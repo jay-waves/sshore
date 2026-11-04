@@ -13,7 +13,7 @@ func TestFileRoundTrip(t *testing.T) {
 	for _, size := range []int{0, 1, chunkSize*3 + 11} {
 		t.Run(string(rune('a'+size%26)), func(t *testing.T) {
 			dir := t.TempDir()
-			src := filepath.Join(dir, "中文 source.bin")
+			src := filepath.Join(dir, "\u4e2d\u6587 source.bin")
 			dst := filepath.Join(dir, "target.bin")
 			data := make([]byte, size)
 			for i := range data {

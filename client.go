@@ -26,7 +26,7 @@ func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\'
 func cleanText(s string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
-			return '�'
+			return '\ufffd'
 		}
 		return r
 	}, s)

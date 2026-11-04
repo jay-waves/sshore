@@ -161,7 +161,7 @@ LogLevel ERROR
             term.expect("Saved .*downloaded.bin")
             assert downloaded.read_bytes() == data
 
-            local = root / "local 文件.bin"
+            local = root / "local \u6587\u4ef6.bin"
             local.write_bytes(data[::-1])
             uploads = root / "uploads"
             uploads.mkdir()

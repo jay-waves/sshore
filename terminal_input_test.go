@@ -28,7 +28,7 @@ func TestConsoleInputPreservesControlKeysAndUnicode(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if want := "A\x1a\x03\x1d中🚀Z"; got.String() != want {
+	if want := "A\x1a\x03\x1d\u4e2d\U0001f680Z"; got.String() != want {
 		t.Fatalf("got %q want %q", got.String(), want)
 	}
 }
@@ -43,7 +43,7 @@ func TestConsoleInputTruncatedSurrogate(t *testing.T) {
 		return 1, nil
 	}}
 	got, err := io.ReadAll(r)
-	if err != nil || string(got) != "�" {
+	if err != nil || string(got) != "\ufffd" {
 		t.Fatalf("%q %v", got, err)
 	}
 }

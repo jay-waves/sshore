@@ -364,7 +364,7 @@ func TestTransferRoundTripsCancellationAndNoOverwrite(t *testing.T) {
 	for i := range data {
 		data[i] = byte(i * 7)
 	}
-	src := filepath.Join(e.dir, "中文 sample.bin")
+	src := filepath.Join(e.dir, "\u4e2d\u6587 sample.bin")
 	if err := os.WriteFile(src, data, 0600); err != nil {
 		t.Fatal(err)
 	}

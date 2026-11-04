@@ -63,7 +63,7 @@ func TestOptions(t *testing.T) {
 	if err != nil || o.session != "build" || o.host != "myhost" || len(o.ssh) != 2 {
 		t.Fatalf("%+v %v", o, err)
 	}
-	for _, name := range []string{"", "../bad", "-bad", "space name", "中文"} {
+	for _, name := range []string{"", "../bad", "-bad", "space name", "\u4e2d\u6587"} {
 		if validSession(name) == nil {
 			t.Fatal("accepted", name)
 		}
