@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Formatting
+        shell: bash
+        run: test -z "$(gofmt -l *.go)"
+      - run: go vet ./...
+      - name: Tests with race detector
+        run: go test -race -count=1 -timeout=5m ./...
+      - name: Build
+        run: go build -o dist/ .
+      - name: CLI smoke tests
+        shell: bash
+        run: |
+          ./dist/sshore --version
+          ./dist/sshore --help
+          ./dist/sshore help download
+      - name: Real SSH integration (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y openssh-server
+          sudo mkdir -p /run/sshd
+          python3 tests/ssh_e2e.py
+
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, windows]
+        goarch: [amd64, arm64]
+    env:
+      CGO_ENABLED: '0'
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Build and package
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="dev-${GITHUB_SHA:0:7}"
+          fi
+          binary=sshore
+          if [[ "$GOOS" == windows ]]; then binary=sshore.exe; fi
+          go build -trimpath -ldflags="-s -w -X main.version=$version" -o "dist/$binary" .
+          python3 scripts/package.py --binary "dist/$binary" --version "$version" --os "$GOOS" --arch "$GOARCH"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sshore-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: packages/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish tagged release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sshore-*
+          path: packages
+          merge-multiple: true
+      - name: Publish archives and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cat packages/*.sha256 > packages/SHA256SUMS
+          gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes packages/*.tar.gz packages/*.zip packages/SHA256SUMS

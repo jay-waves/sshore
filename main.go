@@ -1,0 +1,260 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// Overridden by release builds using -ldflags '-X main.version=...'.
+var version = "0.2.1-dev"
+
+const help = `sshore — persistent shells and file transfer over one SSH connection
+
+Usage:
+  sshore HOST [-s SESSION] [options]
+  sshore HOST list [SSH options]
+  sshore help [upload|download|detach]
+
+Inside a remote sshore shell:
+  sshore detach                  Disconnect; keep the shell running
+  sshore upload [DIRECTORY]      Choose a local file to upload here
+  sshore download FILE...        Download one or more remote files
+
+Options (before or after HOST):
+  -s, --session NAME             Session name (default: main)
+  --server PATH                  Remote executable (default: sshore)
+  --download-dir DIRECTORY       Save downloads here without a path prompt
+  -q, --quiet                    Hide periodic transfer progress
+  --no-escape                    Forward Ctrl-] instead of detaching locally
+  -p PORT  -i KEY  -J JUMP  -F CONFIG  -l USER  -o OPTION
+  -v, -4, -6                    Pass through to system OpenSSH
+  -h, --help                     Show help
+  -V, --version                  Show version
+
+Ctrl-] detaches. Ctrl-C cancels the current file prompt or latest file task;
+without file tasks, Ctrl-C goes to the remote program. No screen replay.
+Two file tasks may run concurrently; each has its own smux stream.
+Requires OpenSSH locally and the same sshore version on the Linux server.
+
+Examples:
+  sshore work -s build
+  sshore user@host --server /home/user/.local/bin/sshore
+  sshore work --download-dir ./downloads
+  sshore work list
+`
+
+var commandHelp = map[string]string{
+	"upload": `Usage: sshore upload [--] [DIRECTORY]
+
+Run inside a remote sshore shell. Choose a local file using the local prompt;
+it is uploaded to DIRECTORY (default: the remote current directory).
+Existing files are never overwritten. Ordinary files only.
+`,
+	"download": `Usage: sshore download [--] FILE...
+
+Run inside a remote sshore shell. Download files with at most two concurrent
+tasks. Local save-path prompts are shown one at a time. When the client was
+started with --download-dir, use that directory without prompting.
+Existing files are never overwritten. A failure does not cancel other files;
+the command returns nonzero if any file failed. Ordinary files only.
+`,
+	"detach": `Usage: sshore detach
+
+Run inside a remote sshore shell. Disconnect the current client and cancel
+its transfers, keeping the shell and its PID alive. Reconnect using the same
+HOST and --session. Ctrl-] is the local detach shortcut.
+`,
+}
+
+type usageError struct{ message string }
+
+func (e *usageError) Error() string          { return e.message }
+func usage(format string, args ...any) error { return &usageError{fmt.Sprintf(format, args...)} }
+
+func validSession(name string) error {
+	if len(name) < 1 || len(name) > 48 {
+		return usage("session name must contain 1–48 ASCII characters")
+	}
+	for i, c := range []byte(name) {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || i > 0 && (c == '_' || c == '-')) {
+			return usage("invalid session name: use letters, digits, _ and -")
+		}
+	}
+	return nil
+}
+
+type options struct {
+	host, session, server string
+	downloadDir           string
+	list, quiet, noEscape bool
+	ssh                   []string
+}
+
+func parseOptions(args []string) (options, error) {
+	o := options{session: "main", server: "sshore"}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "--") {
+			if key, value, ok := strings.Cut(a, "="); ok {
+				switch key {
+				case "--session", "--server", "--download-dir":
+				default:
+					return o, usage("%s does not accept a value", key)
+				}
+				args = append(append(append([]string{}, args[:i]...), key, value), args[i+1:]...)
+				a = key
+			}
+		}
+		switch a {
+		case "-s", "--session", "--server", "--download-dir", "-p", "-i", "-J", "-F", "-l", "-o":
+			i++
+			if i == len(args) || args[i] == "" {
+				return o, usage("missing value for %s", a)
+			}
+			switch a {
+			case "-s", "--session":
+				o.session = args[i]
+			case "--server":
+				o.server = args[i]
+			case "--download-dir":
+				o.downloadDir = args[i]
+			default:
+				o.ssh = append(o.ssh, a, args[i])
+			}
+		case "-q", "--quiet":
+			o.quiet = true
+		case "--no-escape":
+			o.noEscape = true
+		case "-v", "-4", "-6":
+			o.ssh = append(o.ssh, a)
+		case "-h", "--help":
+			return o, errHelp
+		case "--":
+			i++
+			if i == len(args) || o.host != "" || i != len(args)-1 {
+				return o, usage("-- must be followed by one SSH destination")
+			}
+			o.host = args[i]
+		default:
+			if o.host == "" && !strings.HasPrefix(a, "-") {
+				o.host = a
+			} else if o.host != "" && a == "list" && !o.list {
+				o.list = true
+			} else {
+				return o, usage("unexpected argument: %s", a)
+			}
+		}
+	}
+	if o.host == "" || strings.HasPrefix(o.host, "-") || strings.IndexFunc(o.host, func(r rune) bool { return r <= 32 || r == 127 }) >= 0 {
+		return o, usage("invalid SSH destination")
+	}
+	if o.server == "" || strings.ContainsAny(o.server, "\r\n\x00") {
+		return o, usage("invalid server path")
+	}
+	if o.list && (o.session != "main" || o.downloadDir != "" || o.quiet || o.noEscape) {
+		return o, usage("list accepts SSH options and --server, not session or transfer options")
+	}
+	return o, validSession(o.session)
+}
+
+var errHelp = errors.New("help requested")
+
+func prepareDownloadDir(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("download directory: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("download destination is not a directory: %s", path)
+	}
+	return path, nil
+}
+func showHelp(args []string, w io.Writer) error {
+	if len(args) == 0 {
+		_, err := io.WriteString(w, help)
+		return err
+	}
+	if len(args) != 1 {
+		return usage("usage: sshore help [upload|download|detach]")
+	}
+	h, ok := commandHelp[args[0]]
+	if !ok {
+		return usage("unknown help topic: %s", args[0])
+	}
+	_, err := io.WriteString(w, h)
+	return err
+}
+func run(args []string) (int, error) {
+	if len(args) == 0 {
+		return 0, showHelp(nil, os.Stdout)
+	}
+	switch args[0] {
+	case "help":
+		return 0, showHelp(args[1:], os.Stdout)
+	case "-h", "--help":
+		return 0, showHelp(nil, os.Stdout)
+	case "-V", "--version":
+		if len(args) != 1 {
+			return 2, usage("--version takes no arguments")
+		}
+		fmt.Println("sshore", version)
+		return 0, nil
+	case "upload", "download", "detach":
+		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
+			return 0, showHelp(args[:1], os.Stdout)
+		}
+		// -- makes filenames such as --help unambiguous.
+		if len(args) > 1 && args[1] == "--" {
+			args = append([]string{args[0]}, args[2:]...)
+		} else {
+			for _, a := range args[1:] {
+				if strings.HasPrefix(a, "-") {
+					return 2, usage("use %s -- %s for a path beginning with '-'", args[0], a)
+				}
+			}
+		}
+		return 0, serverCommand(args)
+	case "bridge", "daemon", "sessions":
+		return 0, serverCommand(args)
+	}
+	o, err := parseOptions(args)
+	if errors.Is(err, errHelp) {
+		return 0, showHelp(nil, os.Stdout)
+	}
+	if err != nil {
+		return 2, err
+	}
+	o.downloadDir, err = prepareDownloadDir(o.downloadDir)
+	if err != nil {
+		return 1, err
+	}
+	return runClient(o)
+}
+func main() {
+	code, err := run(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sshore:", err)
+		var e *usageError
+		if errors.As(err, &e) {
+			code = 2
+			fmt.Fprintln(os.Stderr, "Try 'sshore --help'.")
+		} else if code == 0 {
+			code = 1
+		}
+	}
+	if code < 0 || code > 255 {
+		code = 1
+	}
+	os.Exit(code)
+}

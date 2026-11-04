@@ -1,0 +1,76 @@
+package main
+
+import (
+	"bytes"
+	"encoding/binary"
+	"io"
+	"testing"
+)
+
+type fragmentedReader struct{ io.Reader }
+
+func (r fragmentedReader) Read(b []byte) (int, error) {
+	if len(b) > 1 {
+		b = b[:1]
+	}
+	return r.Reader.Read(b)
+}
+
+type shortWriter struct{ bytes.Buffer }
+
+func (w *shortWriter) Write(b []byte) (int, error) {
+	if len(b) > 2 {
+		b = b[:2]
+	}
+	return w.Buffer.Write(b)
+}
+func TestProtocolBinaryAndFragmentation(t *testing.T) {
+	data := make([]byte, chunkSize)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	var b shortWriter
+	for _, m := range []message{{Type: "attach", Version: 1, Term: "xterm", Cols: 90, Rows: 30}, {Type: "chunk", ID: 42, Data: data}, {Type: "output", Data: []byte("\x00\xff\x1b[31m")}} {
+		if err := writeMessage(&b, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := fragmentedReader{&b.Buffer}
+	m, err := readMessage(r)
+	if err != nil || m.Cols != 90 || m.Version != 1 {
+		t.Fatalf("%+v %v", m, err)
+	}
+	m, err = readMessage(r)
+	if err != nil || m.ID != 42 || !bytes.Equal(m.Data, data) {
+		t.Fatal("binary frame mismatch", err)
+	}
+	m, err = readMessage(r)
+	if err != nil || !bytes.Equal(m.Data, []byte("\x00\xff\x1b[31m")) {
+		t.Fatal("terminal frame mismatch", err)
+	}
+}
+func TestProtocolRejectsMalformedFrames(t *testing.T) {
+	header := make([]byte, 5)
+	binary.BigEndian.PutUint32(header[1:], maxFrame+1)
+	for _, b := range [][]byte{header, {4, 0, 0, 0, 0}, {3, 0, 0, 0, 1, 0}, {1, 0, 0, 0, 2, 0}, {0, 0, 0, 0, 0}} {
+		if _, err := readMessage(bytes.NewReader(b)); err == nil {
+			t.Fatalf("accepted %v", b)
+		}
+	}
+}
+func TestOptions(t *testing.T) {
+	o, err := parseOptions([]string{"myhost", "-s", "build", "-J", "jump", "--server", "/a b/sshore"})
+	if err != nil || o.session != "build" || o.host != "myhost" || len(o.ssh) != 2 {
+		t.Fatalf("%+v %v", o, err)
+	}
+	for _, name := range []string{"", "../bad", "-bad", "space name", "中文"} {
+		if validSession(name) == nil {
+			t.Fatal("accepted", name)
+		}
+	}
+	for _, args := range [][]string{{"host", "-s"}, {"-evil"}, {"host", "unexpected"}} {
+		if _, err := parseOptions(args); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+}
