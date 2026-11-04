@@ -8,7 +8,7 @@ Written in Go and built on system OpenSSH. The server runs on Linux; clients run
 
 ## Build and install
 
-Prebuilt binaries do not require Go. After a successful CI run, download Linux or Windows packages for amd64 or arm64 from the [Actions artifacts](https://github.com/jay-waves/sshore/actions). Pushing a `v*` tag publishes a [release](https://github.com/jay-waves/sshore/releases) after tests pass, including archives and SHA-256 checksums.
+Prebuilt binaries do not require Go. After a successful CI run, download Linux or Windows packages for amd64 or arm64 from the [Actions artifacts](https://github.com/jay-waves/sshore/actions). Every successful main-branch CI run creates or updates the [release](https://github.com/jay-waves/sshore/releases) for the version line in `VERSION`, including archives and SHA-256 checksums.
 
 Building from source requires Go 1.25+. The local machine needs an OpenSSH client (`ssh` or `ssh.exe`), and the remote machine needs a working SSH server.
 
@@ -149,7 +149,9 @@ CI runs Go tests and the race detector natively on Windows and Linux, plus real 
 
 Keep responsibilities small: OpenSSH handles authentication and encryption, a Linux daemon owns the PTY, smux multiplexes logical streams, and the file protocol handles regular-file transfer and integrity. There is no configuration framework, database, or additional network service.
 
-CI checks formatting, runs `go vet`, executes race tests on both platforms and SSH integration tests on Linux, and builds four platform targets with CGO disabled. Packages contain the executable, README, and MIT license. Push a tag such as `v0.2.1` to embed the release version in the binaries. The workflow publishes archives and `SHA256SUMS` only after all tests and builds pass.
+CI checks formatting, runs `go vet`, executes race tests on both platforms and SSH integration tests on Linux, and builds four platform targets with CGO disabled. Packages contain the executable, README, and MIT license. Each `0.x` version line has one rolling release, such as `v0.2`. After all tests and builds pass on `main`, the workflow moves that tag to the tested commit and replaces the four archives and `SHA256SUMS`. Archive names remain stable; binaries report the version line and commit, such as `0.2+abc1234`. These tags and assets are mutable, not immutable snapshots.
+
+To start the next version line, change `VERSION` from `0.2` to `0.3` and merge into `main`. CI creates `v0.3` and leaves `v0.2` available. Pull requests and other branches only test and build; they never publish. Manual runs on `main` can retry publication, but an old commit cannot replace a newer main build. Publishing is serialized with main-branch CI to avoid overlapping asset updates. Asset replacement is not atomic across files; retry downloads if checksum verification fails during an update.
 
 ## Acknowledgments and references
 
