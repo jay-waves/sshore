@@ -1,0 +1,10 @@
+/dist/
+/sshore
+/sshore.exe
+*.part
+__pycache__/
+/target/
+/packages/
+# Local reference implementation; not part of sshore.
+/dtach/
+/dssh.nu
