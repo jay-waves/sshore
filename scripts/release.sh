@@ -136,6 +136,18 @@ Protocol remains 4. Update the Windows client to receive the mouse fix.
 NOTES
 fi
 
+if [[ "$version" == "0.3.6" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Add local Tab path completion to upload and download approval prompts.
+- Start single-file uploads when the local source path is submitted, without a separate yes prompt; Ctrl-C cancels.
+- Preserve final confirmation for downloads, forwarding and batch requests, and release the line editor before reconnecting.
+
+Protocol remains 4. Update the local client to use the new prompts.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   gh release upload "$tag" packages/*.tar.gz packages/*.zip packages/SHA256SUMS --clobber

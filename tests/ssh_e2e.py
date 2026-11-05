@@ -254,8 +254,9 @@ LogLevel ERROR
                 for kind, path in paths:
                     approval.expect("Save as" if kind == "download" else "Local file to upload")
                     approval.send(str(path) + "\n")
-                approval.expect("Type yes:")
-                approval.send("yes\n")
+                if len(paths) != 1 or paths[0][0] != "upload":
+                    approval.expect("Type yes:")
+                    approval.send("yes\n")
                 if passphrase:
                     approval.expect("Enter passphrase")
                     approval.send(passphrase + "\n")
