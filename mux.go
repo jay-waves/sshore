@@ -2,8 +2,8 @@ package main
 
 // Logical control, terminal, and file streams are application-level smux v2
 // streams over one SSH connection, not native OpenSSH channels. The version
-// handshake rejects incompatible peers before starting smux. Protocol 3 adds
-// connection-scoped forwarding; running older daemons cannot upgrade in place.
+// handshake rejects incompatible peers before starting smux. Protocol 4 adds
+// detached local approval; running older daemons cannot upgrade in place.
 // Each stream has a 256 KiB receive window, with a bounded shared receive budget
 // and 16 KiB maximum frame size. These limits isolate stalled streams but do not
 // guarantee real-time terminal priority: TCP head-of-line blocking still applies.

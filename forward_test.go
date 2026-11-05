@@ -157,7 +157,7 @@ func TestForwardArguments(t *testing.T) {
 		t.Fatal(o, err)
 	}
 	cmd := sshCommand(o)
-	if cmd.Args[1] != "-L" || cmd.Args[2] != o.ssh[1] {
+	if cmd.Args[7] != "-L" || cmd.Args[8] != o.ssh[1] {
 		t.Fatal(cmd.Args)
 	}
 }

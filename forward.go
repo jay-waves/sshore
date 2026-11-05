@@ -260,6 +260,10 @@ func serveForwardStreams(ctx context.Context, mux *smux.Session) {
 			defer abort()
 			_ = st.SetDeadline(time.Now().Add(forwardTimeout))
 			m, err := readMessage(st)
+			if err == nil && m.Type == "approved_transfer" {
+				approvedRemoteTransfer(ctx, st, m)
+				return
+			}
 			if err != nil || m.Type != "forward_connect" || m.Port < 1 || m.Port > 65535 {
 				return
 			}

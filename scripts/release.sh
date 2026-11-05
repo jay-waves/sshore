@@ -48,6 +48,25 @@ upgrade in place. Linux servers; Linux and Windows clients.
 NOTES
 fi
 
+
+if [[ "$version" == "0.3.1" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Remote file and port requests now queue a local approval and detach, preserving the remote shell.
+- Run `sshore approve` locally to review and execute once; SSH authentication remains with system OpenSSH.
+- `--attach` (default) resumes the remote shell; `--stay` stays local, keeping port tunnels in the foreground until Ctrl-C.
+- List or reject pending requests with `approve --list` and `approve ID --reject`.
+- Requests expire after 10 minutes. Unsolicited file/port operations cannot bypass approval; `--download-dir` only sets defaults.
+- Added SECURITY.md with the trust model, attacker assumptions, protections, and remaining limits; included in release archives.
+
+Upgrade: despite the patch version, this release changes the wire protocol to 4.
+Update both client and server. Exit existing sessions with the old client before
+upgrading; running protocol-3 daemons cannot upgrade in place. Batch downloads
+now require one approval and execute sequentially, stopping on the first failure.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   gh release upload "$tag" packages/*.tar.gz packages/*.zip packages/SHA256SUMS --clobber

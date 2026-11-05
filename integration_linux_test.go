@@ -53,6 +53,27 @@ func testBinary(t *testing.T) string {
 	return testBuild.path
 }
 func TestMain(m *testing.M) {
+	// Low-level transfer regression tests run the wire helpers directly; the
+	// public CLI now queues approval instead of initiating these transfers.
+	if os.Getenv("SSHORE_TEST_WIRE_HELPER") == "1" {
+		args := os.Args[1:]
+		var err error
+		if args[0] == "download" && len(args) > 2 {
+			err = downloadFiles(args[1:])
+		} else {
+			path := ""
+			if len(args) > 1 {
+				path = args[1]
+			}
+			err = helper(args[0], path)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
 	code := m.Run()
 	if testBuild.path != "" {
 		os.RemoveAll(filepath.Dir(testBuild.path))
@@ -240,8 +261,8 @@ func (e *testEnv) helper(action, path string) (*exec.Cmd, <-chan error) {
 	if path != "" {
 		args = append(args, path)
 	}
-	c := exec.Command(e.bin, args...)
-	c.Env = append(e.env, "SSHORE_SOCKET="+filepath.Join(e.dir, "main.sock"))
+	c := exec.Command(os.Args[0], args...)
+	c.Env = append(e.env, "SSHORE_TEST_WIRE_HELPER=1", "SSHORE_SOCKET="+filepath.Join(e.dir, "main.sock"))
 	c.Stderr = os.Stderr
 	if err := c.Start(); err != nil {
 		e.t.Fatal(err)
@@ -533,8 +554,8 @@ func TestBatchDownloadsContinueAfterFailure(t *testing.T) {
 		args = append(args, path)
 		expected[name] = data
 	}
-	c := exec.Command(e.bin, args...)
-	c.Env = append(e.env, "SSHORE_SOCKET="+filepath.Join(e.dir, "main.sock"))
+	c := exec.Command(os.Args[0], args...)
+	c.Env = append(e.env, "SSHORE_TEST_WIRE_HELPER=1", "SSHORE_SOCKET="+filepath.Join(e.dir, "main.sock"))
 	var logs bytes.Buffer
 	c.Stderr = &logs
 	if err := c.Start(); err != nil {

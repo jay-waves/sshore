@@ -1,10 +1,8 @@
 package main
 
 // The client launches system OpenSSH and adapts its pipes to the multiplexed
-// transport. The terminal event loop owns keyboard routing and serializes local
-// path prompts; independent file workers keep disk I/O out of that loop.
-// During a prompt, remote output is buffered up to 256 KiB, then omitted with a
-// notice. SSH forwarding environments belong to the connection that created the
+// transport. Remote requests can only save a pending approval and detach.
+// Sensitive file operations execute before terminal interaction, after approval. SSH forwarding environments belong to the connection that created the
 // remote shell and are not refreshed when a later client attaches.
 
 import (
@@ -60,22 +58,20 @@ func localPath(b []byte) (string, error) {
 }
 
 type clientEvent struct {
-	m        message
-	input    []byte
-	err      error
-	task     *clientTransfer
-	finished bool
-	text     string
+	approvalStream *smux.Stream
+	approval       []operation
+	m              message
+	input          []byte
+	err            error
 }
 type clientTransfer struct {
 	id        uint64
 	stream    *smux.Stream
 	request   message
 	choice    chan string
+	exactPath bool
 	ctx       context.Context
 	cancel    context.CancelFunc
-	line      []byte
-	started   bool
 	progress  atomic.Int64
 	total     atomic.Int64
 	closeOnce sync.Once
@@ -88,7 +84,11 @@ func (t *clientTransfer) close() {
 	t.closeOnce.Do(func() { go func() { _ = t.stream.Close() }() })
 }
 func sshCommand(o options) *exec.Cmd {
-	remote := shellQuote(o.server) + " bridge " + shellQuote(o.session)
+	mode := "bridge"
+	if len(o.approved) > 0 {
+		mode = "resume"
+	}
+	remote := shellQuote(o.server) + " " + mode + " " + shellQuote(o.session)
 	if o.list {
 		remote = shellQuote(o.server) + " sessions"
 	}
@@ -96,7 +96,9 @@ func sshCommand(o options) *exec.Cmd {
 	if exe == "" {
 		exe = "ssh"
 	}
-	args := append([]string(nil), o.ssh...)
+	// Own this transport: never reuse or leave behind a shared OpenSSH master.
+	args := []string{"-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no"}
+	args = append(args, o.ssh...)
 	args = append(args, "-T", "-o", "RequestTTY=no", "--", o.host, remote)
 	return exec.Command(exe, args...)
 }
@@ -147,7 +149,11 @@ func runClient(o options) (int, error) {
 	if termName == "" {
 		termName = "xterm-256color"
 	}
-	if err = streamMessage(control, message{Type: "attach", Version: protocolVersion, Cols: uint16(cols), Rows: uint16(rows), Term: termName}); err != nil {
+	action := ""
+	if len(o.approved) > 0 {
+		action = "approved"
+	}
+	if err = streamMessage(control, message{Type: "attach", Action: action, PID: o.resumePID, Version: protocolVersion, Cols: uint16(cols), Rows: uint16(rows), Term: termName}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -167,7 +173,11 @@ func runClient(o options) (int, error) {
 		}
 		o.session = m.Name
 	}
+	if len(o.approved) > 0 && m.PID != o.resumePID {
+		return 1, fmt.Errorf("remote session changed; request again")
+	}
 	pid := m.PID
+	o.resumePID = pid
 	_ = mux.SetDeadline(time.Now().Add(5 * time.Second))
 	terminal, err := mux.AcceptStream()
 	if err != nil {
@@ -183,11 +193,49 @@ func runClient(o options) (int, error) {
 		return 1, fmt.Errorf("missing terminal stream")
 	}
 	_ = terminal.SetReadDeadline(time.Time{})
+	if len(o.approved) > 0 {
+		opCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		err = executeApprovedFiles(opCtx, mux, o.approved, o.quiet)
+		stop()
+		if err != nil {
+			return 1, err
+		}
+		if o.stay {
+			forwards := newForwardManager(context.Background(), mux)
+			defer forwards.close()
+			for _, op := range o.approved {
+				if op.Kind == "forward" {
+					r := forwards.request(message{Action: "add", Port: op.Port})
+					if r.Error != "" {
+						return 1, fmt.Errorf("%s", r.Error)
+					}
+					return stayWithForwards(mux, control, terminal)
+				}
+			}
+			// Closing this owned SSH transport releases attachment, not the shell.
+			fmt.Println("Approved operations complete. Staying local; remote shell is still running.")
+			return 0, nil
+		}
+	}
+	if len(o.approved) > 0 {
+		if err = streamMessage(control, message{Type: "resume_output"}); err != nil {
+			return 1, err
+		}
+		_ = control.SetReadDeadline(time.Now().Add(5 * time.Second))
+		ack, e := readMessage(control)
+		_ = control.SetReadDeadline(time.Time{})
+		if e != nil {
+			return 1, e
+		}
+		if ack.Type != "output_resumed" {
+			return 1, fmt.Errorf("unexpected resume response")
+		}
+	}
 	restore, err := rawTerminal()
 	if err != nil {
 		return 1, err
 	}
-	defer restore()
+	defer func() { restore(); _ = flushTerminalInput() }()
 	logf(os.Stderr, logSuccess, "[sshore] Connected %s / %s (PID %d)\r\n", cleanText(o.host), o.session, pid)
 	logf(os.Stderr, logInfo, "[sshore] Reconnect with --session %s\r\n", o.session)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -217,6 +265,15 @@ func runClient(o options) (int, error) {
 	}
 	forwards := newForwardManager(ctx, mux)
 	defer forwards.close()
+	for _, op := range o.approved {
+		if op.Kind == "forward" {
+			r := forwards.request(message{Action: "add", Port: op.Port})
+			if r.Error != "" {
+				return 1, fmt.Errorf("%s", r.Error)
+			}
+			fmt.Printf("Forwarding %s -> remote %s\r\n", loopback(op.Port), loopback(op.Port))
+		}
+	}
 	go readEvents(control)
 	go readEvents(terminal)
 	go func() {
@@ -228,23 +285,17 @@ func runClient(o options) (int, error) {
 			_ = st.SetReadDeadline(time.Now().Add(5 * time.Second))
 			m, err := readMessage(st)
 			_ = st.SetReadDeadline(time.Time{})
-			if err == nil && m.Type == "forward" {
+			if err == nil && m.Type == "approval_request" {
+				emit(clientEvent{approvalStream: st, approval: m.Operations})
+				continue
+			}
+			if err == nil && m.Type == "forward" && (m.Action == "list" || m.Action == "stop") {
 				forwards.handle(st, m)
 				continue
 			}
-			if err != nil || m.ID == 0 || (m.Type != "upload" && m.Type != "offer") {
-				_ = st.Close()
-				continue
-			}
-			taskCtx, stop := context.WithCancel(ctx)
-			t := &clientTransfer{id: m.ID, stream: st, request: m, choice: make(chan string, 1), ctx: taskCtx, cancel: stop}
-			t.total.Store(m.Size)
-			select {
-			case events <- clientEvent{task: t}:
-			case <-ctx.Done():
-				t.close()
-				return
-			}
+			// Never let unsolicited offers, uploads, or forward-add requests
+			// enter a file worker or open a listener, even from a malicious peer.
+			_ = st.Close()
 		}
 	}()
 	terminalInput := terminalInputReader()
@@ -282,87 +333,12 @@ func runClient(o options) (int, error) {
 			}
 		}
 	}()
-	var workers sync.WaitGroup
-	tasks := make(map[uint64]*clientTransfer)
-	var order []uint64
-	var pending []*clientTransfer
-	var prompt *clientTransfer
-	var buffered []byte
-	omitted := false
-	defer func() {
-		cancel()
-		_ = mux.Close()
-		for _, t := range tasks {
-			t.close()
-		}
-		for _, t := range pending {
-			t.close()
-		}
-		workers.Wait()
-	}()
-	print := func(format string, args ...any) { fmt.Fprintf(os.Stdout, format, args...) }
 	color := terminalLogColor(os.Stdout)
 	notice := func(level logColor, format string, args ...any) {
 		fmt.Fprint(os.Stdout, formatLog(color, level, format, args...))
 	}
-	showPrompt := func() {
-		if prompt != nil {
-			return
-		}
-		for _, id := range order {
-			t := tasks[id]
-			if t == nil || t.started {
-				continue
-			}
-			prompt = t
-			if t.request.Type == "upload" {
-				notice(logInfo, "\r\n[sshore #%d] Local file to upload (Ctrl-C cancels): ", t.id)
-			} else {
-				notice(logInfo, "\r\n[sshore #%d] Download %s (%d bytes)\r\nSave as [./%s] (Ctrl-C cancels): ", t.id, t.request.Name, t.request.Size, t.request.Name)
-			}
-			return
-		}
-	}
-	remove := func(t *clientTransfer) {
-		delete(tasks, t.id)
-		for i, id := range order {
-			if id == t.id {
-				order = append(order[:i], order[i+1:]...)
-				break
-			}
-		}
-		if prompt == t {
-			prompt = nil
-		}
-	}
-	cancelTask := func(t *clientTransfer) {
-		t.close()
-		remove(t)
-		notice(logWarning, "\r\n[sshore #%d] Transfer cancelled\r\n", t.id)
-	}
-	startTask := func(t *clientTransfer) {
-		if t.request.Type == "offer" {
-			if e := safeName(t.request.Name); e != nil || t.request.Size < 0 {
-				t.close()
-				return
-			}
-		}
-		tasks[t.id] = t
-		order = append(order, t.id)
-		if o.downloadDir != "" && t.request.Type == "offer" {
-			t.started = true
-			t.choice <- filepath.Join(o.downloadDir, t.request.Name)
-		}
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			text, err := runFileTask(t)
-			emit(clientEvent{task: t, finished: true, text: text, err: err})
-		}()
-	}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-	progressAt := time.Now()
 	detaching := false
 	var detachTimeout <-chan time.Time
 	for {
@@ -379,54 +355,47 @@ func runClient(o options) (int, error) {
 					return 255, err
 				}
 			}
-			if !o.quiet && prompt == nil && time.Since(progressAt) >= time.Second {
-				for _, id := range order {
-					t := tasks[id]
-					if t != nil && t.started {
-						kind := "Download"
-						if t.request.Type == "upload" {
-							kind = "Upload"
-						}
-						notice(logInfo, "\r\n[sshore #%d] %s: %d/%d bytes\r\n", id, kind, t.progress.Load(), t.total.Load())
-					}
-				}
-				progressAt = time.Now()
-			}
+
 		case e := <-events:
-			if e.task != nil {
-				t := e.task
-				if e.finished {
-					if tasks[t.id] != t {
-						continue
-					}
-					remove(t)
-					if prompt != nil {
-						print("\r\n")
-					}
-					if e.err != nil {
-						notice(logError, "\r\n[sshore #%d] %s\r\n", t.id, cleanText(e.err.Error()))
-					} else {
-						notice(logSuccess, "\r\n[sshore #%d] %s\r\n", t.id, cleanText(e.text))
-					}
-					if prompt != nil {
-						notice(logInfo, "[sshore #%d] Path: %s", prompt.id, string(prompt.line))
-					}
-				} else {
-					if tasks[t.id] != nil {
-						t.close()
-						continue
-					}
-					if len(tasks) >= maxTransfers {
-						if len(pending) >= maxTransfers {
-							t.close()
-						} else {
-							pending = append(pending, t)
-						}
-					} else {
-						startTask(t)
+			if e.approvalStream != nil {
+				st := e.approvalStream
+				if detaching {
+					st.Close()
+					continue
+				}
+				id, err := writeApproval(o, e.approval)
+				if err != nil {
+					_ = streamMessage(st, message{Type: "error", Error: err.Error()})
+					st.Close()
+					notice(logError, "\r\n[sshore] Request rejected: %s\r\n", cleanText(err.Error()))
+					continue
+				}
+				_ = st.SetDeadline(time.Now().Add(forwardTimeout))
+				err = writeMessage(st, message{Type: "queued"})
+				if err == nil {
+					var ack message
+					ack, err = readMessage(st)
+					if err == nil && ack.Type != "queued_ack" {
+						err = fmt.Errorf("unexpected request acknowledgement")
 					}
 				}
-			} else if e.err != nil {
+				st.Close()
+				if err != nil {
+					dir, e := approvalDir()
+					if e == nil {
+						_ = os.Remove(filepath.Join(dir, id+".json"))
+					}
+					return 1, err
+				}
+				notice(logInfo, "\r\n[sshore] Request saved: %s\r\n[sshore] Run sshore approve from your LOCAL shell after this client exits.\r\n", id)
+				if err = streamMessage(control, message{Type: "detach"}); err != nil {
+					return 1, err
+				}
+				detaching = true
+				detachTimeout = time.After(5 * time.Second)
+				continue
+			}
+			if e.err != nil {
 				return 255, fmt.Errorf("connection ended; reconnect to the same session: %w", e.err)
 			} else if e.input != nil {
 				if detaching {
@@ -440,77 +409,19 @@ func runClient(o options) (int, error) {
 					detachTimeout = time.After(5 * time.Second)
 					continue
 				}
-				if bytes.IndexByte(e.input, 3) >= 0 && len(tasks) > 0 {
-					t := prompt
-					if t == nil {
-						for i := len(order) - 1; i >= 0; i-- {
-							if tasks[order[i]] != nil {
-								t = tasks[order[i]]
-								break
-							}
-						}
-					}
-					if t != nil {
-						cancelTask(t)
-					}
-				} else if prompt != nil {
-					submitted := false
-					for _, b := range e.input {
-						switch {
-						case b == '\r' || b == '\n':
-							submitted = true
-						case b == 8 || b == 127:
-							if len(prompt.line) > 0 {
-								_, n := utf8.DecodeLastRune(prompt.line)
-								prompt.line = prompt.line[:len(prompt.line)-n]
-								print("\b \b")
-							}
-						case b >= 32 && b != 127 && len(prompt.line) < 4096:
-							prompt.line = append(prompt.line, b)
-							_, _ = os.Stdout.Write([]byte{b})
-						}
-						if submitted {
-							break
-						}
-					}
-					if submitted {
-						print("\r\n")
-						t := prompt
-						prompt = nil
-						path := t.request.Name
-						var e error
-						if len(t.line) > 0 || t.request.Type == "upload" {
-							path, e = localPath(t.line)
-						}
-						if e != nil {
-							t.close()
-							remove(t)
-							notice(logError, "[sshore #%d] %s\r\n", t.id, cleanText(e.Error()))
-						} else {
-							t.started = true
-							t.choice <- path
-						}
-					}
-				} else {
-					select {
-					case inputQueue <- e.input:
-					default:
-						return 255, fmt.Errorf("terminal input stalled; reconnect to the same session")
-					}
+				select {
+				case inputQueue <- e.input:
+				default:
+					return 255, fmt.Errorf("terminal input stalled; reconnect to the same session")
 				}
 			} else {
 				switch e.m.Type {
 				case "output":
-					if prompt != nil {
-						if len(buffered)+len(e.m.Data) <= 256*1024 {
-							buffered = append(buffered, e.m.Data...)
-						} else {
-							omitted = true
-						}
-					} else {
-						if err = writeFull(os.Stdout, e.m.Data); err != nil {
-							return 1, err
-						}
+					if detaching {
+						continue
+					}
+					if err = writeFull(os.Stdout, e.m.Data); err != nil {
+						return 1, err
 					}
 				case "detach_requested":
 					if !detaching {
@@ -529,24 +440,6 @@ func runClient(o options) (int, error) {
 				case "fatal":
 					return 1, errors.New(e.m.Error)
 				}
-			}
-		}
-		if !detaching {
-			for len(pending) > 0 && len(tasks) < maxTransfers {
-				t := pending[0]
-				pending = pending[1:]
-				startTask(t)
-			}
-			showPrompt()
-		}
-		if prompt == nil && (len(buffered) > 0 || omitted) {
-			if err = writeFull(os.Stdout, buffered); err != nil {
-				return 1, err
-			}
-			buffered = nil
-			if omitted {
-				notice(logWarning, "\r\n[sshore] Some output was omitted during the file prompt\r\n")
-				omitted = false
 			}
 		}
 	}

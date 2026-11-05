@@ -25,7 +25,7 @@ func TestCLIOptionsAndHelp(t *testing.T) {
 			t.Fatal("accepted", args)
 		}
 	}
-	for _, topic := range []string{"upload", "download", "detach", "forward"} {
+	for _, topic := range []string{"upload", "download", "detach", "forward", "approve"} {
 		var b bytes.Buffer
 		if err = showHelp([]string{topic}, &b); err != nil || !strings.Contains(b.String(), "Usage: sshore "+topic) {
 			t.Fatal(topic, err)
@@ -78,7 +78,7 @@ func TestSSHLightweightPassthrough(t *testing.T) {
 				t.Fatalf("%v: %+v %v", args, o, err)
 			}
 			cmd := sshCommand(o)
-			if !reflect.DeepEqual(cmd.Args[1:3], o.ssh) {
+			if !reflect.DeepEqual(cmd.Args[7:9], o.ssh) {
 				t.Fatal(cmd.Args)
 			}
 		}

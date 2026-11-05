@@ -4,14 +4,14 @@
 
 A small SSH command-line tool: disconnect while your remote shell keeps running, then reconnect to the same process. Supports multiple named sessions, with one attached client per session.
 
-The server runs on Linux; clients run on Linux and Windows. Shell access and file transfers share one SSH connection, so transferring files does not ask for your SSH password again. Authentication and connection settings come from system OpenSSH.
+The server runs on Linux; clients run on Linux and Windows. Remote file and port requests detach first; a separate local `sshore approve` command reviews and executes them over a new connection. Authentication, keys, agent use and host-key checks remain with system OpenSSH. See [SECURITY.md](SECURITY.md) for the trust model.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     subgraph local["Local machine · Linux or Windows"]
-        terminal["Terminal and path prompts"] <--> client["sshore client"]
+        terminal["Terminal and local approval"] <--> client["sshore client"]
         client <--> localFiles["Local files"]
         client <--> ssh["OpenSSH client"]
     end
@@ -48,9 +48,9 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -o dist/sshore.
 
 Install the Linux binary on the remote PATH, for example as `~/.local/bin/sshore`, and install the appropriate binary locally. Use the same version on both ends; connections check the protocol version. No root access or additional listening network port is required.
 
-Version 0.3.0 uses protocol 3 for dynamic forwarding. Both binaries must
-be updated together. Existing protocol 2 session daemons must be exited using
-the old client before upgrading; they cannot be attached with the new client.
+Version 0.3.1 uses protocol 4 for local approvals. Update both binaries together.
+Exit existing protocol 3 session daemons using the old client before upgrading;
+running daemons cannot upgrade in place.
 
 Version 0.2 uses a new multiplexing protocol that is incompatible with 0.1. Before upgrading, attach to any running 0.1 sessions with the old client and exit their shells, then replace both binaries. Running session processes cannot upgrade their protocol in place.
 
@@ -74,7 +74,7 @@ sshore user@host                 # Create a new automatically named session.
 sshore myserver -s build         # Create or attach to the build session.
 sshore myserver list             # List sessions, shell PIDs, attachment status, and foreground programs.
 sshore myserver -J jump -p 2222   # Pass SSH connection options.
-sshore myserver --download-dir ./downloads  # Save downloads automatically.
+sshore myserver --download-dir ./downloads  # Default save directory; still requires approval.
 ```
 
 sshore uses system OpenSSH configuration, host keys, and authentication settings. Supported SSH options are `-p`, `-i`, `-J`, `-F`, `-l`, `-o`, `-L`, `-R`, `-D`, `-E`, `-C`, `-v`, `-vv`, `-vvv`, `-4`, and `-6`. Options taking values accept separated or attached forms (for example `-p 2222` or `-p2222`); forwarding options may be repeated. Put complex settings in `~/.ssh/config`. Not every OpenSSH option is forwarded. If a host alias conflicts with a built-in command, configure another SSH alias for that host.
@@ -87,26 +87,65 @@ Without `-s`, every connection creates a new session using an available Pokemon 
 
 Inside the remote shell, run `sshore detach` to leave the session running, or `exit` to end it. Reconnect with the same command, for example `sshore myserver -s build`.
 
+## Approve from the local shell
+
+Remote `upload`, `download` and `forward PORT` commands register a request and
+detach. The remote shell and its programs keep running; current transfers and
+dynamic forwards close. A successful remote command means **queued**, not completed.
+
+```sh
+sshore approve                 # Review the only pending request; execute and attach.
+sshore approve ID --attach     # Explicitly return to the original remote shell.
+sshore approve ID --stay       # Complete files and return to the local shell.
+sshore approve --list          # List unexpired requests.
+sshore approve ID --reject     # Delete a pending request without reconnecting.
+```
+
+For port forwarding, `--stay` keeps a foreground tunnel running without remote
+terminal interaction; Ctrl-C closes it. It does not return a shell prompt while
+the tunnel is active. Use another local terminal for other commands.
+
+Approval displays the connection target and exact operations, asks for local
+file paths, then requires `yes`. SSH reconnects using the original options;
+OpenSSH may ask for a key passphrase, password or MFA as usual. There is no
+separate approval password. `--attach` and `--stay` are mutually exclusive.
+
+Requests expire after 10 minutes and are consumed before connecting. Failure,
+cancellation or a changed/ended session requires a new request. No automatic
+retry or persisted grant exists. The original shell PID must match on reconnect.
+Normal `sshore HOST -s NAME` never executes pending requests.
+
+Pending records live under the local user configuration directory in
+`sshore/approvals` (override the parent with `SSHORE_STATE_DIR`). They contain
+connection options and operation metadata, not collected SSH credentials.
+Unix state must be owned by the current user with private permissions; Windows
+state gets a current-user-only DACL. Up to 32 pending records are retained.
+
+Each sshore connection disables OpenSSH ControlMaster/ControlPath/ControlPersist
+sharing, so exiting owns and closes its transport without terminating someone
+else's shared master. Other locally configured SSH features remain in effect.
+
 ## Forward ports
 
 Inside the remote shell, forward a service to the same port on your computer:
 
 ```sh
-sshore forward 3000          # Local 127.0.0.1:3000 -> remote 127.0.0.1:3000.
+sshore forward 3000          # Request local 3000 -> remote 3000, then detach.
 sshore forward --list        # Show this connection's dynamic forwards.
 sshore forward --stop 3000   # Close the listener and its existing connections.
 ```
 
 Open `http://127.0.0.1:3000` locally for a remote HTTP service. Only TCP over
-IPv4 loopback is supported. Adding an existing rule is harmless; an occupied
-local port reports an error without selecting a different port. Success means
-the local listener is ready, not that the remote service is running. A failed
+IPv4 loopback is supported. After local approval, an occupied local port reports
+an error without selecting a different port. Opening the local listener does
+not establish that the remote service is running. A failed
 remote connection closes that local TCP connection; the listener remains usable.
 
 Rules belong to the attached client. Detach, disconnection, or shell exit closes
 all dynamic listeners and their connections. Reconnecting starts with no rules;
-remote services continue running with the persistent shell. Up to 8 ports and
-32 simultaneous forwarded TCP connections are supported per attachment. Excess
+remote services continue running with the persistent shell. A remote approval contains one port; up to 32 simultaneous forwarded TCP
+connections are supported for that attachment. A new approval detaches and
+closes the previous rule. Excess
 connections are closed. Forwarding uses separate streams and does not occupy
 file-transfer slots, but shares SSH bandwidth with the terminal and files.
 
@@ -122,7 +161,7 @@ rules separately. Both use the same local port namespace, so conflicting
 listeners fail. Dynamic forwarding is implemented by sshore over the command
 channel; it does not depend on OpenSSH ControlMaster support.
 
-Other lightweight OpenSSH options are passed through without adding connections:
+Other lightweight OpenSSH options are passed through for each connection:
 
 ```sh
 sshore myserver -R 127.0.0.1:9000:127.0.0.1:3000  # Remote 9000 -> local 3000.
@@ -138,33 +177,26 @@ and bind-address rules for `-L`, `-R`, and `-D` remain controlled by OpenSSH.
 
 ## Transfer files
 
-Run these commands inside the remote shell:
+Run these commands inside the remote shell; each queues an approval and detaches:
 
 ```sh
-sshore upload                   # Choose a local file to upload to the current directory.
-sshore upload /tmp/uploads       # Upload to a specific remote directory.
-sshore download ./report.zip     # Choose a local destination for the download.
-sshore download a.zip b.log c.png # Download a batch, with up to two concurrent transfers.
+sshore upload                   # Request upload into the current remote directory.
+sshore upload /tmp/uploads       # Request upload into this remote directory.
+sshore download ./report.zip     # Request one download.
+sshore download a.zip b.log c.png # Request a batch (maximum 16 files).
 ```
 
-Local keyboard controls:
+Run `sshore approve` locally to choose paths and approve. UTF-8 paths, spaces,
+surrounding quotes and `~/` work; command substitution and wildcard expansion
+are not performed. For downloads, Enter accepts the displayed default path.
+`--download-dir` changes that default, never bypasses approval.
 
-- `Ctrl-]` detaches even when a remote foreground program is running.
-- During a path prompt, `Ctrl-C` cancels only the transfer associated with that prompt.
-- With active transfers but no path prompt, `Ctrl-C` cancels the most recently added active transfer. Other transfers continue. Task IDs appear in prompts and progress messages.
-- With no file transfers, `Ctrl-C` goes to the remote program. Detaching or losing the connection cancels all transfers on that connection.
-
-File selection uses command-line path input. UTF-8 paths, spaces, surrounding quotes, and `~/` are supported. Command substitution and wildcard expansion are not performed. For downloads, press Enter to accept the default filename in the current local directory, or enter a directory or full destination path.
-
-A session supports simultaneous uploads and downloads, with at most two active tasks, including tasks waiting for a local path. For example, start two downloads remotely:
-
-```sh
-sshore download ./a.zip &
-sshore download ./b.zip &
-wait
-```
-
-The client prompts for each destination in turn; confirmed transfers continue while another prompt is open. Starting a third independent active task returns a concurrency-limit error. `sshore download FILE...` processes the batch with up to two files at a time. Failed files do not cancel the remaining files, and the command reports an aggregate exit status. A batch uses the same two transfer slots and creates no additional SSH connections.
+Batch paths are checked before queuing. Approved files transfer sequentially;
+the first failure stops execution and completed files remain. The local approve
+command reports execution failures. Ctrl-C cancels approval or an active file
+operation and leaves the remote shell running. No sensitive file prompt is
+shown inside the remote terminal anymore. Ctrl-] still detaches during normal
+remote interaction; Ctrl-C goes to the remote program there.
 
 ## Command reference
 
@@ -174,7 +206,7 @@ Common options:
 | --- | --- |
 | `-s, --session NAME` | Create or resume this session; omitted: create a new Pokemon-named session |
 | `--server PATH` | Remote sshore executable; defaults to a PATH lookup |
-| `--download-dir DIRECTORY` | Existing local directory for automatic downloads without individual path prompts; never overwrites files |
+| `--download-dir DIRECTORY` | Existing local directory used as the default during approval; never grants automatic acceptance |
 | `-q, --quiet` | Hide periodic progress while retaining prompts, completion messages, and errors |
 | `--no-escape` | Forward Ctrl-] to the remote application; use `sshore detach` to disconnect |
 | `-h, --help` | Show help; accepted before or after connection arguments |
@@ -189,10 +221,10 @@ Local messages use your terminal’s ANSI 16-color palette: cyan for information
 - Sessions preserve the shell, working directory, environment variables, and running programs. Terminal screens and scrollback are not saved or restored. Press `Ctrl-L` after reconnecting if a redraw is needed.
 - Output produced while detached is discarded. There is no automatic reconnection; reconnect with `sshore HOST -s NAME`.
 - The session ends when its shell exits. Reboots, process termination, or system login-session cleanup policies can also end it.
-- Transfers can run in both directions; canceling one does not close the terminal or other transfers. Only ordinary files are supported, without directories, symbolic links, resumable transfers, drag and drop, or nested SSH. File transfers do not interoperate with SFTP or trzsz.
+- Uploads and downloads execute after local approval, before remote terminal interaction resumes. Only ordinary files are supported, without directories, symbolic links, resumable transfers, drag and drop, or nested SSH. File transfers do not interoperate with SFTP or trzsz.
 - Transfers verify file size and SHA-256 and never overwrite existing files. Cancellation and disconnection remove incomplete files; a forcibly killed receiver or system crash may leave `.sshore-*.part` files.
 - Publishing requires hard-link support on the destination filesystem, such as common Linux filesystems or Windows NTFS. Unsupported filesystems produce an error, without falling back to an operation that might overwrite a file. Permissions, timestamps, and other metadata are not copied. Received files default to `0600` on Linux and inherit the destination directory's ACL on Windows.
-- During file prompts, keyboard input is not forwarded remotely. Remote output is temporarily buffered; excess output is omitted with a notice. Path prompts provide basic line editing, without full shell completion.
+- Local approval and path selection happen before SSH starts. During approved transfers and `--stay`, remote terminal output is not displayed; normal server output is discarded during this phase. There is no screen replay when attachment resumes.
 - SSH agent and X11 forwarding environments come from the connection that created the session and are not refreshed on reconnect. Forwarding is not guaranteed to remain usable after reconnecting.
 - Login scripts that print to stdout for noninteractive SSH connections interfere with the protocol handshake. Restrict such output to interactive shells.
 

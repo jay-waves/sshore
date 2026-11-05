@@ -16,14 +16,17 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.3.0"
+var version = "0.3.1"
 
 const help = `sshore — persistent shells and file transfer over one SSH connection
 
 Usage:
   sshore HOST [-s SESSION] [options]
   sshore HOST list [SSH options]
-  sshore help [upload|download|detach|forward]
+  sshore approve [ID] [--attach | --stay]
+  sshore approve --list
+  sshore approve ID --reject
+  sshore help [upload|download|detach|forward|approve]
 
 Inside a remote sshore shell:
   sshore forward PORT            Forward local loopback PORT to remote loopback PORT
@@ -34,7 +37,7 @@ Inside a remote sshore shell:
 Options (before or after HOST):
   -s, --session NAME             Create or resume NAME (default: new Pokemon name)
   --server PATH                  Remote executable (default: sshore)
-  --download-dir DIRECTORY       Save downloads here without a path prompt
+  --download-dir DIRECTORY       Default download directory (approval still required)
   -q, --quiet                    Hide periodic transfer progress
   --no-escape                    Forward Ctrl-] instead of detaching locally
   -p PORT  -i KEY  -J JUMP  -F CONFIG  -l USER  -o OPTION
@@ -44,9 +47,9 @@ Options (before or after HOST):
   -h, --help                     Show help
   -V, --version                  Show version
 
-Ctrl-] detaches. Ctrl-C cancels the current file prompt or latest file task;
-without file tasks, Ctrl-C goes to the remote program. No screen replay.
-Two file tasks may run concurrently; each has its own smux stream.
+Ctrl-] detaches; Ctrl-C goes to the remote program. No screen replay.
+Upload, download and forward-add requests save a local approval and detach.
+Run sshore approve from your local shell to review, reconnect and execute.
 Requires OpenSSH locally and the same sshore version on the Linux server.
 
 Examples:
@@ -57,27 +60,40 @@ Examples:
 `
 
 var commandHelp = map[string]string{
+	"approve": `Usage: sshore approve [ID] [--attach | --stay]
+       sshore approve --list
+       sshore approve ID --reject
+
+Run from your LOCAL shell after detach. Review one pending request, select
+local file paths and type yes. Authentication remains with system OpenSSH.
+--attach (default) executes approved operations and resumes the remote shell.
+--stay completes file operations and returns to the local shell. For a port
+forward it runs a foreground tunnel until Ctrl-C, without remote terminal I/O.
+Omit ID only when exactly one unexpired request exists. Requests expire after
+10 minutes and are consumed before connecting, even when execution fails.
+No SSH passwords or separate approval passwords are stored or collected.
+`,
 	"forward": `Usage: sshore forward PORT | --stop PORT | --list
 
-Run inside a remote sshore shell. Map local 127.0.0.1:PORT to remote
-127.0.0.1:PORT for this attachment only. --stop closes the listener and all
-its connections. --list shows dynamic forwards only, excluding SSH -L rules.
-Detach/disconnection closes all dynamic forwards; reconnect does not restore
-rules. Up to 8 ports and 32 simultaneous TCP connections are supported.
+Run inside a remote sshore shell. Adding a rule queues local approval and
+detaches; run sshore approve locally to open local 127.0.0.1:PORT -> remote
+127.0.0.1:PORT. --list and --stop do not require approval. Stop/detach closes
+existing connections. OpenSSH -L rules are managed separately.
 `,
 	"upload": `Usage: sshore upload [--] [DIRECTORY]
 
-Run inside a remote sshore shell. Choose a local file using the local prompt;
-it is uploaded to DIRECTORY (default: the remote current directory).
-Existing files are never overwritten. Ordinary files only.
+Run inside a remote sshore shell. Queue approval to upload a local file into
+DIRECTORY (default: remote current directory), then detach. Run sshore approve
+locally to select the source and execute. Existing files are never overwritten.
 `,
 	"download": `Usage: sshore download [--] FILE...
 
-Run inside a remote sshore shell. Download files with at most two concurrent
-tasks. Local save-path prompts are shown one at a time. When the client was
-started with --download-dir, use that directory without prompting.
-Existing files are never overwritten. A failure does not cancel other files;
-the command returns nonzero if any file failed. Ordinary files only.
+Run inside a remote sshore shell. Queue one approval for up to 16 ordinary
+files, then detach. All paths are validated before queuing. Run sshore approve
+locally to select destinations and execute sequentially. --download-dir only
+sets destination defaults. Existing files are never overwritten. Execution
+stops on the first failure; completed files remain. Helper success means queued,
+not transferred; the local approve command reports the execution result.
 `,
 	"detach": `Usage: sshore detach
 
@@ -109,6 +125,9 @@ type options struct {
 	downloadDir           string
 	list, quiet, noEscape bool
 	ssh                   []string
+	approved              []operation
+	resumePID             int
+	stay                  bool
 }
 
 func parseOptions(args []string) (options, error) {
@@ -213,7 +232,7 @@ func showHelp(args []string, w io.Writer) error {
 		return err
 	}
 	if len(args) != 1 {
-		return usage("usage: sshore help [upload|download|detach|forward]")
+		return usage("usage: sshore help [upload|download|detach|forward|approve]")
 	}
 	h, ok := commandHelp[args[0]]
 	if !ok {
@@ -237,6 +256,11 @@ func run(args []string) (int, error) {
 		}
 		fmt.Println("sshore", version)
 		return 0, nil
+	case "approve":
+		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
+			return 0, showHelp(args[:1], os.Stdout)
+		}
+		return runApprove(args[1:])
 	case "forward":
 		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
 			return 0, showHelp(args[:1], os.Stdout)
@@ -260,7 +284,7 @@ func run(args []string) (int, error) {
 			}
 		}
 		return 0, serverCommand(args)
-	case "bridge", "daemon", "sessions":
+	case "bridge", "resume", "daemon", "sessions":
 		return 0, serverCommand(args)
 	}
 	o, err := parseOptions(args)
@@ -279,7 +303,7 @@ func run(args []string) (int, error) {
 func main() {
 	code, err := run(os.Args[1:])
 	if err != nil {
-		logf(os.Stderr, logError, "sshore: %s\n", err)
+		logf(os.Stderr, logError, "sshore: %s\n", cleanText(err.Error()))
 		var e *usageError
 		if errors.As(err, &e) {
 			code = 2

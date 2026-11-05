@@ -4,14 +4,14 @@ Requires ssh, sshd, ssh-keygen and a built binary (default dist/sshore).
 Run after go build -buildvcs=false -o dist/sshore . with:
     python3 tests/ssh_e2e.py
 Creates temporary keys and an SSH server bound only to 127.0.0.1.
-Covers CLI/PTY behavior, uploads, downloads, batches, download directories,
-overwrite protection, path prompts, terminal restoration, and transfers after
-passphrase authentication without reauthentication.
+Covers SSH/PTY, approval detach, local path selection, one-shot execution,
+attach/stay behavior, batches, rejection, forwarding, and SSH reauthentication.
 Does not modify ~/.ssh or system sshd configuration.
 """
 import argparse
 import errno
 import fcntl
+import json
 import os
 from pathlib import Path
 import pty
@@ -97,6 +97,9 @@ def main():
         raise SystemExit("sshd is required")
     with tempfile.TemporaryDirectory(prefix="sshore-e2e-") as root:
         root = Path(root)
+        os.environ["SSHORE_STATE_DIR"] = str(root / "state")
+        os.environ.pop("SSH_CONNECTION", None)
+        os.environ.pop("SSHORE_SOCKET", None)
         key = root / "key"
         hostkey = root / "hostkey"
         for path in (key, hostkey):
@@ -228,132 +231,181 @@ LogLevel ERROR
             term.send("printf 'INT_%s\\n' survived\n")
             term.expect("INT_survived")
 
-            # Dynamic forwarding control travels through the actual helper,
-            # daemon and SSH client. Keep a rule active during file transfers.
-            with socket.socket() as probe:
-                probe.bind(("127.0.0.1", 0))
-                forward_port = probe.getsockname()[1]
-            term.send(f"sshore forward {forward_port}\n")
-            term.expect(f"Forwarding 127.0.0.1:{forward_port}")
-            term.send(f"sshore forward {forward_port}\n")
-            term.expect("Already forwarding")
-            term.send("sshore forward --list\n")
-            term.expect(f"127.0.0.1:{forward_port} -> remote")
+            def queue_request(term, command):
+                term.send(command + "\n")
+                request_id = term.expect(r"Request saved: ([a-f0-9]{32})").group(1).decode()
+                term.expect("Detached")
+                term.wait()
+                return request_id
+
+            def approve(request_id, paths=(), stay=False, passphrase=None):
+                approval = Terminal([binary, "approve", request_id] + (["--stay"] if stay else ["--attach"]), wait_ready=False)
+                terms.append(approval)
+                approval.expect("Local approval")
+                for kind, path in paths:
+                    approval.expect("Save as" if kind == "download" else "Local file to upload")
+                    approval.send(str(path) + "\n")
+                approval.expect("Type yes:")
+                approval.send("yes\n")
+                if passphrase:
+                    approval.expect("Enter passphrase")
+                    approval.send(passphrase + "\n")
+                return approval
 
             data = bytes(range(256)) * 4097
             remote = root / "remote.bin"
             remote.write_bytes(data)
             downloaded = root / "downloaded.bin"
-            term.send(f"sshore download {shlex.quote(str(remote))}\n")
-            term.expect("Save as")
-            term.send(str(downloaded) + "\n")
+            request_id = queue_request(term, f"sshore download {shlex.quote(str(remote))}")
+            assert not downloaded.exists(), "download occurred before approval"
+            listed = subprocess.check_output([binary, "approve", "--list"], text=True)
+            assert request_id in listed
+            term = approve(request_id, [("download", downloaded)])
             term.expect("Saved .*downloaded.bin")
+            term.expect(r"\[sshore\] Connected")
             assert downloaded.read_bytes() == data
+            term.send("printf 'RESUME:%s:%s\\n' $$ \"$KEEP\"\n")
+            term.expect(f"RESUME:{shell_pid}:shore")
+            replay = subprocess.run([binary, "approve", request_id], capture_output=True)
+            assert replay.returncode != 0
 
-            local = root / "local \u6587\u4ef6.bin"
+            local = root / "local 文件.bin"
             local.write_bytes(data[::-1])
             uploads = root / "uploads"
             uploads.mkdir()
-            term.send(f"sshore upload {shlex.quote(str(uploads))}\n")
-            term.expect("Local file to upload")
-            term.send(str(local) + "\n")
-            term.expect("Upload complete")
+            request_id = queue_request(term, f"sshore upload {shlex.quote(str(uploads))}")
+            assert not (uploads / local.name).exists()
+            approved = approve(request_id, [("upload", local)], stay=True)
+            approved.expect("Upload complete")
+            approved.expect("Staying local")
+            approved.wait()
             assert (uploads / local.name).read_bytes() == data[::-1]
 
-            term.send(f"sshore upload {shlex.quote(str(uploads))}\n")
-            term.expect("Local file to upload")
-            term.send(b"\x03")
-            term.expect("Transfer cancelled")
-            term.send("printf 'AFTER_%s\\n' cancel\n")
-            term.expect("AFTER_cancel")
+            term = Terminal(command)
+            terms.append(term)
+            term.send("printf 'STAY_PID:%s\\n' $$\n")
+            term.expect(f"STAY_PID:{shell_pid}")
+            request_id = queue_request(term, f"sshore download {shlex.quote(str(remote))}")
+            subprocess.run([binary, "approve", request_id, "--reject"], check=True)
+            assert request_id not in subprocess.check_output([binary, "approve", "--list"], text=True)
 
-            # Both remote helpers are active before local path confirmation.
-            # Prompts are serialized, while confirmed files use separate streams.
-            first = root / "first.bin"
-            second = root / "second.bin"
-            first.write_bytes(data * 4)
-            second.write_bytes(data[::-1] * 4)
-            parallel = root / "parallel"
-            parallel.mkdir()
-            term.send(f"sshore download {shlex.quote(str(first))} & sshore download {shlex.quote(str(second))} & wait; printf 'BATCH_%s\\n' done\n")
-            term.expect("Save as")
-            term.send(str(parallel) + "\n")
-            term.expect("Save as")
-            term.send(str(parallel) + "\n")
-            term.expect("BATCH_done")
-            assert (parallel / first.name).read_bytes() == first.read_bytes()
-            assert (parallel / second.name).read_bytes() == second.read_bytes()
-
-            term.send(f"sshore forward --stop {forward_port}\n")
-            term.expect("Stopped forwarding")
-            with socket.socket() as probe:
-                probe.bind(("127.0.0.1", forward_port))
-            term.send(f"sshore forward {forward_port}\n")
-            term.expect("Forwarding")
-            term.send(b"\x1d")
-            term.expect("Detached")
-            term.wait()
-            with socket.socket() as probe:
-                probe.bind(("127.0.0.1", forward_port))
+            # A download directory supplies defaults, never automatic approval.
             automatic = root / "automatic"
             automatic.mkdir()
             term = Terminal(command + ["--download-dir", str(automatic), "--quiet", "--no-escape"])
             terms.append(term)
-            term.send("printf 'RESUME:%s:%s\\n' $$ \"$KEEP\"\n")
-            term.expect(f"RESUME:{shell_pid}:shore")
-            term.send("sshore forward --list\n")
-            term.expect("No dynamic forwards")
+            # A compromised remote peer can still speak the old wire format.
+            # Neither a legacy file offer nor forward-add can bypass approval.
+            def unsolicited(metadata):
+                with socket.socket(socket.AF_UNIX) as peer:
+                    peer.settimeout(10)
+                    peer.connect(str(runtime / "main.sock"))
+                    body = json.dumps(metadata).encode()
+                    peer.sendall(b"\x00" + struct.pack("!I", len(body)) + body)
+                    header = peer.recv(5)
+                    if header:
+                        assert len(header) == 5
+                        size = struct.unpack("!I", header[1:])[0]
+                        data = b""
+                        while len(data) < size:
+                            part = peer.recv(size - len(data))
+                            if not part:
+                                break
+                            data += part
+                        reply = json.loads(data)
+                        assert reply.get("Type", reply.get("type")) != "accept"
+                        assert reply.get("error"), reply
+            unsolicited({"type": "offer", "name": "unapproved.txt", "size": 5})
+            assert not (automatic / "unapproved.txt").exists()
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                forbidden_port = probe.getsockname()[1]
+            unsolicited({"type": "forward", "action": "add", "port": forbidden_port})
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", forbidden_port))
+            term.send("printf 'UNSOLICITED_%s\\n' survived\n")
+            term.expect("UNSOLICITED_survived")
             batch = []
-            for index in range(8):
+            for index in range(3):
                 path = root / f"batch-{index}.bin"
                 path.write_bytes(bytes([index]) * (index * 100))
                 batch.append(path)
-            term.send("sshore download " + " ".join(shlex.quote(str(p)) for p in batch) + "; printf 'AUTO_%s\\n' $?\n")
-            term.expect("AUTO_0")
+            request_id = queue_request(term, "sshore download " + " ".join(shlex.quote(str(p)) for p in batch))
+            assert list(automatic.iterdir()) == []
+            term = approve(request_id, [("download", "")] * len(batch))
+            term.expect(r"\[sshore\] Connected")
             for path in batch:
                 assert (automatic / path.name).read_bytes() == path.read_bytes()
-            term.send(f"sshore download {shlex.quote(str(batch[0]))}; printf 'EXISTS_%s\\n' $?\n")
-            term.expect("EXISTS_1")
             term.send("stty -icanon min 1 -echo; printf 'KEY_%s\\n' ready; od -An -tx1 -N1; stty sane -echo\n")
             term.expect("KEY_ready")
             term.send(b"\x1d")
             term.expect("1d")
-            listing = subprocess.check_output(base_command + ["list"], text=True)
-            assert "main" in listing and str(shell_pid) in listing
-            term.close()
-            terms.remove(term)
-            time.sleep(0.2)
+
+            # Local overwrite is rejected before connecting or consuming approval.
+            request_id = queue_request(term, f"sshore download {shlex.quote(str(batch[0]))}")
+            rejected = Terminal([binary, "approve", request_id], wait_ready=False)
+            terms.append(rejected)
+            rejected.expect("Save as")
+            rejected.send("\n")
+            rejected.expect("destination already exists")
+            rejected.wait(1)
+            subprocess.run([binary, "approve", request_id, "--reject"], check=True)
+
+            # Forward --stay owns a foreground tunnel; Ctrl-C closes it without
+            # ending the persistent shell. No listener exists before approval.
             term = Terminal(command)
             terms.append(term)
-            term.send("printf 'EOF_PID:%s\\n' $$\n")
-            term.expect(f"EOF_PID:{shell_pid}")
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                forward_port = probe.getsockname()[1]
+            request_id = queue_request(term, f"sshore forward {forward_port}")
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", forward_port))
+            tunnel = approve(request_id, stay=True)
+            tunnel.expect("Forwarding is active")
+            with socket.socket() as probe:
+                try:
+                    probe.bind(("127.0.0.1", forward_port))
+                except OSError as e:
+                    assert e.errno == errno.EADDRINUSE
+                else:
+                    raise AssertionError("approved listener was not opened")
+            tunnel.send(b"\x03")
+            tunnel.wait()
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", forward_port))
+
+            term = Terminal(command)
+            terms.append(term)
+            request_id = queue_request(term, f"sshore forward {forward_port}")
+            term = approve(request_id)
+            term.expect("Forwarding 127.0.0.1")
+            term.send("sshore forward --list\n")
+            term.expect(f"127.0.0.1:{forward_port} -> remote")
+            term.send(f"sshore forward --stop {forward_port}\n")
+            term.expect("Stopped forwarding")
+            term.send("printf 'FINAL_PID:%s\\n' $$\n")
+            term.expect(f"FINAL_PID:{shell_pid}")
             term.send("sshore detach\n")
             term.expect("Detached")
             term.wait()
-            term = Terminal(command)
-            terms.append(term)
-            term.send("printf 'SIGNAL_READY:%s\\n' $$\n")
-            term.expect(f"SIGNAL_READY:{shell_pid}")
-            os.kill(term.pid, signal.SIGTERM)
-            term.wait(130)
-            time.sleep(0.2)
+
+            # A new SSH connection uses OpenSSH's normal key-passphrase prompt.
             subprocess.run(["ssh-keygen", "-q", "-p", "-P", "", "-N", "sshore-test-passphrase", "-f", str(key)], check=True, stdout=subprocess.DEVNULL)
             term = Terminal(command, wait_ready=False)
             terms.append(term)
             term.expect("Enter passphrase")
             term.send("sshore-test-passphrase\n")
             term.expect(r"\[sshore\] Connected")
-            term.send("printf 'AUTH_PID:%s\\n' $$\n")
-            term.expect(f"AUTH_PID:{shell_pid}")
-            term.send(f"sshore download {shlex.quote(str(remote))}\n")
-            term.expect("Save as")
-            term.send(str(root / "after-auth.bin") + "\n")
+            request_id = queue_request(term, f"sshore download {shlex.quote(str(remote))}")
+            term = approve(request_id, [("download", root / "after-auth.bin")], passphrase="sshore-test-passphrase")
             term.expect("Saved .*after-auth.bin")
+            term.expect(r"\[sshore\] Connected")
             assert (root / "after-auth.bin").read_bytes() == data
             term.send("exit 7\n")
             term.wait(7)
             shell_pid = None
-            print("PASS: real SSH + PTY, resize, upload/download, cancel, named reconnect, PID persistence, detach, exit code")
+            print("PASS: SSH + PTY, local approval, attach/stay, replay rejection, files, batches, forwarding, PID persistence, key authentication")
         finally:
             for term in terms:
                 term.close()

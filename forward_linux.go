@@ -12,6 +12,9 @@ func forwardHelper(args []string) error {
 	if err != nil {
 		return err
 	}
+	if m.Action == "add" {
+		return requestOperations([]operation{{Kind: "forward", Port: m.Port}})
+	}
 	sock := os.Getenv("SSHORE_SOCKET")
 	if sock == "" {
 		return fmt.Errorf("run this command inside an sshore session")

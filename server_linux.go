@@ -135,7 +135,7 @@ func reserveSession(names []string, fresh bool) (string, *os.File, net.Conn, err
 	return "", nil, nil, fmt.Errorf("all automatic session names are in use; exit an existing session or choose a name with --session")
 }
 
-func bridge(name string) error {
+func bridge(name string, existing bool) error {
 	names := []string{name}
 	fresh := name == ""
 	if fresh {
@@ -151,6 +151,9 @@ func bridge(name string) error {
 		return err
 	}
 	if conn == nil {
+		if existing {
+			return fmt.Errorf("approved session no longer exists")
+		}
 		exe, err := os.Executable()
 		if err != nil {
 			return err
@@ -207,6 +210,7 @@ type attachment struct {
 	control, terminal *smux.Stream
 	controlMu         sync.Mutex
 	forwardRequests   chan struct{}
+	muted             atomic.Bool
 }
 
 func (p *attachment) controlMessage(m message) error {
@@ -214,8 +218,13 @@ func (p *attachment) controlMessage(m message) error {
 	defer p.controlMu.Unlock()
 	return streamMessage(p.control, m)
 }
-func (p *attachment) output(m message) error { return streamMessage(p.terminal, m) }
-func (p *attachment) close()                 { _ = p.mux.Close() }
+func (p *attachment) output(m message) error {
+	if m.Type == "output" && p.muted.Load() {
+		return nil
+	}
+	return streamMessage(p.terminal, m)
+}
+func (p *attachment) close() { _ = p.mux.Close() }
 
 type activeTransfer struct {
 	id     uint64
@@ -318,6 +327,12 @@ func (s *session) attach(p *attachment, m message) error {
 	}
 	if s.active != nil {
 		return fmt.Errorf("session already attached; detach the other connection first")
+	}
+	if m.Action == "approved" {
+		if s.cmd == nil || s.cmd.Process.Pid != m.PID {
+			return fmt.Errorf("approved session changed")
+		}
+		p.muted.Store(true)
 	}
 	if s.master == nil {
 		if err := s.start(m.Cols, m.Rows, m.Term); err != nil {
@@ -440,6 +455,11 @@ func (s *session) serveMux(c net.Conn) error {
 			return err
 		}
 		switch m.Type {
+		case "resume_output":
+			p.muted.Store(false)
+			if err := p.controlMessage(message{Type: "output_resumed"}); err != nil {
+				return err
+			}
 		case "resize":
 			s.mu.Lock()
 			if s.active == p {
@@ -586,6 +606,10 @@ func (s *session) handle(id uint64, c net.Conn) {
 			_ = p.controlMessage(message{Type: "detach_requested"})
 		}
 		_ = writeMessage(c, message{Type: "detached"})
+	case "approval_request":
+		if err = s.requestApproval(c, first); err != nil {
+			_ = writeMessage(c, message{Type: "error", Error: err.Error()})
+		}
 	case "forward":
 		if err = s.forward(c, first); err != nil {
 			_ = writeMessage(c, message{Type: "forward_result", Error: err.Error()})
@@ -714,12 +738,12 @@ func listSessions() error {
 }
 func serverCommand(args []string) error {
 	switch args[0] {
-	case "bridge", "daemon":
+	case "bridge", "resume", "daemon":
 		if len(args) != 2 {
 			return fmt.Errorf("internal command requires a session name")
 		}
-		if args[0] == "bridge" {
-			return bridge(args[1])
+		if args[0] == "bridge" || args[0] == "resume" {
+			return bridge(args[1], args[0] == "resume")
 		}
 		return daemon(args[1])
 	case "sessions":
@@ -742,12 +766,12 @@ func serverCommand(args []string) error {
 		if len(args) == 2 {
 			path = args[1]
 		}
-		return helper("upload", path)
+		return requestFiles("upload", []string{path})
 	case "download":
 		if len(args) < 2 {
 			return usage("usage: sshore download FILE...")
 		}
-		return downloadFiles(args[1:])
+		return requestFiles("download", args[1:])
 	}
 	return fmt.Errorf("unknown server command")
 }

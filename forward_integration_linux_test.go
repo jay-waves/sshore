@@ -29,7 +29,15 @@ func TestForwardHelperAndRemoteDial(t *testing.T) {
 				st.Close()
 				continue
 			}
-			f.handle(st, m)
+			if m.Type == "approval_request" {
+				_ = writeMessage(st, message{Type: "queued"})
+				if ack, e := readMessage(st); e == nil && ack.Type == "queued_ack" {
+					f.request(message{Action: "add", Port: m.Operations[0].Port})
+				}
+				st.Close()
+			} else {
+				f.handle(st, m)
+			}
 		}
 	}()
 	run := func(args ...string) string {
@@ -48,13 +56,13 @@ func TestForwardHelperAndRemoteDial(t *testing.T) {
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
-	if out := run(strconv.Itoa(port)); !strings.Contains(out, "Forwarding") {
+	if out := run(strconv.Itoa(port)); !strings.Contains(out, "Request queued") {
 		t.Fatal(out)
 	}
 	if out := run("--list"); !strings.Contains(out, loopback(port)) {
 		t.Fatal(out)
 	}
-	if out := run(strconv.Itoa(port)); !strings.Contains(out, "Already forwarding") {
+	if out := run(strconv.Itoa(port)); !strings.Contains(out, "Request queued") {
 		t.Fatal(out)
 	}
 	run("--stop", strconv.Itoa(port))

@@ -74,6 +74,9 @@ func runFileTask(t *clientTransfer) (result string, failure error) {
 			return "", err
 		}
 		defer f.close()
+		if t.request.Name != "" && (f.name != t.request.Name || f.size != t.request.Size) {
+			return "", fmt.Errorf("local file metadata changed; request again")
+		}
 		t.total.Store(f.size)
 		if err = writeMessage(t.stream, f.offer(t.id)); err != nil {
 			return "", err
@@ -110,7 +113,7 @@ func runFileTask(t *clientTransfer) (result string, failure error) {
 		}
 		return "Upload complete", nil
 	}
-	if info, err := os.Stat(path); err == nil && info.IsDir() {
+	if info, err := os.Stat(path); !t.exactPath && err == nil && info.IsDir() {
 		path = filepath.Join(path, t.request.Name)
 	}
 	f, err := newReceiving(path, t.request.Size)
