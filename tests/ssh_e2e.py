@@ -372,6 +372,7 @@ LogLevel ERROR
                 probe.bind(("127.0.0.1", forward_port))
             tunnel = approve(request_id, stay=True)
             tunnel.expect("Forwarding is active")
+            assert not (termios.tcgetattr(tunnel.fd)[3] & termios.ISIG), "Ctrl-C must be handled locally, not sent to the SSH process group"
             with socket.socket() as probe:
                 try:
                     probe.bind(("127.0.0.1", forward_port))

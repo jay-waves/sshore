@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -95,8 +96,32 @@ func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, q
 func stayWithForwards(mux *smux.Session, control, terminal *smux.Stream) (int, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	fmt.Println("Forwarding is active. Staying local; Ctrl-C closes forwarding and leaves the remote shell running.")
-	done := make(chan error, 3)
+	// Read Ctrl-C as a local key, not a terminal-generated process-group signal:
+	// otherwise it can kill OpenSSH before this process handles cancellation.
+	restore, err := rawTerminal()
+	if err != nil {
+		return 1, err
+	}
+	defer func() { restore(); _ = flushTerminalInput() }()
+	fmt.Print("Forwarding is active. Staying local; Ctrl-C closes forwarding and leaves the remote shell running.\r\n")
+
+	done := make(chan error, 4)
+	go func() {
+		input := terminalInputReader()
+		buf := make([]byte, 4096)
+		for {
+			n, err := input.Read(buf)
+			if bytes.IndexByte(buf[:n], 3) >= 0 {
+				done <- nil
+				return
+			}
+			if err != nil {
+				done <- err
+				return
+			}
+			// All other local input is ignored, never forwarded to the remote shell.
+		}
+	}()
 	// Do not render remote terminal output or accept new sensitive operations in
 	// local mode. Drain terminal output so it cannot block the remote shell.
 	go func() {

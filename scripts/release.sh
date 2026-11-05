@@ -76,6 +76,7 @@ Changes:
 - Missing remote executables now print an installation command matching the local client. No automatic installation is performed.
 - Default remote lookup falls back to ~/.local/bin/sshore when it is absent from PATH; explicit --server paths remain authoritative.
 - Added installer, remote-probe, and real-SSH regression coverage, plus installation trust-boundary documentation.
+- Fixed Ctrl-C in foreground `approve --stay` tunnels so normal cancellation does not race with SSH process termination.
 
 Install on Linux:
 ```sh
