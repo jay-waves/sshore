@@ -83,11 +83,11 @@ func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, q
 			if r.err != nil {
 				return r.err
 			}
-			fmt.Println(cleanText(r.text))
+			logf(os.Stderr, logSuccess, "[sshore] %s\n", cleanText(r.text))
 			return nil
 		case <-ticker.C:
 			if len(quiet) == 0 || !quiet[0] {
-				fmt.Printf("%s: %d/%d bytes\n", op.Kind, t.progress.Load(), t.total.Load())
+				logf(os.Stderr, logInfo, "[sshore] %s: %d/%d bytes\n", op.Kind, t.progress.Load(), t.total.Load())
 			}
 		}
 	}
@@ -103,7 +103,7 @@ func stayWithForwards(mux *smux.Session, control, terminal *smux.Stream) (int, e
 		return 1, err
 	}
 	defer func() { restore(); _ = flushTerminalInput() }()
-	fmt.Print("Forwarding is active. Staying local; Ctrl-C closes forwarding and leaves the remote shell running.\r\n")
+	logf(os.Stderr, logInfo, "[sshore] Forwarding is active. Staying local; Ctrl-C closes forwarding and leaves the remote shell running.\r\n")
 
 	done := make(chan error, 4)
 	go func() {
@@ -144,7 +144,11 @@ func stayWithForwards(mux *smux.Session, control, terminal *smux.Stream) (int, e
 				done <- e
 				return
 			}
-			if m.Type == "fatal" || m.Type == "detached" || m.Type == "detach_requested" {
+			if m.Type == "fatal" {
+				done <- fileResponseError(m)
+				return
+			}
+			if m.Type == "detached" || m.Type == "detach_requested" {
 				done <- nil
 				return
 			}

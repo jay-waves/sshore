@@ -70,7 +70,7 @@ func validateOperations(ops []operation) error {
 
 type approvalRecord struct {
 	PID                                           int
-	Version                                       int
+	SoftwareVersion                               string
 	ID                                            string
 	Created                                       time.Time
 	Host, Session, Server, Directory, DownloadDir string
@@ -151,7 +151,7 @@ func writeApproval(o options, ops []operation) (string, error) {
 		return "", err
 	}
 	id := hex.EncodeToString(nonce)
-	r := approvalRecord{Version: protocolVersion, PID: o.resumePID, ID: id, Created: time.Now(), Host: o.host, Session: o.session, Server: o.server, Directory: cwd, DownloadDir: o.downloadDir, SSH: o.ssh, Quiet: o.quiet, NoEscape: o.noEscape, Operations: ops}
+	r := approvalRecord{SoftwareVersion: version, PID: o.resumePID, ID: id, Created: time.Now(), Host: o.host, Session: o.session, Server: o.server, Directory: cwd, DownloadDir: o.downloadDir, SSH: o.ssh, Quiet: o.quiet, NoEscape: o.noEscape, Operations: ops}
 	data, err := json.Marshal(r)
 	if err != nil {
 		return "", err
@@ -210,7 +210,7 @@ func readApproval(dir, id string) (approvalRecord, error) {
 	if err = json.Unmarshal(data, &r); err != nil {
 		return r, err
 	}
-	if r.Version != protocolVersion || r.ID != id || time.Since(r.Created) > approvalTTL || r.Created.After(time.Now().Add(time.Minute)) {
+	if !compatibleVersions(version, r.SoftwareVersion) || r.ID != id || time.Since(r.Created) > approvalTTL || r.Created.After(time.Now().Add(time.Minute)) {
 		return r, fmt.Errorf("approval expired or incompatible; request it again")
 	}
 	if err = validSession(r.Session); err != nil {
@@ -316,7 +316,7 @@ func runApprove(args []string) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		fmt.Println("Request rejected")
+		logf(os.Stderr, logSuccess, "[sshore] Request rejected\n")
 		return 0, nil
 	}
 	r, err := readApproval(dir, a.id)
@@ -330,7 +330,7 @@ func runApprove(args []string) (int, error) {
 	if err = flushTerminalInput(); err != nil {
 		return 1, err
 	}
-	fmt.Printf("Local approval %s\nHost: %s\nSession: %s\n", r.ID, cleanText(r.Host), r.Session)
+	logf(os.Stdout, logInfo, "Local approval %s\nHost: %s\nSession: %s\n", r.ID, cleanText(r.Host), r.Session)
 	input, err := newApprovalInput()
 	if err != nil {
 		return 1, err
@@ -338,9 +338,9 @@ func runApprove(args []string) (int, error) {
 	defer input.Close()
 	directUpload := len(r.Operations) == 1 && r.Operations[0].Kind == "upload"
 	if a.stay {
-		fmt.Println("After approval: stay local (port forwarding runs until Ctrl-C).")
+		logf(os.Stdout, logInfo, "After approval: stay local (port forwarding runs until Ctrl-C).\n")
 	} else {
-		fmt.Println("After approval: return to the remote session.")
+		logf(os.Stdout, logInfo, "After approval: return to the remote session.\n")
 	}
 	for i := range r.Operations {
 		op := &r.Operations[i]
@@ -351,7 +351,7 @@ func runApprove(args []string) (int, error) {
 				dest = r.Directory
 			}
 			dest = filepath.Join(dest, op.Name)
-			fmt.Printf("Download %s (%d bytes)\n", cleanText(op.Path), op.Size)
+			logf(os.Stdout, logInfo, "Download %s (%d bytes)\n", cleanText(op.Path), op.Size)
 			line, e := input.Read(fmt.Sprintf("Save as [%s] (Tab to complete): ", cleanText(dest)), true)
 			if e != nil {
 				return 1, e
@@ -375,12 +375,12 @@ func runApprove(args []string) (int, error) {
 				return 1, e
 			}
 			op.LocalPath = dest
-			fmt.Printf("Destination: %s\n", cleanText(dest))
+			logf(os.Stdout, logInfo, "Destination: %s\n", cleanText(dest))
 		case "upload":
-			fmt.Printf("Upload to remote directory: %s\n", cleanText(op.Path))
+			logf(os.Stdout, logInfo, "Upload to remote directory: %s\n", cleanText(op.Path))
 			prompt := "Local file to upload (Tab to complete): "
 			if directUpload {
-				fmt.Println("Enter a local file path and press Enter to upload; Ctrl-C cancels.")
+				logf(os.Stdout, logInfo, "Enter a local file path and press Enter to upload; Ctrl-C cancels.\n")
 			}
 			line, e := input.Read(prompt, true)
 			if e != nil {
@@ -402,9 +402,9 @@ func runApprove(args []string) (int, error) {
 			op.Name = f.name
 			op.Size = f.size
 			f.close()
-			fmt.Printf("Source: %s (%d bytes)\n", cleanText(path), op.Size)
+			logf(os.Stdout, logInfo, "Source: %s (%d bytes)\n", cleanText(path), op.Size)
 		case "forward":
-			fmt.Printf("Forward local %s -> remote %s\n", loopback(op.Port), loopback(op.Port))
+			logf(os.Stdout, logInfo, "Forward local %s -> remote %s\n", loopback(op.Port), loopback(op.Port))
 		}
 	}
 	if !directUpload {
@@ -424,12 +424,12 @@ func runApprove(args []string) (int, error) {
 	if time.Since(r.Created) > approvalTTL {
 		return 1, fmt.Errorf("approval expired; request it again")
 	}
-	if err = consumeApproval(dir, r.ID); err != nil {
-		return 1, err
-	}
 	// Restore the original local working directory for relative SSH configuration
 	// paths. Selected local file paths are already absolute.
 	if err = os.Chdir(r.Directory); err != nil {
+		return 1, err
+	}
+	if err = consumeApproval(dir, r.ID); err != nil {
 		return 1, err
 	}
 	return runClient(options{host: r.Host, session: r.Session, server: r.Server, downloadDir: r.DownloadDir, ssh: r.SSH, quiet: r.Quiet, noEscape: r.NoEscape, approved: r.Operations, stay: a.stay, resumePID: r.PID})

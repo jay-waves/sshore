@@ -51,6 +51,7 @@ jobs:
         run: |
           sh -n install.sh
           python3 tests/install_test.py
+          python3 tests/release_test.py
       - name: Installer tests (Windows PowerShell 5.1)
         if: runner.os == 'Windows'
         shell: powershell
@@ -65,7 +66,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y openssh-server
           sudo mkdir -p /run/sshd
-          python3 tests/ssh_e2e.py
+          go build -tags=sshoretest -o dist/sshore-e2e .
+          python3 tests/ssh_e2e.py --binary dist/sshore-e2e
 
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -103,7 +105,7 @@ jobs:
           retention-days: 30
 
   release:
-    name: Publish versioned release
+    name: Publish release
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest

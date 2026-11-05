@@ -19,7 +19,7 @@ func TestApprovalPrompt(t *testing.T) {
 			t.Setenv("SSH_CONNECTION", "")
 			root := t.TempDir()
 			t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
-			source := filepath.Join(root, "tank with spaces.tar.gz")
+			source := filepath.Join(root, "tank 中文 with spaces.tar.gz")
 			if err := os.WriteFile(source, []byte("test"), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -94,7 +94,7 @@ exit 1
 					await("approval cancelled")
 				} else {
 					io.WriteString(terminal, filepath.Join(root, "tank")+"\t")
-					await("tank with spaces.tar.gz")
+					await("tank 中文 with spaces.tar.gz")
 					io.WriteString(terminal, "\r")
 					await("SSH-STARTED")
 					io.WriteString(terminal, "ready\r")

@@ -49,7 +49,7 @@ func TestDownloadDirectoryValidation(t *testing.T) {
 
 func TestDefaultSessions(t *testing.T) {
 	automatic, err := parseOptions([]string{"host"})
-	if err != nil || automatic.session != "" {
+	if err != nil || automatic.session != "main" {
 		t.Fatalf("automatic: %+v %v", automatic, err)
 	}
 	named, err := parseOptions([]string{"host", "-s", "eevee"})
@@ -112,5 +112,15 @@ func TestExplicitConnectRouting(t *testing.T) {
 	}
 	if _, err := run([]string{"connect"}); err == nil {
 		t.Fatal("missing host accepted")
+	}
+}
+
+func TestSourceVersionMatchesRelease(t *testing.T) {
+	data, err := os.ReadFile("VERSION")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != version {
+		t.Fatalf("VERSION=%s, executable=%s", got, version)
 	}
 }

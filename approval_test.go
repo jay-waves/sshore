@@ -154,3 +154,44 @@ func TestChangedUploadIsNotSent(t *testing.T) {
 		t.Fatal("worker did not close")
 	}
 }
+
+func TestApprovalRejectsDifferentRelease(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	id, err := writeApproval(options{host: "host", session: "main", server: "sshore"}, []operation{{Kind: "upload", Path: "/tmp"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := approvalDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := readApproval(dir, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	series, _ := releaseSeries(version)
+	r.SoftwareVersion = series + ".999"
+	data, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, id+".json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readApproval(dir, id); err == nil {
+		t.Fatal("different patch approval accepted")
+	}
+	for _, release := range []string{"0.0.0-old", ""} {
+		r.SoftwareVersion = release
+		data, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, id+".json"), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readApproval(dir, id); err == nil || !strings.Contains(err.Error(), "incompatible") {
+			t.Fatal("accepted incompatible approval", err)
+		}
+	}
+}

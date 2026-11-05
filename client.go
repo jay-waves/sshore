@@ -47,12 +47,16 @@ func localPath(b []byte) (string, error) {
 	if s == "" {
 		return "", fmt.Errorf("empty path")
 	}
-	if strings.HasPrefix(s, "~/") || strings.HasPrefix(s, `~\`) {
+	if s == "~" || strings.HasPrefix(s, "~/") || strings.HasPrefix(s, `~\`) {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
 		}
-		s = filepath.Join(home, s[2:])
+		if s == "~" {
+			s = home
+		} else {
+			s = filepath.Join(home, s[2:])
+		}
 	}
 	return s, nil
 }
@@ -127,6 +131,9 @@ func runClient(o options) (int, error) {
 	// The mux handshake happens after OpenSSH authentication; no local keyboard
 	// reader or raw mode is active while OpenSSH prompts for passwords/host keys.
 	transport := &pipeTransport{Reader: reader, Writer: writer, closers: []io.Closer{reader, writer}}
+	if err = negotiateSetup(reader, writer, &o); err != nil {
+		return 1, err
+	}
 	mux, err := clientMux(transport)
 	if err != nil {
 		return 255, err
@@ -148,7 +155,7 @@ func runClient(o options) (int, error) {
 	if len(o.approved) > 0 {
 		action = "approved"
 	}
-	if err = streamMessage(control, message{Type: "attach", Action: action, PID: o.resumePID, Version: protocolVersion, Cols: uint16(cols), Rows: uint16(rows), Term: termName}); err != nil {
+	if err = streamMessage(control, message{Type: "attach", Action: action, PID: o.resumePID, Cols: uint16(cols), Rows: uint16(rows), Term: termName}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -159,7 +166,7 @@ func runClient(o options) (int, error) {
 		_ = streamMessage(control, message{Type: "bye"})
 		return 1, errors.New(m.Error)
 	}
-	if m.Type != "ready" || m.Version != protocolVersion {
+	if m.Type != "ready" {
 		return 1, fmt.Errorf("unexpected attach handshake")
 	}
 	if o.session == "" {
@@ -208,7 +215,7 @@ func runClient(o options) (int, error) {
 				}
 			}
 			// Closing this owned SSH transport releases attachment, not the shell.
-			fmt.Println("Approved operations complete. Staying local; remote shell is still running.")
+			logf(os.Stderr, logSuccess, "[sshore] Approved operations complete. Staying local; remote shell is still running.\n")
 			return 0, nil
 		}
 	}
@@ -231,8 +238,12 @@ func runClient(o options) (int, error) {
 		return 1, err
 	}
 	defer func() { restore(); _ = flushTerminalInput() }()
-	logf(os.Stderr, logSuccess, "[sshore] Connected %s / %s (PID %d)\r\n", cleanText(o.host), o.session, pid)
-	logf(os.Stderr, logInfo, "[sshore] Reconnect with --session %s\r\n", o.session)
+	if o.plain {
+		logf(os.Stderr, logWarning, "[sshore] Recovery shell on %s: persistence, file transfer, dynamic forwarding and Ctrl-] detach are disabled. Exit and reconnect after maintenance.\r\n", cleanText(o.host))
+	} else {
+		logf(os.Stderr, logSuccess, "[sshore] Connected %s / %s (PID %d)\r\n", cleanText(o.host), o.session, pid)
+		logf(os.Stderr, logInfo, "[sshore] Reconnect with --session %s\r\n", o.session)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	signals := make(chan os.Signal, 1)
@@ -266,7 +277,7 @@ func runClient(o options) (int, error) {
 			if r.Error != "" {
 				return 1, fmt.Errorf("%s", r.Error)
 			}
-			fmt.Printf("Forwarding %s -> remote %s\r\n", loopback(op.Port), loopback(op.Port))
+			logf(os.Stderr, logSuccess, "[sshore] Forwarding %s -> remote %s\r\n", loopback(op.Port), loopback(op.Port))
 		}
 	}
 	go readEvents(control)
@@ -354,6 +365,10 @@ func runClient(o options) (int, error) {
 
 		case e := <-events:
 			if e.approvalStream != nil {
+				if o.plain {
+					e.approvalStream.Close()
+					continue
+				}
 				st := e.approvalStream
 				if detaching {
 					st.Close()

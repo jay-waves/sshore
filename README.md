@@ -33,7 +33,7 @@ Each named session keeps its shell running independently of the SSH connection. 
 
 ## Install
 
-Prebuilt binaries do not require Go. After a successful CI run, download Linux or Windows packages for amd64 or arm64 from the [Actions artifacts](https://github.com/jay-waves/sshore/actions). Download archives and SHA-256 checksums from [Releases](https://github.com/jay-waves/sshore/releases). Starting with 0.3.0, releases use full version tags (for example `v0.3.0`); a published version is not moved to a later commit. Verify downloaded archives against `SHA256SUMS`. Older rolling releases remain available.
+Prebuilt binaries do not require Go. After a successful CI run, download Linux or Windows packages for amd64 or arm64 from the [Actions artifacts](https://github.com/jay-waves/sshore/actions). Download archives and SHA-256 checksums from [Releases](https://github.com/jay-waves/sshore/releases). Starting with 0.3.0, releases use full version tags (for example `v0.3.0`); a published version is not moved to a later commit. Verify downloaded archives against `SHA256SUMS`. Previous releases, assets and Git tags are retained when a new release is published.
 
 On a Linux host (amd64 or arm64), run the installer yourself:
 
@@ -83,13 +83,41 @@ and any script execution policy yourself, and select a client version compatible
 with the remote server. Installer failures do not trigger elevation or environment
 repair.
 
-A connection probes for the remote executable in the same SSH session. If it
-is missing, sshore prints an installation command pinned to the local client's
-version, then exits. **It never runs the installer automatically.** Log in using
-ordinary `ssh`, run the displayed command remotely, then reconnect with sshore.
-The default executable lookup checks PATH, then `~/.local/bin/sshore`. An explicit
-`--server PATH` is respected without fallback. Authentication failures or protocol
-mismatches are not treated as a missing installation.
+A connection checks the remote executable and all visible sshore session daemons
+owned by the remote account. The client, installed program and managed daemons
+must have the exact same full version. Patch versions are not interchangeable.
+A newer remote executable or daemon rejects an older client without downgrading.
+Other Linux users are never included in the scan.
+
+If software is missing or older, setup first downloads a matching, verified
+executable into a temporary directory using the Linux installer. Missing software
+is installed automatically when there are no incompatible existing sessions.
+For an older installation or daemon, setup lists affected sessions and offers:
+
+- Type `update`: prepare the replacement, end the listed old sessions and their
+  identified tasks, then install and connect. This can lose unsaved work and
+  disconnect other clients using the same remote account. Setup takes an account
+  lock, rechecks the session snapshot and backs up the old regular executable.
+- Press Enter: keep the same authenticated SSH connection in a transient recovery
+  shell. Persistence, file transfer, approvals, dynamic forwarding and Ctrl-]
+  detach are disabled. Help, version checks and session diagnostics remain
+  available. Exit and reconnect after maintenance to restore normal operation.
+
+Recovery uses the existing PTY transport without starting a session daemon; it
+supports shell job control, terminal resizing and exit codes. It is not a sandbox:
+old binaries or deliberately overriding the environment are outside enforcement.
+Explicit native OpenSSH forwarding options remain OpenSSH's responsibility.
+Pending operations are skipped if setup updates the installation or enters
+recovery; request them again after reconnecting.
+
+The default lookup checks PATH, then `~/.local/bin/sshore`. Explicit `--server`
+paths are respected. Automatic replacement requires a user-owned regular file
+and a user-owned directory without group/world write permission; there is no
+sudo or PATH modification. Unknown/custom mismatches require manual recovery.
+Preparation needs remote HTTPS access and a matching published release. If that
+preparation fails, setup leaves installed software and sessions untouched; use
+ordinary `ssh HOST` for maintenance. Source/custom builds may require manual
+installation. Noninteractive `HOST list` never asks to terminate sessions.
 
 Building from source requires Go 1.25+. The local machine needs an OpenSSH client (`ssh` or `ssh.exe`), and the remote machine needs a working SSH server.
 
@@ -102,13 +130,11 @@ go build -o dist/sshore .
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -o dist/sshore.exe .
 ```
 
-Install the Linux binary on the remote PATH, for example as `~/.local/bin/sshore`, and install the appropriate binary locally. Use the same version on both ends; connections check the protocol version. No root access or additional listening network port is required.
-
-Versions 0.3.1 and 0.3.2 use protocol 4 for local approvals. Update both binaries together.
-Exit existing protocol 3 session daemons using the old client before upgrading;
-running daemons cannot upgrade in place.
-
-Version 0.2 uses a new multiplexing protocol that is incompatible with 0.1. Before upgrading, attach to any running 0.1 sessions with the old client and exit their shells, then replace both binaries. Running session processes cannot upgrade their protocol in place.
+Install the Linux binary on the remote PATH, for example as `~/.local/bin/sshore`,
+and install the appropriate binary locally. The full release tag is the sole
+compatibility identifier; no separate protocol version is maintained. Published
+labels are immutable. Normal connections do not query GitHub when remote versions
+already match. No root access or additional listening network port is required.
 
 ```sh
 # Install on the Linux server.
@@ -130,7 +156,7 @@ Input-mode cleanup temporarily enables VT output and restores the previous Conso
 Use `sshore connect HOST` when a host alias matches a subcommand, for example `sshore connect forward`. The shorter `sshore HOST` and `sshore -- HOST` forms remain available.
 
 ```sh
-sshore user@host                 # Create a new automatically named session.
+sshore user@host                 # Create or resume the default main session.
 sshore myserver -s build         # Create or attach to the build session.
 sshore myserver list             # List sessions, shell PIDs, attachment status, and foreground programs.
 sshore myserver -J jump -p 2222   # Pass SSH connection options.
@@ -143,7 +169,7 @@ sshore uses system OpenSSH configuration, host keys, and authentication settings
 
 Session names contain 1-48 ASCII letters, digits, underscores, or hyphens, starting with a letter or digit. An attached session rejects a second client; clients cannot take over a connection or share input.
 
-Without `-s`, every connection creates a new session using an available Pokemon English name (for example `pikachu` or `eevee`), without a suffix. Attached and detached sessions both reserve their names. If all automatic names are occupied, the command reports an error; exit an existing session or use `-s NAME` to choose another name. The connection message shows its name. Use `sshore myserver list` to find existing sessions and `sshore myserver -s NAME` to reconnect.
+Without `-s`, connections create or resume the fixed `main` session. After disconnecting or detaching, run `sshore HOST` again to return to it. Use `-s NAME` for a separate named session; it is created if missing. Exiting the remote shell ends that session. Use `sshore HOST list` to list sessions.
 
 Inside the remote shell, run `sshore detach` to leave the session running, or `exit` to end it. Reconnect with the same command, for example `sshore myserver -s build`.
 
@@ -267,7 +293,7 @@ Common options:
 
 | Option | Purpose |
 | --- | --- |
-| `-s, --session NAME` | Create or resume this session; omitted: create a new Pokemon-named session |
+| `-s, --session NAME` | Create or resume this session; omitted: create or resume main |
 | `--server PATH` | Remote sshore executable; defaults to PATH, then `~/.local/bin/sshore` |
 | `--download-dir DIRECTORY` | Existing local directory used as the default during approval; never grants automatic acceptance |
 | `-q, --quiet` | Hide periodic progress while retaining prompts, completion messages, and errors |
@@ -277,7 +303,14 @@ Common options:
 
 Use `sshore help download` or `sshore download --help` for command help. Put `--` before paths that begin with a hyphen, for example `sshore download -- -report.txt`. Invalid arguments return exit code `2`; other failures return a nonzero code. A normal remote shell exit preserves its exit code.
 
-Local messages use your terminal’s ANSI 16-color palette: cyan for information and progress, green for success, yellow for cancellation and warnings, and red for errors. Set `NO_COLOR=1` to disable colors. Redirected output and `TERM=dumb` remain plain text.
+Local messages use your terminal’s ANSI 16-color palette: cyan for information and progress, green for success, yellow for cancellation and warnings, and red for errors. Set `NO_COLOR=1` to disable colors. Redirected output and `TERM=dumb` remain plain text. Transfer progress and status notifications go to stderr; command listings remain plain stdout. UTF-8 paths remain readable, while terminal control characters in displayed paths and errors are sanitized.
+
+At connection time the remote bridge reports session daemons visible for your
+user in `/proc`: attached, detached, starting, suspect, and unverified. Detached
+sessions are normal. Suspects have an unreachable/unresponsive socket or a socket
+owned by another PID; their names and PIDs are shown for inspection. Diagnostics never terminate processes; confirmed setup updates are a separate operation.
+The socket probes share a 500 ms budget. This is a best-effort snapshot, not proof
+of a leak; process visibility and concurrent startup/exit can affect the result.
 
 ## Behavior and limitations
 

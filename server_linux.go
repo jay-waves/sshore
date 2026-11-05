@@ -91,57 +91,48 @@ func openLock(path string, nonblocking bool) (*os.File, error) {
 	return f, nil
 }
 
-// Automatic allocation holds the same per-name startup lock as explicit attach.
-// Keep that lock until the daemon listens, so simultaneous clients cannot claim
-// one name. Live detached sessions also reserve their names; stale sockets do not.
-var sessionNames = strings.Fields(`
-pikachu eevee bulbasaur charmander squirtle snorlax psyduck meowth gengar lapras
- ditto mew togepi pichu vulpix jigglypuff ivysaur venusaur charmeleon charizard
- wartortle blastoise caterpie metapod butterfree weedle kakuna beedrill pidgey
- pidgeotto pidgeot rattata raticate spearow fearow ekans arbok raichu sandshrew
- sandslash clefairy clefable ninetales wigglytuff zubat golbat oddish gloom
- vileplume paras parasect venonat venomoth diglett dugtrio persian golduck mankey
- primeape growlithe arcanine poliwag poliwhirl poliwrath abra kadabra alakazam
- machop machoke machamp bellsprout weepinbell victreebel tentacool tentacruel
- geodude graveler golem ponyta rapidash slowpoke slowbro magnemite magneton
- farfetchd doduo dodrio seel dewgong grimer muk shellder cloyster gastly haunter
- onix drowzee hypno krabby kingler voltorb electrode exeggcute exeggutor cubone
- marowak hitmonlee hitmonchan lickitung koffing weezing rhyhorn rhydon chansey
- tangela kangaskhan horsea seadra goldeen seaking staryu starmie scyther jynx
- electabuzz magmar pinsir tauros magikarp gyarados vaporeon jolteon flareon
- porygon omanyte omastar kabuto kabutops aerodactyl articuno zapdos moltres
- dratini dragonair dragonite mewtwo chikorita cyndaquil totodile sentret furret
- hoothoot noctowl mareep flaaffy ampharos marill azumarill espeon umbreon
-`)
-
-func reserveSession(names []string, fresh bool) (string, *os.File, net.Conn, error) {
-	for _, name := range names {
-		path, err := socketPath(name)
-		if err != nil {
-			return "", nil, nil, err
-		}
-		startup, err := openLock(path+".start", false)
-		if err != nil {
-			return "", nil, nil, err
-		}
-		conn, err := net.Dial("unix", path)
-		if fresh && err == nil {
-			conn.Close()
-			startup.Close()
-			continue
-		}
-		return name, startup, conn, nil
+// Hold the per-name startup lock until the daemon listens, so concurrent
+// connections reuse the same session instead of starting competing daemons.
+func reserveSession(name string) (*os.File, net.Conn, error) {
+	path, err := socketPath(name)
+	if err != nil {
+		return nil, nil, err
 	}
-	return "", nil, nil, fmt.Errorf("all automatic session names are in use; exit an existing session or choose a name with --session")
+	startup, err := openLock(path+".start", false)
+	if err != nil {
+		return nil, nil, err
+	}
+	conn, _ := net.Dial("unix", path)
+	return startup, conn, nil
 }
 
 func bridge(name string, existing bool) error {
-	names := []string{name}
-	fresh := name == ""
-	if fresh {
-		names = sessionNames
+	exe, err := os.Executable()
+	if err != nil {
+		return err
 	}
-	name, startup, conn, err := reserveSession(names, fresh)
+	lock, err := setupLock()
+	if err != nil {
+		return err
+	}
+	state, err := inspectSetup(exe)
+	if err != nil {
+		lock.Close()
+		return err
+	}
+	if state.Manual || len(state.Processes) > 0 || state.Installed != version {
+		lock.Close()
+		return fmt.Errorf("remote versions differ; reconnect through setup")
+	}
+	return bridgePrepared(name, existing, exe, lock)
+}
+
+func bridgePrepared(name string, existing bool, executable string, gate *os.File) error {
+	defer gate.Close()
+	if name == "" {
+		name = "main"
+	}
+	startup, conn, err := reserveSession(name)
 	if err != nil {
 		return err
 	}
@@ -154,10 +145,7 @@ func bridge(name string, existing bool) error {
 		if existing {
 			return fmt.Errorf("approved session no longer exists")
 		}
-		exe, err := os.Executable()
-		if err != nil {
-			return err
-		}
+		exe := executable
 		fd, err := unix.Open(path+".log", unix.O_CREAT|unix.O_WRONLY|unix.O_APPEND|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
 		if err != nil {
 			return err
@@ -194,6 +182,8 @@ func bridge(name string, existing bool) error {
 	}
 	_ = unix.Flock(int(startup.Fd()), unix.LOCK_UN)
 	defer conn.Close()
+	gate.Close()
+	reportSessionDaemons()
 	go func() { _, _ = io.Copy(conn, os.Stdin); _ = conn.Close() }()
 	_, err = io.Copy(os.Stdout, conn)
 	if errors.Is(err, net.ErrClosed) {
@@ -244,6 +234,7 @@ func (t *activeTransfer) close() {
 }
 
 type session struct {
+	plain      bool
 	terminalMu sync.Mutex // serializes state snapshots with PTY output
 	mouse      terminalMouseState
 	mu         sync.Mutex
@@ -265,7 +256,16 @@ func (s *session) start(cols, rows uint16, term string) error {
 	}
 	cmd := exec.Command(shell, "-i")
 	cmd.Env = append(os.Environ(), "TERM="+term, "SSHORE_SOCKET="+s.path)
-	if exe, err := os.Executable(); err == nil {
+	if s.plain {
+		cmd.Env = nil
+		for _, item := range os.Environ() {
+			if !strings.HasPrefix(item, "SSHORE_") {
+				cmd.Env = append(cmd.Env, item)
+			}
+		}
+		cmd.Env = append(cmd.Env, "TERM="+term, "SSHORE_DISABLED=1")
+	}
+	if exe, err := os.Executable(); err == nil && !s.plain {
 		cmd.Env = append(cmd.Env, "PATH="+filepath.Dir(exe)+":"+os.Getenv("PATH"))
 	}
 	master, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: max(cols, 1), Rows: max(rows, 1)})
@@ -324,8 +324,8 @@ func (s *session) start(cols, rows uint16, term string) error {
 func (s *session) attach(p *attachment, m message) error {
 	s.terminalMu.Lock()
 	defer s.terminalMu.Unlock()
-	if m.Type != "attach" || m.Version != protocolVersion {
-		return fmt.Errorf("protocol version mismatch")
+	if m.Type != "attach" {
+		return fmt.Errorf("expected attach request")
 	}
 	if len(m.Term) == 0 || len(m.Term) > 128 || strings.ContainsAny(m.Term, "\x00\r\n\x1b") {
 		return fmt.Errorf("invalid TERM")
@@ -353,7 +353,7 @@ func (s *session) attach(p *attachment, m message) error {
 	if err := pty.Setsize(s.master, &pty.Winsize{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
 		return err
 	}
-	if err := p.controlMessage(message{Type: "ready", Version: protocolVersion, PID: s.cmd.Process.Pid, Name: strings.TrimSuffix(filepath.Base(s.path), ".sock")}); err != nil {
+	if err := p.controlMessage(message{Type: "ready", PID: s.cmd.Process.Pid, Name: strings.TrimSuffix(filepath.Base(s.path), ".sock")}); err != nil {
 		return err
 	}
 	if !p.muted.Load() {
@@ -410,7 +410,7 @@ func (s *session) detach(p *attachment) {
 	_, _ = readMessage(p.control)
 	p.close()
 }
-func (s *session) serveMux(c net.Conn) error {
+func (s *session) serveMux(c io.ReadWriteCloser) error {
 	mux, err := smux.Server(c, muxConfig())
 	if err != nil {
 		return err
@@ -438,14 +438,26 @@ func (s *session) serveMux(c net.Conn) error {
 	p := &attachment{mux: mux, control: control, terminal: terminal, forwardRequests: make(chan struct{}, 8)}
 	defer s.release(p)
 	if err = s.attach(p, m); err != nil {
-		_ = p.controlMessage(message{Type: "fatal", Error: err.Error()})
+		_ = p.controlMessage(message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
 		_ = control.SetReadDeadline(time.Now().Add(2 * time.Second))
 		_, _ = readMessage(control)
 		return err
 	}
 	forwardCtx, cancelForwards := context.WithCancel(context.Background())
 	defer cancelForwards()
-	go serveForwardStreams(forwardCtx, mux)
+	if !s.plain {
+		go serveForwardStreams(forwardCtx, mux)
+	} else {
+		go func() {
+			for {
+				stream, e := mux.AcceptStream()
+				if e != nil {
+					return
+				}
+				_ = stream.Close()
+			}
+		}()
+	}
 	go func() {
 		for {
 			m, err := readMessage(terminal)
@@ -611,11 +623,11 @@ func (s *session) handle(id uint64, c net.Conn) {
 	_ = c.SetDeadline(time.Time{})
 	switch first.Type {
 	case "mux":
-		if first.Version != protocolVersion {
-			_ = writeMessage(c, message{Type: "fatal", Error: "protocol version mismatch; update both sshore binaries"})
+		if err := checkPeerVersion(first.SoftwareVersion, "client"); err != nil {
+			_ = writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
 			return
 		}
-		if writeMessage(c, message{Type: "mux_ready", Version: protocolVersion}) == nil {
+		if writeMessage(c, message{Type: "mux_ready", SoftwareVersion: version}) == nil {
 			_ = s.serveMux(c)
 		}
 	case "status":
@@ -629,7 +641,9 @@ func (s *session) handle(id uint64, c net.Conn) {
 			m.PID = s.cmd.Process.Pid
 		}
 		s.mu.Unlock()
-		m.Foreground = foregroundPrograms("/proc", group)
+		if first.Action != "health" {
+			m.Foreground = foregroundPrograms("/proc", group)
+		}
 		_ = writeMessage(c, m)
 	case "detach":
 		s.mu.Lock()
@@ -651,7 +665,7 @@ func (s *session) handle(id uint64, c net.Conn) {
 		}
 	case "upload", "offer":
 		if err = s.transfer(id, c, first); err != nil {
-			_ = writeMessage(c, message{Type: "fatal", Error: err.Error()})
+			_ = writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
 		}
 	default:
 		_ = writeMessage(c, message{Type: "fatal", Error: "unsupported connection; update sshore on both computers"})
@@ -773,6 +787,11 @@ func listSessions() error {
 }
 func serverCommand(args []string) error {
 	switch args[0] {
+	case "bootstrap":
+		if len(args) != 4 {
+			return usage("invalid bootstrap arguments")
+		}
+		return bootstrap(args[1], args[2], args[3])
 	case "bridge", "resume", "daemon":
 		if len(args) != 2 {
 			return fmt.Errorf("internal command requires a session name")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Linux end-to-end CLI smoke test using an isolated localhost OpenSSH server.
 Requires ssh, sshd, ssh-keygen and a built binary (default dist/sshore).
-Run after go build -buildvcs=false -o dist/sshore . with:
+Run after go build -tags=sshoretest -buildvcs=false -o dist/sshore . with:
     python3 tests/ssh_e2e.py
 Creates temporary keys and an SSH server bound only to 127.0.0.1.
 Covers SSH/PTY, approval detach, local path selection, one-shot execution,
@@ -92,6 +92,9 @@ def main():
     parser.add_argument("--binary", default="dist/sshore")
     args = parser.parse_args()
     binary = str(Path(args.binary).resolve())
+    metadata = subprocess.check_output(["go", "version", "-m", binary], text=True)
+    if "-tags=sshoretest" not in metadata:
+        raise SystemExit("Refusing unisolated test binary; build with -tags=sshoretest")
     sshd = shutil.which("sshd")
     if not sshd:
         raise SystemExit("sshd is required")
@@ -147,26 +150,15 @@ LogLevel ERROR
                        "-i", str(key), "-F", "/dev/null", "-o", "IdentitiesOnly=yes",
                        "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known}",
                        "--server", str(wrapper)]
-            # Missing remote binaries produce advice without installing anything.
-            missing_command = command[:]
-            absent = root / "missing-server"
-            missing_command[missing_command.index("--server") + 1] = str(absent)
-            missing = subprocess.run(missing_command + ["list"], text=True, capture_output=True)
-            assert missing.returncode == 127, missing.stderr
-            assert "install.sh | sh -s -- --version" in missing.stderr, missing.stderr
-            assert "no installation has been performed" in missing.stderr
-            assert not absent.exists()
             base_command = command[:]
-            auto_names = []
             for _ in range(2):
                 auto = Terminal(base_command, wait_ready=False)
                 terms.append(auto)
                 match = auto.expect(r"Connected [^\r\n]+ / ([a-z]+) ")
-                auto_names.append(match.group(1).decode())
-            assert auto_names[0] != auto_names[1]
-            for auto in terms[:]:
-                auto.send("exit\n")
+                assert match.group(1) == b"main"
+                auto.send(b"\x1d")
                 auto.wait()
+                auto.close()
                 terms.remove(auto)
             command = base_command + ["-s", "main"]
             # Native forwarding, compression and diagnostics are passed to the

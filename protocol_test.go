@@ -30,14 +30,14 @@ func TestProtocolBinaryAndFragmentation(t *testing.T) {
 		data[i] = byte(i)
 	}
 	var b shortWriter
-	for _, m := range []message{{Type: "attach", Version: 1, Term: "xterm", Cols: 90, Rows: 30}, {Type: "chunk", ID: 42, Data: data}, {Type: "output", Data: []byte("\x00\xff\x1b[31m")}} {
+	for _, m := range []message{{Type: "attach", SoftwareVersion: version, Term: "xterm", Cols: 90, Rows: 30}, {Type: "chunk", ID: 42, Data: data}, {Type: "output", Data: []byte("\x00\xff\x1b[31m")}} {
 		if err := writeMessage(&b, m); err != nil {
 			t.Fatal(err)
 		}
 	}
 	r := fragmentedReader{&b.Buffer}
 	m, err := readMessage(r)
-	if err != nil || m.Cols != 90 || m.Version != 1 {
+	if err != nil || m.Cols != 90 || m.SoftwareVersion != version {
 		t.Fatalf("%+v %v", m, err)
 	}
 	m, err = readMessage(r)
@@ -72,5 +72,17 @@ func TestOptions(t *testing.T) {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatal("accepted", args)
 		}
+	}
+}
+
+func TestProtocolUnicodeError(t *testing.T) {
+	want := "无法打开 中文文件.txt；literal\\u4e2d.txt"
+	var b bytes.Buffer
+	if err := writeMessage(&b, message{Type: "error", Error: want}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := readMessage(&b)
+	if err != nil || m.Error != want {
+		t.Fatalf("got %q, %v; want %q", m.Error, err, want)
 	}
 }

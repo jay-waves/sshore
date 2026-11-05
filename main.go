@@ -16,7 +16,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.3.2"
+var version = "0.4.1"
 
 const help = `sshore — persistent shells and file transfer over one SSH connection
 
@@ -36,7 +36,7 @@ Inside a remote sshore shell:
   sshore download FILE...        Download one or more remote files
 
 Options (before or after HOST):
-  -s, --session NAME             Create or resume NAME (default: new Pokemon name)
+  -s, --session NAME             Create or resume NAME (default: main)
   --server PATH                  Remote executable (default: PATH, then ~/.local/bin/sshore)
   --download-dir DIRECTORY       Default download directory (approval still required)
   -q, --quiet                    Hide periodic transfer progress
@@ -51,7 +51,10 @@ Options (before or after HOST):
 Ctrl-] detaches; Ctrl-C goes to the remote program. No screen replay.
 Upload, download and forward-add requests save a local approval and detach.
 Run sshore approve from your local shell to review, reconnect and execute.
-Requires OpenSSH locally and the same sshore version on the Linux server.
+Requires OpenSSH locally. Missing remote sshore is installed automatically.
+Older remote versions offer update or a recovery shell; newer versions reject.
+Updating ends listed old sessions only after you type update. Recovery mode
+keeps this connection but disables persistence, transfer and dynamic forwarding.
 
 Examples:
   sshore work -s build
@@ -131,6 +134,7 @@ type options struct {
 	approved              []operation
 	resumePID             int
 	stay                  bool
+	plain                 bool
 }
 
 func parseOptions(args []string) (options, error) {
@@ -205,7 +209,7 @@ func parseOptions(args []string) (options, error) {
 		return o, nil
 	}
 	if o.session == "" {
-		return o, nil
+		o.session = "main"
 	}
 	return o, validSession(o.session)
 }
@@ -245,6 +249,13 @@ func showHelp(args []string, w io.Writer) error {
 	return err
 }
 func run(args []string) (int, error) {
+	if os.Getenv("SSHORE_DISABLED") == "1" && len(args) > 0 {
+		switch args[0] {
+		case "--version", "-V", "--help", "-h", "help", "sessions":
+		default:
+			return 1, fmt.Errorf("sshore features are disabled in this recovery shell; finish maintenance and reconnect from your local shell")
+		}
+	}
 	if len(args) == 0 {
 		return 0, showHelp(nil, os.Stdout)
 	}
@@ -295,7 +306,7 @@ func run(args []string) (int, error) {
 				}
 			}
 			return 0, serverCommand(args)
-		case "bridge", "resume", "daemon", "sessions":
+		case "bridge", "resume", "daemon", "sessions", "bootstrap":
 			return 0, serverCommand(args)
 		}
 	}

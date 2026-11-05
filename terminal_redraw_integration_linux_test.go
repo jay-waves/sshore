@@ -9,7 +9,7 @@ import (
 func approvedTestAttach(t *testing.T, e *testEnv, name string, pid int) *bridgeConn {
 	t.Helper()
 	b := e.bridge(name)
-	sendTest(t, b.in, message{Type: "attach", Version: protocolVersion, Action: "approved", PID: pid, Term: "xterm", Cols: 80, Rows: 24})
+	sendTest(t, b.in, message{Type: "attach", Action: "approved", PID: pid, Term: "xterm", Cols: 80, Rows: 24})
 	if m := recv(t, b.out); m.Type != "ready" {
 		t.Fatal(m)
 	}

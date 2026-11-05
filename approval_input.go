@@ -32,7 +32,7 @@ func newApprovalInput() (*approvalInput, error) {
 
 func (p *approvalInput) Read(prompt string, paths bool) (string, error) {
 	p.paths = paths
-	p.editor.SetPrompt(prompt)
+	p.editor.SetPrompt(formatLog(terminalLogColor(os.Stdout), logInfo, "%s", prompt))
 	line, err := p.editor.Readline()
 	if err != nil {
 		return "", fmt.Errorf("approval cancelled; request remains pending: %w", err)

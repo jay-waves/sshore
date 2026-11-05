@@ -80,21 +80,34 @@ own connection; configured jump hosts/proxies may have their own lifetimes.
   connection-owned transfers/forwards. Forced termination may leave temporary
   `.sshore-*.part` files. Batch failure does not roll back completed files.
 
-Use matching protocol-4 binaries on both ends. Exit old session daemons with
-the old client before upgrading; do not bypass host-key verification to fix a
-connection error.
+Use exact full versions on both ends. Managed setup scans only the current
+remote account's visible session daemons. A newer remote version rejects an older
+client; no automatic downgrade is performed. Do not bypass SSH host-key checks.
 
-## User-run online installer
+## Remote setup and recovery
 
-Missing-server detection only prints a command; it never installs software.
-`install.sh` (Linux) and `install.ps1` (Windows) run only when invoked by the
-user, without elevation or shell-profile changes. They restrict downloads and
-redirects to HTTPS, select amd64/arm64 release assets, check SHA256SUMS and the
-binary version, and stage replacement in the installation directory. The Windows
-installer does not modify PATH or execution policy, stop running executables, or
-maintain versioned backups. Users choose a trusted, writable installation
-directory and handle backups, permissions and environment configuration.
-The script, releases and checksums share the GitHub repository trust boundary:
-a checksum detects corruption, not compromise of that repository/publisher.
-Piping a script to `sh` or PowerShell `iex` executes repository code; download and inspect it first
-if desired. Matching versions and old-daemon upgrade rules still apply.
+Missing or older remote software may trigger HTTPS preparation of a matching
+executable through `install.sh`. The installer checks SHA256SUMS and the binary
+version in a temporary directory before setup changes the installed executable.
+Existing installations or old sessions require typing `update` at the local
+setup prompt before cleanup. Setup displays affected session identities, locks
+managed setup operations per account, rechecks the snapshot, and signals only
+identified same-user tasks with PID identity protection. Updates may interrupt
+other clients sharing that account and lose unsaved work. Unknown versions and
+unsupported signaling/permissions require manual handling. Processes that escape
+the session ancestry/session ID, legacy binaries ignoring this policy, and
+concurrent unmanaged modifications are outside this guarantee.
+
+Choosing manual recovery preserves the SSH connection and starts a transient PTY
+shell. Inherited helper socket variables are removed and new sshore binaries
+honor `SSHORE_DISABLED=1`. No approved transfer is executed in recovery or after a
+setup update. This is not a security sandbox or a restriction on arbitrary remote
+executables. Explicit OpenSSH forwarding remains the local user's policy.
+
+Installer downloads require remote HTTPS access and a matching release asset.
+If preparation fails, no old session is terminated. Auto replacement is restricted
+to a user-owned regular file and non-group/world-writable user-owned directory;
+there is no elevation, PATH or shell-profile modification. A checksum detects
+corruption, not compromise of the publisher/repository supplying both the script
+and checksums. Standalone Windows installation does not stop processes or create
+versioned backups. Published releases and assets are retained.

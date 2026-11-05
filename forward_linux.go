@@ -43,7 +43,7 @@ func forwardHelper(args []string) error {
 			fmt.Printf("%s -> remote %s\n", loopback(port), loopback(port))
 		}
 	} else {
-		fmt.Printf("%s %s -> remote %s\n", reply.Name, loopback(m.Port), loopback(m.Port))
+		logf(os.Stderr, logSuccess, "[sshore] %s %s -> remote %s\n", cleanText(reply.Name), loopback(m.Port), loopback(m.Port))
 	}
 	return nil
 }

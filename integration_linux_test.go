@@ -41,7 +41,7 @@ func testBinary(t *testing.T) string {
 			return
 		}
 		testBuild.path = filepath.Join(dir, "sshore")
-		cmd := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "-buildvcs=false", "-race", "-o", testBuild.path, ".")
+		cmd := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "-tags=sshoretest", "-buildvcs=false", "-race", "-o", testBuild.path, ".")
 		b, err := cmd.CombinedOutput()
 		if err != nil {
 			testBuild.err = fmt.Errorf("build: %w: %s", err, b)
@@ -95,7 +95,7 @@ func newEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 	e := &testEnv{t: t, bin: testBinary(t), dir: dir}
-	e.env = append(os.Environ(), "SSHORE_RUNTIME_DIR="+dir, "SHELL=/bin/sh", "PS1=sshore-test> ")
+	e.env = append(os.Environ(), "SSHORE_RUNTIME_DIR="+dir, "GORACE=atexit_sleep_ms=0", "SHELL=/bin/sh", "PS1=sshore-test> ")
 	t.Cleanup(func() {
 		for _, p := range e.processes {
 			_ = p.Kill()
@@ -197,7 +197,7 @@ func sendTest(t *testing.T, w io.Writer, m message) {
 func (e *testEnv) attach(name string) (*bridgeConn, int) {
 	e.t.Helper()
 	b := e.bridge(name)
-	sendTest(e.t, b.in, message{Type: "attach", Version: protocolVersion, Cols: 80, Rows: 24, Term: "xterm"})
+	sendTest(e.t, b.in, message{Type: "attach", Cols: 80, Rows: 24, Term: "xterm"})
 	m := recv(e.t, b.out)
 	if m.Type != "ready" {
 		e.t.Fatalf("attach: %+v", m)
@@ -293,7 +293,7 @@ func TestSessionPersistenceIsolationAndResize(t *testing.T) {
 		t.Fatal(output)
 	}
 	occupied := e.bridge("main")
-	sendTest(t, occupied.in, message{Type: "attach", Version: protocolVersion, Term: "xterm"})
+	sendTest(t, occupied.in, message{Type: "attach", Term: "xterm"})
 	if recv(t, occupied.out).Type != "fatal" {
 		t.Fatal("accepted second attachment")
 	}

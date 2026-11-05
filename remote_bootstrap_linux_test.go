@@ -10,74 +10,115 @@ import (
 
 func runBootstrap(t *testing.T, home string, o options) (string, error) {
 	t.Helper()
+	tools := filepath.Join(home, "test-tools")
+	if err := os.MkdirAll(tools, 0700); err != nil {
+		t.Fatal(err)
+	}
+	curl := filepath.Join(tools, "curl")
+	if _, err := os.Stat(curl); os.IsNotExist(err) {
+		if err := os.WriteFile(curl, []byte("#!/bin/sh\nexit 79\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cmd := exec.Command("sh", "-c", remoteCommand(o))
-	cmd.Env = append(os.Environ(), "HOME="+home, "PATH=/usr/bin:/bin")
+	cmd.Env = append(os.Environ(), "HOME="+home, "PATH="+tools+":/usr/bin:/bin")
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
-func TestRemoteMissingOnlyPrintsInstaller(t *testing.T) {
-	home := t.TempDir()
-	out, err := runBootstrap(t, home, options{server: filepath.Join(home, "missing"), session: "main"})
-	if err == nil {
-		t.Fatal("missing server succeeded")
-	}
-	if e, ok := err.(*exec.ExitError); !ok || e.ExitCode() != 127 {
+
+func writeBootstrapStub(t *testing.T, path, release string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{installerURL, "--version '" + version + "'", "REMOTE Linux", "no installation", "Adjust --server"} {
-		if !strings.Contains(out, want) {
-			t.Fatal("missing hint", want, out)
-		}
-	}
-	entries, _ := os.ReadDir(home)
-	if len(entries) != 0 {
-		t.Fatal("probe wrote files", entries)
+	script := "#!/bin/sh\nif [ \"$1\" = --version ]; then echo " + shellQuote("sshore "+release) + "; exit 0; fi\nprintf '<%s>\\n' \"$@\"\n"
+	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+		t.Fatal(err)
 	}
 }
+
 func TestRemoteFallbackAndArgumentQuoting(t *testing.T) {
 	home := t.TempDir()
-	dir := filepath.Join(home, ".local", "bin")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		t.Fatal(err)
+	bin := filepath.Join(home, ".local", "bin", "sshore")
+	writeBootstrapStub(t, bin, version)
+	for _, mode := range []string{"bridge", "resume", "sessions"} {
+		o := options{server: "sshore", session: "main", list: mode == "sessions"}
+		if mode == "resume" {
+			o.approved = []operation{{Kind: "forward", Port: 80}}
+		}
+		out, err := runBootstrap(t, home, o)
+		want := "<bootstrap>\n<" + bin + ">\n<" + mode + ">\n<main>\n"
+		if err != nil || out != want {
+			t.Fatal(out, err)
+		}
 	}
-	bin := filepath.Join(dir, "sshore")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '<%s>\\n' \"$@\"\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	out, err := runBootstrap(t, home, options{server: "sshore", session: "main"})
-	if err != nil || out != "<bridge>\n<main>\n" {
-		t.Fatal(out, err)
-	}
-	out, err = runBootstrap(t, home, options{server: "sshore", session: "main", approved: []operation{{Kind: "forward", Port: 80}}})
-	if err != nil || out != "<resume>\n<main>\n" {
-		t.Fatal(out, err)
-	}
-	out, err = runBootstrap(t, home, options{server: "sshore", list: true})
-	if err != nil || out != "<sessions>\n" {
-		t.Fatal(out, err)
-	}
-	// Explicit paths are literal data and never fall back to an unrelated binary.
 	odd := filepath.Join(home, "server ' $(touch INJECTED)")
 	if err := os.Rename(bin, odd); err != nil {
 		t.Fatal(err)
 	}
-	out, err = runBootstrap(t, home, options{server: odd, session: "main"})
-	if err != nil || out != "<bridge>\n<main>\n" {
+	out, err := runBootstrap(t, home, options{server: odd, session: "main"})
+	if err != nil || !strings.Contains(out, "<"+odd+">") {
 		t.Fatal(out, err)
 	}
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho unexpected-fallback\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	out, err = runBootstrap(t, home, options{server: odd + "-missing", session: "main"})
-	if err == nil || !strings.Contains(out, "no installation") {
-		t.Fatal(out, err)
-	}
-	if _, err = os.Stat("INJECTED"); !os.IsNotExist(err) {
-		t.Fatal("shell interpolation occurred")
+	if _, err := os.Stat("INJECTED"); !os.IsNotExist(err) {
+		t.Fatal("shell interpolation occurred", err)
 	}
 }
 
-func TestRemoteExistingFailureDoesNotSuggestInstallation(t *testing.T) {
+func TestRemoteNewerRejectedWithoutDownload(t *testing.T) {
+	home := t.TempDir()
+	bin := filepath.Join(home, "server")
+	writeBootstrapStub(t, bin, "999.0.0")
+	out, err := runBootstrap(t, home, options{server: bin, session: "main"})
+	if err == nil || !strings.Contains(out, "newer") || strings.Contains(out, "Preparing") {
+		t.Fatal(out, err)
+	}
+}
+
+func TestRemoteStagesMissingOrOlderWithoutReplacing(t *testing.T) {
+	for _, older := range []bool{false, true} {
+		home := t.TempDir()
+		bin := filepath.Join(home, "server")
+		if older {
+			writeBootstrapStub(t, bin, "0.0.1")
+		}
+		prepared := filepath.Join(home, "prepared")
+		writeBootstrapStub(t, prepared, version)
+		t.Setenv("SSHORE_SETUP_TEST_BINARY", prepared)
+		tools := filepath.Join(home, "test-tools")
+		if err := os.MkdirAll(tools, 0700); err != nil {
+			t.Fatal(err)
+		}
+		curl := `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+ if [ "$1" = -o ]; then shift; output=$1; fi
+ shift
+done
+cat > "$output" <<'INSTALL'
+#!/bin/sh
+mkdir -p "$4"
+cp "$SSHORE_SETUP_TEST_BINARY" "$4/sshore"
+INSTALL
+`
+		if err := os.WriteFile(filepath.Join(tools, "curl"), []byte(curl), 0700); err != nil {
+			t.Fatal(err)
+		}
+		out, err := runBootstrap(t, home, options{server: bin, session: "main"})
+		if err != nil || !strings.Contains(out, "<bootstrap>\n<"+bin+">") {
+			t.Fatal(out, err)
+		}
+		if older {
+			v, err := executableVersion(bin)
+			if err != nil || v != "0.0.1" {
+				t.Fatal(v, err)
+			}
+		} else if _, err := os.Stat(bin); !os.IsNotExist(err) {
+			t.Fatal("bootstrap overwrote target", err)
+		}
+	}
+}
+
+func TestRemoteExistingFailureDoesNotInstall(t *testing.T) {
 	home := t.TempDir()
 	bin := filepath.Join(home, "server")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho original-error >&2\nexit 23\n"), 0700); err != nil {

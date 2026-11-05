@@ -74,3 +74,21 @@ func TestCompleteLocalPath(t *testing.T) {
 		t.Fatal("confirmation has path completion")
 	}
 }
+
+func TestLocalPathHomeAndUnicode(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ input, want string }{
+		{"~", home},
+		{"~/中文文件.txt", filepath.Join(home, "中文文件.txt")},
+		{`"中文 文件.txt"`, "中文 文件.txt"},
+		{`literal\u4e2d.txt`, `literal\u4e2d.txt`},
+	} {
+		got, err := localPath([]byte(tc.input))
+		if err != nil || got != tc.want {
+			t.Fatalf("%q: got %q, %v; want %q", tc.input, got, err, tc.want)
+		}
+	}
+}

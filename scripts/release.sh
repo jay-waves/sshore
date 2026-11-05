@@ -148,6 +148,35 @@ Protocol remains 4. Update the local client to use the new prompts.
 NOTES
 fi
 
+if [[ "$version" == "0.3.7" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Connections without -s create or resume the default main session.
+- Explicit -s NAME continues to create or resume a separate named session.
+
+Protocol remains 4. Update the client for default-session reuse.
+NOTES
+fi
+
+if [[ "$version" == "0.4.1" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Require one exact active version per remote account; reject newer remote versions without downgrading.
+- Automatically prepare a verified remote executable when missing or older. Updating an existing installation requires explicit confirmation before ending listed old sessions and tasks.
+- Offer a nonpersistent recovery shell on the same SSH connection for manual maintenance, with sshore features disabled.
+- Check running daemon versions, report background sessions, and serialize managed setup operations.
+- Unify status colors and UTF-8 path handling; improve default session reuse and local path input.
+- Preserve previous GitHub releases and assets when publishing new versions.
+
+Updating old sessions terminates their tasks. Press Enter at setup to keep them
+and use manual recovery instead. A matching published binary must be available
+for automatic preparation; source/custom builds may need manual installation.
+Checksums verify downloaded bytes, not a compromised release publisher.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   gh release upload "$tag" packages/*.tar.gz packages/*.zip packages/SHA256SUMS --clobber

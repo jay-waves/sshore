@@ -74,7 +74,7 @@ func TestApprovedAttachRejectsChangedSession(t *testing.T) {
 	sendTest(t, b.in, message{Type: "bye"})
 	b.close()
 	next := e.bridge("main")
-	sendTest(t, next.in, message{Type: "attach", Version: protocolVersion, Action: "approved", PID: pid + 1, Term: "xterm", Cols: 80, Rows: 24})
+	sendTest(t, next.in, message{Type: "attach", Action: "approved", PID: pid + 1, Term: "xterm", Cols: 80, Rows: 24})
 	if m := recv(t, next.out); m.Type != "fatal" {
 		t.Fatal("accepted wrong shell", m)
 	}
