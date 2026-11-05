@@ -32,6 +32,17 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+      - name: Terminal integration dependencies (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y openssh-server tmux
+          mkdir -p "$RUNNER_TEMP/terminal-tools"
+          curl -fsSL https://github.com/zellij-org/zellij/releases/download/v0.45.1/zellij-x86_64-unknown-linux-musl.tar.gz -o "$RUNNER_TEMP/zellij.tar.gz"
+          echo "40bcc2e03f5d5ae8e054e39f676081fe12ab70871506996ba595834c3718eefc  $RUNNER_TEMP/zellij.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/zellij.tar.gz" -C "$RUNNER_TEMP/terminal-tools"
+          echo "$RUNNER_TEMP/terminal-tools" >> "$GITHUB_PATH"
       - name: Formatting
         shell: bash
         run: test -z "$(gofmt -l *.go)"
@@ -54,8 +65,6 @@ jobs:
       - name: Real SSH integration (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y openssh-server
           sudo mkdir -p /run/sshd
           python3 tests/ssh_e2e.py
 

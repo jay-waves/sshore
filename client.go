@@ -111,6 +111,7 @@ func runClient(o options) (int, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return 1, fmt.Errorf("an interactive terminal is required")
 	}
+	resetTerminalInputModes()
 	reader, err := cmd.StdoutPipe()
 	if err != nil {
 		return 1, err

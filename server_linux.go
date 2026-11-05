@@ -209,6 +209,7 @@ type attachment struct {
 	mux               *smux.Session
 	control, terminal *smux.Stream
 	controlMu         sync.Mutex
+	terminalWriteMu   sync.Mutex
 	forwardRequests   chan struct{}
 	muted             atomic.Bool
 }
@@ -219,6 +220,8 @@ func (p *attachment) controlMessage(m message) error {
 	return streamMessage(p.control, m)
 }
 func (p *attachment) output(m message) error {
+	p.terminalWriteMu.Lock()
+	defer p.terminalWriteMu.Unlock()
 	if m.Type == "output" && p.muted.Load() {
 		return nil
 	}
@@ -241,15 +244,17 @@ func (t *activeTransfer) close() {
 }
 
 type session struct {
-	mu        sync.Mutex
-	active    *attachment
-	transfers map[uint64]*activeTransfer
-	master    *os.File
-	cmd       *exec.Cmd
-	exited    bool
-	path      string
-	done      chan struct{}
-	once      sync.Once
+	terminalMu sync.Mutex // serializes state snapshots with PTY output
+	mouse      terminalMouseState
+	mu         sync.Mutex
+	active     *attachment
+	transfers  map[uint64]*activeTransfer
+	master     *os.File
+	cmd        *exec.Cmd
+	exited     bool
+	path       string
+	done       chan struct{}
+	once       sync.Once
 }
 
 func (s *session) stop() { s.once.Do(func() { close(s.done) }) }
@@ -273,6 +278,8 @@ func (s *session) start(cols, rows uint16, term string) error {
 		for {
 			n, err := master.Read(buf)
 			if n > 0 {
+				s.terminalMu.Lock()
+				s.mouse.observe(buf[:n])
 				s.mu.Lock()
 				p := s.active
 				s.mu.Unlock()
@@ -281,6 +288,7 @@ func (s *session) start(cols, rows uint16, term string) error {
 						p.close()
 					}
 				}
+				s.terminalMu.Unlock()
 			}
 			if err != nil {
 				break
@@ -314,6 +322,8 @@ func (s *session) start(cols, rows uint16, term string) error {
 	return nil
 }
 func (s *session) attach(p *attachment, m message) error {
+	s.terminalMu.Lock()
+	defer s.terminalMu.Unlock()
 	if m.Type != "attach" || m.Version != protocolVersion {
 		return fmt.Errorf("protocol version mismatch")
 	}
@@ -334,6 +344,7 @@ func (s *session) attach(p *attachment, m message) error {
 		}
 		p.muted.Store(true)
 	}
+	reconnecting := s.master != nil
 	if s.master == nil {
 		if err := s.start(m.Cols, m.Rows, m.Term); err != nil {
 			return err
@@ -345,7 +356,17 @@ func (s *session) attach(p *attachment, m message) error {
 	if err := p.controlMessage(message{Type: "ready", Version: protocolVersion, PID: s.cmd.Process.Pid, Name: strings.TrimSuffix(filepath.Base(s.path), ".sock")}); err != nil {
 		return err
 	}
+	if !p.muted.Load() {
+		if data := s.mouse.replay(); len(data) > 0 {
+			if err := p.output(message{Type: "output", Data: data}); err != nil {
+				return err
+			}
+		}
+	}
 	s.active = p
+	if reconnecting && !p.muted.Load() {
+		requestTerminalRedraw(s.master)
+	}
 	return nil
 }
 func (s *session) release(p *attachment) {
@@ -456,7 +477,21 @@ func (s *session) serveMux(c net.Conn) error {
 		}
 		switch m.Type {
 		case "resume_output":
-			p.muted.Store(false)
+			s.terminalMu.Lock()
+			if p.muted.Swap(false) {
+				if data := s.mouse.replay(); len(data) > 0 {
+					err = p.output(message{Type: "output", Data: data})
+				}
+				s.mu.Lock()
+				if err == nil && s.active == p {
+					requestTerminalRedraw(s.master)
+				}
+				s.mu.Unlock()
+			}
+			s.terminalMu.Unlock()
+			if err != nil {
+				return err
+			}
 			if err := p.controlMessage(message{Type: "output_resumed"}); err != nil {
 				return err
 			}

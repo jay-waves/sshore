@@ -27,6 +27,7 @@ func rawTerminal() (func(), error) {
 		return nil, err
 	}
 	restore := func() {
+		resetTerminalInputModes()
 		_ = term.Restore(int(os.Stdin.Fd()), state)
 		_ = windows.SetConsoleMode(in, oldIn)
 		_ = windows.SetConsoleMode(out, oldOut)
@@ -56,4 +57,19 @@ func terminalInputReader() io.Reader {
 func supportsANSI(f *os.File) bool {
 	var mode uint32
 	return windows.GetConsoleMode(windows.Handle(f.Fd()), &mode) == nil && mode&windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0
+}
+
+// Approval runs before rawTerminal enables VT output. Temporarily enable it
+// for cleanup on Windows Terminal/ConPTY and VT-capable Console Host.
+func writeTerminalControl(f *os.File, sequence string) {
+	h := windows.Handle(f.Fd())
+	var old uint32
+	if windows.GetConsoleMode(h, &old) != nil {
+		return
+	}
+	if windows.SetConsoleMode(h, old|windows.ENABLE_PROCESSED_OUTPUT|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING) != nil {
+		return
+	}
+	defer windows.SetConsoleMode(h, old)
+	_, _ = f.WriteString(sequence)
 }

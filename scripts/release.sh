@@ -88,6 +88,23 @@ Protocol remains 4, compatible with 0.3.1 session daemons. When upgrading from
 NOTES
 fi
 
+if [[ "$version" == "0.3.3" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Clear mouse/focus reporting and bracketed paste when returning to the local terminal, including approval boundaries; preserve Unix TTY and Windows Console settings.
+- Track standard mouse modes while detached or approval output is muted, restoring them when terminal interaction resumes.
+- Request a foreground-job redraw on reattachment even at unchanged dimensions; approved operations wait until output is enabled, and --stay remains local.
+- Keep remote output transparent, with bounded mouse tracking rather than full terminal emulation.
+- Add terminal cleanup, split-sequence parsing, foreground redraw, and multiplexer reconnection regression tests.
+
+Protocol remains 4. Update client and server and create a new remote session
+for all fixes: already-running daemons retain their original code. Redraw is
+best effort; terminal-specific passthrough and full screen replay are not emulated.
+NOTES
+fi
+
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   gh release upload "$tag" packages/*.tar.gz packages/*.zip packages/SHA256SUMS --clobber

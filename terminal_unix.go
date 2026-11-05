@@ -14,9 +14,19 @@ func rawTerminal() (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	return func() { _ = term.Restore(fd, state) }, nil
+	return func() {
+		resetTerminalInputModes()
+		_ = term.Restore(fd, state)
+	}, nil
 }
 
 func terminalInputReader() io.Reader { return os.Stdin }
 
 func supportsANSI(f *os.File) bool { return true }
+
+func writeTerminalControl(f *os.File, sequence string) {
+	if os.Getenv("TERM") == "dumb" || !term.IsTerminal(int(f.Fd())) {
+		return
+	}
+	_, _ = f.WriteString(sequence)
+}

@@ -96,6 +96,8 @@ sshore myserver --server /home/alice/.local/bin/sshore
 
 Run the Windows client in a modern console with VT support, such as Windows Terminal. The Windows binary is a client; session and file commands run inside the connected Linux shell.
 
+Input-mode cleanup temporarily enables VT output and restores the previous Console mode, including when approval runs before raw input is enabled. On Unix, cleanup is sent only to a TTY with `TERM` other than `dumb`. Detach and exit disable mouse reporting, focus reporting, and bracketed paste before restoring local input settings. During connection, remote terminal output is passed through unchanged.
+
 ## Connect and manage sessions
 
 ```sh
@@ -254,6 +256,9 @@ Local messages use your terminal’s ANSI 16-color palette: cyan for information
 - Transfers verify file size and SHA-256 and never overwrite existing files. Cancellation and disconnection remove incomplete files; a forcibly killed receiver or system crash may leave `.sshore-*.part` files.
 - Publishing requires hard-link support on the destination filesystem, such as common Linux filesystems or Windows NTFS. Unsupported filesystems produce an error, without falling back to an operation that might overwrite a file. Permissions, timestamps, and other metadata are not copied. Received files default to `0600` on Linux and inherit the destination directory's ACL on Windows.
 - Local approval and path selection happen before SSH starts. During approved transfers and `--stay`, remote terminal output is not displayed; normal server output is discarded during this phase. There is no screen replay when attachment resumes.
+- The Linux daemon does track standard 7-bit xterm mouse mode sequences (including changes while detached or muted), and restores the current mouse modes on attachment. This requires an updated daemon; existing session daemons keep running their original binary.
+- After restoring mouse state, reattachment requests a redraw with `SIGWINCH` to the PTY foreground process group, even when the size is unchanged. Approved attachment waits until output resumes before requesting the redraw; `--stay` does not request one. This is best effort: applications may ignore the signal or omit mode reinitialization.
+- Regression tests exercise tmux redraw and Zellij mouse/input recovery; Zellij 0.45.1 can leave unchanged cells unpainted on a same-size notification, so this is not a guarantee of full-screen restoration. Screen contents, focus/paste/extended-keyboard state, and terminal-specific passthrough wrappers are not emulated. Keep terminal capabilities compatible when reconnecting to an existing session.
 - SSH agent and X11 forwarding environments come from the connection that created the session and are not refreshed on reconnect. Forwarding is not guaranteed to remain usable after reconnecting.
 - Login scripts that print to stdout for noninteractive SSH connections interfere with the protocol handshake. Restrict such output to interactive shells.
 

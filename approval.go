@@ -335,6 +335,7 @@ func runApprove(args []string) (int, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return 1, fmt.Errorf("approval requires a local interactive terminal")
 	}
+	resetTerminalInputModes()
 	if err = flushTerminalInput(); err != nil {
 		return 1, err
 	}
