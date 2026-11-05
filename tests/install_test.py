@@ -79,15 +79,15 @@ shutil.copyfile(source,args[args.index('-o')+1])
         self.assertTrue(all("/download/v0.3.1/" in u for u in self.log.read_text().splitlines()))
         self.assertFalse(list(target.parent.glob(".sshore-install.*")))
 
-    def test_latest_arm64_and_custom_directory(self):
-        self.env["TEST_ARCH"] = "aarch64"
-        self.asset("0.3.1", "arm64")
+    def test_latest_and_custom_directory(self):
+        self.env["TEST_ARCH"] = "x86_64"
+        self.asset("0.3.1", "amd64")
         dest = self.home / "directory with spaces"
         self.run_install("--bin-dir", str(dest))
         self.assertTrue((dest / "sshore").is_file())
         urls = self.log.read_text().splitlines()
         self.assertIn("/latest/download/SHA256SUMS", urls[0])
-        self.assertIn("/download/v0.3.1/sshore_0.3.1_linux_arm64.tar.gz", urls[1])
+        self.assertIn("/download/v0.3.1/sshore_0.3.1_linux_amd64.tar.gz", urls[1])
 
     def test_checksum_failure_preserves_existing_install(self):
         target = self.home / ".local/bin/sshore"
@@ -106,7 +106,7 @@ shutil.copyfile(source,args[args.index('-o')+1])
             with self.subTest(args=args):
                 self.run_install(*args, success=False)
         self.assertFalse(self.log.exists())
-        self.env["TEST_ARCH"] = "riscv64"
+        self.env["TEST_ARCH"] = "aarch64"
         self.run_install(success=False)
         self.env["TEST_ARCH"] = "x86_64"
         self.env["TEST_OS"] = "Darwin"

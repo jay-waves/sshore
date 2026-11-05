@@ -29,7 +29,7 @@ cat packages/*.sha256 > packages/SHA256SUMS
 cat > release-notes.md <<NOTES
 sshore $version
 
-Includes Linux and Windows binaries for amd64 and arm64.
+Includes Linux and Windows binaries for amd64 (x86-64) only.
 Verify downloaded archives against SHA256SUMS.
 Commit: $GITHUB_SHA
 NOTES

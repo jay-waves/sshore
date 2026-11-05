@@ -1,5 +1,9 @@
 # Project constraints
 
+## Supported platforms
+
+Support Linux and Windows on amd64 (x86-64) only. Do not build, package, or automatically install ARM targets. Keep existing published releases immutable.
+
 ## Version and setup policy
 
 - Require exact full release versions, including PATCH. Do not introduce a separate protocol compatibility counter or silently accept a different release.

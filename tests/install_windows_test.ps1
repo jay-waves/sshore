@@ -70,12 +70,12 @@ try {
     Install-Sshore -Version '0.3.3'
     Assert-True ((Read-SshoreBinaryVersion $target) -eq 'sshore 0.3.3') 'Wrong installed binary'
     Assert-True ($script:Downloads[0] -like '*/download/v0.3.3/SHA256SUMS') 'Pinned URL not used'
-    $script:TestArchitecture = 'arm64'
+    $script:TestArchitecture = 'amd64'
     $script:Downloads = @()
-    $archivePath = New-TestRelease '0.3.3' 'arm64'
+    $archivePath = New-TestRelease '0.3.3' 'amd64'
     Install-Sshore
     Assert-True ($script:Downloads[0] -like '*/latest/download/SHA256SUMS') 'Latest URL not used'
-    Assert-True ($script:Downloads[1] -like '*/download/v0.3.3/*_windows_arm64.zip') 'Wrong architecture/version URL'
+    Assert-True ($script:Downloads[1] -like '*/download/v0.3.3/*_windows_amd64.zip') 'Wrong architecture/version URL'
     foreach ($scope in $pathTargets) {
         Assert-True ([Environment]::GetEnvironmentVariable('Path', $scope) -ceq $paths[$scope]) "Changed $scope PATH"
     }
@@ -87,16 +87,16 @@ try {
     $stream = [IO.File]::OpenWrite($archivePath)
     try { $null = $stream.Seek(0, [IO.SeekOrigin]::End); $stream.WriteByte(1) } finally { $stream.Dispose() }
     Assert-Fails { Install-Sshore -Version '0.3.3' } 'SHA256 mismatch'
-    $null = New-TestRelease '0.3.3' 'arm64' '../sshore.exe'
+    $null = New-TestRelease '0.3.3' 'amd64' '../sshore.exe'
     Assert-Fails { Install-Sshore -Version '0.3.3' } 'exactly one root sshore.exe'
-    $null = New-TestRelease '0.3.4' 'arm64'
+    $null = New-TestRelease '0.3.4' 'amd64'
     Assert-Fails { Install-Sshore -Version '0.3.4' } 'Binary version does not match'
     Assert-True ((Get-FileHash -LiteralPath $target).Hash -eq $installedHash) 'Existing binary changed on failure'
     Assert-True (@(Get-ChildItem -LiteralPath $env:INSTALL_DIR -Force).Count -eq 1) 'Installer left staging files'
     Write-Host 'PASS: failed verification preserves the existing executable'
 
     if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
-        $null = New-TestRelease '0.3.3' 'arm64'
+        $null = New-TestRelease '0.3.3' 'amd64'
         $locked = [IO.File]::Open($target, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         try {
             $failed = $false

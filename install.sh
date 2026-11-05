@@ -8,7 +8,7 @@ usage() {
     cat <<'HELP'
 Usage: sh install.sh [--version X.Y.Z] [--bin-dir DIRECTORY]
 
-Install a published Linux amd64/arm64 release, without sudo or shell profile edits.
+Install a published Linux amd64 release, without sudo or shell profile edits.
 Default: latest release into $HOME/.local/bin. Explicit --version is recommended
 when matching a local client. Requires curl, tar and sha256sum (or shasum).
 Existing versions are backed up as sshore-X.Y.Z before replacement.
@@ -38,8 +38,7 @@ main() {
     [ "$(uname -s)" = Linux ] || fail 'only Linux servers/clients are supported by this script; Windows clients use install.ps1 or release ZIPs'
     case "$(uname -m)" in
         x86_64|amd64) install_arch=amd64 ;;
-        aarch64|arm64) install_arch=arm64 ;;
-        *) fail 'unsupported CPU architecture (requires amd64 or arm64)' ;;
+        *) fail 'unsupported CPU architecture (requires amd64; ARM is not supported)' ;;
     esac
     for dependency in curl tar awk mktemp; do
         command -v "$dependency" >/dev/null 2>&1 || fail "required command missing: $dependency"

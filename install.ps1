@@ -25,8 +25,7 @@ function Get-SshoreArchitecture {
     }
     switch ($architecture) {
         { $_ -in 'X64', 'AMD64' } { return 'amd64' }
-        'Arm64' { return 'arm64' }
-        default { throw "Unsupported Windows architecture: $architecture (requires amd64 or arm64)." }
+        default { throw "Unsupported Windows architecture: $architecture (requires amd64; ARM is not supported)." }
     }
 }
 
@@ -98,7 +97,7 @@ function Install-Sshore([string]$Version = '') {
         Receive-SshoreFile $manifestUrl $manifest
         $entries = @(
             foreach ($line in [IO.File]::ReadAllLines($manifest)) {
-                if ($line -cmatch "\A(?<hash>[0-9a-fA-F]{64})[ `t]+\*?(?<asset>sshore_(?<version>$versionPattern)_windows_(?<arch>amd64|arm64)\.zip)\z") {
+                if ($line -cmatch "\A(?<hash>[0-9a-fA-F]{64})[ `t]+\*?(?<asset>sshore_(?<version>$versionPattern)_windows_(?<arch>amd64)\.zip)\z") {
                     if ($Matches.arch -eq $architecture -and (-not $Version -or $Matches.version -eq $Version)) {
                         [pscustomobject]@{ Hash = $Matches.hash; Asset = $Matches.asset; Version = $Matches.version }
                     }

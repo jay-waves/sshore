@@ -13,7 +13,7 @@ def main():
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--os", choices=["linux", "windows"], required=True)
-    parser.add_argument("--arch", choices=["amd64", "arm64"], required=True)
+    parser.add_argument("--arch", choices=["amd64"], required=True)
     parser.add_argument("--output", type=Path, default=Path("packages"))
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+_-]*", args.version):

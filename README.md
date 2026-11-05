@@ -33,9 +33,9 @@ Each named session keeps its shell running independently of the SSH connection. 
 
 ## Install
 
-Prebuilt binaries do not require Go. After a successful CI run, download Linux or Windows packages for amd64 or arm64 from the [Actions artifacts](https://github.com/jay-waves/sshore/actions). Download archives and SHA-256 checksums from [Releases](https://github.com/jay-waves/sshore/releases). Starting with 0.3.0, releases use full version tags (for example `v0.3.0`); a published version is not moved to a later commit. Verify downloaded archives against `SHA256SUMS`. Previous releases, assets and Git tags are retained when a new release is published.
+Prebuilt binaries do not require Go. After a successful CI run, download Linux or Windows packages for amd64 (x86-64) only from the [Actions artifacts](https://github.com/jay-waves/sshore/actions). Download archives and SHA-256 checksums from [Releases](https://github.com/jay-waves/sshore/releases). Starting with 0.3.0, releases use full version tags (for example `v0.3.0`); a published version is not moved to a later commit. Verify downloaded archives against `SHA256SUMS`. Previous releases, assets and Git tags are retained when a new release is published.
 
-On a Linux host (amd64 or arm64), run the installer yourself:
+On a Linux host (amd64/x86-64 only; ARM is not supported), run the installer yourself:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | sh
@@ -55,7 +55,7 @@ backup does not already exist. It does not stop or upgrade running daemons.
 macOS and other server operating systems are not supported. To inspect the script first, download the same URL to a file
 and read it before running `sh install.sh`.
 
-On Windows (amd64 or arm64), use Windows PowerShell 5.1 or PowerShell 7:
+On Windows (amd64/x86-64 only; ARM is not supported), use Windows PowerShell 5.1 or PowerShell 7:
 
 ```powershell
 # Latest published Windows client. Does not change PATH.
