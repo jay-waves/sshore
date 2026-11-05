@@ -51,6 +51,8 @@ function New-TestRelease([string]$ReleaseVersion, [string]$Architecture, [string
 
 try {
     $null = [IO.Directory]::CreateDirectory($root)
+    # Windows PowerShell 5.1 does not automatically load the ZIP core assembly.
+    Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $source = Join-Path $root 'fixture.go'
     $fixture = Join-Path $root 'fixture.exe'

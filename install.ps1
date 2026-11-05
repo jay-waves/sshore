@@ -113,6 +113,8 @@ function Install-Sshore([string]$Version = '') {
         if ((Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash -ine $entry.Hash) {
             throw 'SHA256 mismatch; installation unchanged.'
         }
+        # Windows PowerShell 5.1 does not automatically load the ZIP core assembly.
+        Add-Type -AssemblyName System.IO.Compression
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         $archive = [IO.Compression.ZipFile]::OpenRead($archivePath)
         $payload = Join-Path $temp 'sshore.exe'
