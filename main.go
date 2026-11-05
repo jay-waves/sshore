@@ -22,6 +22,7 @@ const help = `sshore — persistent shells and file transfer over one SSH connec
 
 Usage:
   sshore HOST [-s SESSION] [options]
+  sshore connect HOST [-s SESSION] [options]
   sshore HOST list [SSH options]
   sshore approve [ID] [--attach | --stay]
   sshore approve --list
@@ -245,47 +246,56 @@ func run(args []string) (int, error) {
 	if len(args) == 0 {
 		return 0, showHelp(nil, os.Stdout)
 	}
-	switch args[0] {
-	case "help":
-		return 0, showHelp(args[1:], os.Stdout)
-	case "-h", "--help":
-		return 0, showHelp(nil, os.Stdout)
-	case "-V", "--version":
-		if len(args) != 1 {
-			return 2, usage("--version takes no arguments")
-		}
-		fmt.Println("sshore", version)
-		return 0, nil
-	case "approve":
-		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
-			return 0, showHelp(args[:1], os.Stdout)
-		}
-		return runApprove(args[1:])
-	case "forward":
-		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
-			return 0, showHelp(args[:1], os.Stdout)
-		}
-		if _, err := parseForward(args[1:]); err != nil {
-			return 2, err
-		}
-		return 0, serverCommand(args)
-	case "upload", "download", "detach":
-		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
-			return 0, showHelp(args[:1], os.Stdout)
-		}
-		// -- makes filenames such as --help unambiguous.
-		if len(args) > 1 && args[1] == "--" {
-			args = append([]string{args[0]}, args[2:]...)
-		} else {
-			for _, a := range args[1:] {
-				if strings.HasPrefix(a, "-") {
-					return 2, usage("use %s -- %s for a path beginning with '-'", args[0], a)
+	explicitConnect := args[0] == "connect"
+	if explicitConnect {
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		return 2, usage("usage: sshore connect HOST [options]")
+	}
+	if !explicitConnect {
+		switch args[0] {
+		case "help":
+			return 0, showHelp(args[1:], os.Stdout)
+		case "-h", "--help":
+			return 0, showHelp(nil, os.Stdout)
+		case "-V", "--version":
+			if len(args) != 1 {
+				return 2, usage("--version takes no arguments")
+			}
+			fmt.Println("sshore", version)
+			return 0, nil
+		case "approve":
+			if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
+				return 0, showHelp(args[:1], os.Stdout)
+			}
+			return runApprove(args[1:])
+		case "forward":
+			if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
+				return 0, showHelp(args[:1], os.Stdout)
+			}
+			if _, err := parseForward(args[1:]); err != nil {
+				return 2, err
+			}
+			return 0, serverCommand(args)
+		case "upload", "download", "detach":
+			if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
+				return 0, showHelp(args[:1], os.Stdout)
+			}
+			// -- makes filenames such as --help unambiguous.
+			if len(args) > 1 && args[1] == "--" {
+				args = append([]string{args[0]}, args[2:]...)
+			} else {
+				for _, a := range args[1:] {
+					if strings.HasPrefix(a, "-") {
+						return 2, usage("use %s -- %s for a path beginning with '-'", args[0], a)
+					}
 				}
 			}
+			return 0, serverCommand(args)
+		case "bridge", "resume", "daemon", "sessions":
+			return 0, serverCommand(args)
 		}
-		return 0, serverCommand(args)
-	case "bridge", "resume", "daemon", "sessions":
-		return 0, serverCommand(args)
 	}
 	o, err := parseOptions(args)
 	if errors.Is(err, errHelp) {

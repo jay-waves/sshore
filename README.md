@@ -127,6 +127,8 @@ Input-mode cleanup temporarily enables VT output and restores the previous Conso
 
 ## Connect and manage sessions
 
+Use `sshore connect HOST` when a host alias matches a subcommand, for example `sshore connect forward`. The shorter `sshore HOST` and `sshore -- HOST` forms remain available.
+
 ```sh
 sshore user@host                 # Create a new automatically named session.
 sshore myserver -s build         # Create or attach to the build session.

@@ -125,6 +125,17 @@ NOTES
 fi
 
 
+if [[ "$version" == "0.3.5" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Add `sshore connect HOST` to connect unambiguously to SSH aliases that match subcommands.
+- Fix inherited Windows mouse capture in remote shells while preserving mouse input for remote TUIs.
+
+Protocol remains 4. Update the Windows client to receive the mouse fix.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   gh release upload "$tag" packages/*.tar.gz packages/*.zip packages/SHA256SUMS --clobber

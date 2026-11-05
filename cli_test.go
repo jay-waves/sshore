@@ -102,3 +102,15 @@ func TestSSHLightweightPassthrough(t *testing.T) {
 		}
 	}
 }
+
+func TestExplicitConnectRouting(t *testing.T) {
+	for _, host := range []string{"forward", "approve", "help", "connect"} {
+		_, err := run([]string{"connect", host, "--invalid"})
+		if err == nil || !strings.Contains(err.Error(), "unexpected argument: --invalid") {
+			t.Fatalf("connect %s routed as a subcommand: %v", host, err)
+		}
+	}
+	if _, err := run([]string{"connect"}); err == nil {
+		t.Fatal("missing host accepted")
+	}
+}
