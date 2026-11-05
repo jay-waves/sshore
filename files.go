@@ -1,5 +1,13 @@
 package main
 
+// File transfer verifies size and SHA-256 before publishing a received file.
+// The receiver creates a temporary file in the destination directory, then uses
+// a hard link for atomic publication without overwriting. There is deliberately
+// no overwrite-prone fallback on filesystems without hard-link support.
+// Normal cancellation removes temporary files; process death or a crash can leave
+// .sshore-*.part files. Metadata is not copied: Linux files default to 0600 and
+// Windows files inherit the destination directory ACL.
+
 import (
 	"crypto/sha256"
 	"encoding/hex"

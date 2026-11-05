@@ -1,5 +1,10 @@
 package main
 
+// The custom wire protocol frames control metadata and raw terminal/file data
+// within logical streams. It is not compatible with SFTP or trzsz. File chunks
+// are limited to 64 KiB; framing allows metadata overhead and rejects oversized
+// messages before allocating their bodies.
+
 import (
 	"encoding/binary"
 	"encoding/json"

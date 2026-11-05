@@ -2,6 +2,16 @@
 
 package main
 
+// Each named session has one daemon and PTY; there is no global daemon or extra
+// listening network port. bridge connects SSH stdin/stdout to the Unix socket,
+// starting the daemon as needed. The daemon drains and discards detached PTY
+// output so an unread terminal cannot block remote programs.
+//
+// Runtime files: .sock is the communication endpoint; .lock and .start coordinate
+// lifetime and startup; .log records background errors. Locks and logs can outlive
+// a session. Listing queries sockets rather than treating leftover files as live
+// sessions. The shell receives SSHORE_SOCKET for remote helper commands.
+
 import (
 	"context"
 	"errors"
@@ -79,18 +89,67 @@ func openLock(path string, nonblocking bool) (*os.File, error) {
 	}
 	return f, nil
 }
-func bridge(name string) error {
-	path, err := socketPath(name)
-	if err != nil {
-		return err
+
+// Automatic allocation holds the same per-name startup lock as explicit attach.
+// Keep that lock until the daemon listens, so simultaneous clients cannot claim
+// one name. Live detached sessions also reserve their names; stale sockets do not.
+var sessionNames = strings.Fields(`
+pikachu eevee bulbasaur charmander squirtle snorlax psyduck meowth gengar lapras
+ ditto mew togepi pichu vulpix jigglypuff ivysaur venusaur charmeleon charizard
+ wartortle blastoise caterpie metapod butterfree weedle kakuna beedrill pidgey
+ pidgeotto pidgeot rattata raticate spearow fearow ekans arbok raichu sandshrew
+ sandslash clefairy clefable ninetales wigglytuff zubat golbat oddish gloom
+ vileplume paras parasect venonat venomoth diglett dugtrio persian golduck mankey
+ primeape growlithe arcanine poliwag poliwhirl poliwrath abra kadabra alakazam
+ machop machoke machamp bellsprout weepinbell victreebel tentacool tentacruel
+ geodude graveler golem ponyta rapidash slowpoke slowbro magnemite magneton
+ farfetchd doduo dodrio seel dewgong grimer muk shellder cloyster gastly haunter
+ onix drowzee hypno krabby kingler voltorb electrode exeggcute exeggutor cubone
+ marowak hitmonlee hitmonchan lickitung koffing weezing rhyhorn rhydon chansey
+ tangela kangaskhan horsea seadra goldeen seaking staryu starmie scyther jynx
+ electabuzz magmar pinsir tauros magikarp gyarados vaporeon jolteon flareon
+ porygon omanyte omastar kabuto kabutops aerodactyl articuno zapdos moltres
+ dratini dragonair dragonite mewtwo chikorita cyndaquil totodile sentret furret
+ hoothoot noctowl mareep flaaffy ampharos marill azumarill espeon umbreon
+`)
+
+func reserveSession(names []string, fresh bool) (string, *os.File, net.Conn, error) {
+	for _, name := range names {
+		path, err := socketPath(name)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		startup, err := openLock(path+".start", false)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		conn, err := net.Dial("unix", path)
+		if fresh && err == nil {
+			conn.Close()
+			startup.Close()
+			continue
+		}
+		return name, startup, conn, nil
 	}
-	startup, err := openLock(path+".start", false)
+	return "", nil, nil, fmt.Errorf("all automatic session names are in use; exit an existing session or choose a name with --session")
+}
+
+func bridge(name string) error {
+	names := []string{name}
+	fresh := name == ""
+	if fresh {
+		names = sessionNames
+	}
+	name, startup, conn, err := reserveSession(names, fresh)
 	if err != nil {
 		return err
 	}
 	defer startup.Close()
-	conn, err := net.Dial("unix", path)
+	path, err := socketPath(name)
 	if err != nil {
+		return err
+	}
+	if conn == nil {
 		exe, err := os.Executable()
 		if err != nil {
 			return err
@@ -266,7 +325,7 @@ func (s *session) attach(p *attachment, m message) error {
 	if err := pty.Setsize(s.master, &pty.Winsize{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
 		return err
 	}
-	if err := p.controlMessage(message{Type: "ready", Version: protocolVersion, PID: s.cmd.Process.Pid}); err != nil {
+	if err := p.controlMessage(message{Type: "ready", Version: protocolVersion, PID: s.cmd.Process.Pid, Name: strings.TrimSuffix(filepath.Base(s.path), ".sock")}); err != nil {
 		return err
 	}
 	s.active = p

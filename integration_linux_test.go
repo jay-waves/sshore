@@ -1,5 +1,13 @@
 package main
 
+// Run repository checks with go test -race ./... and go vet ./.... These Linux
+// integration tests build a race-enabled binary and exercise real session
+// processes: isolation, exclusive attachment, resizing, exit codes, and preserved
+// PID/environment after detach or disconnection. Transfer cases cover both
+// directions, the two-task limit, unread-stream isolation, independent
+// cancellation, and cleanup after disconnection. Framing, integrity, overwrite
+// protection, and client worker concurrency also have focused unit tests.
+
 import (
 	"bytes"
 	"crypto/sha256"

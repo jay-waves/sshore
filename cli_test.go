@@ -45,3 +45,21 @@ func TestDownloadDirectoryValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultSessions(t *testing.T) {
+	automatic, err := parseOptions([]string{"host"})
+	if err != nil || automatic.session != "" {
+		t.Fatalf("automatic: %+v %v", automatic, err)
+	}
+	named, err := parseOptions([]string{"host", "-s", "eevee"})
+	if err != nil || named.session != "eevee" {
+		t.Fatalf("resume: %+v %v", named, err)
+	}
+	listing, err := parseOptions([]string{"host", "list"})
+	if err != nil || listing.session != "" {
+		t.Fatalf("list: %+v %v", listing, err)
+	}
+	if _, err := parseOptions([]string{"host", "list", "-s", "main"}); err == nil {
+		t.Fatal("list accepted a session option")
+	}
+}

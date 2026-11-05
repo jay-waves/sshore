@@ -1,5 +1,13 @@
 package main
 
+// Logical control, terminal, and file streams are application-level smux v2
+// streams over one SSH connection, not native OpenSSH channels. The version
+// handshake rejects incompatible peers before starting smux. Protocol 2 is
+// incompatible with the 0.1 release; running daemons cannot upgrade in place.
+// Each stream has a 256 KiB receive window, with a 2 MiB shared receive budget
+// and 16 KiB maximum frame size. These limits isolate stalled streams but do not
+// guarantee real-time terminal priority: TCP head-of-line blocking still applies.
+
 import (
 	"fmt"
 	"io"

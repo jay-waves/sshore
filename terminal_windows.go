@@ -1,5 +1,10 @@
 package main
 
+// Windows input uses ReadConsole directly; consoleInput decodes segmented UTF-16
+// and preserves control keys such as Ctrl-Z. CI runs native Windows race tests,
+// but full interactive Windows Terminal behavior still needs manual testing;
+// cross-compilation alone does not validate console interaction.
+
 import (
 	"fmt"
 	"golang.org/x/sys/windows"
@@ -46,4 +51,9 @@ func terminalInputReader() io.Reader {
 		err := windows.ReadConsole(windows.Handle(os.Stdin.Fd()), &b[0], uint32(len(b)), &n, nil)
 		return int(n), err
 	}}
+}
+
+func supportsANSI(f *os.File) bool {
+	var mode uint32
+	return windows.GetConsoleMode(windows.Handle(f.Fd()), &mode) == nil && mode&windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0
 }

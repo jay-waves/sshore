@@ -1,5 +1,11 @@
 package main
 
+// Remote shell helpers use SSHORE_SOCKET to request detach or transfer work from
+// the session daemon. File bytes travel through this socket and a dedicated smux
+// stream, never through the PTY. Multi-file download uses two workers and reports
+// aggregate failure without canceling the remaining files; batches share the
+// same two attachment-wide transfer slots as independent helper commands.
+
 import (
 	"context"
 	"errors"

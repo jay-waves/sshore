@@ -1,5 +1,11 @@
 package main
 
+// Command routing and argument validation live here. OpenSSH owns authentication,
+// encryption, and connection configuration; sshore adds persistent Linux sessions
+// and regular-file transfer without a configuration framework or database.
+// bridge, daemon, and sessions are internal commands invoked by the SSH/client
+// path, not services that users need to start manually.
+
 import (
 	"errors"
 	"fmt"
@@ -10,7 +16,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.2.1-dev"
+var version = "0.2.1"
 
 const help = `sshore — persistent shells and file transfer over one SSH connection
 
@@ -25,7 +31,7 @@ Inside a remote sshore shell:
   sshore download FILE...        Download one or more remote files
 
 Options (before or after HOST):
-  -s, --session NAME             Session name (default: main)
+  -s, --session NAME             Create or resume NAME (default: new Pokemon name)
   --server PATH                  Remote executable (default: sshore)
   --download-dir DIRECTORY       Save downloads here without a path prompt
   -q, --quiet                    Hide periodic transfer progress
@@ -95,7 +101,7 @@ type options struct {
 }
 
 func parseOptions(args []string) (options, error) {
-	o := options{session: "main", server: "sshore"}
+	o := options{server: "sshore"}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if strings.HasPrefix(a, "--") {
@@ -155,8 +161,14 @@ func parseOptions(args []string) (options, error) {
 	if o.server == "" || strings.ContainsAny(o.server, "\r\n\x00") {
 		return o, usage("invalid server path")
 	}
-	if o.list && (o.session != "main" || o.downloadDir != "" || o.quiet || o.noEscape) {
+	if o.list && (o.session != "" || o.downloadDir != "" || o.quiet || o.noEscape) {
 		return o, usage("list accepts SSH options and --server, not session or transfer options")
+	}
+	if o.list {
+		return o, nil
+	}
+	if o.session == "" {
+		return o, nil
 	}
 	return o, validSession(o.session)
 }
@@ -244,11 +256,11 @@ func run(args []string) (int, error) {
 func main() {
 	code, err := run(os.Args[1:])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "sshore:", err)
+		logf(os.Stderr, logError, "sshore: %s\n", err)
 		var e *usageError
 		if errors.As(err, &e) {
 			code = 2
-			fmt.Fprintln(os.Stderr, "Try 'sshore --help'.")
+			logf(os.Stderr, logInfo, "Try 'sshore --help'.\n")
 		} else if code == 0 {
 			code = 1
 		}

@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 # Maintain one rolling release per version line after all CI jobs pass.
+# Change VERSION (e.g. 0.2 -> 0.3) on main to start a new line, retaining the old
+# release. Each successful main build moves v0.x and replaces four archives plus
+# SHA256SUMS; tags/assets are mutable, archive names stable, and binaries include
+# the commit (e.g. 0.2+abc1234). Manual main runs can retry publication.
+# CI serializes main runs; the head check below prevents stale reruns publishing.
+# Asset replacement is not atomic across files; users may need to retry downloads
+# if checksum verification overlaps publication.
 set -euo pipefail
 
 series=$(cat VERSION)

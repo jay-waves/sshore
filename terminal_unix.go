@@ -18,3 +18,5 @@ func rawTerminal() (func(), error) {
 }
 
 func terminalInputReader() io.Reader { return os.Stdin }
+
+func supportsANSI(f *os.File) bool { return true }

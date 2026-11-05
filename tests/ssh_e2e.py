@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Linux end-to-end CLI smoke test using an isolated localhost OpenSSH server.
 Requires ssh, sshd, ssh-keygen and a built binary (default dist/sshore).
+Run after go build -buildvcs=false -o dist/sshore . with:
+    python3 tests/ssh_e2e.py
+Creates temporary keys and an SSH server bound only to 127.0.0.1.
+Covers CLI/PTY behavior, uploads, downloads, batches, download directories,
+overwrite protection, path prompts, terminal restoration, and transfers after
+passphrase authentication without reauthentication.
 Does not modify ~/.ssh or system sshd configuration.
 """
 import argparse
@@ -137,6 +143,19 @@ LogLevel ERROR
                        "-i", str(key), "-F", "/dev/null", "-o", "IdentitiesOnly=yes",
                        "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known}",
                        "--server", str(wrapper)]
+            base_command = command[:]
+            auto_names = []
+            for _ in range(2):
+                auto = Terminal(base_command, wait_ready=False)
+                terms.append(auto)
+                match = auto.expect(r"Connected [^\r\n]+ / ([a-z]+) ")
+                auto_names.append(match.group(1).decode())
+            assert auto_names[0] != auto_names[1]
+            for auto in terms[:]:
+                auto.send("exit\n")
+                auto.wait()
+                terms.remove(auto)
+            command = base_command + ["-s", "main"]
             term = Terminal(command)
             terms.append(term)
             term.send("stty -echo; KEEP=shore; printf 'PID:%s\\n' $$\n")
@@ -219,7 +238,7 @@ LogLevel ERROR
             term.expect("KEY_ready")
             term.send(b"\x1d")
             term.expect("1d")
-            listing = subprocess.check_output(command + ["list"], text=True)
+            listing = subprocess.check_output(base_command + ["list"], text=True)
             assert "main" in listing and str(shell_pid) in listing
             term.close()
             terms.remove(term)
