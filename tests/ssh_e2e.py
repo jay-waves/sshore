@@ -166,6 +166,15 @@ LogLevel ERROR
             term.expect("37 103")
             term.send("printf 'RUN_%s\\n' sleep; sleep 30\n")
             term.expect("RUN_sleep")
+            deadline = time.monotonic() + 5
+            while True:
+                listing = subprocess.check_output(base_command + ["list"], text=True)
+                assert "FOREGROUND" in listing
+                if re.search(r"^main\s+.*\bsleep\b", listing, re.MULTILINE):
+                    break
+                if time.monotonic() >= deadline:
+                    raise AssertionError(f"missing foreground sleep: {listing}")
+                time.sleep(0.05)
             term.send(b"\x03")
             term.send("printf 'INT_%s\\n' survived\n")
             term.expect("INT_survived")

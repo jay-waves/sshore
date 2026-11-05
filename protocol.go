@@ -24,20 +24,21 @@ const (
 
 // Control metadata uses JSON. Terminal and file bytes never undergo text encoding.
 type message struct {
-	Type     string `json:"type"`
-	ID       uint64 `json:"id,omitempty"`
-	Version  int    `json:"version,omitempty"`
-	Cols     uint16 `json:"cols,omitempty"`
-	Rows     uint16 `json:"rows,omitempty"`
-	Term     string `json:"term,omitempty"`
-	PID      int    `json:"pid,omitempty"`
-	Attached bool   `json:"attached,omitempty"`
-	Name     string `json:"name,omitempty"`
-	Size     int64  `json:"size,omitempty"`
-	Hash     string `json:"hash,omitempty"`
-	Error    string `json:"error,omitempty"`
-	Code     int    `json:"code,omitempty"`
-	Data     []byte `json:"-"`
+	Type       string `json:"type"`
+	ID         uint64 `json:"id,omitempty"`
+	Version    int    `json:"version,omitempty"`
+	Cols       uint16 `json:"cols,omitempty"`
+	Rows       uint16 `json:"rows,omitempty"`
+	Term       string `json:"term,omitempty"`
+	PID        int    `json:"pid,omitempty"`
+	Foreground string `json:"foreground,omitempty"`
+	Attached   bool   `json:"attached,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Size       int64  `json:"size,omitempty"`
+	Hash       string `json:"hash,omitempty"`
+	Error      string `json:"error,omitempty"`
+	Code       int    `json:"code,omitempty"`
+	Data       []byte `json:"-"`
 }
 
 func writeFull(w io.Writer, b []byte) error {

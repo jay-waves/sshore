@@ -27,6 +27,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"github.com/creack/pty"
@@ -572,10 +573,15 @@ func (s *session) handle(id uint64, c net.Conn) {
 	case "status":
 		s.mu.Lock()
 		m := message{Type: "session", Attached: s.active != nil}
+		group := 0
+		if s.master != nil {
+			group, _ = unix.IoctlGetInt(int(s.master.Fd()), unix.TIOCGPGRP)
+		}
 		if s.cmd != nil {
 			m.PID = s.cmd.Process.Pid
 		}
 		s.mu.Unlock()
+		m.Foreground = foregroundPrograms("/proc", group)
 		_ = writeMessage(c, m)
 	case "detach":
 		s.mu.Lock()
@@ -676,7 +682,9 @@ func listSessions() error {
 		return err
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	fmt.Println("SESSION\tPID\tSTATE")
+	out := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	defer out.Flush()
+	fmt.Fprintln(out, "SESSION\tPID\tSTATE\tFOREGROUND")
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".sock") {
 			continue
@@ -700,7 +708,10 @@ func listSessions() error {
 		if m.Attached {
 			state = "attached"
 		}
-		fmt.Printf("%s\t%d\t%s\n", strings.TrimSuffix(e.Name(), ".sock"), m.PID, state)
+		if m.Foreground == "" {
+			m.Foreground = "—"
+		}
+		fmt.Fprintf(out, "%s\t%d\t%s\t%s\n", strings.TrimSuffix(e.Name(), ".sock"), m.PID, state, cleanText(m.Foreground))
 	}
 	return nil
 }

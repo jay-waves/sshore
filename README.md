@@ -68,12 +68,14 @@ Run the Windows client in a modern console with VT support, such as Windows Term
 ```sh
 sshore user@host                 # Create a new automatically named session.
 sshore myserver -s build         # Create or attach to the build session.
-sshore myserver list             # List sessions, shell PIDs, and attachment status.
+sshore myserver list             # List sessions, shell PIDs, attachment status, and foreground programs.
 sshore myserver -J jump -p 2222   # Pass SSH connection options.
 sshore myserver --download-dir ./downloads  # Save downloads automatically.
 ```
 
 sshore uses system OpenSSH configuration, host keys, and authentication settings. Supported SSH options are `-p`, `-i`, `-J`, `-F`, `-l`, `-o`, `-v`, `-4`, and `-6`. Put complex settings in `~/.ssh/config`. Not every OpenSSH option is forwarded. If a host alias conflicts with a built-in command, configure another SSH alias for that host.
+
+`list` shows foreground program names (such as `bash`, `vim`, or `python`), without command-line arguments or background jobs. Multiple foreground processes are joined with ` | `; `—` means the information is unavailable.
 
 Session names contain 1-48 ASCII letters, digits, underscores, or hyphens, starting with a letter or digit. An attached session rejects a second client; clients cannot take over a connection or share input.
 
