@@ -28,6 +28,11 @@ sequenceDiagram
     A-->>U: Attach, or stay local (foreground for a port tunnel)
 ```
 
+For a single upload, submitting the local source path after reviewing the host
+and remote destination is explicit approval; there is no additional `yes`. Other
+requests require a final `yes` after path selection. Path completion only browses
+the local filesystem during this separately invoked approval command.
+
 Receiving a request never opens a requested local listener or reads/writes a
 user-selected transfer file. Only the bounded pending metadata is saved.
 Unsolicited file offers, upload requests and forward-add streams are rejected.

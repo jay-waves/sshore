@@ -85,7 +85,9 @@ existing connections. OpenSSH -L rules are managed separately.
 
 Run inside a remote sshore shell. Queue approval to upload a local file into
 DIRECTORY (default: remote current directory), then detach. Run sshore approve
-locally to select the source and execute. Existing files are never overwritten.
+locally to select the source (Tab completes local paths). For a single upload,
+pressing Enter on the source path approves and starts it; Ctrl-C cancels.
+Existing files are never overwritten.
 `,
 	"download": `Usage: sshore download [--] FILE...
 

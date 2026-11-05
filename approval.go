@@ -3,7 +3,6 @@ package main
 // Remote requests describe data, never commands. Only a separately invoked local
 // approve command can turn a request into an executable operation.
 import (
-	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -268,14 +267,6 @@ func parseApprove(args []string) (approveOptions, error) {
 	}
 	return o, nil
 }
-func approvalLine(r *bufio.Reader, prompt string) (string, error) {
-	fmt.Fprint(os.Stdout, prompt)
-	line, err := r.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(line), nil
-}
 func runApprove(args []string) (int, error) {
 	a, err := parseApprove(args)
 	if err != nil {
@@ -340,7 +331,17 @@ func runApprove(args []string) (int, error) {
 		return 1, err
 	}
 	fmt.Printf("Local approval %s\nHost: %s\nSession: %s\n", r.ID, cleanText(r.Host), r.Session)
-	input := bufio.NewReader(os.Stdin)
+	input, err := newApprovalInput()
+	if err != nil {
+		return 1, err
+	}
+	defer input.Close()
+	directUpload := len(r.Operations) == 1 && r.Operations[0].Kind == "upload"
+	if a.stay {
+		fmt.Println("After approval: stay local (port forwarding runs until Ctrl-C).")
+	} else {
+		fmt.Println("After approval: return to the remote session.")
+	}
 	for i := range r.Operations {
 		op := &r.Operations[i]
 		switch op.Kind {
@@ -351,7 +352,7 @@ func runApprove(args []string) (int, error) {
 			}
 			dest = filepath.Join(dest, op.Name)
 			fmt.Printf("Download %s (%d bytes)\n", cleanText(op.Path), op.Size)
-			line, e := approvalLine(input, fmt.Sprintf("Save as [%s]: ", cleanText(dest)))
+			line, e := input.Read(fmt.Sprintf("Save as [%s] (Tab to complete): ", cleanText(dest)), true)
 			if e != nil {
 				return 1, e
 			}
@@ -377,7 +378,11 @@ func runApprove(args []string) (int, error) {
 			fmt.Printf("Destination: %s\n", cleanText(dest))
 		case "upload":
 			fmt.Printf("Upload to remote directory: %s\n", cleanText(op.Path))
-			line, e := approvalLine(input, "Local file to upload: ")
+			prompt := "Local file to upload (Tab to complete): "
+			if directUpload {
+				fmt.Println("Enter a local file path and press Enter to upload; Ctrl-C cancels.")
+			}
+			line, e := input.Read(prompt, true)
 			if e != nil {
 				return 1, e
 			}
@@ -402,17 +407,18 @@ func runApprove(args []string) (int, error) {
 			fmt.Printf("Forward local %s -> remote %s\n", loopback(op.Port), loopback(op.Port))
 		}
 	}
-	if a.stay {
-		fmt.Println("After approval: stay local (port forwarding runs until Ctrl-C).")
-	} else {
-		fmt.Println("After approval: return to the remote session.")
+	if !directUpload {
+		answer, err := input.Read("Approve these operations? Type yes: ", false)
+		if err != nil {
+			return 1, err
+		}
+		if answer != "yes" {
+			return 1, fmt.Errorf("not approved; request remains pending")
+		}
 	}
-	answer, err := approvalLine(input, "Approve these operations? Type yes: ")
-	if err != nil {
+	// Release the input reader and terminal before SSH takes ownership.
+	if err := input.Close(); err != nil {
 		return 1, err
-	}
-	if answer != "yes" {
-		return 1, fmt.Errorf("not approved; request remains pending")
 	}
 	// A user may leave the prompt open past the expiration time.
 	if time.Since(r.Created) > approvalTTL {

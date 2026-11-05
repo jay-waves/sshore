@@ -246,7 +246,10 @@ sshore download ./report.zip     # Request one download.
 sshore download a.zip b.log c.png # Request a batch (maximum 16 files).
 ```
 
-Run `sshore approve` locally to choose paths and approve. UTF-8 paths, spaces,
+Run `sshore approve` locally to choose paths and approve. Path prompts support
+Tab completion on the local filesystem. For a single upload, submitting the
+source path approves and starts the upload without an extra `yes`; Ctrl-C
+cancels. Downloads, forwarding and batch requests still require `yes`. UTF-8 paths, spaces,
 surrounding quotes and `~/` work; command substitution and wildcard expansion
 are not performed. For downloads, Enter accepts the displayed default path.
 `--download-dir` changes that default, never bypasses approval.
