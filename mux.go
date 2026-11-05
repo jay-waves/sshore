@@ -2,9 +2,9 @@ package main
 
 // Logical control, terminal, and file streams are application-level smux v2
 // streams over one SSH connection, not native OpenSSH channels. The version
-// handshake rejects incompatible peers before starting smux. Protocol 2 is
-// incompatible with the 0.1 release; running daemons cannot upgrade in place.
-// Each stream has a 256 KiB receive window, with a 2 MiB shared receive budget
+// handshake rejects incompatible peers before starting smux. Protocol 3 adds
+// connection-scoped forwarding; running older daemons cannot upgrade in place.
+// Each stream has a 256 KiB receive window, with a bounded shared receive budget
 // and 16 KiB maximum frame size. These limits isolate stalled streams but do not
 // guarantee real-time terminal priority: TCP head-of-line blocking still applies.
 
@@ -26,9 +26,9 @@ func muxConfig() *smux.Config {
 	c.Version = 2
 	c.MaxFrameSize = 16 * 1024
 	c.MaxStreamBuffer = 256 * 1024
-	// Keep room for every permitted stream. A stalled file must not exhaust the
-	// connection's shared receive budget and stall terminal/control traffic.
-	c.MaxReceiveBuffer = 2 * 1024 * 1024
+	// Keep room for terminal, files, forward connections, and control requests.
+	// Stalled streams must not exhaust the shared receive budget and block input.
+	c.MaxReceiveBuffer = (maxForwardConnections + maxTransfers + 12) * c.MaxStreamBuffer
 	c.KeepAliveInterval = 10 * time.Second
 	c.KeepAliveTimeout = 60 * time.Second
 	return c

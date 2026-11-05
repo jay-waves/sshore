@@ -215,6 +215,8 @@ func runClient(o options) (int, error) {
 			}
 		}
 	}
+	forwards := newForwardManager(ctx, mux)
+	defer forwards.close()
 	go readEvents(control)
 	go readEvents(terminal)
 	go func() {
@@ -226,6 +228,10 @@ func runClient(o options) (int, error) {
 			_ = st.SetReadDeadline(time.Now().Add(5 * time.Second))
 			m, err := readMessage(st)
 			_ = st.SetReadDeadline(time.Time{})
+			if err == nil && m.Type == "forward" {
+				forwards.handle(st, m)
+				continue
+			}
 			if err != nil || m.ID == 0 || (m.Type != "upload" && m.Type != "offer") {
 				_ = st.Close()
 				continue

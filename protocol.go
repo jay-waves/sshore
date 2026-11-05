@@ -12,7 +12,7 @@ import (
 	"io"
 )
 
-const protocolVersion = 2
+const protocolVersion = 3
 const chunkSize = 64 * 1024
 const maxFrame = chunkSize + 4096
 const (
@@ -24,6 +24,9 @@ const (
 
 // Control metadata uses JSON. Terminal and file bytes never undergo text encoding.
 type message struct {
+	Action     string `json:"action,omitempty"`
+	Port       int    `json:"port,omitempty"`
+	Ports      []int  `json:"ports,omitempty"`
 	Type       string `json:"type"`
 	ID         uint64 `json:"id,omitempty"`
 	Version    int    `json:"version,omitempty"`

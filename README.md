@@ -33,7 +33,7 @@ Each named session keeps its shell running independently of the SSH connection. 
 
 ## Install
 
-Prebuilt binaries do not require Go. After a successful CI run, download Linux or Windows packages for amd64 or arm64 from the [Actions artifacts](https://github.com/jay-waves/sshore/actions). Download archives and SHA-256 checksums from [Releases](https://github.com/jay-waves/sshore/releases). Releases are rolling updates within each version line; verify archives against `SHA256SUMS` and retry if a download overlaps an update.
+Prebuilt binaries do not require Go. After a successful CI run, download Linux or Windows packages for amd64 or arm64 from the [Actions artifacts](https://github.com/jay-waves/sshore/actions). Download archives and SHA-256 checksums from [Releases](https://github.com/jay-waves/sshore/releases). Starting with 0.3.0, releases use full version tags (for example `v0.3.0`); a published version is not moved to a later commit. Verify downloaded archives against `SHA256SUMS`. Older rolling releases remain available.
 
 Building from source requires Go 1.25+. The local machine needs an OpenSSH client (`ssh` or `ssh.exe`), and the remote machine needs a working SSH server.
 
@@ -47,6 +47,10 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -o dist/sshore.
 ```
 
 Install the Linux binary on the remote PATH, for example as `~/.local/bin/sshore`, and install the appropriate binary locally. Use the same version on both ends; connections check the protocol version. No root access or additional listening network port is required.
+
+Version 0.3.0 uses protocol 3 for dynamic forwarding. Both binaries must
+be updated together. Existing protocol 2 session daemons must be exited using
+the old client before upgrading; they cannot be attached with the new client.
 
 Version 0.2 uses a new multiplexing protocol that is incompatible with 0.1. Before upgrading, attach to any running 0.1 sessions with the old client and exit their shells, then replace both binaries. Running session processes cannot upgrade their protocol in place.
 
@@ -73,7 +77,7 @@ sshore myserver -J jump -p 2222   # Pass SSH connection options.
 sshore myserver --download-dir ./downloads  # Save downloads automatically.
 ```
 
-sshore uses system OpenSSH configuration, host keys, and authentication settings. Supported SSH options are `-p`, `-i`, `-J`, `-F`, `-l`, `-o`, `-v`, `-4`, and `-6`. Put complex settings in `~/.ssh/config`. Not every OpenSSH option is forwarded. If a host alias conflicts with a built-in command, configure another SSH alias for that host.
+sshore uses system OpenSSH configuration, host keys, and authentication settings. Supported SSH options are `-p`, `-i`, `-J`, `-F`, `-l`, `-o`, `-L`, `-R`, `-D`, `-E`, `-C`, `-v`, `-vv`, `-vvv`, `-4`, and `-6`. Options taking values accept separated or attached forms (for example `-p 2222` or `-p2222`); forwarding options may be repeated. Put complex settings in `~/.ssh/config`. Not every OpenSSH option is forwarded. If a host alias conflicts with a built-in command, configure another SSH alias for that host.
 
 `list` shows foreground program names (such as `bash`, `vim`, or `python`), without command-line arguments or background jobs. Multiple foreground processes are joined with ` | `; `—` means the information is unavailable.
 
@@ -82,6 +86,55 @@ Session names contain 1-48 ASCII letters, digits, underscores, or hyphens, start
 Without `-s`, every connection creates a new session using an available Pokemon English name (for example `pikachu` or `eevee`), without a suffix. Attached and detached sessions both reserve their names. If all automatic names are occupied, the command reports an error; exit an existing session or use `-s NAME` to choose another name. The connection message shows its name. Use `sshore myserver list` to find existing sessions and `sshore myserver -s NAME` to reconnect.
 
 Inside the remote shell, run `sshore detach` to leave the session running, or `exit` to end it. Reconnect with the same command, for example `sshore myserver -s build`.
+
+## Forward ports
+
+Inside the remote shell, forward a service to the same port on your computer:
+
+```sh
+sshore forward 3000          # Local 127.0.0.1:3000 -> remote 127.0.0.1:3000.
+sshore forward --list        # Show this connection's dynamic forwards.
+sshore forward --stop 3000   # Close the listener and its existing connections.
+```
+
+Open `http://127.0.0.1:3000` locally for a remote HTTP service. Only TCP over
+IPv4 loopback is supported. Adding an existing rule is harmless; an occupied
+local port reports an error without selecting a different port. Success means
+the local listener is ready, not that the remote service is running. A failed
+remote connection closes that local TCP connection; the listener remains usable.
+
+Rules belong to the attached client. Detach, disconnection, or shell exit closes
+all dynamic listeners and their connections. Reconnecting starts with no rules;
+remote services continue running with the persistent shell. Up to 8 ports and
+32 simultaneous forwarded TCP connections are supported per attachment. Excess
+connections are closed. Forwarding uses separate streams and does not occupy
+file-transfer slots, but shares SSH bandwidth with the terminal and files.
+
+For different ports or destinations, pass native OpenSSH `-L` options at startup
+(repeat `-L` for multiple rules):
+
+```sh
+sshore myserver -s dev -L 127.0.0.1:8080:127.0.0.1:3000
+```
+
+`forward --list` and `--stop` manage only dynamic rules; OpenSSH manages `-L`
+rules separately. Both use the same local port namespace, so conflicting
+listeners fail. Dynamic forwarding is implemented by sshore over the command
+channel; it does not depend on OpenSSH ControlMaster support.
+
+Other lightweight OpenSSH options are passed through without adding connections:
+
+```sh
+sshore myserver -R 127.0.0.1:9000:127.0.0.1:3000  # Remote 9000 -> local 3000.
+sshore myserver -D 127.0.0.1:1080                 # Local SOCKS proxy.
+sshore myserver -vvv -E ./ssh-debug.log           # Detailed SSH diagnostics.
+sshore myserver -C                              # Optional SSH compression.
+```
+
+`-C` is optional because compression can add overhead on fast links or with
+already-compressed files. `-E` captures OpenSSH diagnostics, not sshore's own
+messages. `-q` remains sshore's transfer-progress option. Forwarding permissions
+and bind-address rules for `-L`, `-R`, and `-D` remain controlled by OpenSSH.
 
 ## Transfer files
 

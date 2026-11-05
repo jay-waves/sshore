@@ -1,7 +1,7 @@
 # Validate formatting, vet, and native race tests on Linux and Windows; Linux
 # additionally runs isolated OpenSSH/PTY end-to-end tests. Build four targets
 # with CGO disabled and package executable, README, and MIT license.
-# PRs and non-main branches only test/build. Main publishes a rolling version-line
+# PRs and non-main branches only test/build. Main publishes a versioned
 # release after every test/build succeeds; scripts/release.sh documents semantics.
 name: CI
 
@@ -76,13 +76,12 @@ jobs:
       - name: Build and package
         shell: bash
         run: |
-          series=$(cat VERSION)
-          [[ "$series" =~ ^0\.(0|[1-9][0-9]*)$ ]]
-          version="$series+${GITHUB_SHA:0:7}"
+          version=$(cat VERSION)
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           binary=sshore
           if [[ "$GOOS" == windows ]]; then binary=sshore.exe; fi
           go build -trimpath -ldflags="-s -w -X main.version=$version" -o "dist/$binary" .
-          python3 scripts/package.py --binary "dist/$binary" --version "$series" --os "$GOOS" --arch "$GOARCH"
+          python3 scripts/package.py --binary "dist/$binary" --version "$version" --os "$GOOS" --arch "$GOARCH"
       - uses: actions/upload-artifact@v4
         with:
           name: sshore-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -91,7 +90,7 @@ jobs:
           retention-days: 30
 
   release:
-    name: Publish version-line release
+    name: Publish versioned release
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest

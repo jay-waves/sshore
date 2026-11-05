@@ -16,16 +16,17 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.2.2"
+var version = "0.3.0"
 
 const help = `sshore — persistent shells and file transfer over one SSH connection
 
 Usage:
   sshore HOST [-s SESSION] [options]
   sshore HOST list [SSH options]
-  sshore help [upload|download|detach]
+  sshore help [upload|download|detach|forward]
 
 Inside a remote sshore shell:
+  sshore forward PORT            Forward local loopback PORT to remote loopback PORT
   sshore detach                  Disconnect; keep the shell running
   sshore upload [DIRECTORY]      Choose a local file to upload here
   sshore download FILE...        Download one or more remote files
@@ -37,7 +38,9 @@ Options (before or after HOST):
   -q, --quiet                    Hide periodic transfer progress
   --no-escape                    Forward Ctrl-] instead of detaching locally
   -p PORT  -i KEY  -J JUMP  -F CONFIG  -l USER  -o OPTION
-  -v, -4, -6                    Pass through to system OpenSSH
+  -L SPEC  -R SPEC  -D ADDRESS   Pass forwarding options to OpenSSH
+  -E FILE                       Write OpenSSH debug logs to FILE
+  -C, -v, -vv, -vvv, -4, -6     Pass through to system OpenSSH
   -h, --help                     Show help
   -V, --version                  Show version
 
@@ -54,6 +57,14 @@ Examples:
 `
 
 var commandHelp = map[string]string{
+	"forward": `Usage: sshore forward PORT | --stop PORT | --list
+
+Run inside a remote sshore shell. Map local 127.0.0.1:PORT to remote
+127.0.0.1:PORT for this attachment only. --stop closes the listener and all
+its connections. --list shows dynamic forwards only, excluding SSH -L rules.
+Detach/disconnection closes all dynamic forwards; reconnect does not restore
+rules. Up to 8 ports and 32 simultaneous TCP connections are supported.
+`,
 	"upload": `Usage: sshore upload [--] [DIRECTORY]
 
 Run inside a remote sshore shell. Choose a local file using the local prompt;
@@ -115,8 +126,12 @@ func parseOptions(args []string) (options, error) {
 				a = key
 			}
 		}
+		if len(a) > 2 && a[0] == '-' && strings.ContainsRune("piJFloLRDE", rune(a[1])) {
+			o.ssh = append(o.ssh, a[:2], a[2:])
+			continue
+		}
 		switch a {
-		case "-s", "--session", "--server", "--download-dir", "-p", "-i", "-J", "-F", "-l", "-o":
+		case "-s", "--session", "--server", "--download-dir", "-p", "-i", "-J", "-F", "-l", "-o", "-L", "-R", "-D", "-E":
 			i++
 			if i == len(args) || args[i] == "" {
 				return o, usage("missing value for %s", a)
@@ -135,7 +150,7 @@ func parseOptions(args []string) (options, error) {
 			o.quiet = true
 		case "--no-escape":
 			o.noEscape = true
-		case "-v", "-4", "-6":
+		case "-C", "-v", "-vv", "-vvv", "-4", "-6":
 			o.ssh = append(o.ssh, a)
 		case "-h", "--help":
 			return o, errHelp
@@ -198,7 +213,7 @@ func showHelp(args []string, w io.Writer) error {
 		return err
 	}
 	if len(args) != 1 {
-		return usage("usage: sshore help [upload|download|detach]")
+		return usage("usage: sshore help [upload|download|detach|forward]")
 	}
 	h, ok := commandHelp[args[0]]
 	if !ok {
@@ -222,6 +237,14 @@ func run(args []string) (int, error) {
 		}
 		fmt.Println("sshore", version)
 		return 0, nil
+	case "forward":
+		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
+			return 0, showHelp(args[:1], os.Stdout)
+		}
+		if _, err := parseForward(args[1:]); err != nil {
+			return 2, err
+		}
+		return 0, serverCommand(args)
 	case "upload", "download", "detach":
 		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
 			return 0, showHelp(args[:1], os.Stdout)

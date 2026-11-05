@@ -206,6 +206,7 @@ type attachment struct {
 	mux               *smux.Session
 	control, terminal *smux.Stream
 	controlMu         sync.Mutex
+	forwardRequests   chan struct{}
 }
 
 func (p *attachment) controlMessage(m message) error {
@@ -398,7 +399,7 @@ func (s *session) serveMux(c net.Conn) error {
 	if err = streamMessage(terminal, message{Type: "terminal"}); err != nil {
 		return err
 	}
-	p := &attachment{mux: mux, control: control, terminal: terminal}
+	p := &attachment{mux: mux, control: control, terminal: terminal, forwardRequests: make(chan struct{}, 8)}
 	defer s.release(p)
 	if err = s.attach(p, m); err != nil {
 		_ = p.controlMessage(message{Type: "fatal", Error: err.Error()})
@@ -406,17 +407,9 @@ func (s *session) serveMux(c net.Conn) error {
 		_, _ = readMessage(control)
 		return err
 	}
-	// No further client-initiated streams are part of the protocol. Reject them
-	// rather than allowing unread streams to consume the shared receive budget.
-	go func() {
-		for {
-			st, err := mux.AcceptStream()
-			if err != nil {
-				return
-			}
-			_ = st.Close()
-		}
-	}()
+	forwardCtx, cancelForwards := context.WithCancel(context.Background())
+	defer cancelForwards()
+	go serveForwardStreams(forwardCtx, mux)
 	go func() {
 		for {
 			m, err := readMessage(terminal)
@@ -593,6 +586,10 @@ func (s *session) handle(id uint64, c net.Conn) {
 			_ = p.controlMessage(message{Type: "detach_requested"})
 		}
 		_ = writeMessage(c, message{Type: "detached"})
+	case "forward":
+		if err = s.forward(c, first); err != nil {
+			_ = writeMessage(c, message{Type: "forward_result", Error: err.Error()})
+		}
 	case "upload", "offer":
 		if err = s.transfer(id, c, first); err != nil {
 			_ = writeMessage(c, message{Type: "fatal", Error: err.Error()})
@@ -730,6 +727,8 @@ func serverCommand(args []string) error {
 			return usage("usage: sshore sessions")
 		}
 		return listSessions()
+	case "forward":
+		return forwardHelper(args[1:])
 	case "detach":
 		if len(args) != 1 {
 			return usage("usage: sshore detach")

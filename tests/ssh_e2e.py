@@ -26,6 +26,7 @@ import struct
 import subprocess
 import tempfile
 import termios
+import threading
 import time
 
 
@@ -156,8 +157,56 @@ LogLevel ERROR
                 auto.wait()
                 terms.remove(auto)
             command = base_command + ["-s", "main"]
-            term = Terminal(command)
-            terms.append(term)
+            # Native forwarding, compression and diagnostics are passed to the
+            # same interactive OpenSSH process, including attached value forms.
+            native_ports = []
+            probes = []
+            for _ in range(3):
+                probe = socket.socket()
+                probe.bind(("127.0.0.1", 0))
+                probes.append(probe)
+                native_ports.append(probe.getsockname()[1])
+            for probe in probes:
+                probe.close()
+            local_port, reverse_port, socks_port = native_ports
+            ssh_log = root / "ssh debug.log"
+            with socket.socket() as echo:
+                echo.bind(("127.0.0.1", 0))
+                echo.listen()
+                echo.settimeout(10)
+                service_port = echo.getsockname()[1]
+                def echo_connections():
+                    for _ in range(3):
+                        peer, _ = echo.accept()
+                        with peer:
+                            peer.settimeout(5)
+                            peer.sendall(peer.recv(1024))
+                worker = threading.Thread(target=echo_connections, daemon=True)
+                worker.start()
+                term = Terminal(command + [
+                    "-C", "-vvv", "-E", str(ssh_log),
+                    f"-L127.0.0.1:{local_port}:127.0.0.1:{service_port}",
+                    "-R", f"127.0.0.1:{reverse_port}:127.0.0.1:{service_port}",
+                    f"-D127.0.0.1:{socks_port}", "-oExitOnForwardFailure=yes",
+                ])
+                terms.append(term)
+                for native_port in (local_port, reverse_port):
+                    with socket.create_connection(("127.0.0.1", native_port), timeout=5) as peer:
+                        peer.sendall(b"native-forward")
+                        assert peer.recv(1024) == b"native-forward"
+                with socket.create_connection(("127.0.0.1", socks_port), timeout=5) as peer:
+                    stream = peer.makefile("rb")
+                    peer.sendall(b"\x05\x01\x00")
+                    assert stream.read(2) == b"\x05\x00"
+                    peer.sendall(b"\x05\x01\x00\x01" + socket.inet_aton("127.0.0.1") + struct.pack("!H", service_port))
+                    reply = stream.read(10)
+                    assert len(reply) == 10 and reply[:4] == b"\x05\x00\x00\x01", reply
+                    peer.sendall(b"socks-forward")
+                    assert stream.read(len(b"socks-forward")) == b"socks-forward"
+                    stream.close()
+                worker.join(timeout=5)
+                assert not worker.is_alive()
+                assert ssh_log.stat().st_size > 0
             term.send("stty -echo; KEEP=shore; printf 'PID:%s\\n' $$\n")
             shell_pid = int(term.expect(r"PID:(\d+)").group(1))
             fcntl.ioctl(term.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 37, 103, 0, 0))
@@ -178,6 +227,18 @@ LogLevel ERROR
             term.send(b"\x03")
             term.send("printf 'INT_%s\\n' survived\n")
             term.expect("INT_survived")
+
+            # Dynamic forwarding control travels through the actual helper,
+            # daemon and SSH client. Keep a rule active during file transfers.
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                forward_port = probe.getsockname()[1]
+            term.send(f"sshore forward {forward_port}\n")
+            term.expect(f"Forwarding 127.0.0.1:{forward_port}")
+            term.send(f"sshore forward {forward_port}\n")
+            term.expect("Already forwarding")
+            term.send("sshore forward --list\n")
+            term.expect(f"127.0.0.1:{forward_port} -> remote")
 
             data = bytes(range(256)) * 4097
             remote = root / "remote.bin"
@@ -223,15 +284,25 @@ LogLevel ERROR
             assert (parallel / first.name).read_bytes() == first.read_bytes()
             assert (parallel / second.name).read_bytes() == second.read_bytes()
 
+            term.send(f"sshore forward --stop {forward_port}\n")
+            term.expect("Stopped forwarding")
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", forward_port))
+            term.send(f"sshore forward {forward_port}\n")
+            term.expect("Forwarding")
             term.send(b"\x1d")
             term.expect("Detached")
             term.wait()
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", forward_port))
             automatic = root / "automatic"
             automatic.mkdir()
             term = Terminal(command + ["--download-dir", str(automatic), "--quiet", "--no-escape"])
             terms.append(term)
             term.send("printf 'RESUME:%s:%s\\n' $$ \"$KEEP\"\n")
             term.expect(f"RESUME:{shell_pid}:shore")
+            term.send("sshore forward --list\n")
+            term.expect("No dynamic forwards")
             batch = []
             for index in range(8):
                 path = root / f"batch-{index}.bin"
