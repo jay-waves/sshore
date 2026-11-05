@@ -8,7 +8,6 @@ package main
 import (
 	"fmt"
 	"golang.org/x/sys/windows"
-	"golang.org/x/term"
 	"io"
 	"os"
 )
@@ -22,20 +21,19 @@ func rawTerminal() (func(), error) {
 	if err := windows.GetConsoleMode(out, &oldOut); err != nil {
 		return nil, err
 	}
-	state, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		return nil, err
-	}
 	restore := func() {
 		resetTerminalInputModes()
-		_ = term.Restore(int(os.Stdin.Fd()), state)
 		_ = windows.SetConsoleMode(in, oldIn)
 		_ = windows.SetConsoleMode(out, oldOut)
 	}
-	var mode uint32
-	if err = windows.GetConsoleMode(in, &mode); err == nil {
-		err = windows.SetConsoleMode(in, (mode|windows.ENABLE_VIRTUAL_TERMINAL_INPUT|windows.ENABLE_EXTENDED_FLAGS)&^windows.ENABLE_QUICK_EDIT_MODE)
-	}
+	// Do not inherit native mouse capture. With Quick Edit off, ConPTY
+	// advertises ENABLE_MOUSE_INPUT to the outer terminal as mouse reporting,
+	// even when the remote shell never requested it (with or without a mux).
+	// Enter raw mode in one operation so no transient raw+mouse mode is exposed.
+	mode := (oldIn | windows.ENABLE_VIRTUAL_TERMINAL_INPUT | windows.ENABLE_EXTENDED_FLAGS) &^
+		(windows.ENABLE_ECHO_INPUT | windows.ENABLE_PROCESSED_INPUT | windows.ENABLE_LINE_INPUT |
+			windows.ENABLE_QUICK_EDIT_MODE | windows.ENABLE_MOUSE_INPUT)
+	err := windows.SetConsoleMode(in, mode)
 	if err == nil {
 		err = windows.SetConsoleMode(out, oldOut|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING|windows.DISABLE_NEWLINE_AUTO_RETURN)
 	}
@@ -72,4 +70,25 @@ func writeTerminalControl(f *os.File, sequence string) {
 	}
 	defer windows.SetConsoleMode(h, old)
 	_, _ = f.WriteString(sequence)
+}
+
+// ReadConsole consumes VT text, but ConPTY multiplexers also consult the native
+// mouse flag. Keep that flag aligned with the remote application's requests.
+func syncTerminalMouse(state *terminalMouseState) error {
+	in := windows.Handle(os.Stdin.Fd())
+	var mode uint32
+	if err := windows.GetConsoleMode(in, &mode); err != nil {
+		return err
+	}
+	desired := mode &^ windows.ENABLE_MOUSE_INPUT
+	for _, enabled := range state.enabled[:5] {
+		if enabled {
+			desired |= windows.ENABLE_MOUSE_INPUT
+			break
+		}
+	}
+	if desired == mode {
+		return nil
+	}
+	return windows.SetConsoleMode(in, desired)
 }

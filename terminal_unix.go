@@ -30,3 +30,5 @@ func writeTerminalControl(f *os.File, sequence string) {
 	}
 	_, _ = f.WriteString(sequence)
 }
+
+func syncTerminalMouse(state *terminalMouseState) error { return nil }

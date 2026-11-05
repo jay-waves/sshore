@@ -123,7 +123,7 @@ sshore myserver --server /home/alice/.local/bin/sshore
 
 Run the Windows client in a modern console with VT support, such as Windows Terminal. The Windows binary is a client; session and file commands run inside the connected Linux shell.
 
-Input-mode cleanup temporarily enables VT output and restores the previous Console mode, including when approval runs before raw input is enabled. On Unix, cleanup is sent only to a TTY with `TERM` other than `dumb`. Detach and exit disable mouse reporting, focus reporting, and bracketed paste before restoring local input settings. During connection, remote terminal output is passed through unchanged.
+Input-mode cleanup temporarily enables VT output and restores the previous Console mode, including when approval runs before raw input is enabled. On Unix, cleanup is sent only to a TTY with `TERM` other than `dumb`. Detach and exit disable mouse reporting, focus reporting, and bracketed paste before restoring local input settings. During connection, remote terminal output is passed through unchanged. On Windows, native mouse capture starts disabled and follows remote mouse requests, so turning off Quick Edit does not accidentally enable mouse reports in a plain remote shell.
 
 ## Connect and manage sessions
 

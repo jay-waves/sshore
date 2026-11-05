@@ -334,6 +334,7 @@ func runClient(o options) (int, error) {
 	}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+	var outputMouse terminalMouseState
 	detaching := false
 	var detachTimeout <-chan time.Time
 	for {
@@ -417,6 +418,10 @@ func runClient(o options) (int, error) {
 					}
 					if err = writeFull(os.Stdout, e.m.Data); err != nil {
 						return 1, err
+					}
+					outputMouse.observe(e.m.Data)
+					if err = syncTerminalMouse(&outputMouse); err != nil {
+						return 1, fmt.Errorf("update terminal mouse mode: %w", err)
 					}
 				case "detach_requested":
 					if !detaching {
