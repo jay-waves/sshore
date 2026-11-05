@@ -78,3 +78,14 @@ own connection; configured jump hosts/proxies may have their own lifetimes.
 Use matching protocol-4 binaries on both ends. Exit old session daemons with
 the old client before upgrading; do not bypass host-key verification to fix a
 connection error.
+
+## User-run online installer
+
+Missing-server detection only prints a command; it never installs software.
+`install.sh` runs only when invoked by the user, without sudo or shell-profile
+changes. It restricts downloads/redirects to HTTPS, selects Linux amd64/arm64
+assets, checks SHA256SUMS, and replaces the binary atomically after verification.
+The script, releases and checksums share the GitHub repository trust boundary:
+a checksum detects corruption, not compromise of that repository/publisher.
+Piping the script to `sh` executes repository code; download and inspect it first
+if desired. Matching versions and old-daemon upgrade rules still apply.

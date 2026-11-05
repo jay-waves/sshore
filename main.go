@@ -16,7 +16,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.3.1"
+var version = "0.3.2"
 
 const help = `sshore — persistent shells and file transfer over one SSH connection
 
@@ -36,7 +36,7 @@ Inside a remote sshore shell:
 
 Options (before or after HOST):
   -s, --session NAME             Create or resume NAME (default: new Pokemon name)
-  --server PATH                  Remote executable (default: sshore)
+  --server PATH                  Remote executable (default: PATH, then ~/.local/bin/sshore)
   --download-dir DIRECTORY       Default download directory (approval still required)
   -q, --quiet                    Hide periodic transfer progress
   --no-escape                    Forward Ctrl-] instead of detaching locally

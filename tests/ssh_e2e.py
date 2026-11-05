@@ -147,6 +147,15 @@ LogLevel ERROR
                        "-i", str(key), "-F", "/dev/null", "-o", "IdentitiesOnly=yes",
                        "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known}",
                        "--server", str(wrapper)]
+            # Missing remote binaries produce advice without installing anything.
+            missing_command = command[:]
+            absent = root / "missing-server"
+            missing_command[missing_command.index("--server") + 1] = str(absent)
+            missing = subprocess.run(missing_command + ["list"], text=True, capture_output=True)
+            assert missing.returncode == 127, missing.stderr
+            assert "install.sh | sh -s -- --version" in missing.stderr, missing.stderr
+            assert "no installation has been performed" in missing.stderr
+            assert not absent.exists()
             base_command = command[:]
             auto_names = []
             for _ in range(2):

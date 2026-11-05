@@ -35,6 +35,35 @@ Each named session keeps its shell running independently of the SSH connection. 
 
 Prebuilt binaries do not require Go. After a successful CI run, download Linux or Windows packages for amd64 or arm64 from the [Actions artifacts](https://github.com/jay-waves/sshore/actions). Download archives and SHA-256 checksums from [Releases](https://github.com/jay-waves/sshore/releases). Starting with 0.3.0, releases use full version tags (for example `v0.3.0`); a published version is not moved to a later commit. Verify downloaded archives against `SHA256SUMS`. Older rolling releases remain available.
 
+On a Linux host (amd64 or arm64), run the installer yourself:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | sh
+
+# Install the exact version matching your local client.
+curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | sh -s -- --version 0.3.2
+
+# Optional custom installation directory.
+curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | sh -s -- --version 0.3.2 --bin-dir "$HOME/bin"
+```
+
+The script detects Linux/CPU architecture, downloads a published release over
+HTTPS, verifies its SHA256SUMS entry and installs atomically into `~/.local/bin`.
+It requires `curl`, `tar`, and `sha256sum` or `shasum`, does not use sudo or modify
+shell profiles, and preserves a recognized old binary as `sshore-X.Y.Z` if that
+backup does not already exist. It does not stop or upgrade running daemons.
+Windows clients use the ZIP packages; macOS and other server operating systems
+are not supported. To inspect the script first, download the same URL to a file
+and read it before running `sh install.sh`.
+
+A connection probes for the remote executable in the same SSH session. If it
+is missing, sshore prints an installation command pinned to the local client's
+version, then exits. **It never runs the installer automatically.** Log in using
+ordinary `ssh`, run the displayed command remotely, then reconnect with sshore.
+The default executable lookup checks PATH, then `~/.local/bin/sshore`. An explicit
+`--server PATH` is respected without fallback. Authentication failures or protocol
+mismatches are not treated as a missing installation.
+
 Building from source requires Go 1.25+. The local machine needs an OpenSSH client (`ssh` or `ssh.exe`), and the remote machine needs a working SSH server.
 
 ```sh
@@ -48,7 +77,7 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -o dist/sshore.
 
 Install the Linux binary on the remote PATH, for example as `~/.local/bin/sshore`, and install the appropriate binary locally. Use the same version on both ends; connections check the protocol version. No root access or additional listening network port is required.
 
-Version 0.3.1 uses protocol 4 for local approvals. Update both binaries together.
+Versions 0.3.1 and 0.3.2 use protocol 4 for local approvals. Update both binaries together.
 Exit existing protocol 3 session daemons using the old client before upgrading;
 running daemons cannot upgrade in place.
 
@@ -59,7 +88,7 @@ Version 0.2 uses a new multiplexing protocol that is incompatible with 0.1. Befo
 install -Dm755 dist/sshore "$HOME/.local/bin/sshore"
 ```
 
-A noninteractive SSH connection may not include `~/.local/bin` in PATH. Specify an absolute remote path if needed:
+The default lookup also checks `~/.local/bin/sshore` when noninteractive SSH omits that directory from PATH. For a custom installation, specify an absolute remote path:
 
 ```sh
 sshore myserver --server /home/alice/.local/bin/sshore
@@ -205,7 +234,7 @@ Common options:
 | Option | Purpose |
 | --- | --- |
 | `-s, --session NAME` | Create or resume this session; omitted: create a new Pokemon-named session |
-| `--server PATH` | Remote sshore executable; defaults to a PATH lookup |
+| `--server PATH` | Remote sshore executable; defaults to PATH, then `~/.local/bin/sshore` |
 | `--download-dir DIRECTORY` | Existing local directory used as the default during approval; never grants automatic acceptance |
 | `-q, --quiet` | Hide periodic progress while retaining prompts, completion messages, and errors |
 | `--no-escape` | Forward Ctrl-] to the remote application; use `sshore detach` to disconnect |

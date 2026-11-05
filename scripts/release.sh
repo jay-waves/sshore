@@ -67,6 +67,26 @@ now require one approval and execute sequentially, stopping on the first failure
 NOTES
 fi
 
+
+if [[ "$version" == "0.3.2" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Added a user-run Linux amd64/arm64 installer: architecture detection, pinned or latest releases, HTTPS downloads, SHA256 verification, atomic installation, and old-version backup.
+- Missing remote executables now print an installation command matching the local client. No automatic installation is performed.
+- Default remote lookup falls back to ~/.local/bin/sshore when it is absent from PATH; explicit --server paths remain authoritative.
+- Added installer, remote-probe, and real-SSH regression coverage, plus installation trust-boundary documentation.
+
+Install on Linux:
+```sh
+curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/v0.3.2/install.sh | sh -s -- --version 0.3.2
+```
+
+Protocol remains 4, compatible with 0.3.1 session daemons. When upgrading from
+0.3.0 or earlier, exit old sessions with the old client and update both ends.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   gh release upload "$tag" packages/*.tar.gz packages/*.zip packages/SHA256SUMS --clobber

@@ -56,7 +56,7 @@ func clientMux(c io.ReadWriteCloser) (*smux.Session, error) {
 	}
 	m, err := readMessage(c)
 	if err != nil {
-		return nil, fmt.Errorf("SSH handshake failed (install matching sshore on the remote PATH): %w", err)
+		return nil, fmt.Errorf("SSH session handshake failed: %w", err)
 	}
 	if m.Type != "mux_ready" || m.Version != protocolVersion {
 		return nil, fmt.Errorf("incompatible sshore server: %s %s", m.Type, m.Error)

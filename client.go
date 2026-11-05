@@ -84,14 +84,8 @@ func (t *clientTransfer) close() {
 	t.closeOnce.Do(func() { go func() { _ = t.stream.Close() }() })
 }
 func sshCommand(o options) *exec.Cmd {
-	mode := "bridge"
-	if len(o.approved) > 0 {
-		mode = "resume"
-	}
-	remote := shellQuote(o.server) + " " + mode + " " + shellQuote(o.session)
-	if o.list {
-		remote = shellQuote(o.server) + " sessions"
-	}
+	remote := remoteCommand(o)
+
 	exe := os.Getenv("SSHORE_SSH")
 	if exe == "" {
 		exe = "ssh"

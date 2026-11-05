@@ -46,6 +46,11 @@ jobs:
           ./dist/sshore --version
           ./dist/sshore --help
           ./dist/sshore help download
+      - name: Installer tests (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sh -n install.sh
+          python3 tests/install_test.py
       - name: Real SSH integration (Linux)
         if: runner.os == 'Linux'
         run: |
