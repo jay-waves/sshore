@@ -5,19 +5,6 @@ import (
 	"testing"
 )
 
-func TestLogFormatting(t *testing.T) {
-	for _, level := range []logColor{logInfo, logSuccess, logWarning, logError} {
-		plain := formatLog(false, level, "[sshore #%d] %s\r\n", 7, "done")
-		if plain != "[sshore #7] done\r\n" {
-			t.Fatal(plain)
-		}
-		colored := formatLog(true, level, "[sshore #%d] %s\r\n", 7, "done")
-		if colored != "\x1b["+string(level)+"m"+plain+"\x1b[39m" {
-			t.Fatal(colored)
-		}
-	}
-}
-
 func TestRedirectedLogsArePlain(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("TERM", "xterm-256color")

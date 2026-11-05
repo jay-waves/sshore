@@ -52,9 +52,36 @@ HTTPS, verifies its SHA256SUMS entry and installs atomically into `~/.local/bin`
 It requires `curl`, `tar`, and `sha256sum` or `shasum`, does not use sudo or modify
 shell profiles, and preserves a recognized old binary as `sshore-X.Y.Z` if that
 backup does not already exist. It does not stop or upgrade running daemons.
-Windows clients use the ZIP packages; macOS and other server operating systems
-are not supported. To inspect the script first, download the same URL to a file
+macOS and other server operating systems are not supported. To inspect the script first, download the same URL to a file
 and read it before running `sh install.sh`.
+
+On Windows (amd64 or arm64), use Windows PowerShell 5.1 or PowerShell 7:
+
+```powershell
+# Latest published Windows client. Does not change PATH.
+irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
+
+# Optional installation directory, including paths with spaces.
+$env:INSTALL_DIR = 'D:\Tools\sshore'
+irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
+
+# Download, inspect, then install a specific version.
+Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 -OutFile install.ps1
+.\install.ps1 -Version 0.3.4
+```
+
+The default directory is `%LOCALAPPDATA%\sshore\bin`; `INSTALL_DIR` overrides it.
+The script verifies SHA256SUMS and the executable version before replacing
+`sshore.exe`. It never modifies process/user/system PATH, PowerShell profiles, or
+execution policy. It prints the full executable path and optional PATH setup
+instructions. Windows ZIP packages remain available for manual installation.
+
+Choose a writable installation directory, close running copies of `sshore.exe`
+before upgrading, and back up any version you want to keep. The Windows installer
+does not maintain versioned backups or stop processes. Configure persistent PATH
+and any script execution policy yourself, and select a client version compatible
+with the remote server. Installer failures do not trigger elevation or environment
+repair.
 
 A connection probes for the remote executable in the same SSH session. If it
 is missing, sshore prints an installation command pinned to the local client's
@@ -258,7 +285,7 @@ Local messages use your terminal’s ANSI 16-color palette: cyan for information
 - Local approval and path selection happen before SSH starts. During approved transfers and `--stay`, remote terminal output is not displayed; normal server output is discarded during this phase. There is no screen replay when attachment resumes.
 - The Linux daemon does track standard 7-bit xterm mouse mode sequences (including changes while detached or muted), and restores the current mouse modes on attachment. This requires an updated daemon; existing session daemons keep running their original binary.
 - After restoring mouse state, reattachment requests a redraw with `SIGWINCH` to the PTY foreground process group, even when the size is unchanged. Approved attachment waits until output resumes before requesting the redraw; `--stay` does not request one. This is best effort: applications may ignore the signal or omit mode reinitialization.
-- Regression tests exercise tmux redraw and Zellij mouse/input recovery; Zellij 0.45.1 can leave unchanged cells unpainted on a same-size notification, so this is not a guarantee of full-screen restoration. Screen contents, focus/paste/extended-keyboard state, and terminal-specific passthrough wrappers are not emulated. Keep terminal capabilities compatible when reconnecting to an existing session.
+- Automated tests cover sshore mouse-state recovery and foreground redraw notification, not individual terminal or multiplexer rendering. Configure your terminal/multiplexer and use its redraw or detach/reattach controls when needed; Zellij 0.45.1 can leave unchanged cells unpainted on a same-size notification. Screen contents, focus/paste/extended-keyboard state, and terminal-specific passthrough wrappers are not emulated. Keep terminal capabilities compatible when reconnecting to an existing session.
 - SSH agent and X11 forwarding environments come from the connection that created the session and are not refreshed on reconnect. Forwarding is not guaranteed to remain usable after reconnecting.
 - Login scripts that print to stdout for noninteractive SSH connections interfere with the protocol handshake. Restrict such output to interactive shells.
 

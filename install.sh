@@ -12,7 +12,7 @@ Install a published Linux amd64/arm64 release, without sudo or shell profile edi
 Default: latest release into $HOME/.local/bin. Explicit --version is recommended
 when matching a local client. Requires curl, tar and sha256sum (or shasum).
 Existing versions are backed up as sshore-X.Y.Z before replacement.
-Windows clients: download the matching .zip from GitHub Releases.
+Windows clients: use install.ps1 or the matching release ZIP.
 HELP
 }
 
@@ -35,7 +35,7 @@ main() {
     if [ -n "$install_version" ]; then
         valid_version "$install_version" || fail 'version must be X.Y.Z (without v)'
     fi
-    [ "$(uname -s)" = Linux ] || fail 'only Linux servers/clients are supported by this script; Windows clients use release ZIPs'
+    [ "$(uname -s)" = Linux ] || fail 'only Linux servers/clients are supported by this script; Windows clients use install.ps1 or release ZIPs'
     case "$(uname -m)" in
         x86_64|amd64) install_arch=amd64 ;;
         aarch64|arm64) install_arch=arm64 ;;

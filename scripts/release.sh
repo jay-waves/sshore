@@ -104,6 +104,26 @@ best effort; terminal-specific passthrough and full screen replay are not emulat
 NOTES
 fi
 
+if [[ "$version" == "0.3.4" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Add a Windows PowerShell installer for amd64/arm64, with optional INSTALL_DIR and pinned or latest release selection.
+- Verify SHA256SUMS and the executable version before replacement. PATH, execution policy and PowerShell profiles remain unchanged; setup instructions are printed only.
+- Document user responsibility for installation permissions, closing running executables, backups, PATH configuration and compatible client/server versions.
+- Consolidate terminal recovery tests and remove emulator-specific CI dependencies, retaining protocol, approval, transfer integrity and terminal recovery coverage.
+- Add offline installer checks to Windows PowerShell 5.1 and PowerShell 7 CI.
+
+Install the latest Windows client:
+```powershell
+irm https://raw.githubusercontent.com/jay-waves/sshore/v0.3.4/install.ps1 | iex
+```
+
+Default directory: %LOCALAPPDATA%\sshore\bin. Set $env:INSTALL_DIR to override it.
+Protocol remains 4. Running remote session daemons are not upgraded or stopped.
+NOTES
+fi
+
 
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then

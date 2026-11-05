@@ -82,10 +82,14 @@ connection error.
 ## User-run online installer
 
 Missing-server detection only prints a command; it never installs software.
-`install.sh` runs only when invoked by the user, without sudo or shell-profile
-changes. It restricts downloads/redirects to HTTPS, selects Linux amd64/arm64
-assets, checks SHA256SUMS, and replaces the binary atomically after verification.
+`install.sh` (Linux) and `install.ps1` (Windows) run only when invoked by the
+user, without elevation or shell-profile changes. They restrict downloads and
+redirects to HTTPS, select amd64/arm64 release assets, check SHA256SUMS and the
+binary version, and stage replacement in the installation directory. The Windows
+installer does not modify PATH or execution policy, stop running executables, or
+maintain versioned backups. Users choose a trusted, writable installation
+directory and handle backups, permissions and environment configuration.
 The script, releases and checksums share the GitHub repository trust boundary:
 a checksum detects corruption, not compromise of that repository/publisher.
-Piping the script to `sh` executes repository code; download and inspect it first
+Piping a script to `sh` or PowerShell `iex` executes repository code; download and inspect it first
 if desired. Matching versions and old-daemon upgrade rules still apply.
