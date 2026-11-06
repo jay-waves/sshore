@@ -23,7 +23,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.4.4"
+var version = "0.4.5"
 
 const help = `sshore — persistent shells and file transfer over one SSH connection
 
@@ -43,10 +43,10 @@ Inside a remote sshore shell:
   sshore download FILE...        Download one or more remote files
 
 Options (before or after HOST):
-  -s, --session NAME             Create or resume NAME (default: main)
+  -s, --session NAME             Create or resume NAME (default: new Pokemon session)
   --server PATH                  Remote executable (default: PATH, then ~/.local/bin/sshore)
   --download-dir DIRECTORY       Default download directory (approval still required)
-  -q, --quiet                    Hide periodic transfer progress
+  -q, --quiet                    Hide session art and periodic transfer progress
   --no-escape                    Forward Ctrl-] instead of detaching locally
   -p PORT  -i KEY  -J JUMP  -F CONFIG  -l USER  -o OPTION
   -L SPEC  -R SPEC  -D ADDRESS   Pass forwarding options to OpenSSH
@@ -55,6 +55,8 @@ Options (before or after HOST):
   -h, --help                     Show help
   -V, --version                  Show version
 
+Omit -s to create a new Pokemon-named session; use -s NAME to reconnect.
+Detached sessions keep their names. If all names are busy, choose your own -s NAME.
 Ctrl-] detaches; Ctrl-C goes to the remote program. No screen replay.
 Upload, download and forward-add requests save a local approval and detach.
 Run sshore approve from your local shell to review, reconnect and execute.
@@ -216,7 +218,7 @@ func parseOptions(args []string) (options, error) {
 		return o, nil
 	}
 	if o.session == "" {
-		o.session = "main"
+		return o, nil
 	}
 	return o, validSession(o.session)
 }

@@ -1,7 +1,8 @@
 package main
 
 // Use ANSI palette indices rather than RGB values so Base16 and other terminal
-// themes supply the colors. Only local UI messages pass through this formatter;
+// themes supply status colors. Bundled mascot artwork uses its own RGB palette
+// after the same terminal capability check. Only local UI uses this formatter;
 // PTY bytes and protocol streams must never be decorated. Reset foreground color
 // immediately, including after prompts, so typed paths do not inherit it.
 // Respect NO_COLOR, redirected output and TERM=dumb. Progress/status use stderr;

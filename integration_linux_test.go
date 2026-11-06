@@ -144,6 +144,9 @@ func (b *bridgeConn) close() {
 func (e *testEnv) bridge(name string) *bridgeConn {
 	e.t.Helper()
 	cmd := exec.Command(e.bin, "bridge", name)
+	if name == "" {
+		cmd = exec.Command(e.bin, "bootstrap", e.bin, "bridge", "")
+	}
 	cmd.Env = e.env
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -156,6 +159,11 @@ func (e *testEnv) bridge(name string) *bridgeConn {
 	cmd.Stderr = os.Stderr
 	if err = cmd.Start(); err != nil {
 		e.t.Fatal(err)
+	}
+	if name == "" {
+		if m := recv(e.t, out); m.Type != "setup_ready" {
+			e.t.Fatalf("automatic setup: %+v", m)
+		}
 	}
 	mux, err := clientMux(&pipeTransport{Reader: out, Writer: in, closers: []io.Closer{in, out}})
 	if err != nil {
@@ -606,5 +614,32 @@ func TestInterruptedUploadHelperRemovesPartialFile(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 0 {
 		t.Fatal("interrupted helper left a partial file", entries, err)
+	}
+}
+
+// Automatic connections exercise bootstrap too: an empty name must survive its
+// validation, and named reconnect must retain the original shell.
+func TestAutomaticSessionsAndNamedResume(t *testing.T) {
+	e := newEnv(t)
+	first, pid := e.attach("")
+	second, otherPID := e.attach("")
+	if pid == otherPID {
+		t.Fatal("automatic connections reused one shell")
+	}
+	sendTest(t, first.in, message{Type: "detach"})
+	untilType(t, first.out, "detached")
+	first.close()
+	third, thirdPID := e.attach("")
+	if thirdPID == pid || thirdPID == otherPID {
+		t.Fatal("automatic connection reused an occupied name")
+	}
+	resumed, resumedPID := e.attach("pikachu")
+	if resumedPID != pid {
+		t.Fatal("named reconnect did not resume the first automatic session")
+	}
+	for _, b := range []*bridgeConn{resumed, second, third} {
+		sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
+		untilType(t, b.tty, "exit")
+		b.close()
 	}
 }

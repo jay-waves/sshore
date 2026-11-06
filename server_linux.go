@@ -5,8 +5,9 @@ package main
 // Each named session has one daemon and PTY; there is no global daemon or extra
 // listening network port. The bridge connects SSH stdin/stdout to a Unix socket,
 // starting the daemon as needed. Only one client can attach. Names are 1-48 ASCII
-// letters, digits, underscores or hyphens and begin with a letter or digit; main
-// is the fixed default. The daemon drains/discards detached or muted output, so
+// letters, digits, underscores or hyphens and begin with a letter or digit.
+// Omitted names allocate a fresh mascot session; explicit names create or resume.
+// The daemon drains/discards detached or muted output, so
 // an unread terminal cannot block remote programs. No screen or scrollback is
 // stored. Shell exit ends the session; system cleanup/reboot can also end it.
 //
@@ -98,19 +99,28 @@ func openLock(path string, nonblocking bool) (*os.File, error) {
 	return f, nil
 }
 
-// Hold the per-name startup lock until the daemon listens, so concurrent
-// connections reuse the same session instead of starting competing daemons.
-func reserveSession(name string) (*os.File, net.Conn, error) {
-	path, err := socketPath(name)
-	if err != nil {
-		return nil, nil, err
+// Automatic and explicit selection share a startup lock until the daemon listens.
+// Live sessions, including detached ones, keep their names. The account setup
+// gate also serializes allocation against setup and other bridge starts.
+func reserveSession(names []string, fresh bool) (string, *os.File, net.Conn, error) {
+	for _, name := range names {
+		path, err := socketPath(name)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		startup, err := openLock(path+".start", false)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		conn, err := net.Dial("unix", path)
+		if fresh && err == nil {
+			conn.Close()
+			startup.Close()
+			continue
+		}
+		return name, startup, conn, nil
 	}
-	startup, err := openLock(path+".start", false)
-	if err != nil {
-		return nil, nil, err
-	}
-	conn, _ := net.Dial("unix", path)
-	return startup, conn, nil
+	return "", nil, nil, fmt.Errorf("all automatic session names are in use; exit an existing session or choose a name with --session")
 }
 
 func bridge(name string, existing bool) error {
@@ -136,10 +146,15 @@ func bridge(name string, existing bool) error {
 
 func bridgePrepared(name string, existing bool, executable string, gate *os.File) error {
 	defer gate.Close()
-	if name == "" {
-		name = "main"
+	if existing && name == "" {
+		return fmt.Errorf("approved session requires an explicit name")
 	}
-	startup, conn, err := reserveSession(name)
+	names := []string{name}
+	fresh := name == ""
+	if fresh {
+		names = automaticSessionNames()
+	}
+	name, startup, conn, err := reserveSession(names, fresh)
 	if err != nil {
 		return err
 	}

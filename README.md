@@ -9,23 +9,27 @@ Disconnect from SSH without stopping your remote shell. Reconnect to pick up whe
 ## Quick start
 
 ```sh
-sshore myserver                 # Connect; create or resume main.
+sshore myserver                 # New session with an automatic Pokemon name.
 # Press Ctrl-] to detach and keep programs running.
-sshore myserver                 # Reconnect to the same shell.
+sshore myserver -s pikachu      # Resume the name printed when connecting.
 sshore myserver -s build         # Use a separate named session.
 sshore myserver list             # List sessions and foreground programs.
 ```
 
-Uses your normal SSH aliases, keys and authentication. Inside the remote shell, `sshore detach` also detaches; `exit` ends the session. Only one client can attach to a session at a time.
+Uses your normal SSH aliases, keys and authentication. Inside the remote shell, `sshore detach` also detaches; `exit` ends the session. Multiple connections to a host use separate sessions; only one client can attach to each session at a time. Without `-s`, every connection creates a new session, including after a disconnect. Use the printed name to reconnect.
+
+Automatic names come from 24 familiar Pokemon, starting with `pikachu`, `eevee`, `bulbasaur`, `charmander`, `squirtle`, `snorlax`, `psyduck` and `gengar`. Each has a bundled color Unicode sprite on connection in a color-capable terminal. `-q` or `NO_COLOR=1` hides the sprite; monochrome and redirected output show only connection text. Detached sessions keep their names. If all 24 are in use, choose any custom name with `-s NAME`.
 
 ```mermaid
 flowchart LR
     local["Local: sshore HOST"] --> ssh["System SSH"]
     ssh --> setup["Remote version check / setup"]
-    setup --> session["Persistent Linux session"]
+    setup --> select["No -s: new Pokemon name / -s NAME: create or resume"]
+    select --> session["Persistent Linux session"]
     setup --> recovery["Temporary recovery shell"]
     session --> detach["Detach: programs keep running"]
-    detach --> local
+    detach --> resume["Reconnect: sshore HOST -s NAME"]
+    resume --> ssh
     session --> request["Request files or a port; detach"]
     request --> approve["Local: sshore approve"]
     approve -->|"Review, approve, reconnect"| ssh
@@ -51,7 +55,7 @@ irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 
 Installs into `%LOCALAPPDATA%\sshore\bin`; set `$env:INSTALL_DIR` to choose another directory. Close running copies before upgrading.
 
-Installers verify checksums and do not change PATH or request elevation. Use the printed executable path or add its directory to PATH yourself. You can download and inspect either script before running it. For a pinned version, use `sh install.sh --version 0.4.4` or `.\install.ps1 -Version 0.4.4`.
+Installers verify checksums and do not change PATH or request elevation. Use the printed executable path or add its directory to PATH yourself. You can download and inspect either script before running it. For a pinned version, use `sh install.sh --version 0.4.5` or `.\install.ps1 -Version 0.4.5`.
 
 The remote program is installed automatically if missing. Existing programs and sessions require confirmation before updating; see below.
 
@@ -68,11 +72,11 @@ Put recurring connection settings in `~/.ssh/config`. Run `sshore --help` for al
 
 | Option | Use |
 | --- | --- |
-| `-s NAME` | Create or resume a named session; default: `main` |
+| `-s NAME` | Create or resume a named session; omit for a new automatic name |
 | `--server PATH` | Remote executable; default: PATH, then `~/.local/bin/sshore` |
 | `--download-dir DIR` | Default local save directory; approval still required |
 | `--no-escape` | Send Ctrl-] to the remote program |
-| `-q` | Hide periodic transfer progress |
+| `-q` | Hide session art and periodic transfer progress |
 | `-V` / `-h` | Version / help |
 
 ## Transfer files
@@ -137,7 +141,7 @@ Unknown versions require manual recovery. Pending approved operations are skippe
 
 | Symptom | Try |
 | --- | --- |
-| Session already attached | Detach its current client first. |
+| Session already attached | Use a different `-s NAME` or omit `-s` for a new session; detach the current client to resume that same session. |
 | Screen looks stale after reconnecting | Press Ctrl-L or use the application's redraw command. |
 | Missing output while disconnected | Expected: screens, scrollback and detached output are not saved. |
 | Session disappeared | Shell exit, reboot or system session-cleanup policies can end it. |
@@ -154,6 +158,6 @@ Read [SECURITY.md](SECURITY.md) for approval boundaries, update safeguards and r
 
 Build from source with Go 1.25+: `go build -o dist/sshore .`. Source builds need matching binaries on both ends. CI builds Linux/Windows amd64 and publishes main; full tests run manually via [Actions → Tests → Run workflow](https://github.com/jay-waves/sshore/actions/workflows/tests.yml).
 
-Inspired by [dtach](https://github.com/crigler/dtach), the original `dssh.nu` prototype and [trzsz](https://github.com/trzsz/trzsz). Uses [OpenSSH](https://www.openssh.com/), [smux](https://github.com/xtaci/smux) and [creack/pty](https://github.com/creack/pty). sshore does not interoperate with SFTP or trzsz.
+Inspired by [dtach](https://github.com/crigler/dtach), the original `dssh.nu` prototype and [trzsz](https://github.com/trzsz/trzsz). Terminal Pokemon artwork comes from [pokemon-colorscripts](https://gitlab.com/phoneybadger/pokemon-colorscripts) by Phoney badger, vendored from the [Findarato mirror](https://github.com/Findarato/pokemon-colorscripts); see [third-party notices](THIRD_PARTY_NOTICES.txt). Uses [OpenSSH](https://www.openssh.com/), [smux](https://github.com/xtaci/smux) and [creack/pty](https://github.com/creack/pty). sshore does not interoperate with SFTP or trzsz.
 
 [MIT license](LICENSE). Dependencies retain their own licenses; versions are in [go.mod](go.mod).

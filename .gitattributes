@@ -1,2 +1,4 @@
 * text=auto eol=lf
 *.exe binary
+# Preserve the upstream terminal-art cells, including trailing blank columns.
+assets/pokemon-colorscripts/colorscripts/*.txt -text whitespace=-blank-at-eol

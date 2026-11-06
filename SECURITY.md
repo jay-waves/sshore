@@ -25,12 +25,15 @@ flowchart LR
     record -->|"Consume once"| approve
     approve -->|"New SSH connection"| gate
     setup <-->|"Exact version / setup choice"| gate
+    setup -->|"Setup lock, reserve unused name or explicit session"| program
     gate -->|"Unchanged setup and matching shell PID"| resources
     resources <-->|"Only approved operations"| service
     gate -->|"Updated setup or recovery: skip operations"| user
 ```
 
 Remote terminal output is untrusted. It can imitate local messages, but cannot itself grant approval. Sensitive prompts run after the connected client exits, from a **separate local invocation**. Do not invoke approval or enter credentials merely because remote output asks you to.
+
+Automatic names reserve a fresh session, including when other sessions are detached. Explicit names may resume a session, but never evict its attached client. Artwork is bundled local text selected from a fixed roster; its terminal controls are limited to foreground colors and resets, checked by tests. It grants no trust or approval.
 
 ## Local approval
 

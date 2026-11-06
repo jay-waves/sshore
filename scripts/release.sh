@@ -210,6 +210,23 @@ Changes:
 NOTES
 fi
 
+if [[ "$version" == "0.4.5" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Restore automatic Pokemon session names: each connection without -s creates a new session, allowing multiple independent connections to one host.
+- Reserve names for attached and detached sessions; use -s NAME to resume, or choose a custom name when the 24 automatic names are occupied.
+- Show bundled color sprites for 24 familiar Pokemon, with credits and license notices for pokemon-colorscripts included in release packages.
+- Hide sprites with -q or NO_COLOR, or on non-color terminals; preserve recovery-shell restrictions and explicit session approval checks.
+
+Reconnect to existing work with the session name printed on connection:
+`sshore HOST -s NAME`. A bare `sshore HOST` now creates a new session.
+
+Client and remote versions must match exactly. Updating existing older sessions
+ends their tasks only after you review the list and type update.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   gh release upload "$tag" packages/*.tar.gz packages/*.zip packages/SHA256SUMS --clobber

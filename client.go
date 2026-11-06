@@ -105,6 +105,20 @@ func sshCommand(o options) *exec.Cmd {
 	args = append(args, "-T", "-o", "RequestTTY=no", "--", o.host, remote)
 	return exec.Command(exe, args...)
 }
+
+// Recovery has no persistent session name. Only automatic managed connections
+// learn their name from the daemon, before saving any approval metadata.
+func acceptSessionName(o *options, name string) error {
+	if o.plain || o.session != "" {
+		return nil
+	}
+	if err := validSession(name); err != nil {
+		return fmt.Errorf("server returned an invalid session name: %w", err)
+	}
+	o.session = name
+	return nil
+}
+
 func runClient(o options) (int, error) {
 	cmd := sshCommand(o)
 	cmd.Stderr = os.Stderr
@@ -174,11 +188,8 @@ func runClient(o options) (int, error) {
 	if m.Type != "ready" {
 		return 1, fmt.Errorf("unexpected attach handshake")
 	}
-	if o.session == "" {
-		if err := validSession(m.Name); err != nil {
-			return 1, fmt.Errorf("server returned an invalid session name: %w", err)
-		}
-		o.session = m.Name
+	if err := acceptSessionName(&o, m.Name); err != nil {
+		return 1, err
 	}
 	if len(o.approved) > 0 && m.PID != o.resumePID {
 		return 1, fmt.Errorf("remote session changed; request again")
@@ -246,6 +257,9 @@ func runClient(o options) (int, error) {
 	if o.plain {
 		logf(os.Stderr, logWarning, "[sshore] Recovery shell on %s (no sshore features).\r\nExit and reconnect to resume normal use.\r\n", cleanText(o.host))
 	} else {
+		if art := sessionArt(o.session); art != "" && !o.quiet && terminalLogColor(os.Stderr) {
+			fmt.Fprint(os.Stderr, strings.ReplaceAll(art, "\n", "\r\n"))
+		}
 		logf(os.Stderr, logSuccess, "[sshore] Connected %s / %s (PID %d)\r\n", cleanText(o.host), o.session, pid)
 		logf(os.Stderr, logInfo, "[sshore] Reconnect with --session %s\r\n", o.session)
 	}

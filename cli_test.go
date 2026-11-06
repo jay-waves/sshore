@@ -49,7 +49,7 @@ func TestDownloadDirectoryValidation(t *testing.T) {
 
 func TestDefaultSessions(t *testing.T) {
 	automatic, err := parseOptions([]string{"host"})
-	if err != nil || automatic.session != "main" {
+	if err != nil || automatic.session != "" {
 		t.Fatalf("automatic: %+v %v", automatic, err)
 	}
 	named, err := parseOptions([]string{"host", "-s", "eevee"})

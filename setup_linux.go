@@ -123,7 +123,7 @@ func bootstrap(target, mode, name string) (result error) {
 	if mode != "bridge" && mode != "resume" && mode != "sessions" {
 		return fmt.Errorf("invalid setup mode")
 	}
-	if mode != "sessions" {
+	if mode == "resume" || mode == "bridge" && name != "" {
 		if err := validSession(name); err != nil {
 			return err
 		}
