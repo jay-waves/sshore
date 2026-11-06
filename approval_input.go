@@ -32,12 +32,19 @@ func newApprovalInput() (*approvalInput, error) {
 
 func (p *approvalInput) Read(prompt string, paths bool) (string, error) {
 	p.paths = paths
-	p.editor.SetPrompt(formatLog(terminalLogColor(os.Stdout), logInfo, "%s", prompt))
+	p.editor.SetPrompt(formatApprovalPrompt(terminalLogColor(os.Stdout), prompt))
 	line, err := p.editor.Readline()
 	if err != nil {
 		return "", fmt.Errorf("approval cancelled; request remains pending: %w", err)
 	}
 	return strings.TrimSpace(line), nil
+}
+
+func formatApprovalPrompt(color bool, prompt string) string {
+	// readline's Windows ANSIWriter indexes an eight-color table with SGR 39
+	// (our foreground reset), causing a panic. Keep editor prompts plain on
+	// Windows; ordinary log output does not pass through that writer.
+	return formatLog(color && runtime.GOOS != "windows", logInfo, "%s", prompt)
 }
 
 func (p *approvalInput) Close() error {

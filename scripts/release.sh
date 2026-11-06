@@ -177,6 +177,15 @@ Checksums verify downloaded bytes, not a compromised release publisher.
 NOTES
 fi
 
+if [[ "$version" == "0.4.2" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Fix a Windows panic when displaying setup confirmation and local approval prompts by keeping readline prompts uncolored.
+- Preserve explicit update confirmation and exact client/server version matching.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   gh release upload "$tag" packages/*.tar.gz packages/*.zip packages/SHA256SUMS --clobber
