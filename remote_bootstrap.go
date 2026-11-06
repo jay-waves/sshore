@@ -1,5 +1,15 @@
 package main
 
+// Bootstrap runs in the original authenticated SSH connection. Resolve the
+// configured server through PATH, then ~/.local/bin/sshore for the default name;
+// explicit server paths are respected. Matching versions execute directly without
+// querying GitHub. A mismatched program is never overwritten during bootstrap:
+// prepare a checksum/version-verified temporary coordinator using install.sh.
+// Its directory is staging, not a PATH installation. Suppress successful installer
+// output but retain failure diagnostics. The coordinator negotiates confirmation
+// or recovery before replacing the target. Preparation needs remote HTTPS access
+// and a matching published asset; custom builds may need manual installation.
+
 import "strings"
 
 const installerURL = "https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh"

@@ -1,5 +1,9 @@
 #!/bin/sh
-# User-invoked installer for the Linux server/client. Never run by sshore itself.
+# Linux amd64 installer, used directly or by bootstrap for temporary staging.
+# Downloads HTTPS assets, verifies SHA256SUMS and version, then atomically installs.
+# Requires curl, tar and sha256sum/shasum. Default: ~/.local/bin; --bin-dir overrides.
+# No sudo, shell-profile edits or daemon termination. Preserve a recognized old
+# binary as sshore-X.Y.Z when that backup does not already exist.
 # Usage: curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | sh -s -- [--version 0.3.2] [--bin-dir DIR]
 set -eu
 

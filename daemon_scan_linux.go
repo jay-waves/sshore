@@ -1,8 +1,14 @@
 package main
 
-// A detached daemon is expected, not a leak. Inspect only this user's session
-// daemons, and require a responding socket owned by that PID before calling one
-// healthy. Failed probes are suspects, never grounds for automatic cleanup.
+// A detached daemon is expected, not a leak. Inspect only this user's visible
+// session daemons across runtime directories. A healthy daemon requires a
+// responding socket owned by its PID. Reports distinguish attached, detached,
+// starting, suspect and unverified processes; an unreachable socket or mismatched
+// owner is a suspect, never grounds for automatic cleanup. Socket probes share a
+// 500 ms budget. This is a best-effort /proc snapshot: permissions and concurrent
+// startup/exit affect visibility. Diagnostics never terminate processes; confirmed
+// setup cleanup is implemented separately in setup_linux.go.
+
 import (
 	"debug/buildinfo"
 	"fmt"

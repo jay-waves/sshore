@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
-	"strings"
 	"testing"
 )
 
@@ -15,11 +13,7 @@ func TestFormatApprovalPrompt(t *testing.T) {
 		t.Fatalf("uncolored prompt = %q", got)
 	}
 	got := formatApprovalPrompt(true, prompt)
-	if runtime.GOOS == "windows" {
-		if got != prompt || strings.Contains(got, "\x1b") {
-			t.Fatalf("Windows readline must receive a plain prompt: %q", got)
-		}
-	} else if want := formatLog(true, logInfo, "%s", prompt); got != want {
+	if want := formatLog(true, logInfo, "%s", prompt); got != want {
 		t.Fatalf("colored prompt = %q, want %q", got, want)
 	}
 }

@@ -1,5 +1,10 @@
 package main
 
+// Track standard 7-bit xterm mouse sequences even while output is detached or
+// muted; reattachment restores only those modes. This is not a terminal emulator:
+// screens, scrollback, focus/paste/keyboard state and terminal-specific passthrough
+// wrappers are not reconstructed. Existing daemons keep their original behavior.
+
 import (
 	"strconv"
 	"strings"

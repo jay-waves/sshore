@@ -3,14 +3,21 @@
 package main
 
 // Each named session has one daemon and PTY; there is no global daemon or extra
-// listening network port. bridge connects SSH stdin/stdout to the Unix socket,
-// starting the daemon as needed. The daemon drains and discards detached PTY
-// output so an unread terminal cannot block remote programs.
+// listening network port. The bridge connects SSH stdin/stdout to a Unix socket,
+// starting the daemon as needed. Only one client can attach. Names are 1-48 ASCII
+// letters, digits, underscores or hyphens and begin with a letter or digit; main
+// is the fixed default. The daemon drains/discards detached or muted output, so
+// an unread terminal cannot block remote programs. No screen or scrollback is
+// stored. Shell exit ends the session; system cleanup/reboot can also end it.
 //
-// Runtime files: .sock is the communication endpoint; .lock and .start coordinate
-// lifetime and startup; .log records background errors. Locks and logs can outlive
-// a session. Listing queries sockets rather than treating leftover files as live
-// sessions. The shell receives SSHORE_SOCKET for remote helper commands.
+// Runtime selection: SSHORE_RUNTIME_DIR overrides XDG_RUNTIME_DIR/sshore, with
+// /tmp/sshore-UID as fallback. The directory must be current-user-owned and 0700;
+// custom paths must be absolute with an existing parent and short enough for Unix
+// socket limits. .sock is the endpoint; .lock/.start coordinate lifetime/startup;
+// .log records background errors. Locks/logs may outlive the session. Listing
+// queries sockets rather than treating leftover files as live sessions. The shell
+// receives SSHORE_SOCKET for remote helpers. Test lifecycle binaries must use
+// -tags=sshoretest for runtime isolation; release binaries must not use that tag.
 
 import (
 	"context"

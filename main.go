@@ -5,6 +5,13 @@ package main
 // and regular-file transfer without a configuration framework or database.
 // bridge, daemon, and sessions are internal commands invoked by the SSH/client
 // path, not services that users need to start manually.
+// SSH flags are explicitly allowlisted below; value flags accept attached or
+// separate values and forwarding flags may repeat. -q belongs to sshore progress,
+// -E to OpenSSH diagnostics, and -C is optional compression (which may add overhead
+// on fast links or compressed data). Invalid arguments exit 2; normal remote
+// shell exit preserves its code. Build with Go 1.25+; supported release targets
+// are Linux/Windows amd64 only. Cross-build the Windows client with
+// CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o dist/sshore.exe .
 
 import (
 	"errors"
@@ -16,7 +23,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.4.3"
+var version = "0.4.4"
 
 const help = `sshore — persistent shells and file transfer over one SSH connection
 

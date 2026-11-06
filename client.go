@@ -1,9 +1,14 @@
 package main
 
 // The client launches system OpenSSH and adapts its pipes to the multiplexed
-// transport. Remote requests can only save a pending approval and detach.
-// Sensitive file operations execute before terminal interaction, after approval. SSH forwarding environments belong to the connection that created the
-// remote shell and are not refreshed when a later client attaches.
+// transport. Remote requests only save approval metadata and detach; separately
+// approved file operations finish before terminal interaction resumes. During
+// approval execution and --stay, normal remote output is discarded, not replayed.
+// Each connection disables ControlMaster/ControlPath/ControlPersist sharing so it
+// owns its transport lifetime. Other local SSH configuration remains effective.
+// SSH agent/X11 environments belong to the connection that created the remote
+// shell and are not refreshed on reattachment. Noninteractive login-script stdout
+// can corrupt the protocol handshake; diagnostics belong on stderr.
 
 import (
 	"bytes"

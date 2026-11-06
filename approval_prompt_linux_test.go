@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -13,7 +14,7 @@ import (
 )
 
 func TestApprovalPrompt(t *testing.T) {
-	for _, scenario := range []string{"upload", "cancel", "download"} {
+	for _, scenario := range []string{"upload", "cancel", "download", "menu", "many"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Setenv("SSHORE_SOCKET", "")
 			t.Setenv("SSH_CONNECTION", "")
@@ -22,6 +23,18 @@ func TestApprovalPrompt(t *testing.T) {
 			source := filepath.Join(root, "tank 中文 with spaces.tar.gz")
 			if err := os.WriteFile(source, []byte("test"), 0600); err != nil {
 				t.Fatal(err)
+			}
+			count := 0
+			if scenario == "menu" {
+				count = 2
+			}
+			if scenario == "many" {
+				count = 100
+			}
+			for i := 0; i < count; i++ {
+				if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("tank extra%03d.txt", i)), []byte("test"), 0600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			// Reaching this local stub proves approval proceeded, without a network call.
 			stub := filepath.Join(root, "ssh-stub")
@@ -93,12 +106,27 @@ exit 1
 					io.WriteString(terminal, "\x03")
 					await("approval cancelled")
 				} else {
-					io.WriteString(terminal, filepath.Join(root, "tank")+"\t")
-					await("tank 中文 with spaces.tar.gz")
+					if scenario == "menu" {
+						io.WriteString(terminal, filepath.Join(root, "tank ")+"\t")
+						await("Tab: cycle | Enter: select")
+						// Select a candidate and accept it; the next Enter submits.
+						io.WriteString(terminal, "\t\t\t\r")
+					} else if scenario == "many" {
+						io.WriteString(terminal, filepath.Join(root, "tank ")+"\t")
+						await("101 matches; type more")
+						io.WriteString(terminal, "\t\t\t中文\t")
+						await("tank 中文 with spaces.tar.gz")
+					} else {
+						io.WriteString(terminal, filepath.Join(root, "tank")+"\t")
+						await("tank 中文 with spaces.tar.gz")
+					}
 					io.WriteString(terminal, "\r")
 					await("SSH-STARTED")
 					io.WriteString(terminal, "ready\r")
 					await("HANDOFF-ready")
+					if scenario == "many" && strings.Count(output.String(), "101 matches;") != 1 {
+						t.Fatal("repeated completion hint", output.String())
+					}
 					if strings.Contains(output.String(), "Type yes:") {
 						t.Fatal("upload asked for redundant confirmation")
 					}
@@ -107,7 +135,7 @@ exit 1
 			_ = cmd.Wait()
 			dir, _ := approvalDir()
 			_, err = os.Stat(filepath.Join(dir, id+".json"))
-			if scenario == "upload" {
+			if scenario == "upload" || scenario == "menu" || scenario == "many" {
 				if !os.IsNotExist(err) {
 					t.Fatal("approved request not consumed", err)
 				}

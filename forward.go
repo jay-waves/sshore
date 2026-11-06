@@ -1,7 +1,17 @@
 package main
 
-// Forwarding belongs to one attachment. Control requests use short-lived
-// streams; each accepted TCP connection gets its own binary data stream.
+// Dynamic forwarding belongs to one attachment. Control requests use short-lived
+// smux streams; each accepted TCP connection gets its own binary stream. Requests
+// select the same local/remote IPv4 loopback TCP port. An occupied local port fails
+// without substitution; opening a listener does not prove the remote service is
+// running. A remote dial failure closes that connection, not the listener.
+// At most 32 TCP connections run concurrently; excess connections close. Forward
+// streams do not use file-transfer slots, but share SSH bandwidth. Detach, shell
+// exit, disconnection and --stop close listeners and existing connections. A new
+// remote approval request detaches and therefore closes the previous rule.
+// Native OpenSSH -L/-R/-D rules are separate and cannot be listed or stopped here;
+// they share the same local port namespace and obey OpenSSH forwarding policy.
+
 import (
 	"context"
 	"encoding/binary"

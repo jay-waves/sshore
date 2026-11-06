@@ -4,6 +4,9 @@ package main
 // themes supply the colors. Only local UI messages pass through this formatter;
 // PTY bytes and protocol streams must never be decorated. Reset foreground color
 // immediately, including after prompts, so typed paths do not inherit it.
+// Respect NO_COLOR, redirected output and TERM=dumb. Progress/status use stderr;
+// listings remain plain stdout. Sanitize control characters in displayed paths
+// and errors while preserving readable UTF-8; never filter the remote PTY stream.
 import (
 	"fmt"
 	"os"

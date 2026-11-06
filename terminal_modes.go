@@ -1,5 +1,10 @@
 package main
 
+// At connection boundaries, clear mouse/focus reporting and bracketed paste
+// before restoring local input settings. Unix sends cleanup only to a TTY whose
+// TERM is not dumb; Windows temporarily enables VT and restores console flags.
+// During connection, remote PTY bytes pass through unchanged.
+
 import "os"
 
 // Mouse reporting belongs to the terminal emulator, not termios/console raw

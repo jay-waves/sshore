@@ -1,5 +1,20 @@
 package main
 
+// Managed setup uses one lock per remote account, independent of runtime paths.
+// Inspect the installed program and visible same-user session daemons; exclude
+// preparation helpers and transport processes. Require an exact full release,
+// reject newer versions without downgrading, and restrict unknown versions to
+// manual recovery. Missing software can install without confirmation only when
+// there are no incompatible sessions. Existing older state requires typed update.
+// After confirmation, reacquire the account lock, compare the process snapshot,
+// and prepare/verify a replacement on the target filesystem before stopping tasks.
+// Changed state requires a fresh prompt. Process identity checks and signaling
+// live in setup_process_linux.go. Replacement is not an in-place daemon upgrade.
+// Recovery keeps the authenticated transport but uses a transient PTY, removes
+// helper socket inheritance and sets SSHORE_DISABLED. Approved operations are
+// skipped after an update or in recovery; reconnect to restore managed features.
+// This product restriction is not a sandbox for arbitrary remote executables.
+
 import (
 	"context"
 	"errors"

@@ -1,12 +1,12 @@
 package main
 
-// Logical control, terminal, and file streams are application-level smux v2
-// streams over one SSH connection, not native OpenSSH channels. The version
-// handshake requires compatible releases on both ends before starting smux.
-// Running older daemons cannot upgrade in place.
-// Each stream has a 256 KiB receive window, with a bounded shared receive budget
-// and 16 KiB maximum frame size. These limits isolate stalled streams but do not
-// guarantee real-time terminal priority: TCP head-of-line blocking still applies.
+// Logical control, terminal, file and forwarding streams are application-level
+// smux v2 streams over one SSH connection, not native OpenSSH channels. The
+// handshake requires the exact full sshore release, including PATCH; there is no
+// separate sshore protocol compatibility counter. Running daemons cannot upgrade
+// in place. Each stream has a 256 KiB receive window, a bounded shared receive
+// budget and a 16 KiB maximum frame size. These isolate stalled streams without
+// guaranteeing real-time terminal priority: TCP head-of-line blocking still applies.
 
 import (
 	"fmt"

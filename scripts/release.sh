@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Publish a full semantic version after both main-branch release builds pass.
+# CI builds only Linux/Windows amd64 without sshoretest. Full validation lives in
+# the separate workflow_dispatch Tests workflow and never gates release builds.
 # Existing version tags never move. A retry at the same commit can finish asset
 # uploads; later main commits with an unchanged VERSION do not replace a release.
 set -euo pipefail
@@ -194,6 +196,17 @@ Changes:
 - Simplify setup prompts, hide temporary installer output on success, and clearly report affected sessions and completed updates.
 - Explain when remote state changes require fresh confirmation; retain explicit update approval and exact version matching.
 - Move full validation to the manually triggered Tests workflow so release builds no longer wait for tests.
+NOTES
+fi
+
+if [[ "$version" == "0.4.4" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Bound local path completion lists to the terminal size; large lists ask for more input instead of flooding the screen.
+- Cycle small lists with Tab and accept selections with Enter before submitting; color directories using the terminal palette.
+- Use native Windows VT output for colored prompts and completion, with uncolored fallback and console-mode restoration.
+- Simplify the README, refresh architecture and security diagrams, move implementation notes into source headers, and document these conventions in AGENTS.md.
 NOTES
 fi
 

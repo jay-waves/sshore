@@ -1,5 +1,11 @@
 package main
 
+// Approved files execute sequentially; the first failure stops the batch without
+// rolling back completed files. Ctrl-C cancels local file operations but leaves
+// the remote shell alive. Normal terminal output is muted until --attach resumes
+// it. --stay returns after file operations, but an approved port keeps a foreground
+// transport running until cancellation. There is no background tunnel service.
+
 import (
 	"bytes"
 	"context"

@@ -1,6 +1,16 @@
 package main
 
+// One readline editor owns stdin during setup or local approval and closes before
+// SSH takes over. Input history is disabled. Paths are treated as a single string,
+// including spaces, Unicode, optional surrounding quotes and home expansion;
+// there is no shell command substitution or wildcard expansion. Completion occurs
+// at the end or before a closing quote to preserve the suffix. Bounded menu display
+// and selection are in approval_completion.go; color never enters candidate paths.
+// Windows hooks use checked console APIs and native VT when available, restoring
+// console state on close. Legacy ANSI translation receives only uncolored text.
+
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,8 +23,11 @@ import (
 
 // One editor owns stdin throughout approval; it is closed before reconnecting.
 type approvalInput struct {
-	editor *readline.Instance
-	paths  bool
+	editor        *readline.Instance
+	paths         bool
+	color         bool
+	restoreOutput func() error
+	completion    pathCompletion
 }
 
 func newApprovalInput() (*approvalInput, error) {
@@ -23,9 +36,14 @@ func newApprovalInput() (*approvalInput, error) {
 		AutoComplete: p, HistoryLimit: -1, DisableAutoSaveHistory: true,
 		InterruptPrompt: "^C", EOFPrompt: "",
 	}
-	configureApprovalTerminal(config)
+	config.FuncFilterInputRune = p.filterCompletionKey
+	config.Listener = readline.FuncListener(p.completionChanged)
+	restore, ansi := configureApprovalTerminal(config)
+	p.restoreOutput = restore
+	p.color = ansi && terminalLogColor(os.Stdout)
 	editor, err := readline.NewEx(config)
 	if err != nil {
+		_ = restore()
 		return nil, err
 	}
 	p.editor = editor
@@ -34,7 +52,8 @@ func newApprovalInput() (*approvalInput, error) {
 
 func (p *approvalInput) Read(prompt string, paths bool) (string, error) {
 	p.paths = paths
-	p.editor.SetPrompt(formatApprovalPrompt(terminalLogColor(os.Stdout), prompt))
+	p.completion = pathCompletion{}
+	p.editor.SetPrompt(formatApprovalPrompt(p.color, prompt))
 	// readline ignores errors from EnterRawMode. Check our Windows hook before
 	// starting its reader; repeated entry is idempotent.
 	if runtime.GOOS == "windows" {
@@ -50,10 +69,7 @@ func (p *approvalInput) Read(prompt string, paths bool) (string, error) {
 }
 
 func formatApprovalPrompt(color bool, prompt string) string {
-	// readline's Windows ANSIWriter indexes an eight-color table with SGR 39
-	// (our foreground reset), causing a panic. Keep editor prompts plain on
-	// Windows; ordinary log output does not pass through that writer.
-	return formatLog(color && runtime.GOOS != "windows", logInfo, "%s", prompt)
+	return formatLog(color, logInfo, "%s", prompt)
 }
 
 func (p *approvalInput) Close() error {
@@ -62,6 +78,10 @@ func (p *approvalInput) Close() error {
 	}
 	err := p.editor.Close()
 	p.editor = nil
+	if p.restoreOutput != nil {
+		err = errors.Join(err, p.restoreOutput())
+		p.restoreOutput = nil
+	}
 	return err
 }
 
@@ -69,7 +89,7 @@ func (p *approvalInput) Do(line []rune, pos int) ([][]rune, int) {
 	if !p.paths {
 		return nil, 0
 	}
-	return completeLocalPath(line, pos)
+	return p.completePath(line, pos)
 }
 
 // Treat the input as one path, including spaces, rather than shell words.

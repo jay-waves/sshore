@@ -2,6 +2,12 @@
 <#
 .SYNOPSIS
 Install the Windows sshore client without changing PATH or requiring elevation.
+.DESCRIPTION
+Windows amd64 only; supports PowerShell 5.1 and 7. Defaults to
+%LOCALAPPDATA%\sshore\bin, overridden by INSTALL_DIR. Verify SHA256SUMS and
+executable version before replacement. Never modify PATH, profiles or execution
+policy; never elevate, stop processes or create versioned backups. The user must
+choose a writable location, close running copies and retain any desired backup.
 .PARAMETER Version
 Published X.Y.Z version (without v). Defaults to the latest release.
 .EXAMPLE

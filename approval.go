@@ -1,7 +1,16 @@
 package main
 
 // Remote requests describe data, never commands. Only a separately invoked local
-// approve command can turn a request into an executable operation.
+// approve command can turn a request into executable operations. Records live in
+// <UserConfigDir>/sshore/approvals, or under SSHORE_STATE_DIR when overridden. They
+// contain connection options and metadata, not collected SSH credentials; platform
+// helpers enforce private ownership/permissions or a current-user-only DACL.
+// Records expire after ten minutes, are capped at 32, and are consumed before SSH
+// reconnects. Each request contains at most 16 operations. Reconnection preserves
+// the original options and shell PID; failed execution needs a fresh request.
+// Single-upload source submission is consent; other requests require a final yes.
+// The input reader is closed before SSH starts so authentication owns stdin.
+
 import (
 	"crypto/rand"
 	"encoding/hex"
