@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"os"
@@ -33,7 +32,7 @@ func requestOperations(ops []operation) error {
 		return err
 	}
 	if m.Type != "queued" {
-		return responseError(m)
+		return fileResponseError(m)
 	}
 	logf(os.Stderr, logInfo, "[sshore] Request queued locally. After detach, run sshore approve from your local shell.\n")
 	return nil
@@ -98,7 +97,7 @@ func (s *session) requestApproval(c net.Conn, m message) error {
 		return err
 	}
 	if reply.Type != "queued" {
-		return responseError(reply)
+		return fileResponseError(reply)
 	}
 	// Acknowledge the helper before allowing the client to detach.
 	_ = c.SetWriteDeadline(time.Now().Add(forwardTimeout))
@@ -110,14 +109,12 @@ func (s *session) requestApproval(c net.Conn, m message) error {
 
 // Only a client-initiated stream can execute an approved file operation. The
 // server is not an authority for local approval; the client enforces that gate.
-func approvedRemoteTransfer(ctx context.Context, st *smux.Stream, m message) {
+func approvedRemoteTransfer(st *smux.Stream, m message) {
 	if len(m.Operations) != 1 || validateOperations(m.Operations) != nil {
 		_ = writeMessage(st, message{Type: "error", Error: "invalid operation"})
 		return
 	}
 	op := m.Operations[0]
-	abort := context.AfterFunc(ctx, func() { _ = st.Close() })
-	defer abort()
 	_ = st.SetDeadline(time.Time{})
 	var id uint64
 	var err error
@@ -133,8 +130,8 @@ func approvedRemoteTransfer(ctx context.Context, st *smux.Stream, m message) {
 			err = fmt.Errorf("remote file metadata changed; request again")
 			break
 		}
+		err = sendFile(st, f, &id)
 		f.close()
-		err = helperDownload(st, op.Path, &id)
 	case "upload":
 		err = helperUpload(st, op.Path, &id)
 	default:

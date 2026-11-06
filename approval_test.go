@@ -114,7 +114,7 @@ func TestApprovalMismatchDoesNotWriteFile(t *testing.T) {
 		_, _ = readMessage(st)
 		_ = writeMessage(st, message{Type: "offer", Name: "other", Size: 3})
 	}()
-	err := executeApprovedFile(context.Background(), client, operation{Kind: "download", Path: "/tmp/a", Name: "a", Size: 3, LocalPath: target})
+	err := executeApprovedFile(context.Background(), client, operation{Kind: "download", Path: "/tmp/a", Name: "a", Size: 3, LocalPath: target}, false)
 	if err == nil {
 		t.Fatal("mismatch accepted")
 	}

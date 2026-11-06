@@ -2,8 +2,8 @@
 # Publish a full semantic version after both main-branch release builds pass.
 # CI builds only Linux/Windows amd64 without sshoretest. Full validation lives in
 # the separate workflow_dispatch Tests workflow and never gates release builds.
-# Existing version tags never move. A retry at the same commit can finish asset
-# uploads; later main commits with an unchanged VERSION do not replace a release.
+# Existing tags, releases and assets never change. Publishing an existing
+# version is a no-op; bump VERSION to publish changes.
 set -euo pipefail
 
 version=$(cat VERSION)
@@ -227,10 +227,27 @@ ends their tasks only after you review the list and type update.
 NOTES
 fi
 
+if [[ "$version" == "0.4.6" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Fix uploads hanging when a peer rejects a transfer without draining its stream.
+- Send downloads from the same file handle used to verify approved metadata.
+- Remove obsolete direct-transfer relays and workers; keep transfers on client-initiated approved streams.
+- Simplify one-shot approval consumption and session cleanup, and move existing transfer tests to the current approval protocol.
+- Route failed or unknown remote version probes through recovery setup instead of disconnecting or misclassifying versions.
+- Preserve published releases and assets: publishing an existing version is now a no-op.
+- Refresh automatic-session SSH tests and recovery documentation.
+
+Client and remote versions must match exactly. Updating existing older sessions
+ends their tasks only after you review the list and type update. Recovery mode
+preserves the SSH connection without executing pending approvals.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
-  gh release upload "$tag" packages/*.tar.gz packages/*.zip packages/SHA256SUMS --clobber
-  gh release edit "$tag" --title "sshore $tag" --notes-file release-notes.md --latest
+  echo "Skipping release: $tag is already published; releases and assets are immutable."
 else
   gh release create "$tag" --verify-tag --title "sshore $tag" \
     --notes-file release-notes.md --latest \

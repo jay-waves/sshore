@@ -231,16 +231,9 @@ func readApproval(dir, id string) (approvalRecord, error) {
 	return r, validateOperations(r.Operations)
 }
 
-// Claim before any network or file operation. A crashed/failed execution cannot
-// be silently replayed. Exclusive creation serializes concurrent approvers.
+// Removing the record atomically claims it before any network or file operation.
+// Only one concurrent approver can succeed; failed executions cannot be replayed.
 func consumeApproval(dir, id string) error {
-	claim := filepath.Join(dir, id+".claim")
-	f, err := os.OpenFile(claim, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		return fmt.Errorf("approval already claimed: %w", err)
-	}
-	f.Close()
-	defer os.Remove(claim)
 	return os.Remove(filepath.Join(dir, id+".json"))
 }
 

@@ -151,12 +151,19 @@ LogLevel ERROR
                        "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known}",
                        "--server", str(wrapper)]
             base_command = command[:]
-            for _ in range(2):
+            for expected_name in (b"pikachu", b"eevee"):
                 auto = Terminal(base_command, wait_ready=False)
                 terms.append(auto)
                 match = auto.expect(r"Connected [^\r\n]+ / ([a-z]+) ")
-                assert match.group(1) == b"main"
+                assert match.group(1) == expected_name, match.group(1)
                 auto.send(b"\x1d")
+                auto.wait()
+                auto.close()
+                terms.remove(auto)
+            for name in ("pikachu", "eevee"):
+                auto = Terminal(base_command + ["-s", name])
+                terms.append(auto)
+                auto.send("exit\n")
                 auto.wait()
                 auto.close()
                 terms.remove(auto)

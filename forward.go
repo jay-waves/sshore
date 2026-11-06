@@ -5,8 +5,8 @@ package main
 // select the same local/remote IPv4 loopback TCP port. An occupied local port fails
 // without substitution; opening a listener does not prove the remote service is
 // running. A remote dial failure closes that connection, not the listener.
-// At most 32 TCP connections run concurrently; excess connections close. Forward
-// streams do not use file-transfer slots, but share SSH bandwidth. Detach, shell
+// At most 32 TCP connections run concurrently; excess connections close. Remote
+// stream handlers share that bound with approved transfers. Detach, shell
 // exit, disconnection and --stop close listeners and existing connections. A new
 // remote approval request detaches and therefore closes the previous rule.
 // Native OpenSSH -L/-R/-D rules are separate and cannot be listed or stopped here;
@@ -271,7 +271,7 @@ func serveForwardStreams(ctx context.Context, mux *smux.Session) {
 			_ = st.SetDeadline(time.Now().Add(forwardTimeout))
 			m, err := readMessage(st)
 			if err == nil && m.Type == "approved_transfer" {
-				approvedRemoteTransfer(ctx, st, m)
+				approvedRemoteTransfer(st, m)
 				return
 			}
 			if err != nil || m.Type != "forward_connect" || m.Port < 1 || m.Port > 65535 {

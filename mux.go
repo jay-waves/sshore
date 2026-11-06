@@ -18,8 +18,6 @@ import (
 	"github.com/xtaci/smux"
 )
 
-const maxTransfers = 2
-
 // The module's v1 release supports wire protocols 1 and 2. Explicitly select
 // protocol 2 for independent stream receive windows.
 func muxConfig() *smux.Config {
@@ -29,7 +27,7 @@ func muxConfig() *smux.Config {
 	c.MaxStreamBuffer = 256 * 1024
 	// Keep room for terminal, files, forward connections, and control requests.
 	// Stalled streams must not exhaust the shared receive budget and block input.
-	c.MaxReceiveBuffer = (maxForwardConnections + maxTransfers + 12) * c.MaxStreamBuffer
+	c.MaxReceiveBuffer = (maxForwardConnections + 12) * c.MaxStreamBuffer
 	c.KeepAliveInterval = 10 * time.Second
 	c.KeepAliveTimeout = 60 * time.Second
 	return c

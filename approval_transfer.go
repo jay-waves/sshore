@@ -29,7 +29,7 @@ func executeApprovedFiles(ctx context.Context, mux *smux.Session, ops []operatio
 	}
 	return nil
 }
-func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, quiet ...bool) error {
+func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, quiet bool) error {
 	st, err := mux.OpenStream()
 	if err != nil {
 		return err
@@ -67,15 +67,14 @@ func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, q
 	}
 	_ = st.SetDeadline(time.Time{})
 	taskCtx, cancel := context.WithCancel(ctx)
-	t := &clientTransfer{exactPath: true, id: 0, stream: st, request: m, choice: make(chan string, 1), ctx: taskCtx, cancel: cancel}
-	t.choice <- op.LocalPath
+	t := &clientTransfer{id: 0, stream: st, request: m, ctx: taskCtx, cancel: cancel}
 	t.total.Store(op.Size)
 	done := make(chan struct {
 		text string
 		err  error
 	}, 1)
 	go func() {
-		text, err := runFileTask(t)
+		text, err := runFileTask(t, op.LocalPath)
 		done <- struct {
 			text string
 			err  error
@@ -92,7 +91,7 @@ func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, q
 			logf(os.Stderr, logSuccess, "[sshore] %s\n", cleanText(r.text))
 			return nil
 		case <-ticker.C:
-			if len(quiet) == 0 || !quiet[0] {
+			if !quiet {
 				logf(os.Stderr, logInfo, "[sshore] %s: %d/%d bytes\n", op.Kind, t.progress.Load(), t.total.Load())
 			}
 		}

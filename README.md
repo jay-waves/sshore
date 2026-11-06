@@ -26,7 +26,7 @@ flowchart LR
     ssh --> setup["Remote version check / setup"]
     setup --> select["No -s: new Pokemon name / -s NAME: create or resume"]
     select --> session["Persistent Linux session"]
-    setup --> recovery["Temporary recovery shell"]
+    setup -->|"Unknown version or chosen recovery"| recovery["Temporary recovery shell"]
     session --> detach["Detach: programs keep running"]
     detach --> resume["Reconnect: sshore HOST -s NAME"]
     resume --> ssh
@@ -55,7 +55,7 @@ irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 
 Installs into `%LOCALAPPDATA%\sshore\bin`; set `$env:INSTALL_DIR` to choose another directory. Close running copies before upgrading.
 
-Installers verify checksums and do not change PATH or request elevation. Use the printed executable path or add its directory to PATH yourself. You can download and inspect either script before running it. For a pinned version, use `sh install.sh --version 0.4.5` or `.\install.ps1 -Version 0.4.5`.
+Installers verify checksums and do not change PATH or request elevation. Use the printed executable path or add its directory to PATH yourself. You can download and inspect either script before running it. For a pinned version, use `sh install.sh --version 0.4.6` or `.\install.ps1 -Version 0.4.6`.
 
 The remote program is installed automatically if missing. Existing programs and sessions require confirmation before updating; see below.
 
@@ -135,7 +135,7 @@ When an older remote installation or session is found:
 - **Type `update`** to install the matching version and end the listed old sessions and their tasks. Save your work first; this can disconnect other clients on the same account.
 - **Press Enter** for a temporary recovery shell on the same SSH connection. Existing sessions remain running. Persistence, file transfer, approvals, dynamic forwarding and Ctrl-] detach are disabled in recovery. Exit and reconnect for normal use.
 
-Unknown versions require manual recovery. Pending approved operations are skipped after a setup update or in recovery; request them again. If downloading the matching release fails, use ordinary `ssh HOST` for maintenance.
+Unknown versions or a failing remote version check require manual recovery. Pending approved operations are skipped after a setup update or in recovery; request them again. If downloading the matching release fails, use ordinary `ssh HOST` for maintenance.
 
 ## Troubleshooting
 

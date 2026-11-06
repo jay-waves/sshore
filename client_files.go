@@ -1,20 +1,41 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
+	"sync"
+	"sync/atomic"
+
+	"github.com/xtaci/smux"
 )
+
+type clientTransfer struct {
+	id        uint64
+	stream    *smux.Stream
+	request   message
+	ctx       context.Context
+	cancel    context.CancelFunc
+	progress  atomic.Int64
+	total     atomic.Int64
+	closeOnce sync.Once
+}
+
+func (t *clientTransfer) close() {
+	t.cancel()
+	// Close wakes blocked reads/writes immediately, but sending FIN may wait for
+	// the transport. Do not perform that potentially slow operation in the UI.
+	t.closeOnce.Do(func() { go func() { _ = t.stream.Close() }() })
+}
 
 type fileReply struct {
 	m   message
 	err error
 }
 
-// Each task owns its file handles and one smux stream. All disk and transfer I/O
-// stays out of the terminal event loop. Closing the stream cancels just this task.
-func runFileTask(t *clientTransfer) (result string, failure error) {
+// Each approved task owns its files, exact local path and one smux stream.
+// Closing the stream cancels this task without affecting sibling streams.
+func runFileTask(t *clientTransfer, path string) (result string, failure error) {
 	defer t.close()
 	defer func() {
 		if failure != nil && t.ctx.Err() == nil {
@@ -31,7 +52,8 @@ func runFileTask(t *clientTransfer) (result string, failure error) {
 			case <-t.ctx.Done():
 				return
 			}
-			if err != nil {
+			if err != nil || m.Type == "error" || m.Type == "cancel" || m.Type == "fatal" {
+				// A rejected upload must wake a writer blocked by backpressure.
 				_ = t.stream.Close()
 				return
 			}
@@ -56,17 +78,6 @@ func runFileTask(t *clientTransfer) (result string, failure error) {
 			}
 			return r.m, nil
 		}
-	}
-	var path string
-	select {
-	case <-t.ctx.Done():
-		return "", t.ctx.Err()
-	case r := <-inbox:
-		if r.err != nil {
-			return "", r.err
-		}
-		return "", fmt.Errorf("unexpected message before file selection: %s", r.m.Type)
-	case path = <-t.choice:
 	}
 	if t.request.Type == "upload" {
 		f, err := openSending(path)
@@ -112,9 +123,6 @@ func runFileTask(t *clientTransfer) (result string, failure error) {
 			return "", fileResponseError(m)
 		}
 		return "Upload complete", nil
-	}
-	if info, err := os.Stat(path); !t.exactPath && err == nil && info.IsDir() {
-		path = filepath.Join(path, t.request.Name)
 	}
 	f, err := newReceiving(path, t.request.Size)
 	if err != nil {

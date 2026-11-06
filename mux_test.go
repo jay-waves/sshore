@@ -41,7 +41,7 @@ func taskPair(t *testing.T, client, server *smux.Session, m message) (*clientTra
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	task := &clientTransfer{id: m.ID, stream: local, request: m, choice: make(chan string, 1), ctx: ctx, cancel: cancel}
+	task := &clientTransfer{id: m.ID, stream: local, request: m, ctx: ctx, cancel: cancel}
 	t.Cleanup(func() { task.close(); _ = remote.Close() })
 	return task, remote
 }
@@ -50,8 +50,7 @@ func TestClientConcurrentTasksCancelIsolation(t *testing.T) {
 	dir := t.TempDir()
 	down, downStream := taskPair(t, client, server, message{Type: "offer", ID: 1, Name: "partial.bin", Size: 100})
 	downDone := make(chan error, 1)
-	go func() { _, err := runFileTask(down); downDone <- err }()
-	down.choice <- filepath.Join(dir, "partial.bin")
+	go func() { _, err := runFileTask(down, filepath.Join(dir, "partial.bin")); downDone <- err }()
 	m, err := readMessage(downStream)
 	if err != nil || m.Type != "accept" {
 		t.Fatal(m, err)
@@ -66,8 +65,7 @@ func TestClientConcurrentTasksCancelIsolation(t *testing.T) {
 	}
 	up, upStream := taskPair(t, client, server, message{Type: "upload", ID: 2})
 	upDone := make(chan error, 1)
-	go func() { _, err := runFileTask(up); upDone <- err }()
-	up.choice <- path
+	go func() { _, err := runFileTask(up, path); upDone <- err }()
 	m, err = readMessage(upStream)
 	if err != nil || m.Type != "offer" {
 		t.Fatal(m, err)
@@ -121,19 +119,32 @@ func TestClientConcurrentTasksCancelIsolation(t *testing.T) {
 		t.Fatal("partial file leaked", entries, err)
 	}
 }
-func TestRemoteCancellationDuringFilePrompt(t *testing.T) {
+func TestUploadRejectionUnblocksWriter(t *testing.T) {
 	client, server := muxPair(t)
+	path := filepath.Join(t.TempDir(), "source")
+	if err := os.WriteFile(path, make([]byte, 2*muxConfig().MaxStreamBuffer), 0600); err != nil {
+		t.Fatal(err)
+	}
 	task, remote := taskPair(t, client, server, message{Type: "upload", ID: 7})
 	done := make(chan error, 1)
-	go func() { _, err := runFileTask(task); done <- err }()
-	_ = remote.Close()
+	go func() { _, err := runFileTask(task, path); done <- err }()
+	if m, err := readMessage(remote); err != nil || m.Type != "offer" {
+		t.Fatal(m, err)
+	}
+	if err := writeMessage(remote, message{Type: "accept", ID: 7}); err != nil {
+		t.Fatal(err)
+	}
+	// The peer rejects the transfer without draining data or closing its stream.
+	if err := writeMessage(remote, message{Type: "error", ID: 7, Error: "disk full"}); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case err := <-done:
 		if err == nil {
-			t.Fatal("closed request succeeded")
+			t.Fatal("rejected upload succeeded")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("file prompt did not observe remote cancellation")
+	case <-time.After(3 * time.Second):
+		t.Fatal("rejected upload remained blocked")
 	}
 }
 

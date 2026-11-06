@@ -30,7 +30,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -214,9 +213,9 @@ func bridgePrepared(name string, existing bool, executable string, gate *os.File
 	return err
 }
 
-// Only the terminal attachment owns a mux session. Local helper commands keep
-// using one ordinary Unix socket each; their bytes are relayed into a dedicated
-// smux stream, without passing through the PTY or the control stream.
+// Each attachment owns one mux session. Local helpers use Unix sockets for
+// approval, forwarding control and detach requests. Approved file bytes flow
+// directly on client-initiated streams, without a helper process or PTY relay.
 type attachment struct {
 	mux               *smux.Session
 	control, terminal *smux.Stream
@@ -241,27 +240,12 @@ func (p *attachment) output(m message) error {
 }
 func (p *attachment) close() { _ = p.mux.Close() }
 
-type activeTransfer struct {
-	id     uint64
-	helper net.Conn
-	stream *smux.Stream
-	owner  *attachment
-}
-
-func (t *activeTransfer) close() {
-	_ = t.helper.Close()
-	if t.stream != nil {
-		_ = t.stream.Close()
-	}
-}
-
 type session struct {
 	plain      bool
 	terminalMu sync.Mutex // serializes state snapshots with PTY output
 	mouse      terminalMouseState
 	mu         sync.Mutex
 	active     *attachment
-	transfers  map[uint64]*activeTransfer
 	master     *os.File
 	cmd        *exec.Cmd
 	exited     bool
@@ -393,38 +377,18 @@ func (s *session) attach(p *attachment, m message) error {
 }
 func (s *session) release(p *attachment) {
 	p.close()
+	s.clearAttachment(p)
+}
+
+func (s *session) clearAttachment(p *attachment) {
 	s.mu.Lock()
 	if s.active == p {
 		s.active = nil
 	}
-	var tasks []*activeTransfer
-	for id, t := range s.transfers {
-		if t.owner == p {
-			tasks = append(tasks, t)
-			delete(s.transfers, id)
-		}
-	}
 	s.mu.Unlock()
-	for _, t := range tasks {
-		t.close()
-	}
 }
 func (s *session) detach(p *attachment) {
-	s.mu.Lock()
-	if s.active == p {
-		s.active = nil
-	}
-	var tasks []*activeTransfer
-	for id, t := range s.transfers {
-		if t.owner == p {
-			tasks = append(tasks, t)
-			delete(s.transfers, id)
-		}
-	}
-	s.mu.Unlock()
-	for _, t := range tasks {
-		t.close()
-	}
+	s.clearAttachment(p)
 	_ = p.controlMessage(message{Type: "detached"})
 	// Let the client acknowledge the final frame before closing the mux transport.
 	// Closing a mux session immediately can discard unread stream buffers.
@@ -541,101 +505,12 @@ func (s *session) serveMux(c io.ReadWriteCloser) error {
 		case "detach":
 			s.detach(p)
 			return nil
-		case "cancel":
-			s.mu.Lock()
-			t := s.transfers[m.ID]
-			if t != nil && t.owner == p {
-				delete(s.transfers, m.ID)
-			} else {
-				t = nil
-			}
-			s.mu.Unlock()
-			if t != nil {
-				t.close()
-			}
 		default:
 			return fmt.Errorf("unexpected control message: %s", m.Type)
 		}
 	}
 }
-func (s *session) transfer(id uint64, c net.Conn, m message) error {
-	s.mu.Lock()
-	if s.active == nil {
-		s.mu.Unlock()
-		return fmt.Errorf("no attached client")
-	}
-	if len(s.transfers) >= maxTransfers {
-		s.mu.Unlock()
-		return fmt.Errorf("at most %d file transfers may be active", maxTransfers)
-	}
-	p := s.active
-	t := &activeTransfer{id: id, helper: c, owner: p}
-	s.transfers[id] = t
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		if s.transfers[id] == t {
-			delete(s.transfers, id)
-		}
-		s.mu.Unlock()
-		t.close()
-	}()
-	st, err := p.mux.OpenStream()
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	// Detach/cancellation may have removed the reservation while OpenStream ran.
-	if s.transfers[id] != t {
-		s.mu.Unlock()
-		_ = st.Close()
-		return fmt.Errorf("transfer cancelled")
-	}
-	t.stream = st
-	s.mu.Unlock()
-	m.ID = id
-	if err = streamMessage(st, m); err != nil {
-		return err
-	}
-	// Release the slot before forwarding a terminal result, so a batch can
-	// start its next file as soon as the previous helper reports success.
-	releaseSlot := func() {
-		s.mu.Lock()
-		if s.transfers[id] == t {
-			delete(s.transfers, id)
-		}
-		s.mu.Unlock()
-	}
-	relay := func(dst io.Writer, src io.Reader) error {
-		for {
-			m, e := readMessage(src)
-			if e != nil {
-				return e
-			}
-			if m.ID != id {
-				return fmt.Errorf("wrong transfer ID")
-			}
-			final := m.Type == "result" || m.Type == "error" || m.Type == "cancel"
-			if final {
-				releaseSlot()
-			}
-			if e = writeMessage(dst, m); e != nil {
-				return e
-			}
-			if final {
-				return nil
-			}
-		}
-	}
-	done := make(chan error, 2)
-	go func() { done <- relay(st, c) }()
-	go func() { done <- relay(c, st) }()
-	err = <-done
-	t.close() // Closing one file stream unblocks both directions, not its siblings.
-	<-done
-	return err
-}
-func (s *session) handle(id uint64, c net.Conn) {
+func (s *session) handle(c net.Conn) {
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 	first, err := readMessage(c)
@@ -685,10 +560,6 @@ func (s *session) handle(id uint64, c net.Conn) {
 		if err = s.forward(c, first); err != nil {
 			_ = writeMessage(c, message{Type: "forward_result", Error: err.Error()})
 		}
-	case "upload", "offer":
-		if err = s.transfer(id, c, first); err != nil {
-			_ = writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
-		}
 	default:
 		_ = writeMessage(c, message{Type: "fatal", Error: "unsupported connection; update sshore on both computers"})
 	}
@@ -713,7 +584,7 @@ func daemon(name string) error {
 	if err := os.Chmod(path, 0600); err != nil {
 		return err
 	}
-	s := &session{path: path, done: make(chan struct{}), transfers: make(map[uint64]*activeTransfer)}
+	s := &session{path: path, done: make(chan struct{})}
 	defer func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -750,7 +621,6 @@ func daemon(name string) error {
 		case <-s.done:
 		}
 	}()
-	var id atomic.Uint64
 	for {
 		c, err := listener.Accept()
 		if err != nil {
@@ -761,7 +631,7 @@ func daemon(name string) error {
 				return err
 			}
 		}
-		go s.handle(id.Add(1), c)
+		go s.handle(c)
 	}
 }
 func listSessions() error {
@@ -773,7 +643,6 @@ func listSessions() error {
 	if err != nil {
 		return err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	out := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	defer out.Flush()
 	fmt.Fprintln(out, "SESSION\tPID\tSTATE\tFOREGROUND")
@@ -833,7 +702,7 @@ func serverCommand(args []string) error {
 		if len(args) != 1 {
 			return usage("usage: sshore detach")
 		}
-		return helper("detach", "")
+		return detachHelper()
 	case "upload":
 		if len(args) > 2 {
 			return usage("usage: sshore upload [DIRECTORY]")

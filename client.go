@@ -21,8 +21,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -73,25 +71,7 @@ type clientEvent struct {
 	input          []byte
 	err            error
 }
-type clientTransfer struct {
-	id        uint64
-	stream    *smux.Stream
-	request   message
-	choice    chan string
-	exactPath bool
-	ctx       context.Context
-	cancel    context.CancelFunc
-	progress  atomic.Int64
-	total     atomic.Int64
-	closeOnce sync.Once
-}
 
-func (t *clientTransfer) close() {
-	t.cancel()
-	// Close wakes blocked reads/writes immediately, but sending FIN may wait for
-	// the transport. Do not perform that potentially slow operation in the UI.
-	t.closeOnce.Do(func() { go func() { _ = t.stream.Close() }() })
-}
 func sshCommand(o options) *exec.Cmd {
 	remote := remoteCommand(o)
 

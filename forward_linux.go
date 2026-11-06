@@ -33,7 +33,7 @@ func forwardHelper(args []string) error {
 		return fmt.Errorf("forward request interrupted: %w", err)
 	}
 	if reply.Type != "forward_result" || reply.Error != "" {
-		return responseError(reply)
+		return fileResponseError(reply)
 	}
 	if m.Action == "list" {
 		if len(reply.Ports) == 0 {

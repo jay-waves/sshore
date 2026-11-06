@@ -70,18 +70,24 @@ func TestRemoteNewerRejectedWithoutDownload(t *testing.T) {
 	bin := filepath.Join(home, "server")
 	writeBootstrapStub(t, bin, "999.0.0")
 	out, err := runBootstrap(t, home, options{server: bin, session: "main"})
-	if err == nil || !strings.Contains(out, "newer") || strings.Contains(out, "Preparing") {
+	if err == nil || !strings.Contains(out, "newer") || strings.Contains(out, "Downloading") {
 		t.Fatal(out, err)
 	}
 }
 
-func TestRemoteStagesMissingOrOlderWithoutReplacing(t *testing.T) {
-	for _, older := range []bool{false, true} {
+func TestRemoteStagesWithoutReplacing(t *testing.T) {
+	for _, release := range []string{"", "0.0.1", "00.4.5", "custom", "broken"} {
 		home := t.TempDir()
 		bin := filepath.Join(home, "server")
-		if older {
-			writeBootstrapStub(t, bin, "0.0.1")
+		if release != "" {
+			writeBootstrapStub(t, bin, release)
+			if release == "broken" {
+				if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 23\n"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
+		original, _ := os.ReadFile(bin)
 		prepared := filepath.Join(home, "prepared")
 		writeBootstrapStub(t, prepared, version)
 		t.Setenv("SSHORE_SETUP_TEST_BINARY", prepared)
@@ -116,10 +122,10 @@ INSTALL
 		if strings.Contains(out, "staging-only") || strings.Contains(out, "PATH") {
 			t.Fatal("temporary installer output leaked", out)
 		}
-		if older {
-			v, err := executableVersion(bin)
-			if err != nil || v != "0.0.1" {
-				t.Fatal(v, err)
+		if release != "" {
+			unchanged, err := os.ReadFile(bin)
+			if err != nil || string(unchanged) != string(original) {
+				t.Fatal("bootstrap overwrote target", err)
 			}
 		} else if _, err := os.Stat(bin); !os.IsNotExist(err) {
 			t.Fatal("bootstrap overwrote target", err)
@@ -130,18 +136,5 @@ INSTALL
 			t.Fatal("installer failure must retain diagnostics and stop setup", out, err)
 		}
 		t.Setenv("SSHORE_SETUP_TEST_FAIL", "")
-	}
-}
-
-func TestRemoteExistingFailureDoesNotInstall(t *testing.T) {
-	home := t.TempDir()
-	bin := filepath.Join(home, "server")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho original-error >&2\nexit 23\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	out, err := runBootstrap(t, home, options{server: bin, session: "main"})
-	e, ok := err.(*exec.ExitError)
-	if !ok || e.ExitCode() != 23 || out != "original-error\n" {
-		t.Fatal(out, err)
 	}
 }

@@ -27,7 +27,7 @@ flowchart LR
     setup <-->|"Exact version / setup choice"| gate
     setup -->|"Setup lock, reserve unused name or explicit session"| program
     gate -->|"Unchanged setup and matching shell PID"| resources
-    resources <-->|"Only approved operations"| service
+    resources <-->|"Client-initiated approved streams"| service
     gate -->|"Updated setup or recovery: skip operations"| user
 ```
 
@@ -71,7 +71,7 @@ Native SSH `-L`, `-R`, `-D`, agent forwarding and other configuration are explic
 
 The full release version, including PATCH, is the compatibility identifier. No separate protocol compatibility counter is used. The managed scope is the current remote Unix account's visible sshore session daemons across runtime directories, excluding other users, preparation helpers and transient transport processes.
 
-- A newer installed program or session daemon rejects an older client. Never automatically downgrade. Unknown/unordered versions permit manual recovery only.
+- A newer installed program or session daemon rejects an older client. Never automatically downgrade. Unknown/unordered versions, including a failed executable version check, permit manual recovery only.
 - Missing software may be installed automatically when no incompatible sessions exist. Existing older installations or sessions require the user to type `update` after reviewing affected session identities.
 - Preparation downloads a matching release over HTTPS and verifies its checksum and executable version. Temporary staging does not replace the installed program.
 - Before ending tasks, setup takes the account setup lock, rechecks the process snapshot, then prepares and verifies the replacement on the target filesystem. Changed state requires fresh confirmation. Only confirmed same-user session processes and identified tasks are signaled, with process identity validation; no process-name-wide kill is used.

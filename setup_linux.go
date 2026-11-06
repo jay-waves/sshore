@@ -339,7 +339,7 @@ func recoveryShell() error {
 	if err = writeMessage(transport, message{Type: "mux_ready", SoftwareVersion: version}); err != nil {
 		return err
 	}
-	s := &session{plain: true, done: make(chan struct{}), transfers: make(map[uint64]*activeTransfer)}
+	s := &session{plain: true, done: make(chan struct{})}
 	defer func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()

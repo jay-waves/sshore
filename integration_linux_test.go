@@ -4,7 +4,7 @@ package main
 // integration tests build a race-enabled binary and exercise real session
 // processes: isolation, exclusive attachment, resizing, exit codes, and preserved
 // PID/environment after detach or disconnection. Transfer cases cover both
-// directions, the two-task limit, unread-stream isolation, independent
+// directions through approved streams, unread-stream isolation, independent
 // cancellation, and cleanup after disconnection. Framing, integrity, overwrite
 // protection, and client worker concurrency also have focused unit tests.
 
@@ -53,27 +53,6 @@ func testBinary(t *testing.T) string {
 	return testBuild.path
 }
 func TestMain(m *testing.M) {
-	// Low-level transfer regression tests run the wire helpers directly; the
-	// public CLI now queues approval instead of initiating these transfers.
-	if os.Getenv("SSHORE_TEST_WIRE_HELPER") == "1" {
-		args := os.Args[1:]
-		var err error
-		if args[0] == "download" && len(args) > 2 {
-			err = downloadFiles(args[1:])
-		} else {
-			path := ""
-			if len(args) > 1 {
-				path = args[1]
-			}
-			err = helper(args[0], path)
-		}
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		os.Exit(0)
-	}
-
 	code := m.Run()
 	if testBuild.path != "" {
 		os.RemoveAll(filepath.Dir(testBuild.path))
@@ -269,8 +248,8 @@ func (e *testEnv) helper(action, path string) (*exec.Cmd, <-chan error) {
 	if path != "" {
 		args = append(args, path)
 	}
-	c := exec.Command(os.Args[0], args...)
-	c.Env = append(e.env, "SSHORE_TEST_WIRE_HELPER=1", "SSHORE_SOCKET="+filepath.Join(e.dir, "main.sock"))
+	c := exec.Command(e.bin, args...)
+	c.Env = append(e.env, "SSHORE_SOCKET="+filepath.Join(e.dir, "main.sock"))
 	c.Stderr = os.Stderr
 	if err := c.Start(); err != nil {
 		e.t.Fatal(err)
@@ -370,17 +349,36 @@ func TestStatusConnection(t *testing.T) {
 	}
 }
 
-func acceptFile(t *testing.T, b *bridgeConn) (*smux.Stream, message) {
+func approvedStream(t *testing.T, b *bridgeConn, op operation) (*smux.Stream, message) {
 	t.Helper()
-	_ = b.mux.SetDeadline(time.Now().Add(5 * time.Second))
-	st, err := b.mux.AcceptStream()
-	_ = b.mux.SetDeadline(time.Time{})
+	st, err := b.mux.OpenStream()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	sendTest(t, st, message{Type: "approved_transfer", Operations: []operation{op}})
 	return st, recv(t, st)
 }
+
+// Stream closure and remote disk cleanup run concurrently.
+func waitUploadFiles(t *testing.T, dir string, count int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) == count {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("partial upload files leaked", entries)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func uploadBytes(t *testing.T, st *smux.Stream, id uint64, name string, data []byte) {
 	t.Helper()
 	sendTest(t, st, message{Type: "offer", ID: id, Name: name, Size: int64(len(data))})
@@ -405,8 +403,7 @@ func TestTransferRoundTripsCancellationAndNoOverwrite(t *testing.T) {
 	if err := os.WriteFile(src, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	_, done := e.helper("download", src)
-	st, offer := acceptFile(t, b)
+	st, offer := approvedStream(t, b, operation{Kind: "download", Path: src, Name: filepath.Base(src), Size: int64(len(data))})
 	sendTest(t, st, message{Type: "accept", ID: offer.ID})
 	var received []byte
 	for {
@@ -427,53 +424,36 @@ func TestTransferRoundTripsCancellationAndNoOverwrite(t *testing.T) {
 		t.Fatal("download corrupted")
 	}
 	sendTest(t, st, message{Type: "result", ID: offer.ID})
-	waitHelper(t, done, true)
 	_ = st.Close()
 	uploadDir := filepath.Join(e.dir, "uploads")
 	if err := os.Mkdir(uploadDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	_, done = e.helper("upload", uploadDir)
-	st, request := acceptFile(t, b)
+	st, request := approvedStream(t, b, operation{Kind: "upload", Path: uploadDir})
 	uploadBytes(t, st, request.ID, "received.bin", data)
-	waitHelper(t, done, true)
 	_ = st.Close()
 	got, err := os.ReadFile(filepath.Join(uploadDir, "received.bin"))
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatal("upload corrupted", err)
 	}
-	_, done = e.helper("upload", uploadDir)
-	st, request = acceptFile(t, b)
+	st, request = approvedStream(t, b, operation{Kind: "upload", Path: uploadDir})
 	sendTest(t, st, message{Type: "offer", ID: request.ID, Name: "received.bin", Size: 0})
 	untilType(t, st, "error")
-	waitHelper(t, done, false)
 	_ = st.Close()
-	_, done = e.helper("upload", uploadDir)
-	st, request = acceptFile(t, b)
+	st, request = approvedStream(t, b, operation{Kind: "upload", Path: uploadDir})
 	sendTest(t, st, message{Type: "offer", ID: request.ID, Name: "cancelled.bin", Size: 100})
 	untilType(t, st, "accept")
 	sendTest(t, st, message{Type: "chunk", ID: request.ID, Data: []byte("partial")})
 	_ = st.Close()
-	waitHelper(t, done, false)
-	entries, _ := os.ReadDir(uploadDir)
-	if len(entries) != 1 {
-		t.Fatal("cancel leaked partial file", entries)
-	}
-	_, done = e.helper("upload", uploadDir)
-	st, request = acceptFile(t, b)
+	waitUploadFiles(t, uploadDir, 1)
+	st, request = approvedStream(t, b, operation{Kind: "upload", Path: uploadDir})
 	uploadBytes(t, st, request.ID, "empty", nil)
-	waitHelper(t, done, true)
 	_ = st.Close()
-	_, done = e.helper("upload", uploadDir)
-	st, request = acceptFile(t, b)
+	st, request = approvedStream(t, b, operation{Kind: "upload", Path: uploadDir})
 	sendTest(t, st, message{Type: "offer", ID: request.ID, Name: "lost", Size: 100})
 	untilType(t, st, "accept")
 	b.close()
-	waitHelper(t, done, false)
-	entries, _ = os.ReadDir(uploadDir)
-	if len(entries) != 2 {
-		t.Fatal("disconnect leaked partial file", entries)
-	}
+	waitUploadFiles(t, uploadDir, 2)
 }
 
 func TestConcurrentStreamsBackpressureAndCancelIsolation(t *testing.T) {
@@ -485,16 +465,12 @@ func TestConcurrentStreamsBackpressureAndCancelIsolation(t *testing.T) {
 	if err := os.WriteFile(src, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	_, downloadDone := e.helper("download", src)
-	slow, offer := acceptFile(t, b)
+	slow, offer := approvedStream(t, b, operation{Kind: "download", Path: src, Name: filepath.Base(src), Size: int64(len(data))})
 	sendTest(t, slow, message{Type: "accept", ID: offer.ID})
 	// Deliberately stop reading the download until its stream window fills.
 	// Other streams must remain usable on this very same SSH transport.
 	time.Sleep(100 * time.Millisecond)
-	_, uploadDone := e.helper("upload", e.dir)
-	fast, request := acceptFile(t, b)
-	_, rejected := e.helper("upload", e.dir)
-	waitHelper(t, rejected, false)
+	fast, request := approvedStream(t, b, operation{Kind: "upload", Path: e.dir})
 	sendTest(t, b.in, message{Type: "resize", Cols: 97, Rows: 31})
 	untilType(t, b.out, "resized")
 	started := time.Now()
@@ -503,20 +479,16 @@ func TestConcurrentStreamsBackpressureAndCancelIsolation(t *testing.T) {
 		t.Fatal("terminal stalled behind download")
 	}
 	uploadBytes(t, fast, request.ID, "concurrent.bin", []byte("upload while download is blocked"))
-	waitHelper(t, uploadDone, true)
 	_ = fast.Close()
 	// Cancelling one stream must leave the session and a sibling upload alive.
-	_, uploadDone = e.helper("upload", e.dir)
-	fast, request = acceptFile(t, b)
+	fast, request = approvedStream(t, b, operation{Kind: "upload", Path: e.dir})
 	sendTest(t, fast, message{Type: "offer", ID: request.ID, Name: "surviving.bin", Size: 2})
 	untilType(t, fast, "accept")
 	_ = slow.Close()
-	waitHelper(t, downloadDone, false)
 	sendTest(t, fast, message{Type: "chunk", ID: request.ID, Data: []byte("ok")})
 	sum := sha256.Sum256([]byte("ok"))
 	sendTest(t, fast, message{Type: "end", ID: request.ID, Hash: hex.EncodeToString(sum[:])})
 	untilType(t, fast, "result")
-	waitHelper(t, uploadDone, true)
 	shellOutput(t, b, "printf 'AFTER_%s\\n' cancel", "AFTER_cancel")
 }
 
@@ -525,95 +497,17 @@ func TestDisconnectCleansBothConcurrentUploads(t *testing.T) {
 	b, pid := e.attach("main")
 	dir := filepath.Join(e.dir, "uploads")
 	_ = os.Mkdir(dir, 0700)
-	done := make([]<-chan error, 2)
 	for i := 0; i < 2; i++ {
-		_, done[i] = e.helper("upload", dir)
-		st, m := acceptFile(t, b)
+		st, m := approvedStream(t, b, operation{Kind: "upload", Path: dir})
 		sendTest(t, st, message{Type: "offer", ID: m.ID, Name: fmt.Sprintf("file%d", i), Size: 100})
 		untilType(t, st, "accept")
 		sendTest(t, st, message{Type: "chunk", ID: m.ID, Data: []byte("partial")})
 	}
 	b.close()
-	for _, d := range done {
-		waitHelper(t, d, false)
-	}
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 0 {
-		t.Fatal("partial uploads leaked", entries)
-	}
+	waitUploadFiles(t, dir, 0)
 	_, newPID := e.attach("main")
 	if newPID != pid {
 		t.Fatal("disconnect replaced shell")
-	}
-}
-
-func TestBatchDownloadsContinueAfterFailure(t *testing.T) {
-	e := newEnv(t)
-	b, _ := e.attach("main")
-	args := []string{"download", filepath.Join(e.dir, "does-not-exist")}
-	expected := make(map[string][]byte)
-	for i := 0; i < 8; i++ {
-		name := fmt.Sprintf("batch-%d.bin", i)
-		data := bytes.Repeat([]byte{byte(i)}, i*100)
-		path := filepath.Join(e.dir, name)
-		if err := os.WriteFile(path, data, 0600); err != nil {
-			t.Fatal(err)
-		}
-		args = append(args, path)
-		expected[name] = data
-	}
-	c := exec.Command(os.Args[0], args...)
-	c.Env = append(e.env, "SSHORE_TEST_WIRE_HELPER=1", "SSHORE_SOCKET="+filepath.Join(e.dir, "main.sock"))
-	var logs bytes.Buffer
-	c.Stderr = &logs
-	if err := c.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = c.Process.Kill() })
-	done := make(chan error, 1)
-	go func() { done <- c.Wait() }()
-	for range expected {
-		st, offer := acceptFile(t, b)
-		sendTest(t, st, message{Type: "accept", ID: offer.ID})
-		var got []byte
-		for {
-			m := recv(t, st)
-			if m.Type == "end" {
-				break
-			}
-			if m.Type != "chunk" {
-				t.Fatal(m.Type)
-			}
-			got = append(got, m.Data...)
-		}
-		if !bytes.Equal(got, expected[offer.Name]) {
-			t.Fatal("wrong batch content", offer.Name)
-		}
-		sendTest(t, st, message{Type: "result", ID: offer.ID})
-		_ = st.Close()
-	}
-	waitHelper(t, done, false)
-	if !strings.Contains(logs.String(), "1 of 9 downloads failed") || strings.Contains(logs.String(), "may be active") {
-		t.Fatal(logs.String())
-	}
-}
-func TestInterruptedUploadHelperRemovesPartialFile(t *testing.T) {
-	e := newEnv(t)
-	b, _ := e.attach("main")
-	dir := filepath.Join(e.dir, "uploads")
-	_ = os.Mkdir(dir, 0700)
-	c, done := e.helper("upload", dir)
-	st, m := acceptFile(t, b)
-	sendTest(t, st, message{Type: "offer", ID: m.ID, Name: "interrupted.bin", Size: 100})
-	untilType(t, st, "accept")
-	sendTest(t, st, message{Type: "chunk", ID: m.ID, Data: []byte("partial")})
-	if err := c.Process.Signal(os.Interrupt); err != nil {
-		t.Fatal(err)
-	}
-	waitHelper(t, done, false)
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 0 {
-		t.Fatal("interrupted helper left a partial file", entries, err)
 	}
 }
 

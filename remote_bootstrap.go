@@ -14,9 +14,20 @@ import "strings"
 
 const installerURL = "https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh"
 
-func installCommand() string {
-	return "curl -fsSL " + installerURL + " | sh -s -- --version " + shellQuote(version)
-}
+// Match compareVersions before downloading a coordinator. Only canonical full
+// releases are ordered; failed probes and custom labels proceed to manual recovery.
+const newerReleaseAWK = `END {
+    release = "(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)"
+    if (NR != 1 || $0 !~ ("^sshore " release "$") || local !~ ("^" release "$")) exit 1
+    split(local, l, "."); split($2, r, ".")
+    for (i = 1; i <= 3; i++) {
+        if (length(r[i]) > length(l[i])) exit 0
+        if (length(r[i]) < length(l[i])) exit 1
+        if (("x" r[i]) > ("x" l[i])) exit 0
+        if (("x" r[i]) < ("x" l[i])) exit 1
+    }
+    exit 1
+}`
 
 // The bootstrap runs inside the original SSH connection. A mismatched executable
 // is never overwritten here: first prepare a verified, temporary coordinator so
@@ -38,10 +49,10 @@ func remoteCommand(o options) string {
 		b.WriteString("else :; ")
 	}
 	b.WriteString("fi; case \"$server\" in /*) ;; *) server=\"$PWD/$server\" ;; esac; ")
-	b.WriteString("remote_version=; if [ -e \"$server\" ]; then remote_version=$(\"$server\" --version) || exit $?; fi; ")
+	b.WriteString("remote_version=; if [ -e \"$server\" ]; then remote_version=$(\"$server\" --version) || remote_version=; fi; ")
 	// Check direction before downloading anything. Unknown/custom labels are left
 	// to the coordinator; they never authorize an automatic destructive upgrade.
-	b.WriteString("if printf '%s\\n' \"$remote_version\" | awk -v local=" + shellQuote(version) + " 'BEGIN {split(local,l,\".\")} /^sshore [0-9]+\\.[0-9]+\\.[0-9]+$/ {split($2,r,\".\"); for(i=1;i<=3;i++){if(length(r[i])>length(l[i]))exit 0; if(length(r[i])<length(l[i]))exit 1; if((\"x\" r[i])>(\"x\" l[i]))exit 0; if((\"x\" r[i])<(\"x\" l[i]))exit 1}} {exit 1}'; then printf '%s\\n' " + shellQuote("sshore: remote executable is newer than local "+version+"; update the local client. No downgrade performed.") + " >&2; exit 1; fi; ")
+	b.WriteString("if printf '%s\\n' \"$remote_version\" | awk -v local=" + shellQuote(version) + " " + shellQuote(newerReleaseAWK) + "; then printf '%s\\n' " + shellQuote("sshore: remote executable is newer than local "+version+"; update the local client. No downgrade performed.") + " >&2; exit 1; fi; ")
 	args := " bootstrap \"$server\" " + shellQuote(mode) + " " + shellQuote(o.session)
 	b.WriteString("if [ \"$remote_version\" = " + shellQuote("sshore "+version) + " ]; then exec \"$server\"" + args + "; fi; ")
 	b.WriteString("printf '%s\\n' " + shellQuote("[sshore] Downloading sshore "+version+" and verifying checksum...") + " >&2; ")

@@ -23,7 +23,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.4.5"
+var version = "0.4.6"
 
 const help = `sshore — persistent shells and file transfer over one SSH connection
 
