@@ -120,6 +120,7 @@ func bootstrap(target, mode, name string) (result error) {
 		}
 	}()
 	updated := false
+	changed := false
 	for {
 		lock, err := setupLock()
 		if err != nil {
@@ -162,7 +163,18 @@ func bootstrap(target, mode, name string) (result error) {
 		if state.Manual {
 			action = "manual-only"
 		}
-		if err = writeMessage(os.Stdout, message{Type: "setup_choice", SoftwareVersion: version, Action: action, Error: fmt.Sprintf("Version mismatch: client %s, installed %s. Updating ends listed old sessions and their tasks. Manual recovery keeps this SSH connection without sshore features.", version, state.Installed), SetupProcesses: state.Processes}); err != nil {
+		installed := state.Installed
+		if installed == "" {
+			installed = "not installed"
+		}
+		detail := fmt.Sprintf("Remote: %s. Required: %s.", installed, version)
+		if changed {
+			detail = "Remote state changed; review again. " + detail
+		}
+		if state.Manual {
+			detail += " An installed program or session has an unknown version; automatic update is unavailable."
+		}
+		if err = writeMessage(os.Stdout, message{Type: "setup_choice", SoftwareVersion: version, Action: action, Error: detail, SetupProcesses: state.Processes}); err != nil {
 			return err
 		}
 		reply, err := readMessage(os.Stdin)
@@ -192,6 +204,7 @@ func bootstrap(target, mode, name string) (result error) {
 		}
 		if !reflect.DeepEqual(state, current) {
 			lock.Close()
+			changed = true
 			continue
 		} // require fresh confirmation
 		// Stage on the target filesystem and verify before stopping any process.

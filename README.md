@@ -35,6 +35,12 @@ Each named session keeps its shell running independently of the SSH connection. 
 
 Prebuilt binaries do not require Go. After a successful CI run, download Linux or Windows packages for amd64 (x86-64) only from the [Actions artifacts](https://github.com/jay-waves/sshore/actions). Download archives and SHA-256 checksums from [Releases](https://github.com/jay-waves/sshore/releases). Starting with 0.3.0, releases use full version tags (for example `v0.3.0`); a published version is not moved to a later commit. Verify downloaded archives against `SHA256SUMS`. Previous releases, assets and Git tags are retained when a new release is published.
 
+Pushes and pull requests build Linux/Windows amd64 packages without running tests.
+Main publishes after both builds succeed. Run full validation manually from
+[Actions → Tests → Run workflow](https://github.com/jay-waves/sshore/actions/workflows/tests.yml);
+this workflow runs tests only and does not publish a release.
+
+
 On a Linux host (amd64/x86-64 only; ARM is not supported), run the installer yourself:
 
 ```sh
@@ -92,6 +98,9 @@ Other Linux users are never included in the scan.
 If software is missing or older, setup first downloads a matching, verified
 executable into a temporary directory using the Linux installer. Missing software
 is installed automatically when there are no incompatible existing sessions.
+The temporary download does not replace an existing installation and does not
+need to be added to PATH. Setup shows download status and version information;
+installer diagnostics are shown only on failure.
 For an older installation or daemon, setup lists affected sessions and offers:
 
 - Type `update`: prepare the replacement, end the listed old sessions and their

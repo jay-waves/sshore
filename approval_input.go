@@ -19,10 +19,12 @@ type approvalInput struct {
 
 func newApprovalInput() (*approvalInput, error) {
 	p := &approvalInput{}
-	editor, err := readline.NewEx(&readline.Config{
+	config := &readline.Config{
 		AutoComplete: p, HistoryLimit: -1, DisableAutoSaveHistory: true,
 		InterruptPrompt: "^C", EOFPrompt: "",
-	})
+	}
+	configureApprovalTerminal(config)
+	editor, err := readline.NewEx(config)
 	if err != nil {
 		return nil, err
 	}
@@ -33,9 +35,16 @@ func newApprovalInput() (*approvalInput, error) {
 func (p *approvalInput) Read(prompt string, paths bool) (string, error) {
 	p.paths = paths
 	p.editor.SetPrompt(formatApprovalPrompt(terminalLogColor(os.Stdout), prompt))
+	// readline ignores errors from EnterRawMode. Check our Windows hook before
+	// starting its reader; repeated entry is idempotent.
+	if runtime.GOOS == "windows" {
+		if err := p.editor.Config.FuncMakeRaw(); err != nil {
+			return "", fmt.Errorf("prepare confirmation input: %w", err)
+		}
+	}
 	line, err := p.editor.Readline()
 	if err != nil {
-		return "", fmt.Errorf("approval cancelled; request remains pending: %w", err)
+		return "", err
 	}
 	return strings.TrimSpace(line), nil
 }

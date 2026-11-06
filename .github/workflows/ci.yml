@@ -1,8 +1,5 @@
-# Validate formatting, vet, and native race tests on Linux and Windows; Linux
-# additionally runs isolated OpenSSH/PTY end-to-end tests. Build two targets
-# with CGO disabled and package executable, README, SECURITY, and MIT license.
-# PRs and non-main branches only test/build. Main publishes a versioned
-# release after every test/build succeeds; scripts/release.sh documents semantics.
+# Build Linux/Windows amd64 on pushes and PRs; publish main after both builds.
+# Full validation runs separately via the manually triggered Tests workflow.
 name: CI
 
 on:
@@ -19,59 +16,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  test:
-    name: Test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: stable
-      - name: Formatting
-        shell: bash
-        run: test -z "$(gofmt -l *.go)"
-      - run: go vet ./...
-      - name: Tests with race detector
-        run: go test -race -count=1 -timeout=5m ./...
-      - name: Build
-        run: go build -o dist/ .
-      - name: CLI smoke tests
-        shell: bash
-        run: |
-          ./dist/sshore --version
-          ./dist/sshore --help
-          ./dist/sshore help download
-      - name: Installer tests (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sh -n install.sh
-          python3 tests/install_test.py
-          python3 tests/release_test.py
-      - name: Installer tests (Windows PowerShell 5.1)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: ./tests/install_windows_test.ps1
-      - name: Installer tests (PowerShell 7)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./tests/install_windows_test.ps1
-      - name: Real SSH integration (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y openssh-server
-          sudo mkdir -p /run/sshd
-          go build -tags=sshoretest -o dist/sshore-e2e .
-          python3 tests/ssh_e2e.py --binary dist/sshore-e2e
-
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
-    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:

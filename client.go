@@ -239,7 +239,7 @@ func runClient(o options) (int, error) {
 	}
 	defer func() { restore(); _ = flushTerminalInput() }()
 	if o.plain {
-		logf(os.Stderr, logWarning, "[sshore] Recovery shell on %s: persistence, file transfer, dynamic forwarding and Ctrl-] detach are disabled. Exit and reconnect after maintenance.\r\n", cleanText(o.host))
+		logf(os.Stderr, logWarning, "[sshore] Recovery shell on %s (no sshore features).\r\nExit and reconnect to resume normal use.\r\n", cleanText(o.host))
 	} else {
 		logf(os.Stderr, logSuccess, "[sshore] Connected %s / %s (PID %d)\r\n", cleanText(o.host), o.session, pid)
 		logf(os.Stderr, logInfo, "[sshore] Reconnect with --session %s\r\n", o.session)

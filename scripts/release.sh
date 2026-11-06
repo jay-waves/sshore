@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publish a full semantic version after all main-branch CI jobs pass.
+# Publish a full semantic version after both main-branch release builds pass.
 # Existing version tags never move. A retry at the same commit can finish asset
 # uploads; later main commits with an unchanged VERSION do not replace a release.
 set -euo pipefail
@@ -183,6 +183,17 @@ if [[ "$version" == "0.4.2" ]]; then
 Changes:
 - Fix a Windows panic when displaying setup confirmation and local approval prompts by keeping readline prompts uncolored.
 - Preserve explicit update confirmation and exact client/server version matching.
+NOTES
+fi
+
+if [[ "$version" == "0.4.3" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Fix Windows setup and approval confirmation exiting with "The operation completed successfully" instead of continuing.
+- Simplify setup prompts, hide temporary installer output on success, and clearly report affected sessions and completed updates.
+- Explain when remote state changes require fresh confirmation; retain explicit update approval and exact version matching.
+- Move full validation to the manually triggered Tests workflow so release builds no longer wait for tests.
 NOTES
 fi
 

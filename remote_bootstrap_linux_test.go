@@ -96,8 +96,14 @@ while [ "$#" -gt 0 ]; do
 done
 cat > "$output" <<'INSTALL'
 #!/bin/sh
+if [ "$SSHORE_SETUP_TEST_FAIL" = 1 ]; then
+ echo 'checksum verification failed' >&2
+ exit 1
+fi
 mkdir -p "$4"
 cp "$SSHORE_SETUP_TEST_BINARY" "$4/sshore"
+echo 'Directory is not on PATH. staging-only-output'
+echo 'staging-only-stderr' >&2
 INSTALL
 `
 		if err := os.WriteFile(filepath.Join(tools, "curl"), []byte(curl), 0700); err != nil {
@@ -107,6 +113,9 @@ INSTALL
 		if err != nil || !strings.Contains(out, "<bootstrap>\n<"+bin+">") {
 			t.Fatal(out, err)
 		}
+		if strings.Contains(out, "staging-only") || strings.Contains(out, "PATH") {
+			t.Fatal("temporary installer output leaked", out)
+		}
 		if older {
 			v, err := executableVersion(bin)
 			if err != nil || v != "0.0.1" {
@@ -115,6 +124,12 @@ INSTALL
 		} else if _, err := os.Stat(bin); !os.IsNotExist(err) {
 			t.Fatal("bootstrap overwrote target", err)
 		}
+		t.Setenv("SSHORE_SETUP_TEST_FAIL", "1")
+		out, err = runBootstrap(t, home, options{server: bin, session: "main"})
+		if err == nil || !strings.Contains(out, "checksum verification failed") || strings.Contains(out, "<bootstrap>") {
+			t.Fatal("installer failure must retain diagnostics and stop setup", out, err)
+		}
+		t.Setenv("SSHORE_SETUP_TEST_FAIL", "")
 	}
 }
 

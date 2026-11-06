@@ -354,7 +354,7 @@ func runApprove(args []string) (int, error) {
 			logf(os.Stdout, logInfo, "Download %s (%d bytes)\n", cleanText(op.Path), op.Size)
 			line, e := input.Read(fmt.Sprintf("Save as [%s] (Tab to complete): ", cleanText(dest)), true)
 			if e != nil {
-				return 1, e
+				return 1, fmt.Errorf("approval cancelled; request remains pending: %w", e)
 			}
 			if line != "" {
 				dest, e = localPath([]byte(line))
@@ -384,7 +384,7 @@ func runApprove(args []string) (int, error) {
 			}
 			line, e := input.Read(prompt, true)
 			if e != nil {
-				return 1, e
+				return 1, fmt.Errorf("approval cancelled; request remains pending: %w", e)
 			}
 			path, e := localPath([]byte(line))
 			if e != nil {
@@ -410,7 +410,7 @@ func runApprove(args []string) (int, error) {
 	if !directUpload {
 		answer, err := input.Read("Approve these operations? Type yes: ", false)
 		if err != nil {
-			return 1, err
+			return 1, fmt.Errorf("approval cancelled; request remains pending: %w", err)
 		}
 		if answer != "yes" {
 			return 1, fmt.Errorf("not approved; request remains pending")
