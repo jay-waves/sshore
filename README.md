@@ -9,34 +9,39 @@ Disconnect from SSH without stopping your remote shell. Reconnect to pick up whe
 ## Quick start
 
 ```sh
-sshore myserver                 # New session with an automatic Pokemon name.
+sshore new myserver             # New session with an automatic Pokemon name.
 # Press Ctrl-] to detach and keep programs running.
-sshore myserver -s pikachu      # Resume the name printed when connecting.
-sshore myserver -s build         # Use a separate named session.
-sshore myserver list             # List session states and process trees.
+sshore attach myserver pikachu  # Resume the name printed when connecting.
+sshore new myserver build       # Create a separate named session.
+sshore list myserver            # List session states and process trees.
+sshore new --help               # Command-specific help.
 ```
 
-Uses your normal SSH aliases, keys and authentication. Inside the remote shell, `sshore detach` also detaches; `exit` ends the session. Only explicit detach preserves a session: closing the local terminal or losing the connection ends it once the disconnect is detected, as with SSH. Multiple connections to a host use separate sessions; only one client can attach to each session at a time. Without `-s`, every connection creates a new session, including after a disconnect. Use the printed name to resume an explicitly detached session.
+Uses your normal SSH aliases, keys and authentication. **`new` only creates; `attach` only resumes.** An existing name is an error for `new`; a missing name is an error for `attach`. Omit the name in `attach` to resume the only detached session or choose from several. An attached session cannot be taken over.
 
-Automatic names come from 24 familiar Pokemon, starting with `pikachu`, `eevee`, `bulbasaur`, `charmander`, `squirtle`, `snorlax`, `psyduck` and `gengar`. Detached sessions keep their names. If all 24 are in use, choose any custom name with `-s NAME`.
+Inside the remote shell, `sshore detach` also detaches; `exit` ends the session. Only explicit detach preserves a session: closing the local terminal or losing the connection ends it once detected, as with SSH. After detach, copy the printed `sshore attach` command to reconnect.
+
+The old `sshore HOST`, `sshore connect HOST`, `sshore HOST list` and `-s`/`--session` forms are no longer accepted. Use the explicit commands above.
+
+Automatic names come from 24 familiar Pokemon, starting with `pikachu`, `eevee`, `bulbasaur`, `charmander`, `squirtle`, `snorlax`, `psyduck` and `gengar`. Detached sessions keep their names. If all 24 are in use, choose any custom name with `sshore new HOST NAME`.
 
 ```mermaid
 flowchart LR
-    local["Local: sshore HOST"] --> ssh["System SSH"]
+    local["Local: sshore new / attach HOST"] --> ssh["System SSH"]
     ssh --> setup["Remote version check / setup"]
-    setup --> select["No -s: new Pokemon name / -s NAME: create or resume"]
+    setup --> select["new: unused name / attach: existing detached session"]
     select --> session["Persistent Linux session"]
     setup -->|"Unknown version or chosen recovery"| recovery["Temporary recovery shell"]
     session --> detach["Explicit detach: programs keep running"]
     session --> ended["Exit or detected connection loss: session ends"]
-    detach --> resume["Reconnect: sshore HOST -s NAME"]
+    detach --> resume["Reconnect: sshore attach HOST NAME"]
     resume --> ssh
     session --> request["Request files or a port; detach"]
     request --> approve["Local: sshore approve"]
     approve -->|"Review, approve, reconnect"| ssh
 ```
 
-`sshore HOST list` lists each session and its shell/process tree:
+`sshore list HOST` lists each session and its shell/process tree:
 
 ```text
 charmander [attached]
@@ -77,17 +82,16 @@ The remote program is installed automatically if missing. Existing programs and 
 ## Connect
 
 ```sh
-sshore user@host -p 2222 -i ~/.ssh/id_ed25519
-sshore myserver -J jump
-sshore connect forward          # Host alias named like a command.
-sshore myserver --server /home/alice/bin/sshore
+sshore new user@host -p 2222 -i ~/.ssh/id_ed25519
+sshore new myserver -J jump
+sshore new forward          # Host alias named like a command.
+sshore new myserver --server /home/alice/bin/sshore
 ```
 
-Put recurring connection settings in `~/.ssh/config`. Run `sshore --help` for all supported options.
+Put recurring connection settings in `~/.ssh/config`. Run `sshore --help` for commands, or `sshore new --help`, `sshore list --help` and `sshore attach --help` for their options. `sshore help COMMAND` is equivalent to `sshore COMMAND --help`.
 
 | Option | Use |
 | --- | --- |
-| `-s NAME` | Create or resume a named session; omit for a new automatic name |
 | `--server PATH` | Remote executable; default: PATH, then `~/.local/bin/sshore` |
 | `--download-dir DIR` | Default local save directory; approval still required |
 | `--no-escape` | Send Ctrl-] to the remote program |
@@ -135,8 +139,8 @@ Dynamic forwards use the same local and remote TCP port on IPv4 loopback. Detach
 For different ports or multiple rules, use native SSH forwarding at connection time:
 
 ```sh
-sshore myserver -L 127.0.0.1:8080:127.0.0.1:3000
-sshore myserver -D 127.0.0.1:1080   # SOCKS proxy.
+sshore new myserver -L 127.0.0.1:8080:127.0.0.1:3000
+sshore new myserver -D 127.0.0.1:1080   # SOCKS proxy.
 ```
 
 Native `-L`, `-R` and `-D` rules are managed by OpenSSH, separately from `sshore forward`.
@@ -156,13 +160,13 @@ Unknown versions or a failing remote version check require manual recovery. Pend
 
 | Symptom | Try |
 | --- | --- |
-| Session already attached | Use a different `-s NAME` or omit `-s` for a new session; detach the current client to resume that same session. |
+| Session already attached | Use `sshore new HOST` for a separate session; detach the current client before using `sshore attach HOST NAME`. |
 | Screen looks stale after reconnecting | Press Ctrl-L or use the application's redraw command. |
 | Missing output while disconnected | Expected: screens, scrollback and detached output are not saved. |
 | Session disappeared | Shell exit, connection loss without detach, reboot or system cleanup can end it. |
 | Transfer destination exists | Choose another filename; overwriting is disabled. |
 | Forwarded port fails | Check that the local port is free and the remote service is running. |
-| SSH / connection failure | Try `sshore HOST -vvv -E ./ssh-debug.log`; keep noninteractive shell startup output quiet. |
+| SSH / connection failure | Try `sshore new HOST -vvv -E ./ssh-debug.log`; keep noninteractive shell startup output quiet. |
 | Daemon startup failure | On the remote host, check session `.log` files under `$XDG_RUNTIME_DIR/sshore` or `/tmp/sshore-UID`. `SSHORE_RUNTIME_DIR` overrides this location. |
 
 There is no automatic reconnection. SSH agent/X11 forwarding may not survive reattachment. For command help, use `sshore help download` or `sshore download --help`.

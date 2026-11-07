@@ -120,10 +120,10 @@ func bootstrap(target, mode, name string) (result error) {
 	if !filepath.IsAbs(target) {
 		return fmt.Errorf("setup target must be absolute")
 	}
-	if mode != "bridge" && mode != "resume" && mode != "sessions" {
+	if mode != "bridge" && mode != "resume" && mode != "sessions" && mode != "new" && mode != "attach" {
 		return fmt.Errorf("invalid setup mode")
 	}
-	if mode == "resume" || mode == "bridge" && name != "" {
+	if mode == "resume" || name != "" {
 		if err := validSession(name); err != nil {
 			return err
 		}
@@ -160,15 +160,45 @@ func bootstrap(target, mode, name string) (result error) {
 				lock.Close()
 				return listSessions()
 			}
+			if mode == "attach" && name == "" {
+				names, err := detachedSessionNames()
+				lock.Close()
+				if err != nil {
+					return err
+				}
+				if len(names) == 0 {
+					return fmt.Errorf("no detached sessions; use sshore new HOST to create one")
+				}
+				if len(names) == 1 {
+					name = names[0]
+					continue
+				}
+				if err := writeMessage(os.Stdout, message{Type: "session_choice", SoftwareVersion: version, Names: names}); err != nil {
+					return err
+				}
+				reply, err := readMessage(os.Stdin)
+				if err != nil {
+					return err
+				}
+				if reply.Type != "session_select" {
+					return fmt.Errorf("invalid session selection")
+				}
+				for _, candidate := range names {
+					if reply.Name == candidate {
+						name = candidate
+						break
+					}
+				}
+				if name == "" {
+					return fmt.Errorf("invalid session selection")
+				}
+				continue // Recheck setup after waiting without the account lock.
+			}
 			readyMode := "managed"
 			if updated {
 				readyMode = "updated"
 			}
-			if err = writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
-				lock.Close()
-				return err
-			}
-			return bridgePrepared(name, mode == "resume", target, lock)
+			return bridgePrepared(name, mode == "resume" || mode == "attach", mode == "new", target, lock, readyMode)
 		}
 		lock.Close()
 		if mode == "sessions" {

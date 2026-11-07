@@ -6,7 +6,9 @@ package main
 // listening network port. The bridge connects SSH stdin/stdout to a Unix socket,
 // starting the daemon as needed. Only one client can attach. Names are 1-48 ASCII
 // letters, digits, underscores or hyphens and begin with a letter or digit.
-// Omitted names allocate a fresh automatically named session; explicit names create or resume.
+// Public new always reserves a fresh name; attach requires an existing daemon.
+// Omitted new names allocate automatically; omitted attach names are selected
+// during setup. Legacy internal bridge calls retain their create-or-resume behavior.
 // The daemon drains/discards detached or muted output, so
 // an unread terminal cannot block remote programs. No screen or scrollback is
 // stored. Only explicit detach preserves a session. Transport loss closes the PTY
@@ -120,7 +122,7 @@ func reserveSession(names []string, fresh bool) (string, *os.File, net.Conn, err
 		}
 		return name, startup, conn, nil
 	}
-	return "", nil, nil, fmt.Errorf("all automatic session names are in use; exit an existing session or choose a name with --session")
+	return "", nil, nil, fmt.Errorf("all automatic session names are in use; exit an existing session or choose a name with sshore new HOST NAME")
 }
 
 func bridge(name string, existing bool) error {
@@ -141,13 +143,13 @@ func bridge(name string, existing bool) error {
 		lock.Close()
 		return fmt.Errorf("remote versions differ; reconnect through setup")
 	}
-	return bridgePrepared(name, existing, exe, lock)
+	return bridgePrepared(name, existing, false, exe, lock, "")
 }
 
-func bridgePrepared(name string, existing bool, executable string, gate *os.File) error {
+func bridgePrepared(name string, existing, freshOnly bool, executable string, gate *os.File, readyMode string) error {
 	defer gate.Close()
 	if existing && name == "" {
-		return fmt.Errorf("approved session requires an explicit name")
+		return fmt.Errorf("attach requires a session name")
 	}
 	names := []string{name}
 	fresh := name == ""
@@ -159,13 +161,17 @@ func bridgePrepared(name string, existing bool, executable string, gate *os.File
 		return err
 	}
 	defer startup.Close()
+	if freshOnly && conn != nil {
+		conn.Close()
+		return fmt.Errorf("session %s already exists; use sshore attach HOST %s", name, name)
+	}
 	path, err := socketPath(name)
 	if err != nil {
 		return err
 	}
 	if conn == nil {
 		if existing {
-			return fmt.Errorf("approved session no longer exists")
+			return fmt.Errorf("session %s does not exist; use sshore list HOST or sshore new HOST NAME", name)
 		}
 		exe := executable
 		fd, err := unix.Open(path+".log", unix.O_CREAT|unix.O_WRONLY|unix.O_APPEND|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
@@ -206,6 +212,11 @@ func bridgePrepared(name string, existing bool, executable string, gate *os.File
 	defer conn.Close()
 	gate.Close()
 	reportSessionDaemons()
+	if readyMode != "" {
+		if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
+			return err
+		}
+	}
 	go func() { _, _ = io.Copy(conn, os.Stdin); _ = conn.Close() }()
 	_, err = io.Copy(os.Stdout, conn)
 	if errors.Is(err, net.ErrClosed) {
@@ -340,10 +351,13 @@ func (s *session) attach(p *attachment, m message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.exited {
-		return fmt.Errorf("session is exiting; reconnect to create a new one")
+		return fmt.Errorf("session is exiting; use sshore new HOST to create a new one")
 	}
 	if s.active != nil {
 		return fmt.Errorf("session already attached; detach the other connection first")
+	}
+	if m.Action == "existing" && s.cmd == nil {
+		return fmt.Errorf("session has not started; use sshore list HOST")
 	}
 	if m.Action == "approved" {
 		if s.cmd == nil || s.cmd.Process.Pid != m.PID {
@@ -748,4 +762,46 @@ func serverCommand(args []string) error {
 		return requestFiles("download", args[1:])
 	}
 	return fmt.Errorf("unknown server command")
+}
+
+// Candidates are read-only status probes in this account's current runtime
+// directory. Selection is advisory: the bridge and daemon recheck existence and
+// exclusive attachment after the user answers, without holding the setup lock.
+func detachedSessionNames() ([]string, error) {
+	dir, err := runtimeDir()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	names := []string{}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".sock") {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".sock")
+		if validSession(name) != nil {
+			continue
+		}
+		c, err := net.DialTimeout("unix", filepath.Join(dir, e.Name()), time.Second)
+		if err != nil {
+			continue
+		}
+		_ = c.SetDeadline(time.Now().Add(time.Second))
+		err = writeMessage(c, message{Type: "status"})
+		var m message
+		if err == nil {
+			m, err = readMessage(c)
+		}
+		c.Close()
+		if err == nil && m.Type == "session" && !m.Attached && m.PID > 0 {
+			names = append(names, name)
+			if len(names) > 128 {
+				return nil, fmt.Errorf("too many sessions to select; use sshore list HOST, then sshore attach HOST NAME")
+			}
+		}
+	}
+	return names, nil
 }

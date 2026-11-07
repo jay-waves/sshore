@@ -25,55 +25,80 @@ import (
 // Overridden by release builds using -ldflags '-X main.version=...'.
 var version = "0.5.0"
 
+const connectionOptions = `Options (before or after HOST):
+  --server PATH                 Remote executable (default: PATH, then ~/.local/bin/sshore)
+  --download-dir DIRECTORY      Default download directory (approval still required)
+  -q, --quiet                   Hide periodic transfer progress
+  --no-escape                   Forward Ctrl-] instead of detaching locally
+  -p PORT  -i KEY  -J JUMP  -F CONFIG  -l USER  -o OPTION
+  -L SPEC  -R SPEC  -D ADDRESS  Pass forwarding options to OpenSSH
+  -E FILE                      Write OpenSSH debug logs to FILE
+  -C, -v, -vv, -vvv, -4, -6    Pass through to system OpenSSH
+  -h, --help                    Show command help
+`
+
 const help = `sshore — persistent shells and file transfer over one SSH connection
 
-Usage:
-  sshore HOST [-s SESSION] [options]
-  sshore connect HOST [-s SESSION] [options]
-  sshore HOST list [SSH options]  # Session states and ASCII process trees
+Local commands:
+  sshore new HOST [NAME] [options]     Create a session (default: automatic Pokemon name)
+  sshore list HOST [SSH options]      List session states and process trees
+  sshore attach HOST [NAME] [options] Attach to an existing detached session
   sshore approve [ID] [--attach | --stay]
   sshore approve --list
   sshore approve ID --reject
-  sshore help [upload|download|detach|forward|approve]
 
 Inside a remote sshore shell:
-  sshore forward PORT            Forward local loopback PORT to remote loopback PORT
   sshore detach                  Disconnect; keep the shell running
   sshore upload [DIRECTORY]      Choose a local file to upload here
   sshore download FILE...        Download one or more remote files
+  sshore forward PORT            Request a loopback port forward
 
-Options (before or after HOST):
-  -s, --session NAME             Create or resume NAME (default: new Pokemon session)
-  --server PATH                  Remote executable (default: PATH, then ~/.local/bin/sshore)
-  --download-dir DIRECTORY       Default download directory (approval still required)
-  -q, --quiet                    Hide periodic transfer progress
-  --no-escape                    Forward Ctrl-] instead of detaching locally
-  -p PORT  -i KEY  -J JUMP  -F CONFIG  -l USER  -o OPTION
-  -L SPEC  -R SPEC  -D ADDRESS   Pass forwarding options to OpenSSH
-  -E FILE                       Write OpenSSH debug logs to FILE
-  -C, -v, -vv, -vvv, -4, -6     Pass through to system OpenSSH
-  -h, --help                     Show help
-  -V, --version                  Show version
+Help:
+  sshore help [COMMAND]
+  sshore COMMAND --help
+  sshore --version
 
-Omit -s to create a new Pokemon-named session; use -s NAME to reconnect.
-Detached sessions keep their names. If all names are busy, choose your own -s NAME.
-Ctrl-] detaches; Ctrl-C goes to the remote program. No screen replay.
-Only explicit detach preserves a session; exit or detected connection loss ends it.
-Upload, download and forward-add requests save a local approval and detach.
-Run sshore approve from your local shell to review, reconnect and execute.
-Requires OpenSSH locally. Missing remote sshore is installed automatically.
-Older remote versions offer update or a recovery shell; newer versions reject.
-Updating ends listed old sessions only after you type update. Recovery mode
-keeps this connection but disables persistence, transfer and dynamic forwarding.
+new never resumes; attach never creates or evicts another client.
+Ctrl-] detaches; exit or detected connection loss ends the session. No screen replay.
+Requests for files or ports detach; run sshore approve locally to review them.
+Requires local OpenSSH. Missing remote software is installed automatically.
+Older remote versions offer update or recovery; newer versions reject.
+Updating ends listed old sessions only after you type update. Recovery disables
+persistence, transfer and dynamic forwarding until you reconnect.
 
 Examples:
-  sshore work -s build
-  sshore user@host --server /home/user/.local/bin/sshore
-  sshore work --download-dir ./downloads
-  sshore work list
+  sshore new work build
+  sshore list work
+  sshore attach work build
 `
 
 var commandHelp = map[string]string{
+	"new": `Usage: sshore new HOST [NAME] [options]
+
+Create a new session. Omit NAME for an automatic Pokemon name.
+An existing name is an error; use sshore attach HOST NAME to resume it.
+Ctrl-] or remote sshore detach leaves programs running; exit ends the shell.
+
+` + connectionOptions,
+	"attach": `Usage: sshore attach HOST [NAME] [options]
+
+Attach to an existing detached session; never create or take over a session.
+Omit NAME to attach to the only detached session, or choose from several.
+If no detached sessions exist, use sshore new HOST to create one.
+
+` + connectionOptions,
+	"list": `Usage: sshore list HOST [SSH options] [--server PATH]
+
+List session names, attached/detached states and process trees.
+Use sshore attach HOST NAME to resume a detached session.
+
+SSH options:
+  -p PORT  -i KEY  -J JUMP  -F CONFIG  -l USER  -o OPTION
+  -L SPEC  -R SPEC  -D ADDRESS  -E FILE
+  -C, -v, -vv, -vvv, -4, -6
+  --server PATH                 Remote executable
+  -h, --help                    Show command help
+`,
 	"approve": `Usage: sshore approve [ID] [--attach | --stay]
        sshore approve --list
        sshore approve ID --reject
@@ -115,8 +140,8 @@ not transferred; the local approve command reports the execution result.
 	"detach": `Usage: sshore detach
 
 Run inside a remote sshore shell. Disconnect the current client and cancel
-its transfers, keeping the shell and its PID alive. Reconnect using the same
-HOST and --session. Ctrl-] is the local detach shortcut.
+its transfers, keeping the shell and its PID alive. Reconnect with
+sshore attach HOST NAME. Ctrl-] is the local detach shortcut.
 `,
 }
 
@@ -139,6 +164,7 @@ func validSession(name string) error {
 
 type options struct {
 	host, session, server string
+	command               string
 	downloadDir           string
 	list, quiet, noEscape bool
 	ssh                   []string
@@ -150,12 +176,27 @@ type options struct {
 
 func parseOptions(args []string) (options, error) {
 	o := options{server: "sshore"}
+	if len(args) == 0 {
+		return o, usage("expected new, list or attach; see sshore --help")
+	}
+	o.command = args[0]
+	switch o.command {
+	case "new", "attach":
+	case "list":
+		o.list = true
+	default:
+		return o, usage("choose an action: sshore new HOST [NAME], sshore list HOST, or sshore attach HOST [NAME]")
+	}
+	args = args[1:]
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if a == "" {
+			return o, usage("empty argument")
+		}
 		if strings.HasPrefix(a, "--") {
 			if key, value, ok := strings.Cut(a, "="); ok {
 				switch key {
-				case "--session", "--server", "--download-dir":
+				case "--server", "--download-dir":
 				default:
 					return o, usage("%s does not accept a value", key)
 				}
@@ -168,14 +209,12 @@ func parseOptions(args []string) (options, error) {
 			continue
 		}
 		switch a {
-		case "-s", "--session", "--server", "--download-dir", "-p", "-i", "-J", "-F", "-l", "-o", "-L", "-R", "-D", "-E":
+		case "--server", "--download-dir", "-p", "-i", "-J", "-F", "-l", "-o", "-L", "-R", "-D", "-E":
 			i++
 			if i == len(args) || args[i] == "" {
 				return o, usage("missing value for %s", a)
 			}
 			switch a {
-			case "-s", "--session":
-				o.session = args[i]
 			case "--server":
 				o.server = args[i]
 			case "--download-dir":
@@ -193,15 +232,26 @@ func parseOptions(args []string) (options, error) {
 			return o, errHelp
 		case "--":
 			i++
-			if i == len(args) || o.host != "" || i != len(args)-1 {
-				return o, usage("-- must be followed by one SSH destination")
+			if i == len(args) {
+				return o, usage("missing destination or name after --")
 			}
-			o.host = args[i]
+			for ; i < len(args); i++ {
+				if args[i] == "" {
+					return o, usage("empty argument")
+				}
+				if o.host == "" {
+					o.host = args[i]
+				} else if !o.list && o.session == "" {
+					o.session = args[i]
+				} else {
+					return o, usage("unexpected argument: %s", args[i])
+				}
+			}
 		default:
 			if o.host == "" && !strings.HasPrefix(a, "-") {
 				o.host = a
-			} else if o.host != "" && a == "list" && !o.list {
-				o.list = true
+			} else if o.host != "" && !o.list && o.session == "" && !strings.HasPrefix(a, "-") {
+				o.session = a
 			} else {
 				return o, usage("unexpected argument: %s", a)
 			}
@@ -250,7 +300,7 @@ func showHelp(args []string, w io.Writer) error {
 		return err
 	}
 	if len(args) != 1 {
-		return usage("usage: sshore help [upload|download|detach|forward|approve]")
+		return usage("usage: sshore help [COMMAND]")
 	}
 	h, ok := commandHelp[args[0]]
 	if !ok {
@@ -260,6 +310,11 @@ func showHelp(args []string, w io.Writer) error {
 	return err
 }
 func run(args []string) (int, error) {
+	if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
+		if _, ok := commandHelp[args[0]]; ok {
+			return 0, showHelp(args[:1], os.Stdout)
+		}
+	}
 	if os.Getenv("SSHORE_DISABLED") == "1" && len(args) > 0 {
 		switch args[0] {
 		case "--version", "-V", "--help", "-h", "help", "sessions":
@@ -270,60 +325,42 @@ func run(args []string) (int, error) {
 	if len(args) == 0 {
 		return 0, showHelp(nil, os.Stdout)
 	}
-	explicitConnect := args[0] == "connect"
-	if explicitConnect {
-		args = args[1:]
-	}
-	if len(args) == 0 {
-		return 2, usage("usage: sshore connect HOST [options]")
-	}
-	if !explicitConnect {
-		switch args[0] {
-		case "help":
-			return 0, showHelp(args[1:], os.Stdout)
-		case "-h", "--help":
-			return 0, showHelp(nil, os.Stdout)
-		case "-V", "--version":
-			if len(args) != 1 {
-				return 2, usage("--version takes no arguments")
-			}
-			fmt.Println("sshore", version)
-			return 0, nil
-		case "approve":
-			if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
-				return 0, showHelp(args[:1], os.Stdout)
-			}
-			return runApprove(args[1:])
-		case "forward":
-			if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
-				return 0, showHelp(args[:1], os.Stdout)
-			}
-			if _, err := parseForward(args[1:]); err != nil {
-				return 2, err
-			}
-			return 0, serverCommand(args)
-		case "upload", "download", "detach":
-			if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
-				return 0, showHelp(args[:1], os.Stdout)
-			}
-			// -- makes filenames such as --help unambiguous.
-			if len(args) > 1 && args[1] == "--" {
-				args = append([]string{args[0]}, args[2:]...)
-			} else {
-				for _, a := range args[1:] {
-					if strings.HasPrefix(a, "-") {
-						return 2, usage("use %s -- %s for a path beginning with '-'", args[0], a)
-					}
+	switch args[0] {
+	case "help":
+		return 0, showHelp(args[1:], os.Stdout)
+	case "-h", "--help":
+		return 0, showHelp(nil, os.Stdout)
+	case "-V", "--version":
+		if len(args) != 1 {
+			return 2, usage("--version takes no arguments")
+		}
+		fmt.Println("sshore", version)
+		return 0, nil
+	case "approve":
+		return runApprove(args[1:])
+	case "forward":
+		if _, err := parseForward(args[1:]); err != nil {
+			return 2, err
+		}
+		return 0, serverCommand(args)
+	case "upload", "download", "detach":
+		// -- makes filenames such as --help unambiguous.
+		if len(args) > 1 && args[1] == "--" {
+			args = append([]string{args[0]}, args[2:]...)
+		} else {
+			for _, a := range args[1:] {
+				if strings.HasPrefix(a, "-") {
+					return 2, usage("use %s -- %s for a path beginning with '-'", args[0], a)
 				}
 			}
-			return 0, serverCommand(args)
-		case "bridge", "resume", "daemon", "sessions", "bootstrap":
-			return 0, serverCommand(args)
 		}
+		return 0, serverCommand(args)
+	case "bridge", "resume", "daemon", "sessions", "bootstrap":
+		return 0, serverCommand(args)
 	}
 	o, err := parseOptions(args)
 	if errors.Is(err, errHelp) {
-		return 0, showHelp(nil, os.Stdout)
+		return 0, showHelp(args[:1], os.Stdout)
 	}
 	if err != nil {
 		return 2, err

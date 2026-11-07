@@ -120,11 +120,16 @@ func (b *bridgeConn) close() {
 	_ = b.cmd.Process.Kill()
 	_ = b.cmd.Wait()
 }
-func (e *testEnv) bridge(name string) *bridgeConn {
+func (e *testEnv) bridge(name string, modes ...string) *bridgeConn {
 	e.t.Helper()
 	cmd := exec.Command(e.bin, "bridge", name)
-	if name == "" {
-		cmd = exec.Command(e.bin, "bootstrap", e.bin, "bridge", "")
+	mode := "bridge"
+	if len(modes) > 0 {
+		mode = modes[0]
+	}
+	bootstrap := name == "" || len(modes) > 0
+	if bootstrap {
+		cmd = exec.Command(e.bin, "bootstrap", e.bin, mode, name)
 	}
 	cmd.Env = e.env
 	in, err := cmd.StdinPipe()
@@ -139,7 +144,7 @@ func (e *testEnv) bridge(name string) *bridgeConn {
 	if err = cmd.Start(); err != nil {
 		e.t.Fatal(err)
 	}
-	if name == "" {
+	if bootstrap {
 		if m := recv(e.t, out); m.Type != "setup_ready" {
 			e.t.Fatalf("automatic setup: %+v", m)
 		}
@@ -181,10 +186,14 @@ func sendTest(t *testing.T, w io.Writer, m message) {
 		t.Fatal(err)
 	}
 }
-func (e *testEnv) attach(name string) (*bridgeConn, int) {
+func (e *testEnv) attach(name string, modes ...string) (*bridgeConn, int) {
 	e.t.Helper()
-	b := e.bridge(name)
-	sendTest(e.t, b.in, message{Type: "attach", Cols: 80, Rows: 24, Term: "xterm"})
+	b := e.bridge(name, modes...)
+	action := ""
+	if len(modes) > 0 && modes[0] == "attach" {
+		action = "existing"
+	}
+	sendTest(e.t, b.in, message{Type: "attach", Action: action, Cols: 80, Rows: 24, Term: "xterm"})
 	m := recv(e.t, b.out)
 	if m.Type != "ready" {
 		e.t.Fatalf("attach: %+v", m)
@@ -575,4 +584,67 @@ func TestExplicitDetachControlPreservesSession(t *testing.T) {
 	untilType(t, next.tty, "exit")
 	next.close()
 	waitSessionEnded(t, e, "stay", pid)
+}
+
+// Public creation and attachment use distinct bootstrap modes. All subprocesses
+// come from testBinary (-tags=sshoretest) and use newEnv's isolated runtime.
+func TestNewAndAttachLifecycle(t *testing.T) {
+	e := newEnv(t)
+	expectFailure := func(mode, name, contains string) {
+		t.Helper()
+		cmd := exec.Command(e.bin, "bootstrap", e.bin, mode, name)
+		cmd.Env = e.env
+		data, err := cmd.Output()
+		if err == nil {
+			t.Fatalf("%s %s succeeded unexpectedly", mode, name)
+		}
+		m, err := readMessage(bytes.NewReader(data))
+		if err != nil || m.Type != "fatal" || !strings.Contains(m.Error, contains) {
+			t.Fatalf("%s %s: %+v %v", mode, name, m, err)
+		}
+	}
+	expectFailure("attach", "missing", "does not exist")
+	expectFailure("attach", "", "no detached sessions")
+	first, pid := e.attach("build", "new")
+	expectFailure("new", "build", "already exists")
+	expectFailure("attach", "", "no detached sessions")
+	sendTest(t, first.in, message{Type: "detach"})
+	untilType(t, first.out, "detached")
+	first.close()
+	expectFailure("new", "build", "already exists")
+	resumed, resumedPID := e.attach("", "attach")
+	if resumedPID != pid {
+		t.Fatal("attach created another shell")
+	}
+	sendTest(t, resumed.in, message{Type: "detach"})
+	untilType(t, resumed.out, "detached")
+	resumed.close()
+	second, _ := e.attach("other", "new")
+	sendTest(t, second.in, message{Type: "detach"})
+	untilType(t, second.out, "detached")
+	second.close()
+	// Observe the real multi-session offer, then cancel by closing the transport.
+	cmd := exec.Command(e.bin, "bootstrap", e.bin, "attach", "")
+	cmd.Env = e.env
+	in, _ := cmd.StdinPipe()
+	out, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	m := recv(t, out)
+	if m.Type != "session_choice" || strings.Join(m.Names, ",") != "build,other" {
+		t.Fatalf("choice: %+v", m)
+	}
+	in.Close()
+	cmd.Wait()
+	out.Close()
+	for _, name := range []string{"build", "other"} {
+		b, gotPID := e.attach(name, "attach")
+		if name == "build" && gotPID != pid {
+			t.Fatal("selection cancellation lost session")
+		}
+		sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
+		untilType(t, b.tty, "exit")
+		b.close()
+	}
 }

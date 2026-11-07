@@ -98,3 +98,38 @@ func TestCompareReleaseVersions(t *testing.T) {
 		}
 	}
 }
+
+func TestAttachSessionSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		answers  []string
+		want     string
+		closeErr error
+	}{
+		{name: "choose", answers: []string{"0", "3", "2"}, want: "eevee"},
+		{name: "cancel", answers: []string{""}},
+		{name: "eof"},
+		{name: "restore", answers: []string{"1"}, closeErr: errors.New("restore failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var incoming, outgoing bytes.Buffer
+			writeMessage(&incoming, message{Type: "session_choice", SoftwareVersion: version, Names: []string{"pikachu", "eevee"}})
+			writeMessage(&incoming, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed"})
+			input := &stubSetupInput{answers: tc.answers, closeErr: tc.closeErr}
+			err := negotiateSetupWithInput(&incoming, &outgoing, &options{command: "attach"}, func() (setupInput, error) { return input, nil })
+			if !input.closed {
+				t.Fatal("input left open")
+			}
+			if tc.want == "" {
+				if err == nil || outgoing.Len() != 0 {
+					t.Fatalf("cancelled selection sent: %v", err)
+				}
+				return
+			}
+			m, readErr := readMessage(&outgoing)
+			if err != nil || readErr != nil || m.Type != "session_select" || m.Name != tc.want {
+				t.Fatal(m, err, readErr)
+			}
+		})
+	}
+}

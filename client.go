@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -151,6 +152,9 @@ func runClient(o options) (int, error) {
 		termName = "xterm-256color"
 	}
 	action := ""
+	if o.command == "attach" {
+		action = "existing"
+	}
 	if len(o.approved) > 0 {
 		action = "approved"
 	}
@@ -242,7 +246,7 @@ func runClient(o options) (int, error) {
 	} else {
 
 		logf(os.Stderr, logSuccess, "[sshore] Connected %s / %s (PID %d)\r\n", cleanText(o.host), o.session, pid)
-		logf(os.Stderr, logInfo, "[sshore] Reconnect with --session %s\r\n", o.session)
+		logf(os.Stderr, logInfo, "[sshore] Reconnect: %s\r\n", reconnectCommand(o))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -448,7 +452,7 @@ func runClient(o options) (int, error) {
 					}
 				case "detached":
 					_ = streamMessage(control, message{Type: "bye"})
-					notice(logSuccess, "\r\n[sshore] Detached\r\n")
+					notice(logSuccess, "\r\n[sshore] Detached; remote programs keep running.\r\nReconnect: %s\r\n", reconnectCommand(o))
 					return 0, nil
 				case "exit":
 					return e.m.Code, nil
@@ -475,4 +479,29 @@ func detachControl(control *smux.Stream) error {
 		return fmt.Errorf("unexpected detach response: %s", m.Type)
 	}
 	return streamMessage(control, message{Type: "bye"})
+}
+
+// Retain transport options in the reconnect hint, including custom ports and keys.
+// Use POSIX shell quoting on Linux and PowerShell quoting on Windows.
+func reconnectCommand(o options) string {
+	quote := func(s string) string {
+		if s != "" && strings.IndexFunc(s, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("@%_+=:,./-", r))
+		}) < 0 {
+			return s
+		}
+		if runtime.GOOS == "windows" {
+			return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+		}
+		return shellQuote(s)
+	}
+	args := []string{"sshore", "attach", o.host, o.session}
+	args = append(args, o.ssh...)
+	if o.server != "" && o.server != "sshore" {
+		args = append(args, "--server", o.server)
+	}
+	for i := range args {
+		args[i] = quote(args[i])
+	}
+	return strings.Join(args, " ")
 }

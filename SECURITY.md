@@ -27,7 +27,7 @@ flowchart LR
     record -->|"Consume once"| approve
     approve -->|"New SSH connection"| gate
     setup <-->|"Exact version / setup choice"| gate
-    setup -->|"Setup lock, reserve unused name or explicit session"| program
+    setup -->|"Setup lock: new reserves unused name; attach requires existing session"| program
     gate -->|"Unchanged setup and matching shell PID"| resources
     resources <-->|"Client-initiated approved streams"| service
     gate -->|"Updated setup or recovery: skip operations"| user
@@ -35,7 +35,7 @@ flowchart LR
 
 Remote terminal output is untrusted. It can imitate local messages, but cannot itself grant approval. Sensitive prompts run after the connected client exits, from a **separate local invocation**. Do not invoke approval or enter credentials merely because remote output asks you to.
 
-Automatic names reserve a fresh session, including when other sessions are detached. Explicit names may resume a session, but never evict its attached client. Session listings show same-user process descendants with sanitized names and PIDs; they do not expose command-line arguments or environment variables.
+`new` reserves a fresh session, with an automatic or explicit name, including when other sessions are detached. `attach` requires an existing session and never evicts its attached client. Selection without a name lists detached sessions; setup and exclusive attachment are rechecked after selection without holding the account lock while waiting for user input. Session listings show same-user process descendants with sanitized names and PIDs; they do not expose command-line arguments or environment variables.
 
 ## Local approval
 

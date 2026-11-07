@@ -146,7 +146,7 @@ LogLevel ERROR
             wrapper.chmod(0o700)
             known = root / "known_hosts"
             known.write_text(f"[127.0.0.1]:{port} " + hostkey.with_suffix(".pub").read_text())
-            command = [binary, pwd.getpwuid(os.getuid()).pw_name + "@127.0.0.1", "-p", str(port),
+            command = [binary, "new", pwd.getpwuid(os.getuid()).pw_name + "@127.0.0.1", "-p", str(port),
                        "-i", str(key), "-F", "/dev/null", "-o", "IdentitiesOnly=yes",
                        "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known}",
                        "--server", str(wrapper)]
@@ -161,13 +161,13 @@ LogLevel ERROR
                 auto.close()
                 terms.remove(auto)
             for name in ("pikachu", "eevee"):
-                auto = Terminal(base_command + ["-s", name])
+                auto = Terminal([binary, "attach"] + base_command[2:] + [name])
                 terms.append(auto)
                 auto.send("exit\n")
                 auto.wait()
                 auto.close()
                 terms.remove(auto)
-            command = base_command + ["-s", "main"]
+            command = [binary, "attach"] + base_command[2:] + ["main"]
             # Native forwarding, compression and diagnostics are passed to the
             # same interactive OpenSSH process, including attached value forms.
             native_ports = []
@@ -194,7 +194,7 @@ LogLevel ERROR
                             peer.sendall(peer.recv(1024))
                 worker = threading.Thread(target=echo_connections, daemon=True)
                 worker.start()
-                term = Terminal(command + [
+                term = Terminal([binary, "new"] + command[2:] + [
                     "-C", "-vvv", "-E", str(ssh_log),
                     f"-L127.0.0.1:{local_port}:127.0.0.1:{service_port}",
                     "-R", f"127.0.0.1:{reverse_port}:127.0.0.1:{service_port}",
@@ -228,7 +228,7 @@ LogLevel ERROR
             term.expect("RUN_sleep")
             deadline = time.monotonic() + 5
             while True:
-                listing = subprocess.check_output(base_command + ["list"], text=True)
+                listing = subprocess.check_output([binary, "list"] + base_command[2:], text=True)
                 assert "FOREGROUND" in listing
                 if re.search(r"^main\s+.*\bsleep\b", listing, re.MULTILINE):
                     break

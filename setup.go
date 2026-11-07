@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 )
 
 type setupProcess struct {
@@ -54,6 +56,44 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, o *options, openInput fun
 				return fmt.Errorf("invalid setup mode")
 			}
 			return nil
+		case "session_choice":
+			if o.command != "attach" || o.session != "" || len(m.Names) < 2 || len(m.Names) > 128 {
+				return fmt.Errorf("unexpected session selection")
+			}
+			for i, name := range m.Names {
+				if err := validSession(name); err != nil {
+					return err
+				}
+				logf(os.Stderr, logInfo, "  %d. %s [detached]\n", i+1, name)
+			}
+			input, err := openInput()
+			if err != nil {
+				return err
+			}
+			var selected string
+			for {
+				answer, readErr := input.Read("Select session number (Enter cancels): ", false)
+				if readErr != nil {
+					input.Close()
+					return readErr
+				}
+				if answer == "" {
+					input.Close()
+					return fmt.Errorf("session selection cancelled")
+				}
+				n, err := strconv.Atoi(strings.TrimSpace(answer))
+				if err == nil && n >= 1 && n <= len(m.Names) {
+					selected = m.Names[n-1]
+					break
+				}
+				logf(os.Stderr, logWarning, "Choose a number from 1 to %d.\n", len(m.Names))
+			}
+			if err := input.Close(); err != nil {
+				return err
+			}
+			if err := writeMessage(w, message{Type: "session_select", Name: selected}); err != nil {
+				return err
+			}
 		case "setup_choice":
 			if m.Action != "update" && m.Action != "manual-only" {
 				return fmt.Errorf("invalid setup choice")

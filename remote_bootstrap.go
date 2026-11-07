@@ -34,6 +34,9 @@ const newerReleaseAWK = `END {
 // even an old server can offer an interactive, nonpersistent recovery shell.
 func remoteCommand(o options) string {
 	mode := "bridge"
+	if o.command == "new" || o.command == "attach" {
+		mode = o.command
+	}
 	if len(o.approved) > 0 {
 		mode = "resume"
 	}

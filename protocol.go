@@ -23,6 +23,7 @@ const (
 
 // Control metadata uses JSON. Terminal and file bytes never undergo text encoding.
 type message struct {
+	Names           []string       `json:"names,omitempty"`
 	SetupProcesses  []setupProcess `json:"setup_processes,omitempty"`
 	SoftwareVersion string         `json:"software_version,omitempty"`
 	Operations      []operation    `json:"operations,omitempty"`

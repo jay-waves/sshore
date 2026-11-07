@@ -41,8 +41,8 @@ func TestRemoteFallbackAndArgumentQuoting(t *testing.T) {
 	home := t.TempDir()
 	bin := filepath.Join(home, ".local", "bin", "sshore")
 	writeBootstrapStub(t, bin, version)
-	for _, mode := range []string{"bridge", "resume", "sessions"} {
-		o := options{server: "sshore", session: "main", list: mode == "sessions"}
+	for _, mode := range []string{"bridge", "resume", "sessions", "new", "attach"} {
+		o := options{server: "sshore", session: "main", list: mode == "sessions", command: mode}
 		if mode == "resume" {
 			o.approved = []operation{{Kind: "forward", Port: 80}}
 		}
