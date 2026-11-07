@@ -267,6 +267,28 @@ and assets remain unchanged.
 NOTES
 fi
 
+if [[ "$version" == "0.5.1" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Separate session commands: `sshore new HOST [NAME]`, `sshore list HOST`, and `sshore attach HOST [NAME]`.
+- New only creates sessions and rejects occupied names; attach only resumes existing sessions and never takes over an attached client.
+- Omit the attach name to resume the only detached session or choose from several on the same SSH connection. No detached sessions means an error, not a new shell.
+- Add command-specific help, including `sshore new --help`, `sshore list --help`, `sshore attach --help`, and `sshore help COMMAND`.
+- Print a copyable reconnect command after detach, preserving SSH connection options.
+- Update documentation, lifecycle diagrams and targeted regression tests.
+
+Breaking CLI change: `sshore HOST`, `sshore connect HOST`, `sshore HOST list`,
+and `-s`/`--session` are no longer accepted. Use `new`, `list`, or `attach`.
+Only explicit detach preserves remote work; exit or detected connection loss
+ends the session, as in 0.5.0.
+
+Client and remote versions must match exactly. Updating existing older sessions
+ends their tasks only after you review the list and type update. Existing releases
+and assets remain unchanged.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Skipping release: $tag is already published; releases and assets are immutable."
