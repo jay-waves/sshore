@@ -20,6 +20,8 @@ flowchart LR
         resources["Selected files / loopback listener"]
     end
     program -->|"Request metadata over SSH"| client
+    client -->|"Explicit detach: preserve session"| program
+    client -->|"Detected transport loss: close PTY, end session"| program
     client -->|"Validate, save, detach"| record
     user -->|"Review and explicit consent"| approve
     record -->|"Consume once"| approve
@@ -33,7 +35,7 @@ flowchart LR
 
 Remote terminal output is untrusted. It can imitate local messages, but cannot itself grant approval. Sensitive prompts run after the connected client exits, from a **separate local invocation**. Do not invoke approval or enter credentials merely because remote output asks you to.
 
-Automatic names reserve a fresh session, including when other sessions are detached. Explicit names may resume a session, but never evict its attached client. Artwork is bundled local text selected from a fixed roster; its terminal controls are limited to foreground colors and resets, checked by tests. It grants no trust or approval.
+Automatic names reserve a fresh session, including when other sessions are detached. Explicit names may resume a session, but never evict its attached client. Session listings show same-user process descendants with sanitized names and PIDs; they do not expose command-line arguments or environment variables.
 
 ## Local approval
 
@@ -63,7 +65,7 @@ OpenSSH owns passwords, keys, agents, MFA and host-key checks. No separate appro
 
 Transfers check size and SHA-256, which verifies integrity rather than provenance or safety. Downloaded content and forwarded services may be malicious. Avoid destinations that automatically load new scripts or configuration; an approved large file can still fill the disk. Only regular files are supported; metadata is not copied. Linux received files default to `0600`; Windows files inherit the destination directory ACL.
 
-Cancellation removes incomplete files when cleanup can run. Forced termination may leave `.sshore-*.part` files; batch failure does not undo completed files. During approved operations and `--stay`, remote terminal output is suppressed. Detach/disconnection cancels connection-owned transfers and dynamic forwards, while the remote shell keeps running.
+Cancellation removes incomplete files when cleanup can run. Forced termination may leave `.sshore-*.part` files; batch failure does not undo completed files. During approved operations and `--stay`, remote terminal output is suppressed. Detach/disconnection cancels connection-owned transfers and dynamic forwards. Only explicit detach preserves the remote session (including approval-request detach and completed file operations with `--stay`). Other transport loss closes the PTY and ends the daemon when detected. This uses normal terminal hangup semantics, not process-tree extermination: programs that ignore hangup or deliberately escape the terminal may survive, as with SSH. It does not promise cleanup of arbitrary reparented tasks.
 
 Native SSH `-L`, `-R`, `-D`, agent forwarding and other configuration are explicit local policy, outside remote-request approval. They are reused on reconnect; `-R` can expose a local service to the remote host. Do not bypass host-key checks.
 

@@ -210,7 +210,10 @@ func runClient(o options) (int, error) {
 					return stayWithForwards(mux, control, terminal)
 				}
 			}
-			// Closing this owned SSH transport releases attachment, not the shell.
+			// --stay explicitly detaches after completed file operations.
+			if err = detachControl(control); err != nil {
+				return 1, err
+			}
 			logf(os.Stderr, logSuccess, "[sshore] Approved operations complete. Staying local; remote shell is still running.\n")
 			return 0, nil
 		}
@@ -237,9 +240,7 @@ func runClient(o options) (int, error) {
 	if o.plain {
 		logf(os.Stderr, logWarning, "[sshore] Recovery shell on %s (no sshore features).\r\nExit and reconnect to resume normal use.\r\n", cleanText(o.host))
 	} else {
-		if art := sessionArt(o.session); art != "" && !o.quiet && terminalLogColor(os.Stderr) {
-			fmt.Fprint(os.Stderr, strings.ReplaceAll(art, "\n", "\r\n"))
-		}
+
 		logf(os.Stderr, logSuccess, "[sshore] Connected %s / %s (PID %d)\r\n", cleanText(o.host), o.session, pid)
 		logf(os.Stderr, logInfo, "[sshore] Reconnect with --session %s\r\n", o.session)
 	}
@@ -352,7 +353,7 @@ func runClient(o options) (int, error) {
 		case <-signals:
 			return 130, nil
 		case <-detachTimeout:
-			return 255, fmt.Errorf("detach response timed out; reconnect to the same session")
+			return 255, fmt.Errorf("detach response timed out; session preservation is unconfirmed")
 		case <-ticker.C:
 			c, r, e := term.GetSize(int(os.Stdout.Fd()))
 			if e == nil && (c != cols || r != rows) {
@@ -406,7 +407,7 @@ func runClient(o options) (int, error) {
 				continue
 			}
 			if e.err != nil {
-				return 255, fmt.Errorf("connection ended; reconnect to the same session: %w", e.err)
+				return 255, fmt.Errorf("connection ended without detach; remote session is closing: %w", e.err)
 			} else if e.input != nil {
 				if detaching {
 					continue
@@ -422,7 +423,7 @@ func runClient(o options) (int, error) {
 				select {
 				case inputQueue <- e.input:
 				default:
-					return 255, fmt.Errorf("terminal input stalled; reconnect to the same session")
+					return 255, fmt.Errorf("terminal input stalled; closing remote session")
 				}
 			} else {
 				switch e.m.Type {
@@ -457,4 +458,21 @@ func runClient(o options) (int, error) {
 			}
 		}
 	}
+}
+
+// detachControl is used before an interactive control reader has started.
+func detachControl(control *smux.Stream) error {
+	_ = control.SetDeadline(time.Now().Add(5 * time.Second))
+	defer control.SetDeadline(time.Time{})
+	if err := streamMessage(control, message{Type: "detach"}); err != nil {
+		return err
+	}
+	m, err := readMessage(control)
+	if err != nil {
+		return err
+	}
+	if m.Type != "detached" {
+		return fmt.Errorf("unexpected detach response: %s", m.Type)
+	}
+	return streamMessage(control, message{Type: "bye"})
 }

@@ -23,14 +23,14 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.4.6"
+var version = "0.5.0"
 
 const help = `sshore — persistent shells and file transfer over one SSH connection
 
 Usage:
   sshore HOST [-s SESSION] [options]
   sshore connect HOST [-s SESSION] [options]
-  sshore HOST list [SSH options]
+  sshore HOST list [SSH options]  # Session states and ASCII process trees
   sshore approve [ID] [--attach | --stay]
   sshore approve --list
   sshore approve ID --reject
@@ -46,7 +46,7 @@ Options (before or after HOST):
   -s, --session NAME             Create or resume NAME (default: new Pokemon session)
   --server PATH                  Remote executable (default: PATH, then ~/.local/bin/sshore)
   --download-dir DIRECTORY       Default download directory (approval still required)
-  -q, --quiet                    Hide session art and periodic transfer progress
+  -q, --quiet                    Hide periodic transfer progress
   --no-escape                    Forward Ctrl-] instead of detaching locally
   -p PORT  -i KEY  -J JUMP  -F CONFIG  -l USER  -o OPTION
   -L SPEC  -R SPEC  -D ADDRESS   Pass forwarding options to OpenSSH
@@ -58,6 +58,7 @@ Options (before or after HOST):
 Omit -s to create a new Pokemon-named session; use -s NAME to reconnect.
 Detached sessions keep their names. If all names are busy, choose your own -s NAME.
 Ctrl-] detaches; Ctrl-C goes to the remote program. No screen replay.
+Only explicit detach preserves a session; exit or detected connection loss ends it.
 Upload, download and forward-add requests save a local approval and detach.
 Run sshore approve from your local shell to review, reconnect and execute.
 Requires OpenSSH locally. Missing remote sshore is installed automatically.
@@ -80,8 +81,9 @@ var commandHelp = map[string]string{
 Run from your LOCAL shell after detach. Review one pending request, select
 local file paths and type yes. Authentication remains with system OpenSSH.
 --attach (default) executes approved operations and resumes the remote shell.
---stay completes file operations and returns to the local shell. For a port
-forward it runs a foreground tunnel until Ctrl-C, without remote terminal I/O.
+--stay completes file operations, detaches and returns to the local shell.
+For a port forward it runs a foreground tunnel without remote terminal I/O;
+Ctrl-C closes the tunnel and ends the remote session.
 Omit ID only when exactly one unexpired request exists. Requests expire after
 10 minutes and are consumed before connecting, even when execution fails.
 No SSH passwords or separate approval passwords are stored or collected.

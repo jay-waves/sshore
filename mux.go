@@ -7,6 +7,8 @@ package main
 // in place. Each stream has a 256 KiB receive window, a bounded shared receive
 // budget and a 16 KiB maximum frame size. These isolate stalled streams without
 // guaranteeing real-time terminal priority: TCP head-of-line blocking still applies.
+// Keepalives detect silent transport loss (10s interval, 60s timeout); detection
+// ends an attached session rather than granting an implicit detach.
 
 import (
 	"fmt"

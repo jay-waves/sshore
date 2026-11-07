@@ -253,6 +253,8 @@ func relayForward(ctx context.Context, c net.Conn, st *smux.Stream) {
 
 func serveForwardStreams(ctx context.Context, mux *smux.Session) {
 	slots := make(chan struct{}, maxForwardConnections)
+	var workers sync.WaitGroup
+	defer workers.Wait()
 	for {
 		st, err := mux.AcceptStream()
 		if err != nil {
@@ -264,7 +266,9 @@ func serveForwardStreams(ctx context.Context, mux *smux.Session) {
 			_ = st.Close()
 			continue
 		}
+		workers.Add(1)
 		go func() {
+			defer workers.Done()
 			defer func() { <-slots; _ = st.Close() }()
 			abort := context.AfterFunc(ctx, func() { _ = st.SetDeadline(time.Now()); _ = st.Close() })
 			defer abort()

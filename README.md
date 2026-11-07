@@ -13,12 +13,12 @@ sshore myserver                 # New session with an automatic Pokemon name.
 # Press Ctrl-] to detach and keep programs running.
 sshore myserver -s pikachu      # Resume the name printed when connecting.
 sshore myserver -s build         # Use a separate named session.
-sshore myserver list             # List sessions and foreground programs.
+sshore myserver list             # List session states and process trees.
 ```
 
-Uses your normal SSH aliases, keys and authentication. Inside the remote shell, `sshore detach` also detaches; `exit` ends the session. Multiple connections to a host use separate sessions; only one client can attach to each session at a time. Without `-s`, every connection creates a new session, including after a disconnect. Use the printed name to reconnect.
+Uses your normal SSH aliases, keys and authentication. Inside the remote shell, `sshore detach` also detaches; `exit` ends the session. Only explicit detach preserves a session: closing the local terminal or losing the connection ends it once the disconnect is detected, as with SSH. Multiple connections to a host use separate sessions; only one client can attach to each session at a time. Without `-s`, every connection creates a new session, including after a disconnect. Use the printed name to resume an explicitly detached session.
 
-Automatic names come from 24 familiar Pokemon, starting with `pikachu`, `eevee`, `bulbasaur`, `charmander`, `squirtle`, `snorlax`, `psyduck` and `gengar`. Each has a bundled color Unicode sprite on connection in a color-capable terminal. `-q` or `NO_COLOR=1` hides the sprite; monochrome and redirected output show only connection text. Detached sessions keep their names. If all 24 are in use, choose any custom name with `-s NAME`.
+Automatic names come from 24 familiar Pokemon, starting with `pikachu`, `eevee`, `bulbasaur`, `charmander`, `squirtle`, `snorlax`, `psyduck` and `gengar`. Detached sessions keep their names. If all 24 are in use, choose any custom name with `-s NAME`.
 
 ```mermaid
 flowchart LR
@@ -27,13 +27,28 @@ flowchart LR
     setup --> select["No -s: new Pokemon name / -s NAME: create or resume"]
     select --> session["Persistent Linux session"]
     setup -->|"Unknown version or chosen recovery"| recovery["Temporary recovery shell"]
-    session --> detach["Detach: programs keep running"]
+    session --> detach["Explicit detach: programs keep running"]
+    session --> ended["Exit or detected connection loss: session ends"]
     detach --> resume["Reconnect: sshore HOST -s NAME"]
     resume --> ssh
     session --> request["Request files or a port; detach"]
     request --> approve["Local: sshore approve"]
     approve -->|"Review, approve, reconnect"| ssh
 ```
+
+`sshore HOST list` lists each session and its shell/process tree:
+
+```text
+charmander [attached]
+`-- 2602271 bash
+    `-- 2602398 codex [foreground]
+
+pikachu [detached]
+`-- 2451576 bash [foreground]
+```
+
+PIDs identify processes; branches show parent/child relationships. `[foreground]`
+marks the programs currently using the remote terminal. Only process names are shown.
 
 ## Install
 
@@ -76,7 +91,7 @@ Put recurring connection settings in `~/.ssh/config`. Run `sshore --help` for al
 | `--server PATH` | Remote executable; default: PATH, then `~/.local/bin/sshore` |
 | `--download-dir DIR` | Default local save directory; approval still required |
 | `--no-escape` | Send Ctrl-] to the remote program |
-| `-q` | Hide session art and periodic transfer progress |
+| `-q` | Hide periodic transfer progress |
 | `-V` / `-h` | Version / help |
 
 ## Transfer files
@@ -94,7 +109,7 @@ The request detaches you; your remote programs keep running. **In your local she
 
 ```sh
 sshore approve                  # Review, choose local paths, transfer, reconnect.
-sshore approve --stay           # Transfer and remain local.
+sshore approve --stay           # Transfer, explicitly detach, and remain local.
 sshore approve --list            # List pending requests.
 sshore approve ID --reject       # Discard a request.
 ```
@@ -113,7 +128,7 @@ Transfers support regular files only and never overwrite an existing destination
 sshore forward 3000
 ```
 
-Then run `sshore approve` locally and open `http://127.0.0.1:3000`. Use `sshore approve --stay` to keep the tunnel in the local foreground; Ctrl-C closes it.
+Then run `sshore approve` locally and open `http://127.0.0.1:3000`. Use `sshore approve --stay` to keep the tunnel in the local foreground; Ctrl-C closes it and ends the remote session.
 
 Dynamic forwards use the same local and remote TCP port on IPv4 loopback. Detaching or disconnecting closes them; reconnecting does not restore them. In the remote shell, `sshore forward --list` lists rules and `sshore forward --stop 3000` closes one. A new request detaches and closes the previous rule.
 
@@ -144,7 +159,7 @@ Unknown versions or a failing remote version check require manual recovery. Pend
 | Session already attached | Use a different `-s NAME` or omit `-s` for a new session; detach the current client to resume that same session. |
 | Screen looks stale after reconnecting | Press Ctrl-L or use the application's redraw command. |
 | Missing output while disconnected | Expected: screens, scrollback and detached output are not saved. |
-| Session disappeared | Shell exit, reboot or system session-cleanup policies can end it. |
+| Session disappeared | Shell exit, connection loss without detach, reboot or system cleanup can end it. |
 | Transfer destination exists | Choose another filename; overwriting is disabled. |
 | Forwarded port fails | Check that the local port is free and the remote service is running. |
 | SSH / connection failure | Try `sshore HOST -vvv -E ./ssh-debug.log`; keep noninteractive shell startup output quiet. |
@@ -158,6 +173,6 @@ Read [SECURITY.md](SECURITY.md) for approval boundaries, update safeguards and r
 
 Build from source with Go 1.25+: `go build -o dist/sshore .`. Source builds need matching binaries on both ends. CI builds Linux/Windows amd64 and publishes main; full tests run manually via [Actions → Tests → Run workflow](https://github.com/jay-waves/sshore/actions/workflows/tests.yml).
 
-Inspired by [dtach](https://github.com/crigler/dtach), the original `dssh.nu` prototype and [trzsz](https://github.com/trzsz/trzsz). Terminal Pokemon artwork comes from [pokemon-colorscripts](https://gitlab.com/phoneybadger/pokemon-colorscripts) by Phoney badger, vendored from the [Findarato mirror](https://github.com/Findarato/pokemon-colorscripts); see [third-party notices](THIRD_PARTY_NOTICES.txt). Uses [OpenSSH](https://www.openssh.com/), [smux](https://github.com/xtaci/smux) and [creack/pty](https://github.com/creack/pty). sshore does not interoperate with SFTP or trzsz.
+Inspired by [dtach](https://github.com/crigler/dtach), the original `dssh.nu` prototype and [trzsz](https://github.com/trzsz/trzsz). Uses [OpenSSH](https://www.openssh.com/), [smux](https://github.com/xtaci/smux) and [creack/pty](https://github.com/creack/pty). sshore does not interoperate with SFTP or trzsz.
 
 [MIT license](LICENSE). Dependencies retain their own licenses; versions are in [go.mod](go.mod).

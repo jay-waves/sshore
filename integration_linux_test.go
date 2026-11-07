@@ -3,7 +3,7 @@ package main
 // Run repository checks with go test -race ./... and go vet ./.... These Linux
 // integration tests build a race-enabled binary and exercise real session
 // processes: isolation, exclusive attachment, resizing, exit codes, and preserved
-// PID/environment after detach or disconnection. Transfer cases cover both
+// PID/environment after explicit detach, and teardown on disconnection. Transfer cases cover both
 // directions through approved streams, unread-stream isolation, independent
 // cancellation, and cleanup after disconnection. Framing, integrity, overwrite
 // protection, and client worker concurrency also have focused unit tests.
@@ -296,12 +296,6 @@ func TestSessionPersistenceIsolationAndResize(t *testing.T) {
 		t.Fatal("PID changed", pid, pid2)
 	}
 	shellOutput(t, b, "printf 'KEPT_%s\\n' \"$KEEP\"", "KEPT_shore")
-	b.close() // Abrupt transport loss, no detach message.
-	time.Sleep(100 * time.Millisecond)
-	b, pid2 = e.attach("main")
-	if pid2 != pid {
-		t.Fatal("PID changed after EOF")
-	}
 	other, otherPID := e.attach("build")
 	if otherPID == pid {
 		t.Fatal("named sessions share a PID")
@@ -505,10 +499,7 @@ func TestDisconnectCleansBothConcurrentUploads(t *testing.T) {
 	}
 	b.close()
 	waitUploadFiles(t, dir, 0)
-	_, newPID := e.attach("main")
-	if newPID != pid {
-		t.Fatal("disconnect replaced shell")
-	}
+	waitSessionEnded(t, e, "main", pid)
 }
 
 // Automatic connections exercise bootstrap too: an empty name must survive its
@@ -536,4 +527,52 @@ func TestAutomaticSessionsAndNamedResume(t *testing.T) {
 		untilType(t, b.tty, "exit")
 		b.close()
 	}
+}
+
+// A closed transport must hang up the PTY, not silently become a detach.
+func TestDisconnectEndsSession(t *testing.T) {
+	for _, foreground := range []bool{false, true} {
+		t.Run(fmt.Sprint(foreground), func(t *testing.T) {
+			e := newEnv(t)
+			b, pid := e.attach("lost")
+			if foreground {
+				shellOutput(t, b, "stty -echo; sh -c 'printf JOB_%s ready; exec sleep 300'", "JOB_ready")
+			}
+			b.close()
+			waitSessionEnded(t, e, "lost", pid)
+		})
+	}
+}
+
+func waitSessionEnded(t *testing.T, e *testEnv, name string, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_, socketErr := os.Stat(filepath.Join(e.dir, name+".sock"))
+		stat, processErr := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		// An orphan awaiting reaping is no longer a running shell.
+		dead := os.IsNotExist(processErr) || strings.Contains(string(stat), ") Z ")
+		if os.IsNotExist(socketErr) && dead {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("session %s (shell %d) survived connection loss", name, pid)
+}
+
+func TestExplicitDetachControlPreservesSession(t *testing.T) {
+	e := newEnv(t)
+	b, pid := e.attach("stay")
+	if err := detachControl(b.in.(*smux.Stream)); err != nil {
+		t.Fatal(err)
+	}
+	b.close()
+	next, resumedPID := e.attach("stay")
+	if resumedPID != pid {
+		t.Fatal("explicit detach replaced shell")
+	}
+	sendTest(t, next.tty, message{Type: "input", Data: []byte("exit\n")})
+	untilType(t, next.tty, "exit")
+	next.close()
+	waitSessionEnded(t, e, "stay", pid)
 }

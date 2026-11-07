@@ -245,6 +245,28 @@ preserves the SSH connection without executing pending approvals.
 NOTES
 fi
 
+if [[ "$version" == "0.5.0" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Remove bundled Pokemon pixel artwork; retain automatic session names.
+- Show session status and shell/task ancestry as an ASCII process tree, with PIDs and foreground markers.
+- Only explicit detach preserves a remote session. Closing the local terminal or losing the connection ends the session when transport loss is detected, using normal SSH-style PTY hangup semantics.
+- Keep explicit detach for approval requests and completed file operations with --stay; Ctrl-C in a --stay port tunnel now ends the remote session too.
+- Drain cancelled transfer workers before daemon shutdown so incomplete uploads can be removed.
+- Update connection failure messages, CLI help, lifecycle diagrams and regression coverage.
+
+Breaking behavior change: unexpected disconnection no longer saves the session.
+Use Ctrl-] or `sshore detach` before leaving work running. Existing transport
+keepalives detect silent connection loss; there is no reconnect grace period.
+Programs deliberately ignoring or escaping terminal hangup may survive, as with SSH.
+
+Client and remote versions must match exactly. Updating existing older sessions
+ends their tasks only after you review the list and type update. Existing releases
+and assets remain unchanged.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Skipping release: $tag is already published; releases and assets are immutable."

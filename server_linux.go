@@ -6,10 +6,12 @@ package main
 // listening network port. The bridge connects SSH stdin/stdout to a Unix socket,
 // starting the daemon as needed. Only one client can attach. Names are 1-48 ASCII
 // letters, digits, underscores or hyphens and begin with a letter or digit.
-// Omitted names allocate a fresh mascot session; explicit names create or resume.
+// Omitted names allocate a fresh automatically named session; explicit names create or resume.
 // The daemon drains/discards detached or muted output, so
 // an unread terminal cannot block remote programs. No screen or scrollback is
-// stored. Shell exit ends the session; system cleanup/reboot can also end it.
+// stored. Only explicit detach preserves a session. Transport loss closes the PTY
+// (normal terminal hangup semantics) and stops the daemon; shell exit also ends it.
+// Programs deliberately ignoring/escaping hangup may survive, as with SSH.
 //
 // Runtime selection: SSHORE_RUNTIME_DIR overrides XDG_RUNTIME_DIR/sshore, with
 // /tmp/sshore-UID as fallback. The directory must be current-user-owned and 0700;
@@ -34,7 +36,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	"github.com/creack/pty"
@@ -377,7 +378,18 @@ func (s *session) attach(p *attachment, m message) error {
 }
 func (s *session) release(p *attachment) {
 	p.close()
-	s.clearAttachment(p)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Explicit detach already cleared active. Failed competing attachments must
+	// never end the owner session. Mark it exiting before allowing any reattach.
+	if s.active == p {
+		s.active = nil
+		s.exited = true
+		if s.master != nil {
+			_ = s.master.Close()
+		}
+		s.stop()
+	}
 }
 
 func (s *session) clearAttachment(p *attachment) {
@@ -432,7 +444,20 @@ func (s *session) serveMux(c io.ReadWriteCloser) error {
 	forwardCtx, cancelForwards := context.WithCancel(context.Background())
 	defer cancelForwards()
 	if !s.plain {
-		go serveForwardStreams(forwardCtx, mux)
+		workersDone := make(chan struct{})
+		go func() {
+			defer close(workersDone)
+			serveForwardStreams(forwardCtx, mux)
+		}()
+		defer func() {
+			cancelForwards()
+			p.close()
+			// Let cancelled uploads remove temporary files before daemon exit.
+			select {
+			case <-workersDone:
+			case <-time.After(2 * time.Second):
+			}
+		}()
 	} else {
 		go func() {
 			for {
@@ -643,9 +668,8 @@ func listSessions() error {
 	if err != nil {
 		return err
 	}
-	out := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	defer out.Flush()
-	fmt.Fprintln(out, "SESSION\tPID\tSTATE\tFOREGROUND")
+	out := os.Stdout
+	count := 0
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".sock") {
 			continue
@@ -669,10 +693,15 @@ func listSessions() error {
 		if m.Attached {
 			state = "attached"
 		}
-		if m.Foreground == "" {
-			m.Foreground = "—"
+		if count > 0 {
+			fmt.Fprintln(out)
 		}
-		fmt.Fprintf(out, "%s\t%d\t%s\t%s\n", strings.TrimSuffix(e.Name(), ".sock"), m.PID, state, cleanText(m.Foreground))
+		count++
+		fmt.Fprintf(out, "%s [%s]\n", strings.TrimSuffix(e.Name(), ".sock"), state)
+		fmt.Fprint(out, sessionProcessTree("/proc", m.PID))
+	}
+	if count == 0 {
+		fmt.Fprintln(out, "No sessions")
 	}
 	return nil
 }

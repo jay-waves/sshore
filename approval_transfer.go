@@ -108,7 +108,7 @@ func stayWithForwards(mux *smux.Session, control, terminal *smux.Stream) (int, e
 		return 1, err
 	}
 	defer func() { restore(); _ = flushTerminalInput() }()
-	logf(os.Stderr, logInfo, "[sshore] Forwarding is active. Staying local; Ctrl-C closes forwarding and leaves the remote shell running.\r\n")
+	logf(os.Stderr, logInfo, "[sshore] Forwarding is active. Staying local; Ctrl-C closes forwarding and the remote session.\r\n")
 
 	done := make(chan error, 4)
 	go func() {
@@ -153,7 +153,15 @@ func stayWithForwards(mux *smux.Session, control, terminal *smux.Stream) (int, e
 				done <- fileResponseError(m)
 				return
 			}
-			if m.Type == "detached" || m.Type == "detach_requested" {
+			if m.Type == "detach_requested" {
+				if e := streamMessage(control, message{Type: "detach"}); e != nil {
+					done <- e
+					return
+				}
+				continue
+			}
+			if m.Type == "detached" {
+				_ = streamMessage(control, message{Type: "bye"})
 				done <- nil
 				return
 			}
