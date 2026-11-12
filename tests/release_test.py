@@ -9,7 +9,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/release.sh"
 
 
 class ReleaseTest(unittest.TestCase):
-    def run_release(self, fail=False, stale=False, published=False):
+    def run_release(self, fail=False, stale=False, published=False, annotated=False):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "VERSION").write_text("0.4.1\n")
@@ -24,6 +24,10 @@ with open("calls", "a") as f:
     f.write(json.dumps(args) + "\\n")
 if "git/ref/heads/main" in " ".join(args):
     print("old" if os.environ["STALE"] == "1" else "abc")
+elif "git/matching-refs/tags/v0.4.1" in " ".join(args) and os.environ["ANNOTATED"] == "1":
+    print("tag-object-sha")
+elif "repos/test/repo/commits/v0.4.1" in " ".join(args):
+    print("abc")
 elif args[:2] == ["release", "create"] and os.environ["FAIL"] == "1":
     sys.exit(1)
 elif args[:2] == ["release", "list"] and os.environ["PUBLISHED"] == "1":
@@ -32,7 +36,8 @@ elif args[:2] == ["release", "list"] and os.environ["PUBLISHED"] == "1":
             gh.chmod(0o755)
             env = dict(os.environ, PATH=tmp + os.pathsep + os.environ["PATH"],
                        GH_REPO="test/repo", GITHUB_SHA="abc",
-                       FAIL=str(int(fail)), STALE=str(int(stale)), PUBLISHED=str(int(published)))
+                       FAIL=str(int(fail)), STALE=str(int(stale)), PUBLISHED=str(int(published)),
+                       ANNOTATED=str(int(annotated)))
             result = subprocess.run(["bash", str(SCRIPT)], cwd=root, env=env,
                                     capture_output=True, text=True)
             import json
@@ -50,6 +55,12 @@ elif args[:2] == ["release", "list"] and os.environ["PUBLISHED"] == "1":
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(c[:2] in (["release", "create"], ["release", "upload"],
                                       ["release", "edit"]) for c in calls))
+
+    def test_annotated_tag_is_dereferenced(self):
+        result, calls = self.run_release(annotated=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any("repos/test/repo/commits/v0.4.1" in c for c in calls))
+        self.assertTrue(any(c[:2] == ["release", "create"] for c in calls))
 
     def test_failed_publish_preserves_releases(self):
         result, calls = self.run_release(fail=True)

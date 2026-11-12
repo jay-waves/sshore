@@ -16,13 +16,17 @@ if [[ "$head" != "$GITHUB_SHA" ]]; then
   exit 0
 fi
 
-existing=$(gh api "repos/$GH_REPO/git/matching-refs/tags/$tag" \
+existing_ref=$(gh api "repos/$GH_REPO/git/matching-refs/tags/$tag" \
   --jq ".[] | select(.ref == \"refs/tags/$tag\") | .object.sha")
-if [[ -n "$existing" && "$existing" != "$GITHUB_SHA" ]]; then
-  echo "Skipping release: $tag already belongs to another commit; bump VERSION to publish again."
-  exit 0
-fi
-if [[ -z "$existing" ]]; then
+if [[ -n "$existing_ref" ]]; then
+  # The ref SHA is a tag-object SHA for annotated tags. The commits endpoint
+  # dereferences both annotated and lightweight tags to their commit.
+  existing_commit=$(gh api "repos/$GH_REPO/commits/$tag" --jq '.sha')
+  if [[ "$existing_commit" != "$GITHUB_SHA" ]]; then
+    echo "Skipping release: $tag already belongs to another commit; bump VERSION to publish again."
+    exit 0
+  fi
+else
   gh api --method POST "repos/$GH_REPO/git/refs" \
     -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" > /dev/null
 fi
@@ -295,6 +299,20 @@ if [[ "$version" == "0.5.2" ]]; then
 Changes:
 - Dynamic forwards can target a different remote port or any host reachable from the SSH server, for example `sshore forward 7777:192.168.1.20:6666`.
 - Keep local listeners on `127.0.0.1` and show the approved remote target in confirmation, status and list output.
+
+Client and remote versions must match exactly. Updating existing older sessions
+ends their tasks only after you review the list and type update. Existing releases
+and assets remain unchanged.
+NOTES
+fi
+
+if [[ "$version" == "0.5.3" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Dynamic forwards can target a different remote port or any host reachable from the SSH server, for example `sshore forward 7777:192.168.1.20:6666`.
+- Keep local listeners on `127.0.0.1` and show the approved remote target in confirmation, status and list output.
+- Publish releases correctly when the version uses an annotated Git tag.
 
 Client and remote versions must match exactly. Updating existing older sessions
 ends their tasks only after you review the list and type update. Existing releases
