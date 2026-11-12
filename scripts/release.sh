@@ -289,6 +289,19 @@ and assets remain unchanged.
 NOTES
 fi
 
+if [[ "$version" == "0.5.2" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Dynamic forwards can target a different remote port or any host reachable from the SSH server, for example `sshore forward 7777:192.168.1.20:6666`.
+- Keep local listeners on `127.0.0.1` and show the approved remote target in confirmation, status and list output.
+
+Client and remote versions must match exactly. Updating existing older sessions
+ends their tasks only after you review the list and type update. Existing releases
+and assets remain unchanged.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Skipping release: $tag is already published; releases and assets are immutable."

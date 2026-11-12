@@ -23,7 +23,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.5.1"
+var version = "0.5.2"
 
 const connectionOptions = `Options (before or after HOST):
   --server PATH                 Remote executable (default: PATH, then ~/.local/bin/sshore)
@@ -51,7 +51,7 @@ Inside a remote sshore shell:
   sshore detach                  Disconnect; keep the shell running
   sshore upload [DIRECTORY]      Choose a local file to upload here
   sshore download FILE...        Download one or more remote files
-  sshore forward PORT            Request a loopback port forward
+  sshore forward TARGET          Request a port forward
 
 Help:
   sshore help [COMMAND]
@@ -113,11 +113,12 @@ Omit ID only when exactly one unexpired request exists. Requests expire after
 10 minutes and are consumed before connecting, even when execution fails.
 No SSH passwords or separate approval passwords are stored or collected.
 `,
-	"forward": `Usage: sshore forward PORT | --stop PORT | --list
+	"forward": `Usage: sshore forward TARGET | --stop PORT | --list
 
-Run inside a remote sshore shell. Adding a rule queues local approval and
-detaches; run sshore approve locally to open local 127.0.0.1:PORT -> remote
-127.0.0.1:PORT. --list and --stop do not require approval. Stop/detach closes
+Run inside a remote sshore shell. TARGET is PORT, LOCAL_PORT:REMOTE_PORT, or
+LOCAL_PORT:REMOTE_HOST:REMOTE_PORT. Adding a rule queues local approval and
+detaches; run sshore approve locally to open 127.0.0.1:LOCAL_PORT to the
+remote target. --list and --stop do not require approval. Stop/detach closes
 existing connections. OpenSSH -L rules are managed separately.
 `,
 	"upload": `Usage: sshore upload [--] [DIRECTORY]

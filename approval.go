@@ -18,8 +18,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,12 +34,14 @@ const maxPendingApprovals = 32
 const maxApprovalRecord = 128 * 1024
 
 type operation struct {
-	Kind      string `json:"kind"`
-	Path      string `json:"path,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Size      int64  `json:"size,omitempty"`
-	Port      int    `json:"port,omitempty"`
-	LocalPath string `json:"-"`
+	Kind       string `json:"kind"`
+	Path       string `json:"path,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Size       int64  `json:"size,omitempty"`
+	Port       int    `json:"port,omitempty"`
+	RemoteHost string `json:"remote_host,omitempty"`
+	RemotePort int    `json:"remote_port,omitempty"`
+	LocalPath  string `json:"-"`
 }
 
 func validateOperations(ops []operation) error {
@@ -67,7 +71,7 @@ func validateOperations(ops []operation) error {
 				return fmt.Errorf("unexpected upload metadata")
 			}
 		case "forward":
-			if len(ops) != 1 || op.Port < 1 || op.Port > 65535 || op.Path != "" || op.Name != "" || op.Size != 0 {
+			if len(ops) != 1 || op.Port < 1 || op.Port > 65535 || (op.RemotePort != 0 && (op.RemotePort < 1 || op.RemotePort > 65535)) || (op.RemoteHost != "" && strings.ContainsAny(op.RemoteHost, "\x00\r\n \t")) || op.Path != "" || op.Name != "" || op.Size != 0 {
 				return fmt.Errorf("invalid port request")
 			}
 		default:
@@ -406,7 +410,8 @@ func runApprove(args []string) (int, error) {
 			f.close()
 			logf(os.Stdout, logInfo, "Source: %s (%d bytes)\n", cleanText(path), op.Size)
 		case "forward":
-			logf(os.Stdout, logInfo, "Forward local %s -> remote %s\n", loopback(op.Port), loopback(op.Port))
+			spec := normalizeForward(op.Port, op.RemoteHost, op.RemotePort)
+			logf(os.Stdout, logInfo, "Forward local %s -> remote %s\n", loopback(spec.Port), net.JoinHostPort(spec.RemoteHost, strconv.Itoa(spec.RemotePort)))
 		}
 	}
 	if !directUpload {

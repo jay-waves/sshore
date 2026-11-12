@@ -16,11 +16,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -207,7 +209,7 @@ func runClient(o options) (int, error) {
 			defer forwards.close()
 			for _, op := range o.approved {
 				if op.Kind == "forward" {
-					r := forwards.request(message{Action: "add", Port: op.Port})
+					r := forwards.request(message{Action: "add", Port: op.Port, RemoteHost: op.RemoteHost, RemotePort: op.RemotePort})
 					if r.Error != "" {
 						return 1, fmt.Errorf("%s", r.Error)
 					}
@@ -277,11 +279,12 @@ func runClient(o options) (int, error) {
 	defer forwards.close()
 	for _, op := range o.approved {
 		if op.Kind == "forward" {
-			r := forwards.request(message{Action: "add", Port: op.Port})
+			r := forwards.request(message{Action: "add", Port: op.Port, RemoteHost: op.RemoteHost, RemotePort: op.RemotePort})
 			if r.Error != "" {
 				return 1, fmt.Errorf("%s", r.Error)
 			}
-			logf(os.Stderr, logSuccess, "[sshore] Forwarding %s -> remote %s\r\n", loopback(op.Port), loopback(op.Port))
+			spec := normalizeForward(op.Port, op.RemoteHost, op.RemotePort)
+			logf(os.Stderr, logSuccess, "[sshore] Forwarding %s -> remote %s\r\n", loopback(spec.Port), net.JoinHostPort(spec.RemoteHost, strconv.Itoa(spec.RemotePort)))
 		}
 	}
 	go readEvents(control)

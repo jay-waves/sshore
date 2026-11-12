@@ -65,6 +65,9 @@ func TestApprovalValidation(t *testing.T) {
 			t.Fatal("accepted", ops)
 		}
 	}
+	if err := validateOperations([]operation{{Kind: "forward", Port: 7777, RemoteHost: "192.168.1.20", RemotePort: 6666}}); err != nil {
+		t.Fatal("valid remote target rejected:", err)
+	}
 	// A malicious peer cannot deserialize a chosen local path.
 	var op operation
 	if err := json.Unmarshal([]byte(`{"kind":"upload","path":"/tmp","LocalPath":"/etc/passwd"}`), &op); err != nil {

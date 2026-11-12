@@ -2,9 +2,9 @@ package main
 
 // Dynamic forwarding belongs to one attachment. Control requests use short-lived
 // smux streams; each accepted TCP connection gets its own binary stream. Requests
-// select the same local/remote IPv4 loopback TCP port. An occupied local port fails
-// without substitution; opening a listener does not prove the remote service is
-// running. A remote dial failure closes that connection, not the listener.
+// select a local IPv4 loopback port and a remote host/port. An occupied local
+// port fails without substitution; opening a listener does not prove the remote
+// service is running. A remote dial failure closes that connection, not the listener.
 // At most 32 TCP connections run concurrently; excess connections close. Remote
 // stream handlers share that bound with approved transfers. Detach, shell
 // exit, disconnection and --stop close listeners and existing connections. A new
@@ -20,11 +20,75 @@ import (
 	"net"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/xtaci/smux"
 )
+
+type forwardSpec struct {
+	Port       int    `json:"port"`
+	RemoteHost string `json:"remote_host"`
+	RemotePort int    `json:"remote_port"`
+}
+
+func normalizeForward(port int, host string, remotePort int) forwardSpec {
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if remotePort == 0 {
+		remotePort = port
+	}
+	return forwardSpec{Port: port, RemoteHost: host, RemotePort: remotePort}
+}
+
+func parsePort(s string) (int, error) {
+	if s == "" {
+		return 0, usage("port must be an integer from 1 to 65535")
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, usage("port must be an integer from 1 to 65535")
+		}
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 || n > 65535 {
+		return 0, usage("port must be an integer from 1 to 65535")
+	}
+	return n, nil
+}
+
+func parseForwardTarget(s string) (forwardSpec, error) {
+	parts := strings.Split(s, ":")
+	if len(parts) == 1 {
+		p, err := parsePort(parts[0])
+		return normalizeForward(p, "", 0), err
+	}
+	if len(parts) == 2 {
+		local, err := parsePort(parts[0])
+		if err != nil {
+			return forwardSpec{}, err
+		}
+		remote, err := parsePort(parts[1])
+		if err != nil {
+			return forwardSpec{}, err
+		}
+		return normalizeForward(local, "", remote), nil
+	}
+	if len(parts) != 3 || parts[1] == "" || strings.ContainsAny(parts[1], "\x00\r\n \t") {
+		return forwardSpec{}, usage("forward target must be PORT, LOCAL_PORT:REMOTE_PORT, or LOCAL_PORT:REMOTE_HOST:REMOTE_PORT")
+	}
+	local, err := parsePort(parts[0])
+	if err != nil {
+		return forwardSpec{}, err
+	}
+	remote, err := parsePort(parts[2])
+	if err != nil {
+		return forwardSpec{}, err
+	}
+	return normalizeForward(local, parts[1], remote), nil
+}
 
 const maxForwardPorts = 8
 const maxForwardConnections = 32
@@ -42,26 +106,23 @@ func parseForward(args []string) (message, error) {
 		args = args[1:]
 	}
 	if len(args) != 1 {
-		return m, usage("usage: sshore forward PORT | --stop PORT | --list")
+		return m, usage("usage: sshore forward TARGET | --stop PORT | --list")
 	}
-	for _, c := range args[0] {
-		if c < '0' || c > '9' {
-			return m, usage("port must be an integer from 1 to 65535")
-		}
+	spec, err := parseForwardTarget(args[0])
+	if err != nil {
+		return m, err
 	}
-	n, err := strconv.Atoi(args[0])
-	if err != nil || n < 1 || n > 65535 {
-		return m, usage("port must be an integer from 1 to 65535")
-	}
-	m.Port = n
+	m.Port, m.RemoteHost, m.RemotePort = spec.Port, spec.RemoteHost, spec.RemotePort
 	return m, nil
 }
 func loopback(port int) string { return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) }
 
 type forwardRule struct {
-	listener net.Listener
-	ctx      context.Context
-	cancel   context.CancelFunc
+	listener   net.Listener
+	ctx        context.Context
+	cancel     context.CancelFunc
+	remoteHost string
+	remotePort int
 }
 type forwardManager struct {
 	mu     sync.Mutex
@@ -89,7 +150,8 @@ func (f *forwardManager) close() {
 func (f *forwardManager) request(m message) message {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	result := message{Type: "forward_result", Port: m.Port}
+	spec := normalizeForward(m.Port, m.RemoteHost, m.RemotePort)
+	result := message{Type: "forward_result", Port: spec.Port, RemoteHost: spec.RemoteHost, RemotePort: spec.RemotePort}
 	fail := func(err error) message { result.Error = err.Error(); return result }
 	if f.ctx.Err() != nil {
 		return fail(fmt.Errorf("connection closed"))
@@ -98,7 +160,11 @@ func (f *forwardManager) request(m message) message {
 		for p := range f.rules {
 			result.Ports = append(result.Ports, p)
 		}
+		for p, r := range f.rules {
+			result.Forwards = append(result.Forwards, normalizeForward(p, r.remoteHost, r.remotePort))
+		}
 		sort.Ints(result.Ports)
+		sort.Slice(result.Forwards, func(i, j int) bool { return result.Forwards[i].Port < result.Forwards[j].Port })
 		return result
 	}
 	if m.Port < 1 || m.Port > 65535 {
@@ -118,7 +184,7 @@ func (f *forwardManager) request(m message) message {
 			return fail(err)
 		}
 		ctx, cancel := context.WithCancel(f.ctx)
-		r := &forwardRule{listener: ln, ctx: ctx, cancel: cancel}
+		r := &forwardRule{listener: ln, ctx: ctx, cancel: cancel, remoteHost: spec.RemoteHost, remotePort: spec.RemotePort}
 		f.rules[m.Port] = r
 		go f.accept(r, m.Port)
 		result.Name = "Forwarding"
@@ -158,7 +224,7 @@ func (f *forwardManager) accept(r *forwardRule, port int) {
 			abort := context.AfterFunc(r.ctx, func() { _ = st.SetDeadline(time.Now()); _ = st.Close() })
 			defer abort()
 			_ = st.SetDeadline(time.Now().Add(forwardTimeout))
-			if err = writeMessage(st, message{Type: "forward_connect", Port: port}); err != nil {
+			if err = writeMessage(st, message{Type: "forward_connect", Port: port, RemoteHost: r.remoteHost, RemotePort: r.remotePort}); err != nil {
 				return
 			}
 			reply, err := readMessage(st)
@@ -278,11 +344,15 @@ func serveForwardStreams(ctx context.Context, mux *smux.Session) {
 				approvedRemoteTransfer(st, m)
 				return
 			}
-			if err != nil || m.Type != "forward_connect" || m.Port < 1 || m.Port > 65535 {
+			if err != nil || m.Type != "forward_connect" {
+				return
+			}
+			spec := normalizeForward(m.Port, m.RemoteHost, m.RemotePort)
+			if spec.Port < 1 || spec.Port > 65535 || spec.RemotePort < 1 || spec.RemotePort > 65535 || spec.RemoteHost == "" {
 				return
 			}
 			dialer := net.Dialer{Timeout: 5 * time.Second}
-			c, err := dialer.DialContext(ctx, "tcp4", loopback(m.Port))
+			c, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(spec.RemoteHost, strconv.Itoa(spec.RemotePort)))
 			reply := message{Type: "forward_ready"}
 			if err != nil {
 				reply.Error = err.Error()

@@ -130,11 +130,12 @@ Transfers support regular files only and never overwrite an existing destination
 
 ```sh
 sshore forward 3000
+# or: sshore forward 7777:192.168.1.20:6666
 ```
 
 Then run `sshore approve` locally and open `http://127.0.0.1:3000`. Use `sshore approve --stay` to keep the tunnel in the local foreground; Ctrl-C closes it and ends the remote session.
 
-Dynamic forwards use the same local and remote TCP port on IPv4 loopback. Detaching or disconnecting closes them; reconnecting does not restore them. In the remote shell, `sshore forward --list` lists rules and `sshore forward --stop 3000` closes one. A new request detaches and closes the previous rule.
+Dynamic forwards listen on local IPv4 loopback. `sshore forward PORT` keeps the same local and remote port; use `LOCAL_PORT:REMOTE_PORT` or `LOCAL_PORT:REMOTE_HOST:REMOTE_PORT` to reach a different service from the SSH server, such as `7777:192.168.1.20:6666`. Detaching or disconnecting closes them; reconnecting does not restore them. In the remote shell, `sshore forward --list` lists rules and `sshore forward --stop LOCAL_PORT` closes one. A new request detaches and closes the previous rule.
 
 For different ports or multiple rules, use native SSH forwarding at connection time:
 

@@ -60,7 +60,7 @@ OpenSSH owns passwords, keys, agents, MFA and host-key checks. No separate appro
 | Operation changed after approval | A local snapshot fixes direction, paths, name/size and port. Changed file metadata is rejected; same-size content changes remain possible. |
 | Excess data or replay | Framing and buffers are bounded; received bytes cannot exceed approved size. Approval records are single-use. |
 | Request flooding | Request/record limits bound saved metadata; the first accepted request detaches. Repeated disruption across reconnects remains possible. |
-| Unwanted local listener | Approved dynamic forwards bind only IPv4 `127.0.0.1`, fail on occupied ports and close with the connection. Loopback is not per-user isolation. |
+| Unwanted local listener or remote reachability | Approved dynamic forwards bind only IPv4 `127.0.0.1`, fail on occupied ports and close with the connection. The approved remote target may be any host the SSH server can reach, so review target addresses carefully. Loopback is not per-user isolation. |
 | Terminal control injection in local messages | Displayed paths and errors are sanitized. The remote terminal byte stream itself remains unfiltered and untrusted. |
 
 Transfers check size and SHA-256, which verifies integrity rather than provenance or safety. Downloaded content and forwarded services may be malicious. Avoid destinations that automatically load new scripts or configuration; an approved large file can still fill the disk. Only regular files are supported; metadata is not copied. Linux received files default to `0600`; Windows files inherit the destination directory ACL.
