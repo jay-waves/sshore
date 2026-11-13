@@ -7,11 +7,13 @@ package main
 // joined with " | ": this groups foreground processes, not reconstructed shell
 // pipeline syntax. Never expose command-line arguments or background jobs.
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 func foregroundStat(stat string) (string, int, bool) {
@@ -48,6 +50,14 @@ func foregroundPrograms(root string, group int) string {
 		if err != nil || pid <= 0 {
 			continue
 		}
+		info, err := os.Stat(filepath.Join(root, entry.Name()))
+		if err != nil {
+			continue
+		}
+		owner, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || owner.Uid != uint32(os.Geteuid()) {
+			continue
+		}
 		stat, err := os.ReadFile(filepath.Join(root, entry.Name(), "stat"))
 		if err != nil {
 			continue
@@ -66,4 +76,22 @@ func foregroundPrograms(root string, group int) string {
 		return "—"
 	}
 	return strings.Join(names, " | ")
+}
+
+// Prefer the foreground group leader's cwd, falling back to the session shell.
+// This is a best-effort display snapshot, never an authorization decision.
+func sessionDirectory(group, shell int) string {
+	for _, pid := range []int{group, shell} {
+		if pid <= 0 {
+			continue
+		}
+		if _, err := readSetupTask(pid); err != nil {
+			continue
+		}
+		if cwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid)); err == nil {
+			home, _ := os.UserHomeDir()
+			return shortDirectory(cwd, home)
+		}
+	}
+	return "—"
 }

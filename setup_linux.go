@@ -110,6 +110,11 @@ func inspectSetup(target string) (setupState, error) {
 			state.Manual = true
 		}
 		if v != version {
+			if health := probeSessionDaemon(p, time.Now().Add(250*time.Millisecond)); health.state == "attached" || health.state == "detached" || health.state == "starting" {
+				if m, err := sessionStatus(p.socket); err == nil && validSession(m.Name) == nil {
+					p.name = m.Name
+				}
+			}
 			state.Processes = append(state.Processes, setupProcess{PID: p.pid, Name: p.name, Version: v, Start: start})
 		}
 	}

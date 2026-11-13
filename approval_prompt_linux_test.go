@@ -14,7 +14,7 @@ import (
 )
 
 func TestApprovalPrompt(t *testing.T) {
-	for _, scenario := range []string{"upload", "cancel", "download", "menu", "many"} {
+	for _, scenario := range []string{"upload", "retry", "cancel", "download", "menu", "many"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Setenv("SSHORE_SOCKET", "")
 			t.Setenv("SSH_CONNECTION", "")
@@ -97,7 +97,7 @@ exit 1
 			if scenario == "download" {
 				await("Save as")
 				io.WriteString(terminal, filepath.Join(root, "new")+"\r")
-				await("Type yes:")
+				await("Type yes to approve:")
 				io.WriteString(terminal, "no\r")
 				await("not approved")
 			} else {
@@ -106,6 +106,10 @@ exit 1
 					io.WriteString(terminal, "\x03")
 					await("approval cancelled")
 				} else {
+					if scenario == "retry" {
+						io.WriteString(terminal, filepath.Join(root, "missing")+"\r")
+						await("no such file or directory")
+					}
 					if scenario == "menu" {
 						io.WriteString(terminal, filepath.Join(root, "tank ")+"\t")
 						await("Tab: cycle | Enter: select")
@@ -127,7 +131,7 @@ exit 1
 					if scenario == "many" && strings.Count(output.String(), "101 matches;") != 1 {
 						t.Fatal("repeated completion hint", output.String())
 					}
-					if strings.Contains(output.String(), "Type yes:") {
+					if strings.Contains(output.String(), "Type yes to approve:") {
 						t.Fatal("upload asked for redundant confirmation")
 					}
 				}
@@ -135,7 +139,7 @@ exit 1
 			_ = cmd.Wait()
 			dir, _ := approvalDir()
 			_, err = os.Stat(filepath.Join(dir, id+".json"))
-			if scenario == "upload" || scenario == "menu" || scenario == "many" {
+			if scenario == "upload" || scenario == "retry" || scenario == "menu" || scenario == "many" {
 				if !os.IsNotExist(err) {
 					t.Fatal("approved request not consumed", err)
 				}

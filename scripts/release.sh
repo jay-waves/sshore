@@ -320,6 +320,24 @@ and assets remain unchanged.
 NOTES
 fi
 
+if [[ "$version" == "0.5.4" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- End a named session and its identified tasks with `sshore kill HOST NAME`, using version and process identity checks.
+- Rename sessions with `sshore rename HOST OLD NEW` while preserving the shell and inherited helper connections.
+- Show foreground programs, shortened working directories, session ages and recent exit reasons.
+- Resolve session names using private metadata and lifetime locks, without waiting on unrelated unresponsive daemons.
+- Filter session choices with /text and select by #number or exact name; Enter cancels.
+- Improve local approval path validation and prompts using the existing lightweight line editor, with no new runtime dependencies.
+- Preserve terminal restoration errors and synchronize completion state during input handoff.
+
+Client and remote versions must match exactly. Updating existing older sessions
+ends their tasks only after you review the list and type update. Existing releases
+and assets remain unchanged.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Skipping release: $tag is already published; releases and assets are immutable."

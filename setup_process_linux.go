@@ -97,7 +97,7 @@ func sessionTasks(roots []setupProcess) ([]setupTask, error) {
 	return tasks, nil
 }
 
-func stopOldSessions(roots []setupProcess) error {
+func stopOldSessions(roots []setupProcess, reasons ...string) (resultErr error) {
 	for _, root := range roots {
 		if root.Version != "" {
 			v, err := executableVersion(fmt.Sprintf("/proc/%d/exe", root.PID))
@@ -116,6 +116,18 @@ func stopOldSessions(roots []setupProcess) error {
 			return err
 		}
 	}
+	receipts := cleanupExitReceipts(roots)
+	reason := "ended for version update"
+	if len(reasons) > 0 {
+		reason = reasons[0]
+	}
+	defer func() {
+		if resultErr == nil {
+			for socket, name := range receipts {
+				saveSessionExit(socket, name, reason)
+			}
+		}
+	}()
 	for _, task := range tasks {
 		if err := signalProcess(task.pid, task.start, unix.SIGTERM); err != nil {
 			return err

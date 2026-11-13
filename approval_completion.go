@@ -22,6 +22,8 @@ type pathCompletion struct {
 }
 
 func (p *approvalInput) filterCompletionKey(key rune) (rune, bool) {
+	p.completionMu.Lock()
+	defer p.completionMu.Unlock()
 	if key == readline.CharTab {
 		return key, true
 	}
@@ -36,6 +38,8 @@ func (p *approvalInput) filterCompletionKey(key rune) (rune, bool) {
 }
 
 func (p *approvalInput) completionChanged(line []rune, pos int, key rune) ([]rune, int, bool) {
+	p.completionMu.Lock()
+	defer p.completionMu.Unlock()
 	if p.completion.pending == nil {
 		return nil, 0, false
 	}

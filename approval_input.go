@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/chzyer/readline"
@@ -23,6 +24,9 @@ import (
 
 // One editor owns stdin throughout approval; it is closed before reconnecting.
 type approvalInput struct {
+	// Readline can deliver its final listener callback after Readline returns.
+	// Serialize completion state with the next field's reset.
+	completionMu  sync.Mutex
 	editor        *readline.Instance
 	paths         bool
 	color         bool
@@ -51,8 +55,10 @@ func newApprovalInput() (*approvalInput, error) {
 }
 
 func (p *approvalInput) Read(prompt string, paths bool) (string, error) {
+	p.completionMu.Lock()
 	p.paths = paths
 	p.completion = pathCompletion{}
+	p.completionMu.Unlock()
 	p.editor.SetPrompt(formatApprovalPrompt(p.color, prompt))
 	// readline ignores errors from EnterRawMode. Check our Windows hook before
 	// starting its reader; repeated entry is idempotent.
@@ -77,7 +83,9 @@ func (p *approvalInput) Close() error {
 		return nil
 	}
 	err := p.editor.Close()
+	p.completionMu.Lock()
 	p.editor = nil
+	p.completionMu.Unlock()
 	if p.restoreOutput != nil {
 		err = errors.Join(err, p.restoreOutput())
 		p.restoreOutput = nil
@@ -86,6 +94,8 @@ func (p *approvalInput) Close() error {
 }
 
 func (p *approvalInput) Do(line []rune, pos int) ([][]rune, int) {
+	p.completionMu.Lock()
+	defer p.completionMu.Unlock()
 	if !p.paths {
 		return nil, 0
 	}

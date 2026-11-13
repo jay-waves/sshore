@@ -50,6 +50,9 @@ func TestSetupConfirmation(t *testing.T) {
 			}
 			input := &stubSetupInput{answers: tc.answers, closeErr: tc.closeErr}
 			err := negotiateSetupWithInput(&incoming, &outgoing, &options{}, func() (setupInput, error) { return input, nil })
+			if tc.closeErr != nil && !errors.Is(err, tc.closeErr) {
+				t.Fatalf("lost terminal restoration error: %v", err)
+			}
 			if !input.closed {
 				t.Fatal("input not closed before handoff")
 			}
@@ -106,10 +109,16 @@ func TestAttachSessionSelection(t *testing.T) {
 		want     string
 		closeErr error
 	}{
-		{name: "choose", answers: []string{"0", "3", "2"}, want: "eevee"},
+		{name: "choose", answers: []string{"#0", "#3", "#2"}, want: "eevee"},
+		{name: "name", answers: []string{"eevee"}, want: "eevee"},
+		{name: "filter", answers: []string{"/EEV", "#1", "#2"}, want: "eevee"},
+		{name: "filter-no-auto-attach", answers: []string{"/eev", ""}},
+		{name: "clear-filter", answers: []string{"/missing", "/", "pikachu"}, want: "pikachu"},
 		{name: "cancel", answers: []string{""}},
 		{name: "eof"},
-		{name: "restore", answers: []string{"1"}, closeErr: errors.New("restore failed")},
+		{name: "eof-and-restore", closeErr: errors.New("restore failed")},
+		{name: "cancel-and-restore", answers: []string{""}, closeErr: errors.New("restore failed")},
+		{name: "restore", answers: []string{"#1"}, closeErr: errors.New("restore failed")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var incoming, outgoing bytes.Buffer
@@ -117,6 +126,9 @@ func TestAttachSessionSelection(t *testing.T) {
 			writeMessage(&incoming, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed"})
 			input := &stubSetupInput{answers: tc.answers, closeErr: tc.closeErr}
 			err := negotiateSetupWithInput(&incoming, &outgoing, &options{command: "attach"}, func() (setupInput, error) { return input, nil })
+			if tc.closeErr != nil && !errors.Is(err, tc.closeErr) {
+				t.Fatalf("lost terminal restoration error: %v", err)
+			}
 			if !input.closed {
 				t.Fatal("input left open")
 			}
@@ -131,5 +143,14 @@ func TestAttachSessionSelection(t *testing.T) {
 				t.Fatal(m, err, readErr)
 			}
 		})
+	}
+}
+
+func TestSessionSelectionNumericNames(t *testing.T) {
+	for _, tc := range []struct{ answer, want string }{{"2", "2"}, {"#2", "eevee"}} {
+		selected, err := chooseSetupSession(&stubSetupInput{answers: []string{tc.answer}}, []string{"2", "eevee"})
+		if err != nil || selected != tc.want {
+			t.Fatal(selected, err)
+		}
 	}
 }

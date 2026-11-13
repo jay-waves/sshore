@@ -10,6 +10,9 @@ flowchart LR
         program["Programs / session daemon"]
         setup["Setup coordinator"]
         service["Remote files and services"]
+        killgate["Kill: exact versions, setup lock, socket peer and process identity"]
+        renamegate["Rename: exact versions, setup lock, unique public name"]
+        exits["Private, bounded exit diagnostics"]
     end
     subgraph local["Trusted local machine"]
         client["Connected sshore client"]
@@ -23,6 +26,11 @@ flowchart LR
     client -->|"Explicit detach: preserve session"| program
     client -->|"Detected transport loss: close PTY, end session"| program
     client -->|"Validate, save, detach"| record
+    user -->|"Rename OLD NEW over SSH"| renamegate
+    renamegate -->|"Change label; preserve process and helper identity"| program
+    program -->|"Name, time, reason; no terminal content"| exits
+    user -->|"Explicit kill HOST NAME over SSH"| killgate
+    killgate -->|"Only named session and identified same-user tasks"| program
     user -->|"Review and explicit consent"| approve
     record -->|"Consume once"| approve
     approve -->|"New SSH connection"| gate
@@ -35,7 +43,24 @@ flowchart LR
 
 Remote terminal output is untrusted. It can imitate local messages, but cannot itself grant approval. Sensitive prompts run after the connected client exits, from a **separate local invocation**. Do not invoke approval or enter credentials merely because remote output asks you to.
 
-`new` reserves a fresh session, with an automatic or explicit name, including when other sessions are detached. `attach` requires an existing session and never evicts its attached client. Selection without a name lists detached sessions; setup and exclusive attachment are rechecked after selection without holding the account lock while waiting for user input. Session listings show same-user process descendants with sanitized names and PIDs; they do not expose command-line arguments or environment variables.
+`new` reserves a fresh session, with an automatic or explicit name, including when other sessions are detached. `attach` requires an existing session and never evicts its attached client. Selection without a name lists detached sessions; setup and exclusive attachment are rechecked after selection without holding the account lock while waiting for user input. The local session picker starts only after SSH authentication and releases terminal input before attachment. It does not authorize updates or file/port operations. Session listings show same-user process descendants with sanitized names and PIDs; they do not expose command-line arguments or environment variables. Foreground
+summaries include same-user process names and a shortened working directory,
+which may reveal project names. These are best-effort snapshots, never process
+identity evidence for signaling.
+
+Rename requires matching client, installed program and daemon releases. The account
+setup lock serializes label changes and name allocation; immutable socket identities
+preserve inherited helper connections. Private name metadata and daemon lifetime
+locks keep names reserved even when a daemon stops responding; name resolution
+does not depend on other sessions answering status requests. Pending approvals are not rewritten: their
+original name and shell PID must still match, otherwise they fail closed.
+
+Exit diagnostics store only session name, time and reason in private `0600` files
+inside the remote runtime directory. Keep at most 100 receipts for seven days;
+records are best effort and do not prove task cleanup. Explicit kill/update reasons
+are recorded only after verified cleanup succeeds. Abrupt termination or runtime
+removal can prevent recording. No terminal content, command arguments or working
+directories are retained in exit records.
 
 ## Local approval
 
@@ -79,6 +104,15 @@ The full release version, including PATCH, is the compatibility identifier. No s
 - Before ending tasks, setup takes the account setup lock, rechecks the process snapshot, then prepares and verifies the replacement on the target filesystem. Changed state requires fresh confirmation. Only confirmed same-user session processes and identified tasks are signaled, with process identity validation; no process-name-wide kill is used.
 - Failure to prepare a replacement must not terminate tasks. Once confirmed termination starts, later failures cannot restore stopped tasks. Updates can disconnect other clients and lose unsaved work.
 - Automatic replacement requires a user-owned regular file and a user-owned directory without group/world write permission. There is no elevation, PATH or shell-profile modification.
+
+Explicit `sshore kill HOST NAME` authorizes immediate termination of that named session
+and its identified tasks in the selected runtime directory, including an attached
+session. It never enters installation or update negotiation. The client, installed
+remote program and target daemon must have matching full release versions. Under
+the account setup lock, it verifies a same-user daemon and its socket peer, then
+uses the same process-identity-checked termination as setup (TERM, followed by KILL
+for surviving identified tasks). Other sessions are excluded; unconfirmed daemons
+are refused. Recovery mode does not permit this operation.
 
 Processes that deliberately escape session ancestry/session ID, legacy binaries ignoring policy, concurrent unmanaged modifications and a compromised remote kernel/root are outside these guarantees. Process visibility may also limit what can be inspected. Diagnostics alone never terminate processes.
 

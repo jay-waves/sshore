@@ -105,7 +105,7 @@ func acceptSessionName(o *options, name string) error {
 func runClient(o options) (int, error) {
 	cmd := sshCommand(o)
 	cmd.Stderr = os.Stderr
-	if o.list {
+	if o.list || o.command == "kill" || o.command == "rename" {
 		cmd.Stdin, cmd.Stdout = os.Stdin, os.Stdout
 		err := cmd.Run()
 		var e *exec.ExitError
@@ -454,6 +454,9 @@ func runClient(o options) (int, error) {
 						detachTimeout = time.After(5 * time.Second)
 					}
 				case "detached":
+					if validSession(e.m.Name) == nil {
+						o.session = e.m.Name
+					}
 					_ = streamMessage(control, message{Type: "bye"})
 					notice(logSuccess, "\r\n[sshore] Detached; remote programs keep running.\r\nReconnect: %s\r\n", reconnectCommand(o))
 					return 0, nil

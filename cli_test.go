@@ -157,3 +157,23 @@ func TestSessionCommandSemantics(t *testing.T) {
 		t.Fatal("recovery allowed new")
 	}
 }
+
+func TestKillOptions(t *testing.T) {
+	o, err := parseOptions([]string{"kill", "host", "build", "-p", "2222", "--server", "/a b/sshore"})
+	if err != nil || o.command != "kill" || o.session != "build" || o.list {
+		t.Fatalf("%+v %v", o, err)
+	}
+	for _, args := range [][]string{
+		{"kill"}, {"kill", "host"}, {"kill", "host", "../other"},
+		{"kill", "host", "one", "two"}, {"kill", "host", "one", "--quiet"},
+		{"kill", "host", "one", "--download-dir", "/tmp"}, {"kill", "host", "one", "--no-escape"},
+	} {
+		if _, err := parseOptions(args); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+	var out bytes.Buffer
+	if err := showHelp([]string{"kill"}, &out); err != nil || !strings.Contains(out.String(), "without confirmation") {
+		t.Fatal(out.String(), err)
+	}
+}

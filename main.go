@@ -3,7 +3,7 @@ package main
 // Command routing and argument validation live here. OpenSSH owns authentication,
 // encryption, and connection configuration; sshore adds persistent Linux sessions
 // and regular-file transfer without a configuration framework or database.
-// bridge, daemon, and sessions are internal commands invoked by the SSH/client
+// bridge, daemon, sessions, and kill-session are internal commands invoked by the SSH/client
 // path, not services that users need to start manually.
 // SSH flags are explicitly allowlisted below; value flags accept attached or
 // separate values and forwarding flags may repeat. -q belongs to sshore progress,
@@ -23,7 +23,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.5.3"
+var version = "0.5.4"
 
 const connectionOptions = `Options (before or after HOST):
   --server PATH                 Remote executable (default: PATH, then ~/.local/bin/sshore)
@@ -41,7 +41,9 @@ const help = `sshore — persistent shells and file transfer over one SSH connec
 
 Local commands:
   sshore new HOST [NAME] [options]     Create a session (default: automatic Pokemon name)
-  sshore list HOST [SSH options]      List session states and process trees
+  sshore list HOST [SSH options]      List sessions, foreground tasks, directories and recent exits
+  sshore kill HOST NAME [SSH options] End a session and its identified tasks
+  sshore rename HOST OLD NEW [SSH options] Rename a running session
   sshore attach HOST [NAME] [options] Attach to an existing detached session
   sshore approve [ID] [--attach | --stay]
   sshore approve --list
@@ -84,12 +86,17 @@ Ctrl-] or remote sshore detach leaves programs running; exit ends the shell.
 
 Attach to an existing detached session; never create or take over a session.
 Omit NAME to attach to the only detached session, or choose from several.
+Selection: #number or exact name; /text filters, / shows all.
+Numbers stay unchanged after filtering. Bare numbers are session names. Enter or Ctrl-C cancels.
 If no detached sessions exist, use sshore new HOST to create one.
 
 ` + connectionOptions,
 	"list": `Usage: sshore list HOST [SSH options] [--server PATH]
 
-List session names, attached/detached states and process trees.
+List session names, ages, states, foreground programs, shortened working
+directories and process trees, followed by recent exit reasons.
+Exit records retain at most 100 entries for seven days in the runtime directory.
+Abrupt termination or runtime cleanup can leave no record.
 Use sshore attach HOST NAME to resume a detached session.
 
 SSH options:
@@ -99,12 +106,30 @@ SSH options:
   --server PATH                 Remote executable
   -h, --help                    Show command help
 `,
+	"rename": `Usage: sshore rename HOST OLD NEW [SSH options] [--server PATH]
+
+Rename an attached or detached session without restarting its tasks.
+The old name becomes available; the new name must be unused.
+Pending approvals using the old name must be requested again.
+Requires matching releases; never installs or upgrades software.
+SSH options are the same as sshore list; see sshore list --help.
+`,
+	"kill": `Usage: sshore kill HOST NAME [SSH options] [--server PATH]
+
+End the named session and its identified tasks, including an attached session.
+This takes effect immediately without confirmation; unsaved work may be lost.
+NAME is required; there is no all-sessions option. Uses the current runtime
+directory. Requires matching client, installed program and target daemon
+release versions; never installs or upgrades software. Escaped tasks may survive.
+SSH options and --server are the same as sshore list; see sshore list --help.
+`,
 	"approve": `Usage: sshore approve [ID] [--attach | --stay]
        sshore approve --list
        sshore approve ID --reject
 
 Run from your LOCAL shell after detach. Review one pending request, select
-local file paths and type yes. Authentication remains with system OpenSSH.
+local file paths and type yes. Tab completes paths; invalid paths can be retried.
+Authentication remains with system OpenSSH.
 --attach (default) executes approved operations and resumes the remote shell.
 --stay completes file operations, detaches and returns to the local shell.
 For a port forward it runs a foreground tunnel without remote terminal I/O;
@@ -166,6 +191,7 @@ func validSession(name string) error {
 type options struct {
 	host, session, server string
 	command               string
+	newName               string
 	downloadDir           string
 	list, quiet, noEscape bool
 	ssh                   []string
@@ -178,15 +204,15 @@ type options struct {
 func parseOptions(args []string) (options, error) {
 	o := options{server: "sshore"}
 	if len(args) == 0 {
-		return o, usage("expected new, list or attach; see sshore --help")
+		return o, usage("expected new, list, attach, kill or rename; see sshore --help")
 	}
 	o.command = args[0]
 	switch o.command {
-	case "new", "attach":
+	case "new", "attach", "kill", "rename":
 	case "list":
 		o.list = true
 	default:
-		return o, usage("choose an action: sshore new HOST [NAME], sshore list HOST, or sshore attach HOST [NAME]")
+		return o, usage("choose an action: sshore new HOST [NAME], sshore list HOST, sshore attach HOST [NAME], sshore kill HOST NAME, or sshore rename HOST OLD NEW")
 	}
 	args = args[1:]
 	for i := 0; i < len(args); i++ {
@@ -244,6 +270,8 @@ func parseOptions(args []string) (options, error) {
 					o.host = args[i]
 				} else if !o.list && o.session == "" {
 					o.session = args[i]
+				} else if o.command == "rename" && o.newName == "" {
+					o.newName = args[i]
 				} else {
 					return o, usage("unexpected argument: %s", args[i])
 				}
@@ -253,6 +281,8 @@ func parseOptions(args []string) (options, error) {
 				o.host = a
 			} else if o.host != "" && !o.list && o.session == "" && !strings.HasPrefix(a, "-") {
 				o.session = a
+			} else if o.command == "rename" && o.session != "" && o.newName == "" && !strings.HasPrefix(a, "-") {
+				o.newName = a
 			} else {
 				return o, usage("unexpected argument: %s", a)
 			}
@@ -269,6 +299,17 @@ func parseOptions(args []string) (options, error) {
 	}
 	if o.list {
 		return o, nil
+	}
+	if o.command == "rename" {
+		if o.session == "" || o.newName == "" || o.downloadDir != "" || o.quiet || o.noEscape {
+			return o, usage("rename requires HOST OLD NEW and accepts only SSH options and --server")
+		}
+		if err := validSession(o.newName); err != nil {
+			return o, err
+		}
+	}
+	if o.command == "kill" && (o.session == "" || o.downloadDir != "" || o.quiet || o.noEscape) {
+		return o, usage("kill requires HOST NAME and accepts only SSH options and --server")
 	}
 	if o.session == "" {
 		return o, nil
@@ -356,7 +397,7 @@ func run(args []string) (int, error) {
 			}
 		}
 		return 0, serverCommand(args)
-	case "bridge", "resume", "daemon", "sessions", "bootstrap":
+	case "bridge", "resume", "daemon", "sessions", "bootstrap", "kill-session", "rename-session":
 		return 0, serverCommand(args)
 	}
 	o, err := parseOptions(args)

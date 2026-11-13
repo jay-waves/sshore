@@ -273,7 +273,7 @@ func parseApprove(args []string) (approveOptions, error) {
 	}
 	return o, nil
 }
-func runApprove(args []string) (int, error) {
+func runApprove(args []string) (code int, resultErr error) {
 	a, err := parseApprove(args)
 	if err != nil {
 		return 2, err
@@ -336,17 +336,22 @@ func runApprove(args []string) (int, error) {
 	if err = flushTerminalInput(); err != nil {
 		return 1, err
 	}
-	logf(os.Stdout, logInfo, "Local approval %s\nHost: %s\nSession: %s\n", r.ID, cleanText(r.Host), r.Session)
+	logf(os.Stdout, logInfo, "Approve %s · %s / %s\n", r.ID, cleanText(r.Host), r.Session)
 	input, err := newApprovalInput()
 	if err != nil {
 		return 1, err
 	}
-	defer input.Close()
+	defer func() {
+		if err := input.Close(); err != nil {
+			code = 1
+			resultErr = errors.Join(resultErr, fmt.Errorf("restore terminal: %w", err))
+		}
+	}()
 	directUpload := len(r.Operations) == 1 && r.Operations[0].Kind == "upload"
 	if a.stay {
-		logf(os.Stdout, logInfo, "After approval: stay local (port forwarding runs until Ctrl-C).\n")
+		logf(os.Stdout, logInfo, "After: local (forwarding until Ctrl-C).\n")
 	} else {
-		logf(os.Stdout, logInfo, "After approval: return to the remote session.\n")
+		logf(os.Stdout, logInfo, "After: attach.\n")
 	}
 	for i := range r.Operations {
 		op := &r.Operations[i]
@@ -357,65 +362,42 @@ func runApprove(args []string) (int, error) {
 				dest = r.Directory
 			}
 			dest = filepath.Join(dest, op.Name)
-			logf(os.Stdout, logInfo, "Download %s (%d bytes)\n", cleanText(op.Path), op.Size)
-			line, e := input.Read(fmt.Sprintf("Save as [%s] (Tab to complete): ", cleanText(dest)), true)
-			if e != nil {
-				return 1, fmt.Errorf("approval cancelled; request remains pending: %w", e)
-			}
-			if line != "" {
-				dest, e = localPath([]byte(line))
-				if e != nil {
-					return 1, e
-				}
-			}
-			dest, e = filepath.Abs(dest)
-			if e != nil {
-				return 1, e
-			}
-			if info, e := os.Stat(dest); e == nil && info.IsDir() {
-				dest = filepath.Join(dest, op.Name)
-			}
-			if _, e = os.Lstat(dest); e == nil {
-				return 1, fmt.Errorf("destination already exists: %s", dest)
-			} else if !errors.Is(e, os.ErrNotExist) {
-				return 1, e
-			}
-			op.LocalPath = dest
-			logf(os.Stdout, logInfo, "Destination: %s\n", cleanText(dest))
-		case "upload":
-			logf(os.Stdout, logInfo, "Upload to remote directory: %s\n", cleanText(op.Path))
-			prompt := "Local file to upload (Tab to complete): "
-			if directUpload {
-				logf(os.Stdout, logInfo, "Enter a local file path and press Enter to upload; Ctrl-C cancels.\n")
-			}
-			line, e := input.Read(prompt, true)
-			if e != nil {
-				return 1, fmt.Errorf("approval cancelled; request remains pending: %w", e)
-			}
-			path, e := localPath([]byte(line))
-			if e != nil {
-				return 1, e
-			}
-			path, e = filepath.Abs(path)
-			if e != nil {
-				return 1, e
-			}
-			f, e := openSending(path)
+			logf(os.Stdout, logInfo, "Download %s · %s\n", cleanText(op.Path), displayBytes(op.Size))
+			path, e := readApprovalPath(input, fmt.Sprintf("Save as [%s] (Tab): ", cleanText(dest)), dest, func(path string) (string, error) {
+				return downloadDestination(path, op.Name)
+			})
 			if e != nil {
 				return 1, e
 			}
 			op.LocalPath = path
-			op.Name = f.name
-			op.Size = f.size
-			f.close()
-			logf(os.Stdout, logInfo, "Source: %s (%d bytes)\n", cleanText(path), op.Size)
+			logf(os.Stdout, logInfo, "→ %s\n", cleanText(path))
+		case "upload":
+			logf(os.Stdout, logInfo, "Upload → %s\n", cleanText(op.Path))
+			prompt := "Local file to upload (Tab): "
+			if directUpload {
+				prompt = "Local file to upload (Tab; Enter sends): "
+			}
+			path, e := readApprovalPath(input, prompt, "", func(path string) (string, error) {
+				f, e := openSending(path)
+				if e != nil {
+					return "", e
+				}
+				defer f.close()
+				op.Name, op.Size = f.name, f.size
+				return path, nil
+			})
+			if e != nil {
+				return 1, e
+			}
+			op.LocalPath = path
+			logf(os.Stdout, logInfo, "Source: %s · %s\n", cleanText(path), displayBytes(op.Size))
 		case "forward":
 			spec := normalizeForward(op.Port, op.RemoteHost, op.RemotePort)
 			logf(os.Stdout, logInfo, "Forward local %s -> remote %s\n", loopback(spec.Port), net.JoinHostPort(spec.RemoteHost, strconv.Itoa(spec.RemotePort)))
 		}
 	}
 	if !directUpload {
-		answer, err := input.Read("Approve these operations? Type yes: ", false)
+		answer, err := input.Read("Type yes to approve: ", false)
 		if err != nil {
 			return 1, fmt.Errorf("approval cancelled; request remains pending: %w", err)
 		}

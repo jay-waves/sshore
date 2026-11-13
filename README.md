@@ -13,11 +13,12 @@ sshore new myserver             # New session with an automatic Pokemon name.
 # Press Ctrl-] to detach and keep programs running.
 sshore attach myserver pikachu  # Resume the name printed when connecting.
 sshore new myserver build       # Create a separate named session.
-sshore list myserver            # List session states and process trees.
+sshore list myserver            # List session ages, states and process trees.
+sshore kill myserver build      # End this session and its tasks immediately.
 sshore new --help               # Command-specific help.
 ```
 
-Uses your normal SSH aliases, keys and authentication. **`new` only creates; `attach` only resumes.** An existing name is an error for `new`; a missing name is an error for `attach`. Omit the name in `attach` to resume the only detached session or choose from several. An attached session cannot be taken over.
+Uses your normal SSH aliases, keys and authentication. **`new` only creates; `attach` only resumes.** An existing name is an error for `new`; a missing name is an error for `attach`. Omit the name in `attach` to resume the only detached session or choose from several. Choose by `#number` or name; `/text` filters the list and Enter cancels. See `sshore attach --help`. An attached session cannot be taken over.
 
 Inside the remote shell, `sshore detach` also detaches; `exit` ends the session. Only explicit detach preserves a session: closing the local terminal or losing the connection ends it once detected, as with SSH. After detach, copy the printed `sshore attach` command to reconnect.
 
@@ -33,7 +34,11 @@ flowchart LR
     select --> session["Persistent Linux session"]
     setup -->|"Unknown version or chosen recovery"| recovery["Temporary recovery shell"]
     session --> detach["Explicit detach: programs keep running"]
+    session --> renamed["sshore rename HOST OLD NEW: keep tasks running"]
+    renamed --> session
     session --> ended["Exit or detected connection loss: session ends"]
+    ended --> history["sshore list HOST: recent exit reasons"]
+    session --> killed["sshore kill HOST NAME: end session and identified tasks"]
     detach --> resume["Reconnect: sshore attach HOST NAME"]
     resume --> ssh
     session --> request["Request files or a port; detach"]
@@ -41,19 +46,45 @@ flowchart LR
     approve -->|"Review, approve, reconnect"| ssh
 ```
 
-`sshore list HOST` lists each session and its shell/process tree:
+`sshore list HOST` shows session age, foreground programs, shortened working directories, process trees and recent exit reasons:
 
 ```text
-charmander [attached]
+charmander [attached] · started 2h ago
+  codex · ~/src/project
 `-- 2602271 bash
     `-- 2602398 codex [foreground]
 
-pikachu [detached]
+pikachu [detached] · started 2d ago
+  bash · ~
 `-- 2451576 bash [foreground]
 ```
 
 PIDs identify processes; branches show parent/child relationships. `[foreground]`
 marks the programs currently using the remote terminal. Only process names are shown.
+
+`started` includes time spent detached; reattaching does not reset it. Directories
+prefer the foreground program's working directory, falling back to the shell;
+deep paths show their last two components. Unavailable details show `—`.
+
+Rename without restarting tasks, whether attached or detached:
+
+```sh
+sshore rename work pikachu build
+```
+
+The old name becomes available. Reconnect using the new name; pending approvals
+using the old name must be requested again. See `sshore rename --help`.
+
+Recent exits distinguish shell exit codes/signals, connection loss, explicit kill,
+and version-update cleanup. Records are limited to 100 entries for seven days in
+the remote runtime directory. Forced daemon termination, reboot or runtime cleanup
+may leave no record; these are diagnostics, not a guarantee that all tasks ended.
+
+`sshore kill HOST NAME` immediately ends the named session and its identified tasks,
+even if attached. There is no confirmation; unsaved work may be lost. It uses the
+current remote runtime directory and requires matching client, remote program and
+target daemon versions, without installing or upgrading software. See
+`sshore kill --help` and the [termination limits](SECURITY.md#remote-setup-and-updates).
 
 ## Install
 
@@ -120,7 +151,7 @@ sshore approve ID --reject       # Discard a request.
 
 For one upload, submitting the source path approves it. Downloads and other requests ask for `yes`. Ctrl-C cancels local approval or transfer. Requests expire after 10 minutes; request again after a failed reconnect. A normal connection never executes pending requests.
 
-**Path input:** Tab completes a shared prefix or shows a small list. Further Tabs cycle; Enter selects, then another Enter submits. Large lists ask you to type more. Directories are colored; `NO_COLOR=1` disables colors. Spaces, Unicode, surrounding quotes and `~/` work. For downloads, Enter accepts the suggested path. Use `--` before remote paths starting with `-`.
+**Path input:** Tab completes a shared prefix or shows a small list. Further Tabs cycle; Enter selects, then another Enter submits. Large lists ask you to type more. Directories are colored; `NO_COLOR=1` disables colors. Spaces, Unicode, surrounding quotes and `~/` work. For downloads, Enter accepts the suggested path. Invalid paths can be corrected in place; Ctrl-C keeps the request pending. Use `--` before remote paths starting with `-`.
 
 Transfers support regular files only and never overwrite an existing destination. No directories, symlinks, resume or drag-and-drop. The destination filesystem must support hard links (for example NTFS on Windows). A failed batch keeps files already completed.
 

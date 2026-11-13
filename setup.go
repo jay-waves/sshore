@@ -1,11 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"strconv"
-	"strings"
 )
 
 type setupProcess struct {
@@ -60,37 +59,21 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, o *options, openInput fun
 			if o.command != "attach" || o.session != "" || len(m.Names) < 2 || len(m.Names) > 128 {
 				return fmt.Errorf("unexpected session selection")
 			}
-			for i, name := range m.Names {
+			for _, name := range m.Names {
 				if err := validSession(name); err != nil {
 					return err
 				}
-				logf(os.Stderr, logInfo, "  %d. %s [detached]\n", i+1, name)
 			}
 			input, err := openInput()
 			if err != nil {
 				return err
 			}
-			var selected string
-			for {
-				answer, readErr := input.Read("Select session number (Enter cancels): ", false)
-				if readErr != nil {
-					input.Close()
-					return readErr
-				}
-				if answer == "" {
-					input.Close()
-					return fmt.Errorf("session selection cancelled")
-				}
-				n, err := strconv.Atoi(strings.TrimSpace(answer))
-				if err == nil && n >= 1 && n <= len(m.Names) {
-					selected = m.Names[n-1]
-					break
-				}
-				logf(os.Stderr, logWarning, "Choose a number from 1 to %d.\n", len(m.Names))
-			}
-			if err := input.Close(); err != nil {
+			selected, selectErr := chooseSetupSession(input, m.Names)
+			closeErr := input.Close()
+			if err := errors.Join(selectErr, closeErr); err != nil {
 				return err
 			}
+
 			if err := writeMessage(w, message{Type: "session_select", Name: selected}); err != nil {
 				return err
 			}
@@ -133,11 +116,8 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, o *options, openInput fun
 				}
 			}
 			closeErr := input.Close()
-			if err != nil {
-				return fmt.Errorf("setup input failed; no update requested: %w", err)
-			}
-			if closeErr != nil {
-				return fmt.Errorf("restore terminal; no update requested: %w", closeErr)
+			if err := errors.Join(err, closeErr); err != nil {
+				return fmt.Errorf("setup input or terminal restoration failed; no update requested: %w", err)
 			}
 			action := "plain"
 			if answer == "update" {

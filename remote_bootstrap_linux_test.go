@@ -138,3 +138,42 @@ INSTALL
 		t.Setenv("SSHORE_SETUP_TEST_FAIL", "")
 	}
 }
+
+func TestRemoteKillNeverBootstraps(t *testing.T) {
+	for _, release := range []string{version, "0.0.1", "999.0.0", "custom", ""} {
+		t.Run("version-"+release, func(t *testing.T) {
+			home := t.TempDir()
+			bin := filepath.Join(home, "server ' name")
+			if release != "" {
+				writeBootstrapStub(t, bin, release)
+			}
+			out, err := runBootstrap(t, home, options{command: "kill", server: bin, session: "build"})
+			if release == version {
+				if err != nil || out != "<kill-session>\n<build>\n<"+version+">\n" {
+					t.Fatal(out, err)
+				}
+			} else if err == nil || !strings.Contains(out, "kill requires") {
+				t.Fatal(out, err)
+			}
+			if strings.Contains(out, "Downloading") || strings.Contains(out, "<bootstrap>") {
+				t.Fatal(out)
+			}
+		})
+	}
+}
+
+func TestRenameRemoteRouting(t *testing.T) {
+	home := t.TempDir()
+	bin := filepath.Join(home, "server")
+	writeBootstrapStub(t, bin, version)
+	o := options{command: "rename", server: bin, session: "old", newName: "new"}
+	out, err := runBootstrap(t, home, o)
+	if err != nil || out != "<rename-session>\n<old>\n<new>\n<"+version+">\n" {
+		t.Fatal(out, err)
+	}
+	writeBootstrapStub(t, bin, "999.0.0")
+	out, err = runBootstrap(t, home, o)
+	if err == nil || strings.Contains(out, "Downloading") || !strings.Contains(out, "rename requires") {
+		t.Fatal(out, err)
+	}
+}
