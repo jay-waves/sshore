@@ -2,105 +2,15 @@
 
 [![CI](https://github.com/jay-waves/sshore/actions/workflows/ci.yml/badge.svg)](https://github.com/jay-waves/sshore/actions/workflows/ci.yml)
 
-Disconnect from SSH without stopping your remote shell. Reconnect to pick up where you left off.
+SSH connections, SFTP mounts, detach and reattach (Mux), one-time file
+copies (SCP use case), and TCP tunnels in one CLI.
 
-**Local:** Linux or Windows, amd64/x86-64. **Remote:** Linux amd64/x86-64. Requires OpenSSH; ARM and macOS are not supported.
-
-## Quick start
-
-```sh
-sshore new myserver             # New session with an automatic Pokemon name.
-# Press Ctrl-] to detach and keep programs running.
-sshore attach myserver pikachu  # Resume the name printed when connecting.
-sshore new myserver build       # Create a separate named session.
-sshore list myserver            # List session ages, states and process trees.
-sshore cancel myserver build    # End this session and its tasks immediately.
-sshore new --help               # Command-specific help.
-```
-
-Uses your normal SSH aliases, keys and authentication. **`new` only creates; `attach` only resumes.** An existing name is an error for `new`; a missing name is an error for `attach`. Omit the name in `attach` to resume the only detached session or choose from several. Choose by `#number` or name; `/text` filters the list and Enter cancels. See `sshore attach --help`. An attached session cannot be taken over.
-
-Inside the remote shell, `sshore detach` also detaches; `exit` ends the session. Only explicit detach preserves a session: closing the local terminal or losing the connection ends it once detected, as with SSH. After detach, copy the printed `sshore attach` command to reconnect.
-
-The old `sshore HOST`, `sshore connect HOST`, `sshore HOST list` and `-s`/`--session` forms are no longer accepted. Use the explicit commands above.
-
-Automatic names come from 24 familiar Pokemon, starting with `pikachu`, `eevee`, `bulbasaur`, `charmander`, `squirtle`, `snorlax`, `psyduck` and `gengar`. Detached sessions keep their names. If all 24 are in use, choose any custom name with `sshore new HOST NAME`.
-
-```mermaid
-flowchart LR
-    ftp["Local: sshore mount HOST"] --> mount["Background SFTP mount: local tools read / write remote files"]
-    mount --> unmount["cancel mount/NAME: unmount; shell sessions unaffected"]
-    directforward["Local: forward HOST A from/to B"] --> tunnel["Independent background SSH tunnel"]
-    local["Local: sshore new / attach HOST"] --> ssh["System SSH"]
-    ssh --> setup["Remote version check / setup"]
-    setup --> select["new: unused name / attach: existing detached session"]
-    select --> session["Persistent Linux session"]
-    setup -->|"Unknown version or chosen recovery"| recovery["Temporary recovery shell"]
-    session --> detach["Explicit detach: programs keep running"]
-    session --> renamed["sshore rename HOST OLD NEW: keep tasks running"]
-    renamed --> session
-    session --> ended["Exit or detected connection loss: session ends"]
-    ended --> history["sshore list HOST: recent exit reasons"]
-    session --> killed["sshore cancel HOST NAME: end session and identified tasks"]
-    detach --> resume["Reconnect: sshore attach HOST NAME"]
-    resume --> ssh
-    session --> request["Request files or a port; detach"]
-    request --> approve["Local: sshore review"]
-    approve -->|"Files: review, approve, reconnect"| ssh
-    approve -->|"Forward: validate source, detach, start independently"| tunnel
-    tunnel -->|"Transport loss; local --retries opted in"| retry["Bounded retry; existing TCP connections lost"]
-    retry -->|"Existing authentication and known host key"| tunnel
-    mount -->|"SFTP request timeout"| mountfailed["Close connection; never replay writes"]
-    tunnel --> stopforward["cancel forward/NAME; shell unaffected"]
-    tunnel --> inventory["Remote list: read-only peer tasks; stale becomes unknown"]
-    mount --> inventory
-    request --> inventory
-```
-
-`sshore list` shows local mounts, forwards and pending approvals without a remote login.
-`sshore list HOST` filters those entries by SSH destination and also shows remote session age, foreground programs, shortened working directories, process trees and recent exit reasons:
-
-```text
-charmander [attached] · started 2h ago
-  codex · ~/src/project
-`-- 2602271 bash
-    `-- 2602398 codex [foreground]
-
-pikachu [detached] · started 2d ago
-  bash · ~
-`-- 2451576 bash [foreground]
-```
-
-PIDs identify processes; branches show parent/child relationships. `[foreground]`
-marks the programs currently using the remote terminal. Only process names are shown.
-
-`started` includes time spent detached; reattaching does not reset it. Directories
-prefer the foreground program's working directory, falling back to the shell;
-deep paths show their last two components. Unavailable details show `—`.
-
-Rename without restarting tasks, whether attached or detached:
-
-```sh
-sshore rename work pikachu build
-```
-
-The old name becomes available. Reconnect using the new name; pending approvals
-using the old name must be requested again. See `sshore rename --help`.
-
-Recent exits distinguish shell exit codes/signals, connection loss, explicit kill,
-and version-update cleanup. Records are limited to 100 entries for seven days in
-the remote runtime directory. Forced daemon termination, reboot or runtime cleanup
-may leave no record; these are diagnostics, not a guarantee that all tasks ended.
-
-`sshore cancel HOST NAME` immediately ends the named session and its identified tasks,
-even if attached. There is no confirmation; unsaved work may be lost. It uses the
-current remote runtime directory and requires matching client, remote program and
-target daemon versions, without installing or upgrading software. See
-`sshore cancel --help` and the [termination limits](SECURITY.md#remote-setup-and-updates).
+**Local:** Linux or Windows amd64/x86-64. **Remote:** Linux amd64/x86-64.
+Requires system OpenSSH. ARM and macOS are not supported.
 
 ## Install
 
-Download [release packages](https://github.com/jay-waves/sshore/releases), or use an installer:
+Download a [release package](https://github.com/jay-waves/sshore/releases), or run:
 
 **Linux**
 
@@ -108,256 +18,175 @@ Download [release packages](https://github.com/jay-waves/sshore/releases), or us
 curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | sh
 ```
 
-Installs into `~/.local/bin`. Requires `curl`, `tar` and `sha256sum` or `shasum`.
-
-**Windows** — PowerShell 5.1 or 7, preferably in Windows Terminal:
+**Windows** — PowerShell 5.1 or 7:
 
 ```powershell
 irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 ```
 
-Installs into `%LOCALAPPDATA%\sshore\bin`; set `$env:INSTALL_DIR` to choose another directory. Close running copies before upgrading.
+Installers verify checksums and print PATH instructions; they do not request
+elevation. Defaults are `~/.local/bin` on Linux and `%LOCALAPPDATA%\sshore\bin`
+on Windows. Close running Windows executables before upgrading.
 
-Installers verify checksums and do not change PATH or request elevation. Use the printed executable path or add its directory to PATH yourself. You can download and inspect either script before running it. For a pinned version, use `sh install.sh --version 0.4.6` or `.\install.ps1 -Version 0.4.6`.
+## SSH — connections and authentication
 
-The remote program is installed automatically if missing. Existing programs and sessions require confirmation before updating; see below.
-
-## Connect
+Use your normal SSH aliases, keys and authentication. Put recurring settings in
+`~/.ssh/config`. **SSH options go after `--`; sshore options and operands go before it.**
 
 ```sh
-sshore new user@host -- -p 2222 -i ~/.ssh/id_ed25519
-sshore new myserver -- -J jump
-sshore new forward          # Host alias named like a command.
-sshore new myserver --server /home/alice/bin/sshore
+sshore new work build -- -J jump -p 2222
+sshore new work -- -i ~/.ssh/work
 ```
 
+Run `sshore --help` or `sshore COMMAND --help` for syntax, defaults and supported
+options. In `upload` and `download`, `--` instead introduces literal remote paths;
+for mount paths beginning with `-`, use `./` or an absolute path.
 
-SSH connection options must follow `--`; host names, paths and sshore options
-must precede it. Mixed syntax is rejected. For example:
+## SFTP — remote directories as local mounts
+
+Mount a remote directory for local applications:
 
 ```sh
-sshore forward work 8080 to 3000 --name web -- -J jump
-sshore mount work /project ./project --read-only -- -i ~/.ssh/work
+sshore mount work               # Remote home; prints local path and resource ID.
+sshore list
+sshore cancel mount/work        # Close local files before unmounting.
 ```
 
-Use `~/.ssh/config` Host aliases to avoid repeating connection settings.
-For paths starting with `-`, use `./` or an absolute path.
+Mounts use **SFTP over SSH** and require FUSE on Linux or [WinFsp](https://winfsp.dev/)
+on Windows. They are writable by default; `--read-only` prevents changes through
+the mount. Mounts are independent of shell sessions and end on disconnect.
+There is no offline editing, conflict detection or write retry; interrupted writes
+may leave partial remote files. See `sshore mount --help` for timeouts and options.
 
-Put recurring connection settings in `~/.ssh/config`. Run `sshore --help` for commands, or `sshore new --help`, `sshore list --help` and `sshore attach --help` for their options. `sshore help COMMAND` is equivalent to `sshore COMMAND --help`.
+## Mux — detach and reattach
 
-| Option | Use |
-| --- | --- |
-| `--server PATH` | Remote executable; default: PATH, then `~/.local/bin/sshore` |
-| `--download-dir DIR` | Default local save directory; approval still required |
-| `--no-escape` | Send Ctrl-] to the remote program |
-| `-q` | Hide periodic transfer progress |
-| `-V` / `-h` | Version / help |
-
-## Mount remote files locally
-
-Use local editors and file managers on your remote home directory:
+Detach from your remote shell while its programs keep running, then reattach
+to continue. Press Ctrl-] or run `sshore detach` in the remote shell.
 
 ```sh
-sshore mount work             # Authenticate, mount, and return to your terminal
-sshore list                # Show resources, paths and pending approvals
-sshore cancel mount/work     # Close local files first, then unmount
+sshore new work                 # Create a session; prints its automatic name.
+sshore new work build           # Or choose a name.
+# Press Ctrl-] to detach and keep programs running.
+sshore attach work build        # Resume a detached session.
+sshore list work                # Show resources and remote sessions.
+sshore rename work build dev    # Rename without restarting tasks.
+sshore cancel work dev          # Immediately end the session and its tasks.
 ```
 
-Linux requires FUSE and defaults to `~/mnt/work`. Windows requires
-[WinFsp](https://winfsp.dev/) and automatically chooses a free drive letter.
-If WinFsp is missing, the command prints its official installation URL before
-starting SSH; an installed but unloadable WinFsp reports the underlying error.
-The command prints the actual path and identifies SFTP over SSH. Mounts run in the background until stopped,
-disconnected, or the local machine shuts down; they do not restart automatically.
-The default name comes from your SSH host or alias (without `user@`).
-Use `--name project` for another mount of the same host. For a specific directory:
+`new` only creates; `attach` only resumes. Omit the name in `attach` to select a
+detached session. An attached session cannot be taken over.
 
-```sh
-sshore mount work /home/alice/project --name project
+**Only explicit detach preserves the session.** In the remote shell,
+`sshore detach` also works. `exit`, closing the local terminal or detected
+connection loss ends the session. Screens, scrollback and detached output are
+not saved. `cancel HOST NAME` has no confirmation; unsaved work may be lost.
+
+```mermaid
+flowchart LR
+    connect["Local: new / attach HOST"] --> session["Remote shell"]
+    session -->|"Ctrl-] / detach"| detached["Programs keep running"]
+    detached -->|"attach HOST NAME"| session
+    session -->|"Exit / connection loss / cancel"| ended["Session ends"]
+    session -->|"Request files or a forward; detach"| pending["Local pending request"]
+    pending -->|"review and consent"| approved["Execute approved operation"]
+    approved -->|"Files: normally reconnect"| session
+    approved -->|"Forward"| resource["Independent background resource"]
+    local["Local: mount / forward HOST"] --> resource
+    resource -->|"cancel resource ID"| stopped["Resource ends; shells unaffected"]
 ```
 
-An optional third argument selects your own mountpoint (an existing empty
-Linux directory, or an unused Windows drive such as `X:`). `--foreground` keeps
-the mount in your terminal, where Ctrl-C unmounts it.
+## SCP — one-time file copies
 
-`mount` uses **SFTP over system OpenSSH**, not unencrypted FTP. A busy mount stays
-connected so you can close files and retry stopping it. A 10-second unmount
-timeout forces disconnection and may interrupt writes. Each local mount session
-has an independent connection: detaching a remote shell does not close the mount,
-and unmounting does not end shell sessions. No remote sshore installation is needed.
-SSH password and host-key prompts appear during startup; background logs are kept
-under the local sshore state directory in `mounts/NAME.log`.
+SCP describes the file-copy use case here. Transfers use sshore's own protocol,
+not the SCP wire protocol or a drop-in `scp` command.
 
-The mount is writable by default, including overwrite and deletion. Use
-`--read-only` to prevent changes through it. Writable mounts require OpenSSH's
-SFTP atomic-rename and fsync extensions. There is no local write-back cache,
-offline editing, automatic reconnect or write retry. Interrupted writes can leave
-partial remote files. An unanswered SFTP request closes the connection after
-60 seconds; `--io-timeout` adjusts this limit (`0s` disables it). This may interrupt
-other operations on the mount. `--startup-timeout` optionally bounds startup,
-including password/MFA entry; it is disabled by default. Remote changes may take a moment to appear; concurrent
-editing is not conflict-checked. Linux caches reads until close/reopen; use
-`--direct-io` when you need uncached reads from an already-open file. Directory
-listings exceeding 100,000 entries or 32 MiB of SFTP responses fail without
-disconnecting other operations.
-
-Windows names must be representable without renaming; directories containing
-unsupported names report an error. DOS flags and creation/change times are not
-preserved. Linux symlinks that lead outside the selected remote tree cannot be
-followed locally. Special files and file locking are not supported. See
-`sshore mount --help` and the [mount boundary](SECURITY.md#sftp-mounts).
-
-## Transfer files
-
-**In the remote shell:**
+For one-time transfers, request from the **remote sshore shell**:
 
 ```sh
-sshore upload                   # Request an upload to the current directory.
-sshore upload /tmp/uploads       # Request an upload to this directory.
+sshore upload                   # Request a local file for this directory.
 sshore download ./report.zip
-sshore download a.zip b.log      # Up to 16 files per request.
 ```
 
-The request detaches you; your remote programs keep running. **In your local shell:**
+The request detaches you. In your **local shell**:
 
 ```sh
-sshore list                    # List resources and pending requests.
-sshore review                  # Review, choose local paths, transfer, reconnect.
-sshore review --stay            # Transfer, explicitly detach, and remain local.
-sshore cancel approval/ID       # Discard a request.
+sshore review                   # Review, choose local paths, transfer, reconnect.
+sshore review --stay            # Transfer and remain local.
+sshore cancel approval/ID       # Discard a pending request.
 ```
 
-With multiple pending requests, `review` offers a picker: `#number` or exact ID
-selects, `/text` filters, and Enter or Ctrl-C leaves requests pending.
+A single upload is approved by submitting its local source path; other requests
+require `yes`. Requests expire after ten minutes. Transfers support regular files
+only, never overwrite destinations, and require a destination filesystem with
+hard links. Failed batches retain completed files. Tab completes local paths.
 
-For one upload, submitting the source path approves it. Downloads and other requests ask for `yes`. Ctrl-C cancels local approval or transfer. Requests expire after 10 minutes; request again after a failed reconnect. A normal connection never executes pending requests.
+## Tunnel — TCP port forwarding
 
-**Path input:** Tab completes a shared prefix or shows a small list. Further Tabs cycle; Enter selects, then another Enter submits. Large lists ask you to type more. Directories are colored; `NO_COLOR=1` disables colors. Spaces, Unicode, surrounding quotes and `~/` work. For downloads, Enter accepts the suggested path. Invalid paths can be corrected in place; Ctrl-C keeps the request pending. Use `--` before remote paths starting with `-`.
-
-Transfers support regular files only and never overwrite an existing destination. No directories, symlinks, resume or drag-and-drop. The destination filesystem must support hard links (for example NTFS on Windows). Progress includes file/batch position, speed and estimated remaining time.
-A failed batch reports completed, failed and unstarted files; completed files remain.
-
-## Forward a port
-
-The first port belongs to your current shell; the second belongs to the other
-end of the connection. `to` listens here; `from` listens at the other end.
-The direction and at least one port are required. Omit either port to use the
-same port on both ends: `to 3000` and `3000 to` both mean `3000 to 3000`;
-`from 3000` and `3000 from` both mean `3000 from 3000`.
-
-**On your computer** (independent background resources; SSH options such as
-`-p`, `-i` and `-J` are supported after `--`):
+From your **local shell**:
 
 ```sh
-sshore forward work 8080 to 3000 --name web  # Your computer:8080 -> work:3000
-sshore forward work 3000 from 8080  # work:8080 -> your computer:3000
+sshore forward work 8080 to 3000 --name web  # Local:8080 -> server:3000.
+sshore forward work 3000 from 8080           # Server:8080 -> local:3000.
+sshore cancel forward/web
 ```
 
-**In the remote sshore shell** (request local approval):
+The first port belongs to the invoking shell's machine: `to` listens there;
+`from` listens on the other machine. Inside a remote sshore shell, omit `HOST`
+to request a forward for local review. Approved forwards run independently and
+leave the source shell detached. Listeners request IPv4 loopback; server SSH
+policy can override reverse binds.
+
+Forwards end on disconnect by default; local `--retries N` opts into bounded retries, which do not
+restore existing TCP connections. Resources do not restart after local shutdown.
+Native SSH `-L/-R/-D` remain separate connection-level options; see command help.
+
+## Status
 
 ```sh
-sshore forward 3000 from 8080      # Your computer:8080 -> server:3000
-sshore forward 8080 to 3000        # Server:8080 -> your computer:3000
+sshore list                     # Local mounts, forwards and pending requests.
+sshore list work                # Also query remote sessions and peer inventory.
+sshore list --details           # Transport state, last errors and log paths.
+sshore list --json              # Machine-readable inventory.
 ```
 
-Run `sshore review` locally to review and establish the requested rule. The
-source shell stays detached; the forward runs independently in the background.
-Closing, detaching or ending that shell does not stop the forward.
+A running worker does not prove that its target service is healthy. `peer/` entries
+are read-only snapshots; manage them on their original computer.
 
-```sh
-sshore list                   # Stable IDs, hosts, states and directions
-sshore list work              # Filter local entries; also query remote shells
-sshore cancel forward/web       # Stop only this forward and its connections
-sshore cancel mount/work        # Unmount only this mount
-sshore review approval/ID       # Review a pending local task
-sshore cancel approval/ID
-```
+## Updates and troubleshooting
 
-Run `sshore list` in the remote shell too: it shows that computer's own tasks,
-shells, and a read-only section of tasks managed by other computers. Entries
-starting with `peer/` cannot be stopped there; use the resource's original ID
-on its managing computer. Local `sshore list HOST` also includes this peer view.
+Client and remote releases must match exactly, including PATCH. Missing remote
+software may be installed automatically. Updating an older installation requires
+typing `update` after reviewing affected sessions: **their tasks will end**.
+Press Enter instead for a temporary recovery shell; existing sessions stay running,
+but sshore operations are restricted until reconnecting. Newer remote versions
+are never downgraded. See the [security model](SECURITY.md#remote-setup-and-updates).
 
-Background mounts and forwards refresh their remote status about every 20 seconds. After
-75 seconds without an update, the peer view says `unknown`, not stopped. Pending
-requests are last-known snapshots and expire after 10 minutes; other stale
-records expire after 24 hours. Approval clears the pending mirror; rejection
-tries to clear it without prompting for SSH authentication. An unreachable
-manager or server may leave a stale view until expiry.
+- Stale screen after reattachment: use Ctrl-L or the application's redraw command.
+- SSH failure: try `sshore new work -- -vvv -E ./ssh-debug.log`.
+- Mount or forward failure: inspect `sshore list --details` and its log path.
+- Existing transfer destination: choose a new filename; overwriting is disabled.
 
-Forward status sync requires the same sshore release on the remote PATH or in
-`~/.local/bin`; approved requests also retain their configured remote executable.
-Mount status uses the existing SFTP connection and its starting directory as the
-remote home; a custom SFTP root may not appear in the shell's inventory. Both store only small inventory
-records in `~/.local/state/sshore/peer-tasks` on the remote account. If registration
-is unavailable, the mount or forward still works. Local mount paths, control
-tokens and tasks for other hosts are never included.
+## Project documents
 
-Use `sshore list --details` for protocol, transport state, read-only mode, last
-error and log location, or `sshore list --json` for scripts. `running` means the
-local worker answered, not that a forwarded target is healthy. Target services
-are not probed. Detailed output includes recent mount/forward results (up to
-100 per kind for seven days). `list HOST --json` requires a matching remote
-release and never installs or updates it.
+- [SSHORE.md](SSHORE.md): development, architecture, validation and releases.
+- [SECURITY.md](SECURITY.md): trust boundaries, safeguards and remaining risks.
+- [GLOSSARY.md](GLOSSARY.md): terms and relationships.
+- [AGENTS.md](AGENTS.md): contributor and agent rules.
 
-The list groups local `mount/NAME`, `forward/NAME` and pending `approval/ID`
-entries. Approvals belong to your computer; the originating shell is shown for
-context and checked before execution. Approved forwards become independent
-resources. Shells retain `attach HOST NAME` and `cancel HOST NAME`; stopping a
-mount or forward never ends a shell. Remote shell details retain process trees
-and recent exits in a separate section of `list HOST`.
+## Acknowledgements
 
-Use `--name NAME` when starting a local forward; otherwise its name includes the
-host, direction and ports. The command prints its ID after startup succeeds.
-`--foreground` keeps a local tunnel in the terminal for diagnostics.
-The listeners request IPv4 loopback; server SSH policy controls reverse binds.
-Mounts end on disconnect. Forwards do too by default; local background forwards
-can opt into `--retries N` (up to 10). Existing TCP connections are lost, and retries
-cannot prompt for authentication or accept new host keys. Neither resource
-restarts after local shutdown. Old single-port and colon forms are no longer accepted.
-See `sshore forward --help`.
+Reference projects and inspiration:
 
-For non-loopback destinations or multiple rules, use native SSH forwarding at connection time:
+- [dtach](https://github.com/crigler/dtach): lightweight shell detach and reattach.
+- [trzsz](https://github.com/trzsz/trzsz): terminal-oriented file transfer workflows.
+- The original `dssh.nu` prototype: the starting point for this project.
 
-```sh
-sshore new myserver -- -L 127.0.0.1:8080:127.0.0.1:3000
-sshore new myserver -- -D 127.0.0.1:1080   # SOCKS proxy.
-```
+Built with [OpenSSH](https://www.openssh.com/),
+[smux](https://github.com/xtaci/smux), [creack/pty](https://github.com/creack/pty),
+[pkg/sftp](https://github.com/pkg/sftp), [go-fuse](https://github.com/hanwen/go-fuse),
+[WinFsp](https://winfsp.dev/) / [go-winfsp](https://github.com/winfsp/go-winfsp),
+[readline](https://github.com/chzyer/readline) and the Go ecosystem.
+sshore does not implement the trzsz protocol.
 
-Native `-L`, `-R` and `-D` rules are managed by OpenSSH, separately from `sshore forward`.
-
-## Update or recover
-
-Client and remote programs must match **exactly**, including the patch version. A newer remote version requires upgrading your local client; sshore never automatically downgrades it.
-
-When an older remote installation or session is found:
-
-- **Type `update`** to install the matching version and end the listed old sessions and their tasks. Save your work first; this can disconnect other clients on the same account.
-- **Press Enter** for a temporary recovery shell on the same SSH connection. Existing sessions remain running. Persistence, file transfer, approvals, dynamic forwarding and Ctrl-] detach are disabled in recovery. Exit and reconnect for normal use.
-
-Unknown versions or a failing remote version check require manual recovery. Pending approved operations are skipped after a setup update or in recovery; request them again. If downloading the matching release fails, use ordinary `ssh HOST` for maintenance.
-
-## Troubleshooting
-
-| Symptom | Try |
-| --- | --- |
-| Session already attached | Use `sshore new HOST` for a separate session; detach the current client before using `sshore attach HOST NAME`. |
-| Screen looks stale after reconnecting | Press Ctrl-L or use the application's redraw command. |
-| Missing output while disconnected | Expected: screens, scrollback and detached output are not saved. |
-| Session disappeared | Shell exit, connection loss without detach, reboot or system cleanup can end it. |
-| Transfer destination exists | Choose another filename; overwriting is disabled. |
-| Forwarded port fails | Check that the local port is free and the remote service is running. |
-| SSH / connection failure | Try `sshore new HOST -- -vvv -E ./ssh-debug.log`; keep noninteractive shell startup output quiet. |
-| Daemon startup failure | On the remote host, check session `.log` files under `$XDG_RUNTIME_DIR/sshore` or `/tmp/sshore-UID`. `SSHORE_RUNTIME_DIR` overrides this location. |
-
-There is no automatic reconnection. SSH agent/X11 forwarding may not survive reattachment. For command help, use `sshore help download` or `sshore download --help`.
-
-## Security, development and credits
-
-Read [SECURITY.md](SECURITY.md) for approval boundaries, update safeguards and remaining risks. Implementation notes live in the corresponding source-file headers.
-
-Build from source with Go 1.25+: `go build -o dist/sshore .`. Source builds need matching binaries on both ends. CI builds Linux/Windows amd64 and publishes main; full tests run manually via [Actions → Tests → Run workflow](https://github.com/jay-waves/sshore/actions/workflows/tests.yml).
-
-Inspired by [dtach](https://github.com/crigler/dtach), the original `dssh.nu` prototype and [trzsz](https://github.com/trzsz/trzsz). Uses [OpenSSH](https://www.openssh.com/), [smux](https://github.com/xtaci/smux) and [creack/pty](https://github.com/creack/pty). Session file requests use a custom protocol; `sshore mount` uses SFTP. trzsz is not supported.
-
-[MIT license](LICENSE). Dependencies retain their own licenses; versions are in [go.mod](go.mod).
+[MIT license](LICENSE); third-party license notices are collected in
+[THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt).

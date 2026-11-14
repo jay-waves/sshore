@@ -1,5 +1,9 @@
 # Security model
 
+This document owns the security guarantees and their limits. See
+[GLOSSARY.md](GLOSSARY.md) for terms and [SSHORE.md](SSHORE.md) for development
+and lifecycle mechanics.
+
 sshore trusts the **local OS, user account, terminal, executable and SSH configuration**. The remote host may be compromised, including its root user, session daemon and programs running as your remote account. SSH authenticates the endpoint and protects transport; it does not make the endpoint trustworthy.
 
 ## Trust boundaries
@@ -27,7 +31,7 @@ flowchart LR
     native -->|"Disconnect; explicit local retry grant"| retrygate["Bounded retries; noninteractive auth; known host key"]
     retrygate --> native
     mounted -->|"Request deadline exceeded"| abortmount["Abort transport; unknown write outcome; no replay"]
-    mountuser["Local user: ftp HOST"] --> mountgrant["Explicit mount grant: read-only or writable"]
+    mountuser["Local user: mount HOST"] --> mountgrant["Explicit mount grant: read-only or writable"]
     mountgrant --> mounted["FUSE / WinFsp: local applications"]
     mounted <-->|"Independent OpenSSH / bounded SFTP responses"| service
     resources --> status["Local status: no target probe; no control tokens exported"]
@@ -142,7 +146,7 @@ mount cleanup is bounded and best effort. Record removal never signals a PID.
 A rejected request's mirror is removed via a bounded, noninteractive SSH attempt;
 failure leaves only expiring metadata. Executing an approval removes its mirror
 after the source session/PID checks. `peer/` IDs are read-only and cannot be
-passed to local stop to affect similarly named resources.
+passed to local cancel to affect similarly named resources.
 
 ## SFTP mounts
 

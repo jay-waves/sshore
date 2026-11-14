@@ -23,7 +23,12 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     stem = f"sshore_{args.version}_{args.os}_{args.arch}"
     binary_name = "sshore.exe" if args.os == "windows" else "sshore"
-    files = [(args.binary, binary_name), (Path("README.md"), "README.md"), (Path("SECURITY.md"), "SECURITY.md"), (Path("LICENSE"), "LICENSE"), (Path("THIRD_PARTY_LICENSES.txt"), "THIRD_PARTY_LICENSES.txt")]
+    files = [(args.binary, binary_name)]
+    # Keep the root documentation set together so its relative links work offline.
+    files += [(Path(name), name) for name in (
+        "README.md", "SSHORE.md", "SECURITY.md", "GLOSSARY.md", "AGENTS.md",
+        "LICENSE", "THIRD_PARTY_LICENSES.txt",
+    )]
     if args.os == "windows":
         archive = args.output / (stem + ".zip")
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
