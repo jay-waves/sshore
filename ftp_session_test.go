@@ -25,12 +25,12 @@ func TestFTPSessionDefaults(t *testing.T) {
 }
 func TestFTPControlCapability(t *testing.T) {
 	called := make(chan struct{}, 1)
-	l, s, e := ftpListen("secret", func(w http.ResponseWriter, r *http.Request) { called <- struct{}{}; w.WriteHeader(204) })
+	l, s, e := resourceListen("secret", func(w http.ResponseWriter, r *http.Request) { called <- struct{}{}; w.WriteHeader(204) })
 	if e != nil {
 		t.Fatal(e)
 	}
 	defer s.Close()
-	r, e := ftpHTTP(l.Addr().String(), "wrong", "POST", "/stop", nil)
+	r, e := resourceHTTP(l.Addr().String(), "wrong", "POST", "/stop", nil)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -43,7 +43,7 @@ func TestFTPControlCapability(t *testing.T) {
 		t.Fatal("unauthorized control request dispatched")
 	default:
 	}
-	r, e = ftpHTTP(l.Addr().String(), "secret", "POST", "/stop", nil)
+	r, e = resourceHTTP(l.Addr().String(), "secret", "POST", "/stop", nil)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -51,7 +51,7 @@ func TestFTPControlCapability(t *testing.T) {
 	if r.StatusCode != 204 {
 		t.Fatal(r.Status)
 	}
-	if _, e = ftpHTTP("example.com:80", "secret", "POST", "/stop", nil); e == nil {
+	if _, e = resourceHTTP("example.com:80", "secret", "POST", "/stop", nil); e == nil {
 		t.Fatal("accepted non-loopback address")
 	}
 }

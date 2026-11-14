@@ -11,8 +11,8 @@ import (
 	"syscall"
 )
 
-func detachFTPWorker(c *exec.Cmd)   { c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
-func lockFTPState(f *os.File) error { return unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB) }
+func detachResourceWorker(c *exec.Cmd)   { c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
+func lockResourceState(f *os.File) error { return unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB) }
 func prepareFTPPaths(o *ftpOptions) (func(), error) {
 	cleanup := func() {}
 	if o.mountpoint != "" {

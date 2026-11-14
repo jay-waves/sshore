@@ -54,7 +54,7 @@ func mountFTP(f *ftpFS, p string) (ftpMount, error) {
 	adapter := &ftpWindowsAttributes{ftpWindowsBehaviour: base, backend: f, names: make(map[uintptr]string)}
 	host, e := winfsp.Mount(adapter, p, opts...)
 	if e != nil {
-		return nil, fmt.Errorf("WinFsp mount (install WinFsp first): %w", e)
+		return nil, fmt.Errorf("WinFsp mount failed: %w", e)
 	}
 	return &ftpWindowsMount{fs: host, done: make(chan struct{})}, nil
 }

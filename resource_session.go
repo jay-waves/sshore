@@ -1,10 +1,11 @@
 package main
 
-// Local mount workers own one transport and one OS mount. Private records contain
+// Local resource workers own one SSH transport and one mount or forward.
+// Private records contain
 // a loopback control capability, never SSH credentials. An OS lock serializes
 // each name for the worker lifetime; control never signals a recorded PID.
 // Startup retains a terminal askpass broker until the worker acknowledges its
-// mount. EOF before the commit tears down the mount instead of orphaning it.
+// resource. EOF before the commit tears it down instead of orphaning it.
 import (
 	"context"
 	"crypto/rand"
@@ -24,43 +25,52 @@ import (
 	"time"
 )
 
-type ftpRecord struct{ Name, Host, Remote, Mountpoint, Address, Token, Version string }
-type ftpWorkerConfig struct {
+type resourceRecord struct{ Kind, Detail, Name, Host, Remote, Mountpoint, Address, Token, Version string }
+type resourceConfig struct {
+	Forward                *forwardConfig
 	Args                   []string
 	AuthAddress, AuthToken string
 }
-type ftpStopRequest struct{ reply chan error }
-type ftpService struct {
-	record     ftpRecord
-	config     ftpWorkerConfig
-	stop       chan ftpStopRequest
+type resourceStopRequest struct{ reply chan error }
+type resourceService struct {
+	record     resourceRecord
+	config     resourceConfig
+	stop       chan resourceStopRequest
 	ack        <-chan error
 	abandoned  <-chan struct{}
 	recordPath string
 }
 
-func ftpToken() string {
+func resourceToken() string {
 	var b [32]byte
 	if _, e := rand.Read(b[:]); e != nil {
 		panic(e)
 	}
 	return hex.EncodeToString(b[:])
 }
-func ftpStateDir() (string, error) {
+func ftpStateDir() (string, error) { return resourceStateDir("mount") }
+func resourceStateDir(kind string) (string, error) {
+	if kind != "mount" && kind != "forward" {
+		return "", fmt.Errorf("unknown resource type")
+	}
+	folder := "mounts"
+	if kind == "forward" {
+		folder = "forwards"
+	}
 	d, e := approvalDir()
 	if e != nil {
 		return "", e
 	}
-	d = filepath.Join(filepath.Dir(d), "mounts")
+	d = filepath.Join(filepath.Dir(d), folder)
 	if e = os.MkdirAll(d, 0700); e != nil {
 		return "", e
 	}
 	return d, privateState(d, true)
 }
-func ftpHTTP(address, token, method, route string, body io.Reader) (*http.Response, error) {
+func resourceHTTP(address, token, method, route string, body io.Reader) (*http.Response, error) {
 	host, _, e := net.SplitHostPort(address)
 	if e != nil || host != "127.0.0.1" {
-		return nil, fmt.Errorf("invalid mount control address")
+		return nil, fmt.Errorf("invalid resource control address")
 	}
 	req, e := http.NewRequest(method, "http://"+address+route, body)
 	if e != nil {
@@ -78,7 +88,7 @@ func ftpHTTP(address, token, method, route string, body io.Reader) (*http.Respon
 	defer c.CloseIdleConnections()
 	return c.Do(req)
 }
-func ftpListen(token string, handler http.HandlerFunc) (net.Listener, *http.Server, error) {
+func resourceListen(token string, handler http.HandlerFunc) (net.Listener, *http.Server, error) {
 	l, e := net.Listen("tcp4", "127.0.0.1:0")
 	if e != nil {
 		return nil, nil, e
@@ -93,10 +103,10 @@ func ftpListen(token string, handler http.HandlerFunc) (net.Listener, *http.Serv
 	go s.Serve(l)
 	return l, s, nil
 }
-func (s *ftpService) sshEnvironment() []string {
+func (s *resourceService) sshEnvironment() []string {
 	exe, _ := os.Executable()
 	env := os.Environ()
-	for k, v := range map[string]string{"SSH_ASKPASS": exe, "SSH_ASKPASS_REQUIRE": "force", "DISPLAY": "sshore", "SSHORE_FTP_ASKPASS": "1", "SSHORE_FTP_ASKPASS_ADDR": s.config.AuthAddress, "SSHORE_FTP_ASKPASS_TOKEN": s.config.AuthToken} {
+	for k, v := range map[string]string{"SSH_ASKPASS": exe, "SSH_ASKPASS_REQUIRE": "force", "DISPLAY": "sshore", "SSHORE_ASKPASS": "1", "SSHORE_ASKPASS_ADDR": s.config.AuthAddress, "SSHORE_ASKPASS_TOKEN": s.config.AuthToken} {
 		prefix := k + "="
 		filtered := env[:0]
 		for _, x := range env {
@@ -108,17 +118,30 @@ func (s *ftpService) sshEnvironment() []string {
 	}
 	return env
 }
-func (s *ftpService) ready(root, mountpoint string) error {
+func (s *resourceService) ready(root, mountpoint string) error {
 	s.record.Remote = root
 	s.record.Mountpoint = mountpoint
 	data, e := json.Marshal(s.record)
 	if e != nil {
 		return e
 	}
-	if e = os.WriteFile(s.recordPath, data, 0600); e != nil {
+	// Publish complete metadata atomically so list cannot observe partial JSON.
+	tmp, e := os.CreateTemp(filepath.Dir(s.recordPath), ".resource-*")
+	if e != nil {
 		return e
 	}
-	if e = privateState(s.recordPath, false); e != nil {
+	defer os.Remove(tmp.Name())
+	if _, e = tmp.Write(data); e != nil {
+		tmp.Close()
+		return e
+	}
+	if e = tmp.Close(); e != nil {
+		return e
+	}
+	if e = privateState(tmp.Name(), false); e != nil {
+		return e
+	}
+	if e = os.Rename(tmp.Name(), s.recordPath); e != nil {
 		return e
 	}
 	if e = json.NewEncoder(os.Stdout).Encode(s.record); e != nil {
@@ -128,24 +151,36 @@ func (s *ftpService) ready(root, mountpoint string) error {
 	select {
 	case e = <-s.ack:
 	case <-time.After(10 * time.Second):
-		e = fmt.Errorf("mount startup acknowledgement timed out")
+		e = fmt.Errorf("resource startup acknowledgement timed out")
 	}
 	if e != nil {
 		return e
 	}
 	return json.NewEncoder(os.Stdout).Encode("started")
 }
-func runFTPWorker() (int, error) {
+func runResourceWorker() (int, error) {
 	dec := json.NewDecoder(io.LimitReader(os.Stdin, 1<<20))
-	var config ftpWorkerConfig
+	var config resourceConfig
 	if e := dec.Decode(&config); e != nil {
 		return 1, e
 	}
-	o, e := parseFTPOptions(config.Args)
-	if e != nil {
-		return 1, e
+	kind := "mount"
+	var o ftpOptions
+	var e error
+	if config.Forward != nil {
+		kind = "forward"
+		if e = validateForwardConfig(*config.Forward); e != nil {
+			return 1, e
+		}
+		o.host = config.Forward.Host
+		o.name = config.Forward.Name
+	} else {
+		o, e = parseFTPOptions(config.Args)
+		if e != nil {
+			return 1, e
+		}
 	}
-	dir, e := ftpStateDir()
+	dir, e := resourceStateDir(kind)
 	if e != nil {
 		return 1, e
 	}
@@ -158,14 +193,16 @@ func runFTPWorker() (int, error) {
 	if e = privateState(lockPath, false); e != nil {
 		return 1, e
 	}
-	if e = lockFTPState(lock); e != nil {
-		return 1, fmt.Errorf("mount session %s already active (use --list or --name): %w", o.name, e)
+	if e = lockResourceState(lock); e != nil {
+		return 1, fmt.Errorf("resource %s already active (use sshore list or --name): %w", o.name, e)
 	}
-	cleanup, e := prepareFTPPaths(&o)
-	if e != nil {
-		return 1, e
+	if kind == "mount" {
+		cleanup, e := prepareFTPPaths(&o)
+		if e != nil {
+			return 1, e
+		}
+		defer cleanup()
 	}
-	defer cleanup()
 	ack := make(chan error, 1)
 	abandoned := make(chan struct{})
 	go func() {
@@ -179,18 +216,18 @@ func runFTPWorker() (int, error) {
 		}
 		ack <- e
 	}()
-	s := &ftpService{record: ftpRecord{Name: o.name, Host: o.host, Version: version, Token: ftpToken()}, config: config, stop: make(chan ftpStopRequest), ack: ack, abandoned: abandoned, recordPath: filepath.Join(dir, o.name+".json")}
+	s := &resourceService{record: resourceRecord{Kind: kind, Name: o.name, Host: o.host, Version: version, Token: resourceToken()}, config: config, stop: make(chan resourceStopRequest), ack: ack, abandoned: abandoned, recordPath: filepath.Join(dir, o.name+".json")}
 	// The lock excludes a live owner. Remove only its stale metadata, never a mount.
 	if e = os.Remove(s.recordPath); e != nil && !os.IsNotExist(e) {
 		return 1, e
 	}
 	defer os.Remove(s.recordPath)
-	l, server, e := ftpListen(s.record.Token, func(w http.ResponseWriter, r *http.Request) {
+	l, server, e := resourceListen(s.record.Token, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/status":
 			fmt.Fprint(w, version)
 		case r.Method == "POST" && r.URL.Path == "/stop":
-			request := ftpStopRequest{reply: make(chan error, 1)}
+			request := resourceStopRequest{reply: make(chan error, 1)}
 			select {
 			case s.stop <- request:
 			case <-r.Context().Done():
@@ -201,7 +238,7 @@ func runFTPWorker() (int, error) {
 				if e != nil {
 					http.Error(w, cleanText(e.Error()), 409)
 				} else {
-					fmt.Fprint(w, "unmounted")
+					fmt.Fprint(w, "stopped")
 				}
 			case <-r.Context().Done():
 			}
@@ -212,18 +249,27 @@ func runFTPWorker() (int, error) {
 	if e != nil {
 		return 1, e
 	}
-	defer func() { ctx, cancel := contextWithFTPTimeout(); defer cancel(); server.Shutdown(ctx) }()
+	defer func() { ctx, cancel := resourceShutdownContext(); defer cancel(); server.Shutdown(ctx) }()
 	s.record.Address = l.Addr().String()
+	if config.Forward != nil {
+		return runForwardWorker(*config.Forward, s)
+	}
 	return runFTPMount(o, s)
 }
 func startFTPBackground(args []string, o ftpOptions) (int, error) {
-	dir, e := ftpStateDir()
+	return startResourceBackground(resourceConfig{Args: args}, "mount", o.name)
+}
+func startResourceBackground(config resourceConfig, kind, name string) (int, error) {
+	if e := validSession(name); e != nil {
+		return 1, e
+	}
+	dir, e := resourceStateDir(kind)
 	if e != nil {
 		return 1, e
 	}
-	token := ftpToken()
+	token := resourceToken()
 	var prompts sync.Mutex
-	l, broker, e := ftpListen(token, func(w http.ResponseWriter, r *http.Request) {
+	l, broker, e := resourceListen(token, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" || r.URL.Path != "/ask" {
 			http.NotFound(w, r)
 			return
@@ -252,7 +298,7 @@ func startFTPBackground(args []string, o ftpOptions) (int, error) {
 		return 1, e
 	}
 	defer broker.Close()
-	logPath := filepath.Join(dir, o.name+".log")
+	logPath := filepath.Join(dir, name+".log")
 	log, e := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if e != nil {
 		return 1, e
@@ -265,8 +311,8 @@ func startFTPBackground(args []string, o ftpOptions) (int, error) {
 	if e != nil {
 		return 1, e
 	}
-	cmd := exec.Command(exe, "ftp-worker")
-	detachFTPWorker(cmd)
+	cmd := exec.Command(exe, "resource-worker")
+	detachResourceWorker(cmd)
 	cmd.Stderr = log
 	input, e := cmd.StdinPipe()
 	if e != nil {
@@ -296,28 +342,35 @@ func startFTPBackground(args []string, o ftpOptions) (int, error) {
 			}
 		}
 	}()
-	if e = json.NewEncoder(input).Encode(ftpWorkerConfig{Args: args, AuthAddress: l.Addr().String(), AuthToken: token}); e != nil {
+	config.AuthAddress = l.Addr().String()
+	config.AuthToken = token
+	if e = json.NewEncoder(input).Encode(config); e != nil {
 		return 1, e
 	}
 	dec := json.NewDecoder(output)
-	var record ftpRecord
+	var record resourceRecord
 	if e = dec.Decode(&record); e != nil {
-		return 1, fmt.Errorf("mount startup failed; see %s: %w", logPath, e)
+		return 1, fmt.Errorf("resource startup failed; see %s: %w", logPath, e)
 	}
 	if e = json.NewEncoder(input).Encode("commit"); e != nil {
 		return 1, e
 	}
 	var ack string
 	if e = dec.Decode(&ack); e != nil || ack != "started" {
-		return 1, fmt.Errorf("mount startup was not acknowledged: %v", e)
+		return 1, fmt.Errorf("resource startup was not acknowledged: %v", e)
 	}
 	committed = true
 	cmd.Process.Release()
-	fmt.Fprintf(os.Stdout, "Mounted %s:%s at %s (session %s).\nStop: sshore ftp --stop %s\n", cleanText(record.Host), cleanText(record.Remote), cleanText(record.Mountpoint), record.Name, record.Name)
+	detail := record.Detail
+	if kind == "mount" {
+		detail = fmt.Sprintf("%s:%s at %s", record.Host, record.Remote, record.Mountpoint)
+	}
+	fmt.Fprintf(os.Stdout, "Started %s/%s: %s\nStop: sshore stop %s/%s\n", kind, record.Name, cleanText(detail), kind, record.Name)
+
 	return 0, nil
 }
-func runFTPAskpass(args []string) (int, error) {
-	r, e := ftpHTTP(os.Getenv("SSHORE_FTP_ASKPASS_ADDR"), os.Getenv("SSHORE_FTP_ASKPASS_TOKEN"), "POST", "/ask", strings.NewReader(strings.Join(args, " ")))
+func runResourceAskpass(args []string) (int, error) {
+	r, e := resourceHTTP(os.Getenv("SSHORE_ASKPASS_ADDR"), os.Getenv("SSHORE_ASKPASS_TOKEN"), "POST", "/ask", strings.NewReader(strings.Join(args, " ")))
 	if e != nil {
 		return 1, e
 	}
@@ -335,12 +388,13 @@ func runFTPAskpass(args []string) (int, error) {
 	fmt.Println(string(b))
 	return 0, nil
 }
-func readFTPRecord(name string) (ftpRecord, error) {
-	var r ftpRecord
+func readFTPRecord(name string) (resourceRecord, error) { return readResourceRecord("mount", name) }
+func readResourceRecord(kind, name string) (resourceRecord, error) {
+	var r resourceRecord
 	if e := validSession(name); e != nil {
 		return r, e
 	}
-	d, e := ftpStateDir()
+	d, e := resourceStateDir(kind)
 	if e != nil {
 		return r, e
 	}
@@ -353,63 +407,37 @@ func readFTPRecord(name string) (ftpRecord, error) {
 		return r, e
 	}
 	e = json.Unmarshal(b, &r)
+	if r.Kind == "" {
+		r.Kind = "mount"
+	}
+	if e == nil && r.Kind != kind {
+		e = fmt.Errorf("resource type mismatch")
+	}
 	if e == nil && r.Name != name {
 		e = fmt.Errorf("invalid mount record")
 	}
 	return r, e
 }
-func listFTPSessions() error {
-	d, e := ftpStateDir()
-	if e != nil {
-		return e
-	}
-	files, e := os.ReadDir(d)
-	if e != nil {
-		return e
-	}
-	count := 0
-	for _, f := range files {
-		if !strings.HasSuffix(f.Name(), ".json") {
-			continue
-		}
-		r, e := readFTPRecord(strings.TrimSuffix(f.Name(), ".json"))
-		if e != nil {
-			return e
-		}
-		status := "offline"
-		resp, e := ftpHTTP(r.Address, r.Token, "GET", "/status", nil)
-		if e == nil {
-			if resp.StatusCode == 200 {
-				status = "mounted"
-			}
-			resp.Body.Close()
-		}
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%s:%s\t%s\n", r.Name, status, cleanText(r.Host), cleanText(r.Remote), cleanText(r.Mountpoint))
-		count++
-	}
-	if count == 0 {
-		fmt.Fprintln(os.Stdout, "No local mount sessions.")
-	}
-	return nil
-}
-func stopFTPSession(name string) error {
-	r, e := readFTPRecord(name)
+func listFTPSessions() error           { return listLocalResources("", "mount") }
+func stopFTPSession(name string) error { return stopResource("mount", name) }
+func stopResource(kind, name string) error {
+	r, e := readResourceRecord(kind, name)
 	if e != nil {
 		return e
 	}
 	if r.Version != version {
-		return fmt.Errorf("mount uses sshore %s; stop it with that exact version", cleanText(r.Version))
+		return fmt.Errorf("resource uses sshore %s; stop it with that exact version", cleanText(r.Version))
 	}
-	resp, e := ftpHTTP(r.Address, r.Token, "POST", "/stop", nil)
+	resp, e := resourceHTTP(r.Address, r.Token, "POST", "/stop", nil)
 	if e != nil {
 		return e
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("unmount: %s", cleanText(string(b)))
+		return fmt.Errorf("stop: %s", cleanText(string(b)))
 	}
-	dir, e := ftpStateDir()
+	dir, e := resourceStateDir(kind)
 	if e != nil {
 		return e
 	}
@@ -420,18 +448,26 @@ func stopFTPSession(name string) error {
 	defer lock.Close()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if e = lockFTPState(lock); e == nil {
+		if e = lockResourceState(lock); e == nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("unmounted, but worker cleanup is still pending")
+			return fmt.Errorf("resource stopped, but worker cleanup is still pending")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	fmt.Fprintf(os.Stdout, "Unmounted %s.\n", name)
+	fmt.Fprintf(os.Stdout, "Stopped %s/%s.\n", kind, name)
 	return nil
 }
 
-func contextWithFTPTimeout() (context.Context, context.CancelFunc) {
+func resourceShutdownContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 2*time.Second)
+}
+
+func (s *resourceService) peerTask() remoteTask {
+	detail := strings.ReplaceAll(s.record.Detail, "your computer", "manager")
+	if s.record.Kind == "mount" {
+		detail = "remote directory: " + s.record.Remote
+	}
+	return remoteTask{Version: version, Key: resourceToken()[:32], ID: s.record.Kind + "/" + s.record.Name, Manager: taskManagerLabel(), State: "active", Detail: cleanText(detail)}
 }

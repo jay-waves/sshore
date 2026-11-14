@@ -287,7 +287,7 @@ type attachment struct {
 	control, terminal *smux.Stream
 	controlMu         sync.Mutex
 	terminalWriteMu   sync.Mutex
-	forwardRequests   chan struct{}
+	approvalRequests  chan struct{}
 	muted             atomic.Bool
 }
 
@@ -517,7 +517,7 @@ func (s *session) serveMux(c io.ReadWriteCloser) error {
 	if err = streamMessage(terminal, message{Type: "terminal"}); err != nil {
 		return err
 	}
-	p := &attachment{mux: mux, control: control, terminal: terminal, forwardRequests: make(chan struct{}, 8)}
+	p := &attachment{mux: mux, control: control, terminal: terminal, approvalRequests: make(chan struct{}, 8)}
 	defer s.release(p)
 	if err = s.attach(p, m); err != nil {
 		_ = p.controlMessage(message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
@@ -525,16 +525,19 @@ func (s *session) serveMux(c io.ReadWriteCloser) error {
 		_, _ = readMessage(control)
 		return err
 	}
-	forwardCtx, cancelForwards := context.WithCancel(context.Background())
-	defer cancelForwards()
+	if m.Action == "approved" && validApprovalID(m.ApprovalID) {
+		_ = removeRemoteTask(m.ApprovalID)
+	}
+	operationCtx, cancelOperations := context.WithCancel(context.Background())
+	defer cancelOperations()
 	if !s.plain {
 		workersDone := make(chan struct{})
 		go func() {
 			defer close(workersDone)
-			serveForwardStreams(forwardCtx, mux)
+			serveApprovedStreams(operationCtx, mux)
 		}()
 		defer func() {
-			cancelForwards()
+			cancelOperations()
 			p.close()
 			// Let cancelled uploads remove temporary files before daemon exit.
 			select {
@@ -678,10 +681,6 @@ func (s *session) handle(c net.Conn) {
 		if err = s.requestApproval(c, first); err != nil {
 			_ = writeMessage(c, message{Type: "error", Error: err.Error()})
 		}
-	case "forward":
-		if err = s.forward(c, first); err != nil {
-			_ = writeMessage(c, message{Type: "forward_result", Error: err.Error()})
-		}
 	default:
 		_ = writeMessage(c, message{Type: "fatal", Error: "unsupported connection; update sshore on both computers"})
 	}
@@ -816,7 +815,10 @@ func listSessions() error {
 	if count == 0 {
 		fmt.Fprintln(out, "No sessions")
 	}
-	return printSessionExits(dir, out)
+	if err = printSessionExits(dir, out); err != nil {
+		return err
+	}
+	return listRemoteTasks()
 }
 func serverCommand(args []string) error {
 	switch args[0] {
@@ -849,6 +851,22 @@ func serverCommand(args []string) error {
 			return bridge(args[1], args[0] == "resume")
 		}
 		return daemon(args[1])
+	case "task-watch":
+		if len(args) != 2 {
+			return usage("invalid task watcher arguments")
+		}
+		if e := checkPeerVersion(args[1], "client"); e != nil {
+			return e
+		}
+		return watchRemoteTask()
+	case "task-remove":
+		if len(args) != 3 {
+			return usage("invalid task removal arguments")
+		}
+		if e := checkPeerVersion(args[1], "client"); e != nil {
+			return e
+		}
+		return removeRemoteTask(args[2])
 	case "sessions":
 		if len(args) != 1 {
 			return usage("usage: sshore sessions")

@@ -49,6 +49,9 @@ func runFTP(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	if err = checkFTPPlatform(); err != nil {
+		return 1, err
+	}
 	if !o.foreground {
 		return startFTPBackground(args, o)
 	}
@@ -60,8 +63,11 @@ func runFTP(args []string) (int, error) {
 	return runFTPMount(o, nil)
 }
 
-func runFTPMount(o ftpOptions, service *ftpService) (int, error) {
+func runFTPMount(o ftpOptions, service *resourceService) (int, error) {
 	var err error
+	if err = checkFTPPlatform(); err != nil {
+		return 1, err
+	}
 	if err = validateFTPMountpoint(o.mountpoint); err != nil {
 		return 1, err
 	}
@@ -157,13 +163,17 @@ func runFTPMount(o ftpOptions, service *ftpService) (int, error) {
 			return 1, err
 		}
 	}
+	if service != nil {
+		stopSync := startMountTaskSync(ctx, client, service.peerTask())
+		defer stopSync()
+	}
 	fmt.Fprintf(os.Stderr, "Mounted %s:%s at %s. Ctrl-C unmounts; close files first.\n", cleanText(o.host), cleanText(root), cleanText(o.mountpoint))
 	done := make(chan struct{})
 	go func() { mount.Wait(); close(done) }()
 	lost := make(chan error, 1)
 	go func() { lost <- client.Wait() }()
 	abort := func() { cancel(); _ = stdout.Close(); _ = stdin.Close() }
-	var requests <-chan ftpStopRequest
+	var requests <-chan resourceStopRequest
 	if service != nil {
 		requests = service.stop
 	}

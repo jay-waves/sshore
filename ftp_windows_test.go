@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -31,5 +32,36 @@ func TestFTPWindowsErrors(t *testing.T) {
 		if e := ftpWindowsError(tc.in); !errors.Is(e, tc.want) {
 			t.Errorf("%v: %v, want %v", tc.in, e, tc.want)
 		}
+	}
+}
+
+func TestWinFspInstallDiagnostics(t *testing.T) {
+	cases := []struct {
+		findErr, loadErr error
+		want             string
+	}{
+		{windows.ERROR_FILE_NOT_FOUND, nil, "https://winfsp.dev/"},
+		{windows.ERROR_ACCESS_DENIED, nil, "cannot inspect"},
+		{nil, windows.ERROR_MOD_NOT_FOUND, "installed but could not be loaded"},
+	}
+	for _, tc := range cases {
+		called := false
+		e := checkWinFsp(func() (string, error) { return "bin", tc.findErr }, func() error { called = true; return tc.loadErr })
+		if e == nil || !strings.Contains(e.Error(), tc.want) {
+			t.Fatalf("%v", e)
+		}
+		if called != (tc.findErr == nil) {
+			t.Fatal("unexpected DLL load")
+		}
+		cause := tc.findErr
+		if cause == nil {
+			cause = tc.loadErr
+		}
+		if !errors.Is(e, cause) {
+			t.Fatal("lost underlying failure")
+		}
+	}
+	if e := checkWinFsp(func() (string, error) { return "bin", nil }, func() error { return nil }); e != nil {
+		t.Fatal(e)
 	}
 }

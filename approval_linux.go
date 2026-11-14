@@ -18,12 +18,12 @@ func requestOperations(ops []operation) error {
 	if sock == "" {
 		return fmt.Errorf("run this command inside an sshore session")
 	}
-	c, err := net.DialTimeout("unix", sock, forwardTimeout)
+	c, err := net.DialTimeout("unix", sock, requestTimeout)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(2 * forwardTimeout))
+	_ = c.SetDeadline(time.Now().Add(2 * requestTimeout))
 	if err = writeMessage(c, message{Type: "approval_request", Operations: ops}); err != nil {
 		return err
 	}
@@ -78,8 +78,8 @@ func (s *session) requestApproval(c net.Conn, m message) error {
 		return fmt.Errorf("no attached client")
 	}
 	select {
-	case p.forwardRequests <- struct{}{}:
-		defer func() { <-p.forwardRequests }()
+	case p.approvalRequests <- struct{}{}:
+		defer func() { <-p.approvalRequests }()
 	default:
 		return fmt.Errorf("too many pending requests")
 	}
@@ -88,7 +88,7 @@ func (s *session) requestApproval(c net.Conn, m message) error {
 		return err
 	}
 	defer st.Close()
-	_ = st.SetDeadline(time.Now().Add(forwardTimeout))
+	_ = st.SetDeadline(time.Now().Add(requestTimeout))
 	if err = writeMessage(st, m); err != nil {
 		return err
 	}
@@ -99,8 +99,11 @@ func (s *session) requestApproval(c net.Conn, m message) error {
 	if reply.Type != "queued" {
 		return fileResponseError(reply)
 	}
+	if reply.PeerTask != nil && reply.PeerTask.State == "pending" {
+		_ = storeRemoteTask(*reply.PeerTask)
+	}
 	// Acknowledge the helper before allowing the client to detach.
-	_ = c.SetWriteDeadline(time.Now().Add(forwardTimeout))
+	_ = c.SetWriteDeadline(time.Now().Add(requestTimeout))
 	if err = writeMessage(c, message{Type: "queued"}); err != nil {
 		return err
 	}

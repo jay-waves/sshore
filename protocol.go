@@ -10,8 +10,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 )
 
+const requestTimeout = 10 * time.Second
 const chunkSize = 64 * 1024
 const maxFrame = chunkSize + 4096
 const (
@@ -23,6 +25,8 @@ const (
 
 // Control metadata uses JSON. Terminal and file bytes never undergo text encoding.
 type message struct {
+	PeerTask        *remoteTask    `json:"peer_task,omitempty"`
+	ApprovalID      string         `json:"approval_id,omitempty"`
 	Directory       string         `json:"directory,omitempty"`
 	AgeSeconds      *int64         `json:"age_seconds,omitempty"`
 	Names           []string       `json:"names,omitempty"`
@@ -34,8 +38,6 @@ type message struct {
 	Reverse         bool           `json:"reverse,omitempty"`
 	RemoteHost      string         `json:"remote_host,omitempty"`
 	RemotePort      int            `json:"remote_port,omitempty"`
-	Ports           []int          `json:"ports,omitempty"`
-	Forwards        []forwardSpec  `json:"forwards,omitempty"`
 	Type            string         `json:"type"`
 	ID              uint64         `json:"id,omitempty"`
 	Cols            uint16         `json:"cols,omitempty"`

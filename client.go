@@ -127,7 +127,18 @@ func runClient(o options) (int, error) {
 	if err = cmd.Start(); err != nil {
 		return 1, fmt.Errorf("start system OpenSSH: %w", err)
 	}
-	defer func() { _ = writer.Close(); _ = reader.Close(); _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	sshClosed := false
+	closeSSH := func() {
+		if sshClosed {
+			return
+		}
+		sshClosed = true
+		_ = writer.Close()
+		_ = reader.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}
+	defer closeSSH()
 	// The mux handshake happens after OpenSSH authentication; no local keyboard
 	// reader or raw mode is active while OpenSSH prompts for passwords/host keys.
 	transport := &pipeTransport{Reader: reader, Writer: writer, closers: []io.Closer{reader, writer}}
@@ -158,7 +169,7 @@ func runClient(o options) (int, error) {
 	if len(o.approved) > 0 {
 		action = "approved"
 	}
-	if err = streamMessage(control, message{Type: "attach", Action: action, PID: o.resumePID, Cols: uint16(cols), Rows: uint16(rows), Term: termName}); err != nil {
+	if err = streamMessage(control, message{Type: "attach", Action: action, PID: o.resumePID, Cols: uint16(cols), Rows: uint16(rows), Term: termName, ApprovalID: o.approvalID}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -195,6 +206,18 @@ func runClient(o options) (int, error) {
 		return 1, fmt.Errorf("missing terminal stream")
 	}
 	_ = terminal.SetReadDeadline(time.Time{})
+	// Validate the original shell/PID above, then explicitly detach it. The
+	// approved tunnel gets its own transport; neither lifetime owns the other.
+	if len(o.approved) == 1 && o.approved[0].Kind == "forward" {
+		op := o.approved[0]
+		spec := normalizeForward(op.Port, op.RemoteHost, op.RemotePort)
+		if err = detachControl(control); err != nil {
+			return 1, err
+		}
+		_ = mux.Close()
+		closeSSH()
+		return startForwardSession(forwardConfig{Host: o.host, Port: spec.Port, Target: spec.RemotePort, Reverse: op.Reverse, SSH: o.ssh, Server: o.server})
+	}
 	if len(o.approved) > 0 {
 		opCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		err = executeApprovedFiles(opCtx, mux, o.approved, o.quiet)
@@ -203,17 +226,6 @@ func runClient(o options) (int, error) {
 			return 1, err
 		}
 		if o.stay {
-			forwards := newForwardManager(context.Background(), mux)
-			defer forwards.close()
-			for _, op := range o.approved {
-				if op.Kind == "forward" {
-					r := forwards.request(message{Action: "add", Reverse: op.Reverse, Port: op.Port, RemoteHost: op.RemoteHost, RemotePort: op.RemotePort})
-					if r.Error != "" {
-						return 1, fmt.Errorf("%s", r.Error)
-					}
-					return stayWithForwards(mux, control, terminal, forwards)
-				}
-			}
 			// --stay explicitly detaches after completed file operations.
 			if err = detachControl(control); err != nil {
 				return 1, err
@@ -273,18 +285,6 @@ func runClient(o options) (int, error) {
 			}
 		}
 	}
-	forwards := newForwardManager(ctx, mux)
-	defer forwards.close()
-	for _, op := range o.approved {
-		if op.Kind == "forward" {
-			r := forwards.request(message{Action: "add", Reverse: op.Reverse, Port: op.Port, RemoteHost: op.RemoteHost, RemotePort: op.RemotePort})
-			if r.Error != "" {
-				return 1, fmt.Errorf("%s", r.Error)
-			}
-			spec := normalizeForward(op.Port, op.RemoteHost, op.RemotePort)
-			logf(os.Stderr, logSuccess, "[sshore] Forwarding %s\r\n", describeForward(spec.Port, spec.RemoteHost, spec.RemotePort, op.Reverse))
-		}
-	}
 	go readEvents(control)
 	go readEvents(terminal)
 	go func() {
@@ -296,16 +296,8 @@ func runClient(o options) (int, error) {
 			_ = st.SetReadDeadline(time.Now().Add(5 * time.Second))
 			m, err := readMessage(st)
 			_ = st.SetReadDeadline(time.Time{})
-			if err == nil && m.Type == "forward_connect" && m.Reverse {
-				go forwards.handleReverse(st, m)
-				continue
-			}
 			if err == nil && m.Type == "approval_request" {
 				emit(clientEvent{approvalStream: st, approval: m.Operations})
-				continue
-			}
-			if err == nil && m.Type == "forward" && (m.Action == "list" || m.Action == "stop") {
-				forwards.handle(st, m)
 				continue
 			}
 			// Never let unsolicited offers, uploads, or forward-add requests
@@ -390,8 +382,9 @@ func runClient(o options) (int, error) {
 					notice(logError, "\r\n[sshore] Request rejected: %s\r\n", cleanText(err.Error()))
 					continue
 				}
-				_ = st.SetDeadline(time.Now().Add(forwardTimeout))
-				err = writeMessage(st, message{Type: "queued"})
+				_ = st.SetDeadline(time.Now().Add(requestTimeout))
+				task := pendingRemoteTask(id, e.approval)
+				err = writeMessage(st, message{Type: "queued", PeerTask: &task})
 				if err == nil {
 					var ack message
 					ack, err = readMessage(st)

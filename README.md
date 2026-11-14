@@ -29,8 +29,8 @@ Automatic names come from 24 familiar Pokemon, starting with `pikachu`, `eevee`,
 ```mermaid
 flowchart LR
     ftp["Local: sshore ftp HOST"] --> mount["Background SFTP mount: local tools read / write remote files"]
-    mount --> unmount["ftp --stop NAME: unmount; shell sessions unaffected"]
-    directforward["Local: forward HOST A from/to B"] --> tunnel["Foreground OpenSSH tunnel"]
+    mount --> unmount["stop mount/NAME: unmount; shell sessions unaffected"]
+    directforward["Local: forward HOST A from/to B"] --> tunnel["Independent background SSH tunnel"]
     local["Local: sshore new / attach HOST"] --> ssh["System SSH"]
     ssh --> setup["Remote version check / setup"]
     setup --> select["new: unused name / attach: existing detached session"]
@@ -46,10 +46,16 @@ flowchart LR
     resume --> ssh
     session --> request["Request files or a port; detach"]
     request --> approve["Local: sshore approve"]
-    approve -->|"Review, approve, reconnect"| ssh
+    approve -->|"Files: review, approve, reconnect"| ssh
+    approve -->|"Forward: validate source, detach, start independently"| tunnel
+    tunnel --> stopforward["stop forward/NAME; shell unaffected"]
+    tunnel --> inventory["Remote list: read-only peer tasks; stale becomes unknown"]
+    mount --> inventory
+    request --> inventory
 ```
 
-`sshore list HOST` shows session age, foreground programs, shortened working directories, process trees and recent exit reasons:
+`sshore list` shows local mounts, forwards and pending approvals without a remote login.
+`sshore list HOST` filters those entries by SSH destination and also shows remote session age, foreground programs, shortened working directories, process trees and recent exit reasons:
 
 ```text
 charmander [attached] · started 2h ago
@@ -138,12 +144,14 @@ Use local editors and file managers on your remote home directory:
 
 ```sh
 sshore ftp work             # Authenticate, mount, and return to your terminal
-sshore ftp --list           # Show local mount sessions and their paths
-sshore ftp --stop work      # Close local files first, then unmount
+sshore list                # Show resources, paths and pending approvals
+sshore stop mount/work     # Close local files first, then unmount
 ```
 
 Linux requires FUSE and defaults to `~/mnt/work`. Windows requires
 [WinFsp](https://winfsp.dev/) and automatically chooses a free drive letter.
+If WinFsp is missing, the command prints its official installation URL before
+starting SSH; an installed but unloadable WinFsp reports the underlying error.
 The command prints the actual path. Mounts run in the background until stopped,
 disconnected, or the local machine shuts down; they do not restart automatically.
 The default name comes from your SSH host or alias (without `user@`).
@@ -211,12 +219,15 @@ Transfers support regular files only and never overwrite an existing destination
 
 The first port belongs to your current shell; the second belongs to the other
 end of the connection. `to` listens here; `from` listens at the other end.
-Both ports and the direction are required, even for equal ports.
+The direction and at least one port are required. Omit either port to use the
+same port on both ends: `to 3000` and `3000 to` both mean `3000 to 3000`;
+`from 3000` and `3000 from` both mean `3000 from 3000`.
+The same shorthand works after `--stop`.
 
-**On your computer** (foreground; Ctrl-C stops the tunnel):
+**On your computer** (independent background resources):
 
 ```sh
-sshore forward work 8080 to 3000    # Your computer:8080 -> work:3000
+sshore forward work 8080 to 3000 --name web  # Your computer:8080 -> work:3000
 sshore forward work 3000 from 8080  # work:8080 -> your computer:3000
 ```
 
@@ -227,17 +238,54 @@ sshore forward 3000 from 8080      # Your computer:8080 -> server:3000
 sshore forward 8080 to 3000        # Server:8080 -> your computer:3000
 ```
 
-Run `sshore approve` locally to review and establish the requested rule.
-Use `sshore approve --stay` to keep the tunnel in the local foreground;
-Ctrl-C closes it and ends the remote session.
+Run `sshore approve` locally to review and establish the requested rule. The
+source shell stays detached; the forward runs independently in the background.
+Closing, detaching or ending that shell does not stop the forward.
 
-Session rules use IPv4 loopback on both ends. In the remote shell, use
-`sshore forward --list` or repeat the creation operands after `--stop`, for
-example `sshore forward --stop 8080 to 3000`. Detach/disconnection closes
-listeners and existing connections; reconnect does not restore them. A new
-request detaches and closes the previous rule. Standalone local tunnels use
-system SSH and are stopped with Ctrl-C, separately from session rules.
-Old single-port and colon forms are no longer accepted. See `sshore forward --help`.
+```sh
+sshore list                   # Stable IDs, hosts, states and directions
+sshore list work              # Filter local entries; also query remote shells
+sshore stop forward/web       # Stop only this forward and its connections
+sshore stop mount/work        # Unmount only this mount
+sshore approve approval/ID    # Review a pending local task
+sshore approve approval/ID --reject
+```
+
+Run `sshore list` in the remote shell too: it shows that computer's own tasks,
+shells, and a read-only section of tasks managed by other computers. Entries
+starting with `peer/` cannot be stopped there; use the resource's original ID
+on its managing computer. Local `sshore list HOST` also includes this peer view.
+
+Background mounts and forwards refresh their remote status about every 20 seconds. After
+75 seconds without an update, the peer view says `unknown`, not stopped. Pending
+requests are last-known snapshots and expire after 10 minutes; other stale
+records expire after 24 hours. Approval clears the pending mirror; rejection
+tries to clear it without prompting for SSH authentication. An unreachable
+manager or server may leave a stale view until expiry.
+
+Forward status sync requires the same sshore release on the remote PATH or in
+`~/.local/bin`; approved requests also retain their configured remote executable.
+Mount status uses the existing SFTP connection and its starting directory as the
+remote home; a custom SFTP root may not appear in the shell's inventory. Both store only small inventory
+records in `~/.local/state/sshore/peer-tasks` on the remote account. If registration
+is unavailable, the mount or forward still works. Local mount paths, control
+tokens and tasks for other hosts are never included.
+
+The list groups local `mount/NAME`, `forward/NAME` and pending `approval/ID`
+entries. Approvals belong to your computer; the originating shell is shown for
+context and checked before execution. Approved forwards become independent
+resources. Shells retain `attach HOST NAME` and `kill HOST NAME`; stopping a
+mount or forward never ends a shell. Remote shell details retain process trees
+and recent exits in a separate section of `list HOST`.
+
+Use `--name NAME` when starting a local forward; otherwise its name includes the
+host, direction and ports. The command prints its ID after startup succeeds.
+`ftp --list/--stop NAME` and local `forward --list/--stop NAME` remain convenience
+aliases. `--foreground` keeps a local tunnel in the terminal for diagnostics.
+The listeners request IPv4 loopback; server SSH policy controls reverse binds.
+Forwards and mounts end on their own disconnect or local shutdown, and do not
+restart automatically. Old single-port and colon forms are no longer accepted.
+See `sshore forward --help`.
 
 For non-loopback destinations or multiple rules, use native SSH forwarding at connection time:
 

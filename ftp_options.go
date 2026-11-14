@@ -26,11 +26,14 @@ const ftpHelp = `Usage: sshore ftp HOST [REMOTE_DIRECTORY [MOUNTPOINT]] [options
 Mount a remote directory for local applications using SFTP (not plain FTP).
 Starts a named local background mount after SSH authentication succeeds.
 Defaults: remote home directory; ~/mnt/NAME on Linux, free drive on Windows.
-Use --list to find mount paths and --stop NAME to unmount.
+Use sshore list to find mount paths and sshore stop mount/NAME to unmount.
+--list and --stop NAME remain convenience aliases.
 With --foreground, Ctrl-C requests a graceful unmount (10s grace).
 A second Ctrl-C while waiting forces disconnect and can interrupt writes.
 A busy mount stays connected; close files and retry. Uses a separate SSH connection.
-Requires WinFsp on Windows or FUSE on Linux. No persistent write-back cache.
+Requires WinFsp on Windows or FUSE on Linux. Missing WinFsp prints its install URL.
+No persistent write-back cache. Background mounts publish remote inventory only;
+local paths/control tokens are not shared. Sync failure does not fail the mount.
 
 Options:
   --name NAME                   Local mount session name (default: derived from HOST)

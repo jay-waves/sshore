@@ -41,13 +41,14 @@ const help = `sshore — persistent shells, file transfer and SFTP mounts
 
 Local commands:
   sshore new HOST [NAME] [options]     Create a session (default: automatic Pokemon name)
-  sshore list HOST [SSH options]      List sessions, foreground tasks, directories and recent exits
+  sshore list [HOST] [SSH options]    List local resources/approvals; HOST also queries shells
+  sshore stop TYPE/NAME              Stop a mount or forward
   sshore kill HOST NAME [SSH options] End a session and its identified tasks
   sshore rename HOST OLD NEW [SSH options] Rename a running session
   sshore attach HOST [NAME] [options] Attach to an existing detached session
   sshore ftp HOST [DIRECTORY [MOUNTPOINT]] Start a background file mount
   sshore ftp --list / --stop NAME     Manage local mount sessions
-  sshore forward HOST PORT from|to PORT  Forward ports in the foreground
+  sshore forward HOST PORT from|to PORT  Start an independent background forward
   sshore approve [ID] [--attach | --stay]
   sshore approve --list
   sshore approve ID --reject
@@ -95,9 +96,18 @@ Numbers stay unchanged after filtering. Bare numbers are session names. Enter or
 If no detached sessions exist, use sshore new HOST to create one.
 
 ` + connectionOptions,
-	"list": `Usage: sshore list HOST [SSH options] [--server PATH]
+	"list": `Usage: sshore list [HOST] [SSH options] [--server PATH]
 
-List session names, ages, states, foreground programs, shortened working
+Without HOST, list this computer's mounts, forwards, approvals and peer inventory.
+Inside an SSH shell, also list this computer's shell sessions. No remote login
+is initiated just to list this computer. Peer inventory is read-only.
+With HOST, filter those entries by exact SSH destination and also query shells.
+Stable IDs: mount/NAME, forward/NAME, approval/ID. Stop resources with sshore stop;
+review requests with sshore approve ID. Expired approvals are omitted.
+Peer entries use peer/KEY/RESOURCE IDs; manage them on the named computer.
+Missing heartbeats become unknown after 75s; inventory is not authoritative.
+
+The remote shell section lists session names, ages, states, foreground programs, shortened working
 directories and process trees, followed by recent exit reasons.
 Exit records retain at most 100 entries for seven days in the runtime directory.
 Abrupt termination or runtime cleanup can leave no record.
@@ -109,6 +119,14 @@ SSH options:
   -C, -v, -vv, -vvv, -4, -6
   --server PATH                 Remote executable
   -h, --help                    Show command help
+`,
+	"stop": `Usage: sshore stop mount/NAME | forward/NAME
+
+Stop one local background resource shown by sshore list. Does not end shells.
+Mounts unmount first; busy mounts remain active for a retry. Forwards close their
+own SSH connection and all connections carried by it. Requires the exact release
+version that started the resource. Does not kill PIDs from saved records.
+Shells use sshore kill HOST NAME; pending requests use sshore approve ID --reject.
 `,
 	"rename": `Usage: sshore rename HOST OLD NEW [SSH options] [--server PATH]
 
@@ -136,41 +154,45 @@ local file paths and type yes. Tab completes paths; invalid paths can be retried
 Authentication remains with system OpenSSH.
 --attach (default) executes approved operations and resumes the remote shell.
 --stay completes file operations, detaches and returns to the local shell.
-For a port forward it runs a foreground tunnel without remote terminal I/O;
-Ctrl-C closes the tunnel and ends the remote session.
+A port-forward approval always starts an independent background resource and
+returns locally, regardless of --attach/--stay; the source shell stays detached.
+Use sshore list / sshore stop forward/NAME. IDs may include the approval/ prefix.
 Omit ID only when exactly one unexpired request exists. Requests expire after
 10 minutes and are consumed before connecting, even when execution fails.
 No SSH passwords or separate approval passwords are stored or collected.
 `,
-	"forward": `Usage: sshore forward HOST CURRENT_PORT from|to PEER_PORT
-       sshore forward CURRENT_PORT from|to PEER_PORT
+	"forward": `Usage: sshore forward HOST [CURRENT_PORT] from|to [PEER_PORT] [--name NAME]
+       sshore forward [CURRENT_PORT] from|to [PEER_PORT]
        sshore forward --list
-       sshore forward --stop CURRENT_PORT from|to PEER_PORT
+       sshore forward --stop NAME
 
 The first port belongs to the shell running this command; the second belongs
 to the other end of the SSH connection:
   A to B    Listen here on A, connect to the peer's service B.
   A from B  Listen on the peer's B, connect to the service A here.
-Both ports and from/to are mandatory. Old PORT and colon forms are rejected.
-Ports must be 1..65535. Listener and destination use IPv4 127.0.0.1.
+from/to and at least one port are mandatory; a missing port copies the other.
+Old PORT and colon forms are rejected. Ports must be 1..65535.
 
-On your computer, specify HOST (an SSH alias or user@host). Runs system SSH in
-the foreground; Ctrl-C stops it. Uses SSH configuration for keys and options.
-No remote sshore installation is required. Server SSH policy controls -R binds.
+On your computer, specify HOST. Starts an independent background SSH tunnel;
+--name selects its local name (default: host, direction and ports). Prints its
+ID only after SSH authentication and listener setup succeed. Use sshore list
+and sshore stop forward/NAME. --list / --stop NAME are local convenience aliases.
+--foreground keeps a local tunnel in the terminal for diagnostics; Ctrl-C stops it.
+Uses SSH configuration for keys/options. Requires a remote Unix shell and cat,
+but no remote sshore installation. Server policy controls reverse listener binds.
 
-Inside a remote sshore shell, omit HOST to inherit the current connection.
-Queues local approval and detaches; run sshore approve on your computer.
---list and --stop manage approved session rules without new approval. Stop
-requires the same operands as creation, including direction. Detach/disconnect
-closes these rules and existing connections; reconnect does not restore them.
-Standalone local tunnels and native SSH -L/-R/-D are managed separately.
+Inside a remote sshore shell, omit HOST to request local approval. This detaches
+the shell; run sshore approve on your computer. Approval starts an independent
+background forward and leaves the source shell detached. Stopping or exiting
+that shell does not stop the forward. Management commands run on your computer.
+Both ends request IPv4 127.0.0.1. No automatic restart after disconnect/reboot.
 
 Examples:
-  sshore forward work 8080 to 3000    Your computer:8080 -> work:3000
-  sshore forward work 3000 from 8080  work:8080 -> your computer:3000
+  sshore forward work to 3000 --name web
+  sshore forward work 3000 from 8080
   sshore forward 3000 from 8080       Remote request: computer:8080 -> server:3000
   sshore forward 8080 to 3000         Remote request: server:8080 -> computer:3000
-  sshore forward --stop 8080 to 3000  Stop that remote-listening rule
+  sshore stop forward/web
 `,
 	"upload": `Usage: sshore upload [--] [DIRECTORY]
 
@@ -222,6 +244,7 @@ type options struct {
 	list, quiet, noEscape bool
 	ssh                   []string
 	approved              []operation
+	approvalID            string
 	resumePID             int
 	stay                  bool
 	plain                 bool
@@ -378,11 +401,11 @@ func showHelp(args []string, w io.Writer) error {
 	return err
 }
 func run(args []string) (int, error) {
-	if os.Getenv("SSHORE_FTP_ASKPASS") == "1" {
+	if os.Getenv("SSHORE_ASKPASS") == "1" {
 		if os.Getenv("SSHORE_DISABLED") == "1" {
 			return 1, fmt.Errorf("file access disabled in recovery")
 		}
-		return runFTPAskpass(args)
+		return runResourceAskpass(args)
 	}
 	if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
 		if _, ok := commandHelp[args[0]]; ok {
@@ -410,10 +433,16 @@ func run(args []string) (int, error) {
 		}
 		fmt.Println("sshore", version)
 		return 0, nil
-	case "ftp-worker":
-		return runFTPWorker()
+	case "ftp-worker", "resource-worker":
+		return runResourceWorker()
 	case "ftp":
 		return runFTP(args[1:])
+	case "stop":
+		return runStop(args[1:])
+	case "list":
+		if len(args) == 1 {
+			return 0, listThisComputer()
+		}
 	case "approve":
 		return runApprove(args[1:])
 	case "forward":
@@ -430,7 +459,7 @@ func run(args []string) (int, error) {
 			}
 		}
 		return 0, serverCommand(args)
-	case "bridge", "resume", "daemon", "sessions", "bootstrap", "kill-session", "rename-session":
+	case "bridge", "resume", "daemon", "sessions", "bootstrap", "kill-session", "rename-session", "task-watch", "task-remove":
 		return 0, serverCommand(args)
 	}
 	o, err := parseOptions(args)
@@ -443,6 +472,12 @@ func run(args []string) (int, error) {
 	o.downloadDir, err = prepareDownloadDir(o.downloadDir)
 	if err != nil {
 		return 1, err
+	}
+	if o.list {
+		if err = listLocalResources(o.host, ""); err != nil {
+			return 1, err
+		}
+		fmt.Fprintf(os.Stdout, "\nRemote shell sessions on %s:\n", cleanText(o.host))
 	}
 	return runClient(o)
 }

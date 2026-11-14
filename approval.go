@@ -261,6 +261,7 @@ func parseApprove(args []string) (approveOptions, error) {
 		case "--reject":
 			o.reject = true
 		default:
+			a = strings.TrimPrefix(a, "approval/")
 			if o.id != "" || !validApprovalID(a) {
 				return o, usage("usage: sshore approve [ID] [--attach | --stay] | --list | ID --reject")
 			}
@@ -317,9 +318,13 @@ func runApprove(args []string) (code int, resultErr error) {
 		a.id = ids[0]
 	}
 	if a.reject {
+		rejected, readErr := readApproval(dir, a.id)
 		err = os.Remove(filepath.Join(dir, a.id+".json"))
 		if err != nil {
 			return 1, err
+		}
+		if readErr == nil {
+			removeRejectedPeerTask(rejected)
 		}
 		logf(os.Stderr, logSuccess, "[sshore] Request rejected\n")
 		return 0, nil
@@ -347,8 +352,10 @@ func runApprove(args []string) (code int, resultErr error) {
 		}
 	}()
 	directUpload := len(r.Operations) == 1 && r.Operations[0].Kind == "upload"
-	if a.stay {
-		logf(os.Stdout, logInfo, "After: local (forwarding until Ctrl-C).\n")
+	if len(r.Operations) == 1 && r.Operations[0].Kind == "forward" {
+		logf(os.Stdout, logInfo, "After: independent background forward; remote shell stays detached.\n")
+	} else if a.stay {
+		logf(os.Stdout, logInfo, "After: local.\n")
 	} else {
 		logf(os.Stdout, logInfo, "After: attach.\n")
 	}
@@ -420,5 +427,5 @@ func runApprove(args []string) (code int, resultErr error) {
 	if err = consumeApproval(dir, r.ID); err != nil {
 		return 1, err
 	}
-	return runClient(options{host: r.Host, session: r.Session, server: r.Server, downloadDir: r.DownloadDir, ssh: r.SSH, quiet: r.Quiet, noEscape: r.NoEscape, approved: r.Operations, stay: a.stay, resumePID: r.PID})
+	return runClient(options{host: r.Host, session: r.Session, server: r.Server, downloadDir: r.DownloadDir, ssh: r.SSH, quiet: r.Quiet, noEscape: r.NoEscape, approved: r.Operations, stay: a.stay, resumePID: r.PID, approvalID: r.ID})
 }

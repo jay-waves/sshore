@@ -3,16 +3,13 @@ package main
 // Approved files execute sequentially; the first failure stops the batch without
 // rolling back completed files. Ctrl-C cancels local file operations but leaves
 // the remote shell alive. Normal terminal output is muted until --attach resumes
-// it. --stay returns after file operations, but an approved port keeps a foreground
-// transport running until cancellation. There is no background tunnel service.
+// it. --stay returns after file operations. Approved forwarding is handled by
+// the client as an independent background resource after detaching the shell.
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/xtaci/smux"
@@ -95,99 +92,5 @@ func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, q
 				logf(os.Stderr, logInfo, "[sshore] %s: %d/%d bytes\n", op.Kind, t.progress.Load(), t.total.Load())
 			}
 		}
-	}
-}
-
-func stayWithForwards(mux *smux.Session, control, terminal *smux.Stream, forwards *forwardManager) (int, error) {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	// Read Ctrl-C as a local key, not a terminal-generated process-group signal:
-	// otherwise it can kill OpenSSH before this process handles cancellation.
-	restore, err := rawTerminal()
-	if err != nil {
-		return 1, err
-	}
-	defer func() { restore(); _ = flushTerminalInput() }()
-	logf(os.Stderr, logInfo, "[sshore] Forwarding is active. Staying local; Ctrl-C closes forwarding and the remote session.\r\n")
-
-	done := make(chan error, 4)
-	go func() {
-		input := terminalInputReader()
-		buf := make([]byte, 4096)
-		for {
-			n, err := input.Read(buf)
-			if bytes.IndexByte(buf[:n], 3) >= 0 {
-				done <- nil
-				return
-			}
-			if err != nil {
-				done <- err
-				return
-			}
-			// All other local input is ignored, never forwarded to the remote shell.
-		}
-	}()
-	// Do not render remote terminal output or accept new sensitive operations in
-	// local mode. Drain terminal output so it cannot block the remote shell.
-	go func() {
-		for {
-			m, e := readMessage(terminal)
-			if e != nil {
-				done <- e
-				return
-			}
-			if m.Type == "exit" {
-				done <- nil
-				return
-			}
-		}
-	}()
-	go func() {
-		for {
-			m, e := readMessage(control)
-			if e != nil {
-				done <- e
-				return
-			}
-			if m.Type == "fatal" {
-				done <- fileResponseError(m)
-				return
-			}
-			if m.Type == "detach_requested" {
-				if e := streamMessage(control, message{Type: "detach"}); e != nil {
-					done <- e
-					return
-				}
-				continue
-			}
-			if m.Type == "detached" {
-				_ = streamMessage(control, message{Type: "bye"})
-				done <- nil
-				return
-			}
-		}
-	}()
-	go func() {
-		for {
-			st, e := mux.AcceptStream()
-			if e != nil {
-				done <- e
-				return
-			}
-			_ = st.SetReadDeadline(time.Now().Add(forwardTimeout))
-			m, e := readMessage(st)
-			_ = st.SetReadDeadline(time.Time{})
-			if e == nil && m.Type == "forward_connect" && m.Reverse {
-				go forwards.handleReverse(st, m)
-			} else {
-				_ = st.Close()
-			}
-		}
-	}()
-	select {
-	case <-ctx.Done():
-		return 0, nil
-	case err := <-done:
-		return 0, err
 	}
 }

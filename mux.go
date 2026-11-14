@@ -29,7 +29,7 @@ func muxConfig() *smux.Config {
 	c.MaxStreamBuffer = 256 * 1024
 	// Keep room for terminal, files, forward connections, and control requests.
 	// Stalled streams must not exhaust the shared receive budget and block input.
-	c.MaxReceiveBuffer = (maxForwardConnections + 12) * c.MaxStreamBuffer
+	c.MaxReceiveBuffer = (maxApprovedStreams + 12) * c.MaxStreamBuffer
 	c.KeepAliveInterval = 10 * time.Second
 	c.KeepAliveTimeout = 60 * time.Second
 	return c

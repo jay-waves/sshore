@@ -1,6 +1,7 @@
 package main
 
-// Standalone local requests use system OpenSSH in the foreground. Remote shell
+// Local requests default to independent background workers; --foreground is
+// available for diagnostics. Remote shell
 // requests inherit the session and require local approval. Operands always use
 // the invoking shell's perspective; only the remote helper converts to wire
 // identities. Native SSH configuration/authentication remains effective.
@@ -15,7 +16,7 @@ import (
 )
 
 func localForwardArgs(args []string) ([]string, error) {
-	if len(args) != 4 {
+	if len(args) != 3 && len(args) != 4 {
 		return nil, usage("use forward HOST CURRENT_PORT from|to PEER_PORT")
 	}
 	host := args[0]
@@ -41,6 +42,43 @@ func runForward(args []string) (int, error) {
 		}
 		return 0, serverCommand(append([]string{"forward"}, args...))
 	}
+	if len(args) == 1 && args[0] == "--list" {
+		return 0, listLocalResources("", "forward")
+	}
+	if len(args) == 2 && args[0] == "--stop" {
+		return 0, stopResource("forward", args[1])
+	}
+	var name string
+	foreground := false
+	var operands []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--name":
+			i++
+			if i == len(args) {
+				return 2, usage("--name requires NAME")
+			}
+			name = args[i]
+			if e := validSession(name); e != nil {
+				return 2, e
+			}
+		case "--foreground":
+			foreground = true
+		default:
+			operands = append(operands, args[i])
+		}
+	}
+	args = operands
+	if _, e := localForwardArgs(args); e != nil {
+		return 2, e
+	}
+	if !foreground {
+		m, _ := parseForward(args[1:])
+		return startForwardSession(forwardConfig{Host: args[0], Name: name, Port: m.Port, Target: m.RemotePort, Reverse: !m.Reverse})
+	}
+	return runForwardForeground(args)
+}
+func runForwardForeground(args []string) (int, error) {
 	sshArgs, e := localForwardArgs(args)
 	if e != nil {
 		return 2, e
