@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/pkg/sftp"
 )
@@ -24,11 +25,13 @@ const (
 )
 
 type ftpRequest struct {
-	kind   byte
-	handle string
+	started time.Time
+	kind    byte
+	handle  string
 }
 type ftpDirectoryBudget struct{ entries, bytes uint64 }
 type ftpWire struct {
+	onReply                       func()
 	reader                        io.Reader
 	writer                        io.WriteCloser
 	readBuffer, writeBuffer       []byte
@@ -66,7 +69,7 @@ func (w *ftpWire) record(packet []byte) error {
 		return nil
 	} // INIT has a version instead of an ID.
 	id := binary.BigEndian.Uint32(packet[1:5])
-	req := ftpRequest{kind: kind}
+	req := ftpRequest{kind: kind, started: time.Now()}
 	if kind == 12 || kind == 4 {
 		var ok bool
 		req.handle, ok = ftpWireString(packet[5:])
@@ -139,6 +142,9 @@ func (w *ftpWire) filter(packet []byte) ([]byte, error) {
 	if packet[0] == 2 {
 		return packet, nil
 	} // VERSION
+	if w.onReply != nil {
+		w.onReply()
+	}
 	id := binary.BigEndian.Uint32(packet[1:5])
 	w.mu.Lock()
 	defer w.mu.Unlock()

@@ -26,13 +26,13 @@ func TestResourceIdentityAndLegacyMount(t *testing.T) {
 		t.Fatal(r, e)
 	}
 	for _, id := range []string{"work", "shell/work", "mount/../work", "approval/abc"} {
-		if _, e := runStop([]string{id}); e == nil {
+		if _, e := runCancel([]string{id}); e == nil {
 			t.Fatal("accepted", id)
 		}
 	}
 	id := strings.Repeat("a", 32)
-	o, e := parseApprove([]string{"approval/" + id, "--reject"})
-	if e != nil || o.id != id || !o.reject {
+	o, e := parseReview([]string{"approval/" + id})
+	if e != nil || o.id != id {
 		t.Fatal(o, e)
 	}
 }
@@ -62,5 +62,40 @@ func TestAttachmentRejectsTunnelStreams(t *testing.T) {
 			t.Fatalf("obsolete attachment tunnel accepted: %+v", m)
 		}
 		st.Close()
+	}
+}
+
+func TestCancelPendingRequest(t *testing.T) {
+	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "nonexistent-ssh"))
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	id, err := writeApproval(options{host: "fixture", server: "sshore", session: "work"}, []operation{{Kind: "upload", Path: "/tmp"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"cancel", "approval/" + id, "extra"}, {"review", id, "--reject"}} {
+		if _, err := run(args); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+	dir, err := approvalDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readApproval(dir, id); err != nil {
+		t.Fatal("invalid invocation consumed request", err)
+	}
+	if code, err := run([]string{"cancel", "approval/" + id}); code != 0 || err != nil {
+		t.Fatal(code, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, id+".json")); !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if _, err := run([]string{"cancel", "approval/" + id}); err == nil {
+		t.Fatal("cancelled twice")
+	}
+	for _, args := range [][]string{{"ftp", "host"}, {"approve"}, {"stop", "forward/x"}, {"kill", "host", "work"}, {"cancel"}, {"cancel", "host"}, {"cancel", "peer/forward/x"}, {"review", "--list"}, {"mount", "--list"}, {"forward", "--list"}} {
+		if _, err := run(args); err == nil {
+			t.Fatal("accepted", args)
+		}
 	}
 }

@@ -100,6 +100,11 @@ def main():
         raise SystemExit("sshd is required")
     with tempfile.TemporaryDirectory(prefix="sshore-e2e-") as root:
         root = Path(root)
+        # The daemon prepends its executable directory to the shell PATH.
+        # Name the fixture binary sshore so helpers cannot resolve an installed release.
+        fixture_binary = root / "sshore"
+        shutil.copy2(binary, fixture_binary)
+        binary = str(fixture_binary)
         os.environ["SSHORE_STATE_DIR"] = str(root / "state")
         os.environ.pop("SSH_CONNECTION", None)
         os.environ.pop("SSHORE_SOCKET", None)
@@ -146,10 +151,9 @@ LogLevel ERROR
             wrapper.chmod(0o700)
             known = root / "known_hosts"
             known.write_text(f"[127.0.0.1]:{port} " + hostkey.with_suffix(".pub").read_text())
-            command = [binary, "new", pwd.getpwuid(os.getuid()).pw_name + "@127.0.0.1", "-p", str(port),
+            command = [binary, "new", pwd.getpwuid(os.getuid()).pw_name + "@127.0.0.1", "--server", str(wrapper), "--", "-p", str(port),
                        "-i", str(key), "-F", "/dev/null", "-o", "IdentitiesOnly=yes",
-                       "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known}",
-                       "--server", str(wrapper)]
+                       "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known}"]
             base_command = command[:]
             for expected_name in (b"pikachu", b"eevee"):
                 auto = Terminal(base_command, wait_ready=False)
@@ -161,13 +165,13 @@ LogLevel ERROR
                 auto.close()
                 terms.remove(auto)
             for name in ("pikachu", "eevee"):
-                auto = Terminal([binary, "attach"] + base_command[2:] + [name])
+                auto = Terminal([binary, "attach"] + [base_command[2], name] + base_command[3:])
                 terms.append(auto)
                 auto.send("exit\n")
                 auto.wait()
                 auto.close()
                 terms.remove(auto)
-            command = [binary, "attach"] + base_command[2:] + ["main"]
+            command = [binary, "attach"] + [base_command[2], "main"] + base_command[3:]
             # Native forwarding, compression and diagnostics are passed to the
             # same interactive OpenSSH process, including attached value forms.
             native_ports = []
@@ -229,8 +233,7 @@ LogLevel ERROR
             deadline = time.monotonic() + 5
             while True:
                 listing = subprocess.check_output([binary, "list"] + base_command[2:], text=True)
-                assert "FOREGROUND" in listing
-                if re.search(r"^main\s+.*\bsleep\b", listing, re.MULTILINE):
+                if re.search(r"\bmain\b[\s\S]*?\bsleep\b", listing):
                     break
                 if time.monotonic() >= deadline:
                     raise AssertionError(f"missing foreground sleep: {listing}")
@@ -247,14 +250,14 @@ LogLevel ERROR
                 return request_id
 
             def approve(request_id, paths=(), stay=False, passphrase=None):
-                approval = Terminal([binary, "approve", request_id] + (["--stay"] if stay else ["--attach"]), wait_ready=False)
+                approval = Terminal([binary, "review", request_id] + (["--stay"] if stay else []), wait_ready=False)
                 terms.append(approval)
-                approval.expect("Local approval")
+                approval.expect("Review ")
                 for kind, path in paths:
                     approval.expect("Save as" if kind == "download" else "Local file to upload")
                     approval.send(str(path) + "\n")
                 if len(paths) != 1 or paths[0][0] != "upload":
-                    approval.expect("Type yes:")
+                    approval.expect("Type yes to approve:")
                     approval.send("yes\n")
                 if passphrase:
                     approval.expect("Enter passphrase")
@@ -267,7 +270,7 @@ LogLevel ERROR
             downloaded = root / "downloaded.bin"
             request_id = queue_request(term, f"sshore download {shlex.quote(str(remote))}")
             assert not downloaded.exists(), "download occurred before approval"
-            listed = subprocess.check_output([binary, "approve", "--list"], text=True)
+            listed = subprocess.check_output([binary, "list"], text=True)
             assert request_id in listed
             term = approve(request_id, [("download", downloaded)])
             term.expect("Saved .*downloaded.bin")
@@ -275,7 +278,7 @@ LogLevel ERROR
             assert downloaded.read_bytes() == data
             term.send("printf 'RESUME:%s:%s\\n' $$ \"$KEEP\"\n")
             term.expect(f"RESUME:{shell_pid}:shore")
-            replay = subprocess.run([binary, "approve", request_id], capture_output=True)
+            replay = subprocess.run([binary, "review", request_id], capture_output=True)
             assert replay.returncode != 0
 
             local = root / "local 文件.bin"
@@ -295,13 +298,13 @@ LogLevel ERROR
             term.send("printf 'STAY_PID:%s\\n' $$\n")
             term.expect(f"STAY_PID:{shell_pid}")
             request_id = queue_request(term, f"sshore download {shlex.quote(str(remote))}")
-            subprocess.run([binary, "approve", request_id, "--reject"], check=True)
-            assert request_id not in subprocess.check_output([binary, "approve", "--list"], text=True)
+            subprocess.run([binary, "cancel", "approval/" + request_id], check=True)
+            assert request_id not in subprocess.check_output([binary, "list"], text=True)
 
             # A download directory supplies defaults, never automatic approval.
             automatic = root / "automatic"
             automatic.mkdir()
-            term = Terminal(command + ["--download-dir", str(automatic), "--quiet", "--no-escape"])
+            term = Terminal(command[:2] + ["--download-dir", str(automatic), "--quiet", "--no-escape"] + command[2:])
             terms.append(term)
             # A compromised remote peer can still speak the old wire format.
             # Neither a legacy file offer nor forward-add can bypass approval.
@@ -352,53 +355,47 @@ LogLevel ERROR
 
             # Local overwrite is rejected before connecting or consuming approval.
             request_id = queue_request(term, f"sshore download {shlex.quote(str(batch[0]))}")
-            rejected = Terminal([binary, "approve", request_id], wait_ready=False)
+            rejected = Terminal([binary, "review", request_id], wait_ready=False)
             terms.append(rejected)
             rejected.expect("Save as")
             rejected.send("\n")
             rejected.expect("destination already exists")
+            rejected.send(b"\x03")
             rejected.wait(1)
-            subprocess.run([binary, "approve", request_id, "--reject"], check=True)
+            subprocess.run([binary, "cancel", "approval/" + request_id], check=True)
 
-            # Forward --stay owns a foreground tunnel; Ctrl-C closes it without
-            # ending the persistent shell. No listener exists before approval.
+            # Approved forwarding outlives the review process and source shell attachment.
             term = Terminal(command)
             terms.append(term)
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", 0))
                 forward_port = probe.getsockname()[1]
-            request_id = queue_request(term, f"sshore forward {forward_port}")
+            request_id = queue_request(term, f"sshore forward from {forward_port}")
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", forward_port))
-            tunnel = approve(request_id, stay=True)
-            tunnel.expect("Forwarding is active")
-            assert not (termios.tcgetattr(tunnel.fd)[3] & termios.ISIG), "Ctrl-C must be handled locally, not sent to the SSH process group"
-            with socket.socket() as probe:
-                try:
-                    probe.bind(("127.0.0.1", forward_port))
-                except OSError as e:
-                    assert e.errno == errno.EADDRINUSE
-                else:
-                    raise AssertionError("approved listener was not opened")
-            tunnel.send(b"\x03")
+            tunnel = approve(request_id)
+            resource_id = tunnel.expect(r"Started (forward/[^: \r\n]+):").group(1).decode()
             tunnel.wait()
+            try:
+                with socket.socket() as probe:
+                    try:
+                        probe.bind(("127.0.0.1", forward_port))
+                    except OSError as e:
+                        assert e.errno == errno.EADDRINUSE
+                    else:
+                        raise AssertionError("approved listener was not opened")
+                assert resource_id in subprocess.check_output([binary, "list"], text=True)
+                term = Terminal(command)
+                terms.append(term)
+                term.send("printf 'FINAL_PID:%s\\n' $$\n")
+                term.expect(f"FINAL_PID:{shell_pid}")
+                term.send("sshore detach\n")
+                term.expect("Detached")
+                term.wait()
+            finally:
+                subprocess.run([binary, "cancel", resource_id], check=True)
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", forward_port))
-
-            term = Terminal(command)
-            terms.append(term)
-            request_id = queue_request(term, f"sshore forward {forward_port}")
-            term = approve(request_id)
-            term.expect("Forwarding 127.0.0.1")
-            term.send("sshore forward --list\n")
-            term.expect(f"127.0.0.1:{forward_port} -> remote")
-            term.send(f"sshore forward --stop {forward_port}\n")
-            term.expect("Stopped forwarding")
-            term.send("printf 'FINAL_PID:%s\\n' $$\n")
-            term.expect(f"FINAL_PID:{shell_pid}")
-            term.send("sshore detach\n")
-            term.expect("Detached")
-            term.wait()
 
             # A new SSH connection uses OpenSSH's normal key-passphrase prompt.
             subprocess.run(["ssh-keygen", "-q", "-p", "-P", "", "-N", "sshore-test-passphrase", "-f", str(key)], check=True, stdout=subprocess.DEVNULL)

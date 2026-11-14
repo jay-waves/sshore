@@ -25,7 +25,10 @@ import (
 	"time"
 )
 
-type resourceRecord struct{ Kind, Detail, Name, Host, Remote, Mountpoint, Address, Token, Version string }
+type resourceRecord struct {
+	Kind, Detail, Name, Host, Remote, Mountpoint, Address, Token, Version string
+	ReadOnly                                                              bool
+}
 type resourceConfig struct {
 	Forward                *forwardConfig
 	Args                   []string
@@ -33,6 +36,7 @@ type resourceConfig struct {
 }
 type resourceStopRequest struct{ reply chan error }
 type resourceService struct {
+	status     resourceStatusState
 	record     resourceRecord
 	config     resourceConfig
 	stop       chan resourceStopRequest
@@ -68,11 +72,14 @@ func resourceStateDir(kind string) (string, error) {
 	return d, privateState(d, true)
 }
 func resourceHTTP(address, token, method, route string, body io.Reader) (*http.Response, error) {
+	return resourceHTTPContext(context.Background(), address, token, method, route, body)
+}
+func resourceHTTPContext(ctx context.Context, address, token, method, route string, body io.Reader) (*http.Response, error) {
 	host, _, e := net.SplitHostPort(address)
 	if e != nil || host != "127.0.0.1" {
 		return nil, fmt.Errorf("invalid resource control address")
 	}
-	req, e := http.NewRequest(method, "http://"+address+route, body)
+	req, e := http.NewRequestWithContext(ctx, method, "http://"+address+route, body)
 	if e != nil {
 		return nil, e
 	}
@@ -119,6 +126,7 @@ func (s *resourceService) sshEnvironment() []string {
 	return env
 }
 func (s *resourceService) ready(root, mountpoint string) error {
+	s.setTransport("connected", nil)
 	s.record.Remote = root
 	s.record.Mountpoint = mountpoint
 	data, e := json.Marshal(s.record)
@@ -158,7 +166,7 @@ func (s *resourceService) ready(root, mountpoint string) error {
 	}
 	return json.NewEncoder(os.Stdout).Encode("started")
 }
-func runResourceWorker() (int, error) {
+func runResourceWorker() (code int, resultErr error) {
 	dec := json.NewDecoder(io.LimitReader(os.Stdin, 1<<20))
 	var config resourceConfig
 	if e := dec.Decode(&config); e != nil {
@@ -216,16 +224,19 @@ func runResourceWorker() (int, error) {
 		}
 		ack <- e
 	}()
-	s := &resourceService{record: resourceRecord{Kind: kind, Name: o.name, Host: o.host, Version: version, Token: resourceToken()}, config: config, stop: make(chan resourceStopRequest), ack: ack, abandoned: abandoned, recordPath: filepath.Join(dir, o.name+".json")}
+	s := &resourceService{record: resourceRecord{Kind: kind, Name: o.name, Host: o.host, Version: version, Token: resourceToken(), ReadOnly: o.readOnly}, config: config, stop: make(chan resourceStopRequest), ack: ack, abandoned: abandoned, recordPath: filepath.Join(dir, o.name+".json")}
 	// The lock excludes a live owner. Remove only its stale metadata, never a mount.
 	if e = os.Remove(s.recordPath); e != nil && !os.IsNotExist(e) {
 		return 1, e
 	}
+	s.setTransport("starting", nil)
+	defer func() { s.saveResult(code, resultErr) }()
 	defer os.Remove(s.recordPath)
 	l, server, e := resourceListen(s.record.Token, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/status":
-			fmt.Fprint(w, version)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(s.statusSnapshot())
 		case r.Method == "POST" && r.URL.Path == "/stop":
 			request := resourceStopRequest{reply: make(chan error, 1)}
 			select {
@@ -363,9 +374,9 @@ func startResourceBackground(config resourceConfig, kind, name string) (int, err
 	cmd.Process.Release()
 	detail := record.Detail
 	if kind == "mount" {
-		detail = fmt.Sprintf("%s:%s at %s", record.Host, record.Remote, record.Mountpoint)
+		detail = fmt.Sprintf("%s:%s at %s using SFTP over SSH", record.Host, record.Remote, record.Mountpoint)
 	}
-	fmt.Fprintf(os.Stdout, "Started %s/%s: %s\nStop: sshore stop %s/%s\n", kind, record.Name, cleanText(detail), kind, record.Name)
+	fmt.Fprintf(os.Stdout, "Started %s/%s: %s\nCancel: sshore cancel %s/%s\n", kind, record.Name, cleanText(detail), kind, record.Name)
 
 	return 0, nil
 }
@@ -418,8 +429,6 @@ func readResourceRecord(kind, name string) (resourceRecord, error) {
 	}
 	return r, e
 }
-func listFTPSessions() error           { return listLocalResources("", "mount") }
-func stopFTPSession(name string) error { return stopResource("mount", name) }
 func stopResource(kind, name string) error {
 	r, e := readResourceRecord(kind, name)
 	if e != nil {
@@ -456,7 +465,11 @@ func stopResource(kind, name string) error {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	fmt.Fprintf(os.Stdout, "Stopped %s/%s.\n", kind, name)
+	if kind == "mount" {
+		fmt.Fprintf(os.Stdout, "Unmounted mount/%s.\n", name)
+	} else {
+		fmt.Fprintf(os.Stdout, "Closed forward/%s.\n", name)
+	}
 	return nil
 }
 

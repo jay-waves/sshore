@@ -34,7 +34,7 @@ func requestOperations(ops []operation) error {
 	if m.Type != "queued" {
 		return fileResponseError(m)
 	}
-	logf(os.Stderr, logInfo, "[sshore] Request queued locally. After detach, run sshore approve from your local shell.\n")
+	logf(os.Stderr, logInfo, "[sshore] Request queued locally. After detach, run sshore review from your local shell.\n")
 	return nil
 }
 func requestFiles(kind string, paths []string) error {

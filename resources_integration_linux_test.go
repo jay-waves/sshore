@@ -63,10 +63,10 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		t.Fatal(out, err)
 	}
 	name := defaultForwardName(forwardConfig{Host: "fixture", Port: 31234, Target: 31235})
-	defer run("stop", "forward/"+name)
+	defer run("cancel", "forward/"+name)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, e.bin, "approve", "approval/"+id)
+	cmd := exec.CommandContext(ctx, e.bin, "review", "approval/"+id)
 	cmd.Env = env
 	terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 160})
 	if err != nil {
@@ -110,11 +110,20 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	untilType(t, resumed.tty, "exit")
 	resumed.close()
 	out, err = run("list")
-	if err != nil || !strings.Contains(out, "forward/"+name) || !strings.Contains(out, "active") || strings.Contains(out, "approval/"+id) {
+	if err != nil || !strings.Contains(out, "forward/"+name) || !strings.Contains(out, "running") || strings.Contains(out, "approval/"+id) {
 		t.Fatal(out, err)
 	}
 	if _, e := os.Stat(filepath.Join(remoteHome, filepath.FromSlash(remoteTaskRelativeDir), id+".json")); !os.IsNotExist(e) {
 		t.Fatal("approved task mirror survived", e)
+	}
+	out, err = run("list", "--json")
+	var snapshot inventory
+	if err != nil || json.Unmarshal([]byte(out), &snapshot) != nil || len(snapshot.Resources) != 1 || snapshot.Resources[0].Target != "unchecked" {
+		t.Fatal(out, err)
+	}
+	out, err = run("list", "fixture", "--json", "--server", e.bin)
+	if err != nil || json.Unmarshal([]byte(out), &snapshot) != nil || len(snapshot.Exits) == 0 {
+		t.Fatal(out, err)
 	}
 	// The independent watcher synchronizes only this resource to the peer list.
 	deadline := time.Now().Add(3 * time.Second)
@@ -135,7 +144,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	if out, err = run("forward", "fixture", "31234", "to", "31235"); err == nil {
 		t.Fatal("duplicate accepted", out)
 	}
-	if out, err = run("stop", "forward/"+name); err != nil {
+	if out, err = run("cancel", "forward/"+name); err != nil {
 		t.Fatal(out, err)
 	}
 	out, err = run("list")
@@ -147,7 +156,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		t.Fatal(e2)
 	}
 	publishPending(rejected)
-	if out, err = run("approve", "approval/"+rejected, "--reject"); err != nil {
+	if out, err = run("cancel", "approval/"+rejected); err != nil {
 		t.Fatal(out, err)
 	}
 	if _, e2 = os.Stat(filepath.Join(remoteHome, filepath.FromSlash(remoteTaskRelativeDir), rejected+".json")); !os.IsNotExist(e2) {

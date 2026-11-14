@@ -130,31 +130,33 @@ func removeRemoteTask(key string) error {
 	return e
 }
 func listRemoteTasks() error { return printRemoteTasks(os.Stdout) }
-func printRemoteTasks(output io.Writer) error {
+
+type peerRow struct {
+	task  remoteTask
+	state string
+}
+
+func collectPeerRows() ([]peerRow, error) {
 	dir, e := peerTaskDir(false)
 	if os.IsNotExist(e) {
-		return nil
+		return nil, nil
 	}
 	if e != nil {
-		return e
+		return nil, e
 	}
 	d, e := os.Open(dir)
 	if e != nil {
-		return e
+		return nil, e
 	}
 	defer d.Close()
 	names, e := d.Readdirnames(513)
 	if e != nil && e != io.EOF {
-		return e
+		return nil, e
 	}
 	if len(names) > 512 {
-		return fmt.Errorf("peer task directory exceeds 512 records")
+		return nil, fmt.Errorf("peer task directory exceeds 512 records")
 	}
-	type row struct {
-		task  remoteTask
-		state string
-	}
-	var rows []row
+	var rows []peerRow
 	for _, name := range names {
 		key := strings.TrimSuffix(name, ".json")
 		if !strings.HasSuffix(name, ".json") || !validApprovalID(key) {
@@ -200,7 +202,14 @@ func printRemoteTasks(output io.Writer) error {
 		if age > remoteTaskFresh || age < -time.Minute {
 			state = "unknown"
 		}
-		rows = append(rows, row{t, state})
+		rows = append(rows, peerRow{t, state})
+	}
+	return rows, nil
+}
+func printRemoteTasks(output io.Writer) error {
+	rows, e := collectPeerRows()
+	if e != nil {
+		return e
 	}
 	if len(rows) == 0 {
 		return nil
@@ -241,4 +250,17 @@ func removeExpiredPeerTask(p string, previous os.FileInfo) {
 	if e == nil && os.SameFile(previous, current) {
 		_ = os.Remove(p)
 	}
+}
+
+func collectPeerViews() ([]peerView, error) {
+	rows, e := collectPeerRows()
+	if e != nil {
+		return nil, e
+	}
+	out := []peerView{}
+	for _, r := range rows {
+		t := r.task
+		out = append(out, peerView{ID: "peer/" + t.Key[:8] + "/" + t.ID, Manager: t.Manager, State: r.state, Detail: t.Detail})
+	}
+	return out, nil
 }

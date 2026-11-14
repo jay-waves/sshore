@@ -22,7 +22,7 @@ func TestShortDirectory(t *testing.T) {
 }
 
 func TestRenameOptions(t *testing.T) {
-	for _, args := range [][]string{{"rename", "host", "old", "new"}, {"rename", "-p22", "--", "host", "old", "new"}} {
+	for _, args := range [][]string{{"rename", "host", "old", "new"}, {"rename", "host", "old", "new", "--", "-p22"}} {
 		o, err := parseOptions(args)
 		if err != nil || o.session != "old" || o.newName != "new" {
 			t.Fatal(o, err)

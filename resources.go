@@ -4,6 +4,7 @@ package main
 // remain HOST/NAME and retain the existing version/process-safe kill path. List
 // without HOST is offline discovery: it never authenticates to guessed hosts.
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -11,19 +12,16 @@ import (
 	"text/tabwriter"
 )
 
-func listLocalResources(host, kindFilter string) error {
+func collectLocalResources(host string) ([]resourceRecord, error) {
 	var records []resourceRecord
 	for _, kind := range []string{"mount", "forward"} {
-		if kindFilter != "" && kind != kindFilter {
-			continue
-		}
 		dir, e := resourceStateDir(kind)
 		if e != nil {
-			return e
+			return nil, e
 		}
 		files, e := os.ReadDir(dir)
 		if e != nil {
-			return e
+			return nil, e
 		}
 		for _, f := range files {
 			if !strings.HasSuffix(f.Name(), ".json") {
@@ -34,21 +32,21 @@ func listLocalResources(host, kindFilter string) error {
 				continue
 			}
 			if e != nil {
-				return e
+				return nil, e
 			}
 			if host == "" || r.Host == host {
 				records = append(records, r)
 			}
 		}
 	}
-	if kindFilter == "" || kindFilter == "approval" {
+	{
 		dir, e := approvalDir()
 		if e != nil {
-			return e
+			return nil, e
 		}
 		files, e := os.ReadDir(dir)
 		if e != nil {
-			return e
+			return nil, e
 		}
 		for _, f := range files {
 			id := strings.TrimSuffix(f.Name(), ".json")
@@ -62,15 +60,7 @@ func listLocalResources(host, kindFilter string) error {
 			if host != "" && r.Host != host {
 				continue
 			}
-			detail := fmt.Sprintf("%s: %d requested operation(s)", r.Session, len(r.Operations))
-			if len(r.Operations) == 1 {
-				op := r.Operations[0]
-				if op.Kind == "forward" {
-					detail = r.Session + ": " + describeForward(op.Port, op.RemoteHost, op.RemotePort, op.Reverse)
-				} else {
-					detail = r.Session + ": " + op.Kind + " " + op.Path
-				}
-			}
+			detail := r.Session + ": " + approvalSummary(r.Operations)
 			records = append(records, resourceRecord{Kind: "approval", Name: id, Host: r.Host, Detail: detail})
 		}
 	}
@@ -84,6 +74,13 @@ func listLocalResources(host, kindFilter string) error {
 		}
 		return a.Name < b.Name
 	})
+	return records, nil
+}
+func listLocalResources(host string) error {
+	records, err := collectLocalResources(host)
+	if err != nil {
+		return err
+	}
 	if len(records) == 0 {
 		fmt.Fprintln(os.Stdout, "No local resources or pending approvals.")
 		return nil
@@ -91,45 +88,62 @@ func listLocalResources(host, kindFilter string) error {
 	out := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	defer out.Flush()
 	fmt.Fprintln(out, "ID\tHOST\tSTATE\tDETAILS")
-	for _, r := range records {
-		state := "pending"
-		if r.Kind != "approval" {
-			state = "offline"
-			resp, e := resourceHTTP(r.Address, r.Token, "GET", "/status", nil)
-			if e == nil {
-				if resp.StatusCode == 200 {
-					state = "active"
-				}
-				resp.Body.Close()
-			}
-		}
-		detail := r.Detail
-		if r.Kind == "mount" {
-			detail = r.Mountpoint + " -> " + r.Remote
-		}
-		fmt.Fprintf(out, "%s/%s\t%s\t%s\t%s\n", r.Kind, cleanText(r.Name), cleanText(r.Host), state, cleanText(detail))
+	for _, v := range inspectResources(records) {
+		fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", cleanText(v.ID), cleanText(v.Host), v.Worker, cleanText(v.Detail))
 	}
+
 	return nil
 }
-func runStop(args []string) (int, error) {
-	if len(args) != 1 {
-		return 2, usage("use sshore stop mount/NAME or forward/NAME; shells use sshore kill HOST NAME")
+
+// Explicit type prefixes route local cancellation; HOST NAME uses the existing
+// version- and process-identity-checked remote session termination path.
+func runCancel(args []string) (int, error) {
+	if len(args) == 0 {
+		return 2, usage("use sshore cancel approval/ID, mount/NAME, forward/NAME, or HOST NAME")
 	}
-	kind, name, ok := strings.Cut(args[0], "/")
-	if kind == "peer" {
-		return 2, usage("peer tasks are read-only here; stop the resource on its managing computer")
+	kind, name, typed := strings.Cut(args[0], "/")
+	if typed {
+		if len(args) != 1 {
+			return 2, usage("local cancellation accepts exactly one resource ID")
+		}
+		switch kind {
+		case "peer":
+			return 2, usage("peer tasks are read-only here; cancel the resource on its managing computer")
+		case "approval":
+			if !validApprovalID(name) {
+				return 2, usage("invalid approval ID")
+			}
+			dir, err := approvalDir()
+			if err != nil {
+				return 1, err
+			}
+			record, readErr := readApproval(dir, name)
+			if err = consumeApproval(dir, name); err != nil {
+				return 1, err
+			}
+			if readErr == nil {
+				removeRejectedPeerTask(record)
+			}
+			logf(os.Stderr, logSuccess, "[sshore] Request cancelled\n")
+			return 0, nil
+		case "mount", "forward":
+			return 0, stopResource(kind, name)
+		default:
+			return 2, usage("resource ID must be approval/ID, mount/NAME or forward/NAME")
+		}
 	}
-	if kind == "approval" {
-		return 2, usage("use sshore approve approval/ID --reject to reject a pending request")
+	o, err := parseOptions(append([]string{"cancel"}, args...))
+	if errors.Is(err, errHelp) {
+		return 0, showHelp([]string{"cancel"}, os.Stdout)
 	}
-	if !ok || (kind != "mount" && kind != "forward") {
-		return 2, usage("resource ID must be mount/NAME or forward/NAME; shells use sshore kill HOST NAME")
+	if err != nil {
+		return 2, err
 	}
-	return 0, stopResource(kind, name)
+	return runClient(o)
 }
 
 func listThisComputer() error {
-	if e := listLocalResources("", ""); e != nil {
+	if e := listLocalResources(""); e != nil {
 		return e
 	}
 	if os.Getenv("SSHORE_SOCKET") != "" || os.Getenv("SSH_CONNECTION") != "" {

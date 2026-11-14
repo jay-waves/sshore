@@ -103,7 +103,7 @@ func acceptSessionName(o *options, name string) error {
 func runClient(o options) (int, error) {
 	cmd := sshCommand(o)
 	cmd.Stderr = os.Stderr
-	if o.list || o.command == "kill" || o.command == "rename" {
+	if o.list || o.command == "cancel" || o.command == "rename" {
 		cmd.Stdin, cmd.Stdout = os.Stdin, os.Stdout
 		err := cmd.Run()
 		var e *exec.ExitError
@@ -400,7 +400,7 @@ func runClient(o options) (int, error) {
 					}
 					return 1, err
 				}
-				notice(logInfo, "\r\n[sshore] Request saved: %s\r\n[sshore] Run sshore approve from your LOCAL shell after this client exits.\r\n", id)
+				notice(logInfo, "\r\n[sshore] Request saved: %s\r\n[sshore] Run sshore review from your LOCAL shell after this client exits.\r\n", id)
 				if err = streamMessage(control, message{Type: "detach"}); err != nil {
 					return 1, err
 				}
@@ -497,9 +497,12 @@ func reconnectCommand(o options) string {
 		return shellQuote(s)
 	}
 	args := []string{"sshore", "attach", o.host, o.session}
-	args = append(args, o.ssh...)
 	if o.server != "" && o.server != "sshore" {
 		args = append(args, "--server", o.server)
+	}
+	if len(o.ssh) > 0 {
+		args = append(args, "--")
+		args = append(args, o.ssh...)
 	}
 	for i := range args {
 		args[i] = quote(args[i])

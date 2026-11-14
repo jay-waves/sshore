@@ -338,6 +338,34 @@ and assets remain unchanged.
 NOTES
 fi
 
+if [[ "$version" == "0.6.0" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Consolidate commands into review, cancel, mount and list; mount startup identifies SFTP over SSH.
+- Manage mounts and forwards as independent named background resources, with peer inventory and cancellation.
+- Use explicit shell-relative from/to port forwarding; local forwards support SSH connection options and opt-in bounded retries.
+- Add list --details/--json with bounded local status queries, transport state, recent failures and log paths. Target services are not probed.
+- Add SFTP request/startup timeouts without replaying writes, and transfer speed, ETA and batch failure summaries.
+- Share filtered request/session selection and simplify approval prompts.
+- Require SSH options after -- across connection commands, mount and forward; generated reconnect commands use the same syntax.
+
+Breaking CLI changes:
+- approve becomes review; kill and stop become cancel; ftp becomes mount.
+- Use list instead of per-command --list; use cancel approval/ID to reject requests.
+- Place sshore options before -- and SSH options after it:
+  `sshore forward work 8080 to 3000 --name web -- -J jump`.
+- Native -L/-R/-D remain connection-level compatibility options after --,
+  separate from independently managed forward resources.
+
+Forward retries default to off and cannot restore existing TCP connections.
+SFTP timeouts close the transport; remote writes may already have completed.
+Client and remote versions must match exactly. Updating existing older sessions
+ends their tasks only after you review the list and type update. Existing releases
+and assets remain unchanged.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Skipping release: $tag is already published; releases and assets are immutable."

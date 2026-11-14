@@ -1,6 +1,6 @@
 package main
 
-// ftp mounts an SFTP directory through a dedicated system OpenSSH connection.
+// mount exposes an SFTP directory through a dedicated system OpenSSH connection.
 // It does not attach to, create, or own a persistent sshore PTY session. SSH
 // options are deliberately limited to transport/authentication settings; mount
 // lifetime and writes must not inherit backgrounding or forwarding options.
@@ -8,29 +8,32 @@ package main
 import (
 	"runtime"
 	"strings"
+	"time"
 )
 
 type ftpOptions struct {
-	host, remote, mountpoint string
-	ssh                      []string
-	readOnly                 bool
-	directIO                 bool
-	foreground               bool
-	name                     string
+	ioTimeout, startupTimeout time.Duration
+	host, remote, mountpoint  string
+	ssh                       []string
+	readOnly                  bool
+	directIO                  bool
+	foreground                bool
+	name                      string
 }
 
-const ftpHelp = `Usage: sshore ftp HOST [REMOTE_DIRECTORY [MOUNTPOINT]] [options]
-       sshore ftp --list
-       sshore ftp --stop NAME
+const mountHelp = `Usage: sshore mount HOST [REMOTE_DIRECTORY [MOUNTPOINT]] [options] [-- SSH_OPTIONS]
 
 Mount a remote directory for local applications using SFTP (not plain FTP).
 Starts a named local background mount after SSH authentication succeeds.
 Defaults: remote home directory; ~/mnt/NAME on Linux, free drive on Windows.
-Use sshore list to find mount paths and sshore stop mount/NAME to unmount.
---list and --stop NAME remain convenience aliases.
+Use sshore list to find mount paths and sshore cancel mount/NAME to unmount.
 With --foreground, Ctrl-C requests a graceful unmount (10s grace).
 A second Ctrl-C while waiting forces disconnect and can interrupt writes.
-A busy mount stays connected; close files and retry. Uses a separate SSH connection.
+A busy mount stays connected; close files and retry.
+An SFTP request timeout closes the entire mount transport, including sibling
+operations; writes may be incomplete or already completed and are never retried.
+Idle mounts have no request timer. Startup timeout is opt-in because it includes
+SSH password/MFA entry; use SSH ConnectTimeout for network connection setup. Uses a separate SSH connection.
 Requires WinFsp on Windows or FUSE on Linux. Missing WinFsp prints its install URL.
 No persistent write-back cache. Background mounts publish remote inventory only;
 local paths/control tokens are not shared. Sync failure does not fail the mount.
@@ -39,36 +42,40 @@ Options:
   --name NAME                   Local mount session name (default: derived from HOST)
   --foreground                  Keep this mount in the terminal
   --read-only                   Reject changes through this mount
+  --io-timeout DURATION         Per SFTP request (default 60s; 0s disables)
+  --startup-timeout DURATION    Total startup including authentication (default 0s)
   --direct-io                   Linux: disable kernel file read caching
-  -p PORT  -i KEY  -J JUMP  -F CONFIG  -l USER  -o OPTION
-  -C, -v, -vv, -vvv, -4, -6    Pass through to system OpenSSH
   -h, --help                    Show command help
-  --                            End options
+
+SSH options (only after --):
+  -p PORT  -i KEY  -J JUMP  -F CONFIG  -l USER  -o OPTION  -E FILE
+  -C, -v, -vv, -vvv, -4, -6    Pass through to system OpenSSH
+  --                            Begin SSH-only options
 
 Examples:
-  sshore ftp work
-  sshore ftp --list
-  sshore ftp --stop work
-  sshore ftp work /home/alice/project ./remote-project
-  sshore ftp work /home/alice/project X:
+  sshore mount work
+  sshore cancel mount/work
+  sshore mount work /home/alice/project ./remote-project
+  sshore mount work /home/alice/project X:
 `
 
 func parseFTPOptions(args []string) (ftpOptions, error) {
-	var o ftpOptions
+	o := ftpOptions{ioTimeout: 60 * time.Second}
 	var positional []string
-	literal := false
+	var err error
+	args, o.ssh, err = splitSSHOptions(args, false)
+	if err != nil {
+		return o, err
+	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "" {
-			return o, usage("empty ftp argument")
+			return o, usage("empty mount argument")
 		}
-		if literal {
-			positional = append(positional, a)
-			continue
+		if err := misplacedSSHOption(a); err != nil {
+			return o, err
 		}
 		switch a {
-		case "--":
-			literal = true
 		case "-h", "--help":
 			return o, errHelp
 		case "--foreground":
@@ -82,27 +89,33 @@ func parseFTPOptions(args []string) (ftpOptions, error) {
 			if e := validSession(o.name); e != nil {
 				return o, e
 			}
+		case "--io-timeout", "--startup-timeout":
+			i++
+			if i >= len(args) {
+				return o, usage("missing value for %s", a)
+			}
+			d, err := time.ParseDuration(args[i])
+			if err != nil || d < 0 {
+				return o, usage("%s requires a nonnegative duration", a)
+			}
+			if a == "--io-timeout" {
+				o.ioTimeout = d
+			} else {
+				o.startupTimeout = d
+			}
 		case "--direct-io":
 			o.directIO = true
 		case "--read-only":
 			o.readOnly = true
-		case "-C", "-v", "-vv", "-vvv", "-4", "-6":
-			o.ssh = append(o.ssh, a)
-		case "-p", "-i", "-J", "-F", "-l", "-o":
-			i++
-			if i >= len(args) || args[i] == "" {
-				return o, usage("missing value for %s", a)
-			}
-			o.ssh = append(o.ssh, a, args[i])
 		default:
 			if strings.HasPrefix(a, "-") {
-				return o, usage("unsupported ftp option: %s", a)
+				return o, usage("unsupported mount option: %s", a)
 			}
 			positional = append(positional, a)
 		}
 	}
 	if len(positional) < 1 || len(positional) > 3 {
-		return o, usage("ftp requires HOST [REMOTE_DIRECTORY [MOUNTPOINT]]")
+		return o, usage("mount requires HOST [REMOTE_DIRECTORY [MOUNTPOINT]]")
 	}
 	if o.directIO && runtime.GOOS != "linux" {
 		return o, usage("--direct-io is supported only on Linux")

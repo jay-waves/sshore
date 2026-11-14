@@ -109,7 +109,7 @@ func TestFTPDirectory(t *testing.T) {
 	}
 }
 func TestFTPOptions(t *testing.T) {
-	o, e := parseFTPOptions([]string{"host", "/remote folder", "mount", "--read-only", "-J", "jump"})
+	o, e := parseFTPOptions([]string{"host", "/remote folder", "mount", "--read-only", "--", "-J", "jump"})
 	if e != nil || !o.readOnly || o.remote != "/remote folder" {
 		t.Fatalf("%+v %v", o, e)
 	}

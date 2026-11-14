@@ -1,6 +1,6 @@
 package main
 
-// Logical control, terminal, file and forwarding streams are application-level
+// Logical control, terminal and file streams are application-level
 // smux v2 streams over one SSH connection, not native OpenSSH channels. The
 // handshake requires the exact full sshore release, including PATCH; there is no
 // separate sshore protocol compatibility counter. Running daemons cannot upgrade
@@ -27,7 +27,8 @@ func muxConfig() *smux.Config {
 	c.Version = 2
 	c.MaxFrameSize = 16 * 1024
 	c.MaxStreamBuffer = 256 * 1024
-	// Keep room for terminal, files, forward connections, and control requests.
+	// Keep room for terminal, files and control requests. Independent forwards
+	// and mounts use separate SSH connections and do not consume this budget.
 	// Stalled streams must not exhaust the shared receive budget and block input.
 	c.MaxReceiveBuffer = (maxApprovedStreams + 12) * c.MaxStreamBuffer
 	c.KeepAliveInterval = 10 * time.Second

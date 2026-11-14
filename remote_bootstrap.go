@@ -53,15 +53,23 @@ func remoteCommand(o options) string {
 	}
 	b.WriteString("fi; case \"$server\" in /*) ;; *) server=\"$PWD/$server\" ;; esac; ")
 	b.WriteString("remote_version=; if [ -e \"$server\" ]; then remote_version=$(\"$server\" --version) || remote_version=; fi; ")
+	if o.list && (o.listJSON || o.listDetails) {
+		b.WriteString("if [ \"$remote_version\" != " + shellQuote("sshore "+version) + " ]; then printf '%s\\n' 'sshore: inventory requires matching remote release; no software changed' >&2; exit 1; fi; exec \"$server\" inventory " + shellQuote(version))
+		return "sh -c " + shellQuote(b.String())
+	}
 	// Destructive management never enters setup: a kill must not upgrade or end
 	// unrelated sessions. The remote command independently checks its version.
-	if o.command == "kill" || o.command == "rename" {
+	if o.command == "cancel" || o.command == "rename" {
 		b.WriteString("if [ \"$remote_version\" != " + shellQuote("sshore "+version) + " ]; then printf '%s\\n' " + shellQuote("sshore: "+o.command+" requires the installed remote version to match "+version+"; no software changed") + " >&2; exit 1; fi; ")
 		actionArgs := shellQuote(o.session)
 		if o.command == "rename" {
 			actionArgs += " " + shellQuote(o.newName)
 		}
-		b.WriteString("exec \"$server\" " + o.command + "-session " + actionArgs + " " + shellQuote(version))
+		action := o.command
+		if action == "cancel" {
+			action = "kill"
+		}
+		b.WriteString("exec \"$server\" " + action + "-session " + actionArgs + " " + shellQuote(version))
 		return "sh -c " + shellQuote(b.String())
 	}
 	// Check direction before downloading anything. Unknown/custom labels are left

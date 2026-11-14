@@ -14,7 +14,7 @@ import (
 )
 
 func TestApprovalPrompt(t *testing.T) {
-	for _, scenario := range []string{"upload", "retry", "cancel", "download", "menu", "many"} {
+	for _, scenario := range []string{"upload", "retry", "cancel", "download", "menu", "many", "picker", "forward-stay"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Setenv("SSHORE_SOCKET", "")
 			t.Setenv("SSH_CONNECTION", "")
@@ -51,11 +51,21 @@ exit 1
 			if scenario == "download" {
 				op = operation{Kind: "download", Path: "/tmp/new", Name: "new", Size: 4}
 			}
+			if scenario == "forward-stay" {
+				op = operation{Kind: "forward", Port: 3000}
+			}
 			id, err := writeApproval(options{host: "example.invalid", session: "main", server: "sshore"}, []operation{op})
 			if err != nil {
 				t.Fatal(err)
 			}
-			cmd := exec.Command(testBinary(t), "approve", id, "--stay")
+			args := []string{"review", id, "--stay"}
+			if scenario == "picker" {
+				if _, err := writeApproval(options{host: "other.invalid", session: "other", server: "sshore"}, []operation{op}); err != nil {
+					t.Fatal(err)
+				}
+				args = []string{"review", "--stay"}
+			}
+			cmd := exec.Command(testBinary(t), args...)
 			cmd.Env = append(os.Environ(), "TERM=xterm")
 			terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 160})
 			if err != nil {
@@ -94,7 +104,13 @@ exit 1
 					}
 				}
 			}
-			if scenario == "download" {
+			if scenario == "picker" {
+				await("Request (#number/ID")
+				io.WriteString(terminal, "/example.invalid\r"+id+"\r")
+			}
+			if scenario == "forward-stay" {
+				await("--stay applies only to file transfers")
+			} else if scenario == "download" {
 				await("Save as")
 				io.WriteString(terminal, filepath.Join(root, "new")+"\r")
 				await("Type yes to approve:")
@@ -139,7 +155,7 @@ exit 1
 			_ = cmd.Wait()
 			dir, _ := approvalDir()
 			_, err = os.Stat(filepath.Join(dir, id+".json"))
-			if scenario == "upload" || scenario == "retry" || scenario == "menu" || scenario == "many" {
+			if scenario == "upload" || scenario == "retry" || scenario == "menu" || scenario == "many" || scenario == "picker" {
 				if !os.IsNotExist(err) {
 					t.Fatal("approved request not consumed", err)
 				}

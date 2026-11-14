@@ -19,6 +19,7 @@ import (
 )
 
 type forwardConfig struct {
+	Retries            int
 	Host, Name, Server string
 	Port, Target       int
 	Reverse            bool
@@ -26,6 +27,9 @@ type forwardConfig struct {
 }
 
 func validateForwardConfig(f forwardConfig) error {
+	if f.Retries < 0 || f.Retries > 10 {
+		return usage("--retries must be between 0 and 10")
+	}
 	if e := validSession(f.Name); e != nil {
 		return e
 	}
@@ -69,23 +73,71 @@ func backgroundForwardArgs(f forwardConfig) []string {
 	args = append(args, forwardSSHOptions(f.SSH)...)
 	return append(args, flag, "127.0.0.1:"+strconv.Itoa(f.Port)+":127.0.0.1:"+strconv.Itoa(f.Target), "--", f.Host, forwardWatchCommand(f.Server))
 }
+
+// Reconnect only an already-established, explicitly opted-in local forward.
+// Each retry owns a new transport; application TCP connections are not resumed.
 func runForwardWorker(f forwardConfig, s *resourceService) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	stopped := make(chan resourceStopRequest, 1)
 	go func() {
 		select {
+		case request := <-s.stop:
+			stopped <- request
+			cancel()
 		case <-s.abandoned:
 			cancel()
 		case <-ctx.Done():
 		}
 	}()
+	defer func() {
+		select {
+		case request := <-stopped:
+			request.reply <- nil
+		default:
+		}
+	}()
+	for attempt := 0; ; attempt++ {
+		code, err := runForwardAttempt(ctx, f, s, attempt == 0)
+		if ctx.Err() != nil {
+			return 0, nil
+		}
+		if err == nil || attempt >= f.Retries || s.statusSnapshot().Started.IsZero() {
+			return code, err
+		}
+		s.setTransport("reconnecting", err)
+		delay := forwardRetryDelay(attempt)
+		logf(os.Stderr, logWarning, "[sshore] Forward disconnected; retry %d/%d in %s. Existing TCP connections are lost.\n", attempt+1, f.Retries, delay)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return 0, nil
+		case <-timer.C:
+		}
+	}
+}
+func forwardRetryDelay(attempt int) time.Duration {
+	return time.Second * time.Duration(1<<min(attempt, 5))
+}
+func runForwardAttempt(parent context.Context, f forwardConfig, s *resourceService, initial bool) (int, error) {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
 	exe := os.Getenv("SSHORE_SSH")
 	if exe == "" {
 		exe = "ssh"
 	}
-	cmd := exec.CommandContext(ctx, exe, backgroundForwardArgs(f)...)
+	args := backgroundForwardArgs(f)
+	if !initial {
+		args = append([]string{"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=15", "-o", "ConnectionAttempts=1"}, args...)
+	}
+	cmd := exec.CommandContext(ctx, exe, args...)
 	isolateFTPCommand(cmd)
-	cmd.Env = s.sshEnvironment()
+	if initial {
+		cmd.Env = s.sshEnvironment()
+	} else {
+		cmd.Env = os.Environ()
+	}
 	cmd.Stderr = os.Stderr
 	input, e := cmd.StdinPipe()
 	if e != nil {
@@ -120,8 +172,12 @@ func runForwardWorker(f forwardConfig, s *resourceService) (int, error) {
 		return 1, fmt.Errorf("unexpected forward startup response: %q", cleanText(marker))
 	}
 	s.record.Detail = describeForward(f.Port, "127.0.0.1", f.Target, f.Reverse)
-	if e = s.ready("", ""); e != nil {
-		return 1, e
+	if initial {
+		if e = s.ready("", ""); e != nil {
+			return 1, e
+		}
+	} else {
+		s.setTransport("connected", nil)
 	}
 	task := s.peerTask()
 	go func() {
@@ -140,13 +196,6 @@ func runForwardWorker(f forwardConfig, s *resourceService) (int, error) {
 		}
 	}()
 	select {
-	case request := <-s.stop:
-		cancel()
-		e = <-done
-		exited = true
-		// Cancellation is intentional; wait for transport exit before confirming stop.
-		request.reply <- nil
-		return 0, nil
 	case e = <-done:
 		exited = true
 		if e != nil {

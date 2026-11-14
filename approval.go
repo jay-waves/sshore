@@ -1,7 +1,7 @@
 package main
 
 // Remote requests describe data, never commands. Only a separately invoked local
-// approve command can turn a request into executable operations. Records live in
+// review command can turn a request into executable operations. Records live in
 // <UserConfigDir>/sshore/approvals, or under SSHORE_STATE_DIR when overridden. They
 // contain connection options and metadata, not collected SSH credentials; platform
 // helpers enforce private ownership/permissions or a current-user-only DACL.
@@ -152,7 +152,7 @@ func writeApproval(o options, ops []operation) (string, error) {
 		}
 	}
 	if count >= maxPendingApprovals {
-		return "", fmt.Errorf("too many pending approvals; use 'sshore approve --list' and --reject")
+		return "", fmt.Errorf("too many pending approvals; use 'sshore list' and 'sshore cancel approval/ID'")
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -240,107 +240,72 @@ func consumeApproval(dir, id string) error {
 	return os.Remove(filepath.Join(dir, id+".json"))
 }
 
-type approveOptions struct {
-	id                 string
-	stay, list, reject bool
+type reviewOptions struct {
+	id   string
+	stay bool
 }
 
-func parseApprove(args []string) (approveOptions, error) {
-	var o approveOptions
-	mode := ""
+func parseReview(args []string) (reviewOptions, error) {
+	var o reviewOptions
 	for _, a := range args {
-		switch a {
-		case "--stay", "--attach":
-			if mode != "" && mode != a {
-				return o, usage("--stay and --attach are mutually exclusive")
-			}
-			mode = a
-			o.stay = a == "--stay"
-		case "--list":
-			o.list = true
-		case "--reject":
-			o.reject = true
-		default:
-			a = strings.TrimPrefix(a, "approval/")
-			if o.id != "" || !validApprovalID(a) {
-				return o, usage("usage: sshore approve [ID] [--attach | --stay] | --list | ID --reject")
-			}
-			o.id = a
+		if a == "--stay" {
+			o.stay = true
+			continue
 		}
-	}
-	if o.list && (o.reject || o.id != "" || mode != "") || o.reject && (o.id == "" || mode != "") {
-		return o, usage("invalid approve options")
+		a = strings.TrimPrefix(a, "approval/")
+		if o.id != "" || !validApprovalID(a) {
+			return o, usage("usage: sshore review [ID] [--stay]")
+		}
+		o.id = a
 	}
 	return o, nil
 }
-func runApprove(args []string) (code int, resultErr error) {
-	a, err := parseApprove(args)
+func runReview(args []string) (code int, resultErr error) {
+	a, err := parseReview(args)
 	if err != nil {
 		return 2, err
 	}
 	// Never invite a user to enter approval input inside a normal remote shell.
 	if os.Getenv("SSHORE_SOCKET") != "" || os.Getenv("SSH_CONNECTION") != "" {
-		return 1, fmt.Errorf("run approve from your local shell after detach")
+		return 1, fmt.Errorf("run review from your local shell after detach")
 	}
 	dir, err := approvalDir()
 	if err != nil {
 		return 1, err
 	}
-	if a.list || a.id == "" {
+	var ids, labels []string
+	if a.id == "" {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			return 1, err
 		}
-		var ids []string
-		for _, e := range entries {
-			id := strings.TrimSuffix(e.Name(), ".json")
-			if id == e.Name() {
+		for _, entry := range entries {
+			if !strings.HasSuffix(entry.Name(), ".json") {
 				continue
 			}
+			id := strings.TrimSuffix(entry.Name(), ".json")
 			r, err := readApproval(dir, id)
 			if err != nil {
 				continue
 			}
 			ids = append(ids, id)
-			if a.list {
-				fmt.Printf("%s  %s / %s  %d operation(s)\n", id, cleanText(r.Host), r.Session, len(r.Operations))
-			}
+			labels = append(labels, fmt.Sprintf("%s · %s / %s · %s", id, r.Host, r.Session, approvalSummary(r.Operations)))
 		}
-		if a.list {
-			if len(ids) == 0 {
-				fmt.Println("No pending approvals")
-			}
+		if len(ids) == 0 {
+			fmt.Println("No pending approvals")
 			return 0, nil
 		}
-		if len(ids) != 1 {
-			return 1, fmt.Errorf("found %d pending approvals; use 'sshore approve --list', then specify an ID", len(ids))
+		if len(ids) == 1 {
+			a.id = ids[0]
 		}
-		a.id = ids[0]
-	}
-	if a.reject {
-		rejected, readErr := readApproval(dir, a.id)
-		err = os.Remove(filepath.Join(dir, a.id+".json"))
-		if err != nil {
-			return 1, err
-		}
-		if readErr == nil {
-			removeRejectedPeerTask(rejected)
-		}
-		logf(os.Stderr, logSuccess, "[sshore] Request rejected\n")
-		return 0, nil
-	}
-	r, err := readApproval(dir, a.id)
-	if err != nil {
-		return 1, err
 	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
-		return 1, fmt.Errorf("approval requires a local interactive terminal")
+		return 1, fmt.Errorf("review requires a local interactive terminal")
 	}
 	resetTerminalInputModes()
 	if err = flushTerminalInput(); err != nil {
 		return 1, err
 	}
-	logf(os.Stdout, logInfo, "Approve %s · %s / %s\n", r.ID, cleanText(r.Host), r.Session)
 	input, err := newApprovalInput()
 	if err != nil {
 		return 1, err
@@ -351,6 +316,21 @@ func runApprove(args []string) (code int, resultErr error) {
 			resultErr = errors.Join(resultErr, fmt.Errorf("restore terminal: %w", err))
 		}
 	}()
+	if a.id == "" {
+		a.id, err = chooseLocalItem(input, ids, labels, "Request (#number/ID, /filter; Enter cancels): ", "request")
+		if err != nil {
+			return 1, err
+		}
+	}
+	// Re-read after selection: an expired or concurrently cancelled request fails closed.
+	r, err := readApproval(dir, a.id)
+	if err != nil {
+		return 1, err
+	}
+	if a.stay && len(r.Operations) == 1 && r.Operations[0].Kind == "forward" {
+		return 2, usage("--stay applies only to file transfers; forwards always return locally")
+	}
+	logf(os.Stdout, logInfo, "Review %s · %s / %s\n", r.ID, cleanText(r.Host), r.Session)
 	directUpload := len(r.Operations) == 1 && r.Operations[0].Kind == "upload"
 	if len(r.Operations) == 1 && r.Operations[0].Kind == "forward" {
 		logf(os.Stdout, logInfo, "After: independent background forward; remote shell stays detached.\n")
@@ -428,4 +408,15 @@ func runApprove(args []string) (code int, resultErr error) {
 		return 1, err
 	}
 	return runClient(options{host: r.Host, session: r.Session, server: r.Server, downloadDir: r.DownloadDir, ssh: r.SSH, quiet: r.Quiet, noEscape: r.NoEscape, approved: r.Operations, stay: a.stay, resumePID: r.PID, approvalID: r.ID})
+}
+
+func approvalSummary(ops []operation) string {
+	if len(ops) == 1 {
+		op := ops[0]
+		if op.Kind == "forward" {
+			return describeForward(op.Port, op.RemoteHost, op.RemotePort, op.Reverse)
+		}
+		return op.Kind + " " + op.Path
+	}
+	return fmt.Sprintf("%d requested operations", len(ops))
 }

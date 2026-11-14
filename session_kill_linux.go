@@ -56,7 +56,7 @@ func killSession(name string) error {
 	if health.state != "attached" && health.state != "detached" && health.state != "starting" {
 		return fmt.Errorf("session %s is %s; refusing to signal an unconfirmed daemon", name, health.state)
 	}
-	if err := stopOldSessions([]setupProcess{{PID: p.pid, Start: start, Version: v}}, "killed by sshore kill"); err != nil {
+	if err := stopOldSessions([]setupProcess{{PID: p.pid, Start: start, Version: v}}, "cancelled by sshore cancel"); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "Ended session %s\n", name)

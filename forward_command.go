@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -42,47 +43,79 @@ func runForward(args []string) (int, error) {
 		}
 		return 0, serverCommand(append([]string{"forward"}, args...))
 	}
-	if len(args) == 1 && args[0] == "--list" {
-		return 0, listLocalResources("", "forward")
+	f, operands, foreground, e := parseForwardCommand(args)
+	if e != nil {
+		return 2, e
 	}
-	if len(args) == 2 && args[0] == "--stop" {
-		return 0, stopResource("forward", args[1])
+	if !foreground {
+		return startForwardSession(f)
 	}
-	var name string
-	foreground := false
+	return runForwardForegroundWithSSH(operands, f.SSH)
+}
+
+func parseForwardCommand(args []string) (forwardConfig, []string, bool, error) {
+	var f forwardConfig
+	var err error
+	args, f.SSH, err = splitSSHOptions(args, false)
+	if err != nil {
+		return f, nil, false, err
+	}
 	var operands []string
+	foreground := false
 	for i := 0; i < len(args); i++ {
+		if err := misplacedSSHOption(args[i]); err != nil {
+			return f, nil, false, err
+		}
 		switch args[i] {
 		case "--name":
 			i++
 			if i == len(args) {
-				return 2, usage("--name requires NAME")
+				return f, nil, false, usage("--name requires NAME")
 			}
-			name = args[i]
-			if e := validSession(name); e != nil {
-				return 2, e
+			f.Name = args[i]
+			if e := validSession(f.Name); e != nil {
+				return f, nil, false, e
 			}
+		case "--retries":
+			i++
+			if i == len(args) {
+				return f, nil, false, usage("--retries requires a count")
+			}
+			n, e := strconv.Atoi(args[i])
+			if e != nil || n < 0 || n > 10 {
+				return f, nil, false, usage("--retries must be between 0 and 10")
+			}
+			f.Retries = n
 		case "--foreground":
 			foreground = true
 		default:
+			if strings.HasPrefix(args[i], "-") {
+				return f, nil, false, usage("unsupported forward option: %s", args[i])
+			}
 			operands = append(operands, args[i])
 		}
 	}
-	args = operands
-	if _, e := localForwardArgs(args); e != nil {
-		return 2, e
+	if foreground && f.Retries != 0 {
+		return f, nil, false, usage("--retries applies only to background forwards")
 	}
-	if !foreground {
-		m, _ := parseForward(args[1:])
-		return startForwardSession(forwardConfig{Host: args[0], Name: name, Port: m.Port, Target: m.RemotePort, Reverse: !m.Reverse})
+	if _, e := localForwardArgs(operands); e != nil {
+		return f, nil, false, e
 	}
-	return runForwardForeground(args)
+	m, _ := parseForward(operands[1:])
+	f.Host, f.Port, f.Target, f.Reverse = operands[0], m.Port, m.RemotePort, !m.Reverse
+	return f, operands, foreground, nil
 }
+
 func runForwardForeground(args []string) (int, error) {
+	return runForwardForegroundWithSSH(args, nil)
+}
+func runForwardForegroundWithSSH(args, transport []string) (int, error) {
 	sshArgs, e := localForwardArgs(args)
 	if e != nil {
 		return 2, e
 	}
+	// Insert options before the destination delimiter, preserving fixed ownership options.
+	sshArgs = append(append(append([]string{}, sshArgs[:len(sshArgs)-2]...), transport...), sshArgs[len(sshArgs)-2:]...)
 	exe := os.Getenv("SSHORE_SSH")
 	if exe == "" {
 		exe = "ssh"

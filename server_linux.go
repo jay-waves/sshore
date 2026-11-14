@@ -29,6 +29,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -867,6 +868,18 @@ func serverCommand(args []string) error {
 			return e
 		}
 		return removeRemoteTask(args[2])
+	case "inventory":
+		if len(args) != 2 {
+			return usage("inventory requires client version")
+		}
+		if e := checkPeerVersion(args[1], "client"); e != nil {
+			return e
+		}
+		inv, e := localSessionInventory()
+		if e != nil {
+			return e
+		}
+		return json.NewEncoder(os.Stdout).Encode(inv)
 	case "sessions":
 		if len(args) != 1 {
 			return usage("usage: sshore sessions")

@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/pkg/sftp"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -31,20 +32,11 @@ func ftpSSHArgs(o ftpOptions) []string {
 	return append(args, "-s", "--", o.host, "sftp")
 }
 
-func runFTP(args []string) (int, error) {
-	if len(args) == 1 && args[0] == "--list" {
-		return 0, listFTPSessions()
-	}
-	if len(args) > 0 && args[0] == "--stop" {
-		if len(args) != 2 {
-			return 2, usage("ftp --stop requires NAME")
-		}
-		return 0, stopFTPSession(args[1])
-	}
+func runMount(args []string) (int, error) {
 
 	o, err := parseFTPOptions(args)
 	if errors.Is(err, errHelp) {
-		return 0, showHelp([]string{"ftp"}, os.Stdout)
+		return 0, showHelp([]string{"mount"}, os.Stdout)
 	}
 	if err != nil {
 		return 2, err
@@ -63,7 +55,7 @@ func runFTP(args []string) (int, error) {
 	return runFTPMount(o, nil)
 }
 
-func runFTPMount(o ftpOptions, service *resourceService) (int, error) {
+func runFTPMount(o ftpOptions, service *resourceService) (code int, resultErr error) {
 	var err error
 	if err = checkFTPPlatform(); err != nil {
 		return 1, err
@@ -122,7 +114,27 @@ func runFTPMount(o ftpOptions, service *resourceService) (int, error) {
 		}
 		_ = cmd.Wait()
 	}()
-	client, err := newFTPSFTP(stdout, stdin)
+	watch := &sftpWatch{}
+	abortIO := func() { cancel(); _ = stdout.Close(); _ = stdin.Close() }
+	defer func() {
+		if failure := watch.err(); failure != nil {
+			code = 1
+			resultErr = errors.Join(resultErr, failure)
+		}
+	}()
+	if o.startupTimeout > 0 {
+		watch.timer = time.AfterFunc(o.startupTimeout, func() {
+			watch.fail(fmt.Errorf("mount startup timed out after %s (including SSH authentication)", o.startupTimeout), abortIO)
+		})
+		defer watch.timer.Stop()
+	}
+	wire := newFTPWire(stdout, stdin)
+	if service != nil {
+		wire.onReply = service.operationCompleted
+	}
+	stopWatch := wire.watchRequests(o.ioTimeout, watch, abortIO)
+	defer stopWatch()
+	client, err := sftp.NewClientPipe(wire, wire)
 	if err != nil {
 		return 1, fmt.Errorf("SFTP handshake: %w", err)
 	}
@@ -152,6 +164,13 @@ func runFTPMount(o ftpOptions, service *resourceService) (int, error) {
 	if err != nil {
 		return 1, err
 	}
+	if watch.timer != nil {
+		watch.timer.Stop()
+	}
+	if err := watch.err(); err != nil {
+		_ = mount.Unmount()
+		return 1, err
+	}
 	close(setupFinished)
 	<-setupStopped
 	if service != nil {
@@ -167,7 +186,7 @@ func runFTPMount(o ftpOptions, service *resourceService) (int, error) {
 		stopSync := startMountTaskSync(ctx, client, service.peerTask())
 		defer stopSync()
 	}
-	fmt.Fprintf(os.Stderr, "Mounted %s:%s at %s. Ctrl-C unmounts; close files first.\n", cleanText(o.host), cleanText(root), cleanText(o.mountpoint))
+	fmt.Fprintf(os.Stderr, "Mounted %s:%s at %s using SFTP over SSH. Ctrl-C unmounts; close files first.\n", cleanText(o.host), cleanText(root), cleanText(o.mountpoint))
 	done := make(chan struct{})
 	go func() { mount.Wait(); close(done) }()
 	lost := make(chan error, 1)

@@ -10,7 +10,7 @@ flowchart LR
         program["Programs / session daemon"]
         setup["Setup coordinator"]
         service["Remote files and services"]
-        killgate["Kill: exact versions, setup lock, socket peer and process identity"]
+        killgate["Cancel session: exact versions, setup lock, socket peer and process identity"]
         renamegate["Rename: exact versions, setup lock, unique public name"]
         exits["Private, bounded exit diagnostics"]
     end
@@ -18,15 +18,19 @@ flowchart LR
         client["Connected sshore client"]
         record["Private, expiring request metadata"]
         user["User in local shell"]
-        approve["Separate sshore approve process"]
+        approve["Separate sshore review process"]
         gate["Setup and session checks"]
         resources["Selected files / loopback listener or service"]
     end
     user -->|"Explicit forward HOST A from/to B"| native["Independent background SSH tunnel"]
     native <-->|"SSH forwarding policy"| service
+    native -->|"Disconnect; explicit local retry grant"| retrygate["Bounded retries; noninteractive auth; known host key"]
+    retrygate --> native
+    mounted -->|"Request deadline exceeded"| abortmount["Abort transport; unknown write outcome; no replay"]
     mountuser["Local user: ftp HOST"] --> mountgrant["Explicit mount grant: read-only or writable"]
     mountgrant --> mounted["FUSE / WinFsp: local applications"]
     mounted <-->|"Independent OpenSSH / bounded SFTP responses"| service
+    resources --> status["Local status: no target probe; no control tokens exported"]
     mounted --> mountstop["Authenticated local stop: unmount before transport shutdown"]
     native --> inventory["Remote account: advisory peer task inventory"]
     mounted --> inventory
@@ -38,7 +42,7 @@ flowchart LR
     user -->|"Rename OLD NEW over SSH"| renamegate
     renamegate -->|"Change label; preserve process and helper identity"| program
     program -->|"Name, time, reason; no terminal content"| exits
-    user -->|"Explicit kill HOST NAME over SSH"| killgate
+    user -->|"Explicit cancel HOST NAME over SSH"| killgate
     killgate -->|"Only named session and identified same-user tasks"| program
     user -->|"Review and explicit consent"| approve
     record -->|"Consume once"| approve
@@ -112,6 +116,11 @@ persistent remote shell session or install remote software. The helper exits
 with its connection. Local `--foreground` remains available for diagnostics.
 Server GatewayPorts policy can override reverse listener binding.
 
+Local forward `--retries` is an explicit grant to re-establish the same fixed
+mapping, bounded to ten retries. It is unavailable to remote requests. New
+transports require existing authentication and known host keys, never prompt,
+and do not restore application connections. Cancellation ends pending retries.
+
 Native SSH `-L`, `-R`, `-D`, agent forwarding and other configuration are explicit local policy, outside remote-request approval. They are reused on reconnect; `-R` can expose a local service to the remote host. Do not bypass host-key checks.
 
 ## Peer task inventory
@@ -137,11 +146,11 @@ passed to local stop to affect similarly named resources.
 
 ## SFTP mounts
 
-`sshore ftp` is a local, explicit grant to expose a remote directory through a
+`sshore mount` is a local, explicit grant to expose a remote directory through a
 system mount. It is independent of session transfer approvals: local applications
 that can access the mount can read files and, unless `--read-only` is set, overwrite,
 rename or delete them with the authenticated remote account's permissions. A
-remote program cannot request or approve a mount. Recovery mode rejects `ftp`.
+remote program cannot request or approve a mount. Recovery mode rejects `mount`.
 
 Background mounts and forwards are local workers, separate from remote shell sessions. A
 private per-user record stores a random capability for loopback status/unmount
@@ -165,6 +174,13 @@ Linux readlink results are restricted to the mounted tree so an absolute remote
 link cannot redirect local tools into unrelated local files. Windows rejects
 unrepresentable names rather than silently aliasing them. No claim of local-disk
 locking, atomic multi-operation transactions or conflict detection is made.
+
+Each outstanding SFTP request has a deadline (60 seconds by default, configurable).
+Other replies and SSH keepalives cannot extend it. Timeout aborts the connection
+and all its pending operations; a write may already have completed remotely.
+No write is replayed. Idle mounts have no request timer. The optional startup
+deadline includes SSH authentication and defaults to disabled so it does not
+impose a deadline on password/MFA entry.
 
 Writes wait for SFTP responses; fsync requires the server extension. A response
 is not proof that a compromised server stored data. There is no persistent write
@@ -191,7 +207,7 @@ The full release version, including PATCH, is the compatibility identifier. No s
 - Failure to prepare a replacement must not terminate tasks. Once confirmed termination starts, later failures cannot restore stopped tasks. Updates can disconnect other clients and lose unsaved work.
 - Automatic replacement requires a user-owned regular file and a user-owned directory without group/world write permission. There is no elevation, PATH or shell-profile modification.
 
-Explicit `sshore kill HOST NAME` authorizes immediate termination of that named session
+Explicit `sshore cancel HOST NAME` authorizes immediate termination of that named session
 and its identified tasks in the selected runtime directory, including an attached
 session. It never enters installation or update negotiation. The client, installed
 remote program and target daemon must have matching full release versions. Under
@@ -215,3 +231,11 @@ This is a **product mode, not a sandbox**. It cannot constrain arbitrary legacy 
 ## Outside the boundary
 
 Approval is not a malware scan. A compromised local account/root, terminal emulator vulnerabilities, or a user approving a deceptive request defeats this boundary. Approval records are not tamper-proof against their owner. Remote processes sharing the account can request operations and disrupt sessions; a request does not prove who typed it.
+
+Resource status reports local worker liveness separately from transport state;
+forward targets are not probed. JSON inventory is an explicit allowlist of public
+fields, excluding control addresses/tokens, SSH options and terminal contents.
+Private resource exit receipts retain protocol metadata, paths and errors for up
+to seven days (100 per kind). They are diagnostic snapshots, not proof of remote
+availability or process identity. Detailed remote inventory requires an exact
+release match and does not initiate installation or update negotiation.

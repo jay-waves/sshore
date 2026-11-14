@@ -77,7 +77,7 @@ func TestSessionMetadataLifecycle(t *testing.T) {
 		t.Fatal(out, err)
 	}
 	_ = other
-	waitExitReceipt(t, e.dir, "original", "killed by sshore kill")
+	waitExitReceipt(t, e.dir, "original", "cancelled by sshore cancel")
 	if out, err := run("sessions"); err != nil || !strings.Contains(out, "Recent exits:") || !strings.Contains(out, "work [ended]") {
 		t.Fatal(out, err)
 	}

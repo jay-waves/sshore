@@ -47,14 +47,6 @@ func parsePort(s string) (int, error) {
 // Port is always the listener; RemotePort is always the approved destination.
 func parseForward(args []string) (message, error) {
 	m := message{Type: "forward", Action: "add", RemoteHost: "127.0.0.1"}
-	if len(args) == 1 && args[0] == "--list" {
-		m.Action = "list"
-		return m, nil
-	}
-	if len(args) > 0 && args[0] == "--stop" {
-		m.Action = "stop"
-		args = args[1:]
-	}
 	// A missing endpoint copies the explicit port; direction never defaults.
 	if len(args) == 2 {
 		if args[0] == "from" || args[0] == "to" {
@@ -64,7 +56,7 @@ func parseForward(args []string) (message, error) {
 		}
 	}
 	if len(args) != 3 || (args[1] != "from" && args[1] != "to") {
-		return m, usage("use forward CURRENT_PORT from|to PEER_PORT (at least one port required); --stop uses the same operands")
+		return m, usage("use forward CURRENT_PORT from|to PEER_PORT (at least one port required)")
 	}
 	current, e := parsePort(args[0])
 	if e != nil {

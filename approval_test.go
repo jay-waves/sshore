@@ -81,21 +81,21 @@ func TestApprovalValidation(t *testing.T) {
 }
 func TestApproveCLI(t *testing.T) {
 	id := strings.Repeat("a", 32)
-	for _, args := range [][]string{{}, {"--stay"}, {"--attach"}, {id, "--stay"}, {"--list"}, {id, "--reject"}} {
-		if _, err := parseApprove(args); err != nil {
+	for _, args := range [][]string{{}, {"--stay"}, {id, "--stay"}} {
+		if _, err := parseReview(args); err != nil {
 			t.Fatal(args, err)
 		}
 	}
-	for _, args := range [][]string{{"--stay", "--attach"}, {"--list", "--stay"}, {"--reject"}, {"../bad"}, {id, id}, {id, "--reject", "--attach"}} {
-		if _, err := parseApprove(args); err == nil {
+	for _, args := range [][]string{{"--attach"}, {"--list"}, {"--stay", "--attach"}, {"--list", "--stay"}, {"--reject"}, {"../bad"}, {id, id}, {id, "--reject", "--attach"}} {
+		if _, err := parseReview(args); err == nil {
 			t.Fatal("accepted", args)
 		}
 	}
-	o, _ := parseApprove(nil)
+	o, _ := parseReview(nil)
 	if o.stay {
 		t.Fatal("default should attach")
 	}
-	o, _ = parseApprove([]string{"--stay"})
+	o, _ = parseReview([]string{"--stay"})
 	if !o.stay {
 		t.Fatal("stay ignored")
 	}

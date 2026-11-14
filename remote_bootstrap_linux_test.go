@@ -147,12 +147,12 @@ func TestRemoteKillNeverBootstraps(t *testing.T) {
 			if release != "" {
 				writeBootstrapStub(t, bin, release)
 			}
-			out, err := runBootstrap(t, home, options{command: "kill", server: bin, session: "build"})
+			out, err := runBootstrap(t, home, options{command: "cancel", server: bin, session: "build"})
 			if release == version {
 				if err != nil || out != "<kill-session>\n<build>\n<"+version+">\n" {
 					t.Fatal(out, err)
 				}
-			} else if err == nil || !strings.Contains(out, "kill requires") {
+			} else if err == nil || !strings.Contains(out, "cancel requires") {
 				t.Fatal(out, err)
 			}
 			if strings.Contains(out, "Downloading") || strings.Contains(out, "<bootstrap>") {
