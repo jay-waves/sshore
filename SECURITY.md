@@ -22,6 +22,10 @@ flowchart LR
         gate["Setup and session checks"]
         resources["Selected files / loopback listener"]
     end
+    mountuser["Local user: ftp HOST"] --> mountgrant["Explicit mount grant: read-only or writable"]
+    mountgrant --> mounted["FUSE / WinFsp: local applications"]
+    mounted <-->|"Independent OpenSSH / bounded SFTP responses"| service
+    mounted --> mountstop["Authenticated local stop: unmount before transport shutdown"]
     program -->|"Request metadata over SSH"| client
     client -->|"Explicit detach: preserve session"| program
     client -->|"Detected transport loss: close PTY, end session"| program
@@ -93,6 +97,51 @@ Transfers check size and SHA-256, which verifies integrity rather than provenanc
 Cancellation removes incomplete files when cleanup can run. Forced termination may leave `.sshore-*.part` files; batch failure does not undo completed files. During approved operations and `--stay`, remote terminal output is suppressed. Detach/disconnection cancels connection-owned transfers and dynamic forwards. Only explicit detach preserves the remote session (including approval-request detach and completed file operations with `--stay`). Other transport loss closes the PTY and ends the daemon when detected. This uses normal terminal hangup semantics, not process-tree extermination: programs that ignore hangup or deliberately escape the terminal may survive, as with SSH. It does not promise cleanup of arbitrary reparented tasks.
 
 Native SSH `-L`, `-R`, `-D`, agent forwarding and other configuration are explicit local policy, outside remote-request approval. They are reused on reconnect; `-R` can expose a local service to the remote host. Do not bypass host-key checks.
+
+## SFTP mounts
+
+`sshore ftp` is a local, explicit grant to expose a remote directory through a
+system mount. It is independent of session transfer approvals: local applications
+that can access the mount can read files and, unless `--read-only` is set, overwrite,
+rename or delete them with the authenticated remote account's permissions. A
+remote program cannot request or approve a mount. Recovery mode rejects `ftp`.
+
+Background mounts are local workers, separate from remote shell sessions. A
+private per-user record stores a random capability for loopback status/unmount
+requests; control never kills a PID read from disk. An OS lock prevents duplicate
+session names. Stop requires the worker's exact sshore release version. Startup
+uses a temporary authenticated loopback askpass broker to collect SSH answers in
+the initiating terminal; credentials are not stored in records or logs. Losing
+the launcher before startup acknowledgement cancels the pending mount. Local
+administrators and processes running as the same user are inside this boundary.
+
+This connection uses the system OpenSSH host-key/authentication policy. It does
+not run a remote sshore program, negotiate sshore release versions, install
+software, or manage session daemons. It requires the SFTP capabilities it uses;
+existing session setup/version restrictions are unchanged. Transport sharing,
+backgrounding and forwarding are disabled for this independent connection.
+
+The remote host and its filenames, attributes and data remain untrusted. The
+selected root is a navigation boundary, not remote account confinement. Remote
+symlinks may be followed by SFTP operations with that account's permissions;
+Linux readlink results are restricted to the mounted tree so an absolute remote
+link cannot redirect local tools into unrelated local files. Windows rejects
+unrepresentable names rather than silently aliasing them. No claim of local-disk
+locking, atomic multi-operation transactions or conflict detection is made.
+
+Writes wait for SFTP responses; fsync requires the server extension. A response
+is not proof that a compromised server stored data. There is no persistent write
+spool or automatic replay. Disconnect or interruption can leave partial files;
+normal shutdown attempts unmount while transport remains live. Busy mounts stay
+connected for a retry. A second interrupt during shutdown or a 10-second timeout
+aborts transport to release blocked callbacks; forced shutdown reports possible
+incomplete writes. Close applications before stopping a mount. New files are created exclusively and
+permissions are set before exposing the handle; a failed permissions operation
+can leave an empty remote file. Linux read caching is invalidated on reopen; `--direct-io` bypasses it. No
+write-back cache is enabled. Metadata caches, open files and directory snapshots
+can show stale remote state. SFTP packets are limited to 1 MiB and each directory
+listing to 100,000 returned entries and 32 MiB of response data before decoding;
+exceeding a listing budget fails that operation without truncating it silently.
 
 ## Remote setup and updates
 

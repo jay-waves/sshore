@@ -156,6 +156,9 @@ func TestSessionCommandSemantics(t *testing.T) {
 	if _, err := run([]string{"new", "host"}); err == nil {
 		t.Fatal("recovery allowed new")
 	}
+	if _, err := run([]string{"ftp", "host", "/remote", "mount"}); err == nil {
+		t.Fatal("recovery allowed ftp")
+	}
 }
 
 func TestKillOptions(t *testing.T) {

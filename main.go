@@ -37,7 +37,7 @@ const connectionOptions = `Options (before or after HOST):
   -h, --help                    Show command help
 `
 
-const help = `sshore — persistent shells and file transfer over one SSH connection
+const help = `sshore — persistent shells, file transfer and SFTP mounts
 
 Local commands:
   sshore new HOST [NAME] [options]     Create a session (default: automatic Pokemon name)
@@ -45,6 +45,8 @@ Local commands:
   sshore kill HOST NAME [SSH options] End a session and its identified tasks
   sshore rename HOST OLD NEW [SSH options] Rename a running session
   sshore attach HOST [NAME] [options] Attach to an existing detached session
+  sshore ftp HOST [DIRECTORY [MOUNTPOINT]] Start a background file mount
+  sshore ftp --list / --stop NAME     Manage local mount sessions
   sshore approve [ID] [--attach | --stay]
   sshore approve --list
   sshore approve ID --reject
@@ -63,10 +65,10 @@ Help:
 new never resumes; attach never creates or evicts another client.
 Ctrl-] detaches; exit or detected connection loss ends the session. No screen replay.
 Requests for files or ports detach; run sshore approve locally to review them.
-Requires local OpenSSH. Missing remote software is installed automatically.
+Requires local OpenSSH. Session commands install missing remote software automatically.
 Older remote versions offer update or recovery; newer versions reject.
 Updating ends listed old sessions only after you type update. Recovery disables
-persistence, transfer and dynamic forwarding until you reconnect.
+persistence, transfer, mounts and dynamic forwarding until you reconnect.
 
 Examples:
   sshore new work build
@@ -75,6 +77,7 @@ Examples:
 `
 
 var commandHelp = map[string]string{
+	"ftp": ftpHelp,
 	"new": `Usage: sshore new HOST [NAME] [options]
 
 Create a new session. Omit NAME for an automatic Pokemon name.
@@ -352,6 +355,12 @@ func showHelp(args []string, w io.Writer) error {
 	return err
 }
 func run(args []string) (int, error) {
+	if os.Getenv("SSHORE_FTP_ASKPASS") == "1" {
+		if os.Getenv("SSHORE_DISABLED") == "1" {
+			return 1, fmt.Errorf("file access disabled in recovery")
+		}
+		return runFTPAskpass(args)
+	}
 	if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
 		if _, ok := commandHelp[args[0]]; ok {
 			return 0, showHelp(args[:1], os.Stdout)
@@ -378,6 +387,10 @@ func run(args []string) (int, error) {
 		}
 		fmt.Println("sshore", version)
 		return 0, nil
+	case "ftp-worker":
+		return runFTPWorker()
+	case "ftp":
+		return runFTP(args[1:])
 	case "approve":
 		return runApprove(args[1:])
 	case "forward":

@@ -28,6 +28,8 @@ Automatic names come from 24 familiar Pokemon, starting with `pikachu`, `eevee`,
 
 ```mermaid
 flowchart LR
+    ftp["Local: sshore ftp HOST"] --> mount["Background SFTP mount: local tools read / write remote files"]
+    mount --> unmount["ftp --stop NAME: unmount; shell sessions unaffected"]
     local["Local: sshore new / attach HOST"] --> ssh["System SSH"]
     ssh --> setup["Remote version check / setup"]
     setup --> select["new: unused name / attach: existing detached session"]
@@ -129,6 +131,55 @@ Put recurring connection settings in `~/.ssh/config`. Run `sshore --help` for co
 | `-q` | Hide periodic transfer progress |
 | `-V` / `-h` | Version / help |
 
+## Mount remote files locally
+
+Use local editors and file managers on your remote home directory:
+
+```sh
+sshore ftp work             # Authenticate, mount, and return to your terminal
+sshore ftp --list           # Show local mount sessions and their paths
+sshore ftp --stop work      # Close local files first, then unmount
+```
+
+Linux requires FUSE and defaults to `~/mnt/work`. Windows requires
+[WinFsp](https://winfsp.dev/) and automatically chooses a free drive letter.
+The command prints the actual path. Mounts run in the background until stopped,
+disconnected, or the local machine shuts down; they do not restart automatically.
+The default name comes from your SSH host or alias (without `user@`).
+Use `--name project` for another mount of the same host. For a specific directory:
+
+```sh
+sshore ftp work /home/alice/project --name project
+```
+
+An optional third argument selects your own mountpoint (an existing empty
+Linux directory, or an unused Windows drive such as `X:`). `--foreground` keeps
+the mount in your terminal, where Ctrl-C unmounts it.
+
+`ftp` uses **SFTP over system OpenSSH**, not unencrypted FTP. A busy mount stays
+connected so you can close files and retry stopping it. A 10-second unmount
+timeout forces disconnection and may interrupt writes. Each local mount session
+has an independent connection: detaching a remote shell does not close the mount,
+and unmounting does not end shell sessions. No remote sshore installation is needed.
+SSH password and host-key prompts appear during startup; background logs are kept
+under the local sshore state directory in `mounts/NAME.log`.
+
+The mount is writable by default, including overwrite and deletion. Use
+`--read-only` to prevent changes through it. Writable mounts require OpenSSH's
+SFTP atomic-rename and fsync extensions. There is no local write-back cache,
+offline editing, automatic reconnect or write retry. Interrupted writes can leave
+partial remote files. Remote changes may take a moment to appear; concurrent
+editing is not conflict-checked. Linux caches reads until close/reopen; use
+`--direct-io` when you need uncached reads from an already-open file. Directory
+listings exceeding 100,000 entries or 32 MiB of SFTP responses fail without
+disconnecting other operations.
+
+Windows names must be representable without renaming; directories containing
+unsupported names report an error. DOS flags and creation/change times are not
+preserved. Linux symlinks that lead outside the selected remote tree cannot be
+followed locally. Special files and file locking are not supported. See
+`sshore ftp --help` and the [mount boundary](SECURITY.md#sftp-mounts).
+
 ## Transfer files
 
 **In the remote shell:**
@@ -209,6 +260,6 @@ Read [SECURITY.md](SECURITY.md) for approval boundaries, update safeguards and r
 
 Build from source with Go 1.25+: `go build -o dist/sshore .`. Source builds need matching binaries on both ends. CI builds Linux/Windows amd64 and publishes main; full tests run manually via [Actions → Tests → Run workflow](https://github.com/jay-waves/sshore/actions/workflows/tests.yml).
 
-Inspired by [dtach](https://github.com/crigler/dtach), the original `dssh.nu` prototype and [trzsz](https://github.com/trzsz/trzsz). Uses [OpenSSH](https://www.openssh.com/), [smux](https://github.com/xtaci/smux) and [creack/pty](https://github.com/creack/pty). sshore does not interoperate with SFTP or trzsz.
+Inspired by [dtach](https://github.com/crigler/dtach), the original `dssh.nu` prototype and [trzsz](https://github.com/trzsz/trzsz). Uses [OpenSSH](https://www.openssh.com/), [smux](https://github.com/xtaci/smux) and [creack/pty](https://github.com/creack/pty). Session file requests use a custom protocol; `sshore ftp` uses SFTP. trzsz is not supported.
 
 [MIT license](LICENSE). Dependencies retain their own licenses; versions are in [go.mod](go.mod).
