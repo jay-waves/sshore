@@ -98,7 +98,7 @@ func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, q
 	}
 }
 
-func stayWithForwards(mux *smux.Session, control, terminal *smux.Stream) (int, error) {
+func stayWithForwards(mux *smux.Session, control, terminal *smux.Stream, forwards *forwardManager) (int, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// Read Ctrl-C as a local key, not a terminal-generated process-group signal:
@@ -174,7 +174,14 @@ func stayWithForwards(mux *smux.Session, control, terminal *smux.Stream) (int, e
 				done <- e
 				return
 			}
-			_ = st.Close()
+			_ = st.SetReadDeadline(time.Now().Add(forwardTimeout))
+			m, e := readMessage(st)
+			_ = st.SetReadDeadline(time.Time{})
+			if e == nil && m.Type == "forward_connect" && m.Reverse {
+				go forwards.handleReverse(st, m)
+			} else {
+				_ = st.Close()
+			}
 		}
 	}()
 	select {

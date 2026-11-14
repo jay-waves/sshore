@@ -142,24 +142,29 @@ func TestForwardManagerLifecycle(t *testing.T) {
 	}
 }
 func TestForwardArguments(t *testing.T) {
-	for _, args := range [][]string{{}, {"0"}, {"65536"}, {"-1"}, {"+1"}, {"localhost:80"}, {"7777:host:0"}, {"7777:host name:80"}, {"--stop"}, {"--list", "80"}, {"80", "81"}} {
-		if _, err := parseForward(args); err == nil {
+	for _, args := range [][]string{{}, {"3000"}, {"7777:6666"}, {"7777:host:6666"}, {"80", "to"}, {"80", "from", "0"}, {"65536", "to", "80"}, {"80", "on", "90"}, {"--stop", "80"}, {"--list", "80"}} {
+		if _, e := parseForward(args); e == nil {
 			t.Fatal("accepted", args)
 		}
 	}
-	for _, args := range [][]string{{"1"}, {"65535"}, {"7777:6666"}, {"7777:192.168.1.20:6666"}, {"--stop", "3000"}, {"--list"}} {
-		if _, err := parseForward(args); err != nil {
-			t.Fatal(args, err)
+	for _, tc := range []struct {
+		args         []string
+		port, target int
+		reverse      bool
+	}{
+		{[]string{"3000", "from", "8080"}, 8080, 3000, false},
+		{[]string{"8080", "to", "3000"}, 8080, 3000, true},
+		{[]string{"--stop", "8080", "to", "3000"}, 8080, 3000, true},
+	} {
+		m, e := parseForward(tc.args)
+		if e != nil || m.Port != tc.port || m.RemotePort != tc.target || m.Reverse != tc.reverse {
+			t.Fatalf("%v: %+v %v", tc.args, m, e)
 		}
 	}
-	m, err := parseForward([]string{"7777:192.168.1.20:6666"})
-	if err != nil || m.Port != 7777 || m.RemoteHost != "192.168.1.20" || m.RemotePort != 6666 {
-		t.Fatalf("parsed target: %+v (%v)", m, err)
+	if _, e := parseForward([]string{"--list"}); e != nil {
+		t.Fatal(e)
 	}
-	m, err = parseForward([]string{"7777:6666"})
-	if err != nil || m.RemoteHost != "127.0.0.1" || m.RemotePort != 6666 {
-		t.Fatalf("parsed shorthand: %+v (%v)", m, err)
-	}
+
 	o, err := parseOptions([]string{"new", "host", "-L", "127.0.0.1:8080:localhost:80"})
 	if err != nil || len(o.ssh) != 2 {
 		t.Fatal(o, err)

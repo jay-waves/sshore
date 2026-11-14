@@ -31,6 +31,7 @@ type message struct {
 	Operations      []operation    `json:"operations,omitempty"`
 	Action          string         `json:"action,omitempty"`
 	Port            int            `json:"port,omitempty"`
+	Reverse         bool           `json:"reverse,omitempty"`
 	RemoteHost      string         `json:"remote_host,omitempty"`
 	RemotePort      int            `json:"remote_port,omitempty"`
 	Ports           []int          `json:"ports,omitempty"`

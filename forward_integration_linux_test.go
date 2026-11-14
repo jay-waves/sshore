@@ -35,6 +35,8 @@ func TestForwardHelperAndRemoteDial(t *testing.T) {
 					f.request(message{Action: "add", Port: m.Operations[0].Port})
 				}
 				st.Close()
+			} else if m.Type == "forward_connect" && m.Reverse {
+				go f.handleReverse(st, m)
 			} else {
 				f.handle(st, m)
 			}
@@ -56,16 +58,16 @@ func TestForwardHelperAndRemoteDial(t *testing.T) {
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
-	if out := run(strconv.Itoa(port)); !strings.Contains(out, "Request queued") {
+	if out := run(strconv.Itoa(port), "from", strconv.Itoa(port)); !strings.Contains(out, "Request queued") {
 		t.Fatal(out)
 	}
 	if out := run("--list"); !strings.Contains(out, loopback(port)) {
 		t.Fatal(out)
 	}
-	if out := run(strconv.Itoa(port)); !strings.Contains(out, "Request queued") {
+	if out := run(strconv.Itoa(port), "from", strconv.Itoa(port)); !strings.Contains(out, "Request queued") {
 		t.Fatal(out)
 	}
-	run("--stop", strconv.Itoa(port))
+	run("--stop", strconv.Itoa(port), "from", strconv.Itoa(port))
 	if out := run("--list"); !strings.Contains(out, "No dynamic forwards") {
 		t.Fatal(out)
 	}
@@ -123,12 +125,45 @@ func TestForwardHelperAndRemoteDial(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer peer.Close()
+	// Exercise an actual daemon reverse listener before the same detach.
+	reversePort := port
+	if r := f.request(message{Action: "add", Reverse: true, Port: reversePort, RemoteHost: "127.0.0.1", RemotePort: service.Addr().(*net.TCPAddr).Port}); r.Error != "" {
+		t.Fatal(r.Error)
+	}
+	reverseApp, err := net.DialTimeout("tcp4", loopback(reversePort), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reverseApp.Close()
+	service.(*net.TCPListener).SetDeadline(time.Now().Add(3 * time.Second))
+	reversePeer, err := service.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reversePeer.Close()
 	sendTest(t, b.in, message{Type: "detach"})
 	untilType(t, b.out, "detached")
 	_ = peer.SetReadDeadline(time.Now().Add(3 * time.Second))
 	var one [1]byte
 	if _, err = peer.Read(one[:]); err != io.EOF {
 		t.Fatal("remote connection survived detach:", err)
+	}
+	reversePeer.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err = reversePeer.Read(one[:]); err != io.EOF {
+		t.Fatal("reverse connection survived detach:", err)
+	}
+	// Listener teardown can finish just after the detached acknowledgement.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		ln, e := net.Listen("tcp4", loopback(reversePort))
+		if e == nil {
+			ln.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("reverse listener survived detach:", e)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	f.close()
 	b.close()

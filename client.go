@@ -16,13 +16,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -209,11 +207,11 @@ func runClient(o options) (int, error) {
 			defer forwards.close()
 			for _, op := range o.approved {
 				if op.Kind == "forward" {
-					r := forwards.request(message{Action: "add", Port: op.Port, RemoteHost: op.RemoteHost, RemotePort: op.RemotePort})
+					r := forwards.request(message{Action: "add", Reverse: op.Reverse, Port: op.Port, RemoteHost: op.RemoteHost, RemotePort: op.RemotePort})
 					if r.Error != "" {
 						return 1, fmt.Errorf("%s", r.Error)
 					}
-					return stayWithForwards(mux, control, terminal)
+					return stayWithForwards(mux, control, terminal, forwards)
 				}
 			}
 			// --stay explicitly detaches after completed file operations.
@@ -279,12 +277,12 @@ func runClient(o options) (int, error) {
 	defer forwards.close()
 	for _, op := range o.approved {
 		if op.Kind == "forward" {
-			r := forwards.request(message{Action: "add", Port: op.Port, RemoteHost: op.RemoteHost, RemotePort: op.RemotePort})
+			r := forwards.request(message{Action: "add", Reverse: op.Reverse, Port: op.Port, RemoteHost: op.RemoteHost, RemotePort: op.RemotePort})
 			if r.Error != "" {
 				return 1, fmt.Errorf("%s", r.Error)
 			}
 			spec := normalizeForward(op.Port, op.RemoteHost, op.RemotePort)
-			logf(os.Stderr, logSuccess, "[sshore] Forwarding %s -> remote %s\r\n", loopback(spec.Port), net.JoinHostPort(spec.RemoteHost, strconv.Itoa(spec.RemotePort)))
+			logf(os.Stderr, logSuccess, "[sshore] Forwarding %s\r\n", describeForward(spec.Port, spec.RemoteHost, spec.RemotePort, op.Reverse))
 		}
 	}
 	go readEvents(control)
@@ -298,6 +296,10 @@ func runClient(o options) (int, error) {
 			_ = st.SetReadDeadline(time.Now().Add(5 * time.Second))
 			m, err := readMessage(st)
 			_ = st.SetReadDeadline(time.Time{})
+			if err == nil && m.Type == "forward_connect" && m.Reverse {
+				go forwards.handleReverse(st, m)
+				continue
+			}
 			if err == nil && m.Type == "approval_request" {
 				emit(clientEvent{approvalStream: st, approval: m.Operations})
 				continue

@@ -30,6 +30,7 @@ Automatic names come from 24 familiar Pokemon, starting with `pikachu`, `eevee`,
 flowchart LR
     ftp["Local: sshore ftp HOST"] --> mount["Background SFTP mount: local tools read / write remote files"]
     mount --> unmount["ftp --stop NAME: unmount; shell sessions unaffected"]
+    directforward["Local: forward HOST A from/to B"] --> tunnel["Foreground OpenSSH tunnel"]
     local["Local: sshore new / attach HOST"] --> ssh["System SSH"]
     ssh --> setup["Remote version check / setup"]
     setup --> select["new: unused name / attach: existing detached session"]
@@ -208,18 +209,37 @@ Transfers support regular files only and never overwrite an existing destination
 
 ## Forward a port
 
-**In the remote shell:**
+The first port belongs to your current shell; the second belongs to the other
+end of the connection. `to` listens here; `from` listens at the other end.
+Both ports and the direction are required, even for equal ports.
+
+**On your computer** (foreground; Ctrl-C stops the tunnel):
 
 ```sh
-sshore forward 3000
-# or: sshore forward 7777:192.168.1.20:6666
+sshore forward work 8080 to 3000    # Your computer:8080 -> work:3000
+sshore forward work 3000 from 8080  # work:8080 -> your computer:3000
 ```
 
-Then run `sshore approve` locally and open `http://127.0.0.1:3000`. Use `sshore approve --stay` to keep the tunnel in the local foreground; Ctrl-C closes it and ends the remote session.
+**In the remote sshore shell** (request local approval):
 
-Dynamic forwards listen on local IPv4 loopback. `sshore forward PORT` keeps the same local and remote port; use `LOCAL_PORT:REMOTE_PORT` or `LOCAL_PORT:REMOTE_HOST:REMOTE_PORT` to reach a different service from the SSH server, such as `7777:192.168.1.20:6666`. Detaching or disconnecting closes them; reconnecting does not restore them. In the remote shell, `sshore forward --list` lists rules and `sshore forward --stop LOCAL_PORT` closes one. A new request detaches and closes the previous rule.
+```sh
+sshore forward 3000 from 8080      # Your computer:8080 -> server:3000
+sshore forward 8080 to 3000        # Server:8080 -> your computer:3000
+```
 
-For different ports or multiple rules, use native SSH forwarding at connection time:
+Run `sshore approve` locally to review and establish the requested rule.
+Use `sshore approve --stay` to keep the tunnel in the local foreground;
+Ctrl-C closes it and ends the remote session.
+
+Session rules use IPv4 loopback on both ends. In the remote shell, use
+`sshore forward --list` or repeat the creation operands after `--stop`, for
+example `sshore forward --stop 8080 to 3000`. Detach/disconnection closes
+listeners and existing connections; reconnect does not restore them. A new
+request detaches and closes the previous rule. Standalone local tunnels use
+system SSH and are stopped with Ctrl-C, separately from session rules.
+Old single-port and colon forms are no longer accepted. See `sshore forward --help`.
+
+For non-loopback destinations or multiple rules, use native SSH forwarding at connection time:
 
 ```sh
 sshore new myserver -L 127.0.0.1:8080:127.0.0.1:3000

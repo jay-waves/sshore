@@ -47,6 +47,7 @@ Local commands:
   sshore attach HOST [NAME] [options] Attach to an existing detached session
   sshore ftp HOST [DIRECTORY [MOUNTPOINT]] Start a background file mount
   sshore ftp --list / --stop NAME     Manage local mount sessions
+  sshore forward HOST PORT from|to PORT  Forward ports in the foreground
   sshore approve [ID] [--attach | --stay]
   sshore approve --list
   sshore approve ID --reject
@@ -55,7 +56,7 @@ Inside a remote sshore shell:
   sshore detach                  Disconnect; keep the shell running
   sshore upload [DIRECTORY]      Choose a local file to upload here
   sshore download FILE...        Download one or more remote files
-  sshore forward TARGET          Request a port forward
+  sshore forward PORT from|to PORT  Request a port forward
 
 Help:
   sshore help [COMMAND]
@@ -141,13 +142,35 @@ Omit ID only when exactly one unexpired request exists. Requests expire after
 10 minutes and are consumed before connecting, even when execution fails.
 No SSH passwords or separate approval passwords are stored or collected.
 `,
-	"forward": `Usage: sshore forward TARGET | --stop PORT | --list
+	"forward": `Usage: sshore forward HOST CURRENT_PORT from|to PEER_PORT
+       sshore forward CURRENT_PORT from|to PEER_PORT
+       sshore forward --list
+       sshore forward --stop CURRENT_PORT from|to PEER_PORT
 
-Run inside a remote sshore shell. TARGET is PORT, LOCAL_PORT:REMOTE_PORT, or
-LOCAL_PORT:REMOTE_HOST:REMOTE_PORT. Adding a rule queues local approval and
-detaches; run sshore approve locally to open 127.0.0.1:LOCAL_PORT to the
-remote target. --list and --stop do not require approval. Stop/detach closes
-existing connections. OpenSSH -L rules are managed separately.
+The first port belongs to the shell running this command; the second belongs
+to the other end of the SSH connection:
+  A to B    Listen here on A, connect to the peer's service B.
+  A from B  Listen on the peer's B, connect to the service A here.
+Both ports and from/to are mandatory. Old PORT and colon forms are rejected.
+Ports must be 1..65535. Listener and destination use IPv4 127.0.0.1.
+
+On your computer, specify HOST (an SSH alias or user@host). Runs system SSH in
+the foreground; Ctrl-C stops it. Uses SSH configuration for keys and options.
+No remote sshore installation is required. Server SSH policy controls -R binds.
+
+Inside a remote sshore shell, omit HOST to inherit the current connection.
+Queues local approval and detaches; run sshore approve on your computer.
+--list and --stop manage approved session rules without new approval. Stop
+requires the same operands as creation, including direction. Detach/disconnect
+closes these rules and existing connections; reconnect does not restore them.
+Standalone local tunnels and native SSH -L/-R/-D are managed separately.
+
+Examples:
+  sshore forward work 8080 to 3000    Your computer:8080 -> work:3000
+  sshore forward work 3000 from 8080  work:8080 -> your computer:3000
+  sshore forward 3000 from 8080       Remote request: computer:8080 -> server:3000
+  sshore forward 8080 to 3000         Remote request: server:8080 -> computer:3000
+  sshore forward --stop 8080 to 3000  Stop that remote-listening rule
 `,
 	"upload": `Usage: sshore upload [--] [DIRECTORY]
 
@@ -394,10 +417,7 @@ func run(args []string) (int, error) {
 	case "approve":
 		return runApprove(args[1:])
 	case "forward":
-		if _, err := parseForward(args[1:]); err != nil {
-			return 2, err
-		}
-		return 0, serverCommand(args)
+		return runForward(args[1:])
 	case "upload", "download", "detach":
 		// -- makes filenames such as --help unambiguous.
 		if len(args) > 1 && args[1] == "--" {

@@ -18,10 +18,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +37,7 @@ type operation struct {
 	Name       string `json:"name,omitempty"`
 	Size       int64  `json:"size,omitempty"`
 	Port       int    `json:"port,omitempty"`
+	Reverse    bool   `json:"reverse,omitempty"`
 	RemoteHost string `json:"remote_host,omitempty"`
 	RemotePort int    `json:"remote_port,omitempty"`
 	LocalPath  string `json:"-"`
@@ -56,7 +55,7 @@ func validateOperations(ops []operation) error {
 			if !strings.HasPrefix(op.Path, "/") || len(op.Path) > 4096 || strings.ContainsAny(op.Path, "\x00\r\n") {
 				return fmt.Errorf("invalid remote path")
 			}
-			if op.Port != 0 {
+			if op.Port != 0 || op.Reverse {
 				return fmt.Errorf("unexpected port in file request")
 			}
 			if op.Kind == "download" {
@@ -71,7 +70,7 @@ func validateOperations(ops []operation) error {
 				return fmt.Errorf("unexpected upload metadata")
 			}
 		case "forward":
-			if len(ops) != 1 || op.Port < 1 || op.Port > 65535 || (op.RemotePort != 0 && (op.RemotePort < 1 || op.RemotePort > 65535)) || (op.RemoteHost != "" && strings.ContainsAny(op.RemoteHost, "\x00\r\n \t")) || op.Path != "" || op.Name != "" || op.Size != 0 {
+			if len(ops) != 1 || op.Port < 1 || op.Port > 65535 || (op.RemotePort != 0 && (op.RemotePort < 1 || op.RemotePort > 65535)) || (op.RemoteHost != "" && op.RemoteHost != "127.0.0.1") || op.Path != "" || op.Name != "" || op.Size != 0 {
 				return fmt.Errorf("invalid port request")
 			}
 		default:
@@ -393,7 +392,7 @@ func runApprove(args []string) (code int, resultErr error) {
 			logf(os.Stdout, logInfo, "Source: %s · %s\n", cleanText(path), displayBytes(op.Size))
 		case "forward":
 			spec := normalizeForward(op.Port, op.RemoteHost, op.RemotePort)
-			logf(os.Stdout, logInfo, "Forward local %s -> remote %s\n", loopback(spec.Port), net.JoinHostPort(spec.RemoteHost, strconv.Itoa(spec.RemotePort)))
+			logf(os.Stdout, logInfo, "Forward %s\n", describeForward(spec.Port, spec.RemoteHost, spec.RemotePort, op.Reverse))
 		}
 	}
 	if !directUpload {

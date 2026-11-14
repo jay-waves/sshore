@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strconv"
 	"time"
 )
 
@@ -14,7 +13,7 @@ func forwardHelper(args []string) error {
 		return err
 	}
 	if m.Action == "add" {
-		return requestOperations([]operation{{Kind: "forward", Port: m.Port, RemoteHost: m.RemoteHost, RemotePort: m.RemotePort}})
+		return requestOperations([]operation{{Kind: "forward", Reverse: m.Reverse, Port: m.Port, RemoteHost: m.RemoteHost, RemotePort: m.RemotePort}})
 	}
 	sock := os.Getenv("SSHORE_SOCKET")
 	if sock == "" {
@@ -41,7 +40,7 @@ func forwardHelper(args []string) error {
 			fmt.Println("No dynamic forwards")
 		}
 		for _, spec := range reply.Forwards {
-			fmt.Printf("%s -> remote %s\n", loopback(spec.Port), net.JoinHostPort(spec.RemoteHost, strconv.Itoa(spec.RemotePort)))
+			fmt.Println(describeForward(spec.Port, spec.RemoteHost, spec.RemotePort, spec.Reverse))
 		}
 		if len(reply.Forwards) == 0 { // compatibility with an older attached client
 			for _, port := range reply.Ports {
@@ -50,7 +49,7 @@ func forwardHelper(args []string) error {
 		}
 	} else {
 		spec := normalizeForward(m.Port, m.RemoteHost, m.RemotePort)
-		logf(os.Stderr, logSuccess, "[sshore] %s %s -> remote %s\n", cleanText(reply.Name), loopback(spec.Port), net.JoinHostPort(spec.RemoteHost, strconv.Itoa(spec.RemotePort)))
+		logf(os.Stderr, logSuccess, "[sshore] %s %s\n", cleanText(reply.Name), describeForward(spec.Port, spec.RemoteHost, spec.RemotePort, m.Reverse))
 	}
 	return nil
 }

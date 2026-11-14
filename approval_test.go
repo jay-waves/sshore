@@ -58,6 +58,8 @@ func TestApprovalValidation(t *testing.T) {
 	for _, ops := range [][]operation{
 		nil, {{Kind: "exec", Path: "/bin/sh"}}, {{Kind: "download", Path: "/tmp/a", Name: "../a", Size: 1}},
 		{{Kind: "download", Path: "relative", Name: "a", Size: 1}}, {{Kind: "download", Path: "/a", Name: "a", Size: -1}},
+		{{Kind: "forward", Port: 80, Reverse: true, RemoteHost: "192.168.1.20"}},
+		{{Kind: "upload", Path: "/tmp", Reverse: true}},
 		{{Kind: "forward", Port: 0}}, {{Kind: "forward", Port: 80, Path: "/a"}},
 		{{Kind: "upload", Path: "/tmp", Name: "secret"}},
 	} {
@@ -65,7 +67,7 @@ func TestApprovalValidation(t *testing.T) {
 			t.Fatal("accepted", ops)
 		}
 	}
-	if err := validateOperations([]operation{{Kind: "forward", Port: 7777, RemoteHost: "192.168.1.20", RemotePort: 6666}}); err != nil {
+	if err := validateOperations([]operation{{Kind: "forward", Port: 7777, RemoteHost: "127.0.0.1", RemotePort: 6666}}); err != nil {
 		t.Fatal("valid remote target rejected:", err)
 	}
 	// A malicious peer cannot deserialize a chosen local path.

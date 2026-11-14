@@ -20,8 +20,10 @@ flowchart LR
         user["User in local shell"]
         approve["Separate sshore approve process"]
         gate["Setup and session checks"]
-        resources["Selected files / loopback listener"]
+        resources["Selected files / loopback listener or service"]
     end
+    user -->|"Explicit forward HOST A from/to B"| native["Foreground system SSH tunnel"]
+    native <-->|"SSH forwarding policy"| service
     mountuser["Local user: ftp HOST"] --> mountgrant["Explicit mount grant: read-only or writable"]
     mountgrant --> mounted["FUSE / WinFsp: local applications"]
     mounted <-->|"Independent OpenSSH / bounded SFTP responses"| service
@@ -68,7 +70,7 @@ directories are retained in exit records.
 
 ## Local approval
 
-Receiving a request saves only bounded metadata. It does not open a requested listener or read/write a user-selected transfer file. Requests cannot encode a local shell command or choose an upload source. Unsolicited transfer offers and forward-add streams are rejected. `--download-dir` is a default, not consent.
+Receiving a request saves only bounded metadata. It does not open a requested listener or read/write a user-selected transfer file. Requests cannot encode a local shell command or choose an upload source. Unsolicited transfer offers and forward-add streams are rejected. Reverse connection streams require an active, exact local grant; mismatched ports or target addresses are rejected before dialing. `--download-dir` is a default, not consent.
 
 For a single upload, submitting the local source path after reviewing the target and destination is explicit approval. Other requests require `yes`. Completion only browses the local filesystem in this approval process; selecting a completion candidate does not submit the operation.
 
@@ -89,12 +91,14 @@ OpenSSH owns passwords, keys, agents, MFA and host-key checks. No separate appro
 | Operation changed after approval | A local snapshot fixes direction, paths, name/size and port. Changed file metadata is rejected; same-size content changes remain possible. |
 | Excess data or replay | Framing and buffers are bounded; received bytes cannot exceed approved size. Approval records are single-use. |
 | Request flooding | Request/record limits bound saved metadata; the first accepted request detaches. Repeated disruption across reconnects remains possible. |
-| Unwanted local listener or remote reachability | Approved dynamic forwards bind only IPv4 `127.0.0.1`, fail on occupied ports and close with the connection. The approved remote target may be any host the SSH server can reach, so review target addresses carefully. Loopback is not per-user isolation. |
+| Unwanted listener or access to a local service | Approved session forwards bind IPv4 `127.0.0.1` on the selected end and connect to loopback on the other. Current-shell `from`/`to` operands are resolved into fixed client/server identities before saving approval. Reverse connections dial only the stored, approved local target; a server cannot substitute another destination. Occupied ports fail without substitution. Loopback is not per-user isolation. |
 | Terminal control injection in local messages | Displayed paths and errors are sanitized. The remote terminal byte stream itself remains unfiltered and untrusted. |
 
 Transfers check size and SHA-256, which verifies integrity rather than provenance or safety. Downloaded content and forwarded services may be malicious. Avoid destinations that automatically load new scripts or configuration; an approved large file can still fill the disk. Only regular files are supported; metadata is not copied. Linux received files default to `0600`; Windows files inherit the destination directory ACL.
 
 Cancellation removes incomplete files when cleanup can run. Forced termination may leave `.sshore-*.part` files; batch failure does not undo completed files. During approved operations and `--stay`, remote terminal output is suppressed. Detach/disconnection cancels connection-owned transfers and dynamic forwards. Only explicit detach preserves the remote session (including approval-request detach and completed file operations with `--stay`). Other transport loss closes the PTY and ends the daemon when detected. This uses normal terminal hangup semantics, not process-tree extermination: programs that ignore hangup or deliberately escape the terminal may survive, as with SSH. It does not promise cleanup of arbitrary reparented tasks.
+
+Standalone local `forward HOST A from/to B` runs foreground system SSH, requests loopback binding and exits on listener setup failure; server GatewayPorts policy can override a reverse listener binding. It does not create a remote session or enter remote-request approval.
 
 Native SSH `-L`, `-R`, `-D`, agent forwarding and other configuration are explicit local policy, outside remote-request approval. They are reused on reconnect; `-R` can expose a local service to the remote host. Do not bypass host-key checks.
 
