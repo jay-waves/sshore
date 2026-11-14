@@ -249,16 +249,16 @@ LogLevel ERROR
                 term.wait()
                 return request_id
 
-            def approve(request_id, paths=(), stay=False, passphrase=None):
+            def approve(request_id, paths=(), stay=False, passphrase=None, port=None):
                 approval = Terminal([binary, "review", request_id] + (["--stay"] if stay else []), wait_ready=False)
                 terms.append(approval)
                 approval.expect("Review ")
                 for kind, path in paths:
                     approval.expect("Save as" if kind == "download" else "Local file to upload")
                     approval.send(str(path) + "\n")
-                if len(paths) != 1 or paths[0][0] != "upload":
-                    approval.expect("Type yes to approve:")
-                    approval.send("yes\n")
+                if port is not None:
+                    approval.expect("Local listening port")
+                    approval.send(str(port) + "\n")
                 if passphrase:
                     approval.expect("Enter passphrase")
                     approval.send(passphrase + "\n")
@@ -268,7 +268,7 @@ LogLevel ERROR
             remote = root / "remote.bin"
             remote.write_bytes(data)
             downloaded = root / "downloaded.bin"
-            request_id = queue_request(term, f"sshore download {shlex.quote(str(remote))}")
+            request_id = queue_request(term, f"sshore cp {shlex.quote(str(remote))} origin:")
             assert not downloaded.exists(), "download occurred before approval"
             listed = subprocess.check_output([binary, "list"], text=True)
             assert request_id in listed
@@ -285,7 +285,7 @@ LogLevel ERROR
             local.write_bytes(data[::-1])
             uploads = root / "uploads"
             uploads.mkdir()
-            request_id = queue_request(term, f"sshore upload {shlex.quote(str(uploads))}")
+            request_id = queue_request(term, f"sshore cp : {shlex.quote(str(uploads))}")
             assert not (uploads / local.name).exists()
             approved = approve(request_id, [("upload", local)], stay=True)
             approved.expect("Upload complete")
@@ -297,7 +297,7 @@ LogLevel ERROR
             terms.append(term)
             term.send("printf 'STAY_PID:%s\\n' $$\n")
             term.expect(f"STAY_PID:{shell_pid}")
-            request_id = queue_request(term, f"sshore download {shlex.quote(str(remote))}")
+            request_id = queue_request(term, f"sshore cp {shlex.quote(str(remote))} origin:")
             subprocess.run([binary, "cancel", "approval/" + request_id], check=True)
             assert request_id not in subprocess.check_output([binary, "list"], text=True)
 
@@ -342,7 +342,7 @@ LogLevel ERROR
                 path = root / f"batch-{index}.bin"
                 path.write_bytes(bytes([index]) * (index * 100))
                 batch.append(path)
-            request_id = queue_request(term, "sshore download " + " ".join(shlex.quote(str(p)) for p in batch))
+            request_id = queue_request(term, "sshore cp " + " ".join(shlex.quote(str(p)) for p in batch) + " :")
             assert list(automatic.iterdir()) == []
             term = approve(request_id, [("download", "")] * len(batch))
             term.expect(r"\[sshore\] Connected")
@@ -354,7 +354,7 @@ LogLevel ERROR
             term.expect("1d")
 
             # Local overwrite is rejected before connecting or consuming approval.
-            request_id = queue_request(term, f"sshore download {shlex.quote(str(batch[0]))}")
+            request_id = queue_request(term, f"sshore cp {shlex.quote(str(batch[0]))} :")
             rejected = Terminal([binary, "review", request_id], wait_ready=False)
             terms.append(rejected)
             rejected.expect("Save as")
@@ -370,10 +370,10 @@ LogLevel ERROR
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", 0))
                 forward_port = probe.getsockname()[1]
-            request_id = queue_request(term, f"sshore forward from {forward_port}")
+            request_id = queue_request(term, f"sshore forward origin: {forward_port}")
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", forward_port))
-            tunnel = approve(request_id)
+            tunnel = approve(request_id, port=forward_port)
             resource_id = tunnel.expect(r"Started (forward/[^: \r\n]+):").group(1).decode()
             tunnel.wait()
             try:
@@ -404,7 +404,7 @@ LogLevel ERROR
             term.expect("Enter passphrase")
             term.send("sshore-test-passphrase\n")
             term.expect(r"\[sshore\] Connected")
-            request_id = queue_request(term, f"sshore download {shlex.quote(str(remote))}")
+            request_id = queue_request(term, f"sshore cp {shlex.quote(str(remote))} origin:")
             term = approve(request_id, [("download", root / "after-auth.bin")], passphrase="sshore-test-passphrase")
             term.expect("Saved .*after-auth.bin")
             term.expect(r"\[sshore\] Connected")

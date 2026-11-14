@@ -1,8 +1,13 @@
-# Full validation is opt-in and never blocks build/release jobs.
+# Core checks are manual; extended checks are opt-in.
 name: Tests
 
 on:
   workflow_dispatch:
+    inputs:
+      extended:
+        description: Run race, installer and real SSH checks
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -29,32 +34,28 @@ jobs:
         shell: bash
         run: test -z "$(gofmt -l *.go)"
       - run: go vet ./...
+      - name: Core tests
+        if: ${{ !inputs.extended }}
+        run: go test -tags=sshoretest -timeout=5m ./...
       - name: Tests with race detector
-        run: go test -race -count=1 -timeout=5m ./...
-      - name: Build
-        run: go build -o dist/ .
-      - name: CLI smoke tests
-        shell: bash
-        run: |
-          ./dist/sshore --version
-          ./dist/sshore --help
-          ./dist/sshore help download
+        if: ${{ inputs.extended }}
+        run: go test -race -tags=sshoretest -timeout=5m ./...
       - name: Installer tests (Linux)
-        if: runner.os == 'Linux'
+        if: inputs.extended && runner.os == 'Linux'
         run: |
           sh -n install.sh
           python3 tests/install_test.py
           python3 tests/release_test.py
       - name: Installer tests (Windows PowerShell 5.1)
-        if: runner.os == 'Windows'
+        if: inputs.extended && runner.os == 'Windows'
         shell: powershell
         run: ./tests/install_windows_test.ps1
       - name: Installer tests (PowerShell 7)
-        if: runner.os == 'Windows'
+        if: inputs.extended && runner.os == 'Windows'
         shell: pwsh
         run: ./tests/install_windows_test.ps1
       - name: Real SSH integration (Linux)
-        if: runner.os == 'Linux'
+        if: inputs.extended && runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y openssh-server

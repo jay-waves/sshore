@@ -49,3 +49,23 @@ func TestDisplayBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectedPort(t *testing.T) {
+	for _, tc := range []struct {
+		answers []string
+		hint    string
+		want    int
+	}{
+		{[]string{"", "0", "65536", "8080"}, "", 8080},
+		{[]string{""}, "3000", 3000},
+		{[]string{"8080"}, "3000", 8080},
+	} {
+		port, err := readSelectedPort(&stubSetupInput{answers: tc.answers}, "Local port", tc.hint, "cancelled")
+		if err != nil || port != tc.want {
+			t.Fatal(port, err)
+		}
+	}
+	if _, err := readSelectedPort(&stubSetupInput{}, "Local port", "3000", "cancelled"); err == nil || !strings.Contains(err.Error(), "cancelled") {
+		t.Fatal("EOF accepted a suggestion", err)
+	}
+}

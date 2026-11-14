@@ -208,14 +208,5 @@ func writeSessionName(path, name string) error {
 	if err := validSession(name); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".session-name-")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	_, writeErr := f.WriteString(name)
-	if err := errors.Join(writeErr, f.Close()); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path+".name")
+	return writeStateFile(path+".name", []byte(name))
 }

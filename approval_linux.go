@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/pkg/sftp"
 	"github.com/xtaci/smux"
 )
 
@@ -37,14 +38,14 @@ func requestOperations(ops []operation) error {
 	logf(os.Stderr, logInfo, "[sshore] Request queued locally. After detach, run sshore review from your local shell.\n")
 	return nil
 }
-func requestFiles(kind string, paths []string) error {
+func requestFilesWithHint(kind string, paths []string, hint string) error {
 	var ops []operation
 	for _, path := range paths {
 		absolute, err := filepath.Abs(path)
 		if err != nil {
 			return err
 		}
-		op := operation{Kind: kind, Path: absolute}
+		op := operation{Kind: kind, Path: absolute, LocalHint: hint}
 		if kind == "download" {
 			f, err := openSending(absolute)
 			if err != nil {
@@ -118,29 +119,49 @@ func approvedRemoteTransfer(st *smux.Stream, m message) {
 		return
 	}
 	op := m.Operations[0]
-	_ = st.SetDeadline(time.Time{})
-	var id uint64
+	backend := &transferFS{size: op.Size}
 	var err error
 	switch op.Kind {
 	case "download":
-		f, e := openSending(op.Path)
-		if e != nil {
-			err = e
-			break
-		}
-		if f.name != op.Name || f.size != op.Size {
+		var f *sendingFile
+		f, err = openSending(op.Path)
+		if err == nil {
+			if f.name != op.Name || f.size != op.Size {
+				err = fmt.Errorf("remote file metadata changed; request again")
+			}
 			f.close()
-			err = fmt.Errorf("remote file metadata changed; request again")
-			break
 		}
-		err = sendFile(st, f, &id)
-		f.close()
+		backend.source = op.Path
 	case "upload":
-		err = helperUpload(st, op.Path, &id)
+		err = safeName(m.Name)
+		if m.Size < 0 {
+			err = fmt.Errorf("invalid upload size")
+		}
+		if err == nil {
+			var info os.FileInfo
+			info, err = os.Stat(op.Path)
+			if err == nil && !info.IsDir() {
+				err = fmt.Errorf("upload destination must be a directory")
+			}
+		}
+		backend.target, backend.size = filepath.Join(op.Path, m.Name), m.Size
 	default:
 		err = fmt.Errorf("invalid transfer kind")
 	}
 	if err != nil {
-		_ = writeMessage(st, message{Type: "error", ID: id, Error: err.Error()})
+		_ = writeMessage(st, message{Type: "error", Error: err.Error()})
+		return
 	}
+	if writeMessage(st, message{Type: "sftp"}) != nil {
+		return
+	}
+	_ = st.SetDeadline(time.Time{})
+	server := sftp.NewRequestServer(st, sftp.Handlers{FileGet: backend, FilePut: backend, FileCmd: backend, FileList: backend})
+	defer func() {
+		server.Close()
+		if backend.upload != nil {
+			backend.upload.close()
+		}
+	}()
+	_ = server.Serve()
 }

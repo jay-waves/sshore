@@ -18,9 +18,10 @@ session's connection or smux streams.
 | Connection and setup | `client.go`, `remote_bootstrap.go`: OpenSSH launch, remote preparation, attachment and recovery |
 | Session | `server_linux.go`, `session_*.go`: daemon, PTY lifecycle, names, selection, process snapshots and termination |
 | Wire protocol | `mux.go`, `protocol.go`: control, terminal and file streams over smux within SSH |
-| Approval and transfer | `approval*.go`, `files.go`, `client_files.go`: pending metadata, local consent, reconnect checks, file operations and progress |
+| Direct copy | `copy_command.go`: local cp parsing, batch preflight and independent SFTP transport |
+| Approval and transfer | `approval*.go`, `files.go`, `transfer_sftp.go`: pending metadata, local consent, reconnect checks, file operations and progress |
 | Independent resources | `resource_session.go`, `resource_status.go`, `resources.go`: worker startup, private records, control and exit receipts |
-| Forward | `forward*.go`: shell-relative operands, fixed endpoint mapping and independent SSH transport |
+| Forward | `endpoints.go` and `forward*.go`: listener/service operands, fixed endpoint mapping and independent SSH transport |
 | Mount | `ftp*.go`, `sftp_timeout.go`: SFTP adapter, FUSE/WinFsp, mount options and request deadlines |
 | Inventory | `inventory*.go`, `remote_tasks.go`: public status views and advisory peer records |
 | Distribution | `install.sh`, `install.ps1`, `scripts/package.py`, `scripts/release.sh`, `.github/workflows/`: installation, packaging, CI and releases |
@@ -66,15 +67,37 @@ limits and buffer sizes are defined in `protocol.go` and `mux.go`.
 
 A remote helper submits bounded operation metadata. The connected client saves a
 local pending record and detaches. A separate local `review` invocation selects
-and consumes that record, collects consent, reconnects and checks the original
+the record, collects consent, consumes it, reconnects and checks the original
 session before executing. Setup updates or recovery skip approved operations.
 The authorization rules belong in [Local approval](SECURITY.md#local-approval).
 
-File batches run sequentially and stop at the first failure. Transfers use a
-custom framed protocol, size/hash verification and temporary files published
-without overwriting. Completed batch files remain. Progress reports batch position,
-smoothed speed and ETA; failure output distinguishes completed, failed and
-unstarted operations. Cleanup after interruption is best effort.
+File batches run sequentially and stop at the first failure. Both direct and
+approved copies use the same SFTP upload/download implementation in `files.go`.
+Uploads create private temporary files, verify stored bytes by SHA-256 readback,
+and publish with a no-overwrite hard link. Downloads check the exact source size
+and sync a local temporary file before publication. Authenticated SSH provides
+transport integrity; neither mechanism authenticates file provenance.
+
+Direct cp opens a system OpenSSH SFTP subsystem without installing sshore,
+creating a session or mounting a filesystem. It preflights the whole batch. A bare
+`-` selects the invoking process's stdin/stdout for one direct remote copy.
+Stdin is streamed into the remote temporary file while counting and hashing
+bytes; EOF determines the size used for readback verification and publication.
+It is not spooled locally. Stdout writes directly and may contain partial data
+on failure. Streams cannot participate in remote approval requests because
+those detach and resume in another process.
+Approved copies instead open a client-initiated smux stream on the revalidated
+session. A bounded metadata handshake selects one file, then switches to SFTP.
+The embedded request handler exposes only virtual `/source` or `/target` and
+one upload temporary file; it cannot list directories or access other paths.
+Before linking an approved upload, the server checks its size and syncs it.
+Stream termination closes handles and removes its temporary file.
+
+Progress reports batch position, smoothed speed and ETA. Completed files remain
+when later operations fail. Cancellation closes only the transfer stream (or
+the direct copy's SSH pipes); cleanup is best effort after process termination.
+The client releases terminal input before SSH authentication and retains the
+existing resume/`--stay` behavior after approved copies.
 
 ## Independent workers
 
@@ -83,10 +106,33 @@ The launcher handles authentication through a temporary askpass broker until
 startup acknowledgement. Losing the launcher before acknowledgement cancels
 startup. Per-name locks prevent duplicate workers; authenticated loopback control
 performs status and cancellation without signaling a PID read from disk.
+Resource records, peer snapshots, session names and exit receipts share private
+temporary-file writes: sync and close before replacing metadata. File transfers
+retain no-overwrite publication; approvals retain exclusive creation and consumption.
 
-Forward operands are interpreted from the invoking shell's perspective, then
-converted into fixed listener/destination identities. A remote request requires
-review; after validation the source shell is explicitly detached and the worker
+The public transfer commands are `cp SOURCE... TARGET` and
+`forward LISTENER SERVICE`. `origin:` and `:` denote the client's endpoint;
+`origin:PATH` and `origin:PORT` can fill it explicitly. Local direct commands use
+`HOST:PATH` or `HOST:PORT` for the remote side. Remote helpers use the current
+server context and never initiate another SSH connection.
+
+Forward requests always store the listener in `port` and service in `target_port`.
+Reverse means the server listens. The client port stays zero until review, even
+when `local_hint` suggests a port; a suggestion never authorizes execution.
+Review fills that missing port and clears the hint.
+Unresolved requests cannot execute. File requests likewise retain an optional
+local path hint; review validates the selected path and clears the hint before
+execution. Relative local suggestions are resolved in the review process's
+working directory, with home expansion supported. Internal upload/download
+operation kinds and forward/NAME resource IDs remain; the public upload/download
+and publish/subscribe commands are removed.
+
+Submitting all validated local paths or a valid local port grants consent;
+there is no separate yes prompt. Enter accepts a displayed suggestion.
+An empty port without a suggestion retries. File batches collect every path
+before any transfer starts and reject duplicate destinations. Cancellation
+during collection leaves the request pending.
+After validation the source shell is explicitly detached and the worker
 runs independently. Local forwards may opt into at most ten retries after an
 established connection fails. Retry backoff is bounded; authentication is
 noninteractive, host keys must already be trusted, and TCP connections are not
@@ -141,14 +187,17 @@ make checks pass. Build a development binary with:
 go build -o dist/sshore .
 ```
 
-Choose checks proportional to the change. The full Go checks are:
+For routine changes, run the relevant tests with `-run`; use the core suite
+when changes span components:
 
 ```sh
-go vet ./...
-go test -race -count=1 -timeout=5m ./...
+go test -tags=sshoretest -timeout=5m ./...
 ```
 
-Real SSH lifecycle tests must use an isolated tagged executable:
+Use `go vet ./...` for structural changes and add `-race` for concurrency changes.
+Run installer checks only when installation or packaging changes. Real SSH
+lifecycle tests are needed for transport/setup changes and must use an isolated
+tagged executable:
 
 ```sh
 go build -tags=sshoretest -o dist/sshore-e2e .
@@ -158,8 +207,10 @@ python3 tests/ssh_e2e.py --binary dist/sshore-e2e
 Never run simulated upgrade confirmation against the developer's real sessions.
 Release binaries must not use `sshoretest`. Native mount tests are opt-in and
 require the platform mount environment; cross-compilation does not validate it.
-The manually triggered Tests workflow includes Linux/Windows Go checks, installer
-checks and Linux SSH integration; it is separate from release CI.
+The manually triggered Tests workflow runs core Go checks on Linux/Windows.
+Its `extended` option adds race detection, installer checks and Linux SSH
+integration. Build validation remains in release CI; do not repeat full checks
+after a successful run unless further changes warrant it.
 
 `experiments/vt10x` is an isolated module probing a possible terminal observer.
 Its compatibility failures represent unmet requirements, not product regressions;

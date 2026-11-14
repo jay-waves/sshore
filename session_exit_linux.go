@@ -69,17 +69,7 @@ func saveSessionExit(socket, name, reason string) {
 		return
 	}
 	defer gate.Close()
-	f, err := os.CreateTemp(dir, ".exit-*")
-	if err != nil {
-		return
-	}
-	defer os.Remove(f.Name())
-	err = json.NewEncoder(f).Encode(sessionExit{Name: name, Reason: reason, At: time.Now().UTC()})
-	closeErr := f.Close()
-	if err != nil || closeErr != nil {
-		return
-	}
-	if os.Rename(f.Name(), socket+".exit.json") != nil {
+	if writeStateJSON(socket+".exit.json", sessionExit{Name: name, Reason: reason, At: time.Now().UTC()}) != nil {
 		return
 	}
 	pruneSessionExits(dir)

@@ -2,7 +2,7 @@ package main
 
 // Path fields reuse readline editing/completion and retry only local validation.
 // No files are created, requests consumed or connections opened here. Blank input
-// uses an explicit download default; uploads never acquire an implicit source.
+// uses only a displayed default; remote hints still require local submission.
 // Control-C/EOF return to the caller with the approval still pending. Transfer
 // code independently rechecks paths at execution time (this is only UI feedback).
 
@@ -17,10 +17,18 @@ type promptReader interface {
 }
 
 func readApprovalPath(input promptReader, prompt, defaultPath string, validate func(string) (string, error)) (string, error) {
+	return readSelectedPath(input, prompt, defaultPath, validate, "approval cancelled; request remains pending")
+}
+
+func readCopyPath(input promptReader, prompt, defaultPath string, validate func(string) (string, error)) (string, error) {
+	return readSelectedPath(input, prompt, defaultPath, validate, "copy cancelled")
+}
+
+func readSelectedPath(input promptReader, prompt, defaultPath string, validate func(string) (string, error), cancellation string) (string, error) {
 	for {
 		line, err := input.Read(prompt, true)
 		if err != nil {
-			return "", fmt.Errorf("approval cancelled; request remains pending: %w", err)
+			return "", fmt.Errorf("%s: %w", cancellation, err)
 		}
 		path := defaultPath
 		if line != "" || path == "" {
@@ -68,4 +76,24 @@ func displayBytes(size int64) string {
 		}
 	}
 	return fmt.Sprintf("%d B", size)
+}
+
+func readSelectedPort(input promptReader, label, hint, cancellation string) (int, error) {
+	if hint != "" {
+		label += " [" + hint + "]"
+	}
+	for {
+		value, err := input.Read(label+" (Enter starts; Ctrl-C cancels): ", false)
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", cancellation, err)
+		}
+		if value == "" {
+			value = hint
+		}
+		port, err := parsePort(value)
+		if err == nil {
+			return port, nil
+		}
+		logf(os.Stdout, logWarning, "%s\n", err)
+	}
 }

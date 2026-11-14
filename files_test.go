@@ -2,10 +2,9 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -32,20 +31,11 @@ func TestFileRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer r.close()
-			for {
-				m, err := s.next(1)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if m.Type == "end" {
-					if err = r.finish(m.Hash); err != nil {
-						t.Fatal(err)
-					}
-					break
-				}
-				if err = r.put(m.Data); err != nil {
-					t.Fatal(err)
-				}
+			if err = copyExactSize(r, s.file, s.size); err != nil {
+				t.Fatal(err)
+			}
+			if err = r.publish(); err != nil {
+				t.Fatal(err)
 			}
 			got, err := os.ReadFile(dst)
 			if err != nil || !bytes.Equal(got, data) {
@@ -66,9 +56,9 @@ func TestFileFailureAndNoClobber(t *testing.T) {
 	}
 	r.close()
 	r, _ = newReceiving(dst, 2)
-	_ = r.put([]byte("ok"))
-	if r.finish("bad") == nil {
-		t.Fatal("accepted wrong digest")
+	_ = r.put([]byte("o"))
+	if r.publish() == nil {
+		t.Fatal("accepted incomplete file")
 	}
 	if _, err = os.Stat(dst); !os.IsNotExist(err) {
 		t.Fatal("published corrupt file")
@@ -77,8 +67,7 @@ func TestFileFailureAndNoClobber(t *testing.T) {
 	if err = os.WriteFile(dst, []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	sum := sha256.Sum256(nil)
-	if r.finish(hex.EncodeToString(sum[:])) == nil {
+	if r.publish() == nil {
 		t.Fatal("overwrote race-created file")
 	}
 	got, _ := os.ReadFile(dst)
@@ -95,6 +84,26 @@ func TestFileFailureAndNoClobber(t *testing.T) {
 	for _, name := range []string{"../x", "a/b", `a\b`, "CON", "LPT1.txt", "a:b", "a\n", "..", "file."} {
 		if safeName(name) == nil {
 			t.Fatal("unsafe filename", name)
+		}
+	}
+}
+
+func TestCopyExactSize(t *testing.T) {
+	for _, tc := range []struct {
+		data  string
+		size  int64
+		valid bool
+	}{
+		{"", 0, true}, {"abc", 3, true}, {"abc", 2, false}, {"abc", 4, false}, {"", 1, false},
+		{"", -1, false}, {"abc", 1<<63 - 1, false},
+	} {
+		var out bytes.Buffer
+		err := copyExactSize(&out, strings.NewReader(tc.data), tc.size)
+		if (err == nil) != tc.valid {
+			t.Fatalf("%+v: %v", tc, err)
+		}
+		if tc.valid && out.String() != tc.data {
+			t.Fatal(out.String())
 		}
 	}
 }

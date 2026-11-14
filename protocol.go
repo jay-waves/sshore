@@ -1,9 +1,7 @@
 package main
 
-// The custom wire protocol frames control metadata and raw terminal/file data
-// within logical streams. It is not compatible with SFTP or trzsz. File chunks
-// are limited to 64 KiB; framing allows metadata overhead and rejects oversized
-// messages before allocating their bodies.
+// Control metadata and terminal bytes use bounded frames. Approved file
+// streams switch to SFTP after their metadata handshake.
 
 import (
 	"encoding/binary"
@@ -20,10 +18,9 @@ const (
 	control byte = iota
 	input
 	output
-	chunk
 )
 
-// Control metadata uses JSON. Terminal and file bytes never undergo text encoding.
+// Control metadata uses JSON; terminal bytes remain binary.
 type message struct {
 	PeerTask        *remoteTask    `json:"peer_task,omitempty"`
 	ApprovalID      string         `json:"approval_id,omitempty"`
@@ -34,12 +31,7 @@ type message struct {
 	SoftwareVersion string         `json:"software_version,omitempty"`
 	Operations      []operation    `json:"operations,omitempty"`
 	Action          string         `json:"action,omitempty"`
-	Port            int            `json:"port,omitempty"`
-	Reverse         bool           `json:"reverse,omitempty"`
-	RemoteHost      string         `json:"remote_host,omitempty"`
-	RemotePort      int            `json:"remote_port,omitempty"`
 	Type            string         `json:"type"`
-	ID              uint64         `json:"id,omitempty"`
 	Cols            uint16         `json:"cols,omitempty"`
 	Rows            uint16         `json:"rows,omitempty"`
 	Term            string         `json:"term,omitempty"`
@@ -48,7 +40,6 @@ type message struct {
 	Attached        bool           `json:"attached,omitempty"`
 	Name            string         `json:"name,omitempty"`
 	Size            int64          `json:"size,omitempty"`
-	Hash            string         `json:"hash,omitempty"`
 	Error           string         `json:"error,omitempty"`
 	Code            int            `json:"code,omitempty"`
 	Data            []byte         `json:"-"`
@@ -75,11 +66,6 @@ func writeMessage(w io.Writer, m message) error {
 		kind, body = input, m.Data
 	case "output":
 		kind, body = output, m.Data
-	case "chunk":
-		kind = chunk
-		body = make([]byte, 8+len(m.Data))
-		binary.BigEndian.PutUint64(body, m.ID)
-		copy(body[8:], m.Data)
 	default:
 		var err error
 		body, err = json.Marshal(m)
@@ -105,7 +91,7 @@ func readMessage(r io.Reader) (message, error) {
 		return m, err
 	}
 	n := binary.BigEndian.Uint32(header[1:])
-	if n > maxFrame || header[0] > chunk {
+	if n > maxFrame || header[0] > output {
 		return m, fmt.Errorf("invalid frame header")
 	}
 	body := make([]byte, n)
@@ -117,11 +103,6 @@ func readMessage(r io.Reader) (message, error) {
 		m.Type, m.Data = "input", body
 	case output:
 		m.Type, m.Data = "output", body
-	case chunk:
-		if len(body) < 8 {
-			return m, fmt.Errorf("short file frame")
-		}
-		m.Type, m.ID, m.Data = "chunk", binary.BigEndian.Uint64(body), body[8:]
 	default:
 		if err := json.Unmarshal(body, &m); err != nil {
 			return m, err
@@ -131,4 +112,11 @@ func readMessage(r io.Reader) (message, error) {
 		}
 	}
 	return m, nil
+}
+
+func fileResponseError(m message) error {
+	if m.Error != "" {
+		return fmt.Errorf("%s", m.Error)
+	}
+	return fmt.Errorf("transfer cancelled or unexpected response: %s", m.Type)
 }

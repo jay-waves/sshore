@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 )
@@ -33,7 +32,7 @@ func validateForwardConfig(f forwardConfig) error {
 	if e := validSession(f.Name); e != nil {
 		return e
 	}
-	if _, e := parseFTPOptions([]string{f.Host}); e != nil {
+	if e := validSSHDestination(f.Host); e != nil {
 		return e
 	}
 	if f.Port < 1 || f.Port > 65535 || f.Target < 1 || f.Target > 65535 {
@@ -42,9 +41,9 @@ func validateForwardConfig(f forwardConfig) error {
 	return nil
 }
 func defaultForwardName(f forwardConfig) string {
-	direction := "to"
+	direction := "local"
 	if f.Reverse {
-		direction = "from"
+		direction = "remote"
 	}
 	host := ftpDefaultName(f.Host)
 	if len(host) > 24 {
@@ -63,16 +62,6 @@ func startForwardSession(f forwardConfig) (int, error) {
 }
 
 const forwardReadyMarker = "sshore-forward-ready"
-
-func backgroundForwardArgs(f forwardConfig) []string {
-	flag := "-L"
-	if f.Reverse {
-		flag = "-R"
-	}
-	args := []string{"-T", "-o", "ExitOnForwardFailure=yes", "-o", "ClearAllForwardings=no", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "-o", "ForkAfterAuthentication=no", "-o", "SessionType=default", "-o", "RemoteCommand=none", "-o", "RequestTTY=no", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"}
-	args = append(args, forwardSSHOptions(f.SSH)...)
-	return append(args, flag, "127.0.0.1:"+strconv.Itoa(f.Port)+":127.0.0.1:"+strconv.Itoa(f.Target), "--", f.Host, forwardWatchCommand(f.Server))
-}
 
 // Reconnect only an already-established, explicitly opted-in local forward.
 // Each retry owns a new transport; application TCP connections are not resumed.
@@ -123,11 +112,8 @@ func forwardRetryDelay(attempt int) time.Duration {
 func runForwardAttempt(parent context.Context, f forwardConfig, s *resourceService, initial bool) (int, error) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	exe := os.Getenv("SSHORE_SSH")
-	if exe == "" {
-		exe = "ssh"
-	}
-	args := backgroundForwardArgs(f)
+	exe := sshExecutable()
+	args := forwardSSHArgs(f, true)
 	if !initial {
 		args = append([]string{"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=15", "-o", "ConnectionAttempts=1"}, args...)
 	}
@@ -171,7 +157,7 @@ func runForwardAttempt(parent context.Context, f forwardConfig, s *resourceServi
 	if marker != forwardReadyMarker+"\n" {
 		return 1, fmt.Errorf("unexpected forward startup response: %q", cleanText(marker))
 	}
-	s.record.Detail = describeForward(f.Port, "127.0.0.1", f.Target, f.Reverse)
+	s.record.Detail = describeForward(f.Port, f.Target, f.Reverse)
 	if initial {
 		if e = s.ready("", ""); e != nil {
 			return 1, e

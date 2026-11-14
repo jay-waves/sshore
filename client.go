@@ -76,10 +76,7 @@ type clientEvent struct {
 func sshCommand(o options) *exec.Cmd {
 	remote := remoteCommand(o)
 
-	exe := os.Getenv("SSHORE_SSH")
-	if exe == "" {
-		exe = "ssh"
-	}
+	exe := sshExecutable()
 	// Own this transport: never reuse or leave behind a shared OpenSSH master.
 	args := []string{"-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no"}
 	args = append(args, o.ssh...)
@@ -101,6 +98,11 @@ func acceptSessionName(o *options, name string) error {
 }
 
 func runClient(o options) (int, error) {
+	for _, op := range o.approved {
+		if op.localPortPending() {
+			return 2, usage("choose a local port in review before execution")
+		}
+	}
 	cmd := sshCommand(o)
 	cmd.Stderr = os.Stderr
 	if o.list || o.command == "cancel" || o.command == "rename" {
@@ -210,13 +212,12 @@ func runClient(o options) (int, error) {
 	// approved tunnel gets its own transport; neither lifetime owns the other.
 	if len(o.approved) == 1 && o.approved[0].Kind == "forward" {
 		op := o.approved[0]
-		spec := normalizeForward(op.Port, op.RemoteHost, op.RemotePort)
 		if err = detachControl(control); err != nil {
 			return 1, err
 		}
 		_ = mux.Close()
 		closeSSH()
-		return startForwardSession(forwardConfig{Host: o.host, Port: spec.Port, Target: spec.RemotePort, Reverse: op.Reverse, SSH: o.ssh, Server: o.server})
+		return startForwardSession(forwardConfig{Host: o.host, Port: op.Port, Target: op.TargetPort, Reverse: op.Reverse, SSH: o.ssh, Server: o.server})
 	}
 	if len(o.approved) > 0 {
 		opCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

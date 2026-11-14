@@ -52,24 +52,11 @@ func resourceToken() string {
 	}
 	return hex.EncodeToString(b[:])
 }
-func ftpStateDir() (string, error) { return resourceStateDir("mount") }
 func resourceStateDir(kind string) (string, error) {
 	if kind != "mount" && kind != "forward" {
 		return "", fmt.Errorf("unknown resource type")
 	}
-	folder := "mounts"
-	if kind == "forward" {
-		folder = "forwards"
-	}
-	d, e := approvalDir()
-	if e != nil {
-		return "", e
-	}
-	d = filepath.Join(filepath.Dir(d), folder)
-	if e = os.MkdirAll(d, 0700); e != nil {
-		return "", e
-	}
-	return d, privateState(d, true)
+	return stateDir(kind + "s")
 }
 func resourceHTTP(address, token, method, route string, body io.Reader) (*http.Response, error) {
 	return resourceHTTPContext(context.Background(), address, token, method, route, body)
@@ -112,46 +99,17 @@ func resourceListen(token string, handler http.HandlerFunc) (net.Listener, *http
 }
 func (s *resourceService) sshEnvironment() []string {
 	exe, _ := os.Executable()
-	env := os.Environ()
-	for k, v := range map[string]string{"SSH_ASKPASS": exe, "SSH_ASKPASS_REQUIRE": "force", "DISPLAY": "sshore", "SSHORE_ASKPASS": "1", "SSHORE_ASKPASS_ADDR": s.config.AuthAddress, "SSHORE_ASKPASS_TOKEN": s.config.AuthToken} {
-		prefix := k + "="
-		filtered := env[:0]
-		for _, x := range env {
-			if !strings.HasPrefix(x, prefix) {
-				filtered = append(filtered, x)
-			}
-		}
-		env = append(filtered, prefix+v)
-	}
-	return env
+	// os/exec keeps the last value for duplicate environment keys.
+	return append(os.Environ(), "SSH_ASKPASS="+exe, "SSH_ASKPASS_REQUIRE=force", "DISPLAY=sshore", "SSHORE_ASKPASS=1", "SSHORE_ASKPASS_ADDR="+s.config.AuthAddress, "SSHORE_ASKPASS_TOKEN="+s.config.AuthToken)
 }
 func (s *resourceService) ready(root, mountpoint string) error {
 	s.setTransport("connected", nil)
 	s.record.Remote = root
 	s.record.Mountpoint = mountpoint
-	data, e := json.Marshal(s.record)
-	if e != nil {
+	if e := writeStateJSON(s.recordPath, s.record); e != nil {
 		return e
 	}
-	// Publish complete metadata atomically so list cannot observe partial JSON.
-	tmp, e := os.CreateTemp(filepath.Dir(s.recordPath), ".resource-*")
-	if e != nil {
-		return e
-	}
-	defer os.Remove(tmp.Name())
-	if _, e = tmp.Write(data); e != nil {
-		tmp.Close()
-		return e
-	}
-	if e = tmp.Close(); e != nil {
-		return e
-	}
-	if e = privateState(tmp.Name(), false); e != nil {
-		return e
-	}
-	if e = os.Rename(tmp.Name(), s.recordPath); e != nil {
-		return e
-	}
+	var e error
 	if e = json.NewEncoder(os.Stdout).Encode(s.record); e != nil {
 		return e
 	}
@@ -399,7 +357,6 @@ func runResourceAskpass(args []string) (int, error) {
 	fmt.Println(string(b))
 	return 0, nil
 }
-func readFTPRecord(name string) (resourceRecord, error) { return readResourceRecord("mount", name) }
 func readResourceRecord(kind, name string) (resourceRecord, error) {
 	var r resourceRecord
 	if e := validSession(name); e != nil {

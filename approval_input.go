@@ -20,6 +20,7 @@ import (
 	"unicode"
 
 	"github.com/chzyer/readline"
+	"golang.org/x/term"
 )
 
 // One editor owns stdin throughout approval; it is closed before reconnecting.
@@ -156,4 +157,15 @@ func completeLocalPath(line []rune, pos int) ([][]rune, int) {
 		candidates = append(candidates, []rune(suffix))
 	}
 	return candidates, len([]rune(base))
+}
+
+func newLocalInput() (*approvalInput, error) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+		return nil, usage("local selection requires an interactive terminal; specify the local endpoint")
+	}
+	resetTerminalInputModes()
+	if err := flushTerminalInput(); err != nil {
+		return nil, err
+	}
+	return newApprovalInput()
 }

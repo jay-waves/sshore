@@ -3,7 +3,7 @@
 [![CI](https://github.com/jay-waves/sshore/actions/workflows/ci.yml/badge.svg)](https://github.com/jay-waves/sshore/actions/workflows/ci.yml)
 
 SSH connections, SFTP mounts, detach and reattach (Mux), one-time file
-copies (SCP use case), and TCP tunnels in one CLI.
+copies, and TCP tunnels in one CLI.
 
 **Local:** Linux or Windows amd64/x86-64. **Remote:** Linux amd64/x86-64.
 Requires system OpenSSH. ARM and macOS are not supported.
@@ -39,8 +39,8 @@ sshore new work -- -i ~/.ssh/work
 ```
 
 Run `sshore --help` or `sshore COMMAND --help` for syntax, defaults and supported
-options. In `upload` and `download`, `--` instead introduces literal remote paths;
-for mount paths beginning with `-`, use `./` or an absolute path.
+options. For paths beginning with `-` or containing a literal colon, use `./`
+or an absolute path.
 
 ## SFTP — remote directories as local mounts
 
@@ -87,54 +87,68 @@ flowchart LR
     session -->|"Ctrl-] / detach"| detached["Programs keep running"]
     detached -->|"attach HOST NAME"| session
     session -->|"Exit / connection loss / cancel"| ended["Session ends"]
-    session -->|"Request files or a forward; detach"| pending["Local pending request"]
-    pending -->|"review and consent"| approved["Execute approved operation"]
+    session -->|"cp / forward: request, then detach"| pending["Local pending request"]
+    pending -->|"review: submit local paths or port"| approved["Execute approved operation"]
     approved -->|"Files: normally reconnect"| session
     approved -->|"Forward"| resource["Independent background resource"]
-    local["Local: mount / forward HOST"] --> resource
+    local["Local: mount / forward"] --> resource
+    copy["Local: cp SOURCE TARGET"] --> files["Independent SFTP copy"]
     resource -->|"cancel resource ID"| stopped["Resource ends; shells unaffected"]
 ```
 
-## SCP — one-time file copies
+## Copy — files through SSH
 
-SCP describes the file-copy use case here. Transfers use sshore's own protocol,
-not the SCP wire protocol or a drop-in `scp` command.
-
-For one-time transfers, request from the **remote sshore shell**:
+From your **local shell**, copy directly:
 
 ```sh
-sshore upload                   # Request a local file for this directory.
-sshore download ./report.zip
+sshore cp report.zip work:/tmp/
+sshore cp work:/tmp/report.zip ./downloads/
 ```
 
-The request detaches you. In your **local shell**:
+From your **remote sshore shell**, request a copy:
 
 ```sh
-sshore review                   # Review, choose local paths, transfer, reconnect.
-sshore review --stay            # Transfer and remain local.
-sshore cancel approval/ID       # Discard a pending request.
+sshore cp origin: .              # Choose a local source, copy it here.
+sshore cp report.zip :          # Choose a local destination.
+sshore cp report.zip origin:./downloads/
 ```
 
-A single upload is approved by submitting its local source path; other requests
-require `yes`. Requests expire after ten minutes. Transfers support regular files
-only, never overwrite destinations, and require a destination filesystem with
-hard links. Failed batches retain completed files. Tab completes local paths.
+Local copies support pipes: `sshore cp work:/tmp/report.txt - | less` reads a
+remote file; `generate-report | sshore cp - work:/tmp/report.txt` writes a new
+remote file. Output streams cannot be rolled back if a transfer fails.
+
+`origin:` and `:` refer to the attached client computer. A filled `origin:PATH`
+suggests a path for local review. Requests detach you; run `sshore review` locally,
+choose or accept paths, and submit to copy and reconnect. `review --stay` remains
+local. `cancel approval/ID` discards a request.
+
+Submitting all paths approves the batch; there is no extra `yes`. Ctrl-C during
+selection starts no transfer. Requests expire after ten minutes. Only regular
+files are supported, destinations are never overwritten, and destination
+filesystems must support hard links. Failed batches retain completed files.
 
 ## Tunnel — TCP port forwarding
 
-From your **local shell**:
+From your **local shell**, specify the listener and then the service:
 
 ```sh
-sshore forward work 8080 to 3000 --name web  # Local:8080 -> server:3000.
-sshore forward work 3000 from 8080           # Server:8080 -> local:3000.
+sshore forward origin:8080 work:3000 --name web
+sshore forward work:3000 origin:8080
 sshore cancel forward/web
 ```
 
-The first port belongs to the invoking shell's machine: `to` listens there;
-`from` listens on the other machine. Inside a remote sshore shell, omit `HOST`
-to request a forward for local review. Approved forwards run independently and
-leave the source shell detached. Listeners request IPv4 loopback; server SSH
-policy can override reverse binds.
+From your **remote sshore shell**:
+
+```sh
+sshore forward origin: 3000      # Choose a local listener for this server service.
+sshore forward 3000 :           # Choose a local service for this server listener.
+sshore forward 3000 origin:8080  # Suggest a local service port for review.
+```
+
+The request detaches you. Run `sshore review` locally, enter a port or accept
+the displayed suggestion to start forwarding. There is no extra `yes`.
+Ctrl-C cancels. The source shell stays detached. Listeners request IPv4 loopback;
+server SSH policy can override reverse binds.
 
 Forwards end on disconnect by default; local `--retries N` opts into bounded retries, which do not
 restore existing TCP connections. Resources do not restart after local shutdown.

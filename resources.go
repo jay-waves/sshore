@@ -39,29 +39,17 @@ func collectLocalResources(host string) ([]resourceRecord, error) {
 			}
 		}
 	}
-	{
-		dir, e := approvalDir()
-		if e != nil {
-			return nil, e
-		}
-		files, e := os.ReadDir(dir)
-		if e != nil {
-			return nil, e
-		}
-		for _, f := range files {
-			id := strings.TrimSuffix(f.Name(), ".json")
-			if !validApprovalID(id) {
-				continue
-			}
-			r, e := readApproval(dir, id)
-			if e != nil {
-				continue
-			}
-			if host != "" && r.Host != host {
-				continue
-			}
-			detail := r.Session + ": " + approvalSummary(r.Operations)
-			records = append(records, resourceRecord{Kind: "approval", Name: id, Host: r.Host, Detail: detail})
+	dir, e := approvalDir()
+	if e != nil {
+		return nil, e
+	}
+	pending, e := pendingApprovals(dir)
+	if e != nil {
+		return nil, e
+	}
+	for _, r := range pending {
+		if host == "" || r.Host == host {
+			records = append(records, resourceRecord{Kind: "approval", Name: r.ID, Host: r.Host, Detail: r.Session + ": " + approvalSummary(r.Operations)})
 		}
 	}
 	sort.Slice(records, func(i, j int) bool {

@@ -8,7 +8,7 @@ package main
 // Records expire after ten minutes, are capped at 32, and are consumed before SSH
 // reconnects. Each request contains at most 16 operations. Reconnection preserves
 // the original options and shell PID; failed execution needs a fresh request.
-// Single-upload source submission is consent; other requests require a final yes.
+// Submitting all requested local paths or the local port is consent.
 // The input reader is closed before SSH starts so authentication owns stdin.
 
 import (
@@ -22,8 +22,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"golang.org/x/term"
 )
 
 const approvalTTL = 10 * time.Minute
@@ -38,8 +36,8 @@ type operation struct {
 	Size       int64  `json:"size,omitempty"`
 	Port       int    `json:"port,omitempty"`
 	Reverse    bool   `json:"reverse,omitempty"`
-	RemoteHost string `json:"remote_host,omitempty"`
-	RemotePort int    `json:"remote_port,omitempty"`
+	TargetPort int    `json:"target_port,omitempty"`
+	LocalHint  string `json:"local_hint,omitempty"`
 	LocalPath  string `json:"-"`
 }
 
@@ -49,13 +47,16 @@ func validateOperations(ops []operation) error {
 	}
 	var total int64
 	for _, op := range ops {
+		if len(op.LocalHint) > 4096 || strings.ContainsAny(op.LocalHint, "\x00\r\n") {
+			return fmt.Errorf("invalid local endpoint hint")
+		}
 		switch op.Kind {
 		case "download", "upload":
 			// The remote server is Linux, even when the client is Windows.
 			if !strings.HasPrefix(op.Path, "/") || len(op.Path) > 4096 || strings.ContainsAny(op.Path, "\x00\r\n") {
 				return fmt.Errorf("invalid remote path")
 			}
-			if op.Port != 0 || op.Reverse {
+			if op.Port != 0 || op.TargetPort != 0 || op.Reverse {
 				return fmt.Errorf("unexpected port in file request")
 			}
 			if op.Kind == "download" {
@@ -70,7 +71,12 @@ func validateOperations(ops []operation) error {
 				return fmt.Errorf("unexpected upload metadata")
 			}
 		case "forward":
-			if len(ops) != 1 || op.Port < 1 || op.Port > 65535 || (op.RemotePort != 0 && (op.RemotePort < 1 || op.RemotePort > 65535)) || (op.RemoteHost != "" && op.RemoteHost != "127.0.0.1") || op.Path != "" || op.Name != "" || op.Size != 0 {
+			if op.LocalHint != "" {
+				if _, err := parsePort(op.LocalHint); err != nil {
+					return err
+				}
+			}
+			if len(ops) != 1 || op.Port < 0 || op.Port > 65535 || op.TargetPort < 0 || op.TargetPort > 65535 || op.serverPort() == 0 || op.Path != "" || op.Name != "" || op.Size != 0 {
 				return fmt.Errorf("invalid port request")
 			}
 		default:
@@ -91,35 +97,7 @@ type approvalRecord struct {
 	Operations                                    []operation
 }
 
-func approvalDir() (string, error) {
-	root := os.Getenv("SSHORE_STATE_DIR")
-	if root == "" {
-		var err error
-		root, err = os.UserConfigDir()
-		if err != nil {
-			return "", err
-		}
-		root = filepath.Join(root, "sshore")
-	}
-	root, err := filepath.Abs(root)
-	if err != nil {
-		return "", err
-	}
-	if err = os.MkdirAll(root, 0700); err != nil {
-		return "", err
-	}
-	if err = privateState(root, true); err != nil {
-		return "", err
-	}
-	dir := filepath.Join(root, "approvals")
-	if err = os.MkdirAll(dir, 0700); err != nil {
-		return "", err
-	}
-	if err = privateState(dir, true); err != nil {
-		return "", err
-	}
-	return dir, nil
-}
+func approvalDir() (string, error) { return stateDir("approvals") }
 
 func validApprovalID(id string) bool {
 	b, e := hex.DecodeString(id)
@@ -234,6 +212,24 @@ func readApproval(dir, id string) (approvalRecord, error) {
 	return r, validateOperations(r.Operations)
 }
 
+func pendingApprovals(dir string) ([]approvalRecord, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var records []approvalRecord
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		r, err := readApproval(dir, strings.TrimSuffix(entry.Name(), ".json"))
+		if err == nil {
+			records = append(records, r)
+		}
+	}
+	return records, nil
+}
+
 // Removing the record atomically claims it before any network or file operation.
 // Only one concurrent approver can succeed; failed executions cannot be replayed.
 func consumeApproval(dir, id string) error {
@@ -275,21 +271,13 @@ func runReview(args []string) (code int, resultErr error) {
 	}
 	var ids, labels []string
 	if a.id == "" {
-		entries, err := os.ReadDir(dir)
+		records, err := pendingApprovals(dir)
 		if err != nil {
 			return 1, err
 		}
-		for _, entry := range entries {
-			if !strings.HasSuffix(entry.Name(), ".json") {
-				continue
-			}
-			id := strings.TrimSuffix(entry.Name(), ".json")
-			r, err := readApproval(dir, id)
-			if err != nil {
-				continue
-			}
-			ids = append(ids, id)
-			labels = append(labels, fmt.Sprintf("%s · %s / %s · %s", id, r.Host, r.Session, approvalSummary(r.Operations)))
+		for _, r := range records {
+			ids = append(ids, r.ID)
+			labels = append(labels, fmt.Sprintf("%s · %s / %s · %s", r.ID, r.Host, r.Session, approvalSummary(r.Operations)))
 		}
 		if len(ids) == 0 {
 			fmt.Println("No pending approvals")
@@ -299,14 +287,7 @@ func runReview(args []string) (code int, resultErr error) {
 			a.id = ids[0]
 		}
 	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
-		return 1, fmt.Errorf("review requires a local interactive terminal")
-	}
-	resetTerminalInputModes()
-	if err = flushTerminalInput(); err != nil {
-		return 1, err
-	}
-	input, err := newApprovalInput()
+	input, err := newLocalInput()
 	if err != nil {
 		return 1, err
 	}
@@ -331,7 +312,7 @@ func runReview(args []string) (code int, resultErr error) {
 		return 2, usage("--stay applies only to file transfers; forwards always return locally")
 	}
 	logf(os.Stdout, logInfo, "Review %s · %s / %s\n", r.ID, cleanText(r.Host), r.Session)
-	directUpload := len(r.Operations) == 1 && r.Operations[0].Kind == "upload"
+	logf(os.Stdout, logInfo, "Submitting all local paths or the local port starts the operation; Ctrl-C cancels.\n")
 	if len(r.Operations) == 1 && r.Operations[0].Kind == "forward" {
 		logf(os.Stdout, logInfo, "After: independent background forward; remote shell stays detached.\n")
 	} else if a.stay {
@@ -341,6 +322,13 @@ func runReview(args []string) (code int, resultErr error) {
 	}
 	for i := range r.Operations {
 		op := &r.Operations[i]
+		if op.Kind != "forward" && op.LocalHint != "" {
+			hint, e := localPath([]byte(op.LocalHint))
+			if e != nil {
+				return 1, fmt.Errorf("invalid local path suggestion; request remains pending: %w", e)
+			}
+			op.LocalHint = hint
+		}
 		switch op.Kind {
 		case "download":
 			dest := r.DownloadDir
@@ -348,8 +336,11 @@ func runReview(args []string) (code int, resultErr error) {
 				dest = r.Directory
 			}
 			dest = filepath.Join(dest, op.Name)
+			if op.LocalHint != "" {
+				dest = op.LocalHint
+			}
 			logf(os.Stdout, logInfo, "Download %s · %s\n", cleanText(op.Path), displayBytes(op.Size))
-			path, e := readApprovalPath(input, fmt.Sprintf("Save as [%s] (Tab): ", cleanText(dest)), dest, func(path string) (string, error) {
+			path, e := readApprovalPath(input, fmt.Sprintf("Save as [%s] (Tab; Enter accepts): ", cleanText(dest)), dest, func(path string) (string, error) {
 				return downloadDestination(path, op.Name)
 			})
 			if e != nil {
@@ -359,11 +350,11 @@ func runReview(args []string) (code int, resultErr error) {
 			logf(os.Stdout, logInfo, "→ %s\n", cleanText(path))
 		case "upload":
 			logf(os.Stdout, logInfo, "Upload → %s\n", cleanText(op.Path))
-			prompt := "Local file to upload (Tab): "
-			if directUpload {
-				prompt = "Local file to upload (Tab; Enter sends): "
+			prompt := "Local file to upload (Tab; Enter accepts): "
+			if op.LocalHint != "" {
+				prompt = fmt.Sprintf("Local file to upload [%s] (Tab; Enter accepts): ", cleanText(op.LocalHint))
 			}
-			path, e := readApprovalPath(input, prompt, "", func(path string) (string, error) {
+			path, e := readApprovalPath(input, prompt, op.LocalHint, func(path string) (string, error) {
 				f, e := openSending(path)
 				if e != nil {
 					return "", e
@@ -378,18 +369,35 @@ func runReview(args []string) (code int, resultErr error) {
 			op.LocalPath = path
 			logf(os.Stdout, logInfo, "Source: %s · %s\n", cleanText(path), displayBytes(op.Size))
 		case "forward":
-			spec := normalizeForward(op.Port, op.RemoteHost, op.RemotePort)
-			logf(os.Stdout, logInfo, "Forward %s\n", describeForward(spec.Port, spec.RemoteHost, spec.RemotePort, op.Reverse))
+			remote := op.serverPort()
+			label := "Local listening port"
+			if op.Reverse {
+				label = "Local service port"
+			}
+			if op.Reverse {
+				logf(os.Stdout, logInfo, "Server %s -> selected local service\n", loopback(remote))
+			} else {
+				logf(os.Stdout, logInfo, "Selected local listener -> server %s\n", loopback(remote))
+			}
+			port, e := readSelectedPort(input, label, op.LocalHint, "approval cancelled; request remains pending")
+			if e != nil {
+				return 1, e
+			}
+			resolveLocalPort(op, port)
+			logf(os.Stdout, logInfo, "Forward %s\n", describeForward(op.Port, op.TargetPort, op.Reverse))
 		}
 	}
-	if !directUpload {
-		answer, err := input.Read("Type yes to approve: ", false)
-		if err != nil {
-			return 1, fmt.Errorf("approval cancelled; request remains pending: %w", err)
+	// Duplicate destinations are rejected before executing any batch member.
+	destinations := map[string]bool{}
+	for i := range r.Operations {
+		op := &r.Operations[i]
+		if op.Kind == "download" {
+			if destinations[op.LocalPath] {
+				return 1, fmt.Errorf("duplicate destination; request remains pending: %s", op.LocalPath)
+			}
+			destinations[op.LocalPath] = true
 		}
-		if answer != "yes" {
-			return 1, fmt.Errorf("not approved; request remains pending")
-		}
+		op.LocalHint = ""
 	}
 	// Release the input reader and terminal before SSH takes ownership.
 	if err := input.Close(); err != nil {
@@ -414,7 +422,10 @@ func approvalSummary(ops []operation) string {
 	if len(ops) == 1 {
 		op := ops[0]
 		if op.Kind == "forward" {
-			return describeForward(op.Port, op.RemoteHost, op.RemotePort, op.Reverse)
+			if op.localPortPending() {
+				return pendingPortDescription(op)
+			}
+			return describeForward(op.Port, op.TargetPort, op.Reverse)
 		}
 		return op.Kind + " " + op.Path
 	}

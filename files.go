@@ -1,6 +1,6 @@
 package main
 
-// File transfer verifies size and SHA-256 before publishing a received file.
+// SFTP transfers verify exact sizes; uploads also verify stored SHA-256.
 // The receiver creates a temporary file in the destination directory, then uses
 // a hard link for atomic publication without overwriting. There is deliberately
 // no overwrite-prone fallback on filesystems without hard-link support.
@@ -9,15 +9,19 @@ package main
 // Windows files inherit the destination directory ACL.
 
 import (
+	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"hash"
+	"github.com/pkg/sftp"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
 )
@@ -43,10 +47,9 @@ func safeName(name string) error {
 }
 
 type sendingFile struct {
-	file       *os.File
-	name       string
-	size, done int64
-	hash       hash.Hash
+	file *os.File
+	name string
+	size int64
 }
 
 func openSending(path string) (*sendingFile, error) {
@@ -71,40 +74,14 @@ func openSending(path string) (*sendingFile, error) {
 		f.Close()
 		return nil, err
 	}
-	return &sendingFile{file: f, name: name, size: info.Size(), hash: sha256.New()}, nil
+	return &sendingFile{file: f, name: name, size: info.Size()}, nil
 }
 func (f *sendingFile) close() { _ = f.file.Close() }
-func (f *sendingFile) offer(id uint64) message {
-	return message{Type: "offer", ID: id, Name: f.name, Size: f.size}
-}
-func (f *sendingFile) next(id uint64) (message, error) {
-	b := make([]byte, chunkSize)
-	n, err := f.file.Read(b)
-	if n > 0 {
-		f.done += int64(n)
-		if f.done > f.size {
-			return message{}, fmt.Errorf("file grew during transfer")
-		}
-		f.hash.Write(b[:n])
-		return message{Type: "chunk", ID: id, Data: b[:n]}, nil
-	}
-	if err != io.EOF {
-		if err == nil {
-			err = io.ErrNoProgress
-		}
-		return message{}, err
-	}
-	if f.done != f.size {
-		return message{}, fmt.Errorf("file size changed during transfer")
-	}
-	return message{Type: "end", ID: id, Hash: hex.EncodeToString(f.hash.Sum(nil))}, nil
-}
 
 type receivingFile struct {
 	file         *os.File
 	temp, target string
 	size, done   int64
-	hash         hash.Hash
 }
 
 func newReceiving(target string, size int64) (*receivingFile, error) {
@@ -120,7 +97,7 @@ func newReceiving(target string, size int64) (*receivingFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &receivingFile{file: f, temp: f.Name(), target: target, size: size, hash: sha256.New()}, nil
+	return &receivingFile{file: f, temp: f.Name(), target: target, size: size}, nil
 }
 func (f *receivingFile) close() { _ = f.file.Close(); _ = os.Remove(f.temp) }
 func (f *receivingFile) put(b []byte) error {
@@ -130,17 +107,20 @@ func (f *receivingFile) put(b []byte) error {
 	if err := writeFull(f.file, b); err != nil {
 		return err
 	}
-	f.hash.Write(b)
 	f.done += int64(len(b))
 	return nil
 }
-func (f *receivingFile) finish(sum string) error {
+func (f *receivingFile) Write(b []byte) (int, error) {
+	if err := f.put(b); err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
+func (f *receivingFile) publish() error {
 	defer f.close()
 	if f.done != f.size {
 		return fmt.Errorf("incomplete file")
-	}
-	if hex.EncodeToString(f.hash.Sum(nil)) != sum {
-		return fmt.Errorf("SHA-256 mismatch")
 	}
 	if err := f.file.Sync(); err != nil {
 		return err
@@ -154,4 +134,128 @@ func (f *receivingFile) finish(sum string) error {
 		return fmt.Errorf("publish file without overwriting: %w", err)
 	}
 	return nil
+}
+
+// Read exactly the declared size and reject growth without size+1 overflow.
+func copyExactSize(dst io.Writer, src io.Reader, size int64) error {
+	if size < 0 {
+		return fmt.Errorf("invalid file size")
+	}
+	n, err := io.Copy(dst, io.LimitReader(src, size))
+	if err != nil {
+		return err
+	}
+	if n != size {
+		return fmt.Errorf("source size changed")
+	}
+	var extra [1]byte
+	nread, err := io.ReadFull(src, extra[:])
+	if nread != 0 {
+		return fmt.Errorf("source size changed")
+	}
+	if err != io.EOF {
+		return err
+	}
+	return nil
+}
+
+func copyUpload(client *sftp.Client, source, target string, size int64, progress *atomic.Int64) error {
+	f, err := openSending(source)
+	if err != nil {
+		return err
+	}
+	defer f.close()
+	if f.size != size {
+		return fmt.Errorf("source size changed")
+	}
+	return copyUploadReader(client, progressReader{f.file, progress}, target, size)
+}
+
+// A negative size denotes stdin: count bytes until EOF, then verify that count
+// and digest before publishing. File sources still require their declared size.
+func copyUploadReader(client *sftp.Client, source io.Reader, target string, size int64) error {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return err
+	}
+	temporary := path.Join(path.Dir(target), ".sshore-"+hex.EncodeToString(nonce[:])+".part")
+	remote, err := client.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY)
+	if err != nil {
+		return err
+	}
+	defer client.Remove(temporary)
+	defer remote.Close()
+	if err = remote.Chmod(0600); err != nil {
+		return err
+	}
+	digest := sha256.New()
+	writer := io.MultiWriter(remote, digest)
+	if size < 0 {
+		size, err = io.Copy(writer, source)
+	} else {
+		err = copyExactSize(writer, source, size)
+	}
+	if err != nil {
+		return err
+	}
+	if err = remote.Close(); err != nil {
+		return err
+	}
+	// Verify stored content before atomic, no-overwrite publication.
+	stored, err := client.Open(temporary)
+	if err != nil {
+		return err
+	}
+	verification := sha256.New()
+	if err = errors.Join(copyExactSize(verification, stored, size), stored.Close()); err != nil {
+		return err
+	}
+	if !bytes.Equal(digest.Sum(nil), verification.Sum(nil)) {
+		return fmt.Errorf("uploaded content verification failed")
+	}
+	if err = client.Link(temporary, target); err != nil {
+		return fmt.Errorf("publish file without overwriting: %w", err)
+	}
+	return nil
+}
+
+func copyDownload(client *sftp.Client, source, target string, size int64, progress *atomic.Int64) error {
+	receiver, err := newReceiving(target, size)
+	if err != nil {
+		return err
+	}
+	defer receiver.close()
+	if err = copyDownloadTo(client, source, receiver, size, progress); err != nil {
+		return err
+	}
+	return receiver.publish()
+}
+
+func copyDownloadTo(client *sftp.Client, source string, target io.Writer, size int64, progress *atomic.Int64) error {
+	sourceFile, err := client.Open(source)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+	info, err := sourceFile.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() != size {
+		return fmt.Errorf("source metadata changed")
+	}
+	return copyExactSize(target, progressReader{sourceFile, progress}, size)
+}
+
+type progressReader struct {
+	io.Reader
+	count *atomic.Int64
+}
+
+func (r progressReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if r.count != nil {
+		r.count.Add(int64(n))
+	}
+	return n, err
 }

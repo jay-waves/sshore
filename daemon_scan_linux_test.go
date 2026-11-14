@@ -10,6 +10,7 @@ import (
 )
 
 func TestFindSessionDaemons(t *testing.T) {
+	t.Setenv("SSHORE_RUNTIME_DIR", "/custom/runtime")
 	root := t.TempDir()
 	for _, tc := range []struct{ pid, exe, cmd string }{
 		{"123", "/old/sshore (deleted)", "sshore\x00daemon\x00build\x00"},

@@ -16,16 +16,16 @@ import (
 )
 
 func TestForwardTransportOptions(t *testing.T) {
-	f, args, fg, e := parseForwardCommand([]string{"work", "8080", "to", "3000", "--name", "web", "--", "-Jjump", "-i", "key with spaces", "-p2222", "-F", "config"})
-	if e != nil || fg || f.Name != "web" || len(args) != 4 || strings.Join(f.SSH, "|") != "-J|jump|-i|key with spaces|-p|2222|-F|config" {
-		t.Fatal(f, args, fg, e)
+	f, fg, e := parseForwardCommand([]string{"8080", "work:3000", "--name", "web", "--", "-Jjump", "-i", "key with spaces", "-p2222", "-F", "config"})
+	if e != nil || fg || f.Name != "web" || strings.Join(f.SSH, "|") != "-J|jump|-i|key with spaces|-p|2222|-F|config" {
+		t.Fatal(f, fg, e)
 	}
-	command := strings.Join(backgroundForwardArgs(f), " ")
+	command := strings.Join(forwardSSHArgs(f, true), " ")
 	if !strings.Contains(command, "-J jump") || !strings.Contains(command, "-L 127.0.0.1:8080:127.0.0.1:3000") {
 		t.Fatal(command)
 	}
-	for _, bad := range [][]string{{"work", "to", "3000", "-i"}, {"work", "to", "3000", "-D", "1080"}, {"work", "to", "3000", "--unknown"}} {
-		if _, _, _, e := parseForwardCommand(bad); e == nil {
+	for _, bad := range [][]string{{"8080", "work:3000", "-i"}, {"8080", "work:3000", "-D", "1080"}, {"8080", "work:3000", "--unknown"}} {
+		if _, _, e := parseForwardCommand(bad); e == nil {
 			t.Fatal(bad)
 		}
 	}

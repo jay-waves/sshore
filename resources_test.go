@@ -12,7 +12,7 @@ import (
 
 func TestResourceIdentityAndLegacyMount(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	dir, e := ftpStateDir()
+	dir, e := resourceStateDir("mount")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -37,7 +37,7 @@ func TestResourceIdentityAndLegacyMount(t *testing.T) {
 	}
 }
 func TestForwardTransportDoesNotReplayOtherRules(t *testing.T) {
-	args := backgroundForwardArgs(forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, SSH: []string{"-p", "2222", "-L", "9999:localhost:9999", "-R", "8888:localhost:8888", "-D", "7777"}})
+	args := forwardSSHArgs(forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, SSH: []string{"-p", "2222", "-L", "9999:localhost:9999", "-R", "8888:localhost:8888", "-D", "7777"}}, true)
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "9999") || strings.Contains(joined, "8888") || strings.Contains(joined, "7777") || !strings.Contains(joined, "-p 2222") || !strings.Contains(joined, "-L 127.0.0.1:8080:127.0.0.1:3000") {
 		t.Fatal(args)
@@ -55,7 +55,7 @@ func TestAttachmentRejectsTunnelStreams(t *testing.T) {
 			t.Fatal(e)
 		}
 		st.SetDeadline(time.Now().Add(time.Second))
-		if e = writeMessage(st, message{Type: kind, Action: "add", Port: 3000, RemotePort: 3001}); e != nil {
+		if e = writeMessage(st, message{Type: kind, Action: "add"}); e != nil {
 			t.Fatal(e)
 		}
 		if m, e := readMessage(st); e == nil {

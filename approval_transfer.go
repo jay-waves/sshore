@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/xtaci/smux"
@@ -58,45 +59,41 @@ func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, q
 	_ = st.SetDeadline(time.Now().Add(10 * time.Second))
 	remote := op
 	remote.LocalPath = ""
-	if remote.Kind == "upload" {
-		remote.Name = ""
-		remote.Size = 0
+	if op.Kind == "upload" {
+		f, err := openSending(op.LocalPath)
+		if err != nil {
+			return err
+		}
+		f.close()
+		if f.name != op.Name || f.size != op.Size {
+			return fmt.Errorf("local file metadata changed; request again")
+		}
+		remote.Name, remote.Size = "", 0
 	}
-	if err = writeMessage(st, message{Type: "approved_transfer", Operations: []operation{remote}}); err != nil {
+	if err = writeMessage(st, message{Type: "approved_transfer", Operations: []operation{remote}, Name: op.Name, Size: op.Size}); err != nil {
 		return err
 	}
 	m, err := readMessage(st)
 	if err != nil {
 		return err
 	}
-	if m.Type == "error" || m.Type == "fatal" {
+	if m.Type != "sftp" {
 		return fileResponseError(m)
 	}
-	if op.Kind == "download" {
-		if m.Type != "offer" || m.Name != op.Name || m.Size != op.Size || m.ID != 0 {
-			return fmt.Errorf("remote download does not match approval")
-		}
-	} else {
-		if m.Type != "upload" || m.ID != 0 {
-			return fmt.Errorf("unexpected upload response")
-		}
-		m.Name = op.Name
-		m.Size = op.Size
+	client, err := newFTPSFTP(st, st)
+	if err != nil {
+		return err
 	}
+	defer func() { st.Close(); client.Close() }()
 	_ = st.SetDeadline(time.Time{})
-	taskCtx, cancel := context.WithCancel(ctx)
-	t := &clientTransfer{id: 0, stream: st, request: m, ctx: taskCtx, cancel: cancel}
-	t.total.Store(op.Size)
-	done := make(chan struct {
-		text string
-		err  error
-	}, 1)
+	var completed atomic.Int64
+	done := make(chan error, 1)
 	go func() {
-		text, err := runFileTask(t, op.LocalPath)
-		done <- struct {
-			text string
-			err  error
-		}{text, err}
+		if op.Kind == "upload" {
+			done <- copyUpload(client, op.LocalPath, "/target", op.Size, &completed)
+		} else {
+			done <- copyDownload(client, "/source", op.LocalPath, op.Size, &completed)
+		}
 	}()
 	var progress transferProgress
 	progress.at = time.Now()
@@ -104,15 +101,19 @@ func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, q
 	defer ticker.Stop()
 	for {
 		select {
-		case r := <-done:
-			if r.err != nil {
-				return r.err
+		case err := <-done:
+			if err != nil {
+				return err
 			}
-			logf(os.Stderr, logSuccess, "[sshore] %s\n", cleanText(r.text))
+			result := "Saved " + op.LocalPath
+			if op.Kind == "upload" {
+				result = "Upload complete"
+			}
+			logf(os.Stderr, logSuccess, "[sshore] %s\n", cleanText(result))
 			return nil
 		case <-ticker.C:
 			if !quiet {
-				logf(os.Stderr, logInfo, "[sshore] %s %s: %s\n", op.Kind, cleanText(op.Name), progress.sample(time.Now(), t.progress.Load(), t.total.Load()))
+				logf(os.Stderr, logInfo, "[sshore] %s %s: %s\n", op.Kind, cleanText(op.Name), progress.sample(time.Now(), completed.Load(), op.Size))
 			}
 		}
 	}

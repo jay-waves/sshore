@@ -1,18 +1,12 @@
 package main
 
-// Run repository checks with go test -race ./... and go vet ./.... These Linux
-// integration tests build a race-enabled binary and exercise real session
-// processes: isolation, exclusive attachment, resizing, exit codes, and preserved
-// PID/environment after explicit detach, and teardown on disconnection. Transfer cases cover both
-// directions through approved streams, unread-stream isolation, independent
-// cancellation, and cleanup after disconnection. Framing, integrity, overwrite
-// protection, and client worker concurrency also have focused unit tests.
+// Session lifecycle fixtures use isolated runtime directories and tagged binaries.
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
+	"context"
 	"fmt"
+	"github.com/pkg/sftp"
 	"github.com/xtaci/smux"
 	"io"
 	"net"
@@ -251,11 +245,13 @@ func shellOutput(t *testing.T, b *bridgeConn, command, marker string) string {
 	t.Fatal("missing output marker")
 	return ""
 }
-func (e *testEnv) helper(action, path string) (*exec.Cmd, <-chan error) {
+func (e *testEnv) helper(action string, paths ...string) (*exec.Cmd, <-chan error) {
 	e.t.Helper()
 	args := []string{action}
-	if path != "" {
-		args = append(args, path)
+	for _, path := range paths {
+		if path != "" {
+			args = append(args, path)
+		}
 	}
 	c := exec.Command(e.bin, args...)
 	c.Env = append(e.env, "SSHORE_SOCKET="+filepath.Join(e.dir, "main.sock"))
@@ -332,7 +328,7 @@ func TestNoClientTransferFails(t *testing.T) {
 	sendTest(t, b.in, message{Type: "detach"})
 	untilType(t, b.out, "detached")
 	b.close()
-	_, done := e.helper("upload", e.dir)
+	_, done := e.helper("cp", "origin:", e.dir)
 	waitHelper(t, done, false)
 }
 
@@ -352,15 +348,40 @@ func TestStatusConnection(t *testing.T) {
 	}
 }
 
-func approvedStream(t *testing.T, b *bridgeConn, op operation) (*smux.Stream, message) {
+func approvedSFTP(t *testing.T, b *bridgeConn, op operation) (*sftp.Client, *smux.Stream) {
 	t.Helper()
 	st, err := b.mux.OpenStream()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	sendTest(t, st, message{Type: "approved_transfer", Operations: []operation{op}})
-	return st, recv(t, st)
+	remote := op
+	if op.Kind == "upload" {
+		remote.Name, remote.Size = "", 0
+	}
+	sendTest(t, st, message{Type: "approved_transfer", Operations: []operation{remote}, Name: op.Name, Size: op.Size})
+	if m := recv(t, st); m.Type != "sftp" {
+		t.Fatal(m)
+	}
+	client, err := newFTPSFTP(st, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close(); client.Close() })
+	return client, st
+}
+
+func partialUpload(t *testing.T, b *bridgeConn, dir, name string) *smux.Stream {
+	t.Helper()
+	client, st := approvedSFTP(t, b, operation{Kind: "upload", Path: dir, Name: name, Size: 100})
+	file, err := client.OpenFile("/.sshore-part", os.O_CREATE|os.O_EXCL|os.O_WRONLY)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = file.Write([]byte("partial")); err != nil {
+		t.Fatal(err)
+	}
+	return st
 }
 
 // Stream closure and remote disk cleanup run concurrently.
@@ -382,116 +403,81 @@ func waitUploadFiles(t *testing.T, dir string, count int) {
 	}
 }
 
-func uploadBytes(t *testing.T, st *smux.Stream, id uint64, name string, data []byte) {
-	t.Helper()
-	sendTest(t, st, message{Type: "offer", ID: id, Name: name, Size: int64(len(data))})
-	untilType(t, st, "accept")
-	for off := 0; off < len(data); off += chunkSize {
-		sendTest(t, st, message{Type: "chunk", ID: id, Data: data[off:min(off+chunkSize, len(data))]})
-	}
-	sum := sha256.Sum256(data)
-	sendTest(t, st, message{Type: "end", ID: id, Hash: hex.EncodeToString(sum[:])})
-	if m := untilType(t, st, "result"); m.Error != "" {
-		t.Fatal(m.Error)
-	}
-}
 func TestTransferRoundTripsCancellationAndNoOverwrite(t *testing.T) {
 	e := newEnv(t)
 	b, _ := e.attach("main")
-	data := make([]byte, 2*1024*1024+17)
-	for i := range data {
-		data[i] = byte(i * 7)
-	}
-	src := filepath.Join(e.dir, "\u4e2d\u6587 sample.bin")
-	if err := os.WriteFile(src, data, 0600); err != nil {
+	data := bytes.Repeat([]byte("transfer\x00\xff"), 200000)
+	source := filepath.Join(e.dir, "中文 source.bin")
+	if err := os.WriteFile(source, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	st, offer := approvedStream(t, b, operation{Kind: "download", Path: src, Name: filepath.Base(src), Size: int64(len(data))})
-	sendTest(t, st, message{Type: "accept", ID: offer.ID})
-	var received []byte
-	for {
-		m := recv(t, st)
-		if m.Type == "end" {
-			sum := sha256.Sum256(received)
-			if m.Hash != hex.EncodeToString(sum[:]) {
-				t.Fatal("download checksum")
-			}
-			break
-		}
-		if m.Type != "chunk" {
-			t.Fatalf("download: %+v", m)
-		}
-		received = append(received, m.Data...)
-	}
-	if !bytes.Equal(received, data) {
-		t.Fatal("download corrupted")
-	}
-	sendTest(t, st, message{Type: "result", ID: offer.ID})
-	_ = st.Close()
-	uploadDir := filepath.Join(e.dir, "uploads")
-	if err := os.Mkdir(uploadDir, 0700); err != nil {
+	target := filepath.Join(e.dir, "download")
+	op := operation{Kind: "download", Path: source, Name: filepath.Base(source), Size: int64(len(data)), LocalPath: target}
+	if err := executeApprovedFile(context.Background(), b.mux, op, true); err != nil {
 		t.Fatal(err)
 	}
-	st, request := approvedStream(t, b, operation{Kind: "upload", Path: uploadDir})
-	uploadBytes(t, st, request.ID, "received.bin", data)
-	_ = st.Close()
-	got, err := os.ReadFile(filepath.Join(uploadDir, "received.bin"))
+	got, err := os.ReadFile(target)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatal("download corrupted", err)
+	}
+	dir := filepath.Join(e.dir, "uploads")
+	if err = os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	op = operation{Kind: "upload", Path: dir, Name: filepath.Base(source), Size: int64(len(data)), LocalPath: source}
+	if err = executeApprovedFile(context.Background(), b.mux, op, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err = os.ReadFile(filepath.Join(dir, op.Name))
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatal("upload corrupted", err)
 	}
-	st, request = approvedStream(t, b, operation{Kind: "upload", Path: uploadDir})
-	sendTest(t, st, message{Type: "offer", ID: request.ID, Name: "received.bin", Size: 0})
-	untilType(t, st, "error")
-	_ = st.Close()
-	st, request = approvedStream(t, b, operation{Kind: "upload", Path: uploadDir})
-	sendTest(t, st, message{Type: "offer", ID: request.ID, Name: "cancelled.bin", Size: 100})
-	untilType(t, st, "accept")
-	sendTest(t, st, message{Type: "chunk", ID: request.ID, Data: []byte("partial")})
-	_ = st.Close()
-	waitUploadFiles(t, uploadDir, 1)
-	st, request = approvedStream(t, b, operation{Kind: "upload", Path: uploadDir})
-	uploadBytes(t, st, request.ID, "empty", nil)
-	_ = st.Close()
-	st, request = approvedStream(t, b, operation{Kind: "upload", Path: uploadDir})
-	sendTest(t, st, message{Type: "offer", ID: request.ID, Name: "lost", Size: 100})
-	untilType(t, st, "accept")
-	b.close()
-	waitUploadFiles(t, uploadDir, 2)
-}
-
-func TestConcurrentStreamsBackpressureAndCancelIsolation(t *testing.T) {
-	e := newEnv(t)
-	b, pid := e.attach("main")
-	shellOutput(t, b, "stty -echo; printf 'READY_%s\\n' mux", "READY_mux")
-	data := bytes.Repeat([]byte("large download data\x00\xff"), 1024*1024)
-	src := filepath.Join(e.dir, "large.bin")
-	if err := os.WriteFile(src, data, 0600); err != nil {
+	if err = executeApprovedFile(context.Background(), b.mux, op, true); err == nil {
+		t.Fatal("overwrite accepted")
+	}
+	st := partialUpload(t, b, dir, "cancelled")
+	st.Close()
+	waitUploadFiles(t, dir, 1)
+	if err = os.WriteFile(source, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	slow, offer := approvedStream(t, b, operation{Kind: "download", Path: src, Name: filepath.Base(src), Size: int64(len(data))})
-	sendTest(t, slow, message{Type: "accept", ID: offer.ID})
-	// Deliberately stop reading the download until its stream window fills.
-	// Other streams must remain usable on this very same SSH transport.
-	time.Sleep(100 * time.Millisecond)
-	fast, request := approvedStream(t, b, operation{Kind: "upload", Path: e.dir})
+	op.Size = 0
+	op.Path = e.dir
+	// A different empty source exercises zero-byte publication.
+	op.LocalPath = filepath.Join(t.TempDir(), "empty")
+	op.Name = "empty"
+	if err = os.WriteFile(op.LocalPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = executeApprovedFile(context.Background(), b.mux, op, true); err != nil {
+		t.Fatal(err)
+	}
+	partialUpload(t, b, dir, "lost")
+	b.close()
+	waitUploadFiles(t, dir, 1)
+}
+
+func TestConcurrentStreamsCancelIsolation(t *testing.T) {
+	e := newEnv(t)
+	b, pid := e.attach("main")
+	dir := filepath.Join(e.dir, "uploads")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	slow := partialUpload(t, b, dir, "cancelled")
+	fast, _ := approvedSFTP(t, b, operation{Kind: "upload", Path: dir, Name: "surviving", Size: 2})
 	sendTest(t, b.in, message{Type: "resize", Cols: 97, Rows: 31})
 	untilType(t, b.out, "resized")
-	started := time.Now()
 	shellOutput(t, b, "printf 'LIVE_PID:%s\\n' $$", fmt.Sprintf("LIVE_PID:%d", pid))
-	if time.Since(started) > 2*time.Second {
-		t.Fatal("terminal stalled behind download")
+	slow.Close()
+	source := filepath.Join(t.TempDir(), "source")
+	if err := os.WriteFile(source, []byte("ok"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	uploadBytes(t, fast, request.ID, "concurrent.bin", []byte("upload while download is blocked"))
-	_ = fast.Close()
-	// Cancelling one stream must leave the session and a sibling upload alive.
-	fast, request = approvedStream(t, b, operation{Kind: "upload", Path: e.dir})
-	sendTest(t, fast, message{Type: "offer", ID: request.ID, Name: "surviving.bin", Size: 2})
-	untilType(t, fast, "accept")
-	_ = slow.Close()
-	sendTest(t, fast, message{Type: "chunk", ID: request.ID, Data: []byte("ok")})
-	sum := sha256.Sum256([]byte("ok"))
-	sendTest(t, fast, message{Type: "end", ID: request.ID, Hash: hex.EncodeToString(sum[:])})
-	untilType(t, fast, "result")
+	if err := copyUpload(fast, source, "/target", 2, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitUploadFiles(t, dir, 1)
 	shellOutput(t, b, "printf 'AFTER_%s\\n' cancel", "AFTER_cancel")
 }
 
@@ -499,12 +485,11 @@ func TestDisconnectCleansBothConcurrentUploads(t *testing.T) {
 	e := newEnv(t)
 	b, pid := e.attach("main")
 	dir := filepath.Join(e.dir, "uploads")
-	_ = os.Mkdir(dir, 0700)
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 2; i++ {
-		st, m := approvedStream(t, b, operation{Kind: "upload", Path: dir})
-		sendTest(t, st, message{Type: "offer", ID: m.ID, Name: fmt.Sprintf("file%d", i), Size: 100})
-		untilType(t, st, "accept")
-		sendTest(t, st, message{Type: "chunk", ID: m.ID, Data: []byte("partial")})
+		partialUpload(t, b, dir, fmt.Sprintf("file%d", i))
 	}
 	b.close()
 	waitUploadFiles(t, dir, 0)

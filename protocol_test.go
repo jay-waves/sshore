@@ -30,7 +30,7 @@ func TestProtocolBinaryAndFragmentation(t *testing.T) {
 		data[i] = byte(i)
 	}
 	var b shortWriter
-	for _, m := range []message{{Type: "attach", SoftwareVersion: version, Term: "xterm", Cols: 90, Rows: 30}, {Type: "chunk", ID: 42, Data: data}, {Type: "output", Data: []byte("\x00\xff\x1b[31m")}} {
+	for _, m := range []message{{Type: "attach", SoftwareVersion: version, Term: "xterm", Cols: 90, Rows: 30}, {Type: "input", Data: data}, {Type: "output", Data: []byte("\x00\xff\x1b[31m")}} {
 		if err := writeMessage(&b, m); err != nil {
 			t.Fatal(err)
 		}
@@ -41,7 +41,7 @@ func TestProtocolBinaryAndFragmentation(t *testing.T) {
 		t.Fatalf("%+v %v", m, err)
 	}
 	m, err = readMessage(r)
-	if err != nil || m.ID != 42 || !bytes.Equal(m.Data, data) {
+	if err != nil || m.Type != "input" || !bytes.Equal(m.Data, data) {
 		t.Fatal("binary frame mismatch", err)
 	}
 	m, err = readMessage(r)

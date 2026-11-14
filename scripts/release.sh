@@ -366,6 +366,26 @@ and assets remain unchanged.
 NOTES
 fi
 
+if [[ "$version" == "0.6.1" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Unify file commands as `cp SOURCE... TARGET` and forwarding as `forward LISTENER SERVICE`.
+- Use `origin:` (or `:`) for the attached client's endpoint; filled paths/ports remain editable suggestions in remote requests.
+- Support direct copy pipelines: `sshore cp HOST:FILE -` writes stdout, and `sshore cp - HOST:FILE` reads stdin until EOF.
+- Keep stdout byte-clean, stream without local spooling, and verify temporary uploads before no-overwrite publication. Stream copies accept exactly one remote file; stdout may contain partial data on failure.
+- Start approved operations when all local paths or the local port are submitted, without another yes prompt.
+- Share SFTP transfer code between direct copies and approved session streams; remove the custom file-transfer state machine.
+- Simplify endpoint state, private metadata writes and SSH option handling. Keep core tests as the default and extended checks opt-in.
+
+CLI migration: replace upload/download with cp, and from/to forwarding with
+listener/service operands. See `sshore cp --help` and `sshore forward --help`.
+Client and remote versions must match exactly. Request pending operations again
+after upgrading. Updating older sessions ends their tasks only after you review
+the affected session list and type update. Existing releases remain unchanged.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Skipping release: $tag is already published; releases and assets are immutable."

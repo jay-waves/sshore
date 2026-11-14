@@ -58,7 +58,7 @@ func TestApprovalValidation(t *testing.T) {
 	for _, ops := range [][]operation{
 		nil, {{Kind: "exec", Path: "/bin/sh"}}, {{Kind: "download", Path: "/tmp/a", Name: "../a", Size: 1}},
 		{{Kind: "download", Path: "relative", Name: "a", Size: 1}}, {{Kind: "download", Path: "/a", Name: "a", Size: -1}},
-		{{Kind: "forward", Port: 80, Reverse: true, RemoteHost: "192.168.1.20"}},
+		{{Kind: "forward", Port: 80, Reverse: true, TargetPort: -1}},
 		{{Kind: "upload", Path: "/tmp", Reverse: true}},
 		{{Kind: "forward", Port: 0}}, {{Kind: "forward", Port: 80, Path: "/a"}},
 		{{Kind: "upload", Path: "/tmp", Name: "secret"}},
@@ -67,7 +67,7 @@ func TestApprovalValidation(t *testing.T) {
 			t.Fatal("accepted", ops)
 		}
 	}
-	if err := validateOperations([]operation{{Kind: "forward", Port: 7777, RemoteHost: "127.0.0.1", RemotePort: 6666}}); err != nil {
+	if err := validateOperations([]operation{{Kind: "forward", Port: 7777, TargetPort: 6666}}); err != nil {
 		t.Fatal("valid remote target rejected:", err)
 	}
 	// A malicious peer cannot deserialize a chosen local path.
@@ -134,26 +134,25 @@ func TestChangedUploadIsNotSent(t *testing.T) {
 	if err := os.WriteFile(path, []byte("changed"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	result := make(chan message, 1)
+	result := make(chan error, 1)
 	go func() {
 		st, err := server.AcceptStream()
 		if err != nil {
+			result <- err
 			return
 		}
 		defer st.Close()
-		_, _ = readMessage(st)
-		_ = writeMessage(st, message{Type: "upload"})
-		m, _ := readMessage(st)
-		result <- m
+		_, err = readMessage(st)
+		result <- err
 	}()
 	err := executeApprovedFile(context.Background(), client, operation{Kind: "upload", Path: "/tmp", Name: "source", Size: 1, LocalPath: path}, true)
 	if err == nil {
 		t.Fatal("changed upload accepted")
 	}
 	select {
-	case m := <-result:
-		if m.Type == "offer" || m.Type == "chunk" {
-			t.Fatal("unapproved upload sent", m)
+	case err := <-result:
+		if err == nil {
+			t.Fatal("unapproved upload sent")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("worker did not close")

@@ -4,7 +4,6 @@ package main
 // Target services are never probed by listing. Exported views deliberately omit
 // control capabilities, addresses, SSH options, credentials and terminal output.
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -62,27 +61,8 @@ func (s *resourceService) saveResult(code int, err error) {
 	// A bounded receipt per resource name, overwritten on the next lifecycle.
 	r := resourceResult{Record: s.record, Status: s.statusSnapshot(), Finished: time.Now().UTC()}
 	r.Record.Token, r.Record.Address = "", ""
-	data, e := json.Marshal(r)
-	if e != nil {
-		return
-	}
-	dir := filepath.Dir(s.recordPath)
-	f, e := os.CreateTemp(dir, ".result-*")
-	if e != nil {
-		return
-	}
-	defer os.Remove(f.Name())
-	if privateState(f.Name(), false) != nil {
-		f.Close()
-		return
-	}
-	if _, e = f.Write(data); e == nil {
-		e = f.Sync()
-	}
-	f.Close()
-	if e == nil {
-		_ = os.Rename(f.Name(), s.recordPath+".result")
-		pruneResourceResults(dir)
+	if writeStateJSON(s.recordPath+".result", r) == nil {
+		pruneResourceResults(filepath.Dir(s.recordPath))
 	}
 }
 

@@ -39,9 +39,9 @@ This document defines the project vocabulary. Commands are documented by
 | Pending approval | A local single-use request record, identified as `approval/ID`, awaiting user review. |
 | Review | The separate local command that selects a pending request, collects consent and attempts execution. |
 | Consent / approval | The user's explicit acceptance in review. SSH authentication alone is not consent. |
-| SCP use case | The README category for one-time file copies. sshore uses its own transfer protocol, not SCP wire compatibility or `scp` command compatibility. |
+| Copy | A regular-file operation expressed as `cp SOURCE... TARGET`; not full system cp or scp compatibility. |
 | Tunnel | The README feature category for TCP port forwarding through SSH. |
-| Transfer | An approved one-time regular-file upload or download using sshore's framed protocol. It is not SFTP. |
+| Transfer | A one-time regular-file copy. Both direct and approved copies use SFTP; approved copies run on a client-initiated session stream after local review. |
 | Resource | An independently managed local mount or forward, with its own worker, transport and lifetime. |
 | Worker | The local background process owning a resource; distinct from a remote session daemon. |
 | Mount | A remote directory exposed to local applications through SFTP and FUSE/WinFsp, identified as `mount/NAME`. |
@@ -64,9 +64,20 @@ This document defines the project vocabulary. Commands are documented by
 - `cancel approval/ID` discards a request; `cancel mount/NAME` or
   `cancel forward/NAME` stops that local resource; `cancel HOST NAME` ends that
   remote session and its identified tasks. A peer record is read-only.
-- In `CURRENT_PORT to PEER_PORT`, the listener is on the invoking shell's machine.
-  In `CURRENT_PORT from PEER_PORT`, the listener is on the other machine. These
-  directions are resolved to fixed client/server endpoints before approval.
+- `origin:` and `:` name the **client endpoint** of the current connection,
+  even inside a remote shell. This is the current attached client, not the
+  computer that originally created the persistent session.
+- A bare `-` in direct `cp` names the invoking process's **standard stream**:
+  stdin as source, stdout as target. It does not name the client computer or
+  request an interactive selection. `origin:-` and `./-` name an ordinary file.
+- An empty client endpoint is selected locally. A filled `origin:PATH` or
+  `origin:PORT` directly specifies a local operation's endpoint; in a remote
+  request it is a **local hint**, displayed as an editable review default.
+- In `forward LISTENER SERVICE`, the **listener** accepts connections and the
+  **service** receives them. The **pending local port** must be selected or
+  accepted locally before the mapping becomes an executable forward.
+- Submitting all valid local paths or the local port constitutes **consent**.
+  Selecting a request or completion candidate alone does not.
 - **Worker running**, **transport connected** and **target healthy** are different
   claims. Listings do not probe target services; missing peer heartbeats mean
   unknown state, not confirmed termination.

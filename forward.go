@@ -1,30 +1,12 @@
 package main
 
-// Forward operands are resolved relative to the requesting shell, then stored
-// as fixed listener/destination identities for local approval. Independent SSH
-// workers own forwarding; no listener belongs to a shell attachment.
+// Independent SSH workers own forwarding; no listener belongs to a shell attachment.
 import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 )
-
-type forwardSpec struct {
-	Reverse    bool   `json:"reverse,omitempty"`
-	Port       int    `json:"port"`
-	RemoteHost string `json:"remote_host"`
-	RemotePort int    `json:"remote_port"`
-}
-
-func normalizeForward(port int, host string, remotePort int) forwardSpec {
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	if remotePort == 0 {
-		remotePort = port
-	}
-	return forwardSpec{Port: port, RemoteHost: host, RemotePort: remotePort}
-}
 
 func parsePort(s string) (int, error) {
 	if s == "" {
@@ -42,47 +24,58 @@ func parsePort(s string) (int, error) {
 	return n, nil
 }
 
-// parseForward interprets operands in the requesting remote shell's frame.
-// Wire fields are then fixed: Reverse means server listener -> local client.
-// Port is always the listener; RemotePort is always the approved destination.
-func parseForward(args []string) (message, error) {
-	m := message{Type: "forward", Action: "add", RemoteHost: "127.0.0.1"}
-	// A missing endpoint copies the explicit port; direction never defaults.
-	if len(args) == 2 {
-		if args[0] == "from" || args[0] == "to" {
-			args = []string{args[1], args[0], args[1]}
-		} else if args[1] == "from" || args[1] == "to" {
-			args = []string{args[0], args[1], args[0]}
+// A qualified endpoint identifies the peer; the first endpoint always listens.
+func parseForwardEndpoints(args []string) (string, int, int, bool, error) {
+	fail := func() (string, int, int, bool, error) {
+		return "", 0, 0, false, usage("invalid port mapping; use forward origin:PORT HOST:PORT or forward HOST:PORT origin:PORT")
+	}
+	if len(args) != 2 {
+		return fail()
+	}
+	endpoint := func(s string) (string, int, error) {
+		if originPlaceholder(s) {
+			return "", 0, nil
 		}
+		if strings.HasPrefix(s, "origin:") {
+			n, e := parsePort(originHint(s))
+			return "", n, e
+		}
+		if !strings.Contains(s, ":") {
+			n, e := parsePort(s)
+			return "", n, e
+		}
+		i := strings.LastIndex(s, ":")
+		host, err := endpointHost(s[:i])
+		if err != nil {
+			return "", 0, err
+		}
+		n, e := parsePort(s[i+1:])
+		return host, n, e
 	}
-	if len(args) != 3 || (args[1] != "from" && args[1] != "to") {
-		return m, usage("use forward CURRENT_PORT from|to PEER_PORT (at least one port required)")
+	left, port, err := endpoint(args[0])
+	if err != nil {
+		return "", 0, 0, false, err
 	}
-	current, e := parsePort(args[0])
-	if e != nil {
-		return m, e
+	right, target, err := endpoint(args[1])
+	if err != nil {
+		return "", 0, 0, false, err
 	}
-	peer, e := parsePort(args[2])
-	if e != nil {
-		return m, e
+	if (left == "") == (right == "") {
+		return fail()
 	}
-	if args[1] == "to" {
-		m.Port = current
-		m.RemotePort = peer
-		m.Reverse = true
-	} else {
-		m.Port = peer
-		m.RemotePort = current
+	host := right
+	if left != "" {
+		host = left
 	}
-	return m, nil
+	return host, port, target, left != "", nil
 }
 
-func describeForward(port int, host string, target int, reverse bool) string {
-	spec := normalizeForward(port, host, target)
+func describeForward(port, target int, reverse bool) string {
+	listener, service := "your computer", "server"
 	if reverse {
-		return fmt.Sprintf("server %s -> your computer %s", loopback(spec.Port), net.JoinHostPort(spec.RemoteHost, strconv.Itoa(spec.RemotePort)))
+		listener, service = service, listener
 	}
-	return fmt.Sprintf("your computer %s -> server %s", loopback(spec.Port), net.JoinHostPort(spec.RemoteHost, strconv.Itoa(spec.RemotePort)))
+	return fmt.Sprintf("%s %s -> %s %s", listener, loopback(port), service, loopback(target))
 }
 
 func loopback(port int) string { return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) }

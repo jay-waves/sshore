@@ -24,14 +24,6 @@ type ftpMount interface {
 	Wait()
 }
 
-func ftpSSHArgs(o ftpOptions) []string {
-	// OpenSSH uses the first value for scalar options. These precede user/config
-	// settings to guarantee this process owns a foreground, subsystem transport.
-	args := []string{"-T", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "-o", "ForkAfterAuthentication=no", "-o", "SessionType=subsystem", "-o", "RemoteCommand=none", "-o", "ClearAllForwardings=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"}
-	args = append(args, o.ssh...)
-	return append(args, "-s", "--", o.host, "sftp")
-}
-
 func runMount(args []string) (int, error) {
 
 	o, err := parseFTPOptions(args)
@@ -85,11 +77,8 @@ func runFTPMount(o ftpOptions, service *resourceService) (code int, resultErr er
 		}
 	}()
 	defer func() { cancel(); <-setupStopped }()
-	exe := os.Getenv("SSHORE_SSH")
-	if exe == "" {
-		exe = "ssh"
-	}
-	cmd := exec.CommandContext(ctx, exe, ftpSSHArgs(o)...)
+	exe := sshExecutable()
+	cmd := exec.CommandContext(ctx, exe, sftpSSHArgs(o.host, o.ssh)...)
 	isolateFTPCommand(cmd)
 	cmd.Stderr = os.Stderr
 	if service != nil {

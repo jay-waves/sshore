@@ -31,7 +31,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := append(e.env, "SSHORE_SSH="+wrapper)
-	id, err := writeApproval(options{host: "fixture", session: "main", server: e.bin, resumePID: pid}, []operation{{Kind: "forward", Port: 31234, RemotePort: 31235}})
+	id, err := writeApproval(options{host: "fixture", session: "main", server: e.bin, resumePID: pid}, []operation{{Kind: "forward", TargetPort: 31235}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		if e := os.MkdirAll(dir, 0700); e != nil {
 			t.Fatal(e)
 		}
-		b, e := json.Marshal(pendingRemoteTask(id, []operation{{Kind: "forward", Port: 31234, RemotePort: 31235}}))
+		b, e := json.Marshal(pendingRemoteTask(id, []operation{{Kind: "forward", TargetPort: 31235}}))
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -83,8 +83,8 @@ func TestApprovedForwardIndependent(t *testing.T) {
 			n, e := terminal.Read(buf)
 			if n > 0 {
 				b.Write(buf[:n])
-				if !answered && strings.Contains(b.String(), "Type yes to approve:") {
-					io.WriteString(terminal, "yes\r")
+				if !answered && strings.Contains(b.String(), "Local listening port") {
+					io.WriteString(terminal, "31234\r")
 					answered = true
 				}
 			}
@@ -141,7 +141,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	// Duplicate identity cannot silently replace an independent resource.
-	if out, err = run("forward", "fixture", "31234", "to", "31235"); err == nil {
+	if out, err = run("forward", "origin:31234", "fixture:31235"); err == nil {
 		t.Fatal("duplicate accepted", out)
 	}
 	if out, err = run("cancel", "forward/"+name); err != nil {
@@ -151,7 +151,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	if err != nil || strings.Contains(out, "forward/"+name) {
 		t.Fatal(out, err)
 	}
-	rejected, e2 := writeApproval(options{host: "fixture", session: "main", server: e.bin, resumePID: pid}, []operation{{Kind: "forward", Port: 31234, RemotePort: 31235}})
+	rejected, e2 := writeApproval(options{host: "fixture", session: "main", server: e.bin, resumePID: pid}, []operation{{Kind: "forward", TargetPort: 31235}})
 	if e2 != nil {
 		t.Fatal(e2)
 	}

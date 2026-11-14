@@ -55,3 +55,8 @@ assets to update their documentation.
 ## Validation
 
 Keep new tests small and focused; do not add heavyweight end-to-end suites or extra versioned builds. Run the existing checks appropriate to the change. Lifecycle integration test executables must use `-tags=sshoretest`, which compiles in runtime-directory isolation; never run simulated upgrade confirmation against the developer's real account sessions. Release binaries MUST NOT use that tag.
+
+For routine changes, run only the relevant existing tests. Use the full core Go
+suite for cross-component changes; reserve race, real SSH, native mount and
+installer checks for changes affecting those areas. Do not repeat successful
+checks or add a validation layer solely for process completeness.

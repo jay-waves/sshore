@@ -7,8 +7,8 @@ func TestSSHSeparatorBoundaries(t *testing.T) {
 		"session": func(a []string) error { _, e := parseOptions(append([]string{"new"}, a...)); return e },
 		"mount":   func(a []string) error { _, e := parseFTPOptions(a); return e },
 		"forward": func(a []string) error {
-			args := append([]string{a[0], "8080", "to", "3000"}, a[1:]...)
-			_, _, _, e := parseForwardCommand(args)
+			args := append([]string{"8080", a[0] + ":3000"}, a[1:]...)
+			_, _, e := parseForwardCommand(args)
 			return e
 		},
 	}
@@ -47,5 +47,22 @@ func TestReconnectCommandSSHSeparator(t *testing.T) {
 	o.ssh = nil
 	if got := reconnectCommand(o); got != "sshore attach work dev --server /opt/sshore" {
 		t.Fatal(got)
+	}
+}
+
+func TestSharedHostValidation(t *testing.T) {
+	for _, host := range []string{"host name", "host\tname", "host\x7f", "host\nname"} {
+		if _, err := parseOptions([]string{"new", host}); err == nil {
+			t.Fatal("session accepted", host)
+		}
+		if _, err := parseFTPOptions([]string{host}); err == nil {
+			t.Fatal("mount accepted", host)
+		}
+		if _, err := parseCopyCommand([]string{"file", host + ":/tmp"}); err == nil {
+			t.Fatal("copy accepted", host)
+		}
+		if _, _, err := parseForwardCommand([]string{"8080", host + ":3000"}); err == nil {
+			t.Fatal("forward accepted", host)
+		}
 	}
 }

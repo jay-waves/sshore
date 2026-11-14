@@ -23,7 +23,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.6.0"
+var version = "0.6.1"
 
 const connectionOptions = `Options (before --; may appear before or after HOST):
   --server PATH                 Remote executable (default: PATH, then ~/.local/bin/sshore)
@@ -49,14 +49,16 @@ Local commands:
   sshore rename HOST OLD NEW [-- SSH_OPTIONS] Rename a running session
   sshore attach HOST [NAME] [options] Attach to an existing detached session
   sshore mount HOST [DIRECTORY [MOUNTPOINT]] Start a background file mount
-  sshore forward HOST PORT from|to PORT  Start an independent background forward
+  sshore cp SOURCE... TARGET          Copy files through SSH
+  sshore forward LISTENER SERVICE     Start an independent background forward
   sshore review [ID] [--stay]
 
 Inside a remote sshore shell:
   sshore detach                  Disconnect; keep the shell running
-  sshore upload [DIRECTORY]      Choose a local file to upload here
-  sshore download FILE...        Download one or more remote files
-  sshore forward PORT from|to PORT  Request a port forward
+  sshore cp FILE... origin:       Choose local destinations after detach
+  sshore cp origin: DIRECTORY     Choose a local source after detach
+  sshore forward origin: PORT     Choose a local listener after detach
+  sshore forward PORT origin:     Choose a local service after detach
 
 Help:
   sshore help [COMMAND]
@@ -156,7 +158,9 @@ SSH options and --server are the same as sshore list; see sshore list --help.
 	"review": `Usage: sshore review [ID] [--stay]
 
 Run from your LOCAL shell after detach. Review one pending request, select
-local file paths and type yes. Tab completes paths; invalid paths can be retried.
+local file paths or a local port. Submitting all required valid inputs approves
+and starts execution; there is no additional yes prompt. Ctrl-C cancels.
+Tab completes paths; invalid paths and ports can be retried.
 Authentication remains with system OpenSSH.
 By default, approved file operations complete and the remote shell resumes.
 --stay completes file operations, detaches and returns to the local shell.
@@ -170,62 +174,8 @@ Selection only opens review; it never approves an operation. Requests expire aft
 10 minutes and are consumed before connecting, even when execution fails.
 No SSH passwords or separate approval passwords are stored or collected.
 `,
-	"forward": `Usage: sshore forward HOST [CURRENT_PORT] from|to [PEER_PORT] [--name NAME] [-- SSH_OPTIONS]
-       sshore forward [CURRENT_PORT] from|to [PEER_PORT]
-
-The first port belongs to the shell running this command; the second belongs
-to the other end of the SSH connection:
-  A to B    Listen here on A, connect to the peer's service B.
-  A from B  Listen on the peer's B, connect to the service A here.
-from/to and at least one port are mandatory; a missing port copies the other.
-Old PORT and colon forms are rejected. Ports must be 1..65535.
-
-On your computer, specify HOST. Starts an independent background SSH tunnel;
---name selects its local name (default: host, direction and ports). Prints its
-ID only after SSH authentication and listener setup succeed. Use sshore list
-and sshore cancel forward/NAME.
---foreground keeps a local tunnel in the terminal for diagnostics; Ctrl-C stops it.  -h, --help                    Show command help
-
-SSH options (only after --): -p PORT, -i KEY, -J JUMP, -F CONFIG, -l USER, -o OPTION, -E FILE,
--C, -v/-vv/-vvv, -4/-6. Attached short values such as -p2222 are accepted.
-Explicit -L/-R/-D are not accepted here; this resource owns its forwarding rule.
---retries N (0..10, default 0) retries an established background forward with
-exponential backoff (1s to 32s). It does not retry initial startup or restore
-existing TCP connections. Retries cannot ask for passwords/MFA or accept new host
-keys. Cancel stops retries. Not available for remote requests or --foreground.
-Uses SSH configuration for keys/options. Requires a remote Unix shell and cat,
-but no remote sshore installation. Server policy controls reverse listener binds.
-
-Inside a remote sshore shell, omit HOST to request local approval. This detaches
-the shell; run sshore review on your computer. Approval starts an independent
-background forward and leaves the source shell detached. Stopping or exiting
-that shell does not stop the forward. Management commands run on your computer.
-Both ends request IPv4 127.0.0.1. No restart after reboot; reconnect is opt-in.
-
-Examples:
-  sshore forward work to 3000 --name web
-  sshore forward work 3000 from 8080
-  sshore forward 3000 from 8080       Remote request: computer:8080 -> server:3000
-  sshore forward 8080 to 3000         Remote request: server:8080 -> computer:3000
-  sshore cancel forward/web
-`,
-	"upload": `Usage: sshore upload [--] [DIRECTORY]
-
-Run inside a remote sshore shell. Queue approval to upload a local file into
-DIRECTORY (default: remote current directory), then detach. Run sshore review
-locally to select the source (Tab completes local paths). For a single upload,
-pressing Enter on the source path approves and starts it; Ctrl-C cancels.
-Existing files are never overwritten.
-`,
-	"download": `Usage: sshore download [--] FILE...
-
-Run inside a remote sshore shell. Queue one approval for up to 16 ordinary
-files, then detach. All paths are validated before queuing. Run sshore review
-locally to select destinations and execute sequentially. --download-dir only
-sets destination defaults. Existing files are never overwritten. Execution
-stops on the first failure; completed files remain. Helper success means queued,
-not transferred; the local review command reports the execution result.
-`,
+	"cp":      copyHelp,
+	"forward": forwardHelp,
 	"detach": `Usage: sshore detach
 
 Run inside a remote sshore shell. Disconnect the current client and cancel
@@ -314,8 +264,6 @@ func parseOptions(args []string) (options, error) {
 				o.server = args[i]
 			case "--download-dir":
 				o.downloadDir = args[i]
-			default:
-				o.ssh = append(o.ssh, a, args[i])
 			}
 		case "--json", "--details":
 			if !o.list {
@@ -354,8 +302,8 @@ func parseOptions(args []string) (options, error) {
 		}
 		return o, nil
 	}
-	if o.host == "" || strings.HasPrefix(o.host, "-") || strings.IndexFunc(o.host, func(r rune) bool { return r <= 32 || r == 127 }) >= 0 {
-		return o, usage("invalid SSH destination")
+	if err := validSSHDestination(o.host); err != nil {
+		return o, err
 	}
 	if o.server == "" || strings.ContainsAny(o.server, "\r\n\x00") {
 		return o, usage("invalid server path")
@@ -463,17 +411,12 @@ func run(args []string) (int, error) {
 	case "review":
 		return runReview(args[1:])
 	case "forward":
-		return runForward(args[1:])
-	case "upload", "download", "detach":
-		// -- makes filenames such as --help unambiguous.
-		if len(args) > 1 && args[1] == "--" {
-			args = append([]string{args[0]}, args[2:]...)
-		} else {
-			for _, a := range args[1:] {
-				if strings.HasPrefix(a, "-") {
-					return 2, usage("use %s -- %s for a path beginning with '-'", args[0], a)
-				}
-			}
+		return runEndpointForward(args[1:])
+	case "cp":
+		return runCopy(args[1:])
+	case "detach":
+		if len(args) != 1 {
+			return 2, usage("detach takes no arguments")
 		}
 		return 0, serverCommand(args)
 	case "bridge", "resume", "daemon", "sessions", "bootstrap", "kill-session", "rename-session", "task-watch", "task-remove", "inventory":

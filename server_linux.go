@@ -886,26 +886,22 @@ func serverCommand(args []string) error {
 		}
 		return listSessions()
 	case "forward":
-		return forwardHelper(args[1:])
+		op, err := remoteForwardRequest(args[1:])
+		if err != nil {
+			return err
+		}
+		return requestOperations([]operation{op})
 	case "detach":
 		if len(args) != 1 {
 			return usage("usage: sshore detach")
 		}
 		return detachHelper()
-	case "upload":
-		if len(args) > 2 {
-			return usage("usage: sshore upload [DIRECTORY]")
+	case "cp":
+		kind, paths, hint, err := remoteCopyRequest(args[1:])
+		if err != nil {
+			return err
 		}
-		path := "."
-		if len(args) == 2 {
-			path = args[1]
-		}
-		return requestFiles("upload", []string{path})
-	case "download":
-		if len(args) < 2 {
-			return usage("usage: sshore download FILE...")
-		}
-		return requestFiles("download", args[1:])
+		return requestFilesWithHint(kind, paths, hint)
 	}
 	return fmt.Errorf("unknown server command")
 }

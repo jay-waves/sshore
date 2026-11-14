@@ -85,28 +85,7 @@ func inspectResources(records []resourceRecord) []resourceView {
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
-				r := records[i]
-				v := viewRecord(r)
-				if r.Kind != "approval" {
-					resp, e := resourceHTTPContext(ctx, r.Address, r.Token, "GET", "/status", nil)
-					if e == nil {
-						if resp.StatusCode == 200 {
-							var status resourceStatus
-							if json.NewDecoder(io.LimitReader(resp.Body, 8192)).Decode(&status) == nil && status.Version == version {
-								v.Worker = "running"
-								v.resourceStatus = status
-							} else {
-								v.LastError = "incompatible or invalid worker status"
-							}
-						} else {
-							v.LastError = "worker status request rejected"
-						}
-						resp.Body.Close()
-					} else {
-						v.LastError = "local worker unavailable or status deadline exceeded"
-					}
-				}
-				views[i] = v
+				views[i] = inspectResource(ctx, records[i])
 			}
 		}()
 	}
@@ -117,6 +96,30 @@ func inspectResources(records []resourceRecord) []resourceView {
 	wg.Wait()
 	return views
 }
+func inspectResource(ctx context.Context, r resourceRecord) resourceView {
+	v := viewRecord(r)
+	if r.Kind == "approval" {
+		return v
+	}
+	resp, err := resourceHTTPContext(ctx, r.Address, r.Token, "GET", "/status", nil)
+	if err != nil {
+		v.LastError = "local worker unavailable or status deadline exceeded"
+		return v
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		v.LastError = "worker status request rejected"
+		return v
+	}
+	var status resourceStatus
+	if json.NewDecoder(io.LimitReader(resp.Body, 8192)).Decode(&status) != nil || status.Version != version {
+		v.LastError = "incompatible or invalid worker status"
+		return v
+	}
+	v.Worker, v.resourceStatus = "running", status
+	return v
+}
+
 func collectResourceResults(host string, active []resourceView) []resourceView {
 	seen := map[string]bool{}
 	for _, v := range active {

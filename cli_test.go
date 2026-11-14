@@ -25,7 +25,7 @@ func TestCLIOptionsAndHelp(t *testing.T) {
 			t.Fatal("accepted", args)
 		}
 	}
-	for _, topic := range []string{"new", "list", "attach", "upload", "download", "detach", "forward", "review", "cancel", "mount"} {
+	for _, topic := range []string{"new", "list", "attach", "cp", "detach", "forward", "review", "cancel", "mount"} {
 		var b bytes.Buffer
 		if err = showHelp([]string{topic}, &b); err != nil || !strings.Contains(b.String(), "Usage: sshore "+topic) {
 			t.Fatal(topic, err)

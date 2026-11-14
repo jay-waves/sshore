@@ -26,7 +26,9 @@ flowchart LR
         gate["Setup and session checks"]
         resources["Selected files / loopback listener or service"]
     end
-    user -->|"Explicit forward HOST A from/to B"| native["Independent background SSH tunnel"]
+    user -->|"Explicit cp source and destination"| directcopy["Independent SFTP copy; temporary file and no-overwrite hard link"]
+    directcopy <-->|"Authenticated SSH"| service
+    user -->|"Explicit forward LISTENER SERVICE"| native["Independent background SSH tunnel"]
     native <-->|"SSH forwarding policy"| service
     native -->|"Disconnect; explicit local retry grant"| retrygate["Bounded retries; noninteractive auth; known host key"]
     retrygate --> native
@@ -48,7 +50,7 @@ flowchart LR
     program -->|"Name, time, reason; no terminal content"| exits
     user -->|"Explicit cancel HOST NAME over SSH"| killgate
     killgate -->|"Only named session and identified same-user tasks"| program
-    user -->|"Review and explicit consent"| approve
+    user -->|"Review: submit local paths or port"| approve
     record -->|"Consume once"| approve
     approve -->|"New SSH connection"| gate
     setup <-->|"Exact version / setup choice"| gate
@@ -82,9 +84,9 @@ directories are retained in exit records.
 
 ## Local approval
 
-Receiving a request saves only bounded metadata. It does not open a requested listener or read/write a user-selected transfer file. Requests cannot encode a local shell command or choose an upload source. Unsolicited transfer offers and forward-add streams are rejected. Approved forwarding uses an independent system SSH transport with fixed listener and destination ports. Normal shell connections reject unsolicited reverse connection streams. `--download-dir` is a default, not consent.
+Receiving a request saves only bounded metadata. It does not open a requested listener or read/write a user-selected transfer file. Requests cannot encode a local shell command or authorize local access. A filled local endpoint is an untrusted suggestion, displayed for local acceptance or editing; it never bypasses review. Unsolicited transfer offers and forward-add streams are rejected. Approved forwarding uses an independent system SSH transport with fixed listener and destination ports. Normal shell connections reject unsolicited reverse connection streams. `--download-dir` is a default, not consent.
 
-For a single upload, submitting the local source path after reviewing the target and destination is explicit approval. Other requests require `yes`. Completion only browses the local filesystem in this approval process; selecting a completion candidate does not submit the operation.
+Submitting all validated local file paths or a locally submitted port after reviewing the remote target is explicit approval; no additional `yes` is required. File batches collect every path before starting. Ctrl-C or EOF during input leaves the request pending and starts no operation. Invalid ports retry; Enter accepts only a displayed suggestion. An empty port with no suggestion retries. Completion only browses the local filesystem in this approval process; selecting a completion candidate does not submit the operation.
 
 Pending records:
 
@@ -99,18 +101,18 @@ OpenSSH owns passwords, keys, agents, MFA and host-key checks. No separate appro
 
 | Threat | Protection and limit |
 | --- | --- |
-| Path traversal or overwrite | Validate the offered basename; the user chooses the local destination. A temporary file and atomic hard link publish without overwriting. No overwrite-prone fallback is used. |
+| Path traversal or overwrite | Validate the requested basename; the user chooses the local destination. A temporary file and atomic hard link publish without overwriting. No overwrite-prone fallback is used. |
 | Operation changed after approval | A local snapshot fixes direction, paths, name/size and port. Changed file metadata is rejected; same-size content changes remain possible. |
 | Excess data or replay | Framing and buffers are bounded; received bytes cannot exceed approved size. Approval records are single-use. |
 | Request flooding | Request/record limits bound saved metadata; the first accepted request detaches. Repeated disruption across reconnects remains possible. |
-| Unwanted listener or access to a local service | Independent forwards request an IPv4 `127.0.0.1` listener on the selected end and connect to loopback on the other. Current-shell `from`/`to` operands are resolved into fixed client/server identities before saving approval. OpenSSH owns the approved forwarding transport and destination mapping; server GatewayPorts policy can override reverse bind addresses. Occupied ports fail without substitution. Loopback is not per-user isolation. |
+| Unwanted listener or access to a local service | Independent forwards request an IPv4 `127.0.0.1` listener on the selected end and connect to loopback on the other. Remote requests fix the server port and direction and may suggest a local port; local review selects or accepts that port and resolves fixed client/server endpoints before execution. OpenSSH owns the approved forwarding transport and destination mapping; server GatewayPorts policy can override reverse bind addresses. Occupied ports fail without substitution. Loopback is not per-user isolation. |
 | Terminal control injection in local messages | Displayed paths and errors are sanitized. The remote terminal byte stream itself remains unfiltered and untrusted. |
 
-Transfers check size and SHA-256, which verifies integrity rather than provenance or safety. Downloaded content and forwarded services may be malicious. Avoid destinations that automatically load new scripts or configuration; an approved large file can still fill the disk. Only regular files are supported; metadata is not copied. Linux received files default to `0600`; Windows files inherit the destination directory ACL.
+Direct and approved copies share SFTP transfer code: exact-size checks and SHA-256 readback of uploaded temporary content, with transport integrity provided by authenticated SSH. These checks do not authenticate file provenance. Approved streams expose only the selected remote file and its temporary upload, never a general SFTP filesystem; server publication checks size, syncs the file, and refuses overwrite. Downloaded content and forwarded services may be malicious. Avoid destinations that automatically load new scripts or configuration; an approved large file can still fill the disk. File endpoints must be regular files; direct cp also accepts explicit stdin/stdout. Stdout is not atomic and cannot retract bytes on failure. Stdin can be unbounded and exhaust remote storage before EOF; file publication still requires size/digest verification and refuses overwrite. Metadata is not copied. Linux received files default to `0600`; Windows files inherit the destination directory ACL.
 
 Cancellation removes incomplete files when cleanup can run. Forced termination may leave `.sshore-*.part` files; batch failure does not undo completed files. During approved operations and `--stay`, remote terminal output is suppressed. Detach/disconnection cancels connection-owned transfers. Independent mounts and forwards keep their own lifetimes; ending a shell does not stop them. Only explicit detach preserves the remote session (including approval-request detach and completed file operations with `--stay`). Other transport loss closes the PTY and ends the daemon when detected. This uses normal terminal hangup semantics, not process-tree extermination: programs that ignore hangup or deliberately escape the terminal may survive, as with SSH. It does not promise cleanup of arbitrary reparented tasks.
 
-Local `forward HOST A from/to B` defaults to a detached local worker. Remote
+Local `forward` defaults to a detached local worker. Remote
 forward requests are local pending tasks; approval verifies the original session
 and PID, explicitly detaches it, then launches an independent worker. Both paths
 use the same private records, locks and authenticated loopback control as mounts.

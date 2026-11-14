@@ -131,8 +131,8 @@ func parseFTPOptions(args []string) (ftpOptions, error) {
 	if o.name == "" {
 		o.name = ftpDefaultName(o.host)
 	}
-	if strings.HasPrefix(o.host, "-") || strings.ContainsAny(o.host, "\r\n\x00") {
-		return o, usage("invalid SSH destination")
+	if err := validSSHDestination(o.host); err != nil {
+		return o, err
 	}
 	if strings.ContainsRune(o.remote, 0) || strings.ContainsRune(o.mountpoint, 0) {
 		return o, usage("invalid mount path")

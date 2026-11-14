@@ -91,26 +91,7 @@ func storeRemoteTask(t remoteTask) error {
 	if e != nil {
 		return e
 	}
-	data, e := json.Marshal(t)
-	if e != nil {
-		return e
-	}
-	f, e := os.CreateTemp(dir, ".task-*")
-	if e != nil {
-		return e
-	}
-	defer os.Remove(f.Name())
-	if _, e = f.Write(data); e != nil {
-		f.Close()
-		return e
-	}
-	if e = f.Close(); e != nil {
-		return e
-	}
-	if e = privateState(f.Name(), false); e != nil {
-		return e
-	}
-	return os.Rename(f.Name(), filepath.Join(dir, t.Key+".json"))
+	return writeStateJSON(filepath.Join(dir, t.Key+".json"), t)
 }
 func removeRemoteTask(key string) error {
 	if !validApprovalID(key) {
@@ -236,7 +217,7 @@ func pendingRemoteTask(id string, ops []operation) remoteTask {
 	if len(ops) == 1 {
 		op := ops[0]
 		if op.Kind == "forward" {
-			detail = strings.ReplaceAll(describeForward(op.Port, op.RemoteHost, op.RemotePort, op.Reverse), "your computer", "manager")
+			detail = strings.ReplaceAll(approvalSummary([]operation{op}), "your computer", "manager")
 		} else {
 			detail = op.Kind + " " + op.Path
 		}
