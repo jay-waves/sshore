@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/cp"
+	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/releaseversion"
 	"github.com/jay-waves/sshore/internal/termui"
 )
@@ -64,7 +64,7 @@ func validateOperations(ops []operation) error {
 				return fmt.Errorf("unexpected port in file request")
 			}
 			if op.Kind == "download" {
-				if err := cp.ValidateName(op.Name); err != nil {
+				if err := files.ValidateName(op.Name); err != nil {
 					return err
 				}
 				if op.Size < 0 || op.Size > (1<<63-1)-total {
@@ -420,7 +420,7 @@ func runReview(args []string) (code int, resultErr error) {
 				prompt = fmt.Sprintf("Local file to upload [%s] (Tab; Enter accepts): ", cleanText(op.LocalHint))
 			}
 			path, e := readApprovalPath(input, prompt, op.LocalHint, func(path string) (string, error) {
-				f, e := cp.OpenSource(path)
+				f, e := files.OpenSource(path)
 				if e != nil {
 					return "", e
 				}

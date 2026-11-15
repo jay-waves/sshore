@@ -32,7 +32,7 @@ jobs:
           go-version: stable
       - name: Formatting
         shell: bash
-        run: test -z "$(gofmt -l *.go)"
+        run: test -z "$(git ls-files -z '*.go' | xargs -0 gofmt -l)"
       - run: go vet ./...
       - name: Core tests
         if: ${{ !inputs.extended }}

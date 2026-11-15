@@ -127,7 +127,7 @@ func bootstrap(target, mode, name string) (result error) {
 	if !filepath.IsAbs(target) {
 		return fmt.Errorf("setup target must be absolute")
 	}
-	if mode != "bridge" && mode != "resume" && mode != "sessions" && mode != "new" && mode != "attach" && mode != "spawn" {
+	if mode != "bridge" && mode != "resume" && mode != "sessions" && mode != "new" && mode != "attach" && mode != "spawn" && mode != "mount-agent" {
 		return fmt.Errorf("invalid setup mode")
 	}
 	if mode == "resume" || name != "" {
@@ -143,6 +143,12 @@ func bootstrap(target, mode, name string) (result error) {
 	}()
 	updated := false
 	changed := false
+	recoverSetup := func(cause error) error {
+		if mode == "mount-agent" {
+			return cause
+		}
+		return offerRecovery(cause)
+	}
 	for {
 		lock, err := setupLock()
 		if err != nil {
@@ -205,6 +211,13 @@ func bootstrap(target, mode, name string) (result error) {
 			if updated {
 				readyMode = "updated"
 			}
+			if mode == "mount-agent" {
+				lock.Close()
+				if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
+					return err
+				}
+				return serverCommand([]string{"mount-agent"})
+			}
 			return bridgePrepared(name, mode == "resume" || mode == "attach", mode == "new" || mode == "spawn", target, lock, readyMode, mode == "spawn")
 		}
 		lock.Close()
@@ -236,6 +249,9 @@ func bootstrap(target, mode, name string) (result error) {
 		if reply.Type != "setup_action" {
 			return fmt.Errorf("invalid setup action")
 		}
+		if mode == "mount-agent" && (reply.Action == "cancel" || reply.Action == "plain") {
+			return fmt.Errorf("mount setup cancelled; no update performed")
+		}
 		if reply.Action == "plain" {
 			if err = writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "plain"}); err != nil {
 				return err
@@ -263,7 +279,7 @@ func bootstrap(target, mode, name string) (result error) {
 		staged, err := prepareReplacement(target)
 		if err != nil {
 			lock.Close()
-			return offerRecovery(err)
+			return recoverSetup(err)
 		}
 		err = stopOldSessions(state.Processes)
 		if err == nil {
@@ -272,7 +288,7 @@ func bootstrap(target, mode, name string) (result error) {
 		_ = os.Remove(staged)
 		lock.Close()
 		if err != nil {
-			return offerRecovery(err)
+			return recoverSetup(err)
 		}
 		updated = true
 		if mode == "resume" {

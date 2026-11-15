@@ -38,7 +38,9 @@ operations; writes may be incomplete or already completed and are never retried.
 Idle mounts have no request timer. Startup timeout is opt-in because it includes
 SSH password/MFA entry; use SSH ConnectTimeout for network connection setup. Uses a separate SSH connection.
 Default: matching remote sshore and an OpenSSH sftp-server executable; file
-notifications share this SSH connection. No software is installed or updated.
+notifications share this SSH connection. Missing remote sshore installs automatically;
+older installations require typed update confirmation and may end listed shells.
+Failed remote downloads fall back to a verified local download/cache over the same SSH connection.
 Use --no-watch for a plain SFTP subsystem without remote sshore.
 Requires WinFsp on Windows or FUSE on Linux. Missing WinFsp prints its install URL.
 No persistent write-back cache. Background mounts publish remote inventory only;

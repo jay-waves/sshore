@@ -20,7 +20,7 @@ import (
 	"github.com/pkg/sftp"
 	"github.com/xtaci/smux"
 
-	"github.com/jay-waves/sshore/internal/cp"
+	"github.com/jay-waves/sshore/internal/files"
 )
 
 var testBuild struct {
@@ -370,7 +370,7 @@ func approvedSFTP(t *testing.T, b *bridgeConn, op operation) (*sftp.Client, *smu
 	if m := recv(t, st); m.Type != "sftp" {
 		t.Fatal(m)
 	}
-	client, err := newFTPSFTP(st, st)
+	client, err := files.NewSFTP(st, st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +481,7 @@ func TestConcurrentStreamsCancelIsolation(t *testing.T) {
 	if err := os.WriteFile(source, []byte("ok"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := cp.Upload(fast, source, "/target", 2, nil); err != nil {
+	if err := files.Upload(fast, source, "/target", 2, nil); err != nil {
 		t.Fatal(err)
 	}
 	waitUploadFiles(t, dir, 1)

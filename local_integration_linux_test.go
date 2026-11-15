@@ -114,5 +114,8 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 		if args[0] == "launch" && !strings.Contains(out, "Detached;") {
 			t.Fatal(out)
 		}
+		if args[0] == "attach" && !strings.Contains(out, "Exited launch/renamed on local (code 0).") {
+			t.Fatalf("missing shell exit notice: %s", out)
+		}
 	}
 }

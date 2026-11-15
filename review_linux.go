@@ -10,7 +10,7 @@ import (
 	"github.com/pkg/sftp"
 	"github.com/xtaci/smux"
 
-	"github.com/jay-waves/sshore/internal/cp"
+	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -50,7 +50,7 @@ func requestFilesWithHint(kind string, paths []string, hint string) error {
 		}
 		op := operation{Kind: kind, Path: absolute, LocalHint: hint}
 		if kind == "download" {
-			f, err := cp.OpenSource(absolute)
+			f, err := files.OpenSource(absolute)
 			if err != nil {
 				return err
 			}
@@ -122,21 +122,21 @@ func approvedRemoteTransfer(st *smux.Stream, m message) {
 		return
 	}
 	op := m.Operations[0]
-	var backend *cp.FS
+	var backend *files.FS
 	var err error
 	switch op.Kind {
 	case "download":
-		var f *cp.Source
-		f, err = cp.OpenSource(op.Path)
+		var f *files.Source
+		f, err = files.OpenSource(op.Path)
 		if err == nil {
 			if f.Name() != op.Name || f.Size() != op.Size {
 				err = fmt.Errorf("remote file metadata changed; request again")
 			}
 			f.Close()
 		}
-		backend = cp.NewSourceFS(op.Path, op.Size)
+		backend = files.NewSourceFS(op.Path, op.Size)
 	case "upload":
-		err = cp.ValidateName(m.Name)
+		err = files.ValidateName(m.Name)
 		if m.Size < 0 {
 			err = fmt.Errorf("invalid upload size")
 		}
@@ -147,7 +147,7 @@ func approvedRemoteTransfer(st *smux.Stream, m message) {
 				err = fmt.Errorf("upload destination must be a directory")
 			}
 		}
-		backend = cp.NewTargetFS(filepath.Join(op.Path, m.Name), m.Size)
+		backend = files.NewTargetFS(filepath.Join(op.Path, m.Name), m.Size)
 	default:
 		err = fmt.Errorf("invalid transfer kind")
 	}

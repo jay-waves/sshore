@@ -11,6 +11,7 @@ Does not modify ~/.ssh or system sshd configuration.
 import argparse
 import errno
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,7 @@ import signal
 import socket
 import struct
 import subprocess
+import tarfile
 import tempfile
 import termios
 import threading
@@ -143,10 +145,46 @@ def spawn_smoke(binary, host, options):
         subprocess.run(cli("cancel", "persistent"), check=True)
 
 
+def setup_smoke(binary, host, options, root):
+    release = subprocess.check_output([binary, "--version"], text=True).strip().split()[1]
+    cache_root = root / "cache"
+    os.environ["XDG_CACHE_HOME"] = str(cache_root)
+    cache = cache_root / "sshore" / "releases" / release
+    cache.mkdir(parents=True, mode=0o700)
+    archive = cache / f"sshore_{release}_linux_amd64.tar.gz"
+    with tarfile.open(archive, "w:gz") as output:
+        output.add(binary, arcname="sshore")
+    archive.chmod(0o600)
+    manifest = cache / "SHA256SUMS"
+    manifest.write_text(f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n")
+    manifest.chmod(0o600)
+    for action in ("launch", "spawn"):
+        target = root / "remote-home" / "bin" / action
+        cli = [binary, action, host, "prepared", "--server", str(target), *options]
+        terminal = Terminal(cli, wait_ready=False)
+        try:
+            terminal.expect("preparing sshore .* locally")
+            terminal.expect("Connected")
+            terminal.send("printf 'SETUP-%s\\n' alive\n")
+            terminal.expect("SETUP-alive")
+            terminal.send("exit\n")
+            terminal.wait()
+        finally:
+            terminal.close()
+        assert subprocess.check_output([str(target), "--version"], text=True).strip() == f"sshore {release}"
+        before = (root / "curl-calls").read_text()
+        result = subprocess.run([binary, "launch", host, "matching", "--detach", "--server", str(target), *options], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        assert (root / "curl-calls").read_text() == before, "matching version attempted a download"
+        subprocess.run([binary, "cancel", host, "matching", "--server", str(target), *options], check=True)
+    print("setup: real SSH local-cache fallback, spawn relay, exact version and matching-version reuse OK")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default="dist/sshore")
     parser.add_argument("--spawn-only", action="store_true")
+    parser.add_argument("--setup-only", action="store_true")
     args = parser.parse_args()
     binary = str(Path(args.binary).resolve())
     metadata = subprocess.check_output(["go", "version", "-m", binary], text=True)
@@ -185,6 +223,24 @@ PubkeyAuthentication yes
 UsePAM no
 LogLevel ERROR
 """)
+        if args.setup_only:
+            home = root / "remote-home"
+            home.mkdir(mode=0o700)
+            tools = root / "remote-tools"
+            tools.mkdir(mode=0o700)
+            curl = tools / "curl"
+            curl.write_text("#!/bin/sh\n" + f"echo attempt >> {shlex.quote(str(root / 'curl-calls'))}\n" + "echo 'fixture: remote download offline' >&2\nexit 22\n")
+            curl.chmod(0o700)
+            scope = root / "remote-environment"
+            scope.write_text("#!/bin/sh\n" +
+                             f"export HOME={shlex.quote(str(home))}\n" +
+                             f"export SSHORE_RUNTIME_DIR={shlex.quote(str(root / 'runtime'))}\n" +
+                             f"export PATH={shlex.quote(str(tools))}:$PATH\n" +
+                             "export SHELL=/bin/sh\n" +
+                             'exec sh -c "$SSH_ORIGINAL_COMMAND"\n')
+            scope.chmod(0o700)
+            with config.open("a") as output:
+                output.write(f"ForceCommand {scope}\n")
         log = open(root / "sshd.log", "w+")
         daemon = subprocess.Popen([sshd, "-D", "-e", "-f", str(config)], stdout=log, stderr=log)
         terms = []
@@ -213,6 +269,9 @@ LogLevel ERROR
                        "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known}"]
             if args.spawn_only:
                 spawn_smoke(binary, command[2], command[3:])
+                return
+            if args.setup_only:
+                setup_smoke(binary, command[2], command[5:], root)
                 return
             base_command = command[:]
             for expected_name in (b"pikachu", b"eevee"):

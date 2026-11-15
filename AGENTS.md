@@ -20,7 +20,8 @@ See [terminal and mux design scope](SSHORE.md#terminal-and-mux-design-scope).
 - Published tags are immutable. After a successful new publication and complete replacement assets, retain only the highest published PATCH in each MAJOR.MINOR series. Delete older release objects/assets, never their Git tags. Skip drafts, prereleases and noncanonical tags; failed or incomplete publication must not prune releases.
 
 Use GLOSSARY.md terminology for code organization. Name business packages and
-file groups after public commands (`cp`, `mount`, `forward`, `review`); keep
+file groups after public commands (`cp`, `mount`, `forward`, `review`); `cp`
+and `mount` share the flat `internal/files` package. Keep
 shared infrastructure named for its responsibility.
 
 ## User interaction

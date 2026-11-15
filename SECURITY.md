@@ -42,6 +42,7 @@ flowchart LR
         approve["Separate sshore review process"]
         gate["Setup and shell checks"]
         resources["Selected files / loopback listener or service"]
+        staging["Client cache: fixed release and Linux amd64; bounded extraction"]
     end
     user -->|"Explicit cp source and destination"| directcopy["Independent SFTP copy; temporary file and no-overwrite hard link"]
     directcopy <-->|"Authenticated SSH"| service
@@ -52,7 +53,8 @@ flowchart LR
     mounted -->|"Request deadline exceeded"| abortmount["Abort transport; unknown write outcome; no replay"]
     mountuser["Local user: mount HOST"] --> mountgrant["Explicit mount grant: read-only or writable"]
     mountgrant --> mounted["FUSE / WinFsp: local applications"]
-    mounted --> mountversion["Default: exact-release mount agent; recovery denied"]
+    mounted -->|"Default: prepare helper; older state requires update confirmation"| setup
+    setup --> mountversion["Exact-release mount agent; no recovery file access"]
     mountversion <-->|"One OpenSSH connection: SFTP + bounded notifications"| service
     mounted <-->|"No-watch: ordinary SFTP subsystem"| service
     resources --> status["Local status: no target probe; no control tokens exported"]
@@ -73,6 +75,9 @@ flowchart LR
     record -->|"Consume once"| approve
     approve -->|"New SSH connection"| gate
     setup <-->|"Exact version / setup choice"| gate
+    publisher["Trusted release publisher: HTTPS assets + checksums"] --> staging
+    publisher --> setup
+    staging -->|"Remote download failure: same authenticated SSH, bounded binary, hash/version checked"| setup
     setup -->|"Setup lock: launch reserves unused name; attach requires existing shell"| program
     gate -->|"Unchanged setup and matching shell PID"| resources
     user -->|"Review forward: fixed endpoints and one SSH authentication"| forwardcheck["Worker checks source version / name / PID / detached state"]
@@ -262,7 +267,7 @@ The full release version, including PATCH, is the compatibility identifier. No s
 
 - A newer installed program or shell daemon rejects an older client. Never automatically downgrade. Unknown/unordered versions, including a failed executable version check, permit manual recovery only.
 - Missing software may be installed automatically when no incompatible shells exist. Existing older installations or shells require the user to type `update` after reviewing affected shell identities.
-- Preparation downloads a matching release over HTTPS and verifies its checksum and executable version. Temporary staging does not replace the installed program.
+- Preparation downloads a matching release over HTTPS and verifies its checksum and executable version. Remote download failure can request the same Linux amd64 release from the client cache/download over the existing SSH connection. The remote cannot choose a local path, download URL or different release; extraction selects only the regular executable, with bounded sizes. Temporary staging does not replace the installed program.
 - Before ending tasks, setup takes the account setup lock, rechecks the process snapshot, then prepares and verifies the replacement on the target filesystem. Changed state requires fresh confirmation. Only confirmed same-user shell processes and identified tasks are signaled, with process identity validation; no process-name-wide kill is used.
 - Failure to prepare a replacement must not terminate tasks. Once confirmed termination starts, later failures cannot restore stopped tasks. Updates can disconnect other clients and lose unsaved work.
 - Automatic replacement requires a user-owned regular file and a user-owned directory without group/world write permission. There is no elevation, PATH or shell-profile modification.
@@ -280,7 +285,13 @@ are refused. Recovery mode does not permit this operation.
 
 Processes that deliberately escape shell ancestry/shell ID, legacy binaries ignoring policy, concurrent unmanaged modifications and a compromised remote kernel/root are outside these guarantees. Process visibility may also limit what can be inspected. Diagnostics alone never terminate processes.
 
-Installer checksums detect corruption, not compromise of the publisher/repository supplying the installer, assets and checksums. Remote preparation needs HTTPS access and a matching published asset. Standalone installers do not stop running shells; the Windows installer does not make versioned backups. Linux installation preserves a recognized old version when its backup does not already exist. Published Git tags remain immutable. After successful publication and asset checks, older published patch releases and their assets are deleted within each major/minor series. Failed or incomplete publication cannot trigger cleanup.
+Installer checksums detect corruption, not compromise of the publisher/repository supplying the installer, assets and checksums. Preparation needs a matching verified cache entry or HTTPS access from either end to a matching published asset. Cached artifacts are private to the local OS user and checked on reuse; another release is never substituted when assets are unavailable. Standalone installers do not stop running shells; the Windows installer does not make versioned backups. Linux installation preserves a recognized old version when its backup does not already exist. Published Git tags remain immutable. After successful publication and asset checks, older published patch releases and their assets are deleted within each major/minor series. Failed or incomplete publication cannot trigger cleanup.
+
+Notification-enabled mount setup uses the same update safeguards. A background
+worker's private startup broker displays affected shells and collects typed
+confirmation in the launching terminal. Declining cancels setup; it does not
+grant recovery-mode file access. Plain SFTP copies, no-watch mounts and ordinary
+forwarding do not install a remote helper.
 
 ## Manual recovery
 

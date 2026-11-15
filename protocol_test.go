@@ -57,6 +57,14 @@ func TestProtocolRejectsMalformedFrames(t *testing.T) {
 			t.Fatalf("accepted %v", b)
 		}
 	}
+	for _, body := range []string{`{}`, `{"type":"input"}`, `{"type":"output"}`, `{"type":"chunk"}`} {
+		frame := make([]byte, 5+len(body))
+		binary.BigEndian.PutUint32(frame[1:], uint32(len(body)))
+		copy(frame[5:], body)
+		if _, err := readMessage(bytes.NewReader(frame)); err == nil {
+			t.Fatalf("accepted reserved control metadata: %s", body)
+		}
+	}
 }
 func TestOptions(t *testing.T) {
 	o, err := parseOptions([]string{"launch", "myhost", "build", "--server", "/a b/sshore", "--", "-J", "jump"})

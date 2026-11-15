@@ -88,8 +88,10 @@ This document defines the project vocabulary. Commands are documented by
   claims. Listings do not probe target services; missing peer heartbeats mean
   unknown state, not confirmed termination.
 
-Business package and filename prefixes follow the public commands: `spawn`, `cp`,
-`mount`, `forward` and `review`. The mount protocol is SFTP over SSH. `review` replaces
+Business filename prefixes follow the public commands: `spawn`, `cp`,
+`mount`, `forward` and `review`. `internal/files` is the shared, flat implementation package for `cp` and `mount`;
+its shared SFTP and file primitives belong to neither command adapter.
+The mount protocol is SFTP over SSH. `review` replaces
 `approve`, and `cancel` replaces the public `stop`/`kill` verbs. Internal wire or
 function names may retain historical terminology.
 

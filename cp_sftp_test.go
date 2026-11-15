@@ -10,17 +10,17 @@ import (
 
 	"github.com/pkg/sftp"
 
-	"github.com/jay-waves/sshore/internal/cp"
+	"github.com/jay-waves/sshore/internal/files"
 )
 
 func TestTransferSFTPScope(t *testing.T) {
 	dir := t.TempDir()
-	backend := cp.NewTargetFS(filepath.Join(dir, "target"), 2)
+	backend := files.NewTargetFS(filepath.Join(dir, "target"), 2)
 	a, b := net.Pipe()
 	server := sftp.NewRequestServer(a, sftp.Handlers{FileGet: backend, FilePut: backend, FileCmd: backend, FileList: backend})
 	done := make(chan struct{})
 	go func() { defer close(done); _ = server.Serve() }()
-	client, err := newFTPSFTP(b, b)
+	client, err := files.NewSFTP(b, b)
 	if err != nil {
 		t.Fatal(err)
 	}

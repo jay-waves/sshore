@@ -14,37 +14,42 @@ and Windows on amd64 only. Mounts and independent forwards do not share a shell'
 | Area | Entry points and responsibility |
 | --- | --- |
 | CLI | `main.go`: command dispatch and help; `shell_command.go` / `shell_options.go`: one shell execution and parsing path; `ssh_options.go`: SSH-only suffix after `--` |
-| Connection and setup | `client_transport.go`: local/SSH transport ownership; `client.go`: shared interactive loop; `remote_bootstrap.go`: remote preparation and recovery |
+| Connection and setup | `client_transport.go`: local/SSH transport ownership; `client.go`: shared interactive loop; `remote_bootstrap.go` and `setup*.go`: shared remote preparation, downloads, update confirmation and recovery |
 | Shell | `server_linux.go`, `session_*.go`: daemon, PTY lifecycle, names, selection, process snapshots and termination |
 | Wire protocol | `protocol.go`, `mux.go`: shell/application messages; `internal/transport/`: bounded frames, pipe ownership, smux tuning and SSH signal handling |
 | Release version rules | `internal/releaseversion/`: exact matching and ordering of full releases |
 | Direct copy | `cp_command.go`: local cp parsing, batch preflight and independent SFTP transport |
 | Approval | `review*.go`: pending metadata, local consent, reconnect checks and transfer coordination |
-| File transfer | `internal/cp/`: regular-file validation, exact-size copies, verified uploads, no-clobber publication and restricted SFTP handlers |
+| File transfer | `internal/files/cp*.go`: regular-file validation, exact-size copies, verified uploads, no-clobber publication and restricted SFTP handlers |
 | Local daemon | `local_daemon*.go`, `local_*.go`: singleton startup, local shell/forward ownership and mount-worker supervision |
 | Mux | `internal/mux/`: exclusive attachment lifecycle, detach handshake, Linux PTY / Windows local ConPTY, input-mode tracking and native redraw |
 | Terminal presentation | `internal/termui/`: status formatting, theme colors and platform-specific ANSI detection |
 | Independent resources | `resource_session.go`, `resource_status.go`, `resources.go`: worker startup, private records, control and exit receipts |
 | Forward | `endpoints.go` and `forward*.go`: listener/service operands, fixed endpoint mapping and independent SSH transport |
-| Mount | `internal/mount/`: mount lifecycle, SFTP adapter/limits, caches, notifications, capacity, statistics and FUSE/WinFsp; root `mount*.go`: CLI, paths and worker integration |
+| Mount | `internal/files/mount*.go`: mount lifecycle, SFTP adapter/limits, caches, notifications, capacity, statistics and FUSE/WinFsp; root `mount*.go`: CLI, paths and worker integration |
 | Inventory | `inventory*.go`, `remote_tasks.go`: public status views and advisory peer records |
 | Distribution | `install.sh`, `install.ps1`, `scripts/package.py`, `scripts/release.sh`, `.github/workflows/`: installation, packaging, CI and releases |
 
 The root `main` package owns command routing, product policy and lifecycle
 coordination. Internal packages have narrower responsibilities and do not depend
-on application types or mutable application state. `cp` knows nothing
+on application types or mutable application state. The copy implementation in `files` knows nothing
 about approval records, shell identities or the release version; callers authorize
 operations before constructing its source/target views. Receiver handles and
 publication state stay private. `termui` formats local status only; raw terminal
 input, mouse modes and remote PTY bytes remain under application control.
-`mount` owns its filesystem engine and transient remote agent. Its configuration
+The same flat `files` package owns the mount filesystem engine and transient remote agent. Its configuration
 receives an executable, already validated SSH arguments and the current release;
 it never parses product options or installs software. The optional lifecycle
 interface carries worker readiness, stop requests, transport environment,
 operation timestamps and peer synchronization callbacks. Resource capabilities,
 name reservations and worker HTTP endpoints remain in the application. Mount
-notification messages define only mount fields; their frame codec and smux
-configuration are shared with shell traffic through `transport`.
+notification messages define only mount fields; framing, message encoding and
+smux configuration are shared with shell traffic through `transport`.
+The package keeps `cp*` and `mount*` file groups beside shared SFTP framing,
+limits and file validation. Copy and mount callers use these primitives directly;
+neither command depends on the other command adapter. `MountConfig` and
+`MountLifecycle` describe mount-only orchestration. Stop requests carry reply
+channels, so the resource manager does not depend on mount-owned control types.
 Package-level tests live beside their implementation; workflow tests stay with
 the application.
 
@@ -259,11 +264,32 @@ There is no separate sshore protocol counter. Running daemons are replaced throu
 account setup, not upgraded in place. Recovery uses a transient PTY on the existing
 SSH connection; see [setup and recovery safeguards](SECURITY.md#remote-setup-and-updates).
 
-Remote bootstrap downloads the installer with up to two retries for transient
-HTTP failures, matching the installer's release-download retry policy. Download,
-preparation and version-verification failures return a framed setup error to the
-client while keeping detailed diagnostics on stderr. Failed preparation leaves
-existing installations and shell tasks untouched.
+Remote bootstrap first uses the exact installed release without networking. A
+missing or older program stages a matching coordinator via the remote installer,
+with up to two retries for transient HTTP failures. Failed remote preparation
+sends a bounded `setup_download` frame for Linux amd64 on the existing SSH pipes.
+The client uses its fixed release URL and exact version, verifies SHA256SUMS,
+extracts only the regular `sshore` archive entry, and caches the archive/manifest
+under the user's cache directory in `sshore/releases/VERSION`. Cached artifacts
+are verified on every reuse; unavailable/pruned releases never substitute another
+version. Downloads, archives, executable size, and redirects are bounded.
+
+The client sends an ASCII size/SHA256 header and exactly that many executable
+bytes. The shell consumes exactly the header and payload, verifies length/hash
+and the executable's full version, then starts the coordinator on the same
+authenticated connection. The remote spawn owner relays this bounded transfer
+without releasing its SSH connection. The target installation is untouched until
+the existing account-lock and update-confirmation checks succeed. Preparation
+failures return framed errors and remove temporary staging.
+
+Default `mount` uses this same setup before its mount-agent handshake, without
+creating a persistent shell. Its optional transport preparation callback completes
+before SFTP/mount setup and shares the startup cancellation/timeout. Background
+mounts relay update choices and setup status through the launcher's authenticated
+prompt broker; no worker reads terminal input. Enter cancels helper setup; manual
+recovery remains an explicit shell connection, never a hidden mount recovery PTY.
+`mount --no-watch`, direct `cp`, ordinary forwarding, inventory and cancellation
+do not enter automatic installation. WinFsp/FUSE prerequisites remain local setup.
 
 ## Streams and approved operations
 
@@ -280,7 +306,7 @@ shell before executing. Setup updates or recovery skip approved operations.
 The authorization rules belong in [Local approval](SECURITY.md#local-approval).
 
 File batches run sequentially and stop at the first failure. Both direct and
-approved copies use the same SFTP upload/download implementation in `internal/cp`.
+approved copies use the same SFTP upload/download implementation in `internal/files`.
 Uploads create private temporary files, verify stored bytes by SHA-256 readback,
 and publish with a no-overwrite hard link. Downloads check the exact source size
 and sync a local temporary file before publication. Authenticated SSH provides
@@ -666,7 +692,7 @@ when changes span components:
 ```sh
 go test -tags=sshoretest -timeout=5m ./...
 # Optional native mount smoke with the existing FUSE/WinFsp installation:
-SSHORE_TEST_FTP_MOUNT=1 go test -tags=sshoretest -run '^TestFTPNativeMount$' ./internal/mount
+SSHORE_TEST_FTP_MOUNT=1 go test -tags=sshoretest -run '^TestFTPNativeMount$' ./internal/files
 ```
 
 Use `go vet ./...` for structural changes and add `-race` for concurrency changes.
