@@ -136,6 +136,9 @@ func writeApproval(o options, ops []operation) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if o.sshDirectory != "" {
+		cwd = o.sshDirectory
+	}
 	nonce := make([]byte, 16)
 	if _, err = rand.Read(nonce); err != nil {
 		return "", err
@@ -414,6 +417,10 @@ func runReview(args []string) (code int, resultErr error) {
 	}
 	if err = consumeApproval(dir, r.ID); err != nil {
 		return 1, err
+	}
+	if len(r.Operations) == 1 && r.Operations[0].Kind == "forward" {
+		op := r.Operations[0]
+		return startForwardSession(forwardConfig{Host: r.Host, Server: r.Server, SSH: r.SSH, Port: op.Port, Target: op.TargetPort, Reverse: op.Reverse, Session: r.Session, ResumePID: r.PID, ApprovalID: r.ID})
 	}
 	return runClient(options{host: r.Host, session: r.Session, server: r.Server, downloadDir: r.DownloadDir, ssh: r.SSH, quiet: r.Quiet, noEscape: r.NoEscape, approved: r.Operations, stay: a.stay, resumePID: r.PID, approvalID: r.ID})
 }

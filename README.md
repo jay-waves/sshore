@@ -70,14 +70,18 @@ to continue. Press Ctrl-] or run `sshore detach` in the remote shell.
 sshore new work                 # Create a session; prints its automatic name.
 sshore new work build           # Or choose a name.
 # Press Ctrl-] to detach and keep programs running.
-sshore attach work build        # Resume a detached session.
+sshore attach work build        # Resume a specific detached session.
+sshore attach work              # Resume the most recently used session on work.
+sshore attach                   # Reuse the most recent host and session.
 sshore list work                # Show resources and remote sessions.
 sshore rename work build dev    # Rename without restarting tasks.
 sshore cancel work dev          # Immediately end the session and its tasks.
 ```
 
-`new` only creates; `attach` only resumes. Omit the name in `attach` to select a
-detached session. An attached session cannot be taken over.
+`new` only creates; `attach` only resumes. With no saved connection for a host,
+omitting the session name selects a detached session. Recent targets retain SSH
+connection options; explicit options override them. An attached session cannot
+be taken over, and an ended recent session is not recreated.
 
 **Only explicit detach preserves the session.** In the remote shell,
 `sshore detach` also works. `exit`, closing the local terminal or detected
@@ -86,9 +90,9 @@ not saved. `cancel HOST NAME` has no confirmation; unsaved work may be lost.
 
 ```mermaid
 flowchart LR
-    connect["Local: new / attach HOST"] --> session["Remote shell"]
+    connect["Local: new HOST / attach recent or named session"] --> session["Remote shell"]
     session -->|"Ctrl-] / detach"| detached["Programs keep running"]
-    detached -->|"attach HOST NAME"| session
+    detached -->|"attach [HOST [NAME]]"| session
     session -->|"Exit / connection loss / cancel"| ended["Session ends"]
     session -->|"cp / forward: request, then detach"| pending["Local pending request"]
     pending -->|"review: submit local paths or port"| approved["Execute approved operation"]

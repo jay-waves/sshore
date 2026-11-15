@@ -37,9 +37,9 @@ func TestResourceIdentityAndLegacyMount(t *testing.T) {
 	}
 }
 func TestForwardTransportDoesNotReplayOtherRules(t *testing.T) {
-	args := forwardSSHArgs(forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, SSH: []string{"-p", "2222", "-L", "9999:localhost:9999", "-R", "8888:localhost:8888", "-D", "7777"}}, true)
+	args := forwardSSHArgs(forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, SSH: []string{"-p", "2222", "-L", "9999:localhost:9999", "-R", "8888:localhost:8888", "-D", "7777", "-o", "RemoteForward=6666 localhost:66", "-o", "LocalForward 5555 localhost:55"}}, true)
 	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "9999") || strings.Contains(joined, "8888") || strings.Contains(joined, "7777") || !strings.Contains(joined, "-p 2222") || !strings.Contains(joined, "-L 127.0.0.1:8080:127.0.0.1:3000") {
+	if strings.Contains(joined, "9999") || strings.Contains(joined, "8888") || strings.Contains(joined, "7777") || strings.Contains(joined, "6666") || strings.Contains(joined, "5555") || !strings.Contains(joined, "-p 2222") || !strings.Contains(joined, "-L 127.0.0.1:8080:127.0.0.1:3000") {
 		t.Fatal(args)
 	}
 }

@@ -35,8 +35,18 @@ belongs here, not in file headers or a second documentation tree.
 
 `new` reserves an unused name and creates a PTY session. Automatic names come
 from a fixed pool; callers can supply a name when the pool is exhausted. `attach`
-resolves an existing detached session and never evicts another client. Omitting
-its name selects the only detached session or opens the shared picker. Selection
+resolves an existing detached session and never evicts another client. Local
+`connections/recent.json` retains up to 32 hosts, ordered by successful interactive
+attachment, with the latest session name, remote executable and SSH transport
+options and original SSH working directory for each host. Relative SSH key/config
+paths retain their meaning without changing local download paths. It captures no
+typed authentication answers and excludes
+native forwarding flags. Atomic private writes keep metadata complete; concurrent
+clients are last-writer-wins. With no host, attach reuses the newest record; with
+a host, its record supplies an omitted name and transport defaults. Explicit
+server/SSH options override saved defaults. Stale names fail normally without
+creating a replacement or taking over an attached client. Without a saved record,
+omitting the name selects the only detached session or opens the picker. Selection
 uses exact identities or displayed numbers, supports `/text` filtering, and does
 not hold the account setup lock while waiting for terminal input.
 
@@ -49,8 +59,12 @@ that can be used directly for signaling.
 Only explicit detach preserves the session. Exit or detected transport loss
 closes the PTY and ends the daemon. This follows terminal hangup semantics; it is
 not a general process containment mechanism. Detached output and terminal screens
-are not replayed. On reattachment, terminal mode restoration and foreground redraw
-are best effort. See [termination guarantees](SECURITY.md#files-and-forwarding).
+are not replayed. Reattachment requests foreground redraw. When the shell itself
+owns the PTY foreground group, a one-column resize and 30 ms restoration prompts
+readline to redisplay even at unchanged terminal size; no input is injected and
+unsubmitted commands remain unsubmitted. Other foreground applications receive
+SIGWINCH. Restoration checks the current size to avoid overwriting another resize.
+Terminal mode restoration and application redraw remain best effort. See [termination guarantees](SECURITY.md#files-and-forwarding).
 
 The full release version is the compatibility identifier at setup and handshake.
 There is no separate sshore protocol counter. Running daemons are replaced through
@@ -132,8 +146,18 @@ there is no separate yes prompt. Enter accepts a displayed suggestion.
 An empty port without a suggestion retries. File batches collect every path
 before any transfer starts and reject duplicate destinations. Cancellation
 during collection leaves the request pending.
-After validation the source shell is explicitly detached and the worker
-runs independently. Local forwards may opt into at most ten retries after an
+Approved forwarding starts its worker immediately after local review and uses
+one SSH authentication. The remote `forward-watch` command checks exact release,
+source session name/PID and detached state through a bounded local daemon RPC,
+without reattaching or starting a shell. Native OpenSSH establishes the explicitly
+approved listener before running this command; readiness is reported only after
+source validation, and failure closes the transport. There is no separate setup
+connection or software update in this path. Source shell lifetime remains
+independent. Shutdown first closes stdin to let the watcher remove its lease,
+then forces SSH termination after two seconds if necessary. Current-attempt SSH
+stderr is bounded and returned to the launcher on startup failure, including
+occupied/denied remote listener errors; full diagnostics remain in the worker log.
+Peer inventory write failures warn once and retry without closing a live forward. Local forwards may opt into at most ten retries after an
 established connection fails. Retry backoff is bounded; authentication is
 noninteractive, host keys must already be trusted, and TCP connections are not
 resumed. Cancellation also interrupts backoff. Initial startup failures are not
@@ -227,8 +251,10 @@ attribute updates wait for these opens before changing handle/path bookkeeping.
 Close removes its tracked path under that lock, then delegates remote close without
 holding it. Synthetic-only basic-attribute updates reuse the handle validation's
 metadata instead of fetching it again. Background mount and forward SSH transports
-start without a Windows console, using the worker askpass bridge for initial
-authentication; foreground mounts retain console authentication.
+inherit their worker's hidden Windows console. OpenSSH-created console askpass
+children inherit the same hidden console, avoiding a fresh visible window while
+the launcher collects answers through its temporary broker. Foreground mounts
+retain console authentication.
 
 Each outstanding SFTP request has its own deadline; sibling responses do not
 extend it. Timeout closes the transport and fails pending operations without

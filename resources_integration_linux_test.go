@@ -27,7 +27,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	sendTest(t, b.in, message{Type: "bye"})
 	b.close()
 	wrapper := filepath.Join(e.dir, "ssh")
-	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n"), 0700); err != nil {
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf x >> "+shellQuote(filepath.Join(e.dir, "ssh-connections"))+"\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	env := append(e.env, "SSHORE_SSH="+wrapper)
@@ -99,6 +99,10 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		t.Fatalf("approve: %v %s", err, <-output)
 	}
 	out = <-output
+	connections, readErr := os.ReadFile(filepath.Join(e.dir, "ssh-connections"))
+	if readErr != nil || string(connections) != "x" {
+		t.Fatalf("review must authenticate only once: %q %v", connections, readErr)
+	}
 	if !strings.Contains(out, "Started forward/"+name) {
 		t.Fatal(out)
 	}

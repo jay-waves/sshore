@@ -203,9 +203,7 @@ func (f *ftpWindowsFile) Sync() error  { return ftpWindowsError(f.ftpFile.Sync()
 func (f *ftpWindowsFile) Close() error { return ftpWindowsError(f.ftpFile.Close()) }
 
 func isolateFTPCommand(cmd *exec.Cmd, background bool) {
-	flags := uint32(windows.CREATE_NEW_PROCESS_GROUP)
-	if background {
-		flags |= windows.CREATE_NO_WINDOW
-	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: flags}
+	// Background workers own a hidden console. Keep SSH attached to it so its
+	// console-subsystem askpass children inherit it instead of opening a window.
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP, HideWindow: background}
 }

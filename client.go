@@ -81,7 +81,9 @@ func sshCommand(o options) *exec.Cmd {
 	args := []string{"-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no"}
 	args = append(args, o.ssh...)
 	args = append(args, "-T", "-o", "RequestTTY=no", "--", o.host, remote)
-	return exec.Command(exe, args...)
+	cmd := exec.Command(exe, args...)
+	cmd.Dir = o.sshDirectory
+	return cmd
 }
 
 // Recovery has no persistent session name. Only automatic managed connections
@@ -208,17 +210,7 @@ func runClient(o options) (int, error) {
 		return 1, fmt.Errorf("missing terminal stream")
 	}
 	_ = terminal.SetReadDeadline(time.Time{})
-	// Validate the original shell/PID above, then explicitly detach it. The
-	// approved tunnel gets its own transport; neither lifetime owns the other.
-	if len(o.approved) == 1 && o.approved[0].Kind == "forward" {
-		op := o.approved[0]
-		if err = detachControl(control); err != nil {
-			return 1, err
-		}
-		_ = mux.Close()
-		closeSSH()
-		return startForwardSession(forwardConfig{Host: o.host, Port: op.Port, Target: op.TargetPort, Reverse: op.Reverse, SSH: o.ssh, Server: o.server})
-	}
+
 	if len(o.approved) > 0 {
 		opCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		err = executeApprovedFiles(opCtx, mux, o.approved, o.quiet)
@@ -254,6 +246,11 @@ func runClient(o options) (int, error) {
 		return 1, err
 	}
 	defer func() { restore(); _ = flushTerminalInput() }()
+	if !o.plain {
+		if e := rememberConnection(o); e != nil {
+			logf(os.Stderr, logWarning, "[sshore] Could not remember this connection: %s\n", cleanText(e.Error()))
+		}
+	}
 	if o.plain {
 		logf(os.Stderr, logWarning, "[sshore] Recovery shell on %s (no sshore features).\r\nExit and reconnect to resume normal use.\r\n", cleanText(o.host))
 	} else {

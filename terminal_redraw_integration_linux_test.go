@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -90,4 +93,29 @@ func assertMouseReplay(t *testing.T, m message, enabled bool) {
 			t.Fatalf("mouse %s state: %q", mode, m.Data)
 		}
 	}
+}
+
+func TestReconnectRedrawsBashWithoutExecutingInput(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is unavailable")
+	}
+	e := newEnv(t)
+	e.env = append(e.env, "SHELL=/bin/bash", "HOME="+t.TempDir(), "PS1=READY-PROMPT> ", "HISTFILE=/dev/null")
+	b, _ := e.attach("bashprompt")
+	expectTerminalText(t, b, "READY-PROMPT> ")
+	marker := filepath.Join(t.TempDir(), "executed")
+	// Leave a complete command unsubmitted. Reattach must redraw it, never send Enter.
+	sendTest(t, b.tty, message{Type: "input", Data: []byte("touch " + shellQuote(marker))})
+	expectTerminalText(t, b, "touch ")
+	detachTestClient(t, b)
+	b, _ = e.attach("bashprompt")
+	expectTerminalText(t, b, "READY-PROMPT> ")
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("reattach executed pending input: %v", err)
+	}
+	sendTest(t, b.tty, message{Type: "input", Data: []byte{21}})
+	shellOutput(t, b, "printf 'BASH-%s' alive", "BASH-alive")
+	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
+	untilType(t, b.tty, "exit")
+	b.close()
 }

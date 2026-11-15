@@ -23,7 +23,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.6.2"
+var version = "0.6.3"
 
 const connectionOptions = `Options (before --; may appear before or after HOST):
   --server PATH                 Remote executable (default: PATH, then ~/.local/bin/sshore)
@@ -47,7 +47,7 @@ Local commands:
   sshore cancel TYPE/NAME            Cancel a request, mount or forward
   sshore cancel HOST NAME [-- SSH_OPTIONS] End a session and its identified tasks
   sshore rename HOST OLD NEW [-- SSH_OPTIONS] Rename a running session
-  sshore attach HOST [NAME] [options] Attach to an existing detached session
+  sshore attach [HOST [NAME]] [options] Attach to an existing detached session
   sshore mount HOST [DIRECTORY [MOUNTPOINT]] Start a background file mount
   sshore cp SOURCE... TARGET          Copy files through SSH
   sshore forward LISTENER SERVICE     Start an independent background forward
@@ -88,10 +88,15 @@ An existing name is an error; use sshore attach HOST NAME to resume it.
 Ctrl-] or remote sshore detach leaves programs running; exit ends the shell.
 
 ` + connectionOptions,
-	"attach": `Usage: sshore attach HOST [NAME] [options]
+	"attach": `Usage: sshore attach [HOST [NAME]] [options]
 
 Attach to an existing detached session; never create or take over a session.
-Omit NAME to attach to the only detached session, or choose from several.
+Omit HOST and NAME to reuse the most recent successful shell connection.
+With HOST only, reuse its most recent session; without history, select a detached session.
+Remembered connections include --server and SSH transport options, never typed passwords.
+Explicit --server or SSH options override the remembered values. Native forwarding
+flags are not remembered. A missing or attached remembered session is an error;
+use sshore list HOST and specify a different NAME.
 Selection: #number or exact name; /text filters, / shows all.
 Numbers stay unchanged after filtering. Bare numbers are session names. Enter or Ctrl-C cancels.
 If no detached sessions exist, use sshore new HOST to create one.
@@ -214,6 +219,8 @@ type options struct {
 	resumePID             int
 	stay                  bool
 	plain                 bool
+	serverSet             bool
+	sshDirectory          string
 }
 
 func parseOptions(args []string) (options, error) {
@@ -262,6 +269,7 @@ func parseOptions(args []string) (options, error) {
 			switch a {
 			case "--server":
 				o.server = args[i]
+				o.serverSet = true
 			case "--download-dir":
 				o.downloadDir = args[i]
 			}
@@ -302,8 +310,10 @@ func parseOptions(args []string) (options, error) {
 		}
 		return o, nil
 	}
-	if err := validSSHDestination(o.host); err != nil {
-		return o, err
+	if o.host != "" || o.command != "attach" {
+		if err := validSSHDestination(o.host); err != nil {
+			return o, err
+		}
 	}
 	if o.server == "" || strings.ContainsAny(o.server, "\r\n\x00") {
 		return o, usage("invalid server path")
@@ -419,7 +429,7 @@ func run(args []string) (int, error) {
 			return 2, usage("detach takes no arguments")
 		}
 		return 0, serverCommand(args)
-	case "mount-agent", "bridge", "resume", "daemon", "sessions", "bootstrap", "kill-session", "rename-session", "task-watch", "task-remove", "inventory":
+	case "forward-watch", "mount-agent", "bridge", "resume", "daemon", "sessions", "bootstrap", "kill-session", "rename-session", "task-watch", "task-remove", "inventory":
 		return 0, serverCommand(args)
 	}
 	o, err := parseOptions(args)
@@ -428,6 +438,9 @@ func run(args []string) (int, error) {
 	}
 	if err != nil {
 		return 2, err
+	}
+	if err = resolveRecentAttach(&o); err != nil {
+		return 1, err
 	}
 	o.downloadDir, err = prepareDownloadDir(o.downloadDir)
 	if err != nil {

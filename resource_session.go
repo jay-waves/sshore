@@ -29,6 +29,11 @@ type resourceRecord struct {
 	Kind, Detail, Name, Host, Remote, Mountpoint, Address, Token, Version string
 	ReadOnly                                                              bool
 }
+type resourceStartup struct {
+	resourceRecord
+	Error string `json:"error,omitempty"`
+}
+
 type resourceConfig struct {
 	Forward                *forwardConfig
 	Args                   []string
@@ -125,6 +130,12 @@ func (s *resourceService) ready(root, mountpoint string) error {
 	return json.NewEncoder(os.Stdout).Encode("started")
 }
 func runResourceWorker() (code int, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			_ = json.NewEncoder(os.Stdout).Encode(resourceStartup{Error: cleanText(resultErr.Error())})
+		}
+	}()
+
 	dec := json.NewDecoder(io.LimitReader(os.Stdin, 1<<20))
 	var config resourceConfig
 	if e := dec.Decode(&config); e != nil {
@@ -317,10 +328,14 @@ func startResourceBackground(config resourceConfig, kind, name string) (int, err
 		return 1, e
 	}
 	dec := json.NewDecoder(output)
-	var record resourceRecord
-	if e = dec.Decode(&record); e != nil {
+	var startup resourceStartup
+	if e = dec.Decode(&startup); e != nil {
 		return 1, fmt.Errorf("resource startup failed; see %s: %w", logPath, e)
 	}
+	if startup.Error != "" {
+		return 1, fmt.Errorf("%s (log: %s)", startup.Error, logPath)
+	}
+	record := startup.resourceRecord
 	if e = json.NewEncoder(input).Encode("commit"); e != nil {
 		return 1, e
 	}

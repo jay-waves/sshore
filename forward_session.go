@@ -3,7 +3,8 @@ package main
 // Independent forwards use an owned SSH connection and a transient remote Unix
 // helper, never a shell session daemon. OpenSSH's forwarding failure gate runs
 // before the helper command, whose fixed marker acknowledges startup. Killing a
-// worker closes only this transport. No remote executable is installed or kept.
+// worker closes only this transport. Approved forwards require the existing
+// remote executable to validate the source session; no installation is attempted.
 import (
 	"bufio"
 	"context"
@@ -13,16 +14,20 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
 type forwardConfig struct {
-	Retries            int
-	Host, Name, Server string
-	Port, Target       int
-	Reverse            bool
-	SSH                []string
+	Retries             int
+	Session, ApprovalID string
+	ResumePID           int
+	Host, Name, Server  string
+	Port, Target        int
+	Reverse             bool
+	SSH                 []string
 }
 
 func validateForwardConfig(f forwardConfig) error {
@@ -34,6 +39,11 @@ func validateForwardConfig(f forwardConfig) error {
 	}
 	if e := validSSHDestination(f.Host); e != nil {
 		return e
+	}
+	if f.ApprovalID != "" || f.Session != "" || f.ResumePID != 0 {
+		if !validApprovalID(f.ApprovalID) || validSession(f.Session) != nil || f.ResumePID <= 0 || f.Retries != 0 {
+			return fmt.Errorf("invalid approved forward identity")
+		}
 	}
 	if f.Port < 1 || f.Port > 65535 || f.Target < 1 || f.Target > 65535 {
 		return fmt.Errorf("invalid forward ports")
@@ -124,12 +134,17 @@ func runForwardAttempt(parent context.Context, f forwardConfig, s *resourceServi
 	} else {
 		cmd.Env = os.Environ()
 	}
-	cmd.Stderr = os.Stderr
+	var diagnostics forwardDiagnostics
+	cmd.Stderr = io.MultiWriter(os.Stderr, &diagnostics)
 	input, e := cmd.StdinPipe()
 	if e != nil {
 		return 1, e
 	}
 	defer input.Close()
+	// Let the remote watcher receive EOF and remove its lease before forcing SSH
+	// down. Authentication or active forwarded sockets still have a bounded exit.
+	cmd.Cancel = func() error { return input.Close() }
+	cmd.WaitDelay = 2 * time.Second
 	output, e := cmd.StdoutPipe()
 	if e != nil {
 		return 1, e
@@ -152,7 +167,17 @@ func runForwardAttempt(parent context.Context, f forwardConfig, s *resourceServi
 	// Read only the bounded protocol marker. Unexpected login output is an error.
 	marker, e := bufio.NewReader(io.LimitReader(output, int64(len(forwardReadyMarker)+2))).ReadString('\n')
 	if e != nil {
-		return 1, fmt.Errorf("forward startup handshake: %w", e)
+		cancel()
+		exitErr := <-done
+		exited = true
+		detail := diagnostics.String()
+		if detail == "" {
+			detail = fmt.Sprint(exitErr)
+		}
+		if strings.Contains(detail, "remote port forwarding failed") {
+			detail += "; remote listening port is occupied or denied by SSH policy; choose another remote port or inspect existing forwards"
+		}
+		return 1, fmt.Errorf("forward startup failed (%s): %s", describeForward(f.Port, f.Target, f.Reverse), detail)
 	}
 	if marker != forwardReadyMarker+"\n" {
 		return 1, fmt.Errorf("unexpected forward startup response: %q", cleanText(marker))
@@ -201,6 +226,17 @@ func forwardSSHOptions(args []string) []string {
 			i++
 			continue
 		}
+		if args[i] == "-o" && i+1 < len(args) {
+			fields := strings.FieldsFunc(args[i+1], func(r rune) bool { return r == '=' || r == ' ' || r == '\t' })
+			key := ""
+			if len(fields) > 0 {
+				key = strings.ToLower(fields[0])
+			}
+			if key == "localforward" || key == "remoteforward" || key == "dynamicforward" {
+				i++
+				continue
+			}
+		}
 		out = append(out, args[i])
 	}
 	return out
@@ -210,12 +246,53 @@ func forwardWatchCommand(server string) string {
 	if server == "" {
 		server = "sshore"
 	}
-	command := "unset SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN; printf '" + forwardReadyMarker + "\\n'; server=" + shellQuote(server) + `; if command -v "$server" >/dev/null 2>&1; then server=$(command -v "$server"); `
+	command := "unset SSHORE_SOCKET SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN; printf '" + forwardReadyMarker + "\\n'; server=" + shellQuote(server) + `; if command -v "$server" >/dev/null 2>&1; then server=$(command -v "$server"); `
 	if server == "sshore" {
 		command += `else server="$HOME/.local/bin/sshore"; `
 	} else {
 		command += `else :; `
 	}
 	command += `fi; if [ "$("$server" --version 2>/dev/null)" = ` + shellQuote("sshore "+version) + ` ]; then "$server" task-watch ` + shellQuote(version) + ` || exec cat >/dev/null; else exec cat >/dev/null; fi`
+	return command
+}
+
+// Keep only the current attempt's diagnostic tail, never earlier log entries.
+type forwardDiagnostics struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (d *forwardDiagnostics) Write(p []byte) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	n := len(p)
+	if len(p) >= 4096 {
+		d.data = append(d.data[:0], p[len(p)-4096:]...)
+	} else {
+		if len(d.data)+len(p) > 4096 {
+			d.data = d.data[len(d.data)+len(p)-4096:]
+		}
+		d.data = append(d.data, p...)
+	}
+	return n, nil
+}
+func (d *forwardDiagnostics) String() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return cleanText(strings.TrimSpace(string(d.data)))
+}
+
+func approvedForwardCommand(f forwardConfig) string {
+	server := f.Server
+	if server == "" {
+		server = "sshore"
+	}
+	command := "unset SSHORE_SOCKET SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN; server=" + shellQuote(server) + "; if command -v \"$server\" >/dev/null 2>&1; then server=$(command -v \"$server\"); "
+	if server == "sshore" {
+		command += "else server=\"$HOME/.local/bin/sshore\"; "
+	} else {
+		command += "else :; "
+	}
+	command += "fi; exec \"$server\" forward-watch " + shellQuote(version) + " " + shellQuote(f.Session) + fmt.Sprintf(" %d ", f.ResumePID) + shellQuote(f.ApprovalID)
 	return command
 }

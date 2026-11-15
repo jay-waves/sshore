@@ -68,7 +68,11 @@ func newEnv(t *testing.T) *testEnv {
 		t.Fatal(err)
 	}
 	e := &testEnv{t: t, bin: testBinary(t), dir: dir}
-	e.env = append(os.Environ(), "SSHORE_RUNTIME_DIR="+dir, "GORACE=atexit_sleep_ms=0", "SHELL=/bin/sh", "PS1=sshore-test> ")
+	state := os.Getenv("SSHORE_STATE_DIR")
+	if state == "" {
+		state = filepath.Join(dir, "state")
+	}
+	e.env = append(os.Environ(), "SSHORE_STATE_DIR="+state, "SSHORE_RUNTIME_DIR="+dir, "GORACE=atexit_sleep_ms=0", "SHELL=/bin/sh", "PS1=sshore-test> ")
 	t.Cleanup(func() {
 		for _, p := range e.processes {
 			_ = p.Kill()

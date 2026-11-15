@@ -73,8 +73,8 @@ func TestFTPWindowsTransportConsole(t *testing.T) {
 	for _, background := range []bool{false, true} {
 		cmd := exec.Command("ssh.exe")
 		isolateFTPCommand(cmd, background)
-		if got := cmd.SysProcAttr.CreationFlags&windows.CREATE_NO_WINDOW != 0; got != background {
-			t.Fatalf("background=%v: no-window=%v", background, got)
+		if got := cmd.SysProcAttr.HideWindow; got != background || cmd.SysProcAttr.CreationFlags&(windows.CREATE_NO_WINDOW|windows.DETACHED_PROCESS) != 0 {
+			t.Fatalf("background=%v: hidden=%v", background, got)
 		}
 	}
 }

@@ -41,8 +41,12 @@ func TestApprovalPrompt(t *testing.T) {
 			// Reaching this local stub proves approval proceeded, without a network call.
 			stub := filepath.Join(root, "ssh-stub")
 			if err := os.WriteFile(stub, []byte(`#!/bin/sh
-printf 'SSH-STARTED\n' >&2
-read reply </dev/tty
+if [ "$SSHORE_ASKPASS" = 1 ]; then
+  reply=$("$SSH_ASKPASS" SSH-STARTED)
+else
+  printf 'SSH-STARTED\n' >&2
+  read reply </dev/tty
+fi
 printf 'HANDOFF-%s\n' "$reply" >&2
 exit 1
 `), 0700); err != nil {
@@ -80,7 +84,7 @@ exit 1
 			if scenario == "batch-cancel" {
 				ops = append(ops, operation{Kind: "download", Path: "/tmp/second", Name: "second", Size: 4})
 			}
-			id, err := writeApproval(options{host: "example.invalid", session: "main", server: "sshore"}, ops)
+			id, err := writeApproval(options{host: "example.invalid", session: "main", server: "sshore", resumePID: 123}, ops)
 			if err != nil {
 				t.Fatal(err)
 			}

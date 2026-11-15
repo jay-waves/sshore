@@ -37,6 +37,7 @@ func watchRemoteTask() error {
 		failure <- s.Err()
 	}()
 	var first *remoteTask
+	warned := false
 	defer func() {
 		if first != nil {
 			_ = removeRemoteTask(first.Key)
@@ -58,12 +59,13 @@ func watchRemoteTask() error {
 			if first != nil && t != *first {
 				return fmt.Errorf("resource identity changed during watch")
 			}
-			if e := storeRemoteTask(t); e != nil {
-				return e
-			}
 			if first == nil {
 				copy := t
 				first = &copy
+			}
+			if e := storeRemoteTask(t); e != nil && !warned {
+				warned = true
+				logf(os.Stderr, logWarning, "[sshore] Peer inventory unavailable; forwarding remains active: %s\n", cleanText(e.Error()))
 			}
 		}
 	}

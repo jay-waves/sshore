@@ -409,6 +409,26 @@ releases and assets remain unchanged. Linux and Windows amd64 only.
 NOTES
 fi
 
+if [[ "$version" == "0.6.3" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Run approved forwards with one SSH authentication, preserving source session version/name/PID and detached-state checks without reattaching the shell.
+- Keep background Windows workers, SSH and askpass children in a hidden console.
+- Show native SSH startup errors directly, including occupied or denied remote listening ports; close watcher stdin before forced shutdown.
+- Restore Bash prompts on attach without injecting Enter or executing unfinished input.
+- Restore recent-connection shortcuts: `sshore attach`, `sshore attach HOST`, and explicit `sshore attach HOST NAME`; remembered transport options never replay native forwarding rules.
+- Include bounded mount metadata caches, same-connection fsnotify, remote capacity queries and mount statistics from withdrawn 0.6.2.
+
+Recent attach never takes over an attached session or recreates one that ended.
+Explicit server and SSH options override saved defaults. Typed passwords are not
+saved. Default notification mounts require a matching remote sshore and external
+OpenSSH sftp-server; --no-watch retains plain SFTP mode.
+Client and remote releases must match exactly. Existing-session updates still
+require reviewing affected tasks and typing update. Linux/Windows amd64 only.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Skipping release: $tag is already published; releases and assets are immutable."

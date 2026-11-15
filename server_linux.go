@@ -451,7 +451,7 @@ func (s *session) attach(p *attachment, m message) error {
 	}
 	s.active = p
 	if reconnecting && !p.muted.Load() {
-		requestTerminalRedraw(s.master)
+		requestTerminalRedraw(s.master, s.cmd.Process.Pid)
 	}
 	return nil
 }
@@ -595,7 +595,7 @@ func (s *session) serveMux(c io.ReadWriteCloser) error {
 				}
 				s.mu.Lock()
 				if err == nil && s.active == p {
-					requestTerminalRedraw(s.master)
+					requestTerminalRedraw(s.master, s.cmd.Process.Pid)
 				}
 				s.mu.Unlock()
 			}
@@ -640,6 +640,13 @@ func (s *session) handle(c net.Conn) {
 		if writeMessage(c, message{Type: "mux_ready", SoftwareVersion: version}) == nil {
 			_ = s.serveMux(c)
 		}
+	case "forward_check":
+		reply := message{Type: "forward_checked", SoftwareVersion: version}
+		if err := s.checkForwardApproval(first); err != nil {
+			reply.Type = "error"
+			reply.Error = err.Error()
+		}
+		_ = writeMessage(c, reply)
 	case "rename":
 		if err := checkPeerVersion(first.SoftwareVersion, "client"); err != nil {
 			_ = writeMessage(c, message{Type: "error", Error: err.Error()})
@@ -823,6 +830,8 @@ func listSessions() error {
 }
 func serverCommand(args []string) error {
 	switch args[0] {
+	case "forward-watch":
+		return runApprovedForwardWatch(args[1:])
 	case "mount-agent":
 		if len(args) != 1 {
 			return usage("mount-agent takes no arguments")

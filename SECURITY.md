@@ -58,14 +58,15 @@ flowchart LR
     setup <-->|"Exact version / setup choice"| gate
     setup -->|"Setup lock: new reserves unused name; attach requires existing session"| program
     gate -->|"Unchanged setup and matching shell PID"| resources
-    gate -->|"Approved forward: detach source shell"| native
+    user -->|"Review forward: fixed endpoints and one SSH authentication"| forwardcheck["Worker checks source version / name / PID / detached state"]
+    forwardcheck --> native
     resources <-->|"Client-initiated approved streams"| service
     gate -->|"Updated setup or recovery: skip operations"| user
 ```
 
 Remote terminal output is untrusted. It can imitate local messages, but cannot itself grant approval. Sensitive prompts run after the connected client exits, from a **separate local invocation**. Do not invoke approval or enter credentials merely because remote output asks you to.
 
-`new` reserves a fresh session, with an automatic or explicit name, including when other sessions are detached. `attach` requires an existing session and never evicts its attached client. Selection without a name lists detached sessions; setup and exclusive attachment are rechecked after selection without holding the account lock while waiting for user input. The local session picker starts only after SSH authentication and releases terminal input before attachment. It does not authorize updates or file/port operations. Session listings show same-user process descendants with sanitized names and PIDs; they do not expose command-line arguments or environment variables. Foreground
+`new` reserves a fresh session, with an automatic or explicit name, including when other sessions are detached. `attach` requires an existing session and never evicts its attached client. Recent local targets only supply defaults; they never authorize takeover, recreate missing sessions or carry typed passwords. Native forwarding flags are excluded from remembered connections. Without saved history, selection without a name lists detached sessions; setup and exclusive attachment are rechecked after selection without holding the account lock while waiting for user input. The local session picker starts only after SSH authentication and releases terminal input before attachment. It does not authorize updates or file/port operations. Session listings show same-user process descendants with sanitized names and PIDs; they do not expose command-line arguments or environment variables. Foreground
 summaries include same-user process names and a shortened working directory,
 which may reveal project names. These are best-effort snapshots, never process
 identity evidence for signaling.
@@ -86,7 +87,7 @@ directories are retained in exit records.
 
 ## Local approval
 
-Receiving a request saves only bounded metadata. It does not open a requested listener or read/write a user-selected transfer file. Requests cannot encode a local shell command or authorize local access. A filled local endpoint is an untrusted suggestion, displayed for local acceptance or editing; it never bypasses review. Unsolicited transfer offers and forward-add streams are rejected. Approved forwarding uses an independent system SSH transport with fixed listener and destination ports. Normal shell connections reject unsolicited reverse connection streams. `--download-dir` is a default, not consent.
+Receiving a request saves only bounded metadata. It does not open a requested listener or read/write a user-selected transfer file. Requests cannot encode a local shell command or authorize local access. A filled local endpoint is an untrusted suggestion, displayed for local acceptance or editing; it never bypasses review. Unsolicited transfer offers and forward-add streams are rejected. Approved forwarding uses one independent system SSH transport with fixed listener and destination ports. Its remote helper revalidates the original session version/name/PID and detached state through a local daemon RPC, without attaching to the shell. Native OpenSSH may bind the already-approved listener before this check; validation failure closes that transport, and the worker reports ready only after validation. No software update runs during forward review. Normal shell connections reject unsolicited reverse connection streams. `--download-dir` is a default, not consent.
 
 Submitting all validated local file paths or a locally submitted port after reviewing the remote target is explicit approval; no additional `yes` is required. File batches collect every path before starting. Ctrl-C or EOF during input leaves the request pending and starts no operation. Invalid ports retry; Enter accepts only a displayed suggestion. An empty port with no suggestion retries. Completion only browses the local filesystem in this approval process; selecting a completion candidate does not submit the operation.
 

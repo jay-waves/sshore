@@ -45,6 +45,7 @@ This document defines the project vocabulary. Commands are documented by
 | Resource | An independently managed local mount or forward, with its own worker, transport and lifetime. |
 | Worker | The local background process owning a resource; distinct from a remote session daemon. |
 | Mount | A remote directory exposed to local applications through SFTP and FUSE/WinFsp, identified as `mount/NAME`. |
+| Recent connection | A private local default for a previously connected host/session and its SSH transport settings; it is not proof that the remote session is still available. |
 | Mount agent | A transient remote sshore process that carries SFTP and filesystem notifications over a mount-owned SSH connection; it is not a persistent session daemon. |
 | Forward | A fixed TCP port mapping through SSH, identified as `forward/NAME`. It can carry an existing SOCKS service; it does not itself implement SOCKS. |
 | Native forwarding | OpenSSH `-L/-R/-D` configured for a connection, separate from a managed `forward` resource. `-D` creates a SOCKS proxy. |

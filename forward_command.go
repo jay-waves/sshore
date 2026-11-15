@@ -29,7 +29,9 @@ func forwardSSHArgs(f forwardConfig, background bool) []string {
 	args = append(args, flag, fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", f.Port, f.Target))
 	args = append(args, forwardSSHOptions(f.SSH)...)
 	args = append(args, "--", f.Host)
-	if background {
+	if background && f.ApprovalID != "" {
+		args = append(args, approvedForwardCommand(f))
+	} else if background {
 		args = append(args, forwardWatchCommand(f.Server))
 	}
 	return args

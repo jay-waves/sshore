@@ -3,8 +3,8 @@ package main
 // Approved files execute sequentially; the first failure stops the batch without
 // rolling back completed files. Ctrl-C cancels local file operations but leaves
 // the remote shell alive. Normal terminal output is muted until attachment resumes
-// it. --stay returns after file operations. Approved forwarding is handled by
-// the client as an independent background resource after detaching the shell.
+// it. --stay returns after file operations. Approved forwarding runs separately
+// as an independent background resource without attaching to the shell.
 
 import (
 	"context"
