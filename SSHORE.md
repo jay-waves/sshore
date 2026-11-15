@@ -123,6 +123,10 @@ performs status and cancellation without signaling a PID read from disk.
 Resource records, peer snapshots, session names and exit receipts share private
 temporary-file writes: sync and close before replacing metadata. File transfers
 retain no-overwrite publication; approvals retain exclusive creation and consumption.
+Consumption first renames the pending record to a non-pending name, then removes
+it. Direct deletion is insufficient on Windows, where concurrent delete requests
+can both succeed while a file is delete-pending. A crash after claiming leaves no
+replayable request.
 
 The public transfer commands are `cp SOURCE... TARGET` and
 `forward LISTENER SERVICE`. `origin:` and `:` denote the client's endpoint;
