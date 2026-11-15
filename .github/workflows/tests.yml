@@ -36,9 +36,13 @@ jobs:
         shell: bash
         run: test -z "$(gofmt -l *.go)"
       - run: go vet ./...
+      - name: Build isolated integration executable
+        run: go build -tags=sshoretest -o "${{ runner.temp }}/sshore-test.exe" .
       - name: Core tests
+        env:
+          SSHORE_TEST_BINARY: ${{ runner.temp }}/sshore-test.exe
         if: ${{ !inputs.extended }}
-        run: go test -v -tags=sshoretest -run TestNestedConsoleInput -timeout=1m .
+        run: go test -v -tags=sshoretest -timeout=5m ./...
       - name: Tests with race detector
         if: ${{ inputs.extended }}
         run: go test -race -tags=sshoretest -timeout=5m ./...

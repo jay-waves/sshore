@@ -105,6 +105,12 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	waitFor("Connected local / " + name)
 	send("prompt SSHORE_INNER_PROMPT$G\r\n")
 	waitFor("SSHORE_INNER_PROMPT>")
+	// Alacritty sends VT arrows, not Win32 input records. Left + Delete
+	// edits OX into OK before execution. Compute the marker so command echo
+	// cannot satisfy the assertion without executing the edited command.
+	send("set SSHORE_NAV=OX\x1b[D\x1b[3~K\r\n")
+	send("echo SSHORE_EDIT_%SSHORE_NAV%\r\n")
+	waitFor("SSHORE_EDIT_OK")
 	send("\x02d")
 	waitFor("Detached;")
 	waitFor("SSHORE_OUTER_AFTER_DETACH")

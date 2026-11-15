@@ -57,7 +57,7 @@ func TestNestedConsoleInput(t *testing.T) {
 	for _, tc := range []struct{ name, input, want string }{
 		{"vt", "\x1b[A\x1b[B\x1b[C\x1b[D", "\x1b[A\x1b[B\x1b[C\x1b[D"},
 		{"win32", "\x1b[38;72;0;1;256;1_", "\x1b[A"},
-		{"reply", "\x1b]11;rgb:ffff/ffff/ffff\x1b\\", "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"},
+		{"cursor reply", "\x1b[12;34R", "\x1b[12;34R"},
 		{"unicode", "中文😀", "中文😀"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
