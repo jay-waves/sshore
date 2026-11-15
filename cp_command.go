@@ -16,7 +16,7 @@ import (
 
 	"github.com/pkg/sftp"
 
-	"github.com/jay-waves/sshore/internal/cp"
+	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -144,7 +144,7 @@ func runCopy(args []string) (int, error) {
 		}
 		termui.Log(os.Stdout, termui.Info, "To %s:%s. Submit source to copy.\n", cleanText(o.host), cleanText(o.target.path))
 		source, err := readCopyPath(input, "Local file (Tab; Enter starts): ", "", func(p string) (string, error) {
-			f, e := cp.OpenSource(p)
+			f, e := files.OpenSource(p)
 			if e == nil {
 				f.Close()
 			}
@@ -178,7 +178,7 @@ func runCopy(args []string) (int, error) {
 	defer func() { cancel(); _ = stdin.Close(); _ = stdout.Close(); _ = cmd.Wait() }()
 	stop := context.AfterFunc(ctx, func() { _ = stdin.Close(); _ = stdout.Close() })
 	defer stop()
-	client, err := newFTPSFTP(stdout, stdin)
+	client, err := files.NewSFTP(stdout, stdin)
 	if err != nil {
 		return 1, err
 	}
@@ -201,7 +201,7 @@ func runCopy(args []string) (int, error) {
 // Streams refer to this process, independently of origin endpoint selection.
 func executeStreamCopy(client *sftp.Client, o copyOptions, input io.Reader, output io.Writer) error {
 	if o.upload {
-		if err := cp.ValidateName(path.Base(o.target.path)); err != nil {
+		if err := files.ValidateName(path.Base(o.target.path)); err != nil {
 			return err
 		}
 		if _, err := client.Lstat(o.target.path); err == nil {
@@ -209,7 +209,7 @@ func executeStreamCopy(client *sftp.Client, o copyOptions, input io.Reader, outp
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		return cp.UploadReader(client, input, o.target.path, -1)
+		return files.UploadReader(client, input, o.target.path, -1)
 	}
 	source := o.sources[0].path
 	info, err := client.Lstat(source)
@@ -219,17 +219,17 @@ func executeStreamCopy(client *sftp.Client, o copyOptions, input io.Reader, outp
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("only ordinary files are supported")
 	}
-	return cp.DownloadTo(client, source, output, info.Size(), nil)
+	return files.DownloadTo(client, source, output, info.Size(), nil)
 }
 
 func executeCopy(client *sftp.Client, o copyOptions) error {
 	sourceStat, targetStat, targetLstat := client.Lstat, os.Stat, os.Lstat
 	base, join := path.Base, filepath.Join
-	transfer := cp.Download
+	transfer := files.Download
 	if o.upload {
 		sourceStat, targetStat, targetLstat = os.Lstat, client.Stat, client.Lstat
 		base, join = filepath.Base, path.Join
-		transfer = cp.Upload
+		transfer = files.Upload
 	}
 
 	// Preflight the full batch and collect all destination choices before writing.
@@ -270,7 +270,7 @@ func executeCopy(client *sftp.Client, o copyOptions) error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("only ordinary files are supported")
 		}
-		if err = cp.ValidateName(name); err != nil {
+		if err = files.ValidateName(name); err != nil {
 			return err
 		}
 		target := o.target.path

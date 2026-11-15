@@ -464,6 +464,21 @@ Linux and Windows amd64 only.
 NOTES
 fi
 
+if [[ "$version" == "0.6.8" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Prepare the exact remote release automatically for notification-enabled mounts, with foreground update confirmation and no persistent shell creation.
+- Fall back from remote downloads to checksum-verified client downloads/cache, transferring the executable over the same authenticated SSH connection; keep no-downgrade and explicit update safeguards.
+- Fix nested Windows ConPTY keyboard-mode forwarding that turned Alacritty arrow keys into text; clear inherited Win32 input mode.
+- Mark the current local shell as attached (current), and separate entry, exit and detach notices from shell output.
+- Consolidate copy and mount implementations in a flat internal/files package, share frame encoding, and simplify resource stop coordination.
+
+Client and server require the exact full 0.6.8 release. Updating older remote
+shells ends the listed shells and tasks only after typed confirmation.
+NOTES
+fi
+
 if [[ "$version" == "0.6.7" ]]; then
   cat >> release-notes.md <<'NOTES'
 

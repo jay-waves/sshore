@@ -24,6 +24,10 @@ func rawTerminal() (func(), error) {
 
 func terminalInputReader() io.Reader { return os.Stdin }
 
+func terminalOutputWriter() (io.Writer, func() error) {
+	return os.Stdout, func() error { return nil }
+}
+
 func writeTerminalControl(f *os.File, sequence string) {
 	if os.Getenv("TERM") == "dumb" || !term.IsTerminal(int(f.Fd())) {
 		return

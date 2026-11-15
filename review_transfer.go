@@ -16,7 +16,7 @@ import (
 
 	"github.com/xtaci/smux"
 
-	"github.com/jay-waves/sshore/internal/cp"
+	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -64,7 +64,7 @@ func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, q
 	remote := op
 	remote.LocalPath = ""
 	if op.Kind == "upload" {
-		f, err := cp.OpenSource(op.LocalPath)
+		f, err := files.OpenSource(op.LocalPath)
 		if err != nil {
 			return err
 		}
@@ -84,7 +84,7 @@ func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, q
 	if m.Type != "sftp" {
 		return fileResponseError(m)
 	}
-	client, err := newFTPSFTP(st, st)
+	client, err := files.NewSFTP(st, st)
 	if err != nil {
 		return err
 	}
@@ -94,9 +94,9 @@ func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, q
 	done := make(chan error, 1)
 	go func() {
 		if op.Kind == "upload" {
-			done <- cp.Upload(client, op.LocalPath, "/target", op.Size, &completed)
+			done <- files.Upload(client, op.LocalPath, "/target", op.Size, &completed)
 		} else {
-			done <- cp.Download(client, "/source", op.LocalPath, op.Size, &completed)
+			done <- files.Download(client, "/source", op.LocalPath, op.Size, &completed)
 		}
 	}()
 	var progress transferProgress

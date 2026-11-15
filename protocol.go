@@ -4,7 +4,6 @@ package main
 // streams switch to SFTP after their metadata handshake.
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"time"
@@ -51,45 +50,16 @@ type message struct {
 	Data            []byte              `json:"-"`
 }
 
-func writeFull(w io.Writer, b []byte) error { return transport.WriteFull(w, b) }
+func writeFull(w io.Writer, b []byte) error          { return transport.WriteFull(w, b) }
+func (m *message) FrameType() string                 { return m.Type }
+func (m *message) SetFrame(kind string, data []byte) { m.Type, m.Data = kind, data }
 func writeMessage(w io.Writer, m message) error {
-	kind := control
-	var body []byte
-	switch m.Type {
-	case "input":
-		kind, body = input, m.Data
-	case "output":
-		kind, body = output, m.Data
-	default:
-		var err error
-		body, err = json.Marshal(m)
-		if err != nil {
-			return err
-		}
-	}
-	return transport.WriteFrame(w, kind, body)
+	return transport.WriteMessage(w, m.Type, m.Data, m)
 }
-
 func readMessage(r io.Reader) (message, error) {
 	var m message
-	kind, body, err := transport.ReadFrame(r)
-	if err != nil {
-		return m, err
-	}
-	switch kind {
-	case input:
-		m.Type, m.Data = "input", body
-	case output:
-		m.Type, m.Data = "output", body
-	default:
-		if err := json.Unmarshal(body, &m); err != nil {
-			return m, err
-		}
-		if m.Type == "" || m.Type == "input" || m.Type == "output" || m.Type == "chunk" {
-			return m, fmt.Errorf("invalid control type")
-		}
-	}
-	return m, nil
+	err := transport.ReadMessage(r, &m)
+	return m, err
 }
 
 func fileResponseError(m message) error {

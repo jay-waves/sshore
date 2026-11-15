@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/mount"
+	"github.com/jay-waves/sshore/internal/files"
 )
 
 // Exercise the application codec against the mount agent's narrower messages.
@@ -17,7 +17,7 @@ func TestMountAgentControlCompatibility(t *testing.T) {
 	defer b.Close()
 	_ = b.SetDeadline(time.Now().Add(3 * time.Second))
 	done := make(chan error, 1)
-	go func() { done <- mount.ServeAgent(a, version) }()
+	go func() { done <- files.ServeAgent(a, version) }()
 	defer func() {
 		b.Close()
 		select {

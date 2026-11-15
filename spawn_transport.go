@@ -138,6 +138,12 @@ func runSpawnRemote(c net.Conn, req localDaemonRequest) error {
 			}
 			break
 		}
+		if m.Type == "setup_download" {
+			if err := relaySetupBinary(input, c); err != nil {
+				return err
+			}
+			continue
+		}
 		if m.Type != "setup_choice" && m.Type != "session_choice" {
 			return fmt.Errorf("unexpected spawn setup response")
 		}

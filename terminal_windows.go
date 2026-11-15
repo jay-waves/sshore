@@ -42,6 +42,10 @@ func rawTerminal() (func(), error) {
 	if err == nil {
 		err = windows.SetConsoleMode(out, oldOut|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING|windows.DISABLE_NEWLINE_AUTO_RETURN)
 	}
+	if err == nil {
+		// Clear a mode inherited from an earlier nested console or client.
+		_, err = os.Stdout.WriteString("\x1b[?9001l")
+	}
 	if err != nil {
 		restore()
 		return nil, fmt.Errorf("Windows VT-capable console required: %w", err)
@@ -55,6 +59,11 @@ func terminalInputReader() io.Reader {
 		err := windows.ReadConsole(windows.Handle(os.Stdin.Fd()), &b[0], uint32(len(b)), &n, nil)
 		return int(n), err
 	}}
+}
+
+func terminalOutputWriter() (io.Writer, func() error) {
+	w := &consoleOutput{out: os.Stdout}
+	return w, w.Flush
 }
 
 // Approval runs before rawTerminal enables VT output. Temporarily enable it

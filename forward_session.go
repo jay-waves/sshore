@@ -80,7 +80,7 @@ func runForwardWorker(f forwardConfig, s *resourceService) (int, error) {
 	defer func() {
 		select {
 		case request := <-stopped:
-			request.Reply <- nil
+			request <- nil
 		default:
 		}
 	}()

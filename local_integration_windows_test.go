@@ -28,6 +28,13 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_DISABLED", "")
+	outer, err := shellmux.Start(shellmux.Config{Path: "cmd.exe", Args: []string{"/d", "/q"}, Env: os.Environ(), Size: shellmux.Size{Cols: 160, Rows: 40}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep the test's outer job alive until the daemon has removed its record.
+	// Closing it first kills all descendants before normal idle shutdown.
+	t.Cleanup(func() { outer.Close() })
 	t.Cleanup(func() {
 		// Verify idle shutdown and release Windows file handles before TempDir cleanup.
 		path, err := daemonPath()
@@ -46,11 +53,6 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	})
 	const name = "nativecheck"
 	defer func() { _, _ = localRequest(name, message{Type: "cancel"}) }()
-	outer, err := shellmux.Start(shellmux.Config{Path: "cmd.exe", Args: []string{"/d", "/q"}, Env: os.Environ(), Size: shellmux.Size{Cols: 160, Rows: 40}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer outer.Close()
 	chunks := make(chan string, 64)
 	stop := make(chan struct{})
 	defer close(stop)
@@ -105,6 +107,14 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	waitFor("Connected local / " + name)
 	send("prompt SSHORE_INNER_PROMPT$G\r\n")
 	waitFor("SSHORE_INNER_PROMPT>")
+	send(fmt.Sprintf("\"%s\" list --local\r\n", bin))
+	waitFor("attached (current)")
+	// Alacritty sends VT arrows, not Win32 input records. Left + Delete
+	// edits OX into OK before execution. Compute the marker so command echo
+	// cannot satisfy the assertion without executing the edited command.
+	send("set SSHORE_NAV=OX\x1b[D\x1b[3~K\r\n")
+	send("echo SSHORE_EDIT_%SSHORE_NAV%\r\n")
+	waitFor("SSHORE_EDIT_OK")
 	send("\x02d")
 	waitFor("Detached;")
 	waitFor("SSHORE_OUTER_AFTER_DETACH")
@@ -131,7 +141,8 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	}
 	t.Logf("both shells share daemon PID %d", first.ManagerPID)
 	send(fmt.Sprintf("\"%s\" attach --local %s & echo SSHORE_OUTER_AFTER_EXIT\r\n", bin, name))
-	waitFor("Connected local / " + name)
+	// Native screen repaint can replace the connection banner before ConPTY
+	// emits it. Verify the restored shell prompt and live attachment instead.
 	waitFor("SSHORE_INNER_PROMPT>")
 	t.Log("reattach repainted the prompt without sending input")
 	after, err := localRequest(name, message{Type: "status"})

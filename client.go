@@ -242,6 +242,8 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		return 1, err
 	}
 	defer func() { restore(); _ = flushTerminalInput() }()
+	terminalOutput, flushOutput := terminalOutputWriter()
+	defer func() { _ = flushOutput() }()
 	if !o.plain && !o.local {
 		if e := rememberConnection(o); e != nil {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Connection history not saved: %s\n", cleanText(e.Error()))
@@ -250,9 +252,11 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	if o.plain {
 		termui.Log(os.Stderr, termui.Warning, "[sshore] Recovery on %s; sshore disabled. Exit and reconnect to restore.\r\n", cleanText(o.host))
 	} else {
-
-		termui.Log(os.Stderr, termui.Success, "[sshore] Connected %s / %s (PID %d)\r\n", cleanText(o.host), o.session, pid)
-
+		kind := "launch"
+		if o.temporary {
+			kind = "spawn"
+		}
+		sessionNotice(termui.Success, "Connected %s / %s (%s)", cleanText(o.host), cleanText(o.session), kind)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -669,7 +673,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					if detaching {
 						continue
 					}
-					if err = writeFull(os.Stdout, e.m.Data); err != nil {
+					if err = writeFull(terminalOutput, e.m.Data); err != nil {
 						return 1, err
 					}
 					outputMouse.Observe(e.m.Data)
@@ -694,13 +698,20 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 						return 0, &sessionSwitch{from: o, to: *switchTarget}
 					}
 					if o.temporary {
-						notice(termui.Success, "\r\n[sshore] Background; ends with the original parent shell.\r\nReturn: %s\r\n", reconnectCommand(o))
+						sessionNotice(termui.Success, "Background; %s on %s ends with the original parent shell.\r\nReturn: %s", shellTaskName(cleanText(o.session), true), cleanText(o.host), reconnectCommand(o))
 					} else {
-						notice(termui.Success, "\r\n[sshore] Detached; programs keep running.\r\nReconnect: %s\r\n", reconnectCommand(o))
+						sessionNotice(termui.Success, "Detached; %s on %s keeps running.\r\nReconnect: %s", shellTaskName(cleanText(o.session), false), cleanText(o.host), reconnectCommand(o))
 					}
 					return 0, nil
 				case "exit":
 					connection.confirm(e.m.Name, "exited")
+					if !o.plain {
+						level := termui.Success
+						if e.m.Code != 0 {
+							level = termui.Warning
+						}
+						sessionNotice(level, "Exited %s on %s (code %d).", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host), e.m.Code)
+					}
 					return e.m.Code, nil
 				case "fatal":
 					return 1, errors.New(e.m.Error)
@@ -708,6 +719,10 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 			}
 		}
 	}
+}
+
+func sessionNotice(level termui.Color, format string, args ...any) {
+	termui.Log(os.Stderr, level, "\r\n\r\n\r\n[sshore] "+format+"\r\n\r\n", args...)
 }
 
 // detachControl is used before an interactive control reader has started.

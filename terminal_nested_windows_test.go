@@ -1,0 +1,107 @@
+package main
+
+import (
+	"context"
+	"io"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	shellmux "github.com/jay-waves/sshore/internal/mux"
+)
+
+func TestNestedConsoleInput(t *testing.T) {
+	if result := os.Getenv("SSHORE_TEST_NESTED_RESULT"); result != "" {
+		writeTerminalControl(os.Stdout, "\x1b[?9001h")
+		restore, err := rawTerminal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer restore()
+		// A child ConPTY emits this request during startup.
+		out, flush := terminalOutputWriter()
+		defer flush()
+		if _, err := io.WriteString(out, "\x1b[?9001hSSHORE_INPUT_READY"); err != nil {
+			t.Fatal(err)
+		}
+		chunks := make(chan []byte, 64)
+		stop, err := startTerminalKeyboard(context.Background(), func(b []byte, err error) {
+			if len(b) > 0 {
+				chunks <- b
+			}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stop()
+		var data []byte
+		select {
+		case data = <-chunks:
+		case <-time.After(5 * time.Second):
+			t.Fatal("no input")
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		defer timer.Stop()
+		for {
+			select {
+			case b := <-chunks:
+				data = append(data, b...)
+			case <-timer.C:
+				if err := os.WriteFile(result, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+		}
+	}
+	for _, tc := range []struct{ name, input, want string }{
+		{"vt", "\x1b[A\x1b[B\x1b[C\x1b[D", "\x1b[A\x1b[B\x1b[C\x1b[D"},
+		{"win32", "\x1b[38;72;0;1;256;1_", "\x1b[A"},
+		{"cursor reply", "\x1b[12;34R", "\x1b[12;34R"},
+		{"unicode", "中文😀", "中文😀"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := t.TempDir() + "/input"
+			term, err := shellmux.Start(shellmux.Config{Path: os.Args[0], Args: []string{"-test.run=^TestNestedConsoleInput$"}, Env: append(os.Environ(), "SSHORE_TEST_NESTED_RESULT="+result), Size: shellmux.Size{Cols: 100, Rows: 30}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer term.Close()
+			done := make(chan string, 1)
+			go func() {
+				var transcript strings.Builder
+				buf := make([]byte, 4096)
+				sent := false
+				for {
+					n, err := term.Read(buf)
+					transcript.Write(buf[:n])
+					if !sent && strings.Contains(transcript.String(), "SSHORE_INPUT_READY") {
+						sent = true
+						_, _ = io.WriteString(term, tc.input)
+					}
+					if err != nil {
+						done <- transcript.String()
+						return
+					}
+				}
+			}()
+			select {
+			case output := <-done:
+				if err := term.Wait(); err != nil {
+					t.Fatalf("%v: %q", err, output)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("nested console timeout")
+			}
+			data, err := os.ReadFile(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("upstream=%q forwarded=%q", tc.input, data)
+			if string(data) != tc.want {
+				t.Fatalf("input changed: got %q want %q", data, tc.want)
+			}
+		})
+	}
+}

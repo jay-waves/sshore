@@ -35,7 +35,7 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 	defer func() {
 		if !stopped {
 			select {
-			case s.stop <- resourceStopRequest{Reply: make(chan error, 1)}:
+			case s.stop <- make(chan error, 1):
 			case <-done:
 			case <-time.After(time.Second):
 			}
@@ -53,7 +53,7 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	reply := make(chan error, 1)
-	s.stop <- resourceStopRequest{Reply: reply}
+	s.stop <- reply
 	select {
 	case e := <-reply:
 		if e != nil {
@@ -109,7 +109,7 @@ func TestForwardRetryBoundaries(t *testing.T) {
 					time.Sleep(time.Millisecond)
 				}
 				reply := make(chan error, 1)
-				s.stop <- resourceStopRequest{Reply: reply}
+				s.stop <- reply
 				select {
 				case <-reply:
 				case <-time.After(time.Second):

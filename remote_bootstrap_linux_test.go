@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -207,11 +210,11 @@ exit 22
 	if err == nil {
 		t.Fatal("download unexpectedly succeeded")
 	}
-	err = negotiateSetupWithInput(strings.NewReader(string(out)), nil, &options{}, func() (setupInput, error) {
+	err = negotiateSetupUsing(context.Background(), strings.NewReader(string(out)), io.Discard, &options{}, setupClientUI{Download: func(context.Context) ([]byte, error) { return nil, fmt.Errorf("offline") }, OpenInput: func() (setupInput, error) {
 		t.Fatal("failed preparation must not request approval")
 		return nil, nil
-	})
-	if err == nil || !strings.Contains(err.Error(), "installer download failed") || strings.Contains(err.Error(), "EOF") {
+	}})
+	if err == nil || !strings.Contains(err.Error(), "local release preparation failed") || strings.Contains(err.Error(), "EOF") {
 		t.Fatalf("unexpected setup error: %v", err)
 	}
 	if !strings.Contains(diagnostics.String(), "503") {

@@ -14,7 +14,7 @@ import (
 
 	"github.com/pkg/sftp"
 
-	"github.com/jay-waves/sshore/internal/cp"
+	"github.com/jay-waves/sshore/internal/files"
 )
 
 func TestCopyParsing(t *testing.T) {
@@ -77,10 +77,10 @@ func TestCopyFiles(t *testing.T) {
 		t.Fatal("download mismatch", err)
 	}
 	// The atomic publication itself refuses overwrite, independently of preflight.
-	if err = cp.Upload(backend.client, source, remote, int64(len(data)), nil); err == nil {
+	if err = files.Upload(backend.client, source, remote, int64(len(data)), nil); err == nil {
 		t.Fatal("overwrote remote")
 	}
-	if err = cp.Download(backend.client, remote, target, int64(len(data)), nil); err == nil {
+	if err = files.Download(backend.client, remote, target, int64(len(data)), nil); err == nil {
 		t.Fatal("overwrote local")
 	}
 	got, _ = os.ReadFile(remote)
@@ -241,7 +241,7 @@ func testCopyBackend(t *testing.T) *struct {
 		t.Fatal(err)
 	}
 	go func() { _ = server.Serve(); _ = server.Close() }()
-	client, err := newFTPSFTP(b, b)
+	client, err := files.NewSFTP(b, b)
 	if err != nil {
 		t.Fatal(err)
 	}

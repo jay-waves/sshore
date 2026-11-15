@@ -46,7 +46,7 @@ import (
 	shellmux "github.com/jay-waves/sshore/internal/mux"
 	"golang.org/x/sys/unix"
 
-	"github.com/jay-waves/sshore/internal/mount"
+	"github.com/jay-waves/sshore/internal/files"
 )
 
 func runtimeDir() (string, error) {
@@ -895,7 +895,7 @@ func serverCommand(args []string) error {
 		if len(args) != 1 {
 			return usage("mount-agent takes no arguments")
 		}
-		return mount.ServeAgent(&pipeTransport{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version)
+		return files.ServeAgent(&pipeTransport{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version)
 	case "rename-session":
 		if len(args) != 4 && len(args) != 5 {
 			return usage("rename-session requires old name, new name and client version")

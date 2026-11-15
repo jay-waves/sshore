@@ -24,7 +24,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.6.7"
+var version = "0.6.8"
 
 const connectionOptions = `Options (before --; may appear before or after HOST):
   --server PATH                 Remote executable (default: PATH, then ~/.local/bin/sshore)

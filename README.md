@@ -45,6 +45,12 @@ Run `sshore --help` or `sshore COMMAND --help` for syntax, defaults and supporte
 options. For paths beginning with `-` or containing a literal colon, use `./`
 or an absolute path.
 
+Remote shells and notification-enabled mounts prepare the exact matching release
+automatically when missing. If the remote download fails, sshore downloads and
+caches it locally, then transfers it over the same SSH connection. Updating an
+older installation requires typing `update` after reviewing the shells/tasks it
+will end. A newer remote version requires updating the local client.
+
 ## SFTP — remote directories as local mounts
 
 Mount a remote directory for local applications:
@@ -103,13 +109,15 @@ be taken over, and an ended recent shell is not recreated.
 or `cancel ID` ends them. Use `launch --detach` to create without entering.
 In a remote shell, `sshore detach` also works. Screens, scrollback and detached
 output are not saved. A daemon failure can end its shells.
+Entry, exit and detach notices identify the shell and host, separated from shell output by blank lines.
 
 Use `sshore spawn [HOST]` for a temporary shell bound to the launching parent
 shell. Detach returns to that parent; `attach ID` returns to the spawn. Closing
 the original parent shell ends the spawn and its identified tasks, even after
 reattachment elsewhere. Remote spawns also end if their lifetime SSH connection
 is lost (after disconnect detection). `list` shows `spawn/NAME` or `launch/NAME`
-in the existing task column. See `sshore spawn --help`.
+in the existing task column; the local shell running `list` is marked
+`attached (current)` in STATE. See `sshore spawn --help`.
 
 `cancel HOST --all` lists and confirms all tasks for that machine; `cancel --all`
 clears local tasks. Single-task cancellation is immediate; unsaved work may be
@@ -123,7 +131,11 @@ flowchart LR
     localshell -->|"Detach / client connection loss"| localdetached["Local programs keep running"]
     localdetached -->|"attach ID"| localshell
     localshell -->|"Exit / cancel ID / daemon failure"| ended
-    connect["Local: launch HOST / attach recent or named shell"] --> remoted["Shared remote daemon"]
+    connect["Local: launch HOST / attach recent or named shell"] --> prepare["Matching release: reuse or download; local download fallback"]
+    prepare --> update["Older state: review affected shells, type update"]
+    update --> prepared["Remote ready"]
+    prepare -->|"Matching or missing"| prepared
+    prepared --> remoted["Shared remote daemon"]
     remoted --> shell["Remote shell: one PTY"]
     shell -->|"Ctrl+B c/n/p/l/s/w: preserve, then reconnect"| connect
     shell -->|"Ctrl+B d / detach / connection loss"| detached["Programs keep running"]
@@ -139,6 +151,8 @@ flowchart LR
     parent["Original parent shell exits"] -->|"End owned spawns and identified tasks"| ended
     lease["Remote lifetime SSH connection lost"] -->|"End remote spawn"| ended
     local["Local: mount / forward"] --> daemon
+    resource -->|"Mount with notifications"| prepare
+    prepared -->|"Mount agent; no persistent shell"| mounted["Remote files + change notifications"]
     daemon -->|"Own forward SSH / launch mount worker"| resource
     copy["Local: cp SOURCE TARGET"] --> files["Independent SFTP copy"]
     resource -->|"cancel resource ID"| stopped["Resource ends; shells unaffected"]

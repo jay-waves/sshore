@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/jay-waves/sshore/internal/mount"
+	"github.com/jay-waves/sshore/internal/files"
 )
 
 func detachResourceWorker(c *exec.Cmd)   { c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
@@ -45,7 +45,7 @@ func prepareFTPPaths(o *ftpOptions) (func(), error) {
 	o.mountpoint = filepath.Join(root, o.name)
 	e = os.Mkdir(o.mountpoint, 0700)
 	if os.IsExist(e) {
-		return cleanup, mount.ValidateMountpoint(o.mountpoint)
+		return cleanup, files.ValidateMountpoint(o.mountpoint)
 	}
 	if e != nil {
 		return cleanup, e

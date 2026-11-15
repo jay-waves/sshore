@@ -21,8 +21,13 @@ func printTaskInventory(inv inventory, details bool) {
 
 func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 	rows := []taskTableRow{}
+	currentLocal := os.Getenv("SSHORE_LOCAL_SESSION")
 	for _, s := range inv.LocalShells {
-		rows = append(rows, taskTableRow{s.ID, shellTaskName(s.Name, s.Temporary), "local", s.State, s.Directory})
+		state := s.State
+		if currentLocal != "" && s.identity == currentLocal && state == "attached" {
+			state += " (current)"
+		}
+		rows = append(rows, taskTableRow{s.ID, shellTaskName(s.Name, s.Temporary), "local", state, s.Directory})
 	}
 	for _, s := range inv.Shells {
 		if s.State == "renamed" {

@@ -23,8 +23,6 @@ import (
 	"time"
 
 	"golang.org/x/term"
-
-	"github.com/jay-waves/sshore/internal/mount"
 )
 
 type resourceRecord struct {
@@ -41,7 +39,7 @@ type resourceConfig struct {
 	Args                   []string
 	AuthAddress, AuthToken string
 }
-type resourceStopRequest = mount.StopRequest
+type resourceStopRequest = chan error
 type resourceService struct {
 	startup     io.Writer
 	log         io.Writer
@@ -88,7 +86,7 @@ func resourceHTTPContext(ctx context.Context, address, token, method, route stri
 	if route == "/status" {
 		timeout = time.Second
 	}
-	if route == "/ask" {
+	if route == "/ask" || route == "/setup" {
 		timeout = 0
 	}
 	c := &http.Client{Timeout: timeout, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -236,7 +234,7 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 		ack <- e
 	}()
 	s := &resourceService{startup: startup, log: log, environment: env, directory: directory, committed: committed, record: resourceRecord{Kind: kind, Name: o.name, Host: o.host, Version: version, Token: resourceToken(), ReadOnly: o.readOnly}, config: config, stop: make(chan resourceStopRequest), ack: ack, abandoned: abandoned, recordPath: filepath.Join(dir, o.name+".json")}
-	// The lock excludes a live owner. Remove only its stale metadata, never a mount.
+	// The lock excludes a live owner. Remove only its stale metadata, never a files.
 	if e = os.Remove(s.recordPath); e != nil && !os.IsNotExist(e) {
 		return 1, e
 	}
@@ -249,14 +247,14 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(s.statusSnapshot())
 		case r.Method == "POST" && r.URL.Path == "/stop":
-			request := resourceStopRequest{Reply: make(chan error, 1)}
+			request := make(chan error, 1)
 			select {
 			case s.stop <- request:
 			case <-r.Context().Done():
 				return
 			}
 			select {
-			case e := <-request.Reply:
+			case e := <-request:
 				if e != nil {
 					http.Error(w, cleanText(e.Error()), 409)
 				} else {
@@ -309,6 +307,12 @@ func startReservedResource(config resourceConfig, kind string, reservation *reso
 	token := resourceToken()
 	var prompts sync.Mutex
 	l, broker, e := resourceListen(token, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && (r.URL.Path == "/setup" || r.URL.Path == "/setup-log") {
+			prompts.Lock()
+			defer prompts.Unlock()
+			serveResourceSetup(w, r)
+			return
+		}
 		if r.Method != "POST" || r.URL.Path != "/ask" {
 			http.NotFound(w, r)
 			return
