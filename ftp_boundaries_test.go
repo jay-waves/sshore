@@ -130,6 +130,9 @@ func TestFTPCreationPermissions(t *testing.T) {
 }
 
 func TestFTPOpenHandleAfterRename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("in-process SFTP fixture needs Linux remote filesystem rename semantics")
+	}
 	f := testFTPBackend(t)
 	h, err := f.open("before", os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {

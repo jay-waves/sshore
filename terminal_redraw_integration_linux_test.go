@@ -96,11 +96,17 @@ func assertMouseReplay(t *testing.T, m message, enabled bool) {
 }
 
 func TestReconnectRedrawsBashWithoutExecutingInput(t *testing.T) {
-	if _, err := exec.LookPath("bash"); err != nil {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
 		t.Skip("bash is unavailable")
 	}
 	e := newEnv(t)
-	e.env = append(e.env, "SHELL=/bin/bash", "HOME="+t.TempDir(), "PS1=READY-PROMPT> ", "HISTFILE=/dev/null")
+	home := t.TempDir()
+	// System bashrc may overwrite an inherited PS1; user bashrc runs afterwards.
+	if err := os.WriteFile(filepath.Join(home, ".bashrc"), []byte("PS1='READY-PROMPT> '\nHISTFILE=/dev/null\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	e.env = append(e.env, "SHELL="+bash, "HOME="+home)
 	b, _ := e.attach("bashprompt")
 	expectTerminalText(t, b, "READY-PROMPT> ")
 	marker := filepath.Join(t.TempDir(), "executed")
