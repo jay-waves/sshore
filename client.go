@@ -171,6 +171,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		return 1, fmt.Errorf("remote shell changed; request again")
 	}
 	o.instance = m.Instance
+	o.temporary = m.Temporary
 	connection, cacheErr := trackShellConnection(o)
 	if cacheErr != nil {
 		termui.Log(os.Stderr, termui.Warning, "[sshore] Shell tracking failed: %s\n", cleanText(cacheErr.Error()))
@@ -198,7 +199,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		if err := detachControl(control, func(name string) { connection.confirm(name, "detached") }); err != nil {
 			return 1, err
 		}
-		fmt.Fprintf(os.Stdout, "Started shell/%s (%s).\n", cleanText(o.session), cleanText(o.host))
+		fmt.Fprintf(os.Stdout, "Started %s (%s).\n", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host))
 		return 0, nil
 	}
 	if len(o.approved) > 0 {
@@ -388,6 +389,10 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		}
 		target := o
 		target.command = command
+		target.temporary = command == "spawn"
+		if command != "spawn" {
+			target.owner = spawnOwner{}
+		}
 		target.taskIdentity = ""
 		target.instance = ""
 		target.session = name
@@ -646,6 +651,15 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					command := "attach"
 					if e.m.Action == "new" {
 						command = "shell"
+						if o.temporary {
+							command = "spawn"
+							if o.owner.PID == 0 {
+								o.owner, err = currentSpawnOwner()
+								if err != nil {
+									return 1, err
+								}
+							}
+						}
 					}
 					if err = queueSwitch(target, command); err != nil {
 						notice(termui.Warning, "\r\n[sshore] %s\r\n", err.Error())
@@ -679,7 +693,11 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					if switchTarget != nil {
 						return 0, &sessionSwitch{from: o, to: *switchTarget}
 					}
-					notice(termui.Success, "\r\n[sshore] Detached; programs keep running.\r\nReconnect: %s\r\n", reconnectCommand(o))
+					if o.temporary {
+						notice(termui.Success, "\r\n[sshore] Background; ends with the original parent shell.\r\nReturn: %s\r\n", reconnectCommand(o))
+					} else {
+						notice(termui.Success, "\r\n[sshore] Detached; programs keep running.\r\nReconnect: %s\r\n", reconnectCommand(o))
+					}
 					return 0, nil
 				case "exit":
 					connection.confirm(e.m.Name, "exited")

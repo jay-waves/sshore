@@ -99,10 +99,17 @@ omitting the shell name selects a detached shell. Recent targets retain SSH
 connection options; explicit options override them. An attached shell cannot
 be taken over, and an ended recent shell is not recreated.
 
-Shells survive detach, client exit and connection loss; `exit` inside the shell
+`shell` sessions survive detach, client exit and connection loss; `exit` inside the shell
 or `cancel ID` ends them. Use `shell --detach` to create without entering.
 In a remote shell, `sshore detach` also works. Screens, scrollback and detached
 output are not saved. A daemon failure can end its shells.
+
+Use `sshore spawn [HOST]` for a temporary shell bound to the launching parent
+shell. Detach returns to that parent; `attach ID` returns to the spawn. Closing
+the original parent shell ends the spawn and its identified tasks, even after
+reattachment elsewhere. Remote spawns also end if their lifetime SSH connection
+is lost (after disconnect detection). `list` shows `spawn/NAME` or `shell/NAME`
+in the existing task column. See `sshore spawn --help`.
 
 `cancel HOST --all` lists and confirms all tasks for that machine; `cancel --all`
 clears local tasks. Single-task cancellation is immediate; unsaved work may be
@@ -126,6 +133,11 @@ flowchart LR
     pending -->|"review: submit local paths or port"| approved["Execute approved operation"]
     approved -->|"Files: normally reconnect"| shell
     approved -->|"Forward: retain NAME"| resource["Independent background resource"]
+    spawn["spawn: local or remote temporary shell"] --> temporary["Background while original parent shell lives"]
+    temporary -->|"attach ID"| spawn
+    spawn -->|"Ctrl+B d"| temporary
+    parent["Original parent shell exits"] -->|"End owned spawns and identified tasks"| ended
+    lease["Remote lifetime SSH connection lost"] -->|"End remote spawn"| ended
     local["Local: mount / forward"] --> daemon
     daemon -->|"Own forward SSH / launch mount worker"| resource
     copy["Local: cp SOURCE TARGET"] --> files["Independent SFTP copy"]

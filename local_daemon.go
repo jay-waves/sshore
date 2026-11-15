@@ -15,6 +15,7 @@ import (
 )
 
 type localDaemonRequest struct {
+	Spawn  *spawnConfig
 	Kind   string
 	Record localSessionRecord
 	Env    []string
@@ -253,7 +254,7 @@ func runLocalDaemon() (result error) {
 				return
 			}
 			req := *m.LocalRequest
-			if req.Kind != "shell" && req.Kind != "mount" && req.Kind != "forward" {
+			if req.Kind != "spawn" && req.Kind != "shell" && req.Kind != "mount" && req.Kind != "forward" {
 				return
 			}
 			if err = validSession(req.Record.Name); err != nil {
@@ -281,6 +282,10 @@ func runLocalDaemon() (result error) {
 			_ = c.SetDeadline(time.Time{})
 			<-handshakes
 			pending = false
+			if req.Kind == "spawn" {
+				_ = runSpawnRemote(c, req)
+				return
+			}
 			if req.Kind == "shell" {
 				err = runLocalShell(req.Record, req.Env, func(r localSessionRecord) error {
 					_ = c.SetDeadline(time.Now().Add(10 * time.Second))

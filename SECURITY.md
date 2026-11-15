@@ -6,6 +6,15 @@ and lifecycle mechanics.
 
 sshore trusts the **local OS, user account, terminal, executable and SSH configuration**. The remote host may be compromised, including its root user, shell daemon and programs running as your remote account. SSH authenticates the endpoint and protects transport; it does not make the endpoint trustworthy.
 
+A `spawn` is bound to the original parent shell process; detach and attach do not
+transfer that ownership. Local owner checks include process creation identity,
+so PID reuse cannot keep it alive. Linux cleanup signals only confirmed same-user
+tasks; Windows spawns use kill-on-close jobs. Remote spawns require an exclusive
+lifetime lease on their exact endpoint and end when that SSH connection is lost.
+Silent network failure is detected by keepalives, not instantaneously. Deliberately
+escaped/reparented Unix tasks remain outside the global cleanup guarantee. As with
+persistent shells, a malicious remote host can ignore lifecycle rules.
+
 ## Trust boundaries
 
 ```mermaid
@@ -13,7 +22,10 @@ flowchart LR
     localclient["Local shell client"] --> localgate["Private capability + exact release"]
     localgate --> localdaemon["Shared local daemon: private state and lifetime lock"]
     localdaemon --> localworker["Per-shell endpoint: exclusive PTY or ConPTY"]
-    localworker -->|"Client loss: stop writer, preserve shell"| localdaemon
+    localworker -->|"Attachment loss: stop writer; preserve while lifetime permits"| localdaemon
+    spawnowner["Spawn owner: PID and creation identity"] -->|"Owner exit or identity change"| spawnstop["End only owned temporary shell and identified tasks"]
+    localdaemon -->|"Remote spawn: independent authenticated lifetime SSH"| spawnlease["Exclusive lease on exact temporary shell endpoint"]
+    spawnlease -->|"Loss: instance-checked cancellation"| spawnstop
     localdaemon -->|"Authenticated startup; explicit resource grant"| localresource["Mount worker / daemon-owned forward SSH"]
     subgraph remote["Untrusted remote host"]
         program["Programs / shared shell daemon"]

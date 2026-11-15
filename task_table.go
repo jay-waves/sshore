@@ -22,7 +22,7 @@ func printTaskInventory(inv inventory, details bool) {
 func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 	rows := []taskTableRow{}
 	for _, s := range inv.LocalShells {
-		rows = append(rows, taskTableRow{s.ID, "shell/" + s.Name, "local", s.State, s.Directory})
+		rows = append(rows, taskTableRow{s.ID, shellTaskName(s.Name, s.Temporary), "local", s.State, s.Directory})
 	}
 	for _, s := range inv.Shells {
 		if s.State == "renamed" {
@@ -40,7 +40,7 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 		if s.Historical && !s.ConfirmedAt.IsZero() {
 			detail = "confirmed " + time.Since(s.ConfirmedAt).Round(time.Second).String() + " ago"
 		}
-		rows = append(rows, taskTableRow{s.TaskID, "shell/" + s.Name, host, state, detail})
+		rows = append(rows, taskTableRow{s.TaskID, shellTaskName(s.Name, s.Temporary), host, state, detail})
 	}
 	for _, r := range inv.Resources {
 		host := r.Host
@@ -81,7 +81,7 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 	if details {
 		for _, s := range inv.Shells {
 			if s.ProcessTree != "" {
-				fmt.Fprintf(out, "\nshell/%s\n%s\n", cleanText(s.Name), cleanText(s.ProcessTree))
+				fmt.Fprintf(out, "\n%s\n%s\n", shellTaskName(cleanText(s.Name), s.Temporary), cleanText(s.ProcessTree))
 			}
 		}
 		for _, r := range inv.Resources {

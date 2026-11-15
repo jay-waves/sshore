@@ -127,7 +127,7 @@ func bootstrap(target, mode, name string) (result error) {
 	if !filepath.IsAbs(target) {
 		return fmt.Errorf("setup target must be absolute")
 	}
-	if mode != "bridge" && mode != "resume" && mode != "sessions" && mode != "new" && mode != "attach" {
+	if mode != "bridge" && mode != "resume" && mode != "sessions" && mode != "new" && mode != "attach" && mode != "spawn" {
 		return fmt.Errorf("invalid setup mode")
 	}
 	if mode == "resume" || name != "" {
@@ -205,7 +205,7 @@ func bootstrap(target, mode, name string) (result error) {
 			if updated {
 				readyMode = "updated"
 			}
-			return bridgePrepared(name, mode == "resume" || mode == "attach", mode == "new", target, lock, readyMode)
+			return bridgePrepared(name, mode == "resume" || mode == "attach", mode == "new" || mode == "spawn", target, lock, readyMode, mode == "spawn")
 		}
 		lock.Close()
 		if mode == "sessions" {

@@ -16,6 +16,13 @@ func runShellCommand(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	if o.command == "spawn" {
+		o.temporary = true
+		o.owner, err = currentSpawnOwner()
+		if err != nil {
+			return 1, err
+		}
+	}
 	if o.local {
 		return runLocalCommand(o)
 	}

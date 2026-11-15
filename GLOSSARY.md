@@ -13,7 +13,7 @@ This document defines the project vocabulary. Commands are documented by
 | Remote account | The authenticated Unix account. Shell management excludes other users. |
 | Client | The foreground sshore process attaching to a local or remote shell. It is not the shell itself. |
 | Transport | The SSH connection carrying a shell attachment, independent forward or SFTP mount. |
-| Attachment | One client's live connection to a persistent shell. At most one client is attached at a time. |
+| Attachment | One client's live connection to a shell. At most one client is attached at a time. |
 | Peer / manager | Another computer managing a resource whose advisory record is visible on the remote account. |
 
 ## Shells and lifecycle
@@ -22,12 +22,15 @@ This document defines the project vocabulary. Commands are documented by
 | --- | --- |
 | Mux | The detach/reattach capability: explicitly leave a shell running and attach again later. Each shell session has one terminal; mux does not imply split panes. The internal smux library separately multiplexes transport streams. |
 | Session | A running task managed by sshore: a shell, forward or mount. Pending reviews are requests, not started sessions. |
-| Shell | A persistent shell and native terminal owned by a daemon, local on Linux/Windows or remote on Linux. It survives detach and connection loss. |
+| Shell | A shell process and native terminal owned by a daemon, local on Linux/Windows or remote on Linux. `shell` creates a persistent session that survives detach and connection loss. |
+| Spawn | A temporary shell created by `spawn`, displayed as `spawn/NAME`. It can detach and reattach but ends with its original owner. A remote spawn also ends on loss of its lifetime SSH connection. |
+| Spawn owner | The parent shell process that launched `spawn`, identified by PID and creation identity. Attach never transfers ownership. |
+| Lifetime SSH connection | A local-daemon-owned connection keeping a remote spawn alive independently of foreground attachments. It is not automatically reconnected. |
 | Daemon | A background owner of native terminals and lifecycle. One local daemon per user/state root hosts multiple shells and forward transports, and supervises mount workers; Linux remote shells share a daemon per runtime directory, with separate helper endpoints. |
 | Shell name | A public label, automatic or user-supplied; renaming it does not replace the daemon or shell. |
 | Task | A program associated with a shell. Identifying tasks for termination requires process identity checks, not just a displayed PID. |
 | Detach | Explicitly end an attachment while preserving its shell. Ctrl+B d and `sshore detach` request this. |
-| Disconnect | Loss of transport. It releases the attachment while the daemon retains the shell, locally and remotely. |
+| Disconnect | Loss of transport. It releases an attachment. Persistent shells survive; spawns survive only while their owner and, remotely, their lifetime SSH connection remain alive. |
 | Cancel | The public action for discarding a request, stopping a resource or ending a named remote shell. Its scope depends on the identifier. |
 | Recovery | A temporary shell on the authenticated SSH connection, without persistent shell or normal sshore operations. It is not a sandbox. |
 | Release version | Full MAJOR.MINOR.PATCH identifier used for compatibility. There is no independent sshore protocol version counter. |
@@ -85,7 +88,7 @@ This document defines the project vocabulary. Commands are documented by
   claims. Listings do not probe target services; missing peer heartbeats mean
   unknown state, not confirmed termination.
 
-Business package and filename prefixes follow the public commands: `cp`,
+Business package and filename prefixes follow the public commands: `spawn`, `cp`,
 `mount`, `forward` and `review`. The mount protocol is SFTP over SSH. `review` replaces
 `approve`, and `cancel` replaces the public `stop`/`kill` verbs. Internal wire or
 function names may retain historical terminology.

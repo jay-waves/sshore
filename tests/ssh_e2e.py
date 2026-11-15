@@ -87,9 +87,66 @@ class Terminal:
         os.close(self.fd)
 
 
+def spawn_smoke(binary, host, options):
+    def cli(action, *extra):
+        return [binary, action, host, *extra, *options]
+
+    def inventory():
+        return json.loads(subprocess.check_output(cli("list", "--json"), text=True))
+
+    subprocess.run(cli("shell", "persistent", "--detach"), check=True)
+    parent = subprocess.Popen(
+        ["sh", "-c", '\"$@\"; code=$?; echo READY:$code; read answer', "parent",
+         *cli("spawn", "temporary", "--detach")],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        output = b""
+        deadline = time.monotonic() + 20
+        while b"READY:" not in output and time.monotonic() < deadline:
+            if select.select([parent.stdout], [], [], 0.1)[0]:
+                chunk = os.read(parent.stdout.fileno(), 8192)
+                if not chunk:
+                    break
+                output += chunk
+        assert b"READY:0" in output and b"spawn/temporary" in output, output
+        rows = {row["name"]: row for row in inventory()["shells"]}
+        assert rows["temporary"]["temporary"] and rows["temporary"]["state"] == "detached", rows
+        assert not rows["persistent"].get("temporary"), rows
+        pid = rows["temporary"]["pid"]
+        terminal = Terminal(cli("attach", "temporary"))
+        try:
+            terminal.send("printf 'SPAWN-%s\\n' alive\n")
+            terminal.expect("SPAWN-alive")
+            terminal.send(b"\x02d")
+            terminal.wait()
+        finally:
+            terminal.close()
+        assert next(row for row in inventory()["shells"] if row["name"] == "temporary")["pid"] == pid
+        parent.stdin.close()
+        parent.wait(timeout=5)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            rows = {row["name"]: row for row in inventory()["shells"]}
+            if "temporary" not in rows:
+                assert "persistent" in rows, rows
+                print("spawn: real SSH detach, reattach, owner cleanup and persistent sibling OK")
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("spawn survived original parent exit")
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+        parent.wait()
+        parent.stdout.close()
+        parent.stderr.close()
+        subprocess.run(cli("cancel", "persistent"), check=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default="dist/sshore")
+    parser.add_argument("--spawn-only", action="store_true")
     args = parser.parse_args()
     binary = str(Path(args.binary).resolve())
     metadata = subprocess.check_output(["go", "version", "-m", binary], text=True)
@@ -154,6 +211,9 @@ LogLevel ERROR
             command = [binary, "new", pwd.getpwuid(os.getuid()).pw_name + "@127.0.0.1", "--server", str(wrapper), "--", "-p", str(port),
                        "-i", str(key), "-F", "/dev/null", "-o", "IdentitiesOnly=yes",
                        "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known}"]
+            if args.spawn_only:
+                spawn_smoke(binary, command[2], command[3:])
+                return
             base_command = command[:]
             for expected_name in (b"pikachu", b"eevee"):
                 auto = Terminal(base_command, wait_ready=False)

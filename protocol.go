@@ -23,6 +23,7 @@ const (
 
 // Control metadata uses JSON; terminal bytes remain binary.
 type message struct {
+	Temporary       bool                `json:"temporary,omitempty"`
 	Inventory       *inventory          `json:"inventory,omitempty"`
 	LocalRequest    *localDaemonRequest `json:"local_request,omitempty"`
 	Instance        string              `json:"instance,omitempty"`

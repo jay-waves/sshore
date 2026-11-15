@@ -12,7 +12,7 @@ type localStartup struct {
 	Error  string
 }
 
-func startLocalSession(name string) (localSessionRecord, error) {
+func startLocalSession(name string, owners ...spawnOwner) (localSessionRecord, error) {
 	var empty localSessionRecord
 	reservation, err := reserveResourceName("shell", name)
 	if err != nil {
@@ -26,6 +26,9 @@ func startLocalSession(name string) (localSessionRecord, error) {
 	reservation.owner.Close()
 	reservation.owner = nil
 	request := localSessionRecord{Name: reservation.name, Directory: dir, Version: version, Token: resourceToken()}
+	if len(owners) > 0 {
+		request.Owner = owners[0]
+	}
 	c, err := openLocalDaemon(localDaemonRequest{Kind: "shell", Record: request, Env: os.Environ()})
 	if err != nil {
 		return empty, err

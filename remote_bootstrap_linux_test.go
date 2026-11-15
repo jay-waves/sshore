@@ -183,3 +183,42 @@ func TestRenameRemoteRouting(t *testing.T) {
 		t.Fatal(out, err)
 	}
 }
+
+func TestBootstrapDownloadFailureIsSetupError(t *testing.T) {
+	home := t.TempDir()
+	tools := filepath.Join(home, "tools")
+	if err := os.Mkdir(tools, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Require the retry policy, then simulate curl exhausting its retries.
+	stub := `#!/bin/sh
+case " $* " in *" --retry 2 "*) ;; *) exit 99;; esac
+printf '%s\n' 'curl: (22) The requested URL returned error: 503' >&2
+exit 22
+`
+	if err := os.WriteFile(filepath.Join(tools, "curl"), []byte(stub), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "-c", remoteCommand(options{server: filepath.Join(home, "missing")}))
+	cmd.Env = append(os.Environ(), "HOME="+home, "PATH="+tools+":/usr/bin:/bin", "TMPDIR="+home)
+	var diagnostics strings.Builder
+	cmd.Stderr = &diagnostics
+	out, err := cmd.Output()
+	if err == nil {
+		t.Fatal("download unexpectedly succeeded")
+	}
+	err = negotiateSetupWithInput(strings.NewReader(string(out)), nil, &options{}, func() (setupInput, error) {
+		t.Fatal("failed preparation must not request approval")
+		return nil, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "installer download failed") || strings.Contains(err.Error(), "EOF") {
+		t.Fatalf("unexpected setup error: %v", err)
+	}
+	if !strings.Contains(diagnostics.String(), "503") {
+		t.Fatal(diagnostics.String())
+	}
+	staged, err := filepath.Glob(filepath.Join(home, "sshore-setup.*"))
+	if err != nil || len(staged) != 0 {
+		t.Fatalf("staging not cleaned up: %v %v", staged, err)
+	}
+}

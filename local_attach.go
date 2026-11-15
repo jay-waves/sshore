@@ -14,7 +14,7 @@ func runLocalShell(record localSessionRecord, env []string, ready func(localSess
 		switch m.Type {
 		case "status":
 			s.mu.Lock()
-			reply := message{Type: "session", Name: s.record.Name, SoftwareVersion: version, Attached: s.lifecycle.Active() != nil}
+			reply := message{Type: "session", Temporary: s.record.Owner.PID != 0, Name: s.record.Name, SoftwareVersion: version, Attached: s.lifecycle.Active() != nil}
 			if s.terminal != nil {
 				reply.PID = s.terminal.PID()
 			}
@@ -81,7 +81,7 @@ func (s *localShell) attach(c net.Conn) error {
 		err = s.terminal.Resize(shellmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
 	}
 	if err == nil {
-		err = p.controlMessage(message{Type: "ready", Name: s.record.Name, PID: s.terminal.PID()})
+		err = p.controlMessage(message{Type: "ready", Temporary: s.record.Owner.PID != 0, Name: s.record.Name, PID: s.terminal.PID()})
 	}
 	if err == nil {
 		err = p.output(message{Type: "output", Data: s.modes.Replay()})

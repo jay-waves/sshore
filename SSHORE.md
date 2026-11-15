@@ -247,6 +247,12 @@ There is no separate sshore protocol counter. Running daemons are replaced throu
 account setup, not upgraded in place. Recovery uses a transient PTY on the existing
 SSH connection; see [setup and recovery safeguards](SECURITY.md#remote-setup-and-updates).
 
+Remote bootstrap downloads the installer with up to two retries for transient
+HTTP failures, matching the installer's release-download retry policy. Download,
+preparation and version-verification failures return a framed setup error to the
+client while keeping detailed diagnostics on stderr. Failed preparation leaves
+existing installations and shell tasks untouched.
+
 ## Streams and approved operations
 
 smux v2 carries logical control, terminal and file streams over one SSH connection;
@@ -334,6 +340,33 @@ only that shell's identity-checked process tree; cancelling one shell cannot sto
 its siblings. Confirmed version updates may terminate the shared daemon and all
 of its identified shell tasks together, under the existing account setup lock.
 
+## Temporary shells (`spawn`)
+
+`spawn` creates the same single-terminal shell as `shell`, but records the
+launching process's parent PID and creation identity. The local daemon checks
+that owner every 500 ms; exit, zombie state or PID reuse ends the spawn. This
+binds to the actual parent process, including a wrapper if one launches the CLI;
+reattachment never transfers the original ownership. Local Linux cleanup uses
+the identity-checked task snapshot/signaling path. Windows starts a spawn's
+ConPTY process suspended, assigns a kill-on-close job, then resumes it; closing
+the terminal job ends its descendants. Persistent `shell` behavior is unchanged.
+
+For a remote spawn the local daemon owns one lifetime SSH connection. The
+launching client handles SSH askpass and setup choices before entering raw mode.
+The remote bridge first claims an exclusive lifetime connection to the exact
+new temporary shell endpoint, then serves a bounded outer smux transport. The
+initial attachment uses one inner stream; detaching closes only that stream.
+Later attachments use the usual SSH route. The original connection remains
+until owner exit, remote shell exit or transport loss. Closing its lease invokes
+normal instance-checked shell cancellation. Keepalive detection bounds silent
+network-loss detection; there is no automatic reconnect or lifetime transfer.
+Recovery stays a foreground-only transient shell on the authenticated connection.
+
+Temporary status travels in live handshake/inventory metadata and cached shell
+snapshots. The existing task column renders `spawn/NAME` versus `shell/NAME`;
+IDs, names, attachment states, rename and cancellation keep their existing rules.
+Ctrl+B c from a spawn creates another spawn under the switching client's parent.
+
 ## Shared local daemon and resource workers
 
 One daemon per current user and private state root is started on demand. A
@@ -359,8 +392,11 @@ reaps workers; filesystem payloads bypass the daemon. Mount workers can survive
 daemon failure and remain accessible through their private control records. The
 request carries the launching client's working directory and environment rather
 than inheriting whichever shell first started the daemon. Environment values are
-not persisted in daemon metadata. Windows mount workers and directly owned forward SSH processes retain a hidden
-console for OpenSSH/askpass inheritance, separate from the console-free daemon.
+not persisted in daemon metadata. Local shells select the executable from the
+launching client's `SHELL` (a path, not a command with arguments). Linux falls back
+to `/bin/sh`; Windows falls back to `COMSPEC`, then `cmd.exe`, and adds no Unix
+shell flags. Reattachment preserves the existing shell. Windows mount workers
+and directly owned forward SSH processes retain a hidden console for OpenSSH/askpass inheritance, separate from the console-free daemon.
 
 The launching CLI handles authentication through a temporary askpass broker
 until startup acknowledgement. Losing it before commit abandons startup. Once

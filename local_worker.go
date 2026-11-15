@@ -39,6 +39,7 @@ func serveLocalWorker(s *localShell, r localSessionRecord, ready func(localSessi
 		return err
 	}
 	s.record = r
+	go watchSpawnOwner(r.Owner, s.done, s.close)
 	defer func() {
 		path, err := localSessionPath(s.record.Name)
 		if err == nil {

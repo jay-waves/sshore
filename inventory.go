@@ -28,6 +28,7 @@ type resourceView struct {
 	resourceStatus
 }
 type shellView struct {
+	Temporary   bool      `json:"temporary,omitempty"`
 	Instance    string    `json:"instance,omitempty"`
 	TaskID      uint64    `json:"task_id,omitempty"`
 	Host        string    `json:"host,omitempty"`
@@ -226,7 +227,7 @@ func collectInventory(o options) (inventory, error) {
 			inv.Errors = append(inv.Errors, cleanText(err.Error()))
 		}
 		for _, s := range snapshots {
-			inv.Shells = append(inv.Shells, shellView{Instance: s.Instance, ID: "shell/" + s.Name, Host: s.Host, Name: s.Name, State: s.State, ConfirmedAt: s.ConfirmedAt, Unconfirmed: s.Unconfirmed, Active: s.Active, Historical: true})
+			inv.Shells = append(inv.Shells, shellView{Temporary: s.Temporary, Instance: s.Instance, ID: shellTaskName(s.Name, s.Temporary), Host: s.Host, Name: s.Name, State: s.State, ConfirmedAt: s.ConfirmedAt, Unconfirmed: s.Unconfirmed, Active: s.Active, Historical: true})
 		}
 		inv.Peers, err = collectPeerViews()
 		if err != nil {

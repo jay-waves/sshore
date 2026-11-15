@@ -9,7 +9,10 @@ import (
 )
 
 func localShellCommand(env []string) (string, []string) {
-	path := localEnvironmentValue(env, "COMSPEC")
+	path := localEnvironmentValue(env, "SHELL")
+	if path == "" {
+		path = localEnvironmentValue(env, "COMSPEC")
+	}
 	if path == "" {
 		path = "cmd.exe"
 	}

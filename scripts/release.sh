@@ -464,6 +464,20 @@ Linux and Windows amd64 only.
 NOTES
 fi
 
+if [[ "$version" == "0.6.7" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Add `sshore spawn` for local and remote temporary shells bound to the original parent shell. Detach/reattach keeps that ownership; owner exit ends the spawn and its identified tasks. Remote lifetime-connection loss also ends the spawn.
+- Keep `sshore shell` persistent. The existing task column distinguishes `shell/NAME` and `spawn/NAME`, with stable numeric IDs for both.
+- Honor `SHELL` on Windows before falling back to `COMSPEC` or CMD, including Nushell executable paths.
+- Retry transient installer downloads and report preparation failures explicitly instead of a generic setup EOF.
+
+Client and server require the exact full 0.6.7 release. Updating older remote
+shells ends the listed shells and tasks only after typed confirmation.
+NOTES
+fi
+
 if [[ "$version" == "0.6.6" ]]; then
   cat >> release-notes.md <<'NOTES'
 

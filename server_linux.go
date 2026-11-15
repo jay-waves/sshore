@@ -216,7 +216,7 @@ func bridge(name string, existing bool) error {
 	return bridgePrepared(name, existing, false, exe, lock, "")
 }
 
-func bridgePrepared(name string, existing, freshOnly bool, executable string, gate *os.File, readyMode string) error {
+func bridgePrepared(name string, existing, freshOnly bool, executable string, gate *os.File, readyMode string, temporary ...bool) error {
 	defer gate.Close()
 	if existing && name == "" {
 		return fmt.Errorf("attach requires a shell name")
@@ -262,7 +262,7 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 		if publicName == "" {
 			publicName = name
 		}
-		if err := createRemoteShell(executable, name, publicName); err != nil {
+		if err := createRemoteShell(executable, name, publicName, len(temporary) > 0 && temporary[0]); err != nil {
 			return err
 		}
 		conn, err = net.DialTimeout("unix", path, time.Second)
@@ -278,6 +278,9 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 	}
 	defer conn.Close()
 	gate.Close()
+	if len(temporary) > 0 && temporary[0] {
+		return bridgeSpawn(path, conn, readyMode)
+	}
 	if readyMode != "" {
 		if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
 			return err
@@ -295,6 +298,8 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 // approval, forwarding control and detach requests. Approved file bytes flow
 // directly on client-initiated streams, without a helper process or PTY relay.
 type shell struct {
+	temporary       bool
+	spawnOwned      bool
 	environment     []string
 	directory       string
 	processIdentity string
@@ -437,7 +442,7 @@ func (s *shell) attach(p *attachment, m message) error {
 		if err := s.master.Resize(shellmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
 			return err
 		}
-		if err := p.controlMessage(message{Type: "ready", Instance: s.instance, PID: s.cmd.Process.Pid, Name: s.name}); err != nil {
+		if err := p.controlMessage(message{Type: "ready", Temporary: s.temporary, Instance: s.instance, PID: s.cmd.Process.Pid, Name: s.name}); err != nil {
 			return err
 		}
 		if !p.muted.Load() {
@@ -636,7 +641,16 @@ func (s *shell) handle(c net.Conn) {
 	}
 	_ = c.SetDeadline(time.Time{})
 	switch first.Type {
+	case "spawn_owner":
+		s.serveSpawnOwner(c, first)
 	case "mux":
+		s.mu.Lock()
+		unowned := s.temporary && !s.spawnOwned
+		s.mu.Unlock()
+		if unowned {
+			_ = writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: "spawn lifetime is not established"})
+			return
+		}
 		if err := checkPeerVersion(first.SoftwareVersion, "client"); err != nil {
 			_ = writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
 			return
@@ -673,7 +687,7 @@ func (s *shell) handle(c net.Conn) {
 		_ = writeMessage(c, message{Type: "renamed", Name: first.Name})
 	case "status":
 		s.mu.Lock()
-		m := message{Type: "session", Instance: s.instance, Attached: s.lifecycle.Active() != nil, Name: s.name, SoftwareVersion: version}
+		m := message{Type: "session", Temporary: s.temporary, Instance: s.instance, Attached: s.lifecycle.Active() != nil, Name: s.name, SoftwareVersion: version}
 		group := 0
 		if s.master != nil {
 			group, _ = s.master.ForegroundGroup()
@@ -715,7 +729,7 @@ func daemon(name string) error {
 	return serveRemoteShell(name, label, os.Environ(), "", nil)
 }
 
-func serveRemoteShell(name, nameLabel string, env []string, directory string, ready func() error) error {
+func serveRemoteShell(name, nameLabel string, env []string, directory string, ready func() error, temporary ...bool) error {
 	path, err := socketPath(name)
 	if err != nil {
 		return err
@@ -751,7 +765,7 @@ func serveRemoteShell(name, nameLabel string, env []string, directory string, re
 	if err := os.Chmod(path, 0600); err != nil {
 		return err
 	}
-	s := &shell{instance: rand.Text(), environment: env, directory: directory, path: path, name: nameLabel, nameLock: nameLock, done: make(chan struct{})}
+	s := &shell{temporary: len(temporary) > 0 && temporary[0], instance: rand.Text(), environment: env, directory: directory, path: path, name: nameLabel, nameLock: nameLock, done: make(chan struct{})}
 	nameLock = nil
 	defer func() {
 		s.mu.Lock()

@@ -10,9 +10,25 @@ package main
 // or recovery before replacing the target. Preparation needs remote HTTPS access
 // and a matching published asset; custom builds may need manual installation.
 
-import "strings"
+import (
+	"bytes"
+	"fmt"
+	"strings"
+)
 
 const installerURL = "https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh"
+
+// Encode a normal fatal frame before a remote Go executable is available.
+// Octal escapes keep binary framing and JSON out of shell interpolation.
+func bootstrapFailure(reason string) string {
+	var frame bytes.Buffer
+	_ = writeMessage(&frame, message{Type: "fatal", Error: reason})
+	var escaped strings.Builder
+	for _, b := range frame.Bytes() {
+		fmt.Fprintf(&escaped, "\\%03o", b)
+	}
+	return "printf " + shellQuote(escaped.String()) + "; exit 1"
+}
 
 // Match compareVersions before downloading a coordinator. Only canonical full
 // releases are ordered; failed probes and custom labels proceed to manual recovery.
@@ -34,7 +50,9 @@ const newerReleaseAWK = `END {
 // even an old server can offer an interactive, nonpersistent recovery shell.
 func remoteCommand(o options) string {
 	mode := "bridge"
-	if o.command == "shell" {
+	if o.command == "spawn" {
+		mode = "spawn"
+	} else if o.command == "shell" {
 		mode = "new"
 	} else if o.command == "attach" {
 		mode = "attach"
@@ -91,9 +109,9 @@ func remoteCommand(o options) string {
 	b.WriteString("if [ \"$remote_version\" = " + shellQuote("sshore "+version) + " ]; then exec \"$server\"" + args + "; fi; ")
 	b.WriteString("printf '%s\\n' " + shellQuote("[sshore] Downloading sshore "+version+" and verifying checksum...") + " >&2; ")
 	b.WriteString("umask 077; setup_dir=$(mktemp -d \"${TMPDIR:-/tmp}/sshore-setup.XXXXXXXX\") || exit 1; trap 'rm -rf -- \"$setup_dir\"' EXIT; trap 'exit 130' INT; trap 'exit 143' TERM HUP; ")
-	b.WriteString("curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 " + shellQuote(installerURL) + " -o \"$setup_dir/install.sh\" || exit 1; ")
-	b.WriteString("if ! sh \"$setup_dir/install.sh\" --version " + shellQuote(version) + " --bin-dir \"$setup_dir/bin\" >\"$setup_dir/install.log\" 2>&1; then cat \"$setup_dir/install.log\" >&2; exit 1; fi; ")
-	b.WriteString("[ \"$(\"$setup_dir/bin/sshore\" --version)\" = " + shellQuote("sshore "+version) + " ] || exit 1; ")
+	b.WriteString("curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 180 --retry 2 " + shellQuote(installerURL) + " -o \"$setup_dir/install.sh\" || { " + bootstrapFailure("remote setup: installer download failed; retry the connection. No shells stopped.") + "; }; ")
+	b.WriteString("if ! sh \"$setup_dir/install.sh\" --version " + shellQuote(version) + " --bin-dir \"$setup_dir/bin\" >\"$setup_dir/install.log\" 2>&1; then cat \"$setup_dir/install.log\" >&2; " + bootstrapFailure("remote setup: release preparation failed; see diagnostics above. No shells stopped.") + "; fi; ")
+	b.WriteString("[ \"$(\"$setup_dir/bin/sshore\" --version)\" = " + shellQuote("sshore "+version) + " ] || { " + bootstrapFailure("remote setup: prepared binary version mismatch. No shells stopped.") + "; }; ")
 	b.WriteString("\"$setup_dir/bin/sshore\"" + args)
 	return "sh -c " + shellQuote(b.String())
 }

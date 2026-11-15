@@ -9,26 +9,31 @@ import (
 )
 
 type localShell struct {
-	environment []string
-	nameLock    *os.File
-	mu          sync.Mutex
-	record      localSessionRecord
-	terminal    *shellmux.Terminal
-	lifecycle   shellmux.Lifecycle[*attachment]
-	modes       shellmux.InputState
-	done        chan struct{}
-	once        sync.Once
+	processIdentity string
+	environment     []string
+	nameLock        *os.File
+	mu              sync.Mutex
+	record          localSessionRecord
+	terminal        *shellmux.Terminal
+	lifecycle       shellmux.Lifecycle[*attachment]
+	modes           shellmux.InputState
+	done            chan struct{}
+	once            sync.Once
 }
 
 func (s *localShell) close() {
 	s.once.Do(func() {
 		s.mu.Lock()
 		terminal, owner := s.terminal, s.lifecycle.End()
+		temporary, identity := s.record.Owner.PID != 0, s.processIdentity
 		s.mu.Unlock()
 		if owner != nil {
 			owner.mux.Close()
 		}
 		if terminal != nil {
+			if temporary {
+				_ = stopSpawnTerminal(terminal.PID(), identity)
+			}
 			terminal.Close()
 		}
 		close(s.done)
@@ -53,9 +58,17 @@ func (s *localShell) start(m message) error {
 		env = append(env, item)
 	}
 	env = append(env, "TERM="+m.Term, "SSHORE_LOCAL_SESSION="+s.record.identity())
-	t, err := shellmux.Start(shellmux.Config{Path: path, Args: args, Env: env, Dir: s.record.Directory, Size: shellmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}})
+	t, err := shellmux.Start(shellmux.Config{KillOnClose: s.record.Owner.PID != 0, Path: path, Args: args, Env: env, Dir: s.record.Directory, Size: shellmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}})
 	if err != nil {
 		return err
+	}
+	if s.record.Owner.PID != 0 {
+		identity, err := spawnProcessIdentity(t.PID())
+		if err != nil {
+			t.Close()
+			return err
+		}
+		s.processIdentity = identity
 	}
 	s.terminal = t
 	go func() {

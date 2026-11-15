@@ -16,8 +16,9 @@ func (s Size) validate() error {
 // Config uses an executable path and separate arguments, never a shell command.
 // A nil Env inherits the environment. Dir empty inherits the working directory.
 type Config struct {
-	Path      string
-	Args, Env []string
-	Dir       string
-	Size      Size
+	KillOnClose bool
+	Path        string
+	Args, Env   []string
+	Dir         string
+	Size        Size
 }

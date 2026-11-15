@@ -25,7 +25,7 @@ func remoteDaemonPath() (string, error) {
 }
 
 // The caller holds the account setup gate, serializing daemon launch and updates.
-func createRemoteShell(executable, name, label string) error {
+func createRemoteShell(executable, name, label string, temporary ...bool) error {
 	path, err := remoteDaemonPath()
 	if err != nil {
 		return err
@@ -90,7 +90,7 @@ func createRemoteShell(executable, name, label string) error {
 	if err != nil {
 		return err
 	}
-	request := message{Type: "create_shell", SoftwareVersion: version, Name: name, Action: label, LocalRequest: &localDaemonRequest{Record: localSessionRecord{Directory: cwd}, Env: os.Environ()}}
+	request := message{Type: "create_shell", Temporary: len(temporary) > 0 && temporary[0], SoftwareVersion: version, Name: name, Action: label, LocalRequest: &localDaemonRequest{Record: localSessionRecord{Directory: cwd}, Env: os.Environ()}}
 	if err = writeMessage(c, request); err != nil {
 		return err
 	}
@@ -207,7 +207,7 @@ func runSharedRemoteDaemon() error {
 				}
 				c.Close()
 				return err
-			})
+			}, request.Temporary)
 			if err != nil && !ready {
 				_ = writeMessage(c, message{Type: "error", SoftwareVersion: version, Error: err.Error()})
 			}

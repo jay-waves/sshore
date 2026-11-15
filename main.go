@@ -24,7 +24,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.6.6"
+var version = "0.6.7"
 
 const connectionOptions = `Options (before --; may appear before or after HOST):
   --server PATH                 Remote executable (default: PATH, then ~/.local/bin/sshore)
@@ -45,7 +45,8 @@ SSH options (only after --):
 const help = `sshore — persistent shells, file transfer and SFTP mounts
 
 Local commands:
-  sshore shell [HOST [NAME]] [options]   Create a local or remote shell
+  sshore shell [HOST [NAME]] [options]   Create a persistent local or remote shell
+  sshore spawn [HOST [NAME]] [options]   Create a shell bound to the launching parent shell
   sshore list [HOST] [-- SSH_OPTIONS]    Local records, or query the named remote account
   sshore cancel TYPE/NAME            Cancel a request, mount or forward
   sshore cancel HOST NAME [-- SSH_OPTIONS] End a shell and its identified tasks
@@ -70,7 +71,8 @@ Help:
 
 shell never resumes; attach never creates or evicts another client.
 Ctrl+B then d detaches; Ctrl+B then ? shows keys.
-Exit ends the shell; connection loss preserves it. No screen replay.
+Exit ends the shell. shell survives connection loss; spawn ends with its owner
+or its lifetime SSH connection. No screen replay.
 Ctrl+B keys: c new session; n/p next/previous; l last; s/w choose session.
             d detach; r redraw; i info; ? help; Ctrl+B send prefix.
 Unknown prefix combinations pass through. --no-escape disables all local shortcuts.
@@ -88,10 +90,26 @@ Examples:
 
 var commandHelp = map[string]string{
 	"mount": mountHelp,
+	"spawn": `Usage: sshore spawn [HOST [NAME]] [options]
+       sshore spawn [--local] [--name NAME] [--detach] [--quiet] [--no-escape]
+
+Create a temporary shell bound to the parent shell that launches this command.
+Omit HOST for local use. SHELL selects the executable; on Windows, fall back
+to COMSPEC, then cmd.exe. SHELL is a path, without arguments.
+Ctrl+B d returns to the parent shell; attach resumes the background spawn.
+--detach starts in the background. Neither detach nor attach changes its owner.
+Closing the original parent shell ends the spawn and its identified tasks.
+A remote spawn also ends when its lifetime SSH connection is lost; detection
+may take up to the transport timeout. There is no automatic reconnect.
+Ctrl+B c creates another spawn bound to this client's parent shell.
+list distinguishes spawn/NAME from persistent shell/NAME; numeric IDs work for both.
+Use sshore shell for persistence beyond the launching terminal.
+` + connectionOptions,
 	"shell": `Usage: sshore shell [HOST [NAME]] [options]
        sshore shell [--local] [--name NAME] [--quiet] [--no-escape]
 
 Create a local shell when HOST is omitted; preserve the current directory.
+Use SHELL as the executable path. Windows falls back to COMSPEC, then cmd.exe.
 Use --name to name a local shell. With HOST, create a remote shell over SSH.
 Omit NAME for an automatic Pokemon name. --detach creates without attaching.
 An existing name is an error; use sshore attach HOST NAME to resume it.
@@ -138,7 +156,7 @@ never probed. Resource status checks have a two-second aggregate deadline.
 Numeric task IDs are stable, increasing and never reused; gaps are normal.
 Use attach ID, cancel ID, rename ID NEW, or review ID. Cached tasks are revalidated
 before execution. A task that ended is never replaced by a same-name task.
---local lists only local shells. Names: shell/NAME, mount/NAME, forward/NAME,
+--local lists only local shells. Names: shell/NAME, spawn/NAME, mount/NAME, forward/NAME,
 review/NAME. Names share a local namespace
 and default to Pokemon names; explicit names remain supported. Use cancel
 mount/NAME or forward/NAME locally, cancel HOST NAME for a remote shell, and
@@ -235,6 +253,8 @@ func validSession(name string) error {
 }
 
 type options struct {
+	temporary             bool
+	owner                 spawnOwner
 	host, session, server string
 	command               string
 	newName               string
@@ -332,7 +352,7 @@ func run(args []string) (int, error) {
 		return 0, cancelResourceIdentity(args[2], args[3])
 	case "local-daemon":
 		return 0, runLocalDaemon()
-	case "shell", "attach", "rename":
+	case "shell", "spawn", "attach", "rename":
 		return runShellCommand(args)
 	case "ftp-worker", "resource-worker":
 		return runResourceWorker()

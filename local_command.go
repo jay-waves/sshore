@@ -9,6 +9,7 @@ import (
 )
 
 type localShellView struct {
+	Temporary bool   `json:"temporary,omitempty"`
 	ID        uint64 `json:"id"`
 	identity  string
 	Name      string `json:"name"`
@@ -56,7 +57,7 @@ func localShells() ([]localShellView, error) {
 		if err != nil {
 			return nil, err
 		}
-		row := localShellView{identity: r.identity(), Name: name, State: "unavailable", Version: r.Version, Directory: r.Directory}
+		row := localShellView{Temporary: r.Owner.PID != 0, identity: r.identity(), Name: name, State: "unavailable", Version: r.Version, Directory: r.Directory}
 		m, err := localRequest(name, message{Type: "status"})
 		if err == nil && m.Type == "session" {
 			row.PID = m.PID
@@ -86,7 +87,7 @@ func localShells() ([]localShellView, error) {
 
 func runLocalCommand(o options) (int, error) {
 	switch o.command {
-	case "shell":
+	case "shell", "spawn":
 		return runClient(o)
 	case "attach":
 		if o.session == "" {

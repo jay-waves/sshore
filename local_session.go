@@ -15,6 +15,7 @@ import (
 
 // The token is a local connection capability, never part of public inventory.
 type localSessionRecord struct {
+	Owner                                    spawnOwner
 	ManagerPID                               int
 	Name, Address, Token, Version, Directory string
 }

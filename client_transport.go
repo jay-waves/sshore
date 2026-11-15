@@ -11,8 +11,8 @@ func openClientTransport(o *options) (io.ReadWriteCloser, func(), error) {
 	if o.local {
 		var r localSessionRecord
 		var err error
-		if o.command == "shell" {
-			r, err = startLocalSession(o.session)
+		if o.command == "shell" || o.command == "spawn" {
+			r, err = startLocalSession(o.session, o.owner)
 		} else {
 			r, err = readLocalSession(o.session)
 		}
@@ -23,12 +23,16 @@ func openClientTransport(o *options) (io.ReadWriteCloser, func(), error) {
 			return nil, nil, fmt.Errorf("local task changed; refresh with sshore list")
 		}
 		o.session = r.Name
+		o.temporary = r.Owner.PID != 0
 		c, err := dialLocalSession(r)
 		if err != nil {
 			return nil, nil, err
 		}
 		_ = c.SetDeadline(time.Time{})
 		return c, func() { c.Close() }, nil
+	}
+	if o.command == "spawn" {
+		return openSpawnTransport(o)
 	}
 	cmd := sshCommand(*o)
 	cmd.Stderr = os.Stderr
