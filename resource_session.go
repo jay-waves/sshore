@@ -157,10 +157,18 @@ func runResourceWorker() (code int, resultErr error) {
 			return 1, e
 		}
 	}
+	if e = validSession(o.name); e != nil {
+		return 1, e
+	}
 	dir, e := resourceStateDir(kind)
 	if e != nil {
 		return 1, e
 	}
+	nameLock, e := lockObjectName(o.name)
+	if e != nil {
+		return 1, e
+	}
+	defer nameLock.Close()
 	lockPath := filepath.Join(dir, o.name+".lock")
 	lock, e := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if e != nil {
@@ -240,6 +248,23 @@ func startFTPBackground(args []string, o ftpOptions) (int, error) {
 	return startResourceBackground(resourceConfig{Args: args}, "mount", o.name)
 }
 func startResourceBackground(config resourceConfig, kind, name string) (int, error) {
+	reservation, e := reserveResourceName(kind, name)
+	if e != nil {
+		return 1, e
+	}
+	defer reservation.Close()
+	return startReservedResource(config, kind, reservation)
+}
+func startReservedResource(config resourceConfig, kind string, reservation *resourceNameReservation) (int, error) {
+	name := reservation.name
+	if config.Forward != nil {
+		config.Forward.Name = name
+	} else {
+		config.Args = append([]string{"--name", name}, config.Args...)
+	}
+	// Keep the startup reservation until the worker owns the lifetime lock.
+	reservation.owner.Close()
+	reservation.owner = nil
 	if e := validSession(name); e != nil {
 		return 1, e
 	}

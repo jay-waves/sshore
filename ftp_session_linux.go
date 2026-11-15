@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"golang.org/x/sys/unix"
 	"os"
@@ -48,3 +49,5 @@ func prepareFTPPaths(o *ftpOptions) (func(), error) {
 	}
 	return func() { _ = os.Remove(o.mountpoint) }, nil
 }
+
+func resourceLockBusy(err error) bool { return errors.Is(err, unix.EWOULDBLOCK) }

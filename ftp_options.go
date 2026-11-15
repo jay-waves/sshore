@@ -45,7 +45,7 @@ No persistent write-back cache. Background mounts publish remote inventory only;
 local paths/control tokens are not shared. Sync failure does not fail the mount.
 
 Options:
-  --name NAME                   Local mount session name (default: derived from HOST)
+  --name NAME                   Resource name (default: automatic Pokemon name)
   --foreground                  Keep this mount in the terminal
   --no-watch                    Use plain SFTP without remote file notifications
   --server PATH                 Remote sshore executable (default: PATH, then ~/.local/bin/sshore)
@@ -148,9 +148,6 @@ func parseFTPOptions(args []string) (ftpOptions, error) {
 	if len(positional) > 2 {
 		o.mountpoint = positional[2]
 	}
-	if o.name == "" {
-		o.name = ftpDefaultName(o.host)
-	}
 	if err := validSSHDestination(o.host); err != nil {
 		return o, err
 	}
@@ -158,26 +155,4 @@ func parseFTPOptions(args []string) (ftpOptions, error) {
 		return o, usage("invalid mount path")
 	}
 	return o, nil
-}
-
-func ftpDefaultName(host string) string {
-	if i := strings.LastIndexByte(host, '@'); i >= 0 {
-		host = host[i+1:]
-	}
-	var b strings.Builder
-	for _, c := range host {
-		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' {
-			b.WriteRune(c)
-		} else {
-			b.WriteByte('-')
-		}
-		if b.Len() >= 48 {
-			break
-		}
-	}
-	name := strings.Trim(b.String(), "-")
-	if name == "" {
-		name = "mount"
-	}
-	return name
 }

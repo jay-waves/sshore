@@ -90,11 +90,46 @@ type approvalRecord struct {
 	PID                                           int
 	SoftwareVersion                               string
 	ID                                            string
+	Name                                          string
 	Created                                       time.Time
 	Host, Session, Server, Directory, DownloadDir string
 	SSH                                           []string
 	Quiet, NoEscape                               bool
 	Operations                                    []operation
+}
+
+func (r approvalRecord) displayName() string {
+	if r.Name != "" {
+		return r.Name
+	}
+	return r.ID
+}
+
+func findApproval(dir, ref string) (approvalRecord, error) {
+	if validApprovalID(ref) {
+		return readApproval(dir, ref)
+	}
+	if validSession(ref) != nil {
+		return approvalRecord{}, fmt.Errorf("invalid review name")
+	}
+	records, err := pendingApprovals(dir)
+	if err != nil {
+		return approvalRecord{}, err
+	}
+	var found *approvalRecord
+	for _, r := range records {
+		if r.Name == ref {
+			if found != nil {
+				return approvalRecord{}, fmt.Errorf("ambiguous review name %s", ref)
+			}
+			copy := r
+			found = &copy
+		}
+	}
+	if found == nil {
+		return approvalRecord{}, fmt.Errorf("review %s does not exist or expired", ref)
+	}
+	return *found, nil
 }
 
 func approvalDir() (string, error) { return stateDir("approvals") }
@@ -130,7 +165,7 @@ func writeApproval(o options, ops []operation) (string, error) {
 		}
 	}
 	if count >= maxPendingApprovals {
-		return "", fmt.Errorf("too many pending approvals; use 'sshore list' and 'sshore cancel approval/ID'")
+		return "", fmt.Errorf("too many pending approvals; use 'sshore list' and 'sshore cancel review/NAME'")
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -139,12 +174,17 @@ func writeApproval(o options, ops []operation) (string, error) {
 	if o.sshDirectory != "" {
 		cwd = o.sshDirectory
 	}
+	reservation, err := reserveResourceName("review", "")
+	if err != nil {
+		return "", err
+	}
+	defer reservation.Close()
 	nonce := make([]byte, 16)
 	if _, err = rand.Read(nonce); err != nil {
 		return "", err
 	}
 	id := hex.EncodeToString(nonce)
-	r := approvalRecord{SoftwareVersion: version, PID: o.resumePID, ID: id, Created: time.Now(), Host: o.host, Session: o.session, Server: o.server, Directory: cwd, DownloadDir: o.downloadDir, SSH: o.ssh, Quiet: o.quiet, NoEscape: o.noEscape, Operations: ops}
+	r := approvalRecord{SoftwareVersion: version, PID: o.resumePID, ID: id, Name: reservation.name, Created: time.Now(), Host: o.host, Session: o.session, Server: o.server, Directory: cwd, DownloadDir: o.downloadDir, SSH: o.ssh, Quiet: o.quiet, NoEscape: o.noEscape, Operations: ops}
 	data, err := json.Marshal(r)
 	if err != nil {
 		return "", err
@@ -206,6 +246,9 @@ func readApproval(dir, id string) (approvalRecord, error) {
 	if !compatibleVersions(version, r.SoftwareVersion) || r.ID != id || time.Since(r.Created) > approvalTTL || r.Created.After(time.Now().Add(time.Minute)) {
 		return r, fmt.Errorf("approval expired or incompatible; request it again")
 	}
+	if r.Name != "" && validSession(r.Name) != nil {
+		return r, fmt.Errorf("invalid review name")
+	}
 	if err = validSession(r.Session); err != nil {
 		return r, err
 	}
@@ -266,9 +309,9 @@ func parseReview(args []string) (reviewOptions, error) {
 			o.stay = true
 			continue
 		}
-		a = strings.TrimPrefix(a, "approval/")
-		if o.id != "" || !validApprovalID(a) {
-			return o, usage("usage: sshore review [ID] [--stay]")
+		a = strings.TrimPrefix(a, "review/")
+		if o.id != "" || (!validApprovalID(a) && validSession(a) != nil) {
+			return o, usage("usage: sshore review [NAME] [--stay]")
 		}
 		o.id = a
 	}
@@ -294,8 +337,8 @@ func runReview(args []string) (code int, resultErr error) {
 			return 1, err
 		}
 		for _, r := range records {
-			ids = append(ids, r.ID)
-			labels = append(labels, fmt.Sprintf("%s · %s / %s · %s", r.ID, r.Host, r.Session, approvalSummary(r.Operations)))
+			ids = append(ids, r.displayName())
+			labels = append(labels, fmt.Sprintf("%s · %s / %s · %s", r.displayName(), r.Host, r.Session, approvalSummary(r.Operations)))
 		}
 		if len(ids) == 0 {
 			fmt.Println("No pending approvals")
@@ -316,20 +359,20 @@ func runReview(args []string) (code int, resultErr error) {
 		}
 	}()
 	if a.id == "" {
-		a.id, err = chooseLocalItem(input, ids, labels, "Request (#number/ID, /filter; Enter cancels): ", "request")
+		a.id, err = chooseLocalItem(input, ids, labels, "Request (#number/name, /filter; Enter cancels): ", "request")
 		if err != nil {
 			return 1, err
 		}
 	}
 	// Re-read after selection: an expired or concurrently cancelled request fails closed.
-	r, err := readApproval(dir, a.id)
+	r, err := findApproval(dir, a.id)
 	if err != nil {
 		return 1, err
 	}
 	if a.stay && len(r.Operations) == 1 && r.Operations[0].Kind == "forward" {
 		return 2, usage("--stay applies only to file transfers; forwards always return locally")
 	}
-	logf(os.Stdout, logInfo, "Review %s · %s / %s\n", r.ID, cleanText(r.Host), r.Session)
+	logf(os.Stdout, logInfo, "Review %s · %s / %s\n", r.displayName(), cleanText(r.Host), r.Session)
 	logf(os.Stdout, logInfo, "Submitting all local paths or the local port starts the operation; Ctrl-C cancels.\n")
 	if len(r.Operations) == 1 && r.Operations[0].Kind == "forward" {
 		logf(os.Stdout, logInfo, "After: independent background forward; remote shell stays detached.\n")
@@ -430,12 +473,21 @@ func runReview(args []string) (code int, resultErr error) {
 	if err = os.Chdir(r.Directory); err != nil {
 		return 1, err
 	}
+	reservation, err := reserveResourceNameExcept("review", r.displayName(), r.ID)
+	if err != nil {
+		return 1, err
+	}
+	defer reservation.Close()
 	if err = consumeApproval(dir, r.ID); err != nil {
 		return 1, err
 	}
 	if len(r.Operations) == 1 && r.Operations[0].Kind == "forward" {
 		op := r.Operations[0]
-		return startForwardSession(forwardConfig{Host: r.Host, Server: r.Server, SSH: r.SSH, Port: op.Port, Target: op.TargetPort, Reverse: op.Reverse, Session: r.Session, ResumePID: r.PID, ApprovalID: r.ID})
+		f := forwardConfig{Name: r.displayName(), Host: r.Host, Server: r.Server, SSH: r.SSH, Port: op.Port, Target: op.TargetPort, Reverse: op.Reverse, Session: r.Session, ResumePID: r.PID, ApprovalID: r.ID}
+		if err := validateForwardConfig(f); err != nil {
+			return 1, err
+		}
+		return startReservedResource(resourceConfig{Forward: &f}, "forward", reservation)
 	}
 	return runClient(options{host: r.Host, session: r.Session, server: r.Server, downloadDir: r.DownloadDir, ssh: r.SSH, quiet: r.Quiet, noEscape: r.NoEscape, approved: r.Operations, stay: a.stay, resumePID: r.PID, approvalID: r.ID})
 }

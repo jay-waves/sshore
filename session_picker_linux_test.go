@@ -92,7 +92,7 @@ func TestSessionPickerPTY(t *testing.T) {
 						t.Fatalf("picker exited early: %q", output.String())
 					}
 					output.WriteString(chunk)
-					if !keysSent && strings.Contains(output.String(), "Session (") {
+					if !keysSent && strings.Contains(output.String(), "Shell (") {
 						if err := pty.Setsize(master, &pty.Winsize{Cols: 70, Rows: 18}); err != nil {
 							t.Fatal(err)
 						}

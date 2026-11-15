@@ -32,7 +32,7 @@ func sessionStatus(path string) (message, error) {
 	}
 	m, err := readMessage(c)
 	if err == nil && m.Type != "session" {
-		err = fmt.Errorf("invalid session status")
+		err = fmt.Errorf("invalid shell status")
 	}
 	if m.Name == "" {
 		m.Name = strings.TrimSuffix(filepath.Base(path), ".sock")
@@ -71,7 +71,7 @@ func resolveSession(name string) (string, error) {
 		}
 		if label == name {
 			if found != "" {
-				return "", fmt.Errorf("ambiguous session name %s", name)
+				return "", fmt.Errorf("ambiguous shell name %s", name)
 			}
 			found = path
 		}
@@ -93,7 +93,7 @@ func renameSession(old, name string) error {
 		return err
 	}
 	if path == "" {
-		return fmt.Errorf("session %s does not exist", old)
+		return fmt.Errorf("shell %s does not exist", old)
 	}
 
 	other, err := resolveSession(name)
@@ -101,7 +101,7 @@ func renameSession(old, name string) error {
 		return err
 	}
 	if other != "" && other != path {
-		return fmt.Errorf("session %s already exists", name)
+		return fmt.Errorf("shell %s already exists", name)
 	}
 	gate.Close() // The daemon takes the gate and rechecks the old label and destination.
 	c, err := net.DialTimeout("unix", path, time.Second)
@@ -120,7 +120,7 @@ func renameSession(old, name string) error {
 	if m.Type != "renamed" {
 		return fmt.Errorf("rename: %s", m.Error)
 	}
-	fmt.Fprintf(os.Stdout, "Renamed session %s to %s\n", old, name)
+	fmt.Fprintf(os.Stdout, "Renamed shell %s to %s\n", old, name)
 	return nil
 }
 
@@ -131,7 +131,7 @@ func sessionLabel(m message, filename string) string {
 	return cleanText(strings.TrimSuffix(filename, ".sock"))
 }
 
-func (s *session) rename(old, name string) error {
+func (s *shell) rename(old, name string) error {
 	if err := validSession(name); err != nil {
 		return err
 	}
@@ -145,16 +145,29 @@ func (s *session) rename(old, name string) error {
 		return err
 	}
 	if target != "" && target != s.path {
-		return fmt.Errorf("session %s already exists", name)
+		return fmt.Errorf("shell %s already exists", name)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.exited || s.name != old {
-		return fmt.Errorf("session changed or is exiting; refresh the session list")
+		return fmt.Errorf("shell changed or is exiting; refresh the shell list")
 	}
+	if s.name == name {
+		return nil
+	}
+	reservation, err := reserveResourceName("shell", name)
+	if err != nil {
+		return err
+	}
+	defer reservation.Close()
 	if err := writeSessionName(s.path, name); err != nil {
 		return err
 	}
+	if s.nameLock != nil {
+		s.nameLock.Close()
+	}
+	s.nameLock = reservation.owner
+	reservation.owner = nil
 	s.name = name
 	return nil
 }
@@ -191,7 +204,7 @@ func readSessionName(path string) (string, error) {
 		return "", err
 	}
 	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("invalid session name file: %s", path)
+		return "", fmt.Errorf("invalid shell name file: %s", path)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, 49))
 	if err != nil {
@@ -199,7 +212,7 @@ func readSessionName(path string) (string, error) {
 	}
 	name := string(data)
 	if err := validSession(name); err != nil {
-		return "", fmt.Errorf("invalid session label at %s: %w", path, err)
+		return "", fmt.Errorf("invalid shell label at %s: %w", path, err)
 	}
 	return name, nil
 }

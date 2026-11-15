@@ -48,6 +48,9 @@ func TestRemoteFallbackAndArgumentQuoting(t *testing.T) {
 		}
 		out, err := runBootstrap(t, home, o)
 		want := "<bootstrap>\n<" + bin + ">\n<" + mode + ">\n<main>\n"
+		if mode == "sessions" {
+			want = "<inventory>\n<" + version + ">\n"
+		}
 		if err != nil || out != want {
 			t.Fatal(out, err)
 		}

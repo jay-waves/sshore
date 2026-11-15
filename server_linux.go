@@ -111,7 +111,17 @@ func openLock(path string, nonblocking bool) (*os.File, error) {
 type sessionReservation struct {
 	name, publicName string
 	startup          *os.File
+	namespace        *resourceNameReservation
 	conn             net.Conn
+}
+
+func (r *sessionReservation) Close() {
+	if r.startup != nil {
+		r.startup.Close()
+	}
+	if r.namespace != nil {
+		r.namespace.Close()
+	}
 }
 
 func reserveSession(names []string, fresh bool) (sessionReservation, error) {
@@ -142,8 +152,23 @@ func reserveSession(names []string, fresh bool) (sessionReservation, error) {
 				}
 			}
 		}
+		var namespace *resourceNameReservation
+		if found, err := resolveSession(publicLabel); err != nil {
+			return sessionReservation{}, err
+		} else if found == "" {
+			namespace, err = reserveResourceName("shell", publicLabel)
+			if err != nil {
+				if fresh && errors.Is(err, errObjectNameInUse) {
+					continue
+				}
+				return sessionReservation{}, err
+			}
+		}
 		startup, err := openLock(path+".start", false)
 		if err != nil {
+			if namespace != nil {
+				namespace.Close()
+			}
 			return sessionReservation{}, err
 		}
 		conn, err := net.DialTimeout("unix", path, time.Second)
@@ -151,17 +176,23 @@ func reserveSession(names []string, fresh bool) (sessionReservation, error) {
 			live, liveErr := sessionIdentityLive(path)
 			if live || liveErr != nil {
 				startup.Close()
-				return sessionReservation{}, fmt.Errorf("session %s unavailable: %w", publicLabel, errors.Join(err, liveErr))
+				if namespace != nil {
+					namespace.Close()
+				}
+				return sessionReservation{}, fmt.Errorf("shell %s unavailable: %w", publicLabel, errors.Join(err, liveErr))
 			}
 		}
 		if fresh && err == nil {
 			conn.Close()
 			startup.Close()
+			if namespace != nil {
+				namespace.Close()
+			}
 			continue
 		}
-		return sessionReservation{name: name, publicName: publicLabel, startup: startup, conn: conn}, nil
+		return sessionReservation{name: name, publicName: publicLabel, startup: startup, namespace: namespace, conn: conn}, nil
 	}
-	return sessionReservation{}, fmt.Errorf("all automatic session names are in use; exit an existing session or choose a name with sshore new HOST NAME")
+	return sessionReservation{}, fmt.Errorf("all automatic shell names are in use; exit an existing shell or choose a name with sshore new HOST NAME")
 }
 
 func bridge(name string, existing bool) error {
@@ -188,7 +219,7 @@ func bridge(name string, existing bool) error {
 func bridgePrepared(name string, existing, freshOnly bool, executable string, gate *os.File, readyMode string) error {
 	defer gate.Close()
 	if existing && name == "" {
-		return fmt.Errorf("attach requires a session name")
+		return fmt.Errorf("attach requires a shell name")
 	}
 	publicName := name
 	if existing {
@@ -197,7 +228,7 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 			return err
 		}
 		if found == "" {
-			return fmt.Errorf("session %s does not exist; use sshore list HOST", name)
+			return fmt.Errorf("shell %s does not exist; use sshore list HOST", name)
 		}
 	}
 	names := []string{name}
@@ -211,10 +242,10 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 	}
 	name, publicName = reservation.name, reservation.publicName
 	startup, conn := reservation.startup, reservation.conn
-	defer startup.Close()
+	defer reservation.Close()
 	if freshOnly && conn != nil {
 		conn.Close()
-		return fmt.Errorf("session %s already exists; use sshore attach HOST %s", publicName, publicName)
+		return fmt.Errorf("shell %s already exists; use sshore attach HOST %s", publicName, publicName)
 	}
 	path, err := socketPath(name)
 	if err != nil {
@@ -222,7 +253,7 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 	}
 	if conn == nil {
 		if existing {
-			return fmt.Errorf("session %s does not exist; use sshore list HOST or sshore new HOST NAME", name)
+			return fmt.Errorf("shell %s does not exist; use sshore list HOST or sshore new HOST NAME", name)
 		}
 		exe := executable
 		fd, err := unix.Open(path+".log", unix.O_CREAT|unix.O_WRONLY|unix.O_APPEND|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
@@ -230,6 +261,10 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 			return err
 		}
 		log := os.NewFile(uintptr(fd), path+".log")
+		if reservation.namespace != nil {
+			reservation.namespace.owner.Close()
+			reservation.namespace.owner = nil
+		}
 		cmd := exec.Command(exe, "daemon", name)
 		if publicName == "" {
 			publicName = name
@@ -252,9 +287,9 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 		for {
 			select {
 			case err := <-exited:
-				return fmt.Errorf("session daemon exited: %v; see %s.log", err, path)
+				return fmt.Errorf("shell daemon exited: %v; see %s.log", err, path)
 			case <-deadline:
-				return fmt.Errorf("starting session timed out; see %s.log", path)
+				return fmt.Errorf("starting shell timed out; see %s.log", path)
 			case <-retry.C:
 				conn, err = net.Dial("unix", path)
 				if err == nil {
@@ -264,6 +299,10 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 		}
 	}
 	_ = unix.Flock(int(startup.Fd()), unix.LOCK_UN)
+	if reservation.namespace != nil {
+		reservation.namespace.Close()
+		reservation.namespace = nil
+	}
 	defer conn.Close()
 	gate.Close()
 	reportSessionDaemons()
@@ -307,8 +346,9 @@ func (p *attachment) output(m message) error {
 }
 func (p *attachment) close() { _ = p.mux.Close() }
 
-type session struct {
+type shell struct {
 	name       string
+	nameLock   *os.File
 	exitReason string
 	plain      bool
 	terminalMu sync.Mutex // serializes state snapshots with PTY output
@@ -324,8 +364,8 @@ type session struct {
 	once       sync.Once
 }
 
-func (s *session) stop() { s.once.Do(func() { close(s.done) }) }
-func (s *session) start(cols, rows uint16, term string) error {
+func (s *shell) stop() { s.once.Do(func() { close(s.done) }) }
+func (s *shell) start(cols, rows uint16, term string) error {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/bash"
@@ -404,7 +444,7 @@ func (s *session) start(cols, rows uint16, term string) error {
 	}()
 	return nil
 }
-func (s *session) attach(p *attachment, m message) error {
+func (s *shell) attach(p *attachment, m message) error {
 	s.terminalMu.Lock()
 	defer s.terminalMu.Unlock()
 	if m.Type != "attach" {
@@ -416,17 +456,17 @@ func (s *session) attach(p *attachment, m message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.exited {
-		return fmt.Errorf("session is exiting; use sshore new HOST to create a new one")
+		return fmt.Errorf("shell is exiting; use sshore new HOST to create a new one")
 	}
 	if s.active != nil {
-		return fmt.Errorf("session already attached; detach the other connection first")
+		return fmt.Errorf("shell already attached; detach the other connection first")
 	}
 	if m.Action == "existing" && s.cmd == nil {
-		return fmt.Errorf("session has not started; use sshore list HOST")
+		return fmt.Errorf("shell has not started; use sshore list HOST")
 	}
 	if m.Action == "approved" {
 		if s.cmd == nil || s.cmd.Process.Pid != m.PID {
-			return fmt.Errorf("approved session changed")
+			return fmt.Errorf("approved shell changed")
 		}
 		p.muted.Store(true)
 	}
@@ -455,7 +495,7 @@ func (s *session) attach(p *attachment, m message) error {
 	}
 	return nil
 }
-func (s *session) release(p *attachment) {
+func (s *shell) release(p *attachment) {
 	p.close()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -474,14 +514,14 @@ func (s *session) release(p *attachment) {
 	}
 }
 
-func (s *session) clearAttachment(p *attachment) {
+func (s *shell) clearAttachment(p *attachment) {
 	s.mu.Lock()
 	if s.active == p {
 		s.active = nil
 	}
 	s.mu.Unlock()
 }
-func (s *session) detach(p *attachment) {
+func (s *shell) detach(p *attachment) {
 	s.clearAttachment(p)
 	s.mu.Lock()
 	name := s.name
@@ -493,7 +533,7 @@ func (s *session) detach(p *attachment) {
 	_, _ = readMessage(p.control)
 	p.close()
 }
-func (s *session) serveMux(c io.ReadWriteCloser) error {
+func (s *shell) serveMux(c io.ReadWriteCloser) error {
 	mux, err := smux.Server(c, muxConfig())
 	if err != nil {
 		return err
@@ -623,7 +663,7 @@ func (s *session) serveMux(c io.ReadWriteCloser) error {
 		}
 	}
 }
-func (s *session) handle(c net.Conn) {
+func (s *shell) handle(c net.Conn) {
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 	first, err := readMessage(c)
@@ -700,16 +740,26 @@ func daemon(name string) error {
 	}
 	lock, err := openLock(path+".lock", true)
 	if err != nil {
-		return fmt.Errorf("session already running: %w", err)
+		return fmt.Errorf("shell already running: %w", err)
 	}
 	defer lock.Close()
 	nameLabel := os.Getenv("SSHORE_SESSION_NAME")
 	if validSession(nameLabel) != nil {
 		nameLabel = name
 	}
+	nameLock, err := lockObjectName(nameLabel)
+	if err != nil {
+		return fmt.Errorf("shell name %s is in use: %w", nameLabel, err)
+	}
 	if err := writeSessionName(path, nameLabel); err != nil {
+		nameLock.Close()
 		return err
 	}
+	defer func() {
+		if nameLock != nil {
+			nameLock.Close()
+		}
+	}()
 	defer os.Remove(path + ".name")
 	_ = os.Remove(path)
 	listener, err := net.Listen("unix", path)
@@ -721,7 +771,15 @@ func daemon(name string) error {
 	if err := os.Chmod(path, 0600); err != nil {
 		return err
 	}
-	s := &session{path: path, name: nameLabel, done: make(chan struct{})}
+	s := &shell{path: path, name: nameLabel, nameLock: nameLock, done: make(chan struct{})}
+	nameLock = nil
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.nameLock != nil {
+			s.nameLock.Close()
+		}
+	}()
 	defer func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -821,7 +879,7 @@ func listSessions() error {
 		fmt.Fprint(out, sessionProcessTree("/proc", m.PID))
 	}
 	if count == 0 {
-		fmt.Fprintln(out, "No sessions")
+		fmt.Fprintln(out, "No shells")
 	}
 	if err = printSessionExits(dir, out); err != nil {
 		return err
@@ -860,7 +918,7 @@ func serverCommand(args []string) error {
 		return bootstrap(args[1], args[2], args[3])
 	case "bridge", "resume", "daemon":
 		if len(args) != 2 {
-			return fmt.Errorf("internal command requires a session name")
+			return fmt.Errorf("internal command requires a shell name")
 		}
 		if args[0] == "bridge" || args[0] == "resume" {
 			return bridge(args[1], args[0] == "resume")
@@ -883,13 +941,13 @@ func serverCommand(args []string) error {
 		}
 		return removeRemoteTask(args[2])
 	case "inventory":
-		if len(args) != 2 {
+		if len(args) != 2 && (len(args) != 3 || args[2] != "--details") {
 			return usage("inventory requires client version")
 		}
 		if e := checkPeerVersion(args[1], "client"); e != nil {
 			return e
 		}
-		inv, e := localSessionInventory()
+		inv, e := localSessionInventory(len(args) == 3)
 		if e != nil {
 			return e
 		}
@@ -955,7 +1013,7 @@ func detachedSessionNames() ([]string, error) {
 		if err == nil && m.Type == "session" && !m.Attached && m.PID > 0 {
 			names = append(names, sessionLabel(m, e.Name()))
 			if len(names) > 128 {
-				return nil, fmt.Errorf("too many sessions to select; use sshore list HOST, then sshore attach HOST NAME")
+				return nil, fmt.Errorf("too many shells to select; use sshore list HOST, then sshore attach HOST NAME")
 			}
 		}
 	}

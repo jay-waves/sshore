@@ -104,7 +104,7 @@ func inspectSetup(target string) (setupState, error) {
 		}
 		order, known := compareVersions(v, version)
 		if known && order > 0 {
-			return state, fmt.Errorf("remote session %s (PID %d) runs newer version %s; update local client %s", p.name, p.pid, v, version)
+			return state, fmt.Errorf("remote shell %s (PID %d) runs newer version %s; update local client %s", p.name, p.pid, v, version)
 		}
 		if !known {
 			state.Manual = true
@@ -172,7 +172,7 @@ func bootstrap(target, mode, name string) (result error) {
 					return err
 				}
 				if len(names) == 0 {
-					return fmt.Errorf("no detached sessions; use sshore new HOST to create one")
+					return fmt.Errorf("no detached shells; use sshore new HOST to create one")
 				}
 				if len(names) == 1 {
 					name = names[0]
@@ -186,7 +186,7 @@ func bootstrap(target, mode, name string) (result error) {
 					return err
 				}
 				if reply.Type != "session_select" {
-					return fmt.Errorf("invalid session selection")
+					return fmt.Errorf("invalid shell selection")
 				}
 				for _, candidate := range names {
 					if reply.Name == candidate {
@@ -195,7 +195,7 @@ func bootstrap(target, mode, name string) (result error) {
 					}
 				}
 				if name == "" {
-					return fmt.Errorf("invalid session selection")
+					return fmt.Errorf("invalid shell selection")
 				}
 				continue // Recheck setup after waiting without the account lock.
 			}
@@ -222,7 +222,7 @@ func bootstrap(target, mode, name string) (result error) {
 			detail = "Remote state changed; review again. " + detail
 		}
 		if state.Manual {
-			detail += " An installed program or session has an unknown version; automatic update is unavailable."
+			detail += " An installed program or shell has an unknown version; automatic update is unavailable."
 		}
 		if err = writeMessage(os.Stdout, message{Type: "setup_choice", SoftwareVersion: version, Action: action, Error: detail, SetupProcesses: state.Processes}); err != nil {
 			return err
@@ -374,7 +374,7 @@ func recoveryShell() error {
 	if err = writeMessage(transport, message{Type: "mux_ready", SoftwareVersion: version}); err != nil {
 		return err
 	}
-	s := &session{plain: true, done: make(chan struct{})}
+	s := &shell{plain: true, done: make(chan struct{})}
 	defer func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()

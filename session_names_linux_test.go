@@ -9,6 +9,7 @@ import (
 )
 
 func TestAutomaticSessionReservation(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	dir, err := os.MkdirTemp("", "ss-names-")
 	if err != nil {
 		t.Fatal(err)
@@ -41,14 +42,14 @@ func TestAutomaticSessionReservation(t *testing.T) {
 	}()
 	// Occupied names include detached daemons: allocation does not depend on
 	// whether a terminal client is attached to this listening socket.
-	if _, err := reserveSession([]string{"pikachu"}, true); err == nil || !strings.Contains(err.Error(), "all automatic session names") {
+	if _, err := reserveSession([]string{"pikachu"}, true); err == nil || !strings.Contains(err.Error(), "all automatic shell names") {
 		t.Fatalf("expected exhaustion, got %v", err)
 	}
 	r, err := reserveSession([]string{"pikachu", "eevee"}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.startup.Close()
+	defer r.Close()
 	if r.name != "eevee" || r.conn != nil {
 		t.Fatalf("allocated %q, connection %v", r.name, r.conn)
 	}
@@ -57,7 +58,7 @@ func TestAutomaticSessionReservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer explicit.startup.Close()
+	defer explicit.Close()
 	defer explicit.conn.Close()
 	if explicit.name != "pikachu" {
 		t.Fatal(explicit.name)
@@ -65,12 +66,12 @@ func TestAutomaticSessionReservation(t *testing.T) {
 	listener.Close()
 	lifetime.Close()
 	// A leftover startup lock does not permanently consume the name.
-	explicit.startup.Close()
+	explicit.Close()
 	reused, err := reserveSession([]string{"pikachu"}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reused.startup.Close()
+	defer reused.Close()
 	if reused.name != "pikachu" || reused.conn != nil {
 		t.Fatalf("reuse: %q %v", reused.name, reused.conn)
 	}
@@ -79,6 +80,7 @@ func TestAutomaticSessionReservation(t *testing.T) {
 // Neither a hung daemon nor stale metadata should turn name lookup into a
 // network health check. A live hung daemon must still reserve its public name.
 func TestSessionNameResolutionWithoutStatus(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	dir, err := os.MkdirTemp("", "ss-label-")
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +116,7 @@ func TestSessionNameResolutionWithoutStatus(t *testing.T) {
 		t.Fatalf("live identity without socket: %q: %v", got, err)
 	}
 	if _, err := reserveSession([]string{"work"}, false); err == nil {
-		t.Fatal("unavailable live identity treated as a new session")
+		t.Fatal("unavailable live identity treated as a new shell")
 	}
 	lock.Close()
 	if got, err := resolveSession("work"); err != nil || got != "" {

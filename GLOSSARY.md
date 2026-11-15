@@ -10,25 +10,26 @@ This document defines the project vocabulary. Commands are documented by
 | --- | --- |
 | Local computer | The machine running the client or managing a mount/forward. Local is relative to that operation. |
 | Remote host / SSH destination | The host reached through system OpenSSH, often named by a `~/.ssh/config` alias. |
-| Remote account | The authenticated Unix account. Session management excludes other users. |
-| Client | The local sshore process connecting to a remote session. It is not the session itself. |
+| Remote account | The authenticated Unix account. Shell management excludes other users. |
+| Client | The local sshore process connecting to a remote shell. It is not the shell itself. |
 | Transport | The SSH connection carrying a shell attachment, independent forward or SFTP mount. |
-| Attachment | One client's live connection to a persistent session. At most one client is attached at a time. |
+| Attachment | One client's live connection to a persistent shell. At most one client is attached at a time. |
 | Peer / manager | Another computer managing a resource whose advisory record is visible on the remote account. |
 
-## Sessions and lifecycle
+## Shells and lifecycle
 
 | Term | Meaning |
 | --- | --- |
 | Mux | The detach/reattach capability: explicitly leave a remote shell running and attach again later. The internal smux library separately multiplexes transport streams. |
-| Session | A remote persistent shell and PTY owned by a session daemon. It can survive explicit detach. |
-| Daemon | The remote process owning a session's PTY, helper endpoint and lifecycle. |
-| Session name | A public label, automatic or user-supplied; renaming it does not replace the daemon or shell. |
-| Task | A program associated with a session. Identifying tasks for termination requires process identity checks, not just a displayed PID. |
-| Detach | Explicitly end an attachment while preserving its session. Ctrl-] and `sshore detach` request this. |
-| Disconnect | Loss of transport. For an attached shell, it ends the session once detected unless explicit detach already occurred. |
-| Cancel | The public action for discarding a request, stopping a resource or ending a named remote session. Its scope depends on the identifier. |
-| Recovery | A temporary shell on the authenticated SSH connection, without persistent session or normal sshore operations. It is not a sandbox. |
+| Session | A running task managed by sshore: a shell, forward or mount. Pending reviews are requests, not started sessions. |
+| Shell | A remote persistent shell and PTY owned by a shell daemon. It can survive explicit detach. |
+| Daemon | The remote process owning a shell's PTY, helper endpoint and lifecycle. |
+| Shell name | A public label, automatic or user-supplied; renaming it does not replace the daemon or shell. |
+| Task | A program associated with a shell. Identifying tasks for termination requires process identity checks, not just a displayed PID. |
+| Detach | Explicitly end an attachment while preserving its shell. Ctrl-] and `sshore detach` request this. |
+| Disconnect | Loss of transport. For an attached shell, it ends the shell once detected unless explicit detach already occurred. |
+| Cancel | The public action for discarding a request, stopping a resource or ending a named remote shell. Its scope depends on the identifier. |
+| Recovery | A temporary shell on the authenticated SSH connection, without persistent shell or normal sshore operations. It is not a sandbox. |
 | Release version | Full MAJOR.MINOR.PATCH identifier used for compatibility. There is no independent sshore protocol version counter. |
 
 ## Requests, resources and views
@@ -36,39 +37,39 @@ This document defines the project vocabulary. Commands are documented by
 | Term | Meaning |
 | --- | --- |
 | Request | Bounded metadata proposing a file operation or forward; receiving it grants no permission. |
-| Pending approval | A local single-use request record, identified as `approval/ID`, awaiting user review. |
+| Pending approval | A local single-use request record, identified as `review/NAME`, awaiting user review. The public name is reserved for its action; an approved forward retains it. Its random internal request ID remains distinct. |
 | Review | The separate local command that selects a pending request, collects consent and attempts execution. |
 | Consent / approval | The user's explicit acceptance in review. SSH authentication alone is not consent. |
 | Copy | A regular-file operation expressed as `cp SOURCE... TARGET`; not full system cp or scp compatibility. |
 | Tunnel | The README feature category for TCP port forwarding through SSH. |
-| Transfer | A one-time regular-file copy. Both direct and approved copies use SFTP; approved copies run on a client-initiated session stream after local review. |
-| Resource | An independently managed local mount or forward, with its own worker, transport and lifetime. |
-| Worker | The local background process owning a resource; distinct from a remote session daemon. |
+| Transfer | A one-time regular-file copy. Both direct and approved copies use SFTP; approved copies run on a client-initiated shell stream after local review. |
+| Resource | An independently managed local mount or forward, with its own worker, transport and lifetime. Its ID is `TYPE/NAME`, such as `forward/pikachu` or `mount/eevee`; the type prefix identifies the object kind. Shells, resources and pending reviews share a local name namespace and default Pokemon pool. |
+| Worker | The local background process owning a resource; distinct from a remote shell daemon. |
 | Mount | A remote directory exposed to local applications through SFTP and FUSE/WinFsp, identified as `mount/NAME`. |
-| Recent connection | A private local default for a previously connected host/session and its SSH transport settings; it is not proof that the remote session is still available. |
-| Mount agent | A transient remote sshore process that carries SFTP and filesystem notifications over a mount-owned SSH connection; it is not a persistent session daemon. |
+| Recent connection | A private local default for a previously connected host/shell and its SSH transport settings; it is not proof that the remote shell is still available. |
+| Mount agent | A transient remote sshore process that carries SFTP and filesystem notifications over a mount-owned SSH connection; it is not a persistent shell daemon. |
 | Forward | A fixed TCP port mapping through SSH, identified as `forward/NAME`. It can carry an existing SOCKS service; it does not itself implement SOCKS. |
 | Native forwarding | OpenSSH `-L/-R/-D` configured for a connection, separate from a managed `forward` resource. `-D` creates a SOCKS proxy. |
-| Inventory | A diagnostic view of resources, requests, sessions or peer records. It is not an authorization source. |
+| Inventory | A diagnostic view of resources, requests, shells or peer records. It is not an authorization source. |
 | Peer record | A remote advisory mirror, identified as `peer/KEY/RESOURCE`; it cannot control the original resource. |
-| Receipt | A bounded diagnostic record of a session/resource ending. It is not proof of complete task cleanup or remote write outcome. |
+| Receipt | A bounded diagnostic record of a shell/resource ending. It is not proof of complete task cleanup or remote write outcome. |
 
 ## Relationships and scope
 
-- A **client** attaches through a **transport** to a **session** owned by a remote
-  **daemon**. Detach removes the attachment, not the session.
+- A **client** attaches through a **transport** to a **shell** owned by a remote
+  **daemon**. Detach removes the attachment, not the shell.
 - A remote helper creates a **request**. Local **review** obtains consent and checks
-  its source session before attempting a transfer or starting a forward.
+  its source shell before attempting a transfer or starting a forward.
 - A **transfer** belongs to its executing connection. An approved **forward** becomes
   an independent resource and leaves the source shell detached.
 - A **mount** is created explicitly on its managing computer; it is not a remote
   approval request. Ending a shell does not stop its independent resources.
-- `cancel approval/ID` discards a request; `cancel mount/NAME` or
+- `cancel review/NAME` discards a request; `cancel mount/NAME` or
   `cancel forward/NAME` stops that local resource; `cancel HOST NAME` ends that
-  remote session and its identified tasks. A peer record is read-only.
+  remote shell and its identified tasks. A peer record is read-only.
 - `origin:` and `:` name the **client endpoint** of the current connection,
   even inside a remote shell. This is the current attached client, not the
-  computer that originally created the persistent session.
+  computer that originally created the persistent shell.
 - A bare `-` in direct `cp` names the invoking process's **standard stream**:
   stdin as source, stdout as target. It does not name the client computer or
   request an interactive selection. `origin:-` and `./-` name an ordinary file.

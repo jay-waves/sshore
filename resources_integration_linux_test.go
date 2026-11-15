@@ -40,7 +40,12 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, e.bin, args...)
 		cmd.Env = env
-		b, err := cmd.CombinedOutput()
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		b, err := cmd.Output()
+		if err != nil {
+			b = append(b, []byte(stderr.String())...)
+		}
 		return string(b), err
 	}
 	publishPending := func(id string) {
@@ -49,7 +54,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		if e := os.MkdirAll(dir, 0700); e != nil {
 			t.Fatal(e)
 		}
-		b, e := json.Marshal(pendingRemoteTask(id, []operation{{Kind: "forward", TargetPort: 31235}}))
+		b, e := json.Marshal(pendingRemoteTask(id, reviewName(t, id), []operation{{Kind: "forward", TargetPort: 31235}}))
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -59,14 +64,14 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	}
 	publishPending(id)
 	out, err := run("list")
-	if err != nil || !strings.Contains(out, "approval/"+id) || !strings.Contains(out, "pending") {
+	if err != nil || !strings.Contains(out, "review/"+reviewName(t, id)) || !strings.Contains(out, "pending") {
 		t.Fatal(out, err)
 	}
-	name := defaultForwardName(forwardConfig{Host: "fixture", Port: 31234, Target: 31235})
+	name := reviewName(t, id)
 	defer run("cancel", "forward/"+name)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, e.bin, "review", "approval/"+id)
+	cmd := exec.CommandContext(ctx, e.bin, "review", "review/"+reviewName(t, id))
 	cmd.Env = env
 	terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 160})
 	if err != nil {
@@ -114,7 +119,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	untilType(t, resumed.tty, "exit")
 	resumed.close()
 	out, err = run("list")
-	if err != nil || !strings.Contains(out, "forward/"+name) || !strings.Contains(out, "running") || strings.Contains(out, "approval/"+id) {
+	if err != nil || !strings.Contains(out, "forward/"+name) || !strings.Contains(out, "running") || strings.Contains(out, "review/"+name) {
 		t.Fatal(out, err)
 	}
 	if _, e := os.Stat(filepath.Join(remoteHome, filepath.FromSlash(remoteTaskRelativeDir), id+".json")); !os.IsNotExist(e) {
@@ -145,7 +150,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	// Duplicate identity cannot silently replace an independent resource.
-	if out, err = run("forward", "origin:31234", "fixture:31235"); err == nil {
+	if out, err = run("forward", "origin:31234", "fixture:31235", "--name", name); err == nil {
 		t.Fatal("duplicate accepted", out)
 	}
 	if out, err = run("cancel", "forward/"+name); err != nil {
@@ -160,7 +165,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		t.Fatal(e2)
 	}
 	publishPending(rejected)
-	if out, err = run("cancel", "approval/"+rejected); err != nil {
+	if out, err = run("cancel", "review/"+rejected); err != nil {
 		t.Fatal(out, err)
 	}
 	if _, e2 = os.Stat(filepath.Join(remoteHome, filepath.FromSlash(remoteTaskRelativeDir), rejected+".json")); !os.IsNotExist(e2) {

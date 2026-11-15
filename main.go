@@ -1,7 +1,7 @@
 package main
 
 // Command routing and argument validation live here. OpenSSH owns authentication,
-// encryption, and connection configuration; sshore adds persistent Linux sessions
+// encryption, and connection configuration; sshore adds persistent Linux shells
 // and regular-file transfer without a configuration framework or database.
 // bridge, daemon, sessions, and kill-session are internal commands invoked by the SSH/client
 // path, not services that users need to start manually.
@@ -23,7 +23,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.6.3"
+var version = "0.6.4"
 
 const connectionOptions = `Options (before --; may appear before or after HOST):
   --server PATH                 Remote executable (default: PATH, then ~/.local/bin/sshore)
@@ -42,16 +42,16 @@ SSH options (only after --):
 const help = `sshore — persistent shells, file transfer and SFTP mounts
 
 Local commands:
-  sshore new HOST [NAME] [options]     Create a session (default: automatic Pokemon name)
-  sshore list [HOST] [-- SSH_OPTIONS]    List local resources/approvals; HOST also queries shells
+  sshore new HOST [NAME] [options]     Create a shell (default: automatic Pokemon name)
+  sshore list [HOST] [-- SSH_OPTIONS]    Local records, or query the named remote account
   sshore cancel TYPE/NAME            Cancel a request, mount or forward
-  sshore cancel HOST NAME [-- SSH_OPTIONS] End a session and its identified tasks
-  sshore rename HOST OLD NEW [-- SSH_OPTIONS] Rename a running session
-  sshore attach [HOST [NAME]] [options] Attach to an existing detached session
+  sshore cancel HOST NAME [-- SSH_OPTIONS] End a shell and its identified tasks
+  sshore rename HOST OLD NEW [-- SSH_OPTIONS] Rename a running shell
+  sshore attach [HOST [NAME]] [options] Attach to an existing detached shell
   sshore mount HOST [DIRECTORY [MOUNTPOINT]] Start a background file mount
   sshore cp SOURCE... TARGET          Copy files through SSH
   sshore forward LISTENER SERVICE     Start an independent background forward
-  sshore review [ID] [--stay]
+  sshore review [NAME] [--stay]
 
 Inside a remote sshore shell:
   sshore detach                  Disconnect; keep the shell running
@@ -66,11 +66,11 @@ Help:
   sshore --version
 
 new never resumes; attach never creates or evicts another client.
-Ctrl-] detaches; exit or detected connection loss ends the session. No screen replay.
+Ctrl-] detaches; exit or detected connection loss ends the shell. No screen replay.
 Requests for files or ports detach; run sshore review locally to review them.
-Requires local OpenSSH. Session commands install missing remote software automatically.
+Requires local OpenSSH. New/attach commands install missing remote software automatically.
 Older remote versions offer update or recovery; newer versions reject.
-Updating ends listed old sessions only after you type update. Recovery disables
+Updating ends listed old shells only after you type update. Recovery disables
 persistence, transfer, mounts and dynamic forwarding until you reconnect.
 
 Examples:
@@ -83,50 +83,48 @@ var commandHelp = map[string]string{
 	"mount": mountHelp,
 	"new": `Usage: sshore new HOST [NAME] [options]
 
-Create a new session. Omit NAME for an automatic Pokemon name.
+Create a new shell. Omit NAME for an automatic Pokemon name.
 An existing name is an error; use sshore attach HOST NAME to resume it.
 Ctrl-] or remote sshore detach leaves programs running; exit ends the shell.
 
 ` + connectionOptions,
 	"attach": `Usage: sshore attach [HOST [NAME]] [options]
 
-Attach to an existing detached session; never create or take over a session.
+Attach to an existing detached shell; never create or take over a shell.
 Omit HOST and NAME to reuse the most recent successful shell connection.
-With HOST only, reuse its most recent session; without history, select a detached session.
+With HOST only, reuse its most recent shell; without history, select a detached shell.
 Remembered connections include --server and SSH transport options, never typed passwords.
 Explicit --server or SSH options override the remembered values. Native forwarding
-flags are not remembered. A missing or attached remembered session is an error;
+flags are not remembered. A missing or attached remembered shell is an error;
 use sshore list HOST and specify a different NAME.
 Selection: #number or exact name; /text filters, / shows all.
-Numbers stay unchanged after filtering. Bare numbers are session names. Enter or Ctrl-C cancels.
-If no detached sessions exist, use sshore new HOST to create one.
+Numbers stay unchanged after filtering. Bare numbers are shell names. Enter or Ctrl-C cancels.
+If no detached shells exist, use sshore new HOST to create one.
 
 ` + connectionOptions,
 	"list": `Usage: sshore list [HOST] [--details | --json] [--server PATH] [-- SSH_OPTIONS]
 
-Without HOST, list this computer's mounts, forwards, approvals and peer inventory.
-Inside an SSH shell, also list this computer's shell sessions. No remote login
-is initiated just to list this computer. Peer inventory is read-only.
-With HOST, filter those entries by exact SSH destination and also query shells.
---details shows worker/transport state, protocol, read-only mode, last SFTP reply,
-last error and log path, including recent resource exits. --json emits one JSON
-object with version, resources, sessions, peers, exits and errors. It excludes
-control credentials and terminal output. A nonzero exit can accompany partial JSON.
-Detailed/JSON remote inventory requires the exact release; never installs/updates.
-Worker "running" means the local control endpoint answered; target health is
-unchecked. Listing never probes a forwarded service. Status checks use up to eight
-workers and a two-second aggregate network deadline. Receipts last seven days,
-at most 100 per resource kind. Peer and session snapshots are advisory.
-Stable IDs: mount/NAME, forward/NAME, approval/ID. Stop resources with sshore cancel;
-review requests with sshore review ID. Expired approvals are omitted.
-Peer entries use peer/KEY/RESOURCE IDs; manage them on the named computer.
-Missing heartbeats become unknown after 75s; inventory is not authoritative.
-
-The remote shell section lists session names, ages, states, foreground programs, shortened working
-directories and process trees, followed by recent exit reasons.
-Exit records retain at most 100 entries for seven days in the runtime directory.
-Abrupt termination or runtime cleanup can leave no record.
-Use sshore attach HOST NAME to resume a detached session.
+Without HOST, show local connections, resources, pending reviews and known shell
+history grouped by host. Remote hosts are not queried and SSH authentication is
+never triggered. This is not a complete remote task list. Cached states show their
+last confirmation time; loss without detach acknowledgement is unconfirmed.
+A confirmed detach is recorded immediately. Other computers' actions and remote
+exits require a later explicit query.
+With HOST, announce and query that remote account over SSH. No local resource
+table is mixed into the remote result. All remote queries require the exact
+release and never install or update software. Query failures are reported.
+--details adds remote process trees, foreground programs, directories and detailed
+resource state, including recent exits. --json emits version, host,
+remote_queried, resources, shells, peers, exits and errors. Local shell records
+include historical, confirmed_at and local_connection_active. No control tokens
+or terminal output are exported; partial results may have a nonzero exit status.
+Worker running confirms the local worker, not remote service health. Targets are
+never probed. Resource status checks have a two-second aggregate deadline.
+IDs: shell/NAME, mount/NAME, forward/NAME, review/NAME. Names share a local namespace
+and default to Pokemon names; explicit names remain supported. Use cancel
+mount/NAME or forward/NAME locally, cancel HOST NAME for a remote shell, and
+review NAME to inspect a request. Peer entries are read-only and name their
+managing computer; missing heartbeats become unknown after 75 seconds.
 
 Options (before --):
   -h, --help                    Show command help
@@ -138,13 +136,13 @@ SSH options (only after --):
 `,
 	"rename": `Usage: sshore rename HOST OLD NEW [--server PATH] [-- SSH_OPTIONS]
 
-Rename an attached or detached session without restarting its tasks.
+Rename an attached or detached shell without restarting its tasks.
 The old name becomes available; the new name must be unused.
 Pending approvals using the old name must be requested again.
 Requires matching releases; never installs or upgrades software.
 SSH options are the same as sshore list; see sshore list --help.
 `,
-	"cancel": `Usage: sshore cancel approval/ID | mount/NAME | forward/NAME
+	"cancel": `Usage: sshore cancel review/NAME | mount/NAME | forward/NAME
        sshore cancel HOST NAME [--server PATH] [-- SSH_OPTIONS]
 
 Cancel a pending request or stop a local resource shown by sshore list.
@@ -153,14 +151,14 @@ busy mounts remain active for a retry. Forwards close their own SSH connection
 and all connections carried by it. Local resources require the exact release
 version that started them; cancellation never kills PIDs from saved records.
 
-End the named session and its identified tasks, including an attached session.
+End the named shell and its identified tasks, including an attached shell.
 This takes effect immediately without confirmation; unsaved work may be lost.
-NAME is required; there is no all-sessions option. Uses the current runtime
+NAME is required; there is no all-shells option. Uses the current runtime
 directory. Requires matching client, installed program and target daemon
 release versions; never installs or upgrades software. Escaped tasks may survive.
 SSH options and --server are the same as sshore list; see sshore list --help.
 `,
-	"review": `Usage: sshore review [ID] [--stay]
+	"review": `Usage: sshore review [NAME] [--stay]
 
 Run from your LOCAL shell after detach. Review one pending request, select
 local file paths or a local port. Submitting all required valid inputs approves
@@ -171,10 +169,11 @@ By default, approved file operations complete and the remote shell resumes.
 --stay completes file operations, detaches and returns to the local shell.
 A port-forward approval always starts an independent background resource and
 returns locally; --stay is not applicable. The source shell stays detached.
-Use sshore list / sshore cancel forward/NAME. IDs may include the approval/ prefix.
-Discard a pending request with sshore cancel approval/ID.
-Omit ID to select a pending request; a single request opens directly.
-Selection: #number or exact ID; /text filters, / shows all. Enter or Ctrl-C cancels.
+Approved forwards retain the review name: review/NAME becomes forward/NAME.
+Use sshore list / sshore cancel forward/NAME. Names may include the review/ prefix.
+Discard a pending request with sshore cancel review/NAME.
+Omit NAME to select a pending request; a single request opens directly.
+Selection: #number or exact name; /text filters, / shows all. Enter or Ctrl-C cancels.
 Selection only opens review; it never approves an operation. Requests expire after
 10 minutes and are consumed before connecting, even when execution fails.
 No SSH passwords or separate approval passwords are stored or collected.
@@ -196,11 +195,11 @@ func usage(format string, args ...any) error { return &usageError{fmt.Sprintf(fo
 
 func validSession(name string) error {
 	if len(name) < 1 || len(name) > 48 {
-		return usage("session name must contain 1–48 ASCII characters")
+		return usage("name must contain 1–48 ASCII characters")
 	}
 	for i, c := range []byte(name) {
 		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || i > 0 && (c == '_' || c == '-')) {
-			return usage("invalid session name: use letters, digits, _ and -")
+			return usage("invalid name: use letters, digits, _ and -")
 		}
 	}
 	return nil
@@ -306,7 +305,7 @@ func parseOptions(args []string) (options, error) {
 	}
 	if o.host == "" && o.list && len(o.ssh) == 0 && o.server == "sshore" {
 		if o.quiet || o.noEscape || o.downloadDir != "" {
-			return o, usage("list does not accept session or transfer options")
+			return o, usage("list does not accept shell or transfer options")
 		}
 		return o, nil
 	}
@@ -319,7 +318,7 @@ func parseOptions(args []string) (options, error) {
 		return o, usage("invalid server path")
 	}
 	if o.list && (o.session != "" || o.downloadDir != "" || o.quiet || o.noEscape) {
-		return o, usage("list accepts SSH options and --server, not session or transfer options")
+		return o, usage("list accepts SSH options and --server, not shell or transfer options")
 	}
 	if o.list {
 		return o, nil
@@ -446,17 +445,8 @@ func run(args []string) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	if o.list && (o.listJSON || o.listDetails) {
-		return runInventory(o)
-	}
-	if o.list && o.host == "" {
-		return 0, listThisComputer()
-	}
 	if o.list {
-		if err = listLocalResources(o.host); err != nil {
-			return 1, err
-		}
-		fmt.Fprintf(os.Stdout, "\nRemote shell sessions on %s:\n", cleanText(o.host))
+		return runInventory(o)
 	}
 	return runClient(o)
 }

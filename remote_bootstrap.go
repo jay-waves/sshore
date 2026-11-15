@@ -53,8 +53,11 @@ func remoteCommand(o options) string {
 	}
 	b.WriteString("fi; case \"$server\" in /*) ;; *) server=\"$PWD/$server\" ;; esac; ")
 	b.WriteString("remote_version=; if [ -e \"$server\" ]; then remote_version=$(\"$server\" --version) || remote_version=; fi; ")
-	if o.list && (o.listJSON || o.listDetails) {
+	if o.list {
 		b.WriteString("if [ \"$remote_version\" != " + shellQuote("sshore "+version) + " ]; then printf '%s\\n' 'sshore: inventory requires matching remote release; no software changed' >&2; exit 1; fi; exec \"$server\" inventory " + shellQuote(version))
+		if o.listDetails {
+			b.WriteString(" --details")
+		}
 		return "sh -c " + shellQuote(b.String())
 	}
 	// Destructive management never enters setup: a kill must not upgrade or end

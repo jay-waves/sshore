@@ -69,7 +69,7 @@ func sessionTasks(roots []setupProcess) ([]setupTask, error) {
 	for _, root := range roots {
 		if task, ok := all[root.PID]; ok {
 			if task.start != root.Start {
-				return nil, fmt.Errorf("session PID changed; review setup again")
+				return nil, fmt.Errorf("shell PID changed; review setup again")
 			}
 			selected[root.PID] = true
 			// PTY children lead their own session. Include detached process groups still
@@ -102,7 +102,7 @@ func stopOldSessions(roots []setupProcess, reasons ...string) (resultErr error) 
 		if root.Version != "" {
 			v, err := executableVersion(fmt.Sprintf("/proc/%d/exe", root.PID))
 			if err != nil || v != root.Version {
-				return fmt.Errorf("session %d changed before cleanup; review again", root.PID)
+				return fmt.Errorf("shell %d changed before cleanup; review again", root.PID)
 			}
 		}
 	}
@@ -166,5 +166,5 @@ func stopOldSessions(roots []setupProcess, reasons ...string) (resultErr error) 
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	return fmt.Errorf("some old session tasks did not exit; complete cleanup manually")
+	return fmt.Errorf("some old shell tasks did not exit; complete cleanup manually")
 }

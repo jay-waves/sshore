@@ -158,7 +158,7 @@ func probeSessionDaemon(p daemonProcess, deadline time.Time) daemonHealth {
 func reportSessionDaemons() {
 	processes, err := findSessionDaemons("/proc")
 	if err != nil {
-		logf(os.Stderr, logWarning, "[sshore] Remote session daemon scan unavailable: %s\n", cleanText(err.Error()))
+		logf(os.Stderr, logWarning, "[sshore] Remote shell daemon scan unavailable: %s\n", cleanText(err.Error()))
 		return
 	}
 	// A single time budget bounds the connection delay even with stuck daemons.
@@ -188,7 +188,7 @@ func reportSessionDaemons() {
 			suspects = append(suspects, fmt.Sprintf("%s (PID %d)", result.process.name, result.process.pid))
 		}
 	}
-	logf(os.Stderr, logInfo, "[sshore] Remote session daemons (your user, visible in /proc): %d total; %d attached, %d detached, %d starting, %d suspect, %d unverified.\n", len(processes), counts["attached"], counts["detached"], counts["starting"], counts["suspect"], counts["unverified"])
+	logf(os.Stderr, logInfo, "[sshore] Remote shell daemons (your user, visible in /proc): %d total; %d attached, %d detached, %d starting, %d suspect, %d unverified.\n", len(processes), counts["attached"], counts["detached"], counts["starting"], counts["suspect"], counts["unverified"])
 	if len(suspects) > 0 {
 		logf(os.Stderr, logWarning, "[sshore] Possible stale or unresponsive daemons (up to 10): %s. This is a snapshot, not proof of a leak; no processes were stopped.\n", strings.Join(suspects, ", "))
 	}

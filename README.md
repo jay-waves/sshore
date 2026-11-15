@@ -28,6 +28,9 @@ Installers verify checksums and print PATH instructions; they do not request
 elevation. Defaults are `~/.local/bin` on Linux and `%LOCALAPPDATA%\sshore\bin`
 on Windows. Close running Windows executables before upgrading.
 
+Only the latest published patch in each major/minor series remains downloadable.
+Older release assets are removed after a complete replacement is published; Git tags remain.
+
 ## SSH — connections and authentication
 
 Use your normal SSH aliases, keys and authentication. Put recurring settings in
@@ -56,7 +59,7 @@ Mounts use **SFTP over SSH** and require FUSE on Linux or [WinFsp](https://winfs
 on Windows. They are writable by default; `--read-only` prevents changes through
 the mount. By default, a matching remote sshore release sends file-change notifications
 over the same SSH connection; `--no-watch` uses plain SFTP without remote sshore.
-Mounts are independent of shell sessions and end on disconnect.
+Mounts are independent of shells and end on disconnect.
 There is no offline editing, conflict detection or write retry; interrupted writes
 may leave partial remote files. Directory and attribute caching can briefly delay
 visibility of remote changes. See `sshore mount --help` for timeouts and diagnostics.
@@ -67,41 +70,49 @@ Detach from your remote shell while its programs keep running, then reattach
 to continue. Press Ctrl-] or run `sshore detach` in the remote shell.
 
 ```sh
-sshore new work                 # Create a session; prints its automatic name.
+sshore new work                 # Create a shell; prints its automatic name.
 sshore new work build           # Or choose a name.
 # Press Ctrl-] to detach and keep programs running.
-sshore attach work build        # Resume a specific detached session.
-sshore attach work              # Resume the most recently used session on work.
-sshore attach                   # Reuse the most recent host and session.
-sshore list work                # Show resources and remote sessions.
+sshore attach work build        # Resume a specific detached shell.
+sshore attach work              # Resume the most recently used shell on work.
+sshore attach                   # Reuse the most recent host and shell.
+sshore list work                # Show resources and remote shells.
 sshore rename work build dev    # Rename without restarting tasks.
-sshore cancel work dev          # Immediately end the session and its tasks.
+sshore cancel work dev          # Immediately end the shell and its tasks.
 ```
 
 `new` only creates; `attach` only resumes. With no saved connection for a host,
-omitting the session name selects a detached session. Recent targets retain SSH
-connection options; explicit options override them. An attached session cannot
-be taken over, and an ended recent session is not recreated.
+omitting the shell name selects a detached shell. Recent targets retain SSH
+connection options; explicit options override them. An attached shell cannot
+be taken over, and an ended recent shell is not recreated.
 
-**Only explicit detach preserves the session.** In the remote shell,
+**Only explicit detach preserves the shell.** In the remote shell,
 `sshore detach` also works. `exit`, closing the local terminal or detected
-connection loss ends the session. Screens, scrollback and detached output are
+connection loss ends the shell. Screens, scrollback and detached output are
 not saved. `cancel HOST NAME` has no confirmation; unsaved work may be lost.
 
 ```mermaid
 flowchart LR
-    connect["Local: new HOST / attach recent or named session"] --> session["Remote shell"]
-    session -->|"Ctrl-] / detach"| detached["Programs keep running"]
-    detached -->|"attach [HOST [NAME]]"| session
-    session -->|"Exit / connection loss / cancel"| ended["Session ends"]
-    session -->|"cp / forward: request, then detach"| pending["Local pending request"]
+    connect["Local: new HOST / attach recent or named shell"] --> shell["Remote shell"]
+    shell -->|"Ctrl-] / detach"| detached["Programs keep running; acknowledged detach saved locally"]
+    detached -->|"attach [HOST [NAME]]"| shell
+    shell -->|"Exit / connection loss / cancel"| ended["Shell ends"]
+    shell -->|"cp / forward: request, then detach"| pending["Local review/NAME"]
     pending -->|"review: submit local paths or port"| approved["Execute approved operation"]
-    approved -->|"Files: normally reconnect"| session
-    approved -->|"Forward"| resource["Independent background resource"]
+    approved -->|"Files: normally reconnect"| shell
+    approved -->|"Forward: retain NAME"| resource["Independent background resource"]
     local["Local: mount / forward"] --> resource
     copy["Local: cp SOURCE TARGET"] --> files["Independent SFTP copy"]
     resource -->|"cancel resource ID"| stopped["Resource ends; shells unaffected"]
 ```
+
+`sshore list` shows local records grouped by host and does not contact remote
+hosts. Use `sshore list HOST` to query that account, or add `--details` for process
+trees. Cached shell state is labelled with its last confirmation time.
+
+Shells, forwards, mounts and pending reviews automatically share a pool of Pokemon
+names on each computer. Use the full ID shown by `list`, such as `review/eevee`
+or `forward/eevee`; an approved forward keeps its review name.
 
 ## Copy — files through SSH
 
@@ -127,7 +138,7 @@ remote file. Output streams cannot be rolled back if a transfer fails.
 `origin:` and `:` refer to the attached client computer. A filled `origin:PATH`
 suggests a path for local review. Requests detach you; run `sshore review` locally,
 choose or accept paths, and submit to copy and reconnect. `review --stay` remains
-local. `cancel approval/ID` discards a request.
+local. `cancel review/NAME` discards a request.
 
 Submitting all paths approves the batch; there is no extra `yes`. Ctrl-C during
 selection starts no transfer. Requests expire after ten minutes. Only regular
@@ -165,7 +176,7 @@ Native SSH `-L/-R/-D` remain separate connection-level options; see command help
 
 ```sh
 sshore list                     # Local mounts, forwards and pending requests.
-sshore list work                # Also query remote sessions and peer inventory.
+sshore list work                # Also query remote shells and peer inventory.
 sshore list --details           # Transport state, last errors and log paths.
 sshore list --json              # Machine-readable inventory.
 ```
@@ -177,8 +188,8 @@ are read-only snapshots; manage them on their original computer.
 
 Client and remote releases must match exactly, including PATCH. Missing remote
 software may be installed automatically. Updating an older installation requires
-typing `update` after reviewing affected sessions: **their tasks will end**.
-Press Enter instead for a temporary recovery shell; existing sessions stay running,
+typing `update` after reviewing affected shells: **their tasks will end**.
+Press Enter instead for a temporary recovery shell; existing shells stay running,
 but sshore operations are restricted until reconnecting. Newer remote versions
 are never downgraded. See the [security model](SECURITY.md#remote-setup-and-updates).
 

@@ -10,7 +10,7 @@ import (
 func detachHelper() error {
 	sock := os.Getenv("SSHORE_SOCKET")
 	if sock == "" {
-		return fmt.Errorf("run this command inside an sshore session")
+		return fmt.Errorf("run this command inside an sshore shell")
 	}
 	c, err := net.DialTimeout("unix", sock, requestTimeout)
 	if err != nil {

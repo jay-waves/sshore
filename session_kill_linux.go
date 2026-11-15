@@ -25,7 +25,7 @@ func killSession(name string) error {
 		return err
 	}
 	if path == "" {
-		return fmt.Errorf("session %s does not exist", name)
+		return fmt.Errorf("shell %s does not exist", name)
 	}
 	processes, err := findSessionDaemons("/proc")
 	if err != nil {
@@ -38,7 +38,7 @@ func killSession(name string) error {
 		}
 	}
 	if len(matches) != 1 {
-		return fmt.Errorf("session %s: expected one identifiable daemon, found %d; use sshore list", name, len(matches))
+		return fmt.Errorf("shell %s: expected one identifiable daemon, found %d; use sshore list", name, len(matches))
 	}
 	p := matches[0]
 	start, err := processStart(p.pid)
@@ -47,18 +47,18 @@ func killSession(name string) error {
 	}
 	v, err := executableVersion(fmt.Sprintf("/proc/%d/exe", p.pid))
 	if err != nil {
-		return fmt.Errorf("cannot verify session version: %w", err)
+		return fmt.Errorf("cannot verify shell version: %w", err)
 	}
-	if err := checkPeerVersion(v, "session daemon"); err != nil {
+	if err := checkPeerVersion(v, "shell daemon"); err != nil {
 		return err
 	}
 	health := probeSessionDaemon(p, time.Now().Add(time.Second))
 	if health.state != "attached" && health.state != "detached" && health.state != "starting" {
-		return fmt.Errorf("session %s is %s; refusing to signal an unconfirmed daemon", name, health.state)
+		return fmt.Errorf("shell %s is %s; refusing to signal an unconfirmed daemon", name, health.state)
 	}
 	if err := stopOldSessions([]setupProcess{{PID: p.pid, Start: start, Version: v}}, "cancelled by sshore cancel"); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "Ended session %s\n", name)
+	fmt.Fprintf(os.Stdout, "Ended shell %s\n", name)
 	return nil
 }

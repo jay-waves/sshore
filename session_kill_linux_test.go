@@ -79,9 +79,9 @@ func TestKillSessionLifecycle(t *testing.T) {
 			t.Fatal("accepted mismatch", out)
 		}
 		if query(name).PID != pid {
-			t.Fatal("mismatch ended session")
+			t.Fatal("mismatch ended shell")
 		}
-		if out, err := run(name, version); err != nil || !strings.Contains(out, "Ended session "+name) {
+		if out, err := run(name, version); err != nil || !strings.Contains(out, "Ended shell "+name) {
 			t.Fatal(out, err)
 		}
 		for _, taskPID := range []int{pid, child} {

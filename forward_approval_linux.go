@@ -29,7 +29,7 @@ func checkForwardApproval(name string, pid int, approval string) error {
 		return err
 	}
 	if socket == "" {
-		return fmt.Errorf("approved session no longer exists; request forwarding again")
+		return fmt.Errorf("approved shell no longer exists; request forwarding again")
 	}
 	conn, err := net.DialTimeout("unix", socket, time.Second)
 	if err != nil {
@@ -44,7 +44,7 @@ func checkForwardApproval(name string, pid int, approval string) error {
 	if err != nil {
 		return err
 	}
-	if err = checkPeerVersion(m.SoftwareVersion, "source session"); err != nil {
+	if err = checkPeerVersion(m.SoftwareVersion, "source shell"); err != nil {
 		return err
 	}
 	if m.Type != "forward_checked" {
@@ -53,7 +53,7 @@ func checkForwardApproval(name string, pid int, approval string) error {
 	return nil
 }
 
-func (s *session) checkForwardApproval(m message) error {
+func (s *shell) checkForwardApproval(m message) error {
 	if err := checkPeerVersion(m.SoftwareVersion, "forward client"); err != nil {
 		return err
 	}
@@ -63,24 +63,24 @@ func (s *session) checkForwardApproval(m message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.exited || s.cmd == nil || s.cmd.Process.Pid != m.PID || s.name != m.Name {
-		return fmt.Errorf("approved session changed; request forwarding again")
+		return fmt.Errorf("approved shell changed; request forwarding again")
 	}
 	if s.active != nil {
-		return fmt.Errorf("source session is attached; detach it before reviewing the forward")
+		return fmt.Errorf("source shell is attached; detach it before reviewing the forward")
 	}
 	return removeRemoteTask(m.ApprovalID)
 }
 
 func runApprovedForwardWatch(args []string) error {
 	if len(args) != 4 {
-		return usage("forward-watch requires client version, session, PID and approval identity")
+		return usage("forward-watch requires client version, shell, PID and approval identity")
 	}
 	if err := checkPeerVersion(args[0], "forward client"); err != nil {
 		return err
 	}
 	pid, err := strconv.Atoi(args[2])
 	if err != nil {
-		return fmt.Errorf("invalid source session PID")
+		return fmt.Errorf("invalid source shell PID")
 	}
 	if err = checkForwardApproval(args[1], pid, args[3]); err != nil {
 		return err

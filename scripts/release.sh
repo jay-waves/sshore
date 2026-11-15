@@ -2,8 +2,8 @@
 # Publish a full semantic version after both main-branch release builds pass.
 # CI builds only Linux/Windows amd64 without sshoretest. Full validation lives in
 # the separate workflow_dispatch Tests workflow and never gates release builds.
-# Existing tags, releases and assets never change. Publishing an existing
-# version is a no-op; bump VERSION to publish changes.
+# Published tags never change. Existing releases are never overwritten.
+# After successful publication, retain only the latest complete patch per x.y.
 set -euo pipefail
 
 version=$(cat VERSION)
@@ -430,11 +430,40 @@ require reviewing affected tasks and typing update. Linux/Windows amd64 only.
 NOTES
 fi
 
+if [[ "$version" == "0.6.4" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Share 154 automatic Pokemon names across shells, forwards, mounts and pending reviews in each local account namespace; retain explicit names and existing IDs.
+- Use review/NAME for pending requests; approved forwards retain the action name as forward/NAME.
+- Make list an offline, host-grouped view of local connections, resources and timestamped shell history. Record acknowledged detach immediately and mark unconfirmed loss explicitly.
+- Make list HOST announce and query only the remote account; --details adds process trees and diagnostic state. Other managers' resources remain separately labelled and read-only.
+- Use shell for persistent PTY shells and session for managed running tasks. JSON inventory uses shells instead of sessions.
+- Retain only the newest published patch release in each x.y series after verifying replacement assets. Older release assets are removed; Git tags, drafts and prereleases are retained.
+
+Client and remote releases must match exactly. Updates to older shells require
+reviewing affected tasks and typing update. Existing names are not migrated.
+Pinned downloads of removed patches will no longer be available; use the latest
+patch in that x.y series. Linux and Windows amd64 only.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
-  echo "Skipping release: $tag is already published; releases and assets are immutable."
+  echo "Release $tag already exists; keeping its assets and checking retention."
 else
   gh release create "$tag" --verify-tag --title "sshore $tag" \
     --notes-file release-notes.md --latest \
     packages/*.tar.gz packages/*.zip packages/SHA256SUMS
 fi
+
+# Fetch every page before planning deletions. Failed publication or incomplete
+# replacement assets must never remove a working release. Tags are untouched.
+retention_dir=$(mktemp -d)
+trap 'rm -rf "$retention_dir"' EXIT
+gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100" > "$retention_dir/releases.json"
+python3 "$(dirname "$0")/prune_releases.py" "$tag" < "$retention_dir/releases.json" > "$retention_dir/remove.tsv"
+while IFS=$'\t' read -r release_id old_tag; do
+  echo "Removing superseded release $old_tag (keeping its Git tag)."
+  gh api --method DELETE "repos/$GH_REPO/releases/$release_id"
+done < "$retention_dir/remove.tsv"

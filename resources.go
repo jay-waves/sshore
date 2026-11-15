@@ -5,11 +5,9 @@ package main
 // without HOST is offline discovery: it never authenticates to guessed hosts.
 import (
 	"errors"
-	"fmt"
 	"os"
 	"sort"
 	"strings"
-	"text/tabwriter"
 )
 
 func collectLocalResources(host string) ([]resourceRecord, error) {
@@ -49,7 +47,7 @@ func collectLocalResources(host string) ([]resourceRecord, error) {
 	}
 	for _, r := range pending {
 		if host == "" || r.Host == host {
-			records = append(records, resourceRecord{Kind: "approval", Name: r.ID, Host: r.Host, Detail: r.Session + ": " + approvalSummary(r.Operations)})
+			records = append(records, resourceRecord{Kind: "review", Name: r.displayName(), Host: r.Host, Detail: r.Session + ": " + approvalSummary(r.Operations)})
 		}
 	}
 	sort.Slice(records, func(i, j int) bool {
@@ -64,30 +62,12 @@ func collectLocalResources(host string) ([]resourceRecord, error) {
 	})
 	return records, nil
 }
-func listLocalResources(host string) error {
-	records, err := collectLocalResources(host)
-	if err != nil {
-		return err
-	}
-	if len(records) == 0 {
-		fmt.Fprintln(os.Stdout, "No local resources or pending approvals.")
-		return nil
-	}
-	out := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	defer out.Flush()
-	fmt.Fprintln(out, "ID\tHOST\tSTATE\tDETAILS")
-	for _, v := range inspectResources(records) {
-		fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", cleanText(v.ID), cleanText(v.Host), v.Worker, cleanText(v.Detail))
-	}
-
-	return nil
-}
 
 // Explicit type prefixes route local cancellation; HOST NAME uses the existing
 // version- and process-identity-checked remote session termination path.
 func runCancel(args []string) (int, error) {
 	if len(args) == 0 {
-		return 2, usage("use sshore cancel approval/ID, mount/NAME, forward/NAME, or HOST NAME")
+		return 2, usage("use sshore cancel review/NAME, mount/NAME, forward/NAME, or HOST NAME")
 	}
 	kind, name, typed := strings.Cut(args[0], "/")
 	if typed {
@@ -97,16 +77,19 @@ func runCancel(args []string) (int, error) {
 		switch kind {
 		case "peer":
 			return 2, usage("peer tasks are read-only here; cancel the resource on its managing computer")
-		case "approval":
-			if !validApprovalID(name) {
+		case "review":
+			if !validApprovalID(name) && validSession(name) != nil {
 				return 2, usage("invalid approval ID")
 			}
 			dir, err := approvalDir()
 			if err != nil {
 				return 1, err
 			}
-			record, readErr := readApproval(dir, name)
-			if err = consumeApproval(dir, name); err != nil {
+			record, readErr := findApproval(dir, name)
+			if readErr != nil {
+				return 1, readErr
+			}
+			if err = consumeApproval(dir, record.ID); err != nil {
 				return 1, err
 			}
 			if readErr == nil {
@@ -117,7 +100,7 @@ func runCancel(args []string) (int, error) {
 		case "mount", "forward":
 			return 0, stopResource(kind, name)
 		default:
-			return 2, usage("resource ID must be approval/ID, mount/NAME or forward/NAME")
+			return 2, usage("resource ID must be review/NAME, mount/NAME or forward/NAME")
 		}
 	}
 	o, err := parseOptions(append([]string{"cancel"}, args...))
@@ -131,12 +114,6 @@ func runCancel(args []string) (int, error) {
 }
 
 func listThisComputer() error {
-	if e := listLocalResources(""); e != nil {
-		return e
-	}
-	if os.Getenv("SSHORE_SOCKET") != "" || os.Getenv("SSH_CONNECTION") != "" {
-		fmt.Fprintln(os.Stdout, "\nShell sessions on this computer:")
-		return serverCommand([]string{"sessions"})
-	}
-	return listRemoteTasks()
+	_, err := runInventory(options{list: true})
+	return err
 }

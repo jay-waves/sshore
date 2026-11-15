@@ -2,18 +2,18 @@
 
 ## Supported platforms
 
-Support Linux and Windows on amd64 (x86-64) only. Do not build, package, or automatically install ARM targets. Keep existing published releases immutable.
+Support Linux and Windows on amd64 (x86-64) only. Do not build, package, or automatically install ARM targets. Keep published Git tags immutable.
 
 ## Version and setup policy
 
 - Require exact full release versions, including PATCH. Do not introduce a separate protocol compatibility counter or silently accept a different release.
-- The managed scope is the current remote Unix account and its visible sshore session daemons, across runtime directories. Other users are excluded. Preparation helpers and transient transport processes are not persistent sessions.
+- The managed scope is the current remote Unix account and its visible sshore shell daemons, across runtime directories. Other users are excluded. Preparation helpers and transient transport processes are not persistent shells.
 - A newer installed program or daemon rejects an older client. Never automatically downgrade. Unknown/unordered versions allow manual recovery only.
-- Missing software may be installed automatically. Existing older installations/sessions require the user to type `update` after reviewing the affected session list. Prepare and verify the replacement before ending any tasks; recheck the process snapshot under the account setup lock.
+- Missing software may be installed automatically. Existing older installations/shells require the user to type `update` after reviewing the affected shell list. Prepare and verify the replacement before ending any tasks; recheck the process snapshot under the account setup lock.
 - Manual recovery preserves the authenticated SSH connection and provides a transient PTY shell. No persistence, approval execution, file transfer, dynamic forwarding, or Ctrl-] detach. Retain help/version/diagnostics; restore normal functionality only after reconnecting.
 - New binaries honor SSHORE_DISABLED in recovery mode; remove inherited helper socket environment. This is a product-mode restriction, not a sandbox: arbitrary legacy binaries and deliberately escaped/reparented tasks cannot be globally controlled.
-- Signal only confirmed, same-user session processes and their identified tasks, using process identity validation. Never use process-name-wide kill commands. Failure to prepare a replacement must not terminate tasks.
-- Published tags are immutable. Publishing a release MUST preserve older releases and assets; no automatic release deletion.
+- Signal only confirmed, same-user shell processes and their identified tasks, using process identity validation. Never use process-name-wide kill commands. Failure to prepare a replacement must not terminate tasks.
+- Published tags are immutable. After a successful new publication and complete replacement assets, retain only the highest published PATCH in each MAJOR.MINOR series. Delete older release objects/assets, never their Git tags. Skip drafts, prereleases and noncanonical tags; failed or incomplete publication must not prune releases.
 
 ## Documentation ownership
 
@@ -41,12 +41,12 @@ do not add a separate changelog or release-specific work log.
 
 Keep each explanation in its owning document and link to it instead of copying
 it. Update the relevant document when behavior changes. README must stay short;
-retain consequences users need to decide, such as updates ending sessions, while
+retain consequences users need to decide, such as updates ending shells, while
 moving mechanisms to SSHORE and security rationale to SECURITY. New terminology
 belongs in GLOSSARY, not a competing definition in another file.
 
 Keep the Mermaid diagrams in README and SECURITY current. README explains the
-user's connection/session/approval flow; SECURITY explains trust boundaries and
+user's connection/shell/approval flow; SECURITY explains trust boundaries and
 security-relevant gates. Update affected diagrams with lifecycle changes and
 validate their syntax. After documentation edits, check relative links and code
 fences, including links in packaged documents. Do not alter published release
@@ -54,7 +54,7 @@ assets to update their documentation.
 
 ## Validation
 
-Keep new tests small and focused; do not add heavyweight end-to-end suites or extra versioned builds. Run the existing checks appropriate to the change. Lifecycle integration test executables must use `-tags=sshoretest`, which compiles in runtime-directory isolation; never run simulated upgrade confirmation against the developer's real account sessions. Release binaries MUST NOT use that tag.
+Keep new tests small and focused; do not add heavyweight end-to-end suites or extra versioned builds. Run the existing checks appropriate to the change. Lifecycle integration test executables must use `-tags=sshoretest`, which compiles in runtime-directory isolation; never run simulated upgrade confirmation against the developer's real account shells. Release binaries MUST NOT use that tag.
 
 For routine changes, run only the relevant existing tests. Use the full core Go
 suite for cross-component changes; reserve race, real SSH, native mount and

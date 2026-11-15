@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"golang.org/x/sys/windows"
 	"os"
@@ -39,3 +40,5 @@ func prepareFTPPaths(o *ftpOptions) (func(), error) {
 	}
 	return cleanup, fmt.Errorf("no free drive letter; specify a mountpoint")
 }
+
+func resourceLockBusy(err error) bool { return errors.Is(err, windows.ERROR_LOCK_VIOLATION) }

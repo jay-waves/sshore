@@ -53,7 +53,7 @@ func TestReconnectCommandSSHSeparator(t *testing.T) {
 func TestSharedHostValidation(t *testing.T) {
 	for _, host := range []string{"host name", "host\tname", "host\x7f", "host\nname"} {
 		if _, err := parseOptions([]string{"new", host}); err == nil {
-			t.Fatal("session accepted", host)
+			t.Fatal("shell accepted", host)
 		}
 		if _, err := parseFTPOptions([]string{host}); err == nil {
 			t.Fatal("mount accepted", host)

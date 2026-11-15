@@ -47,7 +47,7 @@ func TestClientMuxRejectsDifferentOrUnknownBuild(t *testing.T) {
 				mux.Close()
 				t.Fatal("accepted incompatible daemon")
 			}
-			if err == nil || !strings.Contains(err.Error(), "remote session daemon") || !strings.Contains(err.Error(), "new session name") {
+			if err == nil || !strings.Contains(err.Error(), "remote shell daemon") || !strings.Contains(err.Error(), "new shell name") {
 				t.Fatal(err)
 			}
 			if err := <-done; err != nil {

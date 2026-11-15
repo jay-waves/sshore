@@ -42,6 +42,12 @@ func runMount(args []string) (int, error) {
 	if !o.foreground {
 		return startFTPBackground(args, o)
 	}
+	reservation, err := reserveResourceName("mount", o.name)
+	if err != nil {
+		return 1, err
+	}
+	defer reservation.Close()
+	o.name = reservation.name
 	cleanup, err := prepareFTPPaths(&o)
 	if err != nil {
 		return 1, err

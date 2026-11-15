@@ -298,7 +298,7 @@ LogLevel ERROR
             term.send("printf 'STAY_PID:%s\\n' $$\n")
             term.expect(f"STAY_PID:{shell_pid}")
             request_id = queue_request(term, f"sshore cp {shlex.quote(str(remote))} origin:")
-            subprocess.run([binary, "cancel", "approval/" + request_id], check=True)
+            subprocess.run([binary, "cancel", "review/" + request_id], check=True)
             assert request_id not in subprocess.check_output([binary, "list"], text=True)
 
             # A download directory supplies defaults, never automatic approval.
@@ -362,7 +362,7 @@ LogLevel ERROR
             rejected.expect("destination already exists")
             rejected.send(b"\x03")
             rejected.wait(1)
-            subprocess.run([binary, "cancel", "approval/" + request_id], check=True)
+            subprocess.run([binary, "cancel", "review/" + request_id], check=True)
 
             # Approved forwarding outlives the review process and source shell attachment.
             term = Terminal(command)

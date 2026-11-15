@@ -138,8 +138,8 @@ exit 1
 				}
 			}
 			if scenario == "picker" {
-				await("Request (#number/ID")
-				io.WriteString(terminal, "/example.invalid\r"+id+"\r")
+				await("Request (#number/name")
+				io.WriteString(terminal, "/example.invalid\r"+reviewName(t, id)+"\r")
 			}
 			if scenario == "forward-stay" {
 				await("--stay applies only to file transfers")

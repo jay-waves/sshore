@@ -14,7 +14,7 @@ import (
 )
 
 func chooseSetupSession(input setupInput, names []string) (string, error) {
-	return chooseLocalItem(input, names, names, "Session (#number/name, /filter; Enter cancels): ", "session")
+	return chooseLocalItem(input, names, names, "Shell (#number/name, /filter; Enter cancels): ", "shell")
 }
 
 // Labels are display-only; selection always returns an original identity.

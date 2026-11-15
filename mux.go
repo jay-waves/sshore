@@ -58,9 +58,9 @@ func clientMux(c io.ReadWriteCloser) (*smux.Session, error) {
 	}
 	m, err := readMessage(c)
 	if err != nil {
-		return nil, fmt.Errorf("SSH session handshake failed: %w", err)
+		return nil, fmt.Errorf("SSH shell handshake failed: %w", err)
 	}
-	if err := checkPeerVersion(m.SoftwareVersion, "remote session daemon"); err != nil {
+	if err := checkPeerVersion(m.SoftwareVersion, "remote shell daemon"); err != nil {
 		return nil, err
 	}
 	if m.Type != "mux_ready" {
@@ -83,7 +83,7 @@ func checkPeerVersion(peer, role string) error {
 	if peer == "" {
 		peer = "unknown (older build)"
 	}
-	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%s; all managed processes must use the same full version. Reconnect through sshore setup to update or enter a recovery shell. Existing session daemons keep their old version after an upgrade; use a new session name, or use matching old client and remote binaries (--server PATH) to finish work and exit that shell", version, role, peer)
+	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%s; all managed processes must use the same full version. Reconnect through sshore setup to update or enter a recovery shell. Existing shell daemons keep their old version after an upgrade; use a new shell name, or use matching old client and remote binaries (--server PATH) to finish work and exit that shell", version, role, peer)
 }
 
 // Parse stable release labels for upgrade direction; this is not a compatibility series.

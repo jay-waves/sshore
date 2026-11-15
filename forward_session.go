@@ -34,7 +34,7 @@ func validateForwardConfig(f forwardConfig) error {
 	if f.Retries < 0 || f.Retries > 10 {
 		return usage("--retries must be between 0 and 10")
 	}
-	if e := validSession(f.Name); e != nil {
+	if e := validSession(f.Name); f.Name != "" && e != nil {
 		return e
 	}
 	if e := validSSHDestination(f.Host); e != nil {
@@ -50,21 +50,7 @@ func validateForwardConfig(f forwardConfig) error {
 	}
 	return nil
 }
-func defaultForwardName(f forwardConfig) string {
-	direction := "local"
-	if f.Reverse {
-		direction = "remote"
-	}
-	host := ftpDefaultName(f.Host)
-	if len(host) > 24 {
-		host = host[:24]
-	}
-	return fmt.Sprintf("%s-%s-%d-%d", host, direction, f.Port, f.Target)
-}
 func startForwardSession(f forwardConfig) (int, error) {
-	if f.Name == "" {
-		f.Name = defaultForwardName(f)
-	}
 	if e := validateForwardConfig(f); e != nil {
 		return 2, e
 	}

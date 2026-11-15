@@ -25,13 +25,20 @@ type resourceView struct {
 	Log        string `json:"log,omitempty"`
 	resourceStatus
 }
-type sessionView struct {
-	Name       string `json:"name"`
-	State      string `json:"state"`
-	PID        int    `json:"pid"`
-	Age        *int64 `json:"age_seconds"`
-	Foreground string `json:"foreground"`
-	Directory  string `json:"directory"`
+type shellView struct {
+	Host        string    `json:"host,omitempty"`
+	ID          string    `json:"id"`
+	ConfirmedAt time.Time `json:"confirmed_at,omitempty"`
+	Unconfirmed bool      `json:"remote_state_unconfirmed,omitempty"`
+	Active      bool      `json:"local_connection_active,omitempty"`
+	Historical  bool      `json:"historical"`
+	ProcessTree string    `json:"process_tree,omitempty"`
+	Name        string    `json:"name"`
+	State       string    `json:"state"`
+	PID         int       `json:"pid"`
+	Age         *int64    `json:"age_seconds"`
+	Foreground  string    `json:"foreground"`
+	Directory   string    `json:"directory"`
 }
 type exitView struct {
 	Name   string    `json:"name"`
@@ -45,20 +52,22 @@ type peerView struct {
 	Detail  string `json:"detail"`
 }
 type inventory struct {
-	Version   string         `json:"version"`
-	Resources []resourceView `json:"resources"`
-	Sessions  []sessionView  `json:"sessions"`
-	Peers     []peerView     `json:"peers"`
-	Exits     []exitView     `json:"exits"`
-	Errors    []string       `json:"errors"`
+	Version       string         `json:"version"`
+	Host          string         `json:"host,omitempty"`
+	RemoteQueried bool           `json:"remote_queried"`
+	Resources     []resourceView `json:"resources"`
+	Shells        []shellView    `json:"shells"`
+	Peers         []peerView     `json:"peers"`
+	Exits         []exitView     `json:"exits"`
+	Errors        []string       `json:"errors"`
 }
 
 func emptyInventory() inventory {
-	return inventory{Version: version, Resources: []resourceView{}, Sessions: []sessionView{}, Peers: []peerView{}, Exits: []exitView{}, Errors: []string{}}
+	return inventory{Version: version, Resources: []resourceView{}, Shells: []shellView{}, Peers: []peerView{}, Exits: []exitView{}, Errors: []string{}}
 }
 func viewRecord(r resourceRecord) resourceView {
 	v := resourceView{ID: r.Kind + "/" + r.Name, Host: r.Host, Kind: r.Kind, Worker: "unavailable", Detail: r.Detail, resourceStatus: resourceStatus{Version: r.Version, Transport: "unknown", Target: "unchecked"}}
-	if r.Kind == "approval" {
+	if r.Kind == "review" {
 		v.Worker = "pending"
 		v.Transport = "not-started"
 		return v
@@ -98,7 +107,7 @@ func inspectResources(records []resourceRecord) []resourceView {
 }
 func inspectResource(ctx context.Context, r resourceRecord) resourceView {
 	v := viewRecord(r)
-	if r.Kind == "approval" {
+	if r.Kind == "review" {
 		return v
 	}
 	resp, err := resourceHTTPContext(ctx, r.Address, r.Token, "GET", "/status", nil)
@@ -166,79 +175,180 @@ func collectResourceResults(host string, active []resourceView) []resourceView {
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 	return rows
 }
-func printDetailedInventory(inv inventory) {
-	for _, v := range inv.Resources {
-		fmt.Printf("%s · %s\n  worker=%s transport=%s target=%s\n", cleanText(v.ID), cleanText(v.Host), cleanText(v.Worker), cleanText(v.Transport), cleanText(v.Target))
-		fmt.Printf("  %s · %s\n", cleanText(v.Protocol), cleanText(v.Detail))
-		if v.Kind == "mount" {
-			fmt.Printf("  read-only=%t\n", v.ReadOnly)
-		}
-		if v.LastError != "" {
-			fmt.Printf("  last error: %s\n", cleanText(v.LastError))
-		}
-		if !v.LastOperation.IsZero() {
-			fmt.Printf("  last SFTP reply: %s\n", v.LastOperation.Format(time.RFC3339))
-		}
-		if v.Log != "" {
-			fmt.Printf("  log: %s\n", cleanText(v.Log))
-		}
-	}
-	for _, v := range inv.Sessions {
-		fmt.Printf("%s [%s] PID %d · %s · %s\n", cleanText(v.Name), cleanText(v.State), v.PID, cleanText(v.Foreground), cleanText(v.Directory))
-	}
-	for _, v := range inv.Peers {
-		fmt.Printf("%s [%s] managed by %s · %s\n", cleanText(v.ID), cleanText(v.State), cleanText(v.Manager), cleanText(v.Detail))
-	}
-	for _, v := range inv.Exits {
-		fmt.Printf("%s exited %s: %s\n", cleanText(v.Name), v.Time.Format(time.RFC3339), cleanText(v.Reason))
-	}
-}
 func runInventory(o options) (int, error) {
 	inv := emptyInventory()
-	records, e := collectLocalResources(o.host)
-	if e != nil {
-		inv.Errors = append(inv.Errors, cleanText(e.Error()))
-	}
-	inv.Resources = inspectResources(records)
-	inv.Resources = append(inv.Resources, collectResourceResults(o.host, inv.Resources)...)
-	var remote inventory
+	inv.Host = o.host
 	if o.host != "" {
+		fmt.Fprintf(os.Stderr, "[sshore] Querying remote account on %s via SSH...\n", cleanText(o.host))
 		cmd := sshCommand(o)
-		cmd.Stdin = os.Stdin
-		cmd.Stderr = os.Stderr
+		cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
 		var output limitedInventoryBuffer
 		cmd.Stdout = &output
-		if e = cmd.Run(); e == nil {
-			e = json.Unmarshal(output.data, &remote)
-			if e == nil && remote.Version != version {
-				e = fmt.Errorf("inventory release mismatch")
+		err := cmd.Run()
+		if err == nil {
+			err = json.Unmarshal(output.data, &inv)
+		}
+		if err == nil && inv.Version != version {
+			err = fmt.Errorf("inventory release mismatch")
+		}
+		if err != nil {
+			inv = emptyInventory()
+			inv.Host = o.host
+			inv.Errors = append(inv.Errors, "remote query failed: "+cleanText(err.Error()))
+		} else {
+			inv.Host, inv.RemoteQueried = o.host, true
+			if err := cacheRemoteShells(o.host, inv); err != nil {
+				inv.Errors = append(inv.Errors, "could not save shell history: "+cleanText(err.Error()))
 			}
 		}
-	} else if os.Getenv("SSHORE_SOCKET") != "" || os.Getenv("SSH_CONNECTION") != "" {
-		remote, e = localSessionInventory()
 	} else {
-		remote = emptyInventory()
-		remote.Peers, e = collectPeerViews()
-	}
-	if e != nil {
-		inv.Errors = append(inv.Errors, cleanText(e.Error()))
-	} else {
-		inv.Sessions = append(inv.Sessions, remote.Sessions...)
-		inv.Peers = append(inv.Peers, remote.Peers...)
-		inv.Exits = append(inv.Exits, remote.Exits...)
-		inv.Errors = append(inv.Errors, remote.Errors...)
+		records, err := collectLocalResources("")
+		if err != nil {
+			inv.Errors = append(inv.Errors, cleanText(err.Error()))
+		}
+		inv.Resources = inspectResources(records)
+		if o.listDetails || o.listJSON {
+			inv.Resources = append(inv.Resources, collectResourceResults("", inv.Resources)...)
+		}
+		snapshots, err := readShellSnapshots()
+		if err != nil {
+			inv.Errors = append(inv.Errors, cleanText(err.Error()))
+		}
+		for _, s := range snapshots {
+			inv.Shells = append(inv.Shells, shellView{ID: "shell/" + s.Name, Host: s.Host, Name: s.Name, State: s.State, ConfirmedAt: s.ConfirmedAt, Unconfirmed: s.Unconfirmed, Active: s.Active, Historical: true})
+		}
+		inv.Peers, err = collectPeerViews()
+		if err != nil {
+			inv.Errors = append(inv.Errors, cleanText(err.Error()))
+		}
 	}
 	if o.listJSON {
-		if e := json.NewEncoder(os.Stdout).Encode(inv); e != nil {
-			return 1, e
+		if err := json.NewEncoder(os.Stdout).Encode(inv); err != nil {
+			return 1, err
 		}
 	} else {
-		printDetailedInventory(inv)
+		printInventory(inv, o.listDetails)
 	}
 	if len(inv.Errors) > 0 {
 		return 1, fmt.Errorf("inventory incomplete: %s", strings.Join(inv.Errors, "; "))
 	}
 	return 0, nil
+}
+
+func snapshotState(s shellView, now time.Time) string {
+	if s.ConfirmedAt.IsZero() {
+		return "remote state unconfirmed"
+	}
+	age := now.Sub(s.ConfirmedAt)
+	elapsed := "just now"
+	if age >= time.Minute {
+		elapsed = fmt.Sprintf("%d minutes ago", int(age/time.Minute))
+	}
+	history := fmt.Sprintf("last state: %s · %s", cleanText(s.State), elapsed)
+	if s.Active {
+		return "local connection active · " + history
+	}
+	if s.Unconfirmed || s.State == "attached" {
+		return "remote state unconfirmed · " + history
+	}
+	if age < time.Minute && s.State == "detached" {
+		return "detached · just confirmed"
+	}
+	return history
+}
+
+func printInventory(inv inventory, details bool) {
+	if inv.RemoteQueried {
+		fmt.Printf("Remote account on %s · queried now\n", cleanText(inv.Host))
+		for _, s := range inv.Shells {
+			fmt.Printf("  shell/%s [%s]%s\n", cleanText(s.Name), cleanText(s.State), sessionAgePortable(s.Age))
+			if details {
+				fmt.Printf("    %s · %s\n", cleanText(s.Foreground), cleanText(s.Directory))
+				for _, line := range strings.Split(strings.TrimSuffix(s.ProcessTree, "\n"), "\n") {
+					if line != "" {
+						fmt.Println("    " + cleanText(line))
+					}
+				}
+			}
+		}
+		if len(inv.Shells) == 0 {
+			fmt.Println("  No shells reported.")
+		}
+		if len(inv.Resources) > 0 {
+			fmt.Println("\nResources managed on this remote computer:")
+			printResourceRows(inv.Resources, details)
+		}
+		if details {
+			for _, e := range inv.Exits {
+				fmt.Printf("  shell/%s exited %s: %s\n", cleanText(e.Name), e.Time.Format(time.RFC3339), cleanText(e.Reason))
+			}
+		}
+	} else if inv.Host == "" {
+		fmt.Println("Local inventory · remote not queried; known records only")
+		fmt.Println("Worker running confirms the local worker only; target service health is unchecked.")
+		hosts := map[string]bool{}
+		for _, r := range inv.Resources {
+			hosts[r.Host] = true
+		}
+		for _, s := range inv.Shells {
+			hosts[s.Host] = true
+		}
+		sorted := make([]string, 0, len(hosts))
+		for host := range hosts {
+			sorted = append(sorted, host)
+		}
+		sort.Strings(sorted)
+		for _, host := range sorted {
+			fmt.Printf("\n%s\n", cleanText(host))
+			for _, s := range inv.Shells {
+				if s.Host == host {
+					fmt.Printf("  shell/%s · %s\n", cleanText(s.Name), snapshotState(s, time.Now()))
+					if details && !s.ConfirmedAt.IsZero() {
+						fmt.Printf("    last confirmation: %s\n", s.ConfirmedAt.Format(time.RFC3339))
+					}
+				}
+			}
+			var rows []resourceView
+			for _, r := range inv.Resources {
+				if r.Host == host {
+					rows = append(rows, r)
+				}
+			}
+			printResourceRows(rows, details)
+		}
+		if len(sorted) == 0 {
+			fmt.Println("No local resources or known shells.")
+		}
+	}
+	if len(inv.Peers) > 0 {
+		fmt.Println("\nResources managed by other computers (read-only, advisory):")
+		for _, p := range inv.Peers {
+			fmt.Printf("  %s [%s] · manager %s · %s\n", cleanText(p.ID), cleanText(p.State), cleanText(p.Manager), cleanText(p.Detail))
+		}
+	}
+}
+func printResourceRows(rows []resourceView, details bool) {
+	for _, r := range rows {
+		fmt.Printf("  %s [%s] · %s\n", cleanText(r.ID), cleanText(r.Worker), cleanText(r.Detail))
+		if details {
+			fmt.Printf("    transport=%s target=%s protocol=%s read-only=%t\n", cleanText(r.Transport), cleanText(r.Target), cleanText(r.Protocol), r.ReadOnly)
+			if r.LastError != "" {
+				fmt.Printf("    last error: %s\n", cleanText(r.LastError))
+			}
+			if !r.LastOperation.IsZero() {
+				fmt.Printf("    last SFTP reply: %s\n", r.LastOperation.Format(time.RFC3339))
+			}
+			if r.Log != "" {
+				fmt.Printf("    log: %s\n", cleanText(r.Log))
+			}
+		}
+	}
+}
+func sessionAgePortable(age *int64) string {
+	if age == nil {
+		return ""
+	}
+	return fmt.Sprintf(" · %ds old", *age)
 }
 
 type limitedInventoryBuffer struct{ data []byte }

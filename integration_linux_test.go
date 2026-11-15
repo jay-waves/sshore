@@ -87,7 +87,7 @@ func newEnv(t *testing.T) *testEnv {
 			time.Sleep(20 * time.Millisecond)
 		}
 		if paths, _ := filepath.Glob(filepath.Join(dir, "*.sock")); len(paths) != 0 {
-			t.Errorf("test session failed to exit: %v", paths)
+			t.Errorf("test shell failed to exit: %v", paths)
 		}
 		logs, _ := filepath.Glob(filepath.Join(dir, "*.log"))
 		for _, p := range logs {
@@ -307,7 +307,7 @@ func TestSessionPersistenceIsolationAndResize(t *testing.T) {
 	shellOutput(t, b, "printf 'KEPT_%s\\n' \"$KEEP\"", "KEPT_shore")
 	other, otherPID := e.attach("build")
 	if otherPID == pid {
-		t.Fatal("named sessions share a PID")
+		t.Fatal("named shells share a PID")
 	}
 	cmd := exec.Command(e.bin, "sessions")
 	cmd.Env = e.env
@@ -518,7 +518,7 @@ func TestAutomaticSessionsAndNamedResume(t *testing.T) {
 	}
 	resumed, resumedPID := e.attach("pikachu")
 	if resumedPID != pid {
-		t.Fatal("named reconnect did not resume the first automatic session")
+		t.Fatal("named reconnect did not resume the first automatic shell")
 	}
 	for _, b := range []*bridgeConn{resumed, second, third} {
 		sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
@@ -555,7 +555,7 @@ func waitSessionEnded(t *testing.T, e *testEnv, name string, pid int) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("session %s (shell %d) survived connection loss", name, pid)
+	t.Fatalf("shell %s (shell %d) survived connection loss", name, pid)
 }
 
 func TestExplicitDetachControlPreservesSession(t *testing.T) {
@@ -593,10 +593,10 @@ func TestNewAndAttachLifecycle(t *testing.T) {
 		}
 	}
 	expectFailure("attach", "missing", "does not exist")
-	expectFailure("attach", "", "no detached sessions")
+	expectFailure("attach", "", "no detached shells")
 	first, pid := e.attach("build", "new")
 	expectFailure("new", "build", "already exists")
-	expectFailure("attach", "", "no detached sessions")
+	expectFailure("attach", "", "no detached shells")
 	sendTest(t, first.in, message{Type: "detach"})
 	untilType(t, first.out, "detached")
 	first.close()
@@ -630,7 +630,7 @@ func TestNewAndAttachLifecycle(t *testing.T) {
 	for _, name := range []string{"build", "other"} {
 		b, gotPID := e.attach(name, "attach")
 		if name == "build" && gotPID != pid {
-			t.Fatal("selection cancellation lost session")
+			t.Fatal("selection cancellation lost shell")
 		}
 		sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
 		untilType(t, b.tty, "exit")

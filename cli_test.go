@@ -61,7 +61,7 @@ func TestDefaultSessions(t *testing.T) {
 		t.Fatalf("list: %+v %v", listing, err)
 	}
 	if _, err := parseOptions([]string{"list", "host", "main"}); err == nil {
-		t.Fatal("list accepted a session option")
+		t.Fatal("list accepted a shell option")
 	}
 }
 

@@ -8,7 +8,7 @@ import (
 )
 
 func TestFormatApprovalPrompt(t *testing.T) {
-	const prompt = "Type update to END listed old sessions/tasks and install; Enter for a recovery shell: "
+	const prompt = "Type update to END listed old shells/tasks and install; Enter for a recovery shell: "
 	if got := formatApprovalPrompt(false, prompt); got != prompt {
 		t.Fatalf("uncolored prompt = %q", got)
 	}

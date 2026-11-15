@@ -19,12 +19,19 @@ func TestFTPDefaultMountParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(home, "state"))
+	r, err := reserveResourceName("mount", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	o.name = r.name
 	cleanup, err := prepareFTPPaths(&o)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	if o.mountpoint != filepath.Join(root, "work") {
+	if o.mountpoint != filepath.Join(root, o.name) {
 		t.Fatalf("mountpoint: %s", o.mountpoint)
 	}
 	cleanup()

@@ -93,7 +93,7 @@ func acceptSessionName(o *options, name string) error {
 		return nil
 	}
 	if err := validSession(name); err != nil {
-		return fmt.Errorf("server returned an invalid session name: %w", err)
+		return fmt.Errorf("server returned an invalid shell name: %w", err)
 	}
 	o.session = name
 	return nil
@@ -191,8 +191,13 @@ func runClient(o options) (int, error) {
 		return 1, err
 	}
 	if len(o.approved) > 0 && m.PID != o.resumePID {
-		return 1, fmt.Errorf("remote session changed; request again")
+		return 1, fmt.Errorf("remote shell changed; request again")
 	}
+	connection, cacheErr := trackShellConnection(o)
+	if cacheErr != nil {
+		logf(os.Stderr, logWarning, "[sshore] Could not track shell connection: %s\n", cleanText(cacheErr.Error()))
+	}
+	defer connection.close()
 	pid := m.PID
 	o.resumePID = pid
 	_ = mux.SetDeadline(time.Now().Add(5 * time.Second))
@@ -220,7 +225,7 @@ func runClient(o options) (int, error) {
 		}
 		if o.stay {
 			// --stay explicitly detaches after completed file operations.
-			if err = detachControl(control); err != nil {
+			if err = detachControl(control, func(name string) { connection.confirm(name, "detached") }); err != nil {
 				return 1, err
 			}
 			logf(os.Stderr, logSuccess, "[sshore] Approved operations complete. Staying local; remote shell is still running.\n")
@@ -352,7 +357,7 @@ func runClient(o options) (int, error) {
 		case <-signals:
 			return 130, nil
 		case <-detachTimeout:
-			return 255, fmt.Errorf("detach response timed out; session preservation is unconfirmed")
+			return 255, fmt.Errorf("detach response timed out; shell preservation is unconfirmed")
 		case <-ticker.C:
 			c, r, e := term.GetSize(int(os.Stdout.Fd()))
 			if e == nil && (c != cols || r != rows) {
@@ -381,7 +386,17 @@ func runClient(o options) (int, error) {
 					continue
 				}
 				_ = st.SetDeadline(time.Now().Add(requestTimeout))
-				task := pendingRemoteTask(id, e.approval)
+				dir, err := approvalDir()
+				if err != nil {
+					st.Close()
+					return 1, err
+				}
+				request, err := readApproval(dir, id)
+				if err != nil {
+					st.Close()
+					return 1, err
+				}
+				task := pendingRemoteTask(id, request.displayName(), e.approval)
 				err = writeMessage(st, message{Type: "queued", PeerTask: &task})
 				if err == nil {
 					var ack message
@@ -407,7 +422,7 @@ func runClient(o options) (int, error) {
 				continue
 			}
 			if e.err != nil {
-				return 255, fmt.Errorf("connection ended without detach; remote session is closing: %w", e.err)
+				return 255, fmt.Errorf("connection ended without detach; remote shell is closing: %w", e.err)
 			} else if e.input != nil {
 				if detaching {
 					continue
@@ -423,7 +438,7 @@ func runClient(o options) (int, error) {
 				select {
 				case inputQueue <- e.input:
 				default:
-					return 255, fmt.Errorf("terminal input stalled; closing remote session")
+					return 255, fmt.Errorf("terminal input stalled; closing remote shell")
 				}
 			} else {
 				switch e.m.Type {
@@ -447,6 +462,7 @@ func runClient(o options) (int, error) {
 						detachTimeout = time.After(5 * time.Second)
 					}
 				case "detached":
+					connection.confirm(e.m.Name, "detached")
 					if validSession(e.m.Name) == nil {
 						o.session = e.m.Name
 					}
@@ -454,6 +470,7 @@ func runClient(o options) (int, error) {
 					notice(logSuccess, "\r\n[sshore] Detached; remote programs keep running.\r\nReconnect: %s\r\n", reconnectCommand(o))
 					return 0, nil
 				case "exit":
+					connection.confirm(e.m.Name, "exited")
 					return e.m.Code, nil
 				case "fatal":
 					return 1, errors.New(e.m.Error)
@@ -464,7 +481,7 @@ func runClient(o options) (int, error) {
 }
 
 // detachControl is used before an interactive control reader has started.
-func detachControl(control *smux.Stream) error {
+func detachControl(control *smux.Stream, confirmed ...func(string)) error {
 	_ = control.SetDeadline(time.Now().Add(5 * time.Second))
 	defer control.SetDeadline(time.Time{})
 	if err := streamMessage(control, message{Type: "detach"}); err != nil {
@@ -476,6 +493,9 @@ func detachControl(control *smux.Stream) error {
 	}
 	if m.Type != "detached" {
 		return fmt.Errorf("unexpected detach response: %s", m.Type)
+	}
+	for _, confirm := range confirmed {
+		confirm(m.Name)
 	}
 	return streamMessage(control, message{Type: "bye"})
 }

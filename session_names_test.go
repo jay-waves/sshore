@@ -10,8 +10,8 @@ func TestSessionNames(t *testing.T) {
 		}
 		seen[name] = true
 	}
-	if len(seen) != 24 {
-		t.Fatal("expected 24 automatic names")
+	if len(seen) != 154 {
+		t.Fatal("expected 154 automatic names")
 	}
 }
 
@@ -26,12 +26,12 @@ func TestAcceptSessionName(t *testing.T) {
 		{"invalid remote name", options{}, "../bad", "", true},
 		{"missing remote name", options{}, "", "", true},
 		{"explicit", options{session: "build"}, "", "build", false},
-		{"recovery has no session", options{plain: true}, ".", "", false},
+		{"recovery has no shell", options{plain: true}, ".", "", false},
 	} {
 		t.Run(tc.label, func(t *testing.T) {
 			err := acceptSessionName(&tc.opts, tc.name)
 			if (err != nil) != tc.wantError || tc.opts.session != tc.want {
-				t.Fatalf("session %q, error %v", tc.opts.session, err)
+				t.Fatalf("shell %q, error %v", tc.opts.session, err)
 			}
 		})
 	}

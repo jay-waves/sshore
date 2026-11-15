@@ -54,8 +54,8 @@ func validateRemoteTask(t remoteTask) error {
 		if validSession(name) != nil || t.State != "active" {
 			return fmt.Errorf("invalid peer resource")
 		}
-	case "approval":
-		if !validApprovalID(name) || name != t.Key || t.State != "pending" {
+	case "review":
+		if validSession(name) != nil || t.State != "pending" {
 			return fmt.Errorf("invalid pending task")
 		}
 	default:
@@ -212,7 +212,7 @@ func printRemoteTasks(output io.Writer) error {
 	}
 	return nil
 }
-func pendingRemoteTask(id string, ops []operation) remoteTask {
+func pendingRemoteTask(id, name string, ops []operation) remoteTask {
 	detail := fmt.Sprintf("%d requested operation(s)", len(ops))
 	if len(ops) == 1 {
 		op := ops[0]
@@ -222,7 +222,7 @@ func pendingRemoteTask(id string, ops []operation) remoteTask {
 			detail = op.Kind + " " + op.Path
 		}
 	}
-	return remoteTask{Version: version, Key: id, ID: "approval/" + id, Manager: taskManagerLabel(), State: "pending", Detail: cleanText(detail)}
+	return remoteTask{Version: version, Key: id, ID: "review/" + name, Manager: taskManagerLabel(), State: "pending", Detail: cleanText(detail)}
 }
 
 func removeExpiredPeerTask(p string, previous os.FileInfo) {

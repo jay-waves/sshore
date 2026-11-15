@@ -10,7 +10,7 @@ func TestFTPSessionDefaults(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if o.remote != "." || o.mountpoint != "" || o.foreground || o.name != "work-example" {
+	if o.remote != "." || o.mountpoint != "" || o.foreground || o.name != "" {
 		t.Fatalf("unexpected defaults: %+v", o)
 	}
 	o, e = parseFTPOptions([]string{"work", "project", "--name", "code", "--foreground"})

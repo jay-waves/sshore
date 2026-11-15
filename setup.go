@@ -57,7 +57,7 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, o *options, openInput fun
 			return nil
 		case "session_choice":
 			if o.command != "attach" || o.session != "" || len(m.Names) < 2 || len(m.Names) > 128 {
-				return fmt.Errorf("unexpected session selection")
+				return fmt.Errorf("unexpected shell selection")
 			}
 			for _, name := range m.Names {
 				if err := validSession(name); err != nil {
@@ -84,15 +84,15 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, o *options, openInput fun
 			logf(os.Stderr, logWarning, "[sshore] %s\n", cleanText(m.Error))
 			if m.Action == "update" {
 				if len(m.SetupProcesses) == 0 {
-					logf(os.Stderr, logInfo, "No sessions need to be stopped.\n")
+					logf(os.Stderr, logInfo, "No shells need to be stopped.\n")
 				} else {
-					logf(os.Stderr, logWarning, "Updating will end these sessions and their tasks:\n")
+					logf(os.Stderr, logWarning, "Updating will end these shells and their tasks:\n")
 				}
 			} else if len(m.SetupProcesses) > 0 {
-				logf(os.Stderr, logWarning, "Sessions requiring manual recovery:\n")
+				logf(os.Stderr, logWarning, "Shells requiring manual recovery:\n")
 			}
 			for _, p := range m.SetupProcesses {
-				logf(os.Stderr, logWarning, "  session %s, PID %d, version %s\n", cleanText(p.Name), p.PID, cleanText(p.Version))
+				logf(os.Stderr, logWarning, "  shell %s, PID %d, version %s\n", cleanText(p.Name), p.PID, cleanText(p.Version))
 			}
 			logf(os.Stderr, logInfo, "Enter opens a temporary recovery shell; sshore features are disabled.\n")
 			prompt := "Type update to install, or Enter to recover: "

@@ -17,7 +17,7 @@ func requestOperations(ops []operation) error {
 	}
 	sock := os.Getenv("SSHORE_SOCKET")
 	if sock == "" {
-		return fmt.Errorf("run this command inside an sshore session")
+		return fmt.Errorf("run this command inside an sshore shell")
 	}
 	c, err := net.DialTimeout("unix", sock, requestTimeout)
 	if err != nil {
@@ -68,7 +68,7 @@ func requestFilesWithHint(kind string, paths []string, hint string) error {
 	return requestOperations(ops)
 }
 
-func (s *session) requestApproval(c net.Conn, m message) error {
+func (s *shell) requestApproval(c net.Conn, m message) error {
 	if err := validateOperations(m.Operations); err != nil {
 		return err
 	}

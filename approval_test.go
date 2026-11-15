@@ -199,3 +199,16 @@ func TestApprovalRejectsDifferentRelease(t *testing.T) {
 		}
 	}
 }
+
+func reviewName(t *testing.T, id string) string {
+	t.Helper()
+	dir, err := approvalDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := readApproval(dir, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r.displayName()
+}

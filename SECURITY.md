@@ -4,26 +4,26 @@ This document owns the security guarantees and their limits. See
 [GLOSSARY.md](GLOSSARY.md) for terms and [SSHORE.md](SSHORE.md) for development
 and lifecycle mechanics.
 
-sshore trusts the **local OS, user account, terminal, executable and SSH configuration**. The remote host may be compromised, including its root user, session daemon and programs running as your remote account. SSH authenticates the endpoint and protects transport; it does not make the endpoint trustworthy.
+sshore trusts the **local OS, user account, terminal, executable and SSH configuration**. The remote host may be compromised, including its root user, shell daemon and programs running as your remote account. SSH authenticates the endpoint and protects transport; it does not make the endpoint trustworthy.
 
 ## Trust boundaries
 
 ```mermaid
 flowchart LR
     subgraph remote["Untrusted remote host"]
-        program["Programs / session daemon"]
+        program["Programs / shell daemon"]
         setup["Setup coordinator"]
         service["Remote files and services"]
-        killgate["Cancel session: exact versions, setup lock, socket peer and process identity"]
+        killgate["Cancel shell: exact versions, setup lock, socket peer and process identity"]
         renamegate["Rename: exact versions, setup lock, unique public name"]
         exits["Private, bounded exit diagnostics"]
     end
     subgraph local["Trusted local machine"]
         client["Connected sshore client"]
-        record["Private, expiring request metadata"]
+        record["Private, expiring review/NAME metadata"]
         user["User in local shell"]
         approve["Separate sshore review process"]
-        gate["Setup and session checks"]
+        gate["Setup and shell checks"]
         resources["Selected files / loopback listener or service"]
     end
     user -->|"Explicit cp source and destination"| directcopy["Independent SFTP copy; temporary file and no-overwrite hard link"]
@@ -44,19 +44,19 @@ flowchart LR
     mounted --> inventory
     inventory --> peerlist["Read-only list; no local authorization or control tokens"]
     program -->|"Request metadata over SSH"| client
-    client -->|"Explicit detach: preserve session"| program
-    client -->|"Detected transport loss: close PTY, end session"| program
+    client -->|"Explicit detach: preserve shell"| program
+    client -->|"Detected transport loss: close PTY, end shell"| program
     client -->|"Validate, save, detach"| record
     user -->|"Rename OLD NEW over SSH"| renamegate
     renamegate -->|"Change label; preserve process and helper identity"| program
     program -->|"Name, time, reason; no terminal content"| exits
     user -->|"Explicit cancel HOST NAME over SSH"| killgate
-    killgate -->|"Only named session and identified same-user tasks"| program
+    killgate -->|"Only named shell and identified same-user tasks"| program
     user -->|"Review: submit local paths or port"| approve
     record -->|"Consume once"| approve
     approve -->|"New SSH connection"| gate
     setup <-->|"Exact version / setup choice"| gate
-    setup -->|"Setup lock: new reserves unused name; attach requires existing session"| program
+    setup -->|"Setup lock: new reserves unused name; attach requires existing shell"| program
     gate -->|"Unchanged setup and matching shell PID"| resources
     user -->|"Review forward: fixed endpoints and one SSH authentication"| forwardcheck["Worker checks source version / name / PID / detached state"]
     forwardcheck --> native
@@ -66,7 +66,7 @@ flowchart LR
 
 Remote terminal output is untrusted. It can imitate local messages, but cannot itself grant approval. Sensitive prompts run after the connected client exits, from a **separate local invocation**. Do not invoke approval or enter credentials merely because remote output asks you to.
 
-`new` reserves a fresh session, with an automatic or explicit name, including when other sessions are detached. `attach` requires an existing session and never evicts its attached client. Recent local targets only supply defaults; they never authorize takeover, recreate missing sessions or carry typed passwords. Native forwarding flags are excluded from remembered connections. Without saved history, selection without a name lists detached sessions; setup and exclusive attachment are rechecked after selection without holding the account lock while waiting for user input. The local session picker starts only after SSH authentication and releases terminal input before attachment. It does not authorize updates or file/port operations. Session listings show same-user process descendants with sanitized names and PIDs; they do not expose command-line arguments or environment variables. Foreground
+`new` reserves a fresh shell, with an automatic or explicit name, including when other shells are detached. `attach` requires an existing shell and never evicts its attached client. Recent local targets only supply defaults; they never authorize takeover, recreate missing shells or carry typed passwords. Native forwarding flags are excluded from remembered connections. Without saved history, selection without a name lists detached shells; setup and exclusive attachment are rechecked after selection without holding the account lock while waiting for user input. The local shell picker starts only after SSH authentication and releases terminal input before attachment. It does not authorize updates or file/port operations. Shell listings show same-user process descendants with sanitized names and PIDs; they do not expose command-line arguments or environment variables. Foreground
 summaries include same-user process names and a shortened working directory,
 which may reveal project names. These are best-effort snapshots, never process
 identity evidence for signaling.
@@ -75,10 +75,10 @@ Rename requires matching client, installed program and daemon releases. The acco
 setup lock serializes label changes and name allocation; immutable socket identities
 preserve inherited helper connections. Private name metadata and daemon lifetime
 locks keep names reserved even when a daemon stops responding; name resolution
-does not depend on other sessions answering status requests. Pending approvals are not rewritten: their
+does not depend on other shells answering status requests. Pending approvals are not rewritten: their
 original name and shell PID must still match, otherwise they fail closed.
 
-Exit diagnostics store only session name, time and reason in private `0600` files
+Exit diagnostics store only shell name, time and reason in private `0600` files
 inside the remote runtime directory. Keep at most 100 receipts for seven days;
 records are best effort and do not prove task cleanup. Explicit kill/update reasons
 are recorded only after verified cleanup succeeds. Abrupt termination or runtime
@@ -87,16 +87,20 @@ directories are retained in exit records.
 
 ## Local approval
 
-Receiving a request saves only bounded metadata. It does not open a requested listener or read/write a user-selected transfer file. Requests cannot encode a local shell command or authorize local access. A filled local endpoint is an untrusted suggestion, displayed for local acceptance or editing; it never bypasses review. Unsolicited transfer offers and forward-add streams are rejected. Approved forwarding uses one independent system SSH transport with fixed listener and destination ports. Its remote helper revalidates the original session version/name/PID and detached state through a local daemon RPC, without attaching to the shell. Native OpenSSH may bind the already-approved listener before this check; validation failure closes that transport, and the worker reports ready only after validation. No software update runs during forward review. Normal shell connections reject unsolicited reverse connection streams. `--download-dir` is a default, not consent.
+Receiving a request saves only bounded metadata. It does not open a requested listener or read/write a user-selected transfer file. Requests cannot encode a local shell command or authorize local access. A filled local endpoint is an untrusted suggestion, displayed for local acceptance or editing; it never bypasses review. Unsolicited transfer offers and forward-add streams are rejected. Approved forwarding uses one independent system SSH transport with fixed listener and destination ports. Its remote helper revalidates the original shell version/name/PID and detached state through a local daemon RPC, without attaching to the shell. Native OpenSSH may bind the already-approved listener before this check; validation failure closes that transport, and the worker reports ready only after validation. No software update runs during forward review. Normal shell connections reject unsolicited reverse connection streams. `--download-dir` is a default, not consent.
 
 Submitting all validated local file paths or a locally submitted port after reviewing the remote target is explicit approval; no additional `yes` is required. File batches collect every path before starting. Ctrl-C or EOF during input leaves the request pending and starts no operation. Invalid ports retry; Enter accepts only a displayed suggestion. An empty port with no suggestion retries. Completion only browses the local filesystem in this approval process; selecting a completion candidate does not submit the operation.
+
+Public Pokemon names are labels, not authorization capabilities. Internal random
+request IDs, private records and exclusive consumption still enforce one-time
+execution; retaining a review name for its forward does not grant new approval.
 
 Pending records:
 
 - Expire in 10 minutes, with at most 16 operations per request and 32 pending records.
 - Store connection options and operation metadata, not collected SSH credentials. Unix state requires current-user ownership and private permissions; Windows state uses a current-user-only DACL.
 - Are consumed before reconnecting, even if connection or execution fails. There is no persisted grant or automatic retry; a normal connection never executes them.
-- Retain the original session and shell PID. Approval must not silently create a new shell. PID matching detects accidental replacement, not a malicious server lying about its identity.
+- Retain the original shell and shell PID. Approval must not silently create a new shell. PID matching detects accidental replacement, not a malicious server lying about its identity.
 
 OpenSSH owns passwords, keys, agents, MFA and host-key checks. No separate approval password is collected; an SSH login without a prompt is not consent. Local SSH configuration and executable selection remain trusted. sshore disables ControlMaster sharing for its own connection so closing it does not terminate another connection's shared master; configured proxies/jump hosts may have independent lifetimes.
 
@@ -113,15 +117,15 @@ OpenSSH owns passwords, keys, agents, MFA and host-key checks. No separate appro
 
 Direct and approved copies share SFTP transfer code: exact-size checks and SHA-256 readback of uploaded temporary content, with transport integrity provided by authenticated SSH. These checks do not authenticate file provenance. Approved streams expose only the selected remote file and its temporary upload, never a general SFTP filesystem; server publication checks size, syncs the file, and refuses overwrite. Downloaded content and forwarded services may be malicious. Avoid destinations that automatically load new scripts or configuration; an approved large file can still fill the disk. File endpoints must be regular files; direct cp also accepts explicit stdin/stdout. Stdout is not atomic and cannot retract bytes on failure. Stdin can be unbounded and exhaust remote storage before EOF; file publication still requires size/digest verification and refuses overwrite. Metadata is not copied. Linux received files default to `0600`; Windows files inherit the destination directory ACL.
 
-Cancellation removes incomplete files when cleanup can run. Forced termination may leave `.sshore-*.part` files; batch failure does not undo completed files. During approved operations and `--stay`, remote terminal output is suppressed. Detach/disconnection cancels connection-owned transfers. Independent mounts and forwards keep their own lifetimes; ending a shell does not stop them. Only explicit detach preserves the remote session (including approval-request detach and completed file operations with `--stay`). Other transport loss closes the PTY and ends the daemon when detected. This uses normal terminal hangup semantics, not process-tree extermination: programs that ignore hangup or deliberately escape the terminal may survive, as with SSH. It does not promise cleanup of arbitrary reparented tasks.
+Cancellation removes incomplete files when cleanup can run. Forced termination may leave `.sshore-*.part` files; batch failure does not undo completed files. During approved operations and `--stay`, remote terminal output is suppressed. Detach/disconnection cancels connection-owned transfers. Independent mounts and forwards keep their own lifetimes; ending a shell does not stop them. Only explicit detach preserves the remote shell (including approval-request detach and completed file operations with `--stay`). Other transport loss closes the PTY and ends the daemon when detected. This uses normal terminal hangup semantics, not process-tree extermination: programs that ignore hangup or deliberately escape the terminal may survive, as with SSH. It does not promise cleanup of arbitrary reparented tasks.
 
 Local `forward` defaults to a detached local worker. Remote
-forward requests are local pending tasks; approval verifies the original session
+forward requests are local pending tasks; approval verifies the original shell
 and PID, explicitly detaches it, then launches an independent worker. Both paths
 use the same private records, locks and authenticated loopback control as mounts.
 The worker runs system SSH with failure-on-forward-setup and a transient Unix
 helper that acknowledges startup after forwarding setup. It does not create a
-persistent remote shell session or install remote software. The helper exits
+persistent remote shell or install remote software. The helper exits
 with its connection. Local `--foreground` remains available for diagnostics.
 Server GatewayPorts policy can override reverse listener binding.
 
@@ -150,34 +154,34 @@ stale snapshots expire after 24 hours. Normal watcher EOF removes its record;
 mount cleanup is bounded and best effort. Record removal never signals a PID.
 A rejected request's mirror is removed via a bounded, noninteractive SSH attempt;
 failure leaves only expiring metadata. Executing an approval removes its mirror
-after the source session/PID checks. `peer/` IDs are read-only and cannot be
+after the source shell/PID checks. `peer/` IDs are read-only and cannot be
 passed to local cancel to affect similarly named resources.
 
 ## SFTP mounts
 
 `sshore mount` is a local, explicit grant to expose a remote directory through a
-system mount. It is independent of session transfer approvals: local applications
+system mount. It is independent of shell transfer approvals: local applications
 that can access the mount can read files and, unless `--read-only` is set, overwrite,
 rename or delete them with the authenticated remote account's permissions. A
 remote program cannot request or approve a mount. Recovery mode rejects `mount`.
 
-Background mounts and forwards are local workers, separate from remote shell sessions. A
+Background mounts and forwards are local workers, separate from remote shells. A
 private per-user record stores a random capability for loopback status/unmount
 requests; control never kills a PID read from disk. An OS lock prevents duplicate
-session names. Stop requires the worker's exact sshore release version. Startup
+shell names. Stop requires the worker's exact sshore release version. Startup
 uses a temporary authenticated loopback askpass broker to collect SSH answers in
 the initiating terminal; credentials are not stored in records or logs. Losing
 the launcher before startup acknowledgement cancels the pending resource. Local
 administrators and processes running as the same user are inside this boundary.
 
 This connection uses the system OpenSSH host-key/authentication policy. It does not
-install software or manage session daemons. By default it runs a transient remote
+install software or manage shell daemons. By default it runs a transient remote
 sshore mount agent, requires an exact full release match and rejects recovery
 mode. The agent proxies the account's OpenSSH sftp-server and sends bounded
 filesystem invalidations on a separate logical stream of the same connection.
-It does not reuse a shell session or require another authentication. No-watch mode
+It does not reuse a shell or require another authentication. No-watch mode
 uses the ordinary SFTP subsystem without an agent. Both modes require the SFTP
-capabilities they use. Existing session setup/version restrictions are unchanged.
+capabilities they use. Existing shell setup/version restrictions are unchanged.
 OpenSSH ControlMaster sharing, backgrounding and forwarding are disabled for this
 independent connection. The agent requires remote command execution; it does not
 inherit SFTP subsystem-specific command flags or an internal-sftp-only policy.
@@ -224,31 +228,31 @@ exceeding a listing budget fails that operation without truncating it silently.
 
 ## Remote setup and updates
 
-The full release version, including PATCH, is the compatibility identifier. No separate protocol compatibility counter is used. The managed scope is the current remote Unix account's visible sshore session daemons across runtime directories, excluding other users, preparation helpers and transient transport processes.
+The full release version, including PATCH, is the compatibility identifier. No separate protocol compatibility counter is used. The managed scope is the current remote Unix account's visible sshore shell daemons across runtime directories, excluding other users, preparation helpers and transient transport processes.
 
-- A newer installed program or session daemon rejects an older client. Never automatically downgrade. Unknown/unordered versions, including a failed executable version check, permit manual recovery only.
-- Missing software may be installed automatically when no incompatible sessions exist. Existing older installations or sessions require the user to type `update` after reviewing affected session identities.
+- A newer installed program or shell daemon rejects an older client. Never automatically downgrade. Unknown/unordered versions, including a failed executable version check, permit manual recovery only.
+- Missing software may be installed automatically when no incompatible shells exist. Existing older installations or shells require the user to type `update` after reviewing affected shell identities.
 - Preparation downloads a matching release over HTTPS and verifies its checksum and executable version. Temporary staging does not replace the installed program.
-- Before ending tasks, setup takes the account setup lock, rechecks the process snapshot, then prepares and verifies the replacement on the target filesystem. Changed state requires fresh confirmation. Only confirmed same-user session processes and identified tasks are signaled, with process identity validation; no process-name-wide kill is used.
+- Before ending tasks, setup takes the account setup lock, rechecks the process snapshot, then prepares and verifies the replacement on the target filesystem. Changed state requires fresh confirmation. Only confirmed same-user shell processes and identified tasks are signaled, with process identity validation; no process-name-wide kill is used.
 - Failure to prepare a replacement must not terminate tasks. Once confirmed termination starts, later failures cannot restore stopped tasks. Updates can disconnect other clients and lose unsaved work.
 - Automatic replacement requires a user-owned regular file and a user-owned directory without group/world write permission. There is no elevation, PATH or shell-profile modification.
 
-Explicit `sshore cancel HOST NAME` authorizes immediate termination of that named session
+Explicit `sshore cancel HOST NAME` authorizes immediate termination of that named shell
 and its identified tasks in the selected runtime directory, including an attached
-session. It never enters installation or update negotiation. The client, installed
+shell. It never enters installation or update negotiation. The client, installed
 remote program and target daemon must have matching full release versions. Under
 the account setup lock, it verifies a same-user daemon and its socket peer, then
 uses the same process-identity-checked termination as setup (TERM, followed by KILL
-for surviving identified tasks). Other sessions are excluded; unconfirmed daemons
+for surviving identified tasks). Other shells are excluded; unconfirmed daemons
 are refused. Recovery mode does not permit this operation.
 
-Processes that deliberately escape session ancestry/session ID, legacy binaries ignoring policy, concurrent unmanaged modifications and a compromised remote kernel/root are outside these guarantees. Process visibility may also limit what can be inspected. Diagnostics alone never terminate processes.
+Processes that deliberately escape shell ancestry/shell ID, legacy binaries ignoring policy, concurrent unmanaged modifications and a compromised remote kernel/root are outside these guarantees. Process visibility may also limit what can be inspected. Diagnostics alone never terminate processes.
 
-Installer checksums detect corruption, not compromise of the publisher/repository supplying the installer, assets and checksums. Remote preparation needs HTTPS access and a matching published asset. Standalone installers do not stop running sessions; the Windows installer does not make versioned backups. Linux installation preserves a recognized old version when its backup does not already exist. Existing published tags, releases and older assets are retained when publishing a new version.
+Installer checksums detect corruption, not compromise of the publisher/repository supplying the installer, assets and checksums. Remote preparation needs HTTPS access and a matching published asset. Standalone installers do not stop running shells; the Windows installer does not make versioned backups. Linux installation preserves a recognized old version when its backup does not already exist. Published Git tags remain immutable. After successful publication and asset checks, older published patch releases and their assets are deleted within each major/minor series. Failed or incomplete publication cannot trigger cleanup.
 
 ## Manual recovery
 
-Recovery preserves the authenticated SSH connection and starts a transient PTY shell without a persistent session daemon. Persistence, approval execution, file transfer, dynamic forwarding and Ctrl-] detach are disabled; help, version and diagnostics remain available. Normal functionality requires reconnecting.
+Recovery preserves the authenticated SSH connection and starts a transient PTY shell without a persistent shell daemon. Persistence, approval execution, file transfer, dynamic forwarding and Ctrl-] detach are disabled; help, version and diagnostics remain available. Normal functionality requires reconnecting.
 
 Inherited helper socket variables are removed and new sshore binaries honor `SSHORE_DISABLED=1`. Approved operations are skipped both in recovery and after a setup update, and must be requested again.
 
@@ -256,7 +260,7 @@ This is a **product mode, not a sandbox**. It cannot constrain arbitrary legacy 
 
 ## Outside the boundary
 
-Approval is not a malware scan. A compromised local account/root, terminal emulator vulnerabilities, or a user approving a deceptive request defeats this boundary. Approval records are not tamper-proof against their owner. Remote processes sharing the account can request operations and disrupt sessions; a request does not prove who typed it.
+Approval is not a malware scan. A compromised local account/root, terminal emulator vulnerabilities, or a user approving a deceptive request defeats this boundary. Approval records are not tamper-proof against their owner. Remote processes sharing the account can request operations and disrupt shells; a request does not prove who typed it.
 
 Resource status reports local worker liveness separately from transport state;
 forward targets are not probed. JSON inventory is an explicit allowlist of public

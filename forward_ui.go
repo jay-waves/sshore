@@ -97,7 +97,7 @@ detached after approval. Manage with sshore list / sshore cancel forward/NAME.
 Both endpoints use IPv4 loopback; SSH server policy can override reverse binds.
 
 Local options:
-  --name NAME        Resource name (default: host, direction and ports)
+  --name NAME        Resource name (default: automatic Pokemon name)
   --foreground       Run in this terminal; Ctrl-C stops forwarding
   --retries N        Retry established background connections 0..10 times
                      (default 0; not initial startup or existing connections)
