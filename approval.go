@@ -233,10 +233,19 @@ func pendingApprovals(dir string) ([]approvalRecord, error) {
 	return records, nil
 }
 
-// Rename claims the record before any network or file operation. Concurrent
+// Exclusive creation serializes claims across processes before renaming. Concurrent
 // Windows DeleteFile calls can both succeed while a file is delete-pending.
 // Only one concurrent approver can succeed; failed executions cannot be replayed.
 func consumeApproval(dir, id string) error {
+	lockPath := filepath.Join(dir, id+".claim")
+	lock, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = lock.Close()
+		_ = os.Remove(lockPath)
+	}()
 	claimed := filepath.Join(dir, id+".consumed")
 	if err := os.Rename(filepath.Join(dir, id+".json"), claimed); err != nil {
 		return err
