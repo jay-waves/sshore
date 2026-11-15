@@ -59,7 +59,7 @@ func TestProtocolRejectsMalformedFrames(t *testing.T) {
 	}
 }
 func TestOptions(t *testing.T) {
-	o, err := parseOptions([]string{"shell", "myhost", "build", "--server", "/a b/sshore", "--", "-J", "jump"})
+	o, err := parseOptions([]string{"launch", "myhost", "build", "--server", "/a b/sshore", "--", "-J", "jump"})
 	if err != nil || o.session != "build" || o.host != "myhost" || len(o.ssh) != 2 {
 		t.Fatalf("%+v %v", o, err)
 	}
@@ -68,7 +68,7 @@ func TestOptions(t *testing.T) {
 			t.Fatal("accepted", name)
 		}
 	}
-	for _, args := range [][]string{{"shell", "host", "-s"}, {"shell", "-evil"}, {"shell", "host", "name", "unexpected"}} {
+	for _, args := range [][]string{{"launch", "host", "-s"}, {"launch", "-evil"}, {"launch", "host", "name", "unexpected"}} {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatal("accepted", args)
 		}

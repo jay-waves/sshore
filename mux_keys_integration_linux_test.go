@@ -21,7 +21,7 @@ func TestClientPrefixKeysAndDetach(t *testing.T) {
 	background.close()
 	cmd, terminal, wait := startPrefixClient(t, e)
 	wait("Background tasks:")
-	wait("shell/background")
+	wait("launch/background")
 	var err error
 	wait("Connected")
 	// Prefix and command arrive in separate reads.
@@ -60,7 +60,7 @@ func startPrefixClient(t *testing.T, e *testEnv) (*exec.Cmd, *os.File, func(stri
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
-	cmd := exec.CommandContext(ctx, e.bin, "shell", "fixture", "keys", "--server", e.bin)
+	cmd := exec.CommandContext(ctx, e.bin, "launch", "fixture", "keys", "--server", e.bin)
 	cmd.Env = append(e.env, "SSHORE_SSH="+wrapper, "SSHORE_SOCKET=", "SSHORE_STATE_DIR="+filepath.Join(e.dir, "client-state"), "TERM=xterm-256color")
 	terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 120})
 	if err != nil {

@@ -199,7 +199,7 @@ provide an overlay or restore the application's screen.
 
 ## Connection and shell lifecycle
 
-`shell` reserves an unused name and creates a PTY shell. Automatic names come
+`launch` reserves an unused name and creates a PTY shell. Automatic names come
 from a fixed pool; callers can supply a name when the pool is exhausted. `attach`
 resolves an existing detached shell and never evicts another client. Local
 `connections/recent.json` retains up to 32 hosts, ordered by successful interactive
@@ -342,14 +342,14 @@ of its identified shell tasks together, under the existing account setup lock.
 
 ## Temporary shells (`spawn`)
 
-`spawn` creates the same single-terminal shell as `shell`, but records the
+`spawn` creates the same single-terminal shell as `launch`, but records the
 launching process's parent PID and creation identity. The local daemon checks
 that owner every 500 ms; exit, zombie state or PID reuse ends the spawn. This
 binds to the actual parent process, including a wrapper if one launches the CLI;
 reattachment never transfers the original ownership. Local Linux cleanup uses
 the identity-checked task snapshot/signaling path. Windows starts a spawn's
 ConPTY process suspended, assigns a kill-on-close job, then resumes it; closing
-the terminal job ends its descendants. Persistent `shell` behavior is unchanged.
+the terminal job ends its descendants. Persistent `launch` behavior is unchanged.
 
 For a remote spawn the local daemon owns one lifetime SSH connection. The
 launching client handles SSH askpass and setup choices before entering raw mode.
@@ -363,7 +363,7 @@ network-loss detection; there is no automatic reconnect or lifetime transfer.
 Recovery stays a foreground-only transient shell on the authenticated connection.
 
 Temporary status travels in live handshake/inventory metadata and cached shell
-snapshots. The existing task column renders `spawn/NAME` versus `shell/NAME`;
+snapshots. The existing task column renders `spawn/NAME` versus `launch/NAME`;
 IDs, names, attachment states, rename and cancellation keep their existing rules.
 Ctrl+B c from a spawn creates another spawn under the switching client's parent.
 

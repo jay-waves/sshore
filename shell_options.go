@@ -5,15 +5,18 @@ import "strings"
 func parseOptions(args []string) (options, error) {
 	o := options{server: "sshore"}
 	if len(args) == 0 {
-		return o, usage("expected shell, spawn, list, attach, cancel or rename; see sshore --help")
+		return o, usage("expected launch, spawn, list, attach, cancel or rename; see sshore --help")
 	}
 	o.command = args[0]
+	if o.command == "shell" {
+		o.command = "spawn"
+	}
 	switch o.command {
-	case "shell", "spawn", "attach", "cancel", "rename":
+	case "launch", "spawn", "attach", "cancel", "rename":
 	case "list":
 		o.list = true
 	default:
-		return o, usage("choose an action: sshore shell HOST [NAME], sshore spawn HOST [NAME], sshore list HOST, sshore attach HOST [NAME], sshore cancel HOST NAME, or sshore rename HOST OLD NEW")
+		return o, usage("choose an action: sshore launch HOST [NAME], sshore spawn HOST [NAME], sshore list HOST, sshore attach HOST [NAME], sshore cancel HOST NAME, or sshore rename HOST OLD NEW")
 	}
 	var err error
 	var positional []string
@@ -52,8 +55,8 @@ func parseOptions(args []string) (options, error) {
 				o.server = args[i]
 				o.serverSet = true
 			case "--name":
-				if (o.command != "shell" && o.command != "spawn") || named {
-					return o, usage("--name is only supported once by shell or spawn")
+				if (o.command != "launch" && o.command != "spawn") || named {
+					return o, usage("--name is only supported once by launch or spawn")
 				}
 				named = true
 				o.local = true
@@ -71,8 +74,8 @@ func parseOptions(args []string) (options, error) {
 				o.listDetails = true
 			}
 		case "--detach":
-			if o.command != "shell" && o.command != "spawn" {
-				return o, usage("--detach is only supported by shell or spawn")
+			if o.command != "launch" && o.command != "spawn" {
+				return o, usage("--detach is only supported by launch or spawn")
 			}
 			o.detached = true
 		case "--local":
@@ -91,7 +94,7 @@ func parseOptions(args []string) (options, error) {
 			positional = append(positional, a)
 		}
 	}
-	if (o.command == "shell" || o.command == "spawn") && len(positional) == 0 {
+	if (o.command == "launch" || o.command == "spawn") && len(positional) == 0 {
 		o.local = true
 	}
 	if o.local {

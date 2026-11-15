@@ -650,7 +650,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					}
 					command := "attach"
 					if e.m.Action == "new" {
-						command = "shell"
+						command = "launch"
 						if o.temporary {
 							command = "spawn"
 							if o.owner.PID == 0 {

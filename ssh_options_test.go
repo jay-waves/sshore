@@ -4,7 +4,7 @@ import "testing"
 
 func TestSSHSeparatorBoundaries(t *testing.T) {
 	parsers := map[string]func([]string) error{
-		"session": func(a []string) error { _, e := parseOptions(append([]string{"shell"}, a...)); return e },
+		"session": func(a []string) error { _, e := parseOptions(append([]string{"launch"}, a...)); return e },
 		"mount":   func(a []string) error { _, e := parseFTPOptions(a); return e },
 		"forward": func(a []string) error {
 			args := append([]string{"8080", a[0] + ":3000"}, a[1:]...)
@@ -52,7 +52,7 @@ func TestReconnectCommandSSHSeparator(t *testing.T) {
 
 func TestSharedHostValidation(t *testing.T) {
 	for _, host := range []string{"host name", "host\tname", "host\x7f", "host\nname"} {
-		if _, err := parseOptions([]string{"shell", host}); err == nil {
+		if _, err := parseOptions([]string{"launch", host}); err == nil {
 			t.Fatal("shell accepted", host)
 		}
 		if _, err := parseFTPOptions([]string{host}); err == nil {

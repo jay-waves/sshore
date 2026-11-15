@@ -52,7 +52,7 @@ func remoteCommand(o options) string {
 	mode := "bridge"
 	if o.command == "spawn" {
 		mode = "spawn"
-	} else if o.command == "shell" {
+	} else if o.command == "launch" {
 		mode = "new"
 	} else if o.command == "attach" {
 		mode = "attach"

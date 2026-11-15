@@ -11,7 +11,7 @@ func openClientTransport(o *options) (io.ReadWriteCloser, func(), error) {
 	if o.local {
 		var r localSessionRecord
 		var err error
-		if o.command == "shell" || o.command == "spawn" {
+		if o.command == "launch" || o.command == "spawn" {
 			r, err = startLocalSession(o.session, o.owner)
 		} else {
 			r, err = readLocalSession(o.session)

@@ -64,7 +64,7 @@ func sftpSSHArgs(host string, ssh []string) []string {
 
 func misplacedSSHOption(a string) error {
 	if len(a) >= 2 && a[0] == '-' && a[1] != '-' && strings.ContainsRune("piJFloELRDCv46", rune(a[1])) {
-		return usage("SSH option %s must follow -- (example: sshore shell HOST -- -J jump)", a)
+		return usage("SSH option %s must follow -- (example: sshore launch HOST -- -J jump)", a)
 	}
 	return nil
 }

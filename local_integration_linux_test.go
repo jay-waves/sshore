@@ -19,7 +19,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 	state := filepath.Join(e.dir, "local-state")
 	env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SHELL=/bin/sh", "TERM=xterm-256color")
 	var id uint64
-	for _, args := range [][]string{{"shell", "--name", "localtest"}, {"attach", "--local", "localtest"}} {
+	for _, args := range [][]string{{"launch", "--name", "localtest"}, {"attach", "--local", "localtest"}} {
 		if args[0] == "attach" {
 			list := exec.Command(e.bin, "list", "--local", "--json")
 			list.Env = env
@@ -66,17 +66,17 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 				out.Write(buf[:n])
 				if stage == 0 && strings.Contains(out.String(), "Connected local /") {
 					stage = 1
-					if args[0] == "shell" {
+					if args[0] == "launch" {
 						io.WriteString(terminal, "\x02c")
 					} else {
 						io.WriteString(terminal, "exit\n")
 					}
 				}
-				if args[0] == "shell" && stage == 1 && strings.Contains(out.String(), "Connected local / pikachu") {
+				if args[0] == "launch" && stage == 1 && strings.Contains(out.String(), "Connected local / pikachu") {
 					stage = 2
 					io.WriteString(terminal, "\x02l")
 				}
-				if args[0] == "shell" && stage == 2 && strings.Count(out.String(), "Connected local / localtest") >= 2 {
+				if args[0] == "launch" && stage == 2 && strings.Count(out.String(), "Connected local / localtest") >= 2 {
 					stage = 3
 					io.WriteString(terminal, "\x02d")
 				}
@@ -93,7 +93,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%v: %v %s", args, err, out)
 		}
-		if args[0] == "shell" {
+		if args[0] == "launch" {
 			first, err := readLocalRecord(filepath.Join(state, "local-shells", "localtest.json"), "localtest")
 			if err != nil {
 				t.Fatal(err)
@@ -111,7 +111,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 				t.Fatalf("cleanup: %s %v", output, err)
 			}
 		}
-		if args[0] == "shell" && !strings.Contains(out, "Detached;") {
+		if args[0] == "launch" && !strings.Contains(out, "Detached;") {
 			t.Fatal(out)
 		}
 	}

@@ -18,8 +18,12 @@ import (
 )
 
 func TestSpawnLifetime(t *testing.T) {
-	for _, remote := range []bool{false, true} {
-		t.Run(fmt.Sprintf("remote=%t", remote), func(t *testing.T) {
+	for _, tc := range []struct {
+		remote  bool
+		command string
+	}{{false, "spawn"}, {true, "spawn"}, {false, "shell"}} {
+		remote := tc.remote
+		t.Run(fmt.Sprintf("%s/remote=%t", tc.command, remote), func(t *testing.T) {
 			e := newEnv(t)
 			state := filepath.Join(e.dir, "spawn-state")
 			home := filepath.Join(e.dir, "home")
@@ -27,14 +31,14 @@ func TestSpawnLifetime(t *testing.T) {
 				t.Fatal(err)
 			}
 			env := append(e.env, "SSHORE_STATE_DIR="+state, "HOME="+home, "SSHORE_DISABLED=", "SSHORE_LOCAL_SESSION=", "SSHORE_SOCKET=")
-			args := []string{"spawn", "--name", "temporary", "--detach"}
+			args := []string{tc.command, "--name", "temporary", "--detach"}
 			if remote {
 				ssh := filepath.Join(e.dir, "ssh")
 				if err := os.WriteFile(ssh, []byte("#!/bin/sh\nunset SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN SSH_ASKPASS\nfor arg do last=$arg; done\nexec sh -c \"$last\"\n"), 0700); err != nil {
 					t.Fatal(err)
 				}
 				env = append(env, "SSHORE_SSH="+ssh)
-				args = []string{"spawn", "fake-host", "temporary", "--detach", "--server", e.bin}
+				args = []string{tc.command, "fake-host", "temporary", "--detach", "--server", e.bin}
 			}
 			// This parent stays alive after the detached CLI exits, then exits on EOF.
 			parent := exec.Command("sh", append([]string{"-c", `"$@"; result=$?; printf 'READY:%s\n' "$result"; read answer`, "parent", e.bin}, args...)...)

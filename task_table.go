@@ -65,7 +65,7 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 		return rows[i].id < rows[j].id
 	})
 	if len(rows) == 0 {
-		fmt.Fprintln(out, "No tasks. Create a local shell with sshore shell.")
+		fmt.Fprintln(out, "No tasks. Create a local shell with sshore launch.")
 		return
 	}
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
@@ -94,7 +94,7 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 			}
 		}
 		for _, e := range inv.Exits {
-			fmt.Fprintf(out, "\nshell/%s exited %s: %s\n", cleanText(e.Name), e.Time.Format(time.RFC3339), cleanText(e.Reason))
+			fmt.Fprintf(out, "\n%s exited %s: %s\n", cleanText(e.Name), e.Time.Format(time.RFC3339), cleanText(e.Reason))
 		}
 	}
 }

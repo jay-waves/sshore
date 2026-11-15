@@ -44,7 +44,7 @@ func TestRemoteFallbackAndArgumentQuoting(t *testing.T) {
 	for _, mode := range []string{"bridge", "resume", "sessions", "new", "attach"} {
 		o := options{server: "sshore", session: "main", list: mode == "sessions", command: mode}
 		if mode == "new" {
-			o.command = "shell"
+			o.command = "launch"
 		}
 		if mode == "resume" {
 			o.approved = []operation{{Kind: "forward", Port: 80}}

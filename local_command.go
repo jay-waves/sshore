@@ -87,7 +87,7 @@ func localShells() ([]localShellView, error) {
 
 func runLocalCommand(o options) (int, error) {
 	switch o.command {
-	case "shell", "spawn":
+	case "launch", "spawn":
 		return runClient(o)
 	case "attach":
 		if o.session == "" {
@@ -105,7 +105,7 @@ func runLocalCommand(o options) (int, error) {
 				o.session = r.Name
 			}
 			if o.session == "" {
-				return 1, fmt.Errorf("no detached local shells; use sshore shell")
+				return 1, fmt.Errorf("no detached local shells; use sshore launch")
 			}
 		}
 		return runClient(o)

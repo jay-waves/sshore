@@ -192,7 +192,7 @@ func reserveSession(names []string, fresh bool) (sessionReservation, error) {
 		}
 		return sessionReservation{name: name, publicName: publicLabel, startup: startup, namespace: namespace, conn: conn}, nil
 	}
-	return sessionReservation{}, fmt.Errorf("all automatic shell names are in use; exit an existing shell or choose a name with sshore shell HOST NAME")
+	return sessionReservation{}, fmt.Errorf("all automatic shell names are in use; exit an existing shell or choose a name with sshore launch HOST NAME")
 }
 
 func bridge(name string, existing bool) error {
@@ -253,7 +253,7 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 	}
 	if conn == nil {
 		if existing {
-			return fmt.Errorf("shell %s does not exist; use sshore list HOST or sshore shell HOST NAME", name)
+			return fmt.Errorf("shell %s does not exist; use sshore list HOST or sshore launch HOST NAME", name)
 		}
 		if reservation.namespace != nil {
 			reservation.namespace.owner.Close()
@@ -465,7 +465,7 @@ func (s *shell) attach(p *attachment, m message) error {
 		s.stop()
 	}
 	if errors.Is(err, shellmux.ErrExited) {
-		return fmt.Errorf("shell is exiting; use sshore shell HOST to create a new one")
+		return fmt.Errorf("shell is exiting; use sshore launch HOST to create a new one")
 	}
 	if errors.Is(err, shellmux.ErrAttached) {
 		return fmt.Errorf("shell already attached; detach the other connection first")

@@ -45,5 +45,5 @@ func shellTaskName(name string, temporary bool) string {
 	if temporary {
 		return "spawn/" + name
 	}
-	return "shell/" + name
+	return "launch/" + name
 }

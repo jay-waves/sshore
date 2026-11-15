@@ -94,7 +94,7 @@ def spawn_smoke(binary, host, options):
     def inventory():
         return json.loads(subprocess.check_output(cli("list", "--json"), text=True))
 
-    subprocess.run(cli("shell", "persistent", "--detach"), check=True)
+    subprocess.run(cli("launch", "persistent", "--detach"), check=True)
     parent = subprocess.Popen(
         ["sh", "-c", '\"$@\"; code=$?; echo READY:$code; read answer', "parent",
          *cli("spawn", "temporary", "--detach")],

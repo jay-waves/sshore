@@ -79,7 +79,7 @@ func resolveRecentAttach(o *options) error {
 		return nil
 	}
 	if o.host == "" {
-		return usage("no recent connection; use sshore attach HOST [NAME] or sshore shell HOST")
+		return usage("no recent connection; use sshore attach HOST [NAME] or sshore launch HOST")
 	}
 	return nil
 }

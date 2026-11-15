@@ -37,8 +37,8 @@ Use your normal SSH aliases, keys and authentication. Put recurring settings in
 `~/.ssh/config`. **SSH options go after `--`; sshore options and operands go before it.**
 
 ```sh
-sshore shell work build -- -J jump -p 2222
-sshore shell work -- -i ~/.ssh/work
+sshore launch work build -- -J jump -p 2222
+sshore launch work -- -i ~/.ssh/work
 ```
 
 Run `sshore --help` or `sshore COMMAND --help` for syntax, defaults and supported
@@ -66,7 +66,7 @@ visibility of remote changes. See `sshore mount --help` for timeouts and diagnos
 
 ## Mux — detach and reattach
 
-Run `sshore shell` for a local shell, or `sshore shell HOST` for a remote shell.
+Run `sshore launch` for a local shell, or `sshore launch HOST` for a remote shell.
 Local shells share a user-level daemon, use Linux PTY or Windows ConPTY, and need no SSH server. The same daemon owns forward SSH connections and launches independent mount workers.
 Detach while programs keep running, then reattach
 to continue. Press Ctrl+B then d, or run `sshore detach` in the
@@ -76,11 +76,11 @@ see `sshore --help`. Switching preserves the previous session; remote switching 
 authentication may be requested again.
 
 ```sh
-sshore shell --name dev           # Local shell in the current directory.
+sshore launch --name dev           # Local shell in the current directory.
 sshore list                    # Stable numeric IDs, ordered across tasks.
 sshore attach 3                # Resume the shell with ID 3.
-sshore shell work                 # Remote shell; prints its automatic name.
-sshore shell work build           # Or choose a name.
+sshore launch work                 # Remote shell; prints its automatic name.
+sshore launch work build           # Or choose a name.
 # Press Ctrl+B then d to detach and keep programs running.
 sshore attach work build        # Resume a specific detached shell.
 sshore attach work              # Resume the most recently used shell on work.
@@ -94,13 +94,13 @@ Task IDs remain stable through rename and reconnect, increase monotonically and
 are never reused. Gaps are normal. Use `attach ID`, `cancel ID`, `rename ID NEW`
 or `review ID`; cached remote identities are revalidated before action.
 
-`shell` only creates; `attach` only resumes. With no saved connection for a host,
+`launch` only creates; `attach` only resumes. With no saved connection for a host,
 omitting the shell name selects a detached shell. Recent targets retain SSH
 connection options; explicit options override them. An attached shell cannot
 be taken over, and an ended recent shell is not recreated.
 
-`shell` sessions survive detach, client exit and connection loss; `exit` inside the shell
-or `cancel ID` ends them. Use `shell --detach` to create without entering.
+`launch` sessions survive detach, client exit and connection loss; `exit` inside the shell
+or `cancel ID` ends them. Use `launch --detach` to create without entering.
 In a remote shell, `sshore detach` also works. Screens, scrollback and detached
 output are not saved. A daemon failure can end its shells.
 
@@ -108,22 +108,22 @@ Use `sshore spawn [HOST]` for a temporary shell bound to the launching parent
 shell. Detach returns to that parent; `attach ID` returns to the spawn. Closing
 the original parent shell ends the spawn and its identified tasks, even after
 reattachment elsewhere. Remote spawns also end if their lifetime SSH connection
-is lost (after disconnect detection). `list` shows `spawn/NAME` or `shell/NAME`
+is lost (after disconnect detection). `list` shows `spawn/NAME` or `launch/NAME`
 in the existing task column. See `sshore spawn --help`.
 
 `cancel HOST --all` lists and confirms all tasks for that machine; `cancel --all`
 clears local tasks. Single-task cancellation is immediate; unsaved work may be
-lost. Remote shell/attach connections show other tasks using the same table as
+lost. Remote launch/attach connections show other tasks using the same table as
 `list`, including mounts, forwards and pending requests.
 
 ```mermaid
 flowchart LR
-    localnew["shell / attach --local / attach ID"] --> daemon["Shared local daemon"]
+    localnew["launch / attach --local / attach ID"] --> daemon["Shared local daemon"]
     daemon --> localshell["One PTY or ConPTY per shell"]
     localshell -->|"Detach / client connection loss"| localdetached["Local programs keep running"]
     localdetached -->|"attach ID"| localshell
     localshell -->|"Exit / cancel ID / daemon failure"| ended
-    connect["Local: shell HOST / attach recent or named shell"] --> remoted["Shared remote daemon"]
+    connect["Local: launch HOST / attach recent or named shell"] --> remoted["Shared remote daemon"]
     remoted --> shell["Remote shell: one PTY"]
     shell -->|"Ctrl+B c/n/p/l/s/w: preserve, then reconnect"| connect
     shell -->|"Ctrl+B d / detach / connection loss"| detached["Programs keep running"]
@@ -232,9 +232,17 @@ but sshore operations are restricted until reconnecting. Newer remote versions
 are never downgraded. See the [security model](SECURITY.md#remote-setup-and-updates).
 
 - Stale screen after reattachment: use Ctrl-L or the application's redraw command.
-- SSH failure: try `sshore shell work -- -vvv -E ./ssh-debug.log`.
+- SSH failure: try `sshore launch work -- -vvv -E ./ssh-debug.log`.
 - Mount or forward failure: inspect `sshore list --verbose` and its log path.
 - Existing transfer destination: choose a new filename; overwriting is disabled.
+
+## TODO
+
+- [ ] Add `pull` (remote → local) and `push` (local → remote) for incremental
+  directory synchronization. Files remain on disk after synchronization stops.
+  Proposed behavior: one-shot by default; `--watch` runs a background task managed
+  through `list` and `cancel`; deletion propagation requires `--delete`, and
+  independently modified destination files are reported as conflicts. Not yet implemented.
 
 ## Project documents
 

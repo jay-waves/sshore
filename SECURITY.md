@@ -73,7 +73,7 @@ flowchart LR
     record -->|"Consume once"| approve
     approve -->|"New SSH connection"| gate
     setup <-->|"Exact version / setup choice"| gate
-    setup -->|"Setup lock: shell reserves unused name; attach requires existing shell"| program
+    setup -->|"Setup lock: launch reserves unused name; attach requires existing shell"| program
     gate -->|"Unchanged setup and matching shell PID"| resources
     user -->|"Review forward: fixed endpoints and one SSH authentication"| forwardcheck["Worker checks source version / name / PID / detached state"]
     forwardcheck --> native
@@ -93,7 +93,7 @@ persistent record. It is within the same trusted OS-user boundary as the CLI.
 
 Remote terminal output is untrusted. It can imitate local messages, but cannot itself grant approval. Sensitive prompts run after the connected client exits, from a **separate local invocation**. Do not invoke approval or enter credentials merely because remote output asks you to.
 
-`shell` reserves a fresh shell, with an automatic or explicit name, including when other shells are detached. `attach` requires an existing shell and never evicts its attached client. Recent local targets only supply defaults; they never authorize takeover, recreate missing shells or carry typed passwords. Native forwarding flags are excluded from remembered connections. Without saved history, selection without a name lists detached shells; setup and exclusive attachment are rechecked after selection without holding the account lock while waiting for user input. The local shell picker starts only after SSH authentication and releases terminal input before attachment. It does not authorize updates or file/port operations. Shell listings show same-user process descendants with sanitized names and PIDs; they do not expose command-line arguments or environment variables. Foreground
+`launch` reserves a fresh shell, with an automatic or explicit name, including when other shells are detached. `attach` requires an existing shell and never evicts its attached client. Recent local targets only supply defaults; they never authorize takeover, recreate missing shells or carry typed passwords. Native forwarding flags are excluded from remembered connections. Without saved history, selection without a name lists detached shells; setup and exclusive attachment are rechecked after selection without holding the account lock while waiting for user input. The local shell picker starts only after SSH authentication and releases terminal input before attachment. It does not authorize updates or file/port operations. Shell listings show same-user process descendants with sanitized names and PIDs; they do not expose command-line arguments or environment variables. Foreground
 summaries include same-user process names and a shortened working directory,
 which may reveal project names. These are best-effort snapshots, never process
 identity evidence for signaling.

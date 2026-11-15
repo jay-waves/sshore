@@ -45,7 +45,7 @@ SSH options (only after --):
 const help = `sshore — persistent shells, file transfer and SFTP mounts
 
 Local commands:
-  sshore shell [HOST [NAME]] [options]   Create a persistent local or remote shell
+  sshore launch [HOST [NAME]] [options]   Create a persistent local or remote shell
   sshore spawn [HOST [NAME]] [options]   Create a shell bound to the launching parent shell
   sshore list [HOST] [-- SSH_OPTIONS]    Local records, or query the named remote account
   sshore cancel TYPE/NAME            Cancel a request, mount or forward
@@ -69,9 +69,9 @@ Help:
   sshore COMMAND --help
   sshore --version
 
-shell never resumes; attach never creates or evicts another client.
+launch never resumes; attach never creates or evicts another client.
 Ctrl+B then d detaches; Ctrl+B then ? shows keys.
-Exit ends the shell. shell survives connection loss; spawn ends with its owner
+Exit ends the shell. launch survives connection loss; spawn ends with its owner
 or its lifetime SSH connection. No screen replay.
 Ctrl+B keys: c new session; n/p next/previous; l last; s/w choose session.
             d detach; r redraw; i info; ? help; Ctrl+B send prefix.
@@ -83,7 +83,7 @@ Updating ends listed old shells only after you type update. Recovery disables
 persistence, transfer, mounts and dynamic forwarding until you reconnect.
 
 Examples:
-  sshore shell work build
+  sshore launch work build
   sshore list work
   sshore attach work build
 `
@@ -102,11 +102,11 @@ Closing the original parent shell ends the spawn and its identified tasks.
 A remote spawn also ends when its lifetime SSH connection is lost; detection
 may take up to the transport timeout. There is no automatic reconnect.
 Ctrl+B c creates another spawn bound to this client's parent shell.
-list distinguishes spawn/NAME from persistent shell/NAME; numeric IDs work for both.
-Use sshore shell for persistence beyond the launching terminal.
+list distinguishes spawn/NAME from persistent launch/NAME; numeric IDs work for both.
+Use sshore launch for persistence beyond the launching terminal.
 ` + connectionOptions,
-	"shell": `Usage: sshore shell [HOST [NAME]] [options]
-       sshore shell [--local] [--name NAME] [--quiet] [--no-escape]
+	"launch": `Usage: sshore launch [HOST [NAME]] [options]
+       sshore launch [--local] [--name NAME] [--quiet] [--no-escape]
 
 Create a local shell when HOST is omitted; preserve the current directory.
 Use SHELL as the executable path. Windows falls back to COMSPEC, then cmd.exe.
@@ -132,7 +132,7 @@ flags are not remembered. A missing or attached remembered shell is an error;
 use sshore list HOST and specify a different NAME.
 Selection: #number or exact name; /text filters, / shows all.
 Numbers stay unchanged after filtering. Bare numbers are shell names. Enter or Ctrl-C cancels.
-If no detached shells exist, use sshore shell HOST to create one.
+If no detached shells exist, use sshore launch HOST to create one.
 
 ` + connectionOptions,
 	"list": `Usage: sshore list [HOST] [--verbose | --json] [--server PATH] [-- SSH_OPTIONS]
@@ -156,7 +156,7 @@ never probed. Resource status checks have a two-second aggregate deadline.
 Numeric task IDs are stable, increasing and never reused; gaps are normal.
 Use attach ID, cancel ID, rename ID NEW, or review ID. Cached tasks are revalidated
 before execution. A task that ended is never replaced by a same-name task.
---local lists only local shells. Names: shell/NAME, spawn/NAME, mount/NAME, forward/NAME,
+--local lists only local shells. Names: launch/NAME, spawn/NAME, mount/NAME, forward/NAME,
 review/NAME. Names share a local namespace
 and default to Pokemon names; explicit names remain supported. Use cancel
 mount/NAME or forward/NAME locally, cancel HOST NAME for a remote shell, and
@@ -302,7 +302,11 @@ func showHelp(args []string, w io.Writer) error {
 	if len(args) != 1 {
 		return usage("usage: sshore help [COMMAND]")
 	}
-	h, ok := commandHelp[args[0]]
+	topic := args[0]
+	if topic == "shell" {
+		topic = "spawn"
+	}
+	h, ok := commandHelp[topic]
 	if !ok {
 		return usage("unknown help topic: %s", args[0])
 	}
@@ -315,6 +319,10 @@ func run(args []string) (int, error) {
 			return 1, fmt.Errorf("file access disabled in recovery")
 		}
 		return runResourceAskpass(args)
+	}
+	if len(args) > 0 && args[0] == "shell" {
+		args = append([]string(nil), args...)
+		args[0] = "spawn"
 	}
 	if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
 		if _, ok := commandHelp[args[0]]; ok {
@@ -352,7 +360,7 @@ func run(args []string) (int, error) {
 		return 0, cancelResourceIdentity(args[2], args[3])
 	case "local-daemon":
 		return 0, runLocalDaemon()
-	case "shell", "spawn", "attach", "rename":
+	case "launch", "spawn", "attach", "rename":
 		return runShellCommand(args)
 	case "ftp-worker", "resource-worker":
 		return runResourceWorker()
