@@ -2,8 +2,6 @@
 name: Tests
 
 on:
-  push:
-    branches: [fix/windows-terminal-input]
   workflow_dispatch:
     inputs:
       extended:
@@ -24,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest]
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -36,13 +34,9 @@ jobs:
         shell: bash
         run: test -z "$(gofmt -l *.go)"
       - run: go vet ./...
-      - name: Build isolated integration executable
-        run: go build -tags=sshoretest -o "${{ runner.temp }}/sshore-test.exe" .
       - name: Core tests
-        env:
-          SSHORE_TEST_BINARY: ${{ runner.temp }}/sshore-test.exe
         if: ${{ !inputs.extended }}
-        run: go test -v -tags=sshoretest -run TestWindowsLocalDetachKeepsShell -timeout=2m .
+        run: go test -tags=sshoretest -timeout=5m ./...
       - name: Tests with race detector
         if: ${{ inputs.extended }}
         run: go test -race -tags=sshoretest -timeout=5m ./...
