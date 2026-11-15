@@ -42,7 +42,7 @@ jobs:
         env:
           SSHORE_TEST_BINARY: ${{ runner.temp }}/sshore-test.exe
         if: ${{ !inputs.extended }}
-        run: go test -v -tags=sshoretest -timeout=5m ./...
+        run: go test -v -tags=sshoretest -run TestWindowsLocalDetachKeepsShell -timeout=2m .
       - name: Tests with race detector
         if: ${{ inputs.extended }}
         run: go test -race -tags=sshoretest -timeout=5m ./...

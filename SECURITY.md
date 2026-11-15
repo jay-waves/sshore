@@ -251,7 +251,7 @@ in force. Notification failure does not fail file operations. Subscriptions use
 the remote account's permissions and the same navigation-root (not confinement)
 semantics as SFTP; no elevated privileges are used. Remote account permissions
 remain authoritative. See
-[the mount implementation](SSHORE.md#independent-workers) for cache mechanics.
+[the mount implementation](SSHORE.md#shared-local-daemon-and-resource-workers) for cache mechanics.
 SFTP packets are limited to 1 MiB and each directory
 listing to 100,000 returned entries and 32 MiB of response data before decoding;
 exceeding a listing budget fails that operation without truncating it silently.

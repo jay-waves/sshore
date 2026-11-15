@@ -105,6 +105,8 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	waitFor("Connected local / " + name)
 	send("prompt SSHORE_INNER_PROMPT$G\r\n")
 	waitFor("SSHORE_INNER_PROMPT>")
+	send(fmt.Sprintf("\"%s\" list --local\r\n", bin))
+	waitFor("attached (current)")
 	// Alacritty sends VT arrows, not Win32 input records. Left + Delete
 	// edits OX into OK before execution. Compute the marker so command echo
 	// cannot satisfy the assertion without executing the edited command.
@@ -137,7 +139,8 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	}
 	t.Logf("both shells share daemon PID %d", first.ManagerPID)
 	send(fmt.Sprintf("\"%s\" attach --local %s & echo SSHORE_OUTER_AFTER_EXIT\r\n", bin, name))
-	waitFor("Connected local / " + name)
+	// Native screen repaint can replace the connection banner before ConPTY
+	// emits it. Verify the restored shell prompt and live attachment instead.
 	waitFor("SSHORE_INNER_PROMPT>")
 	t.Log("reattach repainted the prompt without sending input")
 	after, err := localRequest(name, message{Type: "status"})
