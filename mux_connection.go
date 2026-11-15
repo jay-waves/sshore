@@ -8,8 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	shellmux "github.com/jay-waves/sshore/internal/mux"
 	"github.com/xtaci/smux"
+
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 // Accept both streams before handing ownership to a shell. Every partial
@@ -96,7 +97,7 @@ func (p *attachment) finishExit(code int) {
 	}
 }
 
-func (p *attachment) readInput(owner *shellmux.Lifecycle[*attachment]) {
+func (p *attachment) readInput(owner *tmux.Lifecycle[*attachment]) {
 	for {
 		m, err := readMessage(p.terminal)
 		if err != nil {

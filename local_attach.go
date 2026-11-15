@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net"
 
-	shellmux "github.com/jay-waves/sshore/internal/mux"
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 func runLocalShell(record localSessionRecord, env []string, ready func(localSessionRecord) error) error {
@@ -78,7 +78,7 @@ func (s *localShell) attach(c net.Conn) error {
 		err = s.start(m)
 	}
 	if err == nil {
-		err = s.terminal.Resize(shellmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
+		err = s.terminal.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
 	}
 	if err == nil {
 		err = p.controlMessage(message{Type: "ready", Temporary: s.record.Owner.PID != 0, Name: s.record.Name, PID: s.terminal.PID()})
@@ -94,7 +94,7 @@ func (s *localShell) attach(c net.Conn) error {
 		return err
 	}
 	t := s.terminal
-	lease, err := shellmux.NewTerminalInput(t)
+	lease, err := tmux.NewTerminalInput(t)
 	if err != nil {
 		s.mu.Unlock()
 		if initial {
@@ -138,14 +138,14 @@ func (s *localShell) attach(c net.Conn) error {
 			s.lifecycle.Detach(p)
 			name := s.record.Name
 			s.mu.Unlock()
-			shellmux.FinishDetach(control, func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, func() { mx.Close() })
+			tmux.FinishDetach(control, func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, func() { mx.Close() })
 			return nil
 		case "session_targets":
 			if err = p.controlMessage(s.targets(m)); err != nil {
 				return err
 			}
 		case "resize":
-			if err = t.Resize(shellmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
+			if err = t.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
 				return err
 			}
 		case "redraw":

@@ -43,10 +43,10 @@ import (
 	"syscall"
 	"time"
 
-	shellmux "github.com/jay-waves/sshore/internal/mux"
 	"golang.org/x/sys/unix"
 
 	"github.com/jay-waves/sshore/internal/files"
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 func runtimeDir() (string, error) {
@@ -311,11 +311,11 @@ type shell struct {
 	exitReason string
 	plain      bool
 	terminalMu sync.Mutex // serializes state snapshots with PTY output
-	mouse      shellmux.InputState
+	mouse      tmux.InputState
 	mu         sync.Mutex
-	lifecycle  shellmux.Lifecycle[*attachment]
+	lifecycle  tmux.Lifecycle[*attachment]
 	started    time.Time // shell lifetime, including time spent detached
-	master     *shellmux.Terminal
+	master     *tmux.Terminal
 	cmd        *exec.Cmd
 	path       string
 	done       chan struct{}
@@ -350,7 +350,7 @@ func (s *shell) start(cols, rows uint16, term string) error {
 	if exe, err := os.Executable(); err == nil && !s.plain {
 		cmd.Env = append(cmd.Env, "PATH="+filepath.Dir(exe)+":"+localEnvironmentValue(env, "PATH"))
 	}
-	master, err := shellmux.StartCommand(cmd, shellmux.Size{Cols: max(cols, 1), Rows: max(rows, 1)})
+	master, err := tmux.StartCommand(cmd, tmux.Size{Cols: max(cols, 1), Rows: max(rows, 1)})
 	if err != nil {
 		return err
 	}
@@ -439,7 +439,7 @@ func (s *shell) attach(p *attachment, m message) error {
 			}
 			startedHere = true
 		}
-		if err := s.master.Resize(shellmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
+		if err := s.master.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
 			return err
 		}
 		if err := p.controlMessage(message{Type: "ready", Temporary: s.temporary, Instance: s.instance, PID: s.cmd.Process.Pid, Name: s.name}); err != nil {
@@ -452,9 +452,9 @@ func (s *shell) attach(p *attachment, m message) error {
 				}
 			}
 		}
-		p.input = shellmux.NewInputLease(s.master)
+		p.input = tmux.NewInputLease(s.master)
 		if reconnecting && !p.muted.Load() {
-			shellmux.RequestRedraw(s.master, s.cmd.Process.Pid)
+			tmux.RequestRedraw(s.master, s.cmd.Process.Pid)
 		}
 		return nil
 	})
@@ -464,10 +464,10 @@ func (s *shell) attach(p *attachment, m message) error {
 		_ = s.master.Close()
 		s.stop()
 	}
-	if errors.Is(err, shellmux.ErrExited) {
+	if errors.Is(err, tmux.ErrExited) {
 		return fmt.Errorf("shell is exiting; use sshore launch HOST to create a new one")
 	}
-	if errors.Is(err, shellmux.ErrAttached) {
+	if errors.Is(err, tmux.ErrAttached) {
 		return fmt.Errorf("shell already attached; detach the other connection first")
 	}
 	return err
@@ -499,7 +499,7 @@ func (s *shell) detach(p *attachment) {
 	s.mu.Lock()
 	name := s.name
 	s.mu.Unlock()
-	shellmux.FinishDetach(p.control, func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, p.close)
+	tmux.FinishDetach(p.control, func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, p.close)
 }
 func (s *shell) serveMux(c io.ReadWriteCloser) error {
 	mux, control, terminal, m, err := acceptMux(c)
@@ -562,7 +562,7 @@ func (s *shell) serveMux(c io.ReadWriteCloser) error {
 				}
 				s.mu.Lock()
 				if err == nil && s.lifecycle.Active() == p {
-					shellmux.RequestRedraw(s.master, s.cmd.Process.Pid)
+					tmux.RequestRedraw(s.master, s.cmd.Process.Pid)
 				}
 				s.mu.Unlock()
 			}
@@ -604,7 +604,7 @@ func (s *shell) serveMux(c io.ReadWriteCloser) error {
 			s.terminalMu.Lock()
 			s.mu.Lock()
 			if s.lifecycle.Active() == p && !p.muted.Load() {
-				shellmux.RequestRedraw(s.master, s.cmd.Process.Pid)
+				tmux.RequestRedraw(s.master, s.cmd.Process.Pid)
 			}
 			s.mu.Unlock()
 			s.terminalMu.Unlock()
@@ -615,7 +615,7 @@ func (s *shell) serveMux(c io.ReadWriteCloser) error {
 			s.mu.Lock()
 			var resizeErr error
 			if s.lifecycle.Active() == p {
-				resizeErr = s.master.Resize(shellmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
+				resizeErr = s.master.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
 			}
 			s.mu.Unlock()
 			if resizeErr != nil {

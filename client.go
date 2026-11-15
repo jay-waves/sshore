@@ -14,7 +14,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	shellmux "github.com/jay-waves/sshore/internal/mux"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -29,6 +28,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
@@ -59,7 +59,7 @@ func localPath(b []byte) (string, error) {
 }
 
 type clientEvent struct {
-	keyAction      shellmux.KeyAction
+	keyAction      tmux.KeyAction
 	keyDone        chan struct{}
 	inputFailure   bool
 	approvalStream *smux.Stream
@@ -120,7 +120,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	if !o.detached && (!term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd()))) {
 		return 1, fmt.Errorf("an interactive terminal is required")
 	}
-	resetTerminalInputModes()
+	tmux.ResetInputModes()
 	transport, closeTransport, err := openClientTransport(&o)
 	if err != nil {
 		return 1, err
@@ -237,12 +237,12 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Task list unavailable: %s\n", cleanText(err.Error()))
 		}
 	}
-	restore, err := rawTerminal()
+	restore, err := tmux.RawConsole()
 	if err != nil {
 		return 1, err
 	}
-	defer func() { restore(); _ = flushTerminalInput() }()
-	terminalOutput, flushOutput := terminalOutputWriter()
+	defer func() { restore(); _ = tmux.FlushInput() }()
+	terminalOutput, flushOutput := tmux.OutputWriter()
 	defer func() { _ = flushOutput() }()
 	if !o.plain && !o.local {
 		if e := rememberConnection(o); e != nil {
@@ -312,7 +312,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 			_ = st.Close()
 		}
 	}()
-	stopKeyboard, err := startTerminalKeyboard(ctx, func(data []byte, err error) {
+	stopKeyboard, err := tmux.StartKeyboard(ctx, func(data []byte, err error) {
 		if len(data) > 0 {
 			emit(clientEvent{input: data})
 		}
@@ -327,7 +327,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	ready()
 	// One terminal writer preserves keystroke order without making file I/O or a
 	// stalled PTY block the main UI/control loop.
-	inputQueue := make(chan []shellmux.KeyEvent, 16)
+	inputQueue := make(chan []tmux.KeyEvent, 16)
 	go func() {
 		for {
 			select {
@@ -335,8 +335,8 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 				return
 			case batch := <-inputQueue:
 				for _, b := range batch {
-					if b.Action != shellmux.KeyNone {
-						if b.Action == shellmux.KeyDetach {
+					if b.Action != tmux.KeyNone {
+						if b.Action == tmux.KeyDetach {
 							if err := streamMessage(terminal, message{Type: "input_barrier"}); err != nil {
 								emit(clientEvent{err: err, inputFailure: true})
 								return
@@ -357,7 +357,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 						case <-ctx.Done():
 							return
 						}
-						if b.Action == shellmux.KeyDetach {
+						if b.Action == tmux.KeyDetach {
 							return
 						}
 						continue
@@ -376,8 +376,8 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-	var outputMouse shellmux.InputState
-	keys := shellmux.Keys{Bypass: o.noEscape || o.plain}
+	var outputMouse tmux.InputState
+	keys := tmux.Keys{Bypass: o.noEscape || o.plain}
 	detaching := false
 	detachPending := false
 	var detachTimeout <-chan time.Time
@@ -386,7 +386,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	var switchPending bool
 	var switchAction string
 	var switchTarget *options
-	var chooser *shellmux.SessionChooser
+	var chooser *tmux.SessionChooser
 	queueSwitch := func(name, command string) error {
 		if name == o.session && command == "attach" {
 			return nil
@@ -405,7 +405,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		target.approvalID = ""
 		target.stay = false
 		select {
-		case inputQueue <- []shellmux.KeyEvent{{Action: shellmux.KeyDetach}}:
+		case inputQueue <- []tmux.KeyEvent{{Action: tmux.KeyDetach}}:
 			switchTarget = &target
 			switchPending = false
 			chooser = nil
@@ -453,7 +453,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 			}
 
 		case e := <-events:
-			if e.keyAction != shellmux.KeyNone {
+			if e.keyAction != tmux.KeyNone {
 				err = nil
 				func() {
 					defer close(e.keyDone)
@@ -461,21 +461,21 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 						return
 					}
 					switch e.keyAction {
-					case shellmux.KeyNew, shellmux.KeyNext, shellmux.KeyPrevious, shellmux.KeyLast, shellmux.KeyChoose:
-						action := map[shellmux.KeyAction]string{shellmux.KeyNew: "new", shellmux.KeyNext: "next", shellmux.KeyPrevious: "previous", shellmux.KeyLast: "last", shellmux.KeyChoose: "choose"}[e.keyAction]
+					case tmux.KeyNew, tmux.KeyNext, tmux.KeyPrevious, tmux.KeyLast, tmux.KeyChoose:
+						action := map[tmux.KeyAction]string{tmux.KeyNew: "new", tmux.KeyNext: "next", tmux.KeyPrevious: "previous", tmux.KeyLast: "last", tmux.KeyChoose: "choose"}[e.keyAction]
 						err = requestTargets(action, previous)
 
-					case shellmux.KeyDetach:
+					case tmux.KeyDetach:
 						err = streamMessage(control, message{Type: "detach"})
 						if err == nil {
 							detaching = true
 							detachTimeout = time.After(5 * time.Second)
 						}
-					case shellmux.KeyRedraw:
+					case tmux.KeyRedraw:
 						err = streamMessage(control, message{Type: "redraw"})
-					case shellmux.KeyInfo:
+					case tmux.KeyInfo:
 						notice(termui.Info, "\r\n[sshore] %s / %s (PID %d)\r\n", cleanText(o.host), cleanText(o.session), pid)
-					case shellmux.KeyHelp:
+					case tmux.KeyHelp:
 						notice(termui.Info, "\r\nCtrl+B: c new · n/p next/prev · l last · s/w sessions\r\n        d detach · r redraw · i info · ? help · Ctrl+B send prefix\r\n")
 					}
 				}()
@@ -584,7 +584,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 							if key.Action.IsSessionCommand() {
 								switchPending = true
 							}
-							if key.Action == shellmux.KeyDetach {
+							if key.Action == tmux.KeyDetach {
 								detachPending = true
 								inputFlushTimeout = time.After(5 * time.Second)
 								break
@@ -624,9 +624,9 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 						}
 						target = e.m.Names[0]
 					case "next":
-						target = shellmux.AdjacentSession(o.session, e.m.Names, 1)
+						target = tmux.AdjacentSession(o.session, e.m.Names, 1)
 					case "previous":
-						target = shellmux.AdjacentSession(o.session, e.m.Names, -1)
+						target = tmux.AdjacentSession(o.session, e.m.Names, -1)
 					case "last":
 						for _, name := range e.m.Names {
 							if name == previous {
@@ -639,7 +639,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 							continue
 						}
 					case "choose":
-						chooser = &shellmux.SessionChooser{Names: shellmux.SessionOrder(o.session, e.m.Names)}
+						chooser = &tmux.SessionChooser{Names: tmux.SessionOrder(o.session, e.m.Names)}
 						switchPending = true
 						notice(termui.Info, "\r\n")
 						for i, name := range chooser.Names {
@@ -677,7 +677,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 						return 1, err
 					}
 					outputMouse.Observe(e.m.Data)
-					if err = syncTerminalMouse(&outputMouse); err != nil {
+					if err = tmux.SyncMouse(&outputMouse); err != nil {
 						return 1, fmt.Errorf("update terminal mouse mode: %w", err)
 					}
 				case "detach_requested":
@@ -727,7 +727,7 @@ func sessionNotice(level termui.Color, format string, args ...any) {
 
 // detachControl is used before an interactive control reader has started.
 func detachControl(control *smux.Stream, confirmed ...func(string)) error {
-	return shellmux.Detach(control, confirmed...)
+	return tmux.Detach(control, confirmed...)
 }
 
 // Retain transport options in the reconnect hint, including custom ports and keys.

@@ -23,6 +23,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 // One editor owns stdin throughout approval; it is closed before reconnecting.
@@ -165,8 +166,8 @@ func newLocalInput() (*approvalInput, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return nil, usage("local selection requires an interactive terminal; specify the local endpoint")
 	}
-	resetTerminalInputModes()
-	if err := flushTerminalInput(); err != nil {
+	tmux.ResetInputModes()
+	if err := tmux.FlushInput(); err != nil {
 		return nil, err
 	}
 	return newApprovalInput()

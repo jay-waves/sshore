@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	shellmux "github.com/jay-waves/sshore/internal/mux"
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 // The supplied executable must be built with sshoretest, like this test binary.
@@ -28,7 +28,7 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_DISABLED", "")
-	outer, err := shellmux.Start(shellmux.Config{Path: "cmd.exe", Args: []string{"/d", "/q"}, Env: os.Environ(), Size: shellmux.Size{Cols: 160, Rows: 40}})
+	outer, err := tmux.Start(tmux.Config{Path: "cmd.exe", Args: []string{"/d", "/q"}, Env: os.Environ(), Size: tmux.Size{Cols: 160, Rows: 40}})
 	if err != nil {
 		t.Fatal(err)
 	}

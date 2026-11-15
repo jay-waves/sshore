@@ -1,8 +1,9 @@
 package main
 
 import (
-	shellmux "github.com/jay-waves/sshore/internal/mux"
 	"os/exec"
+
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 func localShellCommand(env []string) (string, []string) {
@@ -13,6 +14,6 @@ func localShellCommand(env []string) (string, []string) {
 	return path, []string{"-i"}
 }
 
-func redrawLocalTerminal(t *shellmux.Terminal) { shellmux.RequestRedraw(t, t.PID()) }
+func redrawLocalTerminal(t *tmux.Terminal) { tmux.RequestRedraw(t, t.PID()) }
 
 func detachLocalWorker(cmd *exec.Cmd) { detachResourceWorker(cmd) }

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	shellmux "github.com/jay-waves/sshore/internal/mux"
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 type localShell struct {
@@ -14,9 +14,9 @@ type localShell struct {
 	nameLock        *os.File
 	mu              sync.Mutex
 	record          localSessionRecord
-	terminal        *shellmux.Terminal
-	lifecycle       shellmux.Lifecycle[*attachment]
-	modes           shellmux.InputState
+	terminal        *tmux.Terminal
+	lifecycle       tmux.Lifecycle[*attachment]
+	modes           tmux.InputState
 	done            chan struct{}
 	once            sync.Once
 }
@@ -58,7 +58,7 @@ func (s *localShell) start(m message) error {
 		env = append(env, item)
 	}
 	env = append(env, "TERM="+m.Term, "SSHORE_LOCAL_SESSION="+s.record.identity())
-	t, err := shellmux.Start(shellmux.Config{Path: path, Args: args, Env: env, Dir: s.record.Directory, Size: shellmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}})
+	t, err := tmux.Start(tmux.Config{Path: path, Args: args, Env: env, Dir: s.record.Directory, Size: tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}})
 	if err != nil {
 		return err
 	}

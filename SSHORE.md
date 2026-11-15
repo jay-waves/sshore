@@ -22,7 +22,7 @@ and Windows on amd64 only. Mounts and independent forwards do not share a shell'
 | Approval | `review*.go`: pending metadata, local consent, reconnect checks and transfer coordination |
 | File transfer | `internal/files/cp*.go`: regular-file validation, exact-size copies, verified uploads, no-clobber publication and restricted SFTP handlers |
 | Local daemon | `local_daemon*.go`, `local_*.go`: singleton startup, local shell/forward ownership and mount-worker supervision |
-| Mux | `internal/mux/`: exclusive attachment lifecycle, detach handshake, Linux PTY / Windows local ConPTY, input-mode tracking and native redraw |
+| Mux | `internal/tmux/`: exclusive attachment lifecycle, detach handshake, Linux PTY / Windows local ConPTY, input-mode tracking, native redraw and client console I/O |
 | Terminal presentation | `internal/termui/`: status formatting, theme colors and platform-specific ANSI detection |
 | Independent resources | `resource_session.go`, `resource_status.go`, `resources.go`: worker startup, private records, control and exit receipts |
 | Forward | `endpoints.go` and `forward*.go`: listener/service operands, fixed endpoint mapping and independent SSH transport |
@@ -36,7 +36,7 @@ on application types or mutable application state. The copy implementation in `f
 about approval records, shell identities or the release version; callers authorize
 operations before constructing its source/target views. Receiver handles and
 publication state stay private. `termui` formats local status only; raw terminal
-input, mouse modes and remote PTY bytes remain under application control.
+input and mouse modes belong to `tmux`; application code coordinates remote PTY streams.
 The same flat `files` package owns the mount filesystem engine and transient remote agent. Its configuration
 receives an executable, already validated SSH arguments and the current release;
 it never parses product options or installs software. The optional lifecycle
@@ -92,7 +92,11 @@ capabilities; remote shells expose a random instance value. Name-based commands
 remain supported. Cached remote listings do not prove liveness; ID operations
 revalidate the instance at the authority performing the operation.
 
-The shared `internal/mux` infrastructure provides native Linux PTY and
+The flat `internal/tmux` package combines client console adapters (`console*`,
+`keyboard*`) with managed terminals (`terminal*`), attachment lifecycle and
+shortcut parsing. It does not depend on the external tmux program. Commands,
+SSH, approvals, release policy and spawn ownership stay in the application.
+The shared infrastructure provides native Linux PTY and
 Windows ConPTY startup, byte I/O, resize, process wait and terminal close. Linux
 shell startup, attachment ownership and terminal resize/close use this layer.
 The package owns terminal and attachment mechanisms, while the application owns
@@ -105,7 +109,7 @@ terminal. Linux duplicates and rewraps the PTY master as a pollable nonblocking
 file after startup, and all later ioctls use SyscallConn instead of Fd so resize
 and redraw cannot silently disable cancellation.
 `mux_connection.go` owns stream handshake, serialized writes, input barriers and
-bounded exit draining for both local and remote attachments. `internal/mux` owns
+bounded exit draining for both local and remote attachments. `internal/tmux` owns
 exclusive attachment state and platform input cancellation. Local record and
 worker management stays separate from Linux remote account/setup policy.
 The root command adapters translate application metadata without exposing it to

@@ -1,11 +1,12 @@
 package main
 
 import (
-	shellmux "github.com/jay-waves/sshore/internal/mux"
 	"os/exec"
 	"syscall"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 func localShellCommand(env []string) (string, []string) {
@@ -19,7 +20,7 @@ func localShellCommand(env []string) (string, []string) {
 	return path, nil
 }
 
-func redrawLocalTerminal(t *shellmux.Terminal) { shellmux.RequestRedraw(t, t.PID()) }
+func redrawLocalTerminal(t *tmux.Terminal) { tmux.RequestRedraw(t, t.PID()) }
 
 func detachLocalWorker(cmd *exec.Cmd) {
 	// The worker only uses pipes and sockets; the shell gets its own ConPTY.
