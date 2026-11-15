@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"text/tabwriter"
 	"time"
 )
 
@@ -179,7 +180,6 @@ func runInventory(o options) (int, error) {
 	inv := emptyInventory()
 	inv.Host = o.host
 	if o.host != "" {
-		fmt.Fprintf(os.Stderr, "[sshore] Querying remote account on %s via SSH...\n", cleanText(o.host))
 		cmd := sshCommand(o)
 		cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
 		var output limitedInventoryBuffer
@@ -235,47 +235,40 @@ func runInventory(o options) (int, error) {
 	return 0, nil
 }
 
-func snapshotState(s shellView, now time.Time) string {
-	if s.ConfirmedAt.IsZero() {
-		return "remote state unconfirmed"
-	}
-	age := now.Sub(s.ConfirmedAt)
-	elapsed := "just now"
-	if age >= time.Minute {
-		elapsed = fmt.Sprintf("%d minutes ago", int(age/time.Minute))
-	}
-	history := fmt.Sprintf("last state: %s · %s", cleanText(s.State), elapsed)
+func snapshotState(s shellView) string {
 	if s.Active {
-		return "local connection active · " + history
+		return "local active"
 	}
-	if s.Unconfirmed || s.State == "attached" {
-		return "remote state unconfirmed · " + history
+	if s.Unconfirmed || s.State == "attached" || s.ConfirmedAt.IsZero() {
+		return "unconfirmed"
 	}
-	if age < time.Minute && s.State == "detached" {
-		return "detached · just confirmed"
-	}
-	return history
+	return "-"
 }
 
 func printInventory(inv inventory, details bool) {
 	if inv.RemoteQueried {
-		fmt.Printf("Remote account on %s · queried now\n", cleanText(inv.Host))
+		fmt.Printf("%s (live)\n", cleanText(inv.Host))
+		out := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		if len(inv.Shells) > 0 {
+			fmt.Fprintln(out, "SHELL\tSTATE\tAGE")
+		}
 		for _, s := range inv.Shells {
-			fmt.Printf("  shell/%s [%s]%s\n", cleanText(s.Name), cleanText(s.State), sessionAgePortable(s.Age))
+			fmt.Fprintf(out, "shell/%s\t%s\t%s\n", cleanText(s.Name), cleanText(s.State), sessionAgePortable(s.Age))
 			if details {
-				fmt.Printf("    %s · %s\n", cleanText(s.Foreground), cleanText(s.Directory))
+				fmt.Fprintf(out, "    %s · %s\n", cleanText(s.Foreground), cleanText(s.Directory))
 				for _, line := range strings.Split(strings.TrimSuffix(s.ProcessTree, "\n"), "\n") {
 					if line != "" {
-						fmt.Println("    " + cleanText(line))
+						fmt.Fprintln(out, "    "+cleanText(line))
 					}
 				}
 			}
 		}
+		out.Flush()
 		if len(inv.Shells) == 0 {
-			fmt.Println("  No shells reported.")
+			fmt.Println("No shells")
 		}
 		if len(inv.Resources) > 0 {
-			fmt.Println("\nResources managed on this remote computer:")
+			fmt.Println()
 			printResourceRows(inv.Resources, details)
 		}
 		if details {
@@ -284,8 +277,7 @@ func printInventory(inv inventory, details bool) {
 			}
 		}
 	} else if inv.Host == "" {
-		fmt.Println("Local inventory · remote not queried; known records only")
-		fmt.Println("Worker running confirms the local worker only; target service health is unchecked.")
+		fmt.Println("Local (cached shells)")
 		hosts := map[string]bool{}
 		for _, r := range inv.Resources {
 			hosts[r.Host] = true
@@ -300,14 +292,26 @@ func printInventory(inv inventory, details bool) {
 		sort.Strings(sorted)
 		for _, host := range sorted {
 			fmt.Printf("\n%s\n", cleanText(host))
+			out := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			header := false
 			for _, s := range inv.Shells {
 				if s.Host == host {
-					fmt.Printf("  shell/%s · %s\n", cleanText(s.Name), snapshotState(s, time.Now()))
+					if !header {
+						fmt.Fprintln(out, "SHELL\tLAST STATE\tCONNECTION\tCONFIRMED")
+						header = true
+					}
+					connection := snapshotState(s)
+					confirmed := "-"
+					if !s.ConfirmedAt.IsZero() {
+						confirmed = time.Since(s.ConfirmedAt).Round(time.Second).String() + " ago"
+					}
+					fmt.Fprintf(out, "shell/%s\t%s\t%s\t%s\n", cleanText(s.Name), cleanText(s.State), connection, confirmed)
 					if details && !s.ConfirmedAt.IsZero() {
-						fmt.Printf("    last confirmation: %s\n", s.ConfirmedAt.Format(time.RFC3339))
+						fmt.Fprintf(out, "    last confirmation: %s\n", s.ConfirmedAt.Format(time.RFC3339))
 					}
 				}
 			}
+			out.Flush()
 			var rows []resourceView
 			for _, r := range inv.Resources {
 				if r.Host == host {
@@ -317,38 +321,47 @@ func printInventory(inv inventory, details bool) {
 			printResourceRows(rows, details)
 		}
 		if len(sorted) == 0 {
-			fmt.Println("No local resources or known shells.")
+			fmt.Println("No resources or shells")
 		}
 	}
 	if len(inv.Peers) > 0 {
-		fmt.Println("\nResources managed by other computers (read-only, advisory):")
+		fmt.Println("\nPeers (read-only, advisory)")
+		out := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(out, "RESOURCE\tSTATE\tMANAGER\tDETAIL")
+		defer out.Flush()
 		for _, p := range inv.Peers {
-			fmt.Printf("  %s [%s] · manager %s · %s\n", cleanText(p.ID), cleanText(p.State), cleanText(p.Manager), cleanText(p.Detail))
+			fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", cleanText(p.ID), cleanText(p.State), cleanText(p.Manager), cleanText(p.Detail))
 		}
 	}
 }
 func printResourceRows(rows []resourceView, details bool) {
+	if len(rows) == 0 {
+		return
+	}
+	out := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	defer out.Flush()
+	fmt.Fprintln(out, "RESOURCE\tWORKER\tTARGET\tDETAIL")
 	for _, r := range rows {
-		fmt.Printf("  %s [%s] · %s\n", cleanText(r.ID), cleanText(r.Worker), cleanText(r.Detail))
+		fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", cleanText(r.ID), cleanText(r.Worker), cleanText(r.Target), cleanText(r.Detail))
 		if details {
-			fmt.Printf("    transport=%s target=%s protocol=%s read-only=%t\n", cleanText(r.Transport), cleanText(r.Target), cleanText(r.Protocol), r.ReadOnly)
+			fmt.Fprintf(out, "    transport=%s target=%s protocol=%s read-only=%t\n", cleanText(r.Transport), cleanText(r.Target), cleanText(r.Protocol), r.ReadOnly)
 			if r.LastError != "" {
-				fmt.Printf("    last error: %s\n", cleanText(r.LastError))
+				fmt.Fprintf(out, "    last error: %s\n", cleanText(r.LastError))
 			}
 			if !r.LastOperation.IsZero() {
-				fmt.Printf("    last SFTP reply: %s\n", r.LastOperation.Format(time.RFC3339))
+				fmt.Fprintf(out, "    last SFTP reply: %s\n", r.LastOperation.Format(time.RFC3339))
 			}
 			if r.Log != "" {
-				fmt.Printf("    log: %s\n", cleanText(r.Log))
+				fmt.Fprintf(out, "    log: %s\n", cleanText(r.Log))
 			}
 		}
 	}
 }
 func sessionAgePortable(age *int64) string {
 	if age == nil {
-		return ""
+		return "-"
 	}
-	return fmt.Sprintf(" · %ds old", *age)
+	return (time.Duration(*age) * time.Second).String()
 }
 
 type limitedInventoryBuffer struct{ data []byte }

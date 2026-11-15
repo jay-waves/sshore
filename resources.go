@@ -8,6 +8,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 func collectLocalResources(host string) ([]resourceRecord, error) {
@@ -95,7 +97,7 @@ func runCancel(args []string) (int, error) {
 			if readErr == nil {
 				removeRejectedPeerTask(record)
 			}
-			logf(os.Stderr, logSuccess, "[sshore] Request cancelled\n")
+			termui.Log(os.Stderr, termui.Success, "[sshore] Request cancelled\n")
 			return 0, nil
 		case "mount", "forward":
 			return 0, stopResource(kind, name)

@@ -3,9 +3,11 @@
 package main
 
 import (
-	"golang.org/x/term"
+	shellmux "github.com/jay-waves/sshore/internal/mux"
 	"io"
 	"os"
+
+	"golang.org/x/term"
 )
 
 func rawTerminal() (func(), error) {
@@ -22,8 +24,6 @@ func rawTerminal() (func(), error) {
 
 func terminalInputReader() io.Reader { return os.Stdin }
 
-func supportsANSI(f *os.File) bool { return true }
-
 func writeTerminalControl(f *os.File, sequence string) {
 	if os.Getenv("TERM") == "dumb" || !term.IsTerminal(int(f.Fd())) {
 		return
@@ -31,4 +31,4 @@ func writeTerminalControl(f *os.File, sequence string) {
 	_, _ = f.WriteString(sequence)
 }
 
-func syncTerminalMouse(state *terminalMouseState) error { return nil }
+func syncTerminalMouse(state *shellmux.InputState) error { return nil }

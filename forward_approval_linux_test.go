@@ -31,15 +31,15 @@ func TestForwardApprovalPreservesDetachedSession(t *testing.T) {
 			}
 		})
 	}
-	s.active = &attachment{}
+	_ = s.lifecycle.Attach(&attachment{}, func() error { return nil })
 	if s.checkForwardApproval(m) == nil {
 		t.Fatal("attached shell accepted")
 	}
-	s.active = nil
+	s.lifecycle.Detach(s.lifecycle.Active())
 	if err := s.checkForwardApproval(m); err != nil {
 		t.Fatal(err)
 	}
-	if s.active != nil || s.exited {
+	if s.lifecycle.Active() != nil || s.lifecycle.Exited() {
 		t.Fatal("validation changed shell lifetime")
 	}
 }

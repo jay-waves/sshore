@@ -9,27 +9,172 @@ short user manual. CLI help is the executable command reference.
 
 sshore is a Go CLI using system OpenSSH for authentication and transport. Remote
 persistent shells run on Linux; local clients and resource workers support Linux
-and Windows on amd64 only. Mounts and independent forwards do not share a shell
-shell's connection or smux streams.
+and Windows on amd64 only. Mounts and independent forwards do not share a shell's connection or smux streams.
 
 | Area | Entry points and responsibility |
 | --- | --- |
 | CLI | `main.go`, `ssh_options.go`: routing, help, product arguments and SSH-only suffix after `--` |
 | Connection and setup | `client.go`, `remote_bootstrap.go`: OpenSSH launch, remote preparation, attachment and recovery |
 | Shell | `server_linux.go`, `session_*.go`: daemon, PTY lifecycle, names, selection, process snapshots and termination |
-| Wire protocol | `mux.go`, `protocol.go`: control, terminal and file streams over smux within SSH |
-| Direct copy | `copy_command.go`: local cp parsing, batch preflight and independent SFTP transport |
-| Approval and transfer | `approval*.go`, `files.go`, `transfer_sftp.go`: pending metadata, local consent, reconnect checks, file operations and progress |
+| Wire protocol | `protocol.go`, `mux.go`: shell/application messages; `internal/transport/`: bounded frames, pipe ownership, smux tuning and SSH signal handling |
+| Release version rules | `internal/releaseversion/`: exact matching and ordering of full releases |
+| Direct copy | `cp_command.go`: local cp parsing, batch preflight and independent SFTP transport |
+| Approval | `review*.go`: pending metadata, local consent, reconnect checks and transfer coordination |
+| File transfer | `internal/cp/`: regular-file validation, exact-size copies, verified uploads, no-clobber publication and restricted SFTP handlers |
+| Mux | `internal/mux/`: exclusive attachment lifecycle, detach handshake, Linux PTY / Windows local ConPTY, input-mode tracking and Linux redraw |
+| Terminal presentation | `internal/termui/`: status formatting, theme colors and platform-specific ANSI detection |
 | Independent resources | `resource_session.go`, `resource_status.go`, `resources.go`: worker startup, private records, control and exit receipts |
 | Forward | `endpoints.go` and `forward*.go`: listener/service operands, fixed endpoint mapping and independent SSH transport |
-| Mount | `ftp*.go`, `sftp_timeout.go`: SFTP adapter, FUSE/WinFsp, mount options and request deadlines |
+| Mount | `internal/mount/`: mount lifecycle, SFTP adapter/limits, caches, notifications, capacity, statistics and FUSE/WinFsp; root `mount*.go`: CLI, paths and worker integration |
 | Inventory | `inventory*.go`, `remote_tasks.go`: public status views and advisory peer records |
 | Distribution | `install.sh`, `install.ps1`, `scripts/package.py`, `scripts/release.sh`, `.github/workflows/`: installation, packaging, CI and releases |
 
-The `ftp` source prefix is historical; the public command is `mount`, and the
-protocol is SFTP. Do not infer public command names from internal filenames.
+The root `main` package owns command routing, product policy and lifecycle
+coordination. Internal packages have narrower responsibilities and do not depend
+on application types or mutable application state. `cp` knows nothing
+about approval records, shell identities or the release version; callers authorize
+operations before constructing its source/target views. Receiver handles and
+publication state stay private. `termui` formats local status only; raw terminal
+input, mouse modes and remote PTY bytes remain under application control.
+`mount` owns its filesystem engine and transient remote agent. Its configuration
+receives an executable, already validated SSH arguments and the current release;
+it never parses product options or installs software. The optional lifecycle
+interface carries worker readiness, stop requests, transport environment,
+operation timestamps and peer synchronization callbacks. Resource capabilities,
+name reservations and worker HTTP endpoints remain in the application. Mount
+notification messages define only mount fields; their frame codec and smux
+configuration are shared with shell traffic through `transport`.
+Package-level tests live beside their implementation; workflow tests stay with
+the application.
+
+Remaining filename groups are coupled through `message`, `operation`, options,
+setup state and platform hooks. Protocol messages embed setup, approval and peer
+task types, so moving them requires deciding type ownership first. Shell process
+identity validation and update locking must move with their lifecycle callers.
+Keep CLI routing and assembly in `main`, move cohesive units with their tests and
+both platform implementations, and avoid exporting mutable state merely to make
+a move compile. The release linker still sets `main.version`.
+
+Business source files follow command names: `cp`, `mount`, `forward` and
+`review`. Historical internal function and wire names remain where changing them
+would add unrelated compatibility work.
 Source comments explain local invariants and algorithms; cross-component design
 belongs here, not in file headers or a second documentation tree.
+
+## Terminal and mux design scope
+
+The mux design manages one terminal per shell session, with creation, listing,
+exclusive attachment, explicit detachment, resize and termination. Multiple
+independent sessions are allowed; split panes, pane layouts and tiling are outside
+the project scope. Linux uses native PTYs. Windows uses native ConPTY for an
+ordinary local mux running local programs, without requiring SSH or a remote
+host. Windows continues to support its existing role as an SSH client to Linux;
+it will not provide a remote shell server.
+
+Local Windows mux is a design target, not a completed CLI feature. The current
+implementation provides the ConPTY foundation only; local background session
+ownership and attach/detach integration still need implementation. Remote shell
+lifecycle rules below describe the existing Linux service and must not be assumed
+to define the unfinished Windows local session lifecycle.
+
+The shared `internal/mux` infrastructure provides native Linux PTY and
+Windows ConPTY startup, byte I/O, resize, process wait and terminal close. Linux
+shell startup, attachment ownership and terminal resize/close use this layer.
+The package owns terminal and attachment mechanisms, while the application owns
+SSH, exact release checks, names, approvals, account process validation and exit
+receipts. Preparing an attachment must succeed before its identity becomes the
+owner. A stale attachment cannot detach or terminate a newer owner; explicit
+detach preserves the terminal, and owner transport loss ends the lifecycle. A failed initial attachment rolls back
+its newly created terminal; failed reattachment preserves an existing detached
+terminal. Linux duplicates and rewraps the PTY master as a pollable nonblocking
+file after startup, and all later ioctls use SyscallConn instead of Fd so resize
+and redraw cannot silently disable cancellation.
+The root command adapters translate application metadata without exposing it to
+the package. Windows ConPTY is the foundation for local mux
+sessions; Windows remote shell hosting is outside the project scope. The remote
+daemon, authenticated helper endpoints and remote account process management
+remain Linux-only.
+Terminal bytes pass through unchanged, targeting common VT sequences used with
+Alacritty; this layer does not emulate a screen or promise screen restoration.
+Callers must continuously drain output while a session is running, wait for the
+process and close the terminal when its lifetime ends. Wait is idempotent and
+concurrent callers receive the same result. Linux Close interrupts blocked I/O. Windows uses non-inheritable pipes
+with a requested 64 KiB buffer and an explicit absolute executable path at process
+creation. Command-line, directory and environment conversion happens before
+allocating ConPTY. Repeated Windows resize requests for the current size are
+skipped; failed resizes do not update the remembered dimensions.
+Close discards unread output before closing ConPTY, avoiding shutdown dependence
+on an active reader on older Windows versions. Close does not guarantee
+termination of escaped descendants.
+
+The PTY lifecycle review uses [tmux spawn.c](https://github.com/tmux/tmux/blob/master/spawn.c)
+and [window.c](https://github.com/tmux/tmux/blob/master/window.c) for process and
+output ownership, and [psmux ConPTY](https://github.com/psmux/psmux/blob/master/crates/portable-pty-psmux/src/win/conpty.rs)
+for pipe buffering. Shutdown ordering follows the
+[ClosePseudoConsole contract](https://learn.microsoft.com/en-us/windows/console/closepseudoconsole).
+These are implementation references, not runtime dependencies. Linux PTY EIO
+after slave closure is exposed as EOF by the shared terminal reader. Raw VT
+output cannot use psmux-style replacement of queued screen snapshots: dropping
+arbitrary bytes loses terminal state. The current remote output path retains
+ordered bytes and bounded stream backpressure with a five-second write deadline;
+control traffic uses a separate stream. A future screen-state implementation
+would be required before stale output can be replaced with a fresh snapshot.
+
+## Mux controls and implementation boundaries
+
+Local input uses a Ctrl+B prefix, following the basic tmux/psmux convention.
+The supported bindings are defined by command help. A pending prefix survives
+input-read boundaries without a timeout; a doubled prefix sends one literal
+Ctrl+B. Unknown combinations are forwarded unchanged. Escape sequences are
+forwarded immediately, including a lone Escape. Bracketed-paste delimiters are
+recognized across reads, and their contents bypass shortcuts, including Ctrl-].
+Unbracketed paste is indistinguishable from typing and follows normal shortcuts.
+`--no-escape` and recovery mode forward all bytes without local interception.
+Session commands query the current daemon before detaching. Cycling uses lexical
+name order with wraparound and includes only the current shell and detached
+shells, skipping other clients' attachments. With no other shell, cycling stays
+put. The chooser accepts a displayed number and Enter; Escape/Ctrl+C cancels.
+New-session preflight checks automatic-name availability without reserving it.
+All target attachment/creation checks run again on reconnect; a race never grants
+a takeover. If target setup fails before interactive readiness, the client tries
+to reattach the original session once. A concurrently occupied or ended original
+session can still prevent recovery. The last-session key tracks the previous
+successful switch within this client run.
+
+Switching returns through an iterative client loop, releasing the old transport,
+raw terminal state, attachment tracking and joined keyboard reader before the next
+SSH launch. Linux polls input with a bounded wait; Windows cancels the pinned
+ReadConsole thread and joins cancellation before releasing that thread. No old
+reader may compete with subsequent SSH authentication or terminal input. Switching
+uses a new SSH transport and may require authentication again. Bytes trailing a
+session command in the same input read are discarded, avoiding accidental input
+to a different session; input during target lookup is also discarded.
+
+This initial input path handles conventional VT control bytes; enhanced keyboard
+protocol encodings are passed through rather than interpreted as shortcuts.
+
+The input writer preserves data/command order. Before shortcut detach it sends
+an input barrier on the terminal stream and waits up to five seconds for the
+daemon to acknowledge writing preceding input to the PTY. The UI then sends
+detach on the independent control stream. If delivery remains blocked for five
+seconds, the client reports unconfirmed input and still requests explicit detach;
+blocked input must not turn a preservation request into transport-loss teardown.
+The daemon cancels and joins the former attachment's input lease before allowing
+a successor. Bytes already accepted by the PTY remain application input; remaining
+bytes from the canceled write are discarded. A successful barrier is not proof
+that an application has executed or saved the input. The writer pauses for local command
+handling so subsequent input cannot overtake a command; queues remain bounded.
+Redraw uses the existing foreground redraw request, without injecting Ctrl+L or
+Enter. Help and connection information print concise local lines; they do not
+provide an overlay or restore the application's screen.
+
+| Boundary | tmux / psmux reference | sshore decision |
+| --- | --- | --- |
+| Prefix keys | [tmux defaults](https://github.com/tmux/tmux/blob/master/key-bindings.c), [psmux keys](https://github.com/psmux/psmux/blob/master/docs/keybindings.md) | Small fixed Ctrl+B table for independent sessions; no binding language or pane commands. |
+| Screen recovery | Terminal state and rendered screen snapshots | Raw VT transport with bounded input-mode observation; redraw remains best effort. |
+| Slow output | Screen-aware redraw / stale-frame replacement | Ordered byte backpressure; arbitrary byte dropping would corrupt terminal state. |
+| Attach ownership | Multiple-client mux models | One exclusive attachment per shell; stale clients cannot release its successor. |
+| Lifetime | Persistent mux server / session model | Existing Linux policy: explicit detach preserves; detected transport loss ends the shell. |
 
 ## Connection and shell lifecycle
 
@@ -51,7 +196,9 @@ uses exact identities or displayed numbers, supports `/text` filtering, and does
 not hold the account setup lock while waiting for terminal input.
 
 Public names are labels backed by private metadata and lifetime locks. Rename
-changes the label while preserving the daemon's socket/helper identity. Pending
+changes the label while preserving the daemon's socket/helper identity. A
+successful local rename updates the recent attach target and cached labels while
+retaining the original confirmation time; it does not claim a new liveness check. Pending
 approvals keep their original name and shell PID and must be requested again
 after a rename. Process-tree listings are best-effort snapshots, not identities
 that can be used directly for signaling.
@@ -64,6 +211,14 @@ owns the PTY foreground group, a one-column resize and 30 ms restoration prompts
 readline to redisplay even at unchanged terminal size; no input is injected and
 unsubmitted commands remain unsubmitted. Other foreground applications receive
 SIGWINCH. Restoration checks the current size to avoid overwriting another resize.
+The bounded input-mode observer restores mouse reporting, focus reporting (1004)
+and bracketed paste (2004), including private-mode saved values, after detach or
+muted output. It observes control sequences across read boundaries and ignores
+OSC/DCS payloads. In ground state it scans directly to ESC, skipping ordinary
+text without per-byte mode dispatch; partial sequences keep their parser state
+across reads. Keyboard protocol stacks, screen state and scrollback are not
+reconstructed. This follows the separation of input-mode state from screen state
+in [tmux input.c](https://github.com/tmux/tmux/blob/master/input.c).
 Terminal mode restoration and application redraw remain best effort. See [termination guarantees](SECURITY.md#files-and-forwarding).
 
 The full release version is the compatibility identifier at setup and handshake.
@@ -86,7 +241,7 @@ shell before executing. Setup updates or recovery skip approved operations.
 The authorization rules belong in [Local approval](SECURITY.md#local-approval).
 
 File batches run sequentially and stop at the first failure. Both direct and
-approved copies use the same SFTP upload/download implementation in `files.go`.
+approved copies use the same SFTP upload/download implementation in `internal/cp`.
 Uploads create private temporary files, verify stored bytes by SHA-256 readback,
 and publish with a no-overwrite hard link. Downloads check the exact source size
 and sync a local temporary file before publication. Authenticated SSH provides
@@ -216,26 +371,38 @@ or PATH, preserving its extensions. Servers configured only with internal-sftp
 need an external executable for this mode, or can use no-watch mode. The child
 and watcher end with the transport; a notification stream failure leaves SFTP live.
 
-Remote fsnotify uses Linux inotify without cgo. Before cached stat/lstat reads the
-client subscribes to the parent directory; before directory reads it subscribes to
-that directory. Registration is acknowledged before the read. Only accessed
+Remote fsnotify uses Linux inotify without cgo. Cached stat/lstat reads enqueue a
+subscription to the parent directory; directory reads enqueue a subscription to
+that directory. Only accessed
 directories are watched, never a recursive scan: the client evicts LRU watches at
 128 directories and the server independently enforces the same limit. Successful
 subscriptions are renewed on access after 30 seconds; failures are retried after
-one second. Each subscription exchange has a three-second deadline; timeout closes
+one second. One background worker processes at most 128 queued paths plus one
+active subscription;
+repeated pending paths coalesce, and queue overflow falls back to TTLs. Filesystem
+reads do not wait for subscription acknowledgement. First acknowledgement or recovery from a failed/reset subscription invalidates
+affected cached results and in-flight fetches from the unobserved interval.
+Successful renewal of a continuously confirmed watch preserves cached results
+without extending their TTL. A reset racing with acknowledgement forces refresh
+on subsequent access. Each
+subscription exchange has a three-second deadline; timeout closes
 only the notification stream and warns once before falling back to TTLs.
 
-A dedicated reader drains filesystem events into a one-slot dirty signal even
-under network backpressure. The first invalidation is sent immediately and bursts
-are coalesced with a 50 ms cooldown, including a trailing invalidation. Events
-clear the whole shared metadata cache and fence in-flight responses; removals,
-renames and watcher errors/overflow also force subscription refresh on subsequent
-access. Notification loss clears the cache. No event is interpreted as a file
+A dedicated reader coalesces filesystem events into a bounded set of at most
+128 dirty directory paths even under network backpressure. The first invalidation
+is sent immediately and bursts are coalesced with a 50 ms cooldown, including a
+trailing invalidation. Ordinary changes carry the directory path and retire its
+listing, child attributes, associated handle metadata and matching in-flight
+responses. Unrelated cached directories remain usable. Removals, renames, watcher
+errors/overflow and a full dirty set trigger a whole-cache reset and force
+subscription refresh on subsequent access. An unscoped dirty message also falls
+back to whole-cache invalidation. Notification loss clears the cache. No event is interpreted as a file
 operation or causes write replay. The existing short TTLs remain unchanged:
 unsupported filesystems, alias/hard-link changes and symlink retargeting can evade
 notifications. This invalidates the shared backend cache, not OS page/attribute
 caches or existing directory-handle snapshots; native Explorer change notifications
-are not implemented. The statistics include a remote-invalidation counter.
+are not implemented. Statistics count remote-change invalidations separately from subscription
+confirmations that retire potentially stale metadata.
 Capacity queries use `statvfs@openssh.com` version 2: Linux exposes remote block
 and inode counts, while Windows reports total bytes and bytes available to the
 remote non-root user. Unsupported or unknown extension versions return an
@@ -243,11 +410,20 @@ unsupported-operation error instead of synthetic capacity; query failures remain
 errors. Counts describe the backing filesystem, not a quota for the mounted
 subdirectory. Replies are checked before integer narrowing and byte conversion.
 
-Linux uses FUSE; Windows uses WinFsp. Writable mounts require atomic-rename and
+Linux uses FUSE; Windows uses WinFsp. Linux mtime-only updates preserve the
+SFTP-reported access time. Path-based chmod/time updates are not atomic with
+remote path replacement, even when an application holds an open file handle. Writable mounts require atomic-rename and
 fsync extensions. There is no persistent write-back cache, conflict resolution
 or replay. Linux read caching lasts until close/reopen unless direct I/O is used;
 Windows rejects unrepresentable names instead of renaming them. Special files and
 file locking are unsupported.
+
+Windows handle metadata queries also use this bounded cache with a one-second
+TTL. Entries are keyed by the open handle, not its pathname, and removed on close;
+local mutations and remote notifications invalidate them. Repeated editor polls
+therefore reuse metadata without extending its expiry or confusing a replaced
+pathname with an already open file. Directory handles reuse path attributes across WinFsp enumeration reopens,
+within the same TTL and invalidation rules. File contents remain uncached here.
 
 Both adapters use a per-mount LRU cache: path metadata expires one second after
 the lookup starts, and directory listings expire after two seconds. Hits do not
@@ -258,12 +434,34 @@ wire budget but are not retained in the shared directory cache. Open handles kee
 their own cursor over an immutable snapshot; those live snapshots are outside the
 shared cache budget. Reopening may reuse an unexpired listing.
 
+After a successful foreground listing, up to two background workers prefetch
+at most 16 directly listed child directories, selected in name order. Hidden
+names, symlinks and names that cannot be represented on Windows are skipped.
+The newest listing replaces queued work and cancels the previous batch; repeated
+listings with the same candidates within the directory TTL do not restart it.
+Prefetch does not recursively schedule more reads. Each speculative listing has
+a two-second context deadline and shares the normal bounded cache, TTL and
+in-flight fetches. Subscription acknowledgement retires only affected directory
+metadata and matching in-flight results, preserving prefetched siblings; handle
+metadata is retired only for that directory. Ordinary remote changes are scoped to their directory;
+uncertain or lost event detail still resets the whole cache. Workers register each directory before fetching it without
+waiting for all other candidates. A foreground reader joining a cancelled or
+timed-out speculative fetch retries with its normal request deadline. Shutdown
+cancels work and closes the transport before joining workers. Prefetch reads
+metadata only and can cause directory access on the remote server. Statistics
+report `PrefetchStored`, `PrefetchHits` (first foreground use) and
+`PrefetchDiscarded` (evicted, expired or invalidated before use). These distinguish
+useful prefetch from speculative work that did not benefit a foreground read.
+
 Concurrent misses for the same operation/path share a request within the same
 mutation generation. Errors are shared only with current waiters, never cached.
 Fresh directory reads seed a bounded number of Windows-compatible path attributes;
 symlink entries are excluded because stat follows the target. Cached directory
 results do not reseed attributes or extend their lifetime. Linux lstat entries
-use a separate key space. Actual opens and handle stats remain live SFTP operations.
+use a separate key space. Windows reuses unexpired path attributes for the preliminary open classification;
+create/truncate classification stays live. Each regular-file open still obtains a
+new SFTP handle, and its first handle stat queries that handle rather than reusing
+pathname attributes. Subsequent Windows handle queries use the short TTL above.
 Local create, write, truncate, mkdir, remove, rename and basic-attribute updates
 clear all cached metadata and listings before and after the operation, including
 on failure. New queries cannot join pre-mutation requests, and old responses cannot
@@ -302,6 +500,9 @@ second interrupt or shutdown timeout forces disconnection. See
 ## Inventory and diagnostics
 
 Local status separates worker liveness, transport state and unprobed target health.
+Text inventory uses compact, tab-aligned tables, with cached shell state and
+confirmation age separate from local connection status. Successful queries emit
+no progress log; diagnostic fields remain under `--details`.
 Resource queries use at most eight workers and a two-second aggregate deadline.
 `list --details` and `list --json` include recent resource results; JSON uses an
 explicit field allowlist. All remote inventory requires a matching release
@@ -337,6 +538,8 @@ when changes span components:
 
 ```sh
 go test -tags=sshoretest -timeout=5m ./...
+# Optional native mount smoke with the existing FUSE/WinFsp installation:
+SSHORE_TEST_FTP_MOUNT=1 go test -tags=sshoretest -run '^TestFTPNativeMount$' ./internal/mount
 ```
 
 Use `go vet ./...` for structural changes and add `-race` for concurrency changes.

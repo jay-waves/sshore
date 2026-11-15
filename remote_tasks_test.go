@@ -59,7 +59,7 @@ func TestSFTPPeerTaskSnapshot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("in-process SFTP fixture requires Unix permission modes")
 	}
-	backend := testFTPBackend(t)
+	backend := testCopyBackend(t)
 	dir := filepath.Join(backend.root, "tasks")
 	task := testPeerTask()
 	if e := publishSFTPTask(backend.client, filepath.ToSlash(dir), task); e != nil {

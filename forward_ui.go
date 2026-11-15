@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 func runEndpointForward(args []string) (int, error) {
@@ -28,7 +30,7 @@ func runEndpointForward(args []string) (int, error) {
 			label = "Local service port"
 			remote = f.Port
 		}
-		logf(os.Stdout, logInfo, "Remote endpoint: %s:%d. Submitting the local port starts forwarding.\n", cleanText(f.Host), remote)
+		termui.Log(os.Stdout, termui.Info, "Remote %s:%d. Submit local port to forward.\n", cleanText(f.Host), remote)
 		port, err := readSelectedPort(input, label, "", "forward cancelled")
 		if err != nil {
 			return 1, err

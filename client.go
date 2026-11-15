@@ -11,10 +11,10 @@ package main
 // can corrupt the protocol handshake; diagnostics belong on stderr.
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	shellmux "github.com/jay-waves/sshore/internal/mux"
 	"io"
 	"os"
 	"os/exec"
@@ -24,22 +24,16 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/xtaci/smux"
 	"golang.org/x/term"
+
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
-func cleanText(s string) string {
-	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return '\ufffd'
-		}
-		return r
-	}, s)
-}
+
 func localPath(b []byte) (string, error) {
 	if !utf8.Valid(b) {
 		return "", fmt.Errorf("path must be UTF-8")
@@ -66,6 +60,9 @@ func localPath(b []byte) (string, error) {
 }
 
 type clientEvent struct {
+	keyAction      shellmux.KeyAction
+	keyDone        chan struct{}
+	inputFailure   bool
 	approvalStream *smux.Stream
 	approval       []operation
 	m              message
@@ -99,7 +96,7 @@ func acceptSessionName(o *options, name string) error {
 	return nil
 }
 
-func runClient(o options) (int, error) {
+func runClientOnce(o options, previous string, ready func()) (int, error) {
 	for _, op := range o.approved {
 		if op.localPortPending() {
 			return 2, usage("choose a local port in review before execution")
@@ -110,6 +107,11 @@ func runClient(o options) (int, error) {
 	if o.list || o.command == "cancel" || o.command == "rename" {
 		cmd.Stdin, cmd.Stdout = os.Stdin, os.Stdout
 		err := cmd.Run()
+		if err == nil && o.command == "rename" {
+			if cacheErr := rememberShellRename(o.host, o.session, o.newName); cacheErr != nil {
+				termui.Log(os.Stderr, termui.Warning, "[sshore] Renamed; local history not updated: %s\n", cleanText(cacheErr.Error()))
+			}
+		}
 		var e *exec.ExitError
 		if errors.As(err, &e) {
 			return e.ExitCode(), nil
@@ -145,7 +147,7 @@ func runClient(o options) (int, error) {
 	defer closeSSH()
 	// The mux handshake happens after OpenSSH authentication; no local keyboard
 	// reader or raw mode is active while OpenSSH prompts for passwords/host keys.
-	transport := &pipeTransport{Reader: reader, Writer: writer, closers: []io.Closer{reader, writer}}
+	transport := &pipeTransport{Reader: reader, Writer: writer, Closers: []io.Closer{reader, writer}}
 	if err = negotiateSetup(reader, writer, &o); err != nil {
 		return 1, err
 	}
@@ -195,7 +197,7 @@ func runClient(o options) (int, error) {
 	}
 	connection, cacheErr := trackShellConnection(o)
 	if cacheErr != nil {
-		logf(os.Stderr, logWarning, "[sshore] Could not track shell connection: %s\n", cleanText(cacheErr.Error()))
+		termui.Log(os.Stderr, termui.Warning, "[sshore] Shell tracking failed: %s\n", cleanText(cacheErr.Error()))
 	}
 	defer connection.close()
 	pid := m.PID
@@ -228,7 +230,7 @@ func runClient(o options) (int, error) {
 			if err = detachControl(control, func(name string) { connection.confirm(name, "detached") }); err != nil {
 				return 1, err
 			}
-			logf(os.Stderr, logSuccess, "[sshore] Approved operations complete. Staying local; remote shell is still running.\n")
+			termui.Log(os.Stderr, termui.Success, "[sshore] Done. Staying local; remote shell running.\n")
 			return 0, nil
 		}
 	}
@@ -253,15 +255,15 @@ func runClient(o options) (int, error) {
 	defer func() { restore(); _ = flushTerminalInput() }()
 	if !o.plain {
 		if e := rememberConnection(o); e != nil {
-			logf(os.Stderr, logWarning, "[sshore] Could not remember this connection: %s\n", cleanText(e.Error()))
+			termui.Log(os.Stderr, termui.Warning, "[sshore] Connection history not saved: %s\n", cleanText(e.Error()))
 		}
 	}
 	if o.plain {
-		logf(os.Stderr, logWarning, "[sshore] Recovery shell on %s (no sshore features).\r\nExit and reconnect to resume normal use.\r\n", cleanText(o.host))
+		termui.Log(os.Stderr, termui.Warning, "[sshore] Recovery on %s; sshore disabled. Exit and reconnect to restore.\r\n", cleanText(o.host))
 	} else {
 
-		logf(os.Stderr, logSuccess, "[sshore] Connected %s / %s (PID %d)\r\n", cleanText(o.host), o.session, pid)
-		logf(os.Stderr, logInfo, "[sshore] Reconnect: %s\r\n", reconnectCommand(o))
+		termui.Log(os.Stderr, termui.Success, "[sshore] Connected %s / %s (PID %d)\r\n", cleanText(o.host), o.session, pid)
+		termui.Log(os.Stderr, termui.Info, "[sshore] Reconnect: %s\r\n", reconnectCommand(o))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -269,6 +271,7 @@ func runClient(o options) (int, error) {
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
 	events := make(chan clientEvent, 32)
+	inputDrained := make(chan struct{}, 1)
 	emit := func(e clientEvent) {
 		select {
 		case events <- e:
@@ -281,6 +284,14 @@ func runClient(o options) (int, error) {
 			if err != nil {
 				emit(clientEvent{err: err})
 				return
+			}
+			if st == terminal && m.Type == "input_drained" {
+				select {
+				case inputDrained <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
+				continue
 			}
 			emit(clientEvent{m: m})
 			if m.Type == "exit" || m.Type == "detached" || m.Type == "fatal" {
@@ -308,54 +319,129 @@ func runClient(o options) (int, error) {
 			_ = st.Close()
 		}
 	}()
-	terminalInput := terminalInputReader()
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			n, err := terminalInput.Read(buf)
-			if n > 0 {
-				emit(clientEvent{input: append([]byte(nil), buf[:n]...)})
-			}
-			if err != nil {
-				emit(clientEvent{err: err})
-				return
-			}
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
+	stopKeyboard, err := startTerminalKeyboard(ctx, func(data []byte, err error) {
+		if len(data) > 0 {
+			emit(clientEvent{input: data})
 		}
-	}()
+		if err != nil {
+			emit(clientEvent{err: err})
+		}
+	})
+	if err != nil {
+		return 1, err
+	}
+	defer func() { cancel(); stopKeyboard() }()
+	ready()
 	// One terminal writer preserves keystroke order without making file I/O or a
 	// stalled PTY block the main UI/control loop.
-	inputQueue := make(chan []byte, 16)
+	inputQueue := make(chan []shellmux.KeyEvent, 16)
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case b := <-inputQueue:
-				if err := streamMessage(terminal, message{Type: "input", Data: b}); err != nil {
-					emit(clientEvent{err: err})
-					return
+			case batch := <-inputQueue:
+				for _, b := range batch {
+					if b.Action != shellmux.KeyNone {
+						if b.Action == shellmux.KeyDetach {
+							if err := streamMessage(terminal, message{Type: "input_barrier"}); err != nil {
+								emit(clientEvent{err: err, inputFailure: true})
+								return
+							}
+							select {
+							case <-inputDrained:
+							case <-ctx.Done():
+								return
+							case <-time.After(5 * time.Second):
+								emit(clientEvent{err: fmt.Errorf("terminal input acknowledgement timed out"), inputFailure: true})
+								return
+							}
+						}
+						done := make(chan struct{})
+						emit(clientEvent{keyAction: b.Action, keyDone: done})
+						select {
+						case <-done:
+						case <-ctx.Done():
+							return
+						}
+						if b.Action == shellmux.KeyDetach {
+							return
+						}
+						continue
+					}
+					if err := streamMessage(terminal, message{Type: "input", Data: b.Data}); err != nil {
+						emit(clientEvent{err: err, inputFailure: true})
+						return
+					}
 				}
 			}
 		}
 	}()
-	color := terminalLogColor(os.Stdout)
-	notice := func(level logColor, format string, args ...any) {
-		fmt.Fprint(os.Stdout, formatLog(color, level, format, args...))
+	color := termui.ColorEnabled(os.Stdout)
+	notice := func(level termui.Color, format string, args ...any) {
+		fmt.Fprint(os.Stdout, termui.Format(color, level, format, args...))
 	}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-	var outputMouse terminalMouseState
+	var outputMouse shellmux.InputState
+	keys := shellmux.Keys{Bypass: o.noEscape || o.plain}
 	detaching := false
+	detachPending := false
 	var detachTimeout <-chan time.Time
+	var inputFlushTimeout <-chan time.Time
+	var switchTimeout <-chan time.Time
+	var switchPending bool
+	var switchAction string
+	var switchTarget *options
+	var chooser *shellmux.SessionChooser
+	queueSwitch := func(name, command string) error {
+		if name == o.session && command == "attach" {
+			return nil
+		}
+		target := o
+		target.command = command
+		target.session = name
+		target.resumePID = 0
+		target.approved = nil
+		target.approvalID = ""
+		target.stay = false
+		select {
+		case inputQueue <- []shellmux.KeyEvent{{Action: shellmux.KeyDetach}}:
+			switchTarget = &target
+			switchPending = false
+			chooser = nil
+			detachPending = true
+			inputFlushTimeout = time.After(5 * time.Second)
+			return nil
+		default:
+			return fmt.Errorf("terminal input queue is busy")
+		}
+	}
+	requestTargets := func(action, name string) error {
+		switchPending = true
+		switchAction = action
+		switchTimeout = time.After(5 * time.Second)
+		return streamMessage(control, message{Type: "session_targets", Action: action, Name: name})
+	}
 	for {
 		select {
 		case <-signals:
 			return 130, nil
+		case <-switchTimeout:
+			switchTimeout = nil
+			switchPending = false
+			chooser = nil
+			notice(termui.Warning, "\r\n[sshore] Session lookup timed out; staying here.\r\n")
+		case <-inputFlushTimeout:
+			inputFlushTimeout = nil
+			if !detaching {
+				notice(termui.Warning, "\r\n[sshore] Input delivery unconfirmed; detaching.\r\n")
+				if err = streamMessage(control, message{Type: "detach"}); err != nil {
+					return 255, err
+				}
+				detaching = true
+				detachTimeout = time.After(5 * time.Second)
+			}
 		case <-detachTimeout:
 			return 255, fmt.Errorf("detach response timed out; shell preservation is unconfirmed")
 		case <-ticker.C:
@@ -368,13 +454,44 @@ func runClient(o options) (int, error) {
 			}
 
 		case e := <-events:
+			if e.keyAction != shellmux.KeyNone {
+				err = nil
+				func() {
+					defer close(e.keyDone)
+					if detaching {
+						return
+					}
+					switch e.keyAction {
+					case shellmux.KeyNew, shellmux.KeyNext, shellmux.KeyPrevious, shellmux.KeyLast, shellmux.KeyChoose:
+						action := map[shellmux.KeyAction]string{shellmux.KeyNew: "new", shellmux.KeyNext: "next", shellmux.KeyPrevious: "previous", shellmux.KeyLast: "last", shellmux.KeyChoose: "choose"}[e.keyAction]
+						err = requestTargets(action, previous)
+
+					case shellmux.KeyDetach:
+						err = streamMessage(control, message{Type: "detach"})
+						if err == nil {
+							detaching = true
+							detachTimeout = time.After(5 * time.Second)
+						}
+					case shellmux.KeyRedraw:
+						err = streamMessage(control, message{Type: "redraw"})
+					case shellmux.KeyInfo:
+						notice(termui.Info, "\r\n[sshore] %s / %s (PID %d)\r\n", cleanText(o.host), cleanText(o.session), pid)
+					case shellmux.KeyHelp:
+						notice(termui.Info, "\r\nCtrl+B: c new · n/p next/prev · l last · s/w sessions\r\n        d detach · r redraw · i info · ? help · Ctrl+B send prefix\r\n")
+					}
+				}()
+				if err != nil {
+					return 255, err
+				}
+				continue
+			}
 			if e.approvalStream != nil {
 				if o.plain {
 					e.approvalStream.Close()
 					continue
 				}
 				st := e.approvalStream
-				if detaching {
+				if detaching || detachPending || switchPending {
 					st.Close()
 					continue
 				}
@@ -382,7 +499,7 @@ func runClient(o options) (int, error) {
 				if err != nil {
 					_ = streamMessage(st, message{Type: "error", Error: err.Error()})
 					st.Close()
-					notice(logError, "\r\n[sshore] Request rejected: %s\r\n", cleanText(err.Error()))
+					notice(termui.Error, "\r\n[sshore] Request rejected: %s\r\n", cleanText(err.Error()))
 					continue
 				}
 				_ = st.SetDeadline(time.Now().Add(requestTimeout))
@@ -413,7 +530,7 @@ func runClient(o options) (int, error) {
 					}
 					return 1, err
 				}
-				notice(logInfo, "\r\n[sshore] Request saved: %s\r\n[sshore] Run sshore review from your LOCAL shell after this client exits.\r\n", id)
+				notice(termui.Info, "\r\n[sshore] Request saved: %s\r\n[sshore] Run sshore review from your LOCAL shell after this client exits.\r\n", id)
 				if err = streamMessage(control, message{Type: "detach"}); err != nil {
 					return 1, err
 				}
@@ -422,26 +539,128 @@ func runClient(o options) (int, error) {
 				continue
 			}
 			if e.err != nil {
+				if e.inputFailure && detachPending {
+					if !detaching {
+						notice(termui.Warning, "\r\n[sshore] Input delivery unconfirmed; detaching.\r\n")
+						if err = streamMessage(control, message{Type: "detach"}); err != nil {
+							return 255, err
+						}
+						detaching = true
+						detachTimeout = time.After(5 * time.Second)
+					}
+					inputFlushTimeout = nil
+					continue
+				}
 				return 255, fmt.Errorf("connection ended without detach; remote shell is closing: %w", e.err)
 			} else if e.input != nil {
-				if detaching {
-					continue
-				}
-				if !o.noEscape && bytes.IndexByte(e.input, 0x1d) >= 0 {
-					if err = streamMessage(control, message{Type: "detach"}); err != nil {
-						return 255, err
+				if chooser != nil {
+					selected, done := chooser.Feed(e.input)
+					if done {
+						chooser = nil
+						switchPending = false
+						if selected != "" && selected != o.session {
+							if err = requestTargets("select", selected); err != nil {
+								return 255, err
+							}
+						} else {
+							notice(termui.Info, "\r\n")
+							_ = streamMessage(control, message{Type: "redraw"})
+						}
+					} else {
+						notice(termui.Info, "\rSession # (Esc cancels): %s \x1b[K", chooser.Number)
 					}
-					detaching = true
-					detachTimeout = time.After(5 * time.Second)
 					continue
 				}
-				select {
-				case inputQueue <- e.input:
-				default:
-					return 255, fmt.Errorf("terminal input stalled; closing remote shell")
+				if switchPending {
+					continue
 				}
+				if detaching || detachPending {
+					continue
+				}
+				batch := keys.Feed(e.input)
+				if len(batch) > 0 {
+					select {
+					case inputQueue <- batch:
+						for _, key := range batch {
+							if key.Action.IsSessionCommand() {
+								switchPending = true
+							}
+							if key.Action == shellmux.KeyDetach {
+								detachPending = true
+								inputFlushTimeout = time.After(5 * time.Second)
+								break
+							}
+						}
+					default:
+						return 255, fmt.Errorf("terminal input stalled; closing remote shell")
+					}
+				}
+
 			} else {
 				switch e.m.Type {
+				case "session_targets":
+					if !switchPending || e.m.Action != switchAction {
+						continue
+					}
+					switchTimeout = nil
+					switchPending = false
+					if e.m.Error != "" {
+						notice(termui.Warning, "\r\n[sshore] %s\r\n", cleanText(e.m.Error))
+						continue
+					}
+					if len(e.m.Names) > 128 || validSession(e.m.Name) != nil {
+						return 255, fmt.Errorf("invalid session targets")
+					}
+					for _, name := range e.m.Names {
+						if validSession(name) != nil {
+							return 255, fmt.Errorf("invalid session target")
+						}
+					}
+					o.session = e.m.Name
+					var target string
+					switch e.m.Action {
+					case "new", "select":
+						if len(e.m.Names) != 1 {
+							return 255, fmt.Errorf("missing session target")
+						}
+						target = e.m.Names[0]
+					case "next":
+						target = shellmux.AdjacentSession(o.session, e.m.Names, 1)
+					case "previous":
+						target = shellmux.AdjacentSession(o.session, e.m.Names, -1)
+					case "last":
+						for _, name := range e.m.Names {
+							if name == previous {
+								target = name
+								break
+							}
+						}
+						if target == "" {
+							notice(termui.Info, "\r\n[sshore] Previous session unavailable.\r\n")
+							continue
+						}
+					case "choose":
+						chooser = &shellmux.SessionChooser{Names: shellmux.SessionOrder(o.session, e.m.Names)}
+						switchPending = true
+						notice(termui.Info, "\r\n")
+						for i, name := range chooser.Names {
+							mark := ""
+							if name == o.session {
+								mark = " *"
+							}
+							notice(termui.Info, "%d  %s%s\r\n", i+1, name, mark)
+						}
+						notice(termui.Info, "Session # (Esc cancels): ")
+						continue
+					}
+					command := "attach"
+					if e.m.Action == "new" {
+						command = "new"
+					}
+					if err = queueSwitch(target, command); err != nil {
+						notice(termui.Warning, "\r\n[sshore] %s\r\n", err.Error())
+					}
+
 				case "output":
 					if detaching {
 						continue
@@ -449,12 +668,12 @@ func runClient(o options) (int, error) {
 					if err = writeFull(os.Stdout, e.m.Data); err != nil {
 						return 1, err
 					}
-					outputMouse.observe(e.m.Data)
+					outputMouse.Observe(e.m.Data)
 					if err = syncTerminalMouse(&outputMouse); err != nil {
 						return 1, fmt.Errorf("update terminal mouse mode: %w", err)
 					}
 				case "detach_requested":
-					if !detaching {
+					if !detaching && !detachPending {
 						if err = streamMessage(control, message{Type: "detach"}); err != nil {
 							return 255, err
 						}
@@ -467,7 +686,10 @@ func runClient(o options) (int, error) {
 						o.session = e.m.Name
 					}
 					_ = streamMessage(control, message{Type: "bye"})
-					notice(logSuccess, "\r\n[sshore] Detached; remote programs keep running.\r\nReconnect: %s\r\n", reconnectCommand(o))
+					if switchTarget != nil {
+						return 0, &sessionSwitch{from: o, to: *switchTarget}
+					}
+					notice(termui.Success, "\r\n[sshore] Detached; remote programs keep running.\r\nReconnect: %s\r\n", reconnectCommand(o))
 					return 0, nil
 				case "exit":
 					connection.confirm(e.m.Name, "exited")
@@ -482,22 +704,7 @@ func runClient(o options) (int, error) {
 
 // detachControl is used before an interactive control reader has started.
 func detachControl(control *smux.Stream, confirmed ...func(string)) error {
-	_ = control.SetDeadline(time.Now().Add(5 * time.Second))
-	defer control.SetDeadline(time.Time{})
-	if err := streamMessage(control, message{Type: "detach"}); err != nil {
-		return err
-	}
-	m, err := readMessage(control)
-	if err != nil {
-		return err
-	}
-	if m.Type != "detached" {
-		return fmt.Errorf("unexpected detach response: %s", m.Type)
-	}
-	for _, confirm := range confirmed {
-		confirm(m.Name)
-	}
-	return streamMessage(control, message{Type: "bye"})
+	return shellmux.Detach(control, confirmed...)
 }
 
 // Retain transport options in the reconnect hint, including custom ports and keys.

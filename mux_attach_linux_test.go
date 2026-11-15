@@ -1,0 +1,72 @@
+package main
+
+import (
+	"github.com/xtaci/smux"
+	"net"
+	"testing"
+	"time"
+)
+
+func closedAttachment(t *testing.T) *attachment {
+	t.Helper()
+	a, b := net.Pipe()
+	client, err := smux.Client(a, muxConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := smux.Server(b, muxConfig())
+	if err != nil {
+		client.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close(); server.Close() })
+	stream, err := client.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	remote, err := server.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Close()
+	server.Close()
+	return &attachment{mux: server, control: remote, terminal: remote}
+}
+func TestInitialAttachmentFailureEndsCreatedTerminal(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	s := &shell{name: "failed", plain: true, done: make(chan struct{})}
+	p := closedAttachment(t)
+	if err := s.attach(p, message{Type: "attach", Term: "xterm-256color", Cols: 80, Rows: 24}); err == nil {
+		t.Fatal("accepted closed attachment")
+	}
+	if s.master == nil {
+		t.Fatal("test did not reach terminal startup")
+	}
+	defer s.master.Close()
+	if !s.lifecycle.Exited() || s.lifecycle.Active() != nil {
+		t.Fatal("initial failure preserved shell")
+	}
+	done := make(chan struct{})
+	go func() { s.master.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		s.cmd.Process.Kill()
+		t.Fatal("failed initial terminal survived")
+	}
+}
+func TestFailedReattachmentPreservesDetachedTerminal(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	s := &shell{name: "detached", plain: true, done: make(chan struct{})}
+	if err := s.start(80, 24, "xterm-256color"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { s.master.Close(); s.master.Wait() }()
+	if err := s.attach(closedAttachment(t), message{Type: "attach", Term: "xterm-256color", Cols: 80, Rows: 24}); err == nil {
+		t.Fatal("accepted closed attachment")
+	}
+	if s.lifecycle.Exited() || s.lifecycle.Active() != nil {
+		t.Fatal("failed reconnect ended detached terminal")
+	}
+}

@@ -149,7 +149,7 @@ func (s *shell) rename(old, name string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.exited || s.name != old {
+	if s.lifecycle.Exited() || s.name != old {
 		return fmt.Errorf("shell changed or is exiting; refresh the shell list")
 	}
 	if s.name == name {

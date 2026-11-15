@@ -3,7 +3,7 @@ package main
 // Session listings show a best-effort /proc snapshot rooted at the shell PID.
 // Only same-user descendants are included, in PID order. Display comm names,
 // never command lines or environment, and sanitize terminal control characters.
-// ASCII branches distinguish ancestry; foreground marks the shell PTY's active
+// Tree branches distinguish ancestry; [fg] marks the shell PTY's active
 // process group. Limit depth/nodes so pathological trees cannot flood output.
 import (
 	"fmt"
@@ -23,7 +23,7 @@ type listedProcess struct {
 func sessionProcessTree(root string, shellPID int) string {
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return fmt.Sprintf("`-- %d [process unavailable]\n", shellPID)
+		return fmt.Sprintf("%d [process unavailable]\n", shellPID)
 	}
 	processes := map[int]listedProcess{}
 	children := map[int][]int{}
@@ -71,9 +71,12 @@ func sessionProcessTree(root string, shellPID int) string {
 	seen := map[int]bool{}
 	var walk func(int, string, bool, int)
 	walk = func(pid int, prefix string, last bool, depth int) {
-		branch, next := "|-- ", "|   "
+		branch, next := "├─ ", "│  "
 		if last {
-			branch, next = "`-- ", "    "
+			branch, next = "└─ ", "   "
+		}
+		if depth == 0 {
+			branch, next = "", ""
 		}
 		if seen[pid] {
 			return
@@ -90,9 +93,9 @@ func sessionProcessTree(root string, shellPID int) string {
 		}
 		label := ""
 		if foreground > 0 && p.group == foreground {
-			label = " [foreground]"
+			label = " [fg]"
 		}
-		fmt.Fprintf(&out, "%s%s%d %s%s\n", prefix, branch, pid, p.name, label)
+		fmt.Fprintf(&out, "%s%s%s (%d)%s\n", prefix, branch, p.name, pid, label)
 		for i, child := range children[pid] {
 			walk(child, prefix+next, i == len(children[pid])-1, depth+1)
 			if len(seen) >= 128 {

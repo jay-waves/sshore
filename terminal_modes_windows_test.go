@@ -1,6 +1,7 @@
 package main
 
 import (
+	shellmux "github.com/jay-waves/sshore/internal/mux"
 	"os"
 	"os/exec"
 	"syscall"
@@ -57,13 +58,13 @@ func TestWindowsMouseCaptureFollowsRemoteRequests(t *testing.T) {
 	if mode := readMode(); mode&windows.ENABLE_MOUSE_INPUT != 0 || mode&windows.ENABLE_VIRTUAL_TERMINAL_INPUT == 0 {
 		t.Fatalf("shell inherited mouse capture: %#x", mode)
 	}
-	var state terminalMouseState
+	var state shellmux.InputState
 	for _, enabled := range []bool{true, false} {
 		seq := "\x1b[?1003;1006l"
 		if enabled {
 			seq = "\x1b[?1003;1006h"
 		}
-		state.observe([]byte(seq))
+		state.Observe([]byte(seq))
 		if err := syncTerminalMouse(&state); err != nil {
 			t.Fatal(err)
 		}

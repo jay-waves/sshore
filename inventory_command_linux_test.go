@@ -49,7 +49,7 @@ func TestListScopes(t *testing.T) {
 		t.Fatal("offline list invoked SSH")
 	}
 	remote, stderr, err := run("list", "work", "--json")
-	if err != nil || !remote.RemoteQueried || len(remote.Resources) != 0 || len(remote.Shells) != 1 || remote.Shells[0].Name != "remote-only" || !strings.Contains(stderr, "Querying remote account on work") {
+	if err != nil || !remote.RemoteQueried || len(remote.Resources) != 0 || len(remote.Shells) != 1 || remote.Shells[0].Name != "remote-only" || stderr != "" {
 		t.Fatalf("%+v %s %v", remote, stderr, err)
 	}
 	if err = os.WriteFile(wrapper, []byte("#!/bin/sh\nexit 23\n"), 0700); err != nil {

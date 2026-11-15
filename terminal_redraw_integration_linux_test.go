@@ -69,7 +69,7 @@ func TestReconnectRestoresMouseAndRedrawsForegroundJob(t *testing.T) {
 	b, pid := e.attach("redraw")
 	// A foreground child with its own process group proves we do not merely
 	// signal the persistent shell. Split markers avoid matching input echo.
-	shellOutput(t, b, `sh -c 'trap '\''printf "REDRAW-%s\n" ready'\'' WINCH; printf "\033[?1003;1006hJOB-%s\n" ready; while :; do sleep 1; done'`, "JOB-ready")
+	shellOutput(t, b, `sh -c 'trap '\''printf "REDRAW-%s\n" ready'\'' WINCH; printf "\033[?1003;1006;1004;2004hJOB-%s\n" ready; while :; do sleep 1; done'`, "JOB-ready")
 	detachTestClient(t, b)
 	b, _ = e.attach("redraw")
 	assertMouseReplay(t, message{Type: "output", Data: []byte(expectTerminalText(t, b, "REDRAW-ready"))}, true)
@@ -88,7 +88,7 @@ func assertMouseReplay(t *testing.T, m message, enabled bool) {
 	if m.Type != "output" || !strings.Contains(string(m.Data), "\x1b[?1003l") {
 		t.Fatalf("missing mouse reset: %+v", m)
 	}
-	for _, mode := range []string{"1003", "1006"} {
+	for _, mode := range []string{"1003", "1006", "1004", "2004"} {
 		if strings.Contains(string(m.Data), "\x1b[?"+mode+"h") != enabled {
 			t.Fatalf("mouse %s state: %q", mode, m.Data)
 		}

@@ -18,6 +18,9 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/internal/transport"
 )
 
 type forwardConfig struct {
@@ -78,7 +81,7 @@ func runForwardWorker(f forwardConfig, s *resourceService) (int, error) {
 	defer func() {
 		select {
 		case request := <-stopped:
-			request.reply <- nil
+			request.Reply <- nil
 		default:
 		}
 	}()
@@ -92,7 +95,7 @@ func runForwardWorker(f forwardConfig, s *resourceService) (int, error) {
 		}
 		s.setTransport("reconnecting", err)
 		delay := forwardRetryDelay(attempt)
-		logf(os.Stderr, logWarning, "[sshore] Forward disconnected; retry %d/%d in %s. Existing TCP connections are lost.\n", attempt+1, f.Retries, delay)
+		termui.Log(os.Stderr, termui.Warning, "[sshore] Forward disconnected; TCP connections lost. Retry %d/%d in %s.\n", attempt+1, f.Retries, delay)
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -114,7 +117,7 @@ func runForwardAttempt(parent context.Context, f forwardConfig, s *resourceServi
 		args = append([]string{"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=15", "-o", "ConnectionAttempts=1"}, args...)
 	}
 	cmd := exec.CommandContext(ctx, exe, args...)
-	isolateFTPCommand(cmd, true)
+	transport.IsolateCommand(cmd, true)
 	if initial {
 		cmd.Env = s.sshEnvironment()
 	} else {

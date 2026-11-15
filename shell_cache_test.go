@@ -2,9 +2,7 @@ package main
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
-	"time"
 )
 
 func TestShellConnectionConfirmation(t *testing.T) {
@@ -25,8 +23,8 @@ func TestShellConnectionConfirmation(t *testing.T) {
 		t.Fatalf("%+v %v", rows, err)
 	}
 	v := shellView{State: rows[0].State, ConfirmedAt: rows[0].ConfirmedAt}
-	if !strings.Contains(snapshotState(v, time.Now()), "just confirmed") || !strings.Contains(snapshotState(v, time.Now().Add(2*time.Minute)), "last state") {
-		t.Fatal("missing cache age")
+	if snapshotState(v) != "-" || snapshotState(shellView{Active: true}) != "local active" || snapshotState(shellView{State: "attached"}) != "unconfirmed" {
+		t.Fatal("incorrect cached connection state")
 	}
 	c, err = trackShellConnection(o)
 	if err != nil {

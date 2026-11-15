@@ -4,16 +4,35 @@
 
 Support Linux and Windows on amd64 (x86-64) only. Do not build, package, or automatically install ARM targets. Keep published Git tags immutable.
 
+Windows mux is local-only; do not implement Windows remote shell hosting.
+Mux sessions have one terminal each; split panes and tiling are out of scope.
+See [terminal and mux design scope](SSHORE.md#terminal-and-mux-design-scope).
+
 ## Version and setup policy
 
 - Require exact full release versions, including PATCH. Do not introduce a separate protocol compatibility counter or silently accept a different release.
 - The managed scope is the current remote Unix account and its visible sshore shell daemons, across runtime directories. Other users are excluded. Preparation helpers and transient transport processes are not persistent shells.
 - A newer installed program or daemon rejects an older client. Never automatically downgrade. Unknown/unordered versions allow manual recovery only.
 - Missing software may be installed automatically. Existing older installations/shells require the user to type `update` after reviewing the affected shell list. Prepare and verify the replacement before ending any tasks; recheck the process snapshot under the account setup lock.
-- Manual recovery preserves the authenticated SSH connection and provides a transient PTY shell. No persistence, approval execution, file transfer, dynamic forwarding, or Ctrl-] detach. Retain help/version/diagnostics; restore normal functionality only after reconnecting.
+- Manual recovery preserves the authenticated SSH connection and provides a transient PTY shell. No persistence, approval execution, file transfer, dynamic forwarding, or local mux shortcuts (Ctrl+B / Ctrl-]) detach. Retain help/version/diagnostics; restore normal functionality only after reconnecting.
 - New binaries honor SSHORE_DISABLED in recovery mode; remove inherited helper socket environment. This is a product-mode restriction, not a sandbox: arbitrary legacy binaries and deliberately escaped/reparented tasks cannot be globally controlled.
 - Signal only confirmed, same-user shell processes and their identified tasks, using process identity validation. Never use process-name-wide kill commands. Failure to prepare a replacement must not terminate tasks.
 - Published tags are immutable. After a successful new publication and complete replacement assets, retain only the highest published PATCH in each MAJOR.MINOR series. Delete older release objects/assets, never their Git tags. Skip drafts, prereleases and noncanonical tags; failed or incomplete publication must not prune releases.
+
+Use GLOSSARY.md terminology for code organization. Name business packages and
+file groups after public commands (`cp`, `mount`, `forward`, `review`); keep
+shared infrastructure named for its responsibility.
+
+## User interaction
+
+Keep user-facing prompts concise, effective and elegant. Lead with the result or
+required action; show only information needed to understand the current state or
+decide what to do next. Prefer compact, aligned tables for lists. Avoid redundant
+status logs, repeated instructions and explanatory boilerplate; put diagnostics
+in explicit detail views and command reference material in CLI help. Preserve
+necessary warnings, destructive consequences, confirmation requirements and
+recovery instructions. Distinguish cached or uncertain state from live results.
+Apply this style consistently across commands.
 
 ## Documentation ownership
 

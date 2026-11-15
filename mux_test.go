@@ -56,20 +56,3 @@ func TestClientMuxRejectsDifferentOrUnknownBuild(t *testing.T) {
 		})
 	}
 }
-
-func TestReleaseCompatibility(t *testing.T) {
-	for _, tc := range []struct {
-		a, b string
-		want bool
-	}{
-		{"0.4.0", "0.4.9", false}, {"0.4.9", "0.4.0", false}, {"0.4.0", "0.4.0", true},
-		{"0.4.0", "0.5.0", false}, {"1.4.0", "0.4.0", false},
-		{"0.4.0", "0.40.0", false}, {"0.4.0", "0.4.00", false},
-		{"0.4.0", "0.4.1-rc1", false}, {"0.4.0", "", false},
-		{"0.4.1-dev-a", "0.4.1-dev-a", true}, {"0.4.1-dev-a", "0.4.1-dev-b", false},
-	} {
-		if got := compatibleVersions(tc.a, tc.b); got != tc.want {
-			t.Fatalf("%s / %s: %v, want %v", tc.a, tc.b, got, tc.want)
-		}
-	}
-}

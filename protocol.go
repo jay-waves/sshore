@@ -4,16 +4,17 @@ package main
 // streams switch to SFTP after their metadata handshake.
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/transport"
 )
 
 const requestTimeout = 10 * time.Second
 const chunkSize = 64 * 1024
-const maxFrame = chunkSize + 4096
+const maxFrame = transport.MaxFrame
 const (
 	control byte = iota
 	input
@@ -45,19 +46,7 @@ type message struct {
 	Data            []byte         `json:"-"`
 }
 
-func writeFull(w io.Writer, b []byte) error {
-	for len(b) > 0 {
-		n, err := w.Write(b)
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
-		b = b[n:]
-	}
-	return nil
-}
+func writeFull(w io.Writer, b []byte) error { return transport.WriteFull(w, b) }
 func writeMessage(w io.Writer, m message) error {
 	kind := control
 	var body []byte
@@ -73,32 +62,16 @@ func writeMessage(w io.Writer, m message) error {
 			return err
 		}
 	}
-	if len(body) > maxFrame {
-		return fmt.Errorf("frame exceeds %d bytes", maxFrame)
-	}
-	var header [5]byte
-	header[0] = kind
-	binary.BigEndian.PutUint32(header[1:], uint32(len(body)))
-	if err := writeFull(w, header[:]); err != nil {
-		return err
-	}
-	return writeFull(w, body)
+	return transport.WriteFrame(w, kind, body)
 }
+
 func readMessage(r io.Reader) (message, error) {
 	var m message
-	var header [5]byte
-	if _, err := io.ReadFull(r, header[:]); err != nil {
+	kind, body, err := transport.ReadFrame(r)
+	if err != nil {
 		return m, err
 	}
-	n := binary.BigEndian.Uint32(header[1:])
-	if n > maxFrame || header[0] > output {
-		return m, fmt.Errorf("invalid frame header")
-	}
-	body := make([]byte, n)
-	if _, err := io.ReadFull(r, body); err != nil {
-		return m, err
-	}
-	switch header[0] {
+	switch kind {
 	case input:
 		m.Type, m.Data = "input", body
 	case output:

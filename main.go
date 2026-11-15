@@ -20,17 +20,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.6.4"
+var version = "0.6.5"
 
 const connectionOptions = `Options (before --; may appear before or after HOST):
   --server PATH                 Remote executable (default: PATH, then ~/.local/bin/sshore)
   --download-dir DIRECTORY      Default download directory (approval still required)
   -q, --quiet                   Hide periodic transfer progress
-  --no-escape                   Forward Ctrl-] instead of detaching locally
+  --no-escape                   Forward all input; disable local mux shortcuts
   -h, --help                    Show command help
+
+Ctrl+B then ? shows session shortcuts.
 
 SSH options (only after --):
   -p PORT  -i KEY  -J JUMP  -F CONFIG  -l USER  -o OPTION
@@ -66,7 +70,11 @@ Help:
   sshore --version
 
 new never resumes; attach never creates or evicts another client.
-Ctrl-] detaches; exit or detected connection loss ends the shell. No screen replay.
+Ctrl+B then d (or Ctrl-]) detaches; Ctrl+B then ? shows keys.
+Exit or detected connection loss ends the shell. No screen replay.
+Ctrl+B keys: c new session; n/p next/previous; l last; s/w choose session.
+            d detach; r redraw; i info; ? help; Ctrl+B send prefix.
+Unknown prefix combinations pass through. --no-escape disables all local shortcuts.
 Requests for files or ports detach; run sshore review locally to review them.
 Requires local OpenSSH. New/attach commands install missing remote software automatically.
 Older remote versions offer update or recovery; newer versions reject.
@@ -85,7 +93,7 @@ var commandHelp = map[string]string{
 
 Create a new shell. Omit NAME for an automatic Pokemon name.
 An existing name is an error; use sshore attach HOST NAME to resume it.
-Ctrl-] or remote sshore detach leaves programs running; exit ends the shell.
+Ctrl+B d, Ctrl-] or remote sshore detach leaves programs running; exit ends the shell.
 
 ` + connectionOptions,
 	"attach": `Usage: sshore attach [HOST [NAME]] [options]
@@ -184,7 +192,7 @@ No SSH passwords or separate approval passwords are stored or collected.
 
 Run inside a remote sshore shell. Disconnect the current client and cancel
 its transfers, keeping the shell and its PID alive. Reconnect with
-sshore attach HOST NAME. Ctrl-] is the local detach shortcut.
+sshore attach HOST NAME. Ctrl+B d and Ctrl-] detach locally.
 `,
 }
 
@@ -453,11 +461,11 @@ func run(args []string) (int, error) {
 func main() {
 	code, err := run(os.Args[1:])
 	if err != nil {
-		logf(os.Stderr, logError, "sshore: %s\n", cleanText(err.Error()))
+		termui.Log(os.Stderr, termui.Error, "sshore: %s\n", cleanText(err.Error()))
 		var e *usageError
 		if errors.As(err, &e) {
 			code = 2
-			logf(os.Stderr, logInfo, "Try 'sshore --help'.\n")
+			termui.Log(os.Stderr, termui.Info, "Try 'sshore --help'.\n")
 		} else if code == 0 {
 			code = 1
 		}

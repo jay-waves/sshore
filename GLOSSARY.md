@@ -20,13 +20,13 @@ This document defines the project vocabulary. Commands are documented by
 
 | Term | Meaning |
 | --- | --- |
-| Mux | The detach/reattach capability: explicitly leave a remote shell running and attach again later. The internal smux library separately multiplexes transport streams. |
+| Mux | The detach/reattach capability: explicitly leave a shell running and attach again later. Each shell session has one terminal; mux does not imply split panes. The internal smux library separately multiplexes transport streams. |
 | Session | A running task managed by sshore: a shell, forward or mount. Pending reviews are requests, not started sessions. |
-| Shell | A remote persistent shell and PTY owned by a shell daemon. It can survive explicit detach. |
-| Daemon | The remote process owning a shell's PTY, helper endpoint and lifecycle. |
+| Shell | A persistent shell and native terminal owned by a daemon: a Linux remote shell today, or a Windows local shell in the planned local mux. It can survive explicit detach. |
+| Daemon | The background process owning a shell's native terminal and lifecycle; the existing Linux remote daemon also owns its helper endpoint. |
 | Shell name | A public label, automatic or user-supplied; renaming it does not replace the daemon or shell. |
 | Task | A program associated with a shell. Identifying tasks for termination requires process identity checks, not just a displayed PID. |
-| Detach | Explicitly end an attachment while preserving its shell. Ctrl-] and `sshore detach` request this. |
+| Detach | Explicitly end an attachment while preserving its shell. Ctrl+B d, Ctrl-] and `sshore detach` request this. |
 | Disconnect | Loss of transport. For an attached shell, it ends the shell once detected unless explicit detach already occurred. |
 | Cancel | The public action for discarding a request, stopping a resource or ending a named remote shell. Its scope depends on the identifier. |
 | Recovery | A temporary shell on the authenticated SSH connection, without persistent shell or normal sshore operations. It is not a sandbox. |
@@ -85,7 +85,7 @@ This document defines the project vocabulary. Commands are documented by
   claims. Listings do not probe target services; missing peer heartbeats mean
   unknown state, not confirmed termination.
 
-The legacy `ftp` filename prefix does not name a supported command or plain FTP
-transport. The command is `mount`; its protocol is SFTP over SSH. `review` replaces
+Business package and filename prefixes follow the public commands: `cp`,
+`mount`, `forward` and `review`. The mount protocol is SFTP over SSH. `review` replaces
 `approve`, and `cancel` replaces the public `stop`/`kill` verbs. Internal wire or
 function names may retain historical terminology.

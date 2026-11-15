@@ -44,7 +44,7 @@ flowchart LR
     mounted --> inventory
     inventory --> peerlist["Read-only list; no local authorization or control tokens"]
     program -->|"Request metadata over SSH"| client
-    client -->|"Explicit detach: preserve shell"| program
+    client -->|"Explicit detach / session switch: preserve shell"| program
     client -->|"Detected transport loss: close PTY, end shell"| program
     client -->|"Validate, save, detach"| record
     user -->|"Rename OLD NEW over SSH"| renamegate
@@ -115,9 +115,12 @@ OpenSSH owns passwords, keys, agents, MFA and host-key checks. No separate appro
 | Unwanted listener or access to a local service | Independent forwards request an IPv4 `127.0.0.1` listener on the selected end and connect to loopback on the other. Remote requests fix the server port and direction and may suggest a local port; local review selects or accepts that port and resolves fixed client/server endpoints before execution. OpenSSH owns the approved forwarding transport and destination mapping; server GatewayPorts policy can override reverse bind addresses. Occupied ports fail without substitution. Loopback is not per-user isolation. |
 | Terminal control injection in local messages | Displayed paths and errors are sanitized. The remote terminal byte stream itself remains unfiltered and untrusted. |
 
-Direct and approved copies share SFTP transfer code: exact-size checks and SHA-256 readback of uploaded temporary content, with transport integrity provided by authenticated SSH. These checks do not authenticate file provenance. Approved streams expose only the selected remote file and its temporary upload, never a general SFTP filesystem; server publication checks size, syncs the file, and refuses overwrite. Downloaded content and forwarded services may be malicious. Avoid destinations that automatically load new scripts or configuration; an approved large file can still fill the disk. File endpoints must be regular files; direct cp also accepts explicit stdin/stdout. Stdout is not atomic and cannot retract bytes on failure. Stdin can be unbounded and exhaust remote storage before EOF; file publication still requires size/digest verification and refuses overwrite. Metadata is not copied. Linux received files default to `0600`; Windows files inherit the destination directory ACL.
+Direct and approved copies share SFTP transfer code: exact-size checks and SHA-256 readback of uploaded temporary content, with transport integrity provided by authenticated SSH. These checks do not authenticate file provenance. Approved streams expose only the selected remote file and its temporary upload, never a general SFTP filesystem; server publication checks size, syncs the file, and refuses overwrite. Downloaded content and forwarded services may be malicious. Avoid destinations that automatically load new scripts or configuration; an approved large file can still fill the disk. Local source opens reject final-component symlinks/reparse points and compare
+the opened file identity with the initial check. Linux uses a nonblocking open so
+a replacement FIFO cannot stall validation. This does not lock parent directories
+or prevent changes to the content of the same file. File endpoints must be regular files; direct cp also accepts explicit stdin/stdout. Stdout is not atomic and cannot retract bytes on failure. Stdin can be unbounded and exhaust remote storage before EOF; file publication still requires size/digest verification and refuses overwrite. Metadata is not copied. Linux received files default to `0600`; Windows files inherit the destination directory ACL.
 
-Cancellation removes incomplete files when cleanup can run. Forced termination may leave `.sshore-*.part` files; batch failure does not undo completed files. During approved operations and `--stay`, remote terminal output is suppressed. Detach/disconnection cancels connection-owned transfers. Independent mounts and forwards keep their own lifetimes; ending a shell does not stop them. Only explicit detach preserves the remote shell (including approval-request detach and completed file operations with `--stay`). Other transport loss closes the PTY and ends the daemon when detected. This uses normal terminal hangup semantics, not process-tree extermination: programs that ignore hangup or deliberately escape the terminal may survive, as with SSH. It does not promise cleanup of arbitrary reparented tasks.
+Cancellation removes incomplete files when cleanup can run. Forced termination may leave `.sshore-*.part` files; batch failure does not undo completed files. During approved operations and `--stay`, remote terminal output is suppressed. Detach/disconnection cancels connection-owned transfers. Independent mounts and forwards keep their own lifetimes; ending a shell does not stop them. Only explicit detach (including the detach phase of a local session switch) preserves the remote shell (including approval-request detach and completed file operations with `--stay`). Other transport loss closes the PTY and ends the daemon when detected. This uses normal terminal hangup semantics, not process-tree extermination: programs that ignore hangup or deliberately escape the terminal may survive, as with SSH. It does not promise cleanup of arbitrary reparented tasks.
 
 Local `forward` defaults to a detached local worker. Remote
 forward requests are local pending tasks; approval verifies the original shell
@@ -252,7 +255,7 @@ Installer checksums detect corruption, not compromise of the publisher/repositor
 
 ## Manual recovery
 
-Recovery preserves the authenticated SSH connection and starts a transient PTY shell without a persistent shell daemon. Persistence, approval execution, file transfer, dynamic forwarding and Ctrl-] detach are disabled; help, version and diagnostics remain available. Normal functionality requires reconnecting.
+Recovery preserves the authenticated SSH connection and starts a transient PTY shell without a persistent shell daemon. Persistence, approval execution, file transfer, dynamic forwarding and local mux shortcuts (Ctrl+B and Ctrl-]) are disabled; help, version and diagnostics remain available. Normal functionality requires reconnecting.
 
 Inherited helper socket variables are removed and new sshore binaries honor `SSHORE_DISABLED=1`. Approved operations are skipped both in recovery and after a setup update, and must be requested again.
 

@@ -62,10 +62,10 @@ func (s *shell) checkForwardApproval(m message) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.exited || s.cmd == nil || s.cmd.Process.Pid != m.PID || s.name != m.Name {
+	if s.lifecycle.Exited() || s.cmd == nil || s.cmd.Process.Pid != m.PID || s.name != m.Name {
 		return fmt.Errorf("approved shell changed; request forwarding again")
 	}
-	if s.active != nil {
+	if s.lifecycle.Active() != nil {
 		return fmt.Errorf("source shell is attached; detach it before reviewing the forward")
 	}
 	return removeRemoteTask(m.ApprovalID)

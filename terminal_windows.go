@@ -10,9 +10,11 @@ package main
 
 import (
 	"fmt"
-	"golang.org/x/sys/windows"
+	shellmux "github.com/jay-waves/sshore/internal/mux"
 	"io"
 	"os"
+
+	"golang.org/x/sys/windows"
 )
 
 func rawTerminal() (func(), error) {
@@ -55,11 +57,6 @@ func terminalInputReader() io.Reader {
 	}}
 }
 
-func supportsANSI(f *os.File) bool {
-	var mode uint32
-	return windows.GetConsoleMode(windows.Handle(f.Fd()), &mode) == nil && mode&windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0
-}
-
 // Approval runs before rawTerminal enables VT output. Temporarily enable it
 // for cleanup on Windows Terminal/ConPTY and VT-capable Console Host.
 func writeTerminalControl(f *os.File, sequence string) {
@@ -77,18 +74,15 @@ func writeTerminalControl(f *os.File, sequence string) {
 
 // ReadConsole consumes VT text, but ConPTY multiplexers also consult the native
 // mouse flag. Keep that flag aligned with the remote application's requests.
-func syncTerminalMouse(state *terminalMouseState) error {
+func syncTerminalMouse(state *shellmux.InputState) error {
 	in := windows.Handle(os.Stdin.Fd())
 	var mode uint32
 	if err := windows.GetConsoleMode(in, &mode); err != nil {
 		return err
 	}
 	desired := mode &^ windows.ENABLE_MOUSE_INPUT
-	for _, enabled := range state.enabled[:5] {
-		if enabled {
-			desired |= windows.ENABLE_MOUSE_INPUT
-			break
-		}
+	if state.MouseEnabled() {
+		desired |= windows.ENABLE_MOUSE_INPUT
 	}
 	if desired == mode {
 		return nil

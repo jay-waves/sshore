@@ -67,12 +67,16 @@ visibility of remote changes. See `sshore mount --help` for timeouts and diagnos
 ## Mux — detach and reattach
 
 Detach from your remote shell while its programs keep running, then reattach
-to continue. Press Ctrl-] or run `sshore detach` in the remote shell.
+to continue. Press Ctrl+B then d (or Ctrl-]), or run `sshore detach` in the
+remote shell. Ctrl+B then c creates a session; n/p cycles, l returns to the
+previous session, and s opens the session chooser. Ctrl+B then ? shows keys;
+see `sshore --help`. Switching preserves the previous session and reconnects SSH;
+authentication may be requested again.
 
 ```sh
 sshore new work                 # Create a shell; prints its automatic name.
 sshore new work build           # Or choose a name.
-# Press Ctrl-] to detach and keep programs running.
+# Press Ctrl+B then d to detach and keep programs running.
 sshore attach work build        # Resume a specific detached shell.
 sshore attach work              # Resume the most recently used shell on work.
 sshore attach                   # Reuse the most recent host and shell.
@@ -94,7 +98,8 @@ not saved. `cancel HOST NAME` has no confirmation; unsaved work may be lost.
 ```mermaid
 flowchart LR
     connect["Local: new HOST / attach recent or named shell"] --> shell["Remote shell"]
-    shell -->|"Ctrl-] / detach"| detached["Programs keep running; acknowledged detach saved locally"]
+    shell -->|"Ctrl+B c/n/p/l/s/w: preserve, then reconnect"| connect
+    shell -->|"Ctrl+B d / Ctrl-] / detach"| detached["Programs keep running; acknowledged detach saved locally"]
     detached -->|"attach [HOST [NAME]]"| shell
     shell -->|"Exit / connection loss / cancel"| ended["Shell ends"]
     shell -->|"cp / forward: request, then detach"| pending["Local review/NAME"]

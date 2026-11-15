@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 type shellSnapshot struct {
@@ -147,14 +149,14 @@ func (s *shellConnection) confirm(name, state string) {
 		s.snapshot.State = "renamed"
 		s.snapshot.ConfirmedAt = time.Now()
 		if err := saveShellSnapshot(s.snapshot); err != nil {
-			logf(os.Stderr, logWarning, "[sshore] Could not save shell state: %s\n", cleanText(err.Error()))
+			termui.Log(os.Stderr, termui.Warning, "[sshore] Shell state not saved: %s\n", cleanText(err.Error()))
 		}
 		s.snapshot.Name = name
 	}
 	s.snapshot.State, s.snapshot.ConfirmedAt, s.snapshot.Unconfirmed = state, time.Now(), false
 	s.final = true
 	if err := saveShellSnapshot(s.snapshot); err != nil {
-		logf(os.Stderr, logWarning, "[sshore] Could not save shell state: %s\n", cleanText(err.Error()))
+		termui.Log(os.Stderr, termui.Warning, "[sshore] Shell state not saved: %s\n", cleanText(err.Error()))
 	}
 }
 func (s *shellConnection) close() {
@@ -165,7 +167,7 @@ func (s *shellConnection) close() {
 	if !s.final {
 		s.snapshot.Unconfirmed = true
 		if err := saveShellSnapshot(s.snapshot); err != nil {
-			logf(os.Stderr, logWarning, "[sshore] Could not save shell state: %s\n", cleanText(err.Error()))
+			termui.Log(os.Stderr, termui.Warning, "[sshore] Shell state not saved: %s\n", cleanText(err.Error()))
 		}
 	}
 }
@@ -196,4 +198,38 @@ func cacheRemoteShells(host string, inv inventory) error {
 		}
 	}
 	return nil
+}
+
+// renameShellSnapshot retains the last actual confirmation and leaves live locks
+// with their owning clients. It never creates evidence for an uncached shell.
+func renameShellSnapshot(host, old, name string) error {
+	oldPath, err := shellCachePath(host, old)
+	if err != nil {
+		return err
+	}
+	if err = privateState(oldPath, false); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	file, err := os.Open(oldPath)
+	if err != nil {
+		return err
+	}
+	var snapshot shellSnapshot
+	err = json.NewDecoder(io.LimitReader(file, 8192)).Decode(&snapshot)
+	file.Close()
+	if err != nil {
+		return err
+	}
+	if snapshot.Host != host || snapshot.Name != old {
+		return fmt.Errorf("invalid shell cache record")
+	}
+	renamed := snapshot
+	renamed.Name = name
+	if err = saveShellSnapshot(renamed); err != nil {
+		return err
+	}
+	snapshot.State = "renamed"
+	return saveShellSnapshot(snapshot)
 }

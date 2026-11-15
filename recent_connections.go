@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -119,4 +120,35 @@ func rememberConnection(o options) error {
 		return err
 	}
 	return writeStateJSON(filepath.Join(dir, "recent.json"), next)
+}
+
+// rememberShellRename changes cached labels only after a successful remote rename.
+// It does not reorder recent hosts or treat rename as an attachment confirmation.
+func rememberShellRename(host, old, name string) error {
+	if validSSHDestination(host) != nil || validSession(old) != nil || validSession(name) != nil {
+		return fmt.Errorf("invalid shell rename identity")
+	}
+	if old == name {
+		return nil
+	}
+	snapshotErr := renameShellSnapshot(host, old, name)
+	records, err := readRecentConnections()
+	if err != nil {
+		return errors.Join(snapshotErr, err)
+	}
+	changed := false
+	for i := range records {
+		if records[i].Host == host && records[i].Session == old {
+			records[i].Session = name
+			changed = true
+		}
+	}
+	if changed {
+		dir, e := stateDir("connections")
+		if e != nil {
+			return errors.Join(snapshotErr, e)
+		}
+		err = writeStateJSON(filepath.Join(dir, "recent.json"), records)
+	}
+	return errors.Join(snapshotErr, err)
 }

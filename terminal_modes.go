@@ -5,7 +5,10 @@ package main
 // TERM is not dumb; Windows temporarily enables VT and restores console flags.
 // During connection, remote PTY bytes pass through unchanged.
 
-import "os"
+import (
+	shellmux "github.com/jay-waves/sshore/internal/mux"
+	"os"
+)
 
 // Mouse reporting belongs to the terminal emulator, not termios/console raw
 // mode. A remote program can disable it while detached, when its output is
@@ -13,7 +16,7 @@ import "os"
 // input to the local approval prompt or a resumed remote shell.
 // Keep this a fixed input-mode cleanup, not a screen/keyboard emulator.
 func terminalInputResetSequence() string {
-	return mouseResetSequence() + "\x1b[?1004l\x1b[?2004l"
+	return shellmux.MouseResetSequence() + "\x1b[?1004l\x1b[?2004l"
 }
 
 func resetTerminalInputModes() {

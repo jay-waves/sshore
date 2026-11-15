@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 // The existing SSH transport owns this watcher. EOF or termination removes its
@@ -65,7 +67,7 @@ func watchRemoteTask() error {
 			}
 			if e := storeRemoteTask(t); e != nil && !warned {
 				warned = true
-				logf(os.Stderr, logWarning, "[sshore] Peer inventory unavailable; forwarding remains active: %s\n", cleanText(e.Error()))
+				termui.Log(os.Stderr, termui.Warning, "[sshore] Peer inventory unavailable; forward active: %s\n", cleanText(e.Error()))
 			}
 		}
 	}

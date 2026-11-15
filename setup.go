@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 type setupProcess struct {
@@ -41,14 +43,14 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, o *options, openInput fun
 		case "setup_ready":
 			if m.Action == "plain" {
 				if len(o.approved) > 0 {
-					logf(os.Stderr, logWarning, "[sshore] Approved operations were not executed; request them again after reconnecting.\n")
+					termui.Log(os.Stderr, termui.Warning, "[sshore] Operations skipped; reconnect and request again.\n")
 				}
 				o.plain, o.noEscape, o.stay = true, true, false
 				o.approved, o.resumePID = nil, 0
 			} else if m.Action == "updated" {
-				logf(os.Stderr, logSuccess, "[sshore] Remote updated to %s.\n", version)
+				termui.Log(os.Stderr, termui.Success, "[sshore] Remote updated to %s.\n", version)
 				if len(o.approved) > 0 {
-					logf(os.Stderr, logWarning, "[sshore] Setup changed the remote installation; approved operations were skipped. Request them again.\n")
+					termui.Log(os.Stderr, termui.Warning, "[sshore] Installation changed; operations skipped. Request again.\n")
 				}
 				o.approved, o.resumePID, o.stay = nil, 0, false
 			} else if m.Action != "managed" {
@@ -81,20 +83,20 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, o *options, openInput fun
 			if m.Action != "update" && m.Action != "manual-only" {
 				return fmt.Errorf("invalid setup choice")
 			}
-			logf(os.Stderr, logWarning, "[sshore] %s\n", cleanText(m.Error))
+			termui.Log(os.Stderr, termui.Warning, "[sshore] %s\n", cleanText(m.Error))
 			if m.Action == "update" {
 				if len(m.SetupProcesses) == 0 {
-					logf(os.Stderr, logInfo, "No shells need to be stopped.\n")
+					termui.Log(os.Stderr, termui.Info, "No shells to stop.\n")
 				} else {
-					logf(os.Stderr, logWarning, "Updating will end these shells and their tasks:\n")
+					termui.Log(os.Stderr, termui.Warning, "Update ends these shells and tasks:\n")
 				}
 			} else if len(m.SetupProcesses) > 0 {
-				logf(os.Stderr, logWarning, "Shells requiring manual recovery:\n")
+				termui.Log(os.Stderr, termui.Warning, "Shells requiring manual recovery:\n")
 			}
 			for _, p := range m.SetupProcesses {
-				logf(os.Stderr, logWarning, "  shell %s, PID %d, version %s\n", cleanText(p.Name), p.PID, cleanText(p.Version))
+				termui.Log(os.Stderr, termui.Warning, "  %s  PID %d  %s\n", cleanText(p.Name), p.PID, cleanText(p.Version))
 			}
-			logf(os.Stderr, logInfo, "Enter opens a temporary recovery shell; sshore features are disabled.\n")
+			termui.Log(os.Stderr, termui.Info, "Recovery: temporary shell, sshore disabled.\n")
 			prompt := "Type update to install, or Enter to recover: "
 			if m.Action == "manual-only" {
 				prompt = "Press Enter to recover: "
@@ -110,9 +112,9 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, o *options, openInput fun
 					break
 				}
 				if m.Action == "manual-only" {
-					logf(os.Stderr, logWarning, "Automatic update is unavailable. Press Enter to recover.\n")
+					termui.Log(os.Stderr, termui.Warning, "Update unavailable. Enter to recover.\n")
 				} else {
-					logf(os.Stderr, logWarning, "Type update, or press Enter to recover.\n")
+					termui.Log(os.Stderr, termui.Warning, "Type update or Enter to recover.\n")
 				}
 			}
 			closeErr := input.Close()

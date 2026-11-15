@@ -448,6 +448,22 @@ patch in that x.y series. Linux and Windows amd64 only.
 NOTES
 fi
 
+if [[ "$version" == "0.6.5" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Add Ctrl+B session creation, switching, selection, detach, redraw and help; preserve bracketed paste and literal prefix input.
+- Restore the original session when a switch fails before interactive readiness; never take over another attachment.
+- Harden terminal input cancellation, detach acknowledgement and failed attachment cleanup.
+- Extract native terminal and mux infrastructure, including the Windows ConPTY foundation. Windows local mux CLI remains unfinished; remote shell hosting remains Linux-only.
+- Organize copy, mount, review and shared transport code by responsibility, and align documentation with the implementation.
+
+Client and remote releases must match exactly. Updating older shells requires
+reviewing affected tasks and typing update, which ends those shells and tasks.
+Linux and Windows amd64 only.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."

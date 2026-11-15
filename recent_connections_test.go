@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestRecentAttachForms(t *testing.T) {
@@ -64,5 +65,54 @@ func TestRecentAttachMissingAndPerHost(t *testing.T) {
 	records, err := readRecentConnections()
 	if err != nil || len(records) != 2 {
 		t.Fatalf("%+v %v", records, err)
+	}
+}
+
+func TestRememberShellRenamePreservesHistory(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	original := options{host: "work", session: "old", server: "/custom/sshore", sshDirectory: t.TempDir(), ssh: []string{"-p", "2222"}}
+	if err := rememberConnection(original); err != nil {
+		t.Fatal(err)
+	}
+	if err := rememberConnection(options{host: "other", session: "old", server: "sshore"}); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	snapshot := shellSnapshot{Host: "work", Name: "old", State: "detached", ConfirmedAt: when, Unconfirmed: true}
+	if err := saveShellSnapshot(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := rememberShellRename("work", "old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	records, err := readRecentConnections()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records[0].Host != "other" || records[0].Session != "old" || records[1].Host != "work" || records[1].Session != "new" || records[1].Server != original.server || records[1].Directory != original.sshDirectory || !reflect.DeepEqual(records[1].SSH, original.ssh) {
+		t.Fatalf("rename changed transport/history: %+v", records)
+	}
+	o := options{command: "attach", host: "work"}
+	if err := resolveRecentAttach(&o); err != nil {
+		t.Fatal(err)
+	}
+	if o.session != "new" {
+		t.Fatalf("reattach still uses %q", o.session)
+	}
+	rows, err := readShellSnapshots()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range rows {
+		if s.Host == "work" && s.Name == "new" {
+			found = true
+			if s.State != snapshot.State || s.Unconfirmed != snapshot.Unconfirmed || !s.ConfirmedAt.Equal(when) {
+				t.Fatalf("rename fabricated confirmation: %+v", s)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("renamed shell snapshot missing")
 	}
 }

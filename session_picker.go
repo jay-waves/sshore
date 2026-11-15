@@ -11,6 +11,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 func chooseSetupSession(input setupInput, names []string) (string, error) {
@@ -25,12 +27,12 @@ func chooseLocalItem(input setupInput, names, labels []string, prompt, kind stri
 		for i := range names {
 			visible[i] = strings.Contains(strings.ToLower(labels[i]), strings.ToLower(filter))
 			if visible[i] {
-				logf(os.Stderr, logInfo, "  #%d  %s\n", i+1, cleanText(labels[i]))
+				termui.Log(os.Stderr, termui.Info, "  #%d  %s\n", i+1, cleanText(labels[i]))
 				matches++
 			}
 		}
 		if matches == 0 {
-			logf(os.Stderr, logWarning, "No matches. / clears the filter.\n")
+			termui.Log(os.Stderr, termui.Warning, "No matches. / clears the filter.\n")
 		}
 	}
 	show("")
@@ -56,6 +58,6 @@ func chooseLocalItem(input setupInput, names, labels []string, prompt, kind stri
 		if strings.HasPrefix(answer, "#") && err == nil && n >= 1 && n <= len(names) && visible[n-1] {
 			return names[n-1], nil
 		}
-		logf(os.Stderr, logWarning, "Choose a listed #number or exact identity; /text filters.\n")
+		termui.Log(os.Stderr, termui.Warning, "Choose a listed #number or exact identity; /text filters.\n")
 	}
 }

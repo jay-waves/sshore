@@ -27,7 +27,7 @@ func TestSessionProcessTree(t *testing.T) {
 		}
 	}
 	got := sessionProcessTree(root, 10)
-	expected := "`-- 10 bash\n    |-- 20 codex [foreground]\n    |   `-- 21 worker (job) [foreground]\n    `-- 30 sleep\n        `-- 50 bad�name\n"
+	expected := "bash (10)\n├─ codex (20) [fg]\n│  └─ worker (job) (21) [fg]\n└─ sleep (30)\n   └─ bad�name (50)\n"
 	if got != expected {
 		t.Fatalf("tree:\n%s\nwant:\n%s", got, expected)
 	}

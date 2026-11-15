@@ -86,21 +86,6 @@ func TestSetupPlainClearsApprovedOperations(t *testing.T) {
 		t.Fatal(o)
 	}
 }
-func TestCompareReleaseVersions(t *testing.T) {
-	for _, tc := range []struct {
-		a, b  string
-		order int
-		known bool
-	}{
-		{"0.4.0", "0.4.0", 0, true}, {"0.4.1", "0.4.0", 1, true}, {"0.4.0", "0.4.1", -1, true},
-		{"0.10.0", "0.9.9", 1, true}, {"2.0.0", "1.99.99", 1, true}, {"0.4.0-dev", "0.4.0", 0, false},
-	} {
-		got, known := compareVersions(tc.a, tc.b)
-		if got != tc.order || known != tc.known {
-			t.Fatal(tc, got, known)
-		}
-	}
-}
 
 func TestAttachSessionSelection(t *testing.T) {
 	for _, tc := range []struct {

@@ -13,7 +13,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"golang.org/x/term"
 	"io"
 	"net"
 	"net/http"
@@ -23,6 +22,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/term"
+
+	"github.com/jay-waves/sshore/internal/mount"
 )
 
 type resourceRecord struct {
@@ -39,7 +42,7 @@ type resourceConfig struct {
 	Args                   []string
 	AuthAddress, AuthToken string
 }
-type resourceStopRequest struct{ reply chan error }
+type resourceStopRequest = mount.StopRequest
 type resourceService struct {
 	status     resourceStatusState
 	record     resourceRecord
@@ -215,14 +218,14 @@ func runResourceWorker() (code int, resultErr error) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(s.statusSnapshot())
 		case r.Method == "POST" && r.URL.Path == "/stop":
-			request := resourceStopRequest{reply: make(chan error, 1)}
+			request := resourceStopRequest{Reply: make(chan error, 1)}
 			select {
 			case s.stop <- request:
 			case <-r.Context().Done():
 				return
 			}
 			select {
-			case e := <-request.reply:
+			case e := <-request.Reply:
 				if e != nil {
 					http.Error(w, cleanText(e.Error()), 409)
 				} else {

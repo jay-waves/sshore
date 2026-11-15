@@ -6,8 +6,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/pkg/sftp"
-	"github.com/xtaci/smux"
 	"io"
 	"net"
 	"os"
@@ -18,6 +16,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/pkg/sftp"
+	"github.com/xtaci/smux"
+
+	"github.com/jay-waves/sshore/internal/cp"
 )
 
 var testBuild struct {
@@ -147,7 +150,7 @@ func (e *testEnv) bridge(name string, modes ...string) *bridgeConn {
 			e.t.Fatalf("automatic setup: %+v", m)
 		}
 	}
-	mux, err := clientMux(&pipeTransport{Reader: out, Writer: in, closers: []io.Closer{in, out}})
+	mux, err := clientMux(&pipeTransport{Reader: out, Writer: in, Closers: []io.Closer{in, out}})
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -478,7 +481,7 @@ func TestConcurrentStreamsCancelIsolation(t *testing.T) {
 	if err := os.WriteFile(source, []byte("ok"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := copyUpload(fast, source, "/target", 2, nil); err != nil {
+	if err := cp.Upload(fast, source, "/target", 2, nil); err != nil {
 		t.Fatal(err)
 	}
 	waitUploadFiles(t, dir, 1)

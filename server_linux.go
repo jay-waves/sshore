@@ -44,9 +44,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/creack/pty"
+	shellmux "github.com/jay-waves/sshore/internal/mux"
 	"github.com/xtaci/smux"
 	"golang.org/x/sys/unix"
+
+	"github.com/jay-waves/sshore/internal/mount"
 )
 
 func runtimeDir() (string, error) {
@@ -328,6 +330,7 @@ type attachment struct {
 	controlMu         sync.Mutex
 	terminalWriteMu   sync.Mutex
 	approvalRequests  chan struct{}
+	input             *shellmux.InputLease
 	muted             atomic.Bool
 }
 
@@ -352,13 +355,12 @@ type shell struct {
 	exitReason string
 	plain      bool
 	terminalMu sync.Mutex // serializes state snapshots with PTY output
-	mouse      terminalMouseState
+	mouse      shellmux.InputState
 	mu         sync.Mutex
-	active     *attachment
+	lifecycle  shellmux.Lifecycle[*attachment]
 	started    time.Time // shell lifetime, including time spent detached
-	master     *os.File
+	master     *shellmux.Terminal
 	cmd        *exec.Cmd
-	exited     bool
 	path       string
 	done       chan struct{}
 	once       sync.Once
@@ -384,7 +386,7 @@ func (s *shell) start(cols, rows uint16, term string) error {
 	if exe, err := os.Executable(); err == nil && !s.plain {
 		cmd.Env = append(cmd.Env, "PATH="+filepath.Dir(exe)+":"+os.Getenv("PATH"))
 	}
-	master, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: max(cols, 1), Rows: max(rows, 1)})
+	master, err := shellmux.StartCommand(cmd, shellmux.Size{Cols: max(cols, 1), Rows: max(rows, 1)})
 	if err != nil {
 		return err
 	}
@@ -396,9 +398,9 @@ func (s *shell) start(cols, rows uint16, term string) error {
 			n, err := master.Read(buf)
 			if n > 0 {
 				s.terminalMu.Lock()
-				s.mouse.observe(buf[:n])
+				s.mouse.Observe(buf[:n])
 				s.mu.Lock()
-				p := s.active
+				p := s.lifecycle.Active()
 				s.mu.Unlock()
 				if p != nil {
 					if p.output(message{Type: "output", Data: buf[:n]}) != nil {
@@ -411,7 +413,7 @@ func (s *shell) start(cols, rows uint16, term string) error {
 				break
 			}
 		}
-		err := cmd.Wait()
+		err := master.Wait()
 		code := 0
 		if err != nil {
 			code = 1
@@ -421,9 +423,7 @@ func (s *shell) start(cols, rows uint16, term string) error {
 			}
 		}
 		s.mu.Lock()
-		p := s.active
-		s.active = nil
-		s.exited = true
+		p := s.lifecycle.End()
 		if s.exitReason == "" {
 			s.exitReason = fmt.Sprintf("shell exited (code %d)", code)
 			if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
@@ -455,45 +455,56 @@ func (s *shell) attach(p *attachment, m message) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.exited {
-		return fmt.Errorf("shell is exiting; use sshore new HOST to create a new one")
-	}
-	if s.active != nil {
-		return fmt.Errorf("shell already attached; detach the other connection first")
-	}
-	if m.Action == "existing" && s.cmd == nil {
-		return fmt.Errorf("shell has not started; use sshore list HOST")
-	}
-	if m.Action == "approved" {
-		if s.cmd == nil || s.cmd.Process.Pid != m.PID {
-			return fmt.Errorf("approved shell changed")
+	startedHere := false
+	err := s.lifecycle.Attach(p, func() error {
+		if m.Action == "existing" && s.cmd == nil {
+			return fmt.Errorf("shell has not started; use sshore list HOST")
 		}
-		p.muted.Store(true)
-	}
-	reconnecting := s.master != nil
-	if s.master == nil {
-		if err := s.start(m.Cols, m.Rows, m.Term); err != nil {
-			return err
+		if m.Action == "approved" {
+			if s.cmd == nil || s.cmd.Process.Pid != m.PID {
+				return fmt.Errorf("approved shell changed")
+			}
+			p.muted.Store(true)
 		}
-	}
-	if err := pty.Setsize(s.master, &pty.Winsize{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
-		return err
-	}
-	if err := p.controlMessage(message{Type: "ready", PID: s.cmd.Process.Pid, Name: s.name}); err != nil {
-		return err
-	}
-	if !p.muted.Load() {
-		if data := s.mouse.replay(); len(data) > 0 {
-			if err := p.output(message{Type: "output", Data: data}); err != nil {
+		reconnecting := s.master != nil
+		if s.master == nil {
+			if err := s.start(m.Cols, m.Rows, m.Term); err != nil {
 				return err
 			}
+			startedHere = true
 		}
+		if err := s.master.Resize(shellmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
+			return err
+		}
+		if err := p.controlMessage(message{Type: "ready", PID: s.cmd.Process.Pid, Name: s.name}); err != nil {
+			return err
+		}
+		if !p.muted.Load() {
+			if data := s.mouse.Replay(); len(data) > 0 {
+				if err := p.output(message{Type: "output", Data: data}); err != nil {
+					return err
+				}
+			}
+		}
+		p.input = shellmux.NewInputLease(s.master)
+		if reconnecting && !p.muted.Load() {
+			shellmux.RequestRedraw(s.master, s.cmd.Process.Pid)
+		}
+		return nil
+	})
+	if err != nil && startedHere {
+		s.lifecycle.End()
+		s.exitReason = "initial attachment failed"
+		_ = s.master.Close()
+		s.stop()
 	}
-	s.active = p
-	if reconnecting && !p.muted.Load() {
-		requestTerminalRedraw(s.master, s.cmd.Process.Pid)
+	if errors.Is(err, shellmux.ErrExited) {
+		return fmt.Errorf("shell is exiting; use sshore new HOST to create a new one")
 	}
-	return nil
+	if errors.Is(err, shellmux.ErrAttached) {
+		return fmt.Errorf("shell already attached; detach the other connection first")
+	}
+	return err
 }
 func (s *shell) release(p *attachment) {
 	p.close()
@@ -501,9 +512,10 @@ func (s *shell) release(p *attachment) {
 	defer s.mu.Unlock()
 	// Explicit detach already cleared active. Failed competing attachments must
 	// never end the owner session. Mark it exiting before allowing any reattach.
-	if s.active == p {
-		s.active = nil
-		s.exited = true
+	if s.lifecycle.Release(p) {
+		if p.input != nil {
+			_ = p.input.Stop()
+		}
 		if s.exitReason == "" {
 			s.exitReason = "connection lost without detach"
 		}
@@ -514,24 +526,28 @@ func (s *shell) release(p *attachment) {
 	}
 }
 
-func (s *shell) clearAttachment(p *attachment) {
+func (s *shell) clearAttachment(p *attachment) bool {
 	s.mu.Lock()
-	if s.active == p {
-		s.active = nil
+	defer s.mu.Unlock()
+	if s.lifecycle.Active() == p && p.input != nil {
+		if err := p.input.Stop(); err != nil {
+			s.lifecycle.Release(p)
+			s.exitReason = "terminal input cancellation failed"
+			s.stop()
+			return false
+		}
 	}
-	s.mu.Unlock()
+	return s.lifecycle.Detach(p)
 }
 func (s *shell) detach(p *attachment) {
-	s.clearAttachment(p)
+	if !s.clearAttachment(p) {
+		p.close()
+		return
+	}
 	s.mu.Lock()
 	name := s.name
 	s.mu.Unlock()
-	_ = p.controlMessage(message{Type: "detached", Name: name})
-	// Let the client acknowledge the final frame before closing the mux transport.
-	// Closing a mux session immediately can discard unread stream buffers.
-	_ = p.control.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, _ = readMessage(p.control)
-	p.close()
+	shellmux.FinishDetach(p.control, func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, p.close)
 }
 func (s *shell) serveMux(c io.ReadWriteCloser) error {
 	mux, err := smux.Server(c, muxConfig())
@@ -604,18 +620,28 @@ func (s *shell) serveMux(c io.ReadWriteCloser) error {
 				p.close()
 				return
 			}
-			if m.Type != "input" {
+			if m.Type != "input" && m.Type != "input_barrier" {
 				p.close()
 				return
 			}
 			s.mu.Lock()
-			allowed := s.active == p
-			master := s.master
+			allowed := s.lifecycle.Active() == p
+			input := p.input
 			s.mu.Unlock()
 			if !allowed {
 				return
 			}
-			if err = writeFull(master, m.Data); err != nil {
+			if m.Type == "input_barrier" {
+				if err = p.output(message{Type: "input_drained"}); err != nil {
+					p.close()
+					return
+				}
+				continue
+			}
+			if err = writeFull(input, m.Data); err != nil {
+				if input.Stopped() {
+					return
+				}
 				p.close()
 				return
 			}
@@ -630,12 +656,12 @@ func (s *shell) serveMux(c io.ReadWriteCloser) error {
 		case "resume_output":
 			s.terminalMu.Lock()
 			if p.muted.Swap(false) {
-				if data := s.mouse.replay(); len(data) > 0 {
+				if data := s.mouse.Replay(); len(data) > 0 {
 					err = p.output(message{Type: "output", Data: data})
 				}
 				s.mu.Lock()
-				if err == nil && s.active == p {
-					requestTerminalRedraw(s.master, s.cmd.Process.Pid)
+				if err == nil && s.lifecycle.Active() == p {
+					shellmux.RequestRedraw(s.master, s.cmd.Process.Pid)
 				}
 				s.mu.Unlock()
 			}
@@ -646,12 +672,31 @@ func (s *shell) serveMux(c io.ReadWriteCloser) error {
 			if err := p.controlMessage(message{Type: "output_resumed"}); err != nil {
 				return err
 			}
-		case "resize":
+		case "session_targets":
+			if err := p.controlMessage(s.sessionTargets(m)); err != nil {
+				return err
+			}
+		case "redraw":
+			s.terminalMu.Lock()
 			s.mu.Lock()
-			if s.active == p {
-				_ = pty.Setsize(s.master, &pty.Winsize{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
+			if s.lifecycle.Active() == p && !p.muted.Load() {
+				shellmux.RequestRedraw(s.master, s.cmd.Process.Pid)
 			}
 			s.mu.Unlock()
+			s.terminalMu.Unlock()
+			if err := p.controlMessage(message{Type: "redrawn"}); err != nil {
+				return err
+			}
+		case "resize":
+			s.mu.Lock()
+			var resizeErr error
+			if s.lifecycle.Active() == p {
+				resizeErr = s.master.Resize(shellmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
+			}
+			s.mu.Unlock()
+			if resizeErr != nil {
+				return fmt.Errorf("resize terminal: %w", resizeErr)
+			}
 			if err := p.controlMessage(message{Type: "resized", Cols: m.Cols, Rows: m.Rows}); err != nil {
 				return err
 			}
@@ -699,10 +744,10 @@ func (s *shell) handle(c net.Conn) {
 		_ = writeMessage(c, message{Type: "renamed", Name: first.Name})
 	case "status":
 		s.mu.Lock()
-		m := message{Type: "session", Attached: s.active != nil, Name: s.name, SoftwareVersion: version}
+		m := message{Type: "session", Attached: s.lifecycle.Active() != nil, Name: s.name, SoftwareVersion: version}
 		group := 0
 		if s.master != nil {
-			group, _ = unix.IoctlGetInt(int(s.master.Fd()), unix.TIOCGPGRP)
+			group, _ = s.master.ForegroundGroup()
 		}
 		if s.cmd != nil {
 			m.PID = s.cmd.Process.Pid
@@ -717,7 +762,7 @@ func (s *shell) handle(c net.Conn) {
 		_ = writeMessage(c, m)
 	case "detach":
 		s.mu.Lock()
-		p := s.active
+		p := s.lifecycle.Active()
 		s.mu.Unlock()
 		// Ask the attachment's control loop to handle finalization, avoiding two
 		// concurrent readers of the control stream.
@@ -894,7 +939,7 @@ func serverCommand(args []string) error {
 		if len(args) != 1 {
 			return usage("mount-agent takes no arguments")
 		}
-		return serveFTPMountAgent(&pipeTransport{Reader: os.Stdin, Writer: os.Stdout, closers: []io.Closer{os.Stdin, os.Stdout}})
+		return mount.ServeAgent(&pipeTransport{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version)
 	case "rename-session":
 		if len(args) != 4 {
 			return usage("rename-session requires old name, new name and client version")
@@ -991,6 +1036,7 @@ func detachedSessionNames() ([]string, error) {
 		return nil, err
 	}
 	names := []string{}
+	deadline := time.Now().Add(2 * time.Second)
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".sock") {
 			continue
@@ -999,11 +1045,18 @@ func detachedSessionNames() ([]string, error) {
 		if validSession(name) != nil {
 			continue
 		}
-		c, err := net.DialTimeout("unix", filepath.Join(dir, e.Name()), time.Second)
+		if time.Until(deadline) <= 0 {
+			return nil, fmt.Errorf("session lookup timed out")
+		}
+		c, err := net.DialTimeout("unix", filepath.Join(dir, e.Name()), min(time.Second, time.Until(deadline)))
 		if err != nil {
 			continue
 		}
-		_ = c.SetDeadline(time.Now().Add(time.Second))
+		probeDeadline := time.Now().Add(time.Second)
+		if deadline.Before(probeDeadline) {
+			probeDeadline = deadline
+		}
+		_ = c.SetDeadline(probeDeadline)
 		err = writeMessage(c, message{Type: "status"})
 		var m message
 		if err == nil {

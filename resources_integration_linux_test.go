@@ -17,6 +17,7 @@ import (
 
 func TestApprovedForwardIndependent(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
+	t.Setenv("SSH_CONNECTION", "")
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	e := newEnv(t)
 	remoteHome := t.TempDir()
