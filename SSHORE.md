@@ -374,8 +374,9 @@ security explanation needs them.
 version. Put version-specific changes and migration notes in `scripts/release.sh`.
 Do not accumulate a changelog in the project documents.
 
-CI builds Linux and Windows amd64 on pushes and pull requests. On `main`, after
-both builds succeed, the release job checks that the commit is still the branch
+CI builds Linux and Windows amd64 in one Linux job on pushes and pull requests,
+sharing checkout, Go setup and dependency caches. It packages both targets and
+uploads one artifact. On `main`, after both builds succeed, the release job checks that the commit is still the branch
 head, creates the new tag, and publishes archives plus `SHA256SUMS`. Builds use
 `-trimpath` and version linker flags without `sshoretest`. Published Git tags are immutable; existing release assets are never overwritten.
 After publication, `scripts/prune_releases.py` plans retention from a complete
