@@ -118,7 +118,7 @@ func runForwardAttempt(parent context.Context, f forwardConfig, s *resourceServi
 		args = append([]string{"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=15", "-o", "ConnectionAttempts=1"}, args...)
 	}
 	cmd := exec.CommandContext(ctx, exe, args...)
-	isolateFTPCommand(cmd)
+	isolateFTPCommand(cmd, true)
 	if initial {
 		cmd.Env = s.sshEnvironment()
 	} else {

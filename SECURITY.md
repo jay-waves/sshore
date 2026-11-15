@@ -35,7 +35,9 @@ flowchart LR
     mounted -->|"Request deadline exceeded"| abortmount["Abort transport; unknown write outcome; no replay"]
     mountuser["Local user: mount HOST"] --> mountgrant["Explicit mount grant: read-only or writable"]
     mountgrant --> mounted["FUSE / WinFsp: local applications"]
-    mounted <-->|"Independent OpenSSH / bounded SFTP responses"| service
+    mounted --> mountversion["Default: exact-release mount agent; recovery denied"]
+    mountversion <-->|"One OpenSSH connection: SFTP + bounded notifications"| service
+    mounted <-->|"No-watch: ordinary SFTP subsystem"| service
     resources --> status["Local status: no target probe; no control tokens exported"]
     mounted --> mountstop["Authenticated local stop: unmount before transport shutdown"]
     native --> inventory["Remote account: advisory peer task inventory"]
@@ -167,11 +169,18 @@ the initiating terminal; credentials are not stored in records or logs. Losing
 the launcher before startup acknowledgement cancels the pending resource. Local
 administrators and processes running as the same user are inside this boundary.
 
-This connection uses the system OpenSSH host-key/authentication policy. It does
-not run a remote sshore program, negotiate sshore release versions, install
-software, or manage session daemons. It requires the SFTP capabilities it uses;
-existing session setup/version restrictions are unchanged. Transport sharing,
-backgrounding and forwarding are disabled for this independent connection.
+This connection uses the system OpenSSH host-key/authentication policy. It does not
+install software or manage session daemons. By default it runs a transient remote
+sshore mount agent, requires an exact full release match and rejects recovery
+mode. The agent proxies the account's OpenSSH sftp-server and sends bounded
+filesystem invalidations on a separate logical stream of the same connection.
+It does not reuse a shell session or require another authentication. No-watch mode
+uses the ordinary SFTP subsystem without an agent. Both modes require the SFTP
+capabilities they use. Existing session setup/version restrictions are unchanged.
+OpenSSH ControlMaster sharing, backgrounding and forwarding are disabled for this
+independent connection. The agent requires remote command execution; it does not
+inherit SFTP subsystem-specific command flags or an internal-sftp-only policy.
+The remote SSH/account policy remains the access boundary.
 
 The remote host and its filenames, attributes and data remain untrusted. The
 selected root is a navigation boundary, not remote account confinement. Remote
@@ -198,7 +207,17 @@ incomplete writes. Close applications before stopping a mount. New files are cre
 permissions are set before exposing the handle; a failed permissions operation
 can leave an empty remote file. Linux read caching is invalidated on reopen; `--direct-io` bypasses it. No
 write-back cache is enabled. Metadata caches, open files and directory snapshots
-can show stale remote state. SFTP packets are limited to 1 MiB and each directory
+can show stale remote state. The mount's shared path metadata cache expires after one second and its shared
+directory cache after two seconds. OS caches and already-open directory snapshots
+may outlive those intervals; real opens and handle stats still query the server. Local mutations
+invalidate this cache even on failure. Remote notifications also invalidate it,
+but are advisory, bounded to accessed directories and can be lost; TTLs remain
+in force. Notification failure does not fail file operations. Subscriptions use
+the remote account's permissions and the same navigation-root (not confinement)
+semantics as SFTP; no elevated privileges are used. Remote account permissions
+remain authoritative. See
+[the mount implementation](SSHORE.md#independent-workers) for cache mechanics.
+SFTP packets are limited to 1 MiB and each directory
 listing to 100,000 returned entries and 32 MiB of response data before decoding;
 exceeding a listing budget fails that operation without truncating it silently.
 

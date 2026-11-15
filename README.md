@@ -54,9 +54,12 @@ sshore cancel mount/work        # Close local files before unmounting.
 
 Mounts use **SFTP over SSH** and require FUSE on Linux or [WinFsp](https://winfsp.dev/)
 on Windows. They are writable by default; `--read-only` prevents changes through
-the mount. Mounts are independent of shell sessions and end on disconnect.
+the mount. By default, a matching remote sshore release sends file-change notifications
+over the same SSH connection; `--no-watch` uses plain SFTP without remote sshore.
+Mounts are independent of shell sessions and end on disconnect.
 There is no offline editing, conflict detection or write retry; interrupted writes
-may leave partial remote files. See `sshore mount --help` for timeouts and options.
+may leave partial remote files. Directory and attribute caching can briefly delay
+visibility of remote changes. See `sshore mount --help` for timeouts and diagnostics.
 
 ## Mux — detach and reattach
 

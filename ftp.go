@@ -10,13 +10,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/pkg/sftp"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path"
 	"syscall"
 	"time"
+
+	"github.com/pkg/sftp"
+	"github.com/xtaci/smux"
 )
 
 type ftpMount interface {
@@ -78,8 +81,8 @@ func runFTPMount(o ftpOptions, service *resourceService) (code int, resultErr er
 	}()
 	defer func() { cancel(); <-setupStopped }()
 	exe := sshExecutable()
-	cmd := exec.CommandContext(ctx, exe, sftpSSHArgs(o.host, o.ssh)...)
-	isolateFTPCommand(cmd)
+	cmd := exec.CommandContext(ctx, exe, mountSSHArgs(o)...)
+	isolateFTPCommand(cmd, service != nil)
 	cmd.Stderr = os.Stderr
 	if service != nil {
 		cmd.Env = service.sshEnvironment()
@@ -117,7 +120,19 @@ func runFTPMount(o ftpOptions, service *resourceService) (code int, resultErr er
 		})
 		defer watch.timer.Stop()
 	}
+	var events *smux.Stream
 	wire := newFTPWire(stdout, stdin)
+	if !o.noWatch {
+		transport := &pipeTransport{Reader: stdout, Writer: stdin, closers: []io.Closer{stdout, stdin}}
+		mux, data, notifications, err := openFTPMux(transport)
+		if err != nil {
+			return 1, fmt.Errorf("mount agent handshake: %w", err)
+		}
+		defer mux.Close()
+		events = notifications
+		wire = newFTPWire(data, data)
+	}
+	wire.metrics = o.stats
 	if service != nil {
 		wire.onReply = service.operationCompleted
 	}
@@ -149,6 +164,16 @@ func runFTPMount(o ftpOptions, service *resourceService) (code int, resultErr er
 		}
 	}
 	backend := &ftpFS{client: client, root: path.Clean(root), readOnly: o.readOnly, directIO: o.directIO}
+	if events != nil {
+		backend.notifications = startFTPNotifications(events, &backend.cache)
+		defer backend.notifications.Close()
+		backend.watchDirectory(backend.root)
+	}
+	if o.stats {
+		backend.metrics = &ftpCallbackMetrics{}
+		stopStats := startFTPStats(wire, backend, os.Stderr)
+		defer stopStats()
+	}
 	mount, err := mountFTP(backend, o.mountpoint)
 	if err != nil {
 		return 1, err

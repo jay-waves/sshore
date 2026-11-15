@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/chzyer/readline v1.5.1
 	github.com/creack/pty v1.1.24
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/hanwen/go-fuse/v2 v2.12.1
 	github.com/pkg/sftp v1.13.12
 	github.com/winfsp/go-winfsp v1.0.6

@@ -823,6 +823,11 @@ func listSessions() error {
 }
 func serverCommand(args []string) error {
 	switch args[0] {
+	case "mount-agent":
+		if len(args) != 1 {
+			return usage("mount-agent takes no arguments")
+		}
+		return serveFTPMountAgent(&pipeTransport{Reader: os.Stdin, Writer: os.Stdout, closers: []io.Closer{os.Stdin, os.Stdout}})
 	case "rename-session":
 		if len(args) != 4 {
 			return usage("rename-session requires old name, new name and client version")

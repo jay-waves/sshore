@@ -59,7 +59,9 @@ func mountFTP(f *ftpFS, p string) (ftpMount, error) {
 	return &ftpWindowsMount{fs: host, done: make(chan struct{})}, nil
 }
 
-type ftpWindowsFS struct{ backend *ftpFS }
+type ftpWindowsFS struct {
+	backend *ftpFS
+}
 
 func ftpWindowsPath(p string) (string, error) {
 	p = strings.TrimPrefix(strings.ReplaceAll(p, `\`, "/"), "/")
@@ -157,7 +159,9 @@ func (f *ftpWindowsFS) Rename(a, b string) error {
 	return ftpWindowsError(f.backend.rename(a, b))
 }
 
-type ftpWindowsFile struct{ *ftpFile }
+type ftpWindowsFile struct {
+	*ftpFile
+}
 
 func (f *ftpWindowsFile) Readdir(n int) ([]os.FileInfo, error) {
 	list, e := f.ftpFile.Readdir(n)
@@ -192,10 +196,16 @@ func (f *ftpWindowsFile) WriteAt(b []byte, o int64) (int, error) {
 	n, e := f.ftpFile.WriteAt(b, o)
 	return n, ftpWindowsError(e)
 }
-func (f *ftpWindowsFile) Truncate(n int64) error { return ftpWindowsError(f.ftpFile.Truncate(n)) }
-func (f *ftpWindowsFile) Sync() error            { return ftpWindowsError(f.ftpFile.Sync()) }
-func (f *ftpWindowsFile) Close() error           { return ftpWindowsError(f.ftpFile.Close()) }
+func (f *ftpWindowsFile) Truncate(n int64) error {
+	return ftpWindowsError(f.ftpFile.Truncate(n))
+}
+func (f *ftpWindowsFile) Sync() error  { return ftpWindowsError(f.ftpFile.Sync()) }
+func (f *ftpWindowsFile) Close() error { return ftpWindowsError(f.ftpFile.Close()) }
 
-func isolateFTPCommand(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP}
+func isolateFTPCommand(cmd *exec.Cmd, background bool) {
+	flags := uint32(windows.CREATE_NEW_PROCESS_GROUP)
+	if background {
+		flags |= windows.CREATE_NO_WINDOW
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: flags}
 }

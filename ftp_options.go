@@ -18,6 +18,9 @@ type ftpOptions struct {
 	readOnly                  bool
 	directIO                  bool
 	foreground                bool
+	stats                     bool
+	noWatch                   bool
+	server                    string
 	name                      string
 }
 
@@ -34,6 +37,9 @@ An SFTP request timeout closes the entire mount transport, including sibling
 operations; writes may be incomplete or already completed and are never retried.
 Idle mounts have no request timer. Startup timeout is opt-in because it includes
 SSH password/MFA entry; use SSH ConnectTimeout for network connection setup. Uses a separate SSH connection.
+Default: matching remote sshore and an OpenSSH sftp-server executable; file
+notifications share this SSH connection. No software is installed or updated.
+Use --no-watch for a plain SFTP subsystem without remote sshore.
 Requires WinFsp on Windows or FUSE on Linux. Missing WinFsp prints its install URL.
 No persistent write-back cache. Background mounts publish remote inventory only;
 local paths/control tokens are not shared. Sync failure does not fail the mount.
@@ -41,9 +47,13 @@ local paths/control tokens are not shared. Sync failure does not fail the mount.
 Options:
   --name NAME                   Local mount session name (default: derived from HOST)
   --foreground                  Keep this mount in the terminal
+  --no-watch                    Use plain SFTP without remote file notifications
+  --server PATH                 Remote sshore executable (default: PATH, then ~/.local/bin/sshore)
   --read-only                   Reject changes through this mount
   --io-timeout DURATION         Per SFTP request (default 60s; 0s disables)
   --startup-timeout DURATION    Total startup including authentication (default 0s)
+  --stats                       Emit cumulative request/cache/callback statistics every 10s and at exit
+                                Foreground: stderr; background: worker log. No paths or contents.
   --direct-io                   Linux: disable kernel file read caching
   -h, --help                    Show command help
 
@@ -60,7 +70,7 @@ Examples:
 `
 
 func parseFTPOptions(args []string) (ftpOptions, error) {
-	o := ftpOptions{ioTimeout: 60 * time.Second}
+	o := ftpOptions{ioTimeout: 60 * time.Second, server: "sshore"}
 	var positional []string
 	var err error
 	args, o.ssh, err = splitSSHOptions(args, false)
@@ -78,6 +88,14 @@ func parseFTPOptions(args []string) (ftpOptions, error) {
 		switch a {
 		case "-h", "--help":
 			return o, errHelp
+		case "--no-watch":
+			o.noWatch = true
+		case "--server":
+			i++
+			if i >= len(args) || args[i] == "" || strings.ContainsRune(args[i], 0) {
+				return o, usage("--server requires a remote executable path")
+			}
+			o.server = args[i]
 		case "--foreground":
 			o.foreground = true
 		case "--name":
@@ -103,6 +121,8 @@ func parseFTPOptions(args []string) (ftpOptions, error) {
 			} else {
 				o.startupTimeout = d
 			}
+		case "--stats":
+			o.stats = true
 		case "--direct-io":
 			o.directIO = true
 		case "--read-only":

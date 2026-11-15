@@ -43,35 +43,45 @@ type ftpWindowsBehaviour interface {
 type ftpWindowsAttributes struct {
 	ftpWindowsBehaviour
 	backend *ftpFS
-	mu      sync.Mutex
+	// Exclusive callbacks wait for in-flight opens before changing tracked paths.
+	mu      sync.RWMutex
+	namesMu sync.Mutex
 	names   map[uintptr]string
 }
 
 func (a *ftpWindowsAttributes) Open(ref *winfsp.FileSystemRef, name string, opts, access uint32, info *winfsp.FSP_FSCTL_FILE_INFO) (uintptr, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	defer a.backend.metrics.observe("Open")()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	h, e := a.ftpWindowsBehaviour.Open(ref, name, opts, access, info)
 	if e == nil {
+		a.namesMu.Lock()
 		a.names[h] = name
+		a.namesMu.Unlock()
 	}
 	return h, e
 }
 func (a *ftpWindowsAttributes) Create(ref *winfsp.FileSystemRef, name string, opts, access, attrs uint32, sd *windows.SECURITY_DESCRIPTOR, size uint64, info *winfsp.FSP_FSCTL_FILE_INFO) (uintptr, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	defer a.backend.metrics.observe("Create")()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	h, e := a.ftpWindowsBehaviour.Create(ref, name, opts, access, attrs, sd, size, info)
 	if e == nil {
+		a.namesMu.Lock()
 		a.names[h] = name
+		a.namesMu.Unlock()
 	}
 	return h, e
 }
 func (a *ftpWindowsAttributes) Close(ref *winfsp.FileSystemRef, h uintptr) {
+	defer a.backend.metrics.observe("Close")()
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	delete(a.names, h)
+	a.mu.Unlock()
 	a.ftpWindowsBehaviour.Close(ref, h)
 }
 func (a *ftpWindowsAttributes) Rename(ref *winfsp.FileSystemRef, h uintptr, old, new string, replace bool) error {
+	defer a.backend.metrics.observe("Rename")()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	source, ok := a.names[h]
@@ -104,6 +114,7 @@ func ftpWindowsTime(v uint64) time.Time {
 	return time.Unix(0, t.Nanoseconds())
 }
 func (a *ftpWindowsAttributes) SetBasicInfo(ref *winfsp.FileSystemRef, h uintptr, flags winfsp.SetBasicInfoFlags, attrs uint32, creation, access, write, change uint64, info *winfsp.FSP_FSCTL_FILE_INFO) error {
+	defer a.backend.metrics.observe("SetBasicInfo")()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if e := a.backend.writable(); e != nil {
@@ -117,6 +128,10 @@ func (a *ftpWindowsAttributes) SetBasicInfo(ref *winfsp.FileSystemRef, h uintptr
 	if e := a.GetFileInfo(ref, h, info); e != nil {
 		return e
 	}
+	if flags&(winfsp.SetBasicInfoAttributes|winfsp.SetBasicInfoLastAccessTime|winfsp.SetBasicInfoLastWriteTime) == 0 {
+		return nil
+	}
+	defer a.backend.cache.beginMutation()()
 	name, e := ftpWindowsPath(name)
 	if e != nil {
 		return e
@@ -158,4 +173,13 @@ func (a *ftpWindowsAttributes) SetBasicInfo(ref *winfsp.FileSystemRef, h uintptr
 		}
 	}
 	return a.GetFileInfo(ref, h, info)
+}
+
+func (a *ftpWindowsAttributes) ReadDirectory(ref *winfsp.FileSystemRef, h uintptr, pattern string, fill func(string, *winfsp.FSP_FSCTL_FILE_INFO) (bool, error)) error {
+	defer a.backend.metrics.observe("ReadDirectory")()
+	return a.ftpWindowsBehaviour.ReadDirectory(ref, h, pattern, fill)
+}
+func (a *ftpWindowsAttributes) GetFileInfo(ref *winfsp.FileSystemRef, h uintptr, info *winfsp.FSP_FSCTL_FILE_INFO) error {
+	defer a.backend.metrics.observe("GetFileInfo")()
+	return a.ftpWindowsBehaviour.GetFileInfo(ref, h, info)
 }

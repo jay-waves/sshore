@@ -85,7 +85,7 @@ func ftpAttr(i os.FileInfo, a *fuse.Attr) {
 }
 func (n *ftpNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	p := path.Join(n.remote(), name)
-	i, e := n.backend.client.Lstat(p)
+	i, e := n.backend.lstat(p)
 	if e != nil {
 		return nil, ftpErrno(e)
 	}
@@ -98,7 +98,7 @@ func (n *ftpNode) Getattr(ctx context.Context, h fs.FileHandle, out *fuse.AttrOu
 	if f, ok := h.(*ftpLinuxFile); ok {
 		i, e = f.file.Stat()
 	} else {
-		i, e = n.backend.client.Lstat(n.remote())
+		i, e = n.backend.lstat(n.remote())
 	}
 	if e != nil {
 		return ftpErrno(e)
@@ -203,6 +203,7 @@ func (n *ftpNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
 }
 
 func (n *ftpNode) Setattr(ctx context.Context, h fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
+	defer n.backend.cache.beginMutation()()
 	if e := n.backend.writable(); e != nil {
 		return ftpErrno(e)
 	}
@@ -272,7 +273,7 @@ func (f *ftpLinuxFile) Fsync(ctx context.Context, flags uint32) syscall.Errno {
 // group would stop those reads with SIGTTIN. OpenSSH honors inherited SIG_IGN
 // for INT/QUIT after authentication. The fixed trampoline never interpolates
 // user arguments; startup cancellation still kills the owned subprocess.
-func isolateFTPCommand(cmd *exec.Cmd) {
+func isolateFTPCommand(cmd *exec.Cmd, background bool) {
 	args := append([]string{cmd.Path}, cmd.Args[1:]...)
 	cmd.Path = "/bin/sh"
 	cmd.Args = append([]string{"sh", "-c", `trap '' INT QUIT; exec "$@"`, "sshore-ftp-ssh"}, args...)

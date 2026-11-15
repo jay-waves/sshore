@@ -5,7 +5,7 @@ package main
 // separators on every client OS. The selected root is a navigation root, not a
 // remote security sandbox: symlinks and the authenticated account's permissions
 // determine remote access. Directory handles hold one bounded snapshot; reopening
-// refreshes it. Native adapters own OS-specific names, attributes and errors.
+// may reuse a short-lived mount cache. Native adapters own OS-specific names, attributes and errors.
 
 import (
 	"errors"
@@ -22,10 +22,13 @@ import (
 const ftpMaxDirectoryEntries = 100000
 
 type ftpFS struct {
-	client   *sftp.Client
-	root     string
-	readOnly bool
-	directIO bool
+	client        *sftp.Client
+	root          string
+	readOnly      bool
+	directIO      bool
+	cache         ftpMetadataCache
+	metrics       *ftpCallbackMetrics
+	notifications *ftpNotifications
 }
 
 func (f *ftpFS) remotePath(name string) (string, error) {
@@ -50,9 +53,11 @@ func (f *ftpFS) stat(name string) (os.FileInfo, error) {
 	if e != nil {
 		return nil, e
 	}
-	return f.client.Stat(p)
+	f.watchDirectory(path.Dir(p))
+	return f.cache.stat(p, func() (os.FileInfo, error) { return f.client.Stat(p) })
 }
 func (f *ftpFS) mkdir(name string, mode os.FileMode) error {
+	defer f.cache.beginMutation()()
 	if e := f.writable(); e != nil {
 		return e
 	}
@@ -66,6 +71,7 @@ func (f *ftpFS) mkdir(name string, mode os.FileMode) error {
 	return f.client.Chmod(p, mode.Perm())
 }
 func (f *ftpFS) remove(name string, dir bool) error {
+	defer f.cache.beginMutation()()
 	if e := f.writable(); e != nil {
 		return e
 	}
@@ -82,6 +88,7 @@ func (f *ftpFS) remove(name string, dir bool) error {
 	return f.client.Remove(p)
 }
 func (f *ftpFS) rename(old, new string) error {
+	defer f.cache.beginMutation()()
 	if e := f.writable(); e != nil {
 		return e
 	}
@@ -101,6 +108,9 @@ func (f *ftpFS) rename(old, new string) error {
 	return f.client.PosixRename(a, b)
 }
 func (f *ftpFS) open(name string, flags int, mode os.FileMode) (*ftpFile, error) {
+	if flags&(os.O_CREATE|os.O_TRUNC) != 0 {
+		defer f.cache.beginMutation()()
+	}
 	if flags&(os.O_WRONLY|os.O_RDWR|os.O_CREATE|os.O_TRUNC|os.O_APPEND) != 0 {
 		if e := f.writable(); e != nil {
 			return nil, e
@@ -196,7 +206,7 @@ func (f *ftpFile) Readdir(n int) ([]os.FileInfo, error) {
 	if !f.loaded {
 		// The framing guard enforces entry/byte budgets before decoding. This
 		// count check also protects callers supplying an unguarded test client.
-		list, e := f.fs.client.ReadDir(f.path)
+		list, e := f.fs.readDirectory(f.path)
 		if e != nil {
 			return nil, e
 		}
@@ -230,6 +240,7 @@ func (f *ftpFile) ReadAt(b []byte, o int64) (int, error) {
 	return f.File.ReadAt(b, o)
 }
 func (f *ftpFile) Write(b []byte) (int, error) {
+	defer f.fs.cache.beginMutation()()
 	if e := f.fs.writable(); e != nil {
 		return 0, e
 	}
@@ -239,6 +250,7 @@ func (f *ftpFile) Write(b []byte) (int, error) {
 	return f.File.Write(b)
 }
 func (f *ftpFile) WriteAt(b []byte, o int64) (int, error) {
+	defer f.fs.cache.beginMutation()()
 	if e := f.fs.writable(); e != nil {
 		return 0, e
 	}
@@ -254,6 +266,7 @@ func (f *ftpFile) Seek(o int64, w int) (int64, error) {
 	return f.File.Seek(o, w)
 }
 func (f *ftpFile) Truncate(n int64) error {
+	defer f.fs.cache.beginMutation()()
 	if e := f.fs.writable(); e != nil {
 		return e
 	}
@@ -307,4 +320,28 @@ func ftpErrno(err error) syscall.Errno {
 		return syscall.EBADF
 	}
 	return syscall.EIO
+}
+
+func (f *ftpFS) readDirectory(p string) ([]os.FileInfo, error) {
+	f.watchDirectory(p)
+	return f.cache.readDir(p, func() ([]os.FileInfo, error) {
+		token := f.cache.snapshot()
+		entries, err := f.client.ReadDir(p)
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) > ftpMaxDirectoryEntries {
+			return nil, syscall.EOVERFLOW
+		}
+		f.cache.directory(token, p, entries)
+		return entries, nil
+	})
+}
+func (f *ftpFS) lstat(p string) (os.FileInfo, error) {
+	f.watchDirectory(path.Dir(p))
+	v, err := f.cache.load("l:"+p, ftpMetadataTTL, func() (ftpCacheValue, error) {
+		info, err := f.client.Lstat(p)
+		return ftpCacheValue{info: info, bytes: 256 + len(p) + ftpInfoBytes(info)}, err
+	})
+	return v.info, err
 }

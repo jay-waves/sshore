@@ -6,11 +6,17 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/pkg/sftp"
 )
 
 func testFTPBackend(t *testing.T) *ftpFS {
+	t.Helper()
+	backend, _ := testFTPBackendWithWire(t)
+	return backend
+}
+func testFTPBackendWithWire(t *testing.T) (*ftpFS, *ftpWire) {
 	t.Helper()
 	a, b := net.Pipe()
 	server, e := sftp.NewServer(a)
@@ -18,12 +24,14 @@ func testFTPBackend(t *testing.T) *ftpFS {
 		t.Fatal(e)
 	}
 	go func() { _ = server.Serve(); _ = server.Close() }()
-	client, e := sftp.NewClientPipe(b, b)
+	wire := newFTPWire(b, b)
+	wire.metrics = true
+	client, e := sftp.NewClientPipe(wire, wire)
 	if e != nil {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
-	return &ftpFS{client: client, root: filepath.ToSlash(t.TempDir())}
+	return &ftpFS{client: client, root: filepath.ToSlash(t.TempDir())}, wire
 }
 func TestFTPEditorSave(t *testing.T) {
 	f := testFTPBackend(t)
@@ -117,5 +125,106 @@ func TestFTPOptions(t *testing.T) {
 		if _, e := parseFTPOptions(args); e == nil {
 			t.Fatalf("accepted %v", args)
 		}
+	}
+}
+
+func TestFTPDirectoryCacheAcrossHandles(t *testing.T) {
+	backend, wire := testFTPBackendWithWire(t)
+	if err := backend.mkdir("a", 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.mkdir("b", 0700); err != nil {
+		t.Fatal(err)
+	}
+	first, err := backend.open("", os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := backend.open("", os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	a, err := first.Readdir(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire.mu.Lock()
+	before := wire.totals[12].Started
+	wire.mu.Unlock()
+	all, err := second.Readdir(-1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rest, err := first.Readdir(-1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a) != 1 || len(rest) != 1 || len(all) != 2 || a[0].Name() != all[0].Name() || rest[0].Name() != all[1].Name() {
+		t.Fatal("directory cursors interfered")
+	}
+	wire.mu.Lock()
+	after := wire.totals[12].Started
+	wire.mu.Unlock()
+	if before == 0 || after != before {
+		t.Fatalf("repeat listing added READDIR requests: %d -> %d", before, after)
+	}
+	if backend.cache.counters.Hits != 1 {
+		t.Fatalf("reopen did not reuse listing: %+v", backend.cache.counters)
+	}
+	if err := backend.mkdir("c", 0700); err != nil {
+		t.Fatal(err)
+	}
+	third, err := backend.open("", os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer third.Close()
+	updated, err := third.Readdir(-1)
+	wire.mu.Lock()
+	refreshed := wire.totals[12].Started
+	wire.mu.Unlock()
+	if refreshed <= after {
+		t.Fatal("mutation did not force a remote directory refresh")
+	}
+	if err != nil || len(updated) != 3 {
+		t.Fatalf("stale directory after mkdir: %v %v", updated, err)
+	}
+}
+
+func TestFTPDirectoryCacheDoesNotRenewAttributes(t *testing.T) {
+	backend, wire := testFTPBackendWithWire(t)
+	if err := backend.mkdir("child", 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.readDirectory(backend.root); err != nil {
+		t.Fatal(err)
+	}
+	key := "s:" + backend.root + "/child"
+	backend.cache.mu.Lock()
+	e := backend.cache.entries[key]
+	if e == nil {
+		backend.cache.mu.Unlock()
+		t.Fatal("fresh listing did not seed metadata")
+	}
+	v := e.Value.(ftpCacheValue)
+	v.expires = time.Now().Add(-time.Second)
+	e.Value = v
+	backend.cache.mu.Unlock()
+	if _, err := backend.readDirectory(backend.root); err != nil {
+		t.Fatal(err)
+	}
+	wire.mu.Lock()
+	before := wire.totals[17].Started
+	wire.mu.Unlock()
+	if _, err := backend.stat("child"); err != nil {
+		t.Fatal(err)
+	}
+	wire.mu.Lock()
+	after := wire.totals[17].Started
+	wire.mu.Unlock()
+	if after != before+1 {
+		t.Fatal("cached listing renewed expired attributes")
 	}
 }

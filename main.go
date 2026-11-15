@@ -23,7 +23,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.6.1"
+var version = "0.6.2"
 
 const connectionOptions = `Options (before --; may appear before or after HOST):
   --server PATH                 Remote executable (default: PATH, then ~/.local/bin/sshore)
@@ -419,7 +419,7 @@ func run(args []string) (int, error) {
 			return 2, usage("detach takes no arguments")
 		}
 		return 0, serverCommand(args)
-	case "bridge", "resume", "daemon", "sessions", "bootstrap", "kill-session", "rename-session", "task-watch", "task-remove", "inventory":
+	case "mount-agent", "bridge", "resume", "daemon", "sessions", "bootstrap", "kill-session", "rename-session", "task-watch", "task-remove", "inventory":
 		return 0, serverCommand(args)
 	}
 	o, err := parseOptions(args)

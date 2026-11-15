@@ -139,12 +139,96 @@ noninteractive, host keys must already be trusted, and TCP connections are not
 resumed. Cancellation also interrupts backoff. Initial startup failures are not
 retried. Native SSH forwarding remains owned by its SSH connection.
 
-Mounts use a separate SFTP subsystem without requiring remote sshore installation.
+Mounts own one system OpenSSH connection. By default it runs the transient Linux
+amd64 `mount-agent` entry of the installed remote sshore, found through PATH or
+`~/.local/bin/sshore` (or the explicit server option). A bounded handshake checks
+both processes' exact full release before starting file service. This command does
+not install/update software or inspect/terminate persistent sessions. Missing or
+mismatched installations fail with diagnostics; normal shell setup remains the
+update path. The no-watch option instead opens the ordinary SFTP subsystem and
+does not require remote sshore.
+
+The agent uses the existing smux framing/configuration on this mount-owned SSH
+transport: one stream carries SFTP and another carries watch subscriptions and
+invalidation messages. There is only one SSH authentication, no second connection
+or password cache. It is independent of any shell's mux. SFTP is proxied to the
+installed OpenSSH `sftp-server` executable, discovered in standard Linux locations
+or PATH, preserving its extensions. Servers configured only with internal-sftp
+need an external executable for this mode, or can use no-watch mode. The child
+and watcher end with the transport; a notification stream failure leaves SFTP live.
+
+Remote fsnotify uses Linux inotify without cgo. Before cached stat/lstat reads the
+client subscribes to the parent directory; before directory reads it subscribes to
+that directory. Registration is acknowledged before the read. Only accessed
+directories are watched, never a recursive scan: the client evicts LRU watches at
+128 directories and the server independently enforces the same limit. Successful
+subscriptions are renewed on access after 30 seconds; failures are retried after
+one second. Each subscription exchange has a three-second deadline; timeout closes
+only the notification stream and warns once before falling back to TTLs.
+
+A dedicated reader drains filesystem events into a one-slot dirty signal even
+under network backpressure. The first invalidation is sent immediately and bursts
+are coalesced with a 50 ms cooldown, including a trailing invalidation. Events
+clear the whole shared metadata cache and fence in-flight responses; removals,
+renames and watcher errors/overflow also force subscription refresh on subsequent
+access. Notification loss clears the cache. No event is interpreted as a file
+operation or causes write replay. The existing short TTLs remain unchanged:
+unsupported filesystems, alias/hard-link changes and symlink retargeting can evade
+notifications. This invalidates the shared backend cache, not OS page/attribute
+caches or existing directory-handle snapshots; native Explorer change notifications
+are not implemented. The statistics include a remote-invalidation counter.
+Capacity queries use `statvfs@openssh.com` version 2: Linux exposes remote block
+and inode counts, while Windows reports total bytes and bytes available to the
+remote non-root user. Unsupported or unknown extension versions return an
+unsupported-operation error instead of synthetic capacity; query failures remain
+errors. Counts describe the backing filesystem, not a quota for the mounted
+subdirectory. Replies are checked before integer narrowing and byte conversion.
+
 Linux uses FUSE; Windows uses WinFsp. Writable mounts require atomic-rename and
 fsync extensions. There is no persistent write-back cache, conflict resolution
 or replay. Linux read caching lasts until close/reopen unless direct I/O is used;
 Windows rejects unrepresentable names instead of renaming them. Special files and
 file locking are unsupported.
+
+Both adapters use a per-mount LRU cache: path metadata expires one second after
+the lookup starts, and directory listings expire after two seconds. Hits do not
+extend expiry. The cache retains at most 4,096 metadata results, 128 directory
+lists, 32,768 directory entries and 32 MiB of estimated retained storage (including
+SFTP extended attributes). Oversized listings remain readable within the existing
+wire budget but are not retained in the shared directory cache. Open handles keep
+their own cursor over an immutable snapshot; those live snapshots are outside the
+shared cache budget. Reopening may reuse an unexpired listing.
+
+Concurrent misses for the same operation/path share a request within the same
+mutation generation. Errors are shared only with current waiters, never cached.
+Fresh directory reads seed a bounded number of Windows-compatible path attributes;
+symlink entries are excluded because stat follows the target. Cached directory
+results do not reseed attributes or extend their lifetime. Linux lstat entries
+use a separate key space. Actual opens and handle stats remain live SFTP operations.
+Local create, write, truncate, mkdir, remove, rename and basic-attribute updates
+clear all cached metadata and listings before and after the operation, including
+on failure. New queries cannot join pre-mutation requests, and old responses cannot
+repopulate the cache. Reads overlapping a mutation are not retained. Clearing the
+whole cache covers aliases and parent metadata at the cost of hit rate during
+writes. The cache is not shared across mounts or restored after disconnect.
+
+The opt-in mount statistics described in command help report cumulative SFTP
+request counts, completed-request latency totals/maxima in nanoseconds, framed
+byte counts, error statuses (excluding EOF), current/peak outstanding requests,
+cache hits/misses/coalesced queries/evictions and retained cache estimates. Windows
+also measures Open, Create, Close, Rename, ReadDirectory, GetFileInfo and
+SetBasicInfo callbacks, including lock wait time. Nested callback timings overlap
+and must not be summed as total wall time. Reports contain no paths, credentials
+or file contents. They go to stderr (the worker log for background mounts); the
+final snapshot is emitted when a mount with initialized diagnostics exits.
+
+Windows handle opens may run concurrently over SFTP; rename and path-based
+attribute updates wait for these opens before changing handle/path bookkeeping.
+Close removes its tracked path under that lock, then delegates remote close without
+holding it. Synthetic-only basic-attribute updates reuse the handle validation's
+metadata instead of fetching it again. Background mount and forward SSH transports
+start without a Windows console, using the worker askpass bridge for initial
+authentication; foreground mounts retain console authentication.
 
 Each outstanding SFTP request has its own deadline; sibling responses do not
 extend it. Timeout closes the transport and fails pending operations without

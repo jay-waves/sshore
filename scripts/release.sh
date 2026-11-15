@@ -386,6 +386,29 @@ the affected session list and type update. Existing releases remain unchanged.
 NOTES
 fi
 
+if [[ "$version" == "0.6.2" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Reduce repeated mount metadata and directory requests with bounded, short-lived caches and concurrent-request sharing.
+- Add Linux fsnotify notifications over the mount's existing SSH connection; no second authentication or cgo is needed. Watch only accessed directories, with bounded subscriptions and TTL fallback.
+- Avoid extra console windows for background Windows mount/forward SSH processes and allow concurrent WinFsp opens.
+- Report remote filesystem capacity through statvfs and add opt-in mount request/cache/callback statistics with --stats.
+- Preserve synchronous writes, cache invalidation on local changes, request deadlines and no automatic write replay.
+
+Mount migration: default mounts now require the same full sshore release on the
+Linux amd64 remote and an external OpenSSH sftp-server executable. Mount does
+not install or update remote software. Use --server PATH for a custom executable,
+or --no-watch for the previous plain SFTP subsystem mode. Notifications invalidate
+the backend metadata cache; they do not implement Explorer's native auto-refresh
+or guarantee freshness of already-open files and directory snapshots.
+
+Client and remote versions must match exactly. Updating existing older sessions
+ends their tasks only after you review the affected list and type update. Existing
+releases and assets remain unchanged. Linux and Windows amd64 only.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Skipping release: $tag is already published; releases and assets are immutable."

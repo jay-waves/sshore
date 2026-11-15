@@ -32,6 +32,9 @@ type ftpRequest struct {
 type ftpDirectoryBudget struct{ entries, bytes uint64 }
 type ftpWire struct {
 	onReply                       func()
+	metrics                       bool
+	totals                        [256]ftpRequestTotals
+	peakRequests                  int
 	reader                        io.Reader
 	writer                        io.WriteCloser
 	readBuffer, writeBuffer       []byte
@@ -83,6 +86,11 @@ func (w *ftpWire) record(packet []byte) error {
 		return fmt.Errorf("too many outstanding SFTP requests")
 	}
 	w.requests[id] = req
+	if w.metrics {
+		w.totals[kind].Started++
+		w.totals[kind].SentBytes += uint64(len(packet) + 4)
+		w.peakRequests = max(w.peakRequests, len(w.requests))
+	}
 	if kind == 4 {
 		delete(w.directories, req.handle)
 	}
@@ -153,6 +161,17 @@ func (w *ftpWire) filter(packet []byte) ([]byte, error) {
 	if !ok {
 		return packet, nil
 	} // pkg/sftp diagnoses unsolicited IDs.
+	if w.metrics {
+		total := &w.totals[req.kind]
+		elapsed := time.Since(req.started)
+		total.Completed++
+		total.TotalNS += int64(elapsed)
+		total.MaxNS = max(total.MaxNS, int64(elapsed))
+		total.ReceivedBytes += uint64(len(packet) + 4)
+		if packet[0] == 101 && len(packet) >= 9 && binary.BigEndian.Uint32(packet[5:9]) > 1 {
+			total.Errors++
+		}
+	}
 	if req.kind == 12 && packet[0] == 104 { // READDIR -> NAME
 		if len(packet) < 9 {
 			return nil, fmt.Errorf("short SFTP directory response")
