@@ -470,6 +470,7 @@ if [[ "$version" == "0.6.7" ]]; then
 Changes:
 - Add `sshore spawn` for local and remote temporary shells bound to the original parent shell. Detach/reattach keeps that ownership; owner exit ends the spawn and its identified tasks. Remote lifetime-connection loss also ends the spawn.
 - Rename the persistent-shell command to `sshore launch`. The existing task column distinguishes `launch/NAME` and `spawn/NAME`, with stable numeric IDs for both.
+- Ensure Windows terminal closure ends its process tree even without an output reader.
 - Honor `SHELL` on Windows before falling back to `COMSPEC` or CMD, including Nushell executable paths.
 - Retry transient installer downloads and report preparation failures explicitly instead of a generic setup EOF.
 

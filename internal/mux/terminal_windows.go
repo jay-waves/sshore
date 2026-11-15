@@ -88,18 +88,16 @@ func Start(c Config) (*Terminal, error) {
 	}
 	defer outW.Close()
 	t := &Terminal{input: inW, output: outR, size: c.Size}
-	if c.KillOnClose {
-		t.job, err = windows.CreateJobObject(nil, nil)
-		if err != nil {
-			t.Close()
-			return nil, err
-		}
-		limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
-		limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-		if _, err = windows.SetInformationJobObject(t.job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
-			t.Close()
-			return nil, err
-		}
+	t.job, err = windows.CreateJobObject(nil, nil)
+	if err != nil {
+		t.Close()
+		return nil, err
+	}
+	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
+	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+	if _, err = windows.SetInformationJobObject(t.job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
+		t.Close()
+		return nil, err
 	}
 	if err = windows.CreatePseudoConsole(windows.Coord{X: int16(c.Size.Cols), Y: int16(c.Size.Rows)}, windows.Handle(inR.Fd()), windows.Handle(outW.Fd()), 0, &t.console); err != nil {
 		t.Close()
@@ -133,10 +131,7 @@ func Start(c Config) (*Terminal, error) {
 		t.Close()
 		return nil, err
 	}
-	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT)
-	if c.KillOnClose {
-		flags |= windows.CREATE_SUSPENDED
-	}
+	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_SUSPENDED)
 	err = windows.CreateProcess(application, &line[0], nil, nil, false, flags, env, dir, &si.StartupInfo, &pi)
 	runtime.KeepAlive(block)
 	runtime.KeepAlive(attrs)
@@ -144,18 +139,16 @@ func Start(c Config) (*Terminal, error) {
 		t.Close()
 		return nil, err
 	}
-	if c.KillOnClose {
-		err = windows.AssignProcessToJobObject(t.job, pi.Process)
-		if err == nil {
-			_, err = windows.ResumeThread(pi.Thread)
-		}
-		if err != nil {
-			_ = windows.TerminateProcess(pi.Process, 1)
-			windows.CloseHandle(pi.Thread)
-			windows.CloseHandle(pi.Process)
-			t.Close()
-			return nil, err
-		}
+	err = windows.AssignProcessToJobObject(t.job, pi.Process)
+	if err == nil {
+		_, err = windows.ResumeThread(pi.Thread)
+	}
+	if err != nil {
+		_ = windows.TerminateProcess(pi.Process, 1)
+		windows.CloseHandle(pi.Thread)
+		windows.CloseHandle(pi.Process)
+		t.Close()
+		return nil, err
 	}
 	windows.CloseHandle(pi.Thread)
 	t.process = pi.Process

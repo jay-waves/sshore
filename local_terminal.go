@@ -58,7 +58,7 @@ func (s *localShell) start(m message) error {
 		env = append(env, item)
 	}
 	env = append(env, "TERM="+m.Term, "SSHORE_LOCAL_SESSION="+s.record.identity())
-	t, err := shellmux.Start(shellmux.Config{KillOnClose: s.record.Owner.PID != 0, Path: path, Args: args, Env: env, Dir: s.record.Directory, Size: shellmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}})
+	t, err := shellmux.Start(shellmux.Config{Path: path, Args: args, Env: env, Dir: s.record.Directory, Size: shellmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}})
 	if err != nil {
 		return err
 	}

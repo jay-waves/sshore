@@ -108,7 +108,7 @@ the package. Windows ConPTY is the foundation for local mux
 sessions; Windows remote shell hosting is outside the project scope. The remote
 daemon, authenticated helper endpoints and remote account process management
 remain Linux-only.
-Windows local sessions use the command interpreter from `COMSPEC`, falling back
+Windows local sessions prefer `SHELL`, then `COMSPEC`, falling back
 to `cmd.exe`; installed PowerShell versions are not selected automatically.
 The Windows local daemon starts without a console; each shell allocates its own
 ConPTY. Local reattachment requests a native redraw after restoring output
@@ -124,6 +124,9 @@ allocating ConPTY. Repeated Windows resize requests for the current size are
 skipped; failed resizes do not update the remembered dimensions.
 ConPTY child startup explicitly excludes the worker's redirected standard
 handles, so closed startup pipes cannot become the shell's input or output.
+Each ConPTY process starts suspended and joins a kill-on-close job before it
+runs. Closing the terminal job ends its process tree even if console shutdown
+notification races with startup. Detach leaves that job open.
 Close discards unread output before closing ConPTY, avoiding shutdown dependence
 on an active reader on older Windows versions. Close does not guarantee
 termination of escaped descendants.
