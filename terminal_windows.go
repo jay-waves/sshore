@@ -42,6 +42,10 @@ func rawTerminal() (func(), error) {
 	if err == nil {
 		err = windows.SetConsoleMode(out, oldOut|windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING|windows.DISABLE_NEWLINE_AUTO_RETURN)
 	}
+	if err == nil {
+		// Clear a mode inherited from an earlier nested console or client.
+		_, err = os.Stdout.WriteString("\x1b[?9001l")
+	}
 	if err != nil {
 		restore()
 		return nil, fmt.Errorf("Windows VT-capable console required: %w", err)

@@ -28,6 +28,13 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_DISABLED", "")
+	outer, err := shellmux.Start(shellmux.Config{Path: "cmd.exe", Args: []string{"/d", "/q"}, Env: os.Environ(), Size: shellmux.Size{Cols: 160, Rows: 40}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep the test's outer job alive until the daemon has removed its record.
+	// Closing it first kills all descendants before normal idle shutdown.
+	t.Cleanup(func() { outer.Close() })
 	t.Cleanup(func() {
 		// Verify idle shutdown and release Windows file handles before TempDir cleanup.
 		path, err := daemonPath()
@@ -46,11 +53,6 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	})
 	const name = "nativecheck"
 	defer func() { _, _ = localRequest(name, message{Type: "cancel"}) }()
-	outer, err := shellmux.Start(shellmux.Config{Path: "cmd.exe", Args: []string{"/d", "/q"}, Env: os.Environ(), Size: shellmux.Size{Cols: 160, Rows: 40}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer outer.Close()
 	chunks := make(chan string, 64)
 	stop := make(chan struct{})
 	defer close(stop)

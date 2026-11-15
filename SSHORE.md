@@ -120,7 +120,7 @@ DEC private mode 9001 (Win32 input) set/reset requests, including combined mode
 lists. OSC/DCS payloads and other modes remain opaque. Forwarding a nested
 ConPTY's request would make the outer console encode Alacritty's VT arrow bytes
 as literal Win32 character events, so the inner shell sees `[A` instead of Up.
-The client keeps `ReadConsole` in VT mode; native upstream key events are still
+On entry the client clears any inherited mode 9001 and keeps `ReadConsole` in VT mode; native upstream key events are still
 translated to VT by the outer console. Windows regression tests exercise both
 upstream formats and terminal-query replies in an isolated native ConPTY.
 Callers must continuously drain output while a session is running, wait for the

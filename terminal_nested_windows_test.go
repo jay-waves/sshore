@@ -13,6 +13,7 @@ import (
 
 func TestNestedConsoleInput(t *testing.T) {
 	if result := os.Getenv("SSHORE_TEST_NESTED_RESULT"); result != "" {
+		writeTerminalControl(os.Stdout, "\x1b[?9001h")
 		restore, err := rawTerminal()
 		if err != nil {
 			t.Fatal(err)
