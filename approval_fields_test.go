@@ -26,10 +26,14 @@ func TestApprovalPathRetry(t *testing.T) {
 	if data, _ := os.ReadFile(existing); string(data) != "keep" {
 		t.Fatal("validation overwrote a file")
 	}
-	// A default is preserved literally, including spaces. Only entered input is parsed.
-	defaultPath := filepath.Join(dir, "new with trailing space ")
+	// Defaults bypass input parsing, but still use native absolute-path normalization.
+	defaultPath := filepath.Join(dir, " new with surrounding spaces ")
+	want, err := filepath.Abs(defaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	path, err = readApprovalPath(&stubSetupInput{answers: []string{""}}, "Save as: ", defaultPath, validate)
-	if err != nil || path != defaultPath {
+	if err != nil || path != want {
 		t.Fatal(path, err)
 	}
 }
