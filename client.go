@@ -242,6 +242,8 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		return 1, err
 	}
 	defer func() { restore(); _ = flushTerminalInput() }()
+	terminalOutput, flushOutput := terminalOutputWriter()
+	defer func() { _ = flushOutput() }()
 	if !o.plain && !o.local {
 		if e := rememberConnection(o); e != nil {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Connection history not saved: %s\n", cleanText(e.Error()))
@@ -669,7 +671,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					if detaching {
 						continue
 					}
-					if err = writeFull(os.Stdout, e.m.Data); err != nil {
+					if err = writeFull(terminalOutput, e.m.Data); err != nil {
 						return 1, err
 					}
 					outputMouse.Observe(e.m.Data)

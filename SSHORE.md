@@ -113,8 +113,16 @@ to `cmd.exe`; installed PowerShell versions are not selected automatically.
 The Windows local daemon starts without a console; each shell allocates its own
 ConPTY. Local reattachment requests a native redraw after restoring output
 ownership, without injecting a keystroke into the shell.
-Terminal bytes pass through unchanged, targeting common VT sequences used with
+Terminal bytes pass through, targeting common VT sequences used with
 Alacritty; this layer does not emulate a screen or promise screen restoration.
+At the Windows client output boundary, a bounded streaming filter removes only
+DEC private mode 9001 (Win32 input) set/reset requests, including combined mode
+lists. OSC/DCS payloads and other modes remain opaque. Forwarding a nested
+ConPTY's request would make the outer console encode Alacritty's VT arrow bytes
+as literal Win32 character events, so the inner shell sees `[A` instead of Up.
+The client keeps `ReadConsole` in VT mode; native upstream key events are still
+translated to VT by the outer console. Windows regression tests exercise both
+upstream formats and terminal-query replies in an isolated native ConPTY.
 Callers must continuously drain output while a session is running, wait for the
 process and close the terminal when its lifetime ends. Wait is idempotent and
 concurrent callers receive the same result. Linux Close interrupts blocked I/O. Windows uses non-inheritable pipes

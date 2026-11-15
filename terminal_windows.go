@@ -57,6 +57,11 @@ func terminalInputReader() io.Reader {
 	}}
 }
 
+func terminalOutputWriter() (io.Writer, func() error) {
+	w := &consoleOutput{out: os.Stdout}
+	return w, w.Flush
+}
+
 // Approval runs before rawTerminal enables VT output. Temporarily enable it
 // for cleanup on Windows Terminal/ConPTY and VT-capable Console Host.
 func writeTerminalControl(f *os.File, sequence string) {

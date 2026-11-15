@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -19,9 +18,12 @@ func TestNestedConsoleInput(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer restore()
-		// A child ConPTY emits this request during startup. The client currently
-		// writes it unchanged to its own console.
-		fmt.Print("\x1b[?9001hSSHORE_INPUT_READY")
+		// A child ConPTY emits this request during startup.
+		out, flush := terminalOutputWriter()
+		defer flush()
+		if _, err := io.WriteString(out, "\x1b[?9001hSSHORE_INPUT_READY"); err != nil {
+			t.Fatal(err)
+		}
 		chunks := make(chan []byte, 64)
 		stop, err := startTerminalKeyboard(context.Background(), func(b []byte, err error) {
 			if len(b) > 0 {
@@ -52,9 +54,11 @@ func TestNestedConsoleInput(t *testing.T) {
 			}
 		}
 	}
-	for _, tc := range []struct{ name, input string }{
-		{"vt", "\x1b[A"},
-		{"win32", "\x1b[38;72;0;1;256;1_"},
+	for _, tc := range []struct{ name, input, want string }{
+		{"vt", "\x1b[A\x1b[B\x1b[C\x1b[D", "\x1b[A\x1b[B\x1b[C\x1b[D"},
+		{"win32", "\x1b[38;72;0;1;256;1_", "\x1b[A"},
+		{"reply", "\x1b]11;rgb:ffff/ffff/ffff\x1b\\", "\x1b]11;rgb:ffff/ffff/ffff\x1b\\"},
+		{"unicode", "中文😀", "中文😀"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			result := t.TempDir() + "/input"
@@ -94,6 +98,9 @@ func TestNestedConsoleInput(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Logf("upstream=%q forwarded=%q", tc.input, data)
+			if string(data) != tc.want {
+				t.Fatalf("input changed: got %q want %q", data, tc.want)
+			}
 		})
 	}
 }

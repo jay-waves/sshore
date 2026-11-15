@@ -109,7 +109,8 @@ shell. Detach returns to that parent; `attach ID` returns to the spawn. Closing
 the original parent shell ends the spawn and its identified tasks, even after
 reattachment elsewhere. Remote spawns also end if their lifetime SSH connection
 is lost (after disconnect detection). `list` shows `spawn/NAME` or `launch/NAME`
-in the existing task column. See `sshore spawn --help`.
+in the existing task column; the local shell running `list` is marked
+`attached (current)` in STATE. See `sshore spawn --help`.
 
 `cancel HOST --all` lists and confirms all tasks for that machine; `cancel --all`
 clears local tasks. Single-task cancellation is immediate; unsaved work may be

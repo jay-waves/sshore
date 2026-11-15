@@ -3,7 +3,7 @@ package main
 // At connection boundaries, clear mouse/focus reporting and bracketed paste
 // before restoring local input settings. Unix sends cleanup only to a TTY whose
 // TERM is not dumb; Windows temporarily enables VT and restores console flags.
-// During connection, remote PTY bytes pass through unchanged.
+// During connection, Windows output also excludes nested Win32 input requests.
 
 import (
 	shellmux "github.com/jay-waves/sshore/internal/mux"
