@@ -417,6 +417,7 @@ Changes:
 - Keep background Windows workers, SSH and askpass children in a hidden console.
 - Show native SSH startup errors directly, including occupied or denied remote listening ports; close watcher stdin before forced shutdown.
 - Restore Bash prompts on attach without injecting Enter or executing unfinished input.
+- Prevent concurrent Windows reviews from consuming the same approval more than once.
 - Restore recent-connection shortcuts: `sshore attach`, `sshore attach HOST`, and explicit `sshore attach HOST NAME`; remembered transport options never replay native forwarding rules.
 - Include bounded mount metadata caches, same-connection fsnotify, remote capacity queries and mount statistics from withdrawn 0.6.2.
 
