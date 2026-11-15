@@ -52,21 +52,9 @@ func runEndpointForward(args []string) (int, error) {
 
 func pendingPortDescription(op operation) string {
 	if op.Reverse {
-		return fmt.Sprintf("server %s -> local service (choose port in review)", loopback(op.serverPort()))
+		return fmt.Sprintf("server %s -> local service (choose port in review)", loopback(op.ServerPort()))
 	}
-	return fmt.Sprintf("local listener (choose port in review) -> server %s", loopback(op.serverPort()))
-}
-
-// Port always denotes the listener, TargetPort the service, including pending requests.
-func (op operation) serverPort() int {
-	if op.Reverse {
-		return op.Port
-	}
-	return op.TargetPort
-}
-
-func (op operation) localPortPending() bool {
-	return op.Kind == "forward" && (op.Port == 0 || op.TargetPort == 0)
+	return fmt.Sprintf("local listener (choose port in review) -> server %s", loopback(op.ServerPort()))
 }
 
 func resolveLocalPort(op *operation, port int) {

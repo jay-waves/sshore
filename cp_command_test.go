@@ -136,7 +136,7 @@ func TestLocalEndpointHints(t *testing.T) {
 	}
 	for _, args := range [][]string{{"origin:8080", "3000"}, {"3000", "origin:8080"}} {
 		op, err := remoteForwardRequest(args)
-		if err != nil || op.LocalHint != "8080" || !op.localPortPending() || op.serverPort() != 3000 {
+		if err != nil || op.LocalHint != "8080" || !op.LocalPortPending() || op.ServerPort() != 3000 {
 			t.Fatal(op, err)
 		}
 		if err = validateOperations([]operation{op}); err != nil {
@@ -147,7 +147,7 @@ func TestLocalEndpointHints(t *testing.T) {
 		}
 		reverse := op.Reverse
 		resolveLocalPort(&op, 9090)
-		if op.LocalHint != "" || op.localPortPending() {
+		if op.LocalHint != "" || op.LocalPortPending() {
 			t.Fatal("hint not cleared")
 		}
 		if reverse {

@@ -3,23 +3,16 @@ package main
 // Independent SSH workers own forwarding; no listener belongs to a shell attachment.
 import (
 	"fmt"
+	"github.com/jay-waves/sshore/internal/forward"
 	"net"
 	"strconv"
 	"strings"
 )
 
 func parsePort(s string) (int, error) {
-	if s == "" {
-		return 0, usage("port must be an integer from 1 to 65535")
-	}
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0, usage("port must be an integer from 1 to 65535")
-		}
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil || n < 1 || n > 65535 {
-		return 0, usage("port must be an integer from 1 to 65535")
+	n, err := forward.ParsePort(s)
+	if err != nil {
+		return 0, usage("%s", err)
 	}
 	return n, nil
 }

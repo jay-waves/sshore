@@ -72,7 +72,7 @@ func bridgeSpawn(path string, lease net.Conn, readyMode string) error {
 	}
 }
 
-func (s *shell) serveSpawnOwner(c net.Conn, first message) {
+func (s *remoteShell) serveSpawnOwner(c net.Conn, first message) {
 	s.mu.Lock()
 	if !s.temporary || s.spawnOwned || checkPeerVersion(first.SoftwareVersion, "client") != nil {
 		s.mu.Unlock()

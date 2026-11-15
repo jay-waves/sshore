@@ -15,8 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/jay-waves/sshore/internal/releaseversion"
 )
 
 const maxSetupDownload = 64 * 1024 * 1024
@@ -38,7 +36,7 @@ func localSetupBinary(ctx context.Context) ([]byte, error) {
 }
 
 func fetchSetupBinary(ctx context.Context, client *http.Client, base, cache, release string) ([]byte, error) {
-	if _, ok := releaseversion.Series(release); !ok {
+	if _, ok := releaseSeries(release); !ok {
 		return nil, fmt.Errorf("automatic download requires a full published release")
 	}
 	dir := filepath.Join(cache, release)
@@ -110,16 +108,21 @@ func downloadSetupFile(ctx context.Context, client *http.Client, url string, lim
 		retry := err != nil
 		if err == nil {
 			if resp.StatusCode == http.StatusOK {
-				data, readErr := readSetupLimited(resp.Body, limit)
+				var data []byte
+				data, err = readSetupLimited(resp.Body, limit)
 				resp.Body.Close()
-				return data, readErr
+				if err == nil || int64(len(data)) > limit {
+					return data, err
+				}
+				retry = true
+			} else {
+				resp.Body.Close()
+				err = fmt.Errorf("HTTP %d", resp.StatusCode)
+				if resp.StatusCode == http.StatusNotFound {
+					return nil, fmt.Errorf("matching release asset unavailable (HTTP 404); publish/install this exact version or update the local client")
+				}
+				retry = resp.StatusCode == 429 || resp.StatusCode >= 500
 			}
-			resp.Body.Close()
-			err = fmt.Errorf("HTTP %d", resp.StatusCode)
-			if resp.StatusCode == http.StatusNotFound {
-				return nil, fmt.Errorf("matching release asset unavailable (HTTP 404); publish/install this exact version or update the local client")
-			}
-			retry = resp.StatusCode == 429 || resp.StatusCode >= 500
 		}
 		if !retry || attempt >= 2 {
 			return nil, err

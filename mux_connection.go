@@ -4,12 +4,11 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/xtaci/smux"
 
+	"github.com/jay-waves/sshore/internal/shell"
 	"github.com/jay-waves/sshore/internal/tmux"
 )
 
@@ -55,71 +54,16 @@ func validateAttach(m message) error {
 	return nil
 }
 
-type terminalInputLease interface {
-	io.Writer
-	Stop() error
-	Stopped() bool
-}
-
 type attachment struct {
-	mux               *smux.Session
-	control, terminal *smux.Stream
-	controlMu         sync.Mutex
-	terminalWriteMu   sync.Mutex
-	approvalRequests  chan struct{}
-	input             terminalInputLease
-	muted             atomic.Bool
+	*shell.Attachment
+	approvalRequests chan struct{}
 }
 
-func (p *attachment) controlMessage(m message) error {
-	p.controlMu.Lock()
-	defer p.controlMu.Unlock()
-	return streamMessage(p.control, m)
+func newAttachment(mx *smux.Session, control, terminal *smux.Stream) *attachment {
+	return &attachment{Attachment: shell.NewAttachment(mx, control, terminal), approvalRequests: make(chan struct{}, 8)}
 }
-func (p *attachment) output(m message) error {
-	p.terminalWriteMu.Lock()
-	defer p.terminalWriteMu.Unlock()
-	if m.Type == "output" && p.muted.Load() {
-		return nil
-	}
-	return streamMessage(p.terminal, m)
-}
-func (p *attachment) close() { _ = p.mux.Close() }
-
-// Exit follows output on the terminal stream; let the client consume it before
-// transport shutdown, with a bounded wait for an unresponsive peer.
-func (p *attachment) finishExit(code int) {
-	_ = p.output(message{Type: "exit", Code: code})
-	select {
-	case <-p.mux.CloseChan():
-	case <-time.After(2 * time.Second):
-		p.close()
-	}
-}
-
+func (p *attachment) controlMessage(m message) error { return p.Control(m.Type, m.Data, m) }
+func (p *attachment) output(m message) error         { return p.Output(m.Type, m.Data, m) }
 func (p *attachment) readInput(owner *tmux.Lifecycle[*attachment]) {
-	for {
-		m, err := readMessage(p.terminal)
-		if err != nil {
-			p.close()
-			return
-		}
-		if owner.Active() != p {
-			return
-		}
-		switch m.Type {
-		case "input":
-			err = writeFull(p.input, m.Data)
-		case "input_barrier":
-			err = p.output(message{Type: "input_drained"})
-		default:
-			err = fmt.Errorf("invalid terminal input")
-		}
-		if err != nil {
-			if !p.input.Stopped() {
-				p.close()
-			}
-			return
-		}
-	}
+	p.ReadInput(func() bool { return owner.Active() == p })
 }

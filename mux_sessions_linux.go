@@ -2,7 +2,7 @@ package main
 
 import "fmt"
 
-func (s *shell) sessionTargets(request message) message {
+func (s *remoteShell) sessionTargets(request message) message {
 	s.mu.Lock()
 	current, plain := s.name, s.plain
 	s.mu.Unlock()

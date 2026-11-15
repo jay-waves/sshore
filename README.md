@@ -56,7 +56,7 @@ will end. A newer remote version requires updating the local client.
 Mount a remote directory for local applications:
 
 ```sh
-sshore mount work               # Remote home; prints local path and resource ID.
+sshore mount work --name work   # Remote home; prints local path and resource ID.
 sshore list
 sshore cancel mount/work        # Close local files before unmounting.
 ```

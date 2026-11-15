@@ -1,4 +1,4 @@
-package main
+package termui
 
 import (
 	"fmt"
@@ -7,8 +7,6 @@ import (
 
 	"github.com/chzyer/readline"
 	"golang.org/x/term"
-
-	"github.com/jay-waves/sshore/internal/termui"
 )
 
 // Keep readline's editing, but not its unbounded, repeatedly redrawn menu.
@@ -23,7 +21,7 @@ type pathCompletion struct {
 	notice     string
 }
 
-func (p *approvalInput) filterCompletionKey(key rune) (rune, bool) {
+func (p *Input) filterCompletionKey(key rune) (rune, bool) {
 	p.completionMu.Lock()
 	defer p.completionMu.Unlock()
 	if key == readline.CharTab {
@@ -39,7 +37,7 @@ func (p *approvalInput) filterCompletionKey(key rune) (rune, bool) {
 	return key, true
 }
 
-func (p *approvalInput) completionChanged(line []rune, pos int, key rune) ([]rune, int, bool) {
+func (p *Input) completionChanged(line []rune, pos int, key rune) ([]rune, int, bool) {
 	p.completionMu.Lock()
 	defer p.completionMu.Unlock()
 	if p.completion.pending == nil {
@@ -50,7 +48,7 @@ func (p *approvalInput) completionChanged(line []rune, pos int, key rune) ([]run
 	return line, pos, true
 }
 
-func (p *approvalInput) completePath(line []rune, pos int) ([][]rune, int) {
+func (p *Input) completePath(line []rune, pos int) ([][]rune, int) {
 	c := &p.completion
 	if len(c.candidates) > 0 {
 		c.selected = (c.selected + 1) % len(c.candidates)
@@ -106,7 +104,7 @@ func completionListing(candidates [][]rune, base string, width, height int, colo
 		name := base + string(suffix)
 		isDir := strings.HasSuffix(name, "/") || os.PathSeparator == '\\' && strings.HasSuffix(name, `\`)
 		b.WriteString("  ")
-		b.WriteString(termui.Format(color && isDir, termui.Info, "%s", name))
+		b.WriteString(Format(color && isDir, Info, "%s", name))
 		b.WriteByte('\n')
 	}
 	b.WriteString(help)

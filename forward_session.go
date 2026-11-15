@@ -6,31 +6,19 @@ package main
 // worker closes only this transport. Approved forwards require the existing
 // remote executable to validate the source session; no installation is attempted.
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
-	"time"
 
+	"github.com/jay-waves/sshore/internal/forward"
 	"github.com/jay-waves/sshore/internal/transport"
 )
 
-type forwardConfig struct {
-	Retries             int
-	Session, ApprovalID string
-	ResumePID           int
-	Host, Name, Server  string
-	Port, Target        int
-	Reverse             bool
-	SSH                 []string
-}
+type forwardConfig = forward.Config
 
 func validateForwardConfig(f forwardConfig) error {
 	if f.Retries < 0 || f.Retries > 10 {
@@ -59,7 +47,7 @@ func startForwardSession(f forwardConfig) (int, error) {
 	return startResourceBackground(resourceConfig{Forward: &f}, "forward", f.Name)
 }
 
-const forwardReadyMarker = "sshore-forward-ready"
+const forwardReadyMarker = forward.ReadyMarker
 
 // Reconnect only an already-established, explicitly opted-in local forward.
 // Each retry owns a new transport; application TCP connections are not resumed.
@@ -84,32 +72,21 @@ func runForwardWorker(f forwardConfig, s *resourceService) (int, error) {
 		default:
 		}
 	}()
-	for attempt := 0; ; attempt++ {
-		code, err := runForwardAttempt(ctx, f, s, attempt == 0)
-		if ctx.Err() != nil {
-			return 0, nil
-		}
-		if err == nil || attempt >= f.Retries || s.statusSnapshot().Started.IsZero() {
-			return code, err
-		}
-		s.setTransport("reconnecting", err)
-		delay := forwardRetryDelay(attempt)
-		fmt.Fprintf(s.logWriter(), "[sshore] Forward disconnected; TCP connections lost. Retry %d/%d in %s.\n", attempt+1, f.Retries, delay)
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return 0, nil
-		case <-timer.C:
-		}
-	}
+	return forward.Run(ctx, forward.Runtime{
+		Retries:     f.Retries,
+		Description: describeForward(f.Port, f.Target, f.Reverse),
+		Log:         s.logWriter(), HeartbeatInterval: remoteTaskRefresh,
+		Command: func(ctx context.Context, initial bool) *exec.Cmd { return forwardCommand(ctx, f, s, initial) },
+		Ready: func() error {
+			s.record.Detail = describeForward(f.Port, f.Target, f.Reverse)
+			return s.ready("", "")
+		},
+		Status:    s.setTransport,
+		Heartbeat: func() any { return s.peerTask() },
+	})
 }
-func forwardRetryDelay(attempt int) time.Duration {
-	return time.Second * time.Duration(1<<min(attempt, 5))
-}
-func runForwardAttempt(parent context.Context, f forwardConfig, s *resourceService, initial bool) (int, error) {
-	ctx, cancel := context.WithCancel(parent)
-	defer cancel()
+
+func forwardCommand(ctx context.Context, f forwardConfig, s *resourceService, initial bool) *exec.Cmd {
 	exe := localEnvironmentValue(s.baseEnvironment(), "SSHORE_SSH")
 	if exe == "" {
 		exe = "ssh"
@@ -128,89 +105,8 @@ func runForwardAttempt(parent context.Context, f forwardConfig, s *resourceServi
 	} else {
 		cmd.Env = s.baseEnvironment()
 	}
-	var diagnostics forwardDiagnostics
 	cmd.Dir = s.directory
-	cmd.Stderr = io.MultiWriter(s.logWriter(), &diagnostics)
-	input, e := cmd.StdinPipe()
-	if e != nil {
-		return 1, e
-	}
-	defer input.Close()
-	// Let the remote watcher receive EOF and remove its lease before forcing SSH
-	// down. Authentication or active forwarded sockets still have a bounded exit.
-	cmd.Cancel = func() error { return input.Close() }
-	cmd.WaitDelay = 2 * time.Second
-	output, e := cmd.StdoutPipe()
-	if e != nil {
-		return 1, e
-	}
-	defer output.Close()
-	if e = cmd.Start(); e != nil {
-		return 1, e
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	exited := false
-	defer func() {
-		cancel()
-		input.Close()
-		output.Close()
-		if !exited {
-			<-done
-		}
-	}()
-	// Read only the bounded protocol marker. Unexpected login output is an error.
-	marker, e := bufio.NewReader(io.LimitReader(output, int64(len(forwardReadyMarker)+2))).ReadString('\n')
-	if e != nil {
-		cancel()
-		exitErr := <-done
-		exited = true
-		detail := diagnostics.String()
-		if detail == "" {
-			detail = fmt.Sprint(exitErr)
-		}
-		if strings.Contains(detail, "remote port forwarding failed") {
-			detail += "; remote listening port is occupied or denied by SSH policy; choose another remote port or inspect existing forwards"
-		}
-		return 1, fmt.Errorf("forward startup failed (%s): %s", describeForward(f.Port, f.Target, f.Reverse), detail)
-	}
-	if marker != forwardReadyMarker+"\n" {
-		return 1, fmt.Errorf("unexpected forward startup response: %q", cleanText(marker))
-	}
-	s.record.Detail = describeForward(f.Port, f.Target, f.Reverse)
-	if initial {
-		if e = s.ready("", ""); e != nil {
-			return 1, e
-		}
-	} else {
-		s.setTransport("connected", nil)
-	}
-	task := s.peerTask()
-	go func() {
-		ticker := time.NewTicker(remoteTaskRefresh)
-		defer ticker.Stop()
-		enc := json.NewEncoder(input)
-		for {
-			if e := enc.Encode(task); e != nil {
-				return
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
-		}
-	}()
-	select {
-	case e = <-done:
-		exited = true
-		if e != nil {
-			return 1, e
-		}
-		return 1, fmt.Errorf("forward transport closed")
-	case <-ctx.Done():
-		return 0, nil
-	}
+	return cmd
 }
 
 // Retain transport/authentication settings without replaying unrelated forwards.
@@ -249,32 +145,6 @@ func forwardWatchCommand(server string) string {
 	}
 	command += `fi; if [ "$("$server" --version 2>/dev/null)" = ` + shellQuote("sshore "+version) + ` ]; then "$server" task-watch ` + shellQuote(version) + ` || exec cat >/dev/null; else exec cat >/dev/null; fi`
 	return command
-}
-
-// Keep only the current attempt's diagnostic tail, never earlier log entries.
-type forwardDiagnostics struct {
-	mu   sync.Mutex
-	data []byte
-}
-
-func (d *forwardDiagnostics) Write(p []byte) (int, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	n := len(p)
-	if len(p) >= 4096 {
-		d.data = append(d.data[:0], p[len(p)-4096:]...)
-	} else {
-		if len(d.data)+len(p) > 4096 {
-			d.data = d.data[len(d.data)+len(p)-4096:]
-		}
-		d.data = append(d.data, p...)
-	}
-	return n, nil
-}
-func (d *forwardDiagnostics) String() string {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return cleanText(strings.TrimSpace(string(d.data)))
 }
 
 func approvedForwardCommand(f forwardConfig) string {

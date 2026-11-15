@@ -60,3 +60,25 @@ func TestListScopes(t *testing.T) {
 		t.Fatalf("%s %v", stderr, err)
 	}
 }
+
+func TestInventoryOmitsExpiredExitReceipts(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(root, "runtime"))
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
+	dir, err := runtimeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, age := range map[string]time.Duration{"recent": time.Hour, "expired": 8 * 24 * time.Hour} {
+		if err := writeStateJSON(filepath.Join(dir, name+".sock.exit.json"), sessionExit{Name: name, Reason: "exited", At: time.Now().Add(-age)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inv, err := localSessionInventory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Exits) != 1 || inv.Exits[0].Name != "recent" {
+		t.Fatalf("exit receipts: %#v", inv.Exits)
+	}
+}

@@ -83,7 +83,7 @@ func TestFTPMetadataDirectoryBudgetAndLinks(t *testing.T) {
 		t.Fatalf("cache budget: %d", len(cache.entries))
 	}
 	cache.beginMutation()()
-	epoch.started = time.Now().Add(-2 * time.Second)
+	epoch.started = time.Now().Add(-2 * ftpMetadataTTL)
 	cache.directory(epoch, "/dir", entries[:1])
 	if len(cache.entries) != 0 {
 		t.Fatal("an old directory snapshot refreshed expired entries")

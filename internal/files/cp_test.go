@@ -81,7 +81,7 @@ func TestFileFailureAndNoClobber(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatal("temporary file leaked")
 	}
-	for _, name := range []string{"../x", "a/b", `a\b`, "CON", "LPT1.txt", "a:b", "a\n", "..", "file."} {
+	for _, name := range []string{"../x", "a/b", `a\b`, "CON", "LPT1.txt", "COM¹", "com².txt", "LPT³.log", "a:b", "a\n", "..", "file."} {
 		if ValidateName(name) == nil {
 			t.Fatal("unsafe filename", name)
 		}

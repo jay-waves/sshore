@@ -65,7 +65,7 @@ SSH options (only after --):
   --                            Begin SSH-only options
 
 Examples:
-  sshore mount work
+  sshore mount work --name work
   sshore cancel mount/work
   sshore mount work /home/alice/project ./remote-project
   sshore mount work /home/alice/project X:

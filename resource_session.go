@@ -21,8 +21,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/term"
 )
 
 type resourceRecord struct {
@@ -129,7 +127,7 @@ func (s *resourceService) startupWriter() io.Writer {
 func (s *resourceService) sshEnvironment() []string {
 	exe, _ := os.Executable()
 	// os/exec keeps the last value for duplicate environment keys.
-	return append(append([]string(nil), s.baseEnvironment()...), "SSH_ASKPASS="+exe, "SSH_ASKPASS_REQUIRE=force", "DISPLAY=sshore", "SSHORE_ASKPASS=1", "SSHORE_ASKPASS_ADDR="+s.config.AuthAddress, "SSHORE_ASKPASS_TOKEN="+s.config.AuthToken)
+	return append(append([]string(nil), s.baseEnvironment()...), sshAskpassEnvironment(exe, s.config.AuthAddress, s.config.AuthToken)...)
 }
 func (s *resourceService) ready(root, mountpoint string) error {
 	s.setTransport("connected", nil)
@@ -317,25 +315,9 @@ func startReservedResource(config resourceConfig, kind string, reservation *reso
 			http.NotFound(w, r)
 			return
 		}
-		prompt, e := io.ReadAll(io.LimitReader(r.Body, 8193))
-		if e != nil || len(prompt) > 8192 {
-			http.Error(w, "invalid prompt", 400)
-			return
-		}
 		prompts.Lock()
 		defer prompts.Unlock()
-		fmt.Fprint(os.Stderr, cleanText(string(prompt))+" ")
-		if !term.IsTerminal(int(os.Stdin.Fd())) {
-			http.Error(w, "SSH authentication requires a terminal", 409)
-			return
-		}
-		answer, e := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(os.Stderr)
-		if e != nil {
-			http.Error(w, "terminal input failed", 409)
-			return
-		}
-		w.Write(answer)
+		serveSSHAskpass(w, r)
 	})
 	if e != nil {
 		return 1, e

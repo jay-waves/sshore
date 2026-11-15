@@ -53,7 +53,7 @@ func checkForwardApproval(name string, pid int, approval string) error {
 	return nil
 }
 
-func (s *shell) checkForwardApproval(m message) error {
+func (s *remoteShell) checkForwardApproval(m message) error {
 	if err := checkPeerVersion(m.SoftwareVersion, "forward client"); err != nil {
 		return err
 	}

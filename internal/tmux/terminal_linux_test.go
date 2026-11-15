@@ -65,3 +65,33 @@ func TestWaitConcurrent(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalOutputEndsAfterShellExit(t *testing.T) {
+	terminal, err := Start(Config{Path: "/bin/sh", Args: []string{"-c", "trap '' HUP; sleep 4 & printf ready; exit 0"}, Size: Size{Cols: 80, Rows: 24}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	done := make(chan struct {
+		data []byte
+		err  error
+	}, 1)
+	go func() {
+		data, err := io.ReadAll(terminal)
+		done <- struct {
+			data []byte
+			err  error
+		}{data, err}
+	}()
+	select {
+	case result := <-done:
+		if result.err != nil || string(result.data) != "ready" {
+			t.Fatalf("output %q: %v", result.data, result.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shell exit held hostage by descendant's PTY handle")
+	}
+	if err := terminal.Wait(); err != nil {
+		t.Fatal(err)
+	}
+}

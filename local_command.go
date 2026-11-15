@@ -6,6 +6,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 )
 
 type localShellView struct {
@@ -47,7 +49,7 @@ func localShells() ([]localShellView, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows := []localShellView{}
+	records := []localSessionRecord{}
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -57,19 +59,26 @@ func localShells() ([]localShellView, error) {
 		if err != nil {
 			return nil, err
 		}
-		row := localShellView{Temporary: r.Owner.PID != 0, identity: r.identity(), Name: name, State: "unavailable", Version: r.Version, Directory: r.Directory}
-		m, err := localRequest(name, message{Type: "status"})
-		if err == nil && m.Type == "session" {
-			row.PID = m.PID
-			row.State = "detached"
-			if m.Attached {
-				row.State = "attached"
-			} else if m.PID == 0 {
-				row.State = "starting"
-			}
-		}
-		rows = append(rows, row)
+		records = append(records, r)
 	}
+	rows := make([]localShellView, len(records))
+	deadline := time.Now().Add(2 * time.Second)
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	for range min(8, len(records)) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for i := range jobs {
+				rows[i] = inspectLocalShell(records[i], deadline)
+			}
+		}()
+	}
+	for i := range records {
+		jobs <- i
+	}
+	close(jobs)
+	workers.Wait()
 	keys := make([]string, len(rows))
 	for i := range rows {
 		keys[i] = rows[i].identity
@@ -83,6 +92,30 @@ func localShells() ([]localShellView, error) {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 	return rows, nil
+}
+
+func inspectLocalShell(r localSessionRecord, deadline time.Time) localShellView {
+	row := localShellView{Temporary: r.Owner.PID != 0, identity: r.identity(), Name: r.Name, State: "unavailable", Version: r.Version, Directory: r.Directory}
+	c, err := dialLocalSessionUntil(r, deadline)
+	if err != nil {
+		return row
+	}
+	defer c.Close()
+	if err := writeMessage(c, message{Type: "status"}); err != nil {
+		return row
+	}
+	m, err := readMessage(c)
+	if err != nil || m.Type != "session" {
+		return row
+	}
+	row.PID = m.PID
+	row.State = "detached"
+	if m.Attached {
+		row.State = "attached"
+	} else if m.PID == 0 {
+		row.State = "starting"
+	}
+	return row
 }
 
 func runLocalCommand(o options) (int, error) {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/jay-waves/sshore/internal/shell"
 	"github.com/jay-waves/sshore/internal/tmux"
 )
 
@@ -63,7 +64,7 @@ func (s *localShell) attach(c net.Conn) error {
 		return err
 	}
 	defer mx.Close()
-	p := &attachment{control: control, terminal: terminal, mux: mx}
+	p := newAttachment(mx, control, terminal)
 	if err := validateAttach(m); err != nil {
 		return err
 	}
@@ -107,7 +108,7 @@ func (s *localShell) attach(c net.Conn) error {
 		lease.Stop()
 		return err
 	}
-	p.input = lease
+	p.SetInput(lease)
 	s.mu.Unlock()
 	// Losing a local client releases attachment ownership, not the daemon-owned
 	// terminal. Stop its writer before another client can attach.
@@ -138,7 +139,7 @@ func (s *localShell) attach(c net.Conn) error {
 			s.lifecycle.Detach(p)
 			name := s.record.Name
 			s.mu.Unlock()
-			tmux.FinishDetach(control, func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, func() { mx.Close() })
+			shell.FinishDetach(control, func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, func() { mx.Close() })
 			return nil
 		case "session_targets":
 			if err = p.controlMessage(s.targets(m)); err != nil {

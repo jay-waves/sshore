@@ -33,3 +33,14 @@ func TestTaskInventoryCurrentShell(t *testing.T) {
 		})
 	}
 }
+
+func TestTaskInventoryProcessTreeLines(t *testing.T) {
+	var out bytes.Buffer
+	writeTaskInventory(&out, inventory{Shells: []shellView{{Name: "work", ProcessTree: "bash (1)\n└─ bad\x1b[31m (2)\n"}}}, true)
+	if !strings.Contains(out.String(), "launch/work\nbash (1)\n└─ bad�[31m (2)\n") {
+		t.Fatalf("process tree formatting: %q", out.String())
+	}
+	if strings.ContainsRune(out.String(), '\x1b') {
+		t.Fatal("terminal escape leaked")
+	}
+}

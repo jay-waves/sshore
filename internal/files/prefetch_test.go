@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"slices"
 	"testing"
 	"time"
 )
@@ -93,12 +94,16 @@ func TestDirectoryPrefetchQueueReplaced(t *testing.T) {
 		}
 		infos = append(infos, info)
 	}
+	slices.Reverse(infos)
 	p.schedule("/old", infos)
 	p.schedule("/new", infos)
 	if len(p.paths) != directoryPrefetchLimit {
 		t.Fatalf("queue length %d", len(p.paths))
 	}
-	for _, name := range p.paths {
+	for i, name := range p.paths {
+		if name != path.Join("/new", entries[i].Name()) {
+			t.Fatalf("prefetch selection %d: %s", i, name)
+		}
 		if path.Dir(name) != "/new" {
 			t.Fatal("stale queued path", name)
 		}

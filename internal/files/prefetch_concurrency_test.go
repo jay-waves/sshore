@@ -2,6 +2,7 @@ package files
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -27,7 +28,7 @@ func (emptyPrefetchListing) ListAt([]os.FileInfo, int64) (int, error) { return 0
 
 func TestDirectoryPrefetchOverlapsNetworkWaits(t *testing.T) {
 	a, b := net.Pipe()
-	gate := &prefetchListingGate{entered: make(chan string, 4), release: make(chan struct{})}
+	gate := &prefetchListingGate{entered: make(chan string, directoryPrefetchWorkers+1), release: make(chan struct{})}
 	server := sftp.NewRequestServer(a, sftp.Handlers{FileList: gate})
 	go func() { _ = server.Serve() }()
 	client, err := sftp.NewClientPipe(b, &prefetchRequestRecorder{WriteCloser: b, started: gate.entered})
@@ -46,7 +47,9 @@ func TestDirectoryPrefetchOverlapsNetworkWaits(t *testing.T) {
 	}()
 	p.mu.Lock()
 	p.batch, p.cancelBatch = context.WithCancel(p.ctx)
-	p.paths = []string{"/one", "/two", "/three"}
+	for i := 0; i <= directoryPrefetchWorkers; i++ {
+		p.paths = append(p.paths, fmt.Sprintf("/child%d", i))
+	}
 	p.mu.Unlock()
 	for i := 0; i < directoryPrefetchWorkers; i++ {
 		p.wake <- struct{}{}

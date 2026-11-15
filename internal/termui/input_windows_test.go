@@ -1,4 +1,4 @@
-package main
+package termui
 
 import (
 	"errors"
@@ -13,7 +13,7 @@ func TestApprovalVTOutput(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		config := &readline.Config{}
 		mode := uint32(windows.ENABLE_WRAP_AT_EOL_OUTPUT)
-		restore, enabled := configureApprovalVT(config,
+		restore, enabled := configureInputVT(config,
 			func(saved *uint32) error { *saved = mode; return nil },
 			func(next uint32) error {
 				if fail {
@@ -43,7 +43,7 @@ func TestApprovalConsoleRestore(t *testing.T) {
 	mode := uint32(original)
 	var failure error
 	config := &readline.Config{}
-	configureApprovalConsole(config,
+	configureInputConsole(config,
 		func(saved *uint32) error { *saved = mode; return nil },
 		func(next uint32) error {
 			if failure != nil {

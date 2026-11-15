@@ -1,11 +1,11 @@
-package main
+package termui
 
 // One readline editor owns stdin during setup or local approval and closes before
 // SSH takes over. Input history is disabled. Paths are treated as a single string,
 // including spaces, Unicode, optional surrounding quotes and home expansion;
 // there is no shell command substitution or wildcard expansion. Completion occurs
 // at the end or before a closing quote to preserve the suffix. Bounded menu display
-// and selection are in approval_completion.go; color never enters candidate paths.
+// and selection are in completion.go; color never enters candidate paths.
 // Windows hooks use checked console APIs and native VT when available, restoring
 // console state on close. Legacy ANSI translation receives only uncolored text.
 
@@ -20,14 +20,10 @@ import (
 	"unicode"
 
 	"github.com/chzyer/readline"
-	"golang.org/x/term"
-
-	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/jay-waves/sshore/internal/tmux"
 )
 
-// One editor owns stdin throughout approval; it is closed before reconnecting.
-type approvalInput struct {
+// Input owns one history-free line editor until Close returns stdin to its caller.
+type Input struct {
 	// Readline can deliver its final listener callback after Readline returns.
 	// Serialize completion state with the next field's reset.
 	completionMu  sync.Mutex
@@ -38,17 +34,18 @@ type approvalInput struct {
 	completion    pathCompletion
 }
 
-func newApprovalInput() (*approvalInput, error) {
-	p := &approvalInput{}
+// NewInput creates an editor; the caller coordinates stdin ownership.
+func NewInput() (*Input, error) {
+	p := &Input{}
 	config := &readline.Config{
 		AutoComplete: p, HistoryLimit: -1, DisableAutoSaveHistory: true,
 		InterruptPrompt: "^C", EOFPrompt: "",
 	}
 	config.FuncFilterInputRune = p.filterCompletionKey
 	config.Listener = readline.FuncListener(p.completionChanged)
-	restore, ansi := configureApprovalTerminal(config)
+	restore, ansi := configureInputTerminal(config)
 	p.restoreOutput = restore
-	p.color = ansi && termui.ColorEnabled(os.Stdout)
+	p.color = ansi && ColorEnabled(os.Stdout)
 	editor, err := readline.NewEx(config)
 	if err != nil {
 		_ = restore()
@@ -58,12 +55,12 @@ func newApprovalInput() (*approvalInput, error) {
 	return p, nil
 }
 
-func (p *approvalInput) Read(prompt string, paths bool) (string, error) {
+func (p *Input) Read(prompt string, paths bool) (string, error) {
 	p.completionMu.Lock()
 	p.paths = paths
 	p.completion = pathCompletion{}
 	p.completionMu.Unlock()
-	p.editor.SetPrompt(formatApprovalPrompt(p.color, prompt))
+	p.editor.SetPrompt(formatInputPrompt(p.color, prompt))
 	// readline ignores errors from EnterRawMode. Check our Windows hook before
 	// starting its reader; repeated entry is idempotent.
 	if runtime.GOOS == "windows" {
@@ -78,11 +75,11 @@ func (p *approvalInput) Read(prompt string, paths bool) (string, error) {
 	return strings.TrimSpace(line), nil
 }
 
-func formatApprovalPrompt(color bool, prompt string) string {
-	return termui.Format(color, termui.Info, "%s", prompt)
+func formatInputPrompt(color bool, prompt string) string {
+	return Format(color, Info, "%s", prompt)
 }
 
-func (p *approvalInput) Close() error {
+func (p *Input) Close() error {
 	if p.editor == nil {
 		return nil
 	}
@@ -97,7 +94,7 @@ func (p *approvalInput) Close() error {
 	return err
 }
 
-func (p *approvalInput) Do(line []rune, pos int) ([][]rune, int) {
+func (p *Input) Do(line []rune, pos int) ([][]rune, int) {
 	p.completionMu.Lock()
 	defer p.completionMu.Unlock()
 	if !p.paths {
@@ -128,7 +125,7 @@ func completeLocalPath(line []rune, pos int) ([][]rune, int) {
 		searchDir = "."
 	} else {
 		var err error
-		searchDir, err = localPath([]byte(searchDir))
+		searchDir, err = ParsePath([]byte(searchDir))
 		if err != nil {
 			return nil, 0
 		}
@@ -160,15 +157,4 @@ func completeLocalPath(line []rune, pos int) ([][]rune, int) {
 		candidates = append(candidates, []rune(suffix))
 	}
 	return candidates, len([]rune(base))
-}
-
-func newLocalInput() (*approvalInput, error) {
-	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
-		return nil, usage("local selection requires an interactive terminal; specify the local endpoint")
-	}
-	tmux.ResetInputModes()
-	if err := tmux.FlushInput(); err != nil {
-		return nil, err
-	}
-	return newApprovalInput()
 }

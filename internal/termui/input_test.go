@@ -1,21 +1,19 @@
-package main
+package termui
 
 import (
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
-
-	"github.com/jay-waves/sshore/internal/termui"
 )
 
 func TestFormatApprovalPrompt(t *testing.T) {
 	const prompt = "Type update to END listed old shells/tasks and install; Enter for a recovery shell: "
-	if got := formatApprovalPrompt(false, prompt); got != prompt {
+	if got := formatInputPrompt(false, prompt); got != prompt {
 		t.Fatalf("uncolored prompt = %q", got)
 	}
-	got := formatApprovalPrompt(true, prompt)
-	if want := termui.Format(true, termui.Info, "%s", prompt); got != want {
+	got := formatInputPrompt(true, prompt)
+	if want := Format(true, Info, "%s", prompt); got != want {
 		t.Fatalf("colored prompt = %q, want %q", got, want)
 	}
 }
@@ -82,7 +80,7 @@ func TestCompleteLocalPath(t *testing.T) {
 	if len(got) != 1 || string(got[0]) != "v7585.tar.gz" {
 		t.Fatal("absolute path", got)
 	}
-	p := &approvalInput{}
+	p := &Input{}
 	if got, _ := p.Do([]rune("tank_"), 5); len(got) != 0 {
 		t.Fatal("confirmation has path completion")
 	}
@@ -99,7 +97,7 @@ func TestLocalPathHomeAndUnicode(t *testing.T) {
 		{`"中文 文件.txt"`, "中文 文件.txt"},
 		{`literal\u4e2d.txt`, `literal\u4e2d.txt`},
 	} {
-		got, err := localPath([]byte(tc.input))
+		got, err := ParsePath([]byte(tc.input))
 		if err != nil || got != tc.want {
 			t.Fatalf("%q: got %q, %v; want %q", tc.input, got, err, tc.want)
 		}

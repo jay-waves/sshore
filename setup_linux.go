@@ -29,8 +29,6 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
-
-	"github.com/jay-waves/sshore/internal/releaseversion"
 )
 
 type setupState struct {
@@ -82,7 +80,7 @@ func inspectSetup(target string) (setupState, error) {
 		return state, err
 	}
 	if state.Installed != "" {
-		order, known := releaseversion.Compare(state.Installed, version)
+		order, known := compareReleaseVersions(state.Installed, version)
 		if known && order > 0 {
 			return state, fmt.Errorf("remote executable %s is newer than client %s; update the local client", state.Installed, version)
 		}
@@ -104,7 +102,7 @@ func inspectSetup(target string) (setupState, error) {
 			v = "unknown"
 			state.Manual = true
 		}
-		order, known := releaseversion.Compare(v, version)
+		order, known := compareReleaseVersions(v, version)
 		if known && order > 0 {
 			return state, fmt.Errorf("remote shell %s (PID %d) runs newer version %s; update local client %s", p.name, p.pid, v, version)
 		}
@@ -361,7 +359,7 @@ func prepareReplacement(target string) (string, error) {
 		return "", fmt.Errorf("automatic update requires a regular executable target")
 	}
 	if old, e := executableVersion(target); e == nil && old != version {
-		if _, ok := releaseversion.Series(old); ok {
+		if _, ok := releaseSeries(old); ok {
 			if err := os.Link(target, target+"-"+old); err != nil && !errors.Is(err, os.ErrExist) {
 				return "", fmt.Errorf("back up old executable: %w", err)
 			}
@@ -392,7 +390,7 @@ func recoveryShell() error {
 	if err = writeMessage(transport, message{Type: "mux_ready", SoftwareVersion: version}); err != nil {
 		return err
 	}
-	s := &shell{plain: true, done: make(chan struct{})}
+	s := &remoteShell{plain: true, done: make(chan struct{})}
 	defer func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()

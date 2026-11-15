@@ -131,7 +131,7 @@ func sessionLabel(m message, filename string) string {
 	return cleanText(strings.TrimSuffix(filename, ".sock"))
 }
 
-func (s *shell) rename(old, name string, expected ...string) error {
+func (s *remoteShell) rename(old, name string, expected ...string) error {
 	if err := validSession(name); err != nil {
 		return err
 	}

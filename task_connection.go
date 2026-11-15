@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/xtaci/smux"
@@ -51,20 +52,7 @@ func showConnectedTasks(control *smux.Stream, o options) error {
 	}
 	inv.Resources = append(inv.Resources, inspectResources(records)...)
 	// A local resource may also advertise itself as a peer on this host.
-	peers := inv.Peers[:0]
-	for _, p := range inv.Peers {
-		duplicate := false
-		for _, r := range records {
-			if p.Manager == taskManagerLabel() && p.ID == r.Kind+"/"+r.Name {
-				duplicate = true
-				break
-			}
-		}
-		if !duplicate {
-			peers = append(peers, p)
-		}
-	}
-	inv.Peers = peers
+	inv.Peers = excludeLocalResourcePeers(inv.Peers, records)
 	if err := numberInventoryShells(&inv); err != nil {
 		return err
 	}
@@ -82,4 +70,22 @@ func showConnectedTasks(control *smux.Stream, o options) error {
 		fmt.Fprintln(os.Stderr, "Task list: "+cleanText(err))
 	}
 	return nil
+}
+
+func excludeLocalResourcePeers(peers []peerView, records []resourceRecord) []peerView {
+	localIDs := make(map[string]struct{}, len(records))
+	for _, r := range records {
+		localIDs[r.Kind+"/"+r.Name] = struct{}{}
+	}
+	manager := taskManagerLabel()
+	filtered := peers[:0]
+	for _, p := range peers {
+		_, resourceID, wrapped := strings.Cut(strings.TrimPrefix(p.ID, "peer/"), "/")
+		_, duplicate := localIDs[resourceID]
+		duplicate = wrapped && strings.HasPrefix(p.ID, "peer/") && duplicate
+		if p.Manager != manager || !duplicate {
+			filtered = append(filtered, p)
+		}
+	}
+	return filtered
 }

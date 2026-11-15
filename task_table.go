@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 )
@@ -86,7 +87,10 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 	if details {
 		for _, s := range inv.Shells {
 			if s.ProcessTree != "" {
-				fmt.Fprintf(out, "\n%s\n%s\n", shellTaskName(cleanText(s.Name), s.Temporary), cleanText(s.ProcessTree))
+				fmt.Fprintf(out, "\n%s\n", shellTaskName(cleanText(s.Name), s.Temporary))
+				for _, line := range strings.Split(strings.TrimSuffix(s.ProcessTree, "\n"), "\n") {
+					fmt.Fprintln(out, cleanText(line))
+				}
 			}
 		}
 		for _, r := range inv.Resources {

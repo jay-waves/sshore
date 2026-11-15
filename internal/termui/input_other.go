@@ -1,9 +1,9 @@
 //go:build !windows
 
-package main
+package termui
 
 import "github.com/chzyer/readline"
 
-func configureApprovalTerminal(config *readline.Config) (func() error, bool) {
+func configureInputTerminal(config *readline.Config) (func() error, bool) {
 	return func() error { return nil }, true
 }

@@ -163,3 +163,32 @@ func TestMountSetupDeclineAndUnknownVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSetupDownloadRetriesTruncatedBody(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "8")
+		if calls.Add(1) == 1 {
+			_, _ = io.WriteString(w, "partial")
+			return
+		}
+		_, _ = io.WriteString(w, "complete")
+	}))
+	defer server.Close()
+	data, err := downloadSetupFile(context.Background(), server.Client(), server.URL, 64)
+	if err != nil || string(data) != "complete" || calls.Load() != 2 {
+		t.Fatalf("download %q: %v, requests=%d", data, err, calls.Load())
+	}
+}
+
+func TestSetupDownloadDoesNotRetryOversizedBody(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(w, "too large")
+	}))
+	defer server.Close()
+	if _, err := downloadSetupFile(context.Background(), server.Client(), server.URL, 3); err == nil || calls.Load() != 1 {
+		t.Fatalf("oversized response: %v, requests=%d", err, calls.Load())
+	}
+}

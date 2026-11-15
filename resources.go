@@ -49,7 +49,7 @@ func collectLocalResources(host string) ([]resourceRecord, error) {
 	}
 	for _, r := range pending {
 		if host == "" || r.Host == host {
-			records = append(records, resourceRecord{Token: r.ID, Kind: "review", Name: r.displayName(), Host: r.Host, Detail: r.Session + ": " + approvalSummary(r.Operations)})
+			records = append(records, resourceRecord{Token: r.ID, Kind: "review", Name: r.DisplayName(), Host: r.Host, Detail: r.Session + ": " + approvalSummary(r.Operations)})
 		}
 	}
 	sort.Slice(records, func(i, j int) bool {
@@ -103,9 +103,7 @@ func runCancel(args []string) (int, error) {
 			if err = consumeApproval(dir, record.ID); err != nil {
 				return 1, err
 			}
-			if readErr == nil {
-				removeRejectedPeerTask(record)
-			}
+			removeRejectedPeerTask(record)
 			termui.Log(os.Stderr, termui.Success, "[sshore] Request cancelled\n")
 			return 0, nil
 		case "mount", "forward":

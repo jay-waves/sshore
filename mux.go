@@ -8,7 +8,7 @@ package main
 // budget and a 16 KiB maximum frame size. These isolate stalled streams without
 // guaranteeing real-time terminal priority: TCP head-of-line blocking still applies.
 // Keepalives detect silent transport loss (10s interval, 60s timeout); detection
-// ends an attached session rather than granting an implicit detach.
+// releases the attachment while preserving the shell.
 
 import (
 	"fmt"
@@ -17,7 +17,6 @@ import (
 
 	"github.com/xtaci/smux"
 
-	"github.com/jay-waves/sshore/internal/releaseversion"
 	"github.com/jay-waves/sshore/internal/transport"
 )
 
@@ -50,7 +49,7 @@ func streamMessage(s *smux.Stream, m message) error {
 
 // Check the running process, not just the executable currently on disk.
 func checkPeerVersion(peer, role string) error {
-	if releaseversion.Compatible(version, peer) {
+	if sameRelease(version, peer) {
 		return nil
 	}
 	if peer == "" {

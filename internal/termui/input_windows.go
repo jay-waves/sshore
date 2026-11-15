@@ -1,4 +1,4 @@
-package main
+package termui
 
 import (
 	"os"
@@ -7,20 +7,20 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func configureApprovalTerminal(config *readline.Config) (func() error, bool) {
+func configureInputTerminal(config *readline.Config) (func() error, bool) {
 	handle := windows.Handle(os.Stdin.Fd())
-	configureApprovalConsole(config,
+	configureInputConsole(config,
 		func(mode *uint32) error { return windows.GetConsoleMode(handle, mode) },
 		func(mode uint32) error { return windows.SetConsoleMode(handle, mode) })
 	out := windows.Handle(os.Stdout.Fd())
-	return configureApprovalVT(config,
+	return configureInputVT(config,
 		func(mode *uint32) error { return windows.GetConsoleMode(out, mode) },
 		func(mode uint32) error { return windows.SetConsoleMode(out, mode) })
 }
 
 // Bypass readline's legacy ANSI translator only after native VT is enabled.
 // Both editor writers use the same console, whose mode is restored on Close.
-func configureApprovalVT(config *readline.Config, get func(*uint32) error, set func(uint32) error) (func() error, bool) {
+func configureInputVT(config *readline.Config, get func(*uint32) error, set func(uint32) error) (func() error, bool) {
 	noop := func() error { return nil }
 	var saved uint32
 	if err := get(&saved); err != nil {
@@ -35,7 +35,7 @@ func configureApprovalVT(config *readline.Config, get func(*uint32) error, set f
 
 // Use the checked Windows API wrappers instead of readline's syscall wrapper,
 // which returns a non-nil error containing errno 0 after a successful restore.
-func configureApprovalConsole(config *readline.Config, get func(*uint32) error, set func(uint32) error) {
+func configureInputConsole(config *readline.Config, get func(*uint32) error, set func(uint32) error) {
 	var saved uint32
 	active := false
 	config.FuncMakeRaw = func() error {

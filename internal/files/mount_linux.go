@@ -226,7 +226,13 @@ func (n *ftpNode) Setattr(ctx context.Context, h fs.FileHandle, in *fuse.SetAttr
 		}
 	}
 	if mode, ok := in.GetMode(); ok {
-		if e := n.backend.client.Chmod(p, os.FileMode(mode)); e != nil {
+		var e error
+		if f, ok := h.(*ftpLinuxFile); ok {
+			e = f.file.Chmod(os.FileMode(mode))
+		} else {
+			e = n.backend.client.Chmod(p, os.FileMode(mode))
+		}
+		if e != nil {
 			return ftpErrno(e)
 		}
 	}
@@ -271,8 +277,3 @@ func (f *ftpLinuxFile) Flush(ctx context.Context) syscall.Errno   { return 0 }
 func (f *ftpLinuxFile) Fsync(ctx context.Context, flags uint32) syscall.Errno {
 	return ftpErrno(f.file.Sync())
 }
-
-// Keep /dev/tty accessible for password/MFA prompts. A background process
-// group would stop those reads with SIGTTIN. OpenSSH honors inherited SIG_IGN
-// for INT/QUIT after authentication. The fixed trampoline never interpolates
-// user arguments; startup cancellation still kills the owned subprocess.

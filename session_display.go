@@ -1,9 +1,30 @@
 package main
 
+import (
+	"fmt"
+	"strings"
+)
+
+// Session age comes from the daemon lifetime, not the client clock or socket mtime.
+// Missing ages (unstarted sessions) have no suffix.
+func sessionAge(seconds *int64) string {
+	if seconds == nil {
+		return ""
+	}
+	n := max(*seconds, 0)
+	for _, unit := range []struct {
+		seconds int64
+		label   string
+	}{{86400, "d"}, {3600, "h"}, {60, "m"}, {1, "s"}} {
+		if n >= unit.seconds || unit.seconds == 1 {
+			return fmt.Sprintf(" · started %d%s ago", n/unit.seconds, unit.label)
+		}
+	}
+	return ""
+}
+
 // Display only the trailing two components of deep directories. Home is shown
 // as ~, and a rune limit bounds terminal output without splitting UTF-8.
-import "strings"
-
 func shortDirectory(path, home string) string {
 	if path == "" {
 		return "—"

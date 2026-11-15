@@ -166,7 +166,7 @@ func occupiedObjectNames(exceptReview string) (map[string]bool, error) {
 	}
 	for _, r := range pending {
 		if r.ID != exceptReview {
-			names[r.displayName()] = true
+			names[r.DisplayName()] = true
 		}
 	}
 	return names, nil

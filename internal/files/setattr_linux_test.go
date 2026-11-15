@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -150,4 +152,43 @@ func writeTimestampPacket(w io.Writer, kind byte, body []byte) error {
 		data = data[n:]
 	}
 	return nil
+}
+
+func TestLinuxSetattrModeUsesOpenHandle(t *testing.T) {
+	backend := testFTPBackend(t)
+	file, err := backend.open("file", os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	root := &ftpNode{backend: backend}
+	fs.NewNodeFS(root, nil)
+	child := &ftpNode{backend: backend}
+	root.AddChild("file", root.NewPersistentInode(context.Background(), child, fs.StableAttr{Mode: syscall.S_IFREG}), false)
+	original := filepath.Join(backend.root, "original")
+	replacement := filepath.Join(backend.root, "file")
+	if err := os.Rename(replacement, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(replacement, []byte("new"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(replacement, 0644); err != nil {
+		t.Fatal(err)
+	}
+	var in fuse.SetAttrIn
+	in.Valid, in.Mode = fuse.FATTR_MODE, 0600
+	var out fuse.AttrOut
+	if errno := child.Setattr(context.Background(), &ftpLinuxFile{file: file}, &in, &out); errno != 0 {
+		t.Fatal(errno)
+	}
+	for name, want := range map[string]os.FileMode{original: 0600, replacement: 0644} {
+		info, err := os.Stat(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != want {
+			t.Errorf("%s: mode %o, want %o", name, info.Mode().Perm(), want)
+		}
+	}
 }

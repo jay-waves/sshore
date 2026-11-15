@@ -94,3 +94,17 @@ func mapHelpValues() []string {
 	}
 	return values
 }
+
+func TestRenameOptions(t *testing.T) {
+	for _, args := range [][]string{{"rename", "host", "old", "new"}, {"rename", "host", "old", "new", "--", "-p22"}} {
+		o, err := parseOptions(args)
+		if err != nil || o.session != "old" || o.newName != "new" {
+			t.Fatal(o, err)
+		}
+	}
+	for _, args := range [][]string{{"rename", "host", "old"}, {"rename", "host", "old", "new", "extra"}, {"rename", "host", "old", "bad/name"}, {"rename", "host", "old", "new", "--quiet"}} {
+		if _, err := parseOptions(args); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+}

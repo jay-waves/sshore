@@ -54,7 +54,14 @@ func StartCommand(cmd *exec.Cmd, size Size) (*Terminal, error) {
 	}
 	master.Close()
 	master = os.NewFile(uintptr(fd), "mux-pty")
-	return &Terminal{master: master, cmd: cmd}, nil
+	terminal := &Terminal{master: master, cmd: cmd}
+	// A descendant may retain the slave after the shell exits. Reap the shell
+	// independently, then bound output draining so it cannot keep the session alive.
+	go func() {
+		_ = terminal.Wait()
+		_ = master.SetReadDeadline(time.Now().Add(time.Second))
+	}()
+	return terminal, nil
 }
 func Start(c Config) (*Terminal, error) {
 	cmd := exec.Command(c.Path, c.Args...)
@@ -64,8 +71,8 @@ func Start(c Config) (*Terminal, error) {
 }
 func (t *Terminal) Read(p []byte) (int, error) {
 	n, err := t.master.Read(p)
-	// Linux returns EIO after the last slave closes, including normal child exit.
-	if errors.Is(err, syscall.EIO) {
+	// EIO marks the last slave closing; the read deadline ends post-exit draining.
+	if errors.Is(err, syscall.EIO) || errors.Is(err, os.ErrDeadlineExceeded) {
 		err = io.EOF
 	}
 	return n, err

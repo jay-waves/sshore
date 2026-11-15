@@ -15,28 +15,40 @@ and Windows on amd64 only. Mounts and independent forwards do not share a shell'
 | --- | --- |
 | CLI | `main.go`: command dispatch and help; `shell_command.go` / `shell_options.go`: one shell execution and parsing path; `ssh_options.go`: SSH-only suffix after `--` |
 | Connection and setup | `client_transport.go`: local/SSH transport ownership; `client.go`: shared interactive loop; `remote_bootstrap.go` and `setup*.go`: shared remote preparation, downloads, update confirmation and recovery |
-| Shell | `server_linux.go`, `session_*.go`: daemon, PTY lifecycle, names, selection, process snapshots and termination |
+| Shell | `internal/shell/`: attachment I/O, muting, input barriers, exit draining and detach protocol; root `launch_*_linux.go` / `session_*.go`: startup, daemon hosting, names and account policy; `server_linux.go`: internal command dispatch |
 | Wire protocol | `protocol.go`, `mux.go`: shell/application messages; `internal/transport/`: bounded frames, pipe ownership, smux tuning and SSH signal handling |
-| Release version rules | `internal/releaseversion/`: exact matching and ordering of full releases |
+| Release version rules | Root `version.go`: exact matching and ordering of full releases; mount handshakes check equality locally |
 | Direct copy | `cp_command.go`: local cp parsing, batch preflight and independent SFTP transport |
-| Approval | `review*.go`: pending metadata, local consent, reconnect checks and transfer coordination |
+| Approval | `internal/review/`: request/record models, operation validation, bounded storage, expiration and single-use claims; root `review*.go`: consent, connection policy and execution coordination |
 | File transfer | `internal/files/cp*.go`: regular-file validation, exact-size copies, verified uploads, no-clobber publication and restricted SFTP handlers |
 | Local daemon | `local_daemon*.go`, `local_*.go`: singleton startup, local shell/forward ownership and mount-worker supervision |
-| Mux | `internal/tmux/`: exclusive attachment lifecycle, detach handshake, Linux PTY / Windows local ConPTY, input-mode tracking, native redraw and client console I/O |
-| Terminal presentation | `internal/termui/`: status formatting, theme colors and platform-specific ANSI detection |
+| Mux | `internal/tmux/`: exclusive ownership primitives, Linux PTY / Windows local ConPTY, input-mode tracking, native redraw and client console I/O |
+| Terminal presentation | `internal/termui/`: status formatting, line editing, local path parsing/completion and platform console support; root `local_input.go`: input ownership coordination |
 | Independent resources | `resource_session.go`, `resource_status.go`, `resources.go`: worker startup, private records, control and exit receipts |
-| Forward | `endpoints.go` and `forward*.go`: listener/service operands, fixed endpoint mapping and independent SSH transport |
+| Forward | Root `endpoints.go` / `forward*.go`: command mapping, authorization and worker integration; `internal/forward/`: forward configuration, port rules, process execution, reconnects, heartbeats and bounded diagnostics |
 | Mount | `internal/files/mount*.go`: mount lifecycle, SFTP adapter/limits, caches, notifications, capacity, statistics and FUSE/WinFsp; root `mount*.go`: CLI, paths and worker integration |
 | Inventory | `inventory*.go`, `remote_tasks.go`: public status views and advisory peer records |
 | Distribution | `install.sh`, `install.ps1`, `scripts/package.py`, `scripts/release.sh`, `.github/workflows/`: installation, packaging, CI and releases |
 
 The root `main` package owns command routing, product policy and lifecycle
-coordination. Internal packages have narrower responsibilities and do not depend
+coordination. CLI dispatch and release/update policy remain in the root program. Internal packages have narrower responsibilities and do not depend
 on application types or mutable application state. The copy implementation in `files` knows nothing
 about approval records, shell identities or the release version; callers authorize
 operations before constructing its source/target views. Receiver handles and
-publication state stay private. `termui` formats local status only; raw terminal
-input and mouse modes belong to `tmux`; application code coordinates remote PTY streams.
+publication state stay private. `termui` owns local status and line-editor interaction, including path completion
+and prompt-console restoration. The program decides when an editor may consume
+stdin and closes it before handing input to SSH. Raw attached-terminal input and
+mouse modes belong to `tmux`; application code coordinates remote PTY streams.
+The `review` package owns the stored request model and approval file lifecycle.
+The program supplies platform privacy checks and validates saved connection policy;
+name reservations and dispatch to shell, file or forwarding execution remain in
+the program. Stored JSON and control-message field names remain unchanged.
+The `forward` package runs the independent forwarding process and owns retry,
+startup-marker and shutdown handling. The program constructs a fresh authenticated
+command for each attempt and supplies readiness, status and public-heartbeat hooks.
+The package does not know resource records, approval identities or daemon control
+capabilities. Signals, name reservations and worker commit coordination stay in the
+program; cancelling its context closes only that forwarding transport.
 The same flat `files` package owns the mount filesystem engine and transient remote agent. Its configuration
 receives an executable, already validated SSH arguments and the current release;
 it never parses product options or installs software. The optional lifecycle
@@ -107,10 +119,13 @@ detach preserves the terminal. Client loss stops its writer and releases attachm
 its newly created terminal; failed reattachment preserves an existing detached
 terminal. Linux duplicates and rewraps the PTY master as a pollable nonblocking
 file after startup, and all later ioctls use SyscallConn instead of Fd so resize
-and redraw cannot silently disable cancellation.
-`mux_connection.go` owns stream handshake, serialized writes, input barriers and
-bounded exit draining for both local and remote attachments. `internal/tmux` owns
-exclusive attachment state and platform input cancellation. Local record and
+and redraw cannot silently disable cancellation. Linux reaps the shell independently
+of PTY output and ends output draining one second after shell exit, so a descendant
+retaining the slave cannot keep a finished shell session alive.
+`mux_connection.go` adapts application handshake metadata to `internal/shell`,
+which owns serialized attachment writes, input barriers, bounded exit draining
+and detach confirmation for local and remote shells. `internal/tmux` owns
+exclusive ownership primitives and platform input cancellation. Local record and
 worker management stays separate from Linux remote account/setup policy.
 The root command adapters translate application metadata without exposing it to
 the package. Windows ConPTY is the foundation for local mux
@@ -567,22 +582,32 @@ errors. Counts describe the backing filesystem, not a quota for the mounted
 subdirectory. Replies are checked before integer narrowing and byte conversion.
 
 Linux uses FUSE; Windows uses WinFsp. Linux mtime-only updates preserve the
-SFTP-reported access time. Path-based chmod/time updates are not atomic with
-remote path replacement, even when an application holds an open file handle. Writable mounts require atomic-rename and
+SFTP-reported access time. Linux chmod and truncation use an available open file
+handle, preserving its identity after path replacement. Timestamp updates and
+Windows chmod remain path-based and are not atomic with remote path replacement,
+even when an application holds an open file handle. Writable mounts require atomic-rename and
 fsync extensions. There is no persistent write-back cache, conflict resolution
 or replay. Linux read caching lasts until close/reopen unless direct I/O is used;
 Windows rejects unrepresentable names instead of renaming them. Special files and
 file locking are unsupported.
 
-Windows handle metadata queries also use this bounded cache with a one-second
+Windows handle metadata queries also use this bounded cache with a two-second
 TTL. Entries are keyed by the open handle, not its pathname, and removed on close;
 local mutations and remote notifications invalidate them. Repeated editor polls
 therefore reuse metadata without extending its expiry or confusing a replaced
 pathname with an already open file. Directory handles reuse path attributes across WinFsp enumeration reopens,
 within the same TTL and invalidation rules. File contents remain uncached here.
 
-Both adapters use a per-mount LRU cache: path metadata expires one second after
-the lookup starts, and directory listings expire after two seconds. Hits do not
+Mount smux streams use a 1 MiB receive window instead of the shell transport's
+256 KiB window, retaining the shared receive-memory cap. SFTP keeps its default
+32 KiB packets and 64 concurrent requests per file for server compatibility.
+The larger window and four prefetch workers trade memory and background requests
+for less waiting on higher-latency connections. Longer metadata TTLs can delay
+external changes when notifications are unavailable or miss an event; local
+mutations and received notifications still invalidate caches immediately.
+
+Both adapters use a per-mount LRU cache: path metadata expires two seconds after
+the lookup starts, and directory listings expire after five seconds. Hits do not
 extend expiry. The cache retains at most 4,096 metadata results, 128 directory
 lists, 32,768 directory entries and 32 MiB of estimated retained storage (including
 SFTP extended attributes). Oversized listings remain readable within the existing
@@ -590,7 +615,7 @@ wire budget but are not retained in the shared directory cache. Open handles kee
 their own cursor over an immutable snapshot; those live snapshots are outside the
 shared cache budget. Reopening may reuse an unexpired listing.
 
-After a successful foreground listing, up to two background workers prefetch
+After a successful foreground listing, up to four background workers prefetch
 at most 16 directly listed child directories, selected in name order. Hidden
 names, symlinks and names that cannot be represented on Windows are skipped.
 The newest listing replaces queued work and cancels the previous batch; repeated
@@ -660,7 +685,9 @@ Text inventory combines shells and resources in one task-ID-ordered table with
 `ID`, `TASK`, `HOST`, `STATE` and `DETAIL` columns. It distinguishes cached shell state and
 confirmation age separate from local connection status. Successful queries emit
 no progress log; diagnostic fields remain under `--verbose`.
-Resource queries use at most eight workers and a two-second aggregate deadline.
+Resource and local shell status queries each use at most eight workers and a
+two-second aggregate deadline. Local shell probes authenticate against the exact
+record snapshot rather than resolving the name again during the query.
 `list --verbose` and `list --json` include recent resource results; JSON uses an
 explicit field allowlist. All remote inventory requires a matching release
 and never triggers installation. CLI help defines the output contract and errors.

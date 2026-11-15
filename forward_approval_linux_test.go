@@ -10,7 +10,7 @@ import (
 )
 
 func TestForwardApprovalPreservesDetachedSession(t *testing.T) {
-	s := &shell{name: "eevee", cmd: exec.Command("sh")}
+	s := &remoteShell{name: "eevee", cmd: exec.Command("sh")}
 	s.cmd.Process = &os.Process{Pid: 123}
 	m := message{SoftwareVersion: version, Name: "eevee", PID: 123, ApprovalID: strings.Repeat("a", 32)}
 	t.Setenv("HOME", t.TempDir())

@@ -517,6 +517,24 @@ Linux and Windows amd64 only; remote shell hosting remains Linux-only.
 NOTES
 fi
 
+if [[ "$version" == "0.6.9" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Separate forwarding, approval storage/validation and shell attachment protocols into internal business packages; retain CLI and release policy in the main program.
+- Name shared shell mechanisms internal/shell and consolidate line editing and path completion under terminal UI infrastructure.
+- Bound local shell inventory queries, fix duplicate peer rows and preserve process-tree formatting and receipt expiry.
+- Fix Linux shell exit draining, handle-based mount chmod, failed detach notifications, interrupted release downloads and approval cleanup working directories.
+- Harden Windows filename and inherited shell environment handling.
+- Increase mount stream windows and directory prefetch concurrency; extend metadata/directory cache TTLs to 2/5 seconds while retaining mutation and notification invalidation.
+
+Client and remote releases must match exactly. Updating older remote shells ends
+the listed shells and tasks only after typed update confirmation. Existing mounts
+need restarting to use the new tuning. External metadata changes can remain cached
+longer when notifications are unavailable. Linux and Windows amd64 only.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."

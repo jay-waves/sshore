@@ -238,7 +238,7 @@ func executeCopy(client *sftp.Client, o copyOptions) error {
 		size           int64
 	}
 	var items []item
-	var input *approvalInput
+	var input *termui.Input
 	if o.target.pick {
 		var err error
 		input, err = newLocalInput()

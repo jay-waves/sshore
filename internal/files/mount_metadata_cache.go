@@ -12,8 +12,8 @@ import (
 )
 
 const ftpMetadataLimit = 4096
-const ftpMetadataTTL = time.Second
-const ftpDirectoryTTL = 2 * time.Second
+const ftpMetadataTTL = 2 * time.Second
+const ftpDirectoryTTL = 5 * time.Second
 const ftpDirectoryCacheLimit = 128
 const ftpCacheBytes = 32 * 1024 * 1024
 const ftpCacheDirectoryEntries = 32768

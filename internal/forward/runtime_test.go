@@ -1,4 +1,4 @@
-package main
+package forward
 
 import (
 	"strings"
@@ -6,7 +6,7 @@ import (
 )
 
 func TestForwardDiagnosticsBounded(t *testing.T) {
-	var d forwardDiagnostics
+	var d diagnosticsTail
 	d.Write([]byte(strings.Repeat("x", 8192)))
 	d.Write([]byte("\nError: remote port forwarding failed for listen port 5173\n"))
 	if len(d.data) > 4096 || !strings.Contains(d.String(), "listen port 5173") {

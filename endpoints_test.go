@@ -18,7 +18,7 @@ func TestEndpointRequests(t *testing.T) {
 				args = []string{"3000", local}
 			}
 			op, err := remoteForwardRequest(args)
-			if err != nil || !op.localPortPending() || op.serverPort() != 3000 || op.Reverse != reverse {
+			if err != nil || !op.LocalPortPending() || op.ServerPort() != 3000 || op.Reverse != reverse {
 				t.Fatal(op, err)
 			}
 		}

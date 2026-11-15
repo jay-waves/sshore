@@ -12,7 +12,7 @@ func privateState(path string, directory bool) error {
 		return err
 	}
 	if info.Mode()&os.ModeSymlink != 0 || info.IsDir() != directory || (!directory && !info.Mode().IsRegular()) {
-		return fmt.Errorf("invalid approval state path: %s", path)
+		return fmt.Errorf("invalid state path: %s", path)
 	}
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {

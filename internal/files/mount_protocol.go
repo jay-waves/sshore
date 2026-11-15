@@ -6,7 +6,6 @@ import (
 
 	"github.com/xtaci/smux"
 
-	"github.com/jay-waves/sshore/internal/releaseversion"
 	"github.com/jay-waves/sshore/internal/transport"
 )
 
@@ -31,9 +30,15 @@ func readMessage(r io.Reader) (message, error) {
 }
 
 func checkPeerVersion(local, peer, role string) error {
-	if releaseversion.Compatible(local, peer) {
+	if local != "" && local == peer {
 		return nil
 	}
 	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%s; reconnect to update or recover", local, role, peer)
 }
-func muxConfig() *smux.Config { return transport.MuxConfig() }
+func muxConfig() *smux.Config {
+	config := transport.MuxConfig()
+	// Mounts have separate data/notification streams and no terminal to compete
+	// with. A larger data window avoids throttling pipelined SFTP on higher RTTs.
+	config.MaxStreamBuffer = 1024 * 1024
+	return config
+}

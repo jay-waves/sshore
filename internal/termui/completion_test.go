@@ -1,4 +1,4 @@
-package main
+package termui
 
 import (
 	"strings"
@@ -30,7 +30,7 @@ func TestCompletionListing(t *testing.T) {
 }
 
 func TestCompletionSelectionPreservesPath(t *testing.T) {
-	p := &approvalInput{paths: true, completion: pathCompletion{
+	p := &Input{paths: true, completion: pathCompletion{
 		line: []rune(`"folder/文"`), pos: len([]rune(`"folder/文`)),
 		candidates: [][]rune{[]rune("件 a.txt"), []rune("件 b.txt")}, selected: -1,
 	}}

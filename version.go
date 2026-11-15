@@ -1,9 +1,9 @@
-package releaseversion
+package main
 
 import "strings"
 
 // Parse stable release labels for upgrade direction; this is not a compatibility series.
-func Series(v string) (string, bool) {
+func releaseSeries(v string) (string, bool) {
 	parts := strings.Split(v, ".")
 	if len(parts) != 3 {
 		return "", false
@@ -21,20 +21,20 @@ func Series(v string) (string, bool) {
 	return parts[0] + "." + parts[1], true
 }
 
-func Compatible(local, peer string) bool {
+func sameRelease(local, peer string) bool {
 	return local != "" && local == peer
 }
 
 // Compare numeric release components without integer overflow. Custom labels
 // cannot be ordered and must be handled manually when they differ.
-func Compare(a, b string) (int, bool) {
+func compareReleaseVersions(a, b string) (int, bool) {
 	if a == b && a != "" {
 		return 0, true
 	}
-	if _, ok := Series(a); !ok {
+	if _, ok := releaseSeries(a); !ok {
 		return 0, false
 	}
-	if _, ok := Series(b); !ok {
+	if _, ok := releaseSeries(b); !ok {
 		return 0, false
 	}
 	aa, bb := strings.Split(a, "."), strings.Split(b, ".")

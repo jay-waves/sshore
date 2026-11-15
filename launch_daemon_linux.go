@@ -1,0 +1,595 @@
+//go:build linux
+
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"github.com/jay-waves/sshore/internal/shell"
+	"github.com/jay-waves/sshore/internal/tmux"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+// Each attachment owns one mux session. Local helpers use Unix sockets for
+// approval, forwarding control and detach requests. Approved file bytes flow
+// directly on client-initiated streams, without a helper process or PTY relay.
+
+type remoteShell struct {
+	temporary       bool
+	spawnOwned      bool
+	environment     []string
+	directory       string
+	processIdentity string
+	cancelling      bool
+
+	instance   string
+	name       string
+	nameLock   *os.File
+	exitReason string
+	plain      bool
+	terminalMu sync.Mutex // serializes state snapshots with PTY output
+	mouse      tmux.InputState
+	mu         sync.Mutex
+	lifecycle  tmux.Lifecycle[*attachment]
+	started    time.Time // shell lifetime, including time spent detached
+	master     *tmux.Terminal
+	cmd        *exec.Cmd
+	path       string
+	done       chan struct{}
+	once       sync.Once
+}
+
+func (s *remoteShell) stop() { s.once.Do(func() { close(s.done) }) }
+func (s *remoteShell) start(cols, rows uint16, term string) error {
+	if s.instance == "" {
+		s.instance = rand.Text()
+	}
+	env := s.environment
+	if env == nil {
+		env = os.Environ()
+	}
+	shell := localEnvironmentValue(env, "SHELL")
+	if shell == "" {
+		shell = "/bin/bash"
+	}
+	cmd := exec.Command(shell, "-i")
+	cmd.Dir = s.directory
+	cmd.Env = append(append([]string(nil), env...), "TERM="+term, "SSHORE_SOCKET="+s.path)
+	if s.plain {
+		cmd.Env = nil
+		for _, item := range env {
+			if !strings.HasPrefix(item, "SSHORE_") {
+				cmd.Env = append(cmd.Env, item)
+			}
+		}
+		cmd.Env = append(cmd.Env, "TERM="+term, "SSHORE_DISABLED=1")
+	}
+	if exe, err := os.Executable(); err == nil && !s.plain {
+		cmd.Env = append(cmd.Env, "PATH="+filepath.Dir(exe)+":"+localEnvironmentValue(env, "PATH"))
+	}
+	master, err := tmux.StartCommand(cmd, tmux.Size{Cols: max(cols, 1), Rows: max(rows, 1)})
+	if err != nil {
+		return err
+	}
+	s.cmd, s.master = cmd, master
+	s.processIdentity, err = processStart(cmd.Process.Pid)
+	if err != nil {
+		master.Close()
+		return err
+	}
+	s.started = time.Now()
+	go func() {
+		buf := make([]byte, 8192)
+		for {
+			n, err := master.Read(buf)
+			if n > 0 {
+				s.terminalMu.Lock()
+				s.mouse.Observe(buf[:n])
+				s.mu.Lock()
+				p := s.lifecycle.Active()
+				s.mu.Unlock()
+				if p != nil {
+					if p.output(message{Type: "output", Data: buf[:n]}) != nil {
+						p.Close()
+					}
+				}
+				s.terminalMu.Unlock()
+			}
+			if err != nil {
+				break
+			}
+		}
+		err := master.Wait()
+		code := 0
+		if err != nil {
+			code = 1
+			var e *exec.ExitError
+			if errors.As(err, &e) {
+				code = e.ExitCode()
+			}
+		}
+		s.mu.Lock()
+		p := s.lifecycle.End()
+		if s.exitReason == "" {
+			s.exitReason = fmt.Sprintf("shell exited (code %d)", code)
+			if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+				s.exitReason = "shell terminated by " + status.Signal().String()
+			}
+		}
+		s.mu.Unlock()
+		if p != nil {
+			p.FinishExit(code)
+		}
+		s.stop()
+	}()
+	return nil
+}
+func (s *remoteShell) attach(p *attachment, m message) error {
+	s.terminalMu.Lock()
+	defer s.terminalMu.Unlock()
+	if err := validateAttach(m); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	startedHere := false
+	err := s.lifecycle.Attach(p, func() error {
+		if s.cancelling {
+			return fmt.Errorf("shell is being cancelled")
+		}
+		if m.Instance != "" && m.Instance != s.instance {
+			return fmt.Errorf("shell instance changed; refresh with sshore list")
+		}
+		if m.Action == "existing" && s.cmd == nil {
+			return fmt.Errorf("shell has not started; use sshore list HOST")
+		}
+		if m.Action == "approved" {
+			if s.cmd == nil || s.cmd.Process.Pid != m.PID {
+				return fmt.Errorf("approved shell changed")
+			}
+			p.Mute(true)
+		}
+		reconnecting := s.master != nil
+		if s.master == nil {
+			if err := s.start(m.Cols, m.Rows, m.Term); err != nil {
+				return err
+			}
+			startedHere = true
+		}
+		if err := s.master.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
+			return err
+		}
+		if err := p.controlMessage(message{Type: "ready", Temporary: s.temporary, Instance: s.instance, PID: s.cmd.Process.Pid, Name: s.name}); err != nil {
+			return err
+		}
+		if !p.Muted() {
+			if data := s.mouse.Replay(); len(data) > 0 {
+				if err := p.output(message{Type: "output", Data: data}); err != nil {
+					return err
+				}
+			}
+		}
+		p.SetInput(tmux.NewInputLease(s.master))
+		if reconnecting && !p.Muted() {
+			tmux.RequestRedraw(s.master, s.cmd.Process.Pid)
+		}
+		return nil
+	})
+	if err != nil && startedHere {
+		s.lifecycle.End()
+		s.exitReason = "initial attachment failed"
+		_ = s.master.Close()
+		s.stop()
+	}
+	if errors.Is(err, tmux.ErrExited) {
+		return fmt.Errorf("shell is exiting; use sshore launch HOST to create a new one")
+	}
+	if errors.Is(err, tmux.ErrAttached) {
+		return fmt.Errorf("shell already attached; detach the other connection first")
+	}
+	return err
+}
+func (s *remoteShell) release(p *attachment) {
+	p.Close()
+	// Stop this attachment's writer before allowing another client to attach.
+	s.clearAttachment(p)
+}
+
+func (s *remoteShell) clearAttachment(p *attachment) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lifecycle.Active() == p && p.Input() != nil {
+		if err := p.Input().Stop(); err != nil {
+			s.lifecycle.Release(p)
+			s.exitReason = "terminal input cancellation failed"
+			s.stop()
+			return false
+		}
+	}
+	return s.lifecycle.Detach(p)
+}
+func (s *remoteShell) detach(p *attachment) {
+	if !s.clearAttachment(p) {
+		p.Close()
+		return
+	}
+	s.mu.Lock()
+	name := s.name
+	s.mu.Unlock()
+	shell.FinishDetach(p.ControlStream(), func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, p.Close)
+}
+func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
+	mux, control, terminal, m, err := acceptMux(c)
+	if err != nil {
+		return err
+	}
+	defer mux.Close()
+	p := newAttachment(mux, control, terminal)
+	defer s.release(p)
+	if err = s.attach(p, m); err != nil {
+		_ = p.controlMessage(message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
+		_ = control.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _ = readMessage(control)
+		return err
+	}
+	if m.Action == "approved" && validApprovalID(m.ApprovalID) {
+		_ = removeRemoteTask(m.ApprovalID)
+	}
+	operationCtx, cancelOperations := context.WithCancel(context.Background())
+	defer cancelOperations()
+	if !s.plain {
+		workersDone := make(chan struct{})
+		go func() {
+			defer close(workersDone)
+			serveApprovedStreams(operationCtx, mux)
+		}()
+		defer func() {
+			cancelOperations()
+			p.Close()
+			// Let cancelled uploads remove temporary files before daemon exit.
+			select {
+			case <-workersDone:
+			case <-time.After(2 * time.Second):
+			}
+		}()
+	} else {
+		go func() {
+			for {
+				stream, e := mux.AcceptStream()
+				if e != nil {
+					return
+				}
+				_ = stream.Close()
+			}
+		}()
+	}
+	go p.readInput(&s.lifecycle)
+
+	for {
+		m, err := readMessage(control)
+		if err != nil {
+			return err
+		}
+		switch m.Type {
+		case "resume_output":
+			s.terminalMu.Lock()
+			if p.Mute(false) {
+				if data := s.mouse.Replay(); len(data) > 0 {
+					err = p.output(message{Type: "output", Data: data})
+				}
+				s.mu.Lock()
+				if err == nil && s.lifecycle.Active() == p {
+					tmux.RequestRedraw(s.master, s.cmd.Process.Pid)
+				}
+				s.mu.Unlock()
+			}
+			s.terminalMu.Unlock()
+			if err != nil {
+				return err
+			}
+			if err := p.controlMessage(message{Type: "output_resumed"}); err != nil {
+				return err
+			}
+		case "inventory":
+			inv, err := localSessionInventory()
+			if err != nil {
+				inv.Errors = append(inv.Errors, cleanText(err.Error()))
+			}
+			for _, row := range inv.Shells {
+				if err := p.controlMessage(message{Type: "inventory_row", Inventory: &inventory{Shells: []shellView{row}}}); err != nil {
+					return err
+				}
+			}
+			for _, row := range inv.Resources {
+				if err := p.controlMessage(message{Type: "inventory_row", Inventory: &inventory{Resources: []resourceView{row}}}); err != nil {
+					return err
+				}
+			}
+			for _, row := range inv.Peers {
+				if err := p.controlMessage(message{Type: "inventory_row", Inventory: &inventory{Peers: []peerView{row}}}); err != nil {
+					return err
+				}
+			}
+			if err := p.controlMessage(message{Type: "inventory_done", Inventory: &inventory{Errors: inv.Errors}}); err != nil {
+				return err
+			}
+		case "session_targets":
+			if err := p.controlMessage(s.sessionTargets(m)); err != nil {
+				return err
+			}
+		case "redraw":
+			s.terminalMu.Lock()
+			s.mu.Lock()
+			if s.lifecycle.Active() == p && !p.Muted() {
+				tmux.RequestRedraw(s.master, s.cmd.Process.Pid)
+			}
+			s.mu.Unlock()
+			s.terminalMu.Unlock()
+			if err := p.controlMessage(message{Type: "redrawn"}); err != nil {
+				return err
+			}
+		case "resize":
+			s.mu.Lock()
+			var resizeErr error
+			if s.lifecycle.Active() == p {
+				resizeErr = s.master.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
+			}
+			s.mu.Unlock()
+			if resizeErr != nil {
+				return fmt.Errorf("resize terminal: %w", resizeErr)
+			}
+			if err := p.controlMessage(message{Type: "resized", Cols: m.Cols, Rows: m.Rows}); err != nil {
+				return err
+			}
+		case "detach":
+			s.detach(p)
+			return nil
+		default:
+			return fmt.Errorf("unexpected control message: %s", m.Type)
+		}
+	}
+}
+func (s *remoteShell) handle(c net.Conn) {
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	first, err := readMessage(c)
+	if err != nil {
+		return
+	}
+	_ = c.SetDeadline(time.Time{})
+	switch first.Type {
+	case "spawn_owner":
+		s.serveSpawnOwner(c, first)
+	case "mux":
+		s.mu.Lock()
+		unowned := s.temporary && !s.spawnOwned
+		s.mu.Unlock()
+		if unowned {
+			_ = writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: "spawn lifetime is not established"})
+			return
+		}
+		if err := checkPeerVersion(first.SoftwareVersion, "client"); err != nil {
+			_ = writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
+			return
+		}
+		if writeMessage(c, message{Type: "mux_ready", SoftwareVersion: version}) == nil {
+			_ = s.serveMux(c)
+		}
+	case "cancel":
+		if err := checkPeerVersion(first.SoftwareVersion, "client"); err != nil {
+			_ = writeMessage(c, message{Type: "error", Error: err.Error()})
+			return
+		}
+		if err := s.cancel(first.Instance); err != nil {
+			_ = writeMessage(c, message{Type: "error", Error: err.Error()})
+			return
+		}
+		_ = writeMessage(c, message{Type: "cancelled"})
+	case "forward_check":
+		reply := message{Type: "forward_checked", SoftwareVersion: version}
+		if err := s.checkForwardApproval(first); err != nil {
+			reply.Type = "error"
+			reply.Error = err.Error()
+		}
+		_ = writeMessage(c, reply)
+	case "rename":
+		if err := checkPeerVersion(first.SoftwareVersion, "client"); err != nil {
+			_ = writeMessage(c, message{Type: "error", Error: err.Error()})
+			return
+		}
+		if err := s.rename(first.Action, first.Name, first.Instance); err != nil {
+			_ = writeMessage(c, message{Type: "error", Error: err.Error()})
+			return
+		}
+		_ = writeMessage(c, message{Type: "renamed", Name: first.Name})
+	case "status":
+		s.mu.Lock()
+		m := message{Type: "session", Temporary: s.temporary, Instance: s.instance, Attached: s.lifecycle.Active() != nil, Name: s.name, SoftwareVersion: version}
+		group := 0
+		if s.master != nil {
+			group, _ = s.master.ForegroundGroup()
+		}
+		if s.cmd != nil {
+			m.PID = s.cmd.Process.Pid
+			age := int64(time.Since(s.started) / time.Second)
+			m.AgeSeconds = &age
+		}
+		s.mu.Unlock()
+		if first.Action != "health" {
+			m.Foreground = foregroundPrograms("/proc", group)
+			m.Directory = sessionDirectory(group, m.PID)
+		}
+		_ = writeMessage(c, m)
+	case "detach":
+		s.mu.Lock()
+		p := s.lifecycle.Active()
+		s.mu.Unlock()
+		// Ask the attachment's control loop to handle finalization, avoiding two
+		// concurrent readers of the control stream.
+		if p != nil {
+			if err := p.controlMessage(message{Type: "detach_requested"}); err != nil {
+				_ = writeMessage(c, message{Type: "error", Error: "detach request could not reach the client; reconnect to check the shell"})
+				return
+			}
+		}
+		_ = writeMessage(c, message{Type: "detached"})
+	case "approval_request":
+		if err = s.requestApproval(c, first); err != nil {
+			_ = writeMessage(c, message{Type: "error", Error: err.Error()})
+		}
+	default:
+		_ = writeMessage(c, message{Type: "fatal", Error: "unsupported connection; update sshore on both computers"})
+	}
+}
+func daemon(name string) error {
+	label := os.Getenv("SSHORE_SESSION_NAME")
+	if validSession(label) != nil {
+		label = name
+	}
+	return serveRemoteShell(name, label, os.Environ(), "", nil)
+}
+
+func serveRemoteShell(name, nameLabel string, env []string, directory string, ready func() error, temporary ...bool) error {
+	path, err := socketPath(name)
+	if err != nil {
+		return err
+	}
+	lock, err := openLock(path+".lock", true)
+	if err != nil {
+		return fmt.Errorf("shell already running: %w", err)
+	}
+	defer lock.Close()
+	nameLock, err := lockObjectName(nameLabel)
+	if err != nil {
+		return fmt.Errorf("shell name %s is in use: %w", nameLabel, err)
+	}
+	if err := writeSessionName(path, nameLabel); err != nil {
+		nameLock.Close()
+		return err
+	}
+	defer func() {
+		if nameLock != nil {
+			nameLock.Close()
+		}
+	}()
+	defer os.Remove(path + ".name")
+	_ = os.Remove(path)
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		return err
+	}
+	var handlers sync.WaitGroup
+	defer handlers.Wait()
+	defer listener.Close()
+	defer os.Remove(path)
+	if err := os.Chmod(path, 0600); err != nil {
+		return err
+	}
+	s := &remoteShell{temporary: len(temporary) > 0 && temporary[0], instance: rand.Text(), environment: env, directory: directory, path: path, name: nameLabel, nameLock: nameLock, done: make(chan struct{})}
+	nameLock = nil
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.nameLock != nil {
+			s.nameLock.Close()
+		}
+	}()
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.cmd != nil {
+			reason := s.exitReason
+			if reason == "" {
+				reason = "daemon stopped (signal or shutdown)"
+			}
+			saveSessionExit(s.path, s.name, reason)
+		}
+		if s.master != nil {
+			_ = s.master.Close()
+		}
+	}()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	// Catch and discard HUP in the daemon, rather than installing SIG_IGN:
+	// ignored dispositions survive exec and could make a newly started shell
+	// ignore HUP before its own signal handlers are installed.
+	hangups := make(chan os.Signal, 1)
+	signal.Notify(hangups, syscall.SIGHUP)
+	defer signal.Stop(hangups)
+	go func() {
+		select {
+		case <-ctx.Done():
+			s.stop()
+		case <-s.done:
+		}
+		_ = listener.Close()
+	}()
+	if ready != nil {
+		if err := ready(); err != nil {
+			s.stop()
+			return err
+		}
+	}
+	// A failed initial attach should not leave an empty daemon indefinitely.
+	go func() {
+		select {
+		case <-time.After(30 * time.Second):
+			s.mu.Lock()
+			empty := s.master == nil
+			s.mu.Unlock()
+			if empty {
+				s.stop()
+			}
+		case <-s.done:
+		}
+	}()
+	for {
+		c, err := listener.Accept()
+		if err != nil {
+			select {
+			case <-s.done:
+				return nil
+			default:
+				return err
+			}
+		}
+		handlers.Add(1)
+		go func() { defer handlers.Done(); s.handle(c) }()
+	}
+}
+func (s *remoteShell) cancel(instance string) error {
+	s.mu.Lock()
+	if instance == "" || instance != s.instance {
+		s.mu.Unlock()
+		return fmt.Errorf("shell instance changed; refresh with sshore list")
+	}
+	if s.cmd == nil {
+		s.lifecycle.End()
+		s.stop()
+		s.mu.Unlock()
+		return nil
+	}
+	s.cancelling = true
+	pid, start := s.cmd.Process.Pid, s.processIdentity
+	s.exitReason = "cancelled by sshore cancel"
+	s.mu.Unlock()
+	if err := stopOldSessions([]setupProcess{{PID: pid, Start: start}}, "cancelled by sshore cancel"); err != nil {
+		s.mu.Lock()
+		s.cancelling = false
+		s.mu.Unlock()
+		return err
+	}
+	s.stop()
+	return nil
+}

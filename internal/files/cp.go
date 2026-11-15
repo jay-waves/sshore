@@ -42,7 +42,7 @@ func ValidateName(name string) error {
 	case "CON", "PRN", "AUX", "NUL":
 		return fmt.Errorf("reserved filename %q", name)
 	}
-	if len(stem) == 4 && (strings.HasPrefix(stem, "COM") || strings.HasPrefix(stem, "LPT")) && stem[3] >= '1' && stem[3] <= '9' {
+	if (strings.HasPrefix(stem, "COM") || strings.HasPrefix(stem, "LPT")) && strings.Contains("123456789¹²³", stem[3:]) && utf8.RuneCountInString(stem[3:]) == 1 {
 		return fmt.Errorf("reserved filename %q", name)
 	}
 	return nil

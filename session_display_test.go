@@ -5,6 +5,23 @@ import (
 	"testing"
 )
 
+func TestSessionAge(t *testing.T) {
+	if sessionAge(nil) != "" {
+		t.Fatal("missing age displayed")
+	}
+	for _, tc := range []struct {
+		seconds int64
+		want    string
+	}{
+		{-1, "0s"}, {0, "0s"}, {59, "59s"}, {60, "1m"}, {3599, "59m"},
+		{3600, "1h"}, {86399, "23h"}, {86400, "1d"}, {172800, "2d"},
+	} {
+		if got := sessionAge(&tc.seconds); got != " · started "+tc.want+" ago" {
+			t.Fatalf("%d: %q", tc.seconds, got)
+		}
+	}
+}
+
 func TestShortDirectory(t *testing.T) {
 	for _, tc := range []struct{ path, want string }{
 		{"", "—"}, {"/", "/"}, {"/tmp", "/tmp"}, {"/home/me", "~"},
@@ -18,19 +35,5 @@ func TestShortDirectory(t *testing.T) {
 	}
 	if got := shortDirectory("/"+strings.Repeat("中", 100), ""); len([]rune(got)) != 40 {
 		t.Fatal(got)
-	}
-}
-
-func TestRenameOptions(t *testing.T) {
-	for _, args := range [][]string{{"rename", "host", "old", "new"}, {"rename", "host", "old", "new", "--", "-p22"}} {
-		o, err := parseOptions(args)
-		if err != nil || o.session != "old" || o.newName != "new" {
-			t.Fatal(o, err)
-		}
-	}
-	for _, args := range [][]string{{"rename", "host", "old"}, {"rename", "host", "old", "new", "extra"}, {"rename", "host", "old", "bad/name"}, {"rename", "host", "old", "new", "--quiet"}} {
-		if _, err := parseOptions(args); err == nil {
-			t.Fatal("accepted", args)
-		}
 	}
 }

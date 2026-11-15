@@ -37,7 +37,7 @@ func TestEndpointRequestHelpers(t *testing.T) {
 		if op.Kind != tc.kind || op.LocalHint != tc.hint || op.Reverse != tc.reverse {
 			t.Fatal(op)
 		}
-		if op.Kind == "forward" && (!op.localPortPending() || op.serverPort() != 3000) {
+		if op.Kind == "forward" && (!op.LocalPortPending() || op.ServerPort() != 3000) {
 			t.Fatal("resolved without local consent", op)
 		}
 		sendTest(t, stream, message{Type: "queued"})

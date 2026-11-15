@@ -5,14 +5,13 @@ import (
 	"os"
 	"path"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
 const directoryPrefetchLimit = 16
-const directoryPrefetchWorkers = 2
+const directoryPrefetchWorkers = 4
 
 // Workers share a replaceable queue. No speculative read schedules descendants.
 type directoryPrefetch struct {
@@ -53,8 +52,12 @@ func (p *directoryPrefetch) schedule(parent string, entries []os.FileInfo) {
 		if !entry.IsDir() || entry.Mode()&os.ModeSymlink != 0 || strings.HasPrefix(entry.Name(), ".") || ValidateName(entry.Name()) != nil {
 			continue
 		}
-		paths = append(paths, path.Join(parent, entry.Name()))
-		sort.Strings(paths)
+		candidate := path.Join(parent, entry.Name())
+		at, _ := slices.BinarySearch(paths, candidate)
+		if at >= directoryPrefetchLimit {
+			continue
+		}
+		paths = slices.Insert(paths, at, candidate)
 		if len(paths) > directoryPrefetchLimit {
 			paths = paths[:directoryPrefetchLimit]
 		}

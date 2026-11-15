@@ -71,7 +71,7 @@ func requestFilesWithHint(kind string, paths []string, hint string) error {
 	return requestOperations(ops)
 }
 
-func (s *shell) requestApproval(c net.Conn, m message) error {
+func (s *remoteShell) requestApproval(c net.Conn, m message) error {
 	if err := validateOperations(m.Operations); err != nil {
 		return err
 	}
@@ -87,7 +87,7 @@ func (s *shell) requestApproval(c net.Conn, m message) error {
 	default:
 		return fmt.Errorf("too many pending requests")
 	}
-	st, err := p.mux.OpenStream()
+	st, err := p.Mux().OpenStream()
 	if err != nil {
 		return err
 	}

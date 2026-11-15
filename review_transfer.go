@@ -2,7 +2,7 @@ package main
 
 // Approved files execute sequentially; the first failure stops the batch without
 // rolling back completed files. Ctrl-C cancels local file operations; a failed
-// transfer closes the attachment and ends its shell under normal disconnect policy.
+// transfer closes the attachment while preserving its shell.
 // Normal terminal output is muted until attachment resumes
 // it. --stay returns after file operations. Approved forwarding runs separately
 // as an independent background resource without attaching to the shell.

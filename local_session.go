@@ -66,14 +66,22 @@ func readLocalRecord(path, name string) (localSessionRecord, error) {
 // Authenticate before sending any shell commands. Each exchange is bounded;
 // callers clear the deadline only when they take ownership of the connection.
 func dialLocalSession(r localSessionRecord) (net.Conn, error) {
+	return dialLocalSessionUntil(r, time.Now().Add(5*time.Second))
+}
+
+func dialLocalSessionUntil(r localSessionRecord, deadline time.Time) (net.Conn, error) {
 	if err := checkPeerVersion(r.Version, "local shell"); err != nil {
 		return nil, err
 	}
-	c, err := net.DialTimeout("tcp", r.Address, time.Second)
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return nil, os.ErrDeadlineExceeded
+	}
+	c, err := net.DialTimeout("tcp", r.Address, min(time.Second, remaining))
 	if err != nil {
 		return nil, fmt.Errorf("local shell %s unavailable: %w", r.Name, err)
 	}
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = c.SetDeadline(deadline)
 	if err = writeMessage(c, message{Type: "local_auth", Token: r.Token, SoftwareVersion: version}); err == nil {
 		var m message
 		m, err = readMessage(c)

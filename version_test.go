@@ -1,4 +1,4 @@
-package releaseversion
+package main
 
 import "testing"
 
@@ -13,7 +13,7 @@ func TestReleaseCompatibility(t *testing.T) {
 		{"0.4.0", "0.4.1-rc1", false}, {"0.4.0", "", false},
 		{"0.4.1-dev-a", "0.4.1-dev-a", true}, {"0.4.1-dev-a", "0.4.1-dev-b", false},
 	} {
-		if got := Compatible(tc.a, tc.b); got != tc.want {
+		if got := sameRelease(tc.a, tc.b); got != tc.want {
 			t.Fatalf("%s / %s: %v, want %v", tc.a, tc.b, got, tc.want)
 		}
 	}
@@ -28,7 +28,7 @@ func TestCompareReleaseVersions(t *testing.T) {
 		{"0.4.0", "0.4.0", 0, true}, {"0.4.1", "0.4.0", 1, true}, {"0.4.0", "0.4.1", -1, true},
 		{"0.10.0", "0.9.9", 1, true}, {"2.0.0", "1.99.99", 1, true}, {"0.4.0-dev", "0.4.0", 0, false},
 	} {
-		got, known := Compare(tc.a, tc.b)
+		got, known := compareReleaseVersions(tc.a, tc.b)
 		if got != tc.order || known != tc.known {
 			t.Fatal(tc, got, known)
 		}

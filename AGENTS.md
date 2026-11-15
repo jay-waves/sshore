@@ -22,7 +22,9 @@ See [terminal and mux design scope](SSHORE.md#terminal-and-mux-design-scope).
 Use GLOSSARY.md terminology for code organization. Name business packages and
 file groups after public commands (`cp`, `mount`, `forward`, `review`); `cp`
 and `mount` share the flat `internal/files` package. Keep
-shared infrastructure named for its responsibility.
+shared infrastructure named for its responsibility. Use `internal/shell` for shell
+mechanisms shared by launch, spawn, attach and detach. CLI dispatch and release
+version policy remain in the main program.
 
 ## User interaction
 

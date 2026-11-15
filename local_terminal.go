@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -28,7 +29,7 @@ func (s *localShell) close() {
 		temporary, identity := s.record.Owner.PID != 0, s.processIdentity
 		s.mu.Unlock()
 		if owner != nil {
-			owner.mux.Close()
+			owner.Mux().Close()
 		}
 		if terminal != nil {
 			if temporary {
@@ -48,16 +49,7 @@ func (s *localShell) start(m message) error {
 		source = os.Environ()
 	}
 	path, args := localShellCommand(source)
-	env := make([]string, 0, len(source)+2)
-	for _, item := range source {
-		key, _, _ := strings.Cut(item, "=")
-		switch key {
-		case "SSHORE_SOCKET", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "SSHORE_LOCAL_SESSION", "TERM":
-			continue
-		}
-		env = append(env, item)
-	}
-	env = append(env, "TERM="+m.Term, "SSHORE_LOCAL_SESSION="+s.record.identity())
+	env := localShellEnvironment(source, m.Term, s.record.identity())
 	t, err := tmux.Start(tmux.Config{Path: path, Args: args, Env: env, Dir: s.record.Directory, Size: tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}})
 	if err != nil {
 		return err
@@ -80,7 +72,7 @@ func (s *localShell) start(m message) error {
 				s.modes.Observe(buf[:n])
 				if p := s.lifecycle.Active(); p != nil {
 					if p.output(message{Type: "output", Data: buf[:n]}) != nil {
-						p.mux.Close()
+						p.Mux().Close()
 					}
 				}
 				s.mu.Unlock()
@@ -98,9 +90,26 @@ func (s *localShell) start(m message) error {
 		p := s.lifecycle.Active()
 		s.mu.Unlock()
 		if p != nil {
-			p.finishExit(code)
+			p.FinishExit(code)
 		}
 		s.close()
 	}()
 	return nil
+}
+
+func localShellEnvironment(source []string, term, identity string) []string {
+	env := make([]string, 0, len(source)+2)
+	for _, item := range source {
+		key, _, _ := strings.Cut(item, "=")
+		if runtime.GOOS == "windows" {
+			key = strings.ToUpper(key)
+		}
+		switch key {
+		case "SSHORE_SOCKET", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "SSHORE_LOCAL_SESSION", "TERM":
+			continue
+		}
+		env = append(env, item)
+	}
+	env = append(env, "TERM="+term, "SSHORE_LOCAL_SESSION="+identity)
+	return env
 }

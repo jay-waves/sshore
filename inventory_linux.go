@@ -85,6 +85,9 @@ func localSessionInventory(details ...bool) (inventory, error) {
 		}
 	}
 	for _, r := range readSessionExits(dir) {
+		if time.Since(r.At) > 7*24*time.Hour {
+			continue
+		}
 		inv.Exits = append(inv.Exits, exitView{Name: r.Name, Reason: r.Reason, Time: r.At})
 	}
 	records, e := collectLocalResources("")

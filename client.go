@@ -22,41 +22,16 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"github.com/xtaci/smux"
 	"golang.org/x/term"
 
+	"github.com/jay-waves/sshore/internal/shell"
 	"github.com/jay-waves/sshore/internal/termui"
 	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
-
-func localPath(b []byte) (string, error) {
-	if !utf8.Valid(b) {
-		return "", fmt.Errorf("path must be UTF-8")
-	}
-	s := strings.TrimSpace(string(b))
-	if len(s) >= 2 && (s[0] == '"' && s[len(s)-1] == '"' || s[0] == '\'' && s[len(s)-1] == '\'') {
-		s = s[1 : len(s)-1]
-	}
-	if s == "" {
-		return "", fmt.Errorf("empty path")
-	}
-	if s == "~" || strings.HasPrefix(s, "~/") || strings.HasPrefix(s, `~\`) {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		if s == "~" {
-			s = home
-		} else {
-			s = filepath.Join(home, s[2:])
-		}
-	}
-	return s, nil
-}
 
 type clientEvent struct {
 	keyAction      tmux.KeyAction
@@ -97,7 +72,7 @@ func acceptSessionName(o *options, name string) error {
 
 func runClientOnce(o options, previous string, ready func()) (int, error) {
 	for _, op := range o.approved {
-		if op.localPortPending() {
+		if op.LocalPortPending() {
 			return 2, usage("choose a local port in review before execution")
 		}
 	}
@@ -512,7 +487,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					st.Close()
 					return 1, err
 				}
-				task := pendingRemoteTask(id, request.displayName(), e.approval)
+				task := pendingRemoteTask(id, request.DisplayName(), e.approval)
 				err = writeMessage(st, message{Type: "queued", PeerTask: &task})
 				if err == nil {
 					var ack message
@@ -591,7 +566,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 							}
 						}
 					default:
-						return 255, fmt.Errorf("terminal input stalled; closing shell")
+						return 255, fmt.Errorf("terminal input stalled; closing connection; reconnect to check the shell")
 					}
 				}
 
@@ -727,7 +702,7 @@ func sessionNotice(level termui.Color, format string, args ...any) {
 
 // detachControl is used before an interactive control reader has started.
 func detachControl(control *smux.Stream, confirmed ...func(string)) error {
-	return tmux.Detach(control, confirmed...)
+	return shell.Detach(control, confirmed...)
 }
 
 // Retain transport options in the reconnect hint, including custom ports and keys.
