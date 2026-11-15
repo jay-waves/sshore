@@ -72,6 +72,9 @@ func sessionTasks(roots []setupProcess) ([]setupTask, error) {
 				return nil, fmt.Errorf("shell PID changed; review setup again")
 			}
 			selected[root.PID] = true
+			if task.session == task.pid {
+				sessions[task.session] = true
+			}
 			// PTY children lead their own session. Include detached process groups still
 			// belonging to that shell session, not unrelated processes in the account.
 			for _, child := range all {

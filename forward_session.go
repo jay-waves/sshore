@@ -19,7 +19,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/termui"
 	"github.com/jay-waves/sshore/internal/transport"
 )
 
@@ -95,7 +94,7 @@ func runForwardWorker(f forwardConfig, s *resourceService) (int, error) {
 		}
 		s.setTransport("reconnecting", err)
 		delay := forwardRetryDelay(attempt)
-		termui.Log(os.Stderr, termui.Warning, "[sshore] Forward disconnected; TCP connections lost. Retry %d/%d in %s.\n", attempt+1, f.Retries, delay)
+		fmt.Fprintf(s.logWriter(), "[sshore] Forward disconnected; TCP connections lost. Retry %d/%d in %s.\n", attempt+1, f.Retries, delay)
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -111,20 +110,27 @@ func forwardRetryDelay(attempt int) time.Duration {
 func runForwardAttempt(parent context.Context, f forwardConfig, s *resourceService, initial bool) (int, error) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	exe := sshExecutable()
+	exe := localEnvironmentValue(s.baseEnvironment(), "SSHORE_SSH")
+	if exe == "" {
+		exe = "ssh"
+	}
 	args := forwardSSHArgs(f, true)
 	if !initial {
 		args = append([]string{"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=15", "-o", "ConnectionAttempts=1"}, args...)
 	}
 	cmd := exec.CommandContext(ctx, exe, args...)
 	transport.IsolateCommand(cmd, true)
+	if s.committed != nil {
+		detachResourceWorker(cmd)
+	}
 	if initial {
 		cmd.Env = s.sshEnvironment()
 	} else {
-		cmd.Env = os.Environ()
+		cmd.Env = s.baseEnvironment()
 	}
 	var diagnostics forwardDiagnostics
-	cmd.Stderr = io.MultiWriter(os.Stderr, &diagnostics)
+	cmd.Dir = s.directory
+	cmd.Stderr = io.MultiWriter(s.logWriter(), &diagnostics)
 	input, e := cmd.StdinPipe()
 	if e != nil {
 		return 1, e

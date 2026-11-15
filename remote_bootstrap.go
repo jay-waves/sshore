@@ -34,8 +34,10 @@ const newerReleaseAWK = `END {
 // even an old server can offer an interactive, nonpersistent recovery shell.
 func remoteCommand(o options) string {
 	mode := "bridge"
-	if o.command == "new" || o.command == "attach" {
-		mode = o.command
+	if o.command == "shell" {
+		mode = "new"
+	} else if o.command == "attach" {
+		mode = "attach"
 	}
 	if len(o.approved) > 0 {
 		mode = "resume"
@@ -56,14 +58,18 @@ func remoteCommand(o options) string {
 	if o.list {
 		b.WriteString("if [ \"$remote_version\" != " + shellQuote("sshore "+version) + " ]; then printf '%s\\n' 'sshore: inventory requires matching remote release; no software changed' >&2; exit 1; fi; exec \"$server\" inventory " + shellQuote(version))
 		if o.listDetails {
-			b.WriteString(" --details")
+			b.WriteString(" --verbose")
 		}
 		return "sh -c " + shellQuote(b.String())
 	}
 	// Destructive management never enters setup: a kill must not upgrade or end
 	// unrelated sessions. The remote command independently checks its version.
-	if o.command == "cancel" || o.command == "rename" {
+	if o.command == "cancel" || o.command == "cancel-resource" || o.command == "rename" {
 		b.WriteString("if [ \"$remote_version\" != " + shellQuote("sshore "+version) + " ]; then printf '%s\\n' " + shellQuote("sshore: "+o.command+" requires the installed remote version to match "+version+"; no software changed") + " >&2; exit 1; fi; ")
+		if o.command == "cancel-resource" {
+			b.WriteString("exec \"$server\" cancel-resource " + shellQuote(version) + " " + shellQuote(o.session) + " " + shellQuote(o.taskIdentity))
+			return "sh -c " + shellQuote(b.String())
+		}
 		actionArgs := shellQuote(o.session)
 		if o.command == "rename" {
 			actionArgs += " " + shellQuote(o.newName)
@@ -73,6 +79,9 @@ func remoteCommand(o options) string {
 			action = "kill"
 		}
 		b.WriteString("exec \"$server\" " + action + "-session " + actionArgs + " " + shellQuote(version))
+		if o.instance != "" {
+			b.WriteString(" " + shellQuote(o.instance))
+		}
 		return "sh -c " + shellQuote(b.String())
 	}
 	// Check direction before downloading anything. Unknown/custom labels are left

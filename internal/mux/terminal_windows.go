@@ -107,6 +107,12 @@ func Start(c Config) (*Terminal, error) {
 	}
 	si := windows.StartupInfoEx{}
 	si.Cb = uint32(unsafe.Sizeof(si))
+	// Do not inherit the worker's redirected (possibly already closed) startup
+	// pipes. ConPTY must supply the child's console standard handles.
+	si.Flags = windows.STARTF_USESTDHANDLES
+	si.StdInput = windows.InvalidHandle
+	si.StdOutput = windows.InvalidHandle
+	si.StdErr = windows.InvalidHandle
 	si.ProcThreadAttributeList = attrs.List()
 	var pi windows.ProcessInformation
 	application, err := windows.UTF16PtrFromString(path)
@@ -124,6 +130,9 @@ func Start(c Config) (*Terminal, error) {
 	windows.CloseHandle(pi.Thread)
 	t.process = pi.Process
 	t.pid = int(pi.ProcessId)
+	// ConPTY keeps its output pipe open after the client process exits. Reap
+	// independently so closing the console can finish the active output reader.
+	go t.Wait()
 	return t, nil
 }
 func (t *Terminal) Read(p []byte) (int, error)  { return t.output.Read(p) }
@@ -155,6 +164,7 @@ func (t *Terminal) Wait() error {
 }
 func (t *Terminal) wait() error {
 	defer windows.CloseHandle(t.process)
+	defer t.closeConsole()
 	if _, err := windows.WaitForSingleObject(t.process, windows.INFINITE); err != nil {
 		return err
 	}
@@ -179,15 +189,20 @@ func consolePipe() (*os.File, *os.File, error) {
 func (t *Terminal) Close() error {
 	t.once.Do(func() {
 		t.input.Close()
-		t.mu.Lock()
-		t.closed = true
-		h := t.console
-		t.mu.Unlock()
 		// Close output before ConPTY so shutdown never depends on a reader.
 		t.output.Close()
-		if h != 0 {
-			windows.ClosePseudoConsole(h)
-		}
+		t.closeConsole()
 	})
 	return nil
+}
+
+func (t *Terminal) closeConsole() {
+	t.mu.Lock()
+	t.closed = true
+	h := t.console
+	t.console = 0
+	t.mu.Unlock()
+	if h != 0 {
+		windows.ClosePseudoConsole(h)
+	}
 }

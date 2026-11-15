@@ -11,7 +11,7 @@ This document defines the project vocabulary. Commands are documented by
 | Local computer | The machine running the client or managing a mount/forward. Local is relative to that operation. |
 | Remote host / SSH destination | The host reached through system OpenSSH, often named by a `~/.ssh/config` alias. |
 | Remote account | The authenticated Unix account. Shell management excludes other users. |
-| Client | The local sshore process connecting to a remote shell. It is not the shell itself. |
+| Client | The foreground sshore process attaching to a local or remote shell. It is not the shell itself. |
 | Transport | The SSH connection carrying a shell attachment, independent forward or SFTP mount. |
 | Attachment | One client's live connection to a persistent shell. At most one client is attached at a time. |
 | Peer / manager | Another computer managing a resource whose advisory record is visible on the remote account. |
@@ -22,12 +22,12 @@ This document defines the project vocabulary. Commands are documented by
 | --- | --- |
 | Mux | The detach/reattach capability: explicitly leave a shell running and attach again later. Each shell session has one terminal; mux does not imply split panes. The internal smux library separately multiplexes transport streams. |
 | Session | A running task managed by sshore: a shell, forward or mount. Pending reviews are requests, not started sessions. |
-| Shell | A persistent shell and native terminal owned by a daemon: a Linux remote shell today, or a Windows local shell in the planned local mux. It can survive explicit detach. |
-| Daemon | The background process owning a shell's native terminal and lifecycle; the existing Linux remote daemon also owns its helper endpoint. |
+| Shell | A persistent shell and native terminal owned by a daemon, local on Linux/Windows or remote on Linux. It survives detach and connection loss. |
+| Daemon | A background owner of native terminals and lifecycle. One local daemon per user/state root hosts multiple shells and forward transports, and supervises mount workers; Linux remote shells share a daemon per runtime directory, with separate helper endpoints. |
 | Shell name | A public label, automatic or user-supplied; renaming it does not replace the daemon or shell. |
 | Task | A program associated with a shell. Identifying tasks for termination requires process identity checks, not just a displayed PID. |
-| Detach | Explicitly end an attachment while preserving its shell. Ctrl+B d, Ctrl-] and `sshore detach` request this. |
-| Disconnect | Loss of transport. For an attached shell, it ends the shell once detected unless explicit detach already occurred. |
+| Detach | Explicitly end an attachment while preserving its shell. Ctrl+B d and `sshore detach` request this. |
+| Disconnect | Loss of transport. It releases the attachment while the daemon retains the shell, locally and remotely. |
 | Cancel | The public action for discarding a request, stopping a resource or ending a named remote shell. Its scope depends on the identifier. |
 | Recovery | A temporary shell on the authenticated SSH connection, without persistent shell or normal sshore operations. It is not a sandbox. |
 | Release version | Full MAJOR.MINOR.PATCH identifier used for compatibility. There is no independent sshore protocol version counter. |
@@ -43,8 +43,8 @@ This document defines the project vocabulary. Commands are documented by
 | Copy | A regular-file operation expressed as `cp SOURCE... TARGET`; not full system cp or scp compatibility. |
 | Tunnel | The README feature category for TCP port forwarding through SSH. |
 | Transfer | A one-time regular-file copy. Both direct and approved copies use SFTP; approved copies run on a client-initiated shell stream after local review. |
-| Resource | An independently managed local mount or forward, with its own worker, transport and lifetime. Its ID is `TYPE/NAME`, such as `forward/pikachu` or `mount/eevee`; the type prefix identifies the object kind. Shells, resources and pending reviews share a local name namespace and default Pokemon pool. |
-| Worker | The local background process owning a resource; distinct from a remote shell daemon. |
+| Resource | An independently managed local mount or forward, with its own transport and lifetime. Its ID is `TYPE/NAME`, such as `forward/pikachu` or `mount/eevee`; the type prefix identifies the object kind. Shells, resources and pending reviews share a local name namespace and default Pokemon pool. |
+| Worker | A separate local process owning a mount and its SSH transport, started and reaped by the local daemon. Forwards run directly under the daemon; older independent forward workers remain manageable. |
 | Mount | A remote directory exposed to local applications through SFTP and FUSE/WinFsp, identified as `mount/NAME`. |
 | Recent connection | A private local default for a previously connected host/shell and its SSH transport settings; it is not proof that the remote shell is still available. |
 | Mount agent | A transient remote sshore process that carries SFTP and filesystem notifications over a mount-owned SSH connection; it is not a persistent shell daemon. |
@@ -89,3 +89,9 @@ Business package and filename prefixes follow the public commands: `cp`,
 `mount`, `forward` and `review`. The mount protocol is SFTP over SSH. `review` replaces
 `approve`, and `cancel` replaces the public `stop`/`kill` verbs. Internal wire or
 function names may retain historical terminology.
+
+## Task ID
+
+A persistent numeric shortcut assigned by the local manager to a task instance.
+It is stable across rename, detach and reconnect, increases without reuse, and
+is distinct from a shell PID, public name, approval ID or temporary picker index.

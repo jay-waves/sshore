@@ -1,10 +1,64 @@
 package mux
 
 import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestConPTYRedirectedStartup(t *testing.T) {
+	if os.Getenv("SSHORE_TEST_REDIRECTED_CONPTY") == "1" {
+		// Match a background worker after its startup pipe handshake finishes.
+		os.Stdin.Close()
+		os.Stdout.Close()
+		if err := checkInteractiveConPTY(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, exe, "-test.run=^TestConPTYRedirectedStartup$")
+	cmd.Env = append(os.Environ(), "SSHORE_TEST_REDIRECTED_CONPTY=1")
+	cmd.Stdin = strings.NewReader("")
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = io.Discard, &output
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("redirected worker: %v (%v)\n%s", err, ctx.Err(), output.String())
+	}
+}
+
+func checkInteractiveConPTY() error {
+	term, err := Start(Config{Path: "cmd.exe", Args: []string{"/d", "/q"}, Size: Size{Cols: 80, Rows: 24}})
+	if err != nil {
+		return err
+	}
+	defer term.Close()
+	output := make(chan []byte, 1)
+	go func() { b, _ := io.ReadAll(term); output <- b }()
+	if _, err := term.Write([]byte("echo SSHORE_INTERACTIVE_OK\r\nexit\r\n")); err != nil {
+		return err
+	}
+	b := <-output
+	if err := term.Wait(); err != nil {
+		return err
+	}
+	if !strings.Contains(string(b), "SSHORE_INTERACTIVE_OK") {
+		return fmt.Errorf("interactive command produced no marker: %q", b)
+	}
+	return nil
+}
 
 func TestConPTY(t *testing.T) {
 	term, err := Start(Config{Path: "cmd.exe", Args: []string{"/d", "/c", "echo SSHORE_CONPTY"}, Size: Size{Cols: 80, Rows: 24}})

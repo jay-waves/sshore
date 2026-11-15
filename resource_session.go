@@ -17,7 +17,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -44,6 +43,12 @@ type resourceConfig struct {
 }
 type resourceStopRequest = mount.StopRequest
 type resourceService struct {
+	startup     io.Writer
+	log         io.Writer
+	environment []string
+	directory   string
+	committed   func()
+
 	status     resourceStatusState
 	record     resourceRecord
 	config     resourceConfig
@@ -105,10 +110,28 @@ func resourceListen(token string, handler http.HandlerFunc) (net.Listener, *http
 	go s.Serve(l)
 	return l, s, nil
 }
+func (s *resourceService) baseEnvironment() []string {
+	if s.environment != nil {
+		return s.environment
+	}
+	return os.Environ()
+}
+func (s *resourceService) logWriter() io.Writer {
+	if s.log != nil {
+		return s.log
+	}
+	return os.Stderr
+}
+func (s *resourceService) startupWriter() io.Writer {
+	if s.startup != nil {
+		return s.startup
+	}
+	return os.Stdout
+}
 func (s *resourceService) sshEnvironment() []string {
 	exe, _ := os.Executable()
 	// os/exec keeps the last value for duplicate environment keys.
-	return append(os.Environ(), "SSH_ASKPASS="+exe, "SSH_ASKPASS_REQUIRE=force", "DISPLAY=sshore", "SSHORE_ASKPASS=1", "SSHORE_ASKPASS_ADDR="+s.config.AuthAddress, "SSHORE_ASKPASS_TOKEN="+s.config.AuthToken)
+	return append(append([]string(nil), s.baseEnvironment()...), "SSH_ASKPASS="+exe, "SSH_ASKPASS_REQUIRE=force", "DISPLAY=sshore", "SSHORE_ASKPASS=1", "SSHORE_ASKPASS_ADDR="+s.config.AuthAddress, "SSHORE_ASKPASS_TOKEN="+s.config.AuthToken)
 }
 func (s *resourceService) ready(root, mountpoint string) error {
 	s.setTransport("connected", nil)
@@ -118,7 +141,7 @@ func (s *resourceService) ready(root, mountpoint string) error {
 		return e
 	}
 	var e error
-	if e = json.NewEncoder(os.Stdout).Encode(s.record); e != nil {
+	if e = json.NewEncoder(s.startupWriter()).Encode(s.record); e != nil {
 		return e
 	}
 
@@ -130,7 +153,11 @@ func (s *resourceService) ready(root, mountpoint string) error {
 	if e != nil {
 		return e
 	}
-	return json.NewEncoder(os.Stdout).Encode("started")
+	err := json.NewEncoder(s.startupWriter()).Encode("started")
+	if err == nil && s.committed != nil {
+		s.committed()
+	}
+	return err
 }
 func runResourceWorker() (code int, resultErr error) {
 	defer func() {
@@ -144,6 +171,10 @@ func runResourceWorker() (code int, resultErr error) {
 	if e := dec.Decode(&config); e != nil {
 		return 1, e
 	}
+	return runConfiguredResource(config, dec, os.Stdout, os.Stderr, os.Environ(), "", nil)
+}
+
+func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, log io.Writer, env []string, directory string, committed func()) (code int, resultErr error) {
 	kind := "mount"
 	var o ftpOptions
 	var e error
@@ -204,7 +235,7 @@ func runResourceWorker() (code int, resultErr error) {
 		}
 		ack <- e
 	}()
-	s := &resourceService{record: resourceRecord{Kind: kind, Name: o.name, Host: o.host, Version: version, Token: resourceToken(), ReadOnly: o.readOnly}, config: config, stop: make(chan resourceStopRequest), ack: ack, abandoned: abandoned, recordPath: filepath.Join(dir, o.name+".json")}
+	s := &resourceService{startup: startup, log: log, environment: env, directory: directory, committed: committed, record: resourceRecord{Kind: kind, Name: o.name, Host: o.host, Version: version, Token: resourceToken(), ReadOnly: o.readOnly}, config: config, stop: make(chan resourceStopRequest), ack: ack, abandoned: abandoned, recordPath: filepath.Join(dir, o.name+".json")}
 	// The lock excludes a live owner. Remove only its stale metadata, never a mount.
 	if e = os.Remove(s.recordPath); e != nil && !os.IsNotExist(e) {
 		return 1, e
@@ -307,49 +338,16 @@ func startReservedResource(config resourceConfig, kind string, reservation *reso
 	}
 	defer broker.Close()
 	logPath := filepath.Join(dir, name+".log")
-	log, e := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	cwd, e := os.Getwd()
 	if e != nil {
 		return 1, e
 	}
-	defer log.Close()
-	if e = privateState(logPath, false); e != nil {
-		return 1, e
-	}
-	exe, e := os.Executable()
+	c, e := openLocalDaemon(localDaemonRequest{Kind: kind, Record: localSessionRecord{Name: name, Directory: cwd}, Env: os.Environ()})
 	if e != nil {
 		return 1, e
 	}
-	cmd := exec.Command(exe, "resource-worker")
-	detachResourceWorker(cmd)
-	cmd.Stderr = log
-	input, e := cmd.StdinPipe()
-	if e != nil {
-		return 1, e
-	}
-	defer input.Close()
-	output, e := cmd.StdoutPipe()
-	if e != nil {
-		return 1, e
-	}
-	defer output.Close()
-	if e = cmd.Start(); e != nil {
-		return 1, e
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			input.Close()
-			output.Close()
-			done := make(chan struct{})
-			go func() { cmd.Wait(); close(done) }()
-			select {
-			case <-done:
-			case <-time.After(12 * time.Second):
-				cmd.Process.Kill()
-				<-done
-			}
-		}
-	}()
+	defer c.Close()
+	input, output := c, c
 	config.AuthAddress = l.Addr().String()
 	config.AuthToken = token
 	if e = json.NewEncoder(input).Encode(config); e != nil {
@@ -371,8 +369,6 @@ func startReservedResource(config resourceConfig, kind string, reservation *reso
 	if e = dec.Decode(&ack); e != nil || ack != "started" {
 		return 1, fmt.Errorf("resource startup was not acknowledged: %v", e)
 	}
-	committed = true
-	cmd.Process.Release()
 	detail := record.Detail
 	if kind == "mount" {
 		detail = fmt.Sprintf("%s:%s at %s using SFTP over SSH", record.Host, record.Remote, record.Mountpoint)
@@ -429,10 +425,13 @@ func readResourceRecord(kind, name string) (resourceRecord, error) {
 	}
 	return r, e
 }
-func stopResource(kind, name string) error {
+func stopResource(kind, name string, expected ...string) error {
 	r, e := readResourceRecord(kind, name)
 	if e != nil {
 		return e
+	}
+	if len(expected) > 0 && resourceIdentity(r) != expected[0] {
+		return fmt.Errorf("task changed; refresh with sshore list")
 	}
 	if r.Version != version {
 		return fmt.Errorf("resource uses sshore %s; stop it with that exact version", cleanText(r.Version))

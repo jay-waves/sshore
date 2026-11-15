@@ -27,6 +27,7 @@ import (
 )
 
 type daemonProcess struct {
+	shared       bool
 	pid          int
 	name, socket string
 }
@@ -92,7 +93,8 @@ func findSessionDaemons(root string) ([]daemonProcess, error) {
 			continue
 		}
 		args := strings.Split(strings.TrimSuffix(string(cmd), "\x00"), "\x00")
-		if len(args) != 3 || args[1] != "daemon" || validSession(args[2]) != nil {
+		shared := len(args) == 2 && args[1] == "daemon"
+		if !shared && (len(args) != 3 || args[1] != "daemon" || validSession(args[2]) != nil) {
 			continue
 		}
 		if !same && name != "sshore" && !strings.HasPrefix(name, "sshore-") {
@@ -100,6 +102,43 @@ func findSessionDaemons(root string) ([]daemonProcess, error) {
 			if err != nil || build.Main.Path != "github.com/jay-waves/sshore" {
 				continue
 			}
+		}
+		if shared {
+			env, err := os.ReadFile(filepath.Join(base, "environ"))
+			if err != nil {
+				candidate := daemonProcess{pid: pid, name: "daemon", shared: true}
+				if includeSetupProcess(candidate) {
+					found = append(found, candidate)
+				}
+				continue
+			}
+			dir := filepath.Dir(daemonSocket("daemon", env, stat.Uid))
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				candidate := daemonProcess{pid: pid, name: "daemon", shared: true}
+				if includeSetupProcess(candidate) {
+					found = append(found, candidate)
+				}
+				continue
+			}
+			for _, entry := range entries {
+				if !strings.HasSuffix(entry.Name(), ".sock.lock") {
+					continue
+				}
+				socket := filepath.Join(dir, strings.TrimSuffix(entry.Name(), ".lock"))
+				if live, err := sessionIdentityLive(socket); err != nil || !live {
+					continue
+				}
+				process := daemonProcess{pid: pid, name: strings.TrimSuffix(filepath.Base(socket), ".sock"), socket: socket, shared: true}
+				// Legacy daemons may coexist in this directory; only this socket's owner belongs here.
+				if owner := sessionSocketPID(socket); owner != 0 && owner != pid {
+					continue
+				}
+				if includeSetupProcess(process) {
+					found = append(found, process)
+				}
+			}
+			continue
 		}
 		process := daemonProcess{pid: pid, name: args[2]}
 		if env, err := os.ReadFile(filepath.Join(base, "environ")); err == nil {
@@ -194,4 +233,24 @@ func reportSessionDaemons() {
 	if len(suspects) > 0 {
 		termui.Log(os.Stderr, termui.Warning, "[sshore] Possibly stale/unresponsive (up to 10): %s. Snapshot only; nothing stopped.\n", strings.Join(suspects, ", "))
 	}
+}
+
+func sessionSocketPID(path string) int {
+	c, err := net.DialTimeout("unix", path, 100*time.Millisecond)
+	if err != nil {
+		return 0
+	}
+	defer c.Close()
+	raw, err := c.(*net.UnixConn).SyscallConn()
+	if err != nil {
+		return 0
+	}
+	pid := 0
+	_ = raw.Control(func(fd uintptr) {
+		peer, err := unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
+		if err == nil && peer.Uid == uint32(os.Geteuid()) {
+			pid = int(peer.Pid)
+		}
+	})
+	return pid
 }

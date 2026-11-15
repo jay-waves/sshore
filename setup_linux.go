@@ -174,7 +174,7 @@ func bootstrap(target, mode, name string) (result error) {
 					return err
 				}
 				if len(names) == 0 {
-					return fmt.Errorf("no detached shells; use sshore new HOST to create one")
+					return fmt.Errorf("no detached shells; use sshore shell HOST to create one")
 				}
 				if len(names) == 1 {
 					name = names[0]

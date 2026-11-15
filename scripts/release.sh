@@ -464,6 +464,29 @@ Linux and Windows amd64 only.
 NOTES
 fi
 
+if [[ "$version" == "0.6.6" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Replace `new` with `shell`; create local Linux PTY or Windows ConPTY shells without an SSH server, or remote Linux shells with HOST. Use --detach to create without attaching.
+- Share shell daemons, preserve shells after terminal closure or connection loss, and keep single-shell cancellation isolated from sibling shells.
+- Let the local daemon own forward SSH processes directly; retain independent mount workers and idle daemon shutdown.
+- Add stable numeric task IDs and a unified shell/mount/forward/review table. Remote shell/attach connections show other background tasks through the existing connection.
+- Add `cancel HOST --all` and local `cancel --all`, with a displayed snapshot, explicit confirmation and identity checks that protect replacement tasks.
+- Fix Windows shell startup, detach input handling and prompt redraw on reattach. Use cmd.exe for local Windows shells.
+- Remove Ctrl-] handling; keep Ctrl+B shortcuts. Rename list --details to --verbose, without a -v alias.
+
+CLI migration: use shell instead of new and list --verbose instead of --details.
+Connection loss now preserves shells; use exit or cancel to end them. Screens
+and detached output are not replayed. Mounts and forwards remain independent of
+shell lifetime. Bulk cancellation may end running programs and lose unsaved work.
+
+Client and remote releases must match exactly. Updating older shells requires
+reviewing the affected tasks and typing update, which ends those shells and tasks.
+Linux and Windows amd64 only; remote shell hosting remains Linux-only.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."

@@ -88,11 +88,7 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 			k.prefix = true
 			return false
 		}
-		if c == 0x1d {
-			flush()
-			events = append(events, KeyEvent{Action: KeyDetach})
-			return true
-		}
+
 		out = append(out, c)
 		return false
 	}

@@ -79,7 +79,7 @@ func resolveSession(name string) (string, error) {
 	return found, nil
 }
 
-func renameSession(old, name string) error {
+func renameSession(old, name string, expected ...string) error {
 	if err := validSession(name); err != nil {
 		return err
 	}
@@ -110,7 +110,7 @@ func renameSession(old, name string) error {
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	if err := writeMessage(c, message{Type: "rename", Name: name, Action: old, SoftwareVersion: version}); err != nil {
+	if err := writeMessage(c, message{Type: "rename", Instance: firstExpectedInstance(expected), Name: name, Action: old, SoftwareVersion: version}); err != nil {
 		return err
 	}
 	m, err := readMessage(c)
@@ -131,7 +131,7 @@ func sessionLabel(m message, filename string) string {
 	return cleanText(strings.TrimSuffix(filename, ".sock"))
 }
 
-func (s *shell) rename(old, name string) error {
+func (s *shell) rename(old, name string, expected ...string) error {
 	if err := validSession(name); err != nil {
 		return err
 	}
@@ -149,6 +149,9 @@ func (s *shell) rename(old, name string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if firstExpectedInstance(expected) != "" && firstExpectedInstance(expected) != s.instance {
+		return fmt.Errorf("shell instance changed; refresh with sshore list")
+	}
 	if s.lifecycle.Exited() || s.name != old {
 		return fmt.Errorf("shell changed or is exiting; refresh the shell list")
 	}
@@ -222,4 +225,11 @@ func writeSessionName(path, name string) error {
 		return err
 	}
 	return writeStateFile(path+".name", []byte(name))
+}
+
+func firstExpectedInstance(expected []string) string {
+	if len(expected) > 0 {
+		return expected[0]
+	}
+	return ""
 }

@@ -19,13 +19,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.6.5"
+var version = "0.6.6"
 
 const connectionOptions = `Options (before --; may appear before or after HOST):
   --server PATH                 Remote executable (default: PATH, then ~/.local/bin/sshore)
@@ -46,7 +45,7 @@ SSH options (only after --):
 const help = `sshore — persistent shells, file transfer and SFTP mounts
 
 Local commands:
-  sshore new HOST [NAME] [options]     Create a shell (default: automatic Pokemon name)
+  sshore shell [HOST [NAME]] [options]   Create a local or remote shell
   sshore list [HOST] [-- SSH_OPTIONS]    Local records, or query the named remote account
   sshore cancel TYPE/NAME            Cancel a request, mount or forward
   sshore cancel HOST NAME [-- SSH_OPTIONS] End a shell and its identified tasks
@@ -69,9 +68,9 @@ Help:
   sshore COMMAND --help
   sshore --version
 
-new never resumes; attach never creates or evicts another client.
-Ctrl+B then d (or Ctrl-]) detaches; Ctrl+B then ? shows keys.
-Exit or detected connection loss ends the shell. No screen replay.
+shell never resumes; attach never creates or evicts another client.
+Ctrl+B then d detaches; Ctrl+B then ? shows keys.
+Exit ends the shell; connection loss preserves it. No screen replay.
 Ctrl+B keys: c new session; n/p next/previous; l last; s/w choose session.
             d detach; r redraw; i info; ? help; Ctrl+B send prefix.
 Unknown prefix combinations pass through. --no-escape disables all local shortcuts.
@@ -82,23 +81,31 @@ Updating ends listed old shells only after you type update. Recovery disables
 persistence, transfer, mounts and dynamic forwarding until you reconnect.
 
 Examples:
-  sshore new work build
+  sshore shell work build
   sshore list work
   sshore attach work build
 `
 
 var commandHelp = map[string]string{
 	"mount": mountHelp,
-	"new": `Usage: sshore new HOST [NAME] [options]
+	"shell": `Usage: sshore shell [HOST [NAME]] [options]
+       sshore shell [--local] [--name NAME] [--quiet] [--no-escape]
 
-Create a new shell. Omit NAME for an automatic Pokemon name.
+Create a local shell when HOST is omitted; preserve the current directory.
+Use --name to name a local shell. With HOST, create a remote shell over SSH.
+Omit NAME for an automatic Pokemon name. --detach creates without attaching.
 An existing name is an error; use sshore attach HOST NAME to resume it.
-Ctrl+B d, Ctrl-] or remote sshore detach leaves programs running; exit ends the shell.
+Ctrl+B d, terminal closure or connection loss leaves programs running.
+Exit ends the shell; sshore detach also works inside a remote shell.
 
 ` + connectionOptions,
 	"attach": `Usage: sshore attach [HOST [NAME]] [options]
+       sshore attach ID
+       sshore attach --local [NAME]
 
 Attach to an existing detached shell; never create or take over a shell.
+A bare numeric argument selects a stable task ID from sshore list.
+--local selects a local shell; omit NAME when exactly one is detached.
 Omit HOST and NAME to reuse the most recent successful shell connection.
 With HOST only, reuse its most recent shell; without history, select a detached shell.
 Remembered connections include --server and SSH transport options, never typed passwords.
@@ -107,13 +114,13 @@ flags are not remembered. A missing or attached remembered shell is an error;
 use sshore list HOST and specify a different NAME.
 Selection: #number or exact name; /text filters, / shows all.
 Numbers stay unchanged after filtering. Bare numbers are shell names. Enter or Ctrl-C cancels.
-If no detached shells exist, use sshore new HOST to create one.
+If no detached shells exist, use sshore shell HOST to create one.
 
 ` + connectionOptions,
-	"list": `Usage: sshore list [HOST] [--details | --json] [--server PATH] [-- SSH_OPTIONS]
+	"list": `Usage: sshore list [HOST] [--verbose | --json] [--server PATH] [-- SSH_OPTIONS]
 
 Without HOST, show local connections, resources, pending reviews and known shell
-history grouped by host. Remote hosts are not queried and SSH authentication is
+history ordered by stable numeric task ID. Remote hosts are not queried and SSH authentication is
 never triggered. This is not a complete remote task list. Cached states show their
 last confirmation time; loss without detach acknowledgement is unconfirmed.
 A confirmed detach is recorded immediately. Other computers' actions and remote
@@ -121,14 +128,18 @@ exits require a later explicit query.
 With HOST, announce and query that remote account over SSH. No local resource
 table is mixed into the remote result. All remote queries require the exact
 release and never install or update software. Query failures are reported.
---details adds remote process trees, foreground programs, directories and detailed
+--verbose adds remote process trees, foreground programs, directories and detailed
 resource state, including recent exits. --json emits version, host,
 remote_queried, resources, shells, peers, exits and errors. Local shell records
 include historical, confirmed_at and local_connection_active. No control tokens
 or terminal output are exported; partial results may have a nonzero exit status.
 Worker running confirms the local worker, not remote service health. Targets are
 never probed. Resource status checks have a two-second aggregate deadline.
-IDs: shell/NAME, mount/NAME, forward/NAME, review/NAME. Names share a local namespace
+Numeric task IDs are stable, increasing and never reused; gaps are normal.
+Use attach ID, cancel ID, rename ID NEW, or review ID. Cached tasks are revalidated
+before execution. A task that ended is never replaced by a same-name task.
+--local lists only local shells. Names: shell/NAME, mount/NAME, forward/NAME,
+review/NAME. Names share a local namespace
 and default to Pokemon names; explicit names remain supported. Use cancel
 mount/NAME or forward/NAME locally, cancel HOST NAME for a remote shell, and
 review NAME to inspect a request. Peer entries are read-only and name their
@@ -143,6 +154,8 @@ SSH options (only after --):
   -C, -v, -vv, -vvv, -4, -6
 `,
 	"rename": `Usage: sshore rename HOST OLD NEW [--server PATH] [-- SSH_OPTIONS]
+       sshore rename ID NEW
+       sshore rename --local OLD NEW
 
 Rename an attached or detached shell without restarting its tasks.
 The old name becomes available; the new name must be unused.
@@ -150,8 +163,16 @@ Pending approvals using the old name must be requested again.
 Requires matching releases; never installs or upgrades software.
 SSH options are the same as sshore list; see sshore list --help.
 `,
-	"cancel": `Usage: sshore cancel review/NAME | mount/NAME | forward/NAME
+	"cancel": `Usage: sshore cancel ID
+       sshore cancel --local NAME
+       sshore cancel review/NAME | mount/NAME | forward/NAME
        sshore cancel HOST NAME [--server PATH] [-- SSH_OPTIONS]
+       sshore cancel [HOST] --all [--server PATH] [-- SSH_OPTIONS]
+
+--all shows the current tasks and requires typing cancel before stopping them.
+With HOST, include that account's shells/resources and local resources connected
+to HOST. Without HOST, stop local shells/resources only; cached remote shells and
+other computers' read-only tasks are excluded. Tasks created later are not stopped.
 
 Cancel a pending request or stop a local resource shown by sshore list.
 Pending requests are discarded without executing them. Mounts unmount first;
@@ -161,8 +182,8 @@ version that started them; cancellation never kills PIDs from saved records.
 
 End the named shell and its identified tasks, including an attached shell.
 This takes effect immediately without confirmation; unsaved work may be lost.
-NAME is required; there is no all-shells option. Uses the current runtime
-directory. Requires matching client, installed program and target daemon
+A named shell is resolved in the current runtime directory; confirmed task IDs
+and --all cover visible account shells. Requires matching client, installed program and target daemon
 release versions; never installs or upgrades software. Escaped tasks may survive.
 SSH options and --server are the same as sshore list; see sshore list --help.
 `,
@@ -192,7 +213,7 @@ No SSH passwords or separate approval passwords are stored or collected.
 
 Run inside a remote sshore shell. Disconnect the current client and cancel
 its transfers, keeping the shell and its PID alive. Reconnect with
-sshore attach HOST NAME. Ctrl+B d and Ctrl-] detach locally.
+sshore attach HOST NAME. Ctrl+B d detach locally.
 `,
 }
 
@@ -226,126 +247,12 @@ type options struct {
 	resumePID             int
 	stay                  bool
 	plain                 bool
+	local                 bool
+	detached              bool
+	taskIdentity          string
+	instance              string
 	serverSet             bool
 	sshDirectory          string
-}
-
-func parseOptions(args []string) (options, error) {
-	o := options{server: "sshore"}
-	if len(args) == 0 {
-		return o, usage("expected new, list, attach, cancel or rename; see sshore --help")
-	}
-	o.command = args[0]
-	switch o.command {
-	case "new", "attach", "cancel", "rename":
-	case "list":
-		o.list = true
-	default:
-		return o, usage("choose an action: sshore new HOST [NAME], sshore list HOST, sshore attach HOST [NAME], sshore cancel HOST NAME, or sshore rename HOST OLD NEW")
-	}
-	var err error
-	args, o.ssh, err = splitSSHOptions(args[1:], true)
-	if err != nil {
-		return o, err
-	}
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if a == "" {
-			return o, usage("empty argument")
-		}
-		if strings.HasPrefix(a, "--") {
-			if key, value, ok := strings.Cut(a, "="); ok {
-				switch key {
-				case "--server", "--download-dir":
-				default:
-					return o, usage("%s does not accept a value", key)
-				}
-				args = append(append(append([]string{}, args[:i]...), key, value), args[i+1:]...)
-				a = key
-			}
-		}
-		if err := misplacedSSHOption(a); err != nil {
-			return o, err
-		}
-		switch a {
-		case "--server", "--download-dir":
-			i++
-			if i == len(args) || args[i] == "" {
-				return o, usage("missing value for %s", a)
-			}
-			switch a {
-			case "--server":
-				o.server = args[i]
-				o.serverSet = true
-			case "--download-dir":
-				o.downloadDir = args[i]
-			}
-		case "--json", "--details":
-			if !o.list {
-				return o, usage("%s is only supported by list", a)
-			}
-			if a == "--json" {
-				o.listJSON = true
-			} else {
-				o.listDetails = true
-			}
-		case "-q", "--quiet":
-			o.quiet = true
-		case "--no-escape":
-			o.noEscape = true
-		case "-h", "--help":
-			return o, errHelp
-
-		default:
-			if o.host == "" && !strings.HasPrefix(a, "-") {
-				o.host = a
-			} else if o.host != "" && !o.list && o.session == "" && !strings.HasPrefix(a, "-") {
-				o.session = a
-			} else if o.command == "rename" && o.session != "" && o.newName == "" && !strings.HasPrefix(a, "-") {
-				o.newName = a
-			} else {
-				return o, usage("unexpected argument: %s", a)
-			}
-		}
-	}
-	if o.listJSON && o.listDetails {
-		return o, usage("--json and --details are mutually exclusive")
-	}
-	if o.host == "" && o.list && len(o.ssh) == 0 && o.server == "sshore" {
-		if o.quiet || o.noEscape || o.downloadDir != "" {
-			return o, usage("list does not accept shell or transfer options")
-		}
-		return o, nil
-	}
-	if o.host != "" || o.command != "attach" {
-		if err := validSSHDestination(o.host); err != nil {
-			return o, err
-		}
-	}
-	if o.server == "" || strings.ContainsAny(o.server, "\r\n\x00") {
-		return o, usage("invalid server path")
-	}
-	if o.list && (o.session != "" || o.downloadDir != "" || o.quiet || o.noEscape) {
-		return o, usage("list accepts SSH options and --server, not shell or transfer options")
-	}
-	if o.list {
-		return o, nil
-	}
-	if o.command == "rename" {
-		if o.session == "" || o.newName == "" || o.downloadDir != "" || o.quiet || o.noEscape {
-			return o, usage("rename requires HOST OLD NEW and accepts only SSH options and --server")
-		}
-		if err := validSession(o.newName); err != nil {
-			return o, err
-		}
-	}
-	if o.command == "cancel" && (o.session == "" || o.downloadDir != "" || o.quiet || o.noEscape) {
-		return o, usage("cancel requires HOST NAME and accepts only SSH options and --server")
-	}
-	if o.session == "" {
-		return o, nil
-	}
-	return o, validSession(o.session)
 }
 
 var errHelp = errors.New("help requested")
@@ -415,6 +322,18 @@ func run(args []string) (int, error) {
 		}
 		fmt.Println("sshore", version)
 		return 0, nil
+	case "cancel-resource":
+		if len(args) != 4 {
+			return 2, usage("invalid resource cancellation")
+		}
+		if err := checkPeerVersion(args[1], "client"); err != nil {
+			return 1, err
+		}
+		return 0, cancelResourceIdentity(args[2], args[3])
+	case "local-daemon":
+		return 0, runLocalDaemon()
+	case "shell", "attach", "rename":
+		return runShellCommand(args)
 	case "ftp-worker", "resource-worker":
 		return runResourceWorker()
 	case "mount":
@@ -422,10 +341,11 @@ func run(args []string) (int, error) {
 	case "cancel":
 		return runCancel(args[1:])
 	case "list":
-		if len(args) == 1 {
-			return 0, listThisComputer()
-		}
+		return runShellCommand(args)
 	case "review":
+		if code, handled, err := runTaskID(args); handled {
+			return code, err
+		}
 		return runReview(args[1:])
 	case "forward":
 		return runEndpointForward(args[1:])
@@ -435,29 +355,16 @@ func run(args []string) (int, error) {
 		if len(args) != 1 {
 			return 2, usage("detach takes no arguments")
 		}
+		if identity := os.Getenv("SSHORE_LOCAL_SESSION"); identity != "" {
+			return 0, detachLocalShell(identity)
+		}
 		return 0, serverCommand(args)
 	case "forward-watch", "mount-agent", "bridge", "resume", "daemon", "sessions", "bootstrap", "kill-session", "rename-session", "task-watch", "task-remove", "inventory":
 		return 0, serverCommand(args)
 	}
-	o, err := parseOptions(args)
-	if errors.Is(err, errHelp) {
-		return 0, showHelp(args[:1], os.Stdout)
-	}
-	if err != nil {
-		return 2, err
-	}
-	if err = resolveRecentAttach(&o); err != nil {
-		return 1, err
-	}
-	o.downloadDir, err = prepareDownloadDir(o.downloadDir)
-	if err != nil {
-		return 1, err
-	}
-	if o.list {
-		return runInventory(o)
-	}
-	return runClient(o)
+	return 2, usage("unknown command: %s", args[0])
 }
+
 func main() {
 	code, err := run(os.Args[1:])
 	if err != nil {

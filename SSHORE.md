@@ -13,15 +13,16 @@ and Windows on amd64 only. Mounts and independent forwards do not share a shell'
 
 | Area | Entry points and responsibility |
 | --- | --- |
-| CLI | `main.go`, `ssh_options.go`: routing, help, product arguments and SSH-only suffix after `--` |
-| Connection and setup | `client.go`, `remote_bootstrap.go`: OpenSSH launch, remote preparation, attachment and recovery |
+| CLI | `main.go`: command dispatch and help; `shell_command.go` / `shell_options.go`: one shell execution and parsing path; `ssh_options.go`: SSH-only suffix after `--` |
+| Connection and setup | `client_transport.go`: local/SSH transport ownership; `client.go`: shared interactive loop; `remote_bootstrap.go`: remote preparation and recovery |
 | Shell | `server_linux.go`, `session_*.go`: daemon, PTY lifecycle, names, selection, process snapshots and termination |
 | Wire protocol | `protocol.go`, `mux.go`: shell/application messages; `internal/transport/`: bounded frames, pipe ownership, smux tuning and SSH signal handling |
 | Release version rules | `internal/releaseversion/`: exact matching and ordering of full releases |
 | Direct copy | `cp_command.go`: local cp parsing, batch preflight and independent SFTP transport |
 | Approval | `review*.go`: pending metadata, local consent, reconnect checks and transfer coordination |
 | File transfer | `internal/cp/`: regular-file validation, exact-size copies, verified uploads, no-clobber publication and restricted SFTP handlers |
-| Mux | `internal/mux/`: exclusive attachment lifecycle, detach handshake, Linux PTY / Windows local ConPTY, input-mode tracking and Linux redraw |
+| Local daemon | `local_daemon*.go`, `local_*.go`: singleton startup, local shell/forward ownership and mount-worker supervision |
+| Mux | `internal/mux/`: exclusive attachment lifecycle, detach handshake, Linux PTY / Windows local ConPTY, input-mode tracking and native redraw |
 | Terminal presentation | `internal/termui/`: status formatting, theme colors and platform-specific ANSI detection |
 | Independent resources | `resource_session.go`, `resource_status.go`, `resources.go`: worker startup, private records, control and exit receipts |
 | Forward | `endpoints.go` and `forward*.go`: listener/service operands, fixed endpoint mapping and independent SSH transport |
@@ -71,11 +72,20 @@ ordinary local mux running local programs, without requiring SSH or a remote
 host. Windows continues to support its existing role as an SSH client to Linux;
 it will not provide a remote shell server.
 
-Local Windows mux is a design target, not a completed CLI feature. The current
-implementation provides the ConPTY foundation only; local background session
-ownership and attach/detach integration still need implementation. Remote shell
-lifecycle rules below describe the existing Linux service and must not be assumed
-to define the unfinished Windows local session lifecycle.
+Local shell workers use a private record and a token-authenticated loopback
+connection on both platforms. Startup transfers ownership only after private
+publication and acknowledgement. Shells retain the creating directory and strip
+inherited remote helper variables. Exact release matching applies locally too;
+local attachment never updates or replaces another worker. Explicit detach
+preserves the terminal; transport loss releases the attachment. Windows never
+provides SSH remote shell hosting.
+
+Numeric task IDs are persisted under the local state directory with an OS lock.
+They increase without reuse and bind immutable instances rather than names.
+Local shell and resource capability hashes identify workers without exporting
+capabilities; remote shells expose a random instance value. Name-based commands
+remain supported. Cached remote listings do not prove liveness; ID operations
+revalidate the instance at the authority performing the operation.
 
 The shared `internal/mux` infrastructure provides native Linux PTY and
 Windows ConPTY startup, byte I/O, resize, process wait and terminal close. Linux
@@ -84,16 +94,25 @@ The package owns terminal and attachment mechanisms, while the application owns
 SSH, exact release checks, names, approvals, account process validation and exit
 receipts. Preparing an attachment must succeed before its identity becomes the
 owner. A stale attachment cannot detach or terminate a newer owner; explicit
-detach preserves the terminal, and owner transport loss ends the lifecycle. A failed initial attachment rolls back
+detach preserves the terminal. Client loss stops its writer and releases attachment ownership while preserving the daemon-owned terminal. A failed initial attachment rolls back
 its newly created terminal; failed reattachment preserves an existing detached
 terminal. Linux duplicates and rewraps the PTY master as a pollable nonblocking
 file after startup, and all later ioctls use SyscallConn instead of Fd so resize
 and redraw cannot silently disable cancellation.
+`mux_connection.go` owns stream handshake, serialized writes, input barriers and
+bounded exit draining for both local and remote attachments. `internal/mux` owns
+exclusive attachment state and platform input cancellation. Local record and
+worker management stays separate from Linux remote account/setup policy.
 The root command adapters translate application metadata without exposing it to
 the package. Windows ConPTY is the foundation for local mux
 sessions; Windows remote shell hosting is outside the project scope. The remote
 daemon, authenticated helper endpoints and remote account process management
 remain Linux-only.
+Windows local sessions use the command interpreter from `COMSPEC`, falling back
+to `cmd.exe`; installed PowerShell versions are not selected automatically.
+The Windows local daemon starts without a console; each shell allocates its own
+ConPTY. Local reattachment requests a native redraw after restoring output
+ownership, without injecting a keystroke into the shell.
 Terminal bytes pass through unchanged, targeting common VT sequences used with
 Alacritty; this layer does not emulate a screen or promise screen restoration.
 Callers must continuously drain output while a session is running, wait for the
@@ -103,6 +122,8 @@ with a requested 64 KiB buffer and an explicit absolute executable path at proce
 creation. Command-line, directory and environment conversion happens before
 allocating ConPTY. Repeated Windows resize requests for the current size are
 skipped; failed resizes do not update the remembered dimensions.
+ConPTY child startup explicitly excludes the worker's redirected standard
+handles, so closed startup pipes cannot become the shell's input or output.
 Close discards unread output before closing ConPTY, avoiding shutdown dependence
 on an active reader on older Windows versions. Close does not guarantee
 termination of escaped descendants.
@@ -127,7 +148,7 @@ The supported bindings are defined by command help. A pending prefix survives
 input-read boundaries without a timeout; a doubled prefix sends one literal
 Ctrl+B. Unknown combinations are forwarded unchanged. Escape sequences are
 forwarded immediately, including a lone Escape. Bracketed-paste delimiters are
-recognized across reads, and their contents bypass shortcuts, including Ctrl-].
+recognized across reads, and their contents bypass shortcuts.
 Unbracketed paste is indistinguishable from typing and follows normal shortcuts.
 `--no-escape` and recovery mode forward all bytes without local interception.
 Session commands query the current daemon before detaching. Cycling uses lexical
@@ -174,11 +195,11 @@ provide an overlay or restore the application's screen.
 | Screen recovery | Terminal state and rendered screen snapshots | Raw VT transport with bounded input-mode observation; redraw remains best effort. |
 | Slow output | Screen-aware redraw / stale-frame replacement | Ordered byte backpressure; arbitrary byte dropping would corrupt terminal state. |
 | Attach ownership | Multiple-client mux models | One exclusive attachment per shell; stale clients cannot release its successor. |
-| Lifetime | Persistent mux server / session model | Existing Linux policy: explicit detach preserves; detected transport loss ends the shell. |
+| Lifetime | Persistent mux server / session model | Detach and detected transport loss preserve the shell; exit/cancel ends it. |
 
 ## Connection and shell lifecycle
 
-`new` reserves an unused name and creates a PTY shell. Automatic names come
+`shell` reserves an unused name and creates a PTY shell. Automatic names come
 from a fixed pool; callers can supply a name when the pool is exhausted. `attach`
 resolves an existing detached shell and never evicts another client. Local
 `connections/recent.json` retains up to 32 hosts, ordered by successful interactive
@@ -203,8 +224,8 @@ approvals keep their original name and shell PID and must be requested again
 after a rename. Process-tree listings are best-effort snapshots, not identities
 that can be used directly for signaling.
 
-Only explicit detach preserves the shell. Exit or detected transport loss
-closes the PTY and ends the daemon. This follows terminal hangup semantics; it is
+Detach and detected transport loss preserve the shell. Exit or cancellation
+closes its PTY. This follows terminal hangup semantics; it is
 not a general process containment mechanism. Detached output and terminal screens
 are not replayed. Reattachment requests foreground redraw. When the shell itself
 owns the PTY foreground group, a one-column resize and 30 ms restoration prompts
@@ -231,7 +252,7 @@ SSH connection; see [setup and recovery safeguards](SECURITY.md#remote-setup-and
 smux v2 carries logical control, terminal and file streams over one SSH connection;
 these are not native SSH channels. The receive budget is bounded across streams,
 with per-stream windows. TCP head-of-line blocking remains possible. Keepalives
-detect transport loss; they do not imply permission to detach. Numeric framing
+detect transport loss and release attachment ownership. Numeric framing
 limits and buffer sizes are defined in `protocol.go` and `mux.go`.
 
 A remote helper submits bounded operation metadata. The connected client saves a
@@ -270,8 +291,8 @@ existing resume/`--stay` behavior after approved copies.
 
 ## Inventory and shell history
 
-`list` is an offline local view grouped by SSH destination. It combines local
-worker checks with known shell records and marks remote hosts as unqueried.
+`list` uses one ID-ordered task table with a host column. It combines local
+task checks with cached remote shell records and marks remote hosts as unqueried.
 The connected client holds a local lifetime lock; this confirms the local
 connection process, not continuous remote health. A ready handshake records
 attached state. A detached acknowledgement records detached state before return;
@@ -280,19 +301,76 @@ last confirmation time, and older recent-connection defaults have unknown state.
 
 `list HOST` announces the target before SSH authentication and requests only that
 account's inventory. It never mixes in the client's local resource table or runs
-setup. `--details` adds process trees and detailed resource diagnostics. Visible
+setup. `--verbose` adds process trees and detailed resource diagnostics. Visible
 same-user daemons across runtime directories are queried; unreachable shells make
-the result incomplete. Other managers' resources occupy a separate read-only
-section. Successful queries refresh shell history; incomplete or failed queries
+the result incomplete. Other managers' resources are marked read-only in the same table. Successful queries refresh shell history; incomplete or failed queries
 never establish that an unreported shell ended. A complete query records absent
 shells as not listed, without claiming how they ended.
 
-## Independent workers
+Connection startup reads inventory through the existing authenticated mux control
+stream, one bounded row per frame. It excludes the current shell and merges local
+resources connected to the host; the renderer and stable IDs are shared with
+`list`. Incomplete results are labelled rather than represented as live certainty.
 
-A local mount or forward starts a worker that owns its transport and resource.
-The launcher handles authentication through a temporary askpass broker until
-startup acknowledgement. Losing the launcher before acknowledgement cancels
-startup. Shells, mounts, forwards and pending reviews share one ordered
+`cancel [HOST] --all` collects a fresh snapshot and requires the literal `cancel`
+after displaying its targets. Without HOST it excludes remote history; with HOST
+it includes the remote account's managed shells/resources and locally managed
+resources connected to that destination. Other managers' peer advertisements are
+read-only. Each cancellation revalidates the snapshot's shell instance or resource
+capability hash; newly created or same-name replacement tasks are excluded. Partial
+failures are reported while independent targets continue; busy mounts can remain.
+
+Linux remote shells share a daemon per private runtime directory. The SSH bridge
+requests a shell through a private Unix control socket; the daemon owns its PTY
+from creation and preserves the launching connection's environment and directory.
+Per-shell sockets and locks retain helper, attachment and rename identities.
+The remote daemon exits after its last shell and outstanding handlers finish.
+Legacy per-shell daemons remain discoverable and manageable during transition.
+
+Process discovery expands a shared daemon into its live shell endpoints, checking
+Unix socket peer ownership. Update snapshots therefore still show every affected
+shell. Explicit cancellation sends the confirmed instance to its owner and stops
+only that shell's identity-checked process tree; cancelling one shell cannot stop
+its siblings. Confirmed version updates may terminate the shared daemon and all
+of its identified shell tasks together, under the existing account setup lock.
+
+## Shared local daemon and resource workers
+
+One daemon per current user and private state root is started on demand. A
+startup file lock serializes launchers; a lifetime lock prevents replacement of
+a live, unresponsive daemon. Clients require an exact full release match, with
+no automatic replacement or task termination on mismatch. Separate explicit
+state roots remain isolated. Existing independent workers are not migrated or
+terminated; their private records remain usable.
+
+The daemon owns all newly created local shell terminals from startup, before the
+first attachment. Each shell keeps its own authenticated loopback endpoint,
+input writer, output pump and lifecycle lock. A daemon bookkeeping mutex only
+counts active requests/tasks; it is never held during terminal I/O, authentication
+or resource startup. The existing private ID index stays stable across daemon
+restarts. Local client loss releases attachment ownership after stopping its
+writer. Explicit shell exit/cancel ends the terminal. A daemon crash can end all
+its local shells; terminal state cannot be reconstructed from metadata.
+
+The daemon directly owns forward SSH subprocesses; no extra sshore process wraps
+each forward. Mounts retain independent workers because native filesystem work
+needs a separate failure boundary. The daemon proxies mount startup/commit and
+reaps workers; filesystem payloads bypass the daemon. Mount workers can survive
+daemon failure and remain accessible through their private control records. The
+request carries the launching client's working directory and environment rather
+than inheriting whichever shell first started the daemon. Environment values are
+not persisted in daemon metadata. Windows mount workers and directly owned forward SSH processes retain a hidden
+console for OpenSSH/askpass inheritance, separate from the console-free daemon.
+
+The launching CLI handles authentication through a temporary askpass broker
+until startup acknowledgement. Losing it before commit abandons startup. Once
+the task acknowledges commit, the daemon retains it even if the launcher
+misses the acknowledgement. After all owned shells/workers and startup requests
+end, the daemon exits after 30 seconds idle. Its private diagnostics are written
+to `daemon/local.log` under the state root. Process IDs in metadata are diagnostic
+only, never authority to signal a process.
+
+ Shells, mounts, forwards and pending reviews share one ordered
 154-name Pokemon pool and one local account namespace in the shared state root.
 Explicit names and shell renames use the same conflict checks. Separate computers
 and deliberately isolated state roots do not coordinate names. New allocations
@@ -500,11 +578,12 @@ second interrupt or shutdown timeout forces disconnection. See
 ## Inventory and diagnostics
 
 Local status separates worker liveness, transport state and unprobed target health.
-Text inventory uses compact, tab-aligned tables, with cached shell state and
+Text inventory combines shells and resources in one task-ID-ordered table with
+`ID`, `TASK`, `HOST`, `STATE` and `DETAIL` columns. It distinguishes cached shell state and
 confirmation age separate from local connection status. Successful queries emit
-no progress log; diagnostic fields remain under `--details`.
+no progress log; diagnostic fields remain under `--verbose`.
 Resource queries use at most eight workers and a two-second aggregate deadline.
-`list --details` and `list --json` include recent resource results; JSON uses an
+`list --verbose` and `list --json` include recent resource results; JSON uses an
 explicit field allowlist. All remote inventory requires a matching release
 and never triggers installation. CLI help defines the output contract and errors.
 
@@ -517,7 +596,7 @@ about every 20 seconds; after 75 seconds a missing heartbeat becomes `unknown`.
 Pending mirrors expire after ten minutes, other stale mirrors after 24 hours.
 
 Local resource records/logs and remote shell runtime state are separate. Use
-`list --details` for resource log locations. Remote shell logs live under
+`list --verbose` for resource log locations. Remote shell logs live under
 `$XDG_RUNTIME_DIR/sshore` or `/tmp/sshore-UID`, with `SSHORE_RUNTIME_DIR` overriding
 the runtime directory. Shell exit records and local resource receipts are bounded
 to 100 per category for seven days. They do not contain terminal replay or prove

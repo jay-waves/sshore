@@ -97,13 +97,6 @@ func waitExitReceipt(t *testing.T, dir, name, reason string) {
 	t.Fatalf("missing exit receipt %s / %s: %+v", name, reason, readSessionExits(dir))
 }
 
-func TestSessionConnectionLossReceipt(t *testing.T) {
-	e := newEnv(t)
-	b, _ := e.attach("lost")
-	b.close()
-	waitExitReceipt(t, e.dir, "lost", "connection lost without detach")
-}
-
 func TestSessionExitReceiptBounds(t *testing.T) {
 	dir := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside")

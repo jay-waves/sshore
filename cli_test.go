@@ -11,21 +11,21 @@ import (
 )
 
 func TestCLIOptionsAndHelp(t *testing.T) {
-	o, err := parseOptions([]string{"new", "host", "build", "--download-dir", "downloads", "--quiet", "--no-escape", "--", "-v", "-l", "user"})
+	o, err := parseOptions([]string{"shell", "host", "build", "--download-dir", "downloads", "--quiet", "--no-escape", "--", "-v", "-l", "user"})
 	if err != nil || o.session != "build" || o.downloadDir != "downloads" || !o.quiet || !o.noEscape || len(o.ssh) != 3 {
 		t.Fatalf("%+v %v", o, err)
 	}
-	for _, args := range [][]string{{"new", "host", "--help"}, {"attach", "--help"}} {
+	for _, args := range [][]string{{"shell", "host", "--help"}, {"attach", "--help"}} {
 		if _, err := parseOptions(args); !errors.Is(err, errHelp) {
 			t.Fatal(err)
 		}
 	}
-	for _, args := range [][]string{{"list", "host", "--quiet"}, {"new", "host", "--session="}, {"new", "--quiet=true"}, {"new", "host", "--unknown"}, {"new", "bad host"}, {"new", "host", ""}} {
+	for _, args := range [][]string{{"list", "host", "--quiet"}, {"shell", "host", "--session="}, {"shell", "--quiet=true"}, {"shell", "host", "--unknown"}, {"shell", "bad host"}, {"shell", "host", ""}} {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatal("accepted", args)
 		}
 	}
-	for _, topic := range []string{"new", "list", "attach", "cp", "detach", "forward", "review", "cancel", "mount"} {
+	for _, topic := range []string{"shell", "list", "attach", "cp", "detach", "forward", "review", "cancel", "mount"} {
 		var b bytes.Buffer
 		if err = showHelp([]string{topic}, &b); err != nil || !strings.Contains(b.String(), "Usage: sshore "+topic) {
 			t.Fatal(topic, err)
@@ -48,7 +48,7 @@ func TestDownloadDirectoryValidation(t *testing.T) {
 }
 
 func TestDefaultSessions(t *testing.T) {
-	automatic, err := parseOptions([]string{"new", "host"})
+	automatic, err := parseOptions([]string{"shell", "host"})
 	if err != nil || automatic.session != "" {
 		t.Fatalf("automatic: %+v %v", automatic, err)
 	}
@@ -73,7 +73,7 @@ func TestSSHLightweightPassthrough(t *testing.T) {
 	}
 	for flag, value := range values {
 		for _, args := range [][]string{{"host", "--", flag, value}, {"host", "--", flag + value}} {
-			o, err := parseOptions(append([]string{"new"}, args...))
+			o, err := parseOptions(append([]string{"shell"}, args...))
 			if err != nil || !reflect.DeepEqual(o.ssh, []string{flag, value}) {
 				t.Fatalf("%v: %+v %v", args, o, err)
 			}
@@ -82,22 +82,22 @@ func TestSSHLightweightPassthrough(t *testing.T) {
 				t.Fatal(cmd.Args)
 			}
 		}
-		if _, err := parseOptions([]string{"new", "host", "--", flag}); err == nil {
+		if _, err := parseOptions([]string{"shell", "host", "--", flag}); err == nil {
 			t.Fatal("missing value accepted:", flag)
 		}
 	}
 	flags := []string{"-C", "-vv", "-vvv", "-v", "-4", "-6"}
-	o, err := parseOptions(append([]string{"new", "host", "--"}, flags...))
+	o, err := parseOptions(append([]string{"shell", "host", "--"}, flags...))
 	if err != nil || !reflect.DeepEqual(o.ssh, flags) {
 		t.Fatal(o, err)
 	}
-	o, err = parseOptions([]string{"new", "host", "--", "-R9000:localhost:3000", "-R", "9001:localhost:3001", "-D1080", "-D", "1081"})
+	o, err = parseOptions([]string{"shell", "host", "--", "-R9000:localhost:3000", "-R", "9001:localhost:3001", "-D1080", "-D", "1081"})
 	want := []string{"-R", "9000:localhost:3000", "-R", "9001:localhost:3001", "-D", "1080", "-D", "1081"}
 	if err != nil || !reflect.DeepEqual(o.ssh, want) {
 		t.Fatal(o, err)
 	}
 	for _, flag := range []string{"-N", "-n", "-f", "-t", "-tt", "-W", "-O", "-X"} {
-		if _, err := parseOptions([]string{"new", "host", "--", flag}); err == nil {
+		if _, err := parseOptions([]string{"shell", "host", "--", flag}); err == nil {
 			t.Fatal("unsupported SSH mode accepted:", flag)
 		}
 	}
@@ -105,12 +105,12 @@ func TestSSHLightweightPassthrough(t *testing.T) {
 
 func TestExplicitSessionRouting(t *testing.T) {
 	for _, host := range []string{"forward", "review", "help", "connect"} {
-		_, err := run([]string{"new", host, "--invalid"})
+		_, err := run([]string{"shell", host, "--invalid"})
 		if err == nil || !strings.Contains(err.Error(), "unexpected argument: --invalid") {
-			t.Fatalf("new %s routed as a subcommand: %v", host, err)
+			t.Fatalf("shell %s routed as a subcommand: %v", host, err)
 		}
 	}
-	if _, err := run([]string{"new"}); err == nil {
+	if _, err := run([]string{"shell"}); err == nil {
 		t.Fatal("missing host accepted")
 	}
 }
@@ -126,18 +126,22 @@ func TestSourceVersionMatchesRelease(t *testing.T) {
 }
 
 func TestSessionCommandSemantics(t *testing.T) {
-	for _, command := range []string{"new", "attach"} {
+	for _, command := range []string{"shell", "attach"} {
 		for _, args := range [][]string{{command, "host"}, {command, "host", "build"}, {command, "host", "build", "--", "-p2222"}} {
 			o, err := parseOptions(args)
 			if err != nil || o.command != command || o.list {
 				t.Fatalf("%v: %+v %v", args, o, err)
 			}
-			if !strings.Contains(remoteCommand(o), shellQuote(command)) {
+			mode := command
+			if command == "shell" {
+				mode = "new"
+			}
+			if !strings.Contains(remoteCommand(o), shellQuote(mode)) {
 				t.Fatalf("wrong remote action for %s", command)
 			}
 		}
 	}
-	for _, args := range [][]string{{"host"}, {"host", "list"}, {"connect", "host"}, {"new", "host", "-s", "build"}, {"attach", "host", "--session=build"}, {"new", "host", "a", "b"}, {"list", "host", "--quiet"}} {
+	for _, args := range [][]string{{"new"}, {"new", "host"}, {"host"}, {"host", "list"}, {"connect", "host"}, {"shell", "host", "-s", "build"}, {"attach", "host", "--session=build"}, {"shell", "host", "a", "b"}, {"list", "host", "--quiet"}} {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatalf("accepted obsolete/invalid syntax: %v", args)
 		}
@@ -150,11 +154,11 @@ func TestSessionCommandSemantics(t *testing.T) {
 		}
 	}
 	t.Setenv("SSHORE_DISABLED", "1")
-	if code, err := run([]string{"new", "--help"}); code != 0 || err != nil {
+	if code, err := run([]string{"shell", "--help"}); code != 0 || err != nil {
 		t.Fatal(code, err)
 	}
-	if _, err := run([]string{"new", "host"}); err == nil {
-		t.Fatal("recovery allowed new")
+	if _, err := run([]string{"shell", "host"}); err == nil {
+		t.Fatal("recovery allowed shell")
 	}
 	if _, err := run([]string{"mount", "host", "/remote", "mount"}); err == nil {
 		t.Fatal("recovery allowed ftp")

@@ -500,7 +500,11 @@ func TestDisconnectCleansBothConcurrentUploads(t *testing.T) {
 	}
 	b.close()
 	waitUploadFiles(t, dir, 0)
-	waitSessionEnded(t, e, "main", pid)
+	resumed, resumedPID := e.attach("main")
+	if resumedPID != pid {
+		t.Fatal("upload disconnect replaced the shell")
+	}
+	shellOutput(t, resumed, "printf CLEAN_%s alive", "CLEAN_alive")
 }
 
 // Automatic connections exercise bootstrap too: an empty name must survive its
@@ -530,8 +534,8 @@ func TestAutomaticSessionsAndNamedResume(t *testing.T) {
 	}
 }
 
-// A closed transport must hang up the PTY, not silently become a detach.
-func TestDisconnectEndsSession(t *testing.T) {
+// Losing a client preserves both the shell and its foreground job.
+func TestDisconnectPreservesSession(t *testing.T) {
 	for _, foreground := range []bool{false, true} {
 		t.Run(fmt.Sprint(foreground), func(t *testing.T) {
 			e := newEnv(t)
@@ -540,7 +544,21 @@ func TestDisconnectEndsSession(t *testing.T) {
 				shellOutput(t, b, "stty -echo; sh -c 'printf JOB_%s ready; exec sleep 300'", "JOB_ready")
 			}
 			b.close()
-			waitSessionEnded(t, e, "lost", pid)
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				c, err := net.Dial("unix", filepath.Join(e.dir, "lost.sock"))
+				if err == nil {
+					_ = c.SetDeadline(time.Now().Add(time.Second))
+					_ = writeMessage(c, message{Type: "status"})
+					m, err := readMessage(c)
+					c.Close()
+					if err == nil && m.PID == pid && !m.Attached {
+						return
+					}
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			t.Fatal("shell did not survive client loss as detached")
 		})
 	}
 }
@@ -639,4 +657,22 @@ func TestNewAndAttachLifecycle(t *testing.T) {
 		untilType(t, b.tty, "exit")
 		b.close()
 	}
+}
+
+func TestSharedRemoteDaemonEnvironment(t *testing.T) {
+	e := newEnv(t)
+	e.env = append(e.env, "SSHORE_TEST_VALUE=first")
+	first, firstPID := e.attach("envfirst")
+	e.env = append(e.env, "SSHORE_TEST_VALUE=second")
+	second, secondPID := e.attach("envsecond")
+	a, err := readSetupTask(firstPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := readSetupTask(secondPID)
+	if err != nil || a.parent != b.parent {
+		t.Fatalf("separate daemons: %+v %+v %v", a, b, err)
+	}
+	shellOutput(t, first, "printf 'ENV_%s_VALUE' \"$SSHORE_TEST_VALUE\"", "ENV_first_VALUE")
+	shellOutput(t, second, "printf 'ENV_%s_VALUE' \"$SSHORE_TEST_VALUE\"", "ENV_second_VALUE")
 }

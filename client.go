@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	shellmux "github.com/jay-waves/sshore/internal/mux"
-	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -104,7 +103,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	}
 	cmd := sshCommand(o)
 	cmd.Stderr = os.Stderr
-	if o.list || o.command == "cancel" || o.command == "rename" {
+	if o.list || o.command == "cancel" || o.command == "cancel-resource" || o.command == "rename" {
 		cmd.Stdin, cmd.Stdout = os.Stdin, os.Stdout
 		err := cmd.Run()
 		if err == nil && o.command == "rename" {
@@ -118,39 +117,15 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		}
 		return 0, err
 	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !o.detached && (!term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd()))) {
 		return 1, fmt.Errorf("an interactive terminal is required")
 	}
 	resetTerminalInputModes()
-	reader, err := cmd.StdoutPipe()
+	transport, closeTransport, err := openClientTransport(&o)
 	if err != nil {
 		return 1, err
 	}
-	writer, err := cmd.StdinPipe()
-	if err != nil {
-		return 1, err
-	}
-	if err = cmd.Start(); err != nil {
-		return 1, fmt.Errorf("start system OpenSSH: %w", err)
-	}
-	sshClosed := false
-	closeSSH := func() {
-		if sshClosed {
-			return
-		}
-		sshClosed = true
-		_ = writer.Close()
-		_ = reader.Close()
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	}
-	defer closeSSH()
-	// The mux handshake happens after OpenSSH authentication; no local keyboard
-	// reader or raw mode is active while OpenSSH prompts for passwords/host keys.
-	transport := &pipeTransport{Reader: reader, Writer: writer, Closers: []io.Closer{reader, writer}}
-	if err = negotiateSetup(reader, writer, &o); err != nil {
-		return 1, err
-	}
+	defer closeTransport()
 	mux, err := clientMux(transport)
 	if err != nil {
 		return 255, err
@@ -175,7 +150,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	if len(o.approved) > 0 {
 		action = "approved"
 	}
-	if err = streamMessage(control, message{Type: "attach", Action: action, PID: o.resumePID, Cols: uint16(cols), Rows: uint16(rows), Term: termName, ApprovalID: o.approvalID}); err != nil {
+	if err = streamMessage(control, message{Type: "attach", Instance: o.instance, Action: action, PID: o.resumePID, Cols: uint16(cols), Rows: uint16(rows), Term: termName, ApprovalID: o.approvalID}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -195,6 +170,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	if len(o.approved) > 0 && m.PID != o.resumePID {
 		return 1, fmt.Errorf("remote shell changed; request again")
 	}
+	o.instance = m.Instance
 	connection, cacheErr := trackShellConnection(o)
 	if cacheErr != nil {
 		termui.Log(os.Stderr, termui.Warning, "[sshore] Shell tracking failed: %s\n", cleanText(cacheErr.Error()))
@@ -218,6 +194,13 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	}
 	_ = terminal.SetReadDeadline(time.Time{})
 
+	if o.detached {
+		if err := detachControl(control, func(name string) { connection.confirm(name, "detached") }); err != nil {
+			return 1, err
+		}
+		fmt.Fprintf(os.Stdout, "Started shell/%s (%s).\n", cleanText(o.session), cleanText(o.host))
+		return 0, nil
+	}
 	if len(o.approved) > 0 {
 		opCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		err = executeApprovedFiles(opCtx, mux, o.approved, o.quiet)
@@ -248,12 +231,17 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 			return 1, fmt.Errorf("unexpected resume response")
 		}
 	}
+	if !o.local && !o.plain && !o.quiet {
+		if err := showConnectedTasks(control, o); err != nil {
+			termui.Log(os.Stderr, termui.Warning, "[sshore] Task list unavailable: %s\n", cleanText(err.Error()))
+		}
+	}
 	restore, err := rawTerminal()
 	if err != nil {
 		return 1, err
 	}
 	defer func() { restore(); _ = flushTerminalInput() }()
-	if !o.plain {
+	if !o.plain && !o.local {
 		if e := rememberConnection(o); e != nil {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Connection history not saved: %s\n", cleanText(e.Error()))
 		}
@@ -263,7 +251,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	} else {
 
 		termui.Log(os.Stderr, termui.Success, "[sshore] Connected %s / %s (PID %d)\r\n", cleanText(o.host), o.session, pid)
-		termui.Log(os.Stderr, termui.Info, "[sshore] Reconnect: %s\r\n", reconnectCommand(o))
+
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -400,6 +388,8 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		}
 		target := o
 		target.command = command
+		target.taskIdentity = ""
+		target.instance = ""
 		target.session = name
 		target.resumePID = 0
 		target.approved = nil
@@ -551,7 +541,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					inputFlushTimeout = nil
 					continue
 				}
-				return 255, fmt.Errorf("connection ended without detach; remote shell is closing: %w", e.err)
+				return 255, fmt.Errorf("connection lost; reconnect to check the shell: %w", e.err)
 			} else if e.input != nil {
 				if chooser != nil {
 					selected, done := chooser.Feed(e.input)
@@ -592,7 +582,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 							}
 						}
 					default:
-						return 255, fmt.Errorf("terminal input stalled; closing remote shell")
+						return 255, fmt.Errorf("terminal input stalled; closing shell")
 					}
 				}
 
@@ -655,7 +645,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					}
 					command := "attach"
 					if e.m.Action == "new" {
-						command = "new"
+						command = "shell"
 					}
 					if err = queueSwitch(target, command); err != nil {
 						notice(termui.Warning, "\r\n[sshore] %s\r\n", err.Error())
@@ -689,7 +679,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					if switchTarget != nil {
 						return 0, &sessionSwitch{from: o, to: *switchTarget}
 					}
-					notice(termui.Success, "\r\n[sshore] Detached; remote programs keep running.\r\nReconnect: %s\r\n", reconnectCommand(o))
+					notice(termui.Success, "\r\n[sshore] Detached; programs keep running.\r\nReconnect: %s\r\n", reconnectCommand(o))
 					return 0, nil
 				case "exit":
 					connection.confirm(e.m.Name, "exited")
@@ -722,6 +712,9 @@ func reconnectCommand(o options) string {
 		return shellQuote(s)
 	}
 	args := []string{"sshore", "attach", o.host, o.session}
+	if o.local {
+		args = []string{"sshore", "attach", "--local", o.session}
+	}
 	if o.server != "" && o.server != "sshore" {
 		args = append(args, "--server", o.server)
 	}

@@ -30,7 +30,11 @@ func TestKillSessionLifecycle(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
-	keep, _ := e.attach("keep")
+	keep, keepPID := e.attach("keep")
+	keepProcess, err := readSetupTask(keepPID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	blocked := exec.Command(e.bin, "kill-session", "keep", version)
 	blocked.Env = append(append([]string{}, e.env...), "SSHORE_DISABLED=1")
 	if out, err := blocked.CombinedOutput(); err == nil || !strings.Contains(string(out), "disabled") {
@@ -44,6 +48,10 @@ func TestKillSessionLifecycle(t *testing.T) {
 	for _, detached := range []bool{false, true} {
 		name := fmt.Sprintf("target-%t", detached)
 		b, pid := e.attach(name)
+		targetProcess, err := readSetupTask(pid)
+		if err != nil || targetProcess.parent != keepProcess.parent {
+			t.Fatalf("shells do not share a daemon: %+v %+v %v", keepProcess, targetProcess, err)
+		}
 		// A child that ignores TERM/HUP exercises the bounded escalation path.
 		childFile := filepath.Join(e.dir, name+".child")
 		shellOutput(t, b, "sh -c 'trap \"\" TERM HUP; echo $$ > "+shellQuote(childFile)+"; exec sleep 120' & printf 'CHILD_%s\\n' ready", "CHILD_ready")
@@ -94,4 +102,16 @@ func TestKillSessionLifecycle(t *testing.T) {
 		}
 		shellOutput(t, keep, "printf 'STILL_%s\\n' alive", "STILL_alive")
 	}
+	if out, err := run("keep", version); err != nil {
+		t.Fatal(out, err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if process, err := readSetupTask(keepProcess.parent); err != nil || process.state == "Z" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("shared remote daemon survived its last shell")
+
 }

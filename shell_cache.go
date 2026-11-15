@@ -16,6 +16,7 @@ import (
 )
 
 type shellSnapshot struct {
+	Instance    string    `json:"instance,omitempty"`
 	Host        string    `json:"host"`
 	Name        string    `json:"name"`
 	State       string    `json:"state"`
@@ -116,7 +117,7 @@ type shellConnection struct {
 }
 
 func trackShellConnection(o options) (*shellConnection, error) {
-	if o.plain {
+	if o.plain || o.local {
 		return nil, nil
 	}
 	path, err := shellCachePath(o.host, o.session)
@@ -134,7 +135,7 @@ func trackShellConnection(o options) (*shellConnection, error) {
 		f.Close()
 		return nil, err
 	}
-	s := &shellConnection{lock: f, snapshot: shellSnapshot{Host: o.host, Name: o.session, State: "attached", ConfirmedAt: time.Now()}}
+	s := &shellConnection{lock: f, snapshot: shellSnapshot{Instance: o.instance, Host: o.host, Name: o.session, State: "attached", ConfirmedAt: time.Now()}}
 	if err = saveShellSnapshot(s.snapshot); err != nil {
 		f.Close()
 		return nil, err
@@ -177,7 +178,7 @@ func cacheRemoteShells(host string, inv inventory) error {
 	now := time.Now()
 	for _, shell := range inv.Shells {
 		seen[shell.Name] = true
-		if err := saveShellSnapshot(shellSnapshot{Host: host, Name: shell.Name, State: shell.State, ConfirmedAt: now}); err != nil {
+		if err := saveShellSnapshot(shellSnapshot{Instance: shell.Instance, Host: host, Name: shell.Name, State: shell.State, ConfirmedAt: now}); err != nil {
 			return err
 		}
 	}

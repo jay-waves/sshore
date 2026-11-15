@@ -49,7 +49,7 @@ func collectLocalResources(host string) ([]resourceRecord, error) {
 	}
 	for _, r := range pending {
 		if host == "" || r.Host == host {
-			records = append(records, resourceRecord{Kind: "review", Name: r.displayName(), Host: r.Host, Detail: r.Session + ": " + approvalSummary(r.Operations)})
+			records = append(records, resourceRecord{Token: r.ID, Kind: "review", Name: r.displayName(), Host: r.Host, Detail: r.Session + ": " + approvalSummary(r.Operations)})
 		}
 	}
 	sort.Slice(records, func(i, j int) bool {
@@ -68,6 +68,15 @@ func collectLocalResources(host string) ([]resourceRecord, error) {
 // Explicit type prefixes route local cancellation; HOST NAME uses the existing
 // version- and process-identity-checked remote session termination path.
 func runCancel(args []string) (int, error) {
+	if o, all, err := parseCancelAll(args); all {
+		if errors.Is(err, errHelp) {
+			return 0, showHelp([]string{"cancel"}, os.Stdout)
+		}
+		if err != nil {
+			return 2, err
+		}
+		return runCancelAll(o)
+	}
 	if len(args) == 0 {
 		return 2, usage("use sshore cancel review/NAME, mount/NAME, forward/NAME, or HOST NAME")
 	}
@@ -105,17 +114,5 @@ func runCancel(args []string) (int, error) {
 			return 2, usage("resource ID must be review/NAME, mount/NAME or forward/NAME")
 		}
 	}
-	o, err := parseOptions(append([]string{"cancel"}, args...))
-	if errors.Is(err, errHelp) {
-		return 0, showHelp([]string{"cancel"}, os.Stdout)
-	}
-	if err != nil {
-		return 2, err
-	}
-	return runClient(o)
-}
-
-func listThisComputer() error {
-	_, err := runInventory(options{list: true})
-	return err
+	return runShellCommand(append([]string{"cancel"}, args...))
 }

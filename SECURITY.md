@@ -10,8 +10,13 @@ sshore trusts the **local OS, user account, terminal, executable and SSH configu
 
 ```mermaid
 flowchart LR
+    localclient["Local shell client"] --> localgate["Private capability + exact release"]
+    localgate --> localdaemon["Shared local daemon: private state and lifetime lock"]
+    localdaemon --> localworker["Per-shell endpoint: exclusive PTY or ConPTY"]
+    localworker -->|"Client loss: stop writer, preserve shell"| localdaemon
+    localdaemon -->|"Authenticated startup; explicit resource grant"| localresource["Mount worker / daemon-owned forward SSH"]
     subgraph remote["Untrusted remote host"]
-        program["Programs / shell daemon"]
+        program["Programs / shared shell daemon"]
         setup["Setup coordinator"]
         service["Remote files and services"]
         killgate["Cancel shell: exact versions, setup lock, socket peer and process identity"]
@@ -45,7 +50,7 @@ flowchart LR
     inventory --> peerlist["Read-only list; no local authorization or control tokens"]
     program -->|"Request metadata over SSH"| client
     client -->|"Explicit detach / session switch: preserve shell"| program
-    client -->|"Detected transport loss: close PTY, end shell"| program
+    client -->|"Detected transport loss: release client, preserve shell"| program
     client -->|"Validate, save, detach"| record
     user -->|"Rename OLD NEW over SSH"| renamegate
     renamegate -->|"Change label; preserve process and helper identity"| program
@@ -56,7 +61,7 @@ flowchart LR
     record -->|"Consume once"| approve
     approve -->|"New SSH connection"| gate
     setup <-->|"Exact version / setup choice"| gate
-    setup -->|"Setup lock: new reserves unused name; attach requires existing shell"| program
+    setup -->|"Setup lock: shell reserves unused name; attach requires existing shell"| program
     gate -->|"Unchanged setup and matching shell PID"| resources
     user -->|"Review forward: fixed endpoints and one SSH authentication"| forwardcheck["Worker checks source version / name / PID / detached state"]
     forwardcheck --> native
@@ -64,9 +69,19 @@ flowchart LR
     gate -->|"Updated setup or recovery: skip operations"| user
 ```
 
+The local daemon accepts loopback connections only and authenticates a private
+capability before creation requests. Exact release checks and a lifetime lock
+prevent silent takeover or downgrade. Per-shell capabilities and exclusive
+attachment checks remain independent. Client loss preserves local and remote shells. A daemon failure has a wider
+impact because all its local shell terminals belong to one process. Independent
+mount workers retain their transports and authenticated stop endpoints; a
+restart does not authorize killing recorded PIDs or replaying operations. The
+daemon keeps launch environments in memory, never in public inventory or its
+persistent record. It is within the same trusted OS-user boundary as the CLI.
+
 Remote terminal output is untrusted. It can imitate local messages, but cannot itself grant approval. Sensitive prompts run after the connected client exits, from a **separate local invocation**. Do not invoke approval or enter credentials merely because remote output asks you to.
 
-`new` reserves a fresh shell, with an automatic or explicit name, including when other shells are detached. `attach` requires an existing shell and never evicts its attached client. Recent local targets only supply defaults; they never authorize takeover, recreate missing shells or carry typed passwords. Native forwarding flags are excluded from remembered connections. Without saved history, selection without a name lists detached shells; setup and exclusive attachment are rechecked after selection without holding the account lock while waiting for user input. The local shell picker starts only after SSH authentication and releases terminal input before attachment. It does not authorize updates or file/port operations. Shell listings show same-user process descendants with sanitized names and PIDs; they do not expose command-line arguments or environment variables. Foreground
+`shell` reserves a fresh shell, with an automatic or explicit name, including when other shells are detached. `attach` requires an existing shell and never evicts its attached client. Recent local targets only supply defaults; they never authorize takeover, recreate missing shells or carry typed passwords. Native forwarding flags are excluded from remembered connections. Without saved history, selection without a name lists detached shells; setup and exclusive attachment are rechecked after selection without holding the account lock while waiting for user input. The local shell picker starts only after SSH authentication and releases terminal input before attachment. It does not authorize updates or file/port operations. Shell listings show same-user process descendants with sanitized names and PIDs; they do not expose command-line arguments or environment variables. Foreground
 summaries include same-user process names and a shortened working directory,
 which may reveal project names. These are best-effort snapshots, never process
 identity evidence for signaling.
@@ -120,7 +135,7 @@ the opened file identity with the initial check. Linux uses a nonblocking open s
 a replacement FIFO cannot stall validation. This does not lock parent directories
 or prevent changes to the content of the same file. File endpoints must be regular files; direct cp also accepts explicit stdin/stdout. Stdout is not atomic and cannot retract bytes on failure. Stdin can be unbounded and exhaust remote storage before EOF; file publication still requires size/digest verification and refuses overwrite. Metadata is not copied. Linux received files default to `0600`; Windows files inherit the destination directory ACL.
 
-Cancellation removes incomplete files when cleanup can run. Forced termination may leave `.sshore-*.part` files; batch failure does not undo completed files. During approved operations and `--stay`, remote terminal output is suppressed. Detach/disconnection cancels connection-owned transfers. Independent mounts and forwards keep their own lifetimes; ending a shell does not stop them. Only explicit detach (including the detach phase of a local session switch) preserves the remote shell (including approval-request detach and completed file operations with `--stay`). Other transport loss closes the PTY and ends the daemon when detected. This uses normal terminal hangup semantics, not process-tree extermination: programs that ignore hangup or deliberately escape the terminal may survive, as with SSH. It does not promise cleanup of arbitrary reparented tasks.
+Cancellation removes incomplete files when cleanup can run. Forced termination may leave `.sshore-*.part` files; batch failure does not undo completed files. During approved operations and `--stay`, remote terminal output is suppressed. Detach/disconnection cancels connection-owned transfers. Independent mounts and forwards keep their own lifetimes; ending a shell does not stop them. Explicit detach and transport loss preserve the remote shell. Connection-owned transfers are still cancelled and cleaned up. Shell exit or explicit cancellation closes the PTY. This uses normal terminal hangup semantics, not process-tree extermination: programs that ignore hangup or deliberately escape the terminal may survive, as with SSH. It does not promise cleanup of arbitrary reparented tasks.
 
 Local `forward` defaults to a detached local worker. Remote
 forward requests are local pending tasks; approval verifies the original shell
@@ -240,6 +255,8 @@ The full release version, including PATCH, is the compatibility identifier. No s
 - Failure to prepare a replacement must not terminate tasks. Once confirmed termination starts, later failures cannot restore stopped tasks. Updates can disconnect other clients and lose unsaved work.
 - Automatic replacement requires a user-owned regular file and a user-owned directory without group/world write permission. There is no elevation, PATH or shell-profile modification.
 
+`sshore cancel [HOST] --all` displays a fresh snapshot and requires typing `cancel`. It targets only listed, managed tasks; cached remote shells and other managers' advertisements do not authorize cancellation. Each task is revalidated by instance or capability identity, never by a cached PID. New tasks and same-name replacements are excluded.
+
 Explicit `sshore cancel HOST NAME` authorizes immediate termination of that named shell
 and its identified tasks in the selected runtime directory, including an attached
 shell. It never enters installation or update negotiation. The client, installed
@@ -255,7 +272,7 @@ Installer checksums detect corruption, not compromise of the publisher/repositor
 
 ## Manual recovery
 
-Recovery preserves the authenticated SSH connection and starts a transient PTY shell without a persistent shell daemon. Persistence, approval execution, file transfer, dynamic forwarding and local mux shortcuts (Ctrl+B and Ctrl-]) are disabled; help, version and diagnostics remain available. Normal functionality requires reconnecting.
+Recovery preserves the authenticated SSH connection and starts a transient PTY shell without a persistent shell daemon. Persistence, approval execution, file transfer, dynamic forwarding and local mux shortcuts (Ctrl+B) are disabled; help, version and diagnostics remain available. Normal functionality requires reconnecting.
 
 Inherited helper socket variables are removed and new sshore binaries honor `SSHORE_DISABLED=1`. Approved operations are skipped both in recovery and after a setup update, and must be requested again.
 
@@ -272,3 +289,13 @@ Private resource exit receipts retain protocol metadata, paths and errors for up
 to seven days (100 per kind). They are diagnostic snapshots, not proof of remote
 availability or process identity. Detailed remote inventory requires an exact
 release match and does not initiate installation or update negotiation.
+
+## Local shell control
+
+Local shell workers listen only on IPv4 loopback and require a random capability
+from current-user private state before status or control requests. Linux file
+permissions and Windows ACLs protect these records. Local shells inherit user
+privileges; this is not a sandbox. Recovery mode cannot start a worker.
+Numeric task IDs are selectors, not authorization: identity and normal version
+checks still apply. IDs are never reused, and same-name replacement tasks do not
+inherit an old ID. Public inventory excludes connection capabilities.

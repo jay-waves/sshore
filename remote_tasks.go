@@ -241,7 +241,7 @@ func collectPeerViews() ([]peerView, error) {
 	out := []peerView{}
 	for _, r := range rows {
 		t := r.task
-		out = append(out, peerView{ID: "peer/" + t.Key[:8] + "/" + t.ID, Manager: t.Manager, State: r.state, Detail: t.Detail})
+		out = append(out, peerView{Identity: t.Key, ID: "peer/" + t.Key[:8] + "/" + t.ID, Manager: t.Manager, State: r.state, Detail: t.Detail})
 	}
 	return out, nil
 }

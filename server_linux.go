@@ -2,17 +2,17 @@
 
 package main
 
-// Each named session has one daemon and PTY; there is no global daemon or extra
-// listening network port. The bridge connects SSH stdin/stdout to a Unix socket,
-// starting the daemon as needed. Only one client can attach. Names are 1-48 ASCII
+// A shared remote daemon owns each named session's PTY. The bridge connects
+// SSH stdin/stdout to a per-session Unix socket, starting the daemon as needed.
+// Only one client can attach to each shell. Names are 1-48 ASCII
 // letters, digits, underscores or hyphens and begin with a letter or digit.
 // Public new always reserves a fresh name; attach requires an existing daemon.
 // Omitted new names allocate automatically; omitted attach names are selected
 // during setup. Legacy internal bridge calls retain their create-or-resume behavior.
 // The daemon drains/discards detached or muted output, so
 // an unread terminal cannot block remote programs. No screen or scrollback is
-// stored. Only explicit detach preserves a session. Transport loss closes the PTY
-// (normal terminal hangup semantics) and stops the daemon; shell exit also ends it.
+// stored. Transport loss releases the attachment while preserving the shell.
+// Shell exit or explicit cancellation ends the session.
 // Programs deliberately ignoring/escaping hangup may survive, as with SSH.
 //
 // Runtime selection: SSHORE_RUNTIME_DIR overrides XDG_RUNTIME_DIR/sshore, with
@@ -40,12 +40,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	shellmux "github.com/jay-waves/sshore/internal/mux"
-	"github.com/xtaci/smux"
 	"golang.org/x/sys/unix"
 
 	"github.com/jay-waves/sshore/internal/mount"
@@ -194,7 +192,7 @@ func reserveSession(names []string, fresh bool) (sessionReservation, error) {
 		}
 		return sessionReservation{name: name, publicName: publicLabel, startup: startup, namespace: namespace, conn: conn}, nil
 	}
-	return sessionReservation{}, fmt.Errorf("all automatic shell names are in use; exit an existing shell or choose a name with sshore new HOST NAME")
+	return sessionReservation{}, fmt.Errorf("all automatic shell names are in use; exit an existing shell or choose a name with sshore shell HOST NAME")
 }
 
 func bridge(name string, existing bool) error {
@@ -255,50 +253,23 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 	}
 	if conn == nil {
 		if existing {
-			return fmt.Errorf("shell %s does not exist; use sshore list HOST or sshore new HOST NAME", name)
+			return fmt.Errorf("shell %s does not exist; use sshore list HOST or sshore shell HOST NAME", name)
 		}
-		exe := executable
-		fd, err := unix.Open(path+".log", unix.O_CREAT|unix.O_WRONLY|unix.O_APPEND|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
-		if err != nil {
-			return err
-		}
-		log := os.NewFile(uintptr(fd), path+".log")
 		if reservation.namespace != nil {
 			reservation.namespace.owner.Close()
 			reservation.namespace.owner = nil
 		}
-		cmd := exec.Command(exe, "daemon", name)
 		if publicName == "" {
 			publicName = name
 		}
-		cmd.Env = append(os.Environ(), "SSHORE_SESSION_NAME="+publicName)
-		cmd.Stdout = log
-		cmd.Stderr = log
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		err = cmd.Start()
-		log.Close()
+		if err := createRemoteShell(executable, name, publicName); err != nil {
+			return err
+		}
+		conn, err = net.DialTimeout("unix", path, time.Second)
 		if err != nil {
 			return err
 		}
-		exited := make(chan error, 1)
-		go func() { exited <- cmd.Wait() }()
-		deadline := time.After(3 * time.Second)
-		retry := time.NewTicker(20 * time.Millisecond)
-		defer retry.Stop()
-	wait:
-		for {
-			select {
-			case err := <-exited:
-				return fmt.Errorf("shell daemon exited: %v; see %s.log", err, path)
-			case <-deadline:
-				return fmt.Errorf("starting shell timed out; see %s.log", path)
-			case <-retry.C:
-				conn, err = net.Dial("unix", path)
-				if err == nil {
-					break wait
-				}
-			}
-		}
+
 	}
 	_ = unix.Flock(int(startup.Fd()), unix.LOCK_UN)
 	if reservation.namespace != nil {
@@ -307,7 +278,6 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 	}
 	defer conn.Close()
 	gate.Close()
-	reportSessionDaemons()
 	if readyMode != "" {
 		if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
 			return err
@@ -324,32 +294,13 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 // Each attachment owns one mux session. Local helpers use Unix sockets for
 // approval, forwarding control and detach requests. Approved file bytes flow
 // directly on client-initiated streams, without a helper process or PTY relay.
-type attachment struct {
-	mux               *smux.Session
-	control, terminal *smux.Stream
-	controlMu         sync.Mutex
-	terminalWriteMu   sync.Mutex
-	approvalRequests  chan struct{}
-	input             *shellmux.InputLease
-	muted             atomic.Bool
-}
-
-func (p *attachment) controlMessage(m message) error {
-	p.controlMu.Lock()
-	defer p.controlMu.Unlock()
-	return streamMessage(p.control, m)
-}
-func (p *attachment) output(m message) error {
-	p.terminalWriteMu.Lock()
-	defer p.terminalWriteMu.Unlock()
-	if m.Type == "output" && p.muted.Load() {
-		return nil
-	}
-	return streamMessage(p.terminal, m)
-}
-func (p *attachment) close() { _ = p.mux.Close() }
-
 type shell struct {
+	environment     []string
+	directory       string
+	processIdentity string
+	cancelling      bool
+
+	instance   string
 	name       string
 	nameLock   *os.File
 	exitReason string
@@ -368,15 +319,23 @@ type shell struct {
 
 func (s *shell) stop() { s.once.Do(func() { close(s.done) }) }
 func (s *shell) start(cols, rows uint16, term string) error {
-	shell := os.Getenv("SHELL")
+	if s.instance == "" {
+		s.instance = rand.Text()
+	}
+	env := s.environment
+	if env == nil {
+		env = os.Environ()
+	}
+	shell := localEnvironmentValue(env, "SHELL")
 	if shell == "" {
 		shell = "/bin/bash"
 	}
 	cmd := exec.Command(shell, "-i")
-	cmd.Env = append(os.Environ(), "TERM="+term, "SSHORE_SOCKET="+s.path)
+	cmd.Dir = s.directory
+	cmd.Env = append(append([]string(nil), env...), "TERM="+term, "SSHORE_SOCKET="+s.path)
 	if s.plain {
 		cmd.Env = nil
-		for _, item := range os.Environ() {
+		for _, item := range env {
 			if !strings.HasPrefix(item, "SSHORE_") {
 				cmd.Env = append(cmd.Env, item)
 			}
@@ -384,13 +343,18 @@ func (s *shell) start(cols, rows uint16, term string) error {
 		cmd.Env = append(cmd.Env, "TERM="+term, "SSHORE_DISABLED=1")
 	}
 	if exe, err := os.Executable(); err == nil && !s.plain {
-		cmd.Env = append(cmd.Env, "PATH="+filepath.Dir(exe)+":"+os.Getenv("PATH"))
+		cmd.Env = append(cmd.Env, "PATH="+filepath.Dir(exe)+":"+localEnvironmentValue(env, "PATH"))
 	}
 	master, err := shellmux.StartCommand(cmd, shellmux.Size{Cols: max(cols, 1), Rows: max(rows, 1)})
 	if err != nil {
 		return err
 	}
 	s.cmd, s.master = cmd, master
+	s.processIdentity, err = processStart(cmd.Process.Pid)
+	if err != nil {
+		master.Close()
+		return err
+	}
 	s.started = time.Now()
 	go func() {
 		buf := make([]byte, 8192)
@@ -432,13 +396,7 @@ func (s *shell) start(cols, rows uint16, term string) error {
 		}
 		s.mu.Unlock()
 		if p != nil {
-			// Exit shares the terminal stream, preserving all final output ordering.
-			_ = p.output(message{Type: "exit", Code: code})
-			select {
-			case <-p.mux.CloseChan():
-			case <-time.After(2 * time.Second):
-				p.close()
-			}
+			p.finishExit(code)
 		}
 		s.stop()
 	}()
@@ -447,16 +405,19 @@ func (s *shell) start(cols, rows uint16, term string) error {
 func (s *shell) attach(p *attachment, m message) error {
 	s.terminalMu.Lock()
 	defer s.terminalMu.Unlock()
-	if m.Type != "attach" {
-		return fmt.Errorf("expected attach request")
-	}
-	if len(m.Term) == 0 || len(m.Term) > 128 || strings.ContainsAny(m.Term, "\x00\r\n\x1b") {
-		return fmt.Errorf("invalid TERM")
+	if err := validateAttach(m); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	startedHere := false
 	err := s.lifecycle.Attach(p, func() error {
+		if s.cancelling {
+			return fmt.Errorf("shell is being cancelled")
+		}
+		if m.Instance != "" && m.Instance != s.instance {
+			return fmt.Errorf("shell instance changed; refresh with sshore list")
+		}
 		if m.Action == "existing" && s.cmd == nil {
 			return fmt.Errorf("shell has not started; use sshore list HOST")
 		}
@@ -476,7 +437,7 @@ func (s *shell) attach(p *attachment, m message) error {
 		if err := s.master.Resize(shellmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
 			return err
 		}
-		if err := p.controlMessage(message{Type: "ready", PID: s.cmd.Process.Pid, Name: s.name}); err != nil {
+		if err := p.controlMessage(message{Type: "ready", Instance: s.instance, PID: s.cmd.Process.Pid, Name: s.name}); err != nil {
 			return err
 		}
 		if !p.muted.Load() {
@@ -499,7 +460,7 @@ func (s *shell) attach(p *attachment, m message) error {
 		s.stop()
 	}
 	if errors.Is(err, shellmux.ErrExited) {
-		return fmt.Errorf("shell is exiting; use sshore new HOST to create a new one")
+		return fmt.Errorf("shell is exiting; use sshore shell HOST to create a new one")
 	}
 	if errors.Is(err, shellmux.ErrAttached) {
 		return fmt.Errorf("shell already attached; detach the other connection first")
@@ -508,22 +469,8 @@ func (s *shell) attach(p *attachment, m message) error {
 }
 func (s *shell) release(p *attachment) {
 	p.close()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Explicit detach already cleared active. Failed competing attachments must
-	// never end the owner session. Mark it exiting before allowing any reattach.
-	if s.lifecycle.Release(p) {
-		if p.input != nil {
-			_ = p.input.Stop()
-		}
-		if s.exitReason == "" {
-			s.exitReason = "connection lost without detach"
-		}
-		if s.master != nil {
-			_ = s.master.Close()
-		}
-		s.stop()
-	}
+	// Stop this attachment's writer before allowing another client to attach.
+	s.clearAttachment(p)
 }
 
 func (s *shell) clearAttachment(p *attachment) bool {
@@ -550,30 +497,11 @@ func (s *shell) detach(p *attachment) {
 	shellmux.FinishDetach(p.control, func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, p.close)
 }
 func (s *shell) serveMux(c io.ReadWriteCloser) error {
-	mux, err := smux.Server(c, muxConfig())
+	mux, control, terminal, m, err := acceptMux(c)
 	if err != nil {
 		return err
 	}
 	defer mux.Close()
-	_ = mux.SetDeadline(time.Now().Add(5 * time.Second))
-	control, err := mux.AcceptStream()
-	if err != nil {
-		return err
-	}
-	_ = mux.SetDeadline(time.Time{})
-	_ = control.SetReadDeadline(time.Now().Add(5 * time.Second))
-	m, err := readMessage(control)
-	if err != nil {
-		return err
-	}
-	_ = control.SetReadDeadline(time.Time{})
-	terminal, err := mux.OpenStream()
-	if err != nil {
-		return err
-	}
-	if err = streamMessage(terminal, message{Type: "terminal"}); err != nil {
-		return err
-	}
 	p := &attachment{mux: mux, control: control, terminal: terminal, approvalRequests: make(chan struct{}, 8)}
 	defer s.release(p)
 	if err = s.attach(p, m); err != nil {
@@ -613,40 +541,8 @@ func (s *shell) serveMux(c io.ReadWriteCloser) error {
 			}
 		}()
 	}
-	go func() {
-		for {
-			m, err := readMessage(terminal)
-			if err != nil {
-				p.close()
-				return
-			}
-			if m.Type != "input" && m.Type != "input_barrier" {
-				p.close()
-				return
-			}
-			s.mu.Lock()
-			allowed := s.lifecycle.Active() == p
-			input := p.input
-			s.mu.Unlock()
-			if !allowed {
-				return
-			}
-			if m.Type == "input_barrier" {
-				if err = p.output(message{Type: "input_drained"}); err != nil {
-					p.close()
-					return
-				}
-				continue
-			}
-			if err = writeFull(input, m.Data); err != nil {
-				if input.Stopped() {
-					return
-				}
-				p.close()
-				return
-			}
-		}
-	}()
+	go p.readInput(&s.lifecycle)
+
 	for {
 		m, err := readMessage(control)
 		if err != nil {
@@ -670,6 +566,29 @@ func (s *shell) serveMux(c io.ReadWriteCloser) error {
 				return err
 			}
 			if err := p.controlMessage(message{Type: "output_resumed"}); err != nil {
+				return err
+			}
+		case "inventory":
+			inv, err := localSessionInventory()
+			if err != nil {
+				inv.Errors = append(inv.Errors, cleanText(err.Error()))
+			}
+			for _, row := range inv.Shells {
+				if err := p.controlMessage(message{Type: "inventory_row", Inventory: &inventory{Shells: []shellView{row}}}); err != nil {
+					return err
+				}
+			}
+			for _, row := range inv.Resources {
+				if err := p.controlMessage(message{Type: "inventory_row", Inventory: &inventory{Resources: []resourceView{row}}}); err != nil {
+					return err
+				}
+			}
+			for _, row := range inv.Peers {
+				if err := p.controlMessage(message{Type: "inventory_row", Inventory: &inventory{Peers: []peerView{row}}}); err != nil {
+					return err
+				}
+			}
+			if err := p.controlMessage(message{Type: "inventory_done", Inventory: &inventory{Errors: inv.Errors}}); err != nil {
 				return err
 			}
 		case "session_targets":
@@ -725,6 +644,16 @@ func (s *shell) handle(c net.Conn) {
 		if writeMessage(c, message{Type: "mux_ready", SoftwareVersion: version}) == nil {
 			_ = s.serveMux(c)
 		}
+	case "cancel":
+		if err := checkPeerVersion(first.SoftwareVersion, "client"); err != nil {
+			_ = writeMessage(c, message{Type: "error", Error: err.Error()})
+			return
+		}
+		if err := s.cancel(first.Instance); err != nil {
+			_ = writeMessage(c, message{Type: "error", Error: err.Error()})
+			return
+		}
+		_ = writeMessage(c, message{Type: "cancelled"})
 	case "forward_check":
 		reply := message{Type: "forward_checked", SoftwareVersion: version}
 		if err := s.checkForwardApproval(first); err != nil {
@@ -737,14 +666,14 @@ func (s *shell) handle(c net.Conn) {
 			_ = writeMessage(c, message{Type: "error", Error: err.Error()})
 			return
 		}
-		if err := s.rename(first.Action, first.Name); err != nil {
+		if err := s.rename(first.Action, first.Name, first.Instance); err != nil {
 			_ = writeMessage(c, message{Type: "error", Error: err.Error()})
 			return
 		}
 		_ = writeMessage(c, message{Type: "renamed", Name: first.Name})
 	case "status":
 		s.mu.Lock()
-		m := message{Type: "session", Attached: s.lifecycle.Active() != nil, Name: s.name, SoftwareVersion: version}
+		m := message{Type: "session", Instance: s.instance, Attached: s.lifecycle.Active() != nil, Name: s.name, SoftwareVersion: version}
 		group := 0
 		if s.master != nil {
 			group, _ = s.master.ForegroundGroup()
@@ -779,6 +708,14 @@ func (s *shell) handle(c net.Conn) {
 	}
 }
 func daemon(name string) error {
+	label := os.Getenv("SSHORE_SESSION_NAME")
+	if validSession(label) != nil {
+		label = name
+	}
+	return serveRemoteShell(name, label, os.Environ(), "", nil)
+}
+
+func serveRemoteShell(name, nameLabel string, env []string, directory string, ready func() error) error {
 	path, err := socketPath(name)
 	if err != nil {
 		return err
@@ -788,10 +725,6 @@ func daemon(name string) error {
 		return fmt.Errorf("shell already running: %w", err)
 	}
 	defer lock.Close()
-	nameLabel := os.Getenv("SSHORE_SESSION_NAME")
-	if validSession(nameLabel) != nil {
-		nameLabel = name
-	}
 	nameLock, err := lockObjectName(nameLabel)
 	if err != nil {
 		return fmt.Errorf("shell name %s is in use: %w", nameLabel, err)
@@ -811,12 +744,14 @@ func daemon(name string) error {
 	if err != nil {
 		return err
 	}
+	var handlers sync.WaitGroup
+	defer handlers.Wait()
 	defer listener.Close()
 	defer os.Remove(path)
 	if err := os.Chmod(path, 0600); err != nil {
 		return err
 	}
-	s := &shell{path: path, name: nameLabel, nameLock: nameLock, done: make(chan struct{})}
+	s := &shell{instance: rand.Text(), environment: env, directory: directory, path: path, name: nameLabel, nameLock: nameLock, done: make(chan struct{})}
 	nameLock = nil
 	defer func() {
 		s.mu.Lock()
@@ -855,6 +790,12 @@ func daemon(name string) error {
 		}
 		_ = listener.Close()
 	}()
+	if ready != nil {
+		if err := ready(); err != nil {
+			s.stop()
+			return err
+		}
+	}
 	// A failed initial attach should not leave an empty daemon indefinitely.
 	go func() {
 		select {
@@ -878,7 +819,8 @@ func daemon(name string) error {
 				return err
 			}
 		}
-		go s.handle(c)
+		handlers.Add(1)
+		go func() { defer handlers.Done(); s.handle(c) }()
 	}
 }
 func listSessions() error {
@@ -941,27 +883,30 @@ func serverCommand(args []string) error {
 		}
 		return mount.ServeAgent(&pipeTransport{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version)
 	case "rename-session":
-		if len(args) != 4 {
+		if len(args) != 4 && len(args) != 5 {
 			return usage("rename-session requires old name, new name and client version")
 		}
 		if err := checkPeerVersion(args[3], "client"); err != nil {
 			return err
 		}
-		return renameSession(args[1], args[2])
+		return renameSession(args[1], args[2], args[4:]...)
 	case "kill-session":
-		if len(args) != 3 {
+		if len(args) != 3 && len(args) != 4 {
 			return usage("kill-session requires a name and client version")
 		}
 		if err := checkPeerVersion(args[2], "client"); err != nil {
 			return err
 		}
-		return killSession(args[1])
+		return killSession(args[1], args[3:]...)
 	case "bootstrap":
 		if len(args) != 4 {
 			return usage("invalid bootstrap arguments")
 		}
 		return bootstrap(args[1], args[2], args[3])
 	case "bridge", "resume", "daemon":
+		if args[0] == "daemon" && len(args) == 1 {
+			return runSharedRemoteDaemon()
+		}
 		if len(args) != 2 {
 			return fmt.Errorf("internal command requires a shell name")
 		}
@@ -986,7 +931,7 @@ func serverCommand(args []string) error {
 		}
 		return removeRemoteTask(args[2])
 	case "inventory":
-		if len(args) != 2 && (len(args) != 3 || args[2] != "--details") {
+		if len(args) != 2 && (len(args) != 3 || args[2] != "--verbose") {
 			return usage("inventory requires client version")
 		}
 		if e := checkPeerVersion(args[1], "client"); e != nil {
@@ -1071,4 +1016,30 @@ func detachedSessionNames() ([]string, error) {
 		}
 	}
 	return names, nil
+}
+
+func (s *shell) cancel(instance string) error {
+	s.mu.Lock()
+	if instance == "" || instance != s.instance {
+		s.mu.Unlock()
+		return fmt.Errorf("shell instance changed; refresh with sshore list")
+	}
+	if s.cmd == nil {
+		s.lifecycle.End()
+		s.stop()
+		s.mu.Unlock()
+		return nil
+	}
+	s.cancelling = true
+	pid, start := s.cmd.Process.Pid, s.processIdentity
+	s.exitReason = "cancelled by sshore cancel"
+	s.mu.Unlock()
+	if err := stopOldSessions([]setupProcess{{PID: pid, Start: start}}, "cancelled by sshore cancel"); err != nil {
+		s.mu.Lock()
+		s.cancelling = false
+		s.mu.Unlock()
+		return err
+	}
+	s.stop()
+	return nil
 }
