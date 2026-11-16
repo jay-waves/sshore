@@ -214,3 +214,5 @@ sshore does not implement the trzsz protocol.
 
 [MIT license](LICENSE); third-party license notices are collected in
 [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt).
+
+Use `sshore reset` on a cloned machine to replace its account identity and clear local connection history and cached shell snapshots. Active tasks, approvals and task IDs are preserved; active connections can repopulate snapshots.

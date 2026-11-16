@@ -15,6 +15,7 @@ import (
 func localSessionInventory(details ...bool) (inventory, error) {
 	detailed := len(details) > 0 && details[0]
 	inv := emptyInventory()
+	inv.MachineID, inv.Hostname = localMachineIdentity()
 	inv.ShellTree = knownShellTrees()
 	dir, e := runtimeDir()
 	if e != nil {

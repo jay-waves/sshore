@@ -29,6 +29,8 @@ type resourceView struct {
 	resourceStatus
 }
 type shellView struct {
+	MachineID   string    `json:"machine_id,omitempty"`
+	Hostname    string    `json:"hostname,omitempty"`
 	Lifetime    string    `json:"lifetime"`
 	Temporary   bool      `json:"temporary,omitempty"`
 	Instance    string    `json:"instance,omitempty"`
@@ -61,6 +63,8 @@ type peerView struct {
 	Detail   string `json:"detail"`
 }
 type inventory struct {
+	MachineID     string           `json:"machine_id,omitempty"`
+	Hostname      string           `json:"hostname,omitempty"`
 	ShellTree     []shellTreeNode  `json:"shell_tree,omitempty"`
 	LocalShells   []localShellView `json:"local_shells,omitempty"`
 	Version       string           `json:"version"`
@@ -207,6 +211,9 @@ func collectInventory(o options) (inventory, error) {
 			inv.Errors = append(inv.Errors, "remote query failed: "+cleanText(err.Error()))
 		} else {
 			inv.Host, inv.RemoteQueried = o.host, true
+			if warn, routeErr := observeIdentityRoute(inv.MachineID, o.host, o.ssh); routeErr == nil && warn {
+				fmt.Fprintln(os.Stderr, "[sshore] Same identity through a new entry point; if this is a clone, run sshore reset there.")
+			}
 			if err := cacheRemoteShells(o.host, inv); err != nil {
 				inv.Errors = append(inv.Errors, "could not save shell history: "+cleanText(err.Error()))
 			}
@@ -233,7 +240,7 @@ func collectInventory(o options) (inventory, error) {
 			if s.Forgotten {
 				continue
 			}
-			inv.Shells = append(inv.Shells, shellView{Lifetime: shellLifetime(s.Temporary, true), Temporary: s.Temporary, Instance: s.Instance, ID: shellTaskName(s.Name, s.Temporary), Host: s.Host, Name: s.Name, State: s.State, ConfirmedAt: s.ConfirmedAt, Unconfirmed: s.Unconfirmed, Active: s.Active, Historical: true})
+			inv.Shells = append(inv.Shells, shellView{Lifetime: shellLifetime(s.Temporary, true), Temporary: s.Temporary, Instance: s.Instance, ID: shellTaskName(s.Name, s.Temporary), Host: s.Host, MachineID: s.MachineID, Hostname: s.Hostname, Name: s.Name, State: s.State, ConfirmedAt: s.ConfirmedAt, Unconfirmed: s.Unconfirmed, Active: s.Active, Historical: true})
 		}
 		inv.Peers, err = collectPeerViews()
 		if err != nil {

@@ -166,6 +166,13 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	if len(o.approved) > 0 && m.PID != o.resumePID {
 		return 1, fmt.Errorf("remote shell changed; request again")
 	}
+	if len(m.Tree) > 0 {
+		if warn, err := observeIdentityRoute(m.Tree[len(m.Tree)-1].MachineID, o.host, o.ssh); err != nil {
+			termui.Log(os.Stderr, termui.Warning, "[sshore] Identity tracking failed: %s\n", cleanText(err.Error()))
+		} else if warn {
+			termui.Log(os.Stderr, termui.Warning, "[sshore] Same identity through a new entry point; if this is a clone, run sshore reset there.\n")
+		}
+	}
 	rememberShellTree(m.Tree)
 	o.instance = m.Instance
 	o.temporary = m.Temporary

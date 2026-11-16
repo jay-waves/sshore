@@ -52,6 +52,8 @@ func lockShellCache() (*os.File, error) {
 }
 
 type shellSnapshot struct {
+	MachineID   string    `json:"machine_id,omitempty"`
+	Hostname    string    `json:"hostname,omitempty"`
 	Forgotten   bool      `json:"forgotten,omitempty"`
 	Temporary   bool      `json:"temporary,omitempty"`
 	Instance    string    `json:"instance,omitempty"`
@@ -249,7 +251,7 @@ func cacheRemoteShellsLocked(host string, inv inventory) error {
 	now := time.Now()
 	for _, shell := range inv.Shells {
 		seen[shell.Name] = true
-		snapshot := shellSnapshot{Temporary: shell.Temporary, Instance: shell.Instance, Host: host, Name: shell.Name, State: shell.State, ConfirmedAt: now}
+		snapshot := shellSnapshot{Temporary: shell.Temporary, Instance: shell.Instance, Host: host, MachineID: inv.MachineID, Hostname: inv.Hostname, Name: shell.Name, State: shell.State, ConfirmedAt: now}
 		if err := saveShellSnapshotLocked(snapshot); err != nil {
 			return err
 		}

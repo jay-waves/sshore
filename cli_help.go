@@ -21,6 +21,7 @@ SSH options (only after --):
 const help = `sshore — persistent shells, file transfer and SFTP mounts
 
 Local commands:
+  sshore reset                       Reset local identity, cached snapshots and history
   sshore launch [HOST [NAME]] [options]   Create a persistent local or remote shell
   sshore spawn [HOST [NAME]] [options]   Create a shell bound to the launching parent shell
   sshore pstree                     Show shell ownership and attachment sources
@@ -83,6 +84,12 @@ commands still revalidate them. It never connects, authenticates, starts daemons
 allocates task IDs, modifies state or installs software. Remote paths are not
 queried. File and directory completion uses your shell's native facilities.
 `,
+	"reset": `Usage: sshore reset
+
+Replace this account's local identity and clear connection history, shell snapshots
+and remembered identity routes. Active tasks, approvals and task IDs are preserved.
+Active connections may repopulate snapshots. Run on the cloned machine to reset it.
+`,
 	"pstree": `Usage: sshore pstree [HOST] [-- SSH_OPTIONS]
 
 Show shell ownership and attachment sources, with the current shell highlighted.
@@ -91,8 +98,8 @@ Detach/reattach never changes lifetime or ownership. Unknown owners appear at ro
 Confirmed ended shells are omitted; surviving children remain visible.
 HOST groups ownership roots; @HOST marks a change of host along a branch.
 The header attached label is the default for nodes with no explicit state; it
-does not infer ancestor liveness. A header cached label applies to the whole tree;
-otherwise cached nodes are labelled individually. Unknown state stays explicit.
+does not infer ancestor liveness. CHECKED shows the last observation; now means
+a live result, never means no recorded observation. Unknown state stays explicit.
 launch/ denotes persistent shells; spawn/ denotes temporary shells bound to their
 owner (local parent or remote heartbeat).
 Cross-host relationships are display snapshots, not verified OS process ancestry.

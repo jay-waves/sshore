@@ -57,7 +57,7 @@ func TestShellTreeRendering(t *testing.T) {
 		var out bytes.Buffer
 		writeShellTree(&out, nodes, color)
 		text := out.String()
-		if !strings.Contains(text, "   ├─ ") || !strings.Contains(text, "   └─ ") || !strings.Contains(text, "← current") || !strings.Contains(text, "cached") {
+		if !strings.Contains(text, "   ├─ ") || !strings.Contains(text, "   └─ ") || !strings.Contains(text, "← current") || !strings.Contains(text, "CHECKED") {
 			t.Fatal(text)
 		}
 		if strings.Contains(text, "\x1b[") != color {
@@ -153,21 +153,21 @@ func TestShellTreeCompactStates(t *testing.T) {
 			var out bytes.Buffer
 			writeShellTree(&out, nodes, false)
 			output := out.String()
-			if strings.Count(output, "attached") != 1 || strings.Count(output, "cached") != 1 || strings.Count(output, "@dev") != 2 {
+			if strings.Count(output, "attached") != 1 || strings.Count(output, "CHECKED") != 1 || strings.Count(output, "@dev") != 2 {
 				t.Fatal(output)
 			}
 			lines := strings.Split(output, "\n")
-			if !strings.HasPrefix(lines[0], "HOST  workstation") || strings.Contains(lines[0], "cached") != cached {
+			if !strings.HasPrefix(lines[0], "HOST  workstation") || !strings.Contains(lines[0], "CHECKED") {
 				t.Fatal(output)
 			}
 			for _, line := range lines[1:] {
-				if strings.Contains(line, "spawn/test") && (!strings.Contains(line, "detached") || strings.Contains(line, "cached") == cached) {
+				if strings.Contains(line, "spawn/test") && (!strings.Contains(line, "detached") || !strings.Contains(line, "never")) {
 					t.Fatal(output)
 				}
 				if strings.Contains(line, "spawn/debug") && (!strings.Contains(line, "← current") || strings.Contains(line, "@dev")) {
 					t.Fatal(output)
 				}
-				if strings.Contains(line, "unknown-state") && !strings.HasSuffix(line, "unknown") {
+				if strings.Contains(line, "unknown-state") && !strings.Contains(line, "unknown") {
 					t.Fatal(output)
 				}
 			}
@@ -196,7 +196,7 @@ func TestShellTreeOmitsEndedOwners(t *testing.T) {
 	}, inventory{})
 	var out bytes.Buffer
 	writeShellTree(&out, nodes, false)
-	if strings.Contains(out.String(), "old") || !strings.Contains(out.String(), "spawn/live") || !strings.Contains(out.String(), "owner unknown") {
+	if strings.Contains(out.String(), "old") || !strings.Contains(out.String(), "spawn/live") || !strings.Contains(out.String(), "owner ended") {
 		t.Fatal(out.String())
 	}
 }

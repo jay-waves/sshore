@@ -82,7 +82,7 @@ func commandSpec(command string) (cliSpec, bool) {
 		spec = cliSpec{nil, false, false, 1, 1}
 	case "help":
 		spec = cliSpec{nil, false, false, 0, 1}
-	case "detach":
+	case "detach", "reset":
 	default:
 		return spec, false
 	}

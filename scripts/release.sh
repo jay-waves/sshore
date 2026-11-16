@@ -595,6 +595,25 @@ Windows amd64 only; remote shell hosting remains Linux-only.
 NOTES
 fi
 
+if [[ "$version" == "0.6.13" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Show right-aligned CHECKED observations in pstree, distinguish ended and missing owner contexts, and omit noisy owner warnings for ordinary external launch contexts.
+- Group host display records using an account identity derived from the existing OS identifier and a private random salt. Keep semantic hostnames and disambiguate duplicate display names.
+- Remember connection entry points and warn once when a known identity is reached through a new entry point; this advisory never blocks SSH or establishes authentication authority.
+- Add sshore reset to replace the local account identity and clear connection history, shell snapshots and remembered entry points. Preserve active tasks, approvals, lock files and non-recycled task IDs; active connections may repopulate snapshots and live service memory caches are not flushed.
+- Remove the machineid dependency, narrow identity interfaces and consolidate related application files and tests while preserving platform boundaries.
+
+Client and remote releases must match exactly. Updating older remote shells ends
+listed shells and tasks only after you review them and type update. If a machine
+was cloned with sshore state, run sshore reset on the clone. Identity is advisory
+display metadata, not a hardware fingerprint or authorization credential. Reset
+acts only on the current local account state. Linux and Windows amd64 only;
+remote shell hosting remains Linux-only.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."

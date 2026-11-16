@@ -350,3 +350,5 @@ See [inventory and diagnostics](SSHORE.md#inventory-and-diagnostics) for impleme
   guarantees. Diagnostics never authorize termination by themselves.
 - SSH authenticates a transport endpoint. It does not authenticate file provenance,
   make a forwarded service safe, or guarantee the remote host's behavior.
+
+Host grouping identities use MD5 solely as compact display metadata, never as authentication or integrity evidence. A new connection entry point for a known identity produces a remembered advisory warning; it does not block SSH or prove cloning.

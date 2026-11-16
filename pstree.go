@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/chzyer/readline"
 	"github.com/jay-waves/sshore/internal/termui"
@@ -16,6 +17,9 @@ import (
 type shellTreeNode struct {
 	Identity, Parent, Owner, Lifetime, Host, Name, State string
 	Current, Cached                                      bool
+	MachineID                                            string    `json:",omitempty"`
+	CheckedAt                                            time.Time `json:",omitempty"`
+	OwnerState                                           string    `json:",omitempty"`
 }
 
 func writeShellTree(out io.Writer, nodes []shellTreeNode, color bool) {
@@ -23,6 +27,8 @@ func writeShellTree(out io.Writer, nodes []shellTreeNode, color bool) {
 		fmt.Fprintln(out, "No known shells.")
 		return
 	}
+	nodes = shellTreeHostLabels(nodes)
+	now := time.Now()
 	byID := make(map[string]int)
 	for i, n := range nodes {
 		if n.Identity != "" {
@@ -78,8 +84,8 @@ func writeShellTree(out io.Writer, nodes []shellTreeNode, color bool) {
 	}
 	sort.Strings(hosts)
 	type treeRow struct {
-		prefix, label, host, state string
-		header, current, warning   bool
+		prefix, label, host, state, checked string
+		header, current, warning            bool
 	}
 	var rows []treeRow
 	seen = make(map[int]bool)
@@ -98,15 +104,11 @@ func writeShellTree(out io.Writer, nodes []shellTreeNode, color bool) {
 		for _, i := range groups[host] {
 			inspect(i)
 		}
-		allCached, attached := true, false
+		attached := false
 		for i := range members {
-			allCached = allCached && nodes[i].Cached
 			attached = attached || nodes[i].State == "attached"
 		}
 		var defaults []string
-		if allCached {
-			defaults = append(defaults, "cached")
-		}
 		if attached {
 			defaults = append(defaults, "attached")
 		}
@@ -114,7 +116,7 @@ func writeShellTree(out io.Writer, nodes []shellTreeNode, color bool) {
 		if hostLabel == "" {
 			hostLabel = "unknown"
 		}
-		rows = append(rows, treeRow{label: "HOST  " + hostLabel, state: strings.Join(defaults, " · "), header: true}, treeRow{prefix: "│"})
+		rows = append(rows, treeRow{label: "HOST  " + hostLabel, state: strings.Join(defaults, " · "), header: true, checked: "CHECKED"}, treeRow{prefix: "│"})
 		var draw func(int, string, string, bool)
 		draw = func(i int, prefix, parentHost string, last bool) {
 			if seen[i] {
@@ -130,7 +132,10 @@ func writeShellTree(out io.Writer, nodes []shellTreeNode, color bool) {
 			if n.Lifetime != "" {
 				name = shellTaskName(name, n.Lifetime != "persistent")
 			}
-			r := treeRow{prefix: prefix + branch, label: cleanText(name), current: n.Current}
+			r := treeRow{prefix: prefix + branch, label: cleanText(name), current: n.Current, checked: shellCheckedAge(n.CheckedAt, now)}
+			if !n.Cached {
+				r.checked = "now"
+			}
 			if n.Host != parentHost {
 				r.host = "  @" + cleanText(n.Host)
 				if n.Host == "" {
@@ -146,12 +151,15 @@ func writeShellTree(out io.Writer, nodes []shellTreeNode, color bool) {
 				state = append(state, value)
 				r.warning = n.State != "detached" && n.State != "exited"
 			}
-			if n.Cached && !allCached {
-				state = append(state, "cached")
-			}
 			if _, known := byID[n.Owner]; !known && (n.Lifetime == "parent" || n.Lifetime == "heartbeat") {
-				state = append(state, "owner unknown")
-				r.warning = true
+				switch n.OwnerState {
+				case "external": // An unmanaged launch context is normal, not missing metadata.
+				case "ended":
+					state = append(state, "owner ended")
+				default:
+					state = append(state, "owner?")
+					r.warning = true
+				}
 			}
 			if n.Parent != "" && n.Parent != n.Owner {
 				source := "unknown"
@@ -171,8 +179,18 @@ func writeShellTree(out io.Writer, nodes []shellTreeNode, color bool) {
 		}
 		rows = append(rows, treeRow{})
 	}
-	width := 0
+	width, stateWidth, checkedWidth := 0, 0, len("CHECKED")
 	for _, r := range rows {
+		state := r.state
+		if r.current {
+			if state != "" {
+				state = "← current · " + state
+			} else {
+				state = "← current"
+			}
+		}
+		stateWidth = max(stateWidth, (readline.Runes{}).WidthAll([]rune(state)))
+		checkedWidth = max(checkedWidth, len(r.checked))
 		if n := (readline.Runes{}).WidthAll([]rune(r.prefix + r.label + r.host)); n > width {
 			width = n
 		}
@@ -199,6 +217,21 @@ func writeShellTree(out io.Writer, nodes []shellTreeNode, color bool) {
 				level = termui.Warning
 			}
 			fmt.Fprint(out, termui.Format(color, level, "%s", r.state))
+		}
+		if r.checked != "" {
+			state := r.state
+			if r.current {
+				if state != "" {
+					state = "← current · " + state
+				} else {
+					state = "← current"
+				}
+			}
+			padding := stateWidth - (readline.Runes{}).WidthAll([]rune(state)) + 2
+			if r.state == "" && !r.current {
+				padding += width - (readline.Runes{}).WidthAll([]rune(r.prefix+r.label+r.host)) + 2
+			}
+			fmt.Fprint(out, strings.Repeat(" ", padding+checkedWidth-len(r.checked)), termui.Format(color, "90", "%s", r.checked))
 		}
 		fmt.Fprintln(out)
 	}
@@ -246,7 +279,13 @@ func inventoryShellTrees(nodes []shellTreeNode, inv inventory) []shellTreeNode {
 			if n.Cached && endedShellState(nodes[i].State) {
 				return
 			}
-			n.Owner, n.Parent = nodes[i].Owner, nodes[i].Parent
+			n.Owner, n.Parent, n.OwnerState = nodes[i].Owner, nodes[i].Parent, nodes[i].OwnerState
+			if n.MachineID == "" && nodes[i].MachineID != "" {
+				n.MachineID, n.Host = nodes[i].MachineID, nodes[i].Host
+			}
+			if n.CheckedAt.IsZero() && n.Cached {
+				n.CheckedAt = nodes[i].CheckedAt
+			}
 			if n.State != "attached" {
 				n.Parent = ""
 			}
@@ -256,8 +295,14 @@ func inventoryShellTrees(nodes []shellTreeNode, inv inventory) []shellTreeNode {
 			nodes = append(nodes, n)
 		}
 	}
+	machine, hostname := localMachineIdentity()
+	now := time.Now()
 	for _, s := range inv.LocalShells {
-		merge(shellTreeNode{Identity: s.identity, Host: "local", Name: s.Name, State: s.State, Lifetime: shellLifetime(s.Temporary, false), Cached: s.State == "unavailable"})
+		checked := now
+		if s.State == "unavailable" {
+			checked = time.Time{}
+		}
+		merge(shellTreeNode{Identity: s.identity, Host: hostname, MachineID: machine, CheckedAt: checked, Name: s.Name, State: s.State, Lifetime: shellLifetime(s.Temporary, false), Cached: s.State == "unavailable"})
 	}
 	for _, s := range inv.Shells {
 
@@ -269,15 +314,35 @@ func inventoryShellTrees(nodes []shellTreeNode, inv inventory) []shellTreeNode {
 		if s.Instance == "" {
 			id = host + ":" + s.Name
 		}
-		merge(shellTreeNode{Identity: id, Host: host, Name: s.Name, State: s.State, Lifetime: shellLifetime(s.Temporary, true), Cached: s.Historical})
+		machine, hostname := s.MachineID, s.Hostname
+		if !s.Historical {
+			machine, hostname = inv.MachineID, inv.Hostname
+		}
+		if hostname != "" {
+			host = hostname
+		}
+		checked := s.ConfirmedAt
+		if !s.Historical {
+			checked = now
+		}
+		merge(shellTreeNode{Identity: id, Host: host, MachineID: machine, CheckedAt: checked, Name: s.Name, State: s.State, Lifetime: shellLifetime(s.Temporary, true), Cached: s.Historical})
 	}
 	current := os.Getenv("SSHORE_TREE_ID")
 	if current == "" {
 		current = os.Getenv("SSHORE_LOCAL_SESSION")
 	}
+	ended := map[string]bool{}
+	for _, n := range nodes {
+		if endedShellState(n.State) {
+			ended[n.Identity] = true
+		}
+	}
 	visible := nodes[:0]
 	for _, n := range nodes {
 		if !endedShellState(n.State) {
+			if ended[n.Owner] {
+				n.OwnerState = "ended"
+			}
 			visible = append(visible, n)
 		}
 	}

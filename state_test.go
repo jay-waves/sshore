@@ -41,3 +41,44 @@ func TestMetadataPublication(t *testing.T) {
 		t.Fatal("accepted missing parent")
 	}
 }
+
+func TestIdentityResetAndRoutes(t *testing.T) {
+	dirRoot := t.TempDir()
+	if err := os.Chmod(dirRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSHORE_STATE_DIR", dirRoot)
+	first, err := persistentMachineIdentity(false)
+	if err != nil || !validMachineID(first) {
+		t.Fatalf("identity: %q %v", first, err)
+	}
+	again, err := persistentMachineIdentity(false)
+	if err != nil || again != first {
+		t.Fatal("identity changed", err)
+	}
+	for i, host := range []string{"host-a", "host-a", "host-b", "host-b"} {
+		warn, err := observeIdentityRoute(first, host, nil)
+		if err != nil || warn != (i == 2) {
+			t.Fatalf("route %d: %v %v", i, warn, err)
+		}
+	}
+	dir, _ := stateDir("connections")
+	path := filepath.Join(dir, "recent.json")
+	if err = os.WriteFile(path, []byte("[]"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = runReset(); err != nil {
+		t.Fatal(err)
+	}
+	next, err := persistentMachineIdentity(false)
+	if err != nil || next == first {
+		t.Fatal("reset did not change identity", err)
+	}
+	if _, err = os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("history retained", err)
+	}
+	warn, err := observeIdentityRoute(first, "host-c", nil)
+	if err != nil || warn {
+		t.Fatal("route history retained", err)
+	}
+}

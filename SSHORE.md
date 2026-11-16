@@ -18,7 +18,7 @@ policy or depending on mutable application state.
 
 | Responsibility | Start here |
 | --- | --- |
-| CLI grammar, dispatch and help | `cli_schema.go`: product/SSH grammar; `cli_shell.go`, `cli_files.go`, `cli_forward.go`: command semantics; `cli.go`: dispatch |
+| CLI grammar, dispatch and help | `cli_schema.go`: product/SSH grammar; `cli_shell.go`, `cli_files.go`, `cli_endpoints.go`: command semantics; `cli.go`: dispatch |
 | Shell completion | `completion.go`: contexts and candidate protocol; `completion_state.go`: read-only hints; `completion_scripts.go`: shell adapters |
 | Connections and session switching | `client.go`, `client_connection.go` |
 | Remote preparation and exact-release policy | `remote_bootstrap.go`, `setup*.go`, `version.go` |
@@ -32,8 +32,8 @@ policy or depending on mutable application state.
 | Copy and mount mechanisms | Flat `internal/files/`; command adapters in `cp_command.go`, `mount*.go` |
 | Review records and consent | `review_store.go`, application coordination in `review*.go` (including shared source-shell validation in `review_source_linux.go`) |
 | Forward transport and retries | `forward_runtime.go`, command handling in `forward.go` |
-| Resource startup and control | `resource_runtime.go`, `resource_status.go`, `resources.go` |
-| Private storage and name reservations | `state.go`, `object_names.go`; native checks in `platform_*.go` |
+| Resource startup and control | `resource_runtime.go`, `resources.go` |
+| Private storage and name reservations | `state.go` (including account identity and remembered entry points), `object_names.go`; native checks in `platform_*.go` |
 | Inventory, stable IDs and shell relationships | `inventory*.go`, `list*.go`, `pstree*.go`, `peers*.go` |
 | Platform adapters | `platform_linux.go` / `platform_windows.go` in the application and file/transport packages; `console_linux.go` / `console_windows.go` in terminal/UI packages |
 | Installation, packaging and publication | `install.sh`, `install.ps1`, `scripts/`, `.github/workflows/` |
@@ -246,3 +246,5 @@ tags are excluded. Packaging and retention rules live in `scripts/package.py`,
 is one-shot by default, optional background watching, explicit opt-in to propagated
 deletions, and conflict reporting for independent edits. Revisit the design before
 implementation; it is not an existing command contract.
+
+`cli.go` orchestrates reset across private state stores; `state.go` owns account display identity and remembered connection entry points without depending on CLI options. Native OS identity reads live in the platform adapters. Reset preserves active ownership, lock files, approvals and non-recycled task IDs.

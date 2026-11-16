@@ -104,3 +104,5 @@ function names may retain historical terminology.
 A persistent numeric shortcut assigned by the local manager to a task instance.
 It is stable across rename, detach and reconnect, increases without reuse, and
 is distinct from a shell PID, public name, approval ID or temporary picker index.
+
+An **account identity** is a locally salted OS identifier used only to group host display records. It is not an authentication identity; cloning its state can duplicate it. `sshore reset` replaces it.

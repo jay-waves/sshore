@@ -1,11 +1,16 @@
 package main
 
 import (
+	"crypto/md5"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"github.com/jay-waves/sshore/internal/transport"
 	"os"
 	"path/filepath"
-
-	"github.com/jay-waves/sshore/internal/transport"
+	"strings"
+	"time"
 )
 
 // writeStateJSON encodes metadata before replacing its private state file.
@@ -79,4 +84,108 @@ func stateDir(name string) (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+// Identity is advisory account metadata, never an authentication credential.
+func lockIdentity() (*os.File, string, error) {
+	dir, err := stateDir("identity")
+	if err != nil {
+		return nil, "", err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "state.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, "", err
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err = lockResourceState(f)
+		if err == nil {
+			return f, dir, nil
+		}
+		if !resourceLockBusy(err) || time.Now().After(deadline) {
+			f.Close()
+			return nil, "", err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+func persistentMachineIdentity(reset bool) (string, error) {
+	lock, dir, err := lockIdentity()
+	if err != nil {
+		return "", err
+	}
+	defer lock.Close()
+	path := filepath.Join(dir, "salt")
+	salt, err := os.ReadFile(path)
+	if reset || os.IsNotExist(err) {
+		salt = make([]byte, 32)
+		if _, err = rand.Read(salt); err != nil {
+			return "", err
+		}
+		if err = writeStateFile(path, salt); err != nil {
+			return "", err
+		}
+	} else if err != nil {
+		return "", err
+	}
+	if len(salt) != 32 {
+		return "", fmt.Errorf("invalid identity salt; run sshore reset")
+	}
+	sum := md5.Sum(append(append([]byte("sshore\x00"+systemMachineID()+"\x00"), salt...), '\x00'))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// Remember entry points locally; different routes are not proof of a clone.
+func observeIdentityRoute(id, host string, ssh []string) (bool, error) {
+	if !validMachineID(id) || host == "" {
+		return false, nil
+	}
+	lock, dir, err := lockIdentity()
+	if err != nil {
+		return false, err
+	}
+	defer lock.Close()
+	routeData, _ := json.Marshal(struct {
+		Host string
+		SSH  []string
+	}{host, ssh})
+	sum := md5.Sum(routeData)
+	route := hex.EncodeToString(sum[:])
+	path := filepath.Join(dir, id+".json")
+	routes := map[string]bool{}
+	data, err := os.ReadFile(path)
+	if err == nil {
+		if err = json.Unmarshal(data, &routes); err != nil {
+			return false, err
+		}
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if routes == nil {
+		routes = map[string]bool{}
+	}
+	if routes[route] {
+		return false, nil
+	}
+	warn := len(routes) > 0
+	routes[route] = true
+	return warn, writeStateJSON(path, routes)
+}
+
+// This identifier is advisory display metadata, never connection or account authority.
+func localMachineIdentity() (string, string) {
+	host, _ := os.Hostname()
+	if host == "" {
+		host = "local"
+	}
+	id, _ := persistentMachineIdentity(false)
+	return id, host
+}
+
+func validMachineID(id string) bool {
+	if len(id) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(id)
+	return err == nil && strings.ToLower(id) == id
 }

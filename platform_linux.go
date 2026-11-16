@@ -141,3 +141,13 @@ func privateStatePath(path string, directory bool) error {
 	}
 	return nil
 }
+
+// Read existing OS identity without changing system configuration.
+func systemMachineID() string {
+	for _, path := range []string{"/var/lib/dbus/machine-id", "/etc/machine-id"} {
+		if data, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(data)) != "" {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return ""
+}

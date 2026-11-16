@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -46,6 +47,11 @@ func run(args []string) (code int, resultErr error) {
 		return 0, showHelp(nil, os.Stdout)
 	}
 	switch args[0] {
+	case "reset":
+		if len(args) != 1 {
+			return 2, usage("reset takes no arguments")
+		}
+		return 0, runReset()
 	case "completion":
 		return 0, runCompletion(args[1:], os.Stdout)
 	case "help":
@@ -245,4 +251,43 @@ func runTargetCommand(args []string) (int, error) {
 		return 2, err
 	}
 	return executeShellCommand(o)
+}
+
+func runReset() error {
+	if _, err := persistentMachineIdentity(true); err != nil {
+		return err
+	}
+	// Keep runtime ownership, approval state, task IDs and lock inodes intact.
+	lock, err := lockShellCache()
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	identityLock, _, err := lockIdentity()
+	if err != nil {
+		return err
+	}
+	defer identityLock.Close()
+	for _, name := range []string{"shells", "shell-tree", "connections", "identity"} {
+		dir, err := statePath(name)
+		if err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(dir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+				if err = os.Remove(filepath.Join(dir, entry.Name())); err != nil && !os.IsNotExist(err) {
+					return err
+				}
+			}
+		}
+	}
+	fmt.Println("Identity reset; local history and cached snapshots cleared. Active tasks are preserved.")
+	return nil
 }
