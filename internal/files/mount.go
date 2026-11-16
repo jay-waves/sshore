@@ -21,6 +21,7 @@ import (
 
 // MountConfig contains validated mount and SSH transport settings.
 type MountConfig struct {
+	Approval                                         *MountApproval
 	Host, Remote, Mountpoint, SSHExecutable, Version string
 	SSHArgs                                          []string
 	ReadOnly, DirectIO, NoWatch, Stats               bool
@@ -123,7 +124,7 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 				return 1, fmt.Errorf("mount setup: %w", err)
 			}
 		}
-		mux, data, notifications, err := OpenMux(transport, o.Version)
+		mux, data, notifications, err := OpenMux(transport, o.Version, o.Approval)
 		if err != nil {
 			return 1, fmt.Errorf("mount agent handshake: %w", err)
 		}

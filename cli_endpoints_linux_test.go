@@ -21,6 +21,8 @@ func TestEndpointRequestHelpers(t *testing.T) {
 		{[]string{"cp", ":", e.dir}, "upload", "", false},
 		{[]string{"cp", "origin:/client/source", e.dir}, "upload", "/client/source", false},
 		{[]string{"cp", source, "origin:/client/target"}, "download", "/client/target", false},
+		{[]string{"mount", e.dir, "origin:"}, "mount", "", false},
+		{[]string{"mount", e.dir, "origin:/client/mount", "--read-only"}, "mount", "/client/mount", false},
 		{[]string{"forward", "origin:", "3000"}, "forward", "", false},
 		{[]string{"forward", "3000", "origin:8080"}, "forward", "8080", true},
 	} {
@@ -35,6 +37,9 @@ func TestEndpointRequestHelpers(t *testing.T) {
 		}
 		op := m.Operations[0]
 		if op.Kind != tc.kind || op.LocalHint != tc.hint || op.Reverse != tc.reverse {
+			t.Fatal(op)
+		}
+		if op.Kind == "mount" && (op.Path != e.dir || op.LocalPath != "" || op.ReadOnly != (tc.hint != "")) {
 			t.Fatal(op)
 		}
 		if op.Kind == "forward" && (!op.LocalPortPending() || op.ServerPort() != 3000) {

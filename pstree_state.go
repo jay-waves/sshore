@@ -119,7 +119,7 @@ func knownShellTrees() []shellTreeNode {
 	// Locally owned records supersede copies carried by descendants.
 	for _, path := range paths {
 		for _, n := range readShellTree(path) {
-			if old, ok := nodes[n.Identity]; !ok || old.Cached {
+			if old, ok := nodes[n.Identity]; !ok || (!endedShellState(old.State) && (old.Cached || endedShellState(n.State))) {
 				nodes[n.Identity] = n
 			}
 		}
@@ -152,7 +152,7 @@ func rememberShellTree(chain []shellTreeNode) {
 	if err == nil {
 		existing := readShellTree(path)
 		// A local daemon owns its record; the client must not replace it with a cache.
-		if len(existing) > 0 && !existing[len(existing)-1].Cached {
+		if len(existing) > 0 && (!existing[len(existing)-1].Cached || endedShellState(existing[len(existing)-1].State)) {
 			return
 		}
 		_ = statefs.WriteJSON(path, chain)
@@ -169,4 +169,27 @@ func renameShellTree(id, name string) {
 	if err == nil {
 		_ = statefs.WriteJSON(path, chain)
 	}
+}
+
+func recordRemoteShellTreeState(s shellSnapshot) error {
+	id := "remote:" + s.Instance
+	if s.Instance == "" {
+		id = s.Host + ":" + s.Name
+	}
+	path, err := shellTreePath(id)
+	if err != nil {
+		return err
+	}
+	chain := readShellTree(path)
+	self := shellTreeNode{Identity: id, Host: s.Host, Name: s.Name, Cached: true}
+	for _, n := range chain {
+		if n.Identity == id {
+			self = n
+			break
+		}
+	}
+	self.State, self.Parent, self.Current = s.State, "", false
+	// Retain terminal evidence so older copies in descendant snapshots cannot
+	// resurrect this instance after its list history expires or is forgotten.
+	return statefs.WriteJSON(path, []shellTreeNode{self})
 }

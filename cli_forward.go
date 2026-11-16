@@ -61,27 +61,16 @@ func parseForwardEndpoints(args []string) (string, int, int, bool, error) {
 
 func parseForwardCommand(args []string) (forwardConfig, bool, error) {
 	var f forwardConfig
-	parsed, err := parseCLI(args, []cliFlag{{"--name", true}, {"--retries", true}, {"--foreground", false}}, true, false)
+	parsed, err := parseCLI(args, "forward")
 	if err != nil {
 		return f, false, err
 	}
 	f.SSH, f.Name = parsed.ssh, parsed.values["--name"]
-	if parsed.has("--name") {
-		if err := validSession(f.Name); err != nil {
-			return f, false, err
-		}
-	}
-	if parsed.has("--retries") {
-		f.Retries, err = forward.ParseRetries(parsed.values["--retries"])
-		if err != nil {
-			return f, false, usage("--retries must be between 0 and 10")
-		}
-	}
+	f.Retries = parsed.integer("--retries")
 	foreground := parsed.has("--foreground")
-	operands := parsed.operands
 	if foreground && f.Retries != 0 {
 		return f, false, usage("--retries applies only to background forwards")
 	}
-	f.Host, f.Port, f.Target, f.Reverse, err = parseForwardEndpoints(operands)
+	f.Host, f.Port, f.Target, f.Reverse, err = parseForwardEndpoints(parsed.operands)
 	return f, foreground, err
 }

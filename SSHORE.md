@@ -18,7 +18,8 @@ policy or depending on mutable application state.
 
 | Responsibility | Start here |
 | --- | --- |
-| CLI grammar, dispatch and help | `main.go`, `cli*.go` |
+| CLI grammar, dispatch and help | `cli_schema.go`: product/SSH grammar; `cli_shell.go`, `cli_files.go`, `cli_forward.go`: command semantics; `cli.go`: dispatch |
+| Shell completion | `completion.go`: contexts and candidate protocol; `completion_state.go`: read-only hints; `completion_scripts.go`: shell adapters |
 | Connections and session switching | `client.go`, `client_connection.go` |
 | Remote preparation and exact-release policy | `remote_bootstrap.go`, `setup*.go`, `version.go` |
 | Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_*.go`, `server_linux.go` |
@@ -29,7 +30,7 @@ policy or depending on mutable application state.
 | Local prompts and presentation | `internal/termui/`, application adapters in `cli_ui.go` |
 | Framing, smux and shared SSH transport | `internal/transport/`, application messages in `protocol.go` |
 | Copy and mount mechanisms | Flat `internal/files/`; command adapters in `cp_command.go`, `mount*.go` |
-| Review records and consent | `internal/review/`, application coordination in `review*.go` |
+| Review records and consent | `internal/review/`, application coordination in `review*.go` (including shared source-shell validation in `review_source_linux.go`) |
 | Forward transport and retries | `internal/forward/`, application coordination in `forward*.go` |
 | Resource startup and control | `resource_runtime.go`, `resource_status.go`, `resources.go` |
 | Private storage and name reservations | `internal/state/`, `object_names*.go` |
@@ -42,6 +43,16 @@ small interfaces to mechanisms. Extend the owning module before adding an
 abstraction; move behavior with its tests and platform implementations.
 
 ## Design constraints
+
+### CLI parsing and completion
+
+Execution and completion share the grammar and scanners in `cli_schema.go`;
+command adapters interpret the parsed operands. Partial input uses the same
+validation rules without requiring a complete command. Change grammar/context
+tests together when extending the CLI; see [CLI ownership](AGENTS.md#cli-ownership).
+
+Completion uses native local file completion and bounded cached hints. For its
+trust boundary and execution guarantees, see [inventory and privacy](SECURITY.md#inventory-and-privacy).
 
 ### Terminal and mux design scope
 

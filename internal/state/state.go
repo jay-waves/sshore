@@ -42,8 +42,8 @@ func WriteFile(path string, data []byte) error {
 	return os.Rename(f.Name(), path)
 }
 
-// Dir resolves and prepares a private subdirectory under the configured state root.
-func Dir(name string) (string, error) {
+// Path resolves a state path without creating directories or changing permissions.
+func Path(name string) (string, error) {
 	root := os.Getenv("SSHORE_STATE_DIR")
 	if root == "" {
 		var err error
@@ -54,6 +54,15 @@ func Dir(name string) (string, error) {
 		root = filepath.Join(root, "sshore")
 	}
 	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, name), nil
+}
+
+// Dir resolves and prepares a private subdirectory under the configured state root.
+func Dir(name string) (string, error) {
+	root, err := Path("")
 	if err != nil {
 		return "", err
 	}

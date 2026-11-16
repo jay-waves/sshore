@@ -422,9 +422,9 @@ func (s *remoteShell) handle(c net.Conn) {
 			return
 		}
 		_ = writeMessage(c, message{Type: "cancelled"})
-	case "forward_check":
-		reply := message{Type: "forward_checked", SoftwareVersion: version}
-		if err := s.checkForwardApproval(first); err != nil {
+	case "approval_check":
+		reply := message{Type: "approval_checked", SoftwareVersion: version}
+		if err := s.checkApprovalSource(first); err != nil {
 			reply.Type = "error"
 			reply.Error = err.Error()
 		}

@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/jay-waves/sshore/internal/files"
 	"io"
 	"net"
 	"net/http"
@@ -35,6 +36,7 @@ type resourceStartup struct {
 }
 
 type resourceConfig struct {
+	MountApproval          *files.MountApproval
 	Forward                *forwardConfig
 	Args                   []string
 	AuthAddress, AuthToken string
@@ -185,6 +187,10 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 		o.name = config.Forward.Name
 	} else {
 		o, e = parseFTPOptions(config.Args)
+		o.approval = config.MountApproval
+		if o.approval != nil && (o.noWatch || o.approval.PID <= 0 || validSession(o.approval.Session) != nil || !validApprovalID(o.approval.ID)) {
+			return 1, fmt.Errorf("invalid mount approval")
+		}
 		if e != nil {
 			return 1, e
 		}

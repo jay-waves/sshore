@@ -16,7 +16,44 @@ import (
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
+const shellHistoryRetention = 7 * 24 * time.Hour
+
+func endedShellState(state string) bool {
+	return state == "not-listed" || state == "exited" || state == "renamed"
+}
+
+// Serialize refresh and expiry with snapshot writers so cleanup cannot erase a
+// newly connected shell. Live-connection locks are separate and never removed.
+func lockShellCache() (*os.File, error) {
+	dir, err := statefs.Dir("shells")
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, "cache.lock")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err = statefs.Private(path, false); err != nil {
+		f.Close()
+		return nil, err
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err = lockResourceState(f)
+		if err == nil {
+			return f, nil
+		}
+		if !resourceLockBusy(err) || time.Now().After(deadline) {
+			f.Close()
+			return nil, err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 type shellSnapshot struct {
+	Forgotten   bool      `json:"forgotten,omitempty"`
 	Temporary   bool      `json:"temporary,omitempty"`
 	Instance    string    `json:"instance,omitempty"`
 	Host        string    `json:"host"`
@@ -39,14 +76,35 @@ func shellCachePath(host, name string) (string, error) {
 	return filepath.Join(dir, hex.EncodeToString(sum[:])+".json"), nil
 }
 func saveShellSnapshot(s shellSnapshot) error {
+	lock, err := lockShellCache()
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	return saveShellSnapshotLocked(s)
+}
+func saveShellSnapshotLocked(s shellSnapshot) error {
 	path, err := shellCachePath(s.Host, s.Name)
 	if err != nil {
 		return err
 	}
 	s.Active = false
+	if s.State == "exited" || s.State == "not-listed" {
+		if err := recordRemoteShellTreeState(s); err != nil {
+			return err
+		}
+	}
 	return statefs.WriteJSON(path, s)
 }
 func readShellSnapshots() ([]shellSnapshot, error) {
+	lock, err := lockShellCache()
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Close()
+	return readShellSnapshotsLocked()
+}
+func readShellSnapshotsLocked() ([]shellSnapshot, error) {
 	dir, err := statefs.Dir("shells")
 	if err != nil {
 		return nil, err
@@ -78,6 +136,17 @@ func readShellSnapshots() ([]shellSnapshot, error) {
 		if err != nil || path != expected {
 			return nil, fmt.Errorf("invalid shell cache record")
 		}
+		if s.Instance != "" && !endedShellState(s.State) {
+			for _, n := range shellTreeFor("remote:" + s.Instance) {
+				if n.Identity == "remote:"+s.Instance && (n.State == "exited" || n.State == "not-listed") {
+					s.State, s.Unconfirmed, s.ConfirmedAt = n.State, false, time.Now()
+					if err := saveShellSnapshotLocked(s); err != nil {
+						return nil, err
+					}
+					break
+				}
+			}
+		}
 		live, err := os.OpenFile(path+".live", os.O_CREATE|os.O_RDWR, 0600)
 		if err != nil {
 			return nil, err
@@ -88,20 +157,13 @@ func readShellSnapshots() ([]shellSnapshot, error) {
 		if err != nil && !s.Active {
 			return nil, err
 		}
-		rows = append(rows, s)
-	}
-	recent, err := readRecentConnections()
-	if err != nil {
-		return nil, err
-	}
-	seen := map[string]bool{}
-	for _, r := range rows {
-		seen[r.Host+"\x00"+r.Name] = true
-	}
-	for _, r := range recent {
-		if !seen[r.Host+"\x00"+r.Session] {
-			rows = append(rows, shellSnapshot{Host: r.Host, Name: r.Session, State: "unknown", Unconfirmed: true})
+		if !s.Active && endedShellState(s.State) && !s.ConfirmedAt.IsZero() && time.Since(s.ConfirmedAt) > shellHistoryRetention {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return nil, err
+			}
+			continue
 		}
+		rows = append(rows, s)
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Host != rows[j].Host {
@@ -176,26 +238,46 @@ func (s *shellConnection) close() {
 }
 
 func cacheRemoteShells(host string, inv inventory) error {
+	lock, err := lockShellCache()
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	return cacheRemoteShellsLocked(host, inv)
+}
+func cacheRemoteShellsLocked(host string, inv inventory) error {
 	seen := map[string]bool{}
 	now := time.Now()
 	for _, shell := range inv.Shells {
 		seen[shell.Name] = true
-		if err := saveShellSnapshot(shellSnapshot{Temporary: shell.Temporary, Instance: shell.Instance, Host: host, Name: shell.Name, State: shell.State, ConfirmedAt: now}); err != nil {
+		snapshot := shellSnapshot{Temporary: shell.Temporary, Instance: shell.Instance, Host: host, Name: shell.Name, State: shell.State, ConfirmedAt: now}
+		if err := saveShellSnapshotLocked(snapshot); err != nil {
 			return err
+		}
+		// A fresh remote observation can supersede an earlier absence report.
+		if shell.Instance != "" && !endedShellState(shell.State) {
+			for _, n := range shellTreeFor("remote:" + shell.Instance) {
+				if n.Identity == "remote:"+shell.Instance && endedShellState(n.State) {
+					if err := recordRemoteShellTreeState(snapshot); err != nil {
+						return err
+					}
+					break
+				}
+			}
 		}
 	}
 	// An incomplete inventory cannot establish that a missing shell ended.
 	if len(inv.Errors) != 0 {
 		return nil
 	}
-	previous, err := readShellSnapshots()
+	previous, err := readShellSnapshotsLocked()
 	if err != nil {
 		return err
 	}
 	for _, old := range previous {
-		if old.Host == host && !seen[old.Name] {
+		if old.Host == host && !seen[old.Name] && !old.Active && !endedShellState(old.State) {
 			old.State, old.ConfirmedAt, old.Unconfirmed = "not-listed", now, false
-			if err := saveShellSnapshot(old); err != nil {
+			if err := saveShellSnapshotLocked(old); err != nil {
 				return err
 			}
 		}
@@ -206,6 +288,14 @@ func cacheRemoteShells(host string, inv inventory) error {
 // renameShellSnapshot retains the last actual confirmation and leaves live locks
 // with their owning clients. It never creates evidence for an uncached shell.
 func renameShellSnapshot(host, old, name string) error {
+	lock, err := lockShellCache()
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	return renameShellSnapshotLocked(host, old, name)
+}
+func renameShellSnapshotLocked(host, old, name string) error {
 	oldPath, err := shellCachePath(host, old)
 	if err != nil {
 		return err
@@ -230,9 +320,56 @@ func renameShellSnapshot(host, old, name string) error {
 	}
 	renamed := snapshot
 	renamed.Name = name
-	if err = saveShellSnapshot(renamed); err != nil {
+	if err = saveShellSnapshotLocked(renamed); err != nil {
 		return err
 	}
 	snapshot.State = "renamed"
-	return saveShellSnapshot(snapshot)
+	return saveShellSnapshotLocked(snapshot)
+}
+
+// Cleanup is local and instance-bound; a replacement with the same name is not
+// a cleanup target. Keep a short-lived tombstone for repeated cancellation.
+func forgetEndedShell(host, name, instance string) (bool, error) {
+	lock, err := lockShellCache()
+	if err != nil {
+		return false, err
+	}
+	defer lock.Close()
+	rows, err := readShellSnapshotsLocked()
+	if err != nil {
+		return false, err
+	}
+	for _, s := range rows {
+		if s.Host != host || s.Name != name || (instance != "" && s.Instance != instance) {
+			continue
+		}
+		if s.State != "exited" && s.State != "not-listed" {
+			return false, nil
+		}
+		s.Forgotten = true
+		return true, saveShellSnapshotLocked(s)
+	}
+	return false, nil
+}
+
+func confirmCancelledShell(host, name, instance string) error {
+	lock, err := lockShellCache()
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	rows, err := readShellSnapshotsLocked()
+	if err != nil {
+		return err
+	}
+	for _, s := range rows {
+		if s.Host == host && s.Name == name && s.Instance == instance {
+			s.State, s.Unconfirmed, s.ConfirmedAt = "exited", false, time.Now()
+			return saveShellSnapshotLocked(s)
+		}
+	}
+	if instance != "" {
+		return recordRemoteShellTreeState(shellSnapshot{Host: host, Name: name, Instance: instance, State: "exited"})
+	}
+	return nil
 }

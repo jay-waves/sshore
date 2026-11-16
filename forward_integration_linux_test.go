@@ -32,17 +32,17 @@ func TestForwardApprovalPreservesDetachedSession(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			bad := m
 			test.change(&bad)
-			if s.checkForwardApproval(bad) == nil {
+			if s.checkApprovalSource(bad) == nil {
 				t.Fatal("invalid approval accepted")
 			}
 		})
 	}
 	_ = s.lifecycle.Attach(&attachment{}, func() error { return nil })
-	if s.checkForwardApproval(m) == nil {
+	if s.checkApprovalSource(m) == nil {
 		t.Fatal("attached shell accepted")
 	}
 	s.lifecycle.Detach(s.lifecycle.Active())
-	if err := s.checkForwardApproval(m); err != nil {
+	if err := s.checkApprovalSource(m); err != nil {
 		t.Fatal(err)
 	}
 	if s.lifecycle.Active() != nil || s.lifecycle.Exited() {

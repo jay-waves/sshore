@@ -142,3 +142,19 @@ func TestSharedHostValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestTargetDispatchRejectsInvalidArgumentsBeforeExecution(t *testing.T) {
+	for _, args := range [][]string{
+		{"cancel", "mount/demo", "--local"},
+		{"cancel", "forward/demo", "--", "-p22"},
+		{"cancel", "--all", "--local", "host"},
+		{"attach", "host", "name", "extra"},
+		{"rename", "host", "old"},
+		{"review", "one", "two"},
+	} {
+		code, err := runTargetCommand(args)
+		if code != 2 || err == nil {
+			t.Fatalf("%v: code=%d err=%v", args, code, err)
+		}
+	}
+}

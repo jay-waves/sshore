@@ -26,7 +26,7 @@ func ftpSFTPServerExecutable() (string, error) {
 	return "", fmt.Errorf("OpenSSH sftp-server executable unavailable; install the server component or use --no-watch")
 }
 
-func ServeAgent(conn io.ReadWriteCloser, version string) error {
+func ServeAgent(conn io.ReadWriteCloser, version string, check ...func(MountApproval) error) error {
 	defer conn.Close()
 	if os.Getenv("SSHORE_DISABLED") == "1" {
 		return fmt.Errorf("file access disabled in recovery")
@@ -41,6 +41,13 @@ func ServeAgent(conn io.ReadWriteCloser, version string) error {
 	err = checkPeerVersion(version, m.SoftwareVersion, "mount client")
 	if err == nil && m.Type != "mount_mux" {
 		err = fmt.Errorf("invalid mount handshake")
+	}
+	if err == nil && m.Approval != nil {
+		if len(check) != 1 {
+			err = fmt.Errorf("mount approval validation unavailable")
+		} else {
+			err = check[0](*m.Approval)
+		}
 	}
 	executable := ""
 	if err == nil {

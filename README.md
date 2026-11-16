@@ -29,6 +29,10 @@ Installers verify checksums and print PATH instructions without requesting
 administrator access. Close running Windows executables before upgrading.
 Only the latest patch of each major/minor series remains downloadable.
 
+Enable Tab completion in Bash with `source <(sshore completion bash)`.
+Zsh, Fish and PowerShell are also supported; see `sshore completion --help` for
+startup-file setup. Completion uses local/cached hints and never connects over SSH.
+
 ## TMUX — leave and resume work
 
 Each session has one terminal. No tmux installation is needed.
@@ -62,9 +66,9 @@ flowchart LR
     start["spawn / launch"] --> shell["Work in a shell"]
     shell -->|"detach / switch"| background["Keep running under startup lifetime"]
     background -->|"attach"| shell
-    shell -->|"Remote copy / forward request"| review["Detach; review locally"]
+    shell -->|"Remote copy / forward / mount request"| review["Detach; review locally"]
     review -->|"Approve copy; reconnect"| shell
-    review -->|"Approve forward"| tunnel["Independent tunnel"]
+    review -->|"Approve forward / mount"| resource["Independent tunnel or mount"]
     shell -->|"exit / cancel"| ended["Shell ends"]
     background -->|"spawn: owner exits / remote heartbeat lost"| ended
 ```
@@ -72,7 +76,7 @@ flowchart LR
 ## Status
 
 ```sh
-sshore list                     # Local tasks and cached remote history.
+sshore list                     # Local tasks and cached remote shells.
 sshore list work                # Query remote tasks now.
 sshore pstree                   # Spawn ownership and attachment sources.
 sshore pstree work              # Relationships known to the remote account.
@@ -81,10 +85,12 @@ sshore list --json              # Machine-readable inventory.
 ```
 
 Use the stable IDs from `list` with `attach ID` or `cancel ID`.
-LIFETIME is `parent` for local spawn, `heartbeat` for remote spawn, or
+In `--verbose`, LIFETIME is `parent` for local spawn, `heartbeat` for remote spawn, or
 `persistent` for launch; it describes policy, not connection health.
 
-Cached entries are labelled. `pstree` shows shell relationships, not a live OS
+CHECKED shows when shell states were confirmed; confirmed ended shells leave the default list.
+Use `cancel` to clear confirmed ended remote history (see `sshore cancel --help`).
+See `sshore list --help` for history and refresh behavior. `pstree` shows shell relationships, not a live OS
 process tree; attaching from another shell does not transfer ownership. Peer
 entries are read-only: manage them on their original computer. A running worker
 does not prove its target service is healthy.
@@ -154,6 +160,8 @@ sshore cancel mount/work            # Close local files before unmounting.
 Mounts use SFTP and require FUSE on Linux or [WinFsp](https://winfsp.dev/) on
 Windows. They are writable by default; use `--read-only` to prevent changes.
 They run independently of shells and end if their own SSH connection drops.
+From a remote sshore shell, use `sshore mount . origin:` and then `sshore review`
+locally to select the mountpoint and approve access.
 
 There is no offline editing, conflict detection or write retry. Interrupted
 writes may leave partial files; caching can briefly delay remote changes.

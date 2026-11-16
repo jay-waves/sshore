@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExcludeLocalResourcePeers(t *testing.T) {
@@ -90,7 +92,7 @@ func TestInventoryHostGroups(t *testing.T) {
 		Peers: []peerView{{TaskID: 4, ID: "peer/abcd1234/mount/work", Manager: "laptop", State: "unknown"}},
 	}
 	writeTaskInventory(&out, inv, false)
-	for _, want := range []string{"SESSION", "HOST · local", "REMOTE", "mount/work", "laptop", "unknown (read-only)"} {
+	for _, want := range []string{"SESSION", "HOST  local", "REMOTE", "mount/work", "laptop", "unknown (read-only)"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %q: %s", want, &out)
 		}
@@ -101,8 +103,8 @@ func TestInventoryHostGroups(t *testing.T) {
 	group := ""
 	wantGroup := map[string]string{"launch/build": "server", "mount/local": "local", "forward/remote": "server", "mount/work": "laptop"}
 	for _, line := range strings.Split(out.String(), "\n") {
-		if strings.HasPrefix(line, "HOST · ") {
-			group = strings.TrimPrefix(line, "HOST · ")
+		if strings.HasPrefix(line, "HOST  ") {
+			group, _, _ = strings.Cut(strings.TrimPrefix(line, "HOST  "), " · ")
 			continue
 		}
 		fields := strings.Fields(line)
@@ -119,12 +121,91 @@ func TestInventoryHostGroups(t *testing.T) {
 			t.Fatal(line)
 		}
 	}
-	if !strings.HasPrefix(out.String(), "HOST · local\n") {
+	if !strings.HasPrefix(out.String(), "HOST  local · checked now\n") {
 		t.Fatal("local group must come first")
 	}
 	out.Reset()
 	writeTaskInventory(&out, inv, true)
 	if !strings.Contains(out.String(), "peer/abcd1234/mount/work") {
 		t.Fatal("detail lost peer identity")
+	}
+}
+
+func TestTaskInventoryEndedHistory(t *testing.T) {
+	inv := inventory{Shells: []shellView{
+		{Host: "work", Name: "gone", State: "not-listed", Historical: true},
+		{Host: "work", Name: "finished", State: "exited", Historical: true},
+		{Host: "work", Name: "uncertain", State: "attached", Historical: true, Unconfirmed: true},
+		{Host: "work", Name: "active", State: "not-listed", Historical: true, Active: true},
+	}}
+	for _, details := range []bool{false, true} {
+		var out bytes.Buffer
+		writeTaskInventory(&out, inv, details)
+		for _, name := range []string{"gone", "finished", "active"} {
+			if strings.Contains(out.String(), "launch/"+name) != details {
+				t.Fatal(out.String())
+			}
+		}
+		for _, name := range []string{"uncertain"} {
+			if !strings.Contains(out.String(), "launch/"+name) {
+				t.Fatal(out.String())
+			}
+		}
+	}
+}
+
+func TestTaskInventoryCheckedAndColor(t *testing.T) {
+	now := time.Now()
+	inv := inventory{Shells: []shellView{
+		{TaskID: 1, Host: "work", Name: "api", State: "detached", Historical: true, ConfirmedAt: now.Add(-12 * time.Minute)},
+		{TaskID: 2, Host: "work", Name: "构建", State: "attached", Historical: true, ConfirmedAt: now.Add(-12 * time.Minute)},
+	}}
+	var out bytes.Buffer
+	writeTaskInventory(&out, inv, false)
+	if !strings.Contains(out.String(), "HOST  work · checked 12m ago") || strings.Contains(out.String(), "CHECKED") || strings.Contains(out.String(), "LIFETIME") || strings.Contains(out.String(), "cached") {
+		t.Fatal(out.String())
+	}
+	inv.Shells[1].ConfirmedAt = now.Add(-2 * time.Hour)
+	inv.Shells = append(inv.Shells, shellView{TaskID: 3, Host: "work", Name: "missing", State: "attached", Historical: true})
+	inv.LocalShells = []localShellView{{ID: 4, identity: "here", Name: "current", State: "attached"}}
+	t.Setenv("SSHORE_LOCAL_SESSION", "here")
+	var plain, colored bytes.Buffer
+	writeTaskInventoryColor(&plain, inv, false, false)
+	writeTaskInventoryColor(&colored, inv, false, true)
+	for _, want := range []string{"CHECKED", "12m ago", "2h ago", "never", "unknown"} {
+		if !strings.Contains(plain.String(), want) {
+			t.Fatal(plain.String())
+		}
+	}
+	for _, code := range []string{"\x1b[1m", "\x1b[90m", "\x1b[32m", "\x1b[33m"} {
+		if !strings.Contains(colored.String(), code) {
+			t.Fatalf("missing style %q: %q", code, colored.String())
+		}
+	}
+	ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	if ansi.ReplaceAllString(colored.String(), "") != plain.String() {
+		t.Fatal("color changed table alignment")
+	}
+	out.Reset()
+	writeTaskInventory(&out, inv, true)
+	if !strings.Contains(out.String(), "LIFETIME") {
+		t.Fatal(out.String())
+	}
+	t.Log("\n" + plain.String())
+}
+
+func TestShellCheckedAge(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		at   time.Time
+		want string
+	}{
+		{time.Time{}, "never"}, {now.Add(time.Minute), "unknown"},
+		{now, "<1m ago"}, {now.Add(-12 * time.Minute), "12m ago"},
+		{now.Add(-2 * time.Hour), "2h ago"}, {now.Add(-48 * time.Hour), "2d ago"},
+	} {
+		if got := shellCheckedAge(tc.at, now); got != tc.want {
+			t.Fatalf("%s != %s", got, tc.want)
+		}
 	}
 }

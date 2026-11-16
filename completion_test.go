@@ -1,0 +1,216 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+)
+
+func completionValues(r completionResult) []string {
+	var values []string
+	for _, c := range r.candidates {
+		values = append(values, c.value)
+	}
+	return values
+}
+
+func TestCompletionContexts(t *testing.T) {
+	catalog := func() completionCatalog {
+		return completionCatalog{
+			hosts: []string{"work"}, ids: map[string]uint64{"local": 1, "remote": 2, "mount": 3, "review": 4},
+			tasks: []completionTask{{"shell", "localjob", "", "local"}, {"shell", "remotejob", "work", "remote"}, {"mount", "data", "", "mount"}, {"review", "request", "", "review"}},
+		}
+	}
+	for _, tc := range []struct {
+		words        []string
+		current      string
+		want, absent []string
+		mode, prefix string
+	}{
+		{nil, "", []string{"completion", "launch", "attach"}, nil, "", ""},
+		{[]string{"completion"}, "", []string{"bash", "zsh", "fish", "powershell"}, nil, "", ""},
+		{[]string{"attach"}, "", []string{"work", "1", "2"}, []string{"3", "data", "4"}, "", ""},
+		{[]string{"attach", "work"}, "", []string{"remotejob"}, []string{"localjob", "1"}, "", ""},
+		{[]string{"attach", "--local"}, "", []string{"localjob"}, []string{"remotejob", "work"}, "", ""},
+		{[]string{"launch", "work"}, "", nil, []string{"remotejob", "1"}, "", ""},
+		{[]string{"cancel"}, "", []string{"mount/data", "review/request", "1", "2", "3", "4"}, []string{"localjob"}, "", ""},
+		{[]string{"review"}, "", []string{"request", "4"}, []string{"1", "2", "3"}, "", ""},
+		{[]string{"rename", "2"}, "", nil, []string{"localjob", "remotejob", "work"}, "", ""},
+		{[]string{"list", "--json"}, "--", nil, []string{"--json", "--verbose"}, "", ""},
+		{[]string{"launch", "-q"}, "-", nil, []string{"-q", "--quiet"}, "", ""},
+		{[]string{"mount", "--no-watch"}, "--", nil, []string{"--server"}, "", ""},
+		{[]string{"launch", "--local"}, "--", nil, []string{"--server", "--download-dir", "--"}, "", ""},
+		{[]string{"attach"}, "--", nil, []string{"--no-login", "--detach"}, "", ""},
+		{[]string{"launch", "work", "--download-dir"}, "", nil, nil, "dirs", ""},
+		{[]string{"launch", "work"}, "--download-dir=folder", nil, nil, "dirs", "--download-dir="},
+		{[]string{"mount", "work", "remote"}, "", nil, nil, "dirs", ""},
+		{[]string{"mount", "work"}, "", nil, []string{"work"}, "", ""},
+		{[]string{"cp"}, "", []string{"work:", "origin:"}, nil, "files", ""},
+		{[]string{"cp"}, "work:/", nil, []string{"work:"}, "none", ""},
+		{[]string{"forward"}, "", []string{"work:", "origin:"}, nil, "", ""},
+		{[]string{"mount", "work", "--"}, "-", []string{"-p", "-i"}, []string{"-L", "-R", "-D"}, "", ""},
+		{[]string{"launch", "work", "--"}, "-", []string{"-L", "-R", "-D"}, nil, "", ""},
+		{[]string{"launch", "work", "--", "-i"}, "", nil, nil, "files", ""},
+		{[]string{"launch", "work", "--"}, "-ikey", nil, nil, "files", "-i"},
+	} {
+		t.Run(strings.Join(append(slices.Clone(tc.words), tc.current), " "), func(t *testing.T) {
+			r := completeCLI(tc.words, tc.current, catalog)
+			values := completionValues(r)
+			for _, v := range tc.want {
+				if !slices.Contains(values, v) {
+					t.Fatalf("missing %q: %+v", v, r)
+				}
+			}
+			for _, v := range tc.absent {
+				if slices.Contains(values, v) {
+					t.Fatalf("unexpected %q: %+v", v, r)
+				}
+			}
+			if r.mode != tc.mode || r.prefix != tc.prefix {
+				t.Fatalf("mode/prefix: %+v", r)
+			}
+		})
+	}
+}
+
+func TestCompletionUsesCLIConstraints(t *testing.T) {
+	for command := range commandHelp {
+		spec, ok := commandSpec(command)
+		if !ok {
+			t.Fatalf("no grammar for %s", command)
+		}
+		for _, name := range spec.flags {
+			option, ok := cliOptions[name]
+			if !ok {
+				t.Fatalf("undefined %s", name)
+			}
+			spelling := name
+			if option.alias != "" {
+				spelling = option.alias
+			}
+			_, _, found := spec.option(spelling)
+			if !found {
+				t.Fatalf("missing alias %s", spelling)
+			}
+		}
+	}
+	for _, args := range [][]string{{"-q", "--quiet"}, {"--quiet", "-q"}, {"--local", "--server=x"}} {
+		if _, err := parseCLI(args, "launch"); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+	for _, args := range [][]string{{"--verbose"}, {"--json"}} {
+		if _, err := parseCLI(args, "pstree"); err == nil {
+			t.Fatalf("pstree accepted %v", args)
+		}
+	}
+}
+
+func TestCompletionLiteralBashWords(t *testing.T) {
+	for _, tc := range []struct {
+		line    string
+		words   []string
+		current string
+	}{
+		{"sshore ", nil, ""},
+		{"sshore launch --download-dir='a b", []string{"launch"}, "--download-dir=a b"},
+		{"sshore cp a\\ b work:", []string{"cp", "a b"}, "work:"},
+		{"echo x; sshore attach work jo", []string{"attach", "work"}, "jo"},
+		{"sshore launch work -- -i key", []string{"launch", "work", "--", "-i"}, "key"},
+		{"sshore $(touch marker) ", []string{""}, ""},
+	} {
+		words, current := completionLine(tc.line)
+		if !reflect.DeepEqual(words, tc.words) && !(len(words) == 0 && len(tc.words) == 0) || current != tc.current {
+			t.Fatalf("%q -> %q, %q", tc.line, words, current)
+		}
+	}
+}
+
+func TestCompletionOfflineState(t *testing.T) {
+	root := t.TempDir()
+	state := filepath.Join(root, "state")
+	home := filepath.Join(root, "home")
+	t.Setenv("SSHORE_STATE_DIR", state)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	var out bytes.Buffer
+	if err := runCompletionQuery([]string{"words", ":", "attach"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		t.Fatal("completion created state", err)
+	}
+	write := func(name string, value any) {
+		path := filepath.Join(state, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := json.Marshal(value)
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	local := localShellRecord{Name: "localjob", Token: strings.Repeat("a", 64)}
+	write("local-shells/localjob.json", local)
+	write("connections/recent.json", []recentConnection{{Host: "recent", Session: "job"}})
+	write("shells/job.json", shellSnapshot{Host: "work", Name: "job", State: "detached", Instance: "instance"})
+	write("shells/ended.json", shellSnapshot{Host: "work", Name: "ended", State: "exited"})
+	write("mounts/data.json", resourceRecord{Kind: "mount", Name: "data", Token: "secret"})
+	write("approvals/pending.json", approvalRecord{ID: strings.Repeat("b", 32), Name: "pending", Created: time.Now()})
+	write("approvals/expired.json", approvalRecord{ID: strings.Repeat("c", 32), Name: "expired", Created: time.Now().Add(-2 * approvalTTL)})
+	write("tasks/ids.json", taskIDIndex{Next: 8, IDs: map[string]uint64{local.identity(): 7}})
+	config := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(config, 0700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(config, "config"), []byte("Host configured alias\nHost wildcard* !excluded\nMatch exec touch-marker\nInclude extra\n"), 0600)
+	_ = os.WriteFile(filepath.Join(config, "extra"), []byte("Host included\nInclude config\n"), 0600)
+	before := map[string]string{}
+	filepath.WalkDir(state, func(p string, d os.DirEntry, e error) error {
+		if e == nil && !d.IsDir() {
+			b, _ := os.ReadFile(p)
+			before[p] = string(b)
+		}
+		return e
+	})
+	out.Reset()
+	if err := runCompletionQuery([]string{"words", ":", "attach"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"7\t", "configured\t", "alias\t", "included\t", "recent\t", "work\t"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %q: %s", want, &out)
+		}
+	}
+	if strings.Contains(out.String(), local.Token) || strings.Contains(out.String(), "wildcard*") {
+		t.Fatal("private/invalid data leaked", out.String())
+	}
+	c := loadCompletionCatalog()
+	for _, task := range c.tasks {
+		if task.name == "expired" || task.name == "ended" {
+			t.Fatal(task)
+		}
+	}
+	after := map[string]string{}
+	filepath.WalkDir(state, func(p string, d os.DirEntry, e error) error {
+		if e == nil && !d.IsDir() {
+			b, _ := os.ReadFile(p)
+			after[p] = string(b)
+		}
+		return e
+	})
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("completion mutated state")
+	}
+	t.Setenv("SSHORE_DISABLED", "1")
+	out.Reset()
+	if err := runCompletionQuery([]string{"words", ":", "attach"}, &out); err != nil || out.Len() != 0 {
+		t.Fatal("recovery exposed candidates", err, &out)
+	}
+}

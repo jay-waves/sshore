@@ -7,20 +7,27 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"text/tabwriter"
 	"time"
+
+	"github.com/chzyer/readline"
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 type taskTableRow struct {
-	id                                           uint64
-	task, owner, target, state, detail, lifetime string
+	id                                                    uint64
+	task, owner, target, state, detail, lifetime, checked string
 }
 
 func printTaskInventory(inv inventory, details bool) {
-	writeTaskInventory(os.Stdout, inv, details)
+	writeTaskInventoryColor(os.Stdout, inv, details, termui.ColorEnabled(os.Stdout))
 }
 
 func writeTaskInventory(out io.Writer, inv inventory, details bool) {
+	writeTaskInventoryColor(out, inv, details, false)
+}
+
+func writeTaskInventoryColor(out io.Writer, inv inventory, details, color bool) {
+	now := time.Now()
 	rows := []taskTableRow{}
 	currentLocal := os.Getenv("SSHORE_LOCAL_SESSION")
 	for _, s := range inv.LocalShells {
@@ -28,25 +35,29 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 		if currentLocal != "" && s.identity == currentLocal && state == "attached" {
 			state += " (current)"
 		}
-		rows = append(rows, taskTableRow{s.ID, shellTaskName(s.Name, s.Temporary), "local", "-", state, s.Directory, shellLifetime(s.Temporary, false)})
+		rows = append(rows, taskTableRow{s.ID, shellTaskName(s.Name, s.Temporary), "local", "-", state, s.Directory, shellLifetime(s.Temporary, false), "now"})
 	}
 	for _, s := range inv.Shells {
-		if s.State == "renamed" {
+		if s.State == "renamed" || (s.Historical && endedShellState(s.State) && !details) {
 			continue
 		}
 		host := s.Host
 		if host == "" {
 			host = inv.Host
 		}
-		state := s.State
+		state, checked := s.State, "now"
 		if s.Historical {
-			state += " (cached; " + snapshotState(s) + ")"
+			checked = shellCheckedAge(s.ConfirmedAt, now)
+			if s.ConfirmedAt.IsZero() {
+				state = "unknown"
+			}
+			if s.Active {
+				state += " (local active)"
+			} else if s.Unconfirmed {
+				state += " (unconfirmed)"
+			}
 		}
-		detail := s.Directory
-		if s.Historical && !s.ConfirmedAt.IsZero() {
-			detail = "confirmed " + time.Since(s.ConfirmedAt).Round(time.Second).String() + " ago"
-		}
-		rows = append(rows, taskTableRow{s.TaskID, shellTaskName(s.Name, s.Temporary), host, "-", state, detail, shellLifetime(s.Temporary, true)})
+		rows = append(rows, taskTableRow{s.TaskID, shellTaskName(s.Name, s.Temporary), host, "-", state, s.Directory, shellLifetime(s.Temporary, true), checked})
 	}
 	for _, r := range inv.Resources {
 		host := r.Host
@@ -57,7 +68,11 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 		if inv.RemoteQueried && !r.local {
 			owner = inv.Host
 		}
-		rows = append(rows, taskTableRow{r.TaskID, r.ID, owner, host, r.Worker, r.Detail, "-"})
+		checked := "now"
+		if r.Worker == "exited" {
+			checked = "-"
+		}
+		rows = append(rows, taskTableRow{r.TaskID, r.ID, owner, host, r.Worker, r.Detail, "-", checked})
 	}
 	for _, p := range inv.Peers {
 		name := p.ID
@@ -70,7 +85,7 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 		if target == "" {
 			target = "local"
 		}
-		rows = append(rows, taskTableRow{p.TaskID, name, p.Manager, target, p.State + " (read-only)", p.Detail, "-"})
+		rows = append(rows, taskTableRow{p.TaskID, name, p.Manager, target, p.State + " (read-only)", p.Detail, "-", "-"})
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].owner != rows[j].owner {
@@ -106,25 +121,48 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 		if host == "" {
 			host = "unknown"
 		}
-		fmt.Fprintf(out, "HOST · %s\n", cleanText(host))
-		w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		fmt.Fprint(w, "ID\tSESSION\tREMOTE\tSTATE\tLIFETIME")
-		if details {
-			fmt.Fprint(w, "\tDETAIL")
+		checked := rows[start].checked
+		for _, r := range rows[start:end] {
+			if r.checked != checked {
+				checked = ""
+				break
+			}
 		}
-		fmt.Fprintln(w)
+		title := "HOST  " + cleanText(host)
+		if color {
+			title = "\x1b[1m" + title + "\x1b[22m"
+		}
+		fmt.Fprint(out, title)
+		if checked != "" && checked != "-" {
+			label := "checked " + checked
+			if checked == "never" {
+				label = "never checked"
+			}
+			fmt.Fprint(out, termui.Format(color, "90", " · %s", label))
+		}
+		fmt.Fprintln(out)
+		table := [][]string{{"ID", "SESSION", "REMOTE", "STATE"}}
+		if checked == "" {
+			table[0] = append(table[0], "CHECKED")
+		}
+		if details {
+			table[0] = append(table[0], "LIFETIME", "DETAIL")
+		}
 		for _, r := range rows[start:end] {
 			id := "-"
 			if r.id != 0 {
 				id = strconv.FormatUint(r.id, 10)
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s", id, cleanText(r.task), cleanText(r.target), cleanText(r.state), r.lifetime)
-			if details {
-				fmt.Fprintf(w, "\t%s", cleanText(r.detail))
+			cells := []string{id, r.task, r.target, r.state}
+			if checked == "" {
+				cells = append(cells, r.checked)
 			}
-			fmt.Fprintln(w)
+			if details {
+				cells = append(cells, r.lifetime, r.detail)
+			}
+			table = append(table, cells)
 		}
-		w.Flush()
+		writeTaskTable(out, table, color)
 		start = end
 	}
 	if details {
@@ -151,6 +189,58 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 		for _, e := range inv.Exits {
 			fmt.Fprintf(out, "\n%s exited %s: %s\n", cleanText(e.Name), e.Time.Format(time.RFC3339), cleanText(e.Reason))
 		}
+	}
+}
+
+func shellCheckedAge(checked, now time.Time) string {
+	if checked.IsZero() {
+		return "never"
+	}
+	age := now.Sub(checked)
+	// Stored times cannot establish a future observation.
+	if age < 0 {
+		return "unknown"
+	}
+	if age < time.Minute {
+		return "<1m ago"
+	}
+	if age < time.Hour {
+		return fmt.Sprintf("%dm ago", int(age/time.Minute))
+	}
+	if age < 24*time.Hour {
+		return fmt.Sprintf("%dh ago", int(age/time.Hour))
+	}
+	return fmt.Sprintf("%dd ago", int(age/(24*time.Hour)))
+}
+
+func writeTaskTable(out io.Writer, table [][]string, color bool) {
+	widths := make([]int, len(table[0]))
+	for _, row := range table {
+		for j := range row {
+			row[j] = cleanText(row[j])
+			widths[j] = max(widths[j], (readline.Runes{}).WidthAll([]rune(row[j])))
+		}
+	}
+	for i, row := range table {
+		for j, cell := range row {
+			level := termui.Color("")
+			if i == 0 || j == 0 || j >= 4 || cell == "-" {
+				level = "90"
+			}
+			if i > 0 && j == 3 {
+				switch {
+				case strings.Contains(cell, "(current)"):
+					level = termui.Success
+				case strings.Contains(cell, "unconfirmed"), strings.HasPrefix(cell, "unknown"), strings.HasPrefix(cell, "unavailable"), strings.HasPrefix(cell, "failed"), strings.HasPrefix(cell, "error"):
+					level = termui.Warning
+				}
+			}
+			fmt.Fprint(out, termui.Format(color && level != "", level, "%s", cell))
+			if j < len(row)-1 {
+				fmt.Fprint(out, strings.Repeat(" ", widths[j]-(readline.Runes{}).WidthAll([]rune(cell))+2))
+			}
+		}
+		fmt.Fprintln(out)
 	}
 }
 

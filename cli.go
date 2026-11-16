@@ -8,85 +8,15 @@ import (
 	"strings"
 )
 
-type cliFlag struct {
-	name  string
-	value bool
-}
-
-type cliArguments struct {
-	operands []string
-	values   map[string]string
-	ssh      []string
-}
-
-func (a cliArguments) has(name string) bool { _, ok := a.values[name]; return ok }
-
-// Only the suffix after -- belongs to OpenSSH. Product options are singular;
-// repeated SSH options remain valid and retain their original order.
-func parseCLI(args []string, flags []cliFlag, sshAllowed, nativeForwarding bool) (cliArguments, error) {
-	a := cliArguments{values: make(map[string]string)}
-	var err error
-	if sshAllowed {
-		args, a.ssh, err = splitSSHOptions(args, nativeForwarding)
-		if err != nil {
-			return a, err
-		}
-	}
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "" {
-			return a, usage("empty argument")
-		}
-		if arg == "--help" || arg == "-h" {
-			return a, errHelp
-		}
-		if arg == "-" || !strings.HasPrefix(arg, "-") {
-			a.operands = append(a.operands, arg)
-			continue
-		}
-		if err := misplacedSSHOption(arg); err != nil {
-			return a, err
-		}
-		name, value, attached := strings.Cut(arg, "=")
-		found := false
-		for _, flag := range flags {
-			if flag.name != name {
-				continue
-			}
-			found = true
-			if a.has(name) {
-				return a, usage("%s may only be specified once", name)
-			}
-			if flag.value {
-				if !attached {
-					i++
-					if i == len(args) || strings.HasPrefix(args[i], "--") {
-						return a, usage("missing value for %s", name)
-					}
-					value = args[i]
-				}
-				if value == "" {
-					return a, usage("missing value for %s", name)
-				}
-			} else if attached {
-				return a, usage("%s does not accept a value", name)
-			}
-			a.values[name] = value
-			break
-		}
-		if !found {
-			return a, usage("unsupported option: %s", name)
-		}
-	}
-	return a, nil
-}
-
 func run(args []string) (code int, resultErr error) {
 	defer func() {
 		if errors.Is(resultErr, errHelp) && len(args) > 0 {
 			code, resultErr = 0, showHelp(args[:1], os.Stdout)
 		}
 	}()
+	if len(args) > 0 && args[0] == "__complete" {
+		return 0, runCompletionQuery(args[1:], os.Stdout)
+	}
 	if os.Getenv("SSHORE_ASKPASS") == "1" {
 		if os.Getenv("SSHORE_DISABLED") == "1" {
 			return 1, fmt.Errorf("file access disabled in recovery")
@@ -116,6 +46,8 @@ func run(args []string) (code int, resultErr error) {
 		return 0, showHelp(nil, os.Stdout)
 	}
 	switch args[0] {
+	case "completion":
+		return 0, runCompletion(args[1:], os.Stdout)
 	case "help":
 		return 0, showHelp(args[1:], os.Stdout)
 	case "-h", "--help":
@@ -136,23 +68,14 @@ func run(args []string) (code int, resultErr error) {
 		return 0, cancelResourceIdentity(args[2], args[3])
 	case "local-daemon":
 		return 0, runLocalDaemon()
-	case "launch", "spawn", "attach", "rename":
-		return runShellCommand(args)
+	case "launch", "spawn", "attach", "rename", "cancel", "list", "review":
+		return runTargetCommand(args)
 	case "ftp-worker", "resource-worker":
 		return runResourceWorker()
 	case "mount":
 		return runMount(args[1:])
-	case "cancel":
-		return runCancel(args[1:])
 	case "pstree":
 		return runPSTree(args[1:])
-	case "list":
-		return runShellCommand(args)
-	case "review":
-		if code, handled, err := runTaskID(args); handled {
-			return code, err
-		}
-		return runReview(args[1:])
 	case "forward":
 		return runEndpointForward(args[1:])
 	case "cp":
@@ -206,29 +129,23 @@ func parseTaskID(args []string) (uint64, bool, error) {
 
 // --all selects a snapshot, never a process name or a cached PID.
 func parseCancelAll(args []string) (options, bool, error) {
-	parsed, err := parseCLI(args, []cliFlag{{"--all", false}, {"--local", false}, {"--server", true}}, true, false)
+	parsed, err := parseCLI(args, "cancel")
 	if !parsed.has("--all") {
 		return options{}, false, nil
 	}
 	if err != nil {
 		return options{}, true, err
 	}
-	filtered := append([]string{"list"}, parsed.operands...)
-	if parsed.has("--local") {
-		filtered = append(filtered, "--local")
-	}
-	if parsed.has("--server") {
-		filtered = append(filtered, "--server", parsed.values["--server"])
-	}
-	if len(parsed.ssh) > 0 {
-		filtered = append(filtered, "--")
-		filtered = append(filtered, parsed.ssh...)
-	}
-	o, err := parseOptions(filtered)
+	o, err := cancelAllOptions(parsed)
+	return o, true, err
+}
+
+func cancelAllOptions(parsed cliArguments) (options, error) {
+	o, err := shellOptions("list", parsed)
 	if o.local {
 		o.host = ""
 	}
-	return o, true, err
+	return o, err
 }
 
 type reviewOptions struct {
@@ -238,14 +155,16 @@ type reviewOptions struct {
 
 func parseReview(args []string) (reviewOptions, error) {
 	var o reviewOptions
-	parsed, err := parseCLI(args, []cliFlag{{"--stay", false}}, false, false)
+	parsed, err := parseCLI(args, "review")
 	if err != nil {
 		return o, err
 	}
+	return reviewArguments(parsed)
+}
+
+func reviewArguments(parsed cliArguments) (reviewOptions, error) {
+	var o reviewOptions
 	o.stay = parsed.has("--stay")
-	if len(parsed.operands) > 1 {
-		return o, usage("usage: sshore review [NAME] [--stay]")
-	}
 	if len(parsed.operands) == 1 {
 		a := strings.TrimPrefix(parsed.operands[0], "review/")
 		if !validApprovalID(a) && validSession(a) != nil {
@@ -280,4 +199,50 @@ func parseCancelTarget(args []string) (kind, name string, typed bool, err error)
 		err = usage("resource ID must be review/NAME, mount/NAME or forward/NAME")
 	}
 	return
+}
+
+// Route task selectors before command semantics; no execution starts while
+// selecting a route. Ordinary shell and cancel forms share one parsed result.
+func runTargetCommand(args []string) (int, error) {
+	command := args[0]
+	parsed, err := parseCLI(args[1:], command)
+	if err != nil {
+		return 2, err
+	}
+	if !parsed.has("--all") {
+		if code, handled, err := runTaskID(args); handled {
+			return code, err
+		}
+	}
+	if command == "review" {
+		a, err := reviewArguments(parsed)
+		if err != nil {
+			return 2, err
+		}
+		return executeReview(a)
+	}
+	if command == "cancel" {
+		if parsed.has("--all") {
+			o, err := cancelAllOptions(parsed)
+			if err != nil {
+				return 2, err
+			}
+			return runCancelAll(o)
+		}
+		kind, name, typed, err := parseCancelTarget(parsed.operands)
+		if err != nil {
+			return 2, err
+		}
+		if typed {
+			if len(parsed.values) != 0 || len(parsed.ssh) != 0 {
+				return 2, usage("local cancellation accepts exactly one resource ID")
+			}
+			return runCancelResource(kind, name)
+		}
+	}
+	o, err := shellOptions(command, parsed)
+	if err != nil {
+		return 2, err
+	}
+	return executeShellCommand(o)
 }

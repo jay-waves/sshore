@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -134,7 +135,68 @@ func TestShellTreePersistentAttachmentIsNotOwnership(t *testing.T) {
 		{Identity: "temporary", Owner: "origin", Host: "remote", Name: "temp", State: "detached", Lifetime: "heartbeat"},
 	}, false)
 	text := out.String()
-	if !strings.Contains(text, "│  └─ remote / spawn/temp") || !strings.Contains(text, "\n└─ remote / launch/job") || !strings.Contains(text, "attach via local / work") {
+	if !strings.Contains(text, "   └─ spawn/temp  @remote") || !strings.Contains(text, "\n└─ launch/job") || !strings.Contains(text, "attach via local / work") {
 		t.Fatal(text)
+	}
+}
+
+func TestShellTreeCompactStates(t *testing.T) {
+	for _, cached := range []bool{false, true} {
+		t.Run(fmt.Sprint("all_cached=", cached), func(t *testing.T) {
+			nodes := []shellTreeNode{
+				{Identity: "root", Host: "workstation", Name: "work", Lifetime: "persistent", State: "attached", Cached: cached},
+				{Identity: "api", Owner: "root", Host: "dev", Name: "api", Lifetime: "heartbeat", State: "attached", Cached: cached},
+				{Identity: "debug", Owner: "api", Host: "dev", Name: "debug", Lifetime: "heartbeat", State: "attached", Current: true, Cached: cached},
+				{Identity: "test", Owner: "root", Host: "dev", Name: "test", Lifetime: "heartbeat", State: "detached", Cached: true},
+				{Identity: "unknown", Owner: "root", Host: "workstation", Name: "unknown-state", Cached: cached},
+			}
+			var out bytes.Buffer
+			writeShellTree(&out, nodes, false)
+			output := out.String()
+			if strings.Count(output, "attached") != 1 || strings.Count(output, "cached") != 1 || strings.Count(output, "@dev") != 2 {
+				t.Fatal(output)
+			}
+			lines := strings.Split(output, "\n")
+			if !strings.HasPrefix(lines[0], "HOST  workstation") || strings.Contains(lines[0], "cached") != cached {
+				t.Fatal(output)
+			}
+			for _, line := range lines[1:] {
+				if strings.Contains(line, "spawn/test") && (!strings.Contains(line, "detached") || strings.Contains(line, "cached") == cached) {
+					t.Fatal(output)
+				}
+				if strings.Contains(line, "spawn/debug") && (!strings.Contains(line, "← current") || strings.Contains(line, "@dev")) {
+					t.Fatal(output)
+				}
+				if strings.Contains(line, "unknown-state") && !strings.HasSuffix(line, "unknown") {
+					t.Fatal(output)
+				}
+			}
+			t.Log("\n" + output)
+		})
+	}
+}
+
+func TestShellTreeCyclesRemainVisible(t *testing.T) {
+	var out bytes.Buffer
+	writeShellTree(&out, []shellTreeNode{
+		{Identity: "a", Owner: "b", Host: "alpha", Name: "cycle-a", State: "detached"},
+		{Identity: "b", Owner: "a", Host: "beta", Name: "cycle-b", State: "attached"},
+	}, false)
+	for _, name := range []string{"cycle-a", "cycle-b"} {
+		if strings.Count(out.String(), name) != 1 {
+			t.Fatal(out.String())
+		}
+	}
+}
+
+func TestShellTreeOmitsEndedOwners(t *testing.T) {
+	nodes := inventoryShellTrees([]shellTreeNode{
+		{Identity: "gone", Host: "local", Name: "old", State: "exited"},
+		{Identity: "child", Owner: "gone", Host: "local", Name: "live", State: "detached", Lifetime: "parent"},
+	}, inventory{})
+	var out bytes.Buffer
+	writeShellTree(&out, nodes, false)
+	if strings.Contains(out.String(), "old") || !strings.Contains(out.String(), "spawn/live") || !strings.Contains(out.String(), "owner unknown") {
+		t.Fatal(out.String())
 	}
 }

@@ -90,3 +90,26 @@ func endpointHost(host string) (string, error) {
 	}
 	return user + address, nil
 }
+
+func remoteMountRequest(args []string) (operation, error) {
+	parsed, err := parseCLI(args, "mount")
+	if err != nil {
+		return operation{}, err
+	}
+	if len(parsed.operands) != 2 || originEndpoint(parsed.operands[0]) || !originEndpoint(parsed.operands[1]) {
+		return operation{}, usage("use mount DIRECTORY origin:[MOUNTPOINT] [--read-only]")
+	}
+	if len(parsed.ssh) != 0 {
+		return operation{}, usage("remote mount requests inherit the attached connection")
+	}
+	for name := range parsed.values {
+		if name != "--read-only" {
+			return operation{}, usage("remote mount requests accept only --read-only")
+		}
+	}
+	endpoint, err := parseCopyEndpoint(parsed.operands[0])
+	if err != nil || endpoint.host != "" || endpoint.stream {
+		return operation{}, usage("mount source must be a path on this server")
+	}
+	return operation{Kind: "mount", Path: parsed.operands[0], LocalHint: originHint(parsed.operands[1]), ReadOnly: parsed.has("--read-only")}, nil
+}

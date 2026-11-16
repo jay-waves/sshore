@@ -9,7 +9,15 @@ import (
 	"github.com/jay-waves/sshore/internal/transport"
 )
 
+type MountApproval struct {
+	Session string
+	PID     int
+	ID      string
+}
+
 type message struct {
+	Approval *MountApproval `json:"mount_approval,omitempty"`
+
 	Type            string `json:"type"`
 	SoftwareVersion string `json:"software_version,omitempty"`
 	Error           string `json:"error,omitempty"`

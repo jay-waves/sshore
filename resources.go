@@ -4,7 +4,6 @@ package main
 // remain HOST/NAME and retain the existing version/process-safe kill path. List
 // without HOST is offline discovery: it never authenticates to guessed hosts.
 import (
-	"errors"
 	"os"
 	"sort"
 	"strings"
@@ -68,41 +67,29 @@ func collectLocalResources(host string) ([]resourceRecord, error) {
 // Explicit type prefixes route local cancellation; HOST NAME uses the existing
 // version- and process-identity-checked remote session termination path.
 func runCancel(args []string) (int, error) {
-	if o, all, err := parseCancelAll(args); all {
-		if errors.Is(err, errHelp) {
-			return 0, showHelp([]string{"cancel"}, os.Stdout)
-		}
+	return runTargetCommand(append([]string{"cancel"}, args...))
+}
+
+func runCancelResource(kind, name string) (int, error) {
+	switch kind {
+	case "review":
+		dir, err := approvalDir()
 		if err != nil {
-			return 2, err
+			return 1, err
 		}
-		return runCancelAll(o)
-	}
-	kind, name, typed, err := parseCancelTarget(args)
-	if err != nil {
-		return 2, err
-	}
-	if typed {
-		switch kind {
-		case "review":
-			dir, err := approvalDir()
-			if err != nil {
-				return 1, err
-			}
-			record, readErr := findApproval(dir, name)
-			if readErr != nil {
-				return 1, readErr
-			}
-			if err = consumeApproval(dir, record.ID); err != nil {
-				return 1, err
-			}
-			removeRejectedPeerTask(record)
-			termui.Log(os.Stderr, termui.Success, "[sshore] Request cancelled\n")
-			return 0, nil
-		case "mount", "forward":
-			return 0, stopResource(kind, name)
-		default:
-			return 2, usage("resource ID must be review/NAME, mount/NAME or forward/NAME")
+		record, readErr := findApproval(dir, name)
+		if readErr != nil {
+			return 1, readErr
 		}
+		if err = consumeApproval(dir, record.ID); err != nil {
+			return 1, err
+		}
+		removeRejectedPeerTask(record)
+		termui.Log(os.Stderr, termui.Success, "[sshore] Request cancelled\n")
+		return 0, nil
+	case "mount", "forward":
+		return 0, stopResource(kind, name)
+	default:
+		return 2, usage("resource ID must be review/NAME, mount/NAME or forward/NAME")
 	}
-	return runShellCommand(append([]string{"cancel"}, args...))
 }

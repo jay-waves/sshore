@@ -77,11 +77,32 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 			return 2, usage("choose a local port in review before execution")
 		}
 	}
+	cancelledInstance := o.instance
+	if o.command == "cancel" {
+		if cleared, err := forgetEndedShell(o.host, o.session, o.instance); cleared || err != nil {
+			return 0, err
+		}
+		snapshots, err := readShellSnapshots()
+		if err != nil {
+			return 1, err
+		}
+		for _, s := range snapshots {
+			if s.Host == o.host && s.Name == o.session && (o.instance == "" || s.Instance == o.instance) {
+				cancelledInstance = s.Instance
+				break
+			}
+		}
+	}
 	cmd := sshCommand(o)
 	cmd.Stderr = os.Stderr
 	if o.list || o.command == "cancel" || o.command == "cancel-resource" || o.command == "rename" {
 		cmd.Stdin, cmd.Stdout = os.Stdin, os.Stdout
 		err := cmd.Run()
+		if err == nil && o.command == "cancel" {
+			if cacheErr := confirmCancelledShell(o.host, o.session, cancelledInstance); cacheErr != nil {
+				termui.Log(os.Stderr, termui.Warning, "[sshore] Cancelled; local history not updated: %s\n", cleanText(cacheErr.Error()))
+			}
+		}
 		if err == nil && o.command == "rename" {
 			if cacheErr := rememberShellRename(o.host, o.session, o.newName); cacheErr != nil {
 				termui.Log(os.Stderr, termui.Warning, "[sshore] Renamed; local history not updated: %s\n", cleanText(cacheErr.Error()))

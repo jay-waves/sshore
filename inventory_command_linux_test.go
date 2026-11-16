@@ -84,3 +84,32 @@ func TestInventoryOmitsExpiredExitReceipts(t *testing.T) {
 		t.Fatalf("exit receipts: %#v", inv.Exits)
 	}
 }
+
+func TestCancelUpdatesShellHistory(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	wrapper := filepath.Join(t.TempDir(), "ssh")
+	t.Setenv("SSHORE_SSH", wrapper)
+	for _, exit := range []string{"23", "0"} {
+		if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexit "+exit+"\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "detached", ConfirmedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		code, err := runClientOnce(options{host: "work", session: "job", instance: "instance", command: "cancel", server: "sshore"}, "", func() {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := readShellSnapshots()
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("%+v %v", rows, err)
+		}
+		if exit == "0" {
+			if code != 0 || rows[0].State != "exited" {
+				t.Fatalf("%d %+v", code, rows)
+			}
+		} else if code != 23 || rows[0].State != "detached" {
+			t.Fatalf("failure changed history: %d %+v", code, rows)
+		}
+	}
+}

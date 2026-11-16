@@ -36,6 +36,15 @@ version policy remain in the main program.
   Merge related fragments and split only for independent responsibilities or complexity.
 - Keep the module ownership map in SSHORE.md current.
 
+## CLI ownership
+
+- Define command options, aliases, value types, arity and shared conflicts once;
+  parsing and completion must consume those definitions. Keep command-specific
+  semantics in their command adapters, and keep SSH suffix policy separate.
+- Parsing has no execution side effects. Completion reads local hints only: no
+  SSH, authentication, daemon probes/startup, state mutation or ID allocation.
+  Dynamic candidates are data, never shell code to evaluate.
+
 ## User interaction
 
 Keep user-facing prompts concise, effective and elegant. Lead with the result or

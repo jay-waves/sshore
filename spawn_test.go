@@ -14,8 +14,8 @@ func TestSpawnOptionsAndInventory(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	writeTaskInventory(&out, inventory{LocalShells: []localShellView{{ID: 1, Name: "persistent", State: "detached"}, {ID: 2, Name: "temporary", State: "detached", Temporary: true}}, Shells: []shellView{{TaskID: 3, Name: "remote", Host: "host", State: "detached", Temporary: true, Historical: true}}}, false)
-	for _, want := range []string{"launch/persistent", "spawn/temporary", "spawn/remote", "cached", "LIFETIME", "parent", "heartbeat", "persistent"} {
+	writeTaskInventory(&out, inventory{LocalShells: []localShellView{{ID: 1, Name: "persistent", State: "detached"}, {ID: 2, Name: "temporary", State: "detached", Temporary: true}}, Shells: []shellView{{TaskID: 3, Name: "remote", Host: "host", State: "detached", Temporary: true, Historical: true}}}, true)
+	for _, want := range []string{"launch/persistent", "spawn/temporary", "spawn/remote", "never checked", "LIFETIME", "parent", "heartbeat", "persistent"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %s: %s", want, &out)
 		}

@@ -45,6 +45,7 @@ Help:
   sshore help [COMMAND]
   sshore COMMAND --help
   sshore --version
+  sshore completion SHELL       Print shell completion registration
 
 launch never resumes; attach never creates or evicts another client.
 Ctrl+B then d detaches; Ctrl+B then ? shows keys.
@@ -66,11 +67,34 @@ Examples:
 `
 
 var commandHelp = map[string]string{
+	"completion": `Usage: sshore completion SHELL
+
+Print registration for Bash, Zsh, Fish or PowerShell 7+. Load it in your shell:
+  Bash:       source <(sshore completion bash)
+  Zsh:        source <(sshore completion zsh)   # after compinit
+  Fish:       sshore completion fish | source
+  PowerShell: sshore completion powershell | Out-String | Invoke-Expression
+
+Add the matching line to your shell's startup file to enable it persistently.
+No startup files are changed automatically. cmd.exe has no supported adapter.
+Completion uses command definitions, literal SSH Host aliases (including bounded
+Includes), recent hosts and local/cached task records. Candidates can be stale;
+commands still revalidate them. It never connects, authenticates, starts daemons,
+allocates task IDs, modifies state or installs software. Remote paths are not
+queried. File and directory completion uses your shell's native facilities.
+`,
 	"pstree": `Usage: sshore pstree [HOST] [-- SSH_OPTIONS]
 
 Show shell ownership and attachment sources, with the current shell highlighted.
 Branches show the original spawn owner context; attach via shows interaction only.
 Detach/reattach never changes lifetime or ownership. Unknown owners appear at root.
+Confirmed ended shells are omitted; surviving children remain visible.
+HOST groups ownership roots; @HOST marks a change of host along a branch.
+The header attached label is the default for nodes with no explicit state; it
+does not infer ancestor liveness. A header cached label applies to the whole tree;
+otherwise cached nodes are labelled individually. Unknown state stays explicit.
+launch/ denotes persistent shells; spawn/ denotes temporary shells bound to their
+owner (local parent or remote heartbeat).
 Cross-host relationships are display snapshots, not verified OS process ancestry.
 NO_COLOR disables terminal colors.
 `,
@@ -141,27 +165,34 @@ If no detached shells exist, use sshore launch HOST to create one.
 
 Without HOST, show local connections, resources, pending reviews and known shell
 history ordered by stable numeric task ID. Remote hosts are not queried and SSH authentication is
-never triggered. This is not a complete remote task list. Cached states show their
-last confirmation time; loss without detach acknowledgement is unconfirmed.
+never triggered. This is not a complete remote task list. CHECKED shows when a
+state was last confirmed, on the HOST line when shared or in a column when times
+differ. Loss without detach acknowledgement is unconfirmed.
 A confirmed detach is recorded immediately. Other computers' actions and remote
-exits require a later explicit query.
+exits require a later explicit query. Confirmed absent or exited cached shells
+are hidden by default; --verbose and --json include recent shell history. Ended
+shell history expires after seven days; failed or incomplete queries do not
+confirm disappearance. Use cancel to clear ended history; see sshore cancel --help.
+Recent connection shortcuts do not create task records.
 With HOST, announce and query that remote account over SSH. No local resource
 table is mixed into the remote result. All remote queries require the exact
 release and never install or update software. Query failures are reported.
---verbose adds remote process trees, foreground programs, directories and detailed
-resource state, including recent exits. --json emits version, host,
+--verbose adds LIFETIME, remote process trees, foreground programs, directories
+and detailed resource state, including recent exits. --json emits version, host,
 remote_queried, resources, shells, peers, exits and errors. Local shell records
 include historical, confirmed_at and local_connection_active. No control tokens
 or terminal output are exported; partial results may have a nonzero exit status.
 HOST groups identify where shells run and where mount/forward processes are managed.
 Local sessions appear first. REMOTE names a resource's connection target; shells
 show -. Peer records appear under their managing computer and remain read-only.
+CHECKED does not imply continuous liveness; - means no check time is available
+for this entry. NO_COLOR disables terminal colors; redirected output is plain.
 LIFETIME (lifetime in shell JSON) is fixed at startup: parent for local spawn,
 heartbeat for remote spawn, persistent for launch. Detach/attach never changes
 it. This is policy, not a live heartbeat health check. Use pstree for owner
 contexts and attachment sources.
 Unknown peer paths or ports are not inferred from descriptions. --verbose adds
-paths, descriptions, confirmation times and full peer identities.
+paths, descriptions and full peer identities.
 Worker running confirms the worker, not remote service health. Targets are
 never probed. Resource status checks have a two-second aggregate deadline.
 Numeric task IDs are stable, increasing and never reused; gaps are normal.
@@ -209,6 +240,10 @@ busy mounts remain active for a retry. Forwards close their own SSH connection
 and all connections carried by it. Local resources require the exact release
 version that started them; cancellation never kills PIDs from saved records.
 
+For confirmed exited/not-listed remote history, cancel ID or cancel HOST NAME
+clears the local record without SSH or process signals. Repeated cleanup succeeds
+while that history is retained. Other shell states still require remote checks.
+
 End the named shell and its identified tasks, including an attached shell.
 This takes effect immediately without confirmation; unsaved work may be lost.
 A named shell is resolved in the current runtime directory; confirmed task IDs
@@ -219,16 +254,16 @@ SSH options and --server are the same as sshore list; see sshore list --help.
 	"review": `Usage: sshore review [NAME] [--stay]
 
 Run from your LOCAL shell after detach. Review one pending request, select
-local file paths or a local port. Submitting all required valid inputs approves
+local file paths, a mountpoint or a local port. Submitting all required valid inputs approves
 and starts execution; there is no additional yes prompt. Ctrl-C cancels.
 Tab completes paths; invalid paths and ports can be retried.
 Authentication remains with system OpenSSH.
 By default, approved file operations complete and the remote shell resumes.
 --stay completes file operations, detaches and returns to the local shell.
-A port-forward approval always starts an independent background resource and
+A mount or port-forward approval starts an independent background resource and
 returns locally; --stay is not applicable. The source shell stays detached.
-Approved forwards retain the review name: review/NAME becomes forward/NAME.
-Use sshore list / sshore cancel forward/NAME. Names may include the review/ prefix.
+Approved resources retain the review name: review/NAME becomes mount/NAME or
+forward/NAME. Use sshore list / sshore cancel TYPE/NAME. Names may include the review/ prefix.
 Discard a pending request with sshore cancel review/NAME.
 Omit NAME to select a pending request; a single request opens directly.
 Selection: #number or exact name; /text filters, / shows all. Enter or Ctrl-C cancels.
@@ -247,9 +282,19 @@ sshore attach HOST NAME. Ctrl+B d detach locally.
 }
 
 const mountHelp = `Usage: sshore mount HOST [REMOTE_DIRECTORY [MOUNTPOINT]] [options] [-- SSH_OPTIONS]
+       sshore mount DIRECTORY origin:[MOUNTPOINT] [--read-only]   (remote shell)
 
 Mount a remote directory for local applications using SFTP (not plain FTP).
 Starts a named local background mount after SSH authentication succeeds.
+Inside a remote sshore shell, mount DIRECTORY origin: requests a mount on the
+attached client and detaches. Run review locally to select a mountpoint; Enter
+uses the automatic default when no path was suggested. An origin:PATH is only
+an editable suggestion. Review shows read-write/read-only access and starts a
+background mount, leaving the source shell detached. Only --read-only is accepted
+on remote requests; SSH settings come from the original connection. The source
+shell must still exist with the same name/PID, matching version and no attachment.
+Linux custom mountpoints must be existing empty directories; Windows accepts an
+unused drive letter or nonexistent directory. Cancel before submitting to defer.
 Defaults: remote home directory; ~/mnt/NAME on Linux, free drive on Windows.
 Use sshore list to find mount paths and sshore cancel mount/NAME to unmount.
 With --foreground, Ctrl-C requests a graceful unmount (10s grace).

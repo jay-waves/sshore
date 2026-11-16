@@ -196,8 +196,12 @@ func (n *ftpNotifications) ensure(dir string) {
 
 func (f *ftpFS) watchDirectory(dir string) { f.notifications.enqueue(dir) }
 
-func OpenMux(c io.ReadWriteCloser, version string) (*smux.Session, *smux.Stream, *smux.Stream, error) {
-	if err := writeMessage(c, message{Type: "mount_mux", SoftwareVersion: version}); err != nil {
+func OpenMux(c io.ReadWriteCloser, version string, approval ...*MountApproval) (*smux.Session, *smux.Stream, *smux.Stream, error) {
+	var source *MountApproval
+	if len(approval) > 0 {
+		source = approval[0]
+	}
+	if err := writeMessage(c, message{Type: "mount_mux", SoftwareVersion: version, Approval: source}); err != nil {
 		return nil, nil, nil, err
 	}
 	m, err := readMessage(c)

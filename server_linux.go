@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/jay-waves/sshore/internal/files"
 	transportio "github.com/jay-waves/sshore/internal/transport"
@@ -20,7 +21,7 @@ func serverCommand(args []string) error {
 		if len(args) != 1 {
 			return usage("mount-agent takes no arguments")
 		}
-		return files.ServeAgent(&transportio.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version)
+		return files.ServeAgent(&transportio.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version, func(a files.MountApproval) error { return checkApprovalSource(a.Session, a.PID, a.ID) })
 	case "rename-session":
 		if len(args) != 4 && len(args) != 5 {
 			return usage("rename-session requires old name, new name and client version")
@@ -86,6 +87,23 @@ func serverCommand(args []string) error {
 			return usage("usage: sshore sessions")
 		}
 		return listSessions()
+	case "mount":
+		op, err := remoteMountRequest(args[1:])
+		if err != nil {
+			return err
+		}
+		op.Path, err = filepath.Abs(op.Path)
+		if err != nil {
+			return err
+		}
+		info, err := os.Stat(op.Path)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("mount source must be a directory")
+		}
+		return requestOperations([]operation{op})
 	case "forward":
 		op, err := remoteForwardRequest(args[1:])
 		if err != nil {

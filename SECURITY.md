@@ -41,7 +41,7 @@ flowchart LR
         client["Connected client"]
         pending["Bounded, private, expiring request"]
         user["Local user"]
-        review["Separate local review: select paths or ports"]
+        review["Separate local review: select paths, mountpoint or ports"]
         grant["Fixed operation; consume approval once"]
         resources["Selected files, tunnel or mount"]
         control["Local daemon / workers: private capability + exact version"]
@@ -80,10 +80,10 @@ operations remain constrained by the authenticated account and SSH server policy
 ## Local approval
 
 **Threat:** a remote program asks the connected client to read a local file,
-write a destination, open a listener or reach a local service without consent.
+write a destination, expose a mount, open a listener or reach a local service without consent.
 
 Receiving a request saves bounded metadata and detaches. It does not execute a
-local shell command, open a listener or transfer a selected file. Unsolicited
+local shell command, create a mount, open a listener or transfer a selected file. Unsolicited
 transfer offers, forward-add streams and reverse connection streams are rejected.
 A suggested path or port, including `--download-dir`, is not permission.
 
@@ -214,7 +214,10 @@ paths/data, or leaves an application waiting indefinitely on uncertain writes.
 A local `mount` command explicitly grants access to a remote directory. Applications
 with access to that mount can read and, unless `--read-only` is set, overwrite,
 rename or delete files using the remote account's permissions. A remote program
-cannot request or approve a mount. Recovery mode rejects it.
+may request a mount through the [local approval gate](#local-approval), but cannot
+approve it or choose the final local mountpoint. Review displays the access mode;
+startup revalidates the original detached shell on the mount's SSH connection.
+The resulting mount is independent of that shell. Recovery mode rejects it.
 
 The selected root is a navigation boundary, **not remote-account confinement**.
 Remote symlinks can be followed with the account's permissions. Linux readlink
@@ -299,6 +302,12 @@ binaries and deliberately escaped/reparented tasks are not globally constrained.
 Explicit native SSH forwarding remains the local user's policy.
 
 ## Inventory and privacy
+
+Shell completion reads bounded local records, cached tasks and literal SSH aliases.
+It does not execute SSH configuration commands, contact hosts or daemons, create
+state or allocate IDs. Candidate text remains untrusted data and is quoted by shell
+adapters. Only static registration code is sourced; cached suggestions never bypass
+normal execution checks. Recovery produces no completion candidates.
 
 Public inventory is an allowlist: it excludes control addresses/tokens, SSH options
 and terminal contents. Shell process listings show sanitized same-user names and

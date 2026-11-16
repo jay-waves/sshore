@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -38,5 +39,26 @@ func TestMountAgentControlCompatibility(t *testing.T) {
 	}
 	if reply.Type != "mount_ready" || reply.SoftwareVersion != version {
 		t.Fatalf("incompatible mount reply: %+v", reply)
+	}
+}
+
+func TestMountApprovalSourceGate(t *testing.T) {
+	a, b := net.Pipe()
+	_ = b.SetDeadline(time.Now().Add(3 * time.Second))
+	defer b.Close()
+	called := make(chan files.MountApproval, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- files.ServeAgent(a, version, func(source files.MountApproval) error { called <- source; return fmt.Errorf("source changed") })
+	}()
+	approval := &files.MountApproval{Session: "work", PID: 123, ID: strings.Repeat("a", 32)}
+	if _, _, _, err := files.OpenMux(b, version, approval); err == nil || !strings.Contains(err.Error(), "source changed") {
+		t.Fatalf("gate bypassed: %v", err)
+	}
+	if got := <-called; got != *approval {
+		t.Fatal(got)
+	}
+	if err := <-done; err == nil {
+		t.Fatal("agent accepted failed approval")
 	}
 }

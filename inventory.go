@@ -232,6 +232,9 @@ func collectInventory(o options) (inventory, error) {
 			inv.Errors = append(inv.Errors, cleanText(err.Error()))
 		}
 		for _, s := range snapshots {
+			if s.Forgotten {
+				continue
+			}
 			inv.Shells = append(inv.Shells, shellView{Lifetime: shellLifetime(s.Temporary, true), Temporary: s.Temporary, Instance: s.Instance, ID: shellTaskName(s.Name, s.Temporary), Host: s.Host, Name: s.Name, State: s.State, ConfirmedAt: s.ConfirmedAt, Unconfirmed: s.Unconfirmed, Active: s.Active, Historical: true})
 		}
 		inv.Peers, err = collectPeerViews()

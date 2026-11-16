@@ -251,11 +251,21 @@ func runRemoteShellID(id uint64, args []string) (int, bool, error) {
 		return 1, true, err
 	}
 	for _, s := range rows {
-		if s.State == "renamed" || s.State == "not-listed" || s.State == "exited" {
+		if s.State == "renamed" {
 			continue
 		}
 		if ids[remoteShellIdentity(s.Host, s.Instance)] != id {
 			continue
+		}
+		if endedShellState(s.State) {
+			if args[0] != "cancel" {
+				return 1, true, fmt.Errorf("task %d has ended; use sshore cancel %d to clear its history", id, id)
+			}
+			cleared, err := forgetEndedShell(s.Host, s.Name, s.Instance)
+			if err == nil && !cleared {
+				err = fmt.Errorf("shell record changed; refresh with sshore list")
+			}
+			return 0, true, err
 		}
 		if args[0] == "review" {
 			return 2, true, fmt.Errorf("task %d is a shell, not a review", id)

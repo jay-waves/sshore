@@ -555,6 +555,27 @@ only; remote shell hosting remains Linux-only.
 NOTES
 fi
 
+if [[ "$version" == "0.6.11" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Support mount DIRECTORY origin: requests from remote shells through local review, with mountpoint selection, optional --read-only and original-shell validation on the mount connection.
+- Add Bash, Zsh, Fish and PowerShell completion from shared command definitions, using local hints without SSH, daemon probes or state mutation.
+- Simplify list with host-level or per-row CHECKED times, subdued terminal colors and lifetime details under --verbose; preserve machine-readable JSON fields.
+- Present pstree with HOST roots, compact state labels, cross-host suffixes and current-shell highlighting while retaining spawn ownership.
+- Hide confirmed ended shells from default list and pstree, reconcile exit/cancel observations with stored relationships, and expire ended list history after seven days.
+- Let cancel ID and cancel HOST NAME clear confirmed exited/not-listed history locally without SSH or signals; prevent stale IDs from clearing replacement instances.
+- Consolidate command parsing and adapters, and keep completion candidates separate from execution authority.
+
+Client and remote releases must match exactly. Updating older remote shells ends
+listed shells and tasks only after you review them and type update. Offline list
+does not probe remote hosts; run list HOST to refresh that account. Historical
+connection shortcuts no longer create task rows. Use completion --help for shell
+registration and list --help for display/history behavior. Linux and Windows
+amd64 only; remote shell hosting remains Linux-only.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."

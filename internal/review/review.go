@@ -22,6 +22,7 @@ const MaxRecord = 128 * 1024
 
 type Operation struct {
 	Kind       string `json:"kind"`
+	ReadOnly   bool   `json:"read_only,omitempty"`
 	Path       string `json:"path,omitempty"`
 	Name       string `json:"name,omitempty"`
 	Size       int64  `json:"size,omitempty"`
@@ -72,14 +73,20 @@ func ValidateOperations(ops []Operation) error {
 		if len(op.LocalHint) > 4096 || strings.ContainsAny(op.LocalHint, "\x00\r\n") {
 			return fmt.Errorf("invalid local endpoint hint")
 		}
+		if op.ReadOnly && op.Kind != "mount" {
+			return fmt.Errorf("unexpected read-only flag")
+		}
 		switch op.Kind {
-		case "download", "upload":
+		case "download", "upload", "mount":
 			// The remote server is Linux, even when the client is Windows.
 			if !strings.HasPrefix(op.Path, "/") || len(op.Path) > 4096 || strings.ContainsAny(op.Path, "\x00\r\n") {
 				return fmt.Errorf("invalid remote path")
 			}
 			if op.Port != 0 || op.TargetPort != 0 || op.Reverse {
 				return fmt.Errorf("unexpected port in file request")
+			}
+			if op.Kind == "mount" && len(ops) != 1 {
+				return fmt.Errorf("mount requests cannot be batched")
 			}
 			if op.Kind == "download" {
 				if err := files.ValidateName(op.Name); err != nil {

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"github.com/jay-waves/sshore/internal/files"
 	"runtime"
 	"strings"
+	"time"
 )
 
 type copyEndpoint struct {
@@ -63,19 +65,13 @@ func parseCopyEndpoint(value string) (copyEndpoint, error) {
 
 func parseCopyCommand(args []string) (copyOptions, error) {
 	var o copyOptions
-	parsed, err := parseCLI(args, nil, true, false)
+	parsed, err := parseCLI(args, "cp")
 	if err != nil {
 		return o, err
 	}
 	args, o.ssh = parsed.operands, parsed.ssh
-	if len(args) < 2 {
-		return o, usage("use cp SOURCE... TARGET [-- SSH_OPTIONS]")
-	}
 	var endpoints []copyEndpoint
 	for _, a := range args {
-		if a != "-" && strings.HasPrefix(a, "-") {
-			return o, usage("prefix filenames beginning with '-' with ./")
-		}
 		e, err := parseCopyEndpoint(a)
 		if err != nil {
 			return o, err
@@ -107,6 +103,46 @@ func parseCopyCommand(args []string) (copyOptions, error) {
 	}
 	if len(o.sources) > maxApprovalItems {
 		return o, usage("at most %d files per copy", maxApprovalItems)
+	}
+	return o, nil
+}
+
+type ftpOptions struct {
+	approval                  *files.MountApproval
+	ioTimeout, startupTimeout time.Duration
+	host, remote, mountpoint  string
+	ssh                       []string
+	readOnly                  bool
+	directIO                  bool
+	foreground                bool
+	stats                     bool
+	noWatch                   bool
+	server                    string
+	name                      string
+}
+
+func parseFTPOptions(args []string) (ftpOptions, error) {
+	parsed, err := parseCLI(args, "mount")
+	if err != nil {
+		return ftpOptions{}, err
+	}
+	for _, value := range parsed.operands {
+		if originEndpoint(value) {
+			return ftpOptions{}, usage("origin: mount requests require an attached sshore shell; run mount HOST DIRECTORY locally")
+		}
+	}
+	o := ftpOptions{
+		host: parsed.operand(0, ""), remote: parsed.operand(1, "."), mountpoint: parsed.operand(2, ""),
+		ssh: parsed.ssh, name: parsed.values["--name"], server: parsed.value("--server", "sshore"),
+		foreground: parsed.has("--foreground"), noWatch: parsed.has("--no-watch"),
+		readOnly: parsed.has("--read-only"), stats: parsed.has("--stats"), directIO: parsed.has("--direct-io"),
+		ioTimeout: parsed.duration("--io-timeout", 60*time.Second), startupTimeout: parsed.duration("--startup-timeout", 0),
+	}
+	if err := validSSHDestination(o.host); err != nil {
+		return o, err
+	}
+	if strings.ContainsRune(o.remote, 0) || strings.ContainsRune(o.mountpoint, 0) {
+		return o, usage("invalid mount path")
 	}
 	return o, nil
 }

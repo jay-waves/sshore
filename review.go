@@ -139,6 +139,10 @@ func runReview(args []string) (code int, resultErr error) {
 	if err != nil {
 		return 2, err
 	}
+	return executeReview(a)
+}
+
+func executeReview(a reviewOptions) (code int, resultErr error) {
 	// Never invite a user to enter approval input inside a normal remote shell.
 	if os.Getenv("SSHORE_SOCKET") != "" || os.Getenv("SSH_CONNECTION") != "" {
 		return 1, fmt.Errorf("run review from your local shell after detach")
@@ -186,13 +190,13 @@ func runReview(args []string) (code int, resultErr error) {
 	if err != nil {
 		return 1, err
 	}
-	if a.stay && len(r.Operations) == 1 && r.Operations[0].Kind == "forward" {
-		return 2, usage("--stay applies only to file transfers; forwards always return locally")
+	if a.stay && len(r.Operations) == 1 && (r.Operations[0].Kind == "forward" || r.Operations[0].Kind == "mount") {
+		return 2, usage("--stay applies only to file transfers; mounts and forwards always return locally")
 	}
 	termui.Log(os.Stdout, termui.Info, "Review %s · %s / %s\n", r.DisplayName(), cleanText(r.Host), r.Session)
 	termui.Log(os.Stdout, termui.Info, "Submit all paths or port to start; Ctrl-C cancels.\n")
-	if len(r.Operations) == 1 && r.Operations[0].Kind == "forward" {
-		termui.Log(os.Stdout, termui.Info, "After: background forward; shell detached.\n")
+	if len(r.Operations) == 1 && (r.Operations[0].Kind == "forward" || r.Operations[0].Kind == "mount") {
+		termui.Log(os.Stdout, termui.Info, "After: background %s; shell detached.\n", r.Operations[0].Kind)
 	} else if a.stay {
 		termui.Log(os.Stdout, termui.Info, "After: local.\n")
 	} else {
@@ -246,6 +250,20 @@ func runReview(args []string) (code int, resultErr error) {
 			}
 			op.LocalPath = path
 			termui.Log(os.Stdout, termui.Info, "Source: %s · %s\n", cleanText(path), displayBytes(op.Size))
+		case "mount":
+			if e := files.CheckMountPlatform(); e != nil {
+				return 1, e
+			}
+			mode := "read-write"
+			if op.ReadOnly {
+				mode = "read-only"
+			}
+			termui.Log(os.Stdout, termui.Info, "Mount %s · %s\n", cleanText(op.Path), mode)
+			mountpoint, e := readMountApprovalPath(input, op.LocalHint)
+			if e != nil {
+				return 1, e
+			}
+			op.LocalPath = mountpoint
 		case "forward":
 			remote := op.ServerPort()
 			label := "Local listening port"
@@ -297,6 +315,22 @@ func runReview(args []string) (code int, resultErr error) {
 	defer reservation.Close()
 	if err = consumeApproval(dir, r.ID); err != nil {
 		return 1, err
+	}
+	if len(r.Operations) == 1 && r.Operations[0].Kind == "mount" {
+		op := r.Operations[0]
+		args := []string{r.Host, op.Path}
+		if op.LocalPath != "" {
+			args = append(args, op.LocalPath)
+		}
+		args = append(args, "--server", r.Server)
+		if op.ReadOnly {
+			args = append(args, "--read-only")
+		}
+		if len(r.SSH) > 0 {
+			args = append(args, "--")
+			args = append(args, r.SSH...)
+		}
+		return startReservedResource(resourceConfig{Args: args, MountApproval: &files.MountApproval{Session: r.Session, PID: r.PID, ID: r.ID}}, "mount", reservation)
 	}
 	if len(r.Operations) == 1 && r.Operations[0].Kind == "forward" {
 		op := r.Operations[0]
