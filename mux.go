@@ -8,7 +8,6 @@ import (
 
 	"github.com/xtaci/smux"
 
-	"github.com/jay-waves/sshore/internal/shell"
 	"github.com/jay-waves/sshore/internal/tmux"
 	transportio "github.com/jay-waves/sshore/internal/transport"
 )
@@ -17,8 +16,8 @@ import (
 // smux v2 streams over one SSH connection, not native OpenSSH channels. The
 // handshake requires the exact full sshore release, including PATCH; there is no
 // separate sshore protocol compatibility counter. Running daemons cannot upgrade
-// in place. Each stream has a 256 KiB receive window, a bounded shared receive
-// budget and a 16 KiB maximum frame size. These isolate stalled streams without
+// in place. Per-stream windows and the shared receive budget are owned by
+// transport.MuxConfig. These isolate stalled streams without
 // guaranteeing real-time terminal priority: TCP head-of-line blocking still applies.
 // Keepalives detect silent transport loss (10s interval, 60s timeout); detection
 // releases the attachment while preserving the shell.
@@ -103,12 +102,12 @@ func validateAttach(m message) error {
 }
 
 type attachment struct {
-	*shell.Attachment
+	*tmux.Attachment
 	approvalRequests chan struct{}
 }
 
 func newAttachment(mx *smux.Session, control, terminal *smux.Stream) *attachment {
-	return &attachment{Attachment: shell.NewAttachment(mx, control, terminal), approvalRequests: make(chan struct{}, 8)}
+	return &attachment{Attachment: tmux.NewAttachment(mx, control, terminal), approvalRequests: make(chan struct{}, 8)}
 }
 func (p *attachment) controlMessage(m message) error { return p.Control(m.Type, m.Data, m) }
 func (p *attachment) output(m message) error         { return p.Output(m.Type, m.Data, m) }

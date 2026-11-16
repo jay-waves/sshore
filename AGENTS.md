@@ -22,14 +22,18 @@ See [terminal and mux design scope](SSHORE.md#terminal-and-mux-design-scope).
 Use GLOSSARY.md terminology for code organization. Name business packages and
 file groups after public commands (`cp`, `mount`, `forward`, `review`); `cp`
 and `mount` share the flat `internal/files` package. Keep
-shared infrastructure named for its responsibility. Use `internal/shell` for shell
-mechanisms shared by launch, spawn, attach and detach. CLI dispatch and release
-version policy remain in the main program.
+shared infrastructure named for its responsibility. `internal/tmux` owns terminal
+and shell mechanisms shared by launch, spawn, attach and detach. Keep command
+policy, review records, forward lifecycle, private application state and release
+version policy in the main program; do not split out packages solely for small helpers.
 
 ## File cohesion
 
 - Keep modules highly cohesive and loosely coupled: one clear responsibility,
   explicit ownership and small interfaces. Extend existing modules before adding abstractions.
+- Keep black-box integration tests under `tests/`, using CLI/protocol or exported APIs. Keep tests of private implementation beside their owning packages; do not expose production internals or use overlays to relocate them.
+- Merge small, simple helpers into their concept's module; retain separate files when platform or build constraints require them.
+- Consolidate small native adapters by module and supported platform (`*_linux.go` / `*_windows.go`); keep test-only build constraints separate.
 - Group tests by module behavior and functional boundaries, not by source file,
   helper or individual regression. Preserve platform and build-tag isolation.
 - Use 200–500 lines per file as a guide, not a quota; cohesion takes priority.

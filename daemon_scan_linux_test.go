@@ -79,12 +79,12 @@ func TestProbeSessionDaemon(t *testing.T) {
 				_ = c.SetDeadline(time.Now().Add(time.Second))
 				_, err = readMessage(c)
 				if err == nil {
-					err = writeMessage(c, message{Type: "session", PID: tc.pid, Attached: tc.attached})
+					err = writeMessage(c, message{Type: "session", Name: "renamed", PID: tc.pid, Attached: tc.attached})
 				}
 				done <- err
 			}()
 			got := probeSessionDaemon(daemonProcess{pid: os.Getpid(), name: "main", socket: socket}, time.Now().Add(time.Second))
-			if got.state != tc.state {
+			if got.state != tc.state || got.name != "renamed" {
 				t.Fatal(got)
 			}
 			if err := <-done; err != nil {

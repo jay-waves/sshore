@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	statefs "github.com/jay-waves/sshore/internal/state"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -25,7 +24,7 @@ func endedShellState(state string) bool {
 // Serialize refresh and expiry with snapshot writers so cleanup cannot erase a
 // newly connected shell. Live-connection locks are separate and never removed.
 func lockShellCache() (*os.File, error) {
-	dir, err := statefs.Dir("shells")
+	dir, err := stateDir("shells")
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +33,7 @@ func lockShellCache() (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = statefs.Private(path, false); err != nil {
+	if err = privateStatePath(path, false); err != nil {
 		f.Close()
 		return nil, err
 	}
@@ -68,7 +67,7 @@ func shellCachePath(host, name string) (string, error) {
 	if validSSHDestination(host) != nil || validSession(name) != nil {
 		return "", fmt.Errorf("invalid shell identity")
 	}
-	dir, err := statefs.Dir("shells")
+	dir, err := stateDir("shells")
 	if err != nil {
 		return "", err
 	}
@@ -94,7 +93,7 @@ func saveShellSnapshotLocked(s shellSnapshot) error {
 			return err
 		}
 	}
-	return statefs.WriteJSON(path, s)
+	return writeStateJSON(path, s)
 }
 func readShellSnapshots() ([]shellSnapshot, error) {
 	lock, err := lockShellCache()
@@ -105,7 +104,7 @@ func readShellSnapshots() ([]shellSnapshot, error) {
 	return readShellSnapshotsLocked()
 }
 func readShellSnapshotsLocked() ([]shellSnapshot, error) {
-	dir, err := statefs.Dir("shells")
+	dir, err := stateDir("shells")
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +118,7 @@ func readShellSnapshotsLocked() ([]shellSnapshot, error) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
-		if err := statefs.Private(path, false); err != nil {
+		if err := privateStatePath(path, false); err != nil {
 			return nil, err
 		}
 		f, err := os.Open(path)
@@ -192,7 +191,7 @@ func trackShellConnection(o options) (*shellConnection, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = statefs.Private(path+".live", false); err == nil {
+	if err = privateStatePath(path+".live", false); err == nil {
 		err = lockResourceState(f)
 	}
 	if err != nil {
@@ -300,7 +299,7 @@ func renameShellSnapshotLocked(host, old, name string) error {
 	if err != nil {
 		return err
 	}
-	if err = statefs.Private(oldPath, false); os.IsNotExist(err) {
+	if err = privateStatePath(oldPath, false); os.IsNotExist(err) {
 		return nil
 	} else if err != nil {
 		return err

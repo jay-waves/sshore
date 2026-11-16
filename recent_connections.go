@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	statefs "github.com/jay-waves/sshore/internal/state"
 	"github.com/jay-waves/sshore/internal/transport"
 )
 
@@ -21,7 +20,7 @@ type recentConnection struct {
 }
 
 func readRecentConnections() ([]recentConnection, error) {
-	dir, err := statefs.Dir("connections")
+	dir, err := stateDir("connections")
 	if err != nil {
 		return nil, err
 	}
@@ -118,11 +117,11 @@ func rememberConnection(o options) error {
 			next = append(next, old)
 		}
 	}
-	dir, err := statefs.Dir("connections")
+	dir, err := stateDir("connections")
 	if err != nil {
 		return err
 	}
-	return statefs.WriteJSON(filepath.Join(dir, "recent.json"), next)
+	return writeStateJSON(filepath.Join(dir, "recent.json"), next)
 }
 
 // rememberShellRename changes cached labels only after a successful remote rename.
@@ -147,11 +146,11 @@ func rememberShellRename(host, old, name string) error {
 		}
 	}
 	if changed {
-		dir, e := statefs.Dir("connections")
+		dir, e := stateDir("connections")
 		if e != nil {
 			return errors.Join(snapshotErr, e)
 		}
-		err = statefs.WriteJSON(filepath.Join(dir, "recent.json"), records)
+		err = writeStateJSON(filepath.Join(dir, "recent.json"), records)
 	}
 	return errors.Join(snapshotErr, err)
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -82,57 +81,6 @@ func TestOwnedSSHTransport(t *testing.T) {
 		t.Fatal(args)
 	}
 }
-func TestApprovalMismatchDoesNotWriteFile(t *testing.T) {
-	client, server := muxPair(t)
-	target := filepath.Join(t.TempDir(), "secret")
-	go func() {
-		st, err := server.AcceptStream()
-		if err != nil {
-			return
-		}
-		defer st.Close()
-		_, _ = readMessage(st)
-		_ = writeMessage(st, message{Type: "offer", Name: "other", Size: 3})
-	}()
-	err := executeApprovedFile(context.Background(), client, operation{Kind: "download", Path: "/tmp/a", Name: "a", Size: 3, LocalPath: target}, false)
-	if err == nil {
-		t.Fatal("mismatch accepted")
-	}
-	if _, err = os.Stat(target); !os.IsNotExist(err) {
-		t.Fatal("wrote unapproved file", err)
-	}
-}
-
-func TestChangedUploadIsNotSent(t *testing.T) {
-	client, server := muxPair(t)
-	path := filepath.Join(t.TempDir(), "source")
-	if err := os.WriteFile(path, []byte("changed"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	result := make(chan error, 1)
-	go func() {
-		st, err := server.AcceptStream()
-		if err != nil {
-			result <- err
-			return
-		}
-		defer st.Close()
-		_, err = readMessage(st)
-		result <- err
-	}()
-	err := executeApprovedFile(context.Background(), client, operation{Kind: "upload", Path: "/tmp", Name: "source", Size: 1, LocalPath: path}, true)
-	if err == nil {
-		t.Fatal("changed upload accepted")
-	}
-	select {
-	case err := <-result:
-		if err == nil {
-			t.Fatal("unapproved upload sent")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("worker did not close")
-	}
-}
 
 func TestApprovalRejectsDifferentRelease(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
@@ -186,4 +134,35 @@ func reviewName(t *testing.T, id string) string {
 		t.Fatal(err)
 	}
 	return r.DisplayName()
+}
+
+func TestApprovalValidation(t *testing.T) {
+	for _, ops := range [][]operation{
+		nil, {{Kind: "mount", Path: "relative"}}, {{Kind: "mount", Path: "/tmp", Port: 80}},
+		{{Kind: "mount", Path: "/tmp"}, {Kind: "upload", Path: "/tmp"}},
+		{{Kind: "upload", Path: "/tmp", ReadOnly: true}}, {{Kind: "exec", Path: "/bin/sh"}}, {{Kind: "download", Path: "/tmp/a", Name: "../a", Size: 1}},
+		{{Kind: "download", Path: "relative", Name: "a", Size: 1}}, {{Kind: "download", Path: "/a", Name: "a", Size: -1}},
+		{{Kind: "forward", Port: 80, Reverse: true, TargetPort: -1}},
+		{{Kind: "upload", Path: "/tmp", Reverse: true}},
+		{{Kind: "forward", Port: 0}}, {{Kind: "forward", Port: 80, Path: "/a"}},
+		{{Kind: "upload", Path: "/tmp", Name: "secret"}},
+	} {
+		if validateApprovalOperations(ops) == nil {
+			t.Fatal("accepted", ops)
+		}
+	}
+	if err := validateApprovalOperations([]operation{{Kind: "forward", Port: 7777, TargetPort: 6666}}); err != nil {
+		t.Fatal("valid remote target rejected:", err)
+	}
+	if err := validateApprovalOperations([]operation{{Kind: "mount", Path: "/tmp", ReadOnly: true}}); err != nil {
+		t.Fatal(err)
+	}
+	// A malicious peer cannot deserialize a chosen local path.
+	var op operation
+	if err := json.Unmarshal([]byte(`{"kind":"upload","path":"/tmp","LocalPath":"/etc/passwd"}`), &op); err != nil {
+		t.Fatal(err)
+	}
+	if op.LocalPath != "" {
+		t.Fatal("remote selected local path")
+	}
 }

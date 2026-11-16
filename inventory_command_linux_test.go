@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 func TestListScopes(t *testing.T) {
@@ -20,7 +18,7 @@ func TestListScopes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = statefs.WriteJSON(filepath.Join(dir, "local-only.json"), resourceRecord{Kind: "forward", Name: "local-only", Host: "work", Version: version}); err != nil {
+	if err = writeStateJSON(filepath.Join(dir, "local-only.json"), resourceRecord{Kind: "forward", Name: "local-only", Host: "work", Version: version}); err != nil {
 		t.Fatal(err)
 	}
 	if err = saveShellSnapshot(shellSnapshot{Host: "work", Name: "cached", State: "detached", ConfirmedAt: time.Now()}); err != nil {
@@ -72,7 +70,7 @@ func TestInventoryOmitsExpiredExitReceipts(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, age := range map[string]time.Duration{"recent": time.Hour, "expired": 8 * 24 * time.Hour} {
-		if err := statefs.WriteJSON(filepath.Join(dir, name+".sock.exit.json"), sessionExit{Name: name, Reason: "exited", At: time.Now().Add(-age)}); err != nil {
+		if err := writeStateJSON(filepath.Join(dir, name+".sock.exit.json"), sessionExit{Name: name, Reason: "exited", At: time.Now().Add(-age)}); err != nil {
 			t.Fatal(err)
 		}
 	}

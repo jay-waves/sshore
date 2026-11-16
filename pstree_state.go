@@ -7,13 +7,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-
-	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 // Display-only attachment snapshots; never used for authorization or signaling.
 func shellTreePath(id string) (string, error) {
-	dir, err := statefs.Dir("shell-tree")
+	dir, err := stateDir("shell-tree")
 	if err != nil {
 		return "", err
 	}
@@ -105,12 +103,12 @@ func saveShellTree(id, name string, chain []shellTreeNode, state string, lifetim
 	}
 	chain = append(chain, self)
 	if data, err := json.Marshal(chain); err == nil && len(data) <= 64*1024 {
-		_ = statefs.WriteFile(path, data)
+		_ = writeStateFile(path, data)
 	}
 }
 
 func knownShellTrees() []shellTreeNode {
-	dir, err := statefs.Dir("shell-tree")
+	dir, err := stateDir("shell-tree")
 	if err != nil {
 		return nil
 	}
@@ -155,7 +153,7 @@ func rememberShellTree(chain []shellTreeNode) {
 		if len(existing) > 0 && (!existing[len(existing)-1].Cached || endedShellState(existing[len(existing)-1].State)) {
 			return
 		}
-		_ = statefs.WriteJSON(path, chain)
+		_ = writeStateJSON(path, chain)
 	}
 }
 
@@ -167,7 +165,7 @@ func renameShellTree(id, name string) {
 	chain[len(chain)-1].Name = name
 	path, err := shellTreePath(id)
 	if err == nil {
-		_ = statefs.WriteJSON(path, chain)
+		_ = writeStateJSON(path, chain)
 	}
 }
 
@@ -191,5 +189,5 @@ func recordRemoteShellTreeState(s shellSnapshot) error {
 	self.State, self.Parent, self.Current = s.State, "", false
 	// Retain terminal evidence so older copies in descendant snapshots cannot
 	// resurrect this instance after its list history expires or is forgotten.
-	return statefs.WriteJSON(path, []shellTreeNode{self})
+	return writeStateJSON(path, []shellTreeNode{self})
 }

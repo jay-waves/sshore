@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -56,5 +59,78 @@ func TestClientMuxRejectsDifferentOrUnknownBuild(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestAttachmentRejectsTunnelStreams(t *testing.T) {
+	client, server := muxPair(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go serveApprovedStreams(ctx, server)
+	for _, kind := range []string{"forward_connect", "forward_control"} {
+		st, e := client.OpenStream()
+		if e != nil {
+			t.Fatal(e)
+		}
+		st.SetDeadline(time.Now().Add(time.Second))
+		if e = writeMessage(st, message{Type: kind, Action: "add"}); e != nil {
+			t.Fatal(e)
+		}
+		if m, e := readMessage(st); e == nil {
+			t.Fatalf("obsolete attachment tunnel accepted: %+v", m)
+		}
+		st.Close()
+	}
+}
+
+func TestApprovalMismatchDoesNotWriteFile(t *testing.T) {
+	client, server := muxPair(t)
+	target := filepath.Join(t.TempDir(), "secret")
+	go func() {
+		st, err := server.AcceptStream()
+		if err != nil {
+			return
+		}
+		defer st.Close()
+		_, _ = readMessage(st)
+		_ = writeMessage(st, message{Type: "offer", Name: "other", Size: 3})
+	}()
+	err := executeApprovedFile(context.Background(), client, operation{Kind: "download", Path: "/tmp/a", Name: "a", Size: 3, LocalPath: target}, false)
+	if err == nil {
+		t.Fatal("mismatch accepted")
+	}
+	if _, err = os.Stat(target); !os.IsNotExist(err) {
+		t.Fatal("wrote unapproved file", err)
+	}
+}
+
+func TestChangedUploadIsNotSent(t *testing.T) {
+	client, server := muxPair(t)
+	path := filepath.Join(t.TempDir(), "source")
+	if err := os.WriteFile(path, []byte("changed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		st, err := server.AcceptStream()
+		if err != nil {
+			result <- err
+			return
+		}
+		defer st.Close()
+		_, err = readMessage(st)
+		result <- err
+	}()
+	err := executeApprovedFile(context.Background(), client, operation{Kind: "upload", Path: "/tmp", Name: "source", Size: 1, LocalPath: path}, true)
+	if err == nil {
+		t.Fatal("changed upload accepted")
+	}
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("unapproved upload sent")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not close")
 	}
 }

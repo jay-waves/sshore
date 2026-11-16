@@ -19,8 +19,6 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
-
-	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 type sessionExit struct {
@@ -71,7 +69,7 @@ func saveSessionExit(socket, name, reason string) {
 		return
 	}
 	defer gate.Close()
-	if statefs.WriteJSON(socket+".exit.json", sessionExit{Name: name, Reason: reason, At: time.Now().UTC()}) != nil {
+	if writeStateJSON(socket+".exit.json", sessionExit{Name: name, Reason: reason, At: time.Now().UTC()}) != nil {
 		return
 	}
 	pruneSessionExits(dir)

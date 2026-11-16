@@ -88,7 +88,7 @@ func run(args []string) (code int, resultErr error) {
 			return 0, detachLocalShell(identity)
 		}
 		return 0, serverCommand(args)
-	case "forward-watch", "mount-agent", "bridge", "resume", "daemon", "sessions", "bootstrap", "kill-session", "rename-session", "task-watch", "task-remove", "inventory":
+	case "forward-watch", "mount-agent", "cp-agent", "bridge", "resume", "daemon", "sessions", "bootstrap", "kill-session", "rename-session", "task-watch", "task-remove", "inventory":
 		return 0, serverCommand(args)
 	}
 	return 2, usage("unknown command: %s", args[0])

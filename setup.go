@@ -90,8 +90,8 @@ func negotiateSetupUsing(ctx context.Context, r io.Reader, w io.Writer, o *optio
 			}
 		case "setup_ready":
 			if m.Action == "plain" {
-				if o.command == "mount-agent" {
-					return fmt.Errorf("mount setup requires manual recovery; use sshore launch %s", cleanText(o.host))
+				if o.command == "mount-agent" || o.command == "cp-agent" {
+					return fmt.Errorf("helper setup requires manual recovery; use sshore launch %s", cleanText(o.host))
 				}
 				if len(o.approved) > 0 {
 					log(termui.Warning, "[sshore] Operations skipped; reconnect and request again.\n")
@@ -166,7 +166,7 @@ func chooseSetupAction(m message, o *options, openInput func() (setupInput, erro
 	for _, p := range m.SetupProcesses {
 		termui.Log(os.Stderr, termui.Warning, "  %s  PID %d  %s\n", cleanText(p.Name), p.PID, cleanText(p.Version))
 	}
-	helper := o.command == "mount-agent"
+	helper := o.command == "mount-agent" || o.command == "cp-agent"
 	if helper && m.Action == "manual-only" {
 		return "", fmt.Errorf("automatic setup unavailable; use sshore launch %s for manual recovery", cleanText(o.host))
 	}

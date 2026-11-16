@@ -233,6 +233,7 @@ SSH options are the same as sshore list; see sshore list --help.
 With HOST, include that account's shells/resources and local resources connected
 to HOST. Without HOST, stop local shells/resources only; cached remote shells and
 other computers' read-only tasks are excluded. Tasks created later are not stopped.
+The local background manager exits as soon as its remaining tasks finish.
 
 Cancel a pending request or stop a local resource shown by sshore list.
 Pending requests are discarded without executing them. Mounts unmount first;
@@ -355,8 +356,11 @@ Standard streams are not available in remote approval requests.
 At most 16 regular files; no symlinks, recursive directories, overwrites, metadata
 copying, local-only or remote-to-remote copies. Multiple sources require a target
 directory. A single target may be a directory or a new filename.
-Local copies use an independent SFTP connection; no shell session, remote sshore
-installation, FUSE or WinFsp is required. File destinations must support hard links.
+Local copies use an independent connection and require matching remote sshore.
+Missing software is installed through helper setup; updating older versions requires
+typing update and ends the listed shells/tasks. No persistent shell, FUSE or WinFsp
+is required. Uploads are verified on the receiver without downloading them again.
+File destinations must support hard links.
 
 origin: and : are equivalent placeholders for a locally selected path.
 On your computer, they open a local selector. Inside a remote sshore shell,

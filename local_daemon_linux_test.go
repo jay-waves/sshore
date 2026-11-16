@@ -6,126 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/creack/pty"
 )
-
-func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
-	e := newEnv(t)
-	state := filepath.Join(e.dir, "daemon-state")
-	env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSHORE_LOCAL_SESSION=", "SSHORE_TEST_VALUE=first")
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	saved := make(chan struct{}, 1)
-	start := func(args []string, environment []string) (*exec.Cmd, *os.File, <-chan string) {
-		t.Helper()
-		cmd := exec.CommandContext(ctx, e.bin, args...)
-		cmd.Env = environment
-		terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 160, Rows: 30})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			terminal.Close()
-			if cmd.ProcessState == nil {
-				cmd.Process.Kill()
-				cmd.Wait()
-			}
-		})
-		ready := make(chan struct{}, 1)
-		done := make(chan string, 1)
-		go func() {
-			var b strings.Builder
-			buf := make([]byte, 4096)
-			announced := false
-			for {
-				n, err := terminal.Read(buf)
-				b.Write(buf[:n])
-				if !announced && strings.Contains(b.String(), "Connected local /") {
-					announced = true
-					ready <- struct{}{}
-				}
-				if strings.Contains(b.String(), "SAVED_first_VALUE") {
-					select {
-					case saved <- struct{}{}:
-					default:
-					}
-				}
-				if err != nil {
-					done <- b.String()
-					return
-				}
-			}
-		}()
-		select {
-		case <-ready:
-		case text := <-done:
-			t.Fatalf("client ended: %s", text)
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		}
-		return cmd, terminal, done
-	}
-	run := func(args ...string) []byte {
-		t.Helper()
-		cmd := exec.CommandContext(ctx, e.bin, args...)
-		cmd.Env = env
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("%v: %v %s", args, err, out)
-		}
-		return out
-	}
-	first, terminal, _ := start([]string{"launch", "--local", "persistent"}, env)
-	defer run("cancel", "--local", "persistent")
-	first.Process.Kill()
-	first.Wait()
-	terminal.Close()
-	var rows []localShellView
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		if err := json.Unmarshal(run("list", "--local", "--json"), &rows); err != nil {
-			t.Fatal(err)
-		}
-		if len(rows) == 1 && rows[0].State == "detached" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("client loss did not preserve shell: %+v", rows)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	pid := rows[0].PID
-	second, terminal, done := start([]string{"attach", "--local", "persistent"}, append(env, "SSHORE_TEST_VALUE=second"))
-	io.WriteString(terminal, "printf 'SAVED_%s_VALUE\\n' \"$SSHORE_TEST_VALUE\"\n")
-	select {
-	case <-saved:
-	case <-ctx.Done():
-		t.Fatal("shell did not answer", ctx.Err())
-	}
-	io.WriteString(terminal, "\x02d")
-	if err := second.Wait(); err != nil {
-		t.Fatal(err)
-	}
-	terminal.Close()
-	output := <-done
-	if !strings.Contains(output, "SAVED_first_VALUE") {
-		t.Fatalf("shell environment changed or input lost: %s", output)
-	}
-	if err := json.Unmarshal(run("list", "--local", "--json"), &rows); err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 || rows[0].PID != pid || rows[0].State != "detached" {
-		t.Fatalf("shell identity changed: %+v", rows)
-	}
-}
 
 func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 	e := newEnv(t)
@@ -180,5 +67,53 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 		if string(raw) != fmt.Sprintf("%d\n%s\n", manager.ManagerPID, e.dir) {
 			t.Fatalf("forward has a wrapper process or lost cwd: %s", raw)
 		}
+	}
+}
+
+func TestLocalDaemonIgnoresOrphanedVersion(t *testing.T) {
+	e := newEnv(t)
+	for _, old := range []string{"0.0.1", "999.0.0", "unknown"} {
+		t.Run(old, func(t *testing.T) {
+			state := filepath.Join(t.TempDir(), "state")
+			t.Setenv("SSHORE_STATE_DIR", state)
+			path, err := daemonPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := localShellRecord{Name: "daemon", Address: "127.0.0.1:1", Token: strings.Repeat("a", 64), Version: old}
+			data, _ := json.Marshal(r)
+			if err = os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			// A live owner must still reject the mismatch, even if it cannot answer.
+			owner, err := daemonFileLock("owner")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = ensureLocalDaemon()
+			owner.Close()
+			if err == nil {
+				t.Fatal("live incompatible owner was replaced")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSHORE_LOCAL_SESSION=")
+			cmd := exec.CommandContext(ctx, e.bin, "spawn", "--local", "fresh", "--detach")
+			cmd.Env = env
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("orphaned record blocked spawn: %v %s", err, out)
+			}
+			defer func() {
+				cmd := exec.CommandContext(ctx, e.bin, "cancel", "--all")
+				cmd.Env, cmd.Stdin = env, strings.NewReader("cancel\n")
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Errorf("cleanup: %v %s", err, out)
+				}
+			}()
+			current, err := readLocalRecord(path, "daemon")
+			if err != nil || current.Version != version || current.Token == r.Token {
+				t.Fatalf("daemon was not replaced: %+v %v", current, err)
+			}
+		})
 	}
 }

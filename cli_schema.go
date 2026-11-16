@@ -6,8 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/jay-waves/sshore/internal/forward"
 )
 
 type cliValue uint8
@@ -145,7 +143,7 @@ func validateCLIValue(name, value string, option cliOption) error {
 			return usage("%s requires a nonnegative duration", name)
 		}
 	case cliRetries:
-		if _, err := forward.ParseRetries(value); err != nil {
+		if _, err := parseForwardRetries(value); err != nil {
 			return usage("%s: %s", name, err)
 		}
 	}

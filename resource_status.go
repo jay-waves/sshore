@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 type resourceStatus struct {
@@ -63,7 +61,7 @@ func (s *resourceService) saveResult(code int, err error) {
 	// A bounded receipt per resource name, overwritten on the next lifecycle.
 	r := resourceResult{Record: s.record, Status: s.statusSnapshot(), Finished: time.Now().UTC()}
 	r.Record.Token, r.Record.Address = "", ""
-	if statefs.WriteJSON(s.recordPath+".result", r) == nil {
+	if writeStateJSON(s.recordPath+".result", r) == nil {
 		pruneResourceResults(filepath.Dir(s.recordPath))
 	}
 }

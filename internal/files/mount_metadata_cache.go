@@ -31,6 +31,8 @@ type ftpCacheValue struct {
 	bytes      int
 	directory  bool
 	prefetched bool
+	revision   uint64
+	fetch      func() (ftpCacheValue, error)
 }
 type ftpCacheFlight struct {
 	done  chan struct{}
@@ -41,6 +43,8 @@ type ftpCacheFlight struct {
 type ftpCacheCounters struct {
 	Hits, Misses, Shared, Evictions, RemoteInvalidations, SubscriptionConfirmations uint64
 	PrefetchStored, PrefetchHits, PrefetchDiscarded                                 uint64
+	RefreshQueued, RefreshCoalesced, RefreshDropped                                 uint64
+	RefreshCompleted, RefreshErrors, RefreshDiscarded                               uint64
 }
 
 // Cached slices are immutable. Each directory handle retains its own cursor.
@@ -51,6 +55,9 @@ type ftpMetadataCache struct {
 	flights                        map[string]*ftpCacheFlight
 	epoch                          uint64
 	writers                        int
+	mutations                      map[string]int
+	revision                       uint64
+	refresh                        *metadataRefresh
 	bytes, stats, dirs, dirEntries int
 	counters                       ftpCacheCounters
 }
@@ -89,7 +96,7 @@ func (c *ftpMetadataCache) removeLocked(e *list.Element) {
 	}
 }
 func (c *ftpMetadataCache) putLocked(token ftpCacheToken, v ftpCacheValue) {
-	if c.writers != 0 || c.epoch != token.epoch || !time.Now().Before(v.expires) || v.bytes > ftpCacheBytes || len(v.entries) > ftpCacheDirectoryEntries {
+	if c.mutatingLocked(v.key, v.scope) || c.epoch != token.epoch || !time.Now().Before(v.expires) || v.bytes > ftpCacheBytes || len(v.entries) > ftpCacheDirectoryEntries {
 		return
 	}
 	if e := c.entries[v.key]; e != nil {
@@ -123,17 +130,21 @@ func (c *ftpMetadataCache) load(key string, ttl time.Duration, fetch func() (ftp
 func (c *ftpMetadataCache) loadScoped(key, scope string, ttl time.Duration, fetch func() (ftpCacheValue, error)) (ftpCacheValue, error) {
 	c.mu.Lock()
 	token := ftpCacheToken{c.epoch, time.Now()}
-	if e := c.entries[key]; e != nil {
+	revision := c.revision
+	if e := c.entries[key]; e != nil && !c.mutatingLocked(key, scope) {
 		v := e.Value.(ftpCacheValue)
 		if token.started.Before(v.expires) {
 			c.lru.MoveToFront(e)
 			c.counters.Hits++
+			if v.revision != c.revision {
+				c.refresh.scheduleLocked(key)
+			}
 			c.mu.Unlock()
 			return v, nil
 		}
 		c.removeLocked(e)
 	}
-	if f := c.flights[key]; f != nil && c.writers == 0 {
+	if f := c.flights[key]; f != nil && !c.mutatingLocked(key, scope) {
 		c.counters.Shared++
 		c.mu.Unlock()
 		<-f.done
@@ -141,7 +152,7 @@ func (c *ftpMetadataCache) loadScoped(key, scope string, ttl time.Duration, fetc
 	}
 	c.counters.Misses++
 	flight := &ftpCacheFlight{done: make(chan struct{}), scope: scope}
-	if c.writers == 0 {
+	if !c.mutatingLocked(key, scope) {
 		if c.flights == nil {
 			c.flights = make(map[string]*ftpCacheFlight)
 		}
@@ -150,6 +161,7 @@ func (c *ftpMetadataCache) loadScoped(key, scope string, ttl time.Duration, fetc
 	c.mu.Unlock()
 	v, err := fetch()
 	v.key = key
+	v.revision, v.fetch = revision, fetch
 	v.scope = scope
 	v.bytes += len(scope)
 	v.expires = token.started.Add(ttl)
@@ -213,15 +225,84 @@ func (c *ftpMetadataCache) directoryLocked(token ftpCacheToken, name string, ent
 			continue
 		}
 		key := "s:" + path.Join(name, info.Name())
-		c.putLocked(token, ftpCacheValue{key: key, info: info, expires: token.started.Add(ftpMetadataTTL), bytes: 256 + len(key) + ftpInfoBytes(info)})
+		c.putLocked(token, ftpCacheValue{key: key, info: info, revision: c.revision, expires: token.started.Add(ftpMetadataTTL), bytes: 256 + len(key) + ftpInfoBytes(info)})
 	}
 }
-func (c *ftpMetadataCache) beginMutation() func() {
+
+// Paths include both sides of a rename. Unknown scopes retain the full reset.
+func (c *ftpMetadataCache) beginMutation(paths ...string) func() {
 	c.mu.Lock()
-	c.writers++
-	c.resetLocked()
+	c.revision++
+	if len(paths) == 0 {
+		c.writers++
+		c.resetLocked()
+	} else {
+		if c.mutations == nil {
+			c.mutations = make(map[string]int)
+		}
+		for _, name := range paths {
+			c.mutations[name]++
+			c.invalidateMutationLocked(name)
+		}
+	}
 	c.mu.Unlock()
-	return func() { c.mu.Lock(); c.writers--; c.resetLocked(); c.mu.Unlock() }
+	return func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		defer func() {
+			c.revision++
+			c.refresh.scheduleRecentLocked()
+		}()
+		if len(paths) == 0 {
+			c.writers--
+			c.resetLocked()
+			return
+		}
+		for _, name := range paths {
+			c.mutations[name]--
+			if c.mutations[name] == 0 {
+				delete(c.mutations, name)
+			}
+			c.invalidateMutationLocked(name)
+		}
+	}
+}
+
+func mutationAffects(key, scope, name string) bool {
+	parent := path.Dir(name)
+	if strings.HasPrefix(key, "h:") {
+		return scope == "" || scope == parent || scope == name || strings.HasPrefix(scope, strings.TrimSuffix(name, "/")+"/")
+	}
+	if len(key) < 2 {
+		return false
+	}
+	p := key[2:]
+	return p == name || p == parent || strings.HasPrefix(p, strings.TrimSuffix(name, "/")+"/")
+}
+
+func (c *ftpMetadataCache) mutatingLocked(key, scope string) bool {
+	if c.writers != 0 {
+		return true
+	}
+	for name := range c.mutations {
+		if mutationAffects(key, scope, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *ftpMetadataCache) invalidateMutationLocked(name string) {
+	for key, e := range c.entries {
+		if mutationAffects(key, e.Value.(ftpCacheValue).scope, name) {
+			c.removeLocked(e)
+		}
+	}
+	for key, flight := range c.flights {
+		if mutationAffects(key, flight.scope, name) {
+			delete(c.flights, key)
+		}
+	}
 }
 
 func ftpInfoBytes(info os.FileInfo) int {

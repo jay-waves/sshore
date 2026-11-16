@@ -21,28 +21,16 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
-	"github.com/jay-waves/sshore/internal/forward"
-	"github.com/jay-waves/sshore/internal/review"
-	statefs "github.com/jay-waves/sshore/internal/state"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
-const approvalTTL = review.TTL
-const maxApprovalItems = review.MaxItems
-const maxPendingApprovals = review.MaxPending
-const maxApprovalRecord = review.MaxRecord
-
-type operation = review.Operation
-
 func validateOperations(ops []operation) error {
-	err := review.ValidateOperations(ops)
-	if errors.Is(err, forward.ErrPort) {
+	err := validateApprovalOperations(ops)
+	if errors.Is(err, errForwardPort) {
 		return usage("%s", err)
 	}
 	return err
 }
-
-type approvalRecord = review.Record
 
 func findApproval(dir, ref string) (approvalRecord, error) {
 	if validApprovalID(ref) {
@@ -71,9 +59,7 @@ func findApproval(dir, ref string) (approvalRecord, error) {
 	return *found, nil
 }
 
-func approvalDir() (string, error) { return statefs.Dir("approvals") }
-
-func validApprovalID(id string) bool { return review.ValidID(id) }
+func approvalDir() (string, error) { return stateDir("approvals") }
 
 func writeApproval(o options, ops []operation) (string, error) {
 	if err := validateOperations(ops); err != nil {
@@ -109,8 +95,8 @@ func writeApproval(o options, ops []operation) (string, error) {
 	}
 	return id, nil
 }
-func approvalStore(dir string) review.Store {
-	return review.Store{Directory: dir, Version: version, Private: statefs.Private, Validate: validateApprovalRecord}
+func approvalStore(dir string) approvalStorage {
+	return approvalStorage{directory: dir}
 }
 func validateApprovalRecord(r approvalRecord) error {
 	if r.Name != "" && validSession(r.Name) != nil {
@@ -126,7 +112,7 @@ func validateApprovalRecord(r approvalRecord) error {
 }
 func readApproval(dir, id string) (approvalRecord, error) {
 	record, err := approvalStore(dir).Read(id)
-	if errors.Is(err, forward.ErrPort) {
+	if errors.Is(err, errForwardPort) {
 		err = usage("%s", err)
 	}
 	return record, err

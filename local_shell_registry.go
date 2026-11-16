@@ -13,8 +13,6 @@ import (
 	"strconv"
 	"sync"
 	"time"
-
-	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 // The token is a local connection capability, never part of public inventory.
@@ -28,7 +26,7 @@ func localSessionPath(name string) (string, error) {
 	if err := validSession(name); err != nil {
 		return "", err
 	}
-	dir, err := statefs.Dir("local-shells")
+	dir, err := stateDir("local-shells")
 	if err != nil {
 		return "", err
 	}
@@ -46,7 +44,7 @@ func readLocalSession(name string) (localShellRecord, error) {
 
 func readLocalRecord(path, name string) (localShellRecord, error) {
 	var r localShellRecord
-	if err := statefs.Private(path, false); err != nil {
+	if err := privateStatePath(path, false); err != nil {
 		return r, err
 	}
 	f, err := os.Open(path)
@@ -132,7 +130,7 @@ func serveLocalShell(s *localShell, r localShellRecord, ready func(localShellRec
 	if err != nil {
 		return err
 	}
-	if err = statefs.WriteJSON(path, r); err != nil {
+	if err = writeStateJSON(path, r); err != nil {
 		return err
 	}
 	s.record = r

@@ -13,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 type localDaemonRequest struct {
@@ -35,7 +33,7 @@ func localEnvironmentValue(env []string, name string) string {
 }
 
 func daemonPath() (string, error) {
-	dir, err := statefs.Dir("daemon")
+	dir, err := stateDir("daemon")
 	if err != nil {
 		return "", err
 	}
@@ -43,7 +41,7 @@ func daemonPath() (string, error) {
 }
 
 func daemonFileLock(name string) (*os.File, error) {
-	dir, err := statefs.Dir("daemon")
+	dir, err := stateDir("daemon")
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +50,7 @@ func daemonFileLock(name string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = statefs.Private(path, false); err == nil {
+	if err = privateStatePath(path, false); err == nil {
 		err = lockResourceState(f)
 	}
 	if err != nil {
@@ -107,26 +105,28 @@ func ensureLocalDaemon() (localShellRecord, error) {
 	if err != nil {
 		return empty, err
 	}
-	r, err := readLocalRecord(path, "daemon")
+	// The owner lock, not a persisted record, establishes whether a daemon exists.
+	owner, err := daemonFileLock("owner")
 	if err == nil {
-		if err = checkPeerVersion(r.Version, "local daemon"); err != nil {
-			return empty, err
-		}
-		c, e := dialLocalSession(r)
-		if e == nil {
-			c.Close()
-			return r, nil
-		}
-	} else if !os.IsNotExist(err) {
+		owner.Close()
+		return launchLocalDaemon()
+	}
+	if !resourceLockBusy(err) {
 		return empty, err
 	}
-	// Never replace an unresponsive live owner or signal a PID from metadata.
-	owner, err := daemonFileLock("owner")
+	r, err := readLocalRecord(path, "daemon")
+	if err != nil {
+		return empty, err
+	}
+	if err = checkPeerVersion(r.Version, "local daemon"); err != nil {
+		return empty, err
+	}
+	c, err := dialLocalSession(r)
 	if err != nil {
 		return empty, fmt.Errorf("local daemon is unavailable; its owner is still active: %w", err)
 	}
-	owner.Close()
-	return launchLocalDaemon()
+	c.Close()
+	return r, nil
 }
 
 func runLocalDaemon() (result error) {
@@ -160,7 +160,7 @@ func runLocalDaemon() (result error) {
 	if err != nil {
 		return err
 	}
-	if err = statefs.WriteJSON(path, record); err != nil {
+	if err = writeStateJSON(path, record); err != nil {
 		return err
 	}
 	defer os.Remove(path)
@@ -178,6 +178,7 @@ func runLocalDaemon() (result error) {
 	active := 0
 	last := time.Now()
 	stopping := false
+	exitWhenIdle := false
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -236,7 +237,19 @@ func runLocalDaemon() (result error) {
 				}
 			}()
 			defer c.Close()
-			defer func() { mu.Lock(); active--; last = time.Now(); mu.Unlock() }()
+			defer func() {
+				mu.Lock()
+				active--
+				last = time.Now()
+				stop := exitWhenIdle && active == 0
+				if stop {
+					stopping = true
+				}
+				mu.Unlock()
+				if stop {
+					listener.Close()
+				}
+			}()
 			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 			m, err := readMessage(c)
 			if err != nil || m.Type != "local_auth" || subtle.ConstantTimeCompare([]byte(m.Token), []byte(record.Token)) != 1 {
@@ -251,6 +264,13 @@ func runLocalDaemon() (result error) {
 			}
 			m, err = readMessage(c)
 			if err != nil {
+				return
+			}
+			if m.Type == "daemon_stop_idle" {
+				mu.Lock()
+				exitWhenIdle = true
+				mu.Unlock()
+				_ = writeMessage(c, message{Type: "daemon_ready"})
 				return
 			}
 			if m.Type != "daemon_request" || m.LocalRequest == nil {
@@ -323,7 +343,7 @@ func launchLocalDaemon() (localShellRecord, error) {
 	}
 	cmd := exec.Command(exe, "local-daemon")
 	detachLocalDaemon(cmd)
-	dir, err := statefs.Dir("daemon")
+	dir, err := stateDir("daemon")
 	if err != nil {
 		return empty, err
 	}
@@ -333,7 +353,7 @@ func launchLocalDaemon() (localShellRecord, error) {
 		return empty, err
 	}
 	defer log.Close()
-	if err = statefs.Private(logPath, false); err != nil {
+	if err = privateStatePath(logPath, false); err != nil {
 		return empty, err
 	}
 	cmd.Stderr = log
@@ -393,4 +413,54 @@ func launchLocalDaemon() (localShellRecord, error) {
 	case <-time.After(10 * time.Second):
 		return empty, fmt.Errorf("local daemon startup timed out")
 	}
+}
+
+// Ask only an existing authenticated daemon to leave as soon as its workers finish.
+// Workers outside the cancellation snapshot remain alive until their own completion.
+func stopIdleLocalDaemon() error {
+	lock, err := daemonFileLock("startup")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	owner, err := daemonFileLock("owner")
+	if err == nil {
+		owner.Close()
+		return nil
+	}
+	if !resourceLockBusy(err) {
+		return err
+	}
+	path, err := daemonPath()
+	if err != nil {
+		return err
+	}
+	r, err := readLocalRecord(path, "daemon")
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	c, err := dialLocalSession(r)
+	if err != nil {
+		// It may have completed its normal idle exit after the first lock probe.
+		if owner, probeErr := daemonFileLock("owner"); probeErr == nil {
+			owner.Close()
+			return nil
+		}
+		return err
+	}
+	defer c.Close()
+	if err = writeMessage(c, message{Type: "daemon_stop_idle"}); err != nil {
+		return err
+	}
+	ack, err := readMessage(c)
+	if err != nil {
+		return err
+	}
+	if ack.Type != "daemon_ready" {
+		return fmt.Errorf("local daemon did not accept idle shutdown: %s", ack.Error)
+	}
+	return nil
 }

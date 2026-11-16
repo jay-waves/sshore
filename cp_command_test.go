@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/pkg/sftp"
 
@@ -45,7 +47,7 @@ func TestCopyParsing(t *testing.T) {
 }
 
 func TestCopyFiles(t *testing.T) {
-	backend := testCopyBackend(t)
+	backend := testSFTPBackend(t, true)
 	local := t.TempDir()
 	source := filepath.Join(local, "source")
 	data := bytes.Repeat([]byte("copy data\x00\xff"), 10000)
@@ -96,7 +98,7 @@ func TestCopyFiles(t *testing.T) {
 }
 
 func TestCopyPreflight(t *testing.T) {
-	backend := testCopyBackend(t)
+	backend := testSFTPBackend(t, true)
 	local := t.TempDir()
 	a := filepath.Join(local, "a")
 	if err := os.WriteFile(a, []byte("a"), 0600); err != nil {
@@ -168,7 +170,7 @@ func TestLocalEndpointHints(t *testing.T) {
 }
 
 func TestCopyStreams(t *testing.T) {
-	backend := testCopyBackend(t)
+	backend := testSFTPBackend(t, true)
 	for _, data := range [][]byte{nil, bytes.Repeat([]byte("pipe\x00\xff\n"), 20000)} {
 		target := filepath.ToSlash(filepath.Join(backend.root, "stream"))
 		upload, err := parseCopyCommand([]string{"-", "work:" + target})
@@ -230,22 +232,29 @@ func TestCopyStreams(t *testing.T) {
 	}
 }
 
-func testCopyBackend(t *testing.T) *struct {
+func testSFTPBackend(t *testing.T, managed bool) *struct {
 	client *sftp.Client
 	root   string
 } {
 	t.Helper()
 	a, b := net.Pipe()
-	server, err := sftp.NewServer(a)
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() { _ = server.Serve(); _ = server.Close() }()
+	go func() {
+		if managed {
+			_ = files.ServeCopy(a)
+		} else {
+			server, err := sftp.NewServer(a)
+			if err == nil {
+				_ = server.Serve()
+				server.Close()
+			}
+		}
+		_ = a.Close()
+	}()
 	client, err := files.NewSFTP(b, b)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { client.Close(); server.Close() })
+	t.Cleanup(func() { client.Close(); a.Close() })
 	return &struct {
 		client *sftp.Client
 		root   string
@@ -273,5 +282,46 @@ func TestCopySingleLetterSSHHost(t *testing.T) {
 	explicit, err := parseCopyEndpoint("user@x:/tmp/report")
 	if err != nil || explicit.host != "user@x" {
 		t.Fatalf("explicit remote host rejected: %+v %v", explicit, err)
+	}
+}
+
+func TestApprovedSFTPCancelBlockedHandshake(t *testing.T) {
+	client, server := muxPair(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	go func() {
+		st, err := server.AcceptStream()
+		if err != nil {
+			return
+		}
+		defer st.Close()
+		_, _ = readMessage(st)
+		_ = writeMessage(st, message{Type: "sftp"})
+		close(ready)
+		<-release
+	}()
+	done := make(chan error, 1)
+	go func() {
+		done <- executeApprovedFile(ctx, client, operation{Kind: "download", Path: "/source", Name: "source", Size: 1, LocalPath: filepath.Join(t.TempDir(), "target")}, true)
+	}()
+	select {
+	case <-ready:
+	case <-time.After(3 * time.Second):
+		t.Fatal("handshake did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled transfer succeeded")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancel did not unblock SFTP")
+	}
+	if client.IsClosed() {
+		t.Fatal("cancellation closed the attachment")
 	}
 }

@@ -9,13 +9,11 @@ package files
 // Windows files inherit the destination directory ACL.
 
 import (
-	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/jay-waves/sshore/internal/transport"
 	"io"
 	"os"
 	"path"
@@ -25,6 +23,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/jay-waves/sshore/internal/transport"
 	"github.com/pkg/sftp"
 )
 
@@ -148,6 +147,10 @@ func CopyExactSize(dst io.Writer, src io.Reader, size int64) error {
 	if err != nil {
 		return err
 	}
+	return checkCopySize(src, n, size)
+}
+
+func checkCopySize(src io.Reader, n, size int64) error {
 	if n != size {
 		return fmt.Errorf("source size changed")
 	}
@@ -192,11 +195,18 @@ func UploadReader(client *sftp.Client, source io.Reader, target string, size int
 		return err
 	}
 	digest := sha256.New()
-	writer := io.MultiWriter(remote, digest)
-	if size < 0 {
-		size, err = io.Copy(writer, source)
-	} else {
-		err = CopyExactSize(writer, source, size)
+	input := source
+	if size >= 0 {
+		input = io.LimitReader(source, size)
+	}
+	// Hash in source order; only the private temporary file receives concurrent writes.
+	n, err := remote.ReadFromWithConcurrency(io.TeeReader(input, digest), sftpCopyConcurrency)
+	if err == nil {
+		if size < 0 {
+			size = n
+		} else {
+			err = checkCopySize(source, n, size)
+		}
 	}
 	if err != nil {
 		return err
@@ -204,17 +214,9 @@ func UploadReader(client *sftp.Client, source io.Reader, target string, size int
 	if err = remote.Close(); err != nil {
 		return err
 	}
-	// Verify stored content before atomic, no-overwrite publication.
-	stored, err := client.Open(temporary)
-	if err != nil {
-		return err
-	}
-	verification := sha256.New()
-	if err = errors.Join(CopyExactSize(verification, stored, size), stored.Close()); err != nil {
-		return err
-	}
-	if !bytes.Equal(digest.Sum(nil), verification.Sum(nil)) {
-		return fmt.Errorf("uploaded content verification failed")
+	// The receiving sshore reads its sealed temporary file and verifies this digest.
+	if err = client.SetExtendedData(temporary, []sftp.StatExtended{{ExtType: copyVerifyAttribute, ExtData: fmt.Sprintf("%d:%x", size, digest.Sum(nil))}}); err != nil {
+		return fmt.Errorf("remote upload verification: %w", err)
 	}
 	if err = client.Link(temporary, target); err != nil {
 		return fmt.Errorf("publish file without overwriting: %w", err)
@@ -247,7 +249,54 @@ func DownloadTo(client *sftp.Client, source string, target io.Writer, size int64
 	if !info.Mode().IsRegular() || info.Size() != size {
 		return fmt.Errorf("source metadata changed")
 	}
-	return CopyExactSize(target, progressReader{sourceFile, progress}, size)
+	return copySFTPExact(progressWriter{target, progress}, sourceFile, size)
+}
+
+// Keep WriteTo visible so pkg/sftp pipelines reads, while bounding output even
+// if the source grows after its metadata was checked. WriteTo drains its workers
+// before returning; the destination and digest are written in file order.
+func copySFTPExact(dst io.Writer, src *sftp.File, size int64) error {
+	if size < 0 {
+		return fmt.Errorf("invalid file size")
+	}
+	writer := &exactCopyWriter{Writer: dst, remaining: size}
+	if _, err := src.WriteTo(writer); err != nil {
+		return err
+	}
+	if writer.remaining != 0 {
+		return fmt.Errorf("source size changed")
+	}
+	return nil
+}
+
+type exactCopyWriter struct {
+	io.Writer
+	remaining int64
+}
+
+func (w *exactCopyWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > w.remaining {
+		return 0, fmt.Errorf("source size changed")
+	}
+	n, err := w.Writer.Write(p)
+	w.remaining -= int64(n)
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
+	return n, err
+}
+
+type progressWriter struct {
+	io.Writer
+	count *atomic.Int64
+}
+
+func (w progressWriter) Write(p []byte) (int, error) {
+	n, err := w.Writer.Write(p)
+	if w.count != nil {
+		w.count.Add(int64(n))
+	}
+	return n, err
 }
 
 type progressReader struct {

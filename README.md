@@ -63,6 +63,8 @@ Screens, scrollback and detached output are not saved.
 
 ```mermaid
 flowchart LR
+    copy["Local cp"] --> helper["Prepare matching remote sshore; confirm any update"]
+    helper --> verified["Transfer once; receiver verifies before publication"]
     start["spawn / launch"] --> shell["Work in a shell"]
     shell -->|"detach / switch"| background["Keep running under startup lifetime"]
     background -->|"attach"| shell
@@ -123,6 +125,10 @@ From your **remote sshore shell**:
 sshore cp origin: .                 # Request an upload from your computer.
 sshore cp report.zip origin:        # Request a download to your computer.
 ```
+
+Direct copies also prepare a matching remote sshore helper. Updating older software
+requires confirmation and ends the listed shells and tasks; copying creates no
+persistent shell. Upload verification runs on the receiver without downloading the file again.
 
 `origin:` (or `:`) means the attached client computer. Remote requests detach
 you; run `sshore review` locally, choose paths and submit to copy and reconnect.

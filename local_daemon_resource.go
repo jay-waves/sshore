@@ -9,8 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
-
-	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 // Mount workers receive only startup/control messages through the daemon.
@@ -52,7 +50,7 @@ func runDaemonResource(c net.Conn, request localDaemonRequest) (result error) {
 		return err
 	}
 	defer log.Close()
-	if err = statefs.Private(logPath, false); err != nil {
+	if err = privateStatePath(logPath, false); err != nil {
 		return err
 	}
 	if config.Forward != nil {

@@ -26,7 +26,6 @@ import (
 	"github.com/xtaci/smux"
 	"golang.org/x/term"
 
-	"github.com/jay-waves/sshore/internal/shell"
 	"github.com/jay-waves/sshore/internal/termui"
 	"github.com/jay-waves/sshore/internal/tmux"
 	transportio "github.com/jay-waves/sshore/internal/transport"
@@ -725,7 +724,7 @@ func sessionNotice(level termui.Color, format string, args ...any) {
 
 // detachControl is used before an interactive control reader has started.
 func detachControl(control *smux.Stream, confirmed ...func(string)) error {
-	return shell.Detach(control, confirmed...)
+	return tmux.Detach(control, confirmed...)
 }
 
 // Retain transport options in the reconnect hint, including custom ports and keys.

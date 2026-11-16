@@ -16,7 +16,6 @@ import (
 
 	"github.com/pkg/sftp"
 
-	statefs "github.com/jay-waves/sshore/internal/state"
 	"github.com/jay-waves/sshore/internal/transport"
 )
 
@@ -89,7 +88,7 @@ func peerTaskDir(create bool) (string, error) {
 			return "", e
 		}
 	}
-	return dir, statefs.Private(dir, true)
+	return dir, privateStatePath(dir, true)
 }
 func storeRemoteTask(t peerRecord) error {
 	if e := validateRemoteTask(t); e != nil {
@@ -99,7 +98,7 @@ func storeRemoteTask(t peerRecord) error {
 	if e != nil {
 		return e
 	}
-	return statefs.WriteJSON(filepath.Join(dir, t.Key+".json"), t)
+	return writeStateJSON(filepath.Join(dir, t.Key+".json"), t)
 }
 func removeRemoteTask(key string) error {
 	if !validApprovalID(key) {
@@ -152,7 +151,7 @@ func collectPeerRows() ([]peerRow, error) {
 			continue
 		}
 		p := filepath.Join(dir, name)
-		if statefs.Private(p, false) != nil {
+		if privateStatePath(p, false) != nil {
 			continue
 		}
 		f, e := os.Open(p)

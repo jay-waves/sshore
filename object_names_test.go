@@ -6,8 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 func TestReviewNameReservedForAction(t *testing.T) {
@@ -138,7 +136,7 @@ func TestResourceNameHandoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	dir, _ := statefs.Dir("names")
+	dir, _ := stateDir("names")
 	r.owner.Close()
 	r.owner = nil
 	if _, err := reserveResourceName("mount", r.name); err == nil {

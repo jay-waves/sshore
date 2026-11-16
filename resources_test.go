@@ -1,13 +1,11 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestResourceIdentityAndLegacyMount(t *testing.T) {
@@ -34,26 +32,6 @@ func TestResourceIdentityAndLegacyMount(t *testing.T) {
 	o, e := parseReview([]string{"review/" + id})
 	if e != nil || o.id != id {
 		t.Fatal(o, e)
-	}
-}
-func TestAttachmentRejectsTunnelStreams(t *testing.T) {
-	client, server := muxPair(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go serveApprovedStreams(ctx, server)
-	for _, kind := range []string{"forward_connect", "forward_control"} {
-		st, e := client.OpenStream()
-		if e != nil {
-			t.Fatal(e)
-		}
-		st.SetDeadline(time.Now().Add(time.Second))
-		if e = writeMessage(st, message{Type: kind, Action: "add"}); e != nil {
-			t.Fatal(e)
-		}
-		if m, e := readMessage(st); e == nil {
-			t.Fatalf("obsolete attachment tunnel accepted: %+v", m)
-		}
-		st.Close()
 	}
 }
 

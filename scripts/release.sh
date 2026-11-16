@@ -576,6 +576,25 @@ amd64 only; remote shell hosting remains Linux-only.
 NOTES
 fi
 
+if [[ "$version" == "0.6.12" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Pipeline copy transfers and verify uploaded content on the receiver before no-overwrite publication, avoiding a full network readback. Direct cp uses the shared exact-version remote setup flow.
+- Preserve unrelated mount metadata during local mutations and actively verify cached metadata in the background, prioritizing recently accessed files.
+- Bound and coalesce background verification with debounce, rate limits, transport-failure backoff and cancellation; foreground reads never wait for the verification queue.
+- Reuse authenticated daemon health responses during upgrade inspection instead of opening a second status connection.
+- Consolidate command policy and platform adapters by ownership, and move black-box integration coverage into tests/ with isolated lifecycle binaries.
+
+Client and remote releases must match exactly. Updating older remote shells ends
+listed shells and tasks only after you review them and type update. Direct cp now
+prepares the matching remote sshore executable. Restart existing mounts to use the
+new cache behavior. Alias metadata may remain temporarily stale until background
+verification, notification or cache expiry; no failed write is replayed. Linux and
+Windows amd64 only; remote shell hosting remains Linux-only.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."

@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -39,7 +38,7 @@ func testBinary(t *testing.T) string {
 			return
 		}
 		testBuild.path = filepath.Join(dir, "sshore")
-		cmd := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "-tags=sshoretest", "-buildvcs=false", "-race", "-o", testBuild.path, ".")
+		cmd := exec.Command("go", "build", "-tags=sshoretest", "-buildvcs=false", "-race", "-o", testBuild.path, ".")
 		b, err := cmd.CombinedOutput()
 		if err != nil {
 			testBuild.err = fmt.Errorf("build: %w: %s", err, b)

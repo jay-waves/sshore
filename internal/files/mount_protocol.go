@@ -47,6 +47,8 @@ func muxConfig() *smux.Config {
 	config := transport.MuxConfig()
 	// Mounts have separate data/notification streams and no terminal to compete
 	// with. A larger data window avoids throttling pipelined SFTP on higher RTTs.
-	config.MaxStreamBuffer = 1024 * 1024
+	config.MaxStreamBuffer = 4 * 1024 * 1024
+	// Only data and notifications share this connection; reserve headroom for both.
+	config.MaxReceiveBuffer = 3 * config.MaxStreamBuffer
 	return config
 }

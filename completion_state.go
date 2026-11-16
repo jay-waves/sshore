@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 type completionTask struct{ kind, name, host, identity string }
@@ -35,7 +33,7 @@ func readCompletionJSON(path string, value any) bool {
 }
 
 func completionRecords(directory string, read func(string)) {
-	path, err := statefs.Path(directory)
+	path, err := statePath(directory)
 	if err != nil {
 		return
 	}
@@ -54,14 +52,14 @@ func completionRecords(directory string, read func(string)) {
 
 func loadCompletionCatalog() completionCatalog {
 	c := completionCatalog{ids: map[string]uint64{}}
-	path, err := statefs.Path("tasks/ids.json")
+	path, err := statePath("tasks/ids.json")
 	if err == nil {
 		var index taskIDIndex
 		if readCompletionJSON(path, &index) {
 			c.ids = index.IDs
 		}
 	}
-	path, err = statefs.Path("connections/recent.json")
+	path, err = statePath("connections/recent.json")
 	if err == nil {
 		var recent []recentConnection
 		if readCompletionJSON(path, &recent) {

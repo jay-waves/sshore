@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 // Automatic names retain their original allocation order; explicit names remain supported.
@@ -58,7 +56,7 @@ func reserveResourceNameExcept(kind, requested, reviewID string) (*resourceNameR
 		}
 		names = []string{requested}
 	}
-	dir, err := statefs.Dir("names")
+	dir, err := stateDir("names")
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +83,7 @@ func reserveResourceNameExcept(kind, requested, reviewID string) (*resourceNameR
 				return nil, err
 			}
 			held = append(held, f)
-			if err = statefs.Private(path, false); err != nil {
+			if err = privateStatePath(path, false); err != nil {
 				for _, h := range held {
 					h.Close()
 				}
@@ -128,7 +126,7 @@ func lockObjectName(name string) (*os.File, error) {
 	if err := validSession(name); err != nil {
 		return nil, err
 	}
-	dir, err := statefs.Dir("names")
+	dir, err := stateDir("names")
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +135,7 @@ func lockObjectName(name string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = statefs.Private(path, false); err == nil {
+	if err = privateStatePath(path, false); err == nil {
 		err = lockResourceState(f)
 	}
 	if err != nil {

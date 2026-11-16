@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/pkg/sftp"
 	"github.com/xtaci/smux"
 
 	"github.com/jay-waves/sshore/internal/files"
@@ -159,10 +158,5 @@ func approvedRemoteTransfer(st *smux.Stream, m message) {
 		return
 	}
 	_ = st.SetDeadline(time.Time{})
-	server := sftp.NewRequestServer(st, sftp.Handlers{FileGet: backend, FilePut: backend, FileCmd: backend, FileList: backend})
-	defer func() {
-		server.Close()
-		backend.Close()
-	}()
-	_ = server.Serve()
+	_ = files.ServeTransfer(st, backend)
 }

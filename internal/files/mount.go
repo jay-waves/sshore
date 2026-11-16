@@ -174,12 +174,15 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		stopStats := startFTPStats(wire, backend, os.Stderr)
 		defer stopStats()
 	}
+	refresh := startMetadataRefresh(ctx, backend)
 	backend.prefetch = startDirectoryPrefetch(ctx, backend)
 	defer func() {
 		backend.prefetch.cancel()
+		refresh.cancel()
 		// Release an outstanding SFTP CLOSE before waiting for the worker.
 		abortIO()
 		<-backend.prefetch.done
+		<-refresh.done
 	}()
 	mount, err := mountFTP(backend, o.Mountpoint)
 	if err != nil {

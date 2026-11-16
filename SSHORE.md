@@ -23,18 +23,19 @@ policy or depending on mutable application state.
 | Connections and session switching | `client.go`, `client_connection.go` |
 | Remote preparation and exact-release policy | `remote_bootstrap.go`, `setup*.go`, `version.go` |
 | Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_*.go`, `server_linux.go` |
-| Local daemon and shell registry | `local_daemon*.go`, `local_shell_registry.go`, `local_terminal*.go`, `local_attach.go` |
-| Spawn ownership and lifetime SSH | `spawn*.go` |
-| Shell startup and attachment I/O | `internal/shell/`, application adapters in `mux.go` |
+| Local daemon and shell registry | `local_daemon*.go`, `local_shell_registry.go`, `local_terminal.go`, `platform_*.go`, `local_attach.go` |
+| Spawn ownership and lifetime SSH | `spawn*.go`, `platform_*.go` |
+| Shell startup and attachment I/O | `internal/tmux/shell_*.go`, application adapters in `mux.go` |
 | Native terminals, console I/O and shortcuts | `internal/tmux/` |
 | Local prompts and presentation | `internal/termui/`, application adapters in `cli_ui.go` |
 | Framing, smux and shared SSH transport | `internal/transport/`, application messages in `protocol.go` |
 | Copy and mount mechanisms | Flat `internal/files/`; command adapters in `cp_command.go`, `mount*.go` |
-| Review records and consent | `internal/review/`, application coordination in `review*.go` (including shared source-shell validation in `review_source_linux.go`) |
-| Forward transport and retries | `internal/forward/`, application coordination in `forward*.go` |
+| Review records and consent | `review_store.go`, application coordination in `review*.go` (including shared source-shell validation in `review_source_linux.go`) |
+| Forward transport and retries | `forward_runtime.go`, command handling in `forward.go` |
 | Resource startup and control | `resource_runtime.go`, `resource_status.go`, `resources.go` |
-| Private storage and name reservations | `internal/state/`, `object_names*.go` |
+| Private storage and name reservations | `state.go`, `object_names.go`; native checks in `platform_*.go` |
 | Inventory, stable IDs and shell relationships | `inventory*.go`, `list*.go`, `pstree*.go`, `peers*.go` |
+| Platform adapters | `platform_linux.go` / `platform_windows.go` in the application and file/transport packages; `console_linux.go` / `console_windows.go` in terminal/UI packages |
 | Installation, packaging and publication | `install.sh`, `install.ps1`, `scripts/`, `.github/workflows/` |
 
 Keep command policy in the application: authorization, release checks, prompts,
@@ -94,6 +95,9 @@ and independent forwards retain their own SSH transports and lifetimes.
 Startup must have an explicit ownership handoff. Carry the initiating client's
 working directory and environment, not whichever environment started the daemon.
 Do not hold bookkeeping locks across terminal I/O, authentication or worker startup.
+Daemon liveness comes from its owner lock; orphaned metadata cannot block startup
+with a version mismatch. `cancel --all` asks the existing daemon to exit as soon
+as its remaining workers finish, without the normal idle grace period.
 Cancellation must close owned resources and join background work before reporting
 completion; persisted PIDs are diagnostic, not authority to terminate.
 
@@ -103,14 +107,26 @@ nothing, approval consumption is single-use, and file publication must not overw
 State-file replacement cannot substitute for those command-specific guarantees.
 See [approval safeguards](SECURITY.md#local-approval).
 
-Mount setup uses the shared preparation path before starting its agent. Plain SFTP
-copies, no-watch mounts, ordinary forwarding, inventory and cancellation do not
+Copy and watched mount helpers use the shared preparation path before starting.
+No-watch mounts, ordinary forwarding, inventory and cancellation do not
 install remote software. Keep file/transport behavior in `internal/files` and
 `internal/transport`; account setup and consent stay in the application.
 
+Copy concurrency must stay bounded and preserve exact-size checks, ordered digest
+calculation, receiver-side upload verification and no-overwrite publication.
+Transport window budgets live in `internal/transport/protocol.go` and `internal/files/mount_protocol.go`; size them
+for latency without allowing stalled file streams to exhaust terminal capacity.
+
 Mount request failures can leave write outcomes uncertain: never replay writes
 implicitly. Caches and notifications are advisory, bounded and invalidated by
-mutations. For changes, start with the SFTP, metadata-cache, prefetch and platform
+mutations at the affected paths and parent directories, including both trees
+for renames. Unrelated cache entries remain usable during local writes; unknown
+scopes and notification loss retain full invalidation. Background metadata
+verification prioritizes recent accesses, coalesces repeated work, debounces
+bursts with a bounded delay and rate-limits verification starts. Transport failures
+back off background work; foreground reads never wait for verification or its
+timers. Queue bounds and scheduling policy live in `internal/files/mount_refresh.go`. Do not add synchronous alias discovery
+to the mutation path. For changes, start with the SFTP, metadata-cache, refresh, prefetch and platform
 adapter code and tests in `internal/files/`, rather than a second specification.
 
 ### Inventory and diagnostics
@@ -160,7 +176,18 @@ Choose the smallest check that covers the changed behavior:
 | Documentation | Relative links/anchors, code fences and affected Mermaid diagrams, including packaged documents |
 
 ```sh
-go test -tags=sshoretest -timeout=5m ./...
+go test -count=1 -tags=sshoretest -timeout=5m ./...
+```
+
+Black-box integration tests live in `tests/` and exercise the CLI or import
+exported package APIs. Package-level tests that inspect private implementation
+stay beside their owning code. Both use standard Go test discovery and `-run`;
+no overlay, generated source tree or test-only production exports are needed.
+Use `-count=1` for CLI/native checks that depend on subprocesses or the environment.
+For example:
+
+```sh
+go test -count=1 -tags=sshoretest -run '^TestCancelAll' ./tests
 ```
 
 Lifecycle integration executables **must** use `sshoretest` for runtime-directory
@@ -175,7 +202,7 @@ python3 tests/ssh_e2e.py --binary dist/sshore-e2e
 Native mount smoke tests are opt-in and require an existing FUSE/WinFsp environment:
 
 ```sh
-SSHORE_TEST_FTP_MOUNT=1 go test -tags=sshoretest -run '^TestFTPNativeMount$' ./internal/files
+SSHORE_TEST_FTP_MOUNT=1 go test -count=1 -tags=sshoretest -run '^TestFTPNativeMount$' ./internal/files
 ```
 
 The manually triggered Tests workflow defines Linux/Windows checks and optional

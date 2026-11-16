@@ -56,6 +56,7 @@ flowchart LR
     user -->|"Explicit cp / forward / mount command"| resources
     resources <-->|"Authenticated SSH; remote account permissions"| service
     user -->|"Local shell and resource control"| control
+    resources -->|"cp / watched mount: exact-version helper setup"| update
     user --> update
     update -->|"Prepare verified replacement before ending confirmed tasks"| setup
 ```
@@ -125,7 +126,9 @@ file and temporary upload, not a general remote filesystem. Both paths use bound
 transfers, temporary files and atomic hard-link publication without overwriting;
 there is no overwrite-prone fallback. Approved file sizes bound received bytes.
 Changed metadata is rejected, and uploads verify stored temporary content by
-size and SHA-256 readback before publication.
+size and SHA-256 readback on the receiving sshore before publication. The sender
+provides its digest; the receiver closes writes, verifies its temporary file and
+permits publication only on a match. File content is not downloaded for verification.
 
 Local sources reject final-component symlinks/reparse points and compare opened
 file identity with the initial check. Linux uses nonblocking opens so a substituted
@@ -247,7 +250,11 @@ failed permissions operation can leave an empty remote file.
 
 Packets, directory responses, caches and watch subscriptions have bounded budgets.
 Oversized listings fail rather than silently truncate. Caches and open directory
-snapshots can show stale state; notifications are advisory and may be lost. Neither
+snapshots can show stale state; notifications are advisory and may be lost.
+Local mutations invalidate known paths; hard-link or symlink aliases and paths of
+renamed open files may remain stale until background verification, notification
+or cache expiry. Background verification is bounded and advisory; it cannot
+prove file identity or authorize an operation. Neither
 notifications nor status queries authorize file operations or write replay. See
 [development guidance and code ownership](SSHORE.md#shared-local-daemon-and-resource-workers).
 
@@ -278,9 +285,9 @@ other users, preparation helpers and transient transports are excluded.
 
 Automatic replacement requires a user-owned regular file and a user-owned directory
 without group/world write permission. It does not elevate privileges or modify PATH
-or shell profiles. Notification-enabled mount startup uses the same safeguards and
-collects any confirmation in the initiating terminal. Plain SFTP copies, no-watch
-mounts and ordinary forwarding do not install a remote helper.
+or shell profiles. Direct copy and notification-enabled mount startup use the same
+safeguards and collect any confirmation in the initiating terminal. No-watch mounts
+and ordinary forwarding do not install a remote helper.
 
 Release checksums detect corruption, not publisher compromise. Cached artifacts are
 private and rechecked on reuse; unavailable assets never cause substitution of a

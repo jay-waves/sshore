@@ -7,8 +7,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"github.com/jay-waves/sshore/internal/shell"
-	"github.com/jay-waves/sshore/internal/tmux"
 	"io"
 	"net"
 	"os"
@@ -19,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 // Each attachment owns one mux session. Local helpers use Unix sockets for
@@ -70,7 +70,7 @@ func (s *remoteShell) start(cols, rows uint16, term string, startup ...bool) err
 	if shellPath == "" {
 		shellPath = "/bin/bash"
 	}
-	args, err := shell.StartupArgs(shellPath, s.plain || (len(startup) > 0 && startup[0]), !s.plain && len(startup) > 1 && startup[1])
+	args, err := tmux.StartupArgs(shellPath, s.plain || (len(startup) > 0 && startup[0]), !s.plain && len(startup) > 1 && startup[1])
 	if err != nil {
 		return err
 	}
@@ -89,7 +89,7 @@ func (s *remoteShell) start(cols, rows uint16, term string, startup ...bool) err
 	if exe, err := os.Executable(); err == nil && !s.plain {
 		cmd.Env = append(cmd.Env, "PATH="+filepath.Dir(exe)+":"+localEnvironmentValue(env, "PATH"))
 	}
-	cmd.Env = shell.StartupEnv(shellPath, cmd.Env, !s.plain && len(startup) > 1 && startup[1])
+	cmd.Env = tmux.StartupEnv(shellPath, cmd.Env, !s.plain && len(startup) > 1 && startup[1])
 	master, err := tmux.StartCommand(cmd, tmux.Size{Cols: max(cols, 1), Rows: max(rows, 1)})
 	if err != nil {
 		return err
@@ -253,7 +253,7 @@ func (s *remoteShell) detach(p *attachment) {
 	s.mu.Lock()
 	name := s.name
 	s.mu.Unlock()
-	shell.FinishDetach(p.ControlStream(), func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, p.Close)
+	tmux.FinishDetach(p.ControlStream(), func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, p.Close)
 }
 func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
 	mux, control, terminal, m, err := acceptMux(c)

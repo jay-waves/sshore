@@ -8,8 +8,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 type localShellView struct {
@@ -44,7 +42,7 @@ func localRequest(name string, request message, expected ...string) (message, er
 }
 
 func localShells() ([]localShellView, error) {
-	dir, err := statefs.Dir("local-shells")
+	dir, err := stateDir("local-shells")
 	if err != nil {
 		return nil, err
 	}

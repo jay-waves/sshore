@@ -1,9 +1,13 @@
 package tmux
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"runtime"
+	"sync"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -100,4 +104,183 @@ func SyncMouse(state *InputState) error {
 
 func FlushInput() error {
 	return windows.FlushConsoleInputBuffer(windows.Handle(os.Stdin.Fd()))
+}
+
+var cancelTerminalSynchronousIO = windows.NewLazySystemDLL("kernel32.dll").NewProc("CancelSynchronousIo")
+
+// stop joins the pinned console reader before another session or SSH prompt can
+// consume input. emit must not block after ctx is cancelled.
+func StartKeyboard(parent context.Context, emit func([]byte, error)) (func(), error) {
+	return startTerminalKeyboardReader(parent, emit, terminalInputReader())
+}
+
+func startTerminalKeyboardReader(parent context.Context, emit func([]byte, error), reader io.Reader) (func(), error) {
+	if err := cancelTerminalSynchronousIO.Find(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(parent)
+	type startup struct {
+		thread windows.Handle
+		err    error
+	}
+	ready := make(chan startup)
+	readDone := make(chan struct{})
+	cancelDone := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		defer close(done)
+		thread, err := windows.OpenThread(windows.THREAD_TERMINATE, false, windows.GetCurrentThreadId())
+		ready <- startup{thread: thread, err: err}
+		if err != nil {
+			return
+		}
+		defer windows.CloseHandle(thread)
+		// The cancellation worker must stop before this OS thread can be reused.
+		defer func() { close(readDone); <-cancelDone }()
+		buf := make([]byte, 4096)
+		for ctx.Err() == nil {
+			n, err := reader.Read(buf)
+			if ctx.Err() != nil {
+				return
+			}
+			if n > 0 {
+				emit(append([]byte(nil), buf[:n]...), nil)
+			}
+			if err != nil {
+				emit(nil, err)
+				return
+			}
+		}
+	}()
+	started := <-ready
+	if started.err != nil {
+		cancel()
+		<-done
+		return nil, started.err
+	}
+	go func() {
+		defer close(cancelDone)
+		select {
+		case <-readDone:
+			return
+		case <-ctx.Done():
+		}
+		// A single cancellation can miss the gap before ReadConsole starts. Retry on
+		// a timer until the reader exits, keeping the thread pinned throughout.
+		timer := time.NewTicker(10 * time.Millisecond)
+		defer timer.Stop()
+		for {
+			cancelTerminalSynchronousIO.Call(uintptr(started.thread))
+			select {
+			case <-readDone:
+				return
+			case <-timer.C:
+			}
+		}
+	}()
+	return func() { cancel(); <-done }, nil
+}
+
+var cancelSynchronousWrite = windows.NewLazySystemDLL("kernel32.dll").NewProc("CancelSynchronousIo")
+
+type writeRequest struct {
+	data   []byte
+	result chan writeResult
+}
+type writeResult struct {
+	n   int
+	err error
+}
+type threadInput struct {
+	requests             chan writeRequest
+	stop, done, released chan struct{}
+	once                 sync.Once
+	thread               windows.Handle
+}
+
+func NewTerminalInput(t *Terminal) (*threadInput, error) {
+	if err := cancelSynchronousWrite.Find(); err != nil {
+		return nil, err
+	}
+	l := &threadInput{requests: make(chan writeRequest), stop: make(chan struct{}), done: make(chan struct{}), released: make(chan struct{})}
+	ready := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		defer func() { close(l.done); <-l.released }()
+		var err error
+		l.thread, err = windows.OpenThread(windows.THREAD_TERMINATE, false, windows.GetCurrentThreadId())
+		ready <- err
+		if err != nil {
+			return
+		}
+		// Stop owns this handle until the cancellation loop has joined the writer.
+		for {
+			select {
+			case <-l.stop:
+				return
+			case request := <-l.requests:
+				select {
+				case <-l.stop:
+					request.result <- writeResult{err: os.ErrClosed}
+					return
+				default:
+				}
+				n, err := t.Write(request.data)
+				request.result <- writeResult{n, err}
+			}
+		}
+	}()
+	if err := <-ready; err != nil {
+		close(l.released)
+		<-l.done
+		return nil, err
+	}
+	return l, nil
+}
+
+func (l *threadInput) Write(p []byte) (int, error) {
+	r := writeRequest{data: p, result: make(chan writeResult, 1)}
+	select {
+	case <-l.stop:
+		return 0, os.ErrClosed
+	case l.requests <- r:
+	}
+	result := <-r.result
+	return result.n, result.err
+}
+
+func (l *threadInput) Stop() error {
+	l.once.Do(func() {
+		close(l.stop)
+		defer close(l.released)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		defer windows.CloseHandle(l.thread)
+		for {
+			select {
+			case <-l.done:
+				return
+			default:
+			}
+			cancelSynchronousWrite.Call(uintptr(l.thread))
+			select {
+			case <-l.done:
+				return
+			case <-ticker.C:
+			}
+		}
+	})
+	return nil
+}
+
+func (l *threadInput) Stopped() bool {
+	select {
+	case <-l.stop:
+		return true
+	default:
+		return false
+	}
 }

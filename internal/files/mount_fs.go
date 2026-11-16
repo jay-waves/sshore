@@ -61,7 +61,6 @@ func (f *ftpFS) stat(name string) (os.FileInfo, error) {
 	return f.cache.stat(p, func() (os.FileInfo, error) { return f.client.Stat(p) })
 }
 func (f *ftpFS) mkdir(name string, mode os.FileMode) error {
-	defer f.cache.beginMutation()()
 	if e := f.writable(); e != nil {
 		return e
 	}
@@ -69,13 +68,13 @@ func (f *ftpFS) mkdir(name string, mode os.FileMode) error {
 	if e != nil {
 		return e
 	}
+	defer f.cache.beginMutation(p)()
 	if e = f.client.Mkdir(p); e != nil {
 		return e
 	}
 	return f.client.Chmod(p, mode.Perm())
 }
 func (f *ftpFS) remove(name string, dir bool) error {
-	defer f.cache.beginMutation()()
 	if e := f.writable(); e != nil {
 		return e
 	}
@@ -86,13 +85,13 @@ func (f *ftpFS) remove(name string, dir bool) error {
 	if p == f.root {
 		return os.ErrPermission
 	}
+	defer f.cache.beginMutation(p)()
 	if dir {
 		return f.client.RemoveDirectory(p)
 	}
 	return f.client.Remove(p)
 }
 func (f *ftpFS) rename(old, new string) error {
-	defer f.cache.beginMutation()()
 	if e := f.writable(); e != nil {
 		return e
 	}
@@ -107,6 +106,7 @@ func (f *ftpFS) rename(old, new string) error {
 	if a == f.root || b == f.root {
 		return os.ErrPermission
 	}
+	defer f.cache.beginMutation(a, b)()
 	// Require the atomic overwrite extension at connection setup for writable
 	// mounts. Never emulate replacement by deleting the destination first.
 	return f.client.PosixRename(a, b)
@@ -116,9 +116,6 @@ func (f *ftpFS) open(name string, flags int, mode os.FileMode) (*ftpFile, error)
 }
 
 func (f *ftpFS) openWithMetadata(name string, flags int, mode os.FileMode, cached bool) (*ftpFile, error) {
-	if flags&(os.O_CREATE|os.O_TRUNC) != 0 {
-		defer f.cache.beginMutation()()
-	}
 	if flags&(os.O_WRONLY|os.O_RDWR|os.O_CREATE|os.O_TRUNC|os.O_APPEND) != 0 {
 		if e := f.writable(); e != nil {
 			return nil, e
@@ -127,6 +124,9 @@ func (f *ftpFS) openWithMetadata(name string, flags int, mode os.FileMode, cache
 	p, e := f.remotePath(name)
 	if e != nil {
 		return nil, e
+	}
+	if flags&(os.O_CREATE|os.O_TRUNC) != 0 {
+		defer f.cache.beginMutation(p)()
 	}
 	var info os.FileInfo
 	// WinFsp queries path attributes before opening. Reuse that short-lived
@@ -283,7 +283,7 @@ func (f *ftpFile) ReadAt(b []byte, o int64) (int, error) {
 	return f.File.ReadAt(b, o)
 }
 func (f *ftpFile) Write(b []byte) (int, error) {
-	defer f.fs.cache.beginMutation()()
+	defer f.fs.cache.beginMutation(f.path)()
 	if e := f.fs.writable(); e != nil {
 		return 0, e
 	}
@@ -293,7 +293,7 @@ func (f *ftpFile) Write(b []byte) (int, error) {
 	return f.File.Write(b)
 }
 func (f *ftpFile) WriteAt(b []byte, o int64) (int, error) {
-	defer f.fs.cache.beginMutation()()
+	defer f.fs.cache.beginMutation(f.path)()
 	if e := f.fs.writable(); e != nil {
 		return 0, e
 	}
@@ -309,7 +309,7 @@ func (f *ftpFile) Seek(o int64, w int) (int64, error) {
 	return f.File.Seek(o, w)
 }
 func (f *ftpFile) Truncate(n int64) error {
-	defer f.fs.cache.beginMutation()()
+	defer f.fs.cache.beginMutation(f.path)()
 	if e := f.fs.writable(); e != nil {
 		return e
 	}

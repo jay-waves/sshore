@@ -35,6 +35,7 @@ type daemonProcess struct {
 type daemonHealth struct {
 	process daemonProcess
 	state   string
+	name    string
 }
 
 func daemonSocket(name string, env []byte, uid uint32) string {
@@ -187,6 +188,7 @@ func probeSessionDaemon(p daemonProcess, deadline time.Time) daemonHealth {
 		result.state = "suspect"
 		return result
 	}
+	result.name = m.Name
 	result.state = "detached"
 	if m.PID == 0 {
 		result.state = "starting"

@@ -17,6 +17,11 @@ func serverCommand(args []string) error {
 	switch args[0] {
 	case "forward-watch":
 		return runApprovedForwardWatch(args[1:])
+	case "cp-agent":
+		if len(args) != 1 {
+			return usage("cp-agent takes no arguments")
+		}
+		return files.ServeCopy(&transportio.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}})
 	case "mount-agent":
 		if len(args) != 1 {
 			return usage("mount-agent takes no arguments")

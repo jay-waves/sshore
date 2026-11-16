@@ -13,7 +13,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/jay-waves/sshore/internal/files"
 	"io"
 	"net"
 	"net/http"
@@ -23,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	statefs "github.com/jay-waves/sshore/internal/state"
+	"github.com/jay-waves/sshore/internal/files"
 )
 
 type resourceRecord struct {
@@ -69,7 +68,7 @@ func resourceStateDir(kind string) (string, error) {
 	if kind != "mount" && kind != "forward" {
 		return "", fmt.Errorf("unknown resource type")
 	}
-	return statefs.Dir(kind + "s")
+	return stateDir(kind + "s")
 }
 func resourceHTTP(address, token, method, route string, body io.Reader) (*http.Response, error) {
 	return resourceHTTPContext(context.Background(), address, token, method, route, body)
@@ -137,7 +136,7 @@ func (s *resourceService) ready(root, mountpoint string) error {
 	s.setTransport("connected", nil)
 	s.record.Remote = root
 	s.record.Mountpoint = mountpoint
-	if e := statefs.WriteJSON(s.recordPath, s.record); e != nil {
+	if e := writeStateJSON(s.recordPath, s.record); e != nil {
 		return e
 	}
 	var e error
@@ -213,7 +212,7 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 		return 1, e
 	}
 	defer lock.Close()
-	if e = statefs.Private(lockPath, false); e != nil {
+	if e = privateStatePath(lockPath, false); e != nil {
 		return 1, e
 	}
 	if e = lockResourceState(lock); e != nil {
@@ -400,7 +399,7 @@ func readResourceRecord(kind, name string) (resourceRecord, error) {
 		return r, e
 	}
 	p := filepath.Join(d, name+".json")
-	if e = statefs.Private(p, false); e != nil {
+	if e = privateStatePath(p, false); e != nil {
 		return r, e
 	}
 	b, e := os.ReadFile(p)

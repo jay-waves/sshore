@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 type resourceView struct {
@@ -166,7 +164,7 @@ func collectResourceResults(host string, active []resourceView) []resourceView {
 				continue
 			}
 			path := filepath.Join(dir, entry.Name())
-			if statefs.Private(path, false) != nil {
+			if privateStatePath(path, false) != nil {
 				continue
 			}
 			f, e := os.Open(path)

@@ -1,6 +1,10 @@
 package transport
 
-import "strings"
+import (
+	"io"
+	"strings"
+	"sync"
+)
 
 // OpenSSH uses the first scalar value. Keep transport ownership settings ahead
 // of user options so resource shutdown always closes its own SSH connection.
@@ -44,4 +48,20 @@ func SessionArgs(host string, options []string, command string) []string {
 	args := append(OwnedSSHArgs("default"), "-o", "ClearAllForwardings=yes")
 	args = append(args, options...)
 	return append(args, "--", host, command)
+}
+
+type Pipe struct {
+	io.Reader
+	io.Writer
+	Closers []io.Closer
+	once    sync.Once
+}
+
+func (p *Pipe) Close() error {
+	p.once.Do(func() {
+		for _, c := range p.Closers {
+			_ = c.Close()
+		}
+	})
+	return nil
 }

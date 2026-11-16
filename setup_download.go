@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	statefs "github.com/jay-waves/sshore/internal/state"
 	transportio "github.com/jay-waves/sshore/internal/transport"
 )
 
@@ -46,7 +45,7 @@ func fetchSetupBinary(ctx context.Context, client *http.Client, base, cache, rel
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
-	if err := statefs.Private(dir, true); err != nil {
+	if err := privateStatePath(dir, true); err != nil {
 		return nil, err
 	}
 	name := "sshore_" + release + "_linux_amd64.tar.gz"
@@ -72,17 +71,17 @@ func fetchSetupBinary(ctx context.Context, client *http.Client, base, cache, rel
 	if err != nil {
 		return nil, err
 	}
-	if err = statefs.WriteFile(archivePath, archive); err != nil {
+	if err = writeStateFile(archivePath, archive); err != nil {
 		return nil, fmt.Errorf("cache release: %w", err)
 	}
-	if err = statefs.WriteFile(manifestPath, manifest); err != nil {
+	if err = writeStateFile(manifestPath, manifest); err != nil {
 		return nil, fmt.Errorf("cache checksums: %w", err)
 	}
 	return binary, nil
 }
 
 func readSetupCache(path string, limit int64) ([]byte, error) {
-	if err := statefs.Private(path, false); err != nil {
+	if err := privateStatePath(path, false); err != nil {
 		return nil, err
 	}
 	f, err := os.Open(path)

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/jay-waves/sshore/internal/shell"
 	"github.com/jay-waves/sshore/internal/tmux"
 )
 
@@ -155,7 +154,7 @@ func (s *localShell) attach(c net.Conn) error {
 			}
 			name := s.record.Name
 			s.mu.Unlock()
-			shell.FinishDetach(control, func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, func() { mx.Close() })
+			tmux.FinishDetach(control, func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, func() { mx.Close() })
 			return nil
 		case "session_targets":
 			if err = p.controlMessage(s.targets(m)); err != nil {

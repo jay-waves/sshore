@@ -1,11 +1,8 @@
 package main
 
-// Uses the existing sshoretest-tagged binary and isolated daemon fixture. The
-// SSH wrapper runs only fixture commands; no real account sessions or hosts.
 import (
 	"context"
 	"encoding/json"
-	"github.com/creack/pty"
 	"io"
 	"os"
 	"os/exec"
@@ -13,7 +10,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/creack/pty"
 )
+
+// Uses the existing sshoretest-tagged binary and isolated daemon fixture. The
+// SSH wrapper runs only fixture commands; no real account sessions or hosts.
 
 func TestApprovedForwardIndependent(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
@@ -177,4 +179,41 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		t.Fatal("rejected mirror survived", e2)
 	}
 
+}
+
+func TestCancelAllRemoteScope(t *testing.T) {
+	e := newEnv(t)
+	first, firstPID := e.attach("one")
+	second, secondPID := e.attach("two")
+	defer first.close()
+	defer second.close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	wrapper := filepath.Join(e.dir, "ssh-batch")
+	script := "#!/bin/sh\nexport SSHORE_STATE_DIR=" + shellQuote(filepath.Join(e.dir, "state")) + "\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	env := append(e.env, "SSHORE_SSH="+wrapper, "SSHORE_SOCKET=", "SSHORE_STATE_DIR="+filepath.Join(e.dir, "local-state"))
+	run := func(input string, args ...string) (string, error) {
+		cmd := exec.CommandContext(ctx, e.bin, args...)
+		cmd.Env = env
+		cmd.Stdin = strings.NewReader(input)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	if out, err := run("", "launch", "--local", "keep", "--detach"); err != nil {
+		t.Fatal(out, err)
+	}
+	defer run("", "cancel", "--local", "keep")
+	if out, err := run("cancel\n", "cancel", "fixture", "--all", "--server", e.bin); err != nil {
+		t.Fatal(out, err)
+	}
+	waitSessionEnded(t, e, "one", firstPID)
+	waitSessionEnded(t, e, "two", secondPID)
+	out, err := run("", "list", "--local", "--json")
+	var rows []localShellView
+	if err != nil || json.Unmarshal([]byte(out), &rows) != nil || len(rows) != 1 || rows[0].Name != "keep" {
+		t.Fatal(out, err)
+	}
 }

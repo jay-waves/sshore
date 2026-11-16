@@ -30,7 +30,6 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	statefs "github.com/jay-waves/sshore/internal/state"
 	transportio "github.com/jay-waves/sshore/internal/transport"
 )
 
@@ -65,7 +64,7 @@ func setupLock() (*os.File, error) {
 	if err := os.Mkdir(dir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
 		return nil, err
 	}
-	if err := statefs.Private(dir, true); err != nil {
+	if err := privateStatePath(dir, true); err != nil {
 		return nil, err
 	}
 	return openLock(filepath.Join(dir, "setup.lock"), false)
@@ -114,8 +113,8 @@ func inspectSetup(target string) (setupState, error) {
 		}
 		if v != version {
 			if health := probeSessionDaemon(p, time.Now().Add(250*time.Millisecond)); health.state == "attached" || health.state == "detached" || health.state == "starting" {
-				if m, err := sessionStatus(p.socket); err == nil && validSession(m.Name) == nil {
-					p.name = m.Name
+				if validSession(health.name) == nil {
+					p.name = health.name
 				}
 			}
 			state.Processes = append(state.Processes, setupProcess{PID: p.pid, Name: p.name, Version: v, Start: start})
@@ -128,7 +127,7 @@ func bootstrap(target, mode, name string) (result error) {
 	if !filepath.IsAbs(target) {
 		return fmt.Errorf("setup target must be absolute")
 	}
-	if mode != "bridge" && mode != "resume" && mode != "sessions" && mode != "new" && mode != "attach" && mode != "spawn" && mode != "mount-agent" {
+	if mode != "bridge" && mode != "resume" && mode != "sessions" && mode != "new" && mode != "attach" && mode != "spawn" && mode != "mount-agent" && mode != "cp-agent" {
 		return fmt.Errorf("invalid setup mode")
 	}
 	if mode == "resume" || name != "" {
@@ -145,7 +144,7 @@ func bootstrap(target, mode, name string) (result error) {
 	updated := false
 	changed := false
 	recoverSetup := func(cause error) error {
-		if mode == "mount-agent" {
+		if mode == "mount-agent" || mode == "cp-agent" {
 			return cause
 		}
 		return offerRecovery(cause)
@@ -212,12 +211,12 @@ func bootstrap(target, mode, name string) (result error) {
 			if updated {
 				readyMode = "updated"
 			}
-			if mode == "mount-agent" {
+			if mode == "mount-agent" || mode == "cp-agent" {
 				lock.Close()
 				if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
 					return err
 				}
-				return serverCommand([]string{"mount-agent"})
+				return serverCommand([]string{mode})
 			}
 			return bridgePrepared(name, mode == "resume" || mode == "attach", mode == "new" || mode == "spawn", target, lock, readyMode, mode == "spawn")
 		}
@@ -250,8 +249,8 @@ func bootstrap(target, mode, name string) (result error) {
 		if reply.Type != "setup_action" {
 			return fmt.Errorf("invalid setup action")
 		}
-		if mode == "mount-agent" && (reply.Action == "cancel" || reply.Action == "plain") {
-			return fmt.Errorf("mount setup cancelled; no update performed")
+		if (mode == "mount-agent" || mode == "cp-agent") && (reply.Action == "cancel" || reply.Action == "plain") {
+			return fmt.Errorf("helper setup cancelled; no update performed")
 		}
 		if reply.Action == "plain" {
 			if err = writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "plain"}); err != nil {

@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/jay-waves/sshore/internal/forward"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -43,7 +42,7 @@ func runForwardForeground(f forwardConfig) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	fmt.Fprintf(os.Stderr, "Starting %s (%s); Ctrl-C stops it.\n", describeForward(f.Port, f.Target, f.Reverse), cleanText(f.Host))
-	return forward.RunForeground(ctx, sshExecutable(), f.transportConfig(), os.Stdin, os.Stdout, os.Stderr)
+	return runForwardTransportForeground(ctx, sshExecutable(), f, os.Stdin, os.Stdout, os.Stderr)
 }
 
 func runEndpointForward(args []string) (int, error) {

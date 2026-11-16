@@ -14,8 +14,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 func remoteDaemonPath() (string, error) {
@@ -53,7 +51,7 @@ func createRemoteShell(executable, name, label string, temporary ...bool) error 
 		if err != nil {
 			return err
 		}
-		if err = statefs.Private(path+".log", false); err != nil {
+		if err = privateStatePath(path+".log", false); err != nil {
 			log.Close()
 			return err
 		}

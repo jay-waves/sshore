@@ -19,8 +19,6 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
-
-	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 func sessionStatus(path string) (message, error) {
@@ -228,7 +226,7 @@ func writeSessionName(path, name string) error {
 	if err := validSession(name); err != nil {
 		return err
 	}
-	return statefs.WriteFile(path+".name", []byte(name))
+	return writeStateFile(path+".name", []byte(name))
 }
 
 func firstExpectedInstance(expected []string) string {

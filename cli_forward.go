@@ -1,12 +1,11 @@
 package main
 
 import (
-	"github.com/jay-waves/sshore/internal/forward"
 	"strings"
 )
 
 func parsePort(s string) (int, error) {
-	n, err := forward.ParsePort(s)
+	n, err := parseForwardPort(s)
 	if err != nil {
 		return 0, usage("%s", err)
 	}

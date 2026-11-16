@@ -24,6 +24,7 @@ const (
 	ftpMaxPacket         = 1024 * 1024
 	ftpMaxDirectoryBytes = 32 * 1024 * 1024
 	ftpMaxRequests       = 4096
+	sftpCopyConcurrency  = 64
 )
 
 type ftpRequest struct {
@@ -52,7 +53,7 @@ func newFTPWire(r io.Reader, w io.WriteCloser) *ftpWire {
 }
 func NewSFTP(reader io.Reader, writer io.WriteCloser) (*sftp.Client, error) {
 	wire := newFTPWire(reader, writer)
-	return sftp.NewClientPipe(wire, wire)
+	return sftp.NewClientPipe(wire, wire, sftp.MaxConcurrentRequestsPerFile(sftpCopyConcurrency))
 }
 func (w *ftpWire) Close() error { return w.writer.Close() }
 func ftpWireString(b []byte) (string, bool) {

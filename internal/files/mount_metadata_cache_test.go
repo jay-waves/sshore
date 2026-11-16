@@ -456,3 +456,111 @@ func TestWindowsOpenReusesPathQuery(t *testing.T) {
 		t.Fatal("truncated a directory")
 	}
 }
+
+func TestFTPCacheScopedMutation(t *testing.T) {
+	var cache ftpMetadataCache
+	fetch := func() (os.FileInfo, error) { return ftpCacheInfo{name: "file"}, nil }
+	for _, name := range []string{"/a/file", "/a/sibling", "/b/file"} {
+		_, _ = cache.stat(name, fetch)
+	}
+	_, _ = cache.readDir("/a", func() ([]os.FileInfo, error) { return nil, nil })
+	finish1 := cache.beginMutation("/a/file")
+	finish2 := cache.beginMutation("/a/file")
+	if cache.entries["s:/a/file"] != nil || cache.entries["d:/a"] != nil {
+		t.Fatal("mutation retained affected metadata")
+	}
+	for _, name := range []string{"/a/sibling", "/b/file"} {
+		_, _ = cache.stat(name, func() (os.FileInfo, error) {
+			t.Fatalf("mutation discarded unrelated cache: %s", name)
+			return nil, nil
+		})
+	}
+	finish1()
+	_, _ = cache.stat("/a/file", fetch)
+	if cache.entries["s:/a/file"] != nil {
+		t.Fatal("cached metadata while overlapping mutation was active")
+	}
+	_, _ = cache.stat("/b/new", fetch)
+	if cache.entries["s:/b/new"] == nil {
+		t.Fatal("unrelated cache population blocked by mutation")
+	}
+	finish2()
+	_, _ = cache.stat("/a/file", fetch)
+	if cache.entries["s:/a/file"] == nil || len(cache.mutations) != 0 {
+		t.Fatal("cache did not recover after mutation")
+	}
+}
+
+func TestFTPCacheScopedMutationRejectsInflightDirectory(t *testing.T) {
+	var cache ftpMetadataCache
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = cache.readDir("/a", func() ([]os.FileInfo, error) {
+			close(entered)
+			<-release
+			return []os.FileInfo{ftpCacheInfo{name: "file"}}, nil
+		})
+	}()
+	<-entered
+	cache.beginMutation("/a/file")()
+	close(release)
+	<-done
+	if len(cache.entries) != 0 {
+		t.Fatal("old directory response repopulated changed file metadata")
+	}
+}
+
+func TestFTPCacheRenameInvalidatesBothTreesAndHandles(t *testing.T) {
+	var cache ftpMetadataCache
+	keys := map[string]string{
+		"s:/a/tree/child": "", "d:/a/tree/sub": "", "l:/b/tree/link": "",
+		"d:/a": "", "d:/b": "", "h:source": "/a/tree/sub", "h:destination": "/b",
+	}
+	for key, scope := range keys {
+		_, _ = cache.loadScoped(key, scope, time.Second, func() (ftpCacheValue, error) {
+			return ftpCacheValue{info: ftpCacheInfo{name: "file"}}, nil
+		})
+	}
+	_, _ = cache.stat("/unrelated/file", func() (os.FileInfo, error) { return ftpCacheInfo{name: "file"}, nil })
+	cache.beginMutation("/a/tree", "/b/tree")()
+	if len(cache.entries) != 1 || cache.entries["s:/unrelated/file"] == nil {
+		t.Fatalf("unexpected entries after rename: %v", cache.entries)
+	}
+}
+
+func TestFTPWritePreservesUnrelatedMetadata(t *testing.T) {
+	backend, wire := testFTPBackendWithWire(t)
+	for _, name := range []string{"changed", "untouched"} {
+		if err := os.WriteFile(filepath.Join(backend.root, name), []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := backend.stat(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, err := backend.open("changed", os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteAt([]byte("longer"), 0); err != nil {
+		t.Fatal(err)
+	}
+	wire.mu.Lock()
+	before := wire.totals[17].Started
+	wire.mu.Unlock()
+	if _, err := backend.stat("untouched"); err != nil {
+		t.Fatal(err)
+	}
+	wire.mu.Lock()
+	after := wire.totals[17].Started
+	wire.mu.Unlock()
+	if after != before {
+		t.Fatal("write caused an unrelated remote STAT")
+	}
+	info, err := backend.stat("changed")
+	if err != nil || info.Size() != 6 {
+		t.Fatalf("changed file metadata not refreshed: %v %v", info, err)
+	}
+}

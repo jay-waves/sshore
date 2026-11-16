@@ -7,8 +7,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/jay-waves/sshore/internal/shell"
-	statefs "github.com/jay-waves/sshore/internal/state"
 	"github.com/jay-waves/sshore/internal/tmux"
 )
 
@@ -53,11 +51,11 @@ func (s *localShell) start(m message) error {
 		source = os.Environ()
 	}
 	path := localShellPath(source)
-	args, err := shell.StartupArgs(path, m.NoLogin, m.NoProfile)
+	args, err := tmux.StartupArgs(path, m.NoLogin, m.NoProfile)
 	if err != nil {
 		return err
 	}
-	env := shell.StartupEnv(path, localShellEnvironment(source, m.Term, s.record.identity()), m.NoProfile)
+	env := tmux.StartupEnv(path, localShellEnvironment(source, m.Term, s.record.identity()), m.NoProfile)
 	t, err := tmux.Start(tmux.Config{Path: path, Args: args, Env: env, Dir: s.record.Directory, Size: tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}})
 	if err != nil {
 		return err
@@ -145,7 +143,7 @@ func (s *localShell) rename(name string) error {
 	if err != nil {
 		return err
 	}
-	if err = statefs.WriteJSON(path, next); err != nil {
+	if err = writeStateJSON(path, next); err != nil {
 		return err
 	}
 	oldPath, _ := localSessionPath(s.record.Name)
