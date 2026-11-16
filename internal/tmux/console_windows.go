@@ -140,6 +140,7 @@ func startTerminalKeyboardReader(parent context.Context, emit func([]byte, error
 		// The cancellation worker must stop before this OS thread can be reused.
 		defer func() { close(readDone); <-cancelDone }()
 		buf := make([]byte, 4096)
+		defer clear(buf)
 		for ctx.Err() == nil {
 			n, err := reader.Read(buf)
 			if ctx.Err() != nil {

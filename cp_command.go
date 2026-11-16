@@ -53,7 +53,7 @@ func runCopy(args []string) (int, error) {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	connection := sshio.Options{Host: o.host, Args: append([]string{"-o", "ClearAllForwardings=yes"}, o.ssh...), Command: remoteCommand(options{command: "cp-agent"}), Confirm: confirmSSHHost}
+	connection := sshio.Options{Host: o.host, Args: append([]string{"-o", "ClearAllForwardings=yes"}, o.ssh...), Command: remoteCommand(options{command: "cp-agent"}), Confirm: confirmSSHHost, Passphrase: unlockSSHKey}
 	pipes, err := sshio.Start(ctx, connection, os.Stderr)
 	if err != nil {
 		return 1, err

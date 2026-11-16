@@ -20,10 +20,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 type resourceRecord struct {
@@ -50,6 +50,7 @@ type resourceStartup struct {
 }
 
 type resourceConfig struct {
+	identityCache          *sshio.IdentityCache
 	UID                    string `json:",omitempty"`
 	MountName              string
 	MountApproval          *files.MountApproval
@@ -60,11 +61,12 @@ type resourceConfig struct {
 }
 type resourceStopRequest = chan error
 type resourceService struct {
-	startup     io.Writer
-	log         io.Writer
-	environment []string
-	directory   string
-	committed   func()
+	identityCache *sshio.IdentityCache
+	startup       io.Writer
+	log           io.Writer
+	environment   []string
+	directory     string
+	committed     func()
 
 	status     resourceStatusState
 	record     resourceRecord
@@ -105,7 +107,7 @@ func resourceHTTPContext(ctx context.Context, address, token, method, route stri
 	if route == "/status" {
 		timeout = time.Second
 	}
-	if route == "/ask" || route == "/setup" {
+	if route == "/ask" || route == "/setup" || route == "/unlock" {
 		timeout = 0
 	}
 	c := &http.Client{Timeout: timeout, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -190,6 +192,10 @@ func runResourceWorker() (code int, resultErr error) {
 }
 
 func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, log io.Writer, env []string, directory string, committed func()) (code int, resultErr error) {
+	if config.identityCache == nil {
+		config.identityCache = sshio.NewIdentityCache()
+		defer config.identityCache.Close()
+	}
 	kind := "mount"
 	var o ftpOptions
 	var e error
@@ -271,7 +277,7 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 	if kind == "forward" && config.Forward.Reverse {
 		direction = "->"
 	}
-	s := &resourceService{startup: startup, log: log, environment: env, directory: directory, committed: committed, record: resourceRecord{UID: config.UID, Kind: kind, Name: o.name, Host: o.host, Version: version, Token: resourceToken(), ReadOnly: o.readOnly, Direction: direction}, config: config, stop: make(chan resourceStopRequest), ack: ack, abandoned: abandoned, recordPath: filepath.Join(dir, slot+".json")}
+	s := &resourceService{identityCache: config.identityCache, startup: startup, log: log, environment: env, directory: directory, committed: committed, record: resourceRecord{UID: config.UID, Kind: kind, Name: o.name, Host: o.host, Version: version, Token: resourceToken(), ReadOnly: o.readOnly, Direction: direction}, config: config, stop: make(chan resourceStopRequest), ack: ack, abandoned: abandoned, recordPath: filepath.Join(dir, slot+".json")}
 	// The lock excludes a live owner. Remove only its stale metadata, never a files.
 	if e = os.Remove(s.recordPath); e != nil && !os.IsNotExist(e) {
 		return 1, e
@@ -346,20 +352,28 @@ func startReservedResource(config resourceConfig, kind string, reservation *reso
 		return 1, e
 	}
 	token := resourceToken()
-	var prompts sync.Mutex
+	prompts := make(chan struct{}, 1)
 	l, broker, e := resourceListen(token, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" && (r.URL.Path == "/setup" || r.URL.Path == "/setup-log") {
-			prompts.Lock()
-			defer prompts.Unlock()
+			select {
+			case prompts <- struct{}{}:
+				defer func() { <-prompts }()
+			case <-r.Context().Done():
+				return
+			}
 			serveResourceSetup(w, r)
 			return
 		}
-		if r.Method != "POST" || r.URL.Path != "/ask" {
+		if r.Method != "POST" || r.URL.Path != "/ask" && r.URL.Path != "/unlock" {
 			http.NotFound(w, r)
 			return
 		}
-		prompts.Lock()
-		defer prompts.Unlock()
+		select {
+		case prompts <- struct{}{}:
+			defer func() { <-prompts }()
+		case <-r.Context().Done():
+			return
+		}
 		serveSSHConfirmation(w, r)
 	})
 	if e != nil {

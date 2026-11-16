@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/mcp"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/sys/unix"
 )
@@ -364,6 +365,8 @@ func createRemoteShellUsing(executable, name, label, uid string, temporary bool,
 func runSharedRemoteDaemon() error { return runSharedRemoteDaemonUsing(checkMCPSessionSetup) }
 
 func runSharedRemoteDaemonUsing(check func() error) error {
+	identityCache := sshio.NewIdentityCache()
+	defer identityCache.Close()
 	path, err := remoteDaemonPath()
 	if err != nil {
 		return err
@@ -498,7 +501,7 @@ func runSharedRemoteDaemonUsing(check func() error) error {
 				mu.Unlock()
 			}()
 			ready := false
-			err := serveRemoteShell(request.Name, request.Action, request.Instance, request.LocalRequest.Env, request.LocalRequest.Record.Directory, func() error {
+			err := serveRemoteShellWithCache(identityCache, request.Name, request.Action, request.Instance, request.LocalRequest.Env, request.LocalRequest.Record.Directory, func() error {
 				err := writeMessage(c, message{Type: "shell_created", SoftwareVersion: version})
 				if err == nil {
 					ready = true

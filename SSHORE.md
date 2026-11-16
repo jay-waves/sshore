@@ -12,7 +12,7 @@ do not mirror implementation details here.
 ## Architecture and code map
 
 sshore is a Go CLI using system OpenSSH only to evaluate configuration (`ssh -G`).
-An SSH agent signs authentication requests; Go owns the network connections.
+File-key signers or an SSH agent authenticate; Go owns the network connections.
 The root program coordinates commands, release policy and cross-component
 lifecycles. Internal packages provide mechanisms without owning application
 policy or depending on mutable application state.
@@ -31,7 +31,7 @@ policy or depending on mutable application state.
 | Shell startup and attachment I/O | `internal/tmux/terminal.go`, `internal/tmux/shell_attachment.go`, application adapters in `protocol.go` |
 | Native terminals, console I/O and shortcuts | `internal/tmux/` |
 | Local prompts and presentation | `internal/termui/`, application adapters in `cli_ui.go` |
-| Framing, smux and shared SSH transport | `internal/ssh/` (configuration, agent authentication, host verification, connections, forwarding and framing); application messages and mux handshake in `protocol.go` |
+| Framing, smux and shared SSH transport | `internal/ssh/` (configuration, public-key authentication, host verification, connections, forwarding and framing); application messages and mux handshake in `protocol.go` |
 | Copy and mount mechanisms | Flat `internal/files/`; command adapters in `cp_command.go`, `mount*.go` |
 | Review records and consent | `review_store.go`, application coordination in `review*.go` (including shared source-shell validation in `review_linux.go`) |
 | Forward transport and retries | `forward.go`: endpoint parsing, command execution and SSH worker lifecycle |
@@ -79,9 +79,9 @@ resolved in the initiating environment and directory, including its remote
 command. Completion never runs this resolver. No persistent SSH subprocess,
 ControlMaster, askpass executable or implicit reconnect is used.
 
-Agent-backed public-key authentication is required. Linux uses a Unix agent
-socket; Windows uses its OpenSSH agent pipe. Configuration resolution and agent
-connections are per connection. Unsupported execution hooks and authentication
+Public-key authentication uses configured file keys or an external agent. Linux
+uses a Unix agent socket; Windows uses its OpenSSH agent pipe. Configuration
+resolution and agent connections are per connection. Unsupported execution hooks and authentication
 modes fail explicitly. Keep resolver arguments compatible with Windows in-box
 OpenSSH; Windows system path tokens use the resolver's initiating environment.
 Modern algorithm negotiation uses the supported Go SSH
@@ -124,7 +124,7 @@ Drain parent input before switching. Detach and child exit unwind one level;
 failed startup restores the parent and reports failure to its launcher.
 
 For a next-hop connection, the initiating host's daemon uses that shell's
-configuration, agent, environment and working directory. The root frontend follows
+configuration, signing credentials, environment and working directory. The root frontend follows
 a private attachment route, not remote-supplied local execution instructions.
 Local managed shells also support handoff for remote `launch` and `attach`.
 Detached startup keeps its noninteractive path. Reuse the existing connection and

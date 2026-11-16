@@ -6,9 +6,8 @@ Start a shell, leave it running, and return later. sshore combines local and
 remote shell sessions with SSH file copies, TCP tunnels and SFTP mounts.
 
 **Local:** Linux or Windows amd64/x86-64. **Remote:** Linux amd64/x86-64.
-Requires system OpenSSH for configuration and a running SSH agent with the desired
-key loaded (`ssh-add`). Connections run inside sshore; private keys stay in the
-agent. ARM and macOS are not supported.
+Requires system OpenSSH for configuration. Connections and file-key signing run
+inside sshore; an existing SSH agent can also supply keys. ARM and macOS are not supported.
 In the examples, `work` is a host or an alias from your SSH config.
 
 ## Install
@@ -131,10 +130,13 @@ does not prove its target service is healthy.
 
 ## SSH — connect your way
 
-Use SSH aliases from `~/.ssh/config` and load keys into the SSH agent.
+Use SSH aliases and `IdentityFile` entries from `~/.ssh/config`, or keys loaded
+into an SSH agent. Encrypted file keys require an interactive unlock unless the
+owning daemon already has a valid cached key. Independent frontend connections
+may ask again; MCP cannot prompt for a passphrase.
 Managed remote shells require the server to permit Unix-socket forwarding
 (`AllowStreamLocalForwarding`); preparation then exits and the connection reaches
-the daemon directly. For nested remote hops, configuration and agent access come
+the daemon directly. For nested remote hops, configuration and signing credentials come
 from the machine running the command. A lost route fails explicitly; it is never
 replaced by a direct connection from your computer.
 **Put SSH options after `--`:**

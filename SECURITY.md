@@ -37,7 +37,7 @@ flowchart LR
         service["Files and services"]
         setup["Remote setup and managed shells"]
         bash["Persistent Bash: remote account permissions"]
-        relay["Owning daemon: next-hop configuration and agent"]
+        relay["Owning daemon: next-hop configuration and signing"]
         child["Child shell on next host"]
     end
     subgraph local["Trusted local OS and user account"]
@@ -78,7 +78,7 @@ operations remain constrained by the authenticated account and SSH server policy
 
 Local attachment handoff is accepted through authenticated local control, never
 inferred from terminal output. A nested remote spawn is executed by the daemon on
-its initiating host, using that host's configuration and agent. The root frontend
+its initiating host, using that host's configuration and signing credentials. The root frontend
 receives an attachment route, not an instruction to execute the remote command or
 use the root account's credentials for the next hop. Child readiness is required
 before the launcher reports success; the original spawn owner remains authoritative.
@@ -88,7 +88,8 @@ and review preserve that route; an expired route or changed parent must fail, no
 fall back to a direct connection using a remote-supplied host alias. Route messages
 and returned terminal content remain untrusted. They grant no file, mount or
 forward approval. Host-key confirmation uses an authenticated broker on the
-initiating host; private keys remain with its agent.
+initiating host. File keys stay on that host; unlock responses use the private
+authenticated broker and are never included in route records.
 
 Managed shell channels reach private daemon Unix sockets through SSH stream-local
 forwarding. SSH server policy must allow it; sshore does not bypass a refusal.
@@ -137,8 +138,9 @@ Each pending request:
   the user must request the operation again.
 
 System OpenSSH evaluates configuration; its executable, configuration files and
-`Match exec` hooks are trusted local inputs. The SSH agent retains private keys
-and signs authentication requests. sshore verifies remote host keys and owns the
+`Match exec` hooks are trusted local inputs. Authentication uses an external SSH
+agent or file keys loaded by the connection owner. sshore verifies remote host
+keys and owns the
 encrypted connection through Go SSH. Agent authentication without a prompt is
 not approval. Password authentication, agent forwarding and arbitrary proxy
 commands are outside the supported connection model. Changed host keys are
@@ -146,7 +148,15 @@ rejected; background retries never establish new host trust. Connections do not
 share ControlMaster state or automatically reconnect outside explicit forward
 retry policy.
 
-Configured public-key restrictions and RSA size requirements apply to agent
+Daemon-owned connections can reuse unlocked file keys from a bounded-lifetime
+in-memory keyring. Cache access does not extend expiry. Expiry, file replacement
+and daemon exit invalidate cached keys without terminating authenticated SSH
+connections. Passphrases are not retained or persisted. Dropping key references
+does not guarantee immediate erasure of every copy from Go-managed memory.
+Independent frontend processes do not share this cache. No public agent endpoint
+or agent forwarding is introduced.
+
+Configured public-key restrictions and RSA size requirements apply to public-key
 authentication and host verification. Separate `RevokedHostKeys` files are not
 supported and are rejected rather than ignored; known_hosts revocation markers
 remain enforced.

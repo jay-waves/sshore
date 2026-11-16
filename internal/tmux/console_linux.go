@@ -25,6 +25,7 @@ func startTerminalKeyboardFile(parent context.Context, input *os.File, emit func
 	go func() {
 		defer close(done)
 		buf := make([]byte, 4096)
+		defer clear(buf)
 		poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
 		for {
 			if ctx.Err() != nil {

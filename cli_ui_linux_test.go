@@ -4,6 +4,8 @@ package main
 // No SSH, daemons, upgrade simulation, or additional versioned builds are used.
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -119,6 +121,112 @@ func TestSessionPickerPTY(t *testing.T) {
 				case <-timeout:
 					t.Fatalf("picker timed out: %q", output.String())
 				}
+			}
+		})
+	}
+}
+
+func TestSSHUnlockPTYHelper(t *testing.T) {
+	mode := os.Getenv("SSHORE_UNLOCK_TEST")
+	if mode == "" {
+		return
+	}
+	before, err := term.GetState(int(os.Stdin.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if mode == "cancel" {
+		ctx, cancel = context.WithTimeout(context.Background(), 200*time.Millisecond)
+	}
+	defer cancel()
+	unlock := unlockSSHKey
+	if mode == "broker" || mode == "cancel" {
+		env, stop, err := startSpawnAuth()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stop()
+		unlock = brokerSSHPassphrase(env)
+	}
+	secret, err := unlock(ctx, "fixture-key")
+	if mode == "cancel" {
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("unlock cancellation: %v", err)
+		}
+	} else if err != nil || string(secret) != "  quiet secret  " {
+		clear(secret)
+		t.Fatal("secret changed or unlock failed", err)
+	}
+	clear(secret)
+	// Broker cancellation returns as soon as HTTP is cancelled. Its handler must
+	// promptly release the terminal before the next owner is allowed to read.
+	deadline := time.Now().Add(time.Second)
+	for {
+		after, err := term.GetState(int(os.Stdin.Fd()))
+		if err == nil && reflect.DeepEqual(before, after) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("unlock did not restore terminal", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	fmt.Println("UNLOCK-HANDOFF")
+	var reply string
+	if _, err := fmt.Fscanln(os.Stdin, &reply); err != nil || reply != "handoff" {
+		t.Fatal("input not released", err)
+	}
+	fmt.Println("UNLOCK-DONE")
+}
+
+func TestSSHUnlockPTY(t *testing.T) {
+	for _, mode := range []string{"direct", "broker", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSSHUnlockPTYHelper$")
+			cmd.Env = append(os.Environ(), "SSHORE_UNLOCK_TEST="+mode, "TERM=xterm", "GORACE=atexit_sleep_ms=0")
+			master, err := pty.Start(cmd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer master.Close()
+			defer cmd.Process.Kill()
+			var output strings.Builder
+			buf := make([]byte, 4096)
+			typed, handoff := false, false
+			for {
+				n, readErr := master.Read(buf)
+				output.Write(buf[:n])
+				if !typed && strings.Contains(output.String(), "Passphrase for fixture-key:") {
+					if mode != "cancel" {
+						_, err = master.Write([]byte("  quiet secret  \r"))
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					typed = true
+				}
+				if !handoff && strings.Contains(output.String(), "UNLOCK-HANDOFF") {
+					_, err = master.Write([]byte("handoff\n"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					handoff = true
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			if err = cmd.Wait(); err != nil {
+				t.Fatalf("unlock helper failed: %v\n%s", err, &output)
+			}
+			if strings.Contains(output.String(), "quiet") || strings.Contains(output.String(), "secret") {
+				t.Fatal("passphrase echoed to terminal")
+			}
+			if !strings.Contains(output.String(), "UNLOCK-DONE") {
+				t.Fatal("unlock did not finish")
 			}
 		})
 	}

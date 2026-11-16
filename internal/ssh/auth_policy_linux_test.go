@@ -33,6 +33,8 @@ func TestAgentAuthenticationPolicies(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		cfg.values["identityfile"] = []string{"none"}
+		cfg.values["identitiesonly"] = []string{"no"}
 		cfg.values["requiredrsasize"] = []string{"2048"}
 		if _, conn, err := cfg.authentication(ctx); err == nil {
 			conn.Close()

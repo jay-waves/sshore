@@ -722,7 +722,10 @@ if [[ "$version" == "0.7.0" ]]; then
 
 Changes:
 - Run SSH connections inside sshore. System OpenSSH evaluates configuration;
-  an SSH agent retains keys and signs authentication requests.
+  configured file keys or an existing SSH agent sign authentication requests.
+- Unlock encrypted file keys through the initiating frontend when needed. Existing
+  daemons cache unlocked keys in memory with fixed expiration; no agent service
+  or passphrase storage is added.
 - Handle Windows OpenSSH system paths and older configuration output, IPv6
   destinations, host-key aliases and configured public-key restrictions.
 - Reuse the root terminal frontend for nested spawn, including remote hops.
@@ -739,8 +742,9 @@ Changes:
 - Include a self-contained agent guide in sshore mcp --help, covering output
   polling, recovery and session cleanup.
 
-Migration: start an SSH agent and load the desired key with ssh-add. Password
-and keyboard-interactive authentication, agent forwarding and ProxyCommand are
+Migration: configure IdentityFile or load an SSH agent key with ssh-add. Encrypted
+file keys require an interactive unlock unless cached by their owning daemon;
+MCP cannot prompt. Password and keyboard-interactive authentication, agent forwarding and ProxyCommand are
 not supported by the built-in transport. Managed shell connections require the
 SSH server to permit direct stream-local forwarding to daemon Unix sockets.
 Client and remote releases must match exactly. Updating older remote shells ends

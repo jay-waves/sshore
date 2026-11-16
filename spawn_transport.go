@@ -193,14 +193,18 @@ func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.
 
 func startSpawnAuth() ([]string, func(), error) {
 	token := resourceToken()
-	var prompts sync.Mutex
+	prompts := make(chan struct{}, 1)
 	l, broker, err := resourceListen(token, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/ask" {
+		if r.Method != "POST" || r.URL.Path != "/ask" && r.URL.Path != "/unlock" {
 			http.NotFound(w, r)
 			return
 		}
-		prompts.Lock()
-		defer prompts.Unlock()
+		select {
+		case prompts <- struct{}{}:
+			defer func() { <-prompts }()
+		case <-r.Context().Done():
+			return
+		}
 		serveSSHConfirmation(w, r)
 	})
 	if err != nil {
@@ -214,6 +218,18 @@ func serveSSHConfirmation(w http.ResponseWriter, r *http.Request) {
 	prompt, err := io.ReadAll(io.LimitReader(r.Body, 8193))
 	if err != nil || len(prompt) > 8192 {
 		http.Error(w, "invalid prompt", 400)
+		return
+	}
+	if r.URL.Path == "/unlock" {
+		secret, err := unlockSSHKey(r.Context(), string(prompt))
+		if err != nil {
+			http.Error(w, "terminal input failed", 409)
+			return
+		}
+		defer clear(secret)
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(secret)
 		return
 	}
 	ok, err := confirmSSHHost(r.Context(), string(prompt))

@@ -41,7 +41,8 @@ const sshOptions = `
 for example: --port 2222 -- -J jump. The legacy -- -p PORT form is supported.
 Do not combine --port with SSH -p or -o Port.
 Configuration options: -p -i -J -F -l -o -E -v/-vv/-vvv -4 -6.
-Keys must be loaded into an SSH agent. Passwords, compression, agent/X11
+Keys come from IdentityFile or an SSH agent. Encrypted files need an interactive
+unlock unless cached by the owning daemon. Passwords, compression, agent/X11
 forwarding and ProxyCommand are unsupported; unsupported requests fail.
 `
 
@@ -83,8 +84,8 @@ For a single stateless command outside MCP, use sshore exec HOST 'COMMAND'.
 ## Setup
 
 Configure the MCP client with command "sshore" and args ["mcp"]. It owns stdio;
-diagnostics go to stderr. Use an SSH config host alias and an agent with the key
-loaded. Remote hosting requires Linux amd64 and the matching sshore release.
+diagnostics go to stderr. Use an SSH config host alias with an unencrypted
+IdentityFile or an available agent key. MCP cannot prompt to unlock file keys. Remote hosting requires Linux amd64 and the matching sshore release.
 Missing remote software may be installed automatically. If host trust or an
 update needs review, ask the user to run sshore launch HOST, then reconnect.
 Do not bypass host verification or supply update confirmation on their behalf.
@@ -126,8 +127,9 @@ Do not bypass host verification or supply update confirmation on their behalf.
 	"exec": `Usage: sshore exec HOST 'COMMAND'
 
 Execute COMMAND once over SSH, without a remote PTY.
-System ssh -G supplies connection settings. Load the desired key into an SSH
-agent first; passwords and private-key files are not read by sshore.
+System ssh -G supplies connection settings. IdentityFile and SSH agent keys are
+supported; encrypted file keys require an interactive unlock. Password login is
+not supported.
 Standard input, output, error and the SSH exit status pass through.
 No persistent sshore shell is created and no remote installation is required.
 Use an SSH config host alias for connection options.

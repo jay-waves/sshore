@@ -15,105 +15,84 @@ import (
 
 	"github.com/skeema/knownhosts"
 	cryptossh "golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
 	xknownhosts "golang.org/x/crypto/ssh/knownhosts"
 )
 
 func (c *connectionConfig) authentication(ctx context.Context) ([]cryptossh.AuthMethod, net.Conn, error) {
 	if preferred := c.get("preferredauthentications"); preferred != "" && !slices.Contains(strings.Split(preferred, ","), "publickey") {
-		return nil, nil, fmt.Errorf("PreferredAuthentications excludes publickey; built-in SSH requires agent public-key authentication")
+		return nil, nil, fmt.Errorf("PreferredAuthentications excludes publickey; built-in SSH requires public-key authentication")
 	}
 	minimumRSA, err := c.minimumRSASize()
 	if err != nil {
 		return nil, nil, err
 	}
 	if c.get("pubkeyauthentication") == "false" || c.get("pubkeyauthentication") == "no" {
-		return nil, nil, fmt.Errorf("built-in SSH requires public-key authentication through an agent")
+		return nil, nil, fmt.Errorf("built-in SSH requires public-key authentication")
 	}
-	address := c.get("identityagent")
-	if address == "none" {
-		return nil, nil, fmt.Errorf("SSH agent is disabled")
-	}
-	if strings.HasPrefix(address, "$") && !strings.HasPrefix(address, "${") {
-		name := strings.TrimPrefix(address, "$")
-		address = environment(c.options.Environment, name)
-		if address == "" {
-			return nil, nil, fmt.Errorf("IdentityAgent environment variable %s is unset or empty", name)
+	signers, conn, agentErr := c.agentSigners(ctx)
+	files, allowed, certificates, fileErr := c.fileIdentities(ctx)
+	selected := make([]cryptossh.Signer, 0, len(signers)+len(files))
+	seen := map[string]bool{}
+	add := func(signer cryptossh.Signer) {
+		key, parseErr := cryptossh.ParsePublicKey(signer.PublicKey().Marshal())
+		if parseErr != nil {
+			return
 		}
-	}
-	if address == "" || address == "SSH_AUTH_SOCK" {
-		address = environment(c.options.Environment, "SSH_AUTH_SOCK")
-	}
-	if address == "" {
-		address = defaultAgent()
-	}
-	if address == "" {
-		return nil, nil, fmt.Errorf("SSH agent unavailable; start an agent and load the key using ssh-add")
-	}
-	address, err = c.expand(address)
-	if err != nil {
-		return nil, nil, err
-	}
-	conn, err := connectAgent(ctx, address)
-	if err != nil {
-		return nil, nil, fmt.Errorf("SSH agent unavailable: %w", err)
-	}
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
-	defer stop()
-	signers, err := agent.NewClient(conn).Signers()
-	if err != nil {
-		conn.Close()
-		return nil, nil, fmt.Errorf("list SSH agent keys: %w", err)
-	}
-	// Match configured public identities without ever reading private key material.
-	allowed := map[string]bool{}
-	for i, name := range append(append([]string(nil), c.values["identityfile"]...), c.values["certificatefile"]...) {
-		if name == "none" {
-			continue
+		if checkRSAKeySize(key, minimumRSA) != nil || seen[string(key.Marshal())] {
+			return
 		}
-		path, err := c.expand(name)
-		if err != nil {
-			conn.Close()
-			return nil, nil, err
-		}
-		paths := []string{path + ".pub"}
-		if i >= len(c.values["identityfile"]) || strings.HasSuffix(path, ".pub") {
-			paths = []string{path}
-		}
-		for _, path := range paths {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				continue
-			}
-			key, _, _, _, err := cryptossh.ParseAuthorizedKey(data)
-			if err == nil {
-				allowed[string(key.Marshal())] = true
-			}
-		}
+		seen[string(key.Marshal())] = true
+		selected = append(selected, signer)
 	}
-	selected := make([]cryptossh.Signer, 0, len(signers))
-	others := make([]cryptossh.Signer, 0, len(signers))
+	var others []cryptossh.Signer
 	for _, signer := range signers {
-		key, err := cryptossh.ParsePublicKey(signer.PublicKey().Marshal())
-		if err != nil {
-			conn.Close()
-			return nil, nil, err
-		}
-		if err := checkRSAKeySize(key, minimumRSA); err != nil {
+		key, parseErr := cryptossh.ParsePublicKey(signer.PublicKey().Marshal())
+		if parseErr != nil {
 			continue
 		}
 		matches := allowed[string(key.Marshal())]
-		if certificate, ok := key.(*cryptossh.Certificate); ok {
-			matches = matches || allowed[string(certificate.Key.Marshal())]
+		if cert, ok := key.(*cryptossh.Certificate); ok {
+			matches = matches || allowed[string(cert.Key.Marshal())]
 		}
 		if matches {
-			selected = append(selected, signer)
+			add(signer)
 		} else {
 			others = append(others, signer)
 		}
 	}
+	for _, signer := range files {
+		add(signer)
+	}
+	// Certificates reuse the chosen agent or file signer for their underlying key.
+	for _, cert := range certificates {
+		for _, signer := range append([]cryptossh.Signer(nil), selected...) {
+			if string(cert.Key.Marshal()) == string(signer.PublicKey().Marshal()) {
+				certSigner, e := cryptossh.NewCertSigner(cert, signer)
+				if e == nil {
+					add(certSigner)
+				}
+				break
+			}
+		}
+	}
+	// Try configured certificates before their raw identity and unrelated agent keys.
+	slices.SortStableFunc(selected, func(a, b cryptossh.Signer) int {
+		ak, _ := cryptossh.ParsePublicKey(a.PublicKey().Marshal())
+		bk, _ := cryptossh.ParsePublicKey(b.PublicKey().Marshal())
+		_, ac := ak.(*cryptossh.Certificate)
+		_, bc := bk.(*cryptossh.Certificate)
+		if ac == bc {
+			return 0
+		}
+		if ac {
+			return -1
+		}
+		return 1
+	})
 	if !c.enabled("identitiesonly") {
-		selected = append(selected, others...)
+		for _, signer := range others {
+			add(signer)
+		}
 	}
 	constrained := make([]cryptossh.Signer, 0, len(selected))
 	allowedAlgorithms := cryptossh.SupportedAlgorithms().PublicKeyAuths
@@ -140,7 +119,9 @@ func (c *connectionConfig) authentication(ctx context.Context) ([]cryptossh.Auth
 			}
 			wrapped, err := cryptossh.NewSignerWithAlgorithms(algorithmSigner, allowed)
 			if err != nil {
-				conn.Close()
+				if conn != nil {
+					conn.Close()
+				}
 				return nil, nil, err
 			}
 			constrained = append(constrained, wrapped)
@@ -150,8 +131,10 @@ func (c *connectionConfig) authentication(ctx context.Context) ([]cryptossh.Auth
 	}
 	selected = constrained
 	if len(selected) == 0 {
-		conn.Close()
-		return nil, nil, fmt.Errorf("no matching SSH agent key; load the configured identity using ssh-add")
+		if conn != nil {
+			conn.Close()
+		}
+		return nil, nil, fmt.Errorf("no usable SSH public-key identity: %w", errors.Join(agentErr, fileErr, errors.New("check IdentityFile and SSH agent keys")))
 	}
 	return []cryptossh.AuthMethod{cryptossh.PublicKeys(selected...)}, conn, nil
 }

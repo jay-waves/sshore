@@ -39,7 +39,9 @@ func (c *Client) Close() error {
 	return nil
 }
 
-func Dial(ctx context.Context, o Options) (*Client, error) { return dial(ctx, o, 0) }
+func Dial(ctx context.Context, o Options) (*Client, error) {
+	return dial(context.WithValue(ctx, authenticationBudgetKey{}, &authenticationBudgets{entries: make(map[*authenticationBudget]bool)}), o, 0)
+}
 func dial(ctx context.Context, o Options, depth int) (result *Client, err error) {
 	if depth > 8 {
 		return nil, fmt.Errorf("SSH ProxyJump chain exceeds eight hops")
@@ -55,8 +57,22 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 	if strings.HasPrefix(cfg.host, "[") && strings.HasSuffix(cfg.host, "]") && strings.Contains(cfg.host, ":") {
 		cfg.host = cfg.host[1 : len(cfg.host)-1]
 	}
-	connecting, cancel := context.WithTimeout(ctx, cfg.timeout)
+	connecting, cancel := context.WithCancel(ctx)
 	defer cancel()
+	budgets, _ := ctx.Value(authenticationBudgetKey{}).(*authenticationBudgets)
+	if budgets == nil {
+		budgets = &authenticationBudgets{entries: make(map[*authenticationBudget]bool)}
+		connecting = context.WithValue(connecting, authenticationBudgetKey{}, budgets)
+	}
+	releaseBudget := budgets.add(cfg.timeout, cancel)
+	defer releaseBudget()
+	if confirm := cfg.options.Confirm; confirm != nil {
+		cfg.options.Confirm = func(ctx context.Context, prompt string) (bool, error) {
+			resume := budgets.pause()
+			defer resume()
+			return confirm(ctx, prompt)
+		}
+	}
 	callback, hostAlgos, err := cfg.hostKeys(connecting)
 	if err != nil {
 		return nil, err
@@ -65,9 +81,12 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 	if err != nil {
 		return nil, err
 	}
-	stopAgent := context.AfterFunc(connecting, func() { agentConn.Close() })
-	defer stopAgent()
-	resources := []io.Closer{agentConn}
+	var resources []io.Closer
+	if agentConn != nil {
+		stopAgent := context.AfterFunc(connecting, func() { agentConn.Close() })
+		defer stopAgent()
+		resources = append(resources, agentConn)
+	}
 	defer func() {
 		if err != nil {
 			for i := len(resources) - 1; i >= 0; i-- {
@@ -108,6 +127,7 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 		hops := strings.Split(jump, ",")
 		first := hops[len(hops)-1]
 		jo := Options{Host: first, Executable: cfg.options.Executable, Environment: cfg.options.Environment, Directory: o.Directory, Confirm: o.Confirm, Diagnostic: o.Diagnostic}
+		jo.Passphrase, jo.IdentityCache = o.Passphrase, o.IdentityCache
 		for i := 0; i < len(o.Args); i++ {
 			if o.Args[i] == "-F" && i+1 < len(o.Args) {
 				jo.Args = append(jo.Args, "-F", o.Args[i+1])
@@ -150,10 +170,9 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 	resources = append(resources, raw)
 	stop := context.AfterFunc(connecting, func() { raw.Close() })
 	defer stop()
-	if deadline, ok := connecting.Deadline(); ok {
-		raw.SetDeadline(deadline)
-	}
+	// The cancellation budget closes raw; interactive prompts pause all jump budgets.
 	conn, ch, req, err := cryptossh.NewClientConn(raw, address, cc)
+	cc.Auth = nil
 	if err != nil {
 		return nil, fmt.Errorf("SSH %s: %w", o.Host, err)
 	}
@@ -342,4 +361,69 @@ func (p *processInput) Close() error {
 	}
 	p.closed = true
 	return p.writer.Close()
+}
+
+// A prompt suspends only connection budgets, never caller cancellation. Jump
+// handshakes share this group so a parent's budget cannot expire during input.
+type authenticationBudgetKey struct{}
+type authenticationBudget struct {
+	duration   time.Duration
+	cancel     context.CancelFunc
+	timer      *time.Timer
+	generation uint64
+}
+type authenticationBudgets struct {
+	mu      sync.Mutex
+	entries map[*authenticationBudget]bool
+	paused  int
+}
+
+func (g *authenticationBudgets) start(b *authenticationBudget) {
+	b.generation++
+	generation := b.generation
+	b.timer = time.AfterFunc(b.duration, func() {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if g.entries[b] && g.paused == 0 && generation == b.generation {
+			b.cancel()
+		}
+	})
+}
+func (g *authenticationBudgets) add(duration time.Duration, cancel context.CancelFunc) func() {
+	g.mu.Lock()
+	b := &authenticationBudget{duration: duration, cancel: cancel}
+	g.entries[b] = true
+	if g.paused == 0 {
+		g.start(b)
+	}
+	g.mu.Unlock()
+	return func() {
+		g.mu.Lock()
+		delete(g.entries, b)
+		if b.timer != nil {
+			b.timer.Stop()
+		}
+		g.mu.Unlock()
+	}
+}
+func (g *authenticationBudgets) pause() func() {
+	g.mu.Lock()
+	g.paused++
+	for b := range g.entries {
+		b.generation++
+		if b.timer != nil {
+			b.timer.Stop()
+		}
+	}
+	g.mu.Unlock()
+	return func() {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		g.paused--
+		if g.paused == 0 {
+			for b := range g.entries {
+				g.start(b)
+			}
+		}
+	}
 }

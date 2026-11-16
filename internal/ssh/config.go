@@ -24,6 +24,9 @@ type Options struct {
 	Diagnostic io.Writer
 	// Confirm receives a host key fingerprint. A nil callback requires an existing trusted key.
 	Confirm func(context.Context, string) (bool, error)
+	// Passphrase is available only through the initiating interactive frontend.
+	Passphrase    func(context.Context, string) ([]byte, error)
+	IdentityCache *IdentityCache
 }
 
 type connectionConfig struct {

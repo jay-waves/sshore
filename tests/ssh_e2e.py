@@ -333,6 +333,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default="dist/sshore")
     parser.add_argument("--spawn-only", action="store_true")
+    parser.add_argument("--identity-only", action="store_true")
     parser.add_argument("--nested-only", action="store_true")
     parser.add_argument("--handoff-only", action="store_true")
     parser.add_argument("--setup-only", action="store_true")
@@ -444,6 +445,29 @@ LogLevel ERROR
             command = [binary, "launch", pwd.getpwuid(os.getuid()).pw_name + "@127.0.0.1", "--server", str(wrapper), "--", "-p", str(port),
                        "-i", str(key), "-F", "/dev/null", "-o", "IdentitiesOnly=yes",
                        "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known}"]
+            if args.identity_only:
+                file_command = command + ["-o", "IdentityAgent=none"]
+                plain = Terminal(file_command)
+                terms.append(plain)
+                plain.send("exit\n")
+                plain.wait()
+                secret = "sshore-file-key-secret"
+                subprocess.run(["ssh-keygen", "-q", "-p", "-P", "", "-N", secret, "-f", str(key)], check=True, stdout=subprocess.DEVNULL)
+                file_command[1] = "spawn"
+                for attempt in range(2):
+                    terminal = Terminal(file_command, wait_ready=False)
+                    terms.append(terminal)
+                    if attempt == 0:
+                        terminal.expect("Passphrase for ")
+                        terminal.send(secret + "\n")
+                    terminal.expect(r"\[sshore\] Connected")
+                    assert secret.encode() not in terminal.buffer
+                    terminal.send("printf 'FILE-%s\\n' ready\n")
+                    terminal.expect("FILE-ready")
+                    terminal.send("exit\n")
+                    terminal.wait()
+                print("identity: file authentication, encrypted unlock and daemon cache reuse OK")
+                return
             if args.mcp_only:
                 ssh_wrapper = root / "mcp-ssh"
                 ssh_wrapper.write_text("#!/bin/sh\n" +
