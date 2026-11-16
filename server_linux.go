@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -35,7 +36,13 @@ func serverCommand(args []string) error {
 		if len(args) != 1 {
 			return usage("mount-agent takes no arguments")
 		}
-		return files.ServeAgent(&transportio.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version, func(a files.MountApproval) error { return checkApprovalSource(a.Session, a.PID, a.ID) })
+		return files.ServeAgentWithPeer(&transportio.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version, func(data json.RawMessage) func() {
+			var task peerRecord
+			if len(data) > maxRemoteTaskSize || json.Unmarshal(data, &task) != nil || !strings.HasPrefix(task.ID, "mount/") {
+				return func() {}
+			}
+			return beginIncomingTask(task)
+		}, func(a files.MountApproval) error { return checkApprovalSource(a.Session, a.PID, a.ID) })
 	case "rename-session":
 		if len(args) != 4 && len(args) != 5 {
 			return usage("rename-session requires old name, new name and client version")
@@ -85,7 +92,7 @@ func serverCommand(args []string) error {
 		}
 		return removeRemoteTask(args[2])
 	case "inventory":
-		if len(args) != 2 && (len(args) != 3 || args[2] != "--verbose") {
+		if len(args) != 2 && (len(args) != 3 || args[2] != "--diagnostics") {
 			return usage("inventory requires client version")
 		}
 		if e := checkPeerVersion(args[1], "client"); e != nil {
@@ -165,7 +172,11 @@ func watchRemoteTask() error {
 	}()
 	var first *peerRecord
 	warned := false
+	var endIncoming func()
 	defer func() {
+		if endIncoming != nil {
+			endIncoming()
+		}
 		if first != nil {
 			_ = removeRemoteTask(first.Key)
 		}
@@ -183,12 +194,13 @@ func watchRemoteTask() error {
 			if t.State != "active" {
 				return fmt.Errorf("watch requires an active resource")
 			}
-			if first != nil && t != *first {
+			if first != nil && (t.Key != first.Key || t.UID != first.UID || peerKind(t.ID) != peerKind(first.ID) || t.Manager != first.Manager || t.Direction != first.Direction) {
 				return fmt.Errorf("resource identity changed during watch")
 			}
 			if first == nil {
 				copy := t
 				first = &copy
+				endIncoming = beginIncomingTask(t)
 			}
 			if e := storeRemoteTask(t); e != nil && !warned {
 				warned = true

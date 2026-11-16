@@ -156,7 +156,7 @@ func completeCLI(words []string, current string, catalog func() completionCatalo
 		}
 	}
 	local := parsed.has("--local")
-	hostPosition := n == 0 && !local && slices.Contains([]string{"launch", "spawn", "attach", "list", "pstree", "cancel", "rename", "mount"}, command)
+	hostPosition := n == 0 && !local && slices.Contains([]string{"launch", "spawn", "attach", "list", "cancel", "rename", "mount"}, command)
 	endpoint := command == "cp" || command == "forward" && n < 2
 	tasks := slices.Contains([]string{"attach", "cancel", "rename", "review"}, command)
 	if !hostPosition && !endpoint && !tasks {
@@ -440,7 +440,7 @@ func loadCompletionCatalog() completionCatalog {
 	completionRecords("approvals", func(path string) {
 		var r approvalRecord
 		if readCompletionJSON(path, &r) && validApprovalID(r.ID) && (validSession(r.DisplayName()) == nil || validApprovalID(r.DisplayName())) && time.Since(r.Created) < approvalTTL && !r.Created.After(time.Now()) {
-			addTask(completionTask{"review", r.DisplayName(), ""}, resourceIdentity(resourceRecord{Kind: "review", Token: r.ID}))
+			addTask(completionTask{"review", r.DisplayName(), ""}, resourceIdentity(resourceRecord{UID: r.UID, Kind: "review", Token: r.ID}))
 		}
 	})
 	if home, err := os.UserHomeDir(); err == nil {

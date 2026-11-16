@@ -23,12 +23,12 @@ This document defines the project vocabulary. Commands are documented by
 | Mux | The detach/reattach capability: explicitly leave a shell running and attach again later. Each shell session has one terminal; mux does not imply split panes. `internal/tmux` implements native terminals, ownership primitives, shell startup, attachment I/O and detach confirmation; it does not use the external tmux program. The internal smux library separately multiplexes transport streams. |
 | Session | A running task managed by sshore: a shell, forward or mount. Pending reviews are requests, not started sessions. |
 | Shell | A shell process and native terminal owned by a daemon, local on Linux/Windows or remote on Linux. `launch` creates a persistent session that survives detach and connection loss. |
-| Spawn | A temporary shell created by `spawn`, displayed as `spawn/NAME`. It can detach and reattach but ends with its original owner. A remote spawn also ends on loss of its lifetime SSH connection. |
+| Spawn | A temporary shell created by `spawn`, displayed in trees as `spawn/ID (alias)`. It can detach and reattach but ends with its original owner. A remote spawn also ends on loss of its lifetime SSH connection. |
 | Spawn owner | The parent shell process that launched `spawn`, identified by PID and creation identity. Attach never transfers ownership. |
 | Lifetime SSH connection | A local-daemon-owned connection keeping a remote spawn alive independently of foreground attachments. It is not automatically reconnected. |
 | Daemon | A background owner of native terminals and lifecycle. One local daemon per user/state root hosts multiple shells and forward transports, and supervises mount workers; Linux remote shells share a daemon per runtime directory, with separate helper endpoints. |
-| Shell name | A public label, automatic or user-supplied; renaming it does not replace the daemon or shell. |
-| Task | A context-dependent display term: a numbered item in `list`, or a program running under a shell. It is not a separate execution model; the managed lifecycle uses session, shell and resource. Identifying shell programs for termination requires process identity checks, not just a displayed PID. |
+| Alias / shell name | An optional public label on a fixed task ID. Creation may supply an alias; `rename` replaces it without changing the task identity or lifetime. Legacy names remain aliases. |
+| Task | A context-dependent display term: an identified item in `list`, or a program running under a shell. It is not a separate execution model; the managed lifecycle uses session, shell and resource. Identifying shell programs for termination requires process identity checks, not just a displayed PID. |
 | Shell lifetime | Startup policy: `parent` for local spawn, `heartbeat` for remote spawn (original parent plus lifetime SSH), `persistent` for launch. Detach and attach never change this policy. These labels do not measure connection health. |
 | Owner context | Display-only identity of the managed shell from which a spawn was started, when known. It stays fixed across attachments; it does not replace the actual spawn owner PID/creation identity, which may belong to a wrapper. |
 | Attachment source | The managed shell from which the current attachment was opened, when known. It may change on reattachment and conveys no lifetime ownership. |
@@ -43,13 +43,13 @@ This document defines the project vocabulary. Commands are documented by
 | Term | Meaning |
 | --- | --- |
 | Request | Bounded metadata proposing a file operation or forward; receiving it grants no permission. |
-| Pending approval | A local single-use request record, identified as `review/NAME`, awaiting user review. The public name is reserved for its action; an approved forward retains it. Its random internal request ID remains distinct. |
+| Pending approval | A local single-use request record awaiting user review. Its task ID and optional alias identify the request and are retained if approval starts an independent resource. |
 | Review | The separate local command that selects a pending request, collects consent and attempts execution. |
 | Consent / approval | The user's explicit acceptance in review. SSH authentication alone is not consent. |
 | Copy | A regular-file operation expressed as `cp SOURCE... TARGET`; not full system cp or scp compatibility. |
 | Tunnel | The README feature category for TCP port forwarding through SSH. |
 | Transfer | A one-time regular-file copy. Both direct and approved copies use SFTP; approved copies run on a client-initiated shell stream after local review. |
-| Resource | An independently managed local mount or forward, with its own transport and lifetime. Its ID is `TYPE/NAME`, such as `forward/pikachu` or `mount/eevee`; the type prefix identifies the object kind. Shells, resources and pending reviews share a local name namespace and default Pokemon pool. Direct mounts and forwards get names automatically; approved resources inherit their review name. |
+| Resource | An independently managed local mount or forward, with its own transport and lifetime. Shells, resources and pending reviews share an alias namespace on their managing computer. Approved resources retain their review reference and alias. |
 | Job | The Windows Job Object used to contain a local shell process tree; not an application-level task type. |
 | Worker | A separate local process owning a mount and its SSH transport, started and reaped by the local daemon. Forwards run directly under the daemon; older independent forward workers remain manageable. |
 | Mount | A remote directory exposed to local applications through SFTP and FUSE/WinFsp, identified as `mount/NAME`. |
@@ -57,6 +57,7 @@ This document defines the project vocabulary. Commands are documented by
 | Mount agent | A transient remote sshore process that carries SFTP and filesystem notifications over a mount-owned SSH connection; it is not a persistent shell daemon. |
 | Forward | A fixed TCP port mapping through SSH, identified as `forward/NAME`. It can carry an existing SOCKS service; it does not itself implement SOCKS. |
 | Native forwarding | OpenSSH `-L/-R/-D` configured for a connection, separate from a managed `forward` resource. `-D` creates a SOCKS proxy. |
+| Task ID | Immutable instance identity with a short public reference; see [task identity](#task-id). |
 | Inventory | A diagnostic view of resources, requests, shells or peer records. It is not an authorization source. |
 | Peer record | A remote advisory mirror, identified as `peer/KEY/RESOURCE`; it cannot control the original resource. |
 | Receipt | A bounded diagnostic record of a shell/resource ending. It is not proof of complete task cleanup or remote write outcome. |
@@ -101,10 +102,11 @@ function names may retain historical terminology.
 
 ## Task ID
 
-A private sequence number assigned by the local manager to a task instance.
-It stays stable across rename, detach and reconnect and is never reused.
-The short hex ID shown by `list` stays with that task instance. Commands select
-tasks by name or short ID. A short ID selects its original instance across
-renames; it never selects a replacement that reuses the name.
+An immutable random-hash identity allocated by the managing account at creation.
+Its six-character hexadecimal prefix is the public reference; aliases are optional
+and mutable. Allocation excludes reserved prefixes, and ended task IDs are not
+reassigned. Independently managed accounts may have colliding prefixes; ambiguous
+references require an explicit scope. ID selection stays bound to its original
+instance across alias changes, detach and reconnect.
 
 An **account identity** is a locally salted OS identifier used only to group host display records. It is not an authentication identity; cloning its state can duplicate it. `sshore reset` replaces it.

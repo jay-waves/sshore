@@ -11,12 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
 // The token is a local connection capability, never part of public inventory.
 type localShellRecord struct {
+	UID                                      string `json:",omitempty"`
 	Owner                                    spawnOwner
 	ManagerPID                               int
 	Name, Address, Token, Version, Directory string
@@ -39,7 +41,31 @@ func readLocalSession(name string) (localShellRecord, error) {
 	if err != nil {
 		return r, err
 	}
-	return readLocalRecord(path, name)
+	r, err = readLocalRecord(path, name)
+	if err == nil || !os.IsNotExist(err) {
+		return r, err
+	}
+	dir, err := stateDir("local-shells")
+	if err != nil {
+		return r, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return r, err
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		candidate, err := readLocalRecord(filepath.Join(dir, entry.Name()), strings.TrimSuffix(entry.Name(), ".json"))
+		if err != nil {
+			return r, err
+		}
+		if candidate.Name == name || validTaskUID(candidate.UID) && candidate.UID[:6] == name {
+			return candidate, nil
+		}
+	}
+	return r, os.ErrNotExist
 }
 
 func readLocalRecord(path, name string) (localShellRecord, error) {
@@ -59,7 +85,7 @@ func readLocalRecord(path, name string) (localShellRecord, error) {
 	host, port, err := net.SplitHostPort(r.Address)
 	n, portErr := strconv.Atoi(port)
 	token, tokenErr := hex.DecodeString(r.Token)
-	if err != nil || host != "127.0.0.1" || portErr != nil || n < 1 || n > 65535 || tokenErr != nil || len(token) != 32 || r.Name != name || r.Version == "" {
+	if err != nil || host != "127.0.0.1" || portErr != nil || n < 1 || n > 65535 || tokenErr != nil || len(token) != 32 || (r.Name != name && r.UID != name) || r.UID != "" && !validTaskUID(r.UID) || r.Version == "" {
 		return r, fmt.Errorf("invalid local shell record: %s", name)
 	}
 	return r, nil
@@ -102,6 +128,9 @@ func dialLocalSessionUntil(r localShellRecord, deadline time.Time) (net.Conn, er
 }
 
 func (r localShellRecord) identity() string {
+	if validTaskUID(r.UID) {
+		return "task:" + r.UID
+	}
 	return fmt.Sprintf("local:%x", sha256.Sum256([]byte(r.Token)))
 }
 
@@ -126,7 +155,7 @@ func serveLocalShell(s *localShell, r localShellRecord, ready func(localShellRec
 	}
 	defer listener.Close()
 	r.Address = listener.Addr().String()
-	path, err := localSessionPath(r.Name)
+	path, err := localSessionPath(r.storageName())
 	if err != nil {
 		return err
 	}
@@ -136,7 +165,7 @@ func serveLocalShell(s *localShell, r localShellRecord, ready func(localShellRec
 	s.record = r
 	go watchSpawnOwner(r.Owner, s.done, s.close)
 	defer func() {
-		path, err := localSessionPath(s.record.Name)
+		path, err := localSessionPath(s.record.storageName())
 		if err == nil {
 			os.Remove(path)
 		}
@@ -218,4 +247,11 @@ func serveLocalShell(s *localShell, r localShellRecord, ready func(localShellRec
 			_ = serve(c, m)
 		}()
 	}
+}
+
+func (r localShellRecord) storageName() string {
+	if validTaskUID(r.UID) {
+		return r.UID
+	}
+	return r.Name
 }

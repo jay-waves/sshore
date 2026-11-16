@@ -124,13 +124,26 @@ func reserveSession(names []string, fresh bool) (sessionReservation, error) {
 		if found, err := resolveSession(publicLabel); err != nil {
 			return sessionReservation{}, err
 		} else if found == "" {
-			namespace, err = reserveResourceName("shell", publicLabel)
+			requested := publicLabel
+			if fresh {
+				requested = ""
+			}
+			namespace, err = reserveResourceName("shell", requested)
 			if err != nil {
 				if fresh && errors.Is(err, errObjectNameInUse) {
 					continue
 				}
 				return sessionReservation{}, err
 			}
+		}
+		if namespace != nil && fresh {
+			name = namespace.uid
+			path, err = socketPath(name)
+			if err != nil {
+				namespace.Close()
+				return sessionReservation{}, err
+			}
+			publicLabel = namespace.name
 		}
 		startup, err := openLock(path+".start", false)
 		if err != nil {
@@ -186,6 +199,9 @@ func bridge(name string, existing bool) error {
 
 func bridgePrepared(name string, existing, freshOnly bool, executable string, gate *os.File, readyMode string, temporary ...bool) error {
 	defer gate.Close()
+	if !existing && freshOnly && isShortTaskID(name) {
+		name = ""
+	}
 	if existing && name == "" {
 		return fmt.Errorf("attach requires a shell name")
 	}
@@ -230,7 +246,7 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 		if publicName == "" {
 			publicName = name
 		}
-		if err := createRemoteShell(executable, name, publicName, len(temporary) > 0 && temporary[0]); err != nil {
+		if err := createRemoteShell(executable, name, publicName, reservation.namespace.uid, len(temporary) > 0 && temporary[0]); err != nil {
 			return err
 		}
 		conn, err = net.DialTimeout("unix", path, time.Second)

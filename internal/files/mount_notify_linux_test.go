@@ -3,6 +3,7 @@
 package files
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -291,5 +292,43 @@ func TestMountApprovalSourceGate(t *testing.T) {
 	}
 	if err := <-done; err == nil {
 		t.Fatal("agent accepted failed approval")
+	}
+}
+
+func TestMountAgentPeerMetadataLifetime(t *testing.T) {
+	if _, err := ftpSFTPServerExecutable(); err != nil {
+		t.Skip(err)
+	}
+	a, b := net.Pipe()
+	defer b.Close()
+	peer := json.RawMessage(`{"id":"mount/example"}`)
+	observed := make(chan string, 1)
+	ended := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeAgentWithPeer(a, "test-release", func(data json.RawMessage) func() { observed <- string(data); return func() { close(ended) } })
+	}()
+	mux, _, _, err := openMux(b, "test-release", nil, peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-observed:
+		if got != string(peer) {
+			t.Fatal(got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("metadata not observed")
+	}
+	mux.Close()
+	select {
+	case <-ended:
+	case <-time.After(3 * time.Second):
+		t.Fatal("peer registration outlived agent")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("agent did not exit")
 	}
 }

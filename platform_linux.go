@@ -46,6 +46,9 @@ func stopSpawnTerminal(pid int, start string) error {
 
 func detachResourceWorker(c *exec.Cmd)   { c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
 func lockResourceState(f *os.File) error { return unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB) }
+func lockResourceReadState(f *os.File) error {
+	return unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB)
+}
 func prepareFTPPaths(o *ftpOptions) (func(), error) {
 	cleanup := func() {}
 	if o.mountpoint != "" {
@@ -157,8 +160,7 @@ func systemMachineID() string {
 // Inventory is a read-only, exact-release endpoint. It never enters setup or
 // installs software. Session data and peer inventory remain advisory snapshots.
 
-func localSessionInventory(details ...bool) (inventory, error) {
-	detailed := len(details) > 0 && details[0]
+func hostedShellInventory(detailed bool) (inventory, error) {
 	inv := emptyInventory()
 	inv.MachineID, inv.Hostname = localMachineIdentity()
 	inv.ShellTree = knownShellTrees()
@@ -192,7 +194,23 @@ func localSessionInventory(details ...bool) (inventory, error) {
 		ordered = append(ordered, path)
 	}
 	sort.Strings(ordered)
-	action := "health"
+	unavailable := func(path string) {
+		name, err := readSessionName(path)
+		if err != nil {
+			name = strings.TrimSuffix(filepath.Base(path), ".sock")
+		}
+		uid, _ := readSessionUID(path)
+		view := shellView{Name: name, Instance: uid, State: "unavailable"}
+		if uid != "" {
+			for _, n := range shellTreeFor(remoteTreeIdentity(uid)) {
+				if n.Identity == remoteTreeIdentity(uid) {
+					view.Lifetime, view.Temporary = n.Lifetime, n.Lifetime == "parent" || n.Lifetime == "heartbeat"
+				}
+			}
+		}
+		inv.Shells = append(inv.Shells, view)
+	}
+	action := "inventory"
 	if detailed {
 		action = ""
 	}
@@ -207,18 +225,21 @@ func localSessionInventory(details ...bool) (inventory, error) {
 		}
 		c, e := net.DialTimeout("unix", path, time.Second)
 		if e != nil {
+			unavailable(path)
 			inv.Errors = append(inv.Errors, "shell unavailable: "+cleanText(filepath.Base(path)))
 			continue
 		}
 		c.SetDeadline(time.Now().Add(time.Second))
 		if e = writeMessage(c, message{Type: "status", Action: action}); e != nil {
 			c.Close()
+			unavailable(path)
 			inv.Errors = append(inv.Errors, "shell status request failed: "+cleanText(filepath.Base(path)))
 			continue
 		}
 		m, e := readMessage(c)
 		c.Close()
 		if e != nil || m.Type != "session" || validSession(m.Name) != nil {
+			unavailable(path)
 			inv.Errors = append(inv.Errors, "invalid shell status: "+cleanText(filepath.Base(path)))
 			continue
 		}
@@ -227,9 +248,6 @@ func localSessionInventory(details ...bool) (inventory, error) {
 			state = "attached"
 		}
 		inv.Shells = append(inv.Shells, shellView{Lifetime: shellLifetime(m.Temporary, true), Temporary: m.Temporary, Instance: m.Instance, ID: shellTaskName(cleanText(m.Name), m.Temporary), Name: cleanText(m.Name), State: state, PID: m.PID, Age: m.AgeSeconds, Foreground: cleanText(m.Foreground), Directory: cleanText(m.Directory)})
-		if detailed {
-			inv.Shells[len(inv.Shells)-1].ProcessTree = sessionProcessTree("/proc", m.PID)
-		}
 	}
 	for _, r := range readSessionExits(dir) {
 		if time.Since(r.At) > 7*24*time.Hour {
@@ -237,6 +255,16 @@ func localSessionInventory(details ...bool) (inventory, error) {
 		}
 		inv.Exits = append(inv.Exits, exitView{Name: r.Name, Reason: r.Reason, Time: r.At})
 	}
+	return inv, nil
+}
+
+func localSessionInventory(details ...bool) (inventory, error) {
+	detailed := len(details) > 0 && details[0]
+	inv, e := hostedShellInventory(detailed)
+	if e != nil {
+		return inv, e
+	}
+
 	records, e := collectLocalResources("")
 	if e != nil {
 		return inv, e

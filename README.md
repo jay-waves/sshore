@@ -80,20 +80,18 @@ flowchart LR
 ```sh
 sshore list                     # Local tasks and cached remote shells.
 sshore list work                # Query remote tasks now.
-sshore pstree                   # Spawn ownership and attachment sources.
-sshore pstree work              # Relationships known to the remote account.
-sshore list work --verbose      # Remote process trees and diagnostics.
+sshore pstree                   # Local task relationships and resource directions.
 sshore list --json              # Machine-readable inventory.
 ```
 
-Use names or short IDs from `list` with `attach`, `cancel`, `rename` and `review`.
-In `--verbose`, LIFETIME is `parent` for local spawn, `heartbeat` for remote spawn, or
-`persistent` for launch; it describes policy, not connection health.
+Use aliases or short IDs from `list` with `attach`, `cancel`, `rename` and `review`.
+ID shows a fixed reference with an optional alias; `rename` changes only the alias.
+DETAIL summarizes directories, mappings or errors; use `--json` for full diagnostics.
 
 CHECKED shows when shell states were confirmed; confirmed ended shells leave the default list.
 Use `cancel` to clear confirmed ended remote history (see `sshore cancel --help`).
-See `sshore list --help` for history and refresh behavior. `pstree` shows shell relationships, not a live OS
-process tree; attaching from another shell does not transfer ownership. Peer
+See `sshore list --help` for history and refresh behavior. `pstree` shows local spawn ownership and
+live resource directions, prioritizing the current tree; attaching from another shell does not transfer ownership. Peer
 entries are read-only: manage them on their original computer. A running worker
 does not prove its target service is healthy.
 
@@ -171,8 +169,8 @@ locally to select the mountpoint and approve access.
 
 There is no offline editing, conflict detection or write retry. Interrupted
 writes may leave partial files; caching can briefly delay remote changes.
-By default, remote sshore supplies change notifications; `--no-watch` uses plain
-SFTP without it. See `sshore mount --help` for details.
+Mounts use the remote sshore helper for SFTP and change notifications.
+See `sshore mount --help` for details.
 
 ## Updates and troubleshooting
 
@@ -185,7 +183,7 @@ requires updating your local client; it is never automatically downgraded.
 
 - Stale screen after reattachment: press Ctrl-L or use the application's redraw key.
 - SSH failure: try `sshore launch work -- -vvv -E ./ssh-debug.log`.
-- Mount or forward failure: inspect `sshore list --verbose` and its log path.
+- Mount or forward failure: inspect `sshore list --json` and its log path.
 - Existing copy destination: choose a new filename; overwriting is disabled.
 
 Run `sshore COMMAND --help` for syntax, startup options, shortcuts and defaults.

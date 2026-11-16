@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 )
@@ -132,8 +131,8 @@ func TestSessionNames(t *testing.T) {
 		}
 		seen[name] = true
 	}
-	if len(seen) != 154 {
-		t.Fatal("expected 154 automatic names")
+	if len(seen) == 0 {
+		t.Fatal("missing automatic IDs")
 	}
 }
 
@@ -190,12 +189,22 @@ func TestResourceNameReservations(t *testing.T) {
 	if len(seen) != len(names) {
 		t.Fatal(seen)
 	}
-	if _, err := reserveResourceName("forward", ""); err == nil || !strings.Contains(err.Error(), "cancel an existing task") {
+	extra, err := reserveResourceName("forward", "")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reserveResourceName("forward", names[0]); err == nil {
-		t.Fatal("accepted occupied explicit name")
+	defer extra.Close()
+	if seen[extra.name] {
+		t.Fatal("reused reserved ID")
 	}
+	for name := range seen {
+		if r, err := reserveResourceName("forward", name); err == nil {
+			r.Close()
+			t.Fatal("accepted occupied reference")
+		}
+		break
+	}
+
 	for _, tc := range []struct{ kind, name string }{{"mount", "custom-mount"}, {"forward", "custom"}} {
 		r, err := reserveResourceName(tc.kind, tc.name)
 		if err != nil {
@@ -242,7 +251,7 @@ func TestResourceNameHandoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reused.Close()
-	if reused.name != r.name {
-		t.Fatalf("did not reuse released name: %s", reused.name)
+	if reused.name == r.name {
+		t.Fatal("reused ended task ID")
 	}
 }

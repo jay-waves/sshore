@@ -139,7 +139,8 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	if len(o.approved) > 0 {
 		action = "approved"
 	}
-	if err = streamMessage(control, message{Type: "attach", Tree: currentShellTree(), Instance: o.instance, Action: action, PID: o.resumePID, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && (o.command == "launch" || o.command == "spawn") && !o.plain, NoLogin: o.noLogin && (o.command == "launch" || o.command == "spawn") && !o.plain, ApprovalID: o.approvalID}); err != nil {
+	sourceMachine, sourceHost := localMachineIdentity()
+	if err = streamMessage(control, message{Type: "attach", SourceHost: sourceHost, SourceMachineID: sourceMachine, Tree: currentShellTree(), Instance: o.instance, Action: action, PID: o.resumePID, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && (o.command == "launch" || o.command == "spawn") && !o.plain, NoLogin: o.noLogin && (o.command == "launch" || o.command == "spawn") && !o.plain, ApprovalID: o.approvalID}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)

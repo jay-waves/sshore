@@ -33,6 +33,7 @@ type operation struct {
 }
 
 type approvalRecord struct {
+	UID                                           string `json:",omitempty"`
 	PID                                           int
 	SoftwareVersion                               string
 	ID                                            string

@@ -64,14 +64,16 @@ var commandHelp = map[string]string{
        sshore launch --local [NAME] [options]
 
 Start a new shell. It survives detach and connection loss; exit ends it.
-Omit HOST for local use and NAME for an automatic name. To resume, use attach.
+Omit HOST for local use. NAME sets an optional alias; otherwise use the task ID.
+To resume, use attach.
 
 Options:
 ` + shellStartupOptions + connectionOptions + shellConnectionHelp,
 	"spawn": `Usage: sshore spawn [HOST [NAME]] [options] [-- SSH_OPTIONS]
        sshore spawn --local [NAME] [options]
 
-Start a temporary shell bound to the launching parent. It ends when that
+Start a temporary shell bound to the launching parent. NAME is an optional alias.
+It ends when that
 parent exits; a remote spawn also ends if its lifetime SSH connection is lost.
 Detach and attach do not change the owner. Use launch for a persistent shell.
 
@@ -84,7 +86,7 @@ Options:
 Resume a detached shell. This never creates a shell or evicts its current client.
 Omit HOST and NAME to reuse the last successful connection. HOST alone reuses
 its remembered shell or offers a selection if there is no history.
-Use a name or short ID from list. An ID selects its local or remote shell.
+Use an alias or short ID from list. An ID selects its local or remote shell.
 With HOST or --local, ID may replace NAME. A lone six-character hex operand
 is an ID; for a hex-named host, give HOST NAME explicitly.
 
@@ -101,8 +103,9 @@ Use attach to reconnect. Ctrl+B d also detaches.
        sshore rename {mount|forward|review}/OLD NEW
        sshore rename ID NEW
 
-Rename a shell, resource or pending review without restarting it.
-NEW must be unused. A short ID from list may replace OLD.
+Set or replace a shell, resource or pending review alias without restarting it.
+NEW must be unused and cannot be six hexadecimal characters.
+A short ID from list may replace OLD; the task ID stays unchanged.
 After renaming a shell, request its pending approvals again.
 Remote rename requires matching releases and never installs software.
 ` + sshOptions,
@@ -111,28 +114,34 @@ Remote rename requires matching releases and never installs software.
 Without HOST, show local tasks and saved remote observations without SSH.
 With HOST, query that account live; the remote release must match.
 CHECKED shows when state was last confirmed, not whether it is still live.
-Peer entries are read-only. The six-character hex ID identifies a task instance.
-Use task names or short IDs for attach, rename, cancel and review.
+DETAIL summarizes directories, mappings or errors; terminal output is shortened
+to fit the available width. Redirected output preserves full details.
+ID shows a fixed six-character reference followed by an optional (alias).
+TYPE uses launch, spawn, mount, forward or review. Peer entries are read-only.
+Use aliases or short IDs for attach, rename, cancel and review.
 A matching short ID takes precedence over a name.
 
 Options:
   --local          Show only local shells
-  --verbose        Show lifetime, detailed state and recent shell history
-  --json           Emit structured results, including recent shell history
+  --json           Emit full diagnostics and recent history as JSON
   --server PATH    Select the remote executable
 
 Examples:
   sshore list
-  sshore list work --verbose
+  sshore list work
 ` + sshOptions,
-	"pstree": `Usage: sshore pstree [HOST | --local] [--server PATH] [-- SSH_OPTIONS]
+	"pstree": `Usage: sshore pstree
 
-Show shells grouped by host. Branches show original spawn ownership;
-attach via shows the attachment source. These are recorded relationships,
-not a live OS process tree. @HOST marks a host change within a branch.
-CHECKED: now is a live result; never means no recorded check.
-Give HOST to query that remote account; omit it for local and saved records.
-` + sshOptions,
+Show local managed tasks and live local resource transports as TYPE/ID (alias).
+The tree containing *current comes first; other nodes sort by newest check.
+Branches show local spawn ownership. Cached remote shells and stale peer mirrors
+are excluded. <- HOST on a shell identifies its current remote attachment source.
+Resource arrows run from provider to consumer: importing a mount or remote service
+shows <- HOST; exporting a mount or local service shows -> HOST.
+? marks an unconfirmed local entry or an unknown legacy direction.
+Incoming resources are read-only here. Use list for states and observation times.
+No SSH is started by this command.
+`,
 	"cancel": `Usage: sshore cancel --local NAME
        sshore cancel {review|mount|forward}/NAME
        sshore cancel ID
@@ -191,7 +200,9 @@ and can end the listed shells and tasks.
 	"mount": `Usage: sshore mount HOST:SOURCE [MOUNTPOINT] [options] [-- SSH_OPTIONS]
        sshore mount DIRECTORY origin:[MOUNTPOINT] [--read-only]
 
-Mount a remote directory using SFTP. Background mounts are named automatically. HOST: selects the remote home.
+Mount a remote directory through the remote sshore helper using SFTP.
+Missing sshore is prepared automatically; existing versions follow the update safeguards.
+Background mounts receive fixed task IDs. HOST: selects the remote home.
 Use [HOST]:SOURCE for an IPv6 address.
 The default mountpoint is ~/mnt/NAME
 on Linux or a free drive on Windows. Requires FUSE or WinFsp respectively.
@@ -201,8 +212,7 @@ free drive letter or nonexistent directory on Windows.
 Options:
   --read-only                  Reject changes through the mount
   --foreground                 Run in this terminal; Ctrl-C requests unmount
-  --no-watch                   Plain SFTP without the remote sshore helper
-  --server PATH                Remote helper path; incompatible with --no-watch
+  --server PATH                Remote helper path
   --io-timeout DURATION        Per SFTP request (60s; 0s disables)
   --startup-timeout DURATION   Startup including authentication (0s disables)
   --stats                      Report request and cache statistics

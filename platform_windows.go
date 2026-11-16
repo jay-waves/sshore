@@ -59,6 +59,9 @@ func stopSpawnTerminal(pid int, start string) error { return nil }
 func detachResourceWorker(c *exec.Cmd) {
 	c.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_CONSOLE | windows.CREATE_NEW_PROCESS_GROUP, HideWindow: true}
 }
+func lockResourceReadState(f *os.File) error {
+	return windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &windows.Overlapped{})
+}
 func lockResourceState(f *os.File) error {
 	return windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &windows.Overlapped{})
 }
@@ -136,4 +139,8 @@ func systemMachineID() string {
 	defer key.Close()
 	value, _, _ := key.GetStringValue("MachineGuid")
 	return value
+}
+
+func hostedShellInventory(detailed bool) (inventory, error) {
+	return emptyInventory(), nil
 }

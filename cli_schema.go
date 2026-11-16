@@ -49,10 +49,9 @@ var cliOptions = map[string]cliOption{
 	"--download-dir": {kind: cliDirectory},
 	"--quiet":        {alias: "-q"},
 	"--no-escape":    {}, "--detach": {}, "--no-login": {}, "--no-profile": {},
-	"--json": {conflicts: []string{"--verbose"}}, "--verbose": {},
-	"--all": {}, "--stay": {},
+	"--json": {},
+	"--all":  {}, "--stay": {},
 	"--foreground": {},
-	"--no-watch":   {conflicts: []string{"--server"}},
 	"--read-only":  {}, "--stats": {}, "--direct-io": {},
 	"--io-timeout": {kind: cliDuration}, "--startup-timeout": {kind: cliDuration},
 	"--retries": {kind: cliRetries},
@@ -77,9 +76,9 @@ func commandSpec(command string) (cliSpec, bool) {
 	case "attach":
 		spec = cliSpec{interactive, true, true, 0, 2}
 	case "list":
-		spec = cliSpec{append(base, "--json", "--verbose"), true, false, 0, 1}
+		spec = cliSpec{append(base, "--json"), true, false, 0, 1}
 	case "pstree":
-		spec = cliSpec{base, true, false, 0, 1}
+		spec = cliSpec{nil, false, false, 0, 0}
 	case "cancel":
 		spec = cliSpec{append(base, "--all"), true, false, 0, 2}
 	case "rename":
@@ -87,7 +86,7 @@ func commandSpec(command string) (cliSpec, bool) {
 	case "cp":
 		spec = cliSpec{nil, true, false, 2, -1}
 	case "mount":
-		spec = cliSpec{strings.Fields("--server --foreground --no-watch --read-only --io-timeout --startup-timeout --stats --direct-io"), true, false, 1, 2}
+		spec = cliSpec{strings.Fields("--server --foreground --read-only --io-timeout --startup-timeout --stats --direct-io"), true, false, 1, 2}
 	case "forward":
 		spec = cliSpec{strings.Fields("--retries --foreground"), true, false, 2, 2}
 	case "review":

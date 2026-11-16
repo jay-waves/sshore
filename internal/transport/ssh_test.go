@@ -20,13 +20,10 @@ func TestSSHTransportOwnership(t *testing.T) {
 	if !reflect.DeepEqual(filtered, []string{"-p", "2222", "-J", "jump"}) || !reflect.DeepEqual(input, original) {
 		t.Fatal(filtered, input)
 	}
-	args := SFTPArgs("work", filtered)
-	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "ControlMaster=no") || !strings.Contains(joined, "ClearAllForwardings=yes") || !strings.HasSuffix(joined, "-s -- work sftp") {
-		t.Fatal(args)
-	}
+
 	session := SessionArgs("work", filtered, "opaque command")
-	if session[len(session)-1] != "opaque command" || !strings.Contains(strings.Join(session, " "), "SessionType=default") {
+	joined := strings.Join(session, " ")
+	if session[len(session)-1] != "opaque command" || !strings.Contains(joined, "SessionType=default") || !strings.Contains(joined, "ControlMaster=no") || !strings.Contains(joined, "ClearAllForwardings=yes") {
 		t.Fatal(session)
 	}
 }

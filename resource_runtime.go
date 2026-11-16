@@ -27,12 +27,17 @@ import (
 )
 
 type resourceRecord struct {
+	UID                                                                   string `json:",omitempty"`
 	Kind, Detail, Name, Host, Remote, Mountpoint, Address, Token, Version string
 	ReadOnly                                                              bool
+	Direction                                                             string `json:",omitempty"`
 	slot                                                                  string
 }
 
 func (r resourceRecord) storageName() string {
+	if validTaskUID(r.UID) {
+		return r.UID
+	}
 	if r.slot != "" {
 		return r.slot
 	}
@@ -45,6 +50,7 @@ type resourceStartup struct {
 }
 
 type resourceConfig struct {
+	UID                    string `json:",omitempty"`
 	MountName              string
 	MountApproval          *files.MountApproval
 	Forward                *forwardConfig
@@ -199,7 +205,7 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 		o, e = parseFTPOptions(config.Args)
 		o.name = config.MountName
 		o.approval = config.MountApproval
-		if o.approval != nil && (o.noWatch || o.approval.PID <= 0 || validSession(o.approval.Session) != nil || !validApprovalID(o.approval.ID)) {
+		if o.approval != nil && (o.approval.PID <= 0 || validSession(o.approval.Session) != nil || !validApprovalID(o.approval.ID)) {
 			return 1, fmt.Errorf("invalid mount approval")
 		}
 		if e != nil {
@@ -218,7 +224,11 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 		return 1, e
 	}
 	defer nameLock.Close()
-	lockPath := filepath.Join(dir, o.name+".lock")
+	slot := o.name
+	if validTaskUID(config.UID) {
+		slot = config.UID
+	}
+	lockPath := filepath.Join(dir, slot+".lock")
 	lock, e := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if e != nil {
 		return 1, e
@@ -250,12 +260,16 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 		}
 		ack <- e
 	}()
-	s := &resourceService{startup: startup, log: log, environment: env, directory: directory, committed: committed, record: resourceRecord{Kind: kind, Name: o.name, Host: o.host, Version: version, Token: resourceToken(), ReadOnly: o.readOnly}, config: config, stop: make(chan resourceStopRequest), ack: ack, abandoned: abandoned, recordPath: filepath.Join(dir, o.name+".json")}
+	direction := "<-"
+	if kind == "forward" && config.Forward.Reverse {
+		direction = "->"
+	}
+	s := &resourceService{startup: startup, log: log, environment: env, directory: directory, committed: committed, record: resourceRecord{UID: config.UID, Kind: kind, Name: o.name, Host: o.host, Version: version, Token: resourceToken(), ReadOnly: o.readOnly, Direction: direction}, config: config, stop: make(chan resourceStopRequest), ack: ack, abandoned: abandoned, recordPath: filepath.Join(dir, slot+".json")}
 	// The lock excludes a live owner. Remove only its stale metadata, never a files.
 	if e = os.Remove(s.recordPath); e != nil && !os.IsNotExist(e) {
 		return 1, e
 	}
-	displayPath, err := resourceNamePath(kind, o.name)
+	displayPath, err := resourceNamePath(kind, slot)
 	if err != nil {
 		return 1, err
 	}
@@ -308,6 +322,7 @@ func startResourceBackground(config resourceConfig, kind string) (int, error) {
 }
 func startReservedResource(config resourceConfig, kind string, reservation *resourceNameReservation) (int, error) {
 	name := reservation.name
+	config.UID = reservation.uid
 	if config.Forward != nil {
 		config.Forward.Name = name
 	} else {
@@ -424,10 +439,13 @@ func readResourceRecord(kind, name string) (resourceRecord, error) {
 	if r.Kind == "" {
 		r.Kind = "mount"
 	}
+	if e == nil && r.UID != "" && !validTaskUID(r.UID) {
+		e = fmt.Errorf("invalid resource identity")
+	}
 	if e == nil && r.Kind != kind {
 		e = fmt.Errorf("resource type mismatch")
 	}
-	if e == nil && r.Name != name {
+	if e == nil && r.Name != name && r.UID != name {
 		e = fmt.Errorf("invalid mount record")
 	}
 	return r, e
@@ -490,5 +508,5 @@ func (s *resourceService) peerTask() peerRecord {
 	}
 	// Derive a stable mirror key without exposing the local control token.
 	key := sha256.Sum256([]byte("peer:" + s.record.Token))
-	return peerRecord{Version: version, Key: hex.EncodeToString(key[:16]), ID: s.record.Kind + "/" + displayedResource(s.record).Name, Manager: taskManagerLabel(), State: "active", Detail: cleanText(detail)}
+	return peerRecord{Direction: s.record.Direction, UID: s.record.UID, Version: version, Key: hex.EncodeToString(key[:16]), ID: s.record.Kind + "/" + displayedResource(s.record).Name, Manager: taskManagerLabel(), State: "active", Detail: cleanText(detail)}
 }

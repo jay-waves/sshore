@@ -25,6 +25,8 @@ const (
 
 // Control metadata uses JSON; terminal bytes remain binary.
 type message struct {
+	SourceHost      string              `json:"source_host,omitempty"`
+	SourceMachineID string              `json:"source_machine_id,omitempty"`
 	Tree            []shellTreeNode     `json:"shell_tree,omitempty"`
 	Temporary       bool                `json:"temporary,omitempty"`
 	Inventory       *inventory          `json:"inventory,omitempty"`

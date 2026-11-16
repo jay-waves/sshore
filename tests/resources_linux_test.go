@@ -35,7 +35,7 @@ func TestCancelAllLocalSnapshot(t *testing.T) {
 		}
 		t.Cleanup(func() { run("", "cancel", "--local", name) })
 	}
-	if out, err := run("no\n", "cancel", "--all"); err == nil || !strings.Contains(out, "launch/one") || !strings.Contains(out, "launch/two") {
+	if out, err := run("no\n", "cancel", "--all"); err == nil || !strings.Contains(out, "(one)") || !strings.Contains(out, "(two)") {
 		t.Fatal(out, err)
 	}
 	out, err := run("", "list", "--local", "--json")

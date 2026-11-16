@@ -269,7 +269,7 @@ func remoteDaemonPath() (string, error) {
 }
 
 // The caller holds the account setup gate, serializing daemon launch and updates.
-func createRemoteShell(executable, name, label string, temporary ...bool) error {
+func createRemoteShell(executable, name, label, uid string, temporary ...bool) error {
 	path, err := remoteDaemonPath()
 	if err != nil {
 		return err
@@ -334,7 +334,7 @@ func createRemoteShell(executable, name, label string, temporary ...bool) error 
 	if err != nil {
 		return err
 	}
-	request := message{Type: "create_shell", Temporary: len(temporary) > 0 && temporary[0], SoftwareVersion: version, Name: name, Action: label, LocalRequest: &localDaemonRequest{Record: localShellRecord{Directory: cwd}, Env: os.Environ()}}
+	request := message{Type: "create_shell", Instance: uid, Temporary: len(temporary) > 0 && temporary[0], SoftwareVersion: version, Name: name, Action: label, LocalRequest: &localDaemonRequest{Record: localShellRecord{Directory: cwd}, Env: os.Environ()}}
 	if err = writeMessage(c, request); err != nil {
 		return err
 	}
@@ -418,7 +418,7 @@ func runSharedRemoteDaemon() error {
 			fail(err)
 			continue
 		}
-		if request.Type != "create_shell" || request.LocalRequest == nil || validSession(request.Name) != nil || validSession(request.Action) != nil || !filepath.IsAbs(request.LocalRequest.Record.Directory) {
+		if request.Type != "create_shell" || request.LocalRequest == nil || !validTaskUID(request.Instance) || validSession(request.Name) != nil || validSession(request.Action) != nil || !filepath.IsAbs(request.LocalRequest.Record.Directory) {
 			fail(fmt.Errorf("invalid shell creation"))
 			continue
 		}
@@ -444,7 +444,7 @@ func runSharedRemoteDaemon() error {
 				mu.Unlock()
 			}()
 			ready := false
-			err := serveRemoteShell(request.Name, request.Action, request.LocalRequest.Env, request.LocalRequest.Record.Directory, func() error {
+			err := serveRemoteShell(request.Name, request.Action, request.Instance, request.LocalRequest.Env, request.LocalRequest.Record.Directory, func() error {
 				err := writeMessage(c, message{Type: "shell_created", SoftwareVersion: version})
 				if err == nil {
 					ready = true

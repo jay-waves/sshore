@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestShellTreeAttachmentSnapshots(t *testing.T) {
@@ -57,7 +59,10 @@ func TestShellTreeRendering(t *testing.T) {
 		var out bytes.Buffer
 		writeShellTree(&out, nodes, color)
 		text := out.String()
-		if !strings.Contains(text, "   ├─ ") || !strings.Contains(text, "   └─ ") || !strings.Contains(text, "← current") || !strings.Contains(text, "CHECKED") {
+		if !strings.Contains(text, "   ├─ ") || !strings.Contains(text, "   └─ ") || !strings.Contains(text, "*current") || strings.Contains(text, "CHECKED") {
+			t.Fatal(text)
+		}
+		if strings.Contains(text, "HOST  ") || strings.Contains(text, "@") {
 			t.Fatal(text)
 		}
 		if strings.Contains(text, "\x1b[") != color {
@@ -65,6 +70,7 @@ func TestShellTreeRendering(t *testing.T) {
 		}
 	}
 	nodes[0].Name = "evil\x1b[2J"
+	nodes[0].ShortID = "bad\x1b[2J"
 	nodes[0].Lifetime = "bad\x1b[2J"
 	var out bytes.Buffer
 	writeShellTree(&out, nodes, false)
@@ -135,7 +141,7 @@ func TestShellTreePersistentAttachmentIsNotOwnership(t *testing.T) {
 		{Identity: "temporary", Owner: "origin", Host: "remote", Name: "temp", State: "detached", Lifetime: "heartbeat"},
 	}, false)
 	text := out.String()
-	if !strings.Contains(text, "   └─ spawn/temp  @remote") || !strings.Contains(text, "\n└─ launch/job") || !strings.Contains(text, "attach via local / work") {
+	if !strings.Contains(text, "(temp)") || !strings.Contains(text, "(job)") || strings.Contains(text, "attach via") {
 		t.Fatal(text)
 	}
 }
@@ -153,24 +159,13 @@ func TestShellTreeCompactStates(t *testing.T) {
 			var out bytes.Buffer
 			writeShellTree(&out, nodes, false)
 			output := out.String()
-			if strings.Count(output, "attached") != 1 || strings.Count(output, "CHECKED") != 1 || strings.Count(output, "@dev") != 2 {
+			if strings.Contains(output, "attached") || strings.Contains(output, "detached") || strings.Contains(output, "CHECKED") || strings.Contains(output, "@dev") {
 				t.Fatal(output)
 			}
-			lines := strings.Split(output, "\n")
-			if !strings.HasPrefix(lines[0], "HOST  workstation") || !strings.Contains(lines[0], "CHECKED") {
+			if strings.Contains(output, "HOST  ") || !strings.Contains(output, "(debug)  *current") {
 				t.Fatal(output)
 			}
-			for _, line := range lines[1:] {
-				if strings.Contains(line, "spawn/test") && (!strings.Contains(line, "detached") || !strings.Contains(line, "never")) {
-					t.Fatal(output)
-				}
-				if strings.Contains(line, "spawn/debug") && (!strings.Contains(line, "← current") || strings.Contains(line, "@dev")) {
-					t.Fatal(output)
-				}
-				if strings.Contains(line, "unknown-state") && !strings.Contains(line, "unknown") {
-					t.Fatal(output)
-				}
-			}
+
 			t.Log("\n" + output)
 		})
 	}
@@ -196,7 +191,108 @@ func TestShellTreeOmitsEndedOwners(t *testing.T) {
 	}, inventory{})
 	var out bytes.Buffer
 	writeShellTree(&out, nodes, false)
-	if strings.Contains(out.String(), "old") || !strings.Contains(out.String(), "spawn/live") || !strings.Contains(out.String(), "owner ended") {
+	if strings.Contains(out.String(), "old") || !strings.Contains(out.String(), "(live)") || strings.Contains(out.String(), "owner ended") {
 		t.Fatal(out.String())
+	}
+}
+
+func TestTaskTreeIndependentResources(t *testing.T) {
+	root := shellTreeNode{Identity: "root", ShortID: "a0123b", Name: "work", Host: "laptop", Current: true}
+	nodes := inventoryResourceTrees([]shellTreeNode{root}, inventory{Resources: []resourceView{{Identity: "mount-id", ShortID: "b0123c", ID: "mount/b0123c", Kind: "mount"}, {Identity: "forward-id", ShortID: "c0123d", ID: "forward/db", Kind: "forward"}}})
+	// Force one display host so sibling placement is asserted independently of the fixture computer's name.
+	for i := range nodes {
+		nodes[i].Host, nodes[i].MachineID = "laptop", ""
+	}
+	var out bytes.Buffer
+	writeShellTree(&out, nodes, false)
+	for _, text := range []string{"launch/a0123b (work)  *current", "mount/b0123c", "\n"} {
+		if !strings.Contains(out.String(), text) {
+			t.Fatal(out.String())
+		}
+	}
+	if strings.Contains(out.String(), "   └─ mount/") || strings.Contains(out.String(), "CHECKED") {
+		t.Fatal(out.String())
+	}
+	if !strings.Contains(out.String(), "forward/c0123d (db)") {
+		t.Fatal(out.String())
+	}
+}
+
+func TestLocalTreeScopeAndSources(t *testing.T) {
+	machine, foreign := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	inv := inventory{MachineID: machine, Hostname: "here", LocalShells: []localShellView{{identity: "local", Name: "local"}}, Shells: []shellView{{Instance: "hosted", State: "attached"}, {Instance: "cached", State: "detached", Historical: true}}}
+	nodes := []shellTreeNode{
+		{Identity: "foreign", Host: "there", MachineID: foreign},
+		{Identity: "local", Name: "local", SourceHost: "here", SourceMachineID: machine, State: "attached"},
+		{Identity: "remote:hosted", Name: "hosted", Owner: "foreign", Parent: "foreign", SourceHost: "there", SourceMachineID: foreign, State: "attached"},
+		{Identity: "remote:cached", Name: "cached"},
+	}
+	got := localShellTreeNodes(nodes, inv)
+	if len(got) != 2 || got[0].Remote != "" || got[1].Remote != "there" || got[1].Direction != "<-" {
+		t.Fatalf("scope/source: %+v", got)
+	}
+	nodes[2].State = "detached"
+	if got := localShellTreeNodes(nodes, inv); got[1].Remote != "" {
+		t.Fatalf("stale attachment source: %+v", got)
+	}
+}
+
+func TestTaskTreeCurrentAndCheckedOrder(t *testing.T) {
+	now := time.Now()
+	nodes := []shellTreeNode{
+		{Identity: "new", ShortID: "b0123c", Kind: "mount", Name: "data", Remote: "server", Direction: "<-", CheckedAt: now},
+		{Identity: "parent", ShortID: "a0123b", Name: "work", CheckedAt: now.Add(-time.Hour)},
+		{Identity: "current", ShortID: "d0123e", Kind: "spawn", Name: "build", Owner: "parent", Current: true, Remote: "laptop", Direction: "<-", CheckedAt: now.Add(-time.Hour)},
+		{Identity: "export", ShortID: "f0123a", Kind: "mount", Name: "export", Remote: "laptop", Direction: "->", CheckedAt: now.Add(-30 * time.Second)},
+		{Identity: "old", ShortID: "c0123d", Kind: "forward", Name: "web", Remote: "server", Direction: "->", CheckedAt: now.Add(-time.Minute)},
+		{Identity: "unknown", ShortID: "e0123f", Name: "e0123f", State: "unavailable"},
+	}
+	var out bytes.Buffer
+	writeShellTree(&out, nodes, false)
+	text := out.String()
+	positions := []int{strings.Index(text, "(work)"), strings.Index(text, "*current"), strings.Index(text, "(data)"), strings.Index(text, "(export)"), strings.Index(text, "(web)"), strings.Index(text, "launch/e0123f ?")}
+	for i, p := range positions {
+		if p < 0 || i > 0 && p <= positions[i-1] {
+			t.Fatal(text)
+		}
+	}
+	if strings.Contains(text, "HOST") || strings.Contains(text, "@") {
+		t.Fatal(text)
+	}
+	t.Log("\n" + text)
+}
+
+func TestTaskTreeResourceDirections(t *testing.T) {
+	inv := inventory{Resources: []resourceView{
+		{Identity: "out-mount", Kind: "mount", ShortID: "111111", ID: "mount/data", Host: "server", Worker: "running"},
+		{Identity: "out-forward", Kind: "forward", ShortID: "222222", ID: "forward/db", Host: "server", Direction: "<-", Worker: "running"},
+		{Identity: "reverse-forward", Kind: "forward", ShortID: "333333", ID: "forward/web", Host: "server", Direction: "->", Worker: "running"},
+	}, Peers: []peerView{
+		{Identity: "in-mount", ShortID: "444444", ID: "mount/export", Manager: "laptop"},
+		{Identity: "in-forward", ShortID: "555555", ID: "forward/service", Direction: "<-", Manager: "laptop"},
+		{Identity: "in-reverse", ShortID: "666666", ID: "forward/incoming", Direction: "->", Manager: "laptop"},
+	}}
+	var out bytes.Buffer
+	writeShellTree(&out, inventoryResourceTrees(nil, inv), false)
+	for _, line := range []string{"mount/111111 (data)  <- server", "forward/222222 (db)  <- server", "forward/333333 (web)  -> server", "mount/444444 (export)  -> laptop", "forward/555555 (service)  -> laptop", "forward/666666 (incoming)  <- laptop"} {
+		if !strings.Contains(out.String(), line) {
+			t.Fatal(out.String())
+		}
+	}
+}
+
+func TestShellTreeAttachmentSourceSnapshot(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	for _, source := range []string{"first", "second"} {
+		saveShellTree("child", "child", nil, "attached", "persistent", source, strings.Repeat("a", 32))
+		nodes := shellTreeFor("child")
+		if len(nodes) != 1 || nodes[0].SourceHost != source {
+			t.Fatalf("source not refreshed: %+v", nodes)
+		}
+	}
+	saveShellTree("child", "child", nil, "detached")
+	nodes := shellTreeFor("child")
+	if len(nodes) != 1 || nodes[0].SourceHost != "" || nodes[0].SourceMachineID != "" {
+		t.Fatalf("ended attachment retained source: %+v", nodes)
 	}
 }

@@ -153,7 +153,7 @@ func runLocalCommand(o options) (int, error) {
 		if o.listJSON {
 			return 0, json.NewEncoder(os.Stdout).Encode(rows)
 		}
-		printTaskInventory(inventory{LocalShells: rows}, o.listDetails)
+		printTaskInventory(inventory{LocalShells: rows})
 		return 0, nil
 	case "cancel":
 		m, err := localRequest(o.session, message{Type: "cancel"}, o.taskIdentity)
@@ -182,6 +182,9 @@ type localStartup struct {
 
 func startLocalSession(name string, owners ...spawnOwner) (localShellRecord, error) {
 	var empty localShellRecord
+	if isShortTaskID(name) {
+		name = ""
+	}
 	reservation, err := reserveResourceName("shell", name)
 	if err != nil {
 		return empty, err
@@ -193,7 +196,7 @@ func startLocalSession(name string, owners ...spawnOwner) (localShellRecord, err
 	}
 	reservation.owner.Close()
 	reservation.owner = nil
-	request := localShellRecord{Name: reservation.name, Directory: dir, Version: version, Token: resourceToken()}
+	request := localShellRecord{UID: reservation.uid, Name: reservation.name, Directory: dir, Version: version, Token: resourceToken()}
 	if len(owners) > 0 {
 		request.Owner = owners[0]
 	}

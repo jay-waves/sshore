@@ -101,7 +101,7 @@ func TestShortTaskReviewLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := resourceIdentity(resourceRecord{Kind: "review", Token: id})
+	key := resourceIdentity(resourceRecord{UID: id, Kind: "review", Token: id})
 	ids, err := assignTaskIDs([]string{key})
 	if err != nil {
 		t.Fatal(err)
@@ -200,27 +200,10 @@ func TestShortTaskUnknownAndScopedNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = run([]string{"rename", "review/" + id, "abcdef"}); err != nil {
-		t.Fatal(err)
+	if _, err = run([]string{"rename", "review/" + id, "abcdef"}); err == nil {
+		t.Fatal("hex alias accepted")
 	}
-	parsed, err := parseCLI([]string{"abcdef"}, "review")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, selected, err := resolveShortTask("review", &parsed); selected || err != nil {
-		t.Fatal("hex review name rejected", err)
-	}
-	peer := "peer:readonly"
-	ids, err := assignTaskIDs([]string{peer})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = run([]string{"cancel", ids[peer].code}); err == nil || !strings.Contains(err.Error(), "read-only") {
-		t.Fatal("peer not identified", err)
-	}
-	if _, err = run([]string{"cancel", ids[peer].code, "--all"}); err == nil || !strings.Contains(err.Error(), "does not accept --all") {
-		t.Fatal("task ID used as cancel-all host", err)
-	}
+
 }
 
 func TestShortTaskLocalCommandRouting(t *testing.T) {

@@ -4,6 +4,7 @@ package files
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -23,10 +24,14 @@ func ftpSFTPServerExecutable() (string, error) {
 			return p, nil
 		}
 	}
-	return "", fmt.Errorf("OpenSSH sftp-server executable unavailable; install the server component or use --no-watch")
+	return "", fmt.Errorf("OpenSSH sftp-server executable unavailable; install the OpenSSH server component")
 }
 
 func ServeAgent(conn io.ReadWriteCloser, version string, check ...func(MountApproval) error) error {
+	return ServeAgentWithPeer(conn, version, nil, check...)
+}
+
+func ServeAgentWithPeer(conn io.ReadWriteCloser, version string, observe func(json.RawMessage) func(), check ...func(MountApproval) error) error {
 	defer conn.Close()
 	if os.Getenv("SSHORE_DISABLED") == "1" {
 		return fmt.Errorf("file access disabled in recovery")
@@ -52,6 +57,11 @@ func ServeAgent(conn io.ReadWriteCloser, version string, check ...func(MountAppr
 	executable := ""
 	if err == nil {
 		executable, err = ftpSFTPServerExecutable()
+	}
+	if err == nil && observe != nil && len(m.PeerMetadata) > 0 {
+		if cleanup := observe(m.PeerMetadata); cleanup != nil {
+			defer cleanup()
+		}
 	}
 	reply := message{Type: "mount_ready", SoftwareVersion: version}
 	if err != nil {

@@ -687,6 +687,36 @@ remote shell hosting remains Linux-only.
 NOTES
 fi
 
+if [[ "$version" == "0.6.18" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Allocate immutable random-hash task identities at creation, with six-character
+  hexadecimal references and optional aliases. Regenerate new identities on local
+  prefix collisions; reject ambiguous references imported from other managers.
+- Replace automatic Pokemon names with task references. Rename changes only the
+  alias and preserves task identity, ownership and lifetime; retain legacy names.
+- Show ID (alias), TYPE and lightweight DETAIL in host-grouped list output.
+  Fit terminal details to available width without redrawing; preserve full details
+  in redirected output. Keep structured diagnostics and history in --json.
+- Make pstree local-only, prioritize the current ownership tree and sort remaining
+  nodes by observation recency. Highlight *current and retain unconfirmed local
+  nodes with ?. Remove HOST groups and state/check-time columns.
+- Show remote shell attachment origins and provider-to-consumer mount/forward
+  arrows. Include incoming resources only while a local transport holds its
+  diagnostic registration; discard stale records without controlling peer tasks.
+- Require the exact remote sshore helper for every mount, using the same automatic
+  preparation and confirmed-update safeguards as cp.
+
+Migration: list --verbose and its OS process tree are removed; use list --json
+for diagnostics. pstree takes no HOST or SSH options. mount --no-watch is removed.
+Six hexadecimal characters are reserved for task references, not new aliases.
+Client and remote releases must match exactly. Updating older remote shells ends
+listed shells and tasks only after you review them and type update. Linux and
+Windows amd64 only; remote shell hosting remains Linux-only.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."

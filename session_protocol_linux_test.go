@@ -512,6 +512,8 @@ func TestDisconnectCleansBothConcurrentUploads(t *testing.T) {
 func TestAutomaticSessionsAndNamedResume(t *testing.T) {
 	e := newEnv(t)
 	first, pid := e.attach("")
+	sendTest(t, first.in, message{Type: "session_targets", Action: "list"})
+	firstName := untilType(t, first.out, "session_targets").Name
 	second, otherPID := e.attach("")
 	if pid == otherPID {
 		t.Fatal("automatic connections reused one shell")
@@ -523,7 +525,7 @@ func TestAutomaticSessionsAndNamedResume(t *testing.T) {
 	if thirdPID == pid || thirdPID == otherPID {
 		t.Fatal("automatic connection reused an occupied name")
 	}
-	resumed, resumedPID := e.attach("pikachu")
+	resumed, resumedPID := e.attach(firstName)
 	if resumedPID != pid {
 		t.Fatal("named reconnect did not resume the first automatic shell")
 	}

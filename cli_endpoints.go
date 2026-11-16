@@ -243,7 +243,6 @@ type ftpOptions struct {
 	directIO                  bool
 	foreground                bool
 	stats                     bool
-	noWatch                   bool
 	server                    string
 	name                      string
 }
@@ -276,8 +275,8 @@ func parseFTPOptions(args []string) (ftpOptions, error) {
 	o := ftpOptions{
 		host: host, remote: remote, mountpoint: parsed.operand(1, ""),
 		ssh: parsed.ssh, server: parsed.value("--server", "sshore"),
-		foreground: parsed.has("--foreground"), noWatch: parsed.has("--no-watch"),
-		readOnly: parsed.has("--read-only"), stats: parsed.has("--stats"), directIO: parsed.has("--direct-io"),
+		foreground: parsed.has("--foreground"),
+		readOnly:   parsed.has("--read-only"), stats: parsed.has("--stats"), directIO: parsed.has("--direct-io"),
 		ioTimeout: parsed.duration("--io-timeout", 60*time.Second), startupTimeout: parsed.duration("--startup-timeout", 0),
 	}
 	if strings.ContainsRune(o.remote, 0) || strings.ContainsRune(o.mountpoint, 0) {

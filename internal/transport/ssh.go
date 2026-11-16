@@ -48,13 +48,6 @@ func WithoutForwarding(args []string) []string {
 	return out
 }
 
-// SFTPArgs selects the SSH subsystem without inheriting forwarding rules.
-func SFTPArgs(host string, options []string) []string {
-	args := append(OwnedSSHArgs("subsystem"), "-o", "ClearAllForwardings=yes")
-	args = append(args, options...)
-	return append(args, "-s", "--", host, "sftp")
-}
-
 // SessionArgs uses a caller-owned remote command and a separate SSH transport.
 func SessionArgs(host string, options []string, command string) []string {
 	args := append(OwnedSSHArgs("default"), "-o", "ClearAllForwardings=yes")

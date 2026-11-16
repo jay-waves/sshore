@@ -2,6 +2,7 @@ package files
 
 import (
 	"container/list"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -202,7 +203,11 @@ func OpenMux(c io.ReadWriteCloser, version string, approval ...*MountApproval) (
 	if len(approval) > 0 {
 		source = approval[0]
 	}
-	if err := writeMessage(c, message{Type: "mount_mux", SoftwareVersion: version, Approval: source}); err != nil {
+	return openMux(c, version, source, nil)
+}
+
+func openMux(c io.ReadWriteCloser, version string, source *MountApproval, peer json.RawMessage) (*smux.Session, *smux.Stream, *smux.Stream, error) {
+	if err := writeMessage(c, message{Type: "mount_mux", SoftwareVersion: version, Approval: source, PeerMetadata: peer}); err != nil {
 		return nil, nil, nil, err
 	}
 	m, err := readMessage(c)

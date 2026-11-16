@@ -119,3 +119,85 @@ func TestPeerTaskLeaseStates(t *testing.T) {
 		t.Fatal("expired lease retained")
 	}
 }
+
+func TestIncomingTaskLifetime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("incoming transports are hosted on Linux")
+	}
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("HOME", t.TempDir())
+	task := testPeerTask()
+	task.UID = strings.Repeat("b", 32)
+	task.Direction = "<-"
+	stop := beginIncomingTask(task)
+	rows, err := collectIncomingTasks()
+	if err != nil || len(rows) != 1 || rows[0].UID != task.UID {
+		stop()
+		t.Fatalf("active participant: %+v %v", rows, err)
+	}
+	renamed := task
+	renamed.ID = "forward/new-alias"
+	if err := storeRemoteTask(renamed); err != nil {
+		stop()
+		t.Fatal(err)
+	}
+	rows, err = collectIncomingTasks()
+	if err != nil || len(rows) != 1 || rows[0].ID != renamed.ID {
+		stop()
+		t.Fatalf("alias update: %+v %v", rows, err)
+	}
+	stop()
+	rows, err = collectIncomingTasks()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("ended participant retained: %+v %v", rows, err)
+	}
+	dir, err := stateDir("incoming")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filename := filepath.Join(dir, "stale.json")
+	if err := writeStateJSON(filename, task); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = collectIncomingTasks()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("crashed participant retained: %+v %v", rows, err)
+	}
+	if _, err := os.Stat(filename); !os.IsNotExist(err) {
+		t.Fatal("stale record not removed", err)
+	}
+}
+
+func TestIncomingTaskConcurrentPublication(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("incoming transports are hosted on Linux")
+	}
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("HOME", t.TempDir())
+	if _, err := stateDir("incoming"); err != nil {
+		t.Fatal(err)
+	}
+	finish, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-finish:
+				return
+			default:
+			}
+			collectIncomingTasks()
+			runtime.Gosched()
+		}
+	}()
+	defer func() { close(finish); <-done }()
+	for range 64 {
+		stop := beginIncomingTask(testPeerTask())
+		rows, err := collectIncomingTasks()
+		if err != nil || len(rows) != 1 {
+			stop()
+			t.Fatalf("published participant lost: %+v %v", rows, err)
+		}
+		stop()
+	}
+}

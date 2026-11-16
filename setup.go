@@ -424,8 +424,8 @@ func remoteCommand(o options) string {
 	b.WriteString("remote_version=; if [ -e \"$server\" ]; then remote_version=$(\"$server\" --version) || remote_version=; fi; ")
 	if o.list {
 		b.WriteString("if [ \"$remote_version\" != " + shellQuote("sshore "+version) + " ]; then printf '%s\\n' 'sshore: inventory requires matching remote release; no software changed' >&2; exit 1; fi; exec \"$server\" inventory " + shellQuote(version))
-		if o.listDetails {
-			b.WriteString(" --verbose")
+		if o.listJSON {
+			b.WriteString(" --diagnostics")
 		}
 		return "sh -c " + shellQuote(b.String())
 	}

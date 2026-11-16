@@ -12,8 +12,6 @@ package main
 // The input reader is closed before SSH starts so authentication owns stdin.
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -84,12 +82,8 @@ func writeApproval(o options, ops []operation) (string, error) {
 		return "", err
 	}
 	defer reservation.Close()
-	nonce := make([]byte, 16)
-	if _, err = rand.Read(nonce); err != nil {
-		return "", err
-	}
-	id := hex.EncodeToString(nonce)
-	r := approvalRecord{SoftwareVersion: version, PID: o.resumePID, ID: id, Name: reservation.name, Created: time.Now(), Host: o.host, Session: o.session, Server: o.server, Directory: cwd, DownloadDir: o.downloadDir, SSH: o.ssh, Quiet: o.quiet, NoEscape: o.noEscape, Operations: ops}
+	id := reservation.uid
+	r := approvalRecord{UID: reservation.uid, SoftwareVersion: version, PID: o.resumePID, ID: id, Name: reservation.name, Created: time.Now(), Host: o.host, Session: o.session, Server: o.server, Directory: cwd, DownloadDir: o.downloadDir, SSH: o.ssh, Quiet: o.quiet, NoEscape: o.noEscape, Operations: ops}
 	if err := approvalStore(dir).Save(r); err != nil {
 		return "", err
 	}
@@ -99,6 +93,9 @@ func approvalStore(dir string) approvalStorage {
 	return approvalStorage{directory: dir}
 }
 func validateApprovalRecord(r approvalRecord) error {
+	if r.UID != "" && (!validTaskUID(r.UID) || r.UID != r.ID) {
+		return fmt.Errorf("invalid review identity")
+	}
 	if r.Name != "" && validSession(r.Name) != nil {
 		return fmt.Errorf("invalid review name")
 	}
@@ -299,6 +296,9 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 		return 1, err
 	}
 	defer reservation.Close()
+	if validTaskUID(r.UID) {
+		reservation.uid = r.UID
+	}
 	if err = consumeApproval(dir, r.ID); err != nil {
 		return 1, err
 	}

@@ -166,7 +166,7 @@ func TestAutomaticSessionReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	if r.name != "eevee" || r.conn != nil {
+	if !validTaskUID(r.name) || r.publicName != r.name[:6] || r.conn != nil {
 		t.Fatalf("allocated %q, connection %v", r.name, r.conn)
 	}
 	// Explicit names may still connect to an existing daemon.
@@ -188,7 +188,7 @@ func TestAutomaticSessionReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reused.Close()
-	if reused.name != "pikachu" || reused.conn != nil {
+	if !validTaskUID(reused.name) || reused.name == r.name || reused.conn != nil {
 		t.Fatalf("reuse: %q %v", reused.name, reused.conn)
 	}
 }
@@ -238,4 +238,32 @@ func TestSessionNameResolutionWithoutStatus(t *testing.T) {
 	if got, err := resolveSession("work"); err != nil || got != "" {
 		t.Fatalf("stale label: %q: %v", got, err)
 	}
+}
+
+func TestShellTaskIDIndependentOfAlias(t *testing.T) {
+	e := newEnv(t)
+	alias := strings.Repeat("a", 32)
+	b, pid := e.attach(alias)
+	data, err := os.ReadFile(filepath.Join(e.dir, alias+".sock.id"))
+	uid := string(data)
+	if err != nil || !validTaskUID(uid) || uid == alias {
+		t.Fatalf("alias became identity: %q %v", uid, err)
+	}
+	detachTestClient(t, b)
+	cmd := exec.Command(e.bin, "rename-session", uid[:6], "work", version, uid)
+	cmd.Env = e.env
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("rename by immutable reference: %s %v", out, err)
+	}
+	b, resumedPID := e.attach(uid[:6], "attach")
+	if resumedPID != pid {
+		t.Fatal("alias change replaced the shell")
+	}
+	data, err = os.ReadFile(filepath.Join(e.dir, alias+".sock.id"))
+	if err != nil || string(data) != uid {
+		t.Fatalf("alias changed stored identity: %q %v", data, err)
+	}
+	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
+	untilType(t, b.tty, "exit")
+	b.close()
 }

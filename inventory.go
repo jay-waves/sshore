@@ -26,6 +26,7 @@ type resourceView struct {
 	Protocol   string `json:"protocol,omitempty"`
 	Mountpoint string `json:"mountpoint,omitempty"`
 	ReadOnly   bool   `json:"read_only,omitempty"`
+	Direction  string `json:"direction,omitempty"`
 	Log        string `json:"log,omitempty"`
 	resourceStatus
 }
@@ -43,7 +44,6 @@ type shellView struct {
 	Unconfirmed bool      `json:"remote_state_unconfirmed,omitempty"`
 	Active      bool      `json:"local_connection_active,omitempty"`
 	Historical  bool      `json:"historical"`
-	ProcessTree string    `json:"process_tree,omitempty"`
 	Name        string    `json:"name"`
 	State       string    `json:"state"`
 	PID         int       `json:"pid"`
@@ -57,13 +57,15 @@ type exitView struct {
 	Time   time.Time `json:"time"`
 }
 type peerView struct {
-	Identity string `json:"identity,omitempty"`
-	TaskID   uint64 `json:"-"`
-	ShortID  string `json:"short_id,omitempty"`
-	ID       string `json:"id"`
-	Manager  string `json:"manager"`
-	State    string `json:"state"`
-	Detail   string `json:"detail"`
+	Direction string `json:"direction,omitempty"`
+	UID       string `json:"uid,omitempty"`
+	Identity  string `json:"identity,omitempty"`
+	TaskID    uint64 `json:"-"`
+	ShortID   string `json:"short_id,omitempty"`
+	ID        string `json:"id"`
+	Manager   string `json:"manager"`
+	State     string `json:"state"`
+	Detail    string `json:"detail"`
 }
 type inventory struct {
 	MachineID     string           `json:"machine_id,omitempty"`
@@ -84,7 +86,7 @@ func emptyInventory() inventory {
 	return inventory{Version: version, Resources: []resourceView{}, Shells: []shellView{}, Peers: []peerView{}, Exits: []exitView{}, Errors: []string{}}
 }
 func viewRecord(r resourceRecord) resourceView {
-	v := resourceView{local: true, Identity: resourceIdentity(r), ID: r.Kind + "/" + r.Name, Host: r.Host, Kind: r.Kind, Worker: "unavailable", Detail: r.Detail, resourceStatus: resourceStatus{Version: r.Version, Transport: "unknown", Target: "unchecked"}}
+	v := resourceView{local: true, Identity: resourceIdentity(r), ID: r.Kind + "/" + r.Name, Host: r.Host, Kind: r.Kind, Direction: r.Direction, Worker: "unavailable", Detail: r.Detail, resourceStatus: resourceStatus{Version: r.Version, Transport: "unknown", Target: "unchecked"}}
 	if r.Kind == "review" {
 		v.Worker = "pending"
 		v.Transport = "not-started"
@@ -95,6 +97,7 @@ func viewRecord(r resourceRecord) resourceView {
 	v.Protocol = "SSH/TCP"
 	if r.Kind == "mount" {
 		v.Protocol = "SFTP over SSH"
+		v.Direction = "<-"
 		v.Mountpoint = r.Mountpoint
 		v.ReadOnly = r.ReadOnly
 		v.Detail = r.Mountpoint + " -> " + r.Remote
@@ -181,7 +184,7 @@ func collectResourceResults(host string, active []resourceView) []resourceView {
 			var r resourceResult
 			e = json.NewDecoder(io.LimitReader(f, 128*1024)).Decode(&r)
 			f.Close()
-			if e != nil || r.Record.Name != name || r.Record.Kind != kind || time.Since(r.Finished) > 7*24*time.Hour || (host != "" && r.Record.Host != host) {
+			if e != nil || r.Record.storageName() != name || r.Record.Kind != kind || time.Since(r.Finished) > 7*24*time.Hour || (host != "" && r.Record.Host != host) {
 				continue
 			}
 			if validSession(r.DisplayName) == nil {
@@ -238,7 +241,7 @@ func collectInventory(o options) (inventory, error) {
 			inv.Errors = append(inv.Errors, cleanText(err.Error()))
 		}
 		inv.Resources = inspectResources(records)
-		if o.listDetails || o.listJSON {
+		if o.listJSON {
 			inv.Resources = append(inv.Resources, collectResourceResults("", inv.Resources)...)
 		}
 		snapshots, err := readShellSnapshots()
@@ -278,7 +281,7 @@ func runInventory(o options) (int, error) {
 			return 1, encodeErr
 		}
 	} else {
-		printTaskInventory(inv, o.listDetails)
+		printTaskInventory(inv)
 	}
 	if err != nil {
 		return 1, err

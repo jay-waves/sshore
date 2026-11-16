@@ -300,12 +300,12 @@ func TestNoProfileOptions(t *testing.T) {
 	}
 }
 
-func TestShellVerboseAndSSHBoundary(t *testing.T) {
-	o, err := parseOptions([]string{"list", "host", "--verbose", "--", "-v"})
-	if err != nil || !o.listDetails || len(o.ssh) != 1 || o.ssh[0] != "-v" {
+func TestShellListOptionsAndSSHBoundary(t *testing.T) {
+	o, err := parseOptions([]string{"list", "host", "--json", "--", "-v"})
+	if err != nil || !o.listJSON || len(o.ssh) != 1 || o.ssh[0] != "-v" {
 		t.Fatalf("%+v %v", o, err)
 	}
-	for _, flag := range []string{"-v", "--details", "--version", "--verbosal"} {
+	for _, flag := range []string{"-v", "--verbose", "--details", "--version", "--verbosal"} {
 		if _, err := parseOptions([]string{"list", flag}); err == nil {
 			t.Fatalf("accepted %s", flag)
 		}
@@ -616,7 +616,7 @@ func TestNativeSSHPort(t *testing.T) {
 		operands []string
 	}{
 		{"launch", []string{"host"}}, {"spawn", []string{"host"}}, {"attach", []string{"host", "work"}},
-		{"list", []string{"host"}}, {"pstree", []string{"host"}}, {"cancel", []string{"host", "work"}},
+		{"list", []string{"host"}}, {"cancel", []string{"host", "work"}},
 		{"rename", []string{"host", "old", "new"}}, {"cp", []string{"local", "host:remote"}},
 		{"mount", []string{"host:remote"}}, {"forward", []string{"origin:8080", "host:80"}},
 	} {

@@ -122,7 +122,7 @@ func localShellEnvironment(source []string, term, identity string) []string {
 }
 
 func (s *localShell) rename(name string) error {
-	if err := validSession(name); err != nil {
+	if err := validAlias(name); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -140,17 +140,19 @@ func (s *localShell) rename(name string) error {
 	defer reservation.Close()
 	next := s.record
 	next.Name = name
-	path, err := localSessionPath(name)
+	path, err := localSessionPath(next.storageName())
 	if err != nil {
 		return err
 	}
 	if err = writeStateJSON(path, next); err != nil {
 		return err
 	}
-	oldPath, _ := localSessionPath(s.record.Name)
-	if err = os.Remove(oldPath); err != nil && !os.IsNotExist(err) {
-		os.Remove(path)
-		return err
+	oldPath, _ := localSessionPath(s.record.storageName())
+	if oldPath != path {
+		if err = os.Remove(oldPath); err != nil && !os.IsNotExist(err) {
+			os.Remove(path)
+			return err
+		}
 	}
 	s.record = next
 	renameShellTree(s.record.identity(), name)
@@ -300,9 +302,9 @@ func (s *localShell) attach(c net.Conn) error {
 	}
 	if err == nil {
 		if initial {
-			saveShellTree(s.record.identity(), s.record.Name, m.Tree, "attached", shellLifetime(s.record.Owner.PID != 0, false))
+			saveShellTree(s.record.identity(), s.record.Name, m.Tree, "attached", shellLifetime(s.record.Owner.PID != 0, false), m.SourceHost, m.SourceMachineID)
 		} else {
-			saveShellTree(s.record.identity(), s.record.Name, m.Tree, "attached")
+			saveShellTree(s.record.identity(), s.record.Name, m.Tree, "attached", shellLifetime(s.record.Owner.PID != 0, false), m.SourceHost, m.SourceMachineID)
 		}
 		err = p.controlMessage(message{Type: "ready", Tree: shellTreeFor(s.record.identity()), Temporary: s.record.Owner.PID != 0, Name: s.record.Name, PID: s.terminal.PID()})
 	}
@@ -331,7 +333,7 @@ func (s *localShell) attach(c net.Conn) error {
 		lease.Stop()
 		return err
 	}
-	saveShellTree(s.record.identity(), s.record.Name, m.Tree, "attached")
+	saveShellTree(s.record.identity(), s.record.Name, m.Tree, "attached", shellLifetime(s.record.Owner.PID != 0, false), m.SourceHost, m.SourceMachineID)
 	p.SetInput(lease)
 	s.mu.Unlock()
 	// Losing a local client releases attachment ownership, not the daemon-owned

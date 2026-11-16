@@ -1,16 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/chzyer/readline"
 	"github.com/creack/pty"
 )
 
@@ -67,7 +70,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	}
 	publishPending(id)
 	out, err := run("list")
-	if err != nil || !strings.Contains(out, "review/"+reviewName(t, id)) || !strings.Contains(out, "pending") {
+	if err != nil || !strings.Contains(out, reviewName(t, id)) || !strings.Contains(out, "review") || !strings.Contains(out, "pending") {
 		t.Fatal(out, err)
 	}
 	name := reviewName(t, id)
@@ -122,7 +125,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	untilType(t, resumed.tty, "exit")
 	resumed.close()
 	out, err = run("list")
-	if err != nil || !strings.Contains(out, "forward/"+name) || !strings.Contains(out, "running") || strings.Contains(out, "review/"+name) {
+	if err != nil || !strings.Contains(out, name) || !strings.Contains(out, "forward") || !strings.Contains(out, "running") || strings.Contains(out, " review ") {
 		t.Fatal(out, err)
 	}
 	if _, e := os.Stat(filepath.Join(remoteHome, filepath.FromSlash(remoteTaskRelativeDir), id+".json")); !os.IsNotExist(e) {
@@ -169,11 +172,16 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		snapshot.Resources[0].ID != "forward/"+renamed || snapshot.Resources[0].Worker != "running" {
 		t.Fatal(out, err)
 	}
-	if out, err = run("cancel", "forward/"+name); err == nil {
-		t.Fatal("old name still selects the forward", out)
+	if snapshot.Resources[0].ShortID != name {
+		t.Fatal("alias changed the task ID", out)
 	}
-	name = renamed
-	if out, err = run("cancel", "forward/"+name); err != nil {
+	if out, err = run("rename", name, "renamed-again"); err != nil {
+		t.Fatal(out, err)
+	}
+	if out, err = run("cancel", "forward/"+renamed); err == nil {
+		t.Fatal("old alias still selects the forward", out)
+	}
+	if out, err = run("cancel", name); err != nil {
 		t.Fatal(out, err)
 	}
 	out, err = run("list")
@@ -409,5 +417,38 @@ func TestShortTaskRemoteCommandRouting(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "/observed/sshore") || strings.Contains(string(encoded), "2222") {
 		t.Fatal("private connection settings leaked into inventory")
+	}
+}
+
+func TestTaskInventoryOutputTerminalWidth(t *testing.T) {
+	for _, columns := range []uint16{60, 100} {
+		t.Run(strconv.Itoa(int(columns)), func(t *testing.T) {
+			master, slave, err := pty.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer master.Close()
+			defer slave.Close()
+			if err := pty.Setsize(slave, &pty.Winsize{Rows: 24, Cols: columns}); err != nil {
+				t.Fatal(err)
+			}
+			writeTaskInventory(slave, inventory{Resources: []resourceView{{ID: "mount/data", Host: "server", Worker: "running", Detail: strings.Repeat("路径/", 40)}}})
+			reader := bufio.NewReader(master)
+			var output strings.Builder
+			for range 3 {
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					t.Fatal(err)
+				}
+				line = strings.TrimRight(line, "\r\n")
+				if (readline.Runes{}).WidthAll([]rune(line)) > int(columns) {
+					t.Fatalf("width %d: %q", columns, line)
+				}
+				output.WriteString(line)
+			}
+			if !strings.Contains(output.String(), "…") {
+				t.Fatal(output.String())
+			}
+		})
 	}
 }

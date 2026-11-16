@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -8,12 +11,14 @@ import (
 	"strings"
 )
 
-// Automatic names retain their original allocation order; explicit names remain supported.
-
-var sessionNames = strings.Fields("pikachu eevee bulbasaur charmander squirtle snorlax psyduck gengar meowth jigglypuff ditto mew vulpix raichu togepi pichu umbreon charizard dragonite lapras magikarp butterfree oddish cubone ivysaur venusaur charmeleon wartortle blastoise caterpie metapod weedle kakuna beedrill pidgey pidgeotto pidgeot rattata raticate spearow fearow ekans arbok sandshrew sandslash nidoran-f nidorina nidoqueen nidoran-m nidorino nidoking clefairy clefable ninetales wigglytuff zubat golbat gloom vileplume paras parasect venonat venomoth diglett dugtrio persian golduck mankey primeape growlithe arcanine poliwag poliwhirl poliwrath abra kadabra alakazam machop machoke machamp bellsprout weepinbell victreebel tentacool tentacruel geodude graveler golem ponyta rapidash slowpoke slowbro magnemite magneton farfetchd doduo dodrio seel dewgong grimer muk shellder cloyster gastly haunter onix drowzee hypno krabby kingler voltorb electrode exeggcute exeggutor marowak hitmonlee hitmonchan lickitung koffing weezing rhyhorn rhydon chansey tangela kangaskhan horsea seadra goldeen seaking staryu starmie mr-mime scyther jynx electabuzz magmar pinsir tauros gyarados vaporeon jolteon flareon porygon omanyte omastar kabuto kabutops aerodactyl articuno zapdos moltres dratini dragonair mewtwo")
-
+// Automatic labels are short references; user labels are optional aliases.
 func automaticSessionNames() []string {
-	return append([]string(nil), sessionNames...)
+	names := make([]string, 32)
+	for i := range names {
+		sum := sha256.Sum256([]byte(rand.Text()))
+		names[i] = hex.EncodeToString(sum[:3])
+	}
+	return names
 }
 
 func validSession(name string) error {
@@ -31,7 +36,7 @@ func validSession(name string) error {
 var errObjectNameInUse = errors.New("name is already in use")
 
 type resourceNameReservation struct {
-	name           string
+	name, uid      string
 	startup, owner *os.File
 }
 
@@ -49,7 +54,11 @@ func reserveResourceName(kind, requested string) (*resourceNameReservation, erro
 }
 
 func reserveResourceNameExcept(kind, requested, reviewID string) (*resourceNameReservation, error) {
-	names := automaticSessionNames()
+	uid, err := newTaskUID()
+	if err != nil {
+		return nil, err
+	}
+	names := []string{uid[:6]}
 	if requested != "" {
 		if err := validSession(requested); err != nil {
 			return nil, err
@@ -107,7 +116,7 @@ func reserveResourceNameExcept(kind, requested, reviewID string) (*resourceNameR
 				}
 				continue
 			}
-			return &resourceNameReservation{name: name, startup: held[0], owner: held[1]}, nil
+			return &resourceNameReservation{name: name, uid: uid, startup: held[0], owner: held[1]}, nil
 		}
 		for _, f := range held {
 			f.Close()
@@ -119,7 +128,10 @@ func reserveResourceNameExcept(kind, requested, reviewID string) (*resourceNameR
 			return nil, fmt.Errorf("%s/%s: %w", kind, name, errObjectNameInUse)
 		}
 	}
-	return nil, fmt.Errorf("all automatic %s names are in use; cancel an existing task and retry", kind)
+	if requested == "" {
+		return reserveResourceNameExcept(kind, requested, reviewID)
+	}
+	return nil, fmt.Errorf("%s: %w", requested, errObjectNameInUse)
 }
 
 func lockObjectName(name string) (*os.File, error) {
@@ -197,4 +209,19 @@ func occupiedObjectNames(exceptReview string) (map[string]bool, error) {
 		}
 	}
 	return names, nil
+}
+
+func isShortTaskID(name string) bool {
+	raw, err := hex.DecodeString(name)
+	return err == nil && len(raw) == 3
+}
+
+func validAlias(name string) error {
+	if err := validSession(name); err != nil {
+		return err
+	}
+	if isShortTaskID(name) {
+		return usage("six hexadecimal characters are reserved for task IDs; choose another alias")
+	}
+	return nil
 }

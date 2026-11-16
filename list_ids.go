@@ -1,13 +1,16 @@
 package main
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -23,7 +26,42 @@ type taskReference struct {
 	code  string
 }
 
+func canonicalTaskCode(key string) string {
+	kind, uid, ok := strings.Cut(key, ":")
+	if !ok || (kind != "task" && kind != "peer-task") || !validTaskUID(uid) {
+		return ""
+	}
+	return uid[:6]
+}
+
+func validTaskUID(uid string) bool {
+	raw, err := hex.DecodeString(uid)
+	return err == nil && len(raw) == 16 && hex.EncodeToString(raw) == uid
+}
+
+var errTaskPrefixInUse = errors.New("task ID prefix is reserved")
+
+func newTaskUID() (string, error) {
+	for {
+		sum := sha256.Sum256([]byte(rand.Text()))
+		uid := hex.EncodeToString(sum[:16])
+		if _, err := assignTaskIDsMode([]string{"task:" + uid}, true); err != nil {
+			if errors.Is(err, errTaskPrefixInUse) {
+				continue
+			}
+			return "", err
+		}
+		return uid, nil
+	}
+}
+
 func taskShortCode(key string, salt uint64) string {
+	if salt == 0 {
+		if code := canonicalTaskCode(key); code != "" {
+			return code
+		}
+	}
+
 	if salt != 0 {
 		key = fmt.Sprintf("%s\x00%d", key, salt)
 	}
@@ -54,19 +92,32 @@ func readTaskIDIndex(path string) (taskIDIndex, error) {
 	if index.Codes == nil {
 		index.Codes = map[string]string{}
 	}
-	reserved := make(map[string]bool, len(index.Codes))
+	canonicalCodes := map[string]bool{}
+	for key, code := range index.Codes {
+		if canonicalTaskCode(key) == code {
+			canonicalCodes[code] = true
+		}
+	}
+	seenCodes := map[string]string{}
 	for key, code := range index.Codes {
 		raw, err := hex.DecodeString(code)
 		if index.IDs[key] == 0 || err != nil || len(raw) != 3 ||
-			hex.EncodeToString(raw) != code || reserved[code] {
+			hex.EncodeToString(raw) != code {
 			return taskIDIndex{}, fmt.Errorf("invalid task short ID index")
 		}
-		reserved[code] = true
+		if old := seenCodes[code]; old != "" && !canonicalCodes[code] {
+			return taskIDIndex{}, fmt.Errorf("invalid task short ID index")
+		}
+		seenCodes[code] = key
 	}
 	return index, nil
 }
 
 func assignTaskIDs(keys []string) (map[string]taskReference, error) {
+	return assignTaskIDsMode(keys, false)
+}
+
+func assignTaskIDsMode(keys []string, creating bool) (map[string]taskReference, error) {
 	dir, err := stateDir("tasks")
 	if err != nil {
 		return nil, err
@@ -121,10 +172,17 @@ func assignTaskIDs(keys []string) (map[string]taskReference, error) {
 			if len(reserved) >= 1<<24 {
 				return nil, fmt.Errorf("task short IDs exhausted")
 			}
-			for salt := uint64(0); ; salt++ {
-				code = taskShortCode(key, salt)
-				if !reserved[code] {
-					break
+			code = canonicalTaskCode(key)
+			if code != "" {
+				if creating && reserved[code] {
+					return nil, errTaskPrefixInUse
+				}
+			} else {
+				for salt := uint64(0); ; salt++ {
+					code = taskShortCode(key, salt)
+					if !reserved[code] {
+						break
+					}
 				}
 			}
 			index.Codes[key], reserved[code], changed = code, true, true
@@ -140,6 +198,9 @@ func assignTaskIDs(keys []string) (map[string]taskReference, error) {
 }
 
 func resourceIdentity(r resourceRecord) string {
+	if validTaskUID(r.UID) {
+		return "task:" + r.UID
+	}
 	if r.Token == "" {
 		return ""
 	}
@@ -166,6 +227,9 @@ func numberInventoryResources(inv *inventory) error {
 }
 
 func remoteShellIdentity(host, instance string) string {
+	if validTaskUID(instance) {
+		return "task:" + instance
+	}
 	if instance == "" {
 		return ""
 	}

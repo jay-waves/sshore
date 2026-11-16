@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -33,7 +34,8 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 			if err = json.Unmarshal(data, &rows); err != nil || len(rows) != 1 {
 				t.Fatalf("list: %s %v", data, err)
 			}
-			rename := exec.Command(e.bin, "rename", "--local", rows[0].Name, "renamed")
+			originalID := rows[0].ShortID
+			rename := exec.Command(e.bin, "rename", originalID, "renamed")
 			rename.Env = env
 			if out, err := rename.CombinedOutput(); err != nil {
 				t.Fatalf("rename: %s %v", out, err)
@@ -44,10 +46,10 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = json.Unmarshal(data, &rows); err != nil || len(rows) != 1 || rows[0].Name != "renamed" {
+			if err = json.Unmarshal(data, &rows); err != nil || len(rows) != 1 || rows[0].Name != "renamed" || rows[0].ShortID != originalID {
 				t.Fatalf("renamed list: %s %v", data, err)
 			}
-			args = []string{"attach", "--local", "renamed"}
+			args = []string{"attach", "renamed"}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		cmd := exec.CommandContext(ctx, e.bin, args...)
@@ -73,7 +75,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 						io.WriteString(terminal, "exit\n")
 					}
 				}
-				if args[0] == "launch" && stage == 1 && strings.Contains(out.String(), "Connected local / pikachu") {
+				if args[0] == "launch" && stage == 1 && strings.Count(out.String(), "Connected local /") >= 2 {
 					stage = 2
 					io.WriteString(terminal, "\x02l")
 				}
@@ -95,18 +97,33 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 			t.Fatalf("%v: %v %s", args, err, out)
 		}
 		if args[0] == "launch" {
-			first, err := readLocalRecord(filepath.Join(state, "local-shells", "localtest.json"), "localtest")
+			entries, err := os.ReadDir(filepath.Join(state, "local-shells"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			second, err := readLocalRecord(filepath.Join(state, "local-shells", "pikachu.json"), "pikachu")
-			if err != nil {
-				t.Fatal(err)
+			var first, second localShellRecord
+			for _, entry := range entries {
+				if !strings.HasSuffix(entry.Name(), ".json") {
+					continue
+				}
+				record, err := readLocalRecord(filepath.Join(state, "local-shells", entry.Name()), strings.TrimSuffix(entry.Name(), ".json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if record.Name == "localtest" {
+					first = record
+				} else {
+					second = record
+				}
 			}
+			if !validTaskUID(first.UID) || !validTaskUID(second.UID) || second.Name != second.UID[:6] {
+				t.Fatalf("invalid task identities: %+v %+v", first, second)
+			}
+
 			if first.ManagerPID <= 0 || first.ManagerPID != second.ManagerPID {
 				t.Fatalf("shells do not share a daemon: %d, %d", first.ManagerPID, second.ManagerPID)
 			}
-			cleanup := exec.Command(e.bin, "cancel", "--local", "pikachu")
+			cleanup := exec.Command(e.bin, "cancel", second.UID[:6])
 			cleanup.Env = env
 			if output, err := cleanup.CombinedOutput(); err != nil {
 				t.Fatalf("cleanup: %s %v", output, err)
@@ -216,8 +233,8 @@ func TestPSTreeReattachmentAncestry(t *testing.T) {
 		b = approvedTestAttach(t, e, "tree", pid, shellTreeNode{Identity: "origin", Host: "workstation", Name: "origin", State: "attached"}, shellTreeNode{Parent: "origin", Identity: parent, Host: "upstream", Name: parent, State: "attached"})
 		resumeTestOutput(t, b)
 		output := shellOutput(t, b, shellQuote(e.bin)+" pstree; printf 'TREE-%s' done", "TREE-done")
-		if !strings.Contains(output, parent) || !strings.Contains(output, "← current") || !strings.Contains(output, "workstation / origin") {
-			t.Fatalf("missing ancestry/current: %q", output)
+		if !strings.Contains(output, "<- upstream") || !strings.Contains(output, "*current") || strings.Contains(output, "HOST  ") || strings.Contains(output, "("+parent+")") {
+			t.Fatalf("incorrect local scope/source/current: %q", output)
 		}
 		if parent == "parent-b" && strings.Contains(output, "parent-a") {
 			t.Fatalf("stale parent after attach: %q", output)
@@ -305,4 +322,47 @@ func TestNoProfileRemoteStartup(t *testing.T) {
 	shellOutput(t, b, `printf 'PROFILE-%s' "$SSHORE_PROFILE_INHERITED"`, "PROFILE-kept")
 	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
 	untilType(t, b.tty, "exit")
+}
+
+func TestPSTreeKeepsUnavailableHostedShell(t *testing.T) {
+	dir, err := os.MkdirTemp("", "sshore-tree-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	t.Setenv("SSHORE_RUNTIME_DIR", dir)
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(dir, "state"))
+	uid, err := newTaskUID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, uid+".sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	lock, err := openLock(path+".lock", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := writeSessionName(path, "blocked"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeStateFile(path+".id", []byte(uid)); err != nil {
+		t.Fatal(err)
+	}
+	saveShellTree(remoteTreeIdentity(uid), "blocked", nil, "detached", "heartbeat")
+	// The listening socket never answers, but its local lifetime lock stays held.
+	inv, err := localTreeInventory()
+	if err == nil {
+		t.Fatal("missing partial-inventory error")
+	}
+	nodes := localShellTreeNodes(inventoryShellTrees(knownShellTrees(), inv), inv)
+	var out bytes.Buffer
+	writeShellTree(&out, nodes, false)
+	if !strings.Contains(out.String(), uid[:6]+" (blocked) ?") || !strings.Contains(out.String(), "spawn/") {
+		t.Fatal(out.String())
+	}
 }

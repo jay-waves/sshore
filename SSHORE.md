@@ -120,6 +120,9 @@ calculation, receiver-side upload verification and no-overwrite publication.
 Transport window budgets live in `internal/transport/protocol.go` and `internal/files/mount.go`; size them
 for latency without allowing stalled file streams to exhaust terminal capacity.
 
+Mounts always use the remote sshore helper and the same setup/version safeguards as
+`cp`; there is no plain SFTP compatibility path.
+
 Mount request failures can leave write outcomes uncertain: never replay writes
 implicitly. Caches and notifications are advisory, bounded and invalidated by
 mutations at the affected paths and parent directories, including both trees
@@ -135,9 +138,23 @@ adapter code and tests in `internal/files/`, rather than a second specification.
 ### Inventory and diagnostics
 
 Separate live observations, cached records and unknown state. Inventory and
-`pstree` relationships never authorize operations. Spawn owner context stays fixed;
+`pstree` relationships never authorize operations. Task IDs are allocated at creation;
+alias changes preserve the instance and storage identity. Prefix collisions at creation
+require a new identity; imported ambiguous references require an explicit scope.
+Keep allocation and reference policy in `list_ids.go`, separate from capabilities.
+Spawn owner context stays fixed;
 the current attachment source may change. Neither is verified OS process ancestry.
 
+Keep the default task list to one row per task with details bounded by the output
+terminal width; redirected output preserves complete details. Do not redraw on resize;
+full diagnostics and recent history belong in `list --json`. The table shows
+ID with an optional alias and a separate TYPE, grouped by host. `pstree` is local:
+keep the current tree first, sort remaining nodes by observation recency, omit
+confirmed ended entries, and retain uncertain local records with a compact marker.
+Show remote attachment sources and resource provider-to-consumer directions without
+state or observation columns. Incoming resources require a live local transport
+registration in `peers.go`; advisory peer files alone are insufficient. A held local shell lifetime lock remains a
+local node when its status endpoint is temporarily unavailable.
 Status should distinguish worker liveness from transport state and target health.
 Public output must exclude capabilities and credentials; keep diagnostics out of
 normal command flow. Receipt retention and peer expiry belong in their implementation

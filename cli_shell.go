@@ -36,7 +36,7 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 	o.detached = parsed.has("--detach")
 	o.noLogin = parsed.has("--no-login")
 	o.noProfile = parsed.has("--no-profile")
-	o.listJSON, o.listDetails = parsed.has("--json"), parsed.has("--verbose")
+	o.listJSON = parsed.has("--json")
 	if (o.command == "launch" || o.command == "spawn") && len(parsed.operands) == 0 {
 		o.local = true
 	}
@@ -70,7 +70,7 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 		if o.session == "" || o.newName == "" {
 			return o, usage("rename requires HOST OLD NEW and accepts SSH options, --server and --port")
 		}
-		if err := validSession(o.newName); err != nil {
+		if err := validAlias(o.newName); err != nil {
 			return o, err
 		}
 	}
@@ -79,6 +79,9 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 	}
 	if o.session == "" {
 		return o, nil
+	}
+	if o.command == "launch" || o.command == "spawn" {
+		return o, validAlias(o.session)
 	}
 	return o, validSession(o.session)
 }
@@ -91,7 +94,7 @@ type options struct {
 	newName               string
 	downloadDir           string
 	list, quiet, noEscape bool
-	listJSON, listDetails bool
+	listJSON              bool
 	ssh                   []string
 	approved              []operation
 	approvalID            string

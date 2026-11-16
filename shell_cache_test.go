@@ -139,7 +139,7 @@ func TestEndedShellCleanup(t *testing.T) {
 			t.Fatal(s)
 		}
 	}
-	inv, err := collectInventory(options{listDetails: true})
+	inv, err := collectInventory(options{listJSON: true})
 	if err != nil || len(inv.Shells) != 0 {
 		t.Fatalf("forgotten history visible: %+v %v", inv.Shells, err)
 	}

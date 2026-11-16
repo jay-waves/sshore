@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -22,7 +23,7 @@ func TestClientPrefixKeysAndDetach(t *testing.T) {
 	background.close()
 	cmd, terminal, wait := startPrefixClient(t, e)
 	wait("Background tasks:")
-	wait("launch/background")
+	wait("(background)")
 	var err error
 	wait("Connected")
 	// Prefix and command arrive in separate reads.
@@ -162,14 +163,25 @@ func TestClientSessionShortcuts(t *testing.T) {
 	}
 	wait("Connected fixture / keys")
 	press('c')
-	wait("Connected fixture / pikachu")
+	wait("Connected fixture /")
 	press('d')
 	wait("Detached;")
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
 	}
 	// Explicitly end the independent detached sessions created by the test.
-	for _, name := range []string{"alpha", "keys", "pikachu"} {
+	inventoryCmd := exec.Command(e.bin, "inventory", version)
+	inventoryCmd.Env = e.env
+	data, err := inventoryCmd.Output()
+	var inv inventory
+	if err != nil || json.Unmarshal(data, &inv) != nil {
+		t.Fatalf("inventory: %s %v", data, err)
+	}
+	for _, shell := range inv.Shells {
+		name := shell.Name
+		if name == "zulu" {
+			continue
+		}
 		b, _ := e.attach(name, "attach")
 		sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
 		untilType(t, b.tty, "exit")

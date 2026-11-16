@@ -196,6 +196,8 @@ Lifecycle is fixed at startup:
 Explicit cancellation validates the target instance, capability or process identity;
 it never kills a PID solely because a record contains it. Short-ID selection is
 bound to the original task instance and cannot authorize control of a replacement.
+Aliases are mutable references, not capabilities. Ambiguous short references must
+not select an arbitrary task.
 Remote shell cancellation
 requires matching client/program/daemon releases, the account setup lock, a same-user
 socket peer and confirmed process identities. It does not install or update software.
@@ -208,7 +210,7 @@ Windows spawns use kill-on-close jobs. Ordinary PTY closure relies on terminal h
 semantics: programs ignoring hangup or deliberately escaping/reparenting may survive.
 No process-name-wide kill is used. A daemon failure can affect all terminals it owns.
 
-`pstree` owner contexts and attachment sources are display metadata, not verified
+Recorded owner contexts and attachment sources are display metadata, not verified
 OS ancestry. They never authorize signaling or change the actual owner or lease.
 
 ## SFTP mounts
@@ -327,6 +329,9 @@ Peer records expose only their resource identity, manager label, remote-facing
 path or port direction, and state. They exclude local mount paths and unrelated
 hosts. A remote account can forge its own inventory. Records expire, can become
 unknown and are read-only; removing a record never signals a process.
+`pstree` includes incoming resources only while a local transport holds its
+diagnostic registration lock. This establishes transport participation, not target
+health or authority to control the resource. Attachment-source metadata is advisory.
 
 Cached shell relationships, task IDs, exit receipts and worker liveness
 are not proof of identity, successful cleanup or remote service health. Targets

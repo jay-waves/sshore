@@ -22,10 +22,11 @@ import (
 
 // MountConfig contains validated mount and SSH transport settings.
 type MountConfig struct {
+	PeerMetadata                                     json.RawMessage
 	Approval                                         *MountApproval
 	Host, Remote, Mountpoint, SSHExecutable, Version string
 	SSHArgs                                          []string
-	ReadOnly, DirectIO, NoWatch, Stats               bool
+	ReadOnly, DirectIO, Stats                        bool
 	StartupTimeout, IOTimeout                        time.Duration
 	Prepare                                          func(context.Context, io.ReadWriter) error
 }
@@ -110,23 +111,18 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		})
 		defer watch.timer.Stop()
 	}
-	var events *smux.Stream
-	wire := newFTPWire(stdout, stdin)
-	if !o.NoWatch {
-		transport := pipes
-		if o.Prepare != nil {
-			if err := o.Prepare(ctx, transport); err != nil {
-				return 1, fmt.Errorf("mount setup: %w", err)
-			}
+	transport := pipes
+	if o.Prepare != nil {
+		if err := o.Prepare(ctx, transport); err != nil {
+			return 1, fmt.Errorf("mount setup: %w", err)
 		}
-		mux, data, notifications, err := OpenMux(transport, o.Version, o.Approval)
-		if err != nil {
-			return 1, fmt.Errorf("mount agent handshake: %w", err)
-		}
-		defer mux.Close()
-		events = notifications
-		wire = newFTPWire(data, data)
 	}
+	mux, data, events, err := openMux(transport, o.Version, o.Approval, o.PeerMetadata)
+	if err != nil {
+		return 1, fmt.Errorf("mount agent handshake: %w", err)
+	}
+	defer mux.Close()
+	wire := newFTPWire(data, data)
 	wire.metrics = o.Stats
 	if service != nil {
 		wire.onReply = service.OperationCompleted
@@ -159,11 +155,9 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		}
 	}
 	backend := &ftpFS{client: client, root: path.Clean(root), readOnly: o.ReadOnly, directIO: o.DirectIO}
-	if events != nil {
-		backend.notifications = startFTPNotifications(events, &backend.cache)
-		defer backend.notifications.Close()
-		backend.watchDirectory(backend.root)
-	}
+	backend.notifications = startFTPNotifications(events, &backend.cache)
+	defer backend.notifications.Close()
+	backend.watchDirectory(backend.root)
 	if o.Stats {
 		backend.metrics = &ftpCallbackMetrics{}
 		stopStats := startFTPStats(wire, backend, os.Stderr)
@@ -293,7 +287,8 @@ type MountApproval struct {
 }
 
 type message struct {
-	Approval *MountApproval `json:"mount_approval,omitempty"`
+	Approval     *MountApproval  `json:"mount_approval,omitempty"`
+	PeerMetadata json.RawMessage `json:"peer_metadata,omitempty"`
 
 	Type            string `json:"type"`
 	SoftwareVersion string `json:"software_version,omitempty"`

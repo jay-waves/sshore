@@ -45,8 +45,9 @@ func TestCompletionContexts(t *testing.T) {
 		{[]string{"rename"}, "", []string{"work", "mount/data", "review/request"}, []string{"1", "2"}, "", ""},
 		{[]string{"rename", "work"}, "", []string{"remotejob"}, []string{"localjob", "2"}, "", ""},
 		{[]string{"list", "--json"}, "--", nil, []string{"--json", "--verbose"}, "", ""},
+		{[]string{"list"}, "--", []string{"--json"}, []string{"--verbose"}, "", ""},
 		{[]string{"launch", "-q"}, "-", nil, []string{"-q", "--quiet"}, "", ""},
-		{[]string{"mount", "--no-watch"}, "--", nil, []string{"--server"}, "", ""},
+		{[]string{"mount", "--read-only"}, "--", []string{"--server"}, []string{"--no-watch"}, "", ""},
 		{[]string{"launch", "--local"}, "--", nil, []string{"--server", "--download-dir", "--"}, "", ""},
 		{[]string{"attach"}, "--", nil, []string{"--no-login", "--detach"}, "", ""},
 		{[]string{"attach"}, "--p", []string{"--port"}, nil, "", ""},
@@ -112,7 +113,7 @@ func TestCompletionUsesCLIConstraints(t *testing.T) {
 			t.Fatalf("accepted %v", args)
 		}
 	}
-	for _, args := range [][]string{{"--verbose"}, {"--json"}} {
+	for _, args := range [][]string{{"--verbose"}, {"--json"}, {"host"}, {"--local"}, {"--server", "sshore"}, {"--", "-v"}} {
 		if _, err := parseCLI(args, "pstree"); err == nil {
 			t.Fatalf("pstree accepted %v", args)
 		}

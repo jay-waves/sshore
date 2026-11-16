@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -52,7 +53,10 @@ func runMount(args []string) (int, error) {
 }
 
 func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
-	c := files.MountConfig{Approval: o.approval, Host: o.host, Remote: o.remote, Mountpoint: o.mountpoint, SSHExecutable: sshExecutable(), Version: version, SSHArgs: mountSSHArgs(o), ReadOnly: o.readOnly, DirectIO: o.directIO, NoWatch: o.noWatch, Stats: o.stats, StartupTimeout: o.startupTimeout, IOTimeout: o.ioTimeout}
+	c := files.MountConfig{Approval: o.approval, Host: o.host, Remote: o.remote, Mountpoint: o.mountpoint, SSHExecutable: sshExecutable(), Version: version, SSHArgs: mountSSHArgs(o), ReadOnly: o.readOnly, DirectIO: o.directIO, Stats: o.stats, StartupTimeout: o.startupTimeout, IOTimeout: o.ioTimeout}
+	if s != nil {
+		c.PeerMetadata, _ = json.Marshal(s.peerTask())
+	}
 	c.Prepare = func(ctx context.Context, wire io.ReadWriter) error {
 		ui := setupClientUI{}
 		if s != nil {
@@ -68,9 +72,6 @@ func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
 }
 
 func mountSSHArgs(o ftpOptions) []string {
-	if o.noWatch {
-		return transport.SFTPArgs(o.host, o.ssh)
-	}
 	command := remoteCommand(options{command: "mount-agent", server: o.server})
 	return transport.SessionArgs(o.host, o.ssh, "unset SSHORE_SOCKET SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN; "+command)
 }

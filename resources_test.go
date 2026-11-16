@@ -231,14 +231,13 @@ func TestFTPNotifyOptions(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := strings.Join(mountSSHArgs(o), " ")
-	if o.noWatch || !strings.Contains(args, "mount-agent") || !strings.Contains(args, "-J jump") || strings.Contains(args, "SessionType=subsystem") {
+	if !strings.Contains(args, "mount-agent") || !strings.Contains(args, "-J jump") || strings.Contains(args, "SessionType=subsystem") {
 		t.Fatalf("%+v %s", o, args)
 	}
-	o.noWatch = true
-	args = strings.Join(mountSSHArgs(o), " ")
-	if !strings.HasSuffix(args, "-s -- host sftp") || strings.Contains(args, "mount-agent") {
-		t.Fatal(args)
+	if _, err := parseFTPOptions([]string{"host:", "--no-watch"}); err == nil {
+		t.Fatal("removed compatibility flag accepted")
 	}
+
 }
 
 func TestFTPNotifyRecovery(t *testing.T) {

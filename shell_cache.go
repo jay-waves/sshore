@@ -148,8 +148,8 @@ func readShellSnapshotsLocked() ([]shellSnapshot, error) {
 			}
 		}
 		if s.Instance != "" && !endedShellState(s.State) {
-			for _, n := range shellTreeFor("remote:" + s.Instance) {
-				if n.Identity == "remote:"+s.Instance && (n.State == "exited" || n.State == "not-listed") {
+			for _, n := range shellTreeFor(remoteTreeIdentity(s.Instance)) {
+				if n.Identity == remoteTreeIdentity(s.Instance) && (n.State == "exited" || n.State == "not-listed") {
 					s.State, s.Unconfirmed, s.ConfirmedAt = n.State, false, time.Now()
 					if err := saveShellSnapshotLocked(s); err != nil {
 						return nil, err
@@ -284,8 +284,8 @@ func cacheRemoteShellsLocked(host string, inv inventory, connection ...options) 
 		}
 		// A fresh remote observation can supersede an earlier absence report.
 		if shell.Instance != "" && !endedShellState(shell.State) {
-			for _, n := range shellTreeFor("remote:" + shell.Instance) {
-				if n.Identity == "remote:"+shell.Instance && endedShellState(n.State) {
+			for _, n := range shellTreeFor(remoteTreeIdentity(shell.Instance)) {
+				if n.Identity == remoteTreeIdentity(shell.Instance) && endedShellState(n.State) {
 					if err := recordRemoteShellTreeState(snapshot); err != nil {
 						return err
 					}

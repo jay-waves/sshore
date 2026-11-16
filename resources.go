@@ -14,10 +14,6 @@ import (
 	"time"
 )
 
-// Local resource IDs are type/name, stable across list calls. Shell identities
-// remain HOST/NAME and retain the existing version/process-safe kill path. List
-// without HOST is offline discovery: it never authenticates to guessed hosts.
-
 func collectRunningResources(host string) ([]resourceRecord, error) {
 	var records []resourceRecord
 	for _, kind := range []string{"mount", "forward"} {
@@ -63,7 +59,7 @@ func collectLocalResources(host string) ([]resourceRecord, error) {
 	}
 	for _, r := range pending {
 		if host == "" || r.Host == host {
-			records = append(records, resourceRecord{Token: r.ID, Kind: "review", Name: r.DisplayName(), Host: r.Host, Detail: r.Session + ": " + approvalSummary(r.Operations)})
+			records = append(records, resourceRecord{UID: r.UID, Token: r.ID, Kind: "review", Name: r.DisplayName(), Host: r.Host, Detail: r.Session + ": " + approvalSummary(r.Operations)})
 		}
 	}
 	sort.Slice(records, func(i, j int) bool {
@@ -96,7 +92,7 @@ func displayedResource(r resourceRecord) resourceRecord {
 	if r.slot != "" || r.Token == "" {
 		return r
 	}
-	path, err := resourceNamePath(r.Kind, r.Name)
+	path, err := resourceNamePath(r.Kind, r.storageName())
 	if err != nil || privateStatePath(path, false) != nil {
 		return r
 	}
@@ -157,7 +153,7 @@ func runRenameResource(kind, old, name string, expected ...string) (int, error) 
 	if kind != "mount" && kind != "forward" && kind != "review" {
 		return 2, usage("rename expects mount/NAME, forward/NAME or review/NAME")
 	}
-	if err := validSession(name); err != nil {
+	if err := validAlias(name); err != nil {
 		return 2, err
 	}
 	// Serialize resource/review renames; lock the destination with the same
@@ -176,7 +172,7 @@ func runRenameResource(kind, old, name string, expected ...string) (int, error) 
 		if err != nil {
 			return 1, err
 		}
-		if len(expected) > 0 && resourceIdentity(resourceRecord{Kind: "review", Token: record.ID}) != expected[0] {
+		if len(expected) > 0 && resourceIdentity(resourceRecord{UID: record.UID, Kind: "review", Token: record.ID}) != expected[0] {
 			return 1, fmt.Errorf("request changed; refresh with sshore list")
 		}
 		if record.DisplayName() == name {
@@ -285,7 +281,7 @@ func runCancelAll(o options) (int, error) {
 		fmt.Println("No tasks to cancel.")
 		return 0, nil
 	}
-	printTaskInventory(inv, false)
+	printTaskInventory(inv)
 	fmt.Fprint(os.Stderr, "End these shells and tasks, unmount mounts, and stop forwards? Type cancel: ")
 	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil || strings.TrimSpace(answer) != "cancel" {
@@ -350,7 +346,7 @@ func cancelResourceIdentity(id, identity string) error {
 	if err != nil {
 		return err
 	}
-	if resourceIdentity(resourceRecord{Kind: "review", Token: record.ID}) != identity {
+	if resourceIdentity(resourceRecord{UID: record.UID, Kind: "review", Token: record.ID}) != identity {
 		return fmt.Errorf("request changed; refresh with sshore list")
 	}
 	if err = consumeApproval(dir, record.ID); err == nil {

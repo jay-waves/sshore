@@ -70,7 +70,14 @@ func resolveSession(name string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if label == name {
+		uid := ""
+		if isShortTaskID(name) || validTaskUID(name) {
+			uid, err = readSessionUID(path)
+			if err != nil {
+				return "", err
+			}
+		}
+		if label == name || uid != "" && (uid == name || uid[:6] == name) {
 			if found != "" {
 				return "", fmt.Errorf("ambiguous shell name %s", name)
 			}
@@ -81,7 +88,7 @@ func resolveSession(name string) (string, error) {
 }
 
 func renameSession(old, name string, expected ...string) error {
-	if err := validSession(name); err != nil {
+	if err := validAlias(name); err != nil {
 		return err
 	}
 	gate, err := setupLock()
@@ -103,6 +110,10 @@ func renameSession(old, name string, expected ...string) error {
 	}
 	if other != "" && other != path {
 		return fmt.Errorf("shell %s already exists", name)
+	}
+	old, err = readSessionName(path)
+	if err != nil {
+		return err
 	}
 	gate.Close() // The daemon takes the gate and rechecks the old label and destination.
 	c, err := net.DialTimeout("unix", path, time.Second)
@@ -133,7 +144,7 @@ func sessionLabel(m message, filename string) string {
 }
 
 func (s *remoteShell) rename(old, name string, expected ...string) error {
-	if err := validSession(name); err != nil {
+	if err := validAlias(name); err != nil {
 		return err
 	}
 	gate, err := setupLock()
@@ -173,7 +184,7 @@ func (s *remoteShell) rename(old, name string, expected ...string) error {
 	s.nameLock = reservation.owner
 	reservation.owner = nil
 	s.name = name
-	renameShellTree("remote:"+s.instance, name)
+	renameShellTree(remoteTreeIdentity(s.instance), name)
 	return nil
 }
 
@@ -234,4 +245,29 @@ func firstExpectedInstance(expected []string) string {
 		return expected[0]
 	}
 	return ""
+}
+
+func readSessionUID(path string) (string, error) {
+	path += ".id"
+	if err := privateStatePath(path, false); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return "", err
+	}
+	f := os.NewFile(uintptr(fd), path)
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, 33))
+	if err != nil {
+		return "", err
+	}
+	uid := string(data)
+	if !validTaskUID(uid) {
+		return "", fmt.Errorf("invalid shell identity at %s", path)
+	}
+	return uid, nil
 }

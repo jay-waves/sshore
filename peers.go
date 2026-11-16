@@ -29,12 +29,14 @@ const remoteTaskFresh = 75 * time.Second
 const maxRemoteTaskSize = 8192
 
 type peerRecord struct {
-	Version string `json:"version"`
-	Key     string `json:"key"`
-	ID      string `json:"id"`
-	Manager string `json:"manager"`
-	State   string `json:"state"`
-	Detail  string `json:"detail"`
+	Direction string `json:"direction,omitempty"`
+	UID       string `json:"uid,omitempty"`
+	Version   string `json:"version"`
+	Key       string `json:"key"`
+	ID        string `json:"id"`
+	Manager   string `json:"manager"`
+	State     string `json:"state"`
+	Detail    string `json:"detail"`
 }
 
 func taskManagerLabel() string {
@@ -49,6 +51,9 @@ func taskManagerLabel() string {
 	return h
 }
 func validateRemoteTask(t peerRecord) error {
+	if t.UID != "" && !validTaskUID(t.UID) || t.Direction != "" && t.Direction != "<-" && t.Direction != "->" {
+		return fmt.Errorf("invalid peer identity or direction")
+	}
 	if t.Version != version || !validApprovalID(t.Key) || t.Manager == "" || len(t.Manager) > 128 || len(t.Detail) > 4096 {
 		return fmt.Errorf("invalid peer task metadata")
 	}
@@ -248,7 +253,7 @@ func collectPeerViews() ([]peerView, error) {
 	out := []peerView{}
 	for _, r := range rows {
 		t := r.task
-		out = append(out, peerView{Identity: t.Key, ID: "peer/" + t.Key[:8] + "/" + t.ID, Manager: t.Manager, State: r.state, Detail: t.Detail})
+		out = append(out, peerView{Direction: t.Direction, UID: t.UID, Identity: t.Key, ID: "peer/" + t.Key[:8] + "/" + t.ID, Manager: t.Manager, State: r.state, Detail: t.Detail})
 	}
 	return out, nil
 }
@@ -361,4 +366,98 @@ func startMountTaskSync(parent context.Context, c *sftp.Client, task func() peer
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
+}
+
+// A locked record belongs to a live local transport helper. Peer heartbeat files
+// alone never establish that this machine still participates in the resource.
+func beginIncomingTask(t peerRecord) func() {
+	noop := func() {}
+	if validateRemoteTask(t) != nil || t.State != "active" {
+		return noop
+	}
+	dir, err := stateDir("incoming")
+	if err != nil {
+		return noop
+	}
+	key := resourceToken()[:32]
+	filename := filepath.Join(dir, key+".json")
+	temporary := filepath.Join(dir, "."+key+".tmp")
+	f, err := os.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	if err != nil {
+		return noop
+	}
+	if err = lockResourceState(f); err == nil {
+		err = json.NewEncoder(f).Encode(t)
+	}
+	// Publish only after the lock and complete record are visible on the same inode.
+	if err == nil {
+		err = os.Rename(temporary, filename)
+	}
+	if err != nil {
+		f.Close()
+		os.Remove(temporary)
+		return noop
+	}
+	return func() { os.Remove(filename); f.Close() }
+}
+
+func collectIncomingTasks() ([]peerView, error) {
+	dir, err := stateDir("incoming")
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	byKey := map[string]peerView{}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		filename := filepath.Join(dir, entry.Name())
+		if privateStatePath(filename, false) != nil {
+			continue
+		}
+		f, err := os.OpenFile(filename, os.O_RDWR, 0600)
+		if err != nil {
+			continue
+		}
+		lockErr := lockResourceReadState(f)
+		if lockErr == nil {
+			// Unique connection filenames have no successor that could inherit the inode.
+			old, _ := f.Stat()
+			now, err := os.Lstat(filename)
+			if err == nil && old != nil && os.SameFile(old, now) {
+				os.Remove(filename)
+			}
+			f.Close()
+			continue
+		}
+		if !resourceLockBusy(lockErr) {
+			f.Close()
+			continue
+		}
+		var t peerRecord
+		err = json.NewDecoder(io.LimitReader(f, maxRemoteTaskSize)).Decode(&t)
+		f.Close()
+		if err != nil || validateRemoteTask(t) != nil || t.State != "active" {
+			continue
+		}
+		// The leased peer record may supply a newer alias; the helper lock supplies liveness.
+		if peerDir, err := peerTaskDir(false); err == nil {
+			if data, err := os.ReadFile(filepath.Join(peerDir, t.Key+".json")); err == nil && len(data) <= maxRemoteTaskSize {
+				var newer peerRecord
+				if json.Unmarshal(data, &newer) == nil && validateRemoteTask(newer) == nil && newer.Key == t.Key && newer.UID == t.UID && newer.State == "active" {
+					t = newer
+				}
+			}
+		}
+		byKey[t.Key] = peerView{Direction: t.Direction, UID: t.UID, Identity: t.Key, ID: t.ID, Manager: t.Manager, State: "active", Detail: t.Detail}
+	}
+	result := make([]peerView, 0, len(byKey))
+	for _, v := range byKey {
+		result = append(result, v)
+	}
+	return result, nil
 }

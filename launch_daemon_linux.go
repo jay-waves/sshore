@@ -53,7 +53,7 @@ type remoteShell struct {
 func (s *remoteShell) stop() {
 	s.once.Do(func() {
 		if !s.plain {
-			saveShellTree("remote:"+s.instance, s.name, nil, "exited")
+			saveShellTree(remoteTreeIdentity(s.instance), s.name, nil, "exited")
 		}
 		close(s.done)
 	})
@@ -76,7 +76,7 @@ func (s *remoteShell) start(cols, rows uint16, term string, startup ...bool) err
 	}
 	cmd := exec.Command(shellPath, args...)
 	cmd.Dir = s.directory
-	cmd.Env = append(append([]string(nil), env...), "TERM="+term, "SSHORE_SOCKET="+s.path, "SSHORE_TREE_ID=remote:"+s.instance)
+	cmd.Env = append(append([]string(nil), env...), "TERM="+term, "SSHORE_SOCKET="+s.path, "SSHORE_TREE_ID="+remoteTreeIdentity(s.instance))
 	if s.plain {
 		cmd.Env = nil
 		for _, item := range env {
@@ -187,12 +187,12 @@ func (s *remoteShell) attach(p *attachment, m message) error {
 		}
 		if !s.plain {
 			if startedHere {
-				saveShellTree("remote:"+s.instance, s.name, m.Tree, "attached", shellLifetime(s.temporary, true))
+				saveShellTree(remoteTreeIdentity(s.instance), s.name, m.Tree, "attached", shellLifetime(s.temporary, true), m.SourceHost, m.SourceMachineID)
 			} else {
-				saveShellTree("remote:"+s.instance, s.name, m.Tree, "attached")
+				saveShellTree(remoteTreeIdentity(s.instance), s.name, m.Tree, "attached", shellLifetime(s.temporary, true), m.SourceHost, m.SourceMachineID)
 			}
 		}
-		if err := p.controlMessage(message{Type: "ready", Tree: shellTreeFor("remote:" + s.instance), Temporary: s.temporary, Instance: s.instance, PID: s.cmd.Process.Pid, Name: s.name}); err != nil {
+		if err := p.controlMessage(message{Type: "ready", Tree: shellTreeFor(remoteTreeIdentity(s.instance)), Temporary: s.temporary, Instance: s.instance, PID: s.cmd.Process.Pid, Name: s.name}); err != nil {
 			return err
 		}
 		if !p.Muted() {
@@ -241,7 +241,7 @@ func (s *remoteShell) clearAttachment(p *attachment) bool {
 	}
 	detached := s.lifecycle.Detach(p)
 	if detached && !s.plain {
-		saveShellTree("remote:"+s.instance, s.name, nil, "detached")
+		saveShellTree(remoteTreeIdentity(s.instance), s.name, nil, "detached")
 	}
 	return detached
 }
@@ -453,7 +453,9 @@ func (s *remoteShell) handle(c net.Conn) {
 		}
 		s.mu.Unlock()
 		if first.Action != "health" {
-			m.Foreground = foregroundPrograms("/proc", group)
+			if first.Action != "inventory" {
+				m.Foreground = foregroundPrograms("/proc", group)
+			}
 			m.Directory = sessionDirectory(group, m.PID)
 		}
 		_ = writeMessage(c, m)
@@ -483,10 +485,10 @@ func daemon(name string) error {
 	if validSession(label) != nil {
 		label = name
 	}
-	return serveRemoteShell(name, label, os.Environ(), "", nil)
+	return serveRemoteShell(name, label, "", os.Environ(), "", nil)
 }
 
-func serveRemoteShell(name, nameLabel string, env []string, directory string, ready func() error, temporary ...bool) error {
+func serveRemoteShell(name, nameLabel, uid string, env []string, directory string, ready func() error, temporary ...bool) error {
 	path, err := socketPath(name)
 	if err != nil {
 		return err
@@ -500,6 +502,22 @@ func serveRemoteShell(name, nameLabel string, env []string, directory string, re
 	if err != nil {
 		return fmt.Errorf("shell name %s is in use: %w", nameLabel, err)
 	}
+	if uid == "" {
+		uid, err = newTaskUID()
+		if err != nil {
+			nameLock.Close()
+			return err
+		}
+	}
+	if !validTaskUID(uid) {
+		nameLock.Close()
+		return fmt.Errorf("invalid shell identity")
+	}
+	if err := writeStateFile(path+".id", []byte(uid)); err != nil {
+		nameLock.Close()
+		return err
+	}
+	defer os.Remove(path + ".id")
 	if err := writeSessionName(path, nameLabel); err != nil {
 		nameLock.Close()
 		return err
@@ -522,7 +540,8 @@ func serveRemoteShell(name, nameLabel string, env []string, directory string, re
 	if err := os.Chmod(path, 0600); err != nil {
 		return err
 	}
-	s := &remoteShell{temporary: len(temporary) > 0 && temporary[0], instance: rand.Text(), environment: env, directory: directory, path: path, name: nameLabel, nameLock: nameLock, done: make(chan struct{})}
+
+	s := &remoteShell{temporary: len(temporary) > 0 && temporary[0], instance: uid, environment: env, directory: directory, path: path, name: nameLabel, nameLock: nameLock, done: make(chan struct{})}
 	nameLock = nil
 	defer func() {
 		s.mu.Lock()
