@@ -912,6 +912,29 @@ Mermaid diagrams. README depicts user flow; SECURITY depicts trust boundaries.
 Keep numeric defaults in CLI help and their implementation unless a design or
 security explanation needs them.
 
+### Shell and terminal validation
+
+Supported shell targets: bash (GNU readline), sh, zsh and fish on Linux; pwsh with PSReadLine and cmd on Windows.
+The table describes supported connection paths, **not a fully tested matrix**.
+**L** = Linux local or remote, **R** = remote Linux over SSH, **W** = Windows local;
+**—** = outside scope. Every terminal/shell pairing below still needs dedicated
+interactive validation. Terminal columns refer only to Linux/Windows amd64 builds.
+
+| Shell | Ghostty (Linux) | Alacritty (Linux / Windows) | Windows Terminal | WezTerm (Linux / Windows) | xterm (Linux) | GNOME Terminal (Linux) | Existing shell evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| bash | L | L / R | R | L / R | L | L | Linux startup-file and reconnect regressions |
+| sh | L | L / R | R | L / R | L | L | Linux PTY/lifecycle tests; actual sh implementation matters |
+| zsh | L | L / R | R | L / R | L | L | Linux reconnect editor and job-control regressions |
+| fish | L | L / R | R | L / R | L | L | Linux reconnect editor and job-control regressions |
+| pwsh | — | — / W | W | — / W | — | — | Static ConPTY/input review; native Windows checks pending |
+| cmd | — | — / W | W | — / W | — | — | ConPTY lifecycle test coverage; pairing checks pending |
+
+Alacritty and Windows Terminal have positive user reports, without a recorded
+per-shell matrix. Ghostty has a source-level review; its headless interactive
+probe did not complete. Enhanced keyboard encodings may bypass Ctrl+B shortcuts.
+Terminal applications may also need terminfo matching the client TERM on the
+remote host. See [terminal design and limits](SSHORE.md#terminal-and-mux-design-scope).
+
 ## Release
 
 `VERSION` and the source default in `main.go` must agree and use a full semantic
@@ -976,3 +999,11 @@ a persistent launch requires no client heartbeat. The OS process tree in
 release inventory endpoint. Colors use the terminal palette and respect
 redirection, `NO_COLOR` and `TERM=dumb`. The current node has a textual marker
 as well as color. Display labels are sanitized before terminal output.
+
+## Planned directory synchronization
+
+- [ ] Add `pull` (remote → local) and `push` (local → remote) for incremental
+  directory synchronization. Files remain on disk after synchronization stops.
+  Proposed behavior: one-shot by default; `--watch` runs a background task managed
+  through `list` and `cancel`; deletion propagation requires `--delete`, and
+  independently modified destination files are reported as conflicts. Not yet implemented.
