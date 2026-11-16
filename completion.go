@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -138,10 +137,11 @@ func completeCLI(words []string, current string, catalog func() completionCatalo
 		r.mode = "files"
 	}
 	if command == "mount" && n == 1 {
-		r.add("origin:", "request a mount on the attached client")
-	}
-	if command == "mount" && n == 2 {
-		r.mode = "dirs"
+		if host, _, _ := splitRemotePath(parsed.operands[0]); host != "" && !originEndpoint(parsed.operands[0]) {
+			r.mode = "dirs"
+		} else {
+			r.add("origin:", "request a mount on the attached client")
+		}
 		return r
 	}
 	if command == "forward" && strings.Contains(current, ":") {
@@ -164,11 +164,8 @@ func completeCLI(words []string, current string, catalog func() completionCatalo
 	c := catalog()
 	if hostPosition || endpoint {
 		for _, host := range c.hosts {
-			if endpoint {
-				if strings.Contains(host, ":") {
-					continue
-				}
-				host += ":"
+			if endpoint || command == "mount" {
+				host = remotePathOperand(host, "")
 			}
 			r.add(host, "host")
 		}
@@ -180,6 +177,12 @@ func completeCLI(words []string, current string, catalog func() completionCatalo
 		return r
 	}
 	for _, t := range c.tasks {
+		if command == "rename" && t.kind != "shell" && n == 0 && !local {
+			switch t.kind {
+			case "mount", "forward", "review":
+				r.add(t.kind+"/"+t.name, "local task")
+			}
+		}
 		if command == "attach" || command == "rename" {
 			if t.kind != "shell" {
 				continue
@@ -189,12 +192,13 @@ func completeCLI(words []string, current string, catalog func() completionCatalo
 			continue
 		}
 		description := t.kind + " (cached; revalidated on use)"
-		if n == 0 && !local {
-			if id := c.ids[t.identity]; id != 0 {
-				r.add(strconv.FormatUint(id, 10), description)
-			}
+		if n == 0 && !local && command != "rename" {
 			if command == "review" && t.kind == "review" {
-				r.add(t.name, description)
+				if strings.Trim(t.name, "0123456789") == "" {
+					r.add("review/"+t.name, description)
+				} else {
+					r.add(t.name, description)
+				}
 			}
 			if command == "cancel" && t.kind != "shell" {
 				r.add(t.kind+"/"+t.name, description)
@@ -333,11 +337,10 @@ func completeSSH(words []string, current string, native bool) completionResult {
 	return r
 }
 
-type completionTask struct{ kind, name, host, identity string }
+type completionTask struct{ kind, name, host string }
 type completionCatalog struct {
 	hosts []string
 	tasks []completionTask
-	ids   map[string]uint64
 }
 
 // Read hints only: no Dir(), daemon requests, locks, expiry cleanup or ID allocation.
@@ -374,15 +377,8 @@ func completionRecords(directory string, read func(string)) {
 }
 
 func loadCompletionCatalog() completionCatalog {
-	c := completionCatalog{ids: map[string]uint64{}}
-	path, err := statePath("tasks/ids.json")
-	if err == nil {
-		var index taskIDIndex
-		if readCompletionJSON(path, &index) {
-			c.ids = index.IDs
-		}
-	}
-	path, err = statePath("connections/recent.json")
+	c := completionCatalog{}
+	path, err := statePath("connections/recent.json")
 	if err == nil {
 		var recent []recentConnection
 		if readCompletionJSON(path, &recent) {
@@ -396,7 +392,7 @@ func loadCompletionCatalog() completionCatalog {
 	completionRecords("local-shells", func(path string) {
 		var r localShellRecord
 		if readCompletionJSON(path, &r) && validSession(r.Name) == nil && r.Token != "" {
-			c.tasks = append(c.tasks, completionTask{"shell", r.Name, "", r.identity()})
+			c.tasks = append(c.tasks, completionTask{"shell", r.Name, ""})
 		}
 	})
 	completionRecords("shells", func(path string) {
@@ -406,21 +402,21 @@ func loadCompletionCatalog() completionCatalog {
 		}
 		c.hosts = append(c.hosts, r.Host)
 		if r.State == "detached" || r.State == "attached" {
-			c.tasks = append(c.tasks, completionTask{"shell", r.Name, r.Host, remoteShellIdentity(r.Host, r.Instance)})
+			c.tasks = append(c.tasks, completionTask{"shell", r.Name, r.Host})
 		}
 	})
 	for _, kind := range []string{"mount", "forward"} {
 		completionRecords(kind+"s", func(path string) {
 			var r resourceRecord
 			if readCompletionJSON(path, &r) && validSession(r.Name) == nil && r.Kind == kind {
-				c.tasks = append(c.tasks, completionTask{kind, r.Name, "", resourceIdentity(r)})
+				c.tasks = append(c.tasks, completionTask{kind, displayedResource(r).Name, ""})
 			}
 		})
 	}
 	completionRecords("approvals", func(path string) {
 		var r approvalRecord
 		if readCompletionJSON(path, &r) && validApprovalID(r.ID) && (validSession(r.DisplayName()) == nil || validApprovalID(r.DisplayName())) && time.Since(r.Created) < approvalTTL && !r.Created.After(time.Now()) {
-			c.tasks = append(c.tasks, completionTask{"review", r.DisplayName(), "", resourceIdentity(resourceRecord{Kind: "review", Token: r.ID})})
+			c.tasks = append(c.tasks, completionTask{"review", r.DisplayName(), ""})
 		}
 	})
 	if home, err := os.UserHomeDir(); err == nil {

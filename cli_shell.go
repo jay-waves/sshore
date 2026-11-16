@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 func parseOptions(args []string) (options, error) {
@@ -22,9 +21,6 @@ func parseOptions(args []string) (options, error) {
 	}
 	parsed, err := parseCLI(args[1:], o.command)
 	if err != nil {
-		if strings.Contains(err.Error(), "unsupported option: --name") {
-			return o, usage("use %s --local NAME to name a local shell, or %s HOST NAME", o.command, o.command)
-		}
 		return o, err
 	}
 	return shellOptions(o.command, parsed)

@@ -13,7 +13,8 @@ import (
 type localShellView struct {
 	Lifetime  string `json:"lifetime"`
 	Temporary bool   `json:"temporary,omitempty"`
-	ID        uint64 `json:"id"`
+	ID        uint64 `json:"-"`
+	ShortID   string `json:"short_id,omitempty"`
 	identity  string
 	Name      string `json:"name"`
 	State     string `json:"state"`
@@ -89,7 +90,8 @@ func localShells() ([]localShellView, error) {
 		return nil, err
 	}
 	for i := range rows {
-		rows[i].ID = ids[rows[i].identity]
+		id := ids[rows[i].identity]
+		rows[i].ID, rows[i].ShortID = id.order, id.code
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 	return rows, nil

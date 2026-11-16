@@ -33,11 +33,11 @@ func TestTaskIDsPersistWithoutReorderingOrReuse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first["shell:one"] != 1 || first["mount:two"] != 2 || second["mount:two"] != 2 || second["forward:three"] != 3 {
+	if first["shell:one"].order != 1 || first["mount:two"].order != 2 || second["mount:two"].order != 2 || second["forward:three"].order != 3 {
 		t.Fatalf("%v %v", first, second)
 	}
 	third, err := assignTaskIDs([]string{"shell:one"})
-	if err != nil || third["shell:one"] != 1 {
+	if err != nil || third["shell:one"].order != 1 {
 		t.Fatalf("%v %v", third, err)
 	}
 }
@@ -207,5 +207,47 @@ func TestShellCheckedAge(t *testing.T) {
 		if got := shellCheckedAge(tc.at, now); got != tc.want {
 			t.Fatalf("%s != %s", got, tc.want)
 		}
+	}
+}
+
+func TestTaskListDisplaysShortIDs(t *testing.T) {
+	var out bytes.Buffer
+	writeTaskInventory(&out, inventory{
+		LocalShells: []localShellView{{ID: 20179, ShortID: "d012ab", Name: "first", State: "detached"}},
+		Shells:      []shellView{{TaskID: 183739, ShortID: "a0123b", Host: "remote", Name: "second", State: "attached"}},
+	}, false)
+	lines := strings.Split(out.String(), "\n")
+	for _, row := range []struct{ code, name string }{{"d012ab", "launch/first"}, {"a0123b", "launch/second"}} {
+		found := false
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) > 1 && fields[0] == row.code && fields[1] == row.name {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing %+v in %s", row, &out)
+		}
+	}
+}
+
+func TestTaskShortIDCollision(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	const first, second, collision = "fixture:1170", "fixture:4725", "3c7a51"
+	if taskShortCode(first, 0) != collision || taskShortCode(second, 0) != collision {
+		t.Fatal("collision fixture no longer collides")
+	}
+	a, err := assignTaskIDs([]string{first})
+	if err != nil || a[first].code != collision {
+		t.Fatal(a, err)
+	}
+	// The first task is absent from this list, but its code remains reserved.
+	b, err := assignTaskIDs([]string{second})
+	if err != nil || b[second].code != taskShortCode(second, 1) || b[second].code == collision {
+		t.Fatal(b, err)
+	}
+	both, err := assignTaskIDs([]string{second, first})
+	if err != nil || both[first] != a[first] || both[second] != b[second] {
+		t.Fatalf("codes changed when list order changed: %v %v", both, err)
 	}
 }

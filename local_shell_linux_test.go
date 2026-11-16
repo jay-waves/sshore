@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +21,6 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 	e := newEnv(t)
 	state := filepath.Join(e.dir, "local-state")
 	env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SHELL=/bin/sh", "TERM=xterm-256color")
-	var id uint64
 	for _, args := range [][]string{{"launch", "--local", "localtest"}, {"attach", "--local", "localtest"}} {
 		if args[0] == "attach" {
 			list := exec.Command(e.bin, "list", "--local", "--json")
@@ -35,8 +33,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 			if err = json.Unmarshal(data, &rows); err != nil || len(rows) != 1 {
 				t.Fatalf("list: %s %v", data, err)
 			}
-			id = rows[0].ID
-			rename := exec.Command(e.bin, "rename", strconv.FormatUint(id, 10), "renamed")
+			rename := exec.Command(e.bin, "rename", "--local", rows[0].Name, "renamed")
 			rename.Env = env
 			if out, err := rename.CombinedOutput(); err != nil {
 				t.Fatalf("rename: %s %v", out, err)
@@ -47,10 +44,10 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = json.Unmarshal(data, &rows); err != nil || len(rows) != 1 || rows[0].ID != id || rows[0].Name != "renamed" {
+			if err = json.Unmarshal(data, &rows); err != nil || len(rows) != 1 || rows[0].Name != "renamed" {
 				t.Fatalf("renamed list: %s %v", data, err)
 			}
-			args = []string{"attach", strconv.FormatUint(id, 10)}
+			args = []string{"attach", "--local", "renamed"}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		cmd := exec.CommandContext(ctx, e.bin, args...)

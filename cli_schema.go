@@ -28,7 +28,6 @@ const (
 	cliText
 	cliPath
 	cliDirectory
-	cliName
 	cliDuration
 	cliRetries
 )
@@ -50,7 +49,6 @@ var cliOptions = map[string]cliOption{
 	"--no-escape":    {}, "--detach": {}, "--no-login": {}, "--no-profile": {},
 	"--json": {conflicts: []string{"--verbose"}}, "--verbose": {},
 	"--all": {}, "--stay": {},
-	"--name":       {kind: cliName},
 	"--foreground": {},
 	"--no-watch":   {conflicts: []string{"--server"}},
 	"--read-only":  {}, "--stats": {}, "--direct-io": {},
@@ -87,9 +85,9 @@ func commandSpec(command string) (cliSpec, bool) {
 	case "cp":
 		spec = cliSpec{nil, true, false, 2, -1}
 	case "mount":
-		spec = cliSpec{strings.Fields("--name --server --foreground --no-watch --read-only --io-timeout --startup-timeout --stats --direct-io"), true, false, 1, 3}
+		spec = cliSpec{strings.Fields("--server --foreground --no-watch --read-only --io-timeout --startup-timeout --stats --direct-io"), true, false, 1, 2}
 	case "forward":
-		spec = cliSpec{strings.Fields("--name --retries --foreground"), true, false, 2, 2}
+		spec = cliSpec{strings.Fields("--retries --foreground"), true, false, 2, 2}
 	case "review":
 		spec = cliSpec{[]string{"--stay"}, false, false, 0, 1}
 	case "completion":
@@ -149,8 +147,6 @@ func (a cliArguments) integer(name string) int {
 
 func validateCLIValue(name, value string, option cliOption) error {
 	switch option.kind {
-	case cliName:
-		return validSession(value)
 	case cliDuration:
 		d, err := time.ParseDuration(value)
 		if err != nil || d < 0 {

@@ -143,8 +143,8 @@ files. For pipes and other options, see `sshore cp --help`.
 From your **local shell**, give the listener first, then the service:
 
 ```sh
-sshore forward origin:8080 work:3000 --name web
-sshore cancel forward/web
+sshore forward origin:8080 work:3000
+# To stop it, run the cancel command printed at startup.
 ```
 
 From a **remote sshore shell**, run `sshore forward origin: 3000` to request a
@@ -159,8 +159,8 @@ local forwards, but cannot restore existing TCP connections. See
 ## Mount — open remote files locally
 
 ```sh
-sshore mount work --name work       # Mount remote home; prints the local path.
-sshore cancel mount/work            # Close local files before unmounting.
+sshore mount work:  # Mount remote home; prints the local path.
+# Close local files, then run the cancel command printed at startup.
 ```
 
 Mounts use SFTP and require FUSE on Linux or [WinFsp](https://winfsp.dev/) on

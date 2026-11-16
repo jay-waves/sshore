@@ -103,7 +103,7 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 		}
 	}
 	waitFor(">")
-	send(fmt.Sprintf("\"%s\" launch --name %s & echo SSHORE_OUTER_AFTER_DETACH\r\n", bin, name))
+	send(fmt.Sprintf("\"%s\" launch --local %s & echo SSHORE_OUTER_AFTER_DETACH\r\n", bin, name))
 	waitFor("Connected local / " + name)
 	send("prompt SSHORE_INNER_PROMPT$G\r\n")
 	waitFor("SSHORE_INNER_PROMPT>")
@@ -128,7 +128,7 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _, _ = localRequest("nativesecond", message{Type: "cancel"}) }()
-	send(fmt.Sprintf("\"%s\" launch --name nativesecond & echo SSHORE_SECOND_DETACHED\r\n", bin))
+	send(fmt.Sprintf("\"%s\" launch --local nativesecond & echo SSHORE_SECOND_DETACHED\r\n", bin))
 	waitFor("Connected local / nativesecond")
 	send("\x02d")
 	waitFor("SSHORE_SECOND_DETACHED")

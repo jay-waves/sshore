@@ -49,30 +49,6 @@ func remoteCopyRequest(args []string) (string, []string, string, error) {
 	return kind, paths, hint, nil
 }
 
-func remoteForwardRequest(args []string) (operation, error) {
-	op := operation{Kind: "forward"}
-	if len(args) != 2 || originEndpoint(args[0]) == originEndpoint(args[1]) {
-		return op, usage("use forward origin:[PORT] PORT or forward PORT origin:[PORT]")
-	}
-	remote, local := args[1], args[0]
-	if originEndpoint(args[1]) {
-		remote, local, op.Reverse = args[0], args[1], true
-	}
-	op.LocalHint = originHint(local)
-	if op.LocalHint != "" {
-		if _, err := parsePort(op.LocalHint); err != nil {
-			return op, err
-		}
-	}
-	port, err := parsePort(remote)
-	if op.Reverse {
-		op.Port = port
-	} else {
-		op.TargetPort = port
-	}
-	return op, err
-}
-
 // Endpoint syntax requires brackets around IPv6; OpenSSH receives the bare address.
 func endpointHost(host string) (string, error) {
 	if err := validSSHDestination(host); err != nil {
@@ -134,76 +110,6 @@ func sshExecutable() string {
 	return "ssh"
 }
 
-func parsePort(s string) (int, error) {
-	n, err := parseForwardPort(s)
-	if err != nil {
-		return 0, usage("%s", err)
-	}
-	return n, nil
-}
-
-// A qualified endpoint identifies the peer; the first endpoint always listens.
-func parseForwardEndpoints(args []string) (string, int, int, bool, error) {
-	fail := func() (string, int, int, bool, error) {
-		return "", 0, 0, false, usage("invalid port mapping; use forward origin:PORT HOST:PORT or forward HOST:PORT origin:PORT")
-	}
-	if len(args) != 2 {
-		return fail()
-	}
-	endpoint := func(s string) (string, int, error) {
-		if originPlaceholder(s) {
-			return "", 0, nil
-		}
-		if strings.HasPrefix(s, "origin:") {
-			n, e := parsePort(originHint(s))
-			return "", n, e
-		}
-		if !strings.Contains(s, ":") {
-			n, e := parsePort(s)
-			return "", n, e
-		}
-		i := strings.LastIndex(s, ":")
-		host, err := endpointHost(s[:i])
-		if err != nil {
-			return "", 0, err
-		}
-		n, e := parsePort(s[i+1:])
-		return host, n, e
-	}
-	left, port, err := endpoint(args[0])
-	if err != nil {
-		return "", 0, 0, false, err
-	}
-	right, target, err := endpoint(args[1])
-	if err != nil {
-		return "", 0, 0, false, err
-	}
-	if (left == "") == (right == "") {
-		return fail()
-	}
-	host := right
-	if left != "" {
-		host = left
-	}
-	return host, port, target, left != "", nil
-}
-
-func parseForwardCommand(args []string) (forwardConfig, bool, error) {
-	var f forwardConfig
-	parsed, err := parseCLI(args, "forward")
-	if err != nil {
-		return f, false, err
-	}
-	f.SSH, f.Name = parsed.ssh, parsed.values["--name"]
-	f.Retries = parsed.integer("--retries")
-	foreground := parsed.has("--foreground")
-	if foreground && f.Retries != 0 {
-		return f, false, usage("--retries applies only to background forwards")
-	}
-	f.Host, f.Port, f.Target, f.Reverse, err = parseForwardEndpoints(parsed.operands)
-	return f, foreground, err
-}
-
 type copyEndpoint struct {
 	host, path   string
 	pick, stream bool
@@ -231,6 +137,21 @@ func parseCopyEndpoint(value string) (copyEndpoint, error) {
 	if runtime.GOOS == "windows" && len(value) >= 2 && value[1] == ':' && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) {
 		return copyEndpoint{path: value}, nil
 	}
+	host, path, err := splitRemotePath(value)
+	if err != nil {
+		return copyEndpoint{}, err
+	}
+	if host != "" {
+		return copyEndpoint{host: host, path: path}, nil
+	}
+	if value == "" {
+		return copyEndpoint{}, usage("empty copy path")
+	}
+	return copyEndpoint{path: value}, nil
+}
+
+// splitRemotePath recognizes HOST:PATH without interpreting local endpoint roles.
+func splitRemotePath(value string) (host, path string, err error) {
 	bracket := false
 	for i, c := range value {
 		if c == '[' {
@@ -245,19 +166,28 @@ func parseCopyEndpoint(value string) (copyEndpoint, error) {
 		if c == ':' && !bracket {
 			host, err := endpointHost(value[:i])
 			if err != nil {
-				return copyEndpoint{}, err
+				return "", "", err
 			}
 			remote := value[i+1:]
 			if remote == "" {
 				remote = "."
 			}
-			return copyEndpoint{host: host, path: remote}, nil
+			return host, remote, nil
 		}
 	}
-	if value == "" {
-		return copyEndpoint{}, usage("empty copy path")
+	return "", "", nil
+}
+
+// remotePathOperand encodes a normalized SSH destination for a generated command.
+func remotePathOperand(host, path string) string {
+	prefix, addr := "", host
+	if i := strings.LastIndexByte(host, '@'); i >= 0 {
+		prefix, addr = host[:i+1], host[i+1:]
 	}
-	return copyEndpoint{path: value}, nil
+	if strings.Contains(addr, ":") && !strings.HasPrefix(addr, "[") {
+		addr = "[" + addr + "]"
+	}
+	return prefix + addr + ":" + path
 }
 
 func parseCopyCommand(args []string) (copyOptions, error) {
@@ -325,18 +255,30 @@ func parseFTPOptions(args []string) (ftpOptions, error) {
 	}
 	for _, value := range parsed.operands {
 		if originEndpoint(value) {
-			return ftpOptions{}, usage("origin: mount requests require an attached sshore shell; run mount HOST DIRECTORY locally")
+			return ftpOptions{}, usage("origin: mount requests require an attached sshore shell; run mount HOST:SOURCE locally")
 		}
 	}
+	source := parsed.operands[0]
+	address := source
+	if user, rest, ok := strings.Cut(source, "@"); ok && !strings.ContainsAny(user, ":/\\") {
+		address = rest
+	}
+	if strings.Contains(address, ":") && net.ParseIP(address) != nil {
+		return ftpOptions{}, usage("IPv6 mount sources require brackets: [HOST]:SOURCE")
+	}
+	host, remote, err := splitRemotePath(source)
+	if err != nil {
+		return ftpOptions{}, err
+	}
+	if host == "" {
+		return ftpOptions{}, usage("use mount HOST:SOURCE [MOUNTPOINT]; use HOST: for the remote home")
+	}
 	o := ftpOptions{
-		host: parsed.operand(0, ""), remote: parsed.operand(1, "."), mountpoint: parsed.operand(2, ""),
-		ssh: parsed.ssh, name: parsed.values["--name"], server: parsed.value("--server", "sshore"),
+		host: host, remote: remote, mountpoint: parsed.operand(1, ""),
+		ssh: parsed.ssh, server: parsed.value("--server", "sshore"),
 		foreground: parsed.has("--foreground"), noWatch: parsed.has("--no-watch"),
 		readOnly: parsed.has("--read-only"), stats: parsed.has("--stats"), directIO: parsed.has("--direct-io"),
 		ioTimeout: parsed.duration("--io-timeout", 60*time.Second), startupTimeout: parsed.duration("--startup-timeout", 0),
-	}
-	if err := validSSHDestination(o.host); err != nil {
-		return o, err
 	}
 	if strings.ContainsRune(o.remote, 0) || strings.ContainsRune(o.mountpoint, 0) {
 		return o, usage("invalid mount path")

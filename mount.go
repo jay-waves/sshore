@@ -35,9 +35,9 @@ func runMount(args []string) (int, error) {
 		return 1, err
 	}
 	if !o.foreground {
-		return startFTPBackground(args, o)
+		return startResourceBackground(resourceConfig{Args: args}, "mount")
 	}
-	reservation, err := reserveResourceName("mount", o.name)
+	reservation, err := reserveResourceName("mount", "")
 	if err != nil {
 		return 1, err
 	}
@@ -62,7 +62,7 @@ func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
 	}
 	var lifecycle *files.MountLifecycle
 	if s != nil {
-		lifecycle = &files.MountLifecycle{Abandoned: s.abandoned, Environment: s.sshEnvironment(), OperationCompleted: s.operationCompleted, Ready: s.ready, Stop: s.stop, Sync: func(ctx context.Context, c *sftp.Client) func() { return startMountTaskSync(ctx, c, s.peerTask()) }}
+		lifecycle = &files.MountLifecycle{Abandoned: s.abandoned, Environment: s.sshEnvironment(), OperationCompleted: s.operationCompleted, Ready: s.ready, Stop: s.stop, Sync: func(ctx context.Context, c *sftp.Client) func() { return startMountTaskSync(ctx, c, s.peerTask) }}
 	}
 	return files.RunMount(c, lifecycle)
 }

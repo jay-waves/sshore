@@ -1,16 +1,119 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/internal/transport"
 )
+
+func parsePort(s string) (int, error) {
+	n, err := parseForwardPort(s)
+	if err != nil {
+		return 0, usage("%s", err)
+	}
+	return n, nil
+}
+
+// A qualified endpoint identifies the peer; the first endpoint always listens.
+func parseForwardEndpoints(args []string) (string, int, int, bool, error) {
+	fail := func() (string, int, int, bool, error) {
+		return "", 0, 0, false, usage("invalid port mapping; use forward origin:PORT HOST:PORT or forward HOST:PORT origin:PORT")
+	}
+	if len(args) != 2 {
+		return fail()
+	}
+	endpoint := func(s string) (string, int, error) {
+		if originPlaceholder(s) {
+			return "", 0, nil
+		}
+		if strings.HasPrefix(s, "origin:") {
+			n, e := parsePort(originHint(s))
+			return "", n, e
+		}
+		if !strings.Contains(s, ":") {
+			n, e := parsePort(s)
+			return "", n, e
+		}
+		i := strings.LastIndex(s, ":")
+		host, err := endpointHost(s[:i])
+		if err != nil {
+			return "", 0, err
+		}
+		n, e := parsePort(s[i+1:])
+		return host, n, e
+	}
+	left, port, err := endpoint(args[0])
+	if err != nil {
+		return "", 0, 0, false, err
+	}
+	right, target, err := endpoint(args[1])
+	if err != nil {
+		return "", 0, 0, false, err
+	}
+	if (left == "") == (right == "") {
+		return fail()
+	}
+	host := right
+	if left != "" {
+		host = left
+	}
+	return host, port, target, left != "", nil
+}
+
+func parseForwardCommand(args []string) (forwardConfig, bool, error) {
+	var f forwardConfig
+	parsed, err := parseCLI(args, "forward")
+	if err != nil {
+		return f, false, err
+	}
+	f.SSH = parsed.ssh
+	f.Retries = parsed.integer("--retries")
+	foreground := parsed.has("--foreground")
+	if foreground && f.Retries != 0 {
+		return f, false, usage("--retries applies only to background forwards")
+	}
+	f.Host, f.Port, f.Target, f.Reverse, err = parseForwardEndpoints(parsed.operands)
+	return f, foreground, err
+}
+
+func remoteForwardRequest(args []string) (operation, error) {
+	op := operation{Kind: "forward"}
+	if len(args) != 2 || originEndpoint(args[0]) == originEndpoint(args[1]) {
+		return op, usage("use forward origin:[PORT] PORT or forward PORT origin:[PORT]")
+	}
+	remote, local := args[1], args[0]
+	if originEndpoint(args[1]) {
+		remote, local, op.Reverse = args[0], args[1], true
+	}
+	op.LocalHint = originHint(local)
+	if op.LocalHint != "" {
+		if _, err := parsePort(op.LocalHint); err != nil {
+			return op, err
+		}
+	}
+	port, err := parsePort(remote)
+	if op.Reverse {
+		op.Port = port
+	} else {
+		op.TargetPort = port
+	}
+	return op, err
+}
 
 // Independent SSH workers own forwarding; no listener belongs to a shell attachment.
 
@@ -102,4 +205,387 @@ func resolveLocalPort(op *operation, port int) {
 		op.Port = port
 	}
 	op.LocalHint = ""
+}
+
+// Independent forwards use an owned SSH connection and a transient remote Unix
+// helper, never a shell session daemon. OpenSSH's forwarding failure gate runs
+// before the helper command, whose fixed marker acknowledges startup. Killing a
+// forward closes only this transport. Approved forwards require the existing
+// remote executable to validate the source session; no installation is attempted.
+
+// Keep persisted task identity together with its forwarding configuration.
+type forwardConfig struct {
+	Retries             int
+	Session, ApprovalID string
+	ResumePID           int
+	Host, Name, Server  string
+	Port, Target        int
+	Reverse             bool
+	SSH                 []string
+}
+
+func validateForwardConfig(f forwardConfig) error {
+	transportErr := f.Validate()
+	if errors.Is(transportErr, errForwardRetries) {
+		return usage("--retries must be between 0 and 10")
+	}
+	if e := validSession(f.Name); f.Name != "" && e != nil {
+		return e
+	}
+	if e := validSSHDestination(f.Host); e != nil {
+		return e
+	}
+	if f.ApprovalID != "" || f.Session != "" || f.ResumePID != 0 {
+		if !validApprovalID(f.ApprovalID) || validSession(f.Session) != nil || f.ResumePID <= 0 || f.Retries != 0 {
+			return fmt.Errorf("invalid approved forward identity")
+		}
+	}
+	return transportErr
+}
+func startForwardSession(f forwardConfig) (int, error) {
+	if e := validateForwardConfig(f); e != nil {
+		return 2, e
+	}
+	return startResourceBackground(resourceConfig{Forward: &f}, "forward")
+}
+
+// Reconnect only an already-established, explicitly opted-in local forward.
+// Each retry owns a new transport; application TCP connections are not resumed.
+func runForward(f forwardConfig, s *resourceService) (int, error) {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	var stopped resourceStopRequest
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		select {
+		case stopped = <-s.stop:
+			cancel()
+		case <-s.abandoned:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	defer func() {
+		cancel()
+		<-watcherDone
+		if stopped != nil {
+			stopped <- nil
+		}
+	}()
+	return runForwardTransport(ctx, forwardTransport{
+		Retries:     f.Retries,
+		Description: describeForward(f.Port, f.Target, f.Reverse),
+		Log:         s.logWriter(), HeartbeatInterval: remoteTaskRefresh,
+		Command: func(ctx context.Context, initial bool) *exec.Cmd { return forwardCommand(ctx, f, s, initial) },
+		Ready: func() error {
+			s.record.Detail = describeForward(f.Port, f.Target, f.Reverse)
+			return s.ready("", "")
+		},
+		Status: s.setTransport,
+		Heartbeat: func() ([]byte, error) {
+			data, err := json.Marshal(s.peerTask())
+			return append(data, '\n'), err
+		},
+	})
+}
+
+func forwardCommand(ctx context.Context, f forwardConfig, s *resourceService, initial bool) *exec.Cmd {
+	var environment []string
+	if initial {
+		environment = s.sshEnvironment()
+	} else {
+		environment = s.baseEnvironment()
+	}
+	exe := localEnvironmentValue(environment, "SSHORE_SSH")
+	if exe == "" {
+		exe = "ssh"
+	}
+	cmd := forwardSSHCommand(ctx, exe, f, forwardRemoteCommand(f), !initial)
+	if s.committed != nil {
+		detachResourceWorker(cmd)
+	}
+	cmd.Env = environment
+	cmd.Dir = s.directory
+	return cmd
+}
+
+func forwardWatchCommand(server string) string {
+	if server == "" {
+		server = "sshore"
+	}
+	command := "unset SSHORE_SOCKET SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN; printf '" + forwardReadyMarker + "\\n'; server=" + shellQuote(server) + `; if command -v "$server" >/dev/null 2>&1; then server=$(command -v "$server"); `
+	if server == "sshore" {
+		command += `else server="$HOME/.local/bin/sshore"; `
+	} else {
+		command += `else :; `
+	}
+	command += `fi; if [ "$("$server" --version 2>/dev/null)" = ` + shellQuote("sshore "+version) + ` ]; then "$server" task-watch ` + shellQuote(version) + ` || exec cat >/dev/null; else exec cat >/dev/null; fi`
+	return command
+}
+
+func approvedForwardCommand(f forwardConfig) string {
+	server := f.Server
+	if server == "" {
+		server = "sshore"
+	}
+	command := "unset SSHORE_SOCKET SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN; server=" + shellQuote(server) + "; if command -v \"$server\" >/dev/null 2>&1; then server=$(command -v \"$server\"); "
+	if server == "sshore" {
+		command += "else server=\"$HOME/.local/bin/sshore\"; "
+	} else {
+		command += "else :; "
+	}
+	command += "fi; exec \"$server\" forward-watch " + shellQuote(version) + " " + shellQuote(f.Session) + fmt.Sprintf(" %d ", f.ResumePID) + shellQuote(f.ApprovalID)
+	return command
+}
+
+var errForwardRetries = errors.New("--retries must be between 0 and 10")
+
+var errForwardPort = errors.New("port must be an integer from 1 to 65535")
+
+func parseForwardPort(s string) (int, error) {
+	if s == "" {
+		return 0, errForwardPort
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, errForwardPort
+		}
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 || n > 65535 {
+		return 0, errForwardPort
+	}
+	return n, nil
+}
+
+// Validate checks port and retry values before task identity checks.
+func (c forwardConfig) Validate() error {
+	if !validRetries(c.Retries) {
+		return errForwardRetries
+	}
+	if c.Port < 1 || c.Port > 65535 || c.Target < 1 || c.Target > 65535 {
+		return fmt.Errorf("invalid forward ports")
+	}
+	return nil
+}
+
+// forwardSSHArgs builds an owned forwarding transport. A nonempty remote command selects
+// the readiness/heartbeat protocol; its authorization and version policy belong to the caller.
+func forwardSSHArgs(c forwardConfig, remoteCommand string) []string {
+	sessionType := "none"
+	if remoteCommand != "" {
+		sessionType = "default"
+	}
+	args := append(transport.OwnedSSHArgs(sessionType), "-o", "ExitOnForwardFailure=yes", "-o", "ClearAllForwardings=no", "-o", "RequestTTY=no")
+	flag := "-L"
+	if c.Reverse {
+		flag = "-R"
+	}
+	args = append(args, flag, fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", c.Port, c.Target))
+	args = append(args, transport.WithoutForwarding(c.SSH)...)
+	args = append(args, "--", c.Host)
+	if remoteCommand != "" {
+		args = append(args, remoteCommand)
+	}
+	return args
+}
+
+// forwardSSHCommand constructs a fresh transport. Reconnect never prompts for credentials
+// or trusts a new host key. The caller supplies environment and resource ownership.
+func forwardSSHCommand(ctx context.Context, executable string, c forwardConfig, remoteCommand string, retry bool) *exec.Cmd {
+	args := forwardSSHArgs(c, remoteCommand)
+	if retry {
+		args = append([]string{"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=15", "-o", "ConnectionAttempts=1"}, args...)
+	}
+	cmd := exec.CommandContext(ctx, executable, args...)
+	if remoteCommand != "" {
+		transport.IsolateCommand(cmd, true)
+	}
+	return cmd
+}
+
+// runForwardTransportForeground uses the caller's streams and cancellation without background
+// readiness markers, heartbeats or retries.
+func runForwardTransportForeground(ctx context.Context, executable string, c forwardConfig, in io.Reader, out, diagnostic io.Writer) (int, error) {
+	cmd := forwardSSHCommand(ctx, executable, c, "", false)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, out, diagnostic
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return 0, nil
+		}
+		return 1, err
+	}
+	return 0, nil
+}
+
+// parseForwardRetries applies the same retry policy to CLI and persisted configuration.
+func parseForwardRetries(value string) (int, error) {
+	n, err := strconv.Atoi(value)
+	if err != nil || !validRetries(n) {
+		return 0, errForwardRetries
+	}
+	return n, nil
+}
+
+func validRetries(n int) bool { return n >= 0 && n <= 10 }
+
+const forwardReadyMarker = "sshore-forward-ready"
+
+// forwardTransport joins SSH attempts, readiness, heartbeat and cancellation.
+// Command returns a fresh, context-bound command; all hooks and Log are required.
+// Heartbeat returns a complete wire record once per attempt, after readiness.
+// The caller owns its schema; the engine writes the bytes unchanged.
+type forwardTransport struct {
+	Retries           int
+	Description       string
+	Log               io.Writer
+	HeartbeatInterval time.Duration
+	Command           func(context.Context, bool) *exec.Cmd
+	Ready             func() error
+	Status            func(string, error)
+	Heartbeat         func() ([]byte, error)
+}
+
+// runForwardTransport retries established forwards only. Cancellation closes this transport,
+// while existing application TCP connections are never replayed.
+func runForwardTransport(ctx context.Context, runtime forwardTransport) (int, error) {
+	started := false
+	for attempt := 0; ; attempt++ {
+		code, err := runAttempt(ctx, runtime, attempt == 0, &started)
+		if ctx.Err() != nil {
+			return 0, nil
+		}
+		if err == nil || attempt >= runtime.Retries || !started {
+			return code, err
+		}
+		runtime.Status("reconnecting", err)
+		delay := retryDelay(attempt)
+		fmt.Fprintf(runtime.Log, "[sshore] Forward disconnected; TCP connections lost. Retry %d/%d in %s.\n", attempt+1, runtime.Retries, delay)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return 0, nil
+		case <-timer.C:
+		}
+	}
+}
+func retryDelay(attempt int) time.Duration {
+	return time.Second * time.Duration(1<<min(attempt, 5))
+}
+func runAttempt(parent context.Context, runtime forwardTransport, initial bool, started *bool) (int, error) {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	cmd := runtime.Command(ctx, initial)
+	var diagnostics diagnosticsTail
+	cmd.Stderr = io.MultiWriter(runtime.Log, &diagnostics)
+	input, e := cmd.StdinPipe()
+	if e != nil {
+		return 1, e
+	}
+	defer input.Close()
+	// Let the remote watcher receive EOF and remove its lease before forcing SSH
+	// down. Authentication or active forwarded sockets still have a bounded exit.
+	cmd.Cancel = func() error { return input.Close() }
+	cmd.WaitDelay = 2 * time.Second
+	output, e := cmd.StdoutPipe()
+	if e != nil {
+		return 1, e
+	}
+	defer output.Close()
+	if e = cmd.Start(); e != nil {
+		return 1, e
+	}
+	done := make(chan struct{})
+	var waitErr error
+	go func() { waitErr = cmd.Wait(); close(done) }()
+	var heartbeat sync.WaitGroup
+	defer func() {
+		cancel()
+		input.Close()
+		output.Close()
+		<-done
+		heartbeat.Wait()
+	}()
+	// Read only the bounded protocol marker. Unexpected login output is an error.
+	marker, e := bufio.NewReader(io.LimitReader(output, int64(len(forwardReadyMarker)+2))).ReadString('\n')
+	if e != nil {
+		cancel()
+		<-done
+		detail := diagnostics.String()
+		if detail == "" {
+			detail = fmt.Sprint(waitErr)
+		}
+		if strings.Contains(detail, "remote port forwarding failed") {
+			detail += "; remote listening port is occupied or denied by SSH policy; choose another remote port or inspect existing forwards"
+		}
+		return 1, fmt.Errorf("forward startup failed (%s): %s", runtime.Description, detail)
+	}
+	if marker != forwardReadyMarker+"\n" {
+		return 1, fmt.Errorf("unexpected forward startup response: %q", termui.CleanText(marker))
+	}
+	*started = true
+	if initial {
+		if e = runtime.Ready(); e != nil {
+			return 1, e
+		}
+	} else {
+		runtime.Status("connected", nil)
+	}
+	task, err := runtime.Heartbeat()
+	if err != nil {
+		return 1, err
+	}
+	heartbeat.Add(1)
+	go func() {
+		defer heartbeat.Done()
+		ticker := time.NewTicker(runtime.HeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			if e := transport.WriteFull(input, task); e != nil {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	select {
+	case <-done:
+		if waitErr != nil {
+			return 1, waitErr
+		}
+		return 1, fmt.Errorf("forward transport closed")
+	case <-ctx.Done():
+		return 0, nil
+	}
+}
+
+// Keep only the current attempt's diagnostic tail, never earlier log entries.
+type diagnosticsTail struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (d *diagnosticsTail) Write(p []byte) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	n := len(p)
+	if len(p) >= 4096 {
+		d.data = append(d.data[:0], p[len(p)-4096:]...)
+	} else {
+		if len(d.data)+len(p) > 4096 {
+			d.data = d.data[len(d.data)+len(p)-4096:]
+		}
+		d.data = append(d.data, p...)
+	}
+	return n, nil
+}
+func (d *diagnosticsTail) String() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return termui.CleanText(strings.TrimSpace(string(d.data)))
 }

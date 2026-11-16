@@ -17,7 +17,7 @@ func TestFTPDefaultMountParent(t *testing.T) {
 	if err := os.Mkdir(root, 0755); err != nil {
 		t.Fatal(err)
 	}
-	o, err := parseFTPOptions([]string{"alice@work"})
+	o, err := parseFTPOptions([]string{"alice@work:"})
 	if err != nil {
 		t.Fatal(err)
 	}

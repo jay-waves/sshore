@@ -121,8 +121,8 @@ func TestRetryPolicy(t *testing.T) {
 }
 
 func TestForwardTransportOptions(t *testing.T) {
-	f, fg, e := parseForwardCommand([]string{"8080", "work:3000", "--name", "web", "--", "-Jjump", "-i", "key with spaces", "-p2222", "-F", "config"})
-	if e != nil || fg || f.Name != "web" || strings.Join(f.SSH, "|") != "-J|jump|-i|key with spaces|-p|2222|-F|config" {
+	f, fg, e := parseForwardCommand([]string{"8080", "work:3000", "--", "-Jjump", "-i", "key with spaces", "-p2222", "-F", "config"})
+	if e != nil || fg || f.Name != "" || strings.Join(f.SSH, "|") != "-J|jump|-i|key with spaces|-p|2222|-F|config" {
 		t.Fatal(f, fg, e)
 	}
 	command := strings.Join(forwardSSHArgs(f, forwardRemoteCommand(f)), " ")

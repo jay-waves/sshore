@@ -238,19 +238,44 @@ func (s approvalStorage) Pending() ([]approvalRecord, error) {
 // Exclusive creation serializes claims across processes before renaming. Concurrent
 // Windows DeleteFile calls can both succeed while a file is delete-pending.
 // Only one concurrent approver can succeed; failed executions cannot be replayed.
-func (s approvalStorage) Consume(id string) error {
+func (s approvalStorage) claim(id string) (func(), error) {
 	if !validApprovalID(id) {
-		return fmt.Errorf("invalid approval ID")
+		return nil, fmt.Errorf("invalid approval ID")
 	}
-	lockPath := filepath.Join(s.directory, id+".claim")
-	lock, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	path := filepath.Join(s.directory, id+".claim")
+	lock, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return nil, err
+	}
+	return func() {
+		_ = lock.Close()
+		_ = os.Remove(path)
+	}, nil
+}
+
+func (s approvalStorage) Rename(id, name string) error {
+	if err := validSession(name); err != nil {
+		return err
+	}
+	release, err := s.claim(id)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		_ = lock.Close()
-		_ = os.Remove(lockPath)
-	}()
+	defer release()
+	r, err := s.Read(id)
+	if err != nil {
+		return err
+	}
+	r.Name = name
+	return writeStateJSON(filepath.Join(s.directory, id+".json"), r)
+}
+
+func (s approvalStorage) Consume(id string) error {
+	release, err := s.claim(id)
+	if err != nil {
+		return err
+	}
+	defer release()
 	claimed := filepath.Join(s.directory, id+".consumed")
 	if err := os.Rename(filepath.Join(s.directory, id+".json"), claimed); err != nil {
 		return err

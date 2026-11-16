@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -28,13 +29,23 @@ import (
 type resourceRecord struct {
 	Kind, Detail, Name, Host, Remote, Mountpoint, Address, Token, Version string
 	ReadOnly                                                              bool
+	slot                                                                  string
 }
+
+func (r resourceRecord) storageName() string {
+	if r.slot != "" {
+		return r.slot
+	}
+	return r.Name
+}
+
 type resourceStartup struct {
 	resourceRecord
 	Error string `json:"error,omitempty"`
 }
 
 type resourceConfig struct {
+	MountName              string
 	MountApproval          *files.MountApproval
 	Forward                *forwardConfig
 	Args                   []string
@@ -186,6 +197,7 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 		o.name = config.Forward.Name
 	} else {
 		o, e = parseFTPOptions(config.Args)
+		o.name = config.MountName
 		o.approval = config.MountApproval
 		if o.approval != nil && (o.noWatch || o.approval.PID <= 0 || validSession(o.approval.Session) != nil || !validApprovalID(o.approval.ID)) {
 			return 1, fmt.Errorf("invalid mount approval")
@@ -216,7 +228,7 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 		return 1, e
 	}
 	if e = lockResourceState(lock); e != nil {
-		return 1, fmt.Errorf("resource %s already active (use sshore list or --name): %w", o.name, e)
+		return 1, fmt.Errorf("resource %s already active (see sshore list): %w", o.name, e)
 	}
 	if kind == "mount" {
 		cleanup, e := prepareFTPPaths(&o)
@@ -243,6 +255,11 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 	if e = os.Remove(s.recordPath); e != nil && !os.IsNotExist(e) {
 		return 1, e
 	}
+	displayPath, err := resourceNamePath(kind, o.name)
+	if err != nil {
+		return 1, err
+	}
+	defer os.Remove(displayPath)
 	s.setTransport("starting", nil)
 	defer func() { s.saveResult(code, resultErr) }()
 	defer os.Remove(s.recordPath)
@@ -281,11 +298,8 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 	}
 	return runFTPMount(o, s)
 }
-func startFTPBackground(args []string, o ftpOptions) (int, error) {
-	return startResourceBackground(resourceConfig{Args: args}, "mount", o.name)
-}
-func startResourceBackground(config resourceConfig, kind, name string) (int, error) {
-	reservation, e := reserveResourceName(kind, name)
+func startResourceBackground(config resourceConfig, kind string) (int, error) {
+	reservation, e := reserveResourceName(kind, "")
 	if e != nil {
 		return 1, e
 	}
@@ -297,7 +311,7 @@ func startReservedResource(config resourceConfig, kind string, reservation *reso
 	if config.Forward != nil {
 		config.Forward.Name = name
 	} else {
-		config.Args = append([]string{"--name", name}, config.Args...)
+		config.MountName = name
 	}
 	// Keep the startup reservation until the worker owns the lifetime lock.
 	reservation.owner.Close()
@@ -419,7 +433,7 @@ func readResourceRecord(kind, name string) (resourceRecord, error) {
 	return r, e
 }
 func stopResource(kind, name string, expected ...string) error {
-	r, e := readResourceRecord(kind, name)
+	r, e := findRunningResource(kind, name)
 	if e != nil {
 		return e
 	}
@@ -442,7 +456,7 @@ func stopResource(kind, name string, expected ...string) error {
 	if e != nil {
 		return e
 	}
-	lock, e := os.OpenFile(filepath.Join(dir, name+".lock"), os.O_RDWR, 0600)
+	lock, e := os.OpenFile(filepath.Join(dir, r.storageName()+".lock"), os.O_RDWR, 0600)
 	if e != nil {
 		return e
 	}
@@ -474,5 +488,7 @@ func (s *resourceService) peerTask() peerRecord {
 	if s.record.Kind == "mount" {
 		detail = "remote directory: " + s.record.Remote
 	}
-	return peerRecord{Version: version, Key: resourceToken()[:32], ID: s.record.Kind + "/" + s.record.Name, Manager: taskManagerLabel(), State: "active", Detail: cleanText(detail)}
+	// Derive a stable mirror key without exposing the local control token.
+	key := sha256.Sum256([]byte("peer:" + s.record.Token))
+	return peerRecord{Version: version, Key: hex.EncodeToString(key[:16]), ID: s.record.Kind + "/" + displayedResource(s.record).Name, Manager: taskManagerLabel(), State: "active", Detail: cleanText(detail)}
 }

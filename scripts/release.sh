@@ -644,6 +644,28 @@ listed shells and tasks only after you review them and type update.
 NOTES
 fi
 
+if [[ "$version" == "0.6.16" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- List tasks by name alongside stable six-character hexadecimal display IDs.
+  Collisions are rehashed and allocated IDs are retained across restarts.
+- Let rename change mounts, forwards and pending reviews by TYPE/OLD NEW,
+  without restarting running resources. Remote shells use HOST OLD NEW.
+- Use HOST:SOURCE [MOUNTPOINT] for direct mounts, or HOST: for remote home.
+  Remote shell requests still use DIRECTORY origin:[MOUNTPOINT].
+- Mounts and forwards are named automatically; remove --name and the old
+  positional mount syntax. Use the startup output or list to find the name.
+- Use names in attach, cancel, rename and review. Numeric selectors are removed;
+  update scripts that used them. The JSON list exposes short_id for display.
+- Consolidate forward, daemon and protocol implementation files, and organize
+  platform tests by behavior.
+
+Client and remote releases must match exactly. Updating older remote shells ends
+listed shells and tasks only after you review them and type update.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."

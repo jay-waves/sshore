@@ -119,7 +119,7 @@ func reserveResourceNameExcept(kind, requested, reviewID string) (*resourceNameR
 			return nil, fmt.Errorf("%s/%s: %w", kind, name, errObjectNameInUse)
 		}
 	}
-	return nil, fmt.Errorf("all automatic %s names are in use; choose a name with --name", kind)
+	return nil, fmt.Errorf("all automatic %s names are in use; cancel an existing task and retry", kind)
 }
 
 func lockObjectName(name string) (*os.File, error) {
@@ -175,6 +175,13 @@ func occupiedObjectNames(exceptReview string) (map[string]bool, error) {
 				return nil, err
 			}
 		}
+	}
+	running, err := collectRunningResources("")
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range running {
+		names[r.Name] = true
 	}
 	dir, err := approvalDir()
 	if err != nil {

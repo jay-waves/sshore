@@ -156,10 +156,23 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	// Duplicate identity cannot silently replace an independent resource.
-	if out, err = run("forward", "origin:31234", "fixture:31235", "--name", name); err == nil {
-		t.Fatal("duplicate accepted", out)
+	// Direct forwards no longer accept an explicit resource name.
+	if out, err = run("forward", "origin:31234", "fixture:31235", "--name", name); err == nil || !strings.Contains(out, "unsupported option: --name") {
+		t.Fatal("expected unsupported name option", out, err)
 	}
+	renamed := "renamed-forward"
+	if out, err = run("rename", "forward/"+name, renamed); err != nil {
+		t.Fatal(out, err)
+	}
+	out, err = run("list", "--json")
+	if err != nil || json.Unmarshal([]byte(out), &snapshot) != nil || len(snapshot.Resources) != 1 ||
+		snapshot.Resources[0].ID != "forward/"+renamed || snapshot.Resources[0].Worker != "running" {
+		t.Fatal(out, err)
+	}
+	if out, err = run("cancel", "forward/"+name); err == nil {
+		t.Fatal("old name still selects the forward", out)
+	}
+	name = renamed
 	if out, err = run("cancel", "forward/"+name); err != nil {
 		t.Fatal(out, err)
 	}
@@ -172,7 +185,21 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		t.Fatal(e2)
 	}
 	publishPending(rejected)
-	if out, err = run("cancel", "review/"+rejected); err != nil {
+	dir, e2 := approvalDir()
+	if e2 != nil {
+		t.Fatal(e2)
+	}
+	request, e2 := readApproval(dir, rejected)
+	if e2 != nil {
+		t.Fatal(e2)
+	}
+	if out, err = run("rename", "review/"+request.DisplayName(), "renamed-request"); err != nil {
+		t.Fatal(out, err)
+	}
+	if request, e2 := findApproval(dir, "renamed-request"); e2 != nil || request.ID != rejected {
+		t.Fatal("rename changed the approval identity", request, e2)
+	}
+	if out, err = run("cancel", "review/renamed-request"); err != nil {
 		t.Fatal(out, err)
 	}
 	if _, e2 = os.Stat(filepath.Join(remoteHome, filepath.FromSlash(remoteTaskRelativeDir), rejected+".json")); !os.IsNotExist(e2) {
@@ -215,5 +242,107 @@ func TestCancelAllRemoteScope(t *testing.T) {
 	var rows []localShellView
 	if err != nil || json.Unmarshal([]byte(out), &rows) != nil || len(rows) != 1 || rows[0].Name != "keep" {
 		t.Fatal(out, err)
+	}
+}
+
+func TestListScopes(t *testing.T) {
+	root := t.TempDir()
+	state := filepath.Join(root, "state")
+	t.Setenv("SSHORE_STATE_DIR", state)
+	dir, err := resourceStateDir("forward")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = writeStateJSON(filepath.Join(dir, "local-only.json"), resourceRecord{Kind: "forward", Name: "local-only", Host: "work", Version: version}); err != nil {
+		t.Fatal(err)
+	}
+	if err = saveShellSnapshot(shellSnapshot{Host: "work", Name: "cached", State: "detached", ConfirmedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "ssh-called")
+	wrapper := filepath.Join(root, "ssh")
+	if err = os.WriteFile(wrapper, []byte("#!/bin/sh\ntouch "+shellQuote(marker)+"\nprintf '%s\\n' "+shellQuote(`{"version":"`+version+`","resources":[],"shells":[{"name":"remote-only","state":"detached"}],"peers":[],"errors":[]}`)+"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) (inventory, string, error) {
+		cmd := exec.Command(testBinary(t), args...)
+		cmd.Env = append(os.Environ(), "SSHORE_SSH="+wrapper, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SSHORE_RUNTIME_DIR="+filepath.Join(root, "runtime"), "HOME="+root)
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		inv := emptyInventory()
+		if err == nil {
+			err = json.Unmarshal(out, &inv)
+		}
+		return inv, stderr.String(), err
+	}
+	local, _, err := run("list", "--json")
+	if err != nil || local.RemoteQueried || len(local.Resources) != 1 || len(local.Shells) != 1 {
+		t.Fatalf("%+v %v", local, err)
+	}
+	if _, err = os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("offline list invoked SSH")
+	}
+	remote, stderr, err := run("list", "work", "--json")
+	if err != nil || !remote.RemoteQueried || len(remote.Resources) != 0 || len(remote.Shells) != 1 || remote.Shells[0].Name != "remote-only" || stderr != "" {
+		t.Fatalf("%+v %s %v", remote, stderr, err)
+	}
+	if err = os.WriteFile(wrapper, []byte("#!/bin/sh\nexit 23\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, err = run("list", "work", "--json")
+	if err == nil || !strings.Contains(stderr, "remote query failed") {
+		t.Fatalf("%s %v", stderr, err)
+	}
+}
+
+func TestInventoryOmitsExpiredExitReceipts(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(root, "runtime"))
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
+	dir, err := runtimeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, age := range map[string]time.Duration{"recent": time.Hour, "expired": 8 * 24 * time.Hour} {
+		if err := writeStateJSON(filepath.Join(dir, name+".sock.exit.json"), sessionExit{Name: name, Reason: "exited", At: time.Now().Add(-age)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inv, err := localSessionInventory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Exits) != 1 || inv.Exits[0].Name != "recent" {
+		t.Fatalf("exit receipts: %#v", inv.Exits)
+	}
+}
+
+func TestCancelUpdatesShellHistory(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	wrapper := filepath.Join(t.TempDir(), "ssh")
+	t.Setenv("SSHORE_SSH", wrapper)
+	for _, exit := range []string{"23", "0"} {
+		if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexit "+exit+"\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "detached", ConfirmedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		code, err := runClientOnce(options{host: "work", session: "job", instance: "instance", command: "cancel", server: "sshore"}, "", func() {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := readShellSnapshots()
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("%+v %v", rows, err)
+		}
+		if exit == "0" {
+			if code != 0 || rows[0].State != "exited" {
+				t.Fatalf("%d %+v", code, rows)
+			}
+		} else if code != 23 || rows[0].State != "detached" {
+			t.Fatalf("failure changed history: %d %+v", code, rows)
+		}
 	}
 }

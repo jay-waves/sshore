@@ -24,8 +24,8 @@ func completionValues(r completionResult) []string {
 func TestCompletionContexts(t *testing.T) {
 	catalog := func() completionCatalog {
 		return completionCatalog{
-			hosts: []string{"work"}, ids: map[string]uint64{"local": 1, "remote": 2, "mount": 3, "review": 4},
-			tasks: []completionTask{{"shell", "localjob", "", "local"}, {"shell", "remotejob", "work", "remote"}, {"mount", "data", "", "mount"}, {"review", "request", "", "review"}},
+			hosts: []string{"work"},
+			tasks: []completionTask{{"shell", "localjob", ""}, {"shell", "remotejob", "work"}, {"mount", "data", ""}, {"review", "request", ""}},
 		}
 	}
 	for _, tc := range []struct {
@@ -36,13 +36,14 @@ func TestCompletionContexts(t *testing.T) {
 	}{
 		{nil, "", []string{"completion", "launch", "attach"}, nil, "", ""},
 		{[]string{"completion"}, "", []string{"bash", "zsh", "fish", "powershell"}, nil, "", ""},
-		{[]string{"attach"}, "", []string{"work", "1", "2"}, []string{"3", "data", "4"}, "", ""},
+		{[]string{"attach"}, "", []string{"work"}, []string{"1", "2", "3", "data", "4"}, "", ""},
 		{[]string{"attach", "work"}, "", []string{"remotejob"}, []string{"localjob", "1"}, "", ""},
 		{[]string{"attach", "--local"}, "", []string{"localjob"}, []string{"remotejob", "work"}, "", ""},
 		{[]string{"launch", "work"}, "", nil, []string{"remotejob", "1"}, "", ""},
-		{[]string{"cancel"}, "", []string{"mount/data", "review/request", "1", "2", "3", "4"}, []string{"localjob"}, "", ""},
-		{[]string{"review"}, "", []string{"request", "4"}, []string{"1", "2", "3"}, "", ""},
-		{[]string{"rename", "2"}, "", nil, []string{"localjob", "remotejob", "work"}, "", ""},
+		{[]string{"cancel"}, "", []string{"mount/data", "review/request"}, []string{"localjob", "1", "2", "3", "4"}, "", ""},
+		{[]string{"review"}, "", []string{"request"}, []string{"1", "2", "3", "4"}, "", ""},
+		{[]string{"rename"}, "", []string{"work", "mount/data", "review/request"}, []string{"1", "2"}, "", ""},
+		{[]string{"rename", "work"}, "", []string{"remotejob"}, []string{"localjob", "2"}, "", ""},
 		{[]string{"list", "--json"}, "--", nil, []string{"--json", "--verbose"}, "", ""},
 		{[]string{"launch", "-q"}, "-", nil, []string{"-q", "--quiet"}, "", ""},
 		{[]string{"mount", "--no-watch"}, "--", nil, []string{"--server"}, "", ""},
@@ -50,12 +51,14 @@ func TestCompletionContexts(t *testing.T) {
 		{[]string{"attach"}, "--", nil, []string{"--no-login", "--detach"}, "", ""},
 		{[]string{"launch", "work", "--download-dir"}, "", nil, nil, "dirs", ""},
 		{[]string{"launch", "work"}, "--download-dir=folder", nil, nil, "dirs", "--download-dir="},
-		{[]string{"mount", "work", "remote"}, "", nil, nil, "dirs", ""},
-		{[]string{"mount", "work"}, "", nil, []string{"work"}, "", ""},
+		{[]string{"mount"}, "wo", []string{"work:"}, []string{"work"}, "", ""},
+		{[]string{"mnt", "work:/src"}, "", nil, []string{"origin:"}, "dirs", ""},
+		{[]string{"mount", "work:/src", "dst"}, "", nil, nil, "", ""},
+		{[]string{"mount", "/srv/project"}, "", []string{"origin:"}, []string{"work"}, "", ""},
 		{[]string{"cp"}, "", []string{"work:", "origin:"}, nil, "files", ""},
 		{[]string{"cp"}, "work:/", nil, []string{"work:"}, "none", ""},
 		{[]string{"forward"}, "", []string{"work:", "origin:"}, nil, "", ""},
-		{[]string{"mount", "work", "--"}, "-", []string{"-p", "-i"}, []string{"-L", "-R", "-D"}, "", ""},
+		{[]string{"mount", "work:", "--"}, "-", []string{"-p", "-i"}, []string{"-L", "-R", "-D"}, "", ""},
 		{[]string{"launch", "work", "--"}, "-", []string{"-L", "-R", "-D"}, nil, "", ""},
 		{[]string{"launch", "work", "--", "-i"}, "", nil, nil, "files", ""},
 		{[]string{"launch", "work", "--"}, "-ikey", nil, nil, "files", "-i"},
@@ -184,12 +187,12 @@ func TestCompletionOfflineState(t *testing.T) {
 	if err := runCompletionQuery([]string{"words", ":", "attach"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"7\t", "configured\t", "alias\t", "included\t", "recent\t", "work\t"} {
+	for _, want := range []string{"configured\t", "alias\t", "included\t", "recent\t", "work\t"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %q: %s", want, &out)
 		}
 	}
-	if strings.Contains(out.String(), local.Token) || strings.Contains(out.String(), "wildcard*") {
+	if strings.Contains(out.String(), "7\t") || strings.Contains(out.String(), local.Token) || strings.Contains(out.String(), "wildcard*") {
 		t.Fatal("private/invalid data leaked", out.String())
 	}
 	c := loadCompletionCatalog()

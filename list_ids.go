@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,14 +11,27 @@ import (
 	"time"
 )
 
-// Keys contain immutable task identities, not mutable display names. IDs are
-// never recycled, so a command copied from an older list cannot select a new task.
+// Keep sequence order private and reserve display codes for immutable instances.
 type taskIDIndex struct {
-	Next uint64
-	IDs  map[string]uint64
+	Next  uint64
+	IDs   map[string]uint64
+	Codes map[string]string
 }
 
-func assignTaskIDs(keys []string) (map[string]uint64, error) {
+type taskReference struct {
+	order uint64
+	code  string
+}
+
+func taskShortCode(key string, salt uint64) string {
+	if salt != 0 {
+		key = fmt.Sprintf("%s\x00%d", key, salt)
+	}
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:3])
+}
+
+func assignTaskIDs(keys []string) (map[string]taskReference, error) {
 	dir, err := stateDir("tasks")
 	if err != nil {
 		return nil, err
@@ -62,7 +76,19 @@ func assignTaskIDs(keys []string) (map[string]uint64, error) {
 		}
 		seen[id] = true
 	}
-	result := make(map[string]uint64, len(keys))
+	if index.Codes == nil {
+		index.Codes = map[string]string{}
+	}
+	reserved := make(map[string]bool, len(index.Codes))
+	for key, code := range index.Codes {
+		raw, err := hex.DecodeString(code)
+		if index.IDs[key] == 0 || err != nil || len(raw) != 3 ||
+			hex.EncodeToString(raw) != code || reserved[code] {
+			return nil, fmt.Errorf("invalid task short ID index")
+		}
+		reserved[code] = true
+	}
+	result := make(map[string]taskReference, len(keys))
 	changed := false
 	for _, key := range keys {
 		if key == "" {
@@ -78,7 +104,20 @@ func assignTaskIDs(keys []string) (map[string]uint64, error) {
 			index.IDs[key] = id
 			changed = true
 		}
-		result[key] = id
+		code := index.Codes[key]
+		if code == "" {
+			if len(reserved) >= 1<<24 {
+				return nil, fmt.Errorf("task short IDs exhausted")
+			}
+			for salt := uint64(0); ; salt++ {
+				code = taskShortCode(key, salt)
+				if !reserved[code] {
+					break
+				}
+			}
+			index.Codes[key], reserved[code], changed = code, true, true
+		}
+		result[key] = taskReference{id, code}
 	}
 	if changed {
 		if err = writeStateJSON(path, index); err != nil {
@@ -86,56 +125,6 @@ func assignTaskIDs(keys []string) (map[string]uint64, error) {
 		}
 	}
 	return result, nil
-}
-
-// A bare number denotes a task ID; named remote destinations remain available
-// with the normal HOST NAME form. Resolution never falls back to a name.
-func runTaskID(args []string) (int, bool, error) {
-	id, handled, err := parseTaskID(args)
-	if !handled {
-		return 0, false, nil
-	}
-	if err != nil {
-		return 2, true, err
-	}
-	rows, err := localShells()
-	if err != nil {
-		return 1, true, err
-	}
-	for _, row := range rows {
-		if row.ID != id {
-			continue
-		}
-		if args[0] == "review" {
-			return 2, true, usage("task %d is a shell, not a review", id)
-		}
-		o := options{local: true, host: "local", session: row.Name, command: args[0], taskIdentity: row.identity}
-		if args[0] == "rename" {
-			o.newName = args[2]
-		}
-		code, err := runLocalCommand(o)
-		return code, true, err
-	}
-	if code, found, err := runResourceTaskID(id, args); found {
-		return code, true, err
-	}
-	if code, found, err := runRemoteShellID(id, args); found {
-		return code, true, err
-	}
-	peers, err := collectPeerViews()
-	if err != nil {
-		return 1, true, err
-	}
-	inv := inventory{Peers: peers}
-	if err := numberInventoryPeers(&inv); err != nil {
-		return 1, true, err
-	}
-	for _, p := range inv.Peers {
-		if p.TaskID == id {
-			return 2, true, usage("task %d is read-only here; manage it on %s", id, cleanText(p.Manager))
-		}
-	}
-	return 1, true, fmt.Errorf("task %d is unavailable; refresh with sshore list", id)
 }
 
 func resourceIdentity(r resourceRecord) string {
@@ -157,47 +146,11 @@ func numberInventoryResources(inv *inventory) error {
 		return err
 	}
 	for i := range inv.Resources {
-		inv.Resources[i].TaskID = ids[inv.Resources[i].Identity]
+		id := ids[inv.Resources[i].Identity]
+		inv.Resources[i].TaskID, inv.Resources[i].ShortID = id.order, id.code
 	}
 	sort.SliceStable(inv.Resources, func(i, j int) bool { return inv.Resources[i].TaskID < inv.Resources[j].TaskID })
 	return nil
-}
-
-func runResourceTaskID(id uint64, args []string) (int, bool, error) {
-	records, err := collectLocalResources("")
-	if err != nil {
-		return 1, true, err
-	}
-	keys := []string{}
-	for _, r := range records {
-		if key := resourceIdentity(r); key != "" {
-			keys = append(keys, key)
-		}
-	}
-	ids, err := assignTaskIDs(keys)
-	if err != nil {
-		return 1, true, err
-	}
-	for _, r := range records {
-		key := resourceIdentity(r)
-		if ids[key] != id {
-			continue
-		}
-		if r.Kind == "review" {
-			switch args[0] {
-			case "review":
-				code, err := runReview([]string{r.Token})
-				return code, true, err
-			case "cancel":
-				code, err := runCancel([]string{"review/" + r.Token})
-				return code, true, err
-			}
-		} else if args[0] == "cancel" {
-			return 0, true, stopResource(r.Kind, r.Name, key)
-		}
-		return 2, true, usage("%s is not supported for task %d (%s)", args[0], id, r.Kind)
-	}
-	return 0, false, nil
 }
 
 func remoteShellIdentity(host, instance string) string {
@@ -228,56 +181,8 @@ func numberInventoryShells(inv *inventory) error {
 		if host == "" {
 			host = inv.Host
 		}
-		s.TaskID = ids[remoteShellIdentity(host, s.Instance)]
+		id := ids[remoteShellIdentity(host, s.Instance)]
+		s.TaskID, s.ShortID = id.order, id.code
 	}
 	return nil
-}
-
-func runRemoteShellID(id uint64, args []string) (int, bool, error) {
-	rows, err := readShellSnapshots()
-	if err != nil {
-		return 1, true, err
-	}
-	keys := []string{}
-	for _, s := range rows {
-		if key := remoteShellIdentity(s.Host, s.Instance); key != "" {
-			keys = append(keys, key)
-		}
-	}
-	ids, err := assignTaskIDs(keys)
-	if err != nil {
-		return 1, true, err
-	}
-	for _, s := range rows {
-		if s.State == "renamed" {
-			continue
-		}
-		if ids[remoteShellIdentity(s.Host, s.Instance)] != id {
-			continue
-		}
-		if endedShellState(s.State) {
-			if args[0] != "cancel" {
-				return 1, true, fmt.Errorf("task %d has ended; use sshore cancel %d to clear its history", id, id)
-			}
-			cleared, err := forgetEndedShell(s.Host, s.Name, s.Instance)
-			if err == nil && !cleared {
-				err = fmt.Errorf("shell record changed; refresh with sshore list")
-			}
-			return 0, true, err
-		}
-		if args[0] == "review" {
-			return 2, true, fmt.Errorf("task %d is a shell, not a review", id)
-		}
-		o := options{host: s.Host, session: s.Name, instance: s.Instance, command: "attach", server: "sshore"}
-		if err := resolveRecentAttach(&o); err != nil {
-			return 1, true, err
-		}
-		o.command = args[0]
-		if o.command == "rename" {
-			o.newName = args[2]
-		}
-		code, err := runClient(o)
-		return code, true, err
-	}
-	return 0, false, nil
 }

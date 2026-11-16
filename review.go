@@ -304,7 +304,7 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 	}
 	if len(r.Operations) == 1 && r.Operations[0].Kind == "mount" {
 		op := r.Operations[0]
-		args := []string{r.Host, op.Path}
+		args := []string{remotePathOperand(r.Host, op.Path)}
 		if op.LocalPath != "" {
 			args = append(args, op.LocalPath)
 		}

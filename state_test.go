@@ -190,7 +190,7 @@ func TestResourceNameReservations(t *testing.T) {
 	if len(seen) != len(names) {
 		t.Fatal(seen)
 	}
-	if _, err := reserveResourceName("forward", ""); err == nil || !strings.Contains(err.Error(), "--name") {
+	if _, err := reserveResourceName("forward", ""); err == nil || !strings.Contains(err.Error(), "cancel an existing task") {
 		t.Fatal(err)
 	}
 	if _, err := reserveResourceName("forward", names[0]); err == nil {

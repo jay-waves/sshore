@@ -58,8 +58,16 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 		if err = os.WriteFile(stub, []byte(script), 0700); err != nil {
 			t.Fatal(err)
 		}
-		run(append(env, "SSHORE_SSH="+stub), "forward", "8080", "fixture:3000", "--name", name)
-		defer run(env, "cancel", "forward/"+name)
+		out := run(append(env, "SSHORE_SSH="+stub), "forward", "8080", "fixture:3000")
+		_, started, ok := strings.Cut(out, "Started forward/")
+		if !ok {
+			t.Fatalf("missing auto-assigned forward name: %s", out)
+		}
+		assigned, _, ok := strings.Cut(started, ":")
+		if !ok || validSession(assigned) != nil {
+			t.Fatalf("invalid forward name: %s", out)
+		}
+		defer run(env, "cancel", "forward/"+assigned)
 		raw, err = os.ReadFile(observation)
 		if err != nil {
 			t.Fatal(err)

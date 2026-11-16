@@ -160,7 +160,7 @@ func TestSessionCommandSemantics(t *testing.T) {
 	if _, err := run([]string{"launch", "host"}); err == nil {
 		t.Fatal("recovery allowed shell")
 	}
-	if _, err := run([]string{"mount", "host", "/remote", "mount"}); err == nil {
+	if _, err := run([]string{"mount", "host:/remote", "mount"}); err == nil {
 		t.Fatal("recovery allowed ftp")
 	}
 }
@@ -198,7 +198,7 @@ func TestSharedCLIGrammar(t *testing.T) {
 		parse func([]string) error
 	}{
 		{"shell", []string{"launch", "work"}, func(a []string) error { _, err := parseOptions(a); return err }},
-		{"mount", []string{"work"}, func(a []string) error { _, err := parseFTPOptions(a); return err }},
+		{"mount", []string{"work:"}, func(a []string) error { _, err := parseFTPOptions(a); return err }},
 		{"forward", []string{"8080", "work:3000"}, func(a []string) error { _, _, err := parseForwardCommand(a); return err }},
 		{"cp", []string{"work:source", "target"}, func(a []string) error { _, err := parseCopyCommand(a); return err }},
 		{"review", []string{"request"}, func(a []string) error { _, err := parseReview(a); return err }},
@@ -215,26 +215,26 @@ func TestSharedCLIGrammar(t *testing.T) {
 			}
 		})
 	}
-	mount, err := parseFTPOptions([]string{"--name=work", "work", "--io-timeout=5s", "--startup-timeout=1m", "--server=/bin/sshore"})
-	if err != nil || mount.name != "work" || mount.ioTimeout.String() != "5s" || mount.startupTimeout.String() != "1m0s" || mount.server != "/bin/sshore" {
+	mount, err := parseFTPOptions([]string{"work:", "--io-timeout=5s", "--startup-timeout=1m", "--server=/bin/sshore"})
+	if err != nil || mount.name != "" || mount.ioTimeout.String() != "5s" || mount.startupTimeout.String() != "1m0s" || mount.server != "/bin/sshore" {
 		t.Fatalf("mount equals values: %+v %v", mount, err)
 	}
-	forward, _, err := parseForwardCommand([]string{"8080", "work:3000", "--name=web", "--retries=2"})
-	if err != nil || forward.Name != "web" || forward.Retries != 2 {
+	forward, _, err := parseForwardCommand([]string{"8080", "work:3000", "--retries=2"})
+	if err != nil || forward.Name != "" || forward.Retries != 2 {
 		t.Fatalf("forward equals values: %+v %v", forward, err)
 	}
 	for _, args := range [][]string{
-		{"work", "--name=a", "--name", "b"},
-		{"work", "--read-only=false"},
-		{"work", "--server", "--read-only"},
-		{"work", "--server="},
-		{"work", "--server=x", "--no-watch"},
+		{"work:", "--name=a"},
+		{"work:", "--read-only=false"},
+		{"work:", "--server", "--read-only"},
+		{"work:", "--server="},
+		{"work:", "--server=x", "--no-watch"},
 	} {
 		if _, err := parseFTPOptions(args); err == nil {
 			t.Fatalf("accepted mount %v", args)
 		}
 	}
-	for _, args := range [][]string{{"8080", "work:3000", "--retries=1", "--retries=2"}, {"8080", "work:3000", "--foreground=true"}} {
+	for _, args := range [][]string{{"8080", "work:3000", "--name=web"}, {"8080", "work:3000", "--retries=1", "--retries=2"}, {"8080", "work:3000", "--foreground=true"}} {
 		if _, _, err := parseForwardCommand(args); err == nil {
 			t.Fatalf("accepted forward %v", args)
 		}
@@ -375,6 +375,12 @@ func TestRenameOptions(t *testing.T) {
 			t.Fatal("accepted", args)
 		}
 	}
+
+	o, err := parseOptions([]string{"rename", "12", "old", "new"})
+	if err != nil || o.host != "12" || o.session != "old" || o.newName != "new" {
+		t.Fatalf("numeric host: %+v %v", o, err)
+	}
+
 }
 
 func TestCommandAliases(t *testing.T) {
@@ -491,7 +497,11 @@ func TestEndpointHostValidation(t *testing.T) {
 func TestSSHSeparatorBoundaries(t *testing.T) {
 	parsers := map[string]func([]string) error{
 		"session": func(a []string) error { _, e := parseOptions(append([]string{"launch"}, a...)); return e },
-		"mount":   func(a []string) error { _, e := parseFTPOptions(a); return e },
+		"mount": func(a []string) error {
+			args := append([]string{a[0] + ":"}, a[1:]...)
+			_, e := parseFTPOptions(args)
+			return e
+		},
 		"forward": func(a []string) error {
 			args := append([]string{"8080", a[0] + ":3000"}, a[1:]...)
 			_, _, e := parseForwardCommand(args)
@@ -541,7 +551,7 @@ func TestSharedHostValidation(t *testing.T) {
 		if _, err := parseOptions([]string{"launch", host}); err == nil {
 			t.Fatal("shell accepted", host)
 		}
-		if _, err := parseFTPOptions([]string{host}); err == nil {
+		if _, err := parseFTPOptions([]string{host + ":"}); err == nil {
 			t.Fatal("mount accepted", host)
 		}
 		if _, err := parseCopyCommand([]string{"file", host + ":/tmp"}); err == nil {
@@ -587,6 +597,15 @@ func TestCancelAllScope(t *testing.T) {
 		o, all, err := parseCancelAll(tc.args)
 		if all != tc.all || (err != nil) != tc.bad || (!tc.bad && all && o.host != tc.host) {
 			t.Errorf("%v: host=%q all=%t err=%v", tc.args, o.host, all, err)
+		}
+	}
+}
+
+func TestListNumbersAreNotSelectors(t *testing.T) {
+	for _, command := range []string{"attach", "cancel", "review"} {
+		code, err := run([]string{command, "1"})
+		if code != 2 || err == nil || !strings.Contains(err.Error(), "display-only") {
+			t.Fatalf("%s: %d %v", command, code, err)
 		}
 	}
 }

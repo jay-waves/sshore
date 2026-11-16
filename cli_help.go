@@ -76,13 +76,12 @@ Detach and attach do not change the owner. Use launch for a persistent shell.
 Options:
 ` + shellStartupOptions + connectionOptions + shellConnectionHelp,
 	"attach": `Usage: sshore attach [HOST [NAME]] [options] [-- SSH_OPTIONS]
-       sshore attach ID
        sshore attach --local [NAME]
 
 Resume a detached shell. This never creates a shell or evicts its current client.
 Omit HOST and NAME to reuse the last successful connection. HOST alone reuses
 its remembered shell or offers a selection if there is no history.
-Use an ID from list, or --local to select a local shell.
+Use the name shown in list, or --local to select a local shell.
 
 Options:
 ` + connectionOptions + shellConnectionHelp,
@@ -93,11 +92,12 @@ running; a spawn still follows its owner and connection lifetime.
 Use attach to reconnect. Ctrl+B d also detaches.
 `,
 	"rename": `Usage: sshore rename HOST OLD NEW [--server PATH] [-- SSH_OPTIONS]
-       sshore rename ID NEW
        sshore rename --local OLD NEW
+       sshore rename {mount|forward|review}/OLD NEW
 
-Rename a shell without restarting its tasks. NEW must be unused.
-Pending approvals for the old name must be requested again.
+Rename a shell, resource or pending review without restarting it.
+NEW must be unused.
+After renaming a shell, request its pending approvals again.
 Remote rename requires matching releases and never installs software.
 ` + sshOptions,
 	"list": `Usage: sshore list [HOST] [options] [-- SSH_OPTIONS]
@@ -105,8 +105,8 @@ Remote rename requires matching releases and never installs software.
 Without HOST, show local tasks and saved remote observations without SSH.
 With HOST, query that account live; the remote release must match.
 CHECKED shows when state was last confirmed, not whether it is still live.
-Peer entries are read-only. Use IDs from this list with attach, rename,
-cancel or review; a stale ID never selects a replacement task.
+Peer entries are read-only. The six-character hex ID identifies a task instance.
+Use task names for attach, rename, cancel and review.
 
 Options:
   --local          Show only local shells
@@ -126,13 +126,12 @@ not a live OS process tree. @HOST marks a host change within a branch.
 CHECKED: now is a live result; never means no recorded check.
 Give HOST to query that remote account; omit it for local and saved records.
 ` + sshOptions,
-	"cancel": `Usage: sshore cancel ID
-       sshore cancel --local NAME
+	"cancel": `Usage: sshore cancel --local NAME
        sshore cancel {review|mount|forward}/NAME
        sshore cancel HOST NAME [--server PATH] [-- SSH_OPTIONS]
        sshore cancel [HOST] --all [--server PATH] [-- SSH_OPTIONS]
 
-Cancel by ID from list, or by name:
+Use the task name from list:
   Shell     Ends the shell and its identified tasks without confirmation.
             Unsaved work may be lost. Confirmed ended history is only cleared.
   Review    Discards the pending request without executing it.
@@ -144,10 +143,10 @@ covers local shells and resources. With HOST it targets that account and
 local resources connected to HOST. Peer records are read-only.
 Remote cancellation requires matching releases and never installs software.
 ` + sshOptions,
-	"review": `Usage: sshore review [NAME | ID] [--stay]
+	"review": `Usage: sshore review [NAME] [--stay]
 
 Run locally after a remote request detaches. Omit NAME to select a request,
-or use a name or task ID from list. Selecting it opens review only.
+or use a name from list. Selecting it opens review only.
 
 Submitting all valid paths or the port starts the operation without another
 confirmation. Ctrl-C cancels before submission. A request is single-use,
@@ -177,16 +176,17 @@ A failure stops the batch and keeps completed files. Stdout may already
 contain partial data. Updating older remote software requires typing update
 and can end the listed shells and tasks.
 ` + sshOptions,
-	"mount": `Usage: sshore mount HOST [DIRECTORY [MOUNTPOINT]] [options] [-- SSH_OPTIONS]
+	"mount": `Usage: sshore mount HOST:SOURCE [MOUNTPOINT] [options] [-- SSH_OPTIONS]
        sshore mount DIRECTORY origin:[MOUNTPOINT] [--read-only]
 
-Mount a remote directory using SFTP. Defaults: remote home; ~/mnt/NAME
+Mount a remote directory using SFTP. Background mounts are named automatically. HOST: selects the remote home.
+Use [HOST]:SOURCE for an IPv6 address.
+The default mountpoint is ~/mnt/NAME
 on Linux or a free drive on Windows. Requires FUSE or WinFsp respectively.
 A custom mountpoint must be an existing empty directory on Linux, or a
 free drive letter or nonexistent directory on Windows.
 
 Options:
-  --name NAME                  Name used by list and cancel mount/NAME
   --read-only                  Reject changes through the mount
   --foreground                 Run in this terminal; Ctrl-C requests unmount
   --no-watch                   Plain SFTP without the remote sshore helper
@@ -203,13 +203,14 @@ and can interrupt writes. Request timeouts close the whole mount connection;
 affected writes are not retried.
 Updating older remote software requires typing update and can end listed tasks.
 
-Example: sshore mount work /srv/project --read-only --name project
+Example: sshore mount work:/srv/project --read-only
 ` + sshOptions,
 	"forward": `Usage: sshore forward LISTENER SERVICE [options] [-- SSH_OPTIONS]
 
 Connections enter LISTENER and go to SERVICE. Use HOST:PORT for the remote
 side and a bare port or origin:PORT for the local side. Both use loopback.
 Use origin: without a port to choose the local port interactively.
+Background forwards are named automatically.
 
   sshore forward 8080 work:3000        Local listener -> remote service
   sshore forward work:3000 8080        Remote listener -> local service
@@ -218,7 +219,6 @@ From a remote shell, use a bare server port and origin:[PORT] for the
 client side. The request detaches; run review locally to set the client port.
 
 Options:
-  --name NAME    Name used by list and cancel forward/NAME
   --foreground   Run in this terminal; Ctrl-C stops forwarding
   --retries N    Retry lost background SSH connections (0–10; default 0)
 
@@ -228,8 +228,7 @@ do not survive reconnect. Native OpenSSH -L/-R/-D are not accepted here.
 	"reset": `Usage: sshore reset
 
 Replace this account's local identity and clear connection history, shell
-snapshots and remembered identity routes. Active tasks, approvals and
-task IDs stay intact. Active connections may repopulate snapshots.
+snapshots and remembered identity routes. Active tasks and approvals stay intact. Active connections may repopulate snapshots.
 To resolve a cloned identity, run this on the clone.
 `,
 	"completion": `Usage: sshore completion SHELL

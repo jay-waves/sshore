@@ -15,7 +15,8 @@ import (
 
 type resourceView struct {
 	local      bool   // Set only for records inspected by this process; never sent over the wire.
-	TaskID     uint64 `json:"task_id,omitempty"`
+	TaskID     uint64 `json:"-"`
+	ShortID    string `json:"short_id,omitempty"`
 	Identity   string `json:"identity,omitempty"`
 	ID         string `json:"id"`
 	Host       string `json:"host"`
@@ -34,7 +35,8 @@ type shellView struct {
 	Lifetime    string    `json:"lifetime"`
 	Temporary   bool      `json:"temporary,omitempty"`
 	Instance    string    `json:"instance,omitempty"`
-	TaskID      uint64    `json:"task_id,omitempty"`
+	TaskID      uint64    `json:"-"`
+	ShortID     string    `json:"short_id,omitempty"`
 	Host        string    `json:"host,omitempty"`
 	ID          string    `json:"id"`
 	ConfirmedAt time.Time `json:"confirmed_at,omitempty"`
@@ -56,7 +58,8 @@ type exitView struct {
 }
 type peerView struct {
 	Identity string `json:"identity,omitempty"`
-	TaskID   uint64 `json:"task_id,omitempty"`
+	TaskID   uint64 `json:"-"`
+	ShortID  string `json:"short_id,omitempty"`
 	ID       string `json:"id"`
 	Manager  string `json:"manager"`
 	State    string `json:"state"`
@@ -88,7 +91,7 @@ func viewRecord(r resourceRecord) resourceView {
 		return v
 	}
 	dir, _ := resourceStateDir(r.Kind)
-	v.Log = filepath.Join(dir, r.Name+".log")
+	v.Log = filepath.Join(dir, r.storageName()+".log")
 	v.Protocol = "SSH/TCP"
 	if r.Kind == "mount" {
 		v.Protocol = "SFTP over SSH"
@@ -180,6 +183,12 @@ func collectResourceResults(host string, active []resourceView) []resourceView {
 			f.Close()
 			if e != nil || r.Record.Name != name || r.Record.Kind != kind || time.Since(r.Finished) > 7*24*time.Hour || (host != "" && r.Record.Host != host) {
 				continue
+			}
+			if validSession(r.DisplayName) == nil {
+				r.Record.slot, r.Record.Name = name, r.DisplayName
+				if seen[kind+"/"+r.DisplayName] {
+					continue
+				}
 			}
 			v := viewRecord(r.Record)
 			v.Worker = "exited"

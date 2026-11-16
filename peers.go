@@ -332,7 +332,7 @@ func publishSFTPTask(c *sftp.Client, dir string, t peerRecord) error {
 	_ = c.Remove(final)
 	return c.Rename(temp, final)
 }
-func startMountTaskSync(parent context.Context, c *sftp.Client, t peerRecord) func() {
+func startMountTaskSync(parent context.Context, c *sftp.Client, task func() peerRecord) func() {
 	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	go func() {
@@ -342,11 +342,11 @@ func startMountTaskSync(parent context.Context, c *sftp.Client, t peerRecord) fu
 			return
 		}
 		dir := path.Join(home, remoteTaskRelativeDir)
-		defer c.Remove(path.Join(dir, t.Key+".json"))
+		defer c.Remove(path.Join(dir, task().Key+".json"))
 		ticker := time.NewTicker(remoteTaskRefresh)
 		defer ticker.Stop()
 		for {
-			_ = publishSFTPTask(c, dir, t)
+			_ = publishSFTPTask(c, dir, task())
 			select {
 			case <-ctx.Done():
 				return

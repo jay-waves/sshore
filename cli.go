@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -109,32 +108,6 @@ func usage(format string, args ...any) error { return &usageError{fmt.Sprintf(fo
 
 var errHelp = errors.New("help requested")
 
-func parseTaskID(args []string) (uint64, bool, error) {
-	if len(args) < 2 {
-		return 0, false, nil
-	}
-	switch args[0] {
-	case "attach", "cancel", "review", "rename":
-	default:
-		return 0, false, nil
-	}
-	id, err := strconv.ParseUint(args[1], 10, 64)
-	if err != nil {
-		return 0, false, nil
-	}
-	if id == 0 {
-		return 0, true, usage("task IDs start at 1")
-	}
-	if args[0] == "rename" {
-		if len(args) != 3 {
-			return 0, true, usage("rename ID requires NEW")
-		}
-	} else if len(args) != 2 {
-		return 0, false, nil
-	}
-	return id, true, nil
-}
-
 // --all selects a snapshot, never a process name or a cached PID.
 func parseCancelAll(args []string) (options, bool, error) {
 	parsed, err := parseCLI(args, "cancel")
@@ -217,9 +190,13 @@ func runTargetCommand(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	if !parsed.has("--all") {
-		if code, handled, err := runTaskID(args); handled {
-			return code, err
+	if len(parsed.operands) == 1 && !parsed.has("--local") && !parsed.has("--all") {
+		ref := parsed.operands[0]
+		if ref != "" && strings.Trim(ref, "0123456789") == "" {
+			switch command {
+			case "attach", "cancel", "review":
+				return 2, usage("list IDs are display-only; select the task by name")
+			}
 		}
 	}
 	if command == "review" {
@@ -246,6 +223,14 @@ func runTargetCommand(args []string) (int, error) {
 				return 2, usage("local cancellation accepts exactly one resource ID")
 			}
 			return runCancelResource(kind, name)
+		}
+	}
+	if command == "rename" {
+		if kind, old, typed := strings.Cut(parsed.operands[0], "/"); typed {
+			if len(parsed.operands) != 2 || len(parsed.values) != 0 || len(parsed.ssh) != 0 {
+				return 2, usage("use rename TYPE/NAME NEW")
+			}
+			return runRenameResource(kind, old, parsed.operands[1])
 		}
 	}
 	o, err := shellOptions(command, parsed)

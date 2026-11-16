@@ -49,7 +49,7 @@ This document defines the project vocabulary. Commands are documented by
 | Copy | A regular-file operation expressed as `cp SOURCE... TARGET`; not full system cp or scp compatibility. |
 | Tunnel | The README feature category for TCP port forwarding through SSH. |
 | Transfer | A one-time regular-file copy. Both direct and approved copies use SFTP; approved copies run on a client-initiated shell stream after local review. |
-| Resource | An independently managed local mount or forward, with its own transport and lifetime. Its ID is `TYPE/NAME`, such as `forward/pikachu` or `mount/eevee`; the type prefix identifies the object kind. Shells, resources and pending reviews share a local name namespace and default Pokemon pool. |
+| Resource | An independently managed local mount or forward, with its own transport and lifetime. Its ID is `TYPE/NAME`, such as `forward/pikachu` or `mount/eevee`; the type prefix identifies the object kind. Shells, resources and pending reviews share a local name namespace and default Pokemon pool. Direct mounts and forwards get names automatically; approved resources inherit their review name. |
 | Job | The Windows Job Object used to contain a local shell process tree; not an application-level task type. |
 | Worker | A separate local process owning a mount and its SSH transport, started and reaped by the local daemon. Forwards run directly under the daemon; older independent forward workers remain manageable. |
 | Mount | A remote directory exposed to local applications through SFTP and FUSE/WinFsp, identified as `mount/NAME`. |
@@ -101,8 +101,9 @@ function names may retain historical terminology.
 
 ## Task ID
 
-A persistent numeric shortcut assigned by the local manager to a task instance.
-It is stable across rename, detach and reconnect, increases without reuse, and
-is distinct from a shell PID, public name, approval ID or temporary picker index.
+A private sequence number assigned by the local manager to a task instance.
+It stays stable across rename, detach and reconnect and is never reused.
+The short hex ID shown by `list` stays with that task instance. Commands select
+tasks by name.
 
 An **account identity** is a locally salted OS identifier used only to group host display records. It is not an authentication identity; cloning its state can duplicate it. `sshore reset` replaces it.

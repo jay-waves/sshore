@@ -25,13 +25,13 @@ policy or depending on mutable application state.
 | Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_*.go`, `server_linux.go`; process inspection in `setup_process_linux.go` |
 | Local daemon and shell registry | `local_daemon*.go`, `local_shell_registry.go`, `local_terminal.go`, `platform_*.go` |
 | Spawn ownership and lifetime SSH | `spawn*.go`, `platform_*.go` |
-| Shell startup and attachment I/O | `internal/tmux/terminal.go`, `internal/tmux/shell_attachment.go`, application adapters in `mux.go` |
+| Shell startup and attachment I/O | `internal/tmux/terminal.go`, `internal/tmux/shell_attachment.go`, application adapters in `protocol.go` |
 | Native terminals, console I/O and shortcuts | `internal/tmux/` |
 | Local prompts and presentation | `internal/termui/`, application adapters in `cli_ui.go` |
-| Framing, smux and shared SSH transport | `internal/transport/`, application messages in `protocol.go` |
+| Framing, smux and shared SSH transport | `internal/transport/`, application messages and mux handshake in `protocol.go` |
 | Copy and mount mechanisms | Flat `internal/files/`; command adapters in `cp_command.go`, `mount*.go` |
 | Review records and consent | `review_store.go`, application coordination in `review*.go` (including shared source-shell validation in `review_linux.go`) |
-| Forward transport and retries | `forward_runtime.go`, command handling in `forward.go` |
+| Forward transport and retries | `forward.go`: endpoint parsing, command execution and SSH worker lifecycle |
 | Resource startup and control | `resource_runtime.go`, `resources.go` |
 | Private storage and name reservations | `state.go` (including account identity and remembered entry points), `object_names.go`; native checks in `platform_*.go` |
 | Inventory, stable IDs and shell relationships | `inventory*.go`, `list*.go`, `pstree*.go`, `peers*.go` |
@@ -81,7 +81,8 @@ Keep lifetime separate from interaction:
 - Cancel and join old input readers/writers before handing the terminal to
   another attachment, local prompt or SSH authentication process.
 
-Public names are labels and numeric IDs are selectors. Actions revalidate immutable
+Commands select tasks by name. The task index reserves short display IDs against
+immutable instances and preserves internal ordering. Actions revalidate immutable
 instances, capabilities or process identities at their authority. Displayed process
 ancestry is not permission to signal. Follow the
 [shell control safeguards](SECURITY.md#shell-control-and-lifetime).
@@ -181,7 +182,9 @@ go test -count=1 -tags=sshoretest -timeout=5m ./...
 
 Group tests by behavior, such as CLI grammar, approval flows, or shell and
 resource lifecycle. A regression belongs with its feature’s existing cases;
-keep platform and build-tag variants separate where required.
+keep platform and build-tag variants separate where required. Prefer
+`feature_test.go` or `feature_linux_test.go` / `feature_windows_test.go`.
+The feature or its directory identifies the test scope without an extra suffix.
 
 Product black-box tests live in `tests/` and follow user workflows through
 the CLI, protocols or public APIs. Module regressions stay beside the code they

@@ -123,19 +123,11 @@ func TestEndedShellCleanup(t *testing.T) {
 		if err := saveShellSnapshot(snapshot); err != nil {
 			t.Fatal(err)
 		}
-		ids, err := assignTaskIDs([]string{remoteShellIdentity(snapshot.Host, snapshot.Instance)})
-		if err != nil {
-			t.Fatal(err)
-		}
 		for i := 0; i < 2; i++ {
-			code, found, err := runRemoteShellID(ids[remoteShellIdentity(snapshot.Host, snapshot.Instance)], []string{"cancel"})
-			if code != 0 || !found || err != nil {
-				t.Fatalf("cleanup: %d %t %v", code, found, err)
+			code, err := runClientOnce(options{host: "work", session: state, command: "cancel"}, "", func() {})
+			if code != 0 || err != nil {
+				t.Fatalf("named cleanup: %d %v", code, err)
 			}
-		}
-		code, err := runClientOnce(options{host: "work", session: state, command: "cancel"}, "", func() {})
-		if code != 0 || err != nil {
-			t.Fatalf("named cleanup: %d %v", code, err)
 		}
 	}
 	rows, err := readShellSnapshots()

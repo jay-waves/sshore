@@ -8,14 +8,13 @@ import (
 	"io"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
 
 type taskTableRow struct {
-	id                                                    uint64
-	task, owner, target, state, detail, lifetime, checked string
+	id                                                          uint64
+	code, task, owner, target, state, detail, lifetime, checked string
 }
 
 func printTaskInventory(inv inventory, details bool) {
@@ -35,7 +34,7 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, details, color bool) 
 		if currentLocal != "" && s.identity == currentLocal && state == "attached" {
 			state += " (current)"
 		}
-		rows = append(rows, taskTableRow{s.ID, shellTaskName(s.Name, s.Temporary), "local", "-", state, s.Directory, shellLifetime(s.Temporary, false), "now"})
+		rows = append(rows, taskTableRow{s.ID, s.ShortID, shellTaskName(s.Name, s.Temporary), "local", "-", state, s.Directory, shellLifetime(s.Temporary, false), "now"})
 	}
 	for _, s := range inv.Shells {
 		if s.State == "renamed" || (s.Historical && endedShellState(s.State) && !details) {
@@ -57,7 +56,7 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, details, color bool) 
 				state += " (unconfirmed)"
 			}
 		}
-		rows = append(rows, taskTableRow{s.TaskID, shellTaskName(s.Name, s.Temporary), host, "-", state, s.Directory, shellLifetime(s.Temporary, true), checked})
+		rows = append(rows, taskTableRow{s.TaskID, s.ShortID, shellTaskName(s.Name, s.Temporary), host, "-", state, s.Directory, shellLifetime(s.Temporary, true), checked})
 	}
 	for _, r := range inv.Resources {
 		host := r.Host
@@ -72,7 +71,7 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, details, color bool) 
 		if r.Worker == "exited" {
 			checked = "-"
 		}
-		rows = append(rows, taskTableRow{r.TaskID, r.ID, owner, host, r.Worker, r.Detail, "-", checked})
+		rows = append(rows, taskTableRow{r.TaskID, r.ShortID, r.ID, owner, host, r.Worker, r.Detail, "-", checked})
 	}
 	for _, p := range inv.Peers {
 		name := p.ID
@@ -85,7 +84,7 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, details, color bool) 
 		if target == "" {
 			target = "local"
 		}
-		rows = append(rows, taskTableRow{p.TaskID, name, p.Manager, target, p.State + " (read-only)", p.Detail, "-", "-"})
+		rows = append(rows, taskTableRow{p.TaskID, p.ShortID, name, p.Manager, target, p.State + " (read-only)", p.Detail, "-", "-"})
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].owner != rows[j].owner {
@@ -149,11 +148,11 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, details, color bool) 
 			table[0] = append(table[0], "LIFETIME", "DETAIL")
 		}
 		for _, r := range rows[start:end] {
-			id := "-"
-			if r.id != 0 {
-				id = strconv.FormatUint(r.id, 10)
+			code := r.code
+			if code == "" {
+				code = "-"
 			}
-			cells := []string{id, r.task, r.target, r.state}
+			cells := []string{code, r.task, r.target, r.state}
 			if checked == "" {
 				cells = append(cells, r.checked)
 			}
@@ -255,7 +254,8 @@ func numberInventoryPeers(inv *inventory) error {
 	}
 	for i := range inv.Peers {
 		p := &inv.Peers[i]
-		p.TaskID = ids[peerTaskIdentity(*p)]
+		id := ids[peerTaskIdentity(*p)]
+		p.TaskID, p.ShortID = id.order, id.code
 	}
 	return nil
 }
