@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -27,7 +28,10 @@ func run(args []string) (code int, resultErr error) {
 		args = append([]string(nil), args...)
 		args[0] = canonicalCommand(args[0])
 		if _, public := commandHelp[args[0]]; public {
-			for _, arg := range args[1:] {
+			for i, arg := range args[1:] {
+				if args[0] == "exec" && i > 0 {
+					break
+				}
 				if arg == "--" {
 					break
 				}
@@ -48,6 +52,10 @@ func run(args []string) (code int, resultErr error) {
 		return 0, showHelp(nil, os.Stdout)
 	}
 	switch args[0] {
+	case "exec":
+		return runExec(args[1:])
+	case "mcp":
+		return runMCP(args[1:])
 	case "reset":
 		if len(args) != 1 {
 			return 2, usage("reset takes no arguments")
@@ -298,4 +306,22 @@ func runReset() error {
 	}
 	fmt.Println("Identity reset; local history and cached snapshots cleared. Active tasks are preserved.")
 	return nil
+}
+
+// runExec delegates execution and SSH configuration to the system client.
+func runExec(args []string) (int, error) {
+	parsed, err := parseCLI(args, "exec")
+	if err != nil {
+		return 2, err
+	}
+	cmd := exec.Command(sshExecutable(), "-T", "-o", "RequestTTY=no", "--", parsed.operands[0], parsed.operands[1])
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return exit.ExitCode(), nil
+		}
+		return 1, err
+	}
+	return 0, nil
 }

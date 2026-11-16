@@ -73,7 +73,29 @@ flowchart LR
     review -->|"Approve forward / mount"| resource["Independent tunnel or mount"]
     shell -->|"exit / cancel"| ended["Shell ends"]
     background -->|"spawn: owner exits / remote heartbeat lost"| ended
+    agent["Agent via MCP"] -->|"SSH; prepare matching release"| bash["Persistent remote Bash"]
+    bash -->|"Explicit close"| ended
 ```
+
+## Agent access
+
+Configure an MCP client to launch `sshore mcp` over stdio, for example:
+
+```json
+{
+  "mcpServers": {
+    "sshore": { "command": "sshore", "args": ["mcp"] }
+  }
+}
+```
+
+Its tools create persistent remote Bash sessions and execute scripts without a PTY.
+Sessions survive MCP disconnection until closed; daemon failure or host restart ends them.
+The Agent can run commands with the remote account's permissions. Remote output
+is untrusted. See `sshore mcp --help`.
+
+For one command, use `sshore exec work 'uname -a'`; it does not create a
+persistent session.
 
 ## Status
 

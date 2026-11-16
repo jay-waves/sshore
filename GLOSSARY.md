@@ -22,6 +22,7 @@ This document defines the project vocabulary. Commands are documented by
 | --- | --- |
 | Mux | The detach/reattach capability: explicitly leave a shell running and attach again later. Each shell session has one terminal; mux does not imply split panes. `internal/tmux` implements native terminals, ownership primitives, shell startup, attachment I/O and detach confirmation; it does not use the external tmux program. The internal smux library separately multiplexes transport streams. |
 | Session | A running task managed by sshore: a shell, forward or mount. Pending reviews are requests, not started sessions. |
+| MCP Bash session | A persistent, non-PTY remote Bash process managed through MCP tools; independent of a terminal attachment. |
 | Shell | A shell process and native terminal owned by a daemon, local on Linux/Windows or remote on Linux. `launch` creates a persistent session that survives detach and connection loss. |
 | Spawn | A temporary shell created by `spawn`, displayed in trees as `spawn/ID (alias)`. It can detach and reattach but ends with its original owner. A remote spawn also ends on loss of its lifetime SSH connection. |
 | Spawn owner | The parent shell process that launched `spawn`, identified by PID and creation identity. Attach never transfers ownership. |

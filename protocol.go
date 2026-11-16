@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/mcp"
 	"github.com/jay-waves/sshore/internal/tmux"
 	"github.com/jay-waves/sshore/internal/transport"
 	"github.com/xtaci/smux"
@@ -25,6 +26,8 @@ const (
 
 // Control metadata uses JSON; terminal bytes remain binary.
 type message struct {
+	MCPRequest      *mcp.Request        `json:"mcp_request,omitempty"`
+	MCPResponse     *mcp.Response       `json:"mcp_response,omitempty"`
 	SourceHost      string              `json:"source_host,omitempty"`
 	SourceMachineID string              `json:"source_machine_id,omitempty"`
 	Tree            []shellTreeNode     `json:"shell_tree,omitempty"`

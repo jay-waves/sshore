@@ -403,7 +403,7 @@ func remoteCommand(o options) string {
 		mode = "new"
 	} else if o.command == "attach" {
 		mode = "attach"
-	} else if o.command == "mount-agent" || o.command == "cp-agent" {
+	} else if o.command == "mount-agent" || o.command == "cp-agent" || o.command == "mcp-agent" {
 		mode = o.command
 	}
 	if len(o.approved) > 0 {

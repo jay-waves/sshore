@@ -253,7 +253,11 @@ func TestPublicHelpBeforeExecution(t *testing.T) {
 	t.Setenv("SSHORE_DISABLED", "1")
 	t.Setenv("SSHORE_ASKPASS", "")
 	for command := range commandHelp {
-		if code, err := run([]string{command, "example", "--help"}); code != 0 || err != nil {
+		args := []string{command, "example", "--help"}
+		if command == "exec" {
+			args = []string{command, "--help"}
+		}
+		if code, err := run(args); code != 0 || err != nil {
 			t.Fatalf("%s help: %d %v", command, code, err)
 		}
 	}

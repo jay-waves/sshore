@@ -71,6 +71,10 @@ func commandSpec(command string) (cliSpec, bool) {
 	switch command {
 	case "":
 		spec = cliSpec{[]string{"--version"}, false, false, 0, 0}
+	case "mcp":
+		spec = cliSpec{nil, false, false, 0, 0}
+	case "exec":
+		spec = cliSpec{nil, false, false, 2, 2}
 	case "launch", "spawn":
 		spec = cliSpec{append(interactive, "--detach", "--no-login", "--no-profile"), true, true, 0, 2}
 	case "attach":
@@ -205,6 +209,10 @@ func scanCLI(args []string, command string, partial bool) (cliArguments, error) 
 		arg := args[i]
 		if arg == "" {
 			return a, usage("empty argument")
+		}
+		if command == "exec" && len(a.operands) > 0 {
+			a.operands = append(a.operands, arg)
+			continue
 		}
 		if arg == "--help" || arg == "-h" {
 			return a, errHelp

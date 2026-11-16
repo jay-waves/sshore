@@ -9,6 +9,7 @@ import (
 const help = `Usage: sshore COMMAND [ARGS]
 
 Shells
+  exec        Execute a command over SSH
   launch      Start a persistent shell
   spawn       Start a shell that ends with its owner
   attach      Resume a detached shell
@@ -27,6 +28,7 @@ Tasks and setup
   cancel      Stop tasks or discard requests
   reset       Replace local identity and clear history
   completion  Set up shell completion
+  mcp         Serve Agent tools over stdio
 
 Start: sshore launch work build     Resume: sshore attach work build
 In a session: Ctrl+B d detaches; Ctrl+B ? shows shortcuts.
@@ -60,6 +62,27 @@ SSH shell; reconnect after maintenance to restore sshore features.
 ` + sshOptions + "Shell connections also accept native OpenSSH -L, -R and -D.\n"
 
 var commandHelp = map[string]string{
+	"mcp": `Usage: sshore mcp
+
+Serve persistent remote Bash tools over MCP on standard input and output.
+The MCP client starts this process; diagnostics use standard error.
+Remote sessions persist after MCP disconnect; close them using session_close.
+MCP tools: session_open, session_list, session_execute, session_read, session_close.
+Scripts run with the remote account's permissions; output may be untrusted.
+Authentication uses SSH configuration. Updates require interactive review.
+See README.md for setup and SECURITY.md for the trust boundary.
+`,
+	"exec": `Usage: sshore exec HOST 'COMMAND'
+
+Execute COMMAND once using the system SSH client, without a remote PTY.
+SSH configuration supplies connection settings; terminal allocation is disabled.
+Standard input, output, error and the SSH exit status pass through.
+No persistent sshore shell is created and no remote installation is required.
+Use an SSH config host alias for connection options.
+
+Example: sshore exec work 'uname -a'
+`,
+
 	"launch": `Usage: sshore launch [HOST [NAME]] [options] [-- SSH_OPTIONS]
        sshore launch --local [NAME] [options]
 

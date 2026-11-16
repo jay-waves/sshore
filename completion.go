@@ -156,7 +156,7 @@ func completeCLI(words []string, current string, catalog func() completionCatalo
 		}
 	}
 	local := parsed.has("--local")
-	hostPosition := n == 0 && !local && slices.Contains([]string{"launch", "spawn", "attach", "list", "cancel", "rename", "mount"}, command)
+	hostPosition := n == 0 && !local && slices.Contains([]string{"exec", "launch", "spawn", "attach", "list", "cancel", "rename", "mount"}, command)
 	endpoint := command == "cp" || command == "forward" && n < 2
 	tasks := slices.Contains([]string{"attach", "cancel", "rename", "review"}, command)
 	if !hostPosition && !endpoint && !tasks {

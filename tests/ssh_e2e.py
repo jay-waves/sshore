@@ -187,11 +187,57 @@ def setup_smoke(binary, host, options, root):
     print("setup: real SSH local-cache fallback, spawn relay, exact version and matching-version reuse OK")
 
 
+def mcp_smoke(binary, host, ssh_wrapper):
+    env = dict(os.environ, SSHORE_SSH=str(ssh_wrapper))
+    proc = subprocess.Popen([binary, "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, env=env, bufsize=1)
+    def call(method, params, request_id):
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id,
+                                     "method": method, "params": params}) + "\n")
+        proc.stdin.flush()
+        ready, _, _ = select.select([proc.stdout], [], [], 20)
+        if not ready:
+            raise AssertionError(f"MCP request {method} timed out")
+        reply = json.loads(proc.stdout.readline())
+        if "error" in reply or reply.get("id") != request_id:
+            raise AssertionError(reply)
+        return reply["result"]
+    def tool(name, args, request_id):
+        result = call("tools/call", {"name": name, "arguments": args}, request_id)
+        if result.get("isError"):
+            raise AssertionError(result)
+        return result["structuredContent"]
+    try:
+        call("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
+                            "clientInfo": {"name": "test", "version": "1"}}, 1)
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+        proc.stdin.flush()
+        session = tool("session_open", {"host": host}, 2)
+        run = tool("session_execute", {"session_id": session["id"], "code": "x=sshore; printf '%s' \"$x\""}, 3)
+        cursor, text = "", ""
+        for i in range(4, 104):
+            out = tool("session_read", {"session_id": session["id"], "execution_id": run["id"],
+                                        "cursor": cursor, "wait_ms": 100}, i)
+            text += out["stdout"]
+            cursor = out["cursor"]
+            if out["state"] == "completed" and out["output_closed"]:
+                break
+        assert text == "sshore", text
+        tool("session_close", {"session_id": session["id"]}, 104)
+        print("PASS: MCP over real SSH with persistent Bash")
+    finally:
+        proc.stdin.close()
+        proc.wait(timeout=10)
+        if proc.returncode:
+            raise AssertionError(proc.stderr.read())
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default="dist/sshore")
     parser.add_argument("--spawn-only", action="store_true")
     parser.add_argument("--setup-only", action="store_true")
+    parser.add_argument("--mcp-only", action="store_true")
     args = parser.parse_args()
     binary = str(Path(args.binary).resolve())
     metadata = subprocess.check_output(["go", "version", "-m", binary], text=True)
@@ -250,6 +296,20 @@ LogLevel ERROR
             scope.chmod(0o700)
             with config.open("a") as output:
                 output.write(f"ForceCommand {scope}\n")
+        if args.mcp_only:
+            scope = root / "mcp-remote"
+            scope.write_text("#!/usr/bin/python3\n" +
+                             "import os, shlex\n" +
+                             f"os.environ['SSHORE_RUNTIME_DIR'] = {str(root / 'runtime')!r}\n" +
+                             f"os.environ['SSHORE_STATE_DIR'] = {str(root / 'remote-state')!r}\n" +
+                             "parts = shlex.split(os.environ['SSH_ORIGINAL_COMMAND'])\n" +
+                             "assert len(parts) == 3 and parts[:2] == ['sh', '-c']\n" +
+                             "assert parts[2].startswith(\"server='sshore'; \")\n" +
+                             f"script = parts[2].replace(\"server='sshore'\", 'server=' + shlex.quote({binary!r}), 1)\n" +
+                             "os.execv('/bin/sh', ['sh', '-c', script])\n")
+            scope.chmod(0o700)
+            with config.open("a") as output:
+                output.write(f"ForceCommand {scope}\n")
         log = open(root / "sshd.log", "w+")
         daemon = subprocess.Popen([sshd, "-D", "-e", "-f", str(config)], stdout=log, stderr=log)
         terms = []
@@ -277,6 +337,16 @@ LogLevel ERROR
             command = [binary, "launch", pwd.getpwuid(os.getuid()).pw_name + "@127.0.0.1", "--server", str(wrapper), "--", "-p", str(port),
                        "-i", str(key), "-F", "/dev/null", "-o", "IdentitiesOnly=yes",
                        "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known}"]
+            if args.mcp_only:
+                ssh_wrapper = root / "mcp-ssh"
+                ssh_wrapper.write_text("#!/bin/sh\n" +
+                    "exec ssh -F /dev/null -p " + str(port) +
+                    " -i " + shlex.quote(str(key)) +
+                    " -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o " +
+                    shlex.quote("UserKnownHostsFile=" + str(known)) + ' "$@"\n')
+                ssh_wrapper.chmod(0o700)
+                mcp_smoke(binary, command[2], ssh_wrapper)
+                return
             if args.spawn_only:
                 spawn_smoke(binary, command[2], command[3:])
                 return

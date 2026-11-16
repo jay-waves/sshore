@@ -127,7 +127,7 @@ func bootstrap(target, mode, name string) (result error) {
 	if !filepath.IsAbs(target) {
 		return fmt.Errorf("setup target must be absolute")
 	}
-	if mode != "bridge" && mode != "resume" && mode != "sessions" && mode != "new" && mode != "attach" && mode != "spawn" && mode != "mount-agent" && mode != "cp-agent" {
+	if mode != "bridge" && mode != "resume" && mode != "sessions" && mode != "new" && mode != "attach" && mode != "spawn" && mode != "mount-agent" && mode != "cp-agent" && mode != "mcp-agent" {
 		return fmt.Errorf("invalid setup mode")
 	}
 	if mode == "resume" || name != "" {
@@ -210,6 +210,18 @@ func bootstrap(target, mode, name string) (result error) {
 			readyMode := "managed"
 			if updated {
 				readyMode = "updated"
+			}
+			if mode == "mcp-agent" {
+				c, err := connectRemoteDaemon(target)
+				lock.Close()
+				if err != nil {
+					return err
+				}
+				defer c.Close()
+				if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
+					return err
+				}
+				return bridgeMCP(c)
 			}
 			if mode == "mount-agent" || mode == "cp-agent" {
 				lock.Close()

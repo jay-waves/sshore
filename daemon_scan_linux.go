@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/mcp"
 	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/sys/unix"
 )
@@ -269,10 +270,10 @@ func remoteDaemonPath() (string, error) {
 }
 
 // The caller holds the account setup gate, serializing daemon launch and updates.
-func createRemoteShell(executable, name, label, uid string, temporary ...bool) error {
+func connectRemoteDaemon(executable string) (net.Conn, error) {
 	path, err := remoteDaemonPath()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	connect := func() (net.Conn, error) { return net.DialTimeout("unix", path, time.Second) }
 	c, err := connect()
@@ -287,17 +288,17 @@ func createRemoteShell(executable, name, label, uid string, temporary ...bool) e
 				break
 			}
 			if !errors.Is(lockErr, syscall.EWOULDBLOCK) || time.Now().After(until) {
-				return fmt.Errorf("remote daemon unavailable: %w", lockErr)
+				return nil, fmt.Errorf("remote daemon unavailable: %w", lockErr)
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
 		log, err := os.OpenFile(path+".log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if err = privateStatePath(path+".log", false); err != nil {
 			log.Close()
-			return err
+			return nil, err
 		}
 		cmd := exec.Command(executable, "daemon")
 		cmd.Stdout, cmd.Stderr = log, log
@@ -305,7 +306,7 @@ func createRemoteShell(executable, name, label, uid string, temporary ...bool) e
 		err = cmd.Start()
 		log.Close()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		done := make(chan error, 1)
 		go func() { done <- cmd.Wait() }()
@@ -317,9 +318,9 @@ func createRemoteShell(executable, name, label, uid string, temporary ...bool) e
 		for {
 			select {
 			case err := <-done:
-				return fmt.Errorf("remote daemon exited: %v; see %s.log", err, path)
+				return nil, fmt.Errorf("remote daemon exited: %v; see %s.log", err, path)
 			case <-deadline.C:
-				return fmt.Errorf("remote daemon startup timed out; see %s.log", path)
+				return nil, fmt.Errorf("remote daemon startup timed out; see %s.log", path)
 			case <-tick.C:
 				c, err = connect()
 				if err == nil {
@@ -327,6 +328,14 @@ func createRemoteShell(executable, name, label, uid string, temporary ...bool) e
 				}
 			}
 		}
+	}
+	return c, nil
+}
+
+func createRemoteShell(executable, name, label, uid string, temporary ...bool) error {
+	c, err := connectRemoteDaemon(executable)
+	if err != nil {
+		return err
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
@@ -348,7 +357,9 @@ func createRemoteShell(executable, name, label, uid string, temporary ...bool) e
 	return nil
 }
 
-func runSharedRemoteDaemon() error {
+func runSharedRemoteDaemon() error { return runSharedRemoteDaemonUsing(checkMCPSessionSetup) }
+
+func runSharedRemoteDaemonUsing(check func() error) error {
 	path, err := remoteDaemonPath()
 	if err != nil {
 		return err
@@ -398,7 +409,12 @@ func runSharedRemoteDaemon() error {
 		}
 	}()
 	var shells sync.WaitGroup
-	defer shells.Wait()
+	mcpSessions := newTrackedMCPSessions(check)
+	defer func() {
+		mcpSessions.closeAll()
+		shells.Wait()
+		mcpSessions.closeAll()
+	}()
 	for {
 		c, err := listener.Accept()
 		if err != nil {
@@ -416,6 +432,40 @@ func runSharedRemoteDaemon() error {
 		}
 		if err = checkPeerVersion(request.SoftwareVersion, "client"); err != nil {
 			fail(err)
+			continue
+		}
+		if request.Type == "mcp_request" && request.MCPRequest != nil {
+			mu.Lock()
+			if closing {
+				mu.Unlock()
+				fail(fmt.Errorf("daemon is exiting; retry"))
+				continue
+			}
+			active++
+			mu.Unlock()
+			shells.Add(1)
+			go func() {
+				defer shells.Done()
+				defer c.Close()
+				_ = c.SetDeadline(time.Now().Add(40 * time.Second))
+				response := mcp.Dispatch(ctx, mcpSessions, *request.MCPRequest, version)
+				mu.Lock()
+				if response.Error == "" {
+					if request.MCPRequest.Method == "open" {
+						active++
+					}
+					if request.MCPRequest.Method == "close" {
+						active--
+					}
+				}
+				active--
+				if active == 0 {
+					closing = true
+					listener.Close()
+				}
+				mu.Unlock()
+				_ = writeMessage(c, message{Type: "mcp_response", SoftwareVersion: version, MCPResponse: &response})
+			}()
 			continue
 		}
 		if request.Type != "create_shell" || request.LocalRequest == nil || !validTaskUID(request.Instance) || validSession(request.Name) != nil || validSession(request.Action) != nil || !filepath.IsAbs(request.LocalRequest.Record.Directory) {

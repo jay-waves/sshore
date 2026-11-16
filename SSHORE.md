@@ -18,6 +18,8 @@ policy or depending on mutable application state.
 
 | Responsibility | Start here |
 | --- | --- |
+| MCP tools and remote Bash | `internal/mcp/`, `internal/tmux/bash_linux.go`; application coordination in `mcp_client.go`, `mcp_bridge_linux.go`, `mcp_registry_linux.go` and the shared daemon |
+| One-off SSH execution | `cli.go`: exec adapter delegates directly to system SSH without remote setup |
 | CLI grammar, dispatch and help | `cli_schema.go`: shared command aliases and product/SSH grammar; `cli_shell.go`, `cli_endpoints.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
 | Shell completion | `completion.go`: contexts, candidate protocol and read-only hints; `completion_scripts.go`: shell adapters |
 | Connections and session switching | `client.go`, `client_connection.go` |
@@ -59,7 +61,8 @@ trust boundary and execution guarantees, see [inventory and privacy](SECURITY.md
 
 Support Linux and Windows **amd64 only**, with remote shell hosting on Linux.
 Windows provides local ConPTY sessions and SSH clients, not a remote shell server.
-Each shell owns one terminal and permits one attachment at a time. Split panes,
+Each interactive shell owns one terminal and permits one attachment at a time. MCP
+Bash sessions use pipes and do not support terminal attachment. Split panes,
 tiling, screen emulation and scrollback replay are outside scope.
 
 The shell and native terminal retain interactive state. Redraw is best effort;
