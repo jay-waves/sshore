@@ -28,7 +28,7 @@ policy or depending on mutable application state.
 | Shell startup and attachment I/O | `internal/tmux/terminal.go`, `internal/tmux/shell_attachment.go`, application adapters in `protocol.go` |
 | Native terminals, console I/O and shortcuts | `internal/tmux/` |
 | Local prompts and presentation | `internal/termui/`, application adapters in `cli_ui.go` |
-| Framing, smux and shared SSH transport | `internal/transport/`, application messages and mux handshake in `protocol.go` |
+| Framing, smux and shared SSH transport | `internal/transport/` (`ssh.go` owns OpenSSH arguments and subprocess pipes); application messages and mux handshake in `protocol.go` |
 | Copy and mount mechanisms | Flat `internal/files/`; command adapters in `cp_command.go`, `mount*.go` |
 | Review records and consent | `review_store.go`, application coordination in `review*.go` (including shared source-shell validation in `review_linux.go`) |
 | Forward transport and retries | `forward.go`: endpoint parsing, command execution and SSH worker lifecycle |

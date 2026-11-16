@@ -480,20 +480,16 @@ func runAttempt(parent context.Context, runtime forwardTransport, initial bool, 
 	cmd := runtime.Command(ctx, initial)
 	var diagnostics diagnosticsTail
 	cmd.Stderr = io.MultiWriter(runtime.Log, &diagnostics)
-	input, e := cmd.StdinPipe()
+	pipes, e := transport.OpenPipes(cmd)
 	if e != nil {
 		return 1, e
 	}
-	defer input.Close()
+	defer pipes.Close()
+	input, output := pipes.Input, pipes.Output
 	// Let the remote watcher receive EOF and remove its lease before forcing SSH
 	// down. Authentication or active forwarded sockets still have a bounded exit.
 	cmd.Cancel = func() error { return input.Close() }
 	cmd.WaitDelay = 2 * time.Second
-	output, e := cmd.StdoutPipe()
-	if e != nil {
-		return 1, e
-	}
-	defer output.Close()
 	if e = cmd.Start(); e != nil {
 		return 1, e
 	}

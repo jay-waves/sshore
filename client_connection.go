@@ -43,31 +43,24 @@ func openClientTransport(o *options) (io.ReadWriteCloser, func(), error) {
 	}
 	cmd := sshCommand(*o)
 	cmd.Stderr = os.Stderr
-	reader, err := cmd.StdoutPipe()
+	pipes, err := transportio.StartPipes(cmd)
 	if err != nil {
-		return nil, nil, err
-	}
-	writer, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, nil, err
-	}
-	if err = cmd.Start(); err != nil {
 		return nil, nil, fmt.Errorf("start system OpenSSH: %w", err)
 	}
+	reader, writer := pipes.Output, pipes.Input
 	sshClosed := false
 	closeSSH := func() {
 		if sshClosed {
 			return
 		}
 		sshClosed = true
-		_ = writer.Close()
-		_ = reader.Close()
+		_ = pipes.Close()
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	}
 	// The mux handshake happens after OpenSSH authentication; no local keyboard
 	// reader or raw mode is active while OpenSSH prompts for passwords/host keys.
-	transport := &transportio.Pipe{Reader: reader, Writer: writer, Closers: []io.Closer{reader, writer}}
+	transport := pipes
 	if err = negotiateSetup(reader, writer, o); err != nil {
 		closeSSH()
 		return nil, nil, err

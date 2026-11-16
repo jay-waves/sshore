@@ -57,17 +57,11 @@ func runCopy(args []string) (int, error) {
 	exe := sshExecutable()
 	cmd := exec.CommandContext(ctx, exe, transport.SessionArgs(o.host, o.ssh, "unset SSHORE_SOCKET SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN; "+remoteCommand(options{command: "cp-agent"}))...)
 	cmd.Stderr = os.Stderr
-	stdout, err := cmd.StdoutPipe()
+	pipes, err := transport.StartPipes(cmd)
 	if err != nil {
 		return 1, err
 	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return 1, err
-	}
-	if err = cmd.Start(); err != nil {
-		return 1, err
-	}
+	stdout, stdin := pipes.Output, pipes.Input
 	defer func() { cancel(); _ = stdin.Close(); _ = stdout.Close(); _ = cmd.Wait() }()
 	stop := context.AfterFunc(ctx, func() { _ = stdin.Close(); _ = stdout.Close() })
 	defer stop()

@@ -128,7 +128,14 @@ def spawn_smoke(binary, host, options):
         parent.wait(timeout=5)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            rows = {row["name"]: row for row in inventory()["shells"]}
+            try:
+                rows = {row["name"]: row for row in inventory()["shells"]}
+            except subprocess.CalledProcessError as error:
+                snapshot = json.loads(error.output)
+                if snapshot.get("errors") != ["shell unavailable: temporary.sock"]:
+                    raise
+                time.sleep(0.1)
+                continue
             if "temporary" not in rows:
                 assert "persistent" in rows, rows
                 print("spawn: real SSH detach, reattach, owner cleanup and persistent sibling OK")
@@ -201,6 +208,7 @@ def main():
         shutil.copy2(binary, fixture_binary)
         binary = str(fixture_binary)
         os.environ["SSHORE_STATE_DIR"] = str(root / "state")
+        os.environ["SSHORE_RUNTIME_DIR"] = str(root / "local-runtime")
         os.environ.pop("SSH_CONNECTION", None)
         os.environ.pop("SSHORE_SOCKET", None)
         key = root / "key"
@@ -235,6 +243,7 @@ LogLevel ERROR
             scope.write_text("#!/bin/sh\n" +
                              f"export HOME={shlex.quote(str(home))}\n" +
                              f"export SSHORE_RUNTIME_DIR={shlex.quote(str(root / 'runtime'))}\n" +
+                             f"export SSHORE_STATE_DIR={shlex.quote(str(root / 'remote-state'))}\n" +
                              f"export PATH={shlex.quote(str(tools))}:$PATH\n" +
                              "export SHELL=/bin/sh\n" +
                              'exec sh -c "$SSH_ORIGINAL_COMMAND"\n')
@@ -246,6 +255,7 @@ LogLevel ERROR
         terms = []
         shell_pid = None
         runtime = root / "runtime"
+        wrapper = root / "server"
         try:
             for _ in range(100):
                 if daemon.poll() is not None:
@@ -256,15 +266,15 @@ LogLevel ERROR
                         break
                 except OSError:
                     time.sleep(0.02)
-            wrapper = root / "server"
             wrapper.write_text("#!/bin/sh\n" +
                                f"export SSHORE_RUNTIME_DIR={shlex.quote(str(runtime))}\n" +
+                               f"export SSHORE_STATE_DIR={shlex.quote(str(root / 'remote-state'))}\n" +
                                "export SHELL=/bin/sh\n" +
                                f"exec {shlex.quote(binary)} \"$@\"\n")
             wrapper.chmod(0o700)
             known = root / "known_hosts"
             known.write_text(f"[127.0.0.1]:{port} " + hostkey.with_suffix(".pub").read_text())
-            command = [binary, "new", pwd.getpwuid(os.getuid()).pw_name + "@127.0.0.1", "--server", str(wrapper), "--", "-p", str(port),
+            command = [binary, "launch", pwd.getpwuid(os.getuid()).pw_name + "@127.0.0.1", "--server", str(wrapper), "--", "-p", str(port),
                        "-i", str(key), "-F", "/dev/null", "-o", "IdentitiesOnly=yes",
                        "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known}"]
             if args.spawn_only:
@@ -279,7 +289,7 @@ LogLevel ERROR
                 terms.append(auto)
                 match = auto.expect(r"Connected [^\r\n]+ / ([a-z]+) ")
                 assert match.group(1) == expected_name, match.group(1)
-                auto.send(b"\x1d")
+                auto.send(b"\x02d")
                 auto.wait()
                 auto.close()
                 terms.remove(auto)
@@ -317,7 +327,7 @@ LogLevel ERROR
                             peer.sendall(peer.recv(1024))
                 worker = threading.Thread(target=echo_connections, daemon=True)
                 worker.start()
-                term = Terminal([binary, "new"] + command[2:] + [
+                term = Terminal([binary, "launch"] + command[2:] + [
                     "-C", "-vvv", "-E", str(ssh_log),
                     f"-L127.0.0.1:{local_port}:127.0.0.1:{service_port}",
                     "-R", f"127.0.0.1:{reverse_port}:127.0.0.1:{service_port}",
@@ -351,7 +361,7 @@ LogLevel ERROR
             term.expect("RUN_sleep")
             deadline = time.monotonic() + 5
             while True:
-                listing = subprocess.check_output([binary, "list"] + base_command[2:], text=True)
+                listing = subprocess.check_output([binary, "list", "--verbose"] + base_command[2:], text=True)
                 if re.search(r"\bmain\b[\s\S]*?\bsleep\b", listing):
                     break
                 if time.monotonic() >= deadline:
@@ -389,7 +399,7 @@ LogLevel ERROR
             downloaded = root / "downloaded.bin"
             request_id = queue_request(term, f"sshore cp {shlex.quote(str(remote))} origin:")
             assert not downloaded.exists(), "download occurred before approval"
-            listed = subprocess.check_output([binary, "list"], text=True)
+            listed = subprocess.check_output([binary, "list", "--json"], text=True)
             assert request_id in listed
             term = approve(request_id, [("download", downloaded)])
             term.expect("Saved .*downloaded.bin")
@@ -418,7 +428,7 @@ LogLevel ERROR
             term.expect(f"STAY_PID:{shell_pid}")
             request_id = queue_request(term, f"sshore cp {shlex.quote(str(remote))} origin:")
             subprocess.run([binary, "cancel", "review/" + request_id], check=True)
-            assert request_id not in subprocess.check_output([binary, "list"], text=True)
+            assert request_id not in subprocess.check_output([binary, "list", "--json"], text=True)
 
             # A download directory supplies defaults, never automatic approval.
             automatic = root / "automatic"
@@ -503,7 +513,7 @@ LogLevel ERROR
                         assert e.errno == errno.EADDRINUSE
                     else:
                         raise AssertionError("approved listener was not opened")
-                assert resource_id in subprocess.check_output([binary, "list"], text=True)
+                assert resource_id in subprocess.check_output([binary, "list", "--json"], text=True)
                 term = Terminal(command)
                 terms.append(term)
                 term.send("printf 'FINAL_PID:%s\\n' $$\n")
@@ -533,19 +543,27 @@ LogLevel ERROR
             shell_pid = None
             print("PASS: SSH + PTY, local approval, attach/stay, replay rejection, files, batches, forwarding, PID persistence, key authentication")
         finally:
-            for term in terms:
-                term.close()
-            if shell_pid:
-                try:
-                    os.kill(shell_pid, signal.SIGHUP)
-                except ProcessLookupError:
-                    pass
-            daemon.terminate()
-            daemon.wait(timeout=5)
-            log.close()
-            deadline = time.monotonic() + 3
-            while runtime.exists() and list(runtime.glob("*.sock")) and time.monotonic() < deadline:
-                time.sleep(0.05)
+            try:
+                for term in terms:
+                    term.close()
+                if wrapper.exists():
+                    release = subprocess.check_output([binary, "--version"], text=True).strip().split()[1]
+                    for path in runtime.glob("*.sock"):
+                        if path.name == "daemon.sock":
+                            continue
+                        label = path.with_suffix(".sock.name")
+                        name = label.read_text().strip() if label.exists() else path.stem
+                        result = subprocess.run([str(wrapper), "kill-session", name, release],
+                                                capture_output=True, text=True, timeout=10)
+                        if result.returncode and path.exists():
+                            raise AssertionError(f"fixture cleanup failed: {result.stderr}")
+            finally:
+                daemon.terminate()
+                daemon.wait(timeout=5)
+                log.close()
+                deadline = time.monotonic() + 3
+                while runtime.exists() and list(runtime.glob("*.sock")) and time.monotonic() < deadline:
+                    time.sleep(0.05)
 
 
 if __name__ == "__main__":

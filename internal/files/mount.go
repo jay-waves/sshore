@@ -83,17 +83,11 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 	if service != nil {
 		cmd.Env = service.Environment
 	}
-	stdout, err := cmd.StdoutPipe()
+	pipes, err := transport.StartPipes(cmd)
 	if err != nil {
 		return 1, err
 	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return 1, err
-	}
-	if err = cmd.Start(); err != nil {
-		return 1, err
-	}
+	stdout, stdin := pipes.Output, pipes.Input
 	defer func() {
 		_ = stdin.Close()
 		_ = stdout.Close()
@@ -119,7 +113,7 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 	var events *smux.Stream
 	wire := newFTPWire(stdout, stdin)
 	if !o.NoWatch {
-		transport := &transport.Pipe{Reader: stdout, Writer: stdin, Closers: []io.Closer{stdout, stdin}}
+		transport := pipes
 		if o.Prepare != nil {
 			if err := o.Prepare(ctx, transport); err != nil {
 				return 1, fmt.Errorf("mount setup: %w", err)

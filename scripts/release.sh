@@ -666,6 +666,27 @@ listed shells and tasks only after you review them and type update.
 NOTES
 fi
 
+if [[ "$version" == "0.6.17" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Accept stable short task IDs in attach, cancel, rename and review, with
+  instance validation that prevents stale IDs from selecting replacements.
+- Add --port for SSH connections while retaining -- -p PORT. Reject conflicting
+  port options and preserve remembered connection settings when overriding a port.
+- Share OpenSSH argument and subprocess-pipe handling across shell connections,
+  spawn, copy, mount and forwarding; close pipes when setup or startup fails.
+- Update real-SSH tests for launch, Ctrl+B d and current list output. Isolate
+  local and remote test state, tolerate the expected spawn-exit inventory race,
+  and clean up fixture shells after failures.
+
+Client and remote releases must match exactly. Updating older remote shells ends
+listed shells and tasks only after you review them and type update. Authentication
+and transport continue to use system OpenSSH. Linux and Windows amd64 only;
+remote shell hosting remains Linux-only.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."

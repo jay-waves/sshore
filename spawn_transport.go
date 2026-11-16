@@ -82,40 +82,30 @@ func runSpawnRemote(c net.Conn, req localDaemonRequest) error {
 		return err
 	}
 	o := options{command: "spawn", host: f.Host, session: f.Name, server: f.Server, ssh: f.SSH, sshDirectory: req.Record.Directory}
-	template := sshCommand(o)
 	// Resolve SSH from the launching client's environment, not daemon startup.
 	exe := localEnvironmentValue(req.Env, "SSHORE_SSH")
 	if exe == "" {
 		exe = "ssh"
 	}
-	cmd := exec.Command(exe, template.Args[1:]...)
+	cmd := exec.Command(exe, transportio.ShellArgs(o.host, o.ssh, remoteCommand(o))...)
 	cmd.Dir = req.Record.Directory
 	detachResourceWorker(cmd)
 	cmd.Env = req.Env
 	diagnostics := &spawnDiagnostics{c: c, active: true}
 	cmd.Stderr = diagnostics
-	input, err := cmd.StdinPipe()
+	pipes, err := transportio.StartPipes(cmd)
 	if err != nil {
-		return err
-	}
-	output, err := cmd.StdoutPipe()
-	if err != nil {
-		input.Close()
-		return err
-	}
-	if err = cmd.Start(); err != nil {
-		input.Close()
-		output.Close()
 		_ = writeMessage(c, message{Type: "fatal", Error: err.Error()})
 		return err
 	}
+	input, output := pipes.Input, pipes.Output
 	done := make(chan struct{})
 	defer close(done)
 	var stopOnce sync.Once
 	stop := func() { stopOnce.Do(func() { c.Close(); input.Close(); output.Close(); _ = cmd.Process.Kill() }) }
 	defer func() { stop(); _ = cmd.Wait() }()
 	go watchSpawnOwner(req.Record.Owner, done, stop)
-	transport := &transportio.Pipe{Reader: output, Writer: input, Closers: []io.Closer{output, input}}
+	transport := pipes
 	// Relay only setup choices. Authentication uses the launcher's askpass broker.
 	for {
 		m, e := readMessage(output)

@@ -45,14 +45,7 @@ type clientEvent struct {
 }
 
 func sshCommand(o options) *exec.Cmd {
-	remote := remoteCommand(o)
-
-	exe := sshExecutable()
-	// Own this transport: never reuse or leave behind a shared OpenSSH master.
-	args := []string{"-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no"}
-	args = append(args, o.ssh...)
-	args = append(args, "-T", "-o", "RequestTTY=no", "--", o.host, remote)
-	cmd := exec.Command(exe, args...)
+	cmd := exec.Command(sshExecutable(), transportio.ShellArgs(o.host, o.ssh, remoteCommand(o))...)
 	cmd.Dir = o.sshDirectory
 	return cmd
 }
