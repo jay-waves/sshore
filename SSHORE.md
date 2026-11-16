@@ -21,7 +21,7 @@ policy or depending on mutable application state.
 | CLI grammar, dispatch and help | `cli_schema.go`: shared command aliases and product/SSH grammar; `cli_shell.go`, `cli_endpoints.go`: command semantics; `cli.go`: dispatch |
 | Shell completion | `completion.go`: contexts, candidate protocol and read-only hints; `completion_scripts.go`: shell adapters |
 | Connections and session switching | `client.go`, `client_connection.go` |
-| Remote preparation and exact-release policy | `remote_bootstrap.go`, `setup*.go` |
+| Remote preparation and exact-release policy | `setup*.go` |
 | Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_*.go`, `server_linux.go`; process inspection in `setup_process_linux.go` |
 | Local daemon and shell registry | `local_daemon*.go`, `local_shell_registry.go`, `local_terminal.go`, `platform_*.go` |
 | Spawn ownership and lifetime SSH | `spawn*.go`, `platform_*.go` |
@@ -179,9 +179,14 @@ Choose the smallest check that covers the changed behavior:
 go test -count=1 -tags=sshoretest -timeout=5m ./...
 ```
 
-Black-box integration tests live in `tests/` and exercise the CLI or import
-exported package APIs. Package-level tests that inspect private implementation
-stay beside their owning code. Both use standard Go test discovery and `-run`;
+Group tests by behavior, such as CLI grammar, approval flows, or shell and
+resource lifecycle. A regression belongs with its feature’s existing cases;
+keep platform and build-tag variants separate where required.
+
+Product black-box tests live in `tests/` and follow user workflows through
+the CLI, protocols or public APIs. Module regressions stay beside the code they
+exercise, including those that use an internal package’s exported API. Both use
+standard Go test discovery and `-run`;
 no overlay, generated source tree or test-only production exports are needed.
 Use `-count=1` for CLI/native checks that depend on subprocesses or the environment.
 For example:

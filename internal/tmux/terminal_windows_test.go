@@ -1,6 +1,6 @@
 //go:build sshoretest
 
-package tests_test
+package tmux_test
 
 import (
 	"bytes"

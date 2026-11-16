@@ -5,16 +5,11 @@ package tests_test
 import (
 	"bytes"
 	"context"
-	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
-
-	"github.com/jay-waves/sshore/internal/files"
 )
 
 func TestCopyCLI(t *testing.T) {
@@ -89,26 +84,5 @@ func TestCopyCLI(t *testing.T) {
 		if err = run(old, "--help"); err == nil {
 			t.Fatal("old command remains", old)
 		}
-	}
-}
-
-func TestMountApprovalSourceGate(t *testing.T) {
-	a, b := net.Pipe()
-	_ = b.SetDeadline(time.Now().Add(3 * time.Second))
-	defer b.Close()
-	called := make(chan files.MountApproval, 1)
-	done := make(chan error, 1)
-	go func() {
-		done <- files.ServeAgent(a, "1.2.3", func(source files.MountApproval) error { called <- source; return fmt.Errorf("source changed") })
-	}()
-	approval := &files.MountApproval{Session: "work", PID: 123, ID: strings.Repeat("a", 32)}
-	if _, _, _, err := files.OpenMux(b, "1.2.3", approval); err == nil || !strings.Contains(err.Error(), "source changed") {
-		t.Fatalf("gate bypassed: %v", err)
-	}
-	if got := <-called; got != *approval {
-		t.Fatal(got)
-	}
-	if err := <-done; err == nil {
-		t.Fatal("agent accepted failed approval")
 	}
 }

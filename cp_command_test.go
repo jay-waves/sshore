@@ -325,3 +325,15 @@ func TestApprovedSFTPCancelBlockedHandshake(t *testing.T) {
 		t.Fatal("cancellation closed the attachment")
 	}
 }
+
+func TestTransferProgressEstimate(t *testing.T) {
+	now := time.Now()
+	p := transferProgress{at: now}
+	s := p.sample(now.Add(time.Second), 1024, 2048)
+	if !strings.Contains(s, "remaining 1s") {
+		t.Fatal(s)
+	}
+	if !strings.Contains(p.sample(now.Add(2*time.Second), 2048, 2048), "remaining 0s") {
+		t.Fatal("completion ETA")
+	}
+}

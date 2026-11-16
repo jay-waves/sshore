@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -364,14 +363,6 @@ func TestRemovedShellForms(t *testing.T) {
 	}
 }
 
-func mapHelpValues() []string {
-	var values []string
-	for _, value := range commandHelp {
-		values = append(values, value)
-	}
-	return values
-}
-
 func TestRenameOptions(t *testing.T) {
 	for _, args := range [][]string{{"rename", "host", "old", "new"}, {"rename", "host", "old", "new", "--", "-p22"}} {
 		o, err := parseOptions(args)
@@ -383,123 +374,6 @@ func TestRenameOptions(t *testing.T) {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatal("accepted", args)
 		}
-	}
-}
-
-func TestFTPSessionDefaults(t *testing.T) {
-	o, e := parseFTPOptions([]string{"alice@work.example"})
-	if e != nil {
-		t.Fatal(e)
-	}
-	if o.remote != "." || o.mountpoint != "" || o.foreground || o.name != "" {
-		t.Fatalf("unexpected defaults: %+v", o)
-	}
-	o, e = parseFTPOptions([]string{"work", "project", "--name", "code", "--foreground"})
-	if e != nil || o.name != "code" || !o.foreground || o.remote != "project" {
-		t.Fatalf("options: %+v %v", o, e)
-	}
-	for _, name := range []string{"../escape", "a/b", "", "a.b"} {
-		if _, e = parseFTPOptions([]string{"work", "--name", name}); e == nil {
-			t.Fatalf("accepted name %q", name)
-		}
-	}
-}
-func TestFTPControlCapability(t *testing.T) {
-	called := make(chan struct{}, 1)
-	l, s, e := resourceListen("secret", func(w http.ResponseWriter, r *http.Request) { called <- struct{}{}; w.WriteHeader(204) })
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer s.Close()
-	r, e := resourceHTTP(l.Addr().String(), "wrong", "POST", "/stop", nil)
-	if e != nil {
-		t.Fatal(e)
-	}
-	r.Body.Close()
-	if r.StatusCode != 401 {
-		t.Fatal(r.Status)
-	}
-	select {
-	case <-called:
-		t.Fatal("unauthorized control request dispatched")
-	default:
-	}
-	r, e = resourceHTTP(l.Addr().String(), "secret", "POST", "/stop", nil)
-	if e != nil {
-		t.Fatal(e)
-	}
-	r.Body.Close()
-	if r.StatusCode != 204 {
-		t.Fatal(r.Status)
-	}
-	if _, e = resourceHTTP("example.com:80", "secret", "POST", "/stop", nil); e == nil {
-		t.Fatal("accepted non-loopback address")
-	}
-}
-
-func TestFTPOptions(t *testing.T) {
-	o, e := parseFTPOptions([]string{"host", "/remote folder", "mount", "--read-only", "--", "-J", "jump"})
-	if e != nil || !o.readOnly || o.remote != "/remote folder" {
-		t.Fatalf("%+v %v", o, e)
-	}
-	for _, args := range [][]string{{}, {"host", "/", "mount", "-f"}, {"--", "-bad", "/", "mount"}} {
-		if _, e := parseFTPOptions(args); e == nil {
-			t.Fatalf("accepted %v", args)
-		}
-	}
-}
-
-func TestFTPStatsOptions(t *testing.T) {
-	o, err := parseFTPOptions([]string{"host", "--stats"})
-	if err != nil || !o.stats {
-		t.Fatalf("%+v %v", o, err)
-	}
-}
-
-func TestFTPNotifyOptions(t *testing.T) {
-	o, err := parseFTPOptions([]string{"host", "--server", "/a path/sshore", "--", "-J", "jump"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	args := strings.Join(mountSSHArgs(o), " ")
-	if o.noWatch || !strings.Contains(args, "mount-agent") || !strings.Contains(args, "-J jump") || strings.Contains(args, "SessionType=subsystem") {
-		t.Fatalf("%+v %s", o, args)
-	}
-	o.noWatch = true
-	args = strings.Join(mountSSHArgs(o), " ")
-	if !strings.HasSuffix(args, "-s -- host sftp") || strings.Contains(args, "mount-agent") {
-		t.Fatal(args)
-	}
-}
-
-func TestFTPNotifyRecovery(t *testing.T) {
-	t.Setenv("SSHORE_DISABLED", "1")
-	if _, err := run([]string{"mount-agent"}); err == nil {
-		t.Fatal("mount agent allowed in recovery")
-	}
-}
-
-func TestRemoteMountRequest(t *testing.T) {
-	for _, args := range [][]string{{".", "origin:"}, {"--read-only", "/tmp", "origin:/client/mount"}} {
-		op, err := remoteMountRequest(args)
-		if err != nil || op.Kind != "mount" || op.LocalPath != "" {
-			t.Fatalf("%+v %v", op, err)
-		}
-	}
-	for _, args := range [][]string{{"origin:", "."}, {".", "origin:", "--no-watch"}, {".", "origin:", "--foreground"}, {".", "origin:", "--", "-J", "jump"}, {"host:/tmp", "origin:"}, {"-", "origin:"}, {".", "origin:", "extra"}} {
-		if _, err := remoteMountRequest(args); err == nil {
-			t.Fatal(args)
-		}
-	}
-}
-
-func TestMountApprovalSelection(t *testing.T) {
-	input := &stubSetupInput{answers: []string{""}}
-	if path, err := readMountApprovalPath(input, ""); err != nil || path != "" {
-		t.Fatalf("%q %v", path, err)
-	}
-	if _, err := readMountApprovalPath(&stubSetupInput{}, ""); err == nil {
-		t.Fatal("cancel accepted")
 	}
 }
 
@@ -536,6 +410,183 @@ func TestCommandAliases(t *testing.T) {
 		o, err := parseOptions([]string{alias, "host"})
 		if err != nil || o.command != canonicalCommand(alias) {
 			t.Fatalf("shell policy: %+v %v", o, err)
+		}
+	}
+}
+
+func TestEndpointRequests(t *testing.T) {
+	for _, local := range []string{"origin:", ":"} {
+		kind, paths, _, err := remoteCopyRequest([]string{local, "/tmp"})
+		if err != nil || kind != "upload" || len(paths) != 1 || paths[0] != "/tmp" {
+			t.Fatal(kind, paths, err)
+		}
+		kind, paths, _, err = remoteCopyRequest([]string{"a", "b", local})
+		if err != nil || kind != "download" || len(paths) != 2 {
+			t.Fatal(kind, paths, err)
+		}
+		for _, reverse := range []bool{false, true} {
+			args := []string{local, "3000"}
+			if reverse {
+				args = []string{"3000", local}
+			}
+			op, err := remoteForwardRequest(args)
+			if err != nil || !op.LocalPortPending() || op.ServerPort() != 3000 || op.Reverse != reverse {
+				t.Fatal(op, err)
+			}
+		}
+	}
+	for _, args := range [][]string{{"origin:", "origin:"}, {"a", "local"}, {"a"}, {":", "a", "b"}} {
+		if _, _, _, err := remoteCopyRequest(args); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+	for _, args := range [][]string{{"local", "3000"}, {"3000", "8080"}, {"origin:", ":"}, {"origin:", "0"}, {"65536", ":"}} {
+		if _, err := remoteForwardRequest(args); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+}
+
+func TestForwardInvocation(t *testing.T) {
+	for _, tc := range []struct {
+		args         []string
+		reverse      bool
+		port, target int
+	}{
+		{[]string{"origin:8080", "work:3000"}, false, 8080, 3000},
+		{[]string{"work:3000", "origin:8080"}, true, 3000, 8080},
+		{[]string{"8080", "work:3000"}, false, 8080, 3000},
+	} {
+		f, _, err := parseForwardCommand(tc.args)
+		if err != nil || f.Host != "work" || f.Port != tc.port || f.Target != tc.target || f.Reverse != tc.reverse {
+			t.Fatal(f, err)
+		}
+	}
+}
+
+func TestForwardRejectsInvalidLocalEndpoint(t *testing.T) {
+	for _, args := range [][]string{{"origin:work:3000", "8080"}, {"origin:0", "work:3000"}, {"work:3000", "origin:65536"}, {"origin:3000", "origin:8080"}, {"3000", "8080"}} {
+		if _, _, err := parseForwardCommand(args); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+}
+
+func TestEndpointHostValidation(t *testing.T) {
+	for _, tc := range []struct{ value, want string }{
+		{"work", "work"}, {"user@work", "user@work"}, {"[::1]", "::1"}, {"user@[::1]", "user@::1"},
+	} {
+		got, err := endpointHost(tc.value)
+		if err != nil || got != tc.want {
+			t.Fatal(got, err)
+		}
+	}
+	for _, host := range []string{"", "-host", "host name", "host\tname", "host\x7f", "[broken]", "user@[]", "user@", "::1", "[::1"} {
+		if _, err := endpointHost(host); err == nil {
+			t.Fatal("accepted", host)
+		}
+	}
+}
+
+func TestSSHSeparatorBoundaries(t *testing.T) {
+	parsers := map[string]func([]string) error{
+		"session": func(a []string) error { _, e := parseOptions(append([]string{"launch"}, a...)); return e },
+		"mount":   func(a []string) error { _, e := parseFTPOptions(a); return e },
+		"forward": func(a []string) error {
+			args := append([]string{"8080", a[0] + ":3000"}, a[1:]...)
+			_, _, e := parseForwardCommand(args)
+			return e
+		},
+	}
+	for name, parse := range parsers {
+		t.Run(name, func(t *testing.T) {
+			for _, args := range [][]string{{"work"}, {"work", "--", "-Jjump", "-p", "2222", "-o", "IdentityFile=key with spaces"}} {
+				if e := parse(args); e != nil {
+					t.Fatal(args, e)
+				}
+			}
+			for _, args := range [][]string{
+				{"work", "-J", "jump"}, {"work", "-p2222"}, {"work", "--"},
+				{"work", "--", "-i"}, {"work", "--", "-i", "--"},
+				{"work", "--", "--name", "web"}, {"work", "--", "other-host"},
+				{"work", "--", "-J", "jump", "extra"}, {"work", "--", "--", "-v"},
+				{"work", "--", "-f"}, {"work", "--", "-N"},
+			} {
+				if e := parse(args); e == nil {
+					t.Fatal("accepted", args)
+				}
+			}
+		})
+	}
+	for _, parse := range []func([]string) error{parsers["mount"], parsers["forward"]} {
+		if e := parse([]string{"work", "--", "-D1080"}); e == nil {
+			t.Fatal("resource accepted native forwarding")
+		}
+	}
+}
+
+func TestReconnectCommandSSHSeparator(t *testing.T) {
+	o := options{host: "work", session: "dev", server: "/opt/sshore", ssh: []string{"-J", "jump"}}
+	if got := reconnectCommand(o); got != "sshore attach work dev --server /opt/sshore -- -J jump" {
+		t.Fatal(got)
+	}
+	o.ssh = nil
+	if got := reconnectCommand(o); got != "sshore attach work dev --server /opt/sshore" {
+		t.Fatal(got)
+	}
+}
+
+func TestSharedHostValidation(t *testing.T) {
+	for _, host := range []string{"host name", "host\tname", "host\x7f", "host\nname"} {
+		if _, err := parseOptions([]string{"launch", host}); err == nil {
+			t.Fatal("shell accepted", host)
+		}
+		if _, err := parseFTPOptions([]string{host}); err == nil {
+			t.Fatal("mount accepted", host)
+		}
+		if _, err := parseCopyCommand([]string{"file", host + ":/tmp"}); err == nil {
+			t.Fatal("copy accepted", host)
+		}
+		if _, _, err := parseForwardCommand([]string{"8080", host + ":3000"}); err == nil {
+			t.Fatal("forward accepted", host)
+		}
+	}
+}
+
+func TestTargetDispatchRejectsInvalidArgumentsBeforeExecution(t *testing.T) {
+	for _, args := range [][]string{
+		{"cancel", "mount/demo", "--local"},
+		{"cancel", "forward/demo", "--", "-p22"},
+		{"cancel", "--all", "--local", "host"},
+		{"attach", "host", "name", "extra"},
+		{"rename", "host", "old"},
+		{"review", "one", "two"},
+	} {
+		code, err := runTargetCommand(args)
+		if code != 2 || err == nil {
+			t.Fatalf("%v: code=%d err=%v", args, code, err)
+		}
+	}
+}
+
+func TestCancelAllScope(t *testing.T) {
+	for _, tc := range []struct {
+		args     []string
+		host     string
+		all, bad bool
+	}{
+		{[]string{"--all"}, "", true, false},
+		{[]string{"fedora", "--all"}, "fedora", true, false},
+		{[]string{"--all", "fedora", "--", "-p", "2222"}, "fedora", true, false},
+		{[]string{"--local", "--all"}, "", true, false},
+		{[]string{"fedora", "shell", "--all"}, "", true, true},
+		{[]string{"--all", "--all"}, "", true, true},
+		{[]string{"--all", "--json"}, "", true, true},
+		{[]string{"fedora", "shell", "--", "--all"}, "", false, false},
+	} {
+		o, all, err := parseCancelAll(tc.args)
+		if all != tc.all || (err != nil) != tc.bad || (!tc.bad && all && o.host != tc.host) {
+			t.Errorf("%v: host=%q all=%t err=%v", tc.args, o.host, all, err)
 		}
 	}
 }

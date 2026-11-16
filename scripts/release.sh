@@ -629,6 +629,21 @@ listed shells and tasks only after you review them and type update.
 NOTES
 fi
 
+if [[ "$version" == "0.6.15" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Group CLI help by task and make command usage, common options, and
+  consequences easier to find.
+- Organize tests by behavior and keep product workflow checks separate from
+  module regressions. Shell lifecycle tests retain isolated runtime state.
+- Consolidate connection, setup and terminal UI implementation files.
+
+Client and remote releases must match exactly. Updating older remote shells ends
+listed shells and tasks only after you review them and type update.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."

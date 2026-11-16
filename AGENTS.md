@@ -31,7 +31,7 @@ version policy in the main program; do not split out packages solely for small h
 
 - Keep modules highly cohesive and loosely coupled: one clear responsibility,
   explicit ownership and small interfaces. Extend existing modules before adding abstractions.
-- Keep black-box integration tests under `tests/`, using CLI/protocol or exported APIs. Keep tests of private implementation beside their owning packages; do not expose production internals or use overlays to relocate them.
+- Use `tests/` for product-level black-box tests, grouped by user workflow. Exercise the CLI, protocols or public APIs to cover cross-platform behavior, compatibility, integration and user-visible regressions. Keep module-level tests and regressions beside their owning packages; do not expose production internals or use overlays to relocate them.
 - Merge small, simple helpers into their concept's module; retain separate files when platform or build constraints require them.
 - Consolidate small native adapters by module and supported platform (`*_linux.go` / `*_windows.go`); keep test-only build constraints separate.
 - Group tests by module behavior and functional boundaries, not by source file,

@@ -8,7 +8,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.6.14"
+var version = "0.6.15"
 
 func main() {
 	code, err := run(os.Args[1:])

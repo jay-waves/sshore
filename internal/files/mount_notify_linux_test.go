@@ -3,6 +3,7 @@
 package files
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -269,5 +270,26 @@ func TestFTPNotifyPreservesUnchangedSibling(t *testing.T) {
 	f.cache.mu.Unlock()
 	if !cached || stale {
 		t.Fatalf("right cached=%v left stale=%v", cached, stale)
+	}
+}
+
+func TestMountApprovalSourceGate(t *testing.T) {
+	a, b := net.Pipe()
+	_ = b.SetDeadline(time.Now().Add(3 * time.Second))
+	defer b.Close()
+	called := make(chan MountApproval, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeAgent(a, "1.2.3", func(source MountApproval) error { called <- source; return fmt.Errorf("source changed") })
+	}()
+	approval := &MountApproval{Session: "work", PID: 123, ID: strings.Repeat("a", 32)}
+	if _, _, _, err := OpenMux(b, "1.2.3", approval); err == nil || !strings.Contains(err.Error(), "source changed") {
+		t.Fatalf("gate bypassed: %v", err)
+	}
+	if got := <-called; got != *approval {
+		t.Fatal(got)
+	}
+	if err := <-done; err == nil {
+		t.Fatal("agent accepted failed approval")
 	}
 }
