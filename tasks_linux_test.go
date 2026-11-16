@@ -346,3 +346,68 @@ func TestCancelUpdatesShellHistory(t *testing.T) {
 		}
 	}
 }
+
+func TestShortTaskRemoteCommandRouting(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	root := t.TempDir()
+	wrapper, output := filepath.Join(root, "ssh"), filepath.Join(root, "args")
+	t.Setenv("SSHORE_SSH", wrapper)
+	t.Setenv("SSHORE_TEST_ARGS", output)
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SSHORE_TEST_ARGS\"\nexit 37\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	observed := options{host: "work", server: "/observed/sshore", sshDirectory: root, ssh: []string{"-p", "2222", "-J", "jump", "-L", "8080:localhost:80"}}
+	inv := inventory{Shells: []shellView{{Name: "job", Instance: "original-instance", State: "detached"}}}
+	if err := cacheRemoteShells("work", inv, observed); err != nil {
+		t.Fatal(err)
+	}
+	// A later attachment default must not overwrite the selected observation's route.
+	if err := rememberConnection(options{host: "work", session: "other", server: "/other/sshore", ssh: []string{"-p", "9999"}}); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := assignTaskIDs([]string{remoteShellIdentity("work", "original-instance")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := ids[remoteShellIdentity("work", "original-instance")].code
+	for _, tc := range []struct {
+		args                 []string
+		port, server, action string
+	}{
+		{[]string{"cancel", id}, "2222", "/observed/sshore", "kill-session"},
+		{[]string{"rename", id, "new"}, "2222", "/observed/sshore", "rename-session"},
+		{[]string{"cancel", id, "--server", "/explicit/sshore", "--", "-p", "3333"}, "3333", "/explicit/sshore", "kill-session"},
+	} {
+		if code, err := run(tc.args); err != nil || code != 37 {
+			t.Fatalf("%v: %d %v", tc.args, code, err)
+		}
+		data, err := os.ReadFile(output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		for _, want := range []string{"\n" + tc.port + "\n", tc.server, tc.action, "original-instance"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("missing %q in %s", want, text)
+			}
+		}
+		if strings.Contains(text, "9999") || strings.Contains(text, "8080") {
+			t.Fatal("wrong transport restored", text)
+		}
+	}
+	records, err := readRecentConnections()
+	if err != nil || len(records) != 1 || records[0].Session != "other" {
+		t.Fatalf("attachment default changed: %+v %v", records, err)
+	}
+	public, err := collectInventory(options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "/observed/sshore") || strings.Contains(string(encoded), "2222") {
+		t.Fatal("private connection settings leaked into inventory")
+	}
+}

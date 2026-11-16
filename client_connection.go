@@ -137,25 +137,36 @@ func readRecentConnections() ([]recentConnection, error) {
 		return nil, fmt.Errorf("too many recent connections")
 	}
 	for _, r := range records {
-		if validSSHDestination(r.Host) != nil || validSession(r.Session) != nil || r.Server == "" || strings.ContainsAny(r.Server, "\x00\r\n") {
-			return nil, fmt.Errorf("invalid recent connection")
-		}
-		if r.Directory != "" && !filepath.IsAbs(r.Directory) {
-			return nil, fmt.Errorf("invalid recent connection directory")
-		}
-		if len(r.SSH) > 0 {
-			if _, _, err = splitSSHOptions(append([]string{"--"}, r.SSH...), false); err != nil {
-				return nil, err
-			}
+		if err := validateRecentConnection(r); err != nil {
+			return nil, err
 		}
 	}
 	return records, nil
+}
+
+func validateRecentConnection(r recentConnection) error {
+	if validSSHDestination(r.Host) != nil || validSession(r.Session) != nil || r.Server == "" || strings.ContainsAny(r.Server, "\x00\r\n") {
+		return fmt.Errorf("invalid recent connection")
+	}
+	if r.Directory != "" && !filepath.IsAbs(r.Directory) {
+		return fmt.Errorf("invalid recent connection directory")
+	}
+	if len(r.SSH) > 0 {
+		if _, _, err := splitSSHOptions(append([]string{"--"}, r.SSH...), false); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func resolveRecentAttach(o *options) error {
 	if o.command != "attach" {
 		return nil
 	}
+	return applyRecentConnection(o)
+}
+
+func applyRecentConnection(o *options) error {
 	records, err := readRecentConnections()
 	if err != nil {
 		return err
@@ -168,19 +179,44 @@ func resolveRecentAttach(o *options) error {
 		if o.session == "" {
 			o.session = r.Session
 		}
-		if !o.serverSet {
-			o.server = r.Server
-		}
-		if len(o.ssh) == 0 {
-			o.ssh = append([]string(nil), r.SSH...)
-			o.sshDirectory = r.Directory
-		}
+		applyConnectionOptions(o, r)
 		return nil
 	}
 	if o.host == "" {
 		return usage("no recent connection; use sshore attach HOST [NAME] or sshore launch HOST")
 	}
 	return nil
+}
+
+func connectionFromOptions(o options) (recentConnection, error) {
+	// Forwarding flags belong to the original connection and must never replay
+	// merely because the user selected a recent shell.
+	ssh := transportio.WithoutForwarding(o.ssh)
+	directory := o.sshDirectory
+	if len(ssh) == 0 {
+		directory = ""
+	} else if directory == "" {
+		var err error
+		directory, err = os.Getwd()
+		if err != nil {
+			return recentConnection{}, err
+		}
+	}
+	server := o.server
+	if server == "" {
+		server = "sshore"
+	}
+	return recentConnection{Directory: directory, Host: o.host, Session: o.session, Server: server, SSH: ssh}, nil
+}
+
+func applyConnectionOptions(o *options, r recentConnection) {
+	if !o.serverSet {
+		o.server = r.Server
+	}
+	if len(o.ssh) == 0 {
+		o.ssh = append([]string(nil), r.SSH...)
+		o.sshDirectory = r.Directory
+	}
 }
 
 func rememberConnection(o options) error {
@@ -191,23 +227,10 @@ func rememberConnection(o options) error {
 	if err != nil {
 		return err
 	}
-	// Forwarding flags belong to the original connection and must never replay
-	// merely because the user selected a recent shell.
-	ssh := transportio.WithoutForwarding(o.ssh)
-	directory := o.sshDirectory
-	if len(ssh) == 0 {
-		directory = ""
-	} else if directory == "" {
-		directory, err = os.Getwd()
-		if err != nil {
-			return err
-		}
+	record, err := connectionFromOptions(o)
+	if err != nil {
+		return err
 	}
-	server := o.server
-	if server == "" {
-		server = "sshore"
-	}
-	record := recentConnection{Directory: directory, Host: o.host, Session: o.session, Server: server, SSH: ssh}
 	next := []recentConnection{record}
 	for _, old := range records {
 		if old.Host != o.host && len(next) < recentConnectionLimit {

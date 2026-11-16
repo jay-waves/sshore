@@ -119,8 +119,10 @@ func executeShellCommand(o options) (int, error) {
 	if o.local {
 		return runLocalCommand(o)
 	}
-	if err = resolveRecentAttach(&o); err != nil {
-		return 1, err
+	if o.taskIdentity == "" {
+		if err = resolveRecentAttach(&o); err != nil {
+			return 1, err
+		}
 	}
 	o.downloadDir, err = prepareDownloadDir(o.downloadDir)
 	if err != nil {

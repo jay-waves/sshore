@@ -61,7 +61,7 @@ flowchart LR
     update -->|"Prepare verified replacement before ending confirmed tasks"| setup
 ```
 
-Remote output, public names, numeric task IDs and inventory records are not
+Remote output, public names, task IDs and inventory records are not
 capabilities. Local control requires private state and authentication. Remote
 operations remain constrained by the authenticated account and SSH server policy.
 
@@ -194,7 +194,9 @@ Lifecycle is fixed at startup:
   not end merely because a shell ends.
 
 Explicit cancellation validates the target instance, capability or process identity;
-it never kills a PID solely because a record contains it. Remote shell cancellation
+it never kills a PID solely because a record contains it. Short-ID selection is
+bound to the original task instance and cannot authorize control of a replacement.
+Remote shell cancellation
 requires matching client/program/daemon releases, the account setup lock, a same-user
 socket peer and confirmed process identities. It does not install or update software.
 Single-shell cancel can end an attached shell immediately. `cancel --all` displays a
@@ -326,7 +328,7 @@ path or port direction, and state. They exclude local mount paths and unrelated
 hosts. A remote account can forge its own inventory. Records expire, can become
 unknown and are read-only; removing a record never signals a process.
 
-Cached shell relationships, numeric task IDs, exit receipts and worker liveness
+Cached shell relationships, task IDs, exit receipts and worker liveness
 are not proof of identity, successful cleanup or remote service health. Targets
 are not probed. Detailed remote inventory checks the exact release but never
 installs or updates software.

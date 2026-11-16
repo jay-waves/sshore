@@ -294,7 +294,7 @@ func showConnectedTasks(control *smux.Stream, o options) error {
 			break
 		}
 	}
-	if err := cacheRemoteShells(o.host, inv); err != nil {
+	if err := cacheRemoteShells(o.host, inv, o); err != nil {
 		return err
 	}
 	shells := inv.Shells[:0]

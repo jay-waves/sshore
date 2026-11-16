@@ -77,11 +77,14 @@ Options:
 ` + shellStartupOptions + connectionOptions + shellConnectionHelp,
 	"attach": `Usage: sshore attach [HOST [NAME]] [options] [-- SSH_OPTIONS]
        sshore attach --local [NAME]
+       sshore attach ID [options] [-- SSH_OPTIONS]
 
 Resume a detached shell. This never creates a shell or evicts its current client.
 Omit HOST and NAME to reuse the last successful connection. HOST alone reuses
 its remembered shell or offers a selection if there is no history.
-Use the name shown in list, or --local to select a local shell.
+Use a name or short ID from list. An ID selects its local or remote shell.
+With HOST or --local, ID may replace NAME. A lone six-character hex operand
+is an ID; for a hex-named host, give HOST NAME explicitly.
 
 Options:
 ` + connectionOptions + shellConnectionHelp,
@@ -94,9 +97,10 @@ Use attach to reconnect. Ctrl+B d also detaches.
 	"rename": `Usage: sshore rename HOST OLD NEW [--server PATH] [-- SSH_OPTIONS]
        sshore rename --local OLD NEW
        sshore rename {mount|forward|review}/OLD NEW
+       sshore rename ID NEW
 
 Rename a shell, resource or pending review without restarting it.
-NEW must be unused.
+NEW must be unused. A short ID from list may replace OLD.
 After renaming a shell, request its pending approvals again.
 Remote rename requires matching releases and never installs software.
 ` + sshOptions,
@@ -106,7 +110,8 @@ Without HOST, show local tasks and saved remote observations without SSH.
 With HOST, query that account live; the remote release must match.
 CHECKED shows when state was last confirmed, not whether it is still live.
 Peer entries are read-only. The six-character hex ID identifies a task instance.
-Use task names for attach, rename, cancel and review.
+Use task names or short IDs for attach, rename, cancel and review.
+A matching short ID takes precedence over a name.
 
 Options:
   --local          Show only local shells
@@ -128,10 +133,15 @@ Give HOST to query that remote account; omit it for local and saved records.
 ` + sshOptions,
 	"cancel": `Usage: sshore cancel --local NAME
        sshore cancel {review|mount|forward}/NAME
+       sshore cancel ID
        sshore cancel HOST NAME [--server PATH] [-- SSH_OPTIONS]
        sshore cancel [HOST] --all [--server PATH] [-- SSH_OPTIONS]
 
-Use the task name from list:
+Use a name or short ID from list. ID selects its task without HOST or --local;
+it may also replace NAME in the forms above. IDs stay bound to their original
+instance across renames; an unavailable instance cannot select its replacement.
+
+Effects:
   Shell     Ends the shell and its identified tasks without confirmation.
             Unsaved work may be lost. Confirmed ended history is only cleared.
   Review    Discards the pending request without executing it.
@@ -143,10 +153,10 @@ covers local shells and resources. With HOST it targets that account and
 local resources connected to HOST. Peer records are read-only.
 Remote cancellation requires matching releases and never installs software.
 ` + sshOptions,
-	"review": `Usage: sshore review [NAME] [--stay]
+	"review": `Usage: sshore review [NAME|ID] [--stay]
 
 Run locally after a remote request detaches. Omit NAME to select a request,
-or use a name from list. Selecting it opens review only.
+or use a name or short ID from list. Selecting it opens review only.
 
 Submitting all valid paths or the port starts the operation without another
 confirmation. Ctrl-C cancels before submission. A request is single-use,

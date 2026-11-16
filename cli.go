@@ -190,13 +190,24 @@ func runTargetCommand(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	if len(parsed.operands) == 1 && !parsed.has("--local") && !parsed.has("--all") {
+	target, selected, err := resolveShortTask(command, &parsed)
+	if err != nil {
+		return 2, err
+	}
+	if !selected && (command == "attach" || command == "cancel" || command == "review") && len(parsed.operands) == 1 && !parsed.has("--local") && !parsed.has("--all") {
 		ref := parsed.operands[0]
 		if ref != "" && strings.Trim(ref, "0123456789") == "" {
-			switch command {
-			case "attach", "cancel", "review":
-				return 2, usage("list IDs are display-only; select the task by name")
-			}
+			return 2, usage("list sequence numbers are display-only; select the task by name or short ID")
+		}
+	}
+	if selected && target.kind != "shell" {
+		switch command {
+		case "cancel":
+			return 0, cancelResourceIdentity(target.kind+"/"+target.name, target.identity)
+		case "rename":
+			return runRenameResource(target.kind, target.name, parsed.operands[1], target.identity)
+		case "review":
+			parsed.operands = []string{target.requestID}
 		}
 	}
 	if command == "review" {
@@ -236,6 +247,16 @@ func runTargetCommand(args []string) (int, error) {
 	o, err := shellOptions(command, parsed)
 	if err != nil {
 		return 2, err
+	}
+	if selected && target.kind == "shell" {
+		o.taskIdentity, o.instance = target.identity, target.instance
+		if !o.local {
+			if target.connection != nil {
+				applyConnectionOptions(&o, *target.connection)
+			} else if err := applyRecentConnection(&o); err != nil {
+				return 1, err
+			}
+		}
 	}
 	return executeShellCommand(o)
 }

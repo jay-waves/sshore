@@ -168,7 +168,7 @@ func TestCompletionOfflineState(t *testing.T) {
 	write("mounts/data.json", resourceRecord{Kind: "mount", Name: "data", Token: "secret"})
 	write("approvals/pending.json", approvalRecord{ID: strings.Repeat("b", 32), Name: "pending", Created: time.Now()})
 	write("approvals/expired.json", approvalRecord{ID: strings.Repeat("c", 32), Name: "expired", Created: time.Now().Add(-2 * approvalTTL)})
-	write("tasks/ids.json", taskIDIndex{Next: 8, IDs: map[string]uint64{local.identity(): 7}})
+	write("tasks/ids.json", taskIDIndex{Next: 8, IDs: map[string]uint64{local.identity(): 7}, Codes: map[string]string{local.identity(): "aa9bec"}})
 	config := filepath.Join(home, ".ssh")
 	if err := os.MkdirAll(config, 0700); err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestCompletionOfflineState(t *testing.T) {
 	if err := runCompletionQuery([]string{"words", ":", "attach"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"configured\t", "alias\t", "included\t", "recent\t", "work\t"} {
+	for _, want := range []string{"configured\t", "alias\t", "included\t", "recent\t", "work\t", "aa9bec\t"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %q: %s", want, &out)
 		}
@@ -347,4 +347,34 @@ func TestCompletionQueryProcess(t *testing.T) {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+func TestShortTaskCompletionScopes(t *testing.T) {
+	local, remote, mount, review := completionTask{"shell", "local", ""}, completionTask{"shell", "remote", "work"}, completionTask{"mount", "data", ""}, completionTask{"review", "request", ""}
+	catalog := func() completionCatalog {
+		return completionCatalog{tasks: []completionTask{local, remote, mount, review}, codes: map[completionTask]string{local: "111111", remote: "222222", mount: "aaaaaa", review: "bbbbbb"}}
+	}
+	for _, tc := range []struct {
+		words        []string
+		want, absent []string
+	}{
+		{[]string{"cancel"}, []string{"111111", "222222", "mount/aaaaaa", "review/bbbbbb"}, nil},
+		{[]string{"rename"}, []string{"mount/aaaaaa", "review/bbbbbb"}, nil},
+		{[]string{"attach"}, []string{"111111", "222222"}, []string{"aaaaaa", "bbbbbb"}},
+		{[]string{"review"}, []string{"bbbbbb", "review/bbbbbb"}, []string{"111111", "222222", "aaaaaa"}},
+		{[]string{"cancel", "--local"}, []string{"111111"}, []string{"222222", "aaaaaa", "bbbbbb"}},
+		{[]string{"cancel", "work"}, []string{"222222"}, []string{"111111", "aaaaaa", "bbbbbb"}},
+	} {
+		values := completionValues(completeCLI(tc.words, "", catalog))
+		for _, want := range tc.want {
+			if !slices.Contains(values, want) {
+				t.Fatalf("%v missing %s: %v", tc.words, want, values)
+			}
+		}
+		for _, absent := range tc.absent {
+			if slices.Contains(values, absent) {
+				t.Fatalf("%v suggests %s", tc.words, absent)
+			}
+		}
+	}
 }

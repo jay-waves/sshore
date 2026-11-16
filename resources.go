@@ -153,7 +153,7 @@ func lockResourceRename() (*os.File, error) {
 	return f, nil
 }
 
-func runRenameResource(kind, old, name string) (int, error) {
+func runRenameResource(kind, old, name string, expected ...string) (int, error) {
 	if kind != "mount" && kind != "forward" && kind != "review" {
 		return 2, usage("rename expects mount/NAME, forward/NAME or review/NAME")
 	}
@@ -176,6 +176,9 @@ func runRenameResource(kind, old, name string) (int, error) {
 		if err != nil {
 			return 1, err
 		}
+		if len(expected) > 0 && resourceIdentity(resourceRecord{Kind: "review", Token: record.ID}) != expected[0] {
+			return 1, fmt.Errorf("request changed; refresh with sshore list")
+		}
 		if record.DisplayName() == name {
 			return 0, nil
 		}
@@ -191,6 +194,9 @@ func runRenameResource(kind, old, name string) (int, error) {
 		row, err := findRunningResource(kind, old)
 		if err != nil {
 			return 1, err
+		}
+		if len(expected) > 0 && resourceIdentity(row) != expected[0] {
+			return 1, fmt.Errorf("task changed; refresh with sshore list")
 		}
 		if row.Version != version || row.Token == "" {
 			return 1, fmt.Errorf("resource is unavailable or requires a matching release")

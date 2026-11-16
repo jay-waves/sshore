@@ -18,7 +18,7 @@ policy or depending on mutable application state.
 
 | Responsibility | Start here |
 | --- | --- |
-| CLI grammar, dispatch and help | `cli_schema.go`: shared command aliases and product/SSH grammar; `cli_shell.go`, `cli_endpoints.go`: command semantics; `cli.go`: dispatch |
+| CLI grammar, dispatch and help | `cli_schema.go`: shared command aliases and product/SSH grammar; `cli_shell.go`, `cli_endpoints.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
 | Shell completion | `completion.go`: contexts, candidate protocol and read-only hints; `completion_scripts.go`: shell adapters |
 | Connections and session switching | `client.go`, `client_connection.go` |
 | Remote preparation and exact-release policy | `setup*.go` |
@@ -34,7 +34,7 @@ policy or depending on mutable application state.
 | Forward transport and retries | `forward.go`: endpoint parsing, command execution and SSH worker lifecycle |
 | Resource startup and control | `resource_runtime.go`, `resources.go` |
 | Private storage and name reservations | `state.go` (including account identity and remembered entry points), `object_names.go`; native checks in `platform_*.go` |
-| Inventory, stable IDs and shell relationships | `inventory*.go`, `list*.go`, `pstree*.go`, `peers*.go` |
+| Inventory, stable IDs and shell relationships | `inventory*.go`, `list*.go`, `shell_cache.go`, `pstree*.go`, `peers*.go` |
 | Platform adapters | `platform_linux.go` / `platform_windows.go` in the application and file/transport packages; `console_linux.go` / `console_windows.go` in terminal/UI packages |
 | Installation, packaging and publication | `install.sh`, `install.ps1`, `scripts/`, `.github/workflows/` |
 
@@ -81,8 +81,10 @@ Keep lifetime separate from interaction:
 - Cancel and join old input readers/writers before handing the terminal to
   another attachment, local prompt or SSH authentication process.
 
-Commands select tasks by name. The task index reserves short display IDs against
-immutable instances and preserves internal ordering. Actions revalidate immutable
+Commands select tasks by name or short ID. The task index reserves short IDs against
+immutable instances and preserves internal ordering. Short-ID operations reuse the
+connection settings of their observation without changing the recent-attach default.
+Actions revalidate immutable
 instances, capabilities or process identities at their authority. Displayed process
 ancestry is not permission to signal. Follow the
 [shell control safeguards](SECURITY.md#shell-control-and-lifetime).

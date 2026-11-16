@@ -223,7 +223,7 @@ func collectInventory(o options) (inventory, error) {
 			if warn, routeErr := observeIdentityRoute(inv.MachineID, o.host, o.ssh); routeErr == nil && warn {
 				fmt.Fprintln(os.Stderr, "[sshore] Same identity through a new entry point; if this is a clone, run sshore reset there.")
 			}
-			if err := cacheRemoteShells(o.host, inv); err != nil {
+			if err := cacheRemoteShells(o.host, inv, o); err != nil {
 				inv.Errors = append(inv.Errors, "could not save shell history: "+cleanText(err.Error()))
 			}
 		}

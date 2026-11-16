@@ -16,6 +16,7 @@ import (
 )
 
 const shellHistoryRetention = 7 * 24 * time.Hour
+const maxShellSnapshot = 128 * 1024
 
 func endedShellState(state string) bool {
 	return state == "not-listed" || state == "exited" || state == "renamed"
@@ -52,17 +53,18 @@ func lockShellCache() (*os.File, error) {
 }
 
 type shellSnapshot struct {
-	MachineID   string    `json:"machine_id,omitempty"`
-	Hostname    string    `json:"hostname,omitempty"`
-	Forgotten   bool      `json:"forgotten,omitempty"`
-	Temporary   bool      `json:"temporary,omitempty"`
-	Instance    string    `json:"instance,omitempty"`
-	Host        string    `json:"host"`
-	Name        string    `json:"name"`
-	State       string    `json:"state"`
-	ConfirmedAt time.Time `json:"confirmed_at"`
-	Unconfirmed bool      `json:"unconfirmed,omitempty"`
-	Active      bool      `json:"local_connection_active,omitempty"`
+	Connection  *recentConnection `json:"connection,omitempty"`
+	MachineID   string            `json:"machine_id,omitempty"`
+	Hostname    string            `json:"hostname,omitempty"`
+	Forgotten   bool              `json:"forgotten,omitempty"`
+	Temporary   bool              `json:"temporary,omitempty"`
+	Instance    string            `json:"instance,omitempty"`
+	Host        string            `json:"host"`
+	Name        string            `json:"name"`
+	State       string            `json:"state"`
+	ConfirmedAt time.Time         `json:"confirmed_at"`
+	Unconfirmed bool              `json:"unconfirmed,omitempty"`
+	Active      bool              `json:"local_connection_active,omitempty"`
 }
 
 func shellCachePath(host, name string) (string, error) {
@@ -128,7 +130,7 @@ func readShellSnapshotsLocked() ([]shellSnapshot, error) {
 			return nil, err
 		}
 		var s shellSnapshot
-		err = json.NewDecoder(io.LimitReader(f, 8192)).Decode(&s)
+		err = json.NewDecoder(io.LimitReader(f, maxShellSnapshot)).Decode(&s)
 		f.Close()
 		if err != nil {
 			return nil, err
@@ -136,6 +138,14 @@ func readShellSnapshotsLocked() ([]shellSnapshot, error) {
 		expected, err := shellCachePath(s.Host, s.Name)
 		if err != nil || path != expected {
 			return nil, fmt.Errorf("invalid shell cache record")
+		}
+		if s.Connection != nil {
+			if s.Connection.Host != s.Host {
+				return nil, fmt.Errorf("invalid shell connection host")
+			}
+			if err := validateRecentConnection(*s.Connection); err != nil {
+				return nil, err
+			}
 		}
 		if s.Instance != "" && !endedShellState(s.State) {
 			for _, n := range shellTreeFor("remote:" + s.Instance) {
@@ -200,7 +210,12 @@ func trackShellConnection(o options) (*shellConnection, error) {
 		f.Close()
 		return nil, err
 	}
-	s := &shellConnection{lock: f, snapshot: shellSnapshot{Temporary: o.temporary, Instance: o.instance, Host: o.host, Name: o.session, State: "attached", ConfirmedAt: time.Now()}}
+	connection, err := connectionFromOptions(o)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	s := &shellConnection{lock: f, snapshot: shellSnapshot{Connection: &connection, Temporary: o.temporary, Instance: o.instance, Host: o.host, Name: o.session, State: "attached", ConfirmedAt: time.Now()}}
 	if err = saveShellSnapshot(s.snapshot); err != nil {
 		f.Close()
 		return nil, err
@@ -238,20 +253,32 @@ func (s *shellConnection) close() {
 	}
 }
 
-func cacheRemoteShells(host string, inv inventory) error {
+func cacheRemoteShells(host string, inv inventory, connection ...options) error {
 	lock, err := lockShellCache()
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
-	return cacheRemoteShellsLocked(host, inv)
+	return cacheRemoteShellsLocked(host, inv, connection...)
 }
-func cacheRemoteShellsLocked(host string, inv inventory) error {
+func cacheRemoteShellsLocked(host string, inv inventory, connection ...options) error {
 	seen := map[string]bool{}
+	names := map[string]string{}
 	now := time.Now()
 	for _, shell := range inv.Shells {
+		if shell.Instance != "" {
+			names[shell.Instance] = shell.Name
+		}
 		seen[shell.Name] = true
 		snapshot := shellSnapshot{Temporary: shell.Temporary, Instance: shell.Instance, Host: host, MachineID: inv.MachineID, Hostname: inv.Hostname, Name: shell.Name, State: shell.State, ConfirmedAt: now}
+		if len(connection) > 0 {
+			route, err := connectionFromOptions(connection[0])
+			if err != nil {
+				return err
+			}
+			route.Host, route.Session = host, shell.Name
+			snapshot.Connection = &route
+		}
 		if err := saveShellSnapshotLocked(snapshot); err != nil {
 			return err
 		}
@@ -276,8 +303,14 @@ func cacheRemoteShellsLocked(host string, inv inventory) error {
 		return err
 	}
 	for _, old := range previous {
-		if old.Host == host && !seen[old.Name] && !old.Active && !endedShellState(old.State) {
-			old.State, old.ConfirmedAt, old.Unconfirmed = "not-listed", now, false
+		if old.Host == host && !seen[old.Name] && !endedShellState(old.State) {
+			state := "not-listed"
+			if names[old.Instance] != "" {
+				state = "renamed"
+			} else if old.Active {
+				continue
+			}
+			old.State, old.ConfirmedAt, old.Unconfirmed = state, now, false
 			if err := saveShellSnapshotLocked(old); err != nil {
 				return err
 			}
@@ -311,7 +344,7 @@ func renameShellSnapshotLocked(host, old, name string) error {
 		return err
 	}
 	var snapshot shellSnapshot
-	err = json.NewDecoder(io.LimitReader(file, 8192)).Decode(&snapshot)
+	err = json.NewDecoder(io.LimitReader(file, maxShellSnapshot)).Decode(&snapshot)
 	file.Close()
 	if err != nil {
 		return err

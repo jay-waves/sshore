@@ -104,6 +104,7 @@ function names may retain historical terminology.
 A private sequence number assigned by the local manager to a task instance.
 It stays stable across rename, detach and reconnect and is never reused.
 The short hex ID shown by `list` stays with that task instance. Commands select
-tasks by name.
+tasks by name or short ID. A short ID selects its original instance across
+renames; it never selects a replacement that reuses the name.
 
 An **account identity** is a locally salted OS identifier used only to group host display records. It is not an authentication identity; cloning its state can duplicate it. `sshore reset` replaces it.

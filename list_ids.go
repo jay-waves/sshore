@@ -31,6 +31,41 @@ func taskShortCode(key string, salt uint64) string {
 	return hex.EncodeToString(sum[:3])
 }
 
+func readTaskIDIndex(path string) (taskIDIndex, error) {
+	index := taskIDIndex{Next: 1, IDs: map[string]uint64{}}
+	data, err := os.ReadFile(path)
+	if err == nil {
+		if err = json.Unmarshal(data, &index); err != nil {
+			return taskIDIndex{}, err
+		}
+	} else if !os.IsNotExist(err) {
+		return taskIDIndex{}, err
+	}
+	if index.Next == 0 || index.IDs == nil {
+		return taskIDIndex{}, fmt.Errorf("invalid task ID index")
+	}
+	seen := map[uint64]bool{}
+	for _, id := range index.IDs {
+		if id == 0 || id >= index.Next || seen[id] {
+			return taskIDIndex{}, fmt.Errorf("invalid task ID index")
+		}
+		seen[id] = true
+	}
+	if index.Codes == nil {
+		index.Codes = map[string]string{}
+	}
+	reserved := make(map[string]bool, len(index.Codes))
+	for key, code := range index.Codes {
+		raw, err := hex.DecodeString(code)
+		if index.IDs[key] == 0 || err != nil || len(raw) != 3 ||
+			hex.EncodeToString(raw) != code || reserved[code] {
+			return taskIDIndex{}, fmt.Errorf("invalid task short ID index")
+		}
+		reserved[code] = true
+	}
+	return index, nil
+}
+
 func assignTaskIDs(keys []string) (map[string]taskReference, error) {
 	dir, err := stateDir("tasks")
 	if err != nil {
@@ -57,35 +92,12 @@ func assignTaskIDs(keys []string) (map[string]taskReference, error) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	path := filepath.Join(dir, "ids.json")
-	index := taskIDIndex{Next: 1, IDs: map[string]uint64{}}
-	data, err := os.ReadFile(path)
-	if err == nil {
-		if err = json.Unmarshal(data, &index); err != nil {
-			return nil, err
-		}
-	} else if !os.IsNotExist(err) {
+	index, err := readTaskIDIndex(path)
+	if err != nil {
 		return nil, err
 	}
-	if index.Next == 0 || index.IDs == nil {
-		return nil, fmt.Errorf("invalid task ID index")
-	}
-	seen := map[uint64]bool{}
-	for _, id := range index.IDs {
-		if id == 0 || id >= index.Next || seen[id] {
-			return nil, fmt.Errorf("invalid task ID index")
-		}
-		seen[id] = true
-	}
-	if index.Codes == nil {
-		index.Codes = map[string]string{}
-	}
 	reserved := make(map[string]bool, len(index.Codes))
-	for key, code := range index.Codes {
-		raw, err := hex.DecodeString(code)
-		if index.IDs[key] == 0 || err != nil || len(raw) != 3 ||
-			hex.EncodeToString(raw) != code || reserved[code] {
-			return nil, fmt.Errorf("invalid task short ID index")
-		}
+	for _, code := range index.Codes {
 		reserved[code] = true
 	}
 	result := make(map[string]taskReference, len(keys))

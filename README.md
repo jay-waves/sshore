@@ -86,7 +86,7 @@ sshore list work --verbose      # Remote process trees and diagnostics.
 sshore list --json              # Machine-readable inventory.
 ```
 
-Use the stable IDs from `list` with `attach ID` or `cancel ID`.
+Use names or short IDs from `list` with `attach`, `cancel`, `rename` and `review`.
 In `--verbose`, LIFETIME is `parent` for local spawn, `heartbeat` for remote spawn, or
 `persistent` for launch; it describes policy, not connection health.
 
