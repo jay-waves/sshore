@@ -89,6 +89,103 @@ class Terminal:
         os.close(self.fd)
 
 
+def handoff_smoke(binary, host, options, root):
+    terminal = Terminal([binary, "spawn", "--local", "handoff-local"])
+    try:
+        marker = root / "handoff-accepted"
+        nested = [binary, "spawn", host, "handoff-remote", "--quiet", *options]
+        terminal.send(shlex.join(nested) + "; printf '%s' \"$?\" > " + shlex.quote(str(marker)) + "\n")
+        terminal.expect(r"Connected [^\r\n]+ / handoff-remote")
+        deadline = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert marker.read_text() == "0", "nested command did not exit after handoff"
+        terminal.send(b"\x02i")
+        terminal.expect(re.escape("[sshore] " + host + " / handoff-remote"))
+        terminal.send(b"\x02d")
+        terminal.expect(r"Connected local / handoff-local")
+        terminal.send(shlex.join([binary, "attach", host, "handoff-remote", "--quiet", *options]) + "\n")
+        terminal.expect(r"Connected [^\r\n]+ / handoff-remote")
+        terminal.send("exit\n")
+        terminal.expect(r"Connected local / handoff-local")
+        terminal.send("exit\n")
+        terminal.wait()
+        print("PASS: local frontend handoff, single-prefix remote keys, return and reattach over SSH")
+    finally:
+        terminal.close()
+
+
+def nested_smoke(binary, host, options, root):
+    terminal = Terminal([binary, "launch", host, "nested-root", *options])
+    def processes():
+        found = {}
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                if os.readlink(entry / "exe") == binary:
+                    found[entry.name] = (entry / "cmdline").read_bytes().replace(b"\0", b" ")
+            except (OSError, PermissionError):
+                pass
+        return found
+    try:
+        baseline = processes()
+        for name in ("nested-child", "nested-grandchild", "nested-local"):
+            marker = root / (name + "-returned")
+            command = "export SSH_AUTH_SOCK=" + shlex.quote(os.environ["SSH_AUTH_SOCK"]) + "; "
+            args = [binary, "spawn", "--local", name] if name == "nested-local" else [binary, "spawn", host, name, *options]
+            command += shlex.join(args)
+            terminal.send(command + "; printf '%s' \"$?\" > " + shlex.quote(str(marker)) + "\n")
+            terminal.expect(r"Connected [^\r\n]+ / " + name)
+            deadline = time.monotonic() + 5
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert marker.read_text() == "0", "nested launcher did not exit successfully"
+            deadline = time.monotonic() + 5
+            while len(processes()) > len(baseline) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert len(processes()) <= len(baseline), ("spawn added resident processes", baseline, processes())
+        terminal.send(b"\x02d")
+        terminal.expect(r"Connected [^\r\n]+ / nested-grandchild")
+        reattached = Terminal([binary, "attach", host, "nested-local"])
+        try:
+            payload, received = root / "nested-payload", root / "nested-received"
+            payload.write_bytes(b"routed approval data")
+            reattached.send(shlex.join([binary, "cp", str(payload), "origin:"]) + "\n")
+            request = reattached.expect(r"Request saved: ([a-f0-9]{32})").group(1).decode()
+            reattached.expect("Background;")
+            reattached.wait()
+            reattached.close()
+            reattached = None
+            approval = Terminal([binary, "review", request, "--stay"], wait_ready=False)
+            try:
+                approval.expect("Save as")
+                approval.send(str(received) + "\n")
+                approval.expect("Saved ")
+                approval.wait()
+                assert received.read_bytes() == payload.read_bytes()
+            finally:
+                approval.close()
+            reattached = Terminal([binary, "attach", host, "nested-local"])
+            reattached.send("exit\n")
+            reattached.wait()
+        finally:
+            if reattached is not None:
+                reattached.close()
+        terminal.send(b"\x02n")
+        terminal.expect(r"Connected [^\r\n]+ / nested-root")
+        terminal.send(b"\x02l")
+        terminal.expect(r"Connected [^\r\n]+ / nested-grandchild")
+        for name in ("nested-child", "nested-root"):
+            terminal.send("exit\n")
+            terminal.expect(r"Connected [^\r\n]+ / " + name)
+        terminal.send("exit\n")
+        terminal.wait()
+        print("PASS: remote nested spawn exits launcher and returns through two levels")
+    finally:
+        terminal.close()
+
+
 def spawn_smoke(binary, host, options):
     def cli(action, *extra):
         return [binary, action, host, *extra, *options]
@@ -236,6 +333,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default="dist/sshore")
     parser.add_argument("--spawn-only", action="store_true")
+    parser.add_argument("--nested-only", action="store_true")
+    parser.add_argument("--handoff-only", action="store_true")
     parser.add_argument("--setup-only", action="store_true")
     parser.add_argument("--mcp-only", action="store_true")
     args = parser.parse_args()
@@ -261,6 +360,14 @@ def main():
         hostkey = root / "hostkey"
         for path in (key, hostkey):
             subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(path)], check=True)
+        agent_socket = root / 'agent.sock'
+        agent_process = subprocess.Popen(['ssh-agent', '-D', '-a', str(agent_socket)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        os.environ['SSH_AUTH_SOCK'] = str(agent_socket)
+        for _ in range(100):
+            if agent_socket.exists():
+                break
+            time.sleep(0.01)
+        subprocess.run(['ssh-add', str(key)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
@@ -347,6 +454,12 @@ LogLevel ERROR
                 ssh_wrapper.chmod(0o700)
                 mcp_smoke(binary, command[2], ssh_wrapper)
                 return
+            if args.handoff_only:
+                handoff_smoke(binary, command[2], command[3:], root)
+                return
+            if args.nested_only:
+                nested_smoke(binary, command[2], command[3:], root)
+                return
             if args.spawn_only:
                 spawn_smoke(binary, command[2], command[3:])
                 return
@@ -354,16 +467,18 @@ LogLevel ERROR
                 setup_smoke(binary, command[2], command[5:], root)
                 return
             base_command = command[:]
-            for expected_name in (b"pikachu", b"eevee"):
+            auto_names=[]
+            for _ in range(2):
                 auto = Terminal(base_command, wait_ready=False)
                 terms.append(auto)
-                match = auto.expect(r"Connected [^\r\n]+ / ([a-z]+) ")
-                assert match.group(1) == expected_name, match.group(1)
+                match = auto.expect(r"Connected [^\r\n]+ / ([0-9a-f]{6}) ")
+                assert match.group(1).decode() not in auto_names
+                auto_names.append(match.group(1).decode())
                 auto.send(b"\x02d")
                 auto.wait()
                 auto.close()
                 terms.remove(auto)
-            for name in ("pikachu", "eevee"):
+            for name in auto_names:
                 auto = Terminal([binary, "attach"] + [base_command[2], name] + base_command[3:])
                 terms.append(auto)
                 auto.send("exit\n")
@@ -371,8 +486,7 @@ LogLevel ERROR
                 auto.close()
                 terms.remove(auto)
             command = [binary, "attach"] + [base_command[2], "main"] + base_command[3:]
-            # Native forwarding, compression and diagnostics are passed to the
-            # same interactive OpenSSH process, including attached value forms.
+            # Native forwarding rules evaluated by ssh -G use owned Go channels.
             native_ports = []
             probes = []
             for _ in range(3):
@@ -398,7 +512,6 @@ LogLevel ERROR
                 worker = threading.Thread(target=echo_connections, daemon=True)
                 worker.start()
                 term = Terminal([binary, "launch"] + command[2:] + [
-                    "-C", "-vvv", "-E", str(ssh_log),
                     f"-L127.0.0.1:{local_port}:127.0.0.1:{service_port}",
                     "-R", f"127.0.0.1:{reverse_port}:127.0.0.1:{service_port}",
                     f"-D127.0.0.1:{socks_port}", "-oExitOnForwardFailure=yes",
@@ -420,7 +533,6 @@ LogLevel ERROR
                     stream.close()
                 worker.join(timeout=5)
                 assert not worker.is_alive()
-                assert ssh_log.stat().st_size > 0
             term.send("stty -echo; KEEP=shore; printf 'PID:%s\\n' $$\n")
             shell_pid = int(term.expect(r"PID:(\d+)").group(1))
             fcntl.ioctl(term.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 37, 103, 0, 0))
@@ -431,8 +543,8 @@ LogLevel ERROR
             term.expect("RUN_sleep")
             deadline = time.monotonic() + 5
             while True:
-                listing = subprocess.check_output([binary, "list", "--verbose"] + base_command[2:], text=True)
-                if re.search(r"\bmain\b[\s\S]*?\bsleep\b", listing):
+                listing = subprocess.check_output([binary, "list", "--json"] + base_command[2:], text=True)
+                if "sleep" in listing:
                     break
                 if time.monotonic() >= deadline:
                     raise AssertionError(f"missing foreground sleep: {listing}")
@@ -596,15 +708,13 @@ LogLevel ERROR
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", forward_port))
 
-            # A new SSH connection uses OpenSSH's normal key-passphrase prompt.
+            # The agent retains the key after its on-disk private file is encrypted.
             subprocess.run(["ssh-keygen", "-q", "-p", "-P", "", "-N", "sshore-test-passphrase", "-f", str(key)], check=True, stdout=subprocess.DEVNULL)
             term = Terminal(command, wait_ready=False)
             terms.append(term)
-            term.expect("Enter passphrase")
-            term.send("sshore-test-passphrase\n")
             term.expect(r"\[sshore\] Connected")
             request_id = queue_request(term, f"sshore cp {shlex.quote(str(remote))} origin:")
-            term = approve(request_id, [("download", root / "after-auth.bin")], passphrase="sshore-test-passphrase")
+            term = approve(request_id, [("download", root / "after-auth.bin")])
             term.expect("Saved .*after-auth.bin")
             term.expect(r"\[sshore\] Connected")
             assert (root / "after-auth.bin").read_bytes() == data
@@ -630,6 +740,8 @@ LogLevel ERROR
             finally:
                 daemon.terminate()
                 daemon.wait(timeout=5)
+                agent_process.terminate()
+                agent_process.wait(timeout=5)
                 log.close()
                 deadline = time.monotonic() + 3
                 while runtime.exists() and list(runtime.glob("*.sock")) and time.monotonic() < deadline:

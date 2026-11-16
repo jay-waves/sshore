@@ -172,13 +172,7 @@ func TestApprovalPrompt(t *testing.T) {
 			// Reaching this local stub proves approval proceeded, without a network call.
 			stub := filepath.Join(root, "ssh-stub")
 			if err := os.WriteFile(stub, []byte(`#!/bin/sh
-if [ "$SSHORE_ASKPASS" = 1 ]; then
-  reply=$("$SSH_ASKPASS" SSH-STARTED)
-else
-  printf 'SSH-STARTED\n' >&2
-  read reply </dev/tty
-fi
-printf 'HANDOFF-%s\n' "$reply" >&2
+printf 'SSH-STARTED\n' >&2
 exit 1
 `), 0700); err != nil {
 				t.Fatal(err)
@@ -294,8 +288,6 @@ exit 1
 						io.WriteString(terminal, "8080\r")
 					}
 					await("SSH-STARTED")
-					io.WriteString(terminal, "ready\r")
-					await("HANDOFF-ready")
 				}
 			} else if scenario == "download" || scenario == "download-cancel" || scenario == "batch-cancel" {
 				await("Save as")
@@ -315,8 +307,6 @@ exit 1
 						await("approval cancelled")
 					} else {
 						await("SSH-STARTED")
-						io.WriteString(terminal, "ready\r")
-						await("HANDOFF-ready")
 					}
 				}
 			} else {
@@ -347,8 +337,6 @@ exit 1
 					}
 					io.WriteString(terminal, "\r")
 					await("SSH-STARTED")
-					io.WriteString(terminal, "ready\r")
-					await("HANDOFF-ready")
 					if scenario == "many" && strings.Count(output.String(), "101 matches;") != 1 {
 						t.Fatal("repeated completion hint", output.String())
 					}

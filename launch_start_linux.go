@@ -262,6 +262,9 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 	}
 	defer conn.Close()
 	gate.Close()
+	if os.Getenv("SSHORE_DIRECT_TRANSPORT") == "1" {
+		return writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode, Directory: path})
+	}
 	if len(temporary) > 0 && temporary[0] {
 		return bridgeSpawn(path, conn, readyMode)
 	}

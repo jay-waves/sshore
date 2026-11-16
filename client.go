@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -26,9 +25,9 @@ import (
 	"github.com/xtaci/smux"
 	"golang.org/x/term"
 
+	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 	"github.com/jay-waves/sshore/internal/tmux"
-	transportio "github.com/jay-waves/sshore/internal/transport"
 )
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
@@ -42,12 +41,6 @@ type clientEvent struct {
 	m              message
 	input          []byte
 	err            error
-}
-
-func sshCommand(o options) *exec.Cmd {
-	cmd := exec.Command(sshExecutable(), transportio.ShellArgs(o.host, o.ssh, remoteCommand(o))...)
-	cmd.Dir = o.sshDirectory
-	return cmd
 }
 
 // Recovery has no persistent session name. Only automatic managed connections
@@ -85,11 +78,8 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 			}
 		}
 	}
-	cmd := sshCommand(o)
-	cmd.Stderr = os.Stderr
 	if o.list || o.command == "cancel" || o.command == "cancel-resource" || o.command == "rename" {
-		cmd.Stdin, cmd.Stdout = os.Stdin, os.Stdout
-		err := cmd.Run()
+		err := transportio.Run(context.Background(), sshConnectionOptions(o), os.Stdin, os.Stdout, os.Stderr)
 		if err == nil && o.command == "cancel" {
 			if cacheErr := confirmCancelledShell(o.host, o.session, cancelledInstance); cacheErr != nil {
 				termui.Log(os.Stderr, termui.Warning, "[sshore] Cancelled; local history not updated: %s\n", cleanText(cacheErr.Error()))
@@ -100,9 +90,12 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 				termui.Log(os.Stderr, termui.Warning, "[sshore] Renamed; local history not updated: %s\n", cleanText(cacheErr.Error()))
 			}
 		}
-		var e *exec.ExitError
+		var e interface {
+			error
+			ExitStatus() int
+		}
 		if errors.As(err, &e) {
-			return e.ExitCode(), nil
+			return e.ExitStatus(), nil
 		}
 		return 0, err
 	}
@@ -139,8 +132,12 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	if len(o.approved) > 0 {
 		action = "approved"
 	}
+	tree := o.tree
+	if tree == nil {
+		tree = currentShellTree()
+	}
 	sourceMachine, sourceHost := localMachineIdentity()
-	if err = streamMessage(control, message{Type: "attach", SourceHost: sourceHost, SourceMachineID: sourceMachine, Tree: currentShellTree(), Instance: o.instance, Action: action, PID: o.resumePID, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && (o.command == "launch" || o.command == "spawn") && !o.plain, NoLogin: o.noLogin && (o.command == "launch" || o.command == "spawn") && !o.plain, ApprovalID: o.approvalID}); err != nil {
+	if err = streamMessage(control, message{Type: "attach", SourceHost: sourceHost, SourceMachineID: sourceMachine, Tree: tree, Instance: o.instance, Action: action, PID: o.resumePID, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && (o.command == "launch" || o.command == "spawn") && !o.plain, NoLogin: o.noLogin && (o.command == "launch" || o.command == "spawn") && !o.plain, ApprovalID: o.approvalID}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -322,6 +319,12 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		return 1, err
 	}
 	defer func() { cancel(); stopKeyboard() }()
+	if o.handoffDone != nil {
+		if err := o.handoffDone(nil); err != nil {
+			return 1, err
+		}
+		o.handoffDone = nil
+	}
 	ready()
 	// One terminal writer preserves keystroke order without making file I/O or a
 	// stalled PTY block the main UI/control loop.
@@ -384,12 +387,19 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	var switchPending bool
 	var switchAction string
 	var switchTarget *options
+	returnLocal := false
+	var handoffTarget *options
+	var handoffToken string
+	var handoffDeadline time.Time
 	var chooser *tmux.SessionChooser
 	queueSwitch := func(name, command string) error {
 		if name == o.session && command == "attach" {
 			return nil
 		}
 		target := o
+		if o.routeParent != nil {
+			target.routeTarget = true
+		}
 		target.command = command
 		target.temporary = command == "spawn"
 		if command != "spawn" {
@@ -678,6 +688,79 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					if err = tmux.SyncMouse(&outputMouse); err != nil {
 						return 1, fmt.Errorf("update terminal mouse mode: %w", err)
 					}
+				case "spawn_route":
+					if o.local || o.plain || detaching || detachPending || switchPending || chooser != nil || len(e.m.Token) != 64 {
+						continue
+					}
+					parent := o
+					target := options{noLogin: e.m.NoLogin, noProfile: e.m.NoProfile, tree: e.m.Tree, command: "spawn", host: e.m.SourceHost, session: e.m.Name, temporary: true, routeParent: &parent, routeToken: e.m.Token, quiet: o.quiet}
+					if e.m.Action == "local" {
+						target.host = o.host
+					}
+					token := e.m.Token
+					target.handoffDone = func(result error) error { return confirmSpawnRoute(parent, token, result) }
+					select {
+					case inputQueue <- []tmux.KeyEvent{{Action: tmux.KeyDetach}}:
+						switchTarget, returnLocal = &target, true
+						detachPending = true
+						inputFlushTimeout = time.After(5 * time.Second)
+					default:
+					}
+				case "handoff":
+					// Only authenticated local control can redirect this frontend.
+					if !o.local {
+						return 1, fmt.Errorf("remote attachment requested local handoff")
+					}
+					target, handoffErr := e.m.Handoff.options()
+					source, token := o, e.m.Token
+					target.handoffDone = func(result error) error {
+						request := message{Type: "handoff_confirm", Token: token}
+						if result != nil {
+							request.Error = result.Error()
+						}
+						reply, err := localRequest(strings.TrimPrefix(source.taskIdentity, "task:"), request, source.taskIdentity)
+						if err != nil {
+							return err
+						}
+						if reply.Type != "handoff_confirmed" {
+							return fmt.Errorf("handoff: %s", reply.Error)
+						}
+						return nil
+					}
+					if detaching || detachPending || switchPending || chooser != nil || handoffTarget != nil && time.Now().Before(handoffDeadline) {
+						handoffErr = fmt.Errorf("client is switching sessions")
+					}
+					reply := message{Type: "handoff_result", Token: e.m.Token}
+					if handoffErr != nil {
+						reply.Error = handoffErr.Error()
+					} else {
+						handoffTarget, handoffToken = &target, e.m.Token
+						handoffDeadline = time.Now().Add(5 * time.Second)
+					}
+					if err = streamMessage(control, reply); err != nil {
+						return 255, err
+					}
+				case "handoff_commit":
+					if !o.local {
+						return 1, fmt.Errorf("remote attachment requested local handoff")
+					}
+					if handoffTarget == nil || handoffToken != e.m.Token || time.Now().After(handoffDeadline) {
+						continue
+					}
+					target := handoffTarget
+					handoffTarget = nil
+					if detaching || detachPending || switchPending || chooser != nil {
+						notice(termui.Warning, "\r\n[sshore] Remote handoff interrupted by session switch.\r\n")
+						continue
+					}
+					select {
+					case inputQueue <- []tmux.KeyEvent{{Action: tmux.KeyDetach}}:
+						switchTarget, returnLocal = target, true
+						detachPending = true
+						inputFlushTimeout = time.After(5 * time.Second)
+					default:
+						notice(termui.Warning, "\r\n[sshore] Remote handoff failed: terminal input queue is busy.\r\n")
+					}
 				case "detach_requested":
 					if !detaching && !detachPending {
 						if err = streamMessage(control, message{Type: "detach"}); err != nil {
@@ -693,7 +776,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					}
 					_ = streamMessage(control, message{Type: "bye"})
 					if switchTarget != nil {
-						return 0, &sessionSwitch{from: o, to: *switchTarget}
+						return 0, &sessionSwitch{from: o, to: *switchTarget, returnLocal: returnLocal}
 					}
 					if o.temporary {
 						sessionNotice(termui.Success, "Background; %s on %s ends with the original parent shell.\r\nReturn: %s", shellTaskName(cleanText(o.session), true), cleanText(o.host), reconnectCommand(o))

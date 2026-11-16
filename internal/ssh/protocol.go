@@ -1,4 +1,4 @@
-package transport
+package ssh
 
 import (
 	"encoding/binary"
@@ -104,7 +104,7 @@ func MuxConfig() *smux.Config {
 	c.MaxFrameSize = 16 * 1024
 	c.MaxStreamBuffer = 1024 * 1024
 	// Keep room for terminal, files and control requests. Independent forwards
-	// and mounts use separate SSH connections and do not consume this budget.
+	// and mounts use separate resource transports and do not consume this budget.
 	// Stalled streams must not exhaust the shared receive budget and block input.
 	c.MaxReceiveBuffer = (MaxFileStreams + 12) * c.MaxStreamBuffer
 	c.KeepAliveInterval = 10 * time.Second

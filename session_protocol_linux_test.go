@@ -20,7 +20,7 @@ import (
 	"github.com/xtaci/smux"
 
 	"github.com/jay-waves/sshore/internal/files"
-	transportio "github.com/jay-waves/sshore/internal/transport"
+	transportio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 var testBuild struct {

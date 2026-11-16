@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/mcp"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/tmux"
-	"github.com/jay-waves/sshore/internal/transport"
 	"github.com/xtaci/smux"
 )
 
@@ -17,7 +17,7 @@ import (
 
 const requestTimeout = 10 * time.Second
 const chunkSize = 64 * 1024
-const maxFrame = transport.MaxFrame
+const maxFrame = sshio.MaxFrame
 const (
 	control byte = iota
 	input
@@ -26,6 +26,7 @@ const (
 
 // Control metadata uses JSON; terminal bytes remain binary.
 type message struct {
+	Handoff         *clientHandoff      `json:"handoff,omitempty"`
 	MCPRequest      *mcp.Request        `json:"mcp_request,omitempty"`
 	MCPResponse     *mcp.Response       `json:"mcp_response,omitempty"`
 	SourceHost      string              `json:"source_host,omitempty"`
@@ -64,11 +65,11 @@ type message struct {
 func (m *message) FrameType() string                 { return m.Type }
 func (m *message) SetFrame(kind string, data []byte) { m.Type, m.Data = kind, data }
 func writeMessage(w io.Writer, m message) error {
-	return transport.WriteMessage(w, m.Type, m.Data, m)
+	return sshio.WriteMessage(w, m.Type, m.Data, m)
 }
 func readMessage(r io.Reader) (message, error) {
 	var m message
-	err := transport.ReadMessage(r, &m)
+	err := sshio.ReadMessage(r, &m)
 	return m, err
 }
 
@@ -84,7 +85,7 @@ func fileResponseError(m message) error {
 // handshake requires the exact full sshore release, including PATCH; there is no
 // separate sshore protocol compatibility counter. Running daemons cannot upgrade
 // in place. Per-stream windows and the shared receive budget are owned by
-// transport.MuxConfig. These isolate stalled streams without
+// sshio.MuxConfig. These isolate stalled streams without
 // guaranteeing real-time terminal priority: TCP head-of-line blocking still applies.
 // Keepalives detect silent transport loss (10s interval, 60s timeout); detection
 // releases the attachment while preserving the shell.
@@ -103,7 +104,7 @@ func clientMux(c io.ReadWriteCloser) (*smux.Session, error) {
 	if m.Type != "mux_ready" {
 		return nil, fmt.Errorf("incompatible sshore server: %s %s", m.Type, m.Error)
 	}
-	return smux.Client(c, transport.MuxConfig())
+	return smux.Client(c, sshio.MuxConfig())
 }
 func streamMessage(s *smux.Stream, m message) error {
 	_ = s.SetWriteDeadline(time.Now().Add(5 * time.Second))
@@ -126,7 +127,7 @@ func checkPeerVersion(peer, role string) error {
 // Accept both streams before handing ownership to a shell. Every partial
 // handshake failure closes the transport here; callers own successful results.
 func acceptMux(c io.ReadWriteCloser) (mx *smux.Session, control, terminal *smux.Stream, request message, err error) {
-	mx, err = smux.Server(c, transport.MuxConfig())
+	mx, err = smux.Server(c, sshio.MuxConfig())
 	if err != nil {
 		return
 	}

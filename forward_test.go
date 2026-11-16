@@ -10,9 +10,9 @@ func TestForwardArguments(t *testing.T) {
 	if err != nil || len(o.ssh) != 2 {
 		t.Fatal(o, err)
 	}
-	cmd := sshCommand(o)
-	if cmd.Args[7] != "-L" || cmd.Args[8] != o.ssh[1] {
-		t.Fatal(cmd.Args)
+	connection := sshConnectionOptions(o)
+	if connection.Args[0] != "-L" || connection.Args[1] != o.ssh[1] {
+		t.Fatal(connection.Args)
 	}
 }
 

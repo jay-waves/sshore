@@ -1,20 +1,23 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"sync"
 	"time"
 
-	transportio "github.com/jay-waves/sshore/internal/transport"
-	"golang.org/x/term"
+	transportio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/xtaci/smux"
 )
 
 type spawnConfig struct {
+	NoLogin, NoProfile bool
+	Tree               []shellTreeNode
+	Local              bool
 	Host, Name, Server string
 	SSH                []string
 }
@@ -29,8 +32,15 @@ func proxySpawn(a, b io.ReadWriteCloser) {
 	<-done
 }
 
-func openSpawnTransport(o *options) (io.ReadWriteCloser, func(), error) {
-	cwd, err := os.Getwd()
+func openSpawnTransport(ctx context.Context, o *options) (io.ReadWriteCloser, func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	cwd := o.sshDirectory
+	var err error
+	if cwd == "" {
+		cwd, err = os.Getwd()
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -39,17 +49,23 @@ func openSpawnTransport(o *options) (io.ReadWriteCloser, func(), error) {
 		return nil, nil, err
 	}
 	defer stopAuth()
-	request := localDaemonRequest{Kind: "spawn", Record: localShellRecord{Name: "spawn", Directory: cwd, Owner: o.owner}, Env: append(os.Environ(), auth...), Spawn: &spawnConfig{Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh}}
-	c, err := openLocalDaemon(request)
+	env := o.environment
+	if env == nil {
+		env = os.Environ()
+	}
+	request := localDaemonRequest{Kind: "spawn", Record: localShellRecord{Name: "spawn", Directory: cwd, Owner: o.owner}, Env: append(append([]string(nil), env...), auth...), Spawn: &spawnConfig{Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh}}
+	c, err := openLocalDaemonContext(ctx, request)
 	if err != nil {
 		return nil, nil, err
 	}
+	stop := context.AfterFunc(ctx, func() { c.Close() })
+	closeTransport := func() { stop(); c.Close() }
 	_ = c.SetDeadline(time.Time{})
-	if err = negotiateSetup(c, c, o); err != nil {
-		c.Close()
+	if err = negotiateSetupUsing(ctx, c, c, o, setupClientUI{OpenInput: func() (setupInput, error) { return newApprovalInput() }}); err != nil {
+		closeTransport()
 		return nil, nil, err
 	}
-	return c, func() { c.Close() }, nil
+	return c, closeTransport, nil
 }
 
 type spawnDiagnostics struct {
@@ -74,6 +90,19 @@ func (d *spawnDiagnostics) Write(b []byte) (int, error) {
 }
 
 func runSpawnRemote(c net.Conn, req localDaemonRequest) error {
+	return runSpawnConnection(c, req, func(mx *smux.Session) error {
+		stream, err := mx.OpenStream()
+		if err != nil {
+			return err
+		}
+		proxySpawn(c, stream)
+		<-mx.CloseChan()
+		return nil
+	})
+}
+
+// The owner supervises a single lifetime connection; attachments use its streams.
+func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.Session) error) error {
 	f := req.Spawn
 	if f == nil || req.Record.Owner.PID <= 1 {
 		return fmt.Errorf("invalid spawn request")
@@ -82,30 +111,21 @@ func runSpawnRemote(c net.Conn, req localDaemonRequest) error {
 		return err
 	}
 	o := options{command: "spawn", host: f.Host, session: f.Name, server: f.Server, ssh: f.SSH, sshDirectory: req.Record.Directory}
-	// Resolve SSH from the launching client's environment, not daemon startup.
-	exe := localEnvironmentValue(req.Env, "SSHORE_SSH")
-	if exe == "" {
-		exe = "ssh"
-	}
-	cmd := exec.Command(exe, transportio.ShellArgs(o.host, o.ssh, remoteCommand(o))...)
-	cmd.Dir = req.Record.Directory
-	detachResourceWorker(cmd)
-	cmd.Env = req.Env
 	diagnostics := &spawnDiagnostics{c: c, active: true}
-	cmd.Stderr = diagnostics
-	pipes, err := transportio.StartPipes(cmd)
+	connection := sshioOptionsForSpawn(o, req)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	defer close(done)
+	go watchSpawnOwner(req.Record.Owner, done, func() { cancel(); c.Close() })
+	pipes, err := transportio.Start(ctx, connection, diagnostics)
 	if err != nil {
 		_ = writeMessage(c, message{Type: "fatal", Error: err.Error()})
 		return err
 	}
 	input, output := pipes.Input, pipes.Output
-	done := make(chan struct{})
-	defer close(done)
-	var stopOnce sync.Once
-	stop := func() { stopOnce.Do(func() { c.Close(); input.Close(); output.Close(); _ = cmd.Process.Kill() }) }
-	defer func() { stop(); _ = cmd.Wait() }()
-	go watchSpawnOwner(req.Record.Owner, done, stop)
-	transport := pipes
+	defer func() { c.Close(); pipes.Close(); _ = pipes.Wait() }()
+	var transport io.ReadWriteCloser = pipes
 	// Relay only setup choices. Authentication uses the launcher's askpass broker.
 	for {
 		m, e := readMessage(output)
@@ -114,6 +134,20 @@ func runSpawnRemote(c net.Conn, req localDaemonRequest) error {
 			return e
 		}
 		diagnostics.mu.Lock()
+		if m.Type == "setup_ready" && m.Directory != "" && m.Action != "plain" {
+			channel, e := pipes.DialSocket(ctx, m.Directory)
+			if e != nil {
+				diagnostics.mu.Unlock()
+				return e
+			}
+			transport = channel
+			defer channel.Close()
+			if e = writeMessage(channel, message{Type: "spawn_transport", SoftwareVersion: version}); e != nil {
+				diagnostics.mu.Unlock()
+				return e
+			}
+			m.Directory = ""
+		}
 		if m.Type == "setup_ready" {
 			diagnostics.active = false
 		}
@@ -154,15 +188,7 @@ func runSpawnRemote(c net.Conn, req localDaemonRequest) error {
 		return err
 	}
 	defer mx.Close()
-	stream, err := mx.OpenStream()
-	if err != nil {
-		return err
-	}
-	// A detached foreground client releases only its stream. Keep the lease alive
-	// until the owning shell or remote spawn ends, including during reattachment.
-	proxySpawn(c, stream)
-	<-mx.CloseChan()
-	return nil
+	return attached(mx)
 }
 
 func startSpawnAuth() ([]string, func(), error) {
@@ -175,47 +201,30 @@ func startSpawnAuth() ([]string, func(), error) {
 		}
 		prompts.Lock()
 		defer prompts.Unlock()
-		serveSSHAskpass(w, r)
+		serveSSHConfirmation(w, r)
 	})
 	if err != nil {
 		return nil, nil, err
 	}
-	exe, err := os.Executable()
-	if err != nil {
-		broker.Close()
-		return nil, nil, err
-	}
-	return sshAskpassEnvironment(exe, l.Addr().String(), token), func() { broker.Close() }, nil
+	env := []string{"SSHORE_CONFIRM_ADDR=" + l.Addr().String(), "SSHORE_CONFIRM_TOKEN=" + token}
+	return env, func() { broker.Close() }, nil
 }
 
-func serveSSHAskpass(w http.ResponseWriter, r *http.Request) {
+func serveSSHConfirmation(w http.ResponseWriter, r *http.Request) {
 	prompt, err := io.ReadAll(io.LimitReader(r.Body, 8193))
 	if err != nil || len(prompt) > 8192 {
 		http.Error(w, "invalid prompt", 400)
 		return
 	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		http.Error(w, "SSH authentication requires a terminal", 409)
-		return
-	}
-	fmt.Fprint(os.Stderr, cleanText(string(prompt))+" ")
-	answer, err := term.ReadPassword(int(os.Stdin.Fd()))
-	fmt.Fprintln(os.Stderr)
+	ok, err := confirmSSHHost(r.Context(), string(prompt))
 	if err != nil {
 		http.Error(w, "terminal input failed", 409)
 		return
 	}
-	_, _ = w.Write(answer)
-}
-
-func sshAskpassEnvironment(exe, address, token string) []string {
-	return []string{
-		"SSH_ASKPASS=" + exe,
-		"SSH_ASKPASS_REQUIRE=force",
-		"DISPLAY=sshore",
-		"SSHORE_ASKPASS=1",
-		"SSHORE_ASKPASS_ADDR=" + address,
-		"SSHORE_ASKPASS_TOKEN=" + token,
+	if ok {
+		io.WriteString(w, "yes")
+	} else {
+		io.WriteString(w, "no")
 	}
 }
 

@@ -84,6 +84,14 @@ func writeApproval(o options, ops []operation) (string, error) {
 	defer reservation.Close()
 	id := reservation.uid
 	r := approvalRecord{UID: reservation.uid, SoftwareVersion: version, PID: o.resumePID, ID: id, Name: reservation.name, Created: time.Now(), Host: o.host, Session: o.session, Server: o.server, Directory: cwd, DownloadDir: o.downloadDir, SSH: o.ssh, Quiet: o.quiet, NoEscape: o.noEscape, Operations: ops}
+	if o.routeParent != nil {
+		connection, err := connectionFromOptions(o)
+		if err != nil {
+			return "", err
+		}
+		r.Parent, r.RouteToken, r.RouteTarget, r.Instance = connection.Parent, connection.RouteToken, connection.RouteTarget, connection.Instance
+		r.Server = connection.Server
+	}
 	if err := approvalStore(dir).Save(r); err != nil {
 		return "", err
 	}
@@ -93,6 +101,12 @@ func approvalStore(dir string) approvalStorage {
 	return approvalStorage{directory: dir}
 }
 func validateApprovalRecord(r approvalRecord) error {
+	if r.Parent != nil || r.RouteToken != "" {
+		if err := validateRecentConnection(r.connection()); err != nil {
+			return err
+		}
+	}
+
 	if r.UID != "" && (!validTaskUID(r.UID) || r.UID != r.ID) {
 		return fmt.Errorf("invalid review identity")
 	}
@@ -316,17 +330,28 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 			args = append(args, "--")
 			args = append(args, r.SSH...)
 		}
-		return startReservedResource(resourceConfig{Args: args, MountApproval: &files.MountApproval{Session: r.Session, PID: r.PID, ID: r.ID}}, "mount", reservation)
+		config := resourceConfig{Args: args, MountApproval: &files.MountApproval{Session: r.Session, PID: r.PID, ID: r.ID}}
+		if r.Parent != nil {
+			connection := r.connection()
+			config.MountConnection = &connection
+		}
+		return startReservedResource(config, "mount", reservation)
 	}
 	if len(r.Operations) == 1 && r.Operations[0].Kind == "forward" {
 		op := r.Operations[0]
 		f := forwardConfig{Name: r.DisplayName(), Host: r.Host, Server: r.Server, SSH: r.SSH, Port: op.Port, Target: op.TargetPort, Reverse: op.Reverse, Session: r.Session, ResumePID: r.PID, ApprovalID: r.ID}
+		if r.Parent != nil {
+			connection := r.connection()
+			f.Connection = &connection
+		}
 		if err := validateForwardConfig(f); err != nil {
 			return 1, err
 		}
 		return startReservedResource(resourceConfig{Forward: &f}, "forward", reservation)
 	}
-	return runClient(options{host: r.Host, session: r.Session, server: r.Server, downloadDir: r.DownloadDir, ssh: r.SSH, quiet: r.Quiet, noEscape: r.NoEscape, approved: r.Operations, stay: a.stay, resumePID: r.PID, approvalID: r.ID})
+	o := r.clientOptions()
+	o.stay = a.stay
+	return runClient(o)
 }
 
 func approvalSummary(ops []operation) string {

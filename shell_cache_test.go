@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -318,5 +320,155 @@ func TestNativePortOverridesSavedConnection(t *testing.T) {
 		if !reflect.DeepEqual(o.ssh, []string{"-p", "3333", "-J", "jump", "-i", "key"}) || o.server != "/custom/sshore" || o.sshDirectory == "" {
 			t.Fatalf("saved connection lost: %+v", o)
 		}
+	}
+}
+
+func TestRoutedShellConnectionRecovery(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	root := options{host: "entry", session: "parent", instance: "parent-instance", server: "/custom/sshore", ssh: []string{"-p", "2222", "-L", "8080:localhost:80"}, sshDirectory: t.TempDir()}
+	middle := options{host: "private-alias", session: "middle", instance: "middle-instance", routeParent: &root, routeToken: strings.Repeat("a", 64)}
+	child := options{host: "private-alias", session: "child", instance: "child-instance", routeParent: &middle, routeToken: strings.Repeat("b", 64), routeTarget: true}
+	c, err := trackShellConnection(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.confirm("child", "detached")
+	c.close()
+	if err := rememberConnection(child); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"attach"}, {"attach", "private-alias", "child"}} {
+		o, err := parseOptions(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resolveRecentAttach(&o); err != nil {
+			t.Fatal(err)
+		}
+		if o.instance != child.instance || !o.routeTarget || o.routeToken != child.routeToken || o.routeParent == nil || o.routeParent.routeParent == nil {
+			t.Fatalf("route not restored: %+v", o)
+		}
+		restoredRoot := o.routeParent.routeParent
+		if restoredRoot.host != root.host || restoredRoot.instance != root.instance || restoredRoot.server != root.server || !reflect.DeepEqual(restoredRoot.ssh, []string{"-p", "2222"}) {
+			t.Fatalf("root changed: %+v", restoredRoot)
+		}
+	}
+	dir, _ := stateDir("connections")
+	path := filepath.Join(dir, "recent.json")
+	if err := os.Chmod(path, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if _, err := readRecentConnections(); err == nil {
+			t.Fatal("public route capabilities accepted")
+		}
+	}
+}
+
+func TestRoutedShellCacheSeparatesAliases(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	for _, suffix := range []string{"one", "two"} {
+		parent := options{host: "entry-" + suffix, session: "parent", instance: "parent-" + suffix}
+		o := options{host: "private", session: "job", instance: "child-" + suffix, routeParent: &parent, routeToken: strings.Repeat("a", 64)}
+		c, err := trackShellConnection(o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.confirm("job", "detached")
+		c.close()
+	}
+	rows, err := readShellSnapshots()
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("routes collided: %+v, %v", rows, err)
+	}
+	o := options{command: "attach", host: "private", session: "job"}
+	if err := resolveRecentAttach(&o); err == nil {
+		t.Fatal("ambiguous alias selected")
+	}
+	o.instance = "child-one"
+	if err := resolveRecentAttach(&o); err != nil {
+		t.Fatal(err)
+	}
+	if o.routeParent == nil || o.routeParent.host != "entry-one" {
+		t.Fatalf("wrong route: %+v", o)
+	}
+}
+
+func TestRoutedConnectionValidation(t *testing.T) {
+	parent := &recentConnection{Host: "entry", Session: "parent", Server: "sshore", Instance: "parent-instance"}
+	r := recentConnection{Host: "private", Session: "job", Server: "sshore", Instance: "child-instance", Parent: parent, RouteToken: strings.Repeat("a", 64)}
+	if err := validateRecentConnection(r); err != nil {
+		t.Fatal(err)
+	}
+	r.Parent.Instance = ""
+	if err := validateRecentConnection(r); err == nil {
+		t.Fatal("unbound parent accepted")
+	}
+	r.Parent.Instance = "parent-instance"
+	r.Parent = &r
+	if err := validateRecentConnection(r); err == nil {
+		t.Fatal("cyclic route accepted")
+	}
+}
+
+func TestRoutedInventoryKeepsSiblingDestinations(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	parent := options{host: "entry", session: "parent", instance: "parent-instance"}
+	o := options{host: "private", session: "first", instance: "first-instance", routeParent: &parent, routeToken: strings.Repeat("a", 64)}
+	inv := inventory{Shells: []shellView{{Name: "first", Instance: "first-instance", State: "attached"}, {Name: "sibling", Instance: "sibling-instance", State: "detached"}}}
+	if err := cacheRemoteShells(o.host, inv, o); err != nil {
+		t.Fatal(err)
+	}
+	restored := options{command: "attach", host: "private", session: "sibling"}
+	if err := resolveRecentAttach(&restored); err != nil {
+		t.Fatal(err)
+	}
+	if !restored.routeTarget || restored.routeParent == nil || restored.instance != "sibling-instance" || restored.routeToken != o.routeToken {
+		t.Fatalf("sibling lost destination: %+v", restored)
+	}
+}
+
+func TestRoutedParentUsesImmutableBootstrapIdentity(t *testing.T) {
+	parent := options{command: "spawn", host: "entry", session: "renamed-old-label", instance: strings.Repeat("a", 32)}
+	entry := routeParentOptions(parent)
+	command := remoteCommand(entry)
+	if entry.command != "attach" || entry.session != parent.instance || strings.Contains(command, parent.session) || !strings.Contains(command, parent.instance) {
+		t.Fatalf("ancestor bootstrap still depends on its old label: %s", command)
+	}
+	if parent.session != "renamed-old-label" {
+		t.Fatal("display label changed")
+	}
+	parent.instance = "legacy-instance"
+	if got := routeParentOptions(parent); got.session != parent.session {
+		t.Fatal("noncanonical instance used as a bootstrap target")
+	}
+}
+
+func TestRoutedInventoryExpiryIsScoped(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	var first options
+	for _, suffix := range []string{"one", "two"} {
+		parent := options{host: "entry-" + suffix, session: "parent", instance: "parent-" + suffix}
+		o := options{host: "private", session: "job", instance: "child-" + suffix, routeParent: &parent, routeToken: strings.Repeat("a", 64)}
+		if suffix == "one" {
+			first = o
+		}
+		if err := cacheRemoteShells(o.host, inventory{Shells: []shellView{{Name: "job", Instance: o.instance, State: "detached"}}}, o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cacheRemoteShells("private", inventory{Shells: []shellView{{Name: "job", Instance: "replacement-instance", State: "detached"}}}, first); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := readShellSnapshots()
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := map[string]string{}
+	for _, row := range rows {
+		states[row.Instance] = row.State
+	}
+	if states["child-one"] != "not-listed" || states["child-two"] != "detached" || states["replacement-instance"] != "detached" {
+		t.Fatalf("wrong scope expired: %+v", states)
 	}
 }

@@ -299,7 +299,8 @@ func TestFTPNotifyOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := strings.Join(mountSSHArgs(o), " ")
+	connection := mountSSHOptions(o)
+	args := strings.Join(connection.Args, " ") + " " + connection.Command
 	if !strings.Contains(args, "mount-agent") || !strings.Contains(args, "-J jump") || strings.Contains(args, "SessionType=subsystem") {
 		t.Fatalf("%+v %s", o, args)
 	}

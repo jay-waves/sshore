@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	transportio "github.com/jay-waves/sshore/internal/transport"
+	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/xtaci/smux"
 )
 

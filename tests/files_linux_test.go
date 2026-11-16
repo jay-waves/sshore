@@ -5,6 +5,7 @@ package tests_test
 import (
 	"bytes"
 	"context"
+	"github.com/jay-waves/sshore/internal/sshtest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ func TestCopyCLI(t *testing.T) {
 	if err := os.WriteFile(wrapper, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
+	wrapper = sshtest.Wrap(t, wrapper, append(e.env, "SSHORE_TEST_BINARY="+e.bin))
 	var err error
 	source := filepath.Join(root, "source")
 	remote := filepath.Join(root, "remote")

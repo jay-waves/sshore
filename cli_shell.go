@@ -87,6 +87,13 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 }
 
 type options struct {
+	routeTarget           bool
+	handoffDone           func(error) error
+	routeParent           *options
+	routeToken            string
+	daemonSocket          string
+	environment           []string
+	tree                  []shellTreeNode
 	temporary             bool
 	owner                 spawnOwner
 	host, session, server string
@@ -121,7 +128,19 @@ func executeShellCommand(o options) (int, error) {
 			return 1, err
 		}
 	}
+	if handled, err := handoffRemoteSpawn(o); handled {
+		if err != nil {
+			return 1, err
+		}
+		return 0, nil
+	}
 	if o.local {
+		if handled, err := handoffLocalClient(o); handled {
+			if err != nil {
+				return 1, err
+			}
+			return 0, nil
+		}
 		return runLocalCommand(o)
 	}
 	if o.taskIdentity == "" {
@@ -135,6 +154,12 @@ func executeShellCommand(o options) (int, error) {
 	}
 	if o.list {
 		return runInventory(o)
+	}
+	if handled, err := handoffLocalClient(o); handled {
+		if err != nil {
+			return 1, err
+		}
+		return 0, nil
 	}
 	return runClient(o)
 }

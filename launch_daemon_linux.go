@@ -26,6 +26,7 @@ import (
 // directly on client-initiated streams, without a helper process or PTY relay.
 
 type remoteShell struct {
+	spawnRoutes     map[string]*spawnRoute
 	temporary       bool
 	spawnOwned      bool
 	environment     []string
@@ -395,6 +396,26 @@ func (s *remoteShell) handle(c net.Conn) {
 	}
 	_ = c.SetDeadline(time.Time{})
 	switch first.Type {
+	case "route_mount", "route_forward":
+		s.serveRoutedResource(c, first)
+	case "shell_connect":
+		_ = s.connectRouteShell(c, first)
+	case "spawn_route_confirm":
+		s.confirmSpawnRoute(c, first)
+	case "spawn_route_request":
+		s.requestSpawnRoute(c, first)
+	case "spawn_route_connect":
+		s.connectSpawnRoute(c, first)
+	case "spawn_transport":
+		if checkPeerVersion(first.SoftwareVersion, "client") != nil {
+			return
+		}
+		lease, err := net.DialTimeout("unix", s.path, time.Second)
+		if err != nil {
+			return
+		}
+		defer lease.Close()
+		_ = bridgeSpawnTransport(s.path, lease, "", c)
 	case "spawn_owner":
 		s.serveSpawnOwner(c, first)
 	case "mux":

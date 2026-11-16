@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
-	"github.com/jay-waves/sshore/internal/transport"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 const approvalTTL = 10 * time.Minute
@@ -33,7 +33,11 @@ type operation struct {
 }
 
 type approvalRecord struct {
-	UID                                           string `json:",omitempty"`
+	RouteTarget                                   bool              `json:",omitempty"`
+	Parent                                        *recentConnection `json:",omitempty"`
+	RouteToken                                    string            `json:",omitempty"`
+	Instance                                      string            `json:",omitempty"`
+	UID                                           string            `json:",omitempty"`
 	PID                                           int
 	SoftwareVersion                               string
 	ID                                            string
@@ -43,6 +47,20 @@ type approvalRecord struct {
 	SSH                                           []string
 	Quiet, NoEscape                               bool
 	Operations                                    []operation
+}
+
+func (r approvalRecord) connection() recentConnection {
+	server := r.Server
+	if server == "" {
+		server = "sshore"
+	}
+	return recentConnection{Host: r.Host, Session: r.Session, Server: server, Directory: r.Directory, SSH: r.SSH, Parent: r.Parent, RouteToken: r.RouteToken, RouteTarget: r.RouteTarget, Instance: r.Instance}
+}
+
+func (r approvalRecord) clientOptions() options {
+	o := options{command: "attach", host: r.Host, session: r.Session, downloadDir: r.DownloadDir, quiet: r.Quiet, noEscape: r.NoEscape, approved: r.Operations, resumePID: r.PID, approvalID: r.ID}
+	applyConnectionOptions(&o, r.connection())
+	return o
 }
 
 func (r approvalRecord) DisplayName() string {
@@ -174,7 +192,7 @@ func (s approvalStorage) Save(r approvalRecord) error {
 	if err = privateStatePath(path, false); err != nil {
 		return err
 	}
-	if err = transport.WriteFull(f, data); err != nil {
+	if err = sshio.WriteFull(f, data); err != nil {
 		return err
 	}
 	if err = f.Sync(); err != nil {

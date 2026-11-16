@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
-	transportio "github.com/jay-waves/sshore/internal/transport"
+	transportio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 func TestHelperAutomaticSetup(t *testing.T) {

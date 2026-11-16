@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	transportio "github.com/jay-waves/sshore/internal/transport"
+	transportio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 const maxSetupDownload = 64 * 1024 * 1024

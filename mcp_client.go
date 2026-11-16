@@ -8,12 +8,12 @@ import (
 	"sync"
 
 	sshoremcp "github.com/jay-waves/sshore/internal/mcp"
-	transportio "github.com/jay-waves/sshore/internal/transport"
+	transportio "github.com/jay-waves/sshore/internal/ssh"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type mcpConnection struct {
-	pipes *transportio.CommandPipes
+	pipes *transportio.Process
 	stop  func()
 	once  sync.Once
 }
@@ -27,14 +27,14 @@ func dialMCP(ctx context.Context, host string) (io.ReadWriteCloser, error) {
 		return nil, err
 	}
 	o := options{command: "mcp-agent", host: host, server: "sshore"}
-	cmd := sshCommand(o)
-	cmd.Stderr = os.Stderr
-	pipes, err := transportio.StartPipes(cmd)
+	connection := sshConnectionOptions(o)
+	connection.Confirm = nil
+	pipes, err := transportio.Start(ctx, connection, os.Stderr)
 	if err != nil {
 		return nil, err
 	}
 	c := &mcpConnection{pipes: pipes}
-	c.stop = func() { _ = pipes.Close(); _ = cmd.Process.Kill(); _ = cmd.Wait() }
+	c.stop = func() { pipes.Close(); pipes.Wait() }
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
 	defer stop()
 	err = negotiateSetupUsing(ctx, pipes.Output, pipes.Input, &o, setupClientUI{

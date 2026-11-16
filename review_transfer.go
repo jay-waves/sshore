@@ -11,8 +11,8 @@ import (
 	"github.com/xtaci/smux"
 
 	"github.com/jay-waves/sshore/internal/files"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/jay-waves/sshore/internal/transport"
 )
 
 // Approved files execute sequentially; the first failure stops the batch without
@@ -162,7 +162,7 @@ func (p *transferProgress) sample(now time.Time, done, total int64) string {
 // Forwarding has its own SSH transport; obsolete tunnel/control streams cannot
 // create listeners or dial services through this connection.
 
-const maxApprovedStreams = transport.MaxFileStreams
+const maxApprovedStreams = sshio.MaxFileStreams
 
 func serveApprovedStreams(ctx context.Context, mux *smux.Session) {
 	slots := make(chan struct{}, maxApprovedStreams)

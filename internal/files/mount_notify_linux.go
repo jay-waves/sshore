@@ -104,7 +104,7 @@ func ServeAgentWithPeer(conn io.ReadWriteCloser, version string, observe func(js
 	defer stdout.Close()
 	defer childOutput.Close()
 	cmd.Stdout, cmd.Stderr = childOutput, os.Stderr
-	cmd.Env = append(os.Environ(), "SSHORE_SOCKET=", "SSHORE_ASKPASS=", "SSHORE_ASKPASS_ADDR=", "SSHORE_ASKPASS_TOKEN=")
+	cmd.Env = append(os.Environ(), "SSHORE_SOCKET=", "SSHORE_CONFIRM_ADDR=", "SSHORE_CONFIRM_TOKEN=")
 	if err = cmd.Start(); err != nil {
 		return err
 	}

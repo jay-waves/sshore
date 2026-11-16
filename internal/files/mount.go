@@ -7,28 +7,28 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path"
 	"sync"
 	"syscall"
 	"time"
 
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/jay-waves/sshore/internal/transport"
 	"github.com/pkg/sftp"
 	"github.com/xtaci/smux"
 )
 
 // MountConfig contains validated mount and SSH transport settings.
 type MountConfig struct {
-	PeerMetadata                                     json.RawMessage
-	Approval                                         *MountApproval
-	Host, Remote, Mountpoint, SSHExecutable, Version string
-	SSHArgs                                          []string
-	ReadOnly, DirectIO, Stats                        bool
-	StartupTimeout, IOTimeout                        time.Duration
-	Prepare                                          func(context.Context, io.ReadWriter) error
+	PeerMetadata                      json.RawMessage
+	Approval                          *MountApproval
+	Host, Remote, Mountpoint, Version string
+	Connection                        sshio.Options
+	ReadOnly, DirectIO, Stats         bool
+	StartupTimeout, IOTimeout         time.Duration
+	Prepare                           func(context.Context, io.ReadWriter) error
+	Open                              func(context.Context) (io.ReadWriteCloser, error)
 }
 
 // MountLifecycle connects a background worker to the mount. Ready and Sync are
@@ -77,26 +77,26 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		}
 	}()
 	defer func() { cancel(); <-setupStopped }()
-	exe := o.SSHExecutable
-	cmd := exec.CommandContext(ctx, exe, o.SSHArgs...)
-	transport.IsolateCommand(cmd, service != nil)
-	cmd.Stderr = os.Stderr
+	connection := o.Connection
 	if service != nil {
-		cmd.Env = service.Environment
+		connection.Environment = service.Environment
 	}
-	pipes, err := transport.StartPipes(cmd)
+	var transport io.ReadWriteCloser
+	if o.Open != nil {
+		transport, err = o.Open(ctx)
+	} else {
+		var pipes *sshio.Process
+		pipes, err = sshio.Start(ctx, connection, os.Stderr)
+		if err == nil {
+			transport = pipes
+			defer func() { pipes.Close(); pipes.Wait() }()
+		}
+	}
 	if err != nil {
 		return 1, err
 	}
-	stdout, stdin := pipes.Output, pipes.Input
-	defer func() {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		_ = cmd.Wait()
-	}()
+	defer transport.Close()
+	stdout, stdin := transport, transport
 	watch := &sftpWatch{}
 	abortIO := func() { cancel(); _ = stdout.Close(); _ = stdin.Close() }
 	defer func() {
@@ -111,7 +111,6 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		})
 		defer watch.timer.Stop()
 	}
-	transport := pipes
 	if o.Prepare != nil {
 		if err := o.Prepare(ctx, transport); err != nil {
 			return 1, fmt.Errorf("mount setup: %w", err)
@@ -301,11 +300,11 @@ type message struct {
 func (m *message) FrameType() string                 { return m.Type }
 func (m *message) SetFrame(kind string, data []byte) { m.Type, m.Data = kind, data }
 func writeMessage(w io.Writer, m message) error {
-	return transport.WriteMessage(w, m.Type, m.Data, m)
+	return sshio.WriteMessage(w, m.Type, m.Data, m)
 }
 func readMessage(r io.Reader) (message, error) {
 	var m message
-	err := transport.ReadMessage(r, &m)
+	err := sshio.ReadMessage(r, &m)
 	return m, err
 }
 
@@ -316,7 +315,7 @@ func checkPeerVersion(local, peer, role string) error {
 	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%s; reconnect to update or recover", local, role, peer)
 }
 func muxConfig() *smux.Config {
-	config := transport.MuxConfig()
+	config := sshio.MuxConfig()
 	// Mounts have separate data/notification streams and no terminal to compete
 	// with. A larger data window avoids throttling pipelined SFTP on higher RTTs.
 	config.MaxStreamBuffer = 4 * 1024 * 1024

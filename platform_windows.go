@@ -57,7 +57,7 @@ func spawnProcessIdentity(pid int) (string, error) {
 func stopSpawnTerminal(pid int, start string) error { return nil }
 
 func detachResourceWorker(c *exec.Cmd) {
-	c.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_CONSOLE | windows.CREATE_NEW_PROCESS_GROUP, HideWindow: true}
+	detachLocalDaemon(c)
 }
 func lockResourceReadState(f *os.File) error {
 	return windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &windows.Overlapped{})
@@ -144,3 +144,5 @@ func systemMachineID() string {
 func hostedShellInventory(detailed bool) (inventory, error) {
 	return emptyInventory(), nil
 }
+
+func handoffRemoteSpawn(o options) (bool, error) { return false, nil }

@@ -30,7 +30,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	transportio "github.com/jay-waves/sshore/internal/transport"
+	transportio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 type setupState struct {

@@ -67,7 +67,7 @@ type shellSnapshot struct {
 	Active      bool              `json:"local_connection_active,omitempty"`
 }
 
-func shellCachePath(host, name string) (string, error) {
+func shellCachePath(host, name string, scope ...string) (string, error) {
 	if validSSHDestination(host) != nil || validSession(name) != nil {
 		return "", fmt.Errorf("invalid shell identity")
 	}
@@ -75,9 +75,20 @@ func shellCachePath(host, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256([]byte(host + "\x00" + name))
+	key := host + "\x00" + name
+	if len(scope) > 0 {
+		key += "\x00" + scope[0]
+	}
+	sum := sha256.Sum256([]byte(key))
 	return filepath.Join(dir, hex.EncodeToString(sum[:])+".json"), nil
 }
+func (s shellSnapshot) cachePath() (string, error) {
+	if s.Connection != nil && s.Connection.Parent != nil {
+		return shellCachePath(s.Host, s.Name, s.Instance)
+	}
+	return shellCachePath(s.Host, s.Name)
+}
+
 func saveShellSnapshot(s shellSnapshot) error {
 	lock, err := lockShellCache()
 	if err != nil {
@@ -87,7 +98,7 @@ func saveShellSnapshot(s shellSnapshot) error {
 	return saveShellSnapshotLocked(s)
 }
 func saveShellSnapshotLocked(s shellSnapshot) error {
-	path, err := shellCachePath(s.Host, s.Name)
+	path, err := s.cachePath()
 	if err != nil {
 		return err
 	}
@@ -135,12 +146,12 @@ func readShellSnapshotsLocked() ([]shellSnapshot, error) {
 		if err != nil {
 			return nil, err
 		}
-		expected, err := shellCachePath(s.Host, s.Name)
+		expected, err := s.cachePath()
 		if err != nil || path != expected {
 			return nil, fmt.Errorf("invalid shell cache record")
 		}
 		if s.Connection != nil {
-			if s.Connection.Host != s.Host {
+			if s.Connection.Host != s.Host || s.Connection.Parent != nil && (s.Connection.Session != s.Name || s.Connection.Instance != s.Instance) {
 				return nil, fmt.Errorf("invalid shell connection host")
 			}
 			if err := validateRecentConnection(*s.Connection); err != nil {
@@ -195,7 +206,12 @@ func trackShellConnection(o options) (*shellConnection, error) {
 	if o.plain || o.local {
 		return nil, nil
 	}
-	path, err := shellCachePath(o.host, o.session)
+	connection, err := connectionFromOptions(o)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := shellSnapshot{Connection: &connection, Temporary: o.temporary, Instance: o.instance, Host: o.host, Name: o.session, State: "attached", ConfirmedAt: time.Now()}
+	path, err := snapshot.cachePath()
 	if err != nil {
 		return nil, err
 	}
@@ -210,12 +226,7 @@ func trackShellConnection(o options) (*shellConnection, error) {
 		f.Close()
 		return nil, err
 	}
-	connection, err := connectionFromOptions(o)
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	s := &shellConnection{lock: f, snapshot: shellSnapshot{Connection: &connection, Temporary: o.temporary, Instance: o.instance, Host: o.host, Name: o.session, State: "attached", ConfirmedAt: time.Now()}}
+	s := &shellConnection{lock: f, snapshot: snapshot}
 	if err = saveShellSnapshot(s.snapshot); err != nil {
 		f.Close()
 		return nil, err
@@ -233,6 +244,9 @@ func (s *shellConnection) confirm(name, state string) {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Shell state not saved: %s\n", cleanText(err.Error()))
 		}
 		s.snapshot.Name = name
+		if s.snapshot.Connection != nil {
+			s.snapshot.Connection.Session = name
+		}
 	}
 	s.snapshot.State, s.snapshot.ConfirmedAt, s.snapshot.Unconfirmed = state, time.Now(), false
 	s.final = true
@@ -276,7 +290,10 @@ func cacheRemoteShellsLocked(host string, inv inventory, connection ...options) 
 			if err != nil {
 				return err
 			}
-			route.Host, route.Session = host, shell.Name
+			if route.Parent != nil && shell.Instance != route.Instance {
+				route.RouteTarget = true
+			}
+			route.Host, route.Session, route.Instance = host, shell.Name, shell.Instance
 			snapshot.Connection = &route
 		}
 		if err := saveShellSnapshotLocked(snapshot); err != nil {
@@ -303,7 +320,14 @@ func cacheRemoteShellsLocked(host string, inv inventory, connection ...options) 
 		return err
 	}
 	for _, old := range previous {
-		if old.Host == host && !seen[old.Name] && !endedShellState(old.State) {
+		sameScope := old.Connection == nil || old.Connection.Parent == nil
+		missing := !seen[old.Name]
+		if len(connection) > 0 && connection[0].routeParent != nil {
+			// The same alias on another parent does not describe this inventory.
+			sameScope = old.Connection != nil && old.Connection.Parent != nil && old.Connection.RouteToken == connection[0].routeToken && old.Connection.Parent.Instance == connection[0].routeParent.instance
+			missing = names[old.Instance] != old.Name
+		}
+		if old.Host == host && sameScope && missing && !endedShellState(old.State) {
 			state := "not-listed"
 			if names[old.Instance] != "" {
 				state = "renamed"
@@ -330,30 +354,31 @@ func renameShellSnapshot(host, old, name string) error {
 	return renameShellSnapshotLocked(host, old, name)
 }
 func renameShellSnapshotLocked(host, old, name string) error {
-	oldPath, err := shellCachePath(host, old)
-	if err != nil {
-		return err
-	}
-	if err = privateStatePath(oldPath, false); os.IsNotExist(err) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	file, err := os.Open(oldPath)
+	rows, err := readShellSnapshotsLocked()
 	if err != nil {
 		return err
 	}
 	var snapshot shellSnapshot
-	err = json.NewDecoder(io.LimitReader(file, maxShellSnapshot)).Decode(&snapshot)
-	file.Close()
-	if err != nil {
-		return err
+	found := false
+	for _, row := range rows {
+		if row.Host != host || row.Name != old || row.State == "renamed" {
+			continue
+		}
+		if found {
+			return fmt.Errorf("ambiguous shell route; select the shell by task ID")
+		}
+		snapshot, found = row, true
 	}
-	if snapshot.Host != host || snapshot.Name != old {
-		return fmt.Errorf("invalid shell cache record")
+	if !found {
+		return nil
 	}
 	renamed := snapshot
 	renamed.Name = name
+	if snapshot.Connection != nil {
+		connection := *snapshot.Connection
+		connection.Session = name
+		renamed.Connection = &connection
+	}
 	if err = saveShellSnapshotLocked(renamed); err != nil {
 		return err
 	}

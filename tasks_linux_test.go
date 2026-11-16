@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"github.com/jay-waves/sshore/internal/sshtest"
 	"io"
 	"os"
 	"os/exec"
@@ -36,6 +37,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf x >> "+shellQuote(filepath.Join(e.dir, "ssh-connections"))+"\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
+	wrapper = sshtest.Wrap(t, wrapper, e.env)
 	env := append(e.env, "SSHORE_SSH="+wrapper)
 	id, err := writeApproval(options{host: "fixture", session: "main", server: e.bin, resumePID: pid}, []operation{{Kind: "forward", TargetPort: 31235}})
 	if err != nil {
@@ -229,6 +231,7 @@ func TestCancelAllRemoteScope(t *testing.T) {
 	if err := os.WriteFile(wrapper, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
+	wrapper = sshtest.Wrap(t, wrapper, e.env)
 	env := append(e.env, "SSHORE_SSH="+wrapper, "SSHORE_SOCKET=", "SSHORE_STATE_DIR="+filepath.Join(e.dir, "local-state"))
 	run := func(input string, args ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, e.bin, args...)
@@ -272,9 +275,10 @@ func TestListScopes(t *testing.T) {
 	if err = os.WriteFile(wrapper, []byte("#!/bin/sh\ntouch "+shellQuote(marker)+"\nprintf '%s\\n' "+shellQuote(`{"version":"`+version+`","resources":[],"shells":[{"name":"remote-only","state":"detached"}],"peers":[],"errors":[]}`)+"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
+	configTool := sshtest.Wrap(t, wrapper, os.Environ())
 	run := func(args ...string) (inventory, string, error) {
 		cmd := exec.Command(testBinary(t), args...)
-		cmd.Env = append(os.Environ(), "SSHORE_SSH="+wrapper, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SSHORE_RUNTIME_DIR="+filepath.Join(root, "runtime"), "HOME="+root)
+		cmd.Env = append(os.Environ(), "SSHORE_SSH="+configTool, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SSHORE_RUNTIME_DIR="+filepath.Join(root, "runtime"), "HOME="+root)
 		var stderr strings.Builder
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
@@ -334,6 +338,7 @@ func TestCancelUpdatesShellHistory(t *testing.T) {
 		if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexit "+exit+"\n"), 0700); err != nil {
 			t.Fatal(err)
 		}
+		t.Setenv("SSHORE_SSH", sshtest.Wrap(t, wrapper, os.Environ()))
 		if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "detached", ConfirmedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
@@ -364,6 +369,7 @@ func TestShortTaskRemoteCommandRouting(t *testing.T) {
 	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SSHORE_TEST_ARGS\"\nexit 37\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("SSHORE_SSH", sshtest.Wrap(t, wrapper, os.Environ()))
 	observed := options{host: "work", server: "/observed/sshore", sshDirectory: root, ssh: []string{"-p", "2222", "-J", "jump", "-L", "8080:localhost:80"}}
 	inv := inventory{Shells: []shellView{{Name: "job", Instance: "original-instance", State: "detached"}}}
 	if err := cacheRemoteShells("work", inv, observed); err != nil {
@@ -394,7 +400,7 @@ func TestShortTaskRemoteCommandRouting(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := string(data)
-		for _, want := range []string{"\n" + tc.port + "\n", tc.server, tc.action, "original-instance"} {
+		for _, want := range []string{tc.server, tc.action, "original-instance"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("missing %q in %s", want, text)
 			}

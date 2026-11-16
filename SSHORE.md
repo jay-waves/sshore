@@ -11,7 +11,8 @@ do not mirror implementation details here.
 
 ## Architecture and code map
 
-sshore is a Go CLI using system OpenSSH for authentication and transport.
+sshore is a Go CLI using system OpenSSH only to evaluate configuration (`ssh -G`).
+An SSH agent signs authentication requests; Go owns the network connections.
 The root program coordinates commands, release policy and cross-component
 lifecycles. Internal packages provide mechanisms without owning application
 policy or depending on mutable application state.
@@ -19,18 +20,18 @@ policy or depending on mutable application state.
 | Responsibility | Start here |
 | --- | --- |
 | MCP tools and remote Bash | `internal/mcp/`, `internal/tmux/bash_linux.go`; application coordination in `mcp_client.go`, `mcp_bridge_linux.go`, `mcp_registry_linux.go` and the shared daemon |
-| One-off SSH execution | `cli.go`: exec adapter delegates directly to system SSH without remote setup |
+| One-off SSH execution | `cli.go`: exec adapter uses the shared SSH connection layer without remote setup |
 | CLI grammar, dispatch and help | `cli_schema.go`: shared command aliases and product/SSH grammar; `cli_shell.go`, `cli_endpoints.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
 | Shell completion | `completion.go`: contexts, candidate protocol and read-only hints; `completion_scripts.go`: shell adapters |
-| Connections and session switching | `client.go`, `client_connection.go` |
+| Connections and session switching | `client.go`, `client_connection.go`, `client_handoff.go` |
 | Remote preparation and exact-release policy | `setup*.go` |
 | Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_*.go`, `server_linux.go`; process inspection in `setup_process_linux.go` |
 | Local daemon and shell registry | `local_daemon*.go`, `local_shell_registry.go`, `local_terminal.go`, `platform_*.go` |
-| Spawn ownership and lifetime SSH | `spawn*.go`, `platform_*.go` |
+| Spawn ownership, lifetime SSH and nested routes | `spawn_transport.go`, `spawn_route_linux.go`, `platform_*.go` |
 | Shell startup and attachment I/O | `internal/tmux/terminal.go`, `internal/tmux/shell_attachment.go`, application adapters in `protocol.go` |
 | Native terminals, console I/O and shortcuts | `internal/tmux/` |
 | Local prompts and presentation | `internal/termui/`, application adapters in `cli_ui.go` |
-| Framing, smux and shared SSH transport | `internal/transport/` (`ssh.go` owns OpenSSH arguments and subprocess pipes); application messages and mux handshake in `protocol.go` |
+| Framing, smux and shared SSH transport | `internal/ssh/` (configuration, agent authentication, host verification, connections, forwarding and framing); application messages and mux handshake in `protocol.go` |
 | Copy and mount mechanisms | Flat `internal/files/`; command adapters in `cp_command.go`, `mount*.go` |
 | Review records and consent | `review_store.go`, application coordination in `review*.go` (including shared source-shell validation in `review_linux.go`) |
 | Forward transport and retries | `forward.go`: endpoint parsing, command execution and SSH worker lifecycle |
@@ -70,6 +71,35 @@ do not inject Enter, Ctrl+L or editor commands to reconstruct it. Terminal bytes
 must retain order and bounded buffering. Unsupported terminal protocols must not
 silently become local shortcuts.
 
+### SSH connections
+
+`internal/ssh` owns one connection and any jump chain per task; closing an
+attachment does not close a daemon-owned spawn lease. OpenSSH configuration is
+resolved in the initiating environment and directory, including its remote
+command. Completion never runs this resolver. No persistent SSH subprocess,
+ControlMaster, askpass executable or implicit reconnect is used.
+
+Agent-backed public-key authentication is required. Linux uses a Unix agent
+socket; Windows uses its OpenSSH agent pipe. Configuration resolution and agent
+connections are per connection. Unsupported execution hooks and authentication
+modes fail explicitly. Modern algorithm negotiation uses the supported Go SSH
+algorithms intersected with resolved configuration, preserving configured order
+within the allowed set. SSH debug logging (`-v` or `LogLevel DEBUG`) reports the
+negotiated key exchange, host-key algorithm and both traffic directions, marking
+AEAD integrity protection. Normal connections remain quiet. Host verification uses the
+local known_hosts policy; unknown-host confirmation is routed to the initiating
+frontend over private local control. Background retries never prompt.
+
+After managed shell preparation, the client opens an SSH stream-local channel to
+the account's private daemon socket. The preparation process exits; no bridge
+helper remains per connection. This requires the SSH server to permit stream-local
+forwarding. Recovery retains its transient exec channel instead.
+
+Native port forwards belong to their connection. Application forwards retain
+separate connections and their explicit retry policy. Cancellation closes owned
+connections to interrupt channel I/O before joining workers. Preserve this order
+when adapting streams; session stdin must serialize EOF with writes.
+
 ### Shell ownership and attachment
 
 Keep lifetime separate from interaction:
@@ -84,6 +114,27 @@ Keep lifetime separate from interaction:
 - Cancel and join old input readers/writers before handing the terminal to
   another attachment, local prompt or SSH authentication process.
 
+A root frontend owns the real terminal. Interactive nested `spawn` commands ask
+the existing daemon and frontend to prepare a child attachment, then exit only
+after the child is ready. Preserve the original owner PID and creation identity;
+the short-lived launcher and root frontend never become its lifetime owner.
+Drain parent input before switching. Detach and child exit unwind one level;
+failed startup restores the parent and reports failure to its launcher.
+
+For a next-hop connection, the initiating host's daemon uses that shell's
+configuration, agent, environment and working directory. The root frontend follows
+a private attachment route, not remote-supplied local execution instructions.
+Local managed shells also support handoff for remote `launch` and `attach`.
+Detached startup keeps its noninteractive path. Reuse the existing connection and
+attachment mechanisms; do not run a second terminal frontend inside a daemon.
+
+Local handoff lives in `client_handoff.go`; remote child ownership and routing in
+`spawn_route_linux.go`; the frontend return stack and connection restoration in
+`client_connection.go`. Reattachment and review must preserve the route and its
+parent instance. If it expires or changes, fail rather than reinterpret the
+child's host alias as a direct destination. See the
+[handoff trust boundary](SECURITY.md#trust-boundaries).
+
 Commands select tasks by name or short ID. The task index reserves short IDs against
 immutable instances and preserves internal ordering. Short-ID operations reuse the
 connection settings of their observation without changing the recent-attach default.
@@ -94,7 +145,7 @@ ancestry is not permission to signal. Follow the
 
 ### Shared local daemon and resource workers
 
-A daemon owns local shell terminals and forward SSH processes. Mounts use separate
+A daemon owns local shell terminals and forward SSH connections. Mounts use separate
 workers to isolate native filesystem work. Remote shells are daemon-owned; mounts
 and independent forwards retain their own SSH transports and lifetimes.
 
@@ -113,14 +164,14 @@ nothing, approval consumption is single-use, and file publication must not overw
 State-file replacement cannot substitute for those command-specific guarantees.
 See [approval safeguards](SECURITY.md#local-approval).
 
-Copy and watched mount helpers use the shared preparation path before starting.
-No-watch mounts, ordinary forwarding, inventory and cancellation do not
-install remote software. Keep file/transport behavior in `internal/files` and
-`internal/transport`; account setup and consent stay in the application.
+Copy and mount helpers use the shared preparation path before starting.
+Ordinary forwarding, inventory and cancellation do not install remote software.
+Keep file/transport behavior in `internal/files` and `internal/ssh`; account setup
+and consent stay in the application.
 
 Copy concurrency must stay bounded and preserve exact-size checks, ordered digest
 calculation, receiver-side upload verification and no-overwrite publication.
-Transport window budgets live in `internal/transport/protocol.go` and `internal/files/mount.go`; size them
+Transport window budgets live in `internal/ssh/protocol.go` and `internal/files/mount.go`; size them
 for latency without allowing stalled file streams to exhaust terminal capacity.
 
 Mounts always use the remote sshore helper and the same setup/version safeguards as
@@ -182,7 +233,7 @@ before development. Do not lower requirements or introduce a private toolchain.
 
 ```sh
 command -v go
-go version
+go version  # Go 1.26 or newer
 go build -o dist/sshore .
 ```
 

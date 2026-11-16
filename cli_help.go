@@ -32,6 +32,7 @@ Tasks and setup
 
 Start: sshore launch work build     Resume: sshore attach work build
 In a session: Ctrl+B d detaches; Ctrl+B ? shows shortcuts.
+Remote commands inside a local session reuse its client; detach returns locally.
 Details: sshore COMMAND --help      Version: sshore --version
 `
 
@@ -39,7 +40,9 @@ const sshOptions = `
 --port PORT selects the SSH port (1–65535). Other SSH options follow --,
 for example: --port 2222 -- -J jump. The legacy -- -p PORT form is supported.
 Do not combine --port with SSH -p or -o Port.
-Supported: -p -i -J -F -l -o -E -C -v/-vv/-vvv -4 -6.
+Configuration options: -p -i -J -F -l -o -E -v/-vv/-vvv -4 -6.
+Keys must be loaded into an SSH agent. Passwords, compression, agent/X11
+forwarding and ProxyCommand are unsupported; unsupported requests fail.
 `
 
 const connectionOptions = `  --server PATH         Remote executable (default: PATH, then ~/.local/bin/sshore)
@@ -59,7 +62,7 @@ Missing remote software is installed automatically when needed. Updating an
 older release can end the listed shells and tasks; it requires typing update.
 Newer remote releases reject older clients. Recovery provides a temporary
 SSH shell; reconnect after maintenance to restore sshore features.
-` + sshOptions + "Shell connections also accept native OpenSSH -L, -R and -D.\n"
+` + sshOptions + "Shell connections also accept SSH -L, -R and -D.\n"
 
 var commandHelp = map[string]string{
 	"mcp": `Usage: sshore mcp
@@ -74,8 +77,9 @@ See README.md for setup and SECURITY.md for the trust boundary.
 `,
 	"exec": `Usage: sshore exec HOST 'COMMAND'
 
-Execute COMMAND once using the system SSH client, without a remote PTY.
-SSH configuration supplies connection settings; terminal allocation is disabled.
+Execute COMMAND once over SSH, without a remote PTY.
+System ssh -G supplies connection settings. Load the desired key into an SSH
+agent first; passwords and private-key files are not read by sshore.
 Standard input, output, error and the SSH exit status pass through.
 No persistent sshore shell is created and no remote installation is required.
 Use an SSH config host alias for connection options.
@@ -268,7 +272,7 @@ Options:
   --retries N    Retry lost background SSH connections (0–10; default 0)
 
 Retries cannot prompt for credentials or host keys. Existing connections
-do not survive reconnect. Native OpenSSH -L/-R/-D are not accepted here.
+do not survive reconnect. SSH -L/-R/-D are not accepted here.
 ` + sshOptions,
 	"reset": `Usage: sshore reset
 

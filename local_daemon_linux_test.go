@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/jay-waves/sshore/internal/sshtest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,11 +55,12 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 	for _, name := range []string{"first", "second"} {
 		observation := filepath.Join(e.dir, name+"-parent")
 		stub := filepath.Join(e.dir, name+"-ssh")
-		script := "#!/bin/sh\nprintf '%s\\n%s\\n' \"$PPID\" \"$PWD\" > " + shellQuote(observation) + "\nprintf 'sshore-forward-ready\\n'\nexec cat >/dev/null\n"
+		script := "#!/bin/sh\nprintf 'sshore-forward-ready\n'\nexec cat >/dev/null\n"
 		if err = os.WriteFile(stub, []byte(script), 0700); err != nil {
 			t.Fatal(err)
 		}
-		out := run(append(env, "SSHORE_SSH="+stub), "forward", "8080", "fixture:3000")
+		stub = sshtest.Wrap(t, stub, env)
+		out := run(append(append([]string(nil), env...), "SSHORE_TEST_CONFIG_OWNER="+observation, "SSHORE_SSH="+stub), "forward", "8080", "fixture:3000")
 		_, started, ok := strings.Cut(out, "Started forward/")
 		if !ok {
 			t.Fatalf("missing auto-assigned forward name: %s", out)

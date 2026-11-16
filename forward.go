@@ -9,16 +9,16 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/jay-waves/sshore/internal/transport"
 )
 
 func parsePort(s string) (int, error) {
@@ -215,6 +215,7 @@ func resolveLocalPort(op *operation, port int) {
 
 // Keep persisted task identity together with its forwarding configuration.
 type forwardConfig struct {
+	Connection          *recentConnection
 	Retries             int
 	Session, ApprovalID string
 	ResumePID           int
@@ -225,6 +226,14 @@ type forwardConfig struct {
 }
 
 func validateForwardConfig(f forwardConfig) error {
+	if f.Connection != nil {
+		if err := validateRecentConnection(*f.Connection); err != nil {
+			return err
+		}
+		if f.Connection.Parent == nil || f.Connection.Session != f.Session || f.Connection.Host != f.Host || f.ApprovalID == "" {
+			return fmt.Errorf("invalid routed forward approval")
+		}
+	}
 	transportErr := f.Validate()
 	if errors.Is(transportErr, errForwardRetries) {
 		return usage("--retries must be between 0 and 10")
@@ -277,7 +286,9 @@ func runForward(f forwardConfig, s *resourceService) (int, error) {
 		Retries:     f.Retries,
 		Description: describeForward(f.Port, f.Target, f.Reverse),
 		Log:         s.logWriter(), HeartbeatInterval: remoteTaskRefresh,
-		Command: func(ctx context.Context, initial bool) *exec.Cmd { return forwardCommand(ctx, f, s, initial) },
+		Start: func(ctx context.Context, initial bool, diagnostic io.Writer) (*forwardConnection, error) {
+			return startForwardConnection(ctx, f, s, initial, diagnostic)
+		},
 		Ready: func() error {
 			s.record.Detail = describeForward(f.Port, f.Target, f.Reverse)
 			return s.ready("", "")
@@ -290,31 +301,30 @@ func runForward(f forwardConfig, s *resourceService) (int, error) {
 	})
 }
 
-func forwardCommand(ctx context.Context, f forwardConfig, s *resourceService, initial bool) *exec.Cmd {
-	var environment []string
+func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceService, initial bool, diagnostic io.Writer) (*forwardConnection, error) {
+	if f.Connection != nil {
+		return startRoutedForward(ctx, f)
+	}
+	args := forwardSSHArgs(f, forwardRemoteCommand(f))
+	at := slices.Index(args, "--")
+	connection := sshio.Options{Host: f.Host, Args: args[:at], Command: forwardRemoteCommand(f), Environment: s.sshEnvironment(), Directory: s.directory}
 	if initial {
-		environment = s.sshEnvironment()
+		connection.Confirm = brokerSSHConfirmation(connection.Environment)
 	} else {
-		environment = s.baseEnvironment()
+		connection.Args = append([]string{"-o", "StrictHostKeyChecking=yes"}, connection.Args...)
 	}
-	exe := localEnvironmentValue(environment, "SSHORE_SSH")
-	if exe == "" {
-		exe = "ssh"
+	process, err := sshio.Start(ctx, connection, diagnostic)
+	if err != nil {
+		return nil, err
 	}
-	cmd := forwardSSHCommand(ctx, exe, f, forwardRemoteCommand(f), !initial)
-	if s.committed != nil {
-		detachResourceWorker(cmd)
-	}
-	cmd.Env = environment
-	cmd.Dir = s.directory
-	return cmd
+	return &forwardConnection{Input: process.Input, Output: process.Output, Wait: process.Wait, Close: process.Close}, nil
 }
 
 func forwardWatchCommand(server string) string {
 	if server == "" {
 		server = "sshore"
 	}
-	command := "unset SSHORE_SOCKET SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN; printf '" + forwardReadyMarker + "\\n'; server=" + shellQuote(server) + `; if command -v "$server" >/dev/null 2>&1; then server=$(command -v "$server"); `
+	command := "unset SSHORE_SOCKET SSHORE_CONFIRM_ADDR SSHORE_CONFIRM_TOKEN; printf '" + forwardReadyMarker + "\\n'; server=" + shellQuote(server) + `; if command -v "$server" >/dev/null 2>&1; then server=$(command -v "$server"); `
 	if server == "sshore" {
 		command += `else server="$HOME/.local/bin/sshore"; `
 	} else {
@@ -329,7 +339,7 @@ func approvedForwardCommand(f forwardConfig) string {
 	if server == "" {
 		server = "sshore"
 	}
-	command := "unset SSHORE_SOCKET SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN; server=" + shellQuote(server) + "; if command -v \"$server\" >/dev/null 2>&1; then server=$(command -v \"$server\"); "
+	command := "unset SSHORE_SOCKET SSHORE_CONFIRM_ADDR SSHORE_CONFIRM_TOKEN; server=" + shellQuote(server) + "; if command -v \"$server\" >/dev/null 2>&1; then server=$(command -v \"$server\"); "
 	if server == "sshore" {
 		command += "else server=\"$HOME/.local/bin/sshore\"; "
 	} else {
@@ -377,13 +387,13 @@ func forwardSSHArgs(c forwardConfig, remoteCommand string) []string {
 	if remoteCommand != "" {
 		sessionType = "default"
 	}
-	args := append(transport.OwnedSSHArgs(sessionType), "-o", "ExitOnForwardFailure=yes", "-o", "ClearAllForwardings=no", "-o", "RequestTTY=no")
+	args := []string{"-o", "SessionType=" + sessionType, "-o", "RemoteCommand=none", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ExitOnForwardFailure=yes", "-o", "ClearAllForwardings=no", "-o", "RequestTTY=no"}
 	flag := "-L"
 	if c.Reverse {
 		flag = "-R"
 	}
 	args = append(args, flag, fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", c.Port, c.Target))
-	args = append(args, transport.WithoutForwarding(c.SSH)...)
+	args = append(args, sshio.WithoutForwarding(c.SSH)...)
 	args = append(args, "--", c.Host)
 	if remoteCommand != "" {
 		args = append(args, remoteCommand)
@@ -391,32 +401,25 @@ func forwardSSHArgs(c forwardConfig, remoteCommand string) []string {
 	return args
 }
 
-// forwardSSHCommand constructs a fresh transport. Reconnect never prompts for credentials
-// or trusts a new host key. The caller supplies environment and resource ownership.
-func forwardSSHCommand(ctx context.Context, executable string, c forwardConfig, remoteCommand string, retry bool) *exec.Cmd {
-	args := forwardSSHArgs(c, remoteCommand)
-	if retry {
-		args = append([]string{"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=15", "-o", "ConnectionAttempts=1"}, args...)
-	}
-	cmd := exec.CommandContext(ctx, executable, args...)
-	if remoteCommand != "" {
-		transport.IsolateCommand(cmd, true)
-	}
-	return cmd
-}
-
-// runForwardTransportForeground uses the caller's streams and cancellation without background
-// readiness markers, heartbeats or retries.
+// Foreground forwards own their connection until explicit cancellation or loss.
 func runForwardTransportForeground(ctx context.Context, executable string, c forwardConfig, in io.Reader, out, diagnostic io.Writer) (int, error) {
-	cmd := forwardSSHCommand(ctx, executable, c, "", false)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, out, diagnostic
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return 0, nil
-		}
+	args := forwardSSHArgs(c, "")
+	at := slices.Index(args, "--")
+	connection, err := sshio.Dial(ctx, sshio.Options{Host: c.Host, Args: args[:at], Executable: executable, Confirm: confirmSSHHost})
+	if err != nil {
 		return 1, err
 	}
-	return 0, nil
+	defer connection.Close()
+	if err := connection.StartForwarding(); err != nil {
+		return 1, err
+	}
+	stop := context.AfterFunc(ctx, func() { connection.Close() })
+	defer stop()
+	err = connection.Wait()
+	if ctx.Err() != nil {
+		return 0, nil
+	}
+	return 1, fmt.Errorf("forward disconnected: %w", err)
 }
 
 // parseForwardRetries applies the same retry policy to CLI and persisted configuration.
@@ -441,7 +444,7 @@ type forwardTransport struct {
 	Description       string
 	Log               io.Writer
 	HeartbeatInterval time.Duration
-	Command           func(context.Context, bool) *exec.Cmd
+	Start             func(context.Context, bool, io.Writer) (*forwardConnection, error)
 	Ready             func() error
 	Status            func(string, error)
 	Heartbeat         func() ([]byte, error)
@@ -474,33 +477,32 @@ func runForwardTransport(ctx context.Context, runtime forwardTransport) (int, er
 func retryDelay(attempt int) time.Duration {
 	return time.Second * time.Duration(1<<min(attempt, 5))
 }
+
+type forwardConnection struct {
+	Input  io.WriteCloser
+	Output io.Reader
+	Wait   func() error
+	Close  func() error
+}
+
 func runAttempt(parent context.Context, runtime forwardTransport, initial bool, started *bool) (int, error) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	cmd := runtime.Command(ctx, initial)
 	var diagnostics diagnosticsTail
-	cmd.Stderr = io.MultiWriter(runtime.Log, &diagnostics)
-	pipes, e := transport.OpenPipes(cmd)
+	connection, e := runtime.Start(ctx, initial, io.MultiWriter(runtime.Log, &diagnostics))
 	if e != nil {
 		return 1, e
 	}
-	defer pipes.Close()
-	input, output := pipes.Input, pipes.Output
-	// Let the remote watcher receive EOF and remove its lease before forcing SSH
-	// down. Authentication or active forwarded sockets still have a bounded exit.
-	cmd.Cancel = func() error { return input.Close() }
-	cmd.WaitDelay = 2 * time.Second
-	if e = cmd.Start(); e != nil {
-		return 1, e
-	}
+	defer connection.Close()
+	input, output := connection.Input, connection.Output
 	done := make(chan struct{})
 	var waitErr error
-	go func() { waitErr = cmd.Wait(); close(done) }()
+	go func() { waitErr = connection.Wait(); close(done) }()
 	var heartbeat sync.WaitGroup
 	defer func() {
 		cancel()
 		input.Close()
-		output.Close()
+		connection.Close()
 		<-done
 		heartbeat.Wait()
 	}()
@@ -539,7 +541,7 @@ func runAttempt(parent context.Context, runtime forwardTransport, initial bool, 
 		ticker := time.NewTicker(runtime.HeartbeatInterval)
 		defer ticker.Stop()
 		for {
-			if e := transport.WriteFull(input, task); e != nil {
+			if e := sshio.WriteFull(input, task); e != nil {
 				return
 			}
 			select {

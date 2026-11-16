@@ -3,6 +3,7 @@
 package main
 
 import (
+	"github.com/jay-waves/sshore/internal/sshtest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,7 @@ func TestExecInvokesSSHWithoutPTY(t *testing.T) {
 	}
 	t.Setenv("SSHORE_SSH", script)
 	t.Setenv("SSHORE_TEST_ARGS", argsFile)
+	t.Setenv("SSHORE_SSH", sshtest.Wrap(t, script, os.Environ()))
 	code, err := run([]string{"exec", "work", "printf '%s' --help"})
 	if err != nil || code != 7 {
 		t.Fatalf("exit %d: %v", code, err)
@@ -26,7 +28,7 @@ func TestExecInvokesSSHWithoutPTY(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"); len(got) != 6 || got[0] != "-T" || got[1] != "-o" || got[2] != "RequestTTY=no" || got[3] != "--" || got[4] != "work" || got[5] != "printf '%s' --help" {
+	if got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"); len(got) != 3 || got[0] != "--" || got[1] != "fixture" || got[2] != "printf '%s' --help" {
 		t.Fatalf("args %q", got)
 	}
 }

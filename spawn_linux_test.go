@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/jay-waves/sshore/internal/sshtest"
 	"io"
 	"net"
 	"os"
@@ -39,6 +40,7 @@ func TestSpawnLifetime(t *testing.T) {
 				if err := os.WriteFile(ssh, []byte("#!/bin/sh\nunset SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN SSH_ASKPASS\nfor arg do last=$arg; done\nexec sh -c \"$last\"\n"), 0700); err != nil {
 					t.Fatal(err)
 				}
+				ssh = sshtest.Wrap(t, ssh, env)
 				env = append(env, "SSHORE_SSH="+ssh)
 				args = []string{tc.command, "fake-host", "temporary", "--detach", "--server", e.bin}
 			}

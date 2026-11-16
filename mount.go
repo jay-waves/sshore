@@ -13,8 +13,8 @@ import (
 	"github.com/pkg/sftp"
 
 	"github.com/jay-waves/sshore/internal/files"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/jay-waves/sshore/internal/transport"
 )
 
 func runMount(args []string) (int, error) {
@@ -53,7 +53,13 @@ func runMount(args []string) (int, error) {
 }
 
 func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
-	c := files.MountConfig{Approval: o.approval, Host: o.host, Remote: o.remote, Mountpoint: o.mountpoint, SSHExecutable: sshExecutable(), Version: version, SSHArgs: mountSSHArgs(o), ReadOnly: o.readOnly, DirectIO: o.directIO, Stats: o.stats, StartupTimeout: o.startupTimeout, IOTimeout: o.ioTimeout}
+	c := files.MountConfig{Approval: o.approval, Host: o.host, Remote: o.remote, Mountpoint: o.mountpoint, Version: version, ReadOnly: o.readOnly, DirectIO: o.directIO, Stats: o.stats, StartupTimeout: o.startupTimeout, IOTimeout: o.ioTimeout}
+	c.Connection = mountSSHOptions(o)
+	if s != nil {
+		c.Connection.Environment = s.sshEnvironment()
+		c.Connection.Directory = s.directory
+		c.Connection.Confirm = brokerSSHConfirmation(c.Connection.Environment)
+	}
 	if s != nil {
 		c.PeerMetadata, _ = json.Marshal(s.peerTask())
 	}
@@ -64,6 +70,12 @@ func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
 		}
 		return negotiateSetupUsing(ctx, wire, wire, &options{command: "mount-agent", host: o.host}, ui)
 	}
+	if s != nil && s.config.MountConnection != nil {
+		c.Prepare = nil
+		c.Open = func(ctx context.Context) (io.ReadWriteCloser, error) {
+			return openRoutedResource(ctx, *s.config.MountConnection, message{Type: "route_mount", Name: o.approval.Session, PID: o.approval.PID, ApprovalID: o.approval.ID})
+		}
+	}
 	var lifecycle *files.MountLifecycle
 	if s != nil {
 		lifecycle = &files.MountLifecycle{Abandoned: s.abandoned, Environment: s.sshEnvironment(), OperationCompleted: s.operationCompleted, Ready: s.ready, Stop: s.stop, Sync: func(ctx context.Context, c *sftp.Client) func() { return startMountTaskSync(ctx, c, s.peerTask) }}
@@ -71,9 +83,8 @@ func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
 	return files.RunMount(c, lifecycle)
 }
 
-func mountSSHArgs(o ftpOptions) []string {
-	command := remoteCommand(options{command: "mount-agent", server: o.server})
-	return transport.SessionArgs(o.host, o.ssh, "unset SSHORE_SOCKET SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN; "+command)
+func mountSSHOptions(o ftpOptions) sshio.Options {
+	return sshio.Options{Host: o.host, Args: append([]string{"-o", "ClearAllForwardings=yes"}, sshio.WithoutForwarding(o.ssh)...), Command: remoteCommand(options{command: "mount-agent", server: o.server}), Confirm: confirmSSHHost}
 }
 
 func readMountApprovalPath(input promptReader, hint string) (string, error) {

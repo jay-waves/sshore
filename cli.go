@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"os"
-	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 func run(args []string) (code int, resultErr error) {
@@ -17,12 +20,6 @@ func run(args []string) (code int, resultErr error) {
 	}()
 	if len(args) > 0 && args[0] == "__complete" {
 		return 0, runCompletionQuery(args[1:], os.Stdout)
-	}
-	if os.Getenv("SSHORE_ASKPASS") == "1" {
-		if os.Getenv("SSHORE_DISABLED") == "1" {
-			return 1, fmt.Errorf("file access disabled in recovery")
-		}
-		return runResourceAskpass(args)
 	}
 	if len(args) > 0 {
 		args = append([]string(nil), args...)
@@ -314,12 +311,16 @@ func runExec(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	cmd := exec.Command(sshExecutable(), "-T", "-o", "RequestTTY=no", "--", parsed.operands[0], parsed.operands[1])
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		var exit *exec.ExitError
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	connection := sshio.Options{Host: parsed.operands[0], Command: parsed.operands[1], Confirm: confirmSSHHost}
+	if err := sshio.Run(ctx, connection, os.Stdin, os.Stdout, os.Stderr); err != nil {
+		var exit interface {
+			error
+			ExitStatus() int
+		}
 		if errors.As(err, &exit) {
-			return exit.ExitCode(), nil
+			return exit.ExitStatus(), nil
 		}
 		return 1, err
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"github.com/jay-waves/sshore/internal/sshtest"
 	"io"
 	"os"
 	"os/exec"
@@ -55,15 +56,21 @@ func TestClientPrefixKeysAndDetach(t *testing.T) {
 
 func startPrefixClient(t *testing.T, e *testEnv) (*exec.Cmd, *os.File, func(string)) {
 	t.Helper()
+	return startSessionClient(t, e, []string{"launch", "fixture", "keys", "--server", e.bin})
+}
+
+func startSessionClient(t *testing.T, e *testEnv, args []string) (*exec.Cmd, *os.File, func(string)) {
+	t.Helper()
 	wrapper := filepath.Join(e.dir, "ssh-keys")
-	script := "#!/bin/sh\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n"
+	script := "#!/bin/sh\nunset SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN SSHORE_LOCAL_SESSION SSHORE_SOCKET\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n"
 	if err := os.WriteFile(wrapper, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
+	wrapper = sshtest.Wrap(t, wrapper, e.env)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
-	cmd := exec.CommandContext(ctx, e.bin, "launch", "fixture", "keys", "--server", e.bin)
-	cmd.Env = append(e.env, "SSHORE_SSH="+wrapper, "SSHORE_SOCKET=", "SSHORE_STATE_DIR="+filepath.Join(e.dir, "client-state"), "TERM=xterm-256color")
+	cmd := exec.CommandContext(ctx, e.bin, args...)
+	cmd.Env = append(e.env, "SSHORE_SSH="+wrapper, "SSHORE_SOCKET=", "SSHORE_STATE_DIR="+filepath.Join(e.dir, "client-state"), "TERM=xterm-256color", "SSHORE_TEST_CONFIG_CONTEXT="+filepath.Join(e.dir, "config-context"))
 	terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 120})
 	if err != nil {
 		t.Fatal(err)
@@ -109,6 +116,76 @@ func startPrefixClient(t *testing.T, e *testEnv) (*exec.Cmd, *os.File, func(stri
 	}
 
 	return cmd, terminal, wait
+}
+
+func TestClientLocalRemoteHandoff(t *testing.T) {
+	t.Setenv("SSHORE_LOCAL_SESSION", "")
+	t.Setenv("SSHORE_SOCKET", "")
+	e := newEnv(t)
+	cmd, terminal, wait := startSessionClient(t, e, []string{"launch", "--local", "origin"})
+	t.Cleanup(func() {
+		cleanup := exec.Command(e.bin, "cancel", "--all")
+		cleanup.Env = cmd.Env
+		_ = cleanup.Run()
+	})
+	wait("Connected local / origin")
+	wait("sshore-test> ")
+	marker := filepath.Join(e.dir, "launcher-exited")
+	directory := filepath.Join(e.dir, "handoff-cwd")
+	if err := os.Mkdir(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	wrapper := "#!/bin/sh\nexec " + shellQuote(localEnvironmentValue(cmd.Env, "SSHORE_SSH")) + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(directory, "ssh"), []byte(wrapper), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// The command returns to its owner shell while the frontend is remote.
+	command := "cd " + shellQuote(directory) + "; export HANDOFF_VALUE=preserved; export PATH=" + shellQuote(directory) + ":$PATH; unset SSHORE_SSH; " + shellQuote(e.bin) + " spawn fixture remote --quiet --server " + shellQuote(e.bin) + "; printf '%s' \"$?\" > " + shellQuote(marker) + "\n"
+	io.WriteString(terminal, command)
+	wait("Connected fixture / remote")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		data, err := os.ReadFile(marker)
+		if err == nil {
+			if string(data) != "0" {
+				t.Fatalf("launcher failed: %s", data)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("nested launcher remained running")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// A single prefix reaches the remote frontend, with no local ConPTY hop.
+	io.WriteString(terminal, "\x02i")
+	wait("[sshore] fixture / remote")
+	contextData, err := os.ReadFile(filepath.Join(e.dir, "config-context"))
+	if err != nil || string(contextData) != directory+"\npreserved\n" {
+		t.Fatalf("SSH config context: %q %v", contextData, err)
+	}
+	rename := exec.Command(e.bin, "rename", "--local", "origin", "returned")
+	rename.Env = cmd.Env
+	if out, err := rename.CombinedOutput(); err != nil {
+		t.Fatalf("rename return target: %s %v", out, err)
+	}
+	io.WriteString(terminal, "\x02d")
+	wait("Connected local / returned")
+	io.WriteString(terminal, "\x02i")
+	wait("[sshore] local / returned")
+	io.WriteString(terminal, shellQuote(e.bin)+" attach fixture remote --quiet --server "+shellQuote(e.bin)+"\n")
+	wait("Connected fixture / remote")
+	io.WriteString(terminal, "exit\n")
+	wait("Connected local / returned")
+	// Failed connection restores the same local shell, rather than exiting it.
+	io.WriteString(terminal, shellQuote(e.bin)+" attach fixture missing --server "+shellQuote(e.bin)+"\n")
+	wait("Target unavailable; restoring returned")
+	wait("Connected local / returned")
+	// The failed launcher now reports failure to its parent shell.
+	io.WriteString(terminal, "exit 0\n")
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestClientDetachWithBlockedInput(t *testing.T) {
@@ -288,6 +365,9 @@ func expectTerminalText(t *testing.T, b *bridgeConn, marker string) string {
 
 func detachTestClient(t *testing.T, b *bridgeConn) {
 	t.Helper()
+	// Match the client: drain terminal input before detaching on control.
+	sendTest(t, b.tty, message{Type: "input_barrier"})
+	untilType(t, b.tty, "input_drained")
 	sendTest(t, b.in, message{Type: "detach"})
 	untilType(t, b.out, "detached")
 	b.close()
@@ -487,4 +567,39 @@ func responsiveShellOutput(t *testing.T, b *bridgeConn, command, marker string) 
 	t.Helper()
 	sendTest(t, b.tty, message{Type: "input", Data: []byte(command + "\n")})
 	return expectTerminalText(t, b, marker)
+}
+
+func TestClientNestedLocalSpawnHandoff(t *testing.T) {
+	t.Setenv("SSHORE_LOCAL_SESSION", "")
+	t.Setenv("SSHORE_SOCKET", "")
+	e := newEnv(t)
+	cmd, terminal, wait := startSessionClient(t, e, []string{"launch", "--local", "root"})
+	t.Cleanup(func() { cleanup := exec.Command(e.bin, "cancel", "--all"); cleanup.Env = cmd.Env; _ = cleanup.Run() })
+	wait("Connected local / root")
+	wait("sshore-test> ")
+	for _, name := range []string{"child", "grandchild"} {
+		marker := filepath.Join(e.dir, name+"-returned")
+		io.WriteString(terminal, shellQuote(e.bin)+" spawn --local "+name+"; printf done > "+shellQuote(marker)+"\n")
+		wait("Connected local / " + name)
+		wait("sshore-test> ")
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			data, err := os.ReadFile(marker)
+			if err == nil && string(data) == "done" {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("nested launcher did not exit", name, err)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	for _, name := range []string{"child", "root"} {
+		io.WriteString(terminal, "exit\n")
+		wait("Connected local / " + name)
+	}
+	io.WriteString(terminal, "exit\n")
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
 }

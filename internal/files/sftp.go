@@ -10,7 +10,7 @@ import (
 
 	"github.com/pkg/sftp"
 
-	"github.com/jay-waves/sshore/internal/transport"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 // SFTP v3 framing guard. pkg/sftp's ReadDir accumulates all NAME packets before
@@ -128,7 +128,7 @@ func (w *ftpWire) Write(p []byte) (int, error) {
 		if e := w.record(w.writeBuffer[4:]); e != nil {
 			return accepted, e
 		}
-		if e := transport.WriteFull(w.writer, w.writeBuffer); e != nil {
+		if e := sshio.WriteFull(w.writer, w.writeBuffer); e != nil {
 			return accepted, e
 		}
 		w.writeBuffer = w.writeBuffer[:0]

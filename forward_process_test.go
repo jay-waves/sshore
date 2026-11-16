@@ -5,20 +5,13 @@ package main
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
-	"os"
-	"os/exec"
+	"net"
 	"testing"
 	"time"
 )
 
 func TestBlockedHeartbeatCancellation(t *testing.T) {
-	if os.Getenv("SSHORE_FORWARD_BLOCKED_HELPER") == "1" {
-		fmt.Fprintln(os.Stdout, forwardReadyMarker)
-		time.Sleep(time.Minute)
-		os.Exit(0)
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	heartbeat := make(chan struct{})
@@ -26,10 +19,11 @@ func TestBlockedHeartbeatCancellation(t *testing.T) {
 	go func() {
 		_, err := runForwardTransport(ctx, forwardTransport{
 			Log: io.Discard, HeartbeatInterval: time.Hour,
-			Command: func(ctx context.Context, _ bool) *exec.Cmd {
-				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestBlockedHeartbeatCancellation$")
-				cmd.Env = append(os.Environ(), "SSHORE_FORWARD_BLOCKED_HELPER=1")
-				return cmd
+			Start: func(ctx context.Context, _ bool, _ io.Writer) (*forwardConnection, error) {
+				client, server := net.Pipe()
+				go func() { io.WriteString(server, forwardReadyMarker+"\n"); <-ctx.Done(); server.Close() }()
+				stop := context.AfterFunc(ctx, func() { client.Close() })
+				return &forwardConnection{Input: client, Output: client, Close: func() error { stop(); return client.Close() }, Wait: func() error { <-ctx.Done(); return ctx.Err() }}, nil
 			},
 			Ready: func() error { return nil }, Status: func(string, error) {},
 			Heartbeat: func() ([]byte, error) { close(heartbeat); return bytes.Repeat([]byte("x"), 1<<20), nil },

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"io"
 	"os"
 	"path/filepath"
@@ -206,11 +207,8 @@ func collectInventory(o options) (inventory, error) {
 	inv := emptyInventory()
 	inv.Host = o.host
 	if o.host != "" {
-		cmd := sshCommand(o)
-		cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
 		var output limitedInventoryBuffer
-		cmd.Stdout = &output
-		err := cmd.Run()
+		err := sshio.Run(context.Background(), sshConnectionOptions(o), nil, &output, os.Stderr)
 		if err == nil {
 			err = json.Unmarshal(output.data, &inv)
 		}

@@ -23,7 +23,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/jay-waves/sshore/internal/transport"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/pkg/sftp"
 )
 
@@ -106,7 +106,7 @@ func (f *receivingFile) put(b []byte) error {
 	if int64(len(b)) > f.size-f.done {
 		return fmt.Errorf("received more data than announced")
 	}
-	if err := transport.WriteFull(f.file, b); err != nil {
+	if err := sshio.WriteFull(f.file, b); err != nil {
 		return err
 	}
 	f.done += int64(len(b))

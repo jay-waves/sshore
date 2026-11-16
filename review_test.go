@@ -74,13 +74,6 @@ func TestApproveCLI(t *testing.T) {
 		t.Fatal("stay ignored")
 	}
 }
-func TestOwnedSSHTransport(t *testing.T) {
-	cmd := sshCommand(options{host: "host", server: "sshore", ssh: []string{"-o", "ControlMaster=auto", "-o", "ControlPath=/tmp/shared"}})
-	args := strings.Join(cmd.Args, " ")
-	if !strings.HasPrefix(args, "ssh -o ControlMaster=no -o ControlPath=none -o ControlPersist=no ") {
-		t.Fatal(args)
-	}
-}
 
 func TestApprovalRejectsDifferentRelease(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
@@ -164,5 +157,28 @@ func TestApprovalValidation(t *testing.T) {
 	}
 	if op.LocalPath != "" {
 		t.Fatal("remote selected local path")
+	}
+}
+
+func TestRoutedApprovalRecovery(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	parent := options{host: "entry", session: "parent", instance: "parent-instance", server: "/custom/sshore", ssh: []string{"-p", "2222"}}
+	original := options{host: "private-alias", session: "child", instance: "child-instance", routeParent: &parent, routeToken: strings.Repeat("a", 64), routeTarget: true, resumePID: 123}
+	id, err := writeApproval(original, []operation{{Kind: "upload", Path: "/tmp"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := approvalDir()
+	r, err := readApproval(dir, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := r.clientOptions()
+	if restored.command != "attach" || restored.routeParent == nil || restored.routeParent.host != "entry" || restored.routeParent.instance != parent.instance || restored.instance != original.instance || restored.routeToken != original.routeToken || !restored.routeTarget || restored.resumePID != 123 || restored.approvalID != id {
+		t.Fatalf("approval lost route: %+v", restored)
+	}
+	r.Parent.Instance = ""
+	if err := validateApprovalRecord(r); err == nil {
+		t.Fatal("unbound approval route accepted")
 	}
 }

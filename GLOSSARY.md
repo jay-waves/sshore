@@ -9,11 +9,14 @@ This document defines the project vocabulary. Commands are documented by
 | Term | Meaning |
 | --- | --- |
 | Local computer | The machine running the client or managing a mount/forward. Local is relative to that operation. |
-| Remote host / SSH destination | The host reached through system OpenSSH, often named by a `~/.ssh/config` alias. |
+| Remote host / SSH destination | The host reached through the built-in SSH connection, often named by an alias resolved from OpenSSH configuration. |
 | Remote account | The authenticated Unix account. Shell management excludes other users. |
 | Client | The foreground sshore process attaching to a local or remote shell. It is not the shell itself. |
 | Transport | The SSH connection carrying a shell attachment, independent forward or SFTP mount. |
 | Attachment | One client's live connection to a shell. At most one client is attached at a time. |
+| Root frontend | The client owning the user's real terminal across nested attachments. It handles terminal input and shortcuts; daemons own shells and next-hop connections. |
+| Attachment handoff | A command in a managed shell transfers interaction to a prepared child attachment and exits after readiness confirmation, retaining the parent as its return target. It does not transfer spawn ownership. |
+| Attachment route | A private path through parent daemons to a nested attachment. It retains the originating host's connection context; a host label is not a substitute for the route. |
 | Peer / manager | Another computer managing a resource whose advisory record is visible on the remote account. |
 
 ## Shells and lifecycle
@@ -26,7 +29,7 @@ This document defines the project vocabulary. Commands are documented by
 | Shell | A shell process and native terminal owned by a daemon, local on Linux/Windows or remote on Linux. `launch` creates a persistent session that survives detach and connection loss. |
 | Spawn | A temporary shell created by `spawn`, displayed in trees as `spawn/ID (alias)`. It can detach and reattach but ends with its original owner. A remote spawn also ends on loss of its lifetime SSH connection. |
 | Spawn owner | The parent shell process that launched `spawn`, identified by PID and creation identity. Attach never transfers ownership. |
-| Lifetime SSH connection | A local-daemon-owned connection keeping a remote spawn alive independently of foreground attachments. It is not automatically reconnected. |
+| Lifetime SSH connection | A daemon-owned connection on the initiating host keeping a remote spawn alive independently of foreground attachments. It is not automatically reconnected. |
 | Daemon | A background owner of native terminals and lifecycle. One local daemon per user/state root hosts multiple shells and forward transports, and supervises mount workers; Linux remote shells share a daemon per runtime directory, with separate helper endpoints. |
 | Alias / shell name | An optional public label on a fixed task ID. Creation may supply an alias; `rename` replaces it without changing the task identity or lifetime. Legacy names remain aliases. |
 | Task | A context-dependent display term: an identified item in `list`, or a program running under a shell. It is not a separate execution model; the managed lifecycle uses session, shell and resource. Identifying shell programs for termination requires process identity checks, not just a displayed PID. |

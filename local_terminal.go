@@ -22,6 +22,7 @@ type localShell struct {
 	modes           tmux.InputState
 	done            chan struct{}
 	once            sync.Once
+	handoff         *localHandoff
 }
 
 func (s *localShell) close() {
@@ -227,6 +228,10 @@ func runLocalShell(record localShellRecord, env []string, ready func(localShellR
 	defer s.close()
 	return serveLocalShell(s, record, ready, func(c net.Conn, m message) error {
 		switch m.Type {
+		case "handoff_confirm":
+			return s.confirmHandoff(c, m)
+		case "handoff":
+			return s.requestHandoff(c, m.Handoff)
 		case "status":
 			s.mu.Lock()
 			reply := message{Type: "session", Temporary: s.record.Owner.PID != 0, Name: s.record.Name, SoftwareVersion: version, Attached: s.lifecycle.Active() != nil}
@@ -358,6 +363,8 @@ func (s *localShell) attach(c net.Conn) error {
 			return err
 		}
 		switch m.Type {
+		case "handoff_result":
+			s.finishHandoff(p, m)
 		case "detach":
 			s.mu.Lock()
 			if err := lease.Stop(); err != nil {

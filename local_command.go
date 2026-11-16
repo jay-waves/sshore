@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -36,6 +37,9 @@ func localRequest(name string, request message, expected ...string) (message, er
 		return message{}, err
 	}
 	defer c.Close()
+	if request.Type == "handoff" {
+		_ = c.SetDeadline(time.Now().Add(2 * time.Minute))
+	}
 	if err = writeMessage(c, request); err != nil {
 		return message{}, err
 	}
@@ -181,6 +185,22 @@ type localStartup struct {
 }
 
 func startLocalSession(name string, owners ...spawnOwner) (localShellRecord, error) {
+	var owner spawnOwner
+	if len(owners) > 0 {
+		owner = owners[0]
+	}
+	return startLocalSessionWithOptions(options{session: name, owner: owner})
+}
+
+func startLocalSessionWithOptions(o options) (localShellRecord, error) {
+	return startLocalSessionContext(context.Background(), o)
+}
+
+func startLocalSessionContext(ctx context.Context, o options) (localShellRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return localShellRecord{}, err
+	}
+	name := o.session
 	var empty localShellRecord
 	if isShortTaskID(name) {
 		name = ""
@@ -190,21 +210,28 @@ func startLocalSession(name string, owners ...spawnOwner) (localShellRecord, err
 		return empty, err
 	}
 	defer reservation.Close()
-	dir, err := os.Getwd()
-	if err != nil {
-		return empty, err
+	dir := o.sshDirectory
+	if dir == "" {
+		dir, err = os.Getwd()
+		if err != nil {
+			return empty, err
+		}
+	}
+	env := o.environment
+	if env == nil {
+		env = os.Environ()
 	}
 	reservation.owner.Close()
 	reservation.owner = nil
 	request := localShellRecord{UID: reservation.uid, Name: reservation.name, Directory: dir, Version: version, Token: resourceToken()}
-	if len(owners) > 0 {
-		request.Owner = owners[0]
-	}
-	c, err := openLocalDaemon(localDaemonRequest{Kind: "shell", Record: request, Env: os.Environ()})
+	request.Owner = o.owner
+	c, err := openLocalDaemonContext(ctx, localDaemonRequest{Kind: "shell", Record: request, Env: env})
 	if err != nil {
 		return empty, err
 	}
 	defer c.Close()
+	stop := context.AfterFunc(ctx, func() { c.Close() })
+	defer stop()
 	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 	var reply localStartup
 	if err = json.NewDecoder(c).Decode(&reply); err != nil {

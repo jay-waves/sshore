@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"github.com/jay-waves/sshore/internal/sshtest"
 	"io"
 	"os"
 	"os/exec"
@@ -54,7 +55,7 @@ func TestForwardLocalSelection(t *testing.T) {
 	for _, reverse := range []bool{false, true} {
 		root := t.TempDir()
 		wrapper := filepath.Join(root, "ssh")
-		if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf 'SSH-ARGS %s\\n' \"$*\"\n"), 0700); err != nil {
+		if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf 'SSH-ARGS %s\\n' \"$*\" >&2\nexit 7\n"), 0700); err != nil {
 			t.Fatal(err)
 		}
 		args := []string{"forward", "origin:", "work:3000", "--foreground"}
@@ -92,7 +93,7 @@ func TestForwardLocalSelection(t *testing.T) {
 		terminal.Close()
 		err = cmd.Wait()
 		cancel()
-		if err != nil || !strings.Contains(output.String(), want) {
+		if err == nil || !strings.Contains(output.String(), want) {
 			t.Fatal(output.String(), err)
 		}
 	}
@@ -108,7 +109,7 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 	if e := os.WriteFile(stub, []byte(script), 0700); e != nil {
 		t.Fatal(e)
 	}
-	t.Setenv("SSHORE_SSH", stub)
+	t.Setenv("SSHORE_SSH", sshtest.Wrap(t, stub, os.Environ()))
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
 	dir, e := resourceStateDir("forward")
 	if e != nil {
@@ -158,7 +159,7 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 	}
 	stopped = true
 	args, _ := os.ReadFile(filepath.Join(root, "args"))
-	if !strings.Contains(string(args), "BatchMode=yes\n-o\nStrictHostKeyChecking=yes") {
+	if strings.Count(string(args), "--\nfixture\n") != 2 {
 		t.Fatal(string(args))
 	}
 }
@@ -177,7 +178,7 @@ func TestForwardRetryBoundaries(t *testing.T) {
 			if e := os.WriteFile(stub, []byte(body), 0700); e != nil {
 				t.Fatal(e)
 			}
-			t.Setenv("SSHORE_SSH", stub)
+			t.Setenv("SSHORE_SSH", sshtest.Wrap(t, stub, os.Environ()))
 			t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
 			dir, e := resourceStateDir("forward")
 			if e != nil {

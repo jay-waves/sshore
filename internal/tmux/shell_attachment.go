@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/transport"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/xtaci/smux"
 )
 
@@ -41,7 +41,7 @@ func (a *Attachment) Mute(muted bool) bool        { return a.muted.Swap(muted) }
 func (a *Attachment) Close()                      { _ = a.mux.Close() }
 func send(stream *smux.Stream, kind string, data []byte, metadata any) error {
 	_ = stream.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	err := transport.WriteMessage(stream, kind, data, metadata)
+	err := sshio.WriteMessage(stream, kind, data, metadata)
 	_ = stream.SetWriteDeadline(time.Time{})
 	return err
 }
@@ -81,7 +81,7 @@ func (a *Attachment) FinishExit(code int) {
 func (a *Attachment) ReadInput(active func() bool) {
 	for {
 		var m terminalMessage
-		err := transport.ReadMessage(a.terminal, &m)
+		err := sshio.ReadMessage(a.terminal, &m)
 		if err != nil {
 			a.Close()
 			return
@@ -91,7 +91,7 @@ func (a *Attachment) ReadInput(active func() bool) {
 		}
 		switch m.Type {
 		case "input":
-			err = transport.WriteFull(a.input, m.Data)
+			err = sshio.WriteFull(a.input, m.Data)
 		case "input_barrier":
 			err = a.Output("input_drained", nil, terminalMessage{Type: "input_drained"})
 		default:
@@ -124,7 +124,7 @@ func Detach(control controlStream, confirmed ...func(string)) error {
 	if err := writeControl(control, detachMessage{Type: "detach"}); err != nil {
 		return err
 	}
-	kind, body, err := transport.ReadFrame(control)
+	kind, body, err := sshio.ReadFrame(control)
 	if err != nil {
 		return err
 	}
@@ -148,7 +148,7 @@ func writeControl(w io.Writer, m detachMessage) error {
 	if err != nil {
 		return err
 	}
-	return transport.WriteFrame(w, 0, body)
+	return sshio.WriteFrame(w, 0, body)
 }
 
 // FinishDetach lets the peer consume the confirmation before closing transport.
@@ -161,7 +161,7 @@ func FinishDetach(control interface {
 	defer closeTransport()
 	_ = notify()
 	_ = control.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, _, _ = transport.ReadFrame(control)
+	_, _, _ = sshio.ReadFrame(control)
 }
 
 var ErrExited = errors.New("session is exiting")

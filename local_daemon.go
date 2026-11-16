@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -61,14 +62,20 @@ func daemonFileLock(name string) (*os.File, error) {
 }
 
 func openLocalDaemon(request localDaemonRequest) (net.Conn, error) {
-	record, err := ensureLocalDaemon()
+	return openLocalDaemonContext(context.Background(), request)
+}
+
+func openLocalDaemonContext(ctx context.Context, request localDaemonRequest) (net.Conn, error) {
+	record, err := ensureLocalDaemonContext(ctx)
 	if err != nil {
 		return nil, err
 	}
-	c, err := dialLocalSession(record)
+	c, err := dialLocalSessionContext(ctx, record, time.Now().Add(5*time.Second))
 	if err != nil {
 		return nil, err
 	}
+	stop := context.AfterFunc(ctx, func() { c.Close() })
+	defer stop()
 	err = writeMessage(c, message{Type: "daemon_request", LocalRequest: &request})
 	if err == nil {
 		var ack message
@@ -86,6 +93,13 @@ func openLocalDaemon(request localDaemonRequest) (net.Conn, error) {
 }
 
 func ensureLocalDaemon() (localShellRecord, error) {
+	return ensureLocalDaemonContext(context.Background())
+}
+
+func ensureLocalDaemonContext(ctx context.Context) (localShellRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return localShellRecord{}, err
+	}
 	var empty localShellRecord
 	deadline := time.Now().Add(10 * time.Second)
 	var lock *os.File
@@ -98,7 +112,11 @@ func ensureLocalDaemon() (localShellRecord, error) {
 		if !resourceLockBusy(err) || time.Now().After(deadline) {
 			return empty, err
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return empty, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 	defer lock.Close()
 	path, err := daemonPath()
@@ -109,7 +127,7 @@ func ensureLocalDaemon() (localShellRecord, error) {
 	owner, err := daemonFileLock("owner")
 	if err == nil {
 		owner.Close()
-		return launchLocalDaemon()
+		return launchLocalDaemonContext(ctx)
 	}
 	if !resourceLockBusy(err) {
 		return empty, err
@@ -121,7 +139,7 @@ func ensureLocalDaemon() (localShellRecord, error) {
 	if err = checkPeerVersion(r.Version, "local daemon"); err != nil {
 		return empty, err
 	}
-	c, err := dialLocalSession(r)
+	c, err := dialLocalSessionContext(ctx, r, time.Now().Add(5*time.Second))
 	if err != nil {
 		return empty, fmt.Errorf("local daemon is unavailable; its owner is still active: %w", err)
 	}
@@ -461,6 +479,13 @@ func runDaemonResource(c net.Conn, request localDaemonRequest) (result error) {
 }
 
 func launchLocalDaemon() (localShellRecord, error) {
+	return launchLocalDaemonContext(context.Background())
+}
+
+func launchLocalDaemonContext(ctx context.Context) (localShellRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return localShellRecord{}, err
+	}
 	var empty localShellRecord
 	exe, err := os.Executable()
 	if err != nil {
@@ -515,6 +540,8 @@ func launchLocalDaemon() (localShellRecord, error) {
 		result <- reply
 	}()
 	select {
+	case <-ctx.Done():
+		return empty, ctx.Err()
 	case reply := <-result:
 		if reply.Error != "" {
 			return empty, fmt.Errorf("start local daemon: %s", reply.Error)

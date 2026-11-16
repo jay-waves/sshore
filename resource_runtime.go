@@ -53,6 +53,7 @@ type resourceConfig struct {
 	UID                    string `json:",omitempty"`
 	MountName              string
 	MountApproval          *files.MountApproval
+	MountConnection        *recentConnection
 	Forward                *forwardConfig
 	Args                   []string
 	AuthAddress, AuthToken string
@@ -145,9 +146,7 @@ func (s *resourceService) startupWriter() io.Writer {
 	return os.Stdout
 }
 func (s *resourceService) sshEnvironment() []string {
-	exe, _ := os.Executable()
-	// os/exec keeps the last value for duplicate environment keys.
-	return append(append([]string(nil), s.baseEnvironment()...), sshAskpassEnvironment(exe, s.config.AuthAddress, s.config.AuthToken)...)
+	return append(append([]string(nil), s.baseEnvironment()...), "SSHORE_CONFIRM_ADDR="+s.config.AuthAddress, "SSHORE_CONFIRM_TOKEN="+s.config.AuthToken)
 }
 func (s *resourceService) ready(root, mountpoint string) error {
 	s.setTransport("connected", nil)
@@ -205,6 +204,14 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 		o, e = parseFTPOptions(config.Args)
 		o.name = config.MountName
 		o.approval = config.MountApproval
+		if config.MountConnection != nil {
+			if err := validateRecentConnection(*config.MountConnection); err != nil {
+				return 1, err
+			}
+			if o.approval == nil || config.MountConnection.Parent == nil || config.MountConnection.Session != o.approval.Session || config.MountConnection.Host != o.host {
+				return 1, fmt.Errorf("invalid routed mount approval")
+			}
+		}
 		if o.approval != nil && (o.approval.PID <= 0 || validSession(o.approval.Session) != nil || !validApprovalID(o.approval.ID)) {
 			return 1, fmt.Errorf("invalid mount approval")
 		}
@@ -353,7 +360,7 @@ func startReservedResource(config resourceConfig, kind string, reservation *reso
 		}
 		prompts.Lock()
 		defer prompts.Unlock()
-		serveSSHAskpass(w, r)
+		serveSSHConfirmation(w, r)
 	})
 	if e != nil {
 		return 1, e
@@ -399,25 +406,7 @@ func startReservedResource(config resourceConfig, kind string, reservation *reso
 
 	return 0, nil
 }
-func runResourceAskpass(args []string) (int, error) {
-	r, e := resourceHTTP(os.Getenv("SSHORE_ASKPASS_ADDR"), os.Getenv("SSHORE_ASKPASS_TOKEN"), "POST", "/ask", strings.NewReader(strings.Join(args, " ")))
-	if e != nil {
-		return 1, e
-	}
-	defer r.Body.Close()
-	if r.StatusCode != 200 {
-		return 1, fmt.Errorf("SSH prompt failed")
-	}
-	b, e := io.ReadAll(io.LimitReader(r.Body, 8192))
-	if e != nil {
-		return 1, e
-	}
-	if os.Getenv("SSH_ASKPASS_PROMPT") == "confirm" && !strings.EqualFold(strings.TrimSpace(string(b)), "yes") {
-		return 1, fmt.Errorf("SSH confirmation declined")
-	}
-	fmt.Println(string(b))
-	return 0, nil
-}
+
 func readResourceRecord(kind, name string) (resourceRecord, error) {
 	var r resourceRecord
 	if e := validSession(name); e != nil {

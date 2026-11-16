@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jay-waves/sshore/internal/transport"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 func TestDetachHandshake(t *testing.T) {
@@ -17,7 +17,7 @@ func TestDetachHandshake(t *testing.T) {
 	defer server.Close()
 	done := make(chan error, 1)
 	go func() {
-		_, body, err := transport.ReadFrame(server)
+		_, body, err := sshio.ReadFrame(server)
 		if err != nil {
 			done <- err
 			return
@@ -35,7 +35,7 @@ func TestDetachHandshake(t *testing.T) {
 			done <- err
 			return
 		}
-		_, body, err = transport.ReadFrame(server)
+		_, body, err = sshio.ReadFrame(server)
 		if err == nil {
 			err = json.Unmarshal(body, &m)
 			if err == nil && m.Type != "bye" {

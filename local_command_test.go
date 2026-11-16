@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"path/filepath"
 	"runtime"
@@ -101,5 +104,90 @@ func TestSpawnOptionsAndInventory(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "MODE") {
 		t.Fatal("unexpected extra mode column")
+	}
+}
+
+func TestClientConnectionCancellation(t *testing.T) {
+	for _, stage := range []string{"authentication", "nested-route"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			path, err := localSessionPath("root")
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := localShellRecord{Name: "root", Address: listener.Addr().String(), Token: resourceToken(), Version: version}
+			if err = writeStateJSON(path, record); err != nil {
+				t.Fatal(err)
+			}
+			reached, closed := make(chan error, 1), make(chan struct{})
+			go func() {
+				defer close(closed)
+				c, err := listener.Accept()
+				if err != nil {
+					reached <- err
+					return
+				}
+				defer c.Close()
+				c.SetDeadline(time.Now().Add(3 * time.Second))
+				_, err = readMessage(c)
+				if err == nil && stage == "nested-route" {
+					err = writeMessage(c, message{Type: "local_ready", SoftwareVersion: version})
+					if err == nil {
+						_, err = readMessage(c)
+					}
+					if err == nil {
+						err = writeMessage(c, message{Type: "route_connected", SoftwareVersion: version})
+					}
+					if err == nil {
+						_, err = readMessage(c)
+					}
+				}
+				reached <- err
+				_, _ = io.Copy(io.Discard, c)
+			}()
+			root := options{command: "attach", local: true, session: "root"}
+			o := root
+			if stage == "nested-route" {
+				parent := options{command: "attach", routeParent: &root, routeToken: "first"}
+				o = options{command: "attach", routeParent: &parent, routeToken: "second"}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			result := make(chan error, 1)
+			go func() {
+				_, closeTransport, err := openClientTransportContext(ctx, &o)
+				if closeTransport != nil {
+					closeTransport()
+				}
+				result <- err
+			}()
+			select {
+			case err := <-reached:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("connection did not reach handshake")
+			}
+			cancel()
+			select {
+			case err := <-result:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("error = %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("cancelled connection remained blocked")
+			}
+			select {
+			case <-closed:
+			case <-time.After(time.Second):
+				t.Fatal("cancelled connection remained open")
+			}
+		})
 	}
 }

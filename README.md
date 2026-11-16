@@ -6,7 +6,9 @@ Start a shell, leave it running, and return later. sshore combines local and
 remote shell sessions with SSH file copies, TCP tunnels and SFTP mounts.
 
 **Local:** Linux or Windows amd64/x86-64. **Remote:** Linux amd64/x86-64.
-Requires system OpenSSH. ARM and macOS are not supported.
+Requires system OpenSSH for configuration and a running SSH agent with the desired
+key loaded (`ssh-add`). Connections run inside sshore; private keys stay in the
+agent. ARM and macOS are not supported.
 In the examples, `work` is a host or an alias from your SSH config.
 
 ## Install
@@ -59,6 +61,12 @@ that must survive disconnection. Daemon failure or host restart can end any shel
 Press **Ctrl+B**, then **d** to detach, **s** to switch sessions, or **?** for help.
 Inside a remote shell, `sshore detach` also works. Both startup commands accept
 `--detach` to start in the background. `attach` never takes over an attached shell.
+Inside a managed shell, interactive `spawn` reuses the root client, including
+local children and further remote hops. The command exits successfully only when
+the child attachment is ready; it leaves no per-spawn launcher process behind.
+Ctrl+B controls the child; detach or exit returns one level. Startup failure
+returns to the parent with an error. Spawn ownership stays unchanged.
+Local managed shells also hand off remote `launch` and `attach` this way.
 Screens, scrollback and detached output are not saved.
 
 ```mermaid
@@ -66,6 +74,11 @@ flowchart LR
     copy["Local cp"] --> helper["Prepare matching remote sshore; confirm any update"]
     helper --> verified["Transfer once; receiver verifies before publication"]
     start["spawn / launch"] --> shell["Work in a shell"]
+    shell -->|"Nested spawn; keep root client"| child["Prepare child on its owning daemon"]
+    child -->|"Attachment ready; launcher exits"| nested["Interact with child shell"]
+    child -->|"Startup failure"| shell
+    nested -->|"detach / exit; return one level"| shell
+    nested -->|"Further spawn"| child
     shell -->|"detach / switch"| background["Keep running under startup lifetime"]
     background -->|"attach"| shell
     shell -->|"Remote copy / forward / mount request"| review["Detach; review locally"]
@@ -119,7 +132,12 @@ does not prove its target service is healthy.
 
 ## SSH — connect your way
 
-Use your usual SSH aliases, keys and authentication from `~/.ssh/config`.
+Use SSH aliases from `~/.ssh/config` and load keys into the SSH agent.
+Managed remote shells require the server to permit Unix-socket forwarding
+(`AllowStreamLocalForwarding`); preparation then exits and the connection reaches
+the daemon directly. For nested remote hops, configuration and agent access come
+from the machine running the command. A lost route fails explicitly; it is never
+replaced by a direct connection from your computer.
 **Put SSH options after `--`:**
 
 ```sh

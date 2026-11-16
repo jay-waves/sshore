@@ -20,7 +20,7 @@ expose. It does not promise availability or trustworthy remote computation.
 | --- | --- |
 | Local OS, account, terminal, sshore executable and SSH configuration | Trusted. Administrators and processes running as the same local user are inside this boundary. |
 | Remote host, daemon and programs in the remote account | Potentially malicious. They may forge requests, metadata, terminal output and responses. |
-| Network | Untrusted. System OpenSSH provides endpoint authentication and transport integrity under the user's host-key policy. |
+| Network | Untrusted. Go SSH provides endpoint authentication and transport integrity under the local host-key policy. |
 | Release publisher and distribution repository | Trusted to supply the installer, executable and checksums. Checksums alone do not protect against a compromised publisher. |
 | Local user | Chooses commands and reviews requested access. Approval is not a malware scan or proof that the remote requester is honest. |
 
@@ -37,9 +37,11 @@ flowchart LR
         service["Files and services"]
         setup["Remote setup and managed shells"]
         bash["Persistent Bash: remote account permissions"]
+        relay["Owning daemon: next-hop configuration and agent"]
+        child["Child shell on next host"]
     end
     subgraph local["Trusted local OS and user account"]
-        client["Connected client"]
+        client["Root frontend"]
         pending["Bounded, private, expiring request"]
         user["Local user"]
         agent["MCP client and Agent"]
@@ -60,6 +62,10 @@ flowchart LR
     user -->|"Explicit cp / forward / mount command"| resources
     resources <-->|"Authenticated SSH; remote account permissions"| service
     user -->|"Local shell and resource control"| control
+    control -->|"Private handoff; child readiness required"| client
+    shell -->|"Explicit nested spawn"| relay
+    relay <-->|"Next-hop SSH; same exact release"| child
+    relay <-->|"Private attachment route; no local command or credentials"| client
     resources -->|"cp / watched mount: exact-version helper setup"| update
     user --> update
     agent -->|"Exact release; updates require user review"| update
@@ -69,6 +75,24 @@ flowchart LR
 Remote output, public names, task IDs and inventory records are not
 capabilities. Local control requires private state and authentication. Remote
 operations remain constrained by the authenticated account and SSH server policy.
+
+Local attachment handoff is accepted through authenticated local control, never
+inferred from terminal output. A nested remote spawn is executed by the daemon on
+its initiating host, using that host's configuration and agent. The root frontend
+receives an attachment route, not an instruction to execute the remote command or
+use the root account's credentials for the next hop. Child readiness is required
+before the launcher reports success; the original spawn owner remains authoritative.
+
+Routes are private capabilities bound to the parent shell instance. Reattachment
+and review preserve that route; an expired route or changed parent must fail, not
+fall back to a direct connection using a remote-supplied host alias. Route messages
+and returned terminal content remain untrusted. They grant no file, mount or
+forward approval. Host-key confirmation uses an authenticated broker on the
+initiating host; private keys remain with its agent.
+
+Managed shell channels reach private daemon Unix sockets through SSH stream-local
+forwarding. SSH server policy must allow it; sshore does not bypass a refusal.
+Preparation and bridge processes are not retained as per-shell trust boundaries.
 
 ## Threats and safeguards
 
@@ -112,10 +136,15 @@ Each pending request:
 - Fixes the approved operation locally. Setup changes or recovery skip execution;
   the user must request the operation again.
 
-OpenSSH owns passwords, keys, agents, MFA and host-key checks. Logging in without
-an authentication prompt is not approval. Local SSH configuration and executable
-selection are trusted; configured proxies and jump hosts may have independent
-lifetimes. sshore disables ControlMaster sharing on its own transports.
+System OpenSSH evaluates configuration; its executable, configuration files and
+`Match exec` hooks are trusted local inputs. The SSH agent retains private keys
+and signs authentication requests. sshore verifies remote host keys and owns the
+encrypted connection through Go SSH. Agent authentication without a prompt is
+not approval. Password authentication, agent forwarding and arbitrary proxy
+commands are outside the supported connection model. Changed host keys are
+rejected; background retries never establish new host trust. Connections do not
+share ControlMaster state or automatically reconnect outside explicit forward
+retry policy.
 
 **Limit:** remote output can imitate local prompts, and processes sharing the
 remote account can submit requests. A request does not prove who typed it. Do not
@@ -157,7 +186,7 @@ Forwarding fixes direction, listener and destination before execution. Independe
 forwards request IPv4 loopback listeners and loopback destinations; occupied ports
 fail without substitution. Remote requests need local port selection or acceptance.
 Their helper rechecks the original shell version, name, PID and detached state.
-No software update runs during forward review. OpenSSH may bind an approved
+No software update runs during forward review. The SSH transport may bind an approved
 listener before that check; failure closes the transport before it reports ready.
 
 **Limits:** loopback is not per-user isolation. SSH server `GatewayPorts` policy
@@ -253,10 +282,9 @@ local tools into unrelated local files. Windows rejects unrepresentable names
 instead of silently aliasing them. Remote filenames, attributes and data remain
 untrusted.
 
-Notification-enabled mounts use the same [setup safeguards](#remote-setup-and-updates)
-as shells before starting an exact-release transient agent. Declining setup does not
-grant recovery-mode file access. No-watch mounts use ordinary SFTP without remote
-sshore. The agent needs remote command execution and does not inherit an
+Mounts use the same [setup safeguards](#remote-setup-and-updates) as shells before
+starting an exact-release transient agent. Declining setup does not grant
+recovery-mode file access. The agent needs remote command execution and does not inherit an
 internal-sftp-only policy or SFTP subsystem-specific command flags. SSH/account
 policy remains authoritative; the mount connection disables native forwarding,
 backgrounding and ControlMaster sharing.
@@ -309,9 +337,9 @@ other users, preparation helpers and transient transports are excluded.
 
 Automatic replacement requires a user-owned regular file and a user-owned directory
 without group/world write permission. It does not elevate privileges or modify PATH
-or shell profiles. Direct copy and notification-enabled mount startup use the same
-safeguards and collect any confirmation in the initiating terminal. No-watch mounts
-and ordinary forwarding do not install a remote helper.
+or shell profiles. Direct copy and mount startup use the same safeguards and
+collect any confirmation in the initiating terminal. Ordinary forwarding does not
+install a remote helper.
 
 Release checksums detect corruption, not publisher compromise. Cached artifacts are
 private and rechecked on reuse; unavailable assets never cause substitution of a

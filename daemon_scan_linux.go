@@ -333,17 +333,21 @@ func connectRemoteDaemon(executable string) (net.Conn, error) {
 }
 
 func createRemoteShell(executable, name, label, uid string, temporary ...bool) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	return createRemoteShellUsing(executable, name, label, uid, len(temporary) > 0 && temporary[0], cwd, os.Environ())
+}
+
+func createRemoteShellUsing(executable, name, label, uid string, temporary bool, cwd string, env []string) error {
 	c, err := connectRemoteDaemon(executable)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	cwd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	request := message{Type: "create_shell", Instance: uid, Temporary: len(temporary) > 0 && temporary[0], SoftwareVersion: version, Name: name, Action: label, LocalRequest: &localDaemonRequest{Record: localShellRecord{Directory: cwd}, Env: os.Environ()}}
+	request := message{Type: "create_shell", Instance: uid, Temporary: temporary, SoftwareVersion: version, Name: name, Action: label, LocalRequest: &localDaemonRequest{Record: localShellRecord{Directory: cwd}, Env: env}}
 	if err = writeMessage(c, request); err != nil {
 		return err
 	}

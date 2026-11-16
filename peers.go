@@ -1,12 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
@@ -16,7 +16,7 @@ import (
 
 	"github.com/pkg/sftp"
 
-	"github.com/jay-waves/sshore/internal/transport"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 // Peer task records are advisory, never authorization. They contain only one
@@ -268,7 +268,7 @@ func removeRejectedPeerTask(r approvalRecord) {
 	if server == "" {
 		server = "sshore"
 	}
-	command := "unset SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN; server=" + shellQuote(server) + "; if command -v \"$server\" >/dev/null 2>&1; then server=$(command -v \"$server\"); "
+	command := "unset SSHORE_CONFIRM_ADDR SSHORE_CONFIRM_TOKEN; server=" + shellQuote(server) + "; if command -v \"$server\" >/dev/null 2>&1; then server=$(command -v \"$server\"); "
 	if server == "sshore" {
 		command += "else server=\"$HOME/.local/bin/sshore\"; "
 	} else {
@@ -276,12 +276,8 @@ func removeRejectedPeerTask(r approvalRecord) {
 	}
 	command += "fi; if [ \"$(\"$server\" --version 2>/dev/null)\" = " + shellQuote("sshore "+version) + " ]; then exec \"$server\" task-remove " + shellQuote(version) + " " + shellQuote(r.ID) + "; fi"
 	args := []string{"-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=2", "-o", "ConnectionAttempts=1", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "-o", "ClearAllForwardings=yes", "-o", "ForkAfterAuthentication=no", "-o", "RemoteCommand=none", "-o", "SessionType=default"}
-	args = append(args, transport.WithoutForwarding(r.SSH)...)
-	args = append(args, "--", r.Host, command)
-	cmd := exec.CommandContext(ctx, sshExecutable(), args...)
-	cmd.Dir = r.Directory
-	cmd.WaitDelay = 200 * time.Millisecond
-	_ = cmd.Run()
+	args = append(args, sshio.WithoutForwarding(r.SSH)...)
+	_ = sshio.Run(ctx, sshio.Options{Host: r.Host, Args: args, Command: command, Directory: r.Directory}, nil, io.Discard, io.Discard)
 }
 
 // Mount inventory uses the existing SFTP transport. Failure to publish metadata
@@ -460,4 +456,68 @@ func collectIncomingTasks() ([]peerView, error) {
 		result = append(result, v)
 	}
 	return result, nil
+}
+
+func watchPeerRecords(ctx context.Context, input io.Reader, kind string, report func(error)) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	updates := make(chan peerRecord)
+	failure := make(chan error, 1)
+	go func() {
+		s := bufio.NewScanner(input)
+		s.Buffer(make([]byte, 1024), maxRemoteTaskSize)
+		for s.Scan() {
+			var t peerRecord
+			if e := json.Unmarshal(s.Bytes(), &t); e != nil {
+				failure <- e
+				return
+			}
+			select {
+			case updates <- t:
+			case <-ctx.Done():
+				return
+			}
+		}
+		failure <- s.Err()
+	}()
+	var first *peerRecord
+	warned := false
+	var endIncoming func()
+	defer func() {
+		if endIncoming != nil {
+			endIncoming()
+		}
+		if first != nil {
+			_ = removeRemoteTask(first.Key)
+		}
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case e := <-failure:
+			return e
+		case t := <-updates:
+			if e := validateRemoteTask(t); e != nil {
+				return e
+			}
+			if t.State != "active" || (kind != "" && peerKind(t.ID) != kind) {
+				return fmt.Errorf("watch requires an active resource")
+			}
+			if first != nil && (t.Key != first.Key || t.UID != first.UID || peerKind(t.ID) != peerKind(first.ID) || t.Manager != first.Manager || t.Direction != first.Direction) {
+				return fmt.Errorf("resource identity changed during watch")
+			}
+			if first == nil {
+				copy := t
+				first = &copy
+				endIncoming = beginIncomingTask(t)
+			}
+			if e := storeRemoteTask(t); e != nil && !warned {
+				warned = true
+				if report != nil {
+					report(e)
+				}
+			}
+		}
+	}
 }

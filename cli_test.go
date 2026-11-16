@@ -77,9 +77,9 @@ func TestSSHLightweightPassthrough(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(o.ssh, []string{flag, value}) {
 				t.Fatalf("%v: %+v %v", args, o, err)
 			}
-			cmd := sshCommand(o)
-			if !reflect.DeepEqual(cmd.Args[7:9], o.ssh) {
-				t.Fatal(cmd.Args)
+			connection := sshConnectionOptions(o)
+			if !reflect.DeepEqual(connection.Args, o.ssh) {
+				t.Fatal(connection.Args)
 			}
 		}
 		if _, err := parseOptions([]string{"launch", "host", "--", flag}); err == nil {

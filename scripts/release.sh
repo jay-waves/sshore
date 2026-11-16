@@ -717,6 +717,34 @@ Windows amd64 only; remote shell hosting remains Linux-only.
 NOTES
 fi
 
+if [[ "$version" == "0.7.0" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Run SSH connections inside sshore. System OpenSSH evaluates configuration;
+  an SSH agent retains keys and signs authentication requests.
+- Reuse the root terminal frontend for nested spawn, including remote hops.
+  The initiating host's daemon owns each next-hop connection. Launchers exit
+  after the child attachment is ready; detach and exit return to the parent.
+- Connect shell transports directly to remote daemon sockets so preparation
+  helpers do not remain running for the connection's lifetime.
+- Preserve original spawn ownership, private parent routes and shell instances
+  across detach, reattachment and ancestor renames. Route failures never fall
+  back to interpreting a remote alias using the root computer's SSH settings.
+- Carry reviewed file transfers, mounts and forwards through attachment routes
+  while retaining source-instance checks and the existing approval safeguards.
+- Add MCP tools for persistent remote Bash sessions and one-shot SSH execution.
+
+Migration: start an SSH agent and load the desired key with ssh-add. Password
+and keyboard-interactive authentication, agent forwarding and ProxyCommand are
+not supported by the built-in transport. Managed shell connections require the
+SSH server to permit direct stream-local forwarding to daemon Unix sockets.
+Client and remote releases must match exactly. Updating older remote shells ends
+listed shells and tasks only after you review them and type update. Linux and
+Windows amd64 only; remote shell hosting remains Linux-only.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."

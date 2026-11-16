@@ -92,6 +92,7 @@ func negotiateSetupUsing(ctx context.Context, r io.Reader, w io.Writer, o *optio
 				return fmt.Errorf("transfer remote executable: %w", err)
 			}
 		case "setup_ready":
+			o.daemonSocket = m.Directory
 			if m.Action == "plain" {
 				if o.command == "mount-agent" || o.command == "cp-agent" {
 					return fmt.Errorf("helper setup requires manual recovery; use sshore launch %s", cleanText(o.host))

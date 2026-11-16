@@ -5,7 +5,6 @@ package files
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
@@ -13,8 +12,6 @@ import (
 
 	"github.com/winfsp/go-winfsp"
 	"golang.org/x/sys/windows"
-
-	"github.com/jay-waves/sshore/internal/transport"
 )
 
 func TestFTPWindowsNames(t *testing.T) {
@@ -68,16 +65,6 @@ func TestWinFspInstallDiagnostics(t *testing.T) {
 	}
 	if e := checkWinFsp(func() (string, error) { return "bin", nil }, func() error { return nil }); e != nil {
 		t.Fatal(e)
-	}
-}
-
-func TestFTPWindowsTransportConsole(t *testing.T) {
-	for _, background := range []bool{false, true} {
-		cmd := exec.Command("ssh.exe")
-		transport.IsolateCommand(cmd, background)
-		if got := cmd.SysProcAttr.HideWindow; got != background || cmd.SysProcAttr.CreationFlags&(windows.CREATE_NO_WINDOW|windows.DETACHED_PROCESS) != 0 {
-			t.Fatalf("background=%v: hidden=%v", background, got)
-		}
 	}
 }
 

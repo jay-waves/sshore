@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -98,6 +99,10 @@ func dialLocalSession(r localShellRecord) (net.Conn, error) {
 }
 
 func dialLocalSessionUntil(r localShellRecord, deadline time.Time) (net.Conn, error) {
+	return dialLocalSessionContext(context.Background(), r, deadline)
+}
+
+func dialLocalSessionContext(ctx context.Context, r localShellRecord, deadline time.Time) (net.Conn, error) {
 	if err := checkPeerVersion(r.Version, "local shell"); err != nil {
 		return nil, err
 	}
@@ -105,10 +110,12 @@ func dialLocalSessionUntil(r localShellRecord, deadline time.Time) (net.Conn, er
 	if remaining <= 0 {
 		return nil, os.ErrDeadlineExceeded
 	}
-	c, err := net.DialTimeout("tcp", r.Address, min(time.Second, remaining))
+	c, err := (&net.Dialer{Timeout: min(time.Second, remaining)}).DialContext(ctx, "tcp", r.Address)
 	if err != nil {
 		return nil, fmt.Errorf("local shell %s unavailable: %w", r.Name, err)
 	}
+	stop := context.AfterFunc(ctx, func() { c.Close() })
+	defer stop()
 	_ = c.SetDeadline(deadline)
 	if err = writeMessage(c, message{Type: "local_auth", Token: r.Token, SoftwareVersion: version}); err == nil {
 		var m message
