@@ -198,6 +198,8 @@ it never kills a PID solely because a record contains it. Short-ID selection is
 bound to the original task instance and cannot authorize control of a replacement.
 Aliases are mutable references, not capabilities. Ambiguous short references must
 not select an arbitrary task.
+An exited local mount/forward worker's stale record can be removed regardless of
+version after acquiring its lifetime lock and rechecking the task identity.
 Remote shell cancellation
 requires matching client/program/daemon releases, the account setup lock, a same-user
 socket peer and confirmed process identities. It does not install or update software.

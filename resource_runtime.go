@@ -458,6 +458,37 @@ func stopResource(kind, name string, expected ...string) error {
 	if len(expected) > 0 && resourceIdentity(r) != expected[0] {
 		return fmt.Errorf("task changed; refresh with sshore list")
 	}
+	dir, e := resourceStateDir(kind)
+	if e != nil {
+		return e
+	}
+	lockPath := filepath.Join(dir, r.storageName()+".lock")
+	lock, e := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if e != nil {
+		return e
+	}
+	defer lock.Close()
+	if e = privateStatePath(lockPath, false); e != nil {
+		return e
+	}
+	// The worker holds this lease throughout its lifetime. A failed HTTP probe
+	// alone cannot distinguish an exited worker from an unresponsive one.
+	if e = lockResourceState(lock); e == nil {
+		current, err := readResourceRecord(kind, r.storageName())
+		if err != nil {
+			return err
+		}
+		if resourceIdentity(current) != resourceIdentity(r) {
+			return fmt.Errorf("task changed; refresh with sshore list")
+		}
+		for _, suffix := range []string{".json", ".name", ".json.result"} {
+			if err := os.Remove(filepath.Join(dir, r.storageName()+suffix)); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		fmt.Fprintf(os.Stdout, "Removed exited %s/%s.\n", kind, name)
+		return nil
+	}
 	if r.Version != version {
 		return fmt.Errorf("resource uses sshore %s; stop it with that exact version", cleanText(r.Version))
 	}
@@ -470,15 +501,6 @@ func stopResource(kind, name string, expected ...string) error {
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("stop: %s", cleanText(string(b)))
 	}
-	dir, e := resourceStateDir(kind)
-	if e != nil {
-		return e
-	}
-	lock, e := os.OpenFile(filepath.Join(dir, r.storageName()+".lock"), os.O_RDWR, 0600)
-	if e != nil {
-		return e
-	}
-	defer lock.Close()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		if e = lockResourceState(lock); e == nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -35,6 +36,74 @@ func TestResourceIdentityAndLegacyMount(t *testing.T) {
 	o, e := parseReview([]string{"review/" + id})
 	if e != nil || o.id != id {
 		t.Fatal(o, e)
+	}
+}
+
+func TestCancelExitedResource(t *testing.T) {
+	for _, kind := range []string{"mount", "forward"} {
+		for _, live := range []bool{false, true} {
+			for _, release := range []string{"0.6.17", "999.0.0", "unknown"} {
+				t.Run(fmt.Sprintf("%s/live=%v/%s", kind, live, release), func(t *testing.T) {
+					t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+					dir, err := resourceStateDir(kind)
+					if err != nil {
+						t.Fatal(err)
+					}
+					r := resourceRecord{Kind: kind, Name: "gone", Token: resourceToken(), Version: release}
+					path := filepath.Join(dir, r.Name)
+					if err := writeStateJSON(path+".json", r); err != nil {
+						t.Fatal(err)
+					}
+					lease, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0600)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer lease.Close()
+					if live {
+						if err := lockResourceState(lease); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := os.WriteFile(path+".json.result", []byte("old receipt"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path+".log", []byte("diagnostics"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					key := resourceIdentity(r)
+					ids, err := assignTaskIDs([]string{key})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := stopResource(kind, r.Name, "replacement"); err == nil {
+						t.Fatal("accepted changed identity")
+					}
+					_, err = run([]string{"cancel", ids[key].code})
+					if live {
+						if err == nil || !strings.Contains(err.Error(), "exact version") {
+							t.Fatal("live worker lost version check", err)
+						}
+						if _, err := os.Stat(path + ".json"); err != nil {
+							t.Fatal("removed live record", err)
+						}
+					} else {
+						if err != nil {
+							t.Fatal(err)
+						}
+						for _, suffix := range []string{".json", ".json.result"} {
+							if _, err := os.Stat(path + suffix); !os.IsNotExist(err) {
+								t.Fatal("stale record retained", suffix, err)
+							}
+						}
+					}
+					for _, suffix := range []string{".lock", ".log"} {
+						if _, err := os.Stat(path + suffix); err != nil {
+							t.Fatal("removed lease or diagnostics", err)
+						}
+					}
+				})
+			}
+		}
 	}
 }
 
