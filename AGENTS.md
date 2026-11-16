@@ -56,7 +56,7 @@ trees, component READMEs, design notes or work logs elsewhere.
 | File | Sole responsibility |
 | --- | --- |
 | `README.md` | Project introduction and short user manual: installation, common workflows, essential consequences and links to command help. |
-| `SSHORE.md` | Development document: architecture, component relationships, protocol/lifecycle design, implementation tradeoffs, build, validation and release workflow. |
+| `SSHORE.md` | Development guide: architecture and ownership summaries, design constraints, build, validation and release workflow. |
 | `SECURITY.md` | Security model: trust boundaries, threats, approval/update safeguards, recovery restrictions, guarantees and remaining risks. |
 | `GLOSSARY.md` | Definitions of project terms, identities and their relationships; use these terms consistently. |
 | `AGENTS.md` | Contributor/agent rules, project constraints and documentation ownership. |
@@ -71,10 +71,18 @@ README should not duplicate it. License notices remain legal material. Generated
 release notes belong to releases, with their generation in `scripts/release.sh`;
 do not add a separate changelog or release-specific work log.
 
+Maintain one authoritative source for each fact. Let clear code, configuration
+and focused tests express implementation details; do not restate algorithms,
+protocol fields, record formats, limits or defaults in prose that must be updated
+separately. Use comments only for local intent or invariants that the code cannot
+readily explain. Development documentation provides constraints, guidance and
+summaries, with pointers to the owning implementation. Prefer references or
+generated output over independently maintained copies of the same fact.
+
 Keep each explanation in its owning document and link to it instead of copying
 it. Update the relevant document when behavior changes. README must stay short;
 retain consequences users need to decide, such as updates ending shells, while
-moving mechanisms to SSHORE and security rationale to SECURITY. New terminology
+keeping design guidance in SSHORE and security rationale in SECURITY. New terminology
 belongs in GLOSSARY, not a competing definition in another file.
 
 Keep the Mermaid diagrams in README and SECURITY current. README explains the
