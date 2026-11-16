@@ -22,7 +22,7 @@ func localShellCommand(env []string) (string, []string) {
 
 func redrawLocalTerminal(t *tmux.Terminal) { tmux.RequestRedraw(t, t.PID()) }
 
-func detachLocalWorker(cmd *exec.Cmd) {
+func detachLocalDaemon(cmd *exec.Cmd) {
 	// The worker only uses pipes and sockets; the shell gets its own ConPTY.
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 }

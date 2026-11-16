@@ -8,40 +8,6 @@ import (
 	"strings"
 )
 
-// --all selects a snapshot, never a process name or a cached PID.
-func parseCancelAll(args []string) (options, bool, error) {
-	var filtered []string
-	all := false
-	for i, arg := range args {
-		if arg == "--" {
-			filtered = append(filtered, args[i:]...)
-			break
-		}
-		if arg == "--all" {
-			if all {
-				return options{}, true, usage("--all may only be specified once")
-			}
-			all = true
-		} else {
-			filtered = append(filtered, arg)
-		}
-	}
-	if !all {
-		return options{}, false, nil
-	}
-	o, err := parseOptions(append([]string{"list"}, filtered...))
-	if err != nil {
-		return o, true, err
-	}
-	if o.listJSON || o.listDetails {
-		return o, true, usage("cancel --all does not accept list options")
-	}
-	if o.local {
-		o.host = ""
-	}
-	return o, true, nil
-}
-
 func runCancelAll(o options) (int, error) {
 	inv, err := collectInventory(o)
 	if err != nil {

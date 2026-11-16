@@ -12,7 +12,7 @@ import (
 
 // The listener owns no terminal until the first authenticated attachment.
 // serve runs synchronously for each connection; shutdown joins all handlers.
-func serveLocalWorker(s *localShell, r localSessionRecord, ready func(localSessionRecord) error, serve func(net.Conn, message) error, done <-chan struct{}) (result error) {
+func serveLocalShell(s *localShell, r localShellRecord, ready func(localShellRecord) error, serve func(net.Conn, message) error, done <-chan struct{}) (result error) {
 	if err := validSession(r.Name); err != nil {
 		return err
 	}

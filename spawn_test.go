@@ -7,7 +7,7 @@ import (
 )
 
 func TestSpawnOptionsAndInventory(t *testing.T) {
-	for _, args := range [][]string{{"spawn"}, {"spawn", "--name", "dev", "--detach"}, {"spawn", "host", "dev", "--", "-p", "2222"}} {
+	for _, args := range [][]string{{"spawn"}, {"spawn", "--local", "dev", "--detach"}, {"spawn", "host", "dev", "--", "-p", "2222"}} {
 		o, err := parseOptions(args)
 		if err != nil || o.command != "spawn" {
 			t.Fatalf("%v: %+v %v", args, o, err)

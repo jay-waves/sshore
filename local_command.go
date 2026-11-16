@@ -49,7 +49,7 @@ func localShells() ([]localShellView, error) {
 	if err != nil {
 		return nil, err
 	}
-	records := []localSessionRecord{}
+	records := []localShellRecord{}
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -94,7 +94,7 @@ func localShells() ([]localShellView, error) {
 	return rows, nil
 }
 
-func inspectLocalShell(r localSessionRecord, deadline time.Time) localShellView {
+func inspectLocalShell(r localShellRecord, deadline time.Time) localShellView {
 	row := localShellView{Temporary: r.Owner.PID != 0, identity: r.identity(), Name: r.Name, State: "unavailable", Version: r.Version, Directory: r.Directory}
 	c, err := dialLocalSessionUntil(r, deadline)
 	if err != nil {

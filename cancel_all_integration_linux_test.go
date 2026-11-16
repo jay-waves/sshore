@@ -27,7 +27,7 @@ func TestCancelAllLocalSnapshot(t *testing.T) {
 		return string(out), err
 	}
 	for _, name := range []string{"one", "two"} {
-		if out, err := run("", "launch", "--name", name, "--detach"); err != nil {
+		if out, err := run("", "launch", "--local", name, "--detach"); err != nil {
 			t.Fatal(out, err)
 		}
 		t.Cleanup(func() { run("", "cancel", "--local", name) })
@@ -70,7 +70,7 @@ func TestCancelAllRemoteScope(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
-	if out, err := run("", "launch", "--name", "keep", "--detach"); err != nil {
+	if out, err := run("", "launch", "--local", "keep", "--detach"); err != nil {
 		t.Fatal(out, err)
 	}
 	defer run("", "cancel", "--local", "keep")
@@ -101,7 +101,7 @@ func TestCancelAllDoesNotCancelReplacement(t *testing.T) {
 		}
 		return string(out)
 	}
-	run("launch", "--name", "same", "--detach")
+	run("launch", "--local", "same", "--detach")
 	defer run("cancel", "--local", "same")
 	cmd := exec.CommandContext(ctx, e.bin, "cancel", "--all")
 	cmd.Env = env
@@ -128,7 +128,7 @@ func TestCancelAllDoesNotCancelReplacement(t *testing.T) {
 		text.WriteByte(b)
 	}
 	run("cancel", "--local", "same")
-	run("launch", "--name", "same", "--detach")
+	run("launch", "--local", "same", "--detach")
 	io.WriteString(input, "cancel\n")
 	input.Close()
 	tail, _ := io.ReadAll(reader)

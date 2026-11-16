@@ -13,25 +13,44 @@ and Windows on amd64 only. Mounts and independent forwards do not share a shell'
 
 | Area | Entry points and responsibility |
 | --- | --- |
-| CLI | `main.go`: command dispatch and help; `shell_command.go` / `shell_options.go`: one shell execution and parsing path; `ssh_options.go`: SSH-only suffix after `--` |
+| CLI | `main.go`: executable entry point; `cli.go`: shared argument scanner, dispatch and session-management parsing; `cli_{shell,cp,mount,forward,endpoints,ssh}.go`: command grammars and SSH-only suffix; `cli_help.go`: command help |
 | Connection and setup | `client_transport.go`: local/SSH transport ownership; `client.go`: shared interactive loop; `remote_bootstrap.go` and `setup*.go`: shared remote preparation, downloads, update confirmation and recovery |
 | Shell | `internal/shell/`: attachment I/O, muting, input barriers, exit draining and detach protocol; root `launch_*_linux.go` / `session_*.go`: startup, daemon hosting, names and account policy; `server_linux.go`: internal command dispatch |
 | Wire protocol | `protocol.go`, `mux.go`: shell/application messages; `internal/transport/`: bounded frames, pipe ownership, smux tuning and SSH signal handling |
 | Release version rules | Root `version.go`: exact matching and ordering of full releases; mount handshakes check equality locally |
-| Direct copy | `cp_command.go`: local cp parsing, batch preflight and independent SFTP transport |
+| Direct copy | `cp_command.go`: batch preflight, interaction and independent SFTP transport; `cli_cp.go`: cp grammar |
 | Approval | `internal/review/`: request/record models, operation validation, bounded storage, expiration and single-use claims; root `review*.go`: consent, connection policy and execution coordination |
 | File transfer | `internal/files/cp*.go`: regular-file validation, exact-size copies, verified uploads, no-clobber publication and restricted SFTP handlers |
 | Local daemon | `local_daemon*.go`, `local_*.go`: singleton startup, local shell/forward ownership and mount-worker supervision |
 | Mux | `internal/tmux/`: exclusive ownership primitives, Linux PTY / Windows local ConPTY, input-mode tracking, native redraw and client console I/O |
 | Terminal presentation | `internal/termui/`: status formatting, line editing, local path parsing/completion and platform console support; root `local_input.go`: input ownership coordination |
-| Independent resources | `resource_session.go`, `resource_status.go`, `resources.go`: worker startup, private records, control and exit receipts |
-| Forward | Root `endpoints.go` / `forward*.go`: command mapping, authorization and worker integration; `internal/forward/`: forward configuration, port rules, process execution, reconnects, heartbeats and bounded diagnostics |
+| Independent resources | `resource_runtime.go`, `resource_status.go`, `resources.go`: worker startup, private records, control and exit receipts |
+| Forward | Root `cli_forward.go` / `forward*.go`: command mapping, authorization and worker integration; `internal/forward/`: forward configuration, port rules, process execution, reconnects, heartbeats and bounded diagnostics |
 | Mount | `internal/files/mount*.go`: mount lifecycle, SFTP adapter/limits, caches, notifications, capacity, statistics and FUSE/WinFsp; root `mount*.go`: CLI, paths and worker integration |
-| Inventory | `inventory*.go`, `remote_tasks.go`: public status views and advisory peer records |
+| Inventory | `inventory*.go`, `list*.go`: status views, tables and stable numeric IDs; `peers*.go`: advisory peer records and synchronization |
 | Distribution | `install.sh`, `install.ps1`, `scripts/package.py`, `scripts/release.sh`, `.github/workflows/`: installation, packaging, CI and releases |
 
 The root `main` package owns command routing, product policy and lifecycle
-coordination. CLI dispatch and release/update policy remain in the root program. Internal packages have narrower responsibilities and do not depend
+coordination. CLI dispatch and release/update policy remain in the root program. Product options are scanned in one place: valued options accept either
+`--option VALUE` or `--option=VALUE`, duplicate product options and values on
+boolean flags are rejected, and `--` begins the separately validated OpenSSH
+suffix. Only shell launch/spawn/attach accept native forwarding flags. Each command
+maps the scanner result to its own configuration; execution code and internal
+packages do not interpret public option tokens. Internal helper protocols keep
+explicit positional validation separate from the public CLI.
+Local shell names use `--local NAME`; the redundant shell `--name` option and
+hidden `shell` alias are removed in favor of `spawn`. Mounts and forwards retain
+`--name`, which names their independently managed resource. Plain SFTP mounts
+reject `--server`, since `--no-watch` does not run the remote program.
+
+`session` remains the umbrella lifecycle term for managed shells, mounts and
+forwards. List numbering and ID-based actions live together in `list_ids.go`;
+they do not form a second task execution model. `worker` names an actual
+background process, not an in-process shell listener. `job` is used only for the
+Windows Job Object primitive. Shared remote status uses peer records. State-file
+paths, stored JSON fields and internal wire verbs retain their existing formats.
+
+Internal packages have narrower responsibilities and do not depend
 on application types or mutable application state. The copy implementation in `files` knows nothing
 about approval records, shell identities or the release version; callers authorize
 operations before constructing its source/target views. Receiver handles and
@@ -777,3 +796,12 @@ tests are run separately and are not an automatic release gate.
 Archives contain the executable, project documents and license notices. Verify
 release status, commit/tag identity and both platform assets after publishing.
 A source-only change at an already published version does not replace that release.
+
+The compact list groups sessions by execution host: shells by their host and
+mounts/forwards by the computer managing their process. Local sessions appear
+first, followed by other host groups in lexical order; stable IDs sort each group.
+REMOTE shows the known connection target, with no inferred peer path or port.
+Peer mirrors retain read-only and uncertain states; verbose output adds full
+identifiers and descriptions. Locally inspected resources carry a presentation-only
+origin marker to distinguish them in mixed connection inventories. JSON identities
+and numeric IDs remain unchanged.

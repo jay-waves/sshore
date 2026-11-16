@@ -8,10 +8,10 @@ import (
 	"github.com/jay-waves/sshore/internal/tmux"
 )
 
-func runLocalShell(record localSessionRecord, env []string, ready func(localSessionRecord) error) error {
+func runLocalShell(record localShellRecord, env []string, ready func(localShellRecord) error) error {
 	s := &localShell{done: make(chan struct{}), environment: env}
 	defer s.close()
-	return serveLocalWorker(s, record, ready, func(c net.Conn, m message) error {
+	return serveLocalShell(s, record, ready, func(c net.Conn, m message) error {
 		switch m.Type {
 		case "status":
 			s.mu.Lock()

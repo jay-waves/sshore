@@ -8,12 +8,12 @@ import (
 )
 
 type localStartup struct {
-	Record localSessionRecord
+	Record localShellRecord
 	Error  string
 }
 
-func startLocalSession(name string, owners ...spawnOwner) (localSessionRecord, error) {
-	var empty localSessionRecord
+func startLocalSession(name string, owners ...spawnOwner) (localShellRecord, error) {
+	var empty localShellRecord
 	reservation, err := reserveResourceName("shell", name)
 	if err != nil {
 		return empty, err
@@ -25,7 +25,7 @@ func startLocalSession(name string, owners ...spawnOwner) (localSessionRecord, e
 	}
 	reservation.owner.Close()
 	reservation.owner = nil
-	request := localSessionRecord{Name: reservation.name, Directory: dir, Version: version, Token: resourceToken()}
+	request := localShellRecord{Name: reservation.name, Directory: dir, Version: version, Token: resourceToken()}
 	if len(owners) > 0 {
 		request.Owner = owners[0]
 	}

@@ -35,7 +35,7 @@ func openSpawnTransport(o *options) (io.ReadWriteCloser, func(), error) {
 		return nil, nil, err
 	}
 	defer stopAuth()
-	request := localDaemonRequest{Kind: "spawn", Record: localSessionRecord{Name: "spawn", Directory: cwd, Owner: o.owner}, Env: append(os.Environ(), auth...), Spawn: &spawnConfig{Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh}}
+	request := localDaemonRequest{Kind: "spawn", Record: localShellRecord{Name: "spawn", Directory: cwd, Owner: o.owner}, Env: append(os.Environ(), auth...), Spawn: &spawnConfig{Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh}}
 	c, err := openLocalDaemon(request)
 	if err != nil {
 		return nil, nil, err

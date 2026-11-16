@@ -28,7 +28,7 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 	s := &resourceService{record: resourceRecord{Kind: "forward", Name: "web", Host: "work", Version: version}, recordPath: filepath.Join(dir, "web.json"), ack: ack, stop: make(chan resourceStopRequest), abandoned: make(chan struct{})}
 	done := make(chan error, 1)
 	go func() {
-		_, e := runForwardWorker(forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, Retries: 1}, s)
+		_, e := runForward(forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, Retries: 1}, s)
 		done <- e
 	}()
 	stopped := false
@@ -97,7 +97,7 @@ func TestForwardRetryBoundaries(t *testing.T) {
 			s := &resourceService{record: resourceRecord{Kind: "forward", Name: "web", Host: "work", Version: version}, recordPath: filepath.Join(dir, "web.json"), ack: ack, stop: make(chan resourceStopRequest), abandoned: make(chan struct{})}
 			done := make(chan error, 1)
 			go func() {
-				_, e := runForwardWorker(forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, Retries: 1}, s)
+				_, e := runForward(forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, Retries: 1}, s)
 				done <- e
 			}()
 			if scenario == "cancel-backoff" {

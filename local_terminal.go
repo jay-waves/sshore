@@ -14,7 +14,7 @@ type localShell struct {
 	environment     []string
 	nameLock        *os.File
 	mu              sync.Mutex
-	record          localSessionRecord
+	record          localShellRecord
 	terminal        *tmux.Terminal
 	lifecycle       tmux.Lifecycle[*attachment]
 	modes           tmux.InputState

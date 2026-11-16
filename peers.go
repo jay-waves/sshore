@@ -1,14 +1,12 @@
 package main
 
-// Peer task records are advisory, never authorization. They contain only one
-// connection's public resource ID, manager label and remote-facing description;
-// local mount paths, control addresses/tokens and unrelated hosts are excluded.
-// Server file mtime is the lease clock, avoiding client/server clock skew.
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,12 +14,16 @@ import (
 	"time"
 )
 
+// Peer task records are advisory, never authorization. They contain only one
+// connection's public resource ID, manager label and remote-facing description;
+// local mount paths, control addresses/tokens and unrelated hosts are excluded.
+// Server file mtime is the lease clock, avoiding client/server clock skew.
 const remoteTaskRelativeDir = ".local/state/sshore/peer-tasks"
 const remoteTaskRefresh = 20 * time.Second
 const remoteTaskFresh = 75 * time.Second
 const maxRemoteTaskSize = 8192
 
-type remoteTask struct {
+type peerRecord struct {
 	Version string `json:"version"`
 	Key     string `json:"key"`
 	ID      string `json:"id"`
@@ -41,7 +43,7 @@ func taskManagerLabel() string {
 	}
 	return h
 }
-func validateRemoteTask(t remoteTask) error {
+func validateRemoteTask(t peerRecord) error {
 	if t.Version != version || !validApprovalID(t.Key) || t.Manager == "" || len(t.Manager) > 128 || len(t.Detail) > 4096 {
 		return fmt.Errorf("invalid peer task metadata")
 	}
@@ -83,7 +85,7 @@ func peerTaskDir(create bool) (string, error) {
 	}
 	return dir, privateState(dir, true)
 }
-func storeRemoteTask(t remoteTask) error {
+func storeRemoteTask(t peerRecord) error {
 	if e := validateRemoteTask(t); e != nil {
 		return e
 	}
@@ -113,7 +115,7 @@ func removeRemoteTask(key string) error {
 func listRemoteTasks() error { return printRemoteTasks(os.Stdout) }
 
 type peerRow struct {
-	task  remoteTask
+	task  peerRecord
 	state string
 }
 
@@ -167,7 +169,7 @@ func collectPeerRows() ([]peerRow, error) {
 		if e != nil || len(data) > maxRemoteTaskSize {
 			continue
 		}
-		var t remoteTask
+		var t peerRecord
 		if json.Unmarshal(data, &t) != nil || validateRemoteTask(t) != nil || t.Key != key {
 			continue
 		}
@@ -212,7 +214,7 @@ func printRemoteTasks(output io.Writer) error {
 	}
 	return nil
 }
-func pendingRemoteTask(id, name string, ops []operation) remoteTask {
+func pendingRemoteTask(id, name string, ops []operation) peerRecord {
 	detail := fmt.Sprintf("%d requested operation(s)", len(ops))
 	if len(ops) == 1 {
 		op := ops[0]
@@ -222,7 +224,7 @@ func pendingRemoteTask(id, name string, ops []operation) remoteTask {
 			detail = op.Kind + " " + op.Path
 		}
 	}
-	return remoteTask{Version: version, Key: id, ID: "review/" + name, Manager: taskManagerLabel(), State: "pending", Detail: cleanText(detail)}
+	return peerRecord{Version: version, Key: id, ID: "review/" + name, Manager: taskManagerLabel(), State: "pending", Detail: cleanText(detail)}
 }
 
 func removeExpiredPeerTask(p string, previous os.FileInfo) {
@@ -244,4 +246,30 @@ func collectPeerViews() ([]peerView, error) {
 		out = append(out, peerView{Identity: t.Key, ID: "peer/" + t.Key[:8] + "/" + t.ID, Manager: t.Manager, State: r.state, Detail: t.Detail})
 	}
 	return out, nil
+}
+
+// Rejection has no live session transport. Remove only its advisory remote
+// record, best effort, with existing authentication and a short timeout. Never
+// prompt or change known_hosts; an unreachable mirror expires independently.
+func removeRejectedPeerTask(r approvalRecord) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	server := r.Server
+	if server == "" {
+		server = "sshore"
+	}
+	command := "unset SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN; server=" + shellQuote(server) + "; if command -v \"$server\" >/dev/null 2>&1; then server=$(command -v \"$server\"); "
+	if server == "sshore" {
+		command += "else server=\"$HOME/.local/bin/sshore\"; "
+	} else {
+		command += "else :; "
+	}
+	command += "fi; if [ \"$(\"$server\" --version 2>/dev/null)\" = " + shellQuote("sshore "+version) + " ]; then exec \"$server\" task-remove " + shellQuote(version) + " " + shellQuote(r.ID) + "; fi"
+	args := []string{"-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=2", "-o", "ConnectionAttempts=1", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "-o", "ClearAllForwardings=yes", "-o", "ForkAfterAuthentication=no", "-o", "RemoteCommand=none", "-o", "SessionType=default"}
+	args = append(args, forwardSSHOptions(r.SSH)...)
+	args = append(args, "--", r.Host, command)
+	cmd := exec.CommandContext(ctx, sshExecutable(), args...)
+	cmd.Dir = r.Directory
+	cmd.WaitDelay = 200 * time.Millisecond
+	_ = cmd.Run()
 }

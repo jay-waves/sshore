@@ -21,7 +21,7 @@ func TestSpawnLifetime(t *testing.T) {
 	for _, tc := range []struct {
 		remote  bool
 		command string
-	}{{false, "spawn"}, {true, "spawn"}, {false, "shell"}} {
+	}{{false, "spawn"}, {true, "spawn"}} {
 		remote := tc.remote
 		t.Run(fmt.Sprintf("%s/remote=%t", tc.command, remote), func(t *testing.T) {
 			e := newEnv(t)
@@ -31,7 +31,7 @@ func TestSpawnLifetime(t *testing.T) {
 				t.Fatal(err)
 			}
 			env := append(e.env, "SSHORE_STATE_DIR="+state, "HOME="+home, "SSHORE_DISABLED=", "SSHORE_LOCAL_SESSION=", "SSHORE_SOCKET=")
-			args := []string{tc.command, "--name", "temporary", "--detach"}
+			args := []string{tc.command, "--local", "temporary", "--detach"}
 			if remote {
 				ssh := filepath.Join(e.dir, "ssh")
 				if err := os.WriteFile(ssh, []byte("#!/bin/sh\nunset SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN SSH_ASKPASS\nfor arg do last=$arg; done\nexec sh -c \"$last\"\n"), 0700); err != nil {

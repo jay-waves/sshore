@@ -9,7 +9,7 @@ import (
 
 func openClientTransport(o *options) (io.ReadWriteCloser, func(), error) {
 	if o.local {
-		var r localSessionRecord
+		var r localShellRecord
 		var err error
 		if o.command == "launch" || o.command == "spawn" {
 			r, err = startLocalSession(o.session, o.owner)

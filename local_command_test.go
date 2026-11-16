@@ -35,7 +35,7 @@ func TestLocalShellListingBoundsUnresponsiveWorkers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		record := localSessionRecord{Name: name, Address: listener.Addr().String(), Token: resourceToken(), Version: version}
+		record := localShellRecord{Name: name, Address: listener.Addr().String(), Token: resourceToken(), Version: version}
 		if err := writeStateJSON(path, record); err != nil {
 			t.Fatal(err)
 		}

@@ -2,7 +2,9 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 )
 
 func runShellCommand(args []string) (int, error) {
@@ -37,4 +39,22 @@ func runShellCommand(args []string) (int, error) {
 		return runInventory(o)
 	}
 	return runClient(o)
+}
+
+func prepareDownloadDir(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("download directory: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("download destination is not a directory: %s", path)
+	}
+	return path, nil
 }

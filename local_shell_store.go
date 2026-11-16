@@ -14,7 +14,7 @@ import (
 )
 
 // The token is a local connection capability, never part of public inventory.
-type localSessionRecord struct {
+type localShellRecord struct {
 	Owner                                    spawnOwner
 	ManagerPID                               int
 	Name, Address, Token, Version, Directory string
@@ -31,8 +31,8 @@ func localSessionPath(name string) (string, error) {
 	return filepath.Join(dir, name+".json"), nil
 }
 
-func readLocalSession(name string) (localSessionRecord, error) {
-	var r localSessionRecord
+func readLocalSession(name string) (localShellRecord, error) {
+	var r localShellRecord
 	path, err := localSessionPath(name)
 	if err != nil {
 		return r, err
@@ -40,8 +40,8 @@ func readLocalSession(name string) (localSessionRecord, error) {
 	return readLocalRecord(path, name)
 }
 
-func readLocalRecord(path, name string) (localSessionRecord, error) {
-	var r localSessionRecord
+func readLocalRecord(path, name string) (localShellRecord, error) {
+	var r localShellRecord
 	if err := privateState(path, false); err != nil {
 		return r, err
 	}
@@ -65,11 +65,11 @@ func readLocalRecord(path, name string) (localSessionRecord, error) {
 
 // Authenticate before sending any shell commands. Each exchange is bounded;
 // callers clear the deadline only when they take ownership of the connection.
-func dialLocalSession(r localSessionRecord) (net.Conn, error) {
+func dialLocalSession(r localShellRecord) (net.Conn, error) {
 	return dialLocalSessionUntil(r, time.Now().Add(5*time.Second))
 }
 
-func dialLocalSessionUntil(r localSessionRecord, deadline time.Time) (net.Conn, error) {
+func dialLocalSessionUntil(r localShellRecord, deadline time.Time) (net.Conn, error) {
 	if err := checkPeerVersion(r.Version, "local shell"); err != nil {
 		return nil, err
 	}
@@ -99,6 +99,6 @@ func dialLocalSessionUntil(r localSessionRecord, deadline time.Time) (net.Conn, 
 	return c, nil
 }
 
-func (r localSessionRecord) identity() string {
+func (r localShellRecord) identity() string {
 	return fmt.Sprintf("local:%x", sha256.Sum256([]byte(r.Token)))
 }

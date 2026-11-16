@@ -90,7 +90,7 @@ func createRemoteShell(executable, name, label string, temporary ...bool) error 
 	if err != nil {
 		return err
 	}
-	request := message{Type: "create_shell", Temporary: len(temporary) > 0 && temporary[0], SoftwareVersion: version, Name: name, Action: label, LocalRequest: &localDaemonRequest{Record: localSessionRecord{Directory: cwd}, Env: os.Environ()}}
+	request := message{Type: "create_shell", Temporary: len(temporary) > 0 && temporary[0], SoftwareVersion: version, Name: name, Action: label, LocalRequest: &localDaemonRequest{Record: localShellRecord{Directory: cwd}, Env: os.Environ()}}
 	if err = writeMessage(c, request); err != nil {
 		return err
 	}

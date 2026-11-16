@@ -83,7 +83,7 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 		}
 		return out
 	}
-	first, terminal, _ := start([]string{"launch", "--name", "persistent"}, env)
+	first, terminal, _ := start([]string{"launch", "--local", "persistent"}, env)
 	defer run("cancel", "--local", "persistent")
 	first.Process.Kill()
 	first.Wait()
@@ -154,13 +154,13 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 		}
 		return string(out)
 	}
-	run(env, "launch", "--name", "keeper", "--detach")
+	run(env, "launch", "--local", "keeper", "--detach")
 	defer run(env, "cancel", "--local", "keeper")
 	raw, err := os.ReadFile(filepath.Join(state, "daemon", "local.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var manager localSessionRecord
+	var manager localShellRecord
 	if err = json.Unmarshal(raw, &manager); err != nil {
 		t.Fatal(err)
 	}

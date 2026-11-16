@@ -82,7 +82,7 @@ see `sshore --help`. Switching preserves the previous session; remote switching 
 authentication may be requested again.
 
 ```sh
-sshore launch --name dev           # Local shell in the current directory.
+sshore launch --local dev           # Local shell in the current directory.
 sshore list                    # Stable numeric IDs, ordered across tasks.
 sshore attach 3                # Resume the shell with ID 3.
 sshore launch work                 # Remote shell; prints its automatic name.

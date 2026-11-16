@@ -12,8 +12,8 @@ import (
 )
 
 type taskTableRow struct {
-	id                        uint64
-	task, host, state, detail string
+	id                                 uint64
+	task, owner, target, state, detail string
 }
 
 func printTaskInventory(inv inventory, details bool) {
@@ -28,7 +28,7 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 		if currentLocal != "" && s.identity == currentLocal && state == "attached" {
 			state += " (current)"
 		}
-		rows = append(rows, taskTableRow{s.ID, shellTaskName(s.Name, s.Temporary), "local", state, s.Directory})
+		rows = append(rows, taskTableRow{s.ID, shellTaskName(s.Name, s.Temporary), "local", "-", state, s.Directory})
 	}
 	for _, s := range inv.Shells {
 		if s.State == "renamed" {
@@ -46,22 +46,42 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 		if s.Historical && !s.ConfirmedAt.IsZero() {
 			detail = "confirmed " + time.Since(s.ConfirmedAt).Round(time.Second).String() + " ago"
 		}
-		rows = append(rows, taskTableRow{s.TaskID, shellTaskName(s.Name, s.Temporary), host, state, detail})
+		rows = append(rows, taskTableRow{s.TaskID, shellTaskName(s.Name, s.Temporary), host, "-", state, detail})
 	}
 	for _, r := range inv.Resources {
 		host := r.Host
 		if host == "" {
-			host = inv.Host
+			host = "-"
 		}
-		if host == "" {
-			host = "local"
+		owner := "local"
+		if inv.RemoteQueried && !r.local {
+			owner = inv.Host
 		}
-		rows = append(rows, taskTableRow{r.TaskID, r.ID, host, r.Worker, r.Detail})
+		rows = append(rows, taskTableRow{r.TaskID, r.ID, owner, host, r.Worker, r.Detail})
 	}
 	for _, p := range inv.Peers {
-		rows = append(rows, taskTableRow{p.TaskID, p.ID, p.Manager, p.State + " (read-only)", p.Detail})
+		name := p.ID
+		if strings.HasPrefix(name, "peer/") {
+			if _, resource, ok := strings.Cut(strings.TrimPrefix(name, "peer/"), "/"); ok {
+				name = resource
+			}
+		}
+		target := inv.Host
+		if target == "" {
+			target = "local"
+		}
+		rows = append(rows, taskTableRow{p.TaskID, name, p.Manager, target, p.State + " (read-only)", p.Detail})
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].owner != rows[j].owner {
+			if rows[i].owner == "local" {
+				return true
+			}
+			if rows[j].owner == "local" {
+				return false
+			}
+			return rows[i].owner < rows[j].owner
+		}
 		if rows[i].id == 0 {
 			return false
 		}
@@ -74,17 +94,43 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 		fmt.Fprintln(out, "No tasks. Create a local shell with sshore launch.")
 		return
 	}
-	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tTASK\tHOST\tSTATE\tDETAIL")
-	for _, r := range rows {
-		id := "-"
-		if r.id != 0 {
-			id = strconv.FormatUint(r.id, 10)
+	for start := 0; start < len(rows); {
+		end := start + 1
+		for end < len(rows) && rows[end].owner == rows[start].owner {
+			end++
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", id, cleanText(r.task), cleanText(r.host), cleanText(r.state), cleanText(r.detail))
+		if start > 0 {
+			fmt.Fprintln(out)
+		}
+		host := rows[start].owner
+		if host == "" {
+			host = "unknown"
+		}
+		fmt.Fprintf(out, "HOST · %s\n", cleanText(host))
+		w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		fmt.Fprint(w, "ID\tSESSION\tREMOTE\tSTATE")
+		if details {
+			fmt.Fprint(w, "\tDETAIL")
+		}
+		fmt.Fprintln(w)
+		for _, r := range rows[start:end] {
+			id := "-"
+			if r.id != 0 {
+				id = strconv.FormatUint(r.id, 10)
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s", id, cleanText(r.task), cleanText(r.target), cleanText(r.state))
+			if details {
+				fmt.Fprintf(w, "\t%s", cleanText(r.detail))
+			}
+			fmt.Fprintln(w)
+		}
+		w.Flush()
+		start = end
 	}
-	w.Flush()
 	if details {
+		for _, p := range inv.Peers {
+			fmt.Fprintf(out, "\n%s: managed by %s (read-only mirror)\n", cleanText(p.ID), cleanText(p.Manager))
+		}
 		for _, s := range inv.Shells {
 			if s.ProcessTree != "" {
 				fmt.Fprintf(out, "\n%s\n", shellTaskName(cleanText(s.Name), s.Temporary))

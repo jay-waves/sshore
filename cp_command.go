@@ -10,8 +10,6 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
-	"runtime"
-	"strings"
 	"syscall"
 
 	"github.com/pkg/sftp"
@@ -19,112 +17,6 @@ import (
 	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/termui"
 )
-
-type copyEndpoint struct {
-	host, path   string
-	pick, stream bool
-}
-type copyOptions struct {
-	sources []copyEndpoint
-	target  copyEndpoint
-	host    string
-	upload  bool
-	ssh     []string
-}
-
-func parseCopyEndpoint(value string) (copyEndpoint, error) {
-	if value == "-" {
-		return copyEndpoint{stream: true}, nil
-	}
-	if originPlaceholder(value) {
-		return copyEndpoint{pick: true}, nil
-	}
-	if strings.HasPrefix(value, "origin:") {
-		return copyEndpoint{path: strings.TrimPrefix(value, "origin:")}, nil
-	}
-	// Windows drive prefixes are local only on Windows. On Linux, a single
-	// letter can be a valid SSH host alias.
-	if runtime.GOOS == "windows" && len(value) >= 2 && value[1] == ':' && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) {
-		return copyEndpoint{path: value}, nil
-	}
-	bracket := false
-	for i, c := range value {
-		if c == '[' {
-			bracket = true
-		}
-		if c == ']' {
-			bracket = false
-		}
-		if !bracket && (c == '/' || c == '\\') {
-			break
-		}
-		if c == ':' && !bracket {
-			host, err := endpointHost(value[:i])
-			if err != nil {
-				return copyEndpoint{}, err
-			}
-			remote := value[i+1:]
-			if remote == "" {
-				remote = "."
-			}
-			return copyEndpoint{host: host, path: remote}, nil
-		}
-	}
-	if value == "" {
-		return copyEndpoint{}, usage("empty copy path")
-	}
-	return copyEndpoint{path: value}, nil
-}
-
-func parseCopyCommand(args []string) (copyOptions, error) {
-	var o copyOptions
-	var err error
-	args, o.ssh, err = splitSSHOptions(args, false)
-	if err != nil {
-		return o, err
-	}
-	if len(args) < 2 {
-		return o, usage("use cp SOURCE... TARGET [-- SSH_OPTIONS]")
-	}
-	var endpoints []copyEndpoint
-	for _, a := range args {
-		if a != "-" && strings.HasPrefix(a, "-") {
-			return o, usage("prefix filenames beginning with '-' with ./")
-		}
-		e, err := parseCopyEndpoint(a)
-		if err != nil {
-			return o, err
-		}
-		endpoints = append(endpoints, e)
-	}
-	o.sources, o.target = endpoints[:len(endpoints)-1], endpoints[len(endpoints)-1]
-	o.upload = o.target.host != ""
-	if o.upload {
-		o.host = o.target.host
-	}
-	for _, source := range o.sources {
-		if (source.pick || source.stream || o.target.stream) && len(o.sources) != 1 {
-			return o, usage("selection and standard streams require exactly one source")
-		}
-		if o.upload {
-			if source.host != "" {
-				return o, usage("remote-to-remote copies are not supported")
-			}
-		} else {
-			if source.host == "" {
-				return o, usage("cp requires a remote source or destination")
-			}
-			if o.host != "" && o.host != source.host {
-				return o, usage("all sources must use the same SSH destination")
-			}
-			o.host = source.host
-		}
-	}
-	if len(o.sources) > maxApprovalItems {
-		return o, usage("at most %d files per copy", maxApprovalItems)
-	}
-	return o, nil
-}
 
 func runCopy(args []string) (int, error) {
 	if os.Getenv("SSHORE_SOCKET") != "" {
@@ -311,52 +203,3 @@ func executeCopy(client *sftp.Client, o copyOptions) error {
 	}
 	return nil
 }
-
-const copyHelp = `Usage: sshore cp SOURCE... TARGET [-- SSH_OPTIONS]
-
-On your computer, use HOST:PATH for the remote side and a local path for the
-other. HOST is an SSH alias or user@host; bracket IPv6. Relative remote paths
-start in the remote account's login directory. An empty remote path means ".".
-origin:PATH explicitly names a local path. Use ./ to disambiguate filenames with
-a colon or leading hyphen. On Windows, drive paths are local and take precedence
-over single-letter SSH aliases; use user@HOST:PATH to disambiguate a remote host.
-A bare - is stdin in SOURCE position or stdout in TARGET position, for local
-commands with exactly one remote file. Stdin requires a new destination filename,
-not a directory; EOF completes the upload. Data streams directly without local
-spooling. Stdout contains only file bytes; errors go to stderr. A failed stdout
-copy may already have emitted partial data. Use ./- or origin:- for a file named -.
-Standard streams are not available in remote approval requests.
-At most 16 regular files; no symlinks, recursive directories, overwrites, metadata
-copying, local-only or remote-to-remote copies. Multiple sources require a target
-directory. A single target may be a directory or a new filename.
-Local copies use an independent SFTP connection; no shell session, remote sshore
-installation, FUSE or WinFsp is required. File destinations must support hard links.
-
-origin: and : are equivalent placeholders for a locally selected path.
-On your computer, they open a local selector. Inside a remote sshore shell,
-exactly one side must name origin: (or :): cp origin: DIRECTORY requests an upload;
-cp FILE... origin: requests downloads. A filled origin:PATH is an editable local
-review suggestion; Enter accepts it. Remote requests detach; run sshore review
-locally. origin means the current connection's client, never the invoking shell.
-A suggested path never skips review. Relative local hints use the review working
-directory. The remote upload target must be a directory.
-Tab completes paths. Submitting all valid paths starts copying without an extra
-yes prompt. Ctrl-C during selection cancels before any copy starts.
-Batches execute sequentially; a failure keeps completed files and stops the rest.
-Interrupted copies remove temporary files when possible; forced termination may
-leave .sshore-*.part files. Files are published atomically without overwriting.
-
-SSH options apply only to local direct copies, and only after --:
--p PORT, -i KEY, -J JUMP, -F CONFIG, -l USER, -o OPTION, -E FILE,
--C, -v/-vv/-vvv, -4/-6. -L/-R/-D are not accepted.
--h, --help shows this help.
-
-Examples:
-  sshore cp work:/tmp/report.txt - | less
-  generate-report | sshore cp - work:/tmp/report.txt
-  sshore cp report.zip work:/tmp/
-  sshore cp work:/tmp/report.zip ./downloads/
-  sshore cp a.zip b.zip work:/tmp/
-  sshore cp report.zip origin:        Remote request: choose a local destination
-  sshore cp : .                      Remote request: choose a local source
-`

@@ -19,7 +19,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 	state := filepath.Join(e.dir, "local-state")
 	env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SHELL=/bin/sh", "TERM=xterm-256color")
 	var id uint64
-	for _, args := range [][]string{{"launch", "--name", "localtest"}, {"attach", "--local", "localtest"}} {
+	for _, args := range [][]string{{"launch", "--local", "localtest"}, {"attach", "--local", "localtest"}} {
 		if args[0] == "attach" {
 			list := exec.Command(e.bin, "list", "--local", "--json")
 			list.Env = env

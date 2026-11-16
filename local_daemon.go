@@ -17,7 +17,7 @@ import (
 type localDaemonRequest struct {
 	Spawn  *spawnConfig
 	Kind   string
-	Record localSessionRecord
+	Record localShellRecord
 	Env    []string
 }
 
@@ -84,8 +84,8 @@ func openLocalDaemon(request localDaemonRequest) (net.Conn, error) {
 	return c, nil
 }
 
-func ensureLocalDaemon() (localSessionRecord, error) {
-	var empty localSessionRecord
+func ensureLocalDaemon() (localShellRecord, error) {
+	var empty localShellRecord
 	deadline := time.Now().Add(10 * time.Second)
 	var lock *os.File
 	var err error
@@ -134,7 +134,7 @@ func runLocalDaemon() (result error) {
 		}
 	}()
 	dec := json.NewDecoder(io.LimitReader(os.Stdin, 16*1024))
-	var record localSessionRecord
+	var record localShellRecord
 	if err := dec.Decode(&record); err != nil {
 		return err
 	}
@@ -287,7 +287,7 @@ func runLocalDaemon() (result error) {
 				return
 			}
 			if req.Kind == "shell" {
-				err = runLocalShell(req.Record, req.Env, func(r localSessionRecord) error {
+				err = runLocalShell(req.Record, req.Env, func(r localShellRecord) error {
 					_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 					if e := json.NewEncoder(c).Encode(localStartup{Record: r}); e != nil {
 						return e

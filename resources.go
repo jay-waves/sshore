@@ -77,21 +77,13 @@ func runCancel(args []string) (int, error) {
 		}
 		return runCancelAll(o)
 	}
-	if len(args) == 0 {
-		return 2, usage("use sshore cancel review/NAME, mount/NAME, forward/NAME, or HOST NAME")
+	kind, name, typed, err := parseCancelTarget(args)
+	if err != nil {
+		return 2, err
 	}
-	kind, name, typed := strings.Cut(args[0], "/")
 	if typed {
-		if len(args) != 1 {
-			return 2, usage("local cancellation accepts exactly one resource ID")
-		}
 		switch kind {
-		case "peer":
-			return 2, usage("peer tasks are read-only here; cancel the resource on its managing computer")
 		case "review":
-			if !validApprovalID(name) && validSession(name) != nil {
-				return 2, usage("invalid approval ID")
-			}
 			dir, err := approvalDir()
 			if err != nil {
 				return 1, err

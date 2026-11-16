@@ -11,8 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strconv"
-	"strings"
 	"syscall"
 )
 
@@ -35,55 +33,6 @@ func forwardSSHArgs(f forwardConfig, background bool) []string {
 		args = append(args, forwardWatchCommand(f.Server))
 	}
 	return args
-}
-
-func parseForwardCommand(args []string) (forwardConfig, bool, error) {
-	var f forwardConfig
-	var err error
-	args, f.SSH, err = splitSSHOptions(args, false)
-	if err != nil {
-		return f, false, err
-	}
-	var operands []string
-	foreground := false
-	for i := 0; i < len(args); i++ {
-		if err := misplacedSSHOption(args[i]); err != nil {
-			return f, false, err
-		}
-		switch args[i] {
-		case "--name":
-			i++
-			if i == len(args) {
-				return f, false, usage("--name requires NAME")
-			}
-			f.Name = args[i]
-			if e := validSession(f.Name); e != nil {
-				return f, false, e
-			}
-		case "--retries":
-			i++
-			if i == len(args) {
-				return f, false, usage("--retries requires a count")
-			}
-			n, e := strconv.Atoi(args[i])
-			if e != nil || n < 0 || n > 10 {
-				return f, false, usage("--retries must be between 0 and 10")
-			}
-			f.Retries = n
-		case "--foreground":
-			foreground = true
-		default:
-			if strings.HasPrefix(args[i], "-") {
-				return f, false, usage("unsupported forward option: %s", args[i])
-			}
-			operands = append(operands, args[i])
-		}
-	}
-	if foreground && f.Retries != 0 {
-		return f, false, usage("--retries applies only to background forwards")
-	}
-	f.Host, f.Port, f.Target, f.Reverse, err = parseForwardEndpoints(operands)
-	return f, foreground, err
 }
 
 func runForwardForeground(f forwardConfig) (int, error) {

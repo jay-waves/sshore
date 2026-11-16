@@ -8,3 +8,15 @@ var sessionNames = strings.Fields("pikachu eevee bulbasaur charmander squirtle s
 func automaticSessionNames() []string {
 	return append([]string(nil), sessionNames...)
 }
+
+func validSession(name string) error {
+	if len(name) < 1 || len(name) > 48 {
+		return usage("name must contain 1–48 ASCII characters")
+	}
+	for i, c := range []byte(name) {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || i > 0 && (c == '_' || c == '-')) {
+			return usage("invalid name: use letters, digits, _ and -")
+		}
+	}
+	return nil
+}

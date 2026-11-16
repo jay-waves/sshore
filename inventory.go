@@ -14,6 +14,7 @@ import (
 )
 
 type resourceView struct {
+	local      bool   // Set only for records inspected by this process; never sent over the wire.
 	TaskID     uint64 `json:"task_id,omitempty"`
 	Identity   string `json:"identity,omitempty"`
 	ID         string `json:"id"`
@@ -74,7 +75,7 @@ func emptyInventory() inventory {
 	return inventory{Version: version, Resources: []resourceView{}, Shells: []shellView{}, Peers: []peerView{}, Exits: []exitView{}, Errors: []string{}}
 }
 func viewRecord(r resourceRecord) resourceView {
-	v := resourceView{Identity: resourceIdentity(r), ID: r.Kind + "/" + r.Name, Host: r.Host, Kind: r.Kind, Worker: "unavailable", Detail: r.Detail, resourceStatus: resourceStatus{Version: r.Version, Transport: "unknown", Target: "unchecked"}}
+	v := resourceView{local: true, Identity: resourceIdentity(r), ID: r.Kind + "/" + r.Name, Host: r.Host, Kind: r.Kind, Worker: "unavailable", Detail: r.Detail, resourceStatus: resourceStatus{Version: r.Version, Transport: "unknown", Target: "unchecked"}}
 	if r.Kind == "review" {
 		v.Worker = "pending"
 		v.Transport = "not-started"

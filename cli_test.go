@@ -106,7 +106,7 @@ func TestSSHLightweightPassthrough(t *testing.T) {
 func TestExplicitSessionRouting(t *testing.T) {
 	for _, host := range []string{"forward", "review", "help", "connect"} {
 		_, err := run([]string{"launch", host, "--invalid"})
-		if err == nil || !strings.Contains(err.Error(), "unexpected argument: --invalid") {
+		if err == nil || !strings.Contains(err.Error(), "unsupported option: --invalid") {
 			t.Fatalf("shell %s routed as a subcommand: %v", host, err)
 		}
 	}
@@ -188,5 +188,76 @@ func TestKillOptions(t *testing.T) {
 func TestCleanTerminalText(t *testing.T) {
 	if got := cleanText("中文\x1b[31m\r\n"); got != "中文�[31m��" {
 		t.Fatalf("unsafe terminal text: %q", got)
+	}
+}
+
+func TestSharedCLIGrammar(t *testing.T) {
+	parsers := []struct {
+		name  string
+		args  []string
+		parse func([]string) error
+	}{
+		{"shell", []string{"launch", "work"}, func(a []string) error { _, err := parseOptions(a); return err }},
+		{"mount", []string{"work"}, func(a []string) error { _, err := parseFTPOptions(a); return err }},
+		{"forward", []string{"8080", "work:3000"}, func(a []string) error { _, _, err := parseForwardCommand(a); return err }},
+		{"cp", []string{"work:source", "target"}, func(a []string) error { _, err := parseCopyCommand(a); return err }},
+		{"review", []string{"request"}, func(a []string) error { _, err := parseReview(a); return err }},
+	}
+	for _, parser := range parsers {
+		t.Run(parser.name, func(t *testing.T) {
+			for _, flag := range []string{"--help", "-h"} {
+				if err := parser.parse(append(append([]string{}, parser.args...), flag)); !errors.Is(err, errHelp) {
+					t.Fatalf("%s: %v", flag, err)
+				}
+			}
+			if err := parser.parse(append(append([]string{}, parser.args...), "--unknown")); err == nil {
+				t.Fatal("accepted unknown option")
+			}
+		})
+	}
+	mount, err := parseFTPOptions([]string{"--name=work", "work", "--io-timeout=5s", "--startup-timeout=1m", "--server=/bin/sshore"})
+	if err != nil || mount.name != "work" || mount.ioTimeout.String() != "5s" || mount.startupTimeout.String() != "1m0s" || mount.server != "/bin/sshore" {
+		t.Fatalf("mount equals values: %+v %v", mount, err)
+	}
+	forward, _, err := parseForwardCommand([]string{"8080", "work:3000", "--name=web", "--retries=2"})
+	if err != nil || forward.Name != "web" || forward.Retries != 2 {
+		t.Fatalf("forward equals values: %+v %v", forward, err)
+	}
+	for _, args := range [][]string{
+		{"work", "--name=a", "--name", "b"},
+		{"work", "--read-only=false"},
+		{"work", "--server", "--read-only"},
+		{"work", "--server="},
+		{"work", "--server=x", "--no-watch"},
+	} {
+		if _, err := parseFTPOptions(args); err == nil {
+			t.Fatalf("accepted mount %v", args)
+		}
+	}
+	for _, args := range [][]string{{"8080", "work:3000", "--retries=1", "--retries=2"}, {"8080", "work:3000", "--foreground=true"}} {
+		if _, _, err := parseForwardCommand(args); err == nil {
+			t.Fatalf("accepted forward %v", args)
+		}
+	}
+	if _, err := parseReview([]string{"--stay", "--stay"}); err == nil {
+		t.Fatal("accepted duplicate --stay")
+	}
+	for _, command := range []string{"list", "cancel", "rename"} {
+		if _, err := parseOptions([]string{command, "work", "--", "-L8080:localhost:80"}); err == nil {
+			t.Fatalf("%s accepts unrelated forwarding option", command)
+		}
+	}
+}
+
+func TestPublicHelpBeforeExecution(t *testing.T) {
+	t.Setenv("SSHORE_DISABLED", "1")
+	t.Setenv("SSHORE_ASKPASS", "")
+	for command := range commandHelp {
+		if code, err := run([]string{command, "example", "--help"}); code != 0 || err != nil {
+			t.Fatalf("%s help: %d %v", command, code, err)
+		}
+	}
+	if code, err := run([]string{"shell", "--help"}); code == 0 || err == nil {
+		t.Fatal("removed shell alias accepted")
 	}
 }

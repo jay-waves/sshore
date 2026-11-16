@@ -270,7 +270,7 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 	defer func() { ctx, cancel := resourceShutdownContext(); defer cancel(); server.Shutdown(ctx) }()
 	s.record.Address = l.Addr().String()
 	if config.Forward != nil {
-		return runForwardWorker(*config.Forward, s)
+		return runForward(*config.Forward, s)
 	}
 	return runFTPMount(o, s)
 }
@@ -328,7 +328,7 @@ func startReservedResource(config resourceConfig, kind string, reservation *reso
 	if e != nil {
 		return 1, e
 	}
-	c, e := openLocalDaemon(localDaemonRequest{Kind: kind, Record: localSessionRecord{Name: name, Directory: cwd}, Env: os.Environ()})
+	c, e := openLocalDaemon(localDaemonRequest{Kind: kind, Record: localShellRecord{Name: name, Directory: cwd}, Env: os.Environ()})
 	if e != nil {
 		return 1, e
 	}
@@ -462,10 +462,10 @@ func resourceShutdownContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 2*time.Second)
 }
 
-func (s *resourceService) peerTask() remoteTask {
+func (s *resourceService) peerTask() peerRecord {
 	detail := strings.ReplaceAll(s.record.Detail, "your computer", "manager")
 	if s.record.Kind == "mount" {
 		detail = "remote directory: " + s.record.Remote
 	}
-	return remoteTask{Version: version, Key: resourceToken()[:32], ID: s.record.Kind + "/" + s.record.Name, Manager: taskManagerLabel(), State: "active", Detail: cleanText(detail)}
+	return peerRecord{Version: version, Key: resourceToken()[:32], ID: s.record.Kind + "/" + s.record.Name, Manager: taskManagerLabel(), State: "active", Detail: cleanText(detail)}
 }

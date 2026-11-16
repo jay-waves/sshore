@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-func testPeerTask() remoteTask {
-	return remoteTask{Version: version, Key: strings.Repeat("a", 32), ID: "forward/web", Manager: "test-client", State: "active", Detail: "server 8080 -> manager 3000"}
+func testPeerTask() peerRecord {
+	return peerRecord{Version: version, Key: strings.Repeat("a", 32), ID: "forward/web", Manager: "test-client", State: "active", Detail: "server 8080 -> manager 3000"}
 }
 func TestPeerTaskPrivacyAndStorage(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -30,7 +30,7 @@ func TestPeerTaskPrivacyAndStorage(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	var saved remoteTask
+	var saved peerRecord
 	if e = json.Unmarshal(b, &saved); e != nil || saved != task {
 		t.Fatal(saved, e)
 	}
@@ -73,7 +73,7 @@ func TestSFTPPeerTaskSnapshot(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	var saved remoteTask
+	var saved peerRecord
 	if json.Unmarshal(b, &saved) != nil || saved.Detail != "updated" {
 		t.Fatal(string(b))
 	}

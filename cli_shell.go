@@ -8,9 +8,6 @@ func parseOptions(args []string) (options, error) {
 		return o, usage("expected launch, spawn, list, attach, cancel or rename; see sshore --help")
 	}
 	o.command = args[0]
-	if o.command == "shell" {
-		o.command = "spawn"
-	}
 	switch o.command {
 	case "launch", "spawn", "attach", "cancel", "rename":
 	case "list":
@@ -18,82 +15,36 @@ func parseOptions(args []string) (options, error) {
 	default:
 		return o, usage("choose an action: sshore launch HOST [NAME], sshore spawn HOST [NAME], sshore list HOST, sshore attach HOST [NAME], sshore cancel HOST NAME, or sshore rename HOST OLD NEW")
 	}
-	var err error
-	var positional []string
-	named := false
-	args, o.ssh, err = splitSSHOptions(args[1:], true)
+	flags := []cliFlag{{"--local", false}, {"--server", true}}
+	switch o.command {
+	case "launch", "spawn", "attach":
+		flags = append(flags, cliFlag{"--download-dir", true}, cliFlag{"--quiet", false}, cliFlag{"-q", false}, cliFlag{"--no-escape", false})
+		if o.command != "attach" {
+			flags = append(flags, cliFlag{"--detach", false})
+		}
+	case "list":
+		flags = append(flags, cliFlag{"--json", false}, cliFlag{"--verbose", false})
+	}
+	parsed, err := parseCLI(args[1:], flags, true, o.command == "launch" || o.command == "spawn" || o.command == "attach")
 	if err != nil {
+		if strings.Contains(err.Error(), "unsupported option: --name") {
+			return o, usage("use %s --local NAME to name a local shell, or %s HOST NAME", o.command, o.command)
+		}
 		return o, err
 	}
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if a == "" {
-			return o, usage("empty argument")
-		}
-		if strings.HasPrefix(a, "--") {
-			if key, value, ok := strings.Cut(a, "="); ok {
-				switch key {
-				case "--server", "--download-dir", "--name":
-				default:
-					return o, usage("%s does not accept a value", key)
-				}
-				args = append(append(append([]string{}, args[:i]...), key, value), args[i+1:]...)
-				a = key
-			}
-		}
-		if err := misplacedSSHOption(a); err != nil {
-			return o, err
-		}
-		switch a {
-		case "--server", "--download-dir", "--name":
-			i++
-			if i == len(args) || args[i] == "" {
-				return o, usage("missing value for %s", a)
-			}
-			switch a {
-			case "--server":
-				o.server = args[i]
-				o.serverSet = true
-			case "--name":
-				if (o.command != "launch" && o.command != "spawn") || named {
-					return o, usage("--name is only supported once by launch or spawn")
-				}
-				named = true
-				o.local = true
-				o.session = args[i]
-			case "--download-dir":
-				o.downloadDir = args[i]
-			}
-		case "--json", "--verbose":
-			if !o.list {
-				return o, usage("%s is only supported by list", a)
-			}
-			if a == "--json" {
-				o.listJSON = true
-			} else {
-				o.listDetails = true
-			}
-		case "--detach":
-			if o.command != "launch" && o.command != "spawn" {
-				return o, usage("--detach is only supported by launch or spawn")
-			}
-			o.detached = true
-		case "--local":
-			o.local = true
-		case "-q", "--quiet":
-			o.quiet = true
-		case "--no-escape":
-			o.noEscape = true
-		case "-h", "--help":
-			return o, errHelp
-
-		default:
-			if strings.HasPrefix(a, "-") {
-				return o, usage("unexpected argument: %s", a)
-			}
-			positional = append(positional, a)
-		}
+	positional := parsed.operands
+	o.ssh, o.local = parsed.ssh, parsed.has("--local")
+	o.serverSet = parsed.has("--server")
+	if o.serverSet {
+		o.server = parsed.values["--server"]
 	}
+	o.downloadDir = parsed.values["--download-dir"]
+	o.quiet, o.noEscape = parsed.has("--quiet") || parsed.has("-q"), parsed.has("--no-escape")
+	if parsed.has("--quiet") && parsed.has("-q") {
+		return o, usage("specify --quiet only once")
+	}
+	o.detached = parsed.has("--detach")
+	o.listJSON, o.listDetails = parsed.has("--json"), parsed.has("--verbose")
 	if (o.command == "launch" || o.command == "spawn") && len(positional) == 0 {
 		o.local = true
 	}
@@ -106,7 +57,7 @@ func parseOptions(args []string) (options, error) {
 		o.host = positional[0]
 		positional = positional[1:]
 	}
-	if len(positional) > 0 && !o.list && !named {
+	if len(positional) > 0 && !o.list {
 		o.session = positional[0]
 		positional = positional[1:]
 	}
@@ -116,11 +67,6 @@ func parseOptions(args []string) (options, error) {
 	}
 	if len(positional) > 0 {
 		return o, usage("unexpected argument: %s", positional[0])
-	}
-	if named {
-		if err := validSession(o.session); err != nil {
-			return o, err
-		}
 	}
 
 	if o.listJSON && o.listDetails {
@@ -161,4 +107,27 @@ func parseOptions(args []string) (options, error) {
 		return o, nil
 	}
 	return o, validSession(o.session)
+}
+
+type options struct {
+	temporary             bool
+	owner                 spawnOwner
+	host, session, server string
+	command               string
+	newName               string
+	downloadDir           string
+	list, quiet, noEscape bool
+	listJSON, listDetails bool
+	ssh                   []string
+	approved              []operation
+	approvalID            string
+	resumePID             int
+	stay                  bool
+	plain                 bool
+	local                 bool
+	detached              bool
+	taskIdentity          string
+	instance              string
+	serverSet             bool
+	sshDirectory          string
 }

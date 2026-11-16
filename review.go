@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
@@ -134,26 +133,6 @@ func readApproval(dir, id string) (approvalRecord, error) {
 func pendingApprovals(dir string) ([]approvalRecord, error) { return approvalStore(dir).Pending() }
 func consumeApproval(dir, id string) error                  { return approvalStore(dir).Consume(id) }
 
-type reviewOptions struct {
-	id   string
-	stay bool
-}
-
-func parseReview(args []string) (reviewOptions, error) {
-	var o reviewOptions
-	for _, a := range args {
-		if a == "--stay" {
-			o.stay = true
-			continue
-		}
-		a = strings.TrimPrefix(a, "review/")
-		if o.id != "" || (!validApprovalID(a) && validSession(a) != nil) {
-			return o, usage("usage: sshore review [NAME] [--stay]")
-		}
-		o.id = a
-	}
-	return o, nil
-}
 func runReview(args []string) (code int, resultErr error) {
 	a, err := parseReview(args)
 	if err != nil {

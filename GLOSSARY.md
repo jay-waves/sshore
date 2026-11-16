@@ -28,7 +28,7 @@ This document defines the project vocabulary. Commands are documented by
 | Lifetime SSH connection | A local-daemon-owned connection keeping a remote spawn alive independently of foreground attachments. It is not automatically reconnected. |
 | Daemon | A background owner of native terminals and lifecycle. One local daemon per user/state root hosts multiple shells and forward transports, and supervises mount workers; Linux remote shells share a daemon per runtime directory, with separate helper endpoints. |
 | Shell name | A public label, automatic or user-supplied; renaming it does not replace the daemon or shell. |
-| Task | A program associated with a shell. Identifying tasks for termination requires process identity checks, not just a displayed PID. |
+| Task | A context-dependent display term: a numbered item in `list`, or a program running under a shell. It is not a separate execution model; the managed lifecycle uses session, shell and resource. Identifying shell programs for termination requires process identity checks, not just a displayed PID. |
 | Detach | Explicitly end an attachment while preserving its shell. Ctrl+B d and `sshore detach` request this. |
 | Disconnect | Loss of transport. It releases an attachment. Persistent shells survive; spawns survive only while their owner and, remotely, their lifetime SSH connection remain alive. |
 | Cancel | The public action for discarding a request, stopping a resource or ending a named remote shell. Its scope depends on the identifier. |
@@ -47,6 +47,7 @@ This document defines the project vocabulary. Commands are documented by
 | Tunnel | The README feature category for TCP port forwarding through SSH. |
 | Transfer | A one-time regular-file copy. Both direct and approved copies use SFTP; approved copies run on a client-initiated shell stream after local review. |
 | Resource | An independently managed local mount or forward, with its own transport and lifetime. Its ID is `TYPE/NAME`, such as `forward/pikachu` or `mount/eevee`; the type prefix identifies the object kind. Shells, resources and pending reviews share a local name namespace and default Pokemon pool. |
+| Job | The Windows Job Object used to contain a local shell process tree; not an application-level task type. |
 | Worker | A separate local process owning a mount and its SSH transport, started and reaped by the local daemon. Forwards run directly under the daemon; older independent forward workers remain manageable. |
 | Mount | A remote directory exposed to local applications through SFTP and FUSE/WinFsp, identified as `mount/NAME`. |
 | Recent connection | A private local default for a previously connected host/shell and its SSH transport settings; it is not proof that the remote shell is still available. |

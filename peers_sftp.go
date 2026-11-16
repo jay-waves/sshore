@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func publishSFTPTask(c *sftp.Client, dir string, t remoteTask) error {
+func publishSFTPTask(c *sftp.Client, dir string, t peerRecord) error {
 	if e := validateRemoteTask(t); e != nil {
 		return e
 	}
@@ -62,7 +62,7 @@ func publishSFTPTask(c *sftp.Client, dir string, t remoteTask) error {
 	_ = c.Remove(final)
 	return c.Rename(temp, final)
 }
-func startMountTaskSync(parent context.Context, c *sftp.Client, t remoteTask) func() {
+func startMountTaskSync(parent context.Context, c *sftp.Client, t peerRecord) func() {
 	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	go func() {

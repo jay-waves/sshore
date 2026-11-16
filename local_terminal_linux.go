@@ -16,4 +16,4 @@ func localShellCommand(env []string) (string, []string) {
 
 func redrawLocalTerminal(t *tmux.Terminal) { tmux.RequestRedraw(t, t.PID()) }
 
-func detachLocalWorker(cmd *exec.Cmd) { detachResourceWorker(cmd) }
+func detachLocalDaemon(cmd *exec.Cmd) { detachResourceWorker(cmd) }

@@ -19,13 +19,13 @@ import (
 func watchRemoteTask() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer cancel()
-	updates := make(chan remoteTask)
+	updates := make(chan peerRecord)
 	failure := make(chan error, 1)
 	go func() {
 		s := bufio.NewScanner(os.Stdin)
 		s.Buffer(make([]byte, 1024), maxRemoteTaskSize)
 		for s.Scan() {
-			var t remoteTask
+			var t peerRecord
 			if e := json.Unmarshal(s.Bytes(), &t); e != nil {
 				failure <- e
 				return
@@ -38,7 +38,7 @@ func watchRemoteTask() error {
 		}
 		failure <- s.Err()
 	}()
-	var first *remoteTask
+	var first *peerRecord
 	warned := false
 	defer func() {
 		if first != nil {

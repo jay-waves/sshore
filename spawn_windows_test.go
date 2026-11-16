@@ -23,7 +23,7 @@ func TestWindowsSpawnOwnerClosesTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &localShell{environment: append(os.Environ(), "SHELL=cmd.exe"), record: localSessionRecord{Directory: t.TempDir(), Owner: spawnOwner{PID: parent.Process.Pid, Start: identity}}, done: make(chan struct{})}
+	s := &localShell{environment: append(os.Environ(), "SHELL=cmd.exe"), record: localShellRecord{Directory: t.TempDir(), Owner: spawnOwner{PID: parent.Process.Pid, Start: identity}}, done: make(chan struct{})}
 	defer s.close()
 	if err = s.start(message{Term: "xterm", Cols: 80, Rows: 24}); err != nil {
 		t.Fatal(err)

@@ -3,7 +3,7 @@ package main
 // Independent forwards use an owned SSH connection and a transient remote Unix
 // helper, never a shell session daemon. OpenSSH's forwarding failure gate runs
 // before the helper command, whose fixed marker acknowledges startup. Killing a
-// worker closes only this transport. Approved forwards require the existing
+// forward closes only this transport. Approved forwards require the existing
 // remote executable to validate the source session; no installation is attempted.
 import (
 	"context"
@@ -51,7 +51,7 @@ const forwardReadyMarker = forward.ReadyMarker
 
 // Reconnect only an already-established, explicitly opted-in local forward.
 // Each retry owns a new transport; application TCP connections are not resumed.
-func runForwardWorker(f forwardConfig, s *resourceService) (int, error) {
+func runForward(f forwardConfig, s *resourceService) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	stopped := make(chan resourceStopRequest, 1)

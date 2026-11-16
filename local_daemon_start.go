@@ -9,14 +9,14 @@ import (
 	"time"
 )
 
-func launchLocalDaemon() (localSessionRecord, error) {
-	var empty localSessionRecord
+func launchLocalDaemon() (localShellRecord, error) {
+	var empty localShellRecord
 	exe, err := os.Executable()
 	if err != nil {
 		return empty, err
 	}
 	cmd := exec.Command(exe, "local-daemon")
-	detachLocalWorker(cmd)
+	detachLocalDaemon(cmd)
 	dir, err := stateDir("daemon")
 	if err != nil {
 		return empty, err
@@ -51,7 +51,7 @@ func launchLocalDaemon() (localSessionRecord, error) {
 		}
 		go cmd.Wait()
 	}()
-	request := localSessionRecord{Name: "daemon", Version: version, Token: resourceToken()}
+	request := localShellRecord{Name: "daemon", Version: version, Token: resourceToken()}
 	if err = json.NewEncoder(input).Encode(request); err != nil {
 		return empty, err
 	}

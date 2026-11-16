@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 )
 
@@ -26,7 +25,7 @@ func TestLocalCommandRouting(t *testing.T) {
 	}{
 		{[]string{"launch"}, true, ""},
 		{[]string{"launch", "--quiet", "--no-escape"}, true, ""},
-		{[]string{"launch", "--name", "work"}, true, "work"},
+		{[]string{"launch", "--local", "work"}, true, "work"},
 		{[]string{"launch", "work"}, false, ""},
 		{[]string{"launch", "host", "work"}, false, "work"},
 		{[]string{"attach", "--local", "work"}, true, "work"},
@@ -57,33 +56,15 @@ func TestLocalCommandRejectsAmbiguousOptions(t *testing.T) {
 	}
 }
 
-func TestHiddenShellAliasUsesSpawn(t *testing.T) {
-	for _, args := range [][]string{{"shell"}, {"shell", "--name", "dev", "--detach"}, {"shell", "host", "dev", "--", "-p2222"}} {
-		got, err := parseOptions(args)
-		if err != nil || got.command != "spawn" {
-			t.Fatalf("%v: %+v %v", args, got, err)
-		}
-		if !got.local && !strings.Contains(remoteCommand(got), shellQuote("spawn")) {
-			t.Fatal("alias did not select remote spawn")
+func TestRemovedShellForms(t *testing.T) {
+	for _, args := range [][]string{{"shell"}, {"launch", "--name", "dev"}, {"spawn", "--name=dev"}} {
+		if _, err := parseOptions(args); err == nil {
+			t.Fatalf("accepted %v", args)
 		}
 	}
-	if _, ok := commandHelp["shell"]; ok {
-		t.Fatal("alias is advertised as a command")
-	}
-	var alias, canonical bytes.Buffer
-	if err := showHelp([]string{"shell"}, &alias); err != nil {
-		t.Fatal(err)
-	}
-	if err := showHelp([]string{"spawn"}, &canonical); err != nil {
-		t.Fatal(err)
-	}
-	if alias.String() != canonical.String() {
-		t.Fatal("alias help differs from spawn")
-	}
-	for _, manual := range append([]string{help}, mapHelpValues()...) {
-		if strings.Contains(manual, "sshore shell [") || strings.Contains(manual, "shell/NAME") {
-			t.Fatal("manual advertises hidden alias")
-		}
+	var out bytes.Buffer
+	if err := showHelp([]string{"shell"}, &out); err == nil {
+		t.Fatal("accepted removed alias help")
 	}
 }
 
