@@ -47,3 +47,18 @@ func shellTaskName(name string, temporary bool) string {
 	}
 	return "launch/" + name
 }
+
+// Lifetime is fixed by startup; attachment state never promotes a spawn.
+func shellLifetime(temporary, remote bool) string {
+	if !temporary {
+		return "persistent"
+	}
+	if remote {
+		return "heartbeat"
+	}
+	return "parent"
+}
+
+func validShellLifetime(value string) bool {
+	return value == "" || value == "persistent" || value == "parent" || value == "heartbeat"
+}

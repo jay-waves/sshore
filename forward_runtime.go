@@ -7,21 +7,35 @@ package main
 // remote executable to validate the source session; no installation is attempted.
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/jay-waves/sshore/internal/forward"
-	"github.com/jay-waves/sshore/internal/transport"
 )
 
-type forwardConfig = forward.Config
+// Application identity stays outside the forwarding engine and preserves stored records.
+type forwardConfig struct {
+	Retries             int
+	Session, ApprovalID string
+	ResumePID           int
+	Host, Name, Server  string
+	Port, Target        int
+	Reverse             bool
+	SSH                 []string
+}
+
+func (f forwardConfig) transportConfig() forward.Config {
+	return forward.Config{Retries: f.Retries, Host: f.Host, Port: f.Port, Target: f.Target, Reverse: f.Reverse, SSH: f.SSH}
+}
 
 func validateForwardConfig(f forwardConfig) error {
-	if f.Retries < 0 || f.Retries > 10 {
+	transportErr := f.transportConfig().Validate()
+	if errors.Is(transportErr, forward.ErrRetries) {
 		return usage("--retries must be between 0 and 10")
 	}
 	if e := validSession(f.Name); f.Name != "" && e != nil {
@@ -35,10 +49,7 @@ func validateForwardConfig(f forwardConfig) error {
 			return fmt.Errorf("invalid approved forward identity")
 		}
 	}
-	if f.Port < 1 || f.Port > 65535 || f.Target < 1 || f.Target > 65535 {
-		return fmt.Errorf("invalid forward ports")
-	}
-	return nil
+	return transportErr
 }
 func startForwardSession(f forwardConfig) (int, error) {
 	if e := validateForwardConfig(f); e != nil {
@@ -54,11 +65,12 @@ const forwardReadyMarker = forward.ReadyMarker
 func runForward(f forwardConfig, s *resourceService) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	stopped := make(chan resourceStopRequest, 1)
+	var stopped resourceStopRequest
+	watcherDone := make(chan struct{})
 	go func() {
+		defer close(watcherDone)
 		select {
-		case request := <-s.stop:
-			stopped <- request
+		case stopped = <-s.stop:
 			cancel()
 		case <-s.abandoned:
 			cancel()
@@ -66,10 +78,10 @@ func runForward(f forwardConfig, s *resourceService) (int, error) {
 		}
 	}()
 	defer func() {
-		select {
-		case request := <-stopped:
-			request <- nil
-		default:
+		cancel()
+		<-watcherDone
+		if stopped != nil {
+			stopped <- nil
 		}
 	}()
 	return forward.Run(ctx, forward.Runtime{
@@ -81,56 +93,32 @@ func runForward(f forwardConfig, s *resourceService) (int, error) {
 			s.record.Detail = describeForward(f.Port, f.Target, f.Reverse)
 			return s.ready("", "")
 		},
-		Status:    s.setTransport,
-		Heartbeat: func() any { return s.peerTask() },
+		Status: s.setTransport,
+		Heartbeat: func() ([]byte, error) {
+			data, err := json.Marshal(s.peerTask())
+			return append(data, '\n'), err
+		},
 	})
 }
 
 func forwardCommand(ctx context.Context, f forwardConfig, s *resourceService, initial bool) *exec.Cmd {
-	exe := localEnvironmentValue(s.baseEnvironment(), "SSHORE_SSH")
+	var environment []string
+	if initial {
+		environment = s.sshEnvironment()
+	} else {
+		environment = s.baseEnvironment()
+	}
+	exe := localEnvironmentValue(environment, "SSHORE_SSH")
 	if exe == "" {
 		exe = "ssh"
 	}
-	args := forwardSSHArgs(f, true)
-	if !initial {
-		args = append([]string{"-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=15", "-o", "ConnectionAttempts=1"}, args...)
-	}
-	cmd := exec.CommandContext(ctx, exe, args...)
-	transport.IsolateCommand(cmd, true)
+	cmd := forward.Command(ctx, exe, f.transportConfig(), forwardRemoteCommand(f), !initial)
 	if s.committed != nil {
 		detachResourceWorker(cmd)
 	}
-	if initial {
-		cmd.Env = s.sshEnvironment()
-	} else {
-		cmd.Env = s.baseEnvironment()
-	}
+	cmd.Env = environment
 	cmd.Dir = s.directory
 	return cmd
-}
-
-// Retain transport/authentication settings without replaying unrelated forwards.
-func forwardSSHOptions(args []string) []string {
-	var out []string
-	for i := 0; i < len(args); i++ {
-		if args[i] == "-L" || args[i] == "-R" || args[i] == "-D" {
-			i++
-			continue
-		}
-		if args[i] == "-o" && i+1 < len(args) {
-			fields := strings.FieldsFunc(args[i+1], func(r rune) bool { return r == '=' || r == ' ' || r == '\t' })
-			key := ""
-			if len(fields) > 0 {
-				key = strings.ToLower(fields[0])
-			}
-			if key == "localforward" || key == "remoteforward" || key == "dynamicforward" {
-				i++
-				continue
-			}
-		}
-		out = append(out, args[i])
-	}
-	return out
 }
 
 func forwardWatchCommand(server string) string {

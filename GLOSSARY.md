@@ -29,7 +29,10 @@ This document defines the project vocabulary. Commands are documented by
 | Daemon | A background owner of native terminals and lifecycle. One local daemon per user/state root hosts multiple shells and forward transports, and supervises mount workers; Linux remote shells share a daemon per runtime directory, with separate helper endpoints. |
 | Shell name | A public label, automatic or user-supplied; renaming it does not replace the daemon or shell. |
 | Task | A context-dependent display term: a numbered item in `list`, or a program running under a shell. It is not a separate execution model; the managed lifecycle uses session, shell and resource. Identifying shell programs for termination requires process identity checks, not just a displayed PID. |
-| Detach | Explicitly end an attachment while preserving its shell. Ctrl+B d and `sshore detach` request this. |
+| Shell lifetime | Startup policy: `parent` for local spawn, `heartbeat` for remote spawn (original parent plus lifetime SSH), `persistent` for launch. Detach and attach never change this policy. These labels do not measure connection health. |
+| Owner context | Display-only identity of the managed shell from which a spawn was started, when known. It stays fixed across attachments; it does not replace the actual spawn owner PID/creation identity, which may belong to a wrapper. |
+| Attachment source | The managed shell from which the current attachment was opened, when known. It may change on reattachment and conveys no lifetime ownership. |
+| Detach | Explicitly end an attachment while preserving its shell according to its startup lifetime. Ctrl+B d and `sshore detach` request this. |
 | Disconnect | Loss of transport. It releases an attachment. Persistent shells survive; spawns survive only while their owner and, remotely, their lifetime SSH connection remain alive. |
 | Cancel | The public action for discarding a request, stopping a resource or ending a named remote shell. Its scope depends on the identifier. |
 | Recovery | A temporary shell on the authenticated SSH connection, without persistent shell or normal sshore operations. It is not a sandbox. |

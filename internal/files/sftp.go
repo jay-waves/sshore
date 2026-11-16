@@ -1,23 +1,24 @@
 package files
 
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"sync"
+	"time"
+
+	"github.com/pkg/sftp"
+
+	"github.com/jay-waves/sshore/internal/transport"
+)
+
 // SFTP v3 framing guard. pkg/sftp's ReadDir accumulates all NAME packets before
 // returning; enforce a budget before its decoder allocates entries. Only READDIR
 // replies count, keyed by request ID and remote handle. An oversized directory
 // receives a normal failure status so the rest of the mount remains usable.
 // Packet size and outstanding requests are bounded independently. This layer
 // does not implement file operations or change successful server responses.
-
-import (
-	"bytes"
-	"encoding/binary"
-	"fmt"
-	"github.com/jay-waves/sshore/internal/transport"
-	"io"
-	"sync"
-	"time"
-
-	"github.com/pkg/sftp"
-)
 
 const (
 	ftpMaxPacket         = 1024 * 1024
@@ -226,4 +227,62 @@ func (w *ftpWire) Read(p []byte) (int, error) {
 	n := copy(p, w.readBuffer[w.readOffset:])
 	w.readOffset += n
 	return n, nil
+}
+
+// Each outstanding SFTP request has its own deadline. A responsive sibling or
+// SSH keepalive cannot hide one stuck request. Timeout tears down the transport;
+// writes are never replayed and their remote outcome can be unknown. Idle mounts
+// have no request deadline. Authentication is covered only by an opt-in startup
+// deadline, since the subsystem protocol cannot distinguish an SSH prompt.
+
+type sftpWatch struct {
+	mu      sync.Mutex
+	failure error
+	timer   *time.Timer
+}
+
+func (w *sftpWatch) fail(err error, abort func()) {
+	w.mu.Lock()
+	first := w.failure == nil
+	if first {
+		w.failure = err
+	}
+	w.mu.Unlock()
+	if first {
+		abort()
+	}
+}
+func (w *sftpWatch) err() error { w.mu.Lock(); defer w.mu.Unlock(); return w.failure }
+func (w *ftpWire) watchRequests(timeout time.Duration, watch *sftpWatch, abort func()) func() {
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		if timeout <= 0 {
+			<-stop
+			return
+		}
+		tick := time.NewTicker(min(time.Second, max(time.Millisecond, timeout/4)))
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case now := <-tick.C:
+				w.mu.Lock()
+				expired := false
+				for _, r := range w.requests {
+					if !r.started.IsZero() && now.Sub(r.started) >= timeout {
+						expired = true
+						break
+					}
+				}
+				w.mu.Unlock()
+				if expired {
+					watch.fail(fmt.Errorf("SFTP request timed out after %s; connection closed, remote writes may be incomplete or have completed; no retry performed", timeout), abort)
+					return
+				}
+			}
+		}
+	}()
+	return func() { close(stop); <-done }
 }

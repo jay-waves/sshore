@@ -23,6 +23,7 @@ const help = `sshore — persistent shells, file transfer and SFTP mounts
 Local commands:
   sshore launch [HOST [NAME]] [options]   Create a persistent local or remote shell
   sshore spawn [HOST [NAME]] [options]   Create a shell bound to the launching parent shell
+  sshore pstree                     Show shell ownership and attachment sources
   sshore list [HOST] [-- SSH_OPTIONS]    Local records, or query the named remote account
   sshore cancel TYPE/NAME            Cancel a request, mount or forward
   sshore cancel HOST NAME [-- SSH_OPTIONS] End a shell and its identified tasks
@@ -65,29 +66,54 @@ Examples:
 `
 
 var commandHelp = map[string]string{
+	"pstree": `Usage: sshore pstree [HOST] [-- SSH_OPTIONS]
+
+Show shell ownership and attachment sources, with the current shell highlighted.
+Branches show the original spawn owner context; attach via shows interaction only.
+Detach/reattach never changes lifetime or ownership. Unknown owners appear at root.
+Cross-host relationships are display snapshots, not verified OS process ancestry.
+NO_COLOR disables terminal colors.
+`,
 	"mount": mountHelp,
 	"spawn": `Usage: sshore spawn [HOST [NAME]] [options]
-       sshore spawn --local [NAME] [--detach] [--quiet] [--no-escape]
+       sshore spawn --local [NAME] [--detach] [--no-login] [--no-profile] [--quiet] [--no-escape]
 
 Create a temporary shell bound to the parent shell that launches this command.
 Omit HOST for local use. SHELL selects the executable; on Windows, fall back
 to COMSPEC, then cmd.exe. SHELL is a path, without arguments.
+Linux starts bash/zsh/fish/sh/dash/ash/ksh as a login shell by default.
+--no-login selects ordinary interactive startup; use it for other Linux shells.
+--no-profile skips optional startup files for bash/sh/zsh/fish and implies
+non-login startup on Linux. For sh, it also removes ENV from the child environment.
+Windows: --no-profile uses PowerShell -NoProfile or CMD /D; --no-login is rejected.
+Inherited environment variables remain. Zsh still reads the system zshenv.
+Startup options apply only to new shells; startup files are owned by the shell.
 Ctrl+B d returns to the parent shell; attach resumes the background spawn.
---detach starts in the background. Neither detach nor attach changes its owner.
+--detach starts in the background. Neither detach nor attach changes its owner
+or lifetime. Remote detach keeps the background lifetime heartbeat running.
 Closing the original parent shell ends the spawn and its identified tasks.
 A remote spawn also ends when its lifetime SSH connection is lost; detection
 may take up to the transport timeout. There is no automatic reconnect.
 Ctrl+B c creates another spawn bound to this client's parent shell.
-list distinguishes spawn/NAME from persistent launch/NAME; numeric IDs work for both.
+list shows LIFETIME: parent (local spawn), heartbeat (remote spawn), or persistent
+(launch). These are lifetime policies, not live heartbeat health readings.
+Numeric IDs work for both spawn/NAME and launch/NAME.
 Use sshore launch for persistence beyond the launching terminal.
 ` + connectionOptions,
 	"launch": `Usage: sshore launch [HOST [NAME]] [options]
-       sshore launch --local [NAME] [--detach] [--quiet] [--no-escape]
+       sshore launch --local [NAME] [--detach] [--no-login] [--no-profile] [--quiet] [--no-escape]
 
 Create a local shell when HOST is omitted; preserve the current directory.
 Use SHELL as the executable path. Windows falls back to COMSPEC, then cmd.exe.
 Use --local NAME to name a local shell. With HOST, create a remote shell over SSH.
 Omit NAME for an automatic Pokemon name. --detach creates without attaching.
+Linux starts bash/zsh/fish/sh/dash/ash/ksh as a login shell by default.
+--no-login selects ordinary interactive startup; use it for other Linux shells.
+--no-profile skips optional startup files for bash/sh/zsh/fish and implies
+non-login startup on Linux. For sh, it also removes ENV from the child environment.
+Windows: --no-profile uses PowerShell -NoProfile or CMD /D; --no-login is rejected.
+Inherited environment variables remain. Zsh still reads the system zshenv.
+Startup options apply only to new shells; startup files are owned by the shell.
 An existing name is an error; use sshore attach HOST NAME to resume it.
 Ctrl+B d, terminal closure or connection loss leaves programs running.
 Exit ends the shell; sshore detach also works inside a remote shell.
@@ -130,6 +156,10 @@ or terminal output are exported; partial results may have a nonzero exit status.
 HOST groups identify where shells run and where mount/forward processes are managed.
 Local sessions appear first. REMOTE names a resource's connection target; shells
 show -. Peer records appear under their managing computer and remain read-only.
+LIFETIME (lifetime in shell JSON) is fixed at startup: parent for local spawn,
+heartbeat for remote spawn, persistent for launch. Detach/attach never changes
+it. This is policy, not a live heartbeat health check. Use pstree for owner
+contexts and attachment sources.
 Unknown peer paths or ports are not inferred from descriptions. --verbose adds
 paths, descriptions, confirmation times and full peer identities.
 Worker running confirms the worker, not remote service health. Targets are

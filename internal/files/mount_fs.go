@@ -1,17 +1,11 @@
 package files
 
-// The mount backend uses SFTP handles directly: writes wait for server replies,
-// with no local write-back spool or automatic replay. Remote paths use POSIX
-// separators on every client OS. The selected root is a navigation root, not a
-// remote security sandbox: symlinks and the authenticated account's permissions
-// determine remote access. Directory handles hold one bounded snapshot; reopening
-// may reuse a short-lived mount cache. Native adapters own OS-specific names, attributes and errors.
-
 import (
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path"
 	"strings"
@@ -20,6 +14,13 @@ import (
 
 	"github.com/pkg/sftp"
 )
+
+// The mount backend uses SFTP handles directly: writes wait for server replies,
+// with no local write-back spool or automatic replay. Remote paths use POSIX
+// separators on every client OS. The selected root is a navigation root, not a
+// remote security sandbox: symlinks and the authenticated account's permissions
+// determine remote access. Directory handles hold one bounded snapshot; reopening
+// may reuse a short-lived mount cache. Native adapters own OS-specific names, attributes and errors.
 
 const ftpMaxDirectoryEntries = 100000
 
@@ -399,4 +400,34 @@ func (f *ftpFS) lstat(p string) (os.FileInfo, error) {
 		return ftpCacheValue{info: info, bytes: 256 + len(p) + ftpInfoBytes(info)}, err
 	})
 	return v.info, err
+}
+
+type ftpCapacityClient interface {
+	HasExtension(string) (string, bool)
+	StatVFS(string) (*sftp.StatVFS, error)
+}
+
+func ftpRemoteCapacity(client ftpCapacityClient, root string) (*sftp.StatVFS, error) {
+	version, ok := client.HasExtension("statvfs@openssh.com")
+	if !ok || version != "2" {
+		return nil, syscall.ENOTSUP
+	}
+	stat, err := client.StatVFS(root)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateFTPCapacity(stat); err != nil {
+		return nil, err
+	}
+	return stat, nil
+}
+
+func validateFTPCapacity(s *sftp.StatVFS) error {
+	// Validate before narrowing FUSE fields or converting block counts to bytes.
+	if s == nil || s.Frsize == 0 || s.Bsize == 0 ||
+		s.Frsize > math.MaxUint32 || s.Bsize > math.MaxUint32 || s.Namemax > math.MaxUint32 ||
+		s.Blocks > math.MaxUint64/s.Frsize || s.Bfree > s.Blocks || s.Bavail > s.Bfree {
+		return syscall.EIO
+	}
+	return nil
 }

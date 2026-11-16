@@ -22,6 +22,7 @@ const (
 
 // Control metadata uses JSON; terminal bytes remain binary.
 type message struct {
+	Tree            []shellTreeNode     `json:"shell_tree,omitempty"`
 	Temporary       bool                `json:"temporary,omitempty"`
 	Inventory       *inventory          `json:"inventory,omitempty"`
 	LocalRequest    *localDaemonRequest `json:"local_request,omitempty"`
@@ -39,6 +40,8 @@ type message struct {
 	Type            string              `json:"type"`
 	Cols            uint16              `json:"cols,omitempty"`
 	Rows            uint16              `json:"rows,omitempty"`
+	NoProfile       bool                `json:"no_profile,omitempty"`
+	NoLogin         bool                `json:"no_login,omitempty"`
 	Term            string              `json:"term,omitempty"`
 	PID             int                 `json:"pid,omitempty"`
 	Foreground      string              `json:"foreground,omitempty"`
@@ -50,7 +53,6 @@ type message struct {
 	Data            []byte              `json:"-"`
 }
 
-func writeFull(w io.Writer, b []byte) error          { return transport.WriteFull(w, b) }
 func (m *message) FrameType() string                 { return m.Type }
 func (m *message) SetFrame(kind string, data []byte) { m.Type, m.Data = kind, data }
 func writeMessage(w io.Writer, m message) error {

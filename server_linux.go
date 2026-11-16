@@ -5,9 +5,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/jay-waves/sshore/internal/files"
 	"io"
 	"os"
+
+	"github.com/jay-waves/sshore/internal/files"
+	transportio "github.com/jay-waves/sshore/internal/transport"
 )
 
 func serverCommand(args []string) error {
@@ -18,7 +20,7 @@ func serverCommand(args []string) error {
 		if len(args) != 1 {
 			return usage("mount-agent takes no arguments")
 		}
-		return files.ServeAgent(&pipeTransport{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version)
+		return files.ServeAgent(&transportio.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version)
 	case "rename-session":
 		if len(args) != 4 && len(args) != 5 {
 			return usage("rename-session requires old name, new name and client version")

@@ -3,6 +3,7 @@ package files
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -280,5 +281,178 @@ func TestFTPCacheExtendedAttributeBudget(t *testing.T) {
 	_, err := cache.stat("oversized", fetch)
 	if err != nil || cache.entries["s:oversized"] != nil {
 		t.Fatal("oversized attributes must be returned without retention")
+	}
+}
+
+func TestWindowsDirectoryReopenSharesMetadata(t *testing.T) {
+	backend, wire := testFTPBackendWithWire(t)
+	if err := os.WriteFile(filepath.Join(backend.root, "entry"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// GetSecurityByName, Open, then gofs's separate enumeration handle.
+	if _, err := backend.stat(""); err != nil {
+		t.Fatal(err)
+	}
+	var firstReadDirs uint64
+	for i := 0; i < 10; i++ {
+		h, err := backend.openWithMetadata("", os.O_RDONLY, 0, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = h.cachedStat(); err != nil {
+			h.Close()
+			t.Fatal(err)
+		}
+		entries, err := h.Readdir(-1)
+		h.Close()
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("entries=%v err=%v", entries, err)
+		}
+		wire.mu.Lock()
+		stats, dirs := wire.totals[17].Started, wire.totals[12].Started
+		wire.mu.Unlock()
+		if i == 0 {
+			firstReadDirs = dirs
+		}
+		if stats != 1 || dirs != firstReadDirs {
+			t.Fatalf("reopen %d: STAT=%d READDIR=%d; want 1/%d", i, stats, dirs, firstReadDirs)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(backend.root, "new"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	backend.cache.invalidateRemote()
+	h, err := backend.openWithMetadata("", os.O_RDONLY, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	if _, err = h.cachedStat(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := h.Readdir(-1)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("stale listing: %v %v", entries, err)
+	}
+	wire.mu.Lock()
+	stats := wire.totals[17].Started
+	wire.mu.Unlock()
+	if stats != 2 {
+		t.Fatalf("invalidation STAT=%d want 2", stats)
+	}
+}
+
+func TestHandleStatPollingAndInvalidation(t *testing.T) {
+	backend, wire := testFTPBackendWithWire(t)
+	f, err := backend.open("file", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	count := func() uint64 { wire.mu.Lock(); defer wire.mu.Unlock(); return wire.totals[8].Started } // FSTAT
+	check := func(size int64) {
+		t.Helper()
+		info, err := f.cachedStat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() != size {
+			t.Fatalf("size %d, want %d", info.Size(), size)
+		}
+	}
+	before := count()
+	for i := 0; i < 100; i++ {
+		check(0)
+	}
+	if got := count() - before; got != 1 {
+		t.Fatalf("100 handle polls sent %d FSTAT requests", got)
+	}
+	if _, err = f.Write([]byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	check(3)
+	if err = f.Truncate(1); err != nil {
+		t.Fatal(err)
+	}
+	check(1)
+	if err = os.WriteFile(filepath.Join(backend.root, "file"), []byte("remote"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	backend.cache.invalidateRemote()
+	check(6)
+	// Expire deterministically; hits must not extend the original TTL.
+	backend.cache.mu.Lock()
+	e := backend.cache.entries[f.statCacheKey()]
+	v := e.Value.(ftpCacheValue)
+	v.expires = time.Now().Add(-time.Second)
+	e.Value = v
+	backend.cache.mu.Unlock()
+	before = count()
+	check(6)
+	if count() != before+1 {
+		t.Fatal("expired handle metadata was reused")
+	}
+	if err = f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.cachedStat(); err != os.ErrClosed {
+		t.Fatalf("closed handle: %v", err)
+	}
+	backend.cache.mu.Lock()
+	defer backend.cache.mu.Unlock()
+	if backend.cache.entries[f.statCacheKey()] != nil {
+		t.Fatal("closed handle retained metadata")
+	}
+}
+
+func TestWindowsOpenReusesPathQuery(t *testing.T) {
+	backend, wire := testFTPBackendWithWire(t)
+	target := filepath.Join(backend.root, "file")
+	if err := os.WriteFile(target, []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Equivalent to WinFsp GetSecurityByName followed by Open and GetFileInfo.
+	if _, err := backend.stat("file"); err != nil {
+		t.Fatal(err)
+	}
+	// Replace the path between the attribute check and open: first handle stat
+	// and reads must describe the newly opened file, not the cached pathname.
+	if err := os.Rename(target, target+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("replacement"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := backend.openWithMetadata("file", os.O_RDONLY, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	info, err := file.cachedStat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 11 {
+		t.Fatalf("used stale path size: %d", info.Size())
+	}
+	wire.mu.Lock()
+	stats, opens, fstats := wire.totals[17].Started, wire.totals[3].Started, wire.totals[8].Started
+	wire.mu.Unlock()
+	if stats != 1 || opens != 1 || fstats != 1 {
+		t.Fatalf("STAT=%d OPEN=%d FSTAT=%d; want 1 each", stats, opens, fstats)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Mutating opens must not reuse a stale regular-file classification.
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := backend.openWithMetadata("file", os.O_WRONLY|os.O_TRUNC, 0, true); err == nil {
+		f.Close()
+		t.Fatal("truncated a directory")
 	}
 }

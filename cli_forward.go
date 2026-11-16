@@ -2,7 +2,6 @@ package main
 
 import (
 	"github.com/jay-waves/sshore/internal/forward"
-	"strconv"
 	"strings"
 )
 
@@ -73,8 +72,8 @@ func parseForwardCommand(args []string) (forwardConfig, bool, error) {
 		}
 	}
 	if parsed.has("--retries") {
-		f.Retries, err = strconv.Atoi(parsed.values["--retries"])
-		if err != nil || f.Retries < 0 || f.Retries > 10 {
+		f.Retries, err = forward.ParseRetries(parsed.values["--retries"])
+		if err != nil {
 			return f, false, usage("--retries must be between 0 and 10")
 		}
 	}

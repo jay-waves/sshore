@@ -2,7 +2,7 @@ package main
 
 import "testing"
 
-func TestLocalShellCommand(t *testing.T) {
+func TestLocalShellPath(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		env  []string
@@ -14,9 +14,9 @@ func TestLocalShellCommand(t *testing.T) {
 		{"default", nil, `cmd.exe`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path, args := localShellCommand(tc.env)
-			if path != tc.want || len(args) != 0 {
-				t.Fatalf("got %q %q, want %q without arguments", path, args, tc.want)
+			path := localShellPath(tc.env)
+			if path != tc.want {
+				t.Fatalf("got %q, want %q", path, tc.want)
 			}
 		})
 	}

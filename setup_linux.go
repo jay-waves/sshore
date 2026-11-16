@@ -29,6 +29,9 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	statefs "github.com/jay-waves/sshore/internal/state"
+	transportio "github.com/jay-waves/sshore/internal/transport"
 )
 
 type setupState struct {
@@ -62,7 +65,7 @@ func setupLock() (*os.File, error) {
 	if err := os.Mkdir(dir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
 		return nil, err
 	}
-	if err := privateState(dir, true); err != nil {
+	if err := statefs.Private(dir, true); err != nil {
 		return nil, err
 	}
 	return openLock(filepath.Join(dir, "setup.lock"), false)
@@ -379,7 +382,7 @@ func installPrepared(target string) error {
 }
 
 func recoveryShell() error {
-	transport := &pipeTransport{Reader: os.Stdin, Writer: os.Stdout}
+	transport := &transportio.Pipe{Reader: os.Stdin, Writer: os.Stdout}
 	m, err := readMessage(transport)
 	if err != nil {
 		return err

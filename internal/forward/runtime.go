@@ -3,9 +3,9 @@ package forward
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/internal/transport"
 	"io"
 	"os/exec"
 	"strings"
@@ -17,7 +17,8 @@ const ReadyMarker = "sshore-forward-ready"
 
 // Runtime receives process construction and resource publication from the program.
 // Command returns a fresh, context-bound command; all hooks and Log are required.
-// Heartbeat metadata is encoded once per attempt and contains only public fields.
+// Heartbeat returns a complete wire record once per attempt, after readiness.
+// The caller owns its schema; the engine writes the bytes unchanged.
 type Runtime struct {
 	Retries           int
 	Description       string
@@ -26,7 +27,7 @@ type Runtime struct {
 	Command           func(context.Context, bool) *exec.Cmd
 	Ready             func() error
 	Status            func(string, error)
-	Heartbeat         func() any
+	Heartbeat         func() ([]byte, error)
 }
 
 // Run retries established forwards only. Cancellation closes this transport,
@@ -79,26 +80,25 @@ func runAttempt(parent context.Context, runtime Runtime, initial bool, started *
 	if e = cmd.Start(); e != nil {
 		return 1, e
 	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	exited := false
+	done := make(chan struct{})
+	var waitErr error
+	go func() { waitErr = cmd.Wait(); close(done) }()
+	var heartbeat sync.WaitGroup
 	defer func() {
 		cancel()
 		input.Close()
 		output.Close()
-		if !exited {
-			<-done
-		}
+		<-done
+		heartbeat.Wait()
 	}()
 	// Read only the bounded protocol marker. Unexpected login output is an error.
 	marker, e := bufio.NewReader(io.LimitReader(output, int64(len(ReadyMarker)+2))).ReadString('\n')
 	if e != nil {
 		cancel()
-		exitErr := <-done
-		exited = true
+		<-done
 		detail := diagnostics.String()
 		if detail == "" {
-			detail = fmt.Sprint(exitErr)
+			detail = fmt.Sprint(waitErr)
 		}
 		if strings.Contains(detail, "remote port forwarding failed") {
 			detail += "; remote listening port is occupied or denied by SSH policy; choose another remote port or inspect existing forwards"
@@ -116,13 +116,17 @@ func runAttempt(parent context.Context, runtime Runtime, initial bool, started *
 	} else {
 		runtime.Status("connected", nil)
 	}
-	task := runtime.Heartbeat()
+	task, err := runtime.Heartbeat()
+	if err != nil {
+		return 1, err
+	}
+	heartbeat.Add(1)
 	go func() {
+		defer heartbeat.Done()
 		ticker := time.NewTicker(runtime.HeartbeatInterval)
 		defer ticker.Stop()
-		enc := json.NewEncoder(input)
 		for {
-			if e := enc.Encode(task); e != nil {
+			if e := transport.WriteFull(input, task); e != nil {
 				return
 			}
 			select {
@@ -133,10 +137,9 @@ func runAttempt(parent context.Context, runtime Runtime, initial bool, started *
 		}
 	}()
 	select {
-	case e = <-done:
-		exited = true
-		if e != nil {
-			return 1, e
+	case <-done:
+		if waitErr != nil {
+			return 1, waitErr
 		}
 		return 1, fmt.Errorf("forward transport closed")
 	case <-ctx.Done():

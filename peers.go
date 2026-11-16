@@ -7,11 +7,17 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/pkg/sftp"
+
+	statefs "github.com/jay-waves/sshore/internal/state"
+	"github.com/jay-waves/sshore/internal/transport"
 )
 
 // Peer task records are advisory, never authorization. They contain only one
@@ -83,7 +89,7 @@ func peerTaskDir(create bool) (string, error) {
 			return "", e
 		}
 	}
-	return dir, privateState(dir, true)
+	return dir, statefs.Private(dir, true)
 }
 func storeRemoteTask(t peerRecord) error {
 	if e := validateRemoteTask(t); e != nil {
@@ -93,7 +99,7 @@ func storeRemoteTask(t peerRecord) error {
 	if e != nil {
 		return e
 	}
-	return writeStateJSON(filepath.Join(dir, t.Key+".json"), t)
+	return statefs.WriteJSON(filepath.Join(dir, t.Key+".json"), t)
 }
 func removeRemoteTask(key string) error {
 	if !validApprovalID(key) {
@@ -146,7 +152,7 @@ func collectPeerRows() ([]peerRow, error) {
 			continue
 		}
 		p := filepath.Join(dir, name)
-		if privateState(p, false) != nil {
+		if statefs.Private(p, false) != nil {
 			continue
 		}
 		f, e := os.Open(p)
@@ -266,10 +272,94 @@ func removeRejectedPeerTask(r approvalRecord) {
 	}
 	command += "fi; if [ \"$(\"$server\" --version 2>/dev/null)\" = " + shellQuote("sshore "+version) + " ]; then exec \"$server\" task-remove " + shellQuote(version) + " " + shellQuote(r.ID) + "; fi"
 	args := []string{"-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=2", "-o", "ConnectionAttempts=1", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "-o", "ClearAllForwardings=yes", "-o", "ForkAfterAuthentication=no", "-o", "RemoteCommand=none", "-o", "SessionType=default"}
-	args = append(args, forwardSSHOptions(r.SSH)...)
+	args = append(args, transport.WithoutForwarding(r.SSH)...)
 	args = append(args, "--", r.Host, command)
 	cmd := exec.CommandContext(ctx, sshExecutable(), args...)
 	cmd.Dir = r.Directory
 	cmd.WaitDelay = 200 * time.Millisecond
 	_ = cmd.Run()
+}
+
+// Mount inventory uses the existing SFTP transport. Failure to publish metadata
+// never fails file IO. Shutdown cleanup is bounded; a stalled server leaves an
+// expiring advisory record rather than holding unmount hostage.
+
+func publishSFTPTask(c *sftp.Client, dir string, t peerRecord) error {
+	if e := validateRemoteTask(t); e != nil {
+		return e
+	}
+	if _, e := c.Lstat(dir); os.IsNotExist(e) {
+		if e = c.MkdirAll(dir); e != nil {
+			return e
+		}
+		if e = c.Chmod(dir, 0700); e != nil {
+			return e
+		}
+	} else if e != nil {
+		return e
+	}
+	info, e := c.Lstat(dir)
+	if e != nil {
+		return e
+	}
+	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
+		return fmt.Errorf("peer task directory is not private")
+	}
+	data, e := json.Marshal(t)
+	if e != nil {
+		return e
+	}
+	temp := path.Join(dir, ".task-"+t.Key)
+	f, e := c.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
+	if e != nil {
+		return e
+	}
+	defer c.Remove(temp)
+	if e = c.Chmod(temp, 0600); e != nil {
+		f.Close()
+		return e
+	}
+	if _, e = f.Write(data); e != nil {
+		f.Close()
+		return e
+	}
+	if e = f.Close(); e != nil {
+		return e
+	}
+	final := path.Join(dir, t.Key+".json")
+	if _, ok := c.HasExtension("posix-rename@openssh.com"); ok {
+		return c.PosixRename(temp, final)
+	}
+	_ = c.Remove(final)
+	return c.Rename(temp, final)
+}
+func startMountTaskSync(parent context.Context, c *sftp.Client, t peerRecord) func() {
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		home, e := c.RealPath(".")
+		if e != nil {
+			return
+		}
+		dir := path.Join(home, remoteTaskRelativeDir)
+		defer c.Remove(path.Join(dir, t.Key+".json"))
+		ticker := time.NewTicker(remoteTaskRefresh)
+		defer ticker.Stop()
+		for {
+			_ = publishSFTPTask(c, dir, t)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
 }

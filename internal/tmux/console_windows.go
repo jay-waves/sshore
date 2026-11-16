@@ -1,5 +1,13 @@
 package tmux
 
+import (
+	"fmt"
+	"io"
+	"os"
+
+	"golang.org/x/sys/windows"
+)
+
 // Windows input uses ReadConsole directly; consoleInput decodes segmented UTF-16
 // and preserves control keys such as Ctrl-Z. The manual Tests workflow runs
 // native Windows race tests,
@@ -7,15 +15,6 @@ package tmux
 // cross-compilation alone does not validate console interaction. Native mouse
 // capture starts disabled and follows remote mouse requests; disabling Quick
 // Edit alone must not enable mouse reports in a plain remote shell.
-
-import (
-	"fmt"
-
-	"io"
-	"os"
-
-	"golang.org/x/sys/windows"
-)
 
 func RawConsole() (func(), error) {
 	in, out := windows.Handle(os.Stdin.Fd()), windows.Handle(os.Stdout.Fd())
@@ -97,4 +96,8 @@ func SyncMouse(state *InputState) error {
 		return nil
 	}
 	return windows.SetConsoleMode(in, desired)
+}
+
+func FlushInput() error {
+	return windows.FlushConsoleInputBuffer(windows.Handle(os.Stdin.Fd()))
 }

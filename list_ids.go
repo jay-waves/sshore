@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 // Keys contain immutable task identities, not mutable display names. IDs are
@@ -18,7 +20,7 @@ type taskIDIndex struct {
 }
 
 func assignTaskIDs(keys []string) (map[string]uint64, error) {
-	dir, err := stateDir("tasks")
+	dir, err := statefs.Dir("tasks")
 	if err != nil {
 		return nil, err
 	}
@@ -28,7 +30,7 @@ func assignTaskIDs(keys []string) (map[string]uint64, error) {
 		return nil, err
 	}
 	defer f.Close()
-	if err = privateState(lockPath, false); err != nil {
+	if err = statefs.Private(lockPath, false); err != nil {
 		return nil, err
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -81,7 +83,7 @@ func assignTaskIDs(keys []string) (map[string]uint64, error) {
 		result[key] = id
 	}
 	if changed {
-		if err = writeStateJSON(path, index); err != nil {
+		if err = statefs.WriteJSON(path, index); err != nil {
 			return nil, err
 		}
 	}

@@ -11,9 +11,15 @@ transfer that ownership. Local owner checks include process creation identity,
 so PID reuse cannot keep it alive. Linux cleanup signals only confirmed same-user
 tasks; Windows spawns use kill-on-close jobs. Remote spawns require an exclusive
 lifetime lease on their exact endpoint and end when that SSH connection is lost.
+Detach closes only the attachment stream, leaving lifetime keepalives active.
 Silent network failure is detected by keepalives, not instantaneously. Deliberately
 escaped/reparented Unix tasks remain outside the global cleanup guarantee. As with
 persistent shells, a malicious remote host can ignore lifecycle rules.
+
+`pstree` owner contexts and attachment sources are advisory display metadata,
+not verified OS ancestry. They cannot change the process owner or lifetime lease,
+and are never used to authorize cancellation. `list` lifetime labels describe
+policy, not current heartbeat health.
 
 ## Trust boundaries
 
@@ -25,7 +31,8 @@ flowchart LR
     localworker -->|"Attachment loss: stop writer; preserve while lifetime permits"| localdaemon
     spawnowner["Spawn owner: PID and creation identity"] -->|"Owner exit or identity change"| spawnstop["End only owned temporary shell and identified tasks"]
     localdaemon -->|"Remote spawn: independent authenticated lifetime SSH"| spawnlease["Exclusive lease on exact temporary shell endpoint"]
-    spawnlease -->|"Loss: instance-checked cancellation"| spawnstop
+    spawnlease -->|"Heartbeat loss: instance-checked cancellation"| spawnstop
+    localclient -.->|"Display only; never authorizes signaling"| relations["pstree owner context / attachment source"]
     localdaemon -->|"Authenticated startup; explicit resource grant"| localresource["Mount worker / daemon-owned forward SSH"]
     subgraph remote["Untrusted remote host"]
         program["Programs / shared shell daemon"]

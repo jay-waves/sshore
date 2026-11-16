@@ -15,6 +15,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	statefs "github.com/jay-waves/sshore/internal/state"
+	transportio "github.com/jay-waves/sshore/internal/transport"
 )
 
 const maxSetupDownload = 64 * 1024 * 1024
@@ -43,7 +46,7 @@ func fetchSetupBinary(ctx context.Context, client *http.Client, base, cache, rel
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
-	if err := privateState(dir, true); err != nil {
+	if err := statefs.Private(dir, true); err != nil {
 		return nil, err
 	}
 	name := "sshore_" + release + "_linux_amd64.tar.gz"
@@ -69,17 +72,17 @@ func fetchSetupBinary(ctx context.Context, client *http.Client, base, cache, rel
 	if err != nil {
 		return nil, err
 	}
-	if err = writeStateFile(archivePath, archive); err != nil {
+	if err = statefs.WriteFile(archivePath, archive); err != nil {
 		return nil, fmt.Errorf("cache release: %w", err)
 	}
-	if err = writeStateFile(manifestPath, manifest); err != nil {
+	if err = statefs.WriteFile(manifestPath, manifest); err != nil {
 		return nil, fmt.Errorf("cache checksums: %w", err)
 	}
 	return binary, nil
 }
 
 func readSetupCache(path string, limit int64) ([]byte, error) {
-	if err := privateState(path, false); err != nil {
+	if err := statefs.Private(path, false); err != nil {
 		return nil, err
 	}
 	f, err := os.Open(path)
@@ -192,7 +195,7 @@ func sendSetupBinary(w io.Writer, binary []byte) error {
 	if _, err := fmt.Fprintf(w, "%d %x\n", len(binary), sha256.Sum256(binary)); err != nil {
 		return err
 	}
-	return writeFull(w, binary)
+	return transportio.WriteFull(w, binary)
 }
 
 // Shell read and head consume exactly the header and file, leaving the same
@@ -209,7 +212,7 @@ func relaySetupBinary(dst io.Writer, src io.Reader) error {
 			continue
 		}
 		if string(header) == "0 -\n" {
-			return writeFull(dst, header)
+			return transportio.WriteFull(dst, header)
 		}
 		fields := strings.Fields(string(header))
 		if len(fields) != 2 {
@@ -220,7 +223,7 @@ func relaySetupBinary(dst io.Writer, src io.Reader) error {
 		if err != nil || size <= 0 || size > maxSetupDownload || hashErr != nil || len(digest) != sha256.Size {
 			break
 		}
-		if err := writeFull(dst, header); err != nil {
+		if err := transportio.WriteFull(dst, header); err != nil {
 			return err
 		}
 		_, err = io.CopyN(dst, src, size)

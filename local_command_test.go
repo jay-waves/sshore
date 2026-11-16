@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 func TestLocalShellListingBoundsUnresponsiveWorkers(t *testing.T) {
@@ -36,7 +38,7 @@ func TestLocalShellListingBoundsUnresponsiveWorkers(t *testing.T) {
 			t.Fatal(err)
 		}
 		record := localShellRecord{Name: name, Address: listener.Addr().String(), Token: resourceToken(), Version: version}
-		if err := writeStateJSON(path, record); err != nil {
+		if err := statefs.WriteJSON(path, record); err != nil {
 			t.Fatal(err)
 		}
 	}

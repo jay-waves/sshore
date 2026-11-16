@@ -21,6 +21,7 @@ import (
 	"github.com/xtaci/smux"
 
 	"github.com/jay-waves/sshore/internal/files"
+	transportio "github.com/jay-waves/sshore/internal/transport"
 )
 
 var testBuild struct {
@@ -150,7 +151,7 @@ func (e *testEnv) bridge(name string, modes ...string) *bridgeConn {
 			e.t.Fatalf("automatic setup: %+v", m)
 		}
 	}
-	mux, err := clientMux(&pipeTransport{Reader: out, Writer: in, Closers: []io.Closer{in, out}})
+	mux, err := clientMux(&transportio.Pipe{Reader: out, Writer: in, Closers: []io.Closer{in, out}})
 	if err != nil {
 		e.t.Fatal(err)
 	}

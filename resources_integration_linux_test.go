@@ -138,11 +138,15 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	// The independent watcher synchronizes only this resource to the peer list.
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		out, err = run("list")
-		if err != nil {
+		out, err = run("list", "--json")
+		if err != nil || json.Unmarshal([]byte(out), &snapshot) != nil {
 			t.Fatal(out, err)
 		}
-		if strings.Contains(out, "peer/") {
+		found := false
+		for _, peer := range snapshot.Peers {
+			found = found || strings.HasPrefix(peer.ID, "peer/") && strings.HasSuffix(peer.ID, "/forward/"+name)
+		}
+		if found {
 			break
 		}
 		if time.Now().After(deadline) {

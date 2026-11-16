@@ -2,13 +2,6 @@
 
 package files
 
-// gofs supplies handle sharing, directory buffers and native rename bookkeeping,
-// but its default SetBasicInfo rejects every request. This wrapper adds SFTP mtime,
-// atime and read-only mode updates. DOS archive/hidden/system flags and creation/
-// change times are not stored by SFTP v3; they remain synthetic, as with many
-// network mounts. Path tracking is serialized with local rename/close callbacks;
-// concurrent remote changes remain subject to ordinary SFTP path semantics.
-
 import (
 	"os"
 	"strings"
@@ -19,6 +12,13 @@ import (
 	"github.com/winfsp/go-winfsp"
 	"golang.org/x/sys/windows"
 )
+
+// gofs supplies handle sharing, directory buffers and native rename bookkeeping,
+// but its default SetBasicInfo rejects every request. This wrapper adds SFTP mtime,
+// atime and read-only mode updates. DOS archive/hidden/system flags and creation/
+// change times are not stored by SFTP v3; they remain synthetic, as with many
+// network mounts. Path tracking is serialized with local rename/close callbacks;
+// concurrent remote changes remain subject to ordinary SFTP path semantics.
 
 type ftpWindowsBehaviour interface {
 	winfsp.BehaviourBase
@@ -182,4 +182,24 @@ func (a *ftpWindowsAttributes) ReadDirectory(ref *winfsp.FileSystemRef, h uintpt
 func (a *ftpWindowsAttributes) GetFileInfo(ref *winfsp.FileSystemRef, h uintptr, info *winfsp.FSP_FSCTL_FILE_INFO) error {
 	defer a.backend.metrics.observe("GetFileInfo")()
 	return a.ftpWindowsBehaviour.GetFileInfo(ref, h, info)
+}
+
+func (a *ftpWindowsAttributes) GetVolumeInfo(ref *winfsp.FileSystemRef, info *winfsp.FSP_FSCTL_VOLUME_INFO) error {
+	s, err := ftpRemoteCapacity(a.backend.client, a.backend.root)
+	if err != nil {
+		return ftpWindowsError(err)
+	}
+	if err := a.ftpWindowsBehaviour.GetVolumeInfo(ref, info); err != nil {
+		return err
+	}
+	info.TotalSize = s.Blocks * s.Frsize
+	info.FreeSize = s.Bavail * s.Frsize
+	return nil
+}
+
+func (a *ftpWindowsAttributes) SetVolumeLabel(ref *winfsp.FileSystemRef, label string, info *winfsp.FSP_FSCTL_VOLUME_INFO) error {
+	if err := a.ftpWindowsBehaviour.SetVolumeLabel(ref, label, info); err != nil {
+		return err
+	}
+	return a.GetVolumeInfo(ref, info)
 }

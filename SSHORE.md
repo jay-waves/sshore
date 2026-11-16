@@ -13,22 +13,78 @@ and Windows on amd64 only. Mounts and independent forwards do not share a shell'
 
 | Area | Entry points and responsibility |
 | --- | --- |
-| CLI | `main.go`: executable entry point; `cli.go`: shared argument scanner, dispatch and session-management parsing; `cli_{shell,cp,mount,forward,endpoints,ssh}.go`: command grammars and SSH-only suffix; `cli_help.go`: command help |
-| Connection and setup | `client_transport.go`: local/SSH transport ownership; `client.go`: shared interactive loop; `remote_bootstrap.go` and `setup*.go`: shared remote preparation, downloads, update confirmation and recovery |
-| Shell | `internal/shell/`: attachment I/O, muting, input barriers, exit draining and detach protocol; root `launch_*_linux.go` / `session_*.go`: startup, daemon hosting, names and account policy; `server_linux.go`: internal command dispatch |
-| Wire protocol | `protocol.go`, `mux.go`: shell/application messages; `internal/transport/`: bounded frames, pipe ownership, smux tuning and SSH signal handling |
+| CLI | `main.go`: executable entry point; `cli.go`: shared argument scanner, dispatch and session-management parsing; `cli_{shell,cp,mount,forward,endpoints,ssh}.go`: command grammars and SSH-only suffix; `cli_shell.go` also coordinates shell command dispatch; `cli_help.go`: command help |
+| Connection and setup | `client_connection.go`: local/SSH connection ownership, session switching and reconnect fallback; `client.go`: shared interactive loop; `remote_bootstrap.go` and `setup*.go`: shared remote preparation, downloads, update confirmation and recovery |
+| Shell | `internal/shell/`: shell startup options/environment, attachment I/O, muting, input barriers, exit draining and detach protocol; root `launch_*_linux.go` / `session_*.go`: daemon hosting and account policy; `server_linux.go`: internal command dispatch |
+| Wire protocol | `protocol.go`, `mux.go`: shell/application messages; `internal/transport/`: bounded frames, pipe ownership, smux tuning, shared OpenSSH ownership/session/subsystem arguments, forwarding-option filtering and SSH signal handling |
 | Release version rules | Root `version.go`: exact matching and ordering of full releases; mount handshakes check equality locally |
 | Direct copy | `cp_command.go`: batch preflight, interaction and independent SFTP transport; `cli_cp.go`: cp grammar |
 | Approval | `internal/review/`: request/record models, operation validation, bounded storage, expiration and single-use claims; root `review*.go`: consent, connection policy and execution coordination |
-| File transfer | `internal/files/cp*.go`: regular-file validation, exact-size copies, verified uploads, no-clobber publication and restricted SFTP handlers |
-| Local daemon | `local_daemon*.go`, `local_*.go`: singleton startup, local shell/forward ownership and mount-worker supervision |
+| File transfer | `internal/files/cp*.go`: regular-file validation, local destination preflight, exact-size copies, verified uploads, no-clobber publication and restricted SFTP handlers |
+| Local daemon | `local_daemon.go`: singleton startup, request serving, forward ownership and mount-worker supervision; `local_command.go`: shell creation and command dispatch; `local_terminal.go` / `local_attach.go`: shell lifetime/management and attachment; `local_shell_registry.go`: private registration records and listener ownership |
 | Mux | `internal/tmux/`: exclusive ownership primitives, Linux PTY / Windows local ConPTY, input-mode tracking, native redraw and client console I/O |
-| Terminal presentation | `internal/termui/`: status formatting, line editing, local path parsing/completion and platform console support; root `local_input.go`: input ownership coordination |
+| Terminal presentation | `internal/termui/`: status formatting, line editing, local path parsing/completion and platform console support; root `cli_ui.go`: input ownership, selection and CLI display adapters |
 | Independent resources | `resource_runtime.go`, `resource_status.go`, `resources.go`: worker startup, private records, control and exit receipts |
-| Forward | Root `cli_forward.go` / `forward*.go`: command mapping, authorization and worker integration; `internal/forward/`: forward configuration, port rules, process execution, reconnects, heartbeats and bounded diagnostics |
+| Forward | Root `cli_forward.go` / `forward*.go`: command mapping, authorization and worker integration; `internal/forward/`: transport-only forward configuration/validation, SSH mapping arguments, foreground/background process execution, reconnects, heartbeats and bounded diagnostics |
 | Mount | `internal/files/mount*.go`: mount lifecycle, SFTP adapter/limits, caches, notifications, capacity, statistics and FUSE/WinFsp; root `mount*.go`: CLI, paths and worker integration |
-| Inventory | `inventory*.go`, `list*.go`: status views, tables and stable numeric IDs; `peers*.go`: advisory peer records and synchronization |
+| Private state | `internal/state/`: state-root directories, complete-write publication and platform privacy checks/ACLs; callers retain record schemas, name/version policy and lifecycle locks |
+| Object names | `object_names*.go`: shared name validation, allocation, reservation and platform locks for shells, resources and reviews |
+| Inventory | `inventory*.go`, `list*.go`: status views, lifetime policies, tables and stable numeric IDs; `pstree.go` / `pstree_state.go`: display-only ownership contexts, attachment sources and bounded snapshots; `peers*.go`: advisory peer records and synchronization |
 | Distribution | `install.sh`, `install.ps1`, `scripts/package.py`, `scripts/release.sh`, `.github/workflows/`: installation, packaging, CI and releases |
+
+Forward's application record retains names, server selection and approval shell/PID/ID;
+`internal/forward.Config` contains only transport settings. The application supplies
+an opaque remote helper command, streams, authentication environment and resource
+callbacks; it owns source-shell checks and exact release policy. The engine owns
+forward mapping, retry authentication restrictions and process execution. Shared
+OpenSSH ownership and filtering live in `internal/transport` because copy, mount,
+recent connections and peer synchronization also use them.
+
+Application transport callers use `internal/transport` directly rather than
+local aliases for pipes, mux defaults or full writes. Shell executable selection
+returns only the path; startup argument policy stays in `internal/shell`.
+Forward retry parsing and validation share one range rule in `internal/forward`;
+the CLI preserves usage-error classification. A forward attempt captures one
+authentication environment for both executable selection and execution. Its
+heartbeat factory remains per-attempt: it runs after readiness and creates a new
+peer identity on reconnect. The application encodes a complete record once;
+`internal/forward` receives bytes and an error, owns only transmission, and joins
+the heartbeat writer after cancellation/pipe closure before returning. Process
+completion is published by closing a done channel; all return paths wait for it.
+The resource stop watcher is also cancelled and joined before acknowledging stop,
+so an acknowledgement cannot race ahead of watcher or transport teardown.
+
+Copy/review CLI code delegates destination preflight to `internal/files` while
+retaining prompts and consent. Preflight creates nothing; the transfer mechanism
+still enforces no-clobber publication. Mount keeps versioned agent command/setup
+selection in the application and delegates SSH session/subsystem arguments to
+`internal/transport`. Shell account validation and resource coordination remain
+in the root because they cross module lifecycle boundaries.
+
+Business code calls `internal/state` directly through `Dir`, `Private`,
+`WriteJSON` and `WriteFile`; the package depends only on shared byte writing,
+not shell, review or resource models. It preserves the existing Unix ownership
+checks and Windows DACL behavior. Approval exclusive creation and file-transfer
+no-clobber publication remain with their owning modules; atomic state replacement
+does not replace their policies. Record freshness, capability validation and
+cross-record locking remain application responsibilities.
+
+Files group complete responsibilities rather than individual helpers. Command
+coordination stays in the root; terminal mechanisms stay in `internal/tmux`,
+attachment I/O and startup policy in `internal/shell`, presentation primitives in
+`internal/termui`, and framing in `internal/transport`. Within `internal/tmux`,
+`console.go` groups portable console stream codecs and boundary cleanup;
+`console_*` and `keyboard_*` keep platform adapters separate. Native terminal
+resize/redraw belongs with each `terminal_*` implementation. Startup regressions
+are grouped in `shell_startup_integration_linux_test.go` and
+`internal/shell/startup*_test.go`. Mount tests group metadata consistency,
+directory prefetch, and platform filesystem behavior rather than individual
+callbacks. SFTP request bounds and timeout supervision share `sftp.go`;
+platform mount capability/capacity callbacks live with their filesystem adapters.
+`internal/review/review.go` owns the bounded request-record lifecycle;
+`internal/termui/input.go` owns path input and completion, and `log.go` owns
+presentation formatting. Platform and test build constraints remain separate
+even when a file is small.
 
 The root `main` package owns command routing, product policy and lifecycle
 coordination. CLI dispatch and release/update policy remain in the root program. Product options are scanned in one place: valued options accept either
@@ -141,7 +197,7 @@ file after startup, and all later ioctls use SyscallConn instead of Fd so resize
 and redraw cannot silently disable cancellation. Linux reaps the shell independently
 of PTY output and ends output draining one second after shell exit, so a descendant
 retaining the slave cannot keep a finished shell session alive.
-`mux_connection.go` adapts application handshake metadata to `internal/shell`,
+`mux.go` adapts application handshake metadata to `internal/shell`,
 which owns serialized attachment writes, input barriers, bounded exit draining
 and detach confirmation for local and remote shells. `internal/tmux` owns
 exclusive ownership primitives and platform input cancellation. Local record and
@@ -226,6 +282,27 @@ uses a new SSH transport and may require authentication again. Bytes trailing a
 session command in the same input read are discarded, avoiding accidental input
 to a different session; input during target lookup is also discarded.
 
+New Linux launch/spawn shells use login and interactive startup (`-l -i`) for
+bash, zsh, fish, sh, dash, ash and ksh. Unknown executable names require
+`--no-login`, which retains ordinary `-i` startup. Windows keeps normal startup
+and rejects `--no-login`. PowerShell support targets Windows; Windows shells are
+local-only.
+
+`--no-profile` selects non-login interactive startup on Linux: Bash receives
+`--noprofile --norc -i`, Zsh `-f -i`, Fish `--no-config -i`, and sh `-i` with
+`ENV` removed from the child environment. Windows PowerShell receives `-NoProfile`
+and CMD `/D`; no banner-suppression option is added. Other shell names reject
+`--no-profile`. The supported sh contract is non-login startup plus disabling its
+ENV hook; implementations may differ. Zsh's system zshenv still runs, and inherited
+variables (including PATH and application identity) remain. This is startup-file
+suppression, not an isolated environment or a security boundary.
+
+Creation-only options travel in the initial attachment request and are rejected
+on an existing shell. Switching to an existing shell never reruns startup files;
+Ctrl+B c inherits the current client's startup preference. Recovery retains its
+ordinary interactive startup. Shells own profile selection and failures; sshore
+neither sources profiles nor retries failed startup as a different mode.
+
 This initial input path handles conventional VT control bytes; enhanced keyboard
 protocol encodings are passed through rather than interpreted as shortcuts.
 
@@ -288,14 +365,75 @@ readline to redisplay even at unchanged terminal size; no input is injected and
 unsubmitted commands remain unsubmitted. Other foreground applications receive
 SIGWINCH. Restoration checks the current size to avoid overwriting another resize.
 The bounded input-mode observer restores mouse reporting, focus reporting (1004)
-and bracketed paste (2004), including private-mode saved values, after detach or
+bracketed paste (2004), color-scheme (2031), visibility (2033), in-band size
+reports (2048), and application cursor keys (DECCKM, mode 1), including
+private-mode saved values, after detach or
 muted output. It observes control sequences across read boundaries and ignores
 OSC/DCS payloads. In ground state it scans directly to ESC, skipping ordinary
 text without per-byte mode dispatch; partial sequences keep their parser state
-across reads. Keyboard protocol stacks, screen state and scrollback are not
+across reads. Traditional application keypad mode (`ESC =` / `ESC >`) is also
+tracked; connection cleanup returns cursor keys and keypad to normal mode.
+These basic key modes follow `DECCKM`, `DECKPAM` and `DECKPNM` in
+[tmux input.c](https://github.com/tmux/tmux/blob/master/input.c).
+Enhanced keyboard protocol stacks, screen state and scrollback are not
 reconstructed. This follows the separation of input-mode state from screen state
 in [tmux input.c](https://github.com/tmux/tmux/blob/master/input.c).
+The supported interactive editors are GNU readline in bash, ZLE in zsh,
+fish's editor, PSReadLine in Windows pwsh, and the Windows console editor in cmd.
+The persistent shell/console owns the edit buffer, cursor, history and undo state;
+sshore does not serialize or reconstruct these editor internals. Redraw does not
+inject Ctrl+L, Enter or editor-specific commands. Linux PTY regressions exercise
+unsubmitted input, insertion at a retained cursor position, and prompt redisplay
+in bash, zsh and fish. These checks do not establish complete multiline, vi-mode,
+completion-menu or custom prompt/plugin rendering compatibility.
+
+Linux job control remains owned by the controlling PTY and shell: Ctrl+Z, bg,
+fg and Ctrl+C are covered across detach/reattach for bash, zsh and fish. Tests
+wait for the job's actual foreground process group before sending interrupts.
+Windows local mux retains the same ConPTY and shell process on detach; pwsh
+with PSReadLine and cmd use native console editing and interrupt semantics.
+Unix suspend/fg/bg behavior is not added to Windows, and PowerShell jobs are
+managed by PowerShell. ConPTY redraw temporarily changes width; cached dimensions
+track a failed restoration so a later resize can retry. Windows coverage for this
+review is static inspection and amd64 compilation, not interactive execution.
+Native validation must still cover pending input and cursor retention, prompt
+redisplay and Ctrl+C with PSReadLine loaded and with cmd. Windows remote shell
+hosting remains outside scope.
+
 Terminal mode restoration and application redraw remain best effort. See [termination guarantees](SECURITY.md#files-and-forwarding).
+
+Attachment also preserves an open control-string introducer and pending ST escape
+without buffering its payload, so the remaining opaque bytes cannot become new
+input-mode commands. This preserves parser context, not the original OSC/DCS
+operation or its discarded contents. Windows' nested Win32-mode filter recognizes
+embedded C0 controls and DEL in CSI parameters, retaining those controls while
+removing mode 9001.
+
+Focused parser regressions use every attachment cut point and bytewise output.
+The reference
+cases are Zellij's fragmented OSC/CSI and embedded-paste tests in
+[stdin_ansi_parser_tests.rs](https://github.com/zellij-org/zellij/blob/main/zellij-client/src/stdin_ansi_parser_tests.rs)
+and psmux's
+[missing paste terminator test](https://github.com/psmux/psmux/blob/master/tests/test_vt_paste_missing_close.ps1).
+Here paste bytes are streamed with bounded delimiter state; a missing terminator
+keeps shortcuts disabled until the closing marker rather than applying a timeout
+which could execute pasted Ctrl+B commands.
+The same completed-marker boundary is covered by
+[tmux's paste regression](https://github.com/tmux/tmux/blob/master/regress/tty-keys-paste.sh):
+a preceding Escape stays literal, paste contents bypass bindings, and the first
+key after the completed end marker uses bindings again.
+
+At connection boundaries, console cleanup cancels incomplete control sequences,
+ends synchronized output (2026), closes OSC 8 hyperlinks, resets text style and
+shows the cursor before returning to local prompts, in addition to disabling
+mouse, focus, paste, color-scheme, visibility and in-band size reporting.
+The additional report modes follow [Ghostty modes](https://github.com/ghostty-org/ghostty/blob/542611b3db75d320907ed09fac9a61b572ca86d9/src/terminal/modes.zig);
+these subscriptions must not outlive the attached application. This follows the explicit prompt teardown in
+[Zellij's client](https://github.com/zellij-org/zellij/blob/main/zellij-client/src/lib.rs)
+and [psmux's scrollback client](https://github.com/psmux/psmux/blob/master/src/scrollback.rs).
+Unlike their screen renderers, this byte transport does not generate synchronized
+frames or restore alternate screens it does not own. Unsupported cleanup modes
+remain terminal-dependent; redirected output and Unix `TERM=dumb` receive none.
 
 The full release version is the compatibility identifier at setup and handshake.
 There is no separate sshore protocol counter. Running daemons are replaced through
@@ -432,6 +570,8 @@ launching client handles SSH askpass and setup choices before entering raw mode.
 The remote bridge first claims an exclusive lifetime connection to the exact
 new temporary shell endpoint, then serves a bounded outer smux transport. The
 initial attachment uses one inner stream; detaching closes only that stream.
+The outer smux heartbeat continues in the background (10-second interval,
+60-second receive timeout); it is independent of subsequent attachments.
 Later attachments use the usual SSH route. The original connection remains
 until owner exit, remote shell exit or transport loss. Closing its lease invokes
 normal instance-checked shell cancellation. Keepalive detection bounds silent
@@ -763,9 +903,7 @@ Its `extended` option adds race detection, installer checks and Linux SSH
 integration. Build validation remains in release CI; do not repeat full checks
 after a successful run unless further changes warrant it.
 
-`experiments/vt10x` is an isolated module probing a possible terminal observer.
-Its compatibility failures represent unmet requirements, not product regressions;
-it is excluded from the root module and release builds. The local SFTP concurrency
+The local SFTP concurrency
 benchmark in `sftp_benchmark_test.go` is an in-process baseline, not WAN performance
 evidence. Do not tune production defaults from that result alone.
 
@@ -805,3 +943,36 @@ Peer mirrors retain read-only and uncertain states; verbose output adds full
 identifiers and descriptions. Locally inspected resources carry a presentation-only
 origin marker to distinguish them in mixed connection inventories. JSON identities
 and numeric IDs remain unchanged.
+
+### Shell ownership and attachment sources
+
+`pstree.go` owns shell relationship rendering and inventory reconciliation;
+`pstree_state.go` owns bounded, private display snapshots. Attach handshakes
+carry up to 64 nodes identified by immutable shell identities, never by host
+labels or PIDs. Initial startup fixes the lifetime policy and, for spawns,
+the owner context. Detach and reattachment preserve these fields. The attachment
+source changes on attach and clears on detach; it never transfers ownership.
+The original owner context remains available after attachment elsewhere.
+
+Tree branches represent spawn owner contexts. Persistent launches are roots,
+even when entered from another managed shell; an `attach via` annotation shows
+that interaction separately. Unknown/external owners remain at root. The OS
+parent PID may belong to a wrapper rather than the displayed managed context.
+These snapshots never participate in authorization or process signaling.
+Shells inherit only their own lookup identity, so subsequent commands read
+updated relationships. Cross-host snapshots are cached observations; live
+inventory refreshes shell state by instance identity without duplicating nodes.
+It does not verify relationship metadata. Rendering guards cycles, and bounded
+snapshot validation rejects duplicate/self identities and oversized fields.
+
+`list` shows a LIFETIME column (also `lifetime` in shell JSON): `parent`,
+`heartbeat`, or `persistent`. This describes startup policy, not heartbeat
+health. A detached remote spawn still has its independent lifetime connection;
+a persistent launch requires no client heartbeat. The OS process tree in
+`list --verbose` remains actual same-user process ancestry, separate from
+`pstree`'s managed shell relationships.
+
+`sshore pstree HOST` queries that account's known tree through the existing exact
+release inventory endpoint. Colors use the terminal palette and respect
+redirection, `NO_COLOR` and `TERM=dumb`. The current node has a textual marker
+as well as color. Display labels are sanitized before terminal output.

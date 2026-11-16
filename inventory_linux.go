@@ -15,6 +15,7 @@ import (
 func localSessionInventory(details ...bool) (inventory, error) {
 	detailed := len(details) > 0 && details[0]
 	inv := emptyInventory()
+	inv.ShellTree = knownShellTrees()
 	dir, e := runtimeDir()
 	if e != nil {
 		return inv, e
@@ -79,7 +80,7 @@ func localSessionInventory(details ...bool) (inventory, error) {
 		if m.Attached {
 			state = "attached"
 		}
-		inv.Shells = append(inv.Shells, shellView{Temporary: m.Temporary, Instance: m.Instance, ID: shellTaskName(cleanText(m.Name), m.Temporary), Name: cleanText(m.Name), State: state, PID: m.PID, Age: m.AgeSeconds, Foreground: cleanText(m.Foreground), Directory: cleanText(m.Directory)})
+		inv.Shells = append(inv.Shells, shellView{Lifetime: shellLifetime(m.Temporary, true), Temporary: m.Temporary, Instance: m.Instance, ID: shellTaskName(cleanText(m.Name), m.Temporary), Name: cleanText(m.Name), State: state, PID: m.PID, Age: m.AgeSeconds, Foreground: cleanText(m.Foreground), Directory: cleanText(m.Directory)})
 		if detailed {
 			inv.Shells[len(inv.Shells)-1].ProcessTree = sessionProcessTree("/proc", m.PID)
 		}

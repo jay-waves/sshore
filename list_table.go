@@ -12,8 +12,8 @@ import (
 )
 
 type taskTableRow struct {
-	id                                 uint64
-	task, owner, target, state, detail string
+	id                                           uint64
+	task, owner, target, state, detail, lifetime string
 }
 
 func printTaskInventory(inv inventory, details bool) {
@@ -28,7 +28,7 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 		if currentLocal != "" && s.identity == currentLocal && state == "attached" {
 			state += " (current)"
 		}
-		rows = append(rows, taskTableRow{s.ID, shellTaskName(s.Name, s.Temporary), "local", "-", state, s.Directory})
+		rows = append(rows, taskTableRow{s.ID, shellTaskName(s.Name, s.Temporary), "local", "-", state, s.Directory, shellLifetime(s.Temporary, false)})
 	}
 	for _, s := range inv.Shells {
 		if s.State == "renamed" {
@@ -46,7 +46,7 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 		if s.Historical && !s.ConfirmedAt.IsZero() {
 			detail = "confirmed " + time.Since(s.ConfirmedAt).Round(time.Second).String() + " ago"
 		}
-		rows = append(rows, taskTableRow{s.TaskID, shellTaskName(s.Name, s.Temporary), host, "-", state, detail})
+		rows = append(rows, taskTableRow{s.TaskID, shellTaskName(s.Name, s.Temporary), host, "-", state, detail, shellLifetime(s.Temporary, true)})
 	}
 	for _, r := range inv.Resources {
 		host := r.Host
@@ -57,7 +57,7 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 		if inv.RemoteQueried && !r.local {
 			owner = inv.Host
 		}
-		rows = append(rows, taskTableRow{r.TaskID, r.ID, owner, host, r.Worker, r.Detail})
+		rows = append(rows, taskTableRow{r.TaskID, r.ID, owner, host, r.Worker, r.Detail, "-"})
 	}
 	for _, p := range inv.Peers {
 		name := p.ID
@@ -70,7 +70,7 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 		if target == "" {
 			target = "local"
 		}
-		rows = append(rows, taskTableRow{p.TaskID, name, p.Manager, target, p.State + " (read-only)", p.Detail})
+		rows = append(rows, taskTableRow{p.TaskID, name, p.Manager, target, p.State + " (read-only)", p.Detail, "-"})
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].owner != rows[j].owner {
@@ -108,7 +108,7 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 		}
 		fmt.Fprintf(out, "HOST · %s\n", cleanText(host))
 		w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		fmt.Fprint(w, "ID\tSESSION\tREMOTE\tSTATE")
+		fmt.Fprint(w, "ID\tSESSION\tREMOTE\tSTATE\tLIFETIME")
 		if details {
 			fmt.Fprint(w, "\tDETAIL")
 		}
@@ -118,7 +118,7 @@ func writeTaskInventory(out io.Writer, inv inventory, details bool) {
 			if r.id != 0 {
 				id = strconv.FormatUint(r.id, 10)
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s", id, cleanText(r.task), cleanText(r.target), cleanText(r.state))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s", id, cleanText(r.task), cleanText(r.target), cleanText(r.state), r.lifetime)
 			if details {
 				fmt.Fprintf(w, "\t%s", cleanText(r.detail))
 			}

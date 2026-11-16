@@ -6,12 +6,12 @@ import (
 	"github.com/jay-waves/sshore/internal/tmux"
 )
 
-func localShellCommand(env []string) (string, []string) {
+func localShellPath(env []string) string {
 	path := localEnvironmentValue(env, "SHELL")
 	if path == "" {
 		path = "/bin/sh"
 	}
-	return path, []string{"-i"}
+	return path
 }
 
 func redrawLocalTerminal(t *tmux.Terminal) { tmux.RequestRedraw(t, t.PID()) }

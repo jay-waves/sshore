@@ -29,6 +29,7 @@ import (
 	"github.com/jay-waves/sshore/internal/shell"
 	"github.com/jay-waves/sshore/internal/termui"
 	"github.com/jay-waves/sshore/internal/tmux"
+	transportio "github.com/jay-waves/sshore/internal/transport"
 )
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
@@ -125,7 +126,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	if len(o.approved) > 0 {
 		action = "approved"
 	}
-	if err = streamMessage(control, message{Type: "attach", Instance: o.instance, Action: action, PID: o.resumePID, Cols: uint16(cols), Rows: uint16(rows), Term: termName, ApprovalID: o.approvalID}); err != nil {
+	if err = streamMessage(control, message{Type: "attach", Tree: currentShellTree(), Instance: o.instance, Action: action, PID: o.resumePID, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && (o.command == "launch" || o.command == "spawn") && !o.plain, NoLogin: o.noLogin && (o.command == "launch" || o.command == "spawn") && !o.plain, ApprovalID: o.approvalID}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -145,6 +146,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	if len(o.approved) > 0 && m.PID != o.resumePID {
 		return 1, fmt.Errorf("remote shell changed; request again")
 	}
+	rememberShellTree(m.Tree)
 	o.instance = m.Instance
 	o.temporary = m.Temporary
 	connection, cacheErr := trackShellConnection(o)
@@ -648,7 +650,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					if detaching {
 						continue
 					}
-					if err = writeFull(terminalOutput, e.m.Data); err != nil {
+					if err = transportio.WriteFull(terminalOutput, e.m.Data); err != nil {
 						return 1, err
 					}
 					outputMouse.Observe(e.m.Data)

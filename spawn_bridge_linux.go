@@ -2,12 +2,15 @@ package main
 
 import (
 	"fmt"
-	"github.com/xtaci/smux"
 	"io"
 	"net"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/xtaci/smux"
+
+	transportio "github.com/jay-waves/sshore/internal/transport"
 )
 
 // The original SSH connection is the lifetime lease; individual attachments
@@ -26,7 +29,7 @@ func bridgeSpawn(path string, lease net.Conn, readyMode string) error {
 	if err = writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
 		return err
 	}
-	transport := &pipeTransport{Reader: os.Stdin, Writer: os.Stdout}
+	transport := &transportio.Pipe{Reader: os.Stdin, Writer: os.Stdout}
 	first, err := readMessage(transport)
 	if err != nil {
 		return err
@@ -37,7 +40,7 @@ func bridgeSpawn(path string, lease net.Conn, readyMode string) error {
 	if err = writeMessage(transport, message{Type: "mux_ready", SoftwareVersion: version}); err != nil {
 		return err
 	}
-	mx, err := smux.Server(transport, muxConfig())
+	mx, err := smux.Server(transport, transportio.MuxConfig())
 	if err != nil {
 		return err
 	}

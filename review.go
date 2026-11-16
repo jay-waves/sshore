@@ -23,6 +23,7 @@ import (
 	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/forward"
 	"github.com/jay-waves/sshore/internal/review"
+	statefs "github.com/jay-waves/sshore/internal/state"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -70,7 +71,7 @@ func findApproval(dir, ref string) (approvalRecord, error) {
 	return *found, nil
 }
 
-func approvalDir() (string, error) { return stateDir("approvals") }
+func approvalDir() (string, error) { return statefs.Dir("approvals") }
 
 func validApprovalID(id string) bool { return review.ValidID(id) }
 
@@ -109,7 +110,7 @@ func writeApproval(o options, ops []operation) (string, error) {
 	return id, nil
 }
 func approvalStore(dir string) review.Store {
-	return review.Store{Directory: dir, Version: version, Private: privateState, Validate: validateApprovalRecord}
+	return review.Store{Directory: dir, Version: version, Private: statefs.Private, Validate: validateApprovalRecord}
 }
 func validateApprovalRecord(r approvalRecord) error {
 	if r.Name != "" && validSession(r.Name) != nil {
@@ -218,7 +219,7 @@ func runReview(args []string) (code int, resultErr error) {
 			}
 			termui.Log(os.Stdout, termui.Info, "Download %s · %s\n", cleanText(op.Path), displayBytes(op.Size))
 			path, e := readApprovalPath(input, fmt.Sprintf("Save as [%s] (Tab; Enter accepts): ", cleanText(dest)), dest, func(path string) (string, error) {
-				return downloadDestination(path, op.Name)
+				return files.DownloadDestination(path, op.Name)
 			})
 			if e != nil {
 				return 1, e

@@ -9,10 +9,10 @@ import (
 	"time"
 )
 
-func approvedTestAttach(t *testing.T, e *testEnv, name string, pid int) *bridgeConn {
+func approvedTestAttach(t *testing.T, e *testEnv, name string, pid int, tree ...shellTreeNode) *bridgeConn {
 	t.Helper()
 	b := e.bridge(name)
-	sendTest(t, b.in, message{Type: "attach", Action: "approved", PID: pid, Term: "xterm", Cols: 80, Rows: 24})
+	sendTest(t, b.in, message{Type: "attach", Tree: tree, Action: "approved", PID: pid, Term: "xterm", Cols: 80, Rows: 24})
 	if m := recv(t, b.out); m.Type != "ready" {
 		t.Fatal(m)
 	}
@@ -38,6 +38,7 @@ func resumeTestOutput(t *testing.T, b *bridgeConn) {
 func expectTerminalText(t *testing.T, b *bridgeConn, marker string) string {
 	t.Helper()
 	var output strings.Builder
+	answeredDA, answeredCPR := 0, 0
 	_ = b.tty.SetReadDeadline(time.Now().Add(10 * time.Second))
 	defer b.tty.SetReadDeadline(time.Time{})
 	for i := 0; i < 100; i++ {
@@ -45,11 +46,22 @@ func expectTerminalText(t *testing.T, b *bridgeConn, marker string) string {
 		if err != nil {
 			t.Fatalf("waiting for %q: %v; output=%q", marker, err, output.String())
 		}
+		if m.Type == "exit" && marker == "" {
+			return output.String()
+		}
 		if m.Type != "output" {
 			t.Fatalf("expected %q, got %+v", marker, m)
 		}
 		output.Write(m.Data)
-		if strings.Contains(output.String(), marker) {
+		// Emulate the basic xterm replies fish uses as input barriers.
+		all := output.String()
+		for n := strings.Count(all, "\x1b[0c"); answeredDA < n; answeredDA++ {
+			sendTest(t, b.tty, message{Type: "input", Data: []byte("\x1b[?1;2c")})
+		}
+		for n := strings.Count(all, "\x1b[6n"); answeredCPR < n; answeredCPR++ {
+			sendTest(t, b.tty, message{Type: "input", Data: []byte("\x1b[1;1R")})
+		}
+		if marker != "" && strings.Contains(output.String(), marker) {
 			return output.String()
 		}
 	}
@@ -80,7 +92,7 @@ func TestReconnectRestoresMouseAndRedrawsForegroundJob(t *testing.T) {
 	sendTest(t, b.tty, message{Type: "input", Data: []byte{3}})
 	shellOutput(t, b, "printf 'SHELL-%s' ready", "SHELL-ready")
 	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-	untilType(t, b.tty, "exit")
+	expectTerminalText(t, b, "")
 }
 
 func assertMouseReplay(t *testing.T, m message, enabled bool) {
@@ -106,6 +118,9 @@ func TestReconnectRedrawsBashWithoutExecutingInput(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".bashrc"), []byte("PS1='READY-PROMPT> '\nHISTFILE=/dev/null\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(home, ".bash_profile"), []byte("printf x >> ~/.startup-count\n. ~/.bashrc\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	e.env = append(e.env, "SHELL="+bash, "HOME="+home)
 	b, _ := e.attach("bashprompt")
 	expectTerminalText(t, b, "READY-PROMPT> ")
@@ -116,12 +131,143 @@ func TestReconnectRedrawsBashWithoutExecutingInput(t *testing.T) {
 	detachTestClient(t, b)
 	b, _ = e.attach("bashprompt")
 	expectTerminalText(t, b, "READY-PROMPT> ")
+	if data, err := os.ReadFile(filepath.Join(home, ".startup-count")); err != nil || string(data) != "x" {
+		t.Fatalf("startup rerun: %q %v", data, err)
+	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("reattach executed pending input: %v", err)
 	}
 	sendTest(t, b.tty, message{Type: "input", Data: []byte{21}})
+	// Keep the cursor inside the argument across reattachment. Inserting at
+	// the restored position proves buffer and cursor preservation together.
+	sendTest(t, b.tty, message{Type: "input", Data: []byte("printf 'EDIT-%s\\n' ac\x1b[D")})
+	expectTerminalText(t, b, "printf ")
+	detachTestClient(t, b)
+	b, _ = e.attach("bashprompt")
+	expectTerminalText(t, b, "READY-PROMPT> ")
+	sendTest(t, b.tty, message{Type: "input", Data: []byte("b\n")})
+	expectTerminalText(t, b, "EDIT-abc")
 	shellOutput(t, b, "printf 'BASH-%s' alive", "BASH-alive")
 	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-	untilType(t, b.tty, "exit")
+	expectTerminalText(t, b, "")
 	b.close()
+}
+
+func TestReconnectPreservesStoppedJob(t *testing.T) {
+	for _, name := range []string{"bash", "zsh", "fish"} {
+		t.Run(name, func(t *testing.T) {
+			path, err := exec.LookPath(name)
+			if err != nil {
+				t.Skip(name + " is unavailable")
+			}
+			stopped, running := "Stopped", "Running"
+			if name == "zsh" {
+				stopped, running = "suspended", "running"
+			}
+			if name == "fish" {
+				stopped, running = "stopped", "running"
+			}
+			e := newEnv(t)
+			home := t.TempDir()
+			if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("PROMPT='JOB-PROMPT> '\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			e.env = append(e.env, "SHELL="+path, "HOME="+home, "ZDOTDIR="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"))
+			b, _ := e.attach("jobcontrol")
+			pidFile := filepath.Join(home, "job-pid")
+			responsiveShellOutput(t, b, "sh -c "+shellQuote("echo $$ > "+shellQuote(pidFile)+"; printf 'JOB-%s\\n' started; exec sleep 120"), "JOB-started")
+			sendTest(t, b.tty, message{Type: "input", Data: []byte{26}})
+			expectTerminalText(t, b, stopped)
+			if name == "fish" {
+				expectTerminalText(t, b, "\x1b]133;B")
+			}
+			detachTestClient(t, b)
+			b, _ = e.attach("jobcontrol")
+			responsiveShellOutput(t, b, "jobs -l", stopped)
+			// A stopped job must remain resumable in the background and foreground.
+			responsiveShellOutput(t, b, "bg; jobs", running)
+			sendTest(t, b.tty, message{Type: "input", Data: []byte("fg\n")})
+			expectTerminalText(t, b, "fg")
+			jobPID, err := os.ReadFile(pidFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				data, err := os.ReadFile("/proc/" + strings.TrimSpace(string(jobPID)) + "/stat")
+				if err != nil {
+					t.Fatal(err)
+				}
+				fields := strings.Fields(string(data)[strings.LastIndex(string(data), ")")+1:])
+				if len(fields) > 5 && fields[2] == fields[5] {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("job did not regain foreground: %s", data)
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			sendTest(t, b.tty, message{Type: "input", Data: []byte{3}})
+			if name == "fish" {
+				expectTerminalText(t, b, "\x1b]133;B")
+			}
+			responsiveShellOutput(t, b, "printf 'CONTROL-%s' restored", "CONTROL-restored")
+			sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
+			expectTerminalText(t, b, "")
+			b.close()
+		})
+	}
+}
+
+func TestReconnectPreservesShellEditor(t *testing.T) {
+	for _, name := range []string{"zsh", "fish"} {
+		t.Run(name, func(t *testing.T) {
+			path, err := exec.LookPath(name)
+			if err != nil {
+				t.Skip(name + " is unavailable")
+			}
+			e := newEnv(t)
+			home := t.TempDir()
+			config := filepath.Join(home, ".zshrc")
+			content := "PROMPT='EDITOR-READY> '\nRPROMPT=''\nbindkey -e\n"
+			if name == "fish" {
+				config = filepath.Join(home, ".config", "fish", "config.fish")
+				content = "set -g fish_greeting\nfunction fish_prompt; printf 'EDITOR-READY> '; end\nfunction fish_right_prompt; end\n"
+			}
+			if err := os.MkdirAll(filepath.Dir(config), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(config, []byte(content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			e.env = append(e.env, "SHELL="+path, "HOME="+home, "ZDOTDIR="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"))
+			b, _ := e.attach("editor")
+			expectTerminalText(t, b, "EDITOR-READY> ")
+			marker := filepath.Join(home, "submitted")
+			sendTest(t, b.tty, message{Type: "input", Data: []byte("printf '%s' ac > " + shellQuote(marker) + "; printf 'DONE-%s\\n' ready")})
+			expectTerminalText(t, b, "printf")
+			// Move to the beginning and then into the two-character argument.
+			sendTest(t, b.tty, message{Type: "input", Data: []byte("\x01" + strings.Repeat("\x1b[C", len("printf '%s' a")))})
+			detachTestClient(t, b)
+			b, _ = e.attach("editor")
+			expectTerminalText(t, b, "EDITOR-READY> ")
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("pending command executed: %v", err)
+			}
+			sendTest(t, b.tty, message{Type: "input", Data: []byte("b\n")})
+			expectTerminalText(t, b, "DONE-ready")
+			if data, err := os.ReadFile(marker); err != nil || string(data) != "abc" {
+				t.Fatalf("editor state lost: %q, %v", data, err)
+			}
+			sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
+			expectTerminalText(t, b, "")
+			b.close()
+		})
+	}
+}
+
+func responsiveShellOutput(t *testing.T, b *bridgeConn, command, marker string) string {
+	t.Helper()
+	sendTest(t, b.tty, message{Type: "input", Data: []byte(command + "\n")})
+	return expectTerminalText(t, b, marker)
 }

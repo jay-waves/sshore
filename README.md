@@ -70,101 +70,96 @@ There is no offline editing, conflict detection or write retry; interrupted writ
 may leave partial remote files. Directory and attribute caching can briefly delay
 visibility of remote changes. See `sshore mount --help` for timeouts and diagnostics.
 
-## Mux — detach and reattach
+Use `sshore pstree` to view spawn ownership and attachment sources.
+Cross-host relationships are cached observations; see `sshore pstree --help`.
 
-Run `sshore launch` for a local shell, or `sshore launch HOST` for a remote shell.
-Local shells share a user-level daemon, use Linux PTY or Windows ConPTY, and need no SSH server. The same daemon owns forward SSH connections and launches independent mount workers.
-Detach while programs keep running, then reattach
-to continue. Press Ctrl+B then d, or run `sshore detach` in the
-remote shell. Ctrl+B then c creates a session; n/p cycles, l returns to the
-previous session, and s opens the session chooser. Ctrl+B then ? shows keys;
-see `sshore --help`. Switching preserves the previous session; remote switching reconnects SSH;
-authentication may be requested again.
+## Shell × terminal compatibility
+
+Supported shell targets: bash (GNU readline), sh, zsh and fish on Linux; pwsh with PSReadLine and cmd on Windows.
+The table describes supported connection paths, **not a fully tested matrix**.
+**L** = Linux local or remote, **R** = remote Linux over SSH, **W** = Windows local;
+**—** = outside scope. Every terminal/shell pairing below still needs dedicated
+interactive validation. Terminal columns refer only to Linux/Windows amd64 builds.
+
+| Shell | Ghostty (Linux) | Alacritty (Linux / Windows) | Windows Terminal | WezTerm (Linux / Windows) | xterm (Linux) | GNOME Terminal (Linux) | Existing shell evidence |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| bash | L | L / R | R | L / R | L | L | Linux startup-file and reconnect regressions |
+| sh | L | L / R | R | L / R | L | L | Linux PTY/lifecycle tests; actual sh implementation matters |
+| zsh | L | L / R | R | L / R | L | L | Linux reconnect editor and job-control regressions |
+| fish | L | L / R | R | L / R | L | L | Linux reconnect editor and job-control regressions |
+| pwsh | — | — / W | W | — / W | — | — | Static ConPTY/input review; native Windows checks pending |
+| cmd | — | — / W | W | — / W | — | — | ConPTY lifecycle test coverage; pairing checks pending |
+
+Alacritty and Windows Terminal have positive user reports, without a recorded
+per-shell matrix. Ghostty has a source-level review; its headless interactive
+probe did not complete. Enhanced keyboard encodings may bypass Ctrl+B shortcuts.
+Terminal applications may also need terminfo matching the client TERM on the
+remote host. See [terminal design and limits](SSHORE.md#terminal-and-mux-design-scope).
+
+## TMUX
+
+Leave a shell running, work elsewhere, then attach again. Each session has one
+terminal; sshore provides its own detach/reattach support without requiring tmux.
+
+Choose the lifetime when you start a shell:
+
+| Command | Use it for | When it ends |
+| --- | --- | --- |
+| `sshore spawn` | Temporary local work tied to your current shell. | The original parent shell exits. |
+| `sshore spawn HOST` | Temporary remote work that should not be left running indefinitely after you leave. | The original parent shell exits, or the background SSH heartbeat is lost. |
+| `sshore launch [HOST]` | Independent work that must survive closing your terminal or losing the network. | You exit or cancel it; client disconnection does not end it. |
+
+**Detach switches work; it does not change lifetime.** A remote spawn keeps its
+heartbeat running after detach. Attaching from somewhere else does not transfer
+its ownership. Heartbeat loss is detected after a timeout, so a network outage
+can end a remote spawn; use `launch` when that work must survive disconnection.
+All shells can also end if their daemon fails or the host restarts.
 
 ```sh
-sshore launch --local dev           # Local shell in the current directory.
-sshore list                    # Stable numeric IDs, ordered across tasks.
-sshore attach 3                # Resume the shell with ID 3.
-sshore launch work                 # Remote shell; prints its automatic name.
-sshore launch work build           # Or choose a name.
-# Press Ctrl+B then d to detach and keep programs running.
-sshore attach work build        # Resume a specific detached shell.
-sshore attach work              # Resume the most recently used shell on work.
-sshore attach                   # Reuse the most recent host and shell.
-sshore list work                # Show resources and remote shells.
-sshore rename work build dev    # Rename without restarting tasks.
-sshore cancel work dev          # Immediately end the shell and its tasks.
+sshore spawn                      # Temporary local shell.
+sshore spawn work                 # Temporary remote shell on work.
+sshore launch work build          # Persistent remote shell named build.
+# Ctrl+B then d: detach and return to the calling shell.
+sshore list work                  # Find the shell and its lifetime policy.
+sshore attach work build          # Continue working in build.
+sshore cancel work build          # End it immediately; unsaved work may be lost.
 ```
 
-Task IDs remain stable through rename and reconnect, increase monotonically and
-are never reused. Gaps are normal. Use `attach ID`, `cancel ID`, `rename ID NEW`
-or `review ID`; cached remote identities are revalidated before action.
+Both startup commands accept `--detach` to start in the background. `attach`
+only resumes existing shells and never takes over an attached shell.
+`list` shows stable numeric IDs; use `attach ID` or `cancel ID` for convenience.
+`list` alone uses local records; `list HOST` queries the remote account. Cached
+state is labelled. `pstree` shows spawn ownership and attachment sources;
+`list --verbose` shows remote process trees.
 
-`launch` only creates; `attach` only resumes. With no saved connection for a host,
-omitting the shell name selects a detached shell. Recent targets retain SSH
-connection options; explicit options override them. An attached shell cannot
-be taken over, and an ended recent shell is not recreated.
+Press Ctrl+B then d to detach, s to choose another session, or ? for all keys.
+In a remote shell, `sshore detach` also works. Switching leaves the previous
+shell running under its original lifetime policy; remote switching may require
+SSH authentication again. Screens, scrollback and detached output are not saved.
 
-`launch` sessions survive detach, client exit and connection loss; `exit` inside the shell
-or `cancel ID` ends them. Use `launch --detach` to create without entering.
-In a remote shell, `sshore detach` also works. Screens, scrollback and detached
-output are not saved. A daemon failure can end its shells.
-Entry, exit and detach notices identify the shell and host, separated from shell output by blank lines.
-
-Use `sshore spawn [HOST]` for a temporary shell bound to the launching parent
-shell. Detach returns to that parent; `attach ID` returns to the spawn. Closing
-the original parent shell ends the spawn and its identified tasks, even after
-reattachment elsewhere. Remote spawns also end if their lifetime SSH connection
-is lost (after disconnect detection). `list` shows `spawn/NAME` or `launch/NAME`
-in the existing task column; the local shell running `list` is marked
-`attached (current)` in STATE. See `sshore spawn --help`.
-
-`cancel HOST --all` lists and confirms all tasks for that machine; `cancel --all`
-clears local tasks. Single-task cancellation is immediate; unsaved work may be
-lost. Remote launch/attach connections show other tasks using the same table as
-`list`, including mounts, forwards and pending requests.
+**Local — close the original parent shell:**
 
 ```mermaid
 flowchart LR
-    localnew["launch / attach --local / attach ID"] --> daemon["Shared local daemon"]
-    daemon --> localshell["One PTY or ConPTY per shell"]
-    localshell -->|"Detach / client connection loss"| localdetached["Local programs keep running"]
-    localdetached -->|"attach ID"| localshell
-    localshell -->|"Exit / cancel ID / daemon failure"| ended
-    connect["Local: launch HOST / attach recent or named shell"] --> prepare["Matching release: reuse or download; local download fallback"]
-    prepare --> update["Older state: review affected shells, type update"]
-    update --> prepared["Remote ready"]
-    prepare -->|"Matching or missing"| prepared
-    prepared --> remoted["Shared remote daemon"]
-    remoted --> shell["Remote shell: one PTY"]
-    shell -->|"Ctrl+B c/n/p/l/s/w: preserve, then reconnect"| connect
-    shell -->|"Ctrl+B d / detach / connection loss"| detached["Programs keep running"]
-    detached -->|"attach [HOST [NAME]]"| shell
-    shell -->|"Exit / cancel"| ended["Shell ends"]
-    shell -->|"cp / forward: request, then detach"| pending["Local review/NAME"]
-    pending -->|"review: submit local paths or port"| approved["Execute approved operation"]
-    approved -->|"Files: normally reconnect"| shell
-    approved -->|"Forward: retain NAME"| resource["Independent background resource"]
-    spawn["spawn: local or remote temporary shell"] --> temporary["Background while original parent shell lives"]
-    temporary -->|"attach ID"| spawn
-    spawn -->|"Ctrl+B d"| temporary
-    parent["Original parent shell exits"] -->|"End owned spawns and identified tasks"| ended
-    lease["Remote lifetime SSH connection lost"] -->|"End remote spawn"| ended
-    local["Local: mount / forward"] --> daemon
-    resource -->|"Mount with notifications"| prepare
-    prepared -->|"Mount agent; no persistent shell"| mounted["Remote files + change notifications"]
-    daemon -->|"Own forward SSH / launch mount worker"| resource
-    copy["Local: cp SOURCE TARGET"] --> files["Independent SFTP copy"]
-    resource -->|"cancel resource ID"| stopped["Resource ends; shells unaffected"]
+    spawn["sshore spawn"] -->|"detach"| temporary["Runs in background"]
+    temporary -->|"Parent shell exits"| ended["Ends"]
+    launch["sshore launch"] -->|"detach"| persistent["Runs in background"]
+    persistent -->|"Parent shell exits"| running["Keeps running"]
 ```
 
-`sshore list` shows local records ordered by stable task ID and does not contact remote
-hosts. Use `sshore list HOST` to query that account, or add `--verbose` for process
-trees. Cached shell state is labelled with its last confirmation time.
+**Remote — close the original parent shell or lose the network:**
 
-Shells, forwards, mounts and pending reviews automatically share a pool of Pokemon
-names on each computer. Use a numeric task ID or a typed name, such as `review/eevee`
-or `forward/eevee`; an approved forward keeps its review name.
+```mermaid
+flowchart LR
+    spawn["sshore spawn work"] -->|"detach"| temporary["Remote work + background heartbeat"]
+    temporary -->|"Parent exits / heartbeat loss detected"| ended["Ends"]
+    launch["sshore launch work"] -->|"detach"| persistent["Remote work; no lifetime heartbeat"]
+    persistent -->|"Parent exits / network lost"| running["Keeps running"]
+```
+
+For startup options, shortcuts and task management, see `sshore spawn --help`,
+`sshore launch --help` and `sshore --help`. See the
+[security model](SECURITY.md) for cleanup guarantees and limits.
 
 ## Copy — files through SSH
 

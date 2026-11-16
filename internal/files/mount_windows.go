@@ -2,10 +2,6 @@
 
 package files
 
-// WinFsp uses its native Go binding, without CGO. gofs manages Windows handle
-// sharing and rename bookkeeping; the adapter translates remote errors and
-// rejects names that Windows cannot represent rather than aliasing them.
-
 import (
 	"errors"
 	"fmt"
@@ -19,6 +15,10 @@ import (
 	"github.com/winfsp/go-winfsp/gofs"
 	"golang.org/x/sys/windows"
 )
+
+// WinFsp uses its native Go binding, without CGO. gofs manages Windows handle
+// sharing and rename bookkeeping; the adapter translates remote errors and
+// rejects names that Windows cannot represent rather than aliasing them.
 
 func ValidateMountpoint(p string) error {
 	if len(p) == 2 && p[1] == ':' && ((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z')) {
@@ -200,3 +200,25 @@ func (f *ftpWindowsFile) Truncate(n int64) error {
 }
 func (f *ftpWindowsFile) Sync() error  { return ftpWindowsError(f.ftpFile.Sync()) }
 func (f *ftpWindowsFile) Close() error { return ftpWindowsError(f.ftpFile.Close()) }
+
+const winFspInstallURL = "https://winfsp.dev/"
+
+var winFspCheckOnce sync.Once
+var winFspCheckError error
+
+func CheckMountPlatform() error {
+	winFspCheckOnce.Do(func() { winFspCheckError = checkWinFsp(winfsp.BinPath, winfsp.LoadWinFSP) })
+	return winFspCheckError
+}
+func checkWinFsp(find func() (string, error), load func() error) error {
+	if _, e := find(); e != nil {
+		if errors.Is(e, windows.ERROR_FILE_NOT_FOUND) || errors.Is(e, windows.ERROR_PATH_NOT_FOUND) {
+			return fmt.Errorf("WinFsp was not found. Download and install it from %s, then retry: %w", winFspInstallURL, e)
+		}
+		return fmt.Errorf("cannot inspect the WinFsp installation: %w", e)
+	}
+	if e := load(); e != nil {
+		return fmt.Errorf("WinFsp is installed but could not be loaded; repair the installation from %s, then retry: %w", winFspInstallURL, e)
+	}
+	return nil
+}

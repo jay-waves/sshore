@@ -2,10 +2,6 @@
 
 package files
 
-// Linux exposes remote modes/UIDs as the mounting user, while the SSH account
-// remains the authority for remote access. Read caching lasts until close/reopen unless direct IO is selected;
-// short attribute caches limit metadata round trips without a write-back queue.
-
 import (
 	"context"
 	"errors"
@@ -22,6 +18,10 @@ import (
 	"github.com/hanwen/go-fuse/v2/fuse"
 	"github.com/pkg/sftp"
 )
+
+// Linux exposes remote modes/UIDs as the mounting user, while the SSH account
+// remains the authority for remote access. Read caching lasts until close/reopen unless direct IO is selected;
+// short attribute caches limit metadata round trips without a write-back queue.
 
 func ValidateMountpoint(p string) error {
 	info, e := os.Lstat(p)
@@ -277,3 +277,17 @@ func (f *ftpLinuxFile) Flush(ctx context.Context) syscall.Errno   { return 0 }
 func (f *ftpLinuxFile) Fsync(ctx context.Context, flags uint32) syscall.Errno {
 	return ftpErrno(f.file.Sync())
 }
+
+var _ fs.NodeStatfser = (*ftpNode)(nil)
+
+func (n *ftpNode) Statfs(_ context.Context, out *fuse.StatfsOut) syscall.Errno {
+	s, err := ftpRemoteCapacity(n.backend.client, n.remote())
+	if err != nil {
+		return ftpErrno(err)
+	}
+	*out = fuse.StatfsOut{Blocks: s.Blocks, Bfree: s.Bfree, Bavail: s.Bavail,
+		Files: s.Files, Ffree: s.Ffree, Bsize: uint32(s.Bsize), Frsize: uint32(s.Frsize), NameLen: uint32(s.Namemax)}
+	return 0
+}
+
+func CheckMountPlatform() error { return nil }

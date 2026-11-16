@@ -144,6 +144,8 @@ func run(args []string) (code int, resultErr error) {
 		return runMount(args[1:])
 	case "cancel":
 		return runCancel(args[1:])
+	case "pstree":
+		return runPSTree(args[1:])
 	case "list":
 		return runShellCommand(args)
 	case "review":

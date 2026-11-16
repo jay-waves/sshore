@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"github.com/jay-waves/sshore/internal/files"
 	"io"
 	"os"
 	"os/exec"
@@ -11,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/files"
+	transportio "github.com/jay-waves/sshore/internal/transport"
 )
 
 func TestMountAutomaticSetup(t *testing.T) {
@@ -96,7 +98,7 @@ func TestMountAutomaticSetup(t *testing.T) {
 			if err != nil {
 				t.Fatalf("setup: %v", err)
 			}
-			wire := &pipeTransport{Reader: output, Writer: input}
+			wire := &transportio.Pipe{Reader: output, Writer: input}
 			mux, data, _, err := files.OpenMux(wire, version)
 			if err != nil {
 				t.Fatal(err)

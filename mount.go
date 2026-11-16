@@ -9,6 +9,7 @@ import (
 	"github.com/pkg/sftp"
 
 	"github.com/jay-waves/sshore/internal/files"
+	"github.com/jay-waves/sshore/internal/transport"
 )
 
 func runMount(args []string) (int, error) {
@@ -58,10 +59,8 @@ func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
 
 func mountSSHArgs(o ftpOptions) []string {
 	if o.noWatch {
-		return sftpSSHArgs(o.host, o.ssh)
+		return transport.SFTPArgs(o.host, o.ssh)
 	}
 	command := remoteCommand(options{command: "mount-agent", server: o.server})
-	args := append(ownedSSHArgs("default"), "-o", "ClearAllForwardings=yes")
-	args = append(args, o.ssh...)
-	return append(args, "--", o.host, "unset SSHORE_SOCKET SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN; "+command)
+	return transport.SessionArgs(o.host, o.ssh, "unset SSHORE_SOCKET SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN; "+command)
 }

@@ -10,7 +10,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"golang.org/x/sys/unix"
 	"io"
 	"net"
 	"os"
@@ -18,6 +17,10 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
+
+	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 func sessionStatus(path string) (message, error) {
@@ -172,6 +175,7 @@ func (s *remoteShell) rename(old, name string, expected ...string) error {
 	s.nameLock = reservation.owner
 	reservation.owner = nil
 	s.name = name
+	renameShellTree("remote:"+s.instance, name)
 	return nil
 }
 
@@ -224,7 +228,7 @@ func writeSessionName(path, name string) error {
 	if err := validSession(name); err != nil {
 		return err
 	}
-	return writeStateFile(path+".name", []byte(name))
+	return statefs.WriteFile(path+".name", []byte(name))
 }
 
 func firstExpectedInstance(expected []string) string {

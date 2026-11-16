@@ -2,7 +2,6 @@ package tmux
 
 import (
 	"fmt"
-	"golang.org/x/sys/windows"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +11,8 @@ import (
 	"sync"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 type Terminal struct {
@@ -230,5 +231,24 @@ func (t *Terminal) closeConsole() {
 	}
 	if h != 0 {
 		windows.ClosePseudoConsole(h)
+	}
+}
+
+// A temporary size change asks ConPTY to repaint without injecting input.
+func RequestRedraw(t *Terminal, _ int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed || t.size.Cols < 2 {
+		return
+	}
+	changed := windows.Coord{X: int16(t.size.Cols - 1), Y: int16(t.size.Rows)}
+	if windows.ResizePseudoConsole(t.console, changed) == nil {
+		original := t.size
+		t.size.Cols--
+		// Track the actual size even if restoration fails, so the next Resize
+		// retries instead of incorrectly treating the original size as current.
+		if windows.ResizePseudoConsole(t.console, windows.Coord{X: int16(original.Cols), Y: int16(original.Rows)}) == nil {
+			t.size = original
+		}
 	}
 }

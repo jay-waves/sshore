@@ -8,6 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	statefs "github.com/jay-waves/sshore/internal/state"
+	"github.com/jay-waves/sshore/internal/transport"
 )
 
 const recentConnectionLimit = 32
@@ -18,7 +21,7 @@ type recentConnection struct {
 }
 
 func readRecentConnections() ([]recentConnection, error) {
-	dir, err := stateDir("connections")
+	dir, err := statefs.Dir("connections")
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +97,7 @@ func rememberConnection(o options) error {
 	}
 	// Forwarding flags belong to the original connection and must never replay
 	// merely because the user selected a recent shell.
-	ssh := forwardSSHOptions(o.ssh)
+	ssh := transport.WithoutForwarding(o.ssh)
 	directory := o.sshDirectory
 	if len(ssh) == 0 {
 		directory = ""
@@ -115,11 +118,11 @@ func rememberConnection(o options) error {
 			next = append(next, old)
 		}
 	}
-	dir, err := stateDir("connections")
+	dir, err := statefs.Dir("connections")
 	if err != nil {
 		return err
 	}
-	return writeStateJSON(filepath.Join(dir, "recent.json"), next)
+	return statefs.WriteJSON(filepath.Join(dir, "recent.json"), next)
 }
 
 // rememberShellRename changes cached labels only after a successful remote rename.
@@ -144,11 +147,11 @@ func rememberShellRename(host, old, name string) error {
 		}
 	}
 	if changed {
-		dir, e := stateDir("connections")
+		dir, e := statefs.Dir("connections")
 		if e != nil {
 			return errors.Join(snapshotErr, e)
 		}
-		err = writeStateJSON(filepath.Join(dir, "recent.json"), records)
+		err = statefs.WriteJSON(filepath.Join(dir, "recent.json"), records)
 	}
 	return errors.Join(snapshotErr, err)
 }

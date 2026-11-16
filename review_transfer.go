@@ -1,16 +1,10 @@
 package main
 
-// Approved files execute sequentially; the first failure stops the batch without
-// rolling back completed files. Ctrl-C cancels local file operations; a failed
-// transfer closes the attachment while preserving its shell.
-// Normal terminal output is muted until attachment resumes
-// it. --stay returns after file operations. Approved forwarding runs separately
-// as an independent background resource without attaching to the shell.
-
 import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -18,7 +12,15 @@ import (
 
 	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/internal/transport"
 )
+
+// Approved files execute sequentially; the first failure stops the batch without
+// rolling back completed files. Ctrl-C cancels local file operations; a failed
+// transfer closes the attachment while preserving its shell.
+// Normal terminal output is muted until attachment resumes
+// it. --stay returns after file operations. Approved forwarding runs separately
+// as an independent background resource without attaching to the shell.
 
 func executeApprovedFiles(ctx context.Context, mux *smux.Session, ops []operation, quiet bool) error {
 	var files []operation
@@ -154,4 +156,40 @@ func (p *transferProgress) sample(now time.Time, done, total int64) string {
 		}
 	}
 	return fmt.Sprintf("%s/%s · %s/s · remaining %s", displayBytes(done), displayBytes(total), displayBytes(int64(p.rate)), eta)
+}
+
+// A shell attachment accepts only client-initiated approved file streams.
+// Forwarding has its own SSH transport; obsolete tunnel/control streams cannot
+// create listeners or dial services through this connection.
+
+const maxApprovedStreams = transport.MaxFileStreams
+
+func serveApprovedStreams(ctx context.Context, mux *smux.Session) {
+	slots := make(chan struct{}, maxApprovedStreams)
+	var workers sync.WaitGroup
+	defer workers.Wait()
+	for {
+		st, e := mux.AcceptStream()
+		if e != nil {
+			return
+		}
+		select {
+		case slots <- struct{}{}:
+		default:
+			st.Close()
+			continue
+		}
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			defer func() { <-slots; st.Close() }()
+			abort := context.AfterFunc(ctx, func() { st.SetDeadline(time.Now()); st.Close() })
+			defer abort()
+			st.SetDeadline(time.Now().Add(requestTimeout))
+			m, e := readMessage(st)
+			if e == nil && m.Type == "approved_transfer" {
+				approvedRemoteTransfer(st, m)
+			}
+		}()
+	}
 }

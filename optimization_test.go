@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/jay-waves/sshore/internal/forward"
 	"io"
 	"net/http"
 	"os"
@@ -16,7 +17,7 @@ func TestForwardTransportOptions(t *testing.T) {
 	if e != nil || fg || f.Name != "web" || strings.Join(f.SSH, "|") != "-J|jump|-i|key with spaces|-p|2222|-F|config" {
 		t.Fatal(f, fg, e)
 	}
-	command := strings.Join(forwardSSHArgs(f, true), " ")
+	command := strings.Join(forward.SSHArgs(f.transportConfig(), forwardRemoteCommand(f)), " ")
 	if !strings.Contains(command, "-J jump") || !strings.Contains(command, "-L 127.0.0.1:8080:127.0.0.1:3000") {
 		t.Fatal(command)
 	}

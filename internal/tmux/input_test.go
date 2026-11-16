@@ -41,7 +41,7 @@ func TestMouseStateDisabledWhileDetached(t *testing.T) {
 		t.Fatalf("stale mouse state: %q", s.Replay())
 	}
 	s.Observe([]byte("\x1b[?1003;1006h\x1bc"))
-	if string(s.Replay()) != MouseResetSequence() {
+	if string(s.Replay()) != MouseResetSequence()+"\x1b[?1004l\x1b[?2004l\x1b[?1l\x1b[?2031l\x1b[?2033l\x1b[?2048l\x1b>" {
 		t.Fatalf("RIS failed: %q", s.Replay())
 	}
 }
@@ -127,5 +127,95 @@ func TestInputModesBulkMatchesBytewise(t *testing.T) {
 	bytewise.Observe([]byte("l"))
 	if string(bulk.Replay()) != string(bytewise.Replay()) {
 		t.Fatal("partial CSI diverged")
+	}
+}
+
+func TestAttachInsideOpaqueControlString(t *testing.T) {
+	for _, kind := range []byte{']', 'P', '^', '_', 'X'} {
+		end := "\x1b\\"
+		if kind == ']' {
+			end = "\a"
+		}
+		input := "\x1b" + string(kind) + "payload\x1b[?1003h" + end + "\x1b[?2004h"
+		for split := 2; split < len(input); split++ {
+			var original, resumed InputState
+			original.Observe([]byte(input[:split]))
+			resumed.Observe(original.Replay())
+			original.Observe([]byte(input[split:]))
+			resumed.Observe([]byte(input[split:]))
+			if resumed.enabled != original.enabled || resumed.MouseEnabled() {
+				t.Fatalf("kind %c split %d: opaque payload became input modes", kind, split)
+			}
+		}
+	}
+}
+
+func TestApplicationKeysAcrossAttachment(t *testing.T) {
+	for _, input := range []string{
+		"\x1b[?1h\x1b=",
+		"\x1b[?1h\x1b=\x1b[?1l\x1b>",
+		"\x1b[?1h\x1b[?1s\x1b[?1l\x1b=",
+		"\x1b[?1h\x1b=\x1bc",
+		"\x1b]ignored\x1b=\a\x1bP\x1b[?1h\x1b\\",
+	} {
+		for split := 0; split <= len(input); split++ {
+			var state, resumed InputState
+			state.Observe([]byte(input[:split]))
+			resumed.Observe(state.Replay())
+			state.Observe([]byte(input[split:]))
+			resumed.Observe([]byte(input[split:]))
+			if state.enabled != resumed.enabled || state.keypad != resumed.keypad || state.saved != resumed.saved {
+				t.Fatalf("input %q split %d: application key state changed", input, split)
+			}
+		}
+	}
+	var state InputState
+	state.Observe([]byte("\x1b[?1h\x1b[?1s\x1b[?1l\x1b="))
+	var resumed InputState
+	resumed.Observe(state.Replay())
+	resumed.Observe([]byte("\x1b[?1r"))
+	if !resumed.enabled[11] || !resumed.keypad {
+		t.Fatal("saved application cursor mode or keypad lost on attachment")
+	}
+	resumed.Observe([]byte(terminalInputResetSequence()))
+	if resumed.enabled[11] || resumed.keypad {
+		t.Fatal("application keys left active at local prompt")
+	}
+}
+
+func TestInputStateRISResetsFreshAttachment(t *testing.T) {
+	var application InputState
+	application.Observe([]byte("\x1bc"))
+	var terminal InputState
+	terminal.Observe([]byte("\x1b[?1;1003;1004;2004h\x1b="))
+	terminal.Observe(application.Replay())
+	for i, on := range terminal.enabled {
+		if on {
+			t.Errorf("RIS replay left mode %s enabled", inputModes[i])
+		}
+	}
+	if terminal.keypad {
+		t.Error("RIS replay left application keypad enabled")
+	}
+}
+
+func TestExtendedReportsAcrossAttachment(t *testing.T) {
+	for _, mode := range []string{"2031", "2033", "2048"} {
+		t.Run(mode, func(t *testing.T) {
+			input := "\x1b[?" + mode + "h"
+			for cut := 0; cut <= len(input); cut++ {
+				var state, resumed InputState
+				state.Observe([]byte(input[:cut]))
+				resumed.Observe(state.Replay())
+				resumed.Observe([]byte(input[cut:]))
+				if !strings.Contains(string(resumed.Replay()), input) {
+					t.Fatalf("cut %d lost reporting", cut)
+				}
+				resumed.Observe([]byte(terminalInputResetSequence()))
+				if strings.Contains(string(resumed.Replay()), input) {
+					t.Fatalf("cut %d left reporting enabled", cut)
+				}
+			}
+		})
 	}
 }

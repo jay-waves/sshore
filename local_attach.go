@@ -75,6 +75,11 @@ func (s *localShell) attach(c net.Conn) error {
 		return fmt.Errorf("local shell unavailable")
 	}
 	initial := s.terminal == nil
+	if (m.NoLogin || m.NoProfile) && !initial {
+		s.mu.Unlock()
+		_ = p.controlMessage(message{Type: "fatal", Error: "startup options require a new shell"})
+		return fmt.Errorf("startup options require a new shell")
+	}
 	if initial {
 		err = s.start(m)
 	}
@@ -82,13 +87,19 @@ func (s *localShell) attach(c net.Conn) error {
 		err = s.terminal.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
 	}
 	if err == nil {
-		err = p.controlMessage(message{Type: "ready", Temporary: s.record.Owner.PID != 0, Name: s.record.Name, PID: s.terminal.PID()})
+		if initial {
+			saveShellTree(s.record.identity(), s.record.Name, m.Tree, "attached", shellLifetime(s.record.Owner.PID != 0, false))
+		} else {
+			saveShellTree(s.record.identity(), s.record.Name, m.Tree, "attached")
+		}
+		err = p.controlMessage(message{Type: "ready", Tree: shellTreeFor(s.record.identity()), Temporary: s.record.Owner.PID != 0, Name: s.record.Name, PID: s.terminal.PID()})
 	}
 	if err == nil {
 		err = p.output(message{Type: "output", Data: s.modes.Replay()})
 	}
 	if err != nil {
 		s.mu.Unlock()
+		_ = p.controlMessage(message{Type: "fatal", Error: err.Error()})
 		if initial {
 			s.close()
 		}
@@ -108,6 +119,7 @@ func (s *localShell) attach(c net.Conn) error {
 		lease.Stop()
 		return err
 	}
+	saveShellTree(s.record.identity(), s.record.Name, m.Tree, "attached")
 	p.SetInput(lease)
 	s.mu.Unlock()
 	// Losing a local client releases attachment ownership, not the daemon-owned
@@ -115,7 +127,9 @@ func (s *localShell) attach(c net.Conn) error {
 	defer func() {
 		lease.Stop()
 		s.mu.Lock()
-		s.lifecycle.Detach(p)
+		if s.lifecycle.Detach(p) {
+			saveShellTree(s.record.identity(), s.record.Name, nil, "detached")
+		}
 		s.mu.Unlock()
 	}()
 	go p.readInput(&s.lifecycle)
@@ -136,7 +150,9 @@ func (s *localShell) attach(c net.Conn) error {
 				s.mu.Unlock()
 				return err
 			}
-			s.lifecycle.Detach(p)
+			if s.lifecycle.Detach(p) {
+				saveShellTree(s.record.identity(), s.record.Name, nil, "detached")
+			}
 			name := s.record.Name
 			s.mu.Unlock()
 			shell.FinishDetach(control, func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, func() { mx.Close() })

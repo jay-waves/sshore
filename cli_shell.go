@@ -1,6 +1,12 @@
 package main
 
-import "strings"
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
 
 func parseOptions(args []string) (options, error) {
 	o := options{server: "sshore"}
@@ -20,7 +26,7 @@ func parseOptions(args []string) (options, error) {
 	case "launch", "spawn", "attach":
 		flags = append(flags, cliFlag{"--download-dir", true}, cliFlag{"--quiet", false}, cliFlag{"-q", false}, cliFlag{"--no-escape", false})
 		if o.command != "attach" {
-			flags = append(flags, cliFlag{"--detach", false})
+			flags = append(flags, cliFlag{"--detach", false}, cliFlag{"--no-login", false}, cliFlag{"--no-profile", false})
 		}
 	case "list":
 		flags = append(flags, cliFlag{"--json", false}, cliFlag{"--verbose", false})
@@ -44,6 +50,8 @@ func parseOptions(args []string) (options, error) {
 		return o, usage("specify --quiet only once")
 	}
 	o.detached = parsed.has("--detach")
+	o.noLogin = parsed.has("--no-login")
+	o.noProfile = parsed.has("--no-profile")
 	o.listJSON, o.listDetails = parsed.has("--json"), parsed.has("--verbose")
 	if (o.command == "launch" || o.command == "spawn") && len(positional) == 0 {
 		o.local = true
@@ -126,8 +134,62 @@ type options struct {
 	plain                 bool
 	local                 bool
 	detached              bool
+	noLogin               bool
+	noProfile             bool
 	taskIdentity          string
 	instance              string
 	serverSet             bool
 	sshDirectory          string
+}
+
+func runShellCommand(args []string) (int, error) {
+	if code, handled, err := runTaskID(args); handled {
+		return code, err
+	}
+	o, err := parseOptions(args)
+	if errors.Is(err, errHelp) {
+		return 0, showHelp(args[:1], os.Stdout)
+	}
+	if err != nil {
+		return 2, err
+	}
+	if o.command == "spawn" {
+		o.temporary = true
+		o.owner, err = currentSpawnOwner()
+		if err != nil {
+			return 1, err
+		}
+	}
+	if o.local {
+		return runLocalCommand(o)
+	}
+	if err = resolveRecentAttach(&o); err != nil {
+		return 1, err
+	}
+	o.downloadDir, err = prepareDownloadDir(o.downloadDir)
+	if err != nil {
+		return 1, err
+	}
+	if o.list {
+		return runInventory(o)
+	}
+	return runClient(o)
+}
+
+func prepareDownloadDir(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("download directory: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("download destination is not a directory: %s", path)
+	}
+	return path, nil
 }

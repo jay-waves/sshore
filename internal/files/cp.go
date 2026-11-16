@@ -265,3 +265,24 @@ func (r progressReader) Read(p []byte) (int, error) {
 
 func (f *Source) Name() string { return f.name }
 func (f *Source) Size() int64  { return f.size }
+
+// DownloadDestination checks a local save path without creating it. Publication
+// must independently enforce no-clobber semantics when writing.
+func DownloadDestination(path, name string) (string, error) {
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		path = filepath.Join(path, name)
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return "", fmt.Errorf("destination already exists: %s", path)
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	info, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("destination parent is not a directory")
+	}
+	return path, nil
+}

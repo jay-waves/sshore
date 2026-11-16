@@ -26,6 +26,16 @@ shared infrastructure named for its responsibility. Use `internal/shell` for she
 mechanisms shared by launch, spawn, attach and detach. CLI dispatch and release
 version policy remain in the main program.
 
+## File cohesion
+
+- Keep modules highly cohesive and loosely coupled: one clear responsibility,
+  explicit ownership and small interfaces. Extend existing modules before adding abstractions.
+- Group tests by module behavior and functional boundaries, not by source file,
+  helper or individual regression. Preserve platform and build-tag isolation.
+- Use 200–500 lines per file as a guide, not a quota; cohesion takes priority.
+  Merge related fragments and split only for independent responsibilities or complexity.
+- Keep the module ownership map in SSHORE.md current.
+
 ## User interaction
 
 Keep user-facing prompts concise, effective and elegant. Lead with the result or

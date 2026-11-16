@@ -1,20 +1,23 @@
 package main
 
 import (
-	"github.com/xtaci/smux"
 	"net"
 	"testing"
 	"time"
+
+	"github.com/xtaci/smux"
+
+	transportio "github.com/jay-waves/sshore/internal/transport"
 )
 
 func closedAttachment(t *testing.T) *attachment {
 	t.Helper()
 	a, b := net.Pipe()
-	client, err := smux.Client(a, muxConfig())
+	client, err := smux.Client(a, transportio.MuxConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := smux.Server(b, muxConfig())
+	server, err := smux.Server(b, transportio.MuxConfig())
 	if err != nil {
 		client.Close()
 		t.Fatal(err)

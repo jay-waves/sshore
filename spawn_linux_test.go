@@ -30,7 +30,9 @@ func TestSpawnLifetime(t *testing.T) {
 			if err := os.Mkdir(home, 0700); err != nil {
 				t.Fatal(err)
 			}
-			env := append(e.env, "SSHORE_STATE_DIR="+state, "HOME="+home, "SSHORE_DISABLED=", "SSHORE_LOCAL_SESSION=", "SSHORE_SOCKET=")
+			env := append(e.env, "SSHORE_STATE_DIR="+state, "HOME="+home, "SSHORE_DISABLED=", "SSHORE_LOCAL_SESSION=", "SSHORE_SOCKET=", "SSHORE_TREE_ID=original")
+			t.Setenv("SSHORE_STATE_DIR", state)
+			saveShellTree("original", "work", nil, "attached", "persistent")
 			args := []string{tc.command, "--local", "temporary", "--detach"}
 			if remote {
 				ssh := filepath.Join(e.dir, "ssh")
@@ -97,7 +99,7 @@ func TestSpawnLifetime(t *testing.T) {
 				if err = json.Unmarshal(out, &inv); err != nil {
 					t.Fatalf("%s: %v", out, err)
 				}
-				if len(inv.Shells) != 1 || !inv.Shells[0].Temporary || inv.Shells[0].State != "detached" {
+				if len(inv.Shells) != 1 || !inv.Shells[0].Temporary || inv.Shells[0].Lifetime != "heartbeat" || inv.Shells[0].State != "detached" {
 					t.Fatalf("unexpected shells: %s", out)
 				}
 				pid = inv.Shells[0].PID
@@ -106,7 +108,7 @@ func TestSpawnLifetime(t *testing.T) {
 				if err = json.Unmarshal(out, &rows); err != nil {
 					t.Fatal(err)
 				}
-				if len(rows) != 1 || !rows[0].Temporary || rows[0].State != "detached" {
+				if len(rows) != 1 || !rows[0].Temporary || rows[0].Lifetime != "parent" || rows[0].State != "detached" {
 					t.Fatalf("unexpected shells: %s", out)
 				}
 				pid = rows[0].PID
@@ -147,12 +149,19 @@ func TestSpawnLifetime(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = writeMessage(control, message{Type: "attach", Cols: 80, Rows: 24, Term: "xterm"}); err != nil {
+			if err = writeMessage(control, message{Type: "attach", Tree: []shellTreeNode{{Identity: "other", Host: "elsewhere", Name: "other"}}, Cols: 80, Rows: 24, Term: "xterm"}); err != nil {
 				t.Fatal(err)
 			}
 			ready, err := readMessage(control)
 			if err != nil || ready.Type != "ready" || !ready.Temporary || ready.PID != pid {
 				t.Fatalf("reattach: %+v %v", ready, err)
+			}
+			if len(ready.Tree) == 0 {
+				t.Fatal("missing relationship metadata")
+			}
+			self := ready.Tree[len(ready.Tree)-1]
+			if self.Owner != "original" || self.Parent != "other" || self.Lifetime != shellLifetime(true, remote) {
+				t.Fatalf("reattach changed lifetime owner: %+v", ready.Tree)
 			}
 			terminal, err := mx.AcceptStream()
 			if err != nil {

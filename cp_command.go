@@ -16,6 +16,7 @@ import (
 
 	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/internal/transport"
 )
 
 func runCopy(args []string) (int, error) {
@@ -54,7 +55,7 @@ func runCopy(args []string) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	exe := sshExecutable()
-	cmd := exec.CommandContext(ctx, exe, sftpSSHArgs(o.host, o.ssh)...)
+	cmd := exec.CommandContext(ctx, exe, transport.SFTPArgs(o.host, o.ssh)...)
 	cmd.Stderr = os.Stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -171,7 +172,7 @@ func executeCopy(client *sftp.Client, o copyOptions) error {
 		}
 		if input != nil {
 			termui.Log(os.Stdout, termui.Info, "Copy %s:%s · %s\n", cleanText(o.host), cleanText(source.path), displayBytes(info.Size()))
-			target, err = readCopyPath(input, "Save as (Tab; Enter accepts): ", "", func(p string) (string, error) { return downloadDestination(p, name) })
+			target, err = readCopyPath(input, "Save as (Tab; Enter accepts): ", "", func(p string) (string, error) { return files.DownloadDestination(p, name) })
 			if err != nil {
 				return err
 			}

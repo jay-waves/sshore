@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	statefs "github.com/jay-waves/sshore/internal/state"
 )
 
 type resourceView struct {
@@ -29,6 +31,7 @@ type resourceView struct {
 	resourceStatus
 }
 type shellView struct {
+	Lifetime    string    `json:"lifetime"`
 	Temporary   bool      `json:"temporary,omitempty"`
 	Instance    string    `json:"instance,omitempty"`
 	TaskID      uint64    `json:"task_id,omitempty"`
@@ -60,6 +63,7 @@ type peerView struct {
 	Detail   string `json:"detail"`
 }
 type inventory struct {
+	ShellTree     []shellTreeNode  `json:"shell_tree,omitempty"`
 	LocalShells   []localShellView `json:"local_shells,omitempty"`
 	Version       string           `json:"version"`
 	Host          string           `json:"host,omitempty"`
@@ -162,7 +166,7 @@ func collectResourceResults(host string, active []resourceView) []resourceView {
 				continue
 			}
 			path := filepath.Join(dir, entry.Name())
-			if privateState(path, false) != nil {
+			if statefs.Private(path, false) != nil {
 				continue
 			}
 			f, e := os.Open(path)
@@ -228,7 +232,7 @@ func collectInventory(o options) (inventory, error) {
 			inv.Errors = append(inv.Errors, cleanText(err.Error()))
 		}
 		for _, s := range snapshots {
-			inv.Shells = append(inv.Shells, shellView{Temporary: s.Temporary, Instance: s.Instance, ID: shellTaskName(s.Name, s.Temporary), Host: s.Host, Name: s.Name, State: s.State, ConfirmedAt: s.ConfirmedAt, Unconfirmed: s.Unconfirmed, Active: s.Active, Historical: true})
+			inv.Shells = append(inv.Shells, shellView{Lifetime: shellLifetime(s.Temporary, true), Temporary: s.Temporary, Instance: s.Instance, ID: shellTaskName(s.Name, s.Temporary), Host: s.Host, Name: s.Name, State: s.State, ConfirmedAt: s.ConfirmedAt, Unconfirmed: s.Unconfirmed, Active: s.Active, Historical: true})
 		}
 		inv.Peers, err = collectPeerViews()
 		if err != nil {

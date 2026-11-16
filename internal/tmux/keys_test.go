@@ -96,3 +96,36 @@ func TestKeyEventsPreserveOrder(t *testing.T) {
 		t.Fatalf("got %#v", events)
 	}
 }
+
+func TestPasteWithEmbeddedControlsAndMissingClose(t *testing.T) {
+	// Like the upstream fragmented-paste cases, payload controls stay literal.
+	// A missing close must not turn a slow/large paste into local commands.
+	payload := bytes.Repeat([]byte("text\x1b]11;rgb:0/0/0\x1b\\\x02d\x1b[20x"), 4096)
+	var k Keys
+	data, actions := collectKeys(&k, []byte("\x1b[200~"), payload)
+	want := append([]byte("\x1b[200~"), payload...)
+	if !bytes.Equal(data, want) || len(actions) != 0 {
+		t.Fatal("unterminated paste interpreted shortcuts or changed payload")
+	}
+	if len(k.marker) > 6 {
+		t.Fatal("paste delimiter state grew with payload")
+	}
+	data, actions = collectKeys(&k, []byte("\x1b[20"), []byte("1~\x02i"))
+	if string(data) != "\x1b[201~" || !reflect.DeepEqual(actions, []KeyAction{KeyInfo}) {
+		t.Fatalf("closing fragmented paste did not restore shortcuts: %q %v", data, actions)
+	}
+}
+
+func TestPasteCompletionBoundary(t *testing.T) {
+	// tmux regress/tty-keys-paste.sh: a separate Escape before paste,
+	// fragmented end, then immediately resume normal binding dispatch.
+	var k Keys
+	data, actions := collectKeys(&k, []byte("\x1b\x1b[200~\x02d\x1b[20"))
+	if string(data) != "\x1b\x1b[200~\x02d\x1b[20" || len(actions) != 0 {
+		t.Fatal("partial end marker changed paste dispatch")
+	}
+	data, actions = collectKeys(&k, []byte("1~\x02i"))
+	if string(data) != "1~" || !reflect.DeepEqual(actions, []KeyAction{KeyInfo}) {
+		t.Fatalf("first post-paste shortcut lost: %q %v", data, actions)
+	}
+}

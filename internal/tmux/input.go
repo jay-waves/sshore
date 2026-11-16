@@ -1,7 +1,7 @@
 package tmux
 
 // Track bounded 7-bit xterm input modes while detached or muted. Screen,
-// scrollback, keyboard protocols and passthrough wrappers are not reconstructed.
+// scrollback, enhanced keyboard stacks and passthrough wrappers are not reconstructed.
 
 import (
 	"bytes"
@@ -10,7 +10,7 @@ import (
 )
 
 var mouseModes = [...]string{"9", "1000", "1001", "1002", "1003", "1005", "1006", "1015", "1016"}
-var inputModes = [...]string{"9", "1000", "1001", "1002", "1003", "1005", "1006", "1015", "1016", "1004", "2004"}
+var inputModes = [...]string{"9", "1000", "1001", "1002", "1003", "1005", "1006", "1015", "1016", "1004", "2004", "1", "2031", "2033", "2048"}
 
 func MouseResetSequence() string {
 	var b strings.Builder
@@ -25,14 +25,15 @@ func MouseResetSequence() string {
 // Control strings are opaque: text inside OSC/DCS must not enable mouse input.
 // The parser is bounded and accepts CSI sequences split across arbitrary reads.
 type InputState struct {
-	enabled    [len(inputModes)]bool
-	saved      [len(inputModes)]bool
-	savedSet   [len(inputModes)]bool
-	touched    [len(inputModes)]bool
-	seen       bool
-	state      byte
-	csi        []byte
-	stringKind byte
+	enabled               [len(inputModes)]bool
+	saved                 [len(inputModes)]bool
+	savedSet              [len(inputModes)]bool
+	touched               [len(inputModes)]bool
+	seen                  bool
+	state                 byte
+	csi                   []byte
+	stringKind            byte
+	keypad, keypadTouched bool
 }
 
 func (s *InputState) Observe(data []byte) {
@@ -71,9 +72,20 @@ func (s *InputState) Observe(data []byte) {
 				s.stringKind = c
 			case 'c':
 				s.enabled = [len(inputModes)]bool{}
+				// RIS resets every tracked mode, including modes never explicitly
+				// set by this application on the previous terminal attachment.
+				for i := range s.touched {
+					s.touched[i] = true
+				}
 				s.saved = [len(inputModes)]bool{}
 				s.savedSet = [len(inputModes)]bool{}
 				s.seen = true
+				s.keypad = false
+				s.keypadTouched = true
+				s.state = 0
+			case '=', '>':
+				s.keypad = c == '='
+				s.keypadTouched = true
 				s.state = 0
 			case 0x1b:
 			default:
@@ -188,13 +200,27 @@ func (s *InputState) Replay() []byte {
 			b.WriteString("\x1b[?" + mode + "h")
 		}
 	}
-	// Preserve an in-flight CSI prefix at the attachment boundary.
+	if s.keypadTouched {
+		if s.keypad {
+			b.WriteString("\x1b=")
+		} else {
+			b.WriteString("\x1b>")
+		}
+	}
+	// Preserve an in-flight control prefix at the attachment boundary.
 	if s.state == 'c' {
 		b.WriteString("\x1b[")
 		b.Write(s.csi)
 	} else if s.state == 'e' {
 		b.WriteByte(0x1b)
-
+	} else if s.state == 's' || s.state == 't' {
+		// Do not expose the remainder of an opaque string as terminal commands
+		// when attaching between its opener and terminator. No payload is saved.
+		b.WriteByte(0x1b)
+		b.WriteByte(s.stringKind)
+		if s.state == 't' {
+			b.WriteByte(0x1b)
+		}
 	}
 	return []byte(b.String())
 }

@@ -535,6 +535,26 @@ longer when notifications are unavailable. Linux and Windows amd64 only.
 NOTES
 fi
 
+if [[ "$version" == "0.6.10" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Keep spawn ownership fixed across detach and reattachment. Remote spawns retain their background lifetime heartbeat; launch shells remain independent of client lifetime.
+- Show lifetime policy in list and JSON, and distinguish original spawn owner contexts from attachment sources in pstree. Reconcile live shell state with cached relationships by instance identity.
+- Start supported Linux shells as interactive login shells by default; add --no-login and --no-profile startup controls, with platform-specific Windows handling.
+- Group session listings by execution host and consolidate CLI routing, private state, shell startup, transport, terminal, file and review modules and their tests.
+- Preserve display-only relationship metadata separately from OS process identity checks and cancellation authority.
+
+Client and remote releases must match exactly. Updating older remote shells ends
+listed shells and tasks only after you review them and type update. Detach does
+not change lifetime policy: spawns end with their original owner, and remote
+spawns also end after lifetime connection loss is detected. Launch shells survive
+client exit and connection loss. Login startup may read additional shell startup
+files; use --no-login for ordinary interactive startup. Linux and Windows amd64
+only; remote shell hosting remains Linux-only.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."
