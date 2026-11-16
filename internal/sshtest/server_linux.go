@@ -21,7 +21,7 @@ import (
 
 // Wrap retains a workflow's remote subprocess fixture, replacing its fake SSH
 // executable with a real authenticated channel and an ssh -G configuration tool.
-func Wrap(t testing.TB, script string, env []string) string {
+func Wrap(t testing.TB, script string, env []string, globalRequest ...func(*cryptossh.Request)) string {
 	t.Helper()
 	dir := t.TempDir()
 	if env == nil {
@@ -90,7 +90,15 @@ func Wrap(t testing.TB, script string, env []string) string {
 					return
 				}
 				defer client.Close()
-				go cryptossh.DiscardRequests(requests)
+				go func() {
+					for request := range requests {
+						if len(globalRequest) > 0 {
+							globalRequest[0](request)
+						} else {
+							request.Reply(false, nil)
+						}
+					}
+				}()
 				for channel := range channels {
 					if channel.ChannelType() == "direct-streamlocal@openssh.com" {
 						var request struct {

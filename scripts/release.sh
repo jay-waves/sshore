@@ -723,6 +723,8 @@ if [[ "$version" == "0.7.0" ]]; then
 Changes:
 - Run SSH connections inside sshore. System OpenSSH evaluates configuration;
   an SSH agent retains keys and signs authentication requests.
+- Handle Windows OpenSSH system paths and older configuration output, IPv6
+  destinations, host-key aliases and configured public-key restrictions.
 - Reuse the root terminal frontend for nested spawn, including remote hops.
   The initiating host's daemon owns each next-hop connection. Launchers exit
   after the child attachment is ready; detach and exit return to the parent.
@@ -734,6 +736,8 @@ Changes:
 - Carry reviewed file transfers, mounts and forwards through attachment routes
   while retaining source-instance checks and the existing approval safeguards.
 - Add MCP tools for persistent remote Bash sessions and one-shot SSH execution.
+- Include a self-contained agent guide in sshore mcp --help, covering output
+  polling, recovery and session cleanup.
 
 Migration: start an SSH agent and load the desired key with ssh-add. Password
 and keyboard-interactive authentication, agent forwarding and ProxyCommand are

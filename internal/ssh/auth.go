@@ -2,12 +2,14 @@ package ssh
 
 import (
 	"context"
+	"crypto/rsa"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -18,12 +20,26 @@ import (
 )
 
 func (c *connectionConfig) authentication(ctx context.Context) ([]cryptossh.AuthMethod, net.Conn, error) {
+	if preferred := c.get("preferredauthentications"); preferred != "" && !slices.Contains(strings.Split(preferred, ","), "publickey") {
+		return nil, nil, fmt.Errorf("PreferredAuthentications excludes publickey; built-in SSH requires agent public-key authentication")
+	}
+	minimumRSA, err := c.minimumRSASize()
+	if err != nil {
+		return nil, nil, err
+	}
 	if c.get("pubkeyauthentication") == "false" || c.get("pubkeyauthentication") == "no" {
 		return nil, nil, fmt.Errorf("built-in SSH requires public-key authentication through an agent")
 	}
 	address := c.get("identityagent")
 	if address == "none" {
 		return nil, nil, fmt.Errorf("SSH agent is disabled")
+	}
+	if strings.HasPrefix(address, "$") && !strings.HasPrefix(address, "${") {
+		name := strings.TrimPrefix(address, "$")
+		address = environment(c.options.Environment, name)
+		if address == "" {
+			return nil, nil, fmt.Errorf("IdentityAgent environment variable %s is unset or empty", name)
+		}
 	}
 	if address == "" || address == "SSH_AUTH_SOCK" {
 		address = environment(c.options.Environment, "SSH_AUTH_SOCK")
@@ -34,7 +50,7 @@ func (c *connectionConfig) authentication(ctx context.Context) ([]cryptossh.Auth
 	if address == "" {
 		return nil, nil, fmt.Errorf("SSH agent unavailable; start an agent and load the key using ssh-add")
 	}
-	address, err := c.expand(address)
+	address, err = c.expand(address)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -82,6 +98,9 @@ func (c *connectionConfig) authentication(ctx context.Context) ([]cryptossh.Auth
 		if err != nil {
 			conn.Close()
 			return nil, nil, err
+		}
+		if err := checkRSAKeySize(key, minimumRSA); err != nil {
+			continue
 		}
 		matches := allowed[string(key.Marshal())]
 		if certificate, ok := key.(*cryptossh.Certificate); ok {
@@ -137,8 +156,35 @@ func (c *connectionConfig) authentication(ctx context.Context) ([]cryptossh.Auth
 	return []cryptossh.AuthMethod{cryptossh.PublicKeys(selected...)}, conn, nil
 }
 
+func (c *connectionConfig) minimumRSASize() (int, error) {
+	value := c.get("requiredrsasize")
+	if value == "" {
+		return 1024, nil
+	}
+	minimum, err := strconv.Atoi(value)
+	if err != nil || minimum < 1024 {
+		return 0, fmt.Errorf("RequiredRSASize must be at least 1024 bits")
+	}
+	return minimum, nil
+}
+
+func checkRSAKeySize(key cryptossh.PublicKey, minimum int) error {
+	if certificate, ok := key.(*cryptossh.Certificate); ok {
+		key = certificate.Key
+	}
+	if public, ok := key.(cryptossh.CryptoPublicKey); ok {
+		if rsaKey, ok := public.CryptoPublicKey().(*rsa.PublicKey); ok && rsaKey.N.BitLen() < minimum {
+			return fmt.Errorf("RSA key has %d bits; RequiredRSASize requires %d", rsaKey.N.BitLen(), minimum)
+		}
+	}
+	return nil
+}
+
 func (c *connectionConfig) acceptsSignature(key cryptossh.PublicKey, algorithm string) bool {
 	configured := c.get("pubkeyacceptedalgorithms")
+	if configured == "" {
+		configured = c.get("pubkeyacceptedkeytypes")
+	}
 	if configured == "" {
 		return true
 	}
@@ -168,8 +214,14 @@ func (c *connectionConfig) hostKeys(ctx context.Context) (cryptossh.HostKeyCallb
 			if _, err := os.Stat(whole); err != nil {
 				entries = strings.Fields(value)
 				if len(entries) > 1 {
+					absolute := *c
+					absolute.options.Directory = ""
 					for _, entry := range entries {
-						if !filepath.IsAbs(entry) && !strings.HasPrefix(entry, "~/") && !strings.HasPrefix(entry, "~\\") {
+						path, err := absolute.expand(entry)
+						if err != nil {
+							return nil, nil, err
+						}
+						if !filepath.IsAbs(path) {
 							return nil, nil, fmt.Errorf("ambiguous known_hosts path list from ssh -G: %q; use existing absolute files", value)
 						}
 					}
@@ -195,12 +247,21 @@ func (c *connectionConfig) hostKeys(ctx context.Context) (cryptossh.HostKeyCallb
 	if err != nil {
 		return nil, nil, err
 	}
-	verifyHost := c.host
+	verify := net.JoinHostPort(c.host, c.port)
 	if alias := c.get("hostkeyalias"); alias != "" && alias != "none" {
-		verifyHost = alias
+		verify = alias
+		if _, _, err := net.SplitHostPort(alias); err != nil {
+			verify = net.JoinHostPort(alias, "22")
+		}
 	}
-	verify := net.JoinHostPort(verifyHost, c.port)
+	minimumRSA, err := c.minimumRSASize()
+	if err != nil {
+		return nil, nil, err
+	}
 	callback := func(_ string, remote net.Addr, key cryptossh.PublicKey) error {
+		if err := checkRSAKeySize(key, minimumRSA); err != nil {
+			return err
+		}
 		err := db.HostKeyCallback()(verify, remote, key)
 		if err == nil {
 			return nil
@@ -213,6 +274,9 @@ func (c *connectionConfig) hostKeys(ctx context.Context) (cryptossh.HostKeyCallb
 			return err
 		}
 		if policy == "ask" {
+			if c.enabled("batchmode") {
+				return fmt.Errorf("unknown SSH host %s; BatchMode disables host key confirmation", verify)
+			}
 			if c.options.Confirm == nil {
 				return fmt.Errorf("unknown SSH host %s (%s); connect interactively to trust it", verify, cryptossh.FingerprintSHA256(key))
 			}
@@ -244,11 +308,26 @@ func (c *connectionConfig) hostKeys(ctx context.Context) (cryptossh.HostKeyCallb
 		if e = os.MkdirAll(filepath.Dir(userPath), 0700); e != nil {
 			return e
 		}
-		f, e := os.OpenFile(userPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		f, e := os.OpenFile(userPath, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0600)
 		if e != nil {
 			return e
 		}
 		defer f.Close()
+		info, e := f.Stat()
+		if e != nil {
+			return e
+		}
+		if info.Size() > 0 {
+			var last [1]byte
+			if _, e = f.ReadAt(last[:], info.Size()-1); e != nil {
+				return e
+			}
+			if last[0] != '\n' {
+				if _, e = f.WriteString("\n"); e != nil {
+					return e
+				}
+			}
+		}
 		address := knownhosts.Normalize(verify)
 		if c.enabled("hashknownhosts") {
 			address = xknownhosts.HashHostname(address)

@@ -50,6 +50,11 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 	if err != nil {
 		return nil, err
 	}
+	// ssh -G preserves brackets around literal IPv6 destinations, including
+	// ProxyJump hosts. Go's network and known-host helpers add their own.
+	if strings.HasPrefix(cfg.host, "[") && strings.HasSuffix(cfg.host, "]") && strings.Contains(cfg.host, ":") {
+		cfg.host = cfg.host[1 : len(cfg.host)-1]
+	}
 	connecting, cancel := context.WithTimeout(ctx, cfg.timeout)
 	defer cancel()
 	callback, hostAlgos, err := cfg.hostKeys(connecting)

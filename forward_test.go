@@ -87,7 +87,7 @@ func TestTransportArgumentsAndConfig(t *testing.T) {
 			t.Fatal(args)
 		}
 		foreground := forwardSSHArgs(c, "")
-		if foreground[len(foreground)-1] != "work" || !strings.Contains(strings.Join(foreground, " "), "SessionType=none") {
+		if foreground[len(foreground)-1] != "work" || strings.Contains(strings.Join(foreground, " "), "SessionType=") {
 			t.Fatal(foreground)
 		}
 	}

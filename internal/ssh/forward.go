@@ -65,7 +65,7 @@ func (c *Client) StartForwarding() error {
 			if len(fields) != 2 && !dynamic || dynamic && len(fields) != 1 {
 				return fmt.Errorf("unsupported %s rule %q", kind, rule)
 			}
-			listen, err := forwardAddress(fields[0], true)
+			listen, err := forwardListenAddress(fields[0], c.config.network, kind != "remoteforward" && c.config.enabled("gatewayports"))
 			if err != nil {
 				return err
 			}
@@ -78,9 +78,9 @@ func (c *Client) StartForwarding() error {
 			}
 			var listener net.Listener
 			if kind == "remoteforward" {
-				listener, err = c.Listen("tcp", listen)
+				listener, err = c.Listen(c.config.network, listen)
 			} else {
-				listener, err = net.Listen("tcp", listen)
+				listener, err = net.Listen(c.config.network, listen)
 			}
 			if err != nil {
 				return fmt.Errorf("%s %s: %w", kind, listen, err)
@@ -99,6 +99,36 @@ func (c *Client) StartForwarding() error {
 	}
 	return nil
 }
+
+// ssh -G distinguishes an omitted bind (port only) from an explicit wildcard
+// ([]:port). A single listener follows AddressFamily; the default stays IPv4.
+func forwardListenAddress(value, network string, gateway bool) (string, error) {
+	if _, err := strconv.Atoi(value); err == nil {
+		host := "127.0.0.1"
+		if network == "tcp6" {
+			host = "::1"
+		}
+		if gateway {
+			host = ""
+		}
+		return forwardAddress(net.JoinHostPort(host, value), true)
+	}
+	return forwardAddress(value, true)
+}
+
+func (c *Client) dialForwardTarget(target string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	go func() {
+		select {
+		case <-c.done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return (&net.Dialer{}).DialContext(ctx, c.config.network, target)
+}
+
 func forwardAddress(value string, listen bool) (string, error) {
 	if strings.HasPrefix(value, "/") {
 		return "", fmt.Errorf("Unix socket forwarding is not supported")
@@ -117,7 +147,7 @@ func forwardAddress(value string, listen bool) (string, error) {
 	if err != nil || n < 0 || n > 65535 {
 		return "", fmt.Errorf("invalid forward port")
 	}
-	if host == "" {
+	if host == "" && !listen {
 		host = "127.0.0.1"
 	}
 	if host == "*" {
@@ -160,7 +190,7 @@ func (c *Client) acceptForward(listener net.Listener, target, kind string) {
 			var outgoing net.Conn
 			var err error
 			if kind == "remoteforward" {
-				outgoing, err = net.DialTimeout("tcp", destination, 15*time.Second)
+				outgoing, err = c.dialForwardTarget(destination)
 			} else {
 				outgoing, err = c.DialContext(context.Background(), "tcp", destination)
 			}

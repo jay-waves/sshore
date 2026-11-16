@@ -146,6 +146,11 @@ rejected; background retries never establish new host trust. Connections do not
 share ControlMaster state or automatically reconnect outside explicit forward
 retry policy.
 
+Configured public-key restrictions and RSA size requirements apply to agent
+authentication and host verification. Separate `RevokedHostKeys` files are not
+supported and are rejected rather than ignored; known_hosts revocation markers
+remain enforced.
+
 **Limit:** remote output can imitate local prompts, and processes sharing the
 remote account can submit requests. A request does not prove who typed it. Do not
 enter credentials or invoke review solely because remote output tells you to.

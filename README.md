@@ -102,10 +102,9 @@ Configure an MCP client to launch `sshore mcp` over stdio, for example:
 }
 ```
 
-Its tools create persistent remote Bash sessions and execute scripts without a PTY.
-Sessions survive MCP disconnection until closed; daemon failure or host restart ends them.
-The Agent can run commands with the remote account's permissions. Remote output
-is untrusted. See `sshore mcp --help`.
+Run `sshore mcp --help` for a self-contained, Skills-style agent guide covering
+tool calls, output polling, recovery and cleanup. Sessions persist after MCP
+disconnection. Commands use the remote account's permissions; remote output is untrusted.
 
 For one command, use `sshore exec work 'uname -a'`; it does not create a
 persistent session.

@@ -11,3 +11,5 @@ func connectAgent(ctx context.Context, path string) (net.Conn, error) {
 }
 func defaultAgent() string            { return "" }
 func hideConfigCommand(cmd *exec.Cmd) {}
+
+func (c *connectionConfig) expandSystemPath(path string) (string, error) { return path, nil }

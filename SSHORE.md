@@ -82,7 +82,9 @@ ControlMaster, askpass executable or implicit reconnect is used.
 Agent-backed public-key authentication is required. Linux uses a Unix agent
 socket; Windows uses its OpenSSH agent pipe. Configuration resolution and agent
 connections are per connection. Unsupported execution hooks and authentication
-modes fail explicitly. Modern algorithm negotiation uses the supported Go SSH
+modes fail explicitly. Keep resolver arguments compatible with Windows in-box
+OpenSSH; Windows system path tokens use the resolver's initiating environment.
+Modern algorithm negotiation uses the supported Go SSH
 algorithms intersected with resolved configuration, preserving configured order
 within the allowed set. SSH debug logging (`-v` or `LogLevel DEBUG`) reports the
 negotiated key exchange, host-key algorithm and both traffic directions, marking

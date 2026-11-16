@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	cryptossh "golang.org/x/crypto/ssh"
 )
 
 func TestForwardApprovalPreservesDetachedSession(t *testing.T) {
@@ -225,5 +226,48 @@ func TestForwardRetryBoundaries(t *testing.T) {
 				t.Fatal("unexpected attempts", string(b))
 			}
 		})
+	}
+}
+
+func TestForegroundReverseForwardStartupCancellation(t *testing.T) {
+	requested := make(chan struct{}, 1)
+	executable := sshtest.Wrap(t, "unused", nil, func(request *cryptossh.Request) {
+		if request.Type == "tcpip-forward" {
+			requested <- struct{}{}
+			return
+		}
+		request.Reply(false, nil)
+	})
+	f, err := os.OpenFile(executable, os.O_WRONLY|os.O_APPEND, 0700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.WriteString(f, "printf 'remoteforward 127.0.0.1:18888 127.0.0.1:18889\\n'\n")
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := runForwardTransportForeground(ctx, executable, forwardConfig{Host: "fixture", Port: 18888, Target: 18889, Reverse: true}, nil, io.Discard, io.Discard)
+		result <- err
+	}()
+	select {
+	case <-requested:
+	case err := <-result:
+		t.Fatalf("startup returned early: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("remote forward request missing")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled startup remained blocked waiting for remote forward reply")
 	}
 }

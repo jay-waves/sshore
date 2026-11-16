@@ -383,11 +383,7 @@ func (c forwardConfig) Validate() error {
 // forwardSSHArgs builds an owned forwarding transport. A nonempty remote command selects
 // the readiness/heartbeat protocol; its authorization and version policy belong to the caller.
 func forwardSSHArgs(c forwardConfig, remoteCommand string) []string {
-	sessionType := "none"
-	if remoteCommand != "" {
-		sessionType = "default"
-	}
-	args := []string{"-o", "SessionType=" + sessionType, "-o", "RemoteCommand=none", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ExitOnForwardFailure=yes", "-o", "ClearAllForwardings=no", "-o", "RequestTTY=no"}
+	args := []string{"-o", "RemoteCommand=none", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ExitOnForwardFailure=yes", "-o", "ClearAllForwardings=no", "-o", "RequestTTY=no"}
 	flag := "-L"
 	if c.Reverse {
 		flag = "-R"
@@ -410,11 +406,14 @@ func runForwardTransportForeground(ctx context.Context, executable string, c for
 		return 1, err
 	}
 	defer connection.Close()
-	if err := connection.StartForwarding(); err != nil {
-		return 1, err
-	}
 	stop := context.AfterFunc(ctx, func() { connection.Close() })
 	defer stop()
+	if err := connection.StartForwarding(); err != nil {
+		if ctx.Err() != nil {
+			return 0, nil
+		}
+		return 1, err
+	}
 	err = connection.Wait()
 	if ctx.Err() != nil {
 		return 0, nil

@@ -86,6 +86,11 @@ type connectionFixture struct {
 
 func newConnectionFixture(t *testing.T, identities ...any) *connectionFixture {
 	t.Helper()
+	return newConnectionFixtureAt(t, "127.0.0.1:0", identities...)
+}
+
+func newConnectionFixtureAt(t *testing.T, listenAddress string, identities ...any) *connectionFixture {
+	t.Helper()
 	dir := t.TempDir()
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -119,7 +124,7 @@ func newConnectionFixture(t *testing.T, identities ...any) *connectionFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := net.Listen("tcp", "127.0.0.1:0")
+	server, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,9 +220,10 @@ func newConnectionFixture(t *testing.T, identities ...any) *connectionFixture {
 	os.WriteFile(publicPath+".pub", cryptossh.MarshalAuthorizedKey(signer.PublicKey()), 0600)
 	knownPath := filepath.Join(dir, "known_hosts")
 	address := server.Addr().String()
+	host, port, _ := net.SplitHostPort(address)
 	// Normalize non-default ports exactly as OpenSSH's known_hosts format.
-	os.WriteFile(knownPath, []byte("[127.0.0.1]:"+strings.Split(address, ":")[1]+" "+string(cryptossh.MarshalAuthorizedKey(hostSigner.PublicKey()))), 0600)
-	config := fmt.Sprintf("hostname 127.0.0.1\nuser fixture\nport %s\nidentityagent %s\nidentityfile %s\nidentitiesonly yes\nuserknownhostsfile %s\nstricthostkeychecking yes\n", strings.Split(address, ":")[1], agentPath, publicPath, knownPath)
+	os.WriteFile(knownPath, []byte("["+host+"]:"+port+" "+string(cryptossh.MarshalAuthorizedKey(hostSigner.PublicKey()))), 0600)
+	config := fmt.Sprintf("hostname %s\nuser fixture\nport %s\nidentityagent %s\nidentityfile %s\nidentitiesonly yes\nuserknownhostsfile %s\nstricthostkeychecking yes\n", host, port, agentPath, publicPath, knownPath)
 	executable := filepath.Join(dir, "ssh-config")
 	os.WriteFile(executable, []byte("#!/bin/sh\n[ \"$1\" = -G ] || exit 90\ncat <<'SSHORE_CONFIG'\n"+config+"SSHORE_CONFIG\n"), 0700)
 	return &connectionFixture{options: Options{Host: "fixture", Command: "echo", Executable: executable}, address: address, key: signer.PublicKey()}
@@ -369,5 +375,29 @@ func TestCertificateAgentAuthentication(t *testing.T) {
 	cfg := &connectionConfig{values: map[string][]string{"pubkeyacceptedalgorithms": {cryptossh.CertAlgoED25519v01}}}
 	if !cfg.acceptsSignature(certificate, cryptossh.KeyAlgoED25519) || cfg.acceptsSignature(signer.PublicKey(), cryptossh.KeyAlgoED25519) {
 		t.Fatal("certificate algorithm policy lost")
+	}
+}
+
+func TestBracketedIPv6Connection(t *testing.T) {
+	probe, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback unavailable: %v", err)
+	}
+	probe.Close()
+	fixture := newConnectionFixtureAt(t, "[::1]:0")
+	config, err := os.ReadFile(fixture.options.Executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config = bytes.Replace(config, []byte("hostname ::1"), []byte("hostname [::1]"), 1)
+	if err = os.WriteFile(fixture.options.Executable, config, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err = Run(context.Background(), fixture.options, nil, &output, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "result:echo" {
+		t.Fatalf("output=%q", &output)
 	}
 }

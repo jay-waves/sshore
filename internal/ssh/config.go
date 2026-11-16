@@ -67,13 +67,15 @@ func resolveConfig(ctx context.Context, o Options) (*connectionConfig, error) {
 		}
 	}
 	// SSH settings are evaluated with the actual remote command for Match command.
-	args := []string{"-G", "-T", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "-o", "ForkAfterAuthentication=no", "-o", "RequestTTY=no", "-o", "RemoteCommand=none"}
+	args := []string{"-G", "-T", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "-o", "RequestTTY=no", "-o", "RemoteCommand=none"}
 	args = append(args, o.Args...)
 	args = append(args, "--", o.Host)
 	if o.Command != "" {
 		args = append(args, o.Command)
 	}
 	cmd := exec.CommandContext(ctx, o.Executable, args...)
+	// Match exec children may retain output pipes after the resolver is canceled.
+	cmd.WaitDelay = 100 * time.Millisecond
 	cmd.Env = o.Environment
 	cmd.Dir = o.Directory
 	hideConfigCommand(cmd)
@@ -114,7 +116,7 @@ func resolveConfig(ctx context.Context, o Options) (*connectionConfig, error) {
 		}
 		c.timeout = time.Duration(n) * time.Second
 	}
-	for _, key := range []string{"proxycommand", "knownhostscommand", "pkcs11provider"} {
+	for _, key := range []string{"proxycommand", "knownhostscommand", "pkcs11provider", "revokedhostkeys"} {
 		if v := c.get(key); v != "" && v != "none" {
 			return nil, fmt.Errorf("%s is not supported by the built-in SSH client", key)
 		}
@@ -191,7 +193,10 @@ func (c *connectionConfig) expand(value string) (string, error) {
 		}
 		out.WriteByte(value[i])
 	}
-	result := out.String()
+	result, err := c.expandSystemPath(out.String())
+	if err != nil {
+		return "", err
+	}
 	if result == "~" {
 		result = home
 	} else if strings.HasPrefix(result, "~/") || strings.HasPrefix(result, "~\\") {
