@@ -34,7 +34,9 @@ Details: sshore COMMAND --help      Version: sshore --version
 `
 
 const sshOptions = `
-SSH options follow --, for example: -- -p 2222 -J jump.
+--port PORT selects the SSH port (1–65535). Other SSH options follow --,
+for example: --port 2222 -- -J jump. The legacy -- -p PORT form is supported.
+Do not combine --port with SSH -p or -o Port.
 Supported: -p -i -J -F -l -o -E -C -v/-vv/-vvv -4 -6.
 `
 

@@ -609,3 +609,51 @@ func TestListNumbersAreNotSelectors(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeSSHPort(t *testing.T) {
+	for _, tc := range []struct {
+		command  string
+		operands []string
+	}{
+		{"launch", []string{"host"}}, {"spawn", []string{"host"}}, {"attach", []string{"host", "work"}},
+		{"list", []string{"host"}}, {"pstree", []string{"host"}}, {"cancel", []string{"host", "work"}},
+		{"rename", []string{"host", "old", "new"}}, {"cp", []string{"local", "host:remote"}},
+		{"mount", []string{"host:remote"}}, {"forward", []string{"origin:8080", "host:80"}},
+	} {
+		args := append(append([]string(nil), tc.operands...), "--port=2222", "--", "-J", "jump")
+		parsed, err := parseCLI(args, tc.command)
+		if err != nil || !reflect.DeepEqual(parsed.ssh, []string{"-p", "2222", "-J", "jump"}) {
+			t.Fatalf("%s: %+v %v", tc.command, parsed, err)
+		}
+	}
+	for _, port := range []string{"1", "65535"} {
+		if _, err := parseOptions([]string{"launch", "host", "--port", port}); err != nil {
+			t.Fatal(port, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"host", "--port", "0"}, {"host", "--port", "65536"}, {"host", "--port", "-1"}, {"host", "--port", "+22"},
+		{"host", "--port", "ssh"}, {"host", "--port", "22.0"}, {"host", "--port", "22\n"}, {"host", "--port"},
+		{"host", "--port", "22", "--port", "23"}, {"--local", "--port", "22"}, {"--port", "22"},
+		{"host", "--port", "22", "--", "-p", "23"}, {"host", "--port", "22", "--", "-p23"},
+		{"host", "--port", "22", "--", "-o", "Port=23"}, {"host", "--port", "22", "--", "-o", " pOrT 23"},
+	} {
+		if _, err := parseOptions(append([]string{"launch"}, args...)); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+	if _, err := parseOptions([]string{"launch", "host", "--port", "22", "--", "-o", "ProxyCommand=ssh -p 23 jump"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseCLI([]string{"--port", "22"}, "review"); err == nil {
+		t.Fatal("review accepted SSH port")
+	}
+	o, err := parseCopyCommand([]string{"local", "host:remote", "--port", "2222"})
+	if err != nil || !reflect.DeepEqual(o.ssh, []string{"-p", "2222"}) {
+		t.Fatal(o, err)
+	}
+	mounted, err := parseFTPOptions([]string{"host:remote", "--port", "2222"})
+	if err != nil || !reflect.DeepEqual(mounted.ssh, []string{"-p", "2222"}) {
+		t.Fatal(mounted, err)
+	}
+}

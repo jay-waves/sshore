@@ -30,6 +30,7 @@ const (
 	cliDirectory
 	cliDuration
 	cliRetries
+	cliPort
 )
 
 type cliOption struct {
@@ -42,8 +43,9 @@ type cliOption struct {
 var cliOptions = map[string]cliOption{
 	"--help":         {alias: "-h"},
 	"--version":      {alias: "-V"},
-	"--local":        {conflicts: []string{"--server", "--download-dir"}},
+	"--local":        {conflicts: []string{"--server", "--download-dir", "--port"}},
 	"--server":       {kind: cliText},
+	"--port":         {kind: cliPort},
 	"--download-dir": {kind: cliDirectory},
 	"--quiet":        {alias: "-q"},
 	"--no-escape":    {}, "--detach": {}, "--no-login": {}, "--no-profile": {},
@@ -97,6 +99,9 @@ func commandSpec(command string) (cliSpec, bool) {
 	case "detach", "reset":
 	default:
 		return spec, false
+	}
+	if spec.ssh {
+		spec.flags = append(spec.flags, "--port")
 	}
 	spec.flags = append(spec.flags, "--help")
 	return spec, true
@@ -152,6 +157,11 @@ func validateCLIValue(name, value string, option cliOption) error {
 		if err != nil || d < 0 {
 			return usage("%s requires a nonnegative duration", name)
 		}
+	case cliPort:
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n > 65535 || strings.Trim(value, "0123456789") != "" {
+			return usage("%s requires a port from 1 to 65535", name)
+		}
 	case cliRetries:
 		if _, err := parseForwardRetries(value); err != nil {
 			return usage("%s: %s", name, err)
@@ -166,8 +176,9 @@ func validateCLIValue(name, value string, option cliOption) error {
 	return nil
 }
 
-// Only the suffix after -- belongs to SSH. Product aliases share one slot;
-// repeated SSH options retain their order. Parsing never starts work or reads state.
+// The suffix after -- passes SSH options; --port supplies the SSH port.
+// Product aliases share one slot; repeated SSH options retain their order.
+// Parsing never starts work or reads state.
 func parseCLI(args []string, command string) (cliArguments, error) {
 	return scanCLI(args, command, false)
 }
@@ -249,6 +260,20 @@ func scanCLI(args []string, command string, partial bool) (cliArguments, error) 
 				return a, usage("%s and %s cannot be combined", name, other)
 			}
 		}
+	}
+	if a.has("--port") {
+		flags := sshOptionKinds(spec.native)
+		for i := 0; i < len(a.ssh); i++ {
+			name := a.ssh[i]
+			if flags[name] == cliBool {
+				continue
+			}
+			i++
+			if i < len(a.ssh) && sshPortSetting(name, a.ssh[i]) {
+				return a, usage("--port cannot be combined with SSH -p or -o Port")
+			}
+		}
+		a.ssh = append([]string{"-p", a.values["--port"]}, a.ssh...)
 	}
 	if a.has("--local") && len(a.ssh) != 0 {
 		return a, usage("local shells do not accept SSH options")
@@ -348,6 +373,17 @@ func scanSSHOptions(args []string, native, partial bool) ([]string, cliValue, er
 		ssh = append(ssh, value)
 	}
 	return ssh, cliBool, nil
+}
+
+func sshPortSetting(name, value string) bool {
+	if name == "-p" {
+		return true
+	}
+	if name != "-o" {
+		return false
+	}
+	fields := strings.FieldsFunc(value, func(r rune) bool { return r == '=' || r == ' ' || r == '\t' })
+	return len(fields) > 0 && strings.EqualFold(fields[0], "Port")
 }
 
 func misplacedSSHOption(a string) error {

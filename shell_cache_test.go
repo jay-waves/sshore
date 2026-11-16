@@ -300,3 +300,23 @@ func TestRememberShellRenamePreservesHistory(t *testing.T) {
 		t.Fatal("renamed shell snapshot missing")
 	}
 }
+
+func TestNativePortOverridesSavedConnection(t *testing.T) {
+	for _, saved := range [][]string{
+		{"-p", "2222", "-J", "jump", "-i", "key"},
+		{"-o", "Port=2222", "-J", "jump", "-i", "key"},
+	} {
+		parsed, err := parseCLI([]string{"host", "job", "--port", "3333"}, "attach")
+		if err != nil {
+			t.Fatal(err)
+		}
+		o, err := shellOptions("attach", parsed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		applyConnectionOptions(&o, recentConnection{Host: "host", Server: "/custom/sshore", SSH: saved, Directory: t.TempDir()})
+		if !reflect.DeepEqual(o.ssh, []string{"-p", "3333", "-J", "jump", "-i", "key"}) || o.server != "/custom/sshore" || o.sshDirectory == "" {
+			t.Fatalf("saved connection lost: %+v", o)
+		}
+	}
+}

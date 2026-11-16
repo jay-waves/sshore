@@ -29,6 +29,7 @@ func parseOptions(args []string) (options, error) {
 func shellOptions(command string, parsed cliArguments) (options, error) {
 	o := options{command: command, list: command == "list", server: parsed.value("--server", "sshore")}
 	o.ssh, o.local = parsed.ssh, parsed.has("--local")
+	o.portOverrideOnly = parsed.has("--port") && len(parsed.ssh) == 2
 	o.serverSet = parsed.has("--server")
 	o.downloadDir = parsed.values["--download-dir"]
 	o.quiet, o.noEscape = parsed.has("--quiet"), parsed.has("--no-escape")
@@ -67,14 +68,14 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 	}
 	if o.command == "rename" {
 		if o.session == "" || o.newName == "" {
-			return o, usage("rename requires HOST OLD NEW and accepts only SSH options and --server")
+			return o, usage("rename requires HOST OLD NEW and accepts SSH options, --server and --port")
 		}
 		if err := validSession(o.newName); err != nil {
 			return o, err
 		}
 	}
 	if o.command == "cancel" && (o.session == "") {
-		return o, usage("cancel requires HOST NAME and accepts only SSH options and --server")
+		return o, usage("cancel requires HOST NAME and accepts SSH options, --server and --port")
 	}
 	if o.session == "" {
 		return o, nil
@@ -103,6 +104,7 @@ type options struct {
 	noProfile             bool
 	taskIdentity          string
 	instance              string
+	portOverrideOnly      bool
 	serverSet             bool
 	sshDirectory          string
 }

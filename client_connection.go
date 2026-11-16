@@ -213,7 +213,24 @@ func applyConnectionOptions(o *options, r recentConnection) {
 	if !o.serverSet {
 		o.server = r.Server
 	}
-	if len(o.ssh) == 0 {
+	if o.portOverrideOnly {
+		flags := sshOptionKinds(true)
+		for i := 0; i < len(r.SSH); {
+			end := i + 1
+			if flags[r.SSH[i]] != cliBool {
+				end++
+			}
+			if end > len(r.SSH) {
+				break
+			}
+			if end == i+1 || !sshPortSetting(r.SSH[i], r.SSH[i+1]) {
+				o.ssh = append(o.ssh, r.SSH[i:end]...)
+			}
+			i = end
+		}
+		o.sshDirectory = r.Directory
+		o.portOverrideOnly = false
+	} else if len(o.ssh) == 0 {
 		o.ssh = append([]string(nil), r.SSH...)
 		o.sshDirectory = r.Directory
 	}
