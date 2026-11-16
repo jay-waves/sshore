@@ -2,6 +2,7 @@ package files
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,14 +10,14 @@ import (
 	"os/exec"
 	"os/signal"
 	"path"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/pkg/sftp"
-	"github.com/xtaci/smux"
-
 	"github.com/jay-waves/sshore/internal/termui"
 	"github.com/jay-waves/sshore/internal/transport"
+	"github.com/pkg/sftp"
+	"github.com/xtaci/smux"
 )
 
 // MountConfig contains validated mount and SSH transport settings.
@@ -289,4 +290,138 @@ func stopFTPMount(m ftpMount, interrupts <-chan os.Signal, abort func(), grace t
 		return true, fmt.Errorf("%s; unmount still pending; in-flight writes may be incomplete", reason)
 	}
 	return true, fmt.Errorf("%s; in-flight writes may be incomplete", reason)
+}
+
+type MountApproval struct {
+	Session string
+	PID     int
+	ID      string
+}
+
+type message struct {
+	Approval *MountApproval `json:"mount_approval,omitempty"`
+
+	Type            string `json:"type"`
+	SoftwareVersion string `json:"software_version,omitempty"`
+	Error           string `json:"error,omitempty"`
+	Directory       string `json:"directory,omitempty"`
+	Name            string `json:"name,omitempty"`
+	Data            []byte `json:"-"`
+}
+
+func (m *message) FrameType() string                 { return m.Type }
+func (m *message) SetFrame(kind string, data []byte) { m.Type, m.Data = kind, data }
+func writeMessage(w io.Writer, m message) error {
+	return transport.WriteMessage(w, m.Type, m.Data, m)
+}
+func readMessage(r io.Reader) (message, error) {
+	var m message
+	err := transport.ReadMessage(r, &m)
+	return m, err
+}
+
+func checkPeerVersion(local, peer, role string) error {
+	if local != "" && local == peer {
+		return nil
+	}
+	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%s; reconnect to update or recover", local, role, peer)
+}
+func muxConfig() *smux.Config {
+	config := transport.MuxConfig()
+	// Mounts have separate data/notification streams and no terminal to compete
+	// with. A larger data window avoids throttling pipelined SFTP on higher RTTs.
+	config.MaxStreamBuffer = 4 * 1024 * 1024
+	// Only data and notifications share this connection; reserve headroom for both.
+	config.MaxReceiveBuffer = 3 * config.MaxStreamBuffer
+	return config
+}
+
+type ftpRequestTotals struct {
+	Started, Completed, Errors uint64
+	SentBytes, ReceivedBytes   uint64
+	TotalNS, MaxNS             int64
+}
+type ftpCallbackTotals struct {
+	Calls          uint64
+	TotalNS, MaxNS int64
+}
+type ftpCallbackMetrics struct {
+	mu     sync.Mutex
+	totals map[string]ftpCallbackTotals
+}
+
+func (m *ftpCallbackMetrics) observe(name string) func() {
+	if m == nil {
+		return func() {}
+	}
+	start := time.Now()
+	return func() {
+		elapsed := int64(time.Since(start))
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.totals == nil {
+			m.totals = make(map[string]ftpCallbackTotals)
+		}
+		v := m.totals[name]
+		v.Calls++
+		v.TotalNS += elapsed
+		v.MaxNS = max(v.MaxNS, elapsed)
+		m.totals[name] = v
+	}
+}
+func writeFTPStats(w *ftpWire, f *ftpFS, out io.Writer) {
+	report := struct {
+		Type                                                       string
+		Requests                                                   map[string]ftpRequestTotals
+		Inflight, PeakInflight                                     int
+		Cache                                                      ftpCacheCounters
+		CacheBytes, MetadataEntries, Directories, DirectoryEntries int
+		Callbacks                                                  map[string]ftpCallbackTotals
+	}{Type: "mount_stats", Requests: make(map[string]ftpRequestTotals), Callbacks: make(map[string]ftpCallbackTotals)}
+	w.mu.Lock()
+	for k, v := range w.totals {
+		if v.Started != 0 {
+			report.Requests[ftpRequestName(byte(k))] = v
+		}
+	}
+	report.Inflight, report.PeakInflight = len(w.requests), w.peakRequests
+	w.mu.Unlock()
+	f.cache.mu.Lock()
+	report.Cache = f.cache.counters
+	report.CacheBytes, report.MetadataEntries, report.Directories, report.DirectoryEntries = f.cache.bytes, f.cache.stats, f.cache.dirs, f.cache.dirEntries
+	f.cache.mu.Unlock()
+	if f.metrics != nil {
+		f.metrics.mu.Lock()
+		for k, v := range f.metrics.totals {
+			report.Callbacks[k] = v
+		}
+		f.metrics.mu.Unlock()
+	}
+	_ = json.NewEncoder(out).Encode(report)
+}
+func startFTPStats(w *ftpWire, f *ftpFS, out io.Writer) func() {
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				writeFTPStats(w, f, out)
+				return
+			case <-ticker.C:
+				writeFTPStats(w, f, out)
+			}
+		}
+	}()
+	return func() { close(stop); <-done }
+}
+
+func ftpRequestName(kind byte) string {
+	names := map[byte]string{3: "OPEN", 4: "CLOSE", 5: "READ", 6: "WRITE", 7: "LSTAT", 8: "FSTAT", 9: "SETSTAT", 10: "FSETSTAT", 11: "OPENDIR", 12: "READDIR", 13: "REMOVE", 14: "MKDIR", 15: "RMDIR", 16: "REALPATH", 17: "STAT", 18: "RENAME", 19: "READLINK", 20: "SYMLINK", 200: "EXTENDED"}
+	if name, ok := names[kind]; ok {
+		return name
+	}
+	return fmt.Sprintf("TYPE_%d", kind)
 }

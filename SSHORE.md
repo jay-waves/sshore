@@ -18,19 +18,19 @@ policy or depending on mutable application state.
 
 | Responsibility | Start here |
 | --- | --- |
-| CLI grammar, dispatch and help | `cli_schema.go`: product/SSH grammar; `cli_shell.go`, `cli_files.go`, `cli_endpoints.go`: command semantics; `cli.go`: dispatch |
-| Shell completion | `completion.go`: contexts and candidate protocol; `completion_state.go`: read-only hints; `completion_scripts.go`: shell adapters |
+| CLI grammar, dispatch and help | `cli_schema.go`: shared command aliases and product/SSH grammar; `cli_shell.go`, `cli_endpoints.go`: command semantics; `cli.go`: dispatch |
+| Shell completion | `completion.go`: contexts, candidate protocol and read-only hints; `completion_scripts.go`: shell adapters |
 | Connections and session switching | `client.go`, `client_connection.go` |
-| Remote preparation and exact-release policy | `remote_bootstrap.go`, `setup*.go`, `version.go` |
-| Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_*.go`, `server_linux.go` |
-| Local daemon and shell registry | `local_daemon*.go`, `local_shell_registry.go`, `local_terminal.go`, `platform_*.go`, `local_attach.go` |
+| Remote preparation and exact-release policy | `remote_bootstrap.go`, `setup*.go` |
+| Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_*.go`, `server_linux.go`; process inspection in `setup_process_linux.go` |
+| Local daemon and shell registry | `local_daemon*.go`, `local_shell_registry.go`, `local_terminal.go`, `platform_*.go` |
 | Spawn ownership and lifetime SSH | `spawn*.go`, `platform_*.go` |
-| Shell startup and attachment I/O | `internal/tmux/shell_*.go`, application adapters in `mux.go` |
+| Shell startup and attachment I/O | `internal/tmux/terminal.go`, `internal/tmux/shell_attachment.go`, application adapters in `mux.go` |
 | Native terminals, console I/O and shortcuts | `internal/tmux/` |
 | Local prompts and presentation | `internal/termui/`, application adapters in `cli_ui.go` |
 | Framing, smux and shared SSH transport | `internal/transport/`, application messages in `protocol.go` |
 | Copy and mount mechanisms | Flat `internal/files/`; command adapters in `cp_command.go`, `mount*.go` |
-| Review records and consent | `review_store.go`, application coordination in `review*.go` (including shared source-shell validation in `review_source_linux.go`) |
+| Review records and consent | `review_store.go`, application coordination in `review*.go` (including shared source-shell validation in `review_linux.go`) |
 | Forward transport and retries | `forward_runtime.go`, command handling in `forward.go` |
 | Resource startup and control | `resource_runtime.go`, `resources.go` |
 | Private storage and name reservations | `state.go` (including account identity and remembered entry points), `object_names.go`; native checks in `platform_*.go` |
@@ -114,7 +114,7 @@ install remote software. Keep file/transport behavior in `internal/files` and
 
 Copy concurrency must stay bounded and preserve exact-size checks, ordered digest
 calculation, receiver-side upload verification and no-overwrite publication.
-Transport window budgets live in `internal/transport/protocol.go` and `internal/files/mount_protocol.go`; size them
+Transport window budgets live in `internal/transport/protocol.go` and `internal/files/mount.go`; size them
 for latency without allowing stalled file streams to exhaust terminal capacity.
 
 Mount request failures can leave write outcomes uncertain: never replay writes

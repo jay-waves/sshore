@@ -614,6 +614,21 @@ remote shell hosting remains Linux-only.
 NOTES
 fi
 
+if [[ "$version" == "0.6.14" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Add command aliases: copy (cp), a (attach), d (detach), ps (pstree),
+  ls (list), mnt (mount), and fwd (forward). Help and completion support
+  the same aliases.
+- Consolidate related implementation and test files across shell hosting,
+  completion, pstree, mounts, terminal I/O and SSH transport.
+
+Client and remote releases must match exactly. Updating older remote shells ends
+listed shells and tasks only after you review them and type update.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."

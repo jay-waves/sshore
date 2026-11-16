@@ -502,3 +502,40 @@ func TestMountApprovalSelection(t *testing.T) {
 		t.Fatal("cancel accepted")
 	}
 }
+
+func TestCommandAliases(t *testing.T) {
+	for alias, command := range map[string]string{"copy": "cp", "a": "attach", "d": "detach", "ps": "pstree", "ls": "list", "mnt": "mount", "fwd": "forward"} {
+		t.Run(alias, func(t *testing.T) {
+			var got, want bytes.Buffer
+			if err := showHelp([]string{alias}, &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := showHelp([]string{command}, &want); err != nil {
+				t.Fatal(err)
+			}
+			if got.String() != want.String() {
+				t.Fatal("different help")
+			}
+			// Invalid arguments exercise dispatch without starting an operation.
+			args := []string{alias, "--invalid-option"}
+			code, err := run(args)
+			wantCode, wantErr := run([]string{command, "--invalid-option"})
+			if err == nil || wantErr == nil || code != wantCode || err.Error() != wantErr.Error() {
+				t.Fatalf("dispatch: %d %v / %d %v", code, err, wantCode, wantErr)
+			}
+			if args[0] != alias {
+				t.Fatal("dispatch modified caller arguments")
+			}
+		})
+	}
+	parsed, err := parseCLI([]string{"a", "d", "--", "-J", "ps"}, "copy")
+	if err != nil || !reflect.DeepEqual(parsed.operands, []string{"a", "d"}) || !reflect.DeepEqual(parsed.ssh, []string{"-J", "ps"}) {
+		t.Fatalf("operands rewritten: %+v %v", parsed, err)
+	}
+	for _, alias := range []string{"a", "ls"} {
+		o, err := parseOptions([]string{alias, "host"})
+		if err != nil || o.command != canonicalCommand(alias) {
+			t.Fatalf("shell policy: %+v %v", o, err)
+		}
+	}
+}

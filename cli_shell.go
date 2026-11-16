@@ -12,7 +12,7 @@ func parseOptions(args []string) (options, error) {
 	if len(args) == 0 {
 		return o, usage("expected launch, spawn, list, attach, cancel or rename; see sshore --help")
 	}
-	o.command = args[0]
+	o.command = canonicalCommand(args[0])
 	switch o.command {
 	case "launch", "spawn", "attach", "cancel", "rename":
 	case "list":

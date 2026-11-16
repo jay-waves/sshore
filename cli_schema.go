@@ -8,6 +8,19 @@ import (
 	"time"
 )
 
+// Aliases resolve only command names, never operands or SSH arguments.
+var commandAliases = map[string]string{
+	"copy": "cp", "a": "attach", "d": "detach", "ps": "pstree",
+	"ls": "list", "mnt": "mount", "fwd": "forward",
+}
+
+func canonicalCommand(name string) string {
+	if command, ok := commandAliases[name]; ok {
+		return command
+	}
+	return name
+}
+
 type cliValue uint8
 
 const (
@@ -52,6 +65,7 @@ type cliSpec struct {
 }
 
 func commandSpec(command string) (cliSpec, bool) {
+	command = canonicalCommand(command)
 	base := []string{"--local", "--server"}
 	interactive := append(slices.Clone(base), "--download-dir", "--quiet", "--no-escape")
 	spec := cliSpec{}
@@ -163,6 +177,7 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 }
 
 func scanCLI(args []string, command string, partial bool) (cliArguments, error) {
+	command = canonicalCommand(command)
 	a := cliArguments{values: make(map[string]string)}
 	spec, ok := commandSpec(command)
 	if !ok {

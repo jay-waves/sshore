@@ -25,6 +25,8 @@ func run(args []string) (code int, resultErr error) {
 		return runResourceAskpass(args)
 	}
 	if len(args) > 0 {
+		args = append([]string(nil), args...)
+		args[0] = canonicalCommand(args[0])
 		if _, public := commandHelp[args[0]]; public {
 			for _, arg := range args[1:] {
 				if arg == "--" {

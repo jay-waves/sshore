@@ -1,6 +1,10 @@
 package main
 
-import "io"
+import (
+	"io"
+	"sort"
+	"strings"
+)
 
 const connectionOptions = `Options (before --; may appear before or after HOST; --option=VALUE is accepted):
   --server PATH                 Remote executable (default: PATH, then ~/.local/bin/sshore)
@@ -437,13 +441,18 @@ Examples:
 
 func showHelp(args []string, w io.Writer) error {
 	if len(args) == 0 {
-		_, err := io.WriteString(w, help)
+		aliases := make([]string, 0, len(commandAliases))
+		for alias, command := range commandAliases {
+			aliases = append(aliases, alias+"="+command)
+		}
+		sort.Strings(aliases)
+		_, err := io.WriteString(w, help+"\nAliases: "+strings.Join(aliases, ", ")+"\n")
 		return err
 	}
 	if len(args) != 1 {
 		return usage("usage: sshore help [COMMAND]")
 	}
-	topic := args[0]
+	topic := canonicalCommand(args[0])
 	h, ok := commandHelp[topic]
 	if !ok {
 		return usage("unknown help topic: %s", args[0])
