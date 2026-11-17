@@ -132,3 +132,46 @@ func TestInvalidStartupArguments(t *testing.T) {
 		}
 	}
 }
+
+// TestConPTYNativeProcess exercises native process creation without a shell.
+func TestConPTYNativeProcess(t *testing.T) {
+	if os.Getenv("SSHORE_NATIVE_CONPTY_HELPER") == "1" {
+		if os.Getenv("SSHORE_CASE") != "last" || os.Getenv("SystemRoot") == "" {
+			os.Exit(7)
+		}
+		fmt.Println("SSHORE_NATIVE_OK")
+		os.Exit(0)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := tmux.Start(tmux.Config{
+		Path: exe, Args: []string{"-test.run=^TestConPTYNativeProcess$"},
+		Env:  []string{"SSHORE_NATIVE_CONPTY_HELPER=1", "SSHORE_CASE=first", "sshore_case=last"},
+		Size: tmux.Size{Cols: 80, Rows: 24},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	done := make(chan error, 1)
+	go func() {
+		data, err := io.ReadAll(terminal)
+		if err == nil && !strings.Contains(string(data), "SSHORE_NATIVE_OK") {
+			err = fmt.Errorf("missing helper output: %q", data)
+		}
+		if waitErr := terminal.Wait(); waitErr != nil {
+			err = waitErr
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("native terminal did not exit")
+	}
+}

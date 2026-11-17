@@ -29,7 +29,7 @@ func dialMCP(ctx context.Context, host string) (io.ReadWriteCloser, error) {
 	o := options{command: "mcp-agent", host: host, server: "sshore"}
 	connection := sshConnectionOptions(o)
 	connection.Confirm = nil
-	connection.Passphrase = nil
+	connection.Secret = nil
 	pipes, err := transportio.Start(ctx, connection, os.Stderr)
 	if err != nil {
 		return nil, err

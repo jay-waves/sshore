@@ -61,7 +61,6 @@ func (s *remoteShell) requestSpawnRoute(c net.Conn, request message) {
 		_ = writeMessage(c, message{Type: "fatal", Error: "managed attachment required"})
 		return
 	}
-	req.identityCache = s.identityCache
 	runConnection := runSpawnConnection
 	if req.Spawn.Local {
 		runConnection = runLocalSpawnRoute

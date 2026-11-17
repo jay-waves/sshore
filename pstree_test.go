@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +45,7 @@ func TestShellTreeAttachmentSnapshots(t *testing.T) {
 		t.Fatalf("cycle accepted: %+v", chain)
 	}
 	path, _ := shellTreePath("child")
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm()&0077 != 0 {
+	if info, err := os.Stat(path); err != nil || runtime.GOOS == "linux" && info.Mode().Perm()&0077 != 0 {
 		t.Fatalf("private snapshot: %v %v", info, err)
 	}
 }

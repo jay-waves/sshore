@@ -2,13 +2,17 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type testBackend struct{ execute ExecuteInput }
+type testBackend struct {
+	execute ExecuteInput
+	output  *Output
+}
 
 func (*testBackend) Open(_ context.Context, in OpenInput) (Session, error) {
 	return Session{ID: "id", Host: in.Host, State: "ready"}, nil
@@ -18,7 +22,10 @@ func (b *testBackend) Execute(_ context.Context, in ExecuteInput) (Execution, er
 	b.execute = in
 	return Execution{ID: "run", State: "running"}, nil
 }
-func (*testBackend) Read(context.Context, ReadInput) (Output, error) {
+func (b *testBackend) Read(context.Context, ReadInput) (Output, error) {
+	if b.output != nil {
+		return *b.output, nil
+	}
 	return Output{}, errors.New("execution missing")
 }
 func (*testBackend) Close(context.Context, SessionInput) (Closed, error) {
@@ -54,4 +61,21 @@ func TestToolsOverMCP(t *testing.T) {
 	if err != nil || !result.IsError {
 		t.Fatalf("backend error: %+v %v", result, err)
 	}
+	b.output = &Output{State: "completed", Stdout: "done", Cursor: "4:0", OutputClosed: true}
+	result, err = client.CallTool(ctx, &sdk.CallToolParams{Name: "session_execute", Arguments: map[string]any{"session_id": "id", "code": "printf done", "wait_ms": 1000}})
+	if err != nil || result.IsError {
+		t.Fatalf("execute with output: %+v %v", result, err)
+	}
+	data, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var execution Execution
+	if err = json.Unmarshal(data, &execution); err != nil {
+		t.Fatal(err)
+	}
+	if execution.ID != "run" || execution.State != "completed" || execution.Output == nil || execution.Output.Stdout != "done" || !execution.Output.OutputClosed {
+		t.Fatalf("inconsistent execution result: %+v", execution)
+	}
+
 }

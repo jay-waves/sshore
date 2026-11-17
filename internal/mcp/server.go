@@ -93,6 +93,7 @@ func New(version string, b Backend) *sdk.Server {
 				out.ReadError = readErr.Error()
 			} else {
 				out.Output = &output
+				out.State = output.State
 			}
 		}
 		return nil, out, err

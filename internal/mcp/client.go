@@ -17,20 +17,30 @@ type Client struct {
 	Dial        DialFunc
 	mu          sync.Mutex
 	connections map[string]*clientConnection
+	closed      bool
 }
 type clientConnection struct {
-	gate chan struct{}
-	conn io.ReadWriteCloser
+	gate   chan struct{}
+	conn   io.ReadWriteCloser
+	cancel context.CancelFunc
 }
 
 // Shutdown releases transports without ending persistent remote sessions.
 func (c *Client) Shutdown() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.closed = true
+	var connections []io.ReadWriteCloser
 	for _, entry := range c.connections {
-		if entry.conn != nil {
-			_ = entry.conn.Close()
+		if entry.cancel != nil {
+			entry.cancel()
 		}
+		if entry.conn != nil {
+			connections = append(connections, entry.conn)
+		}
+	}
+	c.mu.Unlock()
+	for _, conn := range connections {
+		_ = conn.Close()
 	}
 }
 
@@ -74,6 +84,10 @@ func (c *Client) call(ctx context.Context, host string, req Request) (Response, 
 		return Response{}, fmt.Errorf("transport unavailable")
 	}
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return Response{}, fmt.Errorf("MCP client closed")
+	}
 	if c.connections == nil {
 		c.connections = make(map[string]*clientConnection)
 	}
@@ -93,15 +107,47 @@ func (c *Client) call(ctx context.Context, host string, req Request) (Response, 
 		return Response{}, err
 	}
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return Response{}, fmt.Errorf("MCP client closed")
+	}
 	conn := entry.conn
 	c.mu.Unlock()
 	var err error
 	if conn == nil {
-		conn, err = c.Dial(ctx, host)
-		if err != nil {
-			return Response{}, err
+		// The transport outlives this request; request cancellation still aborts dialing.
+		connectionCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		c.mu.Lock()
+		if c.closed {
+			c.mu.Unlock()
+			cancel()
+			return Response{}, fmt.Errorf("MCP client closed")
+		}
+		entry.cancel = cancel
+		c.mu.Unlock()
+		stopDial := context.AfterFunc(ctx, cancel)
+		conn, err = c.Dial(connectionCtx, host)
+		stopped := stopDial()
+		if err != nil || !stopped || connectionCtx.Err() != nil {
+			cancel()
+			if conn != nil {
+				_ = conn.Close()
+			}
+			if err != nil {
+				return Response{}, err
+			}
+			if ctx.Err() != nil {
+				return Response{}, ctx.Err()
+			}
+			return Response{}, fmt.Errorf("MCP client closed")
 		}
 		c.mu.Lock()
+		if c.closed {
+			c.mu.Unlock()
+			cancel()
+			_ = conn.Close()
+			return Response{}, fmt.Errorf("MCP client closed")
+		}
 		entry.conn = conn
 		c.mu.Unlock()
 	}
@@ -117,6 +163,10 @@ func (c *Client) call(ctx context.Context, host string, req Request) (Response, 
 			_ = conn.Close()
 			c.mu.Lock()
 			entry.conn = nil
+			if entry.cancel != nil {
+				entry.cancel()
+				entry.cancel = nil
+			}
 			c.mu.Unlock()
 		}
 	}()

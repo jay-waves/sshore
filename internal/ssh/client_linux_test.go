@@ -501,7 +501,7 @@ func TestPasswordFallbackWithoutKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	f.options.Passphrase = func(_ context.Context, prompt string) ([]byte, error) {
+	f.options.Secret = func(_ context.Context, prompt string) ([]byte, error) {
 		calls++
 		if !strings.HasPrefix(prompt, "\x00password:") {
 			t.Fatalf("unexpected prompt %q", prompt)
@@ -516,7 +516,18 @@ func TestPasswordFallbackWithoutKeys(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("prompts %d", calls)
 	}
-	f.options.Passphrase = nil
+	policyConfig := strings.Replace(strings.Join(lines, "\n"), "\nSSHORE_CONFIG\n", "\npreferredauthentications publickey\nSSHORE_CONFIG\n", 1)
+	if err := os.WriteFile(f.options.Executable, []byte(policyConfig), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := Dial(context.Background(), f.options); err == nil {
+		c.Close()
+		t.Fatal("password used despite PreferredAuthentications")
+	}
+	if calls != 1 {
+		t.Fatal("excluded password method prompted")
+	}
+	f.options.Secret = nil
 	if c, err := Dial(context.Background(), f.options); err == nil {
 		c.Close()
 		t.Fatal("authenticated without password")

@@ -263,7 +263,7 @@ func startForwardSession(f forwardConfig) (int, error) {
 func runForward(f forwardConfig, s *resourceService) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	var stopped resourceStopRequest
+	var stopped chan error
 	watcherDone := make(chan struct{})
 	go func() {
 		defer close(watcherDone)
@@ -307,10 +307,10 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 	}
 	args := forwardSSHArgs(f, forwardRemoteCommand(f))
 	at := slices.Index(args, "--")
-	connection := sshio.Options{Host: f.Host, Args: args[:at], Command: forwardRemoteCommand(f), Environment: s.sshEnvironment(), Directory: s.directory, IdentityCache: s.identityCache}
+	connection := sshio.Options{AllowForwarding: true, Host: f.Host, Args: args[:at], Command: forwardRemoteCommand(f), Environment: s.sshEnvironment(), Directory: s.directory}
 	if initial {
 		connection.Confirm = brokerSSHConfirmation(connection.Environment)
-		connection.Passphrase = brokerSSHPassphrase(connection.Environment)
+		connection.Secret = brokerSSHSecret(connection.Environment)
 	} else {
 		connection.Args = append([]string{"-o", "StrictHostKeyChecking=yes"}, connection.Args...)
 	}
@@ -402,7 +402,7 @@ func forwardSSHArgs(c forwardConfig, remoteCommand string) []string {
 func runForwardTransportForeground(ctx context.Context, executable string, c forwardConfig, in io.Reader, out, diagnostic io.Writer) (int, error) {
 	args := forwardSSHArgs(c, "")
 	at := slices.Index(args, "--")
-	connection, err := sshio.Dial(ctx, sshio.Options{Host: c.Host, Args: args[:at], Executable: executable, Confirm: confirmSSHHost, Passphrase: unlockSSHKey})
+	connection, err := sshio.Dial(ctx, sshio.Options{AllowForwarding: true, Host: c.Host, Args: args[:at], Executable: executable, Confirm: confirmSSHHost, Secret: promptSSHSecret})
 	if err != nil {
 		return 1, err
 	}

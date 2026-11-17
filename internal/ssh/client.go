@@ -2,6 +2,7 @@ package ssh
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -93,43 +94,86 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 	}()
 	cc := &cryptossh.ClientConfig{User: cfg.user, HostKeyCallback: callback, HostKeyAlgorithms: hostAlgos}
 	// Let the server accept none authentication before requiring local identities.
-	attempted := false
-	passwordAttempts := 0
+	attempts := map[string]int{}
+	preferred := cfg.get("preferredauthentications")
+	if preferred == "" {
+		preferred = "publickey,keyboard-interactive,password"
+	}
+	limit, e := strconv.Atoi(cfg.get("numberofpasswordprompts"))
+	if e != nil {
+		limit = 3
+	}
 	var identityErr error
+	ask := func(prompt string) (string, error) {
+		resume := budgets.pause()
+		defer resume()
+		secret, err := cfg.options.Secret(connecting, prompt)
+		defer clear(secret)
+		return string(secret), err
+	}
 	cc.AuthCallback = func(state *cryptossh.ClientAuthContext) (cryptossh.AuthMethod, error) {
-		if !attempted && slices.Contains(state.AllowedMethods, "publickey") {
-			attempted = true
-			methods, agentConn, e := cfg.authentication(connecting)
-			identityErr = e
-			if e == nil {
+		for _, method := range strings.Split(preferred, ",") {
+			if !slices.Contains(state.AllowedMethods, method) {
+				continue
+			}
+			if method == "publickey" {
+				if attempts[method] > 0 {
+					continue
+				}
+				attempts[method]++
+				methods, agentConn, err := cfg.authentication(connecting)
+				identityErr = err
+				if err != nil {
+					continue
+				}
 				if agentConn != nil {
 					resources = append(resources, agentConn)
 					stopAgent = context.AfterFunc(connecting, func() { agentConn.Close() })
 				}
 				return methods[0], nil
 			}
-		}
-		if slices.Contains(state.AllowedMethods, "password") && !cfg.enabled("batchmode") && cfg.get("passwordauthentication") != "no" && cfg.get("passwordauthentication") != "false" && cfg.options.Passphrase != nil {
-			limit, err := strconv.Atoi(cfg.get("numberofpasswordprompts"))
-			if err != nil {
-				limit = 3
+			if cfg.enabled("batchmode") || cfg.options.Secret == nil || attempts[method] >= limit {
+				continue
 			}
-			if passwordAttempts < limit {
-				passwordAttempts++
-				return cryptossh.PasswordCallback(func() (string, error) {
-					secret, err := cfg.options.Passphrase(connecting, "\x00password:"+cfg.user+"@"+cfg.host)
-					if err != nil {
-						return "", err
+			switch method {
+			case "password":
+				if cfg.get("passwordauthentication") == "no" || cfg.get("passwordauthentication") == "false" {
+					continue
+				}
+				attempts[method]++
+				return cryptossh.PasswordCallback(func() (string, error) { return ask("\x00password:" + cfg.user + "@" + cfg.host) }), nil
+			case "keyboard-interactive":
+				if cfg.get("kbdinteractiveauthentication") == "no" || cfg.get("kbdinteractiveauthentication") == "false" {
+					continue
+				}
+				attempts[method]++
+				return cryptossh.KeyboardInteractive(func(name, instruction string, questions []string, echoes []bool) ([]string, error) {
+					if len(questions) != len(echoes) {
+						return nil, fmt.Errorf("invalid SSH authentication challenge")
 					}
-					defer clear(secret)
-					return string(secret), nil
+					answers := make([]string, len(questions))
+					for i, question := range questions {
+						prompt := Challenge{Title: name, Instruction: instruction, Question: question, Echo: echoes[i]}
+						if i > 0 {
+							prompt.Title, prompt.Instruction = "", ""
+						}
+						data, err := json.Marshal(prompt)
+						if err != nil {
+							return nil, err
+						}
+						answers[i], err = ask("\x00challenge:" + string(data))
+						if err != nil {
+							return nil, err
+						}
+					}
+					return answers, nil
 				}), nil
 			}
 		}
-		if identityErr != nil {
-			return nil, identityErr
+		if attempts["password"] > 0 || attempts["keyboard-interactive"] > 0 {
+			return nil, fmt.Errorf("server rejected SSH authentication for %s@%s; check the login credentials and server authentication policy", cfg.user, cfg.host)
 		}
-		return nil, nil
+		return nil, identityErr
 	}
 
 	modern := cryptossh.SupportedAlgorithms()
@@ -164,7 +208,7 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 		hops := strings.Split(jump, ",")
 		first := hops[len(hops)-1]
 		jo := Options{Host: first, Executable: cfg.options.Executable, Environment: cfg.options.Environment, Directory: o.Directory, Confirm: o.Confirm, Diagnostic: o.Diagnostic}
-		jo.Passphrase, jo.IdentityCache = o.Passphrase, o.IdentityCache
+		jo.Secret = o.Secret
 		for i := 0; i < len(o.Args); i++ {
 			if o.Args[i] == "-F" && i+1 < len(o.Args) {
 				jo.Args = append(jo.Args, "-F", o.Args[i+1])

@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/files"
+	"github.com/pkg/sftp"
 )
 
 func testPeerTask() peerRecord {
@@ -59,7 +63,7 @@ func TestSFTPPeerTaskSnapshot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("in-process SFTP fixture requires Unix permission modes")
 	}
-	backend := testSFTPBackend(t, false)
+	backend := testSFTPBackend(t)
 	dir := filepath.Join(backend.root, "tasks")
 	task := testPeerTask()
 	if e := publishSFTPTask(backend.client, filepath.ToSlash(dir), task); e != nil {
@@ -200,4 +204,30 @@ func TestIncomingTaskConcurrentPublication(t *testing.T) {
 		}
 		stop()
 	}
+}
+
+func testSFTPBackend(t *testing.T) *struct {
+	client *sftp.Client
+	root   string
+} {
+	t.Helper()
+	a, b := net.Pipe()
+	go func() {
+
+		server, err := sftp.NewServer(a)
+		if err == nil {
+			_ = server.Serve()
+			server.Close()
+		}
+		_ = a.Close()
+	}()
+	client, err := files.NewSFTP(b, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close(); a.Close() })
+	return &struct {
+		client *sftp.Client
+		root   string
+	}{client, filepath.ToSlash(t.TempDir())}
 }

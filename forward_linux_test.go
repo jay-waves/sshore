@@ -118,7 +118,7 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 	}
 	ack := make(chan error, 1)
 	ack <- nil
-	s := &resourceService{record: resourceRecord{Kind: "forward", Name: "web", Host: "work", Version: version}, recordPath: filepath.Join(dir, "web.json"), ack: ack, stop: make(chan resourceStopRequest), abandoned: make(chan struct{})}
+	s := &resourceService{record: resourceRecord{Kind: "forward", Name: "web", Host: "work", Version: version}, recordPath: filepath.Join(dir, "web.json"), ack: ack, stop: make(chan chan error), abandoned: make(chan struct{})}
 	done := make(chan error, 1)
 	go func() {
 		_, e := runForward(forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, Retries: 1}, s)
@@ -187,7 +187,7 @@ func TestForwardRetryBoundaries(t *testing.T) {
 			}
 			ack := make(chan error, 1)
 			ack <- nil
-			s := &resourceService{record: resourceRecord{Kind: "forward", Name: "web", Host: "work", Version: version}, recordPath: filepath.Join(dir, "web.json"), ack: ack, stop: make(chan resourceStopRequest), abandoned: make(chan struct{})}
+			s := &resourceService{record: resourceRecord{Kind: "forward", Name: "web", Host: "work", Version: version}, recordPath: filepath.Join(dir, "web.json"), ack: ack, stop: make(chan chan error), abandoned: make(chan struct{})}
 			done := make(chan error, 1)
 			go func() {
 				_, e := runForward(forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, Retries: 1}, s)

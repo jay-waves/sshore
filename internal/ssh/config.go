@@ -19,14 +19,14 @@ import (
 // Environment and Directory belong to the initiating command, never daemon startup.
 type Options struct {
 	Host, Command, Executable, Directory string
+	AllowForwarding                      bool // Reserved for the product forward adapter.
 	Args, Environment                    []string
 	// Diagnostic receives negotiated algorithms only when SSH LogLevel is DEBUG or higher.
 	Diagnostic io.Writer
 	// Confirm receives a host key fingerprint. A nil callback requires an existing trusted key.
 	Confirm func(context.Context, string) (bool, error)
-	// Passphrase is available only through the initiating interactive frontend.
-	Passphrase    func(context.Context, string) ([]byte, error)
-	IdentityCache *IdentityCache
+	// Secret is available only through the initiating interactive frontend.
+	Secret func(context.Context, string) ([]byte, error)
 }
 
 type connectionConfig struct {
@@ -71,6 +71,15 @@ func resolveConfig(ctx context.Context, o Options) (*connectionConfig, error) {
 	}
 	// SSH settings are evaluated with the actual remote command for Match command.
 	args := []string{"-G", "-T", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "-o", "RequestTTY=no", "-o", "RemoteCommand=none"}
+	if !o.AllowForwarding {
+		for _, arg := range o.Args {
+			lower := strings.ToLower(arg)
+			if strings.HasPrefix(lower, "localforward") || strings.HasPrefix(lower, "remoteforward") || strings.HasPrefix(lower, "dynamicforward") || arg == "-L" || arg == "-R" || arg == "-D" {
+				return nil, fmt.Errorf("SSH configuration forwarding is unsupported; use sshore forward")
+			}
+		}
+		args = append(args, "-o", "ClearAllForwardings=yes")
+	}
 	args = append(args, o.Args...)
 	args = append(args, "--", o.Host)
 	if o.Command != "" {
@@ -209,4 +218,12 @@ func (c *connectionConfig) expand(value string) (string, error) {
 		result = filepath.Join(c.options.Directory, result)
 	}
 	return result, nil
+}
+
+// Challenge carries a server authentication prompt to the initiating frontend.
+type Challenge struct {
+	Title       string
+	Instruction string
+	Question    string
+	Echo        bool
 }

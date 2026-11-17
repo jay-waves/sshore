@@ -1,22 +1,23 @@
 package main
 
-// Exercise the existing readline input loop in a child of the current test executable.
-// No SSH, daemons, upgrade simulation, or additional versioned builds are used.
-
 import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/creack/pty"
+	"github.com/jay-waves/sshore/internal/sshtest"
+	"golang.org/x/term"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/creack/pty"
-	"golang.org/x/term"
 )
+
+// Exercise the existing readline input loop in a child of the current test executable.
+// No SSH, daemons, upgrade simulation, or additional versioned builds are used.
 
 func TestSessionPickerPTYHelper(t *testing.T) {
 	if os.Getenv("SSHORE_PICKER_TEST") != "1" {
@@ -140,14 +141,14 @@ func TestSSHUnlockPTYHelper(t *testing.T) {
 		ctx, cancel = context.WithTimeout(context.Background(), 200*time.Millisecond)
 	}
 	defer cancel()
-	unlock := unlockSSHKey
+	unlock := promptSSHSecret
 	if mode == "broker" || mode == "cancel" {
 		env, stop, err := startSpawnAuth()
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer stop()
-		unlock = brokerSSHPassphrase(env)
+		unlock = brokerSSHSecret(env)
 	}
 	secret, err := unlock(ctx, "fixture-key")
 	if mode == "cancel" {
@@ -199,7 +200,7 @@ func TestSSHUnlockPTY(t *testing.T) {
 			for {
 				n, readErr := master.Read(buf)
 				output.Write(buf[:n])
-				if !typed && strings.Contains(output.String(), "Passphrase for fixture-key:") {
+				if !typed && strings.Contains(output.String(), "fixture-key:") {
 					if mode != "cancel" {
 						_, err = master.Write([]byte("  quiet secret  \r"))
 						if err != nil {
@@ -229,5 +230,28 @@ func TestSSHUnlockPTY(t *testing.T) {
 				t.Fatal("unlock did not finish")
 			}
 		})
+	}
+}
+
+func TestExecInvokesSSHWithoutPTY(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "ssh")
+	argsFile := filepath.Join(dir, "args")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SSHORE_TEST_ARGS\"\nexit 7\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSHORE_SSH", script)
+	t.Setenv("SSHORE_TEST_ARGS", argsFile)
+	t.Setenv("SSHORE_SSH", sshtest.Wrap(t, script, os.Environ()))
+	code, err := run([]string{"exec", "work", "printf '%s' --help"})
+	if err != nil || code != 7 {
+		t.Fatalf("exit %d: %v", code, err)
+	}
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"); len(got) != 3 || got[0] != "--" || got[1] != "fixture" || got[2] != "printf '%s' --help" {
+		t.Fatalf("args %q", got)
 	}
 }

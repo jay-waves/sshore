@@ -3,11 +3,10 @@
 [![CI](https://github.com/jay-waves/sshore/actions/workflows/ci.yml/badge.svg)](https://github.com/jay-waves/sshore/actions/workflows/ci.yml)
 
 Start a shell, leave it running, and return later. sshore combines local and
-remote shell sessions with SSH file copies, TCP tunnels and SFTP mounts.
+remote shell sessions with SSH file copies, TCP forwards and SFTP mounts.
 
-**Local:** Linux or Windows amd64/x86-64. **Remote:** Linux amd64/x86-64.
-Requires system OpenSSH for configuration. Connections and file-key signing run
-inside sshore; an existing SSH agent can also supply keys. ARM and macOS are not supported.
+**Local and remote platforms:** see [OS and shell support](#os-and-shell-support).
+Requires system OpenSSH for configuration. Connections run inside sshore; public-key signing uses an existing system SSH agent. ARM and macOS are not supported.
 In the examples, `work` is a host or an alias from your SSH config.
 
 ## Install
@@ -69,23 +68,13 @@ Screens, scrollback and detached output are not saved.
 
 ```mermaid
 flowchart LR
-    copy["Local cp"] --> helper["Prepare matching remote sshore; confirm any update"]
-    helper --> verified["Transfer once; receiver verifies before publication"]
-    start["spawn / launch"] --> shell["Work in a shell"]
-    shell -->|"Nested spawn; keep root client"| child["Prepare child on its owning daemon"]
-    child -->|"Attachment ready; launcher exits"| nested["Interact with child shell"]
-    child -->|"Startup failure"| shell
-    nested -->|"detach / exit; return one level"| shell
-    nested -->|"Further spawn"| child
-    shell -->|"detach / switch"| background["Keep running under startup lifetime"]
+    client["Client"] -->|"SSH; matching release"| shell["Shell"]
+    shell -->|"detach"| background["Keep running"]
     background -->|"attach"| shell
-    shell -->|"Remote copy / forward / mount request"| review["Detach; review locally"]
-    review -->|"Approve copy; reconnect"| shell
-    review -->|"Approve forward / mount"| resource["Independent tunnel or mount"]
+    shell -->|"copy / mount / forward request"| review["Review locally"]
+    review -->|"approve"| operation["Copy or independent mount / forward"]
     shell -->|"exit / cancel"| ended["Shell ends"]
-    background -->|"spawn: owner exits / remote heartbeat lost"| ended
-    agent["Agent via MCP"] -->|"SSH; prepare matching release"| bash["Persistent remote Bash"]
-    bash -->|"Explicit close"| ended
+    background -->|"spawn owner exits or lifetime SSH is lost"| ended
 ```
 
 ## Agent access
@@ -116,8 +105,8 @@ sshore pstree                   # Local task relationships and resource directio
 sshore list --json              # Machine-readable inventory.
 ```
 
-Use aliases or short IDs from `list` with `attach`, `cancel`, `rename` and `review`.
-ID shows a fixed reference with an optional alias; `rename` changes only the alias.
+Use the six-character ID or optional NAME from `list` with `attach`, `cancel`,
+`rename` and `review`. `rename` changes NAME while preserving the hash ID.
 DETAIL summarizes directories, mappings or errors; use `--json` for full diagnostics.
 
 CHECKED shows when shell states were confirmed; confirmed ended shells leave the default list.
@@ -129,10 +118,11 @@ does not prove its target service is healthy.
 
 ## SSH — connect your way
 
-Use SSH aliases and `IdentityFile` entries from `~/.ssh/config`, or keys loaded
-into an SSH agent. Encrypted file keys require an interactive unlock unless the
-owning daemon already has a valid cached key. Independent frontend connections
-may ask again; password authentication also requires an interactive terminal.
+Use SSH aliases from `~/.ssh/config`. Password and keyboard-interactive login
+require an interactive terminal. For public-key login, load keys with `ssh-add`.
+`-i` and `IdentityFile` select agent identities using a public key file or `.pub`
+sidecar; sshore does not load or unlock private keys. SSH configuration forwarding
+is disabled; use `sshore forward`. OpenSSH compatibility is intentionally limited.
 MCP cannot prompt for credentials.
 Managed remote shells require the server to permit Unix-socket forwarding
 (`AllowStreamLocalForwarding`); preparation then exits and the connection reaches
@@ -145,8 +135,16 @@ replaced by a direct connection from your computer.
 sshore launch work build -- -J jump -p 2222
 ```
 
-Supported shell targets are bash, sh, zsh and fish on Linux, and pwsh or cmd on
-Windows. Terminal/shell pairings have different validation coverage; see
+## OS and shell support
+
+| OS (amd64/x86-64 only) | bash | sh | zsh | fish | PowerShell 7 (pwsh) | cmd |
+| --- | --- | --- | --- | --- | --- | --- |
+| Linux | ✓ | ✓ | ✓ | ✓ | — | — |
+| Windows 11 / Server 2025 or newer | — | — | — | — | ✓ | ✓ |
+
+Linux supports local and remote shells. Windows supports local shells and SSH
+clients; remote shell hosting requires Linux. Shell targets describe supported
+configurations, not exhaustive validation of every terminal pairing; see
 [shell and terminal validation](SSHORE.md#shell-and-terminal-validation).
 
 ## Copy — transfer files
@@ -177,7 +175,7 @@ Only regular files are supported; existing destinations are never overwritten.
 Destination filesystems must support hard links. Failed batches keep completed
 files. For pipes and other options, see `sshore cp --help`.
 
-## Tunnel — forward a port
+## Forward — map a port
 
 From your **local shell**, give the listener first, then the service:
 

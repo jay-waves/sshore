@@ -59,8 +59,7 @@ func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
 		c.Connection.Environment = s.sshEnvironment()
 		c.Connection.Directory = s.directory
 		c.Connection.Confirm = brokerSSHConfirmation(c.Connection.Environment)
-		c.Connection.Passphrase = brokerSSHPassphrase(c.Connection.Environment)
-		c.Connection.IdentityCache = s.identityCache
+		c.Connection.Secret = brokerSSHSecret(c.Connection.Environment)
 	}
 	if s != nil {
 		c.PeerMetadata, _ = json.Marshal(s.peerTask())
@@ -86,7 +85,7 @@ func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
 }
 
 func mountSSHOptions(o ftpOptions) sshio.Options {
-	return sshio.Options{Host: o.host, Args: append([]string{"-o", "ClearAllForwardings=yes"}, sshio.WithoutForwarding(o.ssh)...), Command: remoteCommand(options{command: "mount-agent", server: o.server}), Confirm: confirmSSHHost, Passphrase: unlockSSHKey}
+	return sshio.Options{Host: o.host, Args: append([]string{"-o", "ClearAllForwardings=yes"}, sshio.WithoutForwarding(o.ssh)...), Command: remoteCommand(options{command: "mount-agent", server: o.server}), Confirm: confirmSSHHost, Secret: promptSSHSecret}
 }
 
 func readMountApprovalPath(input promptReader, hint string) (string, error) {

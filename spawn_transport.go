@@ -221,7 +221,7 @@ func serveSSHConfirmation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/unlock" {
-		secret, err := unlockSSHKey(r.Context(), string(prompt))
+		secret, err := promptSSHSecret(r.Context(), string(prompt))
 		if err != nil {
 			http.Error(w, "terminal input failed", 409)
 			return

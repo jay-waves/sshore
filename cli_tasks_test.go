@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"os"
@@ -336,5 +337,76 @@ func TestShortTaskRejectsInvalidConnection(t *testing.T) {
 	}
 	if _, err = run([]string{"cancel", ids[remoteShellIdentity("work", "instance")].code}); err == nil || !strings.Contains(err.Error(), "invalid shell connection host") {
 		t.Fatal("mismatched route accepted", err)
+	}
+}
+
+func TestKillOptions(t *testing.T) {
+	o, err := parseOptions([]string{"cancel", "host", "build", "--server", "/a b/sshore", "--", "-p", "2222"})
+	if err != nil || o.command != "cancel" || o.session != "build" || o.list {
+		t.Fatalf("%+v %v", o, err)
+	}
+	for _, args := range [][]string{
+		{"cancel"}, {"cancel", "host"}, {"cancel", "host", "../other"},
+		{"cancel", "host", "one", "two"}, {"cancel", "host", "one", "--quiet"},
+		{"cancel", "host", "one", "--download-dir", "/tmp"}, {"cancel", "host", "one", "--no-escape"},
+	} {
+		if _, err := parseOptions(args); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+	var out bytes.Buffer
+	if err := showHelp([]string{"cancel"}, &out); err != nil || !strings.Contains(out.String(), "without confirmation") {
+		t.Fatal(out.String(), err)
+	}
+}
+
+func TestRenameOptions(t *testing.T) {
+	for _, args := range [][]string{{"rename", "host", "old", "new"}, {"rename", "host", "old", "new", "--", "-p22"}} {
+		o, err := parseOptions(args)
+		if err != nil || o.session != "old" || o.newName != "new" {
+			t.Fatal(o, err)
+		}
+	}
+	for _, args := range [][]string{{"rename", "host", "old"}, {"rename", "host", "old", "new", "extra"}, {"rename", "host", "old", "bad/name"}, {"rename", "host", "old", "new", "--quiet"}} {
+		if _, err := parseOptions(args); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+
+	o, err := parseOptions([]string{"rename", "12", "old", "new"})
+	if err != nil || o.host != "12" || o.session != "old" || o.newName != "new" {
+		t.Fatalf("numeric host: %+v %v", o, err)
+	}
+
+}
+
+func TestCancelAllScope(t *testing.T) {
+	for _, tc := range []struct {
+		args     []string
+		host     string
+		all, bad bool
+	}{
+		{[]string{"--all"}, "", true, false},
+		{[]string{"fedora", "--all"}, "fedora", true, false},
+		{[]string{"--all", "fedora", "--", "-p", "2222"}, "fedora", true, false},
+		{[]string{"--local", "--all"}, "", true, false},
+		{[]string{"fedora", "shell", "--all"}, "", true, true},
+		{[]string{"--all", "--all"}, "", true, true},
+		{[]string{"--all", "--json"}, "", true, true},
+		{[]string{"fedora", "shell", "--", "--all"}, "", false, false},
+	} {
+		o, all, err := parseCancelAll(tc.args)
+		if all != tc.all || (err != nil) != tc.bad || (!tc.bad && all && o.host != tc.host) {
+			t.Errorf("%v: host=%q all=%t err=%v", tc.args, o.host, all, err)
+		}
+	}
+}
+
+func TestListNumbersAreNotSelectors(t *testing.T) {
+	for _, command := range []string{"attach", "cancel", "review"} {
+		code, err := run([]string{command, "1"})
+		if code != 2 || err == nil || !strings.Contains(err.Error(), "display-only") {
+			t.Fatalf("%s: %d %v", command, code, err)
+		}
 	}
 }

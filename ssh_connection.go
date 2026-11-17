@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -14,7 +15,7 @@ import (
 )
 
 func sshConnectionOptions(o options) sshio.Options {
-	return sshio.Options{Host: o.host, Command: "export SSHORE_DIRECT_TRANSPORT=1; " + remoteCommand(o), Args: o.ssh, Environment: o.environment, Directory: o.sshDirectory, Confirm: confirmSSHHost, Passphrase: unlockSSHKey}
+	return sshio.Options{Host: o.host, Command: "export SSHORE_DIRECT_TRANSPORT=1; " + remoteCommand(o), Args: o.ssh, Environment: o.environment, Directory: o.sshDirectory, Confirm: confirmSSHHost, Secret: promptSSHSecret}
 }
 func confirmSSHHost(ctx context.Context, prompt string) (bool, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
@@ -30,13 +31,36 @@ func confirmSSHHost(ctx context.Context, prompt string) (bool, error) {
 	answer, err := input.Read(cleanText(prompt)+" Type yes: ", false)
 	return strings.TrimSpace(answer) == "yes", err
 }
-func unlockSSHKey(ctx context.Context, identity string) ([]byte, error) {
+func promptSSHSecret(ctx context.Context, identity string) ([]byte, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
-		return nil, fmt.Errorf("SSH key unlock requires an interactive terminal")
+		return nil, fmt.Errorf("SSH authentication requires an interactive terminal")
 	}
-	prompt := "Passphrase for " + cleanText(identity) + ": "
+	prompt := cleanText(identity) + ": "
 	if strings.HasPrefix(identity, "\x00password:") {
 		prompt = cleanText(strings.TrimPrefix(identity, "\x00password:")) + "'s password: "
+	}
+	if strings.HasPrefix(identity, "\x00challenge:") {
+		var challenge sshio.Challenge
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(identity, "\x00challenge:")), &challenge); err != nil {
+			return nil, err
+		}
+		for _, line := range []string{challenge.Title, challenge.Instruction} {
+			if line != "" {
+				fmt.Fprintln(os.Stderr, cleanText(line))
+			}
+		}
+		prompt = cleanText(challenge.Question)
+		if challenge.Echo {
+			input, err := newLocalInput()
+			if err != nil {
+				return nil, err
+			}
+			defer input.Close()
+			stop := context.AfterFunc(ctx, func() { input.Close() })
+			defer stop()
+			answer, err := input.Read(prompt, false)
+			return []byte(answer), err
+		}
 	}
 	secret, err := readSSHSecret(ctx, prompt)
 	if err != nil {
@@ -44,7 +68,7 @@ func unlockSSHKey(ctx context.Context, identity string) ([]byte, error) {
 	}
 	if len(secret) > 4096 {
 		clear(secret)
-		return nil, fmt.Errorf("SSH passphrase is too long")
+		return nil, fmt.Errorf("SSH response is too long")
 	}
 	return secret, nil
 }
@@ -127,7 +151,7 @@ func readSSHSecret(parent context.Context, prompt string) ([]byte, error) {
 				default:
 					if len(secret) >= 4096 {
 						clear(event.data)
-						return nil, fmt.Errorf("SSH passphrase is too long")
+						return nil, fmt.Errorf("SSH response is too long")
 					}
 					secret = append(secret, key)
 				}
@@ -140,7 +164,7 @@ func readSSHSecret(parent context.Context, prompt string) ([]byte, error) {
 	}
 }
 
-func brokerSSHPassphrase(env []string) func(context.Context, string) ([]byte, error) {
+func brokerSSHSecret(env []string) func(context.Context, string) ([]byte, error) {
 	address, token := localEnvironmentValue(env, "SSHORE_CONFIRM_ADDR"), localEnvironmentValue(env, "SSHORE_CONFIRM_TOKEN")
 	if address == "" {
 		return nil
@@ -152,7 +176,7 @@ func brokerSSHPassphrase(env []string) func(context.Context, string) ([]byte, er
 		}
 		defer response.Body.Close()
 		if response.StatusCode != 200 {
-			return nil, fmt.Errorf("SSH key unlock unavailable")
+			return nil, fmt.Errorf("SSH authentication unavailable")
 		}
 		secret, err := io.ReadAll(io.LimitReader(response.Body, 4097))
 		if err != nil || len(secret) > 4096 {
@@ -186,7 +210,6 @@ func sshioOptionsForSpawn(o options, req localDaemonRequest) sshio.Options {
 	connection := sshConnectionOptions(o)
 	connection.Environment = req.Env
 	connection.Confirm = brokerSSHConfirmation(req.Env)
-	connection.Passphrase = brokerSSHPassphrase(req.Env)
-	connection.IdentityCache = req.identityCache
+	connection.Secret = brokerSSHSecret(req.Env)
 	return connection
 }

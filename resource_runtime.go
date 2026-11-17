@@ -20,10 +20,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 type resourceRecord struct {
@@ -50,7 +50,6 @@ type resourceStartup struct {
 }
 
 type resourceConfig struct {
-	identityCache          *sshio.IdentityCache
 	UID                    string `json:",omitempty"`
 	MountName              string
 	MountApproval          *files.MountApproval
@@ -59,19 +58,18 @@ type resourceConfig struct {
 	Args                   []string
 	AuthAddress, AuthToken string
 }
-type resourceStopRequest = chan error
 type resourceService struct {
-	identityCache *sshio.IdentityCache
-	startup       io.Writer
-	log           io.Writer
-	environment   []string
-	directory     string
-	committed     func()
+	startup     io.Writer
+	log         io.Writer
+	environment []string
+	directory   string
+	committed   func()
 
-	status     resourceStatusState
+	statusMu   sync.Mutex
+	status     resourceStatus
 	record     resourceRecord
 	config     resourceConfig
-	stop       chan resourceStopRequest
+	stop       chan chan error
 	ack        <-chan error
 	abandoned  <-chan struct{}
 	recordPath string
@@ -192,10 +190,6 @@ func runResourceWorker() (code int, resultErr error) {
 }
 
 func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, log io.Writer, env []string, directory string, committed func()) (code int, resultErr error) {
-	if config.identityCache == nil {
-		config.identityCache = sshio.NewIdentityCache()
-		defer config.identityCache.Close()
-	}
 	kind := "mount"
 	var o ftpOptions
 	var e error
@@ -277,7 +271,7 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 	if kind == "forward" && config.Forward.Reverse {
 		direction = "->"
 	}
-	s := &resourceService{identityCache: config.identityCache, startup: startup, log: log, environment: env, directory: directory, committed: committed, record: resourceRecord{UID: config.UID, Kind: kind, Name: o.name, Host: o.host, Version: version, Token: resourceToken(), ReadOnly: o.readOnly, Direction: direction}, config: config, stop: make(chan resourceStopRequest), ack: ack, abandoned: abandoned, recordPath: filepath.Join(dir, slot+".json")}
+	s := &resourceService{startup: startup, log: log, environment: env, directory: directory, committed: committed, record: resourceRecord{UID: config.UID, Kind: kind, Name: o.name, Host: o.host, Version: version, Token: resourceToken(), ReadOnly: o.readOnly, Direction: direction}, config: config, stop: make(chan chan error), ack: ack, abandoned: abandoned, recordPath: filepath.Join(dir, slot+".json")}
 	// The lock excludes a live owner. Remove only its stale metadata, never a files.
 	if e = os.Remove(s.recordPath); e != nil && !os.IsNotExist(e) {
 		return 1, e

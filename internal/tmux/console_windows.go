@@ -56,10 +56,10 @@ func RawConsole() (func(), error) {
 	return restore, nil
 }
 
-func terminalInputReader() io.Reader {
+func terminalInputReader(handle windows.Handle) io.Reader {
 	return &consoleInput{readUnits: func(b []uint16) (int, error) {
 		var n uint32
-		err := windows.ReadConsole(windows.Handle(os.Stdin.Fd()), &b[0], uint32(len(b)), &n, nil)
+		err := windows.ReadConsole(handle, &b[0], uint32(len(b)), &n, nil)
 		return int(n), err
 	}}
 }
@@ -106,16 +106,32 @@ func FlushInput() error {
 	return windows.FlushConsoleInputBuffer(windows.Handle(os.Stdin.Fd()))
 }
 
-var cancelTerminalSynchronousIO = windows.NewLazySystemDLL("kernel32.dll").NewProc("CancelSynchronousIo")
+var cancelSynchronousIO = windows.NewLazySystemDLL("kernel32.dll").NewProc("CancelSynchronousIo")
 
 // stop joins the pinned console reader before another session or SSH prompt can
 // consume input. emit must not block after ctx is cancelled.
 func StartKeyboard(parent context.Context, emit func([]byte, error)) (func(), error) {
-	return startTerminalKeyboardReader(parent, emit, terminalInputReader())
+	// Give each reader its own console input handle. Reusing stdin after a
+	// canceled ReadConsole can consume the next owner's first key on ConPTY.
+	name, err := windows.UTF16PtrFromString("CONIN$")
+	if err != nil {
+		return nil, err
+	}
+	handle, err := windows.CreateFile(name, windows.GENERIC_READ|windows.GENERIC_WRITE, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	stop, err := startTerminalKeyboardReader(parent, emit, terminalInputReader(handle))
+	if err != nil {
+		windows.CloseHandle(handle)
+		return nil, err
+	}
+	var once sync.Once
+	return func() { once.Do(func() { stop(); windows.CloseHandle(handle) }) }, nil
 }
 
 func startTerminalKeyboardReader(parent context.Context, emit func([]byte, error), reader io.Reader) (func(), error) {
-	if err := cancelTerminalSynchronousIO.Find(); err != nil {
+	if err := cancelSynchronousIO.Find(); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
@@ -173,7 +189,7 @@ func startTerminalKeyboardReader(parent context.Context, emit func([]byte, error
 		timer := time.NewTicker(10 * time.Millisecond)
 		defer timer.Stop()
 		for {
-			cancelTerminalSynchronousIO.Call(uintptr(started.thread))
+			cancelSynchronousIO.Call(uintptr(started.thread))
 			select {
 			case <-readDone:
 				return
@@ -183,8 +199,6 @@ func startTerminalKeyboardReader(parent context.Context, emit func([]byte, error
 	}()
 	return func() { cancel(); <-done }, nil
 }
-
-var cancelSynchronousWrite = windows.NewLazySystemDLL("kernel32.dll").NewProc("CancelSynchronousIo")
 
 type writeRequest struct {
 	data   []byte
@@ -202,7 +216,7 @@ type threadInput struct {
 }
 
 func NewTerminalInput(t *Terminal) (*threadInput, error) {
-	if err := cancelSynchronousWrite.Find(); err != nil {
+	if err := cancelSynchronousIO.Find(); err != nil {
 		return nil, err
 	}
 	l := &threadInput{requests: make(chan writeRequest), stop: make(chan struct{}), done: make(chan struct{}), released: make(chan struct{})}
@@ -266,7 +280,7 @@ func (l *threadInput) Stop() error {
 				return
 			default:
 			}
-			cancelSynchronousWrite.Call(uintptr(l.thread))
+			cancelSynchronousIO.Call(uintptr(l.thread))
 			select {
 			case <-l.done:
 				return

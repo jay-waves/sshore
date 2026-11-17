@@ -276,3 +276,5 @@ func localSessionInventory(details ...bool) (inventory, error) {
 	inv.Peers, e = collectPeerViews()
 	return inv, e
 }
+
+func checkPlatform() error { return nil }

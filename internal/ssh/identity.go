@@ -4,12 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
-	"runtime"
 	"strings"
-	"sync"
 
 	cryptossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -66,8 +63,7 @@ func publicIdentity(path string) cryptossh.PublicKey {
 	return key
 }
 
-func (c *connectionConfig) fileIdentities(ctx context.Context) ([]cryptossh.Signer, map[string]bool, []*cryptossh.Certificate, error) {
-	var signers []cryptossh.Signer
+func (c *connectionConfig) publicIdentities() (map[string]bool, []*cryptossh.Certificate, error) {
 	var certificates []*cryptossh.Certificate
 	allowed := map[string]bool{}
 	var failures []error
@@ -93,39 +89,11 @@ func (c *connectionConfig) fileIdentities(ctx context.Context) ([]cryptossh.Sign
 		}
 		remember(publicIdentity(path + ".pub"))
 		remember(publicIdentity(path + "-cert.pub"))
-		data, err := os.ReadFile(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				missing = append(missing, path)
-			} else {
-				failures = append(failures, fmt.Errorf("identity %s: %w", path, err))
-			}
-			continue
-		}
-		if key, _, _, _, e := cryptossh.ParseAuthorizedKey(data); e == nil {
+		if key := publicIdentity(path); key != nil {
 			remember(key)
-			continue
+		} else if publicIdentity(path+".pub") == nil {
+			missing = append(missing, path+".pub (load the private key with ssh-add)")
 		}
-		if runtime.GOOS != "windows" {
-			info, statErr := os.Stat(path)
-			if statErr != nil || info.Mode().Perm()&0077 != 0 {
-				failures = append(failures, fmt.Errorf("identity %s: private key permissions must exclude group and other users", path))
-				continue
-			}
-		}
-		// OpenSSH encrypted keys embed the public key even without a sidecar.
-		_, parseErr := cryptossh.ParseRawPrivateKey(data)
-		var encrypted *cryptossh.PassphraseMissingError
-		if errors.As(parseErr, &encrypted) {
-			remember(encrypted.PublicKey)
-		}
-		signer, err := c.fileSigner(ctx, path, data)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("identity %s: %w", path, err))
-			continue
-		}
-		remember(signer.PublicKey())
-		signers = append(signers, signer)
 	}
 	for _, name := range c.values["certificatefile"] {
 		if name == "none" {
@@ -138,122 +106,12 @@ func (c *connectionConfig) fileIdentities(ctx context.Context) ([]cryptossh.Sign
 		}
 		remember(publicIdentity(path))
 	}
-	if len(signers) == 0 && len(allowed) == 0 && len(failures) == 0 {
+	if len(allowed) == 0 && len(failures) == 0 {
 		if len(missing) > 0 {
 			failures = append(failures, fmt.Errorf("IdentityFile not found: %s", strings.Join(missing, ", ")))
 		} else {
 			failures = append(failures, fmt.Errorf("no IdentityFile configured"))
 		}
 	}
-	return signers, allowed, certificates, errors.Join(failures...)
-}
-
-func (c *connectionConfig) fileSigner(ctx context.Context, path string, data []byte) (cryptossh.Signer, error) {
-	if c.options.IdentityCache != nil {
-		if signer, ok := c.options.IdentityCache.Get(path, data); ok {
-			return signer, nil
-		}
-	}
-	key, err := cryptossh.ParseRawPrivateKey(data)
-	if err == nil {
-		return cryptossh.NewSignerFromKey(key)
-	}
-	var encrypted *cryptossh.PassphraseMissingError
-	if !errors.As(err, &encrypted) {
-		return nil, err
-	}
-	if c.enabled("batchmode") || c.options.Passphrase == nil {
-		return nil, fmt.Errorf("encrypted key requires an interactive passphrase")
-	}
-	public := encrypted.PublicKey
-	if public == nil {
-		public = publicIdentity(path + ".pub")
-	}
-	if public == nil {
-		return nil, fmt.Errorf("encrypted key requires a public .pub file")
-	}
-	return &fileSigner{ctx: ctx, path: path, data: data, public: public, prompt: c.options.Passphrase, cache: c.options.IdentityCache}, nil
-}
-
-// The public key is offered before unlocking: rejected identities never prompt.
-type fileSigner struct {
-	ctx    context.Context
-	path   string
-	data   []byte
-	public cryptossh.PublicKey
-	prompt func(context.Context, string) ([]byte, error)
-	cache  *IdentityCache
-	mu     sync.Mutex
-	signer cryptossh.Signer
-}
-
-func (s *fileSigner) PublicKey() cryptossh.PublicKey { return s.public }
-func (s *fileSigner) unlock() (cryptossh.Signer, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.signer != nil {
-		return s.signer, nil
-	}
-	if err := s.ctx.Err(); err != nil {
-		return nil, err
-	}
-	if budgets, _ := s.ctx.Value(authenticationBudgetKey{}).(*authenticationBudgets); budgets != nil {
-		resume := budgets.pause()
-		defer resume()
-	}
-	if s.cache != nil {
-		release, err := s.cache.Acquire(s.ctx, s.path)
-		if err != nil {
-			return nil, err
-		}
-		defer release()
-		if signer, ok := s.cache.Get(s.path, s.data); ok {
-			s.signer = signer
-			return signer, nil
-		}
-	}
-	secret, err := s.prompt(s.ctx, s.path)
-	defer clear(secret)
-	if err != nil {
-		return nil, err
-	}
-	key, err := cryptossh.ParseRawPrivateKeyWithPassphrase(s.data, secret)
-	if err != nil {
-		return nil, fmt.Errorf("unlock identity %s: %w", s.path, err)
-	}
-	signer, err := cryptossh.NewSignerFromKey(key)
-	if err != nil {
-		return nil, err
-	}
-	if string(signer.PublicKey().Marshal()) != string(s.public.Marshal()) {
-		return nil, fmt.Errorf("identity public key does not match %s", s.path)
-	}
-	if s.cache != nil {
-		signer, err = s.cache.Add(s.path, s.data, key)
-		if err != nil {
-			return nil, err
-		}
-	}
-	s.signer = signer
-	return signer, nil
-}
-func (s *fileSigner) Sign(random io.Reader, data []byte) (*cryptossh.Signature, error) {
-	signer, err := s.unlock()
-	if err != nil {
-		return nil, err
-	}
-	return signer.Sign(random, data)
-}
-func (s *fileSigner) SignWithAlgorithm(random io.Reader, data []byte, algorithm string) (*cryptossh.Signature, error) {
-	signer, err := s.unlock()
-	if err != nil {
-		return nil, err
-	}
-	if a, ok := signer.(cryptossh.AlgorithmSigner); ok {
-		return a.SignWithAlgorithm(random, data, algorithm)
-	}
-	if algorithm != "" && algorithm != signer.PublicKey().Type() {
-		return nil, fmt.Errorf("unsupported signature algorithm %s", algorithm)
-	}
-	return signer.Sign(random, data)
+	return allowed, certificates, errors.Join(failures...)
 }

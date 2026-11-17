@@ -43,9 +43,9 @@ const sshOptions = `
 for example: --port 2222 -- -J jump. The legacy -- -p PORT form is supported.
 Do not combine --port with SSH -p or -o Port.
 Configuration options: -p -i -J -F -l -o -E -v/-vv/-vvv -4 -6.
-Keys come from IdentityFile or an SSH agent. Encrypted files need an interactive
-unlock unless cached by the owning daemon. Password login requires an interactive
-terminal. Compression, agent/X11
+Keys must be loaded into the system agent with ssh-add. IdentityFile/-i selects
+agent identities via public keys or .pub sidecars. Password and keyboard-interactive
+login require an interactive terminal. SSH config forwarding is disabled; use forward. Compression, agent/X11
 forwarding and ProxyCommand are unsupported; unsupported requests fail.
 `
 
@@ -87,8 +87,7 @@ For a single stateless command outside MCP, use sshore exec HOST 'COMMAND'.
 ## Setup
 
 Configure the MCP client with command "sshore" and args ["mcp"]. It owns stdio;
-diagnostics go to stderr. Use an SSH config host alias with an unencrypted
-IdentityFile or an available agent key. MCP cannot prompt to unlock file keys. Remote hosting requires Linux amd64 and the matching sshore release.
+diagnostics go to stderr. Use an SSH config host alias with an available agent key. MCP cannot prompt for credentials. Remote hosting requires Linux amd64 and the matching sshore release.
 Missing remote software may be installed automatically. If host trust or an
 update needs review, ask the user to run sshore launch HOST, then reconnect.
 Do not bypass host verification or supply update confirmation on their behalf.
@@ -100,9 +99,11 @@ Do not bypass host verification or supply update confirmation on their behalf.
    Do not reuse or close sessions belonging to unrelated work.
 2. Call session_execute with {"session_id":S,"code":"pwd; uname -a","wait_ms":1000}.
    Submit a complete Bash script; optional stdin is fixed input, not a live stream.
-   Save the returned id as E. Only one script can run per session.
-3. Call session_read with {"session_id":S,"execution_id":E,"wait_ms":1000}.
-   On each subsequent read, include the returned cursor unchanged. Keep S and E
+   Save the returned id as E. Consume any returned output and save its cursor as C
+   (use an empty cursor if no output was returned). Only one script can run per session.
+3. If more output is needed, call session_read with
+   {"session_id":S,"execution_id":E,"cursor":C,"wait_ms":1000}.
+   On each subsequent read, use the newly returned cursor unchanged. Keep S and E
    unchanged; do not resubmit the script just to obtain more output.
 4. Check state and exit_code. A completed script can still have open output
    streams from background tasks; output_closed means all retained output has
@@ -131,7 +132,7 @@ Do not bypass host verification or supply update confirmation on their behalf.
 
 Execute COMMAND once over SSH, without a remote PTY.
 System ssh -G supplies connection settings. IdentityFile and SSH agent keys are
-supported; encrypted file keys and password login require an interactive terminal.
+supported; password and keyboard-interactive login require an interactive terminal.
 Standard input, output, error and the SSH exit status pass through.
 No persistent sshore shell is created and no remote installation is required.
 Use an SSH config host alias for connection options.

@@ -50,10 +50,10 @@ func TestTaskInventoryCurrentShell(t *testing.T) {
 			t.Setenv("SSHORE_LOCAL_SESSION", current)
 			var out bytes.Buffer
 			writeTaskInventory(&out, inventory{LocalShells: []localShellView{
-				{ID: 1, identity: "local:current", Name: "work", State: "attached", Temporary: true},
-				{ID: 2, identity: "local:other", Name: "other", State: "attached"},
-				{ID: 3, identity: "local:replaced", Name: "old", State: "unavailable"},
-			}, Shells: []shellView{{TaskID: 4, Host: "remote", Name: "work", State: "attached", Historical: true}}})
+				{order: 1, identity: "local:current", Name: "work", State: "attached", Temporary: true},
+				{order: 2, identity: "local:other", Name: "other", State: "attached"},
+				{order: 3, identity: "local:replaced", Name: "old", State: "unavailable"},
+			}, Shells: []shellView{{order: 4, Host: "remote", Name: "work", State: "attached", Historical: true}}})
 			want := 0
 			if current == "local:current" {
 				want = 1
@@ -145,12 +145,12 @@ func TestTaskTableTerminalWidth(t *testing.T) {
 func TestInventoryHostGroups(t *testing.T) {
 	var out bytes.Buffer
 	inv := inventory{Host: "server", RemoteQueried: true,
-		Shells: []shellView{{TaskID: 1, Name: "build", State: "detached"}},
+		Shells: []shellView{{order: 1, Name: "build", State: "detached"}},
 		Resources: []resourceView{
-			{TaskID: 2, ID: "mount/local", Host: "server", Worker: "running", local: true},
-			{TaskID: 3, ID: "forward/remote", Host: "upstream", Worker: "running"},
+			{order: 2, ID: "mount/local", Host: "server", Worker: "running", local: true},
+			{order: 3, ID: "forward/remote", Host: "upstream", Worker: "running"},
 		},
-		Peers: []peerView{{TaskID: 4, ID: "peer/abcd1234/mount/work", Manager: "laptop", State: "unknown"}},
+		Peers: []peerView{{order: 4, ID: "peer/abcd1234/mount/work", Manager: "laptop", State: "unknown"}},
 	}
 	writeTaskInventory(&out, inv)
 	for _, want := range []string{"TYPE", "HOST  local", "REMOTE", "(work)", "laptop", "unknown (read-only)"} {
@@ -210,8 +210,8 @@ func TestTaskInventoryEndedHistory(t *testing.T) {
 func TestTaskInventoryCheckedAndColor(t *testing.T) {
 	now := time.Now()
 	inv := inventory{Shells: []shellView{
-		{TaskID: 1, Host: "work", Name: "api", State: "detached", Historical: true, ConfirmedAt: now.Add(-12 * time.Minute)},
-		{TaskID: 2, Host: "work", Name: "构建", State: "attached", Historical: true, ConfirmedAt: now.Add(-12 * time.Minute)},
+		{order: 1, Host: "work", Name: "api", State: "detached", Historical: true, ConfirmedAt: now.Add(-12 * time.Minute)},
+		{order: 2, Host: "work", Name: "构建", State: "attached", Historical: true, ConfirmedAt: now.Add(-12 * time.Minute)},
 	}}
 	var out bytes.Buffer
 	writeTaskInventory(&out, inv)
@@ -219,8 +219,8 @@ func TestTaskInventoryCheckedAndColor(t *testing.T) {
 		t.Fatal(out.String())
 	}
 	inv.Shells[1].ConfirmedAt = now.Add(-2 * time.Hour)
-	inv.Shells = append(inv.Shells, shellView{TaskID: 3, Host: "work", Name: "missing", State: "attached", Historical: true})
-	inv.LocalShells = []localShellView{{ID: 4, identity: "here", Name: "current", State: "attached"}}
+	inv.Shells = append(inv.Shells, shellView{order: 3, Host: "work", Name: "missing", State: "attached", Historical: true})
+	inv.LocalShells = []localShellView{{order: 4, identity: "here", Name: "current", State: "attached"}}
 	t.Setenv("SSHORE_LOCAL_SESSION", "here")
 	var plain, colored bytes.Buffer
 	writeTaskInventoryColor(&plain, inv, false)
@@ -261,8 +261,8 @@ func TestShellCheckedAge(t *testing.T) {
 func TestTaskListDisplaysShortIDs(t *testing.T) {
 	var out bytes.Buffer
 	writeTaskInventory(&out, inventory{
-		LocalShells: []localShellView{{ID: 20179, ShortID: "d012ab", Name: "first", State: "detached"}},
-		Shells:      []shellView{{TaskID: 183739, ShortID: "a0123b", Host: "remote", Name: "second", State: "attached"}},
+		LocalShells: []localShellView{{order: 20179, ShortID: "d012ab", Name: "first", State: "detached"}},
+		Shells:      []shellView{{order: 183739, ShortID: "a0123b", Host: "remote", Name: "second", State: "attached"}},
 	})
 	lines := strings.Split(out.String(), "\n")
 	for _, row := range []struct{ code, name string }{{"d012ab", "(first)"}, {"a0123b", "(second)"}} {

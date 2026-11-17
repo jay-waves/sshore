@@ -177,7 +177,7 @@ func TestSFTPCopyIntegrity(t *testing.T) {
 	if err := UploadReader(backend.client, io.MultiReader(bytes.NewReader(data), iotest.ErrReader(failure)), path.Join(backend.root, "failed"), -1); !errors.Is(err, failure) {
 		t.Fatal(err)
 	}
-	entries, err := os.ReadDir(backend.root)
+	entries, err := os.ReadDir(backend.localRoot)
 	if err != nil || len(entries) != 3 {
 		t.Fatal("failed upload published or leaked temporary files", entries, err)
 	}
@@ -187,7 +187,7 @@ func TestSFTPDownloadSizeAndWriterFailures(t *testing.T) {
 	backend := testCopyBackend(t)
 	data := bytes.Repeat([]byte("content"), 10000)
 	name := path.Join(backend.root, "source")
-	if err := os.WriteFile(name, data, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(backend.localRoot, "source"), data, 0600); err != nil {
 		t.Fatal(err)
 	}
 	for _, size := range []int64{0, int64(len(data) - 1), int64(len(data) + 1)} {
@@ -224,21 +224,84 @@ type copyFailWriter struct{ err error }
 
 func (w copyFailWriter) Write(p []byte) (int, error) { return 0, w.err }
 
-func testCopyBackend(t *testing.T) *ftpFS {
+type copyTestBackend struct {
+	*ftpFS
+	localRoot string
+}
+
+// Requests use Unix paths; only the fixture adapter sees native host paths.
+type copyTestFS struct {
+	*FS
+	root string
+}
+
+func (f *copyTestFS) request(r *sftp.Request) (*sftp.Request, error) {
+	clone := r.WithContext(r.Context())
+	translate := func(p string) (string, error) {
+		if p != "/fixture" && !strings.HasPrefix(p, "/fixture/") {
+			return "", os.ErrPermission
+		}
+		return filepath.Join(f.root, filepath.FromSlash(strings.TrimPrefix(p, "/fixture"))), nil
+	}
+	var err error
+	clone.Filepath, err = translate(r.Filepath)
+	if err != nil {
+		return nil, err
+	}
+	if r.Target != "" {
+		clone.Target, err = translate(r.Target)
+	}
+	return clone, err
+}
+func (f *copyTestFS) Fileread(r *sftp.Request) (io.ReaderAt, error) {
+	r, err := f.request(r)
+	if err != nil {
+		return nil, err
+	}
+	return f.FS.Fileread(r)
+}
+func (f *copyTestFS) Filewrite(r *sftp.Request) (io.WriterAt, error) {
+	r, err := f.request(r)
+	if err != nil {
+		return nil, err
+	}
+	return f.FS.Filewrite(r)
+}
+func (f *copyTestFS) Filecmd(r *sftp.Request) error {
+	r, err := f.request(r)
+	if err != nil {
+		return err
+	}
+	return f.FS.Filecmd(r)
+}
+func (f *copyTestFS) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
+	r, err := f.request(r)
+	if err != nil {
+		return nil, err
+	}
+	return f.FS.Filelist(r)
+}
+func (f *copyTestFS) Lstat(r *sftp.Request) (sftp.ListerAt, error) { return f.Filelist(r) }
+
+func testCopyBackend(t *testing.T) *copyTestBackend {
 	t.Helper()
 	a, b := net.Pipe()
-	go func() { _ = ServeCopy(a); a.Close() }()
+	root := t.TempDir()
+	backend := &copyTestFS{FS: newCopyFS(), root: root}
+	server := sftp.NewRequestServer(a, sftp.Handlers{FileGet: backend, FilePut: backend, FileCmd: backend, FileList: backend})
+	go func() { _ = server.Serve(); _ = server.Close() }()
 	client, err := NewSFTP(b, b)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { b.Close(); client.Close(); a.Close() })
-	return &ftpFS{client: client, root: filepath.ToSlash(t.TempDir())}
+	t.Cleanup(func() { b.Close(); client.Close(); server.Close(); backend.Close() })
+	return &copyTestBackend{ftpFS: &ftpFS{client: client, root: "/fixture"}, localRoot: root}
 }
 
 func TestUploadReceiverVerification(t *testing.T) {
 	a, b := net.Pipe()
-	backend := newCopyFS()
+	localRoot := t.TempDir()
+	backend := &copyTestFS{FS: newCopyFS(), root: localRoot}
 	noRead := &copyRejectReads{}
 	server := sftp.NewRequestServer(a, sftp.Handlers{FileGet: noRead, FilePut: backend, FileCmd: backend, FileList: backend})
 	go func() { server.Serve(); server.Close() }()
@@ -247,7 +310,7 @@ func TestUploadReceiverVerification(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { b.Close(); client.Close(); server.Close(); backend.Close() })
-	root := filepath.ToSlash(t.TempDir())
+	root := "/fixture"
 	data := bytes.Repeat([]byte("verified"), 10000)
 	if err := UploadReader(client, bytes.NewReader(data), path.Join(root, "good"), int64(len(data))); err != nil {
 		t.Fatal(err)
@@ -255,7 +318,7 @@ func TestUploadReceiverVerification(t *testing.T) {
 	if noRead.calls.Load() != 0 {
 		t.Fatal("upload downloaded content for verification")
 	}
-	actual, err := os.ReadFile(path.Join(root, "good"))
+	actual, err := os.ReadFile(filepath.Join(localRoot, "good"))
 	if err != nil || !bytes.Equal(actual, data) {
 		t.Fatal("published data mismatch", err)
 	}
@@ -280,7 +343,7 @@ func TestUploadReceiverVerification(t *testing.T) {
 	if err = client.Remove(virtual); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := os.ReadDir(root)
+	entries, err := os.ReadDir(localRoot)
 	if err != nil || len(entries) != 1 {
 		t.Fatal("verification failure leaked file", entries, err)
 	}

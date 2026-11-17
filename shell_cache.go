@@ -64,7 +64,7 @@ type shellSnapshot struct {
 	State       string            `json:"state"`
 	ConfirmedAt time.Time         `json:"confirmed_at"`
 	Unconfirmed bool              `json:"unconfirmed,omitempty"`
-	Active      bool              `json:"local_connection_active,omitempty"`
+	Active      bool              `json:"-"`
 }
 
 func shellCachePath(host, name string, scope ...string) (string, error) {
@@ -102,7 +102,6 @@ func saveShellSnapshotLocked(s shellSnapshot) error {
 	if err != nil {
 		return err
 	}
-	s.Active = false
 	if s.State == "exited" || s.State == "not-listed" {
 		if err := recordRemoteShellTreeState(s); err != nil {
 			return err
@@ -199,7 +198,6 @@ func readShellSnapshotsLocked() ([]shellSnapshot, error) {
 type shellConnection struct {
 	snapshot shellSnapshot
 	lock     *os.File
-	final    bool
 }
 
 func trackShellConnection(o options) (*shellConnection, error) {
@@ -249,7 +247,6 @@ func (s *shellConnection) confirm(name, state string) {
 		}
 	}
 	s.snapshot.State, s.snapshot.ConfirmedAt, s.snapshot.Unconfirmed = state, time.Now(), false
-	s.final = true
 	if err := saveShellSnapshot(s.snapshot); err != nil {
 		termui.Log(os.Stderr, termui.Warning, "[sshore] Shell state not saved: %s\n", cleanText(err.Error()))
 	}
@@ -259,7 +256,7 @@ func (s *shellConnection) close() {
 		return
 	}
 	defer s.lock.Close()
-	if !s.final {
+	if s.snapshot.State == "attached" {
 		s.snapshot.Unconfirmed = true
 		if err := saveShellSnapshot(s.snapshot); err != nil {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Shell state not saved: %s\n", cleanText(err.Error()))

@@ -14,7 +14,7 @@ import (
 type localShellView struct {
 	Lifetime  string `json:"lifetime"`
 	Temporary bool   `json:"temporary,omitempty"`
-	ID        uint64 `json:"-"`
+	order     uint64
 	ShortID   string `json:"short_id,omitempty"`
 	identity  string
 	Name      string `json:"name"`
@@ -95,9 +95,9 @@ func localShells() ([]localShellView, error) {
 	}
 	for i := range rows {
 		id := ids[rows[i].identity]
-		rows[i].ID, rows[i].ShortID = id.order, id.code
+		rows[i].order, rows[i].ShortID = id.order, id.code
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	sort.Slice(rows, func(i, j int) bool { return rows[i].order < rows[j].order })
 	return rows, nil
 }
 
@@ -182,18 +182,6 @@ func runLocalCommand(o options) (int, error) {
 type localStartup struct {
 	Record localShellRecord
 	Error  string
-}
-
-func startLocalSession(name string, owners ...spawnOwner) (localShellRecord, error) {
-	var owner spawnOwner
-	if len(owners) > 0 {
-		owner = owners[0]
-	}
-	return startLocalSessionWithOptions(options{session: name, owner: owner})
-}
-
-func startLocalSessionWithOptions(o options) (localShellRecord, error) {
-	return startLocalSessionContext(context.Background(), o)
 }
 
 func startLocalSessionContext(ctx context.Context, o options) (localShellRecord, error) {

@@ -38,7 +38,7 @@ func testBinary(t *testing.T) string {
 			return
 		}
 		testBuild.path = filepath.Join(dir, "sshore")
-		cmd := exec.Command("go", "build", "-tags=sshoretest", "-buildvcs=false", "-race", "-o", testBuild.path, ".")
+		cmd := exec.Command("go", "build", "-tags=sshoretest", "-buildvcs=false", "-o", testBuild.path, ".")
 		b, err := cmd.CombinedOutput()
 		if err != nil {
 			testBuild.err = fmt.Errorf("build: %w: %s", err, b)

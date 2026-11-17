@@ -1,116 +1,72 @@
 # Terms and relationships
 
-This document defines the project vocabulary. Commands are documented by
-`sshore COMMAND --help`; implementation and security rules belong in
-[SSHORE.md](SSHORE.md) and [SECURITY.md](SECURITY.md).
+This document defines the shared vocabulary, not an object hierarchy.
+CLI help owns command syntax; [SSHORE.md](SSHORE.md) owns implementation and
+[SECURITY.md](SECURITY.md) owns authorization and trust boundaries.
 
-## Machines and connections
-
-| Term | Meaning |
-| --- | --- |
-| Local computer | The machine running the client or managing a mount/forward. Local is relative to that operation. |
-| Remote host / SSH destination | The host reached through the built-in SSH connection, often named by an alias resolved from OpenSSH configuration. |
-| Remote account | The authenticated Unix account. Shell management excludes other users. |
-| Client | The foreground sshore process attaching to a local or remote shell. It is not the shell itself. |
-| Transport | The SSH connection carrying a shell attachment, independent forward or SFTP mount. |
-| Attachment | One client's live connection to a shell. At most one client is attached at a time. |
-| Root frontend | The client owning the user's real terminal across nested attachments. It handles terminal input and shortcuts; daemons own shells and next-hop connections. |
-| Attachment handoff | A command in a managed shell transfers interaction to a prepared child attachment and exits after readiness confirmation, retaining the parent as its return target. It does not transfer spawn ownership. |
-| Attachment route | A private path through parent daemons to a nested attachment. It retains the originating host's connection context; a host label is not a substitute for the route. |
-| Peer / manager | Another computer managing a resource whose advisory record is visible on the remote account. |
-
-## Shells and lifecycle
+## Tasks
 
 | Term | Meaning |
 | --- | --- |
-| Mux | The detach/reattach capability: explicitly leave a shell running and attach again later. Each shell session has one terminal; mux does not imply split panes. `internal/tmux` implements native terminals, ownership primitives, shell startup, attachment I/O and detach confirmation; it does not use the external tmux program. The internal smux library separately multiplexes transport streams. |
-| Session | A running task managed by sshore: a shell, forward or mount. Pending reviews are requests, not started sessions. |
-| MCP Bash session | A persistent, non-PTY remote Bash process managed through MCP tools; independent of a terminal attachment. |
-| Shell | A shell process and native terminal owned by a daemon, local on Linux/Windows or remote on Linux. `launch` creates a persistent session that survives detach and connection loss. |
-| Spawn | A temporary shell created by `spawn`, displayed in trees as `spawn/ID (alias)`. It can detach and reattach but ends with its original owner. A remote spawn also ends on loss of its lifetime SSH connection. |
-| Spawn owner | The parent shell process that launched `spawn`, identified by PID and creation identity. Attach never transfers ownership. |
-| Lifetime SSH connection | A daemon-owned connection on the initiating host keeping a remote spawn alive independently of foreground attachments. It is not automatically reconnected. |
-| Daemon | A background owner of native terminals and lifecycle. One local daemon per user/state root hosts multiple shells and forward transports, and supervises mount workers; Linux remote shells share a daemon per runtime directory, with separate helper endpoints. |
-| Alias / shell name | An optional public label on a fixed task ID. Creation may supply an alias; `rename` replaces it without changing the task identity or lifetime. Legacy names remain aliases. |
-| Task | A context-dependent display term: an identified item in `list`, or a program running under a shell. It is not a separate execution model; the managed lifecycle uses session, shell and resource. Identifying shell programs for termination requires process identity checks, not just a displayed PID. |
-| Shell lifetime | Startup policy: `parent` for local spawn, `heartbeat` for remote spawn (original parent plus lifetime SSH), `persistent` for launch. Detach and attach never change this policy. These labels do not measure connection health. |
-| Owner context | Display-only identity of the managed shell from which a spawn was started, when known. It stays fixed across attachments; it does not replace the actual spawn owner PID/creation identity, which may belong to a wrapper. |
-| Attachment source | The managed shell from which the current attachment was opened, when known. It may change on reattachment and conveys no lifetime ownership. |
-| Detach | Explicitly end an attachment while preserving its shell according to its startup lifetime. Ctrl+B d and `sshore detach` request this. |
-| Disconnect | Loss of transport. It releases an attachment. Persistent shells survive; spawns survive only while their owner and, remotely, their lifetime SSH connection remain alive. |
-| Cancel | The public action for discarding a request, stopping a resource or ending a named remote shell. Its scope depends on the identifier. |
-| Recovery | A temporary shell on the authenticated SSH connection, without persistent shell or normal sshore operations. It is not a sandbox. |
-| Release version | Full MAJOR.MINOR.PATCH identifier used for compatibility. There is no independent sshore protocol version counter. |
+| Task | A managed item shown by sshore: a shell, mount, forward or pending request. This is a display umbrella, not a common execution model. Programs running inside a shell are its processes, not another sshore task type. |
+| Shell / session | A daemon-owned shell process with one terminal. Local shells run on Linux or Windows; remote shells run on Linux. A session means a shell session, never a mount or forward. |
+| Spawn | A shell created by `spawn`. It ends with its original owner; a remote spawn also ends when its daemon-owned lifetime SSH connection is lost. A shell created by `launch` survives detach and connection loss. |
+| MCP session | A persistent remote Bash process controlled by MCP tools, using pipes instead of a terminal. It cannot be attached to interactively. |
+| Mount | A remote directory exposed to local applications through SFTP and FUSE/WinFsp. |
+| Forward | A fixed TCP port mapping through SSH. It carries TCP traffic, including an existing SOCKS service, but does not implement SOCKS itself. Use this term instead of tunnel. |
+| Copy / transfer | A one-time regular-file copy through SFTP, invoked directly or executed after approval. It belongs to its executing connection. |
+| Resource | A collective name for mounts and forwards, which have lifetimes independent of shell attachments. It does not introduce another task type. |
 
-## Requests, resources and views
+## Connections and ownership
 
 | Term | Meaning |
 | --- | --- |
-| Request | Bounded metadata proposing a file operation or forward; receiving it grants no permission. |
-| Pending approval | A local single-use request record awaiting user review. Its task ID and optional alias identify the request and are retained if approval starts an independent resource. |
-| Review | The separate local command that selects a pending request, collects consent and attempts execution. |
-| Consent / approval | The user's explicit acceptance in review. SSH authentication alone is not consent. |
-| Copy | A regular-file operation expressed as `cp SOURCE... TARGET`; not full system cp or scp compatibility. |
-| Tunnel | The README feature category for TCP port forwarding through SSH. |
-| Transfer | A one-time regular-file copy. Both direct and approved copies use SFTP; approved copies run on a client-initiated shell stream after local review. |
-| Resource | An independently managed local mount or forward, with its own transport and lifetime. Shells, resources and pending reviews share an alias namespace on their managing computer. Approved resources retain their review reference and alias. |
-| Job | The Windows Job Object used to contain a local shell process tree; not an application-level task type. |
-| Worker | A separate local process owning a mount and its SSH transport, started and reaped by the local daemon. Forwards run directly under the daemon; older independent forward workers remain manageable. |
-| Mount | A remote directory exposed to local applications through SFTP and FUSE/WinFsp, identified as `mount/NAME`. |
-| Recent connection | A private local default for a previously connected host/shell and its SSH transport settings; it is not proof that the remote shell is still available. |
-| Mount agent | A transient remote sshore process that carries SFTP and filesystem notifications over a mount-owned SSH connection; it is not a persistent shell daemon. |
-| Forward | A fixed TCP port mapping through SSH, identified as `forward/NAME`. It can carry an existing SOCKS service; it does not itself implement SOCKS. |
-| Native forwarding | OpenSSH `-L/-R/-D` configured for a connection, separate from a managed `forward` resource. `-D` creates a SOCKS proxy. |
-| Task ID | Immutable instance identity with a short public reference; see [task identity](#task-id). |
-| Inventory | A diagnostic view of resources, requests, shells or peer records. It is not an authorization source. |
-| Peer record | A remote advisory mirror, identified as `peer/KEY/RESOURCE`; it cannot control the original resource. |
-| Receipt | A bounded diagnostic record of a shell/resource ending. It is not proof of complete task cleanup or remote write outcome. |
+| Local / remote | Relative to the operation: local is the computer running the client or managing the resource; remote is its SSH destination. The remote account is the authenticated Unix account, excluding other users. |
+| Client | The sshore process interacting with the user. For nested attachments, the client at the user's terminal continues to own input and shortcuts. |
+| Daemon | The background process owning shells or coordinating local resources. Worker and helper processes are implementation roles, not additional task types. |
+| Attachment | A client's live interactive connection to a shell. A shell permits one attachment at a time. Detach ends the attachment; disconnect loses its transport. Neither changes the shell's startup lifetime. Mux means this detach/reattach capability. |
+| Transport | The connection carrying operations, usually SSH; local attachments use local control connections. A remote spawn's lifetime SSH connection is separate from its foreground attachment. |
+| Owner | The original process whose lifetime controls a spawn, verified by process identity. Reattaching never transfers ownership. The managed shell shown as owner in `pstree` is display context, not proof of OS process ancestry. |
+| Attachment source | The managed shell from which the current attachment was opened. It may change on reattachment and does not control the target shell's lifetime. |
+| Peer | Another computer managing a resource. Its remotely visible peer record is advisory and read-only; it cannot control the original resource. |
 
-## Relationships and scope
+Nested attachments retain the initiating host's connection context through a
+private route. Switching attachments does not move SSH configuration or signing
+credentials to the user's computer. See
+[connection ownership](SSHORE.md#shell-ownership-and-attachment).
 
-- A **client** attaches through a **transport** to a **shell** owned by a remote
-  **daemon**. Detach removes the attachment, not the shell.
-- A remote helper creates a **request**. Local **review** obtains consent and checks
-  its source shell before attempting a transfer or starting a forward.
-- A **transfer** belongs to its executing connection. An approved **forward** becomes
-  an independent resource and leaves the source shell detached.
-- A **mount** is created explicitly on its managing computer; it is not a remote
-  approval request. Ending a shell does not stop its independent resources.
-- `cancel review/NAME` discards a request; `cancel mount/NAME` or
-  `cancel forward/NAME` stops that local resource; `cancel HOST NAME` ends that
-  remote shell and its identified tasks. A peer record is read-only.
-- `origin:` and `:` name the **client endpoint** of the current connection,
-  even inside a remote shell. This is the current attached client, not the
-  computer that originally created the persistent shell.
-- A bare `-` in direct `cp` names the invoking process's **standard stream**:
-  stdin as source, stdout as target. It does not name the client computer or
-  request an interactive selection. `origin:-` and `./-` name an ordinary file.
-- An empty client endpoint is selected locally. A filled `origin:PATH` or
-  `origin:PORT` directly specifies a local operation's endpoint; in a remote
-  request it is a **local hint**, displayed as an editable review default.
-- In `forward LISTENER SERVICE`, the **listener** accepts connections and the
-  **service** receives them. The **pending local port** must be selected or
-  accepted locally before the mapping becomes an executable forward.
-- Submitting all valid local paths or the local port constitutes **consent**.
-  Selecting a request or completion candidate alone does not.
-- **Worker running**, **transport connected** and **target healthy** are different
-  claims. Listings do not probe target services; missing peer heartbeats mean
-  unknown state, not confirmed termination.
+## Requests and approval
 
-Business filename prefixes follow the public commands: `spawn`, `cp`,
-`mount`, `forward` and `review`. `internal/files` is the shared, flat implementation package for `cp` and `mount`;
-its shared SFTP and file primitives belong to neither command adapter.
-The mount protocol is SFTP over SSH. `review` replaces
-`approve`, and `cancel` replaces the public `stop`/`kill` verbs. Internal wire or
-function names may retain historical terminology.
+| Term | Meaning |
+| --- | --- |
+| Request | A proposed copy, mount or forward awaiting local review. A pending approval is this request's state, not another object. Receiving or selecting a request grants no permission. |
+| Approval | The user's explicit acceptance of the local endpoints in `review`, after source validation. Consent means the same thing; SSH authentication alone is insufficient. Approval is single-use. |
+| Recovery | A transient shell on the authenticated SSH connection when normal sshore operation is unavailable. It has no sshore persistence or normal management features and is not a sandbox. |
 
-## Task ID
+An approved copy runs on the client's shell stream. An approved mount or forward becomes
+an independent resource and retains the request's ID and NAME.
+Ending a source shell does not stop its independent resources.
 
-An immutable random-hash identity allocated by the managing account at creation.
-Its six-character hexadecimal prefix is the public reference; aliases are optional
-and mutable. Allocation excludes reserved prefixes, and ended task IDs are not
-reassigned. Independently managed accounts may have colliding prefixes; ambiguous
-references require an explicit scope. ID selection stays bound to its original
-instance across alias changes, detach and reconnect.
+`origin:` and `:` name the current attached client's endpoint, not the computer
+that originally created the shell. A path or port supplied by a remote request
+is an editable local default, not permission to use it. Command syntax, endpoint
+selection and standard-stream handling belong to `cp --help` and `forward --help`.
 
-An **account identity** is a locally salted OS identifier used only to group host display records. It is not an authentication identity; cloning its state can duplicate it. `sshore reset` replaces it.
+## Identity and state
+
+| Term | Meaning |
+| --- | --- |
+| ID / NAME | A task has one immutable hash ID; its six-character prefix is the command reference. An optional NAME is a readable label set at creation or by `rename`; it identifies the same task. References are scoped to the managing account, so ambiguous references need an explicit scope. |
+| Account identity | A private identifier used to group account display records. It is not SSH authentication; copying its state can duplicate it. `reset` replaces it. |
+
+### Task ID
+
+The hash identifies the instance; its prefix is the short form of that same ID.
+NAME is optional and does not change the ID or lifetime. Shells, mounts, forwards
+and pending requests share the managing computer's name namespace.
+Allocation and reference rules belong to `task_identity.go`.
+
+Lists, cached connections, peer records and exit history are observations, not
+authorization. A running worker does not prove its SSH connection or target is
+healthy. Missing observations mean unknown state, not confirmed termination.
+See [inventory and diagnostics](SSHORE.md#inventory-and-diagnostics).

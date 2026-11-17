@@ -39,7 +39,9 @@ jobs:
         run: go test -count=1 -tags=sshoretest -timeout=5m ./...
       - name: Tests with race detector
         if: ${{ inputs.extended }}
-        run: go test -count=1 -race -tags=sshoretest -timeout=5m ./...
+        env:
+          GOFLAGS: -race
+        run: go test -count=1 -tags=sshoretest -timeout=5m ./...
       - name: Installer tests (Linux)
         if: inputs.extended && runner.os == 'Linux'
         run: |

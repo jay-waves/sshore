@@ -20,18 +20,18 @@ import (
 
 func (c *connectionConfig) authentication(ctx context.Context) ([]cryptossh.AuthMethod, net.Conn, error) {
 	if preferred := c.get("preferredauthentications"); preferred != "" && !slices.Contains(strings.Split(preferred, ","), "publickey") {
-		return nil, nil, fmt.Errorf("PreferredAuthentications excludes publickey; built-in SSH requires public-key authentication")
+		return nil, nil, fmt.Errorf("PreferredAuthentications excludes publickey; public-key authentication is disabled")
 	}
 	minimumRSA, err := c.minimumRSASize()
 	if err != nil {
 		return nil, nil, err
 	}
 	if c.get("pubkeyauthentication") == "false" || c.get("pubkeyauthentication") == "no" {
-		return nil, nil, fmt.Errorf("built-in SSH requires public-key authentication")
+		return nil, nil, fmt.Errorf("public-key authentication is disabled")
 	}
 	signers, conn, agentErr := c.agentSigners(ctx)
-	files, allowed, certificates, fileErr := c.fileIdentities(ctx)
-	selected := make([]cryptossh.Signer, 0, len(signers)+len(files))
+	allowed, certificates, fileErr := c.publicIdentities()
+	selected := make([]cryptossh.Signer, 0, len(signers))
 	seen := map[string]bool{}
 	add := func(signer cryptossh.Signer) {
 		key, parseErr := cryptossh.ParsePublicKey(signer.PublicKey().Marshal())
@@ -60,10 +60,7 @@ func (c *connectionConfig) authentication(ctx context.Context) ([]cryptossh.Auth
 			others = append(others, signer)
 		}
 	}
-	for _, signer := range files {
-		add(signer)
-	}
-	// Certificates reuse the chosen agent or file signer for their underlying key.
+	// Certificates reuse the chosen agent signer for their underlying key.
 	for _, cert := range certificates {
 		for _, signer := range append([]cryptossh.Signer(nil), selected...) {
 			if string(cert.Key.Marshal()) == string(signer.PublicKey().Marshal()) {
@@ -134,7 +131,7 @@ func (c *connectionConfig) authentication(ctx context.Context) ([]cryptossh.Auth
 		if conn != nil {
 			conn.Close()
 		}
-		detail := errors.Join(fileErr, agentErr, errors.New("check IdentityFile and SSH agent keys"))
+		detail := errors.Join(fileErr, agentErr, errors.New("load a key with ssh-add; check IdentityFile public keys and SSH agent"))
 		return nil, nil, fmt.Errorf("no usable SSH public-key identity: %s", strings.ReplaceAll(detail.Error(), "\n", "; "))
 	}
 	return []cryptossh.AuthMethod{cryptossh.PublicKeys(selected...)}, conn, nil

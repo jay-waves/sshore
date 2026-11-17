@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,8 +19,11 @@ import (
 
 type managedSession struct {
 	shell      *tmux.Bash
-	executions map[string]*tmux.BashExecution
-	order      []string
+	executions []sessionExecution
+}
+type sessionExecution struct {
+	id        string
+	execution *tmux.BashExecution
 }
 type SessionsManager struct {
 	mu       sync.Mutex
@@ -43,7 +47,7 @@ func (m *SessionsManager) Open(ctx context.Context, in OpenInput) (Session, erro
 		return Session{}, err
 	}
 	id := rand.Text()
-	m.sessions[id] = &managedSession{shell: b, executions: make(map[string]*tmux.BashExecution)}
+	m.sessions[id] = &managedSession{shell: b}
 	return Session{ID: id, Host: in.Host, State: "ready"}, nil
 }
 func (m *SessionsManager) List(_ context.Context, in OpenInput) (Sessions, error) {
@@ -71,10 +75,10 @@ func (m *SessionsManager) Execute(ctx context.Context, in ExecuteInput) (Executi
 	if err := ctx.Err(); err != nil {
 		return Execution{}, err
 	}
-	if len(s.order) >= 16 {
+	if len(s.executions) >= 16 {
 		oldest := -1
-		for i, id := range s.order {
-			execution := s.executions[id]
+		for i, record := range s.executions {
+			execution := record.execution
 			select {
 			case <-execution.Done:
 				select {
@@ -91,16 +95,14 @@ func (m *SessionsManager) Execute(ctx context.Context, in ExecuteInput) (Executi
 		if oldest < 0 {
 			return Execution{}, fmt.Errorf("execution limit reached; output streams are still open")
 		}
-		delete(s.executions, s.order[oldest])
-		s.order = append(s.order[:oldest], s.order[oldest+1:]...)
+		s.executions = slices.Delete(s.executions, oldest, oldest+1)
 	}
 	execution, err := s.shell.Run(in.Code, in.Stdin)
 	if err != nil {
 		return Execution{}, err
 	}
 	id := rand.Text()
-	s.executions[id] = execution
-	s.order = append(s.order, id)
+	s.executions = append(s.executions, sessionExecution{id, execution})
 	return Execution{ID: id, State: "running"}, nil
 }
 
@@ -109,7 +111,12 @@ func (m *SessionsManager) Read(ctx context.Context, in ReadInput) (Output, error
 	s := m.sessions[in.SessionID]
 	var e *tmux.BashExecution
 	if s != nil {
-		e = s.executions[in.ExecutionID]
+		for _, record := range s.executions {
+			if record.id == in.ExecutionID {
+				e = record.execution
+				break
+			}
+		}
 	}
 	m.mu.Unlock()
 	if e == nil {

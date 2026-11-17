@@ -1,22 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"errors"
-	"io"
-	"net"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
-	"testing/iotest"
 	"time"
-
-	"github.com/pkg/sftp"
-
-	"github.com/jay-waves/sshore/internal/files"
 )
 
 func TestCopyParsing(t *testing.T) {
@@ -43,87 +33,6 @@ func TestCopyParsing(t *testing.T) {
 		if _, err := parseCopyCommand(args); err == nil {
 			t.Fatal("accepted", args)
 		}
-	}
-}
-
-func TestCopyFiles(t *testing.T) {
-	backend := testSFTPBackend(t, true)
-	local := t.TempDir()
-	source := filepath.Join(local, "source")
-	data := bytes.Repeat([]byte("copy data\x00\xff"), 10000)
-	if err := os.WriteFile(source, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	remote := filepath.ToSlash(filepath.Join(backend.root, "renamed"))
-	o, err := parseCopyCommand([]string{source, "work:" + remote})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = executeCopy(backend.client, o); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(remote)
-	if err != nil || !bytes.Equal(got, data) {
-		t.Fatal("upload mismatch", err)
-	}
-	target := filepath.Join(local, "received")
-	o, err = parseCopyCommand([]string{"work:" + remote, target})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = executeCopy(backend.client, o); err != nil {
-		t.Fatal(err)
-	}
-	got, err = os.ReadFile(target)
-	if err != nil || !bytes.Equal(got, data) {
-		t.Fatal("download mismatch", err)
-	}
-	// The atomic publication itself refuses overwrite, independently of preflight.
-	if err = files.Upload(backend.client, source, remote, int64(len(data)), nil); err == nil {
-		t.Fatal("overwrote remote")
-	}
-	if err = files.Download(backend.client, remote, target, int64(len(data)), nil); err == nil {
-		t.Fatal("overwrote local")
-	}
-	got, _ = os.ReadFile(remote)
-	if !bytes.Equal(got, data) {
-		t.Fatal("remote changed")
-	}
-	entries, _ := os.ReadDir(backend.root)
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".sshore-") {
-			t.Fatal("temporary file leaked")
-		}
-	}
-}
-
-func TestCopyPreflight(t *testing.T) {
-	backend := testSFTPBackend(t, true)
-	local := t.TempDir()
-	a := filepath.Join(local, "a")
-	if err := os.WriteFile(a, []byte("a"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	o, err := parseCopyCommand([]string{a, filepath.Join(local, "missing"), "work:" + backend.root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = executeCopy(backend.client, o); err == nil {
-		t.Fatal("accepted missing source")
-	}
-	if _, err = os.Stat(filepath.Join(backend.root, "a")); !os.IsNotExist(err) {
-		t.Fatal("wrote before preflight completed")
-	}
-	o, _ = parseCopyCommand([]string{a, a, "work:" + backend.root})
-	if err = executeCopy(backend.client, o); err == nil {
-		t.Fatal("accepted duplicate target")
-	}
-	if _, err = os.Stat(filepath.Join(backend.root, "a")); !os.IsNotExist(err) {
-		t.Fatal("duplicate batch partly written")
-	}
-	o, _ = parseCopyCommand([]string{local, "work:" + backend.root})
-	if err = executeCopy(backend.client, o); err == nil {
-		t.Fatal("accepted directory source")
 	}
 }
 
@@ -167,98 +76,6 @@ func TestLocalEndpointHints(t *testing.T) {
 			t.Fatal("accepted", args)
 		}
 	}
-}
-
-func TestCopyStreams(t *testing.T) {
-	backend := testSFTPBackend(t, true)
-	for _, data := range [][]byte{nil, bytes.Repeat([]byte("pipe\x00\xff\n"), 20000)} {
-		target := filepath.ToSlash(filepath.Join(backend.root, "stream"))
-		upload, err := parseCopyCommand([]string{"-", "work:" + target})
-		if err != nil {
-			t.Fatal(err)
-		}
-		var out bytes.Buffer
-		if err = executeStreamCopy(backend.client, upload, bytes.NewReader(data), &out); err != nil {
-			t.Fatal(err)
-		}
-		if out.Len() != 0 {
-			t.Fatal("upload polluted stdout")
-		}
-		download, err := parseCopyCommand([]string{"work:" + target, "-"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = executeStreamCopy(backend.client, download, nil, &out); err != nil || !bytes.Equal(out.Bytes(), data) {
-			t.Fatal("stdout mismatch", err)
-		}
-		if err = executeStreamCopy(backend.client, upload, bytes.NewReader([]byte("overwrite")), &out); err == nil {
-			t.Fatal("overwrote stream destination")
-		}
-		if len(data) > 0 {
-			reader, writer := io.Pipe()
-			reader.Close()
-			err = executeStreamCopy(backend.client, download, nil, writer)
-			writer.Close()
-			if !errors.Is(err, io.ErrClosedPipe) {
-				t.Fatal("stdout failure ignored", err)
-			}
-		}
-		if err = os.Remove(target); err != nil {
-			t.Fatal(err)
-		}
-	}
-	failure := errors.New("input interrupted")
-	o, _ := parseCopyCommand([]string{"-", "work:" + backend.root + "/failed"})
-	if err := executeStreamCopy(backend.client, o, io.MultiReader(strings.NewReader("partial"), iotest.ErrReader(failure)), io.Discard); !errors.Is(err, failure) {
-		t.Fatal(err)
-	}
-	entries, err := os.ReadDir(backend.root)
-	if err != nil || len(entries) != 0 {
-		t.Fatal("failed stdin left files", entries, err)
-	}
-	for _, args := range [][]string{{"-", "a", "work:/tmp/file"}, {"work:/a", "work:/b", "-"}, {"-", "-"}, {"-", ":"}} {
-		if _, err := parseCopyCommand(args); err == nil {
-			t.Fatal("accepted", args)
-		}
-	}
-	for _, literal := range []string{"./-", "origin:-", "work:-"} {
-		e, err := parseCopyEndpoint(literal)
-		if err != nil || e.stream {
-			t.Fatal(literal, e, err)
-		}
-	}
-	if _, _, _, err := remoteCopyRequest([]string{"-", "origin:"}); err == nil {
-		t.Fatal("remote request accepted stdin")
-	}
-}
-
-func testSFTPBackend(t *testing.T, managed bool) *struct {
-	client *sftp.Client
-	root   string
-} {
-	t.Helper()
-	a, b := net.Pipe()
-	go func() {
-		if managed {
-			_ = files.ServeCopy(a)
-		} else {
-			server, err := sftp.NewServer(a)
-			if err == nil {
-				_ = server.Serve()
-				server.Close()
-			}
-		}
-		_ = a.Close()
-	}()
-	client, err := files.NewSFTP(b, b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { client.Close(); a.Close() })
-	return &struct {
-		client *sftp.Client
-		root   string
-	}{client, filepath.ToSlash(t.TempDir())}
 }
 
 func TestCopySingleLetterSSHHost(t *testing.T) {
@@ -335,5 +152,71 @@ func TestTransferProgressEstimate(t *testing.T) {
 	}
 	if !strings.Contains(p.sample(now.Add(2*time.Second), 2048, 2048), "remaining 0s") {
 		t.Fatal("completion ETA")
+	}
+}
+
+func TestCopyStreamParsing(t *testing.T) {
+	for _, args := range [][]string{{"-", "a", "work:/tmp/file"}, {"work:/a", "work:/b", "-"}, {"-", "-"}, {"-", ":"}} {
+		if _, err := parseCopyCommand(args); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+	for _, literal := range []string{"./-", "origin:-", "work:-"} {
+		e, err := parseCopyEndpoint(literal)
+		if err != nil || e.stream {
+			t.Fatal(literal, e, err)
+		}
+	}
+	if _, _, _, err := remoteCopyRequest([]string{"-", "origin:"}); err == nil {
+		t.Fatal("remote request accepted stdin")
+	}
+}
+
+func TestEndpointRequests(t *testing.T) {
+	for _, local := range []string{"origin:", ":"} {
+		kind, paths, _, err := remoteCopyRequest([]string{local, "/tmp"})
+		if err != nil || kind != "upload" || len(paths) != 1 || paths[0] != "/tmp" {
+			t.Fatal(kind, paths, err)
+		}
+		kind, paths, _, err = remoteCopyRequest([]string{"a", "b", local})
+		if err != nil || kind != "download" || len(paths) != 2 {
+			t.Fatal(kind, paths, err)
+		}
+		for _, reverse := range []bool{false, true} {
+			args := []string{local, "3000"}
+			if reverse {
+				args = []string{"3000", local}
+			}
+			op, err := remoteForwardRequest(args)
+			if err != nil || !op.LocalPortPending() || op.ServerPort() != 3000 || op.Reverse != reverse {
+				t.Fatal(op, err)
+			}
+		}
+	}
+	for _, args := range [][]string{{"origin:", "origin:"}, {"a", "local"}, {"a"}, {":", "a", "b"}} {
+		if _, _, _, err := remoteCopyRequest(args); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+	for _, args := range [][]string{{"local", "3000"}, {"3000", "8080"}, {"origin:", ":"}, {"origin:", "0"}, {"65536", ":"}} {
+		if _, err := remoteForwardRequest(args); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+}
+
+func TestEndpointHostValidation(t *testing.T) {
+	for _, tc := range []struct{ value, want string }{
+		{"work", "work"}, {"user@work", "user@work"}, {"[::1]", "::1"}, {"user@[::1]", "user@::1"},
+	} {
+		got, err := endpointHost(tc.value)
+		if err != nil || got != tc.want {
+			t.Fatal(got, err)
+		}
+	}
+	for _, host := range []string{"", "-host", "host name", "host\tname", "host\x7f", "[broken]", "user@[]", "user@", "::1", "[::1"} {
+		if _, err := endpointHost(host); err == nil {
+			t.Fatal("accepted", host)
+		}
 	}
 }

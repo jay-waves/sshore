@@ -17,8 +17,6 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/mcp"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
-	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/sys/unix"
 )
 
@@ -203,45 +201,6 @@ func probeSessionDaemon(p daemonProcess, deadline time.Time) daemonHealth {
 	return result
 }
 
-func reportSessionDaemons() {
-	processes, err := findSessionDaemons("/proc")
-	if err != nil {
-		termui.Log(os.Stderr, termui.Warning, "[sshore] Shell scan unavailable: %s\n", cleanText(err.Error()))
-		return
-	}
-	// A single time budget bounds the connection delay even with stuck daemons.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	results := make([]daemonHealth, len(processes))
-	jobs := make(chan int)
-	var workers sync.WaitGroup
-	for range min(8, len(processes)) {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for i := range jobs {
-				results[i] = probeSessionDaemon(processes[i], deadline)
-			}
-		}()
-	}
-	for i := range processes {
-		jobs <- i
-	}
-	close(jobs)
-	workers.Wait()
-	counts := make(map[string]int)
-	var suspects []string
-	for _, result := range results {
-		counts[result.state]++
-		if result.state == "suspect" && len(suspects) < 10 {
-			suspects = append(suspects, fmt.Sprintf("%s (PID %d)", result.process.name, result.process.pid))
-		}
-	}
-	termui.Log(os.Stderr, termui.Info, "[sshore] Account shells (visible in /proc): %d total; %d attached, %d detached, %d starting, %d suspect, %d unverified.\n", len(processes), counts["attached"], counts["detached"], counts["starting"], counts["suspect"], counts["unverified"])
-	if len(suspects) > 0 {
-		termui.Log(os.Stderr, termui.Warning, "[sshore] Possibly stale/unresponsive (up to 10): %s. Snapshot only; nothing stopped.\n", strings.Join(suspects, ", "))
-	}
-}
-
 func sessionSocketPID(path string) int {
 	c, err := net.DialTimeout("unix", path, 100*time.Millisecond)
 	if err != nil {
@@ -365,8 +324,6 @@ func createRemoteShellUsing(executable, name, label, uid string, temporary bool,
 func runSharedRemoteDaemon() error { return runSharedRemoteDaemonUsing(checkMCPSessionSetup) }
 
 func runSharedRemoteDaemonUsing(check func() error) error {
-	identityCache := sshio.NewIdentityCache()
-	defer identityCache.Close()
 	path, err := remoteDaemonPath()
 	if err != nil {
 		return err
@@ -501,7 +458,7 @@ func runSharedRemoteDaemonUsing(check func() error) error {
 				mu.Unlock()
 			}()
 			ready := false
-			err := serveRemoteShellWithCache(identityCache, request.Name, request.Action, request.Instance, request.LocalRequest.Env, request.LocalRequest.Record.Directory, func() error {
+			err := serveRemoteShell(request.Name, request.Action, request.Instance, request.LocalRequest.Env, request.LocalRequest.Record.Directory, func() error {
 				err := writeMessage(c, message{Type: "shell_created", SoftwareVersion: version})
 				if err == nil {
 					ready = true

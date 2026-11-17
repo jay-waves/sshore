@@ -22,6 +22,9 @@ function Get-SshoreArchitecture {
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
         throw 'This installer supports Windows only; use install.sh on Linux.'
     }
+    if ([Environment]::OSVersion.Version.Build -lt 22000) {
+        throw 'Windows 11 / Server 2025 or newer required.'
+    }
     # OS architecture, not the bitness of the PowerShell process. The fallback
     # covers Windows PowerShell hosts without RuntimeInformation available.
     try { $architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() }

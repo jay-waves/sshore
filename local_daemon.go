@@ -5,7 +5,6 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"io"
 	"net"
 	"os"
@@ -18,11 +17,10 @@ import (
 )
 
 type localDaemonRequest struct {
-	identityCache *sshio.IdentityCache
-	Spawn         *spawnConfig
-	Kind          string
-	Record        localShellRecord
-	Env           []string
+	Spawn  *spawnConfig
+	Kind   string
+	Record localShellRecord
+	Env    []string
 }
 
 func localEnvironmentValue(env []string, name string) string {
@@ -150,8 +148,6 @@ func ensureLocalDaemonContext(ctx context.Context) (localShellRecord, error) {
 }
 
 func runLocalDaemon() (result error) {
-	identityCache := sshio.NewIdentityCache()
-	defer identityCache.Close()
 	enc := json.NewEncoder(os.Stdout)
 	defer func() {
 		if result != nil {
@@ -299,7 +295,6 @@ func runLocalDaemon() (result error) {
 				return
 			}
 			req := *m.LocalRequest
-			req.identityCache = identityCache
 			if req.Kind != "spawn" && req.Kind != "shell" && req.Kind != "mount" && req.Kind != "forward" {
 				return
 			}
@@ -400,7 +395,6 @@ func runDaemonResource(c net.Conn, request localDaemonRequest) (result error) {
 	if err = privateStatePath(logPath, false); err != nil {
 		return err
 	}
-	config.identityCache = request.identityCache
 	if config.Forward != nil {
 		_, err := runConfiguredResource(config, dec, c, log, request.Env, request.Record.Directory, func() { c.Close() })
 		return err
@@ -482,10 +476,6 @@ func runDaemonResource(c net.Conn, request localDaemonRequest) (result error) {
 	output.Close()
 	_ = cmd.Wait()
 	return nil
-}
-
-func launchLocalDaemon() (localShellRecord, error) {
-	return launchLocalDaemonContext(context.Background())
 }
 
 func launchLocalDaemonContext(ctx context.Context) (localShellRecord, error) {

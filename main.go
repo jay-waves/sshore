@@ -11,7 +11,11 @@ import (
 var version = "0.7.0"
 
 func main() {
-	code, err := run(os.Args[1:])
+	code := 1
+	err := checkPlatform()
+	if err == nil {
+		code, err = run(os.Args[1:])
+	}
 	if err != nil {
 		termui.Log(os.Stderr, termui.Error, "sshore: %s\n", cleanText(err.Error()))
 		var e *usageError

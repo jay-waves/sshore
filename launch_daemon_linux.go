@@ -18,7 +18,6 @@ import (
 	"syscall"
 	"time"
 
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/tmux"
 )
 
@@ -27,7 +26,6 @@ import (
 // directly on client-initiated streams, without a helper process or PTY relay.
 
 type remoteShell struct {
-	identityCache   *sshio.IdentityCache
 	spawnRoutes     map[string]*spawnRoute
 	temporary       bool
 	spawnOwned      bool
@@ -512,12 +510,6 @@ func daemon(name string) error {
 }
 
 func serveRemoteShell(name, nameLabel, uid string, env []string, directory string, ready func() error, temporary ...bool) error {
-	identityCache := sshio.NewIdentityCache()
-	defer identityCache.Close()
-	return serveRemoteShellWithCache(identityCache, name, nameLabel, uid, env, directory, ready, temporary...)
-}
-
-func serveRemoteShellWithCache(identityCache *sshio.IdentityCache, name, nameLabel, uid string, env []string, directory string, ready func() error, temporary ...bool) error {
 	path, err := socketPath(name)
 	if err != nil {
 		return err
@@ -570,7 +562,7 @@ func serveRemoteShellWithCache(identityCache *sshio.IdentityCache, name, nameLab
 		return err
 	}
 
-	s := &remoteShell{identityCache: identityCache, temporary: len(temporary) > 0 && temporary[0], instance: uid, environment: env, directory: directory, path: path, name: nameLabel, nameLock: nameLock, done: make(chan struct{})}
+	s := &remoteShell{temporary: len(temporary) > 0 && temporary[0], instance: uid, environment: env, directory: directory, path: path, name: nameLabel, nameLock: nameLock, done: make(chan struct{})}
 	nameLock = nil
 	defer func() {
 		s.mu.Lock()

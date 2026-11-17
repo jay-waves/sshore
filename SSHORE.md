@@ -12,32 +12,33 @@ do not mirror implementation details here.
 ## Architecture and code map
 
 sshore is a Go CLI using system OpenSSH only to evaluate configuration (`ssh -G`).
-File-key signers or an SSH agent authenticate; Go owns the network connections.
+A system SSH agent or interactive credentials authenticate; Go owns the connections.
 The root program coordinates commands, release policy and cross-component
 lifecycles. Internal packages provide mechanisms without owning application
 policy or depending on mutable application state.
 
 | Responsibility | Start here |
 | --- | --- |
-| MCP tools and remote Bash | `internal/mcp/`, `internal/tmux/bash_linux.go`; application coordination in `mcp_client.go`, `mcp_bridge_linux.go`, `mcp_registry_linux.go` and the shared daemon |
+| MCP tools and remote Bash | `internal/mcp/`, `internal/tmux/bash_linux.go`; application coordination in `mcp_client.go`, `mcp_server_linux.go` and the shared daemon |
 | One-off SSH execution | `cli.go`: exec adapter uses the shared SSH connection layer without remote setup |
-| CLI grammar, dispatch and help | `cli_schema.go`: shared command aliases and product/SSH grammar; `cli_shell.go`, `cli_endpoints.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
-| Connections and session switching | `client.go`, `client_connection.go`, `client_handoff.go` |
+| CLI grammar, dispatch and help | `cli_schema.go`: shared command aliases and product/SSH grammar; `cli_commands.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
+| Connections and session switching | `client.go`, `client_connection.go` |
 | Remote preparation and exact-release policy | `setup*.go` |
-| Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_*.go`, `server_linux.go`; process inspection in `setup_process_linux.go` |
-| Local daemon and shell registry | `local_daemon*.go`, `local_shell_registry.go`, `local_terminal.go`, `platform_*.go` |
+| Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_linux.go`, `server_linux.go`; process inspection in `setup_process_linux.go` |
+| Local daemon and shell registry | `local_daemon*.go`, `local_shell.go`, `platform_*.go` |
 | Spawn ownership, lifetime SSH and nested routes | `spawn_transport.go`, `spawn_route_linux.go`, `platform_*.go` |
 | Shell startup and attachment I/O | `internal/tmux/terminal.go`, `internal/tmux/shell_attachment.go`, application adapters in `protocol.go` |
 | Native terminals, console I/O and shortcuts | `internal/tmux/` |
 | Local prompts and presentation | `internal/termui/`, application adapters in `cli_ui.go` |
 | Framing, smux and shared SSH transport | `internal/ssh/` (configuration, public-key authentication, host verification, connections, forwarding and framing); application messages and mux handshake in `protocol.go` |
 | Copy and mount mechanisms | Flat `internal/files/`; command adapters in `cp_command.go`, `mount*.go` |
-| Review records and consent | `review_store.go`, application coordination in `review*.go` (including shared source-shell validation in `review_linux.go`) |
+| Review records and consent | `review_store.go`, application coordination in `review.go` (including shared source-shell validation in `review_linux.go`) |
 | Forward transport and retries | `forward.go`: endpoint parsing, command execution and SSH worker lifecycle |
 | Resource startup and control | `resource_runtime.go`, `resources.go` |
-| Private storage and name reservations | `state.go` (including account identity and remembered entry points), `object_names.go`; native checks in `platform_*.go` |
+| Private storage and name reservations | `state.go` (including account identity and remembered entry points), `task_identity.go`; native checks in `platform_*.go` |
 | Inventory, stable IDs and shell relationships | `inventory*.go`, `list*.go`, `shell_cache.go`, `pstree*.go`, `peers*.go` |
 | Platform adapters | `platform_linux.go` / `platform_windows.go` in the application and file/transport packages; `console_linux.go` / `console_windows.go` in terminal/UI packages |
+| Product workflow tests | `tests/`: shared isolated CLI build, public command workflows and native terminal handoff; module and private protocol regressions remain with their owning code |
 | Installation, packaging and publication | `install.sh`, `install.ps1`, `scripts/`, `.github/workflows/` |
 
 Keep command policy in the application: authorization, release checks, prompts,
@@ -56,7 +57,12 @@ See [CLI ownership](AGENTS.md#cli-ownership).
 ### Terminal and mux design scope
 
 Support Linux and Windows **amd64 only**, with remote shell hosting on Linux.
-Windows provides local ConPTY sessions and SSH clients, not a remote shell server.
+See the [OS and shell support matrix](README.md#os-and-shell-support) for
+supported systems and shells. Windows provides local ConPTY sessions and SSH
+clients, not a remote shell server.
+ConPTY children join their kill-on-close Job during process creation. Native
+console I/O remains synchronous as required by ConPTY; pinned I/O threads use
+CancelSynchronousIo before transferring input ownership.
 Each interactive shell owns one terminal and permits one attachment at a time. MCP
 Bash sessions use pipes and do not support terminal attachment. Split panes,
 tiling, screen emulation and scrollback replay are outside scope.
@@ -74,8 +80,13 @@ resolved in the initiating environment and directory, including its remote
 command. No persistent SSH subprocess,
 ControlMaster, askpass executable or implicit reconnect is used.
 
+MCP reuses one background SSH transport per host. Successful calls leave it open;
+cancelling a call closes its transport, while submitted scripts may continue.
+Failed requests are never replayed automatically; the next call reconnects.
+Closing MCP releases transports without ending persistent remote Bash sessions.
+
 The server may accept SSH `none` authentication (for example Tailscale SSH).
-Only when public-key authentication is requested are file keys or an agent loaded. Linux
+Only when public-key authentication is requested is the system agent queried. Linux
 uses a Unix agent socket; Windows uses its OpenSSH agent pipe. Configuration
 resolution and agent connections are per connection. Unsupported execution hooks and authentication
 modes fail explicitly. Keep resolver arguments compatible with Windows in-box
@@ -112,21 +123,23 @@ Keep lifetime separate from interaction:
 - Cancel and join old input readers/writers before handing the terminal to
   another attachment, local prompt or SSH authentication process.
 
-A root frontend owns the real terminal. Interactive nested `spawn` commands ask
-the existing daemon and frontend to prepare a child attachment, then exit only
+The client at the user's terminal owns terminal input and shortcuts. Interactive nested `spawn` commands ask
+the existing daemon and client to prepare a child attachment, then exit only
 after the child is ready. Preserve the original owner PID and creation identity;
-the short-lived launcher and root frontend never become its lifetime owner.
+the short-lived launcher and terminal client never become its lifetime owner.
 Drain parent input before switching. Detach and child exit unwind one level;
 failed startup restores the parent and reports failure to its launcher.
+Interrupts during authentication or setup must cancel the child connection and
+restore the parent; signal handling stays active through attachment transitions.
 
 For a next-hop connection, the initiating host's daemon uses that shell's
-configuration, signing credentials, environment and working directory. The root frontend follows
+configuration, signing credentials, environment and working directory. The terminal client follows
 a private attachment route, not remote-supplied local execution instructions.
 Local managed shells also support handoff for remote `launch` and `attach`.
 Detached startup keeps its noninteractive path. Reuse the existing connection and
 attachment mechanisms; do not run a second terminal frontend inside a daemon.
 
-Local handoff lives in `client_handoff.go`; remote child ownership and routing in
+Local handoff lives in `client_connection.go`; remote child ownership and routing in
 `spawn_route_linux.go`; the frontend return stack and connection restoration in
 `client_connection.go`. Reattachment and review must preserve the route and its
 parent instance. If it expires or changes, fail rather than reinterpret the
@@ -193,7 +206,7 @@ Separate live observations, cached records and unknown state. Inventory and
 `pstree` relationships never authorize operations. Task IDs are allocated at creation;
 alias changes preserve the instance and storage identity. Prefix collisions at creation
 require a new identity; imported ambiguous references require an explicit scope.
-Keep allocation and reference policy in `list_ids.go`, separate from capabilities.
+Keep allocation and reference policy in `task_identity.go`, separate from capabilities.
 Spawn owner context stays fixed;
 the current attachment source may change. Neither is verified OS process ancestry.
 
@@ -209,7 +222,7 @@ registration in `peers.go`; advisory peer files alone are insufficient. A held l
 local node when its status endpoint is temporarily unavailable.
 Status should distinguish worker liveness from transport state and target health.
 Public output must exclude capabilities and credentials; keep diagnostics out of
-normal command flow. Receipt retention and peer expiry belong in their implementation
+normal command flow. Exit history retention and peer expiry belong in their implementation
 and tests. See [inventory privacy](SECURITY.md#inventory-and-privacy).
 
 ### Setup and recovery
@@ -262,6 +275,15 @@ the CLI, protocols or public APIs. Module regressions stay beside the code they
 exercise, including those that use an internal package’s exported API. Both use
 standard Go test discovery and `-run`;
 no overlay, generated source tree or test-only production exports are needed.
+Keep command parsing and private authorization/lifecycle invariants in their
+owning packages. Put complete help, copy, startup and terminal handoff workflows
+in `tests/`; use its shared isolated CLI build rather than requiring a separately
+supplied executable. Linux remote hosting tests belong in Linux files; Windows
+terminal tests exercise the local client and ConPTY. A platform restriction belongs
+on the test file, not inside a shared fixture that silently skips its callers.
+Test subprocess builds inherit `GOFLAGS`; use `GOFLAGS=-race` with the race suite
+so the CLI executables receive the same instrumentation. Ordinary core tests do
+not require a race-enabled compiler.
 Use `-count=1` for CLI/native checks that depend on subprocesses or the environment.
 For example:
 
@@ -290,7 +312,8 @@ unresolved concerns. Local in-process benchmarks are not WAN performance evidenc
 
 ### Shell and terminal validation
 
-Targets are bash, sh, zsh and fish on Linux; pwsh with PSReadLine and cmd on Windows.
+Supported targets are listed in the [README matrix](README.md#os-and-shell-support).
+PowerShell interactive validation uses PSReadLine.
 Existing tests are evidence for their covered behavior, not a fully validated
 terminal/shell matrix. User reports and cross-compilation do not replace native
 interactive checks.
@@ -327,7 +350,3 @@ deletions, and conflict reporting for independent edits. Revisit the design befo
 implementation; it is not an existing command contract.
 
 `cli.go` orchestrates reset across private state stores; `state.go` owns account display identity and remembered connection entry points without depending on CLI options. Native OS identity reads live in the platform adapters. Reset preserves active ownership, lock files, approvals and non-recycled task IDs.
-
-MCP reuses a background SSH transport per host and serializes requests on it.
-A failed request is never automatically replayed; the next call reconnects.
-Closing MCP releases transports while persistent remote Bash sessions remain.

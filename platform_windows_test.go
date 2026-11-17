@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/tmux"
 	"golang.org/x/sys/windows"
 )
 
@@ -88,5 +93,115 @@ func TestBackgroundWorkerHasNoConsole(t *testing.T) {
 	cmd.Env = append(os.Environ(), "SSHORE_TEST_CONSOLE_CHILD=worker")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("worker: %v\n%s", err, out)
+	}
+}
+
+func TestWindowsPrivateStateHandle(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "state")
+	if err := os.WriteFile(file, []byte("private"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path      string
+		directory bool
+		valid     bool
+	}{
+		{dir, true, true}, {file, false, true}, {dir, false, false}, {file, true, false},
+	} {
+		err := privateStatePath(tc.path, tc.directory)
+		if (err == nil) != tc.valid {
+			t.Fatalf("%+v: %v", tc, err)
+		}
+	}
+	before, err := windows.GetNamedSecurityInfo(file, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broader, err := windows.SecurityDescriptorFromString(before.String() + "(A;;FR;;;WD)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dacl, _, err := broader.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.SetNamedSecurityInfo(file, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := privateStatePath(file, false); err != nil {
+			t.Fatal(err)
+		}
+		after, err := windows.GetNamedSecurityInfo(file, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+		if err != nil || after.String() != before.String() {
+			t.Fatalf("private ACL not restored: %v", err)
+		}
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(file, link); err != nil {
+		t.Logf("symlink unavailable: %v", err)
+		return
+	}
+	if err := privateStatePath(link, false); err == nil {
+		t.Fatal("accepted reparse point")
+	}
+}
+func TestWindowsPlatform(t *testing.T) {
+	if err := checkPlatform(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWindowsSSHSecret(t *testing.T) {
+	if os.Getenv("SSHORE_TEST_SECRET_CONSOLE") == "1" {
+		env, stop, err := startSpawnAuth()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stop()
+		secret, err := brokerSSHSecret(env)(context.Background(), "TEST_PASSWORD")
+		if err != nil || string(secret) != "test-Password!42" {
+			t.Fatalf("synthetic password mismatch: length=%d error=%v", len(secret), err)
+		}
+		clear(secret)
+		fmt.Println("SECRET_OK")
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := tmux.Start(tmux.Config{Path: exe, Args: []string{"-test.run=^TestWindowsSSHSecret$"}, Env: append(os.Environ(), "SSHORE_TEST_SECRET_CONSOLE=1"), Size: tmux.Size{Cols: 100, Rows: 30}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	done := make(chan string, 1)
+	go func() {
+		var out strings.Builder
+		sent := false
+		buf := make([]byte, 4096)
+		for {
+			n, e := terminal.Read(buf)
+			out.Write(buf[:n])
+			if !sent && strings.Contains(out.String(), "TEST_PASSWORD:") {
+				sent = true
+				terminal.Write([]byte("test-Password!42\r"))
+			}
+			if e != nil {
+				done <- out.String()
+				return
+			}
+		}
+	}()
+	select {
+	case output := <-done:
+		if !strings.Contains(output, "SECRET_OK") {
+			t.Fatalf("console failed: %s", output)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("password input timed out")
 	}
 }

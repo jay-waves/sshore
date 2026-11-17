@@ -96,7 +96,7 @@ func TestSpawnOptionsAndInventory(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	writeTaskInventory(&out, inventory{LocalShells: []localShellView{{ID: 1, Name: "persistent", State: "detached"}, {ID: 2, Name: "temporary", State: "detached", Temporary: true}}, Shells: []shellView{{TaskID: 3, Name: "remote", Host: "host", State: "detached", Temporary: true, Historical: true}}})
+	writeTaskInventory(&out, inventory{LocalShells: []localShellView{{order: 1, Name: "persistent", State: "detached"}, {order: 2, Name: "temporary", State: "detached", Temporary: true}}, Shells: []shellView{{order: 3, Name: "remote", Host: "host", State: "detached", Temporary: true, Historical: true}}})
 	for _, want := range []string{"(persistent)", "(temporary)", "(remote)", "launch", "spawn", "never checked"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %s: %s", want, &out)
@@ -189,5 +189,82 @@ func TestClientConnectionCancellation(t *testing.T) {
 				t.Fatal("cancelled connection remained open")
 			}
 		})
+	}
+}
+
+func TestShellStartupOptions(t *testing.T) {
+	for _, command := range []string{"launch", "spawn"} {
+		for _, flag := range []bool{false, true} {
+			args := []string{command, "host"}
+			if flag {
+				args = append(args, "--no-login")
+			}
+			o, err := parseOptions(args)
+			if err != nil || o.noLogin != flag {
+				t.Fatalf("%v: %+v %v", args, o, err)
+			}
+		}
+	}
+	for _, args := range [][]string{{"attach", "host", "--no-login"}, {"launch", "host", "--login"}} {
+		if _, err := parseOptions(args); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+	if err := validateAttach(message{Type: "attach", Term: "xterm", Action: "existing", NoLogin: true}); err == nil {
+		t.Fatal("accepted startup option on reattach")
+	}
+}
+
+func TestNoProfileOptions(t *testing.T) {
+	for _, command := range []string{"launch", "spawn"} {
+		o, err := parseOptions([]string{command, "host", "--no-profile", "--no-login"})
+		if err != nil || !o.noProfile || !o.noLogin {
+			t.Fatalf("%+v %v", o, err)
+		}
+	}
+	if _, err := parseOptions([]string{"attach", "host", "--no-profile"}); err == nil {
+		t.Fatal("accepted creation flag on attach")
+	}
+	if err := validateAttach(message{Type: "attach", Term: "xterm", Action: "existing", NoProfile: true}); err == nil {
+		t.Fatal("accepted profile flag on reattach")
+	}
+}
+
+func TestLocalCommandRouting(t *testing.T) {
+	for _, tc := range []struct {
+		args  []string
+		local bool
+		name  string
+	}{
+		{[]string{"launch"}, true, ""},
+		{[]string{"launch", "--quiet", "--no-escape"}, true, ""},
+		{[]string{"launch", "--local", "work"}, true, "work"},
+		{[]string{"launch", "work"}, false, ""},
+		{[]string{"launch", "host", "work"}, false, "work"},
+		{[]string{"attach", "--local", "work"}, true, "work"},
+		{[]string{"attach"}, false, ""},
+		{[]string{"list", "--local"}, true, ""},
+	} {
+		o, err := parseOptions(tc.args)
+		local := o.local
+		if err != nil || local != tc.local || o.session != tc.name {
+			t.Fatalf("%v: %+v %v %v", tc.args, o, local, err)
+		}
+	}
+}
+
+func TestLocalCommandRejectsAmbiguousOptions(t *testing.T) {
+	for _, args := range [][]string{
+		{"launch", "host", "--name", "work"},
+		{"launch", "--name="},
+		{"launch", "--local", "--server", "other"},
+		{"attach", "--local", "../work"},
+		{"cancel", "--local"},
+		{"rename", "--local", "work"},
+		{"list", "--local", "--json", "--verbose"},
+	} {
+		if _, err := parseOptions(args); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
 	}
 }

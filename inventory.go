@@ -15,8 +15,8 @@ import (
 )
 
 type resourceView struct {
-	local      bool   // Set only for records inspected by this process; never sent over the wire.
-	TaskID     uint64 `json:"-"`
+	local      bool // Set only for records inspected by this process; never sent over the wire.
+	order      uint64
 	ShortID    string `json:"short_id,omitempty"`
 	Identity   string `json:"identity,omitempty"`
 	ID         string `json:"id"`
@@ -32,12 +32,12 @@ type resourceView struct {
 	resourceStatus
 }
 type shellView struct {
-	MachineID   string    `json:"machine_id,omitempty"`
-	Hostname    string    `json:"hostname,omitempty"`
-	Lifetime    string    `json:"lifetime"`
-	Temporary   bool      `json:"temporary,omitempty"`
-	Instance    string    `json:"instance,omitempty"`
-	TaskID      uint64    `json:"-"`
+	MachineID   string `json:"machine_id,omitempty"`
+	Hostname    string `json:"hostname,omitempty"`
+	Lifetime    string `json:"lifetime"`
+	Temporary   bool   `json:"temporary,omitempty"`
+	Instance    string `json:"instance,omitempty"`
+	order       uint64
 	ShortID     string    `json:"short_id,omitempty"`
 	Host        string    `json:"host,omitempty"`
 	ID          string    `json:"id"`
@@ -61,7 +61,7 @@ type peerView struct {
 	Direction string `json:"direction,omitempty"`
 	UID       string `json:"uid,omitempty"`
 	Identity  string `json:"identity,omitempty"`
-	TaskID    uint64 `json:"-"`
+	order     uint64
 	ShortID   string `json:"short_id,omitempty"`
 	ID        string `json:"id"`
 	Manager   string `json:"manager"`

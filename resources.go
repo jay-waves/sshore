@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -367,37 +366,35 @@ type resourceStatus struct {
 	LastOperation time.Time `json:"last_operation,omitempty"`
 	LastError     string    `json:"last_error,omitempty"`
 }
-type resourceStatusState struct {
-	mu    sync.Mutex
-	value resourceStatus
-}
 
 func (s *resourceService) statusSnapshot() resourceStatus {
-	s.status.mu.Lock()
-	defer s.status.mu.Unlock()
-	return s.status.value
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	snapshot := s.status
+	snapshot.Version, snapshot.Target = version, "unchecked"
+	return snapshot
 }
 func (s *resourceService) setTransport(state string, err error) {
 	if s == nil {
 		return
 	}
-	s.status.mu.Lock()
-	defer s.status.mu.Unlock()
-	s.status.value.Version, s.status.value.Transport, s.status.value.Target = version, state, "unchecked"
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.status.Transport = state
 	if err != nil {
-		s.status.value.LastError = cleanText(err.Error())
+		s.status.LastError = cleanText(err.Error())
 	}
-	if state == "connected" && s.status.value.Started.IsZero() {
-		s.status.value.Started = time.Now().UTC()
+	if state == "connected" && s.status.Started.IsZero() {
+		s.status.Started = time.Now().UTC()
 	}
 }
 func (s *resourceService) operationCompleted() {
 	if s == nil {
 		return
 	}
-	s.status.mu.Lock()
-	defer s.status.mu.Unlock()
-	s.status.value.LastOperation = time.Now().UTC()
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.status.LastOperation = time.Now().UTC()
 }
 func (s *resourceService) saveResult(code int, err error) {
 	state := "stopped"

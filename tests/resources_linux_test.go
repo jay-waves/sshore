@@ -5,7 +5,6 @@ package tests_test
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -38,21 +37,19 @@ func TestCancelAllLocalSnapshot(t *testing.T) {
 	if out, err := run("no\n", "cancel", "--all"); err == nil || !strings.Contains(out, "(one)") || !strings.Contains(out, "(two)") {
 		t.Fatal(out, err)
 	}
-	out, err := run("", "list", "--local", "--json")
-	var rows []cliShell
-	if err != nil || json.Unmarshal([]byte(out), &rows) != nil || len(rows) != 2 {
-		t.Fatal(out, err)
+	rows := e.shells(t)
+	if len(rows) != 2 {
+		t.Fatalf("expected two shells: %+v", rows)
 	}
-	if out, err = run("cancel\n", "cancel", "--all"); err != nil {
+	if out, err := run("cancel\n", "cancel", "--all"); err != nil {
 		t.Fatal(out, err)
 	}
 	waitBackgroundExit(t, e, filepath.Join(e.dir, "batch-state"))
-	if out, err = run("", "cancel", "--all"); err != nil {
+	if out, err := run("", "cancel", "--all"); err != nil {
 		t.Fatal(out, err)
 	}
-	out, err = run("", "list", "--local", "--json")
-	if err != nil || json.Unmarshal([]byte(out), &rows) != nil || len(rows) != 0 {
-		t.Fatal(out, err)
+	if rows := e.shells(t); len(rows) != 0 {
+		t.Fatalf("remaining shells: %+v", rows)
 	}
 }
 
@@ -129,10 +126,9 @@ func TestCancelAllDoesNotCancelReplacement(t *testing.T) {
 	if err = cmd.Wait(); err == nil || !strings.Contains(string(tail), "task changed") {
 		t.Fatalf("replacement accepted: %v %s", err, tail)
 	}
-	out := run("list", "--local", "--json")
-	var rows []cliShell
-	if json.Unmarshal([]byte(out), &rows) != nil || len(rows) != 1 || rows[0].Name != "same" {
-		t.Fatal(out)
+	rows := e.shells(t)
+	if len(rows) != 1 || rows[0].Name != "same" {
+		t.Fatalf("replacement lost: %+v", rows)
 	}
 }
 
@@ -275,9 +271,7 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 	var rows []cliShell
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if err := json.Unmarshal(run("list", "--local", "--json"), &rows); err != nil {
-			t.Fatal(err)
-		}
+		rows = e.shells(t)
 		if len(rows) == 1 && rows[0].State == "detached" {
 			break
 		}
@@ -303,10 +297,50 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 	if !strings.Contains(output, "SAVED_first_VALUE") {
 		t.Fatalf("shell environment changed or input lost: %s", output)
 	}
-	if err := json.Unmarshal(run("list", "--local", "--json"), &rows); err != nil {
-		t.Fatal(err)
-	}
+	rows = e.shells(t)
 	if len(rows) != 1 || rows[0].PID != pid || rows[0].State != "detached" {
 		t.Fatalf("shell identity changed: %+v", rows)
+	}
+}
+
+func TestLocalNoLoginStartup(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash unavailable")
+	}
+	e := newCLI(t)
+	home := t.TempDir()
+	marker := filepath.Join(home, "startup")
+	quotedMarker := "'" + strings.ReplaceAll(marker, "'", "'\"'\"'") + "'"
+	for file, value := range map[string]string{".bash_profile": "login", ".bashrc": "interactive"} {
+		if err := os.WriteFile(filepath.Join(home, file), []byte("printf "+value+" > "+quotedMarker+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := append(e.env, "HOME="+home, "SHELL="+bash, "SSHORE_SOCKET=", "SSHORE_STATE_DIR="+filepath.Join(e.dir, "local-state"))
+	e.env = env
+	run := func(args ...string) {
+		t.Helper()
+		c := exec.Command(e.bin, args...)
+		c.Env = env
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v %s", args, err, out)
+		}
+	}
+	run("launch", "--local", "startup", "--no-login", "--detach")
+	defer run("cancel", "--local", "startup")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		data, err := os.ReadFile(marker)
+		if err == nil {
+			if string(data) != "interactive" {
+				t.Fatalf("wrong startup: %q", data)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -59,7 +59,27 @@ func Start(c Config) (*Terminal, error) {
 	var env *uint16
 	var block []uint16
 	if c.Env != nil {
-		items := append([]string(nil), c.Env...)
+		items := make([]string, 0, len(c.Env)+1)
+		seen := make(map[string]bool)
+		for i := len(c.Env) - 1; i >= 0; i-- {
+			value := c.Env[i]
+			offset := 0
+			if strings.HasPrefix(value, "=") {
+				offset = 1
+			}
+			split := strings.IndexByte(value[offset:], '=')
+			if split < 0 {
+				return nil, fmt.Errorf("invalid terminal environment entry")
+			}
+			key := strings.ToUpper(value[:offset+split])
+			if !seen[key] {
+				items = append(items, value)
+				seen[key] = true
+			}
+		}
+		if !seen["SYSTEMROOT"] {
+			items = append(items, "SYSTEMROOT="+os.Getenv("SYSTEMROOT"))
+		}
 		sort.SliceStable(items, func(i, j int) bool { return strings.ToUpper(items[i]) < strings.ToUpper(items[j]) })
 		for _, v := range items {
 			if v == "" {
@@ -104,7 +124,7 @@ func Start(c Config) (*Terminal, error) {
 		t.Close()
 		return nil, err
 	}
-	attrs, err := windows.NewProcThreadAttributeList(1)
+	attrs, err := windows.NewProcThreadAttributeList(2)
 	if err != nil {
 		t.Close()
 		return nil, err
@@ -114,6 +134,12 @@ func Start(c Config) (*Terminal, error) {
 	// Reinterpret the native handle without a uintptr-to-Go-pointer conversion.
 	consolePointer := *(*unsafe.Pointer)(unsafe.Pointer(&t.console))
 	if err = attrs.Update(windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, consolePointer, unsafe.Sizeof(t.console)); err != nil {
+		t.Close()
+		return nil, err
+	}
+	// Assign the job atomically with process creation, before any child code runs.
+	const jobListAttribute = 0x0002000D // PROC_THREAD_ATTRIBUTE_JOB_LIST
+	if err = attrs.Update(jobListAttribute, unsafe.Pointer(&t.job), unsafe.Sizeof(t.job)); err != nil {
 		t.Close()
 		return nil, err
 	}
@@ -132,22 +158,11 @@ func Start(c Config) (*Terminal, error) {
 		t.Close()
 		return nil, err
 	}
-	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_SUSPENDED)
+	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT)
 	err = windows.CreateProcess(application, &line[0], nil, nil, false, flags, env, dir, &si.StartupInfo, &pi)
 	runtime.KeepAlive(block)
 	runtime.KeepAlive(attrs)
 	if err != nil {
-		t.Close()
-		return nil, err
-	}
-	err = windows.AssignProcessToJobObject(t.job, pi.Process)
-	if err == nil {
-		_, err = windows.ResumeThread(pi.Thread)
-	}
-	if err != nil {
-		_ = windows.TerminateProcess(pi.Process, 1)
-		windows.CloseHandle(pi.Thread)
-		windows.CloseHandle(pi.Process)
 		t.Close()
 		return nil, err
 	}

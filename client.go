@@ -57,6 +57,8 @@ func acceptSessionName(o *options, name string) error {
 }
 
 func runClientOnce(o options, previous string, ready func()) (int, error) {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 	for _, op := range o.approved {
 		if op.LocalPortPending() {
 			return 2, usage("choose a local port in review before execution")
@@ -103,11 +105,13 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		return 1, fmt.Errorf("an interactive terminal is required")
 	}
 	tmux.ResetInputModes()
-	transport, closeTransport, err := openClientTransport(&o)
+	transport, closeTransport, err := openClientTransportContext(ctx, &o)
 	if err != nil {
 		return 1, err
 	}
 	defer closeTransport()
+	stopTransport := context.AfterFunc(ctx, func() { transport.Close() })
+	defer stopTransport()
 	mux, err := clientMux(transport)
 	if err != nil {
 		return 255, err
@@ -198,9 +202,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		return 0, nil
 	}
 	if len(o.approved) > 0 {
-		opCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		err = executeApprovedFiles(opCtx, mux, o.approved, o.quiet)
-		stop()
+		err = executeApprovedFiles(ctx, mux, o.approved, o.quiet)
 		if err != nil {
 			return 1, err
 		}
@@ -253,11 +255,6 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		}
 		sessionNotice(termui.Success, "Connected %s / %s (%s)", cleanText(o.host), cleanText(o.session), kind)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(signals)
 	events := make(chan clientEvent, 32)
 	inputDrained := make(chan struct{}, 1)
 	emit := func(e clientEvent) {
@@ -432,7 +429,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	}
 	for {
 		select {
-		case <-signals:
+		case <-ctx.Done():
 			return 130, nil
 		case <-switchTimeout:
 			switchTimeout = nil

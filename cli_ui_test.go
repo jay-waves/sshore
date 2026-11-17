@@ -126,3 +126,9 @@ func TestSelectedPort(t *testing.T) {
 		t.Fatal("EOF accepted a suggestion", err)
 	}
 }
+
+func TestCleanTerminalText(t *testing.T) {
+	if got := cleanText("中文\x1b[31m\r\n"); got != "中文�[31m��" {
+		t.Fatalf("unsafe terminal text: %q", got)
+	}
+}
