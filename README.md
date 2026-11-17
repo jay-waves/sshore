@@ -66,6 +66,11 @@ detach, and reattachment never changes its original owner. Use `launch` for work
 that must survive disconnection. Daemon failure or host restart can end any shell.
 
 Press **Ctrl+B**, then **d** to detach, **l** to return to the last session, **n/p** for next/previous, or **r** to request a redraw.
+Press Ctrl+B twice to send one Ctrl+B to the application. Shortcuts recognize
+traditional control bytes, CSI-u/Kitty and xterm modifyOtherKeys reports, including
+when a TUI enables enhanced keyboard reporting. `--no-escape` forwards all input
+without interpreting shortcuts. Pasted text is not interpreted as shortcuts when
+the application enables bracketed paste.
 Inside a remote shell, `sshore detach` also works. Both startup commands accept
 `--detach` to start in the background. `attach` never takes over an attached shell.
 `sshore attach` resumes the most recently detached local or remote shell.

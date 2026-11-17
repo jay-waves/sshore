@@ -341,6 +341,13 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	defer ticker.Stop()
 	var outputMouse tmux.InputState
 	keys := tmux.Keys{Bypass: o.noEscape}
+	var keySequenceTimeout <-chan time.Time
+	armKeyTimeout := func() {
+		keySequenceTimeout = nil
+		if keys.Pending() {
+			keySequenceTimeout = time.After(50 * time.Millisecond)
+		}
+	}
 	detaching := false
 	detachPending := false
 	var detachTimeout <-chan time.Time
@@ -446,6 +453,16 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 			}
 		case <-ctx.Done():
 			return 130, ctx.Err()
+		case <-keySequenceTimeout:
+			keySequenceTimeout = nil
+			batch := keys.FlushPending()
+			if len(batch) > 0 && !switchPending && switchTarget == nil && handoffTarget == nil && !detaching && !detachPending {
+				select {
+				case inputQueue <- batch:
+				default:
+					return 255, fmt.Errorf("terminal input stalled; closing connection; reconnect to check the shell")
+				}
+			}
 		case <-switchTimeout:
 			switchTimeout = nil
 			switchPending = false
@@ -568,6 +585,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					bypass := keys.Bypass
 					keys.Bypass = false
 					keys.Feed(e.input)
+					armKeyTimeout()
 					keys.Bypass = bypass
 					if keys.Interrupted {
 						if err := interrupt(); err != nil {
@@ -580,6 +598,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					continue
 				}
 				batch := keys.Feed(e.input)
+				armKeyTimeout()
 				if len(batch) > 0 {
 					select {
 					case inputQueue <- batch:

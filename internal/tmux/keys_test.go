@@ -2,7 +2,9 @@ package tmux
 
 import (
 	"bytes"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -73,10 +75,13 @@ func TestBracketedPasteNeverExecutesKeys(t *testing.T) {
 		t.Fatal("bytewise paste changed")
 	}
 }
-func TestEscapeAndBypassAreImmediate(t *testing.T) {
+func TestEscapeTimeoutAndImmediateBypass(t *testing.T) {
 	for _, input := range []string{"\x1b", "\x1b[", "\x1b[A", "\x1b[201~", "\x1b\x1b[200~text\x1b[201~"} {
 		var k Keys
 		data, actions := collectKeys(&k, []byte(input))
+		for _, e := range k.FlushPending() {
+			data = append(data, e.Data...)
+		}
 		if string(data) != input || len(actions) != 0 {
 			t.Fatalf("changed escape input %q: %q %v", input, data, actions)
 		}
@@ -180,5 +185,156 @@ func TestInterruptDetectionAcrossReads(t *testing.T) {
 	keys.Feed([]byte("\x1b[201~\x03\x03"))
 	if !keys.Interrupted {
 		t.Fatal("interrupt after paste lost")
+	}
+}
+
+func TestEnhancedPrefixProtocols(t *testing.T) {
+	for _, prefix := range []string{"\x02", "\x1b[98;5u", "\x1b[98;5:1u", "\x1b[98;69u", "\x1b[27;5;98~", "\x1b[1080::98;5u"} {
+		for command, action := range map[byte]KeyAction{'c': KeyNew, 'd': KeyDetach, 'n': KeyNext, 'p': KeyPrevious, 'l': KeyLast, 'r': KeyRedraw} {
+			for _, next := range []string{string(command), fmt.Sprintf("\x1b[%d;1u", command), fmt.Sprintf("\x1b[27;1;%d~", command)} {
+				input := prefix + next
+				for split := 0; split <= len(input); split++ {
+					var k Keys
+					data, actions := collectKeys(&k, []byte(input[:split]), []byte(input[split:]))
+					if len(data) != 0 || !reflect.DeepEqual(actions, []KeyAction{action}) {
+						t.Fatalf("%q split %d: %q %v", input, split, data, actions)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestEnhancedReleaseAndRepeat(t *testing.T) {
+	for _, prefix := range []string{"\x02", "\x1b[98;5:1u"} {
+		input := prefix + "\x1b[98;5:2u\x1b[98;5:3u\x1b[114;1:1u\x1b[114;1:2u\x1b[114;1:3uX"
+		var k Keys
+		var chunks [][]byte
+		for i := range input {
+			chunks = append(chunks, []byte(input[i:i+1]))
+		}
+		data, actions := collectKeys(&k, chunks...)
+		if string(data) != "X" || !reflect.DeepEqual(actions, []KeyAction{KeyRedraw}) {
+			t.Fatalf("%q %v", data, actions)
+		}
+	}
+}
+
+func TestEnhancedTransparentInput(t *testing.T) {
+	for _, input := range []string{
+		"你好\x1b[97;5u\x1b[97;5:3u",                                                                 // Unconsumed key events remain byte-identical.
+		"\x1b[98;7ud",                                                                              // Ctrl+Alt+B is not the prefix.
+		"\x1b[98;5:9ud", "\x1b[999999999999999999999999999998;5ud", "\x1b[?98;5ud", "\x1b[98;5$ud", // Malformed/unknown reports.
+		"\x1b]title\x02d\x07", "\x1b]title\x1b[98;5ud\x07", "\x1bP\x1b[98;5ud\x1b\\", "\x1b[M\x02d!", "\x1bPpayload\x02d\x1b\\", // Opaque strings.
+		"\x1b[200~\x1b[98;5ud\x03\x1b[201~", // Paste.
+	} {
+		for split := 0; split <= len(input); split++ {
+			var k Keys
+			data, actions := collectKeys(&k, []byte(input[:split]), []byte(input[split:]))
+			for _, e := range k.FlushPending() {
+				data = append(data, e.Data...)
+			}
+			if string(data) != input || len(actions) != 0 {
+				t.Fatalf("%q split %d: %q %v", input, split, data, actions)
+			}
+		}
+	}
+	for _, prefix := range []string{"\x02", "\x1b[98;5u", "\x1b[27;5;98~"} {
+		var k Keys
+		data, actions := collectKeys(&k, []byte(prefix+"\x1b[120;2u"))
+		if string(data) != prefix+"\x1b[120;2u" || len(actions) != 0 {
+			t.Fatalf("fallback changed %q: %q %v", prefix, data, actions)
+		}
+		k = Keys{}
+		data, actions = collectKeys(&k, []byte(prefix+prefix))
+		if string(data) != prefix || len(actions) != 0 {
+			t.Fatalf("double prefix changed %q: %q %v", prefix, data, actions)
+		}
+	}
+}
+
+func TestEnhancedInterrupt(t *testing.T) {
+	for _, input := range []string{"\x03", "\x1b[99;5u", "\x1b[99;5:2u", "\x1b[27;5;99~"} {
+		var k Keys
+		for i := range input {
+			k.Feed([]byte(input[i : i+1]))
+		}
+		if !k.Interrupted {
+			t.Fatalf("missed interrupt %q", input)
+		}
+		k.Feed([]byte("\x1b[99;5:3u"))
+		if k.Interrupted {
+			t.Fatal("release counted as interrupt")
+		}
+		k.Feed([]byte("\x1b[200~" + input + "\x1b[201~"))
+		if k.Interrupted {
+			t.Fatal("paste counted as interrupt")
+		}
+	}
+}
+
+func TestKeySequenceTimeoutAndBounds(t *testing.T) {
+	for _, input := range []string{"\x1b", "\x1b[", "\x02\x1b[98;"} {
+		var k Keys
+		k.Feed([]byte(input))
+		if !k.Pending() {
+			t.Fatalf("no timeout armed for %q", input)
+		}
+		events := k.FlushPending()
+		if len(events) != 1 || string(events[0].Data) != input || k.Pending() {
+			t.Fatalf("timeout changed %q: %+v", input, events)
+		}
+		data, actions := collectKeys(&k, []byte("5ud"))
+		if string(data) != "5ud" || len(actions) != 0 {
+			t.Fatalf("late tail reinterpreted: %q %v", data, actions)
+		}
+	}
+	var k Keys
+	input := "\x1b[" + strings.Repeat("1;", 1000) + "98;5ud"
+	data, actions := collectKeys(&k, []byte(input))
+	if string(data) != input || len(actions) != 0 || len(k.sequence) > 128 {
+		t.Fatal("overlong report changed or retained")
+	}
+	k = Keys{Bypass: true}
+	input = "\x1b[98;5ud\x1b[99;5u"
+	data, actions = collectKeys(&k, []byte(input))
+	if string(data) != input || len(actions) != 0 || k.Pending() {
+		t.Fatal("enhanced bypass changed input")
+	}
+}
+
+func TestPrefixReleaseFallbackPreservesOrder(t *testing.T) {
+	input := "\x1b[98;5u\x1b[98;5:3u\x1b[57442;1:3u\x1b[120;1u"
+	var k Keys
+	data, actions := collectKeys(&k, []byte(input))
+	if string(data) != input || len(actions) != 0 {
+		t.Fatalf("release reordered: %q %v", data, actions)
+	}
+}
+
+func TestEscapeTimeoutAllowsNextShortcut(t *testing.T) {
+	var k Keys
+	k.Feed([]byte{27})
+	k.FlushPending()
+	_, actions := collectKeys(&k, []byte{2, 'r'})
+	if !reflect.DeepEqual(actions, []KeyAction{KeyRedraw}) {
+		t.Fatalf("Escape swallowed next shortcut: %v", actions)
+	}
+}
+
+func TestDeliveredKeysKeepRepeatAndRelease(t *testing.T) {
+	for _, input := range []string{
+		"\x1b[98;5u\x1b[98;5u\x1b[98;5:2u\x1b[98;5:3u",
+		"\x02r\x1b[114;1u\x1b[114;1:2u\x1b[114;1:3u",
+	} {
+		var k Keys
+		data, actions := collectKeys(&k, []byte(input))
+		if strings.HasPrefix(input, "\x02") {
+			if !reflect.DeepEqual(actions, []KeyAction{KeyRedraw}) || string(data) != input[2:] {
+				t.Fatalf("ordinary key events lost: %q %v", data, actions)
+			}
+		} else if len(actions) != 0 || string(data) != input[len("\x1b[98;5u"):] {
+			t.Fatalf("double-prefix events lost: %q %v", data, actions)
+		}
 	}
 }

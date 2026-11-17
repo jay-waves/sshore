@@ -155,7 +155,16 @@ shell, with its recorded process identity, startup directory and environment.
 It never inherits launch lifetime or injects a command into terminal input.
 Exit or detach returns one level; the parent program continues running.
 
-The client at the user's terminal owns terminal input and shortcuts. Interactive nested `spawn` commands ask
+The client at the user's terminal owns terminal input and shortcuts.
+`x/ansi` provides sequence framing and parameter parsing; the shortcut adapter
+recognizes legacy controls, CSI-u/Kitty and xterm modifyOtherKeys. Consumed keys'
+repeat/release reports stay local; unconsumed input retains its original bytes.
+Escape and incomplete CSI reports wait up to 50 ms of input inactivity before
+being forwarded. Late CSI tails remain opaque, and retained sequences are bounded.
+Opaque control strings, X10 mouse payloads and bracketed paste cannot execute
+shortcuts. This does not emulate the remote application's keyboard mode stack.
+
+Interactive nested `spawn` commands ask
 the existing daemon and client to prepare a child attachment, then exit only
 after the child is ready. Preserve the original owner PID and creation identity;
 the short-lived launcher and terminal client never become its lifetime owner.

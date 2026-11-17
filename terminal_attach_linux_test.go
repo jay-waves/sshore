@@ -887,3 +887,30 @@ func TestClientDetachPromotesSharedMRU(t *testing.T) {
 		})
 	}
 }
+
+// Exercise the public client through a native PTY, including its Escape timer.
+func TestClientEnhancedPrefixKeysAndEscape(t *testing.T) {
+	t.Setenv("SSHORE_SOCKET", "")
+	e := newEnv(t)
+	cmd, terminal, wait := startPrefixClient(t, e)
+	wait("Connected fixture / keys")
+	io.WriteString(terminal, "stty raw -echo; printf 'ESC_%s\\n' ready; byte=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n'); stty sane; printf 'BYTE_%s\\n' \"$byte\"\n")
+	wait("ESC_ready")
+	terminal.Write([]byte{27})
+	wait("BYTE_1b")
+	// A Kitty prefix, release report and command can span input reads.
+	for _, part := range []string{"\x1b[98;", "5:1u", "\x1b[98;5:3u", "\x1b[114;1u"} {
+		io.WriteString(terminal, part)
+	}
+	io.WriteString(terminal, "printf 'REDRAW_%s\\n' alive\n")
+	wait("REDRAW_alive")
+	// xterm modifyOtherKeys uses a different encoding for the same prefix.
+	io.WriteString(terminal, "\x1b[27;5;98~\x1b[100;1u")
+	wait("Detached;")
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := e.attach("keys", "attach")
+	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
+	untilType(t, b.tty, "exit")
+}
