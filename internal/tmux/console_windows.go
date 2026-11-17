@@ -126,8 +126,7 @@ func StartKeyboard(parent context.Context, emit func([]byte, error)) (func(), er
 		windows.CloseHandle(handle)
 		return nil, err
 	}
-	var once sync.Once
-	return func() { once.Do(func() { stop(); windows.CloseHandle(handle) }) }, nil
+	return sync.OnceFunc(func() { stop(); windows.CloseHandle(handle) }), nil
 }
 
 func startTerminalKeyboardReader(parent context.Context, emit func([]byte, error), reader io.Reader) (func(), error) {

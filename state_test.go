@@ -156,9 +156,7 @@ func TestTaskNamesClaimedAtomicallyByDaemon(t *testing.T) {
 	wins := make(chan string, 32)
 	done := make(chan struct{})
 	for range 32 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			id, err := newTaskUID()
 			if err != nil {
 				t.Error(err)
@@ -168,7 +166,7 @@ func TestTaskNamesClaimedAtomicallyByDaemon(t *testing.T) {
 			if tasks.register(id, task) == nil {
 				wins <- id
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if len(wins) != 1 {

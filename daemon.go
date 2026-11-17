@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -26,8 +27,8 @@ type localDaemonRequest struct {
 }
 
 func localEnvironmentValue(env []string, name string) string {
-	for i := len(env) - 1; i >= 0; i-- {
-		key, value, ok := strings.Cut(env[i], "=")
+	for _, e := range slices.Backward(env) {
+		key, value, ok := strings.Cut(e, "=")
 		if ok && (key == name || runtime.GOOS == "windows" && strings.EqualFold(key, name)) {
 			return value
 		}

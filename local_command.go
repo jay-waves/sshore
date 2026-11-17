@@ -79,13 +79,11 @@ func nativeShells() ([]localShellView, error) {
 	jobs := make(chan int)
 	var workers sync.WaitGroup
 	for range min(8, len(records)) {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
+		workers.Go(func() {
 			for i := range jobs {
 				rows[i] = inspectLocalShell(records[i], deadline)
 			}
-		}()
+		})
 	}
 	for i := range records {
 		jobs <- i

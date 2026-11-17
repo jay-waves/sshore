@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,7 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -221,11 +222,8 @@ func (s *daemonTasks) Pending() []requestRecord {
 			records = append(records, cloneRequest(r))
 		}
 	}
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].Created.Equal(records[j].Created) {
-			return records[i].ID < records[j].ID
-		}
-		return records[i].Created.Before(records[j].Created)
+	slices.SortFunc(records, func(a, b requestRecord) int {
+		return cmp.Or(a.Created.Compare(b.Created), cmp.Compare(a.ID, b.ID))
 	})
 	return records
 }

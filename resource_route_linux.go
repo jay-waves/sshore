@@ -102,7 +102,8 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message) {
 		return
 	}
 	defer control.Close()
-	startForwardStreams(mx, listener, op.TargetPort)
+	forward := sshio.StartMuxForward(mx, listener, op.TargetPort)
+	defer forward.Close()
 	if _, err = fmt.Fprintln(control, forwardReadyMarker); err != nil {
 		return
 	}

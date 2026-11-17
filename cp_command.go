@@ -64,7 +64,7 @@ func runCopy(args []string) (int, error) {
 		return 1, err
 	}
 	stdout, stdin := pipes.Output, pipes.Input
-	defer func() { cancel(); pipes.Close(); pipes.Wait() }()
+	defer func() { cancel(); pipes.CloseAndWait() }()
 	stop := context.AfterFunc(ctx, func() { _ = stdin.Close(); _ = stdout.Close() })
 	defer stop()
 	if err = negotiateSetupUsing(ctx, stdout, stdin, &options{command: "cp-agent", host: o.host}, setupClientUI{}); err != nil {

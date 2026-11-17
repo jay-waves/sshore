@@ -141,7 +141,7 @@ func downloadSetupFile(ctx context.Context, client *http.Client, url string, lim
 
 func verifiedSetupArchive(manifest, archive []byte, name string) ([]byte, error) {
 	var expected string
-	for _, line := range strings.Split(string(manifest), "\n") {
+	for line := range strings.SplitSeq(string(manifest), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == name {
 			if expected != "" {

@@ -138,19 +138,16 @@ func newConnectionFixtureAt(t *testing.T, listenAddress string, identities ...an
 	var workers sync.WaitGroup
 	track := func(c net.Conn) { mu.Lock(); connections = append(connections, c); mu.Unlock() }
 	done := make(chan struct{})
-	workers.Add(2)
-	go func() {
-		defer workers.Done()
+	workers.Go(func() {
 		for {
 			c, err := al.Accept()
 			if err != nil {
 				return
 			}
 			track(c)
-			workers.Add(1)
-			go func() { defer workers.Done(); defer c.Close(); agent.ServeAgent(keyring, c) }()
+			workers.Go(func() { defer c.Close(); agent.ServeAgent(keyring, c) })
 		}
-	}()
+	})
 	sc := &cryptossh.ServerConfig{NoClientAuth: allowNone, PublicKeyCallback: func(_ cryptossh.ConnMetadata, key cryptossh.PublicKey) (*cryptossh.Permissions, error) {
 		if string(key.Marshal()) != string(signer.PublicKey().Marshal()) {
 			return nil, fmt.Errorf("unexpected identity")
@@ -166,17 +163,14 @@ func newConnectionFixtureAt(t *testing.T, listenAddress string, identities ...an
 		}
 	}
 	sc.AddHostKey(hostSigner)
-	go func() {
-		defer workers.Done()
+	workers.Go(func() {
 		for {
 			raw, err := server.Accept()
 			if err != nil {
 				return
 			}
 			track(raw)
-			workers.Add(1)
-			go func() {
-				defer workers.Done()
+			workers.Go(func() {
 				defer raw.Close()
 				c, channels, requests, err := cryptossh.NewServerConn(raw, sc)
 				if err != nil {
@@ -193,9 +187,7 @@ func newConnectionFixtureAt(t *testing.T, listenAddress string, identities ...an
 					if err != nil {
 						continue
 					}
-					workers.Add(1)
-					go func() {
-						defer workers.Done()
+					workers.Go(func() {
 						defer stream.Close()
 						for request := range req {
 							if request.Type != "exec" {
@@ -213,11 +205,11 @@ func newConnectionFixtureAt(t *testing.T, listenAddress string, identities ...an
 							stream.SendRequest("exit-status", false, cryptossh.Marshal(struct{ Status uint32 }{0}))
 							return
 						}
-					}()
+					})
 				}
-			}()
+			})
 		}
-	}()
+	})
 	t.Cleanup(func() {
 		close(done)
 		al.Close()
@@ -245,10 +237,7 @@ func TestNativeSSHSessionAndIsolation(t *testing.T) {
 	a, b := newConnectionFixture(t), newConnectionFixture(t)
 	var workers sync.WaitGroup
 	for _, fixture := range []*connectionFixture{a, b} {
-		fixture := fixture
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
+		workers.Go(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			process, err := Start(ctx, fixture.options, io.Discard)
@@ -261,10 +250,19 @@ func TestNativeSSHSessionAndIsolation(t *testing.T) {
 			if err != nil || string(data) != "result:echo" {
 				t.Errorf("output %q: %v", data, err)
 			}
-			if err := process.Wait(); err != nil {
+			var waiters sync.WaitGroup
+			for range 8 {
+				waiters.Go(func() {
+					if err := process.Wait(); err != nil {
+						t.Error(err)
+					}
+				})
+			}
+			waiters.Wait()
+			if err := process.CloseAndWait(); err != nil {
 				t.Error(err)
 			}
-		}()
+		})
 	}
 	workers.Wait()
 }

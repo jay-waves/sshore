@@ -467,9 +467,7 @@ func serveApprovedStreams(ctx context.Context, mux *smux.Session) {
 			st.Close()
 			continue
 		}
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
+		workers.Go(func() {
 			defer func() { <-slots; st.Close() }()
 			abort := context.AfterFunc(ctx, func() { st.SetDeadline(time.Now()); st.Close() })
 			defer abort()
@@ -478,6 +476,6 @@ func serveApprovedStreams(ctx context.Context, mux *smux.Session) {
 			if e == nil && m.Type == "approved_transfer" {
 				approvedRemoteTransfer(st, m)
 			}
-		}()
+		})
 	}
 }

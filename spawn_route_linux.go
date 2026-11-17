@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/xtaci/smux"
 )
 
@@ -41,7 +42,7 @@ func (s *remoteShell) connectSpawnRoute(c net.Conn, request message) {
 	if writeMessage(c, message{Type: "route_connected", SoftwareVersion: version}) != nil {
 		return
 	}
-	proxySpawn(c, stream)
+	sshio.Bridge(c, stream)
 }
 
 func (s *remoteShell) requestSpawnRoute(c net.Conn, request message) {
@@ -259,7 +260,7 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 			if err != nil {
 				return err
 			}
-			proxySpawn(c, stream)
+			sshio.Bridge(c, stream)
 			<-mx.CloseChan()
 			return nil
 		})
@@ -294,6 +295,6 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 		return err
 	}
 	_ = target.SetDeadline(time.Time{})
-	proxySpawn(c, target)
+	sshio.Bridge(c, target)
 	return nil
 }

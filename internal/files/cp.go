@@ -36,7 +36,8 @@ func ValidateName(name string) error {
 			return fmt.Errorf("control character in filename")
 		}
 	}
-	stem := strings.ToUpper(strings.Split(name, ".")[0])
+	stem, _, _ := strings.Cut(name, ".")
+	stem = strings.ToUpper(stem)
 	switch stem {
 	case "CON", "PRN", "AUX", "NUL":
 		return fmt.Errorf("reserved filename %q", name)

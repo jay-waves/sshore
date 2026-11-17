@@ -151,9 +151,9 @@ func TestClientConnectionCancellation(t *testing.T) {
 			defer cancel()
 			result := make(chan error, 1)
 			go func() {
-				_, closeTransport, err := openClientTransportContext(ctx, &o)
-				if closeTransport != nil {
-					closeTransport()
+				c, err := openClientTransportContext(ctx, &o)
+				if c != nil {
+					c.Close()
 				}
 				result <- err
 			}()

@@ -310,6 +310,11 @@ func runTargetCommand(args []string) (int, error) {
 }
 
 // runExec delegates execution and SSH configuration to the system client.
+type exitStatusError interface {
+	error
+	ExitStatus() int
+}
+
 func runExec(args []string) (int, error) {
 	parsed, err := parseCLI(args, "exec")
 	if err != nil {
@@ -324,11 +329,7 @@ func runExec(args []string) (int, error) {
 	defer cancel()
 	connection := sshio.Options{Host: parsed.operands[0], Command: parsed.operands[1], Confirm: confirmSSHHost, Secret: promptSSHSecret}
 	if err := sshio.Run(ctx, connection, os.Stdin, os.Stdout, os.Stderr); err != nil {
-		var exit interface {
-			error
-			ExitStatus() int
-		}
-		if errors.As(err, &exit) {
+		if exit, ok := errors.AsType[exitStatusError](err); ok {
 			return exit.ExitStatus(), nil
 		}
 		return 1, err

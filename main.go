@@ -18,11 +18,10 @@ func main() {
 		code, err = run(os.Args[1:])
 	}
 	if err != nil {
-		for _, line := range strings.Split(err.Error(), "\n") {
+		for line := range strings.SplitSeq(err.Error(), "\n") {
 			termui.Log(os.Stderr, termui.Error, "sshore: %s\n", cleanText(line))
 		}
-		var e *usageError
-		if errors.As(err, &e) {
+		if _, ok := errors.AsType[*usageError](err); ok {
 			code = 2
 			termui.Log(os.Stderr, termui.Info, "Try 'sshore --help'.\n")
 		} else if code == 0 {

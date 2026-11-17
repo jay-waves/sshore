@@ -550,17 +550,17 @@ func TestHostedShellTaskCommandRouting(t *testing.T) {
 	o := options{command: "attach", local: true, hosted: true, session: target.name, instance: target.instance}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c, closeTransport, err := openClientTransportContext(ctx, &o)
+	c, err := openClientTransportContext(ctx, &o)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mx, err := clientMux(c)
 	if err != nil {
-		closeTransport()
+		c.Close()
 		t.Fatal(err)
 	}
 	mx.Close()
-	closeTransport()
+	c.Close()
 	if code, err := run([]string{"rename", id, "renamed"}); code != 0 || err != nil {
 		t.Fatalf("rename listed ID: %d %v", code, err)
 	}

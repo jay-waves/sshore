@@ -313,22 +313,19 @@ func leaseActivity(r activityRequest, pulse func()) (func(), error) {
 			}
 		}
 	}()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			writeMu.Lock()
-			_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			err := writeMessage(c, message{Type: "release"})
-			writeMu.Unlock()
-			if err == nil {
-				select {
-				case <-finished:
-				case <-time.After(5 * time.Second):
-				}
+	return sync.OnceFunc(func() {
+		writeMu.Lock()
+		_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		err := writeMessage(c, message{Type: "release"})
+		writeMu.Unlock()
+		if err == nil {
+			select {
+			case <-finished:
+			case <-time.After(5 * time.Second):
 			}
-			c.Close()
-		})
-	}, nil
+		}
+		c.Close()
+	}), nil
 }
 
 func startDaemonHeartbeat(ctx context.Context, pulse func()) (func(), error) {

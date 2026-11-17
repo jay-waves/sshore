@@ -32,8 +32,8 @@ func (c *Client) Close() error {
 		close(c.done)
 		c.Client.Close()
 		c.forwards.close()
-		for i := len(c.resources) - 1; i >= 0; i-- {
-			c.resources[i].Close()
+		for _, v := range slices.Backward(c.resources) {
+			v.Close()
 		}
 		c.forwards.workers.Wait()
 	})
@@ -87,8 +87,8 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 	}()
 	defer func() {
 		if err != nil {
-			for i := len(resources) - 1; i >= 0; i-- {
-				resources[i].Close()
+			for _, resource := range slices.Backward(resources) {
+				resource.Close()
 			}
 		}
 	}()
@@ -112,7 +112,7 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 		return string(secret), err
 	}
 	cc.AuthCallback = func(state *cryptossh.ClientAuthContext) (cryptossh.AuthMethod, error) {
-		for _, method := range strings.Split(preferred, ",") {
+		for method := range strings.SplitSeq(preferred, ",") {
 			if !slices.Contains(state.AllowedMethods, method) {
 				continue
 			}
@@ -183,7 +183,7 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 			return allowed, nil
 		}
 		var result []string
-		for _, a := range strings.Split(value, ",") {
+		for a := range strings.SplitSeq(value, ",") {
 			if slices.Contains(allowed, a) {
 				result = append(result, a)
 			}
@@ -331,6 +331,7 @@ type Process struct {
 	client  *Client
 	stop    func() bool
 	once    sync.Once
+	wait    func() error
 }
 
 // DialDaemon opens a loopback TCP channel on the authenticated SSH connection.
@@ -350,7 +351,16 @@ func (p *Process) Close() error {
 	})
 	return nil
 }
-func (p *Process) Wait() error { return p.session.Wait() }
+
+// Wait returns the same exit result to every caller, including concurrent ones.
+func (p *Process) Wait() error { return p.wait() }
+
+// CloseAndWait aborts I/O before joining the exec channel. Normal completion
+// should consume Output and call Wait first to preserve all remote output.
+func (p *Process) CloseAndWait() error {
+	_ = p.Close()
+	return p.Wait()
+}
 func Start(ctx context.Context, o Options, diagnostic io.Writer) (*Process, error) {
 	if o.Diagnostic == nil {
 		o.Diagnostic = diagnostic
@@ -370,7 +380,7 @@ func Start(ctx context.Context, o Options, diagnostic io.Writer) (*Process, erro
 		client.Close()
 		return nil, err
 	}
-	p := &Process{session: session, client: client}
+	p := &Process{session: session, client: client, wait: sync.OnceValue(session.Wait)}
 	session.Stderr = diagnostic
 	var input io.WriteCloser
 	input, err = session.StdinPipe()

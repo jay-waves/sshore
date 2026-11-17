@@ -3,7 +3,6 @@ package ssh
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 	"sync"
@@ -14,40 +13,42 @@ type forwarding struct {
 	mu          sync.Mutex
 	closing     bool
 	listeners   []net.Listener
-	connections []net.Conn
+	connections map[net.Conn]struct{}
 	workers     sync.WaitGroup
 }
 
 func (f *forwarding) close() {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.closing = true
-	for _, l := range f.listeners {
+	listeners, connections := f.listeners, f.connections
+	f.listeners, f.connections = nil, nil
+	f.mu.Unlock()
+	// Network closure can block; never hold the registry lock while closing.
+	for _, l := range listeners {
 		l.Close()
 	}
-	for _, c := range f.connections {
+	for c := range connections {
 		c.Close()
 	}
 }
 func (f *forwarding) track(c net.Conn) bool {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.closing {
+		f.mu.Unlock()
 		c.Close()
 		return false
 	}
-	f.connections = append(f.connections, c)
+	if f.connections == nil {
+		f.connections = make(map[net.Conn]struct{})
+	}
+	f.connections[c] = struct{}{}
+	f.mu.Unlock()
 	return true
 }
 func (f *forwarding) untrack(c net.Conn) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	for i, v := range f.connections {
-		if v == c {
-			f.connections = append(f.connections[:i], f.connections[i+1:]...)
-			return
-		}
-	}
+	delete(f.connections, c)
+	f.mu.Unlock()
 }
 
 // Forward is one product-owned loopback rule, independent of SSH configuration.
@@ -141,19 +142,7 @@ func (c *Client) acceptForward(listener net.Listener, target string, reverse boo
 			}
 			defer c.forwards.untrack(outgoing)
 			defer outgoing.Close()
-			var copyWG sync.WaitGroup
-			copyWG.Add(1)
-			copyTo := func(dst, src net.Conn) {
-				io.Copy(dst, src)
-				if w, ok := dst.(interface{ CloseWrite() error }); ok {
-					w.CloseWrite()
-				} else {
-					dst.Close()
-				}
-			}
-			go func() { defer copyWG.Done(); copyTo(outgoing, incoming) }()
-			copyTo(incoming, outgoing)
-			copyWG.Wait()
+			Splice(context.Background(), incoming, outgoing)
 		}()
 	}
 }

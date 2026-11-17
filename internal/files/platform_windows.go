@@ -71,7 +71,7 @@ type ftpWindowsFS struct {
 
 func ftpWindowsPath(p string) (string, error) {
 	p = strings.TrimPrefix(strings.ReplaceAll(p, `\`, "/"), "/")
-	for _, part := range strings.Split(p, "/") {
+	for part := range strings.SplitSeq(p, "/") {
 		if part == "" {
 			continue
 		}
@@ -210,13 +210,11 @@ func (f *ftpWindowsFile) Close() error { return ftpWindowsError(f.ftpFile.Close(
 
 const winFspInstallURL = "https://winfsp.dev/"
 
-var winFspCheckOnce sync.Once
-var winFspCheckError error
+var checkMountPlatform = sync.OnceValue(func() error {
+	return checkWinFsp(winfsp.BinPath, winfsp.LoadWinFSP)
+})
 
-func CheckMountPlatform() error {
-	winFspCheckOnce.Do(func() { winFspCheckError = checkWinFsp(winfsp.BinPath, winfsp.LoadWinFSP) })
-	return winFspCheckError
-}
+func CheckMountPlatform() error { return checkMountPlatform() }
 func checkWinFsp(find func() (string, error), load func() error) error {
 	if _, e := find(); e != nil {
 		if errors.Is(e, windows.ERROR_FILE_NOT_FOUND) || errors.Is(e, windows.ERROR_PATH_NOT_FOUND) {

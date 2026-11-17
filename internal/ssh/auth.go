@@ -324,7 +324,7 @@ func (c *connectionConfig) hostKeys(ctx context.Context) (cryptossh.HostKeyCallb
 	if explicit := c.get("hostkeyalgorithms"); explicit != "" {
 		// Keep the resolved configuration's order within the supported, trusted set.
 		var ordered []string
-		for _, algorithm := range strings.Split(explicit, ",") {
+		for algorithm := range strings.SplitSeq(explicit, ",") {
 			if slices.Contains(allowed, algorithm) && !slices.Contains(ordered, algorithm) {
 				ordered = append(ordered, algorithm)
 			}

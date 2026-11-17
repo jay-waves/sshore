@@ -90,7 +90,7 @@ func daemonAdministration(ctx context.Context, action string, expected *daemonSn
 	if err != nil {
 		return daemonAdminReply{}, err
 	}
-	c, err := (&net.Dialer{}).DialContext(ctx, "tcp", r.Address)
+	c, err := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "tcp", r.Address)
 	if err != nil {
 		return daemonAdminReply{}, err
 	}

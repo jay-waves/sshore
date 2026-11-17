@@ -5,22 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sync"
 
 	sshoremcp "github.com/jay-waves/sshore/internal/mcp"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-type mcpConnection struct {
-	pipes *transportio.Process
-	stop  func()
-	once  sync.Once
-}
-
-func (c *mcpConnection) Read(b []byte) (int, error)  { return c.pipes.Read(b) }
-func (c *mcpConnection) Write(b []byte) (int, error) { return c.pipes.Write(b) }
-func (c *mcpConnection) Close() error                { c.once.Do(c.stop); return nil }
 
 func dialMCP(ctx context.Context, host string) (io.ReadWriteCloser, error) {
 	if err := validSSHDestination(host); err != nil {
@@ -34,10 +23,7 @@ func dialMCP(ctx context.Context, host string) (io.ReadWriteCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &mcpConnection{pipes: pipes}
-	c.stop = func() { pipes.Close(); pipes.Wait() }
-	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
-	defer stop()
+	c := transportio.OwnTransport(ctx, pipes, func() { pipes.CloseAndWait() })
 	err = negotiateSetupUsing(ctx, pipes.Output, pipes.Input, &o, setupClientUI{
 		Log: os.Stderr,
 		Choose: func(message) (string, error) {

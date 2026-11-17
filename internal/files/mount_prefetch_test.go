@@ -342,7 +342,6 @@ func TestMetadataRefreshPrioritizesRecentAccessAndBoundsQueue(t *testing.T) {
 	fs.cache.refresh = r
 	var order []string
 	for _, key := range []string{"h:old", "h:recent"} {
-		key := key
 		_, _ = fs.cache.loadScoped(key, "/unrelated", time.Minute, func() (ftpCacheValue, error) {
 			order = append(order, key)
 			return ftpCacheValue{info: ftpCacheInfo{name: key}, bytes: 256}, nil

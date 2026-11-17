@@ -484,31 +484,30 @@ type forwardConnection struct {
 }
 
 func runAttempt(parent context.Context, runtime forwardTransport, initial bool, started *bool) (int, error) {
-	ctx, cancel := context.WithCancel(parent)
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(parent)
+	defer cancel(nil)
 	var diagnostics diagnosticsTail
 	connection, e := runtime.Start(ctx, initial, io.MultiWriter(runtime.Log, &diagnostics))
 	if e != nil {
 		return 1, e
 	}
-	defer connection.Close()
 	input, output := connection.Input, connection.Output
 	done := make(chan struct{})
 	var waitErr error
 	go func() { waitErr = connection.Wait(); close(done) }()
 	var heartbeat sync.WaitGroup
-	defer func() {
-		cancel()
-		input.Close()
+	stop := sync.OnceFunc(func() {
+		cancel(nil)
+		// Abort before joining: stdin.Close can wait behind a blocked write.
 		connection.Close()
 		<-done
 		heartbeat.Wait()
-	}()
+	})
+	defer stop()
 	// Read only the bounded protocol marker. Unexpected login output is an error.
 	marker, e := bufio.NewReader(io.LimitReader(output, int64(len(forwardReadyMarker)+2))).ReadString('\n')
 	if e != nil {
-		cancel()
-		<-done
+		stop()
 		detail := diagnostics.String()
 		if detail == "" {
 			detail = fmt.Sprint(waitErr)
@@ -533,29 +532,42 @@ func runAttempt(parent context.Context, runtime forwardTransport, initial bool, 
 	if err != nil {
 		return 1, err
 	}
-	heartbeat.Add(1)
-	go func() {
-		defer heartbeat.Done()
-		if sshio.WriteFull(input, task) != nil {
+	heartbeat.Go(func() {
+		pulse := func() {
+			if err := sshio.WriteFull(input, task); err != nil {
+				cancel(fmt.Errorf("forward heartbeat write failed: %w", err))
+			}
+		}
+		pulse()
+		if ctx.Err() != nil {
 			return
 		}
-		stop, err := startDaemonHeartbeat(ctx, func() { _ = sshio.WriteFull(input, task) })
+		stop, err := startDaemonHeartbeat(ctx, pulse)
 		if err != nil {
-			connection.Close()
+			cancel(fmt.Errorf("forward heartbeat registration failed: %w", err))
 			return
 		}
 		<-ctx.Done()
 		stop()
-	}()
+	})
 
 	select {
 	case <-done:
+		if parent.Err() != nil {
+			return 0, nil
+		}
+		if cause := context.Cause(ctx); cause != nil {
+			return 1, cause
+		}
 		if waitErr != nil {
 			return 1, waitErr
 		}
 		return 1, fmt.Errorf("forward transport closed")
 	case <-ctx.Done():
-		return 0, nil
+		if parent.Err() != nil {
+			return 0, nil
+		}
+		return 1, context.Cause(ctx)
 	}
 }
 

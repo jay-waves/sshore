@@ -62,3 +62,41 @@ func TestReverseForwardDialCancelledWithClient(t *testing.T) {
 		t.Fatal("forward dial outlived its client")
 	}
 }
+
+// Closing a connection may finish its worker, which unregisters itself.
+// Registry shutdown must not hold the lock across that network operation.
+type unregisteringConn struct {
+	net.Conn
+	registry *forwarding
+}
+
+func (c *unregisteringConn) Close() error {
+	c.registry.untrack(c)
+	return c.Conn.Close()
+}
+
+func TestForwardShutdownReleasesRegistryBeforeClose(t *testing.T) {
+	var registry forwarding
+	a, b := net.Pipe()
+	defer b.Close()
+	c := &unregisteringConn{Conn: a, registry: &registry}
+	if !registry.track(c) {
+		t.Fatal("connection rejected")
+	}
+	done := make(chan struct{})
+	go func() { registry.close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown held registry lock while closing")
+	}
+	a, b2 := net.Pipe()
+	defer b2.Close()
+	if registry.track(a) {
+		t.Fatal("shutdown admitted a connection")
+	}
+	b2.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := b2.Read(make([]byte, 1)); err == nil {
+		t.Fatal("rejected connection left open")
+	}
+}

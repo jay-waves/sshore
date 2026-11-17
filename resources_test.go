@@ -302,3 +302,67 @@ func TestMountTimeoutOptions(t *testing.T) {
 		}
 	}
 }
+
+func TestResourceHTTPReuseAndCancellation(t *testing.T) {
+	peers := make(chan string, 2)
+	waiting := make(chan struct{})
+	aborted := make(chan struct{})
+	l, server, err := resourceListen("secret", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ask" {
+			close(waiting)
+			<-r.Context().Done()
+			close(aborted)
+			return
+		}
+		peers <- r.RemoteAddr
+		io.WriteString(w, "ok")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	defer resourceHTTPTransport.CloseIdleConnections()
+	for range 2 {
+		response, err := resourceHTTPContext(context.Background(), l.Addr().String(), "secret", "POST", "/setup-log", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if first, second := <-peers, <-peers; first != second {
+		t.Fatalf("connection not reused: %s, %s", first, second)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		response, err := resourceHTTPContext(ctx, l.Addr().String(), "secret", "POST", "/ask", nil)
+		if response != nil {
+			response.Body.Close()
+		}
+		done <- err
+	}()
+	select {
+	case <-waiting:
+	case <-time.After(3 * time.Second):
+		t.Fatal("approval request did not arrive")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled approval succeeded")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("approval cancellation blocked")
+	}
+	select {
+	case <-aborted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server retained cancelled request")
+	}
+}

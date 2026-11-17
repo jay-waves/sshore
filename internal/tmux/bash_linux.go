@@ -274,8 +274,7 @@ func (b *Bash) Close() error {
 	err := b.waitErr
 	b.stateMu.Unlock()
 	_ = os.RemoveAll(b.dir)
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
+	if _, ok := errors.AsType[*exec.ExitError](err); ok {
 		return nil
 	}
 	return err

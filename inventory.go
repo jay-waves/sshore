@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,7 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -112,13 +113,11 @@ func inspectResources(records []resourceRecord) []resourceView {
 	var wg sync.WaitGroup
 	jobs := make(chan int)
 	for n := 0; n < min(8, len(records)); n++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range jobs {
 				views[i] = inspectResource(ctx, records[i])
 			}
-		}()
+		})
 	}
 	for i := range records {
 		jobs <- i
@@ -204,7 +203,7 @@ func collectResourceResults(host string, active []resourceView) []resourceView {
 			rows = append(rows, v)
 		}
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	slices.SortFunc(rows, func(a, b resourceView) int { return cmp.Compare(a.ID, b.ID) })
 	return rows
 }
 func collectInventory(o options) (inventory, error) {

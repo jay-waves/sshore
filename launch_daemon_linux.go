@@ -114,8 +114,7 @@ func (s *remoteShell) start(cols, rows uint16, term string, startup ...bool) err
 		code := 0
 		if err != nil {
 			code = 1
-			var e *exec.ExitError
-			if errors.As(err, &e) {
+			if e, ok := errors.AsType[*exec.ExitError](err); ok {
 				code = e.ExitCode()
 			}
 		}

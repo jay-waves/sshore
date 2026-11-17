@@ -25,8 +25,7 @@ type Terminal struct {
 	mu            sync.Mutex
 	closed        bool
 	size          Size
-	waitOnce      sync.Once
-	waitErr       error
+	waitResult    func() error
 }
 
 func Start(c Config) (*Terminal, error) {
@@ -109,6 +108,7 @@ func Start(c Config) (*Terminal, error) {
 	}
 	defer outW.Close()
 	t := &Terminal{input: inW, output: outR, size: c.Size}
+	t.waitResult = sync.OnceValue(t.wait)
 	t.job, err = windows.CreateJobObject(nil, nil)
 	if err != nil {
 		t.Close()
@@ -197,10 +197,7 @@ func (t *Terminal) Resize(s Size) error {
 }
 
 // Wait reaps the process once; concurrent callers receive the same result.
-func (t *Terminal) Wait() error {
-	t.waitOnce.Do(func() { t.waitErr = t.wait() })
-	return t.waitErr
-}
+func (t *Terminal) Wait() error { return t.waitResult() }
 func (t *Terminal) wait() error {
 	defer windows.CloseHandle(t.process)
 	defer t.closeConsole()

@@ -260,16 +260,14 @@ func TestFTPWindowsMetadataLeases(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, 20)
 	for range 20 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			f, err := pool.acquire("file")
 			if err == nil {
 				_, err = f.Stat()
 				_ = f.Close()
 			}
 			errs <- err
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)

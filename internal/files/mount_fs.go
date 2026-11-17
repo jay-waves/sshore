@@ -39,7 +39,7 @@ func (f *ftpFS) remotePath(name string) (string, error) {
 	if strings.ContainsRune(name, 0) {
 		return "", os.ErrInvalid
 	}
-	for _, p := range strings.Split(name, "/") {
+	for p := range strings.SplitSeq(name, "/") {
 		if p == ".." {
 			return "", os.ErrPermission
 		}
@@ -330,8 +330,7 @@ func ftpErrno(err error) syscall.Errno {
 		return 0
 	}
 
-	var status *sftp.StatusError
-	if errors.As(err, &status) {
+	if status, ok := errors.AsType[*sftp.StatusError](err); ok {
 		switch status.FxCode() {
 		case sftp.ErrSSHFxNoSuchFile:
 			return syscall.ENOENT
@@ -343,8 +342,7 @@ func ftpErrno(err error) syscall.Errno {
 			return syscall.EIO
 		}
 	}
-	var errno syscall.Errno
-	if errors.As(err, &errno) {
+	if errno, ok := errors.AsType[syscall.Errno](err); ok {
 		return errno
 	}
 	if os.IsNotExist(err) {

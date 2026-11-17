@@ -56,8 +56,7 @@ func runClientOnce(o options, previous string, ready func()) (resultCode int, re
 			ended()
 			return
 		}
-		var switching *sessionSwitch
-		if attached && resultErr != nil && !errors.As(resultErr, &switching) {
+		if _, switching := errors.AsType[*sessionSwitch](resultErr); attached && resultErr != nil && !switching {
 			sessionNotice(termui.Warning, "Disconnected from %s on %s (client code %d; %s). Shell state unconfirmed.", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host), resultCode, sessionDisconnectReason(resultErr))
 		}
 	}()
@@ -95,11 +94,7 @@ func runClientOnce(o options, previous string, ready func()) (resultCode int, re
 				termui.Log(os.Stderr, termui.Warning, "[sshore] Renamed; local history not updated: %s\n", cleanText(cacheErr.Error()))
 			}
 		}
-		var e interface {
-			error
-			ExitStatus() int
-		}
-		if errors.As(err, &e) {
+		if e, ok := errors.AsType[exitStatusError](err); ok {
 			return e.ExitStatus(), nil
 		}
 		return 0, err
@@ -108,13 +103,11 @@ func runClientOnce(o options, previous string, ready func()) (resultCode int, re
 		return 1, fmt.Errorf("an interactive terminal is required")
 	}
 	tmux.ResetInputModes()
-	transport, closeTransport, err := openClientTransportContext(ctx, &o)
+	transport, err := openClientTransportContext(ctx, &o)
 	if err != nil {
 		return 1, err
 	}
-	defer closeTransport()
-	stopTransport := context.AfterFunc(ctx, func() { transport.Close() })
-	defer stopTransport()
+	defer transport.Close()
 	mux, err := clientMux(transport)
 	if err != nil {
 		return 255, err
@@ -836,9 +829,8 @@ func runClientOnce(o options, previous string, ready func()) (resultCode int, re
 
 // A disconnected transport does not establish that the hosted shell exited.
 func sessionDisconnectReason(err error) string {
-	var timeout net.Error
-	switch {
-	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &timeout) && timeout.Timeout():
+	switch timeout, isTimeout := errors.AsType[net.Error](err); {
+	case errors.Is(err, context.DeadlineExceeded), isTimeout && timeout.Timeout():
 		return "timeout"
 	case errors.Is(err, context.Canceled):
 		return "interrupted"

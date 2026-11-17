@@ -145,7 +145,7 @@ func TestSpawnTransportKeepsIndependentAttachmentStreams(t *testing.T) {
 		}}}
 	for _, kind := range []string{"spawn_route_connect", "spawn_route_confirm", "mux"} {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		c, closeTransport, err := openClientTransportContext(ctx, &o)
+		c, err := openClientTransportContext(ctx, &o)
 		if err != nil {
 			cancel()
 			t.Fatal(err)
@@ -158,7 +158,7 @@ func TestSpawnTransportKeepsIndependentAttachmentStreams(t *testing.T) {
 				err = fmt.Errorf("unexpected reply: %s", reply.Type)
 			}
 		}
-		closeTransport()
+		c.Close()
 		cancel()
 		if err != nil {
 			t.Fatal(err)

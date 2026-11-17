@@ -18,8 +18,7 @@ type Terminal struct {
 	cmd      *exec.Cmd
 	once     sync.Once
 	closeErr error
-	waitOnce sync.Once
-	waitErr  error
+	wait     func() error
 }
 
 // StartCommand starts a caller-configured command with a controlling terminal.
@@ -55,7 +54,7 @@ func StartCommand(cmd *exec.Cmd, size Size) (*Terminal, error) {
 	}
 	master.Close()
 	master = os.NewFile(uintptr(fd), "mux-pty")
-	terminal := &Terminal{master: master, cmd: cmd}
+	terminal := &Terminal{master: master, cmd: cmd, wait: sync.OnceValue(cmd.Wait)}
 	// A descendant may retain the slave after the shell exits. Reap the shell
 	// independently, then bound output draining so it cannot keep the session alive.
 	go func() {
@@ -90,7 +89,7 @@ func (t *Terminal) Resize(s Size) error {
 func (t *Terminal) PID() int { return t.cmd.Process.Pid }
 
 // Wait reaps the child once; concurrent callers receive the same result.
-func (t *Terminal) Wait() error { t.waitOnce.Do(func() { t.waitErr = t.cmd.Wait() }); return t.waitErr }
+func (t *Terminal) Wait() error { return t.wait() }
 
 // Close hangs up the terminal; deliberately detached descendants may survive.
 func (t *Terminal) Close() error {

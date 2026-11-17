@@ -1,13 +1,14 @@
 package main
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/termui"
@@ -121,11 +122,8 @@ func readShellSnapshotsLocked() ([]shellSnapshot, error) {
 		}
 		rows = append(rows, s)
 	}
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].Host != rows[j].Host {
-			return rows[i].Host < rows[j].Host
-		}
-		return rows[i].Name < rows[j].Name
+	slices.SortFunc(rows, func(a, b shellSnapshot) int {
+		return cmp.Or(cmp.Compare(a.Host, b.Host), cmp.Compare(a.Name, b.Name))
 	})
 	return rows, nil
 }

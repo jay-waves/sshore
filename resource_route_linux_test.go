@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"io"
 	"net"
 	"os"
@@ -126,7 +127,8 @@ func TestRoutedForwardEndpointsAndLifetime(t *testing.T) {
 			if err != nil || marker != forwardReadyMarker+"\n" {
 				t.Fatalf("marker=%q err=%v", marker, err)
 			}
-			startForwardStreams(mx, listener, target)
+			forward := sshio.StartMuxForward(mx, listener, target)
+			defer forward.Close()
 			// Approval establishes an independent resource, even after its source exits.
 			close(s.done)
 			c, err := net.DialTimeout("tcp", loopbackPort(port), time.Second)
@@ -208,4 +210,24 @@ func TestRoutedMountPreservesAgentApprovalGate(t *testing.T) {
 			<-done
 		})
 	}
+}
+
+// A failed resource handshake must release the listener reserved before approval.
+func TestRoutedForwardStartupCleanup(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	port := listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+	_, err = startRoutedForward(context.Background(), forwardConfig{Port: port, Target: 12345, Connection: &recentConnection{}})
+	if err == nil {
+		t.Fatal("invalid resource route accepted")
+	}
+	listener, err = net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("failed startup retained its listener: %v", err)
+	}
+	listener.Close()
 }

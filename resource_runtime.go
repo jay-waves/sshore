@@ -88,6 +88,17 @@ func resourceStateDir(kind string) (string, error) {
 	return stateDir(kind + "s")
 }
 
+// Reuse loopback control connections across setup logs and authentication
+// requests. Bound idle retention; interactive responses keep caller cancellation
+// without imposing a deadline on the user's decision.
+var resourceHTTPTransport = &http.Transport{
+	Proxy:               nil,
+	DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+	MaxIdleConns:        16,
+	MaxIdleConnsPerHost: 2,
+	IdleConnTimeout:     5 * time.Second,
+}
+
 func resourceHTTPContext(ctx context.Context, address, token, method, route string, body io.Reader) (*http.Response, error) {
 	host, _, e := net.SplitHostPort(address)
 	if e != nil || host != "127.0.0.1" {
@@ -105,8 +116,7 @@ func resourceHTTPContext(ctx context.Context, address, token, method, route stri
 	if route == "/ask" || route == "/setup" || route == "/unlock" {
 		timeout = 0
 	}
-	c := &http.Client{Timeout: timeout, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	defer c.CloseIdleConnections()
+	c := &http.Client{Timeout: timeout, Transport: resourceHTTPTransport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return c.Do(req)
 }
 func resourceListen(token string, handler http.HandlerFunc) (net.Listener, *http.Server, error) {

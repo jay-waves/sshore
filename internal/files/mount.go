@@ -87,7 +87,7 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		pipes, err = sshio.Start(ctx, connection, os.Stderr)
 		if err == nil {
 			transport = pipes
-			defer func() { pipes.Close(); pipes.Wait() }()
+			defer pipes.CloseAndWait()
 		}
 	}
 	if err != nil {

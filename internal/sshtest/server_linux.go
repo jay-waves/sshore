@@ -53,19 +53,16 @@ func Wrap(t testing.TB, script string, env []string, globalRequest ...func(*cryp
 	var workers sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
 	track := func(c net.Conn) { mu.Lock(); connections = append(connections, c); mu.Unlock() }
-	workers.Add(2)
-	go func() {
-		defer workers.Done()
+	workers.Go(func() {
 		for {
 			c, err := al.Accept()
 			if err != nil {
 				return
 			}
 			track(c)
-			workers.Add(1)
-			go func() { defer workers.Done(); defer c.Close(); agent.ServeAgent(ring, c) }()
+			workers.Go(func() { defer c.Close(); agent.ServeAgent(ring, c) })
 		}
-	}()
+	})
 	sc := &cryptossh.ServerConfig{PublicKeyCallback: func(_ cryptossh.ConnMetadata, key cryptossh.PublicKey) (*cryptossh.Permissions, error) {
 		if string(key.Marshal()) != string(signer.PublicKey().Marshal()) {
 			return nil, fmt.Errorf("wrong fixture key")
@@ -73,17 +70,14 @@ func Wrap(t testing.TB, script string, env []string, globalRequest ...func(*cryp
 		return nil, nil
 	}}
 	sc.AddHostKey(signer)
-	go func() {
-		defer workers.Done()
+	workers.Go(func() {
 		for {
 			raw, err := listener.Accept()
 			if err != nil {
 				return
 			}
 			track(raw)
-			workers.Add(1)
-			go func() {
-				defer workers.Done()
+			workers.Go(func() {
 				defer raw.Close()
 				client, channels, requests, err := cryptossh.NewServerConn(raw, sc)
 				if err != nil {
@@ -122,9 +116,7 @@ func Wrap(t testing.TB, script string, env []string, globalRequest ...func(*cryp
 							remote.Close()
 							continue
 						}
-						workers.Add(1)
-						go func() {
-							defer workers.Done()
+						workers.Go(func() {
 							defer remote.Close()
 							defer stream.Close()
 							go cryptossh.DiscardRequests(requests)
@@ -133,7 +125,7 @@ func Wrap(t testing.TB, script string, env []string, globalRequest ...func(*cryp
 							io.Copy(stream, remote)
 							stream.Close()
 							<-done
-						}()
+						})
 						continue
 					}
 					if channel.ChannelType() != "session" {
@@ -144,9 +136,7 @@ func Wrap(t testing.TB, script string, env []string, globalRequest ...func(*cryp
 					if err != nil {
 						continue
 					}
-					workers.Add(1)
-					go func() {
-						defer workers.Done()
+					workers.Go(func() {
 						defer stream.Close()
 						for r := range req {
 							if r.Type != "exec" {
@@ -184,11 +174,11 @@ func Wrap(t testing.TB, script string, env []string, globalRequest ...func(*cryp
 							<-copied
 							return
 						}
-					}()
+					})
 				}
-			}()
+			})
 		}
-	}()
+	})
 	t.Cleanup(func() {
 		cancel()
 		listener.Close()

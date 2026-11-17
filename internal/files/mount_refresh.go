@@ -101,8 +101,8 @@ func (r *metadataRefresh) scheduleRecentLocked() {
 	for e := r.fs.cache.lru.Front(); e != nil && len(keys) < metadataRefreshRecent; e = e.Next() {
 		keys = append(keys, e.Value.(ftpCacheValue).key)
 	}
-	for i := len(keys) - 1; i >= 0; i-- {
-		r.scheduleLocked(keys[i])
+	for _, key := range slices.Backward(keys) {
+		r.scheduleLocked(key)
 	}
 }
 
@@ -283,8 +283,7 @@ func startDirectoryPrefetch(parent context.Context, fs *ftpFS) *directoryPrefetc
 	go func() {
 		var wg sync.WaitGroup
 		for i := 0; i < directoryPrefetchWorkers; i++ {
-			wg.Add(1)
-			go func() { defer wg.Done(); p.run() }()
+			wg.Go(p.run)
 		}
 		wg.Wait()
 		close(p.done)

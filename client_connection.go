@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -36,18 +37,19 @@ func retainClientTransport(o *options, open func(context.Context) (io.ReadWriteC
 	o.transports.close = append(o.transports.close, closeTransport)
 }
 
-func openReusableTransport(ctx context.Context, connection *clientTransport) (io.ReadWriteCloser, func(), error) {
+func openReusableTransport(ctx context.Context, connection *clientTransport) (io.ReadWriteCloser, error) {
 	c, err := connection.open(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	stop := context.AfterFunc(ctx, func() { c.Close() })
-	return c, func() { stop(); c.Close() }, nil
+	return transportio.OwnTransport(ctx, c, nil), nil
 }
 
-func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWriteCloser, closeTransport func(), err error) {
+// The returned stream owns its cleanup. Reused attachments release only their
+// own stream; frontend-retained authenticated connections outlive attachments.
+func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWriteCloser, err error) {
 	if err := ctx.Err(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer func() {
 		if err != nil && ctx.Err() != nil {
@@ -61,9 +63,9 @@ func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWr
 	o.reusable = nil
 	if o.routeParent != nil {
 		parent := routeParentOptions(*o.routeParent)
-		c, closeParent, err := openClientTransportContext(ctx, &parent)
+		c, err := openClientTransportContext(ctx, &parent)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		if err = writeMessage(c, message{Type: "spawn_route_connect", Token: o.routeToken, Instance: parent.instance, SoftwareVersion: version}); err == nil {
 			var reply message
@@ -73,8 +75,8 @@ func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWr
 			}
 		}
 		if err != nil {
-			closeParent()
-			return nil, nil, err
+			c.Close()
+			return nil, err
 		}
 		if o.routeTarget {
 			if err = writeMessage(c, message{Type: "shell_connect", Action: o.command, Name: o.session, Instance: o.instance, SoftwareVersion: version}); err == nil {
@@ -85,20 +87,19 @@ func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWr
 				}
 			}
 			if err != nil {
-				closeParent()
-				return nil, nil, err
+				c.Close()
+				return nil, err
 			}
 		}
-		return c, closeParent, nil
+		return c, nil
 	}
 	if o.local {
 		if o.hosted {
 			c, err := openHostedTransport(ctx, *o)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
-			stop := context.AfterFunc(ctx, func() { c.Close() })
-			return c, func() { stop(); c.Close() }, nil
+			return transportio.OwnTransport(ctx, c, nil), nil
 		}
 		var r localShellRecord
 		var err error
@@ -112,21 +113,20 @@ func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWr
 			r, err = readLocalSession(name)
 		}
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		if o.taskIdentity != "" && o.taskIdentity != r.identity() {
-			return nil, nil, fmt.Errorf("local task changed; refresh with sshore list")
+			return nil, fmt.Errorf("local task changed; refresh with sshore list")
 		}
 		o.taskIdentity = r.identity()
 		o.session = r.Name
 		o.temporary = r.Owner.PID != 0
 		c, err := dialLocalSessionContext(ctx, r, time.Now().Add(5*time.Second))
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		_ = c.SetDeadline(time.Time{})
-		stop := context.AfterFunc(ctx, func() { c.Close() })
-		return c, func() { stop(); c.Close() }, nil
+		return transportio.OwnTransport(ctx, c, nil), nil
 	}
 	if o.command == "spawn" {
 		return openSpawnTransport(ctx, o)
@@ -141,16 +141,15 @@ func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWr
 	process, err := transportio.Start(connectionCtx, sshConnectionOptions(*o), os.Stderr)
 	if err != nil {
 		cancelConnection()
-		return nil, nil, err
+		return nil, err
 	}
 	reader, writer := process.Output, process.Input
-	closeSSH := func() { cancelConnection(); process.Close(); process.Wait() }
+	closeSSH := func() { cancelConnection(); process.CloseAndWait() }
 	// The mux handshake follows SSH authentication; terminal raw mode and its
 	// keyboard reader start only after authentication and setup finish.
-	transport := process
 	if err = negotiateSetupUsing(ctx, reader, writer, o, setupClientUI{OpenInput: func() (setupInput, error) { return termui.NewInput() }}); err != nil {
 		closeSSH()
-		return nil, nil, err
+		return nil, err
 	}
 	if o.daemonTask != nil {
 		if o.transports != nil {
@@ -163,11 +162,11 @@ func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWr
 		channel, err := openRemoteDaemonTask(ctx, process, *o.daemonTask)
 		if err != nil {
 			closeSSH()
-			return nil, nil, fmt.Errorf("connect remote daemon: %w", err)
+			return nil, fmt.Errorf("connect remote daemon: %w", err)
 		}
-		return channel, func() { channel.Close(); closeSSH() }, nil
+		return transportio.OwnTransport(ctx, channel, func() { channel.Close(); closeSSH() }), nil
 	}
-	return transport, closeSSH, nil
+	return transportio.OwnTransport(ctx, process, closeSSH), nil
 }
 
 // SSH carries TCP channels to the same loopback endpoint used by native clients.
@@ -200,8 +199,8 @@ func (s *sessionSwitch) Error() string { return "switch session" }
 func runClient(o options) (int, error) {
 	transports := &clientTransports{}
 	defer func() {
-		for i := len(transports.close) - 1; i >= 0; i-- {
-			transports.close[i]()
+		for _, v := range slices.Backward(transports.close) {
+			v()
 		}
 	}()
 	// Keep the frontend alive while an attempt unwinds and restores its parent.
@@ -225,8 +224,7 @@ func runClient(o options) (int, error) {
 			_ = o.handoffDone(context.Background(), err)
 			o.handoffDone = nil
 		}
-		var next *sessionSwitch
-		if errors.As(err, &next) {
+		if next, ok := errors.AsType[*sessionSwitch](err); ok {
 			if next.returnLocal {
 				returns = append(returns, returnTarget{next.from, previous})
 			}
@@ -600,11 +598,11 @@ func confirmSpawnRoute(ctx context.Context, parent options, token string, result
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	parent = routeParentOptions(parent)
-	c, closeTransport, err := openClientTransportContext(ctx, &parent)
+	c, err := openClientTransportContext(ctx, &parent)
 	if err != nil {
 		return err
 	}
-	defer closeTransport()
+	defer c.Close()
 	request := message{Type: "spawn_route_confirm", Token: token, Instance: parent.instance, SoftwareVersion: version}
 	if result != nil {
 		request.Error = cleanText(result.Error())

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -37,8 +38,8 @@ type connectionConfig struct {
 }
 
 func environment(env []string, key string) string {
-	for i := len(env) - 1; i >= 0; i-- {
-		k, v, ok := strings.Cut(env[i], "=")
+	for _, e := range slices.Backward(env) {
+		k, v, ok := strings.Cut(e, "=")
 		if ok && (k == key || runtime.GOOS == "windows" && strings.EqualFold(k, key)) {
 			return v
 		}

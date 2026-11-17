@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -195,4 +197,34 @@ func TestForwardRejectsInvalidLocalEndpoint(t *testing.T) {
 			t.Fatal("accepted", args)
 		}
 	}
+}
+
+// A failed heartbeat must end the attempt with its original cause, even when
+// the process waiter concurrently observes the resulting cancellation.
+type failedHeartbeatInput struct{ err error }
+
+func (w failedHeartbeatInput) Write([]byte) (int, error) { return 0, w.err }
+func (w failedHeartbeatInput) Close() error              { return nil }
+
+func TestForwardHeartbeatPreservesExitCause(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		failure := errors.New("peer refused input")
+		started := false
+		code, err := runAttempt(context.Background(), forwardTransport{
+			Log: io.Discard,
+			Start: func(ctx context.Context, _ bool, _ io.Writer) (*forwardConnection, error) {
+				return &forwardConnection{
+					Input:  failedHeartbeatInput{failure},
+					Output: strings.NewReader(forwardReadyMarker + "\n"),
+					Close:  func() error { return nil },
+					Wait:   func() error { <-ctx.Done(); return ctx.Err() },
+				}, nil
+			},
+			Ready:     func() error { return nil },
+			Heartbeat: func() ([]byte, error) { return []byte("heartbeat"), nil },
+		}, true, &started)
+		if code != 1 || !errors.Is(err, failure) || !strings.Contains(err.Error(), "heartbeat write failed") {
+			t.Fatalf("code=%d err=%v", code, err)
+		}
+	})
 }

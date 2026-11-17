@@ -219,9 +219,7 @@ func bridgeSpawnTransport(path string, lease net.Conn, readyMode string, transpo
 		}
 		active++
 		mu.Unlock()
-		handlers.Add(1)
-		go func() {
-			defer handlers.Done()
+		handlers.Go(func() {
 			defer func() {
 				mu.Lock()
 				active--
@@ -238,8 +236,8 @@ func bridgeSpawnTransport(path string, lease net.Conn, readyMode string, transpo
 			}
 			defer c.Close()
 			_ = c.SetDeadline(time.Time{})
-			proxySpawn(stream, c)
-		}()
+			transportio.Bridge(stream, c)
+		})
 	}
 }
 

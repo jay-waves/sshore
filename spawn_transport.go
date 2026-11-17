@@ -23,19 +23,9 @@ type spawnConfig struct {
 	SSH                []string
 }
 
-// Close both directions and join the reader before releasing either endpoint.
-func proxySpawn(a, b io.ReadWriteCloser) {
-	done := make(chan struct{})
-	go func() { _, _ = io.Copy(b, a); b.Close(); a.Close(); close(done) }()
-	_, _ = io.Copy(a, b)
-	a.Close()
-	b.Close()
-	<-done
-}
-
-func openSpawnTransport(ctx context.Context, o *options) (io.ReadWriteCloser, func(), error) {
+func openSpawnTransport(ctx context.Context, o *options) (io.ReadWriteCloser, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	cwd := o.sshDirectory
 	var err error
@@ -43,11 +33,11 @@ func openSpawnTransport(ctx context.Context, o *options) (io.ReadWriteCloser, fu
 		cwd, err = os.Getwd()
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	auth, stopAuth, err := startSpawnAuth()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer stopAuth()
 	env := o.environment
@@ -57,19 +47,19 @@ func openSpawnTransport(ctx context.Context, o *options) (io.ReadWriteCloser, fu
 	request := localDaemonRequest{Kind: "spawn", Record: localShellRecord{Name: "spawn", Directory: cwd, Owner: o.owner}, Env: append(append([]string(nil), env...), auth...), Spawn: &spawnConfig{Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh}}
 	c, err := openLocalDaemonContext(ctx, request)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	stop := context.AfterFunc(ctx, func() { c.Close() })
 	closeTransport := func() { stop(); c.Close() }
 	_ = c.SetDeadline(time.Time{})
 	if err = negotiateSetupUsing(ctx, c, c, o, setupClientUI{OpenInput: func() (setupInput, error) { return termui.NewInput() }}); err != nil {
 		closeTransport()
-		return nil, nil, err
+		return nil, err
 	}
 	mx, err := smux.Client(c, transportio.MuxConfig())
 	if err != nil {
 		closeTransport()
-		return nil, nil, err
+		return nil, err
 	}
 	open := func(ctx context.Context) (io.ReadWriteCloser, error) {
 		if err := ctx.Err(); err != nil {
@@ -86,9 +76,9 @@ func openSpawnTransport(ctx context.Context, o *options) (io.ReadWriteCloser, fu
 	if err != nil {
 		mx.Close()
 		closeTransport()
-		return nil, nil, err
+		return nil, err
 	}
-	return stream, func() { mx.Close(); closeTransport() }, nil
+	return transportio.OwnTransport(ctx, stream, func() { mx.Close(); closeTransport() }), nil
 }
 
 type spawnDiagnostics struct {
@@ -138,7 +128,7 @@ func relaySpawnStreams(frontend, remote *smux.Session) {
 			frontend.Close()
 			return
 		}
-		go proxySpawn(stream, target)
+		go transportio.Bridge(stream, target)
 	}
 }
 
@@ -165,7 +155,7 @@ func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.
 		return err
 	}
 	input, output := pipes.Input, pipes.Output
-	defer func() { c.Close(); pipes.Close(); _ = pipes.Wait() }()
+	defer func() { c.Close(); _ = pipes.CloseAndWait() }()
 	var transport io.ReadWriteCloser = pipes
 	// Relay only setup choices. Authentication uses the launcher's askpass broker.
 	for {

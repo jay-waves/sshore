@@ -162,13 +162,7 @@ func runKillAll(o options) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		waited := false
-		defer func() {
-			process.Close()
-			if !waited {
-				process.Wait()
-			}
-		}()
+		defer process.CloseAndWait()
 		decoder := json.NewDecoder(process.Output)
 		var reply daemonAdminReply
 		if err := decoder.Decode(&reply); err != nil {
@@ -189,7 +183,6 @@ func runKillAll(o options) (int, error) {
 				return fmt.Errorf("%s", reply.Error)
 			}
 			err := process.Wait()
-			waited = true
 			return err
 		}
 	}

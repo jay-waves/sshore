@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	cryptossh "golang.org/x/crypto/ssh"
@@ -180,24 +181,26 @@ func TestPrivateFileDoesNotAuthenticateWithoutAgent(t *testing.T) {
 }
 
 func TestAuthenticationBudgetPausesJumpChain(t *testing.T) {
-	g := &authenticationBudgets{entries: make(map[*authenticationBudget]bool)}
-	outer, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	inner, stop := context.WithCancel(outer)
-	defer stop()
-	release := g.add(30*time.Millisecond, cancel)
-	defer release()
-	release2 := g.add(30*time.Millisecond, stop)
-	defer release2()
-	resume := g.pause()
-	time.Sleep(70 * time.Millisecond)
-	if outer.Err() != nil || inner.Err() != nil {
-		t.Fatal("prompt consumed connection timeout")
-	}
-	resume()
-	select {
-	case <-inner.Done():
-	case <-time.After(time.Second):
-		t.Fatal("network timeout did not resume")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		g := &authenticationBudgets{entries: make(map[*authenticationBudget]bool)}
+		outer, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		inner, stop := context.WithCancel(outer)
+		defer stop()
+		release := g.add(30*time.Millisecond, cancel)
+		defer release()
+		release2 := g.add(30*time.Millisecond, stop)
+		defer release2()
+		resume := g.pause()
+		time.Sleep(70 * time.Millisecond)
+		if outer.Err() != nil || inner.Err() != nil {
+			t.Fatal("prompt consumed connection timeout")
+		}
+		resume()
+		select {
+		case <-inner.Done():
+		case <-time.After(time.Second):
+			t.Fatal("network timeout did not resume")
+		}
+	})
 }

@@ -28,7 +28,7 @@ policy or depending on mutable application state.
 | Shell startup and attachment I/O | `internal/tmux/terminal.go`, `internal/tmux/shell_attachment.go`, application adapters in `protocol.go` |
 | Native terminals, console I/O and shortcuts | `internal/tmux/` |
 | Local prompts and presentation | `internal/termui/`, application adapters in `cli_ui.go` |
-| Framing, smux and shared SSH transport | `internal/ssh/` (configuration, public-key authentication, host verification, connections, forwarding and framing); application messages and mux handshake in `protocol.go` |
+| Framing, smux and shared SSH transport | `internal/ssh/` (configuration, public-key authentication, host verification, connections, forwarding and framing); stream ownership and relays in `transport.go`, owned resource forwarding in `mux_forward.go`; application messages and mux handshake in `protocol.go` |
 | Copy and mount mechanisms | Flat `internal/files/`; command adapters in `cp_command.go`, `mount*.go` |
 | Pending requests and atomic approval | `review_store.go`, application coordination in `review.go` (including shared source-shell validation in `review_linux.go`) |
 | Forward transport and retries | `forward.go`: endpoint parsing, command execution and SSH worker lifecycle |
@@ -303,6 +303,28 @@ Ordinary forwarding, inventory and cancellation do not install remote software.
 Keep file/transport behavior in `internal/files` and `internal/ssh`; account setup
 and consent stay in the application.
 
+Client transport openers return one owned byte stream: `Close` releases its entire
+owned path, and context cancellation invokes the same cleanup exactly once. A
+reused attachment owns only its stream; the frontend retains the authenticated
+connection across attachment changes. Resource route adapters keep instance,
+full-release and approval checks in the application. SSH exec channels cache their
+exit result for concurrent waiters; `CloseAndWait` aborts before joining, while
+normal completion consumes output before `Wait`.
+
+Loopback HTTP control uses a shared, bounded idle connection pool without proxies
+or redirects. Dialing is bounded independently of interactive approval waits;
+caller cancellation still interrupts those waits. Forward attempts preserve heartbeat
+write and registration failures as context cancellation causes; user cancellation
+remains a normal exit. Forward connection registries
+release their lock before closing sockets and remove completed connections in
+constant time.
+
+Shared relays distinguish opaque attachment bridges (EOF closes both directions)
+from request/response splices (clean EOF sends `CloseWrite`, preserving replies;
+I/O errors and cancellation abort both ends). Both join their copy workers. A
+resource mux forward owns its listener, local target connections and mux; closing
+or waiting for it joins its accept loop, cancellation watcher and data workers.
+
 Copy concurrency must stay bounded and preserve exact-size checks, ordered digest
 calculation, receiver-side upload verification and no-overwrite publication.
 Transport window budgets live in `internal/ssh/protocol.go` and `internal/files/mount.go`; size them
@@ -382,6 +404,12 @@ command -v go
 go version  # Go 1.26 or newer
 go build -o dist/sshore .
 ```
+
+Use `WaitGroup.Go` for scoped worker launches and `OnceValue` for immutable
+one-time results. Keep explicit task accounting where registration under a lock
+or completion in another function is part of the lifecycle contract. Pure
+concurrency and timer tests use `testing/synctest` with in-memory I/O; real TCP,
+PTY and subprocess tests stay outside its virtual-time bubble.
 
 Choose checks for the actual impact and risk. The table suggests options, not a
 mandatory sequence: use targeted checks when sufficient, and skip checks that
