@@ -29,7 +29,7 @@ func TestInstallerPreparedUpdate(t *testing.T) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, e.bin, "install-prepared", target)
+		cmd := exec.CommandContext(ctx, e.bin, "bootstrap", target)
 		cmd.Env = append(e.env, "SSHORE_SOCKET=", "SSHORE_LOCAL_SESSION=")
 		terminal, err := pty.Start(cmd)
 		if err != nil {

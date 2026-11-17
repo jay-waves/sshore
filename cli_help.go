@@ -28,6 +28,7 @@ Tasks and setup
   list        Show tasks and when they were last checked
   pstree      Show shell ownership and attachments
   kill        Kill shells or stop other tasks
+  bootstrap   Install a prepared executable
   reset       End local tasks and clear application state
   mcp         Serve Agent tools over stdio
   daemon      Run the account task manager
@@ -69,6 +70,14 @@ SSH shell; reconnect after maintenance to restore sshore features.
 ` + sshOptions + "Shell connections also accept SSH -L, -R and -D.\n"
 
 var commandHelp = map[string]string{
+	"bootstrap": `Usage: sshore bootstrap TARGET
+
+Install this executable's version at the absolute TARGET path. This command
+uses an already downloaded and verified executable; it does not download releases.
+Run it outside managed shells. Updates may end the listed daemon tasks and lose
+unsaved work; type update to confirm. State changes require another review.
+The installer handles downloads, checksums and platform-specific preparation.
+`,
 	"mcp": `---
 name: sshore-mcp
 description: Run remote Bash scripts through persistent SSH sessions using MCP.

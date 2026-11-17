@@ -26,7 +26,7 @@ func TestExternalSpawnParentDisplay(t *testing.T) {
 	}
 	var out bytes.Buffer
 	writeShellTree(&out, nodes, false)
-	if !strings.Contains(out.String(), fmt.Sprintf("(pid %d)", os.Getpid())) || !strings.Contains(out.String(), "external ") || strings.Contains(out.String(), "stale-name") || strings.Contains(out.String(), " ?") {
+	if !strings.Contains(out.String(), fmt.Sprintf("(pid %d)", os.Getpid())) || strings.Contains(out.String(), "external ") || strings.Contains(out.String(), "stale-name") || strings.Contains(out.String(), " ?") {
 		t.Fatal(out.String())
 	}
 	input = append(input, shellTreeNode{Identity: "managed", Lifetime: "persistent"})

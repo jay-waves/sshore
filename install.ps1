@@ -167,7 +167,7 @@ function Install-Sshore([string]$Version = '') {
         if ((Read-SshoreBinaryVersion $stage) -cne "sshore $Version") {
             throw 'Binary version does not match release; installation unchanged.'
         }
-        & $stage install-prepared $target
+        & $stage bootstrap $target
         if ($LASTEXITCODE -ne 0) { throw 'Installation stopped. Close remaining sshore clients if the executable is still in use, then retry.' }
         [IO.File]::Delete($stage)
         $stage = $null

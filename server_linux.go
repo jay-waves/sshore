@@ -69,9 +69,6 @@ func serverCommand(args []string) error {
 		}
 		return killSession(args[1], args[3:]...)
 	case "bootstrap":
-		if len(args) != 4 {
-			return usage("invalid bootstrap arguments")
-		}
 		return bootstrap(args[1], args[2], args[3])
 	case "bridge", "resume":
 		if len(args) != 2 {

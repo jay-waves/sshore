@@ -111,7 +111,7 @@ main() {
         mv -f -- "$install_stage" "$install_target"
         install_stage=
     else
-        "$install_tmp/sshore" install-prepared "$install_target" || fail 'installation stopped; existing tasks may require manual cleanup'
+        "$install_tmp/sshore" bootstrap "$install_target" || fail 'installation stopped; existing tasks may require manual cleanup'
     fi
     printf 'Installed sshore %s: %s\n' "$install_version" "$install_target"
     printf '%s\n' 'SHA256 verified. No sudo or shell configuration changes.'

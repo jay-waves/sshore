@@ -328,7 +328,7 @@ invalidated by mutations. These caches do not buffer file writes.
 
 ### Inventory and diagnostics
 
-Separate live observations, cached records and unknown state. Inventory and
+Separate live observations, cached records and unknown state.
 A spawn without a visible owner task may display its original direct parent
 process, using its saved PID and creation identity. Reattachment preserves this
 context. Only a matching local process identity supplies a live name; foreign
@@ -348,6 +348,15 @@ is not target health. Exclude capabilities and credentials from public output.
 See [inventory privacy](SECURITY.md#inventory-and-privacy).
 
 ### Setup and installation
+
+Install scripts own downloads, checksum verification and platform-specific
+preparation. The prepared executable handles installation through
+`sshore bootstrap TARGET`; installers invoke it directly without legacy entry
+points or capability probes. The Linux remote entry point is `scripts/bootstrap.sh.tmpl`,
+embedded with `go:embed`: Go quotes parameters and builds protocol frames; shell
+resolves the remote executable and prepares a matching coordinator. The remote
+`bootstrap TARGET MODE NAME` exchange keeps stdin for setup/session frames and
+leaves task review, state rechecks, shutdown and replacement in Go.
 
 Standalone installers and SSH setup share release and shutdown policy. Temporary
 bootstrap staging does not stop tasks. Run installers outside managed shells.

@@ -25,6 +25,11 @@ curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | 
 irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 ```
 
+Installers download and verify a release, then invoke the prepared executable's
+`sshore bootstrap TARGET` to install it. Bootstrap uses this executable's version;
+it does not download releases. Updates retain the task review and typed `update`
+confirmation. Install scripts require the current bootstrap command.
+
 Installers verify checksums without requesting administrator access. On Windows,
 the installer updates the first `sshore.exe` on PATH without changing PATH. If none
 is found, it installs to `%LOCALAPPDATA%\sshore\bin` and adds that directory to
@@ -145,7 +150,7 @@ Use `kill` to clear confirmed ended remote history (see `sshore kill --help`).
 See `sshore list --help` for history and refresh behavior. `pstree` shows local spawn ownership and
 live resource directions, prioritizing the current tree; attaching from another shell does not transfer ownership.
 A spawn without a visible owner task shows its original direct parent as
-`external NAME (pid PID)`. This display-only node is not a manageable task;
+`NAME (pid PID)`. This display-only node is not a manageable task;
 missing or unverified processes are marked unavailable. Peer
 entries are read-only: manage them on their original computer. A running worker
 does not prove its target service is healthy.

@@ -382,6 +382,11 @@ product restriction, not a sandbox; arbitrary older binaries and deliberately
 escaped/reparented processes cannot be globally controlled. Native SSH forwarding
 remains the local user's policy.
 
+Installer scripts prepare a checksum-verified executable before invoking its
+`bootstrap TARGET` entry point. Bootstrap help is read-only and does not authorize
+an update. Remote shell staging never performs daemon shutdown or process
+termination itself.
+
 ## Inventory and privacy
 
 Public inventory is an allowlist: it excludes control addresses/tokens, SSH options

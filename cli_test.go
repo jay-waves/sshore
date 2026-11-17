@@ -458,3 +458,27 @@ func TestCancelCommandRemoved(t *testing.T) {
 		}
 	}
 }
+
+func TestBootstrapGrammar(t *testing.T) {
+	for _, args := range [][]string{{"/tmp/sshore"}, {"/tmp/sshore", "new", "build"}, {"/tmp/sshore", "cp-agent", ""}} {
+		if _, err := parseCLI(args, "bootstrap"); err != nil {
+			t.Fatalf("rejected %q: %v", args, err)
+		}
+	}
+	for _, args := range [][]string{nil, {""}, {"/tmp/sshore", "new"}, {"/tmp/sshore", "", "build"}, {"/tmp/sshore", "new", "build", "extra"}} {
+		if _, err := parseCLI(args, "bootstrap"); err == nil {
+			t.Fatalf("accepted %q", args)
+		}
+	}
+	if code, err := run([]string{"install-prepared", "/tmp/sshore"}); code != 2 || err == nil {
+		t.Fatalf("obsolete installer entry accepted: %d %v", code, err)
+	}
+	root := filepath.Join(t.TempDir(), "state")
+	t.Setenv("SSHORE_STATE_DIR", root)
+	if code, err := run([]string{"bootstrap", "--help"}); code != 0 || err != nil {
+		t.Fatalf("help: %d %v", code, err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("help changed state: %v", err)
+	}
+}

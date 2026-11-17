@@ -65,7 +65,7 @@ package main
 import ("fmt"; "os")
 func main() {
  if len(os.Args) == 2 && os.Args[1] == "--version" { fmt.Println("sshore 0.3.3"); return }
- if len(os.Args) != 3 || os.Args[1] != "install-prepared" { os.Exit(2) }
+ if len(os.Args) != 3 || os.Args[1] != "bootstrap" { os.Exit(2) }
  exe, err := os.Executable()
  if err == nil {
   var data []byte

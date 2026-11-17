@@ -985,7 +985,7 @@ func TestClientExternalSpawnParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), fmt.Sprintf("external %s (pid %d)", name, os.Getpid())) || !strings.Contains(string(out), "external-parent") {
+	if !strings.Contains(string(out), fmt.Sprintf("%s (pid %d)", name, os.Getpid())) || !strings.Contains(string(out), "external-parent") {
 		t.Fatalf("missing direct parent: %s", out)
 	}
 	io.WriteString(terminal, "exit\n")

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"text/template"
 
 	"github.com/jay-waves/sshore/internal/termui"
 )
@@ -351,20 +353,16 @@ func bootstrapFrame(m message) string {
 	return "printf " + shellQuote(escaped.String())
 }
 
-// Match compareVersions before downloading a coordinator. Only canonical full
-// releases are ordered; failed probes and custom labels require manual repair.
-const newerReleaseAWK = `END {
-    release = "(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)"
-    if (NR != 1 || $0 !~ ("^sshore " release "$") || local !~ ("^" release "$")) exit 1
-    split(local, l, "."); split($2, r, ".")
-    for (i = 1; i <= 3; i++) {
-        if (length(r[i]) > length(l[i])) exit 0
-        if (length(r[i]) < length(l[i])) exit 1
-        if (("x" r[i]) > ("x" l[i])) exit 0
-        if (("x" r[i]) < ("x" l[i])) exit 1
-    }
-    exit 1
-}`
+//go:embed scripts/bootstrap.sh.tmpl
+var remoteBootstrapScript string
+
+var remoteBootstrapTemplate = template.Must(template.New("bootstrap.sh.tmpl").Funcs(template.FuncMap{
+	"q":     shellQuote,
+	"fatal": bootstrapFailure,
+	"download": func() string {
+		return bootstrapFrame(message{Type: "setup_download", SoftwareVersion: version, Action: "linux-amd64"})
+	},
+}).Parse(remoteBootstrapScript))
 
 // The bootstrap runs inside the original SSH connection. A mismatched executable
 // is never overwritten here: first prepare a verified, temporary coordinator so
@@ -387,64 +385,16 @@ func remoteCommand(o options) string {
 		mode = "sessions"
 	}
 	var b strings.Builder
-	b.WriteString("server=" + shellQuote(o.server) + "; ")
-	b.WriteString("if command -v \"$server\" >/dev/null 2>&1; then server=$(command -v \"$server\"); ")
-	if o.server == "sshore" {
-		b.WriteString("else server=\"$HOME/.local/bin/sshore\"; ")
-	} else {
-		b.WriteString("else :; ")
+	data := struct {
+		Version, Server, Command, Mode, Session, Action, NewName, TaskIdentity, Instance, InstallerURL string
+		List, ListJSON                                                                                 bool
+	}{
+		Version: version, Server: o.server, Command: o.command, Mode: mode, Session: o.session,
+		Action: o.command + "-session", NewName: o.newName, TaskIdentity: o.taskIdentity, Instance: o.instance,
+		InstallerURL: installerURL, List: o.list, ListJSON: o.listJSON,
 	}
-	b.WriteString("fi; case \"$server\" in /*) ;; *) server=\"$PWD/$server\" ;; esac; ")
-	b.WriteString("remote_version=; if [ -e \"$server\" ]; then remote_version=$(\"$server\" --version) || remote_version=; fi; ")
-	if o.command == "daemon-admin" {
-		b.WriteString("exec \"$server\" daemon-admin")
-		return "sh -c " + shellQuote(b.String())
+	if err := remoteBootstrapTemplate.Execute(&b, data); err != nil {
+		panic(err)
 	}
-	if o.list {
-		b.WriteString("if [ \"$remote_version\" != " + shellQuote("sshore "+version) + " ]; then printf '%s\\n' 'sshore: inventory requires matching remote release; no software changed' >&2; exit 1; fi; exec \"$server\" inventory " + shellQuote(version))
-		if o.listJSON {
-			b.WriteString(" --diagnostics")
-		}
-		return "sh -c " + shellQuote(b.String())
-	}
-	// Destructive management never enters setup: a kill must not upgrade or end
-	// unrelated sessions. The remote command independently checks its version.
-	if o.command == "kill" || o.command == "kill-resource" || o.command == "rename" {
-		b.WriteString("if [ \"$remote_version\" != " + shellQuote("sshore "+version) + " ]; then printf '%s\\n' " + shellQuote("sshore: "+o.command+" requires the installed remote version to match "+version+"; no software changed") + " >&2; exit 1; fi; ")
-		if o.command == "kill-resource" {
-			b.WriteString("exec \"$server\" kill-resource " + shellQuote(version) + " " + shellQuote(o.session) + " " + shellQuote(o.taskIdentity))
-			return "sh -c " + shellQuote(b.String())
-		}
-		actionArgs := shellQuote(o.session)
-		if o.command == "rename" {
-			actionArgs += " " + shellQuote(o.newName)
-		}
-		action := o.command
-		b.WriteString("exec \"$server\" " + action + "-session " + actionArgs + " " + shellQuote(version))
-		if o.instance != "" {
-			b.WriteString(" " + shellQuote(o.instance))
-		}
-		return "sh -c " + shellQuote(b.String())
-	}
-	// Check direction before downloading anything. Unknown/custom labels are left
-	// to the coordinator; they never authorize an automatic destructive upgrade.
-	b.WriteString("if printf '%s\\n' \"$remote_version\" | awk -v local=" + shellQuote(version) + " " + shellQuote(newerReleaseAWK) + "; then printf '%s\\n' " + shellQuote("sshore: remote executable is newer than local "+version+"; update the local client. No downgrade performed.") + " >&2; exit 1; fi; ")
-	args := " bootstrap \"$server\" " + shellQuote(mode) + " " + shellQuote(o.session)
-	b.WriteString("if [ \"$remote_version\" = " + shellQuote("sshore "+version) + " ]; then exec \"$server\"" + args + "; fi; ")
-	b.WriteString("if [ \"$(uname -s)\" != Linux ] || [ \"$(uname -m)\" != x86_64 ]; then " + bootstrapFailure("automatic setup supports Linux amd64 only") + "; fi; ")
-	b.WriteString("printf '%s\\n' " + shellQuote("[sshore] Downloading sshore "+version+" and verifying checksum...") + " >&2; ")
-	b.WriteString("umask 077; setup_dir=$(mktemp -d \"${TMPDIR:-/tmp}/sshore-setup.XXXXXXXX\") || { " + bootstrapFailure("remote setup: cannot create staging directory; no shells stopped") + "; }; trap 'rm -rf -- \"$setup_dir\"' EXIT; trap 'exit 130' INT; trap 'exit 143' TERM HUP; ")
-	b.WriteString("if ! { curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 --retry 2 " + shellQuote(installerURL) + " -o \"$setup_dir/install.sh\" && sh \"$setup_dir/install.sh\" --version " + shellQuote(version) + " --bin-dir \"$setup_dir/bin\" --prepare-only; } >\"$setup_dir/install.log\" 2>&1; then ")
-	b.WriteString("cat \"$setup_dir/install.log\" >&2; ")
-	b.WriteString(bootstrapFrame(message{Type: "setup_download", SoftwareVersion: version, Action: "linux-amd64"}) + "; ")
-	b.WriteString("IFS=' ' read -r setup_size setup_hash setup_extra || { " + bootstrapFailure("remote setup: client download unavailable; no shells stopped") + "; }; ")
-	b.WriteString("case \"$setup_size\" in ''|*[!0-9]*|?????????*) " + bootstrapFailure("remote setup: invalid transfer size") + ";; esac; ")
-	b.WriteString("if [ \"$setup_size\" -le 0 ] || [ \"$setup_size\" -gt 67108864 ] || [ -n \"$setup_extra\" ] || [ \"${#setup_hash}\" -ne 64 ]; then " + bootstrapFailure("remote setup: client download failed or transfer invalid; no shells stopped") + "; fi; ")
-	b.WriteString("case \"$setup_hash\" in *[!0-9a-f]*) " + bootstrapFailure("remote setup: invalid transfer checksum") + ";; esac; ")
-	b.WriteString("mkdir -p \"$setup_dir/bin\" && head -c \"$setup_size\" > \"$setup_dir/bin/sshore\" || { " + bootstrapFailure("remote setup: transfer failed; no shells stopped") + "; }; ")
-	b.WriteString("setup_actual=$(sha256sum < \"$setup_dir/bin/sshore\") || { " + bootstrapFailure("remote setup: checksum tool failed; no shells stopped") + "; }; if [ \"$(wc -c < \"$setup_dir/bin/sshore\")\" -ne \"$setup_size\" ] || [ \"${setup_actual%% *}\" != \"$setup_hash\" ]; then " + bootstrapFailure("remote setup: transferred executable checksum mismatch; no shells stopped") + "; fi; ")
-	b.WriteString("chmod 700 \"$setup_dir/bin/sshore\" || { " + bootstrapFailure("remote setup: cannot prepare executable; no shells stopped") + "; }; fi; ")
-	b.WriteString("[ \"$(\"$setup_dir/bin/sshore\" --version)\" = " + shellQuote("sshore "+version) + " ] || { " + bootstrapFailure("remote setup: prepared binary version mismatch. No shells stopped.") + "; }; ")
-	b.WriteString("\"$setup_dir/bin/sshore\"" + args)
 	return "sh -c " + shellQuote(b.String())
 }

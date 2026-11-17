@@ -75,6 +75,8 @@ func commandSpec(command string) (cliSpec, bool) {
 		spec = cliSpec{[]string{"--version"}, false, false, 0, 0}
 	case "daemon":
 		spec = cliSpec{nil, false, false, 0, 1}
+	case "bootstrap":
+		spec = cliSpec{nil, false, false, 1, 3}
 	case "mcp":
 		spec = cliSpec{nil, false, false, 0, 0}
 	case "exec":
@@ -202,7 +204,7 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 	}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "" {
+		if arg == "" && !(command == "bootstrap" && i == len(args)-1 && len(a.operands) == 2) {
 			return a, usage("empty argument")
 		}
 		if command == "exec" && len(a.operands) > 0 {
@@ -276,6 +278,9 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 	}
 	if a.has("--local") && len(a.ssh) != 0 {
 		return a, usage("local shells do not accept SSH options")
+	}
+	if command == "bootstrap" && len(a.operands) == 2 {
+		return a, usage("usage: sshore bootstrap TARGET [MODE NAME]")
 	}
 	max := spec.maxOperands(command, a)
 	if len(a.operands) < spec.min {

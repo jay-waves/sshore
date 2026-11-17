@@ -135,7 +135,7 @@ func writeShellTree(out io.Writer, nodes []shellTreeNode, color bool) {
 		}
 		label := cleanText(kind) + "/" + taskDisplayID(code, n.Name)
 		if kind == "external" && n.OwnerProcess != nil {
-			label = fmt.Sprintf("external %s (pid %d)", cleanText(n.Name), n.OwnerProcess.PID)
+			label = fmt.Sprintf("%s (pid %d)", cleanText(n.Name), n.OwnerProcess.PID)
 		}
 		fmt.Fprint(out, termui.Format(color, "90", "%s", prefix+branch), termui.Format(color && n.Current, termui.Success, "%s", label))
 		if n.State == "unavailable" {
