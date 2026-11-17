@@ -61,7 +61,7 @@ func TestSessionPickerPTY(t *testing.T) {
 	for _, tc := range []struct{ name, keys, want string }{
 		{"choose", "#2\r", "PICKER-SELECTED=eevee"},
 		{"filter", "/snor\r#3\r", "PICKER-SELECTED=snorlax"},
-		{"cancel", "\x03", "PICKER-CANCELLED"},
+		{"kill", "\x03", "PICKER-CANCELLED"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := exec.Command(os.Args[0], "-test.run=^TestSessionPickerPTYHelper$")
@@ -138,12 +138,12 @@ func TestSSHUnlockPTYHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	if mode == "cancel" {
+	if mode == "kill" {
 		ctx, cancel = context.WithTimeout(context.Background(), 200*time.Millisecond)
 	}
 	defer cancel()
 	unlock := promptSSHSecret
-	if mode == "broker" || mode == "cancel" {
+	if mode == "broker" || mode == "kill" {
 		env, stop, err := startSpawnAuth()
 		if err != nil {
 			t.Fatal(err)
@@ -152,7 +152,7 @@ func TestSSHUnlockPTYHelper(t *testing.T) {
 		unlock = brokerSSHSecret(env)
 	}
 	secret, err := unlock(ctx, "fixture-key")
-	if mode == "cancel" {
+	if mode == "kill" {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("unlock cancellation: %v", err)
 		}
@@ -183,7 +183,7 @@ func TestSSHUnlockPTYHelper(t *testing.T) {
 }
 
 func TestSSHUnlockPTY(t *testing.T) {
-	for _, mode := range []string{"direct", "broker", "cancel"} {
+	for _, mode := range []string{"direct", "broker", "kill"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -202,7 +202,7 @@ func TestSSHUnlockPTY(t *testing.T) {
 				n, readErr := master.Read(buf)
 				output.Write(buf[:n])
 				if !typed && strings.Contains(output.String(), "fixture-key:") {
-					if mode != "cancel" {
+					if mode != "kill" {
 						_, err = master.Write([]byte("  quiet secret  \r"))
 						if err != nil {
 							t.Fatal(err)

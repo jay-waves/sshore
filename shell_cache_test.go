@@ -130,7 +130,7 @@ func TestEndedShellCleanup(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := 0; i < 2; i++ {
-			code, err := runClientOnce(options{host: "work", session: state, command: "cancel"}, "", func() {})
+			code, err := runClientOnce(options{host: "work", session: state, command: "kill"}, "", func() {})
 			if code != 0 || err != nil {
 				t.Fatalf("named cleanup: %d %v", code, err)
 			}
@@ -192,7 +192,7 @@ func TestShellExitReconcilesHistory(t *testing.T) {
 	if _, err := os.Stat(path + ".live"); !os.IsNotExist(err) {
 		t.Fatalf("reading history created a connection lease: %v", err)
 	}
-	if err := confirmCancelledShell("work", "job", "different"); err != nil {
+	if err := confirmKilledShell("work", "job", "different"); err != nil {
 		t.Fatal(err)
 	}
 	// Late cached attachment data cannot resurrect an ended instance.
@@ -207,7 +207,7 @@ func TestUncachedCancellationRetainsEvidenceTime(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	before := time.Now()
-	if err := confirmCancelledShell("work", "job", "instance"); err != nil {
+	if err := confirmKilledShell("work", "job", "instance"); err != nil {
 		t.Fatal(err)
 	}
 	nodes := shellTreeFor("remote:instance")

@@ -50,10 +50,10 @@ func TestShortTaskShellSelectors(t *testing.T) {
 		identity   string
 	}{
 		{"attach", []string{ids[local.identity()].code}, []string{"work"}, local.identity()},
-		{"cancel", []string{"--local", ids[local.identity()].code}, []string{"work"}, local.identity()},
+		{"kill", []string{"--local", ids[local.identity()].code}, []string{"work"}, local.identity()},
 		{"rename", []string{ids[local.identity()].code, "new"}, []string{"work", "new"}, local.identity()},
 		{"attach", []string{ids[remoteKey].code}, []string{"host", "build"}, remoteKey},
-		{"cancel", []string{"host", ids[remoteKey].code}, []string{"host", "build"}, remoteKey},
+		{"kill", []string{"host", ids[remoteKey].code}, []string{"host", "build"}, remoteKey},
 		{"rename", []string{ids[remoteKey].code, "new"}, []string{"host", "build", "new"}, remoteKey},
 		{"rename", []string{"host", ids[remoteKey].code, "new"}, []string{"host", "build", "new"}, remoteKey},
 	} {
@@ -71,18 +71,18 @@ func TestShortTaskShellSelectors(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{{"other", ids[remoteKey].code}, {"--local", ids[remoteKey].code}} {
-		parsed, err := parseCLI(args, "cancel")
+		parsed, err := parseCLI(args, "kill")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err = resolveShortTask("cancel", &parsed); err == nil {
+		if _, _, err = resolveShortTask("kill", &parsed); err == nil {
 			t.Fatal("accepted wrong scope", args)
 		}
 	}
 	// A reused name must never make the old code act on its replacement.
 	close(tasks.records[local.UID].(*nativeShellTask).shell.done)
 	registerTestShell(t, tasks, "work", strings.Repeat("b", 32))
-	if _, err = run([]string{"cancel", ids[local.identity()].code}); err == nil {
+	if _, err = run([]string{"kill", ids[local.identity()].code}); err == nil {
 		t.Fatal("accepted replaced local shell")
 	}
 	if err = renameShellSnapshot("host", "build", "renamed"); err != nil {
@@ -101,7 +101,7 @@ func TestShortTaskShellSelectors(t *testing.T) {
 	if err = saveShellSnapshot(remote); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = run([]string{"cancel", ids[remoteKey].code}); err == nil {
+	if _, err = run([]string{"kill", ids[remoteKey].code}); err == nil {
 		t.Fatal("accepted replaced remote shell")
 	}
 }
@@ -134,14 +134,14 @@ func TestShortTaskReviewLifecycle(t *testing.T) {
 	if _, err = run([]string{"rename", code, "renamed"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = run([]string{"cancel", code}); err != nil {
+	if _, err = run([]string{"kill", code}); err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err = readRequest(id); err == nil {
 		t.Fatal("request not consumed", err)
 	}
-	if _, err = run([]string{"cancel", code}); err == nil {
+	if _, err = run([]string{"kill", code}); err == nil {
 		t.Fatal("reused ended request")
 	}
 }
@@ -161,17 +161,17 @@ func TestShortTaskResourceRenameAndReplacement(t *testing.T) {
 		if _, err = run([]string{"rename", code, kind + "new"}); err != nil {
 			t.Fatal(err)
 		}
-		parsed, err := parseCLI([]string{kind + "/" + code}, "cancel")
+		parsed, err := parseCLI([]string{kind + "/" + code}, "kill")
 		if err != nil {
 			t.Fatal(err)
 		}
-		target, ok, err := resolveShortTask("cancel", &parsed)
+		target, ok, err := resolveShortTask("kill", &parsed)
 		if err != nil || !ok || target.name != kind+"new" {
 			t.Fatalf("%+v %v", target, err)
 		}
 		close(done)
 		registerTestResource(t, tasks, kind, r.Name, strings.Repeat(string(rune('c'+i)), 32))
-		if err = cancelResourceIdentity(kind+"/"+r.Name, key); err == nil || !strings.Contains(err.Error(), "changed") {
+		if err = killResourceIdentity(kind+"/"+r.Name, key); err == nil || !strings.Contains(err.Error(), "changed") {
 			t.Fatal("accepted replacement", err)
 		}
 		if _, err = run([]string{"rename", code, "other"}); err == nil {
@@ -184,17 +184,17 @@ func TestShortTaskUnknownAndScopedNames(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "must-not-connect"))
-	for _, args := range [][]string{{"attach", "abcdef"}, {"cancel", "123456"}, {"rename", "ABCDEF", "new"}, {"review", "abcdef"}} {
+	for _, args := range [][]string{{"attach", "abcdef"}, {"kill", "123456"}, {"rename", "ABCDEF", "new"}, {"review", "abcdef"}} {
 		if code, err := run(args); code != 2 || err == nil || !strings.Contains(err.Error(), "unknown task ID") {
 			t.Fatalf("%v: %d %v", args, code, err)
 		}
 	}
 	for _, args := range [][]string{{"--local", "abcdef"}, {"host", "abcdef"}, {"review/abcdef"}} {
-		parsed, err := parseCLI(args, "cancel")
+		parsed, err := parseCLI(args, "kill")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, selected, err := resolveShortTask("cancel", &parsed); selected || err != nil {
+		if _, selected, err := resolveShortTask("kill", &parsed); selected || err != nil {
 			t.Fatalf("hex name rejected: %v %v", args, err)
 		}
 	}
@@ -219,13 +219,13 @@ func TestShortTaskLocalCommandRouting(t *testing.T) {
 	requests := make(chan message, 2)
 	tasks.records[r.UID].(*nativeShellTask).serve = func(c net.Conn, m message) error {
 		requests <- m
-		reply := "cancelled"
+		reply := "killed"
 		if m.Type == "rename" {
 			reply = "renamed"
 		}
 		return writeMessage(c, message{Type: reply})
 	}
-	for _, command := range []string{"cancel", "rename"} {
+	for _, command := range []string{"kill", "rename"} {
 		args := []string{command, "123456"}
 		if command == "rename" {
 			args = append(args, "new")
@@ -299,27 +299,27 @@ func TestShortTaskRejectsInvalidConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = run([]string{"cancel", ids[remoteShellIdentity("work", "instance")].code}); err == nil || !strings.Contains(err.Error(), "invalid shell connection host") {
+	if _, err = run([]string{"kill", ids[remoteShellIdentity("work", "instance")].code}); err == nil || !strings.Contains(err.Error(), "invalid shell connection host") {
 		t.Fatal("mismatched route accepted", err)
 	}
 }
 
 func TestKillOptions(t *testing.T) {
-	o, err := parseOptions([]string{"cancel", "host", "build", "--server", "/a b/sshore", "--", "-p", "2222"})
-	if err != nil || o.command != "cancel" || o.session != "build" || o.list {
+	o, err := parseOptions([]string{"kill", "host", "build", "--server", "/a b/sshore", "--", "-p", "2222"})
+	if err != nil || o.command != "kill" || o.session != "build" || o.list {
 		t.Fatalf("%+v %v", o, err)
 	}
 	for _, args := range [][]string{
-		{"cancel"}, {"cancel", "host"}, {"cancel", "host", "../other"},
-		{"cancel", "host", "one", "two"}, {"cancel", "host", "one", "--quiet"},
-		{"cancel", "host", "one", "--download-dir", "/tmp"}, {"cancel", "host", "one", "--no-escape"},
+		{"kill"}, {"kill", "host"}, {"kill", "host", "../other"},
+		{"kill", "host", "one", "two"}, {"kill", "host", "one", "--quiet"},
+		{"kill", "host", "one", "--download-dir", "/tmp"}, {"kill", "host", "one", "--no-escape"},
 	} {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatal("accepted", args)
 		}
 	}
 	var out bytes.Buffer
-	if err := showHelp([]string{"cancel"}, &out); err != nil || !strings.Contains(out.String(), "without confirmation") {
+	if err := showHelp([]string{"kill"}, &out); err != nil || !strings.Contains(out.String(), "without confirmation") {
 		t.Fatal(out.String(), err)
 	}
 }
@@ -344,7 +344,7 @@ func TestRenameOptions(t *testing.T) {
 
 }
 
-func TestCancelAllScope(t *testing.T) {
+func TestKillAllScope(t *testing.T) {
 	for _, tc := range []struct {
 		args     []string
 		host     string
@@ -359,7 +359,7 @@ func TestCancelAllScope(t *testing.T) {
 		{[]string{"--all", "--json"}, "", true, true},
 		{[]string{"fedora", "shell", "--", "--all"}, "", false, false},
 	} {
-		o, all, err := parseCancelAll(tc.args)
+		o, all, err := parseKillAll(tc.args)
 		if all != tc.all || (err != nil) != tc.bad || (!tc.bad && all && o.host != tc.host) {
 			t.Errorf("%v: host=%q all=%t err=%v", tc.args, o.host, all, err)
 		}
@@ -368,7 +368,7 @@ func TestCancelAllScope(t *testing.T) {
 
 func TestListNumbersAreNotSelectors(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	for _, command := range []string{"attach", "cancel", "review"} {
+	for _, command := range []string{"attach", "kill", "review"} {
 		code, err := run([]string{command, "1"})
 		if code != 2 || err == nil || !strings.Contains(err.Error(), "display-only") {
 			t.Fatalf("%s: %d %v", command, code, err)

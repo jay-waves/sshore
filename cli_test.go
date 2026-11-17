@@ -25,7 +25,7 @@ func TestCLIOptionsAndHelp(t *testing.T) {
 			t.Fatal("accepted", args)
 		}
 	}
-	for _, topic := range []string{"launch", "list", "attach", "cp", "detach", "forward", "review", "cancel", "mount", "daemon"} {
+	for _, topic := range []string{"launch", "list", "attach", "cp", "detach", "forward", "review", "kill", "mount", "daemon"} {
 		var b bytes.Buffer
 		if err = showHelp([]string{topic}, &b); err != nil || !strings.Contains(b.String(), "Usage: sshore "+topic) {
 			t.Fatal(topic, err)
@@ -231,7 +231,7 @@ func TestSharedCLIGrammar(t *testing.T) {
 	if _, err := parseReview([]string{"--stay", "--stay"}); err == nil {
 		t.Fatal("accepted duplicate --stay")
 	}
-	for _, command := range []string{"list", "cancel", "rename"} {
+	for _, command := range []string{"list", "kill", "rename"} {
 		if _, err := parseOptions([]string{command, "work", "--", "-L8080:localhost:80"}); err == nil {
 			t.Fatalf("%s accepts unrelated forwarding option", command)
 		}
@@ -370,9 +370,9 @@ func TestSharedHostValidation(t *testing.T) {
 
 func TestTargetDispatchRejectsInvalidArgumentsBeforeExecution(t *testing.T) {
 	for _, args := range [][]string{
-		{"cancel", "mount/demo", "--local"},
-		{"cancel", "forward/demo", "--", "-p22"},
-		{"cancel", "--all", "--local", "host"},
+		{"kill", "mount/demo", "--local"},
+		{"kill", "forward/demo", "--", "-p22"},
+		{"kill", "--all", "--local", "host"},
 		{"attach", "host", "name", "extra"},
 		{"rename", "host", "old"},
 		{"review", "one", "two"},
@@ -390,7 +390,7 @@ func TestNativeSSHPort(t *testing.T) {
 		operands []string
 	}{
 		{"launch", []string{"host"}}, {"spawn", []string{"host"}}, {"attach", []string{"host", "work"}},
-		{"list", []string{"host"}}, {"cancel", []string{"host", "work"}},
+		{"list", []string{"host"}}, {"kill", []string{"host", "work"}},
 		{"rename", []string{"host", "old", "new"}}, {"cp", []string{"local", "host:remote"}},
 		{"mount", []string{"host:remote"}}, {"forward", []string{"origin:8080", "host:80"}},
 	} {
@@ -442,6 +442,14 @@ func TestExecArguments(t *testing.T) {
 	for _, args := range [][]string{nil, {"work"}, {"work", "echo", "extra"}, {"-host", "echo"}} {
 		if _, err := parseCLI(args, "exec"); err == nil {
 			t.Fatalf("accepted %q", args)
+		}
+	}
+}
+
+func TestCancelCommandRemoved(t *testing.T) {
+	for _, args := range [][]string{{"cancel"}, {"cancel", "--all"}, {"cancel", "--help"}} {
+		if code, err := run(args); code != 2 || err == nil {
+			t.Fatalf("removed command accepted: %v: %d %v", args, code, err)
 		}
 	}
 }

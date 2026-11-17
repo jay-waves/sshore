@@ -39,7 +39,7 @@ func spawnProcessIdentity(pid int) (string, error) {
 }
 
 func stopSpawnTerminal(pid int, start string) error {
-	return stopOwnedProcesses([]setupProcess{{PID: pid, Start: start}}, syscall.SIGHUP)
+	return stopOwnedProcesses([]setupProcess{{PID: pid, Start: start}})
 }
 
 func detachMountDaemon(c *exec.Cmd)      { c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
@@ -194,7 +194,7 @@ func runHostedCommand(o options) (int, error) {
 	switch o.command {
 	case "attach":
 		return runClient(o)
-	case "cancel":
+	case "kill":
 		return 0, killSession(o.session, o.instance)
 	case "rename":
 		return 0, renameSession(o.session, o.newName, o.instance)

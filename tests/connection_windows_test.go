@@ -75,7 +75,7 @@ func testWindowsHandoffPassword(t *testing.T, interrupt bool) {
 		t.Fatal(err)
 	}
 	defer terminal.Close()
-	defer func() { cmd := exec.Command(bin, "cancel", "--all"); cmd.Env = env; cmd.Run() }()
+	defer func() { cmd := exec.Command(bin, "kill", "--all"); cmd.Env = env; cmd.Run() }()
 	chunks := make(chan string, 128)
 	stop := make(chan struct{})
 	defer close(stop)

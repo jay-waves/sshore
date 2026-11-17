@@ -176,15 +176,22 @@ func TestSharedDaemonMCPSession(t *testing.T) {
 		t.Fatalf("output %+v", output)
 	}
 	call(mcp.Request{Method: "close", Session: mcp.SessionInput{SessionID: session.ID}})
-	control, err := dialLocalSession(record)
+	control, err := net.Dial("tcp", record.Address)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writeMessage(control, message{Type: "daemon_stop_idle"}); err != nil {
+	if err := writeMessage(control, message{Type: "daemon_admin", Action: "shutdown", Token: record.Token}); err != nil {
 		t.Fatal(err)
 	}
-	if reply, err := readMessage(control); err != nil || reply.Type != "daemon_ready" {
-		t.Fatalf("idle shutdown: %+v %v", reply, err)
+	tasks.mu.Lock()
+	snapshot := tasks.snapshot(record)
+	tasks.mu.Unlock()
+	if err := json.NewEncoder(control).Encode(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	var reply daemonAdminReply
+	if err := json.NewDecoder(control).Decode(&reply); err != nil || reply.Error != "" {
+		t.Fatalf("administrative shutdown: %+v %v", reply, err)
 	}
 	control.Close()
 	select {

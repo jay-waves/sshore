@@ -42,7 +42,7 @@ credentials to the user's computer. See
 | --- | --- |
 | Request | An immutable proposed copy, mount or forward held in daemon memory until local review or expiry. A pending approval is this request's state, not another object. Receiving or selecting a request grants no permission. |
 | Approval | The user's explicit acceptance of the local endpoints in `review`, after source validation. Consent means the same thing; SSH authentication alone is insufficient. Approval is single-use. |
-| Recovery | A transient shell on the authenticated SSH connection when normal sshore operation is unavailable. It has no sshore persistence or normal management features and is not a sandbox. |
+| Legacy recovery | A temporary shell offered by older releases when setup could not complete. Current setup aborts instead; inherited disabled-mode restrictions remain until reconnecting. |
 
 An approved copy runs on a separate file stream without terminal attachment. An approved mount or forward becomes
 an independent resource and retains the request's ID and NAME.

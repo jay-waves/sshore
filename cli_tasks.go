@@ -15,11 +15,11 @@ type selectedTask struct {
 // instance against the daemon or resource record before acting on it.
 func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool, error) {
 	var empty selectedTask
-	if len(parsed.operands) == 0 {
+	if len(parsed.operands) == 0 || parsed.has("--all") {
 		return empty, false, nil
 	}
 	switch command {
-	case "attach", "cancel", "rename", "review":
+	case "attach", "kill", "rename", "review":
 	default:
 		return empty, false, nil
 	}
@@ -85,7 +85,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 	}
 	if parsed.has("--all") {
 		if identity != "" {
-			return empty, false, usage("cancel ID does not accept --all")
+			return empty, false, usage("kill ID does not accept --all")
 		}
 		return empty, false, nil
 	}
@@ -247,7 +247,7 @@ func findTaskIdentity(identity string, hosts ...string) (selectedTask, error) {
 		}
 	}
 	if strings.HasPrefix(identity, "peer:") || strings.HasPrefix(identity, "peer-task:") {
-		return empty, usage("peer tasks are read-only here; cancel the resource on its managing computer")
+		return empty, usage("peer tasks are read-only here; kill the resource on its managing computer")
 	}
 	return empty, fmt.Errorf("task is no longer available here; refresh with sshore list")
 }

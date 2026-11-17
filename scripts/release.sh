@@ -785,6 +785,33 @@ Windows amd64 only; remote shell hosting remains Linux-only.
 NOTES
 fi
 
+if [[ "$version" == "0.7.3" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Replace the public cancel command with kill, without a compatibility alias.
+  Kill confirmed shell processes and their identified descendants directly;
+  retain identity validation, busy-mount refusal and explicit bulk confirmation.
+- Use authenticated cross-release administration for kill --all. Recheck the
+  reviewed task snapshot, stop registered tasks and wait for daemon exit.
+- Unify standalone installation and remote updates: prepare and verify the exact
+  replacement before review, require typing update, then recheck and shut down
+  the account daemon before replacement. Failed or declined setup stops without
+  opening a recovery shell; transient bootstrap staging never ends tasks.
+- Record process identities for persistent local shells, preserve useful errors,
+  and remove the obsolete idle-shutdown and recovery-shell entry paths.
+- Fix Windows UTF-8 CI output and isolate terminal tests from host startup files
+  and version-dependent Fish prompt markers. Sort detached-shell choices.
+
+Migration: use sshore kill instead of sshore cancel, and type kill when confirming
+--all. Shell termination is immediate and can lose unsaved work. Individual task
+control still requires exact matching releases; administrative shutdown can cross
+releases. Older running daemons retain their old cleanup behavior and may require
+manual maintenance before replacement. Run standalone installers outside managed
+shells. Linux and Windows amd64 only; remote shell hosting remains Linux-only.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."

@@ -72,7 +72,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		t.Fatal(out, err)
 	}
 	name := reviewName(t, id)
-	defer run("cancel", "forward/"+name)
+	defer run("kill", "forward/"+name)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, e.bin, "review", "review/"+reviewName(t, id))
@@ -174,10 +174,10 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	if out, err = run("rename", name, "renamed-again"); err != nil {
 		t.Fatal(out, err)
 	}
-	if out, err = run("cancel", "forward/"+renamed); err == nil {
+	if out, err = run("kill", "forward/"+renamed); err == nil {
 		t.Fatal("old alias still selects the forward", out)
 	}
-	if out, err = run("cancel", name); err != nil {
+	if out, err = run("kill", name); err != nil {
 		t.Fatal(out, err)
 	}
 	out, err = run("list")
@@ -199,13 +199,13 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	if request, e2 := findRequest("renamed-request"); e2 != nil || request.ID != rejected {
 		t.Fatal("rename changed the approval identity", request, e2)
 	}
-	if out, err = run("cancel", "review/renamed-request"); err != nil {
+	if out, err = run("kill", "review/renamed-request"); err != nil {
 		t.Fatal(out, err)
 	}
 
 }
 
-func TestCancelAllRemoteScope(t *testing.T) {
+func TestKillAllRemoteScope(t *testing.T) {
 	e := newEnv(t)
 	first, firstPID := e.attach("one")
 	second, secondPID := e.attach("two")
@@ -230,8 +230,8 @@ func TestCancelAllRemoteScope(t *testing.T) {
 	if out, err := run("", "launch", "--local", "keep", "--detach"); err != nil {
 		t.Fatal(out, err)
 	}
-	defer run("", "cancel", "--local", "keep")
-	if out, err := run("cancel\n", "cancel", "fixture", "--all", "--server", e.bin); err != nil {
+	defer run("", "kill", "--local", "keep")
+	if out, err := run("kill\n", "kill", "fixture", "--all", "--server", e.bin); err != nil {
 		t.Fatal(out, err)
 	}
 	waitSessionEnded(t, e, "one", firstPID)
@@ -332,7 +332,7 @@ func TestInventoryOmitsExpiredExitReceipts(t *testing.T) {
 	}
 }
 
-func TestCancelUpdatesShellHistory(t *testing.T) {
+func TestKillUpdatesShellHistory(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	wrapper := filepath.Join(t.TempDir(), "ssh")
@@ -345,7 +345,7 @@ func TestCancelUpdatesShellHistory(t *testing.T) {
 		if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "detached", ConfirmedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
-		code, err := runClientOnce(options{host: "work", session: "job", instance: "instance", command: "cancel", server: "sshore"}, "", func() {})
+		code, err := runClientOnce(options{host: "work", session: "job", instance: "instance", command: "kill", server: "sshore"}, "", func() {})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -392,9 +392,9 @@ func TestShortTaskRemoteCommandRouting(t *testing.T) {
 		args                 []string
 		port, server, action string
 	}{
-		{[]string{"cancel", id}, "2222", "/observed/sshore", "kill-session"},
+		{[]string{"kill", id}, "2222", "/observed/sshore", "kill-session"},
 		{[]string{"rename", id, "new"}, "2222", "/observed/sshore", "rename-session"},
-		{[]string{"cancel", id, "--server", "/explicit/sshore", "--", "-p", "3333"}, "3333", "/explicit/sshore", "kill-session"},
+		{[]string{"kill", id, "--server", "/explicit/sshore", "--", "-p", "3333"}, "3333", "/explicit/sshore", "kill-session"},
 	} {
 		if code, err := run(tc.args); err != nil || code != 37 {
 			t.Fatalf("%v: %d %v", tc.args, code, err)
@@ -487,15 +487,15 @@ func TestListIncludesAccountHostedShells(t *testing.T) {
 	t.Fatalf("hosted shell missing from list: %s", output)
 }
 
-func TestCancelAllIncludesAccountHostedShells(t *testing.T) {
+func TestKillAllIncludesAccountHostedShells(t *testing.T) {
 	e := newEnv(t)
 	b, pid := e.attach("hosted")
 	defer b.close()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, e.bin, "cancel", "--all")
+	cmd := exec.CommandContext(ctx, e.bin, "kill", "--all")
 	cmd.Env = e.env
-	cmd.Stdin = strings.NewReader("cancel\n")
+	cmd.Stdin = strings.NewReader("kill\n")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("cancel hosted shell: %s %v", out, err)
 	}
@@ -564,7 +564,7 @@ func TestHostedShellTaskCommandRouting(t *testing.T) {
 	if code, err := run([]string{"rename", id, "renamed"}); code != 0 || err != nil {
 		t.Fatalf("rename listed ID: %d %v", code, err)
 	}
-	if code, err := run([]string{"cancel", id}); code != 0 || err != nil {
+	if code, err := run([]string{"kill", id}); code != 0 || err != nil {
 		t.Fatalf("cancel renamed ID: %d %v", code, err)
 	}
 }

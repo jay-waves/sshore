@@ -33,7 +33,7 @@ type remoteShell struct {
 	environment     []string
 	directory       string
 	processIdentity string
-	cancelling      bool
+	killing         bool
 
 	instance   string
 	name       string
@@ -158,8 +158,8 @@ func (s *remoteShell) attach(p *attachment, m message) error {
 	defer s.mu.Unlock()
 	startedHere := false
 	err := s.lifecycle.Attach(p, func() error {
-		if s.cancelling {
-			return fmt.Errorf("shell is being cancelled")
+		if s.killing {
+			return fmt.Errorf("shell is being killed")
 		}
 		if m.Instance != "" && m.Instance != s.instance {
 			return fmt.Errorf("shell instance changed; refresh with sshore list")
@@ -379,16 +379,16 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 		if writeMessage(c, message{Type: "mux_ready", SoftwareVersion: version}) == nil {
 			_ = s.serveMux(c)
 		}
-	case "cancel":
+	case "kill":
 		if err := checkPeerVersion(first.SoftwareVersion, "client"); err != nil {
 			_ = writeMessage(c, message{Type: "error", Error: err.Error()})
 			return
 		}
-		if err := s.cancel(first.Instance); err != nil {
+		if err := s.kill(first.Instance); err != nil {
 			_ = writeMessage(c, message{Type: "error", Error: err.Error()})
 			return
 		}
-		_ = writeMessage(c, message{Type: "cancelled"})
+		_ = writeMessage(c, message{Type: "killed"})
 	case "approval_check":
 		reply := message{Type: "approval_checked", SoftwareVersion: version}
 		if err := s.checkApprovalSource(first); err != nil {
@@ -508,7 +508,7 @@ func serveRemoteShellAt(tasks *daemonTasks, runtime, nameLabel, uid string, env 
 	return nil
 }
 
-func (s *remoteShell) cancel(instance string) error {
+func (s *remoteShell) kill(instance string) error {
 	s.mu.Lock()
 	if instance == "" || instance != s.instance {
 		s.mu.Unlock()
@@ -520,13 +520,13 @@ func (s *remoteShell) cancel(instance string) error {
 		s.mu.Unlock()
 		return nil
 	}
-	s.cancelling = true
+	s.killing = true
 	pid, start := s.cmd.Process.Pid, s.processIdentity
-	s.exitReason = "cancelled by sshore cancel"
+	s.exitReason = "killed by sshore kill"
 	s.mu.Unlock()
-	if err := stopOwnedProcesses([]setupProcess{{PID: pid, Start: start}}, syscall.SIGHUP); err != nil {
+	if err := stopOwnedProcesses([]setupProcess{{PID: pid, Start: start}}); err != nil {
 		s.mu.Lock()
-		s.cancelling = false
+		s.killing = false
 		s.mu.Unlock()
 		return err
 	}
@@ -552,4 +552,4 @@ func (s *remoteShell) serveTask(c net.Conn, m message) error {
 	return nil
 }
 
-func (s *remoteShell) stopTask() error { return s.cancel(s.instance) }
+func (s *remoteShell) stopTask() error { return s.kill(s.instance) }

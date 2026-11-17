@@ -257,7 +257,7 @@ def spawn_smoke(binary, host, options):
         parent.wait()
         parent.stdout.close()
         parent.stderr.close()
-        subprocess.run(cli("cancel", "persistent"), check=True)
+        subprocess.run(cli("kill", "persistent"), check=True)
 
 
 def setup_smoke(binary, host, options, root):
@@ -291,7 +291,7 @@ def setup_smoke(binary, host, options, root):
         result = subprocess.run([binary, "launch", host, "matching", "--detach", "--server", str(target), *options], capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         assert (root / "curl-calls").read_text() == before, "matching version attempted a download"
-        subprocess.run([binary, "cancel", host, "matching", "--server", str(target), *options], check=True)
+        subprocess.run([binary, "kill", host, "matching", "--server", str(target), *options], check=True)
     print("setup: real SSH local-cache fallback, spawn relay, exact version and matching-version reuse OK")
 
 
@@ -625,7 +625,7 @@ LogLevel ERROR
             term.send("printf 'STAY_PID:%s\\n' $$\n")
             term.expect(f"STAY_PID:{shell_pid}")
             request_id = queue_request(term, f"sshore cp {shlex.quote(str(remote))} origin:")
-            subprocess.run([binary, "cancel", "review/" + request_id], check=True)
+            subprocess.run([binary, "kill", "review/" + request_id], check=True)
             assert request_id not in subprocess.check_output([binary, "list", "--json"], text=True)
 
             # A download directory supplies defaults, never automatic approval.
@@ -692,7 +692,7 @@ LogLevel ERROR
             rejected.expect("destination already exists")
             rejected.send(b"\x03")
             rejected.wait(1)
-            subprocess.run([binary, "cancel", "review/" + request_id], check=True)
+            subprocess.run([binary, "kill", "review/" + request_id], check=True)
 
             # Approved forwarding outlives the review process and source shell attachment.
             term = Terminal(command)
@@ -723,7 +723,7 @@ LogLevel ERROR
                 term.expect("Detached")
                 term.wait()
             finally:
-                subprocess.run([binary, "cancel", resource_id], check=True)
+                subprocess.run([binary, "kill", resource_id], check=True)
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", forward_port))
 

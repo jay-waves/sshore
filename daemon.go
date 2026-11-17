@@ -264,7 +264,6 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 	active := 0
 	last := time.Now()
 	stopping := false
-	exitWhenIdle := false
 	busy := func() bool {
 		if activity := accountActivity.Load(); activity != nil && activity.busy() {
 			return true
@@ -285,7 +284,7 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 					activity.tick(now)
 				}
 				mu.Lock()
-				idle := active == 0 && !busy() && (exitWhenIdle || time.Since(last) > 30*time.Second)
+				idle := active == 0 && !busy() && time.Since(last) > 30*time.Second
 				if idle {
 					stopping = true
 				}
@@ -336,14 +335,7 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 				mu.Lock()
 				active--
 				last = time.Now()
-				stop := exitWhenIdle && active == 0 && !busy()
-				if stop {
-					stopping = true
-				}
 				mu.Unlock()
-				if stop {
-					listener.Close()
-				}
 			}()
 			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 			m, err := readMessage(c)
@@ -445,13 +437,6 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 				pending = false
 				_ = c.SetDeadline(time.Time{})
 				services.Serve(c, m, tasks)
-				return
-			}
-			if m.Type == "daemon_stop_idle" {
-				mu.Lock()
-				exitWhenIdle = true
-				mu.Unlock()
-				_ = writeMessage(c, message{Type: "daemon_ready"})
 				return
 			}
 			if m.Type != "daemon_request" || m.LocalRequest == nil {
@@ -761,54 +746,4 @@ func launchLocalDaemonContext(ctx context.Context, executable ...string) (localS
 	case <-time.After(10 * time.Second):
 		return empty, fmt.Errorf("local daemon startup timed out")
 	}
-}
-
-// Ask only an existing authenticated daemon to leave as soon as its workers finish.
-// Workers outside the cancellation snapshot remain alive until their own completion.
-func stopIdleLocalDaemon() error {
-	lock, err := daemonFileLock("startup")
-	if err != nil {
-		return err
-	}
-	defer lock.Close()
-	owner, err := daemonFileLock("owner")
-	if err == nil {
-		owner.Close()
-		return nil
-	}
-	if !resourceLockBusy(err) {
-		return err
-	}
-	path, err := daemonPath()
-	if err != nil {
-		return err
-	}
-	r, err := readLocalRecord(path, "daemon")
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	c, err := dialLocalSession(r)
-	if err != nil {
-		// It may have completed its normal idle exit after the first lock probe.
-		if owner, probeErr := daemonFileLock("owner"); probeErr == nil {
-			owner.Close()
-			return nil
-		}
-		return err
-	}
-	defer c.Close()
-	if err = writeMessage(c, message{Type: "daemon_stop_idle"}); err != nil {
-		return err
-	}
-	ack, err := readMessage(c)
-	if err != nil {
-		return err
-	}
-	if ack.Type != "daemon_ready" {
-		return fmt.Errorf("local daemon did not accept idle shutdown: %s", ack.Error)
-	}
-	return nil
 }

@@ -14,7 +14,7 @@ import (
 )
 
 // RPC fixtures must never start or acquire the developer's account daemon.
-func startRequestDaemon(t *testing.T) *daemonTasks {
+func startRequestDaemon(t *testing.T, release ...string) *daemonTasks {
 	t.Helper()
 	activityFixture(t)
 	expected, err := statePath("daemon")
@@ -39,6 +39,9 @@ func startRequestDaemon(t *testing.T) *daemonTasks {
 		listener.Close()
 		owner.Close()
 		t.Fatal(err)
+	}
+	if len(release) > 0 {
+		record.Version = release[0]
 	}
 	record.ManagerPID, record.Address = os.Getpid(), listener.Addr().String()
 	path, err := daemonPath()

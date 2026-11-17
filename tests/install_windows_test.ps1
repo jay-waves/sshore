@@ -60,7 +60,23 @@ try {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $source = Join-Path $root 'fixture.go'
     $fixture = Join-Path $root 'fixture.exe'
-    [IO.File]::WriteAllText($source, 'package main; import "fmt"; func main() { fmt.Println("sshore 0.3.3") }')
+    [IO.File]::WriteAllText($source, @'
+package main
+import ("fmt"; "os")
+func main() {
+ if len(os.Args) == 2 && os.Args[1] == "--version" { fmt.Println("sshore 0.3.3"); return }
+ if len(os.Args) != 3 || os.Args[1] != "install-prepared" { os.Exit(2) }
+ exe, err := os.Executable()
+ if err == nil {
+  var data []byte
+  data, err = os.ReadFile(exe)
+  if err == nil { err = os.WriteFile(os.Args[2]+".next", data, 0755) }
+  if err == nil { err = os.Rename(os.Args[2]+".next", os.Args[2]) }
+  os.Remove(os.Args[2]+".next")
+ }
+ if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
+}
+'@)
     & go build -o $fixture $source
     if ($LASTEXITCODE -ne 0) { throw 'Cannot build installer fixture' }
     $installDirectory = Join-Path $root "directory with spaces and ' quote"
@@ -107,8 +123,8 @@ try {
         $locked = [IO.File]::Open($target, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         try {
             $downloadCount = $script:Downloads.Count
-            Assert-Fails { Install-Sshore -Version '0.3.3' } 'cancel --all'
-            Assert-True ($script:Downloads.Count -eq $downloadCount) 'Locked target triggered downloads'
+            Assert-Fails { Install-Sshore -Version '0.3.3' } 'Close remaining sshore clients'
+            Assert-True ($script:Downloads.Count -eq ($downloadCount + 2)) 'Replacement was not prepared before cleanup'
         } finally { $locked.Dispose() }
         Assert-True ((Get-FileHash -LiteralPath $target).Hash -eq $installedHash) 'Locked target was damaged'
         Write-Host 'PASS: locked executable fails without removing the installed version'

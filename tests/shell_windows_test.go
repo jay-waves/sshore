@@ -28,8 +28,8 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	// Keep the outer console alive until the fixture has cancelled its daemon.
 	defer outer.Close()
 	defer func() {
-		cmd := exec.Command(e.bin, "cancel", "--all")
-		cmd.Env, cmd.Stdin = e.env, strings.NewReader("cancel\n")
+		cmd := exec.Command(e.bin, "kill", "--all")
+		cmd.Env, cmd.Stdin = e.env, strings.NewReader("kill\n")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Errorf("cleanup: %v: %s", err, out)
 		}

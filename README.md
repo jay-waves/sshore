@@ -29,9 +29,10 @@ Installers verify checksums without requesting administrator access. On Windows,
 the installer updates the first `sshore.exe` on PATH without changing PATH. If none
 is found, it installs to `%LOCALAPPDATA%\sshore\bin` and adds that directory to
 the user and current PowerShell session PATH. Restart other terminals to pick it up.
-If the existing executable is in use,
-run `sshore cancel --all` manually, close remaining clients, and retry. This ends
-local work; unsaved work may be lost.
+Updates prepare and verify the replacement, then list affected account tasks and
+require typing `update` before ending them. Unsaved work may be lost. Run installers
+outside managed shells. On Windows, close remaining clients and retry if they still
+hold the executable open.
 Only the latest patch of each major/minor series remains downloadable.
 
 Use `sshore --tldr` for common examples, or `sshore cp --tldr` for file copies.
@@ -49,7 +50,7 @@ have ended and an idle grace period has elapsed.
 sshore launch work build          # Start a persistent remote shell.
 # Press Ctrl+B, then d to detach.
 sshore attach work build          # Return to it later.
-sshore cancel work build          # End it; unsaved work may be lost.
+sshore kill work build          # End it; unsaved work may be lost.
 ```
 
 Choose the lifetime at startup; omit the host to work locally:
@@ -57,8 +58,8 @@ Choose the lifetime at startup; omit the host to work locally:
 | Command | Lifetime |
 | --- | --- |
 | `sshore spawn` | Ends when the original parent shell exits. |
-| `sshore spawn work` | Also ends if its background SSH heartbeat is lost. |
-| `sshore launch [HOST]` | Survives client exit and network loss until you exit or cancel it. |
+| `sshore spawn work` | Also ends if its background SSH heartbeat times out. |
+| `sshore launch [HOST]` | Survives client exit and network loss until you exit or kill it. |
 
 **Detach does not change lifetime.** A remote spawn keeps its heartbeat after
 detach, and reattachment never changes its original owner. Use `launch` for work
@@ -78,12 +79,14 @@ Screens, scrollback and detached output are not saved.
 flowchart LR
     client["Client"] -->|"Authenticated TCP, directly or over SSH"| daemon["Account daemon: in-memory tasks and live socket leases"]
     daemon --> shell["Shell"]
+    client -->|"Prepare and verify replacement; review; type update"| update["Authenticated daemon shutdown, then replace"]
+    update -->|"Kill confirmed shells and tasks"| ended["Shell ends"]
     shell -->|"detach"| background["Keep running"]
     background -->|"attach"| shell
     shell -->|"copy / mount / forward intent"| request["Pending Request in daemon"]
     request --> review["Review locally"]
     review -->|"approve"| operation["Copy or independent mount / forward"]
-    shell -->|"exit / cancel"| ended["Shell ends"]
+    shell -->|"exit / kill"| ended
     background -->|"spawn owner exits or lifetime SSH is lost"| ended
 ```
 
@@ -115,12 +118,12 @@ sshore pstree                   # Local task relationships and resource directio
 sshore list --json              # Machine-readable inventory.
 ```
 
-Use the six-character ID or optional NAME from `list` with `attach`, `cancel`,
+Use the six-character ID or optional NAME from `list` with `attach`, `kill`,
 `rename` and `review`. `rename` changes NAME while preserving the UID.
 Use `--json` for full diagnostics.
 
 CHECKED shows when shell states were confirmed; confirmed ended shells leave the default list.
-Use `cancel` to clear confirmed ended remote history (see `sshore cancel --help`).
+Use `kill` to clear confirmed ended remote history (see `sshore kill --help`).
 See `sshore list --help` for history and refresh behavior. `pstree` shows local spawn ownership and
 live resource directions, prioritizing the current tree; attaching from another shell does not transfer ownership. Peer
 entries are read-only: manage them on their original computer. A running worker
@@ -191,7 +194,7 @@ From your **local shell**, give the listener first, then the service:
 
 ```sh
 sshore forward origin:8080 work:3000
-# To stop it, run the cancel command printed at startup.
+# To stop it, run the kill command printed at startup.
 ```
 
 From a **remote sshore shell**, run `sshore forward origin: 3000` to request a
@@ -207,7 +210,7 @@ local forwards, but cannot restore existing TCP connections. See
 
 ```sh
 sshore mount work:  # Mount remote home; prints the local path.
-# Close local files, then run the cancel command printed at startup.
+# Close local files, then run the kill command printed at startup.
 ```
 
 Mounts use SFTP and require FUSE on Linux or [WinFsp](https://winfsp.dev/) on
@@ -226,8 +229,8 @@ See `sshore mount --help` for details.
 Client and remote versions must match exactly, including PATCH. Missing remote
 software is prepared automatically. Updating an older installation requires
 reviewing affected shells and typing `update`: **their tasks will end**.
-Press Enter instead for a temporary recovery shell; existing shells stay running,
-but sshore operations remain restricted until reconnecting. A newer remote version
+Press Enter to abort and preserve existing work. Preparation failures stop the
+update without opening a recovery shell. Use ordinary SSH for manual repair. A newer remote version
 requires updating your local client; it is never automatically downgraded.
 
 - Stale screen after reattachment: press Ctrl-L or use the application's redraw key.

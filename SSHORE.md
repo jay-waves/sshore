@@ -21,7 +21,7 @@ policy or depending on mutable application state.
 | One-off SSH execution | `cli.go`: exec adapter uses the shared SSH connection layer without remote setup |
 | CLI grammar, dispatch and help | `cli_schema.go`: shared command aliases and product/SSH grammar; `cli_commands.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
 | Connections and session switching | `client.go`, `client_connection.go` |
-| Remote preparation and exact-release policy | `setup*.go` |
+| Prepared installation and exact-release policy | `setup*.go`: shared installer and state policy in `setup_install.go`; native preparation in `setup_linux.go` / `setup_windows.go` |
 | Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_linux.go`, `server_linux.go`; process inspection in `setup_process_linux.go` |
 | Account daemon and local shell control | `daemon*.go` (including shared activity leases and metadata), `local_command.go`, `local_shell.go`; hosted Unix shell adapters in `platform_*.go` |
 | Spawn ownership, lifetime SSH and nested routes | `spawn_transport.go`, `spawn_route_linux.go`, `platform_*.go` |
@@ -101,7 +101,7 @@ frontend over private local control. Background retries never prompt.
 After managed shell preparation, the client opens an SSH TCP channel to the
 account daemon's loopback endpoint. Native and SSH clients authenticate there and
 open streams by immutable task ID. The preparation process exits; SSH TCP
-forwarding must be permitted. Recovery retains its transient exec channel.
+forwarding must be permitted. Failed or declined setup does not open a shell.
 
 Native port forwards belong to their connection. Application forwards retain
 separate connections and their explicit retry policy. Cancellation closes owned
@@ -167,7 +167,7 @@ lifecycle and live connection relationships; it is never reconstructed after a
 crash. The loopback TCP listener accepts authenticated control and task streams.
 Only endpoint discovery and credentials need private daemon files.
 Every normal public command registers with this daemon after argument parsing;
-help, version output and manual-recovery diagnostics remain free of startup side
+help, version output and diagnostics remain free of startup side
 effects. The daemon's single one-second clock checks external spawn-owner process
 identities, drives lease heartbeats every 20 seconds and reclaims idle daemons.
 Socket leases expire after 75 seconds without acknowledgement; EOF releases them
@@ -214,8 +214,10 @@ Startup must have an explicit ownership handoff. Carry the initiating client's
 working directory and environment, not whichever environment started the daemon.
 Do not hold bookkeeping locks across terminal I/O, authentication or worker startup.
 Daemon liveness comes from its owner lock; orphaned metadata cannot block startup
-with a version mismatch. `cancel --all` asks the existing daemon to exit as soon
-as its remaining workers finish, without the normal idle grace period.
+with a version mismatch. `kill --all` uses cross-release authenticated administration,
+rechecks the reviewed task snapshot, kills owned shells and their identified processes,
+and waits for the daemon to release its account endpoint. No new tasks are admitted
+while shutdown is in progress.
 Cancellation must close owned resources and join background work before reporting
 completion; persisted PIDs are diagnostic, not authority to terminate.
 
@@ -273,17 +275,19 @@ local transport socket lease, not merely a historical advertisement. Worker live
 is not target health. Exclude capabilities and credentials from public output.
 See [inventory privacy](SECURITY.md#inventory-and-privacy).
 
-### Setup and recovery
+### Setup and installation
 
 Require the exact full release version; do not add a separate compatibility counter.
 Never silently downgrade or treat unordered versions as safe to replace. Preparation
 must succeed before confirmed tasks are ended, with identity/snapshot rechecks under
 the account setup lock. Keep these checks with their lifecycle callers when refactoring.
 
-Recovery retains the authenticated SSH connection but disables normal sshore
-operations until reconnecting. It is a product restriction, not a sandbox.
-[SECURITY.md](SECURITY.md#remote-setup-and-updates) owns the complete update,
-cancellation and recovery guarantees.
+Standalone installers and SSH setup prepare the replacement before prompting.
+Failed preparation or declined confirmation stops setup; no recovery shell is started.
+Temporary bootstrap staging never stops tasks. Run standalone installers outside
+managed shells so their coordinator cannot be killed with the reviewed tasks.
+[SECURITY.md](SECURITY.md#remote-setup-and-updates) owns the complete update and
+termination guarantees.
 
 ## Build and validate
 

@@ -50,7 +50,18 @@ shutil.copyfile(source,args[args.index('-o')+1])
 
     def asset(self, version, arch):
         filename = f"sshore_{version}_linux_{arch}.tar.gz"
-        payload = f"#!/bin/sh\necho 'sshore {version}'\n".encode()
+        payload = f"""#!/bin/sh
+case "$1" in
+--version) echo 'sshore {version}' ;;
+install-prepared)
+    if [ -e "$2" ]; then
+        old=$("$2" --version); old=${{old#sshore }}
+        cp -p "$2" "$2-$old"
+    fi
+    cp "$0" "$2.next" && chmod 755 "$2.next" && mv "$2.next" "$2" ;;
+*) exit 2 ;;
+esac
+""".encode()
         with tarfile.open(self.release / filename, "w:gz") as tar:
             item = tarfile.TarInfo("sshore")
             item.size = len(payload)
@@ -78,6 +89,16 @@ shutil.copyfile(source,args[args.index('-o')+1])
         self.assertIn("0.3.0", backup.read_text())
         self.assertTrue(all("/download/v0.3.1/" in u for u in self.log.read_text().splitlines()))
         self.assertFalse(list(target.parent.glob(".sshore-install.*")))
+
+    def test_bootstrap_preparation_does_not_replace_existing_target(self):
+        dest = self.home / "staging"
+        self.run_install("--bin-dir", str(dest), "--prepare-only")
+        target = dest / "sshore"
+        original = target.read_bytes()
+        result = self.run_install("--bin-dir", str(dest), "--prepare-only", success=False)
+        self.assertIn("temporary staging target already exists", result.stderr)
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual([p.name for p in dest.iterdir()], ["sshore"])
 
     def test_latest_and_custom_directory(self):
         self.env["TEST_ARCH"] = "x86_64"

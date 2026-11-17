@@ -195,6 +195,19 @@ type localShell struct {
 	handoff         *localHandoff
 }
 
+func (s *localShell) kill() error {
+	s.mu.Lock()
+	terminal, identity := s.terminal, s.processIdentity
+	s.mu.Unlock()
+	if terminal != nil {
+		if err := stopSpawnTerminal(terminal.PID(), identity); err != nil {
+			return err
+		}
+	}
+	s.close()
+	return nil
+}
+
 func (s *localShell) close() {
 	s.once.Do(func() {
 		s.mu.Lock()
@@ -232,14 +245,12 @@ func (s *localShell) start(m message) error {
 	if err != nil {
 		return err
 	}
-	if s.record.Owner.PID != 0 {
-		identity, err := spawnProcessIdentity(t.PID())
-		if err != nil {
-			t.Close()
-			return err
-		}
-		s.processIdentity = identity
+	identity, err := spawnProcessIdentity(t.PID())
+	if err != nil {
+		t.Close()
+		return err
 	}
+	s.processIdentity = identity
 	s.terminal = t
 	go func() {
 		buf := make([]byte, 8192)
@@ -413,10 +424,11 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, re
 				return err
 			}
 			return writeMessage(c, message{Type: "detach_requested"})
-		case "cancel":
-			_ = writeMessage(c, message{Type: "cancelled"})
-			s.close()
-			return nil
+		case "kill":
+			if err := s.kill(); err != nil {
+				return writeMessage(c, message{Type: "error", Error: err.Error()})
+			}
+			return writeMessage(c, message{Type: "killed"})
 		case "mux":
 			if m.SoftwareVersion != version {
 				return fmt.Errorf("local version mismatch")

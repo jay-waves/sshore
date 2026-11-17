@@ -250,7 +250,7 @@ func TestLocalCommandRejectsAmbiguousOptions(t *testing.T) {
 		{"launch", "--name="},
 		{"launch", "--local", "--server", "other"},
 		{"attach", "--local", "../work"},
-		{"cancel", "--local"},
+		{"kill", "--local"},
 		{"rename", "--local", "work"},
 		{"list", "--local", "--json", "--verbose"},
 	} {

@@ -15,15 +15,15 @@ import (
 func parseOptions(args []string) (options, error) {
 	o := options{server: "sshore"}
 	if len(args) == 0 {
-		return o, usage("expected launch, spawn, list, attach, cancel or rename; see sshore --help")
+		return o, usage("expected launch, spawn, list, attach, kill or rename; see sshore --help")
 	}
 	o.command = canonicalCommand(args[0])
 	switch o.command {
-	case "launch", "spawn", "attach", "cancel", "rename":
+	case "launch", "spawn", "attach", "kill", "rename":
 	case "list":
 		o.list = true
 	default:
-		return o, usage("choose an action: sshore launch HOST [NAME], sshore spawn HOST [NAME], sshore list HOST, sshore attach HOST [NAME], sshore cancel HOST NAME, or sshore rename HOST OLD NEW")
+		return o, usage("choose an action: sshore launch HOST [NAME], sshore spawn HOST [NAME], sshore list HOST, sshore attach HOST [NAME], sshore kill HOST NAME, or sshore rename HOST OLD NEW")
 	}
 	parsed, err := parseCLI(args[1:], o.command)
 	if err != nil {
@@ -80,8 +80,8 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 			return o, err
 		}
 	}
-	if o.command == "cancel" && (o.session == "") {
-		return o, usage("cancel requires HOST NAME and accepts SSH options, --server and --port")
+	if o.command == "kill" && (o.session == "") {
+		return o, usage("kill requires HOST NAME and accepts SSH options, --server and --port")
 	}
 	if o.session == "" {
 		return o, nil

@@ -2,13 +2,18 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"text/tabwriter"
 	"time"
 )
 
@@ -108,7 +113,7 @@ func runRenameResource(kind, old, name string, expected ...string) (int, error) 
 }
 
 // Resource references resolve through the account daemon before cancellation.
-func runCancelResource(kind, name string) (int, error) {
+func runKillResource(kind, name string) (int, error) {
 	switch kind {
 	case "review":
 		record, readErr := findRequest(name)
@@ -119,7 +124,7 @@ func runCancelResource(kind, name string) (int, error) {
 			return 1, err
 		}
 		removeRejectedPeerTask(record)
-		termui.Log(os.Stderr, termui.Success, "[sshore] Request cancelled\n")
+		termui.Log(os.Stderr, termui.Success, "[sshore] Request discarded\n")
 		return 0, nil
 	case "mount", "forward":
 		return 0, stopResource(kind, name)
@@ -128,95 +133,120 @@ func runCancelResource(kind, name string) (int, error) {
 	}
 }
 
-func runCancelAll(o options) (int, error) {
-	inv, err := collectInventory(o)
-	if err != nil {
-		return 1, err
-	}
-	// Offline shell history and tasks owned by other computers are not targets.
-	inv.Peers = nil
+// Kill-all uses administrative control, independent of normal release matching.
+func runKillAll(o options) (int, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var snapshot daemonSnapshot
+	var stop func() error
+	var records []resourceRecord
 	if o.host == "" {
-		live := inv.Shells[:0]
-		for _, s := range inv.Shells {
-			if !s.Historical {
-				live = append(live, s)
+		var err error
+		snapshot, err = daemonAdmin(ctx, "snapshot", nil)
+		if os.IsNotExist(err) {
+			fmt.Println("No tasks to cancel.")
+			return 0, nil
+		}
+		if err != nil {
+			return 1, err
+		}
+		stop = func() error { return requestDaemonShutdown(snapshot) }
+	} else {
+		var err error
+		records, err = collectLocalResources(o.host)
+		if err != nil {
+			return 1, err
+		}
+		o.command, o.list = "daemon-admin", false
+		process, err := transportio.Start(ctx, sshConnectionOptions(o), os.Stderr)
+		if err != nil {
+			return 1, err
+		}
+		waited := false
+		defer func() {
+			process.Close()
+			if !waited {
+				process.Wait()
 			}
+		}()
+		decoder := json.NewDecoder(process.Output)
+		var reply daemonAdminReply
+		if err := decoder.Decode(&reply); err != nil {
+			return 1, fmt.Errorf("remote daemon administration unavailable: %w", err)
 		}
-		inv.Shells = live
+		if reply.Error != "" {
+			return 1, fmt.Errorf("%s", reply.Error)
+		}
+		snapshot = reply.Snapshot
+		stop = func() error {
+			if err := json.NewEncoder(process.Input).Encode(snapshot); err != nil {
+				return err
+			}
+			if err := decoder.Decode(&reply); err != nil {
+				return err
+			}
+			if reply.Error != "" {
+				return fmt.Errorf("%s", reply.Error)
+			}
+			err := process.Wait()
+			waited = true
+			return err
+		}
 	}
-	remoteResources := append([]resourceView(nil), inv.Resources...)
-	records, err := collectLocalResources(o.host)
-	if err != nil {
+	if len(snapshot.Tasks)+len(records) > 0 {
+		host := o.host
+		if host == "" {
+			host = "local"
+		}
+		printDaemonSnapshot(os.Stdout, host, snapshot)
+		if len(records) > 0 {
+			printTaskInventory(inventory{Resources: inspectResources(records)})
+		}
+		fmt.Fprint(os.Stderr, "End these shells and tasks, unmount mounts, and stop forwards? Type kill: ")
+		answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil || strings.TrimSpace(answer) != "kill" {
+			return 1, fmt.Errorf("cancelled; no tasks ended")
+		}
+	}
+	if err := stop(); err != nil {
 		return 1, err
-	}
-	if o.host != "" {
-		inv.Resources = append(inv.Resources, inspectResources(records)...)
-		if err = numberInventoryResources(&inv); err != nil {
-			return 1, err
-		}
-	}
-	if len(inv.LocalShells)+len(inv.Shells)+len(inv.Resources) == 0 {
-		if err := stopIdleLocalDaemon(); err != nil {
-			return 1, err
-		}
-		fmt.Println("No tasks to cancel.")
-		return 0, nil
-	}
-	printTaskInventory(inv)
-	fmt.Fprint(os.Stderr, "End these shells and tasks, unmount mounts, and stop forwards? Type cancel: ")
-	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil || strings.TrimSpace(answer) != "cancel" {
-		return 1, fmt.Errorf("cancelled; no tasks ended")
 	}
 	var failures []error
-	for _, s := range inv.LocalShells {
-		_, err := runLocalCommand(options{local: true, host: "local", command: "cancel", session: s.Name, taskIdentity: s.identity})
-		if err != nil {
-			failures = append(failures, err)
-		}
-	}
-	for _, s := range inv.Shells {
-		if s.Instance == "" {
-			failures = append(failures, fmt.Errorf("shell %s has no confirmed identity", s.Name))
-			continue
-		}
-		target := o
-		target.list, target.command, target.session, target.instance = false, "cancel", s.Name, s.Instance
-		cancel := runClient
-		if o.host == "" {
-			target.local, target.hosted = true, true
-			cancel = runLocalCommand
-		}
-		if _, err := cancel(target); err != nil {
-			failures = append(failures, err)
-		}
-	}
-	if o.host != "" {
-		for _, r := range remoteResources {
-			target := o
-			target.list, target.command, target.session, target.taskIdentity = false, "cancel-resource", r.ID, r.Identity
-			if _, err := runClient(target); err != nil {
-				failures = append(failures, err)
-			}
-		}
-	}
-
 	for _, r := range records {
-		if err := cancelResourceIdentity(r.Kind+"/"+r.Name, resourceIdentity(r)); err != nil {
+		if err := killResourceIdentity(r.Kind+"/"+r.Name, resourceIdentity(r)); err != nil {
 			failures = append(failures, err)
 		}
 	}
-	if err := errors.Join(failures...); err != nil {
-		return 1, err
+	if len(failures) > 0 {
+		return 1, errors.Join(failures...)
 	}
-	if err := stopIdleLocalDaemon(); err != nil {
-		return 1, err
-	}
-	fmt.Println("Tasks cancelled.")
+	fmt.Println("Tasks ended; daemon stopped.")
 	return 0, nil
 }
 
-func cancelResourceIdentity(id, identity string) error {
+func printDaemonSnapshot(w io.Writer, host string, snapshot daemonSnapshot) {
+	fmt.Fprintf(w, "HOST  %s · daemon %s\n", cleanText(host), cleanText(snapshot.Version))
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "ID\tNAME")
+	for _, task := range snapshot.Tasks {
+		id := strings.TrimPrefix(task.ID, "task:")
+		width := min(6, len(id))
+		for _, other := range snapshot.Tasks {
+			otherID := strings.TrimPrefix(other.ID, "task:")
+			if other.ID == task.ID {
+				continue
+			}
+			for width < len(id) && strings.HasPrefix(otherID, id[:width]) {
+				width++
+			}
+		}
+		id = id[:width]
+		fmt.Fprintf(table, "%s\t(%s)\n", cleanText(id), cleanText(task.Name))
+	}
+	table.Flush()
+}
+
+func killResourceIdentity(id, identity string) error {
 	kind, name, ok := strings.Cut(id, "/")
 	if !ok || identity == "" {
 		return fmt.Errorf("missing resource identity")

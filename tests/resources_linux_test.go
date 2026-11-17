@@ -16,7 +16,7 @@ import (
 	"github.com/creack/pty"
 )
 
-func TestCancelAllLocalSnapshot(t *testing.T) {
+func TestKillAllLocalSnapshot(t *testing.T) {
 	e := newCLI(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -32,20 +32,20 @@ func TestCancelAllLocalSnapshot(t *testing.T) {
 		if out, err := run("", "launch", "--local", name, "--detach"); err != nil {
 			t.Fatal(out, err)
 		}
-		t.Cleanup(func() { run("", "cancel", "--local", name) })
+		t.Cleanup(func() { run("", "kill", "--local", name) })
 	}
-	if out, err := run("no\n", "cancel", "--all"); err == nil || !strings.Contains(out, "(one)") || !strings.Contains(out, "(two)") {
+	if out, err := run("no\n", "kill", "--all"); err == nil || !strings.Contains(out, "(one)") || !strings.Contains(out, "(two)") {
 		t.Fatal(out, err)
 	}
 	rows := e.shells(t)
 	if len(rows) != 2 {
 		t.Fatalf("expected two shells: %+v", rows)
 	}
-	if out, err := run("cancel\n", "cancel", "--all"); err != nil {
+	if out, err := run("kill\n", "kill", "--all"); err != nil {
 		t.Fatal(out, err)
 	}
 	waitBackgroundExit(t, e, filepath.Join(e.dir, "batch-state"))
-	if out, err := run("", "cancel", "--all"); err != nil {
+	if out, err := run("", "kill", "--all"); err != nil {
 		t.Fatal(out, err)
 	}
 	if rows := e.shells(t); len(rows) != 0 {
@@ -53,7 +53,7 @@ func TestCancelAllLocalSnapshot(t *testing.T) {
 	}
 }
 
-func TestCancelAllStopsIdleDaemon(t *testing.T) {
+func TestKillAllStopsIdleDaemon(t *testing.T) {
 	e := newCLI(t)
 	state := filepath.Join(e.dir, "idle-state")
 	e.env = append(e.env, "SSHORE_STATE_DIR="+state)
@@ -68,15 +68,15 @@ func TestCancelAllStopsIdleDaemon(t *testing.T) {
 		}
 	}
 	run("launch", "--local", "idle", "--detach")
-	run("cancel", "--local", "idle")
+	run("kill", "--local", "idle")
 	if len(backgroundProcesses(t, e, state)) == 0 {
 		t.Fatal("expected idle daemon")
 	}
-	run("cancel", "--all")
+	run("kill", "--all")
 	waitBackgroundExit(t, e, state)
 }
 
-func TestCancelAllDoesNotCancelReplacement(t *testing.T) {
+func TestKillAllDoesNotCancelReplacement(t *testing.T) {
 	e := newCLI(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -93,8 +93,8 @@ func TestCancelAllDoesNotCancelReplacement(t *testing.T) {
 		return string(out)
 	}
 	run("launch", "--local", "same", "--detach")
-	defer run("cancel", "--local", "same")
-	cmd := exec.CommandContext(ctx, e.bin, "cancel", "--all")
+	defer run("kill", "--local", "same")
+	cmd := exec.CommandContext(ctx, e.bin, "kill", "--all")
 	cmd.Env = env
 	input, err := cmd.StdinPipe()
 	if err != nil {
@@ -111,19 +111,19 @@ func TestCancelAllDoesNotCancelReplacement(t *testing.T) {
 	defer func() { input.Close(); cmd.Process.Kill() }()
 	reader := bufio.NewReader(output)
 	var text strings.Builder
-	for !strings.Contains(text.String(), "Type cancel: ") {
+	for !strings.Contains(text.String(), "Type kill: ") {
 		b, err := reader.ReadByte()
 		if err != nil {
 			t.Fatal(text.String(), err)
 		}
 		text.WriteByte(b)
 	}
-	run("cancel", "--local", "same")
+	run("kill", "--local", "same")
 	run("launch", "--local", "same", "--detach")
-	io.WriteString(input, "cancel\n")
+	io.WriteString(input, "kill\n")
 	input.Close()
 	tail, _ := io.ReadAll(reader)
-	if err = cmd.Wait(); err == nil || !strings.Contains(string(tail), "task changed") {
+	if err = cmd.Wait(); err == nil || !strings.Contains(string(tail), "tasks changed") {
 		t.Fatalf("replacement accepted: %v %s", err, tail)
 	}
 	rows := e.shells(t)
@@ -264,7 +264,7 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 		return out
 	}
 	first, terminal, _ := start([]string{"launch", "--local", "persistent"}, env)
-	defer run("cancel", "--local", "persistent")
+	defer run("kill", "--local", "persistent")
 	first.Process.Kill()
 	first.Wait()
 	terminal.Close()
@@ -328,7 +328,7 @@ func TestLocalNoLoginStartup(t *testing.T) {
 		}
 	}
 	run("launch", "--local", "startup", "--no-login", "--detach")
-	defer run("cancel", "--local", "startup")
+	defer run("kill", "--local", "startup")
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		data, err := os.ReadFile(marker)

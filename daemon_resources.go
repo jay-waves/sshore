@@ -39,11 +39,11 @@ func (t *daemonResourceTask) expired(time.Time) bool {
 	}
 }
 func (t *daemonResourceTask) serveTask(c net.Conn, m message) error {
-	if m.Type != "status" && m.Type != "cancel" {
+	if m.Type != "status" && m.Type != "kill" {
 		return fmt.Errorf("invalid resource operation")
 	}
 	reply := t.control(m.Type)
-	if m.Type == "cancel" && reply.Error == "" {
+	if m.Type == "kill" && reply.Error == "" {
 		select {
 		case <-t.done:
 		case <-time.After(20 * time.Second):
@@ -106,7 +106,7 @@ func daemonResourceRequestContext(ctx context.Context, m message) (resourceReply
 	if err != nil {
 		return resourceReply{}, err
 	}
-	if m.Type == "status" || m.Type == "cancel" {
+	if m.Type == "status" || m.Type == "kill" {
 		r.UID = m.Instance
 	}
 	c, err := dialLocalSessionContext(ctx, r, time.Now().Add(5*time.Second))
@@ -134,7 +134,7 @@ func (s *resourceService) control(action string) resourceReply {
 	if action == "status" {
 		return resourceReply{Status: s.statusSnapshot()}
 	}
-	if action != "cancel" {
+	if action != "kill" {
 		return resourceReply{Error: "invalid resource operation"}
 	}
 	request := make(chan error, 1)

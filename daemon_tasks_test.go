@@ -91,7 +91,7 @@ func registerTestResource(t *testing.T, tasks *daemonTasks, kind, name, id strin
 	done := make(chan struct{})
 	r := resourceRecord{UID: id, Kind: kind, Name: name, Host: "work", Version: version}
 	task := &daemonResourceTask{record: r, done: done, control: func(action string) resourceReply {
-		if action == "cancel" {
+		if action == "kill" {
 			close(done)
 		}
 		return resourceReply{Status: resourceStatus{Version: version, Transport: "connected", Target: "unchecked"}}

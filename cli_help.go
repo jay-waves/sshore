@@ -27,7 +27,7 @@ Files and ports
 Tasks and setup
   list        Show tasks and when they were last checked
   pstree      Show shell ownership and attachments
-  cancel      Stop tasks or discard requests
+  kill        Kill shells or stop other tasks
   reset       Replace local identity and clear history
   mcp         Serve Agent tools over stdio
   daemon      Run the account task manager
@@ -198,7 +198,7 @@ to fit the available width. Redirected output preserves full details.
 ID shows the first six UID characters followed by an optional (alias).
 Use a longer prefix or full UID when a reference is ambiguous.
 TYPE uses launch, spawn, mount, forward or review. Peer entries are read-only.
-Use aliases or short IDs for attach, rename, cancel and review.
+Use aliases or short IDs for attach, rename, kill and review.
 A matching short ID takes precedence over a name.
 
 Options:
@@ -222,27 +222,28 @@ shows <- HOST; exporting a mount or local service shows -> HOST.
 Incoming resources are read-only here. Use list for states and observation times.
 No SSH is started by this command.
 `,
-	"cancel": `Usage: sshore cancel --local NAME
-       sshore cancel {review|mount|forward}/NAME
-       sshore cancel ID
-       sshore cancel HOST NAME [--server PATH] [-- SSH_OPTIONS]
-       sshore cancel [HOST] --all [--server PATH] [-- SSH_OPTIONS]
+	"kill": `Usage: sshore kill --local NAME
+       sshore kill {review|mount|forward}/NAME
+       sshore kill ID
+       sshore kill HOST NAME [--server PATH] [-- SSH_OPTIONS]
+       sshore kill [HOST] --all [--server PATH] [-- SSH_OPTIONS]
 
 Use a name or short ID from list. ID selects its task without HOST or --local;
 it may also replace NAME in the forms above. IDs stay bound to their original
 instance across renames; an unavailable instance cannot select its replacement.
 
 Effects:
-  Shell     Ends the shell and its identified tasks without confirmation.
+  Shell     Kills the shell and its identified processes without confirmation.
             Unsaved work may be lost. Confirmed ended history is only cleared.
   Review    Discards the pending request without executing it.
   Mount     Unmounts first; a busy mount stays active for retry.
   Forward   Closes the forward and its active connections.
 
---all previews the affected tasks and requires typing cancel. Without HOST it
+--all previews the affected tasks and requires typing kill. Without HOST it
 covers local shells and resources. With HOST it targets that account and
 local resources connected to HOST. Peer records are read-only.
-Remote cancellation requires matching releases and never installs software.
+--all uses authenticated cross-release daemon shutdown. Individual remote task
+control requires matching releases. Neither form installs software.
 ` + sshOptions,
 	"review": `Usage: sshore review [NAME|ID]
 
@@ -255,7 +256,7 @@ even if execution fails, and expires after 10 minutes.
 
 Execution returns locally; use attach separately to enter a shell.
 Mounts and forwards run independently and leave the source detached.
-To discard a request: sshore cancel review/NAME.
+To discard a request: sshore kill review/NAME.
 `,
 	"cp": `Usage: sshore cp SOURCE... TARGET [-- SSH_OPTIONS]
 

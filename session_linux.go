@@ -166,15 +166,15 @@ func killSession(name string, expected ...string) error {
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	if err := writeMessage(c, message{Type: "cancel", Instance: m.Instance, SoftwareVersion: version}); err != nil {
+	if err := writeMessage(c, message{Type: "kill", Instance: m.Instance, SoftwareVersion: version}); err != nil {
 		return err
 	}
 	reply, err := readMessage(c)
 	if err != nil {
 		return err
 	}
-	if reply.Type != "cancelled" {
-		return fmt.Errorf("cancel shell: %s", reply.Error)
+	if reply.Type != "killed" {
+		return fmt.Errorf("kill shell: %s", reply.Error)
 	}
 	fmt.Fprintf(os.Stdout, "Ended shell %s\n", name)
 	return nil

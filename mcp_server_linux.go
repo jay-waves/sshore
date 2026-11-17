@@ -11,7 +11,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -32,9 +31,9 @@ func (t *mcpSessionTask) serveTask(c net.Conn, m message) error {
 	switch m.Type {
 	case "status":
 		return writeMessage(c, message{Type: "session", Name: t.taskName(), Instance: t.id, PID: t.pid, SoftwareVersion: version})
-	case "cancel":
+	case "kill":
 		_, err := t.owner.Close(context.Background(), mcp.SessionInput{SessionID: t.id})
-		reply := message{Type: "cancelled"}
+		reply := message{Type: "killed"}
 		if err != nil {
 			reply.Type, reply.Error = "error", err.Error()
 		}
@@ -143,7 +142,7 @@ func (s *trackedMCPSessions) Close(ctx context.Context, in mcp.SessionInput) (mc
 	task.closing = true
 	task.mu.Unlock()
 	defer func() { task.mu.Lock(); task.closing = false; task.mu.Unlock() }()
-	if err := stopOwnedProcesses([]setupProcess{{PID: task.pid, Start: task.start}}, syscall.SIGTERM); err != nil {
+	if err := stopOwnedProcesses([]setupProcess{{PID: task.pid, Start: task.start}}); err != nil {
 		return mcp.Closed{}, err
 	}
 	result, err := s.manager.Close(ctx, in)
@@ -175,7 +174,7 @@ func checkMCPSessionSetup() error {
 		return err
 	}
 	executable = strings.TrimSuffix(executable, " (deleted)")
-	state, err := inspectSetup(executable)
+	state, err := inspectSetup(executable, false)
 	if err != nil {
 		return err
 	}

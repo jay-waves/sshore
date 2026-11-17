@@ -122,9 +122,9 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"launch", "--local", "origin"})
+	cmd, terminal, wait := startSessionClient(t, e, []string{"launch", "--local", "origin", "--no-profile"})
 	t.Cleanup(func() {
-		cleanup := exec.Command(e.bin, "cancel", "--all")
+		cleanup := exec.Command(e.bin, "kill", "--all")
 		cleanup.Env = cmd.Env
 		_ = cleanup.Run()
 	})
@@ -463,18 +463,18 @@ func TestReconnectPreservesStoppedJob(t *testing.T) {
 				stopped, running = "stopped", "running"
 			}
 			e := newEnv(t)
-			home := t.TempDir()
-			if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("PROMPT='JOB-PROMPT> '\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			e.env = append(e.env, "SHELL="+path, "HOME="+home, "ZDOTDIR="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"))
+			home := configureReconnectShell(t, e, path, "JOB-PROMPT> ")
 			b, _ := e.attach("jobcontrol")
+			expectTerminalText(t, b, "JOB-PROMPT> ")
 			pidFile := filepath.Join(home, "job-pid")
 			responsiveShellOutput(t, b, "sh -c "+shellQuote("echo $$ > "+shellQuote(pidFile)+"; printf 'JOB-%s\\n' started; exec sleep 120"), "JOB-started")
 			sendTest(t, b.tty, message{Type: "input", Data: []byte{26}})
-			expectTerminalText(t, b, stopped)
+			marker := stopped
 			if name == "fish" {
-				expectTerminalText(t, b, "\x1b]133;B")
+				marker = "JOB-PROMPT> "
+			}
+			if output := expectTerminalText(t, b, marker); !strings.Contains(output, stopped) {
+				t.Fatalf("job did not stop: %q", output)
 			}
 			detachTestClient(t, b)
 			b, _ = e.attach("jobcontrol")
@@ -504,7 +504,7 @@ func TestReconnectPreservesStoppedJob(t *testing.T) {
 			}
 			sendTest(t, b.tty, message{Type: "input", Data: []byte{3}})
 			if name == "fish" {
-				expectTerminalText(t, b, "\x1b]133;B")
+				expectTerminalText(t, b, "JOB-PROMPT> ")
 			}
 			responsiveShellOutput(t, b, "printf 'CONTROL-%s' restored", "CONTROL-restored")
 			sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
@@ -522,20 +522,7 @@ func TestReconnectPreservesShellEditor(t *testing.T) {
 				t.Skip(name + " is unavailable")
 			}
 			e := newEnv(t)
-			home := t.TempDir()
-			config := filepath.Join(home, ".zshrc")
-			content := "PROMPT='EDITOR-READY> '\nRPROMPT=''\nbindkey -e\n"
-			if name == "fish" {
-				config = filepath.Join(home, ".config", "fish", "config.fish")
-				content = "set -g fish_greeting\nfunction fish_prompt; printf 'EDITOR-READY> '; end\nfunction fish_right_prompt; end\n"
-			}
-			if err := os.MkdirAll(filepath.Dir(config), 0700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(config, []byte(content), 0600); err != nil {
-				t.Fatal(err)
-			}
-			e.env = append(e.env, "SHELL="+path, "HOME="+home, "ZDOTDIR="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"))
+			home := configureReconnectShell(t, e, path, "EDITOR-READY> ")
 			b, _ := e.attach("editor")
 			expectTerminalText(t, b, "EDITOR-READY> ")
 			marker := filepath.Join(home, "submitted")
@@ -561,6 +548,35 @@ func TestReconnectPreservesShellEditor(t *testing.T) {
 	}
 }
 
+// Use fixture-owned prompts and startup configuration for reconnect assertions.
+func configureReconnectShell(t *testing.T, e *testEnv, path, prompt string) string {
+	t.Helper()
+	home := t.TempDir()
+	files := map[string]string{}
+	switch filepath.Base(path) {
+	case "bash":
+		files[".bash_profile"] = ". ~/.bashrc\n"
+		files[".bashrc"] = "PS1=" + shellQuote(prompt) + "\nHISTFILE=/dev/null\n"
+	case "zsh":
+		// Keep the fixture's .zshrc while skipping system completion setup.
+		files[".zshenv"] = "unsetopt GLOBAL_RCS\n"
+		files[".zshrc"] = "PROMPT=" + shellQuote(prompt) + "\nRPROMPT=''\nbindkey -e\n"
+	case "fish":
+		files[filepath.Join(".config", "fish", "config.fish")] = "set -g fish_greeting\nfunction fish_prompt; printf '%s' " + shellQuote(prompt) + "; end\nfunction fish_right_prompt; end\n"
+	}
+	for name, content := range files {
+		config := filepath.Join(home, name)
+		if err := os.MkdirAll(filepath.Dir(config), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(config, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.env = append(e.env, "SHELL="+path, "HOME="+home, "ZDOTDIR="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"))
+	return home
+}
+
 func responsiveShellOutput(t *testing.T, b *bridgeConn, command, marker string) string {
 	t.Helper()
 	sendTest(t, b.tty, message{Type: "input", Data: []byte(command + "\n")})
@@ -571,13 +587,13 @@ func TestClientNestedLocalSpawnHandoff(t *testing.T) {
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"launch", "--local", "root"})
-	t.Cleanup(func() { cleanup := exec.Command(e.bin, "cancel", "--all"); cleanup.Env = cmd.Env; _ = cleanup.Run() })
+	cmd, terminal, wait := startSessionClient(t, e, []string{"launch", "--local", "root", "--no-profile"})
+	t.Cleanup(func() { cleanup := exec.Command(e.bin, "kill", "--all"); cleanup.Env = cmd.Env; _ = cleanup.Run() })
 	wait("Connected local / root")
 	wait("sshore-test> ")
 	for _, name := range []string{"child", "grandchild"} {
 		marker := filepath.Join(e.dir, name+"-returned")
-		io.WriteString(terminal, shellQuote(e.bin)+" spawn --local "+name+"; printf done > "+shellQuote(marker)+"\n")
+		io.WriteString(terminal, shellQuote(e.bin)+" spawn --local "+name+" --no-profile; printf done > "+shellQuote(marker)+"\n")
 		wait("Connected local / " + name)
 		wait("sshore-test> ")
 		deadline := time.Now().Add(3 * time.Second)

@@ -175,10 +175,10 @@ func runLocalCommand(o options) (int, error) {
 		}
 		printTaskInventory(inventory{LocalShells: rows})
 		return 0, nil
-	case "cancel":
-		m, err := localRequest(o.session, message{Type: "cancel"}, o.taskIdentity)
-		if err == nil && m.Type != "cancelled" {
-			err = fmt.Errorf("local cancellation unconfirmed")
+	case "kill":
+		m, err := localRequest(o.session, message{Type: "kill"}, o.taskIdentity)
+		if err == nil && m.Type != "killed" {
+			err = fmt.Errorf("kill local shell: %s", cleanText(m.Error))
 		}
 		return 0, err
 	case "rename":

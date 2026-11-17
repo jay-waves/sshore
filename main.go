@@ -3,12 +3,13 @@ package main
 import (
 	"errors"
 	"os"
+	"strings"
 
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.7.2"
+var version = "0.7.3"
 
 func main() {
 	code := 1
@@ -17,7 +18,9 @@ func main() {
 		code, err = run(os.Args[1:])
 	}
 	if err != nil {
-		termui.Log(os.Stderr, termui.Error, "sshore: %s\n", cleanText(err.Error()))
+		for _, line := range strings.Split(err.Error(), "\n") {
+			termui.Log(os.Stderr, termui.Error, "sshore: %s\n", cleanText(line))
+		}
 		var e *usageError
 		if errors.As(err, &e) {
 			code = 2

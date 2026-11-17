@@ -76,3 +76,24 @@ func TestOwnedDaemonWithoutLocatorIsNotAbsent(t *testing.T) {
 		t.Fatalf("live owner treated as absent: %v", err)
 	}
 }
+
+func TestDaemonAdministrationAcrossReleases(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t, "0.0.1")
+	_, done := registerTestResource(t, tasks, "forward", "older", strings.Repeat("a", 32))
+	if _, err := nativeShellRecords(); err == nil {
+		t.Fatal("normal control accepted a different release")
+	}
+	snapshot, err := daemonAdmin(context.Background(), "snapshot", nil)
+	if err != nil || snapshot.Version != "0.0.1" || len(snapshot.Tasks) != 1 {
+		t.Fatalf("cross-release snapshot: %+v %v", snapshot, err)
+	}
+	if _, err := daemonAdmin(context.Background(), "shutdown", &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("cross-release shutdown did not stop the confirmed task")
+	}
+}

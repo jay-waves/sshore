@@ -141,7 +141,7 @@ func (s *daemonMetadata) handle(r metadataRequest) (reply metadataReply) {
 	case "shell_forget":
 		reply.Found, err = forgetEndedShellLocal(r.Host, r.Name, r.Instance)
 	case "shell_cancel":
-		err = confirmCancelledShellLocal(r.Host, r.Name, r.Instance)
+		err = confirmKilledShellLocal(r.Host, r.Name, r.Instance)
 	default:
 		err = fmt.Errorf("invalid metadata operation")
 	}

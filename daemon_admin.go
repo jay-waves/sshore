@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -109,13 +110,24 @@ func daemonAdmin(ctx context.Context, action string, expected *daemonSnapshot) (
 	}
 	return reply.Snapshot, nil
 }
-func (s *daemonTasks) shutdown(record localShellRecord, expected daemonSnapshot) error {
+func (s *daemonTasks) shutdown(record localShellRecord, expected daemonSnapshot) (result error) {
 	s.mu.Lock()
 	if !reflect.DeepEqual(s.snapshot(record), expected) {
 		s.mu.Unlock()
 		return fmt.Errorf("tasks changed; review again")
 	}
+	if s.draining {
+		s.mu.Unlock()
+		return fmt.Errorf("daemon is already shutting down")
+	}
 	s.draining = true
+	defer func() {
+		if result != nil {
+			s.mu.Lock()
+			s.draining = false
+			s.mu.Unlock()
+		}
+	}()
 	var stops []interface{ stopTask() error }
 	for id, task := range s.records {
 		if stoppable, ok := task.(interface{ stopTask() error }); ok {
@@ -127,7 +139,13 @@ func (s *daemonTasks) shutdown(record localShellRecord, expected daemonSnapshot)
 	s.mu.Unlock()
 	results := make(chan error, len(stops))
 	for _, task := range stops {
-		go func() { results <- task.stopTask() }()
+		go func() {
+			err := task.stopTask()
+			if err != nil {
+				err = fmt.Errorf("%s: %w", cleanText(task.(daemonTask).taskName()), err)
+			}
+			results <- err
+		}()
 	}
 	timer := time.NewTimer(25 * time.Second)
 	defer timer.Stop()
@@ -139,14 +157,14 @@ func (s *daemonTasks) shutdown(record localShellRecord, expected daemonSnapshot)
 				failures = append(failures, err)
 			}
 		case <-timer.C:
-			return fmt.Errorf("daemon tasks did not exit; no forced termination performed")
+			return fmt.Errorf("daemon task cleanup timed out; shutdown stopped")
 		}
 	}
 	return errors.Join(failures...)
 }
-func (t *nativeShellTask) stopTask() error { t.shell.close(); return nil }
+func (t *nativeShellTask) stopTask() error { return t.shell.kill() }
 func (t *daemonResourceTask) stopTask() error {
-	r := t.control("cancel")
+	r := t.control("kill")
 	if r.Error != "" {
 		return fmt.Errorf("%s", r.Error)
 	}
@@ -156,4 +174,39 @@ func (t *daemonResourceTask) stopTask() error {
 	case <-time.After(20 * time.Second):
 		return fmt.Errorf("resource did not exit")
 	}
+}
+
+// An SSH exec channel exposes only the authenticated account's admin exchange.
+// Waiting for confirmation never grants the helper permission to start tasks.
+func serveDaemonAdmin(input io.Reader, output io.Writer) error {
+	snapshot, err := daemonAdmin(context.Background(), "snapshot", nil)
+	if os.IsNotExist(err) {
+		err = nil
+	}
+	reply := daemonAdminReply{Snapshot: snapshot}
+	if err != nil {
+		reply.Error = err.Error()
+	}
+	encoder := json.NewEncoder(output)
+	if err := encoder.Encode(reply); err != nil {
+		return err
+	}
+	if reply.Error != "" {
+		return nil
+	}
+	var expected daemonSnapshot
+	if err := json.NewDecoder(io.LimitReader(input, 1<<20)).Decode(&expected); err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(snapshot, expected) {
+		return encoder.Encode(daemonAdminReply{Error: "tasks changed; review again"})
+	}
+	if snapshot.Instance != "" {
+		err = requestDaemonShutdown(expected)
+	}
+	reply = daemonAdminReply{}
+	if err != nil {
+		reply.Error = err.Error()
+	}
+	return encoder.Encode(reply)
 }

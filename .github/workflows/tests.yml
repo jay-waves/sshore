@@ -90,7 +90,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          python3 - <<'PY'
+          python3 -X utf8 - <<'PY'
           import json, os
           from pathlib import Path
           log = Path('core-tests.jsonl')

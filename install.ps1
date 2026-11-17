@@ -7,8 +7,9 @@ Windows amd64 only; supports PowerShell 5.1 and 7. Updates the first sshore.exe
 on PATH; otherwise install to %LOCALAPPDATA%\sshore\bin and add it to the user
 and current session PATH. Verify SHA256SUMS and executable version before
 replacement. Never modify system PATH, profiles or execution
-policy; never elevate, stop processes or create versioned backups. If the installed
-executable is in use, exit and ask the user to run cancel --all before retrying.
+policy; never elevate or create versioned backups. The verified release reviews
+and stops account tasks after typed update confirmation before replacing the binary.
+Remaining clients may still hold the executable open; close them and retry.
 .PARAMETER Version
 Published X.Y.Z version (without v). Defaults to the latest release.
 .EXAMPLE
@@ -109,26 +110,12 @@ function Install-Sshore([string]$Version = '') {
     # Resolve relative filesystem paths using PowerShell's current location.
     $directory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($directory)
     $target = Join-Path $directory 'sshore.exe'
-    $quotedTarget = $target.Replace("'", "''")
-    $busyMessage = "sshore is in use; installation unchanged. Run & '$quotedTarget' cancel --all, then retry. This ends local work; unsaved work may be lost. Close any remaining sshore clients."
     $existing = Get-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
-    if ($existing) {
-        if ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw 'Installation target is a directory or reparse point; installation unchanged.'
-        }
-        try {
-            $probe = [IO.File]::Open($target, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-            $probe.Dispose()
-        } catch {
-            $code = $_.Exception.GetBaseException().HResult -band 0xffff
-            if ($code -in 32, 33) { throw $busyMessage }
-            throw
-        }
-        Write-Host "Updating in place: $target"
+    if ($existing -and ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint))) {
+        throw 'Installation target is a directory or reparse point; installation unchanged.'
     }
     $temp = Join-Path ([IO.Path]::GetTempPath()) ('sshore-install-' + [Guid]::NewGuid().ToString('N'))
     $stage = $null
-    $rollback = $null
     $null = [IO.Directory]::CreateDirectory($temp)
     try {
         $releases = 'https://github.com/jay-waves/sshore/releases'
@@ -180,28 +167,10 @@ function Install-Sshore([string]$Version = '') {
         if ((Read-SshoreBinaryVersion $stage) -cne "sshore $Version") {
             throw 'Binary version does not match release; installation unchanged.'
         }
-        if ($existing) {
-            $installedVersion = Read-SshoreBinaryVersion $target
-            if ($installedVersion -cnotmatch "\Asshore ($versionPattern)\z") {
-                throw 'Unknown installed version; update manually. No tasks ended.'
-            }
-            if ([version]$Matches[1] -gt [version]$Version) {
-                throw 'Cannot downgrade the installed version. No tasks ended.'
-            }
-            $rollback = Join-Path $directory ('.sshore-previous-' + [Guid]::NewGuid().ToString('N') + '.exe')
-            # Same-volume replacement. A client may have started since preflight;
-            # fail without deleting the installed executable or stopping work.
-            try { [IO.File]::Replace($stage, $target, $rollback) }
-            catch {
-                $code = $_.Exception.GetBaseException().HResult -band 0xffff
-                if ($code -in 32, 33) { throw $busyMessage }
-                throw
-            }
-        } else {
-            [IO.File]::Move($stage, $target)
-        }
+        & $stage install-prepared $target
+        if ($LASTEXITCODE -ne 0) { throw 'Installation stopped. Close remaining sshore clients if the executable is still in use, then retry.' }
+        [IO.File]::Delete($stage)
         $stage = $null
-        if ($rollback) { [IO.File]::Delete($rollback); $rollback = $null }
         Write-Host "Installed sshore ${Version}: $target"
         if (-not $foundOnPath) {
             try {
@@ -220,7 +189,6 @@ function Install-Sshore([string]$Version = '') {
 
     } finally {
         if ($stage -and [IO.File]::Exists($stage)) { [IO.File]::Delete($stage) }
-        if ($rollback -and [IO.File]::Exists($rollback)) { Write-Warning "Previous binary preserved at $rollback; recover it manually if needed." }
         [IO.Directory]::Delete($temp, $true)
     }
 }

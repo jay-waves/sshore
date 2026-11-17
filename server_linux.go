@@ -256,7 +256,7 @@ func (s *remoteShell) serveSpawnOwner(c net.Conn, first message) {
 	s.spawnOwned = true
 	instance := s.instance
 	s.mu.Unlock()
-	defer func() { _ = s.cancel(instance) }()
+	defer func() { _ = s.kill(instance) }()
 	if writeMessage(c, message{Type: "spawn_owned"}) != nil {
 		return
 	}

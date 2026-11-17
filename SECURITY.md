@@ -49,7 +49,7 @@ flowchart LR
         grant["Fixed operation; consume approval once"]
         resources["Selected files, forward or mount"]
         control["Account daemon TCP endpoint: authentication, task IDs and live leases"]
-        update["Review affected shells; type update; recheck identities"]
+        update["Prepare and verify release; review tasks; type update"]
     end
     agent -->|"MCP stdio adapter; authenticated SSH"| control
     control -->|"Task-owned MCP execution"| bash
@@ -59,10 +59,10 @@ flowchart LR
     pending --> review
     user --> review
     review --> grant
-    grant -->|"Revalidate original shell; reject changed setup / recovery"| resources
+    grant -->|"Revalidate original shell; reject changed setup"| resources
     user -->|"Explicit cp / forward / mount command"| resources
     resources <-->|"Authenticated SSH; remote account permissions"| service
-    user -->|"Local shell and resource control"| control
+    user -->|"kill --all: confirm snapshot; cross-release admin only"| control
     control -->|"Private handoff; child readiness required"| client
     shell -->|"Explicit nested spawn"| relay
     relay <-->|"Next-hop SSH; same exact release"| child
@@ -70,7 +70,7 @@ flowchart LR
     resources -->|"cp / watched mount: exact-version helper setup"| update
     user --> update
     agent -->|"Exact release; updates require user review"| update
-    update -->|"Verify replacement; request daemon shutdown; no force fallback"| setup
+    update -->|"Recheck snapshot; daemon kills owned shells; wait for endpoint release"| setup
 ```
 
 Remote output, public names, task IDs and inventory records are not
@@ -136,7 +136,7 @@ Each pending request:
   shell connection cannot execute it; there is no persisted grant or automatic retry.
 - Retains its original shell identity and PID. Review does not silently create a
   replacement shell. Rename or replacement can invalidate a pending request.
-- Fixes the approved operation locally. Setup changes or recovery skip execution;
+- Fixes the approved operation locally. Setup changes skip execution;
   the user must request the operation again.
 
 System OpenSSH, local configuration and `Match exec` hooks are trusted inputs.
@@ -214,7 +214,7 @@ An MCP client can execute arbitrary Bash with the authenticated remote account's
 permissions. MCP is not a sandbox; only trusted clients should be configured to
 start it. Remote output is untrusted and can influence the Agent. The stdio MCP
 process opens no local listening port. Its SSH connections use the same release
-setup policy; MCP cannot approve an update or enter recovery on the user's behalf.
+setup policy; MCP cannot approve an update on the user's behalf.
 Bash scripts and fixed input are staged in private temporary files; abrupt
 termination can leave them on the remote host. A lost response does not prove
 whether a submitted script ran; it is not replayed.
@@ -259,11 +259,12 @@ Control resolves the immutable task ID in the daemon's memory table. Ending a
 task removes its live registration; clients do not infer lifetime from stale files.
 Remote shell cancellation uses the same authenticated, exact-release control
 entry and signals only the child identities owned by that task.
-Single-shell cancel can end an attached shell immediately. `cancel --all` displays a
-fresh snapshot and requires typing `cancel`; new tasks, same-name replacements and
-other managers' advertisements are excluded.
+Single-shell `kill` ends an attached shell immediately using KILL on Linux or job termination on Windows. `kill --all` displays a
+fresh snapshot and requires typing `kill`; any task change requires fresh review.
+Other managers' advertisements are excluded. Administrative shutdown may cross
+release versions; individual task control still requires an exact release.
 
-Linux managed cleanup signals only confirmed same-user shells and identified tasks.
+Linux managed cleanup sends KILL only to confirmed same-user shells and their identified tasks, with process identity validation.
 Windows spawns use kill-on-close jobs. Ordinary PTY closure relies on terminal hangup
 semantics: programs ignoring hangup or deliberately escaping/reparenting may survive.
 No process-name-wide kill is used. A daemon failure can affect all terminals it owns.
@@ -282,7 +283,7 @@ rename or delete files using the remote account's permissions. A remote program
 may request a mount through the [local approval gate](#local-approval), but cannot
 approve it or choose the final local mountpoint. Review displays the access mode;
 startup revalidates the original detached shell on the mount's SSH connection.
-The resulting mount is independent of that shell. Recovery mode rejects it.
+The resulting mount is independent of that shell. Legacy disabled mode rejects it.
 
 The selected root is a navigation boundary, **not remote-account confinement**.
 Remote symlinks can be followed with the account's permissions. Linux readlink
@@ -293,7 +294,7 @@ untrusted.
 
 Mounts use the same [setup safeguards](#remote-setup-and-updates) as shells before
 starting an exact-release transient agent. Declining setup does not grant
-recovery-mode file access. The agent needs remote command execution and does not inherit an
+legacy disabled-mode file access. The agent needs remote command execution and does not inherit an
 internal-sftp-only policy or SFTP subsystem-specific command flags. SSH/account
 policy remains authoritative; the mount connection disables native forwarding,
 backgrounding and ControlMaster sharing.
@@ -331,8 +332,8 @@ process scanning.
 
 1. Missing software may be installed automatically when no incompatible shells
    exist. Existing older installations or shells require reviewing affected
-   identities and typing `update`. Newer versions reject older clients; unknown
-   or unordered versions permit manual recovery only.
+   identities and typing `update`. Normal control rejects different releases; unknown
+   or unordered versions require manual repair without ending tasks.
 2. Preparation selects the exact release, verifies its checksum and executable
    version, and stages it without replacing the installed program. Client-side
    download fallback uses the same authenticated SSH connection; the remote cannot
@@ -344,34 +345,34 @@ process scanning.
 4. Setup requests shutdown through the authenticated administrative endpoint and
    waits for the account owner to release it. This limited endpoint may inspect or
    stop another release; it cannot create tasks or open data streams. A changed
-   snapshot, refusal, unavailable endpoint or timeout stops the update. No daemon
-   scan or forced termination fallback is used. Once shutdown starts, failures
+   snapshot, refusal, unavailable endpoint or timeout stops the update. The daemon
+   kills its confirmed shell tasks; clients never scan for daemons or forcibly kill
+   a daemon that refused or could not complete cleanup. Busy mounts remain active. Once shutdown starts, failures
    cannot restore ended tasks; updates can lose unsaved work.
 
 Automatic replacement requires a user-owned regular file and a user-owned directory
-without group/world write permission. It does not elevate privileges or modify PATH
-or shell profiles. Direct copy and mount startup use the same safeguards and
+without group/world write permission on Linux. Replacement does not elevate privileges
+or modify shell profiles; Windows installer PATH behavior is described in [README.md](README.md#install). Direct copy and mount startup use the same safeguards and
 collect any confirmation in the initiating terminal. Ordinary forwarding does not
 install a remote helper.
 
 Release checksums detect corruption, not publisher compromise. Cached artifacts are
 private and rechecked on reuse; unavailable assets never cause substitution of a
-different release. Standalone installers do not stop running shells. Published tags
+different release. Standalone installers use the same prepared, reviewed shutdown flow. Published tags
 and assets are not overwritten; older patch assets are removed only after a complete
 replacement is published. See [release mechanics](SSHORE.md#release).
 
-## Manual recovery
+## Setup failure and legacy recovery
 
-Recovery preserves the authenticated SSH connection and provides a transient PTY
-shell. Persistence, approval execution, file transfer, dynamic forwarding and local
-Ctrl+B shortcuts are disabled; help, version and diagnostics remain available.
-Normal functionality requires reconnecting. Approved operations are skipped after
-recovery or an update and must be requested again.
+Failed preparation and declined updates stop setup without opening a recovery shell.
+Use ordinary SSH for manual repair. Standalone installers must run outside managed
+shells, so their coordinator is not among the processes being ended.
 
-Inherited helper socket variables are removed; new binaries honor
-`SSHORE_DISABLED=1`. **Recovery is a product mode, not a sandbox:** arbitrary legacy
-binaries and deliberately escaped/reparented tasks are not globally constrained.
-Explicit native SSH forwarding remains the local user's policy.
+New binaries continue to honor `SSHORE_DISABLED=1` inherited from legacy recovery
+shells: normal operations remain disabled until reconnecting. Legacy recovery is a
+product restriction, not a sandbox; arbitrary older binaries and deliberately
+escaped/reparented processes cannot be globally controlled. Native SSH forwarding
+remains the local user's policy.
 
 ## Inventory and privacy
 

@@ -42,9 +42,8 @@ func TestSetupConfirmation(t *testing.T) {
 		closeErr           error
 	}{
 		{name: "update", choice: "update", answers: []string{"update"}, want: "update"},
-		{name: "enter", choice: "update", answers: []string{""}, want: "plain"},
+		{name: "enter", choice: "update", answers: []string{""}, want: "cancel"},
 		{name: "retry", choice: "update", answers: []string{"yes", "update"}, want: "update"},
-		{name: "manual-only", choice: "manual-only", answers: []string{"update", ""}, want: "plain"},
 		{name: "cancel", choice: "update"},
 		{name: "restore-failure", choice: "update", answers: []string{"update"}, closeErr: errors.New("restore failed")},
 	} {
@@ -83,20 +82,11 @@ func TestSetupConfirmation(t *testing.T) {
 	}
 }
 
-func TestSetupPlainClearsManagedIdentity(t *testing.T) {
+func TestSetupRejectsRecoveryMode(t *testing.T) {
 	var stream bytes.Buffer
-	if err := writeMessage(&stream, message{Type: "setup_ready", SoftwareVersion: version, Action: "plain"}); err != nil {
-		t.Fatal(err)
-	}
-	o := options{instance: "old", taskIdentity: "task:old"}
-	if err := negotiateSetup(&stream, &bytes.Buffer{}, &o); err != nil {
-		t.Fatal(err)
-	}
-	if !o.plain || !o.noEscape {
-		t.Fatal(o)
-	}
-	if o.instance != "" || o.taskIdentity != "" {
-		t.Fatal("recovery retained managed task identity")
+	writeMessage(&stream, message{Type: "setup_ready", SoftwareVersion: version, Action: "plain"})
+	if err := negotiateSetup(&stream, &bytes.Buffer{}, &options{}); err == nil {
+		t.Fatal("obsolete recovery mode accepted")
 	}
 }
 
@@ -358,7 +348,7 @@ func TestMountSetupDeclineAndUnknownVersion(t *testing.T) {
 		t.Fatalf("%q %v", action, err)
 	}
 	_, err = chooseSetupAction(message{Type: "setup_choice", Action: "manual-only"}, &options{command: "mount-agent", host: "host"}, func() (setupInput, error) { t.Fatal("unexpected update prompt"); return nil, nil })
-	if err == nil || !strings.Contains(err.Error(), "manual recovery") {
+	if err == nil || !strings.Contains(err.Error(), "update manually") {
 		t.Fatal(err)
 	}
 }

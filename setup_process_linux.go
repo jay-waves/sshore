@@ -101,9 +101,8 @@ func sessionTasks(roots []setupProcess) ([]setupTask, error) {
 	return tasks, nil
 }
 
-// Interactive shells ignore SIGTERM, so terminal owners request SIGHUP for
-// their roots. Other tasks use SIGTERM; descendants retain normal termination.
-func stopOwnedProcesses(roots []setupProcess, rootSignal unix.Signal) error {
+// Cancellation kills only confirmed same-user processes belonging to these roots.
+func stopOwnedProcesses(roots []setupProcess) error {
 	for _, root := range roots {
 		if root.Version != "" {
 			v, err := executableVersion(fmt.Sprintf("/proc/%d/exe", root.PID))
@@ -123,32 +122,40 @@ func stopOwnedProcesses(roots []setupProcess, rootSignal unix.Signal) error {
 		}
 	}
 	for _, task := range tasks {
-		signal := unix.SIGTERM
-		for _, root := range roots {
-			if task.pid == root.PID {
-				signal = rootSignal
-				break
-			}
-		}
-		if err := signalProcess(task.pid, task.start, signal); err != nil {
+		if err := signalProcess(task.pid, task.start, unix.SIGKILL); err != nil {
 			return err
 		}
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	if waitOwnedProcesses(tasks, 2*time.Second) {
+		return nil
+	}
+	var remaining []string
+	for _, task := range tasks {
+		if current, err := readSetupTask(task.pid); err == nil && current.start == task.start && current.state != "Z" && current.state != "X" {
+			remaining = append(remaining, strconv.Itoa(task.pid))
+		}
+	}
+	return fmt.Errorf("tasks did not exit after KILL (PIDs %s)", strings.Join(remaining, ", "))
+}
+
+func waitOwnedProcesses(tasks []setupTask, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
 		alive := false
 		for _, task := range tasks {
-			if now, e := readSetupTask(task.pid); e == nil && now.start == task.start && now.state != "Z" {
+			if current, err := readSetupTask(task.pid); err == nil && current.start == task.start && current.state != "Z" && current.state != "X" {
 				alive = true
 				break
 			}
 		}
 		if !alive {
-			return nil
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	return fmt.Errorf("tasks did not exit; no forced termination performed")
 }
 
 // Session listings show a best-effort /proc snapshot rooted at the shell PID.

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 
@@ -103,7 +104,7 @@ func bridge(name string, existing bool) error {
 	if err != nil {
 		return err
 	}
-	state, err := inspectSetup(exe)
+	state, err := inspectSetup(exe, false)
 	if err != nil {
 		lock.Close()
 		return err
@@ -276,6 +277,7 @@ func detachedSessionNames() ([]string, error) {
 			}
 		}
 	}
+	sort.Strings(names)
 	return names, nil
 }
 

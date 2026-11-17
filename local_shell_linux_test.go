@@ -119,7 +119,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 			if first.ManagerPID <= 0 || first.ManagerPID != second.ManagerPID {
 				t.Fatalf("shells do not share a daemon: %d, %d", first.ManagerPID, second.ManagerPID)
 			}
-			cleanup := exec.Command(e.bin, "cancel", second.UID[:6])
+			cleanup := exec.Command(e.bin, "kill", second.UID[:6])
 			cleanup.Env = env
 			if output, err := cleanup.CombinedOutput(); err != nil {
 				t.Fatalf("cleanup: %s %v", output, err)
@@ -339,7 +339,7 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 		return string(out)
 	}
 	run(env, "launch", "--local", "keeper", "--detach")
-	defer run(env, "cancel", "--local", "keeper")
+	defer run(env, "kill", "--local", "keeper")
 	raw, err := os.ReadFile(filepath.Join(state, "daemon", "daemon.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -398,7 +398,7 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 		if !ok || validSession(assigned) != nil {
 			t.Fatalf("invalid forward name: %s", out)
 		}
-		defer run(env, "cancel", "forward/"+assigned)
+		defer run(env, "kill", "forward/"+assigned)
 		raw, err = os.ReadFile(observation)
 		if err != nil {
 			t.Fatal(err)
@@ -443,8 +443,8 @@ func TestLocalDaemonIgnoresOrphanedVersion(t *testing.T) {
 				t.Fatalf("orphaned record blocked spawn: %v %s", err, out)
 			}
 			defer func() {
-				cmd := exec.CommandContext(ctx, e.bin, "cancel", "--all")
-				cmd.Env, cmd.Stdin = env, strings.NewReader("cancel\n")
+				cmd := exec.CommandContext(ctx, e.bin, "kill", "--all")
+				cmd.Env, cmd.Stdin = env, strings.NewReader("kill\n")
 				if out, err := cmd.CombinedOutput(); err != nil {
 					t.Errorf("cleanup: %v %s", err, out)
 				}

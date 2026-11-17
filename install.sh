@@ -2,8 +2,8 @@
 # Linux amd64 installer, used directly or by bootstrap for temporary staging.
 # Downloads HTTPS assets, verifies SHA256SUMS and version, then atomically installs.
 # Requires curl, tar and sha256sum/shasum. Default: ~/.local/bin; --bin-dir overrides.
-# No sudo, shell-profile edits or daemon termination. Preserve a recognized old
-# binary as sshore-X.Y.Z when that backup does not already exist.
+# No sudo or shell-profile edits. The verified binary reviews and stops account
+# tasks before replacement; temporary bootstrap staging never stops tasks.
 # Usage: curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | sh -s -- [--version 0.3.2] [--bin-dir DIR]
 set -eu
 
@@ -22,6 +22,7 @@ HELP
 
 main() {
     install_version=
+    install_prepare_only=false
     install_bin_dir=${HOME:?HOME must be set}/.local/bin
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -32,6 +33,7 @@ main() {
                     --bin-dir) install_bin_dir=$2 ;;
                 esac
                 shift 2 ;;
+            --prepare-only) install_prepare_only=true; shift ;;
             -h|--help) usage; return ;;
             *) fail "unknown option: $1" ;;
         esac
@@ -99,30 +101,21 @@ main() {
     install_bin_dir=$(cd -- "$install_bin_dir" && pwd -P)
     install_target=$install_bin_dir/sshore
     [ ! -d "$install_target" ] || fail 'installation target is a directory'
-    if [ -e "$install_target" ] || [ -L "$install_target" ]; then
-        install_old=$("$install_target" --version 2>/dev/null || true)
-        case "$install_old" in
-            'sshore '*)
-                install_old=${install_old#sshore }
-                if valid_version "$install_old"; then
-                    install_backup=$install_bin_dir/sshore-$install_old
-                    # Do not follow or overwrite a preexisting backup, including a
-                    # dangling symlink. A backup makes old daemons recoverable.
-                    if [ ! -e "$install_backup" ] && [ ! -L "$install_backup" ]; then
-                        cp -p -- "$install_target" "$install_backup"
-                    fi
-                fi ;;
-        esac
+    chmod 755 "$install_tmp/sshore"
+    [ "$("$install_tmp/sshore" --version)" = "sshore $install_version" ] || fail 'binary version does not match release'
+    if [ "$install_prepare_only" = true ]; then
+        [ ! -e "$install_target" ] && [ ! -L "$install_target" ] || fail 'temporary staging target already exists'
+        install_stage=$(mktemp "$install_bin_dir/.sshore-install.XXXXXXXX")
+        cat "$install_tmp/sshore" > "$install_stage"
+        chmod 755 "$install_stage"
+        mv -f -- "$install_stage" "$install_target"
+        install_stage=
+    else
+        "$install_tmp/sshore" install-prepared "$install_target" || fail 'installation stopped; existing tasks may require manual cleanup'
     fi
-    install_stage=$(mktemp "$install_bin_dir/.sshore-install.XXXXXXXX")
-    cat "$install_tmp/sshore" > "$install_stage"
-    chmod 755 "$install_stage"
-    [ "$("$install_stage" --version)" = "sshore $install_version" ] || fail 'binary version does not match release'
-    mv -f -- "$install_stage" "$install_target"
-    install_stage=
     printf 'Installed sshore %s: %s\n' "$install_version" "$install_target"
     printf '%s\n' 'SHA256 verified. No sudo or shell configuration changes.'
-    printf '%s\n' 'Use matching client/server versions. Existing session daemons are not upgraded or stopped.'
+    printf '%s\n' 'Use matching client/server versions. Remote accounts are updated separately.'
     case ":$PATH:" in
         *":$install_bin_dir:"*) ;;
         *) printf 'Directory is not on PATH. Use the full path, or add %s to PATH.\n' "$install_bin_dir" ;;
@@ -139,5 +132,5 @@ download() {
 }
 
 # Wrapping execution in a function prevents a partial download from running an
-# incomplete installer body. The script never reads approval/passwords from stdin.
+# incomplete installer body. Update approval uses the controlling terminal.
 main "$@"

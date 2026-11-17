@@ -97,13 +97,7 @@ func negotiateSetupUsing(ctx context.Context, r io.Reader, w io.Writer, o *optio
 				record := m.LocalRequest.Record
 				o.daemonTask = &record
 			}
-			if m.Action == "plain" {
-				if o.command == "mount-agent" || o.command == "cp-agent" {
-					return fmt.Errorf("helper setup requires manual recovery; use sshore launch %s", cleanText(o.host))
-				}
-				o.plain, o.noEscape = true, true
-				o.instance, o.taskIdentity = "", ""
-			} else if m.Action == "updated" {
+			if m.Action == "updated" {
 				log(termui.Success, "[sshore] Remote updated to %s.\n", version)
 			} else if m.Action != "managed" {
 				return fmt.Errorf("invalid setup mode")
@@ -171,20 +165,10 @@ func chooseSetupAction(m message, o *options, openInput func() (setupInput, erro
 			termui.Log(os.Stderr, termui.Warning, "  %s  %s\n", cleanText(p.Name), cleanText(p.Version))
 		}
 	}
-	helper := o.command == "mount-agent" || o.command == "cp-agent"
-	if helper && m.Action == "manual-only" {
-		return "", fmt.Errorf("automatic setup unavailable; use sshore launch %s for manual recovery", cleanText(o.host))
-	}
-	if !helper {
-		termui.Log(os.Stderr, termui.Info, "Recovery: temporary shell, sshore disabled.\n")
-	}
-	prompt := "Type update to install, or Enter to recover: "
-	if helper {
-		prompt = "Type update to install, or Enter to cancel: "
-	}
 	if m.Action == "manual-only" {
-		prompt = "Press Enter to recover: "
+		return "", fmt.Errorf("automatic setup unavailable; update manually; no tasks ended")
 	}
+	prompt := "Type update to install, or Enter to cancel: "
 	input, err := openInput()
 	if err != nil {
 		return "", err
@@ -195,20 +179,13 @@ func chooseSetupAction(m message, o *options, openInput func() (setupInput, erro
 		if err != nil || answer == "" || answer == "manual" || answer == "update" && m.Action != "manual-only" {
 			break
 		}
-		if m.Action == "manual-only" {
-			termui.Log(os.Stderr, termui.Warning, "Update unavailable. Enter to recover.\n")
-		} else {
-			termui.Log(os.Stderr, termui.Warning, "%s\n", strings.TrimSpace(prompt))
-		}
+		termui.Log(os.Stderr, termui.Warning, "%s\n", strings.TrimSpace(prompt))
 	}
 	closeErr := input.Close()
 	if err := errors.Join(err, closeErr); err != nil {
 		return "", fmt.Errorf("setup input or terminal restoration failed; no update requested: %w", err)
 	}
-	action := "plain"
-	if helper {
-		action = "cancel"
-	}
+	action := "cancel"
 	if answer == "update" {
 		action = "update"
 	}
@@ -353,7 +330,7 @@ func compareReleaseVersions(a, b string) (int, bool) {
 // prepare a checksum/version-verified temporary coordinator using install.sh.
 // Its directory is staging, not a PATH installation. Suppress successful installer
 // output but retain failure diagnostics. The coordinator negotiates confirmation
-// or recovery before replacing the target. A failed remote download requests a
+// before replacing the target. A failed remote download requests a
 // verified executable from the client over the same authenticated connection.
 
 const installerURL = "https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh"
@@ -375,7 +352,7 @@ func bootstrapFrame(m message) string {
 }
 
 // Match compareVersions before downloading a coordinator. Only canonical full
-// releases are ordered; failed probes and custom labels proceed to manual recovery.
+// releases are ordered; failed probes and custom labels require manual repair.
 const newerReleaseAWK = `END {
     release = "(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)"
     if (NR != 1 || $0 !~ ("^sshore " release "$") || local !~ ("^" release "$")) exit 1
@@ -391,7 +368,7 @@ const newerReleaseAWK = `END {
 
 // The bootstrap runs inside the original SSH connection. A mismatched executable
 // is never overwritten here: first prepare a verified, temporary coordinator so
-// even an old server can offer an interactive, nonpersistent recovery shell.
+// older installations can negotiate reviewed replacement without ending tasks first.
 func remoteCommand(o options) string {
 	if o.server == "" {
 		o.server = "sshore"
@@ -419,6 +396,10 @@ func remoteCommand(o options) string {
 	}
 	b.WriteString("fi; case \"$server\" in /*) ;; *) server=\"$PWD/$server\" ;; esac; ")
 	b.WriteString("remote_version=; if [ -e \"$server\" ]; then remote_version=$(\"$server\" --version) || remote_version=; fi; ")
+	if o.command == "daemon-admin" {
+		b.WriteString("exec \"$server\" daemon-admin")
+		return "sh -c " + shellQuote(b.String())
+	}
 	if o.list {
 		b.WriteString("if [ \"$remote_version\" != " + shellQuote("sshore "+version) + " ]; then printf '%s\\n' 'sshore: inventory requires matching remote release; no software changed' >&2; exit 1; fi; exec \"$server\" inventory " + shellQuote(version))
 		if o.listJSON {
@@ -428,10 +409,10 @@ func remoteCommand(o options) string {
 	}
 	// Destructive management never enters setup: a kill must not upgrade or end
 	// unrelated sessions. The remote command independently checks its version.
-	if o.command == "cancel" || o.command == "cancel-resource" || o.command == "rename" {
+	if o.command == "kill" || o.command == "kill-resource" || o.command == "rename" {
 		b.WriteString("if [ \"$remote_version\" != " + shellQuote("sshore "+version) + " ]; then printf '%s\\n' " + shellQuote("sshore: "+o.command+" requires the installed remote version to match "+version+"; no software changed") + " >&2; exit 1; fi; ")
-		if o.command == "cancel-resource" {
-			b.WriteString("exec \"$server\" cancel-resource " + shellQuote(version) + " " + shellQuote(o.session) + " " + shellQuote(o.taskIdentity))
+		if o.command == "kill-resource" {
+			b.WriteString("exec \"$server\" kill-resource " + shellQuote(version) + " " + shellQuote(o.session) + " " + shellQuote(o.taskIdentity))
 			return "sh -c " + shellQuote(b.String())
 		}
 		actionArgs := shellQuote(o.session)
@@ -439,9 +420,6 @@ func remoteCommand(o options) string {
 			actionArgs += " " + shellQuote(o.newName)
 		}
 		action := o.command
-		if action == "cancel" {
-			action = "kill"
-		}
 		b.WriteString("exec \"$server\" " + action + "-session " + actionArgs + " " + shellQuote(version))
 		if o.instance != "" {
 			b.WriteString(" " + shellQuote(o.instance))
@@ -456,7 +434,7 @@ func remoteCommand(o options) string {
 	b.WriteString("if [ \"$(uname -s)\" != Linux ] || [ \"$(uname -m)\" != x86_64 ]; then " + bootstrapFailure("automatic setup supports Linux amd64 only") + "; fi; ")
 	b.WriteString("printf '%s\\n' " + shellQuote("[sshore] Downloading sshore "+version+" and verifying checksum...") + " >&2; ")
 	b.WriteString("umask 077; setup_dir=$(mktemp -d \"${TMPDIR:-/tmp}/sshore-setup.XXXXXXXX\") || { " + bootstrapFailure("remote setup: cannot create staging directory; no shells stopped") + "; }; trap 'rm -rf -- \"$setup_dir\"' EXIT; trap 'exit 130' INT; trap 'exit 143' TERM HUP; ")
-	b.WriteString("if ! { curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 --retry 2 " + shellQuote(installerURL) + " -o \"$setup_dir/install.sh\" && sh \"$setup_dir/install.sh\" --version " + shellQuote(version) + " --bin-dir \"$setup_dir/bin\"; } >\"$setup_dir/install.log\" 2>&1; then ")
+	b.WriteString("if ! { curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 --retry 2 " + shellQuote(installerURL) + " -o \"$setup_dir/install.sh\" && sh \"$setup_dir/install.sh\" --version " + shellQuote(version) + " --bin-dir \"$setup_dir/bin\" --prepare-only; } >\"$setup_dir/install.log\" 2>&1; then ")
 	b.WriteString("cat \"$setup_dir/install.log\" >&2; ")
 	b.WriteString(bootstrapFrame(message{Type: "setup_download", SoftwareVersion: version, Action: "linux-amd64"}) + "; ")
 	b.WriteString("IFS=' ' read -r setup_size setup_hash setup_extra || { " + bootstrapFailure("remote setup: client download unavailable; no shells stopped") + "; }; ")

@@ -269,7 +269,7 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 				for {
 					var action string
 					if err := dec.Decode(&action); err != nil {
-						s.control("cancel")
+						s.control("kill")
 						return
 					}
 					s.controlMu.Lock()
@@ -282,7 +282,7 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 					err := json.NewEncoder(startup).Encode(s.control(action))
 					s.controlMu.Unlock()
 					if err != nil {
-						s.control("cancel")
+						s.control("kill")
 						return
 					}
 				}
@@ -382,7 +382,7 @@ func startSelectedResource(config resourceConfig, kind string, reservation *task
 	if kind == "mount" {
 		detail = fmt.Sprintf("%s:%s at %s using SFTP over SSH", record.Host, record.Remote, record.Mountpoint)
 	}
-	fmt.Fprintf(os.Stdout, "Started %s/%s: %s\nCancel: sshore cancel %s/%s\n", kind, record.Name, cleanText(detail), kind, record.Name)
+	fmt.Fprintf(os.Stdout, "Started %s/%s: %s\nKill: sshore kill %s/%s\n", kind, record.Name, cleanText(detail), kind, record.Name)
 
 	return 0, nil
 }
@@ -395,7 +395,7 @@ func stopResource(kind, name string, expected ...string) error {
 	if len(expected) > 0 && resourceIdentity(r) != expected[0] {
 		return fmt.Errorf("task changed; refresh with sshore list")
 	}
-	if _, err := daemonResourceRequest(message{Type: "cancel", Instance: r.UID}); err != nil {
+	if _, err := daemonResourceRequest(message{Type: "kill", Instance: r.UID}); err != nil {
 		return err
 	}
 	if kind == "mount" {

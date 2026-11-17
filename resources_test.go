@@ -34,7 +34,7 @@ func TestResourceIdentityAndLifetime(t *testing.T) {
 	}
 }
 
-func TestCancelPendingRequest(t *testing.T) {
+func TestKillPendingRequest(t *testing.T) {
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "nonexistent-ssh"))
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	startRequestDaemon(t)
@@ -42,7 +42,7 @@ func TestCancelPendingRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"cancel", "review/" + id, "extra"}, {"review", id, "--reject"}} {
+	for _, args := range [][]string{{"kill", "review/" + id, "extra"}, {"review", id, "--reject"}} {
 		if _, err := run(args); err == nil {
 			t.Fatal("accepted", args)
 		}
@@ -51,16 +51,16 @@ func TestCancelPendingRequest(t *testing.T) {
 	if _, err := readRequest(id); err != nil {
 		t.Fatal("invalid invocation consumed request", err)
 	}
-	if code, err := run([]string{"cancel", "review/" + id}); code != 0 || err != nil {
+	if code, err := run([]string{"kill", "review/" + id}); code != 0 || err != nil {
 		t.Fatal(code, err)
 	}
 	if _, err := readRequest(id); err == nil {
 		t.Fatal(err)
 	}
-	if _, err := run([]string{"cancel", "review/" + id}); err == nil {
+	if _, err := run([]string{"kill", "review/" + id}); err == nil {
 		t.Fatal("cancelled twice")
 	}
-	for _, args := range [][]string{{"ftp", "host"}, {"approve"}, {"stop", "forward/x"}, {"kill", "host", "work"}, {"cancel"}, {"cancel", "host"}, {"cancel", "peer/forward/x"}, {"review", "--list"}, {"mount", "--list"}, {"forward", "--list"}} {
+	for _, args := range [][]string{{"ftp", "host"}, {"approve"}, {"stop", "forward/x"}, {"cancel", "host", "work"}, {"kill"}, {"kill", "host"}, {"kill", "peer/forward/x"}, {"review", "--list"}, {"mount", "--list"}, {"forward", "--list"}} {
 		if _, err := run(args); err == nil {
 			t.Fatal("accepted", args)
 		}

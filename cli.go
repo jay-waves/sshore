@@ -84,14 +84,24 @@ func run(args []string) (code int, resultErr error) {
 		}
 		fmt.Println("sshore", version)
 		return 0, nil
-	case "cancel-resource":
+	case "kill-resource":
 		if len(args) != 4 {
 			return 2, usage("invalid resource cancellation")
 		}
 		if err := checkPeerVersion(args[1], "client"); err != nil {
 			return 1, err
 		}
-		return 0, cancelResourceIdentity(args[2], args[3])
+		return 0, killResourceIdentity(args[2], args[3])
+	case "install-prepared":
+		if len(args) != 2 {
+			return 2, usage("install-prepared requires an absolute target path")
+		}
+		return 0, installRelease(args[1])
+	case "daemon-admin":
+		if len(args) != 1 {
+			return 2, usage("daemon-admin takes no arguments")
+		}
+		return 0, serveDaemonAdmin(os.Stdin, os.Stdout)
 	case "daemon":
 		parsed, err := parseCLI(args[1:], "daemon")
 		if err != nil {
@@ -104,7 +114,7 @@ func run(args []string) (code int, resultErr error) {
 			return 2, usage("usage: sshore daemon [mount]")
 		}
 		return runMountDaemon()
-	case "launch", "spawn", "attach", "rename", "cancel", "list", "review":
+	case "launch", "spawn", "attach", "rename", "kill", "list", "review":
 		return runTargetCommand(args)
 	case "mount":
 		return runMount(args[1:])
@@ -136,19 +146,19 @@ func usage(format string, args ...any) error { return &usageError{fmt.Sprintf(fo
 var errHelp = errors.New("help requested")
 
 // --all selects a snapshot, never a process name or a cached PID.
-func parseCancelAll(args []string) (options, bool, error) {
-	parsed, err := parseCLI(args, "cancel")
+func parseKillAll(args []string) (options, bool, error) {
+	parsed, err := parseCLI(args, "kill")
 	if !parsed.has("--all") {
 		return options{}, false, nil
 	}
 	if err != nil {
 		return options{}, true, err
 	}
-	o, err := cancelAllOptions(parsed)
+	o, err := killAllOptions(parsed)
 	return o, true, err
 }
 
-func cancelAllOptions(parsed cliArguments) (options, error) {
+func killAllOptions(parsed cliArguments) (options, error) {
 	o, err := shellOptions("list", parsed)
 	if o.local {
 		o.host = ""
@@ -181,9 +191,9 @@ func reviewArguments(parsed cliArguments) (reviewOptions, error) {
 	return o, nil
 }
 
-func parseCancelTarget(args []string) (kind, name string, typed bool, err error) {
+func parseKillTarget(args []string) (kind, name string, typed bool, err error) {
 	if len(args) == 0 {
-		return "", "", false, usage("use sshore cancel review/NAME, mount/NAME, forward/NAME, or HOST NAME")
+		return "", "", false, usage("use sshore kill review/NAME, mount/NAME, forward/NAME, or HOST NAME")
 	}
 	kind, name, typed = strings.Cut(args[0], "/")
 	if !typed {
@@ -195,7 +205,7 @@ func parseCancelTarget(args []string) (kind, name string, typed bool, err error)
 	}
 	switch kind {
 	case "peer":
-		err = usage("peer tasks are read-only here; cancel the resource on its managing computer")
+		err = usage("peer tasks are read-only here; kill the resource on its managing computer")
 	case "review":
 		if !validRequestID(name) && validSession(name) != nil {
 			err = usage("invalid approval ID")
@@ -208,14 +218,14 @@ func parseCancelTarget(args []string) (kind, name string, typed bool, err error)
 }
 
 // Route task selectors before command semantics; no execution starts while
-// selecting a route. Ordinary shell and cancel forms share one parsed result.
+// selecting a route. Ordinary shell and kill forms share one parsed result.
 func runTargetCommand(args []string) (int, error) {
 	command := args[0]
 	parsed, err := parseCLI(args[1:], command)
 	if err != nil {
 		return 2, err
 	}
-	if (command == "attach" || command == "cancel" || command == "review") && len(parsed.operands) == 1 && !parsed.has("--local") && !parsed.has("--all") {
+	if (command == "attach" || command == "kill" || command == "review") && len(parsed.operands) == 1 && !parsed.has("--local") && !parsed.has("--all") {
 		ref := parsed.operands[0]
 		if ref != "" && !isShortTaskID(ref) && strings.Trim(ref, "0123456789") == "" {
 			return 2, usage("list sequence numbers are display-only; select the task by name or short ID")
@@ -228,8 +238,8 @@ func runTargetCommand(args []string) (int, error) {
 
 	if selected && target.kind != "shell" {
 		switch command {
-		case "cancel":
-			return withDaemonActivity(func() (int, error) { return 0, cancelResourceIdentity(target.kind+"/"+target.name, target.identity) })
+		case "kill":
+			return withDaemonActivity(func() (int, error) { return 0, killResourceIdentity(target.kind+"/"+target.name, target.identity) })
 		case "rename":
 			return withDaemonActivity(func() (int, error) {
 				return runRenameResource(target.kind, target.name, parsed.operands[1], target.identity)
@@ -245,15 +255,15 @@ func runTargetCommand(args []string) (int, error) {
 		}
 		return withDaemonActivity(func() (int, error) { return executeReview(a) })
 	}
-	if command == "cancel" {
+	if command == "kill" {
 		if parsed.has("--all") {
-			o, err := cancelAllOptions(parsed)
+			o, err := killAllOptions(parsed)
 			if err != nil {
 				return 2, err
 			}
-			return withDaemonActivity(func() (int, error) { return runCancelAll(o) })
+			return runKillAll(o)
 		}
-		kind, name, typed, err := parseCancelTarget(parsed.operands)
+		kind, name, typed, err := parseKillTarget(parsed.operands)
 		if err != nil {
 			return 2, err
 		}
@@ -261,7 +271,7 @@ func runTargetCommand(args []string) (int, error) {
 			if len(parsed.values) != 0 || len(parsed.ssh) != 0 {
 				return 2, usage("local cancellation accepts exactly one resource ID")
 			}
-			return withDaemonActivity(func() (int, error) { return runCancelResource(kind, name) })
+			return withDaemonActivity(func() (int, error) { return runKillResource(kind, name) })
 		}
 	}
 	if command == "rename" {

@@ -6,8 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -86,7 +86,7 @@ func TestSessionMetadataLifecycle(t *testing.T) {
 		t.Fatal(out, err)
 	}
 	_ = other
-	waitExitReceipt(t, e.dir, "original", "cancelled by sshore cancel")
+	waitExitReceipt(t, e.dir, "original", "killed by sshore kill")
 	if out, err := run("sessions"); err != nil || !strings.Contains(out, "Recent exits:") || !strings.Contains(out, "work [ended]") {
 		t.Fatal(out, err)
 	}
@@ -308,8 +308,9 @@ func TestKillSessionLifecycle(t *testing.T) {
 
 }
 
-func TestCleanupRefusesUncooperativeTask(t *testing.T) {
-	cmd := exec.Command("/bin/sh", "-c", "trap '' TERM HUP; printf ready; while :; do read line || exit; done")
+func TestCleanupEndsUncooperativeTask(t *testing.T) {
+	childFile := filepath.Join(t.TempDir(), "child")
+	cmd := exec.Command("/bin/sh", "-c", "trap '' TERM HUP; sleep 120 & echo $! > "+shellQuote(childFile)+"; printf ready; while :; do read line || exit; done")
 	input, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -329,13 +330,38 @@ func TestCleanupRefusesUncooperativeTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = stopOwnedProcesses([]setupProcess{{PID: cmd.Process.Pid, Start: start}}, syscall.SIGHUP)
-	if err == nil || !strings.Contains(err.Error(), "no forced termination") {
-		t.Fatalf("cleanup refusal: %v", err)
+	if err := stopOwnedProcesses([]setupProcess{{PID: cmd.Process.Pid, Start: start + "-changed"}}); err == nil {
+		t.Fatal("changed process identity was accepted")
 	}
-	task, err := readSetupTask(cmd.Process.Pid)
-	if err != nil || task.start != start || task.state == "Z" {
-		t.Fatalf("task was forcibly ended: %+v %v", task, err)
+	childData, err := os.ReadFile(childFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPID, err := strconv.Atoi(strings.TrimSpace(string(childData)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := readSetupTask(childPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = signalProcess(childPID, child.start, 9) })
+	unrelated := exec.Command("sleep", "120")
+	if err := unrelated.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { unrelated.Process.Kill(); unrelated.Wait() })
+	if err := stopOwnedProcesses([]setupProcess{{PID: cmd.Process.Pid, Start: start}}); err != nil {
+		t.Fatal(err)
+	}
+	if task, err := readSetupTask(cmd.Process.Pid); err == nil && task.state != "Z" && task.state != "X" {
+		t.Fatalf("task survived kill: %+v", task)
+	}
+	if task, err := readSetupTask(childPID); err == nil && task.start == child.start && task.state != "Z" && task.state != "X" {
+		t.Fatalf("child survived kill: %+v", task)
+	}
+	if task, err := readSetupTask(unrelated.Process.Pid); err != nil || task.state == "Z" || task.state == "X" {
+		t.Fatalf("unrelated process was ended: %+v %v", task, err)
 	}
 }
 

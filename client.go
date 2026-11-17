@@ -51,8 +51,8 @@ func acceptSessionName(o *options, name string) error {
 func runClientOnce(o options, previous string, ready func()) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	cancelledInstance := o.instance
-	if o.command == "cancel" {
+	killedInstance := o.instance
+	if o.command == "kill" {
 		if cleared, err := forgetEndedShell(o.host, o.session, o.instance); cleared || err != nil {
 			return 0, err
 		}
@@ -62,15 +62,15 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		}
 		for _, s := range snapshots {
 			if s.Host == o.host && s.Name == o.session && (o.instance == "" || s.Instance == o.instance) {
-				cancelledInstance = s.Instance
+				killedInstance = s.Instance
 				break
 			}
 		}
 	}
-	if o.list || o.command == "cancel" || o.command == "cancel-resource" || o.command == "rename" {
+	if o.list || o.command == "kill" || o.command == "kill-resource" || o.command == "rename" {
 		err := transportio.Run(context.Background(), sshConnectionOptions(o), os.Stdin, os.Stdout, os.Stderr)
-		if err == nil && o.command == "cancel" {
-			if cacheErr := confirmCancelledShell(o.host, o.session, cancelledInstance); cacheErr != nil {
+		if err == nil && o.command == "kill" {
+			if cacheErr := confirmKilledShell(o.host, o.session, killedInstance); cacheErr != nil {
 				termui.Log(os.Stderr, termui.Warning, "[sshore] Cancelled; local history not updated: %s\n", cleanText(cacheErr.Error()))
 			}
 		}

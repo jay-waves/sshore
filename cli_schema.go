@@ -87,7 +87,7 @@ func commandSpec(command string) (cliSpec, bool) {
 		spec = cliSpec{append(base, "--json"), true, false, 0, 1}
 	case "pstree":
 		spec = cliSpec{nil, false, false, 0, 0}
-	case "cancel":
+	case "kill":
 		spec = cliSpec{append(base, "--all"), true, false, 0, 2}
 	case "rename":
 		spec = cliSpec{base, true, false, 2, 3}
@@ -289,10 +289,10 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 
 func (s cliSpec) maxOperands(command string, a cliArguments) int {
 	max := s.max
-	if a.has("--local") && slices.Contains([]string{"launch", "spawn", "attach", "cancel", "rename", "list", "pstree"}, command) {
+	if a.has("--local") && slices.Contains([]string{"launch", "spawn", "attach", "kill", "rename", "list", "pstree"}, command) {
 		max--
 	}
-	if command == "cancel" && a.has("--all") {
+	if command == "kill" && a.has("--all") {
 		max = 1
 		if a.has("--local") {
 			max = 0

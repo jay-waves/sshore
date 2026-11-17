@@ -89,8 +89,8 @@ func newCLI(t *testing.T) *cliFixture {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, e.bin, "cancel", "--all")
-		cmd.Env, cmd.Stdin = e.env, strings.NewReader("cancel\n")
+		cmd := exec.CommandContext(ctx, e.bin, "kill", "--all")
+		cmd.Env, cmd.Stdin = e.env, strings.NewReader("kill\n")
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Errorf("CLI cleanup: %v\n%s", err, output)
 		}
@@ -115,7 +115,7 @@ func TestHelpAndExamplesBeforeExecution(t *testing.T) {
 		{[]string{"detach", "--tldr"}, false},
 		{[]string{"shell", "--help"}, false},
 	}
-	for _, command := range []string{"launch", "spawn", "attach", "detach", "exec", "list", "cp", "mount", "forward", "review", "cancel", "rename"} {
+	for _, command := range []string{"launch", "spawn", "attach", "detach", "exec", "list", "cp", "mount", "forward", "review", "kill", "rename"} {
 		cases = append(cases, helpCase{[]string{command, "--help"}, true})
 	}
 	for _, command := range []string{"launch", "spawn", "cp", "mnt", "fwd"} {

@@ -331,11 +331,11 @@ func forgetEndedShellLocal(host, name, instance string) (bool, error) {
 	return false, nil
 }
 
-func confirmCancelledShell(host, name, instance string) error {
+func confirmKilledShell(host, name, instance string) error {
 	_, err := metadataRPC(metadataRequest{Action: "shell_cancel", Host: host, Name: name, Instance: instance})
 	return err
 }
-func confirmCancelledShellLocal(host, name, instance string) error {
+func confirmKilledShellLocal(host, name, instance string) error {
 	rows, err := readShellSnapshotsLocked()
 	if err != nil {
 		return err
