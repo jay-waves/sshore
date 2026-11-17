@@ -18,7 +18,6 @@ import (
 type setupState struct {
 	Installed string
 	Daemon    *daemonSnapshot
-	Processes []setupProcess
 	Manual    bool
 }
 
@@ -97,12 +96,20 @@ func inspectSetup(target string, includeMatching bool) (setupState, error) {
 	}
 	if snapshot.Version != version || state.Installed != version && len(snapshot.Tasks) > 0 || includeMatching {
 		state.Daemon = &snapshot
-		state.Processes = append(state.Processes, setupProcess{Name: "daemon", Version: snapshot.Version})
-		for _, task := range snapshot.Tasks {
-			state.Processes = append(state.Processes, setupProcess{Name: task.Name, Version: snapshot.Version, Start: task.ID})
-		}
 	}
 	return state, nil
+}
+
+// The review list is a view of the authenticated daemon snapshot.
+func (s setupState) processes() []setupProcess {
+	if s.Daemon == nil {
+		return nil
+	}
+	processes := []setupProcess{{Name: "daemon", Version: s.Daemon.Version}}
+	for _, task := range s.Daemon.Tasks {
+		processes = append(processes, setupProcess{Name: task.Name, Version: s.Daemon.Version, Start: task.ID})
+	}
+	return processes
 }
 
 // The verified release coordinates both standalone installers and SSH setup.
@@ -135,7 +142,7 @@ func installRelease(target string) error {
 			return fmt.Errorf("run the installer outside managed shells; no tasks ended")
 		}
 		if state.Installed != "" && state.Installed != version || state.Daemon != nil && len(state.Daemon.Tasks) > 0 {
-			processes := state.Processes
+			processes := state.processes()
 			action, err := chooseSetupAction(message{Action: "update", Error: "Prepared sshore " + version + ". Updating ends the listed tasks; unsaved work may be lost.", SetupProcesses: processes}, &options{}, installerInput)
 			if err != nil {
 				return err

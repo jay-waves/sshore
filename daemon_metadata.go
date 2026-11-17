@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 )
 
@@ -14,7 +13,6 @@ import (
 type daemonMetadata struct {
 	connections         []recentConnection
 	connectionRoot      string
-	connectionsLoaded   bool
 	treeMu, shellMu     sync.Mutex
 	treeRoot, shellRoot string
 	trees               map[string][]shellTreeNode
@@ -60,7 +58,7 @@ func (s *daemonMetadata) handle(r metadataRequest) (reply metadataReply) {
 	var err error
 	if tree {
 		err = s.loadTrees()
-	} else if r.Action != "shell_reset" && r.Action != "connection_get" && r.Action != "connection_save" {
+	} else if r.Action != "connection_get" && r.Action != "connection_save" {
 		err = s.loadShells()
 	}
 	if err != nil {
@@ -76,36 +74,6 @@ func (s *daemonMetadata) handle(r metadataRequest) (reply metadataReply) {
 		}
 	case "connection_rename":
 		err = rememberShellRenameLocal(r.Host, r.Key, r.Name)
-	case "shell_reset":
-		hub := accountActivity.Load()
-		active := hub.request(activityRequest{Kind: "list"}).Active
-		owned := map[string]bool{}
-		if hub.tasks != nil {
-			hub.tasks.mu.Lock()
-			for id := range hub.tasks.records {
-				owned[id] = true
-			}
-			hub.tasks.mu.Unlock()
-		}
-		s.treeMu.Lock()
-		err = runResetLocal()
-		if err == nil {
-			retained := make(map[string]shellSnapshot)
-			for _, key := range active {
-				if snapshot, ok := s.snapshots[key]; ok {
-					retained[key] = snapshot
-				}
-			}
-			s.snapshots = retained
-			for key, chain := range s.trees {
-				if len(chain) == 0 || !owned[strings.TrimPrefix(chain[len(chain)-1].Identity, "task:")] {
-					delete(s.trees, key)
-				}
-			}
-			s.connections = nil
-			s.connectionsLoaded = false
-		}
-		s.treeMu.Unlock()
 	case "tree_get":
 		reply.Tree = readTreeLocal(r.Key)
 	case "tree_list":

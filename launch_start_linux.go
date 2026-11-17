@@ -17,7 +17,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func runtimeDir() (string, error) {
+func runtimeLocation() (string, error) {
 	dir := os.Getenv("SSHORE_RUNTIME_DIR")
 	if dir == "" {
 		if root := os.Getenv("XDG_RUNTIME_DIR"); root != "" {
@@ -28,6 +28,14 @@ func runtimeDir() (string, error) {
 	}
 	if !filepath.IsAbs(dir) {
 		return "", fmt.Errorf("runtime directory must be absolute")
+	}
+	return dir, nil
+}
+
+func runtimeDir() (string, error) {
+	dir, err := runtimeLocation()
+	if err != nil {
+		return "", err
 	}
 	if err := os.Mkdir(dir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
 		return "", err
@@ -109,7 +117,7 @@ func bridge(name string, existing bool) error {
 		lock.Close()
 		return err
 	}
-	if state.Manual || len(state.Processes) > 0 || state.Installed != version {
+	if state.Manual || state.Daemon != nil || state.Installed != version {
 		lock.Close()
 		return fmt.Errorf("remote versions differ; reconnect through setup")
 	}
@@ -307,13 +315,9 @@ func detachHelper() error {
 
 func (s *remoteShell) sessionTargets(request message) message {
 	s.mu.Lock()
-	current, plain := s.name, s.plain
+	current := s.name
 	s.mu.Unlock()
 	reply := message{Type: "session_targets", Action: request.Action, Name: current}
-	if plain {
-		reply.Error = "session switching is disabled in recovery"
-		return reply
-	}
 	if request.Action == "new" {
 		occupied, err := occupiedObjectNames("")
 		if err != nil {

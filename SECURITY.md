@@ -63,6 +63,7 @@ flowchart LR
     user -->|"Explicit cp / forward / mount command"| resources
     resources <-->|"Authenticated SSH; remote account permissions"| service
     user -->|"kill --all: confirm snapshot; cross-release admin only"| control
+    user -->|"reset: stop tasks before clearing local state"| control
     control -->|"Private handoff; child readiness required"| client
     shell -->|"Explicit nested spawn"| relay
     relay <-->|"Next-hop SSH; same exact release"| child
@@ -325,8 +326,9 @@ notifications nor status queries authorize file operations or write replay. See
 **Threat:** setup runs an unintended executable, silently downgrades software,
 or ends tasks without informed consent or a ready replacement.
 
-The full release version, including PATCH, must match. Managed scope is the current
-remote account's unique daemon and its registered tasks. Other users and
+Normal operations require an exact full release version, including PATCH. Never
+automatically downgrade. Managed scope is the current account's unique daemon and
+its registered tasks. Other users and
 unregistered processes are outside this scope; setup does not discover them by
 process scanning.
 
@@ -347,20 +349,26 @@ process scanning.
    stop another release; it cannot create tasks or open data streams. A changed
    snapshot, refusal, unavailable endpoint or timeout stops the update. The daemon
    kills its confirmed shell tasks; clients never scan for daemons or forcibly kill
-   a daemon that refused or could not complete cleanup. Busy mounts remain active. Once shutdown starts, failures
-   cannot restore ended tasks; updates can lose unsaved work.
+   a daemon that refused or could not complete cleanup. Busy mounts remain active.
+   Once shutdown starts, failures cannot restore ended tasks; updates can lose
+   unsaved work.
 
 Automatic replacement requires a user-owned regular file and a user-owned directory
 without group/world write permission on Linux. Replacement does not elevate privileges
-or modify shell profiles; Windows installer PATH behavior is described in [README.md](README.md#install). Direct copy and mount startup use the same safeguards and
-collect any confirmation in the initiating terminal. Ordinary forwarding does not
+or modify shell profiles. See [Windows installation](README.md#install) for PATH
+behavior. Copy and mount startup use the same safeguards and collect confirmation
+in the initiating terminal. Ordinary forwarding does not
 install a remote helper.
 
 Release checksums detect corruption, not publisher compromise. Cached artifacts are
 private and rechecked on reuse; unavailable assets never cause substitution of a
-different release. Standalone installers use the same prepared, reviewed shutdown flow. Published tags
-and assets are not overwritten; older patch assets are removed only after a complete
+different release. Standalone installers use the same reviewed shutdown flow.
+Published tags and assets are not overwritten; older patch assets are removed after a complete
 replacement is published. See [release mechanics](SSHORE.md#release).
+
+`reset` uses the authenticated administrative snapshot and shutdown before clearing
+local state and cached releases. Failed shutdown stops reset; busy mounts may refuse
+cleanup. Coordination locks remain to prevent concurrent daemon startup.
 
 ## Setup failure and legacy recovery
 

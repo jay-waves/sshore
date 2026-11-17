@@ -346,6 +346,7 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 				reply := daemonAdminReply{}
 				tasks.mu.Lock()
 				reply.Snapshot = tasks.snapshot(record)
+				reply.Runtime = tasks.runtimeDirectories()
 				tasks.mu.Unlock()
 				switch m.Action {
 				case "snapshot":

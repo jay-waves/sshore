@@ -26,7 +26,7 @@ func routedResourceFixture(t *testing.T) (*remoteShell, message) {
 
 func TestRoutedResourceRejectsChangedSource(t *testing.T) {
 	for _, kind := range []string{"route_mount", "route_forward"} {
-		for _, fault := range []string{"version", "instance", "pid", "approval", "recovery"} {
+		for _, fault := range []string{"version", "instance", "pid", "approval", "disabled"} {
 			t.Run(kind+"/"+fault, func(t *testing.T) {
 				s, request := routedResourceFixture(t)
 				request.Type = kind
@@ -42,8 +42,8 @@ func TestRoutedResourceRejectsChangedSource(t *testing.T) {
 					request.PID++
 				case "approval":
 					request.ApprovalID = "bad"
-				case "recovery":
-					s.plain = true
+				case "disabled":
+					t.Setenv("SSHORE_DISABLED", "1")
 				}
 				client, server := net.Pipe()
 				defer client.Close()

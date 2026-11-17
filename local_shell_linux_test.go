@@ -162,7 +162,7 @@ func closedAttachment(t *testing.T) *attachment {
 }
 func TestInitialAttachmentFailureEndsCreatedTerminal(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
-	s := &remoteShell{name: "failed", plain: true, done: make(chan struct{})}
+	s := &remoteShell{name: "failed", done: make(chan struct{})}
 	p := closedAttachment(t)
 	if err := s.attach(p, message{Type: "attach", Term: "xterm-256color", Cols: 80, Rows: 24}); err == nil {
 		t.Fatal("accepted closed attachment")
@@ -185,7 +185,7 @@ func TestInitialAttachmentFailureEndsCreatedTerminal(t *testing.T) {
 }
 func TestFailedReattachmentPreservesDetachedTerminal(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
-	s := &remoteShell{name: "detached", plain: true, done: make(chan struct{})}
+	s := &remoteShell{name: "detached", done: make(chan struct{})}
 	if err := s.start(80, 24, "xterm-256color"); err != nil {
 		t.Fatal(err)
 	}

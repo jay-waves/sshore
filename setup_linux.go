@@ -46,8 +46,8 @@ func bootstrap(target, mode, name string) (result error) {
 			lock.Close()
 			return err
 		}
-		ready := state.Installed == version && len(state.Processes) == 0 && !state.Manual
-		missing := state.Installed == "" && len(state.Processes) == 0 && !state.Manual
+		ready := state.Installed == version && state.Daemon == nil && !state.Manual
+		missing := state.Installed == "" && state.Daemon == nil && !state.Manual
 		if ready || missing {
 			if missing {
 				err = installPrepared(target)
@@ -142,7 +142,7 @@ func bootstrap(target, mode, name string) (result error) {
 		if changed {
 			detail = "Remote state changed; review again. " + detail
 		}
-		if err = writeMessage(os.Stdout, message{Type: "setup_choice", SoftwareVersion: version, Action: action, Error: detail, SetupProcesses: state.Processes}); err != nil {
+		if err = writeMessage(os.Stdout, message{Type: "setup_choice", SoftwareVersion: version, Action: action, Error: detail, SetupProcesses: state.processes()}); err != nil {
 			return err
 		}
 		reply, err := readMessage(os.Stdin)
@@ -152,7 +152,7 @@ func bootstrap(target, mode, name string) (result error) {
 		if reply.Type != "setup_action" {
 			return fmt.Errorf("invalid setup action")
 		}
-		if reply.Action == "cancel" || reply.Action == "plain" {
+		if reply.Action == "cancel" {
 			return fmt.Errorf("setup cancelled; no tasks ended")
 		}
 		if reply.Action != "update" || state.Manual {

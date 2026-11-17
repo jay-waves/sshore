@@ -28,7 +28,7 @@ Tasks and setup
   list        Show tasks and when they were last checked
   pstree      Show shell ownership and attachments
   kill        Kill shells or stop other tasks
-  reset       Replace local identity and clear history
+  reset       End local tasks and clear application state
   mcp         Serve Agent tools over stdio
   daemon      Run the account task manager
 
@@ -336,9 +336,10 @@ The mount subcommand runs an isolated mount worker, started by the manager.
 `,
 	"reset": `Usage: sshore reset
 
-Replace this account's local identity and clear connection history, shell
-snapshots and remembered identity routes. Active tasks and approvals stay intact. Active connections may repopulate snapshots.
-To resolve a cloned identity, run this on the clone.
+Immediately end this account's tasks and clear local identity, history, requests,
+logs and cached releases. Unsaved work may be lost. Run outside managed shells.
+The program and user files remain. Busy mounts can prevent reset.
+
 `,
 }
 

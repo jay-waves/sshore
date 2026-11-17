@@ -66,9 +66,6 @@ func openSpawnTransport(ctx context.Context, o *options) (io.ReadWriteCloser, fu
 		closeTransport()
 		return nil, nil, err
 	}
-	if o.plain {
-		return c, closeTransport, nil
-	}
 	mx, err := smux.Client(c, transportio.MuxConfig())
 	if err != nil {
 		closeTransport()
@@ -178,7 +175,13 @@ func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.
 			return e
 		}
 		diagnostics.mu.Lock()
-		if m.Type == "setup_ready" && m.LocalRequest != nil && m.Action != "plain" {
+		if m.Type == "setup_ready" && m.Action != "managed" && m.Action != "updated" {
+			diagnostics.active = false
+			_ = writeMessage(c, message{Type: "fatal", Error: "invalid spawn setup mode"})
+			diagnostics.mu.Unlock()
+			return fmt.Errorf("invalid spawn setup mode")
+		}
+		if m.Type == "setup_ready" && m.LocalRequest != nil {
 			channel, e := openRemoteDaemonTask(ctx, pipes, m.LocalRequest.Record)
 			if e != nil {
 				diagnostics.mu.Unlock()
@@ -204,10 +207,6 @@ func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.
 			return fmt.Errorf("%s", m.Error)
 		}
 		if m.Type == "setup_ready" {
-			if m.Action == "plain" {
-				proxySpawn(c, transport)
-				return nil
-			}
 			break
 		}
 		if m.Type == "setup_download" {

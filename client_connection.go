@@ -152,7 +152,7 @@ func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWr
 		closeSSH()
 		return nil, nil, err
 	}
-	if o.daemonTask != nil && !o.plain {
+	if o.daemonTask != nil {
 		if o.transports != nil {
 			record := *o.daemonTask
 			retainClientTransport(o, func(ctx context.Context) (io.ReadWriteCloser, error) {
@@ -299,7 +299,7 @@ func readRecentConnectionsLocal() (result []recentConnection, resultErr error) {
 	if err != nil {
 		return nil, err
 	}
-	if hub.connectionRoot == root && hub.connectionsLoaded {
+	if hub.connectionRoot == root {
 		records := make([]recentConnection, len(hub.connections))
 		for i, record := range hub.connections {
 			records[i] = record.clone()
@@ -308,7 +308,7 @@ func readRecentConnectionsLocal() (result []recentConnection, resultErr error) {
 	}
 	defer func() {
 		if resultErr == nil {
-			hub.connectionRoot, hub.connectionsLoaded = root, true
+			hub.connectionRoot = root
 			hub.connections = append([]recentConnection(nil), result...)
 		}
 	}()
@@ -517,7 +517,7 @@ func applyConnectionOptions(o *options, r recentConnection) {
 }
 
 func rememberConnection(o options) error {
-	if o.plain || o.host == "" || o.session == "" {
+	if o.host == "" || o.session == "" {
 		return nil
 	}
 	record, err := connectionFromOptions(o)

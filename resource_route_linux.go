@@ -24,7 +24,7 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message) {
 		return
 	}
 	s.mu.Lock()
-	unavailable := s.plain || s.lifecycle.Exited() || request.Instance == "" || request.Instance != s.instance
+	unavailable := s.lifecycle.Exited() || request.Instance == "" || request.Instance != s.instance
 	s.mu.Unlock()
 	if unavailable || os.Getenv("SSHORE_DISABLED") == "1" {
 		fail(fmt.Errorf("resource shell changed or unavailable"))

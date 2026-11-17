@@ -68,7 +68,8 @@ type daemonSnapshot struct {
 }
 type daemonAdminReply struct {
 	Snapshot daemonSnapshot
-	Error    string `json:",omitempty"`
+	Error    string   `json:",omitempty"`
+	Runtime  []string `json:",omitempty"`
 }
 
 func (s *daemonTasks) snapshot(record localShellRecord) daemonSnapshot {
@@ -81,34 +82,38 @@ func (s *daemonTasks) snapshot(record localShellRecord) daemonSnapshot {
 	return r
 }
 func daemonAdmin(ctx context.Context, action string, expected *daemonSnapshot) (daemonSnapshot, error) {
+	reply, err := daemonAdministration(ctx, action, expected)
+	return reply.Snapshot, err
+}
+func daemonAdministration(ctx context.Context, action string, expected *daemonSnapshot) (daemonAdminReply, error) {
 	r, err := existingDaemonRecord()
 	if err != nil {
-		return daemonSnapshot{}, err
+		return daemonAdminReply{}, err
 	}
 	c, err := (&net.Dialer{}).DialContext(ctx, "tcp", r.Address)
 	if err != nil {
-		return daemonSnapshot{}, err
+		return daemonAdminReply{}, err
 	}
 	defer c.Close()
 	stop := context.AfterFunc(ctx, func() { c.Close() })
 	defer stop()
 	_ = c.SetDeadline(time.Now().Add(30 * time.Second))
 	if err := writeMessage(c, message{Type: "daemon_admin", Action: action, Token: r.Token}); err != nil {
-		return daemonSnapshot{}, err
+		return daemonAdminReply{}, err
 	}
 	if action == "shutdown" {
 		if err := json.NewEncoder(c).Encode(expected); err != nil {
-			return daemonSnapshot{}, err
+			return daemonAdminReply{}, err
 		}
 	}
 	var reply daemonAdminReply
 	if err := json.NewDecoder(c).Decode(&reply); err != nil {
-		return reply.Snapshot, err
+		return reply, err
 	}
 	if reply.Error != "" {
-		return reply.Snapshot, fmt.Errorf("%s", reply.Error)
+		return reply, fmt.Errorf("%s", reply.Error)
 	}
-	return reply.Snapshot, nil
+	return reply, nil
 }
 func (s *daemonTasks) shutdown(record localShellRecord, expected daemonSnapshot) (result error) {
 	s.mu.Lock()
@@ -164,16 +169,10 @@ func (s *daemonTasks) shutdown(record localShellRecord, expected daemonSnapshot)
 }
 func (t *nativeShellTask) stopTask() error { return t.shell.kill() }
 func (t *daemonResourceTask) stopTask() error {
-	r := t.control("kill")
-	if r.Error != "" {
-		return fmt.Errorf("%s", r.Error)
+	if reply := t.stop(); reply.Error != "" {
+		return fmt.Errorf("%s", reply.Error)
 	}
-	select {
-	case <-t.done:
-		return nil
-	case <-time.After(20 * time.Second):
-		return fmt.Errorf("resource did not exit")
-	}
+	return nil
 }
 
 // An SSH exec channel exposes only the authenticated account's admin exchange.
@@ -209,4 +208,21 @@ func serveDaemonAdmin(input io.Reader, output io.Writer) error {
 		reply.Error = err.Error()
 	}
 	return encoder.Encode(reply)
+}
+
+func (s *daemonTasks) runtimeDirectories() []string {
+	seen := map[string]bool{}
+	for _, task := range s.records {
+		if owner, ok := task.(interface{ runtimeDirectory() string }); ok {
+			if dir := owner.runtimeDirectory(); dir != "" {
+				seen[dir] = true
+			}
+		}
+	}
+	var directories []string
+	for dir := range seen {
+		directories = append(directories, dir)
+	}
+	sort.Strings(directories)
+	return directories
 }

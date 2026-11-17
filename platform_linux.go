@@ -227,3 +227,39 @@ func localSessionInventory(details ...bool) inventory {
 }
 
 func checkPlatform() error { return nil }
+
+func resetRuntimeState(directories []string) error {
+	current, err := runtimeLocation()
+	if err != nil {
+		return err
+	}
+	directories = append(directories, current)
+	seen := map[string]bool{}
+	for _, dir := range directories {
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		if !filepath.IsAbs(dir) {
+			return fmt.Errorf("invalid runtime directory")
+		}
+		if err := privateStatePath(dir, true); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if name == ".exit.lock" || strings.HasSuffix(name, ".exit.json") || validTaskUID(strings.TrimSuffix(name, ".sock")) && strings.HasSuffix(name, ".sock") {
+				if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}

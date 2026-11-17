@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -38,7 +37,6 @@ type remoteShell struct {
 	instance   string
 	name       string
 	exitReason string
-	plain      bool
 	terminalMu sync.Mutex // serializes state snapshots with PTY output
 	mouse      tmux.InputState
 	mu         sync.Mutex
@@ -53,9 +51,7 @@ type remoteShell struct {
 
 func (s *remoteShell) stop() {
 	s.once.Do(func() {
-		if !s.plain {
-			saveShellTree(remoteTreeIdentity(s.instance), s.name, nil, "exited")
-		}
+		saveShellTree(remoteTreeIdentity(s.instance), s.name, nil, "exited")
 		close(s.done)
 	})
 }
@@ -71,26 +67,17 @@ func (s *remoteShell) start(cols, rows uint16, term string, startup ...bool) err
 	if shellPath == "" {
 		shellPath = "/bin/bash"
 	}
-	args, err := tmux.StartupArgs(shellPath, s.plain || (len(startup) > 0 && startup[0]), !s.plain && len(startup) > 1 && startup[1])
+	args, err := tmux.StartupArgs(shellPath, len(startup) > 0 && startup[0], len(startup) > 1 && startup[1])
 	if err != nil {
 		return err
 	}
 	cmd := exec.Command(shellPath, args...)
 	cmd.Dir = s.directory
 	cmd.Env = append(append([]string(nil), env...), "TERM="+term, "SSHORE_SOCKET="+s.instance, "SSHORE_TREE_ID="+remoteTreeIdentity(s.instance))
-	if s.plain {
-		cmd.Env = nil
-		for _, item := range env {
-			if !strings.HasPrefix(item, "SSHORE_") {
-				cmd.Env = append(cmd.Env, item)
-			}
-		}
-		cmd.Env = append(cmd.Env, "TERM="+term, "SSHORE_DISABLED=1")
-	}
-	if exe, err := os.Executable(); err == nil && !s.plain {
+	if exe, err := os.Executable(); err == nil {
 		cmd.Env = append(cmd.Env, "PATH="+filepath.Dir(exe)+":"+localEnvironmentValue(env, "PATH"))
 	}
-	cmd.Env = tmux.StartupEnv(shellPath, cmd.Env, !s.plain && len(startup) > 1 && startup[1])
+	cmd.Env = tmux.StartupEnv(shellPath, cmd.Env, len(startup) > 1 && startup[1])
 	master, err := tmux.StartCommand(cmd, tmux.Size{Cols: max(cols, 1), Rows: max(rows, 1)})
 	if err != nil {
 		return err
@@ -167,7 +154,7 @@ func (s *remoteShell) attach(p *attachment, m message) error {
 		if m.Action == "existing" && s.cmd == nil {
 			return fmt.Errorf("shell has not started; use sshore list HOST")
 		}
-		if (m.NoLogin || m.NoProfile) && (s.master != nil || s.plain) {
+		if (m.NoLogin || m.NoProfile) && s.master != nil {
 			return fmt.Errorf("startup options require a new managed shell")
 		}
 		reconnecting := s.master != nil
@@ -180,13 +167,7 @@ func (s *remoteShell) attach(p *attachment, m message) error {
 		if err := s.master.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
 			return err
 		}
-		if !s.plain {
-			if startedHere {
-				saveShellTree(remoteTreeIdentity(s.instance), s.name, m.Tree, "attached", shellLifetime(s.temporary, true), m.SourceHost, m.SourceMachineID)
-			} else {
-				saveShellTree(remoteTreeIdentity(s.instance), s.name, m.Tree, "attached", shellLifetime(s.temporary, true), m.SourceHost, m.SourceMachineID)
-			}
-		}
+		saveShellTree(remoteTreeIdentity(s.instance), s.name, m.Tree, "attached", shellLifetime(s.temporary, true), m.SourceHost, m.SourceMachineID)
 		if err := p.controlMessage(message{Type: "ready", Tree: shellTreeFor(remoteTreeIdentity(s.instance)), Temporary: s.temporary, Instance: s.instance, PID: s.cmd.Process.Pid, Name: s.name}); err != nil {
 			return err
 		}
@@ -235,7 +216,7 @@ func (s *remoteShell) clearAttachment(p *attachment) bool {
 		}
 	}
 	detached := s.lifecycle.Detach(p)
-	if detached && !s.plain {
+	if detached {
 		saveShellTree(remoteTreeIdentity(s.instance), s.name, nil, "detached")
 	}
 	return detached
@@ -553,3 +534,5 @@ func (s *remoteShell) serveTask(c net.Conn, m message) error {
 }
 
 func (s *remoteShell) stopTask() error { return s.kill(s.instance) }
+
+func (s *remoteShell) runtimeDirectory() string { return s.runtime }

@@ -48,10 +48,6 @@ func dialMCP(ctx context.Context, host string) (io.ReadWriteCloser, error) {
 		_ = c.Close()
 		return nil, err
 	}
-	if o.plain {
-		_ = c.Close()
-		return nil, fmt.Errorf("remote is in recovery mode")
-	}
 	if err := ctx.Err(); err != nil {
 		_ = c.Close()
 		return nil, err

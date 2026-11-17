@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net"
 	"os"
 	"path/filepath"
@@ -100,4 +101,94 @@ func registerTestResource(t *testing.T, tasks *daemonTasks, kind, name, id strin
 		t.Fatal(err)
 	}
 	return task, done
+}
+
+func TestDaemonShutdownRequiresCurrentSnapshot(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	_, firstDone := registerTestResource(t, tasks, "forward", "first", strings.Repeat("a", 32))
+	snapshot, err := daemonAdmin(context.Background(), "snapshot", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerTestResource(t, tasks, "mount", "second", strings.Repeat("b", 32))
+	if _, err := daemonAdmin(context.Background(), "shutdown", &snapshot); err == nil {
+		t.Fatal("stale confirmation stopped tasks")
+	}
+	select {
+	case <-firstDone:
+		t.Fatal("stale request ended a task")
+	default:
+	}
+	snapshot, err = daemonAdmin(context.Background(), "snapshot", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := daemonAdmin(context.Background(), "shutdown", &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-firstDone:
+	default:
+		t.Fatal("confirmed shutdown did not stop task")
+	}
+}
+
+func TestDaemonShutdownFailureKeepsControlAvailable(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	task, done := registerTestResource(t, tasks, "mount", "busy", strings.Repeat("a", 32))
+	task.control = func(string) resourceReply { return resourceReply{Error: "mount is busy"} }
+	snapshot, err := daemonAdmin(context.Background(), "snapshot", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := daemonAdmin(context.Background(), "shutdown", &snapshot); err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("refusal: %v", err)
+	}
+	select {
+	case <-done:
+		t.Fatal("refusing task was forced to exit")
+	default:
+	}
+	current, err := daemonAdmin(context.Background(), "snapshot", nil)
+	if err != nil || len(current.Tasks) != 1 || current.Tasks[0].ID != task.record.UID {
+		t.Fatalf("lost live task: %+v %v", current, err)
+	}
+}
+
+func TestOwnedDaemonWithoutLocatorIsNotAbsent(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	startRequestDaemon(t)
+	path, err := daemonPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := existingDaemonRecord(); err == nil || os.IsNotExist(err) {
+		t.Fatalf("live owner treated as absent: %v", err)
+	}
+}
+
+func TestDaemonAdministrationAcrossReleases(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t, "0.0.1")
+	_, done := registerTestResource(t, tasks, "forward", "older", strings.Repeat("a", 32))
+	if _, err := nativeShellRecords(); err == nil {
+		t.Fatal("normal control accepted a different release")
+	}
+	snapshot, err := daemonAdmin(context.Background(), "snapshot", nil)
+	if err != nil || snapshot.Version != "0.0.1" || len(snapshot.Tasks) != 1 {
+		t.Fatalf("cross-release snapshot: %+v %v", snapshot, err)
+	}
+	if _, err := daemonAdmin(context.Background(), "shutdown", &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("cross-release shutdown did not stop the confirmed task")
+	}
 }

@@ -56,9 +56,8 @@ func (s *remoteShell) requestSpawnRoute(c net.Conn, request message) {
 	}
 	s.mu.Lock()
 	parent := s.lifecycle.Active()
-	recovery := s.plain
 	s.mu.Unlock()
-	if parent == nil || recovery {
+	if parent == nil {
 		_ = writeMessage(c, message{Type: "fatal", Error: "managed attachment required"})
 		return
 	}
@@ -146,9 +145,6 @@ func handoffRemoteSpawn(o options) (bool, error) {
 	}
 	if err := negotiateSetup(c, c, &o); err != nil {
 		return true, err
-	}
-	if o.plain {
-		return true, fmt.Errorf("nested spawn requires managed setup; reconnect for recovery")
 	}
 	reply, err := readMessage(c)
 	if err != nil {
@@ -251,7 +247,7 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 		return err
 	}
 	s.mu.Lock()
-	if s.plain || s.cmd == nil {
+	if s.cmd == nil {
 		s.mu.Unlock()
 		return fmt.Errorf("managed shell required")
 	}

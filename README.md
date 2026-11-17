@@ -76,18 +76,16 @@ Local managed shells also hand off remote `launch` and `attach` this way.
 Screens, scrollback and detached output are not saved.
 
 ```mermaid
-flowchart LR
-    client["Client"] -->|"Authenticated TCP, directly or over SSH"| daemon["Account daemon: in-memory tasks and live socket leases"]
-    daemon --> shell["Shell"]
-    client -->|"Prepare and verify replacement; review; type update"| update["Authenticated daemon shutdown, then replace"]
-    update -->|"Kill confirmed shells and tasks"| ended["Shell ends"]
-    shell -->|"detach"| background["Keep running"]
-    background -->|"attach"| shell
-    shell -->|"copy / mount / forward intent"| request["Pending Request in daemon"]
-    request --> review["Review locally"]
-    review -->|"approve"| operation["Copy or independent mount / forward"]
-    shell -->|"exit / kill"| ended
-    background -->|"spawn owner exits or lifetime SSH is lost"| ended
+flowchart TD
+    client["Your client"] -->|"Local connection or SSH"| daemon["Account daemon"]
+    daemon -->|"Hosts"| shell["Shell session"]
+    shell -->|"Detach"| detached["Keeps running"]
+    detached -->|"Attach"| shell
+    shell -->|"Exit or kill"| ended["Shell ends"]
+    detached -->|"Spawn: owner exits or heartbeat is lost"| ended
+    shell -->|"Requests copy, mount or forward"| request["Pending request"]
+    request -->|"Review locally"| review["Your decision"]
+    review -->|"Approve"| operation["Copy or independent mount / forward"]
 ```
 
 ## Agent access
@@ -223,6 +221,8 @@ There is no offline editing, conflict detection or write retry. Interrupted
 writes may leave partial files; caching can briefly delay remote changes.
 Mounts use the remote sshore helper for SFTP and change notifications.
 See `sshore mount --help` for details.
+
+`sshore reset` ends local tasks and clears local application state and caches. Unsaved work may be lost. Run it outside managed shells.
 
 ## Updates and troubleshooting
 

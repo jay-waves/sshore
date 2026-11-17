@@ -812,6 +812,23 @@ shells. Linux and Windows amd64 only; remote shell hosting remains Linux-only.
 NOTES
 fi
 
+if [[ "$version" == "0.7.4" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Make reset stop the account daemon and its registered tasks before clearing
+  local application state and caches. Run it outside managed shells; if shutdown
+  fails, reset retains the state and reports the error.
+- Consolidate daemon resource management and setup state, and remove obsolete
+  recovery-shell paths. Simplify contributor guidance and the README diagram.
+
+Migration: normal client and remote releases must match exactly. Updating an
+older daemon requires reviewing the affected tasks and typing update; ending
+shells can discard unsaved work. Older daemons retain their own shutdown behavior
+and may require manual maintenance. Linux and Windows amd64 only.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."

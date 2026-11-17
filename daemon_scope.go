@@ -92,3 +92,11 @@ func daemonStateRootAt(dir, root string, explicit bool) (string, error) {
 	}
 	return record.Directory, nil
 }
+
+func resetCachePath() (string, error) {
+	root, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "sshore"), nil
+}

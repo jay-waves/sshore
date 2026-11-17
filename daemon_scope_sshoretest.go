@@ -24,3 +24,15 @@ func daemonDirectory() (string, error) {
 }
 
 func daemonStateRoot(root string, explicit bool) (string, error) { return root, nil }
+
+// Destructive reset fixtures must never reach the developer's release cache.
+func resetCachePath() (string, error) {
+	if _, err := daemonLocation(); err != nil {
+		return "", err
+	}
+	root, err := statePath("")
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "release-cache"), nil
+}

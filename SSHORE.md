@@ -21,9 +21,9 @@ policy or depending on mutable application state.
 | One-off SSH execution | `cli.go`: exec adapter uses the shared SSH connection layer without remote setup |
 | CLI grammar, dispatch and help | `cli_schema.go`: shared command aliases and product/SSH grammar; `cli_commands.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
 | Connections and session switching | `client.go`, `client_connection.go` |
-| Prepared installation and exact-release policy | `setup*.go`: shared installer and state policy in `setup_install.go`; native preparation in `setup_linux.go` / `setup_windows.go` |
+| Prepared installation and exact-release policy | `setup*.go`: shared installer and state policy in `setup_install.go`; native preparation in `setup_linux.go` / `platform_windows.go` |
 | Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_linux.go`, `server_linux.go`; process inspection in `setup_process_linux.go` |
-| Account daemon and local shell control | `daemon*.go` (including shared activity leases and metadata), `local_command.go`, `local_shell.go`; hosted Unix shell adapters in `platform_*.go` |
+| Account daemon and local shell control | `daemon*.go` (task registry and resource control in `daemon_tasks.go`, plus activity leases and metadata), `local_command.go`, `local_shell.go`; hosted Unix shell adapters in `platform_*.go` |
 | Spawn ownership, lifetime SSH and nested routes | `spawn_transport.go`, `spawn_route_linux.go`, `platform_*.go` |
 | Shell startup and attachment I/O | `internal/tmux/terminal.go`, `internal/tmux/shell_attachment.go`, application adapters in `protocol.go` |
 | Native terminals, console I/O and shortcuts | `internal/tmux/` |
@@ -44,13 +44,36 @@ identity validation and resource coordination. Pass validated configuration and
 small interfaces to mechanisms. Extend the owning module before adding an
 abstraction; move behavior with its tests and platform implementations.
 
+## Documentation ownership
+
+Keep project documentation in the five root files. CLI help owns syntax and defaults;
+code and tests own implementation details. Link to the authoritative source rather
+than repeating it.
+
+| Document | Responsibility |
+| --- | --- |
+| [README.md](README.md) | Introduction, common workflows and essential consequences |
+| [SSHORE.md](SSHORE.md) | Architecture, development, validation and releases |
+| [SECURITY.md](SECURITY.md) | Trust boundaries, safeguards and remaining risks |
+| [GLOSSARY.md](GLOSSARY.md) | Terms and identities |
+| [AGENTS.md](AGENTS.md) | Essential contributor constraints |
+
+Keep modules cohesive with clear ownership and small interfaces; platform and test
+build constraints may justify separate files. Use `tests/` for public workflow tests
+and keep module tests beside their owners. Group tests by behavior and preserve
+platform isolation. Keep the ownership map and affected README/SECURITY Mermaid
+diagrams current. Check links, anchors and fences after documentation changes,
+including packaged documents. Never modify published assets to update documentation.
+
 ## Design constraints
 
 ### CLI parsing and help
 
 `cli_schema.go` owns command grammar; command adapters interpret parsed operands.
 `cli_help.go` owns command help and concise workflow examples (`--tldr`).
-See [CLI ownership](AGENTS.md#cli-ownership).
+Keep options, aliases, arity and shared conflicts in the schema. Parsing and help
+have no execution side effects. `kill` is the termination command; do not add a
+`cancel` alias or a separate protocol compatibility counter.
 
 ### Terminal and mux design scope
 
@@ -277,22 +300,24 @@ See [inventory privacy](SECURITY.md#inventory-and-privacy).
 
 ### Setup and installation
 
-Require the exact full release version; do not add a separate compatibility counter.
-Never silently downgrade or treat unordered versions as safe to replace. Preparation
-must succeed before confirmed tasks are ended, with identity/snapshot rechecks under
-the account setup lock. Keep these checks with their lifecycle callers when refactoring.
-
-Standalone installers and SSH setup prepare the replacement before prompting.
-Failed preparation or declined confirmation stops setup; no recovery shell is started.
-Temporary bootstrap staging never stops tasks. Run standalone installers outside
-managed shells so their coordinator cannot be killed with the reviewed tasks.
-[SECURITY.md](SECURITY.md#remote-setup-and-updates) owns the complete update and
-termination guarantees.
+Standalone installers and SSH setup share release and shutdown policy. Temporary
+bootstrap staging does not stop tasks. Run installers outside managed shells.
+[SECURITY.md](SECURITY.md#remote-setup-and-updates) owns the update and termination
+safeguards.
 
 ## Build and validate
 
-Use the shared toolchain required by `go.mod`; check its location and version
-before development. Do not lower requirements or introduce a private toolchain.
+Use the shared toolchain on the normal PATH; check locations and versions against
+repository requirements before development. Do not lower requirements or install
+private runtimes. For Node, use system `node` and global Corepack, letting the
+repository's `packageManager` select the version. Keep shims in the configured
+global npm prefix and use standard caches. An incompatible global toolchain needs
+user authorization before updating it.
+
+For browser checks, reuse global Playwright at
+`/home/jay-waves/.local/lib/node_modules/playwright` and system Chrome with
+`chromium.launch({ channel: "chrome" })`. Do not add project dependencies or
+download browsers or reinstall Playwright without approval.
 
 ```sh
 command -v go
@@ -300,27 +325,28 @@ go version  # Go 1.26 or newer
 go build -o dist/sshore .
 ```
 
-Choose the smallest check that covers the changed behavior:
+Choose checks for the actual impact and risk. The table suggests options, not a
+mandatory sequence: use targeted checks when sufficient, and skip checks that
+would not add useful evidence. Do not wait for a full pipeline merely for
+completeness.
 
 | Change | Validation |
 | --- | --- |
 | One module or command | Relevant existing tests with `-run` |
-| Cross-component behavior | Core suite below |
-| Structure or concurrency | `go vet ./...`; add `-race` for concurrency |
-| SSH transport or remote setup | Isolated real-SSH lifecycle checks |
+| Cross-component behavior | Target affected boundaries; use the core suite when impact is broad |
+| Concurrency or shared lifecycle | Relevant tests; consider `-race` for shared-state changes |
+| SSH transport or remote setup | Relevant tests; use focused real-SSH checks for connection behavior |
 | Native terminal or mount behavior | Relevant native platform checks; compilation alone is insufficient |
-| Installation or packaging | Relevant scripts in `tests/` and release checks |
+| Installation or packaging | Relevant installer or release tests |
 | Documentation | Relative links/anchors, code fences and affected Mermaid diagrams, including packaged documents |
 
 ```sh
 go test -count=1 -tags=sshoretest -timeout=5m ./...
 ```
 
-Group tests by behavior and preserve platform/build-tag isolation.
-Product workflows in `tests/` use its shared isolated CLI build; module regressions
-stay beside their owning code. Do not expose internals or use source overlays.
 Subprocess builds inherit `GOFLAGS`; use `GOFLAGS=-race` for race checks and
-`-count=1` for environment-dependent checks.
+`-count=1` for environment-dependent checks. Reuse successful checks unless a
+subsequent change or unresolved failure warrants repeating them.
 
 Lifecycle integration executables **must** use `sshoretest` for runtime-directory
 isolation. Never simulate upgrade confirmation against the developer's real shells.
@@ -351,8 +377,7 @@ skips must be reviewed; a green run is not proof that skipped checks passed.
 The SSH script defaults to all scenarios, each with an isolated fixture; use
 `--core-only`, `--spawn-only`, `--identity-only`, `--nested-only`, `--handoff-only`,
 `--setup-only` or `--mcp-only` for a focused rerun.
-Do not repeat successful checks without new changes or
-unresolved concerns. Local in-process benchmarks are not WAN performance evidence.
+Local in-process benchmarks are not WAN performance evidence.
 
 ### Shell and terminal validation
 
@@ -375,9 +400,8 @@ can affect behavior; record meaningful regressions as focused tests.
 2. Run checks appropriate to the changes, then commit and push. A push to `main`
    triggers Linux/Windows amd64 builds and packaging; successful builds permit
    publication only while that commit remains the branch head.
-3. Unless explicitly asked only to push, verify the release, commit/tag identity,
-   both platform archives and checksums. Full validation remains an independent
-   manual or local operation, as described above; it is not a release gate.
+3. After publication, verify the release, commit/tag identity, both platform archives
+   and checksums. Full validation remains independent of publication.
 
 Published tags and assets are immutable. Source-only edits at an already published
 version do not update its archives. Retain only the highest published patch in each
@@ -393,4 +417,4 @@ is one-shot by default, optional background watching, explicit opt-in to propaga
 deletions, and conflict reporting for independent edits. Revisit the design before
 implementation; it is not an existing command contract.
 
-`daemon_metadata.go` owns serialized task-tree, shell-history and recent-route changes and reset; `daemon_activity.go` owns live socket leases, peer advertisements and the shared heartbeat clock; `cli.go` routes reset to that daemon; `state.go` owns account display identity and remembered connection entry points without depending on CLI options. Native OS identity reads live in the platform adapters. Reset preserves active ownership, lock files, approvals and non-recycled task IDs.
+`daemon_metadata.go` owns serialized task-tree, shell-history and recent-route changes; `daemon_activity.go` owns live socket leases, peer advertisements and the shared heartbeat clock; `reset.go` coordinates authenticated daemon shutdown and state removal; `state.go` owns account display identity and remembered connection entry points without depending on CLI options. Native OS identity reads live in the platform adapters. Reset ends registered tasks and clears application state; coordination locks remain to serialize startup.

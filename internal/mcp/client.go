@@ -98,6 +98,7 @@ func (c *Client) Shutdown() {
 			}
 		}
 	}
+	c.connections = nil
 	c.mu.Unlock()
 	for _, conn := range connections {
 		_ = conn.Close()

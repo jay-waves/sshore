@@ -308,12 +308,30 @@ func TestRecentAttachMissingAndPerHost(t *testing.T) {
 			t.Fatalf("%q: %q", host, o.session)
 		}
 	}
-	if err := rememberConnection(options{plain: true, host: "recovery", session: "ignored", server: "sshore"}); err != nil {
-		t.Fatal(err)
-	}
 	records, err := readRecentConnections()
 	if err != nil || len(records) != 2 {
 		t.Fatalf("%+v %v", records, err)
+	}
+}
+
+func TestRecentConnectionsFollowStateDirectory(t *testing.T) {
+	activityFixture(t)
+	first := filepath.Join(t.TempDir(), "first")
+	second := filepath.Join(t.TempDir(), "second")
+	t.Setenv("SSHORE_STATE_DIR", first)
+	if err := rememberConnection(options{host: "one", session: "shell", server: "sshore"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSHORE_STATE_DIR", second)
+	if rows, err := readRecentConnections(); err != nil || len(rows) != 0 {
+		t.Fatalf("new state directory inherited recent connections: %+v %v", rows, err)
+	}
+	if err := rememberConnection(options{host: "two", session: "shell", server: "sshore"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSHORE_STATE_DIR", first)
+	if rows, err := readRecentConnections(); err != nil || len(rows) != 1 || rows[0].Host != "one" {
+		t.Fatalf("original recent connections lost: %+v %v", rows, err)
 	}
 }
 

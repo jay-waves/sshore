@@ -137,7 +137,6 @@ func TestAcceptSessionName(t *testing.T) {
 		{"invalid remote name", options{}, "../bad", "", true},
 		{"missing remote name", options{}, "", "", true},
 		{"explicit", options{session: "build"}, "", "build", false},
-		{"recovery has no shell", options{plain: true}, ".", "", false},
 	} {
 		t.Run(tc.label, func(t *testing.T) {
 			err := acceptSessionName(&tc.opts, tc.name)

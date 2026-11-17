@@ -178,7 +178,7 @@ func checkMCPSessionSetup() error {
 	if err != nil {
 		return err
 	}
-	if state.Installed != version || state.Manual || len(state.Processes) != 0 {
+	if state.Installed != version || state.Manual || state.Daemon != nil {
 		return fmt.Errorf("remote setup changed; reconnect and review before opening a session")
 	}
 	return nil

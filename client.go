@@ -35,10 +35,9 @@ type clientEvent struct {
 	err            error
 }
 
-// Recovery has no persistent session name. Only automatic managed connections
-// learn their name from the daemon, before saving any approval metadata.
+// Automatic connections learn their shell name before saving approval metadata.
 func acceptSessionName(o *options, name string) error {
-	if o.plain || o.session != "" {
+	if o.session != "" {
 		return nil
 	}
 	if err := validSession(name); err != nil {
@@ -117,7 +116,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		termName = "xterm-256color"
 	}
 	action := ""
-	if o.command == "attach" && !o.plain {
+	if o.command == "attach" {
 		action = "existing"
 	}
 	tree := o.tree
@@ -125,7 +124,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		tree = currentShellTree()
 	}
 	sourceMachine, sourceHost := localMachineIdentity()
-	if err = streamMessage(control, message{Type: "attach", SourceHost: sourceHost, SourceMachineID: sourceMachine, Tree: tree, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && (o.command == "launch" || o.command == "spawn") && !o.plain, NoLogin: o.noLogin && (o.command == "launch" || o.command == "spawn") && !o.plain}); err != nil {
+	if err = streamMessage(control, message{Type: "attach", SourceHost: sourceHost, SourceMachineID: sourceMachine, Tree: tree, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && (o.command == "launch" || o.command == "spawn"), NoLogin: o.noLogin && (o.command == "launch" || o.command == "spawn")}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -185,7 +184,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		fmt.Fprintf(os.Stdout, "Started %s (%s).\n", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host))
 		return 0, nil
 	}
-	if !o.local && !o.plain && !o.quiet {
+	if !o.local && !o.quiet {
 		if err := showConnectedTasks(control, o); err != nil {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Task list unavailable: %s\n", cleanText(err.Error()))
 		}
@@ -197,7 +196,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	defer func() { restore(); _ = tmux.FlushInput() }()
 	terminalOutput, flushOutput := tmux.OutputWriter()
 	defer func() { _ = flushOutput() }()
-	if !o.plain && !o.local {
+	if !o.local {
 		if e := rememberConnection(o); e != nil {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Connection history not saved: %s\n", cleanText(e.Error()))
 		}
@@ -271,15 +270,12 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		o.handoffDone = nil
 	}
 	ready()
-	if o.plain {
-		termui.Log(os.Stderr, termui.Warning, "[sshore] Recovery on %s; sshore disabled. Exit and reconnect to restore.\r\n", cleanText(o.host))
-	} else {
-		kind := "launch"
-		if o.temporary {
-			kind = "spawn"
-		}
-		sessionNotice(termui.Success, "Connected %s / %s (%s)", cleanText(o.host), cleanText(o.session), kind)
+
+	kind := "launch"
+	if o.temporary {
+		kind = "spawn"
 	}
+	sessionNotice(termui.Success, "Connected %s / %s (%s)", cleanText(o.host), cleanText(o.session), kind)
 	// One terminal writer preserves keystroke order without making file I/O or a
 	// stalled PTY block the main UI/control loop.
 	inputQueue := make(chan []tmux.KeyEvent, 16)
@@ -332,7 +328,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	var outputMouse tmux.InputState
-	keys := tmux.Keys{Bypass: o.noEscape || o.plain}
+	keys := tmux.Keys{Bypass: o.noEscape}
 	detaching := false
 	detachPending := false
 	var detachTimeout <-chan time.Time
@@ -461,10 +457,6 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 				continue
 			}
 			if e.approvalStream != nil {
-				if o.plain {
-					e.approvalStream.Close()
-					continue
-				}
 				st := e.approvalStream
 				if detaching || detachPending || switchPending {
 					st.Close()
@@ -649,7 +641,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 						return 1, fmt.Errorf("update terminal mouse mode: %w", err)
 					}
 				case "spawn_route":
-					if o.local && !o.hosted || o.plain || len(e.m.Token) != 64 {
+					if o.local && !o.hosted || len(e.m.Token) != 64 {
 						continue
 					}
 					parent := o
@@ -756,13 +748,11 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					return 0, nil
 				case "exit":
 					connection.confirm(e.m.Name, "exited")
-					if !o.plain {
-						level := termui.Success
-						if e.m.Code != 0 {
-							level = termui.Warning
-						}
-						sessionNotice(level, "Exited %s on %s (code %d).", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host), e.m.Code)
+					level := termui.Success
+					if e.m.Code != 0 {
+						level = termui.Warning
 					}
+					sessionNotice(level, "Exited %s on %s (code %d).", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host), e.m.Code)
 					return e.m.Code, nil
 				case "fatal":
 					return 1, errors.New(e.m.Error)

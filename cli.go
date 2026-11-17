@@ -7,7 +7,6 @@ import (
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -41,7 +40,7 @@ func run(args []string) (code int, resultErr error) {
 	if os.Getenv("SSHORE_DISABLED") == "1" && len(args) > 0 {
 		allowed := true
 		switch args[0] {
-		case "--version", "-V", "--help", "-h", "--tldr", "help", "sessions", "inventory", "pstree":
+		case "--version", "-V", "--help", "-h", "--tldr", "help", "sessions", "inventory", "pstree", "reset":
 		case "list":
 			o, err := parseOptions(args)
 			if err != nil {
@@ -298,46 +297,6 @@ func runTargetCommand(args []string) (int, error) {
 		}
 	}
 	return withDaemonActivity(func() (int, error) { return executeShellCommand(o) })
-}
-
-func runReset() error {
-	_, err := metadataRPC(metadataRequest{Action: "shell_reset"})
-	if err == nil {
-		fmt.Println("Identity reset; local history and cached snapshots cleared. Active tasks are preserved.")
-	}
-	return err
-}
-func runResetLocal() error {
-	if _, err := persistentMachineIdentity(true); err != nil {
-		return err
-	}
-	// Keep runtime ownership, approval state, task IDs and lock inodes intact.
-	identityLock, _, err := lockIdentity()
-	if err != nil {
-		return err
-	}
-	defer identityLock.Close()
-	for _, name := range []string{"shells", "shell-tree", "connections", "identity"} {
-		dir, err := statePath(name)
-		if err != nil {
-			return err
-		}
-		entries, err := os.ReadDir(dir)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		for _, entry := range entries {
-			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
-				if err = os.Remove(filepath.Join(dir, entry.Name())); err != nil && !os.IsNotExist(err) {
-					return err
-				}
-			}
-		}
-	}
-	return nil
 }
 
 // runExec delegates execution and SSH configuration to the system client.

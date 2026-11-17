@@ -136,7 +136,7 @@ type shellConnection struct {
 }
 
 func trackShellConnection(o options) (*shellConnection, error) {
-	if o.plain || o.local {
+	if o.local {
 		return nil, nil
 	}
 	connection, err := connectionFromOptions(o)

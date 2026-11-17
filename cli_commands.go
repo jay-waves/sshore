@@ -113,7 +113,6 @@ type options struct {
 	listJSON              bool
 	ssh                   []string
 	shellPID              int
-	plain                 bool
 	local                 bool
 	detached              bool
 	noLogin               bool

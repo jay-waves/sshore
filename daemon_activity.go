@@ -44,7 +44,7 @@ type daemonActivity struct {
 	tasks     *daemonTasks
 	metadata  daemonMetadata
 	mu        sync.Mutex
-	leases    map[*activityLease]bool
+	leases    map[*activityLease]struct{}
 	peers     map[string]peerAdvertisement
 	lastPulse time.Time
 }
@@ -56,9 +56,9 @@ func (s *daemonActivity) add(request activityRequest) *activityLease {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.leases == nil {
-		s.leases = make(map[*activityLease]bool)
+		s.leases = make(map[*activityLease]struct{})
 	}
-	s.leases[l] = true
+	s.leases[l] = struct{}{}
 	return l
 }
 func (s *daemonActivity) remove(l *activityLease) {
@@ -94,7 +94,7 @@ func (s *daemonActivity) tick(now time.Time) {
 		identity, err := spawnProcessIdentity(l.request.Owner.PID)
 		if err != nil || identity != l.request.Owner.Start {
 			s.mu.Lock()
-			if s.leases[l] {
+			if _, active := s.leases[l]; active {
 				delete(s.leases, l)
 				close(l.expired)
 			}
