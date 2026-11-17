@@ -26,7 +26,10 @@ irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 ```
 
 Installers verify checksums and print PATH instructions without requesting
-administrator access. Close running Windows executables before upgrading.
+administrator access. On Windows, the installer updates the first `sshore.exe` on
+PATH, or uses `%LOCALAPPDATA%\sshore\bin` if none is found. If it is in use,
+run `sshore cancel --all` manually, close remaining clients, and retry. This ends
+local work; unsaved work may be lost.
 Only the latest patch of each major/minor series remains downloadable.
 
 Use `sshore --tldr` for common examples, or `sshore cp --tldr` for file copies.

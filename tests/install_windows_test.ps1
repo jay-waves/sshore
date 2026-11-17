@@ -3,7 +3,6 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\install.ps1')
 $root = Join-Path ([IO.Path]::GetTempPath()) ('sshore-installer-test-' + [Guid]::NewGuid().ToString('N'))
-$oldInstallDir = $env:INSTALL_DIR
 $oldPath = $env:PATH
 $pathTargets = @('Process')
 if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) { $pathTargets += 'User', 'Machine' }
@@ -59,14 +58,17 @@ try {
     [IO.File]::WriteAllText($source, 'package main; import "fmt"; func main() { fmt.Println("sshore 0.3.3") }')
     & go build -o $fixture $source
     if ($LASTEXITCODE -ne 0) { throw 'Cannot build installer fixture' }
-    $env:INSTALL_DIR = Join-Path $root "directory with spaces and ' quote"
-    $null = [IO.Directory]::CreateDirectory($env:INSTALL_DIR)
-    $target = Join-Path $env:INSTALL_DIR 'sshore.exe'
+    $installDirectory = Join-Path $root "directory with spaces and ' quote"
+    $null = [IO.Directory]::CreateDirectory($installDirectory)
+    $target = Join-Path $installDirectory 'sshore.exe'
 
     # Successful install/upgrade, pinned and latest URL selection, custom paths,
     # and PATH remaining unchanged are the user-visible installation contract.
     $null = New-TestRelease '0.3.3' 'amd64'
-    [IO.File]::WriteAllText($target, 'previous binary')
+    [IO.File]::Copy($fixture, $target)
+    $env:PATH = $installDirectory + [IO.Path]::PathSeparator + $oldPath
+    $paths['Process'] = $env:PATH
+    Assert-True ((Get-SshoreInstallDirectory) -eq $installDirectory) 'Did not select existing PATH installation'
     Install-Sshore -Version '0.3.3'
     Assert-True ((Read-SshoreBinaryVersion $target) -eq 'sshore 0.3.3') 'Wrong installed binary'
     Assert-True ($script:Downloads[0] -like '*/download/v0.3.3/SHA256SUMS') 'Pinned URL not used'
@@ -79,7 +81,7 @@ try {
     foreach ($scope in $pathTargets) {
         Assert-True ([Environment]::GetEnvironmentVariable('Path', $scope) -ceq $paths[$scope]) "Changed $scope PATH"
     }
-    Write-Host 'PASS: install/upgrade, release selection, INSTALL_DIR and unchanged PATH'
+    Write-Host 'PASS: install/upgrade, release selection, PATH discovery and unchanged PATH'
 
     # Neither corrupted downloads nor malformed/mislabeled packages may replace
     # the existing executable. Verify actual contents, not implementation calls.
@@ -92,22 +94,21 @@ try {
     $null = New-TestRelease '0.3.4' 'amd64'
     Assert-Fails { Install-Sshore -Version '0.3.4' } 'Binary version does not match'
     Assert-True ((Get-FileHash -LiteralPath $target).Hash -eq $installedHash) 'Existing binary changed on failure'
-    Assert-True (@(Get-ChildItem -LiteralPath $env:INSTALL_DIR -Force).Count -eq 1) 'Installer left staging files'
+    Assert-True (@(Get-ChildItem -LiteralPath $installDirectory -Force).Count -eq 1) 'Installer left staging files'
     Write-Host 'PASS: failed verification preserves the existing executable'
 
     if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
         $null = New-TestRelease '0.3.3' 'amd64'
         $locked = [IO.File]::Open($target, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         try {
-            $failed = $false
-            try { Install-Sshore -Version '0.3.3' } catch { $failed = $true }
-            Assert-True $failed 'Locked target was replaced'
+            $downloadCount = $script:Downloads.Count
+            Assert-Fails { Install-Sshore -Version '0.3.3' } 'cancel --all'
+            Assert-True ($script:Downloads.Count -eq $downloadCount) 'Locked target triggered downloads'
         } finally { $locked.Dispose() }
         Assert-True ((Get-FileHash -LiteralPath $target).Hash -eq $installedHash) 'Locked target was damaged'
         Write-Host 'PASS: locked executable fails without removing the installed version'
     }
 } finally {
-    $env:INSTALL_DIR = $oldInstallDir
     $env:PATH = $oldPath
     if ([IO.Directory]::Exists($root)) { [IO.Directory]::Delete($root, $true) }
 }

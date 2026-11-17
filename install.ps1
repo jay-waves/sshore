@@ -3,17 +3,15 @@
 .SYNOPSIS
 Install the Windows sshore client without changing PATH or requiring elevation.
 .DESCRIPTION
-Windows amd64 only; supports PowerShell 5.1 and 7. Defaults to
-%LOCALAPPDATA%\sshore\bin, overridden by INSTALL_DIR. Verify SHA256SUMS and
+Windows amd64 only; supports PowerShell 5.1 and 7. Updates the first sshore.exe
+on PATH, falling back to %LOCALAPPDATA%\sshore\bin. Verify SHA256SUMS and
 executable version before replacement. Never modify PATH, profiles or execution
-policy; never elevate, stop processes or create versioned backups. The user must
-choose a writable location, close running copies and retain any desired backup.
+policy; never elevate, stop processes or create versioned backups. If the installed
+executable is in use, exit and ask the user to run cancel --all before retrying.
 .PARAMETER Version
 Published X.Y.Z version (without v). Defaults to the latest release.
 .EXAMPLE
 .\install.ps1 -Version 0.3.4
-.EXAMPLE
-$env:INSTALL_DIR = 'D:\Tools\sshore'; .\install.ps1
 #>
 [CmdletBinding()]
 param([string]$Version = '')
@@ -79,6 +77,14 @@ function Read-SshoreBinaryVersion([string]$Path) {
     return ($lines -join "`n")
 }
 
+function Get-SshoreInstallDirectory {
+    $command = Get-Command sshore.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($command) { return [IO.Path]::GetDirectoryName($command.Path) }
+    $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
+    if (-not $localAppData) { throw 'Cannot find LocalAppData.' }
+    return Join-Path $localAppData 'sshore\bin'
+}
+
 function Install-Sshore([string]$Version = '') {
     $ErrorActionPreference = 'Stop'
     $versionPattern = '(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
@@ -86,14 +92,27 @@ function Install-Sshore([string]$Version = '') {
         throw 'Version must be X.Y.Z (without v).'
     }
     $architecture = Get-SshoreArchitecture
-    $directory = $env:INSTALL_DIR
-    if ([string]::IsNullOrWhiteSpace($directory)) {
-        $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
-        if (-not $localAppData) { throw 'Cannot find LocalAppData; set INSTALL_DIR explicitly.' }
-        $directory = Join-Path $localAppData 'sshore\bin'
-    }
+    $directory = Get-SshoreInstallDirectory
     # Resolve relative filesystem paths using PowerShell's current location.
     $directory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($directory)
+    $target = Join-Path $directory 'sshore.exe'
+    $quotedTarget = $target.Replace("'", "''")
+    $busyMessage = "sshore is in use; installation unchanged. Run & '$quotedTarget' cancel --all, then retry. This ends local work; unsaved work may be lost. Close any remaining sshore clients."
+    $existing = Get-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+    if ($existing) {
+        if ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Installation target is a directory or reparse point; installation unchanged.'
+        }
+        try {
+            $probe = [IO.File]::Open($target, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $probe.Dispose()
+        } catch {
+            $code = $_.Exception.GetBaseException().HResult -band 0xffff
+            if ($code -in 32, 33) { throw $busyMessage }
+            throw
+        }
+        Write-Host "Updating in place: $target"
+    }
     $temp = Join-Path ([IO.Path]::GetTempPath()) ('sshore-install-' + [Guid]::NewGuid().ToString('N'))
     $stage = $null
     $rollback = $null
@@ -149,10 +168,22 @@ function Install-Sshore([string]$Version = '') {
             throw 'Binary version does not match release; installation unchanged.'
         }
         if ($existing) {
+            $installedVersion = Read-SshoreBinaryVersion $target
+            if ($installedVersion -cnotmatch "\Asshore ($versionPattern)\z") {
+                throw 'Unknown installed version; update manually. No tasks ended.'
+            }
+            if ([version]$Matches[1] -gt [version]$Version) {
+                throw 'Cannot downgrade the installed version. No tasks ended.'
+            }
             $rollback = Join-Path $directory ('.sshore-previous-' + [Guid]::NewGuid().ToString('N') + '.exe')
-            # Same-volume replacement; no delete-then-copy fallback. A locked
-            # executable or unsupported filesystem fails without removing it.
-            [IO.File]::Replace($stage, $target, $rollback)
+            # Same-volume replacement. A client may have started since preflight;
+            # fail without deleting the installed executable or stopping work.
+            try { [IO.File]::Replace($stage, $target, $rollback) }
+            catch {
+                $code = $_.Exception.GetBaseException().HResult -band 0xffff
+                if ($code -in 32, 33) { throw $busyMessage }
+                throw
+            }
         } else {
             [IO.File]::Move($stage, $target)
         }
