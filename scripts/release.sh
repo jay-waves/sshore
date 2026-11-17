@@ -39,6 +39,30 @@ Includes Linux and Windows binaries for amd64 (x86-64) only.
 Verify downloaded archives against SHA256SUMS.
 Commit: $GITHUB_SHA
 NOTES
+if [[ "$version" == "0.7.7" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Recognize CSI-u/Kitty and xterm modifyOtherKeys for session shortcuts and Ctrl+C.
+  Preserve fragmented input, paste boundaries and unconsumed original bytes;
+  distinguish key presses, repeats and releases. Use x/ansi for ANSI parsing.
+- Print shell exit and unexpected-disconnection notices after terminal restoration,
+  including nested returns. Report actual exit codes, host-provided exit reasons
+  and short connection-failure reasons without claiming an unconfirmed shell exit.
+- Show an original direct parent process for spawns without a visible owner task
+  in ps/pstree. Validate process identity and preserve it across reattachment;
+  external nodes are display-only and cannot be managed as tasks.
+- Clarify copy direction, mount access mode and forward endpoints in review and
+  completion messages; reduce repetitive output.
+
+Upgrade: update both client and server to 0.7.7; normal connections require exact
+full release versions. Updating an active daemon ends its registered tasks only
+after the existing reviewed confirmation. Save work before confirming an update.
+Direct-parent display metadata is recorded for newly created spawns. Linux and
+Windows amd64 only; remote shell hosting remains Linux-only.
+NOTES
+fi
+
 if [[ "$version" == "0.7.5" ]]; then
   cat >> release-notes.md <<'NOTES'
 

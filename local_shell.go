@@ -480,11 +480,7 @@ func (s *localShell) attach(c net.Conn) error {
 		err = s.terminal.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
 	}
 	if err == nil {
-		if initial {
-			saveShellTree(s.record.identity(), s.record.Name, m.Tree, "attached", shellLifetime(s.record.Owner.PID != 0, false), m.SourceHost, m.SourceMachineID)
-		} else {
-			saveShellTree(s.record.identity(), s.record.Name, m.Tree, "attached", shellLifetime(s.record.Owner.PID != 0, false), m.SourceHost, m.SourceMachineID)
-		}
+		saveShellTreeWithProcess(s.record.identity(), s.record.Name, m.Tree, "attached", describeSpawnOwner(s.record.Owner), shellLifetime(s.record.Owner.PID != 0, false), m.SourceHost, m.SourceMachineID)
 		err = p.controlMessage(message{Type: "ready", Tree: shellTreeFor(s.record.identity()), Temporary: s.record.Owner.PID != 0, Name: s.record.Name, PID: s.terminal.PID()})
 	}
 	if err == nil {

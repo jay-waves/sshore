@@ -272,3 +272,8 @@ func resetRuntimeState(directories []string) error {
 	}
 	return nil
 }
+
+func spawnProcessName(pid int) (string, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+	return strings.TrimSpace(string(data)), err
+}

@@ -386,7 +386,10 @@ remains the local user's policy.
 
 Public inventory is an allowlist: it excludes control addresses/tokens, SSH options
 and terminal contents. Shell process listings show sanitized same-user names and
-PIDs, not arguments or environments. Foreground summaries and detailed resource
+PIDs, not arguments or environments. Root spawn trees may include the original
+direct parent process as display context, checked against its creation identity;
+this does not adopt that process or authorize signaling it. Foreign parent PIDs
+are never resolved against local processes. Foreground summaries and detailed resource
 status can reveal working-directory/project names, paths, ports and errors.
 
 Peer records expose only their resource identity, manager label, remote-facing

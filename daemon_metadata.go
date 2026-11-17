@@ -21,6 +21,7 @@ type daemonMetadata struct {
 	snapshots           map[string]shellSnapshot
 }
 type metadataRequest struct {
+	OwnerProcess                             *spawnProcessView
 	Action, Key, Host, Name, State, Instance string
 	Tree                                     []shellTreeNode
 	Lifetime                                 []string
@@ -85,7 +86,18 @@ func (s *daemonMetadata) handle(r metadataRequest) (reply metadataReply) {
 	case "tree_list":
 		reply.Tree = knownShellTreesLocal()
 	case "tree_save":
+		initial := len(readTreeLocal(r.Key)) == 0
 		saveShellTreeLocal(r.Key, r.Name, r.Tree, r.State, r.Lifetime...)
+		if initial && validSpawnProcessView(r.OwnerProcess) {
+			chain := readTreeLocal(r.Key)
+			if len(chain) > 0 {
+				self := &chain[len(chain)-1]
+				if self.Lifetime == "parent" || self.Lifetime == "heartbeat" {
+					self.OwnerProcess = r.OwnerProcess
+					_ = writeTreeLocal(r.Key, chain)
+				}
+			}
+		}
 	case "tree_remember":
 		rememberShellTreeLocal(r.Tree)
 	case "tree_rename":

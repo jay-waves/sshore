@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/jay-waves/sshore/internal/sshtest"
 	"io"
 	"os"
@@ -965,5 +966,31 @@ func TestClientRemoteExitReason(t *testing.T) {
 	wait("Reason: killed by sshore kill.")
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("killed shell reported success")
+	}
+}
+
+func TestClientExternalSpawnParent(t *testing.T) {
+	t.Setenv("SSHORE_SOCKET", "")
+	t.Setenv("SSHORE_LOCAL_SESSION", "")
+	e := newEnv(t)
+	cmd, terminal, wait := startSessionClient(t, e, []string{"spawn", "--local", "external-parent", "--no-login", "--no-profile"})
+	wait("Connected local / external-parent")
+	ps := exec.Command(e.bin, "ps")
+	ps.Env = cmd.Env
+	out, err := ps.CombinedOutput()
+	if err != nil {
+		t.Fatalf("ps: %v %s", err, out)
+	}
+	name, err := spawnProcessName(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), fmt.Sprintf("external %s (pid %d)", name, os.Getpid())) || !strings.Contains(string(out), "external-parent") {
+		t.Fatalf("missing direct parent: %s", out)
+	}
+	io.WriteString(terminal, "exit\n")
+	wait("Exited spawn/external-parent on local")
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
 	}
 }

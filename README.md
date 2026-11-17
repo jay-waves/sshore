@@ -143,7 +143,10 @@ Use `--json` for full diagnostics.
 CHECKED shows when shell states were confirmed; confirmed ended shells leave the default list.
 Use `kill` to clear confirmed ended remote history (see `sshore kill --help`).
 See `sshore list --help` for history and refresh behavior. `pstree` shows local spawn ownership and
-live resource directions, prioritizing the current tree; attaching from another shell does not transfer ownership. Peer
+live resource directions, prioritizing the current tree; attaching from another shell does not transfer ownership.
+A spawn without a visible owner task shows its original direct parent as
+`external NAME (pid PID)`. This display-only node is not a manageable task;
+missing or unverified processes are marked unavailable. Peer
 entries are read-only: manage them on their original computer. A running worker
 does not prove its target service is healthy.
 

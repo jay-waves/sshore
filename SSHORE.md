@@ -329,6 +329,11 @@ invalidated by mutations. These caches do not buffer file writes.
 ### Inventory and diagnostics
 
 Separate live observations, cached records and unknown state. Inventory and
+A spawn without a visible owner task may display its original direct parent
+process, using its saved PID and creation identity. Reattachment preserves this
+context. Only a matching local process identity supplies a live name; foreign
+processes are not probed in the local PID namespace. These external nodes are
+rendering context, not registered tasks or additional process ancestors.
 `pstree` relationships never authorize operations. Task IDs are allocated at creation;
 alias changes preserve the instance and storage identity. Prefix collisions at creation
 require a new identity; imported ambiguous references require an explicit scope.

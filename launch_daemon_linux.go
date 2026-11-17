@@ -168,7 +168,7 @@ func (s *remoteShell) attach(p *attachment, m message) error {
 		if err := s.master.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
 			return err
 		}
-		saveShellTree(remoteTreeIdentity(s.instance), s.name, m.Tree, "attached", shellLifetime(s.temporary, true), m.SourceHost, m.SourceMachineID)
+		saveShellTreeWithProcess(remoteTreeIdentity(s.instance), s.name, m.Tree, "attached", m.OwnerProcess, shellLifetime(s.temporary, true), m.SourceHost, m.SourceMachineID)
 		if err := p.controlMessage(message{Type: "ready", Tree: shellTreeFor(remoteTreeIdentity(s.instance)), Temporary: s.temporary, Instance: s.instance, PID: s.cmd.Process.Pid, Name: s.name}); err != nil {
 			return err
 		}

@@ -17,6 +17,7 @@ import (
 // Shell identities are opaque. Parent is the current attachment source; Owner
 // is the original managed spawn context. Neither is OS process ancestry.
 type shellTreeNode struct {
+	OwnerProcess                                         *spawnProcessView `json:",omitempty"`
 	Identity, Parent, Owner, Lifetime, Host, Name, State string
 	Current                                              bool `json:"-"`
 	Cached                                               bool
@@ -133,6 +134,9 @@ func writeShellTree(out io.Writer, nodes []shellTreeNode, color bool) {
 			code = taskShortCode(n.Identity)
 		}
 		label := cleanText(kind) + "/" + taskDisplayID(code, n.Name)
+		if kind == "external" && n.OwnerProcess != nil {
+			label = fmt.Sprintf("external %s (pid %d)", cleanText(n.Name), n.OwnerProcess.PID)
+		}
 		fmt.Fprint(out, termui.Format(color, "90", "%s", prefix+branch), termui.Format(color && n.Current, termui.Success, "%s", label))
 		if n.State == "unavailable" {
 			fmt.Fprint(out, termui.Format(color, termui.Warning, " ?"))
@@ -176,6 +180,7 @@ func runPSTree(args []string) (int, error) {
 	nodes := inventoryShellTrees(knownShellTrees(), inv)
 	nodes = localShellTreeNodes(nodes, inv)
 	nodes = inventoryResourceTrees(nodes, inv)
+	nodes = externalSpawnParents(nodes, inv.MachineID)
 	writeShellTree(os.Stdout, nodes, termui.ColorEnabled(os.Stdout))
 	if err != nil {
 		return 1, err
@@ -196,6 +201,7 @@ func inventoryShellTrees(nodes []shellTreeNode, inv inventory) []shellTreeNode {
 				return
 			}
 			n.Owner, n.Parent, n.OwnerState = nodes[i].Owner, nodes[i].Parent, nodes[i].OwnerState
+			n.OwnerProcess = nodes[i].OwnerProcess
 			n.SourceHost, n.SourceMachineID = nodes[i].SourceHost, nodes[i].SourceMachineID
 			if n.MachineID == "" && nodes[i].MachineID != "" {
 				n.MachineID, n.Host = nodes[i].MachineID, nodes[i].Host
@@ -296,8 +302,12 @@ func currentShellTree() []shellTreeNode {
 }
 
 func saveShellTree(id, name string, chain []shellTreeNode, state string, lifetime ...string) {
-	_, _ = metadataRPC(metadataRequest{Action: "tree_save", Key: id, Name: name, Tree: chain, State: state, Lifetime: lifetime})
+	saveShellTreeWithProcess(id, name, chain, state, nil, lifetime...)
 }
+func saveShellTreeWithProcess(id, name string, chain []shellTreeNode, state string, owner *spawnProcessView, lifetime ...string) {
+	_, _ = metadataRPC(metadataRequest{Action: "tree_save", Key: id, Name: name, Tree: chain, State: state, Lifetime: lifetime, OwnerProcess: owner})
+}
+
 func saveShellTreeLocal(id, name string, chain []shellTreeNode, state string, lifetime ...string) {
 	if id == "" {
 		return
@@ -308,6 +318,7 @@ func saveShellTreeLocal(id, name string, chain []shellTreeNode, state string, li
 	if len(previous) > 0 && previous[len(previous)-1].Identity == id {
 		old := previous[len(previous)-1]
 		self.Owner, self.Lifetime, self.OwnerState = old.Owner, old.Lifetime, old.OwnerState
+		self.OwnerProcess = old.OwnerProcess
 	}
 	chain = append([]shellTreeNode(nil), chain...)
 	seen := map[string]bool{id: true}

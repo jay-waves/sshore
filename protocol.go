@@ -26,6 +26,7 @@ const (
 
 // Control metadata uses JSON; terminal bytes remain binary.
 type message struct {
+	OwnerProcess    *spawnProcessView   `json:"owner_process,omitempty"`
 	Reason          string              `json:"reason,omitempty"`
 	Activity        *activityRequest    `json:"activity,omitempty"`
 	Handoff         *clientHandoff      `json:"handoff,omitempty"`

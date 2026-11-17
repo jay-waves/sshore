@@ -141,7 +141,7 @@ func runClientOnce(o options, previous string, ready func()) (resultCode int, re
 		tree = currentShellTree()
 	}
 	sourceMachine, sourceHost := localMachineIdentity()
-	if err = streamMessage(control, message{Type: "attach", SourceHost: sourceHost, SourceMachineID: sourceMachine, Tree: tree, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && (o.command == "launch" || o.command == "spawn"), NoLogin: o.noLogin && (o.command == "launch" || o.command == "spawn")}); err != nil {
+	if err = streamMessage(control, message{Type: "attach", OwnerProcess: describeSpawnOwner(o.owner), SourceHost: sourceHost, SourceMachineID: sourceMachine, Tree: tree, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && (o.command == "launch" || o.command == "spawn"), NoLogin: o.noLogin && (o.command == "launch" || o.command == "spawn")}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
