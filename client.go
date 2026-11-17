@@ -8,10 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/signal"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/xtaci/smux"
@@ -48,7 +46,11 @@ func acceptSessionName(o *options, name string) error {
 }
 
 func runClientOnce(o options, previous string, ready func()) (int, error) {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	signalCtx, interruptSignals, stopSignals := newClientSignals(o.recovering)
+	defer stopSignals()
+	// Cancel I/O before restoring the console, but keep signal handling installed
+	// until the keyboard has stopped and terminal restoration has completed.
+	ctx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
 	killedInstance := o.instance
 	if o.command == "kill" {
@@ -269,6 +271,8 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		}
 		o.handoffDone = nil
 	}
+	o.recovering = false
+	interruptSignals.interactive.Store(true)
 	ready()
 
 	kind := "launch"
@@ -341,7 +345,6 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	var handoffTarget *options
 	var handoffToken string
 	var handoffDeadline time.Time
-	var chooser *tmux.SessionChooser
 	queueSwitch := func(name, command string) error {
 		if name == o.session && command == "attach" {
 			return nil
@@ -375,7 +378,6 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		case inputQueue <- []tmux.KeyEvent{{Action: tmux.KeyDetach}}:
 			switchTarget = &target
 			switchPending = false
-			chooser = nil
 			detachPending = true
 			inputFlushTimeout = time.After(5 * time.Second)
 			return nil
@@ -394,14 +396,51 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		}
 		return streamMessage(control, message{Type: "session_targets", Action: action, Name: name})
 	}
+	interrupt := func() error {
+		if switchPending || switchTarget != nil || handoffTarget != nil {
+			for _, target := range []*options{switchTarget, handoffTarget} {
+				if target != nil && target.handoffDone != nil {
+					_ = target.handoffDone(ctx, context.Canceled)
+					target.handoffDone = nil
+				}
+			}
+			target := o
+			target.command, target.recovering = "attach", true
+			if !detaching && !detachPending {
+				select {
+				case inputQueue <- []tmux.KeyEvent{{Action: tmux.KeyDetach}}:
+					detachPending = true
+					inputFlushTimeout = time.After(5 * time.Second)
+				default:
+					return fmt.Errorf("terminal input queue is busy")
+				}
+			}
+			switchTarget, returnLocal, handoffTarget = &target, false, nil
+			switchPending, switchAction, switchTimeout = false, "", nil
+			notice(termui.Info, "\r\n[sshore] Cancelled; returning to %s.\r\n", cleanText(o.session))
+			return nil
+		}
+		if detaching || detachPending {
+			return nil
+		}
+		select {
+		case inputQueue <- []tmux.KeyEvent{{Data: []byte{3}}}:
+			return nil
+		default:
+			return fmt.Errorf("terminal input queue is busy")
+		}
+	}
 	for {
 		select {
+		case <-interruptSignals.interrupts:
+			if err := interrupt(); err != nil {
+				return 1, err
+			}
 		case <-ctx.Done():
-			return 130, nil
+			return 130, ctx.Err()
 		case <-switchTimeout:
 			switchTimeout = nil
 			switchPending = false
-			chooser = nil
 			notice(termui.Warning, "\r\n[sshore] Session lookup timed out; staying here.\r\n")
 		case <-inputFlushTimeout:
 			inputFlushTimeout = nil
@@ -433,8 +472,15 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 						return
 					}
 					switch e.keyAction {
-					case tmux.KeyNew, tmux.KeyNext, tmux.KeyPrevious, tmux.KeyLast, tmux.KeyChoose:
-						action := map[tmux.KeyAction]string{tmux.KeyNew: "new", tmux.KeyNext: "next", tmux.KeyPrevious: "previous", tmux.KeyLast: "last", tmux.KeyChoose: "choose"}[e.keyAction]
+					case tmux.KeyNew:
+						if detachPending {
+							return
+						}
+						switchPending, switchAction = true, "spawn_child"
+						switchTimeout = time.After(30 * time.Second)
+						err = streamMessage(control, message{Type: "spawn_child"})
+					case tmux.KeyNext, tmux.KeyPrevious, tmux.KeyLast:
+						action := map[tmux.KeyAction]string{tmux.KeyNext: "next", tmux.KeyPrevious: "previous", tmux.KeyLast: "last"}[e.keyAction]
 						err = requestTargets(action, previous)
 
 					case tmux.KeyDetach:
@@ -448,7 +494,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					case tmux.KeyInfo:
 						notice(termui.Info, "\r\n[sshore] %s / %s (PID %d)\r\n", cleanText(o.host), cleanText(o.session), pid)
 					case tmux.KeyHelp:
-						notice(termui.Info, "\r\nCtrl+B: c new · n/p next/prev · l last · s/w sessions\r\n        d detach · r redraw · i info · ? help · Ctrl+B send prefix\r\n")
+						notice(termui.Info, "\r\nCtrl+B: c spawn · n/p next/prev · l last\r\n        d detach · r redraw · i info · ? help · Ctrl+B send prefix\r\n")
 					}
 				}()
 				if err != nil {
@@ -512,25 +558,18 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 				}
 				return 255, fmt.Errorf("connection lost; reconnect to check the shell: %w", e.err)
 			} else if e.input != nil {
-				if chooser != nil {
-					selected, done := chooser.Feed(e.input)
-					if done {
-						chooser = nil
-						switchPending = false
-						if selected != "" && selected != o.session {
-							if err = requestTargets("select", selected); err != nil {
-								return 255, err
-							}
-						} else {
-							notice(termui.Info, "\r\n")
-							_ = streamMessage(control, message{Type: "redraw"})
+				if switchPending || switchTarget != nil || handoffTarget != nil {
+					// Keep paste boundaries across reads while ordinary input is
+					// suppressed. A pasted Ctrl+C must not cancel the handoff.
+					bypass := keys.Bypass
+					keys.Bypass = false
+					keys.Feed(e.input)
+					keys.Bypass = bypass
+					if keys.Interrupted {
+						if err := interrupt(); err != nil {
+							return 1, err
 						}
-					} else {
-						notice(termui.Info, "\rSession # (Esc cancels): %s \x1b[K", chooser.Number)
 					}
-					continue
-				}
-				if switchPending {
 					continue
 				}
 				if detaching || detachPending {
@@ -557,6 +596,11 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 
 			} else {
 				switch e.m.Type {
+				case "spawn_child_error":
+					if switchAction == "spawn_child" {
+						switchPending, switchAction, switchTimeout = false, "", nil
+					}
+					notice(termui.Warning, "\r\n[sshore] %s\r\n", cleanText(e.m.Error))
 				case "session_targets":
 					if !switchPending || e.m.Action != switchAction {
 						continue
@@ -598,33 +642,9 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 							notice(termui.Info, "\r\n[sshore] Previous session unavailable.\r\n")
 							continue
 						}
-					case "choose":
-						chooser = &tmux.SessionChooser{Names: tmux.SessionOrder(o.session, e.m.Names)}
-						switchPending = true
-						notice(termui.Info, "\r\n")
-						for i, name := range chooser.Names {
-							mark := ""
-							if name == o.session {
-								mark = " *"
-							}
-							notice(termui.Info, "%d  %s%s\r\n", i+1, name, mark)
-						}
-						notice(termui.Info, "Session # (Esc cancels): ")
-						continue
 					}
 					command := "attach"
-					if e.m.Action == "new" {
-						command = "launch"
-						if o.temporary {
-							command = "spawn"
-							if o.owner.PID == 0 {
-								o.owner, err = currentSpawnOwner()
-								if err != nil {
-									return 1, err
-								}
-							}
-						}
-					}
+
 					if err = queueSwitch(target, command); err != nil {
 						notice(termui.Warning, "\r\n[sshore] %s\r\n", err.Error())
 					}
@@ -641,6 +661,9 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 						return 1, fmt.Errorf("update terminal mouse mode: %w", err)
 					}
 				case "spawn_route":
+					if switchAction == "spawn_child" {
+						switchPending, switchAction, switchTimeout = false, "", nil
+					}
 					if o.local && !o.hosted || len(e.m.Token) != 64 {
 						continue
 					}
@@ -651,7 +674,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 							_ = confirmSpawnRoute(ctx, parent, token, fmt.Errorf("client is switching sessions; try again"))
 						}()
 					}
-					if detaching || detachPending || switchPending || chooser != nil {
+					if detaching || detachPending || switchPending {
 						reject()
 						continue
 					}
@@ -669,6 +692,9 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 						reject()
 					}
 				case "handoff":
+					if switchAction == "spawn_child" {
+						switchPending, switchAction, switchTimeout = false, "", nil
+					}
 					// Only authenticated local control can redirect this frontend.
 					if !o.local {
 						return 1, fmt.Errorf("remote attachment requested local handoff")
@@ -689,7 +715,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 						}
 						return nil
 					}
-					if detaching || detachPending || switchPending || chooser != nil || handoffTarget != nil && time.Now().Before(handoffDeadline) {
+					if detaching || detachPending || switchPending || handoffTarget != nil && time.Now().Before(handoffDeadline) {
 						handoffErr = fmt.Errorf("client is switching sessions")
 					}
 					reply := message{Type: "handoff_result", Token: e.m.Token}
@@ -711,7 +737,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					}
 					target := handoffTarget
 					handoffTarget = nil
-					if detaching || detachPending || switchPending || chooser != nil {
+					if detaching || detachPending || switchPending {
 						notice(termui.Warning, "\r\n[sshore] Remote handoff interrupted by session switch.\r\n")
 						continue
 					}

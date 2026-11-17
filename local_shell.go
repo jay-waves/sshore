@@ -544,6 +544,11 @@ func (s *localShell) attach(c net.Conn) error {
 			s.mu.Unlock()
 			tmux.FinishDetach(control, func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, func() { mx.Close() })
 			return nil
+		case "spawn_child":
+			s.mu.Lock()
+			h := &clientHandoff{Args: []string{"spawn", "--local"}, Owner: spawnOwner{PID: t.PID(), Start: s.processIdentity}, Directory: s.record.Directory, Environment: append([]string(nil), s.environment...), Tree: shellTreeFor(s.record.identity())}
+			s.mu.Unlock()
+			go serveShortcutSpawn(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
 		case "session_targets":
 			if err = p.controlMessage(s.targets(m)); err != nil {
 				return err

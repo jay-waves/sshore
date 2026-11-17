@@ -273,6 +273,13 @@ func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
 			if err := p.controlMessage(message{Type: "inventory_done", Inventory: &inventory{Errors: inv.Errors}}); err != nil {
 				return err
 			}
+		case "spawn_child":
+			s.mu.Lock()
+			req := &localDaemonRequest{Record: localShellRecord{Directory: s.directory, Owner: spawnOwner{PID: s.cmd.Process.Pid, Start: s.processIdentity}}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Tree: shellTreeFor(remoteTreeIdentity(s.instance))}}
+			s.mu.Unlock()
+			go serveShortcutSpawn(p, s.done, func(c net.Conn) {
+				s.requestSpawnRoute(c, message{SoftwareVersion: version, LocalRequest: req})
+			})
 		case "session_targets":
 			if err := p.controlMessage(s.sessionTargets(m)); err != nil {
 				return err
@@ -449,12 +456,6 @@ func serveRemoteShellAt(tasks *daemonTasks, runtime, nameLabel, uid string, env 
 	}()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// Catch and discard HUP in the daemon, rather than installing SIG_IGN:
-	// ignored dispositions survive exec and could make a newly started shell
-	// ignore HUP before its own signal handlers are installed.
-	hangups := make(chan os.Signal, 1)
-	signal.Notify(hangups, syscall.SIGHUP)
-	defer signal.Stop(hangups)
 	go func() {
 		select {
 		case <-ctx.Done():

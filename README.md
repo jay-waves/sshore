@@ -65,9 +65,15 @@ Choose the lifetime at startup; omit the host to work locally:
 detach, and reattachment never changes its original owner. Use `launch` for work
 that must survive disconnection. Daemon failure or host restart can end any shell.
 
-Press **Ctrl+B**, then **d** to detach, **s** to switch sessions, or **?** for help.
+Press **Ctrl+B**, then **d** to detach, **l** to return to the last session, **n/p** for next/previous, or **?** for help.
 Inside a remote shell, `sshore detach` also works. Both startup commands accept
 `--detach` to start in the background. `attach` never takes over an attached shell.
+Ctrl+B **c** creates a nested spawn on the current host; exit or detach returns
+one level. The child belongs to the current shell and uses its startup directory
+and environment. It does not suspend the parent program.
+Ctrl+C interrupts the current shell/application. During a connection switch it
+cancels that attempt and restores the previous shell; during the initial
+connection it cancels startup.
 Inside a managed shell, interactive `spawn` reuses the root client, including
 local children and further remote hops. Inside a remote shell, `sshore spawn`
 creates a shell on that host without authenticating again. Ctrl+B controls the child; detach or exit returns one level. Startup failure

@@ -34,18 +34,24 @@ func TestRawTerminalRestoreDisablesMouseReporting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A remote TUI enables all-motion SGR reporting, then the connection
-	// detaches without delivering that application's cleanup sequences.
-	_, _ = output.WriteString("\x1b[?1003h\x1b[?1006h")
+	// A remote TUI enables mouse and enhanced keyboard release reporting, then
+	// disconnects without delivering its cleanup sequences.
+	remoteModes := "\x1b[?1003h\x1b[?1006h\x1b[>11u\x1b[>4;2m"
+	_, _ = output.WriteString(remoteModes)
 	restore()
 	after, err := term.GetState(int(slave.Fd()))
 	if err != nil || !reflect.DeepEqual(before, after) {
 		t.Fatalf("terminal input state not restored: %v", err)
 	}
-	data := make([]byte, len("\x1b[?1003h\x1b[?1006h")+len(terminalInputResetSequence()))
+	data := make([]byte, len(remoteModes)+len(terminalInputResetSequence()))
 	_, err = io.ReadFull(master, data)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, reset := range []string{"\x1b[=0u", "\x1b[>4;0m"} {
+		if strings.Index(string(data), reset) < len(remoteModes) {
+			t.Fatalf("enhanced keyboard reporting left enabled: %q", data)
+		}
 	}
 	for _, mode := range []string{"9", "1000", "1001", "1002", "1003", "1005", "1006", "1015", "1016", "1004", "2004"} {
 		disable := strings.LastIndex(string(data), "\x1b[?"+mode+"l")

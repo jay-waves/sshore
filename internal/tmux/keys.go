@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"slices"
 	"sort"
-	"strconv"
 )
 
 type KeyAction uint8
@@ -19,7 +18,6 @@ const (
 	KeyNext
 	KeyPrevious
 	KeyLast
-	KeyChoose
 )
 
 // KeyEvent is either opaque terminal input or a local command, in input order.
@@ -32,11 +30,13 @@ type KeyEvent struct {
 // The zero value enables shortcuts. Bypass forwards all bytes unchanged.
 type Keys struct {
 	Bypass        bool
+	Interrupted   bool // Ctrl+C outside bracketed paste in the latest Feed.
 	prefix, paste bool
 	marker        []byte
 }
 
 func (k *Keys) Feed(data []byte) []KeyEvent {
+	k.Interrupted = false
 	if len(data) == 0 {
 		return nil
 	}
@@ -56,6 +56,9 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 			out = append(out, c)
 			return false
 		}
+		if c == 3 {
+			k.Interrupted = true
+		}
 		if k.prefix {
 			k.prefix = false
 			var action KeyAction
@@ -71,8 +74,6 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 				action = KeyPrevious
 			case 'l':
 				action = KeyLast
-			case 's', 'w':
-				action = KeyChoose
 			case 'd':
 				action = KeyDetach
 			case 'r':
@@ -126,7 +127,7 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 	return events
 }
 
-func (a KeyAction) IsSessionCommand() bool { return a >= KeyNew && a <= KeyChoose }
+func (a KeyAction) IsSessionCommand() bool { return a >= KeyNew && a <= KeyLast }
 
 // SessionOrder is stable, includes current, and never changes caller-owned data.
 func SessionOrder(current string, names []string) []string {
@@ -138,37 +139,4 @@ func AdjacentSession(current string, names []string, step int) string {
 	all := SessionOrder(current, names)
 	i := sort.SearchStrings(all, current)
 	return all[(i+step%len(all)+len(all))%len(all)]
-}
-
-type SessionChooser struct {
-	Names  []string
-	Number string
-}
-
-// Feed consumes modal input only; trailing bytes after selection are discarded.
-func (c *SessionChooser) Feed(data []byte) (selected string, done bool) {
-	for _, b := range data {
-		switch {
-		case b == 27 || b == 3:
-			return "", true
-		case b == 13 || b == 10:
-			if c.Number == "" {
-				return "", true
-			}
-			n, err := strconv.Atoi(c.Number)
-			if err == nil && n > 0 && n <= len(c.Names) {
-				return c.Names[n-1], true
-			}
-			c.Number = ""
-		case b == 127 || b == 8:
-			if len(c.Number) > 0 {
-				c.Number = c.Number[:len(c.Number)-1]
-			}
-		case b >= '0' && b <= '9':
-			if len(c.Number) < 3 {
-				c.Number += string(b)
-			}
-		}
-	}
-	return "", false
 }

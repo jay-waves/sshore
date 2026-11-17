@@ -25,7 +25,9 @@ func terminalInputResetSequence() string {
 	// terminates strings on hosts which do not implement CAN inside OSC/DCS.
 	// End synchronized output before returning to a prompt, even if the remote
 	// application disconnected halfway through a frame.
-	return "\x18\x1b\\\x1b[?2026l" + MouseResetSequence() +
+	// Remote TUIs can leave Kitty release-event reporting or xterm
+	// modifyOtherKeys enabled; termios/console restoration does not reset either.
+	return "\x18\x1b\\\x1b[?2026l\x1b[=0u\x1b[>4;0m" + MouseResetSequence() +
 		"\x1b[?1004l\x1b[?2004l\x1b[?1l\x1b[?2031l\x1b[?2033l\x1b[?2048l\x1b>\x1b]8;;\x1b\\\x1b[0m\x1b[?25h"
 }
 

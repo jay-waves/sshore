@@ -27,6 +27,8 @@ func localShellPath(env []string) string {
 	return path
 }
 
+func protectDaemonHangups() func() { return func() {} }
+
 func detachLocalDaemon(cmd *exec.Cmd) {
 	// The worker only uses pipes and sockets; the shell gets its own ConPTY.
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}

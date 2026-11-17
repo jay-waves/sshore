@@ -24,7 +24,7 @@ func TestPrefixKeysAcrossReads(t *testing.T) {
 		input, want string
 		action      KeyAction
 	}{
-		{"a\x02\x02b", "a\x02b", KeyNone}, {"before\x02dignored", "before", KeyDetach}, {"a\x02rZ", "aZ", KeyRedraw}, {"\x02i", "", KeyInfo}, {"\x02?", "", KeyHelp}, {"\x02x", "\x02x", KeyNone}, {"before\x1dignored", "before\x1dignored", KeyNone},
+		{"a\x02\x02b", "a\x02b", KeyNone}, {"before\x02dignored", "before", KeyDetach}, {"a\x02rZ", "aZ", KeyRedraw}, {"\x02i", "", KeyInfo}, {"\x02?", "", KeyHelp}, {"\x02x", "\x02x", KeyNone}, {"\x02s", "\x02s", KeyNone}, {"\x02w", "\x02w", KeyNone}, {"before\x1dignored", "before\x1dignored", KeyNone},
 	} {
 		for split := 0; split <= len(tc.input); split++ {
 			var k Keys
@@ -151,20 +151,8 @@ func TestSessionOrderAndCycle(t *testing.T) {
 		t.Fatal("single session moved")
 	}
 }
-func TestSessionChooser(t *testing.T) {
-	for _, tc := range []struct {
-		input, want string
-		done        bool
-	}{{"2\r", "b", true}, {"\x1b", "", true}, {"\x03", "", true}, {"3\r", "", false}, {"12\x7f\r", "a", true}, {"1", "", false}} {
-		c := SessionChooser{Names: []string{"a", "b"}}
-		got, done := c.Feed([]byte(tc.input))
-		if got != tc.want || done != tc.done {
-			t.Fatalf("%q: %q %v", tc.input, got, done)
-		}
-	}
-}
 func TestSessionKeys(t *testing.T) {
-	for _, key := range []byte{'c', 'n', 'p', 'l', 's', 'w'} {
+	for _, key := range []byte{'c', 'n', 'p', 'l'} {
 		var k Keys
 		events := k.Feed([]byte{2, key, 'x'})
 		if len(events) != 1 || !events[0].Action.IsSessionCommand() {
@@ -175,5 +163,22 @@ func TestSessionKeys(t *testing.T) {
 		if len(actions) != 0 || len(data) == 0 {
 			t.Fatalf("paste intercepted %c", key)
 		}
+	}
+}
+
+func TestInterruptDetectionAcrossReads(t *testing.T) {
+	var keys Keys
+	keys.Feed([]byte("typed\x03"))
+	if !keys.Interrupted {
+		t.Fatal("batched interrupt lost")
+	}
+	keys.Feed([]byte("\x1b[200"))
+	keys.Feed([]byte("~pasted\x03"))
+	if keys.Interrupted {
+		t.Fatal("paste counted as interrupt")
+	}
+	keys.Feed([]byte("\x1b[201~\x03\x03"))
+	if !keys.Interrupted {
+		t.Fatal("interrupt after paste lost")
 	}
 }

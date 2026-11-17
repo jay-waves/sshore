@@ -205,7 +205,7 @@ func runClient(o options) (int, error) {
 		}
 	}()
 	// Keep the frontend alive while an attempt unwinds and restores its parent.
-	// Each attempt handles cancellation with its own fresh signal context.
+	// Each attempt routes interrupts according to its connection phase.
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
@@ -246,6 +246,7 @@ func runClient(o options) (int, error) {
 			}
 			o = fallback.from
 			o.command = "attach"
+			o.recovering = true
 			previous = fallbackPrevious
 			fallback = nil
 			continue
@@ -258,6 +259,7 @@ func runClient(o options) (int, error) {
 			returns = returns[:len(returns)-1]
 			o = target.options
 			o.command = "attach"
+			o.recovering = true
 			fallback = nil
 			previous = target.previous
 			continue

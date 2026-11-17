@@ -246,7 +246,7 @@ func TestBoundaryCleanupAfterTruncatedControl(t *testing.T) {
 
 func TestBoundaryCleanupRestoresPromptDisplay(t *testing.T) {
 	seq := terminalInputResetSequence()
-	for _, control := range []string{"\x1b[?2026l", "\x1b]8;;\x1b\\", "\x1b[0m", "\x1b[?25h"} {
+	for _, control := range []string{"\x1b[=0u", "\x1b[>4;0m", "\x1b[?2026l", "\x1b]8;;\x1b\\", "\x1b[0m", "\x1b[?25h"} {
 		if !strings.Contains(seq, control) {
 			t.Errorf("missing prompt cleanup %q", control)
 		}

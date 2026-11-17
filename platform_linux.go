@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -23,6 +24,14 @@ func localShellPath(env []string) string {
 		path = "/bin/sh"
 	}
 	return path
+}
+
+// Catch HUP for the entire account daemon lifetime, including intervals with
+// no hosted shells. Do not use SIG_IGN, which would survive child exec.
+func protectDaemonHangups() func() {
+	hangups := make(chan os.Signal, 1)
+	signal.Notify(hangups, syscall.SIGHUP)
+	return func() { signal.Stop(hangups) }
 }
 
 func detachLocalDaemon(cmd *exec.Cmd) { detachMountDaemon(cmd) }

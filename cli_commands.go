@@ -93,6 +93,7 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 }
 
 type options struct {
+	recovering            bool
 	transports            *clientTransports
 	reusable              *clientTransport
 	routeTarget           bool

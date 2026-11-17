@@ -147,6 +147,12 @@ Keep lifetime separate from interaction:
 - Cancel and join old input readers/writers before handing the terminal to
   another attachment, local prompt or SSH authentication process.
 
+Ctrl+B c always requests a nested spawn on the current shell's host, through
+the existing daemon handoff and return stack. Its owner is the current managed
+shell, with its recorded process identity, startup directory and environment.
+It never inherits launch lifetime or injects a command into terminal input.
+Exit or detach returns one level; the parent program continues running.
+
 The client at the user's terminal owns terminal input and shortcuts. Interactive nested `spawn` commands ask
 the existing daemon and client to prepare a child attachment, then exit only
 after the child is ready. Preserve the original owner PID and creation identity;
@@ -155,6 +161,16 @@ Drain parent input before switching. Detach and child exit unwind one level;
 failed startup restores the parent and reports failure to its launcher.
 Interrupts during authentication or setup must cancel the child connection and
 restore the parent; signal handling stays active through attachment transitions.
+After attachment, OS interrupts are queued as Ctrl+C terminal input instead of
+cancelling the client transport. Ctrl+C while a switch is pending cancels its
+handoff and returns through the detach barrier to the original attachment.
+Repeated interrupts during parent recovery do not unwind additional levels;
+SIGTERM still cancels the active attempt. Initial connection interrupts cancel
+startup normally. Signal handlers remain installed until keyboard shutdown and
+console restoration finish. Connection boundary cleanup disables Kitty keyboard
+event reporting and xterm modifyOtherKeys before returning to the local prompt.
+The Linux account daemon catches SIGHUP for its entire lifetime, including
+intervals without hosted shells; child shells retain their normal HUP behavior.
 Keep the frontend's authenticated transport alive across nested attachments,
 route confirmations and returns to the parent. Closing an attachment releases
 its stream; closing the frontend releases its retained transports. Saved routes

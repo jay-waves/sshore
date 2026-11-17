@@ -193,7 +193,7 @@ func TestClientDetachWithBlockedInput(t *testing.T) {
 	e := newEnv(t)
 	cmd, terminal, wait := startPrefixClient(t, e)
 	wait("Connected")
-	if _, err := io.WriteString(terminal, "stty -echo -icanon; printf 'BLOCKED-%s' ready; sleep 30\n"); err != nil {
+	if _, err := io.WriteString(terminal, "stty -echo -icanon; printf 'BLOCKED-%s' ready; read interrupted_input\n"); err != nil {
 		t.Fatal(err)
 	}
 	wait("BLOCKED-ready")
@@ -650,5 +650,128 @@ func TestClientNestedRemoteSpawnReusesAuthentication(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestClientSpawnShortcutReturnsToParent(t *testing.T) {
+	for _, tc := range []struct{ command, host string }{{"launch", "--local"}, {"spawn", "--local"}, {"launch", "fixture"}, {"spawn", "fixture"}} {
+		host := tc.host
+		t.Run(tc.command+"/"+host, func(t *testing.T) {
+			t.Setenv("SSHORE_LOCAL_SESSION", "")
+			t.Setenv("SSHORE_SOCKET", "")
+			e := newEnv(t)
+			args := []string{tc.command, host, "root", "--no-login", "--no-profile"}
+			label := "local"
+			if host != "--local" {
+				args = append(args, "--server", e.bin)
+				label = host
+			}
+			cmd, terminal, wait := startSessionClient(t, e, args)
+			t.Cleanup(func() { cleanup := exec.Command(e.bin, "kill", "--all"); cleanup.Env = cmd.Env; _ = cleanup.Run() })
+			wait("Connected " + label + " / root")
+			ready := func() {
+				io.WriteString(terminal, "printf 'SHORTCUT_%s\\n' ready\n")
+				wait("SHORTCUT_ready")
+			}
+			ready()
+			for range 2 {
+				io.WriteString(terminal, "\x02c")
+				wait("(spawn)")
+				ready()
+			}
+			for range 2 {
+				io.WriteString(terminal, "exit\n")
+				wait("Connected " + label + " / ")
+				ready()
+			}
+			io.WriteString(terminal, "exit\n")
+			if err := cmd.Wait(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// Exercise both terminal bytes and an actual OS interrupt: console hosts can
+// deliver either, but neither should disconnect an established attachment.
+func TestClientInterruptStaysAttached(t *testing.T) {
+	for _, host := range []string{"--local", "fixture"} {
+		t.Run(host, func(t *testing.T) {
+			t.Setenv("SSHORE_LOCAL_SESSION", "")
+			t.Setenv("SSHORE_SOCKET", "")
+			e := newEnv(t)
+			args := []string{"launch", host, "interrupt", "--no-login", "--no-profile"}
+			label := "local"
+			if host != "--local" {
+				label = host
+				args = append(args, "--server", e.bin)
+			}
+			cmd, terminal, wait := startSessionClient(t, e, args)
+			t.Cleanup(func() { cleanup := exec.Command(e.bin, "kill", "--all"); cleanup.Env = cmd.Env; _ = cleanup.Run() })
+			wait("Connected " + label + " / interrupt")
+			for _, systemSignal := range []bool{false, true} {
+				io.WriteString(terminal, "trap 'printf \"CAUGHT_%s\\n\" interrupt' INT; printf 'WAIT_%s\\n' ready; read interrupted_input\n")
+				wait("WAIT_ready")
+				if systemSignal {
+					if err := cmd.Process.Signal(os.Interrupt); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					terminal.Write([]byte{3})
+				}
+				wait("CAUGHT_interrupt")
+				io.WriteString(terminal, "printf 'STILL_%s\\n' attached\n")
+				wait("STILL_attached")
+			}
+			io.WriteString(terminal, "exit\n")
+			if err := cmd.Wait(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestClientInterruptDuringSwitchRestoresOriginal(t *testing.T) {
+	t.Setenv("SSHORE_SOCKET", "")
+	e := newEnv(t)
+	alpha, _ := e.attach("alpha")
+	detachTestClient(t, alpha)
+	cmd, terminal, wait := startPrefixClient(t, e)
+	wait("Connected fixture / keys")
+	flag := filepath.Join(e.dir, "switch-started")
+	release := filepath.Join(e.dir, "release-setup")
+	t.Cleanup(func() { _ = os.WriteFile(release, nil, 0600) })
+	script := "#!/bin/sh\nif [ ! -e " + shellQuote(flag) + " ]; then : > " + shellQuote(flag) + "; while [ ! -e " + shellQuote(release) + " ]; do sleep 0.01; done; fi\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n"
+	if err := os.WriteFile(filepath.Join(e.dir, "ssh-keys"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	terminal.Write([]byte{2, 'n'})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(flag); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("switch never reached setup")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	terminal.Write([]byte{3})
+	wait("Target unavailable; restoring keys.")
+	if err := os.WriteFile(release, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	wait("Connected fixture / keys")
+	io.WriteString(terminal, "printf 'RESTORED_%s\\n' input\n")
+	wait("RESTORED_input")
+	terminal.Write([]byte{2, 'd'})
+	wait("Detached;")
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alpha", "keys"} {
+		b, _ := e.attach(name, "attach")
+		sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
+		untilType(t, b.tty, "exit")
 	}
 }

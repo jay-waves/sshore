@@ -181,6 +181,8 @@ func newDaemonRecord() (localShellRecord, error) {
 }
 
 func runDaemon() (result error) {
+	stopHangups := protectDaemonHangups()
+	defer stopHangups()
 	standalone := term.IsTerminal(int(os.Stdin.Fd()))
 	enc := json.NewEncoder(os.Stdout)
 	defer func() {
