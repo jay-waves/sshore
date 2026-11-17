@@ -133,7 +133,8 @@ does not prove its target service is healthy.
 Use SSH aliases and `IdentityFile` entries from `~/.ssh/config`, or keys loaded
 into an SSH agent. Encrypted file keys require an interactive unlock unless the
 owning daemon already has a valid cached key. Independent frontend connections
-may ask again; MCP cannot prompt for a passphrase.
+may ask again; password authentication also requires an interactive terminal.
+MCP cannot prompt for credentials.
 Managed remote shells require the server to permit Unix-socket forwarding
 (`AllowStreamLocalForwarding`); preparation then exits and the connection reaches
 the daemon directly. For nested remote hops, configuration and signing credentials come

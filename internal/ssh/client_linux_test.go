@@ -125,7 +125,8 @@ func newConnectionFixtureAt(t *testing.T, listenAddress string, identities ...an
 		t.Fatal(err)
 	}
 	allowNone := listenAddress == "none"
-	if allowNone {
+	allowPassword := listenAddress == "password"
+	if allowNone || allowPassword {
 		listenAddress = "127.0.0.1:0"
 	}
 	server, err := net.Listen("tcp", listenAddress)
@@ -156,6 +157,14 @@ func newConnectionFixtureAt(t *testing.T, listenAddress string, identities ...an
 		}
 		return nil, nil
 	}}
+	if allowPassword {
+		sc.PasswordCallback = func(_ cryptossh.ConnMetadata, password []byte) (*cryptossh.Permissions, error) {
+			if string(password) != "correct" {
+				return nil, fmt.Errorf("invalid password")
+			}
+			return nil, nil
+		}
+	}
 	sc.AddHostKey(hostSigner)
 	go func() {
 		defer workers.Done()
@@ -470,5 +479,46 @@ func TestServerRejectsNoneWithoutIdentity(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no usable SSH public-key identity") {
 		t.Fatal(err)
+	}
+}
+
+func TestPasswordFallbackWithoutKeys(t *testing.T) {
+	f := newConnectionFixtureAt(t, "password")
+	data, err := os.ReadFile(f.options.Executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "identityagent ") {
+			lines[i] = "identityagent none"
+		}
+		if strings.HasPrefix(line, "identityfile ") {
+			lines[i] = "identityfile /missing/key"
+		}
+	}
+	if err := os.WriteFile(f.options.Executable, []byte(strings.Join(lines, "\n")), 0700); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	f.options.Passphrase = func(_ context.Context, prompt string) ([]byte, error) {
+		calls++
+		if !strings.HasPrefix(prompt, "\x00password:") {
+			t.Fatalf("unexpected prompt %q", prompt)
+		}
+		return []byte("correct"), nil
+	}
+	c, err := Dial(context.Background(), f.options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	if calls != 1 {
+		t.Fatalf("prompts %d", calls)
+	}
+	f.options.Passphrase = nil
+	if c, err := Dial(context.Background(), f.options); err == nil {
+		c.Close()
+		t.Fatal("authenticated without password")
 	}
 }

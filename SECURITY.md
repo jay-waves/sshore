@@ -142,7 +142,8 @@ System OpenSSH evaluates configuration; its executable, configuration files and
 agent or file keys loaded by the connection owner. sshore verifies remote host
 keys and owns the
 encrypted connection through Go SSH. Agent authentication without a prompt is
-not approval. Password authentication, agent forwarding and arbitrary proxy
+not approval. Interactive password authentication sends the entered password over
+the authenticated SSH connection; it is not cached or persisted. Agent forwarding and arbitrary proxy
 commands are outside the supported connection model. Changed host keys are
 rejected; background retries never establish new host trust. Connections do not
 share ControlMaster state or automatically reconnect outside explicit forward

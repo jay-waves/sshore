@@ -42,7 +42,8 @@ for example: --port 2222 -- -J jump. The legacy -- -p PORT form is supported.
 Do not combine --port with SSH -p or -o Port.
 Configuration options: -p -i -J -F -l -o -E -v/-vv/-vvv -4 -6.
 Keys come from IdentityFile or an SSH agent. Encrypted files need an interactive
-unlock unless cached by the owning daemon. Passwords, compression, agent/X11
+unlock unless cached by the owning daemon. Password login requires an interactive
+terminal. Compression, agent/X11
 forwarding and ProxyCommand are unsupported; unsupported requests fail.
 `
 
@@ -128,8 +129,7 @@ Do not bypass host verification or supply update confirmation on their behalf.
 
 Execute COMMAND once over SSH, without a remote PTY.
 System ssh -G supplies connection settings. IdentityFile and SSH agent keys are
-supported; encrypted file keys require an interactive unlock. Password login is
-not supported.
+supported; encrypted file keys and password login require an interactive terminal.
 Standard input, output, error and the SSH exit status pass through.
 No persistent sshore shell is created and no remote installation is required.
 Use an SSH config host alias for connection options.

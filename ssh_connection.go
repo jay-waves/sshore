@@ -34,7 +34,11 @@ func unlockSSHKey(ctx context.Context, identity string) ([]byte, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return nil, fmt.Errorf("SSH key unlock requires an interactive terminal")
 	}
-	secret, err := readSSHSecret(ctx, "Passphrase for "+cleanText(identity)+": ")
+	prompt := "Passphrase for " + cleanText(identity) + ": "
+	if strings.HasPrefix(identity, "\x00password:") {
+		prompt = cleanText(strings.TrimPrefix(identity, "\x00password:")) + "'s password: "
+	}
+	secret, err := readSSHSecret(ctx, prompt)
 	if err != nil {
 		return nil, err
 	}

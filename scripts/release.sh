@@ -746,7 +746,8 @@ Changes:
 
 Migration: configure IdentityFile or load an SSH agent key with ssh-add. Encrypted
 file keys require an interactive unlock unless cached by their owning daemon;
-MCP cannot prompt. Password and keyboard-interactive authentication, agent forwarding and ProxyCommand are
+MCP cannot prompt. Interactive password authentication is supported;
+keyboard-interactive authentication, agent forwarding and ProxyCommand are
 not supported by the built-in transport. Managed shell connections require the
 SSH server to permit direct stream-local forwarding to daemon Unix sockets.
 Client and remote releases must match exactly. Updating older remote shells ends

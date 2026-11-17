@@ -94,21 +94,44 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 	cc := &cryptossh.ClientConfig{User: cfg.user, HostKeyCallback: callback, HostKeyAlgorithms: hostAlgos}
 	// Let the server accept none authentication before requiring local identities.
 	attempted := false
+	passwordAttempts := 0
+	var identityErr error
 	cc.AuthCallback = func(state *cryptossh.ClientAuthContext) (cryptossh.AuthMethod, error) {
-		if attempted || !slices.Contains(state.AllowedMethods, "publickey") {
-			return nil, nil
+		if !attempted && slices.Contains(state.AllowedMethods, "publickey") {
+			attempted = true
+			methods, agentConn, e := cfg.authentication(connecting)
+			identityErr = e
+			if e == nil {
+				if agentConn != nil {
+					resources = append(resources, agentConn)
+					stopAgent = context.AfterFunc(connecting, func() { agentConn.Close() })
+				}
+				return methods[0], nil
+			}
 		}
-		attempted = true
-		methods, agentConn, e := cfg.authentication(connecting)
-		if e != nil {
-			return nil, e
+		if slices.Contains(state.AllowedMethods, "password") && !cfg.enabled("batchmode") && cfg.get("passwordauthentication") != "no" && cfg.get("passwordauthentication") != "false" && cfg.options.Passphrase != nil {
+			limit, err := strconv.Atoi(cfg.get("numberofpasswordprompts"))
+			if err != nil {
+				limit = 3
+			}
+			if passwordAttempts < limit {
+				passwordAttempts++
+				return cryptossh.PasswordCallback(func() (string, error) {
+					secret, err := cfg.options.Passphrase(connecting, "\x00password:"+cfg.user+"@"+cfg.host)
+					if err != nil {
+						return "", err
+					}
+					defer clear(secret)
+					return string(secret), nil
+				}), nil
+			}
 		}
-		if agentConn != nil {
-			resources = append(resources, agentConn)
-			stopAgent = context.AfterFunc(connecting, func() { agentConn.Close() })
+		if identityErr != nil {
+			return nil, identityErr
 		}
-		return methods[0], nil
+		return nil, nil
 	}
+
 	modern := cryptossh.SupportedAlgorithms()
 	choose := func(key string, allowed []string) ([]string, error) {
 		value := cfg.get(key)
