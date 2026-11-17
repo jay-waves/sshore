@@ -188,7 +188,8 @@ Remote rename requires matching releases and never installs software.
 ` + sshOptions,
 	"list": `Usage: sshore list [HOST] [options] [-- SSH_OPTIONS]
 
-Without HOST, show local tasks and saved remote observations without SSH.
+Without HOST, show local tasks, shells hosted by this Unix account, and saved
+remote observations without SSH.
 With HOST, query that account live; the remote release must match.
 CHECKED shows when state was last confirmed, not whether it is still live.
 DETAIL summarizes directories, mappings or errors; terminal output is shortened

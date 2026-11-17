@@ -458,3 +458,27 @@ func TestTaskInventoryOutputTerminalWidth(t *testing.T) {
 		})
 	}
 }
+
+func TestListIncludesAccountHostedShells(t *testing.T) {
+	e := newEnv(t)
+	b, _ := e.attach("hosted")
+	defer b.close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, e.bin, "list", "--json")
+	cmd.Env = e.env
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("list: %v: %s", err, output)
+	}
+	var inv inventory
+	if err := json.Unmarshal(output, &inv); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range inv.Shells {
+		if s.Name == "hosted" && s.Host == "local" && s.State == "attached" && !s.Historical && s.ShortID != "" {
+			return
+		}
+	}
+	t.Fatalf("hosted shell missing from list: %s", output)
+}

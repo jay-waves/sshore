@@ -50,6 +50,10 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, color bool) {
 			host = inv.Host
 		}
 		state, checked := s.State, "now"
+		if !s.Historical && inv.Host == "" && s.Instance != "" &&
+			remoteTreeIdentity(s.Instance) == os.Getenv("SSHORE_TREE_ID") && state == "attached" {
+			state += " (current)"
+		}
 		if s.Historical {
 			checked = shellCheckedAge(s.ConfirmedAt, now)
 			if s.ConfirmedAt.IsZero() {

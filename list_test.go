@@ -344,3 +344,15 @@ func TestTaskInventoryIdentityAndType(t *testing.T) {
 		t.Fatal(out.String())
 	}
 }
+
+func TestTaskInventoryCurrentHostedShell(t *testing.T) {
+	t.Setenv("SSHORE_TREE_ID", remoteTreeIdentity("current"))
+	var out bytes.Buffer
+	writeTaskInventory(&out, inventory{Shells: []shellView{
+		{Name: "nested", Host: "local", Instance: "current", State: "attached", Temporary: true},
+		{Name: "cached", Host: "remote", Instance: "current", State: "attached", Historical: true},
+	}})
+	if strings.Count(out.String(), "(current)") != 1 || !strings.Contains(out.String(), "spawn") || strings.Contains(out.String(), "No tasks") {
+		t.Fatal(out.String())
+	}
+}

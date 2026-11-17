@@ -229,6 +229,16 @@ func collectInventory(o options) (inventory, error) {
 			}
 		}
 	} else {
+		hosted, hostedErr := hostedShellInventory(o.listJSON)
+		inv.MachineID, inv.Hostname = hosted.MachineID, hosted.Hostname
+		inv.Shells, inv.Exits = hosted.Shells, hosted.Exits
+		inv.Errors = append(inv.Errors, hosted.Errors...)
+		if hostedErr != nil {
+			inv.Errors = append(inv.Errors, cleanText(hostedErr.Error()))
+		}
+		for i := range inv.Shells {
+			inv.Shells[i].Host = "local"
+		}
 		local, localErr := localShells()
 		inv.LocalShells = local
 		if localErr != nil {
