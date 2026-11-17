@@ -42,16 +42,17 @@ flowchart LR
     end
     subgraph local["Trusted local OS and user account"]
         client["Terminal client"]
-        pending["Bounded, private, expiring request"]
+        pending["Daemon memory: bounded, expiring Request"]
         user["Local user"]
         agent["MCP client and Agent"]
         review["Separate local review: select paths, mountpoint or ports"]
         grant["Fixed operation; consume approval once"]
         resources["Selected files, forward or mount"]
-        control["Local daemon / workers: private capability + exact version"]
+        control["One account daemon TCP endpoint: authentication + task ID"]
         update["Review affected shells; type update; recheck identities"]
     end
-    agent -->|"Explicit remote execution; SSH"| bash
+    agent -->|"MCP stdio adapter; authenticated SSH"| control
+    control -->|"Task-owned MCP execution"| bash
     bash -->|"Untrusted output"| agent
     shell -->|"Authenticated SSH; content remains untrusted"| client
     client -->|"Save metadata and detach; no operation yet"| pending
@@ -69,7 +70,7 @@ flowchart LR
     resources -->|"cp / watched mount: exact-version helper setup"| update
     user --> update
     agent -->|"Exact release; updates require user review"| update
-    update -->|"Prepare verified replacement before ending confirmed tasks"| setup
+    update -->|"Verify replacement; request daemon shutdown; no force fallback"| setup
 ```
 
 Remote output, public names, task IDs and inventory records are not
@@ -91,8 +92,9 @@ forward approval. Host-key confirmation uses an authenticated broker on the
 initiating host. Private keys remain with its system agent; interactive answers
 use the private authenticated broker and are never included in route records.
 
-Managed shell channels reach private daemon Unix sockets through SSH stream-local
-forwarding. SSH server policy must allow it; sshore does not bypass a refusal.
+Managed shell channels reach the account daemon's loopback TCP endpoint through
+SSH TCP forwarding. Every channel authenticates with the account capability before
+selecting a task ID. SSH server policy must allow it; sshore does not bypass a refusal.
 Preparation and bridge processes are not retained as per-shell trust boundaries.
 
 ## Threats and safeguards
@@ -122,13 +124,13 @@ Sensitive review happens in a **separate local `sshore review` invocation** afte
 the connected client exits. Submitting the validated paths or port is approval;
 there is no additional `yes`. File batches collect all paths before starting.
 Ctrl-C or EOF during selection starts no operation and leaves the request pending.
-Completion can browse local paths but does not submit them. Remote terminal output
-is suppressed during approved operations and `--stay`.
+Completion can browse local paths but does not submit them. Approved execution
+uses a separate data stream and does not attach a terminal.
 
 Each pending request:
 
-- Is private to the local user, expires after ten minutes and is subject to
-  request/operation limits.
+- Lives only in the account daemon's memory, expires after ten minutes and is
+  subject to request/operation limits. Daemon failure loses pending requests.
 - Stores connection options and operation metadata, not collected SSH credentials.
 - Is consumed before reconnecting, even if connection or execution fails. A normal
   shell connection cannot execute it; there is no persisted grant or automatic retry.
@@ -224,7 +226,7 @@ process-identity limits as shell cancellation.
 **Threat:** a stale name, reused PID or forged status row causes takeover or
 termination of unrelated work.
 
-Local daemons and shell endpoints listen on loopback and require random capabilities
+The account daemon and native shell endpoints listen on loopback and require random capabilities
 from current-user private state. Unix ownership/permissions and Windows DACLs
 protect that state. Exact release checks and lifetime locks prevent silent takeover
 or downgrade. Launch environments remain in memory, not public inventory or
@@ -251,11 +253,10 @@ it never kills a PID solely because a record contains it. Short-ID selection is
 bound to the original task instance and cannot authorize control of a replacement.
 Aliases are mutable references, not capabilities. Ambiguous short references must
 not select an arbitrary task.
-An exited local mount/forward worker's stale record can be removed regardless of
-version after acquiring its lifetime lock and rechecking the task identity.
-Remote shell cancellation
-requires matching client/program/daemon releases, the account setup lock, a same-user
-socket peer and confirmed process identities. It does not install or update software.
+Control resolves the immutable task ID in the daemon's memory table. Ending a
+task removes its live registration; clients do not infer lifetime from stale files.
+Remote shell cancellation uses the same authenticated, exact-release control
+entry and signals only the child identities owned by that task.
 Single-shell cancel can end an attached shell immediately. `cancel --all` displays a
 fresh snapshot and requires typing `cancel`; new tasks, same-name replacements and
 other managers' advertisements are excluded.
@@ -314,7 +315,7 @@ renamed open files may remain stale until background verification, notification
 or cache expiry. Background verification is bounded and advisory; it cannot
 prove file identity or authorize an operation. Neither
 notifications nor status queries authorize file operations or write replay. See
-[development guidance and code ownership](SSHORE.md#shared-local-daemon-and-resource-workers).
+[development guidance and code ownership](SSHORE.md#account-daemon-and-mounts).
 
 ## Remote setup and updates
 
@@ -322,8 +323,9 @@ notifications nor status queries authorize file operations or write replay. See
 or ends tasks without informed consent or a ready replacement.
 
 The full release version, including PATCH, must match. Managed scope is the current
-remote Unix account's visible sshore shell daemons across runtime directories;
-other users, preparation helpers and transient transports are excluded.
+remote account's unique daemon and its registered tasks. Other users and
+unregistered processes are outside this scope; setup does not discover them by
+process scanning.
 
 1. Missing software may be installed automatically when no incompatible shells
    exist. Existing older installations or shells require reviewing affected
@@ -337,9 +339,12 @@ other users, preparation helpers and transient transports are excluded.
 3. Before ending tasks, setup takes the account lock, rechecks the snapshot and
    prepares/verifies the replacement on the target filesystem. Changed state
    requires fresh confirmation. Preparation failure must not terminate tasks.
-4. Only confirmed same-user shells and identified tasks are signaled, with process
-   identity checks. Once termination starts, later failures cannot restore stopped
-   tasks. Updates can disconnect other clients and lose unsaved work.
+4. Setup requests shutdown through the authenticated administrative endpoint and
+   waits for the account owner to release it. This limited endpoint may inspect or
+   stop another release; it cannot create tasks or open data streams. A changed
+   snapshot, refusal, unavailable endpoint or timeout stops the update. No daemon
+   scan or forced termination fallback is used. Once shutdown starts, failures
+   cannot restore ended tasks; updates can lose unsaved work.
 
 Automatic replacement requires a user-owned regular file and a user-owned directory
 without group/world write permission. It does not elevate privileges or modify PATH

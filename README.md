@@ -40,6 +40,8 @@ Use `sshore COMMAND --help` for the full command reference.
 ## TMUX — leave and resume work
 
 Each session has one terminal. No tmux installation is needed.
+Daemon-owned tasks survive client exit, disconnect and detach. They are held in
+memory; daemon crashes and host restarts have no recovery guarantee.
 
 ```sh
 sshore launch work build          # Start a persistent remote shell.
@@ -72,10 +74,12 @@ Screens, scrollback and detached output are not saved.
 
 ```mermaid
 flowchart LR
-    client["Client"] -->|"SSH; matching release"| shell["Shell"]
+    client["Client"] -->|"Authenticated TCP, directly or over SSH"| daemon["Account daemon: in-memory tasks"]
+    daemon --> shell["Shell"]
     shell -->|"detach"| background["Keep running"]
     background -->|"attach"| shell
-    shell -->|"copy / mount / forward request"| review["Review locally"]
+    shell -->|"copy / mount / forward intent"| request["Pending Request in daemon"]
+    request --> review["Review locally"]
     review -->|"approve"| operation["Copy or independent mount / forward"]
     shell -->|"exit / cancel"| ended["Shell ends"]
     background -->|"spawn owner exits or lifetime SSH is lost"| ended
@@ -128,9 +132,9 @@ require an interactive terminal. For public-key login, load keys with `ssh-add`.
 sidecar; sshore does not load or unlock private keys. SSH configuration forwarding
 is disabled; use `sshore forward`. OpenSSH compatibility is intentionally limited.
 MCP cannot prompt for credentials.
-Managed remote shells require the server to permit Unix-socket forwarding
-(`AllowStreamLocalForwarding`); preparation then exits and the connection reaches
-the daemon directly. For nested remote hops, configuration and signing credentials come
+Managed remote shells require SSH TCP forwarding to the remote loopback address
+(`AllowTcpForwarding`); preparation then exits and the connection reaches the
+authenticated account daemon. For nested remote hops, configuration and signing credentials come
 from the machine running the command. A lost route fails explicitly; it is never
 replaced by a direct connection from your computer.
 **Put SSH options after `--`:**
@@ -172,7 +176,7 @@ requires confirmation and ends the listed shells and tasks; copying creates no
 persistent shell.
 
 `origin:` (or `:`) means the attached client computer. Remote requests detach
-you; run `sshore review` locally, choose paths and submit to copy and reconnect.
+you; run `sshore review` locally, choose paths and submit to copy. Attach again separately.
 Suggested paths still require your review. Ctrl-C during selection cancels.
 
 Only regular files are supported; existing destinations are never overwritten.

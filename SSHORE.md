@@ -23,14 +23,14 @@ policy or depending on mutable application state.
 | Connections and session switching | `client.go`, `client_connection.go` |
 | Remote preparation and exact-release policy | `setup*.go` |
 | Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_linux.go`, `server_linux.go`; process inspection in `setup_process_linux.go` |
-| Local daemon and shell registry | `local_daemon*.go`, `local_shell.go`, `platform_*.go` |
+| Account daemon and local shell control | `daemon*.go`, `local_command.go`, `local_shell.go`; hosted Unix shell adapters in `platform_*.go` |
 | Spawn ownership, lifetime SSH and nested routes | `spawn_transport.go`, `spawn_route_linux.go`, `platform_*.go` |
 | Shell startup and attachment I/O | `internal/tmux/terminal.go`, `internal/tmux/shell_attachment.go`, application adapters in `protocol.go` |
 | Native terminals, console I/O and shortcuts | `internal/tmux/` |
 | Local prompts and presentation | `internal/termui/`, application adapters in `cli_ui.go` |
 | Framing, smux and shared SSH transport | `internal/ssh/` (configuration, public-key authentication, host verification, connections, forwarding and framing); application messages and mux handshake in `protocol.go` |
 | Copy and mount mechanisms | Flat `internal/files/`; command adapters in `cp_command.go`, `mount*.go` |
-| Review records and consent | `review_store.go`, application coordination in `review.go` (including shared source-shell validation in `review_linux.go`) |
+| Pending requests and atomic approval | `review_store.go`, application coordination in `review.go` (including shared source-shell validation in `review_linux.go`) |
 | Forward transport and retries | `forward.go`: endpoint parsing, command execution and SSH worker lifecycle |
 | Resource startup and control | `resource_runtime.go`, `resources.go` |
 | Private storage and name reservations | `state.go` (including account identity and remembered entry points), `task_identity.go`; native checks in `platform_*.go` |
@@ -78,7 +78,8 @@ resolved in the initiating environment and directory, including its remote
 command. No persistent SSH subprocess,
 ControlMaster, askpass executable or implicit reconnect is used.
 
-MCP reuses one background SSH transport per host. Successful calls leave it open;
+MCP grows a bounded pool of SSH transports per host when concurrent calls need
+independent protocol exchanges. Idle transports are reused. Successful calls leave them open;
 cancelling a call closes its transport, while submitted scripts may continue.
 Failed requests are never replayed automatically; the next call reconnects.
 Closing MCP releases transports without ending persistent remote Bash sessions.
@@ -97,15 +98,17 @@ AEAD integrity protection. Normal connections remain quiet. Host verification us
 local known_hosts policy; unknown-host confirmation is routed to the initiating
 frontend over private local control. Background retries never prompt.
 
-After managed shell preparation, the client opens an SSH stream-local channel to
-the account's private daemon socket. The preparation process exits; no bridge
-helper remains per connection. This requires the SSH server to permit stream-local
-forwarding. Recovery retains its transient exec channel instead.
+After managed shell preparation, the client opens an SSH TCP channel to the
+account daemon's loopback endpoint. Native and SSH clients authenticate there and
+open streams by immutable task ID. The preparation process exits; SSH TCP
+forwarding must be permitted. Recovery retains its transient exec channel.
 
 Native port forwards belong to their connection. Application forwards retain
 separate connections and their explicit retry policy. Cancellation closes owned
 connections to interrupt channel I/O before joining workers. Preserve this order
 when adapting streams; session stdin must serialize EOF with writes.
+When a spawn's shell lease ends, its bridge rejects new streams and drains
+established resource streams before closing the transport.
 
 ### Shell ownership and attachment
 
@@ -156,11 +159,37 @@ instances, capabilities or process identities at their authority. Displayed proc
 ancestry is not permission to signal. Follow the
 [shell control safeguards](SECURITY.md#shell-control-and-lifetime).
 
-### Shared local daemon and resource workers
+### Account daemon and mounts
 
-A daemon owns local shell terminals and forward SSH connections. Mounts use separate
-workers to isolate native filesystem work. Remote shells are daemon-owned; mounts
-and independent forwards retain their own SSH transports and lifetimes.
+One `sshore daemon` per OS user account owns native terminals, hosted Unix shells,
+MCP sessions and resources in one in-memory task table. That table owns identity,
+lifecycle and live connection relationships; it is never reconstructed after a
+crash. The loopback TCP listener accepts authenticated control and task streams.
+Only endpoint discovery and credentials need private daemon files.
+Its private owner lock is independent of
+client runtime directories. While it is running, its explicit application state
+root is authoritative; a conflicting `SSHORE_STATE_DIR` is rejected. Test builds
+use isolated account roots. Mounts use separate `sshore daemon mount` processes to isolate native filesystem
+work. Their inherited pipes carry startup and control; workers publish no
+independent control endpoint or live-state files. Mounts and independent forwards
+retain their own SSH transports and lifetimes. MCP stdio adapters are transient
+clients of the same daemon, not another persistent manager.
+
+Creation and rename claim names atomically in the task table. Request payloads
+remain in daemon memory until expiry or single consumption; reviewed endpoints
+exist only in the executing memory copy. Review does not attach a terminal.
+
+Updates query the authenticated administrative endpoint, compare the confirmed
+task snapshot and request shutdown after preparing the replacement. A refusal,
+unreachable endpoint or timeout stops the update. There is no daemon process
+scan or forced shutdown fallback. Administrative inspection/shutdown is separate
+from exact-release normal control and cannot start work or open task streams.
+
+Concurrent MCP calls create additional authenticated SSH transports on demand,
+up to eight per host; further calls wait with cancellation. Spawn bridges open an
+independent local data connection for each stream instead of rejecting the ninth
+stream. Mux buffers remain bounded. Authentication admission applies backpressure
+instead of dropping valid connection bursts.
 
 Startup must have an explicit ownership handoff. Carry the initiating client's
 working directory and environment, not whichever environment started the daemon.

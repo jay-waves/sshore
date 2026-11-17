@@ -8,7 +8,7 @@ CLI help owns command syntax; [SSHORE.md](SSHORE.md) owns implementation and
 
 | Term | Meaning |
 | --- | --- |
-| Task | A managed item shown by sshore: a shell, mount, forward or pending request. This is a display umbrella, not a common execution model. Programs running inside a shell are its processes, not another sshore task type. |
+| Task | A daemon-owned item: a terminal shell, MCP session, mount, forward or pending request. One in-memory account table owns its identity and lifecycle; each kind retains its execution mechanism. Programs running inside a shell are its processes, not another sshore task type. |
 | Shell / session | A daemon-owned shell process with one terminal. Local shells run on Linux or Windows; remote shells run on Linux. A session means a shell session, never a mount or forward. |
 | Spawn | A shell created by `spawn`. It ends with its original owner; a remote spawn also ends when its daemon-owned lifetime SSH connection is lost. A shell created by `launch` survives detach and connection loss. |
 | MCP session | A persistent remote Bash process controlled by MCP tools, using pipes instead of a terminal. It cannot be attached to interactively. |
@@ -23,7 +23,7 @@ CLI help owns command syntax; [SSHORE.md](SSHORE.md) owns implementation and
 | --- | --- |
 | Local / remote | Relative to the operation: local is the computer running the client or managing the resource; remote is its SSH destination. The remote account is the authenticated Unix account, excluding other users. |
 | Client | The sshore process interacting with the user. For nested attachments, the client at the user's terminal continues to own input and shortcuts. |
-| Daemon | The background process owning shells or coordinating local resources. Worker and helper processes are implementation roles, not additional task types. |
+| Daemon | The unique background manager for an OS account, reached through one authenticated loopback TCP endpoint. It owns the in-memory task table; no daemon-crash recovery is promised. A mount isolation worker is an implementation role, not another manager. |
 | Attachment | A client's live interactive connection to a shell. A shell permits one attachment at a time. Detach ends the attachment; disconnect loses its transport. Neither changes the shell's startup lifetime. Mux means this detach/reattach capability. |
 | Transport | The connection carrying operations, usually SSH; local attachments use local control connections. A remote spawn's lifetime SSH connection is separate from its foreground attachment. |
 | Owner | The original process whose lifetime controls a spawn, verified by process identity. Reattaching never transfers ownership. The managed shell shown as owner in `pstree` is display context, not proof of OS process ancestry. |
@@ -39,11 +39,11 @@ credentials to the user's computer. See
 
 | Term | Meaning |
 | --- | --- |
-| Request | A proposed copy, mount or forward awaiting local review. A pending approval is this request's state, not another object. Receiving or selecting a request grants no permission. |
+| Request | An immutable proposed copy, mount or forward held in daemon memory until local review or expiry. A pending approval is this request's state, not another object. Receiving or selecting a request grants no permission. |
 | Approval | The user's explicit acceptance of the local endpoints in `review`, after source validation. Consent means the same thing; SSH authentication alone is insufficient. Approval is single-use. |
 | Recovery | A transient shell on the authenticated SSH connection when normal sshore operation is unavailable. It has no sshore persistence or normal management features and is not a sandbox. |
 
-An approved copy runs on the client's shell stream. An approved mount or forward becomes
+An approved copy runs on a separate file stream without terminal attachment. An approved mount or forward becomes
 an independent resource and retains the request's ID and NAME.
 Ending a source shell does not stop its independent resources.
 
