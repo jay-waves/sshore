@@ -138,7 +138,9 @@ established resource streams before closing the transport.
 Keep lifetime separate from interaction:
 
 - `spawn` belongs to its original parent process; remote spawn also requires its
-  lifetime SSH connection. Detach leaves that connection active.
+  lifetime SSH connection. Detach leaves that connection active. If that
+  connection closes, its exit receipt records `spawn lifetime connection closed`,
+  separately from an explicit kill or an already-recorded shell exit.
 - `launch` is independent of the launching client. Detach, switching and
   reattachment never change a shell's startup lifetime or transfer its owner.
 - Attachment is exclusive. A stale attachment must not release its successor.

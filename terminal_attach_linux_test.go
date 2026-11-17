@@ -9,10 +9,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
 func TestClientPrefixKeysAndDetach(t *testing.T) {
@@ -773,5 +775,65 @@ func TestClientInterruptDuringSwitchRestoresOriginal(t *testing.T) {
 		b, _ := e.attach(name, "attach")
 		sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
 		untilType(t, b.tty, "exit")
+	}
+}
+
+// Abrupt daemon death cannot deliver an exit frame or TUI cleanup. The client
+// must restore its own terminal on EOF for both persistent and spawned shells.
+func TestClientDaemonLossRestoresTerminal(t *testing.T) {
+	for _, command := range []string{"launch", "spawn"} {
+		t.Run(command, func(t *testing.T) {
+			t.Setenv("SSHORE_SOCKET", "")
+			t.Setenv("SSHORE_LOCAL_SESSION", "")
+			e := newEnv(t)
+			cmd, terminal, wait := startSessionClient(t, e, []string{command, "fixture", "crash", "--no-login", "--no-profile", "--server", e.bin})
+			wait("Connected fixture / crash")
+			// Enable exactly the event reporting that produces ;1:3u on key release.
+			// Split the marker so the echoed command cannot satisfy the output barrier.
+			if _, err := io.WriteString(terminal, "printf '\\033[>11u\\033[>4;2mREADY_%s' crash\n"); err != nil {
+				t.Fatal(err)
+			}
+			wait("READY_crash")
+			mode, err := unix.IoctlGetTermios(int(terminal.Fd()), unix.TCGETS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode.Lflag&(unix.ICANON|unix.ECHO|unix.ISIG) != 0 {
+				t.Fatal("client did not enter raw mode")
+			}
+			// Authenticate against this isolated fixture's registered daemon before
+			// signaling it; never discover or signal the user's account by process name.
+			record, err := existingDaemonRecord()
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity, err := processStart(record.ManagerPID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, err := dialLocalSession(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.Close()
+			if current, err := processStart(record.ManagerPID); err != nil || current != identity {
+				t.Fatalf("test daemon identity changed: %v", err)
+			}
+			if err := syscall.Kill(record.ManagerPID, syscall.SIGKILL); err != nil {
+				t.Fatal(err)
+			}
+			wait("\x1b[=0u\x1b[>4;0m")
+			if err := cmd.Wait(); err == nil {
+				t.Fatal("daemon loss reported success")
+			}
+			mode, err = unix.IoctlGetTermios(int(terminal.Fd()), unix.TCGETS)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := uint32(unix.ICANON | unix.ECHO | unix.ISIG)
+			if mode.Lflag&want != want {
+				t.Fatalf("terminal remained raw after daemon loss: %#x", mode.Lflag)
+			}
+		})
 	}
 }

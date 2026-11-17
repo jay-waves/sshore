@@ -491,6 +491,10 @@ func serveRemoteShellAt(tasks *daemonTasks, runtime, nameLabel, uid string, env 
 }
 
 func (s *remoteShell) kill(instance string) error {
+	return s.killWithReason(instance, "killed by sshore kill")
+}
+
+func (s *remoteShell) killWithReason(instance, reason string) error {
 	s.mu.Lock()
 	if instance == "" || instance != s.instance {
 		s.mu.Unlock()
@@ -504,7 +508,9 @@ func (s *remoteShell) kill(instance string) error {
 	}
 	s.killing = true
 	pid, start := s.cmd.Process.Pid, s.processIdentity
-	s.exitReason = "killed by sshore kill"
+	if s.exitReason == "" {
+		s.exitReason = reason
+	}
 	s.mu.Unlock()
 	if err := stopOwnedProcesses([]setupProcess{{PID: pid, Start: start}}); err != nil {
 		s.mu.Lock()

@@ -39,6 +39,22 @@ Includes Linux and Windows binaries for amd64 (x86-64) only.
 Verify downloaded archives against SHA256SUMS.
 Commit: $GITHUB_SHA
 NOTES
+if [[ "$version" == "0.7.5" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Keep Ctrl+C attached to the remote terminal and safely cancel pending shell handoffs.
+- Make Ctrl+B c spawn a nested shell and return to its parent on exit or detach.
+- Reset enhanced keyboard reporting when returning to the local prompt, including abrupt daemon disconnects.
+- Keep Linux daemon SIGHUP protection active across hosted shell lifetimes.
+- Report spawn lifetime connection closure separately from explicit shell kills.
+
+Upgrade: update both client and server to 0.7.5; normal connections require exact
+full release versions. Updating an active daemon ends its registered tasks after
+the existing reviewed confirmation. Save work before accepting an update.
+NOTES
+fi
+
 if [[ "$version" == "0.3.0" ]]; then
   cat >> release-notes.md <<'NOTES'
 

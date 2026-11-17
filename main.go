@@ -9,7 +9,7 @@ import (
 )
 
 // Overridden by release builds using -ldflags '-X main.version=...'.
-var version = "0.7.4"
+var version = "0.7.5"
 
 func main() {
 	code := 1
