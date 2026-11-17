@@ -1,6 +1,5 @@
 # Build Linux/Windows amd64 on pushes and PRs; publish main after both builds.
-# Published tags run the reusable Tests pipeline explicitly (token-created tags
-# do not trigger another push workflow).
+# Full validation is available separately through the manual Tests workflow.
 name: CI
 
 on:
@@ -52,8 +51,6 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.identity.outputs.tag }}
     permissions:
       contents: write
     steps:
@@ -67,25 +64,3 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: bash scripts/release.sh
-      - name: Identify published tag
-        id: identity
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          tag="v$(cat VERSION)"
-          existing=$(gh api "repos/$GH_REPO/git/matching-refs/tags/$tag" --jq ".[] | select(.ref == \"refs/tags/$tag\") | .ref")
-          if [[ -z "$existing" ]]; then exit 0; fi
-          commit=$(gh api "repos/$GH_REPO/commits/$tag" --jq '.sha')
-          if [[ "$commit" == "$GITHUB_SHA" ]]; then
-            gh release view "$tag" --repo "$GH_REPO" > /dev/null
-            echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          fi
-
-  test-release:
-    name: Validate published tag
-    needs: release
-    if: needs.release.outputs.tag != ''
-    uses: ./.github/workflows/tests.yml
-    with:
-      ref: ${{ needs.release.outputs.tag }}

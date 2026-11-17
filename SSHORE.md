@@ -333,8 +333,12 @@ Native mount smoke tests are opt-in and require an existing FUSE/WinFsp environm
 SSHORE_TEST_FTP_MOUNT=1 go test -count=1 -tags=sshoretest -run '^TestFTPNativeMount$' ./internal/files
 ```
 
-The Tests workflow is the unified Linux/Windows amd64 validation pipeline for
-release tags and manual runs. It runs formatting, vet, the core suite with race
+The manually triggered Tests workflow is the unified Linux/Windows amd64
+validation pipeline. Choose the workflow ref, or supply a release tag or commit
+in its optional `ref` input. Pushes, tags and publication never trigger it;
+validation is independent of CI/CD and can also run locally using the commands
+above and the installer/release scripts in `tests/`.
+It runs formatting, vet, the core suite with race
 detection, installers, release-script checks and every real-SSH scenario. Linux
 installs and verifies Bash, Zsh and Fish before testing. Go failures and skips are
 listed in the workflow summary; complete Go results are retained as artifacts.
@@ -367,13 +371,9 @@ can affect behavior; record meaningful regressions as focused tests.
 2. Run checks appropriate to the changes, then commit and push. A push to `main`
    triggers Linux/Windows amd64 builds and packaging; successful builds permit
    publication only while that commit remains the branch head.
-3. CI explicitly calls the unified Tests workflow on the published tag because
-   tags created with its default token do not trigger another push workflow.
-   Externally pushed release tags also trigger Tests; manual runs use the selected
-   ref. Validation runs after publication and reports failures without modifying
-   tags or published assets; it is not a pre-publication gate.
-4. Unless explicitly asked only to push, verify the release, commit/tag identity,
-   both platform archives and checksums, and the tag's Tests result.
+3. Unless explicitly asked only to push, verify the release, commit/tag identity,
+   both platform archives and checksums. Full validation remains an independent
+   manual or local operation, as described above; it is not a release gate.
 
 Published tags and assets are immutable. Source-only edits at an already published
 version do not update its archives. Retain only the highest published patch in each

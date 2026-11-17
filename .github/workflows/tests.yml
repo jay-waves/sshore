@@ -1,15 +1,12 @@
-# One complete validation pipeline for release tags and manual runs.
+# Full validation is opt-in; builds and publication never invoke it.
 name: Tests
 
 on:
-  push:
-    tags: ['v[0-9]*.[0-9]*.[0-9]*']
   workflow_dispatch:
-  workflow_call:
     inputs:
       ref:
-        description: Immutable release tag to validate
-        required: true
+        description: Optional release tag or commit (defaults to selected ref)
+        required: false
         type: string
 
 permissions:
