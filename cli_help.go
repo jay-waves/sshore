@@ -1,7 +1,9 @@
 package main
 
 import (
+	"github.com/jay-waves/sshore/internal/termui"
 	"io"
+	"os"
 	"sort"
 	"strings"
 )
@@ -414,6 +416,17 @@ func showTLDR(command string, w io.Writer) error {
 	if !ok {
 		return usage("no examples for %s; see sshore %s --help", command, command)
 	}
-	_, err := io.WriteString(w, examples)
-	return err
+	color := false
+	if f, ok := w.(*os.File); ok {
+		color = termui.ColorEnabled(f)
+	}
+	for _, line := range strings.SplitAfter(examples, "\n") {
+		if strings.HasPrefix(line, "  sshore ") {
+			line = termui.Format(color, termui.Info, "%s", line)
+		}
+		if _, err := io.WriteString(w, line); err != nil {
+			return err
+		}
+	}
+	return nil
 }
