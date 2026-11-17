@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -159,6 +158,11 @@ func runEndpointForward(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	stopActivity, err := beginCommandActivity()
+	if err != nil {
+		return 1, err
+	}
+	defer stopActivity()
 	if f.Port == 0 || f.Target == 0 {
 		input, err := newLocalInput()
 		if err != nil {
@@ -286,7 +290,7 @@ func runForward(f forwardConfig, s *resourceService) (int, error) {
 	return runForwardTransport(ctx, forwardTransport{
 		Retries:     f.Retries,
 		Description: describeForward(f.Port, f.Target, f.Reverse),
-		Log:         s.logWriter(), HeartbeatInterval: remoteTaskRefresh,
+		Log:         s.logWriter(),
 		Start: func(ctx context.Context, initial bool, diagnostic io.Writer) (*forwardConnection, error) {
 			return startForwardConnection(ctx, f, s, initial, diagnostic)
 		},
@@ -306,9 +310,8 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 	if f.Connection != nil {
 		return startRoutedForward(ctx, f)
 	}
-	args := forwardSSHArgs(f, forwardRemoteCommand(f))
-	at := slices.Index(args, "--")
-	connection := sshio.Options{AllowForwarding: true, Host: f.Host, Args: args[:at], Command: forwardRemoteCommand(f), Environment: s.sshEnvironment(), Directory: s.directory}
+	connection := forwardSSHOptions(f, forwardRemoteCommand(f))
+	connection.Environment, connection.Directory = s.sshEnvironment(), s.directory
 	if initial {
 		connection.Confirm = brokerSSHConfirmation(connection.Environment)
 		connection.Secret = brokerSSHSecret(connection.Environment)
@@ -385,28 +388,20 @@ func (c forwardConfig) Validate() error {
 	return nil
 }
 
-// forwardSSHArgs builds an owned forwarding transport. A nonempty remote command selects
-// the readiness/heartbeat protocol; its authorization and version policy belong to the caller.
-func forwardSSHArgs(c forwardConfig, remoteCommand string) []string {
-	args := []string{"-o", "RemoteCommand=none", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ExitOnForwardFailure=yes", "-o", "ClearAllForwardings=no", "-o", "RequestTTY=no"}
-	flag := "-L"
-	if c.Reverse {
-		flag = "-R"
-	}
-	args = append(args, flag, fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", c.Port, c.Target))
+// Pass the owned loopback rule directly; ssh -G resolves authentication and
+// transport settings without serializing and parsing the product's ports.
+func forwardSSHOptions(c forwardConfig, command string) sshio.Options {
+	args := []string{"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"}
 	args = append(args, sshio.WithoutForwarding(c.SSH)...)
-	args = append(args, "--", c.Host)
-	if remoteCommand != "" {
-		args = append(args, remoteCommand)
-	}
-	return args
+	return sshio.Options{Host: c.Host, Command: command, Args: args,
+		Forward: &sshio.Forward{Port: c.Port, Target: c.Target, Reverse: c.Reverse}}
 }
 
 // Foreground forwards own their connection until explicit cancellation or loss.
 func runForwardTransportForeground(ctx context.Context, executable string, c forwardConfig, in io.Reader, out, diagnostic io.Writer) (int, error) {
-	args := forwardSSHArgs(c, "")
-	at := slices.Index(args, "--")
-	connection, err := sshio.Dial(ctx, sshio.Options{AllowForwarding: true, Host: c.Host, Args: args[:at], Executable: executable, Confirm: confirmSSHHost, Secret: promptSSHSecret})
+	options := forwardSSHOptions(c, "")
+	options.Executable, options.Confirm, options.Secret = executable, confirmSSHHost, promptSSHSecret
+	connection, err := sshio.Dial(ctx, options)
 	if err != nil {
 		return 1, err
 	}
@@ -444,14 +439,13 @@ const forwardReadyMarker = "sshore-forward-ready"
 // Heartbeat returns a complete wire record once per attempt, after readiness.
 // The caller owns its schema; the engine writes the bytes unchanged.
 type forwardTransport struct {
-	Retries           int
-	Description       string
-	Log               io.Writer
-	HeartbeatInterval time.Duration
-	Start             func(context.Context, bool, io.Writer) (*forwardConnection, error)
-	Ready             func() error
-	Status            func(string, error)
-	Heartbeat         func() ([]byte, error)
+	Retries     int
+	Description string
+	Log         io.Writer
+	Start       func(context.Context, bool, io.Writer) (*forwardConnection, error)
+	Ready       func() error
+	Status      func(string, error)
+	Heartbeat   func() ([]byte, error)
 }
 
 // runForwardTransport retries established forwards only. Cancellation closes this transport,
@@ -542,19 +536,18 @@ func runAttempt(parent context.Context, runtime forwardTransport, initial bool, 
 	heartbeat.Add(1)
 	go func() {
 		defer heartbeat.Done()
-		ticker := time.NewTicker(runtime.HeartbeatInterval)
-		defer ticker.Stop()
-		for {
-			if e := sshio.WriteFull(input, task); e != nil {
-				return
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
+		if sshio.WriteFull(input, task) != nil {
+			return
 		}
+		stop, err := startDaemonHeartbeat(ctx, func() { _ = sshio.WriteFull(input, task) })
+		if err != nil {
+			connection.Close()
+			return
+		}
+		<-ctx.Done()
+		stop()
 	}()
+
 	select {
 	case <-done:
 		if waitErr != nil {

@@ -19,7 +19,7 @@ import (
 // Environment and Directory belong to the initiating command, never daemon startup.
 type Options struct {
 	Host, Command, Executable, Directory string
-	AllowForwarding                      bool // Reserved for the product forward adapter.
+	Forward                              *Forward // Reserved for the product forward adapter.
 	Args, Environment                    []string
 	// Diagnostic receives negotiated algorithms only when SSH LogLevel is DEBUG or higher.
 	Diagnostic io.Writer
@@ -71,15 +71,13 @@ func resolveConfig(ctx context.Context, o Options) (*connectionConfig, error) {
 	}
 	// SSH settings are evaluated with the actual remote command for Match command.
 	args := []string{"-G", "-T", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "-o", "RequestTTY=no", "-o", "RemoteCommand=none"}
-	if !o.AllowForwarding {
-		for _, arg := range o.Args {
-			lower := strings.ToLower(arg)
-			if strings.HasPrefix(lower, "localforward") || strings.HasPrefix(lower, "remoteforward") || strings.HasPrefix(lower, "dynamicforward") || arg == "-L" || arg == "-R" || arg == "-D" {
-				return nil, fmt.Errorf("SSH configuration forwarding is unsupported; use sshore forward")
-			}
+	for _, arg := range o.Args {
+		lower := strings.ToLower(arg)
+		if strings.HasPrefix(lower, "localforward") || strings.HasPrefix(lower, "remoteforward") || strings.HasPrefix(lower, "dynamicforward") || arg == "-L" || arg == "-R" || arg == "-D" {
+			return nil, fmt.Errorf("SSH configuration forwarding is unsupported; use sshore forward")
 		}
-		args = append(args, "-o", "ClearAllForwardings=yes")
 	}
+	args = append(args, "-o", "ClearAllForwardings=yes")
 	args = append(args, o.Args...)
 	args = append(args, "--", o.Host)
 	if o.Command != "" {

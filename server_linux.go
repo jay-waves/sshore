@@ -30,11 +30,21 @@ func serverCommand(args []string) error {
 		if len(args) != 1 {
 			return usage("cp-agent takes no arguments")
 		}
+		stop, err := leaseActivity(activityRequest{Kind: "heartbeat"}, nil)
+		if err != nil {
+			return err
+		}
+		defer stop()
 		return files.ServeCopy(&transportio.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}})
 	case "mount-agent":
 		if len(args) != 1 {
 			return usage("mount-agent takes no arguments")
 		}
+		stop, err := leaseActivity(activityRequest{Kind: "heartbeat"}, nil)
+		if err != nil {
+			return err
+		}
+		defer stop()
 		return files.ServeAgentWithPeer(&transportio.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version, func(data json.RawMessage) func() {
 			var task peerRecord
 			if len(data) > maxRemoteTaskSize || json.Unmarshal(data, &task) != nil || !strings.HasPrefix(task.ID, "mount/") {
@@ -163,6 +173,8 @@ func bridgeSpawnTransport(path string, lease net.Conn, readyMode string, transpo
 	if reply.Type != "spawn_owned" {
 		return fmt.Errorf("spawn lease rejected: %s", reply.Error)
 	}
+	// The authenticated lease now lasts until its owner or shell ends.
+	_ = lease.SetDeadline(time.Time{})
 	if readyMode != "" {
 		if err = writeMessage(transport, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
 			return err
@@ -228,6 +240,7 @@ func bridgeSpawnTransport(path string, lease net.Conn, readyMode string, transpo
 				return
 			}
 			defer c.Close()
+			_ = c.SetDeadline(time.Time{})
 			proxySpawn(stream, c)
 		}()
 	}

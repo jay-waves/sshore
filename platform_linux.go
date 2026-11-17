@@ -39,14 +39,12 @@ func spawnProcessIdentity(pid int) (string, error) {
 }
 
 func stopSpawnTerminal(pid int, start string) error {
-	return stopOwnedProcesses([]setupProcess{{PID: pid, Start: start}})
+	return stopOwnedProcesses([]setupProcess{{PID: pid, Start: start}}, syscall.SIGHUP)
 }
 
 func detachMountDaemon(c *exec.Cmd)      { c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
 func lockResourceState(f *os.File) error { return unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB) }
-func lockResourceReadState(f *os.File) error {
-	return unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB)
-}
+
 func prepareFTPPaths(o *ftpOptions) (func(), error) {
 	cleanup := func() {}
 	if o.mountpoint != "" {

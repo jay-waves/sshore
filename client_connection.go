@@ -148,7 +148,7 @@ func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWr
 	// The mux handshake follows SSH authentication; terminal raw mode and its
 	// keyboard reader start only after authentication and setup finish.
 	transport := process
-	if err = negotiateSetupUsing(ctx, reader, writer, o, setupClientUI{OpenInput: func() (setupInput, error) { return newApprovalInput() }}); err != nil {
+	if err = negotiateSetupUsing(ctx, reader, writer, o, setupClientUI{OpenInput: func() (setupInput, error) { return termui.NewInput() }}); err != nil {
 		closeSSH()
 		return nil, nil, err
 	}
@@ -280,7 +280,38 @@ type recentConnection struct {
 
 func (r recentConnection) viaShell() bool { return r.Hosted || r.Parent != nil }
 
+func (c recentConnection) clone() recentConnection {
+	c.SSH = append([]string(nil), c.SSH...)
+	if c.Parent != nil {
+		parent := c.Parent.clone()
+		c.Parent = &parent
+	}
+	return c
+}
+
 func readRecentConnections() ([]recentConnection, error) {
+	r, err := metadataRPC(metadataRequest{Action: "connection_get"})
+	return r.Connections, err
+}
+func readRecentConnectionsLocal() (result []recentConnection, resultErr error) {
+	hub := &accountActivity.Load().metadata
+	root, err := statePath("connections")
+	if err != nil {
+		return nil, err
+	}
+	if hub.connectionRoot == root && hub.connectionsLoaded {
+		records := make([]recentConnection, len(hub.connections))
+		for i, record := range hub.connections {
+			records[i] = record.clone()
+		}
+		return records, nil
+	}
+	defer func() {
+		if resultErr == nil {
+			hub.connectionRoot, hub.connectionsLoaded = root, true
+			hub.connections = append([]recentConnection(nil), result...)
+		}
+	}()
 	dir, err := stateDir("connections")
 	if err != nil {
 		return nil, err
@@ -489,38 +520,54 @@ func rememberConnection(o options) error {
 	if o.plain || o.host == "" || o.session == "" {
 		return nil
 	}
-	records, err := readRecentConnections()
+	record, err := connectionFromOptions(o)
 	if err != nil {
 		return err
 	}
-	record, err := connectionFromOptions(o)
+	_, err = metadataRPC(metadataRequest{Action: "connection_save", Connection: &record})
+	return err
+}
+func rememberConnectionLocal(record recentConnection) error {
+	if err := validateRecentConnection(record); err != nil {
+		return err
+	}
+	record = record.clone()
+	records, err := readRecentConnectionsLocal()
 	if err != nil {
 		return err
 	}
 	next := []recentConnection{record}
 	for _, old := range records {
-		if old.Host != o.host && len(next) < recentConnectionLimit {
+		if old.Host != record.Host && len(next) < recentConnectionLimit {
 			next = append(next, old)
 		}
 	}
+	return writeRecentConnectionsLocal(next)
+}
+func writeRecentConnectionsLocal(records []recentConnection) error {
 	dir, err := stateDir("connections")
 	if err != nil {
 		return err
 	}
-	return writeStateJSON(filepath.Join(dir, "recent.json"), next)
+	accountActivity.Load().metadata.connections = records
+	return writeStateJSON(filepath.Join(dir, "recent.json"), records)
 }
 
 // rememberShellRename changes cached labels only after a successful remote rename.
 // It does not reorder recent hosts or treat rename as an attachment confirmation.
 func rememberShellRename(host, old, name string) error {
+	_, err := metadataRPC(metadataRequest{Action: "connection_rename", Host: host, Key: old, Name: name})
+	return err
+}
+func rememberShellRenameLocal(host, old, name string) error {
 	if validSSHDestination(host) != nil || validSession(old) != nil || validSession(name) != nil {
 		return fmt.Errorf("invalid shell rename identity")
 	}
 	if old == name {
 		return nil
 	}
-	snapshotErr := renameShellSnapshot(host, old, name)
-	records, err := readRecentConnections()
+	snapshotErr := renameShellSnapshotLocked(host, old, name)
+	records, err := readRecentConnectionsLocal()
 	if err != nil {
 		return errors.Join(snapshotErr, err)
 	}
@@ -532,11 +579,7 @@ func rememberShellRename(host, old, name string) error {
 		}
 	}
 	if changed {
-		dir, e := stateDir("connections")
-		if e != nil {
-			return errors.Join(snapshotErr, e)
-		}
-		err = writeStateJSON(filepath.Join(dir, "recent.json"), records)
+		err = writeRecentConnectionsLocal(records)
 	}
 	return errors.Join(snapshotErr, err)
 }

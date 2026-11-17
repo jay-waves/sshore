@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/creack/pty"
 	"github.com/jay-waves/sshore/internal/sshtest"
+	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/term"
 	"os"
 	"os/exec"
@@ -27,7 +28,7 @@ func TestSessionPickerPTYHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input, err := newApprovalInput()
+	input, err := termui.NewInput()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,6 +235,7 @@ func TestSSHUnlockPTY(t *testing.T) {
 }
 
 func TestExecInvokesSSHWithoutPTY(t *testing.T) {
+	activityFixture(t)
 	dir := t.TempDir()
 	script := filepath.Join(dir, "ssh")
 	argsFile := filepath.Join(dir, "args")

@@ -58,9 +58,7 @@ func stopSpawnTerminal(pid int, start string) error { return nil }
 func detachMountDaemon(c *exec.Cmd) {
 	detachLocalDaemon(c)
 }
-func lockResourceReadState(f *os.File) error {
-	return windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &windows.Overlapped{})
-}
+
 func lockResourceState(f *os.File) error {
 	return windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &windows.Overlapped{})
 }

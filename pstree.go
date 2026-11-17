@@ -130,7 +130,7 @@ func writeShellTree(out io.Writer, nodes []shellTreeNode, color bool) {
 		}
 		code := n.ShortID
 		if code == "" {
-			code = taskShortCode(n.Identity, 0)
+			code = taskShortCode(n.Identity)
 		}
 		label := cleanText(kind) + "/" + taskDisplayID(code, n.Name)
 		fmt.Fprint(out, termui.Format(color, "90", "%s", prefix+branch), termui.Format(color && n.Current, termui.Success, "%s", label))
@@ -167,6 +167,11 @@ func runPSTree(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	stopActivity, err := beginCommandActivity()
+	if err != nil {
+		return 1, err
+	}
+	defer stopActivity()
 	inv, err := localTreeInventory()
 	nodes := inventoryShellTrees(knownShellTrees(), inv)
 	nodes = localShellTreeNodes(nodes, inv)
@@ -264,7 +269,7 @@ func inventoryShellTrees(nodes []shellTreeNode, inv inventory) []shellTreeNode {
 
 // Display-only attachment snapshots; never used for authorization or signaling.
 func shellTreePath(id string) (string, error) {
-	dir, err := stateDir("shell-tree")
+	dir, err := statePath("shell-tree")
 	if err != nil {
 		return "", err
 	}
@@ -287,21 +292,17 @@ func currentShellTree() []shellTreeNode {
 	if id == "" {
 		return nil
 	}
-	path, err := shellTreePath(id)
-	if err != nil {
-		return nil
-	}
-	return readShellTree(path)
+	return shellTreeFor(id)
 }
+
 func saveShellTree(id, name string, chain []shellTreeNode, state string, lifetime ...string) {
+	_, _ = metadataRPC(metadataRequest{Action: "tree_save", Key: id, Name: name, Tree: chain, State: state, Lifetime: lifetime})
+}
+func saveShellTreeLocal(id, name string, chain []shellTreeNode, state string, lifetime ...string) {
 	if id == "" {
 		return
 	}
-	path, err := shellTreePath(id)
-	if err != nil {
-		return
-	}
-	previous := readShellTree(path)
+	previous := readTreeLocal(id)
 	machine, host := localMachineIdentity()
 	self := shellTreeNode{Identity: id, ShortID: canonicalTaskCode(id), Host: host, MachineID: machine, CheckedAt: time.Now(), Name: name, State: state}
 	if len(previous) > 0 && previous[len(previous)-1].Identity == id {
@@ -363,20 +364,19 @@ func saveShellTree(id, name string, chain []shellTreeNode, state string, lifetim
 	}
 	chain = append(chain, self)
 	if data, err := json.Marshal(chain); err == nil && len(data) <= 64*1024 {
-		_ = writeStateFile(path, data)
+		_ = writeTreeLocal(id, chain)
 	}
 }
 
 func knownShellTrees() []shellTreeNode {
-	dir, err := stateDir("shell-tree")
-	if err != nil {
-		return nil
-	}
-	paths, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	r, _ := metadataRPC(metadataRequest{Action: "tree_list"})
+	return r.Tree
+}
+func knownShellTreesLocal() []shellTreeNode {
 	nodes := map[string]shellTreeNode{}
 	// Merge evidence before live inventory; file order must not decide state.
-	for _, path := range paths {
-		for _, n := range readShellTree(path) {
+	for _, chain := range accountActivity.Load().metadata.trees {
+		for _, n := range chain {
 			if old, ok := nodes[n.Identity]; ok {
 				if endedShellState(old.State) != endedShellState(n.State) {
 					if endedShellState(old.State) {
@@ -402,13 +402,13 @@ func knownShellTrees() []shellTreeNode {
 }
 
 func shellTreeFor(id string) []shellTreeNode {
-	path, err := shellTreePath(id)
-	if err != nil {
-		return nil
-	}
-	return readShellTree(path)
+	r, _ := metadataRPC(metadataRequest{Action: "tree_get", Key: id})
+	return r.Tree
 }
 func rememberShellTree(chain []shellTreeNode) {
+	_, _ = metadataRPC(metadataRequest{Action: "tree_remember", Tree: chain})
+}
+func rememberShellTreeLocal(chain []shellTreeNode) {
 	if len(chain) == 0 || len(chain) > 64 {
 		return
 	}
@@ -417,39 +417,46 @@ func rememberShellTree(chain []shellTreeNode) {
 		chain[i].Cached = true
 		chain[i].Current = false
 	}
-	path, err := shellTreePath(chain[len(chain)-1].Identity)
+	_, err := shellTreePath(chain[len(chain)-1].Identity)
 	if err == nil {
-		existing := readShellTree(path)
+		existing := readTreeLocal(chain[len(chain)-1].Identity)
 		// A local daemon owns its record; the client must not replace it with a cache.
 		if len(existing) > 0 && (!existing[len(existing)-1].Cached || endedShellState(existing[len(existing)-1].State)) {
 			return
 		}
-		_ = writeStateJSON(path, chain)
+		_ = writeTreeLocal(chain[len(chain)-1].Identity, chain)
 	}
 }
 
 func renameShellTree(id, name string) {
-	chain := shellTreeFor(id)
+	_, _ = metadataRPC(metadataRequest{Action: "tree_rename", Key: id, Name: name})
+}
+func renameShellTreeLocal(id, name string) {
+	chain := readTreeLocal(id)
 	if len(chain) == 0 {
 		return
 	}
 	chain[len(chain)-1].Name = name
-	path, err := shellTreePath(id)
+	_, err := shellTreePath(id)
 	if err == nil {
-		_ = writeStateJSON(path, chain)
+		_ = writeTreeLocal(chain[len(chain)-1].Identity, chain)
 	}
 }
 
 func recordRemoteShellTreeState(s shellSnapshot) error {
+	_, err := metadataRPC(metadataRequest{Action: "tree_state", Snapshot: &s})
+	return err
+}
+func recordRemoteShellTreeStateLocal(s shellSnapshot) error {
 	id := remoteTreeIdentity(s.Instance)
 	if s.Instance == "" {
 		id = s.Host + ":" + s.Name
 	}
-	path, err := shellTreePath(id)
+	_, err := shellTreePath(id)
 	if err != nil {
 		return err
 	}
-	chain := readShellTree(path)
+	chain := readTreeLocal(id)
 	self := shellTreeNode{Identity: id, Host: s.Host, Name: s.Name, Cached: true}
 	for _, n := range chain {
 		if n.Identity == id {
@@ -464,7 +471,7 @@ func recordRemoteShellTreeState(s shellSnapshot) error {
 	}
 	// Retain terminal evidence so older copies in descendant snapshots cannot
 	// resurrect this instance after its list history expires or is forgotten.
-	return writeStateJSON(path, []shellTreeNode{self})
+	return writeTreeLocal(id, []shellTreeNode{self})
 }
 
 func remoteTreeIdentity(instance string) string {

@@ -19,28 +19,12 @@ func TestSSHTransportOwnership(t *testing.T) {
 
 }
 
-func TestForwardResolvedBindings(t *testing.T) {
-	// Inputs match ssh -G output for -L/-D with omitted, empty and explicit binds.
-	for _, tc := range []struct {
-		name, value, network string
-		gateway              bool
-		want                 string
-	}{
-		{"default-loopback", "8080", "tcp", false, "127.0.0.1:8080"},
-		{"ipv4-loopback", "8080", "tcp4", false, "127.0.0.1:8080"},
-		{"ipv6-loopback", "8080", "tcp6", false, "[::1]:8080"},
-		{"gateway", "8080", "tcp", true, ":8080"},
-		{"explicit-empty", "[]:8080", "tcp", false, ":8080"},
-		{"explicit-wildcard", "[*]:8080", "tcp6", false, ":8080"},
-		{"gateway-preserves-bind", "[127.0.0.1]:8080", "tcp", true, "127.0.0.1:8080"},
-		{"ipv6-explicit", "[::1]:8080", "tcp6", false, "[::1]:8080"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := forwardListenAddress(tc.value, tc.network, tc.gateway)
-			if err != nil || got != tc.want {
-				t.Fatalf("binding=%q, err=%v; want %q", got, err, tc.want)
-			}
-		})
+func TestForwardRejectsInvalidPorts(t *testing.T) {
+	for _, rule := range []Forward{{Port: 0, Target: 80}, {Port: 80, Target: 65536}} {
+		client := &Client{config: &connectionConfig{options: Options{Forward: &rule}}}
+		if client.StartForwarding() == nil {
+			t.Fatal("invalid rule accepted", rule)
+		}
 	}
 }
 

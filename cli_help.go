@@ -165,8 +165,8 @@ Resume a detached shell. This never creates a shell or evicts its current client
 Omit HOST and NAME to reuse the last successful connection. HOST alone reuses
 its remembered shell or offers a selection if there is no history.
 Use an alias or short ID from list. An ID selects its local or remote shell.
-With HOST or --local, ID may replace NAME. A lone six-character hex operand
-is an ID; for a hex-named host, give HOST NAME explicitly.
+With HOST or --local, ID may replace NAME. A lone 6–32 character hex operand
+is an ID prefix or full UID; for a hex-named host, give HOST NAME explicitly.
 
 Options:
 ` + connectionOptions + shellConnectionHelp,
@@ -182,7 +182,7 @@ Use attach to reconnect. Ctrl+B d also detaches.
        sshore rename ID NEW
 
 Set or replace a shell, resource or pending review alias without restarting it.
-NEW must be unused and cannot be six hexadecimal characters.
+NEW must be unused and cannot be 6–32 hexadecimal characters.
 A short ID from list may replace OLD; the task ID stays unchanged.
 After renaming a shell, request its pending approvals again.
 Remote rename requires matching releases and never installs software.
@@ -195,7 +195,8 @@ With HOST, query that account live; the remote release must match.
 CHECKED shows when state was last confirmed, not whether it is still live.
 DETAIL summarizes directories, mappings or errors; terminal output is shortened
 to fit the available width. Redirected output preserves full details.
-ID shows a fixed six-character reference followed by an optional (alias).
+ID shows the first six UID characters followed by an optional (alias).
+Use a longer prefix or full UID when a reference is ambiguous.
 TYPE uses launch, spawn, mount, forward or review. Peer entries are read-only.
 Use aliases or short IDs for attach, rename, cancel and review.
 A matching short ID takes precedence over a name.

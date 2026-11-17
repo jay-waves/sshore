@@ -348,6 +348,21 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 	if err = json.Unmarshal(raw, &manager); err != nil {
 		t.Fatal(err)
 	}
+	target, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	go func() {
+		for {
+			c, err := target.Accept()
+			if err != nil {
+				return
+			}
+			io.WriteString(c, "forward-ok")
+			c.Close()
+		}
+	}()
 	for _, name := range []string{"first", "second"} {
 		observation := filepath.Join(e.dir, name+"-parent")
 		stub := filepath.Join(e.dir, name+"-ssh")
@@ -356,7 +371,25 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 			t.Fatal(err)
 		}
 		stub = sshtest.Wrap(t, stub, env)
-		out := run(append(append([]string(nil), env...), "SSHORE_TEST_CONFIG_OWNER="+observation, "SSHORE_SSH="+stub), "forward", "8080", "fixture:3000")
+		probe, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := fmt.Sprint(probe.Addr().(*net.TCPAddr).Port)
+		probe.Close()
+		out := run(append(append([]string(nil), env...), "SSHORE_TEST_CONFIG_OWNER="+observation, "SSHORE_SSH="+stub), "forward", port, "fixture:"+fmt.Sprint(target.Addr().(*net.TCPAddr).Port))
+		conn, err := net.DialTimeout("tcp4", net.JoinHostPort("127.0.0.1", port), time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn.SetReadDeadline(time.Now().Add(time.Second))
+		data := make([]byte, len("forward-ok"))
+		_, err = io.ReadFull(conn, data)
+		conn.Close()
+		if err != nil || string(data) != "forward-ok" {
+			t.Fatalf("forwarded bytes: %q %v", data, err)
+		}
+
 		_, started, ok := strings.Cut(out, "Started forward/")
 		if !ok {
 			t.Fatalf("missing auto-assigned forward name: %s", out)

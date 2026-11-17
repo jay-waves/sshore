@@ -24,7 +24,7 @@ type setupProcess struct {
 // No keyboard reader runs before SSH authentication. The setup exchange and
 // shell/mux exchange use the same pipes and authenticated SSH connection.
 func negotiateSetup(r io.Reader, w io.Writer, o *options) error {
-	return negotiateSetupWithInput(r, w, o, func() (setupInput, error) { return newApprovalInput() })
+	return negotiateSetupWithInput(r, w, o, func() (setupInput, error) { return termui.NewInput() })
 }
 
 type setupInput interface {
@@ -46,7 +46,7 @@ type setupClientUI struct {
 func negotiateSetupUsing(ctx context.Context, r io.Reader, w io.Writer, o *options, ui setupClientUI) error {
 	openInput := ui.OpenInput
 	if openInput == nil {
-		openInput = func() (setupInput, error) { return newApprovalInput() }
+		openInput = func() (setupInput, error) { return termui.NewInput() }
 	}
 	if ui.Log == nil {
 		ui.Log = os.Stderr
@@ -268,7 +268,7 @@ func (l *resourceSetupLog) Write(p []byte) (int, error) {
 
 // Runs in the foreground launcher's authenticated, short-lived prompt broker.
 func serveResourceSetup(w http.ResponseWriter, r *http.Request) {
-	serveResourceSetupWithInput(w, r, func() (setupInput, error) { return newApprovalInput() })
+	serveResourceSetupWithInput(w, r, func() (setupInput, error) { return termui.NewInput() })
 }
 
 func serveResourceSetupWithInput(w http.ResponseWriter, r *http.Request, openInput func() (setupInput, error)) {

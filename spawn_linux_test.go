@@ -20,29 +20,23 @@ import (
 )
 
 func TestSpawnTransportDrainsExistingStreamsAfterShellExit(t *testing.T) {
-	dir, err := os.MkdirTemp("", "ss-drain-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(dir)
-	path := filepath.Join(dir, "shell.sock")
-	listener, err := net.Listen("unix", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	go func() {
-		for {
-			c, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go func() { defer c.Close(); _, _ = io.Copy(c, c) }()
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	path := strings.Repeat("e", 32)
+	shell := &localShell{record: localShellRecord{Name: "echo"}, done: make(chan struct{})}
+	if err := tasks.register(path, &nativeShellTask{shell: shell, serve: func(c net.Conn, first message) error {
+		if err := writeMessage(c, first); err != nil {
+			return err
 		}
-	}()
+		_, err := io.Copy(c, c)
+		return err
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	owner, lease := net.Pipe()
 	defer owner.Close()
 	defer lease.Close()
+	lease.SetDeadline(time.Now().Add(time.Second))
 	go func() {
 		if m, err := readMessage(owner); err != nil || m.Type != "spawn_owner" {
 			owner.Close()
@@ -69,15 +63,21 @@ func TestSpawnTransportDrainsExistingStreamsAfterShellExit(t *testing.T) {
 	}
 	defer stream.Close()
 	exchange := func(c io.ReadWriter) error {
-		if _, err := c.Write([]byte("x")); err != nil {
+		if err := writeMessage(c, message{Type: "probe"}); err != nil {
 			return err
 		}
-		_, err := io.ReadFull(c, make([]byte, 1))
+		_, err := readMessage(c)
 		return err
 	}
 	stream.SetDeadline(time.Now().Add(5 * time.Second))
 	if err := exchange(stream); err != nil {
 		t.Fatal(err)
+	}
+	// Both the owner lease and the authenticated data connection must outlive
+	// their one-second setup deadlines.
+	time.Sleep(1200 * time.Millisecond)
+	if err := exchange(stream); err != nil {
+		t.Fatalf("attachment lost after authentication deadline: %v", err)
 	}
 	// Each accepted stream opens its own data connection; a busy bridge must
 	// grow beyond the former fixed eight-stream ceiling.
@@ -143,6 +143,9 @@ func TestSpawnLifetime(t *testing.T) {
 			}
 			env := append(e.env, "SSHORE_STATE_DIR="+state, "HOME="+home, "SSHORE_DISABLED=", "SSHORE_LOCAL_SESSION=", "SSHORE_SOCKET=", "SSHORE_TREE_ID=original")
 			t.Setenv("SSHORE_STATE_DIR", state)
+			if _, err := ensureLocalDaemonContext(context.Background(), e.bin); err != nil {
+				t.Fatal(err)
+			}
 			saveShellTree("original", "work", nil, "attached", "persistent")
 			args := []string{tc.command, "--local", "temporary", "--detach"}
 			if remote {

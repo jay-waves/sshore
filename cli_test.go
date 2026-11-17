@@ -168,7 +168,7 @@ func TestSessionCommandSemantics(t *testing.T) {
 func TestRecoveryDiagnosticsStayLocal(t *testing.T) {
 	t.Setenv("SSHORE_DISABLED", "1")
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	t.Setenv("SSHORE_RUNTIME_DIR", t.TempDir())
+	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime"))
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "must-not-run"))
 	for _, args := range [][]string{{"ls", "--json"}, {"list", "--local", "--json"}, {"pstree"}} {
 		if code, err := run(args); code != 0 || err != nil {
@@ -263,7 +263,7 @@ func TestRemovedShellForms(t *testing.T) {
 }
 
 func TestCommandAliases(t *testing.T) {
-	for alias, command := range map[string]string{"copy": "cp", "a": "attach", "d": "detach", "ps": "pstree", "ls": "list", "mnt": "mount", "fwd": "forward"} {
+	for alias, command := range map[string]string{"copy": "cp", "a": "attach", "d": "detach", "ps": "pstree", "ls": "list", "mnt": "mount", "fwd": "forward", "sh": "spawn", "mux": "launch"} {
 		t.Run(alias, func(t *testing.T) {
 			var got, want bytes.Buffer
 			if err := showHelp([]string{alias}, &got); err != nil {
@@ -291,7 +291,7 @@ func TestCommandAliases(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(parsed.operands, []string{"a", "d"}) || !reflect.DeepEqual(parsed.ssh, []string{"-J", "ps"}) {
 		t.Fatalf("operands rewritten: %+v %v", parsed, err)
 	}
-	for _, alias := range []string{"a", "ls"} {
+	for _, alias := range []string{"a", "ls", "sh", "mux"} {
 		o, err := parseOptions([]string{alias, "host"})
 		if err != nil || o.command != canonicalCommand(alias) {
 			t.Fatalf("shell policy: %+v %v", o, err)

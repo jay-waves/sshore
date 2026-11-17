@@ -121,17 +121,9 @@ func validateRequestOperations(ops []operation) error {
 func validRequestID(id string) bool { return validTaskUID(id) }
 
 func cloneRequest(r requestRecord) requestRecord {
-	r.Connection = cloneRequestConnection(r.Connection)
+	r.Connection = r.Connection.clone()
 	r.Operations = append([]operation(nil), r.Operations...)
 	return r
-}
-func cloneRequestConnection(c recentConnection) recentConnection {
-	c.SSH = append([]string(nil), c.SSH...)
-	if c.Parent != nil {
-		parent := cloneRequestConnection(*c.Parent)
-		c.Parent = &parent
-	}
-	return c
 }
 func (s *daemonTasks) prune(now time.Time) {
 	for id, r := range s.records {
@@ -247,7 +239,7 @@ func (s *daemonTasks) Find(ref string) (requestRecord, error) {
 	records := s.Pending()
 	var found *requestRecord
 	for _, r := range records {
-		if isShortTaskID(ref) && strings.HasPrefix(r.ID, ref) {
+		if isShortTaskID(ref) && strings.HasPrefix(r.ID, strings.ToLower(ref)) {
 			if found != nil {
 				return requestRecord{}, fmt.Errorf("ambiguous request ID %s", ref)
 			}

@@ -524,7 +524,7 @@ func (s *remoteShell) cancel(instance string) error {
 	pid, start := s.cmd.Process.Pid, s.processIdentity
 	s.exitReason = "cancelled by sshore cancel"
 	s.mu.Unlock()
-	if err := stopOwnedProcesses([]setupProcess{{PID: pid, Start: start}}); err != nil {
+	if err := stopOwnedProcesses([]setupProcess{{PID: pid, Start: start}}, syscall.SIGHUP); err != nil {
 		s.mu.Lock()
 		s.cancelling = false
 		s.mu.Unlock()

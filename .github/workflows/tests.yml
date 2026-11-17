@@ -1,19 +1,22 @@
-# Core checks are manual; extended checks are opt-in.
+# One complete validation pipeline for release tags and manual runs.
 name: Tests
 
 on:
+  push:
+    tags: ['v[0-9]*.[0-9]*.[0-9]*']
   workflow_dispatch:
+  workflow_call:
     inputs:
-      extended:
-        description: Run race, installer and real SSH checks
-        type: boolean
-        default: false
+      ref:
+        description: Immutable release tag to validate
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: tests-${{ github.ref }}
+  group: tests-${{ inputs.ref || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -24,43 +27,91 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 40
+    env:
+      GOARCH: amd64
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+      - name: Verify release identity and toolchain
+        shell: bash
+        env:
+          TEST_REF: ${{ inputs.ref || github.ref }}
+        run: |
+          command -v go python3 bash
+          go version
+          python3 --version
+          if [[ "$TEST_REF" == refs/tags/* || "$TEST_REF" == v* ]]; then
+            tag=${TEST_REF#refs/tags/}
+            [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+            test "$tag" = "v$(cat VERSION)"
+          fi
+          git rev-parse HEAD
+      - name: Linux test dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bash zsh fish openssh-server openssh-sftp-server
+          sudo mkdir -p /run/sshd
+          command -v bash zsh fish ssh sshd ssh-keygen
+          bash --version
+          zsh --version
+          fish --version
       - name: Formatting
         shell: bash
         run: test -z "$(git ls-files -z '*.go' | xargs -0 gofmt -l)"
       - run: go vet ./...
-      - name: Core tests
-        if: ${{ !inputs.extended }}
-        run: go test -count=1 -tags=sshoretest -timeout=5m ./...
-      - name: Tests with race detector
-        if: ${{ inputs.extended }}
+      - name: Core tests with race detector
         env:
           GOFLAGS: -race
-        run: go test -count=1 -tags=sshoretest -timeout=5m ./...
-      - name: Installer tests (Linux)
-        if: inputs.extended && runner.os == 'Linux'
+        run: go test -json -count=1 -tags=sshoretest -timeout=10m ./... > core-tests.jsonl
+      - name: Installer and release tests (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
         run: |
           sh -n install.sh
+          bash -n scripts/release.sh
           python3 tests/install_test.py
           python3 tests/release_test.py
       - name: Installer tests (Windows PowerShell 5.1)
-        if: inputs.extended && runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: powershell
         run: ./tests/install_windows_test.ps1
       - name: Installer tests (PowerShell 7)
-        if: inputs.extended && runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/install_windows_test.ps1
-      - name: Real SSH integration (Linux)
-        if: inputs.extended && runner.os == 'Linux'
+      - name: All real SSH scenarios (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y openssh-server
-          sudo mkdir -p /run/sshd
           go build -tags=sshoretest -o dist/sshore-e2e .
           python3 tests/ssh_e2e.py --binary dist/sshore-e2e
+      - name: Show failed and skipped Go tests
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          log = Path('core-tests.jsonl')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('### Go test failures and skips\n\n')
+              if not log.exists():
+                  summary.write('Core test log unavailable; check preceding steps.\n')
+              else:
+                  for line in log.read_text(encoding='utf-8-sig').splitlines():
+                      event = json.loads(line)
+                      if event['Action'] in ('fail', 'skip'):
+                          summary.write(f"- {event['Action']}: {event['Package']} {event.get('Test', '')}\n")
+                      if event['Action'] == 'output':
+                          print(event['Output'], end='')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}
+          path: core-tests.jsonl
+          if-no-files-found: warn

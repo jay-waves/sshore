@@ -29,6 +29,11 @@ func runCopy(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	stopActivity, err := beginCommandActivity()
+	if err != nil {
+		return 1, err
+	}
+	defer stopActivity()
 	if o.upload && o.sources[0].pick {
 		input, err := newLocalInput()
 		if err != nil {

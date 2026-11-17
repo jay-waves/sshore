@@ -1,9 +1,7 @@
 package main
 
 import (
-	"encoding/hex"
 	"fmt"
-	"os"
 	"strings"
 )
 
@@ -36,8 +34,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		code = ref
 		kind = ""
 	}
-	raw, err := hex.DecodeString(code)
-	if err != nil || len(raw) != 3 {
+	if !isShortTaskID(code) {
 		if compact && !typed && !parsed.has("--all") {
 			target, found, err := findTaskAlias(command, ref, parsed.has("--local"))
 			if err != nil || !found {
@@ -47,18 +44,14 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		}
 		return empty, false, nil
 	}
-	path, err := statePath("tasks/ids.json")
-	if err != nil {
-		return empty, false, err
-	}
-	index, err := readTaskIDIndex(path)
+	keys, err := availableTaskIdentities()
 	if err != nil {
 		return empty, false, err
 	}
 	identity := ""
 	matched := false
-	for key, value := range index.Codes {
-		if value == strings.ToLower(code) {
+	for key := range keys {
+		if strings.HasPrefix(taskUID(key), strings.ToLower(code)) {
 			matched = true
 			if strings.HasPrefix(key, "peer-task:") && validTaskUID(strings.TrimPrefix(key, "peer-task:")) {
 				if _, err := findTaskIdentity("task:" + strings.TrimPrefix(key, "peer-task:")); err == nil {
@@ -85,7 +78,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 				}
 			}
 			if identity != "" {
-				return empty, false, fmt.Errorf("ambiguous task ID %s; specify HOST, --local or a type prefix", code)
+				return empty, false, fmt.Errorf("ambiguous task ID %s; use a longer prefix, full UID, HOST, --local or a type prefix", code)
 			}
 			identity = key
 		}
@@ -129,6 +122,50 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		return empty, false, usage("task ID %s does not belong to host %s", code, parsed.operands[0])
 	}
 	return routeSelectedTask(command, parsed, target, position)
+}
+
+// Enumerate only registered local tasks and known remote observations.
+func availableTaskIdentities() (map[string]bool, error) {
+	keys := map[string]bool{}
+	native, err := nativeShellRecords()
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range native {
+		keys[r.identity()] = true
+	}
+	hosted, err := hostedShellTasks()
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range hosted {
+		keys[r.identity] = true
+	}
+	snapshots, err := readShellSnapshots()
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range snapshots {
+		if !r.Forgotten {
+			keys[remoteShellIdentity(r.Host, r.Instance)] = true
+		}
+	}
+	resources, err := collectLocalResources("")
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range resources {
+		keys[resourceIdentity(r)] = true
+	}
+	peers, err := collectPeerViews()
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range peers {
+		keys[peerTaskIdentity(r)] = true
+	}
+	delete(keys, "")
+	return keys, nil
 }
 
 func routeSelectedTask(command string, parsed *cliArguments, target selectedTask, position int) (selectedTask, bool, error) {
@@ -241,22 +278,11 @@ func findTaskAlias(command, alias string, local bool) (selectedTask, bool, error
 				add(task)
 			}
 		}
-		dir, err := stateDir("local-shells")
+		records, err := nativeShellRecords()
 		if err != nil {
 			return selectedTask{}, false, err
 		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return selectedTask{}, false, err
-		}
-		for _, entry := range entries {
-			if !strings.HasSuffix(entry.Name(), ".json") {
-				continue
-			}
-			r, err := readLocalRecord(dir+string(os.PathSeparator)+entry.Name(), strings.TrimSuffix(entry.Name(), ".json"))
-			if err != nil {
-				return selectedTask{}, false, err
-			}
+		for _, r := range records {
 			if r.Name == alias {
 				add(selectedTask{kind: "shell", name: r.Name, identity: r.identity()})
 			}

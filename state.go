@@ -48,6 +48,9 @@ func writeStateFile(path string, data []byte) error {
 
 // Path resolves a state path without creating directories or changing permissions.
 func statePath(name string) (string, error) {
+	if hub := accountActivity.Load(); hub != nil && hub.root != "" {
+		return filepath.Join(hub.root, name), nil
+	}
 	root := os.Getenv("SSHORE_STATE_DIR")
 	if root == "" {
 		var err error
@@ -96,23 +99,34 @@ func lockIdentity() (*os.File, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "state.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	f, err := lockStateFile(filepath.Join(dir, "state.lock"))
+	return f, dir, err
+}
+
+// lockStateFile serializes private metadata updates. Closing the file releases it.
+func lockStateFile(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
-		return nil, "", err
+		return nil, err
+	}
+	if err = privateStatePath(path, false); err != nil {
+		f.Close()
+		return nil, err
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		err = lockResourceState(f)
 		if err == nil {
-			return f, dir, nil
+			return f, nil
 		}
 		if !resourceLockBusy(err) || time.Now().After(deadline) {
 			f.Close()
-			return nil, "", err
+			return nil, err
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
 func persistentMachineIdentity(reset bool) (string, error) {
 	lock, dir, err := lockIdentity()
 	if err != nil {

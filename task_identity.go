@@ -3,35 +3,37 @@ package main
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 )
-
-// Keep sequence order private and reserve display codes for immutable instances.
-type taskIDIndex struct {
-	Next  uint64
-	IDs   map[string]uint64
-	Codes map[string]string
-}
 
 type taskReference struct {
 	order uint64
 	code  string
 }
 
+func taskUID(key string) string {
+	kind, uid, ok := strings.Cut(key, ":")
+	if ok && (kind == "task" || kind == "peer-task") && validTaskUID(uid) {
+		return uid
+	}
+	// Legacy observations retain a deterministic reference without allocating state.
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:16])
+}
+
 func canonicalTaskCode(key string) string {
 	kind, uid, ok := strings.Cut(key, ":")
-	if !ok || (kind != "task" && kind != "peer-task") || !validTaskUID(uid) {
-		return ""
+	if ok && (kind == "task" || kind == "peer-task") && validTaskUID(uid) {
+		return uid[:6]
 	}
-	return uid[:6]
+	return ""
 }
 
 func validTaskUID(uid string) bool {
@@ -39,160 +41,24 @@ func validTaskUID(uid string) bool {
 	return err == nil && len(raw) == 16 && hex.EncodeToString(raw) == uid
 }
 
-var errTaskPrefixInUse = errors.New("task ID prefix is reserved")
-
 func newTaskUID() (string, error) {
-	for {
-		sum := sha256.Sum256([]byte(rand.Text()))
-		uid := hex.EncodeToString(sum[:16])
-		if _, err := assignTaskIDsMode([]string{"task:" + uid}, true); err != nil {
-			if errors.Is(err, errTaskPrefixInUse) {
-				continue
-			}
-			return "", err
-		}
-		return uid, nil
-	}
+	var random [16]byte
+	rand.Read(random[:])
+	return hex.EncodeToString(random[:]), nil
 }
 
-func taskShortCode(key string, salt uint64) string {
-	if salt == 0 {
-		if code := canonicalTaskCode(key); code != "" {
-			return code
-		}
-	}
+func taskShortCode(key string) string { return taskUID(key)[:6] }
 
-	if salt != 0 {
-		key = fmt.Sprintf("%s\x00%d", key, salt)
-	}
-	sum := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(sum[:3])
-}
-
-func readTaskIDIndex(path string) (taskIDIndex, error) {
-	index := taskIDIndex{Next: 1, IDs: map[string]uint64{}}
-	data, err := os.ReadFile(path)
-	if err == nil {
-		if err = json.Unmarshal(data, &index); err != nil {
-			return taskIDIndex{}, err
-		}
-	} else if !os.IsNotExist(err) {
-		return taskIDIndex{}, err
-	}
-	if index.Next == 0 || index.IDs == nil {
-		return taskIDIndex{}, fmt.Errorf("invalid task ID index")
-	}
-	seen := map[uint64]bool{}
-	for _, id := range index.IDs {
-		if id == 0 || id >= index.Next || seen[id] {
-			return taskIDIndex{}, fmt.Errorf("invalid task ID index")
-		}
-		seen[id] = true
-	}
-	if index.Codes == nil {
-		index.Codes = map[string]string{}
-	}
-	canonicalCodes := map[string]bool{}
-	for key, code := range index.Codes {
-		if canonicalTaskCode(key) == code {
-			canonicalCodes[code] = true
-		}
-	}
-	seenCodes := map[string]string{}
-	for key, code := range index.Codes {
-		raw, err := hex.DecodeString(code)
-		if index.IDs[key] == 0 || err != nil || len(raw) != 3 ||
-			hex.EncodeToString(raw) != code {
-			return taskIDIndex{}, fmt.Errorf("invalid task short ID index")
-		}
-		if old := seenCodes[code]; old != "" && !canonicalCodes[code] {
-			return taskIDIndex{}, fmt.Errorf("invalid task short ID index")
-		}
-		seenCodes[code] = key
-	}
-	return index, nil
-}
-
+// References are derived from identities; observing tasks never reserves IDs.
 func assignTaskIDs(keys []string) (map[string]taskReference, error) {
-	return assignTaskIDsMode(keys, false)
-}
-
-func assignTaskIDsMode(keys []string, creating bool) (map[string]taskReference, error) {
-	dir, err := stateDir("tasks")
-	if err != nil {
-		return nil, err
-	}
-	lockPath := filepath.Join(dir, "ids.lock")
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	if err = privateStatePath(lockPath, false); err != nil {
-		return nil, err
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		err = lockResourceState(f)
-		if err == nil {
-			break
-		}
-		if !resourceLockBusy(err) || time.Now().After(deadline) {
-			return nil, fmt.Errorf("task IDs unavailable: %w", err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	path := filepath.Join(dir, "ids.json")
-	index, err := readTaskIDIndex(path)
-	if err != nil {
-		return nil, err
-	}
-	reserved := make(map[string]bool, len(index.Codes))
-	for _, code := range index.Codes {
-		reserved[code] = true
-	}
 	result := make(map[string]taskReference, len(keys))
-	changed := false
 	for _, key := range keys {
 		if key == "" {
 			return nil, fmt.Errorf("missing task identity")
 		}
-		id := index.IDs[key]
-		if id == 0 {
-			if index.Next == ^uint64(0) {
-				return nil, fmt.Errorf("task IDs exhausted")
-			}
-			id = index.Next
-			index.Next++
-			index.IDs[key] = id
-			changed = true
-		}
-		code := index.Codes[key]
-		if code == "" {
-			if len(reserved) >= 1<<24 {
-				return nil, fmt.Errorf("task short IDs exhausted")
-			}
-			code = canonicalTaskCode(key)
-			if code != "" {
-				if creating && reserved[code] {
-					return nil, errTaskPrefixInUse
-				}
-			} else {
-				for salt := uint64(0); ; salt++ {
-					code = taskShortCode(key, salt)
-					if !reserved[code] {
-						break
-					}
-				}
-			}
-			index.Codes[key], reserved[code], changed = code, true, true
-		}
-		result[key] = taskReference{id, code}
-	}
-	if changed {
-		if err = writeStateJSON(path, index); err != nil {
-			return nil, err
-		}
+		uid := taskUID(key)
+		raw, _ := hex.DecodeString(uid)
+		result[key] = taskReference{order: binary.BigEndian.Uint64(raw[:8]), code: uid[:6]}
 	}
 	return result, nil
 }
@@ -267,8 +133,9 @@ func numberInventoryShells(inv *inventory) error {
 func automaticSessionNames() []string {
 	names := make([]string, 32)
 	for i := range names {
-		sum := sha256.Sum256([]byte(rand.Text()))
-		names[i] = hex.EncodeToString(sum[:3])
+		var random [3]byte
+		rand.Read(random[:])
+		names[i] = hex.EncodeToString(random[:])
 	}
 	return names
 }
@@ -304,22 +171,24 @@ func chooseTaskIdentityExcept(kind, requested, exceptID string) (*taskIdentitySe
 	if err != nil {
 		return nil, err
 	}
-	for {
-		uid, err := newTaskUID()
-		if err != nil {
-			return nil, err
-		}
-		name := requested
-		if name == "" {
-			name = uid[:6]
-		}
-		if !occupied[name] {
-			return &taskIdentitySelection{name: name, uid: uid}, nil
-		}
-		if requested != "" {
-			return nil, fmt.Errorf("%s/%s: %w", kind, name, errObjectNameInUse)
-		}
+	uid, err := newTaskUID()
+	if err != nil {
+		return nil, err
 	}
+	name := requested
+	if name == "" {
+		for length := 6; length <= len(uid); length++ {
+			name = uid[:length]
+			if !occupied[name] {
+				return &taskIdentitySelection{name: name, uid: uid}, nil
+			}
+		}
+		return nil, fmt.Errorf("task UID already exists")
+	}
+	if occupied[name] {
+		return nil, fmt.Errorf("%s/%s: %w", kind, name, errObjectNameInUse)
+	}
+	return &taskIdentitySelection{name: name, uid: uid}, nil
 }
 
 func occupiedObjectNames(exceptID string) (map[string]bool, error) {
@@ -344,8 +213,15 @@ func occupiedObjectNames(exceptID string) (map[string]bool, error) {
 }
 
 func isShortTaskID(name string) bool {
-	raw, err := hex.DecodeString(name)
-	return err == nil && len(raw) == 3
+	if len(name) < 6 || len(name) > 32 {
+		return false
+	}
+	for _, c := range name {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func validAlias(name string) error {
@@ -353,7 +229,7 @@ func validAlias(name string) error {
 		return err
 	}
 	if isShortTaskID(name) {
-		return usage("six hexadecimal characters are reserved for task IDs; choose another alias")
+		return usage("6–32 hexadecimal characters are reserved for task IDs; choose another alias")
 	}
 	return nil
 }

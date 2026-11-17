@@ -181,6 +181,7 @@ func TestShortTaskResourceRenameAndReplacement(t *testing.T) {
 }
 
 func TestShortTaskUnknownAndScopedNames(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "must-not-connect"))
 	for _, args := range [][]string{{"attach", "abcdef"}, {"cancel", "123456"}, {"rename", "ABCDEF", "new"}, {"review", "abcdef"}} {
@@ -241,6 +242,7 @@ func TestShortTaskLocalCommandRouting(t *testing.T) {
 }
 
 func TestShortTaskRemoteHistoryPrefersCurrentName(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	now := time.Now()
 	for _, s := range []shellSnapshot{
@@ -260,26 +262,34 @@ func TestShortTaskRemoteHistoryPrefersCurrentName(t *testing.T) {
 	}
 }
 
-func TestShortTaskRejectsInvalidIndex(t *testing.T) {
+func TestTaskPrefixCollisionResolution(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	dir, err := stateDir("tasks")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, index := range []taskIDIndex{
-		{Next: 1, IDs: map[string]uint64{}, Codes: map[string]string{"peer:one": "abcdef"}},
-		{Next: 3, IDs: map[string]uint64{"peer:one": 1, "peer:two": 2}, Codes: map[string]string{"peer:one": "abcdef", "peer:two": "abcdef"}},
+	tasks := startRequestDaemon(t)
+	first := "abcdef" + strings.Repeat("1", 26)
+	second := "abcdef" + strings.Repeat("2", 26)
+	registerTestShell(t, tasks, "one", first)
+	registerTestShell(t, tasks, "two", second)
+	for _, tc := range []struct{ ref, uid string }{
+		{"abcdef", ""}, {"abcdef1", first}, {first, first}, {second, second}, {"ABCDEF2", second},
 	} {
-		if err = writeStateJSON(filepath.Join(dir, "ids.json"), index); err != nil {
+		parsed, err := parseCLI([]string{tc.ref}, "attach")
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = run([]string{"cancel", "abcdef"}); err == nil || !strings.Contains(err.Error(), "invalid task short ID index") {
-			t.Fatal("invalid index accepted", err)
+		target, selected, err := resolveShortTask("attach", &parsed)
+		if tc.uid == "" {
+			if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+				t.Fatalf("accepted ambiguous prefix: %v", err)
+			}
+		} else if err != nil || !selected || target.identity != "task:"+tc.uid {
+			t.Fatalf("%s: %+v %v", tc.ref, target, err)
 		}
 	}
+
 }
 
 func TestShortTaskRejectsInvalidConnection(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	snapshot := shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "detached", Connection: &recentConnection{Host: "other", Session: "job", Server: "sshore"}}
 	if err := saveShellSnapshot(snapshot); err != nil {

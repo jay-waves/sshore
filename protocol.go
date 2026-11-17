@@ -26,6 +26,7 @@ const (
 
 // Control metadata uses JSON; terminal bytes remain binary.
 type message struct {
+	Activity        *activityRequest    `json:"activity,omitempty"`
 	Handoff         *clientHandoff      `json:"handoff,omitempty"`
 	MCPRequest      *mcp.Request        `json:"mcp_request,omitempty"`
 	MCPResponse     *mcp.Response       `json:"mcp_response,omitempty"`

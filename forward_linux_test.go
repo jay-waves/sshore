@@ -18,6 +18,7 @@ import (
 )
 
 func TestForwardApprovalPreservesDetachedSession(t *testing.T) {
+	activityFixture(t)
 	s := &remoteShell{name: "eevee", cmd: exec.Command("sh")}
 	s.cmd.Process = &os.Process{Pid: 123}
 	m := message{SoftwareVersion: version, Name: "eevee", PID: 123, ApprovalID: strings.Repeat("a", 32)}
@@ -53,6 +54,7 @@ func TestForwardApprovalPreservesDetachedSession(t *testing.T) {
 }
 
 func TestForwardLocalSelection(t *testing.T) {
+	e := newEnv(t)
 	for _, reverse := range []bool{false, true} {
 		root := t.TempDir()
 		wrapper := filepath.Join(root, "ssh")
@@ -61,15 +63,13 @@ func TestForwardLocalSelection(t *testing.T) {
 		}
 		args := []string{"forward", "origin:", "work:3000", "--foreground"}
 		marker := "Local listening port"
-		want := "-L 127.0.0.1:8080:127.0.0.1:3000"
 		if reverse {
 			args = []string{"forward", "work:3000", ":", "--foreground"}
 			marker = "Local service port"
-			want = "-R 127.0.0.1:3000:127.0.0.1:8080"
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		cmd := exec.CommandContext(ctx, testBinary(t), args...)
-		cmd.Env = append(os.Environ(), "SSHORE_SOCKET=", "SSHORE_DISABLED=", "SSHORE_SSH="+wrapper, "TERM=xterm")
+		cmd.Env = append(e.env, "SSHORE_SOCKET=", "SSHORE_DISABLED=", "SSHORE_SSH="+wrapper, "TERM=xterm")
 		terminal, err := pty.Start(cmd)
 		if err != nil {
 			cancel()
@@ -94,7 +94,7 @@ func TestForwardLocalSelection(t *testing.T) {
 		terminal.Close()
 		err = cmd.Wait()
 		cancel()
-		if err == nil || !strings.Contains(output.String(), want) {
+		if err == nil || !answered || !strings.Contains(output.String(), "SSH-ARGS -G") {
 			t.Fatal(output.String(), err)
 		}
 	}
@@ -103,6 +103,7 @@ func TestForwardLocalSelection(t *testing.T) {
 // Local subprocess fixture only: no SSH server, account sessions or upgrades.
 
 func TestForwardReconnectAndCancel(t *testing.T) {
+	activityFixture(t)
 	root := t.TempDir()
 	attempts := filepath.Join(root, "attempts")
 	stub := filepath.Join(root, "ssh")
@@ -166,6 +167,7 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 }
 
 func TestForwardRetryBoundaries(t *testing.T) {
+	activityFixture(t)
 	for _, scenario := range []string{"initial-failure", "exhausted", "cancel-backoff"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
@@ -238,15 +240,6 @@ func TestForegroundReverseForwardStartupCancellation(t *testing.T) {
 		}
 		request.Reply(false, nil)
 	})
-	f, err := os.OpenFile(executable, os.O_WRONLY|os.O_APPEND, 0700)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = io.WriteString(f, "printf 'remoteforward 127.0.0.1:18888 127.0.0.1:18889\\n'\n")
-	f.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan error, 1)

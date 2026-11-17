@@ -13,9 +13,6 @@ import (
 	"github.com/jay-waves/sshore/internal/tmux"
 )
 
-func localPath(b []byte) (string, error)       { return termui.ParsePath(b) }
-func newApprovalInput() (*termui.Input, error) { return termui.NewInput() }
-
 func newLocalInput() (*termui.Input, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return nil, usage("local selection requires an interactive terminal; specify the local endpoint")
@@ -148,7 +145,7 @@ func readSelectedPath(input promptReader, prompt, defaultPath string, validate f
 		}
 		path := defaultPath
 		if line != "" || path == "" {
-			path, err = localPath([]byte(line))
+			path, err = termui.ParsePath([]byte(line))
 		}
 		if err == nil {
 			path, err = filepath.Abs(path)

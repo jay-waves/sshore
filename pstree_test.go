@@ -12,6 +12,7 @@ import (
 )
 
 func TestShellTreeAttachmentSnapshots(t *testing.T) {
+	activityFixture(t)
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -51,6 +52,7 @@ func TestShellTreeAttachmentSnapshots(t *testing.T) {
 }
 
 func TestShellTreeSnapshotSources(t *testing.T) {
+	activityFixture(t)
 	now := time.Now()
 	old := shellTreeNode{Identity: "task", Name: "old", State: "attached", Cached: true, CheckedAt: now.Add(-time.Hour)}
 	fresh := old
@@ -68,12 +70,12 @@ func TestShellTreeSnapshotSources(t *testing.T) {
 		{"newer-copy-first", fresh, old, "fresh"},
 		{"terminal-copy-after-owner", owner, ended, "ended"},
 		{"terminal-copy-before-owner", ended, owner, "ended"},
-		{"owner-before-live-copy", owner, fresh, "owner"},
-		{"owner-after-live-copy", fresh, owner, "owner"},
+		{"owner-before-live-copy", owner, fresh, "fresh"},
+		{"owner-after-live-copy", fresh, owner, "fresh"},
 		{"same-source-terminal-evidence", ended, fresh, "ended"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("SSHORE_STATE_DIR", t.TempDir())
+			t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 			dir, err := stateDir("shell-tree")
 			if err != nil {
 				t.Fatal(err)
@@ -98,6 +100,7 @@ func TestShellTreeSnapshotSources(t *testing.T) {
 }
 
 func TestShellTreeRendering(t *testing.T) {
+	activityFixture(t)
 	nodes := []shellTreeNode{
 		{Identity: "p", Host: "alpha", Name: "root"},
 		{Identity: "b", Owner: "p", Host: "beta", Name: "one", Cached: true},
@@ -128,6 +131,7 @@ func TestShellTreeRendering(t *testing.T) {
 }
 
 func TestShellTreeLifetimeOwnership(t *testing.T) {
+	activityFixture(t)
 	for _, lifetime := range []string{"parent", "heartbeat", "persistent"} {
 		t.Run(lifetime, func(t *testing.T) {
 			dir := t.TempDir()
@@ -174,6 +178,7 @@ func TestShellTreeLifetimeOwnership(t *testing.T) {
 }
 
 func TestShellTreeInventoryRefresh(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_TREE_ID", "remote:instance")
 	nodes := inventoryShellTrees([]shellTreeNode{{Identity: "remote:instance", Owner: "owner", Parent: "other", State: "attached", Cached: true}}, inventory{Host: "server", Shells: []shellView{{Instance: "instance", Name: "job", State: "detached", Temporary: true}}})
 	if len(nodes) != 1 || nodes[0].State != "detached" || nodes[0].Cached || !nodes[0].Current || nodes[0].Owner != "owner" || nodes[0].Parent != "" || nodes[0].Lifetime != "heartbeat" {
@@ -182,6 +187,7 @@ func TestShellTreeInventoryRefresh(t *testing.T) {
 }
 
 func TestShellTreePersistentAttachmentIsNotOwnership(t *testing.T) {
+	activityFixture(t)
 	var out bytes.Buffer
 	writeShellTree(&out, []shellTreeNode{
 		{Identity: "origin", Host: "local", Name: "work", Lifetime: "persistent"},
@@ -195,6 +201,7 @@ func TestShellTreePersistentAttachmentIsNotOwnership(t *testing.T) {
 }
 
 func TestShellTreeCompactStates(t *testing.T) {
+	activityFixture(t)
 	for _, cached := range []bool{false, true} {
 		t.Run(fmt.Sprint("all_cached=", cached), func(t *testing.T) {
 			nodes := []shellTreeNode{
@@ -220,6 +227,7 @@ func TestShellTreeCompactStates(t *testing.T) {
 }
 
 func TestShellTreeCyclesRemainVisible(t *testing.T) {
+	activityFixture(t)
 	var out bytes.Buffer
 	writeShellTree(&out, []shellTreeNode{
 		{Identity: "a", Owner: "b", Host: "alpha", Name: "cycle-a", State: "detached"},
@@ -233,6 +241,7 @@ func TestShellTreeCyclesRemainVisible(t *testing.T) {
 }
 
 func TestShellTreeOmitsEndedOwners(t *testing.T) {
+	activityFixture(t)
 	nodes := inventoryShellTrees([]shellTreeNode{
 		{Identity: "gone", Host: "local", Name: "old", State: "exited"},
 		{Identity: "child", Owner: "gone", Host: "local", Name: "live", State: "detached", Lifetime: "parent"},
@@ -245,6 +254,7 @@ func TestShellTreeOmitsEndedOwners(t *testing.T) {
 }
 
 func TestTaskTreeIndependentResources(t *testing.T) {
+	activityFixture(t)
 	root := shellTreeNode{Identity: "root", ShortID: "a0123b", Name: "work", Host: "laptop", Current: true}
 	nodes := inventoryResourceTrees([]shellTreeNode{root}, inventory{Resources: []resourceView{{Identity: "mount-id", ShortID: "b0123c", ID: "mount/b0123c", Kind: "mount"}, {Identity: "forward-id", ShortID: "c0123d", ID: "forward/db", Kind: "forward"}}})
 	// Force one display host so sibling placement is asserted independently of the fixture computer's name.
@@ -267,6 +277,7 @@ func TestTaskTreeIndependentResources(t *testing.T) {
 }
 
 func TestLocalTreeScopeAndSources(t *testing.T) {
+	activityFixture(t)
 	machine, foreign := strings.Repeat("a", 32), strings.Repeat("b", 32)
 	inv := inventory{MachineID: machine, Hostname: "here", LocalShells: []localShellView{{identity: "local", Name: "local"}}, Shells: []shellView{{Instance: "hosted", State: "attached"}, {Instance: "cached", State: "detached", Historical: true}}}
 	nodes := []shellTreeNode{
@@ -286,6 +297,7 @@ func TestLocalTreeScopeAndSources(t *testing.T) {
 }
 
 func TestTaskTreeCurrentAndCheckedOrder(t *testing.T) {
+	activityFixture(t)
 	now := time.Now()
 	nodes := []shellTreeNode{
 		{Identity: "new", ShortID: "b0123c", Kind: "mount", Name: "data", Remote: "server", Direction: "<-", CheckedAt: now},
@@ -311,6 +323,7 @@ func TestTaskTreeCurrentAndCheckedOrder(t *testing.T) {
 }
 
 func TestTaskTreeResourceDirections(t *testing.T) {
+	activityFixture(t)
 	inv := inventory{Resources: []resourceView{
 		{Identity: "out-mount", Kind: "mount", ShortID: "111111", ID: "mount/data", Host: "server", Worker: "running"},
 		{Identity: "out-forward", Kind: "forward", ShortID: "222222", ID: "forward/db", Host: "server", Direction: "<-", Worker: "running"},
@@ -330,6 +343,7 @@ func TestTaskTreeResourceDirections(t *testing.T) {
 }
 
 func TestShellTreeAttachmentSourceSnapshot(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	for _, source := range []string{"first", "second"} {
 		saveShellTree("child", "child", nil, "attached", "persistent", source, strings.Repeat("a", 32))

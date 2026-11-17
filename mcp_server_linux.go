@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -142,7 +143,7 @@ func (s *trackedMCPSessions) Close(ctx context.Context, in mcp.SessionInput) (mc
 	task.closing = true
 	task.mu.Unlock()
 	defer func() { task.mu.Lock(); task.closing = false; task.mu.Unlock() }()
-	if err := stopOwnedProcesses([]setupProcess{{PID: task.pid, Start: task.start}}); err != nil {
+	if err := stopOwnedProcesses([]setupProcess{{PID: task.pid, Start: task.start}}, syscall.SIGTERM); err != nil {
 		return mcp.Closed{}, err
 	}
 	result, err := s.manager.Close(ctx, in)

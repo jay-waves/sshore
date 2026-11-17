@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Publish a full semantic version after both main-branch release builds pass.
-# CI builds only Linux/Windows amd64 without sshoretest. Full validation lives in
-# the separate workflow_dispatch Tests workflow and never gates release builds.
+# CI builds only Linux/Windows amd64 without sshoretest, then explicitly calls
+# the unified Tests workflow against the published immutable tag.
 # Published tags never change. Existing releases are never overwritten.
 # After successful publication, retain only the latest complete patch per x.y.
 set -euo pipefail
@@ -752,6 +752,35 @@ not supported by the built-in transport. Managed shell connections require the
 SSH server to permit direct stream-local forwarding to daemon Unix sockets.
 Client and remote releases must match exactly. Updating older remote shells ends
 listed shells and tasks only after you review them and type update. Linux and
+Windows amd64 only; remote shell hosting remains Linux-only.
+NOTES
+fi
+
+if [[ "$version" == "0.7.2" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Keep live shell relationships, client activity and peer participation in the
+  account daemon. Socket leases replace liveness files and SFTP advertisements;
+  one daemon clock drives heartbeats, owner checks and idle shutdown.
+- Load shell history and recent routes as cached observations. History cannot
+  recreate live tasks; reset preserves active ownership and connections.
+- Keep remote spawn transports alive until their owned shell exits, including
+  detached startup and nested handoff. Drain established resource streams before
+  closing an ended shell's transport.
+- Derive task references from immutable random UIDs without a persistent ID
+  index. Accept longer prefixes or full UIDs to resolve ambiguous short IDs.
+- Pass owned forwarding rules directly to the SSH transport, removing redundant
+  argument conversion and unused SOCKS machinery.
+- Run the unified Linux/Windows test pipeline against release tags, including
+  race checks, installers and all seven isolated real-SSH scenarios. Report
+  failed and skipped checks in the workflow summary.
+- Retain sh and mux as aliases for spawn and launch.
+
+Migration: client and remote releases must match exactly. Updating an older
+account daemon ends its listed shells and tasks only after you review them and
+type update. Normal commands use the account daemon; help and version output do
+not start it. History remains private cached data, not crash recovery. Linux and
 Windows amd64 only; remote shell hosting remains Linux-only.
 NOTES
 fi

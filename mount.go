@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/pkg/sftp"
-
 	"github.com/jay-waves/sshore/internal/files"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
@@ -32,6 +30,11 @@ func runMount(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	stopActivity, err := beginCommandActivity()
+	if err != nil {
+		return 1, err
+	}
+	defer stopActivity()
 	if err = files.CheckMountPlatform(); err != nil {
 		return 1, err
 	}
@@ -79,7 +82,7 @@ func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
 	}
 	var lifecycle *files.MountLifecycle
 	if s != nil {
-		lifecycle = &files.MountLifecycle{Abandoned: s.abandoned, Environment: s.sshEnvironment(), OperationCompleted: s.operationCompleted, Ready: s.ready, Stop: s.stop, Sync: func(ctx context.Context, c *sftp.Client) func() { return startMountTaskSync(ctx, c, s.peerTask) }}
+		lifecycle = &files.MountLifecycle{Abandoned: s.abandoned, Environment: s.sshEnvironment(), OperationCompleted: s.operationCompleted, Ready: s.ready, Stop: s.stop}
 	}
 	return files.RunMount(c, lifecycle)
 }
@@ -104,7 +107,7 @@ func readMountApprovalPath(input promptReader, hint string) (string, error) {
 		if line == "" {
 			return "", nil
 		}
-		selected, err := localPath([]byte(line))
+		selected, err := termui.ParsePath([]byte(line))
 		if err == nil && !(runtime.GOOS == "windows" && len(selected) == 2 && selected[1] == ':') {
 			selected, err = filepath.Abs(selected)
 		}

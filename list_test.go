@@ -2,9 +2,8 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"github.com/chzyer/readline"
-	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -12,6 +11,7 @@ import (
 )
 
 func TestExcludeLocalResourcePeers(t *testing.T) {
+	activityFixture(t)
 	manager := taskManagerLabel()
 	peers := []peerView{
 		{ID: "peer/aaaaaaaa/forward/web", Manager: manager},
@@ -25,26 +25,24 @@ func TestExcludeLocalResourcePeers(t *testing.T) {
 	}
 }
 
-func TestTaskIDsPersistWithoutReorderingOrReuse(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+func TestTaskReferencesNeedNoPersistentIndex(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", "relative-invalid-state")
 	first, err := assignTaskIDs([]string{"shell:one", "mount:two"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := assignTaskIDs([]string{"mount:two", "forward:three"})
-	if err != nil {
-		t.Fatal(err)
+	second, err := assignTaskIDs([]string{"mount:two", "shell:one"})
+	if err != nil || !reflect.DeepEqual(first, second) {
+		t.Fatalf("unstable references: %v %v %v", first, second, err)
 	}
-	if first["shell:one"].order != 1 || first["mount:two"].order != 2 || second["mount:two"].order != 2 || second["forward:three"].order != 3 {
-		t.Fatalf("%v %v", first, second)
-	}
-	third, err := assignTaskIDs([]string{"shell:one"})
-	if err != nil || third["shell:one"].order != 1 {
-		t.Fatalf("%v %v", third, err)
+	uid, err := newTaskUID()
+	if err != nil || !validTaskUID(uid) {
+		t.Fatalf("UID requires state: %s %v", uid, err)
 	}
 }
 
 func TestTaskInventoryCurrentShell(t *testing.T) {
+	activityFixture(t)
 	for _, current := range []string{"", "local:current", "local:replaced"} {
 		t.Run(current, func(t *testing.T) {
 			t.Setenv("SSHORE_LOCAL_SESSION", current)
@@ -73,6 +71,7 @@ func TestTaskInventoryCurrentShell(t *testing.T) {
 }
 
 func TestTaskInventoryCompactDetails(t *testing.T) {
+	activityFixture(t)
 	var out bytes.Buffer
 	inv := inventory{
 		LocalShells: []localShellView{{Name: "work", Directory: "/src/project"}},
@@ -102,6 +101,7 @@ func TestTaskInventoryCompactDetails(t *testing.T) {
 }
 
 func TestTaskTableTerminalWidth(t *testing.T) {
+	activityFixture(t)
 	detail := strings.Repeat("路径/", 40)
 	for _, columns := range []int{0, 24, 35, 40, 80, 120} {
 		for _, color := range []bool{false, true} {
@@ -143,6 +143,7 @@ func TestTaskTableTerminalWidth(t *testing.T) {
 }
 
 func TestInventoryHostGroups(t *testing.T) {
+	activityFixture(t)
 	var out bytes.Buffer
 	inv := inventory{Host: "server", RemoteQueried: true,
 		Shells: []shellView{{order: 1, Name: "build", State: "detached"}},
@@ -188,6 +189,7 @@ func TestInventoryHostGroups(t *testing.T) {
 }
 
 func TestTaskInventoryEndedHistory(t *testing.T) {
+	activityFixture(t)
 	inv := inventory{Shells: []shellView{
 		{Host: "work", Name: "gone", State: "detached", Historical: true, Unconfirmed: true},
 		{Host: "work", Name: "finished", State: "exited", Historical: true},
@@ -208,6 +210,7 @@ func TestTaskInventoryEndedHistory(t *testing.T) {
 }
 
 func TestTaskInventoryCheckedAndColor(t *testing.T) {
+	activityFixture(t)
 	now := time.Now()
 	inv := inventory{Shells: []shellView{
 		{order: 1, Host: "work", Name: "api", State: "detached", Historical: true, ConfirmedAt: now.Add(-12 * time.Minute)},
@@ -243,6 +246,7 @@ func TestTaskInventoryCheckedAndColor(t *testing.T) {
 }
 
 func TestShellCheckedAge(t *testing.T) {
+	activityFixture(t)
 	now := time.Now()
 	for _, tc := range []struct {
 		at   time.Time
@@ -259,6 +263,7 @@ func TestShellCheckedAge(t *testing.T) {
 }
 
 func TestTaskListDisplaysShortIDs(t *testing.T) {
+	activityFixture(t)
 	var out bytes.Buffer
 	writeTaskInventory(&out, inventory{
 		LocalShells: []localShellView{{order: 20179, ShortID: "d012ab", Name: "first", State: "detached"}},
@@ -279,60 +284,17 @@ func TestTaskListDisplaysShortIDs(t *testing.T) {
 	}
 }
 
-func TestTaskShortIDCollision(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	const first, second, collision = "fixture:1170", "fixture:4725", "3c7a51"
-	if taskShortCode(first, 0) != collision || taskShortCode(second, 0) != collision {
-		t.Fatal("collision fixture no longer collides")
-	}
-	a, err := assignTaskIDs([]string{first})
-	if err != nil || a[first].code != collision {
-		t.Fatal(a, err)
-	}
-	// The first task is absent from this list, but its code remains reserved.
-	b, err := assignTaskIDs([]string{second})
-	if err != nil || b[second].code != taskShortCode(second, 1) || b[second].code == collision {
-		t.Fatal(b, err)
-	}
-	both, err := assignTaskIDs([]string{second, first})
-	if err != nil || both[first] != a[first] || both[second] != b[second] {
-		t.Fatalf("codes changed when list order changed: %v %v", both, err)
-	}
-}
-
 func TestCanonicalTaskIDsAndPrefixCollisions(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	first := "abcdef" + strings.Repeat("1", 26)
-	collision := "abcdef" + strings.Repeat("2", 26)
-	if _, err := assignTaskIDsMode([]string{"task:" + first}, true); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := assignTaskIDsMode([]string{"task:" + collision}, true); !errors.Is(err, errTaskPrefixInUse) {
-		t.Fatalf("creation accepted reserved prefix: %v", err)
-	}
-	// An observation from an independent manager retains its owner's reference.
-	refs, err := assignTaskIDs([]string{"task:" + collision, "task:" + first})
-	if err != nil || refs["task:"+first].code != "abcdef" || refs["task:"+collision].code != "abcdef" {
-		t.Fatalf("import changed references: %v %v", refs, err)
-	}
-	parsed, err := parseCLI([]string{"abcdef"}, "cancel")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := resolveShortTask("cancel", &parsed); err == nil || !strings.Contains(err.Error(), "ambiguous") {
-		t.Fatalf("ambiguous ID accepted: %v", err)
-	}
-	uid, err := newTaskUID()
-	if err != nil || !validTaskUID(uid) || uid[:6] == "abcdef" {
-		t.Fatalf("invalid generated identity: %s %v", uid, err)
-	}
-	refs, err = assignTaskIDs([]string{"task:" + uid})
-	if err != nil || refs["task:"+uid].code != uid[:6] {
-		t.Fatalf("unstable generated reference: %v %v", refs, err)
+	second := "abcdef" + strings.Repeat("2", 26)
+	refs, err := assignTaskIDs([]string{"task:" + first, "task:" + second})
+	if err != nil || refs["task:"+first].code != "abcdef" || refs["task:"+second].code != "abcdef" {
+		t.Fatalf("prefix collision rewrote UID: %v %v", refs, err)
 	}
 }
 
 func TestTaskInventoryIdentityAndType(t *testing.T) {
+	activityFixture(t)
 	var out bytes.Buffer
 	writeTaskInventory(&out, inventory{LocalShells: []localShellView{{ShortID: "a0123b", Name: "work", State: "attached"}}, Resources: []resourceView{{ShortID: "b0123c", Kind: "mount", ID: "mount/b0123c", Worker: "running"}}})
 	for _, text := range []string{"a0123b (work)", "b0123c", "TYPE", "launch", "mount"} {
@@ -346,6 +308,7 @@ func TestTaskInventoryIdentityAndType(t *testing.T) {
 }
 
 func TestTaskInventoryCurrentHostedShell(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_TREE_ID", remoteTreeIdentity("current"))
 	var out bytes.Buffer
 	writeTaskInventory(&out, inventory{Shells: []shellView{

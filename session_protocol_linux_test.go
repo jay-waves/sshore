@@ -85,10 +85,22 @@ func newEnv(t *testing.T) *testEnv {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if snapshot, err := daemonAdmin(ctx, "snapshot", nil); err == nil {
-			if _, err := daemonAdmin(ctx, "shutdown", &snapshot); err != nil {
-				t.Errorf("test daemon shutdown: %v", err)
+		for {
+			snapshot, err := daemonAdmin(ctx, "snapshot", nil)
+			if err != nil {
+				break
 			}
+			_, err = daemonAdmin(ctx, "shutdown", &snapshot)
+			if err == nil {
+				break
+			}
+			// Test transports may finish between the snapshot and shutdown.
+			// Refresh only this isolated fixture; production still requires review.
+			if err.Error() == "tasks changed; review again" && ctx.Err() == nil {
+				continue
+			}
+			t.Errorf("test daemon shutdown: %v", err)
+			break
 		}
 		logs, _ := filepath.Glob(filepath.Join(dir, "*.log"))
 		for _, p := range logs {
@@ -357,9 +369,27 @@ func TestStatusConnection(t *testing.T) {
 	}
 }
 
-func approvedSFTP(t *testing.T, b *bridgeConn, op operation) (*sftp.Client, *smux.Stream) {
+func approvedTestMux(t *testing.T) *smux.Session {
 	t.Helper()
-	st, err := b.mux.OpenStream()
+	a, b := net.Pipe()
+	client, err := smux.Client(a, transportio.MuxConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := smux.Server(b, transportio.MuxConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { serveApprovedStreams(ctx, server); close(done) }()
+	t.Cleanup(func() { cancel(); client.Close(); server.Close(); <-done })
+	return client
+}
+
+func approvedSFTP(t *testing.T, mux *smux.Session, op operation) (*sftp.Client, *smux.Stream) {
+	t.Helper()
+	st, err := mux.OpenStream()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,9 +410,9 @@ func approvedSFTP(t *testing.T, b *bridgeConn, op operation) (*sftp.Client, *smu
 	return client, st
 }
 
-func partialUpload(t *testing.T, b *bridgeConn, dir, name string) *smux.Stream {
+func partialUpload(t *testing.T, mux *smux.Session, dir, name string) *smux.Stream {
 	t.Helper()
-	client, st := approvedSFTP(t, b, operation{Kind: "upload", Path: dir, Name: name, Size: 100})
+	client, st := approvedSFTP(t, mux, operation{Kind: "upload", Path: dir, Name: name, Size: 100})
 	file, err := client.OpenFile("/.sshore-part", os.O_CREATE|os.O_EXCL|os.O_WRONLY)
 	if err != nil {
 		t.Fatal(err)
@@ -414,7 +444,7 @@ func waitUploadFiles(t *testing.T, dir string, count int) {
 
 func TestTransferRoundTripsCancellationAndNoOverwrite(t *testing.T) {
 	e := newEnv(t)
-	b, _ := e.attach("main")
+	mux := approvedTestMux(t)
 	data := bytes.Repeat([]byte("transfer\x00\xff"), 200000)
 	source := filepath.Join(e.dir, "中文 source.bin")
 	if err := os.WriteFile(source, data, 0600); err != nil {
@@ -422,7 +452,7 @@ func TestTransferRoundTripsCancellationAndNoOverwrite(t *testing.T) {
 	}
 	target := filepath.Join(e.dir, "download")
 	op := operation{Kind: "download", Path: source, Name: filepath.Base(source), Size: int64(len(data)), LocalPath: target}
-	if err := executeApprovedFile(context.Background(), b.mux, op, true); err != nil {
+	if err := executeApprovedFile(context.Background(), mux, op, true); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(target)
@@ -434,17 +464,17 @@ func TestTransferRoundTripsCancellationAndNoOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	op = operation{Kind: "upload", Path: dir, Name: filepath.Base(source), Size: int64(len(data)), LocalPath: source}
-	if err = executeApprovedFile(context.Background(), b.mux, op, true); err != nil {
+	if err = executeApprovedFile(context.Background(), mux, op, true); err != nil {
 		t.Fatal(err)
 	}
 	got, err = os.ReadFile(filepath.Join(dir, op.Name))
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatal("upload corrupted", err)
 	}
-	if err = executeApprovedFile(context.Background(), b.mux, op, true); err == nil {
+	if err = executeApprovedFile(context.Background(), mux, op, true); err == nil {
 		t.Fatal("overwrite accepted")
 	}
-	st := partialUpload(t, b, dir, "cancelled")
+	st := partialUpload(t, mux, dir, "cancelled")
 	st.Close()
 	waitUploadFiles(t, dir, 1)
 	if err = os.WriteFile(source, nil, 0600); err != nil {
@@ -458,23 +488,24 @@ func TestTransferRoundTripsCancellationAndNoOverwrite(t *testing.T) {
 	if err = os.WriteFile(op.LocalPath, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err = executeApprovedFile(context.Background(), b.mux, op, true); err != nil {
+	if err = executeApprovedFile(context.Background(), mux, op, true); err != nil {
 		t.Fatal(err)
 	}
-	partialUpload(t, b, dir, "lost")
-	b.close()
+	partialUpload(t, mux, dir, "lost")
+	mux.Close()
 	waitUploadFiles(t, dir, 1)
 }
 
 func TestConcurrentStreamsCancelIsolation(t *testing.T) {
 	e := newEnv(t)
 	b, pid := e.attach("main")
+	mux := approvedTestMux(t)
 	dir := filepath.Join(e.dir, "uploads")
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	slow := partialUpload(t, b, dir, "cancelled")
-	fast, _ := approvedSFTP(t, b, operation{Kind: "upload", Path: dir, Name: "surviving", Size: 2})
+	slow := partialUpload(t, mux, dir, "cancelled")
+	fast, _ := approvedSFTP(t, mux, operation{Kind: "upload", Path: dir, Name: "surviving", Size: 2})
 	sendTest(t, b.in, message{Type: "resize", Cols: 97, Rows: 31})
 	untilType(t, b.out, "resized")
 	shellOutput(t, b, "printf 'LIVE_PID:%s\\n' $$", fmt.Sprintf("LIVE_PID:%d", pid))
@@ -493,15 +524,17 @@ func TestConcurrentStreamsCancelIsolation(t *testing.T) {
 func TestDisconnectCleansBothConcurrentUploads(t *testing.T) {
 	e := newEnv(t)
 	b, pid := e.attach("main")
+	mux := approvedTestMux(t)
 	dir := filepath.Join(e.dir, "uploads")
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		partialUpload(t, b, dir, fmt.Sprintf("file%d", i))
+		partialUpload(t, mux, dir, fmt.Sprintf("file%d", i))
 	}
-	b.close()
+	mux.Close()
 	waitUploadFiles(t, dir, 0)
+	b.close()
 	resumed, resumedPID := e.attach("main")
 	if resumedPID != pid {
 		t.Fatal("upload disconnect replaced the shell")

@@ -5,7 +5,7 @@ Run after go build -tags=sshoretest -buildvcs=false -o dist/sshore . with:
     python3 tests/ssh_e2e.py
 Creates temporary keys and an SSH server bound only to 127.0.0.1.
 Covers SSH/PTY, approval detach, local path selection, one-shot execution,
-attach/stay behavior, batches, rejection, forwarding, and SSH reauthentication.
+explicit reattachment, batches, rejection, forwarding, and SSH reauthentication.
 Does not modify ~/.ssh or system sshd configuration.
 """
 import argparse
@@ -25,10 +25,10 @@ import signal
 import socket
 import struct
 import subprocess
+import sys
 import tarfile
 import tempfile
 import termios
-import threading
 import time
 
 
@@ -157,7 +157,7 @@ def nested_smoke(binary, host, options, root):
             reattached.wait()
             reattached.close()
             reattached = None
-            approval = Terminal([binary, "review", request, "--stay"], wait_ready=False)
+            approval = Terminal([binary, "review", request], wait_ready=False)
             try:
                 approval.expect("Save as")
                 approval.send(str(received) + "\n")
@@ -192,6 +192,17 @@ def spawn_smoke(binary, host, options):
 
     def inventory():
         return json.loads(subprocess.check_output(cli("list", "--json"), text=True))
+
+    terminal = Terminal(cli("spawn", "foreground"))
+    try:
+        terminal.send("sleep 2; printf 'SPAWN-%s\\n' retained\n")
+        terminal.expect("SPAWN-retained")
+        rows = {row["name"]: row for row in inventory()["shells"]}
+        assert rows["foreground"]["state"] == "attached", rows
+        terminal.send("exit\n")
+        terminal.wait()
+    finally:
+        terminal.close()
 
     subprocess.run(cli("launch", "persistent", "--detach"), check=True)
     parent = subprocess.Popen(
@@ -332,13 +343,26 @@ def mcp_smoke(binary, host, ssh_wrapper):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default="dist/sshore")
-    parser.add_argument("--spawn-only", action="store_true")
-    parser.add_argument("--identity-only", action="store_true")
-    parser.add_argument("--nested-only", action="store_true")
-    parser.add_argument("--handoff-only", action="store_true")
-    parser.add_argument("--setup-only", action="store_true")
-    parser.add_argument("--mcp-only", action="store_true")
+    scenarios = ("core", "spawn", "identity", "nested", "handoff", "setup", "mcp")
+    selection = parser.add_mutually_exclusive_group()
+    for scenario in scenarios:
+        selection.add_argument(f"--{scenario}-only", action="store_true")
     args = parser.parse_args()
+    # The default is the complete suite; focused options must never hide checks
+    # from CI. Each scenario gets its own daemon, SSH server and runtime directory.
+    if not any(getattr(args, f"{scenario}_only") for scenario in scenarios):
+        failed = []
+        for scenario in scenarios:
+            print(f"=== SSH scenario: {scenario} ===", flush=True)
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve()), "--binary", args.binary,
+                 f"--{scenario}-only"])
+            if result.returncode:
+                failed.append(scenario)
+        if failed:
+            raise SystemExit("Failed SSH scenarios: " + ", ".join(failed))
+        print("PASS: all SSH scenarios", flush=True)
+        return
     binary = str(Path(args.binary).resolve())
     metadata = subprocess.check_output(["go", "version", "-m", binary], text=True)
     if "-tags=sshoretest" not in metadata:
@@ -406,15 +430,11 @@ LogLevel ERROR
                 output.write(f"ForceCommand {scope}\n")
         if args.mcp_only:
             scope = root / "mcp-remote"
-            scope.write_text("#!/usr/bin/python3\n" +
-                             "import os, shlex\n" +
-                             f"os.environ['SSHORE_RUNTIME_DIR'] = {str(root / 'runtime')!r}\n" +
-                             f"os.environ['SSHORE_STATE_DIR'] = {str(root / 'remote-state')!r}\n" +
-                             "parts = shlex.split(os.environ['SSH_ORIGINAL_COMMAND'])\n" +
-                             "assert len(parts) == 3 and parts[:2] == ['sh', '-c']\n" +
-                             "assert parts[2].startswith(\"server='sshore'; \")\n" +
-                             f"script = parts[2].replace(\"server='sshore'\", 'server=' + shlex.quote({binary!r}), 1)\n" +
-                             "os.execv('/bin/sh', ['sh', '-c', script])\n")
+            scope.write_text("#!/bin/sh\n" +
+                             f"export SSHORE_RUNTIME_DIR={shlex.quote(str(root / 'runtime'))}\n" +
+                             f"export SSHORE_STATE_DIR={shlex.quote(str(root / 'remote-state'))}\n" +
+                             f"export PATH={shlex.quote(str(root))}:$PATH\n" +
+                             'exec sh -c "$SSH_ORIGINAL_COMMAND"\n')
             scope.chmod(0o700)
             with config.open("a") as output:
                 output.write(f"ForceCommand {scope}\n")
@@ -446,27 +466,24 @@ LogLevel ERROR
                        "-i", str(key), "-F", "/dev/null", "-o", "IdentitiesOnly=yes",
                        "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known}"]
             if args.identity_only:
-                file_command = command + ["-o", "IdentityAgent=none"]
-                plain = Terminal(file_command)
-                terms.append(plain)
-                plain.send("exit\n")
-                plain.wait()
+                # IdentityFile selects an agent identity; private keys must never
+                # be loaded by sshore, including when the agent is disabled.
+                rejected = Terminal(command + ["-o", "IdentityAgent=none"], wait_ready=False)
+                terms.append(rejected)
+                rejected.expect("no usable SSH public-key identity")
+                rejected.wait(expected=1)
                 secret = "sshore-file-key-secret"
                 subprocess.run(["ssh-keygen", "-q", "-p", "-P", "", "-N", secret, "-f", str(key)], check=True, stdout=subprocess.DEVNULL)
-                file_command[1] = "spawn"
-                for attempt in range(2):
-                    terminal = Terminal(file_command, wait_ready=False)
+                for action in ("launch", "spawn"):
+                    agent_command = command[:]
+                    agent_command[1] = action
+                    terminal = Terminal(agent_command)
                     terms.append(terminal)
-                    if attempt == 0:
-                        terminal.expect("Passphrase for ")
-                        terminal.send(secret + "\n")
-                    terminal.expect(r"\[sshore\] Connected")
-                    assert secret.encode() not in terminal.buffer
-                    terminal.send("printf 'FILE-%s\\n' ready\n")
-                    terminal.expect("FILE-ready")
+                    terminal.send("printf 'AGENT-%s\\n' ready\n")
+                    terminal.expect("AGENT-ready")
                     terminal.send("exit\n")
                     terminal.wait()
-                print("identity: file authentication, encrypted unlock and daemon cache reuse OK")
+                print("identity: agent selection with encrypted private key and rejection without agent OK")
                 return
             if args.mcp_only:
                 ssh_wrapper = root / "mcp-ssh"
@@ -510,53 +527,16 @@ LogLevel ERROR
                 auto.close()
                 terms.remove(auto)
             command = [binary, "attach"] + [base_command[2], "main"] + base_command[3:]
-            # Native forwarding rules evaluated by ssh -G use owned Go channels.
-            native_ports = []
-            probes = []
-            for _ in range(3):
-                probe = socket.socket()
-                probe.bind(("127.0.0.1", 0))
-                probes.append(probe)
-                native_ports.append(probe.getsockname()[1])
-            for probe in probes:
-                probe.close()
-            local_port, reverse_port, socks_port = native_ports
-            ssh_log = root / "ssh debug.log"
-            with socket.socket() as echo:
-                echo.bind(("127.0.0.1", 0))
-                echo.listen()
-                echo.settimeout(10)
-                service_port = echo.getsockname()[1]
-                def echo_connections():
-                    for _ in range(3):
-                        peer, _ = echo.accept()
-                        with peer:
-                            peer.settimeout(5)
-                            peer.sendall(peer.recv(1024))
-                worker = threading.Thread(target=echo_connections, daemon=True)
-                worker.start()
-                term = Terminal([binary, "launch"] + command[2:] + [
-                    f"-L127.0.0.1:{local_port}:127.0.0.1:{service_port}",
-                    "-R", f"127.0.0.1:{reverse_port}:127.0.0.1:{service_port}",
-                    f"-D127.0.0.1:{socks_port}", "-oExitOnForwardFailure=yes",
-                ])
-                terms.append(term)
-                for native_port in (local_port, reverse_port):
-                    with socket.create_connection(("127.0.0.1", native_port), timeout=5) as peer:
-                        peer.sendall(b"native-forward")
-                        assert peer.recv(1024) == b"native-forward"
-                with socket.create_connection(("127.0.0.1", socks_port), timeout=5) as peer:
-                    stream = peer.makefile("rb")
-                    peer.sendall(b"\x05\x01\x00")
-                    assert stream.read(2) == b"\x05\x00"
-                    peer.sendall(b"\x05\x01\x00\x01" + socket.inet_aton("127.0.0.1") + struct.pack("!H", service_port))
-                    reply = stream.read(10)
-                    assert len(reply) == 10 and reply[:4] == b"\x05\x00\x00\x01", reply
-                    peer.sendall(b"socks-forward")
-                    assert stream.read(len(b"socks-forward")) == b"socks-forward"
-                    stream.close()
-                worker.join(timeout=5)
-                assert not worker.is_alive()
+            # SSH configuration forwarding is deliberately disabled. Approved
+            # sshore forwarding is exercised below through its public workflow.
+            for option in ("-L127.0.0.1:12345:127.0.0.1:12346",
+                           "-R127.0.0.1:12345:127.0.0.1:12346", "-D127.0.0.1:12345"):
+                rejected = Terminal([binary, "launch"] + command[2:] + [option], wait_ready=False)
+                terms.append(rejected)
+                rejected.expect("forwarding is unsupported")
+                rejected.wait(expected=1)
+            term = Terminal([binary, "launch"] + command[2:])
+            terms.append(term)
             term.send("stty -echo; KEEP=shore; printf 'PID:%s\\n' $$\n")
             shell_pid = int(term.expect(r"PID:(\d+)").group(1))
             fcntl.ioctl(term.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 37, 103, 0, 0))
@@ -584,8 +564,8 @@ LogLevel ERROR
                 term.wait()
                 return request_id
 
-            def approve(request_id, paths=(), stay=False, passphrase=None, port=None):
-                approval = Terminal([binary, "review", request_id] + (["--stay"] if stay else []), wait_ready=False)
+            def approve(request_id, paths=(), passphrase=None, port=None):
+                approval = Terminal([binary, "review", request_id], wait_ready=False)
                 terms.append(approval)
                 approval.expect("Review ")
                 for kind, path in paths:
@@ -599,6 +579,18 @@ LogLevel ERROR
                     approval.send(passphrase + "\n")
                 return approval
 
+            def finish_review(approval):
+                approval.wait()
+                snapshot = json.loads(subprocess.check_output(
+                    [binary, "list", "--json"] + base_command[2:], text=True))
+                shell = next(row for row in snapshot["shells"] if row["name"] == "main")
+                assert shell["state"] == "detached" and shell["pid"] == shell_pid, shell
+
+            def attach_shell():
+                terminal = Terminal(command)
+                terms.append(terminal)
+                return terminal
+
             data = bytes(range(256)) * 4097
             remote = root / "remote.bin"
             remote.write_bytes(data)
@@ -609,7 +601,8 @@ LogLevel ERROR
             assert request_id in listed
             term = approve(request_id, [("download", downloaded)])
             term.expect("Saved .*downloaded.bin")
-            term.expect(r"\[sshore\] Connected")
+            finish_review(term)
+            term = attach_shell()
             assert downloaded.read_bytes() == data
             term.send("printf 'RESUME:%s:%s\\n' $$ \"$KEEP\"\n")
             term.expect(f"RESUME:{shell_pid}:shore")
@@ -622,10 +615,9 @@ LogLevel ERROR
             uploads.mkdir()
             request_id = queue_request(term, f"sshore cp : {shlex.quote(str(uploads))}")
             assert not (uploads / local.name).exists()
-            approved = approve(request_id, [("upload", local)], stay=True)
+            approved = approve(request_id, [("upload", local)])
             approved.expect("Upload complete")
-            approved.expect("Staying local")
-            approved.wait()
+            finish_review(approved)
             assert (uploads / local.name).read_bytes() == data[::-1]
 
             term = Terminal(command)
@@ -644,24 +636,26 @@ LogLevel ERROR
             # A compromised remote peer can still speak the old wire format.
             # Neither a legacy file offer nor forward-add can bypass approval.
             def unsolicited(metadata):
-                with socket.socket(socket.AF_UNIX) as peer:
-                    peer.settimeout(10)
-                    peer.connect(str(runtime / "main.sock"))
-                    body = json.dumps(metadata).encode()
-                    peer.sendall(b"\x00" + struct.pack("!I", len(body)) + body)
-                    header = peer.recv(5)
-                    if header:
-                        assert len(header) == 5
-                        size = struct.unpack("!I", header[1:])[0]
-                        data = b""
-                        while len(data) < size:
-                            part = peer.recv(size - len(data))
-                            if not part:
-                                break
-                            data += part
-                        reply = json.loads(data)
-                        assert reply.get("Type", reply.get("type")) != "accept"
-                        assert reply.get("error"), reply
+                record = json.loads((root / "remote-state" / "daemon" / "daemon.json").read_text())
+                snapshot = json.loads(subprocess.check_output(
+                    [binary, "list", "--json"] + base_command[2:], text=True))
+                instance = next(row["instance"] for row in snapshot["shells"] if row["name"] == "main")
+                address, port = record["Address"].rsplit(":", 1)
+                with socket.create_connection((address, int(port)), timeout=10) as peer:
+                    stream = peer.makefile("rb")
+                    def exchange(message):
+                        body = json.dumps(message).encode()
+                        peer.sendall(b"\x00" + struct.pack("!I", len(body)) + body)
+                        header = stream.read(5)
+                        assert len(header) == 5, header
+                        return json.loads(stream.read(struct.unpack("!I", header[1:])[0]))
+                    reply = exchange({"type": "local_auth", "token": record["Token"],
+                                      "software_version": record["Version"]})
+                    assert reply["type"] == "local_ready", reply
+                    reply = exchange({"type": "task_open", "instance": instance})
+                    assert reply["type"] == "task_ready", reply
+                    reply = exchange(metadata)
+                    assert reply["type"] == "fatal" and reply.get("error"), reply
             unsolicited({"type": "offer", "name": "unapproved.txt", "size": 5})
             assert not (automatic / "unapproved.txt").exists()
             with socket.socket() as probe:
@@ -680,7 +674,8 @@ LogLevel ERROR
             request_id = queue_request(term, "sshore cp " + " ".join(shlex.quote(str(p)) for p in batch) + " :")
             assert list(automatic.iterdir()) == []
             term = approve(request_id, [("download", "")] * len(batch))
-            term.expect(r"\[sshore\] Connected")
+            finish_review(term)
+            term = attach_shell()
             for path in batch:
                 assert (automatic / path.name).read_bytes() == path.read_bytes()
             term.send("stty -icanon min 1 -echo; printf 'KEY_%s\\n' ready; od -An -tx1 -N1; stty sane -echo\n")
@@ -693,7 +688,7 @@ LogLevel ERROR
             rejected = Terminal([binary, "review", request_id], wait_ready=False)
             terms.append(rejected)
             rejected.expect("Save as")
-            rejected.send("\n")
+            rejected.send(str(automatic / batch[0].name) + "\n")
             rejected.expect("destination already exists")
             rejected.send(b"\x03")
             rejected.wait(1)
@@ -710,7 +705,7 @@ LogLevel ERROR
                 probe.bind(("127.0.0.1", forward_port))
             tunnel = approve(request_id, port=forward_port)
             resource_id = tunnel.expect(r"Started (forward/[^: \r\n]+):").group(1).decode()
-            tunnel.wait()
+            finish_review(tunnel)
             try:
                 with socket.socket() as probe:
                     try:
@@ -740,12 +735,13 @@ LogLevel ERROR
             request_id = queue_request(term, f"sshore cp {shlex.quote(str(remote))} origin:")
             term = approve(request_id, [("download", root / "after-auth.bin")])
             term.expect("Saved .*after-auth.bin")
-            term.expect(r"\[sshore\] Connected")
+            finish_review(term)
+            term = attach_shell()
             assert (root / "after-auth.bin").read_bytes() == data
             term.send("exit 7\n")
             term.wait(7)
             shell_pid = None
-            print("PASS: SSH + PTY, local approval, attach/stay, replay rejection, files, batches, forwarding, PID persistence, key authentication")
+            print("PASS: SSH + PTY, local approval, explicit reattachment, replay rejection, files, batches, forwarding, PID persistence, key authentication")
         finally:
             try:
                 for term in terms:

@@ -242,6 +242,9 @@ func runDaemon() (result error) {
 		fmt.Fprintln(os.Stderr, "Daemon running.")
 	}
 	tasks := &daemonTasks{}
+	activity := &daemonActivity{tasks: tasks, root: record.Directory}
+	accountActivity.Store(activity)
+	defer accountActivity.Store(nil)
 	services := newDaemonServices(tasks)
 	if services != nil {
 		defer services.Close()
@@ -262,7 +265,12 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 	last := time.Now()
 	stopping := false
 	exitWhenIdle := false
-	busy := func() bool { return tasks.Busy() }
+	busy := func() bool {
+		if activity := accountActivity.Load(); activity != nil && activity.busy() {
+			return true
+		}
+		return tasks.Busy()
+	}
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -272,7 +280,10 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 			select {
 			case <-done:
 				return
-			case <-tick.C:
+			case now := <-tick.C:
+				if activity := accountActivity.Load(); activity != nil {
+					activity.tick(now)
+				}
 				mu.Lock()
 				idle := active == 0 && !busy() && (exitWhenIdle || time.Since(last) > 30*time.Second)
 				if idle {
@@ -379,6 +390,15 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 			if err != nil {
 				return
 			}
+			if m.Type == "activity" && m.Activity != nil {
+				<-handshakes
+				pending = false
+				if activity := accountActivity.Load(); activity != nil {
+					activity.serve(c, *m.Activity)
+				}
+				return
+			}
+
 			if m.Type == "task_names" {
 				names := map[string]bool{}
 				tasks.mu.Lock()

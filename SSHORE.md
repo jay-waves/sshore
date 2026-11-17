@@ -23,7 +23,7 @@ policy or depending on mutable application state.
 | Connections and session switching | `client.go`, `client_connection.go` |
 | Remote preparation and exact-release policy | `setup*.go` |
 | Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_linux.go`, `server_linux.go`; process inspection in `setup_process_linux.go` |
-| Account daemon and local shell control | `daemon*.go`, `local_command.go`, `local_shell.go`; hosted Unix shell adapters in `platform_*.go` |
+| Account daemon and local shell control | `daemon*.go` (including shared activity leases and metadata), `local_command.go`, `local_shell.go`; hosted Unix shell adapters in `platform_*.go` |
 | Spawn ownership, lifetime SSH and nested routes | `spawn_transport.go`, `spawn_route_linux.go`, `platform_*.go` |
 | Shell startup and attachment I/O | `internal/tmux/terminal.go`, `internal/tmux/shell_attachment.go`, application adapters in `protocol.go` |
 | Native terminals, console I/O and shortcuts | `internal/tmux/` |
@@ -166,6 +166,25 @@ MCP sessions and resources in one in-memory task table. That table owns identity
 lifecycle and live connection relationships; it is never reconstructed after a
 crash. The loopback TCP listener accepts authenticated control and task streams.
 Only endpoint discovery and credentials need private daemon files.
+Every normal public command registers with this daemon after argument parsing;
+help, version output and manual-recovery diagnostics remain free of startup side
+effects. The daemon's single one-second clock checks external spawn-owner process
+identities, drives lease heartbeats every 20 seconds and reclaims idle daemons.
+Socket leases expire after 75 seconds without acknowledgement; EOF releases them
+immediately. Tasks and live leases prevent idle exit; after the last activity the
+normal idle grace is 30 seconds. Explicit idle shutdown and reviewed upgrades keep
+their existing bounded shutdown semantics.
+
+Peer advertisements, incoming-resource participation and client attachment leases
+live in daemon memory. Task trees, remote shell observations and recent connection
+routes are loaded once from private history and then served from daemon memory;
+only the daemon persists changes. Loaded relationships are cached observations,
+never reconstructed live tasks. Clients do not poll files, hold liveness locks or
+publish advertisements through SFTP. Forward metadata uses the same daemon clock;
+mount metadata is registered with its existing agent connection. UI progress,
+terminal mechanics, SSH protocol keepalives and filesystem cache deadlines retain
+their own timers because they do not establish product task liveness.
+
 Its private owner lock is independent of
 client runtime directories. While it is running, its explicit application state
 root is authoritative; a conflicting `SSHORE_STATE_DIR` is rejected. Test builds
@@ -207,6 +226,10 @@ State-file replacement cannot substitute for those command-specific guarantees.
 See [approval safeguards](SECURITY.md#local-approval).
 
 Copy and mount helpers use the shared preparation path before starting.
+The forward adapter passes its loopback ports and direction directly to the SSH
+transport. `ssh -G` resolves connection settings only; configuration forwarding
+rules are cleared and cannot add listeners to the product-owned rule.
+
 Ordinary forwarding, inventory and cancellation do not install remote software.
 Keep file/transport behavior in `internal/files` and `internal/ssh`; account setup
 and consent stay in the application.
@@ -246,7 +269,7 @@ the current attachment source may change. Neither is verified OS process ancestr
 
 Keep normal output compact and distinguish cached, live and unknown state.
 Full diagnostics belong in `list --json`. Incoming resources require a live
-local transport registration, not merely advisory peer files. Worker liveness
+local transport socket lease, not merely a historical advertisement. Worker liveness
 is not target health. Exclude capabilities and credentials from public output.
 See [inventory privacy](SECURITY.md#inventory-and-privacy).
 
@@ -310,8 +333,17 @@ Native mount smoke tests are opt-in and require an existing FUSE/WinFsp environm
 SSHORE_TEST_FTP_MOUNT=1 go test -count=1 -tags=sshoretest -run '^TestFTPNativeMount$' ./internal/files
 ```
 
-The manually triggered Tests workflow defines Linux/Windows checks and optional
-extended validation. Do not repeat successful checks without new changes or
+The Tests workflow is the unified Linux/Windows amd64 validation pipeline for
+release tags and manual runs. It runs formatting, vet, the core suite with race
+detection, installers, release-script checks and every real-SSH scenario. Linux
+installs and verifies Bash, Zsh and Fish before testing. Go failures and skips are
+listed in the workflow summary; complete Go results are retained as artifacts.
+Native FUSE/WinFsp checks remain opt-in on equipped hosts. Other environment-based
+skips must be reviewed; a green run is not proof that skipped checks passed.
+The SSH script defaults to all scenarios, each with an isolated fixture; use
+`--core-only`, `--spawn-only`, `--identity-only`, `--nested-only`, `--handoff-only`,
+`--setup-only` or `--mcp-only` for a focused rerun.
+Do not repeat successful checks without new changes or
 unresolved concerns. Local in-process benchmarks are not WAN performance evidence.
 
 ### Shell and terminal validation
@@ -335,9 +367,13 @@ can affect behavior; record meaningful regressions as focused tests.
 2. Run checks appropriate to the changes, then commit and push. A push to `main`
    triggers Linux/Windows amd64 builds and packaging; successful builds permit
    publication only while that commit remains the branch head.
-3. Unless explicitly asked only to push, verify the release, commit/tag identity,
-   both platform archives and checksums. Build CI does not run the full core suite;
-   the separate Tests workflow does.
+3. CI explicitly calls the unified Tests workflow on the published tag because
+   tags created with its default token do not trigger another push workflow.
+   Externally pushed release tags also trigger Tests; manual runs use the selected
+   ref. Validation runs after publication and reports failures without modifying
+   tags or published assets; it is not a pre-publication gate.
+4. Unless explicitly asked only to push, verify the release, commit/tag identity,
+   both platform archives and checksums, and the tag's Tests result.
 
 Published tags and assets are immutable. Source-only edits at an already published
 version do not update its archives. Retain only the highest published patch in each
@@ -353,4 +389,4 @@ is one-shot by default, optional background watching, explicit opt-in to propaga
 deletions, and conflict reporting for independent edits. Revisit the design before
 implementation; it is not an existing command contract.
 
-`cli.go` orchestrates reset across private state stores; `state.go` owns account display identity and remembered connection entry points without depending on CLI options. Native OS identity reads live in the platform adapters. Reset preserves active ownership, lock files, approvals and non-recycled task IDs.
+`daemon_metadata.go` owns serialized task-tree, shell-history and recent-route changes and reset; `daemon_activity.go` owns live socket leases, peer advertisements and the shared heartbeat clock; `cli.go` routes reset to that daemon; `state.go` owns account display identity and remembered connection entry points without depending on CLI options. Native OS identity reads live in the platform adapters. Reset preserves active ownership, lock files, approvals and non-recycled task IDs.

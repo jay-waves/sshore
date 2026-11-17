@@ -230,6 +230,7 @@ func runLocalSpawnRoute(c net.Conn, req localDaemonRequest, attached func(*smux.
 		return err
 	}
 	defer mx.Close()
+	_ = transport.SetDeadline(time.Time{})
 	done := make(chan struct{})
 	defer close(done)
 	go watchSpawnOwner(req.Record.Owner, done, func() { mx.Close(); transport.Close() })
@@ -296,6 +297,7 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 	if err := writeMessage(c, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed"}); err != nil {
 		return err
 	}
+	_ = target.SetDeadline(time.Time{})
 	proxySpawn(c, target)
 	return nil
 }

@@ -41,7 +41,9 @@ Use `sshore COMMAND --help` for the full command reference.
 
 Each session has one terminal. No tmux installation is needed.
 Daemon-owned tasks survive client exit, disconnect and detach. They are held in
-memory; daemon crashes and host restarts have no recovery guarantee.
+memory; daemon crashes and host restarts have no recovery guarantee. Normal
+commands use the account daemon, which exits after its tasks and active clients
+have ended and an idle grace period has elapsed.
 
 ```sh
 sshore launch work build          # Start a persistent remote shell.
@@ -74,7 +76,7 @@ Screens, scrollback and detached output are not saved.
 
 ```mermaid
 flowchart LR
-    client["Client"] -->|"Authenticated TCP, directly or over SSH"| daemon["Account daemon: in-memory tasks"]
+    client["Client"] -->|"Authenticated TCP, directly or over SSH"| daemon["Account daemon: in-memory tasks and live socket leases"]
     daemon --> shell["Shell"]
     shell -->|"detach"| background["Keep running"]
     background -->|"attach"| shell
@@ -114,7 +116,7 @@ sshore list --json              # Machine-readable inventory.
 ```
 
 Use the six-character ID or optional NAME from `list` with `attach`, `cancel`,
-`rename` and `review`. `rename` changes NAME while preserving the hash ID.
+`rename` and `review`. `rename` changes NAME while preserving the UID.
 Use `--json` for full diagnostics.
 
 CHECKED shows when shell states were confirmed; confirmed ended shells leave the default list.
@@ -248,16 +250,17 @@ Reference projects and inspiration:
 
 - [dtach](https://github.com/crigler/dtach): lightweight shell detach and reattach.
 - [trzsz](https://github.com/trzsz/trzsz): terminal-oriented file transfer workflows.
-- The original `dssh.nu` prototype: the starting point for this project.
+    sshore does not implement the trzsz protocol.
 
-Built with [OpenSSH](https://www.openssh.com/),
-[smux](https://github.com/xtaci/smux), [creack/pty](https://github.com/creack/pty),
-[pkg/sftp](https://github.com/pkg/sftp), [go-fuse](https://github.com/hanwen/go-fuse),
-[WinFsp](https://winfsp.dev/) / [go-winfsp](https://github.com/winfsp/go-winfsp),
-[readline](https://github.com/chzyer/readline) and the Go ecosystem.
-sshore does not implement the trzsz protocol.
+Built with
+
+- [OpenSSH](https://www.openssh.com/),
+- [smux](https://github.com/xtaci/smux),
+- [creack/pty](https://github.com/creack/pty),
+- [pkg/sftp](https://github.com/pkg/sftp),
+- [go-fuse](https://github.com/hanwen/go-fuse),
+- [WinFsp](https://winfsp.dev/) / [go-winfsp](https://github.com/winfsp/go-winfsp),
+- [readline](https://github.com/chzyer/readline) and the Go ecosystem.
 
 [MIT license](LICENSE); third-party license notices are collected in
 [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt).
-
-Use `sshore reset` on a cloned machine to replace its account identity and clear local connection history and cached shell snapshots. Active tasks, approvals and task IDs are preserved; active connections can repopulate snapshots.

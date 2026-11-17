@@ -16,6 +16,7 @@ import (
 // RPC fixtures must never start or acquire the developer's account daemon.
 func startRequestDaemon(t *testing.T) *daemonTasks {
 	t.Helper()
+	activityFixture(t)
 	expected, err := statePath("daemon")
 	if err != nil {
 		t.Skip("isolated daemon scope unavailable:", err)
@@ -53,6 +54,7 @@ func startRequestDaemon(t *testing.T) *daemonTasks {
 	}
 	done := make(chan error, 1)
 	tasks := &daemonTasks{}
+	accountActivity.Load().tasks = tasks
 	services := newDaemonServices(tasks)
 	if services != nil {
 		t.Cleanup(services.Close)

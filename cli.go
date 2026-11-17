@@ -58,6 +58,7 @@ func run(args []string) (code int, resultErr error) {
 	if len(args) == 0 {
 		return 0, showHelp(nil, os.Stdout)
 	}
+
 	switch args[0] {
 	case "exec":
 		return runExec(args[1:])
@@ -214,22 +215,25 @@ func runTargetCommand(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	if (command == "attach" || command == "cancel" || command == "review") && len(parsed.operands) == 1 && !parsed.has("--local") && !parsed.has("--all") {
+		ref := parsed.operands[0]
+		if ref != "" && !isShortTaskID(ref) && strings.Trim(ref, "0123456789") == "" {
+			return 2, usage("list sequence numbers are display-only; select the task by name or short ID")
+		}
+	}
 	target, selected, err := resolveShortTask(command, &parsed)
 	if err != nil {
 		return 2, err
 	}
-	if !selected && (command == "attach" || command == "cancel" || command == "review") && len(parsed.operands) == 1 && !parsed.has("--local") && !parsed.has("--all") {
-		ref := parsed.operands[0]
-		if ref != "" && strings.Trim(ref, "0123456789") == "" {
-			return 2, usage("list sequence numbers are display-only; select the task by name or short ID")
-		}
-	}
+
 	if selected && target.kind != "shell" {
 		switch command {
 		case "cancel":
-			return 0, cancelResourceIdentity(target.kind+"/"+target.name, target.identity)
+			return withDaemonActivity(func() (int, error) { return 0, cancelResourceIdentity(target.kind+"/"+target.name, target.identity) })
 		case "rename":
-			return runRenameResource(target.kind, target.name, parsed.operands[1], target.identity)
+			return withDaemonActivity(func() (int, error) {
+				return runRenameResource(target.kind, target.name, parsed.operands[1], target.identity)
+			})
 		case "review":
 			parsed.operands = []string{target.requestID}
 		}
@@ -239,7 +243,7 @@ func runTargetCommand(args []string) (int, error) {
 		if err != nil {
 			return 2, err
 		}
-		return executeReview(a)
+		return withDaemonActivity(func() (int, error) { return executeReview(a) })
 	}
 	if command == "cancel" {
 		if parsed.has("--all") {
@@ -247,7 +251,7 @@ func runTargetCommand(args []string) (int, error) {
 			if err != nil {
 				return 2, err
 			}
-			return runCancelAll(o)
+			return withDaemonActivity(func() (int, error) { return runCancelAll(o) })
 		}
 		kind, name, typed, err := parseCancelTarget(parsed.operands)
 		if err != nil {
@@ -257,7 +261,7 @@ func runTargetCommand(args []string) (int, error) {
 			if len(parsed.values) != 0 || len(parsed.ssh) != 0 {
 				return 2, usage("local cancellation accepts exactly one resource ID")
 			}
-			return runCancelResource(kind, name)
+			return withDaemonActivity(func() (int, error) { return runCancelResource(kind, name) })
 		}
 	}
 	if command == "rename" {
@@ -265,7 +269,7 @@ func runTargetCommand(args []string) (int, error) {
 			if len(parsed.operands) != 2 || len(parsed.values) != 0 || len(parsed.ssh) != 0 {
 				return 2, usage("use rename TYPE/NAME NEW")
 			}
-			return runRenameResource(kind, old, parsed.operands[1])
+			return withDaemonActivity(func() (int, error) { return runRenameResource(kind, old, parsed.operands[1]) })
 		}
 	}
 	o, err := shellOptions(command, parsed)
@@ -283,19 +287,21 @@ func runTargetCommand(args []string) (int, error) {
 			}
 		}
 	}
-	return executeShellCommand(o)
+	return withDaemonActivity(func() (int, error) { return executeShellCommand(o) })
 }
 
 func runReset() error {
+	_, err := metadataRPC(metadataRequest{Action: "shell_reset"})
+	if err == nil {
+		fmt.Println("Identity reset; local history and cached snapshots cleared. Active tasks are preserved.")
+	}
+	return err
+}
+func runResetLocal() error {
 	if _, err := persistentMachineIdentity(true); err != nil {
 		return err
 	}
 	// Keep runtime ownership, approval state, task IDs and lock inodes intact.
-	lock, err := lockShellCache()
-	if err != nil {
-		return err
-	}
-	defer lock.Close()
 	identityLock, _, err := lockIdentity()
 	if err != nil {
 		return err
@@ -321,7 +327,6 @@ func runReset() error {
 			}
 		}
 	}
-	fmt.Println("Identity reset; local history and cached snapshots cleared. Active tasks are preserved.")
 	return nil
 }
 
@@ -331,6 +336,11 @@ func runExec(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	stopActivity, err := beginCommandActivity()
+	if err != nil {
+		return 1, err
+	}
+	defer stopActivity()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	connection := sshio.Options{Host: parsed.operands[0], Command: parsed.operands[1], Confirm: confirmSSHHost, Secret: promptSSHSecret}

@@ -27,7 +27,7 @@ func resolveSession(name string, expected ...string) (string, error) {
 	instance := firstExpectedInstance(expected)
 	var found string
 	for _, task := range records {
-		match := task.Name == name || task.ID == name || isShortTaskID(name) && strings.HasPrefix(task.ID, name)
+		match := task.Name == name || task.ID == name || isShortTaskID(name) && strings.HasPrefix(task.ID, strings.ToLower(name))
 		if instance != "" {
 			match = task.ID == instance
 		}

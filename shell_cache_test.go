@@ -11,6 +11,7 @@ import (
 )
 
 func TestShellConnectionConfirmation(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	o := options{host: "work", session: "eevee"}
 	c, err := trackShellConnection(o)
@@ -61,6 +62,7 @@ func TestShellConnectionConfirmation(t *testing.T) {
 }
 
 func TestShellHistoryRetention(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	old := time.Now().Add(-shellHistoryRetention - time.Hour)
 	for _, state := range []string{"exited", "renamed", "detached", "attached", "unknown"} {
@@ -119,6 +121,7 @@ func TestShellHistoryRetention(t *testing.T) {
 }
 
 func TestEndedShellCleanup(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "must-not-connect"))
 	for _, state := range []string{"exited", "finished"} {
@@ -159,6 +162,7 @@ func TestEndedShellCleanup(t *testing.T) {
 }
 
 func TestShellExitReconcilesHistory(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	s := shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "attached", ConfirmedAt: time.Now()}
 	if err := saveShellSnapshot(s); err != nil {
@@ -200,6 +204,7 @@ func TestShellExitReconcilesHistory(t *testing.T) {
 }
 
 func TestUncachedCancellationRetainsEvidenceTime(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	before := time.Now()
 	if err := confirmCancelledShell("work", "job", "instance"); err != nil {
@@ -212,6 +217,7 @@ func TestUncachedCancellationRetainsEvidenceTime(t *testing.T) {
 }
 
 func TestMissingShellRemainsUnconfirmedWithoutExitEvidence(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	checked := time.Now().Add(-time.Hour)
 	s := shellSnapshot{Host: "work", Name: "job", Instance: strings.Repeat("a", 32), State: "detached", ConfirmedAt: checked}
@@ -234,6 +240,7 @@ func TestMissingShellRemainsUnconfirmedWithoutExitEvidence(t *testing.T) {
 }
 
 func TestRemoteObservationSupersedesAbsence(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "detached", Unconfirmed: true, ConfirmedAt: time.Now()}); err != nil {
 		t.Fatal(err)
@@ -248,6 +255,7 @@ func TestRemoteObservationSupersedesAbsence(t *testing.T) {
 }
 
 func TestRecentAttachForms(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	original := options{host: "work", session: "eevee", server: "/custom/sshore", sshDirectory: t.TempDir(), ssh: []string{"-p", "2222", "-J", "jump", "-L", "8080:localhost:80"}}
 	if err := rememberConnection(original); err != nil {
@@ -280,6 +288,7 @@ func TestRecentAttachForms(t *testing.T) {
 	}
 }
 func TestRecentAttachMissingAndPerHost(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	empty := options{command: "attach", server: "sshore"}
 	if err := resolveRecentAttach(&empty); err == nil {
@@ -309,6 +318,7 @@ func TestRecentAttachMissingAndPerHost(t *testing.T) {
 }
 
 func TestRememberShellRenamePreservesHistory(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	original := options{host: "work", session: "old", server: "/custom/sshore", sshDirectory: t.TempDir(), ssh: []string{"-p", "2222"}}
 	if err := rememberConnection(original); err != nil {
@@ -358,6 +368,7 @@ func TestRememberShellRenamePreservesHistory(t *testing.T) {
 }
 
 func TestNativePortOverridesSavedConnection(t *testing.T) {
+	activityFixture(t)
 	for _, saved := range [][]string{
 		{"-p", "2222", "-J", "jump", "-i", "key"},
 		{"-o", "Port=2222", "-J", "jump", "-i", "key"},
@@ -378,6 +389,7 @@ func TestNativePortOverridesSavedConnection(t *testing.T) {
 }
 
 func TestRoutedShellConnectionRecovery(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	root := options{host: "entry", session: "parent", instance: "parent-instance", server: "/custom/sshore", ssh: []string{"-p", "2222", "-L", "8080:localhost:80"}, sshDirectory: t.TempDir()}
 	middle := options{host: "private-alias", session: "middle", instance: "middle-instance", routeParent: &root, routeToken: strings.Repeat("a", 64)}
@@ -413,6 +425,8 @@ func TestRoutedShellConnectionRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	if runtime.GOOS != "windows" {
+		// A new daemon revalidates history; the running daemon never reloads live state from files.
+		activityFixture(t)
 		if _, err := readRecentConnections(); err == nil {
 			t.Fatal("public route capabilities accepted")
 		}
@@ -420,6 +434,7 @@ func TestRoutedShellConnectionRecovery(t *testing.T) {
 }
 
 func TestRoutedShellCacheSeparatesAliases(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	for _, suffix := range []string{"one", "two"} {
 		parent := options{host: "entry-" + suffix, session: "parent", instance: "parent-" + suffix}
@@ -449,6 +464,7 @@ func TestRoutedShellCacheSeparatesAliases(t *testing.T) {
 }
 
 func TestRoutedConnectionValidation(t *testing.T) {
+	activityFixture(t)
 	parent := &recentConnection{Host: "entry", Session: "parent", Server: "sshore", Instance: "parent-instance"}
 	r := recentConnection{Host: "private", Session: "job", Server: "sshore", Instance: "child-instance", Parent: parent, RouteToken: strings.Repeat("a", 64)}
 	if err := validateRecentConnection(r); err != nil {
@@ -466,6 +482,7 @@ func TestRoutedConnectionValidation(t *testing.T) {
 }
 
 func TestRoutedInventoryKeepsSiblingDestinations(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	parent := options{host: "entry", session: "parent", instance: "parent-instance"}
 	o := options{host: "private", session: "first", instance: "first-instance", routeParent: &parent, routeToken: strings.Repeat("a", 64)}
@@ -483,6 +500,7 @@ func TestRoutedInventoryKeepsSiblingDestinations(t *testing.T) {
 }
 
 func TestRoutedParentUsesImmutableBootstrapIdentity(t *testing.T) {
+	activityFixture(t)
 	parent := options{command: "spawn", host: "entry", session: "renamed-old-label", instance: strings.Repeat("a", 32)}
 	entry := routeParentOptions(parent)
 	command := remoteCommand(entry)
@@ -499,6 +517,7 @@ func TestRoutedParentUsesImmutableBootstrapIdentity(t *testing.T) {
 }
 
 func TestRoutedInventoryExpiryIsScoped(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	var first options
 	for _, suffix := range []string{"one", "two"} {

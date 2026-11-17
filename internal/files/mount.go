@@ -31,14 +31,12 @@ type MountConfig struct {
 	Open                              func(context.Context) (io.ReadWriteCloser, error)
 }
 
-// MountLifecycle connects a background worker to the mount. Ready and Sync are
-// required when supplied; Sync returns a cleanup function. Nil means foreground.
+// MountLifecycle connects a background worker to the mount. Nil means foreground.
 type MountLifecycle struct {
 	Abandoned          <-chan struct{}
 	Environment        []string
 	OperationCompleted func()
 	Ready              func(string, string) error
-	Sync               func(context.Context, *sftp.Client) func()
 	// Stop receives a reply channel for the graceful-unmount result.
 	Stop <-chan chan error
 }
@@ -193,10 +191,6 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 			_ = mount.Unmount()
 			return 1, err
 		}
-	}
-	if service != nil {
-		stopSync := service.Sync(ctx, client)
-		defer stopSync()
 	}
 	fmt.Fprintf(os.Stderr, "Mounted %s:%s -> %s (SFTP). Close files, then Ctrl-C to unmount.\n", termui.CleanText(o.Host), termui.CleanText(root), termui.CleanText(o.Mountpoint))
 	done := make(chan struct{})

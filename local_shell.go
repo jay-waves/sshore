@@ -33,7 +33,7 @@ func readLocalSession(name string) (localShellRecord, error) {
 	}
 	var found *localShellRecord
 	for _, r := range records {
-		if r.UID == name || isShortTaskID(name) && strings.HasPrefix(r.UID, name) {
+		if r.UID == name || isShortTaskID(name) && strings.HasPrefix(r.UID, strings.ToLower(name)) {
 			if found != nil {
 				return localShellRecord{}, fmt.Errorf("ambiguous task ID")
 			}

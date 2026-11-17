@@ -608,23 +608,26 @@ func TestClientNestedRemoteSpawnReusesAuthentication(t *testing.T) {
 			t.Setenv("SSHORE_LOCAL_SESSION", "")
 			t.Setenv("SSHORE_SOCKET", "")
 			e := newEnv(t)
-			cmd, terminal, wait := startSessionClient(t, e, []string{command, "fixture", "root", "--server", e.bin})
+			cmd, terminal, wait := startSessionClient(t, e, []string{command, "fixture", "root", "--no-login", "--no-profile", "--server", e.bin})
 			wait("Connected fixture / root")
-			wait("sshore-test> ")
+			io.WriteString(terminal, "printf 'READY_%s\\n' shell\n")
+			wait("READY_shell")
 			// Any new authentication attempt now fails at SSH configuration lookup.
 			ssh := localEnvironmentValue(cmd.Env, "SSHORE_SSH")
 			if err := os.WriteFile(ssh, []byte("#!/bin/sh\necho unexpected-reauthentication >&2\nexit 91\n"), 0700); err != nil {
 				t.Fatal(err)
 			}
 			for range 2 {
-				io.WriteString(terminal, shellQuote(e.bin)+" spawn\n")
+				io.WriteString(terminal, shellQuote(e.bin)+" spawn --no-login --no-profile\n")
 				wait("Connected fixture / ")
-				wait("sshore-test> ")
+				io.WriteString(terminal, "printf 'READY_%s\\n' shell\n")
+				wait("READY_shell")
 			}
 			for range 2 {
 				io.WriteString(terminal, "exit\n")
 				wait("Connected fixture / ")
-				wait("sshore-test> ")
+				io.WriteString(terminal, "printf 'READY_%s\\n' shell\n")
+				wait("READY_shell")
 			}
 			io.WriteString(terminal, "exit\n")
 			if err := cmd.Wait(); err != nil {

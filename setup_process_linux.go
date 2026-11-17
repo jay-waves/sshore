@@ -101,7 +101,9 @@ func sessionTasks(roots []setupProcess) ([]setupTask, error) {
 	return tasks, nil
 }
 
-func stopOwnedProcesses(roots []setupProcess) error {
+// Interactive shells ignore SIGTERM, so terminal owners request SIGHUP for
+// their roots. Other tasks use SIGTERM; descendants retain normal termination.
+func stopOwnedProcesses(roots []setupProcess, rootSignal unix.Signal) error {
 	for _, root := range roots {
 		if root.Version != "" {
 			v, err := executableVersion(fmt.Sprintf("/proc/%d/exe", root.PID))
@@ -121,7 +123,14 @@ func stopOwnedProcesses(roots []setupProcess) error {
 		}
 	}
 	for _, task := range tasks {
-		if err := signalProcess(task.pid, task.start, unix.SIGTERM); err != nil {
+		signal := unix.SIGTERM
+		for _, root := range roots {
+			if task.pid == root.PID {
+				signal = rootSignal
+				break
+			}
+		}
+		if err := signalProcess(task.pid, task.start, signal); err != nil {
 			return err
 		}
 	}

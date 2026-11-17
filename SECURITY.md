@@ -48,7 +48,7 @@ flowchart LR
         review["Separate local review: select paths, mountpoint or ports"]
         grant["Fixed operation; consume approval once"]
         resources["Selected files, forward or mount"]
-        control["One account daemon TCP endpoint: authentication + task ID"]
+        control["Account daemon TCP endpoint: authentication, task IDs and live leases"]
         update["Review affected shells; type update; recheck identities"]
     end
     agent -->|"MCP stdio adapter; authenticated SSH"| control
@@ -230,7 +230,9 @@ The account daemon and native shell endpoints listen on loopback and require ran
 from current-user private state. Unix ownership/permissions and Windows DACLs
 protect that state. Exact release checks and lifetime locks prevent silent takeover
 or downgrade. Launch environments remain in memory, not public inventory or
-persistent daemon records. This is a same-user trust boundary, not a sandbox.
+persistent daemon records. History is loaded as cached observations; only the
+daemon owns live records. Lease loss releases participation, never another
+persistent shell. This is a same-user trust boundary, not a sandbox.
 
 `launch` reserves a fresh name; `attach` requires an existing shell and never evicts
 its attached client. Selection is rechecked before attachment. Recent targets only
@@ -383,7 +385,8 @@ path or port direction, and state. They exclude local mount paths and unrelated
 hosts. A remote account can forge its own inventory. Records expire, can become
 unknown and are read-only; removing a record never signals a process.
 `pstree` includes incoming resources only while a local transport holds its
-diagnostic registration lock. This establishes transport participation, not target
+authenticated socket lease. EOF or a missed heartbeat releases that registration;
+filesystem records cannot establish participation. This establishes transport participation, not target
 health or authority to control the resource. Attachment-source metadata is advisory.
 
 Cached shell relationships, task IDs, exit receipts and worker liveness

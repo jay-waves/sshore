@@ -12,6 +12,7 @@ import (
 var commandAliases = map[string]string{
 	"copy": "cp", "a": "attach", "d": "detach", "ps": "pstree",
 	"ls": "list", "mnt": "mount", "fwd": "forward",
+	"sh": "spawn", "mux": "launch",
 }
 
 func canonicalCommand(name string) string {

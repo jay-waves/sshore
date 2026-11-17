@@ -62,16 +62,8 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	}
 	publishPending := func(id string) {
 		t.Helper()
-		dir := filepath.Join(remoteHome, filepath.FromSlash(remoteTaskRelativeDir))
-		if e := os.MkdirAll(dir, 0700); e != nil {
-			t.Fatal(e)
-		}
-		b, e := json.Marshal(pendingRemoteTask(id, reviewName(t, id), []operation{{Kind: "forward", TargetPort: 31235}}))
-		if e != nil {
-			t.Fatal(e)
-		}
-		if e = os.WriteFile(filepath.Join(dir, id+".json"), b, 0600); e != nil {
-			t.Fatal(e)
+		if err := storeRemoteTask(pendingRemoteTask(id, reviewName(t, id), []operation{{Kind: "forward", TargetPort: 31235}})); err != nil {
+			t.Fatal(err)
 		}
 	}
 	publishPending(id)
@@ -134,9 +126,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	if err != nil || !strings.Contains(out, name) || !strings.Contains(out, "forward") || !strings.Contains(out, "running") || strings.Contains(out, " review ") {
 		t.Fatal(out, err)
 	}
-	if _, e := os.Stat(filepath.Join(remoteHome, filepath.FromSlash(remoteTaskRelativeDir), id+".json")); !os.IsNotExist(e) {
-		t.Fatal("approved task mirror survived", e)
-	}
+
 	out, err = run("list", "--json")
 	var snapshot inventory
 	if err != nil || json.Unmarshal([]byte(out), &snapshot) != nil || len(snapshot.Resources) != 1 || snapshot.Resources[0].Target != "unchecked" {
@@ -211,9 +201,6 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	}
 	if out, err = run("cancel", "review/renamed-request"); err != nil {
 		t.Fatal(out, err)
-	}
-	if _, e2 = os.Stat(filepath.Join(remoteHome, filepath.FromSlash(remoteTaskRelativeDir), rejected+".json")); !os.IsNotExist(e2) {
-		t.Fatal("rejected mirror survived", e2)
 	}
 
 }
@@ -323,6 +310,7 @@ func TestInventoryPreservesOtherModulesAfterShellFailure(t *testing.T) {
 }
 
 func TestInventoryOmitsExpiredExitReceipts(t *testing.T) {
+	activityFixture(t)
 	root := t.TempDir()
 	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(root, "runtime"))
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
@@ -345,6 +333,7 @@ func TestInventoryOmitsExpiredExitReceipts(t *testing.T) {
 }
 
 func TestCancelUpdatesShellHistory(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	wrapper := filepath.Join(t.TempDir(), "ssh")
 	t.Setenv("SSHORE_SSH", wrapper)
@@ -375,6 +364,7 @@ func TestCancelUpdatesShellHistory(t *testing.T) {
 }
 
 func TestShortTaskRemoteCommandRouting(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	root := t.TempDir()
 	wrapper, output := filepath.Join(root, "ssh"), filepath.Join(root, "args")

@@ -8,6 +8,7 @@ import (
 )
 
 func TestMetadataPublication(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	dir, err := stateDir("records")
 	if err != nil {
@@ -44,6 +45,7 @@ func TestMetadataPublication(t *testing.T) {
 }
 
 func TestIdentityResetAndRoutes(t *testing.T) {
+	activityFixture(t)
 	dirRoot := t.TempDir()
 	if err := os.Chmod(dirRoot, 0700); err != nil {
 		t.Fatal(err)
@@ -85,6 +87,7 @@ func TestIdentityResetAndRoutes(t *testing.T) {
 }
 
 func TestPendingRequestOwnsName(t *testing.T) {
+	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	startRequestDaemon(t)
 	id, err := queueRequest(testRequestOptions(), []operation{{Kind: "forward", TargetPort: 3000}})
@@ -109,6 +112,7 @@ func TestPendingRequestOwnsName(t *testing.T) {
 }
 
 func TestSessionNames(t *testing.T) {
+	activityFixture(t)
 	seen := map[string]bool{}
 	for _, name := range automaticSessionNames() {
 		if err := validSession(name); err != nil || seen[name] {
@@ -122,6 +126,7 @@ func TestSessionNames(t *testing.T) {
 }
 
 func TestAcceptSessionName(t *testing.T) {
+	activityFixture(t)
 	for _, tc := range []struct {
 		label      string
 		opts       options
@@ -144,6 +149,7 @@ func TestAcceptSessionName(t *testing.T) {
 }
 
 func TestTaskNamesClaimedAtomicallyByDaemon(t *testing.T) {
+	activityFixture(t)
 	root := filepath.Join(t.TempDir(), "state")
 	t.Setenv("SSHORE_STATE_DIR", root)
 	tasks := startRequestDaemon(t)

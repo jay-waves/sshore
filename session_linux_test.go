@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -246,9 +248,9 @@ func TestKillSessionLifecycle(t *testing.T) {
 		if err != nil || targetProcess.parent != keepProcess.parent {
 			t.Fatalf("shells do not share a daemon: %+v %+v %v", keepProcess, targetProcess, err)
 		}
-		// A child that ignores TERM/HUP exercises the bounded escalation path.
+		// Cooperative shell tasks must all end without affecting sibling shells.
 		childFile := filepath.Join(e.dir, name+".child")
-		shellOutput(t, b, "sh -c 'trap \"\" TERM HUP; echo $$ > "+shellQuote(childFile)+"; exec sleep 120' & printf 'CHILD_%s\\n' ready", "CHILD_ready")
+		shellOutput(t, b, "sh -c 'echo $$ > "+shellQuote(childFile)+"; exec sleep 120' & printf 'CHILD_%s\\n' ready", "CHILD_ready")
 		var child int
 		deadline := time.Now().Add(3 * time.Second)
 		for time.Now().Before(deadline) {
@@ -299,15 +301,42 @@ func TestKillSessionLifecycle(t *testing.T) {
 	if out, err := run("keep", version); err != nil {
 		t.Fatal(out, err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if process, err := readSetupTask(keepProcess.parent); err != nil || process.state == "Z" {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	records, err := hostedTaskRecords()
+	if err != nil || len(records) != 0 {
+		t.Fatalf("ended shells remain registered: %+v %v", records, err)
 	}
-	t.Fatal("shared remote daemon survived its last shell")
 
+}
+
+func TestCleanupRefusesUncooperativeTask(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "-c", "trap '' TERM HUP; printf ready; while :; do read line || exit; done")
+	input, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { input.Close(); cmd.Process.Kill(); cmd.Wait() })
+	if _, err := io.ReadFull(output, make([]byte, 5)); err != nil {
+		t.Fatal(err)
+	}
+	start, err := processStart(cmd.Process.Pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = stopOwnedProcesses([]setupProcess{{PID: cmd.Process.Pid, Start: start}}, syscall.SIGHUP)
+	if err == nil || !strings.Contains(err.Error(), "no forced termination") {
+		t.Fatalf("cleanup refusal: %v", err)
+	}
+	task, err := readSetupTask(cmd.Process.Pid)
+	if err != nil || task.start != start || task.state == "Z" {
+		t.Fatalf("task was forcibly ended: %+v %v", task, err)
+	}
 }
 
 func TestSessionProcessTree(t *testing.T) {

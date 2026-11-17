@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/jay-waves/sshore/internal/termui"
 	"io"
 	"net"
 	"net/http"
@@ -61,7 +62,7 @@ func openSpawnTransport(ctx context.Context, o *options) (io.ReadWriteCloser, fu
 	stop := context.AfterFunc(ctx, func() { c.Close() })
 	closeTransport := func() { stop(); c.Close() }
 	_ = c.SetDeadline(time.Time{})
-	if err = negotiateSetupUsing(ctx, c, c, o, setupClientUI{OpenInput: func() (setupInput, error) { return newApprovalInput() }}); err != nil {
+	if err = negotiateSetupUsing(ctx, c, c, o, setupClientUI{OpenInput: func() (setupInput, error) { return termui.NewInput() }}); err != nil {
 		closeTransport()
 		return nil, nil, err
 	}
@@ -306,18 +307,49 @@ func watchSpawnOwner(owner spawnOwner, done <-chan struct{}, end func()) {
 	if owner.PID == 0 {
 		return
 	}
-	tick := time.NewTicker(500 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		start, err := spawnProcessIdentity(owner.PID)
-		if err != nil || start != owner.Start {
-			end()
-			return
-		}
+	request := activityRequest{Kind: "owner", Owner: owner}
+	if s := accountActivity.Load(); s != nil {
+		lease := s.add(request)
+		defer s.remove(lease)
 		select {
 		case <-done:
 			return
-		case <-tick.C:
+		case <-lease.expired:
+			end()
+			return
+		}
+	}
+	c, err := openActivity(request)
+	if err != nil {
+		end()
+		return
+	}
+	defer c.Close()
+	stopped := make(chan struct{})
+	defer close(stopped)
+	go func() {
+		select {
+		case <-done:
+			c.Close()
+		case <-stopped:
+		}
+	}()
+	for {
+		_ = c.SetReadDeadline(time.Now().Add(daemonHeartbeatTimeout))
+		m, err := readMessage(c)
+		if err != nil {
+			select {
+			case <-done:
+			default:
+				end()
+			}
+			return
+		}
+		if m.Type == "pulse" {
+			if writeMessage(c, message{Type: "alive"}) != nil {
+				end()
+				return
+			}
 		}
 	}
 }

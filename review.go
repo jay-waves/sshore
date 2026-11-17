@@ -122,7 +122,7 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 	for i := range r.Operations {
 		op := &r.Operations[i]
 		if op.Kind != "forward" && op.LocalHint != "" {
-			hint, e := localPath([]byte(op.LocalHint))
+			hint, e := termui.ParsePath([]byte(op.LocalHint))
 			if e != nil {
 				return 1, fmt.Errorf("invalid local path suggestion; request remains pending: %w", e)
 			}

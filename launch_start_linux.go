@@ -183,6 +183,7 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 			return err
 		}
 	}
+	_ = conn.SetDeadline(time.Time{})
 	go func() { _, _ = io.Copy(conn, os.Stdin); _ = conn.Close() }()
 	_, err = io.Copy(os.Stdout, conn)
 	if errors.Is(err, net.ErrClosed) {
