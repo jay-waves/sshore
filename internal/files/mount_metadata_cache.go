@@ -12,7 +12,8 @@ import (
 )
 
 const ftpMetadataLimit = 4096
-const ftpMetadataTTL = 2 * time.Second
+const ftpMetadataTTL = time.Second
+const ftpCapacityTTL = 2 * time.Second
 const ftpDirectoryTTL = 5 * time.Second
 const ftpDirectoryCacheLimit = 128
 const ftpCacheBytes = 32 * 1024 * 1024
@@ -23,16 +24,18 @@ type ftpCacheToken struct {
 	started time.Time
 }
 type ftpCacheValue struct {
-	key        string
-	scope      string
-	info       os.FileInfo
-	entries    []os.FileInfo
-	expires    time.Time
-	bytes      int
-	directory  bool
-	prefetched bool
-	revision   uint64
-	fetch      func() (ftpCacheValue, error)
+	key         string
+	scope       string
+	info        os.FileInfo
+	capacity    *sftp.StatVFS
+	capacityErr error
+	entries     []os.FileInfo
+	expires     time.Time
+	bytes       int
+	directory   bool
+	prefetched  bool
+	revision    uint64
+	fetch       func() (ftpCacheValue, error)
 }
 type ftpCacheFlight struct {
 	done  chan struct{}
@@ -49,14 +52,16 @@ type ftpCacheCounters struct {
 
 // Cached slices are immutable. Each directory handle retains its own cursor.
 type ftpMetadataCache struct {
-	mu                             sync.Mutex
-	entries                        map[string]*list.Element
-	lru                            list.List
-	flights                        map[string]*ftpCacheFlight
-	epoch                          uint64
-	writers                        int
-	mutations                      map[string]int
-	revision                       uint64
+	mu        sync.Mutex
+	entries   map[string]*list.Element
+	lru       list.List
+	flights   map[string]*ftpCacheFlight
+	epoch     uint64
+	writers   int
+	mutations map[string]int
+	revision  uint64
+	// Changes on mutations and invalidation, independently of refresh revisions.
+	handleEpoch                    uint64
 	refresh                        *metadataRefresh
 	bytes, stats, dirs, dirEntries int
 	counters                       ftpCacheCounters
@@ -64,6 +69,7 @@ type ftpMetadataCache struct {
 
 func (c *ftpMetadataCache) resetLocked() {
 	c.epoch++
+	c.handleEpoch++
 	for _, e := range c.entries {
 		if e.Value.(ftpCacheValue).prefetched {
 			c.counters.PrefetchDiscarded++
@@ -233,6 +239,7 @@ func (c *ftpMetadataCache) directoryLocked(token ftpCacheToken, name string, ent
 func (c *ftpMetadataCache) beginMutation(paths ...string) func() {
 	c.mu.Lock()
 	c.revision++
+	c.handleEpoch++
 	if len(paths) == 0 {
 		c.writers++
 		c.resetLocked()
@@ -251,6 +258,7 @@ func (c *ftpMetadataCache) beginMutation(paths ...string) func() {
 		defer c.mu.Unlock()
 		defer func() {
 			c.revision++
+			c.handleEpoch++
 			c.refresh.scheduleRecentLocked()
 		}()
 		if len(paths) == 0 {
@@ -269,6 +277,9 @@ func (c *ftpMetadataCache) beginMutation(paths ...string) func() {
 }
 
 func mutationAffects(key, scope, name string) bool {
+	if strings.HasPrefix(key, "v:") {
+		return true
+	}
 	parent := path.Dir(name)
 	if strings.HasPrefix(key, "h:") {
 		return scope == "" || scope == parent || scope == name || strings.HasPrefix(scope, strings.TrimSuffix(name, "/")+"/")
@@ -340,7 +351,11 @@ func (c *ftpMetadataCache) invalidateDirectory(dir string) {
 	c.counters.RemoteInvalidations++
 }
 func (c *ftpMetadataCache) invalidateDirectoryLocked(dir string) {
+	c.handleEpoch++
 	affected := func(key, scope string) bool {
+		if strings.HasPrefix(key, "v:") {
+			return true
+		}
 		if strings.HasPrefix(key, "h:") {
 			return scope == "" || scope == dir
 		}

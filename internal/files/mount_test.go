@@ -572,3 +572,37 @@ func TestFTPWireFragmentedWrites(t *testing.T) {
 type ftpWriteCloser struct{ io.Writer }
 
 func (ftpWriteCloser) Close() error { return nil }
+
+func TestFTPCapacityCache(t *testing.T) {
+	f, wire := testFTPBackendWithWire(t)
+	_, firstErr := f.cachedCapacity()
+	count := func() uint64 { wire.mu.Lock(); defer wire.mu.Unlock(); return wire.totals[200].Started }
+	before := count()
+	for range 20 {
+		if _, err := f.cachedCapacity(); (err == nil) != (firstErr == nil) {
+			t.Fatalf("cached capacity error changed: %v", err)
+		}
+	}
+	if count() != before {
+		t.Fatal("repeated capacity query reached server")
+	}
+	for _, invalidate := range []func(){
+		func() { f.cache.beginMutation(f.root + "/file")() },
+		func() { f.cache.invalidateDirectory(f.root) },
+		func() {
+			f.cache.mu.Lock()
+			e := f.cache.entries["v:"+f.root]
+			v := e.Value.(ftpCacheValue)
+			v.expires = time.Now().Add(-time.Second)
+			e.Value = v
+			f.cache.mu.Unlock()
+		},
+	} {
+		invalidate()
+		_, _ = f.cachedCapacity()
+		if count() != before+1 {
+			t.Fatal("capacity was not refreshed")
+		}
+		before = count()
+	}
+}

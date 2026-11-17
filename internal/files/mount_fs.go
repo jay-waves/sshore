@@ -407,6 +407,19 @@ type ftpCapacityClient interface {
 	StatVFS(string) (*sftp.StatVFS, error)
 }
 
+// Capacity is advisory; local mutations invalidate it and remote changes age out.
+func (f *ftpFS) cachedCapacity() (*sftp.StatVFS, error) {
+	v, err := f.cache.load("v:"+f.root, ftpCapacityTTL, func() (ftpCacheValue, error) {
+		capacity, err := ftpRemoteCapacity(f.client, f.root)
+		// Bound failed advisory probes too; callers still receive the original error.
+		return ftpCacheValue{capacity: capacity, capacityErr: err, bytes: 256 + len(f.root)}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.capacity, v.capacityErr
+}
+
 func ftpRemoteCapacity(client ftpCapacityClient, root string) (*sftp.StatVFS, error) {
 	version, ok := client.HasExtension("statvfs@openssh.com")
 	if !ok || version != "2" {

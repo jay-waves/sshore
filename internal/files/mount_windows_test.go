@@ -4,8 +4,11 @@ package files
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -223,5 +226,142 @@ func TestFTPWindowsHandleStatPolling(t *testing.T) {
 	info, err := file.Stat()
 	if err != nil || info.Size() != 7 {
 		t.Fatalf("stale size after write: %v %v", info, err)
+	}
+}
+
+func TestFTPWindowsMetadataAccess(t *testing.T) {
+	base := uint32(windows.FILE_OPEN << 24)
+	for _, tc := range []struct {
+		opts, access uint32
+		want         bool
+	}{
+		{base, windows.FILE_READ_ATTRIBUTES, true},
+		{base | windows.FILE_OPEN_REPARSE_POINT, windows.FILE_READ_ATTRIBUTES, true},
+		{base | windows.FILE_SYNCHRONOUS_IO_NONALERT, windows.FILE_READ_ATTRIBUTES | windows.SYNCHRONIZE, true},
+		{base, windows.FILE_READ_DATA, false},
+		{base, windows.FILE_READ_ATTRIBUTES | windows.FILE_WRITE_ATTRIBUTES, false},
+		{base, windows.FILE_READ_ATTRIBUTES | windows.DELETE, false},
+		{base | windows.FILE_DELETE_ON_CLOSE, windows.FILE_READ_ATTRIBUTES, false},
+		{windows.FILE_OPEN_IF << 24, windows.FILE_READ_ATTRIBUTES, false},
+	} {
+		if got := ftpWindowsMetadataOpen(tc.opts, tc.access); got != tc.want {
+			t.Errorf("opts=%x access=%x: %v", tc.opts, tc.access, got)
+		}
+	}
+}
+
+func TestFTPWindowsMetadataLeases(t *testing.T) {
+	backend, wire := testFTPBackendWithWire(t)
+	if err := os.WriteFile(filepath.Join(filepath.FromSlash(backend.root), "file"), []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pool := &ftpWindowsMetadataPool{backend: backend, entries: make(map[string]*ftpWindowsMetadataEntry)}
+	defer pool.close()
+	var wg sync.WaitGroup
+	errs := make(chan error, 20)
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f, err := pool.acquire("file")
+			if err == nil {
+				_, err = f.Stat()
+				_ = f.Close()
+			}
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	wire.mu.Lock()
+	opens, stats := wire.totals[3].Started, wire.totals[8].Started
+	wire.mu.Unlock()
+	if opens != 1 || stats != 1 {
+		t.Fatalf("concurrent attribute queries: OPEN=%d FSTAT=%d", opens, stats)
+	}
+	pinned, err := pool.acquire("file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pinned.Close()
+	lease := pinned.(*ftpWindowsMetadataLease)
+	if _, err = pinned.Read(make([]byte, 1)); !errors.Is(err, windows.STATUS_ACCESS_DENIED) {
+		t.Fatalf("metadata read: %v", err)
+	}
+	pool.retire(lease.entry)
+	if _, err = pinned.Stat(); err != nil {
+		t.Fatalf("retirement closed an active lease: %v", err)
+	}
+	next, err := pool.acquire("file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer next.Close()
+	if next.(*ftpWindowsMetadataLease).entry == lease.entry {
+		t.Fatal("retired handle reused")
+	}
+	pool.close()
+	if _, err = pinned.Stat(); !errors.Is(err, windows.STATUS_INVALID_HANDLE) {
+		t.Fatalf("shutdown retained SFTP handle: %v", err)
+	}
+	if _, err = pool.acquire("file"); !errors.Is(err, windows.STATUS_INVALID_HANDLE) {
+		t.Fatalf("open after shutdown: %v", err)
+	}
+}
+
+func TestFTPWindowsMetadataInvalidationAndBounds(t *testing.T) {
+	backend, _ := testFTPBackendWithWire(t)
+	pool := &ftpWindowsMetadataPool{backend: backend, entries: make(map[string]*ftpWindowsMetadataEntry)}
+	defer pool.close()
+	create := func(name string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(filepath.FromSlash(backend.root), name), []byte("old"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	create("file")
+	acquire := func() *ftpWindowsMetadataLease {
+		t.Helper()
+		f, err := pool.acquire("file")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f.(*ftpWindowsMetadataLease)
+	}
+	first := acquire()
+	first.Close()
+	for _, invalidate := range []func(){
+		func() { backend.cache.beginMutation(backend.root + "/file")() },
+		func() { backend.cache.invalidateDirectory(backend.root) },
+		func() { backend.cache.invalidateRemote() },
+		func() { pool.mu.Lock(); pool.entries["file"].expires = time.Now().Add(-time.Second); pool.mu.Unlock() },
+	} {
+		invalidate()
+		next := acquire()
+		if next.entry == first.entry {
+			t.Fatal("invalidated handle reused")
+		}
+		next.Close()
+		first = next
+	}
+	for i := 0; i < ftpWindowsMetadataHandles+2; i++ {
+		name := fmt.Sprintf("bound-%d", i)
+		create(name)
+		f, err := pool.acquire(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+	}
+	pool.mu.Lock()
+	retained, all := len(pool.entries), len(pool.all)
+	pool.mu.Unlock()
+	if retained > ftpWindowsMetadataHandles || all > ftpWindowsMetadataHandles {
+		t.Fatalf("unbounded descriptors: retained=%d all=%d", retained, all)
 	}
 }

@@ -219,6 +219,9 @@ func (r *metadataRefresh) step() bool {
 	fresh.key, fresh.scope, fresh.fetch = key, old.scope, old.fetch
 	fresh.revision, fresh.prefetched = revision, old.prefetched
 	ttl := ftpMetadataTTL
+	if strings.HasPrefix(key, "v:") {
+		ttl = ftpCapacityTTL
+	}
 	if fresh.directory {
 		ttl = ftpDirectoryTTL
 		c.directoryLocked(token, strings.TrimPrefix(key, "d:"), fresh.entries)

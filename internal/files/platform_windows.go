@@ -37,14 +37,15 @@ func ValidateMountpoint(p string) error {
 }
 
 type ftpWindowsMount struct {
-	fs   *winfsp.FileSystem
-	done chan struct{}
-	once sync.Once
+	fs      *winfsp.FileSystem
+	done    chan struct{}
+	once    sync.Once
+	cleanup func()
 }
 
 func (m *ftpWindowsMount) Wait() { <-m.done }
 func (m *ftpWindowsMount) Unmount() error {
-	m.once.Do(func() { m.fs.Unmount(); close(m.done) })
+	m.once.Do(func() { m.fs.Unmount(); m.cleanup(); close(m.done) })
 	return nil
 }
 func mountFTP(f *ftpFS, p string) (ftpMount, error) {
@@ -53,12 +54,15 @@ func mountFTP(f *ftpFS, p string) (ftpMount, error) {
 		opts = append(opts, winfsp.Attributes(winfsp.FspFSAttributeReadOnlyVolume))
 	}
 	base := gofs.New(&ftpWindowsFS{backend: f}).(ftpWindowsBehaviour)
-	adapter := &ftpWindowsAttributes{ftpWindowsBehaviour: base, backend: f, names: make(map[uintptr]string)}
+	pool := &ftpWindowsMetadataPool{backend: f, entries: make(map[string]*ftpWindowsMetadataEntry)}
+	metadata := gofs.New(&ftpWindowsMetadataFS{ftpWindowsFS: &ftpWindowsFS{backend: f}, pool: pool}).(ftpWindowsBehaviour)
+	adapter := &ftpWindowsAttributes{ftpWindowsBehaviour: base, metadata: metadata, metadataHandles: make(map[uintptr]bool), backend: f, names: make(map[uintptr]string)}
 	host, e := winfsp.Mount(adapter, p, opts...)
 	if e != nil {
+		pool.close()
 		return nil, fmt.Errorf("WinFsp mount failed: %w", e)
 	}
-	return &ftpWindowsMount{fs: host, done: make(chan struct{})}, nil
+	return &ftpWindowsMount{fs: host, done: make(chan struct{}), cleanup: pool.close}, nil
 }
 
 type ftpWindowsFS struct {
@@ -255,7 +259,9 @@ type ftpWindowsBehaviour interface {
 
 type ftpWindowsAttributes struct {
 	ftpWindowsBehaviour
-	backend *ftpFS
+	backend         *ftpFS
+	metadata        ftpWindowsBehaviour
+	metadataHandles map[uintptr]bool
 	// Exclusive callbacks wait for in-flight opens before changing tracked paths.
 	mu      sync.RWMutex
 	namesMu sync.Mutex
@@ -266,10 +272,19 @@ func (a *ftpWindowsAttributes) Open(ref *winfsp.FileSystemRef, name string, opts
 	defer a.backend.metrics.observe("Open")()
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	h, e := a.ftpWindowsBehaviour.Open(ref, name, opts, access, info)
+	behaviour := a.ftpWindowsBehaviour
+	metadata := a.metadata != nil && ftpWindowsMetadataOpen(opts, access)
+	if metadata {
+		behaviour = a.metadata
+	}
+	h, e := behaviour.Open(ref, name, opts, access, info)
 	if e == nil {
 		a.namesMu.Lock()
-		a.names[h] = name
+		if metadata {
+			a.metadataHandles[h] = true
+		} else {
+			a.names[h] = name
+		}
 		a.namesMu.Unlock()
 	}
 	return h, e
@@ -289,9 +304,17 @@ func (a *ftpWindowsAttributes) Create(ref *winfsp.FileSystemRef, name string, op
 func (a *ftpWindowsAttributes) Close(ref *winfsp.FileSystemRef, h uintptr) {
 	defer a.backend.metrics.observe("Close")()
 	a.mu.Lock()
+	a.namesMu.Lock()
+	metadata := a.metadataHandles[h]
+	delete(a.metadataHandles, h)
+	a.namesMu.Unlock()
 	delete(a.names, h)
 	a.mu.Unlock()
-	a.ftpWindowsBehaviour.Close(ref, h)
+	if metadata {
+		a.metadata.Close(ref, h)
+	} else {
+		a.ftpWindowsBehaviour.Close(ref, h)
+	}
 }
 func (a *ftpWindowsAttributes) Rename(ref *winfsp.FileSystemRef, h uintptr, old, new string, replace bool) error {
 	defer a.backend.metrics.observe("Rename")()
@@ -394,11 +417,11 @@ func (a *ftpWindowsAttributes) ReadDirectory(ref *winfsp.FileSystemRef, h uintpt
 }
 func (a *ftpWindowsAttributes) GetFileInfo(ref *winfsp.FileSystemRef, h uintptr, info *winfsp.FSP_FSCTL_FILE_INFO) error {
 	defer a.backend.metrics.observe("GetFileInfo")()
-	return a.ftpWindowsBehaviour.GetFileInfo(ref, h, info)
+	return a.handleBehaviour(h).GetFileInfo(ref, h, info)
 }
 
 func (a *ftpWindowsAttributes) GetVolumeInfo(ref *winfsp.FileSystemRef, info *winfsp.FSP_FSCTL_VOLUME_INFO) error {
-	s, err := ftpRemoteCapacity(a.backend.client, a.backend.root)
+	s, err := a.backend.cachedCapacity()
 	if err != nil {
 		return ftpWindowsError(err)
 	}

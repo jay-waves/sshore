@@ -196,6 +196,15 @@ and parents on mutation; notification loss or unknown scope requires full
 invalidation. Background verification must not delay foreground reads.
 Scheduling and cache behavior belong in `internal/files/` and its tests.
 
+Windows mount metadata-only opens reuse bounded, short-lived SFTP handles in
+`internal/files/mount_metadata_windows.go`. Data and mutation opens remain separate;
+active metadata leases keep their original remote handle after cache retirement.
+Handle retention, attribute freshness and capacity probes have separate lifetimes.
+Handle reuse is bounded from opening, rather than extended indefinitely by access.
+Local mutations and remote invalidation stop reuse; expiry and unmount close idle
+handles. Volume capacity, including probe failures, uses the metadata cache and is
+invalidated by mutations. These caches do not buffer file writes.
+
 ### Inventory and diagnostics
 
 Separate live observations, cached records and unknown state. Inventory and
