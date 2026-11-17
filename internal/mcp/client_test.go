@@ -122,3 +122,97 @@ func TestClientShutdownCancelsDial(t *testing.T) {
 		t.Fatal("shutdown left dial running")
 	}
 }
+
+func TestClientExpandsTransportCapacityForConcurrentCalls(t *testing.T) {
+	var dials atomic.Int32
+	started := make(chan struct{}, maxHostConnections+1)
+	release := make(chan struct{})
+	c := &Client{Version: "1.2.3", Dial: func(context.Context, string) (io.ReadWriteCloser, error) {
+		dials.Add(1)
+		local, remote := net.Pipe()
+		go func() {
+			defer remote.Close()
+			for {
+				if _, err := ReadRequest(remote); err != nil {
+					return
+				}
+				started <- struct{}{}
+				<-release
+				if WriteResponse(remote, Response{Version: "1.2.3", Sessions: &Sessions{}}) != nil {
+					return
+				}
+			}
+		}()
+		return local, nil
+	}}
+	defer c.Shutdown()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	results := make(chan error, maxHostConnections+1)
+	for range maxHostConnections + 1 {
+		go func() { _, err := c.List(ctx, OpenInput{Host: "work"}); results <- err }()
+	}
+	for range maxHostConnections {
+		select {
+		case <-started:
+		case <-ctx.Done():
+			t.Fatal("concurrent calls did not obtain independent transports")
+		}
+	}
+	close(release)
+	for range maxHostConnections + 1 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := dials.Load(); got != maxHostConnections {
+		t.Fatalf("dialed %d transports, want bounded expansion to %d", got, maxHostConnections)
+	}
+}
+
+func TestClientPoolCancellationDoesNotCloseOtherTransports(t *testing.T) {
+	started := make(chan struct{}, 2)
+	finish := make(chan struct{}, 1)
+	defer close(finish)
+	c := &Client{Version: "1.2.3", Dial: func(context.Context, string) (io.ReadWriteCloser, error) {
+		local, remote := net.Pipe()
+		go func() {
+			defer remote.Close()
+			req, err := ReadRequest(remote)
+			if err != nil {
+				return
+			}
+			started <- struct{}{}
+			if req.Method == "slow" {
+				_, _ = remote.Read(make([]byte, 1))
+				return
+			}
+			<-finish
+			_ = WriteResponse(remote, Response{Version: "1.2.3", Sessions: &Sessions{}})
+		}()
+		return local, nil
+	}}
+	defer c.Shutdown()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	slow, cancelSlow := context.WithCancel(ctx)
+	defer cancelSlow()
+	slowDone, otherDone := make(chan error, 1), make(chan error, 1)
+	go func() { _, err := c.call(slow, "work", Request{Method: "slow"}); slowDone <- err }()
+	go func() { _, err := c.List(ctx, OpenInput{Host: "work"}); otherDone <- err }()
+	for range 2 {
+		select {
+		case <-started:
+		case <-ctx.Done():
+			t.Fatal("calls did not run concurrently")
+		}
+	}
+	cancelSlow()
+	if err := <-slowDone; err == nil {
+		t.Fatal("canceled request succeeded")
+	}
+	finish <- struct{}{}
+	if err := <-otherDone; err != nil {
+		t.Fatalf("another transport was canceled: %v", err)
+	}
+}
