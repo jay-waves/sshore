@@ -1,11 +1,12 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-Install the Windows sshore client without changing PATH or requiring elevation.
+Install the Windows sshore client without requiring elevation.
 .DESCRIPTION
 Windows amd64 only; supports PowerShell 5.1 and 7. Updates the first sshore.exe
-on PATH, falling back to %LOCALAPPDATA%\sshore\bin. Verify SHA256SUMS and
-executable version before replacement. Never modify PATH, profiles or execution
+on PATH; otherwise install to %LOCALAPPDATA%\sshore\bin and add it to the user
+and current session PATH. Verify SHA256SUMS and executable version before
+replacement. Never modify system PATH, profiles or execution
 policy; never elevate, stop processes or create versioned backups. If the installed
 executable is in use, exit and ask the user to run cancel --all before retrying.
 .PARAMETER Version
@@ -77,12 +78,23 @@ function Read-SshoreBinaryVersion([string]$Path) {
     return ($lines -join "`n")
 }
 
-function Get-SshoreInstallDirectory {
+function Get-SshoreInstallDirectory([ref]$FoundOnPath) {
     $command = Get-Command sshore.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($FoundOnPath) { $FoundOnPath.Value = [bool]$command }
     if ($command) { return [IO.Path]::GetDirectoryName($command.Path) }
     $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
     if (-not $localAppData) { throw 'Cannot find LocalAppData.' }
     return Join-Path $localAppData 'sshore\bin'
+}
+
+function Add-SshorePathDirectory([string]$Path, [string]$Directory) {
+    $normalized = $Directory.Replace('/', '\').TrimEnd('\')
+    foreach ($entry in ($Path -split ';')) {
+        $expanded = [Environment]::ExpandEnvironmentVariables($entry.Trim().Trim('"'))
+        if ($expanded.Replace('/', '\').TrimEnd('\') -ieq $normalized) { return $Path }
+    }
+    if ([string]::IsNullOrEmpty($Path)) { return $Directory }
+    return $Path.TrimEnd(';') + ';' + $Directory
 }
 
 function Install-Sshore([string]$Version = '') {
@@ -92,7 +104,8 @@ function Install-Sshore([string]$Version = '') {
         throw 'Version must be X.Y.Z (without v).'
     }
     $architecture = Get-SshoreArchitecture
-    $directory = Get-SshoreInstallDirectory
+    $foundOnPath = $false
+    $directory = Get-SshoreInstallDirectory ([ref]$foundOnPath)
     # Resolve relative filesystem paths using PowerShell's current location.
     $directory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($directory)
     $target = Join-Path $directory 'sshore.exe'
@@ -190,14 +203,21 @@ function Install-Sshore([string]$Version = '') {
         $stage = $null
         if ($rollback) { [IO.File]::Delete($rollback); $rollback = $null }
         Write-Host "Installed sshore ${Version}: $target"
-        Write-Host 'SHA256 verified. PATH, PowerShell profiles and execution policy were not changed.'
-        Write-Host 'Use matching client/server versions. Existing remote daemons are not upgraded or stopped.'
-        $quotedDirectory = $directory.Replace("'", "''")
-        $quotedTarget = $target.Replace("'", "''")
-        Write-Host "Run directly: & '$quotedTarget' --version"
-        Write-Host "Optional PATH setup for this PowerShell session (not executed):"
-        Write-Host ('$env:Path = ''' + $quotedDirectory + ';'' + $env:Path')
-        Write-Host "For persistent access, manually add '$directory' to your user Path in Windows Environment Variables."
+        if (-not $foundOnPath) {
+            try {
+                $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+                $updatedPath = Add-SshorePathDirectory $userPath $directory
+                if ($updatedPath -cne $userPath) {
+                    [Environment]::SetEnvironmentVariable('Path', $updatedPath, 'User')
+                }
+                $env:Path = Add-SshorePathDirectory $env:Path $directory
+            } catch {
+                throw "Installed successfully, but PATH setup failed. Add '$directory' to your user PATH manually. $($_.Exception.Message)"
+            }
+            Write-Host 'Added to user and current session PATH. Restart other terminals to use sshore.'
+        }
+        Write-Host 'SHA256 verified. Existing remote daemons are not upgraded or stopped.'
+
     } finally {
         if ($stage -and [IO.File]::Exists($stage)) { [IO.File]::Delete($stage) }
         if ($rollback -and [IO.File]::Exists($rollback)) { Write-Warning "Previous binary preserved at $rollback; recover it manually if needed." }

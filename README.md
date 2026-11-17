@@ -25,9 +25,11 @@ curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | 
 irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 ```
 
-Installers verify checksums and print PATH instructions without requesting
-administrator access. On Windows, the installer updates the first `sshore.exe` on
-PATH, or uses `%LOCALAPPDATA%\sshore\bin` if none is found. If it is in use,
+Installers verify checksums without requesting administrator access. On Windows,
+the installer updates the first `sshore.exe` on PATH without changing PATH. If none
+is found, it installs to `%LOCALAPPDATA%\sshore\bin` and adds that directory to
+the user and current PowerShell session PATH. Restart other terminals to pick it up.
+If the existing executable is in use,
 run `sshore cancel --all` manually, close remaining clients, and retry. This ends
 local work; unsaved work may be lost.
 Only the latest patch of each major/minor series remains downloadable.

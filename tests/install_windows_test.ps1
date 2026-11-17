@@ -49,6 +49,11 @@ function New-TestRelease([string]$ReleaseVersion, [string]$Architecture, [string
 }
 
 try {
+    Assert-True ((Add-SshorePathDirectory '' 'C:\Tools') -ceq 'C:\Tools') 'Empty PATH not initialized'
+    Assert-True ((Add-SshorePathDirectory 'C:\Other' 'C:\Tools') -ceq 'C:\Other;C:\Tools') 'Existing PATH not preserved'
+    Assert-True ((Add-SshorePathDirectory 'C:\Other;' 'C:\Tools') -ceq 'C:\Other;C:\Tools') 'Trailing separator duplicated'
+    Assert-True ((Add-SshorePathDirectory 'C:\Other;"c:/TOOLS/"' 'C:\Tools') -ceq 'C:\Other;"c:/TOOLS/"') 'Equivalent directory duplicated'
+    Write-Host 'PASS: PATH addition preserves entries and avoids duplicates'
     $null = [IO.Directory]::CreateDirectory($root)
     # Windows PowerShell 5.1 does not automatically load the ZIP core assembly.
     Add-Type -AssemblyName System.IO.Compression
