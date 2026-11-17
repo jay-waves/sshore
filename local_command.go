@@ -143,7 +143,7 @@ func resolveLocalAttach(o *options) error {
 				continue
 			}
 			if o.session != "" {
-				return fmt.Errorf("multiple local shells; use sshore list --local, then sshore attach --local NAME")
+				return fmt.Errorf("multiple local shells; use sshore list, then sshore attach ID")
 			}
 			o.session = r.Name
 			o.hosted, o.taskIdentity = r.hosted, r.identity

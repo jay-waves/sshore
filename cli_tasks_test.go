@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"net"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -270,7 +271,7 @@ func TestTaskPrefixCollisionResolution(t *testing.T) {
 	registerTestShell(t, tasks, "one", first)
 	registerTestShell(t, tasks, "two", second)
 	for _, tc := range []struct{ ref, uid string }{
-		{"abcdef", ""}, {"abcdef1", first}, {first, first}, {second, second}, {"ABCDEF2", second},
+		{"ab", ""}, {"abcdef", ""}, {"abcdef1", first}, {first, first}, {second, second}, {"ABCDEF2", second},
 	} {
 		parsed, err := parseCLI([]string{tc.ref}, "attach")
 		if err != nil {
@@ -373,5 +374,67 @@ func TestListNumbersAreNotSelectors(t *testing.T) {
 		if code != 2 || err == nil || !strings.Contains(err.Error(), "display-only") {
 			t.Fatalf("%s: %d %v", command, code, err)
 		}
+	}
+}
+
+func TestAttachUnknownTargetNeverConnects(t *testing.T) {
+	activityFixture(t)
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	marker := filepath.Join(t.TempDir(), "ssh-invoked")
+	ssh := filepath.Join(t.TempDir(), "ssh")
+	if err := os.WriteFile(ssh, []byte("#!/bin/sh\ntouch "+shellQuote(marker)+"\nexit 99\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSHORE_SSH", ssh)
+	for _, ref := range []string{"xxxyyy", "3a"} {
+		code, err := run([]string{"attach", ref})
+		if code != 2 || err == nil {
+			t.Fatalf("unknown %s: %d %v", ref, code, err)
+		}
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("unknown target started SSH: %v", err)
+	}
+}
+
+func TestTwoCharacterTaskPrefix(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	first := "3aaaaa" + strings.Repeat("1", 26)
+	registerTestShell(t, tasks, "short-prefix", first)
+	registerTestShell(t, tasks, "db", strings.Repeat("c", 32))
+	parsed, err := parseCLI([]string{"3a"}, "attach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, selected, err := resolveShortTask("attach", &parsed)
+	if err != nil || !selected || target.identity != "task:"+first {
+		t.Fatalf("unique short prefix: %+v %v", target, err)
+	}
+	alias, _ := parseCLI([]string{"db"}, "attach")
+	if candidate, ok, err := resolveShortTask("attach", &alias); err != nil || !ok || candidate.name != "db" {
+		t.Fatalf("short hex alias lost: %+v %v", candidate, err)
+	}
+	registerTestShell(t, tasks, "collision", "3abbbb"+strings.Repeat("2", 26))
+	parsed, _ = parseCLI([]string{"3a"}, "attach")
+	if _, selected, err := resolveShortTask("attach", &parsed); err == nil || selected || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous short prefix selected: %v", err)
+	}
+}
+
+func TestAttachHostRequiresKnownShell(t *testing.T) {
+	activityFixture(t)
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	if err := rememberConnection(options{host: "work", session: "gone"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateAttachHost("work"); err == nil {
+		t.Fatal("connection history alone authorized host")
+	}
+	if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "detached"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateAttachHost("work"); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -845,6 +845,27 @@ and may require manual maintenance. Linux and Windows amd64 only.
 NOTES
 fi
 
+if [[ "$version" == "0.7.6" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Resume the most recently detached local or remote shell from one shared MRU;
+  attach HOST filters that order to a recorded remote host. Confirmed detaches,
+  including Ctrl+B d, update the history; inventory refreshes do not reorder it.
+- Accept unique task ID prefixes of 2-32 hexadecimal characters. Ambiguous
+  prefixes fail, and unknown single-argument attach targets fail before SSH starts.
+- Select local shells by ID instead of attach --local; reconnect hints use IDs.
+- Remove Ctrl+B i and Ctrl+B ?; retain spawn, detach, next/previous, last and redraw.
+- Shut down isolated frontend test daemons before removing fixture state.
+
+Migration: attach --local is removed; use attach ID or operand-free attach.
+Short hexadecimal aliases remain usable when no task UID prefix matches. Use
+HOST NAME explicitly to attach to an unrecorded or hexadecimal-named host.
+Update both client and server to 0.7.6; normal connections require exact full
+release versions. Review and save active work before confirming a daemon update.
+NOTES
+fi
+
 release=$(gh release list --limit 1000 --json tagName --jq ".[] | select(.tagName == \"$tag\") | .tagName")
 if [[ -n "$release" ]]; then
   echo "Release $tag already exists; keeping its assets and checking retention."

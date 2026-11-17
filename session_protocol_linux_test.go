@@ -721,3 +721,33 @@ func (e *testEnv) dial(name string) (net.Conn, error) {
 	}
 	return dialHostedTask(context.Background(), id, time.Second)
 }
+
+// Close only the authenticated daemon under this test fixture state root.
+func shutdownFixtureDaemon(t *testing.T, root string) {
+	t.Helper()
+	// This fixture gives the frontend its own account state root. Shut that
+	// daemon down before newEnv removes its endpoint and owner records.
+	original, had := os.LookupEnv("SSHORE_STATE_DIR")
+	os.Setenv("SSHORE_STATE_DIR", root)
+	defer func() {
+		if had {
+			os.Setenv("SSHORE_STATE_DIR", original)
+		} else {
+			os.Unsetenv("SSHORE_STATE_DIR")
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		snapshot, err := daemonAdmin(ctx, "snapshot", nil)
+		if err != nil {
+			return
+		}
+		if _, err := daemonAdmin(ctx, "shutdown", &snapshot); err == nil {
+			return
+		} else if err.Error() != "tasks changed; review again" || ctx.Err() != nil {
+			t.Errorf("frontend fixture shutdown: %v", err)
+			return
+		}
+	}
+}

@@ -161,8 +161,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		termui.Log(os.Stderr, termui.Warning, "[sshore] Shell tracking failed: %s\n", cleanText(cacheErr.Error()))
 	}
 	defer connection.close()
-	pid := m.PID
-	o.shellPID = pid
+	o.shellPID = m.PID
 	_ = mux.SetDeadline(time.Now().Add(5 * time.Second))
 	terminal, err := mux.AcceptStream()
 	if err != nil {
@@ -179,8 +178,17 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	}
 	_ = terminal.SetReadDeadline(time.Time{})
 
+	confirmDetach := func(name string) {
+		connection.confirm(name, "detached")
+		if validSession(name) == nil {
+			o.session = name
+		}
+		if err := rememberDetachedAttachment(o); err != nil {
+			termui.Log(os.Stderr, termui.Warning, "[sshore] Detach history not saved: %s\n", cleanText(err.Error()))
+		}
+	}
 	if o.detached {
-		if err := detachControl(control, func(name string) { connection.confirm(name, "detached") }); err != nil {
+		if err := detachControl(control, confirmDetach); err != nil {
 			return 1, err
 		}
 		fmt.Fprintf(os.Stdout, "Started %s (%s).\n", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host))
@@ -491,10 +499,6 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 						}
 					case tmux.KeyRedraw:
 						err = streamMessage(control, message{Type: "redraw"})
-					case tmux.KeyInfo:
-						notice(termui.Info, "\r\n[sshore] %s / %s (PID %d)\r\n", cleanText(o.host), cleanText(o.session), pid)
-					case tmux.KeyHelp:
-						notice(termui.Info, "\r\nCtrl+B: c spawn · n/p next/prev · l last\r\n        d detach · r redraw · i info · ? help · Ctrl+B send prefix\r\n")
 					}
 				}()
 				if err != nil {
@@ -758,7 +762,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 						detachTimeout = time.After(5 * time.Second)
 					}
 				case "detached":
-					connection.confirm(e.m.Name, "detached")
+					confirmDetach(e.m.Name)
 					if validSession(e.m.Name) == nil {
 						o.session = e.m.Name
 					}
@@ -813,7 +817,11 @@ func reconnectCommand(o options) string {
 	}
 	args := []string{"sshore", "attach", o.host, o.session}
 	if o.local {
-		args = []string{"sshore", "attach", "--local", o.session}
+		identity := o.taskIdentity
+		if identity == "" {
+			identity = remoteShellIdentity(o.host, o.instance)
+		}
+		args = []string{"sshore", "attach", taskUID(identity)}
 	}
 	if o.server != "" && o.server != "sshore" {
 		args = append(args, "--server", o.server)

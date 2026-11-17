@@ -33,14 +33,9 @@ func TestClientPrefixKeysAndDetach(t *testing.T) {
 	if _, err = terminal.Write([]byte{2}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = io.WriteString(terminal, "?"); err != nil {
+	if _, err = io.WriteString(terminal, "r"); err != nil {
 		t.Fatal(err)
 	}
-	wait("send prefix")
-	if _, err = terminal.Write([]byte{2, 'r', 2, 'i'}); err != nil {
-		t.Fatal(err)
-	}
-	wait("[sshore] fixture / keys")
 	marker := filepath.Join(e.dir, "before-detach")
 	// The terminal-stream barrier must reach the PTY before control-stream detach.
 	if _, err = io.WriteString(terminal, "touch "+shellQuote(marker)+"\n\x02d"); err != nil {
@@ -73,6 +68,7 @@ func startSessionClient(t *testing.T, e *testEnv, args []string) (*exec.Cmd, *os
 	t.Cleanup(cancel)
 	cmd := exec.CommandContext(ctx, e.bin, args...)
 	cmd.Env = append(e.env, "SSHORE_SSH="+wrapper, "SSHORE_SOCKET=", "SSHORE_STATE_DIR="+filepath.Join(e.dir, "client-state"), "TERM=xterm-256color", "SSHORE_TEST_CONFIG_CONTEXT="+filepath.Join(e.dir, "config-context"))
+	t.Cleanup(func() { shutdownFixtureDaemon(t, filepath.Join(e.dir, "client-state")) })
 	terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 120})
 	if err != nil {
 		t.Fatal(err)
@@ -159,9 +155,9 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	// A single prefix reaches the remote frontend, with no local ConPTY hop.
-	io.WriteString(terminal, "\x02i")
-	wait("[sshore] fixture / remote")
+	// Redraw remains local to the frontend; ordinary input reaches the remote shell.
+	io.WriteString(terminal, "\x02rprintf 'HANDOFF_%s\\n' remote\n")
+	wait("HANDOFF_remote")
 	contextData, err := os.ReadFile(filepath.Join(e.dir, "config-context"))
 	if err != nil || string(contextData) != directory+"\npreserved\n" {
 		t.Fatalf("SSH config context: %q %v", contextData, err)
@@ -173,8 +169,8 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 	}
 	io.WriteString(terminal, "\x02d")
 	wait("Connected local / returned")
-	io.WriteString(terminal, "\x02i")
-	wait("[sshore] local / returned")
+	io.WriteString(terminal, "printf 'HANDOFF_%s\\n' returned\n")
+	wait("HANDOFF_returned")
 	io.WriteString(terminal, shellQuote(e.bin)+" attach fixture remote --quiet --server "+shellQuote(e.bin)+"\n")
 	wait("Connected fixture / remote")
 	io.WriteString(terminal, "exit\n")
@@ -834,6 +830,60 @@ func TestClientDaemonLossRestoresTerminal(t *testing.T) {
 			if mode.Lflag&want != want {
 				t.Fatalf("terminal remained raw after daemon loss: %#x", mode.Lflag)
 			}
+		})
+	}
+}
+
+func TestClientDetachPromotesSharedMRU(t *testing.T) {
+	for _, host := range []string{"--local", "fixture"} {
+		t.Run(host, func(t *testing.T) {
+			t.Setenv("SSHORE_SOCKET", "")
+			t.Setenv("SSHORE_LOCAL_SESSION", "")
+			e := newEnv(t)
+			args := []string{"launch", host, "mru-detach", "--no-login", "--no-profile"}
+			label := "local"
+			if host != "--local" {
+				args = append(args, "--server", e.bin)
+				label = host
+			}
+			cmd, terminal, wait := startSessionClient(t, e, args)
+			wait("Connected " + label + " / mru-detach")
+			if _, err := io.WriteString(terminal, "\x02d"); err != nil {
+				t.Fatal(err)
+			}
+			wait("Detached;")
+			if err := cmd.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(e.dir, "client-state", "connections", "detached.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rows []recentAttachment
+			if err := json.Unmarshal(data, &rows); err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 1 || rows[0].Name != "mru-detach" || rows[0].Local != (host == "--local") || rows[0].Identity == "" {
+				t.Fatalf("detach MRU: %+v", rows)
+			}
+			// No operands must reattach the same local or remote shell using MRU.
+			selectorsList := [][]string{nil, {taskUID(rows[0].Identity)[:2]}}
+			if host != "--local" {
+				selectorsList = append(selectorsList, []string{host})
+			}
+			for _, selectors := range selectorsList {
+				reattach := append([]string{"attach"}, selectors...)
+				next, tty, await := startSessionClient(t, e, reattach)
+				await("Connected " + label + " / mru-detach")
+				if _, err := io.WriteString(tty, "\x02d"); err != nil {
+					t.Fatal(err)
+				}
+				await("Detached;")
+				if err := next.Wait(); err != nil {
+					t.Fatal(err)
+				}
+			}
+
 		})
 	}
 }

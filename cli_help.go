@@ -33,7 +33,7 @@ Tasks and setup
   daemon      Run the account task manager
 
 Start: sshore launch work build     Resume: sshore attach work build
-In a session: Ctrl+B d detaches; Ctrl+B ? shows shortcuts.
+In a session: Ctrl+B c spawns; d detaches; n/p switches; l returns; r redraws.
 Examples: sshore --tldr             Details: sshore COMMAND --help
 Version: sshore --version
 `
@@ -158,15 +158,18 @@ Detach and attach do not change the owner. Use launch for a persistent shell.
 Options:
 ` + shellStartupOptions + connectionOptions + shellConnectionHelp,
 	"attach": `Usage: sshore attach [HOST [NAME]] [options] [-- SSH_OPTIONS]
-       sshore attach --local [NAME]
        sshore attach ID [options] [-- SSH_OPTIONS]
 
 Resume a detached shell. This never creates a shell or evicts its current client.
-Omit HOST and NAME to reuse the last successful connection. HOST alone reuses
-its remembered shell or offers a selection if there is no history.
+Omit HOST and NAME to resume the most recently detached local or remote shell.
+HOST alone selects that remote host’s most recently detached shell. Select a
+local shell explicitly by ID. Confirmed detaches, including Ctrl+B d, update the shared MRU order.
+Without detach history, use the remembered connection or existing selection.
 Use an alias or short ID from list. An ID selects its local or remote shell.
-With HOST or --local, ID may replace NAME. A lone 6–32 character hex operand
-is an ID prefix or full UID; for a hex-named host, give HOST NAME explicitly.
+With HOST, ID may replace NAME. IDs accept unique 2–32 character hexadecimal
+prefixes; ambiguous prefixes fail. A single operand must match a known task or
+recorded remote host; unknown targets fail without opening an SSH connection.
+Use HOST NAME explicitly for an unrecorded host or a hexadecimal host name.
 
 Options:
 ` + connectionOptions + shellConnectionHelp,

@@ -212,8 +212,11 @@ func occupiedObjectNames(exceptID string) (map[string]bool, error) {
 	return names, err
 }
 
-func isShortTaskID(name string) bool {
-	if len(name) < 6 || len(name) > 32 {
+// Displayed IDs stay six characters; selectors may use shorter unique prefixes.
+func isShortTaskID(name string) bool { return len(name) >= 6 && isTaskIDPrefix(name) }
+
+func isTaskIDPrefix(name string) bool {
+	if len(name) < 2 || len(name) > 32 {
 		return false
 	}
 	for _, c := range name {

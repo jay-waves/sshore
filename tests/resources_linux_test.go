@@ -281,7 +281,7 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	pid := rows[0].PID
-	second, terminal, done := start([]string{"attach", "--local", "persistent"}, append(env, "SSHORE_TEST_VALUE=second"))
+	second, terminal, done := start([]string{"attach", rows[0].ShortID}, append(env, "SSHORE_TEST_VALUE=second"))
 	io.WriteString(terminal, "printf 'SAVED_%s_VALUE\\n' \"$SSHORE_TEST_VALUE\"\n")
 	select {
 	case <-saved:

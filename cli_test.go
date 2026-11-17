@@ -251,7 +251,7 @@ func TestShellListOptionsAndSSHBoundary(t *testing.T) {
 }
 
 func TestRemovedShellForms(t *testing.T) {
-	for _, args := range [][]string{{"shell"}, {"launch", "--name", "dev"}, {"spawn", "--name=dev"}} {
+	for _, args := range [][]string{{"attach", "--local"}, {"attach", "--local", "dev"}, {"shell"}, {"launch", "--name", "dev"}, {"spawn", "--name=dev"}} {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatalf("accepted %v", args)
 		}
@@ -341,6 +341,11 @@ func TestSSHSeparatorBoundaries(t *testing.T) {
 }
 
 func TestReconnectCommandSSHSeparator(t *testing.T) {
+	uid := strings.Repeat("a", 32)
+	if got := reconnectCommand(options{local: true, taskIdentity: "task:" + uid, session: "local-job"}); got != "sshore attach "+uid {
+		t.Fatal(got)
+	}
+
 	o := options{host: "work", session: "dev", server: "/opt/sshore", ssh: []string{"-J", "jump"}}
 	if got := reconnectCommand(o); got != "sshore attach work dev --server /opt/sshore -- -J jump" {
 		t.Fatal(got)

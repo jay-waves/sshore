@@ -59,10 +59,11 @@ type cliFixture struct {
 
 // These fields are the documented JSON command output, not persisted records.
 type cliShell struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	State string `json:"state"`
-	PID   int    `json:"pid"`
+	ShortID string `json:"short_id"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	State   string `json:"state"`
+	PID     int    `json:"pid"`
 }
 
 func (e *cliFixture) shells(t *testing.T) []cliShell {

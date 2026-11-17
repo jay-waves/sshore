@@ -194,7 +194,20 @@ child's host alias as a direct destination. See the
 
 Commands select tasks by name or short ID. The task index reserves short IDs against
 immutable instances and preserves internal ordering. Short-ID operations reuse the
-connection settings of their observation without changing the recent-attach default.
+connection settings of their observation. Confirmed detach acknowledgements
+(including Ctrl+B d, helper detach, switching, and --detach startup) promote the
+immutable shell identity in one bounded, daemon-serialized MRU stored in
+`connections/detached.json`. Global attach considers that entire
+order; HOST filters it to one remote host before choosing a still-detached
+candidate. Local shells can be selected directly by ID; attach has no --local
+filter. Unique ID prefixes of 2–32 hexadecimal characters resolve exactly;
+ambiguous prefixes fail without choosing a candidate. A single attach operand
+must name a known task or a host in the daemon’s shell observations; unknown
+targets fail before SSH connection setup. HOST NAME is an explicit remote request. Remote candidates retain their
+exact saved route and instance; local candidates resolve against live registered
+tasks. Inventory refreshes never promote entries. Legacy connection history is a
+fallback when no eligible MRU entry is available. Explicit names and IDs bypass
+MRU selection; an actual later detach updates it.
 Actions revalidate immutable
 instances, capabilities or process identities at their authority. Displayed process
 ancestry is not permission to signal. Follow the

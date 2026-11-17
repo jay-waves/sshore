@@ -17,7 +17,7 @@ import (
 
 func TestHostedShellHandoffPreservesLocalInstance(t *testing.T) {
 	uid := strings.Repeat("a", 32)
-	h := clientHandoff{Hosted: true, Args: []string{"attach", "--local", "work"}, Directory: t.TempDir(), TaskIdentity: "task:" + uid, Instance: uid}
+	h := clientHandoff{LocalAttach: true, Hosted: true, Args: []string{"attach", "work"}, Directory: t.TempDir(), TaskIdentity: "task:" + uid, Instance: uid}
 	o, err := h.options()
 	if err != nil || !o.local || !o.hosted || o.instance != uid || o.taskIdentity != h.TaskIdentity {
 		t.Fatalf("hosted route lost: %+v %v", o, err)
@@ -232,7 +232,6 @@ func TestLocalCommandRouting(t *testing.T) {
 		{[]string{"launch", "--local", "work"}, true, "work"},
 		{[]string{"launch", "work"}, false, ""},
 		{[]string{"launch", "host", "work"}, false, "work"},
-		{[]string{"attach", "--local", "work"}, true, "work"},
 		{[]string{"attach"}, false, ""},
 		{[]string{"list", "--local"}, true, ""},
 	} {

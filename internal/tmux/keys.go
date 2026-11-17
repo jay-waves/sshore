@@ -12,8 +12,6 @@ const (
 	KeyNone KeyAction = iota
 	KeyDetach
 	KeyRedraw
-	KeyInfo
-	KeyHelp
 	KeyNew
 	KeyNext
 	KeyPrevious
@@ -78,10 +76,6 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 				action = KeyDetach
 			case 'r':
 				action = KeyRedraw
-			case 'i':
-				action = KeyInfo
-			case '?':
-				action = KeyHelp
 			default:
 				out = append(out, 2, c)
 				return false

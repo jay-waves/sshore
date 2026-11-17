@@ -23,8 +23,9 @@ import (
 func TestLocalShellDetachAndReattach(t *testing.T) {
 	e := newEnv(t)
 	state := filepath.Join(e.dir, "local-state")
+	t.Cleanup(func() { shutdownFixtureDaemon(t, state) })
 	env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SHELL=/bin/sh", "TERM=xterm-256color")
-	for _, args := range [][]string{{"launch", "--local", "localtest"}, {"attach", "--local", "localtest"}} {
+	for _, args := range [][]string{{"launch", "--local", "localtest", "--no-profile"}, {"attach"}} {
 		if args[0] == "attach" {
 			list := exec.Command(e.bin, "list", "--local", "--json")
 			list.Env = env
@@ -51,7 +52,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 			if err = json.Unmarshal(data, &rows); err != nil || len(rows) != 1 || rows[0].Name != "renamed" || rows[0].ShortID != originalID {
 				t.Fatalf("renamed list: %s %v", data, err)
 			}
-			args = []string{"attach", "renamed"}
+			args = []string{"attach", originalID}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		cmd := exec.CommandContext(ctx, e.bin, args...)
@@ -79,7 +80,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 				}
 				if args[0] == "launch" && stage == 1 && strings.Count(out.String(), "Connected local /") >= 2 {
 					stage = 2
-					io.WriteString(terminal, "\x02l")
+					io.WriteString(terminal, "\x02d")
 				}
 				if args[0] == "launch" && stage == 2 && strings.Count(out.String(), "Connected local / localtest") >= 2 {
 					stage = 3

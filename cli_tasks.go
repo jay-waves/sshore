@@ -34,7 +34,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		code = ref
 		kind = ""
 	}
-	if !isShortTaskID(code) {
+	if !isTaskIDPrefix(code) {
 		if compact && !typed && !parsed.has("--all") {
 			target, found, err := findTaskAlias(command, ref, parsed.has("--local"))
 			if err != nil || !found {
@@ -78,7 +78,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 				}
 			}
 			if identity != "" {
-				return empty, false, fmt.Errorf("ambiguous task ID %s; use a longer prefix, full UID, HOST, --local or a type prefix", code)
+				return empty, false, fmt.Errorf("ambiguous task ID %s; use a longer prefix, full UID, HOST or a type prefix", code)
 			}
 			identity = key
 		}
@@ -90,6 +90,16 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		return empty, false, nil
 	}
 	if identity == "" {
+		// Short hexadecimal labels remain valid aliases when no UID prefix matches.
+		if !matched && len(code) < 6 && compact && !typed {
+			target, found, err := findTaskAlias(command, ref, parsed.has("--local"))
+			if err != nil {
+				return empty, false, err
+			}
+			if found {
+				return routeSelectedTask(command, parsed, target, 0)
+			}
+		}
 		if matched {
 			return empty, false, usage("task ID %s does not belong to the requested scope", code)
 		}
@@ -315,4 +325,19 @@ func findTaskAlias(command, alias string, local bool) (selectedTask, bool, error
 		return matches[0], true, nil
 	}
 	return selectedTask{}, false, nil
+}
+
+// A single attach operand is a known selector, never permission to probe an
+// arbitrary SSH destination. HOST NAME remains an explicit remote request.
+func validateAttachHost(host string) error {
+	snapshots, err := readShellSnapshots()
+	if err != nil {
+		return err
+	}
+	for _, s := range snapshots {
+		if s.Host == host && !s.Forgotten && !endedShellState(s.State) {
+			return nil
+		}
+	}
+	return usage("unknown attach target %s; use sshore list and select a shell ID, or specify HOST NAME explicitly", cleanText(host))
 }

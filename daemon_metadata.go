@@ -11,6 +11,8 @@ import (
 // History is persisted by the daemon; running clients never coordinate through
 // these files. Each domain is loaded once and thereafter served from memory.
 type daemonMetadata struct {
+	attachments         []recentAttachment
+	attachmentPath      string
 	connections         []recentConnection
 	connectionRoot      string
 	treeMu, shellMu     sync.Mutex
@@ -24,9 +26,11 @@ type metadataRequest struct {
 	Lifetime                                 []string
 	Snapshot                                 *shellSnapshot
 	Inventory                                *inventory
+	Attachment                               *recentAttachment
 	Connection                               *recentConnection
 }
 type metadataReply struct {
+	Attachments []recentAttachment
 	Connections []recentConnection
 	Tree        []shellTreeNode
 	Snapshots   []shellSnapshot
@@ -58,7 +62,7 @@ func (s *daemonMetadata) handle(r metadataRequest) (reply metadataReply) {
 	var err error
 	if tree {
 		err = s.loadTrees()
-	} else if r.Action != "connection_get" && r.Action != "connection_save" {
+	} else if r.Action != "connection_get" && r.Action != "connection_save" && r.Action != "attach_get" && r.Action != "attach_detach" {
 		err = s.loadShells()
 	}
 	if err != nil {
@@ -66,6 +70,8 @@ func (s *daemonMetadata) handle(r metadataRequest) (reply metadataReply) {
 		return
 	}
 	switch r.Action {
+	case "attach_get", "attach_detach":
+		reply.Attachments, err = attachmentMRULocal(r.Attachment)
 	case "connection_get":
 		reply.Connections, err = readRecentConnectionsLocal()
 	case "connection_save":

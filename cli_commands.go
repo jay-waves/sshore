@@ -140,6 +140,11 @@ func executeShellCommand(o options) (int, error) {
 		}
 		return 0, nil
 	}
+	if o.command == "attach" && o.session == "" && o.taskIdentity == "" {
+		if _, err := resolveDetachedAttach(&o); err != nil {
+			return 1, err
+		}
+	}
 	if o.local {
 		if err := resolveLocalAttach(&o); err != nil {
 			return 1, err

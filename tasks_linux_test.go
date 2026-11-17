@@ -530,7 +530,7 @@ func TestHostedShellTaskCommandRouting(t *testing.T) {
 	if choices.Error != "" || len(choices.Names) != 1 || choices.Names[0] != "hosted" {
 		t.Fatalf("hosted shell missing from local switcher: %+v", choices)
 	}
-	for _, args := range [][]string{{"--local", id}, {"--local", "hosted"}, {"hosted"}} {
+	for _, args := range [][]string{{id}, {"hosted"}} {
 		parsed, err := parseCLI(args, "attach")
 		if err != nil {
 			t.Fatal(err)

@@ -99,7 +99,7 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 		t.Fatalf("detach lost shell: %+v", rows)
 	}
 	pid := rows[0].PID
-	send(fmt.Sprintf("%s attach --local nativecheck; printf 'OUTER_%%s\\n' exited\r", bin))
+	send(fmt.Sprintf("%s attach %s; printf 'OUTER_%%s\\n' exited\r", bin, rows[0].ShortID))
 	wait("SSHORE_INNER>")
 	rows = e.shells(t)
 	if len(rows) != 1 || rows[0].PID != pid || rows[0].State != "attached" {

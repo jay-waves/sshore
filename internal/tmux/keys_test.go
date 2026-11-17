@@ -24,7 +24,7 @@ func TestPrefixKeysAcrossReads(t *testing.T) {
 		input, want string
 		action      KeyAction
 	}{
-		{"a\x02\x02b", "a\x02b", KeyNone}, {"before\x02dignored", "before", KeyDetach}, {"a\x02rZ", "aZ", KeyRedraw}, {"\x02i", "", KeyInfo}, {"\x02?", "", KeyHelp}, {"\x02x", "\x02x", KeyNone}, {"\x02s", "\x02s", KeyNone}, {"\x02w", "\x02w", KeyNone}, {"before\x1dignored", "before\x1dignored", KeyNone},
+		{"a\x02\x02b", "a\x02b", KeyNone}, {"before\x02dignored", "before", KeyDetach}, {"a\x02rZ", "aZ", KeyRedraw}, {"\x02i", "\x02i", KeyNone}, {"\x02?", "\x02?", KeyNone}, {"\x02x", "\x02x", KeyNone}, {"\x02s", "\x02s", KeyNone}, {"\x02w", "\x02w", KeyNone}, {"before\x1dignored", "before\x1dignored", KeyNone},
 	} {
 		for split := 0; split <= len(tc.input); split++ {
 			var k Keys
@@ -55,11 +55,11 @@ func TestPrefixKeysAcrossReads(t *testing.T) {
 	}
 }
 func TestBracketedPasteNeverExecutesKeys(t *testing.T) {
-	input := []byte("\x1b[200~paste \x02d\x02?\x1d\x02\x02 \x1b[201~\x02i")
+	input := []byte("\x1b[200~paste \x02d\x02?\x1d\x02\x02 \x1b[201~\x02r")
 	for split := 0; split <= len(input); split++ {
 		var k Keys
 		data, actions := collectKeys(&k, input[:split], input[split:])
-		if !bytes.Equal(data, input[:len(input)-2]) || !reflect.DeepEqual(actions, []KeyAction{KeyInfo}) {
+		if !bytes.Equal(data, input[:len(input)-2]) || !reflect.DeepEqual(actions, []KeyAction{KeyRedraw}) {
 			t.Fatalf("split %d: data=%q actions=%v", split, data, actions)
 		}
 	}
@@ -69,7 +69,7 @@ func TestBracketedPasteNeverExecutesKeys(t *testing.T) {
 		chunks = append(chunks, input[i:i+1])
 	}
 	data, actions := collectKeys(&k, chunks...)
-	if !bytes.Equal(data, input[:len(input)-2]) || !reflect.DeepEqual(actions, []KeyAction{KeyInfo}) {
+	if !bytes.Equal(data, input[:len(input)-2]) || !reflect.DeepEqual(actions, []KeyAction{KeyRedraw}) {
 		t.Fatal("bytewise paste changed")
 	}
 }
@@ -90,8 +90,8 @@ func TestEscapeAndBypassAreImmediate(t *testing.T) {
 }
 func TestKeyEventsPreserveOrder(t *testing.T) {
 	var k Keys
-	events := k.Feed([]byte("before\x02iafter\x02dignored"))
-	want := []KeyEvent{{Data: []byte("before")}, {Action: KeyInfo}, {Data: []byte("after")}, {Action: KeyDetach}}
+	events := k.Feed([]byte("before\x02rafter\x02dignored"))
+	want := []KeyEvent{{Data: []byte("before")}, {Action: KeyRedraw}, {Data: []byte("after")}, {Action: KeyDetach}}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("got %#v", events)
 	}
@@ -110,8 +110,8 @@ func TestPasteWithEmbeddedControlsAndMissingClose(t *testing.T) {
 	if len(k.marker) > 6 {
 		t.Fatal("paste delimiter state grew with payload")
 	}
-	data, actions = collectKeys(&k, []byte("\x1b[20"), []byte("1~\x02i"))
-	if string(data) != "\x1b[201~" || !reflect.DeepEqual(actions, []KeyAction{KeyInfo}) {
+	data, actions = collectKeys(&k, []byte("\x1b[20"), []byte("1~\x02r"))
+	if string(data) != "\x1b[201~" || !reflect.DeepEqual(actions, []KeyAction{KeyRedraw}) {
 		t.Fatalf("closing fragmented paste did not restore shortcuts: %q %v", data, actions)
 	}
 }
@@ -124,8 +124,8 @@ func TestPasteCompletionBoundary(t *testing.T) {
 	if string(data) != "\x1b\x1b[200~\x02d\x1b[20" || len(actions) != 0 {
 		t.Fatal("partial end marker changed paste dispatch")
 	}
-	data, actions = collectKeys(&k, []byte("1~\x02i"))
-	if string(data) != "1~" || !reflect.DeepEqual(actions, []KeyAction{KeyInfo}) {
+	data, actions = collectKeys(&k, []byte("1~\x02r"))
+	if string(data) != "1~" || !reflect.DeepEqual(actions, []KeyAction{KeyRedraw}) {
 		t.Fatalf("first post-paste shortcut lost: %q %v", data, actions)
 	}
 }

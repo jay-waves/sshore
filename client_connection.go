@@ -624,6 +624,7 @@ func confirmSpawnRoute(ctx context.Context, parent options, token string, result
 
 // Only local authenticated control carries this request; terminal output never does.
 type clientHandoff struct {
+	LocalAttach            bool
 	Hosted                 bool
 	Args                   []string
 	Owner                  spawnOwner
@@ -637,7 +638,25 @@ func (h *clientHandoff) options() (options, error) {
 	if h == nil {
 		return options{}, fmt.Errorf("missing handoff request")
 	}
-	o, err := parseOptions(h.Args)
+	var o options
+	var err error
+	if h.LocalAttach {
+		if len(h.Args) == 0 || h.Args[0] != "attach" {
+			return o, fmt.Errorf("invalid local attachment handoff")
+		}
+		parsed, parseErr := parseCLI(h.Args[1:], "attach")
+		if parseErr != nil {
+			return o, parseErr
+		}
+		if len(parsed.operands) != 1 || len(parsed.ssh) != 0 || parsed.has("--server") || parsed.has("--download-dir") {
+			return o, fmt.Errorf("invalid local attachment handoff")
+		}
+		// Scope is authenticated handoff metadata, not a public CLI selector.
+		parsed.values["--local"] = ""
+		o, err = shellOptions("attach", parsed)
+	} else {
+		o, err = parseOptions(h.Args)
+	}
 	if err != nil {
 		return o, err
 	}
@@ -674,7 +693,9 @@ func handoffLocalClient(o options) (bool, error) {
 	}
 	args := []string{o.command}
 	if o.local {
-		args = append(args, "--local")
+		if o.command != "attach" {
+			args = append(args, "--local")
+		}
 	} else {
 		args = append(args, o.host)
 	}
@@ -711,7 +732,7 @@ func handoffLocalClient(o options) (bool, error) {
 		}
 		environment = append(environment, "SSHORE_SSH="+ssh)
 	}
-	h := &clientHandoff{Hosted: o.hosted, Args: args, Owner: o.owner, Directory: cwd, Environment: environment, Tree: currentShellTree(), TaskIdentity: o.taskIdentity, Instance: o.instance}
+	h := &clientHandoff{LocalAttach: o.local && o.command == "attach", Hosted: o.hosted, Args: args, Owner: o.owner, Directory: cwd, Environment: environment, Tree: currentShellTree(), TaskIdentity: o.taskIdentity, Instance: o.instance}
 	rows, err := localShells()
 	if err != nil {
 		return true, err

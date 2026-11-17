@@ -82,7 +82,7 @@ func commandSpec(command string) (cliSpec, bool) {
 	case "launch", "spawn":
 		spec = cliSpec{append(interactive, "--detach", "--no-login", "--no-profile"), true, true, 0, 2}
 	case "attach":
-		spec = cliSpec{interactive, true, true, 0, 2}
+		spec = cliSpec{strings.Fields("--server --download-dir --quiet --no-escape"), true, true, 0, 2}
 	case "list":
 		spec = cliSpec{append(base, "--json"), true, false, 0, 1}
 	case "pstree":

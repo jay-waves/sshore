@@ -226,13 +226,19 @@ func runTargetCommand(args []string) (int, error) {
 	}
 	if (command == "attach" || command == "kill" || command == "review") && len(parsed.operands) == 1 && !parsed.has("--local") && !parsed.has("--all") {
 		ref := parsed.operands[0]
-		if ref != "" && !isShortTaskID(ref) && strings.Trim(ref, "0123456789") == "" {
+		if ref != "" && !isTaskIDPrefix(ref) && strings.Trim(ref, "0123456789") == "" {
 			return 2, usage("list sequence numbers are display-only; select the task by name or short ID")
 		}
 	}
 	target, selected, err := resolveShortTask(command, &parsed)
 	if err != nil {
 		return 2, err
+	}
+
+	if command == "attach" && !selected && len(parsed.operands) == 1 {
+		if err := validateAttachHost(parsed.operands[0]); err != nil {
+			return 2, err
+		}
 	}
 
 	if selected && target.kind != "shell" {
