@@ -46,15 +46,16 @@ func TestShellConnectionConfirmation(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, _ = readShellSnapshots()
-	if rows[0].State == "not-listed" {
-		t.Fatal("incomplete inventory erased shell")
+	if !rows[0].Unconfirmed {
+		t.Fatal("incomplete inventory confirmed shell")
 	}
+	checked := rows[0].ConfirmedAt
 	inv.Errors = nil
 	if err = cacheRemoteShells("work", inv); err != nil {
 		t.Fatal(err)
 	}
 	rows, _ = readShellSnapshots()
-	if rows[0].State != "not-listed" || rows[0].Unconfirmed {
+	if !rows[0].Unconfirmed || !rows[0].ConfirmedAt.Equal(checked) {
 		t.Fatal(rows)
 	}
 }
@@ -62,12 +63,12 @@ func TestShellConnectionConfirmation(t *testing.T) {
 func TestShellHistoryRetention(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	old := time.Now().Add(-shellHistoryRetention - time.Hour)
-	for _, state := range []string{"not-listed", "exited", "renamed", "detached", "attached", "unknown"} {
-		if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: state, State: state, ConfirmedAt: old}); err != nil {
+	for _, state := range []string{"exited", "renamed", "detached", "attached", "unknown"} {
+		if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: state, State: state, Unconfirmed: state == "unknown", ConfirmedAt: old}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := rememberConnection(options{host: "work", session: "not-listed", server: "sshore"}); err != nil {
+	if err := rememberConnection(options{host: "work", session: "unknown", server: "sshore"}); err != nil {
 		t.Fatal(err)
 	}
 	c, err := trackShellConnection(options{host: "work", session: "active"})
@@ -82,10 +83,10 @@ func TestShellHistoryRetention(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 4 {
+	if len(rows) != 3 {
 		t.Fatalf("%+v", rows)
 	}
-	for _, state := range []string{"not-listed", "exited", "renamed"} {
+	for _, state := range []string{"unknown", "exited", "renamed"} {
 		path, _ := shellCachePath("work", state)
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("expired %s remains: %v", state, err)
@@ -120,8 +121,8 @@ func TestShellHistoryRetention(t *testing.T) {
 func TestEndedShellCleanup(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "must-not-connect"))
-	for _, state := range []string{"exited", "not-listed"} {
-		snapshot := shellSnapshot{Host: "work", Name: state, Instance: state, State: state, ConfirmedAt: time.Now()}
+	for _, state := range []string{"exited", "finished"} {
+		snapshot := shellSnapshot{Host: "work", Name: state, Instance: state, State: "exited", ConfirmedAt: time.Now()}
 		if err := saveShellSnapshot(snapshot); err != nil {
 			t.Fatal(err)
 		}
@@ -164,9 +165,28 @@ func TestShellExitReconcilesHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	saveShellTree("remote:instance", "job", nil, "exited")
+	path, err := s.cachePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := shellTreeFor("remote:instance")
 	rows, err := readShellSnapshots()
 	if err != nil || len(rows) != 1 || rows[0].State != "exited" {
 		t.Fatalf("%+v %v", rows, err)
+	}
+	if len(evidence) != 1 || !rows[0].ConfirmedAt.Equal(evidence[0].CheckedAt) {
+		t.Fatalf("history invented a confirmation time: %+v %+v", rows, evidence)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(before) != string(after) {
+		t.Fatalf("reading evidence rewrote cached observation: %v", err)
+	}
+	if _, err := os.Stat(path + ".live"); !os.IsNotExist(err) {
+		t.Fatalf("reading history created a connection lease: %v", err)
 	}
 	if err := confirmCancelledShell("work", "job", "different"); err != nil {
 		t.Fatal(err)
@@ -179,16 +199,50 @@ func TestShellExitReconcilesHistory(t *testing.T) {
 	}
 }
 
+func TestUncachedCancellationRetainsEvidenceTime(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	before := time.Now()
+	if err := confirmCancelledShell("work", "job", "instance"); err != nil {
+		t.Fatal(err)
+	}
+	nodes := shellTreeFor("remote:instance")
+	if len(nodes) != 1 || nodes[0].State != "exited" || nodes[0].CheckedAt.Before(before) {
+		t.Fatalf("cancellation omitted evidence time: %+v", nodes)
+	}
+}
+
+func TestMissingShellRemainsUnconfirmedWithoutExitEvidence(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	checked := time.Now().Add(-time.Hour)
+	s := shellSnapshot{Host: "work", Name: "job", Instance: strings.Repeat("a", 32), State: "detached", ConfirmedAt: checked}
+	if err := saveShellSnapshot(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := cacheRemoteShells("work", emptyInventory()); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := readShellSnapshots()
+	if err != nil || len(rows) != 1 || rows[0].State != "detached" || !rows[0].Unconfirmed || !rows[0].ConfirmedAt.Equal(checked) {
+		t.Fatalf("absence changed confirmed facts: %+v %v", rows, err)
+	}
+	if nodes := shellTreeFor(remoteTreeIdentity(s.Instance)); len(nodes) != 0 {
+		t.Fatalf("absence created terminal evidence: %+v", nodes)
+	}
+	if forgotten, err := forgetEndedShell(s.Host, s.Name, s.Instance); forgotten || err != nil {
+		t.Fatalf("unconfirmed task treated as exited: %t %v", forgotten, err)
+	}
+}
+
 func TestRemoteObservationSupersedesAbsence(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "not-listed", ConfirmedAt: time.Now()}); err != nil {
+	if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "detached", Unconfirmed: true, ConfirmedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if err := cacheRemoteShells("work", inventory{Shells: []shellView{{Name: "job", Instance: "instance", State: "detached"}}}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := readShellSnapshots()
-	if err != nil || len(rows) != 1 || rows[0].State != "detached" {
+	if err != nil || len(rows) != 1 || rows[0].State != "detached" || rows[0].Unconfirmed {
 		t.Fatalf("%+v %v", rows, err)
 	}
 }
@@ -263,7 +317,7 @@ func TestRememberShellRenamePreservesHistory(t *testing.T) {
 	if err := rememberConnection(options{host: "other", session: "old", server: "sshore"}); err != nil {
 		t.Fatal(err)
 	}
-	when := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	when := time.Now().Add(-time.Hour).UTC()
 	snapshot := shellSnapshot{Host: "work", Name: "old", State: "detached", ConfirmedAt: when, Unconfirmed: true}
 	if err := saveShellSnapshot(snapshot); err != nil {
 		t.Fatal(err)
@@ -465,10 +519,12 @@ func TestRoutedInventoryExpiryIsScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	states := map[string]string{}
+	uncertain := map[string]bool{}
 	for _, row := range rows {
 		states[row.Instance] = row.State
+		uncertain[row.Instance] = row.Unconfirmed
 	}
-	if states["child-one"] != "not-listed" || states["child-two"] != "detached" || states["replacement-instance"] != "detached" {
+	if !uncertain["child-one"] || uncertain["child-two"] || states["child-two"] != "detached" || states["replacement-instance"] != "detached" {
 		t.Fatalf("wrong scope expired: %+v", states)
 	}
 }

@@ -9,150 +9,79 @@ import (
 	"github.com/jay-waves/sshore/internal/termui"
 	"github.com/xtaci/smux"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
-// Remote requests describe data, never commands. Only a separately invoked local
-// review command can turn a request into executable operations. Records live in
-// <UserConfigDir>/sshore/approvals, or under SSHORE_STATE_DIR when overridden. They
-// contain connection options and metadata, not collected SSH credentials; platform
-// helpers enforce private ownership/permissions or a current-user-only DACL.
-// Records expire after ten minutes, are capped at 32, and are consumed before SSH
-// reconnects. Each request contains at most 16 operations. Reconnection preserves
-// the original options and shell PID; failed execution needs a fresh request.
-// Submitting all requested local paths or the local port is consent.
-// The input reader is closed before SSH starts so authentication owns stdin.
+// Requests are immutable daemon-owned intents. Review fills an independent
+// memory copy and consumes the original before executing; failures never replay.
 
 func validateOperations(ops []operation) error {
-	err := validateApprovalOperations(ops)
+	err := validateRequestOperations(ops)
 	if errors.Is(err, errForwardPort) {
 		return usage("%s", err)
 	}
 	return err
 }
 
-func findApproval(dir, ref string) (approvalRecord, error) {
-	if validApprovalID(ref) {
-		return readApproval(dir, ref)
-	}
-	if validSession(ref) != nil {
-		return approvalRecord{}, fmt.Errorf("invalid review name")
-	}
-	records, err := pendingApprovals(dir)
-	if err != nil {
-		return approvalRecord{}, err
-	}
-	var found *approvalRecord
-	for _, r := range records {
-		if r.Name == ref {
-			if found != nil {
-				return approvalRecord{}, fmt.Errorf("ambiguous review name %s", ref)
-			}
-			copy := r
-			found = &copy
-		}
-	}
-	if found == nil {
-		return approvalRecord{}, fmt.Errorf("review %s does not exist or expired", ref)
-	}
-	return *found, nil
-}
-
-func approvalDir() (string, error) { return stateDir("approvals") }
-
-func writeApproval(o options, ops []operation) (string, error) {
+func queueRequest(o options, ops []operation) (string, error) {
 	if err := validateOperations(ops); err != nil {
-		return "", err
-	}
-	dir, err := approvalDir()
-	if err != nil {
-		return "", err
-	}
-	if err := approvalStore(dir).CheckCapacity(); err != nil {
 		return "", err
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
-	if o.sshDirectory != "" {
-		cwd = o.sshDirectory
-	}
-	reservation, err := reserveResourceName("review", "")
+	reservation, err := chooseTaskIdentity("review", "")
 	if err != nil {
 		return "", err
 	}
-	defer reservation.Close()
+
 	id := reservation.uid
-	r := approvalRecord{UID: reservation.uid, SoftwareVersion: version, PID: o.resumePID, ID: id, Name: reservation.name, Created: time.Now(), Host: o.host, Session: o.session, Server: o.server, Directory: cwd, DownloadDir: o.downloadDir, SSH: o.ssh, Quiet: o.quiet, NoEscape: o.noEscape, Operations: ops}
-	if o.routeParent != nil {
-		connection, err := connectionFromOptions(o)
-		if err != nil {
-			return "", err
-		}
-		r.Parent, r.RouteToken, r.RouteTarget, r.Instance = connection.Parent, connection.RouteToken, connection.RouteTarget, connection.Instance
-		r.Server = connection.Server
+	connection, err := connectionFromOptions(o)
+	if err != nil {
+		return "", err
 	}
-	if err := approvalStore(dir).Save(r); err != nil {
+	r := requestRecord{Connection: connection, SoftwareVersion: version, PID: o.shellPID, ID: id, Name: reservation.name, Created: time.Now(), Directory: cwd, DownloadDir: o.downloadDir, Quiet: o.quiet, Operations: ops}
+	if err := saveRequest(r); err != nil {
 		return "", err
 	}
 	return id, nil
 }
-func approvalStore(dir string) approvalStorage {
-	return approvalStorage{directory: dir}
-}
-func validateApprovalRecord(r approvalRecord) error {
-	if r.Parent != nil || r.RouteToken != "" {
-		if err := validateRecentConnection(r.connection()); err != nil {
-			return err
-		}
+func validateRequestRecord(r requestRecord) error {
+	if err := validateRecentConnection(r.Connection); err != nil {
+		return fmt.Errorf("saved connection is incompatible; request it again: %w", err)
 	}
 
-	if r.UID != "" && (!validTaskUID(r.UID) || r.UID != r.ID) {
+	if !validTaskUID(r.ID) || r.PID <= 0 || !validTaskUID(r.Connection.Instance) {
 		return fmt.Errorf("invalid review identity")
 	}
 	if r.Name != "" && validSession(r.Name) != nil {
 		return fmt.Errorf("invalid review name")
 	}
-	if err := validSession(r.Session); err != nil {
-		return err
-	}
-	if !filepath.IsAbs(r.Directory) || r.Host == "" || r.Server == "" {
-		return fmt.Errorf("invalid saved connection")
+	if !filepath.IsAbs(r.Directory) {
+		return fmt.Errorf("invalid local approval directory")
 	}
 	return nil
 }
-func readApproval(dir, id string) (approvalRecord, error) {
-	record, err := approvalStore(dir).Read(id)
-	if errors.Is(err, errForwardPort) {
-		err = usage("%s", err)
-	}
-	return record, err
-}
-func pendingApprovals(dir string) ([]approvalRecord, error) { return approvalStore(dir).Pending() }
-func consumeApproval(dir, id string) error                  { return approvalStore(dir).Consume(id) }
-
 func executeReview(a reviewOptions) (code int, resultErr error) {
 	// Never invite a user to enter approval input inside a normal remote shell.
 	if os.Getenv("SSHORE_SOCKET") != "" || os.Getenv("SSH_CONNECTION") != "" {
 		return 1, fmt.Errorf("run review from your local shell after detach")
 	}
-	dir, err := approvalDir()
-	if err != nil {
-		return 1, err
-	}
 	var ids, labels []string
 	if a.id == "" {
-		records, err := pendingApprovals(dir)
+		records, err := pendingRequests()
 		if err != nil {
 			return 1, err
 		}
 		for _, r := range records {
 			ids = append(ids, r.DisplayName())
-			labels = append(labels, fmt.Sprintf("%s · %s / %s · %s", r.DisplayName(), r.Host, r.Session, approvalSummary(r.Operations)))
+			labels = append(labels, fmt.Sprintf("%s · %s / %s · %s", r.DisplayName(), r.Connection.Host, r.Connection.Session, requestSummary(r.Operations)))
 		}
 		if len(ids) == 0 {
 			fmt.Println("No pending approvals")
@@ -179,21 +108,16 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 		}
 	}
 	// Re-read after selection: an expired or concurrently cancelled request fails closed.
-	r, err := findApproval(dir, a.id)
+	r, err := findRequest(a.id)
 	if err != nil {
 		return 1, err
 	}
-	if a.stay && len(r.Operations) == 1 && (r.Operations[0].Kind == "forward" || r.Operations[0].Kind == "mount") {
-		return 2, usage("--stay applies only to file transfers; mounts and forwards always return locally")
-	}
-	termui.Log(os.Stdout, termui.Info, "Review %s · %s / %s\n", r.DisplayName(), cleanText(r.Host), r.Session)
+	termui.Log(os.Stdout, termui.Info, "Review %s · %s / %s\n", r.DisplayName(), cleanText(r.Connection.Host), r.Connection.Session)
 	termui.Log(os.Stdout, termui.Info, "Submit all paths or port to start; Ctrl-C cancels.\n")
 	if len(r.Operations) == 1 && (r.Operations[0].Kind == "forward" || r.Operations[0].Kind == "mount") {
 		termui.Log(os.Stdout, termui.Info, "After: background %s; shell detached.\n", r.Operations[0].Kind)
-	} else if a.stay {
-		termui.Log(os.Stdout, termui.Info, "After: local.\n")
 	} else {
-		termui.Log(os.Stdout, termui.Info, "After: attach.\n")
+		termui.Log(os.Stdout, termui.Info, "After: local.\n")
 	}
 	for i := range r.Operations {
 		op := &r.Operations[i]
@@ -293,64 +217,80 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 		return 1, err
 	}
 	// A user may leave the prompt open past the expiration time.
-	if time.Since(r.Created) > approvalTTL {
+	if time.Since(r.Created) > requestTTL {
 		return 1, fmt.Errorf("approval expired; request it again")
 	}
 	// Restore the original local working directory for relative SSH configuration
 	// paths. Selected local file paths are already absolute.
-	if err = os.Chdir(r.Directory); err != nil {
+	connectionDirectory := r.Connection.Directory
+	if connectionDirectory == "" {
+		connectionDirectory = r.Directory
+	}
+	if err = os.Chdir(connectionDirectory); err != nil {
 		return 1, err
 	}
-	reservation, err := reserveResourceNameExcept("review", r.DisplayName(), r.ID)
+	reservation, err := chooseTaskIdentityExcept("review", r.DisplayName(), r.ID)
 	if err != nil {
 		return 1, err
 	}
-	defer reservation.Close()
-	if validTaskUID(r.UID) {
-		reservation.uid = r.UID
-	}
-	if err = consumeApproval(dir, r.ID); err != nil {
+
+	reservation.uid = r.ID
+	if err = consumeRequest(r.ID); err != nil {
 		return 1, err
 	}
 	if len(r.Operations) == 1 && r.Operations[0].Kind == "mount" {
 		op := r.Operations[0]
-		args := []string{remotePathOperand(r.Host, op.Path)}
+		args := []string{remotePathOperand(r.Connection.Host, op.Path)}
 		if op.LocalPath != "" {
 			args = append(args, op.LocalPath)
 		}
-		args = append(args, "--server", r.Server)
+		args = append(args, "--server", r.Connection.Server)
 		if op.ReadOnly {
 			args = append(args, "--read-only")
 		}
-		if len(r.SSH) > 0 {
+		if len(r.Connection.SSH) > 0 {
 			args = append(args, "--")
-			args = append(args, r.SSH...)
+			args = append(args, r.Connection.SSH...)
 		}
-		config := resourceConfig{Args: args, MountApproval: &files.MountApproval{Session: r.Session, PID: r.PID, ID: r.ID}}
-		if r.Parent != nil {
-			connection := r.connection()
+		config := resourceConfig{Args: args, MountApproval: &files.MountApproval{Session: r.Connection.Session, PID: r.PID, ID: r.ID, Instance: r.Connection.Instance}}
+		if r.Connection.viaShell() {
+			connection := r.Connection
 			config.MountConnection = &connection
 		}
-		return startReservedResource(config, "mount", reservation)
+		return startSelectedResource(config, "mount", reservation)
 	}
 	if len(r.Operations) == 1 && r.Operations[0].Kind == "forward" {
 		op := r.Operations[0]
-		f := forwardConfig{Name: r.DisplayName(), Host: r.Host, Server: r.Server, SSH: r.SSH, Port: op.Port, Target: op.TargetPort, Reverse: op.Reverse, Session: r.Session, ResumePID: r.PID, ApprovalID: r.ID}
-		if r.Parent != nil {
-			connection := r.connection()
+		f := forwardConfig{Name: r.DisplayName(), Host: r.Connection.Host, Server: r.Connection.Server, SSH: r.Connection.SSH, Port: op.Port, Target: op.TargetPort, Reverse: op.Reverse, Session: r.Connection.Session, ResumePID: r.PID, ApprovalID: r.ID}
+		f.Instance = r.Connection.Instance
+		if r.Connection.viaShell() {
+			connection := r.Connection
 			f.Connection = &connection
 		}
 		if err := validateForwardConfig(f); err != nil {
 			return 1, err
 		}
-		return startReservedResource(resourceConfig{Forward: &f}, "forward", reservation)
+		return startSelectedResource(resourceConfig{Forward: &f}, "forward", reservation)
 	}
-	o := r.clientOptions()
-	o.stay = a.stay
-	return runClient(o)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	wire, err := openRoutedResource(ctx, r.Connection, message{Type: "route_files", Name: r.Connection.Session, PID: r.PID, ApprovalID: r.ID})
+	if err != nil {
+		return 1, err
+	}
+	defer wire.Close()
+	mux, err := smux.Client(wire, sshio.MuxConfig())
+	if err != nil {
+		return 1, err
+	}
+	defer mux.Close()
+	if err := executeApprovedFiles(ctx, mux, r.Operations, r.Quiet); err != nil {
+		return 1, err
+	}
+	return 0, nil
 }
 
-func approvalSummary(ops []operation) string {
+func requestSummary(ops []operation) string {
 	if len(ops) == 1 {
 		op := ops[0]
 		if op.Kind == "forward" {
@@ -367,8 +307,7 @@ func approvalSummary(ops []operation) string {
 // Approved files execute sequentially; the first failure stops the batch without
 // rolling back completed files. Ctrl-C cancels local file operations; a failed
 // transfer closes the attachment while preserving its shell.
-// Normal terminal output is muted until attachment resumes
-// it. --stay returns after file operations. Approved forwarding runs separately
+// File execution uses an independent stream. Approved forwarding runs separately
 // as an independent background resource without attaching to the shell.
 
 func executeApprovedFiles(ctx context.Context, mux *smux.Session, ops []operation, quiet bool) error {
@@ -507,7 +446,7 @@ func (p *transferProgress) sample(now time.Time, done, total int64) string {
 	return fmt.Sprintf("%s/%s · %s/s · remaining %s", displayBytes(done), displayBytes(total), displayBytes(int64(p.rate)), eta)
 }
 
-// A shell attachment accepts only client-initiated approved file streams.
+// A dedicated approved transport accepts only client-initiated file streams.
 // Forwarding has its own SSH transport; obsolete tunnel/control streams cannot
 // create listeners or dial services through this connection.
 

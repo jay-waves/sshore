@@ -2,9 +2,7 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"net"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -12,18 +10,33 @@ import (
 	"time"
 )
 
-func TestShortTaskShellSelectors(t *testing.T) {
+func TestShortTaskExplicitHostScopesSharedIdentity(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	local := localShellRecord{Name: "work", Token: strings.Repeat("a", 64), Address: "127.0.0.1:1234", Version: version}
-	path, err := localSessionPath(local.Name)
+	uid := strings.Repeat("a", 32)
+	tasks := startRequestDaemon(t)
+	registerTestShell(t, tasks, "local-copy", uid)
+	if err := saveShellSnapshot(shellSnapshot{Host: "remote", Name: "remote-copy", Instance: uid, State: "detached"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := assignTaskIDs([]string{"task:" + uid}); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parseCLI([]string{"remote", uid[:6]}, "attach")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = writeStateJSON(path, local); err != nil {
-		t.Fatal(err)
+	target, selected, err := resolveShortTask("attach", &parsed)
+	if err != nil || !selected || target.host != "remote" || target.name != "remote-copy" {
+		t.Fatalf("explicit host selected another scope: %+v %v", target, err)
 	}
+}
+
+func TestShortTaskShellSelectors(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	local := registerTestShell(t, tasks, "work", strings.Repeat("a", 32))
 	remote := shellSnapshot{Host: "host", Name: "build", Instance: "original", State: "detached"}
-	if err = saveShellSnapshot(remote); err != nil {
+	if err := saveShellSnapshot(remote); err != nil {
 		t.Fatal(err)
 	}
 	remoteKey := remoteShellIdentity(remote.Host, remote.Instance)
@@ -67,11 +80,9 @@ func TestShortTaskShellSelectors(t *testing.T) {
 		}
 	}
 	// A reused name must never make the old code act on its replacement.
-	local.Token = strings.Repeat("b", 64)
-	if err = writeStateJSON(path, local); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = run([]string{"cancel", ids[localShellRecord{Token: strings.Repeat("a", 64)}.identity()].code}); err == nil {
+	close(tasks.records[local.UID].(*nativeShellTask).shell.done)
+	registerTestShell(t, tasks, "work", strings.Repeat("b", 32))
+	if _, err = run([]string{"cancel", ids[local.identity()].code}); err == nil {
 		t.Fatal("accepted replaced local shell")
 	}
 	if err = renameShellSnapshot("host", "build", "renamed"); err != nil {
@@ -98,7 +109,8 @@ func TestShortTaskShellSelectors(t *testing.T) {
 func TestShortTaskReviewLifecycle(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "no-ssh"))
-	id, err := writeApproval(options{host: "fixture", server: "sshore", session: "work"}, []operation{{Kind: "upload", Path: "/tmp"}})
+	startRequestDaemon(t)
+	id, err := queueRequest(testRequestOptions(), []operation{{Kind: "upload", Path: "/tmp"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,11 +137,8 @@ func TestShortTaskReviewLifecycle(t *testing.T) {
 	if _, err = run([]string{"cancel", code}); err != nil {
 		t.Fatal(err)
 	}
-	dir, err := approvalDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = os.Stat(filepath.Join(dir, id+".json")); !os.IsNotExist(err) {
+
+	if _, err = readRequest(id); err == nil {
 		t.Fatal("request not consumed", err)
 	}
 	if _, err = run([]string{"cancel", code}); err == nil {
@@ -139,16 +148,10 @@ func TestShortTaskReviewLifecycle(t *testing.T) {
 
 func TestShortTaskResourceRenameAndReplacement(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	for _, kind := range []string{"mount", "forward"} {
-		dir, err := resourceStateDir(kind)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r := resourceRecord{Kind: kind, Name: kind + "job", Token: strings.Repeat("c", 64), Version: version, Host: "host"}
-		path := filepath.Join(dir, r.Name+".json")
-		if err = writeStateJSON(path, r); err != nil {
-			t.Fatal(err)
-		}
+	tasks := startRequestDaemon(t)
+	for i, kind := range []string{"mount", "forward"} {
+		task, done := registerTestResource(t, tasks, kind, kind+"job", strings.Repeat(string(rune('a'+i)), 32))
+		r := task.record
 		key := resourceIdentity(r)
 		ids, err := assignTaskIDs([]string{key})
 		if err != nil {
@@ -166,11 +169,8 @@ func TestShortTaskResourceRenameAndReplacement(t *testing.T) {
 		if err != nil || !ok || target.name != kind+"new" {
 			t.Fatalf("%+v %v", target, err)
 		}
-		// Resolve, then replace the storage slot before execution.
-		r.Token = strings.Repeat("d", 64)
-		if err = writeStateJSON(path, r); err != nil {
-			t.Fatal(err)
-		}
+		close(done)
+		registerTestResource(t, tasks, kind, r.Name, strings.Repeat(string(rune('c'+i)), 32))
 		if err = cancelResourceIdentity(kind+"/"+r.Name, key); err == nil || !strings.Contains(err.Error(), "changed") {
 			t.Fatal("accepted replacement", err)
 		}
@@ -197,7 +197,8 @@ func TestShortTaskUnknownAndScopedNames(t *testing.T) {
 			t.Fatalf("hex name rejected: %v %v", args, err)
 		}
 	}
-	id, err := writeApproval(options{host: "fixture", server: "sshore", session: "work"}, []operation{{Kind: "upload", Path: "/tmp"}})
+	startRequestDaemon(t)
+	id, err := queueRequest(testRequestOptions(), []operation{{Kind: "upload", Path: "/tmp"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,69 +210,21 @@ func TestShortTaskUnknownAndScopedNames(t *testing.T) {
 
 func TestShortTaskLocalCommandRouting(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
+	tasks := startRequestDaemon(t)
+	r := registerTestShell(t, tasks, "work", "123456"+strings.Repeat("a", 26))
+	if _, err := assignTaskIDs([]string{r.identity()}); err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
-	r := localShellRecord{Name: "work", Address: listener.Addr().String(), Token: strings.Repeat("e", 64), Version: version}
-	path, err := localSessionPath(r.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = writeStateJSON(path, r); err != nil {
-		t.Fatal(err)
-	}
-	_, err = assignTaskIDs([]string{r.identity()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Numeric-only six-character codes are IDs too, not list row numbers.
-	indexPath, err := statePath("tasks/ids.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	index, err := readTaskIDIndex(indexPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	index.Codes[r.identity()] = "123456"
-	if err = writeStateJSON(indexPath, index); err != nil {
-		t.Fatal(err)
+	requests := make(chan message, 2)
+	tasks.records[r.UID].(*nativeShellTask).serve = func(c net.Conn, m message) error {
+		requests <- m
+		reply := "cancelled"
+		if m.Type == "rename" {
+			reply = "renamed"
+		}
+		return writeMessage(c, message{Type: reply})
 	}
 	for _, command := range []string{"cancel", "rename"} {
-		done := make(chan error, 1)
-		go func() {
-			c, err := listener.Accept()
-			if err != nil {
-				done <- err
-				return
-			}
-			defer c.Close()
-			_ = c.SetDeadline(time.Now().Add(3 * time.Second))
-			auth, err := readMessage(c)
-			if err == nil && (auth.Type != "local_auth" || auth.Token != r.Token) {
-				err = fmt.Errorf("wrong authentication: %+v", auth)
-			}
-			if err == nil {
-				err = writeMessage(c, message{Type: "local_ready", SoftwareVersion: version})
-			}
-			if err == nil {
-				var request message
-				request, err = readMessage(c)
-				if err == nil && (request.Type != command || command == "rename" && request.Name != "new") {
-					err = fmt.Errorf("wrong request: %+v", request)
-				}
-			}
-			if err == nil {
-				reply := "cancelled"
-				if command == "rename" {
-					reply = "renamed"
-				}
-				err = writeMessage(c, message{Type: reply})
-			}
-			done <- err
-		}()
 		args := []string{command, "123456"}
 		if command == "rename" {
 			args = append(args, "new")
@@ -280,8 +233,9 @@ func TestShortTaskLocalCommandRouting(t *testing.T) {
 		if code != 0 || err != nil {
 			t.Fatalf("%v: %d %v", args, code, err)
 		}
-		if err = <-done; err != nil {
-			t.Fatal(err)
+		m := <-requests
+		if m.Type != command || command == "rename" && m.Name != "new" {
+			t.Fatalf("wrong route: %+v", m)
 		}
 	}
 }
@@ -403,6 +357,7 @@ func TestCancelAllScope(t *testing.T) {
 }
 
 func TestListNumbersAreNotSelectors(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	for _, command := range []string{"attach", "cancel", "review"} {
 		code, err := run([]string{command, "1"})
 		if code != 2 || err == nil || !strings.Contains(err.Error(), "display-only") {

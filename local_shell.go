@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -27,48 +26,30 @@ type localShellRecord struct {
 	Name, Address, Token, Version, Directory string
 }
 
-func localSessionPath(name string) (string, error) {
-	if err := validSession(name); err != nil {
-		return "", err
-	}
-	dir, err := stateDir("local-shells")
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, name+".json"), nil
-}
-
 func readLocalSession(name string) (localShellRecord, error) {
-	var r localShellRecord
-	path, err := localSessionPath(name)
+	records, err := nativeShellRecords()
 	if err != nil {
-		return r, err
+		return localShellRecord{}, err
 	}
-	r, err = readLocalRecord(path, name)
-	if err == nil || !os.IsNotExist(err) {
-		return r, err
-	}
-	dir, err := stateDir("local-shells")
-	if err != nil {
-		return r, err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return r, err
-	}
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		candidate, err := readLocalRecord(filepath.Join(dir, entry.Name()), strings.TrimSuffix(entry.Name(), ".json"))
-		if err != nil {
-			return r, err
-		}
-		if candidate.Name == name || validTaskUID(candidate.UID) && candidate.UID[:6] == name {
-			return candidate, nil
+	var found *localShellRecord
+	for _, r := range records {
+		if r.UID == name || isShortTaskID(name) && strings.HasPrefix(r.UID, name) {
+			if found != nil {
+				return localShellRecord{}, fmt.Errorf("ambiguous task ID")
+			}
+			copy := r
+			found = &copy
 		}
 	}
-	return r, os.ErrNotExist
+	if found != nil {
+		return *found, nil
+	}
+	for _, r := range records {
+		if r.Name == name {
+			return r, nil
+		}
+	}
+	return localShellRecord{}, os.ErrNotExist
 }
 
 func readLocalRecord(path, name string) (localShellRecord, error) {
@@ -119,21 +100,44 @@ func dialLocalSessionContext(ctx context.Context, r localShellRecord, deadline t
 	stop := context.AfterFunc(ctx, func() { c.Close() })
 	defer stop()
 	_ = c.SetDeadline(deadline)
-	if err = writeMessage(c, message{Type: "local_auth", Token: r.Token, SoftwareVersion: version}); err == nil {
-		var m message
-		m, err = readMessage(c)
-		if err == nil {
-			err = checkPeerVersion(m.SoftwareVersion, "local shell")
-			if err == nil && m.Type != "local_ready" {
-				err = fmt.Errorf("local shell authentication failed")
-			}
-		}
-	}
-	if err != nil {
+	if err := authenticateDaemonTask(c, r); err != nil {
 		c.Close()
 		return nil, err
 	}
 	return c, nil
+}
+
+func authenticateDaemonTask(c net.Conn, r localShellRecord) error {
+	if err := checkPeerVersion(r.Version, "daemon"); err != nil {
+		return err
+	}
+	if err := writeMessage(c, message{Type: "local_auth", Token: r.Token, SoftwareVersion: version}); err != nil {
+		return err
+	}
+	m, err := readMessage(c)
+	if err != nil {
+		return err
+	}
+	if err := checkPeerVersion(m.SoftwareVersion, "daemon"); err != nil {
+		return err
+	}
+	if m.Type != "local_ready" {
+		return fmt.Errorf("daemon authentication failed")
+	}
+	if r.UID == "" {
+		return nil
+	}
+	if err := writeMessage(c, message{Type: "task_open", Instance: r.UID}); err != nil {
+		return err
+	}
+	m, err = readMessage(c)
+	if err != nil {
+		return err
+	}
+	if m.Type != "task_ready" {
+		return fmt.Errorf("%s", m.Error)
+	}
+	return nil
 }
 
 func (r localShellRecord) identity() string {
@@ -143,43 +147,22 @@ func (r localShellRecord) identity() string {
 	return fmt.Sprintf("local:%x", sha256.Sum256([]byte(r.Token)))
 }
 
-// The listener owns no terminal until the first authenticated attachment.
-// serve runs synchronously for each connection; shutdown joins all handlers.
-func serveLocalShell(s *localShell, r localShellRecord, ready func(localShellRecord) error, serve func(net.Conn, message) error, done <-chan struct{}) (result error) {
+// Register the terminal task before publishing readiness. Attachments use the
+// account listener and never own the task lifetime.
+func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, ready func(localShellRecord) error, serve func(net.Conn, message) error, done <-chan struct{}) (result error) {
 	if err := validSession(r.Name); err != nil {
 		return err
 	}
 	if r.Version != version || len(r.Token) != 64 || !filepath.IsAbs(r.Directory) {
 		return fmt.Errorf("invalid local startup request")
 	}
-	owner, err := lockObjectName(r.Name)
-	if err != nil {
-		return err
-	}
-	s.nameLock = owner
-	defer func() { s.nameLock.Close() }()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
-	r.Address = listener.Addr().String()
-	path, err := localSessionPath(r.storageName())
-	if err != nil {
-		return err
-	}
-	if err = writeStateJSON(path, r); err != nil {
-		return err
-	}
 	s.record = r
+	s.tasks = tasks
 	go watchSpawnOwner(r.Owner, s.done, s.close)
-	defer func() {
-		path, err := localSessionPath(s.record.storageName())
-		if err == nil {
-			os.Remove(path)
-		}
-	}()
-	if err = ready(r); err != nil {
+	if err := tasks.register(r.UID, &nativeShellTask{shell: s, serve: serve}); err != nil {
+		return err
+	}
+	if err := ready(r); err != nil {
 		return err
 	}
 	startupTimer := time.AfterFunc(15*time.Second, func() {
@@ -194,81 +177,14 @@ func serveLocalShell(s *localShell, r localShellRecord, ready func(localShellRec
 		}
 	})
 	defer startupTimer.Stop()
-	var mu sync.Mutex
-	connections := map[net.Conn]bool{}
-	var workers sync.WaitGroup
-	stopped := make(chan struct{})
-	defer close(stopped)
-	go func() {
-		select {
-		case <-done:
-			_ = listener.Close()
-		case <-stopped:
-		}
-	}()
-	defer func() {
-		mu.Lock()
-		for c := range connections {
-			_ = c.Close()
-		}
-		mu.Unlock()
-		workers.Wait()
-	}()
-	for {
-		c, err := listener.Accept()
-		if err != nil {
-			select {
-			case <-done:
-				return nil
-			default:
-				return err
-			}
-		}
-		mu.Lock()
-		if len(connections) >= 32 {
-			mu.Unlock()
-			c.Close()
-			continue
-		}
-		connections[c] = true
-		mu.Unlock()
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			defer func() { c.Close(); mu.Lock(); delete(connections, c); mu.Unlock() }()
-			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-			m, err := readMessage(c)
-			if err != nil || m.Type != "local_auth" || subtle.ConstantTimeCompare([]byte(m.Token), []byte(r.Token)) != 1 {
-				return
-			}
-			if m.SoftwareVersion != version {
-				_ = writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: "local shell version mismatch"})
-				return
-			}
-			if writeMessage(c, message{Type: "local_ready", SoftwareVersion: version}) != nil {
-				return
-			}
-			m, err = readMessage(c)
-			if err != nil {
-				return
-			}
-			_ = c.SetDeadline(time.Time{})
-			_ = serve(c, m)
-		}()
-	}
-}
-
-func (r localShellRecord) storageName() string {
-	if validTaskUID(r.UID) {
-		return r.UID
-	}
-	return r.Name
+	<-done
+	return nil
 }
 
 type localShell struct {
 	processIdentity string
 	environment     []string
-	nameLock        *os.File
+	tasks           *daemonTasks
 	mu              sync.Mutex
 	record          localShellRecord
 	terminal        *tmux.Terminal
@@ -380,40 +296,20 @@ func (s *localShell) rename(name string) error {
 	if err := validAlias(name); err != nil {
 		return err
 	}
+	s.tasks.mu.Lock()
+	defer s.tasks.mu.Unlock()
+	for id, task := range s.tasks.records {
+		if id != s.record.UID && task.taskName() == name {
+			return fmt.Errorf("%s: %w", name, errObjectNameInUse)
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.lifecycle.Exited() {
 		return fmt.Errorf("local shell has ended")
 	}
-	if s.record.Name == name {
-		return nil
-	}
-	reservation, err := reserveResourceName("shell", name)
-	if err != nil {
-		return err
-	}
-	defer reservation.Close()
-	next := s.record
-	next.Name = name
-	path, err := localSessionPath(next.storageName())
-	if err != nil {
-		return err
-	}
-	if err = writeStateJSON(path, next); err != nil {
-		return err
-	}
-	oldPath, _ := localSessionPath(s.record.storageName())
-	if oldPath != path {
-		if err = os.Remove(oldPath); err != nil && !os.IsNotExist(err) {
-			os.Remove(path)
-			return err
-		}
-	}
-	s.record = next
+	s.record.Name = name
 	renameShellTree(s.record.identity(), name)
-	s.nameLock.Close()
-	s.nameLock = reservation.owner
-	reservation.owner = nil
 	return nil
 }
 
@@ -421,15 +317,19 @@ func (s *localShell) targets(request message) message {
 	s.mu.Lock()
 	name := s.record.Name
 	s.mu.Unlock()
+	return localSessionTargets(name, request)
+}
+
+func localSessionTargets(name string, request message) message {
 	reply := message{Type: "session_targets", Action: request.Action, Name: name}
 	if request.Action == "new" {
-		reservation, err := reserveResourceName("shell", "")
+		reservation, err := chooseTaskIdentity("shell", "")
 		if err != nil {
 			reply.Error = err.Error()
 			return reply
 		}
 		reply.Names = []string{reservation.name}
-		reservation.Close()
+
 		return reply
 	}
 	rows, err := localShells()
@@ -477,10 +377,10 @@ func detachLocalShell(identity string) error {
 	return fmt.Errorf("local shell is unavailable")
 }
 
-func runLocalShell(record localShellRecord, env []string, ready func(localShellRecord) error) error {
+func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, ready func(localShellRecord) error) error {
 	s := &localShell{done: make(chan struct{}), environment: env}
 	defer s.close()
-	return serveLocalShell(s, record, ready, func(c net.Conn, m message) error {
+	return serveLocalShell(tasks, s, record, ready, func(c net.Conn, m message) error {
 		switch m.Type {
 		case "handoff_confirm":
 			return s.confirmHandoff(c, m)
@@ -650,3 +550,5 @@ func (s *localShell) attach(c net.Conn) error {
 		}
 	}
 }
+
+func redrawLocalTerminal(t *tmux.Terminal) { tmux.RequestRedraw(t, t.PID()) }

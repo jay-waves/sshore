@@ -333,9 +333,9 @@ type Process struct {
 	once    sync.Once
 }
 
-// DialSocket opens a daemon channel on the already authenticated connection.
-func (p *Process) DialSocket(ctx context.Context, path string) (net.Conn, error) {
-	return p.client.DialContext(ctx, "unix", path)
+// DialDaemon opens a loopback TCP channel on the authenticated SSH connection.
+func (p *Process) DialDaemon(ctx context.Context, address string) (net.Conn, error) {
+	return p.client.DialContext(ctx, "tcp", address)
 }
 
 func (p *Process) Read(b []byte) (int, error)  { return p.Output.Read(b) }

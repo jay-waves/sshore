@@ -7,49 +7,38 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
 
-func TestLocalShellListingBoundsUnresponsiveWorkers(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+func TestHostedShellHandoffPreservesLocalInstance(t *testing.T) {
+	uid := strings.Repeat("a", 32)
+	h := clientHandoff{Hosted: true, Args: []string{"attach", "--local", "work"}, Directory: t.TempDir(), TaskIdentity: "task:" + uid, Instance: uid}
+	o, err := h.options()
+	if err != nil || !o.local || !o.hosted || o.instance != uid || o.taskIdentity != h.TaskIdentity {
+		t.Fatalf("hosted route lost: %+v %v", o, err)
 	}
-	release, accepted := make(chan struct{}), make(chan struct{})
-	var connections sync.WaitGroup
-	go func() {
-		defer close(accepted)
-		for {
-			c, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			connections.Add(1)
-			go func() { defer connections.Done(); <-release; c.Close() }()
-		}
-	}()
-	t.Cleanup(func() { listener.Close(); close(release); <-accepted; connections.Wait() })
+	h.Args = []string{"attach", "remote", "work"}
+	if _, err := h.options(); err == nil {
+		t.Fatal("hosted route accepted an SSH destination")
+	}
+}
+
+func TestNativeShellListingBoundsUnresponsiveWorkers(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	release := make(chan struct{})
+	defer close(release)
 	for i := range 12 {
-		name := fmt.Sprintf("shell-%d", i)
-		path, err := localSessionPath(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		record := localShellRecord{Name: name, Address: listener.Addr().String(), Token: resourceToken(), Version: version}
-		if err := writeStateJSON(path, record); err != nil {
-			t.Fatal(err)
-		}
+		r := registerTestShell(t, tasks, fmt.Sprintf("shell-%d", i), fmt.Sprintf("%032x", i+1))
+		tasks.records[r.UID].(*nativeShellTask).serve = func(c net.Conn, m message) error { <-release; return nil }
 	}
 	start := time.Now()
-	rows, err := localShells()
+	rows, err := nativeShells()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,14 +106,9 @@ func TestClientConnectionCancellation(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer listener.Close()
-			path, err := localSessionPath("root")
-			if err != nil {
-				t.Fatal(err)
-			}
-			record := localShellRecord{Name: "root", Address: listener.Addr().String(), Token: resourceToken(), Version: version}
-			if err = writeStateJSON(path, record); err != nil {
-				t.Fatal(err)
-			}
+			tasks := startRequestDaemon(t)
+			record := registerTestShell(t, tasks, "root", strings.Repeat("a", 32))
+			tasks.records[record.UID].(*nativeShellTask).shell.record.Address = listener.Addr().String()
 			reached, closed := make(chan error, 1), make(chan struct{})
 			go func() {
 				defer close(closed)
@@ -138,6 +122,12 @@ func TestClientConnectionCancellation(t *testing.T) {
 				_, err = readMessage(c)
 				if err == nil && stage == "nested-route" {
 					err = writeMessage(c, message{Type: "local_ready", SoftwareVersion: version})
+					if err == nil {
+						_, err = readMessage(c)
+					}
+					if err == nil {
+						err = writeMessage(c, message{Type: "task_ready"})
+					}
 					if err == nil {
 						_, err = readMessage(c)
 					}
@@ -267,70 +257,5 @@ func TestLocalCommandRejectsAmbiguousOptions(t *testing.T) {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatalf("accepted %v", args)
 		}
-	}
-}
-
-func TestCancelUnavailableLocalShell(t *testing.T) {
-	for _, active := range []bool{false, true} {
-		t.Run(fmt.Sprintf("active=%v", active), func(t *testing.T) {
-			t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-			listener, err := net.Listen("tcp4", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			address := listener.Addr().String()
-			listener.Close()
-			r := localShellRecord{Name: "unavailable", Address: address, Token: resourceToken(), Version: version}
-			path, err := localSessionPath(r.Name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := writeStateJSON(path, r); err != nil {
-				t.Fatal(err)
-			}
-			if active {
-				owner, err := lockObjectName(r.Name)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer owner.Close()
-			}
-			m, err := localRequest(r.Name, message{Type: "cancel"}, r.identity())
-			if active {
-				if err == nil {
-					t.Fatal("cancelled an unreachable live owner")
-				}
-				if _, err := os.Stat(path); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				if err != nil || m.Type != "cancelled" {
-					t.Fatalf("cancel: %+v %v", m, err)
-				}
-				if _, err := os.Stat(path); !os.IsNotExist(err) {
-					t.Fatalf("stale record retained: %v", err)
-				}
-			}
-		})
-	}
-}
-
-func TestExitedLocalShellCleanupRejectsChangedRecord(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	r := localShellRecord{Name: "changed", Address: "127.0.0.1:1", Token: resourceToken(), Version: version}
-	path, err := localSessionPath(r.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	current := r
-	current.Token = resourceToken()
-	if err := writeStateJSON(path, current); err != nil {
-		t.Fatal(err)
-	}
-	if removed, err := removeExitedLocalShell(r); removed || err == nil {
-		t.Fatalf("changed record removed: %v %v", removed, err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatal(err)
 	}
 }

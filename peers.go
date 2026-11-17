@@ -54,7 +54,7 @@ func validateRemoteTask(t peerRecord) error {
 	if t.UID != "" && !validTaskUID(t.UID) || t.Direction != "" && t.Direction != "<-" && t.Direction != "->" {
 		return fmt.Errorf("invalid peer identity or direction")
 	}
-	if t.Version != version || !validApprovalID(t.Key) || t.Manager == "" || len(t.Manager) > 128 || len(t.Detail) > 4096 {
+	if t.Version != version || !validRequestID(t.Key) || t.Manager == "" || len(t.Manager) > 128 || len(t.Detail) > 4096 {
 		return fmt.Errorf("invalid peer task metadata")
 	}
 	kind, name, ok := strings.Cut(t.ID, "/")
@@ -106,7 +106,7 @@ func storeRemoteTask(t peerRecord) error {
 	return writeStateJSON(filepath.Join(dir, t.Key+".json"), t)
 }
 func removeRemoteTask(key string) error {
-	if !validApprovalID(key) {
+	if !validRequestID(key) {
 		return fmt.Errorf("invalid peer task key")
 	}
 	dir, e := peerTaskDir(false)
@@ -152,7 +152,7 @@ func collectPeerRows() ([]peerRow, error) {
 	var rows []peerRow
 	for _, name := range names {
 		key := strings.TrimSuffix(name, ".json")
-		if !strings.HasSuffix(name, ".json") || !validApprovalID(key) {
+		if !strings.HasSuffix(name, ".json") || !validRequestID(key) {
 			continue
 		}
 		p := filepath.Join(dir, name)
@@ -185,7 +185,7 @@ func collectPeerRows() ([]peerRow, error) {
 		}
 		ttl := 24 * time.Hour
 		if t.State == "pending" {
-			ttl = approvalTTL
+			ttl = requestTTL
 		}
 		if age > ttl {
 			removeExpiredPeerTask(p, info)
@@ -229,7 +229,7 @@ func pendingRemoteTask(id, name string, ops []operation) peerRecord {
 	if len(ops) == 1 {
 		op := ops[0]
 		if op.Kind == "forward" {
-			detail = strings.ReplaceAll(approvalSummary([]operation{op}), "your computer", "manager")
+			detail = strings.ReplaceAll(requestSummary([]operation{op}), "your computer", "manager")
 		} else {
 			detail = op.Kind + " " + op.Path
 		}
@@ -261,10 +261,10 @@ func collectPeerViews() ([]peerView, error) {
 // Rejection has no live session transport. Remove only its advisory remote
 // record, best effort, with existing authentication and a short timeout. Never
 // prompt or change known_hosts; an unreachable mirror expires independently.
-func removeRejectedPeerTask(r approvalRecord) {
+func removeRejectedPeerTask(r requestRecord) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	server := r.Server
+	server := r.Connection.Server
 	if server == "" {
 		server = "sshore"
 	}
@@ -276,8 +276,8 @@ func removeRejectedPeerTask(r approvalRecord) {
 	}
 	command += "fi; if [ \"$(\"$server\" --version 2>/dev/null)\" = " + shellQuote("sshore "+version) + " ]; then exec \"$server\" task-remove " + shellQuote(version) + " " + shellQuote(r.ID) + "; fi"
 	args := []string{"-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=2", "-o", "ConnectionAttempts=1", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "-o", "ClearAllForwardings=yes", "-o", "ForkAfterAuthentication=no", "-o", "RemoteCommand=none", "-o", "SessionType=default"}
-	args = append(args, sshio.WithoutForwarding(r.SSH)...)
-	_ = sshio.Run(ctx, sshio.Options{Host: r.Host, Args: args, Command: command, Directory: r.Directory}, nil, io.Discard, io.Discard)
+	args = append(args, r.Connection.SSH...)
+	_ = sshio.Run(ctx, sshio.Options{Host: r.Connection.Host, Args: args, Command: command, Directory: r.Connection.Directory}, nil, io.Discard, io.Discard)
 }
 
 // Mount inventory uses the existing SFTP transport. Failure to publish metadata

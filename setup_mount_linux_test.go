@@ -132,8 +132,8 @@ func TestHelperAutomaticSetup(t *testing.T) {
 				if staged, _ := filepath.Glob(filepath.Join(home, "sshore-setup.*")); len(staged) != 0 {
 					t.Fatalf("staging retained: %v", staged)
 				}
-				if sockets, _ := filepath.Glob(filepath.Join(e.dir, "*.sock")); len(sockets) != 0 {
-					t.Fatalf("mount created a persistent shell: %v", sockets)
+				if records, err := hostedTaskRecords(); err != nil || len(records) != 0 {
+					t.Fatalf("helper created a persistent shell: %+v %v", records, err)
 				}
 			})
 		}
@@ -203,13 +203,10 @@ func TestRemoteFallbackAndArgumentQuoting(t *testing.T) {
 	home := t.TempDir()
 	bin := filepath.Join(home, ".local", "bin", "sshore")
 	writeBootstrapStub(t, bin, version)
-	for _, mode := range []string{"bridge", "resume", "sessions", "new", "attach"} {
+	for _, mode := range []string{"bridge", "sessions", "new", "attach"} {
 		o := options{server: "sshore", session: "main", list: mode == "sessions", command: mode}
 		if mode == "new" {
 			o.command = "launch"
-		}
-		if mode == "resume" {
-			o.approved = []operation{{Kind: "forward", Port: 80}}
 		}
 		out, err := runBootstrap(t, home, o)
 		want := "<bootstrap>\n<" + bin + ">\n<" + mode + ">\n<main>\n"

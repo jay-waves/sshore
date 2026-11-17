@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,9 +48,15 @@ func TestSessionMetadataLifecycle(t *testing.T) {
 	}
 	sendTest(t, b.tty, message{Type: "input", Data: []byte{3}})
 	shellOutput(t, b, "printf 'INTERRUPTED_%s\\n' ready", "INTERRUPTED_ready")
-	// The helper still uses the original inherited socket after rename.
+	// The helper retains the original task ID after rename.
 	helper := exec.Command(e.bin, "detach")
-	helper.Env = append(append([]string{}, e.env...), "SSHORE_SOCKET="+filepath.Join(e.dir, "original.sock"))
+	helper.Env = append(append([]string{}, e.env...), "SSHORE_SOCKET="+func() string {
+		id, err := resolveSession("work")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}())
 	if out, err := helper.CombinedOutput(); err != nil {
 		t.Fatal(string(out), err)
 	}
@@ -125,119 +130,51 @@ func TestSessionExitReceiptBounds(t *testing.T) {
 	}
 }
 
-func TestAutomaticSessionReservation(t *testing.T) {
+func TestAutomaticSessionSelection(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	dir, err := os.MkdirTemp("", "ss-names-")
-	if err != nil {
+	tasks := startRequestDaemon(t)
+	id := strings.Repeat("a", 32)
+	shell := &remoteShell{tasks: tasks, instance: id, name: "pikachu", done: make(chan struct{})}
+	if err := tasks.register(id, shell); err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
-	t.Setenv("SSHORE_RUNTIME_DIR", dir)
-	listener, err := net.Listen("unix", filepath.Join(dir, "pikachu.sock"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	lifetime, err := openLock(filepath.Join(dir, "pikachu.sock.lock"), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lifetime.Close()
-	go func() {
-		for {
-			c, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer c.Close()
-				if m, err := readMessage(c); err == nil && m.Type == "status" {
-					_ = writeMessage(c, message{Type: "session", Name: "pikachu"})
-				}
-			}()
-		}
-	}()
-	// Occupied names include detached daemons: allocation does not depend on
-	// whether a terminal client is attached to this listening socket.
-	if _, err := reserveSession([]string{"pikachu"}, true); err == nil || !strings.Contains(err.Error(), "all automatic shell names") {
-		t.Fatalf("expected exhaustion, got %v", err)
+	if _, err := reserveSession([]string{"pikachu"}, true); err == nil {
+		t.Fatal("reused live name")
 	}
 	r, err := reserveSession([]string{"pikachu", "eevee"}, true)
+	if err != nil || !validTaskUID(r.name) || r.conn != nil {
+		t.Fatalf("selection: %+v %v", r, err)
+	}
+	existing, err := reserveSession([]string{"pikachu"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
-	if !validTaskUID(r.name) || r.publicName != r.name[:6] || r.conn != nil {
-		t.Fatalf("allocated %q, connection %v", r.name, r.conn)
-	}
-	// Explicit names may still connect to an existing daemon.
-	explicit, err := reserveSession([]string{"pikachu"}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer explicit.Close()
-	defer explicit.conn.Close()
-	if explicit.name != "pikachu" {
-		t.Fatal(explicit.name)
-	}
-	listener.Close()
-	lifetime.Close()
-	// A leftover startup lock does not permanently consume the name.
-	explicit.Close()
-	reused, err := reserveSession([]string{"pikachu"}, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reused.Close()
-	if !validTaskUID(reused.name) || reused.name == r.name || reused.conn != nil {
-		t.Fatalf("reuse: %q %v", reused.name, reused.conn)
+	existing.conn.Close()
+	if existing.name != id {
+		t.Fatal("existing selection lost identity")
 	}
 }
 
 // Neither a hung daemon nor stale metadata should turn name lookup into a
 // network health check. A live hung daemon must still reserve its public name.
-func TestSessionNameResolutionWithoutStatus(t *testing.T) {
+func TestSessionNameResolutionUsesTaskTable(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	dir, err := os.MkdirTemp("", "ss-label-")
-	if err != nil {
+	tasks := startRequestDaemon(t)
+	id := strings.Repeat("a", 32)
+	shell := &remoteShell{tasks: tasks, instance: id, name: "work", done: make(chan struct{})}
+	if err := tasks.register(id, shell); err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(dir)
-	t.Setenv("SSHORE_RUNTIME_DIR", dir)
-	path := filepath.Join(dir, "internal.sock")
-	listener, err := net.Listen("unix", path)
-	if err != nil {
-		t.Fatal(err)
+	if got, err := resolveSession("work"); err != nil || got != id {
+		t.Fatalf("lookup: %s %v", got, err)
 	}
-	defer listener.Close() // Deliberately never accepts or answers status.
-	lock, err := openLock(path+".lock", true)
-	if err != nil {
-		t.Fatal(err)
+	t.Setenv("SSHORE_RUNTIME_DIR", t.TempDir())
+	if got, err := resolveSession("old-label", id); err != nil || got != id {
+		t.Fatalf("account lookup: %s %v", got, err)
 	}
-	defer lock.Close()
-	if err := writeSessionName(path, "work"); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := resolveSession("work"); err != nil || got != path {
-		t.Fatalf("%q: %v", got, err)
-	}
-	if got, err := resolveSession("other"); err != nil || got != "" {
-		t.Fatalf("%q: %v", got, err)
-	}
-	if _, err := reserveSession([]string{"work"}, true); err == nil {
-		t.Fatal("reallocated live label")
-	}
-	// Losing the socket must not release a still-running daemon's label.
-	listener.Close()
-	if got, err := resolveSession("work"); err != nil || got != path {
-		t.Fatalf("live identity without socket: %q: %v", got, err)
-	}
-	if _, err := reserveSession([]string{"work"}, false); err == nil {
-		t.Fatal("unavailable live identity treated as a new shell")
-	}
-	lock.Close()
+	close(shell.done)
 	if got, err := resolveSession("work"); err != nil || got != "" {
-		t.Fatalf("stale label: %q: %v", got, err)
+		t.Fatalf("ended lookup: %s %v", got, err)
 	}
 }
 
@@ -245,8 +182,7 @@ func TestShellTaskIDIndependentOfAlias(t *testing.T) {
 	e := newEnv(t)
 	alias := strings.Repeat("a", 32)
 	b, pid := e.attach(alias)
-	data, err := os.ReadFile(filepath.Join(e.dir, alias+".sock.id"))
-	uid := string(data)
+	uid, err := resolveSession(alias)
 	if err != nil || !validTaskUID(uid) || uid == alias {
 		t.Fatalf("alias became identity: %q %v", uid, err)
 	}
@@ -260,9 +196,9 @@ func TestShellTaskIDIndependentOfAlias(t *testing.T) {
 	if resumedPID != pid {
 		t.Fatal("alias change replaced the shell")
 	}
-	data, err = os.ReadFile(filepath.Join(e.dir, alias+".sock.id"))
-	if err != nil || string(data) != uid {
-		t.Fatalf("alias changed stored identity: %q %v", data, err)
+	resolved, err := resolveSession("work")
+	if err != nil || resolved != uid {
+		t.Fatalf("alias changed identity: %q %v", resolved, err)
 	}
 	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
 	untilType(t, b.tty, "exit")
@@ -274,7 +210,7 @@ func TestKillSessionLifecycle(t *testing.T) {
 	e := newEnv(t)
 	query := func(name string) message {
 		t.Helper()
-		c, err := net.Dial("unix", filepath.Join(e.dir, name+".sock"))
+		c, err := e.dial(name)
 		if err != nil {
 			t.Fatal(err)
 		}

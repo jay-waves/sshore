@@ -18,7 +18,8 @@ import (
 // is the original managed spawn context. Neither is OS process ancestry.
 type shellTreeNode struct {
 	Identity, Parent, Owner, Lifetime, Host, Name, State string
-	Current, Cached                                      bool
+	Current                                              bool `json:"-"`
+	Cached                                               bool
 	ShortID, Kind                                        string    `json:",omitempty"`
 	SourceHost, SourceMachineID                          string    `json:",omitempty"`
 	Remote, Direction                                    string    `json:"-"`
@@ -373,12 +374,23 @@ func knownShellTrees() []shellTreeNode {
 	}
 	paths, _ := filepath.Glob(filepath.Join(dir, "*.json"))
 	nodes := map[string]shellTreeNode{}
-	// Locally owned records supersede copies carried by descendants.
+	// Merge evidence before live inventory; file order must not decide state.
 	for _, path := range paths {
 		for _, n := range readShellTree(path) {
-			if old, ok := nodes[n.Identity]; !ok || (!endedShellState(old.State) && (old.Cached || endedShellState(n.State))) {
-				nodes[n.Identity] = n
+			if old, ok := nodes[n.Identity]; ok {
+				if endedShellState(old.State) != endedShellState(n.State) {
+					if endedShellState(old.State) {
+						continue
+					}
+				} else if old.Cached != n.Cached {
+					if !old.Cached {
+						continue
+					}
+				} else if !n.CheckedAt.After(old.CheckedAt) {
+					continue
+				}
 			}
+			nodes[n.Identity] = n
 		}
 	}
 	result := make([]shellTreeNode, 0, len(nodes))
@@ -469,7 +481,7 @@ func localTreeInventory() (inventory, error) {
 	if err != nil {
 		inv.Errors = append(inv.Errors, cleanText(err.Error()))
 	}
-	local, err := localShells()
+	local, err := nativeShells()
 	inv.LocalShells = local
 	if err != nil {
 		inv.Errors = append(inv.Errors, cleanText(err.Error()))

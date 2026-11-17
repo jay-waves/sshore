@@ -14,87 +14,43 @@ import (
 	"time"
 )
 
-// mcpRegistryEntry makes a persistent Bash visible to the existing account
-// daemon scan while the shared daemon owns the session.
-type mcpRegistryEntry struct {
-	path     string
-	lock     *os.File
-	listener net.Listener
-	done     chan struct{}
-	once     sync.Once
-	pid      int
-	start    string
+// MCP Bash mechanisms live in SessionsManager; their account identity and
+// lifetime registration belong to the same table as terminal and resource tasks.
+type mcpSessionTask struct {
+	owner     *trackedMCPSessions
+	id, start string
+	pid       int
+	mu        sync.Mutex
+	closed    bool
+	closing   bool
 }
 
-func registerMCPSession(id string) (*mcpRegistryEntry, error) {
-	name := "mcp-" + id
-	if err := validSession(name); err != nil {
-		return nil, err
-	}
-	path, err := socketPath(name)
-	if err != nil {
-		return nil, err
-	}
-	lock, err := openLock(path+".lock", true)
-	if err != nil {
-		return nil, fmt.Errorf("session identity already in use: %w", err)
-	}
-	fail := func(e error) (*mcpRegistryEntry, error) { lock.Close(); return nil, e }
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fail(err)
-	}
-	listener, err := net.Listen("unix", path)
-	if err != nil {
-		return fail(err)
-	}
-	if err := os.Chmod(path, 0600); err != nil {
-		listener.Close()
-		os.Remove(path)
-		return fail(err)
-	}
-	entry := &mcpRegistryEntry{path: path, lock: lock, listener: listener, done: make(chan struct{})}
-	go func() {
-		defer close(entry.done)
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer conn.Close()
-				_ = conn.SetDeadline(time.Now().Add(time.Second))
-				req, err := readMessage(conn)
-				if err != nil {
-					return
-				}
-				if req.Type == "status" && req.Action == "health" {
-					_ = writeMessage(conn, message{Type: "session", Name: name, PID: os.Getpid(), SoftwareVersion: version})
-				}
-			}()
+func (t *mcpSessionTask) taskName() string       { return "mcp-" + t.id }
+func (t *mcpSessionTask) expired(time.Time) bool { t.mu.Lock(); defer t.mu.Unlock(); return t.closed }
+func (t *mcpSessionTask) serveTask(c net.Conn, m message) error {
+	switch m.Type {
+	case "status":
+		return writeMessage(c, message{Type: "session", Name: t.taskName(), Instance: t.id, PID: t.pid, SoftwareVersion: version})
+	case "cancel":
+		_, err := t.owner.Close(context.Background(), mcp.SessionInput{SessionID: t.id})
+		reply := message{Type: "cancelled"}
+		if err != nil {
+			reply.Type, reply.Error = "error", err.Error()
 		}
-	}()
-	return entry, nil
-}
-func (e *mcpRegistryEntry) Close() {
-	e.once.Do(func() {
-		_ = e.listener.Close()
-		<-e.done
-		_ = os.Remove(e.path)
-		_ = e.lock.Close()
-	})
+		return writeMessage(c, reply)
+	default:
+		return fmt.Errorf("unsupported MCP task operation")
+	}
 }
 
-// trackedMCPSessions registers Bash processes under the same setup lock used by
-// remote shell creation and replacement.
 type trackedMCPSessions struct {
 	manager *mcp.SessionsManager
-	mu      sync.Mutex
-	entries map[string]*mcpRegistryEntry
+	tasks   *daemonTasks
 	check   func() error
 }
 
-func newTrackedMCPSessions(check ...func() error) *trackedMCPSessions {
-	s := &trackedMCPSessions{manager: mcp.NewSessionsManager(), entries: make(map[string]*mcpRegistryEntry)}
+func newTrackedMCPSessions(tasks *daemonTasks, check ...func() error) *trackedMCPSessions {
+	s := &trackedMCPSessions{manager: mcp.NewSessionsManager(), tasks: tasks}
 	if len(check) > 0 {
 		s.check = check[0]
 	}
@@ -121,64 +77,91 @@ func (s *trackedMCPSessions) Open(ctx context.Context, in mcp.OpenInput) (mcp.Se
 		return mcp.Session{}, err
 	}
 	start, err := processStart(pid)
+	if err == nil {
+		err = s.tasks.register(session.ID, &mcpSessionTask{owner: s, id: session.ID, pid: pid, start: start})
+	}
 	if err != nil {
 		_, _ = s.manager.Close(ctx, mcp.SessionInput{SessionID: session.ID})
 		return mcp.Session{}, err
 	}
-	entry, err := registerMCPSession(session.ID)
-	if err != nil {
-		_, _ = s.manager.Close(ctx, mcp.SessionInput{SessionID: session.ID})
-		return mcp.Session{}, err
-	}
-	entry.pid, entry.start = pid, start
-	s.mu.Lock()
-	s.entries[session.ID] = entry
-	s.mu.Unlock()
 	return session, nil
 }
+func (s *trackedMCPSessions) task(id string) (*mcpSessionTask, error) {
+	s.tasks.mu.Lock()
+	task, ok := s.tasks.records[id].(*mcpSessionTask)
+	s.tasks.mu.Unlock()
+	if !ok || task.owner != s {
+		return nil, fmt.Errorf("session not found")
+	}
+	task.mu.Lock()
+	unavailable := task.closed || task.closing
+	task.mu.Unlock()
+	if unavailable {
+		return nil, fmt.Errorf("session is closing or closed")
+	}
+	return task, nil
+}
 func (s *trackedMCPSessions) List(ctx context.Context, in mcp.OpenInput) (mcp.Sessions, error) {
-	return s.manager.List(ctx, in)
+	result, err := s.manager.List(ctx, in)
+	if err != nil {
+		return result, err
+	}
+	visible := result.Sessions[:0]
+	for _, session := range result.Sessions {
+		if _, err := s.task(session.ID); err == nil {
+			visible = append(visible, session)
+		}
+	}
+	result.Sessions = visible
+	return result, nil
 }
 func (s *trackedMCPSessions) Execute(ctx context.Context, in mcp.ExecuteInput) (mcp.Execution, error) {
+	if _, err := s.task(in.SessionID); err != nil {
+		return mcp.Execution{}, err
+	}
 	return s.manager.Execute(ctx, in)
 }
 func (s *trackedMCPSessions) Read(ctx context.Context, in mcp.ReadInput) (mcp.Output, error) {
+	if _, err := s.task(in.SessionID); err != nil {
+		return mcp.Output{}, err
+	}
 	return s.manager.Read(ctx, in)
 }
 func (s *trackedMCPSessions) Close(ctx context.Context, in mcp.SessionInput) (mcp.Closed, error) {
-	s.mu.Lock()
-	entry := s.entries[in.SessionID]
-	if entry == nil {
-		s.mu.Unlock()
+	s.tasks.mu.Lock()
+	task, ok := s.tasks.records[in.SessionID].(*mcpSessionTask)
+	s.tasks.mu.Unlock()
+	if !ok || task.owner != s {
 		return mcp.Closed{}, fmt.Errorf("session not found")
 	}
-	// Prevent concurrent close from signalling a reused PID or removing a new entry.
-	delete(s.entries, in.SessionID)
-	s.mu.Unlock()
-	if err := stopOldSessions([]setupProcess{{PID: entry.pid, Start: entry.start}}, "cancelled by sshore"); err != nil {
-		s.mu.Lock()
-		s.entries[in.SessionID] = entry
-		s.mu.Unlock()
+	task.mu.Lock()
+	if task.closed || task.closing {
+		task.mu.Unlock()
+		return mcp.Closed{}, fmt.Errorf("session is closing or closed")
+	}
+	task.closing = true
+	task.mu.Unlock()
+	defer func() { task.mu.Lock(); task.closing = false; task.mu.Unlock() }()
+	if err := stopOwnedProcesses([]setupProcess{{PID: task.pid, Start: task.start}}); err != nil {
 		return mcp.Closed{}, err
 	}
 	result, err := s.manager.Close(ctx, in)
-	if err != nil {
-		s.mu.Lock()
-		s.entries[in.SessionID] = entry
-		s.mu.Unlock()
-		return result, err
+	if err == nil {
+		task.mu.Lock()
+		task.closed = true
+		task.mu.Unlock()
 	}
-	entry.Close()
-	return result, nil
+	return result, err
 }
-
 func (s *trackedMCPSessions) closeAll() {
-	s.mu.Lock()
-	ids := make([]string, 0, len(s.entries))
-	for id := range s.entries {
-		ids = append(ids, id)
+	s.tasks.mu.Lock()
+	var ids []string
+	for id, task := range s.tasks.records {
+		if task, ok := task.(*mcpSessionTask); ok && task.owner == s {
+			ids = append(ids, id)
+		}
 	}
-	s.mu.Unlock()
+	s.tasks.mu.Unlock()
 	for _, id := range ids {
 		_, _ = s.Close(context.Background(), mcp.SessionInput{SessionID: id})
 	}
@@ -241,4 +224,9 @@ func bridgeMCP(c net.Conn, target string) error {
 			return err
 		}
 	}
+}
+
+func (t *mcpSessionTask) stopTask() error {
+	_, err := t.owner.Close(context.Background(), mcp.SessionInput{SessionID: t.id})
+	return err
 }

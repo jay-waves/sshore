@@ -40,7 +40,7 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message) {
 			fail(err)
 			return
 		}
-	} else if request.Type != "route_mount" {
+	} else if request.Type != "route_mount" && request.Type != "route_files" {
 		fail(fmt.Errorf("invalid resource request"))
 		return
 	}
@@ -48,15 +48,18 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message) {
 		fail(err)
 		return
 	}
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-s.done:
-			c.Close()
-		case <-done:
+	if request.Type == "route_files" {
+		if err := writeMessage(c, message{Type: "resource_ready", SoftwareVersion: version}); err != nil {
+			return
 		}
-	}()
+		mx, err := smux.Server(c, sshio.MuxConfig())
+		if err != nil {
+			return
+		}
+		defer mx.Close()
+		serveApprovedStreams(context.Background(), mx)
+		return
+	}
 	if request.Type == "route_mount" {
 		if err := writeMessage(c, message{Type: "resource_ready", SoftwareVersion: version}); err != nil {
 			return
@@ -68,7 +71,7 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message) {
 			}
 			return beginIncomingTask(task)
 		}, func(a files.MountApproval) error {
-			if a.Session != request.Name || a.PID != request.PID || a.ID != request.ApprovalID {
+			if a.Session != request.Name || a.PID != request.PID || a.ID != request.ApprovalID || a.Instance != "" && a.Instance != request.Instance {
 				return fmt.Errorf("mount approval identity changed")
 			}
 			return s.checkApprovalSource(request)

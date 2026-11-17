@@ -84,43 +84,28 @@ func TestIdentityResetAndRoutes(t *testing.T) {
 	}
 }
 
-func TestReviewNameReservedForAction(t *testing.T) {
+func TestPendingRequestOwnsName(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime"))
-	id, err := writeApproval(options{host: "work", session: "main", server: "sshore"}, []operation{{Kind: "forward", TargetPort: 3000}})
+	startRequestDaemon(t)
+	id, err := queueRequest(testRequestOptions(), []operation{{Kind: "forward", TargetPort: 3000}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	name := reviewName(t, id)
 	for _, kind := range []string{"mount", "forward", "shell"} {
-		if r, err := reserveResourceName(kind, name); err == nil {
-			r.Close()
-			t.Fatalf("%s stole pending review name", kind)
+		if _, err := chooseTaskIdentity(kind, name); err == nil {
+			t.Fatalf("%s stole pending request name", kind)
 		}
 	}
-	dir, _ := approvalDir()
-	request, err := findApproval(dir, name)
-	if err != nil || request.ID != id {
-		t.Fatalf("%+v %v", request, err)
-	}
-	reservation, err := reserveResourceNameExcept("review", name, id)
-	if err != nil {
+	if _, err := chooseTaskIdentityExcept("review", name, id); err != nil {
 		t.Fatal(err)
 	}
-	defer reservation.Close()
-	if err := consumeApproval(dir, id); err != nil {
+	if err := consumeRequest(id); err != nil {
 		t.Fatal(err)
 	}
-	if r, err := reserveResourceName("forward", name); err == nil {
-		r.Close()
-		t.Fatal("name reused during approval handoff")
-	}
-	reservation.Close()
-	r, err := reserveResourceName("mount", name)
-	if err != nil {
+	if _, err := chooseTaskIdentity("mount", name); err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
 }
 
 func TestSessionNames(t *testing.T) {
@@ -158,100 +143,44 @@ func TestAcceptSessionName(t *testing.T) {
 	}
 }
 
-func TestResourceNameReservations(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime"))
-	names := automaticSessionNames()
-	reservations := make(chan *resourceNameReservation, len(names))
+func TestTaskNamesClaimedAtomicallyByDaemon(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	t.Setenv("SSHORE_STATE_DIR", root)
+	tasks := startRequestDaemon(t)
 	var wg sync.WaitGroup
-	for range names {
+	wins := make(chan string, 32)
+	done := make(chan struct{})
+	for range 32 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r, err := reserveResourceName("forward", "")
+			id, err := newTaskUID()
 			if err != nil {
 				t.Error(err)
 				return
 			}
-			reservations <- r
+			task := &daemonResourceTask{record: resourceRecord{UID: id, Name: "shared", Kind: "forward"}, done: done}
+			if tasks.register(id, task) == nil {
+				wins <- id
+			}
 		}()
 	}
 	wg.Wait()
-	close(reservations)
-	seen := map[string]bool{}
-	for r := range reservations {
-		defer r.Close()
-		if seen[r.name] {
-			t.Fatalf("duplicate %s", r.name)
-		}
-		seen[r.name] = true
+	if len(wins) != 1 {
+		t.Fatalf("concurrent name owners: %d", len(wins))
 	}
-	if len(seen) != len(names) {
-		t.Fatal(seen)
+	if _, err := chooseTaskIdentity("mount", "shared"); err == nil {
+		t.Fatal("selected occupied name")
 	}
-	extra, err := reserveResourceName("forward", "")
+	close(done)
+	next, err := chooseTaskIdentity("mount", "shared")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer extra.Close()
-	if seen[extra.name] {
-		t.Fatal("reused reserved ID")
+	if next.uid == <-wins {
+		t.Fatal("reused old task identity")
 	}
-	for name := range seen {
-		if r, err := reserveResourceName("forward", name); err == nil {
-			r.Close()
-			t.Fatal("accepted occupied reference")
-		}
-		break
-	}
-
-	for _, tc := range []struct{ kind, name string }{{"mount", "custom-mount"}, {"forward", "custom"}} {
-		r, err := reserveResourceName(tc.kind, tc.name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r.Close()
-	}
-}
-
-func TestResourceNameHandoff(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime"))
-	r, err := reserveResourceName("mount", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer r.Close()
-	dir, _ := stateDir("names")
-	r.owner.Close()
-	r.owner = nil
-	if _, err := reserveResourceName("mount", r.name); err == nil {
-		t.Fatal("startup handoff lost reservation")
-	}
-	worker, err := os.OpenFile(filepath.Join(dir, r.name+".lock"), os.O_RDWR, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer worker.Close()
-	if err := lockResourceState(worker); err != nil {
-		t.Fatal(err)
-	}
-	r.Close()
-	next, err := reserveResourceName("mount", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if next.name == r.name {
-		t.Fatal("reused live worker name")
-	}
-	next.Close()
-	worker.Close()
-	reused, err := reserveResourceName("mount", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reused.Close()
-	if reused.name == r.name {
-		t.Fatal("reused ended task ID")
+	if _, err := os.Stat(filepath.Join(root, "names")); !os.IsNotExist(err) {
+		t.Fatalf("name selection created files: %v", err)
 	}
 }

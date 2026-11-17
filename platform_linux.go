@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
-	"github.com/jay-waves/sshore/internal/tmux"
 	"golang.org/x/sys/unix"
 )
 
@@ -25,9 +25,7 @@ func localShellPath(env []string) string {
 	return path
 }
 
-func redrawLocalTerminal(t *tmux.Terminal) { tmux.RequestRedraw(t, t.PID()) }
-
-func detachLocalDaemon(cmd *exec.Cmd) { detachResourceWorker(cmd) }
+func detachLocalDaemon(cmd *exec.Cmd) { detachMountDaemon(cmd) }
 
 func spawnProcessIdentity(pid int) (string, error) {
 	p, err := readSetupTask(pid)
@@ -41,10 +39,10 @@ func spawnProcessIdentity(pid int) (string, error) {
 }
 
 func stopSpawnTerminal(pid int, start string) error {
-	return stopOldSessions([]setupProcess{{PID: pid, Start: start}}, "spawn owner exited")
+	return stopOwnedProcesses([]setupProcess{{PID: pid, Start: start}})
 }
 
-func detachResourceWorker(c *exec.Cmd)   { c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
+func detachMountDaemon(c *exec.Cmd)      { c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
 func lockResourceState(f *os.File) error { return unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB) }
 func lockResourceReadState(f *os.File) error {
 	return unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB)
@@ -87,52 +85,7 @@ func prepareFTPPaths(o *ftpOptions) (func(), error) {
 
 func resourceLockBusy(err error) bool { return errors.Is(err, unix.EWOULDBLOCK) }
 
-// Inspect lifetime locks and labels, never contact the shells or signal tasks.
-func occupiedShellNames() (map[string]bool, error) {
-	names := map[string]bool{}
-	dir, err := runtimeDir()
-	if err != nil {
-		return nil, err
-	}
-	dirs := map[string]bool{dir: true}
-	processes, err := findSessionDaemons("/proc")
-	if err != nil {
-		return nil, err
-	}
-	for _, p := range processes {
-		if p.socket != "" {
-			dirs[filepath.Dir(p.socket)] = true
-		}
-	}
-	for dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		for _, entry := range entries {
-			if !strings.HasSuffix(entry.Name(), ".sock.lock") {
-				continue
-			}
-			path := filepath.Join(dir, strings.TrimSuffix(entry.Name(), ".lock"))
-			live, err := sessionIdentityLive(path)
-			if err != nil {
-				return nil, err
-			}
-			if !live {
-				continue
-			}
-			name, err := readSessionName(path)
-			if err != nil {
-				return nil, err
-			}
-			names[name] = true
-		}
-	}
-	return names, nil
-}
+// Names are an advisory snapshot; the daemon atomically arbitrates creation.
 
 // Private validates ownership, permissions and path type without following symlinks.
 func privateStatePath(path string, directory bool) error {
@@ -168,79 +121,37 @@ func hostedShellInventory(detailed bool) (inventory, error) {
 	if e != nil {
 		return inv, e
 	}
-	entries, e := os.ReadDir(dir)
+	records, e := hostedTaskRecords()
 	if e != nil {
 		return inv, e
 	}
-	paths := map[string]bool{}
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".sock") {
-			paths[filepath.Join(dir, entry.Name())] = true
-		}
-	}
-	processes, e := findSessionDaemons("/proc")
-	if e != nil {
-		return inv, e
-	}
-	for _, p := range processes {
-		if p.socket == "" {
-			inv.Errors = append(inv.Errors, fmt.Sprintf("shell daemon %d has no readable endpoint", p.pid))
-		} else {
-			paths[p.socket] = true
-		}
-	}
-	ordered := make([]string, 0, len(paths))
-	for path := range paths {
-		ordered = append(ordered, path)
-	}
-	sort.Strings(ordered)
-	unavailable := func(path string) {
-		name, err := readSessionName(path)
-		if err != nil {
-			name = strings.TrimSuffix(filepath.Base(path), ".sock")
-		}
-		uid, _ := readSessionUID(path)
-		view := shellView{Name: name, Instance: uid, State: "unavailable"}
-		if uid != "" {
-			for _, n := range shellTreeFor(remoteTreeIdentity(uid)) {
-				if n.Identity == remoteTreeIdentity(uid) {
-					view.Lifetime, view.Temporary = n.Lifetime, n.Lifetime == "parent" || n.Lifetime == "heartbeat"
-				}
-			}
-		}
-		inv.Shells = append(inv.Shells, view)
+	sort.Slice(records, func(i, j int) bool { return records[i].ID < records[j].ID })
+	unavailable := func(task hostedTaskRecord) {
+		inv.Shells = append(inv.Shells, shellView{Name: task.Name, Instance: task.ID, State: "unavailable"})
 	}
 	action := "inventory"
 	if detailed {
 		action = ""
 	}
-	for _, path := range ordered {
-		live, err := sessionIdentityLive(path)
-		if err != nil {
-			inv.Errors = append(inv.Errors, cleanText(err.Error()))
-			continue
-		}
-		if !live {
-			continue
-		}
-		c, e := net.DialTimeout("unix", path, time.Second)
+	for _, task := range records {
+		c, e := dialHostedTask(context.Background(), task.ID, time.Second)
 		if e != nil {
-			unavailable(path)
-			inv.Errors = append(inv.Errors, "shell unavailable: "+cleanText(filepath.Base(path)))
+			unavailable(task)
+			inv.Errors = append(inv.Errors, "shell unavailable: "+cleanText(task.Name))
 			continue
 		}
 		c.SetDeadline(time.Now().Add(time.Second))
 		if e = writeMessage(c, message{Type: "status", Action: action}); e != nil {
 			c.Close()
-			unavailable(path)
-			inv.Errors = append(inv.Errors, "shell status request failed: "+cleanText(filepath.Base(path)))
+			unavailable(task)
+			inv.Errors = append(inv.Errors, "shell status request failed: "+cleanText(task.Name))
 			continue
 		}
 		m, e := readMessage(c)
 		c.Close()
 		if e != nil || m.Type != "session" || validSession(m.Name) != nil {
-			unavailable(path)
-			inv.Errors = append(inv.Errors, "invalid shell status: "+cleanText(filepath.Base(path)))
+			unavailable(task)
+			inv.Errors = append(inv.Errors, "invalid shell status: "+cleanText(task.Name))
 			continue
 		}
 		state := "detached"
@@ -258,23 +169,63 @@ func hostedShellInventory(detailed bool) (inventory, error) {
 	return inv, nil
 }
 
-func localSessionInventory(details ...bool) (inventory, error) {
+func hostedShellTasks() ([]selectedTask, error) {
+	records, err := hostedTaskRecords()
+	if err != nil {
+		return nil, err
+	}
+	var tasks []selectedTask
+	for _, task := range records {
+		tasks = append(tasks, selectedTask{kind: "shell", name: task.Name, identity: remoteShellIdentity("local", task.ID), instance: task.ID, hosted: true})
+	}
+	return tasks, nil
+}
+
+func openHostedTransport(ctx context.Context, o options) (net.Conn, error) {
+	path, err := resolveSession(o.session, o.instance)
+	if err != nil {
+		return nil, err
+	}
+	if path == "" {
+		return nil, fmt.Errorf("shell instance changed; refresh with sshore list")
+	}
+	return dialHostedTask(ctx, path, time.Second)
+}
+
+func runHostedCommand(o options) (int, error) {
+	switch o.command {
+	case "attach":
+		return runClient(o)
+	case "cancel":
+		return 0, killSession(o.session, o.instance)
+	case "rename":
+		return 0, renameSession(o.session, o.newName, o.instance)
+	default:
+		return 2, usage("unsupported hosted shell action %s", o.command)
+	}
+}
+
+func localSessionInventory(details ...bool) inventory {
 	detailed := len(details) > 0 && details[0]
 	inv, e := hostedShellInventory(detailed)
 	if e != nil {
-		return inv, e
+		inv.Errors = append(inv.Errors, cleanText(e.Error()))
 	}
 
 	records, e := collectLocalResources("")
 	if e != nil {
-		return inv, e
-	}
-	inv.Resources = inspectResources(records)
-	if detailed {
-		inv.Resources = append(inv.Resources, collectResourceResults("", inv.Resources)...)
+		inv.Errors = append(inv.Errors, cleanText(e.Error()))
+	} else {
+		inv.Resources = inspectResources(records)
+		if detailed {
+			inv.Resources = append(inv.Resources, collectResourceResults("", inv.Resources)...)
+		}
 	}
 	inv.Peers, e = collectPeerViews()
-	return inv, e
+	if e != nil {
+		inv.Errors = append(inv.Errors, cleanText(e.Error()))
+	}
+	return inv
 }
 
 func checkPlatform() error { return nil }

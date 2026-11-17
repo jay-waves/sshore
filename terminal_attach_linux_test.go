@@ -303,14 +303,17 @@ func TestClientFailedSwitchRestoresOriginal(t *testing.T) {
 	}
 }
 
-func approvedTestAttach(t *testing.T, e *testEnv, name string, pid int, tree ...shellTreeNode) *bridgeConn {
+func reattachTestWithTree(t *testing.T, e *testEnv, name string, pid int, tree ...shellTreeNode) *bridgeConn {
 	t.Helper()
-	b := e.bridge(name)
-	sendTest(t, b.in, message{Type: "attach", Tree: tree, Action: "approved", PID: pid, Term: "xterm", Cols: 80, Rows: 24})
-	if m := recv(t, b.out); m.Type != "ready" {
-		t.Fatal(m)
+	id, err := resolveSession(name)
+	if err != nil {
+		t.Fatal(err)
 	}
-	var err error
+	b := e.bridge(name)
+	sendTest(t, b.in, message{Type: "attach", Action: "existing", Instance: id, Tree: tree, Term: "xterm", Cols: 80, Rows: 24})
+	if m := recv(t, b.out); m.Type != "ready" || m.PID != pid {
+		t.Fatalf("reattach: %+v", m)
+	}
 	b.tty, err = b.mux.AcceptStream()
 	if err != nil {
 		t.Fatal(err)
@@ -319,14 +322,6 @@ func approvedTestAttach(t *testing.T, e *testEnv, name string, pid int, tree ...
 		t.Fatal(m)
 	}
 	return b
-}
-
-func resumeTestOutput(t *testing.T, b *bridgeConn) {
-	t.Helper()
-	sendTest(t, b.in, message{Type: "resume_output"})
-	if m := recv(t, b.out); m.Type != "output_resumed" {
-		t.Fatal(m)
-	}
 }
 
 func expectTerminalText(t *testing.T, b *bridgeConn, marker string) string {
@@ -383,8 +378,11 @@ func TestReconnectRestoresMouseAndRedrawsForegroundJob(t *testing.T) {
 	b, _ = e.attach("redraw")
 	assertMouseReplay(t, message{Type: "output", Data: []byte(expectTerminalText(t, b, "REDRAW-ready"))}, true)
 	detachTestClient(t, b)
-	b = approvedTestAttach(t, e, "redraw", pid)
-	resumeTestOutput(t, b)
+	var resumedPID int
+	b, resumedPID = e.attach("redraw", "attach")
+	if resumedPID != pid {
+		t.Fatal("reattachment replaced the shell")
+	}
 	assertMouseReplay(t, message{Type: "output", Data: []byte(expectTerminalText(t, b, "REDRAW-ready"))}, true)
 	sendTest(t, b.tty, message{Type: "input", Data: []byte{3}})
 	shellOutput(t, b, "printf 'SHELL-%s' ready", "SHELL-ready")

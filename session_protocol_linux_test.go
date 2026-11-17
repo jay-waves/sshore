@@ -75,22 +75,20 @@ func newEnv(t *testing.T) *testEnv {
 	if state == "" {
 		state = filepath.Join(dir, "state")
 	}
+	t.Setenv("SSHORE_STATE_DIR", state)
+	t.Setenv("SSHORE_RUNTIME_DIR", dir)
 	e.env = append(os.Environ(), "SSHORE_STATE_DIR="+state, "SSHORE_RUNTIME_DIR="+dir, "GORACE=atexit_sleep_ms=0", "SHELL=/bin/sh", "PS1=sshore-test> ")
 	t.Cleanup(func() {
 		for _, p := range e.processes {
 			_ = p.Kill()
 			_ = p.Release()
 		}
-		deadline := time.Now().Add(4 * time.Second)
-		for time.Now().Before(deadline) {
-			paths, _ := filepath.Glob(filepath.Join(dir, "*.sock"))
-			if len(paths) == 0 {
-				break
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if snapshot, err := daemonAdmin(ctx, "snapshot", nil); err == nil {
+			if _, err := daemonAdmin(ctx, "shutdown", &snapshot); err != nil {
+				t.Errorf("test daemon shutdown: %v", err)
 			}
-			time.Sleep(20 * time.Millisecond)
-		}
-		if paths, _ := filepath.Glob(filepath.Join(dir, "*.sock")); len(paths) != 0 {
-			t.Errorf("test shell failed to exit: %v", paths)
 		}
 		logs, _ := filepath.Glob(filepath.Join(dir, "*.log"))
 		for _, p := range logs {
@@ -261,7 +259,11 @@ func (e *testEnv) helper(action string, paths ...string) (*exec.Cmd, <-chan erro
 		}
 	}
 	c := exec.Command(e.bin, args...)
-	c.Env = append(e.env, "SSHORE_SOCKET="+filepath.Join(e.dir, "main.sock"))
+	id, err := resolveSession("main")
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	c.Env = append(e.env, "SSHORE_SOCKET="+id)
 	c.Stderr = os.Stderr
 	if err := c.Start(); err != nil {
 		e.t.Fatal(err)
@@ -343,7 +345,7 @@ func TestNoClientTransferFails(t *testing.T) {
 func TestStatusConnection(t *testing.T) {
 	e := newEnv(t)
 	_, pid := e.attach("main")
-	c, err := net.Dial("unix", filepath.Join(e.dir, "main.sock"))
+	c, err := e.dial("main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +550,7 @@ func TestDisconnectPreservesSession(t *testing.T) {
 			b.close()
 			deadline := time.Now().Add(5 * time.Second)
 			for time.Now().Before(deadline) {
-				c, err := net.Dial("unix", filepath.Join(e.dir, "lost.sock"))
+				c, err := e.dial("lost")
 				if err == nil {
 					_ = c.SetDeadline(time.Now().Add(time.Second))
 					_ = writeMessage(c, message{Type: "status"})
@@ -569,11 +571,11 @@ func waitSessionEnded(t *testing.T, e *testEnv, name string, pid int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		_, socketErr := os.Stat(filepath.Join(e.dir, name+".sock"))
+		id, lookupErr := resolveSession(name)
 		stat, processErr := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 		// An orphan awaiting reaping is no longer a running shell.
 		dead := os.IsNotExist(processErr) || strings.Contains(string(stat), ") Z ")
-		if os.IsNotExist(socketErr) && dead {
+		if lookupErr == nil && id == "" && dead {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -677,4 +679,12 @@ func TestSharedRemoteDaemonEnvironment(t *testing.T) {
 	}
 	shellOutput(t, first, "printf 'ENV_%s_VALUE' \"$SSHORE_TEST_VALUE\"", "ENV_first_VALUE")
 	shellOutput(t, second, "printf 'ENV_%s_VALUE' \"$SSHORE_TEST_VALUE\"", "ENV_second_VALUE")
+}
+
+func (e *testEnv) dial(name string) (net.Conn, error) {
+	id, err := resolveSession(name)
+	if err != nil {
+		return nil, err
+	}
+	return dialHostedTask(context.Background(), id, time.Second)
 }

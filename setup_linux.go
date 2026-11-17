@@ -1,19 +1,9 @@
 package main
 
-// Managed setup uses one lock per remote account, independent of runtime paths.
-// Inspect the installed program and visible same-user session daemons; exclude
-// preparation helpers and transport processes. Require an exact full release,
-// reject newer versions without downgrading, and restrict unknown versions to
-// manual recovery. Missing software can install without confirmation only when
-// there are no incompatible sessions. Existing older state requires typed update.
-// After confirmation, reacquire the account lock, compare the process snapshot,
-// and prepare/verify a replacement on the target filesystem before stopping tasks.
-// Changed state requires a fresh prompt. Process identity checks and signaling
-// live in setup_process_linux.go. Replacement is not an in-place daemon upgrade.
-// Recovery keeps the authenticated transport but uses a transient PTY, removes
-// helper socket inheritance and sets SSHORE_DISABLED. Approved operations are
-// skipped after an update or in recovery; reconnect to restore managed features.
-// This product restriction is not a sandbox for arbitrary remote executables.
+// Setup prepares the exact release before requesting cooperative shutdown of
+// the account daemon. It rechecks the confirmed task snapshot under the setup
+// lock; unavailable control, changed state or refusal never triggers process scans
+// or forced cleanup. Recovery retains the authenticated transient SSH shell.
 
 import (
 	"context"
@@ -35,6 +25,7 @@ import (
 
 type setupState struct {
 	Installed string
+	Daemon    *daemonSnapshot
 	Processes []setupProcess
 	Manual    bool
 }
@@ -56,14 +47,11 @@ func executableVersion(path string) (string, error) {
 // One lock per account, independent of custom runtime directories. Existing
 // attached sessions remain usable while another client reviews the prompt.
 func setupLock() (*os.File, error) {
-	root, err := os.UserHomeDir()
+	owner, err := daemonDirectory()
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(root, ".sshore")
-	if err := os.Mkdir(dir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
-		return nil, err
-	}
+	dir := filepath.Dir(owner)
 	if err := privateStatePath(dir, true); err != nil {
 		return nil, err
 	}
@@ -90,34 +78,25 @@ func inspectSetup(target string) (setupState, error) {
 			state.Manual = true
 		}
 	}
-	processes, err := findSessionDaemons("/proc")
-	if err != nil {
-		return state, err
+	snapshot, err := daemonAdmin(context.Background(), "snapshot", nil)
+	if os.IsNotExist(err) {
+		return state, nil
 	}
-	for _, p := range processes {
-		start, err := processStart(p.pid)
-		if err != nil {
-			continue
-		} // process exited during the snapshot
-		v, err := executableVersion(fmt.Sprintf("/proc/%d/exe", p.pid))
-		if err != nil {
-			v = "unknown"
-			state.Manual = true
-		}
-		order, known := compareReleaseVersions(v, version)
-		if known && order > 0 {
-			return state, fmt.Errorf("remote shell %s (PID %d) runs newer version %s; update local client %s", p.name, p.pid, v, version)
-		}
-		if !known {
-			state.Manual = true
-		}
-		if v != version {
-			if health := probeSessionDaemon(p, time.Now().Add(250*time.Millisecond)); health.state == "attached" || health.state == "detached" || health.state == "starting" {
-				if validSession(health.name) == nil {
-					p.name = health.name
-				}
-			}
-			state.Processes = append(state.Processes, setupProcess{PID: p.pid, Name: p.name, Version: v, Start: start})
+	if err != nil {
+		return state, fmt.Errorf("account daemon unavailable; no update performed: %w", err)
+	}
+	order, known := compareReleaseVersions(snapshot.Version, version)
+	if known && order > 0 {
+		return state, fmt.Errorf("account daemon %s is newer than client %s; update the local client", snapshot.Version, version)
+	}
+	if !known {
+		state.Manual = true
+	}
+	if snapshot.Version != version {
+		state.Daemon = &snapshot
+		state.Processes = append(state.Processes, setupProcess{Name: "daemon", Version: snapshot.Version})
+		for _, task := range snapshot.Tasks {
+			state.Processes = append(state.Processes, setupProcess{Name: task.Name, Version: snapshot.Version, Start: task.ID})
 		}
 	}
 	return state, nil
@@ -293,7 +272,9 @@ func bootstrap(target, mode, name string) (result error) {
 			lock.Close()
 			return recoverSetup(err)
 		}
-		err = stopOldSessions(state.Processes)
+		if state.Daemon != nil {
+			err = requestDaemonShutdown(*state.Daemon)
+		}
 		if err == nil {
 			err = os.Rename(staged, target)
 		}
@@ -304,7 +285,7 @@ func bootstrap(target, mode, name string) (result error) {
 		}
 		updated = true
 		if mode == "resume" {
-			mode = "bridge"
+			return writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "updated"})
 		}
 		// Recheck the complete state before launching a session.
 	}

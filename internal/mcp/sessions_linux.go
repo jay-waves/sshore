@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"slices"
 	"strconv"
@@ -46,7 +47,9 @@ func (m *SessionsManager) Open(ctx context.Context, in OpenInput) (Session, erro
 	if err != nil {
 		return Session{}, err
 	}
-	id := rand.Text()
+	var raw [16]byte
+	_, _ = rand.Read(raw[:])
+	id := hex.EncodeToString(raw[:])
 	m.sessions[id] = &managedSession{shell: b}
 	return Session{ID: id, Host: in.Host, State: "ready"}, nil
 }

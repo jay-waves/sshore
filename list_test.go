@@ -189,20 +189,20 @@ func TestInventoryHostGroups(t *testing.T) {
 
 func TestTaskInventoryEndedHistory(t *testing.T) {
 	inv := inventory{Shells: []shellView{
-		{Host: "work", Name: "gone", State: "not-listed", Historical: true},
+		{Host: "work", Name: "gone", State: "detached", Historical: true, Unconfirmed: true},
 		{Host: "work", Name: "finished", State: "exited", Historical: true},
 		{Host: "work", Name: "uncertain", State: "attached", Historical: true, Unconfirmed: true},
-		{Host: "work", Name: "active", State: "not-listed", Historical: true, Active: true},
+		{Host: "work", Name: "active", State: "attached", Historical: true, Active: true},
 	}}
 	var out bytes.Buffer
 	writeTaskInventory(&out, inv)
-	for _, name := range []string{"gone", "finished", "active"} {
-		if strings.Contains(out.String(), "("+name+")") {
+	if strings.Contains(out.String(), "(finished)") {
+		t.Fatal(out.String())
+	}
+	for _, name := range []string{"gone", "uncertain", "active"} {
+		if !strings.Contains(out.String(), "("+name+")") {
 			t.Fatal(out.String())
 		}
-	}
-	if !strings.Contains(out.String(), "(uncertain)") {
-		t.Fatal(out.String())
 	}
 
 }

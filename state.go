@@ -61,6 +61,10 @@ func statePath(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	root, err = daemonStateRoot(root, os.Getenv("SSHORE_STATE_DIR") != "")
+	if err != nil {
+		return "", err
+	}
 	return filepath.Join(root, name), nil
 }
 

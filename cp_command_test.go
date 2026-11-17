@@ -53,7 +53,7 @@ func TestLocalEndpointHints(t *testing.T) {
 		if err = validateOperations([]operation{op}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = runClient(options{approved: []operation{op}}); err == nil {
+		if err = validateForwardConfig(forwardConfig{Host: "work", Port: op.Port, Target: op.TargetPort}); err == nil {
 			t.Fatal("hint authorized execution")
 		}
 		reverse := op.Reverse

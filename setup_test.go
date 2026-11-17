@@ -83,17 +83,20 @@ func TestSetupConfirmation(t *testing.T) {
 	}
 }
 
-func TestSetupPlainClearsApprovedOperations(t *testing.T) {
+func TestSetupPlainClearsManagedIdentity(t *testing.T) {
 	var stream bytes.Buffer
 	if err := writeMessage(&stream, message{Type: "setup_ready", SoftwareVersion: version, Action: "plain"}); err != nil {
 		t.Fatal(err)
 	}
-	o := options{approved: []operation{{Kind: "forward", Port: 1234}}, resumePID: 123, stay: true}
+	o := options{instance: "old", taskIdentity: "task:old"}
 	if err := negotiateSetup(&stream, &bytes.Buffer{}, &o); err != nil {
 		t.Fatal(err)
 	}
-	if !o.plain || !o.noEscape || o.stay || len(o.approved) > 0 || o.resumePID != 0 {
+	if !o.plain || !o.noEscape {
 		t.Fatal(o)
+	}
+	if o.instance != "" || o.taskIdentity != "" {
+		t.Fatal("recovery retained managed task identity")
 	}
 }
 
@@ -187,7 +190,8 @@ func TestReleaseCompatibility(t *testing.T) {
 		{"0.4.0", "0.5.0", false}, {"1.4.0", "0.4.0", false},
 		{"0.4.0", "0.40.0", false}, {"0.4.0", "0.4.00", false},
 		{"0.4.0", "0.4.1-rc1", false}, {"0.4.0", "", false},
-		{"0.4.1-dev-a", "0.4.1-dev-a", true}, {"0.4.1-dev-a", "0.4.1-dev-b", false},
+		{"0.4.1-dev-a", "0.4.1-dev-a", false}, {"0.4.1-dev-a", "0.4.1-dev-b", false},
+		{"unknown", "unknown", false}, {"0.4", "0.4", false}, {"0.4.00", "0.4.00", false},
 	} {
 		if got := sameRelease(tc.a, tc.b); got != tc.want {
 			t.Fatalf("%s / %s: %v, want %v", tc.a, tc.b, got, tc.want)
@@ -203,6 +207,7 @@ func TestCompareReleaseVersions(t *testing.T) {
 	}{
 		{"0.4.0", "0.4.0", 0, true}, {"0.4.1", "0.4.0", 1, true}, {"0.4.0", "0.4.1", -1, true},
 		{"0.10.0", "0.9.9", 1, true}, {"2.0.0", "1.99.99", 1, true}, {"0.4.0-dev", "0.4.0", 0, false},
+		{"unknown", "unknown", 0, false}, {"0.4.0-dev", "0.4.0-dev", 0, false}, {"0.4", "0.4", 0, false},
 	} {
 		got, known := compareReleaseVersions(tc.a, tc.b)
 		if got != tc.order || known != tc.known {

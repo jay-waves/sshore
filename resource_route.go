@@ -18,7 +18,7 @@ func openRoutedResource(ctx context.Context, connection recentConnection, reques
 	if err := validateRecentConnection(connection); err != nil {
 		return nil, err
 	}
-	if connection.Parent == nil || connection.Instance == "" {
+	if connection.Instance == "" || !connection.viaShell() && request.Type != "route_files" {
 		return nil, fmt.Errorf("routed resource requires a live shell route")
 	}
 	o := options{command: "attach", host: connection.Host, session: connection.Session}

@@ -126,6 +126,8 @@ func TestRoutedForwardEndpointsAndLifetime(t *testing.T) {
 				t.Fatalf("marker=%q err=%v", marker, err)
 			}
 			startForwardStreams(mx, listener, target)
+			// Approval establishes an independent resource, even after its source exits.
+			close(s.done)
 			c, err := net.DialTimeout("tcp", loopbackPort(port), time.Second)
 			if err != nil {
 				t.Fatal(err)
@@ -156,12 +158,12 @@ func TestRoutedForwardEndpointsAndLifetime(t *testing.T) {
 			case <-time.After(3 * time.Second):
 				t.Fatal("idle connection did not arrive")
 			}
-			// Closing the source daemon's lifetime also closes active data connections.
-			close(s.done)
+			// Losing the resource transport still closes active data connections.
+			mx.Close()
 			select {
 			case <-done:
 			case <-time.After(3 * time.Second):
-				t.Fatal("resource outlived daemon")
+				t.Fatal("resource outlived its transport")
 			}
 			if _, err = idle.Read(b); err == nil {
 				t.Fatal("data connection survived route loss")
@@ -171,7 +173,7 @@ func TestRoutedForwardEndpointsAndLifetime(t *testing.T) {
 }
 
 func TestRoutedMountPreservesAgentApprovalGate(t *testing.T) {
-	for _, fault := range []string{"version", "approval"} {
+	for _, fault := range []string{"version", "approval", "instance"} {
 		t.Run(fault, func(t *testing.T) {
 			s, request := routedResourceFixture(t)
 			client, server := net.Pipe()
@@ -183,13 +185,15 @@ func TestRoutedMountPreservesAgentApprovalGate(t *testing.T) {
 			if err != nil || reply.Type != "resource_ready" {
 				t.Fatalf("reply=%+v err=%v", reply, err)
 			}
-			release, id := version, request.ApprovalID
+			release, id, instance := version, request.ApprovalID, request.Instance
 			if fault == "version" {
 				release = "0.0.1"
-			} else {
+			} else if fault == "approval" {
 				id = strings.Repeat("b", 32)
+			} else {
+				instance = "replacement"
 			}
-			metadata := map[string]any{"type": "mount_mux", "software_version": release, "mount_approval": map[string]any{"Session": request.Name, "PID": request.PID, "ID": id}}
+			metadata := map[string]any{"type": "mount_mux", "software_version": release, "mount_approval": map[string]any{"Session": request.Name, "PID": request.PID, "ID": id, "Instance": instance}}
 			if err = sshio.WriteMessage(client, "mount_mux", nil, metadata); err != nil {
 				t.Fatal(err)
 			}
@@ -197,7 +201,7 @@ func TestRoutedMountPreservesAgentApprovalGate(t *testing.T) {
 			if err != nil || reply.Type != "error" {
 				t.Fatalf("reply=%+v err=%v", reply, err)
 			}
-			if fault == "approval" && !strings.Contains(reply.Error, "approval identity changed") {
+			if fault != "version" && !strings.Contains(reply.Error, "approval identity changed") {
 				t.Fatal(reply.Error)
 			}
 			<-done

@@ -215,6 +215,7 @@ func resolveLocalPort(op *operation, port int) {
 
 // Keep persisted task identity together with its forwarding configuration.
 type forwardConfig struct {
+	Instance            string `json:",omitempty"`
 	Connection          *recentConnection
 	Retries             int
 	Session, ApprovalID string
@@ -230,7 +231,7 @@ func validateForwardConfig(f forwardConfig) error {
 		if err := validateRecentConnection(*f.Connection); err != nil {
 			return err
 		}
-		if f.Connection.Parent == nil || f.Connection.Session != f.Session || f.Connection.Host != f.Host || f.ApprovalID == "" {
+		if !f.Connection.viaShell() || f.Connection.Session != f.Session || f.Connection.Host != f.Host || f.ApprovalID == "" {
 			return fmt.Errorf("invalid routed forward approval")
 		}
 	}
@@ -245,7 +246,7 @@ func validateForwardConfig(f forwardConfig) error {
 		return e
 	}
 	if f.ApprovalID != "" || f.Session != "" || f.ResumePID != 0 {
-		if !validApprovalID(f.ApprovalID) || validSession(f.Session) != nil || f.ResumePID <= 0 || f.Retries != 0 {
+		if !validRequestID(f.ApprovalID) || validSession(f.Session) != nil || f.ResumePID <= 0 || f.Retries != 0 {
 			return fmt.Errorf("invalid approved forward identity")
 		}
 	}
@@ -347,6 +348,9 @@ func approvedForwardCommand(f forwardConfig) string {
 		command += "else :; "
 	}
 	command += "fi; exec \"$server\" forward-watch " + shellQuote(version) + " " + shellQuote(f.Session) + fmt.Sprintf(" %d ", f.ResumePID) + shellQuote(f.ApprovalID)
+	if f.Instance != "" {
+		command += " " + shellQuote(f.Instance)
+	}
 	return command
 }
 

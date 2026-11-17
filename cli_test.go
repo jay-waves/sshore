@@ -25,7 +25,7 @@ func TestCLIOptionsAndHelp(t *testing.T) {
 			t.Fatal("accepted", args)
 		}
 	}
-	for _, topic := range []string{"launch", "list", "attach", "cp", "detach", "forward", "review", "cancel", "mount"} {
+	for _, topic := range []string{"launch", "list", "attach", "cp", "detach", "forward", "review", "cancel", "mount", "daemon"} {
 		var b bytes.Buffer
 		if err = showHelp([]string{topic}, &b); err != nil || !strings.Contains(b.String(), "Usage: sshore "+topic) {
 			t.Fatal(topic, err)
@@ -162,6 +162,21 @@ func TestSessionCommandSemantics(t *testing.T) {
 	}
 	if _, err := run([]string{"mount", "host:/remote", "mount"}); err == nil {
 		t.Fatal("recovery allowed ftp")
+	}
+}
+
+func TestRecoveryDiagnosticsStayLocal(t *testing.T) {
+	t.Setenv("SSHORE_DISABLED", "1")
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("SSHORE_RUNTIME_DIR", t.TempDir())
+	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "must-not-run"))
+	for _, args := range [][]string{{"ls", "--json"}, {"list", "--local", "--json"}, {"pstree"}} {
+		if code, err := run(args); code != 0 || err != nil {
+			t.Fatalf("local diagnostics %v: %d %v", args, code, err)
+		}
+	}
+	if _, err := run([]string{"list", "remote", "--json"}); err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("recovery attempted remote diagnostics: %v", err)
 	}
 }
 

@@ -34,6 +34,9 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, color bool) {
 	}
 	rows := []taskTableRow{}
 	currentLocal := os.Getenv("SSHORE_LOCAL_SESSION")
+	if currentLocal == "" {
+		currentLocal = os.Getenv("SSHORE_TREE_ID")
+	}
 	for _, s := range inv.LocalShells {
 		state := s.State
 		if currentLocal != "" && s.identity == currentLocal && state == "attached" {

@@ -1,23 +1,24 @@
 package main
 
 import (
-	"encoding/hex"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
-	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
-const approvalTTL = 10 * time.Minute
-const maxApprovalItems = 16
-const maxPendingApprovals = 32
-const maxApprovalRecord = 128 * 1024
+const requestTTL = 10 * time.Minute
+const maxRequestItems = 16
+const maxPendingRequests = 32
+const maxRequestRecord = 128 * 1024
 
 type operation struct {
 	Kind       string `json:"kind"`
@@ -32,38 +33,19 @@ type operation struct {
 	LocalPath  string `json:"-"`
 }
 
-type approvalRecord struct {
-	RouteTarget                                   bool              `json:",omitempty"`
-	Parent                                        *recentConnection `json:",omitempty"`
-	RouteToken                                    string            `json:",omitempty"`
-	Instance                                      string            `json:",omitempty"`
-	UID                                           string            `json:",omitempty"`
-	PID                                           int
-	SoftwareVersion                               string
-	ID                                            string
-	Name                                          string
-	Created                                       time.Time
-	Host, Session, Server, Directory, DownloadDir string
-	SSH                                           []string
-	Quiet, NoEscape                               bool
-	Operations                                    []operation
+type requestRecord struct {
+	Connection             recentConnection
+	PID                    int
+	SoftwareVersion        string
+	ID                     string
+	Name                   string
+	Created                time.Time
+	Directory, DownloadDir string
+	Quiet                  bool
+	Operations             []operation
 }
 
-func (r approvalRecord) connection() recentConnection {
-	server := r.Server
-	if server == "" {
-		server = "sshore"
-	}
-	return recentConnection{Host: r.Host, Session: r.Session, Server: server, Directory: r.Directory, SSH: r.SSH, Parent: r.Parent, RouteToken: r.RouteToken, RouteTarget: r.RouteTarget, Instance: r.Instance}
-}
-
-func (r approvalRecord) clientOptions() options {
-	o := options{command: "attach", host: r.Host, session: r.Session, downloadDir: r.DownloadDir, quiet: r.Quiet, noEscape: r.NoEscape, approved: r.Operations, resumePID: r.PID, approvalID: r.ID}
-	applyConnectionOptions(&o, r.connection())
-	return o
-}
-
-func (r approvalRecord) DisplayName() string {
+func (r requestRecord) DisplayName() string {
 	if r.Name != "" {
 		return r.Name
 	}
@@ -82,9 +64,9 @@ func (op operation) LocalPortPending() bool {
 	return op.Kind == "forward" && (op.Port == 0 || op.TargetPort == 0)
 }
 
-func validateApprovalOperations(ops []operation) error {
-	if len(ops) == 0 || len(ops) > maxApprovalItems {
-		return fmt.Errorf("request must contain 1–%d operations", maxApprovalItems)
+func validateRequestOperations(ops []operation) error {
+	if len(ops) == 0 || len(ops) > maxRequestItems {
+		return fmt.Errorf("request must contain 1–%d operations", maxRequestItems)
 	}
 	var total int64
 	for _, op := range ops {
@@ -133,172 +115,304 @@ func validateApprovalOperations(ops []operation) error {
 	return nil
 }
 
-// approvalStorage owns bounded approval files and their atomic, single-use claims.
-type approvalStorage struct {
-	directory string
-}
+// Pending requests belong to the account daemon. Selected local paths and ports
+// remain on the caller's independent copy; consumption deletes the pending intent.
 
-func validApprovalID(id string) bool {
-	b, e := hex.DecodeString(id)
-	return e == nil && len(b) == 16 && id == strings.ToLower(id)
+func validRequestID(id string) bool { return validTaskUID(id) }
+
+func cloneRequest(r requestRecord) requestRecord {
+	r.Connection = cloneRequestConnection(r.Connection)
+	r.Operations = append([]operation(nil), r.Operations...)
+	return r
 }
-func (s approvalStorage) CheckCapacity() error {
-	entries, err := os.ReadDir(s.directory)
-	if err != nil {
-		return err
+func cloneRequestConnection(c recentConnection) recentConnection {
+	c.SSH = append([]string(nil), c.SSH...)
+	if c.Parent != nil {
+		parent := cloneRequestConnection(*c.Parent)
+		c.Parent = &parent
 	}
-	count := 0
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".json") {
-			info, err := e.Info()
-			if err != nil {
-				return err
-			}
-			if time.Since(info.ModTime()) > approvalTTL {
-				_ = os.Remove(filepath.Join(s.directory, e.Name()))
-				continue
-			}
-			count++
+	return c
+}
+func (s *daemonTasks) prune(now time.Time) {
+	for id, r := range s.records {
+		if r.expired(now) {
+			delete(s.records, id)
 		}
 	}
-	if count >= maxPendingApprovals {
-		return fmt.Errorf("too many pending approvals; use 'sshore list' and 'sshore cancel review/NAME'")
-	}
-	return nil
 }
-func (s approvalStorage) Save(r approvalRecord) error {
-	if !validApprovalID(r.ID) {
-		return fmt.Errorf("invalid approval ID")
+func (s *daemonTasks) Busy() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prune(time.Now())
+	return len(s.records) != 0
+}
+func (s *daemonTasks) Save(r requestRecord) error {
+	if !validRequestID(r.ID) {
+		return fmt.Errorf("invalid request ID")
+	}
+	if !sameRelease(version, r.SoftwareVersion) {
+		return fmt.Errorf("incompatible request release")
+	}
+	now := time.Now()
+	if now.Sub(r.Created) > requestTTL || r.Created.After(now.Add(time.Minute)) {
+		return fmt.Errorf("request expired; request it again")
+	}
+	if err := validateRequestOperations(r.Operations); err != nil {
+		return err
+	}
+	if err := validateRequestRecord(r); err != nil {
+		return err
 	}
 	data, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
-	if len(data) > maxApprovalRecord {
-		return fmt.Errorf("approval record too large")
+	if len(data) > maxRequestRecord {
+		return fmt.Errorf("request record too large")
 	}
-	path := filepath.Join(s.directory, r.ID+".json")
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.draining {
+		return fmt.Errorf("daemon is shutting down")
 	}
-	ok := false
-	defer func() {
-		f.Close()
-		if !ok {
-			os.Remove(path)
+	s.prune(now)
+	if _, exists := s.records[r.ID]; exists {
+		return fmt.Errorf("request already exists")
+	}
+	pending := 0
+	for _, task := range s.records {
+		if _, ok := task.(requestRecord); ok {
+			pending++
 		}
-	}()
-	if err = privateStatePath(path, false); err != nil {
-		return err
 	}
-	if err = sshio.WriteFull(f, data); err != nil {
-		return err
+	if pending >= maxPendingRequests {
+		return fmt.Errorf("too many pending requests; use sshore list and cancel")
 	}
-	if err = f.Sync(); err != nil {
-		return err
+	if r.Name != "" {
+		for _, old := range s.records {
+			if old.taskName() == r.Name {
+				return fmt.Errorf("%s: %w", r.Name, errObjectNameInUse)
+			}
+		}
 	}
-	if err = f.Close(); err != nil {
-		return err
+	if s.records == nil {
+		s.records = make(map[string]daemonTask)
 	}
-	ok = true
+	r = cloneRequest(r)
+	for i := range r.Operations {
+		r.Operations[i].LocalPath = ""
+	}
+	s.records[r.ID] = r
 	return nil
 }
-func (s approvalStorage) Read(id string) (approvalRecord, error) {
-	var r approvalRecord
-	if !validApprovalID(id) {
-		return r, fmt.Errorf("invalid approval ID")
+func (s *daemonTasks) Read(id string) (requestRecord, error) {
+	if !validRequestID(id) {
+		return requestRecord{}, fmt.Errorf("invalid request ID")
 	}
-	path := filepath.Join(s.directory, id+".json")
-	if err := privateStatePath(path, false); err != nil {
-		return r, err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prune(time.Now())
+	task, found := s.records[id]
+	r, isRequest := task.(requestRecord)
+	if !found || !isRequest {
+		return requestRecord{}, fmt.Errorf("request no longer exists or expired: %w", os.ErrNotExist)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return r, err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, maxApprovalRecord+1))
-	if err != nil {
-		return r, err
-	}
-	if len(data) > maxApprovalRecord {
-		return r, fmt.Errorf("approval record too large")
-	}
-	if err = json.Unmarshal(data, &r); err != nil {
-		return r, err
-	}
-	if version == "" || version != r.SoftwareVersion || r.ID != id || time.Since(r.Created) > approvalTTL || r.Created.After(time.Now().Add(time.Minute)) {
-		return r, fmt.Errorf("approval expired or incompatible; request it again")
-	}
-	if err := validateApprovalOperations(r.Operations); err != nil {
-		return r, err
-	}
-	return r, validateApprovalRecord(r)
+	return cloneRequest(r), nil
 }
-func (s approvalStorage) Pending() ([]approvalRecord, error) {
-	entries, err := os.ReadDir(s.directory)
-	if err != nil {
-		return nil, err
-	}
-	var records []approvalRecord
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		r, err := s.Read(strings.TrimSuffix(entry.Name(), ".json"))
-		if err == nil {
-			records = append(records, r)
+func (s *daemonTasks) Pending() []requestRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prune(time.Now())
+	records := make([]requestRecord, 0, len(s.records))
+	for _, r := range s.records {
+		if r, ok := r.(requestRecord); ok {
+			records = append(records, cloneRequest(r))
 		}
 	}
-	return records, nil
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].Created.Equal(records[j].Created) {
+			return records[i].ID < records[j].ID
+		}
+		return records[i].Created.Before(records[j].Created)
+	})
+	return records
 }
-
-// Exclusive creation serializes claims across processes before renaming. Concurrent
-// Windows DeleteFile calls can both succeed while a file is delete-pending.
-// Only one concurrent approver can succeed; failed executions cannot be replayed.
-func (s approvalStorage) claim(id string) (func(), error) {
-	if !validApprovalID(id) {
-		return nil, fmt.Errorf("invalid approval ID")
+func (s *daemonTasks) Find(ref string) (requestRecord, error) {
+	if validRequestID(ref) {
+		return s.Read(ref)
 	}
-	path := filepath.Join(s.directory, id+".claim")
-	lock, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return nil, err
+	if err := validSession(ref); err != nil {
+		return requestRecord{}, err
 	}
-	return func() {
-		_ = lock.Close()
-		_ = os.Remove(path)
-	}, nil
+	records := s.Pending()
+	var found *requestRecord
+	for _, r := range records {
+		if isShortTaskID(ref) && strings.HasPrefix(r.ID, ref) {
+			if found != nil {
+				return requestRecord{}, fmt.Errorf("ambiguous request ID %s", ref)
+			}
+			copy := r
+			found = &copy
+		}
+	}
+	if found != nil {
+		return *found, nil
+	}
+	for _, r := range records {
+		if r.Name == ref {
+			return r, nil
+		}
+	}
+	return requestRecord{}, fmt.Errorf("request no longer exists or expired: %w", os.ErrNotExist)
 }
-
-func (s approvalStorage) Rename(id, name string) error {
+func (s *daemonTasks) Consume(id string) error {
+	if !validRequestID(id) {
+		return fmt.Errorf("invalid request ID")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prune(time.Now())
+	if _, found := s.records[id].(requestRecord); !found {
+		return fmt.Errorf("request no longer exists or expired: %w", os.ErrNotExist)
+	}
+	delete(s.records, id)
+	return nil
+}
+func (s *daemonTasks) Rename(id, name string) error {
+	if !validRequestID(id) {
+		return fmt.Errorf("invalid request ID")
+	}
 	if err := validSession(name); err != nil {
 		return err
 	}
-	release, err := s.claim(id)
-	if err != nil {
-		return err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prune(time.Now())
+	task, found := s.records[id]
+	r, isRequest := task.(requestRecord)
+	if !found || !isRequest {
+		return fmt.Errorf("request no longer exists or expired: %w", os.ErrNotExist)
 	}
-	defer release()
-	r, err := s.Read(id)
-	if err != nil {
-		return err
+	for key, old := range s.records {
+		if key != id && old.taskName() == name {
+			return fmt.Errorf("%s: %w", name, errObjectNameInUse)
+		}
 	}
 	r.Name = name
-	return writeStateJSON(filepath.Join(s.directory, id+".json"), r)
+	s.records[id] = r
+	return nil
 }
 
-func (s approvalStorage) Consume(id string) error {
-	release, err := s.claim(id)
+type requestRPCReply struct {
+	Request  *requestRecord  `json:",omitempty"`
+	Requests []requestRecord `json:",omitempty"`
+	Error    string          `json:",omitempty"`
+	NotFound bool            `json:",omitempty"`
+}
+
+func (s *daemonTasks) Serve(c net.Conn, m message) {
+	reply := requestRPCReply{}
+	var err error
+	switch m.Action {
+	case "request_save":
+		var r requestRecord
+		err = json.NewDecoder(io.LimitReader(c, maxRequestRecord+1)).Decode(&r)
+		if err == nil {
+			err = s.Save(r)
+		}
+	case "request_get":
+		var r requestRecord
+		r, err = s.Find(m.Name)
+		if err == nil {
+			reply.Request = &r
+		}
+	case "request_list":
+		reply.Requests = s.Pending()
+	case "request_consume":
+		err = s.Consume(m.ApprovalID)
+	case "request_rename":
+		err = s.Rename(m.ApprovalID, m.Name)
+	default:
+		err = fmt.Errorf("invalid request store action")
+	}
 	if err != nil {
-		return err
+		reply.Error = err.Error()
+		reply.NotFound = errors.Is(err, os.ErrNotExist)
 	}
-	defer release()
-	claimed := filepath.Join(s.directory, id+".consumed")
-	if err := os.Rename(filepath.Join(s.directory, id+".json"), claimed); err != nil {
-		return err
+	_ = json.NewEncoder(c).Encode(reply)
+}
+func requestRPC(action, ref, name string, request *requestRecord) (requestRPCReply, error) {
+	var reply requestRPCReply
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	var record localShellRecord
+	var err error
+	if action == "request_save" {
+		record, err = ensureLocalDaemonContext(ctx)
+	} else {
+		record, err = existingDaemonRecord()
 	}
-	_ = os.Remove(claimed)
-	return nil
+	if err != nil {
+		return reply, err
+	}
+	c, err := dialLocalSessionContext(ctx, record, time.Now().Add(requestTimeout))
+	if err != nil {
+		return reply, err
+	}
+	defer c.Close()
+	stop := context.AfterFunc(ctx, func() { c.Close() })
+	defer stop()
+	if err := writeMessage(c, message{Type: "request_store", Action: action, Name: name, ApprovalID: ref}); err != nil {
+		return reply, err
+	}
+	if request != nil {
+		if err := json.NewEncoder(c).Encode(request); err != nil {
+			return reply, err
+		}
+	}
+	if err := json.NewDecoder(io.LimitReader(c, maxPendingRequests*maxRequestRecord+4096)).Decode(&reply); err != nil {
+		return reply, err
+	}
+	if reply.NotFound {
+		return reply, fmt.Errorf("%s: %w", reply.Error, os.ErrNotExist)
+	}
+	if reply.Error != "" {
+		return reply, fmt.Errorf("%s", reply.Error)
+	}
+	return reply, nil
+}
+func saveRequest(r requestRecord) error {
+	_, err := requestRPC("request_save", "", "", &r)
+	return err
+}
+func pendingRequests() ([]requestRecord, error) {
+	result, err := requestRPC("request_list", "", "", nil)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return result.Requests, err
+}
+func findRequest(ref string) (requestRecord, error) {
+	result, err := requestRPC("request_get", "", ref, nil)
+	if err != nil {
+		return requestRecord{}, err
+	}
+	if result.Request == nil {
+		return requestRecord{}, fmt.Errorf("invalid request store response")
+	}
+	return *result.Request, nil
+}
+func readRequest(id string) (requestRecord, error) {
+	if !validRequestID(id) {
+		return requestRecord{}, fmt.Errorf("invalid request ID")
+	}
+	return findRequest(id)
+}
+func consumeRequest(id string) error {
+	_, err := requestRPC("request_consume", id, "", nil)
+	return err
+}
+func renameRequest(id, name string) error {
+	_, err := requestRPC("request_rename", id, name, nil)
+	return err
 }

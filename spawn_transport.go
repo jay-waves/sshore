@@ -177,8 +177,8 @@ func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.
 			return e
 		}
 		diagnostics.mu.Lock()
-		if m.Type == "setup_ready" && m.Directory != "" && m.Action != "plain" {
-			channel, e := pipes.DialSocket(ctx, m.Directory)
+		if m.Type == "setup_ready" && m.LocalRequest != nil && m.Action != "plain" {
+			channel, e := openRemoteDaemonTask(ctx, pipes, m.LocalRequest.Record)
 			if e != nil {
 				diagnostics.mu.Unlock()
 				return e
@@ -189,7 +189,7 @@ func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.
 				diagnostics.mu.Unlock()
 				return e
 			}
-			m.Directory = ""
+			m.LocalRequest = nil
 		}
 		if m.Type == "setup_ready" {
 			diagnostics.active = false

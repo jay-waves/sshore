@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -21,7 +22,7 @@ func requestOperations(ops []operation) error {
 	if sock == "" {
 		return fmt.Errorf("run this command inside an sshore shell")
 	}
-	c, err := net.DialTimeout("unix", sock, requestTimeout)
+	c, err := dialHostedTask(context.Background(), sock, requestTimeout)
 	if err != nil {
 		return err
 	}
@@ -163,11 +164,11 @@ func approvedRemoteTransfer(st *smux.Stream, m message) {
 
 // Validate the original detached shell without attaching to it. A failed
 // validation must never terminate the shell or start a replacement session.
-func checkApprovalSource(name string, pid int, approval string) error {
+func checkApprovalSource(name string, pid int, approval string, expected ...string) error {
 	if err := validSession(name); err != nil {
 		return err
 	}
-	if pid <= 0 || !validApprovalID(approval) {
+	if pid <= 0 || !validRequestID(approval) {
 		return fmt.Errorf("invalid source approval")
 	}
 	gate, err := setupLock()
@@ -175,20 +176,20 @@ func checkApprovalSource(name string, pid int, approval string) error {
 		return err
 	}
 	defer gate.Close()
-	socket, err := resolveSession(name)
+	socket, err := resolveSession(name, expected...)
 	if err != nil {
 		return err
 	}
 	if socket == "" {
 		return fmt.Errorf("approved shell no longer exists; request the operation again")
 	}
-	conn, err := net.DialTimeout("unix", socket, time.Second)
+	conn, err := dialHostedTask(context.Background(), socket, time.Second)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	if err = writeMessage(conn, message{Type: "approval_check", SoftwareVersion: version, Name: name, PID: pid, ApprovalID: approval}); err != nil {
+	if err = writeMessage(conn, message{Type: "approval_check", SoftwareVersion: version, Name: name, PID: pid, ApprovalID: approval, Instance: firstExpectedInstance(expected)}); err != nil {
 		return err
 	}
 	m, err := readMessage(conn)
@@ -208,12 +209,12 @@ func (s *remoteShell) checkApprovalSource(m message) error {
 	if err := checkPeerVersion(m.SoftwareVersion, "approval client"); err != nil {
 		return err
 	}
-	if !validApprovalID(m.ApprovalID) {
+	if !validRequestID(m.ApprovalID) {
 		return fmt.Errorf("invalid approval identity")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lifecycle.Exited() || s.cmd == nil || s.cmd.Process.Pid != m.PID || s.name != m.Name {
+	if s.lifecycle.Exited() || s.cmd == nil || s.cmd.Process.Pid != m.PID || s.name != m.Name || m.Instance != "" && m.Instance != s.instance {
 		return fmt.Errorf("approved shell changed; request the operation again")
 	}
 	if s.lifecycle.Active() != nil {
@@ -223,7 +224,7 @@ func (s *remoteShell) checkApprovalSource(m message) error {
 }
 
 func runApprovedForwardWatch(args []string) error {
-	if len(args) != 4 {
+	if len(args) != 4 && len(args) != 5 {
 		return usage("forward-watch requires client version, shell, PID and approval identity")
 	}
 	if err := checkPeerVersion(args[0], "approval client"); err != nil {
@@ -233,7 +234,7 @@ func runApprovedForwardWatch(args []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid source shell PID")
 	}
-	if err = checkApprovalSource(args[1], pid, args[3]); err != nil {
+	if err = checkApprovalSource(args[1], pid, args[3], args[4:]...); err != nil {
 		return err
 	}
 	if _, err = fmt.Fprintln(os.Stdout, forwardReadyMarker); err != nil {

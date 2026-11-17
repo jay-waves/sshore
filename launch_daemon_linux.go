@@ -26,6 +26,7 @@ import (
 // directly on client-initiated streams, without a helper process or PTY relay.
 
 type remoteShell struct {
+	tasks           *daemonTasks
 	spawnRoutes     map[string]*spawnRoute
 	temporary       bool
 	spawnOwned      bool
@@ -36,7 +37,6 @@ type remoteShell struct {
 
 	instance   string
 	name       string
-	nameLock   *os.File
 	exitReason string
 	plain      bool
 	terminalMu sync.Mutex // serializes state snapshots with PTY output
@@ -46,7 +46,7 @@ type remoteShell struct {
 	started    time.Time // shell lifetime, including time spent detached
 	master     *tmux.Terminal
 	cmd        *exec.Cmd
-	path       string
+	runtime    string
 	done       chan struct{}
 	once       sync.Once
 }
@@ -77,7 +77,7 @@ func (s *remoteShell) start(cols, rows uint16, term string, startup ...bool) err
 	}
 	cmd := exec.Command(shellPath, args...)
 	cmd.Dir = s.directory
-	cmd.Env = append(append([]string(nil), env...), "TERM="+term, "SSHORE_SOCKET="+s.path, "SSHORE_TREE_ID="+remoteTreeIdentity(s.instance))
+	cmd.Env = append(append([]string(nil), env...), "TERM="+term, "SSHORE_SOCKET="+s.instance, "SSHORE_TREE_ID="+remoteTreeIdentity(s.instance))
 	if s.plain {
 		cmd.Env = nil
 		for _, item := range env {
@@ -166,12 +166,6 @@ func (s *remoteShell) attach(p *attachment, m message) error {
 		}
 		if m.Action == "existing" && s.cmd == nil {
 			return fmt.Errorf("shell has not started; use sshore list HOST")
-		}
-		if m.Action == "approved" {
-			if s.cmd == nil || s.cmd.Process.Pid != m.PID {
-				return fmt.Errorf("approved shell changed")
-			}
-			p.Mute(true)
 		}
 		if (m.NoLogin || m.NoProfile) && (s.master != nil || s.plain) {
 			return fmt.Errorf("startup options require a new managed shell")
@@ -270,37 +264,6 @@ func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
 		_, _ = readMessage(control)
 		return err
 	}
-	if m.Action == "approved" && validApprovalID(m.ApprovalID) {
-		_ = removeRemoteTask(m.ApprovalID)
-	}
-	operationCtx, cancelOperations := context.WithCancel(context.Background())
-	defer cancelOperations()
-	if !s.plain {
-		workersDone := make(chan struct{})
-		go func() {
-			defer close(workersDone)
-			serveApprovedStreams(operationCtx, mux)
-		}()
-		defer func() {
-			cancelOperations()
-			p.Close()
-			// Let cancelled uploads remove temporary files before daemon exit.
-			select {
-			case <-workersDone:
-			case <-time.After(2 * time.Second):
-			}
-		}()
-	} else {
-		go func() {
-			for {
-				stream, e := mux.AcceptStream()
-				if e != nil {
-					return
-				}
-				_ = stream.Close()
-			}
-		}()
-	}
 	go p.readInput(&s.lifecycle)
 
 	for {
@@ -309,30 +272,8 @@ func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
 			return err
 		}
 		switch m.Type {
-		case "resume_output":
-			s.terminalMu.Lock()
-			if p.Mute(false) {
-				if data := s.mouse.Replay(); len(data) > 0 {
-					err = p.output(message{Type: "output", Data: data})
-				}
-				s.mu.Lock()
-				if err == nil && s.lifecycle.Active() == p {
-					tmux.RequestRedraw(s.master, s.cmd.Process.Pid)
-				}
-				s.mu.Unlock()
-			}
-			s.terminalMu.Unlock()
-			if err != nil {
-				return err
-			}
-			if err := p.controlMessage(message{Type: "output_resumed"}); err != nil {
-				return err
-			}
 		case "inventory":
-			inv, err := localSessionInventory()
-			if err != nil {
-				inv.Errors = append(inv.Errors, cleanText(err.Error()))
-			}
+			inv := localSessionInventory()
 			for _, row := range inv.Shells {
 				if err := p.controlMessage(message{Type: "inventory_row", Inventory: &inventory{Shells: []shellView{row}}}); err != nil {
 					return err
@@ -394,9 +335,14 @@ func (s *remoteShell) handle(c net.Conn) {
 	if err != nil {
 		return
 	}
+	s.handleTask(c, first)
+}
+
+func (s *remoteShell) handleTask(c net.Conn, first message) {
+	var err error
 	_ = c.SetDeadline(time.Time{})
 	switch first.Type {
-	case "route_mount", "route_forward":
+	case "route_mount", "route_forward", "route_files":
 		s.serveRoutedResource(c, first)
 	case "shell_connect":
 		_ = s.connectRouteShell(c, first)
@@ -410,12 +356,12 @@ func (s *remoteShell) handle(c net.Conn) {
 		if checkPeerVersion(first.SoftwareVersion, "client") != nil {
 			return
 		}
-		lease, err := net.DialTimeout("unix", s.path, time.Second)
+		lease, err := dialHostedTask(context.Background(), s.instance, time.Second)
 		if err != nil {
 			return
 		}
 		defer lease.Close()
-		_ = bridgeSpawnTransport(s.path, lease, "", c)
+		_ = bridgeSpawnTransport(s.instance, lease, "", c)
 	case "spawn_owner":
 		s.serveSpawnOwner(c, first)
 	case "mux":
@@ -501,76 +447,11 @@ func (s *remoteShell) handle(c net.Conn) {
 		_ = writeMessage(c, message{Type: "fatal", Error: "unsupported connection; update sshore on both computers"})
 	}
 }
-func daemon(name string) error {
-	label := os.Getenv("SSHORE_SESSION_NAME")
-	if validSession(label) != nil {
-		label = name
-	}
-	return serveRemoteShell(name, label, "", os.Environ(), "", nil)
-}
-
-func serveRemoteShell(name, nameLabel, uid string, env []string, directory string, ready func() error, temporary ...bool) error {
-	path, err := socketPath(name)
-	if err != nil {
-		return err
-	}
-	lock, err := openLock(path+".lock", true)
-	if err != nil {
-		return fmt.Errorf("shell already running: %w", err)
-	}
-	defer lock.Close()
-	nameLock, err := lockObjectName(nameLabel)
-	if err != nil {
-		return fmt.Errorf("shell name %s is in use: %w", nameLabel, err)
-	}
-	if uid == "" {
-		uid, err = newTaskUID()
-		if err != nil {
-			nameLock.Close()
-			return err
-		}
-	}
+func serveRemoteShellAt(tasks *daemonTasks, runtime, nameLabel, uid string, env []string, directory string, ready func() error, temporary ...bool) error {
 	if !validTaskUID(uid) {
-		nameLock.Close()
 		return fmt.Errorf("invalid shell identity")
 	}
-	if err := writeStateFile(path+".id", []byte(uid)); err != nil {
-		nameLock.Close()
-		return err
-	}
-	defer os.Remove(path + ".id")
-	if err := writeSessionName(path, nameLabel); err != nil {
-		nameLock.Close()
-		return err
-	}
-	defer func() {
-		if nameLock != nil {
-			nameLock.Close()
-		}
-	}()
-	defer os.Remove(path + ".name")
-	_ = os.Remove(path)
-	listener, err := net.Listen("unix", path)
-	if err != nil {
-		return err
-	}
-	var handlers sync.WaitGroup
-	defer handlers.Wait()
-	defer listener.Close()
-	defer os.Remove(path)
-	if err := os.Chmod(path, 0600); err != nil {
-		return err
-	}
-
-	s := &remoteShell{temporary: len(temporary) > 0 && temporary[0], instance: uid, environment: env, directory: directory, path: path, name: nameLabel, nameLock: nameLock, done: make(chan struct{})}
-	nameLock = nil
-	defer func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if s.nameLock != nil {
-			s.nameLock.Close()
-		}
-	}()
+	s := &remoteShell{tasks: tasks, temporary: len(temporary) > 0 && temporary[0], instance: uid, environment: env, directory: directory, runtime: runtime, name: nameLabel, done: make(chan struct{})}
 	defer func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -579,7 +460,7 @@ func serveRemoteShell(name, nameLabel, uid string, env []string, directory strin
 			if reason == "" {
 				reason = "daemon stopped (signal or shutdown)"
 			}
-			saveSessionExit(s.path, s.name, reason)
+			saveSessionExit(filepath.Join(s.runtime, s.instance+".sock"), s.name, reason)
 		}
 		if s.master != nil {
 			_ = s.master.Close()
@@ -599,8 +480,11 @@ func serveRemoteShell(name, nameLabel, uid string, env []string, directory strin
 			s.stop()
 		case <-s.done:
 		}
-		_ = listener.Close()
 	}()
+	if err := tasks.register(uid, s); err != nil {
+		s.stop()
+		return err
+	}
 	if ready != nil {
 		if err := ready(); err != nil {
 			s.stop()
@@ -620,20 +504,10 @@ func serveRemoteShell(name, nameLabel, uid string, env []string, directory strin
 		case <-s.done:
 		}
 	}()
-	for {
-		c, err := listener.Accept()
-		if err != nil {
-			select {
-			case <-s.done:
-				return nil
-			default:
-				return err
-			}
-		}
-		handlers.Add(1)
-		go func() { defer handlers.Done(); s.handle(c) }()
-	}
+	<-s.done
+	return nil
 }
+
 func (s *remoteShell) cancel(instance string) error {
 	s.mu.Lock()
 	if instance == "" || instance != s.instance {
@@ -650,7 +524,7 @@ func (s *remoteShell) cancel(instance string) error {
 	pid, start := s.cmd.Process.Pid, s.processIdentity
 	s.exitReason = "cancelled by sshore cancel"
 	s.mu.Unlock()
-	if err := stopOldSessions([]setupProcess{{PID: pid, Start: start}}, "cancelled by sshore cancel"); err != nil {
+	if err := stopOwnedProcesses([]setupProcess{{PID: pid, Start: start}}); err != nil {
 		s.mu.Lock()
 		s.cancelling = false
 		s.mu.Unlock()
@@ -659,3 +533,23 @@ func (s *remoteShell) cancel(instance string) error {
 	s.stop()
 	return nil
 }
+
+func (s *remoteShell) taskName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.name
+}
+func (s *remoteShell) expired(time.Time) bool {
+	select {
+	case <-s.done:
+		return true
+	default:
+		return false
+	}
+}
+func (s *remoteShell) serveTask(c net.Conn, m message) error {
+	s.handleTask(c, m)
+	return nil
+}
+
+func (s *remoteShell) stopTask() error { return s.cancel(s.instance) }

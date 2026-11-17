@@ -3,14 +3,13 @@
 package main
 
 import (
-	"crypto/rand"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -42,20 +41,6 @@ func runtimeDir() (string, error) {
 	}
 	return dir, nil
 }
-func socketPath(name string) (string, error) {
-	if err := validSession(name); err != nil {
-		return "", err
-	}
-	dir, err := runtimeDir()
-	if err != nil {
-		return "", err
-	}
-	path := filepath.Join(dir, name+".sock")
-	if len(path) >= 104 {
-		return "", fmt.Errorf("runtime socket path is too long")
-	}
-	return path, nil
-}
 func openLock(path string, nonblocking bool) (*os.File, error) {
 	fd, err := unix.Open(path, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
 	if err != nil {
@@ -73,107 +58,40 @@ func openLock(path string, nonblocking bool) (*os.File, error) {
 	return f, nil
 }
 
-// Automatic and explicit selection share a startup lock until the daemon listens.
-// Live sessions, including detached ones, keep their names. The account setup
-// gate also serializes allocation against setup and other bridge starts.
+// The daemon arbitrates the final name and identity atomically.
 type sessionReservation struct {
 	name, publicName string
-	startup          *os.File
-	namespace        *resourceNameReservation
+	namespace        *taskIdentitySelection
 	conn             net.Conn
-}
-
-func (r *sessionReservation) Close() {
-	if r.startup != nil {
-		r.startup.Close()
-	}
-	if r.namespace != nil {
-		r.namespace.Close()
-	}
 }
 
 func reserveSession(names []string, fresh bool) (sessionReservation, error) {
 	for _, name := range names {
-		publicLabel := name
-		path, err := resolveSession(name)
+		id, err := resolveSession(name)
 		if err != nil {
 			return sessionReservation{}, err
 		}
-		if path != "" {
+		if id != "" {
 			if fresh {
 				continue
 			}
-			name = strings.TrimSuffix(filepath.Base(path), ".sock")
-		} else {
-			path, err = socketPath(name)
+			conn, err := dialHostedTask(context.Background(), id, time.Second)
 			if err != nil {
 				return sessionReservation{}, err
 			}
-			// A renamed daemon may still own this internal identity.
-			if live, err := sessionIdentityLive(path); err != nil {
-				return sessionReservation{}, err
-			} else if live {
-				name = "session-" + rand.Text()
-				path, err = socketPath(name)
-				if err != nil {
-					return sessionReservation{}, err
-				}
-			}
+			return sessionReservation{name: id, publicName: name, conn: conn}, nil
 		}
-		var namespace *resourceNameReservation
-		if found, err := resolveSession(publicLabel); err != nil {
-			return sessionReservation{}, err
-		} else if found == "" {
-			requested := publicLabel
-			if fresh {
-				requested = ""
-			}
-			namespace, err = reserveResourceName("shell", requested)
-			if err != nil {
-				if fresh && errors.Is(err, errObjectNameInUse) {
-					continue
-				}
-				return sessionReservation{}, err
-			}
+		requested := name
+		if fresh {
+			requested = ""
 		}
-		if namespace != nil && fresh {
-			name = namespace.uid
-			path, err = socketPath(name)
-			if err != nil {
-				namespace.Close()
-				return sessionReservation{}, err
-			}
-			publicLabel = namespace.name
-		}
-		startup, err := openLock(path+".start", false)
+		namespace, err := chooseTaskIdentity("shell", requested)
 		if err != nil {
-			if namespace != nil {
-				namespace.Close()
-			}
 			return sessionReservation{}, err
 		}
-		conn, err := net.DialTimeout("unix", path, time.Second)
-		if err != nil {
-			live, liveErr := sessionIdentityLive(path)
-			if live || liveErr != nil {
-				startup.Close()
-				if namespace != nil {
-					namespace.Close()
-				}
-				return sessionReservation{}, fmt.Errorf("shell %s unavailable: %w", publicLabel, errors.Join(err, liveErr))
-			}
-		}
-		if fresh && err == nil {
-			conn.Close()
-			startup.Close()
-			if namespace != nil {
-				namespace.Close()
-			}
-			continue
-		}
-		return sessionReservation{name: name, publicName: publicLabel, startup: startup, namespace: namespace, conn: conn}, nil
+		return sessionReservation{name: namespace.uid, publicName: namespace.name, namespace: namespace}, nil
 	}
-	return sessionReservation{}, fmt.Errorf("all automatic shell names are in use; exit an existing shell or choose a name with sshore launch HOST NAME")
+	return sessionReservation{}, fmt.Errorf("no shell name available")
 }
 
 func bridge(name string, existing bool) error {
@@ -225,23 +143,15 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 		return err
 	}
 	name, publicName = reservation.name, reservation.publicName
-	startup, conn := reservation.startup, reservation.conn
-	defer reservation.Close()
+	conn := reservation.conn
+
 	if freshOnly && conn != nil {
 		conn.Close()
 		return fmt.Errorf("shell %s already exists; use sshore attach HOST %s", publicName, publicName)
 	}
-	path, err := socketPath(name)
-	if err != nil {
-		return err
-	}
 	if conn == nil {
 		if existing {
 			return fmt.Errorf("shell %s does not exist; use sshore list HOST or sshore launch HOST NAME", name)
-		}
-		if reservation.namespace != nil {
-			reservation.namespace.owner.Close()
-			reservation.namespace.owner = nil
 		}
 		if publicName == "" {
 			publicName = name
@@ -249,24 +159,24 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 		if err := createRemoteShell(executable, name, publicName, reservation.namespace.uid, len(temporary) > 0 && temporary[0]); err != nil {
 			return err
 		}
-		conn, err = net.DialTimeout("unix", path, time.Second)
+		conn, err = dialHostedTask(context.Background(), name, time.Second)
 		if err != nil {
 			return err
 		}
 
 	}
-	_ = unix.Flock(int(startup.Fd()), unix.LOCK_UN)
-	if reservation.namespace != nil {
-		reservation.namespace.Close()
-		reservation.namespace = nil
-	}
 	defer conn.Close()
 	gate.Close()
 	if os.Getenv("SSHORE_DIRECT_TRANSPORT") == "1" {
-		return writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode, Directory: path})
+		record, err := existingDaemonRecord()
+		if err != nil {
+			return err
+		}
+		record.UID = name
+		return writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode, LocalRequest: &localDaemonRequest{Record: record}})
 	}
 	if len(temporary) > 0 && temporary[0] {
-		return bridgeSpawn(path, conn, readyMode)
+		return bridgeSpawn(name, conn, readyMode)
 	}
 	if readyMode != "" {
 		if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
@@ -286,17 +196,14 @@ func listSessions() error {
 	if err != nil {
 		return err
 	}
-	entries, err := os.ReadDir(dir)
+	records, err := hostedTaskRecords()
 	if err != nil {
 		return err
 	}
 	out := os.Stdout
 	count := 0
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".sock") {
-			continue
-		}
-		c, err := net.DialTimeout("unix", filepath.Join(dir, e.Name()), time.Second)
+	for _, task := range records {
+		c, err := dialHostedTask(context.Background(), task.ID, time.Second)
 		if err != nil {
 			continue
 		}
@@ -319,7 +226,7 @@ func listSessions() error {
 			fmt.Fprintln(out)
 		}
 		count++
-		fmt.Fprintf(out, "%s [%s]%s\n", sessionLabel(m, e.Name()), state, sessionAge(m.AgeSeconds))
+		fmt.Fprintf(out, "%s [%s]%s\n", sessionLabel(m, task.Name), state, sessionAge(m.AgeSeconds))
 		fmt.Fprintf(out, "  %s · %s\n", cleanText(m.Foreground), cleanText(m.Directory))
 		fmt.Fprint(out, sessionProcessTree("/proc", m.PID))
 	}
@@ -336,28 +243,17 @@ func listSessions() error {
 // directory. Selection is advisory: the bridge and daemon recheck existence and
 // exclusive attachment after the user answers, without holding the setup lock.
 func detachedSessionNames() ([]string, error) {
-	dir, err := runtimeDir()
-	if err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(dir)
+	records, err := hostedTaskRecords()
 	if err != nil {
 		return nil, err
 	}
 	names := []string{}
 	deadline := time.Now().Add(2 * time.Second)
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".sock") {
-			continue
-		}
-		name := strings.TrimSuffix(e.Name(), ".sock")
-		if validSession(name) != nil {
-			continue
-		}
+	for _, task := range records {
 		if time.Until(deadline) <= 0 {
 			return nil, fmt.Errorf("session lookup timed out")
 		}
-		c, err := net.DialTimeout("unix", filepath.Join(dir, e.Name()), min(time.Second, time.Until(deadline)))
+		c, err := dialHostedTask(context.Background(), task.ID, min(time.Second, time.Until(deadline)))
 		if err != nil {
 			continue
 		}
@@ -373,7 +269,7 @@ func detachedSessionNames() ([]string, error) {
 		}
 		c.Close()
 		if err == nil && m.Type == "session" && !m.Attached && m.PID > 0 {
-			names = append(names, sessionLabel(m, e.Name()))
+			names = append(names, sessionLabel(m, task.Name))
 			if len(names) > 128 {
 				return nil, fmt.Errorf("too many shells to select; use sshore list HOST, then sshore attach HOST NAME")
 			}
@@ -387,7 +283,7 @@ func detachHelper() error {
 	if sock == "" {
 		return fmt.Errorf("run this command inside an sshore shell")
 	}
-	c, err := net.DialTimeout("unix", sock, requestTimeout)
+	c, err := dialHostedTask(context.Background(), sock, requestTimeout)
 	if err != nil {
 		return err
 	}

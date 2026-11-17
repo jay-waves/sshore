@@ -22,11 +22,10 @@ func TestFTPDefaultMountParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(home, "state"))
-	r, err := reserveResourceName("mount", "")
+	r, err := chooseTaskIdentity("mount", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
 	o.name = r.name
 	cleanup, err := prepareFTPPaths(&o)
 	if err != nil {
@@ -104,7 +103,7 @@ func TestRejectedTaskCleanupUsesSavedDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SSHORE_SSH", ssh)
-	removeRejectedPeerTask(approvalRecord{Directory: directory, Host: "work", Server: "sshore", ID: strings.Repeat("a", 32), SSH: []string{"-F", "ssh.conf"}})
+	removeRejectedPeerTask(requestRecord{Directory: t.TempDir(), Connection: recentConnection{Host: "work", Server: "sshore", Directory: directory, SSH: []string{"-F", "ssh.conf"}}, ID: strings.Repeat("a", 32)})
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("cleanup did not use saved SSH working directory: %v", err)
 	}

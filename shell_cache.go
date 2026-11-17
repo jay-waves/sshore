@@ -19,7 +19,7 @@ const shellHistoryRetention = 7 * 24 * time.Hour
 const maxShellSnapshot = 128 * 1024
 
 func endedShellState(state string) bool {
-	return state == "not-listed" || state == "exited" || state == "renamed"
+	return state == "exited" || state == "renamed"
 }
 
 // Serialize refresh and expiry with snapshot writers so cleanup cannot erase a
@@ -102,7 +102,7 @@ func saveShellSnapshotLocked(s shellSnapshot) error {
 	if err != nil {
 		return err
 	}
-	if s.State == "exited" || s.State == "not-listed" {
+	if s.State == "exited" {
 		if err := recordRemoteShellTreeState(s); err != nil {
 			return err
 		}
@@ -159,26 +159,26 @@ func readShellSnapshotsLocked() ([]shellSnapshot, error) {
 		}
 		if s.Instance != "" && !endedShellState(s.State) {
 			for _, n := range shellTreeFor(remoteTreeIdentity(s.Instance)) {
-				if n.Identity == remoteTreeIdentity(s.Instance) && (n.State == "exited" || n.State == "not-listed") {
-					s.State, s.Unconfirmed, s.ConfirmedAt = n.State, false, time.Now()
-					if err := saveShellSnapshotLocked(s); err != nil {
-						return nil, err
-					}
+				if n.Identity == remoteTreeIdentity(s.Instance) && n.State == "exited" {
+					// Project the original evidence; reading history is not a new confirmation.
+					s.State, s.Unconfirmed, s.ConfirmedAt = n.State, false, n.CheckedAt
 					break
 				}
 			}
 		}
-		live, err := os.OpenFile(path+".live", os.O_CREATE|os.O_RDWR, 0600)
-		if err != nil {
+		live, err := os.OpenFile(path+".live", os.O_RDWR, 0600)
+		if err != nil && !os.IsNotExist(err) {
 			return nil, err
 		}
-		err = lockResourceState(live)
-		live.Close()
-		s.Active = resourceLockBusy(err)
-		if err != nil && !s.Active {
-			return nil, err
+		if err == nil {
+			err = lockResourceState(live)
+			live.Close()
+			s.Active = resourceLockBusy(err)
+			if err != nil && !s.Active {
+				return nil, err
+			}
 		}
-		if !s.Active && endedShellState(s.State) && !s.ConfirmedAt.IsZero() && time.Since(s.ConfirmedAt) > shellHistoryRetention {
+		if !s.Active && (endedShellState(s.State) || s.Unconfirmed) && !s.ConfirmedAt.IsZero() && time.Since(s.ConfirmedAt) > shellHistoryRetention {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				return nil, err
 			}
@@ -308,7 +308,7 @@ func cacheRemoteShellsLocked(host string, inv inventory, connection ...options) 
 			}
 		}
 	}
-	// An incomplete inventory cannot establish that a missing shell ended.
+	// Partial results cannot establish absence from this account's inventory.
 	if len(inv.Errors) != 0 {
 		return nil
 	}
@@ -325,13 +325,13 @@ func cacheRemoteShellsLocked(host string, inv inventory, connection ...options) 
 			missing = names[old.Instance] != old.Name
 		}
 		if old.Host == host && sameScope && missing && !endedShellState(old.State) {
-			state := "not-listed"
 			if names[old.Instance] != "" {
-				state = "renamed"
-			} else if old.Active {
+				old.State, old.ConfirmedAt, old.Unconfirmed = "renamed", now, false
+			} else if old.Active || old.Unconfirmed {
 				continue
+			} else {
+				old.Unconfirmed = true
 			}
-			old.State, old.ConfirmedAt, old.Unconfirmed = state, now, false
 			if err := saveShellSnapshotLocked(old); err != nil {
 				return err
 			}
@@ -399,7 +399,7 @@ func forgetEndedShell(host, name, instance string) (bool, error) {
 		if s.Host != host || s.Name != name || (instance != "" && s.Instance != instance) {
 			continue
 		}
-		if s.State != "exited" && s.State != "not-listed" {
+		if s.State != "exited" {
 			return false, nil
 		}
 		s.Forgotten = true
@@ -425,7 +425,7 @@ func confirmCancelledShell(host, name, instance string) error {
 		}
 	}
 	if instance != "" {
-		return recordRemoteShellTreeState(shellSnapshot{Host: host, Name: name, Instance: instance, State: "exited"})
+		return recordRemoteShellTreeState(shellSnapshot{Host: host, Name: name, Instance: instance, State: "exited", ConfirmedAt: time.Now()})
 	}
 	return nil
 }

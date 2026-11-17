@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/term"
 )
 
 type localDaemonRequest struct {
@@ -34,15 +36,42 @@ func localEnvironmentValue(env []string, name string) string {
 }
 
 func daemonPath() (string, error) {
-	dir, err := stateDir("daemon")
+	dir, err := daemonDirectory()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "local.json"), nil
+	return filepath.Join(dir, "daemon.json"), nil
+}
+
+// Reads never start a manager or create locator/lock files. The owner lock,
+// rather than a leftover locator, establishes whether pending state exists.
+func existingDaemonRecord() (localShellRecord, error) {
+	dir, err := daemonLocation()
+	if err != nil {
+		return localShellRecord{}, err
+	}
+	owner, err := os.OpenFile(filepath.Join(dir, "owner.lock"), os.O_RDWR, 0600)
+	if err != nil {
+		return localShellRecord{}, err
+	}
+	defer owner.Close()
+	if err := privateStatePath(owner.Name(), false); err != nil {
+		return localShellRecord{}, err
+	}
+	if err := lockResourceState(owner); err == nil {
+		return localShellRecord{}, os.ErrNotExist
+	} else if !resourceLockBusy(err) {
+		return localShellRecord{}, err
+	}
+	record, err := readLocalRecord(filepath.Join(dir, "daemon.json"), "daemon")
+	if os.IsNotExist(err) {
+		return record, fmt.Errorf("account daemon owns its lock but its endpoint is unavailable")
+	}
+	return record, err
 }
 
 func daemonFileLock(name string) (*os.File, error) {
-	dir, err := stateDir("daemon")
+	dir, err := daemonDirectory()
 	if err != nil {
 		return nil, err
 	}
@@ -92,11 +121,7 @@ func openLocalDaemonContext(ctx context.Context, request localDaemonRequest) (ne
 	return c, nil
 }
 
-func ensureLocalDaemon() (localShellRecord, error) {
-	return ensureLocalDaemonContext(context.Background())
-}
-
-func ensureLocalDaemonContext(ctx context.Context) (localShellRecord, error) {
+func ensureLocalDaemonContext(ctx context.Context, executable ...string) (localShellRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return localShellRecord{}, err
 	}
@@ -127,7 +152,7 @@ func ensureLocalDaemonContext(ctx context.Context) (localShellRecord, error) {
 	owner, err := daemonFileLock("owner")
 	if err == nil {
 		owner.Close()
-		return launchLocalDaemonContext(ctx)
+		return launchLocalDaemonContext(ctx, executable...)
 	}
 	if !resourceLockBusy(err) {
 		return empty, err
@@ -147,19 +172,40 @@ func ensureLocalDaemonContext(ctx context.Context) (localShellRecord, error) {
 	return r, nil
 }
 
-func runLocalDaemon() (result error) {
+func newDaemonRecord() (localShellRecord, error) {
+	root, err := statePath("")
+	if err != nil {
+		return localShellRecord{}, err
+	}
+	return localShellRecord{Name: "daemon", Version: version, Token: resourceToken(), Directory: root}, nil
+}
+
+func runDaemon() (result error) {
+	standalone := term.IsTerminal(int(os.Stdin.Fd()))
 	enc := json.NewEncoder(os.Stdout)
 	defer func() {
-		if result != nil {
+		if result != nil && !standalone {
 			_ = enc.Encode(localStartup{Error: result.Error()})
 		}
 	}()
 	dec := json.NewDecoder(io.LimitReader(os.Stdin, 16*1024))
 	var record localShellRecord
-	if err := dec.Decode(&record); err != nil {
-		return err
+	if !standalone {
+		if err := dec.Decode(&record); err != nil {
+			if err != io.EOF {
+				return err
+			}
+			standalone = true
+		}
 	}
-	if record.Name != "daemon" || record.Version != version || len(record.Token) != 64 {
+	if standalone {
+		var err error
+		record, err = newDaemonRecord()
+		if err != nil {
+			return err
+		}
+	}
+	if record.Name != "daemon" || record.Version != version || len(record.Token) != 64 || !filepath.IsAbs(record.Directory) {
 		return fmt.Errorf("invalid daemon startup")
 	}
 	owner, err := daemonFileLock("owner")
@@ -182,21 +228,41 @@ func runLocalDaemon() (result error) {
 		return err
 	}
 	defer os.Remove(path)
-	if err = enc.Encode(localStartup{Record: record}); err != nil {
-		return err
+	if !standalone {
+		if err = enc.Encode(localStartup{Record: record}); err != nil {
+			return err
+		}
+		var ack string
+		if err = dec.Decode(&ack); err != nil || ack != "ready" {
+			return fmt.Errorf("daemon startup not committed")
+		}
+		os.Stdin.Close()
+		os.Stdout.Close()
+	} else {
+		fmt.Fprintln(os.Stderr, "Daemon running.")
 	}
-	var ack string
-	if err = dec.Decode(&ack); err != nil || ack != "ready" {
-		return fmt.Errorf("daemon startup not committed")
+	tasks := &daemonTasks{}
+	services := newDaemonServices(tasks)
+	if services != nil {
+		defer services.Close()
 	}
-	os.Stdin.Close()
-	os.Stdout.Close()
+	return serveDaemon(listener, record, services, tasks)
+}
+
+// Platform services share the same authenticated listener and lifetime owner.
+type daemonServices interface {
+	Serve(net.Conn, message, *daemonTasks)
+	Close()
+}
+
+func serveDaemon(listener net.Listener, record localShellRecord, services daemonServices, tasks *daemonTasks) error {
 	// The mutex protects bookkeeping only, never terminal I/O or worker startup.
 	var mu sync.Mutex
 	active := 0
 	last := time.Now()
 	stopping := false
 	exitWhenIdle := false
+	busy := func() bool { return tasks.Busy() }
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -208,7 +274,7 @@ func runLocalDaemon() (result error) {
 				return
 			case <-tick.C:
 				mu.Lock()
-				idle := active == 0 && time.Since(last) > 30*time.Second
+				idle := active == 0 && !busy() && (exitWhenIdle || time.Since(last) > 30*time.Second)
 				if idle {
 					stopping = true
 				}
@@ -234,9 +300,9 @@ func runLocalDaemon() (result error) {
 		}
 		select {
 		case handshakes <- struct{}{}:
-		default:
+		case <-done:
 			c.Close()
-			continue
+			return nil
 		}
 		mu.Lock()
 		if stopping {
@@ -259,7 +325,7 @@ func runLocalDaemon() (result error) {
 				mu.Lock()
 				active--
 				last = time.Now()
-				stop := exitWhenIdle && active == 0
+				stop := exitWhenIdle && active == 0 && !busy()
 				if stop {
 					stopping = true
 				}
@@ -270,6 +336,35 @@ func runLocalDaemon() (result error) {
 			}()
 			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 			m, err := readMessage(c)
+			if err == nil && m.Type == "daemon_admin" && subtle.ConstantTimeCompare([]byte(m.Token), []byte(record.Token)) == 1 {
+				<-handshakes
+				pending = false
+				_ = c.SetDeadline(time.Now().Add(30 * time.Second))
+				reply := daemonAdminReply{}
+				tasks.mu.Lock()
+				reply.Snapshot = tasks.snapshot(record)
+				tasks.mu.Unlock()
+				switch m.Action {
+				case "snapshot":
+				case "shutdown":
+					var expected daemonSnapshot
+					if err := json.NewDecoder(io.LimitReader(c, 1<<20)).Decode(&expected); err != nil {
+						reply.Error = err.Error()
+					} else if err := tasks.shutdown(record, expected); err != nil {
+						reply.Error = err.Error()
+					}
+				default:
+					reply.Error = "unsupported administrative operation"
+				}
+				_ = json.NewEncoder(c).Encode(reply)
+				if m.Action == "shutdown" && reply.Error == "" {
+					mu.Lock()
+					stopping = true
+					mu.Unlock()
+					listener.Close()
+				}
+				return
+			}
 			if err != nil || m.Type != "local_auth" || subtle.ConstantTimeCompare([]byte(m.Token), []byte(record.Token)) != 1 {
 				return
 			}
@@ -282,6 +377,54 @@ func runLocalDaemon() (result error) {
 			}
 			m, err = readMessage(c)
 			if err != nil {
+				return
+			}
+			if m.Type == "task_names" {
+				names := map[string]bool{}
+				tasks.mu.Lock()
+				tasks.prune(time.Now())
+				for id, task := range tasks.records {
+					if id != m.Instance {
+						names[task.taskName()] = true
+					}
+				}
+				tasks.mu.Unlock()
+				_ = json.NewEncoder(c).Encode(names)
+				return
+			}
+			if m.Type == "task_list_resources" {
+				_ = json.NewEncoder(c).Encode(resourceReply{Records: tasks.resourceRecords()})
+				return
+			}
+			if m.Type == "task_rename_resource" {
+				reply := resourceReply{}
+				if err := tasks.renameResource(m.Instance, m.Name); err != nil {
+					reply.Error = err.Error()
+				}
+				_ = json.NewEncoder(c).Encode(reply)
+				return
+			}
+			if m.Type == "task_list_native" {
+				_ = json.NewEncoder(c).Encode(tasks.nativeRecords())
+				return
+			}
+			if m.Type == "task_open" {
+				<-handshakes
+				pending = false
+				tasks.open(c, m.Instance)
+				return
+			}
+			if m.Type == "request_store" {
+				<-handshakes
+				pending = false
+				tasks.Serve(c, m)
+				return
+			}
+			if services != nil && (m.Type == "create_shell" || m.Type == "mcp_request" || m.Type == "task_list_hosted") {
+				<-handshakes
+				pending = false
+				_ = c.SetDeadline(time.Time{})
+				services.Serve(c, m, tasks)
 				return
 			}
 			if m.Type == "daemon_stop_idle" {
@@ -314,7 +457,7 @@ func runLocalDaemon() (result error) {
 				}
 				env = append(env, item)
 			}
-			env = append(env, "SSHORE_STATE_DIR="+filepath.Dir(filepath.Dir(path)))
+			env = append(env, "SSHORE_STATE_DIR="+record.Directory)
 			req.Env = env
 			req.Record.ManagerPID = os.Getpid()
 			if writeMessage(c, message{Type: "daemon_ready"}) != nil {
@@ -328,7 +471,8 @@ func runLocalDaemon() (result error) {
 				return
 			}
 			if req.Kind == "shell" {
-				err = runLocalShell(req.Record, req.Env, func(r localShellRecord) error {
+				req.Record.Address, req.Record.Token = record.Address, record.Token
+				err = runLocalShell(tasks, req.Record, req.Env, func(r localShellRecord) error {
 					_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 					if e := json.NewEncoder(c).Encode(localStartup{Record: r}); e != nil {
 						return e
@@ -347,15 +491,15 @@ func runLocalDaemon() (result error) {
 					_ = json.NewEncoder(c).Encode(localStartup{Error: err.Error()})
 				}
 			} else {
-				_ = runDaemonResource(c, req)
+				_ = runDaemonResource(c, req, tasks)
 			}
 		}()
 	}
 }
 
-// Mount workers receive only startup/control messages through the daemon.
+// Mount daemons receive only startup/control messages through the account daemon.
 // Forwards run here and directly own their SSH child; payloads stay in SSH.
-func runDaemonResource(c net.Conn, request localDaemonRequest) (result error) {
+func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTasks) (result error) {
 	enc := json.NewEncoder(c)
 	defer func() {
 		if result != nil {
@@ -386,7 +530,10 @@ func runDaemonResource(c net.Conn, request localDaemonRequest) (result error) {
 	if err != nil {
 		return err
 	}
-	logPath := filepath.Join(dir, request.Record.Name+".log")
+	if !validTaskUID(config.UID) {
+		return fmt.Errorf("invalid resource task ID")
+	}
+	logPath := filepath.Join(dir, config.UID+".log")
 	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
@@ -396,15 +543,15 @@ func runDaemonResource(c net.Conn, request localDaemonRequest) (result error) {
 		return err
 	}
 	if config.Forward != nil {
-		_, err := runConfiguredResource(config, dec, c, log, request.Env, request.Record.Directory, func() { c.Close() })
+		_, err := runConfiguredResource(config, dec, c, log, request.Env, request.Record.Directory, func() { c.Close() }, tasks)
 		return err
 	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, "resource-worker")
-	detachResourceWorker(cmd)
+	cmd := exec.Command(exe, "daemon", "mount")
+	detachMountDaemon(cmd)
 	cmd.Dir = request.Record.Directory
 	cmd.Env = request.Env
 	cmd.Stderr = log
@@ -421,6 +568,8 @@ func runDaemonResource(c net.Conn, request localDaemonRequest) (result error) {
 	if err = cmd.Start(); err != nil {
 		return err
 	}
+	finished := make(chan struct{})
+	defer close(finished)
 	committed := false
 	defer func() {
 		if committed {
@@ -444,6 +593,31 @@ func runDaemonResource(c net.Conn, request localDaemonRequest) (result error) {
 	var startup resourceStartup
 	if err = child.Decode(&startup); err != nil {
 		return err
+	}
+	var pipeMu sync.Mutex
+	pipeMu.Lock()
+	pipeLocked := true
+	defer func() {
+		if pipeLocked {
+			pipeMu.Unlock()
+		}
+	}()
+	if startup.Error == "" {
+		task := &daemonResourceTask{record: startup.resourceRecord, done: finished, control: func(action string) resourceReply {
+			pipeMu.Lock()
+			defer pipeMu.Unlock()
+			if err := json.NewEncoder(input).Encode(action); err != nil {
+				return resourceReply{Error: err.Error()}
+			}
+			var reply resourceReply
+			if err := child.Decode(&reply); err != nil {
+				return resourceReply{Error: err.Error()}
+			}
+			return reply
+		}}
+		if err := tasks.register(config.UID, task); err != nil {
+			return err
+		}
 	}
 	if err = enc.Encode(startup); err != nil {
 		return err
@@ -470,15 +644,15 @@ func runDaemonResource(c net.Conn, request localDaemonRequest) (result error) {
 	}
 	// From this point the worker owns the task even if the acknowledgement is lost.
 	committed = true
+	pipeMu.Unlock()
+	pipeLocked = false
 	_ = enc.Encode(ack)
 	c.Close()
-	input.Close()
-	output.Close()
 	_ = cmd.Wait()
 	return nil
 }
 
-func launchLocalDaemonContext(ctx context.Context) (localShellRecord, error) {
+func launchLocalDaemonContext(ctx context.Context, executable ...string) (localShellRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return localShellRecord{}, err
 	}
@@ -487,9 +661,12 @@ func launchLocalDaemonContext(ctx context.Context) (localShellRecord, error) {
 	if err != nil {
 		return empty, err
 	}
-	cmd := exec.Command(exe, "local-daemon")
+	if len(executable) > 0 && executable[0] != "" {
+		exe = executable[0]
+	}
+	cmd := exec.Command(exe, "daemon")
 	detachLocalDaemon(cmd)
-	dir, err := stateDir("daemon")
+	dir, err := daemonDirectory()
 	if err != nil {
 		return empty, err
 	}
@@ -523,7 +700,10 @@ func launchLocalDaemonContext(ctx context.Context) (localShellRecord, error) {
 		}
 		go cmd.Wait()
 	}()
-	request := localShellRecord{Name: "daemon", Version: version, Token: resourceToken()}
+	request, err := newDaemonRecord()
+	if err != nil {
+		return empty, err
+	}
 	if err = json.NewEncoder(input).Encode(request); err != nil {
 		return empty, err
 	}

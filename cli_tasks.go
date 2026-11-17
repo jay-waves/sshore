@@ -10,6 +10,7 @@ import (
 type selectedTask struct {
 	kind, name, host, identity, instance, requestID string
 	connection                                      *recentConnection
+	hosted                                          bool
 }
 
 // Selection reads local identities only. Execution still validates the selected
@@ -37,8 +38,8 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 	}
 	raw, err := hex.DecodeString(code)
 	if err != nil || len(raw) != 3 {
-		if compact && !typed && !parsed.has("--local") && !parsed.has("--all") {
-			target, found, err := findTaskAlias(command, ref)
+		if compact && !typed && !parsed.has("--all") {
+			target, found, err := findTaskAlias(command, ref, parsed.has("--local"))
 			if err != nil || !found {
 				return empty, false, err
 			}
@@ -102,11 +103,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		// Explicit HOST/--local/type scopes still accept hexadecimal names.
 		if compact && !typed && !parsed.has("--local") {
 			if command == "review" {
-				dir, err := approvalDir()
-				if err != nil {
-					return empty, false, err
-				}
-				if record, err := findApproval(dir, ref); err == nil && record.DisplayName() == ref {
+				if record, err := findRequest(ref); err == nil && record.DisplayName() == ref {
 					return empty, false, nil
 				}
 			}
@@ -156,29 +153,29 @@ func routeSelectedTask(command string, parsed *cliArguments, target selectedTask
 
 func findTaskIdentity(identity string, hosts ...string) (selectedTask, error) {
 	empty := selectedTask{}
-	if strings.HasPrefix(identity, "local:") || strings.HasPrefix(identity, "task:") {
-		dir, err := stateDir("local-shells")
+	if len(hosts) == 0 && (strings.HasPrefix(identity, "local:") || strings.HasPrefix(identity, "task:")) {
+		records, err := nativeShellRecords()
 		if err != nil {
 			return empty, err
 		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			return empty, err
-		}
-		for _, entry := range entries {
-			if !strings.HasSuffix(entry.Name(), ".json") {
-				continue
-			}
-			r, err := readLocalSession(strings.TrimSuffix(entry.Name(), ".json"))
-			if err != nil {
-				return empty, err
-			}
+		for _, r := range records {
 			if r.identity() == identity {
 				return selectedTask{kind: "shell", name: r.Name, identity: identity}, nil
 			}
 		}
 	}
 	if strings.HasPrefix(identity, "remote:") || strings.HasPrefix(identity, "task:") {
+		if len(hosts) == 0 {
+			tasks, err := hostedShellTasks()
+			if err != nil {
+				return empty, err
+			}
+			for _, task := range tasks {
+				if task.identity == identity {
+					return task, nil
+				}
+			}
+		}
 		snapshots, err := readShellSnapshots()
 		if err != nil {
 			return empty, err
@@ -218,9 +215,12 @@ func findTaskIdentity(identity string, hosts ...string) (selectedTask, error) {
 	return empty, fmt.Errorf("task is no longer available here; refresh with sshore list")
 }
 
-func findTaskAlias(command, alias string) (selectedTask, bool, error) {
+func findTaskAlias(command, alias string, local bool) (selectedTask, bool, error) {
 	var matches []selectedTask
 	add := func(target selectedTask) {
+		if local && (target.kind != "shell" || target.host != "") {
+			return
+		}
 		if command == "attach" && target.kind != "shell" || command == "review" && target.kind != "review" {
 			return
 		}
@@ -232,6 +232,15 @@ func findTaskAlias(command, alias string) (selectedTask, bool, error) {
 		matches = append(matches, target)
 	}
 	if command != "review" {
+		tasks, err := hostedShellTasks()
+		if err != nil {
+			return selectedTask{}, false, err
+		}
+		for _, task := range tasks {
+			if task.name == alias {
+				add(task)
+			}
+		}
 		dir, err := stateDir("local-shells")
 		if err != nil {
 			return selectedTask{}, false, err

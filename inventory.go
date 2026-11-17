@@ -132,18 +132,13 @@ func inspectResource(ctx context.Context, r resourceRecord) resourceView {
 	if r.Kind == "review" {
 		return v
 	}
-	resp, err := resourceHTTPContext(ctx, r.Address, r.Token, "GET", "/status", nil)
+	reply, err := daemonResourceRequestContext(ctx, message{Type: "status", Instance: r.UID})
 	if err != nil {
 		v.LastError = "local worker unavailable or status deadline exceeded"
 		return v
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		v.LastError = "worker status request rejected"
-		return v
-	}
-	var status resourceStatus
-	if json.NewDecoder(io.LimitReader(resp.Body, 8192)).Decode(&status) != nil || status.Version != version {
+	status := reply.Status
+	if status.Version != version {
 		v.LastError = "incompatible or invalid worker status"
 		return v
 	}
@@ -154,6 +149,9 @@ func inspectResource(ctx context.Context, r resourceRecord) resourceView {
 func collectResourceResults(host string, active []resourceView) []resourceView {
 	seen := map[string]bool{}
 	for _, v := range active {
+		if v.Identity != "" {
+			seen[v.Identity] = true
+		}
 		seen[v.ID] = true
 	}
 	var rows []resourceView
@@ -171,7 +169,7 @@ func collectResourceResults(host string, active []resourceView) []resourceView {
 				continue
 			}
 			name := strings.TrimSuffix(entry.Name(), ".json.result")
-			if validSession(name) != nil || seen[kind+"/"+name] {
+			if validSession(name) != nil {
 				continue
 			}
 			path := filepath.Join(dir, entry.Name())
@@ -188,9 +186,15 @@ func collectResourceResults(host string, active []resourceView) []resourceView {
 			if e != nil || r.Record.storageName() != name || r.Record.Kind != kind || time.Since(r.Finished) > 7*24*time.Hour || (host != "" && r.Record.Host != host) {
 				continue
 			}
+			if validTaskUID(r.Record.UID) && seen[resourceIdentity(r.Record)] {
+				continue
+			}
+			if !validTaskUID(r.Record.UID) && seen[kind+"/"+name] {
+				continue
+			}
 			if validSession(r.DisplayName) == nil {
 				r.Record.slot, r.Record.Name = name, r.DisplayName
-				if seen[kind+"/"+r.DisplayName] {
+				if !validTaskUID(r.Record.UID) && seen[kind+"/"+r.DisplayName] {
 					continue
 				}
 			}
@@ -231,6 +235,7 @@ func collectInventory(o options) (inventory, error) {
 	} else {
 		hosted, hostedErr := hostedShellInventory(o.listJSON)
 		inv.MachineID, inv.Hostname = hosted.MachineID, hosted.Hostname
+		inv.ShellTree = hosted.ShellTree
 		inv.Shells, inv.Exits = hosted.Shells, hosted.Exits
 		inv.Errors = append(inv.Errors, hosted.Errors...)
 		if hostedErr != nil {
@@ -239,7 +244,7 @@ func collectInventory(o options) (inventory, error) {
 		for i := range inv.Shells {
 			inv.Shells[i].Host = "local"
 		}
-		local, localErr := localShells()
+		local, localErr := nativeShells()
 		inv.LocalShells = local
 		if localErr != nil {
 			inv.Errors = append(inv.Errors, cleanText(localErr.Error()))

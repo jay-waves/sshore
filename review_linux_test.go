@@ -12,11 +12,44 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/xtaci/smux"
 )
+
+func TestApprovalSourceRejectsReusedNameAndPID(t *testing.T) {
+	s, request := routedResourceFixture(t)
+	request.Instance = "replacement"
+	if err := s.checkApprovalSource(request); err == nil {
+		t.Fatal("approval accepted another instance with the same name and PID")
+	}
+	request.Instance = s.instance
+	if err := s.checkApprovalSource(request); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestApprovedTransferRequiresMatchingMetadata(t *testing.T) {
 	e := newEnv(t)
-	b, _ := e.attach("main")
+	b, pid := e.attach("main")
+	id, err := resolveSession("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	detachTestClient(t, b)
+	wire, err := e.dial("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wire.Close()
+	sendTest(t, wire, message{Type: "route_files", SoftwareVersion: version, Name: "main", PID: pid, Instance: id, ApprovalID: strings.Repeat("a", 32)})
+	if reply := recv(t, wire); reply.Type != "resource_ready" {
+		t.Fatalf("file route: %+v", reply)
+	}
+	mx, err := smux.Client(wire, sshio.MuxConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mx.Close()
 	source := filepath.Join(e.dir, "source")
 	if err := os.WriteFile(source, []byte("changed"), 0600); err != nil {
 		t.Fatal(err)
@@ -24,7 +57,7 @@ func TestApprovedTransferRequiresMatchingMetadata(t *testing.T) {
 	target := filepath.Join(e.dir, "target")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err := executeApprovedFile(ctx, b.mux, operation{Kind: "download", Path: source, Name: "source", Size: 1, LocalPath: target}, true)
+	err = executeApprovedFile(ctx, mx, operation{Kind: "download", Path: source, Name: "source", Size: 1, LocalPath: target}, true)
 	if err == nil {
 		t.Fatal("changed remote file accepted")
 	}
@@ -32,44 +65,20 @@ func TestApprovedTransferRequiresMatchingMetadata(t *testing.T) {
 		t.Fatal("unapproved file created", err)
 	}
 	// The same stream path succeeds for the exact approved metadata.
-	if err = executeApprovedFile(ctx, b.mux, operation{Kind: "download", Path: source, Name: "source", Size: 7, LocalPath: target}, true); err != nil {
+	if err = executeApprovedFile(ctx, mx, operation{Kind: "download", Path: source, Name: "source", Size: 7, LocalPath: target}, true); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(target)
 	if err != nil || string(data) != "changed" {
 		t.Fatal(string(data), err)
 	}
-	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-	untilType(t, b.tty, "exit")
-}
-
-func TestApprovalPrivateStateAndSymlinks(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "state")
-	t.Setenv("SSHORE_STATE_DIR", root)
-	if err := os.Mkdir(root, 0755); err != nil {
-		t.Fatal(err)
+	mx.Close()
+	resumed, resumedPID := e.attach("main", "attach")
+	if resumedPID != pid {
+		t.Fatal("file execution replaced source shell")
 	}
-	if _, err := approvalDir(); err == nil {
-		t.Fatal("public state directory accepted")
-	}
-	if err := os.Chmod(root, 0700); err != nil {
-		t.Fatal(err)
-	}
-	dir, err := approvalDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	target := filepath.Join(t.TempDir(), "data")
-	if err = os.WriteFile(target, []byte("{}"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err = os.Symlink(target, filepath.Join(dir, id+".json")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = readApproval(dir, id); err == nil {
-		t.Fatal("symlink record accepted")
-	}
+	sendTest(t, resumed.tty, message{Type: "input", Data: []byte("exit\n")})
+	untilType(t, resumed.tty, "exit")
 }
 
 func TestApprovedAttachRejectsChangedSession(t *testing.T) {
@@ -145,7 +154,7 @@ func TestEndpointRequestHelpers(t *testing.T) {
 }
 
 func TestApprovalPrompt(t *testing.T) {
-	for _, scenario := range []string{"upload", "retry", "cancel", "download", "download-cancel", "batch-cancel", "publish", "subscribe", "port-cancel", "menu", "many", "picker", "forward-stay", "upload-hint", "download-hint", "publish-hint", "subscribe-hint", "cancel-hint"} {
+	for _, scenario := range []string{"upload", "retry", "cancel", "download", "download-cancel", "batch-cancel", "publish", "subscribe", "port-cancel", "menu", "many", "picker", "upload-hint", "download-hint", "publish-hint", "subscribe-hint", "cancel-hint"} {
 		t.Run(scenario, func(t *testing.T) {
 			hinted := strings.HasSuffix(scenario, "-hint")
 			scenario := strings.TrimSuffix(scenario, "-hint")
@@ -182,9 +191,6 @@ exit 1
 			if scenario == "download" || scenario == "download-cancel" || scenario == "batch-cancel" {
 				op = operation{Kind: "download", Path: "/tmp/new", Name: "new", Size: 4}
 			}
-			if scenario == "forward-stay" {
-				op = operation{Kind: "forward", TargetPort: 3000}
-			}
 			if scenario == "publish" || scenario == "subscribe" || scenario == "port-cancel" {
 				command := "publish"
 				if scenario == "subscribe" {
@@ -209,19 +215,22 @@ exit 1
 			if scenario == "batch-cancel" {
 				ops = append(ops, operation{Kind: "download", Path: "/tmp/second", Name: "second", Size: 4})
 			}
-			id, err := writeApproval(options{host: "example.invalid", session: "main", server: "sshore", resumePID: 123}, ops)
+			startRequestDaemon(t)
+			o := testRequestOptions()
+			o.host = "example.invalid"
+			id, err := queueRequest(o, ops)
 			if err != nil {
 				t.Fatal(err)
 			}
-			args := []string{"review", id, "--stay"}
+			args := []string{"review", id}
 			if scenario == "publish" || scenario == "subscribe" || scenario == "port-cancel" {
 				args = []string{"review", id}
 			}
 			if scenario == "picker" {
-				if _, err := writeApproval(options{host: "other.invalid", session: "other", server: "sshore"}, []operation{op}); err != nil {
+				if _, err := queueRequest(o, []operation{op}); err != nil {
 					t.Fatal(err)
 				}
-				args = []string{"review", "--stay"}
+				args = []string{"review"}
 			}
 			cmd := exec.Command(testBinary(t), args...)
 			cmd.Env = append(os.Environ(), "TERM=xterm")
@@ -266,9 +275,7 @@ exit 1
 				await("Request (#number/name")
 				io.WriteString(terminal, "/example.invalid\r"+reviewName(t, id)+"\r")
 			}
-			if scenario == "forward-stay" {
-				await("--stay applies only to file transfers")
-			} else if scenario == "publish" || scenario == "subscribe" || scenario == "port-cancel" {
+			if scenario == "publish" || scenario == "subscribe" || scenario == "port-cancel" {
 				label := "Local listening port"
 				if scenario == "subscribe" {
 					label = "Local service port"
@@ -352,10 +359,9 @@ exit 1
 			if strings.Contains(scenario, "cancel") && strings.Contains(output.String(), "SSH-STARTED") {
 				t.Fatal("cancelled operation started SSH")
 			}
-			dir, _ := approvalDir()
-			_, err = os.Stat(filepath.Join(dir, id+".json"))
+			_, err = readRequest(id)
 			if scenario == "publish" || scenario == "subscribe" || scenario == "download" || scenario == "upload" || scenario == "retry" || scenario == "menu" || scenario == "many" || scenario == "picker" {
-				if !os.IsNotExist(err) {
+				if err == nil {
 					t.Fatal("approved request not consumed", err)
 				}
 			} else if err != nil {

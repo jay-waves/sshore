@@ -280,9 +280,10 @@ func stopFTPMount(m ftpMount, interrupts <-chan os.Signal, abort func(), grace t
 }
 
 type MountApproval struct {
-	Session string
-	PID     int
-	ID      string
+	Instance string `json:",omitempty"`
+	Session  string
+	PID      int
+	ID       string
 }
 
 type message struct {

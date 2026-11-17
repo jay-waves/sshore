@@ -99,19 +99,13 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 			t.Fatalf("%v: %v %s", args, err, out)
 		}
 		if args[0] == "launch" {
-			entries, err := os.ReadDir(filepath.Join(state, "local-shells"))
+			t.Setenv("SSHORE_STATE_DIR", state)
+			records, err := nativeShellRecords()
 			if err != nil {
 				t.Fatal(err)
 			}
 			var first, second localShellRecord
-			for _, entry := range entries {
-				if !strings.HasSuffix(entry.Name(), ".json") {
-					continue
-				}
-				record, err := readLocalRecord(filepath.Join(state, "local-shells", entry.Name()), strings.TrimSuffix(entry.Name(), ".json"))
-				if err != nil {
-					t.Fatal(err)
-				}
+			for _, record := range records {
 				if record.Name == "localtest" {
 					first = record
 				} else {
@@ -232,8 +226,7 @@ func TestPSTreeReattachmentAncestry(t *testing.T) {
 	shellOutput(t, b, "printf 'START-%s' ready", "START-ready")
 	detachTestClient(t, b)
 	for _, parent := range []string{"parent-a", "parent-b"} {
-		b = approvedTestAttach(t, e, "tree", pid, shellTreeNode{Identity: "origin", Host: "workstation", Name: "origin", State: "attached"}, shellTreeNode{Parent: "origin", Identity: parent, Host: "upstream", Name: parent, State: "attached"})
-		resumeTestOutput(t, b)
+		b = reattachTestWithTree(t, e, "tree", pid, shellTreeNode{Identity: "origin", Host: "workstation", Name: "origin", State: "attached"}, shellTreeNode{Parent: "origin", Identity: parent, Host: "upstream", Name: parent, State: "attached"})
 		output := shellOutput(t, b, shellQuote(e.bin)+" pstree; printf 'TREE-%s' done", "TREE-done")
 		if !strings.Contains(output, "<- upstream") || !strings.Contains(output, "*current") || strings.Contains(output, "HOST  ") || strings.Contains(output, "("+parent+")") {
 			t.Fatalf("incorrect local scope/source/current: %q", output)
@@ -298,33 +291,22 @@ func TestPSTreeKeepsUnavailableHostedShell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, uid+".sock")
-	listener, err := net.Listen("unix", path)
-	if err != nil {
+	tasks := startRequestDaemon(t)
+	shell := &remoteShell{tasks: tasks, instance: uid, name: "blocked", temporary: true, done: make(chan struct{})}
+	if err := tasks.register(uid, shell); err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
-	lock, err := openLock(path+".lock", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lock.Close()
-	if err := writeSessionName(path, "blocked"); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeStateFile(path+".id", []byte(uid)); err != nil {
-		t.Fatal(err)
-	}
+	// A task's status can fail without erasing its known identity.
 	saveShellTree(remoteTreeIdentity(uid), "blocked", nil, "detached", "heartbeat")
 	// The listening socket never answers, but its local lifetime lock stays held.
 	inv, err := localTreeInventory()
-	if err == nil {
-		t.Fatal("missing partial-inventory error")
+	if err != nil {
+		t.Fatal(err)
 	}
 	nodes := localShellTreeNodes(inventoryShellTrees(knownShellTrees(), inv), inv)
 	var out bytes.Buffer
 	writeShellTree(&out, nodes, false)
-	if !strings.Contains(out.String(), uid[:6]+" (blocked) ?") || !strings.Contains(out.String(), "spawn/") {
+	if !strings.Contains(out.String(), uid[:6]+" (blocked)") || !strings.Contains(out.String(), "spawn/") {
 		t.Fatal(out.String())
 	}
 }
@@ -335,7 +317,7 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 	t.Cleanup(func() {
 		deadline := time.Now().Add(35 * time.Second)
 		for time.Now().Before(deadline) {
-			if _, err := os.Stat(filepath.Join(state, "daemon", "local.json")); os.IsNotExist(err) {
+			if _, err := os.Stat(filepath.Join(state, "daemon", "daemon.json")); os.IsNotExist(err) {
 				return
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -358,7 +340,7 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 	}
 	run(env, "launch", "--local", "keeper", "--detach")
 	defer run(env, "cancel", "--local", "keeper")
-	raw, err := os.ReadFile(filepath.Join(state, "daemon", "local.json"))
+	raw, err := os.ReadFile(filepath.Join(state, "daemon", "daemon.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +396,7 @@ func TestLocalDaemonIgnoresOrphanedVersion(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = ensureLocalDaemon()
+			_, err = ensureLocalDaemonContext(context.Background())
 			owner.Close()
 			if err == nil {
 				t.Fatal("live incompatible owner was replaced")

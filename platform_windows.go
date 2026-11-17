@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,8 +14,6 @@ import (
 	"github.com/xtaci/smux"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
-
-	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 func localShellPath(env []string) string {
@@ -26,8 +26,6 @@ func localShellPath(env []string) string {
 	}
 	return path
 }
-
-func redrawLocalTerminal(t *tmux.Terminal) { tmux.RequestRedraw(t, t.PID()) }
 
 func detachLocalDaemon(cmd *exec.Cmd) {
 	// The worker only uses pipes and sockets; the shell gets its own ConPTY.
@@ -57,7 +55,7 @@ func spawnProcessIdentity(pid int) (string, error) {
 // The terminal owns a kill-on-close job; Terminal.Close ends its process tree.
 func stopSpawnTerminal(pid int, start string) error { return nil }
 
-func detachResourceWorker(c *exec.Cmd) {
+func detachMountDaemon(c *exec.Cmd) {
 	detachLocalDaemon(c)
 }
 func lockResourceReadState(f *os.File) error {
@@ -90,8 +88,6 @@ func prepareFTPPaths(o *ftpOptions) (func(), error) {
 }
 
 func resourceLockBusy(err error) bool { return errors.Is(err, windows.ERROR_LOCK_VIOLATION) }
-
-func occupiedShellNames() (map[string]bool, error) { return map[string]bool{}, nil }
 
 // Private validates the path type and applies a protected current-user DACL.
 func privateStatePath(path string, directory bool) error {
@@ -167,11 +163,14 @@ func approvedRemoteTransfer(st *smux.Stream, m message) {
 	_ = writeMessage(st, message{Type: "error", Error: "file serving requires Linux"})
 }
 
-func localSessionInventory(details ...bool) (inventory, error) {
+func localSessionInventory(details ...bool) inventory {
 	inv := emptyInventory()
 	var e error
 	inv.Peers, e = collectPeerViews()
-	return inv, e
+	if e != nil {
+		inv.Errors = append(inv.Errors, cleanText(e.Error()))
+	}
+	return inv
 }
 
 func systemMachineID() string {
@@ -186,6 +185,18 @@ func systemMachineID() string {
 
 func hostedShellInventory(detailed bool) (inventory, error) {
 	return emptyInventory(), nil
+}
+
+func hostedShellTasks() ([]selectedTask, error) { return nil, nil }
+
+func newDaemonServices(tasks *daemonTasks) daemonServices { return nil }
+
+func openHostedTransport(context.Context, options) (net.Conn, error) {
+	return nil, fmt.Errorf("Windows does not host Unix shells")
+}
+
+func runHostedCommand(options) (int, error) {
+	return 1, fmt.Errorf("Windows does not host Unix shells")
 }
 
 func handoffRemoteSpawn(o options) (bool, error) { return false, nil }

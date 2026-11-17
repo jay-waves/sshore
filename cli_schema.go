@@ -50,8 +50,8 @@ var cliOptions = map[string]cliOption{
 	"--download-dir": {kind: cliDirectory},
 	"--quiet":        {alias: "-q"},
 	"--no-escape":    {}, "--detach": {}, "--no-login": {}, "--no-profile": {},
-	"--json": {},
-	"--all":  {}, "--stay": {},
+	"--json":       {},
+	"--all":        {},
 	"--foreground": {},
 	"--read-only":  {}, "--stats": {}, "--direct-io": {},
 	"--io-timeout": {kind: cliDuration}, "--startup-timeout": {kind: cliDuration},
@@ -72,6 +72,8 @@ func commandSpec(command string) (cliSpec, bool) {
 	switch command {
 	case "":
 		spec = cliSpec{[]string{"--version"}, false, false, 0, 0}
+	case "daemon":
+		spec = cliSpec{nil, false, false, 0, 1}
 	case "mcp":
 		spec = cliSpec{nil, false, false, 0, 0}
 	case "exec":
@@ -95,7 +97,7 @@ func commandSpec(command string) (cliSpec, bool) {
 	case "forward":
 		spec = cliSpec{strings.Fields("--retries --foreground"), true, false, 2, 2}
 	case "review":
-		spec = cliSpec{[]string{"--stay"}, false, false, 0, 1}
+		spec = cliSpec{nil, false, false, 0, 1}
 	case "help":
 		spec = cliSpec{nil, false, false, 0, 1}
 	case "detach", "reset":

@@ -100,16 +100,18 @@ func Wrap(t testing.TB, script string, env []string, globalRequest ...func(*cryp
 					}
 				}()
 				for channel := range channels {
-					if channel.ChannelType() == "direct-streamlocal@openssh.com" {
+					if channel.ChannelType() == "direct-tcpip" {
 						var request struct {
-							Path, Reserved string
-							Port           uint32
+							Host       string
+							Port       uint32
+							OriginHost string
+							OriginPort uint32
 						}
 						if cryptossh.Unmarshal(channel.ExtraData(), &request) != nil {
 							channel.Reject(cryptossh.ConnectionFailed, "invalid socket request")
 							continue
 						}
-						remote, err := net.Dial("unix", request.Path)
+						remote, err := net.Dial("tcp", net.JoinHostPort(request.Host, fmt.Sprint(request.Port)))
 						if err != nil {
 							channel.Reject(cryptossh.ConnectionFailed, err.Error())
 							continue

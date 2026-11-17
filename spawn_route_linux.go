@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"golang.org/x/term"
 	"net"
@@ -135,7 +136,7 @@ func handoffRemoteSpawn(o options) (bool, error) {
 	defer stop()
 	env = append(env, auth...)
 	req := &localDaemonRequest{Record: localShellRecord{Owner: o.owner, Directory: cwd}, Env: env, Spawn: &spawnConfig{NoLogin: o.noLogin, NoProfile: o.noProfile, Tree: currentShellTree(), Local: o.local, Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh}}
-	c, err := net.DialTimeout("unix", socket, requestTimeout)
+	c, err := dialHostedTask(context.Background(), socket, requestTimeout)
 	if err != nil {
 		return true, err
 	}
@@ -192,12 +193,11 @@ func createRouteShell(req localDaemonRequest, temporary bool) (net.Conn, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer reservation.Close()
+
 	if reservation.conn != nil {
 		return nil, fmt.Errorf("shell already exists")
 	}
-	reservation.namespace.owner.Close()
-	reservation.namespace.owner = nil
+
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -209,11 +209,7 @@ func createRouteShell(req localDaemonRequest, temporary bool) (net.Conn, error) 
 	if err := createRemoteShellUsing(executable, reservation.name, label, reservation.namespace.uid, temporary, req.Record.Directory, req.Env); err != nil {
 		return nil, err
 	}
-	path, err := socketPath(reservation.name)
-	if err != nil {
-		return nil, err
-	}
-	transport, err := net.DialTimeout("unix", path, time.Second)
+	transport, err := dialHostedTask(context.Background(), reservation.name, time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -277,14 +273,14 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 		if err := validSession(request.Name); err != nil {
 			return err
 		}
-		path, err := resolveSession(request.Name)
+		path, err := resolveSession(request.Name, request.Instance)
 		if err != nil {
 			return err
 		}
 		if path == "" {
 			return fmt.Errorf("shell is unavailable")
 		}
-		target, err = net.DialTimeout("unix", path, time.Second)
+		target, err = dialHostedTask(context.Background(), path, time.Second)
 		if err != nil {
 			return err
 		}

@@ -10,6 +10,14 @@ import (
 	"time"
 )
 
+func TestApprovedForwardCarriesSourceInstance(t *testing.T) {
+	instance := strings.Repeat("c", 32)
+	command := approvedForwardCommand(forwardConfig{Session: "work", ResumePID: 123, ApprovalID: strings.Repeat("a", 32), Instance: instance})
+	if !strings.HasSuffix(command, " "+shellQuote(instance)) {
+		t.Fatalf("source instance missing from forward validation: %s", command)
+	}
+}
+
 func TestForwardArguments(t *testing.T) {
 	o, err := parseOptions([]string{"launch", "host", "--", "-L", "127.0.0.1:8080:localhost:80"})
 	if err != nil || len(o.ssh) != 2 {

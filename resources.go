@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/jay-waves/sshore/internal/termui"
@@ -14,30 +13,14 @@ import (
 )
 
 func collectRunningResources(host string) ([]resourceRecord, error) {
+	reply, err := daemonResourceRequest(message{Type: "task_list_resources"})
+	if err != nil {
+		return nil, err
+	}
 	var records []resourceRecord
-	for _, kind := range []string{"mount", "forward"} {
-		dir, e := resourceStateDir(kind)
-		if e != nil {
-			return nil, e
-		}
-		files, e := os.ReadDir(dir)
-		if e != nil {
-			return nil, e
-		}
-		for _, f := range files {
-			if !strings.HasSuffix(f.Name(), ".json") {
-				continue
-			}
-			r, e := readResourceRecord(kind, strings.TrimSuffix(f.Name(), ".json"))
-			if os.IsNotExist(e) {
-				continue
-			}
-			if e != nil {
-				return nil, e
-			}
-			if host == "" || r.Host == host {
-				records = append(records, displayedResource(r))
-			}
+	for _, r := range reply.Records {
+		if host == "" || r.Host == host {
+			records = append(records, r)
 		}
 	}
 	return records, nil
@@ -48,17 +31,13 @@ func collectLocalResources(host string) ([]resourceRecord, error) {
 	if e != nil {
 		return nil, e
 	}
-	dir, e := approvalDir()
-	if e != nil {
-		return nil, e
-	}
-	pending, e := pendingApprovals(dir)
+	pending, e := pendingRequests()
 	if e != nil {
 		return nil, e
 	}
 	for _, r := range pending {
-		if host == "" || r.Host == host {
-			records = append(records, resourceRecord{UID: r.UID, Token: r.ID, Kind: "review", Name: r.DisplayName(), Host: r.Host, Detail: r.Session + ": " + approvalSummary(r.Operations)})
+		if host == "" || r.Connection.Host == host {
+			records = append(records, resourceRecord{UID: r.ID, Token: r.ID, Kind: "review", Name: r.DisplayName(), Host: r.Connection.Host, Detail: r.Connection.Session + ": " + requestSummary(r.Operations)})
 		}
 	}
 	sort.Slice(records, func(i, j int) bool {
@@ -74,78 +53,20 @@ func collectLocalResources(host string) ([]resourceRecord, error) {
 	return records, nil
 }
 
-// Running resources keep their original storage slot and lease while their
-// public name changes. Bind the display record to the instance, not the slot.
-type resourceDisplayName struct {
-	Identity, Name string
-}
-
-func resourceNamePath(kind, slot string) (string, error) {
-	if (kind != "mount" && kind != "forward") || validSession(slot) != nil {
-		return "", fmt.Errorf("invalid resource storage slot")
-	}
-	return statePath(filepath.Join(kind+"s", slot+".name"))
-}
-
-func displayedResource(r resourceRecord) resourceRecord {
-	if r.slot != "" || r.Token == "" {
-		return r
-	}
-	path, err := resourceNamePath(r.Kind, r.storageName())
-	if err != nil || privateStatePath(path, false) != nil {
-		return r
-	}
-	data, err := os.ReadFile(path)
-	var saved resourceDisplayName
-	if err == nil && json.Unmarshal(data, &saved) == nil &&
-		saved.Identity == resourceIdentity(r) && validSession(saved.Name) == nil {
-		r.slot, r.Name = r.Name, saved.Name
-	}
-	return r
-}
-
 func findRunningResource(kind, name string) (resourceRecord, error) {
 	if err := validSession(name); err != nil {
 		return resourceRecord{}, err
-	}
-	r, err := readResourceRecord(kind, name)
-	if err == nil {
-		if r = displayedResource(r); r.Name == name {
-			return r, nil
-		}
-	} else if !os.IsNotExist(err) {
-		return r, err
 	}
 	rows, err := collectRunningResources("")
 	if err != nil {
 		return resourceRecord{}, err
 	}
 	for _, row := range rows {
-		if row.Kind == kind && row.Name == name {
+		if row.Kind == kind && (row.Name == name || row.UID == name) {
 			return row, nil
 		}
 	}
 	return resourceRecord{}, fmt.Errorf("%s/%s no longer exists; refresh with sshore list", kind, name)
-}
-
-func lockResourceRename() (*os.File, error) {
-	dir, err := stateDir("names")
-	if err != nil {
-		return nil, err
-	}
-	path := filepath.Join(dir, ".rename.lock")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return nil, err
-	}
-	if err = privateStatePath(path, false); err == nil {
-		err = lockResourceState(f)
-	}
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	return f, nil
 }
 
 func runRenameResource(kind, old, name string, expected ...string) (int, error) {
@@ -155,34 +76,18 @@ func runRenameResource(kind, old, name string, expected ...string) (int, error) 
 	if err := validAlias(name); err != nil {
 		return 2, err
 	}
-	// Serialize resource/review renames; lock the destination with the same
-	// reservation used when starting any local task.
-	renameLock, err := lockResourceRename()
-	if err != nil {
-		return 1, err
-	}
-	defer renameLock.Close()
 	if kind == "review" {
-		dir, err := approvalDir()
+		record, err := findRequest(old)
 		if err != nil {
 			return 1, err
 		}
-		record, err := findApproval(dir, old)
-		if err != nil {
-			return 1, err
-		}
-		if len(expected) > 0 && resourceIdentity(resourceRecord{UID: record.UID, Kind: "review", Token: record.ID}) != expected[0] {
+		if len(expected) > 0 && resourceIdentity(resourceRecord{UID: record.ID, Kind: "review", Token: record.ID}) != expected[0] {
 			return 1, fmt.Errorf("request changed; refresh with sshore list")
 		}
 		if record.DisplayName() == name {
 			return 0, nil
 		}
-		reservation, err := reserveResourceName("review", name)
-		if err != nil {
-			return 1, err
-		}
-		defer reservation.Close()
-		if err := approvalStore(dir).Rename(record.ID, name); err != nil {
+		if err := renameRequest(record.ID, name); err != nil {
 			return 1, err
 		}
 	} else {
@@ -193,53 +98,24 @@ func runRenameResource(kind, old, name string, expected ...string) (int, error) 
 		if len(expected) > 0 && resourceIdentity(row) != expected[0] {
 			return 1, fmt.Errorf("task changed; refresh with sshore list")
 		}
-		if row.Version != version || row.Token == "" {
-			return 1, fmt.Errorf("resource is unavailable or requires a matching release")
-		}
-		if row.Name == name {
-			return 0, nil
-		}
-		if name != row.storageName() {
-			reservation, err := reserveResourceName(kind, name)
-			if err != nil {
-				return 1, err
-			}
-			defer reservation.Close()
-		}
-		path, err := resourceNamePath(kind, row.storageName())
-		if err != nil {
+		if _, err := daemonResourceRequest(message{Type: "task_rename_resource", Instance: row.UID, Name: name}); err != nil {
 			return 1, err
 		}
-		current, err := readResourceRecord(kind, row.storageName())
-		if err != nil || resourceIdentity(current) != resourceIdentity(row) {
-			return 1, fmt.Errorf("task changed; refresh with sshore list")
-		}
-		if err = writeStateJSON(path, resourceDisplayName{resourceIdentity(row), name}); err != nil {
-			return 1, err
-		}
+
 	}
 	fmt.Printf("Renamed %s/%s to %s/%s.\n", kind, old, kind, name)
 	return 0, nil
 }
 
-// Explicit type prefixes route local cancellation; HOST NAME uses the existing
-// version- and process-identity-checked remote session termination path.
-func runCancel(args []string) (int, error) {
-	return runTargetCommand(append([]string{"cancel"}, args...))
-}
-
+// Resource references resolve through the account daemon before cancellation.
 func runCancelResource(kind, name string) (int, error) {
 	switch kind {
 	case "review":
-		dir, err := approvalDir()
-		if err != nil {
-			return 1, err
-		}
-		record, readErr := findApproval(dir, name)
+		record, readErr := findRequest(name)
 		if readErr != nil {
 			return 1, readErr
 		}
-		if err = consumeApproval(dir, record.ID); err != nil {
+		if err := consumeRequest(record.ID); err != nil {
 			return 1, err
 		}
 		removeRejectedPeerTask(record)
@@ -260,7 +136,13 @@ func runCancelAll(o options) (int, error) {
 	// Offline shell history and tasks owned by other computers are not targets.
 	inv.Peers = nil
 	if o.host == "" {
-		inv.Shells = nil
+		live := inv.Shells[:0]
+		for _, s := range inv.Shells {
+			if !s.Historical {
+				live = append(live, s)
+			}
+		}
+		inv.Shells = live
 	}
 	remoteResources := append([]resourceView(nil), inv.Resources...)
 	records, err := collectLocalResources(o.host)
@@ -300,7 +182,12 @@ func runCancelAll(o options) (int, error) {
 		}
 		target := o
 		target.list, target.command, target.session, target.instance = false, "cancel", s.Name, s.Instance
-		if _, err := runClient(target); err != nil {
+		cancel := runClient
+		if o.host == "" {
+			target.local, target.hosted = true, true
+			cancel = runLocalCommand
+		}
+		if _, err := cancel(target); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -337,18 +224,14 @@ func cancelResourceIdentity(id, identity string) error {
 	if kind != "review" {
 		return stopResource(kind, name, identity)
 	}
-	dir, err := approvalDir()
+	record, err := findRequest(name)
 	if err != nil {
 		return err
 	}
-	record, err := findApproval(dir, name)
-	if err != nil {
-		return err
-	}
-	if resourceIdentity(resourceRecord{UID: record.UID, Kind: "review", Token: record.ID}) != identity {
+	if resourceIdentity(resourceRecord{UID: record.ID, Kind: "review", Token: record.ID}) != identity {
 		return fmt.Errorf("request changed; refresh with sshore list")
 	}
-	if err = consumeApproval(dir, record.ID); err == nil {
+	if err = consumeRequest(record.ID); err == nil {
 		removeRejectedPeerTask(record)
 	}
 	return err
@@ -402,8 +285,8 @@ func (s *resourceService) saveResult(code int, err error) {
 		state = "failed"
 	}
 	s.setTransport(state, err)
-	// A bounded receipt per resource name, overwritten on the next lifecycle.
-	r := resourceResult{Record: s.record, DisplayName: displayedResource(s.record).Name, Status: s.statusSnapshot(), Finished: time.Now().UTC()}
+	// UID-backed resources retain one receipt per instance; legacy slots reuse it.
+	r := resourceResult{Record: s.record, DisplayName: s.record.Name, Status: s.statusSnapshot(), Finished: time.Now().UTC()}
 	r.Record.Token, r.Record.Address = "", ""
 	if writeStateJSON(s.recordPath+".result", r) == nil {
 		pruneResourceResults(filepath.Dir(s.recordPath))

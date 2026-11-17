@@ -101,55 +101,26 @@ func TestMCPStdioReconnect(t *testing.T) {
 	}
 }
 
-func TestMCPRegistryHealth(t *testing.T) {
-	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime"))
-	entry, err := registerMCPSession("ABC123")
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := entry.path
-	live, err := sessionIdentityLive(path)
-	if err != nil || !live {
-		t.Fatalf("live=%v error=%v", live, err)
-	}
-	status := probeSessionDaemon(daemonProcess{pid: os.Getpid(), socket: path, shared: true}, time.Now().Add(time.Second))
-	if status.state != "detached" || status.name != "mcp-ABC123" {
-		t.Fatalf("health: %+v", status)
-	}
-	if _, err := registerMCPSession("ABC123"); err == nil {
-		t.Fatal("duplicate registration accepted")
-	}
-	entry.Close()
-	live, err = sessionIdentityLive(path)
-	if err != nil || live {
-		t.Fatalf("after close live=%v error=%v", live, err)
-	}
-}
-
 func TestTrackedMCPSessionRegistration(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(root, "runtime"))
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
-	sessions := newTrackedMCPSessions()
+	sessions := newTrackedMCPSessions(&daemonTasks{})
 	session, err := sessions.Open(context.Background(), mcp.OpenInput{Host: "work"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	path, err := socketPath("mcp-" + session.ID)
-	if err != nil {
+	if !validTaskUID(session.ID) || !sessions.tasks.Busy() {
+		t.Fatal("missing task registration")
+	}
+	if _, err := os.Stat(filepath.Join(root, "runtime")); !os.IsNotExist(err) {
+		t.Fatalf("MCP registration created runtime files: %v", err)
+	}
+	if _, err := sessions.Close(context.Background(), mcp.SessionInput{SessionID: session.ID}); err != nil {
 		t.Fatal(err)
 	}
-	live, err := sessionIdentityLive(path)
-	if err != nil || !live {
-		t.Fatalf("missing registration: %v %v", live, err)
-	}
-	_, err = sessions.Close(context.Background(), mcp.SessionInput{SessionID: session.ID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	live, err = sessionIdentityLive(path)
-	if err != nil || live {
-		t.Fatalf("registration remains: %v %v", live, err)
+	if sessions.tasks.Busy() {
+		t.Fatal("ended MCP task retained")
 	}
 }
 
@@ -157,31 +128,32 @@ func TestSharedDaemonMCPSession(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(root, "runtime"))
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
-	done := make(chan error, 1)
-	go func() { done <- runSharedRemoteDaemonUsing(nil) }()
-	path := filepath.Join(root, "runtime", "daemon.control")
-	var conn net.Conn
-	var err error
-	for until := time.Now().Add(3 * time.Second); time.Now().Before(until); {
-		conn, err = net.DialTimeout("unix", path, 50*time.Millisecond)
-		if err == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn.Close()
+	record := localShellRecord{Name: "daemon", Version: version, Token: resourceToken(), Address: listener.Addr().String()}
+	tasks := &daemonTasks{}
+	services := &unixDaemonServices{sessions: newTrackedMCPSessions(tasks, nil)}
+	done := make(chan error, 1)
+	go func() {
+		defer listener.Close()
+		defer services.Close()
+		done <- serveDaemon(listener, record, services, tasks)
+	}()
 	call := func(req mcp.Request) mcp.Response {
 		t.Helper()
 		req.Version = version
-		c, err := net.DialTimeout("unix", path, time.Second)
+		c, err := dialLocalSession(record)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer c.Close()
-		if err = writeMessage(c, message{Type: "mcp_request", SoftwareVersion: version, MCPRequest: &req}); err != nil {
+		dir, err := runtimeDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = writeMessage(c, message{Directory: dir, Type: "mcp_request", SoftwareVersion: version, MCPRequest: &req}); err != nil {
 			t.Fatal(err)
 		}
 		reply, err := readMessage(c)
@@ -204,6 +176,17 @@ func TestSharedDaemonMCPSession(t *testing.T) {
 		t.Fatalf("output %+v", output)
 	}
 	call(mcp.Request{Method: "close", Session: mcp.SessionInput{SessionID: session.ID}})
+	control, err := dialLocalSession(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMessage(control, message{Type: "daemon_stop_idle"}); err != nil {
+		t.Fatal(err)
+	}
+	if reply, err := readMessage(control); err != nil || reply.Type != "daemon_ready" {
+		t.Fatalf("idle shutdown: %+v %v", reply, err)
+	}
+	control.Close()
 	select {
 	case err := <-done:
 		if err != nil {
@@ -218,7 +201,7 @@ func TestTrackedMCPCloseStopsChild(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(root, "runtime"))
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
-	sessions := newTrackedMCPSessions()
+	sessions := newTrackedMCPSessions(&daemonTasks{})
 	ctx := context.Background()
 	session, err := sessions.Open(ctx, mcp.OpenInput{Host: "work"})
 	if err != nil {
@@ -263,7 +246,7 @@ func TestTrackedMCPCloseAfterBashExit(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(root, "runtime"))
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
-	sessions := newTrackedMCPSessions()
+	sessions := newTrackedMCPSessions(&daemonTasks{})
 	ctx := context.Background()
 	session, err := sessions.Open(ctx, mcp.OpenInput{Host: "work"})
 	if err != nil {
@@ -291,7 +274,7 @@ func TestTrackedMCPOpenRechecksSetup(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(root, "runtime"))
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
-	sessions := newTrackedMCPSessions(func() error { return errors.New("setup changed") })
+	sessions := newTrackedMCPSessions(&daemonTasks{}, func() error { return errors.New("setup changed") })
 	if _, err := sessions.Open(context.Background(), mcp.OpenInput{Host: "work"}); err == nil {
 		t.Fatal("changed setup accepted")
 	}
@@ -339,21 +322,18 @@ func TestMCPBootstrapReconnect(t *testing.T) {
 		return reply
 	}
 	session := call(mcp.Request{Method: "open", Open: mcp.OpenInput{Host: "fixture"}}).Session
-	processes, err := findSessionDaemons("/proc")
+	snapshot, err := daemonAdmin(context.Background(), "snapshot", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	found := false
-	for _, process := range processes {
-		if process.name == "mcp-"+session.ID {
+	for _, task := range snapshot.Tasks {
+		if task.ID == session.ID {
 			found = true
-			if health := probeSessionDaemon(process, time.Now().Add(time.Second)); health.state != "detached" {
-				t.Fatalf("MCP daemon health: %+v", health)
-			}
 		}
 	}
 	if !found {
-		t.Fatalf("MCP session absent from account scan: %+v", processes)
+		t.Fatalf("MCP session absent from task table: %+v", snapshot.Tasks)
 	}
 	execute := func(code string) string {
 		execution := call(mcp.Request{Method: "execute", Execute: mcp.ExecuteInput{SessionID: session.ID, Code: code}}).Execution

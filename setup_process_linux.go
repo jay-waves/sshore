@@ -101,7 +101,7 @@ func sessionTasks(roots []setupProcess) ([]setupTask, error) {
 	return tasks, nil
 }
 
-func stopOldSessions(roots []setupProcess, reasons ...string) (resultErr error) {
+func stopOwnedProcesses(roots []setupProcess) error {
 	for _, root := range roots {
 		if root.Version != "" {
 			v, err := executableVersion(fmt.Sprintf("/proc/%d/exe", root.PID))
@@ -120,18 +120,6 @@ func stopOldSessions(roots []setupProcess, reasons ...string) (resultErr error) 
 			return err
 		}
 	}
-	receipts := cleanupExitReceipts(roots)
-	reason := "ended for version update"
-	if len(reasons) > 0 {
-		reason = reasons[0]
-	}
-	defer func() {
-		if resultErr == nil {
-			for socket, name := range receipts {
-				saveSessionExit(socket, name, reason)
-			}
-		}
-	}()
 	for _, task := range tasks {
 		if err := signalProcess(task.pid, task.start, unix.SIGTERM); err != nil {
 			return err
@@ -151,26 +139,7 @@ func stopOldSessions(roots []setupProcess, reasons ...string) (resultErr error) 
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	for _, task := range tasks {
-		if err := signalProcess(task.pid, task.start, unix.SIGKILL); err != nil {
-			return err
-		}
-	}
-	deadline = time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		alive := false
-		for _, task := range tasks {
-			if now, e := readSetupTask(task.pid); e == nil && now.start == task.start && now.state != "Z" {
-				alive = true
-				break
-			}
-		}
-		if !alive {
-			return nil
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	return fmt.Errorf("some old shell tasks did not exit; complete cleanup manually")
+	return fmt.Errorf("tasks did not exit; no forced termination performed")
 }
 
 // Session listings show a best-effort /proc snapshot rooted at the shell PID.

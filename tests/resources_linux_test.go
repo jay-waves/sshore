@@ -148,7 +148,7 @@ func backgroundProcesses(t *testing.T, e *cliFixture, state string) []string {
 		}
 		args, _ := os.ReadFile(filepath.Join(path, "cmdline"))
 		words := strings.Split(string(args), "\x00")
-		if len(words) < 2 || (words[1] != "local-daemon" && words[1] != "resource-worker") {
+		if len(words) < 2 || words[1] != "daemon" {
 			continue
 		}
 		env, err := os.ReadFile(filepath.Join(path, "environ"))

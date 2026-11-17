@@ -38,11 +38,11 @@ func runMount(args []string) (int, error) {
 	if !o.foreground {
 		return startResourceBackground(resourceConfig{Args: args}, "mount")
 	}
-	reservation, err := reserveResourceName("mount", "")
+	reservation, err := chooseTaskIdentity("mount", "")
 	if err != nil {
 		return 1, err
 	}
-	defer reservation.Close()
+
 	o.name = reservation.name
 	cleanup, err := prepareFTPPaths(&o)
 	if err != nil {

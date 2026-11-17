@@ -50,6 +50,53 @@ func TestShellTreeAttachmentSnapshots(t *testing.T) {
 	}
 }
 
+func TestShellTreeSnapshotSources(t *testing.T) {
+	now := time.Now()
+	old := shellTreeNode{Identity: "task", Name: "old", State: "attached", Cached: true, CheckedAt: now.Add(-time.Hour)}
+	fresh := old
+	fresh.Name, fresh.CheckedAt = "fresh", now
+	owner := old
+	owner.Name, owner.Cached = "owner", false
+	ended := fresh
+	ended.Name, ended.State = "ended", "exited"
+	for _, tc := range []struct {
+		name          string
+		first, second shellTreeNode
+		want          string
+	}{
+		{"newer-copy-last", old, fresh, "fresh"},
+		{"newer-copy-first", fresh, old, "fresh"},
+		{"terminal-copy-after-owner", owner, ended, "ended"},
+		{"terminal-copy-before-owner", ended, owner, "ended"},
+		{"owner-before-live-copy", owner, fresh, "owner"},
+		{"owner-after-live-copy", fresh, owner, "owner"},
+		{"same-source-terminal-evidence", ended, fresh, "ended"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("SSHORE_STATE_DIR", t.TempDir())
+			dir, err := stateDir("shell-tree")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, node := range []shellTreeNode{tc.first, tc.second} {
+				node.Current = true
+				path := filepath.Join(dir, fmt.Sprintf("%d.json", i))
+				if err := writeStateJSON(path, []shellTreeNode{node}); err != nil {
+					t.Fatal(err)
+				}
+				data, err := os.ReadFile(path)
+				if err != nil || bytes.Contains(data, []byte("Current")) {
+					t.Fatalf("display selection persisted: %s %v", data, err)
+				}
+			}
+			nodes := knownShellTrees()
+			if len(nodes) != 1 || nodes[0].Name != tc.want {
+				t.Fatalf("wrong snapshot source: %+v", nodes)
+			}
+		})
+	}
+}
+
 func TestShellTreeRendering(t *testing.T) {
 	nodes := []shellTreeNode{
 		{Identity: "p", Host: "alpha", Name: "root"},

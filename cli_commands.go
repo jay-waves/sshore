@@ -99,10 +99,11 @@ type options struct {
 	handoffDone           func(context.Context, error) error
 	routeParent           *options
 	routeToken            string
-	daemonSocket          string
+	daemonTask            *localShellRecord
 	environment           []string
 	tree                  []shellTreeNode
 	temporary             bool
+	hosted                bool
 	owner                 spawnOwner
 	host, session, server string
 	command               string
@@ -111,10 +112,7 @@ type options struct {
 	list, quiet, noEscape bool
 	listJSON              bool
 	ssh                   []string
-	approved              []operation
-	approvalID            string
-	resumePID             int
-	stay                  bool
+	shellPID              int
 	plain                 bool
 	local                 bool
 	detached              bool
@@ -143,6 +141,9 @@ func executeShellCommand(o options) (int, error) {
 		return 0, nil
 	}
 	if o.local {
+		if err := resolveLocalAttach(&o); err != nil {
+			return 1, err
+		}
 		if handled, err := handoffLocalClient(o); handled {
 			if err != nil {
 				return 1, err
@@ -408,8 +409,8 @@ func parseCopyCommand(args []string) (copyOptions, error) {
 			o.host = source.host
 		}
 	}
-	if len(o.sources) > maxApprovalItems {
-		return o, usage("at most %d files per copy", maxApprovalItems)
+	if len(o.sources) > maxRequestItems {
+		return o, usage("at most %d files per copy", maxRequestItems)
 	}
 	return o, nil
 }

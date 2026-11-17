@@ -1,14 +1,7 @@
 package main
 
-// The client launches system OpenSSH and adapts its pipes to the multiplexed
-// transport. Remote requests only save approval metadata and detach; separately
-// approved file operations finish before terminal interaction resumes. During
-// approval execution and --stay, normal remote output is discarded, not replayed.
-// Each connection disables ControlMaster/ControlPath/ControlPersist sharing so it
-// owns its transport lifetime. Other local SSH configuration remains effective.
-// SSH agent/X11 environments belong to the connection that created the remote
-// shell and are not refreshed on reattachment. Noninteractive login-script stdout
-// can corrupt the protocol handshake; diagnostics belong on stderr.
+// The frontend owns terminal interaction; daemon-owned tasks outlive its
+// connections. Remote operation requests are stored for separate local review.
 
 import (
 	"context"
@@ -16,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -59,11 +51,6 @@ func acceptSessionName(o *options, name string) error {
 func runClientOnce(o options, previous string, ready func()) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	for _, op := range o.approved {
-		if op.LocalPortPending() {
-			return 2, usage("choose a local port in review before execution")
-		}
-	}
 	cancelledInstance := o.instance
 	if o.command == "cancel" {
 		if cleared, err := forgetEndedShell(o.host, o.session, o.instance); cleared || err != nil {
@@ -130,18 +117,15 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		termName = "xterm-256color"
 	}
 	action := ""
-	if o.command == "attach" {
+	if o.command == "attach" && !o.plain {
 		action = "existing"
-	}
-	if len(o.approved) > 0 {
-		action = "approved"
 	}
 	tree := o.tree
 	if tree == nil {
 		tree = currentShellTree()
 	}
 	sourceMachine, sourceHost := localMachineIdentity()
-	if err = streamMessage(control, message{Type: "attach", SourceHost: sourceHost, SourceMachineID: sourceMachine, Tree: tree, Instance: o.instance, Action: action, PID: o.resumePID, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && (o.command == "launch" || o.command == "spawn") && !o.plain, NoLogin: o.noLogin && (o.command == "launch" || o.command == "spawn") && !o.plain, ApprovalID: o.approvalID}); err != nil {
+	if err = streamMessage(control, message{Type: "attach", SourceHost: sourceHost, SourceMachineID: sourceMachine, Tree: tree, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && (o.command == "launch" || o.command == "spawn") && !o.plain, NoLogin: o.noLogin && (o.command == "launch" || o.command == "spawn") && !o.plain}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -157,9 +141,6 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	}
 	if err := acceptSessionName(&o, m.Name); err != nil {
 		return 1, err
-	}
-	if len(o.approved) > 0 && m.PID != o.resumePID {
-		return 1, fmt.Errorf("remote shell changed; request again")
 	}
 	if len(m.Tree) > 0 {
 		if warn, err := observeIdentityRoute(m.Tree[len(m.Tree)-1].MachineID, o.host, o.ssh); err != nil {
@@ -180,7 +161,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	}
 	defer connection.close()
 	pid := m.PID
-	o.resumePID = pid
+	o.shellPID = pid
 	_ = mux.SetDeadline(time.Now().Add(5 * time.Second))
 	terminal, err := mux.AcceptStream()
 	if err != nil {
@@ -203,34 +184,6 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		}
 		fmt.Fprintf(os.Stdout, "Started %s (%s).\n", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host))
 		return 0, nil
-	}
-	if len(o.approved) > 0 {
-		err = executeApprovedFiles(ctx, mux, o.approved, o.quiet)
-		if err != nil {
-			return 1, err
-		}
-		if o.stay {
-			// --stay explicitly detaches after completed file operations.
-			if err = detachControl(control, func(name string) { connection.confirm(name, "detached") }); err != nil {
-				return 1, err
-			}
-			termui.Log(os.Stderr, termui.Success, "[sshore] Done. Staying local; remote shell running.\n")
-			return 0, nil
-		}
-	}
-	if len(o.approved) > 0 {
-		if err = streamMessage(control, message{Type: "resume_output"}); err != nil {
-			return 1, err
-		}
-		_ = control.SetReadDeadline(time.Now().Add(5 * time.Second))
-		ack, e := readMessage(control)
-		_ = control.SetReadDeadline(time.Time{})
-		if e != nil {
-			return 1, e
-		}
-		if ack.Type != "output_resumed" {
-			return 1, fmt.Errorf("unexpected resume response")
-		}
 	}
 	if !o.local && !o.plain && !o.quiet {
 		if err := showConnectedTasks(control, o); err != nil {
@@ -409,10 +362,19 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		target.taskIdentity = ""
 		target.instance = ""
 		target.session = name
-		target.resumePID = 0
-		target.approved = nil
-		target.approvalID = ""
-		target.stay = false
+		if o.local {
+			target.hosted = false
+			if command == "attach" {
+				selected, found, err := findTaskAlias("attach", name, true)
+				if err != nil {
+					return err
+				}
+				if !found {
+					return fmt.Errorf("local shell is no longer available")
+				}
+				target.hosted, target.taskIdentity, target.instance = selected.hosted, selected.identity, selected.instance
+			}
+		}
 		select {
 		case inputQueue <- []tmux.KeyEvent{{Action: tmux.KeyDetach}}:
 			switchTarget = &target
@@ -429,6 +391,11 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 		switchPending = true
 		switchAction = action
 		switchTimeout = time.After(5 * time.Second)
+		if o.local {
+			current := o.session
+			go func() { emit(clientEvent{m: localSessionTargets(current, message{Action: action, Name: name})}) }()
+			return nil
+		}
 		return streamMessage(control, message{Type: "session_targets", Action: action, Name: name})
 	}
 	for {
@@ -503,7 +470,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					st.Close()
 					continue
 				}
-				id, err := writeApproval(o, e.approval)
+				id, err := queueRequest(o, e.approval)
 				if err != nil {
 					_ = streamMessage(st, message{Type: "error", Error: err.Error()})
 					st.Close()
@@ -511,12 +478,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					continue
 				}
 				_ = st.SetDeadline(time.Now().Add(requestTimeout))
-				dir, err := approvalDir()
-				if err != nil {
-					st.Close()
-					return 1, err
-				}
-				request, err := readApproval(dir, id)
+				request, err := readRequest(id)
 				if err != nil {
 					st.Close()
 					return 1, err
@@ -532,10 +494,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 				}
 				st.Close()
 				if err != nil {
-					dir, e := approvalDir()
-					if e == nil {
-						_ = os.Remove(filepath.Join(dir, id+".json"))
-					}
+					_ = consumeRequest(id)
 					return 1, err
 				}
 				notice(termui.Info, "\r\n[sshore] Request saved: %s\r\n[sshore] Run sshore review from your LOCAL shell after this client exits.\r\n", id)
@@ -690,7 +649,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 						return 1, fmt.Errorf("update terminal mouse mode: %w", err)
 					}
 				case "spawn_route":
-					if o.local || o.plain || len(e.m.Token) != 64 {
+					if o.local && !o.hosted || o.plain || len(e.m.Token) != 64 {
 						continue
 					}
 					parent := o

@@ -39,9 +39,19 @@ func run(args []string) (code int, resultErr error) {
 		}
 	}
 	if os.Getenv("SSHORE_DISABLED") == "1" && len(args) > 0 {
+		allowed := true
 		switch args[0] {
-		case "--version", "-V", "--help", "-h", "--tldr", "help", "sessions", "inventory":
+		case "--version", "-V", "--help", "-h", "--tldr", "help", "sessions", "inventory", "pstree":
+		case "list":
+			o, err := parseOptions(args)
+			if err != nil {
+				return 2, err
+			}
+			allowed = o.local || o.host == ""
 		default:
+			allowed = false
+		}
+		if !allowed {
 			return 1, fmt.Errorf("sshore features are disabled in this recovery shell; finish maintenance and reconnect from your local shell")
 		}
 	}
@@ -81,12 +91,20 @@ func run(args []string) (code int, resultErr error) {
 			return 1, err
 		}
 		return 0, cancelResourceIdentity(args[2], args[3])
-	case "local-daemon":
-		return 0, runLocalDaemon()
+	case "daemon":
+		parsed, err := parseCLI(args[1:], "daemon")
+		if err != nil {
+			return 2, err
+		}
+		if len(parsed.operands) == 0 {
+			return 0, runDaemon()
+		}
+		if parsed.operands[0] != "mount" {
+			return 2, usage("usage: sshore daemon [mount]")
+		}
+		return runMountDaemon()
 	case "launch", "spawn", "attach", "rename", "cancel", "list", "review":
 		return runTargetCommand(args)
-	case "ftp-worker", "resource-worker":
-		return runResourceWorker()
 	case "mount":
 		return runMount(args[1:])
 	case "pstree":
@@ -103,7 +121,7 @@ func run(args []string) (code int, resultErr error) {
 			return 0, detachLocalShell(identity)
 		}
 		return 0, serverCommand(args)
-	case "forward-watch", "mount-agent", "cp-agent", "bridge", "resume", "daemon", "sessions", "bootstrap", "kill-session", "rename-session", "task-watch", "task-remove", "inventory":
+	case "forward-watch", "mount-agent", "cp-agent", "bridge", "resume", "sessions", "bootstrap", "kill-session", "rename-session", "task-watch", "task-remove", "inventory":
 		return 0, serverCommand(args)
 	}
 	return 2, usage("unknown command: %s", args[0])
@@ -138,8 +156,7 @@ func cancelAllOptions(parsed cliArguments) (options, error) {
 }
 
 type reviewOptions struct {
-	id   string
-	stay bool
+	id string
 }
 
 func parseReview(args []string) (reviewOptions, error) {
@@ -153,10 +170,9 @@ func parseReview(args []string) (reviewOptions, error) {
 
 func reviewArguments(parsed cliArguments) (reviewOptions, error) {
 	var o reviewOptions
-	o.stay = parsed.has("--stay")
 	if len(parsed.operands) == 1 {
 		a := strings.TrimPrefix(parsed.operands[0], "review/")
-		if !validApprovalID(a) && validSession(a) != nil {
+		if !validRequestID(a) && validSession(a) != nil {
 			return o, usage("invalid review name")
 		}
 		o.id = a
@@ -180,7 +196,7 @@ func parseCancelTarget(args []string) (kind, name string, typed bool, err error)
 	case "peer":
 		err = usage("peer tasks are read-only here; cancel the resource on its managing computer")
 	case "review":
-		if !validApprovalID(name) && validSession(name) != nil {
+		if !validRequestID(name) && validSession(name) != nil {
 			err = usage("invalid approval ID")
 		}
 	case "mount", "forward":
@@ -258,6 +274,7 @@ func runTargetCommand(args []string) (int, error) {
 	}
 	if selected && target.kind == "shell" {
 		o.taskIdentity, o.instance = target.identity, target.instance
+		o.hosted = target.hosted
 		if !o.local {
 			if target.connection != nil {
 				applyConnectionOptions(&o, *target.connection)

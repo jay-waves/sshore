@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/jay-waves/sshore/internal/sshtest"
@@ -17,6 +18,115 @@ import (
 	"testing"
 	"time"
 )
+
+func TestSpawnTransportDrainsExistingStreamsAfterShellExit(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ss-drain-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "shell.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			c, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() { defer c.Close(); _, _ = io.Copy(c, c) }()
+		}
+	}()
+	owner, lease := net.Pipe()
+	defer owner.Close()
+	defer lease.Close()
+	go func() {
+		if m, err := readMessage(owner); err != nil || m.Type != "spawn_owner" {
+			owner.Close()
+			return
+		}
+		if writeMessage(owner, message{Type: "spawn_owned"}) != nil {
+			owner.Close()
+		}
+	}()
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	done := make(chan error, 1)
+	go func() { done <- bridgeSpawnTransport(path, lease, "", server) }()
+	client.SetDeadline(time.Now().Add(5 * time.Second))
+	mx, err := clientMux(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mx.Close()
+	stream, err := mx.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	exchange := func(c io.ReadWriter) error {
+		if _, err := c.Write([]byte("x")); err != nil {
+			return err
+		}
+		_, err := io.ReadFull(c, make([]byte, 1))
+		return err
+	}
+	stream.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := exchange(stream); err != nil {
+		t.Fatal(err)
+	}
+	// Each accepted stream opens its own data connection; a busy bridge must
+	// grow beyond the former fixed eight-stream ceiling.
+	var extraStreams []io.Closer
+	for range 12 {
+		extra, err := mx.OpenStream()
+		if err != nil {
+			t.Fatal(err)
+		}
+		extraStreams = append(extraStreams, extra)
+		defer extra.Close()
+		extra.SetDeadline(time.Now().Add(5 * time.Second))
+		if err := exchange(extra); err != nil {
+			t.Fatal(err)
+		}
+	}
+	owner.Close()
+	// Observe rejection of new streams before testing the retained stream.
+	for deadline := time.Now().Add(3 * time.Second); ; {
+		probe, err := mx.OpenStream()
+		if err != nil {
+			break
+		}
+		probe.SetDeadline(deadline)
+		err = exchange(probe)
+		probe.Close()
+		if err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ended shell still accepts streams")
+		}
+	}
+	if err := exchange(stream); err != nil {
+		t.Fatalf("existing resource stream lost with shell: %v", err)
+	}
+	stream.Close()
+	for _, extra := range extraStreams {
+		extra.Close()
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("drained transport did not close")
+	}
+}
 
 func TestSpawnLifetime(t *testing.T) {
 	for _, tc := range []struct {
@@ -126,7 +236,7 @@ func TestSpawnLifetime(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				c, err := net.DialTimeout("unix", path, time.Second)
+				c, err := dialHostedTask(context.Background(), path, time.Second)
 				if err != nil {
 					t.Fatal(err)
 				}

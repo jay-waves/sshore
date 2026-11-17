@@ -92,22 +92,19 @@ func negotiateSetupUsing(ctx context.Context, r io.Reader, w io.Writer, o *optio
 				return fmt.Errorf("transfer remote executable: %w", err)
 			}
 		case "setup_ready":
-			o.daemonSocket = m.Directory
+			o.daemonTask = nil
+			if m.LocalRequest != nil {
+				record := m.LocalRequest.Record
+				o.daemonTask = &record
+			}
 			if m.Action == "plain" {
 				if o.command == "mount-agent" || o.command == "cp-agent" {
 					return fmt.Errorf("helper setup requires manual recovery; use sshore launch %s", cleanText(o.host))
 				}
-				if len(o.approved) > 0 {
-					log(termui.Warning, "[sshore] Operations skipped; reconnect and request again.\n")
-				}
-				o.plain, o.noEscape, o.stay = true, true, false
-				o.approved, o.resumePID = nil, 0
+				o.plain, o.noEscape = true, true
+				o.instance, o.taskIdentity = "", ""
 			} else if m.Action == "updated" {
 				log(termui.Success, "[sshore] Remote updated to %s.\n", version)
-				if len(o.approved) > 0 {
-					log(termui.Warning, "[sshore] Installation changed; operations skipped. Request again.\n")
-				}
-				o.approved, o.resumePID, o.stay = nil, 0, false
 			} else if m.Action != "managed" {
 				return fmt.Errorf("invalid setup mode")
 			}
@@ -168,7 +165,11 @@ func chooseSetupAction(m message, o *options, openInput func() (setupInput, erro
 		termui.Log(os.Stderr, termui.Warning, "Shells requiring manual recovery:\n")
 	}
 	for _, p := range m.SetupProcesses {
-		termui.Log(os.Stderr, termui.Warning, "  %s  PID %d  %s\n", cleanText(p.Name), p.PID, cleanText(p.Version))
+		if p.PID > 0 {
+			termui.Log(os.Stderr, termui.Warning, "  %s  PID %d  %s\n", cleanText(p.Name), p.PID, cleanText(p.Version))
+		} else {
+			termui.Log(os.Stderr, termui.Warning, "  %s  %s\n", cleanText(p.Name), cleanText(p.Version))
+		}
 	}
 	helper := o.command == "mount-agent" || o.command == "cp-agent"
 	if helper && m.Action == "manual-only" {
@@ -314,15 +315,13 @@ func releaseSeries(v string) (string, bool) {
 }
 
 func sameRelease(local, peer string) bool {
-	return local != "" && local == peer
+	_, canonical := releaseSeries(local)
+	return canonical && local == peer
 }
 
 // Compare numeric release components without integer overflow. Custom labels
 // cannot be ordered and must be handled manually when they differ.
 func compareReleaseVersions(a, b string) (int, bool) {
-	if a == b && a != "" {
-		return 0, true
-	}
 	if _, ok := releaseSeries(a); !ok {
 		return 0, false
 	}
@@ -406,9 +405,6 @@ func remoteCommand(o options) string {
 		mode = "attach"
 	} else if o.command == "mount-agent" || o.command == "cp-agent" || o.command == "mcp-agent" {
 		mode = o.command
-	}
-	if len(o.approved) > 0 {
-		mode = "resume"
 	}
 	if o.list {
 		mode = "sessions"

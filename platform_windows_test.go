@@ -80,7 +80,7 @@ func TestWindowsSpawnOwnerClosesTerminal(t *testing.T) {
 	t.Fatal("spawn terminal process survived owner cleanup")
 }
 
-func TestBackgroundWorkerHasNoConsole(t *testing.T) {
+func TestMountDaemonHasNoConsole(t *testing.T) {
 	if os.Getenv("SSHORE_TEST_CONSOLE_CHILD") == "worker" {
 		hwnd, _, _ := windows.NewLazySystemDLL("kernel32.dll").NewProc("GetConsoleWindow").Call()
 		if hwnd != 0 {
@@ -88,8 +88,8 @@ func TestBackgroundWorkerHasNoConsole(t *testing.T) {
 		}
 		return
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestBackgroundWorkerHasNoConsole$")
-	detachResourceWorker(cmd)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestMountDaemonHasNoConsole$")
+	detachMountDaemon(cmd)
 	cmd.Env = append(os.Environ(), "SSHORE_TEST_CONSOLE_CHILD=worker")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("worker: %v\n%s", err, out)

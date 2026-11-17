@@ -160,6 +160,9 @@ func validateAttach(m message) error {
 	if m.Type != "attach" {
 		return fmt.Errorf("expected attach request")
 	}
+	if m.Action != "" && m.Action != "existing" {
+		return fmt.Errorf("invalid attach action")
+	}
 	if (m.NoLogin || m.NoProfile) && m.Action != "" {
 		return fmt.Errorf("startup options require a new shell")
 	}

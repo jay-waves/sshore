@@ -41,7 +41,7 @@ func serverCommand(args []string) error {
 				return func() {}
 			}
 			return beginIncomingTask(task)
-		}, func(a files.MountApproval) error { return checkApprovalSource(a.Session, a.PID, a.ID) })
+		}, func(a files.MountApproval) error { return checkApprovalSource(a.Session, a.PID, a.ID, a.Instance) })
 	case "rename-session":
 		if len(args) != 4 && len(args) != 5 {
 			return usage("rename-session requires old name, new name and client version")
@@ -63,17 +63,11 @@ func serverCommand(args []string) error {
 			return usage("invalid bootstrap arguments")
 		}
 		return bootstrap(args[1], args[2], args[3])
-	case "bridge", "resume", "daemon":
-		if args[0] == "daemon" && len(args) == 1 {
-			return runSharedRemoteDaemon()
-		}
+	case "bridge", "resume":
 		if len(args) != 2 {
 			return fmt.Errorf("internal command requires a shell name")
 		}
-		if args[0] == "bridge" || args[0] == "resume" {
-			return bridge(args[1], args[0] == "resume")
-		}
-		return daemon(args[1])
+		return bridge(args[1], args[0] == "resume")
 	case "task-watch":
 		if len(args) != 2 {
 			return usage("invalid task watcher arguments")
@@ -97,10 +91,7 @@ func serverCommand(args []string) error {
 		if e := checkPeerVersion(args[1], "client"); e != nil {
 			return e
 		}
-		inv, e := localSessionInventory(len(args) == 3)
-		if e != nil {
-			return e
-		}
+		inv := localSessionInventory(len(args) == 3)
 		return json.NewEncoder(os.Stdout).Encode(inv)
 	case "sessions":
 		if len(args) != 1 {
@@ -192,8 +183,18 @@ func bridgeSpawnTransport(path string, lease net.Conn, readyMode string, transpo
 		return err
 	}
 	defer mx.Close()
-	go func() { _, _ = io.Copy(io.Discard, lease); mx.Close() }()
-	slots := make(chan struct{}, 8)
+	var mu sync.Mutex
+	active, ended := 0, false
+	go func() {
+		_, _ = io.Copy(io.Discard, lease)
+		mu.Lock()
+		ended = true
+		idle := active == 0
+		mu.Unlock()
+		if idle {
+			mx.Close()
+		}
+	}()
 	var handlers sync.WaitGroup
 	defer handlers.Wait()
 	for {
@@ -201,18 +202,28 @@ func bridgeSpawnTransport(path string, lease net.Conn, readyMode string, transpo
 		if err != nil {
 			return nil
 		}
-		select {
-		case slots <- struct{}{}:
-		default:
+		mu.Lock()
+		if ended {
+			mu.Unlock()
 			stream.Close()
 			continue
 		}
+		active++
+		mu.Unlock()
 		handlers.Add(1)
 		go func() {
 			defer handlers.Done()
-			defer func() { <-slots }()
+			defer func() {
+				mu.Lock()
+				active--
+				idle := ended && active == 0
+				mu.Unlock()
+				if idle {
+					mx.Close()
+				}
+			}()
 			defer stream.Close()
-			c, err := net.DialTimeout("unix", path, time.Second)
+			c, err := dialHostedTask(context.Background(), path, time.Second)
 			if err != nil {
 				return
 			}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,97 +13,23 @@ import (
 	"time"
 )
 
-func TestResourceIdentityAndLegacyMount(t *testing.T) {
+func TestResourceIdentityAndLifetime(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	dir, e := resourceStateDir("mount")
-	if e != nil {
-		t.Fatal(e)
-	}
-	// Existing private mount records continue to work without a Kind field.
-	b, _ := json.Marshal(resourceRecord{Name: "work", Host: "work", Version: version})
-	if e = os.WriteFile(filepath.Join(dir, "work.json"), b, 0600); e != nil {
-		t.Fatal(e)
-	}
-	r, e := readResourceRecord("mount", "work")
-	if e != nil || r.Kind != "mount" {
-		t.Fatal(r, e)
-	}
-	for _, id := range []string{"work", "shell/work", "mount/../work", "review/abc"} {
-		if _, e := runCancel([]string{id}); e == nil {
-			t.Fatal("accepted", id)
+	tasks := startRequestDaemon(t)
+	for i, kind := range []string{"mount", "forward"} {
+		task, _ := registerTestResource(t, tasks, kind, "work", fmt.Sprintf("%032x", i+1))
+		r, err := findRunningResource(kind, "work")
+		if err != nil || r.UID != task.record.UID {
+			t.Fatalf("resource: %+v %v", r, err)
 		}
-	}
-	id := strings.Repeat("a", 32)
-	o, e := parseReview([]string{"review/" + id})
-	if e != nil || o.id != id {
-		t.Fatal(o, e)
-	}
-}
-
-func TestCancelExitedResource(t *testing.T) {
-	for _, kind := range []string{"mount", "forward"} {
-		for _, live := range []bool{false, true} {
-			for _, release := range []string{"0.6.17", "999.0.0", "unknown"} {
-				t.Run(fmt.Sprintf("%s/live=%v/%s", kind, live, release), func(t *testing.T) {
-					t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-					dir, err := resourceStateDir(kind)
-					if err != nil {
-						t.Fatal(err)
-					}
-					r := resourceRecord{Kind: kind, Name: "gone", Token: resourceToken(), Version: release}
-					path := filepath.Join(dir, r.Name)
-					if err := writeStateJSON(path+".json", r); err != nil {
-						t.Fatal(err)
-					}
-					lease, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0600)
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer lease.Close()
-					if live {
-						if err := lockResourceState(lease); err != nil {
-							t.Fatal(err)
-						}
-					}
-					if err := os.WriteFile(path+".json.result", []byte("old receipt"), 0600); err != nil {
-						t.Fatal(err)
-					}
-					if err := os.WriteFile(path+".log", []byte("diagnostics"), 0600); err != nil {
-						t.Fatal(err)
-					}
-					key := resourceIdentity(r)
-					ids, err := assignTaskIDs([]string{key})
-					if err != nil {
-						t.Fatal(err)
-					}
-					if err := stopResource(kind, r.Name, "replacement"); err == nil {
-						t.Fatal("accepted changed identity")
-					}
-					_, err = run([]string{"cancel", ids[key].code})
-					if live {
-						if err == nil || !strings.Contains(err.Error(), "exact version") {
-							t.Fatal("live worker lost version check", err)
-						}
-						if _, err := os.Stat(path + ".json"); err != nil {
-							t.Fatal("removed live record", err)
-						}
-					} else {
-						if err != nil {
-							t.Fatal(err)
-						}
-						for _, suffix := range []string{".json", ".json.result"} {
-							if _, err := os.Stat(path + suffix); !os.IsNotExist(err) {
-								t.Fatal("stale record retained", suffix, err)
-							}
-						}
-					}
-					for _, suffix := range []string{".lock", ".log"} {
-						if _, err := os.Stat(path + suffix); err != nil {
-							t.Fatal("removed lease or diagnostics", err)
-						}
-					}
-				})
-			}
+		if err := stopResource(kind, "work", "replacement"); err == nil {
+			t.Fatal("accepted replacement")
+		}
+		if err := stopResource(kind, "work", resourceIdentity(r)); err != nil {
+			t.Fatal(err)
+		}
+		if rows, err := collectRunningResources(""); err != nil || len(rows) != 0 {
+			t.Fatalf("ended resources retained: %+v %v", rows, err)
 		}
 	}
 }
@@ -110,7 +37,8 @@ func TestCancelExitedResource(t *testing.T) {
 func TestCancelPendingRequest(t *testing.T) {
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "nonexistent-ssh"))
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	id, err := writeApproval(options{host: "fixture", server: "sshore", session: "work"}, []operation{{Kind: "upload", Path: "/tmp"}})
+	startRequestDaemon(t)
+	id, err := queueRequest(testRequestOptions(), []operation{{Kind: "upload", Path: "/tmp"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,17 +47,14 @@ func TestCancelPendingRequest(t *testing.T) {
 			t.Fatal("accepted", args)
 		}
 	}
-	dir, err := approvalDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readApproval(dir, id); err != nil {
+
+	if _, err := readRequest(id); err != nil {
 		t.Fatal("invalid invocation consumed request", err)
 	}
 	if code, err := run([]string{"cancel", "review/" + id}); code != 0 || err != nil {
 		t.Fatal(code, err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, id+".json")); !os.IsNotExist(err) {
+	if _, err := readRequest(id); err == nil {
 		t.Fatal(err)
 	}
 	if _, err := run([]string{"cancel", "review/" + id}); err == nil {
@@ -144,36 +69,32 @@ func TestCancelPendingRequest(t *testing.T) {
 
 func TestInventoryDoesNotExposeCapabilities(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	token := "PRIVATE-CONTROL-TOKEN"
-	l, server, e := resourceListen(token, func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(resourceStatus{Version: version, Transport: "connected", Target: "unchecked"})
-	})
-	if e != nil {
-		t.Fatal(e)
+	tasks := startRequestDaemon(t)
+	task, _ := registerTestResource(t, tasks, "forward", "web", strings.Repeat("a", 32))
+	record, err := existingDaemonRecord()
+	if err != nil {
+		t.Fatal(err)
 	}
-	defer server.Close()
-	defer l.Close()
-	rows := inspectResources([]resourceRecord{{Kind: "forward", Name: "web", Host: "work", Address: l.Addr().String(), Token: token, Version: version}})
+	rows := inspectResources([]resourceRecord{task.record})
 	b, e := json.Marshal(rows)
 	if e != nil {
 		t.Fatal(e)
 	}
-	if strings.Contains(string(b), token) || strings.Contains(string(b), l.Addr().String()) || rows[0].Worker != "running" || rows[0].Target != "unchecked" {
+	if strings.Contains(string(b), record.Token) || strings.Contains(string(b), record.Address) || rows[0].Worker != "running" || rows[0].Target != "unchecked" {
 		t.Fatal(string(b))
 	}
 }
 
 func TestInventoryBoundedStatusWait(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	l, server, e := resourceListen("x", func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer server.Close()
-	defer l.Close()
+	tasks := startRequestDaemon(t)
+	release := make(chan struct{})
+	defer close(release)
 	var records []resourceRecord
-	for i := 0; i < 24; i++ {
-		records = append(records, resourceRecord{Kind: "forward", Name: "web", Address: l.Addr().String(), Token: "x"})
+	for i := range 24 {
+		task, _ := registerTestResource(t, tasks, "forward", fmt.Sprintf("web-%d", i), fmt.Sprintf("%032x", i+1))
+		task.control = func(string) resourceReply { <-release; return resourceReply{} }
+		records = append(records, task.record)
 	}
 	start := time.Now()
 	rows := inspectResources(records)
@@ -205,6 +126,31 @@ func TestResourceFailureReceipt(t *testing.T) {
 	}
 }
 
+func TestResourceReceiptUsesInstanceRatherThanAlias(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	dir, err := resourceStateDir("forward")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := resourceRecord{UID: strings.Repeat("a", 32), Kind: "forward", Name: "web", Host: "work"}
+	receipt := resourceResult{Record: old, DisplayName: "web", Finished: time.Now()}
+	if err := writeStateJSON(filepath.Join(dir, old.storageName()+".json.result"), receipt); err != nil {
+		t.Fatal(err)
+	}
+	// Reusing an alias must preserve the previous instance's failure receipt.
+	replacement := old
+	replacement.UID = strings.Repeat("b", 32)
+	if rows := collectResourceResults("", []resourceView{viewRecord(replacement)}); len(rows) != 1 {
+		t.Fatalf("reused alias hid previous instance: %+v", rows)
+	}
+	// Renaming an instance must not make its receipt appear beside its live row.
+	renamed := old
+	renamed.Name = "renamed"
+	if rows := collectResourceResults("", []resourceView{viewRecord(renamed)}); len(rows) != 0 {
+		t.Fatalf("renamed instance duplicated: %+v", rows)
+	}
+}
+
 func TestFTPSessionDefaults(t *testing.T) {
 	o, e := parseFTPOptions([]string{"alice@work.example:"})
 	if e != nil {
@@ -226,7 +172,7 @@ func TestFTPControlCapability(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer s.Close()
-	r, e := resourceHTTP(l.Addr().String(), "wrong", "POST", "/stop", nil)
+	r, e := resourceHTTPContext(context.Background(), l.Addr().String(), "wrong", "POST", "/stop", nil)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -239,7 +185,7 @@ func TestFTPControlCapability(t *testing.T) {
 		t.Fatal("unauthorized control request dispatched")
 	default:
 	}
-	r, e = resourceHTTP(l.Addr().String(), "secret", "POST", "/stop", nil)
+	r, e = resourceHTTPContext(context.Background(), l.Addr().String(), "secret", "POST", "/stop", nil)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -247,7 +193,7 @@ func TestFTPControlCapability(t *testing.T) {
 	if r.StatusCode != 204 {
 		t.Fatal(r.Status)
 	}
-	if _, e = resourceHTTP("example.com:80", "secret", "POST", "/stop", nil); e == nil {
+	if _, e = resourceHTTPContext(context.Background(), "example.com:80", "secret", "POST", "/stop", nil); e == nil {
 		t.Fatal("accepted non-loopback address")
 	}
 }

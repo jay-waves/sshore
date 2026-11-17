@@ -30,6 +30,7 @@ Tasks and setup
   cancel      Stop tasks or discard requests
   reset       Replace local identity and clear history
   mcp         Serve Agent tools over stdio
+  daemon      Run the account task manager
 
 Start: sshore launch work build     Resume: sshore attach work build
 In a session: Ctrl+B d detaches; Ctrl+B ? shows shortcuts.
@@ -242,7 +243,7 @@ covers local shells and resources. With HOST it targets that account and
 local resources connected to HOST. Peer records are read-only.
 Remote cancellation requires matching releases and never installs software.
 ` + sshOptions,
-	"review": `Usage: sshore review [NAME|ID] [--stay]
+	"review": `Usage: sshore review [NAME|ID]
 
 Run locally after a remote request detaches. Omit NAME to select a request,
 or use a name or short ID from list. Selecting it opens review only.
@@ -251,7 +252,7 @@ Submitting all valid paths or the port starts the operation without another
 confirmation. Ctrl-C cancels before submission. A request is single-use,
 even if execution fails, and expires after 10 minutes.
 
-File copies resume the source shell when done; --stay returns locally.
+Execution returns locally; use attach separately to enter a shell.
 Mounts and forwards run independently and leave the source detached.
 To discard a request: sshore cancel review/NAME.
 `,
@@ -324,6 +325,13 @@ Options:
 Retries cannot prompt for credentials or host keys. Existing connections
 do not survive reconnect. SSH -L/-R/-D are not accepted here.
 ` + sshOptions,
+	"daemon": `Usage: sshore daemon [mount]
+
+Run this account's task manager in the foreground. Clients start it automatically
+when needed. One manager owns shells, MCP sessions and resource coordination.
+It exits after 30 seconds without tasks or connections.
+The mount subcommand runs an isolated mount worker, started by the manager.
+`,
 	"reset": `Usage: sshore reset
 
 Replace this account's local identity and clear connection history, shell
