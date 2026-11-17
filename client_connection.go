@@ -24,6 +24,31 @@ func openClientTransport(o *options) (io.ReadWriteCloser, func(), error) {
 	return openClientTransportContext(context.Background(), o)
 }
 
+// Authenticated transports belong to the frontend, across attachment changes.
+// Only live options carry these handles; saved routes must authenticate normally.
+type clientTransports struct {
+	close []func()
+}
+
+type clientTransport struct {
+	open              func(context.Context) (io.ReadWriteCloser, error)
+	session, instance string
+}
+
+func retainClientTransport(o *options, open func(context.Context) (io.ReadWriteCloser, error), closeTransport func()) {
+	o.reusable = &clientTransport{open: open}
+	o.transports.close = append(o.transports.close, closeTransport)
+}
+
+func openReusableTransport(ctx context.Context, connection *clientTransport) (io.ReadWriteCloser, func(), error) {
+	c, err := connection.open(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	stop := context.AfterFunc(ctx, func() { c.Close() })
+	return c, func() { stop(); c.Close() }, nil
+}
+
 func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWriteCloser, closeTransport func(), err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
@@ -33,6 +58,11 @@ func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWr
 			err = ctx.Err()
 		}
 	}()
+	if o.reusable != nil && o.command == "attach" &&
+		(o.instance != "" && o.instance == o.reusable.instance || o.instance == "" && o.session == o.reusable.session) {
+		return openReusableTransport(ctx, o.reusable)
+	}
+	o.reusable = nil
 	if o.routeParent != nil {
 		parent := routeParentOptions(*o.routeParent)
 		c, closeParent, err := openClientTransportContext(ctx, &parent)
@@ -97,12 +127,20 @@ func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWr
 	if o.command == "spawn" {
 		return openSpawnTransport(ctx, o)
 	}
-	process, err := transportio.Start(ctx, sshConnectionOptions(*o), os.Stderr)
+	connectionCtx := ctx
+	cancelConnection := func() {}
+	if o.transports != nil {
+		connectionCtx, cancelConnection = context.WithCancel(context.WithoutCancel(ctx))
+		stopConnecting := context.AfterFunc(ctx, cancelConnection)
+		defer stopConnecting()
+	}
+	process, err := transportio.Start(connectionCtx, sshConnectionOptions(*o), os.Stderr)
 	if err != nil {
+		cancelConnection()
 		return nil, nil, err
 	}
 	reader, writer := process.Output, process.Input
-	closeSSH := func() { process.Close(); process.Wait() }
+	closeSSH := func() { cancelConnection(); process.Close(); process.Wait() }
 	// The mux handshake follows SSH authentication; terminal raw mode and its
 	// keyboard reader start only after authentication and setup finish.
 	transport := process
@@ -111,6 +149,13 @@ func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWr
 		return nil, nil, err
 	}
 	if o.daemonSocket != "" && !o.plain {
+		if o.transports != nil {
+			socket := o.daemonSocket
+			retainClientTransport(o, func(ctx context.Context) (io.ReadWriteCloser, error) {
+				return process.DialSocket(ctx, socket)
+			}, closeSSH)
+			return openReusableTransport(ctx, o.reusable)
+		}
 		channel, err := process.DialSocket(ctx, o.daemonSocket)
 		if err != nil {
 			closeSSH()
@@ -128,6 +173,12 @@ type sessionSwitch struct {
 
 func (s *sessionSwitch) Error() string { return "switch session" }
 func runClient(o options) (int, error) {
+	transports := &clientTransports{}
+	defer func() {
+		for i := len(transports.close) - 1; i >= 0; i-- {
+			transports.close[i]()
+		}
+	}()
 	// Keep the frontend alive while an attempt unwinds and restores its parent.
 	// Each attempt handles cancellation with its own fresh signal context.
 	signals := make(chan os.Signal, 1)
@@ -142,10 +193,11 @@ func runClient(o options) (int, error) {
 	var fallback *sessionSwitch
 	fallbackPrevious := ""
 	for {
+		o.transports = transports
 		ready := false
 		code, err := runClientOnce(o, previous, func() { ready = true; o.handoffDone = nil })
 		if !ready && o.handoffDone != nil {
-			_ = o.handoffDone(err)
+			_ = o.handoffDone(context.Background(), err)
 			o.handoffDone = nil
 		}
 		var next *sessionSwitch
@@ -468,9 +520,11 @@ func routeParentOptions(parent options) options {
 	return parent
 }
 
-func confirmSpawnRoute(parent options, token string, result error) error {
+func confirmSpawnRoute(ctx context.Context, parent options, token string, result error) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	parent = routeParentOptions(parent)
-	c, closeTransport, err := openClientTransport(&parent)
+	c, closeTransport, err := openClientTransportContext(ctx, &parent)
 	if err != nil {
 		return err
 	}

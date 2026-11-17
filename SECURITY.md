@@ -137,31 +137,20 @@ Each pending request:
 - Fixes the approved operation locally. Setup changes or recovery skip execution;
   the user must request the operation again.
 
-System OpenSSH evaluates configuration; its executable, configuration files and
-`Match exec` hooks are trusted local inputs. Authentication uses an external SSH
-agent; private-key loading, unlocking and retention belong to that agent. sshore verifies remote host
-keys and owns the
-encrypted connection through Go SSH. Agent authentication without a prompt is
-not approval. Interactive password authentication sends the entered password over
-the authenticated SSH connection; it is not cached or persisted. Agent forwarding and arbitrary proxy
-commands are outside the supported connection model. Changed host keys are
-rejected; background retries never establish new host trust. Connections do not
-share ControlMaster state or automatically reconnect outside explicit forward
-retry policy.
+System OpenSSH, local configuration and `Match exec` hooks are trusted inputs.
+Go SSH owns the connection and host-key verification. Changed host keys are
+rejected; background retries cannot establish new trust or prompt for credentials.
+Private-key loading and unlocking belong to the system agent. Passwords and
+keyboard-interactive answers are requested through the initiating frontend and
+are not cached or persisted. Agent authentication is not operation approval;
+removing a key affects future authentication, not existing connections.
 
-Passwords and keyboard-interactive answers are requested from the initiating
-frontend and are not cached or persisted. Background retries cannot request them.
-Removing an agent key affects future authentication, not existing connections.
-Agent-specific confirmation may still require user interaction.
-
-A server may accept SSH `none` authentication using an external identity system
-such as Tailscale. Host-key verification and sshore operation approvals still
-apply; a missing local key does not bypass a server authentication refusal.
-
-Configured public-key restrictions and RSA size requirements apply to public-key
-authentication and host verification. Separate `RevokedHostKeys` files are not
-supported and are rejected rather than ignored; known_hosts revocation markers
-remain enforced.
+Servers may accept SSH `none` authentication, such as Tailscale SSH; host-key
+verification and operation approval still apply. Unsupported authentication and
+execution hooks fail explicitly. Public-key restrictions and RSA size requirements
+remain enforced. `RevokedHostKeys` files are rejected; known_hosts revocation
+markers are supported. Connections do not share ControlMaster state or reconnect
+outside explicit forward retry policy.
 
 **Limit:** remote output can imitate local prompts, and processes sharing the
 remote account can submit requests. A request does not prove who typed it. Do not

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/jay-waves/sshore/internal/files"
 	"net"
@@ -92,8 +93,10 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 }
 
 type options struct {
+	transports            *clientTransports
+	reusable              *clientTransport
 	routeTarget           bool
-	handoffDone           func(error) error
+	handoffDone           func(context.Context, error) error
 	routeParent           *options
 	routeToken            string
 	daemonSocket          string

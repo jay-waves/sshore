@@ -170,6 +170,9 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	}
 	rememberShellTree(m.Tree)
 	o.instance = m.Instance
+	if o.reusable != nil {
+		o.reusable.session, o.reusable.instance = o.session, o.instance
+	}
 	o.temporary = m.Temporary
 	connection, cacheErr := trackShellConnection(o)
 	if cacheErr != nil {
@@ -246,15 +249,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Connection history not saved: %s\n", cleanText(e.Error()))
 		}
 	}
-	if o.plain {
-		termui.Log(os.Stderr, termui.Warning, "[sshore] Recovery on %s; sshore disabled. Exit and reconnect to restore.\r\n", cleanText(o.host))
-	} else {
-		kind := "launch"
-		if o.temporary {
-			kind = "spawn"
-		}
-		sessionNotice(termui.Success, "Connected %s / %s (%s)", cleanText(o.host), cleanText(o.session), kind)
-	}
+
 	events := make(chan clientEvent, 32)
 	inputDrained := make(chan struct{}, 1)
 	emit := func(e clientEvent) {
@@ -317,12 +312,21 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	}
 	defer func() { cancel(); stopKeyboard() }()
 	if o.handoffDone != nil {
-		if err := o.handoffDone(nil); err != nil {
+		if err := o.handoffDone(ctx, nil); err != nil {
 			return 1, err
 		}
 		o.handoffDone = nil
 	}
 	ready()
+	if o.plain {
+		termui.Log(os.Stderr, termui.Warning, "[sshore] Recovery on %s; sshore disabled. Exit and reconnect to restore.\r\n", cleanText(o.host))
+	} else {
+		kind := "launch"
+		if o.temporary {
+			kind = "spawn"
+		}
+		sessionNotice(termui.Success, "Connected %s / %s (%s)", cleanText(o.host), cleanText(o.session), kind)
+	}
 	// One terminal writer preserves keystroke order without making file I/O or a
 	// stalled PTY block the main UI/control loop.
 	inputQueue := make(chan []tmux.KeyEvent, 16)
@@ -686,22 +690,32 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 						return 1, fmt.Errorf("update terminal mouse mode: %w", err)
 					}
 				case "spawn_route":
-					if o.local || o.plain || detaching || detachPending || switchPending || chooser != nil || len(e.m.Token) != 64 {
+					if o.local || o.plain || len(e.m.Token) != 64 {
 						continue
 					}
 					parent := o
+					token := e.m.Token
+					reject := func() {
+						go func() {
+							_ = confirmSpawnRoute(ctx, parent, token, fmt.Errorf("client is switching sessions; try again"))
+						}()
+					}
+					if detaching || detachPending || switchPending || chooser != nil {
+						reject()
+						continue
+					}
 					target := options{noLogin: e.m.NoLogin, noProfile: e.m.NoProfile, tree: e.m.Tree, command: "spawn", host: e.m.SourceHost, session: e.m.Name, temporary: true, routeParent: &parent, routeToken: e.m.Token, quiet: o.quiet}
 					if e.m.Action == "local" {
 						target.host = o.host
 					}
-					token := e.m.Token
-					target.handoffDone = func(result error) error { return confirmSpawnRoute(parent, token, result) }
+					target.handoffDone = func(ctx context.Context, result error) error { return confirmSpawnRoute(ctx, parent, token, result) }
 					select {
 					case inputQueue <- []tmux.KeyEvent{{Action: tmux.KeyDetach}}:
 						switchTarget, returnLocal = &target, true
 						detachPending = true
 						inputFlushTimeout = time.After(5 * time.Second)
 					default:
+						reject()
 					}
 				case "handoff":
 					// Only authenticated local control can redirect this frontend.
@@ -710,7 +724,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					}
 					target, handoffErr := e.m.Handoff.options()
 					source, token := o, e.m.Token
-					target.handoffDone = func(result error) error {
+					target.handoffDone = func(_ context.Context, result error) error {
 						request := message{Type: "handoff_confirm", Token: token}
 						if result != nil {
 							request.Error = result.Error()

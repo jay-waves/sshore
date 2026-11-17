@@ -65,7 +65,32 @@ func openSpawnTransport(ctx context.Context, o *options) (io.ReadWriteCloser, fu
 		closeTransport()
 		return nil, nil, err
 	}
-	return c, closeTransport, nil
+	if o.plain {
+		return c, closeTransport, nil
+	}
+	mx, err := smux.Client(c, transportio.MuxConfig())
+	if err != nil {
+		closeTransport()
+		return nil, nil, err
+	}
+	open := func(ctx context.Context) (io.ReadWriteCloser, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return mx.OpenStream()
+	}
+	if o.transports != nil {
+		stop()
+		retainClientTransport(o, open, func() { mx.Close(); closeTransport() })
+		return openReusableTransport(ctx, o.reusable)
+	}
+	stream, err := open(ctx)
+	if err != nil {
+		mx.Close()
+		closeTransport()
+		return nil, nil, err
+	}
+	return stream, func() { mx.Close(); closeTransport() }, nil
 }
 
 type spawnDiagnostics struct {
@@ -91,14 +116,32 @@ func (d *spawnDiagnostics) Write(b []byte) (int, error) {
 
 func runSpawnRemote(c net.Conn, req localDaemonRequest) error {
 	return runSpawnConnection(c, req, func(mx *smux.Session) error {
-		stream, err := mx.OpenStream()
+		frontend, err := smux.Server(c, transportio.MuxConfig())
 		if err != nil {
 			return err
 		}
-		proxySpawn(c, stream)
+		defer frontend.Close()
+		go relaySpawnStreams(frontend, mx)
+		// Detaching the frontend must not release the spawn's lifetime connection.
 		<-mx.CloseChan()
 		return nil
 	})
+}
+
+func relaySpawnStreams(frontend, remote *smux.Session) {
+	for {
+		stream, err := frontend.AcceptStream()
+		if err != nil {
+			return
+		}
+		target, err := remote.OpenStream()
+		if err != nil {
+			stream.Close()
+			frontend.Close()
+			return
+		}
+		go proxySpawn(stream, target)
+	}
 }
 
 // The owner supervises a single lifetime connection; attachments use its streams.

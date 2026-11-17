@@ -119,6 +119,55 @@ func muxPair(t *testing.T) (*smux.Session, *smux.Session) {
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 	return client, server
 }
+
+func TestSpawnTransportKeepsIndependentAttachmentStreams(t *testing.T) {
+	frontend, relay := muxPair(t)
+	remote, daemon := muxPair(t)
+	go relaySpawnStreams(relay, remote)
+	go func() {
+		for {
+			stream, err := daemon.AcceptStream()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer stream.Close()
+				m, err := readMessage(stream)
+				if err == nil {
+					_ = writeMessage(stream, m)
+				}
+			}()
+		}
+	}()
+	o := options{command: "attach", host: "must-not-authenticate", session: "parent", instance: "parent-instance",
+		reusable: &clientTransport{session: "parent", instance: "parent-instance", open: func(context.Context) (io.ReadWriteCloser, error) {
+			return frontend.OpenStream()
+		}}}
+	for _, kind := range []string{"spawn_route_connect", "spawn_route_confirm", "mux"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		c, closeTransport, err := openClientTransportContext(ctx, &o)
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		err = writeMessage(c, message{Type: kind})
+		if err == nil {
+			var reply message
+			reply, err = readMessage(c)
+			if err == nil && reply.Type != kind {
+				err = fmt.Errorf("unexpected reply: %s", reply.Type)
+			}
+		}
+		closeTransport()
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if frontend.IsClosed() || remote.IsClosed() {
+		t.Fatal("attachment close ended the shared transport")
+	}
+}
 func TestClientMuxRejectsDifferentOrUnknownBuild(t *testing.T) {
 	for _, peer := range []string{"0.0.0-old", ""} {
 		t.Run(peer, func(t *testing.T) {
@@ -222,5 +271,30 @@ func TestChangedUploadIsNotSent(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("worker did not close")
+	}
+}
+
+func TestSpawnConfirmationCancellation(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	parent := options{session: "parent", instance: "instance", reusable: &clientTransport{
+		session: "parent", instance: "instance", open: func(context.Context) (io.ReadWriteCloser, error) { return client, nil },
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- confirmSpawnRoute(ctx, parent, "token", nil) }()
+	request, err := readMessage(server)
+	if err != nil || request.Type != "spawn_route_confirm" {
+		t.Fatalf("confirmation request: %+v, %v", request, err)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled confirmation succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("confirmation blocked after cancellation")
 	}
 }

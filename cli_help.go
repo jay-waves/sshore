@@ -33,7 +33,6 @@ Tasks and setup
 
 Start: sshore launch work build     Resume: sshore attach work build
 In a session: Ctrl+B d detaches; Ctrl+B ? shows shortcuts.
-Remote commands inside a local session reuse its client; detach returns locally.
 Examples: sshore --tldr             Details: sshore COMMAND --help
 Version: sshore --version
 `
@@ -130,10 +129,9 @@ Do not bypass host verification or supply update confirmation on their behalf.
 `,
 	"exec": `Usage: sshore exec HOST 'COMMAND'
 
-Execute COMMAND once over SSH, without a remote PTY.
-System ssh -G supplies connection settings. IdentityFile and SSH agent keys are
-supported; password and keyboard-interactive login require an interactive terminal.
-Standard input, output, error and the SSH exit status pass through.
+Execute COMMAND once over SSH without a remote PTY. Uses system ssh -G
+configuration and agent keys; password login requires an interactive terminal.
+Standard streams and the SSH exit status pass through.
 No persistent sshore shell is created and no remote installation is required.
 Use an SSH config host alias for connection options.
 
@@ -152,9 +150,8 @@ Options:
 	"spawn": `Usage: sshore spawn [HOST [NAME]] [options] [-- SSH_OPTIONS]
        sshore spawn --local [NAME] [options]
 
-Start a temporary shell bound to the launching parent. NAME is an optional alias.
-It ends when that
-parent exits; a remote spawn also ends if its lifetime SSH connection is lost.
+Start a shell bound to the launching parent. NAME is an optional alias.
+It ends when that parent exits; a remote spawn also ends if its lifetime SSH connection is lost.
 Detach and attach do not change the owner. Use launch for a persistent shell.
 
 Options:
@@ -284,8 +281,7 @@ Mount a remote directory through the remote sshore helper using SFTP.
 Missing sshore is prepared automatically; existing versions follow the update safeguards.
 Background mounts receive fixed task IDs. HOST: selects the remote home.
 Use [HOST]:SOURCE for an IPv6 address.
-The default mountpoint is ~/mnt/NAME
-on Linux or a free drive on Windows. Requires FUSE or WinFsp respectively.
+Default: ~/mnt/NAME on Linux or a free Windows drive. Requires FUSE or WinFsp respectively.
 A custom mountpoint must be an existing empty directory on Linux, or a
 free drive letter or nonexistent directory on Windows.
 

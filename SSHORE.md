@@ -4,10 +4,8 @@ Read [AGENTS.md](AGENTS.md) for contributor rules, [GLOSSARY.md](GLOSSARY.md)
 for terminology and [SECURITY.md](SECURITY.md) for security guarantees.
 [README.md](README.md) is the user manual; CLI help owns syntax and defaults.
 
-This document is a map and a set of design constraints. Code and focused tests
-own algorithms, record formats, protocol fields, limits and platform behavior.
-Update this document when ownership, scope or the development workflow changes;
-do not mirror implementation details here.
+Code and tests own implementation details; this guide covers ownership, design
+constraints and development workflows.
 
 ## Architecture and code map
 
@@ -131,6 +129,10 @@ Drain parent input before switching. Detach and child exit unwind one level;
 failed startup restores the parent and reports failure to its launcher.
 Interrupts during authentication or setup must cancel the child connection and
 restore the parent; signal handling stays active through attachment transitions.
+Keep the frontend's authenticated transport alive across nested attachments,
+route confirmations and returns to the parent. Closing an attachment releases
+its stream; closing the frontend releases its retained transports. Saved routes
+contain no live connection handles and still require authentication.
 
 For a next-hop connection, the initiating host's daemon uses that shell's
 configuration, signing credentials, environment and working directory. The terminal client follows
@@ -188,17 +190,11 @@ for latency without allowing stalled file streams to exhaust terminal capacity.
 Mounts always use the remote sshore helper and the same setup/version safeguards as
 `cp`; there is no plain SFTP compatibility path.
 
-Mount request failures can leave write outcomes uncertain: never replay writes
-implicitly. Caches and notifications are advisory, bounded and invalidated by
-mutations at the affected paths and parent directories, including both trees
-for renames. Unrelated cache entries remain usable during local writes; unknown
-scopes and notification loss retain full invalidation. Background metadata
-verification prioritizes recent accesses, coalesces repeated work, debounces
-bursts with a bounded delay and rate-limits verification starts. Transport failures
-back off background work; foreground reads never wait for verification or its
-timers. Queue bounds and scheduling policy live in `internal/files/mount_refresh.go`. Do not add synchronous alias discovery
-to the mutation path. For changes, start with the SFTP, metadata-cache, refresh, prefetch and platform
-adapter code and tests in `internal/files/`, rather than a second specification.
+Mount failures can leave writes uncertain; never replay writes implicitly.
+Keep caches and notifications bounded and advisory. Invalidate affected paths
+and parents on mutation; notification loss or unknown scope requires full
+invalidation. Background verification must not delay foreground reads.
+Scheduling and cache behavior belong in `internal/files/` and its tests.
 
 ### Inventory and diagnostics
 
@@ -210,20 +206,11 @@ Keep allocation and reference policy in `task_identity.go`, separate from capabi
 Spawn owner context stays fixed;
 the current attachment source may change. Neither is verified OS process ancestry.
 
-Keep the default task list to one row per task with details bounded by the output
-terminal width; redirected output preserves complete details. Do not redraw on resize;
-full diagnostics and recent history belong in `list --json`. The table shows
-ID with an optional alias and a separate TYPE, grouped by host. `pstree` is local:
-keep the current tree first, sort remaining nodes by observation recency, omit
-confirmed ended entries, and retain uncertain local records with a compact marker.
-Show remote attachment sources and resource provider-to-consumer directions without
-state or observation columns. Incoming resources require a live local transport
-registration in `peers.go`; advisory peer files alone are insufficient. A held local shell lifetime lock remains a
-local node when its status endpoint is temporarily unavailable.
-Status should distinguish worker liveness from transport state and target health.
-Public output must exclude capabilities and credentials; keep diagnostics out of
-normal command flow. Exit history retention and peer expiry belong in their implementation
-and tests. See [inventory privacy](SECURITY.md#inventory-and-privacy).
+Keep normal output compact and distinguish cached, live and unknown state.
+Full diagnostics belong in `list --json`. Incoming resources require a live
+local transport registration, not merely advisory peer files. Worker liveness
+is not target health. Exclude capabilities and credentials from public output.
+See [inventory privacy](SECURITY.md#inventory-and-privacy).
 
 ### Setup and recovery
 
@@ -264,32 +251,11 @@ Choose the smallest check that covers the changed behavior:
 go test -count=1 -tags=sshoretest -timeout=5m ./...
 ```
 
-Group tests by behavior, such as CLI grammar, approval flows, or shell and
-resource lifecycle. A regression belongs with its feature’s existing cases;
-keep platform and build-tag variants separate where required. Prefer
-`feature_test.go` or `feature_linux_test.go` / `feature_windows_test.go`.
-The feature or its directory identifies the test scope without an extra suffix.
-
-Product black-box tests live in `tests/` and follow user workflows through
-the CLI, protocols or public APIs. Module regressions stay beside the code they
-exercise, including those that use an internal package’s exported API. Both use
-standard Go test discovery and `-run`;
-no overlay, generated source tree or test-only production exports are needed.
-Keep command parsing and private authorization/lifecycle invariants in their
-owning packages. Put complete help, copy, startup and terminal handoff workflows
-in `tests/`; use its shared isolated CLI build rather than requiring a separately
-supplied executable. Linux remote hosting tests belong in Linux files; Windows
-terminal tests exercise the local client and ConPTY. A platform restriction belongs
-on the test file, not inside a shared fixture that silently skips its callers.
-Test subprocess builds inherit `GOFLAGS`; use `GOFLAGS=-race` with the race suite
-so the CLI executables receive the same instrumentation. Ordinary core tests do
-not require a race-enabled compiler.
-Use `-count=1` for CLI/native checks that depend on subprocesses or the environment.
-For example:
-
-```sh
-go test -count=1 -tags=sshoretest -run '^TestCancelAll' ./tests
-```
+Group tests by behavior and preserve platform/build-tag isolation.
+Product workflows in `tests/` use its shared isolated CLI build; module regressions
+stay beside their owning code. Do not expose internals or use source overlays.
+Subprocess builds inherit `GOFLAGS`; use `GOFLAGS=-race` for race checks and
+`-count=1` for environment-dependent checks.
 
 Lifecycle integration executables **must** use `sshoretest` for runtime-directory
 isolation. Never simulate upgrade confirmation against the developer's real shells.

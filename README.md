@@ -59,9 +59,8 @@ Press **Ctrl+B**, then **d** to detach, **s** to switch sessions, or **?** for h
 Inside a remote shell, `sshore detach` also works. Both startup commands accept
 `--detach` to start in the background. `attach` never takes over an attached shell.
 Inside a managed shell, interactive `spawn` reuses the root client, including
-local children and further remote hops. The command exits successfully only when
-the child attachment is ready; it leaves no per-spawn launcher process behind.
-Ctrl+B controls the child; detach or exit returns one level. Startup failure
+local children and further remote hops. Inside a remote shell, `sshore spawn`
+creates a shell on that host without authenticating again. Ctrl+B controls the child; detach or exit returns one level. Startup failure
 returns to the parent with an error. Spawn ownership stays unchanged.
 Local managed shells also hand off remote `launch` and `attach` this way.
 Screens, scrollback and detached output are not saved.
@@ -107,7 +106,7 @@ sshore list --json              # Machine-readable inventory.
 
 Use the six-character ID or optional NAME from `list` with `attach`, `cancel`,
 `rename` and `review`. `rename` changes NAME while preserving the hash ID.
-DETAIL summarizes directories, mappings or errors; use `--json` for full diagnostics.
+Use `--json` for full diagnostics.
 
 CHECKED shows when shell states were confirmed; confirmed ended shells leave the default list.
 Use `cancel` to clear confirmed ended remote history (see `sshore cancel --help`).
@@ -165,7 +164,7 @@ sshore cp report.zip origin:        # Request a download to your computer.
 
 Direct copies also prepare a matching remote sshore helper. Updating older software
 requires confirmation and ends the listed shells and tasks; copying creates no
-persistent shell. Upload verification runs on the receiver without downloading the file again.
+persistent shell.
 
 `origin:` (or `:`) means the attached client computer. Remote requests detach
 you; run `sshore review` locally, choose paths and submit to copy and reconnect.
