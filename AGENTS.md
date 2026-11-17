@@ -43,11 +43,10 @@ version policy in the main program; do not split out packages solely for small h
 ## CLI ownership
 
 - Define command options, aliases, value types, arity and shared conflicts once;
-  parsing and completion must consume those definitions. Keep command-specific
+  parsing must consume those definitions. Keep command-specific
   semantics in their command adapters, and keep SSH suffix policy separate.
-- Parsing has no execution side effects. Completion reads local hints only: no
-  SSH, authentication, daemon probes/startup, state mutation or ID allocation.
-  Dynamic candidates are data, never shell code to evaluate.
+- Parsing and help/example output have no execution side effects: no SSH,
+  authentication, daemon probes/startup, state mutation or ID allocation.
 
 ## User interaction
 

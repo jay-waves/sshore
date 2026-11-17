@@ -22,7 +22,6 @@ policy or depending on mutable application state.
 | MCP tools and remote Bash | `internal/mcp/`, `internal/tmux/bash_linux.go`; application coordination in `mcp_client.go`, `mcp_bridge_linux.go`, `mcp_registry_linux.go` and the shared daemon |
 | One-off SSH execution | `cli.go`: exec adapter uses the shared SSH connection layer without remote setup |
 | CLI grammar, dispatch and help | `cli_schema.go`: shared command aliases and product/SSH grammar; `cli_shell.go`, `cli_endpoints.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
-| Shell completion | `completion.go`: contexts, candidate protocol and read-only hints; `completion_scripts.go`: shell adapters |
 | Connections and session switching | `client.go`, `client_connection.go`, `client_handoff.go` |
 | Remote preparation and exact-release policy | `setup*.go` |
 | Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_*.go`, `server_linux.go`; process inspection in `setup_process_linux.go` |
@@ -48,15 +47,11 @@ abstraction; move behavior with its tests and platform implementations.
 
 ## Design constraints
 
-### CLI parsing and completion
+### CLI parsing and help
 
-Execution and completion share the grammar and scanners in `cli_schema.go`;
-command adapters interpret the parsed operands. Partial input uses the same
-validation rules without requiring a complete command. Change grammar/context
-tests together when extending the CLI; see [CLI ownership](AGENTS.md#cli-ownership).
-
-Completion uses native local file completion and bounded cached hints. For its
-trust boundary and execution guarantees, see [inventory and privacy](SECURITY.md#inventory-and-privacy).
+`cli_schema.go` owns command grammar; command adapters interpret parsed operands.
+`cli_help.go` owns command help and concise workflow examples (`--tldr`).
+See [CLI ownership](AGENTS.md#cli-ownership).
 
 ### Terminal and mux design scope
 
@@ -76,7 +71,7 @@ silently become local shortcuts.
 `internal/ssh` owns one connection and any jump chain per task; closing an
 attachment does not close a daemon-owned spawn lease. OpenSSH configuration is
 resolved in the initiating environment and directory, including its remote
-command. Completion never runs this resolver. No persistent SSH subprocess,
+command. No persistent SSH subprocess,
 ControlMaster, askpass executable or implicit reconnect is used.
 
 The server may accept SSH `none` authentication (for example Tailscale SSH).

@@ -30,9 +30,8 @@ Installers verify checksums and print PATH instructions without requesting
 administrator access. Close running Windows executables before upgrading.
 Only the latest patch of each major/minor series remains downloadable.
 
-Enable Tab completion in Bash with `source <(sshore completion bash)`.
-Zsh, Fish and PowerShell are also supported; see `sshore completion --help` for
-startup-file setup. Completion uses local/cached hints and never connects over SSH.
+Use `sshore --tldr` for common examples, or `sshore cp --tldr` for file copies.
+Use `sshore COMMAND --help` for the full command reference.
 
 ## TMUX — leave and resume work
 

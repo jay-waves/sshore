@@ -39,9 +39,10 @@ type cliOption struct {
 	conflicts []string
 }
 
-// Canonical option definitions are shared by parsing and shell completion.
+// Canonical option definitions own the public command grammar.
 var cliOptions = map[string]cliOption{
 	"--help":         {alias: "-h"},
+	"--tldr":         {},
 	"--version":      {alias: "-V"},
 	"--local":        {conflicts: []string{"--server", "--download-dir", "--port"}},
 	"--server":       {kind: cliText},
@@ -95,8 +96,6 @@ func commandSpec(command string) (cliSpec, bool) {
 		spec = cliSpec{strings.Fields("--retries --foreground"), true, false, 2, 2}
 	case "review":
 		spec = cliSpec{[]string{"--stay"}, false, false, 0, 1}
-	case "completion":
-		spec = cliSpec{nil, false, false, 1, 1}
 	case "help":
 		spec = cliSpec{nil, false, false, 0, 1}
 	case "detach", "reset":
@@ -107,6 +106,9 @@ func commandSpec(command string) (cliSpec, bool) {
 		spec.flags = append(spec.flags, "--port")
 	}
 	spec.flags = append(spec.flags, "--help")
+	if _, ok := commandExamples[command]; ok {
+		spec.flags = append(spec.flags, "--tldr")
+	}
 	return spec, true
 }
 
@@ -124,8 +126,6 @@ type cliArguments struct {
 	operands []string
 	values   map[string]string
 	ssh      []string
-	pending  string
-	sshMode  bool
 }
 
 func (a cliArguments) has(name string) bool { _, ok := a.values[name]; return ok }
@@ -183,10 +183,7 @@ func validateCLIValue(name, value string, option cliOption) error {
 // Product aliases share one slot; repeated SSH options retain their order.
 // Parsing never starts work or reads state.
 func parseCLI(args []string, command string) (cliArguments, error) {
-	return scanCLI(args, command, false)
-}
 
-func scanCLI(args []string, command string, partial bool) (cliArguments, error) {
 	command = canonicalCommand(command)
 	a := cliArguments{values: make(map[string]string)}
 	spec, ok := commandSpec(command)
@@ -195,12 +192,7 @@ func scanCLI(args []string, command string, partial bool) (cliArguments, error) 
 	}
 	var err error
 	if spec.ssh {
-		if at := slices.Index(args, "--"); partial && at >= 0 {
-			a.sshMode, a.ssh = true, args[at+1:]
-			args = args[:at]
-		} else {
-			args, a.ssh, err = splitSSHOptions(args, spec.native)
-		}
+		args, a.ssh, err = splitSSHOptions(args, spec.native)
 		if err != nil {
 			return a, err
 		}
@@ -213,6 +205,9 @@ func scanCLI(args []string, command string, partial bool) (cliArguments, error) 
 		if command == "exec" && len(a.operands) > 0 {
 			a.operands = append(a.operands, arg)
 			continue
+		}
+		if arg == "--tldr" {
+			return a, usage("use sshore %s --tldr without other arguments", command)
 		}
 		if arg == "--help" || arg == "-h" {
 			return a, errHelp
@@ -235,10 +230,7 @@ func scanCLI(args []string, command string, partial bool) (cliArguments, error) 
 		if option.kind != cliBool {
 			if !attached {
 				i++
-				if partial && i == len(args) {
-					a.pending = canonical
-					return a, nil
-				}
+
 				if i == len(args) || strings.HasPrefix(args[i], "--") {
 					return a, usage("missing value for %s", name)
 				}
@@ -254,9 +246,6 @@ func scanCLI(args []string, command string, partial bool) (cliArguments, error) 
 		if err := validateCLIValue(canonical, value, option); err != nil {
 			return a, err
 		}
-	}
-	if partial {
-		return a, nil
 	}
 	for _, name := range spec.flags {
 		if !a.has(name) {
@@ -309,7 +298,7 @@ func (s cliSpec) maxOperands(command string, a cliArguments) int {
 	return max
 }
 
-// One allowlist serves execution and completion; only shell attachments permit
+// One allowlist defines SSH options; only shell attachments permit
 // native forwarding. SSH option repetition is intentional and retains order.
 func sshOptionKinds(native bool) map[string]cliValue {
 	result := map[string]cliValue{
@@ -348,11 +337,11 @@ func splitSSHOptions(args []string, nativeForwarding bool) ([]string, []string, 
 	if len(suffix) == 0 {
 		return nil, nil, usage("expected SSH options after --")
 	}
-	ssh, _, err := scanSSHOptions(suffix, nativeForwarding, false)
+	ssh, _, err := scanSSHOptions(suffix, nativeForwarding)
 	return args[:at], ssh, err
 }
 
-func scanSSHOptions(args []string, native, partial bool) ([]string, cliValue, error) {
+func scanSSHOptions(args []string, native bool) ([]string, cliValue, error) {
 	flags := sshOptionKinds(native)
 	var ssh []string
 	for i := 0; i < len(args); i++ {
@@ -366,9 +355,6 @@ func scanSSHOptions(args []string, native, partial bool) ([]string, cliValue, er
 		}
 		if value == "" {
 			i++
-			if partial && i == len(args) {
-				return ssh, kind, nil
-			}
 			if i == len(args) {
 				return nil, cliBool, usage("missing value for %s", name)
 			}

@@ -27,13 +27,13 @@ Tasks and setup
   pstree      Show shell ownership and attachments
   cancel      Stop tasks or discard requests
   reset       Replace local identity and clear history
-  completion  Set up shell completion
   mcp         Serve Agent tools over stdio
 
 Start: sshore launch work build     Resume: sshore attach work build
 In a session: Ctrl+B d detaches; Ctrl+B ? shows shortcuts.
 Remote commands inside a local session reuse its client; detach returns locally.
-Details: sshore COMMAND --help      Version: sshore --version
+Examples: sshore --tldr             Details: sshore COMMAND --help
+Version: sshore --version
 `
 
 const sshOptions = `
@@ -330,16 +330,6 @@ Replace this account's local identity and clear connection history, shell
 snapshots and remembered identity routes. Active tasks and approvals stay intact. Active connections may repopulate snapshots.
 To resolve a cloned identity, run this on the clone.
 `,
-	"completion": `Usage: sshore completion SHELL
-
-Load completion in your shell, or add the matching line to its startup file:
-  Bash:       source <(sshore completion bash)
-  Zsh:        source <(sshore completion zsh)   # after compinit
-  Fish:       sshore completion fish | source
-  PowerShell: sshore completion powershell | Out-String | Invoke-Expression
-
-Completion reads local hints only and never connects to a remote host.
-`,
 }
 
 func showHelp(args []string, w io.Writer) error {
@@ -361,5 +351,69 @@ func showHelp(args []string, w io.Writer) error {
 		return usage("unknown help topic: %s", args[0])
 	}
 	_, err := io.WriteString(w, h)
+	return err
+}
+
+var commandExamples = map[string]string{
+	"": `Start a persistent remote shell
+  sshore launch work build
+Resume it after detaching with Ctrl+B d
+  sshore attach work build
+Upload a file
+  sshore cp ./report.txt work:/tmp/report.txt
+Forward a local port to a remote service
+  sshore forward 8080 work:3000
+
+More examples: sshore launch|spawn|cp|mount|forward --tldr
+`,
+	"launch": `Start a persistent remote shell
+  sshore launch work build
+Start a local shell
+  sshore launch --local build
+Connect through a jump host
+  sshore launch work build -- -J jump
+
+Ctrl+B d detaches; sshore attach work build resumes.
+Updating remote software requires confirmation and can end listed tasks.
+`,
+	"spawn": `Start a remote shell tied to this owner and connection
+  sshore spawn work build
+Start without attaching
+  sshore spawn work build --detach
+
+The shell ends when its owner or lifetime connection is lost.
+Updating remote software requires confirmation and can end listed tasks.
+`,
+	"cp": `Upload a file
+  sshore cp ./report.txt work:/tmp/report.txt
+Download a file
+  sshore cp work:/tmp/report.txt ./report.txt
+Use a different SSH port
+  sshore cp ./report.txt work:/tmp/report.txt --port 2222
+`,
+	"mount": `Mount a remote directory at the default local mountpoint
+  sshore mount work:/srv/project
+Mount read-only
+  sshore mount work:/srv/project --read-only
+Run in the foreground
+  sshore mount work:/srv/project --foreground
+
+Requires FUSE on Linux or WinFsp on Windows.
+`,
+	"forward": `Expose a remote service on a local port
+  sshore forward 8080 work:3000
+Expose a local service on a remote port
+  sshore forward work:8080 3000
+Run until Ctrl-C
+  sshore forward 8080 work:3000 --foreground
+`,
+}
+
+func showTLDR(command string, w io.Writer) error {
+	examples, ok := commandExamples[canonicalCommand(command)]
+	if !ok {
+		return usage("no examples for %s; see sshore %s --help", command, command)
+	}
+	_, err := io.WriteString(w, examples)
 	return err
 }

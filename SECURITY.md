@@ -382,12 +382,6 @@ Explicit native SSH forwarding remains the local user's policy.
 
 ## Inventory and privacy
 
-Shell completion reads bounded local records, cached tasks and literal SSH aliases.
-It does not execute SSH configuration commands, contact hosts or daemons, create
-state or allocate IDs. Candidate text remains untrusted data and is quoted by shell
-adapters. Only static registration code is sourced; cached suggestions never bypass
-normal execution checks. Recovery produces no completion candidates.
-
 Public inventory is an allowlist: it excludes control addresses/tokens, SSH options
 and terminal contents. Shell process listings show sanitized same-user names and
 PIDs, not arguments or environments. Foreground summaries and detailed resource

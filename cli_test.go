@@ -10,6 +10,23 @@ import (
 	"testing"
 )
 
+func TestTLDRBeforeExecution(t *testing.T) {
+	t.Setenv("SSHORE_DISABLED", "1")
+	for _, args := range [][]string{{"--tldr"}, {"launch", "--tldr"}, {"spawn", "--tldr"}, {"cp", "--tldr"}, {"mnt", "--tldr"}, {"fwd", "--tldr"}} {
+		if code, err := run(args); code != 0 || err != nil {
+			t.Fatalf("%v: %d %v", args, code, err)
+		}
+	}
+	for _, args := range [][]string{{"completion", "bash"}, {"__complete", "words"}, {"--tldr", "cp"}, {"detach", "--tldr"}} {
+		if _, err := run(args); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+	if _, err := parseCLI([]string{"work", "--tldr"}, "launch"); err == nil {
+		t.Fatal("examples option reached execution parsing")
+	}
+}
+
 func TestCLIOptionsAndHelp(t *testing.T) {
 	o, err := parseOptions([]string{"launch", "host", "build", "--download-dir", "downloads", "--quiet", "--no-escape", "--", "-v", "-l", "user"})
 	if err != nil || o.session != "build" || o.downloadDir != "downloads" || !o.quiet || !o.noEscape || len(o.ssh) != 3 {

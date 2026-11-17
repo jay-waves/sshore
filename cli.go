@@ -18,13 +18,13 @@ func run(args []string) (code int, resultErr error) {
 			code, resultErr = 0, showHelp(args[:1], os.Stdout)
 		}
 	}()
-	if len(args) > 0 && args[0] == "__complete" {
-		return 0, runCompletionQuery(args[1:], os.Stdout)
-	}
 	if len(args) > 0 {
 		args = append([]string(nil), args...)
 		args[0] = canonicalCommand(args[0])
 		if _, public := commandHelp[args[0]]; public {
+			if len(args) == 2 && args[1] == "--tldr" {
+				return 0, showTLDR(args[0], os.Stdout)
+			}
 			for i, arg := range args[1:] {
 				if args[0] == "exec" && i > 0 {
 					break
@@ -40,7 +40,7 @@ func run(args []string) (code int, resultErr error) {
 	}
 	if os.Getenv("SSHORE_DISABLED") == "1" && len(args) > 0 {
 		switch args[0] {
-		case "--version", "-V", "--help", "-h", "help", "sessions", "inventory":
+		case "--version", "-V", "--help", "-h", "--tldr", "help", "sessions", "inventory":
 		default:
 			return 1, fmt.Errorf("sshore features are disabled in this recovery shell; finish maintenance and reconnect from your local shell")
 		}
@@ -58,8 +58,11 @@ func run(args []string) (code int, resultErr error) {
 			return 2, usage("reset takes no arguments")
 		}
 		return 0, runReset()
-	case "completion":
-		return 0, runCompletion(args[1:], os.Stdout)
+	case "--tldr":
+		if len(args) != 1 {
+			return 2, usage("usage: sshore --tldr or sshore COMMAND --tldr")
+		}
+		return 0, showTLDR("", os.Stdout)
 	case "help":
 		return 0, showHelp(args[1:], os.Stdout)
 	case "-h", "--help":
