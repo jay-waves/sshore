@@ -32,6 +32,15 @@ func localRequest(name string, request message, expected ...string) (message, er
 	if len(expected) > 0 && expected[0] != "" && r.identity() != expected[0] {
 		return message{}, fmt.Errorf("local task changed; refresh with sshore list")
 	}
+	if request.Type == "cancel" {
+		removed, err := removeExitedLocalShell(r)
+		if err != nil {
+			return message{}, err
+		}
+		if removed {
+			return message{Type: "cancelled"}, nil
+		}
+	}
 	c, err := dialLocalSession(r)
 	if err != nil {
 		return message{}, err
@@ -44,6 +53,34 @@ func localRequest(name string, request message, expected ...string) (message, er
 		return message{}, err
 	}
 	return readMessage(c)
+}
+
+// The name lease spans the shell's lifetime. An unreachable endpoint alone
+// does not establish that its owner has exited.
+func removeExitedLocalShell(r localShellRecord) (bool, error) {
+	owner, err := lockObjectName(r.Name)
+	if err != nil {
+		return false, nil
+	}
+	defer owner.Close()
+	path, err := localSessionPath(r.storageName())
+	if err != nil {
+		return false, err
+	}
+	current, err := readLocalRecord(path, r.storageName())
+	if os.IsNotExist(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if current.identity() != r.identity() || current.Name != r.Name || current.Token != r.Token || current.Address != r.Address {
+		return false, fmt.Errorf("local task changed; refresh with sshore list")
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	return true, nil
 }
 
 func localShells() ([]localShellView, error) {

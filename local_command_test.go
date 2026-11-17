@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -266,5 +267,70 @@ func TestLocalCommandRejectsAmbiguousOptions(t *testing.T) {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatalf("accepted %v", args)
 		}
+	}
+}
+
+func TestCancelUnavailableLocalShell(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		t.Run(fmt.Sprintf("active=%v", active), func(t *testing.T) {
+			t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+			listener, err := net.Listen("tcp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			address := listener.Addr().String()
+			listener.Close()
+			r := localShellRecord{Name: "unavailable", Address: address, Token: resourceToken(), Version: version}
+			path, err := localSessionPath(r.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writeStateJSON(path, r); err != nil {
+				t.Fatal(err)
+			}
+			if active {
+				owner, err := lockObjectName(r.Name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer owner.Close()
+			}
+			m, err := localRequest(r.Name, message{Type: "cancel"}, r.identity())
+			if active {
+				if err == nil {
+					t.Fatal("cancelled an unreachable live owner")
+				}
+				if _, err := os.Stat(path); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err != nil || m.Type != "cancelled" {
+					t.Fatalf("cancel: %+v %v", m, err)
+				}
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("stale record retained: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestExitedLocalShellCleanupRejectsChangedRecord(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	r := localShellRecord{Name: "changed", Address: "127.0.0.1:1", Token: resourceToken(), Version: version}
+	path, err := localSessionPath(r.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := r
+	current.Token = resourceToken()
+	if err := writeStateJSON(path, current); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := removeExitedLocalShell(r); removed || err == nil {
+		t.Fatalf("changed record removed: %v %v", removed, err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
 	}
 }
