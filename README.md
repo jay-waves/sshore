@@ -90,6 +90,9 @@ local children and further remote hops. Inside a remote shell, `sshore spawn`
 creates a shell on that host without authenticating again. Ctrl+B controls the child; detach or exit returns one level. Startup failure
 returns to the parent with an error. Spawn ownership stays unchanged.
 Local managed shells also hand off remote `launch` and `attach` this way.
+On shell exit, the client reports the task, host, exit code and available reason.
+A lost connection reports a short reason such as timeout or connection closed;
+the remote shell's state remains unconfirmed.
 Screens, scrollback and detached output are not saved.
 
 ```mermaid

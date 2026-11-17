@@ -819,6 +819,8 @@ func TestClientDaemonLossRestoresTerminal(t *testing.T) {
 				t.Fatal(err)
 			}
 			wait("\x1b[=0u\x1b[>4;0m")
+			wait("Disconnected from " + command + "/crash on fixture")
+			wait("Shell state unconfirmed.")
 			if err := cmd.Wait(); err == nil {
 				t.Fatal("daemon loss reported success")
 			}
@@ -913,4 +915,55 @@ func TestClientEnhancedPrefixKeysAndEscape(t *testing.T) {
 	b, _ := e.attach("keys", "attach")
 	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
 	untilType(t, b.tty, "exit")
+}
+
+func TestClientExitNotices(t *testing.T) {
+	for _, host := range []string{"--local", "fixture"} {
+		for _, command := range []string{"launch", "spawn"} {
+			for _, code := range []string{"0", "7"} {
+				t.Run(host+"/"+command+"/"+code, func(t *testing.T) {
+					t.Setenv("SSHORE_SOCKET", "")
+					t.Setenv("SSHORE_LOCAL_SESSION", "")
+					e := newEnv(t)
+					args := []string{command, host, "exit-notice", "--no-login", "--no-profile"}
+					label := "local"
+					if host != "--local" {
+						label = host
+						args = append(args, "--server", e.bin)
+					}
+					cmd, terminal, wait := startSessionClient(t, e, args)
+					wait("Connected " + label + " / exit-notice")
+					io.WriteString(terminal, "exit "+code+"\n")
+					wait("Exited " + command + "/exit-notice on " + label + " (code " + code + "). Reason:")
+					err := cmd.Wait()
+					if code == "0" && err != nil {
+						t.Fatal(err)
+					}
+					if code == "7" {
+						status, ok := err.(*exec.ExitError)
+						if !ok || status.ExitCode() != 7 {
+							t.Fatalf("exit status: %v", err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestClientRemoteExitReason(t *testing.T) {
+	t.Setenv("SSHORE_SOCKET", "")
+	e := newEnv(t)
+	cmd, _, wait := startPrefixClient(t, e)
+	wait("Connected fixture / keys")
+	kill := exec.Command(e.bin, "kill", "fixture", "keys", "--server", e.bin)
+	kill.Env = cmd.Env
+	if out, err := kill.CombinedOutput(); err != nil {
+		t.Fatalf("kill fixture shell: %v %s", err, out)
+	}
+	wait("Exited launch/keys on fixture")
+	wait("Reason: killed by sshore kill.")
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("killed shell reported success")
+	}
 }

@@ -178,7 +178,11 @@ handoff and returns through the detach barrier to the original attachment.
 Repeated interrupts during parent recovery do not unwind additional levels;
 SIGTERM still cancels the active attempt. Initial connection interrupts cancel
 startup normally. Signal handlers remain installed until keyboard shutdown and
-console restoration finish. Connection boundary cleanup disables Kitty keyboard
+console restoration finish. Confirmed exits carry the host's reason to the client;
+exit and unexpected-disconnection notices print after console restoration, also
+when returning to a parent attachment. A transport failure reports its category
+and client exit code without asserting that the hosted shell ended.
+Connection boundary cleanup disables Kitty keyboard
 event reporting and xterm modifyOtherKeys before returning to the local prompt.
 The Linux account daemon catches SIGHUP for its entire lifetime, including
 intervals without hosted shells; child shells retain their normal HUP behavior.

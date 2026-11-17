@@ -127,9 +127,10 @@ func (s *remoteShell) start(cols, rows uint16, term string, startup ...bool) err
 				s.exitReason = "shell terminated by " + status.Signal().String()
 			}
 		}
+		reason := s.exitReason
 		s.mu.Unlock()
 		if p != nil {
-			p.FinishExit(code)
+			p.FinishExit(code, reason)
 		}
 		s.stop()
 	}()

@@ -112,13 +112,16 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 	if err != nil {
 		return 1, err
 	}
-	termui.Log(os.Stdout, termui.Info, "Review %s · %s / %s\n", r.DisplayName(), cleanText(r.Connection.Host), r.Connection.Session)
-	termui.Log(os.Stdout, termui.Info, "Submit all paths or port to start; Ctrl-C cancels.\n")
-	if len(r.Operations) == 1 && (r.Operations[0].Kind == "forward" || r.Operations[0].Kind == "mount") {
-		termui.Log(os.Stdout, termui.Info, "After: background %s; shell detached.\n", r.Operations[0].Kind)
-	} else {
-		termui.Log(os.Stdout, termui.Info, "After: local.\n")
+	title := "Copy"
+	if len(r.Operations) == 1 {
+		switch r.Operations[0].Kind {
+		case "mount":
+			title = "Mount"
+		case "forward":
+			title = "Forward"
+		}
 	}
+	termui.Log(os.Stdout, termui.Info, "%s %s · %s / %s\n", title, r.DisplayName(), cleanText(r.Connection.Host), cleanText(r.Connection.Session))
 	for i := range r.Operations {
 		op := &r.Operations[i]
 		if op.Kind != "forward" && op.LocalHint != "" {
@@ -139,19 +142,18 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 				dest = op.LocalHint
 			}
 			termui.Log(os.Stdout, termui.Info, "Download %s · %s\n", cleanText(op.Path), displayBytes(op.Size))
-			path, e := readApprovalPath(input, fmt.Sprintf("Save as [%s] (Tab; Enter accepts): ", cleanText(dest)), dest, func(path string) (string, error) {
+			path, e := readApprovalPath(input, fmt.Sprintf("Save as [%s] (Enter confirms; Ctrl-C cancels): ", cleanText(dest)), dest, func(path string) (string, error) {
 				return files.DownloadDestination(path, op.Name)
 			})
 			if e != nil {
 				return 1, e
 			}
 			op.LocalPath = path
-			termui.Log(os.Stdout, termui.Info, "→ %s\n", cleanText(path))
 		case "upload":
 			termui.Log(os.Stdout, termui.Info, "Upload → %s\n", cleanText(op.Path))
-			prompt := "Local file to upload (Tab; Enter accepts): "
+			prompt := "Local file to upload (Enter confirms; Ctrl-C cancels): "
 			if op.LocalHint != "" {
-				prompt = fmt.Sprintf("Local file to upload [%s] (Tab; Enter accepts): ", cleanText(op.LocalHint))
+				prompt = fmt.Sprintf("Local file to upload [%s] (Enter confirms; Ctrl-C cancels): ", cleanText(op.LocalHint))
 			}
 			path, e := readApprovalPath(input, prompt, op.LocalHint, func(path string) (string, error) {
 				f, e := files.OpenSource(path)
@@ -166,7 +168,6 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 				return 1, e
 			}
 			op.LocalPath = path
-			termui.Log(os.Stdout, termui.Info, "Source: %s · %s\n", cleanText(path), displayBytes(op.Size))
 		case "mount":
 			if e := files.CheckMountPlatform(); e != nil {
 				return 1, e
@@ -175,7 +176,7 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 			if op.ReadOnly {
 				mode = "read-only"
 			}
-			termui.Log(os.Stdout, termui.Info, "Mount %s · %s\n", cleanText(op.Path), mode)
+			termui.Log(os.Stdout, termui.Info, "%s · %s\n", cleanText(op.Path), mode)
 			mountpoint, e := readMountApprovalPath(input, op.LocalHint)
 			if e != nil {
 				return 1, e
@@ -188,16 +189,15 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 				label = "Local service port"
 			}
 			if op.Reverse {
-				termui.Log(os.Stdout, termui.Info, "Server %s -> selected local service\n", loopback(remote))
+				termui.Log(os.Stdout, termui.Info, "%s %s -> local service\n", cleanText(r.Connection.Host), loopback(remote))
 			} else {
-				termui.Log(os.Stdout, termui.Info, "Selected local listener -> server %s\n", loopback(remote))
+				termui.Log(os.Stdout, termui.Info, "Local listener -> %s %s\n", cleanText(r.Connection.Host), loopback(remote))
 			}
 			port, e := readSelectedPort(input, label, op.LocalHint, "approval cancelled; request remains pending")
 			if e != nil {
 				return 1, e
 			}
 			resolveLocalPort(op, port)
-			termui.Log(os.Stdout, termui.Info, "Forward %s\n", describeForward(op.Port, op.TargetPort, op.Reverse))
 		}
 	}
 	// Duplicate destinations are rejected before executing any batch member.
@@ -318,7 +318,7 @@ func executeApprovedFiles(ctx context.Context, mux *smux.Session, ops []operatio
 		}
 	}
 	for i, op := range files {
-		if !quiet {
+		if !quiet && len(files) > 1 {
 			termui.Log(os.Stderr, termui.Info, "[sshore] File %d/%d: %s %s\n", i+1, len(files), op.Kind, cleanText(op.Name))
 		}
 		if err := executeApprovedFile(ctx, mux, op, quiet); err != nil {
@@ -336,7 +336,7 @@ func executeApprovedFiles(ctx context.Context, mux *smux.Session, ops []operatio
 			return err
 		}
 	}
-	if len(files) > 0 {
+	if len(files) > 1 {
 		termui.Log(os.Stderr, termui.Success, "[sshore] Transferred %d/%d files.\n", len(files), len(files))
 	}
 	return nil
@@ -401,7 +401,7 @@ func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, q
 			}
 			result := "Saved " + op.LocalPath
 			if op.Kind == "upload" {
-				result = "Upload complete"
+				result = "Uploaded " + op.LocalPath + " -> " + op.Path
 			}
 			termui.Log(os.Stderr, termui.Success, "[sshore] %s\n", cleanText(result))
 			return nil

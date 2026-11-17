@@ -60,17 +60,18 @@ func (a *Attachment) Output(kind string, data []byte, metadata any) error {
 }
 
 type terminalMessage struct {
-	Type string `json:"type"`
-	Code int    `json:"code,omitempty"`
-	Data []byte `json:"-"`
+	Reason string `json:"reason,omitempty"`
+	Type   string `json:"type"`
+	Code   int    `json:"code,omitempty"`
+	Data   []byte `json:"-"`
 }
 
 func (m *terminalMessage) FrameType() string                 { return m.Type }
 func (m *terminalMessage) SetFrame(kind string, data []byte) { m.Type, m.Data = kind, data }
 
 // FinishExit follows terminal output, allowing bounded consumption before close.
-func (a *Attachment) FinishExit(code int) {
-	_ = a.Output("exit", nil, terminalMessage{Type: "exit", Code: code})
+func (a *Attachment) FinishExit(code int, reason string) {
+	_ = a.Output("exit", nil, terminalMessage{Type: "exit", Code: code, Reason: reason})
 	select {
 	case <-a.mux.CloseChan():
 	case <-time.After(2 * time.Second):

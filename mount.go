@@ -97,7 +97,7 @@ func readMountApprovalPath(input promptReader, hint string) (string, error) {
 		label = "automatic"
 	}
 	for {
-		line, err := input.Read(fmt.Sprintf("Mountpoint [%s] (Tab; Enter accepts): ", cleanText(label)), true)
+		line, err := input.Read(fmt.Sprintf("Mountpoint [%s] (Enter starts; Ctrl-C cancels): ", cleanText(label)), true)
 		if err != nil {
 			return "", fmt.Errorf("approval cancelled; request remains pending: %w", err)
 		}

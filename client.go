@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"runtime"
 	"strings"
@@ -45,7 +47,20 @@ func acceptSessionName(o *options, name string) error {
 	return nil
 }
 
-func runClientOnce(o options, previous string, ready func()) (int, error) {
+func runClientOnce(o options, previous string, ready func()) (resultCode int, resultErr error) {
+	attached := false
+	var ended func()
+	// Report after input shutdown and console restoration, including nested returns.
+	defer func() {
+		if ended != nil {
+			ended()
+			return
+		}
+		var switching *sessionSwitch
+		if attached && resultErr != nil && !errors.As(resultErr, &switching) {
+			sessionNotice(termui.Warning, "Disconnected from %s on %s (client code %d; %s). Shell state unconfirmed.", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host), resultCode, sessionDisconnectReason(resultErr))
+		}
+	}()
 	signalCtx, interruptSignals, stopSignals := newClientSignals(o.recovering)
 	defer stopSignals()
 	// Cancel I/O before restoring the console, but keep signal handling installed
@@ -281,6 +296,7 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 	}
 	o.recovering = false
 	interruptSignals.interactive.Store(true)
+	attached = true
 	ready()
 
 	kind := "launch"
@@ -801,13 +817,39 @@ func runClientOnce(o options, previous string, ready func()) (int, error) {
 					if e.m.Code != 0 {
 						level = termui.Warning
 					}
-					sessionNotice(level, "Exited %s on %s (code %d).", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host), e.m.Code)
+					exit := e.m
+					ended = func() {
+						reason := cleanText(exit.Reason)
+						if reason == "" || strings.HasPrefix(reason, "shell exited (code ") {
+							reason = "shell exited"
+						}
+						sessionNotice(level, "Exited %s on %s (code %d). Reason: %s.", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host), exit.Code, reason)
+					}
 					return e.m.Code, nil
 				case "fatal":
 					return 1, errors.New(e.m.Error)
 				}
 			}
 		}
+	}
+}
+
+// A disconnected transport does not establish that the hosted shell exited.
+func sessionDisconnectReason(err error) string {
+	var timeout net.Error
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &timeout) && timeout.Timeout():
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "interrupted"
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, net.ErrClosed):
+		return "connection closed"
+	default:
+		// Local phase timers currently return contextual errors rather than net.Error.
+		if strings.Contains(err.Error(), "timed out") {
+			return "timeout"
+		}
+		return "connection error"
 	}
 }
 

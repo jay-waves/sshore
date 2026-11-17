@@ -199,7 +199,13 @@ func executeCopy(client *sftp.Client, o copyOptions) error {
 		if err != nil {
 			return fmt.Errorf("%d completed, copy failed, %d not started: %w", i, len(items)-i-1, err)
 		}
-		termui.Log(os.Stderr, termui.Success, "Copied %s -> %s\n", cleanText(item.source), cleanText(item.target))
+		source, target := item.source, item.target
+		if o.upload {
+			target = o.host + ":" + target
+		} else {
+			source = o.host + ":" + source
+		}
+		termui.Log(os.Stderr, termui.Success, "Copied %s -> %s\n", cleanText(source), cleanText(target))
 	}
 	return nil
 }

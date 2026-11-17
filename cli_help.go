@@ -250,11 +250,14 @@ control requires matching releases. Neither form installs software.
 ` + sshOptions,
 	"review": `Usage: sshore review [NAME|ID]
 
-Run locally after a remote request detaches. Omit NAME to select a request,
+Run locally after a remote request detaches. Mount review shows its access mode
+and mountpoint; copy review shows file direction and paths; forward review shows
+the listener and target ports. Omit NAME to select a request,
 or use a name or short ID from list. Selecting it opens review only.
 
 Submitting all valid paths or the port starts the operation without another
-confirmation. Ctrl-C cancels before submission. A request is single-use,
+confirmation. Tab completes local paths; Ctrl-C cancels before submission.
+A request is single-use,
 even if execution fails, and expires after 10 minutes.
 
 Execution returns locally; use attach separately to enter a shell.

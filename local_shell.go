@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/jay-waves/sshore/internal/tmux"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -272,14 +274,20 @@ func (s *localShell) start(m message) error {
 		}
 		err := t.Wait()
 		code := 0
+		reason := "shell exited"
 		if err != nil {
 			code = 1
+			var exit *exec.ExitError
+			if errors.As(err, &exit) {
+				code = exit.ExitCode()
+			}
+			reason = err.Error()
 		}
 		s.mu.Lock()
 		p := s.lifecycle.Active()
 		s.mu.Unlock()
 		if p != nil {
-			p.FinishExit(code)
+			p.FinishExit(code, reason)
 		}
 		s.close()
 	}()

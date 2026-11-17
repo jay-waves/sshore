@@ -379,10 +379,23 @@ func startSelectedResource(config resourceConfig, kind string, reservation *task
 		return 1, fmt.Errorf("resource startup was not acknowledged: %v", e)
 	}
 	detail := record.Detail
-	if kind == "mount" {
-		detail = fmt.Sprintf("%s:%s at %s using SFTP over SSH", record.Host, record.Remote, record.Mountpoint)
+	switch kind {
+	case "mount":
+		mode := "read-write"
+		if record.ReadOnly {
+			mode = "read-only"
+		}
+		detail = fmt.Sprintf("%s:%s -> %s · %s", record.Host, record.Remote, record.Mountpoint, mode)
+	case "forward":
+		if f := config.Forward; f != nil {
+			listener, service := "local", f.Host
+			if f.Reverse {
+				listener, service = service, listener
+			}
+			detail = fmt.Sprintf("%s %s -> %s %s", listener, loopback(f.Port), service, loopback(f.Target))
+		}
 	}
-	fmt.Fprintf(os.Stdout, "Started %s/%s: %s\nKill: sshore kill %s/%s\n", kind, record.Name, cleanText(detail), kind, record.Name)
+	fmt.Fprintf(os.Stdout, "Started %s/%s: %s\n", kind, record.Name, cleanText(detail))
 
 	return 0, nil
 }
