@@ -327,3 +327,7 @@ deletions, and conflict reporting for independent edits. Revisit the design befo
 implementation; it is not an existing command contract.
 
 `cli.go` orchestrates reset across private state stores; `state.go` owns account display identity and remembered connection entry points without depending on CLI options. Native OS identity reads live in the platform adapters. Reset preserves active ownership, lock files, approvals and non-recycled task IDs.
+
+MCP reuses a background SSH transport per host and serializes requests on it.
+A failed request is never automatically replayed; the next call reconnects.
+Closing MCP releases transports while persistent remote Bash sessions remain.

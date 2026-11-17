@@ -6,15 +6,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 )
 
 type DialFunc func(context.Context, string) (io.ReadWriteCloser, error)
 
 // Client routes each request to its host; session references survive client restarts.
 type Client struct {
-	Version string
-	Dial    DialFunc
+	Version     string
+	Dial        DialFunc
+	mu          sync.Mutex
+	connections map[string]*clientConnection
 }
+type clientConnection struct {
+	gate chan struct{}
+	conn io.ReadWriteCloser
+}
+
+// Shutdown releases transports without ending persistent remote sessions.
+func (c *Client) Shutdown() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, entry := range c.connections {
+		if entry.conn != nil {
+			_ = entry.conn.Close()
+		}
+	}
+}
+
 type sessionReference struct {
 	Host string `json:"host"`
 	ID   string `json:"id"`
@@ -54,13 +73,53 @@ func (c *Client) call(ctx context.Context, host string, req Request) (Response, 
 	if c.Dial == nil {
 		return Response{}, fmt.Errorf("transport unavailable")
 	}
-	conn, err := c.Dial(ctx, host)
-	if err != nil {
+	c.mu.Lock()
+	if c.connections == nil {
+		c.connections = make(map[string]*clientConnection)
+	}
+	entry := c.connections[host]
+	if entry == nil {
+		entry = &clientConnection{gate: make(chan struct{}, 1)}
+		c.connections[host] = entry
+	}
+	c.mu.Unlock()
+	select {
+	case entry.gate <- struct{}{}:
+	case <-ctx.Done():
+		return Response{}, ctx.Err()
+	}
+	defer func() { <-entry.gate }()
+	if err := ctx.Err(); err != nil {
 		return Response{}, err
 	}
-	defer conn.Close()
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
-	defer stop()
+	c.mu.Lock()
+	conn := entry.conn
+	c.mu.Unlock()
+	var err error
+	if conn == nil {
+		conn, err = c.Dial(ctx, host)
+		if err != nil {
+			return Response{}, err
+		}
+		c.mu.Lock()
+		entry.conn = conn
+		c.mu.Unlock()
+	}
+	healthy := false
+	stopped := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close(); close(stopped) })
+	defer func() {
+		if !stop() {
+			<-stopped
+			healthy = false
+		}
+		if !healthy {
+			_ = conn.Close()
+			c.mu.Lock()
+			entry.conn = nil
+			c.mu.Unlock()
+		}
+	}()
 	req.Version = c.Version
 	if err = WriteRequest(conn, req); err != nil {
 		return Response{}, fmt.Errorf("send request: %w", err)
@@ -72,6 +131,7 @@ func (c *Client) call(ctx context.Context, host string, req Request) (Response, 
 	if res.Version != c.Version {
 		return Response{}, fmt.Errorf("remote release mismatch")
 	}
+	healthy = true
 	if res.Error != "" {
 		return Response{}, fmt.Errorf("remote: %s", res.Error)
 	}

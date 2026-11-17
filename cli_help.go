@@ -96,7 +96,7 @@ Do not bypass host verification or supply update confirmation on their behalf.
 1. Call session_list with {"host":"work"} to find an existing session for this
    task, or session_open with the same input to create one. Save its id as S.
    Do not reuse or close sessions belonging to unrelated work.
-2. Call session_execute with {"session_id":S,"code":"pwd; uname -a"}.
+2. Call session_execute with {"session_id":S,"code":"pwd; uname -a","wait_ms":1000}.
    Submit a complete Bash script; optional stdin is fixed input, not a live stream.
    Save the returned id as E. Only one script can run per session.
 3. Call session_read with {"session_id":S,"execution_id":E,"wait_ms":1000}.

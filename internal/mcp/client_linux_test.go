@@ -21,11 +21,15 @@ func TestClientReconnectsToSession(t *testing.T) {
 		client, server := net.Pipe()
 		go func() {
 			defer server.Close()
-			req, err := ReadRequest(server)
-			if err != nil {
-				return
+			for {
+				req, err := ReadRequest(server)
+				if err != nil {
+					return
+				}
+				if WriteResponse(server, Dispatch(ctx, remote, req, "1.2.3")) != nil {
+					return
+				}
 			}
-			_ = WriteResponse(server, Dispatch(ctx, remote, req, "1.2.3"))
 		}()
 		return client, nil
 	}

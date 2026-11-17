@@ -221,7 +221,7 @@ func bootstrap(target, mode, name string) (result error) {
 				if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
 					return err
 				}
-				return bridgeMCP(c)
+				return bridgeMCP(c, target)
 			}
 			if mode == "mount-agent" || mode == "cp-agent" {
 				lock.Close()

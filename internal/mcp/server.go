@@ -18,6 +18,7 @@ type SessionInput struct {
 type ExecuteInput struct {
 	SessionID string `json:"session_id"`
 	Code      string `json:"code" jsonschema:"Complete Bash script to execute"`
+	WaitMS    int    `json:"wait_ms,omitempty" jsonschema:"Wait up to 30000 ms for initial output; zero returns immediately"`
 	Stdin     string `json:"stdin,omitempty" jsonschema:"Fixed standard input"`
 }
 type ReadInput struct {
@@ -35,8 +36,10 @@ type Sessions struct {
 	Sessions []Session `json:"sessions"`
 }
 type Execution struct {
-	ID    string `json:"id"`
-	State string `json:"state"`
+	Output    *Output `json:"output,omitempty"`
+	ReadError string  `json:"read_error,omitempty"`
+	ID        string  `json:"id"`
+	State     string  `json:"state"`
 }
 type Output struct {
 	Stdout       string `json:"stdout"`
@@ -79,11 +82,19 @@ func New(version string, b Backend) *sdk.Server {
 		out, err := b.List(ctx, in)
 		return nil, out, err
 	})
-	sdk.AddTool(s, &sdk.Tool{Name: "session_execute", Description: "Submit a complete Bash script. State persists in the session. Only one script can run at a time; a busy session rejects another submission. Returns an execution ID; read it for output and completion."}, func(ctx context.Context, _ *sdk.CallToolRequest, in ExecuteInput) (*sdk.CallToolResult, Execution, error) {
-		if in.SessionID == "" || strings.IndexByte(in.Code, 0) >= 0 {
+	sdk.AddTool(s, &sdk.Tool{Name: "session_execute", Description: "Submit a complete Bash script. State persists in the session. Only one script can run at a time; a busy session rejects another submission. Returns an execution ID. Set wait_ms to include initial output; continue session_read with its cursor."}, func(ctx context.Context, _ *sdk.CallToolRequest, in ExecuteInput) (*sdk.CallToolResult, Execution, error) {
+		if in.SessionID == "" || strings.IndexByte(in.Code, 0) >= 0 || in.WaitMS < 0 || in.WaitMS > 30000 {
 			return nil, Execution{}, fmt.Errorf("invalid session or NUL in code")
 		}
 		out, err := b.Execute(ctx, in)
+		if err == nil && in.WaitMS > 0 {
+			output, readErr := b.Read(ctx, ReadInput{SessionID: in.SessionID, ExecutionID: out.ID, WaitMS: in.WaitMS})
+			if readErr != nil {
+				out.ReadError = readErr.Error()
+			} else {
+				out.Output = &output
+			}
+		}
 		return nil, out, err
 	})
 	sdk.AddTool(s, &sdk.Tool{Name: "session_read", Description: "Read bounded output from an execution. Reuse the returned cursor to continue. stdout_base64 or stderr_base64 contains bytes when a chunk is not UTF-8. Completion and output_closed are separate; background tasks can keep streams open. Old completed executions may be evicted."}, func(ctx context.Context, _ *sdk.CallToolRequest, in ReadInput) (*sdk.CallToolResult, Output, error) {

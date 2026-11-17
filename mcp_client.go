@@ -62,6 +62,8 @@ func runMCP(args []string) (int, error) {
 	if _, err := parseCLI(args, "mcp"); err != nil {
 		return 2, err
 	}
-	server := sshoremcp.New(version, &sshoremcp.Client{Version: version, Dial: dialMCP})
+	client := &sshoremcp.Client{Version: version, Dial: dialMCP}
+	defer client.Shutdown()
+	server := sshoremcp.New(version, client)
 	return 0, server.Run(context.Background(), &sdk.StdioTransport{})
 }
