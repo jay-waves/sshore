@@ -71,6 +71,7 @@ func (c *connectionConfig) fileIdentities(ctx context.Context) ([]cryptossh.Sign
 	var certificates []*cryptossh.Certificate
 	allowed := map[string]bool{}
 	var failures []error
+	var missing []string
 	remember := func(key cryptossh.PublicKey) {
 		if key == nil {
 			return
@@ -94,7 +95,9 @@ func (c *connectionConfig) fileIdentities(ctx context.Context) ([]cryptossh.Sign
 		remember(publicIdentity(path + "-cert.pub"))
 		data, err := os.ReadFile(path)
 		if err != nil {
-			if !os.IsNotExist(err) {
+			if os.IsNotExist(err) {
+				missing = append(missing, path)
+			} else {
 				failures = append(failures, fmt.Errorf("identity %s: %w", path, err))
 			}
 			continue
@@ -134,6 +137,13 @@ func (c *connectionConfig) fileIdentities(ctx context.Context) ([]cryptossh.Sign
 			continue
 		}
 		remember(publicIdentity(path))
+	}
+	if len(signers) == 0 && len(allowed) == 0 && len(failures) == 0 {
+		if len(missing) > 0 {
+			failures = append(failures, fmt.Errorf("IdentityFile not found: %s", strings.Join(missing, ", ")))
+		} else {
+			failures = append(failures, fmt.Errorf("no IdentityFile configured"))
+		}
 	}
 	return signers, allowed, certificates, errors.Join(failures...)
 }

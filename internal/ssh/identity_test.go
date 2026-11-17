@@ -8,6 +8,7 @@ import (
 	cryptossh "golang.org/x/crypto/ssh"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -115,5 +116,14 @@ func TestConcurrentFileIdentityUnlock(t *testing.T) {
 	wg.Wait()
 	if prompts.Load() != 1 {
 		t.Fatalf("prompts=%d", prompts.Load())
+	}
+}
+
+func TestMissingIdentityDiagnostics(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing-key")
+	c := &connectionConfig{values: map[string][]string{"identityagent": {"none"}, "identityfile": {path}}}
+	_, _, err := c.authentication(context.Background())
+	if err == nil || !strings.Contains(err.Error(), path) || strings.ContainsAny(err.Error(), "\r\n") {
+		t.Fatalf("missing identity diagnostic: %v", err)
 	}
 }

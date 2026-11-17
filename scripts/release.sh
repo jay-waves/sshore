@@ -726,6 +726,8 @@ Changes:
 - Unlock encrypted file keys through the initiating frontend when needed. Existing
   daemons cache unlocked keys in memory with fixed expiration; no agent service
   or passphrase storage is added.
+- Permit server-accepted SSH none authentication, including Tailscale SSH,
+  without requiring local private keys or an SSH agent.
 - Handle Windows OpenSSH system paths and older configuration output, IPv6
   destinations, host-key aliases and configured public-key restrictions.
 - Reuse the root terminal frontend for nested spawn, including remote hops.

@@ -134,7 +134,8 @@ func (c *connectionConfig) authentication(ctx context.Context) ([]cryptossh.Auth
 		if conn != nil {
 			conn.Close()
 		}
-		return nil, nil, fmt.Errorf("no usable SSH public-key identity: %w", errors.Join(agentErr, fileErr, errors.New("check IdentityFile and SSH agent keys")))
+		detail := errors.Join(fileErr, agentErr, errors.New("check IdentityFile and SSH agent keys"))
+		return nil, nil, fmt.Errorf("no usable SSH public-key identity: %s", strings.ReplaceAll(detail.Error(), "\n", "; "))
 	}
 	return []cryptossh.AuthMethod{cryptossh.PublicKeys(selected...)}, conn, nil
 }

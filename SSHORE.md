@@ -79,7 +79,8 @@ resolved in the initiating environment and directory, including its remote
 command. Completion never runs this resolver. No persistent SSH subprocess,
 ControlMaster, askpass executable or implicit reconnect is used.
 
-Public-key authentication uses configured file keys or an external agent. Linux
+The server may accept SSH `none` authentication (for example Tailscale SSH).
+Only when public-key authentication is requested are file keys or an agent loaded. Linux
 uses a Unix agent socket; Windows uses its OpenSSH agent pipe. Configuration
 resolution and agent connections are per connection. Unsupported execution hooks and authentication
 modes fail explicitly. Keep resolver arguments compatible with Windows in-box

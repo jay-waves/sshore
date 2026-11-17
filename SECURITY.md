@@ -156,6 +156,10 @@ does not guarantee immediate erasure of every copy from Go-managed memory.
 Independent frontend processes do not share this cache. No public agent endpoint
 or agent forwarding is introduced.
 
+A server may accept SSH `none` authentication using an external identity system
+such as Tailscale. Host-key verification and sshore operation approvals still
+apply; a missing local key does not bypass a server authentication refusal.
+
 Configured public-key restrictions and RSA size requirements apply to public-key
 authentication and host verification. Separate `RevokedHostKeys` files are not
 supported and are rejected rather than ignored; known_hosts revocation markers

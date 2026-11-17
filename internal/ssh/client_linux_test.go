@@ -124,6 +124,10 @@ func newConnectionFixtureAt(t *testing.T, listenAddress string, identities ...an
 	if err != nil {
 		t.Fatal(err)
 	}
+	allowNone := listenAddress == "none"
+	if allowNone {
+		listenAddress = "127.0.0.1:0"
+	}
 	server, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +150,7 @@ func newConnectionFixtureAt(t *testing.T, listenAddress string, identities ...an
 			go func() { defer workers.Done(); defer c.Close(); agent.ServeAgent(keyring, c) }()
 		}
 	}()
-	sc := &cryptossh.ServerConfig{PublicKeyCallback: func(_ cryptossh.ConnMetadata, key cryptossh.PublicKey) (*cryptossh.Permissions, error) {
+	sc := &cryptossh.ServerConfig{NoClientAuth: allowNone, PublicKeyCallback: func(_ cryptossh.ConnMetadata, key cryptossh.PublicKey) (*cryptossh.Permissions, error) {
 		if string(key.Marshal()) != string(signer.PublicKey().Marshal()) {
 			return nil, fmt.Errorf("unexpected identity")
 		}
@@ -399,5 +403,72 @@ func TestBracketedIPv6Connection(t *testing.T) {
 	}
 	if output.String() != "result:echo" {
 		t.Fatalf("output=%q", &output)
+	}
+}
+
+func TestServerAcceptedNoneAuthentication(t *testing.T) {
+	f := newConnectionFixtureAt(t, "none")
+	data, err := os.ReadFile(f.options.Executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data[:len(data)-len("SSHORE_CONFIG\n")], []byte("identityagent none\npubkeyauthentication no\nSSHORE_CONFIG\n")...)
+	// Replace the existing agent field, since ssh -G uses first-value semantics.
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "identityagent ") {
+			lines[i] = "identityagent none"
+		}
+		if strings.HasPrefix(line, "identityfile ") {
+			lines[i] = "identityfile /missing/identity"
+		}
+	}
+	if err := os.WriteFile(f.options.Executable, []byte(strings.Join(lines, "\n")), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Dial(context.Background(), f.options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	for i, line := range lines {
+		if strings.HasPrefix(line, "userknownhostsfile ") {
+			lines[i] = "userknownhostsfile /missing/known_hosts"
+		}
+	}
+	if err := os.WriteFile(f.options.Executable, []byte(strings.Join(lines, "\n")), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := Dial(context.Background(), f.options); err == nil {
+		c.Close()
+		t.Fatal("none authentication bypassed host trust")
+	}
+}
+
+func TestServerRejectsNoneWithoutIdentity(t *testing.T) {
+	f := newConnectionFixture(t)
+	data, err := os.ReadFile(f.options.Executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "identityagent ") {
+			lines[i] = "identityagent none"
+		}
+		if strings.HasPrefix(line, "identityfile ") {
+			lines[i] = "identityfile /missing/identity"
+		}
+	}
+	if err := os.WriteFile(f.options.Executable, []byte(strings.Join(lines, "\n")), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Dial(context.Background(), f.options)
+	if err == nil {
+		c.Close()
+		t.Fatal("authenticated without server permission or credentials")
+	}
+	if !strings.Contains(err.Error(), "no usable SSH public-key identity") {
+		t.Fatal(err)
 	}
 }

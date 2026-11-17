@@ -77,16 +77,13 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 	if err != nil {
 		return nil, err
 	}
-	auth, agentConn, err := cfg.authentication(connecting)
-	if err != nil {
-		return nil, err
-	}
 	var resources []io.Closer
-	if agentConn != nil {
-		stopAgent := context.AfterFunc(connecting, func() { agentConn.Close() })
-		defer stopAgent()
-		resources = append(resources, agentConn)
-	}
+	var stopAgent func() bool
+	defer func() {
+		if stopAgent != nil {
+			stopAgent()
+		}
+	}()
 	defer func() {
 		if err != nil {
 			for i := len(resources) - 1; i >= 0; i-- {
@@ -94,7 +91,24 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 			}
 		}
 	}()
-	cc := &cryptossh.ClientConfig{User: cfg.user, Auth: auth, HostKeyCallback: callback, HostKeyAlgorithms: hostAlgos}
+	cc := &cryptossh.ClientConfig{User: cfg.user, HostKeyCallback: callback, HostKeyAlgorithms: hostAlgos}
+	// Let the server accept none authentication before requiring local identities.
+	attempted := false
+	cc.AuthCallback = func(state *cryptossh.ClientAuthContext) (cryptossh.AuthMethod, error) {
+		if attempted || !slices.Contains(state.AllowedMethods, "publickey") {
+			return nil, nil
+		}
+		attempted = true
+		methods, agentConn, e := cfg.authentication(connecting)
+		if e != nil {
+			return nil, e
+		}
+		if agentConn != nil {
+			resources = append(resources, agentConn)
+			stopAgent = context.AfterFunc(connecting, func() { agentConn.Close() })
+		}
+		return methods[0], nil
+	}
 	modern := cryptossh.SupportedAlgorithms()
 	choose := func(key string, allowed []string) ([]string, error) {
 		value := cfg.get(key)
@@ -173,6 +187,7 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 	// The cancellation budget closes raw; interactive prompts pause all jump budgets.
 	conn, ch, req, err := cryptossh.NewClientConn(raw, address, cc)
 	cc.Auth = nil
+	cc.AuthCallback = nil
 	if err != nil {
 		return nil, fmt.Errorf("SSH %s: %w", o.Host, err)
 	}
