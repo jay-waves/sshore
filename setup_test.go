@@ -24,6 +24,14 @@ func (s *stubSetupInput) Read(string, bool) (string, error) {
 
 func (s *stubSetupInput) Close() error { s.closed = true; return s.closeErr }
 
+func (s *stubSetupInput) ReadPrefilled(prompt string, paths bool, initial string) (string, error) {
+	line, err := s.Read(prompt, paths)
+	if line == "" && err == nil {
+		return initial, nil
+	}
+	return line, err
+}
+
 func TestSetupRejectsRecoveryMode(t *testing.T) {
 	var stream bytes.Buffer
 	writeMessage(&stream, message{Type: "setup_ready", SoftwareVersion: version, Action: "plain"})

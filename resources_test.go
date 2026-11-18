@@ -13,6 +13,21 @@ import (
 	"time"
 )
 
+func TestConfirmKillAll(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  bool
+	}{
+		{"\n", true}, {"\r\n", true}, {"y\n", true}, {"YES\n", true}, {"kill\n", true},
+		{"n\n", false}, {"no\n", false}, {"cancel\n", false}, {"\x03\n", false},
+		{"", false}, {"yes", false},
+	} {
+		if got := confirmKillAll(strings.NewReader(tc.input)); got != tc.want {
+			t.Errorf("confirmKillAll(%q) = %t, want %t", tc.input, got, tc.want)
+		}
+	}
+}
+
 func TestResourceIdentityAndLifetime(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	tasks := startRequestDaemon(t)
@@ -277,6 +292,26 @@ func TestRemoteMountRequest(t *testing.T) {
 	for _, args := range [][]string{{"origin:", "."}, {".", "origin:", "--no-watch"}, {".", "origin:", "--foreground"}, {".", "origin:", "--", "-J", "jump"}, {"host:/tmp", "origin:"}, {"-", "origin:"}, {".", "origin:", "extra"}} {
 		if _, err := remoteMountRequest(args); err == nil {
 			t.Fatal(args)
+		}
+	}
+}
+
+func TestAbsoluteMountPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	for _, tc := range []struct{ input, want string }{
+		{"~", home},
+		{"~/ a directory ", filepath.Join(home, " a directory ")},
+		{"./~", "~"},
+		{"~alice", "~alice"},
+	} {
+		want, err := filepath.Abs(tc.want)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := absoluteMountPath(tc.input); err != nil || got != want {
+			t.Errorf("absoluteMountPath(%q) = %q, %v; want %q", tc.input, got, err, want)
 		}
 	}
 }

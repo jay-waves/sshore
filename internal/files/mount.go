@@ -29,7 +29,7 @@ type MountConfig struct {
 	Connection                        sshio.Options
 	ReadOnly, DirectIO, Stats         bool
 	StartupTimeout, IOTimeout         time.Duration
-	Prepare                           func(context.Context, io.ReadWriter) error
+	Prepare                           func(context.Context, io.ReadWriter) (string, error)
 	Open                              func(context.Context) (io.ReadWriteCloser, error)
 }
 
@@ -111,10 +111,15 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		})
 		defer watch.timer.Stop()
 	}
+	var home string
 	if o.Prepare != nil {
-		if err := o.Prepare(ctx, transport); err != nil {
+		if home, err = o.Prepare(ctx, transport); err != nil {
 			return 1, fmt.Errorf("mount setup: %w", err)
 		}
+	}
+	remote, err := ExpandRemoteHome(o.Remote, home)
+	if err != nil {
+		return 1, err
 	}
 	var account string
 	mux, data, events, err := openMux(transport, o.Version, o.Approval, o.PeerMetadata, &account)
@@ -136,7 +141,7 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 	// Direct pipe closure must precede Client.Close: pkg/sftp serializes Close
 	// with writes and otherwise cannot interrupt a blocked outgoing request.
 	defer func() { cancel(); _ = stdout.Close(); _ = stdin.Close(); _ = client.Close() }()
-	root, err := client.RealPath(o.Remote)
+	root, err := client.RealPath(remote)
 	if err != nil {
 		return 1, fmt.Errorf("remote directory: %w", err)
 	}

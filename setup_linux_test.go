@@ -68,7 +68,8 @@ func TestRemoteHelpersRequireMatchingRelease(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer func() { input.Close(); output.Close(); cmd.Process.Kill(); cmd.Wait() }()
-				err = negotiateSetup(output, input, &options{command: mode, host: "fixture"})
+				setup := options{command: mode, host: "fixture"}
+				err = negotiateSetup(output, input, &setup)
 				if !tc.success {
 					if err == nil || !strings.Contains(err.Error(), "sshore install") || !strings.Contains(err.Error(), version) {
 						t.Fatalf("expected version and setup guidance: %v", err)
@@ -84,6 +85,9 @@ func TestRemoteHelpersRequireMatchingRelease(t *testing.T) {
 				}
 				if err != nil {
 					t.Fatalf("setup: %v", err)
+				}
+				if setup.remoteHome != home {
+					t.Fatalf("remote home = %q, want %q", setup.remoteHome, home)
 				}
 				wire := &wire.Pipe{Reader: output, Writer: input, Closers: []io.Closer{input, output}}
 				var data io.ReadWriteCloser = wire
@@ -295,7 +299,7 @@ func TestInstallWithRunningTasks(t *testing.T) {
 		return string(out), err
 	}
 
-	if out, err := apply(e.bin, ""); err != nil || strings.Contains(out, "Type kill") {
+	if out, err := apply(e.bin, ""); err != nil || strings.Contains(out, "[Y/n]") {
 		t.Fatalf("same release: %s %v", out, err)
 	}
 	target := filepath.Join(t.TempDir(), "sshore")

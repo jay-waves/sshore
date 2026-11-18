@@ -60,7 +60,7 @@ func daemonProcessWaiter(_ int) (func(time.Time) error, func(), error) {
 func prepareFTPPaths(o *ftpOptions) (func(), error) {
 	cleanup := func() {}
 	if o.mountpoint != "" {
-		p, e := filepath.Abs(o.mountpoint)
+		p, e := absoluteMountPath(o.mountpoint)
 		o.mountpoint = p
 		return cleanup, e
 	}

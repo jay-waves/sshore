@@ -141,6 +141,11 @@ Direct copies require a matching remote sshore helper. Copy supports regular
 files and refuses to overwrite existing destinations. If a batch fails, files
 already copied stay in place.
 
+In copy and mount endpoints, `~` and `~/...` refer to the home directory on
+that endpoint's machine. For example, `sshore cp .:report.zip work:~` saves
+`report.zip` in the remote user's home directory. Use `./~` for a path named
+`~`.
+
 ## Forward a port
 
 ```sh
@@ -164,6 +169,8 @@ on Linux or [WinFsp](https://winfsp.dev/) on Windows. Omit `--read-only` to
 allow writes. An interrupted write can leave a partial file. Close open files
 before running the kill command printed at startup.
 
+An `origin:~/...` path expands on the client during review.
+
 ## Request access from a remote shell
 
 Inside an attached remote shell, use `origin:` when an operation needs a file,
@@ -176,8 +183,10 @@ sshore forward origin: .:3000     # Request a client port for this remote servic
 sshore mount .:./ origin:         # Request a client mountpoint for this directory.
 ```
 
-Return to the client and run `sshore review` to supply any missing path or port
-and approve the request. A forward request detaches the shell. Use `attach` to
+Return to the client and run `sshore review`. The input field starts with the
+suggested path or port when supplied, or a local default when available. Edit it
+if needed and press Enter to approve. For batch downloads, submit each destination
+before the transfer starts. A forward request detaches the shell. Use `attach` to
 resume it after review.
 
 ## Agent access

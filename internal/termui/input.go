@@ -58,6 +58,11 @@ func NewInput() (*Input, error) {
 }
 
 func (p *Input) Read(prompt string, paths bool) (string, error) {
+	line, err := p.ReadPrefilled(prompt, paths, "")
+	return strings.TrimSpace(line), err
+}
+
+func (p *Input) ReadPrefilled(prompt string, paths bool, initial string) (string, error) {
 	p.completionMu.Lock()
 	p.paths = paths
 	p.completion = pathCompletion{}
@@ -70,11 +75,7 @@ func (p *Input) Read(prompt string, paths bool) (string, error) {
 			return "", fmt.Errorf("prepare confirmation input: %w", err)
 		}
 	}
-	line, err := p.editor.Readline()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(line), nil
+	return p.editor.ReadlineWithDefault(initial)
 }
 
 func formatInputPrompt(color bool, prompt string) string {
@@ -127,7 +128,7 @@ func completeLocalPath(line []rune, pos int) ([][]rune, int) {
 		searchDir = "."
 	} else {
 		var err error
-		searchDir, err = ParsePath([]byte(searchDir))
+		searchDir, err = ExpandHomePath(searchDir)
 		if err != nil {
 			return nil, 0
 		}
@@ -274,10 +275,19 @@ func ParsePath(b []byte) (string, error) {
 	if s == "" {
 		return "", fmt.Errorf("empty path")
 	}
-	if s == "~" || strings.HasPrefix(s, "~/") || strings.HasPrefix(s, `~\`) {
+	return ExpandHomePath(s)
+}
+
+// ExpandHomePath expands the current user's home prefix in a native path.
+// It preserves spaces and quotes in paths already parsed by the caller.
+func ExpandHomePath(s string) (string, error) {
+	if s == "~" || strings.HasPrefix(s, "~/") || os.PathSeparator == '\\' && strings.HasPrefix(s, `~\`) {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
+		}
+		if !filepath.IsAbs(home) {
+			return "", fmt.Errorf("home directory is not an absolute path")
 		}
 		if s == "~" {
 			s = home

@@ -70,7 +70,7 @@ var commandHelp = map[string]string{
 
 Update this computer to the latest published release, or update HOST to the
 exact local version over SSH. Before replacement, install stops the target daemon.
-If it owns tasks, review the list and type kill to end them and continue.
+If it owns tasks, review the list and follow the confirmation prompt.
 Omit the target or use self: to install locally. Use HOST: to select a remote
 default path, or append an absolute path to either endpoint.
 ` + sshOptions,
@@ -239,7 +239,7 @@ Effects:
 --all stops the account daemon, even when idle. Without HOST it targets the
 local account. With HOST it targets the remote account and also ends local
 resources connected to HOST. When tasks are present, it previews them and
-requires typing kill. Peer records are read-only.
+prompts [Y/n]. Enter confirms and n cancels. Peer records are read-only.
 --all uses authenticated cross-release daemon shutdown. Individual remote task
 control requires matching releases. Neither form installs software.
 ` + sshOptions,

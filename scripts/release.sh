@@ -39,6 +39,22 @@ Includes Linux and Windows binaries for amd64 (x86-64) only.
 Verify downloaded archives against SHA256SUMS.
 Commit: $GITHUB_SHA
 NOTES
+if [[ "$version" == "0.7.11" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+- Use explicit host endpoints for shell and file commands. Bare kill selectors
+  resolve locally. Include HOST: to select a remote shell.
+- Copy and mount expand home-relative paths on the machine named by each endpoint.
+- Review prefills suggested paths and ports. Enter submits each field, and
+  approved uploads use the file handle opened at approval.
+- kill --all shows the task snapshot and accepts Enter at the [Y/n] prompt.
+
+Update both endpoints to 0.7.11 for managed connections. Save work before
+installing because the installer stops the target account daemon. Update scripts
+that relied on bare selectors finding remote shells to specify HOST:ID.
+NOTES
+fi
+
 if [[ "$version" == "0.7.10" ]]; then
   cat >> release-notes.md <<'NOTES'
 

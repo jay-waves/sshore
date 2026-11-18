@@ -70,8 +70,10 @@ func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
 	if s != nil {
 		c.PeerMetadata, _ = json.Marshal(s.peerTask())
 	}
-	c.Prepare = func(_ context.Context, wire io.ReadWriter) error {
-		return negotiateSetup(wire, wire, &options{command: "mount-agent", host: o.host})
+	c.Prepare = func(_ context.Context, wire io.ReadWriter) (string, error) {
+		setup := options{command: "mount-agent", host: o.host}
+		err := negotiateSetup(wire, wire, &setup)
+		return setup.remoteHome, err
 	}
 	if s != nil && s.config.MountConnection != nil && s.config.MountConnection.viaShell() {
 		c.Prepare = nil
@@ -90,34 +92,25 @@ func mountSSHOptions(o ftpOptions) sshio.Options {
 	return sshio.Options{Host: o.host, Args: append([]string{"-o", "ClearAllForwardings=yes"}, sshio.WithoutForwarding(o.ssh)...), Command: remoteCommand(options{command: "mount-agent", host: o.host, server: o.server}), Confirm: confirmSSHHost, Secret: promptSSHSecret}
 }
 
-func readMountApprovalPath(input promptReader, hint string) (string, error) {
-	label := hint
-	if label == "" {
-		label = "automatic"
+func absoluteMountPath(path string) (string, error) {
+	path, err := termui.ExpandHomePath(path)
+	if err != nil {
+		return "", err
 	}
-	for {
-		line, err := input.Read(fmt.Sprintf("Mountpoint [%s] (Enter starts; Ctrl-C cancels): ", cleanText(label)), true)
-		if err != nil {
-			return "", fmt.Errorf("approval cancelled; request remains pending: %w", err)
+	return filepath.Abs(path)
+}
+
+func readMountApprovalPath(input reviewPromptReader, hint string) (string, error) {
+	return readReviewPath(input, "Mountpoint (empty for automatic): ", hint, true, func(path string) (string, error) {
+		if !(runtime.GOOS == "windows" && len(path) == 2 && path[1] == ':') {
+			absolute, err := filepath.Abs(path)
+			if err != nil {
+				return "", err
+			}
+			path = absolute
 		}
-		if line == "" {
-			line = hint
-		}
-		if line == "" {
-			return "", nil
-		}
-		selected, err := termui.ParsePath([]byte(line))
-		if err == nil && !(runtime.GOOS == "windows" && len(selected) == 2 && selected[1] == ':') {
-			selected, err = filepath.Abs(selected)
-		}
-		if err == nil {
-			err = files.ValidateMountpoint(selected)
-		}
-		if err == nil {
-			return selected, nil
-		}
-		termui.Log(os.Stdout, termui.Warning, "%s\n", cleanText(err.Error()))
-	}
+		return path, files.ValidateMountpoint(path)
+	})
 }
 
 // Merge this mount's observations under the account state lock on unmount.

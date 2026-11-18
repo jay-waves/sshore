@@ -122,8 +122,9 @@ transfer offers, forward-add streams and reverse connection streams are rejected
 A suggested path or port, including `--download-dir`, is not permission.
 
 Sensitive review happens in a **separate local `sshore review` invocation** after
-the connected client exits. Submitting the validated paths or port is approval;
-there is no additional `yes`. File batches collect all paths before starting.
+the connected client exits. Suggested values are prefilled as editable local
+input. Pressing Enter submits the field and approves once all requested fields
+are valid. File batches collect all paths before starting.
 Ctrl-C or EOF during selection starts no operation and leaves the request pending.
 Completion can browse local paths but does not submit them. Approved execution
 uses a separate data stream and does not attach a terminal.
@@ -174,8 +175,9 @@ provides its digest; the receiver closes writes, verifies its temporary file and
 permits publication only on a match. File content is not downloaded for verification.
 
 Local sources reject final-component symlinks/reparse points and compare opened
-file identity with the initial check. Linux uses nonblocking opens so a substituted
-FIFO cannot stall validation. These checks do not lock parent directories or stop
+file identity with the initial check. A reviewed upload reads from the file
+handle opened when the local user submitted the path. Linux uses nonblocking
+opens so a substituted FIFO cannot stall validation. These checks do not lock parent directories or stop
 changes to the contents of the same file. Same-size content changes remain possible.
 
 SSH integrity and readback checks do not authenticate file provenance. Downloaded
@@ -261,7 +263,8 @@ task removes its live registration; clients do not infer lifetime from stale fil
 Remote shell cancellation uses the same authenticated, exact-release control
 entry and signals only the child identities owned by that task.
 Single-shell `kill` ends an attached shell immediately using KILL on Linux or job termination on Windows. `kill --all` displays a
-fresh snapshot and requires typing `kill`; any task change requires fresh review.
+fresh snapshot and requires confirmation at a `[Y/n]` prompt. Enter confirms,
+and EOF cancels. Any task change requires fresh review.
 Other managers' advertisements are excluded. Administrative shutdown may cross
 release versions; individual task control still requires an exact release.
 

@@ -554,7 +554,11 @@ func TestRequestPickerIdentityAndFilter(t *testing.T) {
 		{[]string{"/beta", "/", "first-id"}, "first-id"},
 		{[]string{""}, ""},
 	} {
-		got, err := chooseLocalItem(&stubSetupInput{answers: tc.answers}, ids, labels, "Request: ", "request")
+		i, err := chooseLocalItem(&stubSetupInput{answers: tc.answers}, ids, labels, "Request: ", "request")
+		got := ""
+		if err == nil {
+			got = ids[i]
+		}
 		if got != tc.want || (err != nil) != (tc.want == "") {
 			t.Fatal(got, err)
 		}

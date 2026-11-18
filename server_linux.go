@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -124,7 +123,7 @@ func serverCommand(args []string) error {
 		if err != nil {
 			return err
 		}
-		op.Path, err = filepath.Abs(op.Path)
+		op.Path, err = absoluteMountPath(op.Path)
 		if err != nil {
 			return err
 		}

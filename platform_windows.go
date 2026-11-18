@@ -96,7 +96,7 @@ func prepareFTPPaths(o *ftpOptions) (func(), error) {
 		if len(o.mountpoint) == 2 && o.mountpoint[1] == ':' {
 			return cleanup, nil
 		}
-		p, e := filepath.Abs(o.mountpoint)
+		p, e := absoluteMountPath(o.mountpoint)
 		o.mountpoint = p
 		return cleanup, e
 	}

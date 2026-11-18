@@ -55,6 +55,31 @@ func TestCopyCLI(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(root, "relative-copy")); err != nil || string(got) != "direct cp" {
 		t.Fatal("relative remote path", string(got), err)
 	}
+	localDir := filepath.Join(root, "local")
+	if err = os.Mkdir(localDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(localDir, "home-copy"), []byte("home copy"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = run("cp", ".:~/local/home-copy", "work:~"); err != nil {
+		t.Fatal(err)
+	}
+	if err = run("cp", "work:~/home-copy", ".:~/local/download"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(localDir, "download")); err != nil || string(got) != "home copy" {
+		t.Fatal("home path", string(got), err)
+	}
+	if _, err = os.Lstat(filepath.Join(root, "~")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected literal tilde destination: %v", err)
+	}
+	if err = run("cp", ".:"+source, "work:./~"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "~")); err != nil || string(got) != "direct cp" {
+		t.Fatal("literal tilde path", string(got), err)
+	}
 	streamTarget := filepath.Join(root, "streamed")
 	data = bytes.Repeat([]byte("pipe data\x00\xff\n"), 10000)
 	for _, args := range [][]string{{"cp", ".:-", "work:" + streamTarget}, {"cp", "work:" + streamTarget, ".:-"}} {

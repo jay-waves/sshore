@@ -18,6 +18,28 @@ import (
 	"testing/iotest"
 )
 
+func TestExpandRemoteHome(t *testing.T) {
+	for _, tc := range []struct{ name, home, want string }{
+		{"~", "/home/user", "/home/user"},
+		{"~/directory with spaces", "/home/user", "/home/user/directory with spaces"},
+		{"~/file", "/", "/file"},
+		{"~/link/../file", "/home/user", "/home/user/link/../file"},
+		{"./~", "", "./~"},
+		{"~user", "", "~user"},
+		{`~\file`, "", `~\file`},
+	} {
+		got, err := ExpandRemoteHome(tc.name, tc.home)
+		if got != tc.want || err != nil {
+			t.Errorf("ExpandRemoteHome(%q, %q) = %q, %v; want %q", tc.name, tc.home, got, err, tc.want)
+		}
+	}
+	for _, home := range []string{"", "relative"} {
+		if _, err := ExpandRemoteHome("~", home); err == nil {
+			t.Errorf("accepted remote home %q", home)
+		}
+	}
+}
+
 func TestFileRoundTrip(t *testing.T) {
 	for _, size := range []int{0, 1, 64*1024*3 + 11} {
 		t.Run(string(rune('a'+size%26)), func(t *testing.T) {

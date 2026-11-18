@@ -48,6 +48,20 @@ func ValidateName(name string) error {
 	return nil
 }
 
+// ExpandRemoteHome interprets a home prefix using the Linux SSH peer's home.
+func ExpandRemoteHome(name, home string) (string, error) {
+	if name != "~" && !strings.HasPrefix(name, "~/") {
+		return name, nil
+	}
+	if !path.IsAbs(home) || strings.ContainsRune(home, 0) {
+		return "", fmt.Errorf("remote home directory is unavailable")
+	}
+	if name == "~" {
+		return home, nil
+	}
+	return strings.TrimRight(home, "/") + name[1:], nil
+}
+
 type Source struct {
 	file *os.File
 	name string
@@ -172,6 +186,11 @@ func Upload(client *sftp.Client, source, target string, size int64, progress *at
 		return err
 	}
 	defer f.Close()
+	return f.Upload(client, target, size, progress)
+}
+
+// Upload transfers the file already opened by OpenSource.
+func (f *Source) Upload(client *sftp.Client, target string, size int64, progress *atomic.Int64) error {
 	if f.size != size {
 		return fmt.Errorf("source size changed")
 	}

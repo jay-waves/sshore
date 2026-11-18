@@ -72,14 +72,15 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 	if os.Getenv("SSHORE_SOCKET") != "" || os.Getenv("SSH_CONNECTION") != "" {
 		return 1, fmt.Errorf("run review from your local shell after detach")
 	}
-	var ids, labels []string
+	var ids, names, labels []string
 	if a.id == "" {
 		records, err := pendingRequests()
 		if err != nil {
 			return 1, err
 		}
 		for _, r := range records {
-			ids = append(ids, r.DisplayName())
+			ids = append(ids, r.ID)
+			names = append(names, r.DisplayName())
 			source := r.Connection.Host
 			if r.Connection.Session != "" {
 				source += " / " + r.Connection.Session
@@ -105,10 +106,11 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 		}
 	}()
 	if a.id == "" {
-		a.id, err = chooseLocalItem(input, ids, labels, "Request (#number/name, /filter; Enter cancels): ", "request")
+		i, err := chooseLocalItem(input, names, labels, "Request (#number/name, /filter; Enter cancels): ", "request")
 		if err != nil {
 			return 1, err
 		}
+		a.id = ids[i]
 	}
 	// Re-read after selection: an expired or concurrently cancelled request fails closed.
 	r, err := findRequest(a.id)
@@ -125,10 +127,17 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 		}
 	}
 	termui.Log(os.Stdout, termui.Info, "%s %s · %s / %s\n", title, r.DisplayName(), cleanText(r.Connection.Host), cleanText(r.Connection.Session))
+	uploadSources := make(map[int]*files.Source)
+	destinations := make(map[string]bool)
+	defer func() {
+		for _, source := range uploadSources {
+			source.Close()
+		}
+	}()
 	for i := range r.Operations {
 		op := &r.Operations[i]
 		if op.Kind != "forward" && op.LocalHint != "" {
-			hint, e := termui.ParsePath([]byte(op.LocalHint))
+			hint, e := termui.ExpandHomePath(op.LocalHint)
 			if e != nil {
 				return 1, fmt.Errorf("invalid local path suggestion; request remains pending: %w", e)
 			}
@@ -145,25 +154,26 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 				dest = op.LocalHint
 			}
 			termui.Log(os.Stdout, termui.Info, "Download %s · %s\n", cleanText(op.Path), displayBytes(op.Size))
-			path, e := readApprovalPath(input, fmt.Sprintf("Save as [%s] (Enter confirms; Ctrl-C cancels): ", cleanText(dest)), dest, func(path string) (string, error) {
-				return files.DownloadDestination(path, op.Name)
+			path, e := readApprovalPath(input, "Save as: ", dest, func(path string) (string, error) {
+				path, err := files.DownloadDestination(path, op.Name)
+				if err == nil && destinations[path] {
+					return "", fmt.Errorf("destination already selected: %s", path)
+				}
+				return path, err
 			})
 			if e != nil {
 				return 1, e
 			}
 			op.LocalPath = path
+			destinations[path] = true
 		case "upload":
 			termui.Log(os.Stdout, termui.Info, "Upload → %s\n", cleanText(op.Path))
-			prompt := "Local file to upload (Enter confirms; Ctrl-C cancels): "
-			if op.LocalHint != "" {
-				prompt = fmt.Sprintf("Local file to upload [%s] (Enter confirms; Ctrl-C cancels): ", cleanText(op.LocalHint))
-			}
-			path, e := readApprovalPath(input, prompt, op.LocalHint, func(path string) (string, error) {
+			path, e := readApprovalPath(input, "Local file to upload: ", op.LocalHint, func(path string) (string, error) {
 				f, e := files.OpenSource(path)
 				if e != nil {
 					return "", e
 				}
-				defer f.Close()
+				uploadSources[i] = f
 				op.Name, op.Size = f.Name(), f.Size()
 				return path, nil
 			})
@@ -190,38 +200,21 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 			label := "Local listening port"
 			if op.Reverse {
 				label = "Local service port"
-			}
-			if op.Reverse {
 				termui.Log(os.Stdout, termui.Info, "%s %s -> local service\n", cleanText(r.Connection.Host), loopback(remote))
 			} else {
 				termui.Log(os.Stdout, termui.Info, "Local listener -> %s %s\n", cleanText(r.Connection.Host), loopback(remote))
 			}
-			port, e := readSelectedPort(input, label, op.LocalHint, "approval cancelled; request remains pending")
+			port, e := readApprovalPort(input, label, op.LocalHint)
 			if e != nil {
 				return 1, e
 			}
 			resolveLocalPort(op, port)
-		}
-	}
-	// Duplicate destinations are rejected before executing any batch member.
-	destinations := map[string]bool{}
-	for i := range r.Operations {
-		op := &r.Operations[i]
-		if op.Kind == "download" {
-			if destinations[op.LocalPath] {
-				return 1, fmt.Errorf("duplicate destination; request remains pending: %s", op.LocalPath)
-			}
-			destinations[op.LocalPath] = true
 		}
 		op.LocalHint = ""
 	}
 	// Release the input reader and terminal before SSH takes ownership.
 	if err := input.Close(); err != nil {
 		return 1, err
-	}
-	// A user may leave the prompt open past the expiration time.
-	if time.Since(r.Created) > requestTTL {
-		return 1, fmt.Errorf("approval expired; request it again")
 	}
 	// Restore the original local working directory for relative SSH configuration
 	// paths. Selected local file paths are already absolute.
@@ -232,16 +225,18 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 	if err = os.Chdir(connectionDirectory); err != nil {
 		return 1, err
 	}
-	reservation, err := chooseTaskIdentityExcept("review", r.DisplayName(), r.ID)
-	if err != nil {
-		return 1, err
+	kind := r.Operations[0].Kind
+	var reservation *taskIdentitySelection
+	if kind == "mount" || kind == "forward" {
+		reservation, err = chooseTaskIdentityExcept(kind, r.DisplayName(), r.ID)
+		if err != nil {
+			return 1, err
+		}
 	}
-
-	reservation.uid = r.ID
 	if err = consumeRequest(r.ID); err != nil {
 		return 1, err
 	}
-	if len(r.Operations) == 1 && r.Operations[0].Kind == "mount" {
+	if kind == "mount" {
 		op := r.Operations[0]
 		args := []string{remotePathOperand(r.Connection.Host, op.Path), localEndpointPrefix + op.LocalPath}
 		if op.ReadOnly {
@@ -254,7 +249,7 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 		}
 		return startSelectedResource(config, "mount", reservation)
 	}
-	if len(r.Operations) == 1 && r.Operations[0].Kind == "forward" {
+	if kind == "forward" {
 		op := r.Operations[0]
 		f := forwardConfig{Name: r.DisplayName(), Host: r.Connection.Host, Server: r.Connection.Server, SSH: r.Connection.SSH, Port: op.Port, Target: op.TargetPort, Reverse: op.Reverse, Session: r.Connection.Session, ResumePID: r.PID, ApprovalID: r.ID}
 		f.Instance = r.Connection.Instance
@@ -279,7 +274,7 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 		return 1, err
 	}
 	defer mux.Close()
-	if err := executeApprovedFiles(ctx, mux, r.Operations, r.Quiet); err != nil {
+	if err := executeApprovedFiles(ctx, mux, r.Operations, uploadSources, r.Quiet); err != nil {
 		return 1, err
 	}
 	return 0, nil
@@ -305,20 +300,14 @@ func requestSummary(ops []operation) string {
 // File execution uses an independent stream. Approved forwarding runs separately
 // as an independent background resource without attaching to the shell.
 
-func executeApprovedFiles(ctx context.Context, mux *smux.Session, ops []operation, quiet bool) error {
-	var files []operation
-	for _, op := range ops {
-		if op.Kind != "forward" {
-			files = append(files, op)
+func executeApprovedFiles(ctx context.Context, mux *smux.Session, ops []operation, uploadSources map[int]*files.Source, quiet bool) error {
+	for i, op := range ops {
+		if !quiet && len(ops) > 1 {
+			termui.Log(os.Stderr, termui.Info, "[sshore] File %d/%d: %s %s\n", i+1, len(ops), op.Kind, cleanText(op.Name))
 		}
-	}
-	for i, op := range files {
-		if !quiet && len(files) > 1 {
-			termui.Log(os.Stderr, termui.Info, "[sshore] File %d/%d: %s %s\n", i+1, len(files), op.Kind, cleanText(op.Name))
-		}
-		if err := executeApprovedFile(ctx, mux, op, quiet); err != nil {
-			termui.Log(os.Stderr, termui.Error, "[sshore] Transfer: %d done, 1 failed/cancelled, %d not started. Completed files kept.\n", i, len(files)-i-1)
-			for j, file := range files {
+		if err := executeApprovedFile(ctx, mux, op, uploadSources[i], quiet); err != nil {
+			termui.Log(os.Stderr, termui.Error, "[sshore] Transfer: %d done, 1 failed/cancelled, %d not started. Completed files kept.\n", i, len(ops)-i-1)
+			for j, file := range ops {
 				state := "not started"
 				if j < i {
 					state = "completed"
@@ -331,13 +320,13 @@ func executeApprovedFiles(ctx context.Context, mux *smux.Session, ops []operatio
 			return err
 		}
 	}
-	if len(files) > 1 {
-		termui.Log(os.Stderr, termui.Success, "[sshore] Transferred %d/%d files.\n", len(files), len(files))
+	if len(ops) > 1 {
+		termui.Log(os.Stderr, termui.Success, "[sshore] Transferred %d/%d files.\n", len(ops), len(ops))
 	}
 	return nil
 }
 
-func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, quiet bool) error {
+func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, source *files.Source, quiet bool) error {
 	st, err := mux.OpenStream()
 	if err != nil {
 		return err
@@ -349,13 +338,8 @@ func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, q
 	remote := op
 	remote.LocalPath = ""
 	if op.Kind == "upload" {
-		f, err := files.OpenSource(op.LocalPath)
-		if err != nil {
-			return err
-		}
-		f.Close()
-		if f.Name() != op.Name || f.Size() != op.Size {
-			return fmt.Errorf("local file metadata changed; request again")
+		if source == nil || source.Name() != op.Name || source.Size() != op.Size {
+			return fmt.Errorf("local file differs from the approved source; request again")
 		}
 		remote.Name, remote.Size = "", 0
 	}
@@ -379,7 +363,7 @@ func executeApprovedFile(ctx context.Context, mux *smux.Session, op operation, q
 	done := make(chan error, 1)
 	go func() {
 		if op.Kind == "upload" {
-			done <- files.Upload(client, op.LocalPath, "/target", op.Size, &completed)
+			done <- source.Upload(client, "/target", op.Size, &completed)
 		} else {
 			done <- files.Download(client, "/source", op.LocalPath, op.Size, &completed)
 		}
