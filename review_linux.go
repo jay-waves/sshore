@@ -46,6 +46,10 @@ func requestOperations(ops []operation) error {
 func requestFilesWithHint(kind string, paths []string, hint string) error {
 	var ops []operation
 	for _, path := range paths {
+		path, err := termui.ExpandHomePath(path)
+		if err != nil {
+			return err
+		}
 		absolute, err := filepath.Abs(path)
 		if err != nil {
 			return err

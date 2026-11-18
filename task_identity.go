@@ -172,9 +172,12 @@ func chooseTaskIdentityExcept(kind, requested, exceptID string) (*taskIdentitySe
 	if err != nil {
 		return nil, err
 	}
-	uid, err := newTaskUID()
-	if err != nil {
-		return nil, err
+	uid := exceptID
+	if uid == "" {
+		uid, err = newTaskUID()
+		if err != nil {
+			return nil, err
+		}
 	}
 	name := requested
 	if name == "" {

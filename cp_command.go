@@ -29,6 +29,16 @@ func runCopy(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	if o.upload {
+		for i := range o.sources {
+			o.sources[i].path, err = termui.ExpandHomePath(o.sources[i].path)
+			if err != nil {
+				return 1, err
+			}
+		}
+	} else if o.target.path, err = termui.ExpandHomePath(o.target.path); err != nil {
+		return 1, err
+	}
 	stopActivity, err := beginCommandActivity()
 	if err != nil {
 		return 1, err
@@ -65,8 +75,22 @@ func runCopy(args []string) (int, error) {
 	}
 	stdin := pipes.Stdin()
 	defer func() { cancel(); pipes.CloseAndWait() }()
-	if err = negotiateSetup(pipes, stdin, &options{command: "cp-agent", host: o.host, ssh: o.ssh}); err != nil {
+	setup := options{command: "cp-agent", host: o.host, ssh: o.ssh}
+	if err = negotiateSetup(pipes, stdin, &setup); err != nil {
 		return 1, err
+	}
+	if o.upload {
+		o.target.path, err = files.ExpandRemoteHome(o.target.path, setup.remoteHome)
+		if err != nil {
+			return 1, err
+		}
+	} else {
+		for i := range o.sources {
+			o.sources[i].path, err = files.ExpandRemoteHome(o.sources[i].path, setup.remoteHome)
+			if err != nil {
+				return 1, err
+			}
+		}
 	}
 	client, err := files.NewSFTP(pipes, stdin)
 	if err != nil {

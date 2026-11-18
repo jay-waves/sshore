@@ -195,9 +195,8 @@ func runKillAll(o options) (int, error) {
 		if len(records) > 0 {
 			printTaskInventory(inventory{Resources: inspectResources(records)})
 		}
-		fmt.Fprint(os.Stderr, "End the listed tasks and stop the account daemon? Type kill: ")
-		answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
-		if err != nil || strings.TrimSpace(answer) != "kill" {
+		fmt.Fprint(os.Stderr, "End the listed tasks and stop the account daemon? [Y/n] ")
+		if !confirmKillAll(os.Stdin) {
 			return 1, fmt.Errorf("cancelled; no tasks ended")
 		}
 	}
@@ -215,6 +214,19 @@ func runKillAll(o options) (int, error) {
 	}
 	fmt.Println("Tasks ended; daemon stopped.")
 	return 0, nil
+}
+
+func confirmKillAll(input io.Reader) bool {
+	answer, err := bufio.NewReader(input).ReadString('\n')
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "", "y", "yes", "kill":
+		return true
+	default:
+		return false
+	}
 }
 
 func printDaemonSnapshot(w io.Writer, host string, snapshot daemonSnapshot) {

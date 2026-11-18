@@ -225,6 +225,7 @@ type options struct {
 	command               string
 	newName               string
 	downloadDir           string
+	remoteHome            string
 	list, quiet, noEscape bool
 	listJSON              bool
 	ssh                   []string

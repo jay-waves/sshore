@@ -14,7 +14,7 @@ Usage: sh install.sh [--version X.Y.Z] [--path PATH | --bin-dir DIRECTORY]
 Install a published Linux amd64 release, without sudo or shell profile edits.
 Default: latest release into $HOME/.local/bin. Explicit --version is recommended
 when matching a local client. Requires curl, tar and sha256sum (or shasum).
-Upgrades stop the account daemon. If tasks are listed, type kill to end them.
+Upgrades stop the account daemon. If tasks are listed, follow the confirmation prompt.
 Windows clients: use install.ps1 or the matching release ZIP.
 HELP
 }

@@ -103,8 +103,9 @@ func TestPendingRequestOwnsName(t *testing.T) {
 			t.Fatalf("%s stole pending request name", kind)
 		}
 	}
-	if _, err := chooseTaskIdentityExcept("review", name, id); err != nil {
-		t.Fatal(err)
+	reservation, err := chooseTaskIdentityExcept("forward", name, id)
+	if err != nil || reservation.uid != id {
+		t.Fatal(reservation, err)
 	}
 	if err := consumeRequest(id); err != nil {
 		t.Fatal(err)

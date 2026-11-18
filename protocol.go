@@ -39,6 +39,7 @@ type message struct {
 	PeerTask        *peerRecord         `json:"peer_task,omitempty"`
 	ApprovalID      string              `json:"approval_id,omitempty"`
 	Directory       string              `json:"directory,omitempty"`
+	HomeDirectory   string              `json:"home_directory,omitempty"`
 	AgeSeconds      *int64              `json:"age_seconds,omitempty"`
 	Names           []string            `json:"names,omitempty"`
 	SoftwareVersion string              `json:"software_version,omitempty"`

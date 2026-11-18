@@ -418,7 +418,7 @@ func TestTransferRoundTripsCancellationAndNoOverwrite(t *testing.T) {
 	}
 	target := filepath.Join(e.dir, "download")
 	op := operation{Kind: "download", Path: source, Name: filepath.Base(source), Size: int64(len(data)), LocalPath: target}
-	if err := executeApprovedFile(context.Background(), mux, op, true); err != nil {
+	if err := executeApprovedFile(context.Background(), mux, op, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(target)
@@ -430,14 +430,33 @@ func TestTransferRoundTripsCancellationAndNoOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	op = operation{Kind: "upload", Path: dir, Name: filepath.Base(source), Size: int64(len(data)), LocalPath: source}
-	if err = executeApprovedFile(context.Background(), mux, op, true); err != nil {
+	approved, err := files.OpenSource(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer approved.Close()
+	if err = os.Rename(source, source+".original"); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(source, make([]byte, len(data)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = executeApprovedFile(context.Background(), mux, op, approved, true); err != nil {
 		t.Fatal(err)
 	}
 	got, err = os.ReadFile(filepath.Join(dir, op.Name))
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatal("upload corrupted", err)
 	}
-	if err = executeApprovedFile(context.Background(), mux, op, true); err == nil {
+	upload := func(op operation) error {
+		approved, err := files.OpenSource(op.LocalPath)
+		if err != nil {
+			return err
+		}
+		defer approved.Close()
+		return executeApprovedFile(context.Background(), mux, op, approved, true)
+	}
+	if err = upload(op); err == nil {
 		t.Fatal("overwrite accepted")
 	}
 	st := partialUpload(t, mux, dir, "cancelled")
@@ -454,7 +473,7 @@ func TestTransferRoundTripsCancellationAndNoOverwrite(t *testing.T) {
 	if err = os.WriteFile(op.LocalPath, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err = executeApprovedFile(context.Background(), mux, op, true); err != nil {
+	if err = upload(op); err != nil {
 		t.Fatal(err)
 	}
 	partialUpload(t, mux, dir, "lost")

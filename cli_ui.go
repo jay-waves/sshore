@@ -73,11 +73,15 @@ func shortDirectory(path, home string) string {
 // Setup validates remote names and closes the reader before sending a selection.
 
 func chooseSetupSession(input setupInput, names []string) (string, error) {
-	return chooseLocalItem(input, names, names, "Shell (#number/name, /filter; Enter cancels): ", "shell")
+	i, err := chooseLocalItem(input, names, names, "Shell (#number/name, /filter; Enter cancels): ", "shell")
+	if err != nil {
+		return "", err
+	}
+	return names[i], nil
 }
 
-// Labels are display-only; selection always returns an original identity.
-func chooseLocalItem(input setupInput, names, labels []string, prompt, kind string) (string, error) {
+// Return the original row so callers can use the identity attached to it.
+func chooseLocalItem(input setupInput, names, labels []string, prompt, kind string) (int, error) {
 	visible := make([]bool, len(names))
 	show := func(filter string) {
 		matches := 0
@@ -96,11 +100,11 @@ func chooseLocalItem(input setupInput, names, labels []string, prompt, kind stri
 	for {
 		answer, err := input.Read(prompt, false)
 		if err != nil {
-			return "", fmt.Errorf("%s selection cancelled: %w", kind, err)
+			return -1, fmt.Errorf("%s selection cancelled: %w", kind, err)
 		}
 		answer = strings.TrimSpace(answer)
 		if answer == "" {
-			return "", fmt.Errorf("%s selection cancelled", kind)
+			return -1, fmt.Errorf("%s selection cancelled", kind)
 		}
 		if strings.HasPrefix(answer, "/") {
 			show(strings.TrimSpace(answer[1:]))
@@ -108,20 +112,20 @@ func chooseLocalItem(input setupInput, names, labels []string, prompt, kind stri
 		}
 		for i, name := range names {
 			if visible[i] && answer == name {
-				return name, nil
+				return i, nil
 			}
 		}
 		n, err := strconv.Atoi(strings.TrimPrefix(answer, "#"))
 		if strings.HasPrefix(answer, "#") && err == nil && n >= 1 && n <= len(names) && visible[n-1] {
-			return names[n-1], nil
+			return n - 1, nil
 		}
 		termui.Log(os.Stderr, termui.Warning, "Choose a listed #number or exact identity; /text filters.\n")
 	}
 }
 
 // Path fields reuse readline editing/completion and retry only local validation.
-// No files are created, requests consumed or connections opened here. Blank input
-// uses only a displayed default; remote hints still require local submission.
+// No files are created, requests consumed or connections opened here. Review
+// fields start with an editable suggestion and still require local submission.
 // Control-C/EOF return to the caller with the approval still pending. Transfer
 // code independently rechecks paths at execution time (this is only UI feedback).
 
@@ -129,8 +133,67 @@ type promptReader interface {
 	Read(string, bool) (string, error)
 }
 
-func readApprovalPath(input promptReader, prompt, defaultPath string, validate func(string) (string, error)) (string, error) {
-	return readSelectedPath(input, prompt, defaultPath, validate, "approval cancelled; request remains pending")
+type reviewPromptReader interface {
+	ReadPrefilled(string, bool, string) (string, error)
+}
+
+func readReviewField(input reviewPromptReader, label string, paths bool, initial string) (string, error) {
+	// Terminal control bytes must never enter the readline buffer.
+	if cleanText(initial) != initial {
+		return "", fmt.Errorf("invalid suggested value; request remains pending")
+	}
+	line, err := input.ReadPrefilled(label, paths, initial)
+	if err != nil {
+		return "", fmt.Errorf("approval cancelled; request remains pending: %w", err)
+	}
+	return line, nil
+}
+
+func readApprovalPort(input reviewPromptReader, label, initial string) (int, error) {
+	for {
+		line, err := readReviewField(input, label+": ", false, initial)
+		if err != nil {
+			return 0, err
+		}
+		port, err := parsePort(strings.TrimSpace(line))
+		if err == nil {
+			return port, nil
+		}
+		termui.Log(os.Stdout, termui.Warning, "%s\n", err)
+	}
+}
+
+func readApprovalPath(input reviewPromptReader, prompt, defaultPath string, validate func(string) (string, error)) (string, error) {
+	return readReviewPath(input, prompt, defaultPath, false, func(path string) (string, error) {
+		path, err := filepath.Abs(path)
+		if err != nil {
+			return "", err
+		}
+		return validate(path)
+	})
+}
+
+func readReviewPath(input reviewPromptReader, prompt, initial string, allowEmpty bool, validate func(string) (string, error)) (string, error) {
+	for {
+		line, err := readReviewField(input, prompt, true, initial)
+		if err != nil {
+			return "", err
+		}
+		if line == "" && allowEmpty {
+			return "", nil
+		}
+		path := line
+		if line == "" || line != initial {
+			path, err = termui.ParsePath([]byte(line))
+		}
+		if err == nil {
+			path, err = validate(path)
+		}
+		if err == nil {
+			return path, nil
+		}
+		termui.Log(os.Stdout, termui.Warning, "%s\n", cleanText(err.Error()))
+	}
 }
 
 func readCopyPath(input promptReader, prompt, defaultPath string, validate func(string) (string, error)) (string, error) {

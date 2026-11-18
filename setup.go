@@ -59,6 +59,7 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, o *options, openInput fun
 			if m.Action != "managed" {
 				return fmt.Errorf("invalid setup mode")
 			}
+			o.remoteHome = m.HomeDirectory
 			return nil
 		case "session_choice":
 			if o.command != "attach" || o.session != "" || len(m.Names) < 2 || len(m.Names) > 128 {

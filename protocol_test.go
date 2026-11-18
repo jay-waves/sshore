@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
@@ -213,7 +214,7 @@ func TestApprovalMismatchDoesNotWriteFile(t *testing.T) {
 		_, _ = readMessage(st)
 		_ = writeMessage(st, message{Type: "offer", Name: "other", Size: 3})
 	}()
-	err := executeApprovedFile(context.Background(), client, operation{Kind: "download", Path: "/tmp/a", Name: "a", Size: 3, LocalPath: target}, false)
+	err := executeApprovedFile(context.Background(), client, operation{Kind: "download", Path: "/tmp/a", Name: "a", Size: 3, LocalPath: target}, nil, false)
 	if err == nil {
 		t.Fatal("mismatch accepted")
 	}
@@ -222,12 +223,17 @@ func TestApprovalMismatchDoesNotWriteFile(t *testing.T) {
 	}
 }
 
-func TestChangedUploadIsNotSent(t *testing.T) {
+func TestMismatchedApprovedUploadIsNotSent(t *testing.T) {
 	client, server := muxPair(t)
 	path := filepath.Join(t.TempDir(), "source")
 	if err := os.WriteFile(path, []byte("changed"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	source, err := files.OpenSource(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
 	result := make(chan error, 1)
 	go func() {
 		st, err := server.AcceptStream()
@@ -239,7 +245,7 @@ func TestChangedUploadIsNotSent(t *testing.T) {
 		_, err = readMessage(st)
 		result <- err
 	}()
-	err := executeApprovedFile(context.Background(), client, operation{Kind: "upload", Path: "/tmp", Name: "source", Size: 1, LocalPath: path}, true)
+	err = executeApprovedFile(context.Background(), client, operation{Kind: "upload", Path: "/tmp", Name: "source", Size: 1, LocalPath: path}, source, true)
 	if err == nil {
 		t.Fatal("changed upload accepted")
 	}

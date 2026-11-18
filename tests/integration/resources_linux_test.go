@@ -39,7 +39,7 @@ func TestKillAllLocalSnapshot(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("expected two shells: %+v", rows)
 	}
-	if out, err := run("kill\n", "kill", "--all"); err != nil {
+	if out, err := run("\n", "kill", "--all"); err != nil {
 		t.Fatal(out, err)
 	}
 	waitBackgroundExit(t, e, filepath.Join(e.dir, "batch-state"))
@@ -109,7 +109,7 @@ func TestKillAllDoesNotCancelReplacement(t *testing.T) {
 	defer func() { input.Close(); cmd.Process.Kill() }()
 	reader := bufio.NewReader(output)
 	var text strings.Builder
-	for !strings.Contains(text.String(), "Type kill: ") {
+	for !strings.Contains(text.String(), "[Y/n] ") {
 		b, err := reader.ReadByte()
 		if err != nil {
 			t.Fatal(text.String(), err)
@@ -118,7 +118,7 @@ func TestKillAllDoesNotCancelReplacement(t *testing.T) {
 	}
 	run("kill", "self:same")
 	run("fixture-launch", "--local", "same", "--detach")
-	io.WriteString(input, "kill\n")
+	io.WriteString(input, "\n")
 	input.Close()
 	tail, _ := io.ReadAll(reader)
 	if err = cmd.Wait(); err == nil || !strings.Contains(string(tail), "tasks changed") {

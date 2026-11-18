@@ -57,7 +57,7 @@ func TestApprovedTransferRequiresMatchingMetadata(t *testing.T) {
 	target := filepath.Join(e.dir, "target")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err = executeApprovedFile(ctx, mx, operation{Kind: "download", Path: source, Name: "source", Size: 1, LocalPath: target}, true)
+	err = executeApprovedFile(ctx, mx, operation{Kind: "download", Path: source, Name: "source", Size: 1, LocalPath: target}, nil, true)
 	if err == nil {
 		t.Fatal("changed remote file accepted")
 	}
@@ -65,7 +65,7 @@ func TestApprovedTransferRequiresMatchingMetadata(t *testing.T) {
 		t.Fatal("unapproved file created", err)
 	}
 	// The same stream path succeeds for the exact approved metadata.
-	if err = executeApprovedFile(ctx, mx, operation{Kind: "download", Path: source, Name: "source", Size: 7, LocalPath: target}, true); err != nil {
+	if err = executeApprovedFile(ctx, mx, operation{Kind: "download", Path: source, Name: "source", Size: 7, LocalPath: target}, nil, true); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(target)
@@ -311,11 +311,13 @@ exit 1
 					if hinted {
 						io.WriteString(terminal, "\r")
 					} else {
-						io.WriteString(terminal, filepath.Join(root, "new")+"\r")
+						io.WriteString(terminal, "\x15"+filepath.Join(root, "new")+"\r")
 					}
 					if scenario == "batch-cancel" {
 						cwd, _ := os.Getwd()
-						await("Save as [" + filepath.Join(cwd, "second"))
+						await(filepath.Join(cwd, "second"))
+						io.WriteString(terminal, "\x15"+filepath.Join(root, "new")+"\r")
+						await("destination already selected")
 						io.WriteString(terminal, "\x03")
 						await("approval cancelled")
 					} else {
@@ -333,7 +335,7 @@ exit 1
 						await("no such file or directory")
 					}
 					if hinted {
-						await("[" + source + "]")
+						await(source)
 					} else if scenario == "menu" {
 						io.WriteString(terminal, filepath.Join(root, "tank ")+"\t")
 						await("Tab: cycle | Enter: select")

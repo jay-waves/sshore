@@ -91,7 +91,8 @@ func serveRemote(mode, name, peerVersion string) (result error) {
 		}
 		if mode == "mount-agent" || mode == "cp-agent" {
 			lock.Close()
-			if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
+			home, _ := os.UserHomeDir()
+			if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode, HomeDirectory: home}); err != nil {
 				return err
 			}
 			return serverCommand([]string{mode})
