@@ -215,7 +215,7 @@ An MCP client can execute arbitrary Bash with the authenticated remote account's
 permissions. MCP is not a sandbox; only trusted clients should be configured to
 start it. Remote output is untrusted and can influence the Agent. The stdio MCP
 process opens no local listening port. Its SSH connections require the exact
-remote release. A mismatch directs the user to run `sshore setup HOST`.
+remote release. A mismatch directs the user to run `sshore install HOST:`.
 Bash scripts and fixed input are staged in private temporary files; abrupt
 termination can leave them on the remote host. A lost response does not prove
 whether a submitted script ran; it is not replayed.
@@ -326,7 +326,7 @@ notifications nor status queries authorize file operations or write replay. See
 or replaces it while the account daemon still owns tasks.
 
 Managed remote commands require the exact full release, including PATCH.
-`setup HOST` uses authenticated SSH to run the bundled installer on the target.
+`install HOST:` uses authenticated SSH to run the bundled installer on the target.
 Installers verify the release checksum and executable version. The prepared binary
 checks that the account daemon has exited, then holds the startup and owner locks
 until replacement finishes. Use the daemon's own release to run
@@ -359,7 +359,7 @@ escaped/reparented processes cannot be globally controlled. Native SSH forwardin
 remains the local user's policy.
 
 Installer scripts verify the release before invoking the prepared executable to
-apply it. Setup help is read-only.
+apply it. Install help is read-only.
 
 ## Inventory and privacy
 

@@ -106,7 +106,12 @@ main() {
     [ ! -d "$install_target" ] || fail 'installation target is a directory'
     chmod 755 "$install_tmp/sshore"
     [ "$("$install_tmp/sshore" --version)" = "sshore $install_version" ] || fail 'binary version does not match release'
-    "$install_tmp/sshore" setup --apply --path "$install_target" || fail 'installation stopped'
+    # The published 0.7.9 executable predates the install command.
+    if [ "$install_version" = 0.7.9 ] && ! "$install_tmp/sshore" install --help >/dev/null 2>&1; then
+        "$install_tmp/sshore" setup --apply --path "$install_target" || fail 'installation stopped'
+    else
+        "$install_tmp/sshore" install --apply "self:$install_target" || fail 'installation stopped'
+    fi
     printf 'Installed sshore %s: %s\n' "$install_version" "$install_target"
     printf '%s\n' 'SHA256 verified. No sudo or shell configuration changes.'
     printf '%s\n' 'Use matching client/server versions. Remote accounts are updated separately.'

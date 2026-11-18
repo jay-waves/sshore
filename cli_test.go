@@ -461,25 +461,25 @@ func TestCancelCommandRemoved(t *testing.T) {
 	}
 }
 
-func TestSetupGrammar(t *testing.T) {
-	for _, args := range [][]string{nil, {"work"}, {"--path", "/tmp/sshore"}, {"work", "--path", "/tmp/sshore", "--", "-p", "2222"}} {
-		if _, err := parseCLI(args, "setup"); err != nil {
+func TestInstallGrammar(t *testing.T) {
+	for _, args := range [][]string{nil, {"work:"}, {".:/tmp/sshore"}, {"work:/tmp/sshore", "--", "-p", "2222"}} {
+		if _, err := parseCLI(args, "install"); err != nil {
 			t.Fatalf("rejected %q: %v", args, err)
 		}
 	}
 	for _, args := range [][]string{{""}, {"work", "/tmp/sshore"}, {"--path"}, {"--path", ""}} {
-		if _, err := parseCLI(args, "setup"); err == nil {
+		if _, err := parseCLI(args, "install"); err == nil {
 			t.Fatalf("accepted %q", args)
 		}
 	}
-	for _, args := range [][]string{{"bootstrap"}, {"setup", "--path", "relative"}, {"setup", "work", "--path", "relative"}, {"setup", "--", "-p", "2222"}} {
+	for _, args := range [][]string{{"bootstrap"}, {"setup", "--apply", "--path", "/tmp/sshore"}, {"install", "work"}, {"install", "work:relative"}, {"install", "self:relative"}, {"install", "origin:"}, {"install", "work:/tmp/sshore", "--apply"}, {"install", "--", "-p", "2222"}} {
 		if code, err := run(args); code != 2 || err == nil {
 			t.Fatalf("accepted %q: %d %v", args, code, err)
 		}
 	}
 	root := filepath.Join(t.TempDir(), "state")
 	t.Setenv("SSHORE_STATE_DIR", root)
-	if code, err := run([]string{"setup", "--help"}); code != 0 || err != nil {
+	if code, err := run([]string{"install", "--help"}); code != 0 || err != nil {
 		t.Fatalf("help: %d %v", code, err)
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {

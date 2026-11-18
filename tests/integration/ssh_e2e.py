@@ -271,7 +271,7 @@ def setup_smoke(binary, host, options, root):
     for action in ("launch", "spawn"):
         terminal = Terminal([binary, action, host + ":", *shell_options], wait_ready=False)
         try:
-            terminal.expect("sshore setup")
+            terminal.expect("sshore install")
             terminal.wait(expected=1)
         finally:
             terminal.close()
@@ -287,10 +287,10 @@ def setup_smoke(binary, host, options, root):
     try:
         result = subprocess.run([binary, "mount", f"{host}:/", ".:" + str(mountpoint), *options],
                                 capture_output=True, text=True, timeout=15)
-        assert result.returncode == 1 and "sshore setup" in result.stderr, result.stderr
+        assert result.returncode == 1 and "sshore install" in result.stderr, result.stderr
         result = subprocess.run([binary, "forward", f".:{local_port}", f"{host}:1", *options],
                                 capture_output=True, text=True, timeout=15)
-        assert result.returncode == 1 and "sshore setup" in result.stderr, result.stderr
+        assert result.returncode == 1 and "sshore install" in result.stderr, result.stderr
         assert old_remote.read_text() == "#!/bin/sh\necho 'sshore 0.0.1'\n"
     finally:
         old_remote.unlink()
@@ -306,7 +306,7 @@ def setup_smoke(binary, host, options, root):
     curl.write_text("#!/bin/sh\n" +
                     "while [ \"$#\" -gt 0 ]; do case \"$1\" in -o) out=$2; shift;; https://*) url=$1;; esac; shift; done\n" +
                     f"cp {shlex.quote(str(assets))}/\"${{url##*/}}\" \"$out\"\n")
-    subprocess.run([binary, "setup", host, "--path", str(target), *options], check=True, timeout=15)
+    subprocess.run([binary, "install", host + ":" + str(target), *options], check=True, timeout=15)
     assert subprocess.check_output([str(target), "--version"], text=True).strip() == f"sshore {release}"
     # Exercise the standalone installer against an actual registered remote task.
     started = subprocess.check_output([binary, "launch", host + ":", "--detach", *shell_options],
@@ -319,7 +319,7 @@ def setup_smoke(binary, host, options, root):
     installer_target.chmod(0o700)
     owner = target.stat()
     os.chown(installer_target, owner.st_uid, owner.st_gid)
-    installer_command = [binary, "setup", host, "--path", str(installer_target), *options]
+    installer_command = [binary, "install", host + ":" + str(installer_target), *options]
     installed = [binary, "list", "--json", host, "--server", str(target), *options]
 
     def installer_tasks():
@@ -342,7 +342,7 @@ def setup_smoke(binary, host, options, root):
     assert subprocess.check_output([str(installer_target), "--version"], text=True).strip() == f"sshore {release}"
     assert not list(target.parent.glob(".sshore-update-*"))
     target.write_bytes(original)
-    subprocess.run([binary, "setup", host, *options], check=True, timeout=15)
+    subprocess.run([binary, "install", host + ":", *options], check=True, timeout=15)
     assert subprocess.check_output([str(target), "--version"], text=True).strip() == f"sshore {release}"
     print("setup: explicit remote update, target paths and stopped-daemon requirement passed")
 
@@ -399,7 +399,7 @@ def mcp_smoke(binary, host, ssh_wrapper, remote_tools):
         older.chmod(0o755)
         try:
             rejected = call("tools/call", {"name": "session_open", "arguments": {"host": host}}, 200)
-            assert rejected.get("isError") and "sshore setup" in json.dumps(rejected), rejected
+            assert rejected.get("isError") and "sshore install" in json.dumps(rejected), rejected
             assert older.read_bytes() == original
         finally:
             older.unlink()

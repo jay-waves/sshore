@@ -91,8 +91,8 @@ func run(args []string) (code int, resultErr error) {
 			return 1, err
 		}
 		return 0, killResourceIdentity(args[2], args[3])
-	case "setup":
-		return runSetup(args[1:])
+	case "install":
+		return runInstall(args[1:])
 	case "daemon-admin":
 		if len(args) != 1 {
 			return 2, usage("daemon-admin takes no arguments")

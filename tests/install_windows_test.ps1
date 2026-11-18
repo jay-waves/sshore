@@ -63,17 +63,18 @@ try {
     $fixture = Join-Path $root 'fixture.exe'
     [IO.File]::WriteAllText($source, @'
 package main
-import ("fmt"; "os")
+import ("fmt"; "os"; "strings")
 func main() {
  if len(os.Args) == 2 && os.Args[1] == "--version" { fmt.Println("sshore 0.3.3"); return }
- if len(os.Args) != 5 || os.Args[1] != "setup" || os.Args[2] != "--apply" || os.Args[3] != "--path" { os.Exit(2) }
+ if len(os.Args) != 4 || os.Args[1] != "install" || os.Args[2] != "--apply" || !strings.HasPrefix(os.Args[3], "self:") { os.Exit(2) }
+ target := strings.TrimPrefix(os.Args[3], "self:")
  exe, err := os.Executable()
  if err == nil {
   var data []byte
   data, err = os.ReadFile(exe)
-  if err == nil { err = os.WriteFile(os.Args[4]+".next", data, 0755) }
-  if err == nil { err = os.Rename(os.Args[4]+".next", os.Args[4]) }
-  os.Remove(os.Args[4]+".next")
+  if err == nil { err = os.WriteFile(target+".next", data, 0755) }
+  if err == nil { err = os.Rename(target+".next", target) }
+  os.Remove(target+".next")
  }
  if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
 }

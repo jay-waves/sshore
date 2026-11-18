@@ -25,11 +25,12 @@ curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | 
 irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 ```
 
-Run `sshore setup` to update this computer to the latest release, or
-`sshore setup HOST` to install this client's exact release on a remote Linux
+Run `sshore install` to update this computer to the latest release, or
+`sshore install HOST:` to install this client's exact release on a remote Linux
 host. The remote host downloads and verifies the release over HTTPS. Remote
-setup updates the executable on PATH, falling back to `~/.local/bin/sshore`.
-Use `--path` to select an absolute installation path on the target machine.
+installation updates the executable on PATH, falling back to `~/.local/bin/sshore`.
+Append an absolute path to the endpoint to select a custom target.
+When upgrading from v0.7.9, run the standalone installer above on each target.
 
 Installers verify checksums without requesting administrator access. On Windows,
 the installer updates the first `sshore.exe` on PATH without changing PATH. If none
@@ -255,9 +256,9 @@ See `sshore mount --help` for details.
 ## Updates and troubleshooting
 
 Client and remote versions must match exactly, including PATCH. Run
-`sshore setup HOST` for an older remote installation, or `sshore setup` when
+`sshore install HOST:` for an older remote installation, or `sshore install` when
 this client is older. For a custom remote installation, pass its executable
-path with `sshore setup HOST --path /absolute/path/to/sshore`.
+path with `sshore install HOST:/absolute/path/to/sshore`.
 
 - Stale screen after reattachment: press Ctrl-L or use the application's redraw key.
 - SSH failure: try `sshore launch work: -- -vvv -E ./ssh-debug.log`.

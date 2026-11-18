@@ -24,11 +24,11 @@ Files and ports
   forward     Forward a TCP port
   review      Approve remote shell requests
 
-Tasks and setup
+Tasks and installation
   list        Show tasks and when they were last checked
   pstree      Show shell ownership and attachments
   kill        Kill shells or stop other tasks
-  setup       Update the local installation
+  install     Install or update sshore
   reset       End local tasks and clear application state
   mcp         Serve Agent tools over stdio
   daemon      Run the account task manager
@@ -66,11 +66,12 @@ The remote release must match exactly. Update the older side before connecting.
 ` + sshOptions + "Shell connections also accept SSH -L, -R and -D.\n"
 
 var commandHelp = map[string]string{
-	"setup": `Usage: sshore setup [HOST] [--path PATH] [-- SSH_OPTIONS]
+	"install": `Usage: sshore install [HOST:[PATH]] [-- SSH_OPTIONS]
 
 Update this computer to the latest published release, or update HOST to the
 exact local version over SSH. Stop the daemon on the target before updating.
---path selects an absolute installation path on the target machine.
+Omit the target or use self: to install locally. Use HOST: to select a remote
+default path, or append an absolute path to either endpoint.
 ` + sshOptions,
 	"mcp": `---
 name: sshore-mcp
@@ -91,7 +92,7 @@ For a single stateless command outside MCP, use sshore exec HOST 'COMMAND'.
 
 Configure the MCP client with command "sshore" and args ["mcp"]. It owns stdio;
 diagnostics go to stderr. Use an SSH config host alias with an available agent key. MCP cannot prompt for credentials. Remote hosting requires Linux amd64 and the matching sshore release.
-If setup is required, ask the user to run sshore setup HOST.
+If setup is required, ask the user to run sshore install HOST:.
 
 ## Workflow
 
@@ -352,7 +353,7 @@ func showHelp(args []string, w io.Writer) error {
 }
 
 var commandExamples = map[string]string{
-	"setup": "Update this computer\n  sshore setup\nUpdate a remote host to match this computer\n  sshore setup work\n",
+	"install": "Update this computer\n  sshore install\nUpdate a remote host to match this computer\n  sshore install work:\n",
 	"": `Start a persistent remote shell
   sshore launch work:
 Resume it after detaching with Ctrl+B d

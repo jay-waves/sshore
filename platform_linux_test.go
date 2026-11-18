@@ -84,7 +84,7 @@ func TestForwardRequiresMatchingRelease(t *testing.T) {
 		cmd := exec.Command("/bin/sh", "-c", forwardWatchCommand("fixture", server))
 		cmd.Stdin = strings.NewReader("ignored metadata\n")
 		b, e := cmd.CombinedOutput()
-		if e == nil || !strings.Contains(string(b), "sshore setup") || strings.Contains(string(b), forwardReadyMarker) {
+		if e == nil || !strings.Contains(string(b), "sshore install") || strings.Contains(string(b), forwardReadyMarker) {
 			t.Fatalf("forward did not reject version mismatch: %q %v", b, e)
 		}
 	}

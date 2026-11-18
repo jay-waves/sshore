@@ -48,14 +48,19 @@ shutil.copyfile(source,args[args.index('-o')+1])
         path.write_text(content)
         path.chmod(0o755)
 
-    def asset(self, version, arch):
+    def asset(self, version, arch, *, legacy=False):
         filename = f"sshore_{version}_linux_{arch}.tar.gz"
+        entry = """setup)
+    [ "$2" = --apply ] && [ "$3" = --path ] || exit 2
+    shift 2""" if legacy else """install)
+    [ "$2" = --apply ] || exit 2
+    case "$3" in self:*) target=${3#self:} ;; *) exit 2 ;; esac
+    set -- install "$target"
+""".rstrip()
         payload = f"""#!/bin/sh
 case "$1" in
 --version) echo 'sshore {version}' ;;
-setup)
-    [ "$2" = --apply ] && [ "$3" = --path ] || exit 2
-    shift 2
+{entry}
     if [ -e "$2" ]; then
         old=$("$2" --version); old=${{old#sshore }}
         cp -p "$2" "$2-$old"
@@ -92,11 +97,16 @@ esac
         self.assertTrue(all("/download/v0.3.1/" in u for u in self.log.read_text().splitlines()))
         self.assertFalse(list(target.parent.glob(".sshore-install.*")))
 
-    def test_prepared_binary_uses_setup(self):
+    def test_prepared_binary_uses_install(self):
         self.asset("0.7.8", "amd64")
         self.run_install("--version", "0.7.8")
         target = self.home / ".local/bin/sshore"
         self.assertEqual(subprocess.check_output([str(target), "--version"], text=True).strip(), "sshore 0.7.8")
+
+    def test_published_079_uses_legacy_installer_entry(self):
+        self.asset("0.7.9", "amd64", legacy=True)
+        result = self.run_install("--version", "0.7.9")
+        self.assertIn("Installed sshore 0.7.9", result.stdout)
 
     def test_latest_and_custom_directory(self):
         self.env["TEST_ARCH"] = "x86_64"

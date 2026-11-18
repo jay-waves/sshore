@@ -91,35 +91,44 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, o *options, openInput fun
 //go:embed install.sh
 var linuxInstaller string
 
-func runSetup(args []string) (int, error) {
-	parsed, err := parseCLI(args, "setup")
+func runInstall(args []string) (int, error) {
+	parsed, err := parseCLI(args, "install")
 	if err != nil {
 		return 2, err
 	}
-	host, target := parsed.operand(0, ""), parsed.value("--path", "")
-	if host == "" {
+	host, target := "self", ""
+	if len(parsed.operands) != 0 {
+		host, target, err = splitEndpoint(parsed.operands[0])
+		if err != nil {
+			return 2, err
+		}
+	}
+	if strings.ContainsAny(target, "\x00\r\n") {
+		return 2, usage("invalid installation path")
+	}
+	if host == "self" {
 		if len(parsed.ssh) != 0 {
-			return 2, usage("SSH options require a setup host")
+			return 2, usage("SSH options require a remote installation target")
 		}
 		if target != "" && !filepath.IsAbs(target) {
-			return 2, usage("--path must be an absolute installation path")
+			return 2, usage("installation path must be absolute")
 		}
 		if parsed.has("--apply") {
 			if target == "" {
-				return 2, usage("applying a prepared release requires --path")
+				return 2, usage("applying a prepared release requires self:PATH")
 			}
 			return 0, installRelease(target)
 		}
 		return 0, runLocalInstaller(target)
 	}
-	if parsed.has("--apply") {
-		return 2, usage("applying a prepared release requires a local installation path")
+	if host == "origin" {
+		return 2, usage("install requires self: or an SSH host")
 	}
-	if err := validSSHDestination(host); err != nil {
-		return 2, err
+	if parsed.has("--apply") {
+		return 2, usage("applying a prepared release requires self:PATH")
 	}
 	if target != "" && !strings.HasPrefix(target, "/") {
-		return 2, usage("--path must be an absolute remote installation path")
+		return 2, usage("remote installation path must be absolute")
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -133,19 +142,18 @@ func runSetup(args []string) (int, error) {
 	}
 	connection := sshio.Options{Host: host, Args: parsed.ssh, Command: command, Confirm: confirmSSHHost, Secret: promptSSHSecret}
 	if err := sshio.Run(ctx, connection, strings.NewReader(linuxInstaller), os.Stdout, os.Stderr); err != nil {
-		return 1, fmt.Errorf("remote setup on %s: %w", cleanText(host), err)
+		return 1, fmt.Errorf("remote installation on %s: %w", cleanText(host), err)
 	}
 	return 0, nil
 }
 
 func remoteVersionHelp(host string) string {
-	if host == "" {
-		host = "HOST"
-	} else {
-		host = shellQuote(host)
+	target := "HOST:"
+	if host != "" {
+		target = shellQuote(remotePathOperand(host, ""))
 	}
-	return "Remote sshore must match local version " + version + ". Run sshore setup " + host +
-		" to update an older remote installation, or sshore setup if this machine is older. Use --path for a custom remote installation."
+	return "Remote sshore must match local version " + version + ". Run sshore install " + target +
+		" to update the remote, or sshore install if this machine is older. For a custom remote path, use HOST:/absolute/path."
 }
 
 // Parse stable release labels for upgrade direction; this is not a compatibility series.

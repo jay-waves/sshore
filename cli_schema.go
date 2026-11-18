@@ -47,7 +47,6 @@ var cliOptions = map[string]cliOption{
 	"--version":      {alias: "-V"},
 	"--local":        {conflicts: []string{"--server", "--download-dir", "--port"}},
 	"--server":       {kind: cliText},
-	"--path":         {kind: cliText},
 	"--apply":        {},
 	"--port":         {kind: cliPort},
 	"--download-dir": {kind: cliDirectory},
@@ -77,8 +76,8 @@ func commandSpec(command string) (cliSpec, bool) {
 		spec = cliSpec{[]string{"--version"}, false, false, 0, 0}
 	case "daemon":
 		spec = cliSpec{nil, false, false, 0, 1}
-	case "setup":
-		spec = cliSpec{[]string{"--path", "--apply"}, true, false, 0, 1}
+	case "install":
+		spec = cliSpec{[]string{"--apply"}, true, false, 0, 1}
 	case "mcp":
 		spec = cliSpec{nil, false, false, 0, 0}
 	case "exec":
@@ -178,7 +177,7 @@ func validateCLIValue(name, value string, option cliOption) error {
 			return usage("%s: %s", name, err)
 		}
 	}
-	if (name == "--server" || name == "--path") && strings.ContainsAny(value, "\x00\r\n") {
+	if name == "--server" && strings.ContainsAny(value, "\x00\r\n") {
 		return usage("invalid %s value", name)
 	}
 	if name == "--direct-io" && runtime.GOOS != "linux" {

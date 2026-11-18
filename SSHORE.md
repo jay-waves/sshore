@@ -387,7 +387,7 @@ See [inventory privacy](SECURITY.md#inventory-and-privacy).
 
 ### Setup and installation
 
-Local setup runs the bundled platform installer. With a host, setup sends the
+Local installation runs the bundled platform installer. With a host, `install` sends the
 bundled Linux installer over SSH and pins the release to the client's exact
 version. The target runs the installer and downloads the release. Installers
 verify the checksum and call the prepared binary to apply the installation.

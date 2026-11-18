@@ -70,7 +70,7 @@ func TestRemoteHelpersRequireMatchingRelease(t *testing.T) {
 				defer func() { input.Close(); output.Close(); cmd.Process.Kill(); cmd.Wait() }()
 				err = negotiateSetup(output, input, &options{command: mode, host: "fixture"})
 				if !tc.success {
-					if err == nil || !strings.Contains(err.Error(), "sshore setup") || !strings.Contains(err.Error(), version) {
+					if err == nil || !strings.Contains(err.Error(), "sshore install") || !strings.Contains(err.Error(), version) {
 						t.Fatalf("expected version and setup guidance: %v", err)
 					}
 					input.Close()
@@ -260,7 +260,7 @@ func TestRemoteShellRejectsVersionMismatch(t *testing.T) {
 			target := filepath.Join(home, "sshore")
 			writeRemoteVersionStub(t, target, "0.0.1")
 			out, err := runRemoteCommand(t, home, options{command: command, server: target})
-			if err == nil || !strings.Contains(out, "sshore setup") || !strings.Contains(out, target) {
+			if err == nil || !strings.Contains(out, "sshore install") || !strings.Contains(out, target) {
 				t.Fatalf("expected setup guidance: %q %v", out, err)
 			}
 		})
@@ -270,7 +270,7 @@ func TestRemoteShellRejectsVersionMismatch(t *testing.T) {
 func TestSetupAppliesPreparedRelease(t *testing.T) {
 	e := newEnv(t)
 	target := filepath.Join(t.TempDir(), "custom name")
-	cmd := exec.Command(e.bin, "setup", "--apply", "--path", target)
+	cmd := exec.Command(e.bin, "install", "--apply", "self:"+target)
 	cmd.Env = e.env
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("setup: %v: %s", err, out)
