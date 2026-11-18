@@ -347,7 +347,7 @@ func localShellEnvironment(source []string, term, identity string) []string {
 			key = strings.ToUpper(key)
 		}
 		switch key {
-		case "SSHORE_SOCKET", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "SSHORE_LOCAL_SESSION", "SSHORE_TREE_ID", "TERM":
+		case "SSHORE_SOCKET", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "SSHORE_TTY", "SSHORE_LOCAL_SESSION", "SSHORE_TREE_ID", "TERM":
 			continue
 		}
 		env = append(env, item)

@@ -94,6 +94,19 @@ do not inject Enter, Ctrl+L or editor commands to reconstruct it. Terminal bytes
 must retain order and bounded buffering. Unsupported terminal protocols must not
 silently become local shortcuts.
 
+### Shell environment for scripts
+
+- `SSHORE_TTY` contains the Linux PTY device path for a hosted interactive
+  shell, local or remote. The path stays the same across detach and reattach.
+  Windows ConPTY has no Linux device path. Use `test -t 0` to check whether
+  the current command's standard input is a terminal.
+- `SSHORE_SOCKET` identifies a hosted remote shell. `SSHORE_LOCAL_SESSION`
+  identifies a hosted local shell, including on Windows.
+- `SSHORE_TREE_ID` identifies the managed shell in the process tree.
+- `SSHORE_DIRECT_TRANSPORT=1` marks startup through sshore's direct SSH
+  transport. The attached terminal's clipboard capabilities depend on the
+  client.
+
 ### SSH connections
 
 `internal/ssh` owns one connection and any jump chain per task; closing an

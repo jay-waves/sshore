@@ -58,14 +58,14 @@ func TestNativeShellListingBoundsUnresponsiveWorkers(t *testing.T) {
 }
 
 func TestLocalShellEnvironment(t *testing.T) {
-	source := []string{"SSHORE_SOCKET=remote", "SSH_CONNECTION=old", "SSHORE_LOCAL_SESSION=old", "TERM=old", "sshore_socket=mixed", "Term=mixed", "KEEP=value"}
+	source := []string{"SSHORE_SOCKET=remote", "SSH_CONNECTION=old", "SSHORE_LOCAL_SESSION=old", "TERM=old", "SSHORE_TTY=/dev/stale", "sshore_socket=mixed", "Term=mixed", "KEEP=value"}
 	got := localShellEnvironment(source, "xterm", "local:new")
-	for _, old := range source[:4] {
+	for _, old := range source[:5] {
 		if slices.Contains(got, old) {
 			t.Fatalf("retained %s", old)
 		}
 	}
-	for _, mixed := range source[4:6] {
+	for _, mixed := range source[5:7] {
 		if slices.Contains(got, mixed) == (runtime.GOOS == "windows") {
 			t.Fatalf("incorrect case handling: %s", mixed)
 		}

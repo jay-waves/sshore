@@ -17,7 +17,12 @@ import (
 )
 
 func TestNativeTerminal(t *testing.T) {
-	term, err := tmux.Start(tmux.Config{Path: "/bin/sh", Args: []string{"-c", "stty size; printf '\033[31mhello\033[0m'"}, Size: tmux.Size{Cols: 91, Rows: 27}})
+	t.Setenv("SSHORE_TTY", "/dev/stale")
+	term, err := tmux.Start(tmux.Config{
+		Path: "/bin/sh",
+		Args: []string{"-ec", "tty_path=$(tty); test \"$SSHORE_TTY\" = \"$tty_path\"; stty size; printf '\033[31mhello\033[0m'"},
+		Size: tmux.Size{Cols: 91, Rows: 27},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

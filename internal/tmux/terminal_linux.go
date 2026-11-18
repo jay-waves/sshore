@@ -28,8 +28,20 @@ func Start(c Config) (*Terminal, error) {
 	}
 	cmd := exec.Command(c.Path, c.Args...)
 	cmd.Env, cmd.Dir = c.Env, c.Dir
-	master, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: c.Size.Cols, Rows: c.Size.Rows})
+	master, slave, err := pty.Open()
 	if err != nil {
+		return nil, err
+	}
+	defer slave.Close()
+	if err := pty.Setsize(master, &pty.Winsize{Cols: c.Size.Cols, Rows: c.Size.Rows}); err != nil {
+		master.Close()
+		return nil, err
+	}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+	cmd.Env = append(cmd.Environ(), "SSHORE_TTY="+slave.Name())
+	if err := cmd.Start(); err != nil {
+		master.Close()
 		return nil, err
 	}
 	// creack/pty uses Fd during setup, which marks its os.File as blocking.
