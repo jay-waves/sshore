@@ -20,7 +20,7 @@ func routedResourceFixture(t *testing.T) (*remoteShell, message) {
 	t.Helper()
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", t.TempDir())
-	s := &remoteShell{instance: "resource-instance", name: "source", process: processIdentity{PID: os.Getpid()}, done: make(chan struct{})}
+	s := &remoteShell{instance: "resource-instance", name: "source", shellTerminal: shellTerminal{process: processIdentity{PID: os.Getpid()}}, done: make(chan struct{})}
 	return s, message{Type: "route_mount", SoftwareVersion: version, Instance: s.instance, Name: s.name, PID: os.Getpid(), ApprovalID: strings.Repeat("a", 32)}
 }
 

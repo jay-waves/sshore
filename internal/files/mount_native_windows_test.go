@@ -1,5 +1,3 @@
-//go:build windows && sshoretest
-
 package files
 
 import (

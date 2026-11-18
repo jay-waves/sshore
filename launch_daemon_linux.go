@@ -31,23 +31,18 @@ const (
 )
 
 type remoteShell struct {
+	shellTerminal
 	tasks       *daemonTasks
 	spawnRoutes map[string]*spawnRoute
 	lifetime    hostedLifetime
 	environment []string
 	directory   string
-	process     processIdentity // Verified PID and creation identity of the hosted shell.
 	killing     bool
 
 	instance   string
 	name       string
 	exitReason string
-	terminalMu sync.Mutex // serializes state snapshots with PTY output
-	mouse      tmux.InputState
-	mu         sync.Mutex
-	lifecycle  tmux.Lifecycle[*attachment]
 	started    time.Time // shell lifetime, including time spent detached
-	master     *tmux.Terminal
 	runtime    string
 	done       chan struct{}
 	once       sync.Once
@@ -79,51 +74,7 @@ func (s *remoteShell) start(m message) error {
 	if exe, err := os.Executable(); err == nil {
 		env = append(env, "PATH="+filepath.Dir(exe)+":"+localEnvironmentValue(env, "PATH"))
 	}
-	master, err := tmux.Start(tmux.Config{
-		Path: shellPath, Args: args, Dir: s.directory,
-		Env:  tmux.StartupEnv(shellPath, env, m.NoProfile),
-		Size: tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)},
-	})
-	if err != nil {
-		return err
-	}
-	identity, err := processStart(master.PID())
-	if err != nil {
-		master.Close()
-		return err
-	}
-	s.master = master
-	s.process = processIdentity{PID: master.PID(), Start: identity}
-	s.started = time.Now()
-	go func() {
-		buf := make([]byte, 8192)
-		for {
-			n, err := master.Read(buf)
-			if n > 0 {
-				s.terminalMu.Lock()
-				s.mouse.Observe(buf[:n])
-				s.mu.Lock()
-				p := s.lifecycle.Active()
-				s.mu.Unlock()
-				if p != nil {
-					if p.output(message{Type: "output", Data: buf[:n]}) != nil {
-						p.Close()
-					}
-				}
-				s.terminalMu.Unlock()
-			}
-			if err != nil {
-				break
-			}
-		}
-		err := master.Wait()
-		code := 0
-		if err != nil {
-			code = 1
-			if e, ok := errors.AsType[*exec.ExitError](err); ok {
-				code = e.ExitCode()
-			}
-		}
+	err = s.startTerminal(shellPath, args, tmux.StartupEnv(shellPath, env, m.NoProfile), s.directory, m, func(err error, code int) {
 		s.mu.Lock()
 		p := s.lifecycle.End()
 		if s.exitReason == "" {
@@ -140,10 +91,13 @@ func (s *remoteShell) start(m message) error {
 			p.FinishExit(code, reason)
 		}
 		s.stop()
-	}()
-	return nil
+	})
+	if err == nil {
+		s.started = time.Now()
+	}
+	return err
 }
-func (s *remoteShell) attach(p *attachment, m message) (*tmux.InputLease, error) {
+func (s *remoteShell) attach(p *attachment, m message) (shellInput, error) {
 	s.terminalMu.Lock()
 	defer s.terminalMu.Unlock()
 	if err := validateAttach(m); err != nil {
@@ -151,54 +105,27 @@ func (s *remoteShell) attach(p *attachment, m message) (*tmux.InputLease, error)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	startedHere := false
-	var lease *tmux.InputLease
-	err := s.lifecycle.Attach(p, func() error {
-		if s.killing {
-			return fmt.Errorf("shell is being killed")
-		}
-		if m.Instance != "" && m.Instance != s.instance {
-			return fmt.Errorf("shell instance changed; refresh with sshore list")
-		}
-		if m.Action == "existing" && s.process.PID == 0 {
-			return fmt.Errorf("shell has not started; use sshore list HOST")
-		}
-		if (m.NoLogin || m.NoProfile) && s.master != nil {
-			return fmt.Errorf("startup options require a new managed shell")
-		}
-		reconnecting := s.master != nil
-		if s.master == nil {
-			if err := s.start(m); err != nil {
-				return err
-			}
-			startedHere = true
-		}
-		if err := s.master.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
-			return err
-		}
+	if s.killing {
+		return nil, fmt.Errorf("shell is being killed")
+	}
+	if m.Instance != "" && m.Instance != s.instance {
+		return nil, fmt.Errorf("shell instance changed; refresh with sshore list")
+	}
+	initial := s.terminal == nil
+	if m.Action == "existing" && initial {
+		return nil, fmt.Errorf("shell has not started; use sshore list HOST")
+	}
+	lease, err := s.attachTerminal(p, m, s.start, func() error {
 		saveShellTreeWithProcess(remoteTreeIdentity(s.instance), s.name, m.Tree, "attached", m.OwnerProcess, shellLifetime(s.lifetime != persistentLaunch, true), m.SourceHost, m.SourceMachineID)
-		if err := p.controlMessage(message{Type: "ready", Tree: shellTreeFor(remoteTreeIdentity(s.instance)), Temporary: s.lifetime != persistentLaunch, Instance: s.instance, PID: s.process.PID, Name: s.name}); err != nil {
-			return err
-		}
-		if !p.Muted() {
-			if data := s.mouse.Replay(); len(data) > 0 {
-				if err := p.output(message{Type: "output", Data: data}); err != nil {
-					return err
-				}
-			}
-		}
-		lease = tmux.NewInputLease(s.master)
-		if reconnecting && !p.Muted() {
-			tmux.RequestRedraw(s.master, s.process.PID)
-		}
-		return nil
+		return p.controlMessage(message{Type: "ready", Tree: shellTreeFor(remoteTreeIdentity(s.instance)), Temporary: s.lifetime != persistentLaunch, Instance: s.instance, PID: s.process.PID, Name: s.name})
 	})
-	if err != nil && startedHere {
+	if err != nil && initial && s.terminal != nil {
 		s.lifecycle.End()
 		s.exitReason = "initial attachment failed"
-		_ = s.master.Close()
+		s.terminal.Close()
 		s.stop()
 	}
+
 	if errors.Is(err, tmux.ErrExited) {
 		return nil, fmt.Errorf("shell is exiting; use sshore launch HOST to create a new one")
 	}
@@ -209,19 +136,15 @@ func (s *remoteShell) attach(p *attachment, m message) (*tmux.InputLease, error)
 }
 
 // Only the current attachment may stop the terminal's writer and hand it off.
-func (s *remoteShell) clearAttachment(p *attachment, lease *tmux.InputLease) (string, bool) {
+func (s *remoteShell) clearAttachment(p *attachment, lease shellInput) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lifecycle.Active() != p {
-		return "", false
-	}
-	if err := lease.Stop(); err != nil {
-		s.lifecycle.EndIfAttached(p)
+	detached, err := s.detachTerminal(p, lease)
+	if err != nil {
 		s.exitReason = "terminal input cancellation failed"
 		s.stop()
-		return "", false
 	}
-	if !s.lifecycle.Detach(p) {
+	if !detached {
 		return "", false
 	}
 	saveShellTree(remoteTreeIdentity(s.instance), s.name, nil, "detached")
@@ -285,7 +208,7 @@ func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
 			s.terminalMu.Lock()
 			s.mu.Lock()
 			if s.lifecycle.Active() == p && !p.Muted() {
-				tmux.RequestRedraw(s.master, s.process.PID)
+				tmux.RequestRedraw(s.terminal, s.process.PID)
 			}
 			s.mu.Unlock()
 			s.terminalMu.Unlock()
@@ -296,7 +219,7 @@ func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
 			s.mu.Lock()
 			var resizeErr error
 			if s.lifecycle.Active() == p {
-				resizeErr = s.master.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
+				resizeErr = s.terminal.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
 			}
 			s.mu.Unlock()
 			if resizeErr != nil {
@@ -397,8 +320,8 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 		s.mu.Lock()
 		m := message{Type: "session", Temporary: s.lifetime != persistentLaunch, Instance: s.instance, Attached: s.lifecycle.Active() != nil, Name: s.name, SoftwareVersion: version}
 		group := 0
-		if s.master != nil {
-			group, _ = s.master.ForegroundGroup()
+		if s.terminal != nil {
+			group, _ = s.terminal.ForegroundGroup()
 		}
 		if s.process.PID != 0 {
 			m.PID = s.process.PID
@@ -452,8 +375,8 @@ func serveRemoteShellAt(tasks *daemonTasks, runtime, nameLabel, uid string, env 
 			}
 			saveSessionExit(filepath.Join(s.runtime, s.instance+".sock"), s.name, reason)
 		}
-		if s.master != nil {
-			_ = s.master.Close()
+		if s.terminal != nil {
+			_ = s.terminal.Close()
 		}
 	}()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -480,7 +403,7 @@ func serveRemoteShellAt(tasks *daemonTasks, runtime, nameLabel, uid string, env 
 		select {
 		case <-time.After(30 * time.Second):
 			s.mu.Lock()
-			empty := s.master == nil
+			empty := s.terminal == nil
 			s.mu.Unlock()
 			if empty {
 				s.stop()

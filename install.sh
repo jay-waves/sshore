@@ -23,14 +23,16 @@ HELP
 main() {
     install_version=
     install_prepare_only=false
+    install_cache_dir=
     install_bin_dir=${HOME:?HOME must be set}/.local/bin
     while [ "$#" -gt 0 ]; do
         case "$1" in
-            --version|--bin-dir)
+            --version|--bin-dir|--cache-dir)
                 [ "$#" -ge 2 ] && [ -n "$2" ] || fail "missing value for $1"
                 case "$1" in
                     --version) install_version=$2 ;;
                     --bin-dir) install_bin_dir=$2 ;;
+                    --cache-dir) install_cache_dir=$2 ;;
                 esac
                 shift 2 ;;
             --prepare-only) install_prepare_only=true; shift ;;
@@ -70,8 +72,11 @@ main() {
     else
         install_checks_url=$install_releases/latest/download/SHA256SUMS
     fi
-    download "$install_checks_url" "$install_tmp/SHA256SUMS"
+    if [ -n "$install_cache_dir" ]; then
+        [ "$install_prepare_only" = true ] && [ -n "$install_version" ] || fail 'cache requires exact-version preparation'
+    fi
     if [ -z "$install_version" ]; then
+        download "$install_checks_url" "$install_tmp/SHA256SUMS" 262144
         # Infer the version from a single matching asset, without jq or API quota.
         install_version=$(awk -v arch="$install_arch" '
             $2 ~ ("^sshore_[0-9]+\\.[0-9]+\\.[0-9]+_linux_" arch "\\.tar\\.gz$") {
@@ -82,19 +87,22 @@ main() {
         valid_version "$install_version" || fail 'invalid version in release manifest'
     fi
     install_asset=sshore_${install_version}_linux_${install_arch}.tar.gz
-    install_expected=$(awk -v name="$install_asset" '$2==name { hash=$1; n++ } END { if (n==1) print hash; else exit 1 }' "$install_tmp/SHA256SUMS") || fail 'missing or duplicate checksum entry'
-    [ "${#install_expected}" -eq 64 ] || fail 'invalid checksum entry'
-    case "$install_expected" in *[!0-9a-fA-F]*) fail 'invalid checksum entry' ;; esac
-    download "$install_releases/download/v$install_version/$install_asset" "$install_tmp/archive.tar.gz"
-    if [ "$install_hasher" = sha256sum ]; then
-        install_actual=$(sha256sum "$install_tmp/archive.tar.gz" | awk '{print $1}')
+    if [ -n "$install_cache_dir" ] &&
+       [ -f "$install_cache_dir/$install_asset" ] && [ -f "$install_cache_dir/SHA256SUMS" ] &&
+       cp "$install_cache_dir/$install_asset" "$install_tmp/cached.tar.gz" &&
+       verify_archive "$install_cache_dir/SHA256SUMS" "$install_tmp/cached.tar.gz"; then
+        install_archive=$install_tmp/cached.tar.gz
     else
-        install_actual=$(shasum -a 256 "$install_tmp/archive.tar.gz" | awk '{print $1}')
+        [ -f "$install_tmp/SHA256SUMS" ] || download "$install_checks_url" "$install_tmp/SHA256SUMS" 262144
+        install_archive=$install_tmp/$install_asset
+        download "$install_releases/download/v$install_version/$install_asset" "$install_archive" 67108864
+        verify_archive "$install_tmp/SHA256SUMS" "$install_archive" || fail 'SHA256 mismatch or invalid checksum entry'
     fi
-    [ "$install_actual" = "$install_expected" ] || fail 'SHA256 mismatch; installation unchanged'
-    # Extract only the named payload to stdout: archive paths cannot write outside
-    # the temporary directory, even if an archive contains additional members.
-    tar -xzOf "$install_tmp/archive.tar.gz" sshore > "$install_tmp/sshore" || fail 'cannot extract sshore'
+    entry=$(LC_ALL=C tar -tvzf "$install_archive" -- sshore) || fail 'cannot inspect release archive'
+    case "$entry" in -* ) ;; *) fail 'release executable must be a regular file' ;; esac
+    [ "$(printf '%s\n' "$entry" | wc -l)" -eq 1 ] || fail 'duplicate release executable'
+    (ulimit -f 65536; tar -xzOf "$install_archive" -- sshore > "$install_tmp/sshore") || fail 'cannot extract sshore'
+    [ -s "$install_tmp/sshore" ] && [ "$(wc -c < "$install_tmp/sshore")" -le 67108864 ] || fail 'invalid release executable size'
 
     # Use an absolute directory so options/relative paths cannot confuse tools.
     mkdir -p -- "$install_bin_dir"
@@ -102,7 +110,10 @@ main() {
     install_target=$install_bin_dir/sshore
     [ ! -d "$install_target" ] || fail 'installation target is a directory'
     chmod 755 "$install_tmp/sshore"
-    [ "$("$install_tmp/sshore" --version)" = "sshore $install_version" ] || fail 'binary version does not match release'
+    # Remote preparation checks the executable version on the target host.
+    if [ -z "$install_cache_dir" ]; then
+        [ "$("$install_tmp/sshore" --version)" = "sshore $install_version" ] || fail 'binary version does not match release'
+    fi
     if [ "$install_prepare_only" = true ]; then
         [ ! -e "$install_target" ] && [ ! -L "$install_target" ] || fail 'temporary staging target already exists'
         install_stage=$(mktemp "$install_bin_dir/.sshore-install.XXXXXXXX")
@@ -110,6 +121,10 @@ main() {
         chmod 755 "$install_stage"
         mv -f -- "$install_stage" "$install_target"
         install_stage=
+        if [ -n "$install_cache_dir" ] && [ -f "$install_tmp/SHA256SUMS" ]; then
+            mv -f -- "$install_archive" "$install_cache_dir/$install_asset"
+            mv -f -- "$install_tmp/SHA256SUMS" "$install_cache_dir/SHA256SUMS"
+        fi
     else
         "$install_tmp/sshore" bootstrap "$install_target" || fail 'installation stopped; existing tasks may require manual cleanup'
     fi
@@ -126,8 +141,20 @@ valid_version() {
     # No shell expressions, URL path components, prereleases or ambiguous names.
     printf '%s\n' "$1" | awk '/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ {ok=1} END {exit !(ok && NR==1)}'
 }
+verify_archive() {
+    [ -f "$1" ] && [ -f "$2" ] &&
+        [ "$(wc -c < "$1")" -le 262144 ] &&
+        [ "$(wc -c < "$2")" -le 67108864 ] || return 1
+    expected=$(awk -v name="$install_asset" '$2==name || $2=="*" name { hash=$1; n++ } END { if (n==1) print tolower(hash); else exit 1 }' "$1") || return 1
+    if [ "$install_hasher" = sha256sum ]; then
+        actual=$(sha256sum "$2") || return 1
+    else
+        actual=$(shasum -a 256 "$2") || return 1
+    fi
+    [ "${actual%% *}" = "$expected" ]
+}
 download() {
-    curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    curl --disable --max-filesize "$3" --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
         --tlsv1.2 --connect-timeout 15 --max-time 180 --retry 2 "$1" -o "$2" || fail "download failed: $1"
 }
 

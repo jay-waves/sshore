@@ -1,5 +1,3 @@
-//go:build !sshoretest
-
 package main
 
 import (
@@ -9,15 +7,6 @@ import (
 	"path/filepath"
 	"time"
 )
-
-// The daemon owner is account-wide, independent of a client's runtime or cache.
-func daemonLocation() (string, error) {
-	account, err := user.Current()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(account.HomeDir, ".sshore", "daemon"), nil
-}
 
 func daemonDirectory() (string, error) {
 	dir, err := daemonLocation()
@@ -93,7 +82,16 @@ func daemonStateRootAt(dir, root string, explicit bool) (string, error) {
 	return record.Directory, nil
 }
 
-func resetCachePath() (string, error) {
+// Daemon ownership follows the authenticated OS account, independently of runtime state.
+var daemonLocation = func() (string, error) {
+	account, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(account.HomeDir, ".sshore", "daemon"), nil
+}
+
+var resetCachePath = func() (string, error) {
 	root, err := os.UserCacheDir()
 	if err != nil {
 		return "", err

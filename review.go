@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -470,38 +469,4 @@ func (p *transferProgress) sample(now time.Time, done, total int64) string {
 		}
 	}
 	return fmt.Sprintf("%s/%s · %s/s · remaining %s", displayBytes(done), displayBytes(total), displayBytes(int64(p.rate)), eta)
-}
-
-// A dedicated approved transport accepts only client-initiated file streams.
-// Forwarding has its own SSH transport; obsolete tunnel/control streams cannot
-// create listeners or dial services through this connection.
-
-const maxApprovedStreams = wire.MaxFileStreams
-
-func serveApprovedStreams(ctx context.Context, mux *smux.Session) {
-	slots := make(chan struct{}, maxApprovedStreams)
-	var workers sync.WaitGroup
-	defer workers.Wait()
-	for {
-		st, e := mux.AcceptStream()
-		if e != nil {
-			return
-		}
-		select {
-		case slots <- struct{}{}:
-		default:
-			st.Close()
-			continue
-		}
-		workers.Go(func() {
-			defer func() { <-slots; st.Close() }()
-			abort := context.AfterFunc(ctx, func() { st.SetDeadline(time.Now()); st.Close() })
-			defer abort()
-			st.SetDeadline(time.Now().Add(requestTimeout))
-			m, e := readMessage(st)
-			if e == nil && m.Type == "approved_transfer" {
-				approvedRemoteTransfer(st, m)
-			}
-		})
-	}
 }

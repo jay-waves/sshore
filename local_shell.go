@@ -88,7 +88,10 @@ func dialLocalSessionUntil(r localShellRecord, deadline time.Time) (net.Conn, er
 }
 
 func dialLocalSessionContext(ctx context.Context, r localShellRecord, deadline time.Time) (net.Conn, error) {
-	if err := checkPeerVersion(r.Version, "local shell"); err != nil {
+	return dialDaemonStream(ctx,r,deadline,"/tasks/"+r.UID+"/open",nil)
+}
+func dialDaemonStream(ctx context.Context,r localShellRecord,deadline time.Time,path string,input any)(net.Conn,error){
+if err := checkPeerVersion(r.Version, "local shell"); err != nil {
 		return nil, err
 	}
 	remaining := time.Until(deadline)
@@ -100,50 +103,7 @@ func dialLocalSessionContext(ctx context.Context, r localShellRecord, deadline t
 		return nil, fmt.Errorf("local shell %s unavailable: %w", r.Name, err)
 	}
 	_ = c.SetDeadline(deadline)
-	return authenticatedTaskConn(ctx, c, r)
-}
-
-func authenticatedTaskConn(ctx context.Context, c net.Conn, r localShellRecord) (net.Conn, error) {
-	stop := context.AfterFunc(ctx, func() { c.Close() })
-	defer stop()
-	if err := authenticateDaemonTask(c, r); err != nil {
-		c.Close()
-		return nil, err
-	}
-	return c, nil
-}
-
-func authenticateDaemonTask(c net.Conn, r localShellRecord) error {
-	if err := checkPeerVersion(r.Version, "daemon"); err != nil {
-		return err
-	}
-	if err := writeMessage(c, message{Type: "local_auth", Token: r.Token, SoftwareVersion: version}); err != nil {
-		return err
-	}
-	m, err := readMessage(c)
-	if err != nil {
-		return err
-	}
-	if err := checkPeerVersion(m.SoftwareVersion, "daemon"); err != nil {
-		return err
-	}
-	if m.Type != "local_ready" {
-		return fmt.Errorf("daemon authentication failed")
-	}
-	if r.UID == "" {
-		return nil
-	}
-	if err := writeMessage(c, message{Type: "task_open", Instance: r.UID}); err != nil {
-		return err
-	}
-	m, err = readMessage(c)
-	if err != nil {
-		return err
-	}
-	if m.Type != "task_ready" {
-		return fmt.Errorf("%s", m.Error)
-	}
-	return nil
+	return upgradeDaemonConn(ctx,c,r,path,input)
 }
 
 func (r localShellRecord) identity() string {
@@ -188,15 +148,131 @@ func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, read
 	return nil
 }
 
+type shellTerminal struct {
+	mu         sync.Mutex
+	terminalMu sync.Mutex // Serialize replay and redraw with live output. Acquire before mu.
+	terminal   *tmux.Terminal
+	process    processIdentity
+	modes      tmux.InputState
+	lifecycle  tmux.Lifecycle[*attachment]
+}
+
+type shellInput interface {
+	tmux.Input
+	Stop() error
+}
+
+func shellSize(m message) tmux.Size {
+	return tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}
+}
+
+// The caller holds mu while publishing the terminal. The exit handler owns
+// task-specific state and exit reporting.
+func (s *shellTerminal) startTerminal(path string, args, env []string, dir string, m message, exited func(error, int)) error {
+	t, err := tmux.Start(tmux.Config{Path: path, Args: args, Env: env, Dir: dir, Size: shellSize(m)})
+	if err != nil {
+		return err
+	}
+	pid := t.PID()
+	identity, err := spawnProcessIdentity(pid)
+	if err != nil {
+		t.Close()
+		return err
+	}
+	s.terminal = t
+	s.process = processIdentity{PID: pid, Start: identity}
+	go s.pumpTerminal(t, exited)
+	return nil
+}
+
+func (s *shellTerminal) pumpTerminal(t *tmux.Terminal, exited func(error, int)) {
+	buf := make([]byte, 8192)
+	for {
+		n, err := t.Read(buf)
+		if n > 0 {
+			s.terminalMu.Lock()
+			s.modes.Observe(buf[:n])
+			p := s.lifecycle.Active()
+			if p != nil && p.output(message{Type: "output", Data: buf[:n]}) != nil {
+				p.Close()
+			}
+			s.terminalMu.Unlock()
+		}
+		if err != nil {
+			break
+		}
+	}
+	err := t.Wait()
+	code := 0
+	if err != nil {
+		code = 1
+		if e, ok := errors.AsType[*exec.ExitError](err); ok {
+			code = e.ExitCode()
+		}
+	}
+	exited(err, code)
+}
+
+// Caller holds both host locks. The attachment acquires ownership only after
+// startup, terminal setup and the ready handshake have succeeded.
+func (s *shellTerminal) attachTerminal(p *attachment, m message, start func(message) error, ready func() error) (shellInput, error) {
+	var input shellInput
+	initial := s.terminal == nil
+	err := s.lifecycle.Attach(p, func() error {
+		if !initial && (m.NoLogin || m.NoProfile) {
+			return fmt.Errorf("startup options require a new managed shell")
+		}
+		if initial {
+			if err := start(m); err != nil {
+				return err
+			}
+		}
+		if err := s.terminal.Resize(shellSize(m)); err != nil {
+			return err
+		}
+		lease, err := tmux.NewTerminalInput(s.terminal)
+		if err != nil {
+			return err
+		}
+		if err = ready(); err == nil {
+			if data := s.modes.Replay(); len(data) > 0 {
+				err = p.output(message{Type: "output", Data: data})
+			}
+		}
+		if err != nil {
+			lease.Stop()
+			return err
+		}
+		input = lease
+		return nil
+	})
+	if err == nil && !initial && !p.Muted() {
+		tmux.RequestRedraw(s.terminal, s.process.PID)
+	}
+	return input, err
+}
+
+// Hold mu through Stop so no successor can acquire the terminal's writer.
+func (s *shellTerminal) detachTerminal(p *attachment, input shellInput) (bool, error) {
+	if s.lifecycle.Active() != p {
+		// An exited shell has no successor, but the input worker still needs joining.
+		if s.lifecycle.Exited() {
+			_ = input.Stop()
+		}
+		return false, nil
+	}
+	if err := input.Stop(); err != nil {
+		s.lifecycle.EndIfAttached(p)
+		return false, err
+	}
+	return s.lifecycle.Detach(p), nil
+}
+
 type localShell struct {
-	process     processIdentity
+	shellTerminal
 	environment []string
 	tasks       *daemonTasks
-	mu          sync.Mutex
 	record      localShellRecord
-	terminal    *tmux.Terminal
-	lifecycle   tmux.Lifecycle[*attachment]
-	modes       tmux.InputState
 	done        chan struct{}
 	once        sync.Once
 	handoff     *localHandoff
@@ -248,54 +324,19 @@ func (s *localShell) start(m message) error {
 		return err
 	}
 	env := tmux.StartupEnv(path, localShellEnvironment(source, m.Term, s.record.identity()), m.NoProfile)
-	t, err := tmux.Start(tmux.Config{Path: path, Args: args, Env: env, Dir: s.record.Directory, Size: tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}})
-	if err != nil {
-		return err
-	}
-	identity, err := spawnProcessIdentity(t.PID())
-	if err != nil {
-		t.Close()
-		return err
-	}
-	s.process = processIdentity{PID: t.PID(), Start: identity}
-	s.terminal = t
-	go func() {
-		buf := make([]byte, 8192)
-		for {
-			n, err := t.Read(buf)
-			if n > 0 {
-				s.mu.Lock()
-				s.modes.Observe(buf[:n])
-				if p := s.lifecycle.Active(); p != nil {
-					if p.output(message{Type: "output", Data: buf[:n]}) != nil {
-						p.Close()
-					}
-				}
-				s.mu.Unlock()
-			}
-			if err != nil {
-				break
-			}
-		}
-		err := t.Wait()
-		code := 0
+	return s.startTerminal(path, args, env, s.record.Directory, m, func(err error, code int) {
 		reason := "shell exited"
 		if err != nil {
-			code = 1
-			if exit, ok := errors.AsType[*exec.ExitError](err); ok {
-				code = exit.ExitCode()
-			}
 			reason = err.Error()
 		}
 		s.mu.Lock()
-		p := s.lifecycle.Active()
+		p := s.lifecycle.End()
 		s.mu.Unlock()
 		if p != nil {
 			p.FinishExit(code, reason)
 		}
 		s.close()
-	}()
-	return nil
+	})
 }
 
 func localShellEnvironment(source []string, term, identity string) []string {
@@ -465,77 +506,43 @@ func (s *localShell) attach(c net.Conn) error {
 	if err := validateAttach(m); err != nil {
 		return err
 	}
+	s.terminalMu.Lock()
 	s.mu.Lock()
-	if s.lifecycle.Active() != nil || s.lifecycle.Exited() {
-		s.mu.Unlock()
-		_ = p.controlMessage(message{Type: "fatal", Error: "local shell unavailable or already attached"})
-		return fmt.Errorf("local shell unavailable")
-	}
 	initial := s.terminal == nil
-	if (m.NoLogin || m.NoProfile) && !initial {
-		s.mu.Unlock()
-		_ = p.controlMessage(message{Type: "fatal", Error: "startup options require a new shell"})
-		return fmt.Errorf("startup options require a new shell")
-	}
-	if initial {
-		err = s.start(m)
-	}
-	if err == nil {
-		err = s.terminal.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
-	}
-	if err == nil {
+	lease, err := s.attachTerminal(p, m, s.start, func() error {
 		saveShellTreeWithProcess(s.record.identity(), s.record.Name, m.Tree, "attached", describeSpawnOwner(s.record.Owner), shellLifetime(s.record.Owner.PID != 0, false), m.SourceHost, m.SourceMachineID)
-		err = p.controlMessage(message{Type: "ready", Tree: shellTreeFor(s.record.identity()), Temporary: s.record.Owner.PID != 0, Name: s.record.Name, PID: s.terminal.PID()})
-	}
-	if err == nil {
-		err = p.output(message{Type: "output", Data: s.modes.Replay()})
-	}
-	if err != nil {
-		s.mu.Unlock()
-		_ = p.controlMessage(message{Type: "fatal", Error: err.Error()})
-		if initial {
-			s.close()
-		}
-		return err
+		return p.controlMessage(message{Type: "ready", Tree: shellTreeFor(s.record.identity()), Temporary: s.record.Owner.PID != 0, Name: s.record.Name, PID: s.process.PID})
+	})
+	if err != nil && initial && !errors.Is(err, tmux.ErrAttached) {
+		s.lifecycle.End()
 	}
 	t := s.terminal
-	lease, err := tmux.NewTerminalInput(t)
+	s.mu.Unlock()
+	s.terminalMu.Unlock()
 	if err != nil {
-		s.mu.Unlock()
-		if initial {
+		if errors.Is(err, tmux.ErrExited) || errors.Is(err, tmux.ErrAttached) {
+			err = fmt.Errorf("local shell unavailable or already attached")
+		} else if initial {
 			s.close()
 		}
+		_ = p.controlMessage(message{Type: "fatal", Error: err.Error()})
 		return err
 	}
-	if err = s.lifecycle.Attach(p, func() error { return nil }); err != nil {
-		s.mu.Unlock()
-		lease.Stop()
-		return err
-	}
-	saveShellTree(s.record.identity(), s.record.Name, m.Tree, "attached", shellLifetime(s.record.Owner.PID != 0, false), m.SourceHost, m.SourceMachineID)
-	s.mu.Unlock()
-	// Losing a local client releases attachment ownership, not the daemon-owned
-	// terminal. Stop its writer before another client can attach.
 	release := sync.OnceValues(func() (string, error) {
-		err := lease.Stop()
 		s.mu.Lock()
-		terminate := err != nil && s.lifecycle.EndIfAttached(p)
-		if err == nil && s.lifecycle.Detach(p) {
+		detached, err := s.detachTerminal(p, lease)
+		if detached {
 			saveShellTree(s.record.identity(), s.record.Name, nil, "detached")
 		}
 		name := s.record.Name
 		s.mu.Unlock()
-		if terminate {
+		if err != nil {
 			s.close()
 		}
 		return name, err
 	})
 	defer release()
 	go p.readInput(lease, &s.lifecycle)
-	if !initial {
-		// Output ownership must be installed before requesting a repaint.
-		redrawLocalTerminal(t)
-	}
 
 	for {
 		m, err := readMessage(control)

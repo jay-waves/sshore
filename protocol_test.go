@@ -201,27 +201,6 @@ func TestClientMuxRejectsDifferentOrUnknownBuild(t *testing.T) {
 	}
 }
 
-func TestAttachmentRejectsTunnelStreams(t *testing.T) {
-	client, server := muxPair(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go serveApprovedStreams(ctx, server)
-	for _, kind := range []string{"forward_connect", "forward_control"} {
-		st, e := client.OpenStream()
-		if e != nil {
-			t.Fatal(e)
-		}
-		st.SetDeadline(time.Now().Add(time.Second))
-		if e = writeMessage(st, message{Type: kind, Action: "add"}); e != nil {
-			t.Fatal(e)
-		}
-		if m, e := readMessage(st); e == nil {
-			t.Fatalf("obsolete attachment tunnel accepted: %+v", m)
-		}
-		st.Close()
-	}
-}
-
 func TestApprovalMismatchDoesNotWriteFile(t *testing.T) {
 	client, server := muxPair(t)
 	target := filepath.Join(t.TempDir(), "secret")
@@ -338,5 +317,25 @@ func TestFrontendReleasesUnreachableTransports(t *testing.T) {
 	_, err = openTaskStream(ctx, &parent, func(context.Context) (io.ReadWriteCloser, error) { return nil, io.EOF }, func() { closed++ })
 	if err != io.EOF || closed != 1 || len(owned) != 0 {
 		t.Fatal("failed first stream retained transport")
+	}
+}
+
+func TestSessionDisconnectReason(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{context.DeadlineExceeded, "timeout"},
+		{smux.ErrTimeout, "timeout"},
+		{context.Canceled, "interrupted"},
+		{io.EOF, "connection closed"},
+		{io.ErrUnexpectedEOF, "connection closed"},
+		{net.ErrClosed, "connection closed"},
+		{fmt.Errorf("detach response timed out"), "timeout"},
+		{fmt.Errorf("connection reset by peer"), "connection error"},
+	} {
+		if got := sessionDisconnectReason(fmt.Errorf("connection lost: %w", tc.err)); got != tc.want {
+			t.Errorf("%v: %q, want %q", tc.err, got, tc.want)
+		}
 	}
 }

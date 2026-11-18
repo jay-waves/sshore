@@ -1,5 +1,3 @@
-//go:build sshoretest
-
 package tests_test
 
 import (

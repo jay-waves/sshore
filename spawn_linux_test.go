@@ -1,5 +1,3 @@
-//go:build linux && sshoretest
-
 package main
 
 import (

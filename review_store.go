@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+"net/http"
+"net/url"
 	"os"
 	"reflect"
 	"slices"
@@ -322,32 +324,32 @@ type requestRPCReply struct {
 	NotFound bool            `json:",omitempty"`
 }
 
-func (s *daemonTasks) Serve(c net.Conn, m message) {
+func (s *daemonTasks) serveRequest(w http.ResponseWriter,r *http.Request) {
 	reply := requestRPCReply{}
 	var err error
-	switch m.Action {
+	switch r.PathValue("action") {
 	case "setup_wait":
-		err = s.waitSetup(c)
+		err = s.waitSetup(w,r)
 	case "setup_approve":
-		err = s.approveSetup(m.ApprovalID)
+		err = s.approveSetup(r.URL.Query().Get("ref"))
 	case "request_save":
-		var r requestRecord
-		err = json.NewDecoder(io.LimitReader(c, maxRequestRecord+1)).Decode(&r)
+		var record requestRecord
+		err = json.NewDecoder(http.MaxBytesReader(w,r.Body,maxRequestRecord+1)).Decode(&record)
 		if err == nil {
-			err = s.Save(r)
+			err = s.Save(record)
 		}
 	case "request_get":
-		var r requestRecord
-		r, err = s.Find(m.Name)
+		var record requestRecord
+		record, err = s.Find(r.URL.Query().Get("name"))
 		if err == nil {
-			reply.Request = &r
+			reply.Request = &record
 		}
 	case "request_list":
 		reply.Requests = s.Pending()
 	case "request_consume":
-		err = s.Consume(m.ApprovalID)
+		err = s.Consume(r.URL.Query().Get("ref"))
 	case "request_rename":
-		err = s.Rename(m.ApprovalID, m.Name)
+		err = s.Rename(r.URL.Query().Get("ref"), r.URL.Query().Get("name"))
 	default:
 		err = fmt.Errorf("invalid request store action")
 	}
@@ -355,7 +357,7 @@ func (s *daemonTasks) Serve(c net.Conn, m message) {
 		reply.Error = err.Error()
 		reply.NotFound = errors.Is(err, os.ErrNotExist)
 	}
-	_ = json.NewEncoder(c).Encode(reply)
+	_ = json.NewEncoder(w).Encode(reply)
 }
 func requestRPC(action, ref, name string, request *requestRecord) (requestRPCReply, error) {
 	return requestRPCContext(context.Background(), requestTimeout, action, ref, name, request, nil)
@@ -374,23 +376,14 @@ func requestRPCContext(parent context.Context, timeout time.Duration, action, re
 	if err != nil {
 		return reply, err
 	}
-	c, err := dialLocalSessionContext(ctx, record, time.Now().Add(timeout))
-	if err != nil {
-		return reply, err
-	}
-	defer c.Close()
-	stop := context.AfterFunc(ctx, func() { c.Close() })
-	defer stop()
-	if err := writeMessage(c, message{Type: "request_store", Action: action, Name: name, ApprovalID: ref}); err != nil {
-		return reply, err
-	}
-	if request != nil {
-		if err := json.NewEncoder(c).Encode(request); err != nil {
-			return reply, err
-		}
-	}
-	decoder := json.NewDecoder(io.LimitReader(c, maxPendingRequests*maxRequestRecord+4096))
-	if err := decoder.Decode(&reply); err != nil {
+	path:="/requests/"+action+"?"+url.Values{"ref":{ref},"name":{name}}.Encode()
+ req,err:=daemonRequest(ctx,record,path,request)
+ if err!=nil{return reply,err}
+ resp,err:=daemonDo(req)
+ if err!=nil{return reply,err}
+ defer resp.Body.Close()
+ decoder:=json.NewDecoder(io.LimitReader(resp.Body,maxPendingRequests*maxRequestRecord+4096))
+ if err := decoder.Decode(&reply); err != nil {
 		return reply, err
 	}
 	if queued != nil && reply.Error == "" {
@@ -489,9 +482,9 @@ func (s *daemonTasks) approveSetup(id string) error {
 	return nil
 }
 
-func (s *daemonTasks) waitSetup(c net.Conn) error {
+func (s *daemonTasks) waitSetup(w http.ResponseWriter,req *http.Request) error {
 	var r requestRecord
-	if err := json.NewDecoder(io.LimitReader(c, maxRequestRecord)).Decode(&r); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w,req.Body,maxRequestRecord)).Decode(&r); err != nil {
 		return err
 	}
 	if !validRequestID(r.ID) || r.SoftwareVersion != version || r.Setup == nil || len(r.Operations) != 0 || validSSHDestination(r.Connection.Host) != nil {
@@ -527,22 +520,19 @@ func (s *daemonTasks) waitSetup(c net.Conn) error {
 			s.removeRequest(r.ID)
 		}
 	}()
-	if err := json.NewEncoder(c).Encode(requestRPCReply{Queued: r.ID}); err != nil {
+	if err := json.NewEncoder(w).Encode(requestRPCReply{Queued: r.ID}); err != nil {
 		return err
 	}
-	_ = c.SetDeadline(r.Created.Add(requestTTL))
-	disconnected := make(chan struct{})
-	go func() {
-		var b [1]byte
-		_, _ = c.Read(b[:])
-		close(disconnected)
-	}()
-	select {
+	if err:=http.NewResponseController(w).Flush();err!=nil{return err}
+ timer:=time.NewTimer(time.Until(r.Created.Add(requestTTL)))
+ defer timer.Stop()
+ select {
 	case <-d.done:
 		if d.approved {
 			return nil
 		}
-	case <-disconnected:
+	case <-req.Context().Done():
+case <-timer.C:
 	}
 	return fmt.Errorf("setup review declined, cancelled or expired")
 }

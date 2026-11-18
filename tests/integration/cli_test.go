@@ -1,5 +1,3 @@
-//go:build sshoretest
-
 package tests_test
 
 import (
@@ -32,6 +30,7 @@ func TestMain(m *testing.M) {
 
 func testBinary(t *testing.T) string {
 	t.Helper()
+	t.Setenv("SSHORE_TEST_CLI", "1")
 	cliBuild.Do(func() {
 		cliBuild.directory, cliBuild.err = os.MkdirTemp("", "sshore-cli-test-")
 		if cliBuild.err != nil {
@@ -41,7 +40,7 @@ func testBinary(t *testing.T) string {
 		if runtime.GOOS == "windows" {
 			cliBuild.binary += ".exe"
 		}
-		cmd := exec.Command("go", "build", "-tags=sshoretest", "-buildvcs=false", "-o", cliBuild.binary, "..")
+		cmd := exec.Command("go", "test", "-c", "-buildvcs=false", "-o", cliBuild.binary, "../..")
 		if output, err := cmd.CombinedOutput(); err != nil {
 			cliBuild.err = fmt.Errorf("build CLI: %w\n%s", err, output)
 		}

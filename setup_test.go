@@ -1,20 +1,12 @@
 package main
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 )
 
@@ -180,96 +172,6 @@ func TestCompareReleaseVersions(t *testing.T) {
 	}
 }
 
-func setupArchive(t *testing.T, name string, kind byte) []byte {
-	t.Helper()
-	var b bytes.Buffer
-	gz := gzip.NewWriter(&b)
-	tw := tar.NewWriter(gz)
-	data := []byte("verified executable fixture\x00\n")
-	size := int64(len(data))
-	if kind != tar.TypeReg {
-		size = 0
-	}
-	if err := tw.WriteHeader(&tar.Header{Name: name, Typeflag: kind, Size: size, Mode: 0755, Linkname: "/other"}); err != nil {
-		t.Fatal(err)
-	}
-	if size > 0 {
-		if _, err := tw.Write(data); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := gz.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return b.Bytes()
-}
-
-func TestSetupDownloadCache(t *testing.T) {
-	archive := setupArchive(t, "sshore", tar.TypeReg)
-	name := "sshore_" + version + "_linux_amd64.tar.gz"
-	manifest := fmt.Sprintf("%x  %s\n", sha256.Sum256(archive), name)
-	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		switch r.URL.Path {
-		case "/v" + version + "/SHA256SUMS":
-			io.WriteString(w, manifest)
-		case "/v" + version + "/" + name:
-			w.Write(archive)
-		default:
-			t.Errorf("unexpected release path %s", r.URL.Path)
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-	cache := t.TempDir()
-	for i := 0; i < 2; i++ {
-		binary, err := fetchSetupBinary(context.Background(), server.Client(), server.URL, cache, version)
-		if err != nil || string(binary) != "verified executable fixture\x00\n" {
-			t.Fatalf("%q %v", binary, err)
-		}
-	}
-	if requests.Load() != 2 {
-		t.Fatalf("valid cache made %d requests", requests.Load())
-	}
-	if err := os.WriteFile(filepath.Join(cache, version, name), []byte("corrupt"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fetchSetupBinary(context.Background(), server.Client(), server.URL, cache, version); err != nil {
-		t.Fatal(err)
-	}
-	if requests.Load() != 4 {
-		t.Fatalf("bad cache not replaced: %d requests", requests.Load())
-	}
-}
-
-func TestSetupDownloadRejectsInvalidArtifacts(t *testing.T) {
-	for _, tc := range []struct {
-		name, path string
-		kind       byte
-		corrupt    bool
-	}{
-		{"checksum", "sshore", tar.TypeReg, true},
-		{"missing", "README.md", tar.TypeReg, false},
-		{"path traversal", "../sshore", tar.TypeReg, false},
-		{"symlink", "sshore", tar.TypeSymlink, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			archive := setupArchive(t, tc.path, tc.kind)
-			manifest := []byte(fmt.Sprintf("%x  release.tar.gz\n", sha256.Sum256(archive)))
-			if tc.corrupt {
-				archive = append(archive, '!')
-			}
-			if _, err := verifiedSetupArchive(manifest, archive, "release.tar.gz"); err == nil {
-				t.Fatal("invalid artifact accepted")
-			}
-		})
-	}
-}
-
 func TestSetupDownloadNegotiation(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		var incoming, outgoing bytes.Buffer
@@ -300,34 +202,5 @@ func TestMountSetupDeclineAndUnknownVersion(t *testing.T) {
 	_, err = chooseSetupAction(message{Type: "setup_choice", Action: "manual-only"}, func() (setupInput, error) { t.Fatal("unexpected update prompt"); return nil, nil })
 	if err == nil || !strings.Contains(err.Error(), "update manually") {
 		t.Fatal(err)
-	}
-}
-
-func TestSetupDownloadRetriesTruncatedBody(t *testing.T) {
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", "8")
-		if calls.Add(1) == 1 {
-			_, _ = io.WriteString(w, "partial")
-			return
-		}
-		_, _ = io.WriteString(w, "complete")
-	}))
-	defer server.Close()
-	data, err := downloadSetupFile(context.Background(), server.Client(), server.URL, 64)
-	if err != nil || string(data) != "complete" || calls.Load() != 2 {
-		t.Fatalf("download %q: %v, requests=%d", data, err, calls.Load())
-	}
-}
-
-func TestSetupDownloadDoesNotRetryOversizedBody(t *testing.T) {
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		_, _ = io.WriteString(w, "too large")
-	}))
-	defer server.Close()
-	if _, err := downloadSetupFile(context.Background(), server.Client(), server.URL, 3); err == nil || calls.Load() != 1 {
-		t.Fatalf("oversized response: %v, requests=%d", err, calls.Load())
 	}
 }

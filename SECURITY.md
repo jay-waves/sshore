@@ -333,8 +333,9 @@ unregistered processes are outside this scope; setup does not discover them by
 process scanning.
 
 1. Remote installation requires local review, including first use. Existing older installations or shells require reviewing affected
-   identities and typing `update`. Normal control rejects different releases; unknown
-   or unordered versions require manual repair without ending tasks.
+   identities and typing `update`. If a different-release daemon is running, use
+   its own release to end its tasks and wait for exit before installation.
+   Unknown or unordered versions require manual repair.
 2. Preparation selects the exact release, verifies its checksum and executable
    version, and stages it without replacing the installed program. The client supplies the verified binary over the same authenticated SSH connection; the remote cannot
    choose a local path, URL or different release. Extraction accepts only the
@@ -343,8 +344,8 @@ process scanning.
    prepares/verifies the replacement on the target filesystem. Changed state
    requires fresh confirmation. Preparation failure must not terminate tasks.
 4. Setup requests shutdown through the authenticated administrative endpoint and
-   waits for the account owner to release it. This limited endpoint may inspect or
-   stop another release; it cannot create tasks or open data streams. A changed
+   waits for the account owner to release it. Setup uses this endpoint only for
+   a matching daemon. A changed
    snapshot, refusal, unavailable endpoint or timeout stops the update. The daemon
    kills its confirmed shell tasks; clients never scan for daemons or forcibly kill
    a daemon that refused or could not complete cleanup. Busy mounts remain active.

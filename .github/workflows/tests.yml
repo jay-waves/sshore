@@ -52,9 +52,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y bash zsh fish openssh-server openssh-sftp-server
-          sudo mkdir -p /run/sshd
-          command -v bash zsh fish ssh sshd ssh-keygen
+          sudo apt-get install -y bash zsh fish openssh-client openssh-sftp-server
+          command -v bash zsh fish ssh ssh-keygen
           bash --version
           zsh --version
           fish --version
@@ -62,10 +61,17 @@ jobs:
         shell: bash
         run: test -z "$(git ls-files -z '*.go' | xargs -0 gofmt -l)"
       - run: go vet ./...
-      - name: Core tests with race detector
+      - name: Linux Go tests with race detector
+        if: runner.os == 'Linux'
         env:
           GOFLAGS: -race
-        run: go test -json -count=1 -tags=sshoretest -timeout=10m ./... > core-tests.jsonl
+        run: go test -json -count=1 -timeout=10m ./... > core-tests.jsonl
+      - name: Windows build and platform compatibility
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          go build ./...
+          go test -run '^(TestLocalShellPath|TestWindowsPlatform|TestMountDaemonHasNoConsole|TestWindowsPrivateStateHandle)$' .
       - name: Installer and release tests (Linux)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         run: |
@@ -83,11 +89,9 @@ jobs:
         run: ./tests/install_windows_test.ps1
       - name: All real SSH scenarios (Linux)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
-        run: |
-          go build -tags=sshoretest -o dist/sshore-e2e .
-          python3 tests/ssh_e2e.py --binary dist/sshore-e2e
+        run: tests/integration/ssh_docker.sh
       - name: Show failed and skipped Go tests
-        if: always()
+        if: ${{ always() && runner.os == 'Linux' }}
         shell: bash
         run: |
           python3 -X utf8 - <<'PY'
@@ -107,7 +111,7 @@ jobs:
                           print(event['Output'], end='')
           PY
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: ${{ always() && runner.os == 'Linux' }}
         with:
           name: test-results-${{ matrix.os }}
           path: core-tests.jsonl

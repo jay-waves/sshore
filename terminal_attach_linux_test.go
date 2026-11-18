@@ -232,15 +232,6 @@ func TestClientSessionShortcuts(t *testing.T) {
 	wait("Connected fixture / keys")
 	press('l')
 	wait("Connected fixture / alpha")
-	press('s')
-	wait("Session # (Esc cancels):")
-	// The list contains alpha and keys; select keys (second).
-	if _, err := io.WriteString(terminal, "2\r"); err != nil {
-		t.Fatal(err)
-	}
-	wait("Connected fixture / keys")
-	press('c')
-	wait("Connected fixture /")
 	press('d')
 	wait("Detached;")
 	if err := cmd.Wait(); err != nil {

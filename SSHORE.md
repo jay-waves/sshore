@@ -21,11 +21,11 @@ policy or depending on mutable application state.
 | One-off SSH execution | `cli.go`: exec adapter uses the shared SSH connection layer without remote setup |
 | CLI grammar, dispatch and help | `cli_schema.go`: shared command aliases and product/SSH grammar; `cli_commands.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
 | Connections and session switching | `client.go`, `client_connection.go` |
-| Prepared installation and exact-release policy | `setup*.go`: shared installer and state policy in `setup_install.go`; native preparation in `setup_linux.go` / `platform_windows.go` |
-| Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_linux.go`, `server_linux.go`; process inspection in `setup_process_linux.go` |
+| Prepared installation and exact-release policy | `setup.go` handles release negotiation, transport and installation policy. `setup_linux.go` handles remote bootstrap |
+| Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_linux.go`, `server_linux.go`; process inspection in `process_linux.go` |
 | Account daemon and local shell control | `daemon*.go` (task registry and resource control in `daemon_tasks.go`, plus activity leases and metadata), `local_command.go`, `local_shell.go`; hosted Unix shell adapters in `platform_*.go` |
 | Spawn ownership, lifetime SSH and nested routes | `spawn_owner.go`, `spawn_transport.go`, `spawn_route_linux.go`, `platform_*.go` |
-| Shell startup and attachment I/O | `internal/tmux/terminal.go`, `internal/tmux/shell_attachment.go`, application adapters in `protocol.go` |
+| Shell startup and attachment I/O | `local_shell.go` shares terminal startup, output and input lease handoff between native and SSH-hosted shells. `internal/tmux/` owns platform terminal I/O |
 | Native terminals, console I/O and shortcuts | `internal/tmux/` |
 | Local prompts and presentation | `internal/termui/`, application adapters in `cli_ui.go` |
 | SSH connections | `internal/ssh/` owns SSH authentication, host verification, jump connections, exec channels and SSH forwarding |
@@ -122,7 +122,9 @@ AEAD integrity protection. Normal connections remain quiet. Host verification us
 local known_hosts policy; unknown-host confirmation is routed to the initiating
 frontend over private local control. Background retries never prompt.
 
-After managed shell preparation, the client opens an SSH TCP channel to the
+For remote launch, attach and spawn, the initiating daemon owns SSH and forwards
+setup and authentication prompts to the frontend. After preparation it opens an SSH
+TCP channel to the
 account daemon's loopback endpoint. Native and SSH clients authenticate there and
 open streams by immutable task ID. The preparation process exits; SSH TCP
 forwarding must be permitted. Failed or declined setup does not open a shell.
@@ -187,9 +189,10 @@ Connection boundary cleanup disables Kitty keyboard
 event reporting and xterm modifyOtherKeys before returning to the local prompt.
 The Linux account daemon catches SIGHUP for its entire lifetime, including
 intervals without hosted shells; child shells retain their normal HUP behavior.
-The frontend owns reusable authenticated connections. During handoff it keeps the
-previous route for recovery. Once the target is ready, it releases connections
-unreachable from the active route or return stack. Saved routes authenticate anew.
+The frontend holds local daemon leases for the active route and return stack.
+During handoff it keeps the previous route for recovery. Once the target is ready,
+it closes unreferenced leases. Each lease can open independent attachment streams
+over the daemon-owned SSH connection. Saved routes authenticate anew.
 
 The shell host holds a terminal and the verified process identity used for task
 operations. Each attachment owns a mux and borrows one input lease from the host.
@@ -382,8 +385,9 @@ Remote setup uses the client cache or downloads the exact Linux release on the
 client and transfers it over SSH. A missing or older release queues a setup request
 in the initiating account daemon. Review releases the waiting connection, which
 rechecks the affected tasks before applying the change.
-Standalone install scripts own downloads, checksum verification and platform-specific
-preparation. The prepared executable handles installation through
+The bundled install scripts download, verify and extract releases for local
+installation and remote preparation. Remote preparation uses the client
+version. Windows clients use system PowerShell and tar to prepare the Linux asset. The prepared executable handles installation through
 `sshore bootstrap TARGET`; installers invoke it directly without legacy entry
 points or capability probes. The Linux remote entry point is `scripts/bootstrap.sh.tmpl`,
 embedded with `go:embed`: Go quotes parameters and builds protocol frames; shell
@@ -438,26 +442,32 @@ completeness.
 | Documentation | Relative links/anchors, code fences and affected Mermaid diagrams, including packaged documents |
 
 ```sh
-go test -count=1 -tags=sshoretest -timeout=5m ./...
+go test -count=1 -timeout=5m ./...
 ```
 
 Subprocess builds inherit `GOFLAGS`; use `GOFLAGS=-race` for race checks and
 `-count=1` for environment-dependent checks. Reuse successful checks unless a
 subsequent change or unresolved failure warrants repeating them.
 
-Lifecycle integration executables **must** use `sshoretest` for runtime-directory
-isolation. Never simulate upgrade confirmation against the developer's real shells.
-Release binaries must not use this tag. For real-SSH checks:
+Go lifecycle fixtures re-execute the test binary with temporary daemon and cache
+paths. Use a normal build when the fixture isolates daemon ownership with OS accounts.
+The external CLI and real-SSH scenarios live under `tests/integration/`.
+For local real-SSH checks on Linux amd64, run the Python fixture through Docker.
+The runner uses the host Go toolchain to build the normal binary. Each scenario
+gets a fresh container with separate client and server accounts, an isolated
+loopback network and read-only test artifacts. The first run builds the test image.
+The setup scenario also checks standalone installer approval against a running
+server task and local reset against the client account.
 
 ```sh
-go build -tags=sshoretest -o dist/sshore-e2e .
-python3 tests/ssh_e2e.py --binary dist/sshore-e2e
+tests/integration/ssh_docker.sh
+tests/integration/ssh_docker.sh --setup-only
 ```
 
 Native mount smoke tests are opt-in and require an existing FUSE/WinFsp environment:
 
 ```sh
-SSHORE_TEST_FTP_MOUNT=1 go test -count=1 -tags=sshoretest -run '^TestFTPNativeMount$' ./internal/files
+SSHORE_TEST_FTP_MOUNT=1 go test -count=1 -run '^TestFTPNativeMount$' ./internal/files
 ```
 
 The manually triggered Tests workflow is the unified Linux/Windows amd64
@@ -465,13 +475,14 @@ validation pipeline. Choose the workflow ref, or supply a release tag or commit
 in its optional `ref` input. Pushes, tags and publication never trigger it;
 validation is independent of CI/CD and can also run locally using the commands
 above and the installer/release scripts in `tests/`.
-It runs formatting, vet, the core suite with race
-detection, installers, release-script checks and every real-SSH scenario. Linux
-installs and verifies Bash, Zsh and Fish before testing. Go failures and skips are
+Linux runs the Go suite with race detection, installer and release checks,
+and all containerized SSH scenarios. Windows checks the build, platform adapters
+and both supported PowerShell installers. Linux installs and verifies Bash, Zsh
+and Fish for the Go suite. Go failures and skips are
 listed in the workflow summary; complete Go results are retained as artifacts.
 Native FUSE/WinFsp checks remain opt-in on equipped hosts. Other environment-based
 skips must be reviewed; a green run is not proof that skipped checks passed.
-The SSH script defaults to all scenarios, each with an isolated fixture; use
+The Docker runner defaults to all scenarios, each with an isolated fixture; use
 `--core-only`, `--spawn-only`, `--identity-only`, `--nested-only`, `--handoff-only`,
 `--setup-only` or `--mcp-only` for a focused rerun.
 Local in-process benchmarks are not WAN performance evidence.

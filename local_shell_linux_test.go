@@ -168,15 +168,15 @@ func TestInitialAttachmentFailureEndsCreatedTerminal(t *testing.T) {
 	if _, err := s.attach(p, message{Type: "attach", Term: "xterm-256color", Cols: 80, Rows: 24}); err == nil {
 		t.Fatal("accepted closed attachment")
 	}
-	if s.master == nil {
+	if s.terminal == nil {
 		t.Fatal("test did not reach terminal startup")
 	}
-	defer s.master.Close()
+	defer s.terminal.Close()
 	if !s.lifecycle.Exited() || s.lifecycle.Active() != nil {
 		t.Fatal("initial failure preserved shell")
 	}
 	done := make(chan struct{})
-	go func() { s.master.Wait(); close(done) }()
+	go func() { s.terminal.Wait(); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
@@ -190,7 +190,7 @@ func TestFailedReattachmentPreservesDetachedTerminal(t *testing.T) {
 	if err := s.start(message{Cols: 80, Rows: 24, Term: "xterm-256color"}); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { s.master.Close(); s.master.Wait() }()
+	defer func() { s.terminal.Close(); s.terminal.Wait() }()
 	if _, err := s.attach(closedAttachment(t), message{Type: "attach", Term: "xterm-256color", Cols: 80, Rows: 24}); err == nil {
 		t.Fatal("accepted closed attachment")
 	}
@@ -455,5 +455,32 @@ func TestLocalDaemonIgnoresOrphanedVersion(t *testing.T) {
 				t.Fatalf("daemon was not replaced: %+v %v", current, err)
 			}
 		})
+	}
+}
+
+type trackedShellInput struct {
+	stops int
+}
+
+func (i *trackedShellInput) Write(b []byte) (int, error) { return len(b), nil }
+func (i *trackedShellInput) Stopped() bool               { return i.stops != 0 }
+func (i *trackedShellInput) Stop() error {
+	i.stops++
+	return nil
+}
+
+func TestShellTerminalReleasesWriterAfterExit(t *testing.T) {
+	var host shellTerminal
+	active, stale := new(attachment), new(attachment)
+	input := new(trackedShellInput)
+	if err := host.lifecycle.Attach(active, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if detached, err := host.detachTerminal(stale, input); detached || err != nil || input.Stopped() {
+		t.Fatal("stale attachment affected the active writer")
+	}
+	host.lifecycle.End()
+	if detached, err := host.detachTerminal(active, input); detached || err != nil || input.stops != 1 {
+		t.Fatal("exited terminal's writer was not stopped")
 	}
 }

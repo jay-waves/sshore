@@ -16,7 +16,7 @@ Published X.Y.Z version (without v). Defaults to the latest release.
 .\install.ps1 -Version 0.3.4
 #>
 [CmdletBinding()]
-param([string]$Version = '')
+param([string]$Version = '', [string]$PrepareLinux = '')
 
 function Get-SshoreArchitecture {
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
@@ -38,12 +38,13 @@ function Get-SshoreArchitecture {
     }
 }
 
-function Receive-SshoreFile([uri]$Uri, [string]$Destination) {
+function Receive-SshoreFile([uri]$Uri, [string]$Destination, [long]$Limit = [int]::MaxValue) {
     Add-Type -AssemblyName System.Net.Http
     $oldTls = [Net.ServicePointManager]::SecurityProtocol
     $handler = New-Object Net.Http.HttpClientHandler
     $handler.AllowAutoRedirect = $false
     $client = New-Object Net.Http.HttpClient($handler)
+    $client.MaxResponseContentBufferSize = $Limit
     $client.Timeout = [TimeSpan]::FromSeconds(180)
     try {
         [Net.ServicePointManager]::SecurityProtocol = $oldTls -bor [Net.SecurityProtocolType]::Tls12
@@ -193,5 +194,50 @@ function Install-Sshore([string]$Version = '') {
     }
 }
 
+function Prepare-SshoreLinux([string]$Version, [string]$Directory) {
+    $ErrorActionPreference = 'Stop'
+    if ($Version -cnotmatch '\A(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z') {
+        throw 'Linux preparation requires an exact release version.'
+    }
+    $asset = "sshore_${Version}_linux_amd64.tar.gz"
+    $cache = Split-Path -Parent $Directory
+    $archive = Join-Path $Directory $asset
+    $manifest = Join-Path $Directory 'SHA256SUMS'
+    $cached = $false
+    foreach ($source in @($cache, "https://github.com/jay-waves/sshore/releases/download/v$Version")) {
+        if ($source -eq $cache) {
+            if (!(Test-Path -LiteralPath (Join-Path $cache $asset) -PathType Leaf) -or
+                !(Test-Path -LiteralPath (Join-Path $cache 'SHA256SUMS') -PathType Leaf)) { continue }
+            Copy-Item -LiteralPath (Join-Path $cache $asset) -Destination $archive
+            Copy-Item -LiteralPath (Join-Path $cache 'SHA256SUMS') -Destination $manifest
+        } else {
+            Receive-SshoreFile "$source/SHA256SUMS" $manifest 256KB
+            Receive-SshoreFile "$source/$asset" $archive 64MB
+        }
+        if ((Get-Item -LiteralPath $manifest).Length -le 256KB -and (Get-Item -LiteralPath $archive).Length -le 64MB) {
+            $entries = @(Select-String -LiteralPath $manifest -CaseSensitive -Pattern ('^([0-9a-fA-F]{64})\s+\*?' + [regex]::Escape($asset) + '$'))
+            if ($entries.Count -eq 1 -and (Get-FileHash -LiteralPath $archive).Hash -ieq $entries[0].Matches[0].Groups[1].Value) {
+                $cached = $source -eq $cache
+                break
+            }
+        }
+        if ($source -ne $cache) { throw 'Invalid Linux release checksum or size.' }
+    }
+    $entry = @( & tar.exe -tvzf $archive sshore )
+    if ($LASTEXITCODE -ne 0 -or $entry.Count -ne 1 -or $entry[0] -cnotmatch '^-[^ ]*\s+\d+\s+\S+\s+\S+\s+(\d+)\s+' -or
+        [long]$Matches[1] -le 0 -or [long]$Matches[1] -gt 64MB) {
+        throw 'Expected one bounded regular Linux executable.'
+    }
+    & tar.exe -xzf $archive -C $Directory sshore
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to extract Linux executable.' }
+    if (!$cached) {
+        Move-Item -LiteralPath $archive -Destination (Join-Path $cache $asset) -Force
+        Move-Item -LiteralPath $manifest -Destination (Join-Path $cache 'SHA256SUMS') -Force
+    }
+}
+
 # Dot-sourcing loads helpers for offline tests; normal script/scriptblock use installs.
-if ($MyInvocation.InvocationName -ne '.') { Install-Sshore -Version $Version }
+if ($MyInvocation.InvocationName -ne '.') {
+    if ($PrepareLinux) { Prepare-SshoreLinux $Version $PrepareLinux }
+    else { Install-Sshore -Version $Version }
+}

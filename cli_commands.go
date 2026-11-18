@@ -100,7 +100,6 @@ type options struct {
 	handoffDone           func(context.Context, error) error
 	routeParent           *options
 	routeToken            string
-	daemonTask            *localShellRecord
 	environment           []string
 	tree                  []shellTreeNode
 	temporary             bool

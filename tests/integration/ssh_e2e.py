@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Linux end-to-end CLI smoke test using an isolated localhost OpenSSH server.
-Requires ssh, sshd, ssh-keygen and a built binary (default dist/sshore).
-Run after go build -tags=sshoretest -buildvcs=false -o dist/sshore . with:
-    python3 tests/ssh_e2e.py
+Run via tests/integration/ssh_docker.sh. Each scenario uses two container accounts.
 Creates temporary keys and an SSH server bound only to 127.0.0.1.
 Covers SSH/PTY, approval detach, local path selection, one-shot execution,
 explicit reattachment, batches, rejection, forwarding, and SSH reauthentication.
@@ -25,7 +23,6 @@ import signal
 import socket
 import struct
 import subprocess
-import sys
 import tarfile
 import tempfile
 import termios
@@ -100,8 +97,8 @@ def handoff_smoke(binary, host, options, root):
         while not marker.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert marker.read_text() == "0", "nested command did not exit after handoff"
-        terminal.send(b"\x02i")
-        terminal.expect(re.escape("[sshore] " + host + " / handoff-remote"))
+        terminal.send("printf 'HANDOFF-%s\\n' ready\n")
+        terminal.expect("HANDOFF-ready")
         terminal.send(b"\x02d")
         terminal.expect(r"Connected local / handoff-local")
         terminal.send(shlex.join([binary, "attach", host, "handoff-remote", "--quiet", *options]) + "\n")
@@ -115,7 +112,7 @@ def handoff_smoke(binary, host, options, root):
         terminal.close()
 
 
-def nested_smoke(binary, host, options, root):
+def nested_smoke(binary, host, options, root, agent_socket):
     terminal = Terminal([binary, "launch", host, "nested-root", *options])
     def processes():
         found = {}
@@ -131,8 +128,8 @@ def nested_smoke(binary, host, options, root):
     try:
         baseline = processes()
         for name in ("nested-child", "nested-grandchild", "nested-local"):
-            marker = root / (name + "-returned")
-            command = "export SSH_AUTH_SOCK=" + shlex.quote(os.environ["SSH_AUTH_SOCK"]) + "; "
+            marker = root / "remote-files" / (name + "-returned")
+            command = "export SSH_AUTH_SOCK=" + shlex.quote(str(agent_socket)) + "; "
             args = [binary, "spawn", "--local", name] if name == "nested-local" else [binary, "spawn", host, name, *options]
             command += shlex.join(args)
             terminal.send(command + "; printf '%s' \"$?\" > " + shlex.quote(str(marker)) + "\n")
@@ -266,6 +263,7 @@ def setup_smoke(binary, host, options, root):
     os.environ["XDG_CACHE_HOME"] = str(cache_root)
     cache = cache_root / "sshore" / "releases" / release
     cache.mkdir(parents=True, mode=0o700)
+    (cache_root / "sshore").chmod(0o700)
     archive = cache / f"sshore_{release}_linux_amd64.tar.gz"
     with tarfile.open(archive, "w:gz") as output:
         output.add(binary, arcname="sshore")
@@ -301,6 +299,9 @@ def setup_smoke(binary, host, options, root):
             # A published older release requires the typed update decision.
             target.write_text("#!/bin/sh\necho 'sshore 0.0.1'\n")
             target.chmod(0o700)
+            owner = target.parent.stat()
+            if owner.st_uid != os.getuid():
+                os.chown(target, owner.st_uid, owner.st_gid)
         terminal = Terminal(cli, wait_ready=False)
         try:
             terminal.expect("Run sshore review")
@@ -322,12 +323,64 @@ def setup_smoke(binary, host, options, root):
         finally:
             terminal.close()
         assert subprocess.check_output([str(target), "--version"], text=True).strip() == f"sshore {release}"
-        assert not (root / "curl-calls").exists(), "setup attempted remote download"
+        assert not (root / "remote-home" / "curl-calls").exists(), "setup attempted remote download"
         result = subprocess.run([binary, "launch", host, "matching", "--detach", "--server", str(target), *options], capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
-        assert not (root / "curl-calls").exists(), "matching version attempted a download"
+        assert not (root / "remote-home" / "curl-calls").exists(), "matching version attempted a download"
         subprocess.run([binary, "kill", host, "matching", "--server", str(target), *options], check=True)
+    # Exercise the standalone installer against an actual registered remote task.
+    subprocess.run([binary, "launch", host, "installer-existing", "--detach", "--server", str(target), *options],
+                   check=True, timeout=15)
+    installer_target = target.with_name("installer")
+    original = b"#!/bin/sh\necho 'sshore 0.0.1'\n"
+    installer_target.write_bytes(original)
+    installer_target.chmod(0o700)
+    owner = target.stat()
+    os.chown(installer_target, owner.st_uid, owner.st_gid)
+    installer_command = shlex.join([str(root / "server"), "bootstrap", str(installer_target)])
+    installed = [binary, "list", "--json", host, "--server", str(target), *options]
+
+    def installer_tasks():
+        return {row["name"]: row["pid"] for row in json.loads(
+            subprocess.check_output(installed, timeout=15))["shells"]}
+
+    original_pid = installer_tasks()["installer-existing"]
+    for answer in ("", "update"):
+        installer = Terminal(["/usr/bin/ssh", "-tt", *options[1:], host, installer_command], wait_ready=False)
+        try:
+            installer.expect("installer-existing")
+            installer.expect("Type update to install")
+            installer.send(answer + "\n")
+            installer.wait(expected=0 if answer else 1)
+        finally:
+            installer.close()
+        if not answer:
+            assert installer_target.read_bytes() == original
+            assert installer_tasks()["installer-existing"] == original_pid
+    assert "installer-existing" not in installer_tasks()
+    assert subprocess.check_output([str(installer_target), "--version"], text=True).strip() == f"sshore {release}"
+    assert not list(target.parent.glob(".sshore-update-*"))
     print("setup: reviewed SSH setup from verified client cache, exact version and matching-version reuse OK")
+
+
+def reset_smoke(binary, root):
+    subprocess.run([binary, "launch", "--local", "reset-fixture", "--detach"], check=True)
+    state = root / "state"
+    history = state / "shells" / "reset-history"
+    history.parent.mkdir(mode=0o700, exist_ok=True)
+    history.write_text("clear")
+    unrelated = state / "user-file"
+    unrelated.write_text("keep")
+    cache = Path(os.environ["XDG_CACHE_HOME"]) / "sshore"
+    assert cache.is_dir()
+    daemon = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".sshore" / "daemon" / "daemon.json"
+    assert daemon.is_file()
+    subprocess.run([binary, "reset"], check=True, timeout=15)
+    assert unrelated.read_text() == "keep"
+    assert not cache.exists()
+    assert not daemon.exists()
+    assert not (state / "shells").exists()
+    print("PASS: release reset ended the local daemon and cleared only application data")
 
 
 def mcp_smoke(binary, host, ssh_wrapper):
@@ -383,30 +436,22 @@ def main():
     for scenario in scenarios:
         selection.add_argument(f"--{scenario}-only", action="store_true")
     args = parser.parse_args()
-    # The default is the complete suite; focused options must never hide checks
-    # from CI. Each scenario gets its own daemon, SSH server and runtime directory.
+    if not Path("/.dockerenv").is_file() or os.getuid() != 0:
+        parser.error("use tests/integration/ssh_docker.sh to run inside a disposable container")
     if not any(getattr(args, f"{scenario}_only") for scenario in scenarios):
-        failed = []
-        for scenario in scenarios:
-            print(f"=== SSH scenario: {scenario} ===", flush=True)
-            result = subprocess.run(
-                [sys.executable, str(Path(__file__).resolve()), "--binary", args.binary,
-                 f"--{scenario}-only"])
-            if result.returncode:
-                failed.append(scenario)
-        if failed:
-            raise SystemExit("Failed SSH scenarios: " + ", ".join(failed))
-        print("PASS: all SSH scenarios", flush=True)
-        return
+        parser.error("select one scenario per container")
+    remote_account = pwd.getpwnam("sshore-fixture")
     binary = str(Path(args.binary).resolve())
-    metadata = subprocess.check_output(["go", "version", "-m", binary], text=True)
-    if "-tags=sshoretest" not in metadata:
-        raise SystemExit("Refusing unisolated test binary; build with -tags=sshoretest")
     sshd = shutil.which("sshd")
     if not sshd:
         raise SystemExit("sshd is required")
     with tempfile.TemporaryDirectory(prefix="sshore-e2e-") as root:
         root = Path(root)
+        root.chmod(0o755)
+        for name in ("remote-home", "remote-state", "runtime", "remote-files"):
+            directory = root / name
+            directory.mkdir(mode=0o700)
+            os.chown(directory, remote_account.pw_uid, remote_account.pw_gid)
         # The daemon prepends its executable directory to the shell PATH.
         # Name the fixture binary sshore so helpers cannot resolve an installed release.
         fixture_binary = root / "sshore"
@@ -444,35 +489,24 @@ PubkeyAuthentication yes
 UsePAM no
 LogLevel ERROR
 """)
-        if args.setup_only:
-            home = root / "remote-home"
-            home.mkdir(mode=0o700)
-            tools = root / "remote-tools"
-            tools.mkdir(mode=0o700)
-            curl = tools / "curl"
-            curl.write_text("#!/bin/sh\n" + f"echo attempt >> {shlex.quote(str(root / 'curl-calls'))}\n" + "echo 'fixture: remote download offline' >&2\nexit 22\n")
-            curl.chmod(0o700)
-            scope = root / "remote-environment"
-            scope.write_text("#!/bin/sh\n" +
-                             f"export HOME={shlex.quote(str(home))}\n" +
-                             f"export SSHORE_RUNTIME_DIR={shlex.quote(str(root / 'runtime'))}\n" +
-                             f"export SSHORE_STATE_DIR={shlex.quote(str(root / 'remote-state'))}\n" +
-                             f"export PATH={shlex.quote(str(tools))}:$PATH\n" +
-                             "export SHELL=/bin/sh\n" +
-                             'exec sh -c "$SSH_ORIGINAL_COMMAND"\n')
-            scope.chmod(0o700)
-            with config.open("a") as output:
-                output.write(f"ForceCommand {scope}\n")
-        if args.mcp_only:
-            scope = root / "mcp-remote"
-            scope.write_text("#!/bin/sh\n" +
-                             f"export SSHORE_RUNTIME_DIR={shlex.quote(str(root / 'runtime'))}\n" +
-                             f"export SSHORE_STATE_DIR={shlex.quote(str(root / 'remote-state'))}\n" +
-                             f"export PATH={shlex.quote(str(root))}:$PATH\n" +
-                             'exec sh -c "$SSH_ORIGINAL_COMMAND"\n')
-            scope.chmod(0o700)
-            with config.open("a") as output:
-                output.write(f"ForceCommand {scope}\n")
+        home = root / "remote-home"
+        tools = root / "remote-tools"
+        tools.mkdir(mode=0o755)
+        curl = tools / "curl"
+        curl.write_text("#!/bin/sh\n" + f"echo attempt >> {shlex.quote(str(home / 'curl-calls'))}\n" +
+                        "echo 'fixture: remote download offline' >&2\nexit 22\n")
+        curl.chmod(0o755)
+        scope = root / "remote-environment"
+        scope.write_text("#!/bin/sh\n" +
+                         f"export HOME={shlex.quote(str(home))}\n" +
+                         f"export SSHORE_RUNTIME_DIR={shlex.quote(str(root / 'runtime'))}\n" +
+                         f"export SSHORE_STATE_DIR={shlex.quote(str(root / 'remote-state'))}\n" +
+                         f"export PATH={shlex.quote(str(tools))}:{shlex.quote(str(root))}:$PATH\n" +
+                         "export SHELL=/bin/sh\n" +
+                         'exec sh -c "$SSH_ORIGINAL_COMMAND"\n')
+        scope.chmod(0o755)
+        with config.open("a") as output:
+            output.write(f"ForceCommand {scope}\n")
         log = open(root / "sshd.log", "w+")
         daemon = subprocess.Popen([sshd, "-D", "-e", "-f", str(config)], stdout=log, stderr=log)
         terms = []
@@ -494,10 +528,11 @@ LogLevel ERROR
                                f"export SSHORE_STATE_DIR={shlex.quote(str(root / 'remote-state'))}\n" +
                                "export SHELL=/bin/sh\n" +
                                f"exec {shlex.quote(binary)} \"$@\"\n")
-            wrapper.chmod(0o700)
+            wrapper.chmod(0o755)
             known = root / "known_hosts"
             known.write_text(f"[127.0.0.1]:{port} " + hostkey.with_suffix(".pub").read_text())
-            command = [binary, "launch", pwd.getpwuid(os.getuid()).pw_name + "@127.0.0.1", "--server", str(wrapper), "--", "-p", str(port),
+            username = remote_account.pw_name
+            command = [binary, "launch", username + "@127.0.0.1", "--server", str(wrapper), "--", "-p", str(port),
                        "-i", str(key), "-F", "/dev/null", "-o", "IdentitiesOnly=yes",
                        "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known}"]
             if args.identity_only:
@@ -534,13 +569,30 @@ LogLevel ERROR
                 handoff_smoke(binary, command[2], command[3:], root)
                 return
             if args.nested_only:
-                nested_smoke(binary, command[2], command[3:], root)
+                remote_key = home / "key"
+                shutil.copy2(key, remote_key)
+                os.chown(remote_key, remote_account.pw_uid, remote_account.pw_gid)
+                remote_socket = home / "agent.sock"
+                run_as_remote = ["runuser", "-u", username, "--"]
+                remote_agent = subprocess.Popen(run_as_remote + ["ssh-agent", "-D", "-a", str(remote_socket)],
+                                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    for _ in range(100):
+                        if remote_socket.exists():
+                            break
+                        time.sleep(0.01)
+                    subprocess.run(run_as_remote + ["env", f"SSH_AUTH_SOCK={remote_socket}", "ssh-add", str(remote_key)], check=True)
+                    nested_smoke(binary, command[2], command[3:], root, remote_socket)
+                finally:
+                    remote_agent.terminate()
+                    remote_agent.wait(timeout=5)
                 return
             if args.spawn_only:
                 spawn_smoke(binary, command[2], command[3:])
                 return
             if args.setup_only:
                 setup_smoke(binary, command[2], command[5:], root)
+                reset_smoke(binary, root)
                 return
             base_command = command[:]
             auto_names=[]
@@ -602,7 +654,6 @@ LogLevel ERROR
             def approve(request_id, paths=(), passphrase=None, port=None):
                 approval = Terminal([binary, "review", request_id], wait_ready=False)
                 terms.append(approval)
-                approval.expect("Review ")
                 for kind, path in paths:
                     approval.expect("Save as" if kind == "download" else "Local file to upload")
                     approval.send(str(path) + "\n")
@@ -646,12 +697,11 @@ LogLevel ERROR
 
             local = root / "local 文件.bin"
             local.write_bytes(data[::-1])
-            uploads = root / "uploads"
-            uploads.mkdir()
+            uploads = root / "remote-files"
             request_id = queue_request(term, f"sshore cp : {shlex.quote(str(uploads))}")
             assert not (uploads / local.name).exists()
             approved = approve(request_id, [("upload", local)])
-            approved.expect("Upload complete")
+            approved.expect("Uploaded ")
             finish_review(approved)
             assert (uploads / local.name).read_bytes() == data[::-1]
 
@@ -671,7 +721,7 @@ LogLevel ERROR
             # A compromised remote peer can still speak the old wire format.
             # Neither a legacy file offer nor forward-add can bypass approval.
             def unsolicited(metadata):
-                record = json.loads((root / "remote-state" / "daemon" / "daemon.json").read_text())
+                record = json.loads((Path(remote_account.pw_dir) / ".sshore" / "daemon" / "daemon.json").read_text())
                 snapshot = json.loads(subprocess.check_output(
                     [binary, "list", "--json"] + base_command[2:], text=True))
                 instance = next(row["instance"] for row in snapshot["shells"] if row["name"] == "main")
@@ -781,17 +831,6 @@ LogLevel ERROR
             try:
                 for term in terms:
                     term.close()
-                if wrapper.exists():
-                    release = subprocess.check_output([binary, "--version"], text=True).strip().split()[1]
-                    for path in runtime.glob("*.sock"):
-                        if path.name == "daemon.sock":
-                            continue
-                        label = path.with_suffix(".sock.name")
-                        name = label.read_text().strip() if label.exists() else path.stem
-                        result = subprocess.run([str(wrapper), "kill-session", name, release],
-                                                capture_output=True, text=True, timeout=10)
-                        if result.returncode and path.exists():
-                            raise AssertionError(f"fixture cleanup failed: {result.stderr}")
             finally:
                 daemon.terminate()
                 daemon.wait(timeout=5)

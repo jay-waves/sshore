@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+"net/http"
 	"os"
 	"sync"
 	"time"
@@ -18,16 +19,8 @@ func nativeShellRecords() ([]localShellRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := dialLocalSession(r)
-	if err != nil {
-		return nil, err
-	}
-	defer c.Close()
-	if err = writeMessage(c, message{Type: "task_list_native"}); err != nil {
-		return nil, err
-	}
 	var records []localShellRecord
-	err = json.NewDecoder(c).Decode(&records)
+	err = daemonJSON(context.Background(), r, "/tasks/native", nil, &records)
 	return records, err
 }
 
@@ -107,24 +100,22 @@ func (s *daemonTasks) register(id string, task daemonTask) error {
 	return nil
 }
 
-func (s *daemonTasks) open(c net.Conn, id string) {
+func (s *daemonTasks) open(w http.ResponseWriter,r *http.Request) {
+id:=r.PathValue("id")
 	s.mu.Lock()
 	s.prune(time.Now())
 	task, ok := s.records[id].(interface{ serveTask(net.Conn, message) error })
 	s.mu.Unlock()
 	if !ok {
-		_ = writeMessage(c, message{Type: "error", Error: "task no longer exists"})
-		return
-	}
-	if writeMessage(c, message{Type: "task_ready"}) != nil {
-		return
-	}
-	m, err := readMessage(c)
+		http.Error(w,"task no longer exists",404);return}
+ serveDaemonStream(w,r,func(c net.Conn){
+ m, err := readMessage(c)
 	if err != nil {
 		return
 	}
 	_ = c.SetDeadline(time.Time{})
 	_ = task.serveTask(c, m)
+})
 }
 
 func (t *nativeShellTask) serveTask(c net.Conn, m message) error { return t.serve(c, m) }
@@ -234,6 +225,18 @@ func daemonResourceRequestContext(ctx context.Context, m message) (resourceReply
 	}
 	if err != nil {
 		return resourceReply{}, err
+	}
+	if m.Type == "task_list_resources" || m.Type == "task_rename_resource" {
+		path := "/tasks/resources"
+		if m.Type == "task_rename_resource" {
+			path = "/tasks/rename"
+		}
+		var reply resourceReply
+		err := daemonJSON(ctx, r, path, m, &reply)
+		if err == nil && reply.Error != "" {
+			err = fmt.Errorf("%s", reply.Error)
+		}
+		return reply, err
 	}
 	if m.Type == "status" || m.Type == "kill" {
 		r.UID = m.Instance

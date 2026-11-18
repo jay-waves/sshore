@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Publish a full semantic version after both main-branch release builds pass.
-# CI builds only Linux/Windows amd64 without sshoretest. Full validation is
+# CI builds only Linux/Windows amd64. Full validation is
 # available locally or through the manual Tests workflow, independently of release.
 # Published tags never change. Existing releases are never overwritten.
 # After successful publication, retain only the latest complete patch per x.y.

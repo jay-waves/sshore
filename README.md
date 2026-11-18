@@ -40,6 +40,9 @@ Installers verify checksums without requesting administrator access. On Windows,
 the installer updates the first `sshore.exe` on PATH without changing PATH. If none
 is found, it installs to `%LOCALAPPDATA%\sshore\bin` and adds that directory to
 the user and current PowerShell session PATH. Restart other terminals to pick it up.
+Before installing a different release, use the running release to end its
+tasks and wait for its daemon to exit. Run the installer again after it exits.
+
 Updates prepare and verify the replacement, then list affected account tasks and
 require typing `update` before ending them. Unsaved work may be lost. Run installers
 outside managed shells. On Windows, close remaining clients and retry if they still
@@ -260,8 +263,11 @@ See `sshore mount --help` for details.
 
 ## Updates and troubleshooting
 
-Client and remote versions must match exactly, including PATCH. Approve installation with `sshore review`. Updating an older installation requires
-reviewing affected shells and typing `update`: **their tasks will end**.
+Client and remote versions must match exactly, including PATCH. If a remote
+daemon runs another release, use that release to end its tasks and wait for it
+to exit, then retry the connection. Approve installation with `sshore review`.
+Type `update` when replacing an older executable and review any listed tasks
+that the installation will end.
 Press Enter to abort and preserve existing work. Preparation failures stop the
 update without opening a recovery shell. Use ordinary SSH for manual repair. A newer remote version
 requires updating your local client; it is never automatically downgraded.

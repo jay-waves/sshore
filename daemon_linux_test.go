@@ -1,14 +1,48 @@
-//go:build sshoretest
-
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestDaemonHostedTaskRouting(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	id := strings.Repeat("e", 32)
+	shell := &remoteShell{tasks: tasks, instance: id, name: "hosted", done: make(chan struct{})}
+	if err := tasks.register(id, shell); err != nil {
+		t.Fatal(err)
+	}
+	records, err := hostedTaskRecords()
+	if err != nil || len(records) != 1 || records[0].ID != id {
+		t.Fatalf("hosted inventory: %+v %v", records, err)
+	}
+	for range 2 {
+		c, err := dialHostedTask(context.Background(), id, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeMessage(c, message{Type: "status", Action: "health"}); err != nil {
+			t.Fatal(err)
+		}
+		m, err := readMessage(c)
+		c.Close()
+		if err != nil || m.Instance != id || m.Name != "hosted" {
+			t.Fatalf("hosted route: %+v %v", m, err)
+		}
+	}
+	close(shell.done)
+	if c, err := dialHostedTask(context.Background(), id, time.Second); err == nil {
+		c.Close()
+		t.Fatal("ended hosted task accepted a stream")
+	}
+}
 
 func TestDaemonHangupsDoNotReachChildren(t *testing.T) {
 	if os.Getenv("SSHORE_TEST_HANGUP_HELPER") == "1" {
@@ -75,4 +109,25 @@ func TestDaemonHangupBetweenHostedShells(t *testing.T) {
 		t.Fatalf("HUP replaced account daemon: %+v %v", nextChild, err)
 	}
 	shellOutput(t, next, "printf 'HUP_%s\\n' survived", "HUP_survived")
+}
+
+func TestResetRetainsStateWhenShutdownRefused(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	task, _ := registerTestResource(t, tasks, "mount", "busy", strings.Repeat("a", 32))
+	task.control = func(string) resourceReply { return resourceReply{Error: "mount is busy"} }
+	root, err := stateDir("history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "record")
+	if err := os.WriteFile(marker, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runReset(); err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("refusal: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("state lost on refusal: %v", err)
+	}
 }

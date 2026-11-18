@@ -18,7 +18,7 @@ import (
 	"github.com/creack/pty"
 )
 
-// Uses the existing sshoretest-tagged binary and isolated daemon fixture. The
+// Uses the existing isolated CLI test executable and isolated daemon fixture. The
 // SSH wrapper runs only fixture commands; no real account sessions or hosts.
 
 func TestApprovedForwardIndependent(t *testing.T) {

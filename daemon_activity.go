@@ -209,15 +209,7 @@ func openActivity(parent context.Context, r activityRequest) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := dialLocalSessionContext(ctx, record, time.Now().Add(10*time.Second))
-	if err != nil {
-		return nil, err
-	}
-	if err = writeMessage(c, message{Type: "activity", Activity: &r}); err != nil {
-		c.Close()
-		return nil, err
-	}
-	return c, nil
+	return dialDaemonStream(ctx,record,time.Now().Add(10*time.Second),"/activity",r)
 }
 func (s *daemonActivity) serve(c net.Conn, r activityRequest) {
 	if r.Kind != "shell" && r.Kind != "incoming" && r.Kind != "heartbeat" && r.Kind != "owner" {

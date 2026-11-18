@@ -90,7 +90,7 @@ func TestMountDaemonHasNoConsole(t *testing.T) {
 		return
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestMountDaemonHasNoConsole$")
-	detachMountDaemon(cmd)
+	detachDaemon(cmd)
 	cmd.Env = append(os.Environ(), "SSHORE_TEST_CONSOLE_CHILD=worker")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("worker: %v\n%s", err, out)

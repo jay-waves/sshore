@@ -1,13 +1,14 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -199,16 +200,8 @@ func occupiedObjectNames(exceptID string) (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := dialLocalSession(r)
-	if err != nil {
-		return nil, err
-	}
-	defer c.Close()
-	if err := writeMessage(c, message{Type: "task_names", Instance: exceptID}); err != nil {
-		return nil, err
-	}
 	var names map[string]bool
-	err = json.NewDecoder(c).Decode(&names)
+	err = daemonJSON(context.Background(), r, "/tasks/names?except="+url.QueryEscape(exceptID), nil, &names)
 	return names, err
 }
 

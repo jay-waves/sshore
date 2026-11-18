@@ -1,6 +1,6 @@
 package main
 
-// Session lifecycle fixtures use isolated runtime directories and tagged binaries.
+// Session lifecycle fixtures use isolated runtime directories and the CLI test executable.
 
 import (
 	"bytes"
@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -23,40 +22,6 @@ import (
 
 	"github.com/jay-waves/sshore/internal/wire"
 )
-
-var testBuild struct {
-	sync.Once
-	path string
-	err  error
-}
-
-func testBinary(t *testing.T) string {
-	t.Helper()
-	testBuild.Do(func() {
-		dir, err := os.MkdirTemp("", "sshore-bin-")
-		if err != nil {
-			testBuild.err = err
-			return
-		}
-		testBuild.path = filepath.Join(dir, "sshore")
-		cmd := exec.Command("go", "build", "-tags=sshoretest", "-buildvcs=false", "-o", testBuild.path, ".")
-		b, err := cmd.CombinedOutput()
-		if err != nil {
-			testBuild.err = fmt.Errorf("build: %w: %s", err, b)
-		}
-	})
-	if testBuild.err != nil {
-		t.Fatal(testBuild.err)
-	}
-	return testBuild.path
-}
-func TestMain(m *testing.M) {
-	code := m.Run()
-	if testBuild.path != "" {
-		os.RemoveAll(filepath.Dir(testBuild.path))
-	}
-	os.Exit(code)
-}
 
 type testEnv struct {
 	t         *testing.T
@@ -635,7 +600,7 @@ func TestExplicitDetachControlPreservesSession(t *testing.T) {
 }
 
 // Public creation and attachment use distinct bootstrap modes. All subprocesses
-// come from testBinary (-tags=sshoretest) and use newEnv's isolated runtime.
+// come from testBinary (isolated CLI test executable) and use newEnv's isolated runtime.
 func TestNewAndAttachLifecycle(t *testing.T) {
 	e := newEnv(t)
 	expectFailure := func(mode, name, contains string) {
@@ -750,5 +715,26 @@ func shutdownFixtureDaemon(t *testing.T, root string) {
 			t.Errorf("frontend fixture shutdown: %v", err)
 			return
 		}
+	}
+}
+
+func TestAttachmentRejectsTunnelStreams(t *testing.T) {
+	client, server := muxPair(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go serveApprovedStreams(ctx, server)
+	for _, kind := range []string{"forward_connect", "forward_control"} {
+		st, e := client.OpenStream()
+		if e != nil {
+			t.Fatal(e)
+		}
+		st.SetDeadline(time.Now().Add(time.Second))
+		if e = writeMessage(st, message{Type: kind, Action: "add"}); e != nil {
+			t.Fatal(e)
+		}
+		if m, e := readMessage(st); e == nil {
+			t.Fatalf("obsolete attachment tunnel accepted: %+v", m)
+		}
+		st.Close()
 	}
 }

@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Every lifecycle process uses newEnv's sshoretest-tagged, isolated binary.
+// Every lifecycle process uses newEnv's isolated CLI test executable.
 func TestSessionMetadataLifecycle(t *testing.T) {
 	e := newEnv(t)
 	run := func(args ...string) (string, error) {
@@ -206,7 +206,7 @@ func TestShellTaskIDIndependentOfAlias(t *testing.T) {
 	b.close()
 }
 
-// Uses the existing isolated -tags=sshoretest executable, never account sessions.
+// Uses the existing isolated CLI test executable, never account sessions.
 func TestKillSessionLifecycle(t *testing.T) {
 	e := newEnv(t)
 	query := func(name string) message {

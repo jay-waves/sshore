@@ -23,7 +23,11 @@ func startRequestDaemon(t *testing.T, release ...string) *daemonTasks {
 	}
 	actual, err := daemonLocation()
 	if err != nil || filepath.Clean(expected) != filepath.Clean(actual) {
-		t.Skip("request RPC tests require the isolated sshoretest daemon scope")
+		t.Skip("request RPC tests require the isolated test daemon scope")
+	}
+	record, err := newDaemonRecord()
+	if err != nil {
+		t.Fatal(err)
 	}
 	owner, err := daemonFileLock("owner")
 	if err != nil {
@@ -31,12 +35,6 @@ func startRequestDaemon(t *testing.T, release ...string) *daemonTasks {
 	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
-		owner.Close()
-		t.Fatal(err)
-	}
-	record, err := newDaemonRecord()
-	if err != nil {
-		listener.Close()
 		owner.Close()
 		t.Fatal(err)
 	}
@@ -245,21 +243,40 @@ func TestRequestRPCDoesNotCreatePersistentApprovalFiles(t *testing.T) {
 }
 
 func TestRequestRPCPreservesLargeBoundedRequests(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	startRequestDaemon(t)
+	tasks := &daemonTasks{}
+	call := func(action, name string, record *requestRecord) (requestRPCReply, error) {
+		client, server := net.Pipe()
+		defer client.Close()
+		_ = client.SetDeadline(time.Now().Add(requestTimeout))
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer server.Close()
+			m, err := readMessage(server)
+			if err == nil {
+				tasks.Serve(server, m)
+			}
+		}()
+		reply, err := exchangeRequest(client, action, "", name, record, nil)
+		client.Close()
+		<-done
+		return reply, err
+	}
 	r := pendingRequestFixture(t)
 	r.Operations = nil
 	for i := range maxRequestItems {
 		r.Operations = append(r.Operations, operation{Kind: "upload", Path: "/tmp/" + strings.Repeat("x", 4070) + fmt.Sprint(i), LocalHint: strings.Repeat("p", 2000)})
 	}
-	if err := saveRequest(r); err != nil {
+	if _, err := call("request_save", "", &r); err != nil {
 		t.Fatal(err)
 	}
-	copy, err := readRequest(r.ID)
-	if err != nil || len(copy.Operations) != maxRequestItems || copy.Operations[15].Path != r.Operations[15].Path {
+	got, err := call("request_get", r.ID, nil)
+	copy := got.Request
+	if err != nil || copy == nil || len(copy.Operations) != maxRequestItems || copy.Operations[15].Path != r.Operations[15].Path {
 		t.Fatalf("large request lost metadata: %v", err)
 	}
-	listed, err := pendingRequests()
+	reply, err := call("request_list", "", nil)
+	listed := reply.Requests
 	if err != nil || len(listed) != 1 || len(listed[0].Operations[0].LocalHint) != 2000 {
 		t.Fatalf("bounded request list lost metadata: %v", err)
 	}

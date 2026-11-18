@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
+
 	"os"
 	"path/filepath"
 	"reflect"
@@ -90,24 +90,12 @@ func daemonAdministration(ctx context.Context, action string, expected *daemonSn
 	if err != nil {
 		return daemonAdminReply{}, err
 	}
-	c, err := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "tcp", r.Address)
-	if err != nil {
-		return daemonAdminReply{}, err
-	}
-	defer c.Close()
-	stop := context.AfterFunc(ctx, func() { c.Close() })
-	defer stop()
-	_ = c.SetDeadline(time.Now().Add(30 * time.Second))
-	if err := writeMessage(c, message{Type: "daemon_admin", Action: action, Token: r.Token}); err != nil {
-		return daemonAdminReply{}, err
-	}
-	if action == "shutdown" {
-		if err := json.NewEncoder(c).Encode(expected); err != nil {
-			return daemonAdminReply{}, err
-		}
-	}
+	return daemonAdministrationAt(ctx, r, action, expected)
+}
+
+func daemonAdministrationAt(ctx context.Context, r localShellRecord, action string, expected *daemonSnapshot) (daemonAdminReply, error) {
 	var reply daemonAdminReply
-	if err := json.NewDecoder(c).Decode(&reply); err != nil {
+	if err := daemonJSON(ctx, r, "/admin/"+action, expected, &reply); err != nil {
 		return reply, err
 	}
 	if reply.Error != "" {

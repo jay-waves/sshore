@@ -11,8 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 )
 
 func bootstrap(target, mode, name string) (result error) {
@@ -184,30 +182,4 @@ func prepareReplacement(target string) (string, error) {
 	}
 	success = true
 	return path, nil
-}
-
-// pidfds bind signals to the inspected process, never a reused numeric PID.
-func signalProcess(pid int, start string, signal unix.Signal) error {
-	fd, err := unix.PidfdOpen(pid, 0)
-	if errors.Is(err, unix.ESRCH) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer unix.Close(fd)
-	current, err := processStart(pid)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if current != start {
-		return fmt.Errorf("process %d changed during setup", pid)
-	}
-	if err = unix.PidfdSendSignal(fd, signal, nil, 0); errors.Is(err, unix.ESRCH) {
-		return nil
-	}
-	return err
 }

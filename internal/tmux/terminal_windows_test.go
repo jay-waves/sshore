@@ -1,5 +1,3 @@
-//go:build sshoretest
-
 package tmux_test
 
 import (

@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,26 +100,9 @@ func openLocalDaemonContext(ctx context.Context, request localDaemonRequest) (ne
 	if err != nil {
 		return nil, err
 	}
-	c, err := dialLocalSessionContext(ctx, record, time.Now().Add(5*time.Second))
-	if err != nil {
-		return nil, err
-	}
-	stop := context.AfterFunc(ctx, func() { c.Close() })
-	defer stop()
-	err = writeMessage(c, message{Type: "daemon_request", LocalRequest: &request})
-	if err == nil {
-		var ack message
-		ack, err = readMessage(c)
-		if err == nil && ack.Type != "daemon_ready" {
-			err = fmt.Errorf("local daemon: %s", ack.Error)
-		}
-	}
-	if err != nil {
-		c.Close()
-		return nil, err
-	}
-	_ = c.SetDeadline(time.Time{})
-	return c, nil
+	c,err:=dialDaemonStream(ctx,record,time.Now().Add(5*time.Second),"/launch",request)
+ if err==nil{_=c.SetDeadline(time.Time{})}
+ return c,err
 }
 
 func ensureLocalDaemonContext(ctx context.Context, executable ...string) (localShellRecord, error) {
@@ -165,12 +148,9 @@ func ensureLocalDaemonContext(ctx context.Context, executable ...string) (localS
 	if err = checkPeerVersion(r.Version, "local daemon"); err != nil {
 		return empty, err
 	}
-	c, err := dialLocalSessionContext(ctx, r, time.Now().Add(5*time.Second))
-	if err != nil {
-		return empty, fmt.Errorf("local daemon is unavailable; its owner is still active: %w", err)
-	}
-	c.Close()
-	return r, nil
+	var ready bool
+ if err:=daemonJSON(ctx,r,"/ready",nil,&ready);err!=nil{return empty,fmt.Errorf("local daemon is unavailable; its owner is still active: %w",err)}
+ return r, nil
 }
 
 func newDaemonRecord() (localShellRecord, error) {
@@ -257,7 +237,7 @@ func runDaemon() (result error) {
 
 // Platform services share the same authenticated listener and lifetime owner.
 type daemonServices interface {
-	Serve(net.Conn, message, *daemonTasks)
+	Routes(*http.ServeMux,*daemonTasks)
 	Close()
 }
 
@@ -299,164 +279,76 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 			}
 		}
 	}()
-	handshakes := make(chan struct{}, 64)
-	for {
-		c, err := listener.Accept()
-		if err != nil {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /admin/{action}", func(w http.ResponseWriter, r *http.Request) {
+		reply := daemonAdminReply{}
+		tasks.mu.Lock()
+		reply.Snapshot = tasks.snapshot(record)
+		reply.Runtime = tasks.runtimeDirectories()
+		tasks.mu.Unlock()
+		switch r.PathValue("action") {
+		case "snapshot":
+		case "shutdown":
+			var expected daemonSnapshot
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&expected); err != nil {
+				reply.Error = err.Error()
+			} else if err = tasks.shutdown(record, expected); err != nil {
+				reply.Error = err.Error()
+			}
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(reply)
+		if r.PathValue("action") == "shutdown" && reply.Error == "" {
 			mu.Lock()
-			idle := stopping
+			stopping = true
 			mu.Unlock()
-			if idle {
-				return nil
-			}
-			return err
+			listener.Close()
 		}
-		select {
-		case handshakes <- struct{}{}:
-		case <-done:
-			c.Close()
-			return nil
+	})
+	mux.HandleFunc("POST /tasks/native", func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(tasks.nativeRecords()) })
+	mux.HandleFunc("POST /tasks/resources", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(resourceReply{Records: tasks.resourceRecords()})
+	})
+	mux.HandleFunc("POST /tasks/names", func(w http.ResponseWriter, r *http.Request) {
+		names := map[string]bool{}
+		tasks.mu.Lock()
+		tasks.prune(time.Now())
+		for id, t := range tasks.records {
+			if id != r.URL.Query().Get("except") {
+				names[t.taskName()] = true
+			}
 		}
-		mu.Lock()
-		if stopping {
-			mu.Unlock()
-			c.Close()
-			<-handshakes
-			continue
+		tasks.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(names)
+	})
+	mux.HandleFunc("POST /tasks/rename", func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Instance, Name string }
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
 		}
-		active++
-		mu.Unlock()
-		go func() {
-			pending := true
-			defer func() {
-				if pending {
-					<-handshakes
-				}
-			}()
-			defer c.Close()
-			defer func() {
-				mu.Lock()
-				active--
-				last = time.Now()
-				mu.Unlock()
-			}()
-			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-			m, err := readMessage(c)
-			if err == nil && m.Type == "daemon_admin" && subtle.ConstantTimeCompare([]byte(m.Token), []byte(record.Token)) == 1 {
-				<-handshakes
-				pending = false
-				_ = c.SetDeadline(time.Now().Add(30 * time.Second))
-				reply := daemonAdminReply{}
-				tasks.mu.Lock()
-				reply.Snapshot = tasks.snapshot(record)
-				reply.Runtime = tasks.runtimeDirectories()
-				tasks.mu.Unlock()
-				switch m.Action {
-				case "snapshot":
-				case "shutdown":
-					var expected daemonSnapshot
-					if err := json.NewDecoder(io.LimitReader(c, 1<<20)).Decode(&expected); err != nil {
-						reply.Error = err.Error()
-					} else if err := tasks.shutdown(record, expected); err != nil {
-						reply.Error = err.Error()
-					}
-				default:
-					reply.Error = "unsupported administrative operation"
-				}
-				_ = json.NewEncoder(c).Encode(reply)
-				if m.Action == "shutdown" && reply.Error == "" {
-					mu.Lock()
-					stopping = true
-					mu.Unlock()
-					listener.Close()
-				}
-				return
-			}
-			if err != nil || m.Type != "local_auth" || subtle.ConstantTimeCompare([]byte(m.Token), []byte(record.Token)) != 1 {
-				return
-			}
-			if m.SoftwareVersion != version {
-				_ = writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: "local daemon version mismatch"})
-				return
-			}
-			if writeMessage(c, message{Type: "local_ready", SoftwareVersion: version}) != nil {
-				return
-			}
-			m, err = readMessage(c)
-			if err != nil {
-				return
-			}
-			if m.Type == "activity" && m.Activity != nil {
-				<-handshakes
-				pending = false
-				if activity := accountActivity.Load(); activity != nil {
-					activity.serve(c, *m.Activity)
-				}
-				return
-			}
-
-			if m.Type == "task_names" {
-				names := map[string]bool{}
-				tasks.mu.Lock()
-				tasks.prune(time.Now())
-				for id, task := range tasks.records {
-					if id != m.Instance {
-						names[task.taskName()] = true
-					}
-				}
-				tasks.mu.Unlock()
-				_ = json.NewEncoder(c).Encode(names)
-				return
-			}
-			if m.Type == "task_list_resources" {
-				_ = json.NewEncoder(c).Encode(resourceReply{Records: tasks.resourceRecords()})
-				return
-			}
-			if m.Type == "task_rename_resource" {
-				reply := resourceReply{}
-				if err := tasks.renameResource(m.Instance, m.Name); err != nil {
-					reply.Error = err.Error()
-				}
-				_ = json.NewEncoder(c).Encode(reply)
-				return
-			}
-			if m.Type == "task_list_native" {
-				_ = json.NewEncoder(c).Encode(tasks.nativeRecords())
-				return
-			}
-			if m.Type == "task_open" {
-				<-handshakes
-				pending = false
-				tasks.open(c, m.Instance)
-				return
-			}
-			if m.Type == "request_store" {
-				<-handshakes
-				pending = false
-				tasks.Serve(c, m)
-				return
-			}
-			if services != nil && (m.Type == "create_shell" || m.Type == "mcp_request" || m.Type == "task_list_hosted") {
-				<-handshakes
-				pending = false
-				_ = c.SetDeadline(time.Time{})
-				services.Serve(c, m, tasks)
-				return
-			}
-			if m.Type != "daemon_request" || m.LocalRequest == nil {
-				return
-			}
-			req := *m.LocalRequest
-			if req.Kind != "spawn" && req.Kind != "shell" && req.Kind != "mount" && req.Kind != "forward" {
-				return
-			}
-			if err = validSession(req.Record.Name); err != nil {
-				return
-			}
-			if !filepath.IsAbs(req.Record.Directory) {
-				return
-			}
-			// All children share this daemon's private state root, regardless of the
+		reply := resourceReply{}
+		if err := tasks.renameResource(req.Instance, req.Name); err != nil {
+			reply.Error = err.Error()
+		}
+		_ = json.NewEncoder(w).Encode(reply)
+	})
+	mux.HandleFunc("POST /ready",func(w http.ResponseWriter,r *http.Request){_=json.NewEncoder(w).Encode(true)})
+ mux.HandleFunc("POST /tasks/{id}/open",tasks.open)
+ mux.HandleFunc("POST /activity",func(w http.ResponseWriter,r *http.Request){
+ var req activityRequest
+ if readDaemonBody(w,r,&req){if activity:=accountActivity.Load();activity!=nil{serveDaemonStream(w,r,func(c net.Conn){activity.serve(c,req)})}else{http.Error(w,"activity unavailable",503)}}
+ })
+ mux.HandleFunc("POST /requests/{action}",tasks.serveRequest)
+ if services!=nil{services.Routes(mux,tasks)}
+ mux.HandleFunc("POST /launch",func(w http.ResponseWriter,r *http.Request){
+ var req localDaemonRequest
+ if !readDaemonBody(w,r,&req){return}
+ if (req.Kind!="remote-shell" && req.Kind!="shell" && req.Kind!="mount" && req.Kind!="forward") || validSession(req.Record.Name)!=nil || !filepath.IsAbs(req.Record.Directory){http.Error(w,"invalid launch",400);return}
+ serveDaemonStream(w,r,func(c net.Conn){
+ // All children share this daemon's private state root, regardless of the
 			// launcher's inherited environment casing or stale state-directory value.
 			env := make([]string, 0, len(req.Env)+1)
 			for _, item := range req.Env {
@@ -469,19 +361,15 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 			env = append(env, "SSHORE_STATE_DIR="+record.Directory)
 			req.Env = env
 			req.Record.ManagerPID = os.Getpid()
-			if writeMessage(c, message{Type: "daemon_ready"}) != nil {
-				return
-			}
 			_ = c.SetDeadline(time.Time{})
-			<-handshakes
-			pending = false
-			if req.Kind == "spawn" {
-				_ = runSpawnRemote(c, req)
+
+			if req.Kind == "remote-shell" {
+				_ = runRemoteShell(c, req)
 				return
 			}
 			if req.Kind == "shell" {
 				req.Record.Address, req.Record.Token = record.Address, record.Token
-				err = runLocalShell(tasks, req.Record, req.Env, func(r localShellRecord) error {
+				err := runLocalShell(tasks, req.Record, req.Env, func(r localShellRecord) error {
 					_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 					if e := json.NewEncoder(c).Encode(localStartup{Record: r}); e != nil {
 						return e
@@ -502,8 +390,40 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 			} else {
 				_ = runDaemonResource(c, req, tasks)
 			}
-		}()
+		})
+	})
+	server := http.Server{ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 5 * time.Second, MaxHeaderBytes: 8192, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !daemonAuthorized(r, record) {
+			http.Error(w, "unauthorized", 401)
+			return
+		}
+		if !strings.HasPrefix(r.URL.Path, "/admin/") && r.Header.Get("Sshore-Version") != record.Version {
+			http.Error(w, "daemon version mismatch", 409)
+			return
+		}
+		mu.Lock()
+		if stopping {
+			mu.Unlock()
+			http.Error(w, "daemon stopping", 503)
+			return
+		}
+		active++
+		mu.Unlock()
+		defer func() { mu.Lock(); active--; last = time.Now(); mu.Unlock() }()
+		mux.ServeHTTP(w, r)
+	})}
+	server.SetKeepAlivesEnabled(false)
+	err := server.Serve(listener)
+	mu.Lock()
+	closedForShutdown := stopping
+	mu.Unlock()
+	if !closedForShutdown {
+		return err
 	}
+	// Let the shutdown response finish before releasing the daemon owner.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return server.Shutdown(ctx)
 }
 
 // Mount daemons receive only startup/control messages through the account daemon.
@@ -560,7 +480,7 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 		return err
 	}
 	cmd := exec.Command(exe, "daemon", "mount")
-	detachMountDaemon(cmd)
+	detachDaemon(cmd)
 	cmd.Dir = request.Record.Directory
 	cmd.Env = request.Env
 	cmd.Stderr = log
@@ -674,7 +594,7 @@ func launchLocalDaemonContext(ctx context.Context, executable ...string) (localS
 		exe = executable[0]
 	}
 	cmd := exec.Command(exe, "daemon")
-	detachLocalDaemon(cmd)
+	detachDaemon(cmd)
 	dir, err := daemonDirectory()
 	if err != nil {
 		return empty, err

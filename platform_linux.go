@@ -35,8 +35,6 @@ func protectDaemonHangups() func() {
 	return func() { signal.Stop(hangups) }
 }
 
-func detachLocalDaemon(cmd *exec.Cmd) { detachMountDaemon(cmd) }
-
 func spawnProcessIdentity(pid int) (string, error) {
 	p, err := readSetupTask(pid)
 	if err != nil {
@@ -52,7 +50,7 @@ func stopSpawnTerminal(pid int, start string) error {
 	return stopOwnedProcesses([]setupProcess{{PID: pid, Start: start}})
 }
 
-func detachMountDaemon(c *exec.Cmd)      { c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
+func detachDaemon(c *exec.Cmd)           { c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
 func lockResourceState(f *os.File) error { return unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB) }
 
 func prepareFTPPaths(o *ftpOptions) (func(), error) {
@@ -289,5 +287,11 @@ func runLocalInstaller() error {
 	}
 	cmd := exec.Command("sh", "-c", linuxInstaller, "install.sh", "--bin-dir", filepath.Dir(target))
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd.Run()
+}
+
+func prepareLinuxRelease(ctx context.Context, stage string) error {
+	cmd := exec.CommandContext(ctx, "sh", "-c", linuxInstaller, "install.sh", "--version", version, "--bin-dir", stage, "--prepare-only", "--cache-dir", filepath.Dir(stage))
+	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }

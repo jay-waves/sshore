@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/xtaci/smux"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
@@ -31,7 +30,7 @@ func localShellPath(env []string) string {
 
 func protectDaemonHangups() func() { return func() {} }
 
-func detachLocalDaemon(cmd *exec.Cmd) {
+func detachDaemon(cmd *exec.Cmd) {
 	// The worker only uses pipes and sockets; the shell gets its own ConPTY.
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 }
@@ -58,10 +57,6 @@ func spawnProcessIdentity(pid int) (string, error) {
 
 // The terminal owns a kill-on-close job; Terminal.Close ends its process tree.
 func stopSpawnTerminal(pid int, start string) error { return nil }
-
-func detachMountDaemon(c *exec.Cmd) {
-	detachLocalDaemon(c)
-}
 
 func lockResourceState(f *os.File) error {
 	return windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &windows.Overlapped{})
@@ -159,20 +154,6 @@ func privateStatePath(path string, directory bool) error {
 
 func serverCommand(args []string) error {
 	return fmt.Errorf("%s runs on the Linux server, inside the remote shell", args[0])
-}
-
-func approvedRemoteTransfer(st *smux.Stream, m message) {
-	_ = writeMessage(st, message{Type: "error", Error: "file serving requires Linux"})
-}
-
-func localSessionInventory(details ...bool) inventory {
-	inv := emptyInventory()
-	var e error
-	inv.Peers, e = collectPeerViews()
-	if e != nil {
-		inv.Errors = append(inv.Errors, cleanText(e.Error()))
-	}
-	return inv
 }
 
 func systemMachineID() string {
@@ -310,4 +291,15 @@ func startWindowsInstaller(path string) error {
 	windows.CloseHandle(pi.Thread)
 	windows.CloseHandle(pi.Process)
 	return nil
+}
+
+func prepareLinuxRelease(ctx context.Context, stage string) error {
+	script := filepath.Join(stage, "install.ps1")
+	if err := os.WriteFile(script, []byte(windowsInstaller), 0600); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-File", script, "-Version", version, "-PrepareLinux", stage)
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = os.Stderr
+	return cmd.Run()
 }

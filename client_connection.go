@@ -21,8 +21,8 @@ import (
 	"time"
 )
 
-// Authenticated transports belong to the frontend, across attachment changes.
-// Only live options carry these handles; saved routes must authenticate normally.
+// The frontend retains local daemon leases across attachment changes.
+// Saved routes get new leases and authenticate normally.
 type clientTransports map[*clientTransport]bool
 
 type clientTransport struct {
@@ -72,7 +72,7 @@ func openReusableTransport(ctx context.Context, connection *clientTransport) (io
 }
 
 // The returned stream owns its cleanup. Reused attachments release only their
-// own stream; frontend-retained authenticated connections outlive attachments.
+// own stream. A retained daemon lease can open another stream without reauthenticating.
 func openClientTransportContext(ctx context.Context, o *options) (stream io.ReadWriteCloser, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -154,39 +154,7 @@ func openClientTransportContext(ctx context.Context, o *options) (stream io.Read
 		_ = c.SetDeadline(time.Time{})
 		return wire.OwnTransport(ctx, c, nil), nil
 	}
-	if o.command == "spawn" {
-		return openSpawnTransport(ctx, o)
-	}
-	connectionCtx := ctx
-	cancelConnection := func() {}
-	if o.transports != nil {
-		connectionCtx, cancelConnection = context.WithCancel(context.WithoutCancel(ctx))
-		stopConnecting := context.AfterFunc(ctx, cancelConnection)
-		defer stopConnecting()
-	}
-	process, err := transportio.Start(connectionCtx, sshConnectionOptions(*o), os.Stderr)
-	if err != nil {
-		cancelConnection()
-		return nil, err
-	}
-	closeSSH := func() { cancelConnection(); process.CloseAndWait() }
-	// The mux handshake follows SSH authentication; terminal raw mode and its
-	// keyboard reader start only after authentication and setup finish.
-	if err = negotiateSetupUsing(ctx, process, process, o, setupClientUI{OpenInput: func() (setupInput, error) { return termui.NewInput() }}); err != nil {
-		closeSSH()
-		return nil, err
-	}
-	if o.daemonTask != nil {
-		record := *o.daemonTask
-		return openTaskStream(ctx, o, func(ctx context.Context) (io.ReadWriteCloser, error) {
-			c, err := openRemoteDaemonTask(ctx, process.DialTCP, record)
-			if err != nil {
-				return nil, fmt.Errorf("connect remote daemon: %w", err)
-			}
-			return c, nil
-		}, closeSSH)
-	}
-	return wire.OwnTransport(ctx, process, func() { cancelConnection(); _ = process.Wait() }), nil
+	return openRemoteShellTransport(ctx, o)
 }
 
 // SSH carries TCP channels to the same loopback endpoint used by native clients.
@@ -201,7 +169,7 @@ func openRemoteDaemonTask(ctx context.Context, dial func(context.Context, string
 	if err != nil {
 		return nil, err
 	}
-	return authenticatedTaskConn(authCtx, c, record)
+	return upgradeDaemonConn(authCtx,c,record,"/tasks/"+record.UID+"/open",nil)
 }
 
 type sessionSwitch struct {
