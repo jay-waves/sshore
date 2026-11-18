@@ -169,7 +169,7 @@ func openRemoteDaemonTask(ctx context.Context, dial func(context.Context, string
 	if err != nil {
 		return nil, err
 	}
-	return upgradeDaemonConn(authCtx,c,record,"/tasks/"+record.UID+"/open",nil)
+	return upgradeDaemonConn(authCtx, c, record, "/tasks/"+record.UID+"/open", nil)
 }
 
 type sessionSwitch struct {

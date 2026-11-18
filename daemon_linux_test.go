@@ -12,12 +12,24 @@ import (
 )
 
 func TestDaemonHostedTaskRouting(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	root := t.TempDir()
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
+	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(root, "runtime"))
 	tasks := startRequestDaemon(t)
 	id := strings.Repeat("e", 32)
-	shell := &remoteShell{tasks: tasks, instance: id, name: "hosted", done: make(chan struct{})}
-	if err := tasks.register(id, shell); err != nil {
+	selection := taskIdentitySelection{name: "hosted", uid: id}
+	if err := createRemoteShell("", selection, false, root, nil); err != nil {
 		t.Fatal(err)
+	}
+	tasks.mu.Lock()
+	shell, ok := tasks.records[id].(*remoteShell)
+	tasks.mu.Unlock()
+	if !ok {
+		t.Fatal("creation returned before registering the hosted shell")
+	}
+	t.Cleanup(func() { _ = shell.stopTask() })
+	if err := createRemoteShell("", selection, false, root, nil); err == nil || !strings.Contains(err.Error(), "task already exists") {
+		t.Fatalf("duplicate hosted shell creation: %v", err)
 	}
 	records, err := hostedTaskRecords()
 	if err != nil || len(records) != 1 || records[0].ID != id {
@@ -37,7 +49,9 @@ func TestDaemonHostedTaskRouting(t *testing.T) {
 			t.Fatalf("hosted route: %+v %v", m, err)
 		}
 	}
-	close(shell.done)
+	if err := shell.stopTask(); err != nil {
+		t.Fatal(err)
+	}
 	if c, err := dialHostedTask(context.Background(), id, time.Second); err == nil {
 		c.Close()
 		t.Fatal("ended hosted task accepted a stream")

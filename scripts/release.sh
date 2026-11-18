@@ -39,6 +39,25 @@ Includes Linux and Windows binaries for amd64 (x86-64) only.
 Verify downloaded archives against SHA256SUMS.
 Commit: $GITHUB_SHA
 NOTES
+if [[ "$version" == "0.7.8" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Use authenticated loopback HTTP for daemon control, including task inventory,
+  resources, approvals and MCP. Interactive sessions keep their stream protocol
+  after HTTP Upgrade.
+- Register hosted Linux shells in one HTTP request and let the daemon manage
+  their lifetime from registration through exit.
+- Reduce repeat mount directory listing work and bound read-ahead for nearby
+  directories.
+- Simplify setup and isolate lifecycle fixtures from the user's account daemon.
+
+Upgrade: save work, use the installed release to end its tasks, and wait for its
+daemon to exit before installing 0.7.8. Update both client and server to 0.7.8.
+Normal connections require an exact version match.
+NOTES
+fi
+
 if [[ "$version" == "0.7.7" ]]; then
   cat >> release-notes.md <<'NOTES'
 

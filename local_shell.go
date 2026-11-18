@@ -88,10 +88,10 @@ func dialLocalSessionUntil(r localShellRecord, deadline time.Time) (net.Conn, er
 }
 
 func dialLocalSessionContext(ctx context.Context, r localShellRecord, deadline time.Time) (net.Conn, error) {
-	return dialDaemonStream(ctx,r,deadline,"/tasks/"+r.UID+"/open",nil)
+	return dialDaemonStream(ctx, r, deadline, "/tasks/"+r.UID+"/open", nil)
 }
-func dialDaemonStream(ctx context.Context,r localShellRecord,deadline time.Time,path string,input any)(net.Conn,error){
-if err := checkPeerVersion(r.Version, "local shell"); err != nil {
+func dialDaemonStream(ctx context.Context, r localShellRecord, deadline time.Time, path string, input any) (net.Conn, error) {
+	if err := checkPeerVersion(r.Version, "local shell"); err != nil {
 		return nil, err
 	}
 	remaining := time.Until(deadline)
@@ -103,7 +103,7 @@ if err := checkPeerVersion(r.Version, "local shell"); err != nil {
 		return nil, fmt.Errorf("local shell %s unavailable: %w", r.Name, err)
 	}
 	_ = c.SetDeadline(deadline)
-	return upgradeDaemonConn(ctx,c,r,path,input)
+	return upgradeDaemonConn(ctx, c, r, path, input)
 }
 
 func (r localShellRecord) identity() string {

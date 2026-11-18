@@ -408,7 +408,7 @@ func stopResource(kind, name string, expected ...string) error {
 	if len(expected) > 0 && resourceIdentity(r) != expected[0] {
 		return fmt.Errorf("task changed; refresh with sshore list")
 	}
-	if _, err := daemonResourceRequest(message{Type: "kill", Instance: r.UID}); err != nil {
+	if _, err := daemonResourceRequest(context.Background(), "/resources/"+r.UID+"/kill", nil); err != nil {
 		return err
 	}
 	if kind == "mount" {

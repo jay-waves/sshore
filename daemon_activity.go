@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -184,13 +183,13 @@ func activityRPC(r activityRequest) (activityReply, error) {
 		}
 		return reply, nil
 	}
-	c, err := openActivity(context.Background(), r)
-	if err != nil {
-		return activityReply{}, err
-	}
-	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	record, err := activityDaemon(ctx)
 	var reply activityReply
-	err = json.NewDecoder(c).Decode(&reply)
+	if err == nil {
+		err = daemonJSON(ctx, record, "/activity", r, &reply)
+	}
 	if err == nil && reply.Error != "" {
 		err = fmt.Errorf("%s", reply.Error)
 	}
@@ -199,21 +198,20 @@ func activityRPC(r activityRequest) (activityReply, error) {
 func openActivity(parent context.Context, r activityRequest) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
-	var record localShellRecord
-	var err error
-	if activityAllowed() {
-		record, err = ensureLocalDaemonContext(ctx)
-	} else {
-		record, err = existingDaemonRecord()
-	}
+	record, err := activityDaemon(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return dialDaemonStream(ctx,record,time.Now().Add(10*time.Second),"/activity",r)
+	return dialDaemonStream(ctx, record, time.Now().Add(10*time.Second), "/leases", r)
+}
+func activityDaemon(ctx context.Context) (localShellRecord, error) {
+	if activityAllowed() {
+		return ensureLocalDaemonContext(ctx)
+	}
+	return existingDaemonRecord()
 }
 func (s *daemonActivity) serve(c net.Conn, r activityRequest) {
 	if r.Kind != "shell" && r.Kind != "incoming" && r.Kind != "heartbeat" && r.Kind != "owner" {
-		_ = json.NewEncoder(c).Encode(s.request(r))
 		return
 	}
 	if r.Kind == "incoming" && (r.Peer == nil || validateRemoteTask(*r.Peer) != nil || r.Peer.State != "active") {

@@ -800,11 +800,11 @@ func TestClientDaemonLossRestoresTerminal(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			c, err := dialLocalSession(record)
+			var ready bool
+			err = daemonJSON(context.Background(), record, "/ready", nil, &ready)
 			if err != nil {
 				t.Fatal(err)
 			}
-			c.Close()
 			if current, err := processStart(record.ManagerPID); err != nil || current != identity {
 				t.Fatalf("test daemon identity changed: %v", err)
 			}

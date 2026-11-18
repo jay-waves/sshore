@@ -718,7 +718,7 @@ LogLevel ERROR
             automatic.mkdir()
             term = Terminal(command[:2] + ["--download-dir", str(automatic), "--quiet", "--no-escape"] + command[2:])
             terms.append(term)
-            # A compromised remote peer can still speak the old wire format.
+            # An authenticated peer can still send old task messages.
             # Neither a legacy file offer nor forward-add can bypass approval.
             def unsolicited(metadata):
                 record = json.loads((Path(remote_account.pw_dir) / ".sshore" / "daemon" / "daemon.json").read_text())
@@ -728,18 +728,24 @@ LogLevel ERROR
                 address, port = record["Address"].rsplit(":", 1)
                 with socket.create_connection((address, int(port)), timeout=10) as peer:
                     stream = peer.makefile("rb")
-                    def exchange(message):
-                        body = json.dumps(message).encode()
-                        peer.sendall(b"\x00" + struct.pack("!I", len(body)) + body)
-                        header = stream.read(5)
-                        assert len(header) == 5, header
-                        return json.loads(stream.read(struct.unpack("!I", header[1:])[0]))
-                    reply = exchange({"type": "local_auth", "token": record["Token"],
-                                      "software_version": record["Version"]})
-                    assert reply["type"] == "local_ready", reply
-                    reply = exchange({"type": "task_open", "instance": instance})
-                    assert reply["type"] == "task_ready", reply
-                    reply = exchange(metadata)
+                    peer.sendall((
+                        f"POST /tasks/{instance}/open HTTP/1.1\r\n"
+                        f"Host: {record['Address']}\r\n"
+                        f"Authorization: Bearer {record['Token']}\r\n"
+                        f"Sshore-Version: {record['Version']}\r\n"
+                        "Connection: Upgrade\r\n"
+                        "Upgrade: sshore-stream\r\n"
+                        "Content-Length: 0\r\n\r\n"
+                    ).encode())
+                    status = stream.readline()
+                    assert status.startswith(b"HTTP/1.1 101 "), status
+                    for header in iter(stream.readline, b"\r\n"):
+                        assert header, "truncated upgrade response"
+                    body = json.dumps(metadata).encode()
+                    peer.sendall(b"\x00" + struct.pack("!I", len(body)) + body)
+                    header = stream.read(5)
+                    assert len(header) == 5, header
+                    reply = json.loads(stream.read(struct.unpack("!I", header[1:])[0]))
                     assert reply["type"] == "fatal" and reply.get("error"), reply
             unsolicited({"type": "offer", "name": "unapproved.txt", "size": 5})
             assert not (automatic / "unapproved.txt").exists()

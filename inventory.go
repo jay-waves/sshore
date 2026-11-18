@@ -131,7 +131,7 @@ func inspectResource(ctx context.Context, r resourceRecord) resourceView {
 	if r.Kind == "review" {
 		return v
 	}
-	reply, err := daemonResourceRequestContext(ctx, message{Type: "status", Instance: r.UID})
+	reply, err := daemonResourceRequest(ctx, "/resources/"+r.UID+"/status", nil)
 	if err != nil {
 		v.LastError = "local worker unavailable or status deadline exceeded"
 		return v

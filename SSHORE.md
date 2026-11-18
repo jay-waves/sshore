@@ -239,7 +239,13 @@ ancestry is not permission to signal. Follow the
 One `sshore daemon` per OS user account owns native terminals, hosted Unix shells,
 MCP sessions and resources in one in-memory task table. That table owns identity,
 lifecycle and live connection relationships; it is never reconstructed after a
-crash. The loopback TCP listener accepts authenticated control and task streams.
+crash. The loopback TCP listener serves HTTP/1.1. Control requests use JSON
+with an account token and exact release version. The same token authenticates
+administrative snapshot and shutdown requests across releases that speak HTTP.
+Linux hosted shell creation returns after task registration. Interactive task
+and lease connections and multi-step startup use HTTP Upgrade.
+Upgraded connections carry the existing task streams, including smux where
+the session uses multiple streams.
 Only endpoint discovery and credentials need private daemon files.
 Every normal public command registers with this daemon after argument parsing;
 help, version output and diagnostics remain free of startup side
@@ -289,7 +295,7 @@ Startup must have an explicit ownership handoff. Carry the initiating client's
 working directory and environment, not whichever environment started the daemon.
 Do not hold bookkeeping locks across terminal I/O, authentication or worker startup.
 Daemon liveness comes from its owner lock; orphaned metadata cannot block startup
-with a version mismatch. `kill --all` uses cross-release authenticated administration,
+with a version mismatch. `kill --all` uses authenticated administration across releases that speak HTTP,
 rechecks the reviewed task snapshot, kills owned shells and their identified processes,
 and waits for the daemon to release its account endpoint. No new tasks are admitted
 while shutdown is in progress.

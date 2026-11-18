@@ -5,8 +5,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -41,16 +43,8 @@ func hostedTaskRecords() ([]hostedTaskRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := dialLocalSession(r)
-	if err != nil {
-		return nil, err
-	}
-	defer c.Close()
-	if err := writeMessage(c, message{Type: "task_list_hosted", SoftwareVersion: version}); err != nil {
-		return nil, err
-	}
 	var records []hostedTaskRecord
-	err = json.NewDecoder(c).Decode(&records)
+	err = daemonJSON(context.Background(), r, "/tasks/hosted", nil, &records)
 	return records, err
 }
 
@@ -77,86 +71,55 @@ func newDaemonServices(tasks *daemonTasks) daemonServices {
 
 func (s *unixDaemonServices) Close() { s.sessions.closeAll() }
 
-func validateDaemonRuntime(dir string) error {
-	if !filepath.IsAbs(dir) {
-		return fmt.Errorf("invalid shell runtime directory")
-	}
-	return privateStatePath(dir, true)
+type hostedShellRequest struct {
+	Runtime, Directory, Name, UID string
+	Env                           []string
+	Temporary                     bool
 }
 
-func (s *unixDaemonServices) Serve(c net.Conn, request message, tasks *daemonTasks) {
-	fail := func(err error) {
-		_ = writeMessage(c, message{Type: "error", SoftwareVersion: version, Error: err.Error()})
-	}
-	if err := checkPeerVersion(request.SoftwareVersion, "client"); err != nil {
-		fail(err)
-		return
-	}
-	if request.Type == "task_list_hosted" {
-		_ = json.NewEncoder(c).Encode(tasks.hostedRecords())
-		return
-	}
-	if request.Type == "mcp_request" && request.MCPRequest != nil {
-		_ = c.SetDeadline(time.Now().Add(40 * time.Second))
-		response := mcp.Dispatch(context.Background(), s.sessions, *request.MCPRequest, version)
-		_ = writeMessage(c, message{Type: "mcp_response", SoftwareVersion: version, MCPResponse: &response})
-		return
-	}
-	if request.Type != "create_shell" || request.LocalRequest == nil || !validTaskUID(request.Instance) || validSession(request.Name) != nil || validSession(request.Action) != nil || !filepath.IsAbs(request.LocalRequest.Record.Directory) {
-		fail(fmt.Errorf("invalid shell creation"))
-		return
-	}
-	if err := validateDaemonRuntime(request.Directory); err != nil {
-		fail(err)
-		return
-	}
-	ready := false
-	err := serveRemoteShellAt(tasks, request.Directory, request.Action, request.Instance, request.LocalRequest.Env, request.LocalRequest.Record.Directory, func() error {
-		err := writeMessage(c, message{Type: "shell_created", SoftwareVersion: version})
-		if err == nil {
-			ready = true
+func (s *unixDaemonServices) Routes(mux *http.ServeMux, tasks *daemonTasks) {
+	mux.HandleFunc("POST /tasks/hosted", func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(tasks.hostedRecords()) })
+	mux.HandleFunc("POST /mcp", func(w http.ResponseWriter, r *http.Request) {
+		var req mcp.Request
+		if readDaemonBody(w, r, &req) {
+			_ = json.NewEncoder(w).Encode(mcp.Dispatch(r.Context(), s.sessions, req, version))
 		}
-		c.Close()
-		return err
-	}, request.Temporary)
-	if err != nil && !ready {
-		fail(err)
-	}
-	return
+	})
+	mux.HandleFunc("POST /shells", func(w http.ResponseWriter, r *http.Request) {
+		var req hostedShellRequest
+		if !readDaemonBody(w, r, &req) {
+			return
+		}
+		if !validTaskUID(req.UID) || validSession(req.Name) != nil || !filepath.IsAbs(req.Directory) || !filepath.IsAbs(req.Runtime) {
+			http.Error(w, "invalid shell creation", 400)
+			return
+		}
+		if err := privateStatePath(req.Runtime, true); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		if err := tasks.registerHostedShell(req); err != nil {
+			status := http.StatusConflict
+			if errors.Is(err, errDaemonDraining) {
+				status = http.StatusServiceUnavailable
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 }
-
-// SSH bootstrap and native clients authenticate to the same account daemon.
-func connectRemoteDaemon(executable string) (net.Conn, error) {
+func createRemoteShell(executable string, id taskIdentitySelection, temporary bool, cwd string, env []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	record, err := ensureLocalDaemonContext(ctx, executable)
 	if err != nil {
-		return nil, err
-	}
-	return dialLocalSessionContext(ctx, record, time.Now().Add(5*time.Second))
-}
-
-func createRemoteShell(executable string, id taskIdentitySelection, temporary bool, cwd string, env []string) error {
-	c, err := connectRemoteDaemon(executable)
-	if err != nil {
 		return err
 	}
-	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 	dir, err := runtimeDir()
 	if err != nil {
 		return err
 	}
-	request := message{Directory: dir, Type: "create_shell", Instance: id.uid, Temporary: temporary, SoftwareVersion: version, Name: id.uid, Action: id.name, LocalRequest: &localDaemonRequest{Record: localShellRecord{Directory: cwd}, Env: env}}
-	if err = writeMessage(c, request); err != nil {
-		return err
-	}
-	reply, err := readMessage(c)
-	if err != nil {
-		return err
-	}
-	if reply.Type != "shell_created" || reply.SoftwareVersion != version {
-		return fmt.Errorf("remote shell creation failed: %s", reply.Error)
-	}
-	return nil
+	req := hostedShellRequest{Runtime: dir, Directory: cwd, Name: id.name, UID: id.uid, Env: env, Temporary: temporary}
+	return daemonJSON(ctx, record, "/shells", req, nil)
 }

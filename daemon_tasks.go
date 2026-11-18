@@ -3,9 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
-"net/http"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -46,6 +47,8 @@ type daemonTask interface {
 	expired(time.Time) bool
 }
 
+var errDaemonDraining = errors.New("daemon is shutting down")
+
 type daemonTasks struct {
 	draining bool
 	mu       sync.Mutex
@@ -82,7 +85,7 @@ func (s *daemonTasks) register(id string, task daemonTask) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.draining {
-		return fmt.Errorf("daemon is shutting down")
+		return errDaemonDraining
 	}
 	s.prune(time.Now())
 	if s.records == nil {
@@ -100,22 +103,24 @@ func (s *daemonTasks) register(id string, task daemonTask) error {
 	return nil
 }
 
-func (s *daemonTasks) open(w http.ResponseWriter,r *http.Request) {
-id:=r.PathValue("id")
+func (s *daemonTasks) open(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
 	s.mu.Lock()
 	s.prune(time.Now())
 	task, ok := s.records[id].(interface{ serveTask(net.Conn, message) error })
 	s.mu.Unlock()
 	if !ok {
-		http.Error(w,"task no longer exists",404);return}
- serveDaemonStream(w,r,func(c net.Conn){
- m, err := readMessage(c)
-	if err != nil {
+		http.Error(w, "task no longer exists", 404)
 		return
 	}
-	_ = c.SetDeadline(time.Time{})
-	_ = task.serveTask(c, m)
-})
+	serveDaemonStream(w, r, func(c net.Conn) {
+		m, err := readMessage(c)
+		if err != nil {
+			return
+		}
+		_ = c.SetDeadline(time.Time{})
+		_ = task.serveTask(c, m)
+	})
 }
 
 func (t *nativeShellTask) serveTask(c net.Conn, m message) error { return t.serve(c, m) }
@@ -148,17 +153,26 @@ func (t *daemonResourceTask) expired(time.Time) bool {
 		return false
 	}
 }
-func (t *daemonResourceTask) serveTask(c net.Conn, m message) error {
-	if m.Type != "status" && m.Type != "kill" {
-		return fmt.Errorf("invalid resource operation")
+func (s *daemonTasks) resourceControl(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.prune(time.Now())
+	t, ok := s.records[r.PathValue("id")].(*daemonResourceTask)
+	s.mu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
 	}
 	var reply resourceReply
-	if m.Type == "kill" {
+	switch r.PathValue("operation") {
+	case "kill":
 		reply = t.stop()
-	} else {
-		reply = t.control(m.Type)
+	case "status":
+		reply = t.control("status")
+	default:
+		http.NotFound(w, r)
+		return
 	}
-	return json.NewEncoder(c).Encode(reply)
+	_ = json.NewEncoder(w).Encode(reply)
 }
 func (t *daemonResourceTask) stop() resourceReply {
 	reply := t.control("kill")
@@ -215,51 +229,19 @@ func (s *daemonTasks) renameResource(id, name string) error {
 	return nil
 }
 
-func daemonResourceRequest(m message) (resourceReply, error) {
-	return daemonResourceRequestContext(context.Background(), m)
-}
-func daemonResourceRequestContext(ctx context.Context, m message) (resourceReply, error) {
-	r, err := existingDaemonRecord()
-	if os.IsNotExist(err) && m.Type == "task_list_resources" {
-		return resourceReply{}, nil
-	}
-	if err != nil {
-		return resourceReply{}, err
-	}
-	if m.Type == "task_list_resources" || m.Type == "task_rename_resource" {
-		path := "/tasks/resources"
-		if m.Type == "task_rename_resource" {
-			path = "/tasks/rename"
-		}
-		var reply resourceReply
-		err := daemonJSON(ctx, r, path, m, &reply)
-		if err == nil && reply.Error != "" {
-			err = fmt.Errorf("%s", reply.Error)
-		}
-		return reply, err
-	}
-	if m.Type == "status" || m.Type == "kill" {
-		r.UID = m.Instance
-	}
-	c, err := dialLocalSessionContext(ctx, r, time.Now().Add(5*time.Second))
-	if err != nil {
-		return resourceReply{}, err
-	}
-	defer c.Close()
-	stop := context.AfterFunc(ctx, func() { c.Close() })
-	defer stop()
-	_ = c.SetDeadline(time.Now().Add(25 * time.Second))
-	if err := writeMessage(c, m); err != nil {
-		return resourceReply{}, err
-	}
+func daemonResourceRequest(ctx context.Context, path string, input any) (resourceReply, error) {
 	var reply resourceReply
-	if err := json.NewDecoder(c).Decode(&reply); err != nil {
-		return reply, err
+	record, err := existingDaemonRecord()
+	if os.IsNotExist(err) && path == "/resources" {
+		return reply, nil
 	}
-	if reply.Error != "" {
-		return reply, fmt.Errorf("%s", reply.Error)
+	if err == nil {
+		err = daemonJSON(ctx, record, path, input, &reply)
 	}
-	return reply, nil
+	if err == nil && reply.Error != "" {
+		err = fmt.Errorf("%s", reply.Error)
+	}
+	return reply, err
 }
 
 func (s *resourceService) control(action string) resourceReply {

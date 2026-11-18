@@ -100,9 +100,11 @@ func openLocalDaemonContext(ctx context.Context, request localDaemonRequest) (ne
 	if err != nil {
 		return nil, err
 	}
-	c,err:=dialDaemonStream(ctx,record,time.Now().Add(5*time.Second),"/launch",request)
- if err==nil{_=c.SetDeadline(time.Time{})}
- return c,err
+	c, err := dialDaemonStream(ctx, record, time.Now().Add(5*time.Second), "/launch", request)
+	if err == nil {
+		_ = c.SetDeadline(time.Time{})
+	}
+	return c, err
 }
 
 func ensureLocalDaemonContext(ctx context.Context, executable ...string) (localShellRecord, error) {
@@ -149,8 +151,10 @@ func ensureLocalDaemonContext(ctx context.Context, executable ...string) (localS
 		return empty, err
 	}
 	var ready bool
- if err:=daemonJSON(ctx,r,"/ready",nil,&ready);err!=nil{return empty,fmt.Errorf("local daemon is unavailable; its owner is still active: %w",err)}
- return r, nil
+	if err := daemonJSON(ctx, r, "/ready", nil, &ready); err != nil {
+		return empty, fmt.Errorf("local daemon is unavailable; its owner is still active: %w", err)
+	}
+	return r, nil
 }
 
 func newDaemonRecord() (localShellRecord, error) {
@@ -237,7 +241,7 @@ func runDaemon() (result error) {
 
 // Platform services share the same authenticated listener and lifetime owner.
 type daemonServices interface {
-	Routes(*http.ServeMux,*daemonTasks)
+	Routes(*http.ServeMux, *daemonTasks)
 	Close()
 }
 
@@ -279,139 +283,48 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 			}
 		}
 	}()
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /admin/{action}", func(w http.ResponseWriter, r *http.Request) {
-		reply := daemonAdminReply{}
-		tasks.mu.Lock()
-		reply.Snapshot = tasks.snapshot(record)
-		reply.Runtime = tasks.runtimeDirectories()
-		tasks.mu.Unlock()
-		switch r.PathValue("action") {
-		case "snapshot":
-		case "shutdown":
-			var expected daemonSnapshot
-			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&expected); err != nil {
-				reply.Error = err.Error()
-			} else if err = tasks.shutdown(record, expected); err != nil {
-				reply.Error = err.Error()
-			}
-		default:
-			http.NotFound(w, r)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(reply)
-		if r.PathValue("action") == "shutdown" && reply.Error == "" {
+	mux := daemonRoutes(record, tasks, services, func() { mu.Lock(); stopping = true; mu.Unlock(); listener.Close() })
+	// Limit connections that are still reading their HTTP headers.
+	pending := make(map[net.Conn]struct{})
+	server := http.Server{
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		MaxHeaderBytes:    8192,
+		ConnState: func(c net.Conn, state http.ConnState) {
 			mu.Lock()
-			stopping = true
-			mu.Unlock()
-			listener.Close()
-		}
-	})
-	mux.HandleFunc("POST /tasks/native", func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(tasks.nativeRecords()) })
-	mux.HandleFunc("POST /tasks/resources", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(resourceReply{Records: tasks.resourceRecords()})
-	})
-	mux.HandleFunc("POST /tasks/names", func(w http.ResponseWriter, r *http.Request) {
-		names := map[string]bool{}
-		tasks.mu.Lock()
-		tasks.prune(time.Now())
-		for id, t := range tasks.records {
-			if id != r.URL.Query().Get("except") {
-				names[t.taskName()] = true
-			}
-		}
-		tasks.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(names)
-	})
-	mux.HandleFunc("POST /tasks/rename", func(w http.ResponseWriter, r *http.Request) {
-		var req struct{ Instance, Name string }
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		reply := resourceReply{}
-		if err := tasks.renameResource(req.Instance, req.Name); err != nil {
-			reply.Error = err.Error()
-		}
-		_ = json.NewEncoder(w).Encode(reply)
-	})
-	mux.HandleFunc("POST /ready",func(w http.ResponseWriter,r *http.Request){_=json.NewEncoder(w).Encode(true)})
- mux.HandleFunc("POST /tasks/{id}/open",tasks.open)
- mux.HandleFunc("POST /activity",func(w http.ResponseWriter,r *http.Request){
- var req activityRequest
- if readDaemonBody(w,r,&req){if activity:=accountActivity.Load();activity!=nil{serveDaemonStream(w,r,func(c net.Conn){activity.serve(c,req)})}else{http.Error(w,"activity unavailable",503)}}
- })
- mux.HandleFunc("POST /requests/{action}",tasks.serveRequest)
- if services!=nil{services.Routes(mux,tasks)}
- mux.HandleFunc("POST /launch",func(w http.ResponseWriter,r *http.Request){
- var req localDaemonRequest
- if !readDaemonBody(w,r,&req){return}
- if (req.Kind!="remote-shell" && req.Kind!="shell" && req.Kind!="mount" && req.Kind!="forward") || validSession(req.Record.Name)!=nil || !filepath.IsAbs(req.Record.Directory){http.Error(w,"invalid launch",400);return}
- serveDaemonStream(w,r,func(c net.Conn){
- // All children share this daemon's private state root, regardless of the
-			// launcher's inherited environment casing or stale state-directory value.
-			env := make([]string, 0, len(req.Env)+1)
-			for _, item := range req.Env {
-				key, _, _ := strings.Cut(item, "=")
-				if strings.EqualFold(key, "SSHORE_STATE_DIR") {
-					continue
+			defer mu.Unlock()
+			switch state {
+			case http.StateNew:
+				if stopping || len(pending) >= 64 {
+					_ = c.Close()
+					return
 				}
-				env = append(env, item)
+				pending[c] = struct{}{}
+			case http.StateActive, http.StateClosed:
+				delete(pending, c)
 			}
-			env = append(env, "SSHORE_STATE_DIR="+record.Directory)
-			req.Env = env
-			req.Record.ManagerPID = os.Getpid()
-			_ = c.SetDeadline(time.Time{})
-
-			if req.Kind == "remote-shell" {
-				_ = runRemoteShell(c, req)
+		},
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !daemonAuthorized(r, record) {
+				http.Error(w, "unauthorized", 401)
 				return
 			}
-			if req.Kind == "shell" {
-				req.Record.Address, req.Record.Token = record.Address, record.Token
-				err := runLocalShell(tasks, req.Record, req.Env, func(r localShellRecord) error {
-					_ = c.SetDeadline(time.Now().Add(10 * time.Second))
-					if e := json.NewEncoder(c).Encode(localStartup{Record: r}); e != nil {
-						return e
-					}
-					var ack string
-					if e := json.NewDecoder(c).Decode(&ack); e != nil {
-						return e
-					}
-					if ack != "ready" {
-						return fmt.Errorf("shell startup not committed")
-					}
-					c.Close()
-					return nil
-				})
-				if err != nil {
-					_ = json.NewEncoder(c).Encode(localStartup{Error: err.Error()})
-				}
-			} else {
-				_ = runDaemonResource(c, req, tasks)
+			if !strings.HasPrefix(r.URL.Path, "/admin/") && r.Header.Get("Sshore-Version") != record.Version {
+				http.Error(w, "daemon version mismatch", 409)
+				return
 			}
-		})
-	})
-	server := http.Server{ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 5 * time.Second, MaxHeaderBytes: 8192, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !daemonAuthorized(r, record) {
-			http.Error(w, "unauthorized", 401)
-			return
-		}
-		if !strings.HasPrefix(r.URL.Path, "/admin/") && r.Header.Get("Sshore-Version") != record.Version {
-			http.Error(w, "daemon version mismatch", 409)
-			return
-		}
-		mu.Lock()
-		if stopping {
+			mu.Lock()
+			if stopping {
+				mu.Unlock()
+				http.Error(w, "daemon stopping", 503)
+				return
+			}
+			active++
 			mu.Unlock()
-			http.Error(w, "daemon stopping", 503)
-			return
-		}
-		active++
-		mu.Unlock()
-		defer func() { mu.Lock(); active--; last = time.Now(); mu.Unlock() }()
-		mux.ServeHTTP(w, r)
-	})}
+			defer func() { mu.Lock(); active--; last = time.Now(); mu.Unlock() }()
+			mux.ServeHTTP(w, r)
+		}),
+	}
 	server.SetKeepAlivesEnabled(false)
 	err := server.Serve(listener)
 	mu.Lock()
@@ -424,6 +337,51 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return server.Shutdown(ctx)
+}
+
+func runDaemonLaunch(c net.Conn, req localDaemonRequest, record localShellRecord, tasks *daemonTasks) {
+	// All children share this daemon's private state root, regardless of the
+	// launcher's inherited environment casing or stale state-directory value.
+	env := make([]string, 0, len(req.Env)+1)
+	for _, item := range req.Env {
+		key, _, _ := strings.Cut(item, "=")
+		if strings.EqualFold(key, "SSHORE_STATE_DIR") {
+			continue
+		}
+		env = append(env, item)
+	}
+	env = append(env, "SSHORE_STATE_DIR="+record.Directory)
+	req.Env = env
+	req.Record.ManagerPID = os.Getpid()
+	_ = c.SetDeadline(time.Time{})
+
+	if req.Kind == "remote-shell" {
+		_ = runRemoteShell(c, req)
+		return
+	}
+	if req.Kind == "shell" {
+		req.Record.Address, req.Record.Token = record.Address, record.Token
+		err := runLocalShell(tasks, req.Record, req.Env, func(r localShellRecord) error {
+			_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+			if e := json.NewEncoder(c).Encode(localStartup{Record: r}); e != nil {
+				return e
+			}
+			var ack string
+			if e := json.NewDecoder(c).Decode(&ack); e != nil {
+				return e
+			}
+			if ack != "ready" {
+				return fmt.Errorf("shell startup not committed")
+			}
+			c.Close()
+			return nil
+		})
+		if err != nil {
+			_ = json.NewEncoder(c).Encode(localStartup{Error: err.Error()})
+		}
+	} else {
+		_ = runDaemonResource(c, req, tasks)
+	}
 }
 
 // Mount daemons receive only startup/control messages through the account daemon.

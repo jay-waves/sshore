@@ -142,23 +142,11 @@ func TestSharedDaemonMCPSession(t *testing.T) {
 	call := func(req mcp.Request) mcp.Response {
 		t.Helper()
 		req.Version = version
-		c, err := dialLocalSession(record)
-		if err != nil {
-			t.Fatal(err)
+		var reply mcp.Response
+		if err := daemonJSON(context.Background(), record, "/mcp", req, &reply); err != nil || reply.Error != "" {
+			t.Fatalf("MCP: %+v %v", reply, err)
 		}
-		defer c.Close()
-		dir, err := runtimeDir()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = writeMessage(c, message{Directory: dir, Type: "mcp_request", SoftwareVersion: version, MCPRequest: &req}); err != nil {
-			t.Fatal(err)
-		}
-		reply, err := readMessage(c)
-		if err != nil || reply.MCPResponse == nil || reply.MCPResponse.Error != "" {
-			t.Fatalf("reply %+v: %v", reply, err)
-		}
-		return *reply.MCPResponse
+		return reply
 	}
 	session := call(mcp.Request{Method: "open", Open: mcp.OpenInput{Host: "host"}}).Session
 	execution := call(mcp.Request{Method: "execute", Execute: mcp.ExecuteInput{SessionID: session.ID, Code: "printf daemon"}}).Execution
@@ -174,24 +162,12 @@ func TestSharedDaemonMCPSession(t *testing.T) {
 		t.Fatalf("output %+v", output)
 	}
 	call(mcp.Request{Method: "close", Session: mcp.SessionInput{SessionID: session.ID}})
-	control, err := net.Dial("tcp", record.Address)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := writeMessage(control, message{Type: "daemon_admin", Action: "shutdown", Token: record.Token}); err != nil {
-		t.Fatal(err)
-	}
 	tasks.mu.Lock()
 	snapshot := tasks.snapshot(record)
 	tasks.mu.Unlock()
-	if err := json.NewEncoder(control).Encode(snapshot); err != nil {
+	if _, err := daemonAdministrationAt(context.Background(), record, "shutdown", &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	var reply daemonAdminReply
-	if err := json.NewDecoder(control).Decode(&reply); err != nil || reply.Error != "" {
-		t.Fatalf("administrative shutdown: %+v %v", reply, err)
-	}
-	control.Close()
 	select {
 	case err := <-done:
 		if err != nil {

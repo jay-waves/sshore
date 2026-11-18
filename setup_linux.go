@@ -6,11 +6,13 @@ package main
 // or client-side forced cleanup. Failures stop setup without a recovery shell.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 func bootstrap(target, mode, name string) (result error) {
@@ -92,16 +94,17 @@ func bootstrap(target, mode, name string) (result error) {
 		}
 		readyMode := "managed"
 		if mode == "mcp-agent" {
-			c, err := connectRemoteDaemon(target)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_, err := ensureLocalDaemonContext(ctx, target)
+			cancel()
 			lock.Close()
 			if err != nil {
 				return err
 			}
-			defer c.Close()
 			if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
 				return err
 			}
-			return bridgeMCP(c, target)
+			return bridgeMCP(target)
 		}
 		if mode == "mount-agent" || mode == "cp-agent" {
 			lock.Close()

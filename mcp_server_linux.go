@@ -185,8 +185,7 @@ func checkMCPSessionSetup() error {
 }
 
 // bridgeMCP keeps the SSH stream open while each request uses a daemon connection.
-func bridgeMCP(c net.Conn, target string) error {
-	first := true
+func bridgeMCP(target string) error {
 	for {
 		req, err := mcp.ReadRequest(os.Stdin)
 		if err == io.EOF {
@@ -198,29 +197,17 @@ func bridgeMCP(c net.Conn, target string) error {
 		if req.Version != version {
 			return fmt.Errorf("release version mismatch")
 		}
-		if !first {
-			c, err = connectRemoteDaemon(target)
-			if err != nil {
-				return err
-			}
-		}
-		first = false
-		err = func() error {
-			defer c.Close()
-			_ = c.SetDeadline(time.Now().Add(40 * time.Second))
-			if err := writeMessage(c, message{Type: "mcp_request", SoftwareVersion: version, MCPRequest: &req}); err != nil {
-				return err
-			}
-			reply, err := readMessage(c)
-			if err != nil {
-				return err
-			}
-			if reply.Type != "mcp_response" || reply.SoftwareVersion != version || reply.MCPResponse == nil {
-				return fmt.Errorf("invalid daemon response")
-			}
-			return mcp.WriteResponse(os.Stdout, *reply.MCPResponse)
-		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		record, err := ensureLocalDaemonContext(ctx, target)
+		cancel()
 		if err != nil {
+			return err
+		}
+		var reply mcp.Response
+		if err := daemonJSON(context.Background(), record, "/mcp", req, &reply); err != nil {
+			return err
+		}
+		if err := mcp.WriteResponse(os.Stdout, reply); err != nil {
 			return err
 		}
 	}

@@ -243,24 +243,10 @@ func TestRequestRPCDoesNotCreatePersistentApprovalFiles(t *testing.T) {
 }
 
 func TestRequestRPCPreservesLargeBoundedRequests(t *testing.T) {
-	tasks := &daemonTasks{}
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	startRequestDaemon(t)
 	call := func(action, name string, record *requestRecord) (requestRPCReply, error) {
-		client, server := net.Pipe()
-		defer client.Close()
-		_ = client.SetDeadline(time.Now().Add(requestTimeout))
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			defer server.Close()
-			m, err := readMessage(server)
-			if err == nil {
-				tasks.Serve(server, m)
-			}
-		}()
-		reply, err := exchangeRequest(client, action, "", name, record, nil)
-		client.Close()
-		<-done
-		return reply, err
+		return requestRPC(action, "", name, record)
 	}
 	r := pendingRequestFixture(t)
 	r.Operations = nil

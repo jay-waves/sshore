@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/mcp"
 	"github.com/jay-waves/sshore/internal/tmux"
 	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
@@ -28,10 +27,7 @@ const (
 type message struct {
 	OwnerProcess    *spawnProcessView   `json:"owner_process,omitempty"`
 	Reason          string              `json:"reason,omitempty"`
-	Activity        *activityRequest    `json:"activity,omitempty"`
 	Handoff         *clientHandoff      `json:"handoff,omitempty"`
-	MCPRequest      *mcp.Request        `json:"mcp_request,omitempty"`
-	MCPResponse     *mcp.Response       `json:"mcp_response,omitempty"`
 	SourceHost      string              `json:"source_host,omitempty"`
 	SourceMachineID string              `json:"source_machine_id,omitempty"`
 	Tree            []shellTreeNode     `json:"shell_tree,omitempty"`

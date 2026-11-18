@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -119,15 +121,9 @@ func TestClientConnectionCancellation(t *testing.T) {
 				}
 				defer c.Close()
 				c.SetDeadline(time.Now().Add(3 * time.Second))
-				_, err = readMessage(c)
+				_, err = http.ReadRequest(bufio.NewReader(c))
 				if err == nil && stage == "nested-route" {
-					err = writeMessage(c, message{Type: "local_ready", SoftwareVersion: version})
-					if err == nil {
-						_, err = readMessage(c)
-					}
-					if err == nil {
-						err = writeMessage(c, message{Type: "task_ready"})
-					}
+					_, err = fmt.Fprintf(c, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: %s\r\nSshore-Version: %s\r\n\r\n", daemonUpgrade, version)
 					if err == nil {
 						_, err = readMessage(c)
 					}

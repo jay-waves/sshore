@@ -18,7 +18,7 @@ import (
 )
 
 func collectRunningResources(host string) ([]resourceRecord, error) {
-	reply, err := daemonResourceRequest(message{Type: "task_list_resources"})
+	reply, err := daemonResourceRequest(context.Background(), "/resources", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +103,7 @@ func runRenameResource(kind, old, name string, expected ...string) (int, error) 
 		if len(expected) > 0 && resourceIdentity(row) != expected[0] {
 			return 1, fmt.Errorf("task changed; refresh with sshore list")
 		}
-		if _, err := daemonResourceRequest(message{Type: "task_rename_resource", Instance: row.UID, Name: name}); err != nil {
+		if _, err := daemonResourceRequest(context.Background(), "/resources/"+row.UID+"/rename", name); err != nil {
 			return 1, err
 		}
 

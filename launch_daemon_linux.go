@@ -357,14 +357,26 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 		_ = writeMessage(c, message{Type: "fatal", Error: "unsupported connection; update sshore on both computers"})
 	}
 }
-func serveRemoteShellAt(tasks *daemonTasks, runtime, nameLabel, uid string, env []string, directory string, ready func() error, temporary bool) error {
-	if !validTaskUID(uid) {
-		return fmt.Errorf("invalid shell identity")
+func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) error {
+	s := &remoteShell{
+		tasks: tasks, instance: req.UID, name: req.Name, runtime: req.Runtime,
+		environment: req.Env, directory: req.Directory, done: make(chan struct{}),
 	}
-	s := &remoteShell{tasks: tasks, instance: uid, environment: env, directory: directory, runtime: runtime, name: nameLabel, done: make(chan struct{})}
-	if temporary {
+	if req.Temporary {
 		s.lifetime = awaitingSpawnOwner
 	}
+	if err := tasks.register(req.UID, s); err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	go func() {
+		defer stop()
+		s.watchLifetime(ctx)
+	}()
+	return nil
+}
+
+func (s *remoteShell) watchLifetime(ctx context.Context) {
 	defer func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -379,40 +391,34 @@ func serveRemoteShellAt(tasks *daemonTasks, runtime, nameLabel, uid string, env 
 			_ = s.terminal.Close()
 		}
 	}()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	go func() {
+	// A failed initial attach should not leave an empty shell indefinitely.
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	initialAttachDeadline := timer.C
+	for {
 		select {
 		case <-ctx.Done():
+			s.mu.Lock()
+			s.lifecycle.End()
 			s.stop()
+			s.mu.Unlock()
+			return
 		case <-s.done:
-		}
-	}()
-	if err := tasks.register(uid, s); err != nil {
-		s.stop()
-		return err
-	}
-	if ready != nil {
-		if err := ready(); err != nil {
-			s.stop()
-			return err
-		}
-	}
-	// A failed initial attach should not leave an empty daemon indefinitely.
-	go func() {
-		select {
-		case <-time.After(30 * time.Second):
+			return
+		case <-initialAttachDeadline:
 			s.mu.Lock()
 			empty := s.terminal == nil
-			s.mu.Unlock()
 			if empty {
+				s.lifecycle.End()
 				s.stop()
 			}
-		case <-s.done:
+			s.mu.Unlock()
+			if empty {
+				return
+			}
+			initialAttachDeadline = nil
 		}
-	}()
-	<-s.done
-	return nil
+	}
 }
 
 func (s *remoteShell) kill(instance string) error {
