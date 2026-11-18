@@ -261,3 +261,21 @@ func TestFTPOpenSSHSync(t *testing.T) {
 		t.Fatalf("%q %v", data, e)
 	}
 }
+
+func TestLinuxWarmReaddirUsesNoSFTPRequests(t *testing.T) {
+	backend, wire := testFTPBackendWithWire(t)
+	root := &ftpNode{backend: backend}
+	fs.NewNodeFS(root, nil)
+	for range 2 {
+		listing, errno := root.Readdir(context.Background())
+		if errno != 0 {
+			t.Fatal(errno)
+		}
+		listing.Close()
+	}
+	wire.mu.Lock()
+	defer wire.mu.Unlock()
+	if stat, open := wire.totals[17].Started, wire.totals[11].Started; stat != 0 || open != 1 {
+		t.Fatalf("two listings sent %d STAT and %d OPENDIR requests", stat, open)
+	}
+}

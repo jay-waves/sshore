@@ -108,12 +108,11 @@ func (n *ftpNode) Getattr(ctx context.Context, h fs.FileHandle, out *fuse.AttrOu
 	return 0
 }
 func (n *ftpNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	h, e := n.backend.open(n.name(), os.O_RDONLY, 0)
+	p, e := n.backend.remotePath(n.name())
 	if e != nil {
 		return nil, ftpErrno(e)
 	}
-	defer h.Close()
-	list, e := h.Readdir(-1)
+	list, e := n.backend.readDirectory(p)
 	if e != nil {
 		return nil, ftpErrno(e)
 	}

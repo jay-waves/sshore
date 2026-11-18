@@ -30,7 +30,7 @@ const (
 type ftpRequest struct {
 	started time.Time
 	kind    byte
-	handle  string
+	budget  *ftpDirectoryBudget
 }
 type ftpDirectoryBudget struct{ entries, bytes uint64 }
 type ftpWire struct {
@@ -44,12 +44,12 @@ type ftpWire struct {
 	readOffset                    int
 	mu                            sync.Mutex
 	requests                      map[uint32]ftpRequest
-	directories                   map[string]ftpDirectoryBudget
+	directories                   map[string]*ftpDirectoryBudget
 	maxEntries, maxDirectoryBytes uint64
 }
 
 func newFTPWire(r io.Reader, w io.WriteCloser) *ftpWire {
-	return &ftpWire{reader: r, writer: w, requests: make(map[uint32]ftpRequest), directories: make(map[string]ftpDirectoryBudget), maxEntries: ftpMaxDirectoryEntries, maxDirectoryBytes: ftpMaxDirectoryBytes}
+	return &ftpWire{reader: r, writer: w, requests: make(map[uint32]ftpRequest), directories: make(map[string]*ftpDirectoryBudget), maxEntries: ftpMaxDirectoryEntries, maxDirectoryBytes: ftpMaxDirectoryBytes}
 }
 func NewSFTP(reader io.Reader, writer io.WriteCloser) (*sftp.Client, error) {
 	wire := newFTPWire(reader, writer)
@@ -76,9 +76,10 @@ func (w *ftpWire) record(packet []byte) error {
 	} // INIT has a version instead of an ID.
 	id := binary.BigEndian.Uint32(packet[1:5])
 	req := ftpRequest{kind: kind, started: time.Now()}
+	var handle string
 	if kind == 12 || kind == 4 {
 		var ok bool
-		req.handle, ok = ftpWireString(packet[5:])
+		handle, ok = ftpWireString(packet[5:])
 		if !ok {
 			return fmt.Errorf("invalid SFTP handle")
 		}
@@ -88,14 +89,21 @@ func (w *ftpWire) record(packet []byte) error {
 	if len(w.requests) >= ftpMaxRequests {
 		return fmt.Errorf("too many outstanding SFTP requests")
 	}
+	switch kind {
+	case 12: // Bind the reply to this enumeration even if CLOSE races with it.
+		req.budget = w.directories[handle]
+		if req.budget == nil {
+			req.budget = &ftpDirectoryBudget{}
+			w.directories[handle] = req.budget
+		}
+	case 4:
+		delete(w.directories, handle)
+	}
 	w.requests[id] = req
 	if w.metrics {
 		w.totals[kind].Started++
 		w.totals[kind].SentBytes += uint64(len(packet) + 4)
 		w.peakRequests = max(w.peakRequests, len(w.requests))
-	}
-	if kind == 4 {
-		delete(w.directories, req.handle)
 	}
 	return nil
 }
@@ -179,10 +187,9 @@ func (w *ftpWire) filter(packet []byte) ([]byte, error) {
 		if len(packet) < 9 {
 			return nil, fmt.Errorf("short SFTP directory response")
 		}
-		budget := w.directories[req.handle]
+		budget := req.budget
 		budget.entries += uint64(binary.BigEndian.Uint32(packet[5:9]))
 		budget.bytes += uint64(len(packet))
-		w.directories[req.handle] = budget
 		if budget.entries > w.maxEntries || budget.bytes > w.maxDirectoryBytes {
 			return ftpDirectoryFailure(id), nil
 		}

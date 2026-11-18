@@ -606,3 +606,51 @@ func TestFTPCapacityCache(t *testing.T) {
 		before = count()
 	}
 }
+
+func TestFTPLateDirectoryReplyAfterHandleReuse(t *testing.T) {
+	w := newFTPWire(nil, nil)
+	request := func(kind byte, id uint32) {
+		packet := binary.BigEndian.AppendUint32([]byte{kind}, id)
+		packet = binary.BigEndian.AppendUint32(packet, 1)
+		if err := w.record(append(packet, 'h')); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request(12, 1)
+	request(4, 2)
+	request(12, 3)
+	w.maxEntries = 1
+	for _, id := range []uint32{1, 3} {
+		packet := binary.BigEndian.AppendUint32([]byte{104}, id)
+		reply, err := w.filter(binary.BigEndian.AppendUint32(packet, 1))
+		if err != nil || reply[0] != 104 {
+			t.Fatal("directory budget crossed handle reuse", id, err)
+		}
+	}
+	request(4, 4)
+	if len(w.directories) != 0 {
+		t.Fatal("directory budget survived close")
+	}
+}
+
+func TestFTPOpenRequestCounts(t *testing.T) {
+	f, w := testFTPBackendWithWire(t)
+	if _, err := f.open("missing", os.O_RDONLY, 0); !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.root, "existing"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	h, err := f.open("existing", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if stat, open := w.totals[17].Started, w.totals[3].Started; stat != 2 || open != 1 {
+		t.Fatalf("sent %d STAT, %d OPEN", stat, open)
+	}
+}

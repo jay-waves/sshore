@@ -145,7 +145,7 @@ func (f *ftpFS) openWithMetadata(name string, flags int, mode os.FileMode, cache
 		}
 		return &ftpFile{fs: f, path: p, dir: true}, nil
 	}
-	if e != nil && !os.IsNotExist(e) {
+	if e != nil && (!os.IsNotExist(e) || flags&os.O_CREATE == 0) {
 		return nil, e
 	}
 	if e == nil && !info.Mode().IsRegular() {
@@ -156,6 +156,15 @@ func (f *ftpFS) openWithMetadata(name string, flags int, mode os.FileMode, cache
 	// chmod an existing destination or retry a failed write. If another creator
 	// wins, open the existing file without O_CREATE so disappearance fails closed.
 	var file *sftp.File
+	if e == nil && flags&os.O_CREATE != 0 && flags&os.O_EXCL == 0 {
+		file, e = f.client.OpenFile(p, flags&^os.O_CREATE)
+		if !os.IsNotExist(e) {
+			if e != nil {
+				return nil, e
+			}
+			return &ftpFile{File: file, fs: f, path: p}, nil
+		}
+	}
 	if flags&os.O_CREATE != 0 {
 		file, e = f.client.OpenFile(p, flags|os.O_EXCL)
 		if e == nil {
@@ -283,23 +292,23 @@ func (f *ftpFile) ReadAt(b []byte, o int64) (int, error) {
 	return f.File.ReadAt(b, o)
 }
 func (f *ftpFile) Write(b []byte) (int, error) {
-	defer f.fs.cache.beginMutation(f.path)()
 	if e := f.fs.writable(); e != nil {
 		return 0, e
 	}
 	if f.dir {
 		return 0, syscall.EISDIR
 	}
+	defer f.fs.cache.beginMutation(f.path)()
 	return f.File.Write(b)
 }
 func (f *ftpFile) WriteAt(b []byte, o int64) (int, error) {
-	defer f.fs.cache.beginMutation(f.path)()
 	if e := f.fs.writable(); e != nil {
 		return 0, e
 	}
 	if f.dir {
 		return 0, syscall.EISDIR
 	}
+	defer f.fs.cache.beginMutation(f.path)()
 	return f.File.WriteAt(b, o)
 }
 func (f *ftpFile) Seek(o int64, w int) (int64, error) {
@@ -309,13 +318,13 @@ func (f *ftpFile) Seek(o int64, w int) (int64, error) {
 	return f.File.Seek(o, w)
 }
 func (f *ftpFile) Truncate(n int64) error {
-	defer f.fs.cache.beginMutation(f.path)()
 	if e := f.fs.writable(); e != nil {
 		return e
 	}
 	if f.dir {
 		return syscall.EISDIR
 	}
+	defer f.fs.cache.beginMutation(f.path)()
 	return f.File.Truncate(n)
 }
 func (f *ftpFile) Sync() error {
