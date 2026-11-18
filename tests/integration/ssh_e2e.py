@@ -87,12 +87,13 @@ class Terminal:
 
 
 def handoff_smoke(binary, host, options, root):
-    terminal = Terminal([binary, "spawn", "--local", "handoff-local"])
+    terminal = Terminal([binary, "spawn", ".:"], wait_ready=False)
+    local_ref = terminal.expect(r"Connected (\S+) \(spawn\)").group(1).decode()
     try:
         marker = root / "handoff-accepted"
-        nested = [binary, "spawn", host, "handoff-remote", "--quiet", *options]
+        nested = [binary, "spawn", host + ":", "--quiet", *options]
         terminal.send(shlex.join(nested) + "; printf '%s' \"$?\" > " + shlex.quote(str(marker)) + "\n")
-        terminal.expect(r"Connected [^\r\n]+ / handoff-remote")
+        remote_ref = terminal.expect(r"Connected (\S+) \(spawn\)").group(1).decode()
         deadline = time.monotonic() + 5
         while not marker.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -100,11 +101,11 @@ def handoff_smoke(binary, host, options, root):
         terminal.send("printf 'HANDOFF-%s\\n' ready\n")
         terminal.expect("HANDOFF-ready")
         terminal.send(b"\x02d")
-        terminal.expect(r"Connected local / handoff-local")
-        terminal.send(shlex.join([binary, "attach", host, "handoff-remote", "--quiet", *options]) + "\n")
-        terminal.expect(r"Connected [^\r\n]+ / handoff-remote")
+        terminal.expect("Connected " + re.escape(local_ref))
+        terminal.send(shlex.join([binary, "attach", remote_ref, "--quiet", *options]) + "\n")
+        terminal.expect("Connected " + re.escape(remote_ref))
         terminal.send("exit\n")
-        terminal.expect(r"Connected local / handoff-local")
+        terminal.expect("Connected " + re.escape(local_ref))
         terminal.send("exit\n")
         terminal.wait()
         print("PASS: local frontend handoff, single-prefix remote keys, return and reattach over SSH")
@@ -113,7 +114,8 @@ def handoff_smoke(binary, host, options, root):
 
 
 def nested_smoke(binary, host, options, root, agent_socket):
-    terminal = Terminal([binary, "launch", host, "nested-root", *options])
+    terminal = Terminal([binary, "launch", host + ":", *options], wait_ready=False)
+    refs = {"nested-root": terminal.expect(r"Connected (\S+) \(launch\)").group(1).decode()}
     def processes():
         found = {}
         for entry in Path("/proc").iterdir():
@@ -130,10 +132,10 @@ def nested_smoke(binary, host, options, root, agent_socket):
         for name in ("nested-child", "nested-grandchild", "nested-local"):
             marker = root / "remote-files" / (name + "-returned")
             command = "export SSH_AUTH_SOCK=" + shlex.quote(str(agent_socket)) + "; "
-            args = [binary, "spawn", "--local", name] if name == "nested-local" else [binary, "spawn", host, name, *options]
+            args = [binary, "spawn", ".:"] if name == "nested-local" else [binary, "spawn", host + ":", *options]
             command += shlex.join(args)
             terminal.send(command + "; printf '%s' \"$?\" > " + shlex.quote(str(marker)) + "\n")
-            terminal.expect(r"Connected [^\r\n]+ / " + name)
+            refs[name] = terminal.expect(r"Connected (\S+) \(spawn\)").group(1).decode()
             deadline = time.monotonic() + 5
             while not marker.exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
@@ -143,12 +145,12 @@ def nested_smoke(binary, host, options, root, agent_socket):
                 time.sleep(0.02)
             assert len(processes()) <= len(baseline), ("spawn added resident processes", baseline, processes())
         terminal.send(b"\x02d")
-        terminal.expect(r"Connected [^\r\n]+ / nested-grandchild")
-        reattached = Terminal([binary, "attach", host, "nested-local"])
+        terminal.expect("Connected " + re.escape(refs["nested-grandchild"]))
+        reattached = Terminal([binary, "attach", refs["nested-local"]])
         try:
             payload, received = root / "nested-payload", root / "nested-received"
             payload.write_bytes(b"routed approval data")
-            reattached.send(shlex.join([binary, "cp", str(payload), "origin:"]) + "\n")
+            reattached.send(shlex.join([binary, "cp", ".:" + str(payload), "origin:"]) + "\n")
             request = reattached.expect(r"Request saved: ([a-f0-9]{32})").group(1).decode()
             reattached.expect("Background;")
             reattached.wait()
@@ -163,19 +165,19 @@ def nested_smoke(binary, host, options, root, agent_socket):
                 assert received.read_bytes() == payload.read_bytes()
             finally:
                 approval.close()
-            reattached = Terminal([binary, "attach", host, "nested-local"])
+            reattached = Terminal([binary, "attach", refs["nested-local"]])
             reattached.send("exit\n")
             reattached.wait()
         finally:
             if reattached is not None:
                 reattached.close()
         terminal.send(b"\x02n")
-        terminal.expect(r"Connected [^\r\n]+ / nested-root")
+        terminal.expect("Connected " + re.escape(refs["nested-root"]))
         terminal.send(b"\x02l")
-        terminal.expect(r"Connected [^\r\n]+ / nested-grandchild")
+        terminal.expect("Connected " + re.escape(refs["nested-grandchild"]))
         for name in ("nested-child", "nested-root"):
             terminal.send("exit\n")
-            terminal.expect(r"Connected [^\r\n]+ / " + name)
+            terminal.expect("Connected " + re.escape(refs[name]))
         terminal.send("exit\n")
         terminal.wait()
         print("PASS: remote nested spawn exits launcher and returns through two levels")
@@ -190,21 +192,24 @@ def spawn_smoke(binary, host, options):
     def inventory():
         return json.loads(subprocess.check_output(cli("list", "--json"), text=True))
 
-    terminal = Terminal(cli("spawn", "foreground"))
+    terminal = Terminal([binary, "spawn", host + ":", *options], wait_ready=False)
+    foreground = terminal.expect(r"Connected (\S+) \(spawn\)").group(1).decode().rsplit(":", 1)[-1]
     try:
         terminal.send("sleep 2; printf 'SPAWN-%s\\n' retained\n")
         terminal.expect("SPAWN-retained")
         rows = {row["name"]: row for row in inventory()["shells"]}
-        assert rows["foreground"]["state"] == "attached", rows
+        assert rows[foreground]["state"] == "attached", rows
         terminal.send("exit\n")
         terminal.wait()
     finally:
         terminal.close()
 
-    subprocess.run(cli("launch", "persistent", "--detach"), check=True)
+    started = subprocess.check_output([binary, "launch", host + ":", "--detach", *options], text=True)
+    persistent_ref = re.search(r"Started (\S+)", started).group(1)
+    persistent = persistent_ref.rsplit(":", 1)[-1]
     parent = subprocess.Popen(
         ["sh", "-c", '\"$@\"; code=$?; echo READY:$code; read answer', "parent",
-         *cli("spawn", "temporary", "--detach")],
+         binary, "spawn", host + ":", "--detach", *options],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         output = b""
@@ -215,12 +220,14 @@ def spawn_smoke(binary, host, options):
                 if not chunk:
                     break
                 output += chunk
-        assert b"READY:0" in output and b"spawn/temporary" in output, output
+        assert b"READY:0" in output and b"(spawn)" in output, output
+        temporary_ref = re.search(rb"Started (\S+)", output).group(1).decode()
+        temporary = temporary_ref.rsplit(":", 1)[-1]
         rows = {row["name"]: row for row in inventory()["shells"]}
-        assert rows["temporary"]["temporary"] and rows["temporary"]["state"] == "detached", rows
-        assert not rows["persistent"].get("temporary"), rows
-        pid = rows["temporary"]["pid"]
-        terminal = Terminal(cli("attach", "temporary"))
+        assert rows[temporary]["temporary"] and rows[temporary]["state"] == "detached", rows
+        assert not rows[persistent].get("temporary"), rows
+        pid = rows[temporary]["pid"]
+        terminal = Terminal([binary, "attach", temporary_ref, *options])
         try:
             terminal.send("printf 'SPAWN-%s\\n' alive\n")
             terminal.expect("SPAWN-alive")
@@ -228,7 +235,7 @@ def spawn_smoke(binary, host, options):
             terminal.wait()
         finally:
             terminal.close()
-        assert next(row for row in inventory()["shells"] if row["name"] == "temporary")["pid"] == pid
+        assert next(row for row in inventory()["shells"] if row["name"] == temporary)["pid"] == pid
         parent.stdin.close()
         parent.wait(timeout=5)
         deadline = time.monotonic() + 10
@@ -237,12 +244,12 @@ def spawn_smoke(binary, host, options):
                 rows = {row["name"]: row for row in inventory()["shells"]}
             except subprocess.CalledProcessError as error:
                 snapshot = json.loads(error.output)
-                if snapshot.get("errors") != ["shell unavailable: temporary.sock"]:
+                if snapshot.get("errors") != [f"shell unavailable: {temporary}.sock"]:
                     raise
                 time.sleep(0.1)
                 continue
-            if "temporary" not in rows:
-                assert "persistent" in rows, rows
+            if temporary not in rows:
+                assert persistent in rows, rows
                 print("spawn: real SSH detach, reattach, owner cleanup and persistent sibling OK")
                 break
             time.sleep(0.1)
@@ -254,7 +261,7 @@ def spawn_smoke(binary, host, options):
         parent.wait()
         parent.stdout.close()
         parent.stderr.close()
-        subprocess.run(cli("kill", "persistent"), check=True)
+        subprocess.run([binary, "kill", persistent_ref, *options], check=True)
 
 
 def setup_smoke(binary, host, options, root):
@@ -262,7 +269,7 @@ def setup_smoke(binary, host, options, root):
     target = root / "remote-home" / ".local" / "bin" / "sshore"
     shell_options = ["--server", str(target), *options]
     for action in ("launch", "spawn"):
-        terminal = Terminal([binary, action, host, "prepared", *shell_options], wait_ready=False)
+        terminal = Terminal([binary, action, host + ":", *shell_options], wait_ready=False)
         try:
             terminal.expect("sshore setup")
             terminal.wait(expected=1)
@@ -271,10 +278,6 @@ def setup_smoke(binary, host, options, root):
         assert not target.exists()
     mountpoint = root / "mountpoint"
     mountpoint.mkdir()
-    result = subprocess.run([binary, "mount", f"{host}:/", str(mountpoint), *shell_options],
-                            capture_output=True, text=True, timeout=15)
-    assert result.returncode == 1 and "sshore setup" in result.stderr, result.stderr
-    assert not target.exists()
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         local_port = listener.getsockname()[1]
@@ -282,7 +285,10 @@ def setup_smoke(binary, host, options, root):
     old_remote.write_text("#!/bin/sh\necho 'sshore 0.0.1'\n")
     old_remote.chmod(0o755)
     try:
-        result = subprocess.run([binary, "forward", str(local_port), f"{host}:1", *options],
+        result = subprocess.run([binary, "mount", f"{host}:/", ".:" + str(mountpoint), *options],
+                                capture_output=True, text=True, timeout=15)
+        assert result.returncode == 1 and "sshore setup" in result.stderr, result.stderr
+        result = subprocess.run([binary, "forward", f".:{local_port}", f"{host}:1", *options],
                                 capture_output=True, text=True, timeout=15)
         assert result.returncode == 1 and "sshore setup" in result.stderr, result.stderr
         assert old_remote.read_text() == "#!/bin/sh\necho 'sshore 0.0.1'\n"
@@ -303,8 +309,10 @@ def setup_smoke(binary, host, options, root):
     subprocess.run([binary, "setup", host, "--path", str(target), *options], check=True, timeout=15)
     assert subprocess.check_output([str(target), "--version"], text=True).strip() == f"sshore {release}"
     # Exercise the standalone installer against an actual registered remote task.
-    subprocess.run([binary, "launch", host, "installer-existing", "--detach", "--server", str(target), *options],
-                   check=True, timeout=15)
+    started = subprocess.check_output([binary, "launch", host + ":", "--detach", *shell_options],
+                                      text=True, timeout=15)
+    shell_ref = re.search(r"Started (\S+) \(launch\)", started).group(1)
+    shell_name = shell_ref.rsplit(":", 1)[-1]
     installer_target = target.with_name("other install's path")
     original = b"#!/bin/sh\necho 'sshore 0.0.1'\n"
     installer_target.write_bytes(original)
@@ -318,13 +326,13 @@ def setup_smoke(binary, host, options, root):
         return {row["name"]: row["pid"] for row in json.loads(
             subprocess.check_output(installed, timeout=15))["shells"]}
 
-    original_pid = installer_tasks()["installer-existing"]
+    original_pid = installer_tasks()[shell_name]
     result = subprocess.run(installer_command,
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 1 and "daemon is still running" in result.stderr, result.stderr
     assert installer_target.read_bytes() == original
-    assert installer_tasks()["installer-existing"] == original_pid
-    subprocess.run([binary, "kill", host, "installer-existing", *shell_options], check=True, timeout=15)
+    assert installer_tasks()[shell_name] == original_pid
+    subprocess.run([binary, "kill", shell_ref, *shell_options], check=True, timeout=15)
     result = subprocess.run(installer_command,
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 1 and "daemon is still running" in result.stderr, result.stderr
@@ -340,7 +348,7 @@ def setup_smoke(binary, host, options, root):
 
 
 def reset_smoke(binary, root):
-    subprocess.run([binary, "launch", "--local", "reset-fixture", "--detach"], check=True)
+    subprocess.run([binary, "launch", "self:", "--detach"], check=True)
     state = root / "state"
     history = state / "shells" / "reset-history"
     history.parent.mkdir(mode=0o700, exist_ok=True)
@@ -525,7 +533,7 @@ LogLevel ERROR
             if args.identity_only:
                 # IdentityFile selects an agent identity; private keys must never
                 # be loaded by sshore, including when the agent is disabled.
-                rejected = Terminal(command + ["-o", "IdentityAgent=none"], wait_ready=False)
+                rejected = Terminal([*command[:2], command[2] + ":", *command[3:], "-o", "IdentityAgent=none"], wait_ready=False)
                 terms.append(rejected)
                 rejected.expect("no usable SSH public-key identity")
                 rejected.wait(expected=1)
@@ -534,7 +542,7 @@ LogLevel ERROR
                 for action in ("launch", "spawn"):
                     agent_command = command[:]
                     agent_command[1] = action
-                    terminal = Terminal(agent_command)
+                    terminal = Terminal([*agent_command[:2], agent_command[2] + ":", *agent_command[3:]])
                     terms.append(terminal)
                     terminal.send("printf 'AGENT-%s\\n' ready\n")
                     terminal.expect("AGENT-ready")
@@ -584,9 +592,9 @@ LogLevel ERROR
             base_command = command[:]
             auto_names=[]
             for _ in range(2):
-                auto = Terminal(base_command, wait_ready=False)
+                auto = Terminal([*base_command[:2], base_command[2] + ":", *base_command[3:]], wait_ready=False)
                 terms.append(auto)
-                match = auto.expect(r"Connected [^\r\n]+ / ([0-9a-f]{6}) ")
+                match = auto.expect(r"Connected [^\r\n]+:([0-9a-f]{6}) ")
                 assert match.group(1).decode() not in auto_names
                 auto_names.append(match.group(1).decode())
                 auto.send(b"\x02d")
@@ -594,22 +602,25 @@ LogLevel ERROR
                 auto.close()
                 terms.remove(auto)
             for name in auto_names:
-                auto = Terminal([binary, "attach"] + [base_command[2], name] + base_command[3:])
+                auto = Terminal([binary, "attach"] + [base_command[2] + ":" + name] + base_command[3:])
                 terms.append(auto)
                 auto.send("exit\n")
                 auto.wait()
                 auto.close()
                 terms.remove(auto)
-            command = [binary, "attach"] + [base_command[2], "main"] + base_command[3:]
+            create = [binary, "launch", base_command[2] + ":", *base_command[3:]]
             # SSH configuration forwarding is deliberately disabled. Approved
             # sshore forwarding is exercised below through its public workflow.
             for option in ("-L127.0.0.1:12345:127.0.0.1:12346",
                            "-R127.0.0.1:12345:127.0.0.1:12346", "-D127.0.0.1:12345"):
-                rejected = Terminal([binary, "launch"] + command[2:] + [option], wait_ready=False)
+                rejected = Terminal(create + [option], wait_ready=False)
                 terms.append(rejected)
                 rejected.expect("forwarding is unsupported")
                 rejected.wait(expected=1)
-            term = Terminal([binary, "launch"] + command[2:])
+            term = Terminal(create, wait_ready=False)
+            main_ref = term.expect(r"Connected (\S+) \(launch\)").group(1).decode()
+            main_name = main_ref.rsplit(":", 1)[-1]
+            command = [binary, "attach", main_ref, *base_command[3:]]
             terms.append(term)
             term.send("stty -echo; KEEP=shore; printf 'PID:%s\\n' $$\n")
             shell_pid = int(term.expect(r"PID:(\d+)").group(1))
@@ -656,7 +667,7 @@ LogLevel ERROR
                 approval.wait()
                 snapshot = json.loads(subprocess.check_output(
                     [binary, "list", "--json"] + base_command[2:], text=True))
-                shell = next(row for row in snapshot["shells"] if row["name"] == "main")
+                shell = next(row for row in snapshot["shells"] if row["name"] == main_name)
                 assert shell["state"] == "detached" and shell["pid"] == shell_pid, shell
 
             def attach_shell():
@@ -668,7 +679,7 @@ LogLevel ERROR
             remote = root / "remote.bin"
             remote.write_bytes(data)
             downloaded = root / "downloaded.bin"
-            request_id = queue_request(term, f"sshore cp {shlex.quote(str(remote))} origin:")
+            request_id = queue_request(term, f"sshore cp {shlex.quote('.:' + str(remote))} origin:")
             assert not downloaded.exists(), "download occurred before approval"
             listed = subprocess.check_output([binary, "list", "--json"], text=True)
             assert request_id in listed
@@ -685,7 +696,7 @@ LogLevel ERROR
             local = root / "local 文件.bin"
             local.write_bytes(data[::-1])
             uploads = root / "remote-files"
-            request_id = queue_request(term, f"sshore cp : {shlex.quote(str(uploads))}")
+            request_id = queue_request(term, f"sshore cp :: {shlex.quote('.:' + str(uploads))}")
             assert not (uploads / local.name).exists()
             approved = approve(request_id, [("upload", local)])
             approved.expect("Uploaded ")
@@ -696,7 +707,7 @@ LogLevel ERROR
             terms.append(term)
             term.send("printf 'STAY_PID:%s\\n' $$\n")
             term.expect(f"STAY_PID:{shell_pid}")
-            request_id = queue_request(term, f"sshore cp {shlex.quote(str(remote))} origin:")
+            request_id = queue_request(term, f"sshore cp {shlex.quote('.:' + str(remote))} origin:")
             subprocess.run([binary, "kill", "review/" + request_id], check=True)
             assert request_id not in subprocess.check_output([binary, "list", "--json"], text=True)
 
@@ -711,7 +722,7 @@ LogLevel ERROR
                 record = json.loads((Path(remote_account.pw_dir) / ".sshore" / "daemon" / "daemon.json").read_text())
                 snapshot = json.loads(subprocess.check_output(
                     [binary, "list", "--json"] + base_command[2:], text=True))
-                instance = next(row["instance"] for row in snapshot["shells"] if row["name"] == "main")
+                instance = next(row["instance"] for row in snapshot["shells"] if row["name"] == main_name)
                 address, port = record["Address"].rsplit(":", 1)
                 with socket.create_connection((address, int(port)), timeout=10) as peer:
                     stream = peer.makefile("rb")
@@ -749,7 +760,7 @@ LogLevel ERROR
                 path = root / f"batch-{index}.bin"
                 path.write_bytes(bytes([index]) * (index * 100))
                 batch.append(path)
-            request_id = queue_request(term, "sshore cp " + " ".join(shlex.quote(str(p)) for p in batch) + " :")
+            request_id = queue_request(term, "sshore cp " + " ".join(shlex.quote(".:" + str(p)) for p in batch) + " ::")
             assert list(automatic.iterdir()) == []
             term = approve(request_id, [("download", "")] * len(batch))
             finish_review(term)
@@ -762,7 +773,7 @@ LogLevel ERROR
             term.expect("1d")
 
             # Local overwrite is rejected before connecting or consuming approval.
-            request_id = queue_request(term, f"sshore cp {shlex.quote(str(batch[0]))} :")
+            request_id = queue_request(term, f"sshore cp {shlex.quote('.:' + str(batch[0]))} ::")
             rejected = Terminal([binary, "review", request_id], wait_ready=False)
             terms.append(rejected)
             rejected.expect("Save as")
@@ -778,7 +789,7 @@ LogLevel ERROR
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", 0))
                 forward_port = probe.getsockname()[1]
-            request_id = queue_request(term, f"sshore forward origin: {forward_port}")
+            request_id = queue_request(term, f"sshore forward origin: .:{forward_port}")
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", forward_port))
             tunnel = approve(request_id, port=forward_port)
@@ -810,7 +821,7 @@ LogLevel ERROR
             term = Terminal(command, wait_ready=False)
             terms.append(term)
             term.expect(r"\[sshore\] Connected")
-            request_id = queue_request(term, f"sshore cp {shlex.quote(str(remote))} origin:")
+            request_id = queue_request(term, f"sshore cp {shlex.quote('.:' + str(remote))} origin:")
             term = approve(request_id, [("download", root / "after-auth.bin")])
             term.expect("Saved .*after-auth.bin")
             finish_review(term)

@@ -145,7 +145,7 @@ func TestSpawnLifetime(t *testing.T) {
 				t.Fatal(err)
 			}
 			saveShellTree("original", "work", nil, "attached", "persistent")
-			args := []string{tc.command, "--local", "temporary", "--detach"}
+			args := []string{"fixture-" + tc.command, "--local", "temporary", "--detach"}
 			if remote {
 				ssh := filepath.Join(e.dir, "ssh")
 				if err := os.WriteFile(ssh, []byte("#!/bin/sh\nunset SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN SSH_ASKPASS\nfor arg do last=$arg; done\nexec sh -c \"$last\"\n"), 0700); err != nil {
@@ -153,7 +153,7 @@ func TestSpawnLifetime(t *testing.T) {
 				}
 				ssh = sshtest.Wrap(t, ssh, env)
 				env = append(env, "SSHORE_SSH="+ssh)
-				args = []string{tc.command, "fake-host", "temporary", "--detach", "--server", e.bin}
+				args = []string{"fixture-" + tc.command, "fake-host", "temporary", "--detach", "--server", e.bin}
 			}
 			// This parent stays alive after the detached CLI exits, then exits on EOF.
 			parent := exec.Command("sh", append([]string{"-c", `"$@"; result=$?; printf 'READY:%s\n' "$result"; read answer`, "parent", e.bin}, args...)...)
@@ -187,7 +187,7 @@ func TestSpawnLifetime(t *testing.T) {
 			}()
 			select {
 			case out := <-lines:
-				if !strings.Contains(out, "Started spawn/temporary") || !strings.Contains(out, "READY:0") {
+				if !strings.Contains(out, "Started ") || !strings.Contains(out, "READY:0") {
 					t.Fatalf("startup: %s\n%s", out, stderr.String())
 				}
 			case <-time.After(20 * time.Second):

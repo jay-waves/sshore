@@ -221,21 +221,18 @@ func runTargetCommand(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	if (command == "attach" || command == "kill" || command == "review") && len(parsed.operands) == 1 && !parsed.has("--local") && !parsed.has("--all") {
+	if (command == "attach" || command == "kill" || command == "review") && len(parsed.operands) == 1 && !parsed.has("--local") && !parsed.has("--all") && !parsed.explicitHost {
 		ref := parsed.operands[0]
 		if ref != "" && !isTaskIDPrefix(ref) && strings.Trim(ref, "0123456789") == "" {
 			return 2, usage("list sequence numbers are display-only; select the task by name or short ID")
 		}
 	}
+	if command == "attach" && !parsed.explicitHost {
+		return 2, usage("use attach HOST:ID or attach self:ID")
+	}
 	target, selected, err := resolveShortTask(command, &parsed)
 	if err != nil {
 		return 2, err
-	}
-
-	if command == "attach" && !selected && len(parsed.operands) == 1 {
-		if err := validateAttachHost(parsed.operands[0]); err != nil {
-			return 2, err
-		}
 	}
 
 	if selected && target.kind != "shell" {
@@ -283,6 +280,9 @@ func runTargetCommand(args []string) (int, error) {
 			}
 			return withDaemonActivity(func() (int, error) { return runRenameResource(kind, old, parsed.operands[1]) })
 		}
+	}
+	if (command == "rename" || command == "kill") && !parsed.explicitHost {
+		return 2, usage("use %s HOST:ID or %s self:ID", command, command)
 	}
 	o, err := shellOptions(command, parsed)
 	if err != nil {

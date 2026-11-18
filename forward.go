@@ -32,30 +32,27 @@ func parsePort(s string) (int, error) {
 // A qualified endpoint identifies the peer; the first endpoint always listens.
 func parseForwardEndpoints(args []string) (string, int, int, bool, error) {
 	fail := func() (string, int, int, bool, error) {
-		return "", 0, 0, false, usage("invalid port mapping; use forward origin:PORT HOST:PORT or forward HOST:PORT origin:PORT")
+		return "", 0, 0, false, usage("invalid port mapping; use forward self:[PORT] HOST:PORT or forward HOST:PORT self:[PORT]")
 	}
 	if len(args) != 2 {
 		return fail()
 	}
-	endpoint := func(s string) (string, int, error) {
-		if originPlaceholder(s) {
-			return "", 0, nil
-		}
-		if strings.HasPrefix(s, "origin:") {
-			n, e := parsePort(originHint(s))
-			return "", n, e
-		}
-		if !strings.Contains(s, ":") {
-			n, e := parsePort(s)
-			return "", n, e
-		}
-		i := strings.LastIndex(s, ":")
-		host, err := endpointHost(s[:i])
+	endpoint := func(value string) (string, int, error) {
+		host, port, err := splitEndpoint(value)
 		if err != nil {
 			return "", 0, err
 		}
-		n, e := parsePort(s[i+1:])
-		return host, n, e
+		if host == "origin" {
+			return "", 0, usage("origin: requires an attached sshore shell")
+		}
+		if host == "self" {
+			if port == "" {
+				return "", 0, nil
+			}
+			host = ""
+		}
+		n, err := parsePort(port)
+		return host, n, err
 	}
 	left, port, err := endpoint(args[0])
 	if err != nil {
@@ -93,14 +90,26 @@ func parseForwardCommand(args []string) (forwardConfig, bool, error) {
 
 func remoteForwardRequest(args []string) (operation, error) {
 	op := operation{Kind: "forward"}
-	if len(args) != 2 || originEndpoint(args[0]) == originEndpoint(args[1]) {
-		return op, usage("use forward origin:[PORT] PORT or forward PORT origin:[PORT]")
+	if len(args) != 2 {
+		return op, usage("forward requires a listener and a service")
 	}
-	remote, local := args[1], args[0]
-	if originEndpoint(args[1]) {
-		remote, local, op.Reverse = args[0], args[1], true
+	leftHost, leftPort, err := splitEndpoint(args[0])
+	if err != nil {
+		return op, err
 	}
-	op.LocalHint = originHint(local)
+	rightHost, rightPort, err := splitEndpoint(args[1])
+	if err != nil {
+		return op, err
+	}
+	var remote string
+	switch {
+	case leftHost == "origin" && rightHost == "self":
+		op.LocalHint, remote = leftPort, rightPort
+	case leftHost == "self" && rightHost == "origin":
+		remote, op.LocalHint, op.Reverse = leftPort, rightPort, true
+	default:
+		return op, usage("forward between self:PORT and origin:[PORT]")
+	}
 	if op.LocalHint != "" {
 		if _, err := parsePort(op.LocalHint); err != nil {
 			return op, err

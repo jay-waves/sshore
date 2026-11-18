@@ -60,7 +60,7 @@ func TestForwardLocalSelection(t *testing.T) {
 		if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf 'SSH-ARGS %s\\n' \"$*\" >&2\nexit 7\n"), 0700); err != nil {
 			t.Fatal(err)
 		}
-		args := []string{"forward", "origin:", "work:3000", "--foreground"}
+		args := []string{"forward", "self:", "work:3000", "--foreground"}
 		marker := "Local listening port"
 		if reverse {
 			args = []string{"forward", "work:3000", ":", "--foreground"}

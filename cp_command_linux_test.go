@@ -19,7 +19,7 @@ func TestCopyStreams(t *testing.T) {
 	backend := testCopyCommandBackend(t)
 	for _, data := range [][]byte{nil, bytes.Repeat([]byte("pipe\x00\xff\n"), 20000)} {
 		target := filepath.ToSlash(filepath.Join(backend.root, "stream"))
-		upload, err := parseCopyCommand([]string{"-", "work:" + target})
+		upload, err := parseCopyCommand([]string{".:-", "work:" + target})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -30,7 +30,7 @@ func TestCopyStreams(t *testing.T) {
 		if out.Len() != 0 {
 			t.Fatal("upload polluted stdout")
 		}
-		download, err := parseCopyCommand([]string{"work:" + target, "-"})
+		download, err := parseCopyCommand([]string{"work:" + target, ".:-"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -54,7 +54,7 @@ func TestCopyStreams(t *testing.T) {
 		}
 	}
 	failure := errors.New("input interrupted")
-	o, _ := parseCopyCommand([]string{"-", "work:" + backend.root + "/failed"})
+	o, _ := parseCopyCommand([]string{".:-", "work:" + backend.root + "/failed"})
 	if err := executeStreamCopy(backend.client, o, io.MultiReader(strings.NewReader("partial"), iotest.ErrReader(failure)), io.Discard); !errors.Is(err, failure) {
 		t.Fatal(err)
 	}

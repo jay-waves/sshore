@@ -243,22 +243,14 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 	}
 	if len(r.Operations) == 1 && r.Operations[0].Kind == "mount" {
 		op := r.Operations[0]
-		args := []string{remotePathOperand(r.Connection.Host, op.Path)}
-		if op.LocalPath != "" {
-			args = append(args, op.LocalPath)
-		}
-		args = append(args, "--server", r.Connection.Server)
+		args := []string{remotePathOperand(r.Connection.Host, op.Path), localEndpointPrefix + op.LocalPath}
 		if op.ReadOnly {
 			args = append(args, "--read-only")
 		}
-		if len(r.Connection.SSH) > 0 {
-			args = append(args, "--")
-			args = append(args, r.Connection.SSH...)
-		}
-		config := resourceConfig{Args: args, MountApproval: &files.MountApproval{Session: r.Connection.Session, PID: r.PID, ID: r.ID, Instance: r.Connection.Instance}}
-		if r.Connection.viaShell() {
-			connection := r.Connection
-			config.MountConnection = &connection
+		config := resourceConfig{
+			Args:            args,
+			MountApproval:   &files.MountApproval{Session: r.Connection.Session, PID: r.PID, ID: r.ID, Instance: r.Connection.Instance},
+			MountConnection: &r.Connection,
 		}
 		return startSelectedResource(config, "mount", reservation)
 	}

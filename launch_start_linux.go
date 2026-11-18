@@ -82,7 +82,7 @@ func selectHostedShell(name, mode string) (shellSelection, error) {
 		}
 		if id != "" {
 			if mode == "new" || mode == "spawn" {
-				return shellSelection{}, fmt.Errorf("shell %s already exists; use sshore attach HOST %s", name, name)
+				return shellSelection{}, fmt.Errorf("shell %s already exists; use sshore attach HOST:%s", name, name)
 			}
 			return shellSelection{taskIdentitySelection: taskIdentitySelection{name: name, uid: id}, existing: true}, nil
 		}
@@ -245,7 +245,7 @@ func detachedSessionNames() ([]string, error) {
 		if err == nil && m.Type == "session" && !m.Attached && m.PID > 0 {
 			names = append(names, sessionLabel(m, task.Name))
 			if len(names) > 128 {
-				return nil, fmt.Errorf("too many shells to select; use sshore list HOST, then sshore attach HOST NAME")
+				return nil, fmt.Errorf("too many shells to select; use sshore list HOST, then sshore attach HOST:ID")
 			}
 		}
 	}

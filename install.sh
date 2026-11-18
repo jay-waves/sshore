@@ -21,28 +21,24 @@ HELP
 
 main() {
     install_version=
-    install_prepare_only=false
-    install_cache_dir=
     install_bin_dir=
     install_path=
     while [ "$#" -gt 0 ]; do
         case "$1" in
-            --version|--bin-dir|--cache-dir|--path)
+            --version|--bin-dir|--path)
                 [ "$#" -ge 2 ] && [ -n "$2" ] || fail "missing value for $1"
                 case "$1" in
                     --version) install_version=$2 ;;
                     --bin-dir) install_bin_dir=$2 ;;
-                    --cache-dir) install_cache_dir=$2 ;;
                     --path) install_path=$2 ;;
                 esac
                 shift 2 ;;
-            --prepare-only) install_prepare_only=true; shift ;;
             -h|--help) usage; return ;;
             *) fail "unknown option: $1" ;;
         esac
     done
     if [ -n "$install_path" ]; then
-        [ -z "$install_bin_dir" ] && [ "$install_prepare_only" = false ] || fail '--path requires a direct installation'
+        [ -z "$install_bin_dir" ] || fail '--path and --bin-dir cannot be combined'
         case "$install_path" in /*) ;; *) fail '--path must be absolute' ;; esac
         install_bin_dir=$(dirname -- "$install_path")
         install_name=$(basename -- "$install_path")
@@ -72,8 +68,7 @@ main() {
     # Downloads and checksum verification precede changes to the installation.
     umask 077
     install_tmp=$(mktemp -d "${TMPDIR:-/tmp}/sshore-install.XXXXXXXX")
-    install_stage=
-    trap 'rm -rf "$install_tmp"; if [ -n "$install_stage" ]; then rm -f "$install_stage"; fi' EXIT
+    trap 'rm -rf "$install_tmp"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
     install_releases=https://github.com/jay-waves/sshore/releases
@@ -81,9 +76,6 @@ main() {
         install_checks_url=$install_releases/download/v$install_version/SHA256SUMS
     else
         install_checks_url=$install_releases/latest/download/SHA256SUMS
-    fi
-    if [ -n "$install_cache_dir" ]; then
-        [ "$install_prepare_only" = true ] && [ -n "$install_version" ] || fail 'cache requires exact-version preparation'
     fi
     if [ -z "$install_version" ]; then
         download "$install_checks_url" "$install_tmp/SHA256SUMS" 262144
@@ -97,17 +89,10 @@ main() {
         valid_version "$install_version" || fail 'invalid version in release manifest'
     fi
     install_asset=sshore_${install_version}_linux_${install_arch}.tar.gz
-    if [ -n "$install_cache_dir" ] &&
-       [ -f "$install_cache_dir/$install_asset" ] && [ -f "$install_cache_dir/SHA256SUMS" ] &&
-       cp "$install_cache_dir/$install_asset" "$install_tmp/cached.tar.gz" &&
-       verify_archive "$install_cache_dir/SHA256SUMS" "$install_tmp/cached.tar.gz"; then
-        install_archive=$install_tmp/cached.tar.gz
-    else
-        [ -f "$install_tmp/SHA256SUMS" ] || download "$install_checks_url" "$install_tmp/SHA256SUMS" 262144
-        install_archive=$install_tmp/$install_asset
-        download "$install_releases/download/v$install_version/$install_asset" "$install_archive" 67108864
-        verify_archive "$install_tmp/SHA256SUMS" "$install_archive" || fail 'SHA256 mismatch or invalid checksum entry'
-    fi
+    [ -f "$install_tmp/SHA256SUMS" ] || download "$install_checks_url" "$install_tmp/SHA256SUMS" 262144
+    install_archive=$install_tmp/$install_asset
+    download "$install_releases/download/v$install_version/$install_asset" "$install_archive" 67108864
+    verify_archive "$install_tmp/SHA256SUMS" "$install_archive" || fail 'SHA256 mismatch or invalid checksum entry'
     entry=$(LC_ALL=C tar -tvzf "$install_archive" -- sshore) || fail 'cannot inspect release archive'
     case "$entry" in -* ) ;; *) fail 'release executable must be a regular file' ;; esac
     [ "$(printf '%s\n' "$entry" | wc -l)" -eq 1 ] || fail 'duplicate release executable'
@@ -120,24 +105,8 @@ main() {
     install_target=$install_bin_dir/$install_name
     [ ! -d "$install_target" ] || fail 'installation target is a directory'
     chmod 755 "$install_tmp/sshore"
-    # Remote preparation checks the executable version on the target host.
-    if [ -z "$install_cache_dir" ]; then
-        [ "$("$install_tmp/sshore" --version)" = "sshore $install_version" ] || fail 'binary version does not match release'
-    fi
-    if [ "$install_prepare_only" = true ]; then
-        [ ! -e "$install_target" ] && [ ! -L "$install_target" ] || fail 'temporary staging target already exists'
-        install_stage=$(mktemp "$install_bin_dir/.sshore-install.XXXXXXXX")
-        cat "$install_tmp/sshore" > "$install_stage"
-        chmod 755 "$install_stage"
-        mv -f -- "$install_stage" "$install_target"
-        install_stage=
-        if [ -n "$install_cache_dir" ] && [ -f "$install_tmp/SHA256SUMS" ]; then
-            mv -f -- "$install_archive" "$install_cache_dir/$install_asset"
-            mv -f -- "$install_tmp/SHA256SUMS" "$install_cache_dir/SHA256SUMS"
-        fi
-    else
-        "$install_tmp/sshore" setup --apply --path "$install_target" || fail 'installation stopped'
-    fi
+    [ "$("$install_tmp/sshore" --version)" = "sshore $install_version" ] || fail 'binary version does not match release'
+    "$install_tmp/sshore" setup --apply --path "$install_target" || fail 'installation stopped'
     printf 'Installed sshore %s: %s\n' "$install_version" "$install_target"
     printf '%s\n' 'SHA256 verified. No sudo or shell configuration changes.'
     printf '%s\n' 'Use matching client/server versions. Remote accounts are updated separately.'

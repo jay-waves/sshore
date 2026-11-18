@@ -227,10 +227,10 @@ func TestKillAllRemoteScope(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
-	if out, err := run("", "launch", "--local", "keep", "--detach"); err != nil {
+	if out, err := run("", "fixture-launch", "--local", "keep", "--detach"); err != nil {
 		t.Fatal(out, err)
 	}
-	defer run("", "kill", "--local", "keep")
+	defer run("", "kill", "self:keep")
 	if out, err := run("kill\n", "kill", "fixture", "--all", "--server", e.bin); err != nil {
 		t.Fatal(out, err)
 	}
@@ -392,9 +392,9 @@ func TestShortTaskRemoteCommandRouting(t *testing.T) {
 		args                 []string
 		port, server, action string
 	}{
-		{[]string{"kill", id}, "2222", "/observed/sshore", "kill-session"},
-		{[]string{"rename", id, "new"}, "2222", "/observed/sshore", "rename-session"},
-		{[]string{"kill", id, "--server", "/explicit/sshore", "--", "-p", "3333"}, "3333", "/explicit/sshore", "kill-session"},
+		{[]string{"kill", "work:" + id}, "2222", "/observed/sshore", "kill-session"},
+		{[]string{"rename", "work:" + id, "new"}, "2222", "/observed/sshore", "rename-session"},
+		{[]string{"kill", "work:" + id, "--server", "/explicit/sshore", "--", "-p", "3333"}, "3333", "/explicit/sshore", "kill-session"},
 	} {
 		if code, err := run(tc.args); err != nil || code != 37 {
 			t.Fatalf("%v: %d %v", tc.args, code, err)
@@ -561,10 +561,10 @@ func TestHostedShellTaskCommandRouting(t *testing.T) {
 	}
 	mx.Close()
 	c.Close()
-	if code, err := run([]string{"rename", id, "renamed"}); code != 0 || err != nil {
+	if code, err := run([]string{"rename", "self:" + id, "renamed"}); code != 0 || err != nil {
 		t.Fatalf("rename listed ID: %d %v", code, err)
 	}
-	if code, err := run([]string{"kill", id}); code != 0 || err != nil {
+	if code, err := run([]string{"kill", "self:" + id}); code != 0 || err != nil {
 		t.Fatalf("cancel renamed ID: %d %v", code, err)
 	}
 }

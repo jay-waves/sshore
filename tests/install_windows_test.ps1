@@ -120,22 +120,6 @@ func main() {
     Write-Host 'PASS: failed verification preserves the existing executable'
 
     if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
-        $stage = Join-Path $root 'prepare'
-        $null = [IO.Directory]::CreateDirectory($stage)
-        $linuxPayload = Join-Path $root 'sshore'
-        [IO.File]::WriteAllText($linuxPayload, 'offline Linux fixture')
-        $asset = 'sshore_0.3.3_linux_amd64.tar.gz'
-        $linuxArchive = Join-Path $root $asset
-        & tar.exe -czf $linuxArchive -C $root sshore
-        if ($LASTEXITCODE -ne 0) { throw 'Cannot create Linux release fixture' }
-        $linuxHash = (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $linuxArchive).Hash
-        [IO.File]::WriteAllText((Join-Path $root 'SHA256SUMS'), "$linuxHash  $asset`r`n")
-        $downloadCount = $script:Downloads.Count
-        Prepare-SshoreLinux '0.3.3' $stage
-        Assert-True ($script:Downloads.Count -eq $downloadCount) 'Verified Linux cache was not used'
-        Assert-True ([IO.File]::ReadAllText((Join-Path $stage 'sshore')) -eq 'offline Linux fixture') 'Wrong prepared Linux payload'
-        Write-Host 'PASS: Linux release preparation without Get-FileHash'
-
         $null = New-TestRelease '0.3.3' 'amd64'
         $locked = [IO.File]::Open($target, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         try {

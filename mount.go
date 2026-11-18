@@ -73,7 +73,7 @@ func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
 	c.Prepare = func(_ context.Context, wire io.ReadWriter) error {
 		return negotiateSetup(wire, wire, &options{command: "mount-agent", host: o.host})
 	}
-	if s != nil && s.config.MountConnection != nil {
+	if s != nil && s.config.MountConnection != nil && s.config.MountConnection.viaShell() {
 		c.Prepare = nil
 		c.Open = func(ctx context.Context) (io.ReadWriteCloser, error) {
 			return openRoutedResource(ctx, *s.config.MountConnection, message{Type: "route_mount", Name: o.approval.Session, PID: o.approval.PID, ApprovalID: o.approval.ID})

@@ -36,20 +36,20 @@ func TestCopyCLI(t *testing.T) {
 		}
 		return err
 	}
-	if err = run("cp", "origin:"+source, "work:"+remote); err != nil {
+	if err = run("cp", ".:"+source, "work:"+remote); err != nil {
 		t.Fatal(err)
 	}
-	if err = run("cp", "work:"+remote, "origin:"+target); err != nil {
+	if err = run("cp", "work:"+remote, ".:"+target); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(target)
 	if err != nil || string(data) != "direct cp" {
 		t.Fatal(string(data), err)
 	}
-	if err = run("cp", source, "work:"+remote); err == nil {
+	if err = run("cp", ".:"+source, "work:"+remote); err == nil {
 		t.Fatal("overwrite accepted")
 	}
-	if err = run("cp", source, "work:relative-copy"); err != nil {
+	if err = run("cp", ".:"+source, "work:relative-copy"); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := os.ReadFile(filepath.Join(root, "relative-copy")); err != nil || string(got) != "direct cp" {
@@ -57,7 +57,7 @@ func TestCopyCLI(t *testing.T) {
 	}
 	streamTarget := filepath.Join(root, "streamed")
 	data = bytes.Repeat([]byte("pipe data\x00\xff\n"), 10000)
-	for _, args := range [][]string{{"cp", "-", "work:" + streamTarget}, {"cp", "work:" + streamTarget, "-"}} {
+	for _, args := range [][]string{{"cp", ".:-", "work:" + streamTarget}, {"cp", "work:" + streamTarget, ".:-"}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		cmd := exec.CommandContext(ctx, e.bin, args...)
 		cmd.Dir = root
@@ -70,10 +70,10 @@ func TestCopyCLI(t *testing.T) {
 		if err != nil {
 			t.Fatal(err, stderr.String())
 		}
-		if args[1] == "-" && len(out) != 0 {
+		if args[1] == ".:-" && len(out) != 0 {
 			t.Fatal("upload wrote to stdout")
 		}
-		if args[2] == "-" && !bytes.Equal(out, data) {
+		if args[2] == ".:-" && !bytes.Equal(out, data) {
 			t.Fatal("stdout bytes corrupted")
 		}
 	}
@@ -94,7 +94,10 @@ func TestCopyPreflight(t *testing.T) {
 	copy := func(sources ...string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		args := append([]string{"cp"}, sources...)
+		args := []string{"cp"}
+		for _, source := range sources {
+			args = append(args, ".:"+source)
+		}
 		cmd := exec.CommandContext(ctx, e.bin, append(args, "work:"+remote)...)
 		cmd.Env = append(e.env, "SSHORE_SSH="+wrapper)
 		out, err := cmd.CombinedOutput()

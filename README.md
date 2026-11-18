@@ -52,10 +52,10 @@ commands use the account daemon, which exits after its tasks and active clients
 have ended and an idle grace period has elapsed.
 
 ```sh
-sshore launch work build          # Start a persistent remote shell.
+sshore launch work:          # Start a persistent remote shell.
 # Press Ctrl+B, then d to detach.
-sshore attach work build          # Return to it later.
-sshore kill work build          # End it; unsaved work may be lost.
+sshore attach work:7afe22          # Return to it later.
+sshore kill work:7afe22          # End it; unsaved work may be lost.
 ```
 
 Choose the lifetime at startup; omit the host to work locally:
@@ -63,8 +63,8 @@ Choose the lifetime at startup; omit the host to work locally:
 | Command | Lifetime |
 | --- | --- |
 | `sshore spawn` | Ends when the original parent shell exits. |
-| `sshore spawn work` | Also ends if its background SSH heartbeat times out. |
-| `sshore launch [HOST]` | Survives client exit and network loss until you exit or kill it. |
+| `sshore spawn work:` | Also ends if its background SSH heartbeat times out. |
+| `sshore launch [HOST:]` | Survives client exit and network loss until you exit or kill it. |
 
 **Detach does not change lifetime.** A remote spawn keeps its heartbeat after
 detach, and reattachment never changes its original owner. Use `launch` for work
@@ -79,7 +79,7 @@ the application enables bracketed paste.
 Inside a remote shell, `sshore detach` also works. Both startup commands accept
 `--detach` to start in the background. `attach` never takes over an attached shell.
 `sshore attach` resumes the most recently detached local or remote shell.
-`sshore attach HOST` uses that remote host’s detach order. Use `sshore attach ID`
+`sshore attach HOST:` uses that remote host’s detach order. Use `sshore attach HOST:ID`
 to select a local or remote shell explicitly; unique ID prefixes of at least two
 hexadecimal characters are accepted, and ambiguous prefixes fail. Ctrl+B d updates
 this shared history; listing tasks does not.
@@ -171,7 +171,7 @@ replaced by a direct connection from your computer.
 **Put SSH options after `--`:**
 
 ```sh
-sshore launch work build -- -J jump -p 2222
+sshore launch work: -- -J jump -p 2222
 ```
 
 ## OS and shell support
@@ -191,22 +191,23 @@ configurations, not exhaustive validation of every terminal pairing; see
 From your **local shell**:
 
 ```sh
-sshore cp report.zip work:/tmp/       # Upload.
-sshore cp work:/tmp/report.zip ./    # Download.
+sshore cp .:report.zip work:/tmp/       # Upload.
+sshore cp work:/tmp/report.zip .:./    # Download.
 ```
 
 From your **remote sshore shell**:
 
 ```sh
-sshore cp origin: .                 # Request an upload from your computer.
-sshore cp report.zip origin:        # Request a download to your computer.
+sshore cp origin: self:./                 # Request an upload from your computer.
+sshore cp .:report.zip origin:        # Request a download to your computer.
 ```
 
 Direct copies require the matching remote sshore helper and create no persistent shell.
 
-`origin:` (or `:`) means the attached client computer. Remote requests detach
-you; run `sshore review` locally, choose paths and submit to copy. Attach again separately.
-Suggested paths still require your review. Ctrl-C during selection cancels.
+Copy, forward and mount use explicit endpoints. `self:` and `.:` select the
+machine running the command. An empty host in `:VALUE` also selects this
+machine. In an attached remote shell, `origin:` and `::` select the attached
+client. Use `sshore review` in the client to confirm requests.
 
 Only regular files are supported; existing destinations are never overwritten.
 Destination filesystems must support hard links. Failed batches keep completed
@@ -217,11 +218,11 @@ files. For pipes and other options, see `sshore cp --help`.
 From your **local shell**, give the listener first, then the service:
 
 ```sh
-sshore forward origin:8080 work:3000
+sshore forward .:8080 work:3000
 # To stop it, run the kill command printed at startup.
 ```
 
-From a **remote sshore shell**, run `sshore forward origin: 3000` to request a
+From a **remote sshore shell**, run `sshore forward origin: .:3000` to request a
 local listener for the remote service. This detaches you; run `sshore review`
 locally and submit a port to start forwarding. The shell stays detached.
 
@@ -233,14 +234,15 @@ local forwards, but cannot restore existing TCP connections. See
 ## Mount — open remote files locally
 
 ```sh
-sshore mount work:  # Mount remote home; prints the local path.
+sshore mount work: .:  # Mount remote home and print the local path.
 # Close local files, then run the kill command printed at startup.
 ```
 
+Pass `self:` or `.:` for an automatic mountpoint, or append a local path.
 Mounts use SFTP and require FUSE on Linux or [WinFsp](https://winfsp.dev/) on
 Windows. They are writable by default; use `--read-only` to prevent changes.
 They run independently of shells and end if their own SSH connection drops.
-From a remote sshore shell, use `sshore mount . origin:` and then `sshore review`
+From a remote sshore shell, use `sshore mount .:./ origin:` and then `sshore review`
 locally to select the mountpoint and approve access.
 
 There is no offline editing, conflict detection or write retry. Interrupted
@@ -258,7 +260,7 @@ this client is older. For a custom remote installation, pass its executable
 path with `sshore setup HOST --path /absolute/path/to/sshore`.
 
 - Stale screen after reattachment: press Ctrl-L or use the application's redraw key.
-- SSH failure: try `sshore launch work -- -vvv -E ./ssh-debug.log`.
+- SSH failure: try `sshore launch work: -- -vvv -E ./ssh-debug.log`.
 - Mount or forward failure: inspect `sshore list --json` and its log path.
 - Existing copy destination: choose a new filename; overwriting is disabled.
 

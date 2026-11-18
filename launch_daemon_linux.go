@@ -127,7 +127,7 @@ func (s *remoteShell) attach(p *attachment, m message) (shellInput, error) {
 	}
 
 	if errors.Is(err, tmux.ErrExited) {
-		return nil, fmt.Errorf("shell is exiting; use sshore launch HOST to create a new one")
+		return nil, fmt.Errorf("shell is exiting; use sshore launch HOST: to create a new one")
 	}
 	if errors.Is(err, tmux.ErrAttached) {
 		return nil, fmt.Errorf("shell already attached; detach the other connection first")

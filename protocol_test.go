@@ -77,8 +77,8 @@ func TestProtocolRejectsMalformedFrames(t *testing.T) {
 	}
 }
 func TestOptions(t *testing.T) {
-	o, err := parseOptions([]string{"launch", "myhost", "build", "--server", "/a b/sshore", "--", "-J", "jump"})
-	if err != nil || o.session != "build" || o.host != "myhost" || len(o.ssh) != 2 {
+	o, err := parseOptions([]string{"launch", "myhost:", "--server", "/a b/sshore", "--", "-J", "jump"})
+	if err != nil || o.session != "" || o.host != "myhost" || len(o.ssh) != 2 {
 		t.Fatalf("%+v %v", o, err)
 	}
 	for _, name := range []string{"", "../bad", "-bad", "space name", "\u4e2d\u6587"} {
@@ -191,7 +191,7 @@ func TestClientMuxRejectsDifferentOrUnknownBuild(t *testing.T) {
 				mux.Close()
 				t.Fatal("accepted incompatible daemon")
 			}
-			if err == nil || !strings.Contains(err.Error(), "remote shell daemon") || !strings.Contains(err.Error(), "new shell name") {
+			if err == nil || !strings.Contains(err.Error(), "remote shell daemon") || !strings.Contains(err.Error(), "same full release") {
 				t.Fatal(err)
 			}
 			if err := <-done; err != nil {

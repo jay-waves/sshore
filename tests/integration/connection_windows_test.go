@@ -106,12 +106,12 @@ func testWindowsHandoffPassword(t *testing.T, interrupt bool) {
 			}
 		}
 	}
-	wait("Connected local / pw" + filepath.Base(dir))
+	wait("Connected self:pw" + filepath.Base(dir))
 	// Wait for the child shell to begin accepting commands.
 	terminal.Write([]byte("echo SHELL_READY\r"))
 	wait("SHELL_READY")
 	time.Sleep(200 * time.Millisecond)
-	command := fmt.Sprintf("'%s' spawn fixture -- -F '%s'\r", filepath.ToSlash(bin), filepath.ToSlash(cfg))
+	command := fmt.Sprintf("'%s' spawn fixture: -- -F '%s'\r", filepath.ToSlash(bin), filepath.ToSlash(cfg))
 	terminal.Write([]byte(command))
 	wait("fixture@127.0.0.1's password:")
 	for _, b := range []byte("test-Password!42\r") {
@@ -134,6 +134,6 @@ func testWindowsHandoffPassword(t *testing.T, interrupt bool) {
 			t.Fatal(err)
 		}
 		wait("Target unavailable; restoring")
-		wait("Connected local / pw" + filepath.Base(dir))
+		wait("Connected self:pw" + filepath.Base(dir))
 	}
 }

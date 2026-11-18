@@ -70,7 +70,7 @@ type cliSpec struct {
 func commandSpec(command string) (cliSpec, bool) {
 	command = canonicalCommand(command)
 	base := []string{"--local", "--server"}
-	interactive := append(slices.Clone(base), "--download-dir", "--quiet", "--no-escape")
+	interactive := []string{"--server", "--download-dir", "--quiet", "--no-escape"}
 	spec := cliSpec{}
 	switch command {
 	case "":
@@ -84,7 +84,7 @@ func commandSpec(command string) (cliSpec, bool) {
 	case "exec":
 		spec = cliSpec{nil, false, false, 2, 2}
 	case "launch", "spawn":
-		spec = cliSpec{append(interactive, "--detach", "--no-login", "--no-profile"), true, true, 0, 2}
+		spec = cliSpec{append(interactive, "--detach", "--no-login", "--no-profile"), true, true, 0, 1}
 	case "attach":
 		spec = cliSpec{strings.Fields("--server --download-dir --quiet --no-escape"), true, true, 0, 2}
 	case "list":
@@ -98,7 +98,7 @@ func commandSpec(command string) (cliSpec, bool) {
 	case "cp":
 		spec = cliSpec{nil, true, false, 2, -1}
 	case "mount":
-		spec = cliSpec{strings.Fields("--server --foreground --read-only --io-timeout --startup-timeout --stats --direct-io"), true, false, 1, 2}
+		spec = cliSpec{strings.Fields("--foreground --read-only --io-timeout --startup-timeout --stats --direct-io"), true, false, 2, 2}
 	case "forward":
 		spec = cliSpec{strings.Fields("--retries --foreground"), true, false, 2, 2}
 	case "review":
@@ -130,9 +130,10 @@ func (s cliSpec) option(name string) (string, cliOption, bool) {
 }
 
 type cliArguments struct {
-	operands []string
-	values   map[string]string
-	ssh      []string
+	explicitHost bool
+	operands     []string
+	values       map[string]string
+	ssh          []string
 }
 
 func (a cliArguments) has(name string) bool { _, ok := a.values[name]; return ok }
@@ -288,12 +289,12 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 	if max >= 0 && len(a.operands) > max {
 		return a, usage("unexpected argument: %s", a.operands[max])
 	}
-	return a, nil
+	return a, normalizeShellSelector(command, &a)
 }
 
 func (s cliSpec) maxOperands(command string, a cliArguments) int {
 	max := s.max
-	if a.has("--local") && slices.Contains([]string{"launch", "spawn", "attach", "kill", "rename", "list", "pstree"}, command) {
+	if a.has("--local") && slices.Contains([]string{"attach", "kill", "rename", "list", "pstree"}, command) {
 		max--
 	}
 	if command == "kill" && a.has("--all") {
@@ -388,7 +389,7 @@ func sshPortSetting(name, value string) bool {
 
 func misplacedSSHOption(a string) error {
 	if _, _, _, ok := sshOption(a, sshOptionKinds(true)); ok {
-		return usage("SSH option %s must follow -- (example: sshore launch HOST -- -J jump)", a)
+		return usage("SSH option %s must follow -- (example: sshore launch HOST: -- -J jump)", a)
 	}
 	return nil
 }

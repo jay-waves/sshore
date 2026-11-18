@@ -54,7 +54,7 @@ func TestClientPrefixKeysAndDetach(t *testing.T) {
 
 func startPrefixClient(t *testing.T, e *testEnv) (*exec.Cmd, *os.File, func(string)) {
 	t.Helper()
-	return startSessionClient(t, e, []string{"launch", "fixture", "keys", "--server", e.bin})
+	return startSessionClient(t, e, []string{"fixture-launch", "fixture", "keys", "--server", e.bin})
 }
 
 func startSessionClient(t *testing.T, e *testEnv, args []string) (*exec.Cmd, *os.File, func(string)) {
@@ -121,13 +121,13 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"launch", "--local", "origin", "--no-profile"})
+	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-launch", "--local", "origin", "--no-profile"})
 	t.Cleanup(func() {
 		cleanup := exec.Command(e.bin, "kill", "--all")
 		cleanup.Env = cmd.Env
 		_ = cleanup.Run()
 	})
-	wait("Connected local / origin")
+	wait("Connected self:origin")
 	wait("sshore-test> ")
 	marker := filepath.Join(e.dir, "launcher-exited")
 	directory := filepath.Join(e.dir, "handoff-cwd")
@@ -139,9 +139,9 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The command returns to its owner shell while the frontend is remote.
-	command := "cd " + shellQuote(directory) + "; export HANDOFF_VALUE=preserved; export PATH=" + shellQuote(directory) + ":$PATH; unset SSHORE_SSH; " + shellQuote(e.bin) + " spawn fixture remote --quiet --server " + shellQuote(e.bin) + "; printf '%s' \"$?\" > " + shellQuote(marker) + "\n"
+	command := "cd " + shellQuote(directory) + "; export HANDOFF_VALUE=preserved; export PATH=" + shellQuote(directory) + ":$PATH; unset SSHORE_SSH; " + shellQuote(e.bin) + " spawn fixture: --quiet --server " + shellQuote(e.bin) + "; printf '%s' \"$?\" > " + shellQuote(marker) + "\n"
 	io.WriteString(terminal, command)
-	wait("Connected fixture / remote")
+	wait("Connected fixture:")
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		data, err := os.ReadFile(marker)
@@ -163,23 +163,23 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 	if err != nil || string(contextData) != directory+"\npreserved\n" {
 		t.Fatalf("SSH config context: %q %v", contextData, err)
 	}
-	rename := exec.Command(e.bin, "rename", "--local", "origin", "returned")
+	rename := exec.Command(e.bin, "rename", "self:origin", "returned")
 	rename.Env = cmd.Env
 	if out, err := rename.CombinedOutput(); err != nil {
 		t.Fatalf("rename return target: %s %v", out, err)
 	}
 	io.WriteString(terminal, "\x02d")
-	wait("Connected local / returned")
+	wait("Connected self:returned")
 	io.WriteString(terminal, "printf 'HANDOFF_%s\\n' returned\n")
 	wait("HANDOFF_returned")
-	io.WriteString(terminal, shellQuote(e.bin)+" attach fixture remote --quiet --server "+shellQuote(e.bin)+"\n")
-	wait("Connected fixture / remote")
+	io.WriteString(terminal, shellQuote(e.bin)+" attach fixture: --quiet --server "+shellQuote(e.bin)+"\n")
+	wait("Connected fixture:")
 	io.WriteString(terminal, "exit\n")
-	wait("Connected local / returned")
+	wait("Connected self:returned")
 	// Failed connection restores the same local shell, rather than exiting it.
-	io.WriteString(terminal, shellQuote(e.bin)+" attach fixture missing --server "+shellQuote(e.bin)+"\n")
+	io.WriteString(terminal, shellQuote(e.bin)+" attach fixture:missing --server "+shellQuote(e.bin)+"\n")
 	wait("Target unavailable; restoring returned")
-	wait("Connected local / returned")
+	wait("Connected self:returned")
 	// The failed launcher now reports failure to its parent shell.
 	io.WriteString(terminal, "exit 0\n")
 	if err := cmd.Wait(); err != nil {
@@ -218,7 +218,7 @@ func TestClientSessionShortcuts(t *testing.T) {
 	detachTestClient(t, alpha)
 	busy, _ := e.attach("zulu")
 	cmd, terminal, wait := startPrefixClient(t, e)
-	wait("Connected fixture / keys")
+	wait("Connected fixture:keys")
 	press := func(key byte) {
 		t.Helper()
 		if _, err := terminal.Write([]byte{2, key}); err != nil {
@@ -226,12 +226,12 @@ func TestClientSessionShortcuts(t *testing.T) {
 		}
 	}
 	press('n')
-	wait("Connected fixture / alpha")
+	wait("Connected fixture:alpha")
 	// Stable lexical order wraps, and an attached zulu is never taken over.
 	press('p')
-	wait("Connected fixture / keys")
+	wait("Connected fixture:keys")
 	press('l')
-	wait("Connected fixture / alpha")
+	wait("Connected fixture:alpha")
 	press('d')
 	wait("Detached;")
 	if err := cmd.Wait(); err != nil {
@@ -264,7 +264,7 @@ func TestClientFailedSwitchRestoresOriginal(t *testing.T) {
 	alpha, _ := e.attach("alpha")
 	detachTestClient(t, alpha)
 	cmd, terminal, wait := startPrefixClient(t, e)
-	wait("Connected fixture / keys")
+	wait("Connected fixture:keys")
 	// Fail exactly the next SSH launch, after preflight has accepted alpha.
 	flag := filepath.Join(e.dir, "switch-failed")
 	script := "#!/bin/sh\nif [ ! -e " + shellQuote(flag) + " ]; then : > " + shellQuote(flag) + "; exit 42; fi\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n"
@@ -275,7 +275,7 @@ func TestClientFailedSwitchRestoresOriginal(t *testing.T) {
 		t.Fatal(err)
 	}
 	wait("Target unavailable; restoring keys.")
-	wait("Connected fixture / keys")
+	wait("Connected fixture:keys")
 	if _, err := io.WriteString(terminal, "printf 'RESTORED-%s' input\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -578,14 +578,14 @@ func TestClientNestedLocalSpawnHandoff(t *testing.T) {
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"launch", "--local", "root", "--no-profile"})
+	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-launch", "--local", "root", "--no-profile"})
 	t.Cleanup(func() { cleanup := exec.Command(e.bin, "kill", "--all"); cleanup.Env = cmd.Env; _ = cleanup.Run() })
-	wait("Connected local / root")
+	wait("Connected self:root")
 	wait("sshore-test> ")
 	for _, name := range []string{"child", "grandchild"} {
 		marker := filepath.Join(e.dir, name+"-returned")
-		io.WriteString(terminal, shellQuote(e.bin)+" spawn --local "+name+" --no-profile; printf done > "+shellQuote(marker)+"\n")
-		wait("Connected local / " + name)
+		io.WriteString(terminal, shellQuote(e.bin)+" spawn self: --no-profile; printf done > "+shellQuote(marker)+"\n")
+		wait("Connected self:")
 		wait("sshore-test> ")
 		deadline := time.Now().Add(3 * time.Second)
 		for {
@@ -599,9 +599,9 @@ func TestClientNestedLocalSpawnHandoff(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
-	for _, name := range []string{"child", "root"} {
+	for range 2 {
 		io.WriteString(terminal, "exit\n")
-		wait("Connected local / " + name)
+		wait("Connected self:")
 	}
 	io.WriteString(terminal, "exit\n")
 	if err := cmd.Wait(); err != nil {
@@ -615,8 +615,8 @@ func TestClientNestedRemoteSpawnReusesAuthentication(t *testing.T) {
 			t.Setenv("SSHORE_LOCAL_SESSION", "")
 			t.Setenv("SSHORE_SOCKET", "")
 			e := newEnv(t)
-			cmd, terminal, wait := startSessionClient(t, e, []string{command, "fixture", "root", "--no-login", "--no-profile", "--server", e.bin})
-			wait("Connected fixture / root")
+			cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-" + command, "fixture", "root", "--no-login", "--no-profile", "--server", e.bin})
+			wait("Connected fixture:root")
 			io.WriteString(terminal, "printf 'READY_%s\\n' shell\n")
 			wait("READY_shell")
 			// Any new authentication attempt now fails at SSH configuration lookup.
@@ -626,13 +626,13 @@ func TestClientNestedRemoteSpawnReusesAuthentication(t *testing.T) {
 			}
 			for range 2 {
 				io.WriteString(terminal, shellQuote(e.bin)+" spawn --no-login --no-profile\n")
-				wait("Connected fixture / ")
+				wait("Connected fixture:")
 				io.WriteString(terminal, "printf 'READY_%s\\n' shell\n")
 				wait("READY_shell")
 			}
 			for range 2 {
 				io.WriteString(terminal, "exit\n")
-				wait("Connected fixture / ")
+				wait("Connected fixture:")
 				io.WriteString(terminal, "printf 'READY_%s\\n' shell\n")
 				wait("READY_shell")
 			}
@@ -651,15 +651,15 @@ func TestClientSpawnShortcutReturnsToParent(t *testing.T) {
 			t.Setenv("SSHORE_LOCAL_SESSION", "")
 			t.Setenv("SSHORE_SOCKET", "")
 			e := newEnv(t)
-			args := []string{tc.command, host, "root", "--no-login", "--no-profile"}
-			label := "local"
+			args := []string{"fixture-" + tc.command, host, "root", "--no-login", "--no-profile"}
+			label := "self"
 			if host != "--local" {
 				args = append(args, "--server", e.bin)
 				label = host
 			}
 			cmd, terminal, wait := startSessionClient(t, e, args)
 			t.Cleanup(func() { cleanup := exec.Command(e.bin, "kill", "--all"); cleanup.Env = cmd.Env; _ = cleanup.Run() })
-			wait("Connected " + label + " / root")
+			wait("Connected " + label + ":root")
 			ready := func() {
 				io.WriteString(terminal, "printf 'SHORTCUT_%s\\n' ready\n")
 				wait("SHORTCUT_ready")
@@ -672,7 +672,7 @@ func TestClientSpawnShortcutReturnsToParent(t *testing.T) {
 			}
 			for range 2 {
 				io.WriteString(terminal, "exit\n")
-				wait("Connected " + label + " / ")
+				wait("Connected " + label + ":")
 				ready()
 			}
 			io.WriteString(terminal, "exit\n")
@@ -691,15 +691,15 @@ func TestClientInterruptStaysAttached(t *testing.T) {
 			t.Setenv("SSHORE_LOCAL_SESSION", "")
 			t.Setenv("SSHORE_SOCKET", "")
 			e := newEnv(t)
-			args := []string{"launch", host, "interrupt", "--no-login", "--no-profile"}
-			label := "local"
+			args := []string{"fixture-launch", host, "interrupt", "--no-login", "--no-profile"}
+			label := "self"
 			if host != "--local" {
 				label = host
 				args = append(args, "--server", e.bin)
 			}
 			cmd, terminal, wait := startSessionClient(t, e, args)
 			t.Cleanup(func() { cleanup := exec.Command(e.bin, "kill", "--all"); cleanup.Env = cmd.Env; _ = cleanup.Run() })
-			wait("Connected " + label + " / interrupt")
+			wait("Connected " + label + ":interrupt")
 			for _, systemSignal := range []bool{false, true} {
 				io.WriteString(terminal, "trap 'printf \"CAUGHT_%s\\n\" interrupt' INT; printf 'WAIT_%s\\n' ready; read interrupted_input\n")
 				wait("WAIT_ready")
@@ -728,7 +728,7 @@ func TestClientInterruptDuringSwitchRestoresOriginal(t *testing.T) {
 	alpha, _ := e.attach("alpha")
 	detachTestClient(t, alpha)
 	cmd, terminal, wait := startPrefixClient(t, e)
-	wait("Connected fixture / keys")
+	wait("Connected fixture:keys")
 	flag := filepath.Join(e.dir, "switch-started")
 	release := filepath.Join(e.dir, "release-setup")
 	t.Cleanup(func() { _ = os.WriteFile(release, nil, 0600) })
@@ -752,7 +752,7 @@ func TestClientInterruptDuringSwitchRestoresOriginal(t *testing.T) {
 	if err := os.WriteFile(release, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	wait("Connected fixture / keys")
+	wait("Connected fixture:keys")
 	io.WriteString(terminal, "printf 'RESTORED_%s\\n' input\n")
 	wait("RESTORED_input")
 	terminal.Write([]byte{2, 'd'})
@@ -775,8 +775,8 @@ func TestClientDaemonLossRestoresTerminal(t *testing.T) {
 			t.Setenv("SSHORE_SOCKET", "")
 			t.Setenv("SSHORE_LOCAL_SESSION", "")
 			e := newEnv(t)
-			cmd, terminal, wait := startSessionClient(t, e, []string{command, "fixture", "crash", "--no-login", "--no-profile", "--server", e.bin})
-			wait("Connected fixture / crash")
+			cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-" + command, "fixture", "crash", "--no-login", "--no-profile", "--server", e.bin})
+			wait("Connected fixture:crash")
 			// Enable exactly the event reporting that produces ;1:3u on key release.
 			// Split the marker so the echoed command cannot satisfy the output barrier.
 			if _, err := io.WriteString(terminal, "printf '\\033[>11u\\033[>4;2mREADY_%s' crash\n"); err != nil {
@@ -835,14 +835,14 @@ func TestClientDetachPromotesSharedMRU(t *testing.T) {
 			t.Setenv("SSHORE_SOCKET", "")
 			t.Setenv("SSHORE_LOCAL_SESSION", "")
 			e := newEnv(t)
-			args := []string{"launch", host, "mru-detach", "--no-login", "--no-profile"}
-			label := "local"
+			args := []string{"fixture-launch", host, "mru-detach", "--no-login", "--no-profile"}
+			label := "self"
 			if host != "--local" {
 				args = append(args, "--server", e.bin)
 				label = host
 			}
 			cmd, terminal, wait := startSessionClient(t, e, args)
-			wait("Connected " + label + " / mru-detach")
+			wait("Connected " + label + ":mru-detach")
 			if _, err := io.WriteString(terminal, "\x02d"); err != nil {
 				t.Fatal(err)
 			}
@@ -862,14 +862,14 @@ func TestClientDetachPromotesSharedMRU(t *testing.T) {
 				t.Fatalf("detach MRU: %+v", rows)
 			}
 			// No operands must reattach the same local or remote shell using MRU.
-			selectorsList := [][]string{nil, {taskUID(rows[0].Identity)[:2]}}
+			selectorsList := [][]string{{label + ":"}, {label + ":" + taskUID(rows[0].Identity)[:2]}}
 			if host != "--local" {
-				selectorsList = append(selectorsList, []string{host})
+				selectorsList = append(selectorsList, []string{host + ":"})
 			}
 			for _, selectors := range selectorsList {
 				reattach := append([]string{"attach"}, selectors...)
 				next, tty, await := startSessionClient(t, e, reattach)
-				await("Connected " + label + " / mru-detach")
+				await("Connected " + label + ":mru-detach")
 				if _, err := io.WriteString(tty, "\x02d"); err != nil {
 					t.Fatal(err)
 				}
@@ -888,7 +888,7 @@ func TestClientEnhancedPrefixKeysAndEscape(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
 	cmd, terminal, wait := startPrefixClient(t, e)
-	wait("Connected fixture / keys")
+	wait("Connected fixture:keys")
 	io.WriteString(terminal, "stty raw -echo; printf 'ESC_%s\\n' ready; byte=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n'); stty sane; printf 'BYTE_%s\\n' \"$byte\"\n")
 	wait("ESC_ready")
 	terminal.Write([]byte{27})
@@ -918,16 +918,20 @@ func TestClientExitNotices(t *testing.T) {
 					t.Setenv("SSHORE_SOCKET", "")
 					t.Setenv("SSHORE_LOCAL_SESSION", "")
 					e := newEnv(t)
-					args := []string{command, host, "exit-notice", "--no-login", "--no-profile"}
-					label := "local"
+					args := []string{"fixture-" + command, host, "exit-notice", "--no-login", "--no-profile"}
+					label := "self"
 					if host != "--local" {
 						label = host
 						args = append(args, "--server", e.bin)
 					}
 					cmd, terminal, wait := startSessionClient(t, e, args)
-					wait("Connected " + label + " / exit-notice")
+					wait("Connected " + label + ":exit-notice")
 					io.WriteString(terminal, "exit "+code+"\n")
-					wait("Exited " + command + "/exit-notice on " + label + " (code " + code + "). Reason:")
+					exitHost := host
+					if host == "--local" {
+						exitHost = "local"
+					}
+					wait("Exited " + command + "/exit-notice on " + exitHost + " (code " + code + "). Reason:")
 					err := cmd.Wait()
 					if code == "0" && err != nil {
 						t.Fatal(err)
@@ -948,8 +952,8 @@ func TestClientRemoteExitReason(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
 	cmd, _, wait := startPrefixClient(t, e)
-	wait("Connected fixture / keys")
-	kill := exec.Command(e.bin, "kill", "fixture", "keys", "--server", e.bin)
+	wait("Connected fixture:keys")
+	kill := exec.Command(e.bin, "kill", "fixture:keys", "--server", e.bin)
 	kill.Env = cmd.Env
 	if out, err := kill.CombinedOutput(); err != nil {
 		t.Fatalf("kill fixture shell: %v %s", err, out)
@@ -965,8 +969,8 @@ func TestClientExternalSpawnParent(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"spawn", "--local", "external-parent", "--no-login", "--no-profile"})
-	wait("Connected local / external-parent")
+	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-spawn", "--local", "external-parent", "--no-login", "--no-profile"})
+	wait("Connected self:external-parent")
 	ps := exec.Command(e.bin, "ps")
 	ps.Env = cmd.Env
 	out, err := ps.CombinedOutput()

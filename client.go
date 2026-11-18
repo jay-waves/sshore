@@ -200,7 +200,7 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 		if err := detachControl(control, confirmDetach); err != nil {
 			return 1, err
 		}
-		fmt.Fprintf(os.Stdout, "Started %s (%s).\n", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host))
+		fmt.Fprintf(os.Stdout, "Started %s (%s).\n", cleanText(shellDisplayEndpoint(o)), shellTaskKind(o.temporary))
 		return 0, nil
 	}
 	if !o.local && !o.quiet {
@@ -293,11 +293,7 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 	attached = true
 	ready(o)
 
-	kind := "launch"
-	if o.temporary {
-		kind = "spawn"
-	}
-	sessionNotice(termui.Success, "Connected %s / %s (%s)", cleanText(o.host), cleanText(o.session), kind)
+	sessionNotice(termui.Success, "Connected %s (%s)", cleanText(shellDisplayEndpoint(o)), shellTaskKind(o.temporary))
 	// One terminal writer preserves keystroke order without making file I/O or a
 	// stalled PTY block the main UI/control loop.
 	inputQueue := make(chan []tmux.KeyEvent, 16)
@@ -857,6 +853,13 @@ func detachControl(control *smux.Stream, confirmed ...func(string)) error {
 
 // Retain transport options in the reconnect hint, including custom ports and keys.
 // Use POSIX shell quoting on Linux and PowerShell quoting on Windows.
+func shellDisplayEndpoint(o options) string {
+	if o.local {
+		return localEndpointPrefix + o.session
+	}
+	return remotePathOperand(o.host, o.session)
+}
+
 func reconnectCommand(o options) string {
 	quote := func(s string) string {
 		if s != "" && strings.IndexFunc(s, func(r rune) bool {
@@ -869,13 +872,17 @@ func reconnectCommand(o options) string {
 		}
 		return shellQuote(s)
 	}
-	args := []string{"sshore", "attach", o.host, o.session}
+	selector := o.session
+	if validTaskUID(o.instance) {
+		selector = o.instance
+	}
+	args := []string{"sshore", "attach", remotePathOperand(o.host, selector)}
 	if o.local {
 		identity := o.taskIdentity
 		if identity == "" {
 			identity = remoteShellIdentity(o.host, o.instance)
 		}
-		args = []string{"sshore", "attach", taskUID(identity)}
+		args = []string{"sshore", "attach", localEndpointPrefix + taskUID(identity)}
 	}
 	if o.server != "" && o.server != "sshore" {
 		args = append(args, "--server", o.server)

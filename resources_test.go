@@ -152,14 +152,14 @@ func TestResourceReceiptUsesInstanceRatherThanAlias(t *testing.T) {
 }
 
 func TestFTPSessionDefaults(t *testing.T) {
-	o, e := parseFTPOptions([]string{"alice@work.example:"})
+	o, e := parseFTPOptions([]string{"alice@work.example:", "self:"})
 	if e != nil {
 		t.Fatal(e)
 	}
 	if o.remote != "." || o.mountpoint != "" || o.foreground || o.name != "" {
 		t.Fatalf("unexpected defaults: %+v", o)
 	}
-	o, e = parseFTPOptions([]string{"work:project", "--foreground"})
+	o, e = parseFTPOptions([]string{"work:project", "self:", "--foreground"})
 	if e != nil || o.name != "" || !o.foreground || o.remote != "project" {
 		t.Fatalf("options: %+v %v", o, e)
 	}
@@ -199,7 +199,7 @@ func TestFTPControlCapability(t *testing.T) {
 }
 
 func TestFTPOptions(t *testing.T) {
-	o, e := parseFTPOptions([]string{"host:/remote folder", "mount", "--read-only", "--", "-J", "jump"})
+	o, e := parseFTPOptions([]string{"host:/remote folder", ".:mount", "--read-only", "--", "-J", "jump"})
 	if e != nil || !o.readOnly || o.remote != "/remote folder" {
 		t.Fatalf("%+v %v", o, e)
 	}
@@ -215,18 +215,22 @@ func TestMountSourceEndpoints(t *testing.T) {
 		args                     []string
 		host, remote, mountpoint string
 	}{
-		{[]string{"work:"}, "work", ".", ""},
-		{[]string{"work:project", "./local"}, "work", "project", "./local"},
-		{[]string{"work:/srv/name@::1"}, "work", "/srv/name@::1", ""},
-		{[]string{"alice@[2001:db8::1]:/srv/project", "X:"}, "alice@2001:db8::1", "/srv/project", "X:"},
-		{[]string{remotePathOperand("alice@2001:db8::1", "/srv/project"), "X:"}, "alice@2001:db8::1", "/srv/project", "X:"},
+		{[]string{"work:", "self:"}, "work", ".", ""},
+		{[]string{"work:", ".:"}, "work", ".", ""},
+		{[]string{"work:project", "self:./local"}, "work", "project", "./local"},
+		{[]string{"work:project", ".:X:"}, "work", "project", "X:"},
+		{[]string{"work:project", ".:./local"}, "work", "project", "./local"},
+		{[]string{"work:project", ".:./local:"}, "work", "project", "./local:"},
+		{[]string{"work:/srv/name@::1", "self:"}, "work", "/srv/name@::1", ""},
+		{[]string{"alice@[2001:db8::1]:/srv/project", ".:X:"}, "alice@2001:db8::1", "/srv/project", "X:"},
+		{[]string{remotePathOperand("alice@2001:db8::1", "/srv/project"), ".:X:"}, "alice@2001:db8::1", "/srv/project", "X:"},
 	} {
 		o, err := parseFTPOptions(tc.args)
 		if err != nil || o.host != tc.host || o.remote != tc.remote || o.mountpoint != tc.mountpoint {
 			t.Fatalf("mount %v: %+v, %v", tc.args, o, err)
 		}
 	}
-	for _, args := range [][]string{{"work"}, {"work", "/src"}, {"work", "/src", "./dst"}, {"2001:db8::1"}, {"alice@2001:db8::1"}, {"work:project", "local", "extra"}, {"origin:project", "local"}, {"[not-ip]:project"}} {
+	for _, args := range [][]string{{"work:"}, {"work:project"}, {"work", "/src"}, {"work", "/src", "./dst"}, {"2001:db8::1", "self:"}, {"alice@2001:db8::1", "self:"}, {"work:project", "local", "extra"}, {"origin:project", "local"}, {"local:project", "origin:"}, {"[not-ip]:project", "self:"}} {
 		if _, err := parseFTPOptions(args); err == nil {
 			t.Fatalf("accepted mount %v", args)
 		}
@@ -234,23 +238,23 @@ func TestMountSourceEndpoints(t *testing.T) {
 }
 
 func TestFTPStatsOptions(t *testing.T) {
-	o, err := parseFTPOptions([]string{"host:", "--stats"})
+	o, err := parseFTPOptions([]string{"host:", "self:", "--stats"})
 	if err != nil || !o.stats {
 		t.Fatalf("%+v %v", o, err)
 	}
 }
 
 func TestFTPNotifyOptions(t *testing.T) {
-	o, err := parseFTPOptions([]string{"host:", "--server", "/a path/sshore", "--", "-J", "jump"})
+	o, err := parseFTPOptions([]string{"host:", "self:", "--", "-J", "jump"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	connection := mountSSHOptions(o)
 	args := strings.Join(connection.Args, " ") + " " + connection.Command
-	if !strings.Contains(args, "mount-agent") || !strings.Contains(args, "-J jump") || strings.Contains(args, "SessionType=subsystem") {
+	if !strings.Contains(args, "mount-agent") || !strings.Contains(args, "$HOME/.local/bin/sshore") || !strings.Contains(args, "-J jump") || strings.Contains(args, "SessionType=subsystem") {
 		t.Fatalf("%+v %s", o, args)
 	}
-	if _, err := parseFTPOptions([]string{"host:", "--no-watch"}); err == nil {
+	if _, err := parseFTPOptions([]string{"host:", "self:", "--no-watch"}); err == nil {
 		t.Fatal("removed compatibility flag accepted")
 	}
 
@@ -264,7 +268,7 @@ func TestFTPNotifyRecovery(t *testing.T) {
 }
 
 func TestRemoteMountRequest(t *testing.T) {
-	for _, args := range [][]string{{".", "origin:"}, {"--read-only", "/tmp", "origin:/client/mount"}} {
+	for _, args := range [][]string{{".:.", "origin:"}, {"self:", "::"}, {"--read-only", ".:/tmp", "origin:/client/mount"}, {".:/tmp", "::/client/mount"}} {
 		op, err := remoteMountRequest(args)
 		if err != nil || op.Kind != "mount" || op.LocalPath != "" {
 			t.Fatalf("%+v %v", op, err)
@@ -288,15 +292,15 @@ func TestMountApprovalSelection(t *testing.T) {
 }
 
 func TestMountTimeoutOptions(t *testing.T) {
-	o, e := parseFTPOptions([]string{"work:"})
+	o, e := parseFTPOptions([]string{"work:", "self:"})
 	if e != nil || o.ioTimeout != time.Minute || o.startupTimeout != 0 {
 		t.Fatal(o, e)
 	}
-	o, e = parseFTPOptions([]string{"work:", "--io-timeout", "0s", "--startup-timeout", "2m"})
+	o, e = parseFTPOptions([]string{"work:", "self:", "--io-timeout", "0s", "--startup-timeout", "2m"})
 	if e != nil || o.ioTimeout != 0 || o.startupTimeout != 2*time.Minute {
 		t.Fatal(o, e)
 	}
-	for _, a := range [][]string{{"work:", "--io-timeout", "-1s"}, {"work:", "--startup-timeout", "bad"}} {
+	for _, a := range [][]string{{"work:", "self:", "--io-timeout", "-1s"}, {"work:", "self:", "--startup-timeout", "bad"}} {
 		if _, e := parseFTPOptions(a); e == nil {
 			t.Fatal(a)
 		}

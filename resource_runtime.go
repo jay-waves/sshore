@@ -209,21 +209,22 @@ func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, lo
 		o.name = config.Forward.Name
 	} else {
 		o, e = parseFTPOptions(config.Args)
+		if e != nil {
+			return 1, e
+		}
 		o.name = config.MountName
 		o.approval = config.MountApproval
-		if config.MountConnection != nil {
-			if err := validateRecentConnection(*config.MountConnection); err != nil {
-				return 1, err
-			}
-			if o.approval == nil || !config.MountConnection.viaShell() || config.MountConnection.Session != o.approval.Session || config.MountConnection.Host != o.host {
-				return 1, fmt.Errorf("invalid routed mount approval")
-			}
-		}
 		if o.approval != nil && (o.approval.PID <= 0 || validSession(o.approval.Session) != nil || !validRequestID(o.approval.ID)) {
 			return 1, fmt.Errorf("invalid mount approval")
 		}
-		if e != nil {
-			return 1, e
+		if connection := config.MountConnection; connection != nil {
+			if err := validateRecentConnection(*connection); err != nil {
+				return 1, err
+			}
+			if o.approval == nil || connection.Session != o.approval.Session || connection.Instance != o.approval.Instance || connection.Host != o.host {
+				return 1, fmt.Errorf("invalid mount approval connection")
+			}
+			o.server, o.ssh = connection.Server, connection.SSH
 		}
 	}
 	if e = validSession(o.name); e != nil {

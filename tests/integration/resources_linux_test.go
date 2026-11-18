@@ -27,10 +27,10 @@ func TestKillAllLocalSnapshot(t *testing.T) {
 		return string(out), err
 	}
 	for _, name := range []string{"one", "two"} {
-		if out, err := run("", "launch", "--local", name, "--detach"); err != nil {
+		if out, err := run("", "fixture-launch", "--local", name, "--detach"); err != nil {
 			t.Fatal(out, err)
 		}
-		t.Cleanup(func() { run("", "kill", "--local", name) })
+		t.Cleanup(func() { run("", "kill", "self:"+name) })
 	}
 	if out, err := run("no\n", "kill", "--all"); err == nil || !strings.Contains(out, "(one)") || !strings.Contains(out, "(two)") {
 		t.Fatal(out, err)
@@ -65,8 +65,8 @@ func TestKillAllStopsIdleDaemon(t *testing.T) {
 			t.Fatalf("%v: %v %s", args, err, out)
 		}
 	}
-	run("launch", "--local", "idle", "--detach")
-	run("kill", "--local", "idle")
+	run("fixture-launch", "--local", "idle", "--detach")
+	run("kill", "self:idle")
 	if len(backgroundProcesses(t, e, state)) == 0 {
 		t.Fatal("expected idle daemon")
 	}
@@ -90,8 +90,8 @@ func TestKillAllDoesNotCancelReplacement(t *testing.T) {
 		}
 		return string(out)
 	}
-	run("launch", "--local", "same", "--detach")
-	defer run("kill", "--local", "same")
+	run("fixture-launch", "--local", "same", "--detach")
+	defer run("kill", "self:same")
 	cmd := exec.CommandContext(ctx, e.bin, "kill", "--all")
 	cmd.Env = env
 	input, err := cmd.StdinPipe()
@@ -116,8 +116,8 @@ func TestKillAllDoesNotCancelReplacement(t *testing.T) {
 		}
 		text.WriteByte(b)
 	}
-	run("kill", "--local", "same")
-	run("launch", "--local", "same", "--detach")
+	run("kill", "self:same")
+	run("fixture-launch", "--local", "same", "--detach")
 	io.WriteString(input, "kill\n")
 	input.Close()
 	tail, _ := io.ReadAll(reader)
@@ -185,7 +185,7 @@ func TestForwardStartupShowsSSHFailure(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' 'Error: remote port forwarding failed for listen port 5173' >&2\nexit 255\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(e.bin, "forward", "work:5173", "origin:7777")
+	cmd := exec.Command(e.bin, "forward", "work:5173", ".:7777")
 	cmd.Env = append(e.env, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SSHORE_STATE_DIR="+filepath.Join(root, "state"), "SSHORE_SSH="+script)
 	e.env = cmd.Env
 	out, err := cmd.CombinedOutput()
@@ -226,7 +226,7 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 			for {
 				n, err := terminal.Read(buf)
 				b.Write(buf[:n])
-				if !announced && strings.Contains(b.String(), "Connected local /") {
+				if !announced && strings.Contains(b.String(), "Connected self:") {
 					announced = true
 					ready <- struct{}{}
 				}
@@ -261,8 +261,8 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 		}
 		return out
 	}
-	first, terminal, _ := start([]string{"launch", "--local", "persistent"}, env)
-	defer run("kill", "--local", "persistent")
+	first, terminal, _ := start([]string{"fixture-launch", "--local", "persistent"}, env)
+	defer run("kill", "self:persistent")
 	first.Process.Kill()
 	first.Wait()
 	terminal.Close()
@@ -279,7 +279,7 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	pid := rows[0].PID
-	second, terminal, done := start([]string{"attach", rows[0].ShortID}, append(env, "SSHORE_TEST_VALUE=second"))
+	second, terminal, done := start([]string{"attach", "self:" + rows[0].ShortID}, append(env, "SSHORE_TEST_VALUE=second"))
 	io.WriteString(terminal, "printf 'SAVED_%s_VALUE\\n' \"$SSHORE_TEST_VALUE\"\n")
 	select {
 	case <-saved:
@@ -325,8 +325,8 @@ func TestLocalNoLoginStartup(t *testing.T) {
 			t.Fatalf("%v: %v %s", args, err, out)
 		}
 	}
-	run("launch", "--local", "startup", "--no-login", "--detach")
-	defer run("kill", "--local", "startup")
+	run("fixture-launch", "--local", "startup", "--no-login", "--detach")
+	defer run("kill", "self:startup")
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		data, err := os.ReadFile(marker)

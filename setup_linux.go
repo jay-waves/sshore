@@ -48,7 +48,7 @@ func serveRemote(mode, name, peerVersion string) (result error) {
 				return err
 			}
 			if len(names) == 0 {
-				return fmt.Errorf("no detached shells; use sshore launch HOST to create one")
+				return fmt.Errorf("no detached shells; use sshore launch HOST: to create one")
 			}
 			if len(names) == 1 {
 				name = names[0]

@@ -29,8 +29,8 @@ func TestWindowsKillAllWaitsForIdleDaemonExit(t *testing.T) {
 			t.Fatalf("%v: %v: %s", args, err, out)
 		}
 	}
-	run("launch", "--local", "idle", "--detach")
-	run("kill", "--local", "idle")
+	run("fixture-launch", "--local", "idle", "--detach")
+	run("kill", "self:idle")
 	data, err := os.ReadFile(filepath.Join(state, "daemon", "daemon.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -121,8 +121,8 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	}
 	bin := "'" + strings.ReplaceAll(filepath.ToSlash(e.bin), "'", "'\"'\"'") + "'"
 	wait("SSHORE_OUTER>")
-	send(fmt.Sprintf("%s launch --local nativecheck; printf 'OUTER_%%s\\n' detached\r", bin))
-	wait("Connected local / nativecheck")
+	send(fmt.Sprintf("%s fixture-launch --local nativecheck; printf 'OUTER_%%s\\n' detached\r", bin))
+	wait("Connected self:nativecheck")
 	send("PS1='SSHORE_INNER> '\r")
 	wait("SSHORE_INNER>")
 	send("SSHORE_NAV=OX\x1b[D\x1b[3~K\r")
@@ -135,7 +135,7 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 		t.Fatalf("detach lost shell: %+v", rows)
 	}
 	pid := rows[0].PID
-	send(fmt.Sprintf("%s attach %s; printf 'OUTER_%%s\\n' exited\r", bin, rows[0].ShortID))
+	send(fmt.Sprintf("%s attach self:%s; printf 'OUTER_%%s\\n' exited\r", bin, rows[0].ShortID))
 	wait("SSHORE_INNER>")
 	rows = e.shells(t)
 	if len(rows) != 1 || rows[0].PID != pid || rows[0].State != "attached" {

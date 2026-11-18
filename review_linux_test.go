@@ -115,13 +115,19 @@ func TestEndpointRequestHelpers(t *testing.T) {
 		kind, hint string
 		reverse    bool
 	}{
-		{[]string{"cp", ":", e.dir}, "upload", "", false},
-		{[]string{"cp", "origin:/client/source", e.dir}, "upload", "/client/source", false},
-		{[]string{"cp", source, "origin:/client/target"}, "download", "/client/target", false},
-		{[]string{"mount", e.dir, "origin:"}, "mount", "", false},
-		{[]string{"mount", e.dir, "origin:/client/mount", "--read-only"}, "mount", "/client/mount", false},
-		{[]string{"forward", "origin:", "3000"}, "forward", "", false},
-		{[]string{"forward", "3000", "origin:8080"}, "forward", "8080", true},
+		{[]string{"cp", "origin:", ".:" + e.dir}, "upload", "", false},
+		{[]string{"cp", "origin:/client/source", ".:" + e.dir}, "upload", "/client/source", false},
+		{[]string{"cp", ".:" + source, "origin:/client/target"}, "download", "/client/target", false},
+		{[]string{"cp", "::", ".:" + e.dir}, "upload", "", false},
+		{[]string{"cp", ".:" + source, "::/client/target"}, "download", "/client/target", false},
+		{[]string{"mount", ".:" + e.dir, "origin:"}, "mount", "", false},
+		{[]string{"mount", ".:" + e.dir, "origin:/client/mount", "--read-only"}, "mount", "/client/mount", false},
+		{[]string{"mount", ".:" + e.dir, "::"}, "mount", "", false},
+		{[]string{"mount", ".:" + e.dir, "::/client/mount", "--read-only"}, "mount", "/client/mount", false},
+		{[]string{"forward", "origin:", ".:3000"}, "forward", "", false},
+		{[]string{"forward", ".:3000", "origin:8080"}, "forward", "8080", true},
+		{[]string{"forward", "::", ".:3000"}, "forward", "", false},
+		{[]string{"forward", ".:3000", "::8080"}, "forward", "8080", true},
 	} {
 		_, done := e.helper(tc.args[0], tc.args[1:]...)
 		stream, err := b.mux.AcceptStream()
@@ -197,9 +203,9 @@ exit 1
 					command = "subscribe"
 				}
 				if command == "publish" {
-					op, _ = remoteForwardRequest([]string{"origin:", "3000"})
+					op, _ = remoteForwardRequest([]string{"origin:", ".:3000"})
 				} else {
-					op, _ = remoteForwardRequest([]string{"3000", ":"})
+					op, _ = remoteForwardRequest([]string{".:3000", "::"})
 				}
 			}
 			if hinted {

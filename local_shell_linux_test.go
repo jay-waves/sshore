@@ -25,7 +25,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 	state := filepath.Join(e.dir, "local-state")
 	t.Cleanup(func() { shutdownFixtureDaemon(t, state) })
 	env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SHELL=/bin/sh", "TERM=xterm-256color")
-	for _, args := range [][]string{{"launch", "--local", "localtest", "--no-profile"}, {"attach"}} {
+	for _, args := range [][]string{{"fixture-launch", "--local", "localtest", "--no-profile"}, {"attach", "self:"}} {
 		if args[0] == "attach" {
 			list := exec.Command(e.bin, "list", "--local", "--json")
 			list.Env = env
@@ -38,7 +38,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 				t.Fatalf("list: %s %v", data, err)
 			}
 			originalID := rows[0].ShortID
-			rename := exec.Command(e.bin, "rename", originalID, "renamed")
+			rename := exec.Command(e.bin, "rename", "self:"+originalID, "renamed")
 			rename.Env = env
 			if out, err := rename.CombinedOutput(); err != nil {
 				t.Fatalf("rename: %s %v", out, err)
@@ -52,7 +52,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 			if err = json.Unmarshal(data, &rows); err != nil || len(rows) != 1 || rows[0].Name != "renamed" || rows[0].ShortID != originalID {
 				t.Fatalf("renamed list: %s %v", data, err)
 			}
-			args = []string{"attach", originalID}
+			args = []string{"attach", "self:" + originalID}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		cmd := exec.CommandContext(ctx, e.bin, args...)
@@ -70,19 +70,19 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 			for {
 				n, err := terminal.Read(buf)
 				out.Write(buf[:n])
-				if stage == 0 && strings.Contains(out.String(), "Connected local /") {
+				if stage == 0 && strings.Contains(out.String(), "Connected self:") {
 					stage = 1
-					if args[0] == "launch" {
+					if args[0] == "fixture-launch" {
 						io.WriteString(terminal, "\x02c")
 					} else {
 						io.WriteString(terminal, "exit\n")
 					}
 				}
-				if args[0] == "launch" && stage == 1 && strings.Count(out.String(), "Connected local /") >= 2 {
+				if args[0] == "fixture-launch" && stage == 1 && strings.Count(out.String(), "Connected self:") >= 2 {
 					stage = 2
 					io.WriteString(terminal, "\x02d")
 				}
-				if args[0] == "launch" && stage == 2 && strings.Count(out.String(), "Connected local / localtest") >= 2 {
+				if args[0] == "fixture-launch" && stage == 2 && strings.Count(out.String(), "Connected self:localtest") >= 2 {
 					stage = 3
 					io.WriteString(terminal, "\x02d")
 				}
@@ -99,7 +99,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%v: %v %s", args, err, out)
 		}
-		if args[0] == "launch" {
+		if args[0] == "fixture-launch" {
 			t.Setenv("SSHORE_STATE_DIR", state)
 			records, err := nativeShellRecords()
 			if err != nil {
@@ -120,13 +120,13 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 			if first.ManagerPID <= 0 || first.ManagerPID != second.ManagerPID {
 				t.Fatalf("shells do not share a daemon: %d, %d", first.ManagerPID, second.ManagerPID)
 			}
-			cleanup := exec.Command(e.bin, "kill", second.UID[:6])
+			cleanup := exec.Command(e.bin, "kill", "self:"+second.UID[:6])
 			cleanup.Env = env
 			if output, err := cleanup.CombinedOutput(); err != nil {
 				t.Fatalf("cleanup: %s %v", output, err)
 			}
 		}
-		if args[0] == "launch" && !strings.Contains(out, "Detached;") {
+		if args[0] == "fixture-launch" && !strings.Contains(out, "Detached;") {
 			t.Fatal(out)
 		}
 		if args[0] == "attach" && !strings.Contains(out, "Exited launch/renamed on local (code 0).") {
@@ -339,8 +339,8 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 		}
 		return string(out)
 	}
-	run(env, "launch", "--local", "keeper", "--detach")
-	defer run(env, "kill", "--local", "keeper")
+	run(env, "fixture-launch", "--local", "keeper", "--detach")
+	defer run(env, "kill", "self:keeper")
 	raw, err := os.ReadFile(filepath.Join(state, "daemon", "daemon.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -378,7 +378,7 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 		}
 		port := fmt.Sprint(probe.Addr().(*net.TCPAddr).Port)
 		probe.Close()
-		out := run(append(append([]string(nil), env...), "SSHORE_TEST_CONFIG_OWNER="+observation, "SSHORE_SSH="+stub), "forward", port, "fixture:"+fmt.Sprint(target.Addr().(*net.TCPAddr).Port))
+		out := run(append(append([]string(nil), env...), "SSHORE_TEST_CONFIG_OWNER="+observation, "SSHORE_SSH="+stub), "forward", ".:"+port, "fixture:"+fmt.Sprint(target.Addr().(*net.TCPAddr).Port))
 		conn, err := net.DialTimeout("tcp4", net.JoinHostPort("127.0.0.1", port), time.Second)
 		if err != nil {
 			t.Fatal(err)
@@ -438,7 +438,7 @@ func TestLocalDaemonIgnoresOrphanedVersion(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSHORE_LOCAL_SESSION=")
-			cmd := exec.CommandContext(ctx, e.bin, "spawn", "--local", "fresh", "--detach")
+			cmd := exec.CommandContext(ctx, e.bin, "fixture-spawn", "--local", "fresh", "--detach")
 			cmd.Env = env
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("orphaned record blocked spawn: %v %s", err, out)

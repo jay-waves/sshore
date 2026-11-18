@@ -33,7 +33,7 @@ Tasks and setup
   mcp         Serve Agent tools over stdio
   daemon      Run the account task manager
 
-Start: sshore launch work build     Resume: sshore attach work build
+Start: sshore launch work:     Resume: sshore attach work:7afe22
 In a session: Ctrl+B c spawns; d detaches; n/p switches; l returns; r redraws.
 Examples: sshore --tldr             Details: sshore COMMAND --help
 Version: sshore --version
@@ -56,8 +56,7 @@ const connectionOptions = `  --server PATH         Remote executable (default: P
   --no-escape           Disable Ctrl+B shortcuts
 `
 
-const shellStartupOptions = `  --local               Select a local shell
-  --detach              Start without attaching
+const shellStartupOptions = `  --detach              Start without attaching
   --no-login            Use non-login startup (Linux)
   --no-profile          Skip optional shell startup files; implies --no-login on Linux
 `
@@ -141,37 +140,28 @@ Use an SSH config host alias for connection options.
 Example: sshore exec work 'uname -a'
 `,
 
-	"launch": `Usage: sshore launch [HOST [NAME]] [options] [-- SSH_OPTIONS]
-       sshore launch --local [NAME] [options]
+	"launch": `Usage: sshore launch [HOST:] [options] [-- SSH_OPTIONS]
 
 Start a new shell. It survives detach and connection loss; exit ends it.
-Omit HOST for local use. NAME sets an optional alias; otherwise use the task ID.
+Omit the target or use self: or .: for local use. Create aliases with rename.
 To resume, use attach.
 
 Options:
 ` + shellStartupOptions + connectionOptions + shellConnectionHelp,
-	"spawn": `Usage: sshore spawn [HOST [NAME]] [options] [-- SSH_OPTIONS]
-       sshore spawn --local [NAME] [options]
+	"spawn": `Usage: sshore spawn [HOST:] [options] [-- SSH_OPTIONS]
 
-Start a shell bound to the launching parent. NAME is an optional alias.
+Start a shell bound to the launching parent. Use self: or .: for local use.
 It ends when that parent exits; a remote spawn also ends if its lifetime SSH connection is lost.
 Detach and attach do not change the owner. Use launch for a persistent shell.
 
 Options:
 ` + shellStartupOptions + connectionOptions + shellConnectionHelp,
-	"attach": `Usage: sshore attach [HOST [NAME]] [options] [-- SSH_OPTIONS]
-       sshore attach ID [options] [-- SSH_OPTIONS]
+	"attach": `Usage: sshore attach HOST:[ID] [options] [-- SSH_OPTIONS]
+       sshore attach self:[ID] [options]
 
-Resume a detached shell. This never creates a shell or evicts its current client.
-Omit HOST and NAME to resume the most recently detached local or remote shell.
-HOST alone selects that remote host’s most recently detached shell. Select a
-local shell explicitly by ID. Confirmed detaches, including Ctrl+B d, update the shared MRU order.
-Without detach history, use the remembered connection or existing selection.
-Use an alias or short ID from list. An ID selects its local or remote shell.
-With HOST, ID may replace NAME. IDs accept unique 2–32 character hexadecimal
-prefixes; ambiguous prefixes fail. A single operand must match a known task or
-recorded remote host; unknown targets fail without opening an SSH connection.
-Use HOST NAME explicitly for an unrecorded host or a hexadecimal host name.
+Resume a detached shell. Use an ID or alias from list.
+Leave the ID empty to select a detached shell on the specified machine.
+Use .: as a shorthand for self:. IDs accept unique hexadecimal prefixes.
 
 Options:
 ` + connectionOptions + shellConnectionHelp,
@@ -181,10 +171,9 @@ Disconnect this client and cancel its transfers. A persistent shell keeps
 running; a spawn still follows its owner and connection lifetime.
 Use attach to reconnect. Ctrl+B d also detaches.
 `,
-	"rename": `Usage: sshore rename HOST OLD NEW [--server PATH] [-- SSH_OPTIONS]
-       sshore rename --local OLD NEW
+	"rename": `Usage: sshore rename HOST:ID NEW [--server PATH] [-- SSH_OPTIONS]
+       sshore rename self:ID NEW
        sshore rename {mount|forward|review}/OLD NEW
-       sshore rename ID NEW
 
 Set or replace a shell, resource or pending review alias without restarting it.
 NEW must be unused and cannot be 6–32 hexadecimal characters.
@@ -227,14 +216,12 @@ shows <- HOST; exporting a mount or local service shows -> HOST.
 Incoming resources are read-only here. Use list for states and observation times.
 No SSH is started by this command.
 `,
-	"kill": `Usage: sshore kill --local NAME
+	"kill": `Usage: sshore kill self:ID
        sshore kill {review|mount|forward}/NAME
-       sshore kill ID
-       sshore kill HOST NAME [--server PATH] [-- SSH_OPTIONS]
+       sshore kill HOST:ID [--server PATH] [-- SSH_OPTIONS]
        sshore kill [HOST] --all [--server PATH] [-- SSH_OPTIONS]
 
-Use a name or short ID from list. ID selects its task without HOST or --local;
-it may also replace NAME in the forms above. IDs stay bound to their original
+Use a name or short ID from list as the endpoint value. IDs stay bound to their original
 instance across renames; an unavailable instance cannot select its replacement.
 
 Effects:
@@ -269,63 +256,55 @@ To discard a request: sshore kill review/NAME.
 `,
 	"cp": `Usage: sshore cp SOURCE... TARGET [-- SSH_OPTIONS]
 
-Use HOST:PATH for one side and a local path for the other. Bracket IPv6
-addresses; use ./ for local filenames containing a colon. Copies up to
-16 regular files; no recursion, symlinks or overwrites. Multiple sources
-need a target directory. File destinations must support hard links.
+Write both endpoints as HOST:PATH. Use self: or .: for the current machine.
+In an attached remote shell, origin: or :: selects the client for review.
+Leave a local path empty to choose it. Use .:- for standard input or output.
+Copy supports up to 16 regular files. Batches with an explicit target require a directory.
 
-  sshore cp report.zip work:/tmp/
-  sshore cp work:/tmp/report.txt -      Write one file to stdout
-  sshore cp - work:/tmp/report.txt      Read stdin into a new remote file
-
-Use origin: (or :) to pick a local path. From a remote shell, it refers to
-the attached client: sshore cp report.zip origin: queues a request and
-detaches. Run sshore review locally. An origin:PATH is only a suggestion.
-Streams are for direct copies only.
+  sshore cp .:report.zip work:/tmp/
+  sshore cp work:/tmp/report.txt .:-
+  sshore cp .:- work:/tmp/report.txt
 
 A failure stops the batch and keeps completed files. Stdout may already
 contain partial data. The remote sshore release must match exactly.
 ` + sshOptions,
-	"mount": `Usage: sshore mount HOST:SOURCE [MOUNTPOINT] [options] [-- SSH_OPTIONS]
-       sshore mount DIRECTORY origin:[MOUNTPOINT] [--read-only]
+	"mount": `Usage: sshore mount HOST:SOURCE MOUNTPOINT [options] [-- SSH_OPTIONS]
+       sshore mount self:[DIRECTORY] origin:[MOUNTPOINT] [--read-only]
 
 Mount a remote directory through the remote sshore helper using SFTP.
 The remote sshore release must match exactly.
 Background mounts receive fixed task IDs. HOST: selects the remote home.
 Use [HOST]:SOURCE for an IPv6 address.
-Default: ~/mnt/NAME on Linux or a free Windows drive. Requires FUSE or WinFsp respectively.
+Use self:PATH or .:PATH for the mountpoint. Leave PATH empty
+to use ~/mnt/NAME on Linux or a free drive letter on Windows.
+Requires FUSE on Linux or WinFsp on Windows.
 A custom mountpoint must be an existing empty directory on Linux, or a
 free drive letter or nonexistent directory on Windows.
 
 Options:
   --read-only                  Reject changes through the mount
   --foreground                 Run in this terminal; Ctrl-C requests unmount
-  --server PATH                Remote helper path
   --io-timeout DURATION        Per SFTP request (60s; 0s disables)
   --startup-timeout DURATION   Startup including authentication (0s disables)
   --stats                      Report request and cache statistics
   --direct-io                  Disable kernel read caching (Linux)
 
-From a remote shell, origin: queues a request and detaches. Run review
-locally to choose a mountpoint and start the mount.
+From a remote shell, origin: and :: select the attached client.
+The request detaches you. Run review locally to choose a mountpoint.
 Busy mounts stay active. A second Ctrl-C during unmount forces disconnect
 and can interrupt writes. Request timeouts close the whole mount connection;
 affected writes are not retried.
 
-Example: sshore mount work:/srv/project --read-only
+Example: sshore mount work:/srv/project .: --read-only
 ` + sshOptions,
 	"forward": `Usage: sshore forward LISTENER SERVICE [options] [-- SSH_OPTIONS]
 
-Connections enter LISTENER and go to SERVICE. Use HOST:PORT for the remote
-side and a bare port or origin:PORT for the local side. Both use loopback.
-Use origin: without a port to choose the local port interactively.
-Background forwards are named automatically. The remote sshore release must match exactly.
+Write both endpoints as HOST:PORT, with the listener first. Use self: or .:
+for the current machine. Leave the client-side port empty to choose it.
+From a remote shell, use origin: or :: for the attached client and review locally.
 
-  sshore forward 8080 work:3000        Local listener -> remote service
-  sshore forward work:3000 8080        Remote listener -> local service
-
-From a remote shell, use a bare server port and origin:[PORT] for the
-client side. The request detaches; run review locally to set the client port.
+  sshore forward .:8080 work:3000
+  sshore forward work:3000 .:8080
 
 Options:
   --foreground   Run in this terminal; Ctrl-C stops forwarding
@@ -375,56 +354,56 @@ func showHelp(args []string, w io.Writer) error {
 var commandExamples = map[string]string{
 	"setup": "Update this computer\n  sshore setup\nUpdate a remote host to match this computer\n  sshore setup work\n",
 	"": `Start a persistent remote shell
-  sshore launch work build
+  sshore launch work:
 Resume it after detaching with Ctrl+B d
-  sshore attach work build
+  sshore attach work:7afe22
 Upload a file
-  sshore cp ./report.txt work:/tmp/report.txt
+  sshore cp .:./report.txt work:/tmp/report.txt
 Forward a local port to a remote service
-  sshore forward 8080 work:3000
+  sshore forward .:8080 work:3000
 
 More examples: sshore launch|spawn|cp|mount|forward --tldr
 `,
 	"launch": `Start a persistent remote shell
-  sshore launch work build
+  sshore launch work:
 Start a local shell
-  sshore launch --local build
+  sshore launch self:
 Connect through a jump host
-  sshore launch work build -- -J jump
+  sshore launch work: -- -J jump
 
-Ctrl+B d detaches; sshore attach work build resumes.
+Ctrl+B d detaches; sshore attach work:7afe22 resumes.
 The remote sshore release must match exactly.
 `,
 	"spawn": `Start a remote shell tied to this owner and connection
-  sshore spawn work build
+  sshore spawn work:
 Start without attaching
-  sshore spawn work build --detach
+  sshore spawn work: --detach
 
 The shell ends when its owner or lifetime connection is lost.
 The remote sshore release must match exactly.
 `,
 	"cp": `Upload a file
-  sshore cp ./report.txt work:/tmp/report.txt
+  sshore cp .:./report.txt work:/tmp/report.txt
 Download a file
-  sshore cp work:/tmp/report.txt ./report.txt
+  sshore cp work:/tmp/report.txt .:./report.txt
 Use a different SSH port
-  sshore cp ./report.txt work:/tmp/report.txt --port 2222
+  sshore cp .:./report.txt work:/tmp/report.txt --port 2222
 `,
 	"mount": `Mount a remote directory at the default local mountpoint
-  sshore mount work:/srv/project
+  sshore mount work:/srv/project .:
 Mount read-only
-  sshore mount work:/srv/project --read-only
+  sshore mount work:/srv/project .: --read-only
 Run in the foreground
-  sshore mount work:/srv/project --foreground
+  sshore mount work:/srv/project .: --foreground
 
 Requires FUSE on Linux or WinFsp on Windows.
 `,
 	"forward": `Expose a remote service on a local port
-  sshore forward 8080 work:3000
+  sshore forward .:8080 work:3000
 Expose a local service on a remote port
-  sshore forward work:8080 3000
+  sshore forward work:8080 .:3000
 Run until Ctrl-C
-  sshore forward 8080 work:3000 --foreground
+  sshore forward .:8080 work:3000 --foreground
 `,
 }
 

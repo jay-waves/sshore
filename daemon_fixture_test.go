@@ -49,6 +49,24 @@ func TestMain(m *testing.M) {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+		if len(os.Args) >= 4 && (os.Args[1] == "fixture-launch" || os.Args[1] == "fixture-spawn") {
+			// Named fixtures let lifecycle tests locate processes independently of shell ID generation.
+			target := os.Args[2] + ":"
+			if os.Args[2] == "--local" {
+				target = "self:"
+			}
+			o, err := parseOptions(append([]string{strings.TrimPrefix(os.Args[1], "fixture-"), target}, os.Args[4:]...))
+			if err == nil {
+				o.session = os.Args[3]
+				code, runErr := withDaemonActivity(func() (int, error) { return executeShellCommand(o) })
+				if runErr == nil {
+					os.Exit(code)
+				}
+				err = runErr
+			}
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		main()
 	}
 	// Tests opt in to an isolated root instead of using the caller's setting.

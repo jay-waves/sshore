@@ -113,7 +113,7 @@ func resolveDetachedAttach(o *options) (bool, error) {
 		return false, nil
 	}
 	var locals []localShellView
-	if o.host == "" {
+	if o.host == "" || o.local {
 		locals, err = localShells()
 		if err != nil {
 			return false, err
@@ -165,6 +165,9 @@ func selectDetachedAttach(o *options, rows []recentAttachment, locals []localShe
 // Host selection filters the global order; local shells are selected globally
 // or explicitly by identity, without a separate public local scope.
 func (r recentAttachment) inScope(o options) bool {
+	if o.local {
+		return r.Local
+	}
 	if o.host == "" {
 		return true
 	}

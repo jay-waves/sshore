@@ -21,7 +21,7 @@ func TestApprovedForwardCarriesSourceInstance(t *testing.T) {
 }
 
 func TestForwardArguments(t *testing.T) {
-	o, err := parseOptions([]string{"launch", "host", "--", "-L", "127.0.0.1:8080:localhost:80"})
+	o, err := parseOptions([]string{"launch", "host:", "--", "-L", "127.0.0.1:8080:localhost:80"})
 	if err != nil || len(o.ssh) != 2 {
 		t.Fatal(o, err)
 	}
@@ -32,7 +32,7 @@ func TestForwardArguments(t *testing.T) {
 }
 
 func TestForwardNativeOptions(t *testing.T) {
-	o, err := parseOptions([]string{"launch", "host", "--", "-L8080:localhost:80", "-L", "8081:localhost:81"})
+	o, err := parseOptions([]string{"launch", "host:", "--", "-L8080:localhost:80", "-L", "8081:localhost:81"})
 	if err != nil || len(o.ssh) != 4 || o.ssh[1] != "8080:localhost:80" || o.ssh[3] != "8081:localhost:81" {
 		t.Fatal(o, err)
 	}
@@ -44,11 +44,11 @@ func TestLocalForwardDirections(t *testing.T) {
 		host    string
 		reverse bool
 	}{
-		{[]string{"8080", "work:3000"}, "work", false},
-		{[]string{"work:8080", "3000"}, "work", true},
-		{[]string{"8080", "user@work:3000"}, "user@work", false},
-		{[]string{"[::1]:8080", "3000"}, "::1", true},
-		{[]string{"8080", "user@[::1]:3000"}, "user@::1", false},
+		{[]string{".:8080", "work:3000"}, "work", false},
+		{[]string{"work:8080", ".:3000"}, "work", true},
+		{[]string{".:8080", "user@work:3000"}, "user@work", false},
+		{[]string{"[::1]:8080", ".:3000"}, "::1", true},
+		{[]string{".:8080", "user@[::1]:3000"}, "user@::1", false},
 	} {
 		f, _, err := parseForwardCommand(tc.args)
 		if err != nil {
@@ -60,11 +60,11 @@ func TestLocalForwardDirections(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"work", "3000"}, {"work", "8080", "3000"}, {"3000", "from", "work:8080"},
-		{"8080", "3000"}, {"a:8080", "b:3000"},
-		{"8080", ":3000"}, {"8080", "-host:3000"},
-		{"8080", "work:0"}, {"work:65536", "80"},
-		{"8080", "::1:3000"}, {"8080", "[bad]:3000"},
-		{"8080", "work:3000", "extra"},
+		{".:8080", "3000"}, {"a:8080", "b:3000"},
+		{".:8080", ":3000"}, {".:8080", "-host:3000"},
+		{".:8080", "work:0"}, {"work:65536", "80"},
+		{".:8080", "::1:3000"}, {".:8080", "[bad]:3000"},
+		{".:8080", "work:3000", "extra"},
 	} {
 		if _, _, err := parseForwardCommand(args); err == nil {
 			t.Fatal("accepted", args)
@@ -122,7 +122,7 @@ func TestRetryPolicy(t *testing.T) {
 }
 
 func TestForwardTransportOptions(t *testing.T) {
-	f, fg, e := parseForwardCommand([]string{"8080", "work:3000", "--", "-Jjump", "-i", "key with spaces", "-p2222", "-F", "config"})
+	f, fg, e := parseForwardCommand([]string{".:8080", "work:3000", "--", "-Jjump", "-i", "key with spaces", "-p2222", "-F", "config"})
 	if e != nil || fg || f.Name != "" || strings.Join(f.SSH, "|") != "-J|jump|-i|key with spaces|-p|2222|-F|config" {
 		t.Fatal(f, fg, e)
 	}
@@ -130,7 +130,7 @@ func TestForwardTransportOptions(t *testing.T) {
 	if !strings.Contains(command, "-J jump") {
 		t.Fatal(command)
 	}
-	for _, bad := range [][]string{{"8080", "work:3000", "-i"}, {"8080", "work:3000", "-D", "1080"}, {"8080", "work:3000", "--unknown"}} {
+	for _, bad := range [][]string{{".:8080", "work:3000", "-i"}, {".:8080", "work:3000", "-D", "1080"}, {".:8080", "work:3000", "--unknown"}} {
 		if _, _, e := parseForwardCommand(bad); e == nil {
 			t.Fatal(bad)
 		}
@@ -180,9 +180,13 @@ func TestForwardInvocation(t *testing.T) {
 		reverse      bool
 		port, target int
 	}{
-		{[]string{"origin:8080", "work:3000"}, false, 8080, 3000},
-		{[]string{"work:3000", "origin:8080"}, true, 3000, 8080},
-		{[]string{"8080", "work:3000"}, false, 8080, 3000},
+		{[]string{".:8080", "work:3000"}, false, 8080, 3000},
+		{[]string{"work:3000", ".:8080"}, true, 3000, 8080},
+		{[]string{"self:8080", "work:3000"}, false, 8080, 3000},
+		{[]string{"work:3000", "self:8080"}, true, 3000, 8080},
+		{[]string{"self:", "work:3000"}, false, 0, 3000},
+		{[]string{"work:3000", ".:"}, true, 3000, 0},
+		{[]string{".:8080", "work:3000"}, false, 8080, 3000},
 	} {
 		f, _, err := parseForwardCommand(tc.args)
 		if err != nil || f.Host != "work" || f.Port != tc.port || f.Target != tc.target || f.Reverse != tc.reverse {
@@ -192,7 +196,7 @@ func TestForwardInvocation(t *testing.T) {
 }
 
 func TestForwardRejectsInvalidLocalEndpoint(t *testing.T) {
-	for _, args := range [][]string{{"origin:work:3000", "8080"}, {"origin:0", "work:3000"}, {"work:3000", "origin:65536"}, {"origin:3000", "origin:8080"}, {"3000", "8080"}} {
+	for _, args := range [][]string{{"origin:work:3000", "8080"}, {"origin:0", "work:3000"}, {"work:3000", "origin:65536"}, {"origin:3000", ".:8080"}, {"origin:3000", "self:8080"}, {"self:8080", "work:"}, {"3000", "8080"}} {
 		if _, _, err := parseForwardCommand(args); err == nil {
 			t.Fatal("accepted", args)
 		}

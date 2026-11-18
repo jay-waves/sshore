@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -23,7 +22,7 @@ func parseOptions(args []string) (options, error) {
 	case "list":
 		o.list = true
 	default:
-		return o, usage("choose an action: sshore launch HOST [NAME], sshore spawn HOST [NAME], sshore list HOST, sshore attach HOST [NAME], sshore kill HOST NAME, or sshore rename HOST OLD NEW")
+		return o, usage("choose an action: sshore launch [HOST:], sshore spawn [HOST:], sshore list HOST, sshore attach HOST:ID, sshore kill HOST:ID, or sshore rename HOST:ID NEW")
 	}
 	parsed, err := parseCLI(args[1:], o.command)
 	if err != nil {
@@ -43,8 +42,35 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 	o.noLogin = parsed.has("--no-login")
 	o.noProfile = parsed.has("--no-profile")
 	o.listJSON = parsed.has("--json")
-	if (o.command == "launch" || o.command == "spawn") && len(parsed.operands) == 0 {
-		o.local = true
+	if command == "launch" || command == "spawn" {
+		target := parsed.operand(0, "")
+		o.local = target == ""
+		if o.local {
+			o.host = "local"
+			if len(o.ssh) > 0 || o.serverSet || o.downloadDir != "" {
+				return o, usage("local shells do not accept SSH or transfer options")
+			}
+			return o, nil
+		}
+		host, suffix, err := splitEndpoint(target)
+		if err != nil {
+			return o, err
+		}
+		if suffix != "" {
+			return o, usage("create with %s HOST: and set an alias with rename", command)
+		}
+		if host == "origin" {
+			return o, usage("create shells on self: or an SSH host")
+		}
+		if host == "self" {
+			o.local, o.host = true, "local"
+			if len(o.ssh) > 0 || o.serverSet || o.downloadDir != "" {
+				return o, usage("local shells do not accept SSH or transfer options")
+			}
+			return o, nil
+		}
+		o.host = host
+		return o, nil
 	}
 	firstName := 1
 	o.host = parsed.operand(0, "")
@@ -74,7 +100,7 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 	}
 	if o.command == "rename" {
 		if o.session == "" || o.newName == "" {
-			return o, usage("rename requires HOST OLD NEW and accepts SSH options, --server and --port")
+			return o, usage("rename requires HOST:ID and a new alias")
 		}
 		if err := validAlias(o.newName); err != nil {
 			return o, err
@@ -86,10 +112,56 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 	if o.session == "" {
 		return o, nil
 	}
-	if o.command == "launch" || o.command == "spawn" {
-		return o, validAlias(o.session)
-	}
 	return o, validSession(o.session)
+}
+
+func normalizeShellSelector(command string, parsed *cliArguments) error {
+	count := len(parsed.operands)
+	if parsed.has("--all") || !((command == "attach" || command == "kill") && count == 1 || command == "rename" && count == 2) {
+		return nil
+	}
+	ref := parsed.operands[0]
+	if !strings.Contains(ref, ":") || strings.Contains(ref, "/") {
+		return nil
+	}
+	if parsed.has("--local") {
+		return usage("use self:ID without --local")
+	}
+	host, selector, err := splitEndpoint(ref)
+	if err != nil {
+		return err
+	}
+	if selector == "" && command != "attach" {
+		return usage("%s requires a task ID or alias after the colon", command)
+	}
+	if selector != "" {
+		if err := validSession(selector); err != nil {
+			return err
+		}
+	}
+	tail := parsed.operands[1:]
+	parsed.explicitHost = true
+	if host == "origin" {
+		return usage("shell selectors require self: or an SSH host")
+	}
+	if host == "self" {
+		if len(parsed.ssh) != 0 || parsed.has("--server") || parsed.has("--download-dir") {
+			return usage("local shells do not accept SSH or transfer options")
+		}
+		parsed.values["--local"] = ""
+		if selector == "" {
+			parsed.operands = tail
+		} else {
+			parsed.operands = append([]string{selector}, tail...)
+		}
+		return nil
+	}
+	operands := []string{host}
+	if selector != "" {
+		operands = append(operands, selector)
+	}
+	parsed.operands = append(operands, tail...)
+	return nil
 }
 
 type options struct {
@@ -195,41 +267,79 @@ func prepareDownloadDir(path string) (string, error) {
 	return path, nil
 }
 
-// A placeholder always names the attached client, never the current shell.
-func originPlaceholder(s string) bool { return s == ":" || s == "origin:" }
+const localEndpointPrefix = "self:"
 
-func originEndpoint(s string) bool { return s == ":" || strings.HasPrefix(s, "origin:") }
-func originHint(s string) string {
-	if s == ":" {
-		return ""
+func splitEndpoint(value string) (host, suffix string, err error) {
+	switch {
+	case strings.HasPrefix(value, "::"):
+		return "origin", value[2:], nil
+	case strings.HasPrefix(value, ".:"):
+		return "self", value[2:], nil
+	case strings.HasPrefix(value, ":"):
+		return "self", value[1:], nil
 	}
-	return strings.TrimPrefix(s, "origin:")
+	address, offset := value, 0
+	if user, after, ok := strings.Cut(value, "@"); ok && !strings.ContainsAny(user, ":/\\") {
+		address, offset = after, len(user)+1
+	}
+	start := 0
+	if strings.HasPrefix(address, "[") {
+		end := strings.IndexByte(address, ']')
+		if end < 0 || end+1 == len(address) || address[end+1] != ':' {
+			return "", "", usage("use [HOST]:VALUE for an IPv6 endpoint")
+		}
+		start = end + 1
+	} else if ip := net.ParseIP(address); ip != nil && strings.Contains(address, ":") {
+		return "", "", usage("IPv6 endpoints require brackets")
+	}
+	separator := strings.IndexByte(address[start:], ':')
+	if separator < 0 {
+		return "", "", usage("endpoint requires a colon: use HOST:VALUE, self:VALUE or origin:VALUE")
+	}
+	separator += offset + start
+	if strings.ContainsAny(value[:separator], "/\\") {
+		return "", "", usage("invalid endpoint host")
+	}
+	host, err = endpointHost(value[:separator])
+	return host, value[separator+1:], err
 }
 
 func remoteCopyRequest(args []string) (string, []string, string, error) {
 	fail := func() (string, []string, string, error) {
-		return "", nil, "", usage("use cp SOURCE... origin:[PATH] or cp origin:[PATH] DIRECTORY")
+		return "", nil, "", usage("use cp self:SOURCE... origin:[PATH] or cp origin:[PATH] self:DIRECTORY")
 	}
 	if len(args) < 2 {
 		return fail()
 	}
-	kind, paths, hint := "download", args[:len(args)-1], originHint(args[len(args)-1])
-	if originEndpoint(args[0]) {
-		if len(args) != 2 || originEndpoint(args[1]) {
-			return fail()
-		}
-		kind, paths, hint = "upload", args[1:], originHint(args[0])
-	} else if !originEndpoint(args[len(args)-1]) {
+	first, firstPath, err := splitEndpoint(args[0])
+	if err != nil {
+		return "", nil, "", err
+	}
+	last, lastPath, err := splitEndpoint(args[len(args)-1])
+	if err != nil {
+		return "", nil, "", err
+	}
+	kind, sources, hint := "download", args[:len(args)-1], lastPath
+	switch {
+	case first == "origin" && last == "self" && len(args) == 2:
+		kind, sources, hint = "upload", args[1:], firstPath
+	case first == "self" && last == "origin":
+	default:
 		return fail()
 	}
 	if len(hint) > 4096 || strings.ContainsAny(hint, "\x00\r\n") {
 		return fail()
 	}
-	for _, value := range paths {
-		endpoint, err := parseCopyEndpoint(value)
-		if err != nil || endpoint.stream || originEndpoint(value) || endpoint.host != "" {
+	paths := make([]string, 0, len(sources))
+	for _, source := range sources {
+		host, path, err := splitEndpoint(source)
+		if err != nil || host != "self" || path == "-" || (path == "" && kind != "upload") {
 			return fail()
 		}
+		if path == "" {
+			path = "."
+		}
+		paths = append(paths, path)
 	}
 	return kind, paths, hint, nil
 }
@@ -262,8 +372,19 @@ func remoteMountRequest(args []string) (operation, error) {
 	if err != nil {
 		return operation{}, err
 	}
-	if len(parsed.operands) != 2 || originEndpoint(parsed.operands[0]) || !originEndpoint(parsed.operands[1]) {
-		return operation{}, usage("use mount DIRECTORY origin:[MOUNTPOINT] [--read-only]")
+	sourceHost, source, err := splitEndpoint(parsed.operands[0])
+	if err != nil {
+		return operation{}, err
+	}
+	targetHost, hint, err := splitEndpoint(parsed.operands[1])
+	if err != nil {
+		return operation{}, err
+	}
+	if sourceHost != "self" || targetHost != "origin" {
+		return operation{}, usage("use mount self:[DIRECTORY] origin:[MOUNTPOINT]")
+	}
+	if source == "" {
+		source = "."
 	}
 	if len(parsed.ssh) != 0 {
 		return operation{}, usage("remote mount requests inherit the attached connection")
@@ -273,11 +394,7 @@ func remoteMountRequest(args []string) (operation, error) {
 			return operation{}, usage("remote mount requests accept only --read-only")
 		}
 	}
-	endpoint, err := parseCopyEndpoint(parsed.operands[0])
-	if err != nil || endpoint.host != "" || endpoint.stream {
-		return operation{}, usage("mount source must be a path on this server")
-	}
-	return operation{Kind: "mount", Path: parsed.operands[0], LocalHint: originHint(parsed.operands[1]), ReadOnly: parsed.has("--read-only")}, nil
+	return operation{Kind: "mount", Path: source, LocalHint: hint, ReadOnly: parsed.has("--read-only")}, nil
 }
 
 // validSSHDestination applies to SSH aliases as well as user@host addresses.
@@ -308,59 +425,20 @@ type copyOptions struct {
 }
 
 func parseCopyEndpoint(value string) (copyEndpoint, error) {
-	if value == "-" {
-		return copyEndpoint{stream: true}, nil
-	}
-	if originPlaceholder(value) {
-		return copyEndpoint{pick: true}, nil
-	}
-	if strings.HasPrefix(value, "origin:") {
-		return copyEndpoint{path: strings.TrimPrefix(value, "origin:")}, nil
-	}
-	// Windows drive prefixes are local only on Windows. On Linux, a single
-	// letter can be a valid SSH host alias.
-	if runtime.GOOS == "windows" && len(value) >= 2 && value[1] == ':' && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) {
-		return copyEndpoint{path: value}, nil
-	}
-	host, path, err := splitRemotePath(value)
+	host, path, err := splitEndpoint(value)
 	if err != nil {
 		return copyEndpoint{}, err
 	}
-	if host != "" {
-		return copyEndpoint{host: host, path: path}, nil
+	switch host {
+	case "self":
+		return copyEndpoint{path: path, pick: path == "", stream: path == "-"}, nil
+	case "origin":
+		return copyEndpoint{}, usage("origin: requires an attached sshore shell")
 	}
-	if value == "" {
-		return copyEndpoint{}, usage("empty copy path")
+	if path == "" {
+		path = "."
 	}
-	return copyEndpoint{path: value}, nil
-}
-
-// splitRemotePath recognizes HOST:PATH without interpreting local endpoint roles.
-func splitRemotePath(value string) (host, path string, err error) {
-	bracket := false
-	for i, c := range value {
-		if c == '[' {
-			bracket = true
-		}
-		if c == ']' {
-			bracket = false
-		}
-		if !bracket && (c == '/' || c == '\\') {
-			break
-		}
-		if c == ':' && !bracket {
-			host, err := endpointHost(value[:i])
-			if err != nil {
-				return "", "", err
-			}
-			remote := value[i+1:]
-			if remote == "" {
-				remote = "."
-			}
-			return host, remote, nil
-		}
-	}
-	return "", "", nil
+	return copyEndpoint{host: host, path: path}, nil
 }
 
 // remotePathOperand encodes a normalized SSH destination for a generated command.
@@ -437,29 +515,23 @@ func parseFTPOptions(args []string) (ftpOptions, error) {
 	if err != nil {
 		return ftpOptions{}, err
 	}
-	for _, value := range parsed.operands {
-		if originEndpoint(value) {
-			return ftpOptions{}, usage("origin: mount requests require an attached sshore shell; run mount HOST:SOURCE locally")
-		}
-	}
-	source := parsed.operands[0]
-	address := source
-	if user, rest, ok := strings.Cut(source, "@"); ok && !strings.ContainsAny(user, ":/\\") {
-		address = rest
-	}
-	if strings.Contains(address, ":") && net.ParseIP(address) != nil {
-		return ftpOptions{}, usage("IPv6 mount sources require brackets: [HOST]:SOURCE")
-	}
-	host, remote, err := splitRemotePath(source)
+	host, remote, err := splitEndpoint(parsed.operands[0])
 	if err != nil {
 		return ftpOptions{}, err
 	}
-	if host == "" {
-		return ftpOptions{}, usage("use mount HOST:SOURCE [MOUNTPOINT]; use HOST: for the remote home")
+	targetHost, mountpoint, err := splitEndpoint(parsed.operands[1])
+	if err != nil {
+		return ftpOptions{}, err
+	}
+	if host == "self" || host == "origin" || targetHost != "self" {
+		return ftpOptions{}, usage("use mount HOST:SOURCE self:[MOUNTPOINT]")
+	}
+	if remote == "" {
+		remote = "."
 	}
 	o := ftpOptions{
-		host: host, remote: remote, mountpoint: parsed.operand(1, ""),
-		ssh: parsed.ssh, server: parsed.value("--server", "sshore"),
+		host: host, remote: remote, mountpoint: mountpoint,
+		ssh:        parsed.ssh,
 		foreground: parsed.has("--foreground"),
 		readOnly:   parsed.has("--read-only"), stats: parsed.has("--stats"), directIO: parsed.has("--direct-io"),
 		ioTimeout: parsed.duration("--io-timeout", 60*time.Second), startupTimeout: parsed.duration("--startup-timeout", 0),

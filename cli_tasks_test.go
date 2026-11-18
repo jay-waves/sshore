@@ -186,7 +186,7 @@ func TestShortTaskUnknownAndScopedNames(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "must-not-connect"))
 	for _, args := range [][]string{{"attach", "abcdef"}, {"kill", "123456"}, {"rename", "ABCDEF", "new"}, {"review", "abcdef"}} {
-		if code, err := run(args); code != 2 || err == nil || !strings.Contains(err.Error(), "unknown task ID") {
+		if code, err := run(args); code != 2 || err == nil {
 			t.Fatalf("%v: %d %v", args, code, err)
 		}
 	}
@@ -227,7 +227,7 @@ func TestShortTaskLocalCommandRouting(t *testing.T) {
 		return writeMessage(c, message{Type: reply})
 	}
 	for _, command := range []string{"kill", "rename"} {
-		args := []string{command, "123456"}
+		args := []string{command, "self:123456"}
 		if command == "rename" {
 			args = append(args, "new")
 		}
@@ -300,7 +300,7 @@ func TestShortTaskRejectsInvalidConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = run([]string{"kill", ids[remoteShellIdentity("work", "instance")].code}); err == nil || !strings.Contains(err.Error(), "invalid shell connection host") {
+	if _, err = run([]string{"kill", "work:" + ids[remoteShellIdentity("work", "instance")].code}); err == nil || !strings.Contains(err.Error(), "invalid shell connection host") {
 		t.Fatal("mismatched route accepted", err)
 	}
 }
@@ -419,22 +419,5 @@ func TestTwoCharacterTaskPrefix(t *testing.T) {
 	parsed, _ = parseCLI([]string{"3a"}, "attach")
 	if _, selected, err := resolveShortTask("attach", &parsed); err == nil || selected || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("ambiguous short prefix selected: %v", err)
-	}
-}
-
-func TestAttachHostRequiresKnownShell(t *testing.T) {
-	activityFixture(t)
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	if err := rememberConnection(options{host: "work", session: "gone"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateAttachHost("work"); err == nil {
-		t.Fatal("connection history alone authorized host")
-	}
-	if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "detached"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateAttachHost("work"); err != nil {
-		t.Fatal(err)
 	}
 }

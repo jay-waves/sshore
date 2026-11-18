@@ -48,10 +48,9 @@ An approved copy runs on a separate file stream without terminal attachment. An 
 an independent resource and retains the request's ID and NAME.
 Ending a source shell does not stop its independent resources.
 
-`origin:` and `:` name the current attached client's endpoint, not the computer
-that originally created the shell. A path or port supplied by a remote request
-is an editable local default, not permission to use it. Command syntax, endpoint
-selection and standard-stream handling belong to `cp --help` and `forward --help`.
+`self:` and `.:` identify the machine running the command. `origin:` and `::`
+identify the currently attached client. A remote request's path or port is an
+editable default in local review.
 
 ## Identity and state
 

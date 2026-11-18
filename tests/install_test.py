@@ -98,16 +98,6 @@ esac
         target = self.home / ".local/bin/sshore"
         self.assertEqual(subprocess.check_output([str(target), "--version"], text=True).strip(), "sshore 0.7.8")
 
-    def test_preparation_does_not_replace_existing_target(self):
-        dest = self.home / "staging"
-        self.run_install("--bin-dir", str(dest), "--prepare-only")
-        target = dest / "sshore"
-        original = target.read_bytes()
-        result = self.run_install("--bin-dir", str(dest), "--prepare-only", success=False)
-        self.assertIn("temporary staging target already exists", result.stderr)
-        self.assertEqual(target.read_bytes(), original)
-        self.assertEqual([p.name for p in dest.iterdir()], ["sshore"])
-
     def test_latest_and_custom_directory(self):
         self.env["TEST_ARCH"] = "x86_64"
         self.asset("0.3.1", "amd64")

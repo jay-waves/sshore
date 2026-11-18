@@ -19,7 +19,7 @@ import (
 
 func TestHostedShellHandoffPreservesLocalInstance(t *testing.T) {
 	uid := strings.Repeat("a", 32)
-	h := clientHandoff{LocalAttach: true, Hosted: true, Args: []string{"attach", "work"}, Directory: t.TempDir(), TaskIdentity: "task:" + uid, Instance: uid}
+	h := clientHandoff{Hosted: true, Args: []string{"attach", "self:work"}, Directory: t.TempDir(), TaskIdentity: "task:" + uid, Instance: uid}
 	o, err := h.options()
 	if err != nil || !o.local || !o.hosted || o.instance != uid || o.taskIdentity != h.TaskIdentity {
 		t.Fatalf("hosted route lost: %+v %v", o, err)
@@ -81,7 +81,7 @@ func TestLocalShellEnvironment(t *testing.T) {
 }
 
 func TestSpawnOptionsAndInventory(t *testing.T) {
-	for _, args := range [][]string{{"spawn"}, {"spawn", "--local", "dev", "--detach"}, {"spawn", "host", "dev", "--", "-p", "2222"}} {
+	for _, args := range [][]string{{"spawn"}, {"spawn", "self:", "--detach"}, {"spawn", "host:", "--", "-p", "2222"}} {
 		o, err := parseOptions(args)
 		if err != nil || o.command != "spawn" {
 			t.Fatalf("%v: %+v %v", args, o, err)
@@ -182,7 +182,7 @@ func TestClientConnectionCancellation(t *testing.T) {
 func TestShellStartupOptions(t *testing.T) {
 	for _, command := range []string{"launch", "spawn"} {
 		for _, flag := range []bool{false, true} {
-			args := []string{command, "host"}
+			args := []string{command, "host:"}
 			if flag {
 				args = append(args, "--no-login")
 			}
@@ -204,7 +204,7 @@ func TestShellStartupOptions(t *testing.T) {
 
 func TestNoProfileOptions(t *testing.T) {
 	for _, command := range []string{"launch", "spawn"} {
-		o, err := parseOptions([]string{command, "host", "--no-profile", "--no-login"})
+		o, err := parseOptions([]string{command, "host:", "--no-profile", "--no-login"})
 		if err != nil || !o.noProfile || !o.noLogin {
 			t.Fatalf("%+v %v", o, err)
 		}
@@ -225,9 +225,8 @@ func TestLocalCommandRouting(t *testing.T) {
 	}{
 		{[]string{"launch"}, true, ""},
 		{[]string{"launch", "--quiet", "--no-escape"}, true, ""},
-		{[]string{"launch", "--local", "work"}, true, "work"},
-		{[]string{"launch", "work"}, false, ""},
-		{[]string{"launch", "host", "work"}, false, "work"},
+		{[]string{"launch", "self:"}, true, ""},
+		{[]string{"launch", "work:"}, false, ""},
 		{[]string{"attach"}, false, ""},
 		{[]string{"list", "--local"}, true, ""},
 	} {

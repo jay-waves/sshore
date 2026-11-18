@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -16,20 +15,22 @@ func TestCopyParsing(t *testing.T) {
 		host   string
 		count  int
 	}{
-		{[]string{"a", "work:/tmp"}, true, "work", 1},
-		{[]string{"a", "b", "work:/tmp"}, true, "work", 2},
-		{[]string{"work:/tmp/a", "."}, false, "work", 1},
-		{[]string{"work:/a", "work:/b", "origin:./out"}, false, "work", 2},
-		{[]string{"origin:", "user@[::1]:/tmp"}, true, "user@::1", 1},
+		{[]string{".:a", "work:/tmp"}, true, "work", 1},
+		{[]string{".:a", ".:b", "work:/tmp"}, true, "work", 2},
+		{[]string{"work:/tmp/a", ".:."}, false, "work", 1},
+		{[]string{"work:/a", "work:/b", ".:./out"}, false, "work", 2},
+		{[]string{".:", "user@[::1]:/tmp"}, true, "user@::1", 1},
 		{[]string{"work:/a", ":"}, false, "work", 1},
-		{[]string{"origin:./a", "work:/b", "--", "-p2222"}, true, "work", 1},
+		{[]string{".:./a", "work:/b", "--", "-p2222"}, true, "work", 1},
+		{[]string{"self:./a", "work:/b"}, true, "work", 1},
+		{[]string{"work:/a", "self:"}, false, "work", 1},
 	} {
 		o, err := parseCopyCommand(tc.args)
 		if err != nil || o.upload != tc.upload || o.host != tc.host || len(o.sources) != tc.count {
 			t.Fatal(tc.args, o, err)
 		}
 	}
-	for _, args := range [][]string{{"a"}, {"a", "b"}, {"a:/x", "b:/y"}, {":", ":"}, {"work:/a", "other:/b", "."}, {"a", ":", "work:/b"}, {"a", "work:/b", "--", "-L8080:localhost:80"}, {"a", "work:/b", "-p2222"}} {
+	for _, args := range [][]string{{"a"}, {"a", "b"}, {"a:/x", "b:/y"}, {":", ":"}, {"work:/a", "other:/b", "."}, {"a", ":", "work:/b"}, {".:a", "work:/b", "--", "-L8080:localhost:80"}, {".:a", "work:/b", "-p2222"}} {
 		if _, err := parseCopyCommand(args); err == nil {
 			t.Fatal("accepted", args)
 		}
@@ -37,15 +38,25 @@ func TestCopyParsing(t *testing.T) {
 }
 
 func TestLocalEndpointHints(t *testing.T) {
-	kind, paths, hint, err := remoteCopyRequest([]string{"origin:/client/source", "/tmp"})
+	for _, prefix := range []string{"self:", ".:"} {
+		placeholder, err := parseCopyEndpoint(prefix)
+		if err != nil || !placeholder.pick {
+			t.Fatal(prefix, placeholder, err)
+		}
+		path, err := parseCopyEndpoint(prefix + "./downloads")
+		if err != nil || path.pick || path.host != "" || path.path != "./downloads" {
+			t.Fatal(prefix, path, err)
+		}
+	}
+	kind, paths, hint, err := remoteCopyRequest([]string{"origin:/client/source", ".:/tmp"})
 	if err != nil || kind != "upload" || len(paths) != 1 || hint != "/client/source" {
 		t.Fatal(kind, paths, hint, err)
 	}
-	kind, _, hint, err = remoteCopyRequest([]string{"report", "origin:./downloads"})
+	kind, _, hint, err = remoteCopyRequest([]string{".:report", "origin:./downloads"})
 	if err != nil || kind != "download" || hint != "./downloads" {
 		t.Fatal(kind, hint, err)
 	}
-	for _, args := range [][]string{{"origin:8080", "3000"}, {"3000", "origin:8080"}} {
+	for _, args := range [][]string{{"origin:8080", ".:3000"}, {".:3000", "origin:8080"}, {"::8080", ".:3000"}, {".:3000", "::8080"}} {
 		op, err := remoteForwardRequest(args)
 		if err != nil || op.LocalHint != "8080" || !op.LocalPortPending() || op.ServerPort() != 3000 {
 			t.Fatal(op, err)
@@ -71,7 +82,7 @@ func TestLocalEndpointHints(t *testing.T) {
 			}
 		}
 	}
-	for _, args := range [][]string{{"origin:0", "3000"}, {"3000", "origin:65536"}, {"origin:8080", "origin:3000"}} {
+	for _, args := range [][]string{{"origin:0", ".:3000"}, {".:3000", "origin:65536"}, {"origin:8080", "origin:3000"}} {
 		if _, err := remoteForwardRequest(args); err == nil {
 			t.Fatal("accepted", args)
 		}
@@ -83,18 +94,12 @@ func TestCopySingleLetterSSHHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runtime.GOOS == "windows" {
-		if endpoint.host != "" || endpoint.path != "x:/tmp/report" {
-			t.Fatalf("drive path parsed as remote: %+v", endpoint)
-		}
-	} else {
-		if endpoint.host != "x" || endpoint.path != "/tmp/report" {
-			t.Fatalf("single-letter host parsed as local: %+v", endpoint)
-		}
-		copy, err := parseCopyCommand([]string{"x:/tmp/report", "./out"})
-		if err != nil || copy.host != "x" || copy.upload {
-			t.Fatalf("single-letter download rejected: %+v %v", copy, err)
-		}
+	if endpoint.host != "x" || endpoint.path != "/tmp/report" {
+		t.Fatalf("single-letter host parsed as local: %+v", endpoint)
+	}
+	copy, err := parseCopyCommand([]string{"x:/tmp/report", ".:./out"})
+	if err != nil || copy.host != "x" || copy.upload {
+		t.Fatalf("single-letter download rejected: %+v %v", copy, err)
 	}
 	explicit, err := parseCopyEndpoint("user@x:/tmp/report")
 	if err != nil || explicit.host != "user@x" {
@@ -161,7 +166,7 @@ func TestCopyStreamParsing(t *testing.T) {
 			t.Fatal("accepted", args)
 		}
 	}
-	for _, literal := range []string{"./-", "origin:-", "work:-"} {
+	for _, literal := range []string{".:./-", "work:-"} {
 		e, err := parseCopyEndpoint(literal)
 		if err != nil || e.stream {
 			t.Fatal(literal, e, err)
@@ -173,19 +178,19 @@ func TestCopyStreamParsing(t *testing.T) {
 }
 
 func TestEndpointRequests(t *testing.T) {
-	for _, local := range []string{"origin:", ":"} {
-		kind, paths, _, err := remoteCopyRequest([]string{local, "/tmp"})
+	for _, local := range []string{"origin:", "::"} {
+		kind, paths, _, err := remoteCopyRequest([]string{local, ".:/tmp"})
 		if err != nil || kind != "upload" || len(paths) != 1 || paths[0] != "/tmp" {
 			t.Fatal(kind, paths, err)
 		}
-		kind, paths, _, err = remoteCopyRequest([]string{"a", "b", local})
+		kind, paths, _, err = remoteCopyRequest([]string{".:a", ".:b", local})
 		if err != nil || kind != "download" || len(paths) != 2 {
 			t.Fatal(kind, paths, err)
 		}
 		for _, reverse := range []bool{false, true} {
-			args := []string{local, "3000"}
+			args := []string{local, ".:3000"}
 			if reverse {
-				args = []string{"3000", local}
+				args = []string{".:3000", local}
 			}
 			op, err := remoteForwardRequest(args)
 			if err != nil || !op.LocalPortPending() || op.ServerPort() != 3000 || op.Reverse != reverse {

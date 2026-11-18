@@ -15,7 +15,7 @@ type selectedTask struct {
 // instance against the daemon or resource record before acting on it.
 func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool, error) {
 	var empty selectedTask
-	if len(parsed.operands) == 0 || parsed.has("--all") {
+	if len(parsed.operands) == 0 || parsed.has("--all") || parsed.explicitHost && len(parsed.operands) == 1 && !parsed.has("--local") {
 		return empty, false, nil
 	}
 	switch command {
@@ -35,7 +35,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		kind = ""
 	}
 	if !isTaskIDPrefix(code) {
-		if compact && !typed && !parsed.has("--all") {
+		if compact && !typed {
 			target, found, err := findTaskAlias(command, ref, parsed.has("--local"))
 			if err != nil || !found {
 				return empty, false, err
@@ -82,12 +82,6 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 			}
 			identity = key
 		}
-	}
-	if parsed.has("--all") {
-		if identity != "" {
-			return empty, false, usage("kill ID does not accept --all")
-		}
-		return empty, false, nil
 	}
 	if identity == "" {
 		// Short hexadecimal labels remain valid aliases when no UID prefix matches.
@@ -325,19 +319,4 @@ func findTaskAlias(command, alias string, local bool) (selectedTask, bool, error
 		return matches[0], true, nil
 	}
 	return selectedTask{}, false, nil
-}
-
-// A single attach operand is a known selector, never permission to probe an
-// arbitrary SSH destination. HOST NAME remains an explicit remote request.
-func validateAttachHost(host string) error {
-	snapshots, err := readShellSnapshots()
-	if err != nil {
-		return err
-	}
-	for _, s := range snapshots {
-		if s.Host == host && !s.Forgotten && !endedShellState(s.State) {
-			return nil
-		}
-	}
-	return usage("unknown attach target %s; use sshore list and select a shell ID, or specify HOST NAME explicitly", cleanText(host))
 }

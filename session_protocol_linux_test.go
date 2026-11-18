@@ -315,7 +315,7 @@ func TestNoClientTransferFails(t *testing.T) {
 	sendTest(t, b.in, message{Type: "detach"})
 	untilType(t, b.out, "detached")
 	b.close()
-	_, done := e.helper("cp", "origin:", e.dir)
+	_, done := e.helper("cp", "origin:", ".:"+e.dir)
 	waitHelper(t, done, false)
 }
 

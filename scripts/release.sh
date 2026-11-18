@@ -39,6 +39,25 @@ Includes Linux and Windows binaries for amd64 (x86-64) only.
 Verify downloaded archives against SHA256SUMS.
 Commit: $GITHUB_SHA
 NOTES
+if [[ "$version" == "0.7.9" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+Changes:
+- Use explicit endpoints for copy, mount, forward and shell selection. Use
+  self: or .: for the current machine, origin: or :: for the attached client,
+  and HOST:VALUE for SSH endpoints. Remote client requests still require review.
+- Create shells with launch or spawn on the current machine, or with HOST:
+  on a remote machine. Shells receive an ID at creation. Set aliases with rename.
+- Use setup HOST to install the matching release on a remote Linux host.
+  Setup requires the target daemon to be stopped before installation.
+- Remove bootstrap, the mount --server option and unused installer preparation modes.
+
+Upgrade: save work and stop each account daemon with its installed release.
+Install 0.7.9 on both ends. Update scripts that use bare file paths or ports,
+HOST NAME shell selectors, or a single : to select the attached client.
+NOTES
+fi
+
 if [[ "$version" == "0.7.8" ]]; then
   cat >> release-notes.md <<'NOTES'
 
