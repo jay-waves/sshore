@@ -1,10 +1,13 @@
 package main
 
 import (
+	"github.com/jay-waves/sshore/internal/files"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestMetadataPublication(t *testing.T) {
@@ -185,5 +188,24 @@ func TestTaskNamesClaimedAtomicallyByDaemon(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "names")); !os.IsNotExist(err) {
 		t.Fatalf("name selection created files: %v", err)
+	}
+}
+
+func TestMountVisitHistoryAcrossMounts(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	account := strings.Repeat("a", 32)
+	now := time.Now().Add(-time.Hour)
+	delta := files.VisitHistory{"src": {Score: 1, Last: now}}
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() { mountVisitHistory(account, "/project", delta) })
+	}
+	wg.Wait()
+	h := mountVisitHistory(account, "/project", nil)
+	if v := h["src"]; v.Score != 2 || !v.Last.Equal(now) {
+		t.Fatalf("merged visits = %+v", v)
+	}
+	if len(mountVisitHistory(account, "/other", nil)) != 0 || len(mountVisitHistory(strings.Repeat("b", 32), "/project", nil)) != 0 {
+		t.Fatal("history crossed account or root")
 	}
 }

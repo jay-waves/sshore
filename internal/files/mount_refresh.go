@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
+
 	"time"
 )
 
@@ -239,15 +239,8 @@ func (r *metadataRefresh) fetch(v ftpCacheValue) (ftpCacheValue, error) {
 	if strings.HasPrefix(v.key, "d:") {
 		ctx, cancel := context.WithTimeout(r.ctx, 2*time.Second)
 		defer cancel()
-		entries, err := r.fs.client.ReadDirContext(ctx, v.key[2:])
-		if len(entries) > ftpMaxDirectoryEntries {
-			return ftpCacheValue{}, syscall.EOVERFLOW
-		}
-		size := 256 + len(v.key[2:])
-		for _, info := range entries {
-			size += ftpInfoBytes(info)
-		}
-		return ftpCacheValue{entries: entries, directory: true, bytes: size}, err
+		entries, err := r.fs.fetchDirectory(ctx, v.key[2:])
+		return directoryValue(v.key[2:], entries, false), err
 	}
 	if strings.HasPrefix(v.key, "s:") {
 		info, err := r.fs.client.Stat(v.key[2:])
@@ -258,100 +251,108 @@ func (r *metadataRefresh) fetch(v ftpCacheValue) (ftpCacheValue, error) {
 	return fresh, err
 }
 
-const directoryPrefetchLimit = 16
-const directoryPrefetchWorkers = 4
+const directoryPrefetchCount = 2
 
-// Workers share a replaceable queue. No speculative read schedules descendants.
 type directoryPrefetch struct {
-	fs          *ftpFS
-	ctx         context.Context
-	cancel      context.CancelFunc
-	mu          sync.Mutex
-	paths       []string
-	batch       context.Context
-	cancelBatch context.CancelFunc
-	lastParent  string
-	lastPaths   []string
-	scheduled   time.Time
-	wake        chan struct{}
-	done        chan struct{}
+	fs             *ftpFS
+	ctx            context.Context
+	cancel         context.CancelFunc
+	mu             sync.Mutex
+	history, delta VisitHistory
+	lastParent     string
+	targets        [directoryPrefetchCount]string
+	scheduled      time.Time
+	batch          context.Context
+	cancelBatch    context.CancelFunc
+	pending        [directoryPrefetchCount]string
+	wake, done     chan struct{}
 }
 
-func startDirectoryPrefetch(parent context.Context, fs *ftpFS) *directoryPrefetch {
+func startDirectoryPrefetch(parent context.Context, fs *ftpFS, history VisitHistory) *directoryPrefetch {
 	ctx, cancel := context.WithCancel(parent)
-	p := &directoryPrefetch{fs: fs, ctx: ctx, cancel: cancel, wake: make(chan struct{}, directoryPrefetchWorkers), done: make(chan struct{})}
-	go func() {
-		var wg sync.WaitGroup
-		for i := 0; i < directoryPrefetchWorkers; i++ {
-			wg.Go(p.run)
-		}
-		wg.Wait()
-		close(p.done)
-	}()
+
+	p := &directoryPrefetch{fs: fs, ctx: ctx, cancel: cancel, history: history, delta: VisitHistory{}, wake: make(chan struct{}, 1), done: make(chan struct{})}
+	go p.run()
 	return p
 }
 func (p *directoryPrefetch) schedule(parent string, entries []os.FileInfo) {
-	if p == nil || p.ctx.Err() != nil {
+	if p == nil {
 		return
-	}
-	paths := make([]string, 0, directoryPrefetchLimit+1)
-	for _, entry := range entries {
-		if !entry.IsDir() || entry.Mode()&os.ModeSymlink != 0 || strings.HasPrefix(entry.Name(), ".") || ValidateName(entry.Name()) != nil {
-			continue
-		}
-		candidate := path.Join(parent, entry.Name())
-		at, _ := slices.BinarySearch(paths, candidate)
-		if at >= directoryPrefetchLimit {
-			continue
-		}
-		paths = slices.Insert(paths, at, candidate)
-		if len(paths) > directoryPrefetchLimit {
-			paths = paths[:directoryPrefetchLimit]
-		}
 	}
 	p.mu.Lock()
-	if parent == p.lastParent && slices.Equal(paths, p.lastPaths) && time.Since(p.scheduled) < ftpDirectoryTTL {
-		p.mu.Unlock()
+	defer p.mu.Unlock()
+	if p.ctx.Err() != nil {
 		return
 	}
-	p.lastParent, p.lastPaths, p.scheduled = parent, paths, time.Now()
+	now := time.Now()
+	prefix := strings.TrimSuffix(p.fs.root, "/") + "/"
+	if parent != p.fs.root && !strings.HasPrefix(parent, prefix) {
+		return
+	}
+	if parent != p.lastParent && parent != p.fs.root {
+		key := strings.TrimPrefix(parent, prefix)
+		p.delta.add(key, 1, now)
+	}
+	var best [directoryPrefetchCount]string
+	var scores [directoryPrefetchCount]float64
+	for _, e := range entries {
+		if !e.IsDir() || e.Mode()&os.ModeSymlink != 0 || ValidateName(e.Name()) != nil {
+			continue
+		}
+		dir := path.Join(parent, e.Name())
+		key := strings.TrimPrefix(dir, prefix)
+		w := p.history[key].weight(now) + p.delta[key].weight(now)
+		if w <= 1.5 {
+			continue
+		} // Each prediction needs repeated visits.
+		for i, score := range scores {
+			if dir == best[i] {
+				break
+			}
+			if w > score || w == score && dir < best[i] {
+				copy(scores[i+1:], scores[i:])
+				copy(best[i+1:], best[i:])
+				scores[i], best[i] = w, dir
+				break
+			}
+		}
+	}
+	if parent == p.lastParent && best == p.targets && now.Sub(p.scheduled) < ftpDirectoryTTL {
+		return
+	}
+	p.lastParent, p.targets, p.scheduled = parent, best, now
 	if p.cancelBatch != nil {
 		p.cancelBatch()
 	}
+	p.pending = best
+	if best[0] == "" {
+		return
+	}
 	p.batch, p.cancelBatch = context.WithCancel(p.ctx)
-	p.paths = paths
-	p.mu.Unlock()
-	for i := 0; i < directoryPrefetchWorkers; i++ {
-		select {
-		case p.wake <- struct{}{}:
-		default:
-		}
+	select {
+	case p.wake <- struct{}{}:
+	default:
 	}
 }
 func (p *directoryPrefetch) run() {
+	defer close(p.done)
 	for {
 		select {
 		case <-p.ctx.Done():
 			return
 		case <-p.wake:
 		}
-		for p.ctx.Err() == nil {
-			p.mu.Lock()
-			if len(p.paths) == 0 {
-				p.mu.Unlock()
+		p.mu.Lock()
+		dirs, batch := p.pending, p.batch
+		p.pending = [directoryPrefetchCount]string{}
+		p.mu.Unlock()
+		for _, dir := range dirs {
+			if dir == "" || batch.Err() != nil {
 				break
 			}
-			dir, batch := p.paths[0], p.batch
-			p.paths = p.paths[1:]
-			p.mu.Unlock()
-			if batch.Err() != nil {
-				continue
-			}
-			// Registration affects only this directory's cache; another worker's
-			// already-prefetched sibling remains usable.
 			p.fs.notifications.ensure(dir)
 			if batch.Err() != nil {
-				continue
+				break
 			}
 			ctx, cancel := context.WithTimeout(batch, 2*time.Second)
 			_, _ = p.fs.loadDirectoryMode(ctx, dir, true)

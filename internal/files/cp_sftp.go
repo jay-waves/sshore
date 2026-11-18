@@ -21,14 +21,20 @@ const copyVerifyAttribute = "sha256@sshore"
 // Each approved stream sees one virtual source or target, never a general
 // filesystem. Its temporary upload is removed when the stream ends.
 type FS struct {
-	mu                      sync.RWMutex
-	source, target, virtual string
-	size                    int64
-	upload                  *receivingFile
-	direct                  bool
-	transfers               map[string]*FS
-	sealed, verified        bool
-	ctx                     context.Context
+	mu             sync.Mutex
+	source, target string
+	size           int64
+	single         *copyUpload
+	transfers      map[string]*copyUpload
+	ctx            context.Context
+}
+
+type copyUpload struct {
+	mu               sync.RWMutex
+	virtual          string
+	size             int64
+	upload           *receivingFile
+	sealed, verified bool
 }
 
 func (f *FS) Fileread(r *sftp.Request) (io.ReaderAt, error) {
@@ -42,12 +48,12 @@ func (f *FS) Fileread(r *sftp.Request) (io.ReaderAt, error) {
 		return file.file, nil
 	}
 	name := ""
-	if f.upload != nil {
-		name = f.upload.temp
+	if f.single != nil && r.Filepath == f.single.virtual {
+		name = f.single.upload.temp
 	}
 	if r.Filepath == "/source" && f.source != "" {
 		name = f.source
-	} else if r.Filepath != f.virtual || name == "" {
+	} else if name == "" {
 		return nil, os.ErrPermission
 	}
 	file, err := OpenSource(name)
@@ -65,47 +71,51 @@ func (f *FS) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	flags := r.Pflags()
-	if f.transfers != nil {
-		if len(f.transfers) >= 32 || f.transfers[r.Filepath] != nil || !flags.Write || !flags.Creat || !flags.Excl || flags.Read || flags.Append || !strings.HasPrefix(filepath.Base(r.Filepath), ".sshore-") {
-			return nil, os.ErrPermission
-		}
-		file, err := newReceiving(r.Filepath, 0)
-		if err != nil {
-			return nil, err
-		}
-		child := &FS{direct: true, virtual: r.Filepath, size: -1, upload: file, ctx: f.ctx}
-		f.transfers[r.Filepath] = child
-		return transferWriter{child}, nil
-	}
-	if f.target == "" || f.upload != nil || !flags.Write || !flags.Creat || !flags.Excl || flags.Read || flags.Append || !strings.HasPrefix(r.Filepath, "/.sshore-") || strings.Contains(r.Filepath[1:], "/") {
+	if !flags.Write || !flags.Creat || !flags.Excl || flags.Read || flags.Append {
 		return nil, os.ErrPermission
 	}
-	file, err := newReceiving(f.target, f.size)
+	target, size := f.target, f.size
+	if f.transfers != nil {
+		if len(f.transfers) >= 32 || f.transfers[r.Filepath] != nil || !strings.HasPrefix(filepath.Base(r.Filepath), ".sshore-") {
+			return nil, os.ErrPermission
+		}
+		target, size = r.Filepath, -1
+	} else if target == "" || f.single != nil || !strings.HasPrefix(r.Filepath, "/.sshore-") || strings.Contains(r.Filepath[1:], "/") {
+		return nil, os.ErrPermission
+	}
+	file, err := newReceiving(target, f.size)
 	if err != nil {
 		return nil, err
 	}
-	f.upload, f.virtual = file, r.Filepath
-	// Publication owns Sync/Close; SFTP CLOSE must not close this handle early.
-	return transferWriter{f}, nil
+	u := &copyUpload{virtual: r.Filepath, size: size, upload: file}
+	if f.transfers != nil {
+		f.transfers[r.Filepath] = u
+	} else {
+		f.single = u
+	}
+	return u, nil
 }
 
 func (f *FS) Filecmd(r *sftp.Request) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.transfers != nil {
-		child := f.transfers[r.Filepath]
-		if child == nil {
-			return os.ErrPermission
-		}
-		err := child.Filecmd(r)
-		if err == nil && r.Method == "Remove" {
-			delete(f.transfers, r.Filepath)
-		}
-		return err
+	direct := f.transfers != nil
+	u := f.single
+	if direct {
+		u = f.transfers[r.Filepath]
 	}
-	if f.upload == nil || r.Filepath != f.virtual {
+	if u == nil || u.virtual != r.Filepath {
+		f.mu.Unlock()
 		return os.ErrPermission
 	}
+	if direct && r.Method == "Remove" {
+		delete(f.transfers, r.Filepath)
+	}
+	f.mu.Unlock()
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.command(r, direct, f.ctx)
+}
+func (f *copyUpload) command(r *sftp.Request, direct bool, ctx context.Context) error {
 	switch r.Method {
 	case "Setstat":
 		// The private temporary file is already 0600; no other mutation is allowed.
@@ -115,7 +125,6 @@ func (f *FS) Filecmd(r *sftp.Request) error {
 			if flags.Size || flags.UidGid || flags.Permissions || flags.Acmodtime {
 				return os.ErrPermission
 			}
-			ctx := f.ctx
 			if ctx == nil {
 				ctx = r.Context()
 			}
@@ -132,7 +141,7 @@ func (f *FS) Filecmd(r *sftp.Request) error {
 		if !f.sealed || !f.verified {
 			return fmt.Errorf("upload is not verified")
 		}
-		if f.direct {
+		if direct {
 			if filepath.Dir(r.Target) != filepath.Dir(f.virtual) {
 				return os.ErrPermission
 			}
@@ -182,8 +191,8 @@ func (f *FS) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 	case "/target":
 		name = f.target
 	default:
-		if r.Filepath == f.virtual && f.upload != nil {
-			name = f.upload.temp
+		if f.single != nil && r.Filepath == f.single.virtual {
+			name = f.single.upload.temp
 		}
 	}
 	if name == "" || r.Method != "Stat" {
@@ -202,23 +211,21 @@ func (infos transferInfo) ListAt(dst []os.FileInfo, offset int64) (int, error) {
 	return copy(dst, infos[offset:]), io.EOF
 }
 
-type transferWriter struct{ fs *FS }
-
-func (w transferWriter) WriteAt(p []byte, off int64) (int, error) {
-	w.fs.mu.RLock()
-	defer w.fs.mu.RUnlock()
-	if w.fs.sealed || off < 0 || w.fs.size >= 0 && (off > w.fs.size || int64(len(p)) > w.fs.size-off) {
+func (u *copyUpload) WriteAt(p []byte, off int64) (int, error) {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	if u.sealed || off < 0 || u.size >= 0 && (off > u.size || int64(len(p)) > u.size-off) {
 		return 0, os.ErrPermission
 	}
-	return w.fs.upload.file.WriteAt(p, off)
+	return u.upload.file.WriteAt(p, off)
 }
-func (w transferWriter) Close() error {
-	w.fs.mu.Lock()
-	defer w.fs.mu.Unlock()
-	w.fs.sealed = true
+func (u *copyUpload) Close() error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.sealed = true
 	return nil
 }
-func (f *FS) verify(ctx context.Context, attrs []sftp.StatExtended) error {
+func (f *copyUpload) verify(ctx context.Context, attrs []sftp.StatExtended) error {
 	if !f.sealed || len(attrs) != 1 || attrs[0].ExtType != copyVerifyAttribute {
 		return os.ErrPermission
 	}
@@ -268,7 +275,7 @@ func (w copyContextWriter) Write(p []byte) (int, error) {
 	return w.Writer.Write(p)
 }
 
-func newCopyFS() *FS                                       { return &FS{direct: true, transfers: make(map[string]*FS)} }
+func newCopyFS() *FS                                       { return &FS{transfers: make(map[string]*copyUpload)} }
 func (f *FS) Lstat(r *sftp.Request) (sftp.ListerAt, error) { return f.Filelist(r) }
 func ServeCopy(conn io.ReadWriteCloser) error              { return ServeTransfer(conn, newCopyFS()) }
 
@@ -314,9 +321,13 @@ func (f *FS) Close() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, child := range f.transfers {
-		child.Close()
+		child.mu.Lock()
+		child.upload.close()
+		child.mu.Unlock()
 	}
-	if f.upload != nil {
-		f.upload.close()
+	if f.single != nil {
+		f.single.mu.Lock()
+		defer f.single.mu.Unlock()
+		f.single.upload.close()
 	}
 }

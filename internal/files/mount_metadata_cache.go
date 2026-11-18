@@ -197,14 +197,17 @@ func (c *ftpMetadataCache) stat(name string, fetch func() (os.FileInfo, error)) 
 func (c *ftpMetadataCache) readDir(name string, fetch func() ([]os.FileInfo, error)) ([]os.FileInfo, error) {
 	return c.readDirMode(name, false, fetch)
 }
+func directoryValue(name string, entries []os.FileInfo, prefetch bool) ftpCacheValue {
+	size := 256 + len(name)
+	for _, info := range entries {
+		size += ftpInfoBytes(info)
+	}
+	return ftpCacheValue{entries: entries, directory: true, bytes: size, prefetched: prefetch}
+}
 func (c *ftpMetadataCache) readDirMode(name string, prefetch bool, fetch func() ([]os.FileInfo, error)) ([]os.FileInfo, error) {
 	v, err := c.load("d:"+name, ftpDirectoryTTL, func() (ftpCacheValue, error) {
 		entries, err := fetch()
-		size := 256 + len(name)
-		for _, info := range entries {
-			size += ftpInfoBytes(info)
-		}
-		return ftpCacheValue{entries: entries, directory: true, bytes: size, prefetched: prefetch}, err
+		return directoryValue(name, entries, prefetch), err
 	})
 	if err == nil && !prefetch && v.prefetched {
 		c.mu.Lock()

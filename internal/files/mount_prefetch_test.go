@@ -4,12 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path"
 	"path/filepath"
-	"slices"
 	"testing"
 	"time"
 
@@ -18,21 +16,24 @@ import (
 
 func TestDirectoryPrefetchBoundedAndUseful(t *testing.T) {
 	fs, wire := testFTPBackendWithWire(t)
-	for _, name := range append([]string{".git"}, prefetchTestNames(directoryPrefetchLimit+2)...) {
+	for _, name := range []string{".git", "dir00", "dir16", "dir17"} {
 		if err := os.MkdirAll(path.Join(fs.root, name, "nested"), 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	fs.prefetch = startDirectoryPrefetch(context.Background(), fs)
+	fs.prefetch = startDirectoryPrefetch(context.Background(), fs, VisitHistory{"dir00": {4, time.Now()}, "dir16": {2, time.Now()}, "dir17": {5, time.Now()}})
 	defer func() { fs.prefetch.cancel(); <-fs.prefetch.done }()
 	if _, err := fs.readDirectory(fs.root); err != nil {
 		t.Fatal(err)
+	}
+	if got := fs.prefetch.targets; got != [2]string{path.Join(fs.root, "dir17"), path.Join(fs.root, "dir00")} {
+		t.Fatalf("ranked siblings = %v", got)
 	}
 	deadline := time.Now().Add(time.Second)
 	for {
 		fs.cache.mu.Lock()
 		ready := true
-		for _, name := range prefetchTestNames(directoryPrefetchLimit) {
+		for _, name := range []string{"dir00", "dir17"} {
 			if fs.cache.entries["d:"+path.Join(fs.root, name)] == nil {
 				ready = false
 			}
@@ -55,7 +56,7 @@ func TestDirectoryPrefetchBoundedAndUseful(t *testing.T) {
 	fs.prefetch.cancel()
 	<-fs.prefetch.done
 	fs.cache.mu.Lock()
-	for _, name := range []string{".git", "dir16", "dir17", "dir00/nested"} {
+	for _, name := range []string{".git", "dir16", "dir00/nested"} {
 		if fs.cache.entries["d:"+path.Join(fs.root, name)] != nil {
 			t.Error("unexpected speculative read", name)
 		}
@@ -80,66 +81,64 @@ func TestDirectoryPrefetchBoundedAndUseful(t *testing.T) {
 	}
 }
 
-func TestDirectoryPrefetchQueueReplaced(t *testing.T) {
-	p := &directoryPrefetch{ctx: context.Background(), wake: make(chan struct{}, 1)}
-	dir := t.TempDir()
-	for i := 0; i < 20; i++ {
-		if err := os.Mkdir(path.Join(dir, fmt.Sprint(i)), 0700); err != nil {
+func TestDirectoryPrefetchLearnsForegroundVisits(t *testing.T) {
+	fs, _ := testFTPBackendWithWire(t)
+	for _, name := range []string{"src", "docs"} {
+		if err := os.Mkdir(path.Join(fs.root, name), 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var infos []os.FileInfo
-	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil {
+	p := startDirectoryPrefetch(context.Background(), fs, nil)
+	fs.prefetch = p
+	defer func() { p.cancel(); <-p.done }()
+	visit := func(dir string) {
+		t.Helper()
+		if _, err := fs.readDirectory(path.Join(fs.root, dir)); err != nil {
 			t.Fatal(err)
 		}
-		infos = append(infos, info)
 	}
-	slices.Reverse(infos)
-	p.schedule("/old", infos)
-	p.schedule("/new", infos)
-	if len(p.paths) != directoryPrefetchLimit {
-		t.Fatalf("queue length %d", len(p.paths))
+	visit("")
+	visit("src")
+	visit("src")
+	visit("")
+	if p.targets[0] != "" {
+		t.Fatal("one visit qualified")
 	}
-	for i, name := range p.paths {
-		if name != path.Join("/new", entries[i].Name()) {
-			t.Fatalf("prefetch selection %d: %s", i, name)
-		}
-		if path.Dir(name) != "/new" {
-			t.Fatal("stale queued path", name)
-		}
+	visit("src")
+	visit("")
+	if p.targets[0] != path.Join(fs.root, "src") {
+		t.Fatal("missing repeat prediction", p.targets[0])
+	}
+	if len(p.delta) != 1 || p.delta["src"].Score > 2 {
+		t.Fatal("unexpected visit history", p.delta)
+	}
+	batch := p.batch
+	visit("docs")
+	if batch.Err() != context.Canceled {
+		t.Fatal("navigation did not cancel previous batch")
+	}
+	if p.targets[0] != "" {
+		t.Fatal("stale prediction")
 	}
 }
-
-func prefetchTestNames(n int) []string {
-	names := make([]string, n)
-	for i := range names {
-		names[i] = fmt.Sprintf("dir%02d", i)
+func TestDirectoryHistoryDecayAndBound(t *testing.T) {
+	now := time.Now()
+	h := VisitHistory{}
+	h.add("old", 4, now.Add(-14*24*time.Hour))
+	h.add("recent", 2, now)
+	if h["old"].weight(now) >= h["recent"].weight(now) {
+		t.Fatal("history did not fade")
 	}
-	return names
-}
-
-func TestPrefetchReplacementCancelsActiveBatch(t *testing.T) {
-	p := &directoryPrefetch{ctx: context.Background(), wake: make(chan struct{}, directoryPrefetchWorkers)}
-	p.schedule("/old", nil)
-	old := p.batch
-	p.schedule("/old", nil)
-	if p.batch != old || old.Err() != nil {
-		t.Fatal("duplicate browse restarted active prefetch")
+	h.Merge(nil, now.Add(31*24*time.Hour))
+	if len(h) != 0 {
+		t.Fatal("expired history retained")
 	}
-	p.schedule("/new", nil)
-	if old.Err() != context.Canceled {
-		t.Fatal("old batch was not cancelled")
+	for i := 0; i < VisitHistoryLimit+1; i++ {
+		h.add(fmt.Sprint(i), 1, now)
 	}
-	if p.batch.Err() != nil {
-		t.Fatal("replacement already cancelled")
+	if len(h) != VisitHistoryLimit {
+		t.Fatal("unbounded history", len(h))
 	}
-	p.cancelBatch()
 }
 
 func TestWatchRegistrationPreservesSiblingPrefetch(t *testing.T) {
@@ -200,74 +199,6 @@ func TestRegistrationScopesOpenHandleCache(t *testing.T) {
 	}
 }
 
-type prefetchListingGate struct {
-	entered chan string
-	release chan struct{}
-}
-
-func (g *prefetchListingGate) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
-	<-g.release
-	return emptyPrefetchListing{}, nil
-}
-
-type emptyPrefetchListing struct{}
-
-func (emptyPrefetchListing) ListAt([]os.FileInfo, int64) (int, error) { return 0, io.EOF }
-
-func TestDirectoryPrefetchOverlapsNetworkWaits(t *testing.T) {
-	a, b := net.Pipe()
-	gate := &prefetchListingGate{entered: make(chan string, directoryPrefetchWorkers+1), release: make(chan struct{})}
-	server := sftp.NewRequestServer(a, sftp.Handlers{FileList: gate})
-	go func() { _ = server.Serve() }()
-	client, err := sftp.NewClientPipe(b, &prefetchRequestRecorder{WriteCloser: b, started: gate.entered})
-	if err != nil {
-		t.Fatal(err)
-	}
-	fs := &ftpFS{client: client, root: "/"}
-	p := startDirectoryPrefetch(context.Background(), fs)
-	defer func() {
-		p.cancel()
-		close(gate.release)
-		b.Close()
-		client.Close()
-		server.Close()
-		<-p.done
-	}()
-	p.mu.Lock()
-	p.batch, p.cancelBatch = context.WithCancel(p.ctx)
-	for i := 0; i <= directoryPrefetchWorkers; i++ {
-		p.paths = append(p.paths, fmt.Sprintf("/child%d", i))
-	}
-	p.mu.Unlock()
-	for i := 0; i < directoryPrefetchWorkers; i++ {
-		p.wake <- struct{}{}
-	}
-	for i := 0; i < directoryPrefetchWorkers; i++ {
-		select {
-		case <-gate.entered:
-		case <-time.After(time.Second):
-			t.Fatal("prefetch serialized independent network waits")
-		}
-	}
-	select {
-	case path := <-gate.entered:
-		t.Fatal("concurrency exceeded limit", path)
-	default:
-	}
-}
-
-type prefetchRequestRecorder struct {
-	io.WriteCloser
-	started chan string
-}
-
-func (w *prefetchRequestRecorder) Write(b []byte) (int, error) {
-	if len(b) >= 5 && b[4] == 11 {
-		w.started <- "OPENDIR"
-	}
-	return w.WriteCloser.Write(b)
-}
-
 type delayedDirectoryConn struct{ net.Conn }
 
 func (c delayedDirectoryConn) Write(b []byte) (int, error) {
@@ -299,7 +230,7 @@ func TestDirectoryPrefetchWithResponseLatency(t *testing.T) {
 	}
 	cold := time.Since(start)
 	f.cache.invalidateRemote()
-	f.prefetch = startDirectoryPrefetch(context.Background(), f)
+	f.prefetch = startDirectoryPrefetch(context.Background(), f, VisitHistory{"child": {2, time.Now()}})
 	defer func() { f.prefetch.cancel(); b.Close(); <-f.prefetch.done }()
 	if _, err = f.readDirectory(f.root); err != nil {
 		t.Fatal(err)

@@ -306,9 +306,13 @@ func TestMountAgentPeerMetadataLifetime(t *testing.T) {
 	ended := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- ServeAgentWithPeer(a, "test-release", func(data json.RawMessage) func() { observed <- string(data); return func() { close(ended) } })
+		done <- ServeAgentWithPeer(a, "test-release", "fixture", func(data json.RawMessage) func() { observed <- string(data); return func() { close(ended) } })
 	}()
-	mux, _, _, err := openMux(b, "test-release", nil, peer)
+	var account string
+	mux, _, _, err := openMux(b, "test-release", nil, peer, &account)
+	if account != "fixture" {
+		t.Fatalf("remote account = %q", account)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

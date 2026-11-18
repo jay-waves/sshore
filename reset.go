@@ -65,7 +65,7 @@ func runReset() error {
 	if os.Getenv("SSHORE_STATE_DIR") != "" {
 		// A custom state directory may contain user files; clear only sshore's
 		// known entries and leave unrelated contents alone.
-		for _, name := range []string{"identity", "shells", "shell-tree", "connections", "approvals", "requests", "mounts", "forwards", "peers", "names", "activity"} {
+		for _, name := range []string{"identity", "shells", "shell-tree", "connections", "approvals", "requests", "mounts", "mount-history", "forwards", "peers", "names", "activity"} {
 			if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
 				return err
 			}

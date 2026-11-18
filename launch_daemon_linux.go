@@ -55,7 +55,7 @@ func (s *remoteShell) stop() {
 		close(s.done)
 	})
 }
-func (s *remoteShell) start(cols, rows uint16, term string, startup ...bool) error {
+func (s *remoteShell) start(m message) error {
 	if s.instance == "" {
 		s.instance = rand.Text()
 	}
@@ -67,18 +67,18 @@ func (s *remoteShell) start(cols, rows uint16, term string, startup ...bool) err
 	if shellPath == "" {
 		shellPath = "/bin/bash"
 	}
-	args, err := tmux.StartupArgs(shellPath, len(startup) > 0 && startup[0], len(startup) > 1 && startup[1])
+	args, err := tmux.StartupArgs(shellPath, m.NoLogin, m.NoProfile)
 	if err != nil {
 		return err
 	}
 	cmd := exec.Command(shellPath, args...)
 	cmd.Dir = s.directory
-	cmd.Env = append(append([]string(nil), env...), "TERM="+term, "SSHORE_SOCKET="+s.instance, "SSHORE_TREE_ID="+remoteTreeIdentity(s.instance))
+	cmd.Env = append(append([]string(nil), env...), "TERM="+m.Term, "SSHORE_SOCKET="+s.instance, "SSHORE_TREE_ID="+remoteTreeIdentity(s.instance))
 	if exe, err := os.Executable(); err == nil {
 		cmd.Env = append(cmd.Env, "PATH="+filepath.Dir(exe)+":"+localEnvironmentValue(env, "PATH"))
 	}
-	cmd.Env = tmux.StartupEnv(shellPath, cmd.Env, len(startup) > 1 && startup[1])
-	master, err := tmux.StartCommand(cmd, tmux.Size{Cols: max(cols, 1), Rows: max(rows, 1)})
+	cmd.Env = tmux.StartupEnv(shellPath, cmd.Env, m.NoProfile)
+	master, err := tmux.StartCommand(cmd, tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
 	if err != nil {
 		return err
 	}
@@ -159,7 +159,7 @@ func (s *remoteShell) attach(p *attachment, m message) error {
 		}
 		reconnecting := s.master != nil
 		if s.master == nil {
-			if err := s.start(m.Cols, m.Rows, m.Term, m.NoLogin, m.NoProfile); err != nil {
+			if err := s.start(m); err != nil {
 				return err
 			}
 			startedHere = true

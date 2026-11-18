@@ -337,6 +337,7 @@ Mount failures can leave writes uncertain; never replay writes implicitly.
 Keep caches and notifications bounded and advisory. Invalidate affected paths
 and parents on mutation; notification loss or unknown scope requires full
 invalidation. Background verification must not delay foreground reads.
+Mounts learn from successful foreground directory listings. Per remote account and resolved root, they remember up to 1,024 relative paths, halve visit weight every seven days and forget paths after 30 days without a visit. After a listing, one worker may fetch up to two current child directories in descending score order, each with repeated recent visits. Prefetch never trains history or walks descendants. Clean unmount merges visit counts into private local state.
 Scheduling and cache behavior belong in `internal/files/` and its tests.
 
 Windows mount metadata-only opens reuse bounded, short-lived SFTP handles in

@@ -203,10 +203,10 @@ func OpenMux(c io.ReadWriteCloser, version string, approval ...*MountApproval) (
 	if len(approval) > 0 {
 		source = approval[0]
 	}
-	return openMux(c, version, source, nil)
+	return openMux(c, version, source, nil, nil)
 }
 
-func openMux(c io.ReadWriteCloser, version string, source *MountApproval, peer json.RawMessage) (*smux.Session, *smux.Stream, *smux.Stream, error) {
+func openMux(c io.ReadWriteCloser, version string, source *MountApproval, peer json.RawMessage, account *string) (*smux.Session, *smux.Stream, *smux.Stream, error) {
 	if err := writeMessage(c, message{Type: "mount_mux", SoftwareVersion: version, Approval: source, PeerMetadata: peer}); err != nil {
 		return nil, nil, nil, err
 	}
@@ -219,6 +219,9 @@ func openMux(c io.ReadWriteCloser, version string, source *MountApproval, peer j
 	}
 	if m.Type != "mount_ready" {
 		return nil, nil, nil, fmt.Errorf("remote mount agent: %s", m.Error)
+	}
+	if account != nil {
+		*account = m.Account
 	}
 	session, err := smux.Client(c, muxConfig())
 	if err != nil {

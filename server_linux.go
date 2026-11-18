@@ -45,7 +45,8 @@ func serverCommand(args []string) error {
 			return err
 		}
 		defer stop()
-		return files.ServeAgentWithPeer(&transportio.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version, func(data json.RawMessage) func() {
+		account, _ := localMachineIdentity()
+		return files.ServeAgentWithPeer(&transportio.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version, account, func(data json.RawMessage) func() {
 			var task peerRecord
 			if len(data) > maxRemoteTaskSize || json.Unmarshal(data, &task) != nil || !strings.HasPrefix(task.ID, "mount/") {
 				return func() {}

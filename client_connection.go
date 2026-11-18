@@ -181,13 +181,7 @@ func openRemoteDaemonTask(ctx context.Context, process *transportio.Process, rec
 	if err != nil {
 		return nil, err
 	}
-	stop := context.AfterFunc(authCtx, func() { c.Close() })
-	defer stop()
-	if err := authenticateDaemonTask(c, record); err != nil {
-		c.Close()
-		return nil, err
-	}
-	return c, nil
+	return authenticatedTaskConn(authCtx, c, record)
 }
 
 type sessionSwitch struct {

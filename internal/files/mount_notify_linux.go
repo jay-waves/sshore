@@ -28,10 +28,10 @@ func ftpSFTPServerExecutable() (string, error) {
 }
 
 func ServeAgent(conn io.ReadWriteCloser, version string, check ...func(MountApproval) error) error {
-	return ServeAgentWithPeer(conn, version, nil, check...)
+	return ServeAgentWithPeer(conn, version, "", nil, check...)
 }
 
-func ServeAgentWithPeer(conn io.ReadWriteCloser, version string, observe func(json.RawMessage) func(), check ...func(MountApproval) error) error {
+func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observe func(json.RawMessage) func(), check ...func(MountApproval) error) error {
 	defer conn.Close()
 	if os.Getenv("SSHORE_DISABLED") == "1" {
 		return fmt.Errorf("file access disabled in recovery")
@@ -63,7 +63,7 @@ func ServeAgentWithPeer(conn io.ReadWriteCloser, version string, observe func(js
 			defer cleanup()
 		}
 	}
-	reply := message{Type: "mount_ready", SoftwareVersion: version}
+	reply := message{Type: "mount_ready", SoftwareVersion: version, Account: account}
 	if err != nil {
 		reply.Type = "error"
 		reply.Error = err.Error()

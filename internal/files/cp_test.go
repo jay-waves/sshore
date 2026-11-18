@@ -312,16 +312,6 @@ func TestUploadReceiverVerification(t *testing.T) {
 	t.Cleanup(func() { b.Close(); client.Close(); server.Close(); backend.Close() })
 	root := "/fixture"
 	data := bytes.Repeat([]byte("verified"), 10000)
-	if err := UploadReader(client, bytes.NewReader(data), path.Join(root, "good"), int64(len(data))); err != nil {
-		t.Fatal(err)
-	}
-	if noRead.calls.Load() != 0 {
-		t.Fatal("upload downloaded content for verification")
-	}
-	actual, err := os.ReadFile(filepath.Join(localRoot, "good"))
-	if err != nil || !bytes.Equal(actual, data) {
-		t.Fatal("published data mismatch", err)
-	}
 	virtual := path.Join(root, ".sshore-corrupt.part")
 	file, err := client.OpenFile(virtual, os.O_CREATE|os.O_EXCL|os.O_WRONLY)
 	if err != nil {
@@ -332,6 +322,17 @@ func TestUploadReceiverVerification(t *testing.T) {
 	}
 	if err = file.Close(); err != nil {
 		t.Fatal(err)
+	}
+	// Keep the corrupt upload registered while a second upload publishes.
+	if err := UploadReader(client, bytes.NewReader(data), path.Join(root, "good"), int64(len(data))); err != nil {
+		t.Fatal(err)
+	}
+	if noRead.calls.Load() != 0 {
+		t.Fatal("upload downloaded content for verification")
+	}
+	actual, err := os.ReadFile(filepath.Join(localRoot, "good"))
+	if err != nil || !bytes.Equal(actual, data) {
+		t.Fatal("published data mismatch", err)
 	}
 	expected := fmt.Sprintf("3:%x", sha256.Sum256([]byte("good")))
 	if err = client.SetExtendedData(virtual, []sftp.StatExtended{{ExtType: copyVerifyAttribute, ExtData: expected}}); err == nil {

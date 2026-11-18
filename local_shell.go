@@ -99,9 +99,13 @@ func dialLocalSessionContext(ctx context.Context, r localShellRecord, deadline t
 	if err != nil {
 		return nil, fmt.Errorf("local shell %s unavailable: %w", r.Name, err)
 	}
+	_ = c.SetDeadline(deadline)
+	return authenticatedTaskConn(ctx, c, r)
+}
+
+func authenticatedTaskConn(ctx context.Context, c net.Conn, r localShellRecord) (net.Conn, error) {
 	stop := context.AfterFunc(ctx, func() { c.Close() })
 	defer stop()
-	_ = c.SetDeadline(deadline)
 	if err := authenticateDaemonTask(c, r); err != nil {
 		c.Close()
 		return nil, err

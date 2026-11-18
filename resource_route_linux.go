@@ -64,7 +64,8 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message) {
 		if err := writeMessage(c, message{Type: "resource_ready", SoftwareVersion: version}); err != nil {
 			return
 		}
-		_ = files.ServeAgentWithPeer(c, version, func(data json.RawMessage) func() {
+		account, _ := localMachineIdentity()
+		_ = files.ServeAgentWithPeer(c, version, account, func(data json.RawMessage) func() {
 			var task peerRecord
 			if len(data) > maxRemoteTaskSize || json.Unmarshal(data, &task) != nil || !strings.HasPrefix(task.ID, "mount/") {
 				return func() {}

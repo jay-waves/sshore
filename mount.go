@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
@@ -57,6 +59,7 @@ func runMount(args []string) (int, error) {
 
 func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
 	c := files.MountConfig{Approval: o.approval, Host: o.host, Remote: o.remote, Mountpoint: o.mountpoint, Version: version, ReadOnly: o.readOnly, DirectIO: o.directIO, Stats: o.stats, StartupTimeout: o.startupTimeout, IOTimeout: o.ioTimeout}
+	c.History = mountVisitHistory
 	c.Connection = mountSSHOptions(o)
 	if s != nil {
 		c.Connection.Environment = s.sshEnvironment()
@@ -119,4 +122,36 @@ func readMountApprovalPath(input promptReader, hint string) (string, error) {
 		}
 		termui.Log(os.Stdout, termui.Warning, "%s\n", cleanText(err.Error()))
 	}
+}
+
+// Merge this mount's observations under the account state lock on unmount.
+func mountVisitHistory(account, root string, delta files.VisitHistory) files.VisitHistory {
+	if !validMachineID(account) {
+		return nil
+	}
+	dir, err := stateDir("mount-history")
+	if err != nil {
+		return nil
+	}
+	lock, err := lockStateFile(filepath.Join(dir, "state.lock"))
+	if err != nil {
+		return nil
+	}
+	defer lock.Close()
+	file := filepath.Join(dir, fmt.Sprintf("%x.json", sha256.Sum256([]byte(account+"\x00"+root))))
+	h := files.VisitHistory{}
+	if privateStatePath(file, false) == nil {
+		if info, err := os.Stat(file); err == nil && info.Size() <= files.VisitHistoryLimit*(6*4096+128) {
+			if data, err := os.ReadFile(file); err == nil {
+				if json.Unmarshal(data, &h) != nil || h == nil || len(h) > files.VisitHistoryLimit {
+					h = files.VisitHistory{}
+				}
+			}
+		}
+	}
+	h.Merge(delta, time.Now())
+	if len(delta) > 0 {
+		_ = writeStateJSON(file, h)
+	}
+	return h
 }

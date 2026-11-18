@@ -21,6 +21,7 @@ import (
 
 // MountConfig contains validated mount and SSH transport settings.
 type MountConfig struct {
+	History                           func(account, root string, delta VisitHistory) VisitHistory
 	PeerMetadata                      json.RawMessage
 	Approval                          *MountApproval
 	Host, Remote, Mountpoint, Version string
@@ -114,7 +115,8 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 			return 1, fmt.Errorf("mount setup: %w", err)
 		}
 	}
-	mux, data, events, err := openMux(transport, o.Version, o.Approval, o.PeerMetadata)
+	var account string
+	mux, data, events, err := openMux(transport, o.Version, o.Approval, o.PeerMetadata, &account)
 	if err != nil {
 		return 1, fmt.Errorf("mount agent handshake: %w", err)
 	}
@@ -161,7 +163,11 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		defer stopStats()
 	}
 	refresh := startMetadataRefresh(ctx, backend)
-	backend.prefetch = startDirectoryPrefetch(ctx, backend)
+	var history VisitHistory
+	if o.History != nil && account != "" {
+		history = o.History(account, root, nil)
+	}
+	backend.prefetch = startDirectoryPrefetch(ctx, backend, history)
 	defer func() {
 		backend.prefetch.cancel()
 		refresh.cancel()
@@ -169,6 +175,13 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		abortIO()
 		<-backend.prefetch.done
 		<-refresh.done
+		if o.History != nil && account != "" {
+			backend.prefetch.mu.Lock()
+			defer backend.prefetch.mu.Unlock()
+			if len(backend.prefetch.delta) > 0 {
+				o.History(account, root, backend.prefetch.delta)
+			}
+		}
 	}()
 	mount, err := mountFTP(backend, o.Mountpoint)
 	if err != nil {
@@ -281,6 +294,7 @@ type MountApproval struct {
 }
 
 type message struct {
+	Account      string          `json:"account,omitempty"`
 	Approval     *MountApproval  `json:"mount_approval,omitempty"`
 	PeerMetadata json.RawMessage `json:"peer_metadata,omitempty"`
 

@@ -381,15 +381,18 @@ func (f *ftpFS) loadDirectory(ctx context.Context, p string) ([]os.FileInfo, err
 }
 func (f *ftpFS) loadDirectoryMode(ctx context.Context, p string, prefetch bool) ([]os.FileInfo, error) {
 	return f.cache.readDirMode(p, prefetch, func() ([]os.FileInfo, error) {
-		entries, err := f.client.ReadDirContext(ctx, p)
-		if err != nil {
-			return nil, err
-		}
-		if len(entries) > ftpMaxDirectoryEntries {
-			return nil, syscall.EOVERFLOW
-		}
-		return entries, nil
+		return f.fetchDirectory(ctx, p)
 	})
+}
+func (f *ftpFS) fetchDirectory(ctx context.Context, p string) ([]os.FileInfo, error) {
+	entries, err := f.client.ReadDirContext(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) > ftpMaxDirectoryEntries {
+		return nil, syscall.EOVERFLOW
+	}
+	return entries, nil
 }
 func (f *ftpFS) lstat(p string) (os.FileInfo, error) {
 	f.watchDirectory(path.Dir(p))

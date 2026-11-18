@@ -164,30 +164,33 @@ func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.
 			_ = writeMessage(c, message{Type: "fatal", Error: fmt.Sprintf("spawn setup failed: %v", e)})
 			return e
 		}
-		diagnostics.mu.Lock()
-		if m.Type == "setup_ready" && m.Action != "managed" && m.Action != "updated" {
-			diagnostics.active = false
-			_ = writeMessage(c, message{Type: "fatal", Error: "invalid spawn setup mode"})
-			diagnostics.mu.Unlock()
-			return fmt.Errorf("invalid spawn setup mode")
-		}
-		if m.Type == "setup_ready" && m.LocalRequest != nil {
-			channel, e := openRemoteDaemonTask(ctx, pipes, m.LocalRequest.Record)
-			if e != nil {
-				diagnostics.mu.Unlock()
-				return e
-			}
-			transport = channel
-			defer channel.Close()
-			if e = writeMessage(channel, message{Type: "spawn_transport", SoftwareVersion: version}); e != nil {
-				diagnostics.mu.Unlock()
-				return e
-			}
-			m.LocalRequest = nil
-		}
 		if m.Type == "setup_ready" {
+			// Drain any in-flight diagnostic write before switching protocols.
+			diagnostics.mu.Lock()
 			diagnostics.active = false
+			diagnostics.mu.Unlock()
+			if m.Action != "managed" && m.Action != "updated" {
+				_ = writeMessage(c, message{Type: "fatal", Error: "invalid spawn setup mode"})
+				return fmt.Errorf("invalid spawn setup mode")
+			}
+			if m.LocalRequest != nil {
+				channel, err := openRemoteDaemonTask(ctx, pipes, m.LocalRequest.Record)
+				if err != nil {
+					return err
+				}
+				defer channel.Close()
+				if err := writeMessage(channel, message{Type: "spawn_transport", SoftwareVersion: version}); err != nil {
+					return err
+				}
+				transport = channel
+				m.LocalRequest = nil
+			}
+			if err := writeMessage(c, m); err != nil {
+				return err
+			}
+			break
 		}
+		diagnostics.mu.Lock()
 		err = writeMessage(c, m)
 		diagnostics.mu.Unlock()
 		if err != nil {
@@ -195,9 +198,6 @@ func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.
 		}
 		if m.Type == "fatal" {
 			return fmt.Errorf("%s", m.Error)
-		}
-		if m.Type == "setup_ready" {
-			break
 		}
 		if m.Type == "setup_download" {
 			if err := relaySetupBinary(input, c); err != nil {
