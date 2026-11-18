@@ -22,7 +22,7 @@ func parseOptions(args []string) (options, error) {
 	case "list":
 		o.list = true
 	default:
-		return o, usage("choose an action: sshore launch [HOST:], sshore spawn [HOST:], sshore list HOST, sshore attach HOST:ID, sshore kill HOST:ID, or sshore rename HOST:ID NEW")
+		return o, usage("choose an action: sshore launch [HOST:], sshore spawn [HOST:], sshore list HOST:, sshore attach HOST:ID, sshore kill HOST:ID, or sshore rename HOST:ID NEW")
 	}
 	parsed, err := parseCLI(args[1:], o.command)
 	if err != nil {
@@ -113,6 +113,50 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 		return o, nil
 	}
 	return o, validSession(o.session)
+}
+
+// Host-only commands accept the legacy SSH destination as well as HOST:.
+func normalizeHostOperand(command string, parsed *cliArguments) error {
+	ref := parsed.operands[0]
+	if !strings.Contains(ref, ":") {
+		return validSSHDestination(ref)
+	}
+	// Keep legacy unbracketed IPv6 destinations. Endpoints use [IPv6]:.
+	_, address, hasUser := strings.Cut(ref, "@")
+	if !hasUser {
+		address = ref
+	}
+	if ref != "::" && net.ParseIP(address) != nil {
+		return validSSHDestination(ref)
+	}
+	if strings.HasSuffix(address, "]") {
+		if _, err := endpointHost(ref); err == nil {
+			return nil
+		}
+	}
+	host, value, err := splitEndpoint(ref)
+	if err != nil {
+		return err
+	}
+	if value != "" {
+		return usage("%s requires an empty value after the host colon", command)
+	}
+	switch host {
+	case "origin":
+		return usage("%s requires self: or an SSH host", command)
+	case "self":
+		if command == "exec" {
+			return usage("exec requires an SSH host")
+		}
+		if len(parsed.ssh) != 0 || parsed.has("--server") {
+			return usage("local tasks do not accept SSH options")
+		}
+		parsed.values["--local"] = ""
+		parsed.operands = nil
+	default:
+		parsed.operands[0] = host
+	}
+	return nil
 }
 
 func normalizeShellSelector(command string, parsed *cliArguments) error {

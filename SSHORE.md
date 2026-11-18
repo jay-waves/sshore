@@ -213,8 +213,11 @@ parent instance. If it expires or changes, fail rather than reinterpret the
 child's host alias as a direct destination. See the
 [handoff trust boundary](SECURITY.md#trust-boundaries).
 
-Commands select tasks by name or short ID. The task index reserves short IDs against
-immutable instances and preserves internal ordering. Short-ID operations reuse the
+Commands select tasks by name or short ID. A bare kill selector and
+`self:ID` are restricted to tasks managed on this machine. Remote kill
+selectors require the host in `HOST:ID`, including for cached rows. The task index
+reserves short IDs against immutable instances and preserves internal ordering.
+Short-ID operations reuse the
 connection settings of their observation. Confirmed detach acknowledgements
 (including Ctrl+B d, helper detach, switching, and --detach startup) promote the
 immutable shell identity in one bounded, daemon-serialized MRU stored in

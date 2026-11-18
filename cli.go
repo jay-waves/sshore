@@ -281,7 +281,7 @@ func runTargetCommand(args []string) (int, error) {
 			return withDaemonActivity(func() (int, error) { return runRenameResource(kind, old, parsed.operands[1]) })
 		}
 	}
-	if (command == "rename" || command == "kill") && !parsed.explicitHost {
+	if !parsed.explicitHost && (command == "rename" || command == "kill" && !(selected && target.host == "")) {
 		return 2, usage("use %s HOST:ID or %s self:ID", command, command)
 	}
 	o, err := shellOptions(command, parsed)

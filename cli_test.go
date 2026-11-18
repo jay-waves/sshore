@@ -439,14 +439,37 @@ func TestNativeSSHPort(t *testing.T) {
 	}
 }
 
+func TestListHostEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		target, host string
+		local        bool
+	}{
+		{"work:", "work", false},
+		{"work", "work", false},
+		{"user@[2001:db8::1]:", "user@2001:db8::1", false},
+		{"2001:db8::1", "2001:db8::1", false},
+		{"self:", "local", true},
+	} {
+		o, err := parseOptions([]string{"list", tc.target})
+		if err != nil || o.host != tc.host || o.local != tc.local {
+			t.Fatalf("%s: %+v, %v", tc.target, o, err)
+		}
+	}
+	for _, args := range [][]string{{"work:path"}, {"origin:"}, {"self:", "--port", "2222"}} {
+		if _, err := parseCLI(args, "list"); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+}
+
 func TestExecArguments(t *testing.T) {
 	for _, command := range []string{"uname -a", "printf '%s' --help", "--help", "echo x -- -p 22"} {
-		parsed, err := parseCLI([]string{"work", command}, "exec")
-		if err != nil || len(parsed.operands) != 2 || parsed.operands[1] != command {
+		parsed, err := parseCLI([]string{"work:", command}, "exec")
+		if err != nil || len(parsed.operands) != 2 || parsed.operands[0] != "work" || parsed.operands[1] != command {
 			t.Fatalf("command %q: %+v, %v", command, parsed, err)
 		}
 	}
-	for _, args := range [][]string{nil, {"work"}, {"work", "echo", "extra"}, {"-host", "echo"}} {
+	for _, args := range [][]string{nil, {"work"}, {"work", "echo", "extra"}, {"-host", "echo"}, {"work:path", "echo"}, {"self:", "echo"}, {"origin:", "echo"}} {
 		if _, err := parseCLI(args, "exec"); err == nil {
 			t.Fatalf("accepted %q", args)
 		}

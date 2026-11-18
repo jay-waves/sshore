@@ -34,9 +34,11 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		code = ref
 		kind = ""
 	}
+	localKill := command == "kill" && compact && !typed && (!parsed.has("--local") || parsed.explicitHost)
+	localShell := parsed.has("--local") && !localKill
 	if !isTaskIDPrefix(code) {
 		if compact && !typed {
-			target, found, err := findTaskAlias(command, ref, parsed.has("--local"))
+			target, found, err := findTaskAlias(command, ref, localShell)
 			if err != nil || !found {
 				return empty, false, err
 			}
@@ -52,13 +54,13 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 	matched := false
 	for key := range keys {
 		if strings.HasPrefix(taskUID(key), strings.ToLower(code)) {
-			matched = true
+			matched = matched || !localKill
 			if strings.HasPrefix(key, "peer-task:") && validTaskUID(strings.TrimPrefix(key, "peer-task:")) {
 				if _, err := findTaskIdentity("task:" + strings.TrimPrefix(key, "peer-task:")); err == nil {
 					continue
 				}
 			}
-			if typed || parsed.has("--local") || position == 1 {
+			if typed || localShell || localKill || position == 1 {
 				var hosts []string
 				if position == 1 {
 					hosts = []string{parsed.operands[0]}
@@ -70,13 +72,14 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 				if typed && kind != candidate.kind && !((kind == "spawn" || kind == "launch") && candidate.kind == "shell") {
 					continue
 				}
-				if parsed.has("--local") && (candidate.kind != "shell" || candidate.host != "") {
+				if localShell && (candidate.kind != "shell" || candidate.host != "") || localKill && candidate.host != "" {
 					continue
 				}
 				if position == 1 && (candidate.kind != "shell" || candidate.host != parsed.operands[0]) {
 					continue
 				}
 			}
+			matched = true
 			if identity != "" {
 				return empty, false, fmt.Errorf("ambiguous task ID %s; use a longer prefix, full UID, HOST or a type prefix", code)
 			}
@@ -86,7 +89,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 	if identity == "" {
 		// Short hexadecimal labels remain valid aliases when no UID prefix matches.
 		if !matched && len(code) < 6 && compact && !typed {
-			target, found, err := findTaskAlias(command, ref, parsed.has("--local"))
+			target, found, err := findTaskAlias(command, ref, localShell)
 			if err != nil {
 				return empty, false, err
 			}
@@ -119,7 +122,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 	if kind != "" && kind != target.kind && !((kind == "spawn" || kind == "launch") && target.kind == "shell") {
 		return empty, false, usage("task ID %s is a %s", code, target.kind)
 	}
-	if parsed.has("--local") && (target.kind != "shell" || target.host != "") {
+	if localShell && (target.kind != "shell" || target.host != "") || localKill && target.host != "" {
 		return empty, false, usage("task ID %s is not a local shell", code)
 	}
 	if position == 1 && (target.kind != "shell" || target.host != parsed.operands[0]) {
@@ -178,7 +181,7 @@ func routeSelectedTask(command string, parsed *cliArguments, target selectedTask
 		return empty, false, usage("%s does not accept %s tasks", command, target.kind)
 	}
 	if target.kind != "shell" {
-		if parsed.has("--local") || len(parsed.ssh) != 0 || parsed.has("--server") {
+		if parsed.has("--local") && !(command == "kill" && parsed.explicitHost) || len(parsed.ssh) != 0 || parsed.has("--server") {
 			return empty, false, usage("local resources do not accept SSH options or --local")
 		}
 		return target, true, nil
@@ -256,10 +259,10 @@ func findTaskIdentity(identity string, hosts ...string) (selectedTask, error) {
 	return empty, fmt.Errorf("task is no longer available here; refresh with sshore list")
 }
 
-func findTaskAlias(command, alias string, local bool) (selectedTask, bool, error) {
+func findTaskAlias(command, alias string, localShell bool) (selectedTask, bool, error) {
 	var matches []selectedTask
 	add := func(target selectedTask) {
-		if local && (target.kind != "shell" || target.host != "") {
+		if localShell && (target.kind != "shell" || target.host != "") {
 			return
 		}
 		if command == "attach" && target.kind != "shell" || command == "review" && target.kind != "review" {
@@ -291,13 +294,15 @@ func findTaskAlias(command, alias string, local bool) (selectedTask, bool, error
 				add(selectedTask{kind: "shell", name: r.Name, identity: r.identity()})
 			}
 		}
-		snapshots, err := readShellSnapshots()
-		if err != nil {
-			return selectedTask{}, false, err
-		}
-		for _, r := range snapshots {
-			if r.Name == alias && !r.Forgotten && !endedShellState(r.State) {
-				add(selectedTask{kind: "shell", name: r.Name, host: r.Host, identity: remoteShellIdentity(r.Host, r.Instance), instance: r.Instance, connection: r.Connection})
+		if !localShell && command != "kill" {
+			snapshots, err := readShellSnapshots()
+			if err != nil {
+				return selectedTask{}, false, err
+			}
+			for _, r := range snapshots {
+				if r.Name == alias && !r.Forgotten && !endedShellState(r.State) {
+					add(selectedTask{kind: "shell", name: r.Name, host: r.Host, identity: remoteShellIdentity(r.Host, r.Instance), instance: r.Instance, connection: r.Connection})
+				}
 			}
 		}
 	}

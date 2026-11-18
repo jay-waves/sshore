@@ -52,9 +52,10 @@ func TestShortTaskShellSelectors(t *testing.T) {
 	}{
 		{"attach", []string{ids[local.identity()].code}, []string{"work"}, local.identity()},
 		{"kill", []string{"--local", ids[local.identity()].code}, []string{"work"}, local.identity()},
+		{"kill", []string{ids[local.identity()].code}, []string{"work"}, local.identity()},
 		{"rename", []string{ids[local.identity()].code, "new"}, []string{"work", "new"}, local.identity()},
 		{"attach", []string{ids[remoteKey].code}, []string{"host", "build"}, remoteKey},
-		{"kill", []string{"host", ids[remoteKey].code}, []string{"host", "build"}, remoteKey},
+		{"kill", []string{"host:" + ids[remoteKey].code}, []string{"host", "build"}, remoteKey},
 		{"rename", []string{ids[remoteKey].code, "new"}, []string{"host", "build", "new"}, remoteKey},
 		{"rename", []string{"host", ids[remoteKey].code, "new"}, []string{"host", "build", "new"}, remoteKey},
 	} {
@@ -71,7 +72,7 @@ func TestShortTaskShellSelectors(t *testing.T) {
 			t.Fatalf("%+v %v", o, err)
 		}
 	}
-	for _, args := range [][]string{{"other", ids[remoteKey].code}, {"--local", ids[remoteKey].code}} {
+	for _, args := range [][]string{{"other", ids[remoteKey].code}, {"--local", ids[remoteKey].code}, {ids[remoteKey].code}} {
 		parsed, err := parseCLI(args, "kill")
 		if err != nil {
 			t.Fatal(err)
@@ -79,6 +80,13 @@ func TestShortTaskShellSelectors(t *testing.T) {
 		if _, _, err = resolveShortTask("kill", &parsed); err == nil {
 			t.Fatal("accepted wrong scope", args)
 		}
+	}
+	parsed, err := parseCLI([]string{remote.Name}, "kill")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, selected, err := resolveShortTask("kill", &parsed); selected || err != nil {
+		t.Fatalf("remote alias selected by bare kill: selected=%t err=%v", selected, err)
 	}
 	// A reused name must never make the old code act on its replacement.
 	close(tasks.records[local.UID].(*nativeShellTask).shell.done)
@@ -89,7 +97,7 @@ func TestShortTaskShellSelectors(t *testing.T) {
 	if err = renameShellSnapshot("host", "build", "renamed"); err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := parseCLI([]string{ids[remoteKey].code}, "attach")
+	parsed, err = parseCLI([]string{ids[remoteKey].code}, "attach")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +110,7 @@ func TestShortTaskShellSelectors(t *testing.T) {
 	if err = saveShellSnapshot(remote); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = run([]string{"kill", ids[remoteKey].code}); err == nil {
+	if _, err = run([]string{"kill", "host:" + ids[remoteKey].code}); err == nil {
 		t.Fatal("accepted replaced remote shell")
 	}
 }
@@ -227,9 +235,9 @@ func TestShortTaskLocalCommandRouting(t *testing.T) {
 		return writeMessage(c, message{Type: reply})
 	}
 	for _, command := range []string{"kill", "rename"} {
-		args := []string{command, "self:123456"}
+		args := []string{command, "123456"}
 		if command == "rename" {
-			args = append(args, "new")
+			args = []string{command, "self:123456", "new"}
 		}
 		code, err := run(args)
 		if code != 0 || err != nil {
@@ -352,6 +360,8 @@ func TestKillAllScope(t *testing.T) {
 		all, bad bool
 	}{
 		{[]string{"--all"}, "", true, false},
+		{[]string{"fedora:", "--all"}, "fedora", true, false},
+		{[]string{"self:", "--all"}, "", true, false},
 		{[]string{"fedora", "--all"}, "fedora", true, false},
 		{[]string{"--all", "fedora", "--", "-p", "2222"}, "fedora", true, false},
 		{[]string{"--local", "--all"}, "", true, false},

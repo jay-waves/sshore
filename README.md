@@ -54,8 +54,9 @@ attached remote shell, where “here” and “my computer” can mean different
 | `self:` or `.:` | The machine running the command. For example, `.:report.zip` is relative to the current directory there. |
 | `origin:` or `::` | The attached client, when requesting a copy, forward or mount from a remote shell. You approve the request on that client. |
 
-Commands that take a host alone, such as `sshore list work` and
-`sshore exec work 'uname -a'`, use its plain name.
+Use an empty value for host-only commands such as `sshore list work:` and
+`sshore exec work: 'uname -a'`. Both still accept the plain SSH host for
+compatibility.
 
 ## Start and resume shells
 
@@ -63,12 +64,13 @@ Commands that take a host alone, such as `sshore list work` and
 sshore launch work:         # Start a persistent shell. Omit work: for a local one.
 # Press Ctrl+B, then d to detach. Return later with:
 sshore attach work:         # Resume the most recently detached shell on work.
-sshore list work            # Find a specific shell's ID or name.
+sshore list work:           # Find a specific shell's ID or name.
 sshore attach work:7afe22   # Resume that shell.
 ```
 
 Choose `launch` for work that should survive a client exit or network loss.
-Choose `spawn` for a shell that should end when its original parent exits.
+Choose `spawn` (or its alias `sh`, as in `sshore sh work:`) for a shell that
+should end when its original parent exits.
 A remote spawn also ends if its SSH heartbeat times out. Detaching and reattaching
 preserve the original lifetime. Both commands accept `--detach` to start in the
 background. Daemon failure or a host restart can end any shell. Screens and
@@ -91,7 +93,7 @@ Use `--no-escape` if the application needs all keystrokes.
 
 ```sh
 sshore list                  # Local tasks and cached remote shells.
-sshore list work             # Query the remote host now.
+sshore list work:            # Query the remote host now.
 sshore pstree                # Show local task relationships.
 sshore list --json           # Include diagnostics and resource log paths.
 ```
@@ -99,7 +101,10 @@ sshore list --json           # Include diagnostics and resource log paths.
 Use an ID or name from `list` to select a task. For example,
 `sshore rename work:7afe22 build` lets you resume it with
 `sshore attach work:build`. To end the shell, run `sshore kill work:build`.
-This can discard unsaved work. Manage read-only peer entries on their original
+A bare selector such as `sshore kill 123eef` searches only locally managed
+tasks, like `sshore kill self:123eef`. For a remote row from cached or live
+output, include its host, as in `sshore kill work:123eef`. Killing a shell can
+discard unsaved work. Manage read-only peer entries on their original
 computer.
 
 ## Connect over SSH
@@ -113,7 +118,7 @@ loopback. Put SSH options after `--`, for example:
 sshore launch work: -- -J jump -p 2222
 ```
 
-For a single command, run `sshore exec work 'uname -a'`. For port forwarding,
+For a single command, run `sshore exec work: 'uname -a'`. For port forwarding,
 use `sshore forward`.
 
 ## OS and shell support
