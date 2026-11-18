@@ -24,11 +24,12 @@ policy or depending on mutable application state.
 | Prepared installation and exact-release policy | `setup*.go`: shared installer and state policy in `setup_install.go`; native preparation in `setup_linux.go` / `platform_windows.go` |
 | Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_linux.go`, `server_linux.go`; process inspection in `setup_process_linux.go` |
 | Account daemon and local shell control | `daemon*.go` (task registry and resource control in `daemon_tasks.go`, plus activity leases and metadata), `local_command.go`, `local_shell.go`; hosted Unix shell adapters in `platform_*.go` |
-| Spawn ownership, lifetime SSH and nested routes | `spawn_transport.go`, `spawn_route_linux.go`, `platform_*.go` |
+| Spawn ownership, lifetime SSH and nested routes | `spawn_owner.go`, `spawn_transport.go`, `spawn_route_linux.go`, `platform_*.go` |
 | Shell startup and attachment I/O | `internal/tmux/terminal.go`, `internal/tmux/shell_attachment.go`, application adapters in `protocol.go` |
 | Native terminals, console I/O and shortcuts | `internal/tmux/` |
 | Local prompts and presentation | `internal/termui/`, application adapters in `cli_ui.go` |
-| Framing, smux and shared SSH transport | `internal/ssh/` (configuration, public-key authentication, host verification, connections, forwarding and framing); stream ownership and relays in `transport.go`, owned resource forwarding in `mux_forward.go`; application messages and mux handshake in `protocol.go` |
+| SSH connections | `internal/ssh/` owns SSH authentication, host verification, jump connections, exec channels and SSH forwarding |
+| Shared byte streams | `internal/wire/` owns framing, smux settings, stream cleanup and relays. Application messages and attachment handshakes live in `protocol.go` |
 | Copy and mount mechanisms | Flat `internal/files/`; command adapters in `cp_command.go`, `mount*.go` |
 | Pending requests and atomic approval | `review_store.go`, application coordination in `review.go` (including shared source-shell validation in `review_linux.go`) |
 | Forward transport and retries | `forward.go`: endpoint parsing, command execution and SSH worker lifecycle |
@@ -186,10 +187,14 @@ Connection boundary cleanup disables Kitty keyboard
 event reporting and xterm modifyOtherKeys before returning to the local prompt.
 The Linux account daemon catches SIGHUP for its entire lifetime, including
 intervals without hosted shells; child shells retain their normal HUP behavior.
-Keep the frontend's authenticated transport alive across nested attachments,
-route confirmations and returns to the parent. Closing an attachment releases
-its stream; closing the frontend releases its retained transports. Saved routes
-contain no live connection handles and still require authentication.
+The frontend owns reusable authenticated connections. During handoff it keeps the
+previous route for recovery. Once the target is ready, it releases connections
+unreachable from the active route or return stack. Saved routes authenticate anew.
+
+The shell host holds a terminal and the verified process identity used for task
+operations. Each attachment owns a mux and borrows one input lease from the host.
+The host stops that writer before admitting another attachment. Local daemon
+sockets and authenticated SSH channels use the same frames from `internal/wire`.
 
 For a next-hop connection, the initiating host's daemon uses that shell's
 configuration, signing credentials, environment and working directory. The terminal client follows
@@ -300,7 +305,7 @@ transport. `ssh -G` resolves connection settings only; configuration forwarding
 rules are cleared and cannot add listeners to the product-owned rule.
 
 Ordinary forwarding, inventory and cancellation do not install remote software.
-Keep file/transport behavior in `internal/files` and `internal/ssh`; account setup
+Keep file, SSH and shared stream behavior in `internal/files`, `internal/ssh` and `internal/wire`; account setup
 and consent stay in the application.
 
 Client transport openers return one owned byte stream: `Close` releases its entire
@@ -327,7 +332,7 @@ or waiting for it joins its accept loop, cancellation watcher and data workers.
 
 Copy concurrency must stay bounded and preserve exact-size checks, ordered digest
 calculation, receiver-side upload verification and no-overwrite publication.
-Transport window budgets live in `internal/ssh/protocol.go` and `internal/files/mount.go`; size them
+Transport window budgets live in `internal/wire/protocol.go` and `internal/files/mount.go`; size them
 for latency without allowing stalled file streams to exhaust terminal capacity.
 
 Mounts always use the remote sshore helper and the same setup/version safeguards as
@@ -372,7 +377,12 @@ See [inventory privacy](SECURITY.md#inventory-and-privacy).
 
 ### Setup and installation
 
-Install scripts own downloads, checksum verification and platform-specific
+Local setup runs the bundled platform installer for the latest release.
+Remote setup uses the client cache or downloads the exact Linux release on the
+client and transfers it over SSH. A missing or older release queues a setup request
+in the initiating account daemon. Review releases the waiting connection, which
+rechecks the affected tasks before applying the change.
+Standalone install scripts own downloads, checksum verification and platform-specific
 preparation. The prepared executable handles installation through
 `sshore bootstrap TARGET`; installers invoke it directly without legacy entry
 points or capability probes. The Linux remote entry point is `scripts/bootstrap.sh.tmpl`,

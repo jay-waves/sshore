@@ -9,39 +9,35 @@ import (
 	"sync/atomic"
 	"time"
 
-	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
 
 type Input interface {
 	io.Writer
-	Stop() error
 	Stopped() bool
 }
 
 // Attachment owns the I/O of one shell attachment, not shell authorization.
-// The host installs Input before starting readers and stops it before handoff.
+// ReadInput borrows the host-owned input lease for one reader.
 type Attachment struct {
 	mux                 *smux.Session
 	control, terminal   *smux.Stream
 	controlMu, outputMu sync.Mutex
-	input               Input
 	muted               atomic.Bool
 }
 
 func NewAttachment(mx *smux.Session, control, terminal *smux.Stream) *Attachment {
 	return &Attachment{mux: mx, control: control, terminal: terminal}
 }
-func (a *Attachment) Mux() *smux.Session          { return a.mux }
-func (a *Attachment) ControlStream() *smux.Stream { return a.control }
-func (a *Attachment) Input() Input                { return a.input }
-func (a *Attachment) SetInput(input Input)        { a.input = input }
-func (a *Attachment) Muted() bool                 { return a.muted.Load() }
-func (a *Attachment) Mute(muted bool) bool        { return a.muted.Swap(muted) }
-func (a *Attachment) Close()                      { _ = a.mux.Close() }
+func (a *Attachment) OpenStream() (*smux.Stream, error) { return a.mux.OpenStream() }
+func (a *Attachment) Done() <-chan struct{}             { return a.mux.CloseChan() }
+func (a *Attachment) Muted() bool                       { return a.muted.Load() }
+func (a *Attachment) Mute(muted bool) bool              { return a.muted.Swap(muted) }
+func (a *Attachment) Close()                            { _ = a.mux.Close() }
 func send(stream *smux.Stream, kind string, data []byte, metadata any) error {
 	_ = stream.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	err := sshio.WriteMessage(stream, kind, data, metadata)
+	err := wire.WriteMessage(stream, kind, data, metadata)
 	_ = stream.SetWriteDeadline(time.Time{})
 	return err
 }
@@ -79,10 +75,10 @@ func (a *Attachment) FinishExit(code int, reason string) {
 	}
 }
 
-func (a *Attachment) ReadInput(active func() bool) {
+func (a *Attachment) ReadInput(input Input, active func() bool) {
 	for {
 		var m terminalMessage
-		err := sshio.ReadMessage(a.terminal, &m)
+		err := wire.ReadMessage(a.terminal, &m)
 		if err != nil {
 			a.Close()
 			return
@@ -92,14 +88,14 @@ func (a *Attachment) ReadInput(active func() bool) {
 		}
 		switch m.Type {
 		case "input":
-			err = sshio.WriteFull(a.input, m.Data)
+			err = wire.WriteFull(input, m.Data)
 		case "input_barrier":
 			err = a.Output("input_drained", nil, terminalMessage{Type: "input_drained"})
 		default:
 			err = fmt.Errorf("invalid terminal input")
 		}
 		if err != nil {
-			if !a.input.Stopped() {
+			if !input.Stopped() {
 				a.Close()
 			}
 			return
@@ -125,7 +121,7 @@ func Detach(control controlStream, confirmed ...func(string)) error {
 	if err := writeControl(control, detachMessage{Type: "detach"}); err != nil {
 		return err
 	}
-	kind, body, err := sshio.ReadFrame(control)
+	kind, body, err := wire.ReadFrame(control)
 	if err != nil {
 		return err
 	}
@@ -149,20 +145,18 @@ func writeControl(w io.Writer, m detachMessage) error {
 	if err != nil {
 		return err
 	}
-	return sshio.WriteFrame(w, 0, body)
+	return wire.WriteFrame(w, 0, body)
 }
 
-// FinishDetach lets the peer consume the confirmation before closing transport.
-// The caller has already relinquished attachment ownership and serializes notify
-// with other control writes. No second reader may consume the acknowledgement.
-func FinishDetach(control interface {
-	io.Reader
-	SetReadDeadline(time.Time) error
-}, notify func() error, closeTransport func()) {
-	defer closeTransport()
-	_ = notify()
-	_ = control.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, _, _ = sshio.ReadFrame(control)
+// FinishDetach confirms the handoff after the host releases the input lease.
+// Only the control loop may call it, since it consumes the final acknowledgement.
+func (a *Attachment) FinishDetach(name string) {
+	defer a.Close()
+	if err := a.Control("detached", nil, detachMessage{Type: "detached", Name: name}); err != nil {
+		return
+	}
+	_ = a.control.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, _, _ = wire.ReadFrame(a.control)
 }
 
 var ErrExited = errors.New("session is exiting")
@@ -214,8 +208,8 @@ func (s *Lifecycle[A]) Detach(a A) bool {
 	return true
 }
 
-// Release treats transport loss as terminal termination only for the owner.
-func (s *Lifecycle[A]) Release(a A) bool {
+// EndIfAttached prevents a failed input handoff from admitting another writer.
+func (s *Lifecycle[A]) EndIfAttached(a A) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var zero A

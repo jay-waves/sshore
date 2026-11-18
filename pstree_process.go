@@ -12,7 +12,7 @@ func validSpawnProcessView(p *spawnProcessView) bool {
 	return p != nil && p.PID > 1 && p.Start != "" && len(p.Start) <= 128 && len(p.Name) <= 256 && len(p.Host) <= 256 && validMachineID(p.MachineID)
 }
 
-func describeSpawnOwner(owner spawnOwner) *spawnProcessView {
+func describeSpawnOwner(owner processIdentity) *spawnProcessView {
 	if owner.PID <= 1 || owner.Start == "" {
 		return nil
 	}

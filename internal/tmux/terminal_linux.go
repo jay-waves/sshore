@@ -21,12 +21,14 @@ type Terminal struct {
 	wait     func() error
 }
 
-// StartCommand starts a caller-configured command with a controlling terminal.
-func StartCommand(cmd *exec.Cmd, size Size) (*Terminal, error) {
-	if err := size.validate(); err != nil {
+// Start owns the command and its controlling terminal from creation to Wait.
+func Start(c Config) (*Terminal, error) {
+	if err := c.Size.validate(); err != nil {
 		return nil, err
 	}
-	master, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: size.Cols, Rows: size.Rows})
+	cmd := exec.Command(c.Path, c.Args...)
+	cmd.Env, cmd.Dir = c.Env, c.Dir
+	master, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: c.Size.Cols, Rows: c.Size.Rows})
 	if err != nil {
 		return nil, err
 	}
@@ -62,12 +64,6 @@ func StartCommand(cmd *exec.Cmd, size Size) (*Terminal, error) {
 		_ = master.SetReadDeadline(time.Now().Add(time.Second))
 	}()
 	return terminal, nil
-}
-func Start(c Config) (*Terminal, error) {
-	cmd := exec.Command(c.Path, c.Args...)
-	cmd.Env = c.Env
-	cmd.Dir = c.Dir
-	return StartCommand(cmd, c.Size)
 }
 func (t *Terminal) Read(p []byte) (int, error) {
 	n, err := t.master.Read(p)

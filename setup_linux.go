@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -20,7 +19,7 @@ func bootstrap(target, mode, name string) (result error) {
 	if !filepath.IsAbs(target) {
 		return fmt.Errorf("setup target must be absolute")
 	}
-	if mode != "bridge" && mode != "resume" && mode != "sessions" && mode != "new" && mode != "attach" && mode != "spawn" && mode != "mount-agent" && mode != "cp-agent" && mode != "mcp-agent" {
+	if mode != "prepare" && mode != "bridge" && mode != "resume" && mode != "sessions" && mode != "new" && mode != "attach" && mode != "spawn" && mode != "mount-agent" && mode != "cp-agent" && mode != "mcp-agent" {
 		return fmt.Errorf("invalid setup mode")
 	}
 	if mode == "resume" || name != "" {
@@ -34,166 +33,111 @@ func bootstrap(target, mode, name string) (result error) {
 			_ = writeMessage(os.Stdout, message{Type: "fatal", SoftwareVersion: version, Error: result.Error()})
 		}
 	}()
-	updated := false
-	changed := false
 	for {
 		lock, err := setupLock()
 		if err != nil {
 			return err
 		}
-		state, err := inspectSetup(target, false)
+		state, err := inspectSetup(target)
 		if err != nil {
 			lock.Close()
 			return err
 		}
-		ready := state.Installed == version && state.Daemon == nil && !state.Manual
-		missing := state.Installed == "" && state.Daemon == nil && !state.Manual
-		if ready || missing {
-			if missing {
-				err = installPrepared(target)
-			}
-			if err != nil {
-				lock.Close()
+		if state.Installed != version || state.Daemon != nil || state.Manual {
+			lock.Close()
+			if err := installPreparedRelease(target, true, remoteSetupConfirmation); err != nil {
 				return err
 			}
-			if mode == "sessions" {
-				lock.Close()
-				return listSessions()
-			}
-			if mode == "attach" && name == "" {
-				names, err := detachedSessionNames()
-				lock.Close()
-				if err != nil {
-					return err
-				}
-				if len(names) == 0 {
-					return fmt.Errorf("no detached shells; use sshore launch HOST to create one")
-				}
-				if len(names) == 1 {
-					name = names[0]
-					continue
-				}
-				if err := writeMessage(os.Stdout, message{Type: "session_choice", SoftwareVersion: version, Names: names}); err != nil {
-					return err
-				}
-				reply, err := readMessage(os.Stdin)
-				if err != nil {
-					return err
-				}
-				if reply.Type != "session_select" {
-					return fmt.Errorf("invalid shell selection")
-				}
-				for _, candidate := range names {
-					if reply.Name == candidate {
-						name = candidate
-						break
-					}
-				}
-				if name == "" {
-					return fmt.Errorf("invalid shell selection")
-				}
-				continue // Recheck setup after waiting without the account lock.
-			}
-			readyMode := "managed"
-			if updated {
-				readyMode = "updated"
-			}
-			if mode == "mcp-agent" {
-				c, err := connectRemoteDaemon(target)
-				lock.Close()
-				if err != nil {
-					return err
-				}
-				defer c.Close()
-				if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
-					return err
-				}
-				return bridgeMCP(c, target)
-			}
-			if mode == "mount-agent" || mode == "cp-agent" {
-				lock.Close()
-				if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
-					return err
-				}
-				return serverCommand([]string{mode})
-			}
-			return bridgePrepared(name, mode == "resume" || mode == "attach", mode == "new" || mode == "spawn", target, lock, readyMode, mode == "spawn")
+			continue
+		}
+		if mode == "prepare" {
+			lock.Close()
+			return nil
 		}
 		if mode == "sessions" {
 			lock.Close()
-			return fmt.Errorf("remote version mismatch; connect interactively to update")
+			return listSessions()
 		}
-		if state.Manual {
+		if mode == "attach" && name == "" {
+			names, err := detachedSessionNames()
 			lock.Close()
-			return fmt.Errorf("unknown installed or daemon version; update manually; no tasks ended")
+			if err != nil {
+				return err
+			}
+			if len(names) == 0 {
+				return fmt.Errorf("no detached shells; use sshore launch HOST to create one")
+			}
+			if len(names) == 1 {
+				name = names[0]
+				continue
+			}
+			if err := writeMessage(os.Stdout, message{Type: "session_choice", SoftwareVersion: version, Names: names}); err != nil {
+				return err
+			}
+			reply, err := readMessage(os.Stdin)
+			if err != nil {
+				return err
+			}
+			if reply.Type != "session_select" {
+				return fmt.Errorf("invalid shell selection")
+			}
+			for _, candidate := range names {
+				if reply.Name == candidate {
+					name = candidate
+					break
+				}
+			}
+			if name == "" {
+				return fmt.Errorf("invalid shell selection")
+			}
+			continue // Recheck setup after waiting without the account lock.
 		}
-		staged, err := prepareReplacement(target)
-		lock.Close()
-		if err != nil {
-			return err
-		}
-		defer os.Remove(staged)
-		action := "update"
-		installed := state.Installed
-		if installed == "" {
-			installed = "not installed"
-		}
-		detail := fmt.Sprintf("Remote: %s. Required: %s.", installed, version)
-		if changed {
-			detail = "Remote state changed; review again. " + detail
-		}
-		if err = writeMessage(os.Stdout, message{Type: "setup_choice", SoftwareVersion: version, Action: action, Error: detail, SetupProcesses: state.processes()}); err != nil {
-			return err
-		}
-		reply, err := readMessage(os.Stdin)
-		if err != nil {
-			return err
-		}
-		if reply.Type != "setup_action" {
-			return fmt.Errorf("invalid setup action")
-		}
-		if reply.Action == "cancel" {
-			return fmt.Errorf("setup cancelled; no tasks ended")
-		}
-		if reply.Action != "update" || state.Manual {
-			return fmt.Errorf("automatic update is not authorized")
-		}
-		lock, err = setupLock()
-		if err != nil {
-			return err
-		}
-		current, err := inspectSetup(target, false)
-		if err != nil {
+		readyMode := "managed"
+		if mode == "mcp-agent" {
+			c, err := connectRemoteDaemon(target)
 			lock.Close()
-			return err
+			if err != nil {
+				return err
+			}
+			defer c.Close()
+			if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
+				return err
+			}
+			return bridgeMCP(c, target)
 		}
-		if !reflect.DeepEqual(state, current) {
+		if mode == "mount-agent" || mode == "cp-agent" {
 			lock.Close()
-			changed = true
-			continue
-		} // require fresh confirmation
-		// The staged replacement must still be verified before ending tasks.
-		if v, err := executableVersion(staged); err != nil || v != version {
-			lock.Close()
-			return fmt.Errorf("prepared executable verification failed; no tasks ended")
+			if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
+				return err
+			}
+			return serverCommand([]string{mode})
 		}
-		if state.Daemon != nil {
-			err = requestDaemonShutdown(*state.Daemon)
-		}
-		if err == nil {
-			err = os.Rename(staged, target)
-		}
-		_ = os.Remove(staged)
-		lock.Close()
-		if err != nil {
-			return err
-		}
-		updated = true
-		if mode == "resume" {
-			return writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "updated"})
-		}
-		// Recheck the complete state before launching a session.
+		return bridgePrepared(name, mode, target, lock, readyMode)
 	}
+}
+
+func remoteSetupConfirmation(m message) (string, error) {
+	m.Type, m.SoftwareVersion = "setup_choice", version
+	if machine := systemMachineID(); machine != "" {
+		m.SourceMachineID = taskUID(fmt.Sprintf("%s/%d", machine, os.Geteuid()))
+	} else {
+		id, err := newTaskUID()
+		if err != nil {
+			return "", err
+		}
+		m.SourceMachineID = id
+	}
+	if err := writeMessage(os.Stdout, m); err != nil {
+		return "", err
+	}
+	reply, err := readMessage(os.Stdin)
+	if err != nil {
+		return "", err
+	}
+	if reply.Type != "setup_action" {
+		return "", fmt.Errorf("invalid setup action")
+	}
+	return reply.Action, nil
 }
 
 func prepareReplacement(target string) (string, error) {
@@ -240,15 +184,6 @@ func prepareReplacement(target string) (string, error) {
 	}
 	success = true
 	return path, nil
-}
-
-func installPrepared(target string) error {
-	staged, err := prepareReplacement(target)
-	if err != nil {
-		return err
-	}
-	defer os.Remove(staged)
-	return os.Rename(staged, target)
 }
 
 // pidfds bind signals to the inspected process, never a reused numeric PID.

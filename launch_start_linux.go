@@ -67,43 +67,39 @@ func openLock(path string, nonblocking bool) (*os.File, error) {
 	return f, nil
 }
 
-// The daemon arbitrates the final name and identity atomically.
-type sessionReservation struct {
-	name, publicName string
-	namespace        *taskIdentitySelection
-	conn             net.Conn
+// Selection opens no task streams. Only daemon registration claims a new identity.
+type shellSelection struct {
+	taskIdentitySelection
+	existing bool
 }
 
-func reserveSession(names []string, fresh bool) (sessionReservation, error) {
-	for _, name := range names {
+func selectHostedShell(name, mode string) (shellSelection, error) {
+	attach := mode == "attach" || mode == "resume"
+	if name != "" {
 		id, err := resolveSession(name)
 		if err != nil {
-			return sessionReservation{}, err
+			return shellSelection{}, err
 		}
 		if id != "" {
-			if fresh {
-				continue
+			if mode == "new" || mode == "spawn" {
+				return shellSelection{}, fmt.Errorf("shell %s already exists; use sshore attach HOST %s", name, name)
 			}
-			conn, err := dialHostedTask(context.Background(), id, time.Second)
-			if err != nil {
-				return sessionReservation{}, err
-			}
-			return sessionReservation{name: id, publicName: name, conn: conn}, nil
+			return shellSelection{taskIdentitySelection: taskIdentitySelection{name: name, uid: id}, existing: true}, nil
 		}
-		requested := name
-		if fresh {
-			requested = ""
-		}
-		namespace, err := chooseTaskIdentity("shell", requested)
-		if err != nil {
-			return sessionReservation{}, err
-		}
-		return sessionReservation{name: namespace.uid, publicName: namespace.name, namespace: namespace}, nil
 	}
-	return sessionReservation{}, fmt.Errorf("no shell name available")
+	if attach {
+		if name == "" {
+			return shellSelection{}, fmt.Errorf("attach requires a shell name")
+		}
+		return shellSelection{}, fmt.Errorf("shell %s does not exist; use sshore list HOST", name)
+	}
+	id, err := chooseTaskIdentity("shell", name)
+	if err != nil {
+		return shellSelection{}, err
+	}
+	return shellSelection{taskIdentitySelection: *id}, nil
 }
-
-func bridge(name string, existing bool) error {
+func bridge(name, mode string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -112,7 +108,7 @@ func bridge(name string, existing bool) error {
 	if err != nil {
 		return err
 	}
-	state, err := inspectSetup(exe, false)
+	state, err := inspectSetup(exe)
 	if err != nil {
 		lock.Close()
 		return err
@@ -121,58 +117,31 @@ func bridge(name string, existing bool) error {
 		lock.Close()
 		return fmt.Errorf("remote versions differ; reconnect through setup")
 	}
-	return bridgePrepared(name, existing, false, exe, lock, "")
+	return bridgePrepared(name, mode, exe, lock, "")
 }
 
-func bridgePrepared(name string, existing, freshOnly bool, executable string, gate *os.File, readyMode string, temporary ...bool) error {
+func bridgePrepared(name, mode, executable string, gate *os.File, readyMode string) error {
 	defer gate.Close()
-	if !existing && freshOnly && isShortTaskID(name) {
+	if (mode == "new" || mode == "spawn") && isShortTaskID(name) {
 		name = ""
 	}
-	if existing && name == "" {
-		return fmt.Errorf("attach requires a shell name")
-	}
-	publicName := name
-	if existing {
-		found, err := resolveSession(name)
-		if err != nil {
-			return err
-		}
-		if found == "" {
-			return fmt.Errorf("shell %s does not exist; use sshore list HOST", name)
-		}
-	}
-	names := []string{name}
-	fresh := name == ""
-	if fresh {
-		names = automaticSessionNames()
-	}
-	reservation, err := reserveSession(names, fresh)
+	selected, err := selectHostedShell(name, mode)
 	if err != nil {
 		return err
 	}
-	name, publicName = reservation.name, reservation.publicName
-	conn := reservation.conn
-
-	if freshOnly && conn != nil {
-		conn.Close()
-		return fmt.Errorf("shell %s already exists; use sshore attach HOST %s", publicName, publicName)
-	}
-	if conn == nil {
-		if existing {
-			return fmt.Errorf("shell %s does not exist; use sshore list HOST or sshore launch HOST NAME", name)
-		}
-		if publicName == "" {
-			publicName = name
-		}
-		if err := createRemoteShell(executable, name, publicName, reservation.namespace.uid, len(temporary) > 0 && temporary[0]); err != nil {
-			return err
-		}
-		conn, err = dialHostedTask(context.Background(), name, time.Second)
+	if !selected.existing {
+		cwd, err := os.Getwd()
 		if err != nil {
 			return err
 		}
-
+		if err := createRemoteShell(executable, selected.taskIdentitySelection, mode == "spawn", cwd, os.Environ()); err != nil {
+			return err
+		}
+	}
+	name = selected.uid
+	conn, err := dialHostedTask(context.Background(), name, time.Second)
+	if err != nil {
+		return err
 	}
 	defer conn.Close()
 	gate.Close()
@@ -184,7 +153,7 @@ func bridgePrepared(name string, existing, freshOnly bool, executable string, ga
 		record.UID = name
 		return writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode, LocalRequest: &localDaemonRequest{Record: record}})
 	}
-	if len(temporary) > 0 && temporary[0] {
+	if mode == "spawn" {
 		return bridgeSpawn(name, conn, readyMode)
 	}
 	if readyMode != "" {

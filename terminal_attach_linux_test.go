@@ -192,7 +192,8 @@ func TestClientDetachWithBlockedInput(t *testing.T) {
 	e := newEnv(t)
 	cmd, terminal, wait := startPrefixClient(t, e)
 	wait("Connected")
-	if _, err := io.WriteString(terminal, "stty -echo -icanon; printf 'BLOCKED-%s' ready; read interrupted_input\n"); err != nil {
+	// The foreground process must leave the PTY unread until detach completes.
+	if _, err := io.WriteString(terminal, "stty -echo -icanon; printf 'BLOCKED-%s' ready; sleep 30\n"); err != nil {
 		t.Fatal(err)
 	}
 	wait("BLOCKED-ready")

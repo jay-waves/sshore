@@ -94,7 +94,7 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 
 type options struct {
 	recovering            bool
-	transports            *clientTransports
+	transports            clientTransports
 	reusable              *clientTransport
 	routeTarget           bool
 	handoffDone           func(context.Context, error) error
@@ -105,7 +105,7 @@ type options struct {
 	tree                  []shellTreeNode
 	temporary             bool
 	hosted                bool
-	owner                 spawnOwner
+	owner                 processIdentity
 	host, session, server string
 	command               string
 	newName               string

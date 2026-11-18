@@ -1,4 +1,4 @@
-package ssh
+package wire
 
 import (
 	"context"
@@ -8,18 +8,19 @@ import (
 
 // OwnTransport binds a byte stream to its owner's cleanup and context. Closing
 // it runs cleanup exactly once, including when cancellation races with Close.
-// Cleanup replaces stream.Close: it must close the stream and release any owning
-// connection or workers. A nil cleanup closes only the stream.
+// Close ends the stream first, then runs any additional owner cleanup.
 // This wrapper intentionally exposes no connection-specific methods.
 func OwnTransport(ctx context.Context, stream io.ReadWriteCloser, cleanup func()) io.ReadWriteCloser {
-	if cleanup == nil {
-		cleanup = func() { _ = stream.Close() }
-	}
-	cleanup = sync.OnceFunc(cleanup)
+	closeStream := sync.OnceFunc(func() {
+		_ = stream.Close()
+		if cleanup != nil {
+			cleanup()
+		}
+	})
 	return &ownedTransport{
 		ReadWriteCloser: stream,
-		cleanup:         cleanup,
-		stop:            context.AfterFunc(ctx, cleanup),
+		cleanup:         closeStream,
+		stop:            context.AfterFunc(ctx, closeStream),
 	}
 }
 
@@ -39,16 +40,15 @@ func (c *ownedTransport) Close() error {
 // endpoints and joins both copies. Used for attachment routes, where EOF ends
 // the whole route. Close must unblock concurrent reads and writes.
 func Bridge(a, b io.ReadWriteCloser) {
+	closeBoth := sync.OnceFunc(func() { _ = a.Close(); _ = b.Close() })
 	done := make(chan struct{})
 	go func() {
 		_, _ = io.Copy(b, a)
-		_ = b.Close()
-		_ = a.Close()
+		closeBoth()
 		close(done)
 	}()
 	_, _ = io.Copy(a, b)
-	_ = a.Close()
-	_ = b.Close()
+	closeBoth()
 	<-done
 }
 

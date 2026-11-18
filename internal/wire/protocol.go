@@ -1,11 +1,11 @@
-package ssh
+// Package wire defines the sshore frames and multiplexing settings shared by local and SSH-backed streams.
+package wire
 
 import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
-	"sync"
 	"time"
 
 	"github.com/xtaci/smux"
@@ -110,20 +110,4 @@ func MuxConfig() *smux.Config {
 	c.KeepAliveInterval = 10 * time.Second
 	c.KeepAliveTimeout = 60 * time.Second
 	return c
-}
-
-type Pipe struct {
-	io.Reader
-	io.Writer
-	Closers []io.Closer
-	once    sync.Once
-}
-
-func (p *Pipe) Close() error {
-	p.once.Do(func() {
-		for _, c := range p.Closers {
-			_ = c.Close()
-		}
-	})
-	return nil
 }

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jay-waves/sshore/internal/files"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 	"os"
 	"os/signal"
@@ -81,7 +81,11 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 		}
 		for _, r := range records {
 			ids = append(ids, r.DisplayName())
-			labels = append(labels, fmt.Sprintf("%s · %s / %s · %s", r.DisplayName(), r.Connection.Host, r.Connection.Session, requestSummary(r.Operations)))
+			source := r.Connection.Host
+			if r.Connection.Session != "" {
+				source += " / " + r.Connection.Session
+			}
+			labels = append(labels, fmt.Sprintf("%s · %s · %s", r.DisplayName(), source, r.summary()))
 		}
 		if len(ids) == 0 {
 			fmt.Println("No pending approvals")
@@ -111,6 +115,28 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 	r, err := findRequest(a.id)
 	if err != nil {
 		return 1, err
+	}
+	if r.Setup != nil {
+		termui.Log(os.Stdout, termui.Info, "Setup %s · %s → %s (remote executable %s)\n", cleanText(r.Connection.Host), cleanText(r.Setup.Installed), version, cleanText(r.Setup.Target))
+		for _, task := range r.Setup.Tasks {
+			termui.Log(os.Stdout, termui.Warning, "  %s %s %s\n", cleanText(task.Name), cleanText(task.Version), cleanText(task.Start))
+		}
+		if len(r.Setup.Tasks) > 0 {
+			fmt.Println("Updating ends these tasks. Unsaved work may be lost.")
+		}
+		word := "update"
+		if r.Setup.Installed == "missing" && len(r.Setup.Tasks) == 0 {
+			word = "install"
+		}
+		answer, err := input.Read("Type "+word+" to approve, or Enter to decline: ", false)
+		if err != nil {
+			return 1, err
+		}
+		if answer != word {
+			return 0, consumeRequest(r.ID)
+		}
+		_, err = requestRPC("setup_approve", r.ID, "", nil)
+		return 0, err
 	}
 	title := "Copy"
 	if len(r.Operations) == 1 {
@@ -274,12 +300,12 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	wire, err := openRoutedResource(ctx, r.Connection, message{Type: "route_files", Name: r.Connection.Session, PID: r.PID, ApprovalID: r.ID})
+	conn, err := openRoutedResource(ctx, r.Connection, message{Type: "route_files", Name: r.Connection.Session, PID: r.PID, ApprovalID: r.ID})
 	if err != nil {
 		return 1, err
 	}
-	defer wire.Close()
-	mux, err := smux.Client(wire, sshio.MuxConfig())
+	defer conn.Close()
+	mux, err := smux.Client(conn, wire.MuxConfig())
 	if err != nil {
 		return 1, err
 	}
@@ -450,7 +476,7 @@ func (p *transferProgress) sample(now time.Time, done, total int64) string {
 // Forwarding has its own SSH transport; obsolete tunnel/control streams cannot
 // create listeners or dial services through this connection.
 
-const maxApprovedStreams = sshio.MaxFileStreams
+const maxApprovedStreams = wire.MaxFileStreams
 
 func serveApprovedStreams(ctx context.Context, mux *smux.Session) {
 	slots := make(chan struct{}, maxApprovedStreams)

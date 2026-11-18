@@ -18,6 +18,7 @@ import (
 
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/internal/wire"
 )
 
 func parsePort(s string) (int, error) {
@@ -322,7 +323,7 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 	if err != nil {
 		return nil, err
 	}
-	return &forwardConnection{Input: process.Input, Output: process.Output, Wait: process.Wait, Close: process.Close}, nil
+	return &forwardConnection{Input: process.Stdin(), Output: process, Wait: process.Wait, Close: process.Close}, nil
 }
 
 func forwardWatchCommand(server string) string {
@@ -534,7 +535,7 @@ func runAttempt(parent context.Context, runtime forwardTransport, initial bool, 
 	}
 	heartbeat.Go(func() {
 		pulse := func() {
-			if err := sshio.WriteFull(input, task); err != nil {
+			if err := wire.WriteFull(input, task); err != nil {
 				cancel(fmt.Errorf("forward heartbeat write failed: %w", err))
 			}
 		}

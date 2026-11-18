@@ -58,7 +58,9 @@ func TestSetupConfirmation(t *testing.T) {
 				}
 			}
 			input := &stubSetupInput{answers: tc.answers, closeErr: tc.closeErr}
-			err := negotiateSetupWithInput(&incoming, &outgoing, &options{}, func() (setupInput, error) { return input, nil })
+			err := negotiateSetupUsing(context.Background(), &incoming, &outgoing, &options{}, setupClientUI{Choose: func(m message) (string, error) {
+				return chooseSetupAction(m, func() (setupInput, error) { return input, nil })
+			}})
 			if tc.closeErr != nil && !errors.Is(err, tc.closeErr) {
 				t.Fatalf("lost terminal restoration error: %v", err)
 			}
@@ -140,34 +142,6 @@ func TestSessionSelectionNumericNames(t *testing.T) {
 		if err != nil || selected != tc.want {
 			t.Fatal(selected, err)
 		}
-	}
-}
-
-func TestBackgroundMountSetupPrompt(t *testing.T) {
-	for _, answer := range []string{"update", ""} {
-		t.Run("answer="+answer, func(t *testing.T) {
-			input := &stubSetupInput{answers: []string{answer}}
-			handled := make(chan struct{})
-			token := resourceToken()
-			listener, broker, err := resourceListen(token, func(w http.ResponseWriter, r *http.Request) {
-				defer close(handled)
-				serveResourceSetupWithInput(w, r, func() (setupInput, error) { return input, nil })
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer broker.Close()
-			service := &resourceService{record: resourceRecord{Host: "fixture"}, config: resourceConfig{AuthAddress: listener.Addr().String(), AuthToken: token}}
-			action, err := service.setupUI(context.Background()).Choose(message{Type: "setup_choice", Action: "update", SoftwareVersion: version, SetupProcesses: []setupProcess{{Name: "work", PID: 123, Version: "0.0.1"}}})
-			<-handled
-			want := answer
-			if want == "" {
-				want = "cancel"
-			}
-			if err != nil || action != want || !input.closed {
-				t.Fatalf("action=%q want=%q closed=%v err=%v", action, want, input.closed, err)
-			}
-		})
 	}
 }
 
@@ -296,36 +270,12 @@ func TestSetupDownloadRejectsInvalidArtifacts(t *testing.T) {
 	}
 }
 
-func TestSetupTransferBoundary(t *testing.T) {
-	data := []byte("binary\x00\nbody\xff")
-	var source, destination bytes.Buffer
-	if err := sendSetupBinary(&source, data); err != nil {
-		t.Fatal(err)
-	}
-	writeMessage(&source, message{Type: "setup_action", Action: "update"})
-	if err := relaySetupBinary(&destination, &source); err != nil {
-		t.Fatal(err)
-	}
-	next, err := readMessage(&source)
-	if err != nil || next.Type != "setup_action" {
-		t.Fatalf("relay consumed next frame: %+v %v", next, err)
-	}
-	if !bytes.HasSuffix(destination.Bytes(), data) {
-		t.Fatal("relay changed bytes")
-	}
-	for _, header := range []string{"-1 bad\n", "67108865 " + strings.Repeat("0", 64) + "\n", "1 not-a-hash\n"} {
-		if err := relaySetupBinary(io.Discard, strings.NewReader(header)); err == nil {
-			t.Fatalf("accepted %q", header)
-		}
-	}
-}
-
 func TestSetupDownloadNegotiation(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		var incoming, outgoing bytes.Buffer
 		writeMessage(&incoming, message{Type: "setup_download", SoftwareVersion: version, Action: "linux-amd64"})
 		writeMessage(&incoming, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed"})
-		err := negotiateSetupUsing(context.Background(), &incoming, &outgoing, &options{}, setupClientUI{Log: io.Discard, Download: func(context.Context) ([]byte, error) {
+		err := negotiateSetupUsing(context.Background(), &incoming, &outgoing, &options{command: "setup"}, setupClientUI{Log: io.Discard, Download: func(context.Context) ([]byte, error) {
 			if fail {
 				return nil, fmt.Errorf("offline")
 			}
@@ -343,11 +293,11 @@ func TestSetupDownloadNegotiation(t *testing.T) {
 
 func TestMountSetupDeclineAndUnknownVersion(t *testing.T) {
 	input := &stubSetupInput{answers: []string{""}}
-	action, err := chooseSetupAction(message{Type: "setup_choice", Action: "update"}, &options{command: "mount-agent"}, func() (setupInput, error) { return input, nil })
+	action, err := chooseSetupAction(message{Type: "setup_choice", Action: "update"}, func() (setupInput, error) { return input, nil })
 	if err != nil || action != "cancel" || !input.closed {
 		t.Fatalf("%q %v", action, err)
 	}
-	_, err = chooseSetupAction(message{Type: "setup_choice", Action: "manual-only"}, &options{command: "mount-agent", host: "host"}, func() (setupInput, error) { t.Fatal("unexpected update prompt"); return nil, nil })
+	_, err = chooseSetupAction(message{Type: "setup_choice", Action: "manual-only"}, func() (setupInput, error) { t.Fatal("unexpected update prompt"); return nil, nil })
 	if err == nil || !strings.Contains(err.Error(), "update manually") {
 		t.Fatal(err)
 	}

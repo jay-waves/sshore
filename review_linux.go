@@ -87,7 +87,7 @@ func (s *remoteShell) requestApproval(c net.Conn, m message) error {
 	default:
 		return fmt.Errorf("too many pending requests")
 	}
-	st, err := p.Mux().OpenStream()
+	st, err := p.OpenStream()
 	if err != nil {
 		return err
 	}
@@ -214,7 +214,7 @@ func (s *remoteShell) checkApprovalSource(m message) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lifecycle.Exited() || s.cmd == nil || s.cmd.Process.Pid != m.PID || s.name != m.Name || m.Instance != "" && m.Instance != s.instance {
+	if s.lifecycle.Exited() || s.process.PID == 0 || s.process.PID != m.PID || s.name != m.Name || m.Instance != "" && m.Instance != s.instance {
 		return fmt.Errorf("approved shell changed; request the operation again")
 	}
 	if s.lifecycle.Active() != nil {

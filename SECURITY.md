@@ -68,9 +68,9 @@ flowchart LR
     shell -->|"Explicit nested spawn"| relay
     relay <-->|"Next-hop SSH; same exact release"| child
     relay <-->|"Private attachment route; no local command or credentials"| client
-    resources -->|"cp / watched mount: exact-version helper setup"| update
-    user --> update
-    agent -->|"Exact release; updates require user review"| update
+    resources -->|"Request exact-version helper"| review
+    user -->|"Local setup review"| update
+    agent -->|"Request exact release"| review
     update -->|"Recheck snapshot; daemon kills owned shells; wait for endpoint release"| setup
 ```
 
@@ -332,13 +332,11 @@ its registered tasks. Other users and
 unregistered processes are outside this scope; setup does not discover them by
 process scanning.
 
-1. Missing software may be installed automatically when no incompatible shells
-   exist. Existing older installations or shells require reviewing affected
+1. Remote installation requires local review, including first use. Existing older installations or shells require reviewing affected
    identities and typing `update`. Normal control rejects different releases; unknown
    or unordered versions require manual repair without ending tasks.
 2. Preparation selects the exact release, verifies its checksum and executable
-   version, and stages it without replacing the installed program. Client-side
-   download fallback uses the same authenticated SSH connection; the remote cannot
+   version, and stages it without replacing the installed program. The client supplies the verified binary over the same authenticated SSH connection; the remote cannot
    choose a local path, URL or different release. Extraction accepts only the
    bounded regular executable.
 3. Before ending tasks, setup takes the account lock, rechecks the snapshot and

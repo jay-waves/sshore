@@ -11,7 +11,8 @@ import (
 	"strings"
 
 	"github.com/jay-waves/sshore/internal/files"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
+
+	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
 
@@ -52,7 +53,7 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message) {
 		if err := writeMessage(c, message{Type: "resource_ready", SoftwareVersion: version}); err != nil {
 			return
 		}
-		mx, err := smux.Server(c, sshio.MuxConfig())
+		mx, err := smux.Server(c, wire.MuxConfig())
 		if err != nil {
 			return
 		}
@@ -93,7 +94,7 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message) {
 	if err := writeMessage(c, message{Type: "resource_ready", SoftwareVersion: version}); err != nil {
 		return
 	}
-	mx, err := smux.Server(c, sshio.MuxConfig())
+	mx, err := smux.Server(c, wire.MuxConfig())
 	if err != nil {
 		return
 	}
@@ -103,7 +104,7 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message) {
 		return
 	}
 	defer control.Close()
-	forward := sshio.StartMuxForward(mx, listener, op.TargetPort)
+	forward := wire.StartMuxForward(mx, listener, op.TargetPort)
 	defer forward.Close()
 	if _, err = fmt.Fprintln(control, forwardReadyMarker); err != nil {
 		return

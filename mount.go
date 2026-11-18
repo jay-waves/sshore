@@ -71,11 +71,7 @@ func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
 		c.PeerMetadata, _ = json.Marshal(s.peerTask())
 	}
 	c.Prepare = func(ctx context.Context, wire io.ReadWriter) error {
-		ui := setupClientUI{}
-		if s != nil {
-			ui = s.setupUI(ctx)
-		}
-		return negotiateSetupUsing(ctx, wire, wire, &options{command: "mount-agent", host: o.host}, ui)
+		return negotiateSetupUsing(ctx, wire, wire, &options{command: "mount-agent", host: o.host, server: o.server, ssh: o.ssh, sshDirectory: c.Connection.Directory}, setupClientUI{})
 	}
 	if s != nil && s.config.MountConnection != nil {
 		c.Prepare = nil
@@ -91,7 +87,7 @@ func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
 }
 
 func mountSSHOptions(o ftpOptions) sshio.Options {
-	return sshio.Options{Host: o.host, Args: append([]string{"-o", "ClearAllForwardings=yes"}, sshio.WithoutForwarding(o.ssh)...), Command: remoteCommand(options{command: "mount-agent", server: o.server}), Confirm: confirmSSHHost, Secret: promptSSHSecret}
+	return sshio.Options{Host: o.host, Args: append([]string{"-o", "ClearAllForwardings=yes"}, sshio.WithoutForwarding(o.ssh)...), Command: remoteCommand(options{command: "mount-agent", host: o.host, server: o.server}), Confirm: confirmSSHHost, Secret: promptSSHSecret}
 }
 
 func readMountApprovalPath(input promptReader, hint string) (string, error) {

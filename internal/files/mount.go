@@ -15,6 +15,7 @@ import (
 
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/pkg/sftp"
 	"github.com/xtaci/smux"
 )
@@ -309,11 +310,11 @@ type message struct {
 func (m *message) FrameType() string                 { return m.Type }
 func (m *message) SetFrame(kind string, data []byte) { m.Type, m.Data = kind, data }
 func writeMessage(w io.Writer, m message) error {
-	return sshio.WriteMessage(w, m.Type, m.Data, m)
+	return wire.WriteMessage(w, m.Type, m.Data, m)
 }
 func readMessage(r io.Reader) (message, error) {
 	var m message
-	err := sshio.ReadMessage(r, &m)
+	err := wire.ReadMessage(r, &m)
 	return m, err
 }
 
@@ -324,7 +325,7 @@ func checkPeerVersion(local, peer, role string) error {
 	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%s; reconnect to update or recover", local, role, peer)
 }
 func muxConfig() *smux.Config {
-	config := sshio.MuxConfig()
+	config := wire.MuxConfig()
 	// Mounts have separate data/notification streams and no terminal to compete
 	// with. A larger data window avoids throttling pipelined SFTP on higher RTTs.
 	config.MaxStreamBuffer = 4 * 1024 * 1024

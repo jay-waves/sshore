@@ -58,23 +58,21 @@ func runCopy(args []string) (int, error) {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	connection := sshio.Options{Host: o.host, Args: append([]string{"-o", "ClearAllForwardings=yes"}, o.ssh...), Command: remoteCommand(options{command: "cp-agent"}), Confirm: confirmSSHHost, Secret: promptSSHSecret}
+	connection := sshio.Options{Host: o.host, Args: append([]string{"-o", "ClearAllForwardings=yes"}, o.ssh...), Command: remoteCommand(options{command: "cp-agent", host: o.host}), Confirm: confirmSSHHost, Secret: promptSSHSecret}
 	pipes, err := sshio.Start(ctx, connection, os.Stderr)
 	if err != nil {
 		return 1, err
 	}
-	stdout, stdin := pipes.Output, pipes.Input
+	stdin := pipes.Stdin()
 	defer func() { cancel(); pipes.CloseAndWait() }()
-	stop := context.AfterFunc(ctx, func() { _ = stdin.Close(); _ = stdout.Close() })
-	defer stop()
-	if err = negotiateSetupUsing(ctx, stdout, stdin, &options{command: "cp-agent", host: o.host}, setupClientUI{}); err != nil {
+	if err = negotiateSetupUsing(ctx, pipes, stdin, &options{command: "cp-agent", host: o.host, ssh: o.ssh}, setupClientUI{}); err != nil {
 		return 1, err
 	}
-	client, err := files.NewSFTP(stdout, stdin)
+	client, err := files.NewSFTP(pipes, stdin)
 	if err != nil {
 		return 1, err
 	}
-	defer func() { _ = stdout.Close(); _ = stdin.Close(); _ = client.Close() }()
+	defer func() { _ = pipes.Close(); _ = client.Close() }()
 	if o.sources[0].stream {
 		stopInput := context.AfterFunc(ctx, func() { _ = os.Stdin.Close() })
 		defer stopInput()

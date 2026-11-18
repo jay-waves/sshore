@@ -7,7 +7,7 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
-	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/wire"
 )
 
 // At connection boundaries, clear reporting and restore prompt display modes
@@ -154,14 +154,14 @@ func (w *consoleOutput) Write(data []byte) (int, error) {
 			}
 		}
 	}
-	if err := sshio.WriteFull(w.out, out); err != nil {
+	if err := wire.WriteFull(w.out, out); err != nil {
 		return 0, err
 	}
 	return len(data), nil
 }
 
 func (w *consoleOutput) Flush() error {
-	err := sshio.WriteFull(w.out, w.pending)
+	err := wire.WriteFull(w.out, w.pending)
 	w.pending = nil
 	w.state = 0
 	return err

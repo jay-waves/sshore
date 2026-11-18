@@ -42,7 +42,7 @@ func collectLocalResources(host string) ([]resourceRecord, error) {
 	}
 	for _, r := range pending {
 		if host == "" || r.Connection.Host == host {
-			records = append(records, resourceRecord{UID: r.ID, Token: r.ID, Kind: "review", Name: r.DisplayName(), Host: r.Connection.Host, Detail: r.Connection.Session + ": " + requestSummary(r.Operations)})
+			records = append(records, resourceRecord{UID: r.ID, Token: r.ID, Kind: "review", Name: r.DisplayName(), Host: r.Connection.Host, Detail: r.Connection.Session + ": " + r.summary()})
 		}
 	}
 	sort.Slice(records, func(i, j int) bool {
@@ -163,7 +163,7 @@ func runKillAll(o options) (int, error) {
 			return 1, err
 		}
 		defer process.CloseAndWait()
-		decoder := json.NewDecoder(process.Output)
+		decoder := json.NewDecoder(process)
 		var reply daemonAdminReply
 		if err := decoder.Decode(&reply); err != nil {
 			return 1, fmt.Errorf("remote daemon administration unavailable: %w", err)
@@ -173,7 +173,7 @@ func runKillAll(o options) (int, error) {
 		}
 		snapshot = reply.Snapshot
 		stop = func() error {
-			if err := json.NewEncoder(process.Input).Encode(snapshot); err != nil {
+			if err := json.NewEncoder(process).Encode(snapshot); err != nil {
 				return err
 			}
 			if err := decoder.Decode(&reply); err != nil {

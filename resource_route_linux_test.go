@@ -8,12 +8,11 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
-	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
 
@@ -21,7 +20,7 @@ func routedResourceFixture(t *testing.T) (*remoteShell, message) {
 	t.Helper()
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", t.TempDir())
-	s := &remoteShell{instance: "resource-instance", name: "source", cmd: &exec.Cmd{Process: &os.Process{Pid: os.Getpid()}}, done: make(chan struct{})}
+	s := &remoteShell{instance: "resource-instance", name: "source", process: processIdentity{PID: os.Getpid()}, done: make(chan struct{})}
 	return s, message{Type: "route_mount", SoftwareVersion: version, Instance: s.instance, Name: s.name, PID: os.Getpid(), ApprovalID: strings.Repeat("a", 32)}
 }
 
@@ -114,7 +113,7 @@ func TestRoutedForwardEndpointsAndLifetime(t *testing.T) {
 			if err != nil || reply.Type != "resource_ready" {
 				t.Fatalf("reply=%+v err=%v", reply, err)
 			}
-			mx, err := smux.Client(client, sshio.MuxConfig())
+			mx, err := smux.Client(client, wire.MuxConfig())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -127,7 +126,7 @@ func TestRoutedForwardEndpointsAndLifetime(t *testing.T) {
 			if err != nil || marker != forwardReadyMarker+"\n" {
 				t.Fatalf("marker=%q err=%v", marker, err)
 			}
-			forward := sshio.StartMuxForward(mx, listener, target)
+			forward := wire.StartMuxForward(mx, listener, target)
 			defer forward.Close()
 			// Approval establishes an independent resource, even after its source exits.
 			close(s.done)
@@ -197,7 +196,7 @@ func TestRoutedMountPreservesAgentApprovalGate(t *testing.T) {
 				instance = "replacement"
 			}
 			metadata := map[string]any{"type": "mount_mux", "software_version": release, "mount_approval": map[string]any{"Session": request.Name, "PID": request.PID, "ID": id, "Instance": instance}}
-			if err = sshio.WriteMessage(client, "mount_mux", nil, metadata); err != nil {
+			if err = wire.WriteMessage(client, "mount_mux", nil, metadata); err != nil {
 				t.Fatal(err)
 			}
 			reply, err = readMessage(client)

@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
-	"fmt"
+
 	"io"
 	"os"
 
 	sshoremcp "github.com/jay-waves/sshore/internal/mcp"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/wire"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -23,13 +24,8 @@ func dialMCP(ctx context.Context, host string) (io.ReadWriteCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := transportio.OwnTransport(ctx, pipes, func() { pipes.CloseAndWait() })
-	err = negotiateSetupUsing(ctx, pipes.Output, pipes.Input, &o, setupClientUI{
-		Log: os.Stderr,
-		Choose: func(message) (string, error) {
-			return "", fmt.Errorf("remote setup needs user review; run sshore launch %s and reconnect", host)
-		},
-	})
+	c := wire.OwnTransport(ctx, pipes, func() { _ = pipes.Wait() })
+	err = negotiateSetupUsing(ctx, pipes, pipes, &o, setupClientUI{})
 	if err != nil {
 		_ = c.Close()
 		return nil, err

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/wire"
 )
 
 type forwarding struct {
@@ -142,7 +144,7 @@ func (c *Client) acceptForward(listener net.Listener, target string, reverse boo
 			}
 			defer c.forwards.untrack(outgoing)
 			defer outgoing.Close()
-			Splice(context.Background(), incoming, outgoing)
+			wire.Splice(context.Background(), incoming, outgoing)
 		}()
 	}
 }

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/pkg/sftp"
 )
 
@@ -174,7 +174,7 @@ func newLatencyConn(conn net.Conn, delay time.Duration) *latencyConn {
 					return
 				case <-timer.C:
 				}
-				if err := sshio.WriteFull(c.Conn, p.data); err != nil {
+				if err := wire.WriteFull(c.Conn, p.data); err != nil {
 					c.shutdown()
 					return
 				}

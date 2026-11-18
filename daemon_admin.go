@@ -138,7 +138,7 @@ func (s *daemonTasks) shutdown(record localShellRecord, expected daemonSnapshot)
 		if stoppable, ok := task.(interface{ stopTask() error }); ok {
 			stops = append(stops, stoppable)
 		} else if _, ok := task.(requestRecord); ok {
-			delete(s.records, id)
+			s.removeRequest(id)
 		}
 	}
 	s.mu.Unlock()

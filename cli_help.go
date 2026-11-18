@@ -22,13 +22,13 @@ Files and ports
   cp          Copy files over SSH
   mount       Mount a remote directory
   forward     Forward a TCP port
-  review      Review requests from a remote shell
+  review      Approve setup and remote shell requests
 
 Tasks and setup
   list        Show tasks and when they were last checked
   pstree      Show shell ownership and attachments
   kill        Kill shells or stop other tasks
-  bootstrap   Install a prepared executable
+  setup       Update the local installation
   reset       End local tasks and clear application state
   mcp         Serve Agent tools over stdio
   daemon      Run the account task manager
@@ -63,13 +63,16 @@ const shellStartupOptions = `  --local               Select a local shell
 `
 
 const shellConnectionHelp = `
-Missing remote software is installed automatically when needed. Updating an
-older release can end the listed shells and tasks; it requires typing update.
-Newer remote releases reject older clients. Recovery provides a temporary
-SSH shell; reconnect after maintenance to restore sshore features.
+Missing or older remote releases queue a setup request. Run sshore review in another local terminal.
+Updating may end the listed shells and tasks and requires typing update.
 ` + sshOptions + "Shell connections also accept SSH -L, -R and -D.\n"
 
 var commandHelp = map[string]string{
+	"setup": `Usage: sshore setup
+
+Run the platform installer to update this computer to the latest published release.
+Remote connections request installation or upgrade through sshore review.
+`,
 	"bootstrap": `Usage: sshore bootstrap TARGET
 
 Install this executable's version at the absolute TARGET path. This command
@@ -97,8 +100,7 @@ For a single stateless command outside MCP, use sshore exec HOST 'COMMAND'.
 
 Configure the MCP client with command "sshore" and args ["mcp"]. It owns stdio;
 diagnostics go to stderr. Use an SSH config host alias with an available agent key. MCP cannot prompt for credentials. Remote hosting requires Linux amd64 and the matching sshore release.
-Missing remote software may be installed automatically. If host trust or an
-update needs review, ask the user to run sshore launch HOST, then reconnect.
+Ask the user to approve pending setup requests with sshore review on the initiating computer.
 Do not bypass host verification or supply update confirmation on their behalf.
 
 ## Workflow
@@ -259,7 +261,9 @@ control requires matching releases. Neither form installs software.
 ` + sshOptions,
 	"review": `Usage: sshore review [NAME|ID]
 
-Run locally after a remote request detaches. Mount review shows its access mode
+Run locally. Setup requests appear first. Type install for a new installation
+or update after reviewing affected tasks. Approval resumes the waiting connection.
+Mount review shows its access mode
 and mountpoint; copy review shows file direction and paths; forward review shows
 the listener and target ports. Omit NAME to select a request,
 or use a name or short ID from list. Selecting it opens review only.
@@ -297,7 +301,7 @@ and can end the listed shells and tasks.
        sshore mount DIRECTORY origin:[MOUNTPOINT] [--read-only]
 
 Mount a remote directory through the remote sshore helper using SFTP.
-Missing sshore is prepared automatically; existing versions follow the update safeguards.
+Approve missing or older remote helpers with sshore review.
 Background mounts receive fixed task IDs. HOST: selects the remote home.
 Use [HOST]:SOURCE for an IPv6 address.
 Default: ~/mnt/NAME on Linux or a free Windows drive. Requires FUSE or WinFsp respectively.
@@ -381,6 +385,7 @@ func showHelp(args []string, w io.Writer) error {
 }
 
 var commandExamples = map[string]string{
+	"setup": "Update this computer\n  sshore setup\n",
 	"": `Start a persistent remote shell
   sshore launch work build
 Resume it after detaching with Ctrl+B d

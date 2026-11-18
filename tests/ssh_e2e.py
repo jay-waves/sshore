@@ -276,9 +276,44 @@ def setup_smoke(binary, host, options, root):
     for action in ("launch", "spawn"):
         target = root / "remote-home" / "bin" / action
         cli = [binary, action, host, "prepared", "--server", str(target), *options]
+        if action == "launch":
+            waiting = []
+            try:
+                for _ in range(2):
+                    client = Terminal(cli, wait_ready=False)
+                    waiting.append(client)
+                    client.expect("Run sshore review")
+                review = Terminal([binary, "review"], wait_ready=False)
+                try:
+                    # One pending request opens directly, without a picker.
+                    review.expect("Type install")
+                    review.send("\n")
+                    review.wait()
+                finally:
+                    review.close()
+                for client in waiting:
+                    client.wait(expected=1)
+                assert not target.exists()
+            finally:
+                for client in waiting:
+                    client.close()
+        else:
+            # A published older release requires the typed update decision.
+            target.write_text("#!/bin/sh\necho 'sshore 0.0.1'\n")
+            target.chmod(0o700)
         terminal = Terminal(cli, wait_ready=False)
         try:
-            terminal.expect("preparing sshore .* locally")
+            terminal.expect("Run sshore review")
+            if action == "launch":
+                assert not target.exists()
+            review = Terminal([binary, "review"], wait_ready=False)
+            try:
+                decision = "install" if action == "launch" else "update"
+                review.expect("Type " + decision)
+                review.send(decision + "\n")
+                review.wait()
+            finally:
+                review.close()
             terminal.expect("Connected")
             terminal.send("printf 'SETUP-%s\\n' alive\n")
             terminal.expect("SETUP-alive")
@@ -287,12 +322,12 @@ def setup_smoke(binary, host, options, root):
         finally:
             terminal.close()
         assert subprocess.check_output([str(target), "--version"], text=True).strip() == f"sshore {release}"
-        before = (root / "curl-calls").read_text()
+        assert not (root / "curl-calls").exists(), "setup attempted remote download"
         result = subprocess.run([binary, "launch", host, "matching", "--detach", "--server", str(target), *options], capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
-        assert (root / "curl-calls").read_text() == before, "matching version attempted a download"
+        assert not (root / "curl-calls").exists(), "matching version attempted a download"
         subprocess.run([binary, "kill", host, "matching", "--server", str(target), *options], check=True)
-    print("setup: real SSH local-cache fallback, spawn relay, exact version and matching-version reuse OK")
+    print("setup: reviewed SSH setup from verified client cache, exact version and matching-version reuse OK")
 
 
 def mcp_smoke(binary, host, ssh_wrapper):

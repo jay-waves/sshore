@@ -12,6 +12,8 @@ import (
 	"time"
 
 	transportio "github.com/jay-waves/sshore/internal/ssh"
+
+	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
 
@@ -56,7 +58,7 @@ func openSpawnTransport(ctx context.Context, o *options) (io.ReadWriteCloser, er
 		closeTransport()
 		return nil, err
 	}
-	mx, err := smux.Client(c, transportio.MuxConfig())
+	mx, err := smux.Client(c, wire.MuxConfig())
 	if err != nil {
 		closeTransport()
 		return nil, err
@@ -69,16 +71,8 @@ func openSpawnTransport(ctx context.Context, o *options) (io.ReadWriteCloser, er
 	}
 	if o.transports != nil {
 		stop()
-		retainClientTransport(o, open, func() { mx.Close(); closeTransport() })
-		return openReusableTransport(ctx, o.reusable)
 	}
-	stream, err := open(ctx)
-	if err != nil {
-		mx.Close()
-		closeTransport()
-		return nil, err
-	}
-	return transportio.OwnTransport(ctx, stream, func() { mx.Close(); closeTransport() }), nil
+	return openTaskStream(ctx, o, open, func() { mx.Close(); closeTransport() })
 }
 
 type spawnDiagnostics struct {
@@ -104,19 +98,23 @@ func (d *spawnDiagnostics) Write(b []byte) (int, error) {
 
 func runSpawnRemote(c net.Conn, req localDaemonRequest) error {
 	return runSpawnConnection(c, req, func(mx *smux.Session) error {
-		frontend, err := smux.Server(c, transportio.MuxConfig())
+		frontend, err := smux.Server(c, wire.MuxConfig())
 		if err != nil {
 			return err
 		}
-		defer frontend.Close()
-		go relaySpawnStreams(frontend, mx)
+		relayDone := make(chan struct{})
+		go func() { defer close(relayDone); relaySpawnStreams(frontend, mx) }()
 		// Detaching the frontend must not release the spawn's lifetime connection.
 		<-mx.CloseChan()
+		frontend.Close()
+		<-relayDone
 		return nil
 	})
 }
 
 func relaySpawnStreams(frontend, remote *smux.Session) {
+	var streams sync.WaitGroup
+	defer streams.Wait()
 	for {
 		stream, err := frontend.AcceptStream()
 		if err != nil {
@@ -128,7 +126,7 @@ func relaySpawnStreams(frontend, remote *smux.Session) {
 			frontend.Close()
 			return
 		}
-		go transportio.Bridge(stream, target)
+		streams.Go(func() { wire.Bridge(stream, target) })
 	}
 }
 
@@ -146,20 +144,18 @@ func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.
 	connection := sshioOptionsForSpawn(o, req)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := make(chan struct{})
-	defer close(done)
-	go watchSpawnOwner(req.Record.Owner, done, func() { cancel(); c.Close() })
+	stopWatching := superviseSpawnOwner(req.Record.Owner, func() { cancel(); c.Close() })
+	defer stopWatching()
 	pipes, err := transportio.Start(ctx, connection, diagnostics)
 	if err != nil {
 		_ = writeMessage(c, message{Type: "fatal", Error: err.Error()})
 		return err
 	}
-	input, output := pipes.Input, pipes.Output
 	defer func() { c.Close(); _ = pipes.CloseAndWait() }()
 	var transport io.ReadWriteCloser = pipes
 	// Relay only setup choices. Authentication uses the launcher's askpass broker.
 	for {
-		m, e := readMessage(output)
+		m, e := readMessage(pipes)
 		if e != nil {
 			_ = writeMessage(c, message{Type: "fatal", Error: fmt.Sprintf("spawn setup failed: %v", e)})
 			return e
@@ -174,7 +170,7 @@ func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.
 				return fmt.Errorf("invalid spawn setup mode")
 			}
 			if m.LocalRequest != nil {
-				channel, err := openRemoteDaemonTask(ctx, pipes, m.LocalRequest.Record)
+				channel, err := openRemoteDaemonTask(ctx, pipes.DialTCP, m.LocalRequest.Record)
 				if err != nil {
 					return err
 				}
@@ -200,19 +196,19 @@ func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.
 			return fmt.Errorf("%s", m.Error)
 		}
 		if m.Type == "setup_download" {
-			if err := relaySetupBinary(input, c); err != nil {
+			if err := relaySetupBinary(pipes, c); err != nil {
 				return err
 			}
 			continue
 		}
-		if m.Type != "setup_choice" && m.Type != "session_choice" {
+		if m.Type != "session_choice" && m.Type != "setup_choice" {
 			return fmt.Errorf("unexpected spawn setup response")
 		}
 		answer, e := readMessage(c)
 		if e != nil {
 			return e
 		}
-		if e = writeMessage(input, answer); e != nil {
+		if e = writeMessage(pipes, answer); e != nil {
 			return e
 		}
 	}
@@ -274,72 +270,6 @@ func serveSSHConfirmation(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "yes")
 	} else {
 		io.WriteString(w, "no")
-	}
-}
-
-// Creation identity prevents a reused parent PID from extending a spawn's life.
-type spawnOwner struct {
-	PID   int
-	Start string
-}
-
-func currentSpawnOwner() (spawnOwner, error) {
-	pid := os.Getppid()
-	if pid <= 1 {
-		return spawnOwner{}, fmt.Errorf("spawn requires a live parent shell")
-	}
-	start, err := spawnProcessIdentity(pid)
-	return spawnOwner{PID: pid, Start: start}, err
-}
-
-func watchSpawnOwner(owner spawnOwner, done <-chan struct{}, end func()) {
-	if owner.PID == 0 {
-		return
-	}
-	request := activityRequest{Kind: "owner", Owner: owner}
-	if s := accountActivity.Load(); s != nil {
-		lease := s.add(request)
-		defer s.remove(lease)
-		select {
-		case <-done:
-			return
-		case <-lease.expired:
-			end()
-			return
-		}
-	}
-	c, err := openActivity(request)
-	if err != nil {
-		end()
-		return
-	}
-	defer c.Close()
-	stopped := make(chan struct{})
-	defer close(stopped)
-	go func() {
-		select {
-		case <-done:
-			c.Close()
-		case <-stopped:
-		}
-	}()
-	for {
-		_ = c.SetReadDeadline(time.Now().Add(daemonHeartbeatTimeout))
-		m, err := readMessage(c)
-		if err != nil {
-			select {
-			case <-done:
-			default:
-				end()
-			}
-			return
-		}
-		if m.Type == "pulse" {
-			if writeMessage(c, message{Type: "alive"}) != nil {
-				end()
-				return
-			}
-		}
 	}
 }
 

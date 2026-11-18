@@ -25,6 +25,12 @@ curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | 
 irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 ```
 
+Run `sshore setup` to update this computer. A managed connection to a missing
+or older remote release waits for approval. Run `sshore review` in another
+local terminal, review the host and affected tasks, then type `install` or
+`update`. The original connection continues after approval. Only the client
+downloads releases.
+
 Installers download and verify a release, then invoke the prepared executable's
 `sshore bootstrap TARGET` to install it. Bootstrap uses this executable's version;
 it does not download releases. Updates retain the task review and typed `update`
@@ -254,8 +260,7 @@ See `sshore mount --help` for details.
 
 ## Updates and troubleshooting
 
-Client and remote versions must match exactly, including PATCH. Missing remote
-software is prepared automatically. Updating an older installation requires
+Client and remote versions must match exactly, including PATCH. Approve installation with `sshore review`. Updating an older installation requires
 reviewing affected shells and typing `update`: **their tasks will end**.
 Press Enter to abort and preserve existing work. Preparation failures stop the
 update without opening a recovery shell. Use ordinary SSH for manual repair. A newer remote version

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/wire"
 )
 
 // Request and Response are exchanged over the authenticated SSH transport.
@@ -76,11 +76,11 @@ func WriteRequest(w io.Writer, req Request) error {
 	if err != nil {
 		return err
 	}
-	return sshio.WriteFrame(w, 0, data)
+	return wire.WriteFrame(w, 0, data)
 }
 func ReadRequest(r io.Reader) (Request, error) {
 	var req Request
-	_, data, err := sshio.ReadFrame(r)
+	_, data, err := wire.ReadFrame(r)
 	if err != nil {
 		return req, err
 	}
@@ -92,11 +92,11 @@ func WriteResponse(w io.Writer, res Response) error {
 	if err != nil {
 		return err
 	}
-	return sshio.WriteFrame(w, 0, data)
+	return wire.WriteFrame(w, 0, data)
 }
 func ReadResponse(r io.Reader) (Response, error) {
 	var res Response
-	_, data, err := sshio.ReadFrame(r)
+	_, data, err := wire.ReadFrame(r)
 	if err != nil {
 		return res, err
 	}

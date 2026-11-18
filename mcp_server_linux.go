@@ -174,7 +174,7 @@ func checkMCPSessionSetup() error {
 		return err
 	}
 	executable = strings.TrimSuffix(executable, " (deleted)")
-	state, err := inspectSetup(executable, false)
+	state, err := inspectSetup(executable)
 	if err != nil {
 		return err
 	}

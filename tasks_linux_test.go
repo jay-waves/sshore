@@ -345,7 +345,7 @@ func TestKillUpdatesShellHistory(t *testing.T) {
 		if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "detached", ConfirmedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
-		code, err := runClientOnce(options{host: "work", session: "job", instance: "instance", command: "kill", server: "sshore"}, "", func() {})
+		code, err := runClientOnce(options{host: "work", session: "job", instance: "instance", command: "kill", server: "sshore"}, "", func(options) {})
 		if err != nil {
 			t.Fatal(err)
 		}

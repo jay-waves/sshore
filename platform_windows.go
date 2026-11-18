@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"unsafe"
 
 	"github.com/xtaci/smux"
 	"golang.org/x/sys/windows"
@@ -254,4 +256,58 @@ func spawnProcessName(pid int) (string, error) {
 		return "", err
 	}
 	return filepath.Base(windows.UTF16ToString(buf[:size])), nil
+}
+
+//go:embed install.ps1
+var windowsInstaller string
+
+func runLocalInstaller() error {
+	// Release our executable before the installer replaces it. A separate
+	// console keeps the installer's task review and confirmation interactive.
+	f, err := os.CreateTemp("", "sshore-install-*.ps1")
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(windowsInstaller); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return err
+	}
+	err = startWindowsInstaller(f.Name())
+	if err != nil {
+		os.Remove(f.Name())
+		return err
+	}
+	fmt.Fprintln(os.Stderr, "Continue setup in the installer window.")
+	return nil
+}
+
+func startWindowsInstaller(path string) error {
+	powershell, err := exec.LookPath("powershell.exe")
+	if err != nil {
+		return err
+	}
+	file := "'" + strings.ReplaceAll(path, "'", "''") + "'"
+	script := fmt.Sprintf("Wait-Process -Id %d -ErrorAction SilentlyContinue; try { & %s } finally { Remove-Item -LiteralPath %s; Read-Host 'Press Enter to close' }", os.Getpid(), file, file)
+	cmdline, err := windows.UTF16PtrFromString(windows.ComposeCommandLine([]string{powershell, "-NoProfile", "-Command", script}))
+	if err != nil {
+		return err
+	}
+	// Let the new console supply its own input and output handles.
+	si := windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfo{}))}
+	var pi windows.ProcessInformation
+	app, err := windows.UTF16PtrFromString(powershell)
+	if err != nil {
+		return err
+	}
+	if err := windows.CreateProcess(app, cmdline, nil, nil, false, windows.CREATE_NEW_CONSOLE, nil, nil, &si, &pi); err != nil {
+		return err
+	}
+	windows.CloseHandle(pi.Thread)
+	windows.CloseHandle(pi.Process)
+	return nil
 }

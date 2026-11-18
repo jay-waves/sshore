@@ -60,7 +60,7 @@ func setupLock() (*os.File, error) {
 	return file, nil
 }
 
-func inspectSetup(target string, includeMatching bool) (setupState, error) {
+func inspectSetup(target string) (setupState, error) {
 	var state setupState
 	if _, err := os.Lstat(target); err == nil {
 		state.Installed, err = executableVersion(target)
@@ -94,7 +94,7 @@ func inspectSetup(target string, includeMatching bool) (setupState, error) {
 	if !known {
 		state.Manual = true
 	}
-	if snapshot.Version != version || state.Installed != version && len(snapshot.Tasks) > 0 || includeMatching {
+	if snapshot.Version != version || state.Installed != version && len(snapshot.Tasks) > 0 {
 		state.Daemon = &snapshot
 	}
 	return state, nil
@@ -105,7 +105,7 @@ func (s setupState) processes() []setupProcess {
 	if s.Daemon == nil {
 		return nil
 	}
-	processes := []setupProcess{{Name: "daemon", Version: s.Daemon.Version}}
+	processes := []setupProcess{{Name: "daemon", Start: s.Daemon.Instance, Version: s.Daemon.Version}}
 	for _, task := range s.Daemon.Tasks {
 		processes = append(processes, setupProcess{Name: task.Name, Version: s.Daemon.Version, Start: task.ID})
 	}
@@ -115,6 +115,12 @@ func (s setupState) processes() []setupProcess {
 // The verified release coordinates both standalone installers and SSH setup.
 // Preparation never ends work; only a confirmed, rechecked snapshot can do that.
 func installRelease(target string) error {
+	return installPreparedRelease(target, false, func(m message) (string, error) {
+		return chooseSetupAction(m, installerInput)
+	})
+}
+
+func installPreparedRelease(target string, reviewInstall bool, confirm func(message) (string, error)) error {
 	if !filepath.IsAbs(target) {
 		return fmt.Errorf("installation target must be absolute")
 	}
@@ -122,7 +128,7 @@ func installRelease(target string) error {
 	if err != nil {
 		return err
 	}
-	state, err := inspectSetup(target, true)
+	state, err := inspectSetup(target)
 	if err != nil {
 		lock.Close()
 		return err
@@ -130,6 +136,9 @@ func installRelease(target string) error {
 	if state.Manual {
 		lock.Close()
 		return fmt.Errorf("unknown installed or daemon version; update manually; no tasks ended")
+	}
+	if state.Installed == version && state.Daemon == nil {
+		return lock.Close()
 	}
 	staged, err := prepareReplacement(target)
 	lock.Close()
@@ -141,9 +150,9 @@ func installRelease(target string) error {
 		if state.Daemon != nil && len(state.Daemon.Tasks) > 0 && (os.Getenv("SSHORE_LOCAL_SESSION") != "" || os.Getenv("SSHORE_SOCKET") != "") {
 			return fmt.Errorf("run the installer outside managed shells; no tasks ended")
 		}
-		if state.Installed != "" && state.Installed != version || state.Daemon != nil && len(state.Daemon.Tasks) > 0 {
+		if reviewInstall || state.Installed != "" && state.Installed != version || state.Daemon != nil {
 			processes := state.processes()
-			action, err := chooseSetupAction(message{Action: "update", Error: "Prepared sshore " + version + ". Updating ends the listed tasks; unsaved work may be lost.", SetupProcesses: processes}, &options{}, installerInput)
+			action, err := confirm(message{Action: "update", Name: state.Installed, SetupTarget: target, Error: "Prepared sshore " + version + ". Updating ends the listed tasks; unsaved work may be lost.", SetupProcesses: processes})
 			if err != nil {
 				return err
 			}
@@ -155,7 +164,7 @@ func installRelease(target string) error {
 		if err != nil {
 			return err
 		}
-		current, err := inspectSetup(target, true)
+		current, err := inspectSetup(target)
 		if err != nil {
 			lock.Close()
 			return err
@@ -165,6 +174,9 @@ func installRelease(target string) error {
 			state = current
 			if state.Manual {
 				return fmt.Errorf("installation changed; update manually; no tasks ended")
+			}
+			if state.Installed == version && state.Daemon == nil {
+				return nil
 			}
 			fmt.Fprintln(os.Stderr, "Tasks changed; review again.")
 			continue

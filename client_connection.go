@@ -8,6 +8,7 @@ import (
 	"fmt"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/internal/wire"
 	"golang.org/x/term"
 	"io"
 	"net"
@@ -15,7 +16,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -23,18 +23,44 @@ import (
 
 // Authenticated transports belong to the frontend, across attachment changes.
 // Only live options carry these handles; saved routes must authenticate normally.
-type clientTransports struct {
-	close []func()
-}
+type clientTransports map[*clientTransport]bool
 
 type clientTransport struct {
 	open              func(context.Context) (io.ReadWriteCloser, error)
+	close             func()
 	session, instance string
 }
 
-func retainClientTransport(o *options, open func(context.Context) (io.ReadWriteCloser, error), closeTransport func()) {
-	o.reusable = &clientTransport{open: open}
-	o.transports.close = append(o.transports.close, closeTransport)
+func (ts clientTransports) releaseExcept(keep clientTransports) {
+	for t := range ts {
+		if !keep[t] {
+			delete(ts, t)
+			t.close()
+		}
+	}
+}
+
+// A routed target may still need its ancestor's authenticated transport.
+func keepRoute(keep clientTransports, o *options) {
+	for ; o != nil; o = o.routeParent {
+		if o.reusable != nil {
+			keep[o.reusable] = true
+		}
+	}
+}
+func openTaskStream(ctx context.Context, o *options, open func(context.Context) (io.ReadWriteCloser, error), closeTask func()) (io.ReadWriteCloser, error) {
+	stream, err := open(ctx)
+	if err != nil {
+		closeTask()
+		return nil, err
+	}
+	if o.transports == nil {
+		return wire.OwnTransport(ctx, stream, closeTask), nil
+	}
+	t := &clientTransport{open: open, close: closeTask}
+	o.reusable = t
+	o.transports[t] = true
+	return wire.OwnTransport(ctx, stream, nil), nil
 }
 
 func openReusableTransport(ctx context.Context, connection *clientTransport) (io.ReadWriteCloser, error) {
@@ -42,12 +68,12 @@ func openReusableTransport(ctx context.Context, connection *clientTransport) (io
 	if err != nil {
 		return nil, err
 	}
-	return transportio.OwnTransport(ctx, c, nil), nil
+	return wire.OwnTransport(ctx, c, nil), nil
 }
 
 // The returned stream owns its cleanup. Reused attachments release only their
 // own stream; frontend-retained authenticated connections outlive attachments.
-func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWriteCloser, err error) {
+func openClientTransportContext(ctx context.Context, o *options) (stream io.ReadWriteCloser, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -99,7 +125,7 @@ func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWr
 			if err != nil {
 				return nil, err
 			}
-			return transportio.OwnTransport(ctx, c, nil), nil
+			return wire.OwnTransport(ctx, c, nil), nil
 		}
 		var r localShellRecord
 		var err error
@@ -126,7 +152,7 @@ func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWr
 			return nil, err
 		}
 		_ = c.SetDeadline(time.Time{})
-		return transportio.OwnTransport(ctx, c, nil), nil
+		return wire.OwnTransport(ctx, c, nil), nil
 	}
 	if o.command == "spawn" {
 		return openSpawnTransport(ctx, o)
@@ -143,41 +169,35 @@ func openClientTransportContext(ctx context.Context, o *options) (wire io.ReadWr
 		cancelConnection()
 		return nil, err
 	}
-	reader, writer := process.Output, process.Input
 	closeSSH := func() { cancelConnection(); process.CloseAndWait() }
 	// The mux handshake follows SSH authentication; terminal raw mode and its
 	// keyboard reader start only after authentication and setup finish.
-	if err = negotiateSetupUsing(ctx, reader, writer, o, setupClientUI{OpenInput: func() (setupInput, error) { return termui.NewInput() }}); err != nil {
+	if err = negotiateSetupUsing(ctx, process, process, o, setupClientUI{OpenInput: func() (setupInput, error) { return termui.NewInput() }}); err != nil {
 		closeSSH()
 		return nil, err
 	}
 	if o.daemonTask != nil {
-		if o.transports != nil {
-			record := *o.daemonTask
-			retainClientTransport(o, func(ctx context.Context) (io.ReadWriteCloser, error) {
-				return openRemoteDaemonTask(ctx, process, record)
-			}, closeSSH)
-			return openReusableTransport(ctx, o.reusable)
-		}
-		channel, err := openRemoteDaemonTask(ctx, process, *o.daemonTask)
-		if err != nil {
-			closeSSH()
-			return nil, fmt.Errorf("connect remote daemon: %w", err)
-		}
-		return transportio.OwnTransport(ctx, channel, func() { channel.Close(); closeSSH() }), nil
+		record := *o.daemonTask
+		return openTaskStream(ctx, o, func(ctx context.Context) (io.ReadWriteCloser, error) {
+			c, err := openRemoteDaemonTask(ctx, process.DialTCP, record)
+			if err != nil {
+				return nil, fmt.Errorf("connect remote daemon: %w", err)
+			}
+			return c, nil
+		}, closeSSH)
 	}
-	return transportio.OwnTransport(ctx, process, closeSSH), nil
+	return wire.OwnTransport(ctx, process, func() { cancelConnection(); _ = process.Wait() }), nil
 }
 
 // SSH carries TCP channels to the same loopback endpoint used by native clients.
-func openRemoteDaemonTask(ctx context.Context, process *transportio.Process, record localShellRecord) (net.Conn, error) {
+func openRemoteDaemonTask(ctx context.Context, dial func(context.Context, string) (net.Conn, error), record localShellRecord) (net.Conn, error) {
 	host, _, err := net.SplitHostPort(record.Address)
 	if err != nil || host != "127.0.0.1" || !validTaskUID(record.UID) || len(record.Token) != 64 {
 		return nil, fmt.Errorf("invalid daemon endpoint")
 	}
 	authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	c, err := process.DialDaemon(authCtx, record.Address)
+	c, err := dial(authCtx, record.Address)
 	if err != nil {
 		return nil, err
 	}
@@ -191,12 +211,8 @@ type sessionSwitch struct {
 
 func (s *sessionSwitch) Error() string { return "switch session" }
 func runClient(o options) (int, error) {
-	transports := &clientTransports{}
-	defer func() {
-		for _, v := range slices.Backward(transports.close) {
-			v()
-		}
-	}()
+	transports := make(clientTransports)
+	defer transports.releaseExcept(nil)
 	// Keep the frontend alive while an attempt unwinds and restores its parent.
 	// Each attempt routes interrupts according to its connection phase.
 	signals := make(chan os.Signal, 1)
@@ -210,10 +226,27 @@ func runClient(o options) (int, error) {
 	var returns []returnTarget
 	var fallback *sessionSwitch
 	fallbackPrevious := ""
+	prune := func(current *options) {
+		keep := make(clientTransports)
+		keepRoute(keep, current)
+		if fallback != nil {
+			keepRoute(keep, &fallback.from)
+		}
+		for i := range returns {
+			keepRoute(keep, &returns[i].options)
+		}
+		transports.releaseExcept(keep)
+	}
 	for {
+		prune(&o)
 		o.transports = transports
 		ready := false
-		code, err := runClientOnce(o, previous, func() { ready = true; o.handoffDone = nil })
+		code, err := runClientOnce(o, previous, func(current options) {
+			ready = true
+			o.handoffDone = nil
+			fallback = nil
+			prune(&current)
+		})
 		if !ready && o.handoffDone != nil {
 			_ = o.handoffDone(context.Background(), err)
 			o.handoffDone = nil
@@ -580,6 +613,8 @@ func rememberShellRenameLocal(host, old, name string) error {
 
 func routeParentOptions(parent options) options {
 	parent.command = "attach"
+	// A route borrows an existing connection. A fresh dial belongs to this stream.
+	parent.transports = nil
 	// Bootstrap accepts immutable task UIDs, so an ancestor rename cannot sever
 	// an otherwise live child route. This transport never attaches a terminal.
 	if validTaskUID(parent.instance) {
@@ -619,7 +654,7 @@ type clientHandoff struct {
 	LocalAttach            bool
 	Hosted                 bool
 	Args                   []string
-	Owner                  spawnOwner
+	Owner                  processIdentity
 	Directory              string
 	Environment            []string
 	Tree                   []shellTreeNode
@@ -792,7 +827,7 @@ func (s *localShell) requestHandoff(c net.Conn, h *clientHandoff) error {
 		case <-time.After(2 * time.Minute):
 			return writeMessage(c, message{Type: "error", Error: "attachment startup timed out"})
 		}
-	case <-p.Mux().CloseChan():
+	case <-p.Done():
 		return writeMessage(c, message{Type: "error", Error: "local frontend disconnected"})
 	case <-time.After(4 * time.Second):
 		return writeMessage(c, message{Type: "error", Error: "local frontend handoff timed out"})

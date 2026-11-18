@@ -91,6 +91,11 @@ func run(args []string) (code int, resultErr error) {
 			return 1, err
 		}
 		return 0, killResourceIdentity(args[2], args[3])
+	case "setup":
+		if _, err := parseCLI(args[1:], "setup"); err != nil {
+			return 2, err
+		}
+		return 0, runLocalInstaller()
 	case "bootstrap":
 		parsed, err := parseCLI(args[1:], "bootstrap")
 		if err != nil {

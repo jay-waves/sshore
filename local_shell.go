@@ -23,7 +23,7 @@ import (
 // The token is a local connection capability, never part of public inventory.
 type localShellRecord struct {
 	UID                                      string `json:",omitempty"`
-	Owner                                    spawnOwner
+	Owner                                    processIdentity
 	ManagerPID                               int
 	Name, Address, Token, Version, Directory string
 }
@@ -155,7 +155,7 @@ func (r localShellRecord) identity() string {
 
 // Register the terminal task before publishing readiness. Attachments use the
 // account listener and never own the task lifetime.
-func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, ready func(localShellRecord) error, serve func(net.Conn, message) error, done <-chan struct{}) (result error) {
+func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, ready func(localShellRecord) error, serve func(net.Conn, message) error) error {
 	if err := validSession(r.Name); err != nil {
 		return err
 	}
@@ -164,7 +164,8 @@ func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, read
 	}
 	s.record = r
 	s.tasks = tasks
-	go watchSpawnOwner(r.Owner, s.done, s.close)
+	stopWatching := superviseSpawnOwner(r.Owner, s.close)
+	defer stopWatching()
 	if err := tasks.register(r.UID, &nativeShellTask{shell: s, serve: serve}); err != nil {
 		return err
 	}
@@ -183,30 +184,30 @@ func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, read
 		}
 	})
 	defer startupTimer.Stop()
-	<-done
+	<-s.done
 	return nil
 }
 
 type localShell struct {
-	processIdentity string
-	environment     []string
-	tasks           *daemonTasks
-	mu              sync.Mutex
-	record          localShellRecord
-	terminal        *tmux.Terminal
-	lifecycle       tmux.Lifecycle[*attachment]
-	modes           tmux.InputState
-	done            chan struct{}
-	once            sync.Once
-	handoff         *localHandoff
+	process     processIdentity
+	environment []string
+	tasks       *daemonTasks
+	mu          sync.Mutex
+	record      localShellRecord
+	terminal    *tmux.Terminal
+	lifecycle   tmux.Lifecycle[*attachment]
+	modes       tmux.InputState
+	done        chan struct{}
+	once        sync.Once
+	handoff     *localHandoff
 }
 
 func (s *localShell) kill() error {
 	s.mu.Lock()
-	terminal, identity := s.terminal, s.processIdentity
+	process := s.process
 	s.mu.Unlock()
-	if terminal != nil {
-		if err := stopSpawnTerminal(terminal.PID(), identity); err != nil {
+	if process.PID != 0 {
+		if err := stopSpawnTerminal(process.PID, process.Start); err != nil {
 			return err
 		}
 	}
@@ -218,14 +219,14 @@ func (s *localShell) close() {
 	s.once.Do(func() {
 		s.mu.Lock()
 		terminal, owner := s.terminal, s.lifecycle.End()
-		temporary, identity := s.record.Owner.PID != 0, s.processIdentity
+		temporary, process := s.record.Owner.PID != 0, s.process
 		s.mu.Unlock()
 		if owner != nil {
-			owner.Mux().Close()
+			owner.Close()
 		}
 		if terminal != nil {
 			if temporary {
-				_ = stopSpawnTerminal(terminal.PID(), identity)
+				_ = stopSpawnTerminal(process.PID, process.Start)
 			}
 			terminal.Close()
 		}
@@ -256,7 +257,7 @@ func (s *localShell) start(m message) error {
 		t.Close()
 		return err
 	}
-	s.processIdentity = identity
+	s.process = processIdentity{PID: t.PID(), Start: identity}
 	s.terminal = t
 	go func() {
 		buf := make([]byte, 8192)
@@ -267,7 +268,7 @@ func (s *localShell) start(m message) error {
 				s.modes.Observe(buf[:n])
 				if p := s.lifecycle.Active(); p != nil {
 					if p.output(message{Type: "output", Data: buf[:n]}) != nil {
-						p.Mux().Close()
+						p.Close()
 					}
 				}
 				s.mu.Unlock()
@@ -451,7 +452,7 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, re
 		default:
 			return fmt.Errorf("unexpected local request")
 		}
-	}, s.done)
+	})
 }
 
 func (s *localShell) attach(c net.Conn) error {
@@ -512,19 +513,25 @@ func (s *localShell) attach(c net.Conn) error {
 		return err
 	}
 	saveShellTree(s.record.identity(), s.record.Name, m.Tree, "attached", shellLifetime(s.record.Owner.PID != 0, false), m.SourceHost, m.SourceMachineID)
-	p.SetInput(lease)
 	s.mu.Unlock()
 	// Losing a local client releases attachment ownership, not the daemon-owned
 	// terminal. Stop its writer before another client can attach.
-	defer func() {
-		lease.Stop()
+	release := sync.OnceValues(func() (string, error) {
+		err := lease.Stop()
 		s.mu.Lock()
-		if s.lifecycle.Detach(p) {
+		terminate := err != nil && s.lifecycle.EndIfAttached(p)
+		if err == nil && s.lifecycle.Detach(p) {
 			saveShellTree(s.record.identity(), s.record.Name, nil, "detached")
 		}
+		name := s.record.Name
 		s.mu.Unlock()
-	}()
-	go p.readInput(&s.lifecycle)
+		if terminate {
+			s.close()
+		}
+		return name, err
+	})
+	defer release()
+	go p.readInput(lease, &s.lifecycle)
 	if !initial {
 		// Output ownership must be installed before requesting a repaint.
 		redrawLocalTerminal(t)
@@ -539,21 +546,15 @@ func (s *localShell) attach(c net.Conn) error {
 		case "handoff_result":
 			s.finishHandoff(p, m)
 		case "detach":
-			s.mu.Lock()
-			if err := lease.Stop(); err != nil {
-				s.mu.Unlock()
+			name, err := release()
+			if err != nil {
 				return err
 			}
-			if s.lifecycle.Detach(p) {
-				saveShellTree(s.record.identity(), s.record.Name, nil, "detached")
-			}
-			name := s.record.Name
-			s.mu.Unlock()
-			tmux.FinishDetach(control, func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, func() { mx.Close() })
+			p.FinishDetach(name)
 			return nil
 		case "spawn_child":
 			s.mu.Lock()
-			h := &clientHandoff{Args: []string{"spawn", "--local"}, Owner: spawnOwner{PID: t.PID(), Start: s.processIdentity}, Directory: s.record.Directory, Environment: append([]string(nil), s.environment...), Tree: shellTreeFor(s.record.identity())}
+			h := &clientHandoff{Args: []string{"spawn", "--local"}, Owner: s.process, Directory: s.record.Directory, Environment: append([]string(nil), s.environment...), Tree: shellTreeFor(s.record.identity())}
 			s.mu.Unlock()
 			go serveShortcutSpawn(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
 		case "session_targets":

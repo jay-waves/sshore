@@ -40,7 +40,7 @@ credentials to the user's computer. See
 
 | Term | Meaning |
 | --- | --- |
-| Request | An immutable proposed copy, mount or forward held in daemon memory until local review or expiry. A pending approval is this request's state, not another object. Receiving or selecting a request grants no permission. |
+| Request | An immutable proposed setup, copy, mount or forward held in daemon memory until local review or expiry. A pending approval is this request's state, not another object. Receiving or selecting a request grants no permission. |
 | Approval | The user's explicit acceptance of the local endpoints in `review`, after source validation. Consent means the same thing; SSH authentication alone is insufficient. Approval is single-use. |
 | Legacy recovery | A temporary shell offered by older releases when setup could not complete. Current setup aborts instead; inherited disabled-mode restrictions remain until reconnecting. |
 

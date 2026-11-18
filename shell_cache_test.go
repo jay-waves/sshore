@@ -130,7 +130,7 @@ func TestEndedShellCleanup(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := 0; i < 2; i++ {
-			code, err := runClientOnce(options{host: "work", session: state, command: "kill"}, "", func() {})
+			code, err := runClientOnce(options{host: "work", session: state, command: "kill"}, "", func(options) {})
 			if code != 0 || err != nil {
 				t.Fatalf("named cleanup: %d %v", code, err)
 			}

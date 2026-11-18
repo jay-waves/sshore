@@ -18,7 +18,7 @@ type activityRequest struct {
 	Metadata  *metadataRequest
 	Kind, Key string
 	Peer      *peerRecord
-	Owner     spawnOwner
+	Owner     processIdentity
 }
 type peerAdvertisement struct {
 	Record peerRecord
@@ -184,7 +184,7 @@ func activityRPC(r activityRequest) (activityReply, error) {
 		}
 		return reply, nil
 	}
-	c, err := openActivity(r)
+	c, err := openActivity(context.Background(), r)
 	if err != nil {
 		return activityReply{}, err
 	}
@@ -196,8 +196,8 @@ func activityRPC(r activityRequest) (activityReply, error) {
 	}
 	return reply, err
 }
-func openActivity(r activityRequest) (net.Conn, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func openActivity(parent context.Context, r activityRequest) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 	var record localShellRecord
 	var err error
@@ -280,7 +280,7 @@ func leaseActivity(r activityRequest, pulse func()) (func(), error) {
 		l := s.add(r)
 		return func() { s.remove(l) }, nil
 	}
-	c, err := openActivity(r)
+	c, err := openActivity(context.Background(), r)
 	if err != nil {
 		return nil, err
 	}

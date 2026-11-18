@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sshtest"
+	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
 
@@ -138,11 +138,11 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 func closedAttachment(t *testing.T) *attachment {
 	t.Helper()
 	a, b := net.Pipe()
-	client, err := smux.Client(a, transportio.MuxConfig())
+	client, err := smux.Client(a, wire.MuxConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := smux.Server(b, transportio.MuxConfig())
+	server, err := smux.Server(b, wire.MuxConfig())
 	if err != nil {
 		client.Close()
 		t.Fatal(err)
@@ -165,7 +165,7 @@ func TestInitialAttachmentFailureEndsCreatedTerminal(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 	s := &remoteShell{name: "failed", done: make(chan struct{})}
 	p := closedAttachment(t)
-	if err := s.attach(p, message{Type: "attach", Term: "xterm-256color", Cols: 80, Rows: 24}); err == nil {
+	if _, err := s.attach(p, message{Type: "attach", Term: "xterm-256color", Cols: 80, Rows: 24}); err == nil {
 		t.Fatal("accepted closed attachment")
 	}
 	if s.master == nil {
@@ -180,7 +180,7 @@ func TestInitialAttachmentFailureEndsCreatedTerminal(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
-		s.cmd.Process.Kill()
+		_ = stopSpawnTerminal(s.process.PID, s.process.Start)
 		t.Fatal("failed initial terminal survived")
 	}
 }
@@ -191,7 +191,7 @@ func TestFailedReattachmentPreservesDetachedTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { s.master.Close(); s.master.Wait() }()
-	if err := s.attach(closedAttachment(t), message{Type: "attach", Term: "xterm-256color", Cols: 80, Rows: 24}); err == nil {
+	if _, err := s.attach(closedAttachment(t), message{Type: "attach", Term: "xterm-256color", Cols: 80, Rows: 24}); err == nil {
 		t.Fatal("accepted closed attachment")
 	}
 	if s.lifecycle.Exited() || s.lifecycle.Active() != nil {
@@ -293,7 +293,7 @@ func TestPSTreeKeepsUnavailableHostedShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	tasks := startRequestDaemon(t)
-	shell := &remoteShell{tasks: tasks, instance: uid, name: "blocked", temporary: true, done: make(chan struct{})}
+	shell := &remoteShell{tasks: tasks, instance: uid, name: "blocked", lifetime: awaitingSpawnOwner, done: make(chan struct{})}
 	if err := tasks.register(uid, shell); err != nil {
 		t.Fatal(err)
 	}

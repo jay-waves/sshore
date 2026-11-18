@@ -37,6 +37,9 @@ exec "$server" kill-resource "$version" "$name" {{q .TaskIdentity}}
 exec "$server" {{q .Action}} "$name"{{if eq .Command "rename"}} {{q .NewName}}{{end}} "$version"{{if .Instance}} {{q .Instance}}{{end}}
 {{end}}
 {{else}}
+if [ "$remote_version" = "sshore $version" ]; then
+    exec "$server" bootstrap "$server" "$mode" "$name"
+fi
 # Reject a downgrade before downloading anything. Unknown versions are left to
 # the Go coordinator, which refuses destructive updates without known state.
 if printf '%s\n' "$remote_version" | awk -v local="$version" 'END {
@@ -54,9 +57,6 @@ if printf '%s\n' "$remote_version" | awk -v local="$version" 'END {
     printf '%s\n' "sshore: remote executable is newer than local $version; update the local client. No downgrade performed." >&2
     exit 1
 fi
-if [ "$remote_version" = "sshore $version" ]; then
-    exec "$server" bootstrap "$server" "$mode" "$name"
-fi
 if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
     {{fatal "automatic setup supports Linux amd64 only"}}
 fi
@@ -68,41 +68,37 @@ setup_dir=$(mktemp -d "${TMPDIR:-/tmp}/sshore-setup.XXXXXXXX") || {
 trap 'rm -rf -- "$setup_dir"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
-if ! {
-    curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-        --connect-timeout 15 --max-time 60 --retry 2 {{q .InstallerURL}} -o "$setup_dir/install.sh" &&
-    sh "$setup_dir/install.sh" --version "$version" --bin-dir "$setup_dir/bin" --prepare-only
-} >"$setup_dir/install.log" 2>&1; then
-    cat "$setup_dir/install.log" >&2
-    {{download}}
-    IFS=' ' read -r setup_size setup_hash setup_extra || {
-        {{fatal "remote setup: client download unavailable; no shells stopped"}}
-    }
-    case "$setup_size" in ''|*[!0-9]*|?????????*)
-        {{fatal "remote setup: invalid transfer size"}}
-    ;; esac
-    if [ "$setup_size" -le 0 ] || [ "$setup_size" -gt 67108864 ] || [ -n "$setup_extra" ] || [ "${#setup_hash}" -ne 64 ]; then
-        {{fatal "remote setup: client download failed or transfer invalid; no shells stopped"}}
-    fi
-    case "$setup_hash" in *[!0-9a-f]*)
-        {{fatal "remote setup: invalid transfer checksum"}}
-    ;; esac
-    mkdir -p "$setup_dir/bin" && head -c "$setup_size" > "$setup_dir/bin/sshore" || {
-        {{fatal "remote setup: transfer failed; no shells stopped"}}
-    }
-    setup_actual=$(sha256sum < "$setup_dir/bin/sshore") || {
-        {{fatal "remote setup: checksum tool failed; no shells stopped"}}
-    }
-    if [ "$(wc -c < "$setup_dir/bin/sshore")" -ne "$setup_size" ] || [ "${setup_actual%% *}" != "$setup_hash" ]; then
-        {{fatal "remote setup: transferred executable checksum mismatch; no shells stopped"}}
-    fi
-    chmod 700 "$setup_dir/bin/sshore" || {
-        {{fatal "remote setup: cannot prepare executable; no shells stopped"}}
-    }
+{{download}}
+IFS=' ' read -r setup_size setup_hash setup_extra || {
+    {{fatal "remote setup: client download unavailable; no shells stopped"}}
+}
+case "$setup_size" in ''|*[!0-9]*|?????????*)
+    {{fatal "remote setup: invalid transfer size"}}
+;; esac
+if [ "$setup_size" -le 0 ] || [ "$setup_size" -gt 67108864 ] || [ -n "$setup_extra" ] || [ "${#setup_hash}" -ne 64 ]; then
+    {{fatal "remote setup: client download failed or transfer invalid; no shells stopped"}}
 fi
-[ "$("$setup_dir/bin/sshore" --version)" = "sshore $version" ] || {
+case "$setup_hash" in *[!0-9a-f]*)
+    {{fatal "remote setup: invalid transfer checksum"}}
+;; esac
+head -c "$setup_size" > "$setup_dir/sshore" || {
+    {{fatal "remote setup: transfer failed; no shells stopped"}}
+}
+setup_actual=$(sha256sum < "$setup_dir/sshore") || {
+    {{fatal "remote setup: checksum tool failed; no shells stopped"}}
+}
+if [ "$(wc -c < "$setup_dir/sshore")" -ne "$setup_size" ] || [ "${setup_actual%% *}" != "$setup_hash" ]; then
+    {{fatal "remote setup: transferred executable checksum mismatch; no shells stopped"}}
+fi
+chmod 700 "$setup_dir/sshore" || {
+    {{fatal "remote setup: cannot prepare executable; no shells stopped"}}
+}
+[ "$("$setup_dir/sshore" --version)" = "sshore $version" ] || {
     {{fatal "remote setup: prepared binary version mismatch. No shells stopped."}}
 }
-# Do not exec: the staging directory must remain until the coordinator returns.
-"$setup_dir/bin/sshore" bootstrap "$server" "$mode" "$name"
+# Install under the account lock, then run the installed executable.
+"$setup_dir/sshore" bootstrap "$server" prepare '' || exit $?
+rm -rf -- "$setup_dir"
+[ "$("$server" --version)" = "sshore $version" ] || { {{fatal "remote installation changed; reconnect"}}; }
+exec "$server" bootstrap "$server" "$mode" "$name"
 {{end}}

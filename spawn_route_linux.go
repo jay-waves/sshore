@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
-	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
 
@@ -42,7 +42,7 @@ func (s *remoteShell) connectSpawnRoute(c net.Conn, request message) {
 	if writeMessage(c, message{Type: "route_connected", SoftwareVersion: version}) != nil {
 		return
 	}
-	sshio.Bridge(c, stream)
+	wire.Bridge(c, stream)
 }
 
 func (s *remoteShell) requestSpawnRoute(c net.Conn, request message) {
@@ -181,36 +181,18 @@ func (s *remoteShell) confirmSpawnRoute(c net.Conn, request message) {
 }
 
 func createRouteShell(req localDaemonRequest, temporary bool) (net.Conn, error) {
-	names := []string{req.Spawn.Name}
-	fresh := req.Spawn.Name == ""
-	if fresh {
-		names = automaticSessionNames()
-	}
-	reservation, err := reserveSession(names, fresh)
+	selected, err := selectHostedShell(req.Spawn.Name, "new")
 	if err != nil {
 		return nil, err
 	}
-
-	if reservation.conn != nil {
-		return nil, fmt.Errorf("shell already exists")
-	}
-
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
-	label := reservation.publicName
-	if label == "" {
-		label = reservation.name
-	}
-	if err := createRemoteShellUsing(executable, reservation.name, label, reservation.namespace.uid, temporary, req.Record.Directory, req.Env); err != nil {
+	if err := createRemoteShell(executable, selected.taskIdentitySelection, temporary, req.Record.Directory, req.Env); err != nil {
 		return nil, err
 	}
-	transport, err := dialHostedTask(context.Background(), reservation.name, time.Second)
-	if err != nil {
-		return nil, err
-	}
-	return transport, nil
+	return dialHostedTask(context.Background(), selected.uid, time.Second)
 }
 
 func runLocalSpawnRoute(c net.Conn, req localDaemonRequest, attached func(*smux.Session) error) error {
@@ -228,9 +210,8 @@ func runLocalSpawnRoute(c net.Conn, req localDaemonRequest, attached func(*smux.
 	}
 	defer mx.Close()
 	_ = transport.SetDeadline(time.Time{})
-	done := make(chan struct{})
-	defer close(done)
-	go watchSpawnOwner(req.Record.Owner, done, func() { mx.Close(); transport.Close() })
+	stopWatching := superviseSpawnOwner(req.Record.Owner, func() { mx.Close(); transport.Close() })
+	defer stopWatching()
 	if err := writeMessage(c, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed"}); err != nil {
 		return err
 	}
@@ -248,11 +229,11 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 		return err
 	}
 	s.mu.Lock()
-	if s.cmd == nil {
+	if s.process.PID == 0 {
 		s.mu.Unlock()
 		return fmt.Errorf("managed shell required")
 	}
-	req := localDaemonRequest{Record: localShellRecord{Directory: s.directory, Owner: spawnOwner{PID: s.cmd.Process.Pid, Start: s.processIdentity}}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Name: request.Name}}
+	req := localDaemonRequest{Record: localShellRecord{Directory: s.directory, Owner: s.process}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Name: request.Name}}
 	s.mu.Unlock()
 	if request.Action == "spawn" {
 		return runLocalSpawnRoute(c, req, func(mx *smux.Session) error {
@@ -260,7 +241,7 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 			if err != nil {
 				return err
 			}
-			sshio.Bridge(c, stream)
+			wire.Bridge(c, stream)
 			<-mx.CloseChan()
 			return nil
 		})
@@ -295,6 +276,6 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 		return err
 	}
 	_ = target.SetDeadline(time.Time{})
-	sshio.Bridge(c, target)
+	wire.Bridge(c, target)
 	return nil
 }

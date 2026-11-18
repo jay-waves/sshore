@@ -322,11 +322,11 @@ func (c *Client) keepalive() {
 	}()
 }
 
-// Process is an SSH exec channel and its owning connection. Input.Close sends
-// channel EOF; Close aborts all I/O. Wait must be called after consuming Output.
+// Process is an SSH exec channel and its owning connection. Stdin().Close sends
+// channel EOF; Close aborts all I/O. Wait must be called after consuming stdout.
 type Process struct {
-	Input   io.WriteCloser
-	Output  io.ReadCloser
+	stdin   processInput
+	stdout  io.Reader
 	session *cryptossh.Session
 	client  *Client
 	stop    func() bool
@@ -334,13 +334,16 @@ type Process struct {
 	wait    func() error
 }
 
-// DialDaemon opens a loopback TCP channel on the authenticated SSH connection.
-func (p *Process) DialDaemon(ctx context.Context, address string) (net.Conn, error) {
+// DialTCP opens a sibling TCP channel. Closing it leaves the exec channel alive.
+func (p *Process) DialTCP(ctx context.Context, address string) (net.Conn, error) {
 	return p.client.DialContext(ctx, "tcp", address)
 }
 
-func (p *Process) Read(b []byte) (int, error)  { return p.Output.Read(b) }
-func (p *Process) Write(b []byte) (int, error) { return p.Input.Write(b) }
+func (p *Process) Read(b []byte) (int, error)  { return p.stdout.Read(b) }
+func (p *Process) Write(b []byte) (int, error) { return p.stdin.Write(b) }
+
+// Stdin closes independently to send EOF while the caller continues reading stdout.
+func (p *Process) Stdin() io.WriteCloser { return &p.stdin }
 func (p *Process) Close() error {
 	p.once.Do(func() {
 		if p.stop != nil {
@@ -356,7 +359,7 @@ func (p *Process) Close() error {
 func (p *Process) Wait() error { return p.wait() }
 
 // CloseAndWait aborts I/O before joining the exec channel. Normal completion
-// should consume Output and call Wait first to preserve all remote output.
+// should consume stdout and call Wait first to preserve all remote output.
 func (p *Process) CloseAndWait() error {
 	_ = p.Close()
 	return p.Wait()
@@ -369,32 +372,28 @@ func Start(ctx context.Context, o Options, diagnostic io.Writer) (*Process, erro
 	if err != nil {
 		return nil, err
 	}
-	stopConnecting := context.AfterFunc(ctx, func() { client.Close() })
-	defer stopConnecting()
+	stop := context.AfterFunc(ctx, func() { client.Close() })
 	if err := client.StartForwarding(); err != nil {
+		stop()
 		client.Close()
 		return nil, err
 	}
 	session, err := client.NewSession()
 	if err != nil {
+		stop()
 		client.Close()
 		return nil, err
 	}
-	p := &Process{session: session, client: client, wait: sync.OnceValue(session.Wait)}
+	p := &Process{session: session, client: client, stop: stop, wait: sync.OnceValue(session.Wait)}
 	session.Stderr = diagnostic
-	var input io.WriteCloser
-	input, err = session.StdinPipe()
-	p.Input = &processInput{writer: input}
+	p.stdin.writer, err = session.StdinPipe()
 	if err == nil {
-		var output io.Reader
-		output, err = session.StdoutPipe()
-		p.Output = processOutput{Reader: output, close: p.Close}
+		p.stdout, err = session.StdoutPipe()
 	}
 	if err != nil {
 		p.Close()
 		return nil, err
 	}
-	p.stop = context.AfterFunc(ctx, func() { client.Close() })
 	if err = session.Start(o.Command); err != nil {
 		p.Close()
 		return nil, err
@@ -409,26 +408,19 @@ func Run(ctx context.Context, o Options, input io.Reader, output, diagnostic io.
 	defer p.Close()
 	// Input may be an interactive terminal. Application owns and cancels its reader.
 	if input != nil {
-		go func() { io.Copy(p.Input, input); p.Input.Close() }()
+		go func() { io.Copy(p, input); p.stdin.Close() }()
 	} else {
-		p.Input.Close()
+		p.stdin.Close()
 	}
 	if output == nil {
 		output = io.Discard
 	}
-	_, err = io.Copy(output, p.Output)
+	_, err = io.Copy(output, p)
 	if err != nil {
 		return err
 	}
 	return p.Wait()
 }
-
-type processOutput struct {
-	io.Reader
-	close func() error
-}
-
-func (p processOutput) Close() error { return p.close() }
 
 // crypto/ssh's session stdin does not serialize CloseWrite with concurrent writes.
 type processInput struct {

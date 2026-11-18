@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/wire"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,7 +34,7 @@ func writeStateFile(path string, data []byte) error {
 	if err = privateStatePath(f.Name(), false); err != nil {
 		return err
 	}
-	if err = sshio.WriteFull(f, data); err != nil {
+	if err = wire.WriteFull(f, data); err != nil {
 		return err
 	}
 	if err = f.Sync(); err != nil {

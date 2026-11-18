@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"net"
@@ -276,4 +277,17 @@ func resetRuntimeState(directories []string) error {
 func spawnProcessName(pid int) (string, error) {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
 	return strings.TrimSpace(string(data)), err
+}
+
+//go:embed install.sh
+var linuxInstaller string
+
+func runLocalInstaller() error {
+	target, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("sh", "-c", linuxInstaller, "install.sh", "--bin-dir", filepath.Dir(target))
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd.Run()
 }

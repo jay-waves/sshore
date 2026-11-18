@@ -330,16 +330,6 @@ func startSelectedResource(config resourceConfig, kind string, reservation *task
 	token := resourceToken()
 	prompts := make(chan struct{}, 1)
 	l, broker, e := resourceListen(token, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" && (r.URL.Path == "/setup" || r.URL.Path == "/setup-log") {
-			select {
-			case prompts <- struct{}{}:
-				defer func() { <-prompts }()
-			case <-r.Context().Done():
-				return
-			}
-			serveResourceSetup(w, r)
-			return
-		}
 		if r.Method != "POST" || r.URL.Path != "/ask" && r.URL.Path != "/unlock" {
 			http.NotFound(w, r)
 			return

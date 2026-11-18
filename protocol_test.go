@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	transportio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
 
@@ -108,11 +108,11 @@ func TestProtocolUnicodeError(t *testing.T) {
 func muxPair(t *testing.T) (*smux.Session, *smux.Session) {
 	t.Helper()
 	a, b := net.Pipe()
-	client, err := smux.Client(a, transportio.MuxConfig())
+	client, err := smux.Client(a, wire.MuxConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := smux.Server(b, transportio.MuxConfig())
+	server, err := smux.Server(b, wire.MuxConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,5 +296,47 @@ func TestSpawnConfirmationCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("confirmation blocked after cancellation")
+	}
+}
+
+func TestFrontendReleasesUnreachableTransports(t *testing.T) {
+	ctx := context.Background()
+	owned := make(clientTransports)
+	open := func(context.Context) (io.ReadWriteCloser, error) { a, b := net.Pipe(); b.Close(); return a, nil }
+	var parentClosed, childrenClosed int
+	parent := options{transports: owned}
+	stream, err := openTaskStream(ctx, &parent, open, func() { parentClosed++ })
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream.Close()
+	for i := 1; i <= 32; i++ {
+		child := options{transports: owned, routeParent: &parent}
+		c, err := openTaskStream(ctx, &child, open, func() { childrenClosed++ })
+		if err != nil {
+			t.Fatal(err)
+		}
+		keep := make(clientTransports)
+		keepRoute(keep, &child)
+		owned.releaseExcept(keep)
+		if len(owned) != 2 {
+			t.Fatal("lost a route ancestor")
+		}
+		c.Close()
+		keep = make(clientTransports)
+		keepRoute(keep, &parent)
+		owned.releaseExcept(keep)
+		if parentClosed != 0 || childrenClosed != i || len(owned) != 1 {
+			t.Fatal("return retained an obsolete transport or closed parent")
+		}
+	}
+	owned.releaseExcept(nil)
+	if parentClosed != 1 {
+		t.Fatal("parent was not released exactly once")
+	}
+	closed := 0
+	_, err = openTaskStream(ctx, &parent, func(context.Context) (io.ReadWriteCloser, error) { return nil, io.EOF }, func() { closed++ })
+	if err != io.EOF || closed != 1 || len(owned) != 0 {
+		t.Fatal("failed first stream retained transport")
 	}
 }

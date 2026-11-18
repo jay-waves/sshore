@@ -12,11 +12,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+
 	"strconv"
 	"strings"
 	"time"
 
-	transportio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/wire"
 )
 
 const maxSetupDownload = 64 * 1024 * 1024
@@ -194,7 +195,7 @@ func sendSetupBinary(w io.Writer, binary []byte) error {
 	if _, err := fmt.Fprintf(w, "%d %x\n", len(binary), sha256.Sum256(binary)); err != nil {
 		return err
 	}
-	return transportio.WriteFull(w, binary)
+	return wire.WriteFull(w, binary)
 }
 
 // Shell read and head consume exactly the header and file, leaving the same
@@ -211,7 +212,7 @@ func relaySetupBinary(dst io.Writer, src io.Reader) error {
 			continue
 		}
 		if string(header) == "0 -\n" {
-			return transportio.WriteFull(dst, header)
+			return wire.WriteFull(dst, header)
 		}
 		fields := strings.Fields(string(header))
 		if len(fields) != 2 {
@@ -222,7 +223,7 @@ func relaySetupBinary(dst io.Writer, src io.Reader) error {
 		if err != nil || size <= 0 || size > maxSetupDownload || hashErr != nil || len(digest) != sha256.Size {
 			break
 		}
-		if err := transportio.WriteFull(dst, header); err != nil {
+		if err := wire.WriteFull(dst, header); err != nil {
 			return err
 		}
 		_, err = io.CopyN(dst, src, size)

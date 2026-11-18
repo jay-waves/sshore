@@ -14,10 +14,10 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
-	transportio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/wire"
 )
 
-func TestHelperAutomaticSetup(t *testing.T) {
+func TestReviewedRemoteHelperSetup(t *testing.T) {
 	e := newEnv(t)
 	binary, err := os.ReadFile(e.bin)
 	if err != nil {
@@ -29,7 +29,7 @@ func TestHelperAutomaticSetup(t *testing.T) {
 			success                 bool
 			downloads               int
 		}{
-			{"missing", "", "", true, 1},
+			{"missing", "", "update", true, 1},
 			{"matching", version, "", true, 0},
 			{"older", "0.0.1", "update", true, 1},
 			{"declined", "0.0.1", "cancel", false, 1},
@@ -101,7 +101,7 @@ func TestHelperAutomaticSetup(t *testing.T) {
 				if err != nil {
 					t.Fatalf("setup: %v", err)
 				}
-				wire := &transportio.Pipe{Reader: output, Writer: input, Closers: []io.Closer{input, output}}
+				wire := &wire.Pipe{Reader: output, Writer: input, Closers: []io.Closer{input, output}}
 				var data io.ReadWriteCloser = wire
 				if mode == "mount-agent" {
 					mux, stream, _, err := files.OpenMux(wire, version)
@@ -234,73 +234,9 @@ func TestRemoteNewerRejectedWithoutDownload(t *testing.T) {
 	home := t.TempDir()
 	bin := filepath.Join(home, "server")
 	writeBootstrapStub(t, bin, "999.0.0")
-	out, err := runBootstrap(t, home, options{server: bin, session: "main"})
+	out, err := runBootstrap(t, home, options{command: "setup", server: bin})
 	if err == nil || !strings.Contains(out, "newer") || strings.Contains(out, "Downloading") {
 		t.Fatal(out, err)
-	}
-}
-
-func TestRemoteStagesWithoutReplacing(t *testing.T) {
-	for _, release := range []string{"", "0.0.1", "00.4.5", "custom", "broken"} {
-		home := t.TempDir()
-		bin := filepath.Join(home, "server")
-		if release != "" {
-			writeBootstrapStub(t, bin, release)
-			if release == "broken" {
-				if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 23\n"), 0700); err != nil {
-					t.Fatal(err)
-				}
-			}
-		}
-		original, _ := os.ReadFile(bin)
-		prepared := filepath.Join(home, "prepared")
-		writeBootstrapStub(t, prepared, version)
-		t.Setenv("SSHORE_SETUP_TEST_BINARY", prepared)
-		tools := filepath.Join(home, "test-tools")
-		if err := os.MkdirAll(tools, 0700); err != nil {
-			t.Fatal(err)
-		}
-		curl := `#!/bin/sh
-while [ "$#" -gt 0 ]; do
- if [ "$1" = -o ]; then shift; output=$1; fi
- shift
-done
-cat > "$output" <<'INSTALL'
-#!/bin/sh
-if [ "$SSHORE_SETUP_TEST_FAIL" = 1 ]; then
- echo 'checksum verification failed' >&2
- exit 1
-fi
-mkdir -p "$4"
-cp "$SSHORE_SETUP_TEST_BINARY" "$4/sshore"
-echo 'Directory is not on PATH. staging-only-output'
-echo 'staging-only-stderr' >&2
-INSTALL
-`
-		if err := os.WriteFile(filepath.Join(tools, "curl"), []byte(curl), 0700); err != nil {
-			t.Fatal(err)
-		}
-		out, err := runBootstrap(t, home, options{server: bin, session: "main"})
-		if err != nil || !strings.Contains(out, "<bootstrap>\n<"+bin+">") {
-			t.Fatal(out, err)
-		}
-		if strings.Contains(out, "staging-only") || strings.Contains(out, "PATH") {
-			t.Fatal("temporary installer output leaked", out)
-		}
-		if release != "" {
-			unchanged, err := os.ReadFile(bin)
-			if err != nil || string(unchanged) != string(original) {
-				t.Fatal("bootstrap overwrote target", err)
-			}
-		} else if _, err := os.Stat(bin); !os.IsNotExist(err) {
-			t.Fatal("bootstrap overwrote target", err)
-		}
-		t.Setenv("SSHORE_SETUP_TEST_FAIL", "1")
-		out, err = runBootstrap(t, home, options{server: bin, session: "main"})
-		if err == nil || !strings.Contains(out, "checksum verification failed") || strings.Contains(out, "<bootstrap>") {
-			t.Fatal("installer failure must retain diagnostics and stop setup", out, err)
-		}
-		t.Setenv("SSHORE_SETUP_TEST_FAIL", "")
 	}
 }
 
@@ -349,16 +285,7 @@ func TestBootstrapDownloadFailureIsSetupError(t *testing.T) {
 	if err := os.Mkdir(tools, 0700); err != nil {
 		t.Fatal(err)
 	}
-	// Require the retry policy, then simulate curl exhausting its retries.
-	stub := `#!/bin/sh
-case " $* " in *" --retry 2 "*) ;; *) exit 99;; esac
-printf '%s\n' 'curl: (22) The requested URL returned error: 503' >&2
-exit 22
-`
-	if err := os.WriteFile(filepath.Join(tools, "curl"), []byte(stub), 0700); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command("sh", "-c", remoteCommand(options{server: filepath.Join(home, "missing")}))
+	cmd := exec.Command("sh", "-c", remoteCommand(options{command: "setup", server: filepath.Join(home, "missing")}))
 	cmd.Env = append(os.Environ(), "HOME="+home, "PATH="+tools+":/usr/bin:/bin", "TMPDIR="+home)
 	var diagnostics strings.Builder
 	cmd.Stderr = &diagnostics
@@ -366,15 +293,12 @@ exit 22
 	if err == nil {
 		t.Fatal("download unexpectedly succeeded")
 	}
-	err = negotiateSetupUsing(context.Background(), strings.NewReader(string(out)), io.Discard, &options{}, setupClientUI{Download: func(context.Context) ([]byte, error) { return nil, fmt.Errorf("offline") }, OpenInput: func() (setupInput, error) {
+	err = negotiateSetupUsing(context.Background(), strings.NewReader(string(out)), io.Discard, &options{command: "setup"}, setupClientUI{Download: func(context.Context) ([]byte, error) { return nil, fmt.Errorf("offline") }, OpenInput: func() (setupInput, error) {
 		t.Fatal("failed preparation must not request approval")
 		return nil, nil
 	}})
 	if err == nil || !strings.Contains(err.Error(), "local release preparation failed") || strings.Contains(err.Error(), "EOF") {
 		t.Fatalf("unexpected setup error: %v", err)
-	}
-	if !strings.Contains(diagnostics.String(), "503") {
-		t.Fatal(diagnostics.String())
 	}
 	staged, err := filepath.Glob(filepath.Join(home, "sshore-setup.*"))
 	if err != nil || len(staged) != 0 {

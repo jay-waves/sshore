@@ -7,7 +7,7 @@ import (
 	"net"
 	"strconv"
 
-	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
 
@@ -46,7 +46,7 @@ func openRoutedResource(ctx context.Context, connection recentConnection, reques
 func startRoutedForward(ctx context.Context, f forwardConfig) (result *forwardConnection, err error) {
 	request := message{Type: "route_forward", Name: f.Session, PID: f.ResumePID, ApprovalID: f.ApprovalID, Operations: []operation{{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse}}}
 	var listener net.Listener
-	var wire io.ReadWriteCloser
+	var conn io.ReadWriteCloser
 	var mx *smux.Session
 	// Startup owns all partial resources until the forwarder takes over.
 	defer func() {
@@ -56,8 +56,8 @@ func startRoutedForward(ctx context.Context, f forwardConfig) (result *forwardCo
 		if mx != nil {
 			mx.Close()
 		}
-		if wire != nil {
-			wire.Close()
+		if conn != nil {
+			conn.Close()
 		}
 		if listener != nil {
 			listener.Close()
@@ -70,11 +70,11 @@ func startRoutedForward(ctx context.Context, f forwardConfig) (result *forwardCo
 			return nil, err
 		}
 	}
-	wire, err = openRoutedResource(ctx, *f.Connection, request)
+	conn, err = openRoutedResource(ctx, *f.Connection, request)
 	if err != nil {
 		return nil, err
 	}
-	mx, err = smux.Client(wire, sshio.MuxConfig())
+	mx, err = smux.Client(conn, wire.MuxConfig())
 	if err != nil {
 		return nil, err
 	}
@@ -82,11 +82,11 @@ func startRoutedForward(ctx context.Context, f forwardConfig) (result *forwardCo
 	if err != nil {
 		return nil, err
 	}
-	forward := sshio.StartMuxForward(mx, listener, f.Target)
+	forward := wire.StartMuxForward(mx, listener, f.Target)
 	return &forwardConnection{
 		Input: control, Output: control,
 		Wait:  func() error { forward.Wait(); return nil },
-		Close: func() error { forward.Close(); return wire.Close() },
+		Close: func() error { forward.Close(); return conn.Close() },
 	}, nil
 }
 

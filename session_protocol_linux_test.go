@@ -20,7 +20,8 @@ import (
 	"github.com/xtaci/smux"
 
 	"github.com/jay-waves/sshore/internal/files"
-	transportio "github.com/jay-waves/sshore/internal/ssh"
+
+	"github.com/jay-waves/sshore/internal/wire"
 )
 
 var testBuild struct {
@@ -160,7 +161,7 @@ func (e *testEnv) bridge(name string, modes ...string) *bridgeConn {
 			e.t.Fatalf("automatic setup: %+v", m)
 		}
 	}
-	mux, err := clientMux(&transportio.Pipe{Reader: out, Writer: in, Closers: []io.Closer{in, out}})
+	mux, err := clientMux(&wire.Pipe{Reader: out, Writer: in, Closers: []io.Closer{in, out}})
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -372,11 +373,11 @@ func TestStatusConnection(t *testing.T) {
 func approvedTestMux(t *testing.T) *smux.Session {
 	t.Helper()
 	a, b := net.Pipe()
-	client, err := smux.Client(a, transportio.MuxConfig())
+	client, err := smux.Client(a, wire.MuxConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := smux.Server(b, transportio.MuxConfig())
+	server, err := smux.Server(b, wire.MuxConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

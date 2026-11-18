@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/wire"
 )
 
 func TestDetachHandshake(t *testing.T) {
@@ -17,7 +17,7 @@ func TestDetachHandshake(t *testing.T) {
 	defer server.Close()
 	done := make(chan error, 1)
 	go func() {
-		_, body, err := sshio.ReadFrame(server)
+		_, body, err := wire.ReadFrame(server)
 		if err != nil {
 			done <- err
 			return
@@ -35,7 +35,7 @@ func TestDetachHandshake(t *testing.T) {
 			done <- err
 			return
 		}
-		_, body, err = sshio.ReadFrame(server)
+		_, body, err = wire.ReadFrame(server)
 		if err == nil {
 			err = json.Unmarshal(body, &m)
 			if err == nil && m.Type != "bye" {
@@ -69,17 +69,17 @@ func TestAttachmentOwnership(t *testing.T) {
 	if err := s.Attach(b, func() error { t.Fatal("prepared competing attachment"); return nil }); err == nil {
 		t.Fatal("accepted competing attachment")
 	}
-	if s.Detach(b) || s.Release(b) || s.Active() != a {
+	if s.Detach(b) || s.EndIfAttached(b) || s.Active() != a {
 		t.Fatal("stale identity changed owner")
 	}
-	if !s.Detach(a) || s.Release(a) || s.Exited() {
+	if !s.Detach(a) || s.EndIfAttached(a) || s.Exited() {
 		t.Fatal("detach ended session")
 	}
 	if err := s.Attach(b, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if !s.Release(b) || !s.Exited() {
-		t.Fatal("transport loss did not end owner")
+	if !s.EndIfAttached(b) || !s.Exited() {
+		t.Fatal("failed handoff did not end owner")
 	}
 	if err := s.Attach(a, func() error { return nil }); err == nil {
 		t.Fatal("reattached ended session")

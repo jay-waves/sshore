@@ -110,12 +110,11 @@ func TestTerminalOutputEndsAfterShellExit(t *testing.T) {
 func blockedInputTerminal(t *testing.T) (*tmux.Terminal, string) {
 	t.Helper()
 	gate := filepath.Join(t.TempDir(), "read-input")
-	cmd := exec.Command("/bin/sh", "-c", `stty raw -echo; printf READY; while [ ! -e "$1" ]; do sleep 0.01; done; exec cat`, "mux-test", gate)
-	term, err := tmux.StartCommand(cmd, tmux.Size{Cols: 80, Rows: 24})
+	term, err := tmux.Start(tmux.Config{Path: "/bin/sh", Args: []string{"-c", `stty raw -echo; printf READY; while [ ! -e "$1" ]; do sleep 0.01; done; exec cat`, "mux-test", gate}, Size: tmux.Size{Cols: 80, Rows: 24}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = term.Close(); _ = cmd.Process.Kill(); _ = term.Wait() })
+	t.Cleanup(func() { _ = term.Close(); _ = os.WriteFile(gate, nil, 0600); _ = term.Wait() })
 	ready := make(chan error, 1)
 	go func() {
 		data := make([]byte, 5)

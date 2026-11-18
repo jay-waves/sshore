@@ -4,14 +4,13 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/jay-waves/sshore/internal/termui"
 )
@@ -84,7 +83,7 @@ func negotiateSetupUsing(ctx context.Context, r io.Reader, w io.Writer, o *optio
 				return fmt.Errorf("unsupported setup download platform")
 			}
 			downloaded = true
-			log(termui.Info, "[sshore] Remote download unavailable; preparing sshore %s locally.\n", version)
+			log(termui.Info, "[sshore] Preparing sshore %s locally.\n", version)
 			binary, err := ui.Download(ctx)
 			if err != nil {
 				_, _ = io.WriteString(w, "0 -\n")
@@ -132,7 +131,7 @@ func negotiateSetupUsing(ctx context.Context, r io.Reader, w io.Writer, o *optio
 			if ui.Choose != nil {
 				action, err = ui.Choose(m)
 			} else {
-				action, err = chooseSetupAction(m, o, openInput)
+				action, err = waitSetupReview(ctx, *o, m, ui.Log)
 			}
 			if err != nil {
 				return err
@@ -146,7 +145,7 @@ func negotiateSetupUsing(ctx context.Context, r io.Reader, w io.Writer, o *optio
 	}
 }
 
-func chooseSetupAction(m message, o *options, openInput func() (setupInput, error)) (string, error) {
+func chooseSetupAction(m message, openInput func() (setupInput, error)) (string, error) {
 	if m.Action != "update" && m.Action != "manual-only" {
 		return "", fmt.Errorf("invalid setup choice")
 	}
@@ -192,86 +191,6 @@ func chooseSetupAction(m message, o *options, openInput func() (setupInput, erro
 		action = "update"
 	}
 	return action, nil
-}
-
-type resourceSetupRequest struct {
-	Host   string
-	Choice message
-}
-
-func (s *resourceService) setupUI(ctx context.Context) setupClientUI {
-	return setupClientUI{
-		Log: &resourceSetupLog{ctx: ctx, address: s.config.AuthAddress, token: s.config.AuthToken},
-		Choose: func(m message) (string, error) {
-			body, err := json.Marshal(resourceSetupRequest{Host: s.record.Host, Choice: m})
-			if err != nil {
-				return "", err
-			}
-			resp, err := resourceHTTPContext(ctx, s.config.AuthAddress, s.config.AuthToken, "POST", "/setup", bytes.NewReader(body))
-			if err != nil {
-				return "", err
-			}
-			defer resp.Body.Close()
-			answer, err := io.ReadAll(io.LimitReader(resp.Body, 8192))
-			if err != nil {
-				return "", err
-			}
-			if resp.StatusCode != http.StatusOK {
-				return "", fmt.Errorf("setup confirmation failed: %s", cleanText(strings.TrimSpace(string(answer))))
-			}
-			action := strings.TrimSpace(string(answer))
-			if action != "update" && action != "cancel" {
-				return "", fmt.Errorf("invalid setup confirmation")
-			}
-			return action, nil
-		},
-	}
-}
-
-type resourceSetupLog struct {
-	ctx            context.Context
-	address, token string
-}
-
-func (l *resourceSetupLog) Write(p []byte) (int, error) {
-	resp, err := resourceHTTPContext(l.ctx, l.address, l.token, "POST", "/setup-log", bytes.NewReader(p))
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("setup log unavailable")
-	}
-	return len(p), nil
-}
-
-// Runs in the foreground launcher's authenticated, short-lived prompt broker.
-func serveResourceSetup(w http.ResponseWriter, r *http.Request) {
-	serveResourceSetupWithInput(w, r, func() (setupInput, error) { return termui.NewInput() })
-}
-
-func serveResourceSetupWithInput(w http.ResponseWriter, r *http.Request, openInput func() (setupInput, error)) {
-	if r.URL.Path == "/setup-log" {
-		b, err := readSetupLimited(r.Body, 8192)
-		if err != nil {
-			http.Error(w, "invalid setup log", 400)
-			return
-		}
-		fmt.Fprintln(os.Stderr, cleanText(strings.TrimSpace(string(b))))
-		return
-	}
-	data, err := readSetupLimited(r.Body, 256*1024)
-	var request resourceSetupRequest
-	if err != nil || json.Unmarshal(data, &request) != nil || validSSHDestination(request.Host) != nil || request.Choice.Type != "setup_choice" || request.Choice.SoftwareVersion != version {
-		http.Error(w, "invalid setup request", 400)
-		return
-	}
-	action, err := chooseSetupAction(request.Choice, &options{command: "mount-agent", host: request.Host}, openInput)
-	if err != nil {
-		http.Error(w, err.Error(), 409)
-		return
-	}
-	fmt.Fprint(w, action)
 }
 
 // Parse stable release labels for upgrade direction; this is not a compatibility series.
@@ -325,18 +244,6 @@ func compareReleaseVersions(a, b string) (int, bool) {
 	return 0, true
 }
 
-// Bootstrap runs in the original authenticated SSH connection. Resolve the
-// configured server through PATH, then ~/.local/bin/sshore for the default name;
-// explicit server paths are respected. Matching versions execute directly without
-// querying GitHub. A mismatched program is never overwritten during bootstrap:
-// prepare a checksum/version-verified temporary coordinator using install.sh.
-// Its directory is staging, not a PATH installation. Suppress successful installer
-// output but retain failure diagnostics. The coordinator negotiates confirmation
-// before replacing the target. A failed remote download requests a
-// verified executable from the client over the same authenticated connection.
-
-const installerURL = "https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh"
-
 // Encode a normal fatal frame before a remote Go executable is available.
 // Octal escapes keep binary framing and JSON out of shell interpolation.
 func bootstrapFailure(reason string) string {
@@ -386,15 +293,44 @@ func remoteCommand(o options) string {
 	}
 	var b strings.Builder
 	data := struct {
-		Version, Server, Command, Mode, Session, Action, NewName, TaskIdentity, Instance, InstallerURL string
-		List, ListJSON                                                                                 bool
+		Version, Server, Command, Mode, Session, Action, NewName, TaskIdentity, Instance string
+		List, ListJSON                                                                   bool
 	}{
 		Version: version, Server: o.server, Command: o.command, Mode: mode, Session: o.session,
 		Action: o.command + "-session", NewName: o.newName, TaskIdentity: o.taskIdentity, Instance: o.instance,
-		InstallerURL: installerURL, List: o.list, ListJSON: o.listJSON,
+		List: o.list, ListJSON: o.listJSON,
 	}
 	if err := remoteBootstrapTemplate.Execute(&b, data); err != nil {
 		panic(err)
 	}
 	return "sh -c " + shellQuote(b.String())
+}
+
+func waitSetupReview(ctx context.Context, o options, m message, log io.Writer) (string, error) {
+	if m.Action != "update" {
+		return "", fmt.Errorf("unsupported setup action")
+	}
+	installed := m.Name
+	if installed == "" {
+		installed = "missing"
+	} else if n, ok := compareReleaseVersions(installed, version); !ok || n > 0 {
+		return "", fmt.Errorf("incompatible release %s; manual repair required", installed)
+	}
+	connection, err := connectionFromOptions(o)
+	if err != nil {
+		return "", err
+	}
+	connection.Session, connection.Instance = "", ""
+	id, err := newTaskUID()
+	if err != nil {
+		return "", err
+	}
+	r := requestRecord{ID: id, SoftwareVersion: version, Created: time.Now(), Connection: connection, Setup: &setupReview{Installed: installed, Tasks: m.SetupProcesses, Target: m.SetupTarget, Account: m.SourceMachineID}}
+	_, err = requestRPCContext(ctx, requestTTL, "setup_wait", "", "", &r, func(id string) {
+		fmt.Fprintf(log, "[sshore] %s needs setup. Run sshore review in another local terminal (request %s).\n", cleanText(o.host), id[:6])
+	})
+	if err != nil {
+		return "", err
+	}
+	return "update", nil
 }

@@ -17,8 +17,9 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
-	transportio "github.com/jay-waves/sshore/internal/ssh"
+
 	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
 
@@ -35,7 +36,7 @@ func serverCommand(args []string) error {
 			return err
 		}
 		defer stop()
-		return files.ServeCopy(&transportio.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}})
+		return files.ServeCopy(&wire.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}})
 	case "mount-agent":
 		if len(args) != 1 {
 			return usage("mount-agent takes no arguments")
@@ -46,7 +47,7 @@ func serverCommand(args []string) error {
 		}
 		defer stop()
 		account, _ := localMachineIdentity()
-		return files.ServeAgentWithPeer(&transportio.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version, account, func(data json.RawMessage) func() {
+		return files.ServeAgentWithPeer(&wire.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version, account, func(data json.RawMessage) func() {
 			var task peerRecord
 			if len(data) > maxRemoteTaskSize || json.Unmarshal(data, &task) != nil || !strings.HasPrefix(task.ID, "mount/") {
 				return func() {}
@@ -75,7 +76,7 @@ func serverCommand(args []string) error {
 		if len(args) != 2 {
 			return fmt.Errorf("internal command requires a shell name")
 		}
-		return bridge(args[1], args[0] == "resume")
+		return bridge(args[1], args[0])
 	case "task-watch":
 		if len(args) != 2 {
 			return usage("invalid task watcher arguments")
@@ -157,7 +158,7 @@ func watchRemoteTask() error {
 // The original SSH connection is the lifetime lease; individual attachments
 // can end without closing it. Its first stream carries the initial attachment.
 func bridgeSpawn(path string, lease net.Conn, readyMode string) error {
-	return bridgeSpawnTransport(path, lease, readyMode, &transportio.Pipe{Reader: os.Stdin, Writer: os.Stdout})
+	return bridgeSpawnTransport(path, lease, readyMode, &wire.Pipe{Reader: os.Stdin, Writer: os.Stdout})
 }
 
 func bridgeSpawnTransport(path string, lease net.Conn, readyMode string, transport io.ReadWriteCloser) error {
@@ -188,7 +189,7 @@ func bridgeSpawnTransport(path string, lease net.Conn, readyMode string, transpo
 	if err = writeMessage(transport, message{Type: "mux_ready", SoftwareVersion: version}); err != nil {
 		return err
 	}
-	mx, err := smux.Server(transport, transportio.MuxConfig())
+	mx, err := smux.Server(transport, wire.MuxConfig())
 	if err != nil {
 		return err
 	}
@@ -237,19 +238,19 @@ func bridgeSpawnTransport(path string, lease net.Conn, readyMode string, transpo
 			}
 			defer c.Close()
 			_ = c.SetDeadline(time.Time{})
-			transportio.Bridge(stream, c)
+			wire.Bridge(stream, c)
 		})
 	}
 }
 
 func (s *remoteShell) serveSpawnOwner(c net.Conn, first message) {
 	s.mu.Lock()
-	if !s.temporary || s.spawnOwned || checkPeerVersion(first.SoftwareVersion, "client") != nil {
+	if s.lifetime != awaitingSpawnOwner || checkPeerVersion(first.SoftwareVersion, "client") != nil {
 		s.mu.Unlock()
 		_ = writeMessage(c, message{Type: "error", Error: "spawn lifetime already owned or unavailable"})
 		return
 	}
-	s.spawnOwned = true
+	s.lifetime = ownedSpawn
 	instance := s.instance
 	s.mu.Unlock()
 	defer func() { _ = s.killWithReason(instance, "spawn lifetime connection closed") }()

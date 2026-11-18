@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/mcp"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/tmux"
+	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
 
@@ -17,7 +17,7 @@ import (
 
 const requestTimeout = 10 * time.Second
 const chunkSize = 64 * 1024
-const maxFrame = sshio.MaxFrame
+const maxFrame = wire.MaxFrame
 const (
 	control byte = iota
 	input
@@ -45,6 +45,7 @@ type message struct {
 	Directory       string              `json:"directory,omitempty"`
 	AgeSeconds      *int64              `json:"age_seconds,omitempty"`
 	Names           []string            `json:"names,omitempty"`
+	SetupTarget     string              `json:"setup_target,omitempty"`
 	SetupProcesses  []setupProcess      `json:"setup_processes,omitempty"`
 	SoftwareVersion string              `json:"software_version,omitempty"`
 	Operations      []operation         `json:"operations,omitempty"`
@@ -68,11 +69,11 @@ type message struct {
 func (m *message) FrameType() string                 { return m.Type }
 func (m *message) SetFrame(kind string, data []byte) { m.Type, m.Data = kind, data }
 func writeMessage(w io.Writer, m message) error {
-	return sshio.WriteMessage(w, m.Type, m.Data, m)
+	return wire.WriteMessage(w, m.Type, m.Data, m)
 }
 func readMessage(r io.Reader) (message, error) {
 	var m message
-	err := sshio.ReadMessage(r, &m)
+	err := wire.ReadMessage(r, &m)
 	return m, err
 }
 
@@ -88,7 +89,7 @@ func fileResponseError(m message) error {
 // handshake requires the exact full sshore release, including PATCH; there is no
 // separate sshore protocol compatibility counter. Running daemons cannot upgrade
 // in place. Per-stream windows and the shared receive budget are owned by
-// sshio.MuxConfig. These isolate stalled streams without
+// wire.MuxConfig. These isolate stalled streams without
 // guaranteeing real-time terminal priority: TCP head-of-line blocking still applies.
 // Keepalives detect silent transport loss (10s interval, 60s timeout); detection
 // releases the attachment while preserving the shell.
@@ -107,7 +108,7 @@ func clientMux(c io.ReadWriteCloser) (*smux.Session, error) {
 	if m.Type != "mux_ready" {
 		return nil, fmt.Errorf("incompatible sshore server: %s %s", m.Type, m.Error)
 	}
-	return smux.Client(c, sshio.MuxConfig())
+	return smux.Client(c, wire.MuxConfig())
 }
 func streamMessage(s *smux.Stream, m message) error {
 	_ = s.SetWriteDeadline(time.Now().Add(5 * time.Second))
@@ -130,7 +131,7 @@ func checkPeerVersion(peer, role string) error {
 // Accept both streams before handing ownership to a shell. Every partial
 // handshake failure closes the transport here; callers own successful results.
 func acceptMux(c io.ReadWriteCloser) (mx *smux.Session, control, terminal *smux.Stream, request message, err error) {
-	mx, err = smux.Server(c, sshio.MuxConfig())
+	mx, err = smux.Server(c, wire.MuxConfig())
 	if err != nil {
 		return
 	}
@@ -185,6 +186,6 @@ func newAttachment(mx *smux.Session, control, terminal *smux.Stream) *attachment
 }
 func (p *attachment) controlMessage(m message) error { return p.Control(m.Type, m.Data, m) }
 func (p *attachment) output(m message) error         { return p.Output(m.Type, m.Data, m) }
-func (p *attachment) readInput(owner *tmux.Lifecycle[*attachment]) {
-	p.ReadInput(func() bool { return owner.Active() == p })
+func (p *attachment) readInput(input tmux.Input, owner *tmux.Lifecycle[*attachment]) {
+	p.ReadInput(input, func() bool { return owner.Active() == p })
 }

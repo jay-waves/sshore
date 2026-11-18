@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -198,7 +199,7 @@ func TestDaemonResetPreservesLiveOwnership(t *testing.T) {
 
 func TestDaemonClockChecksOwnerIdentity(t *testing.T) {
 	state := activityFixture(t)
-	lease := state.add(activityRequest{Kind: "owner", Owner: spawnOwner{PID: os.Getpid(), Start: "different-process-identity"}})
+	lease := state.add(activityRequest{Kind: "owner", Owner: processIdentity{PID: os.Getpid(), Start: "different-process-identity"}})
 	if !state.busy() {
 		t.Fatal("owner lease did not retain daemon")
 	}
@@ -281,4 +282,40 @@ func TestDaemonLiveMetadataDoesNotReadHistoryFiles(t *testing.T) {
 	if rows, err := readRecentConnections(); err != nil || len(rows) != 1 || rows[0].Host != "work" {
 		t.Fatal(rows, err)
 	}
+}
+
+func TestSpawnOwnerWatcherLifetime(t *testing.T) {
+	state := activityFixture(t)
+	synctest.Test(t, func(t *testing.T) {
+		owner := processIdentity{PID: os.Getpid(), Start: "obsolete"}
+		lost := false
+		stop := superviseSpawnOwner(owner, func() { lost = true })
+		synctest.Wait()
+		if !state.busy() {
+			t.Fatal("owner lease missing")
+		}
+		stop()
+		if lost || state.busy() {
+			t.Fatal("normal shutdown reported owner loss or leaked its lease")
+		}
+
+		entered, release := make(chan struct{}), make(chan struct{})
+		stop = superviseSpawnOwner(owner, func() { close(entered); <-release })
+		synctest.Wait()
+		state.tick(time.Now())
+		<-entered
+		joined := make(chan struct{})
+		go func() { stop(); close(joined) }()
+		synctest.Wait()
+		select {
+		case <-joined:
+			t.Fatal("stop returned during owner cleanup")
+		default:
+		}
+		close(release)
+		<-joined
+		if state.busy() {
+			t.Fatal("expired owner lease survived")
+		}
+	})
 }

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
 
@@ -36,16 +36,16 @@ func TestApprovedTransferRequiresMatchingMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	detachTestClient(t, b)
-	wire, err := e.dial("main")
+	conn, err := e.dial("main")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer wire.Close()
-	sendTest(t, wire, message{Type: "route_files", SoftwareVersion: version, Name: "main", PID: pid, Instance: id, ApprovalID: strings.Repeat("a", 32)})
-	if reply := recv(t, wire); reply.Type != "resource_ready" {
+	defer conn.Close()
+	sendTest(t, conn, message{Type: "route_files", SoftwareVersion: version, Name: "main", PID: pid, Instance: id, ApprovalID: strings.Repeat("a", 32)})
+	if reply := recv(t, conn); reply.Type != "resource_ready" {
 		t.Fatalf("file route: %+v", reply)
 	}
-	mx, err := smux.Client(wire, sshio.MuxConfig())
+	mx, err := smux.Client(conn, wire.MuxConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -75,6 +75,8 @@ func commandSpec(command string) (cliSpec, bool) {
 		spec = cliSpec{[]string{"--version"}, false, false, 0, 0}
 	case "daemon":
 		spec = cliSpec{nil, false, false, 0, 1}
+	case "setup":
+		spec = cliSpec{}
 	case "bootstrap":
 		spec = cliSpec{nil, false, false, 1, 3}
 	case "mcp":

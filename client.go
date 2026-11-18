@@ -20,6 +20,7 @@ import (
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 	"github.com/jay-waves/sshore/internal/tmux"
+	"github.com/jay-waves/sshore/internal/wire"
 )
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
@@ -47,7 +48,7 @@ func acceptSessionName(o *options, name string) error {
 	return nil
 }
 
-func runClientOnce(o options, previous string, ready func()) (resultCode int, resultErr error) {
+func runClientOnce(o options, previous string, ready func(options)) (resultCode int, resultErr error) {
 	attached := false
 	var ended func()
 	// Report after input shutdown and console restoration, including nested returns.
@@ -290,7 +291,7 @@ func runClientOnce(o options, previous string, ready func()) (resultCode int, re
 	o.recovering = false
 	interruptSignals.interactive.Store(true)
 	attached = true
-	ready()
+	ready(o)
 
 	kind := "launch"
 	if o.temporary {
@@ -380,7 +381,7 @@ func runClientOnce(o options, previous string, ready func()) (resultCode int, re
 		target.command = command
 		target.temporary = command == "spawn"
 		if command != "spawn" {
-			target.owner = spawnOwner{}
+			target.owner = processIdentity{}
 		}
 		target.taskIdentity = ""
 		target.instance = ""
@@ -685,7 +686,7 @@ func runClientOnce(o options, previous string, ready func()) (resultCode int, re
 					if detaching {
 						continue
 					}
-					if err = transportio.WriteFull(terminalOutput, e.m.Data); err != nil {
+					if err = wire.WriteFull(terminalOutput, e.m.Data); err != nil {
 						return 1, err
 					}
 					outputMouse.Observe(e.m.Data)

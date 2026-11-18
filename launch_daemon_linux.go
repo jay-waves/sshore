@@ -20,19 +20,24 @@ import (
 	"github.com/jay-waves/sshore/internal/tmux"
 )
 
-// Each attachment owns one mux session. Local helpers use Unix sockets for
-// approval, forwarding control and detach requests. Approved file bytes flow
-// directly on client-initiated streams, without a helper process or PTY relay.
+// A launch is persistent. A spawn can be attached only after its single
+// lifetime connection has claimed it. Transitions are serialized by remoteShell.mu.
+type hostedLifetime uint8
+
+const (
+	persistentLaunch hostedLifetime = iota
+	awaitingSpawnOwner
+	ownedSpawn
+)
 
 type remoteShell struct {
-	tasks           *daemonTasks
-	spawnRoutes     map[string]*spawnRoute
-	temporary       bool
-	spawnOwned      bool
-	environment     []string
-	directory       string
-	processIdentity string
-	killing         bool
+	tasks       *daemonTasks
+	spawnRoutes map[string]*spawnRoute
+	lifetime    hostedLifetime
+	environment []string
+	directory   string
+	process     processIdentity // Verified PID and creation identity of the hosted shell.
+	killing     bool
 
 	instance   string
 	name       string
@@ -43,7 +48,6 @@ type remoteShell struct {
 	lifecycle  tmux.Lifecycle[*attachment]
 	started    time.Time // shell lifetime, including time spent detached
 	master     *tmux.Terminal
-	cmd        *exec.Cmd
 	runtime    string
 	done       chan struct{}
 	once       sync.Once
@@ -71,23 +75,25 @@ func (s *remoteShell) start(m message) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(shellPath, args...)
-	cmd.Dir = s.directory
-	cmd.Env = append(append([]string(nil), env...), "TERM="+m.Term, "SSHORE_SOCKET="+s.instance, "SSHORE_TREE_ID="+remoteTreeIdentity(s.instance))
+	env = append(append([]string(nil), env...), "TERM="+m.Term, "SSHORE_SOCKET="+s.instance, "SSHORE_TREE_ID="+remoteTreeIdentity(s.instance))
 	if exe, err := os.Executable(); err == nil {
-		cmd.Env = append(cmd.Env, "PATH="+filepath.Dir(exe)+":"+localEnvironmentValue(env, "PATH"))
+		env = append(env, "PATH="+filepath.Dir(exe)+":"+localEnvironmentValue(env, "PATH"))
 	}
-	cmd.Env = tmux.StartupEnv(shellPath, cmd.Env, m.NoProfile)
-	master, err := tmux.StartCommand(cmd, tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
+	master, err := tmux.Start(tmux.Config{
+		Path: shellPath, Args: args, Dir: s.directory,
+		Env:  tmux.StartupEnv(shellPath, env, m.NoProfile),
+		Size: tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)},
+	})
 	if err != nil {
 		return err
 	}
-	s.cmd, s.master = cmd, master
-	s.processIdentity, err = processStart(cmd.Process.Pid)
+	identity, err := processStart(master.PID())
 	if err != nil {
 		master.Close()
 		return err
 	}
+	s.master = master
+	s.process = processIdentity{PID: master.PID(), Start: identity}
 	s.started = time.Now()
 	go func() {
 		buf := make([]byte, 8192)
@@ -122,8 +128,10 @@ func (s *remoteShell) start(m message) error {
 		p := s.lifecycle.End()
 		if s.exitReason == "" {
 			s.exitReason = fmt.Sprintf("shell exited (code %d)", code)
-			if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-				s.exitReason = "shell terminated by " + status.Signal().String()
+			if e, ok := errors.AsType[*exec.ExitError](err); ok {
+				if status, ok := e.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+					s.exitReason = "shell terminated by " + status.Signal().String()
+				}
 			}
 		}
 		reason := s.exitReason
@@ -135,15 +143,16 @@ func (s *remoteShell) start(m message) error {
 	}()
 	return nil
 }
-func (s *remoteShell) attach(p *attachment, m message) error {
+func (s *remoteShell) attach(p *attachment, m message) (*tmux.InputLease, error) {
 	s.terminalMu.Lock()
 	defer s.terminalMu.Unlock()
 	if err := validateAttach(m); err != nil {
-		return err
+		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	startedHere := false
+	var lease *tmux.InputLease
 	err := s.lifecycle.Attach(p, func() error {
 		if s.killing {
 			return fmt.Errorf("shell is being killed")
@@ -151,7 +160,7 @@ func (s *remoteShell) attach(p *attachment, m message) error {
 		if m.Instance != "" && m.Instance != s.instance {
 			return fmt.Errorf("shell instance changed; refresh with sshore list")
 		}
-		if m.Action == "existing" && s.cmd == nil {
+		if m.Action == "existing" && s.process.PID == 0 {
 			return fmt.Errorf("shell has not started; use sshore list HOST")
 		}
 		if (m.NoLogin || m.NoProfile) && s.master != nil {
@@ -167,8 +176,8 @@ func (s *remoteShell) attach(p *attachment, m message) error {
 		if err := s.master.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
 			return err
 		}
-		saveShellTreeWithProcess(remoteTreeIdentity(s.instance), s.name, m.Tree, "attached", m.OwnerProcess, shellLifetime(s.temporary, true), m.SourceHost, m.SourceMachineID)
-		if err := p.controlMessage(message{Type: "ready", Tree: shellTreeFor(remoteTreeIdentity(s.instance)), Temporary: s.temporary, Instance: s.instance, PID: s.cmd.Process.Pid, Name: s.name}); err != nil {
+		saveShellTreeWithProcess(remoteTreeIdentity(s.instance), s.name, m.Tree, "attached", m.OwnerProcess, shellLifetime(s.lifetime != persistentLaunch, true), m.SourceHost, m.SourceMachineID)
+		if err := p.controlMessage(message{Type: "ready", Tree: shellTreeFor(remoteTreeIdentity(s.instance)), Temporary: s.lifetime != persistentLaunch, Instance: s.instance, PID: s.process.PID, Name: s.name}); err != nil {
 			return err
 		}
 		if !p.Muted() {
@@ -178,9 +187,9 @@ func (s *remoteShell) attach(p *attachment, m message) error {
 				}
 			}
 		}
-		p.SetInput(tmux.NewInputLease(s.master))
+		lease = tmux.NewInputLease(s.master)
 		if reconnecting && !p.Muted() {
-			tmux.RequestRedraw(s.master, s.cmd.Process.Pid)
+			tmux.RequestRedraw(s.master, s.process.PID)
 		}
 		return nil
 	})
@@ -191,45 +200,32 @@ func (s *remoteShell) attach(p *attachment, m message) error {
 		s.stop()
 	}
 	if errors.Is(err, tmux.ErrExited) {
-		return fmt.Errorf("shell is exiting; use sshore launch HOST to create a new one")
+		return nil, fmt.Errorf("shell is exiting; use sshore launch HOST to create a new one")
 	}
 	if errors.Is(err, tmux.ErrAttached) {
-		return fmt.Errorf("shell already attached; detach the other connection first")
+		return nil, fmt.Errorf("shell already attached; detach the other connection first")
 	}
-	return err
-}
-func (s *remoteShell) release(p *attachment) {
-	p.Close()
-	// Stop this attachment's writer before allowing another client to attach.
-	s.clearAttachment(p)
+	return lease, err
 }
 
-func (s *remoteShell) clearAttachment(p *attachment) bool {
+// Only the current attachment may stop the terminal's writer and hand it off.
+func (s *remoteShell) clearAttachment(p *attachment, lease *tmux.InputLease) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lifecycle.Active() == p && p.Input() != nil {
-		if err := p.Input().Stop(); err != nil {
-			s.lifecycle.Release(p)
-			s.exitReason = "terminal input cancellation failed"
-			s.stop()
-			return false
-		}
+	if s.lifecycle.Active() != p {
+		return "", false
 	}
-	detached := s.lifecycle.Detach(p)
-	if detached {
-		saveShellTree(remoteTreeIdentity(s.instance), s.name, nil, "detached")
+	if err := lease.Stop(); err != nil {
+		s.lifecycle.EndIfAttached(p)
+		s.exitReason = "terminal input cancellation failed"
+		s.stop()
+		return "", false
 	}
-	return detached
-}
-func (s *remoteShell) detach(p *attachment) {
-	if !s.clearAttachment(p) {
-		p.Close()
-		return
+	if !s.lifecycle.Detach(p) {
+		return "", false
 	}
-	s.mu.Lock()
-	name := s.name
-	s.mu.Unlock()
-	tmux.FinishDetach(p.ControlStream(), func() error { return p.controlMessage(message{Type: "detached", Name: name}) }, p.Close)
+	saveShellTree(remoteTreeIdentity(s.instance), s.name, nil, "detached")
+	return s.name, true
 }
 func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
 	mux, control, terminal, m, err := acceptMux(c)
@@ -238,14 +234,15 @@ func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
 	}
 	defer mux.Close()
 	p := newAttachment(mux, control, terminal)
-	defer s.release(p)
-	if err = s.attach(p, m); err != nil {
+	lease, err := s.attach(p, m)
+	if err != nil {
 		_ = p.controlMessage(message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
 		_ = control.SetReadDeadline(time.Now().Add(2 * time.Second))
 		_, _ = readMessage(control)
 		return err
 	}
-	go p.readInput(&s.lifecycle)
+	defer func() { p.Close(); s.clearAttachment(p, lease) }()
+	go p.readInput(lease, &s.lifecycle)
 
 	for {
 		m, err := readMessage(control)
@@ -275,7 +272,7 @@ func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
 			}
 		case "spawn_child":
 			s.mu.Lock()
-			req := &localDaemonRequest{Record: localShellRecord{Directory: s.directory, Owner: spawnOwner{PID: s.cmd.Process.Pid, Start: s.processIdentity}}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Tree: shellTreeFor(remoteTreeIdentity(s.instance))}}
+			req := &localDaemonRequest{Record: localShellRecord{Directory: s.directory, Owner: s.process}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Tree: shellTreeFor(remoteTreeIdentity(s.instance))}}
 			s.mu.Unlock()
 			go serveShortcutSpawn(p, s.done, func(c net.Conn) {
 				s.requestSpawnRoute(c, message{SoftwareVersion: version, LocalRequest: req})
@@ -288,7 +285,7 @@ func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
 			s.terminalMu.Lock()
 			s.mu.Lock()
 			if s.lifecycle.Active() == p && !p.Muted() {
-				tmux.RequestRedraw(s.master, s.cmd.Process.Pid)
+				tmux.RequestRedraw(s.master, s.process.PID)
 			}
 			s.mu.Unlock()
 			s.terminalMu.Unlock()
@@ -309,7 +306,9 @@ func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
 				return err
 			}
 		case "detach":
-			s.detach(p)
+			if name, ok := s.clearAttachment(p, lease); ok {
+				p.FinishDetach(name)
+			}
 			return nil
 		default:
 			return fmt.Errorf("unexpected control message: %s", m.Type)
@@ -354,7 +353,7 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 		s.serveSpawnOwner(c, first)
 	case "mux":
 		s.mu.Lock()
-		unowned := s.temporary && !s.spawnOwned
+		unowned := s.lifetime == awaitingSpawnOwner
 		s.mu.Unlock()
 		if unowned {
 			_ = writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: "spawn lifetime is not established"})
@@ -396,13 +395,13 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 		_ = writeMessage(c, message{Type: "renamed", Name: first.Name})
 	case "status":
 		s.mu.Lock()
-		m := message{Type: "session", Temporary: s.temporary, Instance: s.instance, Attached: s.lifecycle.Active() != nil, Name: s.name, SoftwareVersion: version}
+		m := message{Type: "session", Temporary: s.lifetime != persistentLaunch, Instance: s.instance, Attached: s.lifecycle.Active() != nil, Name: s.name, SoftwareVersion: version}
 		group := 0
 		if s.master != nil {
 			group, _ = s.master.ForegroundGroup()
 		}
-		if s.cmd != nil {
-			m.PID = s.cmd.Process.Pid
+		if s.process.PID != 0 {
+			m.PID = s.process.PID
 			age := int64(time.Since(s.started) / time.Second)
 			m.AgeSeconds = &age
 		}
@@ -435,15 +434,18 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 		_ = writeMessage(c, message{Type: "fatal", Error: "unsupported connection; update sshore on both computers"})
 	}
 }
-func serveRemoteShellAt(tasks *daemonTasks, runtime, nameLabel, uid string, env []string, directory string, ready func() error, temporary ...bool) error {
+func serveRemoteShellAt(tasks *daemonTasks, runtime, nameLabel, uid string, env []string, directory string, ready func() error, temporary bool) error {
 	if !validTaskUID(uid) {
 		return fmt.Errorf("invalid shell identity")
 	}
-	s := &remoteShell{tasks: tasks, temporary: len(temporary) > 0 && temporary[0], instance: uid, environment: env, directory: directory, runtime: runtime, name: nameLabel, done: make(chan struct{})}
+	s := &remoteShell{tasks: tasks, instance: uid, environment: env, directory: directory, runtime: runtime, name: nameLabel, done: make(chan struct{})}
+	if temporary {
+		s.lifetime = awaitingSpawnOwner
+	}
 	defer func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if s.cmd != nil {
+		if s.process.PID != 0 {
 			reason := s.exitReason
 			if reason == "" {
 				reason = "daemon stopped (signal or shutdown)"
@@ -500,14 +502,14 @@ func (s *remoteShell) killWithReason(instance, reason string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("shell instance changed; refresh with sshore list")
 	}
-	if s.cmd == nil {
+	if s.process.PID == 0 {
 		s.lifecycle.End()
 		s.stop()
 		s.mu.Unlock()
 		return nil
 	}
 	s.killing = true
-	pid, start := s.cmd.Process.Pid, s.processIdentity
+	pid, start := s.process.PID, s.process.Start
 	if s.exitReason == "" {
 		s.exitReason = reason
 	}

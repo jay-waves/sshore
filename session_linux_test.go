@@ -140,19 +140,18 @@ func TestAutomaticSessionSelection(t *testing.T) {
 	if err := tasks.register(id, shell); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reserveSession([]string{"pikachu"}, true); err == nil {
+	if _, err := selectHostedShell("pikachu", "new"); err == nil {
 		t.Fatal("reused live name")
 	}
-	r, err := reserveSession([]string{"pikachu", "eevee"}, true)
-	if err != nil || !validTaskUID(r.name) || r.conn != nil {
+	r, err := selectHostedShell("", "new")
+	if err != nil || !validTaskUID(r.uid) || r.existing || !strings.HasPrefix(r.uid, r.name) {
 		t.Fatalf("selection: %+v %v", r, err)
 	}
-	existing, err := reserveSession([]string{"pikachu"}, false)
+	existing, err := selectHostedShell("pikachu", "attach")
 	if err != nil {
 		t.Fatal(err)
 	}
-	existing.conn.Close()
-	if existing.name != id {
+	if !existing.existing || existing.uid != id {
 		t.Fatal("existing selection lost identity")
 	}
 }

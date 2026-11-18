@@ -1,4 +1,4 @@
-package ssh
+package wire
 
 import (
 	"context"
@@ -30,7 +30,7 @@ func TestOwnTransportCancellationAndConcurrentClose(t *testing.T) {
 			}
 			a, b := net.Pipe()
 			var calls atomic.Int32
-			c := OwnTransport(ctx, a, func() { calls.Add(1); a.Close() })
+			c := OwnTransport(ctx, a, func() { calls.Add(1) })
 			var wg sync.WaitGroup
 			for range 16 {
 				wg.Go(func() { c.Close() })
