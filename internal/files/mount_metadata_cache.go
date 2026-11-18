@@ -117,7 +117,17 @@ func (c *ftpMetadataCache) putLocked(token ftpCacheToken, v ftpCacheValue) {
 	if v.prefetched {
 		c.counters.PrefetchStored++
 	}
-	c.entries[v.key] = c.lru.PushFront(v)
+	e := c.lru.PushFront(v)
+	if v.prefetched {
+		// Speculation can replace older speculation, but never foreground data.
+		for prev := c.lru.Back(); prev != e; prev = prev.Prev() {
+			if !prev.Value.(ftpCacheValue).prefetched {
+				c.lru.MoveAfter(e, prev)
+				break
+			}
+		}
+	}
+	c.entries[v.key] = e
 	c.bytes += v.bytes
 	if v.directory {
 		c.dirs++
@@ -134,15 +144,32 @@ func (c *ftpMetadataCache) load(key string, ttl time.Duration, fetch func() (ftp
 	return c.loadScoped(key, "", ttl, fetch)
 }
 func (c *ftpMetadataCache) loadScoped(key, scope string, ttl time.Duration, fetch func() (ftpCacheValue, error)) (ftpCacheValue, error) {
+	return c.loadMode(key, scope, ttl, false, fetch)
+}
+func (c *ftpMetadataCache) loadMode(key, scope string, ttl time.Duration, speculative bool, fetch func() (ftpCacheValue, error)) (ftpCacheValue, error) {
 	c.mu.Lock()
 	token := ftpCacheToken{c.epoch, time.Now()}
+	if !speculative {
+		parent := scope
+		if strings.HasPrefix(key, "s:") || strings.HasPrefix(key, "l:") || strings.HasPrefix(key, "d:") {
+			parent = path.Dir(key[2:])
+		}
+		if dir := c.entries["d:"+parent]; parent != "" && dir != nil {
+			v := dir.Value.(ftpCacheValue)
+			if !v.prefetched && token.started.Before(v.expires) {
+				c.lru.MoveToFront(dir)
+			}
+		}
+	}
 	revision := c.revision
 	if e := c.entries[key]; e != nil && !c.mutatingLocked(key, scope) {
 		v := e.Value.(ftpCacheValue)
 		if token.started.Before(v.expires) {
-			c.lru.MoveToFront(e)
+			if !speculative && !v.prefetched {
+				c.lru.MoveToFront(e)
+			}
 			c.counters.Hits++
-			if v.revision != c.revision {
+			if !speculative && v.revision != c.revision {
 				c.refresh.scheduleLocked(key)
 			}
 			c.mu.Unlock()
@@ -177,7 +204,7 @@ func (c *ftpMetadataCache) loadScoped(key, scope string, ttl time.Duration, fetc
 		delete(c.flights, key)
 	}
 	if err == nil && publish {
-		if v.directory {
+		if v.directory && !v.prefetched {
 			c.directoryLocked(token, strings.TrimPrefix(key, "d:"), v.entries)
 		}
 		c.putLocked(token, v)
@@ -205,7 +232,7 @@ func directoryValue(name string, entries []os.FileInfo, prefetch bool) ftpCacheV
 	return ftpCacheValue{entries: entries, directory: true, bytes: size, prefetched: prefetch}
 }
 func (c *ftpMetadataCache) readDirMode(name string, prefetch bool, fetch func() ([]os.FileInfo, error)) ([]os.FileInfo, error) {
-	v, err := c.load("d:"+name, ftpDirectoryTTL, func() (ftpCacheValue, error) {
+	v, err := c.loadMode("d:"+name, "", ftpDirectoryTTL, prefetch, func() (ftpCacheValue, error) {
 		entries, err := fetch()
 		return directoryValue(name, entries, prefetch), err
 	})
@@ -216,6 +243,11 @@ func (c *ftpMetadataCache) readDirMode(name string, prefetch bool, fetch func() 
 			if current.prefetched && current.expires == v.expires {
 				current.prefetched = false
 				e.Value = current
+				c.lru.MoveToFront(e)
+				started := current.expires.Add(-ftpDirectoryTTL)
+				if current.revision == c.revision && time.Now().Before(started.Add(ftpMetadataTTL)) {
+					c.directoryLocked(ftpCacheToken{c.epoch, started}, name, current.entries)
+				}
 				c.counters.PrefetchHits++
 			}
 		}

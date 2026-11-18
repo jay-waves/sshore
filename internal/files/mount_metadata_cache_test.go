@@ -564,3 +564,38 @@ func TestFTPWritePreservesUnrelatedMetadata(t *testing.T) {
 		t.Fatalf("changed file metadata not refreshed: %v %v", info, err)
 	}
 }
+
+func TestPrefetchAdmissionAndForegroundPromotion(t *testing.T) {
+	var c ftpMetadataCache
+	listing := func() ([]os.FileInfo, error) { return []os.FileInfo{ftpCacheInfo{name: "child"}}, nil }
+	if _, err := c.readDirMode("/cold", true, listing); err != nil {
+		t.Fatal(err)
+	}
+	if c.stats != 0 {
+		t.Fatal("unused listing seeded file attributes")
+	}
+	if _, err := c.readDir("/cold", func() ([]os.FileInfo, error) { t.Fatal("promotion fetched listing"); return nil, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if c.entries["s:/cold/child"] == nil {
+		t.Fatal("fresh foreground listing did not seed attributes")
+	}
+	empty := func() ([]os.FileInfo, error) { return nil, nil }
+	for i := 1; i < ftpDirectoryCacheLimit; i++ {
+		if _, err := c.readDir(fmt.Sprintf("/used%d", i), empty); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := c.readDirMode("/speculative", true, empty); err != nil {
+		t.Fatal(err)
+	}
+	if c.entries["d:/speculative"] != nil || c.entries["d:/cold"] == nil {
+		t.Fatal("speculation displaced foreground data")
+	}
+	if _, err := c.stat("/cold/child", func() (os.FileInfo, error) { return ftpCacheInfo{name: "child"}, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if prev := c.lru.Front().Next(); prev == nil || prev.Value.(ftpCacheValue).key != "d:/cold" {
+		t.Fatal("file lookup did not touch parent")
+	}
+}

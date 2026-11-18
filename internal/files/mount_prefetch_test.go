@@ -16,24 +16,24 @@ import (
 
 func TestDirectoryPrefetchBoundedAndUseful(t *testing.T) {
 	fs, wire := testFTPBackendWithWire(t)
-	for _, name := range []string{".git", "dir00", "dir16", "dir17"} {
+	for _, name := range []string{".git", "dir00", "dir01", "dir02", "dir03", "dir04", "dir05", "dir06", "dir07", "dir16", "dir17"} {
 		if err := os.MkdirAll(path.Join(fs.root, name, "nested"), 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	fs.prefetch = startDirectoryPrefetch(context.Background(), fs, VisitHistory{"dir00": {4, time.Now()}, "dir16": {2, time.Now()}, "dir17": {5, time.Now()}})
+	fs.prefetch = startDirectoryPrefetch(context.Background(), fs, nil)
 	defer func() { fs.prefetch.cancel(); <-fs.prefetch.done }()
 	if _, err := fs.readDirectory(fs.root); err != nil {
 		t.Fatal(err)
 	}
-	if got := fs.prefetch.targets; got != [2]string{path.Join(fs.root, "dir17"), path.Join(fs.root, "dir00")} {
+	if got := fs.prefetch.targets; got[0] != path.Join(fs.root, "dir00") || got[9] != path.Join(fs.root, "dir17") {
 		t.Fatalf("ranked siblings = %v", got)
 	}
 	deadline := time.Now().Add(time.Second)
 	for {
 		fs.cache.mu.Lock()
 		ready := true
-		for _, name := range []string{"dir00", "dir17"} {
+		for _, name := range []string{"dir00", "dir01", "dir02", "dir03", "dir04", "dir05", "dir06", "dir07", "dir16", "dir17"} {
 			if fs.cache.entries["d:"+path.Join(fs.root, name)] == nil {
 				ready = false
 			}
@@ -56,7 +56,7 @@ func TestDirectoryPrefetchBoundedAndUseful(t *testing.T) {
 	fs.prefetch.cancel()
 	<-fs.prefetch.done
 	fs.cache.mu.Lock()
-	for _, name := range []string{".git", "dir16", "dir00/nested"} {
+	for _, name := range []string{".git", "dir00/nested"} {
 		if fs.cache.entries["d:"+path.Join(fs.root, name)] != nil {
 			t.Error("unexpected speculative read", name)
 		}
@@ -83,7 +83,7 @@ func TestDirectoryPrefetchBoundedAndUseful(t *testing.T) {
 
 func TestDirectoryPrefetchLearnsForegroundVisits(t *testing.T) {
 	fs, _ := testFTPBackendWithWire(t)
-	for _, name := range []string{"src", "docs"} {
+	for _, name := range []string{"src", "docs", "a", "b", "c", "d", "e", "f", "g", "h", "i"} {
 		if err := os.Mkdir(path.Join(fs.root, name), 0700); err != nil {
 			t.Fatal(err)
 		}
@@ -98,11 +98,14 @@ func TestDirectoryPrefetchLearnsForegroundVisits(t *testing.T) {
 		}
 	}
 	visit("")
+	if p.targets[0] != "" {
+		t.Fatal("cold wide directory scheduled prefetch")
+	}
 	visit("src")
 	visit("src")
 	visit("")
-	if p.targets[0] != "" {
-		t.Fatal("one visit qualified")
+	if p.targets[0] != path.Join(fs.root, "src") || p.targets[1] != "" {
+		t.Fatal("expected only visited child")
 	}
 	visit("src")
 	visit("")

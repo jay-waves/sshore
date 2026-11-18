@@ -39,6 +39,22 @@ Includes Linux and Windows binaries for amd64 (x86-64) only.
 Verify downloaded archives against SHA256SUMS.
 Commit: $GITHUB_SHA
 NOTES
+if [[ "$version" == "0.7.10" ]]; then
+  cat >> release-notes.md <<'NOTES'
+
+- Mounts prefetch one level of visible directories, up to ten children with four
+  concurrent listings. Wider directories use recent visit history.
+- Unused prefetched listings yield cache space to foreground data. File metadata
+  lookups also keep recently used parent listings higher in the eviction order.
+- Rename setup to install. Use sshore install locally or sshore install HOST:
+  for a remote Linux host.
+
+When upgrading from 0.7.9, save work, stop the account daemon with the installed
+release and run the standalone installer on each target. Update both endpoints
+to 0.7.10 and change scripts that invoke setup to the new install syntax.
+NOTES
+fi
+
 if [[ "$version" == "0.7.9" ]]; then
   cat >> release-notes.md <<'NOTES'
 

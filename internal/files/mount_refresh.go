@@ -63,7 +63,7 @@ func (r *metadataRefresh) scheduleLocked(key string) {
 		return
 	}
 	v := e.Value.(ftpCacheValue)
-	if !time.Now().Before(v.expires) || (v.fetch == nil && !strings.HasPrefix(key, "s:")) {
+	if v.prefetched || !time.Now().Before(v.expires) || (v.fetch == nil && !strings.HasPrefix(key, "s:")) {
 		return
 	}
 	now := time.Now()
@@ -118,7 +118,7 @@ func (r *metadataRefresh) nextLocked(now time.Time) (string, time.Duration) {
 	var earliest time.Time
 	for k, task := range r.queue {
 		e := c.entries[k]
-		if e == nil || e.Value.(ftpCacheValue).revision == c.revision || !now.Before(e.Value.(ftpCacheValue).expires) {
+		if e == nil || e.Value.(ftpCacheValue).prefetched || e.Value.(ftpCacheValue).revision == c.revision || !now.Before(e.Value.(ftpCacheValue).expires) {
 			delete(r.queue, k)
 			continue
 		}
@@ -251,7 +251,8 @@ func (r *metadataRefresh) fetch(v ftpCacheValue) (ftpCacheValue, error) {
 	return fresh, err
 }
 
-const directoryPrefetchCount = 2
+const directoryPrefetchCount = 10
+const directoryPrefetchConcurrency = 4
 
 type directoryPrefetch struct {
 	fs             *ftpFS
@@ -295,24 +296,34 @@ func (p *directoryPrefetch) schedule(parent string, entries []os.FileInfo) {
 	}
 	var best [directoryPrefetchCount]string
 	var scores [directoryPrefetchCount]float64
+	visible := 0
 	for _, e := range entries {
-		if !e.IsDir() || e.Mode()&os.ModeSymlink != 0 || ValidateName(e.Name()) != nil {
+		if strings.HasPrefix(e.Name(), ".") || !e.IsDir() || e.Mode()&os.ModeSymlink != 0 || ValidateName(e.Name()) != nil {
 			continue
 		}
+		visible++
 		dir := path.Join(parent, e.Name())
 		key := strings.TrimPrefix(dir, prefix)
 		w := p.history[key].weight(now) + p.delta[key].weight(now)
-		if w <= 1.5 {
+		if visible > directoryPrefetchCount && w == 0 {
 			continue
-		} // Each prediction needs repeated visits.
+		}
 		for i, score := range scores {
 			if dir == best[i] {
 				break
 			}
-			if w > score || w == score && dir < best[i] {
+			if best[i] == "" || w > score || w == score && dir < best[i] {
 				copy(scores[i+1:], scores[i:])
 				copy(best[i+1:], best[i:])
 				scores[i], best[i] = w, dir
+				break
+			}
+		}
+	}
+	if visible > directoryPrefetchCount {
+		for i, score := range scores {
+			if score == 0 {
+				clear(best[i:])
 				break
 			}
 		}
@@ -346,17 +357,31 @@ func (p *directoryPrefetch) run() {
 		dirs, batch := p.pending, p.batch
 		p.pending = [directoryPrefetchCount]string{}
 		p.mu.Unlock()
+		jobs := make(chan string, len(dirs))
 		for _, dir := range dirs {
-			if dir == "" || batch.Err() != nil {
+			if dir == "" {
 				break
 			}
-			p.fs.notifications.ensure(dir)
-			if batch.Err() != nil {
-				break
-			}
-			ctx, cancel := context.WithTimeout(batch, 2*time.Second)
-			_, _ = p.fs.loadDirectoryMode(ctx, dir, true)
-			cancel()
+			jobs <- dir
 		}
+		close(jobs)
+		var workers sync.WaitGroup
+		for range min(len(jobs), directoryPrefetchConcurrency) {
+			workers.Go(func() {
+				for dir := range jobs {
+					if batch.Err() != nil {
+						return
+					}
+					p.fs.notifications.ensure(dir)
+					if batch.Err() != nil {
+						return
+					}
+					ctx, cancel := context.WithTimeout(batch, 2*time.Second)
+					_, _ = p.fs.loadDirectoryMode(ctx, dir, true)
+					cancel()
+				}
+			})
+		}
+		workers.Wait()
 	}
 }
