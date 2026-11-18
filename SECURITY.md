@@ -328,9 +328,10 @@ or replaces it while the account daemon still owns tasks.
 Managed remote commands require the exact full release, including PATCH.
 `install HOST:` uses authenticated SSH to run the bundled installer on the target.
 Installers verify the release checksum and executable version. The prepared binary
-checks that the account daemon has exited, then holds the startup and owner locks
-until replacement finishes. Use the daemon's own release to run
-`sshore kill --all` if needed. Unknown or newer installed releases require
+stages the replacement before invoking authenticated `kill --all` on the target
+account, using the installed release when it matches the running daemon.
+Active tasks require confirmation of the displayed snapshot. Publication
+requires both the startup and owner locks. Unknown or newer installed releases require
 manual handling.
 
 Replacement requires a user-owned regular file and a user-owned directory

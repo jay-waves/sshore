@@ -69,7 +69,8 @@ var commandHelp = map[string]string{
 	"install": `Usage: sshore install [HOST:[PATH]] [-- SSH_OPTIONS]
 
 Update this computer to the latest published release, or update HOST to the
-exact local version over SSH. Stop the daemon on the target before updating.
+exact local version over SSH. Before replacement, install stops the target daemon.
+If it owns tasks, review the list and type kill to end them and continue.
 Omit the target or use self: to install locally. Use HOST: to select a remote
 default path, or append an absolute path to either endpoint.
 ` + sshOptions,

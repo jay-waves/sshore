@@ -2,7 +2,7 @@
 # Linux amd64 release installer.
 # Downloads HTTPS assets, verifies SHA256SUMS and version, then atomically installs.
 # Requires curl, tar and sha256sum/shasum. Default: ~/.local/bin; --bin-dir overrides.
-# No sudo or shell-profile edits. Replacement requires the account daemon to be stopped.
+# No sudo or shell-profile edits. Upgrades stop the account daemon after any task confirmation.
 # Usage: curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | sh -s -- [--version 0.3.2] [--bin-dir DIR]
 set -eu
 
@@ -14,7 +14,7 @@ Usage: sh install.sh [--version X.Y.Z] [--path PATH | --bin-dir DIRECTORY]
 Install a published Linux amd64 release, without sudo or shell profile edits.
 Default: latest release into $HOME/.local/bin. Explicit --version is recommended
 when matching a local client. Requires curl, tar and sha256sum (or shasum).
-The account daemon must exit before replacement.
+Upgrades stop the account daemon. If tasks are listed, type kill to end them.
 Windows clients: use install.ps1 or the matching release ZIP.
 HELP
 }
@@ -106,6 +106,11 @@ main() {
     [ ! -d "$install_target" ] || fail 'installation target is a directory'
     chmod 755 "$install_tmp/sshore"
     [ "$("$install_tmp/sshore" --version)" = "sshore $install_version" ] || fail 'binary version does not match release'
+    # curl | sh uses stdin for the script. Read approval from the terminal
+    # when present; an SSH exec channel supplies approval on stdin instead.
+    if ( : 2>/dev/null </dev/tty ); then
+        exec </dev/tty
+    fi
     # The published 0.7.9 executable predates the install command.
     if [ "$install_version" = 0.7.9 ] && ! "$install_tmp/sshore" install --help >/dev/null 2>&1; then
         "$install_tmp/sshore" setup --apply --path "$install_target" || fail 'installation stopped'

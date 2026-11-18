@@ -392,7 +392,8 @@ Local installation runs the bundled platform installer. With a host, `install` s
 bundled Linux installer over SSH and pins the release to the client's exact
 version. The target runs the installer and downloads the release. Installers
 verify the checksum and call the prepared binary to apply the installation.
-The daemon must be stopped before replacement.
+The installer stops the target daemon before replacement and prompts for `kill`
+when it owns tasks. Remote confirmation travels over the authenticated SSH channel.
 
 The embedded `scripts/remote.sh.tmpl` checks the release and dispatches normal
 connections to their internal service entry points. SSH stdin remains available

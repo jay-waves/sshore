@@ -7,8 +7,8 @@ Windows amd64 only; supports PowerShell 5.1 and 7. Updates the first sshore.exe
 on PATH; otherwise install to %LOCALAPPDATA%\sshore\bin and add it to the user
 and current session PATH. Verify SHA256SUMS and executable version before
 replacement. Never modify system PATH, profiles or execution
-policy; never elevate or create versioned backups. Stop the account daemon
-before replacing the binary.
+policy; never elevate or create versioned backups. The installer stops the account daemon
+before replacement and prompts when it owns tasks.
 Remaining clients may still hold the executable open; close them and retry.
 .PARAMETER Version
 Published X.Y.Z version (without v). Defaults to the latest release.

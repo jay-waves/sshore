@@ -327,24 +327,21 @@ def setup_smoke(binary, host, options, root):
             subprocess.check_output(installed, timeout=15))["shells"]}
 
     original_pid = installer_tasks()[shell_name]
-    result = subprocess.run(installer_command,
+    result = subprocess.run(installer_command, input="no\n",
                             capture_output=True, text=True, timeout=15)
-    assert result.returncode == 1 and "daemon is still running" in result.stderr, result.stderr
+    assert result.returncode == 1 and "cancelled" in result.stderr, result.stderr
+    assert "Type kill" in result.stderr and shell_name in result.stdout, result
     assert installer_target.read_bytes() == original
     assert installer_tasks()[shell_name] == original_pid
-    subprocess.run([binary, "kill", shell_ref, *shell_options], check=True, timeout=15)
-    result = subprocess.run(installer_command,
+    result = subprocess.run(installer_command, input="kill\n",
                             capture_output=True, text=True, timeout=15)
-    assert result.returncode == 1 and "daemon is still running" in result.stderr, result.stderr
-    assert installer_target.read_bytes() == original
-    subprocess.run([binary, "kill", host, "--all", *shell_options], check=True, timeout=15)
-    subprocess.run(installer_command, check=True, timeout=15)
+    assert result.returncode == 0 and shell_name in result.stdout, result
     assert subprocess.check_output([str(installer_target), "--version"], text=True).strip() == f"sshore {release}"
     assert not list(target.parent.glob(".sshore-update-*"))
     target.write_bytes(original)
     subprocess.run([binary, "install", host + ":", *options], check=True, timeout=15)
     assert subprocess.check_output([str(target), "--version"], text=True).strip() == f"sshore {release}"
-    print("setup: explicit remote update, target paths and stopped-daemon requirement passed")
+    print("setup: explicit remote update, target paths and task confirmation passed")
 
 
 def reset_smoke(binary, root):

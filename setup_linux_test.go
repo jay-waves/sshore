@@ -279,3 +279,39 @@ func TestSetupAppliesPreparedRelease(t *testing.T) {
 		t.Fatalf("installation: %q %v", got, err)
 	}
 }
+
+func TestInstallWithRunningTasks(t *testing.T) {
+	e := newEnv(t)
+	b, pid := e.attach("build")
+	defer b.close()
+
+	apply := func(target, answer string) (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, e.bin, "install", "--apply", "self:"+target)
+		cmd.Env = e.env
+		cmd.Stdin = strings.NewReader(answer)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
+	if out, err := apply(e.bin, ""); err != nil || strings.Contains(out, "Type kill") {
+		t.Fatalf("same release: %s %v", out, err)
+	}
+	target := filepath.Join(t.TempDir(), "sshore")
+	writeRemoteVersionStub(t, target, "0.0.1")
+	out, err := apply(target, "no\n")
+	if err == nil || !strings.Contains(out, "build") || !strings.Contains(out, "cancelled") {
+		t.Fatalf("declined upgrade: %s %v", out, err)
+	}
+	if got, err := executableVersion(target); err != nil || got != "0.0.1" {
+		t.Fatalf("declined upgrade changed target: %q %v", got, err)
+	}
+	if out, err := apply(target, "kill\n"); err != nil || !strings.Contains(out, "build") {
+		t.Fatalf("confirmed upgrade: %s %v", out, err)
+	}
+	waitSessionEnded(t, e, "build", pid)
+	if got, err := executableVersion(target); err != nil || got != version {
+		t.Fatalf("installed release: %q %v", got, err)
+	}
+}

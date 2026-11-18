@@ -132,7 +132,8 @@ func runInstall(args []string) (int, error) {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	command := "sh -s -- --version " + shellQuote(version)
+	// Keep SSH stdin available for kill --all confirmation after authentication.
+	command := "sh -c " + shellQuote(linuxInstaller) + " install.sh --version " + shellQuote(version)
 	if target != "" {
 		command += " --path " + shellQuote(target)
 	} else {
@@ -141,7 +142,7 @@ func runInstall(args []string) (int, error) {
 			command + " \"$@\""
 	}
 	connection := sshio.Options{Host: host, Args: parsed.ssh, Command: command, Confirm: confirmSSHHost, Secret: promptSSHSecret}
-	if err := sshio.Run(ctx, connection, strings.NewReader(linuxInstaller), os.Stdout, os.Stderr); err != nil {
+	if err := sshio.Run(ctx, connection, os.Stdin, os.Stdout, os.Stderr); err != nil {
 		return 1, fmt.Errorf("remote installation on %s: %w", cleanText(host), err)
 	}
 	return 0, nil
@@ -332,24 +333,12 @@ func installRelease(target string) error {
 		return err
 	}
 	defer startup.Close()
-	// Hold the owner lock through publication, including against a direct daemon invocation.
-	owner, err := daemonFileLock("owner")
-	if resourceLockBusy(err) {
-		return fmt.Errorf("account daemon is still running. Use its installed release to run sshore kill --all, wait for it to exit, then retry")
-	}
-	if err != nil {
-		return err
-	}
-	defer owner.Close()
-
+	var installed string
 	if info, err := os.Lstat(target); err == nil {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("installation target must be a regular executable: %s", target)
 		}
-		installed, err := executableVersion(target)
-		if installed == version {
-			return nil
-		}
+		installed, err = executableVersion(target)
 		order, known := compareReleaseVersions(installed, version)
 		if err != nil || !known {
 			return fmt.Errorf("unknown installed release; update manually")
@@ -360,11 +349,44 @@ func installRelease(target string) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	record, err := existingDaemonRecord()
+	running := err == nil
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if installed == version && (!running || record.Version == version) {
+		return nil
+	}
+	if running {
+		order, known := compareReleaseVersions(record.Version, version)
+		if !known || order > 0 {
+			return fmt.Errorf("cannot update account daemon release %q to %s", cleanText(record.Version), version)
+		}
+	}
+
 	staged, err := prepareReplacement(target)
 	if err != nil {
 		return err
 	}
 	defer os.Remove(staged)
+	if running {
+		if installed == record.Version {
+			// The installed release also speaks its daemon's administrative protocol.
+			cmd := exec.Command(target, "kill", "--all")
+			cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("stopping the account daemon: %w", err)
+			}
+		} else if _, err := runKillAll(options{}); err != nil {
+			return fmt.Errorf("stopping the account daemon: %w", err)
+		}
+	}
+	// A direct daemon invocation can race even while we hold the startup lock.
+	owner, err := daemonFileLock("owner")
+	if err != nil {
+		return fmt.Errorf("cannot take ownership for installation: %w", err)
+	}
+	defer owner.Close()
 	return os.Rename(staged, target)
 }
 

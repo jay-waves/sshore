@@ -2,12 +2,8 @@
 
 [![CI](https://github.com/jay-waves/sshore/actions/workflows/ci.yml/badge.svg)](https://github.com/jay-waves/sshore/actions/workflows/ci.yml)
 
-Start a shell, leave it running, and return later. sshore combines local and
-remote shell sessions with SSH file copies, TCP forwards and SFTP mounts.
-
-**Local and remote platforms:** see [OS and shell support](#os-and-shell-support).
-Requires system OpenSSH for configuration. Connections run inside sshore; public-key signing uses an existing system SSH agent. ARM and macOS are not supported.
-In the examples, `work` is a host or an alias from your SSH config.
+Start a shell on this computer or over SSH, detach, and pick up where you left
+off. You can also copy files, forward ports and mount remote directories.
 
 ## Install
 
@@ -25,98 +21,163 @@ curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | 
 irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 ```
 
-Run `sshore install` to update this computer to the latest release, or
-`sshore install HOST:` to install this client's exact release on a remote Linux
-host. The remote host downloads and verifies the release over HTTPS. Remote
-installation updates the executable on PATH, falling back to `~/.local/bin/sshore`.
-Append an absolute path to the endpoint to select a custom target.
-When upgrading from v0.7.9, run the standalone installer above on each target.
+Linux and Windows clients require system OpenSSH. Remote shell hosting requires
+Linux. See [OS and shell support](#os-and-shell-support).
 
-Installers verify checksums without requesting administrator access. On Windows,
-the installer updates the first `sshore.exe` on PATH without changing PATH. If none
-is found, it installs to `%LOCALAPPDATA%\sshore\bin` and adds that directory to
-the user and current PowerShell session PATH. Restart other terminals to pick it up.
-Before updating, exit the account daemon. Use the currently installed release
-to run `sshore kill --all` if needed, then wait for it to exit. On Windows, close
-other clients that still hold the executable open.
-Only the latest patch of each major/minor series remains downloadable.
+Run `sshore install` to update this computer to the latest release. Run
+`sshore install work:` to install this client's exact version on a remote Linux
+host named `work`. Use `work:/absolute/path/to/sshore` for a custom install path.
+Client and remote versions must match, including the patch version. When
+upgrading from v0.7.9, use the standalone installer above on each target.
 
-Use `sshore --tldr` for common examples, or `sshore cp --tldr` for file copies.
-Use `sshore COMMAND --help` for the full command reference.
+When replacement is needed, the installer stops the target account’s daemon.
+If it owns tasks, review the list and type `kill` to end them and continue.
+For remote installs, enter the confirmation in your local terminal. On Windows, close other
+clients using the executable and reopen your terminal if PATH changed.
 
-## TMUX — leave and resume work
+## Reading `HOST:VALUE`
 
-Each session has one terminal. No tmux installation is needed.
-Daemon-owned tasks survive client exit, disconnect and detach. They are held in
-memory; daemon crashes and host restarts have no recovery guarantee. Normal
-commands use the account daemon, which exits after its tasks and active clients
-have ended and an idle grace period has elapsed.
+The part before the colon tells you **which machine**. The command tells you
+**what the value on that machine means**. For example, `work:7afe22` selects a
+shell for `attach`, `work:/tmp/report.zip` names a file for `cp`, and
+`work:3000` names a port for `forward`. Here, `work` can be a hostname or an
+SSH config alias.
+
+Keeping the machine alongside each value makes direction visible in the command.
+For example, `sshore cp .:report.zip work:/tmp/` reads the file on the machine
+running the command and writes it on `work`. This also works from inside an
+attached remote shell, where “here” and “my computer” can mean different things.
+
+| Endpoint | Where it points |
+| --- | --- |
+| `work:` | The named host. An empty value takes the command's default, such as the remote home directory for `mount`. |
+| `self:` or `.:` | The machine running the command. For example, `.:report.zip` is relative to the current directory there. |
+| `origin:` or `::` | The attached client, when requesting a copy, forward or mount from a remote shell. You approve the request on that client. |
+
+Commands that take a host alone, such as `sshore list work` and
+`sshore exec work 'uname -a'`, use its plain name.
+
+## Start and resume shells
 
 ```sh
-sshore launch work:          # Start a persistent remote shell.
-# Press Ctrl+B, then d to detach.
-sshore attach work:7afe22          # Return to it later.
-sshore kill work:7afe22          # End it; unsaved work may be lost.
+sshore launch work:         # Start a persistent shell. Omit work: for a local one.
+# Press Ctrl+B, then d to detach. Return later with:
+sshore attach work:         # Resume the most recently detached shell on work.
+sshore list work            # Find a specific shell's ID or name.
+sshore attach work:7afe22   # Resume that shell.
 ```
 
-Choose the lifetime at startup; omit the host to work locally:
+Choose `launch` for work that should survive a client exit or network loss.
+Choose `spawn` for a shell that should end when its original parent exits.
+A remote spawn also ends if its SSH heartbeat times out. Detaching and reattaching
+preserve the original lifetime. Both commands accept `--detach` to start in the
+background. Daemon failure or a host restart can end any shell. Screens and
+scrollback are not saved.
 
-| Command | Lifetime |
+Each session has one terminal and requires no tmux installation. Press **Ctrl+B**
+and then one of these keys:
+
+| Key | Action |
 | --- | --- |
-| `sshore spawn` | Ends when the original parent shell exits. |
-| `sshore spawn work:` | Also ends if its background SSH heartbeat times out. |
-| `sshore launch [HOST:]` | Survives client exit and network loss until you exit or kill it. |
+| `d` | Detach. Run `sshore attach` to return to the last detached local or remote shell. |
+| `l`, `n`, `p` | Switch to the last, next or previous session. |
+| `c` | Spawn a nested shell on the current host. Exit or detach to return one level. |
+| `r` | Request a redraw. |
+| `Ctrl+B` | Send a literal Ctrl+B to the application. |
 
-**Detach does not change lifetime.** A remote spawn keeps its heartbeat after
-detach, and reattachment never changes its original owner. Use `launch` for work
-that must survive disconnection. Daemon failure or host restart can end any shell.
+Use `--no-escape` if the application needs all keystrokes.
 
-Press **Ctrl+B**, then **d** to detach, **l** to return to the last session, **n/p** for next/previous, or **r** to request a redraw.
-Press Ctrl+B twice to send one Ctrl+B to the application. Shortcuts recognize
-traditional control bytes, CSI-u/Kitty and xterm modifyOtherKeys reports, including
-when a TUI enables enhanced keyboard reporting. `--no-escape` forwards all input
-without interpreting shortcuts. Pasted text is not interpreted as shortcuts when
-the application enables bracketed paste.
-Inside a remote shell, `sshore detach` also works. Both startup commands accept
-`--detach` to start in the background. `attach` never takes over an attached shell.
-`sshore attach` resumes the most recently detached local or remote shell.
-`sshore attach HOST:` uses that remote host’s detach order. Use `sshore attach HOST:ID`
-to select a local or remote shell explicitly; unique ID prefixes of at least two
-hexadecimal characters are accepted, and ambiguous prefixes fail. Ctrl+B d updates
-this shared history; listing tasks does not.
+## Find and manage tasks
 
-Ctrl+B **c** creates a nested spawn on the current host; exit or detach returns
-one level. The child belongs to the current shell and uses its startup directory
-and environment. It does not suspend the parent program.
-Ctrl+C interrupts the current shell/application. During a connection switch it
-cancels that attempt and restores the previous shell; during the initial
-connection it cancels startup.
-Inside a managed shell, interactive `spawn` reuses the root client, including
-local children and further remote hops. Inside a remote shell, `sshore spawn`
-creates a shell on that host without authenticating again. Ctrl+B controls the child; detach or exit returns one level. Startup failure
-returns to the parent with an error. Spawn ownership stays unchanged.
-Local managed shells also hand off remote `launch` and `attach` this way.
-On shell exit, the client reports the task, host, exit code and available reason.
-A lost connection reports a short reason such as timeout or connection closed;
-the remote shell's state remains unconfirmed.
-Screens, scrollback and detached output are not saved.
-
-```mermaid
-flowchart TD
-    client["Your client"] -->|"Local connection or SSH"| daemon["Account daemon"]
-    daemon -->|"Hosts"| shell["Shell session"]
-    shell -->|"Detach"| detached["Keeps running"]
-    detached -->|"Attach"| shell
-    shell -->|"Exit or kill"| ended["Shell ends"]
-    detached -->|"Spawn: owner exits or heartbeat is lost"| ended
-    shell -->|"Requests copy, mount or forward"| request["Pending request"]
-    request -->|"Review locally"| review["Your decision"]
-    review -->|"Approve"| operation["Copy or independent mount / forward"]
+```sh
+sshore list                  # Local tasks and cached remote shells.
+sshore list work             # Query the remote host now.
+sshore pstree                # Show local task relationships.
+sshore list --json           # Include diagnostics and resource log paths.
 ```
+
+Use an ID or name from `list` to select a task. For example,
+`sshore rename work:7afe22 build` lets you resume it with
+`sshore attach work:build`. To end the shell, run `sshore kill work:build`.
+This can discard unsaved work. Manage read-only peer entries on their original
+computer.
+
+## Connect over SSH
+
+Use hosts and aliases from your SSH config. For public-key login, load the key
+with `ssh-add`. Password and keyboard-interactive login require a terminal.
+Managed remote shells require the SSH server to allow TCP forwarding to
+loopback. Put SSH options after `--`, for example:
+
+```sh
+sshore launch work: -- -J jump -p 2222
+```
+
+For a single command, run `sshore exec work 'uname -a'`. For port forwarding,
+use `sshore forward`.
+
+## OS and shell support
+
+| OS (amd64/x86-64 only) | bash | sh | zsh | fish | PowerShell 7 (pwsh) | cmd |
+| --- | --- | --- | --- | --- | --- | --- |
+| Linux | ✓ | ✓ | ✓ | ✓ | — | — |
+| Windows 11 / Server 2025 or newer | — | — | — | — | ✓ | ✓ |
+
+Windows can connect to Linux hosts and run local shells.
+
+## Copy files
+
+```sh
+sshore cp .:report.zip work:/tmp/     # Upload to the remote directory.
+sshore cp work:/tmp/report.zip .:./   # Download to the current directory.
+```
+
+Direct copies require a matching remote sshore helper. Copy supports regular
+files and refuses to overwrite existing destinations. If a batch fails, files
+already copied stay in place.
+
+## Forward a port
+
+```sh
+sshore forward .:8080 work:3000
+```
+
+Connect to port 8080 on this computer to reach port 3000 on `work`. The listener
+comes first and requests an IPv4 loopback address. For reverse forwards, SSH
+server policy can override the bind address. A disconnect ends the forward by
+default. To stop it yourself, run the kill command printed at startup.
+
+## Mount remote files
+
+```sh
+sshore mount work: .: --read-only
+```
+
+This mounts the remote home directory and prints the local mountpoint. Give a
+path after either colon to choose a directory. Mounts use SFTP and require FUSE
+on Linux or [WinFsp](https://winfsp.dev/) on Windows. Omit `--read-only` to
+allow writes. An interrupted write can leave a partial file. Close open files
+before running the kill command printed at startup.
+
+## Request access from a remote shell
+
+Inside an attached remote shell, use `origin:` when an operation needs a file,
+port or mountpoint on your client computer.
+
+```sh
+sshore cp .:report.zip origin:    # Send a remote file to your computer.
+sshore cp origin: .:./            # Ask for a file from your computer.
+sshore forward origin: .:3000     # Request a client port for this remote service.
+sshore mount .:./ origin:         # Request a client mountpoint for this directory.
+```
+
+Return to the client and run `sshore review` to supply any missing path or port
+and approve the request. A forward request detaches the shell. Use `attach` to
+resume it after review.
 
 ## Agent access
 
-Configure an MCP client to launch `sshore mcp` over stdio, for example:
+Configure your MCP client to start `sshore mcp` over stdio:
 
 ```json
 {
@@ -126,146 +187,19 @@ Configure an MCP client to launch `sshore mcp` over stdio, for example:
 }
 ```
 
-Run `sshore mcp --help` for a self-contained, Skills-style agent guide covering
-tool calls, output polling, recovery and cleanup. Sessions persist after MCP
-disconnection. Commands use the remote account's permissions; remote output is untrusted.
+MCP needs noninteractive authentication. Sessions persist after the client
+disconnects and commands run with the remote account's permissions. Treat
+remote output as untrusted. See `sshore mcp --help` for tool usage and cleanup.
 
-For one command, use `sshore exec work 'uname -a'`; it does not create a
-persistent session.
+## Help and troubleshooting
 
-## Status
-
-```sh
-sshore list                     # Local tasks and cached remote shells.
-sshore list work                # Query remote tasks now.
-sshore pstree                   # Local task relationships and resource directions.
-sshore list --json              # Machine-readable inventory.
-```
-
-Use the six-character ID or optional NAME from `list` with `attach`, `kill`,
-`rename` and `review`. `rename` changes NAME while preserving the UID.
-Use `--json` for full diagnostics.
-
-CHECKED shows when shell states were confirmed; confirmed ended shells leave the default list.
-Use `kill` to clear confirmed ended remote history (see `sshore kill --help`).
-See `sshore list --help` for history and refresh behavior. `pstree` shows local spawn ownership and
-live resource directions, prioritizing the current tree; attaching from another shell does not transfer ownership.
-A spawn without a visible owner task shows its original direct parent as
-`NAME (pid PID)`. This display-only node is not a manageable task;
-missing or unverified processes are marked unavailable. Peer
-entries are read-only: manage them on their original computer. A running worker
-does not prove its target service is healthy.
-
-## SSH — connect your way
-
-Use SSH aliases from `~/.ssh/config`. Password and keyboard-interactive login
-require an interactive terminal. For public-key login, load keys with `ssh-add`.
-`-i` and `IdentityFile` select agent identities using a public key file or `.pub`
-sidecar; sshore does not load or unlock private keys. SSH configuration forwarding
-is disabled; use `sshore forward`. OpenSSH compatibility is intentionally limited.
-MCP cannot prompt for credentials.
-Managed remote shells require SSH TCP forwarding to the remote loopback address
-(`AllowTcpForwarding`); preparation then exits and the connection reaches the
-authenticated account daemon. For nested remote hops, configuration and signing credentials come
-from the machine running the command. A lost route fails explicitly; it is never
-replaced by a direct connection from your computer.
-**Put SSH options after `--`:**
-
-```sh
-sshore launch work: -- -J jump -p 2222
-```
-
-## OS and shell support
-
-| OS (amd64/x86-64 only) | bash | sh | zsh | fish | PowerShell 7 (pwsh) | cmd |
-| --- | --- | --- | --- | --- | --- | --- |
-| Linux | ✓ | ✓ | ✓ | ✓ | — | — |
-| Windows 11 / Server 2025 or newer | — | — | — | — | ✓ | ✓ |
-
-Linux supports local and remote shells. Windows supports local shells and SSH
-clients; remote shell hosting requires Linux. Shell targets describe supported
-configurations, not exhaustive validation of every terminal pairing; see
-[shell and terminal validation](SSHORE.md#shell-and-terminal-validation).
-
-## Copy — transfer files
-
-From your **local shell**:
-
-```sh
-sshore cp .:report.zip work:/tmp/       # Upload.
-sshore cp work:/tmp/report.zip .:./    # Download.
-```
-
-From your **remote sshore shell**:
-
-```sh
-sshore cp origin: self:./                 # Request an upload from your computer.
-sshore cp .:report.zip origin:        # Request a download to your computer.
-```
-
-Direct copies require the matching remote sshore helper and create no persistent shell.
-
-Copy, forward and mount use explicit endpoints. `self:` and `.:` select the
-machine running the command. An empty host in `:VALUE` also selects this
-machine. In an attached remote shell, `origin:` and `::` select the attached
-client. Use `sshore review` in the client to confirm requests.
-
-Only regular files are supported; existing destinations are never overwritten.
-Destination filesystems must support hard links. Failed batches keep completed
-files. For pipes and other options, see `sshore cp --help`.
-
-## Forward — map a port
-
-From your **local shell**, give the listener first, then the service:
-
-```sh
-sshore forward .:8080 work:3000
-# To stop it, run the kill command printed at startup.
-```
-
-From a **remote sshore shell**, run `sshore forward origin: .:3000` to request a
-local listener for the remote service. This detaches you; run `sshore review`
-locally and submit a port to start forwarding. The shell stays detached.
-
-Listeners request IPv4 loopback; SSH server policy can override reverse binds.
-Forwards end on disconnect by default. `--retries N` enables bounded retries for
-local forwards, but cannot restore existing TCP connections. See
-`sshore forward --help` for reverse forwarding and other options.
-
-## Mount — open remote files locally
-
-```sh
-sshore mount work: .:  # Mount remote home and print the local path.
-# Close local files, then run the kill command printed at startup.
-```
-
-Pass `self:` or `.:` for an automatic mountpoint, or append a local path.
-Mounts use SFTP and require FUSE on Linux or [WinFsp](https://winfsp.dev/) on
-Windows. They are writable by default; use `--read-only` to prevent changes.
-They run independently of shells and end if their own SSH connection drops.
-From a remote sshore shell, use `sshore mount .:./ origin:` and then `sshore review`
-locally to select the mountpoint and approve access.
-
-There is no offline editing, conflict detection or write retry. Interrupted
-writes may leave partial files; caching can briefly delay remote changes.
-Mounts use the remote sshore helper for SFTP and change notifications.
-See `sshore mount --help` for details.
-
-`sshore reset` ends local tasks and clears local application state and caches. Unsaved work may be lost. Run it outside managed shells.
-
-## Updates and troubleshooting
-
-Client and remote versions must match exactly, including PATCH. Run
-`sshore install HOST:` for an older remote installation, or `sshore install` when
-this client is older. For a custom remote installation, pass its executable
-path with `sshore install HOST:/absolute/path/to/sshore`.
-
-- Stale screen after reattachment: press Ctrl-L or use the application's redraw key.
-- SSH failure: try `sshore launch work: -- -vvv -E ./ssh-debug.log`.
-- Mount or forward failure: inspect `sshore list --json` and its log path.
-- Existing copy destination: choose a new filename; overwriting is disabled.
-
-Run `sshore COMMAND --help` for syntax, startup options, shortcuts and defaults.
+- For common examples, run `sshore --tldr` or `sshore cp --tldr`. For options
+  and defaults, run `sshore COMMAND --help`.
+- If a reattached screen looks stale, press Ctrl-L or use the application's redraw key.
+- To diagnose SSH failures, run `sshore launch work: -- -vvv -E ./ssh-debug.log`.
+- For a failed mount or forward, check the log path in `sshore list --json`.
+- To reset this computer, save your work and run `sshore reset` outside managed
+  shells. It ends local tasks and clears local application state and caches.
 
 ## Project documents
 
