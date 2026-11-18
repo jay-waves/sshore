@@ -47,6 +47,8 @@ var cliOptions = map[string]cliOption{
 	"--version":      {alias: "-V"},
 	"--local":        {conflicts: []string{"--server", "--download-dir", "--port"}},
 	"--server":       {kind: cliText},
+	"--path":         {kind: cliText},
+	"--apply":        {},
 	"--port":         {kind: cliPort},
 	"--download-dir": {kind: cliDirectory},
 	"--quiet":        {alias: "-q"},
@@ -76,9 +78,7 @@ func commandSpec(command string) (cliSpec, bool) {
 	case "daemon":
 		spec = cliSpec{nil, false, false, 0, 1}
 	case "setup":
-		spec = cliSpec{}
-	case "bootstrap":
-		spec = cliSpec{nil, false, false, 1, 3}
+		spec = cliSpec{[]string{"--path", "--apply"}, true, false, 0, 1}
 	case "mcp":
 		spec = cliSpec{nil, false, false, 0, 0}
 	case "exec":
@@ -177,8 +177,8 @@ func validateCLIValue(name, value string, option cliOption) error {
 			return usage("%s: %s", name, err)
 		}
 	}
-	if name == "--server" && strings.ContainsAny(value, "\x00\r\n") {
-		return usage("invalid server path")
+	if (name == "--server" || name == "--path") && strings.ContainsAny(value, "\x00\r\n") {
+		return usage("invalid %s value", name)
 	}
 	if name == "--direct-io" && runtime.GOOS != "linux" {
 		return usage("--direct-io is supported only on Linux")
@@ -206,7 +206,7 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 	}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "" && !(command == "bootstrap" && i == len(args)-1 && len(a.operands) == 2) {
+		if arg == "" {
 			return a, usage("empty argument")
 		}
 		if command == "exec" && len(a.operands) > 0 {
@@ -280,9 +280,6 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 	}
 	if a.has("--local") && len(a.ssh) != 0 {
 		return a, usage("local shells do not accept SSH options")
-	}
-	if command == "bootstrap" && len(a.operands) == 2 {
-		return a, usage("usage: sshore bootstrap TARGET [MODE NAME]")
 	}
 	max := spec.maxOperands(command, a)
 	if len(a.operands) < spec.min {

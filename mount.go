@@ -70,8 +70,8 @@ func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
 	if s != nil {
 		c.PeerMetadata, _ = json.Marshal(s.peerTask())
 	}
-	c.Prepare = func(ctx context.Context, wire io.ReadWriter) error {
-		return negotiateSetupUsing(ctx, wire, wire, &options{command: "mount-agent", host: o.host, server: o.server, ssh: o.ssh, sshDirectory: c.Connection.Directory}, setupClientUI{})
+	c.Prepare = func(_ context.Context, wire io.ReadWriter) error {
+		return negotiateSetup(wire, wire, &options{command: "mount-agent", host: o.host})
 	}
 	if s != nil && s.config.MountConnection != nil {
 		c.Prepare = nil

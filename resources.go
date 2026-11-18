@@ -42,7 +42,7 @@ func collectLocalResources(host string) ([]resourceRecord, error) {
 	}
 	for _, r := range pending {
 		if host == "" || r.Connection.Host == host {
-			records = append(records, resourceRecord{UID: r.ID, Token: r.ID, Kind: "review", Name: r.DisplayName(), Host: r.Connection.Host, Detail: r.Connection.Session + ": " + r.summary()})
+			records = append(records, resourceRecord{UID: r.ID, Token: r.ID, Kind: "review", Name: r.DisplayName(), Host: r.Connection.Host, Detail: r.Connection.Session + ": " + requestSummary(r.Operations)})
 		}
 	}
 	sort.Slice(records, func(i, j int) bool {

@@ -271,9 +271,8 @@ func spawnProcessName(pid int) (string, error) {
 //go:embed install.ps1
 var windowsInstaller string
 
-func runLocalInstaller() error {
-	// Release our executable before the installer replaces it. A separate
-	// console keeps the installer's task review and confirmation interactive.
+func runLocalInstaller(target string) error {
+	// Start the installer in a separate console so this executable can exit before replacement.
 	f, err := os.CreateTemp("", "sshore-install-*.ps1")
 	if err != nil {
 		return err
@@ -287,7 +286,7 @@ func runLocalInstaller() error {
 		os.Remove(f.Name())
 		return err
 	}
-	err = startWindowsInstaller(f.Name())
+	err = startWindowsInstaller(f.Name(), target)
 	if err != nil {
 		os.Remove(f.Name())
 		return err
@@ -296,13 +295,17 @@ func runLocalInstaller() error {
 	return nil
 }
 
-func startWindowsInstaller(path string) error {
+func startWindowsInstaller(path, target string) error {
 	powershell, err := exec.LookPath("powershell.exe")
 	if err != nil {
 		return err
 	}
 	file := "'" + strings.ReplaceAll(path, "'", "''") + "'"
-	script := fmt.Sprintf("Wait-Process -Id %d -ErrorAction SilentlyContinue; try { & %s } finally { Remove-Item -LiteralPath %s; Read-Host 'Press Enter to close' }", os.Getpid(), file, file)
+	invocation := file
+	if target != "" {
+		invocation += " -Path '" + strings.ReplaceAll(target, "'", "''") + "'"
+	}
+	script := fmt.Sprintf("Wait-Process -Id %d -ErrorAction SilentlyContinue; try { & %s } finally { Remove-Item -LiteralPath %s; Read-Host 'Press Enter to close' }", os.Getpid(), invocation, file)
 	cmdline, err := windows.UTF16PtrFromString(windows.ComposeCommandLine([]string{powershell, "-NoProfile", "-Command", script}))
 	if err != nil {
 		return err
@@ -320,15 +323,4 @@ func startWindowsInstaller(path string) error {
 	windows.CloseHandle(pi.Thread)
 	windows.CloseHandle(pi.Process)
 	return nil
-}
-
-func prepareLinuxRelease(ctx context.Context, stage string) error {
-	script := filepath.Join(stage, "install.ps1")
-	if err := os.WriteFile(script, []byte(windowsInstaller), 0600); err != nil {
-		return err
-	}
-	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-File", script, "-Version", version, "-PrepareLinux", stage)
-	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stderr
-	return cmd.Run()
 }

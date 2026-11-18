@@ -65,7 +65,7 @@ func runCopy(args []string) (int, error) {
 	}
 	stdin := pipes.Stdin()
 	defer func() { cancel(); pipes.CloseAndWait() }()
-	if err = negotiateSetupUsing(ctx, pipes, stdin, &options{command: "cp-agent", host: o.host, ssh: o.ssh}, setupClientUI{}); err != nil {
+	if err = negotiateSetup(pipes, stdin, &options{command: "cp-agent", host: o.host, ssh: o.ssh}); err != nil {
 		return 1, err
 	}
 	client, err := files.NewSFTP(pipes, stdin)

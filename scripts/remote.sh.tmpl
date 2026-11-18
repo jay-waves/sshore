@@ -1,0 +1,49 @@
+# Embedded remote entry point. Rendered values are shell-quoted by Go.
+# Keep stdin free for startup frames and the eventual session.
+version={{q .Version}}
+server={{q .Server}}
+command={{q .Command}}
+mode={{q .Mode}}
+name={{q .Session}}
+
+if command -v "$server" >/dev/null 2>&1; then
+    server=$(command -v "$server")
+{{if eq .Server "sshore"}}else
+    server="$HOME/.local/bin/sshore"
+{{end}}fi
+case "$server" in /*) ;; *) server="$PWD/$server" ;; esac
+remote_version=
+if [ -e "$server" ]; then
+    remote_version=$("$server" --version) || remote_version=
+fi
+
+{{if eq .Command "daemon-admin"}}
+exec "$server" daemon-admin
+{{else if .List}}
+if [ "$remote_version" != "sshore $version" ]; then
+    printf '%s\n' 'sshore: inventory requires matching remote release; no software changed' >&2
+    exit 1
+fi
+exec "$server" inventory "$version"{{if .ListJSON}} --diagnostics{{end}}
+{{else if or (eq .Command "kill") (eq .Command "kill-resource") (eq .Command "rename")}}
+# Management never installs or updates software.
+if [ "$remote_version" != "sshore $version" ]; then
+    printf '%s\n' "sshore: $command requires the installed remote version to match $version; no software changed" >&2
+    exit 1
+fi
+{{if eq .Command "kill-resource"}}
+exec "$server" kill-resource "$version" "$name" {{q .TaskIdentity}}
+{{else}}
+exec "$server" {{q .Action}} "$name"{{if eq .Command "rename"}} {{q .NewName}}{{end}} "$version"{{if .Instance}} {{q .Instance}}{{end}}
+{{end}}
+{{else}}
+if [ "$remote_version" != "sshore $version" ]; then
+    printf 'Remote executable: %s\n' "$server" >&2
+    {{fatal (versionHelp .Host)}}
+fi
+{{if or (eq .Mode "cp-agent") (eq .Mode "mount-agent") (eq .Mode "mcp-agent")}}
+exec "$server" "$mode" "$version"
+{{else}}
+exec "$server" bridge "$version" "$mode" "$name"
+{{end}}
+{{end}}

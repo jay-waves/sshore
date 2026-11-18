@@ -113,7 +113,7 @@ func resourceHTTPContext(ctx context.Context, address, token, method, route stri
 	if route == "/status" {
 		timeout = time.Second
 	}
-	if route == "/ask" || route == "/setup" || route == "/unlock" {
+	if route == "/ask" || route == "/unlock" {
 		timeout = 0
 	}
 	c := &http.Client{Timeout: timeout, Transport: resourceHTTPTransport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}

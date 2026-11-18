@@ -1,21 +1,20 @@
 #!/bin/sh
-# Linux amd64 installer, used directly or by bootstrap for temporary staging.
+# Linux amd64 release installer.
 # Downloads HTTPS assets, verifies SHA256SUMS and version, then atomically installs.
 # Requires curl, tar and sha256sum/shasum. Default: ~/.local/bin; --bin-dir overrides.
-# No sudo or shell-profile edits. The verified binary reviews and stops account
-# tasks before replacement; temporary bootstrap staging never stops tasks.
+# No sudo or shell-profile edits. Replacement requires the account daemon to be stopped.
 # Usage: curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | sh -s -- [--version 0.3.2] [--bin-dir DIR]
 set -eu
 
 fail() { printf 'sshore install: %s\n' "$*" >&2; exit 1; }
 usage() {
     cat <<'HELP'
-Usage: sh install.sh [--version X.Y.Z] [--bin-dir DIRECTORY]
+Usage: sh install.sh [--version X.Y.Z] [--path PATH | --bin-dir DIRECTORY]
 
 Install a published Linux amd64 release, without sudo or shell profile edits.
 Default: latest release into $HOME/.local/bin. Explicit --version is recommended
 when matching a local client. Requires curl, tar and sha256sum (or shasum).
-Existing versions are backed up as sshore-X.Y.Z before replacement.
+The account daemon must exit before replacement.
 Windows clients: use install.ps1 or the matching release ZIP.
 HELP
 }
@@ -24,15 +23,17 @@ main() {
     install_version=
     install_prepare_only=false
     install_cache_dir=
-    install_bin_dir=${HOME:?HOME must be set}/.local/bin
+    install_bin_dir=
+    install_path=
     while [ "$#" -gt 0 ]; do
         case "$1" in
-            --version|--bin-dir|--cache-dir)
+            --version|--bin-dir|--cache-dir|--path)
                 [ "$#" -ge 2 ] && [ -n "$2" ] || fail "missing value for $1"
                 case "$1" in
                     --version) install_version=$2 ;;
                     --bin-dir) install_bin_dir=$2 ;;
                     --cache-dir) install_cache_dir=$2 ;;
+                    --path) install_path=$2 ;;
                 esac
                 shift 2 ;;
             --prepare-only) install_prepare_only=true; shift ;;
@@ -40,6 +41,15 @@ main() {
             *) fail "unknown option: $1" ;;
         esac
     done
+    if [ -n "$install_path" ]; then
+        [ -z "$install_bin_dir" ] && [ "$install_prepare_only" = false ] || fail '--path requires a direct installation'
+        case "$install_path" in /*) ;; *) fail '--path must be absolute' ;; esac
+        install_bin_dir=$(dirname -- "$install_path")
+        install_name=$(basename -- "$install_path")
+    else
+        install_bin_dir=${install_bin_dir:-${HOME:?HOME must be set}/.local/bin}
+        install_name=sshore
+    fi
     if [ -n "$install_version" ]; then
         valid_version "$install_version" || fail 'version must be X.Y.Z (without v)'
     fi
@@ -107,7 +117,7 @@ main() {
     # Use an absolute directory so options/relative paths cannot confuse tools.
     mkdir -p -- "$install_bin_dir"
     install_bin_dir=$(cd -- "$install_bin_dir" && pwd -P)
-    install_target=$install_bin_dir/sshore
+    install_target=$install_bin_dir/$install_name
     [ ! -d "$install_target" ] || fail 'installation target is a directory'
     chmod 755 "$install_tmp/sshore"
     # Remote preparation checks the executable version on the target host.
@@ -126,7 +136,7 @@ main() {
             mv -f -- "$install_tmp/SHA256SUMS" "$install_cache_dir/SHA256SUMS"
         fi
     else
-        "$install_tmp/sshore" bootstrap "$install_target" || fail 'installation stopped; existing tasks may require manual cleanup'
+        "$install_tmp/sshore" setup --apply --path "$install_target" || fail 'installation stopped'
     fi
     printf 'Installed sshore %s: %s\n' "$install_version" "$install_target"
     printf '%s\n' 'SHA256 verified. No sudo or shell configuration changes.'

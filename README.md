@@ -25,29 +25,19 @@ curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | 
 irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 ```
 
-Run `sshore setup` to update this computer. A managed connection to a missing
-or older remote release waits for approval. Run `sshore review` in another
-local terminal, review the host and affected tasks, then type `install` or
-`update`. The original connection continues after approval. Only the client
-downloads releases.
-
-Installers download and verify a release, then invoke the prepared executable's
-`sshore bootstrap TARGET` to install it. Bootstrap uses this executable's version;
-it does not download releases. Updates retain the task review and typed `update`
-confirmation. Install scripts require the current bootstrap command.
+Run `sshore setup` to update this computer to the latest release, or
+`sshore setup HOST` to install this client's exact release on a remote Linux
+host. The remote host downloads and verifies the release over HTTPS. Remote
+setup updates the executable on PATH, falling back to `~/.local/bin/sshore`.
+Use `--path` to select an absolute installation path on the target machine.
 
 Installers verify checksums without requesting administrator access. On Windows,
 the installer updates the first `sshore.exe` on PATH without changing PATH. If none
 is found, it installs to `%LOCALAPPDATA%\sshore\bin` and adds that directory to
 the user and current PowerShell session PATH. Restart other terminals to pick it up.
-If the installer reports a running daemon from a different release, use that
-release to run `sshore kill --all` and retry the installer. The command stops the
-account daemon even when idle and asks for confirmation when tasks are present.
-
-Updates prepare and verify the replacement, then list affected account tasks and
-require typing `update` before ending them. Unsaved work may be lost. Run installers
-outside managed shells. On Windows, close remaining clients and retry if they still
-hold the executable open.
+Before updating, exit the account daemon. Use the currently installed release
+to run `sshore kill --all` if needed, then wait for it to exit. On Windows, close
+other clients that still hold the executable open.
 Only the latest patch of each major/minor series remains downloadable.
 
 Use `sshore --tldr` for common examples, or `sshore cp --tldr` for file copies.
@@ -212,9 +202,7 @@ sshore cp origin: .                 # Request an upload from your computer.
 sshore cp report.zip origin:        # Request a download to your computer.
 ```
 
-Direct copies also prepare a matching remote sshore helper. Updating older software
-requires confirmation and ends the listed shells and tasks; copying creates no
-persistent shell.
+Direct copies require the matching remote sshore helper and create no persistent shell.
 
 `origin:` (or `:`) means the attached client computer. Remote requests detach
 you; run `sshore review` locally, choose paths and submit to copy. Attach again separately.
@@ -264,14 +252,10 @@ See `sshore mount --help` for details.
 
 ## Updates and troubleshooting
 
-Client and remote versions must match exactly, including PATCH. If a remote
-daemon runs another release, use that release to end its tasks and wait for it
-to exit, then retry the connection. Approve installation with `sshore review`.
-Type `update` when replacing an older executable and review any listed tasks
-that the installation will end.
-Press Enter to abort and preserve existing work. Preparation failures stop the
-update without opening a recovery shell. Use ordinary SSH for manual repair. A newer remote version
-requires updating your local client; it is never automatically downgraded.
+Client and remote versions must match exactly, including PATCH. Run
+`sshore setup HOST` for an older remote installation, or `sshore setup` when
+this client is older. For a custom remote installation, pass its executable
+path with `sshore setup HOST --path /absolute/path/to/sshore`.
 
 - Stale screen after reattachment: press Ctrl-L or use the application's redraw key.
 - SSH failure: try `sshore launch work -- -vvv -E ./ssh-debug.log`.

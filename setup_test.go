@@ -2,11 +2,8 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"errors"
-	"fmt"
 	"io"
-	"strings"
 	"testing"
 )
 
@@ -26,55 +23,6 @@ func (s *stubSetupInput) Read(string, bool) (string, error) {
 }
 
 func (s *stubSetupInput) Close() error { s.closed = true; return s.closeErr }
-
-func TestSetupConfirmation(t *testing.T) {
-	for _, tc := range []struct {
-		name, choice, want string
-		answers            []string
-		closeErr           error
-	}{
-		{name: "update", choice: "update", answers: []string{"update"}, want: "update"},
-		{name: "enter", choice: "update", answers: []string{""}, want: "cancel"},
-		{name: "retry", choice: "update", answers: []string{"yes", "update"}, want: "update"},
-		{name: "cancel", choice: "update"},
-		{name: "restore-failure", choice: "update", answers: []string{"update"}, closeErr: errors.New("restore failed")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var incoming, outgoing bytes.Buffer
-			for _, m := range []message{
-				{Type: "setup_choice", SoftwareVersion: version, Action: tc.choice},
-				{Type: "setup_ready", SoftwareVersion: version, Action: "managed"},
-			} {
-				if err := writeMessage(&incoming, m); err != nil {
-					t.Fatal(err)
-				}
-			}
-			input := &stubSetupInput{answers: tc.answers, closeErr: tc.closeErr}
-			err := negotiateSetupUsing(context.Background(), &incoming, &outgoing, &options{}, setupClientUI{Choose: func(m message) (string, error) {
-				return chooseSetupAction(m, func() (setupInput, error) { return input, nil })
-			}})
-			if tc.closeErr != nil && !errors.Is(err, tc.closeErr) {
-				t.Fatalf("lost terminal restoration error: %v", err)
-			}
-			if !input.closed {
-				t.Fatal("input not closed before handoff")
-			}
-			if tc.want == "" {
-				if err == nil || !strings.Contains(err.Error(), "no update requested") || outgoing.Len() != 0 {
-					t.Fatalf("failed input sent action: %v, %q", err, outgoing.String())
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			m, err := readMessage(&outgoing)
-			if err != nil || m.Type != "setup_action" || m.Action != tc.want {
-				t.Fatalf("action: %+v, %v", m, err)
-			}
-		})
-	}
-}
 
 func TestSetupRejectsRecoveryMode(t *testing.T) {
 	var stream bytes.Buffer
@@ -169,38 +117,5 @@ func TestCompareReleaseVersions(t *testing.T) {
 		if got != tc.order || known != tc.known {
 			t.Fatal(tc, got, known)
 		}
-	}
-}
-
-func TestSetupDownloadNegotiation(t *testing.T) {
-	for _, fail := range []bool{false, true} {
-		var incoming, outgoing bytes.Buffer
-		writeMessage(&incoming, message{Type: "setup_download", SoftwareVersion: version, Action: "linux-amd64"})
-		writeMessage(&incoming, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed"})
-		err := negotiateSetupUsing(context.Background(), &incoming, &outgoing, &options{command: "setup"}, setupClientUI{Log: io.Discard, Download: func(context.Context) ([]byte, error) {
-			if fail {
-				return nil, fmt.Errorf("offline")
-			}
-			return []byte("payload"), nil
-		}, OpenInput: func() (setupInput, error) { t.Fatal("download requested confirmation"); return nil, nil }})
-		if fail {
-			if err == nil || !strings.Contains(err.Error(), "no shells stopped") || outgoing.String() != "0 -\n" {
-				t.Fatalf("%q %v", outgoing.String(), err)
-			}
-		} else if err != nil || !bytes.HasSuffix(outgoing.Bytes(), []byte("payload")) {
-			t.Fatalf("%q %v", outgoing.String(), err)
-		}
-	}
-}
-
-func TestMountSetupDeclineAndUnknownVersion(t *testing.T) {
-	input := &stubSetupInput{answers: []string{""}}
-	action, err := chooseSetupAction(message{Type: "setup_choice", Action: "update"}, func() (setupInput, error) { return input, nil })
-	if err != nil || action != "cancel" || !input.closed {
-		t.Fatalf("%q %v", action, err)
-	}
-	_, err = chooseSetupAction(message{Type: "setup_choice", Action: "manual-only"}, func() (setupInput, error) { t.Fatal("unexpected update prompt"); return nil, nil })
-	if err == nil || !strings.Contains(err.Error(), "update manually") {
-		t.Fatal(err)
 	}
 }

@@ -174,14 +174,7 @@ func checkMCPSessionSetup() error {
 		return err
 	}
 	executable = strings.TrimSuffix(executable, " (deleted)")
-	state, err := inspectSetup(executable)
-	if err != nil {
-		return err
-	}
-	if state.Installed != version || state.Manual || state.Daemon != nil {
-		return fmt.Errorf("remote setup changed; reconnect and review before opening a session")
-	}
-	return nil
+	return requireInstalledRelease(executable)
 }
 
 // bridgeMCP keeps the SSH stream open while each request uses a daemon connection.

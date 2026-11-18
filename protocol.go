@@ -41,8 +41,6 @@ type message struct {
 	Directory       string              `json:"directory,omitempty"`
 	AgeSeconds      *int64              `json:"age_seconds,omitempty"`
 	Names           []string            `json:"names,omitempty"`
-	SetupTarget     string              `json:"setup_target,omitempty"`
-	SetupProcesses  []setupProcess      `json:"setup_processes,omitempty"`
 	SoftwareVersion string              `json:"software_version,omitempty"`
 	Operations      []operation         `json:"operations,omitempty"`
 	Action          string              `json:"action,omitempty"`
@@ -121,7 +119,7 @@ func checkPeerVersion(peer, role string) error {
 	if peer == "" {
 		peer = "unknown (older build)"
 	}
-	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%s; all managed processes must use the same full version. Reconnect through sshore setup to update or enter a recovery shell. Existing shell daemons keep their old version after an upgrade; use a new shell name, or use matching old client and remote binaries (--server PATH) to finish work and exit that shell", version, role, peer)
+	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%s. Managed processes must use the same full release", version, role, peer)
 }
 
 // Accept both streams before handing ownership to a shell. Every partial

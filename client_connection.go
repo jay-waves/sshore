@@ -583,7 +583,7 @@ func routeParentOptions(parent options) options {
 	parent.command = "attach"
 	// A route borrows an existing connection. A fresh dial belongs to this stream.
 	parent.transports = nil
-	// Bootstrap accepts immutable task UIDs, so an ancestor rename cannot sever
+	// The remote entry point accepts immutable task UIDs, so an ancestor rename cannot sever
 	// an otherwise live child route. This transport never attaches a terminal.
 	if validTaskUID(parent.instance) {
 		parent.session = parent.instance

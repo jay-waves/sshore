@@ -259,85 +259,59 @@ def spawn_smoke(binary, host, options):
 
 def setup_smoke(binary, host, options, root):
     release = subprocess.check_output([binary, "--version"], text=True).strip().split()[1]
-    cache_root = root / "cache"
-    os.environ["XDG_CACHE_HOME"] = str(cache_root)
-    cache = cache_root / "sshore" / "releases" / release
-    cache.mkdir(parents=True, mode=0o700)
-    (cache_root / "sshore").chmod(0o700)
-    archive = cache / f"sshore_{release}_linux_amd64.tar.gz"
-    with tarfile.open(archive, "w:gz") as output:
-        output.add(binary, arcname="sshore")
-    archive.chmod(0o600)
-    manifest = cache / "SHA256SUMS"
-    manifest.write_text(f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n")
-    manifest.chmod(0o600)
+    target = root / "remote-home" / ".local" / "bin" / "sshore"
+    shell_options = ["--server", str(target), *options]
     for action in ("launch", "spawn"):
-        target = root / "remote-home" / "bin" / action
-        cli = [binary, action, host, "prepared", "--server", str(target), *options]
-        if action == "launch":
-            waiting = []
-            try:
-                for _ in range(2):
-                    client = Terminal(cli, wait_ready=False)
-                    waiting.append(client)
-                    client.expect("Run sshore review")
-                review = Terminal([binary, "review"], wait_ready=False)
-                try:
-                    # One pending request opens directly, without a picker.
-                    review.expect("Type install")
-                    review.send("\n")
-                    review.wait()
-                finally:
-                    review.close()
-                for client in waiting:
-                    client.wait(expected=1)
-                assert not target.exists()
-            finally:
-                for client in waiting:
-                    client.close()
-        else:
-            # A published older release requires the typed update decision.
-            target.write_text("#!/bin/sh\necho 'sshore 0.0.1'\n")
-            target.chmod(0o700)
-            owner = target.parent.stat()
-            if owner.st_uid != os.getuid():
-                os.chown(target, owner.st_uid, owner.st_gid)
-        terminal = Terminal(cli, wait_ready=False)
+        terminal = Terminal([binary, action, host, "prepared", *shell_options], wait_ready=False)
         try:
-            terminal.expect("Run sshore review")
-            if action == "launch":
-                assert not target.exists()
-            review = Terminal([binary, "review"], wait_ready=False)
-            try:
-                decision = "install" if action == "launch" else "update"
-                review.expect("Type " + decision)
-                review.send(decision + "\n")
-                review.wait()
-            finally:
-                review.close()
-            terminal.expect("Connected")
-            terminal.send("printf 'SETUP-%s\\n' alive\n")
-            terminal.expect("SETUP-alive")
-            terminal.send("exit\n")
-            terminal.wait()
+            terminal.expect("sshore setup")
+            terminal.wait(expected=1)
         finally:
             terminal.close()
-        assert subprocess.check_output([str(target), "--version"], text=True).strip() == f"sshore {release}"
-        assert not (root / "remote-home" / "curl-calls").exists(), "setup attempted remote download"
-        result = subprocess.run([binary, "launch", host, "matching", "--detach", "--server", str(target), *options], capture_output=True, text=True)
-        assert result.returncode == 0, result.stderr
-        assert not (root / "remote-home" / "curl-calls").exists(), "matching version attempted a download"
-        subprocess.run([binary, "kill", host, "matching", "--server", str(target), *options], check=True)
+        assert not target.exists()
+    mountpoint = root / "mountpoint"
+    mountpoint.mkdir()
+    result = subprocess.run([binary, "mount", f"{host}:/", str(mountpoint), *shell_options],
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 1 and "sshore setup" in result.stderr, result.stderr
+    assert not target.exists()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        local_port = listener.getsockname()[1]
+    old_remote = root / "remote-tools" / "sshore"
+    old_remote.write_text("#!/bin/sh\necho 'sshore 0.0.1'\n")
+    old_remote.chmod(0o755)
+    try:
+        result = subprocess.run([binary, "forward", str(local_port), f"{host}:1", *options],
+                                capture_output=True, text=True, timeout=15)
+        assert result.returncode == 1 and "sshore setup" in result.stderr, result.stderr
+        assert old_remote.read_text() == "#!/bin/sh\necho 'sshore 0.0.1'\n"
+    finally:
+        old_remote.unlink()
+
+    assert not (root / "remote-home" / "curl-calls").exists()
+    assets = root / "release"
+    assets.mkdir(mode=0o755)
+    archive = assets / f"sshore_{release}_linux_amd64.tar.gz"
+    with tarfile.open(archive, "w:gz") as bundle:
+        bundle.add(binary, arcname="sshore")
+    (assets / "SHA256SUMS").write_text(f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n")
+    curl = root / "remote-tools" / "curl"
+    curl.write_text("#!/bin/sh\n" +
+                    "while [ \"$#\" -gt 0 ]; do case \"$1\" in -o) out=$2; shift;; https://*) url=$1;; esac; shift; done\n" +
+                    f"cp {shlex.quote(str(assets))}/\"${{url##*/}}\" \"$out\"\n")
+    subprocess.run([binary, "setup", host, "--path", str(target), *options], check=True, timeout=15)
+    assert subprocess.check_output([str(target), "--version"], text=True).strip() == f"sshore {release}"
     # Exercise the standalone installer against an actual registered remote task.
     subprocess.run([binary, "launch", host, "installer-existing", "--detach", "--server", str(target), *options],
                    check=True, timeout=15)
-    installer_target = target.with_name("installer")
+    installer_target = target.with_name("other install's path")
     original = b"#!/bin/sh\necho 'sshore 0.0.1'\n"
     installer_target.write_bytes(original)
     installer_target.chmod(0o700)
     owner = target.stat()
     os.chown(installer_target, owner.st_uid, owner.st_gid)
-    installer_command = shlex.join([str(root / "server"), "bootstrap", str(installer_target)])
+    installer_command = [binary, "setup", host, "--path", str(installer_target), *options]
     installed = [binary, "list", "--json", host, "--server", str(target), *options]
 
     def installer_tasks():
@@ -345,22 +319,24 @@ def setup_smoke(binary, host, options, root):
             subprocess.check_output(installed, timeout=15))["shells"]}
 
     original_pid = installer_tasks()["installer-existing"]
-    for answer in ("", "update"):
-        installer = Terminal(["/usr/bin/ssh", "-tt", *options[1:], host, installer_command], wait_ready=False)
-        try:
-            installer.expect("installer-existing")
-            installer.expect("Type update to install")
-            installer.send(answer + "\n")
-            installer.wait(expected=0 if answer else 1)
-        finally:
-            installer.close()
-        if not answer:
-            assert installer_target.read_bytes() == original
-            assert installer_tasks()["installer-existing"] == original_pid
-    assert "installer-existing" not in installer_tasks()
+    result = subprocess.run(installer_command,
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 1 and "daemon is still running" in result.stderr, result.stderr
+    assert installer_target.read_bytes() == original
+    assert installer_tasks()["installer-existing"] == original_pid
+    subprocess.run([binary, "kill", host, "installer-existing", *shell_options], check=True, timeout=15)
+    result = subprocess.run(installer_command,
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 1 and "daemon is still running" in result.stderr, result.stderr
+    assert installer_target.read_bytes() == original
+    subprocess.run([binary, "kill", host, "--all", *shell_options], check=True, timeout=15)
+    subprocess.run(installer_command, check=True, timeout=15)
     assert subprocess.check_output([str(installer_target), "--version"], text=True).strip() == f"sshore {release}"
     assert not list(target.parent.glob(".sshore-update-*"))
-    print("setup: reviewed SSH setup from verified client cache, exact version and matching-version reuse OK")
+    target.write_bytes(original)
+    subprocess.run([binary, "setup", host, *options], check=True, timeout=15)
+    assert subprocess.check_output([str(target), "--version"], text=True).strip() == f"sshore {release}"
+    print("setup: explicit remote update, target paths and stopped-daemon requirement passed")
 
 
 def reset_smoke(binary, root):
@@ -371,8 +347,9 @@ def reset_smoke(binary, root):
     history.write_text("clear")
     unrelated = state / "user-file"
     unrelated.write_text("keep")
+    os.environ["XDG_CACHE_HOME"] = str(root / "cache")
     cache = Path(os.environ["XDG_CACHE_HOME"]) / "sshore"
-    assert cache.is_dir()
+    cache.mkdir(parents=True, mode=0o700)
     daemon = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".sshore" / "daemon" / "daemon.json"
     assert daemon.is_file()
     subprocess.run([binary, "reset"], check=True, timeout=15)
@@ -383,7 +360,7 @@ def reset_smoke(binary, root):
     print("PASS: release reset ended the local daemon and cleared only application data")
 
 
-def mcp_smoke(binary, host, ssh_wrapper):
+def mcp_smoke(binary, host, ssh_wrapper, remote_tools):
     env = dict(os.environ, SSHORE_SSH=str(ssh_wrapper))
     proc = subprocess.Popen([binary, "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, env=env, bufsize=1)
@@ -408,6 +385,16 @@ def mcp_smoke(binary, host, ssh_wrapper):
                             "clientInfo": {"name": "test", "version": "1"}}, 1)
         proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
         proc.stdin.flush()
+        older = remote_tools / "sshore"
+        original = b"#!/bin/sh\necho 'sshore 0.0.1'\n"
+        older.write_bytes(original)
+        older.chmod(0o755)
+        try:
+            rejected = call("tools/call", {"name": "session_open", "arguments": {"host": host}}, 200)
+            assert rejected.get("isError") and "sshore setup" in json.dumps(rejected), rejected
+            assert older.read_bytes() == original
+        finally:
+            older.unlink()
         session = tool("session_open", {"host": host}, 2)
         run = tool("session_execute", {"session_id": session["id"], "code": "x=sshore; printf '%s' \"$x\""}, 3)
         cursor, text = "", ""
@@ -501,7 +488,7 @@ LogLevel ERROR
                          f"export HOME={shlex.quote(str(home))}\n" +
                          f"export SSHORE_RUNTIME_DIR={shlex.quote(str(root / 'runtime'))}\n" +
                          f"export SSHORE_STATE_DIR={shlex.quote(str(root / 'remote-state'))}\n" +
-                         f"export PATH={shlex.quote(str(tools))}:{shlex.quote(str(root))}:$PATH\n" +
+                         f"export PATH=\"$HOME/.local/bin\":{shlex.quote(str(tools))}:{shlex.quote(str(root))}:$PATH\n" +
                          "export SHELL=/bin/sh\n" +
                          'exec sh -c "$SSH_ORIGINAL_COMMAND"\n')
         scope.chmod(0o755)
@@ -563,7 +550,7 @@ LogLevel ERROR
                     " -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o " +
                     shlex.quote("UserKnownHostsFile=" + str(known)) + ' "$@"\n')
                 ssh_wrapper.chmod(0o700)
-                mcp_smoke(binary, command[2], ssh_wrapper)
+                mcp_smoke(binary, command[2], ssh_wrapper, tools)
                 return
             if args.handoff_only:
                 handoff_smoke(binary, command[2], command[3:], root)

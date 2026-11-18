@@ -92,19 +92,7 @@ func run(args []string) (code int, resultErr error) {
 		}
 		return 0, killResourceIdentity(args[2], args[3])
 	case "setup":
-		if _, err := parseCLI(args[1:], "setup"); err != nil {
-			return 2, err
-		}
-		return 0, runLocalInstaller()
-	case "bootstrap":
-		parsed, err := parseCLI(args[1:], "bootstrap")
-		if err != nil {
-			return 2, err
-		}
-		if len(parsed.operands) == 1 {
-			return 0, installRelease(parsed.operands[0])
-		}
-		return 0, serverCommand(append([]string{"bootstrap"}, parsed.operands...))
+		return runSetup(args[1:])
 	case "daemon-admin":
 		if len(args) != 1 {
 			return 2, usage("daemon-admin takes no arguments")
@@ -140,7 +128,7 @@ func run(args []string) (code int, resultErr error) {
 			return 0, detachLocalShell(identity)
 		}
 		return 0, serverCommand(args)
-	case "forward-watch", "mount-agent", "cp-agent", "bridge", "resume", "sessions", "kill-session", "rename-session", "task-watch", "task-remove", "inventory":
+	case "forward-watch", "mount-agent", "cp-agent", "mcp-agent", "bridge", "resume", "sessions", "kill-session", "rename-session", "task-watch", "task-remove", "inventory":
 		return 0, serverCommand(args)
 	}
 	return 2, usage("unknown command: %s", args[0])

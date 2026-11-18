@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -46,8 +45,6 @@ type requestRecord struct {
 	Directory, DownloadDir string
 	Quiet                  bool
 	Operations             []operation
-	Setup                  *setupReview
-	decision               *setupDecision
 }
 
 func (r requestRecord) DisplayName() string {
@@ -128,17 +125,12 @@ func validRequestID(id string) bool { return validTaskUID(id) }
 func cloneRequest(r requestRecord) requestRecord {
 	r.Connection = r.Connection.clone()
 	r.Operations = slices.Clone(r.Operations)
-	if r.Setup != nil {
-		setup := *r.Setup
-		setup.Tasks = slices.Clone(setup.Tasks)
-		r.Setup = &setup
-	}
 	return r
 }
 func (s *daemonTasks) prune(now time.Time) {
 	for id, r := range s.records {
 		if r.expired(now) {
-			s.removeRequest(id)
+			delete(s.records, id)
 		}
 	}
 }
@@ -149,9 +141,6 @@ func (s *daemonTasks) Busy() bool {
 	return len(s.records) != 0
 }
 func (s *daemonTasks) Save(r requestRecord) error {
-	if r.Setup != nil {
-		return fmt.Errorf("setup requires a waiting client")
-	}
 	if !validRequestID(r.ID) {
 		return fmt.Errorf("invalid request ID")
 	}
@@ -239,12 +228,6 @@ func (s *daemonTasks) Pending() []requestRecord {
 		}
 	}
 	slices.SortFunc(records, func(a, b requestRecord) int {
-		if (a.Setup != nil) != (b.Setup != nil) {
-			if a.Setup != nil {
-				return -1
-			}
-			return 1
-		}
 		return cmp.Or(a.Created.Compare(b.Created), cmp.Compare(a.ID, b.ID))
 	})
 	return records
@@ -287,7 +270,7 @@ func (s *daemonTasks) Consume(id string) error {
 	if _, found := s.records[id].(requestRecord); !found {
 		return fmt.Errorf("request no longer exists or expired: %w", os.ErrNotExist)
 	}
-	s.removeRequest(id)
+	delete(s.records, id)
 	return nil
 }
 func (s *daemonTasks) Rename(id, name string) error {
@@ -319,7 +302,6 @@ type requestRPCReply struct {
 	Request  *requestRecord  `json:",omitempty"`
 	Requests []requestRecord `json:",omitempty"`
 	Error    string          `json:",omitempty"`
-	Queued   string          `json:",omitempty"`
 	NotFound bool            `json:",omitempty"`
 }
 
@@ -327,10 +309,6 @@ func (s *daemonTasks) serveRequest(w http.ResponseWriter, r *http.Request) {
 	reply := requestRPCReply{}
 	var err error
 	switch r.PathValue("action") {
-	case "setup_wait":
-		err = s.waitSetup(w, r)
-	case "setup_approve":
-		err = s.approveSetup(r.URL.Query().Get("ref"))
 	case "request_save":
 		var record requestRecord
 		err = json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestRecord+1)).Decode(&record)
@@ -359,15 +337,12 @@ func (s *daemonTasks) serveRequest(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(reply)
 }
 func requestRPC(action, ref, name string, request *requestRecord) (requestRPCReply, error) {
-	return requestRPCContext(context.Background(), requestTimeout, action, ref, name, request, nil)
-}
-func requestRPCContext(parent context.Context, timeout time.Duration, action, ref, name string, request *requestRecord, queued func(string)) (requestRPCReply, error) {
 	var reply requestRPCReply
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 	var record localShellRecord
 	var err error
-	if action == "request_save" || action == "setup_wait" {
+	if action == "request_save" {
 		record, err = ensureLocalDaemonContext(ctx)
 	} else {
 		record, err = existingDaemonRecord()
@@ -388,16 +363,6 @@ func requestRPCContext(parent context.Context, timeout time.Duration, action, re
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, maxPendingRequests*maxRequestRecord+4096))
 	if err := decoder.Decode(&reply); err != nil {
 		return reply, err
-	}
-	if queued != nil && reply.Error == "" {
-		if !validRequestID(reply.Queued) {
-			return reply, fmt.Errorf("invalid setup queue reply")
-		}
-		queued(reply.Queued)
-		reply = requestRPCReply{}
-		if err := decoder.Decode(&reply); err != nil {
-			return reply, err
-		}
 	}
 	if reply.NotFound {
 		return reply, fmt.Errorf("%s: %w", reply.Error, os.ErrNotExist)
@@ -441,103 +406,4 @@ func consumeRequest(id string) error {
 func renameRequest(id, name string) error {
 	_, err := requestRPC("request_rename", id, name, nil)
 	return err
-}
-
-// The waiting SSH connection owns execution. Review only releases the exact
-// proposal held in the local daemon. Decisions never survive daemon restart.
-type setupReview struct {
-	Installed string
-	Target    string
-	Account   string
-	Tasks     []setupProcess
-}
-type setupDecision struct {
-	done     chan struct{}
-	approved bool
-	waiters  int
-}
-
-func (r requestRecord) summary() string {
-	if r.Setup != nil {
-		return "setup " + r.Setup.Installed + " → " + r.SoftwareVersion
-	}
-	return requestSummary(r.Operations)
-}
-
-// removeRequest runs under s.mu. Ordinary cancellation, expiry and shutdown
-// all wake the waiting connection with a negative decision.
-func (s *daemonTasks) removeRequest(id string) {
-	if r, ok := s.records[id].(requestRecord); ok && r.decision != nil {
-		close(r.decision.done)
-	}
-	delete(s.records, id)
-}
-func (s *daemonTasks) approveSetup(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.prune(time.Now())
-	r, ok := s.records[id].(requestRecord)
-	if !ok || r.decision == nil {
-		return fmt.Errorf("setup request expired or cancelled")
-	}
-	r.decision.approved = true
-	s.removeRequest(id)
-	return nil
-}
-
-func (s *daemonTasks) waitSetup(w http.ResponseWriter, req *http.Request) error {
-	var r requestRecord
-	if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, maxRequestRecord)).Decode(&r); err != nil {
-		return err
-	}
-	if !validRequestID(r.ID) || r.SoftwareVersion != version || r.Setup == nil || len(r.Operations) != 0 || validSSHDestination(r.Connection.Host) != nil {
-		return fmt.Errorf("invalid setup request")
-	}
-	s.mu.Lock()
-	now := time.Now()
-	s.prune(now)
-	for _, task := range s.records {
-		old, ok := task.(requestRecord)
-		if ok && old.decision != nil && reflect.DeepEqual(old.Connection, r.Connection) && reflect.DeepEqual(old.Setup, r.Setup) {
-			r = old
-			break
-		}
-	}
-	if r.decision == nil {
-		r.Created = now
-		r.Name = ""
-		r.decision = &setupDecision{done: make(chan struct{})}
-		if err := s.insertRequest(r, now); err != nil {
-			s.mu.Unlock()
-			return err
-		}
-	}
-	d := r.decision
-	d.waiters++
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		d.waiters--
-		if old, ok := s.records[r.ID].(requestRecord); ok && old.decision == d && d.waiters == 0 {
-			s.removeRequest(r.ID)
-		}
-	}()
-	if err := json.NewEncoder(w).Encode(requestRPCReply{Queued: r.ID}); err != nil {
-		return err
-	}
-	if err := http.NewResponseController(w).Flush(); err != nil {
-		return err
-	}
-	timer := time.NewTimer(time.Until(r.Created.Add(requestTTL)))
-	defer timer.Stop()
-	select {
-	case <-d.done:
-		if d.approved {
-			return nil
-		}
-	case <-req.Context().Done():
-	case <-timer.C:
-	}
-	return fmt.Errorf("setup review declined, cancelled or expired")
 }

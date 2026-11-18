@@ -1,10 +1,5 @@
 package main
 
-// Setup prepares the exact release before requesting reviewed shutdown of
-// the account daemon. It rechecks the confirmed task snapshot under the setup
-// lock; unavailable control, changed state or refusal never triggers process scans
-// or client-side forced cleanup. Failures stop setup without a recovery shell.
-
 import (
 	"context"
 	"errors"
@@ -15,12 +10,13 @@ import (
 	"time"
 )
 
-func bootstrap(target, mode, name string) (result error) {
-	if !filepath.IsAbs(target) {
-		return fmt.Errorf("setup target must be absolute")
+func serveRemote(mode, name, peerVersion string) (result error) {
+	target, err := os.Executable()
+	if err != nil {
+		return err
 	}
-	if mode != "prepare" && mode != "bridge" && mode != "resume" && mode != "sessions" && mode != "new" && mode != "attach" && mode != "spawn" && mode != "mount-agent" && mode != "cp-agent" && mode != "mcp-agent" {
-		return fmt.Errorf("invalid setup mode")
+	if mode != "bridge" && mode != "resume" && mode != "new" && mode != "attach" && mode != "spawn" && mode != "mount-agent" && mode != "cp-agent" && mode != "mcp-agent" {
+		return fmt.Errorf("invalid remote service")
 	}
 	if mode == "resume" || name != "" {
 		if err := validSession(name); err != nil {
@@ -29,34 +25,21 @@ func bootstrap(target, mode, name string) (result error) {
 	}
 	// Fatal setup replies are framed; no human text ever enters protocol stdout.
 	defer func() {
-		if result != nil && mode != "sessions" {
+		if result != nil {
 			_ = writeMessage(os.Stdout, message{Type: "fatal", SoftwareVersion: version, Error: result.Error()})
 		}
 	}()
+	if err := checkPeerVersion(peerVersion, "client"); err != nil {
+		return err
+	}
 	for {
 		lock, err := setupLock()
 		if err != nil {
 			return err
 		}
-		state, err := inspectSetup(target)
-		if err != nil {
+		if err := requireInstalledRelease(target); err != nil {
 			lock.Close()
 			return err
-		}
-		if state.Installed != version || state.Daemon != nil || state.Manual {
-			lock.Close()
-			if err := installPreparedRelease(target, true, remoteSetupConfirmation); err != nil {
-				return err
-			}
-			continue
-		}
-		if mode == "prepare" {
-			lock.Close()
-			return nil
-		}
-		if mode == "sessions" {
-			lock.Close()
-			return listSessions()
 		}
 		if mode == "attach" && name == "" {
 			names, err := detachedSessionNames()
@@ -117,30 +100,6 @@ func bootstrap(target, mode, name string) (result error) {
 	}
 }
 
-func remoteSetupConfirmation(m message) (string, error) {
-	m.Type, m.SoftwareVersion = "setup_choice", version
-	if machine := systemMachineID(); machine != "" {
-		m.SourceMachineID = taskUID(fmt.Sprintf("%s/%d", machine, os.Geteuid()))
-	} else {
-		id, err := newTaskUID()
-		if err != nil {
-			return "", err
-		}
-		m.SourceMachineID = id
-	}
-	if err := writeMessage(os.Stdout, m); err != nil {
-		return "", err
-	}
-	reply, err := readMessage(os.Stdin)
-	if err != nil {
-		return "", err
-	}
-	if reply.Type != "setup_action" {
-		return "", fmt.Errorf("invalid setup action")
-	}
-	return reply.Action, nil
-}
-
 func prepareReplacement(target string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 		return "", err
@@ -172,7 +131,7 @@ func prepareReplacement(target string) (string, error) {
 			os.Remove(path)
 		}
 	}()
-	// Probe atomic replacement permissions before terminating sessions.
+	// Probe atomic replacement permissions before publishing.
 	if info, e := os.Lstat(target); e == nil && !info.Mode().IsRegular() {
 		return "", fmt.Errorf("automatic update requires a regular executable target")
 	}

@@ -49,7 +49,7 @@ flowchart LR
         grant["Fixed operation; consume approval once"]
         resources["Selected files, forward or mount"]
         control["Account daemon TCP endpoint: authentication, task IDs and live leases"]
-        update["Prepare and verify release; review tasks; type update"]
+        update["Verify release and require stopped daemon"]
     end
     agent -->|"MCP stdio adapter; authenticated SSH"| control
     control -->|"Task-owned MCP execution"| bash
@@ -68,10 +68,10 @@ flowchart LR
     shell -->|"Explicit nested spawn"| relay
     relay <-->|"Next-hop SSH; same exact release"| child
     relay <-->|"Private attachment route; no local command or credentials"| client
-    resources -->|"Request exact-version helper"| review
-    user -->|"Local setup review"| update
-    agent -->|"Request exact release"| review
-    update -->|"Recheck snapshot; daemon kills owned shells; wait for endpoint release"| setup
+    resources -->|"Require exact release"| setup
+    agent -->|"Require exact release"| setup
+    user -->|"Stop daemon, then run installer"| update
+    update -->|"Hold daemon owner lock during replacement"| setup
 ```
 
 Remote output, public names, task IDs and inventory records are not
@@ -107,7 +107,7 @@ Preparation and bridge processes are not retained as per-shell trust boundaries.
 | A file request overwrites a local file or changes after approval | [Selected paths and no-overwrite publication](#files-and-forwarding) | Content can be malicious or change without changing size. |
 | A remote program exposes a local service | Locally selected, fixed forwarding endpoints | Loopback is not per-user isolation; server policy can alter reverse binds. |
 | Another process takes over or cancels unrelated work | [Private capabilities and process identity checks](#shell-control-and-lifetime) | Same-user compromise and deliberately escaped tasks are outside the guarantee. |
-| Setup silently downgrades software or kills tasks before replacement is ready | [Exact versions and typed update confirmation](#remote-setup-and-updates) | Confirmed termination cannot be undone. |
+| Setup silently downgrades software or kills tasks before replacement is ready | [Exact versions and stopped-daemon requirement](#remote-setup-and-updates) | Explicit task termination can lose unsaved work. |
 | A remote filesystem hangs, floods responses or leaves writes uncertain | [Bounded mount requests and no write replay](#sftp-mounts) | Partial writes, stale data and resource exhaustion remain possible. |
 | Forged status records become authority to act | [Advisory inventory only](#inventory-and-privacy) | Displayed status may be false or stale. |
 
@@ -214,8 +214,8 @@ service to the remote host. Do not bypass host-key checks.
 An MCP client can execute arbitrary Bash with the authenticated remote account's
 permissions. MCP is not a sandbox; only trusted clients should be configured to
 start it. Remote output is untrusted and can influence the Agent. The stdio MCP
-process opens no local listening port. Its SSH connections use the same release
-setup policy; MCP cannot approve an update on the user's behalf.
+process opens no local listening port. Its SSH connections require the exact
+remote release. A mismatch directs the user to run `sshore setup HOST`.
 Bash scripts and fixed input are staged in private temporary files; abrupt
 termination can leave them on the remote host. A lost response does not prove
 whether a submitted script ran; it is not replayed.
@@ -293,9 +293,8 @@ local tools into unrelated local files. Windows rejects unrepresentable names
 instead of silently aliasing them. Remote filenames, attributes and data remain
 untrusted.
 
-Mounts use the same [setup safeguards](#remote-setup-and-updates) as shells before
-starting an exact-release transient agent. Declining setup does not grant
-legacy disabled-mode file access. The agent needs remote command execution and does not inherit an
+Mounts require a matching release before starting a transient agent. The agent
+needs remote command execution and does not inherit an
 internal-sftp-only policy or SFTP subsystem-specific command flags. SSH/account
 policy remains authoritative; the mount connection disables native forwarding,
 backgrounding and ControlMaster sharing.
@@ -323,45 +322,25 @@ notifications nor status queries authorize file operations or write replay. See
 
 ## Remote setup and updates
 
-**Threat:** setup runs an unintended executable, silently downgrades software,
-or ends tasks without informed consent or a ready replacement.
+**Threat:** installation runs an unintended executable, downgrades software,
+or replaces it while the account daemon still owns tasks.
 
-Normal operations require an exact full release version, including PATCH. Never
-automatically downgrade. Managed scope is the current account's unique daemon and
-its registered tasks. Other users and
-unregistered processes are outside this scope; setup does not discover them by
-process scanning.
+Managed remote commands require the exact full release, including PATCH.
+`setup HOST` uses authenticated SSH to run the bundled installer on the target.
+Installers verify the release checksum and executable version. The prepared binary
+checks that the account daemon has exited, then holds the startup and owner locks
+until replacement finishes. Use the daemon's own release to run
+`sshore kill --all` if needed. Unknown or newer installed releases require
+manual handling.
 
-1. Remote installation requires local review, including first use. Existing older installations or shells require reviewing affected
-   identities and typing `update`. If a different-release daemon is running, use
-   its own release to end its tasks and wait for exit before installation.
-   Unknown or unordered versions require manual repair.
-2. Preparation selects the exact release, verifies its checksum and executable
-   version, and stages it without replacing the installed program. The client supplies the verified binary over the same authenticated SSH connection; the remote cannot
-   choose a local path, URL or different release. Extraction accepts only the
-   bounded regular executable.
-3. Before ending tasks, setup takes the account lock, rechecks the snapshot and
-   prepares/verifies the replacement on the target filesystem. Changed state
-   requires fresh confirmation. Preparation failure must not terminate tasks.
-4. Setup requests shutdown through the authenticated administrative endpoint and
-   waits for the account owner to release it. Setup uses this endpoint only for
-   a matching daemon. A changed
-   snapshot, refusal, unavailable endpoint or timeout stops the update. The daemon
-   kills its confirmed shell tasks; clients never scan for daemons or forcibly kill
-   a daemon that refused or could not complete cleanup. Busy mounts remain active.
-   Once shutdown starts, failures cannot restore ended tasks; updates can lose
-   unsaved work.
-
-Automatic replacement requires a user-owned regular file and a user-owned directory
-without group/world write permission on Linux. Replacement does not elevate privileges
-or modify shell profiles. See [Windows installation](README.md#install) for PATH
-behavior. Copy and mount startup use the same safeguards and collect confirmation
-in the initiating terminal. Ordinary forwarding does not
-install a remote helper.
+Replacement requires a user-owned regular file and a user-owned directory
+without group/world write permission on Linux. Replacement does not elevate
+privileges or modify shell profiles. See [Windows installation](README.md#install)
+for PATH behavior.
 
 Release checksums detect corruption, not publisher compromise. Cached artifacts are
 private and rechecked on reuse; unavailable assets never cause substitution of a
-different release. Standalone installers use the same reviewed shutdown flow.
+different release.
 Published tags and assets are not overwritten; older patch assets are removed after a complete
 replacement is published. See [release mechanics](SSHORE.md#release).
 
@@ -371,9 +350,7 @@ cleanup. Coordination locks remain to prevent concurrent daemon startup.
 
 ## Setup failure and legacy recovery
 
-Failed preparation and declined updates stop setup without opening a recovery shell.
-Use ordinary SSH for manual repair. Standalone installers must run outside managed
-shells, so their coordinator is not among the processes being ended.
+Use ordinary SSH for manual repair.
 
 New binaries continue to honor `SSHORE_DISABLED=1` inherited from legacy recovery
 shells: normal operations remain disabled until reconnecting. Legacy recovery is a
@@ -381,10 +358,8 @@ product restriction, not a sandbox; arbitrary older binaries and deliberately
 escaped/reparented processes cannot be globally controlled. Native SSH forwarding
 remains the local user's policy.
 
-Installer scripts prepare a checksum-verified executable before invoking its
-`bootstrap TARGET` entry point. Bootstrap help is read-only and does not authorize
-an update. Remote shell staging never performs daemon shutdown or process
-termination itself.
+Installer scripts verify the release before invoking the prepared executable to
+apply it. Setup help is read-only.
 
 ## Inventory and privacy
 

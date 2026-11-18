@@ -7,8 +7,8 @@ Windows amd64 only; supports PowerShell 5.1 and 7. Updates the first sshore.exe
 on PATH; otherwise install to %LOCALAPPDATA%\sshore\bin and add it to the user
 and current session PATH. Verify SHA256SUMS and executable version before
 replacement. Never modify system PATH, profiles or execution
-policy; never elevate or create versioned backups. The verified release reviews
-and stops account tasks after typed update confirmation before replacing the binary.
+policy; never elevate or create versioned backups. Stop the account daemon
+before replacing the binary.
 Remaining clients may still hold the executable open; close them and retry.
 .PARAMETER Version
 Published X.Y.Z version (without v). Defaults to the latest release.
@@ -16,7 +16,7 @@ Published X.Y.Z version (without v). Defaults to the latest release.
 .\install.ps1 -Version 0.3.4
 #>
 [CmdletBinding()]
-param([string]$Version = '', [string]$PrepareLinux = '')
+param([string]$Version = '', [string]$PrepareLinux = '', [string]$Path = '')
 
 function Get-SshoreArchitecture {
     if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
@@ -108,7 +108,7 @@ function Add-SshorePathDirectory([string]$Path, [string]$Directory) {
     return $Path.TrimEnd(';') + ';' + $Directory
 }
 
-function Install-Sshore([string]$Version = '') {
+function Install-Sshore([string]$Version = '', [string]$Path = '') {
     $ErrorActionPreference = 'Stop'
     $versionPattern = '(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
     if ($Version -and $Version -cnotmatch "\A$versionPattern\z") {
@@ -116,10 +116,15 @@ function Install-Sshore([string]$Version = '') {
     }
     $architecture = Get-SshoreArchitecture
     $foundOnPath = $false
-    $directory = Get-SshoreInstallDirectory ([ref]$foundOnPath)
-    # Resolve relative filesystem paths using PowerShell's current location.
-    $directory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($directory)
-    $target = Join-Path $directory 'sshore.exe'
+    if ($Path) {
+        if ($Path -notmatch '\A([A-Za-z]:[\\/]|\\\\)') { throw 'Installation path must be absolute.' }
+        $target = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
+        $directory = [IO.Path]::GetDirectoryName($target)
+    } else {
+        $directory = Get-SshoreInstallDirectory ([ref]$foundOnPath)
+        $directory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($directory)
+        $target = Join-Path $directory 'sshore.exe'
+    }
     $existing = Get-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
     if ($existing -and ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint))) {
         throw 'Installation target is a directory or reparse point; installation unchanged.'
@@ -167,7 +172,6 @@ function Install-Sshore([string]$Version = '') {
         } finally { $archive.Dispose() }
 
         $null = [IO.Directory]::CreateDirectory($directory)
-        $target = Join-Path $directory 'sshore.exe'
         $existing = Get-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
         if ($existing -and ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint))) {
             throw 'Installation target is a directory or reparse point; installation unchanged.'
@@ -177,12 +181,12 @@ function Install-Sshore([string]$Version = '') {
         if ((Read-SshoreBinaryVersion $stage) -cne "sshore $Version") {
             throw 'Binary version does not match release; installation unchanged.'
         }
-        & $stage bootstrap $target
+        & $stage setup --apply --path $target
         if ($LASTEXITCODE -ne 0) { throw 'Installation stopped. Close remaining sshore clients if the executable is still in use, then retry.' }
         [IO.File]::Delete($stage)
         $stage = $null
         Write-Host "Installed sshore ${Version}: $target"
-        if (-not $foundOnPath) {
+        if (-not $Path -and -not $foundOnPath) {
             try {
                 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
                 $updatedPath = Add-SshorePathDirectory $userPath $directory
@@ -248,5 +252,5 @@ function Prepare-SshoreLinux([string]$Version, [string]$Directory) {
 # Dot-sourcing loads helpers for offline tests; normal script/scriptblock use installs.
 if ($MyInvocation.InvocationName -ne '.') {
     if ($PrepareLinux) { Prepare-SshoreLinux $Version $PrepareLinux }
-    else { Install-Sshore -Version $Version }
+    else { Install-Sshore -Version $Version -Path $Path }
 }

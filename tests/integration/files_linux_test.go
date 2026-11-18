@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,10 +134,16 @@ func TestCopyPreflight(t *testing.T) {
 func copySSH(t *testing.T, e *cliFixture) string {
 	t.Helper()
 	wrapper := filepath.Join(e.dir, "ssh")
-	script := "#!/bin/sh\nexec \"$SSHORE_TEST_BINARY\" bootstrap \"$SSHORE_TEST_BINARY\" cp-agent ''\n"
+	script := "#!/bin/sh\nexec \"$SSHORE_TEST_BINARY\" cp-agent \"$SSHORE_TEST_VERSION\"\n"
 	if err := os.WriteFile(wrapper, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	wrapper = sshtest.Wrap(t, wrapper, append(e.env, "SSHORE_TEST_BINARY="+e.bin))
+	versionCommand := exec.Command(e.bin, "--version")
+	versionCommand.Env = e.env
+	versionOutput, err := versionCommand.CombinedOutput()
+	if err != nil {
+		t.Fatalf("version: %v: %s", err, versionOutput)
+	}
+	wrapper = sshtest.Wrap(t, wrapper, append(e.env, "SSHORE_TEST_BINARY="+e.bin, "SSHORE_TEST_VERSION="+strings.TrimPrefix(strings.TrimSpace(string(versionOutput)), "sshore ")))
 	return wrapper
 }

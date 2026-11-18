@@ -21,7 +21,7 @@ policy or depending on mutable application state.
 | One-off SSH execution | `cli.go`: exec adapter uses the shared SSH connection layer without remote setup |
 | CLI grammar, dispatch and help | `cli_schema.go`: shared command aliases and product/SSH grammar; `cli_commands.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
 | Connections and session switching | `client.go`, `client_connection.go` |
-| Prepared installation and exact-release policy | `setup.go` handles release negotiation, transport and installation policy. `setup_linux.go` handles remote bootstrap |
+| Prepared installation and exact-release policy | `setup.go` handles version checks and installation policy. `setup_linux.go` handles remote service startup |
 | Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_linux.go`, `server_linux.go`; process inspection in `process_linux.go` |
 | Account daemon and local shell control | `daemon*.go` (task registry and resource control in `daemon_tasks.go`, plus activity leases and metadata), `local_command.go`, `local_shell.go`; hosted Unix shell adapters in `platform_*.go` |
 | Spawn ownership, lifetime SSH and nested routes | `spawn_owner.go`, `spawn_transport.go`, `spawn_route_linux.go`, `platform_*.go` |
@@ -123,11 +123,11 @@ local known_hosts policy; unknown-host confirmation is routed to the initiating
 frontend over private local control. Background retries never prompt.
 
 For remote launch, attach and spawn, the initiating daemon owns SSH and forwards
-setup and authentication prompts to the frontend. After preparation it opens an SSH
+shell selection and authentication prompts to the frontend. After version checks it opens an SSH
 TCP channel to the
 account daemon's loopback endpoint. Native and SSH clients authenticate there and
 open streams by immutable task ID. The preparation process exits; SSH TCP
-forwarding must be permitted. Failed or declined setup does not open a shell.
+forwarding must be permitted. A version mismatch stops the connection before opening a shell.
 
 Native port forwards belong to their connection. Application forwards retain
 separate connections and their explicit retry policy. Cancellation closes owned
@@ -387,25 +387,16 @@ See [inventory privacy](SECURITY.md#inventory-and-privacy).
 
 ### Setup and installation
 
-Local setup runs the bundled platform installer for the latest release.
-Remote setup uses the client cache or downloads the exact Linux release on the
-client and transfers it over SSH. A missing or older release queues a setup request
-in the initiating account daemon. Review releases the waiting connection, which
-rechecks the affected tasks before applying the change.
-The bundled install scripts download, verify and extract releases for local
-installation and remote preparation. Remote preparation uses the client
-version. Windows clients use system PowerShell and tar to prepare the Linux asset. The prepared executable handles installation through
-`sshore bootstrap TARGET`; installers invoke it directly without legacy entry
-points or capability probes. The Linux remote entry point is `scripts/bootstrap.sh.tmpl`,
-embedded with `go:embed`: Go quotes parameters and builds protocol frames; shell
-resolves the remote executable and prepares a matching coordinator. The remote
-`bootstrap TARGET MODE NAME` exchange keeps stdin for setup/session frames and
-leaves task review, state rechecks, shutdown and replacement in Go.
+Local setup runs the bundled platform installer. With a host, setup sends the
+bundled Linux installer over SSH and pins the release to the client's exact
+version. The target runs the installer and downloads the release. Installers
+verify the checksum and call the prepared binary to apply the installation.
+The daemon must be stopped before replacement.
 
-Standalone installers and SSH setup share release and shutdown policy. Temporary
-bootstrap staging does not stop tasks. Run installers outside managed shells.
-[SECURITY.md](SECURITY.md#remote-setup-and-updates) owns the update and termination
-safeguards.
+The embedded `scripts/remote.sh.tmpl` checks the release and dispatches normal
+connections to their internal service entry points. SSH stdin remains available
+for service protocol frames.
+[SECURITY.md](SECURITY.md#remote-setup-and-updates) owns the installation safeguards.
 
 ## Build and validate
 
@@ -463,8 +454,8 @@ For local real-SSH checks on Linux amd64, run the Python fixture through Docker.
 The runner uses the host Go toolchain to build the normal binary. Each scenario
 gets a fresh container with separate client and server accounts, an isolated
 loopback network and read-only test artifacts. The first run builds the test image.
-The setup scenario also checks standalone installer approval against a running
-server task and local reset against the client account.
+The setup scenario also checks that installation rejects a running or idle daemon
+and that reset clears only application data.
 
 ```sh
 tests/integration/ssh_docker.sh

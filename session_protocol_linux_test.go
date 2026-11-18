@@ -104,9 +104,9 @@ func (e *testEnv) bridge(name string, modes ...string) *bridgeConn {
 	if len(modes) > 0 {
 		mode = modes[0]
 	}
-	bootstrap := name == "" || len(modes) > 0
-	if bootstrap {
-		cmd = exec.Command(e.bin, "bootstrap", e.bin, mode, name)
+	versioned := name == "" || len(modes) > 0
+	if versioned {
+		cmd = exec.Command(e.bin, "bridge", version, mode, name)
 	}
 	cmd.Env = e.env
 	in, err := cmd.StdinPipe()
@@ -121,7 +121,7 @@ func (e *testEnv) bridge(name string, modes ...string) *bridgeConn {
 	if err = cmd.Start(); err != nil {
 		e.t.Fatal(err)
 	}
-	if bootstrap {
+	if versioned {
 		if m := recv(e.t, out); m.Type != "setup_ready" {
 			e.t.Fatalf("automatic setup: %+v", m)
 		}
@@ -508,7 +508,7 @@ func TestDisconnectCleansBothConcurrentUploads(t *testing.T) {
 	shellOutput(t, resumed, "printf CLEAN_%s alive", "CLEAN_alive")
 }
 
-// Automatic connections exercise bootstrap too: an empty name must survive its
+// Automatic connections exercise versioned startup too: an empty name must survive its
 // validation, and named reconnect must retain the original shell.
 func TestAutomaticSessionsAndNamedResume(t *testing.T) {
 	e := newEnv(t)
@@ -599,13 +599,13 @@ func TestExplicitDetachControlPreservesSession(t *testing.T) {
 	waitSessionEnded(t, e, "stay", pid)
 }
 
-// Public creation and attachment use distinct bootstrap modes. All subprocesses
+// Public creation and attachment use distinct startup modes. All subprocesses
 // come from testBinary (isolated CLI test executable) and use newEnv's isolated runtime.
 func TestNewAndAttachLifecycle(t *testing.T) {
 	e := newEnv(t)
 	expectFailure := func(mode, name, contains string) {
 		t.Helper()
-		cmd := exec.Command(e.bin, "bootstrap", e.bin, mode, name)
+		cmd := exec.Command(e.bin, "bridge", version, mode, name)
 		cmd.Env = e.env
 		data, err := cmd.Output()
 		if err == nil {
@@ -637,7 +637,7 @@ func TestNewAndAttachLifecycle(t *testing.T) {
 	untilType(t, second.out, "detached")
 	second.close()
 	// Observe the real multi-session offer, then cancel by closing the transport.
-	cmd := exec.Command(e.bin, "bootstrap", e.bin, "attach", "")
+	cmd := exec.Command(e.bin, "bridge", version, "attach", "")
 	cmd.Env = e.env
 	in, _ := cmd.StdinPipe()
 	out, _ := cmd.StdoutPipe()

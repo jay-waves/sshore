@@ -53,7 +53,9 @@ shutil.copyfile(source,args[args.index('-o')+1])
         payload = f"""#!/bin/sh
 case "$1" in
 --version) echo 'sshore {version}' ;;
-bootstrap)
+setup)
+    [ "$2" = --apply ] && [ "$3" = --path ] || exit 2
+    shift 2
     if [ -e "$2" ]; then
         old=$("$2" --version); old=${{old#sshore }}
         cp -p "$2" "$2-$old"
@@ -90,13 +92,13 @@ esac
         self.assertTrue(all("/download/v0.3.1/" in u for u in self.log.read_text().splitlines()))
         self.assertFalse(list(target.parent.glob(".sshore-install.*")))
 
-    def test_prepared_binary_uses_bootstrap(self):
+    def test_prepared_binary_uses_setup(self):
         self.asset("0.7.8", "amd64")
         self.run_install("--version", "0.7.8")
         target = self.home / ".local/bin/sshore"
         self.assertEqual(subprocess.check_output([str(target), "--version"], text=True).strip(), "sshore 0.7.8")
 
-    def test_bootstrap_preparation_does_not_replace_existing_target(self):
+    def test_preparation_does_not_replace_existing_target(self):
         dest = self.home / "staging"
         self.run_install("--bin-dir", str(dest), "--prepare-only")
         target = dest / "sshore"

@@ -517,20 +517,20 @@ func TestRoutedInventoryKeepsSiblingDestinations(t *testing.T) {
 	}
 }
 
-func TestRoutedParentUsesImmutableBootstrapIdentity(t *testing.T) {
+func TestRoutedParentUsesImmutableRemoteIdentity(t *testing.T) {
 	activityFixture(t)
 	parent := options{command: "spawn", host: "entry", session: "renamed-old-label", instance: strings.Repeat("a", 32)}
 	entry := routeParentOptions(parent)
 	command := remoteCommand(entry)
 	if entry.command != "attach" || entry.session != parent.instance || strings.Contains(command, parent.session) || !strings.Contains(command, parent.instance) {
-		t.Fatalf("ancestor bootstrap still depends on its old label: %s", command)
+		t.Fatalf("ancestor startup still depends on its old label: %s", command)
 	}
 	if parent.session != "renamed-old-label" {
 		t.Fatal("display label changed")
 	}
 	parent.instance = "legacy-instance"
 	if got := routeParentOptions(parent); got.session != parent.session {
-		t.Fatal("noncanonical instance used as a bootstrap target")
+		t.Fatal("noncanonical instance used as a remote startup target")
 	}
 }
 

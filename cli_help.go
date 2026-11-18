@@ -22,7 +22,7 @@ Files and ports
   cp          Copy files over SSH
   mount       Mount a remote directory
   forward     Forward a TCP port
-  review      Approve setup and remote shell requests
+  review      Approve remote shell requests
 
 Tasks and setup
   list        Show tasks and when they were last checked
@@ -63,24 +63,16 @@ const shellStartupOptions = `  --local               Select a local shell
 `
 
 const shellConnectionHelp = `
-Missing or older remote releases queue a setup request. Run sshore review in another local terminal.
-Updating may end the listed shells and tasks and requires typing update.
+The remote release must match exactly. Update the older side before connecting.
 ` + sshOptions + "Shell connections also accept SSH -L, -R and -D.\n"
 
 var commandHelp = map[string]string{
-	"setup": `Usage: sshore setup
+	"setup": `Usage: sshore setup [HOST] [--path PATH] [-- SSH_OPTIONS]
 
-Run the platform installer to update this computer to the latest published release.
-Remote connections request installation or upgrade through sshore review.
-`,
-	"bootstrap": `Usage: sshore bootstrap TARGET
-
-Install this executable's version at the absolute TARGET path. This command
-uses an already downloaded and verified executable; it does not download releases.
-Run it outside managed shells. Updates may end the listed daemon tasks and lose
-unsaved work; type update to confirm. State changes require another review.
-The installer handles downloads, checksums and platform-specific preparation.
-`,
+Update this computer to the latest published release, or update HOST to the
+exact local version over SSH. Stop the daemon on the target before updating.
+--path selects an absolute installation path on the target machine.
+` + sshOptions,
 	"mcp": `---
 name: sshore-mcp
 description: Run remote Bash scripts through persistent SSH sessions using MCP.
@@ -100,8 +92,7 @@ For a single stateless command outside MCP, use sshore exec HOST 'COMMAND'.
 
 Configure the MCP client with command "sshore" and args ["mcp"]. It owns stdio;
 diagnostics go to stderr. Use an SSH config host alias with an available agent key. MCP cannot prompt for credentials. Remote hosting requires Linux amd64 and the matching sshore release.
-Ask the user to approve pending setup requests with sshore review on the initiating computer.
-Do not bypass host verification or supply update confirmation on their behalf.
+If setup is required, ask the user to run sshore setup HOST.
 
 ## Workflow
 
@@ -262,9 +253,7 @@ control requires matching releases. Neither form installs software.
 ` + sshOptions,
 	"review": `Usage: sshore review [NAME|ID]
 
-Run locally. Setup requests appear first. Type install for a new installation
-or update after reviewing affected tasks. Approval resumes the waiting connection.
-Mount review shows its access mode
+Run locally. Mount review shows its access mode
 and mountpoint; copy review shows file direction and paths; forward review shows
 the listener and target ports. Omit NAME to select a request,
 or use a name or short ID from list. Selecting it opens review only.
@@ -295,14 +284,13 @@ detaches. Run sshore review locally. An origin:PATH is only a suggestion.
 Streams are for direct copies only.
 
 A failure stops the batch and keeps completed files. Stdout may already
-contain partial data. Updating older remote software requires typing update
-and can end the listed shells and tasks.
+contain partial data. The remote sshore release must match exactly.
 ` + sshOptions,
 	"mount": `Usage: sshore mount HOST:SOURCE [MOUNTPOINT] [options] [-- SSH_OPTIONS]
        sshore mount DIRECTORY origin:[MOUNTPOINT] [--read-only]
 
 Mount a remote directory through the remote sshore helper using SFTP.
-Approve missing or older remote helpers with sshore review.
+The remote sshore release must match exactly.
 Background mounts receive fixed task IDs. HOST: selects the remote home.
 Use [HOST]:SOURCE for an IPv6 address.
 Default: ~/mnt/NAME on Linux or a free Windows drive. Requires FUSE or WinFsp respectively.
@@ -323,7 +311,6 @@ locally to choose a mountpoint and start the mount.
 Busy mounts stay active. A second Ctrl-C during unmount forces disconnect
 and can interrupt writes. Request timeouts close the whole mount connection;
 affected writes are not retried.
-Updating older remote software requires typing update and can end listed tasks.
 
 Example: sshore mount work:/srv/project --read-only
 ` + sshOptions,
@@ -332,7 +319,7 @@ Example: sshore mount work:/srv/project --read-only
 Connections enter LISTENER and go to SERVICE. Use HOST:PORT for the remote
 side and a bare port or origin:PORT for the local side. Both use loopback.
 Use origin: without a port to choose the local port interactively.
-Background forwards are named automatically.
+Background forwards are named automatically. The remote sshore release must match exactly.
 
   sshore forward 8080 work:3000        Local listener -> remote service
   sshore forward work:3000 8080        Remote listener -> local service
@@ -386,7 +373,7 @@ func showHelp(args []string, w io.Writer) error {
 }
 
 var commandExamples = map[string]string{
-	"setup": "Update this computer\n  sshore setup\n",
+	"setup": "Update this computer\n  sshore setup\nUpdate a remote host to match this computer\n  sshore setup work\n",
 	"": `Start a persistent remote shell
   sshore launch work build
 Resume it after detaching with Ctrl+B d
@@ -406,7 +393,7 @@ Connect through a jump host
   sshore launch work build -- -J jump
 
 Ctrl+B d detaches; sshore attach work build resumes.
-Updating remote software requires confirmation and can end listed tasks.
+The remote sshore release must match exactly.
 `,
 	"spawn": `Start a remote shell tied to this owner and connection
   sshore spawn work build
@@ -414,7 +401,7 @@ Start without attaching
   sshore spawn work build --detach
 
 The shell ends when its owner or lifetime connection is lost.
-Updating remote software requires confirmation and can end listed tasks.
+The remote sshore release must match exactly.
 `,
 	"cp": `Upload a file
   sshore cp ./report.txt work:/tmp/report.txt

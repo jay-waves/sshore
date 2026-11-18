@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	_ "embed"
 	"errors"
 	"fmt"
 	"net"
@@ -282,21 +281,15 @@ func spawnProcessName(pid int) (string, error) {
 	return strings.TrimSpace(string(data)), err
 }
 
-//go:embed install.sh
-var linuxInstaller string
-
-func runLocalInstaller() error {
-	target, err := os.Executable()
-	if err != nil {
-		return err
+func runLocalInstaller(target string) error {
+	if target == "" {
+		executable, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		target = filepath.Join(filepath.Dir(executable), "sshore")
 	}
-	cmd := exec.Command("sh", "-c", linuxInstaller, "install.sh", "--bin-dir", filepath.Dir(target))
+	cmd := exec.Command("sh", "-c", linuxInstaller, "install.sh", "--path", target)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd.Run()
-}
-
-func prepareLinuxRelease(ctx context.Context, stage string) error {
-	cmd := exec.CommandContext(ctx, "sh", "-c", linuxInstaller, "install.sh", "--version", version, "--bin-dir", stage, "--prepare-only", "--cache-dir", filepath.Dir(stage))
-	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }

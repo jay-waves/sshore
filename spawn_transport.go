@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/jay-waves/sshore/internal/termui"
 	"io"
 	"net"
 	"net/http"
@@ -60,7 +59,7 @@ func openRemoteShellTransport(ctx context.Context, o *options) (io.ReadWriteClos
 	}
 	setup, err := mx.OpenStream()
 	if err == nil {
-		err = negotiateSetupUsing(ctx, setup, setup, o, setupClientUI{OpenInput: func() (setupInput, error) { return termui.NewInput() }})
+		err = negotiateSetup(setup, setup, o)
 		setup.Close()
 	}
 	if err != nil {
@@ -207,7 +206,7 @@ func prepareRemoteShellConnection(parent context.Context, c net.Conn, req localD
 	defer func() { c.Close(); _ = pipes.CloseAndWait() }()
 	var transport io.ReadWriteCloser = pipes
 	var open func(context.Context) (io.ReadWriteCloser, error)
-	// Relay only setup choices. Authentication uses the launcher's askpass broker.
+	// Relay shell selection. Authentication uses the launcher's askpass broker.
 	for {
 		m, e := readMessage(pipes)
 		if e != nil {
@@ -219,7 +218,7 @@ func prepareRemoteShellConnection(parent context.Context, c net.Conn, req localD
 			diagnostics.mu.Lock()
 			diagnostics.active = false
 			diagnostics.mu.Unlock()
-			if m.Action != "managed" && m.Action != "updated" {
+			if m.Action != "managed" {
 				_ = writeMessage(c, message{Type: "fatal", Error: "invalid remote shell setup mode"})
 				return fmt.Errorf("invalid remote shell setup mode")
 			}
@@ -260,13 +259,7 @@ func prepareRemoteShellConnection(parent context.Context, c net.Conn, req localD
 		if m.Type == "fatal" {
 			return fmt.Errorf("%s", m.Error)
 		}
-		if m.Type == "setup_download" {
-			if err := relaySetupBinary(pipes, c); err != nil {
-				return err
-			}
-			continue
-		}
-		if m.Type != "session_choice" && m.Type != "setup_choice" {
+		if m.Type != "session_choice" {
 			return fmt.Errorf("unexpected remote shell setup response")
 		}
 		answer, e := readMessage(c)

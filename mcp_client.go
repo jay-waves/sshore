@@ -25,7 +25,7 @@ func dialMCP(ctx context.Context, host string) (io.ReadWriteCloser, error) {
 		return nil, err
 	}
 	c := wire.OwnTransport(ctx, pipes, func() { _ = pipes.Wait() })
-	err = negotiateSetupUsing(ctx, pipes, pipes, &o, setupClientUI{})
+	err = negotiateSetup(pipes, pipes, &o)
 	if err != nil {
 		_ = c.Close()
 		return nil, err

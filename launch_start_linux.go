@@ -108,14 +108,9 @@ func bridge(name, mode string) error {
 	if err != nil {
 		return err
 	}
-	state, err := inspectSetup(exe)
-	if err != nil {
+	if err := requireInstalledRelease(exe); err != nil {
 		lock.Close()
 		return err
-	}
-	if state.Manual || state.Daemon != nil || state.Installed != version {
-		lock.Close()
-		return fmt.Errorf("remote versions differ; reconnect through setup")
 	}
 	return bridgePrepared(name, mode, exe, lock, "")
 }

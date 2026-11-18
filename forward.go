@@ -138,7 +138,7 @@ func forwardRemoteCommand(f forwardConfig) string {
 	if f.ApprovalID != "" {
 		return approvedForwardCommand(f)
 	}
-	return forwardWatchCommand(f.Server)
+	return forwardWatchCommand(f.Host, f.Server)
 }
 
 func runForwardForeground(f forwardConfig) (int, error) {
@@ -326,36 +326,29 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 	return &forwardConnection{Input: process.Stdin(), Output: process, Wait: process.Wait, Close: process.Close}, nil
 }
 
-func forwardWatchCommand(server string) string {
-	if server == "" {
-		server = "sshore"
-	}
-	command := "unset SSHORE_SOCKET SSHORE_CONFIRM_ADDR SSHORE_CONFIRM_TOKEN; printf '" + forwardReadyMarker + "\\n'; server=" + shellQuote(server) + `; if command -v "$server" >/dev/null 2>&1; then server=$(command -v "$server"); `
-	if server == "sshore" {
-		command += `else server="$HOME/.local/bin/sshore"; `
-	} else {
-		command += `else :; `
-	}
-	command += `fi; if [ "$("$server" --version 2>/dev/null)" = ` + shellQuote("sshore "+version) + ` ]; then "$server" task-watch ` + shellQuote(version) + ` || exec cat >/dev/null; else exec cat >/dev/null; fi`
-	return command
+func forwardWatchCommand(host, server string) string {
+	return forwardHelperCommand(host, server) + "printf '%s\\n' " + shellQuote(forwardReadyMarker) +
+		"; \"$server\" task-watch " + shellQuote(version) + " || exec cat >/dev/null"
 }
 
 func approvedForwardCommand(f forwardConfig) string {
-	server := f.Server
-	if server == "" {
-		server = "sshore"
-	}
-	command := "unset SSHORE_SOCKET SSHORE_CONFIRM_ADDR SSHORE_CONFIRM_TOKEN; server=" + shellQuote(server) + "; if command -v \"$server\" >/dev/null 2>&1; then server=$(command -v \"$server\"); "
-	if server == "sshore" {
-		command += "else server=\"$HOME/.local/bin/sshore\"; "
-	} else {
-		command += "else :; "
-	}
-	command += "fi; exec \"$server\" forward-watch " + shellQuote(version) + " " + shellQuote(f.Session) + fmt.Sprintf(" %d ", f.ResumePID) + shellQuote(f.ApprovalID)
+	command := forwardHelperCommand(f.Host, f.Server) + "exec \"$server\" forward-watch " + shellQuote(version) + " " + shellQuote(f.Session) + fmt.Sprintf(" %d ", f.ResumePID) + shellQuote(f.ApprovalID)
 	if f.Instance != "" {
 		command += " " + shellQuote(f.Instance)
 	}
 	return command
+}
+
+func forwardHelperCommand(host, server string) string {
+	if server == "" {
+		server = "sshore"
+	}
+	command := "unset SSHORE_SOCKET SSHORE_CONFIRM_ADDR SSHORE_CONFIRM_TOKEN; server=" + shellQuote(server) + `; if command -v "$server" >/dev/null 2>&1; then server=$(command -v "$server"); `
+	if server == "sshore" {
+		command += `else server="$HOME/.local/bin/sshore"; `
+	}
+	return command + `fi; if [ "$("$server" --version 2>/dev/null)" != ` + shellQuote("sshore "+version) +
+		` ]; then printf '%s\n' ` + shellQuote(remoteVersionHelp(host)) + ` >&2; exit 1; fi; `
 }
 
 var errForwardRetries = errors.New("--retries must be between 0 and 10")

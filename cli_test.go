@@ -462,23 +462,25 @@ func TestCancelCommandRemoved(t *testing.T) {
 	}
 }
 
-func TestBootstrapGrammar(t *testing.T) {
-	for _, args := range [][]string{{"/tmp/sshore"}, {"/tmp/sshore", "new", "build"}, {"/tmp/sshore", "cp-agent", ""}} {
-		if _, err := parseCLI(args, "bootstrap"); err != nil {
+func TestSetupGrammar(t *testing.T) {
+	for _, args := range [][]string{nil, {"work"}, {"--path", "/tmp/sshore"}, {"work", "--path", "/tmp/sshore", "--", "-p", "2222"}} {
+		if _, err := parseCLI(args, "setup"); err != nil {
 			t.Fatalf("rejected %q: %v", args, err)
 		}
 	}
-	for _, args := range [][]string{nil, {""}, {"/tmp/sshore", "new"}, {"/tmp/sshore", "", "build"}, {"/tmp/sshore", "new", "build", "extra"}} {
-		if _, err := parseCLI(args, "bootstrap"); err == nil {
+	for _, args := range [][]string{{""}, {"work", "/tmp/sshore"}, {"--path"}, {"--path", ""}} {
+		if _, err := parseCLI(args, "setup"); err == nil {
 			t.Fatalf("accepted %q", args)
 		}
 	}
-	if code, err := run([]string{"install-prepared", "/tmp/sshore"}); code != 2 || err == nil {
-		t.Fatalf("obsolete installer entry accepted: %d %v", code, err)
+	for _, args := range [][]string{{"bootstrap"}, {"setup", "--path", "relative"}, {"setup", "work", "--path", "relative"}, {"setup", "--", "-p", "2222"}} {
+		if code, err := run(args); code != 2 || err == nil {
+			t.Fatalf("accepted %q: %d %v", args, code, err)
+		}
 	}
 	root := filepath.Join(t.TempDir(), "state")
 	t.Setenv("SSHORE_STATE_DIR", root)
-	if code, err := run([]string{"bootstrap", "--help"}); code != 0 || err != nil {
+	if code, err := run([]string{"setup", "--help"}); code != 0 || err != nil {
 		t.Fatalf("help: %d %v", code, err)
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {

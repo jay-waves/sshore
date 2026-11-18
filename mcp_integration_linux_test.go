@@ -19,7 +19,7 @@ import (
 func TestMCPStdioReconnect(t *testing.T) {
 	e := newEnv(t)
 	wrapper := filepath.Join(e.dir, "ssh-wrapper")
-	script := "#!/bin/sh\nexec \"$SSHORE_TEST_REMOTE_BIN\" bootstrap \"$SSHORE_TEST_REMOTE_BIN\" mcp-agent ''\n"
+	script := "#!/bin/sh\nexec \"$SSHORE_TEST_REMOTE_BIN\" mcp-agent " + shellQuote(version) + "\n"
 	if err := os.WriteFile(wrapper, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -265,12 +265,12 @@ func TestTrackedMCPOpenRechecksSetup(t *testing.T) {
 	}
 }
 
-func TestMCPBootstrapReconnect(t *testing.T) {
+func TestMCPAgentReconnect(t *testing.T) {
 	e := newEnv(t)
 	t.Setenv("SSHORE_RUNTIME_DIR", e.dir)
 	call := func(req mcp.Request) mcp.Response {
 		t.Helper()
-		cmd := exec.Command(e.bin, "bootstrap", e.bin, "mcp-agent", "")
+		cmd := exec.Command(e.bin, "mcp-agent", version)
 		cmd.Env = e.env
 		input, err := cmd.StdinPipe()
 		if err != nil {

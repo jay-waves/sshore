@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -17,7 +16,7 @@ import (
 	"github.com/jay-waves/sshore/internal/wire"
 )
 
-func TestReviewedRemoteHelperSetup(t *testing.T) {
+func TestRemoteHelpersRequireMatchingRelease(t *testing.T) {
 	e := newEnv(t)
 	binary, err := os.ReadFile(e.bin)
 	if err != nil {
@@ -25,16 +24,14 @@ func TestReviewedRemoteHelperSetup(t *testing.T) {
 	}
 	for _, mode := range []string{"mount-agent", "cp-agent"} {
 		for _, tc := range []struct {
-			name, installed, answer string
-			success                 bool
-			downloads               int
+			name, installed string
+			success         bool
 		}{
-			{"missing", "", "update", true, 1},
-			{"matching", version, "", true, 0},
-			{"older", "0.0.1", "update", true, 1},
-			{"declined", "0.0.1", "cancel", false, 1},
-			{"newer", "999.0.0", "", false, 0},
-			{"unordered", "custom", "update", false, 1},
+			{"missing", "", false},
+			{"matching", version, true},
+			{"older", "0.0.1", false},
+			{"newer", "999.0.0", false},
+			{"unordered", "custom", false},
 		} {
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
 				home := t.TempDir()
@@ -45,7 +42,7 @@ func TestReviewedRemoteHelperSetup(t *testing.T) {
 						t.Fatal(err)
 					}
 				} else if tc.installed != "" {
-					writeBootstrapStub(t, target, tc.installed)
+					writeRemoteVersionStub(t, target, tc.installed)
 				}
 				original, _ := os.ReadFile(target)
 				tools := filepath.Join(home, "tools")
@@ -71,23 +68,10 @@ func TestReviewedRemoteHelperSetup(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer func() { input.Close(); output.Close(); cmd.Process.Kill(); cmd.Wait() }()
-				downloads := 0
-				err = negotiateSetupUsing(ctx, output, input, &options{command: mode, host: "fixture"}, setupClientUI{
-					Log:      io.Discard,
-					Download: func(context.Context) ([]byte, error) { downloads++; return binary, nil },
-					Choose: func(m message) (string, error) {
-						if tc.answer == "" {
-							t.Fatalf("unexpected prompt: %+v", m)
-						}
-						return tc.answer, nil
-					},
-				})
-				if downloads != tc.downloads {
-					t.Fatalf("downloads=%d want=%d", downloads, tc.downloads)
-				}
+				err = negotiateSetup(output, input, &options{command: mode, host: "fixture"})
 				if !tc.success {
-					if err == nil {
-						t.Fatal("setup unexpectedly authorized")
+					if err == nil || !strings.Contains(err.Error(), "sshore setup") || !strings.Contains(err.Error(), version) {
+						t.Fatalf("expected version and setup guidance: %v", err)
 					}
 					input.Close()
 					output.Close()
@@ -170,7 +154,7 @@ func TestMountAgentControlCompatibility(t *testing.T) {
 	}
 }
 
-func runBootstrap(t *testing.T, home string, o options) (string, error) {
+func runRemoteCommand(t *testing.T, home string, o options) (string, error) {
 	t.Helper()
 	tools := filepath.Join(home, "test-tools")
 	if err := os.MkdirAll(tools, 0700); err != nil {
@@ -188,7 +172,7 @@ func runBootstrap(t *testing.T, home string, o options) (string, error) {
 	return string(out), err
 }
 
-func writeBootstrapStub(t *testing.T, path, release string) {
+func writeRemoteVersionStub(t *testing.T, path, release string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
@@ -202,14 +186,14 @@ func writeBootstrapStub(t *testing.T, path, release string) {
 func TestRemoteFallbackAndArgumentQuoting(t *testing.T) {
 	home := t.TempDir()
 	bin := filepath.Join(home, ".local", "bin", "sshore")
-	writeBootstrapStub(t, bin, version)
+	writeRemoteVersionStub(t, bin, version)
 	for _, mode := range []string{"bridge", "sessions", "new", "attach"} {
 		o := options{server: "sshore", session: "main", list: mode == "sessions", command: mode}
 		if mode == "new" {
 			o.command = "launch"
 		}
-		out, err := runBootstrap(t, home, o)
-		want := "<bootstrap>\n<" + bin + ">\n<" + mode + ">\n<main>\n"
+		out, err := runRemoteCommand(t, home, o)
+		want := "<bridge>\n<" + version + ">\n<" + mode + ">\n<main>\n"
 		if mode == "sessions" {
 			want = "<inventory>\n<" + version + ">\n"
 		}
@@ -221,8 +205,8 @@ func TestRemoteFallbackAndArgumentQuoting(t *testing.T) {
 	if err := os.Rename(bin, odd); err != nil {
 		t.Fatal(err)
 	}
-	out, err := runBootstrap(t, home, options{server: odd, session: "main"})
-	if err != nil || !strings.Contains(out, "<"+odd+">") {
+	out, err := runRemoteCommand(t, home, options{server: odd, session: "main"})
+	if err != nil || out != "<bridge>\n<"+version+">\n<bridge>\n<main>\n" {
 		t.Fatal(out, err)
 	}
 	if _, err := os.Stat("INJECTED"); !os.IsNotExist(err) {
@@ -230,25 +214,15 @@ func TestRemoteFallbackAndArgumentQuoting(t *testing.T) {
 	}
 }
 
-func TestRemoteNewerRejectedWithoutDownload(t *testing.T) {
-	home := t.TempDir()
-	bin := filepath.Join(home, "server")
-	writeBootstrapStub(t, bin, "999.0.0")
-	out, err := runBootstrap(t, home, options{command: "setup", server: bin})
-	if err == nil || !strings.Contains(out, "newer") || strings.Contains(out, "Downloading") {
-		t.Fatal(out, err)
-	}
-}
-
-func TestRemoteKillNeverBootstraps(t *testing.T) {
+func TestRemoteKillRequiresMatchingRelease(t *testing.T) {
 	for _, release := range []string{version, "0.0.1", "999.0.0", "custom", ""} {
 		t.Run("version-"+release, func(t *testing.T) {
 			home := t.TempDir()
 			bin := filepath.Join(home, "server ' name")
 			if release != "" {
-				writeBootstrapStub(t, bin, release)
+				writeRemoteVersionStub(t, bin, release)
 			}
-			out, err := runBootstrap(t, home, options{command: "kill", server: bin, session: "build"})
+			out, err := runRemoteCommand(t, home, options{command: "kill", server: bin, session: "build"})
 			if release == version {
 				if err != nil || out != "<kill-session>\n<build>\n<"+version+">\n" {
 					t.Fatal(out, err)
@@ -256,7 +230,7 @@ func TestRemoteKillNeverBootstraps(t *testing.T) {
 			} else if err == nil || !strings.Contains(out, "kill requires") {
 				t.Fatal(out, err)
 			}
-			if strings.Contains(out, "Downloading") || strings.Contains(out, "<bootstrap>") {
+			if strings.Contains(out, "Downloading") || strings.Contains(out, "<bridge>") {
 				t.Fatal(out)
 			}
 		})
@@ -266,42 +240,42 @@ func TestRemoteKillNeverBootstraps(t *testing.T) {
 func TestRenameRemoteRouting(t *testing.T) {
 	home := t.TempDir()
 	bin := filepath.Join(home, "server")
-	writeBootstrapStub(t, bin, version)
+	writeRemoteVersionStub(t, bin, version)
 	o := options{command: "rename", server: bin, session: "old", newName: "new"}
-	out, err := runBootstrap(t, home, o)
+	out, err := runRemoteCommand(t, home, o)
 	if err != nil || out != "<rename-session>\n<old>\n<new>\n<"+version+">\n" {
 		t.Fatal(out, err)
 	}
-	writeBootstrapStub(t, bin, "999.0.0")
-	out, err = runBootstrap(t, home, o)
+	writeRemoteVersionStub(t, bin, "999.0.0")
+	out, err = runRemoteCommand(t, home, o)
 	if err == nil || strings.Contains(out, "Downloading") || !strings.Contains(out, "rename requires") {
 		t.Fatal(out, err)
 	}
 }
 
-func TestBootstrapDownloadFailureIsSetupError(t *testing.T) {
-	home := t.TempDir()
-	tools := filepath.Join(home, "tools")
-	if err := os.Mkdir(tools, 0700); err != nil {
-		t.Fatal(err)
+func TestRemoteShellRejectsVersionMismatch(t *testing.T) {
+	for _, command := range []string{"launch", "spawn", "attach", "mcp-agent"} {
+		t.Run(command, func(t *testing.T) {
+			home := t.TempDir()
+			target := filepath.Join(home, "sshore")
+			writeRemoteVersionStub(t, target, "0.0.1")
+			out, err := runRemoteCommand(t, home, options{command: command, server: target})
+			if err == nil || !strings.Contains(out, "sshore setup") || !strings.Contains(out, target) {
+				t.Fatalf("expected setup guidance: %q %v", out, err)
+			}
+		})
 	}
-	cmd := exec.Command("sh", "-c", remoteCommand(options{command: "setup", server: filepath.Join(home, "missing")}))
-	cmd.Env = append(os.Environ(), "HOME="+home, "PATH="+tools+":/usr/bin:/bin", "TMPDIR="+home)
-	var diagnostics strings.Builder
-	cmd.Stderr = &diagnostics
-	out, err := cmd.Output()
-	if err == nil {
-		t.Fatal("download unexpectedly succeeded")
+}
+
+func TestSetupAppliesPreparedRelease(t *testing.T) {
+	e := newEnv(t)
+	target := filepath.Join(t.TempDir(), "custom name")
+	cmd := exec.Command(e.bin, "setup", "--apply", "--path", target)
+	cmd.Env = e.env
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("setup: %v: %s", err, out)
 	}
-	err = negotiateSetupUsing(context.Background(), strings.NewReader(string(out)), io.Discard, &options{command: "setup"}, setupClientUI{Download: func(context.Context) ([]byte, error) { return nil, fmt.Errorf("offline") }, OpenInput: func() (setupInput, error) {
-		t.Fatal("failed preparation must not request approval")
-		return nil, nil
-	}})
-	if err == nil || !strings.Contains(err.Error(), "local release preparation failed") || strings.Contains(err.Error(), "EOF") {
-		t.Fatalf("unexpected setup error: %v", err)
-	}
-	staged, err := filepath.Glob(filepath.Join(home, "sshore-setup.*"))
-	if err != nil || len(staged) != 0 {
-		t.Fatalf("staging not cleaned up: %v %v", staged, err)
+	if got, err := executableVersion(target); err != nil || got != version {
+		t.Fatalf("installation: %q %v", got, err)
 	}
 }

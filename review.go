@@ -84,7 +84,7 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 			if r.Connection.Session != "" {
 				source += " / " + r.Connection.Session
 			}
-			labels = append(labels, fmt.Sprintf("%s · %s · %s", r.DisplayName(), source, r.summary()))
+			labels = append(labels, fmt.Sprintf("%s · %s · %s", r.DisplayName(), source, requestSummary(r.Operations)))
 		}
 		if len(ids) == 0 {
 			fmt.Println("No pending approvals")
@@ -114,28 +114,6 @@ func executeReview(a reviewOptions) (code int, resultErr error) {
 	r, err := findRequest(a.id)
 	if err != nil {
 		return 1, err
-	}
-	if r.Setup != nil {
-		termui.Log(os.Stdout, termui.Info, "Setup %s · %s → %s (remote executable %s)\n", cleanText(r.Connection.Host), cleanText(r.Setup.Installed), version, cleanText(r.Setup.Target))
-		for _, task := range r.Setup.Tasks {
-			termui.Log(os.Stdout, termui.Warning, "  %s %s %s\n", cleanText(task.Name), cleanText(task.Version), cleanText(task.Start))
-		}
-		if len(r.Setup.Tasks) > 0 {
-			fmt.Println("Updating ends these tasks. Unsaved work may be lost.")
-		}
-		word := "update"
-		if r.Setup.Installed == "missing" && len(r.Setup.Tasks) == 0 {
-			word = "install"
-		}
-		answer, err := input.Read("Type "+word+" to approve, or Enter to decline: ", false)
-		if err != nil {
-			return 1, err
-		}
-		if answer != word {
-			return 0, consumeRequest(r.ID)
-		}
-		_, err = requestRPC("setup_approve", r.ID, "", nil)
-		return 0, err
 	}
 	title := "Copy"
 	if len(r.Operations) == 1 {

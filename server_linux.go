@@ -27,7 +27,15 @@ func serverCommand(args []string) error {
 	switch args[0] {
 	case "forward-watch":
 		return runApprovedForwardWatch(args[1:])
+	case "mcp-agent":
+		if len(args) != 2 {
+			return usage("mcp-agent requires a client version")
+		}
+		return serveRemote(args[0], "", args[1])
 	case "cp-agent":
+		if len(args) == 2 {
+			return serveRemote(args[0], "", args[1])
+		}
 		if len(args) != 1 {
 			return usage("cp-agent takes no arguments")
 		}
@@ -38,6 +46,9 @@ func serverCommand(args []string) error {
 		defer stop()
 		return files.ServeCopy(&wire.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}})
 	case "mount-agent":
+		if len(args) == 2 {
+			return serveRemote(args[0], "", args[1])
+		}
 		if len(args) != 1 {
 			return usage("mount-agent takes no arguments")
 		}
@@ -70,9 +81,10 @@ func serverCommand(args []string) error {
 			return err
 		}
 		return killSession(args[1], args[3:]...)
-	case "bootstrap":
-		return bootstrap(args[1], args[2], args[3])
 	case "bridge", "resume":
+		if args[0] == "bridge" && len(args) == 4 {
+			return serveRemote(args[2], args[3], args[1])
+		}
 		if len(args) != 2 {
 			return fmt.Errorf("internal command requires a shell name")
 		}
