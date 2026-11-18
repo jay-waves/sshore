@@ -253,9 +253,10 @@ Effects:
   Mount     Unmounts first; a busy mount stays active for retry.
   Forward   Closes the forward and its active connections.
 
---all previews the affected tasks and requires typing kill. Without HOST it
-covers local shells and resources. With HOST it targets that account and
-local resources connected to HOST. Peer records are read-only.
+--all stops the account daemon, even when idle. Without HOST it targets the
+local account. With HOST it targets the remote account and also ends local
+resources connected to HOST. When tasks are present, it previews them and
+requires typing kill. Peer records are read-only.
 --all uses authenticated cross-release daemon shutdown. Individual remote task
 control requires matching releases. Neither form installs software.
 ` + sshOptions,

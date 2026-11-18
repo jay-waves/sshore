@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -61,6 +62,34 @@ func stopSpawnTerminal(pid int, start string) error { return nil }
 func lockResourceState(f *os.File) error {
 	return windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &windows.Overlapped{})
 }
+
+// Retain a wait-only handle across authenticated shutdown. The owner lock can be
+// released before Windows unloads the daemon's executable.
+func daemonProcessWaiter(pid int) (func(time.Time) error, func(), error) {
+	if pid == os.Getpid() {
+		return nil, nil, nil
+	}
+	if pid <= 0 {
+		return nil, nil, fmt.Errorf("invalid daemon process ID")
+	}
+	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
+	if err != nil {
+		return nil, nil, err
+	}
+	wait := func(deadline time.Time) error {
+		milliseconds := max(0, time.Until(deadline).Milliseconds())
+		status, err := windows.WaitForSingleObject(handle, uint32(milliseconds))
+		if err != nil {
+			return fmt.Errorf("wait for daemon exit: %w", err)
+		}
+		if status != windows.WAIT_OBJECT_0 {
+			return fmt.Errorf("daemon process did not exit before the shutdown deadline")
+		}
+		return nil
+	}
+	return wait, func() { windows.CloseHandle(handle) }, nil
+}
+
 func prepareFTPPaths(o *ftpOptions) (func(), error) {
 	cleanup := func() {}
 	if o.mountpoint != "" {

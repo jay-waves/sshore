@@ -53,6 +53,11 @@ func stopSpawnTerminal(pid int, start string) error {
 func detachDaemon(c *exec.Cmd)           { c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
 func lockResourceState(f *os.File) error { return unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB) }
 
+func daemonProcessWaiter(_ int) (func(time.Time) error, func(), error) {
+	// Releasing the account lock is sufficient for replacement on Linux.
+	return nil, nil, nil
+}
+
 func prepareFTPPaths(o *ftpOptions) (func(), error) {
 	cleanup := func() {}
 	if o.mountpoint != "" {

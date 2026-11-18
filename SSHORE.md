@@ -297,8 +297,9 @@ Do not hold bookkeeping locks across terminal I/O, authentication or worker star
 Daemon liveness comes from its owner lock; orphaned metadata cannot block startup
 with a version mismatch. `kill --all` uses authenticated administration across releases that speak HTTP,
 rechecks the reviewed task snapshot, kills owned shells and their identified processes,
-and waits for the daemon to release its account endpoint. No new tasks are admitted
-while shutdown is in progress.
+and waits for the daemon to release its account endpoint. On Windows it also waits
+for the daemon process to exit so the installer can replace its executable. No new
+tasks are admitted while shutdown is in progress.
 Cancellation must close owned resources and join background work before reporting
 completion; persisted PIDs are diagnostic, not authority to terminate.
 

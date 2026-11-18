@@ -51,9 +51,13 @@ Changes:
 - Reduce repeat mount directory listing work and bound read-ahead for nearby
   directories.
 - Simplify setup and isolate lifecycle fixtures from the user's account daemon.
+- Verify release archives on Windows with .NET SHA-256, including when preparing
+  Linux updates from a PowerShell session without Get-FileHash.
+- Make kill --all wait for the Windows account daemon process to exit, including
+  when the daemon is idle, so it releases the installed executable.
 
-Upgrade: save work, use the installed release to end its tasks, and wait for its
-daemon to exit before installing 0.7.8. Update both client and server to 0.7.8.
+Upgrade: save work and run sshore kill --all with the installed release to stop
+its account daemon before installing 0.7.8. Update both client and server to 0.7.8.
 Normal connections require an exact version match.
 NOTES
 fi

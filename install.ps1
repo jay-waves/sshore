@@ -80,6 +80,15 @@ function Read-SshoreBinaryVersion([string]$Path) {
     return ($lines -join "`n")
 }
 
+function Get-SshoreSha256([string]$Path) {
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [IO.File]::OpenRead($Path)
+        try { return [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '') }
+        finally { $stream.Dispose() }
+    } finally { $sha256.Dispose() }
+}
+
 function Get-SshoreInstallDirectory([ref]$FoundOnPath) {
     $command = Get-Command sshore.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($FoundOnPath) { $FoundOnPath.Value = [bool]$command }
@@ -138,7 +147,7 @@ function Install-Sshore([string]$Version = '') {
         $Version = $entry.Version
         $archivePath = Join-Path $temp 'release.zip'
         Receive-SshoreFile "$releases/download/v$Version/$($entry.Asset)" $archivePath
-        if ((Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash -ine $entry.Hash) {
+        if ((Get-SshoreSha256 $archivePath) -ine $entry.Hash) {
             throw 'SHA256 mismatch; installation unchanged.'
         }
         # Windows PowerShell 5.1 does not automatically load the ZIP core assembly.
@@ -216,7 +225,7 @@ function Prepare-SshoreLinux([string]$Version, [string]$Directory) {
         }
         if ((Get-Item -LiteralPath $manifest).Length -le 256KB -and (Get-Item -LiteralPath $archive).Length -le 64MB) {
             $entries = @(Select-String -LiteralPath $manifest -CaseSensitive -Pattern ('^([0-9a-fA-F]{64})\s+\*?' + [regex]::Escape($asset) + '$'))
-            if ($entries.Count -eq 1 -and (Get-FileHash -LiteralPath $archive).Hash -ieq $entries[0].Matches[0].Groups[1].Value) {
+            if ($entries.Count -eq 1 -and (Get-SshoreSha256 $archive) -ieq $entries[0].Matches[0].Groups[1].Value) {
                 $cached = $source -eq $cache
                 break
             }

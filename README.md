@@ -40,8 +40,9 @@ Installers verify checksums without requesting administrator access. On Windows,
 the installer updates the first `sshore.exe` on PATH without changing PATH. If none
 is found, it installs to `%LOCALAPPDATA%\sshore\bin` and adds that directory to
 the user and current PowerShell session PATH. Restart other terminals to pick it up.
-Before installing a different release, use the running release to end its
-tasks and wait for its daemon to exit. Run the installer again after it exits.
+If the installer reports a running daemon from a different release, use that
+release to run `sshore kill --all` and retry the installer. The command stops the
+account daemon even when idle and asks for confirmation when tasks are present.
 
 Updates prepare and verify the replacement, then list affected account tasks and
 require typing `update` before ending them. Unsaved work may be lost. Run installers

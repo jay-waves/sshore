@@ -22,6 +22,7 @@ function Assert-Fails([scriptblock]$Action, [string]$Message) {
     throw "Expected failure: $Message"
 }
 function Get-SshoreArchitecture { return $script:TestArchitecture }
+function Get-FileHash { throw 'Get-FileHash is unavailable in this session' }
 function Receive-SshoreFile([uri]$Uri, [string]$Destination) {
     Assert-True ($Uri.Scheme -eq 'https') 'Installer requested non-HTTPS URL'
     $script:Downloads += $Uri.AbsoluteUri
@@ -43,7 +44,7 @@ function New-TestRelease([string]$ReleaseVersion, [string]$Architecture, [string
     $zip = [IO.Compression.ZipFile]::Open($archivePath, [IO.Compression.ZipArchiveMode]::Create)
     try { $null = [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $fixture, $EntryName) }
     finally { $zip.Dispose() }
-    $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
+    $hash = (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
     [IO.File]::WriteAllText((Join-Path $root 'SHA256SUMS'), "$hash  $asset`r`n")
     return $archivePath
 }
@@ -106,7 +107,7 @@ func main() {
 
     # Neither corrupted downloads nor malformed/mislabeled packages may replace
     # the existing executable. Verify actual contents, not implementation calls.
-    $installedHash = (Get-FileHash -LiteralPath $target).Hash
+    $installedHash = (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $target).Hash
     $stream = [IO.File]::OpenWrite($archivePath)
     try { $null = $stream.Seek(0, [IO.SeekOrigin]::End); $stream.WriteByte(1) } finally { $stream.Dispose() }
     Assert-Fails { Install-Sshore -Version '0.3.3' } 'SHA256 mismatch'
@@ -114,11 +115,27 @@ func main() {
     Assert-Fails { Install-Sshore -Version '0.3.3' } 'exactly one root sshore.exe'
     $null = New-TestRelease '0.3.4' 'amd64'
     Assert-Fails { Install-Sshore -Version '0.3.4' } 'Binary version does not match'
-    Assert-True ((Get-FileHash -LiteralPath $target).Hash -eq $installedHash) 'Existing binary changed on failure'
+    Assert-True ((Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $target).Hash -eq $installedHash) 'Existing binary changed on failure'
     Assert-True (@(Get-ChildItem -LiteralPath $installDirectory -Force).Count -eq 1) 'Installer left staging files'
     Write-Host 'PASS: failed verification preserves the existing executable'
 
     if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        $stage = Join-Path $root 'prepare'
+        $null = [IO.Directory]::CreateDirectory($stage)
+        $linuxPayload = Join-Path $root 'sshore'
+        [IO.File]::WriteAllText($linuxPayload, 'offline Linux fixture')
+        $asset = 'sshore_0.3.3_linux_amd64.tar.gz'
+        $linuxArchive = Join-Path $root $asset
+        & tar.exe -czf $linuxArchive -C $root sshore
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot create Linux release fixture' }
+        $linuxHash = (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $linuxArchive).Hash
+        [IO.File]::WriteAllText((Join-Path $root 'SHA256SUMS'), "$linuxHash  $asset`r`n")
+        $downloadCount = $script:Downloads.Count
+        Prepare-SshoreLinux '0.3.3' $stage
+        Assert-True ($script:Downloads.Count -eq $downloadCount) 'Verified Linux cache was not used'
+        Assert-True ([IO.File]::ReadAllText((Join-Path $stage 'sshore')) -eq 'offline Linux fixture') 'Wrong prepared Linux payload'
+        Write-Host 'PASS: Linux release preparation without Get-FileHash'
+
         $null = New-TestRelease '0.3.3' 'amd64'
         $locked = [IO.File]::Open($target, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         try {
@@ -126,7 +143,7 @@ func main() {
             Assert-Fails { Install-Sshore -Version '0.3.3' } 'Close remaining sshore clients'
             Assert-True ($script:Downloads.Count -eq ($downloadCount + 2)) 'Replacement was not prepared before cleanup'
         } finally { $locked.Dispose() }
-        Assert-True ((Get-FileHash -LiteralPath $target).Hash -eq $installedHash) 'Locked target was damaged'
+        Assert-True ((Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $target).Hash -eq $installedHash) 'Locked target was damaged'
         Write-Host 'PASS: locked executable fails without removing the installed version'
     }
 } finally {

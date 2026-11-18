@@ -17,7 +17,21 @@ import (
 func requestDaemonShutdown(expected daemonSnapshot) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := daemonAdmin(ctx, "shutdown", &expected); err != nil {
+	record, err := existingDaemonRecord()
+	if err != nil {
+		return err
+	}
+	if record.identity() != expected.Instance {
+		return fmt.Errorf("daemon changed; review again")
+	}
+	waitForExit, closeProcess, err := daemonProcessWaiter(record.ManagerPID)
+	if err != nil {
+		return fmt.Errorf("cannot wait for daemon exit: %w", err)
+	}
+	if closeProcess != nil {
+		defer closeProcess()
+	}
+	if _, err := daemonAdministrationAt(ctx, record, "shutdown", &expected); err != nil {
 		return err
 	}
 	tick := time.NewTicker(20 * time.Millisecond)
@@ -38,6 +52,10 @@ func requestDaemonShutdown(expected daemonSnapshot) error {
 		lockErr := lockResourceState(owner)
 		owner.Close()
 		if lockErr == nil {
+			if waitForExit != nil {
+				deadline, _ := ctx.Deadline()
+				return waitForExit(deadline)
+			}
 			return nil
 		}
 		if !resourceLockBusy(lockErr) {
@@ -53,7 +71,7 @@ func requestDaemonShutdown(expected daemonSnapshot) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("daemon did not release its account endpoint; update stopped")
+			return fmt.Errorf("daemon did not release its account endpoint")
 		case <-tick.C:
 		}
 	}

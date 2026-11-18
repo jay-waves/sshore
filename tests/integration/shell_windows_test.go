@@ -1,8 +1,11 @@
 package tests_test
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -10,7 +13,42 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/tmux"
+	"golang.org/x/sys/windows"
 )
+
+func TestWindowsKillAllWaitsForIdleDaemonExit(t *testing.T) {
+	e := newCLI(t)
+	state := filepath.Join(e.dir, "state")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.CommandContext(ctx, e.bin, args...)
+		cmd.Env = append(e.env, "SHELL=cmd.exe")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v: %s", args, err, out)
+		}
+	}
+	run("launch", "--local", "idle", "--detach")
+	run("kill", "--local", "idle")
+	data, err := os.ReadFile(filepath.Join(state, "daemon", "daemon.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record struct{ ManagerPID uint32 }
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatal(err)
+	}
+	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, record.ManagerPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(handle)
+	run("kill", "--all")
+	if status, err := windows.WaitForSingleObject(handle, 0); err != nil || status != windows.WAIT_OBJECT_0 {
+		t.Fatalf("daemon has not exited: wait status %d, error %v", status, err)
+	}
+}
 
 func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	shell, err := exec.LookPath("bash")

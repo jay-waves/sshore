@@ -144,7 +144,7 @@ func runKillAll(o options) (int, error) {
 		var err error
 		snapshot, err = daemonAdmin(ctx, "snapshot", nil)
 		if os.IsNotExist(err) {
-			fmt.Println("No tasks to cancel.")
+			fmt.Println("No account daemon is running.")
 			return 0, nil
 		}
 		if err != nil {
@@ -195,7 +195,7 @@ func runKillAll(o options) (int, error) {
 		if len(records) > 0 {
 			printTaskInventory(inventory{Resources: inspectResources(records)})
 		}
-		fmt.Fprint(os.Stderr, "End these shells and tasks, unmount mounts, and stop forwards? Type kill: ")
+		fmt.Fprint(os.Stderr, "End the listed tasks and stop the account daemon? Type kill: ")
 		answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
 		if err != nil || strings.TrimSpace(answer) != "kill" {
 			return 1, fmt.Errorf("cancelled; no tasks ended")
