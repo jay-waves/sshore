@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -189,7 +190,7 @@ func hostedExitHistory() []exitView { return []exitView{} }
 
 func hostedShells(string) ([]shellView, error) { return nil, nil }
 
-func newDaemonServices(tasks *daemonTasks) daemonServices { return nil }
+func registerPlatformDaemonRoutes(*http.ServeMux, *daemonTasks) {}
 
 func openHostedTransport(context.Context, options) (net.Conn, error) {
 	return nil, fmt.Errorf("Windows does not host Unix shells")

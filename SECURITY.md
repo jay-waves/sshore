@@ -36,7 +36,6 @@ flowchart LR
         shell["Shell output and operation requests"]
         service["Files and services"]
         setup["Remote setup and managed shells"]
-        bash["Persistent Bash: remote account permissions"]
         relay["Owning daemon: next-hop configuration and signing"]
         child["Child shell on next host"]
     end
@@ -44,16 +43,12 @@ flowchart LR
         client["Terminal client"]
         pending["Daemon memory: bounded, expiring Request"]
         user["Local user"]
-        agent["MCP client and Agent"]
         review["Separate local review: select paths, mountpoint or ports"]
         grant["Fixed operation; consume approval once"]
         resources["Selected files, forward or mount"]
         control["Account daemon TCP endpoint: authentication, task IDs and live leases"]
         update["Verify release and require stopped daemon"]
     end
-    agent -->|"MCP stdio adapter; authenticated SSH"| control
-    control -->|"Task-owned MCP execution"| bash
-    bash -->|"Untrusted output"| agent
     shell -->|"Authenticated SSH; content remains untrusted"| client
     client -->|"Save metadata and detach; no operation yet"| pending
     pending --> review
@@ -69,7 +64,6 @@ flowchart LR
     relay <-->|"Next-hop SSH; same exact release"| child
     relay <-->|"Private attachment route; no local command or credentials"| client
     resources -->|"Require exact release"| setup
-    agent -->|"Require exact release"| setup
     user -->|"Stop daemon, then run installer"| update
     update -->|"Hold daemon owner lock during replacement"| setup
 ```
@@ -229,19 +223,6 @@ cancellation.
 Native SSH forwarding (`-L`, `-R`, `-D`), agent forwarding and SSH configuration are
 separate local policy, outside remote-request approval. `-R` can expose a local
 service to the remote host. Do not bypass host-key checks.
-
-## Agent execution
-
-An MCP client can execute arbitrary Bash with the authenticated remote account's
-permissions. MCP is not a sandbox; only trusted clients should be configured to
-start it. Remote output is untrusted and can influence the Agent. The stdio MCP
-process opens no local listening port. Its SSH connections require the exact
-remote release. A mismatch directs the user to run `sshore install HOST:`.
-Bash scripts and fixed input are staged in private temporary files; abrupt
-termination can leave them on the remote host. A lost response does not prove
-whether a submitted script ran; it is not replayed.
-Closing a session ends its identified tasks, subject to the same escaped-task and
-process-identity limits as shell cancellation.
 
 ## Shell control and lifetime
 

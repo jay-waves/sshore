@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
-	"time"
 )
 
 func serveRemote(mode, name, peerVersion string) (result error) {
@@ -14,7 +12,7 @@ func serveRemote(mode, name, peerVersion string) (result error) {
 	if err != nil {
 		return err
 	}
-	if mode != "bridge" && mode != "resume" && mode != "new" && mode != "attach" && mode != "spawn" && mode != "mount-agent" && mode != "cp-agent" && mode != "mcp-agent" {
+	if mode != "bridge" && mode != "resume" && mode != "new" && mode != "attach" && mode != "spawn" && mode != "mount-agent" && mode != "cp-agent" {
 		return fmt.Errorf("invalid remote service")
 	}
 	if mode == "resume" || name != "" {
@@ -50,19 +48,6 @@ func serveRemote(mode, name, peerVersion string) (result error) {
 			continue // Recheck setup after waiting without the account lock.
 		}
 		readyMode := "managed"
-		if mode == "mcp-agent" {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			record, err := ensureLocalDaemonContext(ctx, target)
-			cancel()
-			lock.Close()
-			if err != nil {
-				return err
-			}
-			if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
-				return err
-			}
-			return bridgeMCP(record)
-		}
 		if mode == "mount-agent" || mode == "cp-agent" {
 			lock.Close()
 			home, _ := os.UserHomeDir()

@@ -3,12 +3,31 @@ package main
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestDaemonRoutesAfterMCPRemoval(t *testing.T) {
+	mux := daemonRoutes(localShellRecord{}, &daemonTasks{}, func() {})
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{path: "/ready", want: http.StatusOK},
+		{path: "/mcp", want: http.StatusNotFound},
+	} {
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, tc.path, nil))
+		if recorder.Code != tc.want {
+			t.Errorf("POST %s: got %d, want %d", tc.path, recorder.Code, tc.want)
+		}
+	}
+}
 
 func registerTestShell(t *testing.T, tasks *daemonTasks, name, id string) localShellRecord {
 	t.Helper()

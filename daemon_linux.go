@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/mcp"
 	"github.com/jay-waves/sshore/internal/proc"
 )
 
@@ -115,23 +114,13 @@ func dialHostedTask(ctx context.Context, ref string, timeout time.Duration) (net
 	return dialLocalSessionContext(ctx, r, time.Now().Add(timeout))
 }
 
-type unixDaemonServices struct {
-	sessions *trackedMCPSessions
-}
-
-func newDaemonServices(tasks *daemonTasks) daemonServices {
-	return &unixDaemonServices{sessions: newTrackedMCPSessions(tasks, checkMCPSessionSetup)}
-}
-
-func (s *unixDaemonServices) Close() { s.sessions.closeAll() }
-
 type hostedShellRequest struct {
 	Runtime, Directory, Name, UID string
 	Env                           []string
 	Temporary                     bool
 }
 
-func (s *unixDaemonServices) Routes(mux *http.ServeMux, tasks *daemonTasks) {
+func registerPlatformDaemonRoutes(mux *http.ServeMux, tasks *daemonTasks) {
 	mux.HandleFunc("POST /tasks/hosted/resolve", func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
 		name := query.Get("name")
@@ -153,12 +142,6 @@ func (s *unixDaemonServices) Routes(mux *http.ServeMux, tasks *daemonTasks) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(tasks.hostedViews(detail))
-	})
-	mux.HandleFunc("POST /mcp", func(w http.ResponseWriter, r *http.Request) {
-		var req mcp.Request
-		if readDaemonBody(w, r, &req) {
-			_ = json.NewEncoder(w).Encode(mcp.Dispatch(r.Context(), s.sessions, req, version))
-		}
 	})
 	mux.HandleFunc("POST /shells", func(w http.ResponseWriter, r *http.Request) {
 		var req hostedShellRequest

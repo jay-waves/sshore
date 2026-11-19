@@ -21,11 +21,6 @@ func serverCommand(args []string) error {
 	switch args[0] {
 	case "forward-watch":
 		return runApprovedForwardWatch(args[1:])
-	case "mcp-agent":
-		if len(args) != 2 {
-			return usage("mcp-agent requires a client version")
-		}
-		return serveRemote(args[0], "", args[1])
 	case "cp-agent":
 		if len(args) == 2 {
 			return serveRemote(args[0], "", args[1])

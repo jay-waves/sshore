@@ -39,7 +39,7 @@ if [ "$#" -gt 0 ]; then
     run_scenario "$@"
 else
     status=0
-    for scenario in core spawn identity nested handoff setup mcp; do
+    for scenario in core spawn identity nested handoff setup; do
         echo "=== SSH scenario: $scenario ==="
         run_scenario "--$scenario-only" || status=1
     done

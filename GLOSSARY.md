@@ -8,10 +8,9 @@ CLI help owns command syntax; [SSHORE.md](SSHORE.md) owns implementation and
 
 | Term | Meaning |
 | --- | --- |
-| Task | A daemon-owned item: a terminal shell, MCP session, mount, forward or pending request. One in-memory account table owns its identity and lifecycle; each kind retains its execution mechanism. Programs running inside a shell are its processes, not another sshore task type. |
+| Task | A daemon-owned item: a terminal shell, mount, forward or pending request. One in-memory account table owns its identity and lifecycle; each kind retains its execution mechanism. Programs running inside a shell are its processes, not another sshore task type. |
 | Shell / session | A daemon-owned shell process with one terminal. Local shells run on Linux or Windows; remote shells run on Linux. A session means a shell session, never a mount or forward. |
 | Spawn | A shell created by `spawn`. It ends with its original owner; a remote spawn also ends when its daemon-owned lifetime SSH connection is lost. A shell created by `launch` survives detach and connection loss. |
-| MCP session | A persistent remote Bash process controlled by MCP tools, using pipes instead of a terminal. It cannot be attached to interactively. |
 | Mount | A remote directory exposed to local applications through SFTP and FUSE/WinFsp. |
 | Forward | A fixed TCP port mapping through SSH. It carries TCP traffic, including an existing SOCKS service, but does not implement SOCKS itself. Use this term instead of tunnel. |
 | Copy / transfer | A one-time regular-file copy through SFTP, invoked directly or executed after approval. It belongs to its executing connection. |

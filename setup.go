@@ -238,7 +238,7 @@ func remoteCommand(o options) string {
 		mode = "new"
 	} else if o.command == "attach" {
 		mode = "attach"
-	} else if o.command == "mount-agent" || o.command == "cp-agent" || o.command == "mcp-agent" {
+	} else if o.command == "mount-agent" || o.command == "cp-agent" {
 		mode = o.command
 	}
 	if o.list {

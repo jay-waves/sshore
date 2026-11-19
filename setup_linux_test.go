@@ -254,7 +254,7 @@ func TestRenameRemoteRouting(t *testing.T) {
 }
 
 func TestRemoteShellRejectsVersionMismatch(t *testing.T) {
-	for _, command := range []string{"launch", "spawn", "attach", "mcp-agent"} {
+	for _, command := range []string{"launch", "spawn", "attach"} {
 		t.Run(command, func(t *testing.T) {
 			home := t.TempDir()
 			target := filepath.Join(home, "sshore")

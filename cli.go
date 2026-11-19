@@ -61,8 +61,6 @@ func run(args []string) (code int, resultErr error) {
 	switch args[0] {
 	case "exec":
 		return runExec(args[1:])
-	case "mcp":
-		return runMCP(args[1:])
 	case "reset":
 		if len(args) != 1 {
 			return 2, usage("reset takes no arguments")
@@ -128,7 +126,7 @@ func run(args []string) (code int, resultErr error) {
 			return 0, detachLocalShell(identity)
 		}
 		return 0, serverCommand(args)
-	case "forward-watch", "mount-agent", "cp-agent", "mcp-agent", "bridge", "resume", "sessions", "kill-session", "rename-session", "task-watch", "task-remove", "inventory":
+	case "forward-watch", "mount-agent", "cp-agent", "bridge", "resume", "sessions", "kill-session", "rename-session", "task-watch", "task-remove", "inventory":
 		return 0, serverCommand(args)
 	}
 	return 2, usage("unknown command: %s", args[0])

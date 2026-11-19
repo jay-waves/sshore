@@ -191,22 +191,6 @@ to the client directory recorded when the request was queued. For batch download
 before the transfer starts. A forward request detaches the shell. Use `attach` to
 resume it after review.
 
-## Agent access
-
-Configure your MCP client to start `sshore mcp` over stdio:
-
-```json
-{
-  "mcpServers": {
-    "sshore": { "command": "sshore", "args": ["mcp"] }
-  }
-}
-```
-
-MCP needs noninteractive authentication. Sessions persist after the client
-disconnects and commands run with the remote account's permissions. Treat
-remote output as untrusted. See `sshore mcp --help` for tool usage and cleanup.
-
 ## Help and troubleshooting
 
 - For common examples, run `sshore --tldr` or `sshore cp --tldr`. For options

@@ -185,7 +185,7 @@ func daemonResponseError(resp *http.Response) error {
 	return fmt.Errorf("daemon: %s", resp.Status)
 }
 
-func daemonRoutes(record localShellRecord, tasks *daemonTasks, services daemonServices, stop func()) *http.ServeMux {
+func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+daemonSnapshotRoute, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(tasks.adminSnapshot(record))
@@ -238,9 +238,7 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, services daemonSe
 	mux.HandleFunc("POST /activity", activityHandler)
 	mux.HandleFunc("POST /leases", activityHandler)
 	mux.HandleFunc("POST /requests/{action}", tasks.serveRequest)
-	if services != nil {
-		services.Routes(mux, tasks)
-	}
+	registerPlatformDaemonRoutes(mux, tasks)
 	mux.HandleFunc("POST /launch", func(w http.ResponseWriter, r *http.Request) {
 		var req localDaemonRequest
 		if !readDaemonBody(w, r, &req) {

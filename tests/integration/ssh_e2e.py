@@ -367,65 +367,10 @@ def reset_smoke(binary, root):
     print("PASS: release reset ended the local daemon and cleared only application data")
 
 
-def mcp_smoke(binary, host, ssh_wrapper, remote_tools):
-    env = dict(os.environ, SSHORE_SSH=str(ssh_wrapper))
-    proc = subprocess.Popen([binary, "mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, env=env, bufsize=1)
-    def call(method, params, request_id):
-        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id,
-                                     "method": method, "params": params}) + "\n")
-        proc.stdin.flush()
-        ready, _, _ = select.select([proc.stdout], [], [], 20)
-        if not ready:
-            raise AssertionError(f"MCP request {method} timed out")
-        reply = json.loads(proc.stdout.readline())
-        if "error" in reply or reply.get("id") != request_id:
-            raise AssertionError(reply)
-        return reply["result"]
-    def tool(name, args, request_id):
-        result = call("tools/call", {"name": name, "arguments": args}, request_id)
-        if result.get("isError"):
-            raise AssertionError(result)
-        return result["structuredContent"]
-    try:
-        call("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
-                            "clientInfo": {"name": "test", "version": "1"}}, 1)
-        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
-        proc.stdin.flush()
-        older = remote_tools / "sshore"
-        original = b"#!/bin/sh\necho 'sshore 0.0.1'\n"
-        older.write_bytes(original)
-        older.chmod(0o755)
-        try:
-            rejected = call("tools/call", {"name": "session_open", "arguments": {"host": host}}, 200)
-            assert rejected.get("isError") and "sshore install" in json.dumps(rejected), rejected
-            assert older.read_bytes() == original
-        finally:
-            older.unlink()
-        session = tool("session_open", {"host": host}, 2)
-        run = tool("session_execute", {"session_id": session["id"], "code": "x=sshore; printf '%s' \"$x\""}, 3)
-        cursor, text = "", ""
-        for i in range(4, 104):
-            out = tool("session_read", {"session_id": session["id"], "execution_id": run["id"],
-                                        "cursor": cursor, "wait_ms": 100}, i)
-            text += out["stdout"]
-            cursor = out["cursor"]
-            if out["state"] == "completed" and out["output_closed"]:
-                break
-        assert text == "sshore", text
-        tool("session_close", {"session_id": session["id"]}, 104)
-        print("PASS: MCP over real SSH with persistent Bash")
-    finally:
-        proc.stdin.close()
-        proc.wait(timeout=10)
-        if proc.returncode:
-            raise AssertionError(proc.stderr.read())
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default="dist/sshore")
-    scenarios = ("core", "spawn", "identity", "nested", "handoff", "setup", "mcp")
+    scenarios = ("core", "spawn", "identity", "nested", "handoff", "setup")
     selection = parser.add_mutually_exclusive_group()
     for scenario in scenarios:
         selection.add_argument(f"--{scenario}-only", action="store_true")
@@ -548,16 +493,6 @@ LogLevel ERROR
                     terminal.send("exit\n")
                     terminal.wait()
                 print("identity: agent selection with encrypted private key and rejection without agent OK")
-                return
-            if args.mcp_only:
-                ssh_wrapper = root / "mcp-ssh"
-                ssh_wrapper.write_text("#!/bin/sh\n" +
-                    "exec ssh -F /dev/null -p " + str(port) +
-                    " -i " + shlex.quote(str(key)) +
-                    " -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o " +
-                    shlex.quote("UserKnownHostsFile=" + str(known)) + ' "$@"\n')
-                ssh_wrapper.chmod(0o700)
-                mcp_smoke(binary, command[2], ssh_wrapper, tools)
                 return
             if args.handoff_only:
                 handoff_smoke(binary, command[2], command[3:], root)

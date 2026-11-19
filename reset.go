@@ -7,6 +7,14 @@ import (
 	"path/filepath"
 )
 
+var resetCachePath = func() (string, error) {
+	root, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "sshore"), nil
+}
+
 // Reset is local administrative maintenance, independent of normal release
 // matching and daemon metadata. Data is removed only after the owner exits.
 func runReset() error {

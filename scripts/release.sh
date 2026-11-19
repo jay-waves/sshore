@@ -39,18 +39,15 @@ Includes Linux and Windows binaries for amd64 (x86-64) only.
 Verify downloaded archives against SHA256SUMS.
 Commit: $GITHUB_SHA
 NOTES
-if [[ "$version" == "0.7.13" ]]; then
-  cat >> release-notes.md <<'NOTES'
+if [[ "$version" == "0.7.14" ]]; then
+  cat >> release-notes.md <<NOTES
 
-- Attach without a target resumes the most recently detached shell. A known
-  task ID or unique alias can be used without a host prefix.
-- Detach restores the calling terminal's main screen. Reattaching a full-screen
-  application restores its alternate-screen selection before requesting redraw.
-- A remote spawn's owner connection releases its lease when the connection ends.
-  Cache updates use the instance ID, and a complete inventory retires missing
-  spawns from the same remote account.
+- Remove the MCP command and its remote Bash session service. Existing MCP
+  sessions end when their owning daemon stops; save their work before updating.
+- Simplify the account daemon routing and consolidate related client and daemon
+  code. Shell, copy, mount and forwarding remain available.
 
-Update both endpoints to 0.7.13 for managed connections. Save work before
+Update both endpoints to 0.7.14 for managed connections. Save work before
 installing because the installer stops the target account daemon.
 NOTES
 fi

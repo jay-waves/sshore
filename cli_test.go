@@ -474,8 +474,8 @@ func TestExecArguments(t *testing.T) {
 	}
 }
 
-func TestCancelCommandRemoved(t *testing.T) {
-	for _, args := range [][]string{{"cancel"}, {"cancel", "--all"}, {"cancel", "--help"}} {
+func TestRemovedCommands(t *testing.T) {
+	for _, args := range [][]string{{"cancel"}, {"cancel", "--all"}, {"cancel", "--help"}, {"mcp"}, {"mcp-agent"}} {
 		if code, err := run(args); code != 2 || err == nil {
 			t.Fatalf("removed command accepted: %v: %d %v", args, code, err)
 		}

@@ -17,7 +17,6 @@ policy or depending on mutable application state.
 
 | Responsibility | Start here |
 | --- | --- |
-| MCP tools and remote Bash | `internal/mcp/`; application coordination in `mcp_client.go`, `mcp_server_linux.go` and the shared daemon |
 | One-off SSH execution | `cli.go`: exec adapter uses the shared SSH connection layer without remote setup |
 | CLI grammar, dispatch and help | `cli_help.go`: command definitions, help and examples; `cli_schema.go`: aliases and product/SSH parsing; `cli_commands.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
 | Mount command and execution | `cli_resources.go` handles resource command entry; `mount.go` coordinates the operation and adapts SSH and routed connections |
@@ -103,9 +102,8 @@ Natural exit and explicit close share the same Job and pseudoconsole shutdown.
 The client receives the shell's exit code after the terminal output is drained.
 On Linux, the Go I/O poller waits for shell exit through a pidfd when available.
 The host then reaps the shell and bounds the remaining PTY output drain.
-Each interactive shell owns one terminal and permits one attachment at a time. MCP
-Bash sessions use pipes and do not support terminal attachment. Split panes,
-tiling, screen emulation and scrollback replay are outside scope.
+Each interactive shell owns one terminal and permits one attachment at a time.
+Split panes, tiling, screen emulation and scrollback replay are outside scope.
 
 The shell and native terminal retain interactive state. Redraw is best effort;
 do not inject Enter, Ctrl+L or editor commands to reconstruct it. Terminal bytes
@@ -141,21 +139,6 @@ used by itself replaces the saved port and keeps the other saved SSH options
 in their original order.
 Forwarding filters operate on whole options, including the attached forms of
 `-L`, `-R`, `-D` and `-o`.
-
-MCP grows a bounded pool of SSH transports per host when concurrent calls need
-independent protocol exchanges. The pool keeps a list of slots, and each slot
-tracks whether it is idle. A call owns its slot from reservation through
-dialing and response receipt. On exit it either returns the connection to the
-pool or cancels and closes it before freeing the slot. A complete exchange
-allows reuse while submitted scripts continue independently.
-Failed requests are never replayed automatically; the next call reconnects.
-Closing MCP detaches its pools and cancels every slot before waiting for
-published transports to close. Persistent remote Bash sessions remain available.
-Each SSH transport stays bound to the account daemon selected at setup. If that
-daemon is replaced, the next request retires that transport and a later call can
-open a new one. The SSH bridge checks frame kind and size and relays the JSON
-payload through the authenticated daemon endpoint. The daemon decodes the typed
-request, checks its release and dispatches it.
 
 The server may accept SSH `none` authentication (for example Tailscale SSH).
 Only when public-key authentication is requested is the system agent queried. Linux
@@ -297,7 +280,7 @@ channels and input lease, preserving the hosted shell and reusable SSH connectio
 
 The attachment carries control and approval messages on one connection.
 Each control message is a newline-terminated JSON value of at most 68 KiB
-before the delimiter. The mount agents and MCP bridge use bounded JSON lines
+before the delimiter. The mount agents use bounded JSON lines
 for their own messages. Peers must use matching full releases. The readers
 retain any bytes buffered during a handshake when the connection switches to
 a raw protocol.
@@ -393,8 +376,8 @@ ancestry is not permission to signal. Follow the
 
 ### Account daemon and mounts
 
-One `sshore daemon` per OS user account owns native terminals, hosted Unix shells,
-MCP sessions and resources in one in-memory task table. That table owns identity,
+One `sshore daemon` per OS user account owns native terminals, hosted Unix shells
+and resources in one in-memory task table. That table owns identity,
 lifecycle and live connection relationships; it is never reconstructed after a
 crash. The loopback TCP listener serves HTTP/1.1. Control requests use JSON
 with an account token and exact release version. The same token authenticates
@@ -476,8 +459,7 @@ cancellation, which closes worker input. Cancellation and the handoff to task
 control use the same lock. Startup owns both pipes through the configuration
 write, the commit write and the worker's acknowledgement.
 The daemon then uses them for task control and can read the final reply even if
-the worker has already exited. MCP stdio adapters are transient clients of the
-same daemon.
+the worker has already exited.
 
 The daemon checks proposed names and selects automatic names from the task ID's
 prefixes. Creation and rename use the same name check under the table lock.
@@ -534,32 +516,8 @@ The daemon verifies confirmed task IDs, names and expiration by direct lookup.
 It scans for expired extras only when the task table has more entries than the
 snapshot. Pending requests are removed after the entire snapshot is verified.
 
-The account task table defines the scope for MCP session lookup, limits,
-listing and shutdown. MCP sessions remain registered during cleanup, and the
-task table can retire them after cleanup succeeds. Failed cleanup can be
-retried against the same registered task. Each session owns its Bash process
-and bounded execution history. Bash and PTY hosts share the Linux pidfd wait
-path so idle shells don't occupy an OS thread while waiting to exit.
-The latest execution's foreground completion
-determines when the next script can start. Older executions remain readable
-while their output streams are open. Output reads copy at most 4 KiB
-from each stream at the supplied cursor. The response reports output closed
-once both streams have closed and all retained output has been read.
-The execution owns the wait for new output and creates a notification channel
-only when a reader needs to wait.
-The runner opens output readers before submitting a script and waits for Bash
-to open the corresponding writers before it starts draining. If Bash exits
-during setup, the readers can reach EOF without waiting for a writer to appear.
-Failed staging closes any opened readers and removes only the directory created
-for that execution. A submission write failure makes the shell unavailable,
-since Bash may have read part of the command.
-One cleanup path joins both output readers and publishes their combined result.
-The process waiter owns control-descriptor and temporary-directory cleanup on
-both natural exit and explicit close.
-Concurrent MCP calls create additional authenticated SSH transports on demand,
-up to eight per host; further calls wait with cancellation. Spawn bridges open an
-independent local data connection for each stream instead of rejecting the ninth
-stream. Mux buffers remain bounded. Authentication admission applies backpressure
+Spawn bridges open an independent local data connection for each stream. Mux
+buffers remain bounded, and authentication admission applies backpressure
 instead of dropping valid connection bursts.
 
 Startup must have an explicit ownership handoff. Carry the initiating client's
@@ -967,7 +925,7 @@ Native FUSE/WinFsp checks remain opt-in on equipped hosts. Other environment-bas
 skips must be reviewed; a green run is not proof that skipped checks passed.
 The Docker runner defaults to all scenarios, each with an isolated fixture; use
 `--core-only`, `--spawn-only`, `--identity-only`, `--nested-only`, `--handoff-only`,
-`--setup-only` or `--mcp-only` for a focused rerun.
+or `--setup-only` for a focused rerun.
 Local in-process benchmarks are not WAN performance evidence.
 
 ### Shell and terminal validation

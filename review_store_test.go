@@ -56,11 +56,7 @@ func startRequestDaemon(t *testing.T, release ...string) *daemonTasks {
 	done := make(chan error, 1)
 	tasks := &daemonTasks{}
 	accountActivity.Load().tasks = tasks
-	services := newDaemonServices(tasks)
-	if services != nil {
-		t.Cleanup(services.Close)
-	}
-	go func() { done <- serveDaemon(listener, record, services, tasks) }()
+	go func() { done <- serveDaemon(listener, record, tasks) }()
 	t.Cleanup(func() {
 		listener.Close()
 		select {
