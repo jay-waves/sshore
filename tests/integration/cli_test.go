@@ -69,7 +69,7 @@ func (e *cliFixture) shells(t *testing.T) []cliShell {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, e.bin, "list", "--local", "--json")
+	cmd := exec.CommandContext(ctx, e.bin, "list", "self:", "--json")
 	cmd.Env = e.env
 	out, err := cmd.Output()
 	if err != nil {

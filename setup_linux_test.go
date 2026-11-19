@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
-	"github.com/jay-waves/sshore/internal/wire"
 )
 
 func TestRemoteHelpersRequireMatchingRelease(t *testing.T) {
@@ -88,15 +87,13 @@ func TestRemoteHelpersRequireMatchingRelease(t *testing.T) {
 				if remoteHome != home {
 					t.Fatalf("remote home = %q, want %q", remoteHome, home)
 				}
-				wire := &wire.Pipe{Reader: output, Writer: input, Closers: []io.Closer{input, output}}
+				wire := &stdioPipe{Reader: output, Writer: input, closers: []io.Closer{input, output}}
 				var data io.ReadWriteCloser = wire
 				if mode == "mount-agent" {
-					mux, stream, _, err := files.OpenMux(wire, version, nil, nil, nil)
-					if err != nil {
-						t.Fatal(err)
+					sendTest(t, wire, message{Type: "mount_data", SoftwareVersion: version})
+					if reply := recv(t, wire); reply.Type != "mount_ready" {
+						t.Fatalf("mount agent handshake: %+v", reply)
 					}
-					defer mux.Close()
-					data = stream
 				}
 				client, err := files.NewSFTP(data, data)
 				if err != nil {
@@ -142,7 +139,7 @@ func TestMountAgentControlCompatibility(t *testing.T) {
 			t.Error("mount agent did not exit")
 		}
 	}()
-	if err := writeMessage(b, message{Type: "mount_mux", SoftwareVersion: version}); err != nil {
+	if err := writeMessage(b, message{Type: "mount_data", SoftwareVersion: version}); err != nil {
 		t.Fatal(err)
 	}
 	reply, err := readMessage(b)

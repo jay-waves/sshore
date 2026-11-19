@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"os"
@@ -12,8 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/wire"
-	"github.com/xtaci/smux"
+	forwardio "github.com/jay-waves/sshore/internal/forward"
 )
 
 func routedResourceFixture(t *testing.T) (*remoteShell, message) {
@@ -113,21 +113,15 @@ func TestRoutedForwardEndpointsAndLifetime(t *testing.T) {
 			if err != nil || reply.Type != "resource_ready" {
 				t.Fatalf("reply=%+v err=%v", reply, err)
 			}
-			mx, err := smux.Client(client, wire.MuxConfig())
+			forward, control, err := forwardio.Open(client, listener, target, true)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer mx.Close()
-			control, err := mx.OpenStream()
-			if err != nil {
-				t.Fatal(err)
-			}
+			defer forward.Close()
 			marker, err := bufio.NewReader(control).ReadString('\n')
 			if err != nil || marker != forwardReadyMarker+"\n" {
 				t.Fatalf("marker=%q err=%v", marker, err)
 			}
-			forward := wire.StartMuxForward(mx, listener, target)
-			defer forward.Close()
 			// Approval establishes an independent resource, even after its source exits.
 			close(s.done)
 			c, err := net.DialTimeout("tcp", loopbackPort(port), time.Second)
@@ -161,7 +155,7 @@ func TestRoutedForwardEndpointsAndLifetime(t *testing.T) {
 				t.Fatal("idle connection did not arrive")
 			}
 			// Losing the resource transport still closes active data connections.
-			mx.Close()
+			client.Close()
 			select {
 			case <-done:
 			case <-time.After(3 * time.Second):
@@ -195,8 +189,12 @@ func TestRoutedMountPreservesAgentApprovalGate(t *testing.T) {
 			} else {
 				instance = "replacement"
 			}
-			metadata := map[string]any{"type": "mount_mux", "software_version": release, "mount_approval": map[string]any{"Session": request.Name, "PID": request.PID, "ID": id, "Instance": instance}}
-			if err = wire.WriteMessage(client, "mount_mux", nil, metadata); err != nil {
+			metadata := map[string]any{"type": "mount_data", "software_version": release, "mount_approval": map[string]any{"Session": request.Name, "PID": request.PID, "ID": id, "Instance": instance}}
+			data, err := json.Marshal(metadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = writeFull(client, append(data, '\n')); err != nil {
 				t.Fatal(err)
 			}
 			reply, err = readMessage(client)

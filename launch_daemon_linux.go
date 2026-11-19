@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -17,7 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/tmux"
+	"github.com/jay-waves/sshore/internal/proc"
+	"github.com/jay-waves/sshore/internal/pty"
 )
 
 // A launch is persistent. A spawn can be attached only after its single
@@ -66,7 +66,7 @@ func (s *remoteShell) start(m message) error {
 	if shellPath == "" {
 		shellPath = "/bin/bash"
 	}
-	args, err := tmux.StartupArgs(shellPath, m.NoLogin, m.NoProfile)
+	args, err := pty.StartupArgs(shellPath, m.NoLogin, m.NoProfile)
 	if err != nil {
 		return err
 	}
@@ -74,7 +74,7 @@ func (s *remoteShell) start(m message) error {
 	if exe, err := os.Executable(); err == nil {
 		env = append(env, "PATH="+filepath.Dir(exe)+":"+localEnvironmentValue(env, "PATH"))
 	}
-	err = s.startTerminal(shellPath, args, tmux.StartupEnv(shellPath, env, m.NoProfile), s.directory, m, func(err error, code int) {
+	err = s.startTerminal(shellPath, args, pty.StartupEnv(shellPath, env, m.NoProfile), s.directory, m, func(err error, code int) {
 		s.mu.Lock()
 		p := s.endTerminal()
 		if s.exitReason == "" {
@@ -135,22 +135,21 @@ func (s *remoteShell) attach(p *attachment, m message) error {
 	return err
 }
 
-func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
-	mux, control, terminal, m, err := acceptMux(c)
+func (s *remoteShell) serveControl(c net.Conn) error {
+	terminal, m, err := acceptAttachment(c, &s.endpoints)
 	if err != nil {
 		return err
 	}
-	p := newAttachment(mux, control, terminal)
-	p.approvalRequests = make(chan struct{}, 8)
+	p := newAttachment(c, terminal)
 	err = s.attach(p, m)
 	if err != nil {
 		_ = p.controlMessage(message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
-		_ = control.SetReadDeadline(time.Now().Add(2 * time.Second))
-		_, _ = readMessage(control)
+		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _ = readMessage(c)
 		p.Close()
 		return err
 	}
-	return s.serveAttachment(p, control, true, func(err error) (string, func()) {
+	return s.serveAttachment(p, c, true, func(err error) (string, func()) {
 		if err != nil {
 			s.exitReason = "terminal input cancellation failed"
 			s.stop()
@@ -188,6 +187,10 @@ func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
 			go serveShortcutSpawn(p, s.done, func(c net.Conn) {
 				s.requestSpawnRoute(c, message{SoftwareVersion: version, LocalRequest: req})
 			})
+		case "approval_ready":
+			p.approvals.enable()
+		case "queued", "approval_rejected":
+			p.approvals.reply(m)
 		case "session_targets":
 			if err := p.controlMessage(s.sessionTargets(m)); err != nil {
 				return err
@@ -213,6 +216,8 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 	var err error
 	_ = c.SetDeadline(time.Time{})
 	switch first.Type {
+	case "terminal_open":
+		_ = s.endpoints.serve(c, first)
 	case "route_mount", "route_forward", "route_files":
 		s.serveRoutedResource(c, first)
 	case "shell_connect":
@@ -223,19 +228,9 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 		s.requestSpawnRoute(c, first)
 	case "spawn_route_connect":
 		s.connectSpawnRoute(c, first)
-	case "spawn_transport":
-		if checkPeerVersion(first.SoftwareVersion, "client") != nil {
-			return
-		}
-		lease, err := dialHostedTask(context.Background(), s.instance, time.Second)
-		if err != nil {
-			return
-		}
-		defer lease.Close()
-		_ = bridgeSpawnTransport(s.instance, lease, "", c)
 	case "spawn_owner":
 		s.serveSpawnOwner(c, first)
-	case "mux":
+	case "attach_control":
 		s.mu.Lock()
 		unowned := s.lifetime == awaitingSpawnOwner
 		s.mu.Unlock()
@@ -247,8 +242,8 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 			_ = writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
 			return
 		}
-		if writeMessage(c, message{Type: "mux_ready", SoftwareVersion: version}) == nil {
-			_ = s.serveMux(c)
+		if writeMessage(c, message{Type: "attach_control_ready", SoftwareVersion: version}) == nil {
+			_ = s.serveControl(c)
 		}
 	case "kill":
 		if err := checkPeerVersion(first.SoftwareVersion, "client"); err != nil {
@@ -282,7 +277,7 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 		if first.Action != "health" && first.Action != "inventory" {
 			view.Foreground = "—"
 			if group > 0 {
-				view.Foreground = readProcessSnapshot("/proc").foregroundPrograms(group)
+				view.Foreground = newProcessSnapshot(proc.ReadProcesses()).foregroundPrograms(group)
 			}
 		}
 		_ = writeMessage(c, message{

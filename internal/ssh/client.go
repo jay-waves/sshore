@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/wire"
 	cryptossh "golang.org/x/crypto/ssh"
 )
 
@@ -20,11 +19,9 @@ import (
 // Closing a session never transfers connection ownership to another task.
 type Client struct {
 	*cryptossh.Client
-	jump      *Client
-	once      sync.Once
-	done      chan struct{}
-	forwardMu sync.Mutex
-	forward   *wire.Forwarder
+	jump *Client
+	once sync.Once
+	done chan struct{}
 }
 
 func (c *Client) Close() error {
@@ -36,12 +33,6 @@ func (c *Client) Close() error {
 			c.jump.Close()
 		}
 		c.Client.Close()
-		c.forwardMu.Lock()
-		forward := c.forward
-		c.forwardMu.Unlock()
-		if forward != nil {
-			forward.Close()
-		}
 	})
 	return nil
 }
@@ -81,19 +72,6 @@ func dial(ctx context.Context, o Options, depth int, budgets *authenticationBudg
 		}
 	}
 	client.keepalive(cfg.get("serveraliveinterval"), cfg.get("serveralivecountmax"))
-	if o.Forward != nil {
-		// Remote listener setup can block waiting for the server's reply.
-		stop := context.AfterFunc(ctx, func() { client.Close() })
-		err := client.startForwarding(*o.Forward)
-		stop()
-		if err == nil {
-			err = ctx.Err()
-		}
-		if err != nil {
-			client.Close()
-			return nil, err
-		}
-	}
 	return client, nil
 }
 
@@ -244,14 +222,15 @@ func (c *Client) keepalive(interval, count string) {
 	}()
 }
 
-// Process is an SSH exec channel and its owning connection. CloseWrite sends
-// channel EOF; Close aborts all I/O. Wait must be called after consuming stdout.
+// Process is an SSH exec channel. CloseWrite sends channel EOF; Close aborts
+// its I/O and closes the connection only when created by the package-level Start.
+// Wait must be called after consuming stdout.
 type Process struct {
 	stdin  processInput
 	stdout io.Reader
 	client *Client
-	stop   func() bool
 	wait   func() error
+	close  func() error
 }
 
 // DialTCP opens a sibling TCP channel. Closing it leaves the exec channel alive.
@@ -265,8 +244,7 @@ func (p *Process) Write(b []byte) (int, error) { return p.stdin.Write(b) }
 // CloseWrite sends EOF while the caller continues reading stdout.
 func (p *Process) CloseWrite() error { return p.stdin.Close() }
 func (p *Process) Close() error {
-	p.stop()
-	return p.client.Close()
+	return p.close()
 }
 
 // Wait returns the same exit result to every caller, including concurrent ones.
@@ -278,6 +256,12 @@ func (p *Process) CloseAndWait() error {
 	_ = p.Close()
 	return p.Wait()
 }
+
+// OpenSibling starts another exec channel on this process's SSH connection.
+func (p *Process) OpenSibling(command string, diagnostic io.Writer) (*Process, error) {
+	return p.client.Start(command, diagnostic)
+}
+
 func Start(ctx context.Context, o Options, diagnostic io.Writer) (process *Process, err error) {
 	if o.Diagnostic == nil {
 		o.Diagnostic = diagnostic
@@ -293,20 +277,37 @@ func Start(ctx context.Context, o Options, diagnostic io.Writer) (process *Proce
 			client.Close()
 		}
 	}()
+	return startSession(client, o.Command, diagnostic, stop)
+}
+
+// Start opens an exec channel owned by the caller's connection.
+func (c *Client) Start(command string, diagnostic io.Writer) (*Process, error) {
+	return startSession(c, command, diagnostic, nil)
+}
+
+func startSession(client *Client, command string, diagnostic io.Writer, stop func() bool) (*Process, error) {
 	session, err := client.NewSession()
 	if err != nil {
 		return nil, err
 	}
-	p := &Process{client: client, stop: stop, wait: sync.OnceValue(session.Wait)}
+	p := &Process{client: client, wait: sync.OnceValue(session.Wait), close: session.Close}
+	if stop != nil {
+		p.close = func() error {
+			stop()
+			return client.Close()
+		}
+	}
 	session.Stderr = diagnostic
 	p.stdin.writer, err = session.StdinPipe()
 	if err == nil {
 		p.stdout, err = session.StdoutPipe()
 	}
 	if err != nil {
+		_ = session.Close()
 		return nil, err
 	}
-	if err = session.Start(o.Command); err != nil {
+	if err = session.Start(command); err != nil {
+		_ = session.Close()
 		return nil, err
 	}
 	return p, nil

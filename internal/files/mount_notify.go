@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/xtaci/smux"
 )
 
 const ftpWatchLimit = 128
@@ -20,7 +18,7 @@ const ftpWatchTimeout = 3 * time.Second
 // Watches are hints: TTLs remain mandatory for unsupported filesystems, symlink
 // retargeting and mutations through other hard links. Never cache file contents.
 type ftpNotifications struct {
-	stream       *smux.Stream
+	stream       io.ReadWriteCloser
 	cache        *ftpMetadataCache
 	mu           sync.Mutex // protects subscription state, never held during transport I/O
 	dirs         map[string]ftpWatchEntry
@@ -47,8 +45,12 @@ type ftpWatchEntry struct {
 	ready      chan struct{} // Non-nil while a registration is queued or in flight.
 }
 
-func startFTPNotifications(s *smux.Stream, cache *ftpMetadataCache) *ftpNotifications {
+func startFTPNotifications(s io.ReadWriteCloser, cache *ftpMetadataCache) *ftpNotifications {
 	n := &ftpNotifications{stream: s, cache: cache, dirs: make(map[string]ftpWatchEntry), done: make(chan struct{}), queue: make(chan string, ftpWatchLimit)}
+	if s == nil {
+		n.stop(true)
+		return n
+	}
 	n.workers.Go(n.read)
 	n.workers.Go(n.subscribe)
 	return n
@@ -136,9 +138,13 @@ func (n *ftpNotifications) stop(warn bool) {
 	// All registration waiters also listen here. Their individual channels are
 	// only for acknowledgements while the subscription table is still live.
 	close(n.done)
-	_ = n.stream.SetReadDeadline(time.Now())
-	// smux Close can wait up to 30s to send FIN on a blocked transport.
-	// Retire this reader immediately without delaying filesystem callbacks.
+	if n.stream == nil {
+		return
+	}
+	if stream, ok := n.stream.(interface{ SetReadDeadline(time.Time) error }); ok {
+		_ = stream.SetReadDeadline(time.Now())
+	}
+	// Close the endpoint without delaying filesystem callbacks.
 	go n.stream.Close()
 }
 func (n *ftpNotifications) Close() {
@@ -237,9 +243,9 @@ func (n *ftpNotifications) register(dir string, timer *time.Timer) {
 	// One deadline covers both write and ack;
 	// closing this stream only disables notifications, never file transfers.
 	deadline := time.Now().Add(ftpWatchTimeout)
-	_ = n.stream.SetWriteDeadline(deadline)
+	stopWrite := time.AfterFunc(time.Until(deadline), func() { n.stop(true) })
 	err := writeMessage(n.stream, message{Type: "watch", Directory: dir, Name: remove})
-	_ = n.stream.SetWriteDeadline(time.Time{})
+	stopWrite.Stop()
 	if err != nil {
 		n.stop(true)
 		return
@@ -265,39 +271,24 @@ func (n *ftpNotifications) register(dir string, timer *time.Timer) {
 	}
 }
 
-// OpenMux negotiates the mount agent protocol and opens its data and event streams.
-func OpenMux(c io.ReadWriteCloser, version string, source *MountApproval, peer json.RawMessage, account *string) (*smux.Session, *smux.Stream, *smux.Stream, error) {
-	if err := writeMessage(c, message{Type: "mount_mux", SoftwareVersion: version, Approval: source, PeerMetadata: peer}); err != nil {
-		return nil, nil, nil, err
+func negotiateMount(c io.ReadWriter, mode, version string, source *MountApproval, peer json.RawMessage, account *string) error {
+	if err := writeMessage(c, message{Type: mode, SoftwareVersion: version, Approval: source, PeerMetadata: peer}); err != nil {
+		return err
 	}
 	m, err := readMessage(c)
 	if err != nil {
-		return nil, nil, nil, err
+		return err
 	}
 	if err = checkPeerVersion(version, m.SoftwareVersion, "remote mount agent"); err != nil {
-		return nil, nil, nil, err
+		return err
 	}
 	if m.Type != "mount_ready" {
-		return nil, nil, nil, fmt.Errorf("remote mount agent: %s", m.Error)
+		return fmt.Errorf("remote mount agent: %s", m.Error)
 	}
 	if account != nil {
 		*account = m.Account
 	}
-	session, err := smux.Client(c, muxConfig())
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	data, err := session.OpenStream()
-	if err != nil {
-		session.Close()
-		return nil, nil, nil, err
-	}
-	events, err := session.OpenStream()
-	if err != nil {
-		session.Close()
-		return nil, nil, nil, err
-	}
-	return session, data, events, nil
+	return nil
 }
 
 func validFTPWatchPath(p string) bool {

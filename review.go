@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -13,9 +14,7 @@ import (
 
 	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/pkg/sftp"
-	"github.com/xtaci/smux"
 )
 
 // Requests are immutable daemon-owned intents. Review keeps local selections
@@ -70,37 +69,46 @@ func queueRequest(o options, ops []operation) (requestRecord, error) {
 	if err != nil {
 		return requestRecord{}, err
 	}
-	r := requestRecord{Connection: connection, SoftwareVersion: version, PID: o.shellPID, ID: reservation.uid, Name: reservation.name, Created: time.Now(), Directory: cwd, DownloadDir: o.downloadDir, Quiet: o.quiet, Operations: ops}
+	r := requestRecord{Connection: connection, SoftwareVersion: version, PID: o.shellPID, ID: reservation.uid, Name: reservation.name, Created: time.Now(), Directory: cwd, Quiet: o.quiet, Operations: ops}
 	if err := saveRequest(r); err != nil {
 		return requestRecord{}, err
 	}
 	return r, nil
 }
 
-// Cancel the saved request if the shell cannot confirm the helper reply.
-func confirmQueuedRequest(st *smux.Stream, r requestRecord) (result error) {
-	defer func() {
-		_ = st.Close()
-		if result == nil {
-			return
-		}
-		if err := consumeRequest(r.ID); err != nil && !errors.Is(err, os.ErrNotExist) {
-			result = errors.Join(result, fmt.Errorf("could not cancel unconfirmed request: %w", err))
-		}
-	}()
-	_ = st.SetDeadline(time.Now().Add(requestTimeout))
-	task := pendingRemoteTask(r.ID, r.DisplayName(), r.Operations)
-	if err := writeMessage(st, message{Type: "queued", PeerTask: &task}); err != nil {
-		return err
+// queuedApproval retains the saved local request until the helper exchange ends.
+type queuedApproval struct {
+	request requestRecord
+	token   string
+	timeout <-chan time.Time
+}
+
+func (a *queuedApproval) pending() bool             { return a.token != "" }
+func (a *queuedApproval) matches(token string) bool { return a.pending() && a.token == token }
+func (a *queuedApproval) confirm(token string) (requestRecord, bool) {
+	if !a.matches(token) {
+		return requestRecord{}, false
 	}
-	ack, err := readMessage(st)
-	if err != nil {
-		return err
+	request := a.request
+	*a = queuedApproval{}
+	return request, true
+}
+func (a *queuedApproval) sendDetach(control attachmentControl) (bool, error) {
+	if a.pending() {
+		return false, nil
 	}
-	if ack.Type != "queued_ack" {
-		return fmt.Errorf("unexpected request acknowledgement")
+	return true, streamMessage(control, message{Type: "detach"})
+}
+func (a *queuedApproval) cancel(result error) error {
+	if !a.pending() {
+		return result
 	}
-	return nil
+	id := a.request.ID
+	*a = queuedApproval{}
+	if err := consumeRequest(id); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.Join(result, fmt.Errorf("could not cancel unconfirmed request: %w", err))
+	}
+	return result
 }
 
 func executeReview(a reviewOptions) (code int, resultErr error) {
@@ -308,11 +316,7 @@ func selectApprovedFiles(input reviewPromptReader, r requestRecord) ([]fileCopy,
 		}
 		switch op.Kind {
 		case "download":
-			dest := r.DownloadDir
-			if dest == "" {
-				dest = r.Directory
-			}
-			dest = filepath.Join(dest, op.Name)
+			dest := filepath.Join(r.Directory, op.Name)
 			if hint != "" {
 				dest = hint
 			}
@@ -352,17 +356,17 @@ func selectApprovedFiles(input reviewPromptReader, r requestRecord) ([]fileCopy,
 func runApprovedFiles(r requestRecord, approvedFiles []fileCopy) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	conn, err := openRoutedResource(ctx, r.Connection, message{Type: "route_files", Name: r.Connection.Session, PID: r.PID, ApprovalID: r.ID})
+	request := message{Type: "route_files", Name: r.Connection.Session, PID: r.PID, ApprovalID: r.ID}
+	o, err := routedResourceOptions(r.Connection, request.Type)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-	mux, err := smux.Client(conn, wire.MuxConfig())
-	if err != nil {
-		return err
+	transports := make(clientTransports)
+	defer transports.releaseUnreferenced()
+	open := func() (net.Conn, error) {
+		return openResourceEndpoint(ctx, &o, request, transports)
 	}
-	defer mux.Close()
-	return executeApprovedFiles(ctx, mux, approvedFiles, r.Quiet)
+	return executeApprovedFiles(ctx, open, approvedFiles, r.Quiet)
 }
 
 func requestSummary(ops []operation) string {
@@ -379,18 +383,15 @@ func requestSummary(ops []operation) string {
 	return fmt.Sprintf("%d requested operations", len(ops))
 }
 
-// Approved files execute sequentially; the first failure stops the batch without
-// rolling back completed files. Ctrl-C cancels local file operations; a failed
-// transfer closes the attachment while preserving its shell.
-// File execution uses an independent stream. Approved forwarding runs separately
-// as an independent background resource without attaching to the shell.
+// Each approved file uses its own endpoint. The batch stops on the first failure
+// and preserves completed files.
 
-func executeApprovedFiles(ctx context.Context, mux *smux.Session, batch []fileCopy, quiet bool) error {
+func executeApprovedFiles(ctx context.Context, open func() (net.Conn, error), batch []fileCopy, quiet bool) error {
 	completed, err := transferCopyBatch(batch, func(i int, file fileCopy) error {
 		if !quiet && len(batch) > 1 {
 			termui.Log(os.Stderr, termui.Info, "[sshore] File %d/%d: %s %s\n", i+1, len(batch), file.approval.Kind, cleanText(file.approvedName()))
 		}
-		return executeApprovedFile(ctx, mux, file, quiet)
+		return executeApprovedFile(ctx, open, file, quiet)
 	})
 	if err != nil {
 		termui.Log(os.Stderr, termui.Error, "[sshore] Transfer: %d done, 1 failed/cancelled, %d not started. Completed files kept.\n", completed, len(batch)-completed-1)
@@ -412,7 +413,7 @@ func executeApprovedFiles(ctx context.Context, mux *smux.Session, batch []fileCo
 	return nil
 }
 
-func executeApprovedFile(ctx context.Context, mux *smux.Session, file fileCopy, quiet bool) error {
+func executeApprovedFile(ctx context.Context, open func() (net.Conn, error), file fileCopy, quiet bool) error {
 	remote := *file.approval
 	remote.LocalHint = ""
 	request := message{Type: "approved_transfer", Operations: []operation{remote}}
@@ -430,13 +431,15 @@ func executeApprovedFile(ctx context.Context, mux *smux.Session, file fileCopy, 
 	default:
 		return fmt.Errorf("invalid transfer kind")
 	}
-	st, err := mux.OpenStream()
+	stream, err := open()
 	if err != nil {
 		return err
 	}
-	stream := wire.OwnTransport(ctx, st, nil)
 	defer stream.Close()
-	_ = st.SetDeadline(time.Now().Add(10 * time.Second))
+	stop := context.AfterFunc(ctx, func() { _ = stream.Close() })
+	defer stop()
+	st := stream
+	_ = st.SetDeadline(time.Now().Add(requestTimeout))
 	if err = writeMessage(stream, request); err != nil {
 		return err
 	}

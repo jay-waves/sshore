@@ -7,13 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/jay-waves/sshore/internal/wire"
-	"github.com/xtaci/smux"
 )
 
 func requestOperations(_ string, ops []operation) error {
@@ -54,43 +51,11 @@ func (s *remoteShell) requestApproval(c net.Conn, m message) error {
 	if p == nil {
 		return fmt.Errorf("no attached client")
 	}
-	select {
-	case p.approvalRequests <- struct{}{}:
-		defer func() { <-p.approvalRequests }()
-	default:
-		return fmt.Errorf("too many pending requests")
-	}
-	st, err := p.OpenStream()
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-	_ = st.SetDeadline(time.Now().Add(requestTimeout))
-	if err = writeMessage(st, m); err != nil {
-		return err
-	}
-	reply, err := readMessage(st)
-	if err != nil {
-		return err
-	}
-	if reply.Type != "queued" {
-		return fileResponseError(reply)
-	}
-	// Acknowledge the helper before allowing the client to detach.
-	_ = c.SetWriteDeadline(time.Now().Add(requestTimeout))
-	if err = writeMessage(c, message{Type: "queued"}); err != nil {
-		return err
-	}
-	published := reply.PeerTask != nil && reply.PeerTask.State == "pending" && storeRemoteTask(*reply.PeerTask) == nil
-	if err = writeMessage(st, message{Type: "queued_ack"}); err != nil && published {
-		_ = removeRemoteTask(reply.PeerTask.Key)
-	}
-	return err
+	return p.requestApproval(c, m)
 }
 
-// Only a client-initiated stream can execute an approved file operation. The
-// server is not an authority for local approval; the client enforces that gate.
-func approvedRemoteTransfer(st *smux.Stream, m message) {
+// The authenticated file endpoint serves one operation after its approval check.
+func approvedRemoteTransfer(st net.Conn, m message) {
 	if len(m.Operations) != 1 || validateOperations(m.Operations) != nil {
 		_ = writeMessage(st, message{Type: "error", Error: "invalid operation"})
 		return
@@ -215,38 +180,4 @@ func runApprovedForwardWatch(args []string) error {
 		return err
 	}
 	return watchRemoteTask()
-}
-
-// A dedicated approved transport accepts only client-initiated file streams.
-// Forwarding has its own SSH transport; obsolete tunnel/control streams cannot
-// create listeners or dial services through this connection.
-
-const maxApprovedStreams = wire.MaxFileStreams
-
-func serveApprovedStreams(ctx context.Context, mux *smux.Session) {
-	slots := make(chan struct{}, maxApprovedStreams)
-	var workers sync.WaitGroup
-	defer workers.Wait()
-	for {
-		st, e := mux.AcceptStream()
-		if e != nil {
-			return
-		}
-		select {
-		case slots <- struct{}{}:
-		default:
-			st.Close()
-			continue
-		}
-		workers.Go(func() {
-			defer func() { <-slots; st.Close() }()
-			abort := context.AfterFunc(ctx, func() { st.SetDeadline(time.Now()); st.Close() })
-			defer abort()
-			st.SetDeadline(time.Now().Add(requestTimeout))
-			m, e := readMessage(st)
-			if e == nil && m.Type == "approved_transfer" {
-				approvedRemoteTransfer(st, m)
-			}
-		})
-	}
 }

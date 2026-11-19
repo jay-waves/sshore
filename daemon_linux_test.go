@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/proc"
 )
 
 func TestDaemonHostedTaskRouting(t *testing.T) {
@@ -93,23 +95,23 @@ func TestDaemonHangupsDoNotReachChildren(t *testing.T) {
 func TestDaemonHangupBetweenHostedShells(t *testing.T) {
 	e := newEnv(t)
 	b, pid := e.attach("before-hangup")
-	child, err := readSetupTask(pid)
+	child, err := proc.ReadTask(pid)
 	if err != nil {
 		t.Fatal(err)
 	}
 	record, err := existingDaemonRecord()
-	if err != nil || record.ManagerPID != child.parent {
+	if err != nil || record.ManagerPID != child.Parent {
 		t.Fatalf("fixture daemon identity: %+v %v", record, err)
 	}
-	identity, err := processStart(record.ManagerPID)
+	identity, err := proc.StartToken(record.ManagerPID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-	untilType(t, b.tty, "exit")
+	b.writeInput(t, []byte("exit\n"))
+	b.readExit(t)
 	b.close()
 	waitExitReceipt(t, e.dir, "before-hangup", "shell exited (code 0)")
-	if current, err := processStart(record.ManagerPID); err != nil || current != identity {
+	if current, err := proc.StartToken(record.ManagerPID); err != nil || current != identity {
 		t.Fatalf("fixture daemon changed: %v", err)
 	}
 	if err := syscall.Kill(record.ManagerPID, syscall.SIGHUP); err != nil {
@@ -118,8 +120,8 @@ func TestDaemonHangupBetweenHostedShells(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	next, nextPID := e.attach("after-hangup")
 	defer next.close()
-	nextChild, err := readSetupTask(nextPID)
-	if err != nil || nextChild.parent != record.ManagerPID {
+	nextChild, err := proc.ReadTask(nextPID)
+	if err != nil || nextChild.Parent != record.ManagerPID {
 		t.Fatalf("HUP replaced account daemon: %+v %v", nextChild, err)
 	}
 	shellOutput(t, next, "printf 'HUP_%s\\n' survived", "HUP_survived")

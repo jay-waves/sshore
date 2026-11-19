@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/wire"
+	"github.com/jay-waves/sshore/internal/proc"
 )
 
 const daemonHeartbeatInterval = 20 * time.Second
@@ -166,7 +166,7 @@ func (s *daemonActivity) tick(now time.Time) {
 		identity, checked := identities[owner.PID]
 		if !checked {
 			var err error
-			identity, err = spawnProcessIdentity(owner.PID)
+			identity, err = proc.LiveIdentity(owner.PID)
 			if err != nil {
 				identity = "" // Registered owners always have a start identity.
 			}
@@ -372,8 +372,14 @@ func remoteActivity(ctx context.Context, r activityRequest) (func(), <-chan stru
 	if err != nil {
 		return nil, nil, err
 	}
-	stream := wire.OwnTransport(ctx, c, nil)
-	ready, err := readMessage(stream)
+	return acceptActivityLease(ctx, c)
+}
+
+// Shared lease supervision also keeps a direct spawn owner alive over SSH.
+func acceptActivityLease(ctx context.Context, c net.Conn) (func(), <-chan struct{}, error) {
+	closeConnection := sync.OnceFunc(func() { _ = c.Close() })
+	stop := context.AfterFunc(ctx, closeConnection)
+	ready, err := readMessage(c)
 	switch {
 	case ctx.Err() != nil:
 		err = ctx.Err()
@@ -383,7 +389,8 @@ func remoteActivity(ctx context.Context, r activityRequest) (func(), <-chan stru
 		err = fmt.Errorf("unexpected activity registration reply: %s", ready.Type)
 	}
 	if err != nil {
-		_ = stream.Close()
+		stop()
+		closeConnection()
 		return nil, nil, err
 	}
 	_ = c.SetDeadline(time.Time{})
@@ -391,11 +398,16 @@ func remoteActivity(ctx context.Context, r activityRequest) (func(), <-chan stru
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		defer stream.Close()
+		defer closeConnection()
+		defer stop()
 		for {
 			_ = c.SetReadDeadline(time.Now().Add(daemonHeartbeatTimeout))
-			m, err := readMessage(stream)
-			if err != nil || m.Type != "pulse" {
+			// SSH forwarded channels do not implement read deadlines. Closing the
+			// endpoint bounds a missing pulse on those transports as well.
+			timeout := time.AfterFunc(daemonHeartbeatTimeout, closeConnection)
+			m, err := readMessage(c)
+			alive := timeout.Stop()
+			if !alive || err != nil || m.Type != "pulse" {
 				return
 			}
 			writeMu.Lock()
@@ -421,7 +433,8 @@ func remoteActivity(ctx context.Context, r activityRequest) (func(), <-chan stru
 			case <-time.After(5 * time.Second):
 			}
 		}
-		_ = stream.Close()
+		stop()
+		_ = c.Close()
 		<-finished
 	}), finished, nil
 }

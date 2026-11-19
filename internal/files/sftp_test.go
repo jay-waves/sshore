@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/pkg/sftp"
 )
 
@@ -181,7 +180,7 @@ func newLatencyConn(conn net.Conn, delay time.Duration) *latencyConn {
 					return
 				case <-timer.C:
 				}
-				if err := wire.WriteFull(c.Conn, p.data); err != nil {
+				if err := writeFull(c.Conn, p.data); err != nil {
 					c.shutdown()
 					return
 				}

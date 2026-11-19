@@ -712,10 +712,10 @@ LogLevel ERROR
             subprocess.run([binary, "kill", "review/" + request_id], check=True)
             assert request_id not in subprocess.check_output([binary, "list", "--json"], text=True)
 
-            # A download directory supplies defaults, never automatic approval.
+            # Downloads require review and an explicit destination.
             automatic = root / "automatic"
             automatic.mkdir()
-            term = Terminal(command[:2] + ["--download-dir", str(automatic), "--quiet", "--no-escape"] + command[2:])
+            term = Terminal(command[:2] + ["--quiet", "--no-escape"] + command[2:])
             terms.append(term)
             # An authenticated peer can still send old task messages.
             # Neither a legacy file offer nor forward-add can bypass approval.
@@ -740,11 +740,8 @@ LogLevel ERROR
                     assert status.startswith(b"HTTP/1.1 101 "), status
                     for header in iter(stream.readline, b"\r\n"):
                         assert header, "truncated upgrade response"
-                    body = json.dumps(metadata).encode()
-                    peer.sendall(b"\x00" + struct.pack("!I", len(body)) + body)
-                    header = stream.read(5)
-                    assert len(header) == 5, header
-                    reply = json.loads(stream.read(struct.unpack("!I", header[1:])[0]))
+                    peer.sendall(json.dumps(metadata).encode() + b"\n")
+                    reply = json.loads(stream.readline())
                     assert reply["type"] == "fatal" and reply.get("error"), reply
             unsolicited({"type": "offer", "name": "unapproved.txt", "size": 5})
             assert not (automatic / "unapproved.txt").exists()
@@ -763,7 +760,7 @@ LogLevel ERROR
                 batch.append(path)
             request_id = queue_request(term, "sshore cp " + " ".join(shlex.quote(".:" + str(p)) for p in batch) + " ::")
             assert list(automatic.iterdir()) == []
-            term = approve(request_id, [("download", "")] * len(batch))
+            term = approve(request_id, [("download", automatic / path.name) for path in batch])
             finish_review(term)
             term = attach_shell()
             for path in batch:

@@ -20,7 +20,6 @@ import (
 // Environment and Directory belong to the initiating command, never daemon startup.
 type Options struct {
 	Host, Command, Executable, Directory string
-	Forward                              *Forward // Bound by Dial before returning.
 	Args, Environment                    []string
 	// Diagnostic receives negotiated algorithms only when SSH LogLevel is DEBUG or higher.
 	Diagnostic io.Writer

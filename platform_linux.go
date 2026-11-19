@@ -33,17 +33,6 @@ func protectDaemonHangups() func() {
 	return func() { signal.Stop(hangups) }
 }
 
-func spawnProcessIdentity(pid int) (string, error) {
-	p, err := readSetupTask(pid)
-	if err != nil {
-		return "", err
-	}
-	if p.state == "Z" || p.state == "X" {
-		return "", fmt.Errorf("parent shell exited")
-	}
-	return p.start, nil
-}
-
 func stopSpawnTerminal(pid int, start string) error {
 	return stopOwnedProcesses([]setupProcess{{PID: pid, Start: start}})
 }
@@ -219,11 +208,6 @@ func resetRuntimeState(directories []string) error {
 		}
 	}
 	return nil
-}
-
-func spawnProcessName(pid int) (string, error) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-	return strings.TrimSpace(string(data)), err
 }
 
 func runLocalInstaller(target string) error {

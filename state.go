@@ -12,8 +12,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/jay-waves/sshore/internal/wire"
 )
 
 const exitReceiptLimit = 100
@@ -88,7 +86,7 @@ func writeStateFile(path string, data []byte) error {
 		if err := privateStatePath(f.Name(), false); err != nil {
 			return err
 		}
-		return wire.WriteFull(f, data)
+		return writeFull(f, data)
 	})
 	if err != nil {
 		return err

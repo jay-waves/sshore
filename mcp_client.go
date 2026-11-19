@@ -7,9 +7,13 @@ import (
 
 	sshoremcp "github.com/jay-waves/sshore/internal/mcp"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
-	"github.com/jay-waves/sshore/internal/wire"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// The pool closes its SSH endpoint to abort I/O and join the remote command.
+type mcpSSHConn struct{ *transportio.Process }
+
+func (c mcpSSHConn) Close() error { return c.CloseAndWait() }
 
 func dialMCP(ctx context.Context, host string) (io.ReadWriteCloser, error) {
 	if err := validSSHDestination(host); err != nil {
@@ -30,9 +34,7 @@ func dialMCP(ctx context.Context, host string) (io.ReadWriteCloser, error) {
 		_ = pipes.CloseAndWait()
 		return nil, err
 	}
-	// The SSH exec stream already follows ctx. The pool owns cancellation
-	// for published transports and closes this wrapper to join exec.
-	return wire.OwnTransport(context.Background(), pipes, func() { _ = pipes.Wait() }), nil
+	return mcpSSHConn{pipes}, nil
 }
 func runMCP(args []string) (int, error) {
 	if _, err := parseCLI(args, "mcp"); err != nil {

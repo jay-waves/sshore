@@ -7,8 +7,8 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
-	"github.com/jay-waves/sshore/internal/wire"
 	cryptossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 )
@@ -42,14 +42,20 @@ func (c *connectionConfig) agentSigners(ctx context.Context) ([]cryptossh.Signer
 	if err != nil {
 		return nil, nil, fmt.Errorf("SSH agent unavailable: %w", err)
 	}
-	stream := wire.OwnTransport(ctx, conn, nil)
-	signers, err := agent.NewClient(stream).Signers()
+	closeConn := sync.OnceValue(conn.Close)
+	stop := context.AfterFunc(ctx, func() { _ = closeConn() })
+	lease := agentLease(func() error { stop(); return closeConn() })
+	signers, err := agent.NewClient(conn).Signers()
 	if err != nil {
-		stream.Close()
+		lease.Close()
 		return nil, nil, err
 	}
-	return signers, stream, nil
+	return signers, lease, nil
 }
+
+type agentLease func() error
+
+func (c agentLease) Close() error { return c() }
 
 func publicIdentity(path string) cryptossh.PublicKey {
 	data, err := os.ReadFile(path)

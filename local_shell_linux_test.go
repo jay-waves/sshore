@@ -16,8 +16,6 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/jay-waves/sshore/internal/sshtest"
-	"github.com/jay-waves/sshore/internal/wire"
-	"github.com/xtaci/smux"
 )
 
 func TestLocalShellDetachAndReattach(t *testing.T) {
@@ -25,9 +23,9 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 	state := filepath.Join(e.dir, "local-state")
 	t.Cleanup(func() { shutdownFixtureDaemon(t, state) })
 	env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SHELL=/bin/sh", "TERM=xterm-256color")
-	for _, args := range [][]string{{"fixture-launch", "--local", "localtest", "--no-profile"}, {"attach", "self:"}} {
+	for _, args := range [][]string{{"fixture-launch", "self:", "localtest", "--no-profile"}, {"attach", "self:"}} {
 		if args[0] == "attach" {
-			list := exec.Command(e.bin, "list", "--local", "--json")
+			list := exec.Command(e.bin, "list", "self:", "--json")
 			list.Env = env
 			data, err := list.Output()
 			if err != nil {
@@ -43,7 +41,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 			if out, err := rename.CombinedOutput(); err != nil {
 				t.Fatalf("rename: %s %v", out, err)
 			}
-			list = exec.Command(e.bin, "list", "--local", "--json")
+			list = exec.Command(e.bin, "list", "self:", "--json")
 			list.Env = env
 			data, err = list.Output()
 			if err != nil {
@@ -142,29 +140,12 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 
 func closedAttachment(t *testing.T) *attachment {
 	t.Helper()
-	a, b := net.Pipe()
-	client, err := smux.Client(a, wire.MuxConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	server, err := smux.Server(b, wire.MuxConfig())
-	if err != nil {
-		client.Close()
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { client.Close(); server.Close() })
-	stream, err := client.OpenStream()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stream.Close()
-	remote, err := server.AcceptStream()
-	if err != nil {
-		t.Fatal(err)
-	}
+	control, client := net.Pipe()
+	terminal, peer := net.Pipe()
 	client.Close()
-	server.Close()
-	return newAttachment(server, remote, remote)
+	peer.Close()
+	t.Cleanup(func() { control.Close(); terminal.Close() })
+	return newAttachment(control, terminal)
 }
 func TestInitialAttachmentFailureEndsCreatedTerminal(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
@@ -247,8 +228,8 @@ func TestPSTreeReattachmentAncestry(t *testing.T) {
 		detachTestClient(t, b)
 	}
 	b, _ = e.attach("tree")
-	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-	untilType(t, b.tty, "exit")
+	b.writeInput(t, []byte("exit\n"))
+	b.readExit(t)
 	b.close()
 }
 
@@ -267,7 +248,7 @@ func TestNoProfileRemoteStartup(t *testing.T) {
 	e.env = append(e.env, "SHELL="+bash, "HOME="+home, "SSHORE_PROFILE_INHERITED=kept")
 	b := e.bridge("clean")
 	defer b.close()
-	sendTest(t, b.in, message{Type: "attach", Term: "xterm", Cols: 80, Rows: 24, NoProfile: true})
+	b.sendAttach(t, message{Type: "attach", Term: "xterm", Cols: 80, Rows: 24, NoProfile: true})
 	m := recv(t, b.out)
 	if m.Type != "ready" {
 		t.Fatal(m)
@@ -277,16 +258,9 @@ func TestNoProfileRemoteStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.processes = append(e.processes, process)
-	b.tty, err = b.mux.AcceptStream()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if head := recv(t, b.tty); head.Type != "terminal" {
-		t.Fatal(head)
-	}
 	shellOutput(t, b, `printf 'PROFILE-%s' "$SSHORE_PROFILE_INHERITED"`, "PROFILE-kept")
-	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-	untilType(t, b.tty, "exit")
+	b.writeInput(t, []byte("exit\n"))
+	b.readExit(t)
 }
 
 func TestPSTreeKeepsUnavailableHostedShell(t *testing.T) {
@@ -345,7 +319,7 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 		}
 		return string(out)
 	}
-	run(env, "fixture-launch", "--local", "keeper", "--detach")
+	run(env, "fixture-launch", "self:", "keeper", "--detach")
 	defer run(env, "kill", "self:keeper")
 	raw, err := os.ReadFile(filepath.Join(state, "daemon", "daemon.json"))
 	if err != nil {
@@ -444,7 +418,7 @@ func TestLocalDaemonIgnoresOrphanedVersion(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSHORE_LOCAL_SESSION=")
-			cmd := exec.CommandContext(ctx, e.bin, "fixture-spawn", "--local", "fresh", "--detach")
+			cmd := exec.CommandContext(ctx, e.bin, "fixture-spawn", "self:", "fresh", "--detach")
 			cmd.Env = env
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("orphaned record blocked spawn: %v %s", err, out)

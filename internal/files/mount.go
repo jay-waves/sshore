@@ -1,6 +1,7 @@
 package files
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,24 +15,21 @@ import (
 	"syscall"
 	"time"
 
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/pkg/sftp"
-	"github.com/xtaci/smux"
 )
 
-// MountConfig contains validated mount and SSH transport settings.
+// MountConfig contains mount settings and endpoint openers.
 type MountConfig struct {
 	History                           func(account, root string, delta VisitHistory) VisitHistory
 	PeerMetadata                      json.RawMessage
 	Approval                          *MountApproval
 	Host, Remote, Mountpoint, Version string
-	Connection                        sshio.Options
 	ReadOnly, DirectIO, Stats         bool
 	StartupTimeout, IOTimeout         time.Duration
 	Prepare                           func(context.Context, io.ReadWriter) (string, error)
 	Open                              func(context.Context) (io.ReadWriteCloser, error)
+	OpenNotifications                 func(context.Context) (io.ReadWriteCloser, error)
 }
 
 // MountLifecycle connects a background worker to the mount. Nil means foreground.
@@ -95,29 +93,19 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 	}()
 	finishSetup := func() { endSetup(); <-setupStopped }
 	defer finishSetup()
-	var transport io.ReadWriteCloser
-	if o.Open != nil {
-		transport, err = o.Open(ctx)
-		if err == nil {
-			transport = wire.OwnTransport(ctx, transport, nil)
-		}
-	} else {
-		var pipes *sshio.Process
-		pipes, err = sshio.Start(ctx, o.Connection, os.Stderr)
-		if err == nil {
-			transport = pipes
-			defer pipes.Wait()
-		}
-	}
+	endpoint, err := o.Open(ctx)
 	if err != nil {
 		return 1, err
 	}
+	data := newMountStream(endpoint)
+	closeData := sync.OnceFunc(func() { _ = data.Close() })
+	stopData := context.AfterFunc(ctx, closeData)
+	defer stopData()
 	disconnect := func(reason error) {
 		cancel(reason)
-		_ = transport.Close()
+		closeData()
 	}
 	var account, root string
-	var mux *smux.Session
 	var client *sftp.Client
 	var backend *ftpFS
 	var stopStats func()
@@ -147,13 +135,10 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 			_ = client.Close()
 		}
 		sftpWorkers.Wait()
-		if mux != nil {
-			_ = mux.Close()
-		}
 	}()
 	var home string
 	if o.Prepare != nil {
-		if home, err = o.Prepare(ctx, transport); err != nil {
+		if home, err = o.Prepare(ctx, data); err != nil {
 			return 1, fmt.Errorf("mount setup: %w", err)
 		}
 	}
@@ -161,9 +146,29 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 	if err != nil {
 		return 1, err
 	}
-	mux, data, events, err := OpenMux(transport, o.Version, o.Approval, o.PeerMetadata, &account)
-	if err != nil {
+	if err := negotiateMount(data, "mount_data", o.Version, o.Approval, o.PeerMetadata, &account); err != nil {
 		return 1, fmt.Errorf("mount agent handshake: %w", err)
+	}
+	var events io.ReadWriteCloser
+	if o.OpenNotifications != nil {
+		endpoint, watchErr := o.OpenNotifications(ctx)
+		if watchErr == nil {
+			watch := newMountStream(endpoint)
+			closeWatch := sync.OnceFunc(func() { _ = watch.Close() })
+			stopWatch := context.AfterFunc(ctx, closeWatch)
+			defer func() { stopWatch(); closeWatch() }()
+			if o.Prepare != nil {
+				_, watchErr = o.Prepare(ctx, watch)
+			}
+			if watchErr == nil {
+				watchErr = negotiateMount(watch, "mount_watch", o.Version, o.Approval, nil, nil)
+			}
+			if watchErr == nil {
+				events = watch
+			} else {
+				closeWatch()
+			}
+		}
 	}
 	ftp := newFTPWire(data, data)
 	if o.Stats {
@@ -343,18 +348,76 @@ type message struct {
 	Error           string `json:"error,omitempty"`
 	Directory       string `json:"directory,omitempty"`
 	Name            string `json:"name,omitempty"`
-	Data            []byte `json:"-"`
 }
 
-func (m *message) FrameType() string                 { return m.Type }
-func (m *message) SetFrame(kind string, data []byte) { m.Type, m.Data = kind, data }
-func writeMessage(w io.Writer, m message) error {
-	return wire.WriteMessage(w, m.Type, m.Data, m)
+const maxMountMessage = 64*1024 + 4096
+
+type mountStream struct {
+	io.ReadWriteCloser
+	reader *bufio.Reader
 }
+
+func newMountStream(c io.ReadWriteCloser) *mountStream {
+	return &mountStream{ReadWriteCloser: c, reader: bufio.NewReader(c)}
+}
+
+func (c *mountStream) Read(b []byte) (int, error)           { return c.reader.Read(b) }
+func (c *mountStream) ReadByte() (byte, error)              { return c.reader.ReadByte() }
+func (c *mountStream) ReadSlice(delim byte) ([]byte, error) { return c.reader.ReadSlice(delim) }
+func (c *mountStream) CloseWrite() error {
+	if stream, ok := c.ReadWriteCloser.(interface{ CloseWrite() error }); ok {
+		return stream.CloseWrite()
+	}
+	return nil
+}
+
+func writeMessage(w io.Writer, m message) error {
+	body, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	if len(body) > maxMountMessage {
+		return fmt.Errorf("mount message exceeds %d bytes", maxMountMessage)
+	}
+	return writeFull(w, append(body, '\n'))
+}
+
 func readMessage(r io.Reader) (message, error) {
 	var m message
-	err := wire.ReadMessage(r, &m)
+	reader, ok := r.(interface{ ReadByte() (byte, error) })
+	if !ok {
+		reader = mountByteReader{r}
+	}
+	var body []byte
+	for {
+		b, err := reader.ReadByte()
+		if err != nil {
+			if err == io.EOF && len(body) != 0 {
+				err = io.ErrUnexpectedEOF
+			}
+			return m, err
+		}
+		if b == '\n' {
+			break
+		}
+		if len(body) == maxMountMessage {
+			return m, fmt.Errorf("mount message exceeds %d bytes", maxMountMessage)
+		}
+		body = append(body, b)
+	}
+	err := json.Unmarshal(body, &m)
+	if err == nil && m.Type == "" {
+		return m, fmt.Errorf("empty mount control type")
+	}
 	return m, err
+}
+
+type mountByteReader struct{ io.Reader }
+
+func (r mountByteReader) ReadByte() (byte, error) {
+	var b [1]byte
+	_, err := io.ReadFull(r.Reader, b[:])
+	return b[0], err
 }
 
 func checkPeerVersion(local, peer, role string) error {
@@ -362,15 +425,6 @@ func checkPeerVersion(local, peer, role string) error {
 		return nil
 	}
 	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%s; reconnect to update or recover", local, role, peer)
-}
-func muxConfig() *smux.Config {
-	config := wire.MuxConfig()
-	// Mounts have separate data/notification streams and no terminal to compete
-	// with. A larger data window avoids throttling pipelined SFTP on higher RTTs.
-	config.MaxStreamBuffer = 4 * 1024 * 1024
-	// Only data and notifications share this connection; reserve headroom for both.
-	config.MaxReceiveBuffer = 3 * config.MaxStreamBuffer
-	return config
 }
 
 type ftpRequestTotals struct {

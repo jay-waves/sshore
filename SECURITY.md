@@ -85,9 +85,11 @@ receives an attachment route, not an instruction to execute the remote command o
 use the root account's credentials for the next hop. Child readiness is required
 before the launcher reports success; the original spawn owner remains authoritative.
 
-Routes are private capabilities bound to the parent shell instance. Reattachment
-and review preserve that route; an expired route or changed parent must fail, not
-fall back to a direct connection using a remote-supplied host alias. Route messages
+Routes are private capabilities bound to the parent shell instance. Each route
+opens authenticated endpoints to the fixed child instance, using local daemon
+connections or native channels on the initiating daemon's existing SSH session.
+Reattachment and review preserve that route. An expired route or changed parent
+blocks the request and prohibits falling back to a direct connection using a remote-supplied host alias. Route messages
 and returned terminal content remain untrusted. They grant no file, mount or
 forward approval. Host-key confirmation uses an authenticated broker on the
 initiating host. Private keys remain with its system agent; interactive answers
@@ -119,7 +121,12 @@ write a destination, expose a mount, open a listener or reach a local service wi
 Receiving a request saves bounded metadata and detaches. It does not execute a
 local shell command, create a mount, open a listener or transfer a selected file. Unsolicited
 transfer offers, forward-add streams and reverse connection streams are rejected.
-A suggested path or port, including `--download-dir`, is not permission.
+A suggested path or port is not permission.
+The shell confirms the helper's queued reply before acknowledging the saved
+request on the attachment's control connection. The frontend waits for that
+acknowledgement before detaching and removes the unconfirmed request if the
+exchange fails. A token correlates the messages for this exchange. Approval
+authority remains with local review.
 
 Sensitive review happens in a **separate local `sshore review` invocation** after
 the connected client exits. Suggested values are prefilled as editable local
@@ -127,7 +134,9 @@ input. Pressing Enter submits the field and approves once all requested fields
 are valid. File batches collect all paths before starting.
 Ctrl-C or EOF during selection starts no operation and leaves the request pending.
 Completion can browse local paths but does not submit them. Approved execution
-uses a separate data stream and does not attach a terminal.
+uses a separate resource connection. Each approved file opens an authenticated
+endpoint and rechecks the exact release and the original detached shell's
+identity and PID.
 
 Each pending request:
 

@@ -3,25 +3,36 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 
-	"github.com/jay-waves/sshore/internal/wire"
-	"github.com/xtaci/smux"
+	forwardio "github.com/jay-waves/sshore/internal/forward"
 )
 
 // A routed resource reuses the authenticated path. Host is a display label here.
-func openRoutedResource(ctx context.Context, connection recentConnection, request message) (_ io.ReadWriteCloser, err error) {
+func routedResourceOptions(connection recentConnection, kind string) (options, error) {
 	if err := validateRecentConnection(connection); err != nil {
-		return nil, err
+		return options{}, err
 	}
-	if connection.Instance == "" || !connection.viaShell() && request.Type != "route_files" {
-		return nil, fmt.Errorf("routed resource requires a live shell route")
+	if connection.Instance == "" || !connection.viaShell() && kind != "route_files" {
+		return options{}, fmt.Errorf("routed resource requires a live shell route")
 	}
 	o := options{command: "attach", host: connection.Host, session: connection.Session}
 	applyConnectionOptions(&o, connection)
-	c, err := openClientTransportContext(ctx, &o, nil)
+	return o, nil
+}
+
+func openRoutedResource(ctx context.Context, connection recentConnection, request message) (net.Conn, error) {
+	o, err := routedResourceOptions(connection, request.Type)
+	if err != nil {
+		return nil, err
+	}
+	return openResourceEndpoint(ctx, &o, request, nil)
+}
+
+func openResourceEndpoint(ctx context.Context, o *options, request message, transports clientTransports) (_ net.Conn, err error) {
+	request.Instance = o.instance
+	c, err := openClientTransportContext(ctx, o, transports)
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +41,6 @@ func openRoutedResource(ctx context.Context, connection recentConnection, reques
 			c.Close()
 		}
 	}()
-	request.Instance = connection.Instance
 	reply, err := exchangeRouteRequest(c, request)
 	if err != nil {
 		return nil, err
@@ -64,7 +74,7 @@ func startRoutedForward(ctx context.Context, f forwardConfig) (*forwardConnectio
 	if err != nil {
 		return nil, err
 	}
-	forward, control, err := openResourceMuxForward(conn, listener, f.Target, true)
+	forward, control, err := forwardio.Open(conn, listener, f.Target, true)
 	if err != nil {
 		return nil, err
 	}
@@ -74,30 +84,6 @@ func startRoutedForward(ctx context.Context, f forwardConfig) (*forwardConnectio
 		Wait:  func() error { forward.Wait(); return nil },
 		close: forward.Close,
 	}, nil
-}
-
-// Take ownership of the connection immediately and of the listener once the
-// control stream is established. The control stream always precedes data.
-func openResourceMuxForward(conn io.ReadWriteCloser, listener net.Listener, target int, initiator bool) (*wire.Forwarder, *smux.Stream, error) {
-	openMux := smux.Server
-	if initiator {
-		openMux = smux.Client
-	}
-	mx, err := openMux(conn, wire.MuxConfig())
-	if err != nil {
-		_ = conn.Close()
-		return nil, nil, err
-	}
-	openControl := mx.AcceptStream
-	if initiator {
-		openControl = mx.OpenStream
-	}
-	control, err := openControl()
-	if err != nil {
-		_ = mx.Close()
-		return nil, nil, err
-	}
-	return wire.StartMuxForward(mx, listener, target), control, nil
 }
 
 func loopbackPort(port int) string { return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) }

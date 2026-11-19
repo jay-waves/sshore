@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,8 +13,6 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/jay-waves/sshore/internal/wire"
-	"github.com/xtaci/smux"
 )
 
 func TestApprovalSourceRejectsReusedNameAndPID(t *testing.T) {
@@ -36,20 +35,18 @@ func TestApprovedTransferRequiresMatchingMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	detachTestClient(t, b)
-	conn, err := e.dial("main")
-	if err != nil {
-		t.Fatal(err)
+	open := func() (net.Conn, error) {
+		conn, err := e.dial("main")
+		if err != nil {
+			return nil, err
+		}
+		sendTest(t, conn, message{Type: "route_files", SoftwareVersion: version, Name: "main", PID: pid, Instance: id, ApprovalID: strings.Repeat("a", 32)})
+		if reply := recv(t, conn); reply.Type != "resource_ready" {
+			conn.Close()
+			t.Fatalf("file route: %+v", reply)
+		}
+		return conn, nil
 	}
-	defer conn.Close()
-	sendTest(t, conn, message{Type: "route_files", SoftwareVersion: version, Name: "main", PID: pid, Instance: id, ApprovalID: strings.Repeat("a", 32)})
-	if reply := recv(t, conn); reply.Type != "resource_ready" {
-		t.Fatalf("file route: %+v", reply)
-	}
-	mx, err := smux.Client(conn, wire.MuxConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer mx.Close()
 	source := filepath.Join(e.dir, "source")
 	if err := os.WriteFile(source, []byte("changed"), 0600); err != nil {
 		t.Fatal(err)
@@ -57,7 +54,7 @@ func TestApprovedTransferRequiresMatchingMetadata(t *testing.T) {
 	target := filepath.Join(e.dir, "target")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err = executeApprovedFile(ctx, mx, newApprovedFile(operation{Kind: "download", Path: source, Name: "source", Size: 1}, target, nil), true)
+	err = executeApprovedFile(ctx, open, newApprovedFile(operation{Kind: "download", Path: source, Name: "source", Size: 1}, target, nil), true)
 	if err == nil {
 		t.Fatal("changed remote file accepted")
 	}
@@ -65,20 +62,19 @@ func TestApprovedTransferRequiresMatchingMetadata(t *testing.T) {
 		t.Fatal("unapproved file created", err)
 	}
 	// The same stream path succeeds for the exact approved metadata.
-	if err = executeApprovedFile(ctx, mx, newApprovedFile(operation{Kind: "download", Path: source, Name: "source", Size: 7}, target, nil), true); err != nil {
+	if err = executeApprovedFile(ctx, open, newApprovedFile(operation{Kind: "download", Path: source, Name: "source", Size: 7}, target, nil), true); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(target)
 	if err != nil || string(data) != "changed" {
 		t.Fatal(string(data), err)
 	}
-	mx.Close()
 	resumed, resumedPID := e.attach("main", "attach")
 	if resumedPID != pid {
 		t.Fatal("file execution replaced source shell")
 	}
-	sendTest(t, resumed.tty, message{Type: "input", Data: []byte("exit\n")})
-	untilType(t, resumed.tty, "exit")
+	resumed.writeInput(t, []byte("exit\n"))
+	resumed.readExit(t)
 }
 
 func TestApprovedAttachRejectsChangedSession(t *testing.T) {
@@ -89,7 +85,7 @@ func TestApprovedAttachRejectsChangedSession(t *testing.T) {
 	sendTest(t, b.in, message{Type: "bye"})
 	b.close()
 	next := e.bridge("main")
-	sendTest(t, next.in, message{Type: "attach", Action: "approved", PID: pid + 1, Term: "xterm", Cols: 80, Rows: 24})
+	next.sendAttach(t, message{Type: "attach", Action: "approved", PID: pid + 1, Term: "xterm", Cols: 80, Rows: 24})
 	if m := recv(t, next.out); m.Type != "fatal" {
 		t.Fatal("accepted wrong shell", m)
 	}
@@ -99,13 +95,14 @@ func TestApprovedAttachRejectsChangedSession(t *testing.T) {
 	if resumedPID != pid {
 		t.Fatal("shell was replaced")
 	}
-	sendTest(t, resumed.tty, message{Type: "input", Data: []byte("exit\n")})
-	untilType(t, resumed.tty, "exit")
+	resumed.writeInput(t, []byte("exit\n"))
+	resumed.readExit(t)
 }
 
 func TestEndpointRequestHelpers(t *testing.T) {
 	e := newEnv(t)
 	b, _ := e.attach("main")
+	sendTest(t, b.in, message{Type: "approval_ready"})
 	source := filepath.Join(e.dir, "copy-source")
 	if err := os.WriteFile(source, []byte("data"), 0600); err != nil {
 		t.Fatal(err)
@@ -130,11 +127,7 @@ func TestEndpointRequestHelpers(t *testing.T) {
 		{[]string{"forward", ".:3000", "::8080"}, "forward", "8080", true},
 	} {
 		_, done := e.helper(tc.args[0], tc.args[1:]...)
-		stream, err := b.mux.AcceptStream()
-		if err != nil {
-			t.Fatal(err)
-		}
-		m := recv(t, stream)
+		m := recv(t, b.out)
 		if m.Type != "approval_request" || len(m.Operations) != 1 {
 			t.Fatal(m)
 		}
@@ -148,15 +141,14 @@ func TestEndpointRequestHelpers(t *testing.T) {
 		if op.Kind == "forward" && (!op.LocalPortPending() || op.ServerPort() != 3000) {
 			t.Fatal("resolved without local consent", op)
 		}
-		sendTest(t, stream, message{Type: "queued"})
-		if m := recv(t, stream); m.Type != "queued_ack" {
-			t.Fatal(m)
+		sendTest(t, b.in, message{Type: "queued", Token: m.Token})
+		if reply := recv(t, b.out); reply.Type != "queued_ack" || reply.Token != m.Token {
+			t.Fatal(reply)
 		}
-		stream.Close()
 		waitHelper(t, done, true)
 	}
-	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-	untilType(t, b.tty, "exit")
+	b.writeInput(t, []byte("exit\n"))
+	b.readExit(t)
 }
 
 func TestApprovalPrompt(t *testing.T) {

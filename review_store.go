@@ -35,15 +35,15 @@ type operation struct {
 }
 
 type requestRecord struct {
-	Connection             recentConnection
-	PID                    int
-	SoftwareVersion        string
-	ID                     string
-	Name                   string
-	Created                time.Time
-	Directory, DownloadDir string
-	Quiet                  bool
-	Operations             []operation
+	Connection      recentConnection
+	PID             int
+	SoftwareVersion string
+	ID              string
+	Name            string
+	Created         time.Time
+	Directory       string
+	Quiet           bool
+	Operations      []operation
 }
 
 func (r requestRecord) DisplayName() string {

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/tmux"
+	"github.com/jay-waves/sshore/internal/pty"
 	cryptossh "golang.org/x/crypto/ssh"
 )
 
@@ -72,7 +72,7 @@ func testWindowsHandoffPassword(t *testing.T, phase string) {
 	t.Setenv("SSHORE_SOCKET", "")
 	t.Setenv("SHELL", shell)
 	env := os.Environ()
-	terminal, err := tmux.Start(tmux.Config{Path: bin, Args: []string{"launch", "self:"}, Env: env, Size: tmux.Size{Cols: 120, Rows: 40}})
+	terminal, err := pty.Start(pty.Config{Path: bin, Args: []string{"launch", "self:"}, Env: env, Size: pty.Size{Cols: 120, Rows: 40}})
 	if err != nil {
 		t.Fatal(err)
 	}

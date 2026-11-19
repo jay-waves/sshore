@@ -81,7 +81,8 @@ type daemonStream struct {
 	reader *bufio.Reader
 }
 
-func (s daemonStream) Read(b []byte) (int, error) { return s.reader.Read(b) }
+func (s daemonStream) Read(b []byte) (int, error)           { return s.reader.Read(b) }
+func (s daemonStream) ReadSlice(delim byte) ([]byte, error) { return s.reader.ReadSlice(delim) }
 
 func upgradeDaemonConn(ctx context.Context, c net.Conn, record localShellRecord, path string, input any) (stream net.Conn, result error) {
 	closeConn := sync.OnceFunc(func() { _ = c.Close() })

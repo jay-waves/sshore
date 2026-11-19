@@ -1,28 +1,20 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/jay-waves/sshore/internal/tmux"
-	"github.com/jay-waves/sshore/internal/wire"
-	"github.com/xtaci/smux"
 )
 
-// Control metadata and terminal bytes use bounded frames. Approved file
-// streams switch to SFTP after their metadata handshake.
+// Control metadata uses bounded frames. Approved file streams switch to
+// SFTP after their metadata handshake.
 
 const requestTimeout = 10 * time.Second
-const chunkSize = 64 * 1024
-const maxFrame = wire.MaxFrame
-const (
-	control byte = iota
-	input
-	output
-)
 
 type sessionTarget struct {
 	Name     string `json:"name"`
@@ -32,6 +24,7 @@ type sessionTarget struct {
 
 // Control metadata uses JSON; terminal bytes remain binary.
 type message struct {
+	TerminalOffset  uint64              `json:"terminal_offset,omitempty"`
 	OwnerProcess    *spawnProcessView   `json:"owner_process,omitempty"`
 	Reason          string              `json:"reason,omitempty"`
 	Handoff         *clientHandoff      `json:"handoff,omitempty"`
@@ -65,7 +58,6 @@ type message struct {
 	Size            int64               `json:"size,omitempty"`
 	Error           string              `json:"error,omitempty"`
 	Code            int                 `json:"code,omitempty"`
-	Data            []byte              `json:"-"`
 }
 
 func validateSessionTargets(targets []sessionTarget) error {
@@ -118,15 +110,81 @@ func adjacentSessionTarget(current string, targets []sessionTarget, previous boo
 	return nearest
 }
 
-func (m *message) FrameType() string                 { return m.Type }
-func (m *message) SetFrame(kind string, data []byte) { m.Type, m.Data = kind, data }
+const maxControlMessage = 64*1024 + 4096
+
 func writeMessage(w io.Writer, m message) error {
-	return wire.WriteMessage(w, m.Type, m.Data, m)
+	body, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	if len(body) > maxControlMessage {
+		return fmt.Errorf("control message exceeds %d bytes", maxControlMessage)
+	}
+	return writeFull(w, append(body, '\n'))
 }
+
 func readMessage(r io.Reader) (message, error) {
 	var m message
-	err := wire.ReadMessage(r, &m)
-	return m, err
+	var body []byte
+	if lines, ok := r.(interface{ ReadSlice(byte) ([]byte, error) }); ok {
+		for {
+			part, err := lines.ReadSlice('\n')
+			if len(body)+len(part) > maxControlMessage+1 || err == bufio.ErrBufferFull && len(body)+len(part) > maxControlMessage {
+				return m, fmt.Errorf("control message exceeds %d bytes", maxControlMessage)
+			}
+			if err == nil {
+				body = append(body, part[:len(part)-1]...)
+				break
+			}
+			if err != bufio.ErrBufferFull {
+				if err == io.EOF && len(body)+len(part) != 0 {
+					err = io.ErrUnexpectedEOF
+				}
+				return m, err
+			}
+			body = append(body, part...)
+		}
+	} else {
+		// Unbuffered readers may hand this same stream to a raw protocol.
+		var b [1]byte
+		for {
+			if _, err := io.ReadFull(r, b[:]); err != nil {
+				if err == io.EOF && len(body) != 0 {
+					err = io.ErrUnexpectedEOF
+				}
+				return m, err
+			}
+			if b[0] == '\n' {
+				break
+			}
+			if len(body) == maxControlMessage {
+				return m, fmt.Errorf("control message exceeds %d bytes", maxControlMessage)
+			}
+			body = append(body, b[0])
+		}
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return m, err
+	}
+	switch m.Type {
+	case "", "input", "output", "chunk":
+		return m, fmt.Errorf("invalid control type")
+	}
+	return m, nil
+}
+
+func writeFull(w io.Writer, b []byte) error {
+	for len(b) > 0 {
+		n, err := w.Write(b)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		b = b[n:]
+	}
+	return nil
 }
 
 func fileResponseError(m message) error {
@@ -136,33 +194,7 @@ func fileResponseError(m message) error {
 	return fmt.Errorf("transfer cancelled or unexpected response: %s", m.Type)
 }
 
-// Logical control, terminal and file streams are application-level
-// smux v2 streams over one SSH connection, not native OpenSSH channels. The
-// handshake requires the exact full sshore release, including PATCH; there is no
-// separate sshore protocol compatibility counter. Running daemons cannot upgrade
-// in place. Per-stream windows and the shared receive budget are owned by
-// wire.MuxConfig. These isolate stalled streams without
-// guaranteeing real-time terminal priority: TCP head-of-line blocking still applies.
-// Keepalives detect silent transport loss (10s interval, 60s timeout); detection
-// releases the attachment while preserving the shell.
-
-func clientMux(c io.ReadWriteCloser) (*smux.Session, error) {
-	if err := writeMessage(c, message{Type: "mux", SoftwareVersion: version}); err != nil {
-		return nil, err
-	}
-	m, err := readMessage(c)
-	if err != nil {
-		return nil, fmt.Errorf("SSH shell handshake failed: %w", err)
-	}
-	if err := checkPeerVersion(m.SoftwareVersion, "remote shell daemon"); err != nil {
-		return nil, err
-	}
-	if m.Type != "mux_ready" {
-		return nil, fmt.Errorf("incompatible sshore server: %s %s", m.Type, m.Error)
-	}
-	return smux.Client(c, wire.MuxConfig())
-}
-func streamMessage(s *smux.Stream, m message) error {
+func streamMessage(s attachmentControl, m message) error {
 	_ = s.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	err := writeMessage(s, m)
 	_ = s.SetWriteDeadline(time.Time{})
@@ -180,36 +212,41 @@ func checkPeerVersion(peer, role string) error {
 	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%s. Managed processes must use the same full release", version, role, peer)
 }
 
-// Accept both streams before handing ownership to a shell. Every partial
-// handshake failure closes the transport here; callers own successful results.
-func acceptMux(c io.ReadWriteCloser) (mx *smux.Session, control, terminal *smux.Stream, request message, err error) {
-	mx, err = smux.Server(c, wire.MuxConfig())
-	if err != nil {
-		return
+type attachmentControl interface {
+	io.ReadWriteCloser
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
+	SetDeadline(time.Time) error
+}
+
+func clientAttachment(c attachmentControl) error {
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	defer c.SetDeadline(time.Time{})
+	if err := writeMessage(c, message{Type: "attach_control", SoftwareVersion: version}); err != nil {
+		return err
 	}
-	defer func() {
-		if err != nil {
-			mx.Close()
-		}
-	}()
-	_ = mx.SetDeadline(time.Now().Add(5 * time.Second))
-	control, err = mx.AcceptStream()
+	m, err := readMessage(c)
 	if err != nil {
-		return
+		return fmt.Errorf("SSH shell handshake failed: %w", err)
 	}
-	_ = control.SetReadDeadline(time.Now().Add(5 * time.Second))
-	request, err = readMessage(control)
+	if err := checkPeerVersion(m.SoftwareVersion, "shell daemon"); err != nil {
+		return err
+	}
+	if m.Type != "attach_control_ready" {
+		return fmt.Errorf("incompatible sshore server: %s %s", m.Type, m.Error)
+	}
+	return nil
+}
+
+func acceptAttachment(c attachmentControl, endpoints *terminalEndpoints) (net.Conn, message, error) {
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	defer c.SetReadDeadline(time.Time{})
+	request, err := readMessage(c)
 	if err != nil {
-		return
+		return nil, request, err
 	}
-	_ = control.SetReadDeadline(time.Time{})
-	terminal, err = mx.OpenStream()
-	if err != nil {
-		return
-	}
-	err = streamMessage(terminal, message{Type: "terminal"})
-	_ = mx.SetDeadline(time.Time{})
-	return
+	terminal, err := endpoints.take(request.Token)
+	return terminal, request, err
 }
 
 func validateAttach(m message) error {
@@ -227,15 +264,3 @@ func validateAttach(m message) error {
 	}
 	return nil
 }
-
-type attachment struct {
-	*tmux.Attachment
-	input            shellInput    // Lease installed and released by the shell host.
-	approvalRequests chan struct{} // Hosted attachments accept approval requests.
-}
-
-func newAttachment(mx *smux.Session, control, terminal *smux.Stream) *attachment {
-	return &attachment{Attachment: tmux.NewAttachment(mx, control, terminal)}
-}
-func (p *attachment) controlMessage(m message) error { return p.Control(m.Type, m.Data, m) }
-func (p *attachment) output(m message) error         { return p.Output(m.Type, m.Data, m) }

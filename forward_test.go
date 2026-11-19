@@ -9,6 +9,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 func TestApprovedForwardCarriesSourceInstance(t *testing.T) {
@@ -87,7 +89,7 @@ func TestTransportArgumentsAndConfig(t *testing.T) {
 			t.Fatal(err)
 		}
 		options := forwardSSHOptions(c, "opaque helper")
-		if options.Host != c.Host || options.Command != "opaque helper" || options.Forward.Port != 8080 || options.Forward.Target != 3000 || options.Forward.Reverse != reverse || strings.Contains(strings.Join(options.Args, " "), "9999") {
+		if options.Host != c.Host || options.Command != "opaque helper" || strings.Contains(strings.Join(options.Args, " "), "9999") {
 			t.Fatal(options)
 		}
 	}
@@ -237,4 +239,40 @@ func TestForwardHeartbeatPreservesExitCause(t *testing.T) {
 			t.Fatalf("ready=%v err=%v", ready, err)
 		}
 	})
+}
+
+func TestDirectForwardRejectsInvalidRuleBeforeDial(t *testing.T) {
+	for _, rule := range []forwardConfig{{Port: 0, Target: 80}, {Port: 80, Target: 65536}} {
+		client, close, err := openDirectForward(context.Background(), sshio.Options{}, rule)
+		if err == nil || err.Error() != "invalid forward ports" || client != nil || close != nil {
+			t.Fatalf("invalid rule reached SSH: client=%v error=%v", client, err)
+		}
+	}
+}
+
+func TestDirectForwardListenerOwnership(t *testing.T) {
+	occupied, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	rule := forwardConfig{Port: occupied.Addr().(*net.TCPAddr).Port, Target: 80}
+	// Binding fails before any SSH channel or remote helper is opened.
+	if worker, err := startDirectForward(nil, rule); err == nil {
+		worker.Close()
+		t.Fatal("occupied listener accepted")
+	}
+	occupied.Close()
+	worker, err := startDirectForward(nil, rule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Close()
+	worker.Close()
+	// Closing the forward releases its listener without closing another owner.
+	reopened, err := net.Listen("tcp4", occupied.Addr().String())
+	if err != nil {
+		t.Fatal("forward retained listener:", err)
+	}
+	reopened.Close()
 }

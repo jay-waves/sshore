@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/mcp"
-	"github.com/jay-waves/sshore/internal/wire"
+	"github.com/jay-waves/sshore/internal/proc"
 )
 
 // The account task table owns MCP identities and lifetimes.
@@ -79,7 +79,7 @@ func (s *trackedMCPSessions) Open(ctx context.Context, in mcp.OpenInput) (mcp.Se
 		return mcp.Session{}, err
 	}
 	pid := session.PID()
-	start, err := processStart(pid)
+	start, err := proc.StartToken(pid)
 	if err == nil {
 		err = s.tasks.register(id, &mcpSessionTask{session: session, id: id, process: processIdentity{PID: pid, Start: start}})
 	}
@@ -173,7 +173,7 @@ func checkMCPSessionSetup() error {
 func bridgeMCP(record localShellRecord) error {
 	return mcp.Relay(os.Stdin, os.Stdout, func(req json.RawMessage) (json.RawMessage, error) {
 		var reply json.RawMessage
-		err := daemonJSONLimit(context.Background(), record, "/mcp", req, &reply, wire.MaxFrame+1)
+		err := daemonJSONLimit(context.Background(), record, "/mcp", req, &reply, mcp.MaxRPCPayload+1)
 		return reply, err
 	})
 }

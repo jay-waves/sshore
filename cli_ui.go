@@ -9,16 +9,16 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/jay-waves/sshore/internal/pty"
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 func newLocalInput() (*termui.Input, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return nil, usage("local selection requires an interactive terminal; specify the local endpoint")
 	}
-	tmux.ResetInputModes()
-	if err := tmux.FlushInput(); err != nil {
+	pty.ResetInputModes()
+	if err := pty.FlushInput(); err != nil {
 		return nil, err
 	}
 	return termui.NewInput()

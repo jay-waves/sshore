@@ -19,22 +19,8 @@ import (
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
-func runCopy(args []string) (int, error) {
-	if os.Getenv("SSHORE_SOCKET") != "" {
-		kind, paths, hint, err := remoteCopyRequest(args)
-		if err != nil {
-			return 2, err
-		}
-		ops, err := prepareFileRequest(kind, paths, hint)
-		if err != nil {
-			return 1, err
-		}
-		return 0, requestOperations("cp", ops)
-	}
-	o, err := parseCopyCommand(args)
-	if err != nil {
-		return 2, err
-	}
+func executeCopyCommand(o copyOptions) (int, error) {
+	var err error
 	if o.upload {
 		for i := range o.sources {
 			o.sources[i].path, err = termui.ExpandHomePath(o.sources[i].path)

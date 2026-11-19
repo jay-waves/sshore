@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/chzyer/readline"
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/xtaci/smux"
 	"golang.org/x/term"
 	"io"
 	"os"
@@ -292,7 +291,7 @@ func peerTaskIdentity(p peerView) string {
 	return "peer:" + p.Manager + ":" + p.ID
 }
 
-func showConnectedTasks(control *smux.Stream, o options) error {
+func showConnectedTasks(control attachmentControl, o options) error {
 	if err := streamMessage(control, message{Type: "inventory"}); err != nil {
 		return err
 	}

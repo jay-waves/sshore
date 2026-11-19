@@ -27,7 +27,7 @@ func TestKillAllLocalSnapshot(t *testing.T) {
 		return string(out), err
 	}
 	for _, name := range []string{"one", "two"} {
-		if out, err := run("", "fixture-launch", "--local", name, "--detach"); err != nil {
+		if out, err := run("", "fixture-launch", "self:", name, "--detach"); err != nil {
 			t.Fatal(out, err)
 		}
 		t.Cleanup(func() { run("", "kill", "self:"+name) })
@@ -65,7 +65,7 @@ func TestKillAllStopsIdleDaemon(t *testing.T) {
 			t.Fatalf("%v: %v %s", args, err, out)
 		}
 	}
-	run("fixture-launch", "--local", "idle", "--detach")
+	run("fixture-launch", "self:", "idle", "--detach")
 	run("kill", "self:idle")
 	if len(backgroundProcesses(t, e, state)) == 0 {
 		t.Fatal("expected idle daemon")
@@ -90,7 +90,7 @@ func TestKillAllDoesNotCancelReplacement(t *testing.T) {
 		}
 		return string(out)
 	}
-	run("fixture-launch", "--local", "same", "--detach")
+	run("fixture-launch", "self:", "same", "--detach")
 	defer run("kill", "self:same")
 	cmd := exec.CommandContext(ctx, e.bin, "kill", "--all")
 	cmd.Env = env
@@ -117,7 +117,7 @@ func TestKillAllDoesNotCancelReplacement(t *testing.T) {
 		text.WriteByte(b)
 	}
 	run("kill", "self:same")
-	run("fixture-launch", "--local", "same", "--detach")
+	run("fixture-launch", "self:", "same", "--detach")
 	io.WriteString(input, "\n")
 	input.Close()
 	tail, _ := io.ReadAll(reader)
@@ -261,7 +261,7 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 		}
 		return out
 	}
-	first, terminal, _ := start([]string{"fixture-launch", "--local", "persistent"}, env)
+	first, terminal, _ := start([]string{"fixture-launch", "self:", "persistent"}, env)
 	defer run("kill", "self:persistent")
 	first.Process.Kill()
 	first.Wait()
@@ -325,7 +325,7 @@ func TestLocalNoLoginStartup(t *testing.T) {
 			t.Fatalf("%v: %v %s", args, err, out)
 		}
 	}
-	run("fixture-launch", "--local", "startup", "--no-login", "--detach")
+	run("fixture-launch", "self:", "startup", "--no-login", "--detach")
 	defer run("kill", "self:startup")
 	deadline := time.Now().Add(3 * time.Second)
 	for {

@@ -18,7 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/tmux"
+	"github.com/jay-waves/sshore/internal/proc"
+	"github.com/jay-waves/sshore/internal/pty"
 )
 
 // The token is a local connection capability, never part of public inventory.
@@ -149,12 +150,13 @@ func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, read
 }
 
 type shellTerminal struct {
+	endpoints  terminalEndpoints
 	mu         sync.Mutex // Protect shell state and attachment ownership.
 	terminalMu sync.Mutex // Serialize replay and redraw with live output. Acquire before mu.
 	renameMu   sync.Mutex // Keep each shell's history renames in live update order.
-	terminal   *tmux.Terminal
+	terminal   *pty.Terminal
 	process    processIdentity
-	modes      tmux.InputState
+	modes      pty.InputState
 	active     *attachment
 	exited     bool
 }
@@ -195,23 +197,24 @@ func (s *shellTerminal) endTerminal() *attachment {
 }
 
 type shellInput interface {
-	tmux.Input
+	io.Writer
+	Stopped() bool
 	Stop() error
 }
 
-func shellSize(m message) tmux.Size {
-	return tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}
+func shellSize(m message) pty.Size {
+	return pty.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}
 }
 
 // The caller holds mu while publishing the terminal. The exit handler owns
 // task-specific state and exit reporting.
 func (s *shellTerminal) startTerminal(path string, args, env []string, dir string, m message, exited func(error, int)) error {
-	t, err := tmux.Start(tmux.Config{Path: path, Args: args, Env: env, Dir: dir, Size: shellSize(m)})
+	t, err := pty.Start(pty.Config{Path: path, Args: args, Env: env, Dir: dir, Size: shellSize(m)})
 	if err != nil {
 		return err
 	}
 	pid := t.PID()
-	identity, err := spawnProcessIdentity(pid)
+	identity, err := proc.LiveIdentity(pid)
 	if err != nil {
 		t.Close()
 		return err
@@ -222,7 +225,7 @@ func (s *shellTerminal) startTerminal(path string, args, env []string, dir strin
 	return nil
 }
 
-func (s *shellTerminal) pumpTerminal(t *tmux.Terminal, exited func(error, int)) {
+func (s *shellTerminal) pumpTerminal(t *pty.Terminal, exited func(error, int)) {
 	buf := make([]byte, 8192)
 	for {
 		n, err := t.Read(buf)
@@ -233,7 +236,7 @@ func (s *shellTerminal) pumpTerminal(t *tmux.Terminal, exited func(error, int)) 
 			s.mu.Lock()
 			p := s.active
 			s.mu.Unlock()
-			if p != nil && p.output(message{Type: "output", Data: buf[:n]}) != nil {
+			if p != nil && p.Output(buf[:n]) != nil {
 				p.Close()
 			}
 			s.terminalMu.Unlock()
@@ -276,11 +279,11 @@ func (s *shellTerminal) attachTerminal(p *attachment, m message, start func(mess
 	if err := s.terminal.Resize(shellSize(m)); err != nil {
 		return err
 	}
-	lease := tmux.NewInputLease(s.terminal)
+	lease := pty.NewInputLease(s.terminal)
 	err := ready()
 	if err == nil {
 		if data := s.modes.Replay(); len(data) > 0 {
-			err = p.output(message{Type: "output", Data: data})
+			err = p.Output(data)
 		}
 	}
 	if err != nil {
@@ -290,7 +293,7 @@ func (s *shellTerminal) attachTerminal(p *attachment, m message, start func(mess
 	p.input = lease
 	s.active = p
 	if !initial {
-		tmux.RequestRedraw(s.terminal, s.process.PID)
+		pty.RequestRedraw(s.terminal, s.process.PID)
 	}
 	return nil
 }
@@ -358,12 +361,15 @@ func (s *shellTerminal) serveAttachment(p *attachment, control io.Reader, resize
 		}
 		switch m.Type {
 		case "detach":
+			p.approvals.disable()
 			released = true
 			name, err := release()
 			if err == nil && name != "" {
 				return p.FinishDetach(name)
 			}
 			return err
+		case "input_barrier":
+			err = p.DrainInput(m.TerminalOffset)
 		case "resize":
 			s.mu.Lock()
 			if s.active == p {
@@ -380,7 +386,7 @@ func (s *shellTerminal) serveAttachment(p *attachment, control io.Reader, resize
 			s.terminalMu.Lock()
 			s.mu.Lock()
 			if s.active == p {
-				tmux.RequestRedraw(s.terminal, s.process.PID)
+				pty.RequestRedraw(s.terminal, s.process.PID)
 			}
 			s.mu.Unlock()
 			s.terminalMu.Unlock()
@@ -467,11 +473,11 @@ func (s *localShell) start(m message) error {
 		source = os.Environ()
 	}
 	path := localShellPath(source)
-	args, err := tmux.StartupArgs(path, m.NoLogin, m.NoProfile)
+	args, err := pty.StartupArgs(path, m.NoLogin, m.NoProfile)
 	if err != nil {
 		return err
 	}
-	env := tmux.StartupEnv(path, localShellEnvironment(source, m.Term, s.record.identity()), m.NoProfile)
+	env := pty.StartupEnv(path, localShellEnvironment(source, m.Term, s.record.identity()), m.NoProfile)
 	return s.startTerminal(path, args, env, s.record.Directory, m, func(err error, code int) {
 		reason := "shell exited"
 		if err != nil {
@@ -548,7 +554,7 @@ func localSessionTargets(name string, request message) message {
 	}
 	if len(reply.Targets) > 128 {
 		reply.Targets = nil
-		reply.Error = "too many local shells; use sshore list --local"
+		reply.Error = "too many local shells; use sshore list self:"
 	}
 	return reply
 }
@@ -603,11 +609,13 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, re
 				return writeMessage(c, message{Type: "error", Error: err.Error()})
 			}
 			return writeMessage(c, message{Type: "killed"})
-		case "mux":
+		case "terminal_open":
+			return s.endpoints.serve(c, m)
+		case "attach_control":
 			if m.SoftwareVersion != version {
 				return fmt.Errorf("local version mismatch")
 			}
-			if err := writeMessage(c, message{Type: "mux_ready", SoftwareVersion: version}); err != nil {
+			if err := writeMessage(c, message{Type: "attach_control_ready", SoftwareVersion: version}); err != nil {
 				return err
 			}
 			return s.attach(c)
@@ -618,15 +626,15 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, re
 }
 
 func (s *localShell) attach(c net.Conn) error {
-	mx, control, terminal, m, err := acceptMux(c)
+	terminal, m, err := acceptAttachment(c, &s.endpoints)
 	if err != nil {
 		return err
 	}
 	if err := validateAttach(m); err != nil {
-		mx.Close()
+		terminal.Close()
 		return err
 	}
-	p := newAttachment(mx, control, terminal)
+	p := newAttachment(c, terminal)
 	s.terminalMu.Lock()
 	s.mu.Lock()
 	initial := s.terminal == nil
@@ -649,7 +657,7 @@ func (s *localShell) attach(c net.Conn) error {
 		p.Close()
 		return err
 	}
-	return s.serveAttachment(p, control, false, func(err error) (string, func()) {
+	return s.serveAttachment(p, c, false, func(err error) (string, func()) {
 		if err != nil {
 			return "", s.close
 		}

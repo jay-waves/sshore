@@ -9,8 +9,9 @@ import (
 	"sync"
 	"time"
 
+	forwardio "github.com/jay-waves/sshore/internal/forward"
+	"github.com/jay-waves/sshore/internal/proc"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
-	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
 
@@ -23,7 +24,7 @@ type spawnConfig struct {
 	SSH                []string
 }
 
-func openRemoteShellTransport(ctx context.Context, o *options, transports clientTransports) (io.ReadWriteCloser, error) {
+func openRemoteShellTransport(ctx context.Context, o *options, transports clientTransports) (net.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -51,7 +52,7 @@ func openRemoteShellTransport(ctx context.Context, o *options, transports client
 	}
 	stop := context.AfterFunc(ctx, func() { c.Close() })
 	defer stop()
-	mx, err := smux.Client(c, wire.MuxConfig())
+	mx, err := smux.Client(c, relayMuxConfig())
 	if err != nil {
 		c.Close()
 		return nil, err
@@ -66,7 +67,7 @@ func openRemoteShellTransport(ctx context.Context, o *options, transports client
 		mx.Close()
 		return nil, err
 	}
-	open := func(ctx context.Context) (io.ReadWriteCloser, error) {
+	open := func(ctx context.Context) (net.Conn, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -123,7 +124,7 @@ func runRemoteShell(c net.Conn, req localDaemonRequest) error {
 	if f.Command != "spawn" {
 		conn = setupConnection{c, cancel}
 	}
-	frontend, err := smux.Server(conn, wire.MuxConfig())
+	frontend, err := smux.Server(conn, relayMuxConfig())
 	if err != nil {
 		return err
 	}
@@ -134,31 +135,50 @@ func runRemoteShell(c net.Conn, req localDaemonRequest) error {
 	}
 	defer setup.Close()
 	if f.Command == "spawn" {
-		return runSpawnConnection(setup, req, func(lifetime *smux.Session) error {
+		return withRemoteSpawn(setup, req, func(open taskEndpoint, ready message, ownerDone <-chan struct{}) error {
+			if err := streamMessage(setup, ready); err != nil {
+				return err
+			}
 			setup.Close()
-			done := make(chan struct{})
-			go func() { defer close(done); relaySpawnStreams(frontend, lifetime) }()
-			// The owner keeps the lifetime connection even if the frontend leaves.
-			<-lifetime.CloseChan()
-			frontend.Close()
-			<-done
+			relayDirectSpawn(frontend, ownerDone, open)
 			return nil
 		})
 	}
-	return withRemoteShell(ctx, setup, req, f.Command, func(open func() (net.Conn, error), ready message, _ string) error {
+
+	return withRemoteShell(ctx, setup, req, f.Command, func(open taskEndpoint, ready message) error {
 		if err := streamMessage(setup, ready); err != nil {
 			return err
 		}
 		setup.Close()
-		relayRemoteStreams(frontend, func() (io.ReadWriteCloser, error) { return open() })
+		relayRemoteStreams(frontend, open)
 		return nil
 	})
 }
 
-func relaySpawnStreams(frontend, remote *smux.Session) {
-	relayRemoteStreams(frontend, func() (io.ReadWriteCloser, error) { return remote.OpenStream() })
+// The owner channel, not an attachment, holds the temporary shell alive.
+// Data endpoints are sibling SSH channels opened by the authenticated dialer.
+func relayDirectSpawn(frontend *smux.Session, ownerDone <-chan struct{}, open taskEndpoint) {
+	relayDone := make(chan struct{})
+	go func() {
+		defer close(relayDone)
+		relayRemoteStreams(frontend, whileSpawnOwned(ownerDone, open))
+	}()
+
+	// Detach/front-end EOF does not revoke the owner's lease.
+	<-ownerDone
+	// Owner EOF can precede delivery of bytes already queued on sibling channels.
+	// Reject new endpoints immediately, but let the existing output drain briefly.
+	timer := time.NewTimer(spawnDrainTimeout)
+	defer timer.Stop()
+	select {
+	case <-relayDone:
+	case <-timer.C:
+	}
+	frontend.Close()
+	<-relayDone
 }
-func relayRemoteStreams(frontend *smux.Session, open func() (io.ReadWriteCloser, error)) {
+
+func relayRemoteStreams(frontend *smux.Session, open taskEndpoint) {
 	var streams sync.WaitGroup
 	defer streams.Wait()
 	defer frontend.Close()
@@ -173,40 +193,124 @@ func relayRemoteStreams(frontend *smux.Session, open func() (io.ReadWriteCloser,
 				stream.Close()
 				return
 			}
-			wire.Bridge(stream, target)
+			forwardio.Bridge(stream, target)
 		})
 	}
 }
 
-// A spawn claims its lifetime mux before reporting readiness to either caller.
-func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.Session) error) error {
-	return withRemoteShell(context.Background(), c, req, "spawn", func(open func() (net.Conn, error), ready message, instance string) error {
-		channel, err := open()
+// Keep PID and creation identity together when a process outlives its launcher.
+type processIdentity struct {
+	PID   int
+	Start string
+}
+
+func currentSpawnOwner() (processIdentity, error) {
+	pid := os.Getppid()
+	if pid <= 1 {
+		return processIdentity{}, fmt.Errorf("spawn requires a live parent shell")
+	}
+	start, err := proc.LiveIdentity(pid)
+	return processIdentity{PID: pid, Start: start}, err
+}
+
+// The task owns this watcher. Stopping it joins any in-flight owner-loss
+// callback, so cleanup cannot affect a later attachment or outlive the task.
+func superviseSpawnOwner(owner processIdentity, lost func()) func() {
+	if owner.PID == 0 {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		waitSpawnOwner(ctx, owner)
+		if ctx.Err() == nil {
+			lost()
+		}
+	}()
+	return func() { cancel(); <-stopped }
+}
+
+func waitSpawnOwner(ctx context.Context, owner processIdentity) {
+	request := activityRequest{Kind: "owner", Owner: owner}
+	if s := accountActivity.Load(); s != nil {
+		lease, err := s.registerLease(request)
 		if err != nil {
-			return err
+			return
 		}
-		defer channel.Close()
-		if err := writeMessage(channel, message{Type: "spawn_transport", SoftwareVersion: version}); err != nil {
-			return err
+		defer s.remove(lease)
+		select {
+		case <-ctx.Done():
+		case <-lease.expired:
 		}
-		lifetime, err := clientMux(channel)
+		return
+	}
+	stop, done, err := remoteActivity(ctx, request)
+	if err != nil {
+		return
+	}
+	defer stop()
+	<-done
+}
+
+const spawnDrainTimeout = 2 * time.Second
+
+type taskEndpoint func() (net.Conn, error)
+
+func spawnEnded(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
+}
+
+func whileSpawnOwned(done <-chan struct{}, open taskEndpoint) taskEndpoint {
+	return func() (net.Conn, error) {
+		if spawnEnded(done) {
+			return nil, io.ErrClosedPipe
+		}
+		c, err := open()
+		if err == nil && spawnEnded(done) {
+			c.Close()
+			return nil, io.ErrClosedPipe
+		}
+		return c, err
+	}
+}
+
+func claimSpawnOwner(ctx context.Context, open taskEndpoint, instance string) (func(), <-chan struct{}, error) {
+	owner, err := open()
+	if err != nil {
+		return nil, nil, err
+	}
+	handshake := time.AfterFunc(5*time.Second, func() { owner.Close() })
+	defer handshake.Stop()
+	if err := writeMessage(owner, message{Type: "spawn_owner", SoftwareVersion: version, Instance: instance}); err != nil {
+		owner.Close()
+		return nil, nil, err
+	}
+	return acceptActivityLease(ctx, owner)
+}
+
+func withRemoteSpawn(c net.Conn, req localDaemonRequest, use func(taskEndpoint, message, <-chan struct{}) error) error {
+	return withRemoteShell(context.Background(), c, req, "spawn", func(open taskEndpoint, ready message) error {
+		stop, done, err := claimSpawnOwner(context.Background(), open, ready.Instance)
 		if err != nil {
 			return err
 		}
 		defer func() {
-			_ = lifetime.Close()
-			if err := confirmKilledShell(req.Spawn.Host, "", instance); err != nil {
+			stop()
+			if err := confirmKilledShell(req.Spawn.Host, "", ready.Instance); err != nil {
 				fmt.Fprintf(os.Stderr, "sshore: record spawn lifetime end: %v\n", err)
 			}
 		}()
-		if err := writeMessage(c, ready); err != nil {
-			return err
-		}
-		return attached(lifetime)
+		return use(open, ready, done)
 	})
 }
 
-func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest, command string, use func(func() (net.Conn, error), message, string) error) (resultErr error) {
+func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest, command string, use func(taskEndpoint, message) error) (resultErr error) {
 	f := req.Spawn
 	diagnostics := &spawnDiagnostics{c: c, active: true}
 	var pipes *transportio.Process
@@ -252,7 +356,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	}
 	record := ready.LocalRequest.Record
 	host, _, err := net.SplitHostPort(record.Address)
-	if err != nil || host != "127.0.0.1" || !validTaskUID(record.UID) || len(record.Token) != 64 {
+	if err != nil || host != "127.0.0.1" || !validTaskUID(record.UID) || ready.Instance != record.UID || len(record.Token) != 64 {
 		return fmt.Errorf("invalid daemon endpoint")
 	}
 	if err := checkPeerVersion(record.Version, "daemon"); err != nil {
@@ -268,7 +372,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 		}
 		return upgradeDaemonConn(authCtx, channel, record, "/tasks/"+record.UID+"/open", nil)
 	}
-	return use(open, ready, record.UID)
+	return use(open, ready)
 }
 
 // Relay the selection exchange until the remote setup process hands over a task.
@@ -333,4 +437,16 @@ func shellLifetime(temporary, remote bool) string {
 
 func validShellLifetime(value string) bool {
 	return value == "" || value == "persistent" || value == "parent" || value == "heartbeat"
+}
+
+// The local frontend-to-daemon connection carries independent task endpoints.
+func relayMuxConfig() *smux.Config {
+	c := smux.DefaultConfig()
+	c.Version = 2
+	c.MaxFrameSize = 16 * 1024
+	c.MaxStreamBuffer = 1024 * 1024
+	c.MaxReceiveBuffer = 44 * c.MaxStreamBuffer
+	c.KeepAliveInterval = 10 * time.Second
+	c.KeepAliveTimeout = 60 * time.Second
+	return c
 }

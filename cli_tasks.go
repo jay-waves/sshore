@@ -15,7 +15,7 @@ type selectedTask struct {
 // instance against the daemon or resource record before acting on it.
 func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool, error) {
 	var empty selectedTask
-	if len(parsed.operands) == 0 || parsed.has("--all") || parsed.explicitHost && len(parsed.operands) == 1 && !parsed.has("--local") {
+	if len(parsed.operands) == 0 || parsed.has("--all") || parsed.explicitHost && len(parsed.operands) == 1 && !parsed.local {
 		return empty, false, nil
 	}
 	switch command {
@@ -25,7 +25,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 	}
 	position := 0
 	compact := len(parsed.operands) == 1 || command == "rename" && len(parsed.operands) == 2
-	if !compact && !parsed.has("--local") && command != "review" {
+	if !compact && !parsed.local && command != "review" {
 		position = 1
 	}
 	ref := parsed.operands[position]
@@ -34,8 +34,8 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		code = ref
 		kind = ""
 	}
-	localKill := command == "kill" && compact && !typed && (!parsed.has("--local") || parsed.explicitHost)
-	localShell := parsed.has("--local") && !localKill
+	localKill := command == "kill" && compact && !typed && (!parsed.local || parsed.explicitHost)
+	localShell := parsed.local && !localKill
 	prefix := ""
 	if isTaskIDPrefix(code) {
 		prefix = strings.ToLower(code)
@@ -58,7 +58,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 	scoped := typed || localShell || localKill || host != ""
 	var target selectedTask
 	found := false
-	matched := !localKill && len(selections.byID) > 0
+	matched := len(selections.byID) > 0
 	for _, candidate := range selections.byID {
 		if scoped {
 			if candidate.kind == "" || candidate.kind == "peer" {
@@ -90,8 +90,8 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		if prefix == "" {
 			return empty, false, nil
 		}
-		// Explicit HOST/--local/type scopes still accept hexadecimal names.
-		if compact && !typed && !parsed.has("--local") {
+		// Explicit HOST/self:/type scopes still accept hexadecimal names.
+		if compact && !typed && !parsed.local {
 			return empty, false, usage("unknown task ID %s; use sshore list", ref)
 		}
 		return empty, false, nil
@@ -243,13 +243,13 @@ func routeSelectedTask(command string, parsed *cliArguments, target selectedTask
 		return empty, false, usage("%s does not accept %s tasks", command, target.kind)
 	}
 	if target.kind != "shell" {
-		if parsed.has("--local") && !(command == "kill" && parsed.explicitHost) || len(parsed.ssh) != 0 || parsed.has("--server") {
-			return empty, false, usage("local resources do not accept SSH options or --local")
+		if parsed.local && !(command == "kill" && parsed.explicitHost) || len(parsed.ssh) != 0 || parsed.has("--server") {
+			return empty, false, usage("local resources do not accept SSH options")
 		}
 		return target, true, nil
 	}
 	if target.host == "" {
-		parsed.values["--local"] = ""
+		parsed.local = true
 		parsed.operands = append([]string{target.name}, parsed.operands[position+1:]...)
 	} else {
 		parsed.operands = append([]string{target.host, target.name}, parsed.operands[position+1:]...)

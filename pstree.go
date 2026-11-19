@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/proc"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -25,6 +26,42 @@ type shellTreeNode struct {
 	Remote, Direction                                    string    `json:"-"`
 	MachineID                                            string    `json:",omitempty"`
 	CheckedAt                                            time.Time `json:",omitempty"`
+}
+
+// Display context only: this process is never registered or adopted as a task.
+type spawnProcessView struct {
+	PID                          int
+	Start, Name, MachineID, Host string
+}
+
+func validSpawnProcessView(p *spawnProcessView) bool {
+	return p != nil && p.PID > 1 && p.Start != "" && len(p.Start) <= 128 && len(p.Name) <= 256 && len(p.Host) <= 256 && validMachineID(p.MachineID)
+}
+
+func describeSpawnOwner(owner processIdentity) *spawnProcessView {
+	if owner.PID <= 1 || owner.Start == "" {
+		return nil
+	}
+	machine, host := localMachineIdentity()
+	p := &spawnProcessView{PID: owner.PID, Start: owner.Start, MachineID: machine, Host: host}
+	p.Name = proc.VerifiedName(p.PID, p.Start)
+	return p
+}
+
+func externalSpawnNode(id, machine string, p *spawnProcessView) shellTreeNode {
+	name, state := "unavailable", "unavailable"
+	if p.MachineID == machine {
+		if current := proc.VerifiedName(p.PID, p.Start); current != "" {
+			name, state = current, "active"
+		}
+	} else {
+		// Never query a foreign PID in the local process namespace.
+		if p.Name != "" {
+			name = p.Name
+		}
+		name += " on " + p.Host
+	}
+	return shellTreeNode{Identity: id, Kind: "external", Name: name, State: state, OwnerProcess: p}
 }
 
 func (n shellTreeNode) clone() shellTreeNode {

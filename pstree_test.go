@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/proc"
 )
 
 func TestShellTreeAttachmentSnapshots(t *testing.T) {
@@ -364,7 +366,7 @@ func TestShellTreeAttachmentSourceSnapshot(t *testing.T) {
 }
 
 func TestExternalSpawnParentDisplay(t *testing.T) {
-	start, err := spawnProcessIdentity(os.Getpid())
+	start, err := proc.LiveIdentity(os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}

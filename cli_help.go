@@ -51,7 +51,6 @@ forwarding and ProxyCommand are unsupported; unsupported requests fail.
 `
 
 const connectionOptions = `  --server PATH         Remote executable (default: PATH, then ~/.local/bin/sshore)
-  --download-dir DIR    Default download directory; review still required
   -q, --quiet           Hide periodic transfer progress
   --no-escape           Disable Ctrl+B shortcuts
 `
@@ -65,7 +64,7 @@ const shellConnectionHelp = `
 The remote release must match exactly. Update the older side before connecting.
 ` + sshOptions + "Shell connections also accept SSH -L, -R and -D.\n"
 
-const connectionFlags = "--server --download-dir --quiet --no-escape"
+const connectionFlags = "--server --quiet --no-escape"
 
 var cliCommands = map[string]cliSpec{
 	"": {
@@ -228,7 +227,7 @@ Use attach to reconnect. Ctrl+B d also detaches.
 `,
 	},
 	"rename": {
-		ssh: true, min: 2, max: 3, flags: []string{"--local", "--server"},
+		ssh: true, min: 2, max: 3, flags: []string{"--server"},
 		help: `Usage: sshore rename HOST:ID NEW [--server PATH] [-- SSH_OPTIONS]
        sshore rename self:ID NEW
        sshore rename {mount|forward|review}/OLD NEW
@@ -241,7 +240,7 @@ Remote rename requires matching releases and never installs software.
 ` + sshOptions,
 	},
 	"list": {
-		ssh: true, max: 1, flags: []string{"--local", "--server", "--json"},
+		ssh: true, max: 1, flags: []string{"--server", "--json"},
 		help: `Usage: sshore list [HOST:] [options] [-- SSH_OPTIONS]
 
 Without an endpoint, show local tasks, shells hosted by this Unix account, and saved
@@ -258,7 +257,6 @@ Use aliases or short IDs for attach, rename, kill and review.
 A matching short ID takes precedence over a name.
 
 Options:
-  --local          Show only local shells
   --json           Emit full diagnostics and recent history as JSON
   --server PATH    Select the remote executable
 
@@ -282,7 +280,7 @@ No SSH is started by this command.
 `,
 	},
 	"kill": {
-		ssh: true, max: 2, flags: []string{"--local", "--server", "--all"},
+		ssh: true, max: 2, flags: []string{"--server", "--all"},
 		help: `Usage: sshore kill [self:]ID
        sshore kill {review|mount|forward}/NAME
        sshore kill HOST:ID [--server PATH] [-- SSH_OPTIONS]

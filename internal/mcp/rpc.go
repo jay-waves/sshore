@@ -1,12 +1,11 @@
 package mcp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-
-	"github.com/jay-waves/sshore/internal/wire"
 )
 
 // Request and Response are exchanged over the authenticated SSH transport.
@@ -88,7 +87,7 @@ func writeRPCFrame(w io.Writer, value any) error {
 	if err != nil {
 		return err
 	}
-	return wire.WriteFrame(w, 0, data)
+	return writeRPCPayload(w, data)
 }
 func readRPCFrame(r io.Reader, value any) error {
 	data, err := readRPCPayload(r)
@@ -98,22 +97,64 @@ func readRPCFrame(r io.Reader, value any) error {
 	return json.Unmarshal(data, value)
 }
 
+const MaxRPCPayload = 64*1024 + 4096
+
+func writeRPCPayload(w io.Writer, data []byte) error {
+	if len(data) > MaxRPCPayload {
+		return fmt.Errorf("MCP message exceeds %d bytes", MaxRPCPayload)
+	}
+	line := append(append(make([]byte, 0, len(data)+1), data...), '\n')
+	for len(line) != 0 {
+		n, err := w.Write(line)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		line = line[n:]
+	}
+	return nil
+}
+
 func readRPCPayload(r io.Reader) ([]byte, error) {
-	kind, data, err := wire.ReadFrame(r)
-	if err != nil {
-		return nil, err
+	reader, ok := r.(io.ByteReader)
+	if !ok {
+		reader = rpcByteReader{r}
 	}
-	if kind != 0 {
-		return nil, fmt.Errorf("expected MCP JSON frame")
+	var data []byte
+	for {
+		b, err := reader.ReadByte()
+		if err != nil {
+			if err == io.EOF && len(data) != 0 {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, err
+		}
+		if b == '\n' {
+			return data, nil
+		}
+		if len(data) == MaxRPCPayload {
+			return nil, fmt.Errorf("MCP message exceeds %d bytes", MaxRPCPayload)
+		}
+		data = append(data, b)
 	}
-	return data, nil
+}
+
+type rpcByteReader struct{ io.Reader }
+
+func (r rpcByteReader) ReadByte() (byte, error) {
+	var b [1]byte
+	_, err := io.ReadFull(r.Reader, b[:])
+	return b[0], err
 }
 
 // Relay passes one bounded JSON exchange at a time to the authenticated daemon.
 // The daemon decodes requests and owns release checks and dispatch.
 func Relay(r io.Reader, w io.Writer, exchange func(json.RawMessage) (json.RawMessage, error)) error {
+	reader := bufio.NewReader(r)
 	for {
-		request, err := readRPCPayload(r)
+		request, err := readRPCPayload(reader)
 		if err == io.EOF {
 			return nil
 		}
@@ -124,7 +165,7 @@ func Relay(r io.Reader, w io.Writer, exchange func(json.RawMessage) (json.RawMes
 		if err != nil {
 			return err
 		}
-		if err := wire.WriteFrame(w, 0, response); err != nil {
+		if err := writeRPCPayload(w, response); err != nil {
 			return err
 		}
 	}

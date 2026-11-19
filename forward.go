@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
+	forwardio "github.com/jay-waves/sshore/internal/forward"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/jay-waves/sshore/internal/wire"
 )
 
 func parsePort(s string) (int, error) {
@@ -161,55 +161,6 @@ func runForwardForeground(f forwardConfig) (int, error) {
 	return runForwardTransportForeground(ctx, sshExecutable(), f, os.Stderr)
 }
 
-func runEndpointForward(args []string) (int, error) {
-	if os.Getenv("SSHORE_SOCKET") != "" {
-		op, err := remoteForwardRequest(args)
-		if err != nil {
-			return 2, err
-		}
-		return 0, requestOperations("forward", []operation{op})
-	}
-	f, foreground, err := parseForwardCommand(args)
-	if err != nil {
-		return 2, err
-	}
-	stopActivity, err := beginCommandActivity()
-	if err != nil {
-		return 1, err
-	}
-	defer stopActivity()
-	if f.Port == 0 || f.Target == 0 {
-		input, err := newLocalInput()
-		if err != nil {
-			return 2, err
-		}
-		defer input.Close()
-		label := "Local listening port"
-		remote := f.Target
-		if f.Reverse {
-			label = "Local service port"
-			remote = f.Port
-		}
-		termui.Log(os.Stdout, termui.Info, "Remote %s:%d. Submit local port to forward.\n", cleanText(f.Host), remote)
-		port, err := readForwardPort(input, label)
-		if err != nil {
-			return 1, err
-		}
-		if f.Reverse {
-			f.Target = port
-		} else {
-			f.Port = port
-		}
-		if err = input.Close(); err != nil {
-			return 1, err
-		}
-	}
-	if foreground {
-		return runForwardForeground(f)
-	}
-	return startForwardSession(f)
-}
-
 func pendingPortDescription(op operation) string {
 	if op.Reverse {
 		return fmt.Sprintf("server %s -> local service (choose port in review)", loopback(op.ServerPort()))
@@ -325,11 +276,17 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 	} else {
 		connection.Args = append([]string{"-o", "StrictHostKeyChecking=yes"}, connection.Args...)
 	}
-	process, err := sshio.Start(ctx, connection, diagnostic)
+	connection.Diagnostic = diagnostic
+	client, close, err := openDirectForward(ctx, connection, f)
 	if err != nil {
 		return nil, err
 	}
-	return &forwardConnection{Reader: process, Writer: process, Wait: process.Wait, close: process.Close}, nil
+	process, err := client.Start(connection.Command, diagnostic)
+	if err != nil {
+		close()
+		return nil, err
+	}
+	return &forwardConnection{Reader: process, Writer: process, Wait: process.Wait, close: func() error { close(); return nil }}, nil
 }
 
 var errForwardRetries = errors.New("--retries must be between 0 and 10")
@@ -363,13 +320,67 @@ func (c forwardConfig) Validate() error {
 	return nil
 }
 
-// Pass the owned loopback rule directly; ssh -G resolves authentication and
-// transport settings without serializing and parsing the product's ports.
+// SSH resolves connection settings; the application binds its own forwarding rule.
 func forwardSSHOptions(c forwardConfig, command string) sshio.Options {
 	args := []string{"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"}
 	args = append(args, sshio.WithoutForwarding(c.SSH)...)
-	return sshio.Options{Host: c.Host, Command: command, Args: args,
-		Forward: &sshio.Forward{Port: c.Port, Target: c.Target, Reverse: c.Reverse}}
+	return sshio.Options{Host: c.Host, Command: command, Args: args}
+}
+
+// openDirectForward owns both the SSH connection and its forwarding workers.
+// The listener must be established before starting the remote readiness helper.
+func openDirectForward(ctx context.Context, options sshio.Options, rule forwardConfig) (*sshio.Client, func(), error) {
+	if err := rule.Validate(); err != nil {
+		return nil, nil, err
+	}
+	client, err := sshio.Dial(ctx, options)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Remote listener setup may block waiting for an SSH reply.
+	stop := context.AfterFunc(ctx, func() { client.Close() })
+	worker, err := startDirectForward(client, rule)
+	if err == nil {
+		err = ctx.Err()
+	}
+	close := sync.OnceFunc(func() {
+		stop()
+		client.Close()
+		if worker != nil {
+			worker.Close()
+		}
+	})
+	if err != nil {
+		close()
+		return nil, nil, err
+	}
+	return client, close, nil
+}
+
+func startDirectForward(c *sshio.Client, rule forwardConfig) (*forwardio.Forwarder, error) {
+	listen := net.JoinHostPort("127.0.0.1", strconv.Itoa(rule.Port))
+	target := net.JoinHostPort("127.0.0.1", strconv.Itoa(rule.Target))
+	var listener net.Listener
+	var err error
+	if rule.Reverse {
+		listener, err = c.Listen("tcp4", listen)
+	} else {
+		listener, err = net.Listen("tcp4", listen)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("forward %s: %w", listen, err)
+	}
+
+	dial := func(ctx context.Context) (net.Conn, error) {
+		return c.DialContext(ctx, "tcp", target)
+	}
+	if rule.Reverse {
+		dialer := net.Dialer{Timeout: 15 * time.Second}
+		dial = func(ctx context.Context) (net.Conn, error) {
+			return dialer.DialContext(ctx, "tcp4", target)
+		}
+	}
+	return forwardio.StartForwardListener(listener, dial), nil
 }
 
 // Foreground forwards own their connection until explicit cancellation or loss.
@@ -377,16 +388,14 @@ func runForwardTransportForeground(ctx context.Context, executable string, c for
 	options := forwardSSHOptions(c, "")
 	options.Executable, options.Confirm, options.Secret = executable, confirmSSHHost, promptSSHSecret
 	options.Diagnostic = diagnostic
-	connection, err := sshio.Dial(ctx, options)
+	connection, close, err := openDirectForward(ctx, options, c)
 	if err != nil {
 		if ctx.Err() != nil {
 			return 0, nil
 		}
 		return 1, err
 	}
-	defer connection.Close()
-	stop := context.AfterFunc(ctx, func() { connection.Close() })
-	defer stop()
+	defer close()
 	err = connection.Wait()
 	if ctx.Err() != nil {
 		return 0, nil
@@ -425,15 +434,17 @@ func runForwardAttempt(parent context.Context, s *resourceService, advertisement
 	if err != nil {
 		return false, err
 	}
-	stream := wire.OwnTransport(ctx, connection, nil)
+	closeConnection := sync.OnceFunc(func() { _ = connection.Close() })
+	stop := context.AfterFunc(ctx, closeConnection)
 	var heartbeat sync.WaitGroup
 	defer func() {
 		cancel(nil)
-		_ = stream.Close()
+		stop()
+		closeConnection()
 		heartbeat.Wait()
 	}()
 	// Read only the bounded protocol marker. Unexpected login output is an error.
-	marker, readErr := bufio.NewReader(io.LimitReader(stream, int64(len(forwardReadyMarker)+2))).ReadString('\n')
+	marker, readErr := bufio.NewReader(io.LimitReader(connection, int64(len(forwardReadyMarker)+2))).ReadString('\n')
 	startupErr := readErr
 	switch {
 	case readErr != nil:
@@ -458,7 +469,7 @@ func runForwardAttempt(parent context.Context, s *resourceService, advertisement
 			// The registered forward already keeps the account daemon busy.
 			pulse := activity.heartbeat()
 			for ctx.Err() == nil {
-				if err := wire.WriteFull(stream, advertisement); err != nil {
+				if err := writeFull(connection, advertisement); err != nil {
 					cancel(fmt.Errorf("forward heartbeat write failed: %w", err))
 					return
 				}

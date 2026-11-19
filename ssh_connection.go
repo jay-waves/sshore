@@ -14,14 +14,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jay-waves/sshore/internal/pty"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/jay-waves/sshore/internal/tmux"
 	"golang.org/x/term"
 )
 
 func sshConnectionOptions(o options) sshio.Options {
-	return sshio.Options{Host: o.host, Command: "export SSHORE_DIRECT_TRANSPORT=1; " + remoteCommand(o), Args: o.ssh, Environment: o.environment, Directory: o.sshDirectory, Confirm: confirmSSHHost, Secret: promptSSHSecret}
+	return sshio.Options{Host: o.host, Command: remoteCommand(o), Args: o.ssh, Environment: o.environment, Directory: o.sshDirectory, Confirm: confirmSSHHost, Secret: promptSSHSecret}
 }
 func confirmSSHHost(ctx context.Context, prompt string) (bool, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
@@ -38,11 +38,11 @@ func readSSHLine(ctx context.Context, prompt string) (string, error) {
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
 		return "", usage("local selection requires an interactive terminal; specify the local endpoint")
 	}
-	tmux.ResetInputModes()
-	if err := tmux.FlushInput(); err != nil {
+	pty.ResetInputModes()
+	if err := pty.FlushInput(); err != nil {
 		return "", err
 	}
-	restore, err := tmux.RawConsole()
+	restore, err := pty.RawConsole()
 	if err != nil {
 		return "", err
 	}
@@ -62,7 +62,7 @@ func readSSHLine(ctx context.Context, prompt string) (string, error) {
 	defer cancelKeyboard()
 	stopCancel := context.AfterFunc(keyboardCtx, func() { _ = writer.CloseWithError(keyboardCtx.Err()) })
 	defer stopCancel()
-	stopKeyboard, err := tmux.StartKeyboard(keyboardCtx, func(data []byte, err error) {
+	stopKeyboard, err := pty.StartKeyboard(keyboardCtx, func(data []byte, err error) {
 		defer clear(data)
 		if len(data) != 0 {
 			_, _ = writer.Write(data)
@@ -128,7 +128,7 @@ func readSSHSecret(parent context.Context, prompt string) ([]byte, error) {
 	if err := parent.Err(); err != nil {
 		return nil, err
 	}
-	restore, err := tmux.RawConsole()
+	restore, err := pty.RawConsole()
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +140,7 @@ func readSSHSecret(parent context.Context, prompt string) ([]byte, error) {
 		err  error
 	}
 	incoming := make(chan input)
-	stop, err := tmux.StartKeyboard(ctx, func(data []byte, err error) {
+	stop, err := pty.StartKeyboard(ctx, func(data []byte, err error) {
 		select {
 		case incoming <- input{data, err}:
 		case <-ctx.Done():

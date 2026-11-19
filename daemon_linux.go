@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/mcp"
+	"github.com/jay-waves/sshore/internal/proc"
 )
 
 func (tasks *daemonTasks) hostedViews(detail string) []shellView {
@@ -31,7 +32,7 @@ func (tasks *daemonTasks) hostedViews(detail string) []shellView {
 		}
 	}
 	if diagnostics && len(views) > 0 {
-		snapshot := readProcessSnapshot("/proc")
+		snapshot := newProcessSnapshot(proc.ReadProcesses())
 		for i, group := range groups {
 			views[i].Foreground = snapshot.foregroundPrograms(group)
 			if detail == "sessions" {

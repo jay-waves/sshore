@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
-	"encoding/binary"
+	"errors"
+
 	"fmt"
 	"io"
 	"net"
@@ -13,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
 
@@ -55,13 +56,9 @@ func (w *shortWriter) Write(b []byte) (int, error) {
 	}
 	return w.Buffer.Write(b)
 }
-func TestProtocolBinaryAndFragmentation(t *testing.T) {
-	data := make([]byte, chunkSize)
-	for i := range data {
-		data[i] = byte(i)
-	}
+func TestProtocolControlFragmentation(t *testing.T) {
 	var b shortWriter
-	for _, m := range []message{{Type: "attach", SoftwareVersion: version, Term: "xterm", Cols: 90, Rows: 30}, {Type: "input", Data: data}, {Type: "output", Data: []byte("\x00\xff\x1b[31m")}} {
+	for _, m := range []message{{Type: "attach", SoftwareVersion: version, Term: "xterm", Cols: 90, Rows: 30}, {Type: "input_barrier", TerminalOffset: 65537}} {
 		if err := writeMessage(&b, m); err != nil {
 			t.Fatal(err)
 		}
@@ -72,29 +69,59 @@ func TestProtocolBinaryAndFragmentation(t *testing.T) {
 		t.Fatalf("%+v %v", m, err)
 	}
 	m, err = readMessage(r)
-	if err != nil || m.Type != "input" || !bytes.Equal(m.Data, data) {
-		t.Fatal("binary frame mismatch", err)
-	}
-	m, err = readMessage(r)
-	if err != nil || !bytes.Equal(m.Data, []byte("\x00\xff\x1b[31m")) {
-		t.Fatal("terminal frame mismatch", err)
+	if err != nil || m.Type != "input_barrier" || m.TerminalOffset != 65537 {
+		t.Fatalf("%+v %v", m, err)
 	}
 }
-func TestProtocolRejectsMalformedFrames(t *testing.T) {
-	header := make([]byte, 5)
-	binary.BigEndian.PutUint32(header[1:], maxFrame+1)
-	for _, b := range [][]byte{header, {4, 0, 0, 0, 0}, {3, 0, 0, 0, 1, 0}, {1, 0, 0, 0, 2, 0}, {0, 0, 0, 0, 0}} {
-		if _, err := readMessage(bytes.NewReader(b)); err == nil {
-			t.Fatalf("accepted %v", b)
+
+func TestProtocolJSONLines(t *testing.T) {
+	var out bytes.Buffer
+	for range 2 {
+		if err := writeMessage(&out, message{Type: "bye"}); err != nil {
+			t.Fatal(err)
 		}
 	}
-	for _, body := range []string{`{}`, `{"type":"input"}`, `{"type":"output"}`, `{"type":"chunk"}`} {
-		frame := make([]byte, 5+len(body))
-		binary.BigEndian.PutUint32(frame[1:], uint32(len(body)))
-		copy(frame[5:], body)
-		if _, err := readMessage(bytes.NewReader(frame)); err == nil {
-			t.Fatalf("accepted reserved control metadata: %s", body)
+	if got, want := out.String(), "{\"type\":\"bye\"}\n{\"type\":\"bye\"}\n"; got != want {
+		t.Fatalf("encoded %q, want %q", got, want)
+	}
+}
+
+func TestProtocolRejectsMalformedFrames(t *testing.T) {
+	for _, body := range []string{"\n", "{\n", `{}
+`, `{"type":"input"}
+`, `{"type":"output"}
+`, `{"type":"chunk"}
+`, strings.Repeat(" ", maxControlMessage+1) + "\n"} {
+		for _, reader := range []io.Reader{strings.NewReader(body), bufio.NewReader(strings.NewReader(body))} {
+			if _, err := readMessage(reader); err == nil {
+				t.Fatalf("accepted invalid control line of length %d", len(body))
+			}
 		}
+	}
+	for _, reader := range []io.Reader{strings.NewReader(`{"type":"bye"}`), bufio.NewReader(strings.NewReader(`{"type":"bye"}`))} {
+		if _, err := readMessage(reader); !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("truncated read: %v", err)
+		}
+	}
+}
+
+func TestControlHandshakePreservesRawBytes(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	raw := []byte{0, 255, 13, 10, 7}
+	go func() {
+		_, _ = b.Write(append([]byte("{\"type\":\"sftp\"}\n"), raw...))
+	}()
+	stream := ownClientTransport(context.Background(), a, nil)
+	defer stream.Close()
+	m, err := readMessage(stream)
+	if err != nil || m.Type != "sftp" {
+		t.Fatalf("handshake: %+v %v", m, err)
+	}
+	got := make([]byte, len(raw))
+	if _, err := io.ReadFull(stream, got); err != nil || !bytes.Equal(got, raw) {
+		t.Fatalf("raw tail: %x %v", got, err)
 	}
 }
 func TestOptions(t *testing.T) {
@@ -129,11 +156,11 @@ func TestProtocolUnicodeError(t *testing.T) {
 func muxPair(t *testing.T) (*smux.Session, *smux.Session) {
 	t.Helper()
 	a, b := net.Pipe()
-	client, err := smux.Client(a, wire.MuxConfig())
+	client, err := smux.Client(a, relayMuxConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := smux.Server(b, wire.MuxConfig())
+	server, err := smux.Server(b, relayMuxConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,10 +168,10 @@ func muxPair(t *testing.T) (*smux.Session, *smux.Session) {
 	return client, server
 }
 
-func TestSpawnTransportKeepsIndependentAttachmentStreams(t *testing.T) {
+func TestFrontendDaemonMuxKeepsIndependentTaskEndpoints(t *testing.T) {
 	frontend, relay := muxPair(t)
 	remote, daemon := muxPair(t)
-	go relaySpawnStreams(relay, remote)
+	go relayRemoteStreams(relay, func() (net.Conn, error) { return remote.OpenStream() })
 	go func() {
 		for {
 			stream, err := daemon.AcceptStream()
@@ -161,10 +188,10 @@ func TestSpawnTransportKeepsIndependentAttachmentStreams(t *testing.T) {
 		}
 	}()
 	o := options{command: "attach", host: "must-not-authenticate", session: "parent", instance: "parent-instance",
-		reusable: &clientTransport{session: "parent", instance: "parent-instance", open: func(context.Context) (io.ReadWriteCloser, error) {
+		reusable: &clientTransport{session: "parent", instance: "parent-instance", open: func(context.Context) (net.Conn, error) {
 			return frontend.OpenStream()
 		}}}
-	for _, kind := range []string{"spawn_route_connect", "spawn_route_confirm", "mux"} {
+	for _, kind := range []string{"spawn_route_connect", "spawn_route_confirm", "terminal_open"} {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		c, err := openClientTransportContext(ctx, &o, nil)
 		if err != nil {
@@ -189,52 +216,17 @@ func TestSpawnTransportKeepsIndependentAttachmentStreams(t *testing.T) {
 		t.Fatal("attachment close ended the shared transport")
 	}
 }
-func TestClientMuxRejectsDifferentOrUnknownBuild(t *testing.T) {
-	for _, peer := range []string{"0.0.0-old", ""} {
-		t.Run(peer, func(t *testing.T) {
-			a, b := net.Pipe()
-			defer a.Close()
-			defer b.Close()
-			_ = a.SetDeadline(time.Now().Add(3 * time.Second))
-			done := make(chan error, 1)
-			go func() {
-				m, err := readMessage(b)
-				if err == nil && m.SoftwareVersion != version {
-					err = fmt.Errorf("client omitted its software version")
-				}
-				if err == nil {
-					err = writeMessage(b, message{Type: "mux_ready", SoftwareVersion: peer})
-				}
-				done <- err
-			}()
-			mux, err := clientMux(a)
-			if mux != nil {
-				mux.Close()
-				t.Fatal("accepted incompatible daemon")
-			}
-			if err == nil || !strings.Contains(err.Error(), "remote shell daemon") || !strings.Contains(err.Error(), "same full release") {
-				t.Fatal(err)
-			}
-			if err := <-done; err != nil {
-				t.Fatal(err)
-			}
-		})
-	}
-}
-
 func TestApprovalMismatchDoesNotWriteFile(t *testing.T) {
-	client, server := muxPair(t)
+	client, server := net.Pipe()
+	defer server.Close()
 	target := filepath.Join(t.TempDir(), "secret")
 	go func() {
-		st, err := server.AcceptStream()
-		if err != nil {
-			return
-		}
-		defer st.Close()
-		_, _ = readMessage(st)
-		_ = writeMessage(st, message{Type: "offer", Name: "other", Size: 3})
+		defer server.Close()
+		_, _ = readMessage(server)
+		_ = writeMessage(server, message{Type: "offer", Name: "other", Size: 3})
 	}()
-	err := executeApprovedFile(context.Background(), client, newApprovedFile(operation{Kind: "download", Path: "/tmp/a", Name: "a", Size: 3}, target, nil), false)
+	open := func() (net.Conn, error) { return client, nil }
+	err := executeApprovedFile(context.Background(), open, newApprovedFile(operation{Kind: "download", Path: "/tmp/a", Name: "a", Size: 3}, target, nil), false)
 	if err == nil {
 		t.Fatal("mismatch accepted")
 	}
@@ -244,15 +236,56 @@ func TestApprovalMismatchDoesNotWriteFile(t *testing.T) {
 }
 
 func TestApprovedUploadRequiresOpenedSource(t *testing.T) {
-	client, server := muxPair(t)
-	err := executeApprovedFile(context.Background(), client, newApprovedFile(operation{Kind: "upload", Path: "/tmp"}, "", nil), true)
+	open := func() (net.Conn, error) {
+		t.Fatal("unapproved upload opened an endpoint")
+		return nil, nil
+	}
+	err := executeApprovedFile(context.Background(), open, newApprovedFile(operation{Kind: "upload", Path: "/tmp"}, "", nil), true)
 	if err == nil {
 		t.Fatal("upload without an opened source accepted")
 	}
-	_ = server.SetDeadline(time.Now().Add(time.Second))
-	if stream, err := server.AcceptStream(); err == nil {
-		_ = stream.Close()
-		t.Fatal("unapproved upload opened a stream")
+}
+
+func TestApprovedFileEndpointsReuseAuthenticatedLease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	instance := strings.Repeat("a", 32)
+	approval := strings.Repeat("b", 32)
+	var opened, released int
+	checked := make(chan message, 2)
+	lease := &clientTransport{instance: instance, close: func() { released++ }, open: func(context.Context) (net.Conn, error) {
+		opened++
+		client, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			m, err := readMessage(server)
+			if err == nil {
+				checked <- m
+				_ = writeMessage(server, message{Type: "resource_ready", SoftwareVersion: version})
+			}
+		}()
+		return client, nil
+	}}
+	transports := clientTransports{lease: false}
+	o := options{command: "attach", instance: instance, reusable: lease}
+	request := message{Type: "route_files", Name: "source", PID: 100, ApprovalID: approval}
+	for range 2 {
+		endpoint, err := openResourceEndpoint(ctx, &o, request, transports)
+		if err != nil {
+			t.Fatal(err)
+		}
+		endpoint.Close()
+		m := <-checked
+		if m.Type != request.Type || m.Instance != instance || m.ApprovalID != approval || m.PID != request.PID || m.SoftwareVersion != version {
+			t.Fatalf("file endpoint skipped its approval handshake: %+v", m)
+		}
+		if released != 0 {
+			t.Fatal("closing one endpoint ended its authenticated lease")
+		}
+	}
+	transports.releaseUnreferenced()
+	if opened != 2 || released != 1 {
+		t.Fatalf("opened endpoints=%d, released leases=%d", opened, released)
 	}
 }
 
@@ -260,7 +293,7 @@ func TestSpawnConfirmationCancellation(t *testing.T) {
 	client, server := net.Pipe()
 	defer server.Close()
 	parent := options{session: "parent", instance: "instance", reusable: &clientTransport{
-		session: "parent", instance: "instance", open: func(context.Context) (io.ReadWriteCloser, error) { return client, nil },
+		session: "parent", instance: "instance", open: func(context.Context) (net.Conn, error) { return client, nil },
 	}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -284,7 +317,7 @@ func TestSpawnConfirmationCancellation(t *testing.T) {
 func TestFrontendReleasesUnreachableTransports(t *testing.T) {
 	ctx := context.Background()
 	owned := make(clientTransports)
-	open := func(context.Context) (io.ReadWriteCloser, error) { a, b := net.Pipe(); b.Close(); return a, nil }
+	open := func(context.Context) (net.Conn, error) { a, b := net.Pipe(); b.Close(); return a, nil }
 	var parentClosed, childrenClosed int
 	var parent options
 	stream, err := owned.openTaskStream(ctx, &parent, open, func() { parentClosed++ })
@@ -315,7 +348,7 @@ func TestFrontendReleasesUnreachableTransports(t *testing.T) {
 		t.Fatal("parent was not released exactly once")
 	}
 	closed := 0
-	_, err = owned.openTaskStream(ctx, &parent, func(context.Context) (io.ReadWriteCloser, error) { return nil, io.EOF }, func() { closed++ })
+	_, err = owned.openTaskStream(ctx, &parent, func(context.Context) (net.Conn, error) { return nil, io.EOF }, func() { closed++ })
 	if err != io.EOF || closed != 1 || len(owned) != 0 {
 		t.Fatal("failed first stream retained transport")
 	}

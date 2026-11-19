@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -31,10 +29,9 @@ func parseOptions(args []string) (options, error) {
 
 func shellOptions(command string, parsed cliArguments) (options, error) {
 	o := options{command: command, list: command == "list", server: parsed.value("--server", "sshore")}
-	o.ssh, o.local = parsed.ssh, parsed.has("--local")
+	o.ssh, o.local = parsed.ssh, parsed.local
 	o.portOverrideOnly = parsed.has("--port") && len(parsed.ssh) == 2
 	o.serverSet = parsed.has("--server")
-	o.downloadDir = parsed.values["--download-dir"]
 	o.quiet, o.noEscape = parsed.has("--quiet"), parsed.has("--no-escape")
 	o.detached = parsed.has("--detach")
 	o.noLogin = parsed.has("--no-login")
@@ -44,8 +41,8 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 	o.host = parsed.operand(0)
 	if o.local {
 		o.host, firstName = "local", 0
-		if len(o.ssh) > 0 || o.serverSet || o.downloadDir != "" {
-			return o, usage("local shells do not accept SSH or transfer options")
+		if len(o.ssh) > 0 || o.serverSet {
+			return o, usage("local shells do not accept SSH options")
 		}
 	}
 	if !o.list {
@@ -119,7 +116,7 @@ func normalizeHostOperand(command string, parsed *cliArguments) error {
 		if len(parsed.ssh) != 0 || parsed.has("--server") {
 			return usage("local tasks do not accept SSH options")
 		}
-		parsed.values["--local"] = ""
+		parsed.local = true
 		parsed.operands = nil
 	default:
 		parsed.operands[0] = host
@@ -145,7 +142,7 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 			host = endpoint
 		}
 		if host == "self" {
-			parsed.values["--local"] = ""
+			parsed.local = true
 			parsed.operands = nil
 		} else {
 			parsed.operands[0] = host
@@ -158,9 +155,6 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 	ref := parsed.operands[0]
 	if !strings.Contains(ref, ":") || strings.Contains(ref, "/") {
 		return nil
-	}
-	if parsed.has("--local") {
-		return usage("use self:ID without --local")
 	}
 	host, selector, err := splitEndpoint(ref)
 	if err != nil {
@@ -180,10 +174,10 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 		return usage("shell selectors require self: or an SSH host")
 	}
 	if host == "self" {
-		if len(parsed.ssh) != 0 || parsed.has("--server") || parsed.has("--download-dir") {
-			return usage("local shells do not accept SSH or transfer options")
+		if len(parsed.ssh) != 0 || parsed.has("--server") {
+			return usage("local shells do not accept SSH options")
 		}
-		parsed.values["--local"] = ""
+		parsed.local = true
 		if selector == "" {
 			parsed.operands = tail
 		} else {
@@ -214,7 +208,6 @@ type options struct {
 	host, session, server string
 	command               string
 	newName               string
-	downloadDir           string
 	list, quiet, noEscape bool
 	listJSON              bool
 	ssh                   []string
@@ -267,10 +260,6 @@ func executeShellCommand(o options) (int, error) {
 			return 1, err
 		}
 	}
-	o.downloadDir, err = prepareDownloadDir(o.downloadDir)
-	if err != nil {
-		return 1, err
-	}
 	if o.list {
 		return runInventory(o)
 	}
@@ -281,24 +270,6 @@ func executeShellCommand(o options) (int, error) {
 		return 0, nil
 	}
 	return runClient(o)
-}
-
-func prepareDownloadDir(path string) (string, error) {
-	if path == "" {
-		return "", nil
-	}
-	path, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", fmt.Errorf("download directory: %w", err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("download destination is not a directory: %s", path)
-	}
-	return path, nil
 }
 
 const localEndpointPrefix = "self:"

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -12,21 +13,48 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/proc"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/jay-waves/sshore/internal/wire"
 	"golang.org/x/term"
 )
+
+// The reader remains with the lease stream when a handshake switches to raw I/O.
+type clientStream struct {
+	net.Conn
+	reader      *bufio.Reader
+	closeStream func()
+	stop        func() bool
+}
+
+func ownClientTransport(ctx context.Context, stream net.Conn, cleanup func()) *clientStream {
+	closeStream := sync.OnceFunc(func() {
+		_ = stream.Close()
+		if cleanup != nil {
+			cleanup()
+		}
+	})
+	return &clientStream{Conn: stream, reader: bufio.NewReader(stream), closeStream: closeStream, stop: context.AfterFunc(ctx, closeStream)}
+}
+
+func (c *clientStream) Read(b []byte) (int, error)           { return c.reader.Read(b) }
+func (c *clientStream) ReadSlice(delim byte) ([]byte, error) { return c.reader.ReadSlice(delim) }
+func (c *clientStream) Close() error {
+	c.stop()
+	c.closeStream()
+	return nil
+}
 
 // The frontend owns these daemon leases. A true entry marks a lease referenced
 // by the current, pending or parent route during a sweep.
 type clientTransports map[*clientTransport]bool
 
 type clientTransport struct {
-	open              func(context.Context) (io.ReadWriteCloser, error)
+	open              func(context.Context) (net.Conn, error)
 	close             func()
 	session, instance string
 }
@@ -50,32 +78,32 @@ func (ts clientTransports) retainRoute(o *options) {
 		}
 	}
 }
-func (ts clientTransports) openTaskStream(ctx context.Context, o *options, open func(context.Context) (io.ReadWriteCloser, error), closeTask func()) (io.ReadWriteCloser, error) {
+func (ts clientTransports) openTaskStream(ctx context.Context, o *options, open func(context.Context) (net.Conn, error), closeTask func()) (net.Conn, error) {
 	stream, err := open(ctx)
 	if err != nil {
 		closeTask()
 		return nil, err
 	}
 	if ts == nil {
-		return wire.OwnTransport(ctx, stream, closeTask), nil
+		return ownClientTransport(ctx, stream, closeTask), nil
 	}
-	t := &clientTransport{open: open, close: closeTask}
+	t := &clientTransport{open: open, close: closeTask, session: o.session, instance: o.instance}
 	o.reusable = t
 	ts[t] = false
-	return wire.OwnTransport(ctx, stream, nil), nil
+	return ownClientTransport(ctx, stream, nil), nil
 }
 
-func openReusableTransport(ctx context.Context, connection *clientTransport) (io.ReadWriteCloser, error) {
+func openReusableTransport(ctx context.Context, connection *clientTransport) (net.Conn, error) {
 	c, err := connection.open(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return wire.OwnTransport(ctx, c, nil), nil
+	return ownClientTransport(ctx, c, nil), nil
 }
 
 // The returned stream owns its cleanup. Reused attachments release only their
 // own stream. A retained daemon lease can open another stream without reauthenticating.
-func openClientTransportContext(ctx context.Context, o *options, transports clientTransports) (stream io.ReadWriteCloser, err error) {
+func openClientTransportContext(ctx context.Context, o *options, transports clientTransports) (stream net.Conn, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -90,7 +118,7 @@ func openClientTransportContext(ctx context.Context, o *options, transports clie
 	}
 	o.reusable = nil
 	if o.routeParent != nil {
-		return openSessionRoute(ctx, o)
+		return openSessionRoute(ctx, o, transports)
 	}
 	if o.local {
 		if o.hosted {
@@ -98,7 +126,8 @@ func openClientTransportContext(ctx context.Context, o *options, transports clie
 			if err != nil {
 				return nil, err
 			}
-			return wire.OwnTransport(ctx, c, nil), nil
+			_ = c.SetDeadline(time.Time{})
+			return ownClientTransport(ctx, c, nil), nil
 		}
 		var c net.Conn
 		var r localShellRecord
@@ -125,7 +154,7 @@ func openClientTransportContext(ctx context.Context, o *options, transports clie
 		o.session = r.Name
 		o.temporary = r.Owner.PID != 0
 		_ = c.SetDeadline(time.Time{})
-		return wire.OwnTransport(ctx, c, nil), nil
+		return ownClientTransport(ctx, c, nil), nil
 	}
 	return openRemoteShellTransport(ctx, o, transports)
 }
@@ -500,9 +529,9 @@ func routeParentOptions(parent options) options {
 	return parent
 }
 
-func openSessionRoute(ctx context.Context, o *options) (_ io.ReadWriteCloser, err error) {
+func openSessionRoute(ctx context.Context, o *options, transports clientTransports) (_ net.Conn, err error) {
 	parent := routeParentOptions(*o.routeParent)
-	c, err := openClientTransportContext(ctx, &parent, nil)
+	c, err := openClientTransportContext(ctx, &parent, transports)
 	if err != nil {
 		return nil, err
 	}
@@ -518,6 +547,9 @@ func openSessionRoute(ctx context.Context, o *options) (_ io.ReadWriteCloser, er
 	if reply.Type != "route_connected" {
 		return nil, fmt.Errorf("spawn route: %s", reply.Error)
 	}
+	if err := checkPeerVersion(reply.SoftwareVersion, "spawn route"); err != nil {
+		return nil, err
+	}
 	if o.routeTarget {
 		reply, err := exchangeRouteRequest(c, message{Type: "shell_connect", Action: o.command, Name: o.session, Instance: o.instance})
 		if err != nil {
@@ -526,7 +558,15 @@ func openSessionRoute(ctx context.Context, o *options) (_ io.ReadWriteCloser, er
 		if reply.Type != "setup_ready" {
 			return nil, fmt.Errorf("shell connection: %s", reply.Error)
 		}
+		if err := checkPeerVersion(reply.SoftwareVersion, "routed shell"); err != nil {
+			return nil, err
+		}
+		if !validTaskUID(reply.Instance) || o.instance != "" && o.instance != reply.Instance {
+			return nil, fmt.Errorf("routed shell instance changed")
+		}
+		o.instance = reply.Instance
 	}
+	o.routeParent.reusable = parent.reusable
 	return c, nil
 }
 
@@ -587,7 +627,7 @@ func (h *clientHandoff) options() (options, error) {
 		return o, fmt.Errorf("invalid hosted shell handoff")
 	}
 	if o.command == "spawn" {
-		identity, err := spawnProcessIdentity(h.Owner.PID)
+		identity, err := proc.LiveIdentity(h.Owner.PID)
 		if h.Owner.PID <= 1 || err != nil || identity != h.Owner.Start {
 			return o, fmt.Errorf("spawn owner exited")
 		}
@@ -624,9 +664,6 @@ func handoffLocalClient(o options) (bool, error) {
 	}
 	if !o.local {
 		args = append(args, "--server", o.server)
-	}
-	if o.downloadDir != "" {
-		args = append(args, "--download-dir", o.downloadDir)
 	}
 	for _, flag := range []struct {
 		name    string

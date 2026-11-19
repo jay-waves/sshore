@@ -1,87 +1,37 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/proc"
 	"golang.org/x/sys/unix"
 )
 
-type setupTask struct {
-	pid, parent, session int
-	start, state         string
-}
-
-func readSetupTask(pid int) (setupTask, error) {
-	var task setupTask
-	path := fmt.Sprintf("/proc/%d", pid)
-	info, err := os.Stat(path)
-	if err != nil {
-		return task, err
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || st.Uid != uint32(os.Geteuid()) {
-		return task, fmt.Errorf("process %d is not owned by this user", pid)
-	}
-	data, err := os.ReadFile(filepath.Join(path, "stat"))
-	if err != nil {
-		return task, err
-	}
-	end := strings.LastIndexByte(string(data), ')')
-	if end < 0 {
-		return task, fmt.Errorf("invalid process stat")
-	}
-	fields := strings.Fields(string(data[end+1:]))
-	if len(fields) < 20 {
-		return task, fmt.Errorf("short process stat")
-	}
-	parent, e1 := strconv.Atoi(fields[1])
-	session, e2 := strconv.Atoi(fields[3])
-	if e1 != nil || e2 != nil {
-		return task, fmt.Errorf("invalid process ancestry")
-	}
-	return setupTask{pid: pid, parent: parent, session: session, start: fields[19], state: fields[0]}, nil
-}
-func processStart(pid int) (string, error) { task, err := readSetupTask(pid); return task.start, err }
-
-func sessionTasks(roots []setupProcess) ([]setupTask, error) {
-	entries, err := os.ReadDir("/proc")
+func sessionTasks(roots []setupProcess) ([]proc.Task, error) {
+	all, err := proc.ReadTasks()
 	if err != nil {
 		return nil, err
-	}
-	all := make(map[int]setupTask)
-	for _, entry := range entries {
-		pid, e := strconv.Atoi(entry.Name())
-		if e != nil {
-			continue
-		}
-		if task, e := readSetupTask(pid); e == nil {
-			all[pid] = task
-		}
 	}
 	selected := make(map[int]bool)
 	sessions := make(map[int]bool)
 	for _, root := range roots {
 		if task, ok := all[root.PID]; ok {
-			if task.start != root.Start {
+			if task.Start != root.Start {
 				return nil, fmt.Errorf("shell PID changed; review setup again")
 			}
 			selected[root.PID] = true
-			if task.session == task.pid {
-				sessions[task.session] = true
+			if task.Session == task.PID {
+				sessions[task.Session] = true
 			}
 			// PTY children lead their own session. Include detached process groups still
 			// belonging to that shell session, not unrelated processes in the account.
 			for _, child := range all {
-				if child.parent == root.PID && child.session == child.pid {
-					sessions[child.session] = true
+				if child.Parent == root.PID && child.Session == child.PID {
+					sessions[child.Session] = true
 				}
 			}
 		}
@@ -89,13 +39,13 @@ func sessionTasks(roots []setupProcess) ([]setupTask, error) {
 	for changed := true; changed; {
 		changed = false
 		for pid, task := range all {
-			if !selected[pid] && (selected[task.parent] || sessions[task.session]) {
+			if !selected[pid] && (selected[task.Parent] || sessions[task.Session]) {
 				selected[pid] = true
 				changed = true
 			}
 		}
 	}
-	var tasks []setupTask
+	var tasks []proc.Task
 	for pid := range selected {
 		tasks = append(tasks, all[pid])
 	}
@@ -106,7 +56,7 @@ func sessionTasks(roots []setupProcess) ([]setupTask, error) {
 func stopOwnedProcesses(roots []setupProcess) error {
 	for _, root := range roots {
 		if root.Version != "" {
-			v, err := executableVersion(fmt.Sprintf("/proc/%d/exe", root.PID))
+			v, err := executableVersion(proc.ExecutablePath(root.PID))
 			if err != nil || v != root.Version {
 				return fmt.Errorf("shell %d changed before cleanup; review again", root.PID)
 			}
@@ -118,12 +68,12 @@ func stopOwnedProcesses(roots []setupProcess) error {
 	}
 	// Verify signaling support/ownership for every task before changing anything.
 	for _, task := range tasks {
-		if err := signalProcess(task.pid, task.start, 0); err != nil {
+		if err := proc.Signal(task.PID, task.Start, 0); err != nil {
 			return err
 		}
 	}
 	for _, task := range tasks {
-		if err := signalProcess(task.pid, task.start, unix.SIGKILL); err != nil {
+		if err := proc.Signal(task.PID, task.Start, unix.SIGKILL); err != nil {
 			return err
 		}
 	}
@@ -132,19 +82,19 @@ func stopOwnedProcesses(roots []setupProcess) error {
 	}
 	var remaining []string
 	for _, task := range tasks {
-		if current, err := readSetupTask(task.pid); err == nil && current.start == task.start && current.state != "Z" && current.state != "X" {
-			remaining = append(remaining, strconv.Itoa(task.pid))
+		if current, err := proc.ReadTask(task.PID); err == nil && current.Start == task.Start && current.State != "Z" && current.State != "X" {
+			remaining = append(remaining, strconv.Itoa(task.PID))
 		}
 	}
 	return fmt.Errorf("tasks did not exit after KILL (PIDs %s)", strings.Join(remaining, ", "))
 }
 
-func waitOwnedProcesses(tasks []setupTask, timeout time.Duration) bool {
+func waitOwnedProcesses(tasks []proc.Task, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for {
 		alive := false
 		for _, task := range tasks {
-			if current, err := readSetupTask(task.pid); err == nil && current.start == task.start && current.state != "Z" && current.state != "X" {
+			if current, err := proc.ReadTask(task.PID); err == nil && current.Start == task.Start && current.State != "Z" && current.State != "X" {
 				alive = true
 				break
 			}
@@ -161,76 +111,26 @@ func waitOwnedProcesses(tasks []setupTask, timeout time.Duration) bool {
 
 // One best-effort snapshot supplies names and trees for display. Process
 // ownership and identity checks used for signaling are performed separately.
-type listedProcess struct {
-	pid, parent, group, foreground int
-	name                           string
-}
-
 type processSnapshot struct {
-	processes map[int]listedProcess
+	processes map[int]proc.Process
 	children  map[int][]int
 	groups    map[int][]string
 }
 
-func readProcessSnapshot(root string) processSnapshot {
-	entries, _ := os.ReadDir(root)
-	var processes []listedProcess
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 0 {
-			continue
-		}
-		path := filepath.Join(root, entry.Name())
-		info, err := os.Stat(path)
-		if err != nil {
-			continue
-		}
-		owner, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || owner.Uid != uint32(os.Geteuid()) {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(path, "stat"))
-		if err != nil {
-			continue
-		}
-		// comm can contain spaces, newlines, and parentheses.
-		stat := string(data)
-		start, end := strings.IndexByte(stat, '('), strings.LastIndexByte(stat, ')')
-		if start < 0 || end <= start {
-			continue
-		}
-		fields := strings.Fields(stat[end+1:])
-		if len(fields) < 3 {
-			continue
-		}
-		group, err := strconv.Atoi(fields[2])
-		if err != nil {
-			continue
-		}
-		process := listedProcess{pid: pid, parent: -1, group: group, foreground: -1, name: cleanText(stat[start+1 : end])}
-		if len(fields) >= 6 {
-			parent, parentErr := strconv.Atoi(fields[1])
-			foreground, foregroundErr := strconv.Atoi(fields[5])
-			if parentErr == nil && foregroundErr == nil {
-				process.parent, process.foreground = parent, foreground
-			}
-		}
-		processes = append(processes, process)
-	}
-	sort.Slice(processes, func(i, j int) bool { return processes[i].pid < processes[j].pid })
-
+func newProcessSnapshot(processes []proc.Process) processSnapshot {
 	snapshot := processSnapshot{
-		processes: make(map[int]listedProcess, len(processes)),
+		processes: make(map[int]proc.Process, len(processes)),
 		children:  make(map[int][]int),
 		groups:    make(map[int][]string),
 	}
 	for _, process := range processes {
-		if process.group > 0 {
-			snapshot.groups[process.group] = append(snapshot.groups[process.group], process.name)
+		process.Name = cleanText(process.Name)
+		if process.Group > 0 {
+			snapshot.groups[process.Group] = append(snapshot.groups[process.Group], process.Name)
 		}
-		if process.parent >= 0 {
-			snapshot.processes[process.pid] = process
-			snapshot.children[process.parent] = append(snapshot.children[process.parent], process.pid)
+		if process.Parent >= 0 {
+			snapshot.processes[process.PID] = process
+			snapshot.children[process.Parent] = append(snapshot.children[process.Parent], process.PID)
 		}
 	}
 	return snapshot
@@ -247,7 +147,7 @@ func (snapshot processSnapshot) foregroundPrograms(group int) string {
 // Display same-user descendants in PID order. Limit depth and nodes so a
 // pathological tree cannot flood output.
 func (snapshot processSnapshot) sessionTree(shellPID int) string {
-	foreground := snapshot.processes[shellPID].foreground
+	foreground := snapshot.processes[shellPID].Foreground
 	var out strings.Builder
 	seen := map[int]bool{}
 	var walk func(int, string, bool, int)
@@ -273,10 +173,10 @@ func (snapshot processSnapshot) sessionTree(shellPID int) string {
 			return
 		}
 		label := ""
-		if foreground > 0 && p.group == foreground {
+		if foreground > 0 && p.Group == foreground {
 			label = " [fg]"
 		}
-		fmt.Fprintf(&out, "%s%s%s (%d)%s\n", prefix, branch, p.name, pid, label)
+		fmt.Fprintf(&out, "%s%s%s (%d)%s\n", prefix, branch, p.Name, pid, label)
 		for i, child := range snapshot.children[pid] {
 			walk(child, prefix+next, i == len(snapshot.children[pid])-1, depth+1)
 			if len(seen) >= 128 {
@@ -295,39 +195,10 @@ func sessionDirectory(group, shell int) string {
 		if pid <= 0 {
 			continue
 		}
-		if _, err := readSetupTask(pid); err != nil {
-			continue
-		}
-		if cwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid)); err == nil {
+		if cwd, err := proc.WorkingDirectory(pid); err == nil {
 			home, _ := os.UserHomeDir()
 			return shortDirectory(cwd, home)
 		}
 	}
 	return "—"
-}
-
-// pidfds bind signals to the inspected process, never a reused numeric PID.
-func signalProcess(pid int, start string, signal unix.Signal) error {
-	fd, err := unix.PidfdOpen(pid, 0)
-	if errors.Is(err, unix.ESRCH) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer unix.Close(fd)
-	current, err := processStart(pid)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if current != start {
-		return fmt.Errorf("process %d changed during setup", pid)
-	}
-	if err = unix.PidfdSendSignal(fd, signal, nil, 0); errors.Is(err, unix.ESRCH) {
-		return nil
-	}
-	return err
 }

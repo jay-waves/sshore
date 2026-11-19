@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/pkg/sftp"
-
-	"github.com/jay-waves/sshore/internal/wire"
 )
 
 // SFTP v3 framing guard. pkg/sftp's ReadDir accumulates all NAME packets before
@@ -158,7 +156,7 @@ func (w *ftpWire) Write(p []byte) (int, error) {
 		if e := w.record(w.writeBuffer[4:]); e != nil {
 			return accepted, e
 		}
-		if e := wire.WriteFull(w.writer, w.writeBuffer); e != nil {
+		if e := writeFull(w.writer, w.writeBuffer); e != nil {
 			return accepted, e
 		}
 		w.writeBuffer = w.writeBuffer[:0]
@@ -314,6 +312,20 @@ func (w *ftpWire) watchRequests(ctx context.Context, timeout time.Duration) erro
 			timer.Stop()
 		case <-deadline:
 		}
+	}
+	return nil
+}
+
+func writeFull(w io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := w.Write(data)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
 	}
 	return nil
 }

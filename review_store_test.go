@@ -200,7 +200,7 @@ func TestPendingRequestRenameAndValidation(t *testing.T) {
 		case "expired":
 			bad.Created = time.Now().Add(-requestTTL - time.Second)
 		case "size":
-			bad.DownloadDir = strings.Repeat("x", maxRequestRecord)
+			bad.Directory = strings.Repeat("x", maxRequestRecord)
 		}
 		if err := (&daemonTasks{}).Save(bad); err == nil {
 			t.Fatal("accepted invalid", fault)

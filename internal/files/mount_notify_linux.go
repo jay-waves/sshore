@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/xtaci/smux"
 )
 
 func ftpSFTPServerExecutable() (string, error) {
@@ -35,6 +34,7 @@ func ServeAgent(conn io.ReadWriteCloser, version string, check ...func(MountAppr
 
 func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observe func(json.RawMessage) func(), check ...func(MountApproval) error) error {
 	defer conn.Close()
+	conn = newMountStream(conn)
 	if os.Getenv("SSHORE_DISABLED") == "1" {
 		return fmt.Errorf("file access disabled in recovery")
 	}
@@ -46,7 +46,7 @@ func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observ
 		return err
 	}
 	err = checkPeerVersion(version, m.SoftwareVersion, "mount client")
-	if err == nil && m.Type != "mount_mux" {
+	if err == nil && m.Type != "mount_data" && m.Type != "mount_watch" {
 		err = fmt.Errorf("invalid mount handshake")
 	}
 	if err == nil && m.Approval != nil {
@@ -57,7 +57,7 @@ func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observ
 		}
 	}
 	executable := ""
-	if err == nil {
+	if err == nil && m.Type != "mount_watch" {
 		executable, err = ftpSFTPServerExecutable()
 	}
 	if err == nil && observe != nil && len(m.PeerMetadata) > 0 {
@@ -76,23 +76,16 @@ func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observ
 	if err != nil {
 		return err
 	}
-	mux, err := smux.Server(conn, muxConfig())
-	if err != nil {
-		return err
+	if m.Type == "mount_watch" {
+		serveFTPWatch(conn)
+		return nil
 	}
+	return serveMountData(conn, executable)
+}
+
+func serveMountData(data io.ReadWriteCloser, executable string) error {
 	var workers sync.WaitGroup
-	defer func() {
-		mux.Close()
-		workers.Wait()
-	}()
-	data, err := mux.AcceptStream()
-	if err != nil {
-		return err
-	}
-	events, err := mux.AcceptStream()
-	if err != nil {
-		return err
-	}
+	defer func() { data.Close(); workers.Wait() }()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cmd := exec.CommandContext(ctx, executable)
@@ -115,17 +108,12 @@ func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observ
 	if err != nil {
 		return err
 	}
-	workers.Go(func() {
-		select {
-		case <-mux.CloseChan():
-			cancel()
-		case <-ctx.Done():
-		}
-	})
 	outputDone := make(chan struct{})
 	workers.Go(func() {
 		defer stdin.Close()
-		_, _ = io.Copy(stdin, data)
+		if _, err := io.Copy(stdin, data); err != nil {
+			cancel()
+		}
 	})
 	workers.Go(func() {
 		defer close(outputDone)
@@ -133,22 +121,22 @@ func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observ
 			cancel()
 			return
 		}
-		_ = data.CloseWrite()
+		if stream, ok := data.(interface{ CloseWrite() error }); ok {
+			_ = stream.CloseWrite()
+		}
 	})
-	workers.Go(func() { serveFTPWatch(events) })
 	err = cmd.Wait()
 	// Preserve final replies while bounding cleanup for a peer that stopped reading.
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
 	select {
 	case <-outputDone:
-	case <-mux.CloseChan():
 	case <-timer.C:
 	}
 	return err
 }
 
-func serveFTPWatch(stream *smux.Stream) {
+func serveFTPWatch(stream io.ReadWriteCloser) {
 	defer stream.Close()
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -158,8 +146,11 @@ func serveFTPWatch(stream *smux.Stream) {
 	var workers sync.WaitGroup
 	defer func() {
 		close(stop)
-		// Release a blocked read before joining, independently of the stream FIN.
-		_ = stream.SetReadDeadline(time.Now())
+		// Release a blocked read during endpoint shutdown.
+		if s, ok := stream.(interface{ SetReadDeadline(time.Time) error }); ok {
+			_ = s.SetReadDeadline(time.Now())
+		}
+		_ = stream.Close()
 		watcher.Close()
 		workers.Wait()
 	}()
@@ -216,7 +207,8 @@ func serveFTPWatch(stream *smux.Stream) {
 	defer timer.Stop()
 	var notifications <-chan watchChanges = changed
 	send := func(m message) error {
-		_ = stream.SetWriteDeadline(time.Now().Add(ftpWatchTimeout))
+		stop := time.AfterFunc(ftpWatchTimeout, func() { _ = stream.Close() })
+		defer stop.Stop()
 		return writeMessage(stream, m)
 	}
 	for {

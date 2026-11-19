@@ -14,8 +14,8 @@ import (
 )
 
 func TestCLIOptionsAndHelp(t *testing.T) {
-	o, err := parseOptions([]string{"launch", "host:", "--download-dir", "downloads", "--quiet", "--no-escape", "--", "-v", "-l", "user"})
-	if err != nil || o.session != "" || o.downloadDir != "downloads" || !o.quiet || !o.noEscape || len(o.ssh) != 3 {
+	o, err := parseOptions([]string{"launch", "host:", "--quiet", "--no-escape", "--", "-v", "-l", "user"})
+	if err != nil || o.session != "" || !o.quiet || !o.noEscape || len(o.ssh) != 3 {
 		t.Fatalf("%+v %v", o, err)
 	}
 	for _, args := range [][]string{{"launch", "host:", "--help"}, {"attach", "--help"}} {
@@ -35,21 +35,6 @@ func TestCLIOptionsAndHelp(t *testing.T) {
 		}
 	}
 }
-func TestDownloadDirectoryValidation(t *testing.T) {
-	dir := t.TempDir()
-	got, err := prepareDownloadDir(dir)
-	if err != nil || !filepath.IsAbs(got) {
-		t.Fatal(got, err)
-	}
-	f := filepath.Join(dir, "file")
-	_ = os.WriteFile(f, nil, 0600)
-	for _, p := range []string{f, filepath.Join(dir, "missing")} {
-		if _, err = prepareDownloadDir(p); err == nil {
-			t.Fatal("accepted", p)
-		}
-	}
-}
-
 func TestDefaultSessions(t *testing.T) {
 	automatic, err := parseOptions([]string{"launch", "host:"})
 	if err != nil || automatic.session != "" {
@@ -167,7 +152,7 @@ func TestRecoveryDiagnosticsStayLocal(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime"))
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "must-not-run"))
-	for _, args := range [][]string{{"ls", "--json"}, {"list", "--local", "--json"}, {"pstree"}} {
+	for _, args := range [][]string{{"ls", "--json"}, {"list", "self:", "--json"}, {"pstree"}} {
 		if code, err := run(args); code != 0 || err != nil {
 			t.Fatalf("local diagnostics %v: %d %v", args, code, err)
 		}
@@ -254,6 +239,19 @@ func TestRemovedShellForms(t *testing.T) {
 	var out bytes.Buffer
 	if err := showHelp([]string{"shell"}, &out); err == nil {
 		t.Fatal("accepted removed alias help")
+	}
+}
+
+func TestRemovedScopeAndDownloadFlags(t *testing.T) {
+	for command, spec := range cliCommands {
+		for _, flag := range []string{"--local", "--download-dir"} {
+			if _, err := parseCLI([]string{flag}, command); err == nil || !strings.Contains(err.Error(), flag) {
+				t.Fatalf("%s accepted removed flag %s: %v", command, flag, err)
+			}
+			if strings.Contains(spec.help, flag) {
+				t.Fatalf("%s still advertises %s", command, flag)
+			}
+		}
 	}
 }
 

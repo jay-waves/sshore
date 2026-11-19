@@ -22,22 +22,25 @@ func testFTPAgent(t *testing.T) *ftpFS {
 	if _, err := ftpSFTPServerExecutable(); err != nil {
 		t.Skip(err)
 	}
-	a, b := net.Pipe()
-	done := make(chan error, 1)
-	go func() { done <- ServeAgent(a, "test-release") }()
-	t.Cleanup(func() {
-		b.Close()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Error("mount agent did not exit")
+	open := func(mode string) io.ReadWriteCloser {
+		a, b := net.Pipe()
+		done := make(chan error, 1)
+		go func() { done <- ServeAgent(a, "test-release") }()
+		t.Cleanup(func() {
+			b.Close()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Error("mount agent did not exit")
+			}
+		})
+		endpoint := newMountStream(b)
+		if err := negotiateMount(endpoint, mode, "test-release", nil, nil, nil); err != nil {
+			t.Fatal(err)
 		}
-	})
-	mux, data, events, err := OpenMux(b, "test-release", nil, nil, nil)
-	if err != nil {
-		t.Fatal(err)
+		return endpoint
 	}
-	t.Cleanup(func() { mux.Close() })
+	data, events := open("mount_data"), open("mount_watch")
 	client, err := sftp.NewClientPipe(data, data)
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +203,7 @@ func TestFTPNotifyVersionMismatch(t *testing.T) {
 	defer b.Close()
 	done := make(chan error, 1)
 	go func() { done <- ServeAgent(a, "test-release") }()
-	if err := writeMessage(b, message{Type: "mount_mux", SoftwareVersion: "different-release"}); err != nil {
+	if err := writeMessage(b, message{Type: "mount_watch", SoftwareVersion: "different-release"}); err != nil {
 		t.Fatal(err)
 	}
 	m, err := readMessage(b)
@@ -225,14 +228,13 @@ func TestFTPNotifySFTPExitStopsAgent(t *testing.T) {
 	defer b.Close()
 	done := make(chan error, 1)
 	go func() { done <- ServeAgent(a, "test-release") }()
-	mux, data, _, err := OpenMux(b, "test-release", nil, nil, nil)
-	if err != nil {
+	data := newMountStream(b)
+	if err := negotiateMount(data, "mount_data", "test-release", nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	defer mux.Close()
-	// OpenSSH rejects this oversized packet and exits while both streams remain
+	// OpenSSH rejects this oversized packet and exits while its data connection remains
 	// open. The agent must reap the child without waiting for another client read.
-	if _, err = data.Write([]byte{255, 255, 255, 255, 1}); err != nil {
+	if _, err := data.Write([]byte{255, 255, 255, 255, 1}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -282,7 +284,7 @@ func TestMountApprovalSourceGate(t *testing.T) {
 		done <- ServeAgent(a, "1.2.3", func(source MountApproval) error { called <- source; return fmt.Errorf("source changed") })
 	}()
 	approval := &MountApproval{Session: "work", PID: 123, ID: strings.Repeat("a", 32)}
-	if _, _, _, err := OpenMux(b, "1.2.3", approval, nil, nil); err == nil || !strings.Contains(err.Error(), "source changed") {
+	if err := negotiateMount(b, "mount_watch", "1.2.3", approval, nil, nil); err == nil || !strings.Contains(err.Error(), "source changed") {
 		t.Fatalf("gate bypassed: %v", err)
 	}
 	if got := <-called; got != *approval {
@@ -307,7 +309,7 @@ func TestMountAgentPeerMetadataLifetime(t *testing.T) {
 		done <- ServeAgentWithPeer(a, "test-release", "fixture", func(data json.RawMessage) func() { observed <- string(data); return func() { close(ended) } })
 	}()
 	var account string
-	mux, _, _, err := OpenMux(b, "test-release", nil, peer, &account)
+	err := negotiateMount(b, "mount_data", "test-release", nil, peer, &account)
 	if account != "fixture" {
 		t.Fatalf("remote account = %q", account)
 	}
@@ -322,7 +324,7 @@ func TestMountAgentPeerMetadataLifetime(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("metadata not observed")
 	}
-	mux.Close()
+	b.Close()
 	select {
 	case <-ended:
 	case <-time.After(3 * time.Second):
@@ -332,5 +334,52 @@ func TestMountAgentPeerMetadataLifetime(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("agent did not exit")
+	}
+}
+
+// Independent endpoints must not couple notification lifetime to SFTP I/O.
+func TestMountEndpointsCloseIndependently(t *testing.T) {
+	if _, err := ftpSFTPServerExecutable(); err != nil {
+		t.Skip(err)
+	}
+	open := func(mode string) net.Conn {
+		server, client := net.Pipe()
+		_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+		done := make(chan struct{})
+		go func() { defer close(done); _ = ServeAgent(server, "test-release") }()
+		t.Cleanup(func() {
+			_ = client.Close()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Error("mount endpoint did not exit")
+			}
+		})
+		if err := negotiateMount(client, mode, "test-release", nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		return client
+	}
+	data := open("mount_data")
+	events := open("mount_watch")
+	client, err := sftp.NewClientPipe(data, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	_ = events.Close()
+	root := t.TempDir()
+	filename := filepath.Join(root, "after-notification-close")
+	if err := os.WriteFile(filename, []byte("still connected"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := client.Open(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	got, err := io.ReadAll(f)
+	if err != nil || string(got) != "still connected" {
+		t.Fatalf("SFTP after notification close: %q, %v", got, err)
 	}
 }

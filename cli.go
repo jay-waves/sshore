@@ -199,7 +199,7 @@ func runTargetCommand(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	if (command == "attach" || command == "kill" || command == "review") && len(parsed.operands) == 1 && !parsed.has("--local") && !parsed.has("--all") && !parsed.explicitHost {
+	if (command == "attach" || command == "kill" || command == "review") && len(parsed.operands) == 1 && !parsed.local && !parsed.has("--all") && !parsed.explicitHost {
 		ref := parsed.operands[0]
 		if ref != "" && !isTaskIDPrefix(ref) && strings.Trim(ref, "0123456789") == "" {
 			return 2, usage("list sequence numbers are display-only; select the task by name or short ID")

@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -8,8 +9,6 @@ import (
 	"io"
 	"slices"
 	"sync"
-
-	"github.com/jay-waves/sshore/internal/wire"
 )
 
 type DialFunc func(context.Context, string) (io.ReadWriteCloser, error)
@@ -27,6 +26,20 @@ type clientConnection struct {
 	cancel context.CancelFunc
 	conn   io.ReadWriteCloser
 	idle   bool // Protected by Client.mu.
+}
+
+type rpcConnection struct {
+	io.ReadWriteCloser
+	reader      *bufio.Reader
+	closeStream func()
+	stop        func() bool
+}
+
+func (c *rpcConnection) ReadByte() (byte, error) { return c.reader.ReadByte() }
+func (c *rpcConnection) Close() error {
+	c.stop()
+	c.closeStream()
+	return nil
 }
 
 const maxHostConnections = 8
@@ -196,7 +209,9 @@ func (c *Client) call(ctx context.Context, host string, req Request) (Response, 
 		if conn == nil {
 			return Response{}, fmt.Errorf("transport unavailable")
 		}
-		conn = wire.OwnTransport(entry.ctx, conn, nil)
+		stream := conn
+		closeStream := sync.OnceFunc(func() { _ = stream.Close() })
+		conn = &rpcConnection{ReadWriteCloser: stream, reader: bufio.NewReader(stream), closeStream: closeStream, stop: context.AfterFunc(entry.ctx, closeStream)}
 
 		// Publish under the same lock that detaches pools during shutdown.
 		c.mu.Lock()

@@ -243,7 +243,7 @@ func TestLocalCommandRouting(t *testing.T) {
 		{[]string{"launch", "self:"}, true, ""},
 		{[]string{"launch", "work:"}, false, ""},
 		{[]string{"attach"}, false, ""},
-		{[]string{"list", "--local"}, true, ""},
+		{[]string{"list", "self:"}, true, ""},
 	} {
 		o, err := parseOptions(tc.args)
 		local := o.local

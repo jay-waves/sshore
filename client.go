@@ -12,27 +12,98 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
-	"github.com/xtaci/smux"
 	"golang.org/x/term"
 
+	"github.com/jay-waves/sshore/internal/pty"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/jay-waves/sshore/internal/tmux"
-	"github.com/jay-waves/sshore/internal/wire"
 )
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 
 type clientEvent struct {
-	keyAction      tmux.KeyAction
-	inputFailure   bool
-	approvalStream *smux.Stream
-	approval       []operation
-	m              message
-	input          []byte
-	err            error
+	inputBarrier bool
+	inputOffset  uint64
+	keyAction    pty.KeyAction
+	inputFailure bool
+	m            message
+	input        []byte
+	output       []byte
+	err          error
+}
+
+// Put all terminal bytes on the event queue before publishing a confirmed exit.
+func readAttachmentEvents(ctx context.Context, control attachmentControl, terminal io.Reader, emit func(clientEvent), inputDrained chan<- struct{}) {
+	var outputBytes atomic.Uint64
+	outputProgress := make(chan struct{}, 1)
+	outputDone := make(chan struct{})
+	go func() {
+		for {
+			m, err := readMessage(control)
+			if err != nil {
+				emit(clientEvent{err: err})
+				return
+			}
+			if m.Type == "exit" && outputBytes.Load() < m.TerminalOffset {
+				deadline := time.NewTimer(5 * time.Second)
+				defer deadline.Stop()
+				for outputBytes.Load() < m.TerminalOffset {
+					select {
+					case <-outputProgress:
+						deadline.Reset(5 * time.Second)
+					case <-deadline.C:
+						if outputBytes.Load() < m.TerminalOffset {
+							emit(clientEvent{err: io.ErrUnexpectedEOF})
+							return
+						}
+					case <-outputDone:
+						if outputBytes.Load() < m.TerminalOffset {
+							emit(clientEvent{err: io.ErrUnexpectedEOF})
+							return
+						}
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+			if m.Type == "input_drained" {
+				select {
+				case inputDrained <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
+			emit(clientEvent{m: m})
+			if m.Type == "exit" || m.Type == "detached" || m.Type == "fatal" {
+				return
+			}
+		}
+	}()
+	go func() {
+		defer close(outputDone)
+		buf := make([]byte, 32*1024)
+		for {
+			n, e := terminal.Read(buf)
+			if n > 0 {
+				emit(clientEvent{output: append([]byte(nil), buf[:n]...)})
+				outputBytes.Add(uint64(n))
+				select {
+				case outputProgress <- struct{}{}:
+				default:
+				}
+			}
+			if e != nil {
+				// The control stream can still have a confirmed exit in
+				// flight when a relay closes the terminal connection.
+				_ = control.SetReadDeadline(time.Now().Add(2 * time.Second))
+				return
+			}
+		}
+	}()
 }
 
 // Learn the current shell name before saving approval metadata.
@@ -102,21 +173,21 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	if !o.detached && (!term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd()))) {
 		return 1, fmt.Errorf("an interactive terminal is required")
 	}
-	tmux.ResetInputModes()
+	pty.ResetInputModes()
 	transport, err := openClientTransportContext(ctx, &o, transports)
 	if err != nil {
 		return 1, err
 	}
 	defer transport.Close()
-	mux, err := clientMux(transport)
+	control := transport
+	if err := clientAttachment(control); err != nil {
+		return 255, err
+	}
+	terminal, terminalToken, err := openTerminalEndpoint(ctx, o)
 	if err != nil {
 		return 255, err
 	}
-	defer mux.Close()
-	control, err := mux.OpenStream()
-	if err != nil {
-		return 255, err
-	}
+	defer terminal.Close()
 	cols, rows, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil {
 		cols, rows = 80, 24
@@ -134,7 +205,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		tree = currentShellTree()
 	}
 	sourceMachine, sourceHost := localMachineIdentity()
-	if err = streamMessage(control, message{Type: "attach", OwnerProcess: describeSpawnOwner(o.owner), SourceHost: sourceHost, SourceMachineID: sourceMachine, Tree: tree, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && (o.command == "launch" || o.command == "spawn"), NoLogin: o.noLogin && (o.command == "launch" || o.command == "spawn")}); err != nil {
+	if err = streamMessage(control, message{Type: "attach", Token: terminalToken, OwnerProcess: describeSpawnOwner(o.owner), SourceHost: sourceHost, SourceMachineID: sourceMachine, Tree: tree, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && (o.command == "launch" || o.command == "spawn"), NoLogin: o.noLogin && (o.command == "launch" || o.command == "spawn")}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -173,21 +244,6 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	}
 	defer connection.close()
 	o.shellPID = m.PID
-	_ = mux.SetDeadline(time.Now().Add(5 * time.Second))
-	terminal, err := mux.AcceptStream()
-	if err != nil {
-		return 255, err
-	}
-	_ = mux.SetDeadline(time.Time{})
-	_ = terminal.SetReadDeadline(time.Now().Add(5 * time.Second))
-	m, err = readMessage(terminal)
-	if err != nil {
-		return 255, err
-	}
-	if m.Type != "terminal" {
-		return 1, fmt.Errorf("missing terminal stream")
-	}
-	_ = terminal.SetReadDeadline(time.Time{})
 
 	confirmDetach := func(name string) {
 		connection.confirm(name, "detached")
@@ -199,7 +255,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		}
 	}
 	if o.detached {
-		if err := tmux.Detach(control, confirmDetach); err != nil {
+		if err := detachAttachment(control, confirmDetach); err != nil {
 			return 1, err
 		}
 		fmt.Fprintf(os.Stdout, "Started %s (%s).\n", cleanText(shellDisplayEndpoint(o)), shellTaskKind(o.temporary))
@@ -210,14 +266,14 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Task list unavailable: %s\n", cleanText(err.Error()))
 		}
 	}
-	restore, err := tmux.RawConsole()
+	restore, err := pty.RawConsole()
 	if err != nil {
 		return 1, err
 	}
-	defer func() { restore(); _ = tmux.FlushInput() }()
-	var outputModes tmux.InputState
+	defer func() { restore(); _ = pty.FlushInput() }()
+	var outputModes pty.InputState
 	defer outputModes.RestoreScreen()
-	terminalOutput, flushOutput := tmux.OutputWriter()
+	terminalOutput, flushOutput := pty.OutputWriter()
 	defer func() { _ = flushOutput() }()
 	if !o.local {
 		if e := rememberConnection(o); e != nil {
@@ -235,48 +291,8 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		case <-ctx.Done():
 		}
 	}
-	readEvents := func(st *smux.Stream) {
-		for {
-			m, err := readMessage(st)
-			if err != nil {
-				emit(clientEvent{err: err})
-				return
-			}
-			if st == terminal && m.Type == "input_drained" {
-				select {
-				case inputDrained <- struct{}{}:
-				case <-ctx.Done():
-					return
-				}
-				continue
-			}
-			emit(clientEvent{m: m})
-			if m.Type == "exit" || m.Type == "detached" || m.Type == "fatal" {
-				return
-			}
-		}
-	}
-	go readEvents(control)
-	go readEvents(terminal)
-	go func() {
-		for {
-			st, err := mux.AcceptStream()
-			if err != nil {
-				return
-			}
-			_ = st.SetReadDeadline(time.Now().Add(5 * time.Second))
-			m, err := readMessage(st)
-			_ = st.SetReadDeadline(time.Time{})
-			if err == nil && m.Type == "approval_request" {
-				emit(clientEvent{approvalStream: st, approval: m.Operations})
-				continue
-			}
-			// Never let unsolicited offers, uploads, or forward-add requests
-			// enter a file worker or open a listener, even from a malicious peer.
-			_ = st.Close()
-		}
-	}()
-	stopKeyboard, err := tmux.StartKeyboard(ctx, func(data []byte, err error) {
+	readAttachmentEvents(ctx, control, terminal, emit, inputDrained)
+	stopKeyboard, err := pty.StartKeyboard(ctx, func(data []byte, err error) {
 		if len(data) > 0 {
 			emit(clientEvent{input: data})
 		}
@@ -289,22 +305,20 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	}
 	// One terminal writer preserves keystroke order without making file I/O or a
 	// stalled PTY block the main UI/control loop.
-	inputQueue := make(chan []tmux.KeyEvent, 16)
+	inputQueue := make(chan []pty.KeyEvent, 16)
 	inputDone := make(chan struct{})
 	go func() {
 		defer close(inputDone)
+		var inputBytes uint64
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case batch := <-inputQueue:
 				for _, b := range batch {
-					if b.Action != tmux.KeyNone {
-						if b.Action == tmux.KeyDetach {
-							if err := streamMessage(terminal, message{Type: "input_barrier"}); err != nil {
-								emit(clientEvent{err: err, inputFailure: true})
-								return
-							}
+					if b.Action != pty.KeyNone {
+						if b.Action == pty.KeyDetach {
+							emit(clientEvent{inputBarrier: true, inputOffset: inputBytes})
 							// The control loop owns the detach deadline.
 							select {
 							case <-inputDrained:
@@ -318,15 +332,16 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						case <-ctx.Done():
 							return
 						}
-						if b.Action == tmux.KeyDetach {
+						if b.Action == pty.KeyDetach {
 							return
 						}
 						continue
 					}
-					if err := streamMessage(terminal, message{Type: "input", Data: b.Data}); err != nil {
+					if err := writeFull(terminal, b.Data); err != nil {
 						emit(clientEvent{err: err, inputFailure: true})
 						return
 					}
+					inputBytes += uint64(len(b.Data))
 				}
 			}
 		}
@@ -334,9 +349,15 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	defer func() {
 		cancel()
 		stopKeyboard()
+		_ = terminal.Close()
 		_ = transport.Close()
 		<-inputDone
 	}()
+	if !o.local || o.hosted {
+		if err := streamMessage(control, message{Type: "approval_ready"}); err != nil {
+			return 255, err
+		}
+	}
 	if o.handoffDone != nil {
 		if err := o.handoffDone(ctx, nil); err != nil {
 			return 1, err
@@ -355,7 +376,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-	keys := tmux.Keys{Bypass: o.noEscape}
+	keys := pty.Keys{Bypass: o.noEscape}
 	var keyTimer *time.Timer
 	defer func() {
 		if keyTimer != nil {
@@ -391,19 +412,22 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	}
 	queueDetach := func() bool {
 		select {
-		case inputQueue <- []tmux.KeyEvent{{Action: tmux.KeyDetach}}:
+		case inputQueue <- []pty.KeyEvent{{Action: pty.KeyDetach}}:
 			drainInput()
 			return true
 		default:
 			return false
 		}
 	}
+	var approval queuedApproval
+	defer func() { resultErr = approval.cancel(resultErr) }()
 	sendDetach := func(inputUnconfirmed bool) error {
+		sent, err := approval.sendDetach(control)
+		if err != nil || !sent {
+			return err
+		}
 		if inputUnconfirmed {
 			notice(termui.Warning, "\r\n[sshore] Input delivery unconfirmed; detaching.\r\n")
-		}
-		if err := streamMessage(control, message{Type: "detach"}); err != nil {
-			return err
 		}
 		detachPhase = awaitingDetach
 		detachDeadline = time.After(5 * time.Second)
@@ -425,21 +449,21 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		pending.timeout = time.After(time.Until(pending.deadline))
 	}
 	transitioning := func() bool { return pending.action != "" || pending.next != nil }
-	actionForKey := func(action tmux.KeyAction) string {
+	actionForKey := func(action pty.KeyAction) string {
 		switch action {
-		case tmux.KeyNew:
+		case pty.KeyNew:
 			return "spawn_child"
-		case tmux.KeyNext:
+		case pty.KeyNext:
 			return "next"
-		case tmux.KeyPrevious:
+		case pty.KeyPrevious:
 			return "previous"
-		case tmux.KeyLast:
+		case pty.KeyLast:
 			return "last"
 		}
 		return ""
 	}
 	queueSwitch := func(next *sessionSwitch) bool {
-		if !queueDetach() {
+		if approval.pending() || !queueDetach() {
 			return false
 		}
 		pending = transitionRequest{next: next}
@@ -485,7 +509,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 			return nil
 		}
 		select {
-		case inputQueue <- []tmux.KeyEvent{{Data: []byte{3}}}:
+		case inputQueue <- []pty.KeyEvent{{Data: []byte{3}}}:
 			return nil
 		default:
 			return fmt.Errorf("terminal input queue is busy")
@@ -518,6 +542,8 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 				notice(termui.Warning, "\r\n[sshore] Session lookup timed out; staying here.\r\n")
 			}
 			clearTransition()
+		case <-approval.timeout:
+			return 1, approval.cancel(fmt.Errorf("request acknowledgement timed out"))
 		case <-detachDeadline:
 			if detachPhase == awaitingDetach {
 				return 255, fmt.Errorf("detach response timed out; shell preservation is unconfirmed")
@@ -535,52 +561,36 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 			}
 
 		case e := <-events:
-			if e.keyAction != tmux.KeyNone {
+			if e.inputBarrier {
+				if err := streamMessage(control, message{Type: "input_barrier", TerminalOffset: e.inputOffset}); err != nil {
+					return 255, err
+				}
+				continue
+			}
+			if e.keyAction != pty.KeyNone {
 				var keyErr error
 				if detachPhase != awaitingDetach {
 					switch e.keyAction {
-					case tmux.KeyNew, tmux.KeyNext, tmux.KeyPrevious, tmux.KeyLast:
+					case pty.KeyNew, pty.KeyNext, pty.KeyPrevious, pty.KeyLast:
 						action := actionForKey(e.keyAction)
-						if detachPhase != detachIdle || action != pending.action {
+						if detachPhase != detachIdle || approval.pending() || action != pending.action {
 							break
 						}
-						if e.keyAction == tmux.KeyNew {
+						if e.keyAction == pty.KeyNew {
 							awaitResponse(30 * time.Second)
 							keyErr = streamMessage(control, message{Type: action})
 						} else {
 							keyErr = requestTargets(action)
 						}
-					case tmux.KeyDetach:
+					case pty.KeyDetach:
 						keyErr = sendDetach(false)
-					case tmux.KeyRedraw:
+					case pty.KeyRedraw:
 						keyErr = streamMessage(control, message{Type: "redraw"})
 					}
 				}
 				keyHandled <- struct{}{}
 				if keyErr != nil {
 					return 255, keyErr
-				}
-				continue
-			}
-			if e.approvalStream != nil {
-				st := e.approvalStream
-				if detachPhase != detachIdle || transitioning() {
-					st.Close()
-					continue
-				}
-				request, err := queueRequest(o, e.approval)
-				if err != nil {
-					_ = streamMessage(st, message{Type: "error", Error: err.Error()})
-					st.Close()
-					notice(termui.Error, "\r\n[sshore] Request rejected: %s\r\n", cleanText(err.Error()))
-					continue
-				}
-				if err := confirmQueuedRequest(st, request); err != nil {
-					return 1, err
-				}
-				notice(termui.Info, "\r\n[sshore] Request saved: %s\r\n[sshore] Run sshore review from your LOCAL shell after this client exits.\r\n", request.ID)
-				if err = sendDetach(false); err != nil {
-					return 1, err
 				}
 				continue
 			}
@@ -594,6 +604,17 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					continue
 				}
 				return 255, fmt.Errorf("connection lost; reconnect to check the shell: %w", e.err)
+			} else if len(e.output) > 0 {
+				if detachPhase == awaitingDetach {
+					continue
+				}
+				if err = writeFull(terminalOutput, e.output); err != nil {
+					return 1, err
+				}
+				outputModes.Observe(e.output)
+				if err = pty.SyncMouse(&outputModes); err != nil {
+					return 1, fmt.Errorf("update terminal mouse mode: %w", err)
+				}
 			} else if e.input != nil {
 				if transitioning() {
 					// Keep paste boundaries across reads while ordinary input is
@@ -610,7 +631,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					}
 					continue
 				}
-				if detachPhase != detachIdle {
+				if detachPhase != detachIdle || approval.pending() {
 					continue
 				}
 				batch := keys.Feed(e.input)
@@ -622,7 +643,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 							if action := actionForKey(key.Action); action != "" {
 								pending.action = action
 							}
-							if key.Action == tmux.KeyDetach {
+							if key.Action == pty.KeyDetach {
 								drainInput()
 								break
 							}
@@ -681,17 +702,6 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						notice(termui.Warning, "\r\n[sshore] terminal input queue is busy\r\n")
 					}
 
-				case "output":
-					if detachPhase == awaitingDetach {
-						continue
-					}
-					if err = wire.WriteFull(terminalOutput, e.m.Data); err != nil {
-						return 1, err
-					}
-					outputModes.Observe(e.m.Data)
-					if err = tmux.SyncMouse(&outputModes); err != nil {
-						return 1, fmt.Errorf("update terminal mouse mode: %w", err)
-					}
 				case "spawn_route":
 					if pending.timeout != nil && pending.action == "spawn_child" {
 						clearTransition()
@@ -777,6 +787,38 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					if handoffErr != nil {
 						go func() { _ = target.to.handoffDone(ctx, handoffErr) }()
 						notice(termui.Warning, "\r\n[sshore] %s.\r\n", handoffErr)
+					}
+				case "approval_request":
+					if detachPhase != detachIdle || transitioning() || approval.pending() || len(e.m.Token) != 26 {
+						if err := streamMessage(control, message{Type: "approval_rejected", Token: e.m.Token, Error: "client unavailable for approval"}); err != nil {
+							return 255, err
+						}
+						continue
+					}
+					request, err := queueRequest(o, e.m.Operations)
+					if err != nil {
+						_ = streamMessage(control, message{Type: "approval_rejected", Token: e.m.Token, Error: err.Error()})
+						notice(termui.Error, "\r\n[sshore] Request rejected: %s\r\n", cleanText(err.Error()))
+						continue
+					}
+					approval = queuedApproval{request: request, token: e.m.Token, timeout: time.After(requestTimeout)}
+					task := pendingRemoteTask(request.ID, request.DisplayName(), request.Operations)
+					if err := streamMessage(control, message{Type: "queued", Token: approval.token, PeerTask: &task}); err != nil {
+						return 1, err
+					}
+				case "approval_failed":
+					if !approval.matches(e.m.Token) {
+						continue
+					}
+					return 1, approval.cancel(fileResponseError(e.m))
+				case "queued_ack":
+					request, confirmed := approval.confirm(e.m.Token)
+					if !confirmed {
+						continue
+					}
+					notice(termui.Info, "\r\n[sshore] Request saved: %s\r\n[sshore] Run sshore review from your LOCAL shell after this client exits.\r\n", request.ID)
+					if err := sendDetach(false); err != nil {
+						return 1, err
 					}
 				case "detach_requested":
 					if detachPhase == detachIdle {

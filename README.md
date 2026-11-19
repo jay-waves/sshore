@@ -186,7 +186,8 @@ sshore mount .:./ origin:         # Request a client mountpoint for this directo
 
 Return to the client and run `sshore review`. The input field starts with the
 suggested path or port when supplied, or a local default when available. Edit it
-if needed and press Enter to approve. For batch downloads, submit each destination
+if needed and press Enter to approve. Without a suggested path, downloads default
+to the client directory recorded when the request was queued. For batch downloads, submit each destination
 before the transfer starts. A forward request detaches the shell. Use `attach` to
 resume it after review.
 

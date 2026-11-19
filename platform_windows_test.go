@@ -11,7 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/tmux"
+	"github.com/jay-waves/sshore/internal/proc"
+	"github.com/jay-waves/sshore/internal/pty"
 	"golang.org/x/sys/windows"
 )
 
@@ -46,7 +47,7 @@ func TestWindowsSpawnOwnerClosesTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { parent.Process.Kill(); parent.Wait() }()
-	identity, err := spawnProcessIdentity(parent.Process.Pid)
+	identity, err := proc.LiveIdentity(parent.Process.Pid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +60,7 @@ func TestWindowsSpawnOwnerClosesTerminal(t *testing.T) {
 	defer stopWatching()
 	pid := s.terminal.PID()
 	// A normal foreground client is unnecessary for the owner to retain the shell.
-	if _, err = spawnProcessIdentity(pid); err != nil {
+	if _, err = proc.LiveIdentity(pid); err != nil {
 		t.Fatal(err)
 	}
 	_, _ = io.WriteString(input, "exit\r\n")
@@ -73,7 +74,7 @@ func TestWindowsSpawnOwnerClosesTerminal(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err = spawnProcessIdentity(pid); err != nil {
+		if _, err = proc.LiveIdentity(pid); err != nil {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -175,7 +176,7 @@ func TestWindowsSSHSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	terminal, err := tmux.Start(tmux.Config{Path: exe, Args: []string{"-test.run=^TestWindowsSSHSecret$"}, Env: append(os.Environ(), "SSHORE_TEST_SECRET_CONSOLE=1"), Size: tmux.Size{Cols: 100, Rows: 30}})
+	terminal, err := pty.Start(pty.Config{Path: exe, Args: []string{"-test.run=^TestWindowsSSHSecret$"}, Env: append(os.Environ(), "SSHORE_TEST_SECRET_CONSOLE=1"), Size: pty.Size{Cols: 100, Rows: 30}})
 	if err != nil {
 		t.Fatal(err)
 	}

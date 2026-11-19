@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/wire"
 	"golang.org/x/sys/unix"
 )
 
@@ -139,12 +138,12 @@ func bridgePrepared(name, mode, executable string, gate *os.File, readyMode stri
 		return err
 	}
 	record.UID = selected.uid
-	if os.Getenv("SSHORE_DIRECT_TRANSPORT") == "1" {
+	if readyMode != "" {
 		if err := checkPeerVersion(record.Version, "daemon"); err != nil {
 			return err
 		}
 		gate.Close()
-		return writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode, LocalRequest: &localDaemonRequest{Record: record}})
+		return writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode, Instance: record.UID, LocalRequest: &localDaemonRequest{Record: record}})
 	}
 	conn, err := dialLocalSessionUntil(record, time.Now().Add(time.Second))
 	if err != nil {
@@ -152,14 +151,6 @@ func bridgePrepared(name, mode, executable string, gate *os.File, readyMode stri
 	}
 	defer conn.Close()
 	gate.Close()
-	if mode == "spawn" {
-		return bridgeSpawnTransport(record.UID, conn, readyMode, &wire.Pipe{Reader: os.Stdin, Writer: os.Stdout})
-	}
-	if readyMode != "" {
-		if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
-			return err
-		}
-	}
 	_ = conn.SetDeadline(time.Time{})
 	go func() { _, _ = io.Copy(conn, os.Stdin); _ = conn.Close() }()
 	_, err = io.Copy(os.Stdout, conn)

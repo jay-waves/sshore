@@ -1,15 +1,15 @@
 package files
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/xtaci/smux"
 )
 
 func TestFTPNotifyInvalidationDuringFetch(t *testing.T) {
@@ -32,25 +32,9 @@ func TestFTPNotifyInvalidationDuringFetch(t *testing.T) {
 }
 
 func TestFTPNotifyInvalidationBeforeSubscriptionAck(t *testing.T) {
-	a, b := net.Pipe()
-	server, err := smux.Server(a, muxConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer server.Close()
-	client, err := smux.Client(b, muxConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-	local, err := client.OpenStream()
-	if err != nil {
-		t.Fatal(err)
-	}
-	remote, err := server.AcceptStream()
-	if err != nil {
-		t.Fatal(err)
-	}
+	local, remote := net.Pipe()
+	defer local.Close()
+	defer remote.Close()
 	var cache ftpMetadataCache
 	_, _ = cache.stat("/file", func() (os.FileInfo, error) { return ftpCacheInfo{name: "old"}, nil })
 	n := startFTPNotifications(local, &cache)
@@ -92,25 +76,10 @@ func TestNewDirectoriesDoNotWaitForWatchAck(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	a, b := net.Pipe()
-	server, err := smux.Server(a, muxConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer server.Close()
-	client, err := smux.Client(b, muxConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-	local, err := client.OpenStream()
-	if err != nil {
-		t.Fatal(err)
-	}
-	remote, err := server.AcceptStream()
-	if err != nil {
-		t.Fatal(err)
-	}
+	local, remote := net.Pipe()
+	defer local.Close()
+	defer remote.Close()
+	var err error
 	n := startFTPNotifications(local, &backend.cache)
 	defer n.Close()
 	backend.notifications = n
@@ -182,25 +151,9 @@ func TestNewDirectoriesDoNotWaitForWatchAck(t *testing.T) {
 }
 
 func TestWatchRenewalPreservesContinuousCache(t *testing.T) {
-	a, b := net.Pipe()
-	server, err := smux.Server(a, muxConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer server.Close()
-	client, err := smux.Client(b, muxConfig())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-	local, err := client.OpenStream()
-	if err != nil {
-		t.Fatal(err)
-	}
-	remote, err := server.AcceptStream()
-	if err != nil {
-		t.Fatal(err)
-	}
+	local, remote := net.Pipe()
+	defer local.Close()
+	defer remote.Close()
 	var cache ftpMetadataCache
 	n := startFTPNotifications(local, &cache)
 	defer n.Close()
@@ -304,5 +257,25 @@ func TestPrefetchStatistics(t *testing.T) {
 	c.invalidateRemote()
 	if c.counters.PrefetchStored != 2 || c.counters.PrefetchHits != 1 || c.counters.PrefetchDiscarded != 1 {
 		t.Fatal(c.counters)
+	}
+}
+
+func TestMountHandshakePreservesSFTPBytes(t *testing.T) {
+	local, peer := net.Pipe()
+	defer local.Close()
+	defer peer.Close()
+	_ = local.SetDeadline(time.Now().Add(time.Second))
+	packet := []byte{0, 0, 0, 1, 255}
+	go func() {
+		_, _ = peer.Write(append([]byte("{\"type\":\"mount_ready\"}\n"), packet...))
+	}()
+	stream := newMountStream(local)
+	reply, err := readMessage(stream)
+	if err != nil || reply.Type != "mount_ready" {
+		t.Fatalf("mount handshake: %+v %v", reply, err)
+	}
+	data := make([]byte, len(packet))
+	if _, err := io.ReadFull(stream, data); err != nil || !bytes.Equal(data, packet) {
+		t.Fatalf("SFTP data: %x %v", data, err)
 	}
 }

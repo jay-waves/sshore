@@ -10,16 +10,11 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
-
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/jay-waves/sshore/internal/wire"
-	"github.com/xtaci/smux"
 )
 
 func serverCommand(args []string) error {
@@ -43,7 +38,7 @@ func serverCommand(args []string) error {
 			return err
 		}
 		defer stop()
-		return files.ServeCopy(&wire.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}})
+		return files.ServeCopy(agentStdio())
 	case "mount-agent":
 		if len(args) == 2 {
 			return serveRemote(args[0], "", args[1])
@@ -57,13 +52,7 @@ func serverCommand(args []string) error {
 		}
 		defer stop()
 		account, _ := localMachineIdentity()
-		return files.ServeAgentWithPeer(&wire.Pipe{Reader: os.Stdin, Writer: os.Stdout, Closers: []io.Closer{os.Stdin, os.Stdout}}, version, account, func(data json.RawMessage) func() {
-			var task peerRecord
-			if len(data) > maxRemoteTaskSize || json.Unmarshal(data, &task) != nil || !strings.HasPrefix(task.ID, "mount/") {
-				return func() {}
-			}
-			return beginIncomingTask(task)
-		}, func(a files.MountApproval) error { return checkApprovalSource(a.Session, a.PID, a.ID, a.Instance) })
+		return files.ServeAgentWithPeer(agentStdio(), version, account, beginIncomingMountTask, func(a files.MountApproval) error { return checkApprovalSource(a.Session, a.PID, a.ID, a.Instance) })
 	case "rename-session":
 		if len(args) != 4 && len(args) != 5 {
 			return usage("rename-session requires old name, new name and client version")
@@ -152,98 +141,9 @@ func watchRemoteTask() error {
 	return err
 }
 
-// The original SSH connection is the lifetime lease; individual attachments
-// can end without closing it. Its first stream carries the initial attachment.
-func bridgeSpawnTransport(path string, lease net.Conn, readyMode string, transport io.ReadWriteCloser) error {
-	if err := writeMessage(lease, message{Type: "spawn_owner", SoftwareVersion: version}); err != nil {
-		return err
-	}
-	reply, err := readMessage(lease)
-	if err != nil {
-		return err
-	}
-	if reply.Type != "spawn_owned" {
-		return fmt.Errorf("spawn lease rejected: %s", reply.Error)
-	}
-	// The authenticated lease now lasts until its owner or shell ends.
-	_ = lease.SetDeadline(time.Time{})
-	if readyMode != "" {
-		if err = writeMessage(transport, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
-			return err
-		}
-	}
-	first, err := readMessage(transport)
-	if err != nil {
-		return err
-	}
-	if first.Type != "mux" || checkPeerVersion(first.SoftwareVersion, "client") != nil {
-		return fmt.Errorf("invalid spawn transport")
-	}
-	if err = writeMessage(transport, message{Type: "mux_ready", SoftwareVersion: version}); err != nil {
-		return err
-	}
-	mx, err := smux.Server(transport, wire.MuxConfig())
-	if err != nil {
-		return err
-	}
-	var mu sync.Mutex
-	active, ended := 0, false
-	var handlers sync.WaitGroup
-	defer func() {
-		// Transport loss ends the owner lease even if an attachment relay
-		// still needs to unblock and drain.
-		_ = lease.Close()
-		_ = mx.Close()
-		handlers.Wait()
-	}()
-	go func() {
-		_, _ = io.Copy(io.Discard, lease)
-		mu.Lock()
-		ended = true
-		idle := active == 0
-		mu.Unlock()
-		if idle {
-			mx.Close()
-		}
-	}()
-	for {
-		stream, err := mx.AcceptStream()
-		if err != nil {
-			return nil
-		}
-		mu.Lock()
-		if ended {
-			mu.Unlock()
-			stream.Close()
-			continue
-		}
-		active++
-		mu.Unlock()
-		handlers.Go(func() {
-			defer func() {
-				mu.Lock()
-				active--
-				idle := ended && active == 0
-				mu.Unlock()
-				if idle {
-					mx.Close()
-				}
-			}()
-			defer stream.Close()
-			c, err := dialHostedTask(context.Background(), path, time.Second)
-			if err != nil {
-				return
-			}
-			defer c.Close()
-			_ = c.SetDeadline(time.Time{})
-			wire.Bridge(stream, c)
-		})
-	}
-}
-
 func (s *remoteShell) serveSpawnOwner(c net.Conn, first message) {
 	s.mu.Lock()
-	if s.lifetime != awaitingSpawnOwner || checkPeerVersion(first.SoftwareVersion, "client") != nil {
+	if s.lifetime != awaitingSpawnOwner || checkPeerVersion(first.SoftwareVersion, "client") != nil || first.Instance != s.instance {
 		s.mu.Unlock()
 		_ = writeMessage(c, message{Type: "error", Error: "spawn lifetime already owned or unavailable"})
 		return
@@ -252,9 +152,7 @@ func (s *remoteShell) serveSpawnOwner(c net.Conn, first message) {
 	instance := s.instance
 	s.mu.Unlock()
 	defer func() { _ = s.killWithReason(instance, "spawn lifetime connection closed") }()
-	if writeMessage(c, message{Type: "spawn_owned"}) != nil {
-		return
-	}
+
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -264,5 +162,27 @@ func (s *remoteShell) serveSpawnOwner(c net.Conn, first message) {
 		case <-done:
 		}
 	}()
-	_, _ = io.Copy(io.Discard, c)
+	if activity := accountActivity.Load(); activity != nil {
+		activity.serve(c, activityRequest{Kind: "heartbeat"})
+	}
+}
+
+type stdioPipe struct {
+	io.Reader
+	io.Writer
+	closers []io.Closer
+	once    sync.Once
+}
+
+func (p *stdioPipe) Close() error {
+	p.once.Do(func() {
+		for _, c := range p.closers {
+			_ = c.Close()
+		}
+	})
+	return nil
+}
+
+func agentStdio() *stdioPipe {
+	return &stdioPipe{Reader: os.Stdin, Writer: os.Stdout, closers: []io.Closer{os.Stdin, os.Stdout}}
 }

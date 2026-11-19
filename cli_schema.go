@@ -35,23 +35,20 @@ const (
 )
 
 type cliOption struct {
-	kind      cliValue
-	alias     string
-	conflicts []string
+	kind  cliValue
+	alias string
 }
 
 // Canonical option definitions own the public command grammar.
 var cliOptions = map[string]cliOption{
-	"--help":         {alias: "-h"},
-	"--tldr":         {},
-	"--version":      {alias: "-V"},
-	"--local":        {conflicts: []string{"--server", "--download-dir", "--port"}},
-	"--server":       {kind: cliText},
-	"--apply":        {},
-	"--port":         {kind: cliPort},
-	"--download-dir": {kind: cliText},
-	"--quiet":        {alias: "-q"},
-	"--no-escape":    {}, "--detach": {}, "--no-login": {}, "--no-profile": {},
+	"--help":      {alias: "-h"},
+	"--tldr":      {},
+	"--version":   {alias: "-V"},
+	"--server":    {kind: cliText},
+	"--apply":     {},
+	"--port":      {kind: cliPort},
+	"--quiet":     {alias: "-q"},
+	"--no-escape": {}, "--detach": {}, "--no-login": {}, "--no-profile": {},
 	"--json":       {},
 	"--all":        {},
 	"--foreground": {},
@@ -96,6 +93,7 @@ func (s cliSpec) option(name string) (string, cliOption, bool) {
 
 type cliArguments struct {
 	explicitHost bool
+	local        bool
 	operands     []string
 	values       map[string]string
 	ssh          []string
@@ -225,24 +223,11 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 			return a, err
 		}
 	}
-	for _, name := range spec.flags {
-		if !a.has(name) {
-			continue
-		}
-		for _, other := range cliOptions[name].conflicts {
-			if a.has(other) {
-				return a, usage("%s and %s cannot be combined", name, other)
-			}
-		}
-	}
 	if a.has("--port") {
 		if hasSSHPort {
 			return a, usage("--port cannot be combined with SSH -p or -o Port")
 		}
 		a.ssh = append([]string{"-p", a.values["--port"]}, a.ssh...)
-	}
-	if a.has("--local") && len(a.ssh) != 0 {
-		return a, usage("local shells do not accept SSH options")
 	}
 	max := spec.maxOperands(command, a)
 	if len(a.operands) < spec.min {
@@ -261,14 +246,8 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 
 func (s cliSpec) maxOperands(command string, a cliArguments) int {
 	max := s.max
-	if a.has("--local") && slices.Contains([]string{"attach", "kill", "rename", "list", "pstree"}, command) {
-		max--
-	}
 	if command == "kill" && a.has("--all") {
 		max = 1
-		if a.has("--local") {
-			max = 0
-		}
 	}
 	return max
 }

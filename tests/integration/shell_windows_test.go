@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/tmux"
+	"github.com/jay-waves/sshore/internal/pty"
 	"golang.org/x/sys/windows"
 )
 
@@ -33,7 +33,7 @@ func TestWindowsKillAllWaitsForIdleDaemonExit(t *testing.T) {
 			t.Fatalf("%v: %v: %s", args, err, out)
 		}
 	}
-	run("fixture-launch", "--local", "idle", "--detach")
+	run("fixture-launch", "self:", "idle", "--detach")
 	run("kill", "self:idle")
 	data, err := os.ReadFile(filepath.Join(state, "daemon", "daemon.json"))
 	if err != nil {
@@ -61,7 +61,7 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	}
 	e := newCLI(t)
 	e.env = append(e.env, "SHELL="+shell, "PS1=SSHORE_OUTER> ")
-	outer, err := tmux.Start(tmux.Config{Path: shell, Args: []string{"--noprofile", "--norc", "-i"}, Env: e.env, Size: tmux.Size{Cols: 160, Rows: 40}})
+	outer, err := pty.Start(pty.Config{Path: shell, Args: []string{"--noprofile", "--norc", "-i"}, Env: e.env, Size: pty.Size{Cols: 160, Rows: 40}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	}
 	bin := "'" + strings.ReplaceAll(filepath.ToSlash(e.bin), "'", "'\"'\"'") + "'"
 	wait("SSHORE_OUTER>")
-	send(fmt.Sprintf("%s fixture-launch --local nativecheck; printf 'OUTER_%%s\\n' detached\r", bin))
+	send(fmt.Sprintf("%s fixture-launch self: nativecheck; printf 'OUTER_%%s\\n' detached\r", bin))
 	wait("Connected self:nativecheck")
 	// The echoed assignment must not match the prompt it installs.
 	send("PS1='SSHORE_''INNER> '\r")

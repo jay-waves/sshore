@@ -120,8 +120,8 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	if resumedPID != pid {
 		t.Fatal("source shell was replaced")
 	}
-	sendTest(t, resumed.tty, message{Type: "input", Data: []byte("exit\n")})
-	untilType(t, resumed.tty, "exit")
+	resumed.writeInput(t, []byte("exit\n"))
+	resumed.readExit(t)
 	resumed.close()
 	out, err = run("list")
 	if err != nil || !strings.Contains(out, name) || !strings.Contains(out, "forward") || !strings.Contains(out, "running") || strings.Contains(out, " review ") {
@@ -230,7 +230,7 @@ func TestKillAllRemoteScope(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
-	if out, err := run("", "fixture-launch", "--local", "keep", "--detach"); err != nil {
+	if out, err := run("", "fixture-launch", "self:", "keep", "--detach"); err != nil {
 		t.Fatal(out, err)
 	}
 	defer run("", "kill", "self:keep")
@@ -239,7 +239,7 @@ func TestKillAllRemoteScope(t *testing.T) {
 	}
 	waitSessionEnded(t, e, "one", firstPID)
 	waitSessionEnded(t, e, "two", secondPID)
-	out, err := run("", "list", "--local", "--json")
+	out, err := run("", "list", "self:", "--json")
 	var rows []localShellView
 	if err != nil || json.Unmarshal([]byte(out), &rows) != nil || len(rows) != 1 || rows[0].Name != "keep" {
 		t.Fatal(out, err)
@@ -553,12 +553,10 @@ func TestHostedShellTaskCommandRouting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mx, err := clientMux(c)
-	if err != nil {
+	if err := clientAttachment(c.(attachmentControl)); err != nil {
 		c.Close()
 		t.Fatal(err)
 	}
-	mx.Close()
 	c.Close()
 	if code, err := run([]string{"rename", "self:" + id, "renamed"}); code != 0 || err != nil {
 		t.Fatalf("rename listed ID: %d %v", code, err)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/jay-waves/sshore/internal/mcp"
+	"github.com/jay-waves/sshore/internal/proc"
 	"github.com/jay-waves/sshore/internal/sshtest"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"net"
@@ -208,15 +209,15 @@ func TestTrackedMCPCloseStopsChild(t *testing.T) {
 	if pid == 0 {
 		t.Fatal("child PID unavailable")
 	}
-	child, err := readSetupTask(pid)
+	child, err := proc.ReadTask(pid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = signalProcess(pid, child.start, 9) }()
+	defer func() { _ = proc.Signal(pid, child.Start, 9) }()
 	if _, err = sessions.Close(ctx, mcp.SessionInput{SessionID: session.ID}); err != nil {
 		t.Fatal(err)
 	}
-	if now, err := readSetupTask(pid); err == nil && now.start == child.start && now.state != "Z" {
+	if now, err := proc.ReadTask(pid); err == nil && now.Start == child.Start && now.State != "Z" {
 		t.Fatal("child still running")
 	}
 }

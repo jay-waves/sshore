@@ -20,19 +20,25 @@ policy or depending on mutable application state.
 | MCP tools and remote Bash | `internal/mcp/`; application coordination in `mcp_client.go`, `mcp_server_linux.go` and the shared daemon |
 | One-off SSH execution | `cli.go`: exec adapter uses the shared SSH connection layer without remote setup |
 | CLI grammar, dispatch and help | `cli_help.go`: command definitions, help and examples; `cli_schema.go`: aliases and product/SSH parsing; `cli_commands.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
+| Mount command and execution | `cli_resources.go` handles resource command entry; `mount.go` coordinates the operation and adapts SSH and routed connections |
 | Connections and session switching | `client.go`, `client_connection.go` |
 | Prepared installation and exact-release policy | `setup.go` handles version checks and installation policy. `setup_linux.go` handles remote service startup |
-| Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_linux.go`, `server_linux.go`; process inspection in `process_linux.go` |
+| Shell hosting, identity and cancellation | `launch_*_linux.go`, `shell_lifecycle_linux.go`, `server_linux.go`; process inspection in `process_linux.go` |
 | Account daemon and local shell control | `daemon*.go` (task registry and resource control in `daemon_tasks.go`, plus activity leases and metadata), `local_command.go`, `local_shell.go`; hosted Unix shell adapters in `platform_*.go` |
-| Spawn ownership, lifetime SSH and nested routes | `spawn_owner.go`, `spawn_transport.go`, `spawn_route_linux.go`, `platform_*.go` |
-| Shell startup and attachment I/O | `local_shell.go` shares terminal startup, output and input lease handoff between native and SSH-hosted shells. `internal/tmux/` owns platform terminal I/O |
-| Native terminals, console I/O and shortcuts | `internal/tmux/` |
+| Spawn ownership, lifetime SSH and nested routes | `spawn_transport.go` coordinates owner leases and relay lifetime; `spawn_route_linux.go` and `platform_*.go` handle nested routes |
+| Shell startup and attachment I/O | `local_shell.go` shares terminal startup, output and input lease handoff between native and SSH-hosted shells. `internal/pty/` owns native terminal hosts |
+| Native PTY and ConPTY hosts | `internal/pty/` |
+| Shell attachment protocol and endpoints | `protocol.go`, `shell_attachment.go` |
+| Console I/O and shortcuts | `internal/pty/` |
+| CLI prompts and line editing | `internal/termui/` |
+| Process identity, verified signaling, display names, Linux process snapshots and child waiting | `internal/proc/`; `pstree.go` decides when to display an external owner; application code retains task scope and termination policy |
 | Local prompts and presentation | `internal/termui/`, application adapters in `cli_ui.go` |
-| SSH connections | `internal/ssh/` owns SSH authentication, host verification, jump connections, exec channels and SSH forwarding |
-| Shared byte streams | `internal/wire/` owns framing, smux settings, stream cleanup and relays. Application messages and attachment handshakes live in `protocol.go` |
-| Copy and mount mechanisms | Flat `internal/files/`; command adapters in `cp_command.go`, `mount*.go` |
+| SSH connections | `internal/ssh/` owns SSH authentication, host verification, jump connections and channel primitives |
+| Multiplexed relays | `spawn_transport.go` owns the local frontend-to-daemon mux and spawn ownership. `internal/forward/` owns forwarding relays and multiplexing |
+| Copy and mount mechanisms | Flat `internal/files/`; command entry in `cli_resources.go`, operations in `cp_command.go` and `mount.go` |
 | Pending requests and atomic approval | `review_store.go`, application coordination in `review.go` (including shared source-shell validation in `review_linux.go`) |
-| Forward transport and retries | `forward.go`: endpoint parsing, command execution and SSH worker lifecycle |
+| Forward transport and retries | `forward.go`: endpoint parsing, command execution and direct SSH forwarding lifecycle |
+| Shell-routed resources | `resource_route.go` opens the route; `resource_route_linux.go` checks release and approval before serving file, mount and forward endpoints |
 | Resource startup and control | `resource_runtime.go`, `resources.go` |
 | Private storage and name reservations | `state.go` (including account identity and remembered entry points), `task_identity.go`; native checks in `platform_*.go` |
 | Inventory, stable IDs and shell relationships | `inventory*.go`, `list*.go`, `shell_cache.go`, `pstree*.go`, `peers*.go` |
@@ -118,9 +124,6 @@ reattachment before requesting a redraw.
 - `SSHORE_SOCKET` identifies a hosted remote shell. `SSHORE_LOCAL_SESSION`
   identifies a hosted local shell, including on Windows.
 - `SSHORE_TREE_ID` identifies the managed shell in the process tree.
-- `SSHORE_DIRECT_TRANSPORT=1` marks startup through sshore's direct SSH
-  transport. The attached terminal's clipboard capabilities depend on the
-  client.
 
 ### SSH connections
 
@@ -189,10 +192,12 @@ shell selection and authentication prompts to the frontend. After version checks
 TCP channel to the
 account daemon's loopback endpoint. Native and SSH clients authenticate there and
 open streams by immutable task ID. All three modes require the preparation
-process to hand back an authenticated daemon endpoint. A spawn establishes its
-lifetime mux before reporting readiness. The preparation process exits and SSH
-TCP forwarding must be permitted. A version mismatch stops the connection
-before opening a shell.
+process to hand back an authenticated daemon endpoint before it exits. A remote spawn claims an
+independent owner channel before reporting readiness; each data endpoint uses a
+sibling native SSH channel. The owner reuses the daemon's pulse/alive lease
+protocol and timeout, including a close timer for SSH channels without read
+deadlines. SSH TCP forwarding must be permitted. A version mismatch stops the
+connection before opening a shell.
 Only an attach without a selected shell can accept a setup menu, and it can
 answer one menu per handshake. File helpers read the remote home directory
 from the setup reply when resolving paths.
@@ -208,8 +213,9 @@ SSH AddressFamily selects the SSH endpoint's network.
 SSH command runners drain stdout before waiting on normal exit. If reading or
 forwarding stdout fails, they close the owning connection before joining the
 command.
-When a spawn's shell lease ends, its bridge rejects new streams and drains
-established resource streams before closing the transport.
+When a spawn's owner lease ends, its relay rejects new endpoints and gives
+already-open connections up to two seconds to drain. Frontend detach leaves
+the owner lease active.
 
 ### Shell ownership and attachment
 
@@ -275,15 +281,46 @@ leases across attempts. A fresh dial for a saved route or control request
 belongs to its stream.
 
 The shell host holds a terminal and the verified process identity used for task
-operations. Each attachment owns a mux and borrows one input lease from the host.
-The host stops that writer before admitting another attachment. Local daemon
-sockets and authenticated SSH channels use the same frames from `internal/wire`.
+operations. Each attachment borrows one input lease; the host stops that writer
+before admitting another attachment. Every attachment opens a separate raw
+terminal endpoint. For direct remote launch and attach, each endpoint uses a
+native SSH `direct-tcpip` channel to the authenticated daemon. Local attachments
+open separate daemon connections. Spawn lifetime transports and reverse routes
+open separate endpoint streams through their authenticated relays. A single-use
+token scoped to that shell pairs the terminal endpoint with its control
+attachment, expires after five seconds, and is bounded to eight pending endpoints.
+The endpoint carries raw terminal bytes after its handshake. Resize and
+approval messages stay on the control connection. Input byte counts order detach
+after accepted input; exit includes an output byte count so the frontend drains
+the tail before reporting the exit status. Closing an attachment releases its
+channels and input lease, preserving the hosted shell and reusable SSH connection.
 
-For a next-hop connection, the initiating host's daemon uses that shell's
-configuration, signing credentials, environment and working directory. The terminal client follows
+The attachment carries control and approval messages on one connection.
+Each control message is a newline-terminated JSON value of at most 68 KiB
+before the delimiter. The mount agents and MCP bridge use bounded JSON lines
+for their own messages. Peers must use matching full releases. The readers
+retain any bytes buffered during a handshake when the connection switches to
+a raw protocol.
+
+The local frontend-to-daemon lease uses smux to open independent endpoint
+streams over its shared connection. Each SSH connection uses native channels
+over a single underlying TCP connection. Indirect forwarding uses its own smux
+relay.
+
+For a nested `spawn` initiated inside an attached shell, the initiating host's
+daemon uses that shell's configuration, signing credentials, environment and
+working directory. `ProxyJump` uses SSH forwarding through its jump hosts
+and requires the managed shell daemon only at the destination. With nested
+`spawn`, the terminal client follows
 a private attachment route, not remote-supplied local execution instructions.
 The first attachment confirmation consumes only the startup reply slot. The
-private route remains usable for later attachments until its transport closes.
+private route stays bound to that child task instance until its owner lease
+ends. For each route request, the daemon opens an authenticated endpoint to
+that instance. Same-host spawns use a local daemon connection. Next-hop spawns
+open a native channel on the daemon's existing SSH connection and repeat the
+same process at each hop. The daemon relays endpoint bytes without interpreting
+terminal or file traffic. Both endpoints of a routed sibling attachment bind to
+the selected shell instance, including after a rename.
 Local managed shells also support handoff for remote `launch` and `attach`.
 Detached startup keeps its noninteractive path. Reuse the existing connection and
 attachment mechanisms; do not run a second terminal frontend inside a daemon.
@@ -322,8 +359,7 @@ connection settings of their observation. Confirmed detach acknowledgements
 immutable shell identity in one bounded, daemon-serialized MRU stored in
 `connections/detached.json`. Global attach considers that entire
 order; HOST filters it to one remote host before choosing a still-detached
-candidate. Local shells can be selected directly by ID; attach has no --local
-filter. The account daemon resolves a native shell and opens its control stream
+candidate. Local shells can be selected directly by ID or with `self:ID`. The account daemon resolves a native shell and opens its control stream
 in the same authenticated request. Detach and handoff from a native shell use
 its registered identity directly. A hosted shell chosen from the startup menu
 is attached by the UID captured when the menu was shown. The next, previous and
@@ -561,15 +597,17 @@ State-file replacement cannot substitute for those command-specific guarantees.
 See [approval safeguards](SECURITY.md#local-approval).
 
 Copy and mount helpers use the shared preparation path before starting.
-The forward adapter passes its loopback ports and direction directly to the SSH
-transport. `ssh -G` resolves connection settings only; configuration forwarding
+The application owns the direct forward listener, workers and SSH connection
+as one lifetime. `internal/ssh` provides channels and knows no forwarding rules;
+`internal/forward` owns byte relay and multiplexing. `ssh -G` resolves connection settings only; configuration forwarding
 rules are cleared and cannot add listeners to the product-owned rule.
 
 Ordinary forwarding, inventory and cancellation do not install remote software.
-Keep file, SSH and shared stream behavior in `internal/files`, `internal/ssh` and `internal/wire`; account setup
+File and SSH behavior live in `internal/files` and `internal/ssh`. Account setup
 and consent stay in the application.
 
-Client transport openers return one owned byte stream: `Close` releases its entire
+Client transport openers return an owned `net.Conn`, making deadline support
+explicit rather than asserting it at runtime. `Close` releases its entire
 owned path, and context cancellation invokes the same cleanup exactly once. A
 reused attachment owns only its stream; the frontend retains the authenticated
 connection across attachment changes. Resource routing checks the full release
@@ -578,8 +616,8 @@ same lock as the shell name, process and attachment state. File and mount routes
 can acknowledge readiness after approval. A reverse forward binds its listener
 before acknowledging readiness.
 
-SSH exec streams own their connection's cancellation and cache the exit result
-for concurrent waiters. Direct copies and mounts use that stream directly.
+SSH `Start` owns connection cancellation; `Client.Start` opens a session on a
+caller-owned connection. Both cache the exit result for concurrent waiters. Direct copies and mounts use that stream directly.
 `CloseWrite` sends channel EOF while leaving output available. `CloseAndWait`
 aborts before joining, while normal completion consumes output before `Wait`.
 
@@ -603,6 +641,12 @@ graceful unmount so the daemon can report a busy mount while it remains
 connected. Single stops, batch stops and daemon shutdown share the same
 worker stop operation. Once a stop is accepted, concurrent callers wait
 independently for the same task to exit. A refused stop can be retried.
+Shell resource routes validate the session identity and approval, then hand the
+connection to the resource service. Each approved file opens a separate endpoint
+that rechecks the source identity and release before its SFTP handshake. Mount
+data and notifications use separate authorized endpoints. Forwarding owns its multiplexing and relay lifecycle in
+`internal/forward`; its public endpoint returns ordinary I/O interfaces.
+
 SSH and resource mux forwarding share a lifecycle that cancels pending dials and
 relays, closes the inputs, and waits for workers when accepting ends or the owner
 stops the forward.
@@ -641,8 +685,9 @@ request or when the stream closes. Successful removal releases the slot for
 direct copies. An approved stream reserves its single slot until it closes.
 If removal fails, cleanup can retry while the upload remains closed to writes
 and publication.
-Transport window budgets live in `internal/wire/protocol.go` and `internal/files/mount.go`; size them
-for latency without allowing stalled file streams to exhaust terminal capacity.
+Each approved transfer negotiates one SFTP operation on its own endpoint.
+The batch retains its authenticated SSH lease and closes it after the last
+transfer or cancellation.
 
 Mounts always use the remote sshore helper and the same setup/version safeguards as
 `cp`; there is no plain SFTP compatibility path.
@@ -693,11 +738,14 @@ batch when the writer can accept it. Overflow sends a full reset. The agent
 ends notifications when its filesystem watcher stops and joins both the request
 reader and event collector before returning. The client
 invalidates its cache before releasing registration waiters through a shared
-signal. File transfers continue on their own stream.
-The mount agent waits for its SFTP subprocess directly. Multiplexer closure or
-a reply write failure cancels the subprocess. After the subprocess exits, the
-agent gives final replies up to one second to drain, then closes the multiplexer
-and joins its workers.
+signal. A direct mount owns one SSH connection and opens separate exec channels
+for the SFTP subprocess and notifications. Routed mounts open separate
+authenticated endpoints for data and notifications and validate the source shell
+identity and approval on both. If the notification endpoint is unavailable, the
+mount falls back to short-lived metadata caches. The mount agent waits for its
+SFTP subprocess directly. After the subprocess exits, the agent gives final
+replies up to one second to drain, then closes the data endpoint and joins its
+workers.
 For a background mount, startup cancellation closes the worker's input. The
 daemon starts its worker-exit deadline before waiting for final control replies.
 The worker uses one reader through startup and control, with a size limit

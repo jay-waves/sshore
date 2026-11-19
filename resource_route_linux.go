@@ -3,16 +3,15 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
-	"github.com/jay-waves/sshore/internal/wire"
-	"github.com/xtaci/smux"
+	forwardio "github.com/jay-waves/sshore/internal/forward"
 )
 
 func (s *remoteShell) serveRoutedResource(c net.Conn, request message) {
@@ -48,7 +47,13 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message) {
 		fail(err)
 		return
 	}
+	serveApprovedResource(c, request, s.checkApprovalSource)
+}
+
+// Authorization stays with the shell route; resource endpoints own their I/O.
+func serveApprovedResource(c net.Conn, request message, check func(message) error) {
 	if request.Type == "route_forward" {
+		forward := request.Operations[0]
 		serveRoutedForward(c, forward)
 		return
 	}
@@ -57,26 +62,36 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message) {
 	}
 	if request.Type == "route_mount" {
 		account, _ := localMachineIdentity()
-		_ = files.ServeAgentWithPeer(c, version, account, func(data json.RawMessage) func() {
-			var task peerRecord
-			if len(data) > maxRemoteTaskSize || json.Unmarshal(data, &task) != nil || !strings.HasPrefix(task.ID, "mount/") {
-				return func() {}
-			}
-			return beginIncomingTask(task)
-		}, func(a files.MountApproval) error {
+		_ = files.ServeAgentWithPeer(c, version, account, beginIncomingMountTask, func(a files.MountApproval) error {
 			if a.Session != request.Name || a.PID != request.PID || a.ID != request.ApprovalID || a.Instance != "" && a.Instance != request.Instance {
 				return fmt.Errorf("mount approval identity changed")
 			}
-			return s.checkApprovalSource(request)
+			return check(request)
 		})
 		return
 	}
-	mx, err := smux.Server(c, wire.MuxConfig())
+	serveApprovedFileEndpoint(c)
+}
+
+func beginIncomingMountTask(data json.RawMessage) func() {
+	var task peerRecord
+	if len(data) > maxRemoteTaskSize || json.Unmarshal(data, &task) != nil || !strings.HasPrefix(task.ID, "mount/") {
+		return func() {}
+	}
+	return beginIncomingTask(task)
+}
+
+func serveApprovedFileEndpoint(c net.Conn) {
+	_ = c.SetDeadline(time.Now().Add(requestTimeout))
+	m, err := readMessage(c)
 	if err != nil {
 		return
 	}
-	defer mx.Close()
-	serveApprovedStreams(context.Background(), mx)
+	if m.Type != "approved_transfer" {
+		_ = writeMessage(c, message{Type: "error", Error: "invalid transfer request"})
+		return
+	}
+	approvedRemoteTransfer(c, m)
 }
 
 func serveRoutedForward(c net.Conn, forward operation) {
@@ -97,7 +112,7 @@ func serveRoutedForward(c net.Conn, forward operation) {
 	if err := writeMessage(c, message{Type: "resource_ready", SoftwareVersion: version}); err != nil {
 		return
 	}
-	tunnel, control, err := openResourceMuxForward(c, listener, forward.TargetPort, false)
+	tunnel, control, err := forwardio.Open(c, listener, forward.TargetPort, false)
 	if err != nil {
 		return
 	}

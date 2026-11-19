@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/jay-waves/sshore/internal/sshtest"
 	"io"
 	"os"
 	"os/exec"
@@ -15,6 +14,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/jay-waves/sshore/internal/proc"
+	"github.com/jay-waves/sshore/internal/sshtest"
 	"golang.org/x/sys/unix"
 )
 
@@ -48,8 +49,8 @@ func TestClientPrefixKeysAndDetach(t *testing.T) {
 	}
 	b, _ := e.attach("keys", "attach")
 	shellOutput(t, b, "test -f "+shellQuote(marker)+" && printf 'INPUT-%s' drained", "INPUT-drained")
-	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-	untilType(t, b.tty, "exit")
+	b.writeInput(t, []byte("exit\n"))
+	b.readExit(t)
 }
 
 func startPrefixClient(t *testing.T, e *testEnv) (*exec.Cmd, *os.File, func(string)) {
@@ -121,7 +122,7 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-launch", "--local", "origin", "--no-profile"})
+	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-launch", "self:", "origin", "--no-profile"})
 	t.Cleanup(func() {
 		cleanup := exec.Command(e.bin, "kill", "--all")
 		cleanup.Env = cmd.Env
@@ -251,11 +252,11 @@ func TestClientSessionShortcuts(t *testing.T) {
 			continue
 		}
 		b, _ := e.attach(name, "attach")
-		sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-		untilType(t, b.tty, "exit")
+		b.writeInput(t, []byte("exit\n"))
+		b.readExit(t)
 	}
-	sendTest(t, busy.tty, message{Type: "input", Data: []byte("exit\n")})
-	untilType(t, busy.tty, "exit")
+	busy.writeInput(t, []byte("exit\n"))
+	busy.readExit(t)
 }
 
 func TestClientFailedSwitchRestoresOriginal(t *testing.T) {
@@ -289,8 +290,8 @@ func TestClientFailedSwitchRestoresOriginal(t *testing.T) {
 	}
 	for _, name := range []string{"alpha", "keys"} {
 		b, _ := e.attach(name, "attach")
-		sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-		untilType(t, b.tty, "exit")
+		b.writeInput(t, []byte("exit\n"))
+		b.readExit(t)
 	}
 }
 
@@ -301,16 +302,9 @@ func reattachTestWithTree(t *testing.T, e *testEnv, name string, pid int, tree .
 		t.Fatal(err)
 	}
 	b := e.bridge(name)
-	sendTest(t, b.in, message{Type: "attach", Action: "existing", Instance: id, Tree: tree, Term: "xterm", Cols: 80, Rows: 24})
+	b.sendAttach(t, message{Type: "attach", Action: "existing", Instance: id, Tree: tree, Term: "xterm", Cols: 80, Rows: 24})
 	if m := recv(t, b.out); m.Type != "ready" || m.PID != pid {
 		t.Fatalf("reattach: %+v", m)
-	}
-	b.tty, err = b.mux.AcceptStream()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m := recv(t, b.tty); m.Type != "terminal" {
-		t.Fatal(m)
 	}
 	return b
 }
@@ -319,29 +313,17 @@ func expectTerminalText(t *testing.T, b *bridgeConn, marker string) string {
 	t.Helper()
 	var output strings.Builder
 	answeredDA, answeredCPR := 0, 0
-	_ = b.tty.SetReadDeadline(time.Now().Add(10 * time.Second))
-	defer b.tty.SetReadDeadline(time.Time{})
 	for i := 0; i < 100; i++ {
-		m, err := readMessage(b.tty)
-		if err != nil {
-			t.Fatalf("waiting for %q: %v; output=%q", marker, err, output.String())
-		}
-		if m.Type == "exit" && marker == "" {
-			return output.String()
-		}
-		if m.Type != "output" {
-			t.Fatalf("expected %q, got %+v", marker, m)
-		}
-		output.Write(m.Data)
+		output.Write(b.readOutput(t))
 		// Emulate the basic xterm replies fish uses as input barriers.
 		all := output.String()
 		for n := strings.Count(all, "\x1b[0c"); answeredDA < n; answeredDA++ {
-			sendTest(t, b.tty, message{Type: "input", Data: []byte("\x1b[?1;2c")})
+			b.writeInput(t, []byte("\x1b[?1;2c"))
 		}
 		for n := strings.Count(all, "\x1b[6n"); answeredCPR < n; answeredCPR++ {
-			sendTest(t, b.tty, message{Type: "input", Data: []byte("\x1b[1;1R")})
+			b.writeInput(t, []byte("\x1b[1;1R"))
 		}
-		if marker != "" && strings.Contains(output.String(), marker) {
+		if strings.Contains(output.String(), marker) {
 			return output.String()
 		}
 	}
@@ -352,8 +334,8 @@ func expectTerminalText(t *testing.T, b *bridgeConn, marker string) string {
 func detachTestClient(t *testing.T, b *bridgeConn) {
 	t.Helper()
 	// Match the client: drain terminal input before detaching on control.
-	sendTest(t, b.tty, message{Type: "input_barrier"})
-	untilType(t, b.tty, "input_drained")
+	sendTest(t, b.in, message{Type: "input_barrier", TerminalOffset: b.inputBytes})
+	untilType(t, b.out, "input_drained")
 	sendTest(t, b.in, message{Type: "detach"})
 	untilType(t, b.out, "detached")
 	b.close()
@@ -367,28 +349,28 @@ func TestReconnectRestoresMouseAndRedrawsForegroundJob(t *testing.T) {
 	shellOutput(t, b, `sh -c 'trap '\''printf "REDRAW-%s\n" ready'\'' WINCH; printf "\033[?1003;1006;1004;2004hJOB-%s\n" ready; while :; do sleep 1; done'`, "JOB-ready")
 	detachTestClient(t, b)
 	b, _ = e.attach("redraw")
-	assertMouseReplay(t, message{Type: "output", Data: []byte(expectTerminalText(t, b, "REDRAW-ready"))}, true)
+	assertMouseReplay(t, expectTerminalText(t, b, "REDRAW-ready"), true)
 	detachTestClient(t, b)
 	var resumedPID int
 	b, resumedPID = e.attach("redraw", "attach")
 	if resumedPID != pid {
 		t.Fatal("reattachment replaced the shell")
 	}
-	assertMouseReplay(t, message{Type: "output", Data: []byte(expectTerminalText(t, b, "REDRAW-ready"))}, true)
-	sendTest(t, b.tty, message{Type: "input", Data: []byte{3}})
+	assertMouseReplay(t, expectTerminalText(t, b, "REDRAW-ready"), true)
+	b.writeInput(t, []byte{3})
 	shellOutput(t, b, "printf 'SHELL-%s' ready", "SHELL-ready")
-	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-	expectTerminalText(t, b, "")
+	b.writeInput(t, []byte("exit\n"))
+	b.readExit(t)
 }
 
-func assertMouseReplay(t *testing.T, m message, enabled bool) {
+func assertMouseReplay(t *testing.T, output string, enabled bool) {
 	t.Helper()
-	if m.Type != "output" || !strings.Contains(string(m.Data), "\x1b[?1003l") {
-		t.Fatalf("missing mouse reset: %+v", m)
+	if !strings.Contains(output, "\x1b[?1003l") {
+		t.Fatalf("missing mouse reset: %q", output)
 	}
 	for _, mode := range []string{"1003", "1006", "1004", "2004"} {
-		if strings.Contains(string(m.Data), "\x1b[?"+mode+"h") != enabled {
-			t.Fatalf("mouse %s state: %q", mode, m.Data)
+		if strings.Contains(output, "\x1b[?"+mode+"h") != enabled {
+			t.Fatalf("mouse %s state: %q", mode, output)
 		}
 	}
 }
@@ -412,7 +394,7 @@ func TestReconnectRedrawsBashWithoutExecutingInput(t *testing.T) {
 	expectTerminalText(t, b, "READY-PROMPT> ")
 	marker := filepath.Join(t.TempDir(), "executed")
 	// Leave a complete command unsubmitted. Reattach must redraw it, never send Enter.
-	sendTest(t, b.tty, message{Type: "input", Data: []byte("touch " + shellQuote(marker))})
+	b.writeInput(t, []byte("touch "+shellQuote(marker)))
 	expectTerminalText(t, b, "touch ")
 	detachTestClient(t, b)
 	b, _ = e.attach("bashprompt")
@@ -423,19 +405,19 @@ func TestReconnectRedrawsBashWithoutExecutingInput(t *testing.T) {
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("reattach executed pending input: %v", err)
 	}
-	sendTest(t, b.tty, message{Type: "input", Data: []byte{21}})
+	b.writeInput(t, []byte{21})
 	// Keep the cursor inside the argument across reattachment. Inserting at
 	// the restored position proves buffer and cursor preservation together.
-	sendTest(t, b.tty, message{Type: "input", Data: []byte("printf 'EDIT-%s\\n' ac\x1b[D")})
+	b.writeInput(t, []byte("printf 'EDIT-%s\\n' ac\x1b[D"))
 	expectTerminalText(t, b, "printf ")
 	detachTestClient(t, b)
 	b, _ = e.attach("bashprompt")
 	expectTerminalText(t, b, "READY-PROMPT> ")
-	sendTest(t, b.tty, message{Type: "input", Data: []byte("b\n")})
+	b.writeInput(t, []byte("b\n"))
 	expectTerminalText(t, b, "EDIT-abc")
 	shellOutput(t, b, "printf 'BASH-%s' alive", "BASH-alive")
-	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-	expectTerminalText(t, b, "")
+	b.writeInput(t, []byte("exit\n"))
+	b.readExit(t)
 	b.close()
 }
 
@@ -459,7 +441,7 @@ func TestReconnectPreservesStoppedJob(t *testing.T) {
 			expectTerminalText(t, b, "JOB-PROMPT> ")
 			pidFile := filepath.Join(home, "job-pid")
 			responsiveShellOutput(t, b, "sh -c "+shellQuote("echo $$ > "+shellQuote(pidFile)+"; printf 'JOB-%s\\n' started; exec sleep 120"), "JOB-started")
-			sendTest(t, b.tty, message{Type: "input", Data: []byte{26}})
+			b.writeInput(t, []byte{26})
 			marker := stopped
 			if name == "fish" {
 				marker = "JOB-PROMPT> "
@@ -472,7 +454,7 @@ func TestReconnectPreservesStoppedJob(t *testing.T) {
 			responsiveShellOutput(t, b, "jobs -l", stopped)
 			// A stopped job must remain resumable in the background and foreground.
 			responsiveShellOutput(t, b, "bg; jobs", running)
-			sendTest(t, b.tty, message{Type: "input", Data: []byte("fg\n")})
+			b.writeInput(t, []byte("fg\n"))
 			expectTerminalText(t, b, "fg")
 			jobPID, err := os.ReadFile(pidFile)
 			if err != nil {
@@ -493,13 +475,13 @@ func TestReconnectPreservesStoppedJob(t *testing.T) {
 				}
 				time.Sleep(5 * time.Millisecond)
 			}
-			sendTest(t, b.tty, message{Type: "input", Data: []byte{3}})
+			b.writeInput(t, []byte{3})
 			if name == "fish" {
 				expectTerminalText(t, b, "JOB-PROMPT> ")
 			}
 			responsiveShellOutput(t, b, "printf 'CONTROL-%s' restored", "CONTROL-restored")
-			sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-			expectTerminalText(t, b, "")
+			b.writeInput(t, []byte("exit\n"))
+			b.readExit(t)
 			b.close()
 		})
 	}
@@ -517,23 +499,23 @@ func TestReconnectPreservesShellEditor(t *testing.T) {
 			b, _ := e.attach("editor")
 			expectTerminalText(t, b, "EDITOR-READY> ")
 			marker := filepath.Join(home, "submitted")
-			sendTest(t, b.tty, message{Type: "input", Data: []byte("printf '%s' ac > " + shellQuote(marker) + "; printf 'DONE-%s\\n' ready")})
+			b.writeInput(t, []byte("printf '%s' ac > "+shellQuote(marker)+"; printf 'DONE-%s\\n' ready"))
 			expectTerminalText(t, b, "printf")
 			// Move to the beginning and then into the two-character argument.
-			sendTest(t, b.tty, message{Type: "input", Data: []byte("\x01" + strings.Repeat("\x1b[C", len("printf '%s' a")))})
+			b.writeInput(t, []byte("\x01"+strings.Repeat("\x1b[C", len("printf '%s' a"))))
 			detachTestClient(t, b)
 			b, _ = e.attach("editor")
 			expectTerminalText(t, b, "EDITOR-READY> ")
 			if _, err := os.Stat(marker); !os.IsNotExist(err) {
 				t.Fatalf("pending command executed: %v", err)
 			}
-			sendTest(t, b.tty, message{Type: "input", Data: []byte("b\n")})
+			b.writeInput(t, []byte("b\n"))
 			expectTerminalText(t, b, "DONE-ready")
 			if data, err := os.ReadFile(marker); err != nil || string(data) != "abc" {
 				t.Fatalf("editor state lost: %q, %v", data, err)
 			}
-			sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-			expectTerminalText(t, b, "")
+			b.writeInput(t, []byte("exit\n"))
+			b.readExit(t)
 			b.close()
 		})
 	}
@@ -570,7 +552,7 @@ func configureReconnectShell(t *testing.T, e *testEnv, path, prompt string) stri
 
 func responsiveShellOutput(t *testing.T, b *bridgeConn, command, marker string) string {
 	t.Helper()
-	sendTest(t, b.tty, message{Type: "input", Data: []byte(command + "\n")})
+	b.writeInput(t, []byte(command+"\n"))
 	return expectTerminalText(t, b, marker)
 }
 
@@ -578,7 +560,7 @@ func TestClientNestedLocalSpawnHandoff(t *testing.T) {
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-launch", "--local", "root", "--no-profile"})
+	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-launch", "self:", "root", "--no-profile"})
 	t.Cleanup(func() { cleanup := exec.Command(e.bin, "kill", "--all"); cleanup.Env = cmd.Env; _ = cleanup.Run() })
 	wait("Connected self:root")
 	wait("sshore-test> ")
@@ -645,7 +627,7 @@ func TestClientNestedRemoteSpawnReusesAuthentication(t *testing.T) {
 }
 
 func TestClientSpawnShortcutReturnsToParent(t *testing.T) {
-	for _, tc := range []struct{ command, host string }{{"launch", "--local"}, {"spawn", "--local"}, {"launch", "fixture"}, {"spawn", "fixture"}} {
+	for _, tc := range []struct{ command, host string }{{"launch", "self:"}, {"spawn", "self:"}, {"launch", "fixture"}, {"spawn", "fixture"}} {
 		host := tc.host
 		t.Run(tc.command+"/"+host, func(t *testing.T) {
 			t.Setenv("SSHORE_LOCAL_SESSION", "")
@@ -653,7 +635,7 @@ func TestClientSpawnShortcutReturnsToParent(t *testing.T) {
 			e := newEnv(t)
 			args := []string{"fixture-" + tc.command, host, "root", "--no-login", "--no-profile"}
 			label := "self"
-			if host != "--local" {
+			if host != "self:" {
 				args = append(args, "--server", e.bin)
 				label = host
 			}
@@ -686,14 +668,14 @@ func TestClientSpawnShortcutReturnsToParent(t *testing.T) {
 // Exercise both terminal bytes and an actual OS interrupt: console hosts can
 // deliver either, but neither should disconnect an established attachment.
 func TestClientInterruptStaysAttached(t *testing.T) {
-	for _, host := range []string{"--local", "fixture"} {
+	for _, host := range []string{"self:", "fixture"} {
 		t.Run(host, func(t *testing.T) {
 			t.Setenv("SSHORE_LOCAL_SESSION", "")
 			t.Setenv("SSHORE_SOCKET", "")
 			e := newEnv(t)
 			args := []string{"fixture-launch", host, "interrupt", "--no-login", "--no-profile"}
 			label := "self"
-			if host != "--local" {
+			if host != "self:" {
 				label = host
 				args = append(args, "--server", e.bin)
 			}
@@ -758,8 +740,8 @@ func TestClientInterruptDuringSwitchRestoresOriginal(t *testing.T) {
 	}
 	for _, name := range []string{"alpha", "keys"} {
 		b, _ := e.attach(name, "attach")
-		sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-		untilType(t, b.tty, "exit")
+		b.writeInput(t, []byte("exit\n"))
+		b.readExit(t)
 	}
 }
 
@@ -792,7 +774,7 @@ func TestClientDaemonLossRestoresTerminal(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			identity, err := processStart(record.ManagerPID)
+			identity, err := proc.StartToken(record.ManagerPID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -801,7 +783,7 @@ func TestClientDaemonLossRestoresTerminal(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if current, err := processStart(record.ManagerPID); err != nil || current != identity {
+			if current, err := proc.StartToken(record.ManagerPID); err != nil || current != identity {
 				t.Fatalf("test daemon identity changed: %v", err)
 			}
 			if err := syscall.Kill(record.ManagerPID, syscall.SIGKILL); err != nil {
@@ -826,14 +808,14 @@ func TestClientDaemonLossRestoresTerminal(t *testing.T) {
 }
 
 func TestClientDetachPromotesSharedMRU(t *testing.T) {
-	for _, host := range []string{"--local", "fixture"} {
+	for _, host := range []string{"self:", "fixture"} {
 		t.Run(host, func(t *testing.T) {
 			t.Setenv("SSHORE_SOCKET", "")
 			t.Setenv("SSHORE_LOCAL_SESSION", "")
 			e := newEnv(t)
 			args := []string{"fixture-launch", host, "mru-detach", "--no-login", "--no-profile"}
 			label := "self"
-			if host != "--local" {
+			if host != "self:" {
 				args = append(args, "--server", e.bin)
 				label = host
 			}
@@ -854,12 +836,12 @@ func TestClientDetachPromotesSharedMRU(t *testing.T) {
 			if err := json.Unmarshal(data, &rows); err != nil {
 				t.Fatal(err)
 			}
-			if len(rows) != 1 || rows[0].Name != "mru-detach" || rows[0].Local != (host == "--local") || rows[0].Identity == "" {
+			if len(rows) != 1 || rows[0].Name != "mru-detach" || rows[0].Local != (host == "self:") || rows[0].Identity == "" {
 				t.Fatalf("detach MRU: %+v", rows)
 			}
 			// No operands must reattach the same local or remote shell using MRU.
 			selectorsList := [][]string{{label + ":"}, {label + ":" + taskUID(rows[0].Identity)[:2]}}
-			if host != "--local" {
+			if host != "self:" {
 				selectorsList = append(selectorsList, []string{host + ":"})
 			}
 			for _, selectors := range selectorsList {
@@ -902,12 +884,12 @@ func TestClientEnhancedPrefixKeysAndEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := e.attach("keys", "attach")
-	sendTest(t, b.tty, message{Type: "input", Data: []byte("exit\n")})
-	untilType(t, b.tty, "exit")
+	b.writeInput(t, []byte("exit\n"))
+	b.readExit(t)
 }
 
 func TestClientExitNotices(t *testing.T) {
-	for _, host := range []string{"--local", "fixture"} {
+	for _, host := range []string{"self:", "fixture"} {
 		for _, command := range []string{"launch", "spawn"} {
 			for _, code := range []string{"0", "7"} {
 				t.Run(host+"/"+command+"/"+code, func(t *testing.T) {
@@ -916,7 +898,7 @@ func TestClientExitNotices(t *testing.T) {
 					e := newEnv(t)
 					args := []string{"fixture-" + command, host, "exit-notice", "--no-login", "--no-profile"}
 					label := "self"
-					if host != "--local" {
+					if host != "self:" {
 						label = host
 						args = append(args, "--server", e.bin)
 					}
@@ -924,7 +906,7 @@ func TestClientExitNotices(t *testing.T) {
 					wait("Connected " + label + ":exit-notice")
 					io.WriteString(terminal, "exit "+code+"\n")
 					exitHost := host
-					if host == "--local" {
+					if host == "self:" {
 						exitHost = "local"
 					}
 					wait("Exited " + command + "/exit-notice on " + exitHost + " (code " + code + "). Reason:")
@@ -965,7 +947,7 @@ func TestClientExternalSpawnParent(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-spawn", "--local", "external-parent", "--no-login", "--no-profile"})
+	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-spawn", "self:", "external-parent", "--no-login", "--no-profile"})
 	wait("Connected self:external-parent")
 	ps := exec.Command(e.bin, "ps")
 	ps.Env = cmd.Env
@@ -973,11 +955,11 @@ func TestClientExternalSpawnParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ps: %v %s", err, out)
 	}
-	name, err := spawnProcessName(os.Getpid())
+	name, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", os.Getpid()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), fmt.Sprintf("%s (pid %d)", name, os.Getpid())) || !strings.Contains(string(out), "external-parent") {
+	if !strings.Contains(string(out), fmt.Sprintf("%s (pid %d)", strings.TrimSpace(string(name)), os.Getpid())) || !strings.Contains(string(out), "external-parent") {
 		t.Fatalf("missing direct parent: %s", out)
 	}
 	io.WriteString(terminal, "exit\n")

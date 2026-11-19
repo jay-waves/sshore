@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,17 +109,16 @@ func TestCopySingleLetterSSHHost(t *testing.T) {
 }
 
 func TestApprovedSFTPCancelBlockedHandshake(t *testing.T) {
-	client, server := muxPair(t)
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ready := make(chan struct{})
 	release := make(chan struct{})
 	defer close(release)
 	go func() {
-		st, err := server.AcceptStream()
-		if err != nil {
-			return
-		}
+		st := server
 		defer st.Close()
 		_, _ = readMessage(st)
 		_ = writeMessage(st, message{Type: "sftp"})
@@ -127,7 +127,7 @@ func TestApprovedSFTPCancelBlockedHandshake(t *testing.T) {
 	}()
 	done := make(chan error, 1)
 	go func() {
-		done <- executeApprovedFile(ctx, client, newApprovedFile(operation{Kind: "download", Path: "/source", Name: "source", Size: 1}, filepath.Join(t.TempDir(), "target"), nil), true)
+		done <- executeApprovedFile(ctx, func() (net.Conn, error) { return client, nil }, newApprovedFile(operation{Kind: "download", Path: "/source", Name: "source", Size: 1}, filepath.Join(t.TempDir(), "target"), nil), true)
 	}()
 	select {
 	case <-ready:
@@ -142,9 +142,6 @@ func TestApprovedSFTPCancelBlockedHandshake(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("cancel did not unblock SFTP")
-	}
-	if client.IsClosed() {
-		t.Fatal("cancellation closed the attachment")
 	}
 }
 
