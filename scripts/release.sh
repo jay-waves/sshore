@@ -39,14 +39,16 @@ Includes Linux and Windows binaries for amd64 (x86-64) only.
 Verify downloaded archives against SHA256SUMS.
 Commit: $GITHUB_SHA
 NOTES
-if [[ "$version" == "0.7.16" ]]; then
+if [[ "$version" == "0.7.17" ]]; then
   cat >> release-notes.md <<NOTES
 
-- Request a terminal title for attached shells and restore the previous title
-  when the terminal supports a title stack.
-- Improve redraw on Linux reattachment and Ctrl+B r by briefly resizing the PTY.
+- Open the full-screen command prompt with Ctrl+B followed by : for list,
+  pstree, attach, and spawn. Readline adds command history and Tab completion.
+- Show active handoff destinations in list details and pstree. Detached return
+  targets remain available for attachment, and failed returns exit cleanly.
+- Keep process tree ordering stable by task ID.
 
-Update both endpoints to 0.7.16 for managed connections. Save work before
+Update both endpoints to 0.7.17 for managed connections. Save work before
 installing because the installer stops the target account daemon.
 NOTES
 fi
