@@ -20,6 +20,8 @@ import (
 // discarded. Clear it at connection boundaries so mouse motion cannot become
 // input to the local approval prompt or a resumed remote shell.
 // Keep this a fixed boundary cleanup, not a screen/keyboard emulator.
+const finishTerminalOutput = "\x18\x1b\\\x1b[?2026l"
+
 func terminalInputResetSequence() string {
 	// Cancel a truncated CSI/control string before sending cleanup. ST also
 	// terminates strings on hosts which do not implement CAN inside OSC/DCS.
@@ -27,12 +29,24 @@ func terminalInputResetSequence() string {
 	// application disconnected halfway through a frame.
 	// Remote TUIs can leave Kitty release-event reporting or xterm
 	// modifyOtherKeys enabled; termios/console restoration does not reset either.
-	return "\x18\x1b\\\x1b[?2026l\x1b[=0u\x1b[>4;0m" + MouseResetSequence() +
+	return finishTerminalOutput + "\x1b[=0u\x1b[>4;0m" + MouseResetSequence() +
 		"\x1b[?1004l\x1b[?2004l\x1b[?1l\x1b[?2031l\x1b[?2033l\x1b[?2048l\x1b>\x1b]8;;\x1b\\\x1b[0m\x1b[?25h"
 }
 
 func ResetInputModes() {
 	writeTerminalControl(os.Stdout, terminalInputResetSequence())
+}
+
+// RestoreScreen returns to the invoking terminal's main buffer if this
+// attachment entered the alternate buffer.
+func (s *InputState) RestoreScreen() {
+	if s.alternateScreen == 0 {
+		return
+	}
+	var sequence strings.Builder
+	sequence.WriteString(finishTerminalOutput)
+	writeMode(&sequence, s.alternateScreen, 'l')
+	writeTerminalControl(os.Stdout, sequence.String())
 }
 
 // ReadConsole returns UTF-16. Decode it without os.File.Read's Windows Ctrl-Z

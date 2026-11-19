@@ -145,7 +145,7 @@ func runRemoteShell(c net.Conn, req localDaemonRequest) error {
 			return nil
 		})
 	}
-	return withRemoteShell(ctx, setup, req, f.Command, func(open func() (net.Conn, error), ready message) error {
+	return withRemoteShell(ctx, setup, req, f.Command, func(open func() (net.Conn, error), ready message, _ string) error {
 		if err := streamMessage(setup, ready); err != nil {
 			return err
 		}
@@ -180,7 +180,7 @@ func relayRemoteStreams(frontend *smux.Session, open func() (io.ReadWriteCloser,
 
 // A spawn claims its lifetime mux before reporting readiness to either caller.
 func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.Session) error) error {
-	return withRemoteShell(context.Background(), c, req, "spawn", func(open func() (net.Conn, error), ready message) error {
+	return withRemoteShell(context.Background(), c, req, "spawn", func(open func() (net.Conn, error), ready message, instance string) error {
 		channel, err := open()
 		if err != nil {
 			return err
@@ -193,7 +193,12 @@ func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.
 		if err != nil {
 			return err
 		}
-		defer lifetime.Close()
+		defer func() {
+			_ = lifetime.Close()
+			if err := confirmKilledShell(req.Spawn.Host, "", instance); err != nil {
+				fmt.Fprintf(os.Stderr, "sshore: record spawn lifetime end: %v\n", err)
+			}
+		}()
 		if err := writeMessage(c, ready); err != nil {
 			return err
 		}
@@ -201,7 +206,7 @@ func runSpawnConnection(c net.Conn, req localDaemonRequest, attached func(*smux.
 	})
 }
 
-func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest, command string, use func(func() (net.Conn, error), message) error) (resultErr error) {
+func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest, command string, use func(func() (net.Conn, error), message, string) error) (resultErr error) {
 	f := req.Spawn
 	diagnostics := &spawnDiagnostics{c: c, active: true}
 	var pipes *transportio.Process
@@ -263,7 +268,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 		}
 		return upgradeDaemonConn(authCtx, channel, record, "/tasks/"+record.UID+"/open", nil)
 	}
-	return use(open, ready)
+	return use(open, ready, record.UID)
 }
 
 // Relay the selection exchange until the remote setup process hands over a task.

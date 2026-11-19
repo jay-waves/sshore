@@ -215,6 +215,8 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		return 1, err
 	}
 	defer func() { restore(); _ = tmux.FlushInput() }()
+	var outputModes tmux.InputState
+	defer outputModes.RestoreScreen()
 	terminalOutput, flushOutput := tmux.OutputWriter()
 	defer func() { _ = flushOutput() }()
 	if !o.local {
@@ -353,7 +355,6 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-	var outputMouse tmux.InputState
 	keys := tmux.Keys{Bypass: o.noEscape}
 	var keyTimer *time.Timer
 	defer func() {
@@ -687,8 +688,8 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					if err = wire.WriteFull(terminalOutput, e.m.Data); err != nil {
 						return 1, err
 					}
-					outputMouse.Observe(e.m.Data)
-					if err = tmux.SyncMouse(&outputMouse); err != nil {
+					outputModes.Observe(e.m.Data)
+					if err = tmux.SyncMouse(&outputModes); err != nil {
 						return 1, fmt.Errorf("update terminal mouse mode: %w", err)
 					}
 				case "spawn_route":
@@ -790,10 +791,12 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						pending.next.from = returnTarget{options: o, previous: previous}
 						return 0, pending.next
 					}
-					if o.temporary {
-						sessionNotice(termui.Success, "Background; %s on %s ends with the original parent shell.\r\nReturn: %s", shellTaskName(cleanText(o.session), true), cleanText(o.host), reconnectCommand(o))
-					} else {
-						sessionNotice(termui.Success, "Detached; %s on %s keeps running.\r\nReconnect: %s", shellTaskName(cleanText(o.session), false), cleanText(o.host), reconnectCommand(o))
+					ended = func() {
+						if o.temporary {
+							sessionNotice(termui.Success, "Background; %s on %s ends with the original parent shell.\r\nReturn: %s", shellTaskName(cleanText(o.session), true), cleanText(o.host), reconnectCommand(o))
+						} else {
+							sessionNotice(termui.Success, "Detached; %s on %s keeps running.\r\nReconnect: %s", shellTaskName(cleanText(o.session), false), cleanText(o.host), reconnectCommand(o))
+						}
 					}
 					return 0, nil
 				case "exit":

@@ -134,14 +134,28 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	wait("' OX")
 	send("\x1b[D\x1b[3~K\r")
 	wait("EDIT_OK")
+	send("printf '\\033[?1049hFULLSCREEN_%s\\n' ready\r")
+	wait("\x1b[?1049h")
+	wait("FULLSCREEN_ready")
 	send("\x02d")
+	wait("\x1b[?1049l")
+	wait("Detached;")
 	wait("OUTER_detached")
 	rows := e.shells(t)
 	if len(rows) != 1 || rows[0].PID == 0 || rows[0].State != "detached" {
 		t.Fatalf("detach lost shell: %+v", rows)
 	}
 	pid := rows[0].PID
-	send(fmt.Sprintf("%s attach self:%s; printf 'OUTER_exit_%%s\\n' \"$?\"\r", bin, rows[0].ShortID))
+	id := rows[0].ShortID
+	send(fmt.Sprintf("%s attach; printf 'OUTER_%%s\\n' detached_again\r", bin))
+	wait("\x1b[?1049h")
+	send("printf '\\033[?1049lRESTORED_%s\\n' ready\r")
+	wait("\x1b[?1049l")
+	wait("RESTORED_ready")
+	wait("SSHORE_INNER>")
+	send("\x02d")
+	wait("OUTER_detached_again")
+	send(fmt.Sprintf("%s attach %s; printf 'OUTER_exit_%%s\\n' \"$?\"\r", bin, id))
 	wait("SSHORE_INNER>")
 	rows = e.shells(t)
 	if len(rows) != 1 || rows[0].PID != pid || rows[0].State != "attached" {

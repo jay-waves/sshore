@@ -63,6 +63,7 @@ compatibility.
 ```sh
 sshore launch work:         # Start a persistent shell. Omit work: for a local one.
 # Press Ctrl+B, then d to detach. Return later with:
+sshore attach               # Resume the most recently detached local or remote shell.
 sshore attach work:         # Resume the most recently detached shell on work.
 sshore list work:           # Find a specific shell's ID or name.
 sshore attach work:7afe22   # Resume that shell.

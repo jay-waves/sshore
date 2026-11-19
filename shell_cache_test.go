@@ -248,6 +248,68 @@ func TestMissingShellRemainsUnconfirmedWithoutExitEvidence(t *testing.T) {
 	}
 }
 
+func TestRemoteSpawnLifetimeEndRetiresOnlyItsInstance(t *testing.T) {
+	activityFixture(t)
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	ended, running := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	for name, instance := range map[string]string{"old": ended, "renamed": ended, "other": running} {
+		if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: name, Instance: instance, State: "detached", Temporary: true, ConfirmedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := confirmKilledShell("work", "", ended); err != nil {
+		t.Fatal(err)
+	}
+	// A late attachment write and an inventory read begun before expiry can race
+	// with lease closure. Neither can make the ended instance live again.
+	if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: "renamed", Instance: ended, State: "attached", Temporary: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cacheRemoteShells("work", inventory{Shells: []shellView{
+		{Name: "renamed", Instance: ended, Temporary: true, State: "attached"},
+		{Name: "other", Instance: running, Temporary: true, State: "detached"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := readShellSnapshots()
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("read history: %+v %v", rows, err)
+	}
+	for _, row := range rows {
+		if row.Instance == ended && (row.State != "exited" || row.Unconfirmed) ||
+			row.Instance == running && row.State != "detached" {
+			t.Fatalf("unexpected instance state: %+v", row)
+		}
+	}
+}
+
+func TestCompleteRemoteInventoryRetiresMissingSpawn(t *testing.T) {
+	activityFixture(t)
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	machine, foreign, instance := strings.Repeat("a", 32), strings.Repeat("b", 32), strings.Repeat("c", 32)
+	// Older snapshots can get their account identity from the attachment tree.
+	rememberShellTree([]shellTreeNode{{MachineID: machine, Identity: remoteTreeIdentity(instance), Name: "job", State: "attached"}})
+	if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: "job", Instance: instance, State: "attached", Temporary: true, Unconfirmed: true, ConfirmedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		inventory inventory
+		want      string
+	}{
+		{inventory{MachineID: machine, Errors: []string{"partial"}}, "attached"},
+		{inventory{MachineID: foreign}, "attached"},
+		{inventory{MachineID: machine}, "exited"},
+	} {
+		if err := cacheRemoteShells("work", tc.inventory); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := readShellSnapshots()
+		if err != nil || len(rows) != 1 || rows[0].State != tc.want || rows[0].Unconfirmed != (tc.want != "exited") {
+			t.Fatalf("want %s: %+v %v", tc.want, rows, err)
+		}
+	}
+}
+
 func TestRemoteObservationSupersedesAbsence(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))

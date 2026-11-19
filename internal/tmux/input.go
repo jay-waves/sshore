@@ -1,7 +1,7 @@
 package tmux
 
-// Track bounded 7-bit xterm input modes while detached. Screen,
-// scrollback, enhanced keyboard stacks and passthrough wrappers are not reconstructed.
+// Track bounded 7-bit xterm input modes and alternate-screen selection while
+// detached. Screen contents and scrollback are not reconstructed.
 
 import (
 	"bytes"
@@ -52,10 +52,11 @@ const escape = 0x1b
 // Observe, never filter, the PTY byte stream. Track modes while detached and
 // retain only the control prefix needed at the next attachment boundary.
 type InputState struct {
-	current, saved [len(inputModes)]modeSetting
-	prefix         []byte
-	state          uint8
-	keypad         modeSetting
+	current, saved  [len(inputModes)]modeSetting
+	prefix          []byte
+	state           uint8
+	keypad          modeSetting
+	alternateScreen int // DEC mode that selected the alternate buffer, or zero
 }
 
 func (s *InputState) Observe(data []byte) {
@@ -102,6 +103,7 @@ func (s *InputState) Observe(data []byte) {
 				}
 				clear(s.saved[:])
 				s.keypad = modeOff
+				s.alternateScreen = 0
 				s.state = inputText
 			case '=', '>':
 				s.keypad = modeOff
@@ -139,10 +141,21 @@ func (s *InputState) apply(action byte) {
 	}
 	// Commit the whole CSI only after all parameters have validated.
 	current, saved := s.current, s.saved
+	alternateScreen := s.alternateScreen
 	for param := range strings.SplitSeq(string(s.prefix[3:]), ";") {
 		number, err := strconv.ParseUint(param, 10, 16)
 		if err != nil {
 			return
+		}
+		switch number {
+		case 47, 1047, 1049:
+			switch action {
+			case 'h':
+				alternateScreen = int(number)
+			case 'l':
+				alternateScreen = 0
+			}
+			continue
 		}
 		i := slices.Index(inputModes[:], int(number))
 		if i < 0 {
@@ -174,10 +187,14 @@ func (s *InputState) apply(action byte) {
 		current[i] = setting
 	}
 	s.current, s.saved = current, saved
+	s.alternateScreen = alternateScreen
 }
 
 func (s *InputState) Replay() []byte {
 	var b strings.Builder
+	if s.alternateScreen != 0 {
+		writeMode(&b, s.alternateScreen, 'h')
+	}
 	if s.current != [len(inputModes)]modeSetting{} {
 		for i, mode := range inputModes {
 			if i < mouseModeCount || s.current[i] != modeUnset {

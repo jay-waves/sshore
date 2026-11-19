@@ -220,6 +220,12 @@ func (a *daemonActivity) cacheRemoteShellsLocked(host string, inv inventory, con
 			names[shell.Instance] = shell.Name
 		}
 		seen[shell.Name] = true
+		if shell.Temporary && shell.Instance != "" {
+			if node, ok := a.metadata.treeNode(remoteTreeIdentity(shell.Instance)); ok && node.State == "exited" {
+				// A query already in flight cannot revive a closed spawn lease.
+				continue
+			}
+		}
 		snapshot := shellSnapshot{Temporary: shell.Temporary, Instance: shell.Instance, Host: host, MachineID: inv.MachineID, Hostname: inv.Hostname, Name: shell.Name, State: shell.State, ConfirmedAt: now}
 		if connection != nil {
 			route := *connection
@@ -263,7 +269,11 @@ func (a *daemonActivity) cacheRemoteShellsLocked(host string, inv inventory, con
 		if sameScope && missing {
 			if names[old.Instance] != "" {
 				old.State, old.ConfirmedAt, old.Unconfirmed = "renamed", now, false
-			} else if old.Active || old.Unconfirmed {
+			} else if old.Active {
+				continue
+			} else if old.Temporary && validTaskUID(old.Instance) && validMachineID(inv.MachineID) && a.snapshotMachineID(old) == inv.MachineID {
+				old.State, old.ConfirmedAt, old.Unconfirmed = "exited", now, false
+			} else if old.Unconfirmed {
 				continue
 			} else {
 				old.Unconfirmed = true
@@ -274,6 +284,14 @@ func (a *daemonActivity) cacheRemoteShellsLocked(host string, inv inventory, con
 		}
 	}
 	return nil
+}
+
+func (a *daemonActivity) snapshotMachineID(s shellSnapshot) string {
+	if s.MachineID != "" {
+		return s.MachineID
+	}
+	node, _ := a.metadata.treeNode(remoteTreeIdentity(s.Instance))
+	return node.MachineID
 }
 
 // Retain the last actual confirmation and leave live locks with their owners.
@@ -334,6 +352,16 @@ func confirmKilledShell(host, name, instance string) error {
 	return err
 }
 func (a *daemonActivity) confirmKilledShellLocal(host, name, instance string) error {
+	// The owning transport knows the immutable instance even if its shell was
+	// renamed, or the frontend lost its attachment before saving a snapshot.
+	if name == "" && validTaskUID(instance) {
+		id := remoteTreeIdentity(instance)
+		node, ok := a.metadata.treeNode(id)
+		if ok && node.State == "exited" {
+			return nil
+		}
+		return a.metadata.recordRemoteShellTreeStateLocal(shellSnapshot{Host: host, Name: taskShortCode(id), Instance: instance, State: "exited", ConfirmedAt: time.Now()})
+	}
 	rows, err := a.readShellSnapshotsLocked(func(s shellSnapshot) bool {
 		return s.Host == host && s.Name == name && s.Instance == instance
 	})

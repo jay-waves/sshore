@@ -59,6 +59,34 @@ func TestMouseReplayPreservesPartialSequence(t *testing.T) {
 	}
 }
 
+func TestAlternateScreenReplay(t *testing.T) {
+	for _, mode := range []string{"47", "1047", "1049"} {
+		enter := "\x1b[?" + mode + "h"
+		leave := "\x1b[?" + mode + "l"
+		for split := 0; split <= len(enter); split++ {
+			var state InputState
+			state.Observe([]byte(enter[:split]))
+			state.Observe([]byte(enter[split:]))
+			if got := string(state.Replay()); got != enter {
+				t.Fatalf("split %d: got %q, want %q", split, got, enter)
+			}
+			state.Observe([]byte(leave))
+			if got := string(state.Replay()); got != "" {
+				t.Fatalf("left screen still replayed: %q", got)
+			}
+		}
+	}
+	var state InputState
+	state.Observe([]byte("\x1b[?1049;bad h\x1b]opaque\x1b[?1049h\a"))
+	if got := string(state.Replay()); got != "" {
+		t.Fatalf("malformed or opaque input selected a screen: %q", got)
+	}
+	state.Observe([]byte("\x1b[?1049h\x1bc"))
+	if state.alternateScreen != 0 {
+		t.Fatal("terminal reset did not restore the main screen")
+	}
+}
+
 func TestMouseSavedModes(t *testing.T) {
 	var s InputState
 	s.Observe([]byte("\x1b[?1003;1006h\x1b[?1003;1006s\x1b[?1003;1006l"))

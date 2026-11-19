@@ -205,12 +205,13 @@ func runTargetCommand(args []string) (int, error) {
 			return 2, usage("list sequence numbers are display-only; select the task by name or short ID")
 		}
 	}
-	if command == "attach" && !parsed.explicitHost {
-		return 2, usage("use attach HOST:ID or attach self:ID")
-	}
+	operandCount := len(parsed.operands)
 	target, selected, err := resolveShortTask(command, &parsed)
 	if err != nil {
 		return 2, err
+	}
+	if command == "attach" && !parsed.explicitHost && operandCount != 0 && !(operandCount == 1 && selected) {
+		return 2, usage("use attach ID or attach HOST:ID; run sshore list for available shells")
 	}
 
 	if selected && target.kind != "shell" {

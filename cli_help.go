@@ -209,12 +209,12 @@ The remote sshore release must match exactly.
 	},
 	"attach": {
 		ssh: true, native: true, max: 2, flags: strings.Fields(connectionFlags),
-		help: `Usage: sshore attach HOST:[ID] [options] [-- SSH_OPTIONS]
-       sshore attach self:[ID] [options]
+		help: `Usage: sshore attach [ID|HOST:[ID]] [options] [-- SSH_OPTIONS]
 
-Resume a detached shell. Use an ID or alias from list.
-Leave the ID empty to select a detached shell on the specified machine.
-Use .: as a shorthand for self:. IDs accept unique hexadecimal prefixes.
+With no target, resume the most recently detached local or remote shell.
+Use an ID or unique alias from list, or specify HOST: to select on that host.
+Use self: for the local machine, or .: as shorthand. IDs accept unique
+hexadecimal prefixes.
 
 Options:
 ` + connectionOptions + shellConnectionHelp,

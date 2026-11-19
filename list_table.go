@@ -58,13 +58,14 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, color bool) {
 		}
 		if s.Historical {
 			checked = shellCheckedAge(s.ConfirmedAt, now)
-			if s.ConfirmedAt.IsZero() {
-				state = "unknown"
-			}
-			if s.Active {
+			switch snapshotState(s) {
+			case "local active":
 				state += " (local active)"
-			} else if s.Unconfirmed {
-				state += " (unconfirmed)"
+			case "unconfirmed":
+				state = "unconfirmed"
+				if s.ConfirmedAt.IsZero() {
+					state = "unknown"
+				}
 			}
 		}
 		rows = append(rows, taskTableRow{taskUID(s.identity(inv.Host)), s.ShortID, s.Name, shellTaskKind(s.Temporary), host, "-", state, s.Directory, checked})

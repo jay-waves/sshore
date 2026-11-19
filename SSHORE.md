@@ -105,6 +105,9 @@ The shell and native terminal retain interactive state. Redraw is best effort;
 do not inject Enter, Ctrl+L or editor commands to reconstruct it. Terminal bytes
 must retain order and bounded buffering. Unsupported terminal protocols must not
 silently become local shortcuts.
+The frontend leaves an alternate screen selected by the shell before returning
+to the calling terminal. The host reapplies the shell's buffer selection on
+reattachment before requesting a redraw.
 
 ### Shell environment for scripts
 
@@ -791,6 +794,9 @@ Spawn owner context stays fixed;
 the current attachment source may change. Neither is verified OS process ancestry.
 
 Keep normal output compact and distinguish cached, live and unknown state.
+Closing a remote spawn's owning transport retires its cached instance.
+A complete inventory also retires an absent spawn from the same remote account.
+The default list reports uncertain cached attachments as unconfirmed.
 The local and background inventories match a live local resource's peer
 advertisement by UID when available. Advertisements without a UID use the
 manager and resource label. Exit receipts do not hide peer advertisements.

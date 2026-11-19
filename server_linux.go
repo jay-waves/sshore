@@ -186,9 +186,16 @@ func bridgeSpawnTransport(path string, lease net.Conn, readyMode string, transpo
 	if err != nil {
 		return err
 	}
-	defer mx.Close()
 	var mu sync.Mutex
 	active, ended := 0, false
+	var handlers sync.WaitGroup
+	defer func() {
+		// Transport loss ends the owner lease even if an attachment relay
+		// still needs to unblock and drain.
+		_ = lease.Close()
+		_ = mx.Close()
+		handlers.Wait()
+	}()
 	go func() {
 		_, _ = io.Copy(io.Discard, lease)
 		mu.Lock()
@@ -199,8 +206,6 @@ func bridgeSpawnTransport(path string, lease net.Conn, readyMode string, transpo
 			mx.Close()
 		}
 	}()
-	var handlers sync.WaitGroup
-	defer handlers.Wait()
 	for {
 		stream, err := mx.AcceptStream()
 		if err != nil {

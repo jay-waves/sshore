@@ -186,23 +186,31 @@ func TestInventoryHostGroups(t *testing.T) {
 
 func TestTaskInventoryEndedHistory(t *testing.T) {
 	activityFixture(t)
+	now := time.Now()
 	inv := inventory{Shells: []shellView{
-		{Host: "work", Name: "gone", State: "detached", Historical: true, Unconfirmed: true},
+		{Host: "work", Name: "gone", State: "detached", Historical: true, Unconfirmed: true, ConfirmedAt: now},
 		{Host: "work", Name: "finished", State: "exited", Historical: true},
-		{Host: "work", Name: "uncertain", State: "attached", Historical: true, Unconfirmed: true},
-		{Host: "work", Name: "active", State: "attached", Historical: true, Active: true},
+		{Host: "work", Name: "uncertain", State: "attached", Historical: true, ConfirmedAt: now},
+		{Host: "work", Name: "lost-owner", State: "exited", Historical: true, Temporary: true, ConfirmedAt: now},
+		{Host: "work", Name: "active", State: "attached", Historical: true, Active: true, Temporary: true, ConfirmedAt: now},
+		{Host: "work", Name: "detached", State: "detached", Historical: true, Temporary: true, ConfirmedAt: now},
+		{Host: "work", Name: "live", State: "attached", Temporary: true},
 	}}
 	var out bytes.Buffer
 	writeTaskInventory(&out, inv)
-	if strings.Contains(out.String(), "(finished)") {
-		t.Fatal(out.String())
+	for _, name := range []string{"finished", "lost-owner"} {
+		if strings.Contains(out.String(), "("+name+")") {
+			t.Fatal(out.String())
+		}
 	}
-	for _, name := range []string{"gone", "uncertain", "active"} {
+	for _, name := range []string{"gone", "uncertain", "active", "detached", "live"} {
 		if !strings.Contains(out.String(), "("+name+")") {
 			t.Fatal(out.String())
 		}
 	}
-
+	if strings.Contains(out.String(), "attached (unconfirmed)") || !strings.Contains(out.String(), "unconfirmed") {
+		t.Fatal(out.String())
+	}
 }
 
 func TestTaskInventoryCheckedAndColor(t *testing.T) {

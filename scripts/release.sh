@@ -39,19 +39,18 @@ Includes Linux and Windows binaries for amd64 (x86-64) only.
 Verify downloaded archives against SHA256SUMS.
 Commit: $GITHUB_SHA
 NOTES
-if [[ "$version" == "0.7.12" ]]; then
+if [[ "$version" == "0.7.13" ]]; then
   cat >> release-notes.md <<'NOTES'
 
-- Linux PTY and MCP Bash sessions use pollable process exit waits when available,
-  reducing OS threads with many idle sessions.
-- Linux SFTP mounts use 64 KiB chunks to reduce read and write requests.
-- Windows ConPTY uses native synchronous child pipe handles, overlapped daemon
-  I/O and thread-pool process waits. Shell exit codes follow drained output.
-- ProxyJump hops inherit explicitly supplied SSH configuration files.
-- Windows OpenSSH known_hosts lists support multiple drive-qualified paths.
-- Ctrl+C aborts SSH password and keyboard-interactive prompts without retrying.
+- Attach without a target resumes the most recently detached shell. A known
+  task ID or unique alias can be used without a host prefix.
+- Detach restores the calling terminal's main screen. Reattaching a full-screen
+  application restores its alternate-screen selection before requesting redraw.
+- A remote spawn's owner connection releases its lease when the connection ends.
+  Cache updates use the instance ID, and a complete inventory retires missing
+  spawns from the same remote account.
 
-Update both endpoints to 0.7.12 for managed connections. Save work before
+Update both endpoints to 0.7.13 for managed connections. Save work before
 installing because the installer stops the target account daemon.
 NOTES
 fi
