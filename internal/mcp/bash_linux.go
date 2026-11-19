@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/procwait"
 )
 
 const bashOutputLimit = 1 << 20
@@ -135,7 +137,7 @@ func StartBashSession(ctx context.Context) (result *BashSession, _ error) {
 	}
 	b := &BashSession{cmd: cmd, input: input, status: bufio.NewReader(controlRead), dir: dir, finished: make(chan struct{})}
 	go func() {
-		b.waitErr = cmd.Wait()
+		b.waitErr = procwait.Wait(cmd)
 		b.unavailable.Store(true)
 		// Descendants may inherit the descriptor after Bash exits.
 		_ = controlRead.Close()

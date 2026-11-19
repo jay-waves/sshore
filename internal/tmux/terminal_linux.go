@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/procwait"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -67,13 +69,14 @@ func Start(c Config) (result *Terminal, _ error) {
 	// A descendant may retain the slave after the shell exits. Reap the shell
 	// independently, then bound output draining so it cannot keep the session alive.
 	terminal.wait = sync.OnceValue(func() error {
-		err := cmd.Wait()
+		err := procwait.Wait(cmd)
 		_ = master.SetReadDeadline(time.Now().Add(time.Second))
 		return err
 	})
 	go terminal.Wait()
 	return terminal, nil
 }
+
 func (t *Terminal) Read(p []byte) (int, error) {
 	n, err := t.master.Read(p)
 	// EIO marks the last slave closing; the read deadline ends post-exit draining.

@@ -159,7 +159,7 @@ def nested_smoke(binary, host, options, root, agent_socket):
             approval = Terminal([binary, "review", request], wait_ready=False)
             try:
                 approval.expect("Save as")
-                approval.send(str(received) + "\n")
+                approval.send("\x15" + str(received) + "\n")
                 approval.expect("Saved ")
                 approval.wait()
                 assert received.read_bytes() == payload.read_bytes()
@@ -171,7 +171,9 @@ def nested_smoke(binary, host, options, root, agent_socket):
         finally:
             if reattached is not None:
                 reattached.close()
-        terminal.send(b"\x02n")
+        cycle = sorted(refs[name] for name in ("nested-root", "nested-child", "nested-grandchild"))
+        next_ref = cycle[(cycle.index(refs["nested-grandchild"]) + 1) % len(cycle)]
+        terminal.send(b"\x02n" if next_ref == refs["nested-root"] else b"\x02p")
         terminal.expect("Connected " + re.escape(refs["nested-root"]))
         terminal.send(b"\x02l")
         terminal.expect("Connected " + re.escape(refs["nested-grandchild"]))
@@ -330,10 +332,10 @@ def setup_smoke(binary, host, options, root):
     result = subprocess.run(installer_command, input="no\n",
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 1 and "cancelled" in result.stderr, result.stderr
-    assert "Type kill" in result.stderr and shell_name in result.stdout, result
+    assert "stop the account daemon? [Y/n]" in result.stderr and shell_name in result.stdout, result
     assert installer_target.read_bytes() == original
     assert installer_tasks()[shell_name] == original_pid
-    result = subprocess.run(installer_command, input="kill\n",
+    result = subprocess.run(installer_command, input="yes\n",
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 0 and shell_name in result.stdout, result
     assert subprocess.check_output([str(installer_target), "--version"], text=True).strip() == f"sshore {release}"
@@ -650,11 +652,13 @@ LogLevel ERROR
                 approval = Terminal([binary, "review", request_id], wait_ready=False)
                 terms.append(approval)
                 for kind, path in paths:
+                    if kind == "download":
+                        approval.expect("Download ")
                     approval.expect("Save as" if kind == "download" else "Local file to upload")
-                    approval.send(str(path) + "\n")
+                    approval.send("\x15" + str(path) + "\n" if path else "\n")
                 if port is not None:
                     approval.expect("Local listening port")
-                    approval.send(str(port) + "\n")
+                    approval.send("\x15" + str(port) + "\n")
                 if passphrase:
                     approval.expect("Enter passphrase")
                     approval.send(passphrase + "\n")
@@ -774,8 +778,9 @@ LogLevel ERROR
             rejected = Terminal([binary, "review", request_id], wait_ready=False)
             terms.append(rejected)
             rejected.expect("Save as")
-            rejected.send(str(automatic / batch[0].name) + "\n")
+            rejected.send("\x15" + str(automatic / batch[0].name) + "\n")
             rejected.expect("destination already exists")
+            rejected.expect("Save as")
             rejected.send(b"\x03")
             rejected.wait(1)
             subprocess.run([binary, "kill", "review/" + request_id], check=True)

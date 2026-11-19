@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -178,7 +179,13 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 			}
 		})
 	}
-	client, err = sftp.NewClientPipe(ftp, ftp)
+	var sftpOptions []sftp.ClientOption
+	if runtime.GOOS == "linux" {
+		// The mount agent runs OpenSSH sftp-server. Two 64 KiB
+		// requests cover a typical 128 KiB FUSE read.
+		sftpOptions = append(sftpOptions, sftp.MaxPacketUnchecked(64*1024))
+	}
+	client, err = sftp.NewClientPipe(ftp, ftp, sftpOptions...)
 	if err != nil {
 		if cause := context.Cause(ctx); cause != nil {
 			return 1, cause

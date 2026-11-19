@@ -95,6 +95,8 @@ Windows thread-pool process wait. The Windows environment keeps the last value
 for each case-insensitive name and emits one sorted block.
 Natural exit and explicit close share the same Job and pseudoconsole shutdown.
 The client receives the shell's exit code after the terminal output is drained.
+On Linux, the Go I/O poller waits for shell exit through a pidfd when available.
+The host then reaps the shell and bounds the remaining PTY output drain.
 Each interactive shell owns one terminal and permits one attachment at a time. MCP
 Bash sessions use pipes and do not support terminal attachment. Split panes,
 tiling, screen emulation and scrollback replay are outside scope.
@@ -155,8 +157,8 @@ uses a Unix agent socket; Windows uses its OpenSSH agent pipe. Configuration
 resolution and agent connections are per connection. Unsupported execution hooks and authentication
 modes fail explicitly. Keep resolver arguments compatible with Windows in-box
 OpenSSH; Windows system path tokens use the resolver's initiating environment.
-The resolver collects explicit `-F` options for ProxyJump while checking the
-original argument list. Each hop resolves its own settings.
+Each ProxyJump hop inherits explicit `-F` options and resolves its own
+settings.
 Public-key authentication tries certificates matching configured identities,
 then their raw keys, then other agent keys when allowed. A certificate can use
 the agent signer for its underlying key.
@@ -497,7 +499,9 @@ The account task table defines the scope for MCP session lookup, limits,
 listing and shutdown. MCP sessions remain registered during cleanup, and the
 task table can retire them after cleanup succeeds. Failed cleanup can be
 retried against the same registered task. Each session owns its Bash process
-and bounded execution history. The latest execution's foreground completion
+and bounded execution history. Bash and PTY hosts share the Linux pidfd wait
+path so idle shells don't occupy an OS thread while waiting to exit.
+The latest execution's foreground completion
 determines when the next script can start. Older executions remain readable
 while their output streams are open. Output reads copy at most 4 KiB
 from each stream at the supplied cursor. The response reports output closed
@@ -706,6 +710,7 @@ to ten seconds to finish. If the transport fails during a graceful unmount,
 the same attempt gets up to five seconds to finish after transport shutdown.
 The SFTP request watchdog sleeps while the wire is idle and reads the oldest
 outstanding request directly from the wire's request table.
+Linux mounts use 64 KiB SFTP read and write chunks with the OpenSSH mount agent.
 Mounts learn from successful foreground directory listings. Per remote account
 and resolved root, they remember up to 1,024 relative paths, halve visit weight
 every seven days and forget paths after 30 days without a visit. After a

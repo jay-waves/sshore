@@ -33,7 +33,6 @@ type Options struct {
 type connectionConfig struct {
 	options                   Options
 	values                    map[string][]string
-	configFileArgs            []string // Preserve explicit -F options for ProxyJump.
 	host, user, port, network string
 	timeout                   time.Duration
 }
@@ -78,9 +77,6 @@ func resolveConfig(ctx context.Context, o Options) (*connectionConfig, error) {
 		name, value, n := SplitOption(args)
 		if ForwardingOption(name, value) {
 			return nil, fmt.Errorf("SSH configuration forwarding is unsupported; use sshore forward")
-		}
-		if name == "-F" && n > 0 {
-			c.configFileArgs = append(c.configFileArgs, args[:n]...)
 		}
 		args = args[max(n, 1):]
 	}

@@ -194,7 +194,13 @@ func (cfg *connectionConfig) proxyJumpOptions(jump string) Options {
 	options := Options{
 		Host: host, Executable: o.Executable, Environment: o.Environment,
 		Directory: o.Directory, Confirm: o.Confirm, Secret: o.Secret, Diagnostic: o.Diagnostic,
-		Args: slices.Clip(cfg.configFileArgs),
+	}
+	for args := o.Args; len(args) > 0; {
+		name, _, n := SplitOption(args)
+		if name == "-F" && n > 0 {
+			options.Args = append(options.Args, args[:n]...)
+		}
+		args = args[max(n, 1):]
 	}
 	if last >= 0 {
 		options.Args = append(options.Args, "-J", jump[:last])
