@@ -40,7 +40,11 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, color bool) {
 		if currentLocal != "" && s.identity == currentLocal && state == "attached" {
 			state += " (current)"
 		}
-		rows = append(rows, taskTableRow{taskUID(s.identity), s.ShortID, s.Name, shellTaskKind(s.Temporary), "local", "-", state, s.Directory, "now"})
+		detail := s.Directory
+		if s.ConnectedHost != "" {
+			detail = strings.TrimSpace(detail + "  -> " + cleanText(s.ConnectedHost))
+		}
+		rows = append(rows, taskTableRow{taskUID(s.identity), s.ShortID, s.Name, shellTaskKind(s.Temporary), "local", "-", state, detail, "now"})
 	}
 	for _, s := range inv.Shells {
 		if s.State == "renamed" || (s.Historical && endedShellState(s.State)) {

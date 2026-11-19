@@ -11,16 +11,17 @@ import (
 )
 
 type localShellView struct {
-	hosted    bool
-	Lifetime  string `json:"lifetime"`
-	Temporary bool   `json:"temporary,omitempty"`
-	ShortID   string `json:"short_id,omitempty"`
-	identity  string
-	Name      string `json:"name"`
-	State     string `json:"state"`
-	PID       int    `json:"pid,omitempty"`
-	Version   string `json:"version"`
-	Directory string `json:"directory,omitempty"`
+	hosted        bool
+	Lifetime      string `json:"lifetime"`
+	Temporary     bool   `json:"temporary,omitempty"`
+	ShortID       string `json:"short_id,omitempty"`
+	identity      string
+	Name          string `json:"name"`
+	State         string `json:"state"`
+	ConnectedHost string `json:"connected_host,omitempty"`
+	PID           int    `json:"pid,omitempty"`
+	Version       string `json:"version"`
+	Directory     string `json:"directory,omitempty"`
 }
 
 func localRequest(ref, identity string, request message) (message, error) {

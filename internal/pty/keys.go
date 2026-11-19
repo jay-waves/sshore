@@ -17,9 +17,11 @@ const (
 	KeyNext
 	KeyPrevious
 	KeyLast
+	KeyConsole
 )
 
 // KeyEvent is either opaque terminal input or a local command, in input order.
+// KeyConsole also carries the unread bytes following the shortcut.
 type KeyEvent struct {
 	Data   []byte
 	Action KeyAction
@@ -155,6 +157,8 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 				action = KeyNext
 			case 'p':
 				action = KeyPrevious
+			case ':':
+				action = KeyConsole
 			case 'l':
 				action = KeyLast
 			case 'd':
@@ -173,9 +177,9 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 		k.prefix = nil
 		flush()
 		events = append(events, KeyEvent{Action: action})
-		return action == KeyDetach || action.IsSessionCommand()
+		return action == KeyConsole || action == KeyDetach || action.IsSessionCommand()
 	}
-	for _, c := range data {
+	for i, c := range data {
 		if k.mouseTail > 0 {
 			out = append(out, c)
 			k.mouseTail--
@@ -217,6 +221,9 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 				mods = 4
 			}
 			if key([]byte{c}, code, mods, 1) {
+				if events[len(events)-1].Action == KeyConsole {
+					events[len(events)-1].Data = data[i+1:]
+				}
 				return events
 			}
 			continue
@@ -272,6 +279,9 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 		if !ok {
 			literal(raw)
 		} else if key(raw, code, mods, event) {
+			if events[len(events)-1].Action == KeyConsole {
+				events[len(events)-1].Data = data[i+1:]
+			}
 			return events
 		}
 	}

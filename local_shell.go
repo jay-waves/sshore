@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -402,12 +404,13 @@ func (s *shellTerminal) serveAttachment(p *attachment, control io.Reader, resize
 
 type localShell struct {
 	shellTerminal
-	environment []string
-	tasks       *daemonTasks
-	record      localShellRecord
-	done        chan struct{}
-	once        sync.Once
-	handoff     *localHandoff
+	environment  []string
+	tasks        *daemonTasks
+	record       localShellRecord
+	done         chan struct{}
+	once         sync.Once
+	handoff      *localHandoff
+	handoffHints map[net.Conn]string
 }
 
 func (s *localShell) view() localShellView {
@@ -427,6 +430,10 @@ func (s *localShell) view() localShellView {
 		view.State = "starting"
 	default:
 		view.State = "detached"
+	}
+	if len(s.handoffHints) != 0 {
+		hosts := slices.Sorted(maps.Values(s.handoffHints))
+		view.ConnectedHost = strings.Join(slices.Compact(hosts), ", ")
 	}
 	return view
 }
@@ -575,6 +582,8 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, re
 	defer s.close()
 	return serveLocalShell(tasks, s, record, ready, func(c net.Conn, m message) error {
 		switch m.Type {
+		case "watch_handoff":
+			return s.watchHandoff(c, m)
 		case "handoff_confirm":
 			return s.confirmHandoff(c, m)
 		case "handoff":

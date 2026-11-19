@@ -194,6 +194,7 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 }
 
 type options struct {
+	handoffHint           *handoffObservation
 	recovering            bool
 	reusable              *clientTransport
 	routeTarget           bool

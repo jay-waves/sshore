@@ -90,7 +90,16 @@ Press **Ctrl+B** and then one of these keys:
 | `l`, `n`, `p` | Switch to the last, next or previous session. |
 | `c` | Spawn a nested shell on the current host. Exit or detach to return one level. |
 | `r` | Request a redraw. |
+| `:` | Open the full-screen sshore command prompt. |
 | `Ctrl+B` | Send a literal Ctrl+B to the application. |
+
+At the command prompt, use `list` for task inventory, `ps` for the local task
+tree, `attach <ID|name>` to switch to a detached session in the current scope,
+and `spawn` to open a nested shell. Tab completes commands, session names and
+short IDs. Use the arrow keys to edit input or recall commands from the current
+prompt. Type `help` for commands. Press Esc
+or type `exit` to return. Applications already using the alternate screen
+redraw on return.
 
 Use `--no-escape` if the application needs all keystrokes.
 
@@ -102,6 +111,11 @@ sshore list work:            # Query the remote host now.
 sshore pstree                # Show local task relationships.
 sshore list --json           # Include diagnostics and resource log paths.
 ```
+
+When a native local shell hands its terminal to another sshore session, `list`
+adds `-> HOST` (or `-> local`) to DETAIL, and `pstree` shows the same destination.
+The source shell can be attached while it is detached. If the original frontend
+cannot return to it, it prints the reason and exits.
 
 Use an ID or name from `list` to select a task. For example,
 `sshore rename work:7afe22 build` lets you resume it with

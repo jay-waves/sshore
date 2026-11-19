@@ -302,7 +302,7 @@ func TestLocalTreeScopeAndSources(t *testing.T) {
 	}
 }
 
-func TestTaskTreeCurrentAndCheckedOrder(t *testing.T) {
+func TestTaskTreeStableIDOrder(t *testing.T) {
 	activityFixture(t)
 	now := time.Now()
 	nodes := []shellTreeNode{
@@ -316,7 +316,7 @@ func TestTaskTreeCurrentAndCheckedOrder(t *testing.T) {
 	var out bytes.Buffer
 	writeShellTree(&out, nodes, "", false)
 	text := out.String()
-	positions := []int{strings.Index(text, "(work)"), strings.Index(text, "*current"), strings.Index(text, "(data)"), strings.Index(text, "(export)"), strings.Index(text, "(web)"), strings.Index(text, "launch/e0123f ?")}
+	positions := []int{strings.Index(text, "(work)"), strings.Index(text, "*current"), strings.Index(text, "(data)"), strings.Index(text, "(web)"), strings.Index(text, "launch/e0123f ?"), strings.Index(text, "(export)")}
 	for i, p := range positions {
 		if p < 0 || i > 0 && p <= positions[i-1] {
 			t.Fatal(text)

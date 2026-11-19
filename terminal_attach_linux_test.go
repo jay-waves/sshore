@@ -157,6 +157,38 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	// Show the live handoff separately from attachment state.
+	list := exec.Command(e.bin, "list", "self:", "--json")
+	list.Env = cmd.Env
+	out, err := list.CombinedOutput()
+	if err != nil {
+		t.Fatalf("list connected shell: %s: %v", out, err)
+	}
+	var rows []localShellView
+	if err := json.Unmarshal(out, &rows); err != nil {
+		t.Fatalf("list JSON: %s: %v", out, err)
+	}
+	found := false
+	for _, row := range rows {
+		if row.Name == "origin" && row.State == "detached" && row.ConnectedHost == "fixture" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing connected return target: %s", out)
+	}
+	tree := exec.Command(e.bin, "pstree")
+	tree.Env = cmd.Env
+	out, err = tree.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "-> fixture") {
+		t.Fatalf("connected tree: %s: %v", out, err)
+	}
+	table := exec.Command(e.bin, "list", "self:")
+	table.Env = cmd.Env
+	out, err = table.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "-> fixture") {
+		t.Fatalf("list handoff detail: %s: %v", out, err)
+	}
 	// Redraw remains local to the frontend; ordinary input reaches the remote shell.
 	io.WriteString(terminal, "\x02rprintf 'HANDOFF_%s\\n' remote\n")
 	wait("HANDOFF_remote")
@@ -257,6 +289,52 @@ func TestClientSessionShortcuts(t *testing.T) {
 	}
 	busy.writeInput(t, []byte("exit\n"))
 	busy.readExit(t)
+}
+
+func TestClientCommandConsole(t *testing.T) {
+	t.Setenv("SSHORE_SOCKET", "")
+	e := newEnv(t)
+	alpha, _ := e.attach("alpha")
+	detachTestClient(t, alpha)
+	cmd, terminal, wait := startPrefixClient(t, e)
+	wait("Connected fixture:keys")
+	io.WriteString(terminal, "\x02:help\r")
+	wait("sshore commands")
+	wait("  alpha")
+	wait("Switch session")
+	io.WriteString(terminal, "list\r")
+	wait("sshore> ")
+	io.WriteString(terminal, "ps\r")
+	wait("sshore> ")
+	io.WriteString(terminal, "\x1b")
+	wait("\x1b[?1049l")
+	io.WriteString(terminal, "printf 'CONSOLE-%s' restored\n")
+	wait("CONSOLE-restored")
+	io.WriteString(terminal, "\x02:")
+	wait("  alpha")
+	io.WriteString(terminal, "att\ta\t\r")
+	wait("Connected fixture:alpha")
+	io.WriteString(terminal, "\x02:")
+	wait("sshore commands")
+	io.WriteString(terminal, "spawn\r")
+	wait("(spawn)")
+	io.WriteString(terminal, "exit\n")
+	wait("Connected fixture:alpha")
+	io.WriteString(terminal, "\x02:")
+	wait("sshore> ")
+	beta, _ := e.attach("beta")
+	detachTestClient(t, beta)
+	io.WriteString(terminal, "attach beta\r")
+	wait("Connected fixture:beta")
+	io.WriteString(terminal, "exit\n")
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"keys", "alpha"} {
+		b, _ := e.attach(name, "attach")
+		b.writeInput(t, []byte("exit\n"))
+		b.readExit(t)
+	}
 }
 
 func TestClientFailedSwitchRestoresOriginal(t *testing.T) {
@@ -588,6 +666,90 @@ func TestClientNestedLocalSpawnHandoff(t *testing.T) {
 	io.WriteString(terminal, "exit\n")
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestClientHandoffReturnTargetTaken(t *testing.T) {
+	t.Setenv("SSHORE_LOCAL_SESSION", "")
+	t.Setenv("SSHORE_SOCKET", "")
+	e := newEnv(t)
+	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-launch", "self:", "origin", "--no-profile"})
+	t.Cleanup(func() {
+		cleanup := exec.Command(e.bin, "kill", "--all")
+		cleanup.Env = cmd.Env
+		_ = cleanup.Run()
+	})
+	wait("Connected self:origin")
+	wait("sshore-test> ")
+	io.WriteString(terminal, shellQuote(e.bin)+" launch self: --no-profile\n")
+	wait("Connected self:")
+	other, otherTerminal, otherWait := startSessionClient(t, e, []string{"attach", "self:origin"})
+	otherWait("Connected self:origin")
+	tree := exec.Command(e.bin, "pstree")
+	tree.Env = cmd.Env
+	if out, err := tree.CombinedOutput(); err != nil || !strings.Contains(string(out), "-> local") {
+		t.Fatalf("occupied source should still show handoff: %s: %v", out, err)
+	}
+	io.WriteString(terminal, "\x02d")
+	wait("Detached;")
+	wait("Could not return to origin")
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	io.WriteString(otherTerminal, "printf 'ORIGIN-%s' alive\n")
+	otherWait("ORIGIN-alive")
+	io.WriteString(otherTerminal, "exit\n")
+	if err := other.Wait(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientHandoffHintReleasedOnFrontendExit(t *testing.T) {
+	t.Setenv("SSHORE_LOCAL_SESSION", "")
+	t.Setenv("SSHORE_SOCKET", "")
+	e := newEnv(t)
+	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-launch", "self:", "origin", "--no-profile"})
+	t.Cleanup(func() { cleanup := exec.Command(e.bin, "kill", "--all"); cleanup.Env = cmd.Env; _ = cleanup.Run() })
+	wait("Connected self:origin")
+	wait("sshore-test> ")
+	io.WriteString(terminal, shellQuote(e.bin)+" spawn self: --no-profile\n")
+	wait("Connected self:")
+	check := func(wantHost string) bool {
+		list := exec.Command(e.bin, "list", "self:", "--json")
+		list.Env = cmd.Env
+		out, err := list.Output()
+		if err != nil {
+			return false
+		}
+		var rows []localShellView
+		if json.Unmarshal(out, &rows) != nil {
+			return false
+		}
+		for _, row := range rows {
+			if row.Name == "origin" && row.State == "detached" && row.ConnectedHost == wantHost {
+				return true
+			}
+		}
+		return false
+	}
+	if !check("local") {
+		t.Fatal("parent is not connected during local handoff")
+	}
+	// The hint stream must outlive the daemon stream handshake deadline.
+	time.Sleep(5200 * time.Millisecond)
+	if !check("local") {
+		t.Fatal("handoff hint expired while the frontend remained connected")
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	deadline := time.Now().Add(5 * time.Second)
+	for !check("") {
+		if time.Now().After(deadline) {
+			t.Fatal("handoff hint survived frontend exit")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

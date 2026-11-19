@@ -98,6 +98,12 @@ def handoff_smoke(binary, host, options, root):
         while not marker.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert marker.read_text() == "0", "nested command did not exit after handoff"
+        rows = json.loads(subprocess.check_output([binary, "list", "self:", "--json"], text=True))
+        local_name = local_ref.split(":", 1)[1]
+        assert any(row["name"] == local_name and row["state"] == "detached"
+                   and row.get("connected_host") == host for row in rows), rows
+        tree = subprocess.check_output([binary, "pstree"], text=True)
+        assert "-> " + host in tree, tree
         terminal.send("printf 'HANDOFF-%s\\n' ready\n")
         terminal.expect("HANDOFF-ready")
         terminal.send(b"\x02d")

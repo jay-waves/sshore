@@ -225,6 +225,12 @@ It never inherits launch lifetime or injects a command into terminal input.
 Exit or detach returns one level; the parent program continues running.
 
 The client at the user's terminal owns terminal input and shortcuts.
+Ctrl+B : opens a frontend command prompt using the terminal screen. It uses the
+same validated session targets and instance-based switching as other shortcuts.
+While the prompt has focus, PTY output is buffered up to 256 KiB. If the buffer
+fills, the prompt closes and output resumes. On return, the frontend requests a
+redraw for the underlying application.
+
 Ctrl+B n and Ctrl+B p select the next or previous validated target by name
 and wrap at the ends. The client keeps the selected target's instance ID.
 `x/ansi` provides sequence framing and parameter parsing; the shortcut adapter
@@ -307,6 +313,11 @@ same process at each hop. The daemon relays endpoint bytes without interpreting
 terminal or file traffic. Both endpoints of a routed sibling attachment bind to
 the selected shell instance, including after a rename.
 Local managed shells also support handoff for remote `launch` and `attach`.
+A native shell reports live handoff destinations in list details and pstree
+while the frontend holds the observation stream. Attachment remains exclusive
+per shell, and a detached return target is eligible for ordinary attach.
+If a return target is unavailable, the frontend reports the failed return and
+exits after releasing the departed attachment.
 Detached startup keeps its noninteractive path. Reuse the existing connection and
 attachment mechanisms; do not run a second terminal frontend inside a daemon.
 Native and hosted shells release the input lease through the same control
@@ -338,7 +349,8 @@ Commands select tasks by name or short ID. A bare kill selector and
 `self:ID` are restricted to tasks managed on this machine. Remote kill
 selectors require the host in `HOST:ID`, including for cached rows. The list
 displays the first six characters of each task UID and orders tasks by full UID
-within each owner group. Short-ID operations reuse the
+within each owner group. The process tree sorts roots and siblings by short
+ID so attachment and observation updates do not reorder them. Short-ID operations reuse the
 connection settings of their observation. Confirmed detach acknowledgements
 (including Ctrl+B d, helper detach, switching, and --detach startup) promote the
 immutable shell identity in one bounded, daemon-serialized MRU stored in

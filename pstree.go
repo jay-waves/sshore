@@ -144,32 +144,12 @@ func writeShellTree(out io.Writer, nodes []shellTreeNode, machine string, color 
 	}
 	// Bucket zero holds roots; the rest hold each owner's children.
 	children := make([][]int, len(nodes)+1)
-	clear(marks)
 	for i, owner := range owners {
 		bucket := owner + 1
 		children[bucket] = append(children[bucket], i)
-		if !nodes[i].Current {
-			continue
-		}
-		for p := i; p >= 0 && marks[p] == 0; p = owners[p] {
-			marks[p] = 1
-		}
 	}
 	compare := func(a, b int) int {
-		if marks[a] != marks[b] {
-			return cmp.Compare(marks[b], marks[a])
-		}
-		uncertainA := nodes[a].CheckedAt.IsZero() || nodes[a].State == "unavailable"
-		uncertainB := nodes[b].CheckedAt.IsZero() || nodes[b].State == "unavailable"
-		if uncertainA != uncertainB {
-			if uncertainA {
-				return 1
-			}
-			return -1
-		}
-		return cmp.Or(nodes[b].CheckedAt.Compare(nodes[a].CheckedAt),
-			cmp.Compare(nodes[a].Kind, nodes[b].Kind),
-			cmp.Compare(nodes[a].Name, nodes[b].Name),
+		return cmp.Or(cmp.Compare(nodes[a].displayCode(), nodes[b].displayCode()),
 			cmp.Compare(nodes[a].Identity, nodes[b].Identity))
 	}
 	for _, siblings := range children {
@@ -196,16 +176,19 @@ func writeShellTree(out io.Writer, nodes []shellTreeNode, machine string, color 
 	draw(children[0])
 }
 
+func (n shellTreeNode) displayCode() string {
+	if n.ShortID != "" {
+		return n.ShortID
+	}
+	return taskShortCode(n.Identity)
+}
+
 func writeShellTreeRow(out io.Writer, n shellTreeNode, color bool, prefix []byte, branch string) {
 	kind := n.Kind
 	if kind == "" {
 		kind = shellTaskKind(n.Lifetime == "parent" || n.Lifetime == "heartbeat")
 	}
-	code := n.ShortID
-	if code == "" {
-		code = taskShortCode(n.Identity)
-	}
-	label := cleanText(kind) + "/" + taskDisplayID(code, n.Name)
+	label := cleanText(kind) + "/" + taskDisplayID(n.displayCode(), n.Name)
 	if kind == "external" && n.OwnerProcess != nil {
 		label = fmt.Sprintf("%s (pid %d)", cleanText(n.Name), n.OwnerProcess.PID)
 	}
@@ -528,7 +511,7 @@ func localShellTreeNodes(inv inventory) []shellTreeNode {
 		byID[n.Identity] = entry
 	}
 	for _, s := range inv.LocalShells {
-		add(shellTreeNode{Identity: s.identity, ShortID: s.ShortID, Host: inv.Hostname, MachineID: inv.MachineID, Name: s.Name, State: s.State, Lifetime: shellLifetime(s.Temporary, false)})
+		add(shellTreeNode{Identity: s.identity, ShortID: s.ShortID, Host: inv.Hostname, MachineID: inv.MachineID, Name: s.Name, State: s.State, Lifetime: shellLifetime(s.Temporary, false), Remote: s.ConnectedHost, Direction: "->"})
 	}
 	for _, s := range inv.Shells {
 		if s.Historical {

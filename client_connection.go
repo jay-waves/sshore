@@ -173,6 +173,12 @@ type sessionSwitch struct {
 func (s *sessionSwitch) Error() string { return "switch session" }
 func runClient(o options) (int, error) {
 	transports := make(clientTransports)
+	observations := make(map[*handoffObservation]struct{})
+	defer func() {
+		for r := range observations {
+			r.conn.Close()
+		}
+	}()
 	defer transports.releaseUnreferenced()
 	// Keep the frontend alive while an attempt unwinds and restores its parent.
 	// Each attempt routes interrupts according to its connection phase.
@@ -182,6 +188,8 @@ func runClient(o options) (int, error) {
 	previous := ""
 	var parents []returnTarget
 	var pending *sessionSwitch
+	returning := false
+	returnCode := 0
 	prune := func(current *options) {
 		transports.retainRoute(current)
 		if pending != nil {
@@ -196,6 +204,12 @@ func runClient(o options) (int, error) {
 		prune(&o)
 		code, err := runClientOnce(o, previous, transports, func(current options) {
 			o.handoffDone = nil
+			returning = false
+			if current.handoffHint != nil {
+				current.handoffHint.conn.Close()
+				delete(observations, current.handoffHint)
+				o.handoffHint = nil
+			}
 			if pending != nil {
 				if pending.returnToParent {
 					parents = append(parents, pending.from)
@@ -210,6 +224,9 @@ func runClient(o options) (int, error) {
 		}
 		if next, ok := errors.AsType[*sessionSwitch](err); ok {
 			pending = next
+			if next.from.options.handoffHint != nil {
+				observations[next.from.options.handoffHint] = struct{}{}
+			}
 			source := next.from.options
 			switch {
 			case next.returnToParent:
@@ -228,6 +245,9 @@ func runClient(o options) (int, error) {
 			target = pending.from
 			pending = nil
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Target unavailable; restoring %s.\n", cleanText(target.options.session))
+		case returning && err != nil:
+			termui.Log(os.Stderr, termui.Warning, "[sshore] Could not return to %s: %s. Leaving this frontend.\n", cleanText(o.session), cleanText(err.Error()))
+			return returnCode, nil
 		case len(parents) == 0:
 			return code, err
 		default:
@@ -238,6 +258,7 @@ func runClient(o options) (int, error) {
 				termui.Log(os.Stderr, termui.Warning, "[sshore] %s\n", cleanText(err.Error()))
 			}
 		}
+		returning, returnCode = true, code
 		o, previous = target.options, target.previous
 		o.command, o.recovering = "attach", true
 	}
@@ -700,7 +721,66 @@ func handoffLocalClient(o options) (bool, error) {
 	return true, nil
 }
 
+type handoffObservation struct {
+	conn net.Conn
+}
+
+func openHandoffHint(identity, token string) (*handoffObservation, error) {
+	c, _, err := openNativeShell(context.Background(), "", identity)
+	if err != nil {
+		return nil, err
+	}
+	if err = writeMessage(c, message{Type: "watch_handoff", Token: token}); err == nil {
+		var reply message
+		reply, err = readMessage(c)
+		if err == nil && reply.Type != "watching" {
+			err = fmt.Errorf("watch handoff: %s", reply.Error)
+		}
+	}
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	_ = c.SetDeadline(time.Time{})
+	return &handoffObservation{conn: c}, nil
+}
+
+func (s *localShell) watchHandoff(c net.Conn, m message) error {
+	s.mu.Lock()
+	h := s.handoff
+	if h == nil || h.token != m.Token || h.attachment == nil {
+		s.mu.Unlock()
+		return writeMessage(c, message{Type: "error", Error: "handoff unavailable"})
+	}
+	if s.handoffHints == nil {
+		s.handoffHints = make(map[net.Conn]string)
+	}
+	s.handoffHints[c] = h.host
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.handoffHints, c)
+		s.mu.Unlock()
+	}()
+	if err := writeMessage(c, message{Type: "watching"}); err != nil {
+		return err
+	}
+	_ = c.SetDeadline(time.Time{})
+	finished := make(chan struct{})
+	defer close(finished)
+	go func() {
+		select {
+		case <-s.done:
+			_ = c.Close()
+		case <-finished:
+		}
+	}()
+	_, err := io.Copy(io.Discard, c)
+	return err
+}
+
 type localHandoff struct {
+	host       string
 	token      string
 	attachment *attachment // The preparing frontend; nil while awaiting startup.
 	reply      chan string // Owned by one phase and cleared on delivery.
@@ -719,8 +799,13 @@ func (h *localHandoff) deliver(errorText string) bool {
 func (s *localShell) requestHandoff(c net.Conn, h *clientHandoff) error {
 	deadline := time.Now().Add(2 * time.Minute)
 	_ = c.SetDeadline(deadline)
-	if _, err := h.options(); err != nil {
+	target, err := h.options()
+	if err != nil {
 		return writeMessage(c, message{Type: "error", Error: err.Error()})
+	}
+	host := target.host
+	if target.local {
+		host = "local"
 	}
 	s.mu.Lock()
 	p := s.active
@@ -729,7 +814,7 @@ func (s *localShell) requestHandoff(c net.Conn, h *clientHandoff) error {
 		return writeMessage(c, message{Type: "error", Error: "local frontend unavailable or busy"})
 	}
 	prepared := make(chan string, 1)
-	pending := &localHandoff{token: resourceToken(), attachment: p, reply: prepared}
+	pending := &localHandoff{token: resourceToken(), attachment: p, reply: prepared, host: host}
 	s.handoff = pending
 	s.mu.Unlock()
 	defer func() {

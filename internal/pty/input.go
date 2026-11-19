@@ -56,6 +56,7 @@ type InputState struct {
 	prefix          []byte
 	state           uint8
 	keypad          modeSetting
+	modifyOtherKeys string
 	alternateScreen int // DEC mode that selected the alternate buffer, or zero
 }
 
@@ -104,6 +105,7 @@ func (s *InputState) Observe(data []byte) {
 				clear(s.saved[:])
 				s.keypad = modeOff
 				s.alternateScreen = 0
+				s.modifyOtherKeys = ""
 				s.state = inputText
 			case '=', '>':
 				s.keypad = modeOff
@@ -120,6 +122,14 @@ func (s *InputState) Observe(data []byte) {
 				s.prefix = s.prefix[:1]
 				s.state = inputEscape
 			case c >= 0x40 && c <= 0x7e:
+				if s.state == inputCSI && c == 'm' {
+					switch string(s.prefix) {
+					case "\x1b[>4", "\x1b[>4;0":
+						s.modifyOtherKeys = ""
+					case "\x1b[>4;1", "\x1b[>4;2":
+						s.modifyOtherKeys = string(s.prefix) + "m"
+					}
+				}
 				if s.state == inputCSI && (c == 'h' || c == 'l' || c == 's' || c == 'r') {
 					s.apply(c)
 				}
@@ -234,4 +244,13 @@ func (s *InputState) Replay() []byte {
 // MouseEnabled reports whether native mouse capture is requested.
 func (s *InputState) MouseEnabled() bool {
 	return slices.Contains(s.current[:trackingModeCount], modeOn)
+}
+
+// AlternateScreen reports whether the application owns the alternate buffer.
+func (s *InputState) AlternateScreen() bool { return s.alternateScreen != 0 }
+
+// ReplayModes restores input modes without selecting a screen buffer.
+func (s InputState) ReplayModes() []byte {
+	s.alternateScreen = 0
+	return append([]byte(s.modifyOtherKeys), s.Replay()...)
 }
