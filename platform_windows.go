@@ -65,29 +65,31 @@ func lockResourceState(f *os.File) error {
 
 // Retain a wait-only handle across authenticated shutdown. The owner lock can be
 // released before Windows unloads the daemon's executable.
-func daemonProcessWaiter(pid int) (func(time.Time) error, func(), error) {
+func completeDaemonShutdown(ctx context.Context, pid int, shutdown func() error) error {
 	if pid == os.Getpid() {
-		return nil, nil, nil
+		return shutdown()
 	}
 	if pid <= 0 {
-		return nil, nil, fmt.Errorf("invalid daemon process ID")
+		return fmt.Errorf("cannot wait for daemon exit: invalid daemon process ID")
 	}
 	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
 	if err != nil {
-		return nil, nil, err
+		return fmt.Errorf("cannot wait for daemon exit: %w", err)
 	}
-	wait := func(deadline time.Time) error {
-		milliseconds := max(0, time.Until(deadline).Milliseconds())
-		status, err := windows.WaitForSingleObject(handle, uint32(milliseconds))
-		if err != nil {
-			return fmt.Errorf("wait for daemon exit: %w", err)
-		}
-		if status != windows.WAIT_OBJECT_0 {
-			return fmt.Errorf("daemon process did not exit before the shutdown deadline")
-		}
-		return nil
+	defer windows.CloseHandle(handle)
+	if err := shutdown(); err != nil {
+		return err
 	}
-	return wait, func() { windows.CloseHandle(handle) }, nil
+	deadline, _ := ctx.Deadline()
+	milliseconds := max(0, time.Until(deadline).Milliseconds())
+	status, err := windows.WaitForSingleObject(handle, uint32(milliseconds))
+	if err != nil {
+		return fmt.Errorf("wait for daemon exit: %w", err)
+	}
+	if status != windows.WAIT_OBJECT_0 {
+		return fmt.Errorf("daemon process did not exit before the shutdown deadline")
+	}
+	return nil
 }
 
 func prepareFTPPaths(o *ftpOptions) (func(), error) {

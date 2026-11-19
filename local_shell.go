@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -247,7 +246,10 @@ func (s *shellTerminal) pumpTerminal(t *tmux.Terminal, exited func(error, int)) 
 	code := 0
 	if err != nil {
 		code = 1
-		if e, ok := errors.AsType[*exec.ExitError](err); ok {
+		if e, ok := errors.AsType[interface {
+			error
+			ExitCode() int
+		}](err); ok {
 			code = e.ExitCode()
 		}
 	}

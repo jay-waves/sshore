@@ -10,7 +10,7 @@ import (
 )
 
 func TestConPTYInputPipeStopsBlockedWriteBeforeNewOwner(t *testing.T) {
-	reader, writer, err := consoleInputPipe()
+	reader, writer, err := consolePipe(false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,5 +78,37 @@ func TestConPTYInputPipeStopsBlockedWriteBeforeNewOwner(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("pipe reader did not reach EOF")
+	}
+}
+
+func TestConPTYOutputPipeReadDeadline(t *testing.T) {
+	reader, writer, err := consolePipe(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+
+	if err := reader.SetReadDeadline(time.Now().Add(30 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 3)
+	if _, err := reader.Read(buf); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("read error %v, want deadline", err)
+	}
+	if err := reader.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("END")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(reader, buf); err != nil || string(buf) != "END" {
+		t.Fatalf("final output %q: %v", buf, err)
+	}
+	if _, err := reader.Read(buf); err != io.EOF {
+		t.Fatalf("read error %v, want EOF", err)
 	}
 }

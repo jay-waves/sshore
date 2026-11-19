@@ -2,7 +2,6 @@ package tmux
 
 import (
 	"crypto/rand"
-	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -80,13 +79,13 @@ func Start(c Config) (result *Terminal, _ error) {
 		// ConPTY keeps its output pipe open after the child exits.
 		go t.Wait()
 	}()
-	inR, inW, err := consoleInputPipe()
+	inR, inW, err := consolePipe(false)
 	if err != nil {
 		return nil, err
 	}
 	t.input = inW
 	defer inR.Close()
-	outR, outW, err := consolePipe()
+	outR, outW, err := consolePipe(true)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +203,7 @@ func (t *Terminal) Wait() error { return t.waitResult() }
 func (t *Terminal) wait(process windows.Handle) error {
 	defer windows.CloseHandle(process)
 	defer t.closeConsole()
-	if _, err := windows.WaitForSingleObject(process, windows.INFINITE); err != nil {
+	if err := waitForProcessExit(process); err != nil {
 		return err
 	}
 	var code uint32
@@ -212,55 +211,74 @@ func (t *Terminal) wait(process windows.Handle) error {
 		return err
 	}
 	if code != 0 {
-		return fmt.Errorf("terminal process exited with code %d", code)
+		return processExitError(code)
 	}
 	return nil
 }
 
-// ConPTY reads synchronously. Only our write end uses overlapped I/O so Go
-// can cancel a blocked write by deadline without closing the terminal.
-// TODO: On native Windows amd64, run the ConPTY tests and verify Ctrl+B
-// detach/reattach during blocked input and final output on shell exit.
-func consoleInputPipe() (read, write *os.File, err error) {
+type processExitError uint32
+
+func (e processExitError) Error() string {
+	return fmt.Sprintf("terminal process exited with code %d", e)
+}
+func (e processExitError) ExitCode() int { return int(e) }
+
+// Only the daemon's end is overlapped. CreatePseudoConsole requires its
+// handles to use synchronous I/O.
+func consolePipe(daemonReads bool) (*os.File, *os.File, error) {
 	name, err := windows.UTF16PtrFromString(`\\.\pipe\sshore-conpty-` + rand.Text())
 	if err != nil {
 		return nil, nil, err
 	}
-	r, err := windows.CreateNamedPipe(name, windows.PIPE_ACCESS_INBOUND|windows.FILE_FLAG_FIRST_PIPE_INSTANCE,
+	readMode := uint32(windows.PIPE_ACCESS_INBOUND | windows.FILE_FLAG_FIRST_PIPE_INSTANCE)
+	writeFlags := uint32(windows.SECURITY_SQOS_PRESENT | windows.SECURITY_IDENTIFICATION)
+	if daemonReads {
+		readMode |= windows.FILE_FLAG_OVERLAPPED
+	} else {
+		writeFlags |= windows.FILE_FLAG_OVERLAPPED
+	}
+	r, err := windows.CreateNamedPipe(name, readMode,
 		windows.PIPE_REJECT_REMOTE_CLIENTS, 1, 0, 64*1024, 0, nil)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer func() {
-		if err != nil {
-			_ = windows.CloseHandle(r)
-		}
-	}()
-	w, err := windows.CreateFile(name, windows.GENERIC_WRITE, 0, nil, windows.OPEN_EXISTING,
-		windows.FILE_FLAG_OVERLAPPED|windows.SECURITY_SQOS_PRESENT|windows.SECURITY_IDENTIFICATION, 0)
+	// CreateFile connects to the single server instance before returning.
+	w, err := windows.CreateFile(name, windows.GENERIC_WRITE, 0, nil, windows.OPEN_EXISTING, writeFlags, 0)
 	if err != nil {
+		_ = windows.CloseHandle(r)
 		return nil, nil, err
 	}
-	if err = windows.ConnectNamedPipe(r, nil); err != nil && !errors.Is(err, windows.ERROR_PIPE_CONNECTED) {
-		_ = windows.CloseHandle(w)
-		return nil, nil, err
+	pollHandle := &w
+	if daemonReads {
+		pollHandle = &r
 	}
-	writer := os.NewFile(uintptr(w), "conpty-input")
-	if err = writer.SetWriteDeadline(time.Time{}); err != nil {
+	// After the startup pipe closes, Windows may reuse its stdin handle value.
+	// os.NewFile skips overlapped detection for that original value.
+	if *pollHandle == windows.Handle(syscall.Stdin) {
+		current := windows.CurrentProcess()
+		var duplicate windows.Handle
+		if err := windows.DuplicateHandle(current, *pollHandle, current, &duplicate, 0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
+			_ = windows.CloseHandle(r)
+			_ = windows.CloseHandle(w)
+			return nil, nil, err
+		}
+		_ = windows.CloseHandle(*pollHandle)
+		*pollHandle = duplicate
+	}
+	reader := os.NewFile(uintptr(r), "conpty-read")
+	writer := os.NewFile(uintptr(w), "conpty-write")
+	pollable := writer
+	if daemonReads {
+		pollable = reader
+	}
+	if err := pollable.SetDeadline(time.Time{}); err != nil {
+		_ = reader.Close()
 		_ = writer.Close()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("enable ConPTY pipe deadlines: %w", err)
 	}
-	return os.NewFile(uintptr(r), "conpty-input-read"), writer, nil
+	return reader, writer, nil
 }
 
-// consolePipe requests bounded output buffering without inheritable handles.
-func consolePipe() (*os.File, *os.File, error) {
-	var read, write windows.Handle
-	if err := windows.CreatePipe(&read, &write, nil, 64*1024); err != nil {
-		return nil, nil, err
-	}
-	return os.NewFile(uintptr(read), "conpty-read"), os.NewFile(uintptr(write), "conpty-write"), nil
-}
 func (t *Terminal) Close() error {
 	t.closePipes.Do(func() {
 		if t.input != nil {

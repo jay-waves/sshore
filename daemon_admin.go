@@ -28,21 +28,9 @@ func requestDaemonShutdown(expected daemonSnapshot) error {
 	if err != nil {
 		return err
 	}
-	waitForExit, closeProcess, err := daemonProcessWaiter(record.ManagerPID)
-	if err != nil {
-		return fmt.Errorf("cannot wait for daemon exit: %w", err)
-	}
-	if closeProcess != nil {
-		defer closeProcess()
-	}
-	if err := shutdownDaemonEndpoint(ctx, dir, record, expected); err != nil {
-		return err
-	}
-	if waitForExit != nil {
-		deadline, _ := ctx.Deadline()
-		return waitForExit(deadline)
-	}
-	return nil
+	return completeDaemonShutdown(ctx, record.ManagerPID, func() error {
+		return shutdownDaemonEndpoint(ctx, dir, record, expected)
+	})
 }
 
 func shutdownDaemonEndpoint(ctx context.Context, dir string, record localShellRecord, expected daemonSnapshot) error {

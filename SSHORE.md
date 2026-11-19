@@ -86,14 +86,15 @@ See the [OS and shell support matrix](README.md#os-and-shell-support) for
 supported systems and shells. Windows provides local ConPTY sessions and SSH
 clients, not a remote shell server.
 ConPTY children join their kill-on-close Job during process creation. ConPTY
-reads its input pipe synchronously. The daemon opens the other end for
-overlapped I/O, so Linux PTYs and Windows ConPTY use the same deadline-based
-input lease. The Windows frontend still pins its native keyboard reader and
-uses CancelSynchronousIo to release it before transferring stdin ownership.
+uses synchronous pipe handles. The daemon uses overlapped handles for input
+writes and output reads. Input deadlines let Linux PTYs and Windows ConPTY
+share the same input lease. The Windows frontend pins its native keyboard reader
+and uses CancelSynchronousIo to release it before transferring stdin ownership.
 ConPTY startup releases child-facing pipe ends before rollback or starting the
-process waiter. The Windows environment keeps the last value for each
-case-insensitive name and emits one sorted block.
+Windows thread-pool process wait. The Windows environment keeps the last value
+for each case-insensitive name and emits one sorted block.
 Natural exit and explicit close share the same Job and pseudoconsole shutdown.
+The client receives the shell's exit code after the terminal output is drained.
 Each interactive shell owns one terminal and permits one attachment at a time. MCP
 Bash sessions use pipes and do not support terminal attachment. Split panes,
 tiling, screen emulation and scrollback replay are outside scope.

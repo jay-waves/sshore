@@ -17,6 +17,10 @@ import (
 )
 
 func TestWindowsKillAllWaitsForIdleDaemonExit(t *testing.T) {
+	shell, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("Niubash bash executable unavailable")
+	}
 	e := newCLI(t)
 	state := filepath.Join(e.dir, "state")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -24,7 +28,7 @@ func TestWindowsKillAllWaitsForIdleDaemonExit(t *testing.T) {
 	run := func(args ...string) {
 		t.Helper()
 		cmd := exec.CommandContext(ctx, e.bin, args...)
-		cmd.Env = append(e.env, "SHELL=cmd.exe")
+		cmd.Env = append(e.env, "SHELL="+shell)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v: %s", args, err, out)
 		}
@@ -123,10 +127,12 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	wait("SSHORE_OUTER>")
 	send(fmt.Sprintf("%s fixture-launch --local nativecheck; printf 'OUTER_%%s\\n' detached\r", bin))
 	wait("Connected self:nativecheck")
-	send("PS1='SSHORE_INNER> '\r")
+	// The echoed assignment must not match the prompt it installs.
+	send("PS1='SSHORE_''INNER> '\r")
 	wait("SSHORE_INNER>")
-	send("SSHORE_NAV=OX\x1b[D\x1b[3~K\r")
-	send("printf 'EDIT_%s\\n' \"$SSHORE_NAV\"\r")
+	send("printf 'EDIT_%s\\n' OX")
+	wait("' OX")
+	send("\x1b[D\x1b[3~K\r")
 	wait("EDIT_OK")
 	send("\x02d")
 	wait("OUTER_detached")
@@ -135,12 +141,13 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 		t.Fatalf("detach lost shell: %+v", rows)
 	}
 	pid := rows[0].PID
-	send(fmt.Sprintf("%s attach self:%s; printf 'OUTER_%%s\\n' exited\r", bin, rows[0].ShortID))
+	send(fmt.Sprintf("%s attach self:%s; printf 'OUTER_exit_%%s\\n' \"$?\"\r", bin, rows[0].ShortID))
 	wait("SSHORE_INNER>")
 	rows = e.shells(t)
 	if len(rows) != 1 || rows[0].PID != pid || rows[0].State != "attached" {
 		t.Fatalf("reattach changed shell: %+v", rows)
 	}
-	send("exit\r")
-	wait("OUTER_exited")
+	send("printf 'FINAL_%s\\n' output; exit 7\r")
+	wait("FINAL_output")
+	wait("OUTER_exit_7")
 }
