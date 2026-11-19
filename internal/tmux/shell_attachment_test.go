@@ -1,11 +1,8 @@
 package tmux
 
 import (
-	"encoding/json"
-	"errors"
 	"net"
 	"reflect"
-	"sync"
 	"testing"
 
 	"github.com/jay-waves/sshore/internal/wire"
@@ -17,31 +14,15 @@ func TestDetachHandshake(t *testing.T) {
 	defer server.Close()
 	done := make(chan error, 1)
 	go func() {
-		_, body, err := wire.ReadFrame(server)
-		if err != nil {
+		if _, err := expectDetachMessage(server, "detach"); err != nil {
 			done <- err
 			return
 		}
-		var m detachMessage
-		if err = json.Unmarshal(body, &m); err != nil {
+		if err := wire.WriteMessage(server, "detached", nil, terminalMessage{Type: "detached", Name: "work"}); err != nil {
 			done <- err
 			return
 		}
-		if m.Type != "detach" {
-			done <- net.ErrClosed
-			return
-		}
-		if err = writeControl(server, detachMessage{Type: "detached", Name: "work"}); err != nil {
-			done <- err
-			return
-		}
-		_, body, err = wire.ReadFrame(server)
-		if err == nil {
-			err = json.Unmarshal(body, &m)
-			if err == nil && m.Type != "bye" {
-				err = net.ErrClosed
-			}
-		}
+		_, err := expectDetachMessage(server, "bye")
 		done <- err
 	}()
 	confirmed := ""
@@ -53,64 +34,6 @@ func TestDetachHandshake(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestAttachmentOwnership(t *testing.T) {
-	var s Lifecycle[*int]
-	a, b := new(int), new(int)
-	fail := errors.New("prepare failed")
-	if err := s.Attach(a, func() error { return fail }); !errors.Is(err, fail) || s.Active() != nil {
-		t.Fatal("failed prepare acquired attachment")
-	}
-	if err := s.Attach(a, func() error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Attach(b, func() error { t.Fatal("prepared competing attachment"); return nil }); err == nil {
-		t.Fatal("accepted competing attachment")
-	}
-	if s.Detach(b) || s.EndIfAttached(b) || s.Active() != a {
-		t.Fatal("stale identity changed owner")
-	}
-	if !s.Detach(a) || s.EndIfAttached(a) || s.Exited() {
-		t.Fatal("detach ended session")
-	}
-	if err := s.Attach(b, func() error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if !s.EndIfAttached(b) || !s.Exited() {
-		t.Fatal("failed handoff did not end owner")
-	}
-	if err := s.Attach(a, func() error { return nil }); err == nil {
-		t.Fatal("reattached ended session")
-	}
-}
-func TestConcurrentAttach(t *testing.T) {
-	var s Lifecycle[*int]
-	var wg sync.WaitGroup
-	wins := make(chan *int, 16)
-	for range 16 {
-		wg.Go(func() {
-			a := new(int)
-			if s.Attach(a, func() error { return nil }) == nil {
-				wins <- a
-			}
-		})
-	}
-	wg.Wait()
-	close(wins)
-	n := 0
-	for a := range wins {
-		n++
-		if s.Active() != a {
-			t.Fatal("wrong owner")
-		}
-	}
-	if n != 1 {
-		t.Fatalf("%d winners", n)
-	}
-	if s.End() == nil || !s.Exited() || s.Active() != nil {
-		t.Fatal("end did not clear attachment")
 	}
 }
 

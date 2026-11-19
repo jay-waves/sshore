@@ -31,8 +31,8 @@ func TestDaemonHostedTaskRouting(t *testing.T) {
 	if err := createRemoteShell("", selection, false, root, nil); err == nil || !strings.Contains(err.Error(), "task already exists") {
 		t.Fatalf("duplicate hosted shell creation: %v", err)
 	}
-	records, err := hostedTaskRecords()
-	if err != nil || len(records) != 1 || records[0].ID != id {
+	records, err := hostedShells("health")
+	if err != nil || len(records) != 1 || records[0].Instance != id {
 		t.Fatalf("hosted inventory: %+v %v", records, err)
 	}
 	for range 2 {

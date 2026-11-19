@@ -3,6 +3,7 @@
 package files
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,7 +33,7 @@ func testFTPAgent(t *testing.T) *ftpFS {
 			t.Error("mount agent did not exit")
 		}
 	})
-	mux, data, events, err := OpenMux(b, "test-release")
+	mux, data, events, err := OpenMux(b, "test-release", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +71,7 @@ func ftpInvalidations(f *ftpFS) uint64 {
 
 func TestFTPNotifyRemoteChanges(t *testing.T) {
 	f := testFTPAgent(t)
-	f.notifications.ensure(f.root)
+	f.notifications.ensure(context.Background(), f.root)
 	filename := filepath.Join(f.root, "file")
 	if err := os.WriteFile(filename, []byte("old"), 0600); err != nil {
 		t.Fatal(err)
@@ -119,7 +120,7 @@ func TestFTPNotifyRemoteChanges(t *testing.T) {
 	if _, err := f.readDirectory(sub); err != nil {
 		t.Fatal(err)
 	}
-	f.notifications.ensure(sub)
+	f.notifications.ensure(context.Background(), sub)
 	before := ftpInvalidations(f)
 	if err := os.WriteFile(filepath.Join(sub, "new"), []byte("new"), 0600); err != nil {
 		t.Fatal(err)
@@ -179,19 +180,16 @@ func TestFTPNotifyWatchBudget(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		f.notifications.ensure(dir)
+		f.notifications.ensure(context.Background(), dir)
 	}
 	n := f.notifications
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if len(n.dirs) != ftpWatchLimit || n.lru.Len() != ftpWatchLimit {
-		t.Fatalf("unbounded subscriptions: %d/%d", len(n.dirs), n.lru.Len())
+	if len(n.dirs) != ftpWatchLimit {
+		t.Fatalf("unexpected subscription count: %d", len(n.dirs))
 	}
-	if n.closed.Load() {
-		t.Fatal("watch eviction closed notification stream")
-	}
-	for _, e := range n.dirs {
-		if time.Until(e.Value.(ftpWatchEntry).expires) < 20*time.Second {
+	for _, entry := range n.dirs {
+		if time.Until(entry.expires) < 20*time.Second {
 			t.Fatal("watch registration failed within budget")
 		}
 	}
@@ -227,7 +225,7 @@ func TestFTPNotifySFTPExitStopsAgent(t *testing.T) {
 	defer b.Close()
 	done := make(chan error, 1)
 	go func() { done <- ServeAgent(a, "test-release") }()
-	mux, data, _, err := OpenMux(b, "test-release")
+	mux, data, _, err := OpenMux(b, "test-release", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,8 +250,8 @@ func TestFTPNotifyPreservesUnchangedSibling(t *testing.T) {
 		}
 	}
 	left, right := filepath.Join(f.root, "left"), filepath.Join(f.root, "right")
-	f.notifications.ensure(left)
-	f.notifications.ensure(right)
+	f.notifications.ensure(context.Background(), left)
+	f.notifications.ensure(context.Background(), right)
 	if _, err := f.readDirectory(left); err != nil {
 		t.Fatal(err)
 	}
@@ -266,8 +264,8 @@ func TestFTPNotifyPreservesUnchangedSibling(t *testing.T) {
 	}
 	waitFTPInvalidation(t, f, before)
 	f.cache.mu.Lock()
-	cached := f.cache.entries["d:"+right] != nil
-	stale := f.cache.entries["d:"+left] != nil
+	cached := f.cache.entries[ftpCacheKey{kind: ftpDirectoryKey, name: right}] != nil
+	stale := f.cache.entries[ftpCacheKey{kind: ftpDirectoryKey, name: left}] != nil
 	f.cache.mu.Unlock()
 	if !cached || stale {
 		t.Fatalf("right cached=%v left stale=%v", cached, stale)
@@ -284,7 +282,7 @@ func TestMountApprovalSourceGate(t *testing.T) {
 		done <- ServeAgent(a, "1.2.3", func(source MountApproval) error { called <- source; return fmt.Errorf("source changed") })
 	}()
 	approval := &MountApproval{Session: "work", PID: 123, ID: strings.Repeat("a", 32)}
-	if _, _, _, err := OpenMux(b, "1.2.3", approval); err == nil || !strings.Contains(err.Error(), "source changed") {
+	if _, _, _, err := OpenMux(b, "1.2.3", approval, nil, nil); err == nil || !strings.Contains(err.Error(), "source changed") {
 		t.Fatalf("gate bypassed: %v", err)
 	}
 	if got := <-called; got != *approval {
@@ -309,7 +307,7 @@ func TestMountAgentPeerMetadataLifetime(t *testing.T) {
 		done <- ServeAgentWithPeer(a, "test-release", "fixture", func(data json.RawMessage) func() { observed <- string(data); return func() { close(ended) } })
 	}()
 	var account string
-	mux, _, _, err := openMux(b, "test-release", nil, peer, &account)
+	mux, _, _, err := OpenMux(b, "test-release", nil, peer, &account)
 	if account != "fixture" {
 		t.Fatalf("remote account = %q", account)
 	}

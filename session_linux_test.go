@@ -300,7 +300,7 @@ func TestKillSessionLifecycle(t *testing.T) {
 	if out, err := run("keep", version); err != nil {
 		t.Fatal(out, err)
 	}
-	records, err := hostedTaskRecords()
+	records, err := hostedShells("health")
 	if err != nil || len(records) != 0 {
 		t.Fatalf("ended shells remain registered: %+v %v", records, err)
 	}
@@ -383,12 +383,13 @@ func TestSessionProcessTree(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := sessionProcessTree(root, 10)
+	snapshot := readProcessSnapshot(root)
+	got := snapshot.sessionTree(10)
 	expected := "bash (10)\n├─ codex (20) [fg]\n│  └─ worker (job) (21) [fg]\n└─ sleep (30)\n   └─ bad�name (50)\n"
 	if got != expected {
 		t.Fatalf("tree:\n%s\nwant:\n%s", got, expected)
 	}
-	if got := sessionProcessTree(root, 99); !strings.Contains(got, "99 [process unavailable]") {
+	if got := snapshot.sessionTree(99); !strings.Contains(got, "99 [process unavailable]") {
 		t.Fatal(got)
 	}
 }
@@ -410,15 +411,16 @@ func TestForegroundSnapshot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := foregroundPrograms(root, 42); got != "cat (worker) | bad�name | grep" {
+	snapshot := readProcessSnapshot(root)
+	if got := snapshot.foregroundPrograms(42); got != "cat (worker) | bad�name | grep" {
 		t.Fatal(got)
 	}
 	for _, group := range []int{0, 100} {
-		if got := foregroundPrograms(root, group); got != "—" {
+		if got := snapshot.foregroundPrograms(group); got != "—" {
 			t.Fatal(got)
 		}
 	}
-	if got := foregroundPrograms(filepath.Join(root, "missing"), 42); got != "—" {
+	if got := readProcessSnapshot(filepath.Join(root, "missing")).foregroundPrograms(42); got != "—" {
 		t.Fatal(got)
 	}
 }

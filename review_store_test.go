@@ -89,21 +89,20 @@ func TestPendingRequestsReturnIndependentCopies(t *testing.T) {
 	r := pendingRequestFixture(t)
 	r.Connection.Parent = &recentConnection{Host: "entry", Session: "parent", Server: "sshore", Instance: strings.Repeat("c", 32), SSH: []string{"-p", "2222"}}
 	r.Connection.RouteToken = strings.Repeat("d", 64)
-	r.Operations[0].LocalPath = "selected-local-path"
 	if err := s.Save(r); err != nil {
 		t.Fatal(err)
 	}
 	r.Connection.Parent.SSH[1], r.Operations[0].Path = "3333", "/changed"
-	copy, err := s.Read(r.ID)
+	copy, err := s.Find(r.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if copy.Connection.Parent.SSH[1] != "2222" || copy.Operations[0].Path != "/tmp/a" || copy.Operations[0].LocalPath != "" {
+	if copy.Connection.Parent.SSH[1] != "2222" || copy.Operations[0].Path != "/tmp/a" {
 		t.Fatalf("pending intent retained mutable caller state: %+v", copy)
 	}
-	copy.Connection.Parent.SSH[1], copy.Operations[0].LocalPath = "4444", "approved-copy"
+	copy.Connection.Parent.SSH[1], copy.Operations[0].Path = "4444", "/approved-copy"
 	listed := s.Pending()
-	if len(listed) != 1 || listed[0].Connection.Parent.SSH[1] != "2222" || listed[0].Operations[0].LocalPath != "" {
+	if len(listed) != 1 || listed[0].Connection.Parent.SSH[1] != "2222" || listed[0].Operations[0].Path != "/tmp/a" {
 		t.Fatalf("review edits changed stored intent: %+v", listed)
 	}
 	listed[0].Operations[0].Path = "/list-copy"
@@ -131,7 +130,7 @@ func TestPendingRequestConsumptionIsAtomic(t *testing.T) {
 	if consumed.Load() != 1 || s.Busy() {
 		t.Fatalf("consumed %d times", consumed.Load())
 	}
-	if _, err := s.Read(r.ID); !errors.Is(err, os.ErrNotExist) {
+	if _, err := s.Find(r.ID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("consumed request survived:", err)
 	}
 }
@@ -179,10 +178,10 @@ func TestPendingRequestRenameAndValidation(t *testing.T) {
 	if err := s.Save(other); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Rename(r.ID, other.Name); !errors.Is(err, errObjectNameInUse) {
+	if _, _, err := s.mutateResource("rename", resourceMutation{Kind: "review", Ref: r.ID, NewName: other.Name}); !errors.Is(err, errObjectNameInUse) {
 		t.Fatal("rename took another pending name:", err)
 	}
-	if err := s.Rename(r.ID, "renamed"); err != nil {
+	if _, _, err := s.mutateResource("rename", resourceMutation{Kind: "review", Ref: r.ID, NewName: "renamed"}); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := s.Find("renamed"); err != nil || got.ID != r.ID {
@@ -227,13 +226,13 @@ func TestRequestRPCDoesNotCreatePersistentApprovalFiles(t *testing.T) {
 	if err != nil || got.ID != r.ID {
 		t.Fatal(got, err)
 	}
-	if err := renameRequest(r.ID, "renamed"); err != nil {
+	if _, err := runRenameResource("review", r.ID, "renamed"); err != nil {
 		t.Fatal(err)
 	}
 	if err := consumeRequest(r.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readRequest(r.ID); !errors.Is(err, os.ErrNotExist) {
+	if _, err := findRequest(r.ID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("RPC restored a consumed request:", err)
 	}
 	files, _ := statePath("approvals")
@@ -245,23 +244,20 @@ func TestRequestRPCDoesNotCreatePersistentApprovalFiles(t *testing.T) {
 func TestRequestRPCPreservesLargeBoundedRequests(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	startRequestDaemon(t)
-	call := func(action, name string, record *requestRecord) (requestRPCReply, error) {
-		return requestRPC(action, "", name, record)
-	}
 	r := pendingRequestFixture(t)
 	r.Operations = nil
 	for i := range maxRequestItems {
 		r.Operations = append(r.Operations, operation{Kind: "upload", Path: "/tmp/" + strings.Repeat("x", 4070) + fmt.Sprint(i), LocalHint: strings.Repeat("p", 2000)})
 	}
-	if _, err := call("request_save", "", &r); err != nil {
+	if _, err := requestRPC("save", "", &r); err != nil {
 		t.Fatal(err)
 	}
-	got, err := call("request_get", r.ID, nil)
+	got, err := requestRPC("get", r.ID, nil)
 	copy := got.Request
 	if err != nil || copy == nil || len(copy.Operations) != maxRequestItems || copy.Operations[15].Path != r.Operations[15].Path {
 		t.Fatalf("large request lost metadata: %v", err)
 	}
-	reply, err := call("request_list", "", nil)
+	reply, err := requestRPC("list", "", nil)
 	listed := reply.Requests
 	if err != nil || len(listed) != 1 || len(listed[0].Operations[0].LocalHint) != 2000 {
 		t.Fatalf("bounded request list lost metadata: %v", err)

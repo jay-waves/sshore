@@ -3,6 +3,7 @@ package termui
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -38,9 +39,14 @@ type Input struct {
 
 // NewInput creates an editor; the caller coordinates stdin ownership.
 func NewInput() (*Input, error) {
+	return NewInputFrom(nil)
+}
+
+// NewInputFrom creates an editor whose input is supplied by the caller.
+func NewInputFrom(stdin io.ReadCloser) (*Input, error) {
 	p := &Input{}
 	config := &readline.Config{
-		AutoComplete: p, HistoryLimit: -1, DisableAutoSaveHistory: true,
+		Stdin: stdin, AutoComplete: p, HistoryLimit: -1, DisableAutoSaveHistory: true,
 		InterruptPrompt: "^C", EOFPrompt: "",
 	}
 	config.FuncFilterInputRune = p.filterCompletionKey

@@ -2,14 +2,20 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"time"
 	"unicode/utf8"
 
 	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/termui"
 	"github.com/jay-waves/sshore/internal/tmux"
 	"golang.org/x/term"
 )
@@ -21,16 +27,68 @@ func confirmSSHHost(ctx context.Context, prompt string) (bool, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return false, fmt.Errorf("SSH host trust requires an interactive terminal")
 	}
-	input, err := newLocalInput()
-	if err != nil {
-		return false, err
-	}
-	defer input.Close()
-	stop := context.AfterFunc(ctx, func() { input.Close() })
-	defer stop()
-	answer, err := input.Read(cleanText(prompt)+" Type yes: ", false)
+	answer, err := readSSHLine(ctx, cleanText(prompt)+" Type yes: ")
 	return strings.TrimSpace(answer) == "yes", err
 }
+
+func readSSHLine(ctx context.Context, prompt string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return "", usage("local selection requires an interactive terminal; specify the local endpoint")
+	}
+	tmux.ResetInputModes()
+	if err := tmux.FlushInput(); err != nil {
+		return "", err
+	}
+	restore, err := tmux.RawConsole()
+	if err != nil {
+		return "", err
+	}
+	defer restore()
+
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+	input, err := termui.NewInputFrom(reader)
+	if err != nil {
+		return "", err
+	}
+	defer input.Close()
+	// Interrupt the editor via its input pipe. Only the owning goroutine
+	// closes the editor and restores terminal modes.
+	keyboardCtx, cancelKeyboard := context.WithCancel(ctx)
+	defer cancelKeyboard()
+	stopCancel := context.AfterFunc(keyboardCtx, func() { _ = writer.CloseWithError(keyboardCtx.Err()) })
+	defer stopCancel()
+	stopKeyboard, err := tmux.StartKeyboard(keyboardCtx, func(data []byte, err error) {
+		defer clear(data)
+		if len(data) != 0 {
+			_, _ = writer.Write(data)
+		}
+		if err != nil {
+			_ = writer.CloseWithError(err)
+		}
+	})
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		cancelKeyboard()
+		_ = writer.Close()
+		stopKeyboard()
+	}()
+	answer, err := input.Read(prompt, false)
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	return answer, err
+}
+
+const maxSSHPrompt = 8192
+const maxSSHResponse = 4096
+
 func promptSSHSecret(ctx context.Context, identity string) ([]byte, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return nil, fmt.Errorf("SSH authentication requires an interactive terminal")
@@ -51,26 +109,17 @@ func promptSSHSecret(ctx context.Context, identity string) ([]byte, error) {
 		}
 		prompt = cleanText(challenge.Question)
 		if challenge.Echo {
-			input, err := newLocalInput()
+			answer, err := readSSHLine(ctx, prompt)
 			if err != nil {
 				return nil, err
 			}
-			defer input.Close()
-			stop := context.AfterFunc(ctx, func() { input.Close() })
-			defer stop()
-			answer, err := input.Read(prompt, false)
-			return []byte(answer), err
+			if len(answer) > maxSSHResponse {
+				return nil, fmt.Errorf("SSH response is too long")
+			}
+			return []byte(answer), nil
 		}
 	}
-	secret, err := readSSHSecret(ctx, prompt)
-	if err != nil {
-		return nil, err
-	}
-	if len(secret) > 4096 {
-		clear(secret)
-		return nil, fmt.Errorf("SSH response is too long")
-	}
-	return secret, nil
+	return readSSHSecret(ctx, prompt)
 }
 
 // Reuse the joined console reader so cancellation cannot leave stdin owned by
@@ -106,7 +155,7 @@ func readSSHSecret(parent context.Context, prompt string) ([]byte, error) {
 		return nil, err
 	}
 	defer fmt.Fprint(os.Stderr, "\r\n")
-	secret := make([]byte, 0, 4096)
+	secret := make([]byte, 0, maxSSHResponse)
 	accepted := false
 	defer func() {
 		if !accepted {
@@ -149,7 +198,7 @@ func readSSHSecret(parent context.Context, prompt string) ([]byte, error) {
 				case 27:
 					escape = 1
 				default:
-					if len(secret) >= 4096 {
+					if len(secret) >= maxSSHResponse {
 						clear(event.data)
 						return nil, fmt.Errorf("SSH response is too long")
 					}
@@ -164,52 +213,156 @@ func readSSHSecret(parent context.Context, prompt string) ([]byte, error) {
 	}
 }
 
-func brokerSSHSecret(env []string) func(context.Context, string) ([]byte, error) {
-	address, token := localEnvironmentValue(env, "SSHORE_CONFIRM_ADDR"), localEnvironmentValue(env, "SSHORE_CONFIRM_TOKEN")
-	if address == "" {
-		return nil
+// Bound loopback connection setup and idle retention. Prompt input stays
+// cancellable without imposing a fixed deadline on the user's decision.
+var sshAuthHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext:  (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+		MaxIdleConns: 16, MaxIdleConnsPerHost: 2, IdleConnTimeout: 5 * time.Second,
+	},
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
+func postSSHAuth(ctx context.Context, address, token, route string, body io.Reader) (*http.Response, error) {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil || host != "127.0.0.1" {
+		return nil, fmt.Errorf("invalid SSH authentication broker address")
 	}
-	return func(ctx context.Context, identity string) ([]byte, error) {
-		response, err := resourceHTTPContext(ctx, address, token, "POST", "/unlock", strings.NewReader(identity))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+address+route, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	return sshAuthHTTPClient.Do(req)
+}
+
+func listenSSHAuth(ctx context.Context, token string, handler http.HandlerFunc) (net.Listener, *http.Server, error) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return nil, nil, err
+	}
+	expected := []byte("Bearer " + token)
+	server := &http.Server{
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       5 * time.Second,
+		MaxHeaderBytes:    8192,
+		BaseContext:       func(net.Listener) context.Context { return ctx },
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), expected) != 1 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			handler(w, r)
+		}),
+	}
+	go server.Serve(listener)
+	return listener, server, nil
+}
+
+type sshAuthEndpoint struct {
+	Address string
+	Token   string
+}
+
+func (auth *sshAuthEndpoint) callbacks() (confirm func(context.Context, string) (bool, error), secret func(context.Context, string) ([]byte, error)) {
+	if auth == nil {
+		return nil, nil
+	}
+	request := func(ctx context.Context, route, prompt, description string, limit int64) ([]byte, error) {
+		response, err := postSSHAuth(ctx, auth.Address, auth.Token, route, strings.NewReader(prompt))
 		if err != nil {
 			return nil, err
 		}
 		defer response.Body.Close()
-		if response.StatusCode != 200 {
-			return nil, fmt.Errorf("SSH authentication unavailable")
+		if response.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("%s unavailable", description)
 		}
-		secret, err := io.ReadAll(io.LimitReader(response.Body, 4097))
-		if err != nil || len(secret) > 4096 {
-			clear(secret)
-			return nil, fmt.Errorf("invalid SSH unlock response")
+		data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+		if err != nil || int64(len(data)) > limit {
+			clear(data)
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("invalid %s response", description)
 		}
-		return secret, nil
+		return data, nil
 	}
-}
-
-func brokerSSHConfirmation(env []string) func(context.Context, string) (bool, error) {
-	address, token := localEnvironmentValue(env, "SSHORE_CONFIRM_ADDR"), localEnvironmentValue(env, "SSHORE_CONFIRM_TOKEN")
-	if address == "" {
-		return nil
-	}
-	return func(ctx context.Context, prompt string) (bool, error) {
-		response, err := resourceHTTPContext(ctx, address, token, "POST", "/ask", strings.NewReader(prompt))
+	confirm = func(ctx context.Context, prompt string) (bool, error) {
+		data, err := request(ctx, "/ask", prompt, "SSH host confirmation", 3)
 		if err != nil {
 			return false, err
 		}
-		defer response.Body.Close()
-		if response.StatusCode != 200 {
-			return false, fmt.Errorf("SSH host confirmation unavailable")
+		switch string(data) {
+		case "yes":
+			return true, nil
+		case "no":
+			return false, nil
+		default:
+			return false, fmt.Errorf("invalid SSH host confirmation response")
 		}
-		data, err := io.ReadAll(io.LimitReader(response.Body, 32))
-		return string(data) == "yes", err
 	}
+	secret = func(ctx context.Context, prompt string) ([]byte, error) {
+		return request(ctx, "/unlock", prompt, "SSH authentication", maxSSHResponse)
+	}
+	return confirm, secret
 }
 
-func sshioOptionsForSpawn(o options, req localDaemonRequest) sshio.Options {
-	connection := sshConnectionOptions(o)
-	connection.Environment = req.Env
-	connection.Confirm = brokerSSHConfirmation(req.Env)
-	connection.Secret = brokerSSHSecret(req.Env)
-	return connection
+func startSSHAuthBroker() (*sshAuthEndpoint, func(), error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	token := resourceToken()
+	prompts := make(chan struct{}, 1)
+	listener, broker, err := listenSSHAuth(ctx, token, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/ask" && r.URL.Path != "/unlock" {
+			http.NotFound(w, r)
+			return
+		}
+		select {
+		case prompts <- struct{}{}:
+			defer func() { <-prompts }()
+		case <-r.Context().Done():
+			return
+		}
+		if r.Context().Err() == nil {
+			serveSSHConfirmation(w, r)
+		}
+	})
+	if err != nil {
+		cancel()
+		return nil, nil, err
+	}
+	return &sshAuthEndpoint{Address: listener.Addr().String(), Token: token}, sync.OnceFunc(func() {
+		cancel()
+		_ = broker.Close()
+		// Join the active prompt so shutdown includes terminal restoration.
+		// Retain the slot after cancellation so no later handler can read input.
+		prompts <- struct{}{}
+	}), nil
+}
+
+func serveSSHConfirmation(w http.ResponseWriter, r *http.Request) {
+	prompt, err := io.ReadAll(io.LimitReader(r.Body, maxSSHPrompt+1))
+	if err != nil || len(prompt) > maxSSHPrompt {
+		http.Error(w, "invalid prompt", 400)
+		return
+	}
+	var answer []byte
+	if r.URL.Path == "/unlock" {
+		answer, err = promptSSHSecret(r.Context(), string(prompt))
+	} else {
+		var ok bool
+		ok, err = confirmSSHHost(r.Context(), string(prompt))
+		if ok {
+			answer = []byte("yes")
+		} else {
+			answer = []byte("no")
+		}
+	}
+	defer clear(answer)
+	if err != nil {
+		http.Error(w, "terminal input failed", 409)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/octet-stream")
+	_, _ = w.Write(answer)
 }

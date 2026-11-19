@@ -87,7 +87,7 @@ func (b *ftpBlockingWindowsOpen) Open(_ *winfsp.FileSystemRef, name string, _, _
 }
 func TestFTPWindowsConcurrentOpens(t *testing.T) {
 	b := &ftpBlockingWindowsOpen{entered: make(chan string, 2), release: make(chan struct{})}
-	a := &ftpWindowsAttributes{ftpWindowsBehaviour: b, backend: &ftpFS{}, names: make(map[uintptr]string)}
+	a := &ftpWindowsAttributes{ftpWindowsBehaviour: b, backend: &ftpFS{}}
 	done := make(chan struct{}, 2)
 	defer func() { close(b.release); <-done; <-done }()
 	for _, name := range []string{"a", "b"} {
@@ -119,7 +119,8 @@ func TestFTPWindowsCloseDoesNotBlockOpen(t *testing.T) {
 		ftpBlockingWindowsOpen: ftpBlockingWindowsOpen{entered: make(chan string, 1), release: make(chan struct{})},
 		closing:                make(chan struct{}), finishClose: make(chan struct{}),
 	}
-	a := &ftpWindowsAttributes{ftpWindowsBehaviour: b, backend: &ftpFS{}, names: map[uintptr]string{3: "closed"}}
+	a := &ftpWindowsAttributes{ftpWindowsBehaviour: b, backend: &ftpFS{}}
+	a.handles.Store(uintptr(3), ftpWindowsHandle{name: "closed"})
 	done := make(chan struct{}, 2)
 	go func() { a.Close(nil, 3); done <- struct{}{} }()
 	<-b.closing
@@ -144,7 +145,8 @@ func (b *ftpWindowsInfoOnly) GetFileInfo(_ *winfsp.FileSystemRef, _ uintptr, inf
 }
 func TestFTPWindowsSyntheticTimes(t *testing.T) {
 	b := &ftpWindowsInfoOnly{}
-	a := &ftpWindowsAttributes{ftpWindowsBehaviour: b, backend: &ftpFS{}, names: map[uintptr]string{1: "file"}}
+	a := &ftpWindowsAttributes{ftpWindowsBehaviour: b, backend: &ftpFS{}}
+	a.handles.Store(uintptr(1), ftpWindowsHandle{name: "file"})
 	var info winfsp.FSP_FSCTL_FILE_INFO
 	if err := a.SetBasicInfo(nil, 1, winfsp.SetBasicInfoCreationTime|winfsp.SetBasicInfoChangeTime, 0, 1, 0, 0, 1, &info); err != nil {
 		t.Fatal(err)
@@ -291,10 +293,7 @@ func TestFTPWindowsMetadataLeases(t *testing.T) {
 	if _, err = pinned.Read(make([]byte, 1)); !errors.Is(err, windows.STATUS_ACCESS_DENIED) {
 		t.Fatalf("metadata read: %v", err)
 	}
-	pool.retire(lease.entry)
-	if _, err = pinned.Stat(); err != nil {
-		t.Fatalf("retirement closed an active lease: %v", err)
-	}
+	backend.cache.invalidateDirectory(backend.root)
 	next, err := pool.acquire("file")
 	if err != nil {
 		t.Fatal(err)
@@ -302,6 +301,9 @@ func TestFTPWindowsMetadataLeases(t *testing.T) {
 	defer next.Close()
 	if next.(*ftpWindowsMetadataLease).entry == lease.entry {
 		t.Fatal("retired handle reused")
+	}
+	if _, err = pinned.Stat(); err != nil {
+		t.Fatalf("retirement closed an active lease: %v", err)
 	}
 	pool.close()
 	if _, err = pinned.Stat(); !errors.Is(err, windows.STATUS_INVALID_HANDLE) {

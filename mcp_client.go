@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-
 	"io"
 	"os"
 
@@ -24,17 +23,16 @@ func dialMCP(ctx context.Context, host string) (io.ReadWriteCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := wire.OwnTransport(ctx, pipes, func() { _ = pipes.Wait() })
-	err = negotiateSetup(pipes, pipes, &o)
+	if _, err = negotiateSetup(pipes, pipes, host, false); err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
-		_ = c.Close()
+		_ = pipes.CloseAndWait()
 		return nil, err
 	}
-	if err := ctx.Err(); err != nil {
-		_ = c.Close()
-		return nil, err
-	}
-	return c, nil
+	// The SSH exec stream already follows ctx. The pool owns cancellation
+	// for published transports and closes this wrapper to join exec.
+	return wire.OwnTransport(context.Background(), pipes, func() { _ = pipes.Wait() }), nil
 }
 func runMCP(args []string) (int, error) {
 	if _, err := parseCLI(args, "mcp"); err != nil {

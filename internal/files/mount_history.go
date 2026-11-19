@@ -1,7 +1,9 @@
 package files
 
 import (
+	"cmp"
 	"math"
+	"slices"
 	"time"
 )
 
@@ -26,15 +28,41 @@ func (h VisitHistory) add(key string, weight float64, now time.Time) {
 	h.trim(now)
 }
 func (h VisitHistory) trim(now time.Time) {
-	for len(h) > VisitHistoryLimit {
-		worst := ""
-		low := math.Inf(1)
-		for k, v := range h {
-			if w := v.weight(now); w < low || w == low && k < worst {
-				worst, low = k, w
+	excess := len(h) - VisitHistoryLimit
+	if excess <= 0 {
+		return
+	}
+	type candidate struct {
+		key    string
+		weight float64
+	}
+	compare := func(a, b candidate) int {
+		return cmp.Or(cmp.Compare(a.weight, b.weight), cmp.Compare(a.key, b.key))
+	}
+	if excess == 1 {
+		// The live visit path can add at most one entry.
+		var worst candidate
+		first := true
+		for key, visit := range h {
+			entry := candidate{key, visit.weight(now)}
+			if first || compare(entry, worst) < 0 {
+				worst = entry
+				first = false
 			}
 		}
-		delete(h, worst)
+		delete(h, worst.key)
+		return
+	}
+
+	// A merge can exceed the cap by a full session's history. Score each
+	// candidate once at the same instant and remove the lowest-ranked entries.
+	ranked := make([]candidate, 0, len(h))
+	for key, visit := range h {
+		ranked = append(ranked, candidate{key, visit.weight(now)})
+	}
+	slices.SortFunc(ranked, compare)
+	for _, entry := range ranked[:excess] {
+		delete(h, entry.key)
 	}
 }
 

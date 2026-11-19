@@ -20,7 +20,7 @@ import (
 // Environment and Directory belong to the initiating command, never daemon startup.
 type Options struct {
 	Host, Command, Executable, Directory string
-	Forward                              *Forward // Reserved for the product forward adapter.
+	Forward                              *Forward // Bound by Dial before returning.
 	Args, Environment                    []string
 	// Diagnostic receives negotiated algorithms only when SSH LogLevel is DEBUG or higher.
 	Diagnostic io.Writer
@@ -33,6 +33,7 @@ type Options struct {
 type connectionConfig struct {
 	options                   Options
 	values                    map[string][]string
+	configFileArgs            []string // Preserve explicit -F options for ProxyJump.
 	host, user, port, network string
 	timeout                   time.Duration
 }
@@ -71,14 +72,18 @@ func resolveConfig(ctx context.Context, o Options) (*connectionConfig, error) {
 		}
 	}
 	// SSH settings are evaluated with the actual remote command for Match command.
-	args := []string{"-G", "-T", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "-o", "RequestTTY=no", "-o", "RemoteCommand=none"}
-	for _, arg := range o.Args {
-		lower := strings.ToLower(arg)
-		if strings.HasPrefix(lower, "localforward") || strings.HasPrefix(lower, "remoteforward") || strings.HasPrefix(lower, "dynamicforward") || arg == "-L" || arg == "-R" || arg == "-D" {
+	args := []string{"-G", "-T", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "-o", "RequestTTY=no", "-o", "RemoteCommand=none", "-o", "ClearAllForwardings=yes"}
+	c := &connectionConfig{options: o, values: map[string][]string{}, network: "tcp", timeout: 15 * time.Second}
+	for args := o.Args; len(args) > 0; {
+		name, value, n := SplitOption(args)
+		if ForwardingOption(name, value) {
 			return nil, fmt.Errorf("SSH configuration forwarding is unsupported; use sshore forward")
 		}
+		if name == "-F" && n > 0 {
+			c.configFileArgs = append(c.configFileArgs, args[:n]...)
+		}
+		args = args[max(n, 1):]
 	}
-	args = append(args, "-o", "ClearAllForwardings=yes")
 	args = append(args, o.Args...)
 	args = append(args, "--", o.Host)
 	if o.Command != "" {
@@ -96,7 +101,6 @@ func resolveConfig(ctx context.Context, o Options) (*connectionConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("SSH configuration: %w: %s", err, strings.TrimSpace(diagnostic.String()))
 	}
-	c := &connectionConfig{options: o, values: map[string][]string{}, network: "tcp", timeout: 15 * time.Second}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 4096), 1024*1024)
 	for scanner.Scan() {
@@ -114,6 +118,10 @@ func resolveConfig(ctx context.Context, o Options) (*connectionConfig, error) {
 	if c.host == "" || c.user == "" || err != nil || n < 1 || n > 65535 {
 		return nil, fmt.Errorf("ssh -G returned an invalid connection configuration")
 	}
+	// ssh -G preserves IPv6 brackets. Go's endpoint helpers add their own.
+	if strings.HasPrefix(c.host, "[") && strings.HasSuffix(c.host, "]") && strings.Contains(c.host, ":") {
+		c.host = c.host[1 : len(c.host)-1]
+	}
 	switch c.get("addressfamily") {
 	case "inet":
 		c.network = "tcp4"
@@ -122,7 +130,7 @@ func resolveConfig(ctx context.Context, o Options) (*connectionConfig, error) {
 	}
 	if value := c.get("connecttimeout"); value != "" && value != "none" {
 		n, err := strconv.Atoi(value)
-		if err != nil || n < 1 {
+		if err != nil || n < 1 || int64(n) > int64((1<<63-1)/time.Second) {
 			return nil, fmt.Errorf("invalid ConnectTimeout")
 		}
 		c.timeout = time.Duration(n) * time.Second

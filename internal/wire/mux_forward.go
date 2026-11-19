@@ -2,6 +2,7 @@ package wire
 
 import (
 	"context"
+	"io"
 	"net"
 	"strconv"
 	"sync"
@@ -10,86 +11,103 @@ import (
 	"github.com/xtaci/smux"
 )
 
-// MuxForward owns a resource mux, its optional loopback listener and all data
-// connections. The listening side opens streams; the other side dials its own
-// loopback target. Control streams must be established before startup.
-type MuxForward struct {
-	mux  *smux.Session
+// Forwarder owns the inputs and active connections of a forwarding rule.
+type Forwarder struct {
+	stop func()
 	done chan struct{}
 }
 
-// StartMuxForward transfers listener and mux ownership to the forwarder. A nil
-// listener selects the dialing side. Target must already be validated by the
-// application; this component does not perform resource approval or handshakes.
-func StartMuxForward(mx *smux.Session, listener net.Listener, target int) *MuxForward {
-	f := &MuxForward{mux: mx, done: make(chan struct{})}
+func startForwarder(closeInputs func(), serve func(context.Context, *sync.WaitGroup, func())) *Forwarder {
 	ctx, cancel := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		if listener != nil {
-			// CloseChan alone does not report a socket read error until smux's
-			// keepalive expires. This side never accepts peer-initiated data
-			// streams, so AcceptStream detects loss even with an idle listener.
-			// Any unsolicited stream also terminates this dedicated resource mux.
-			_, _ = mx.AcceptStream()
-			_ = mx.Close()
-		} else {
-			<-mx.CloseChan()
-		}
-		cancel()
-		if listener != nil {
-			_ = listener.Close()
-		}
-	}()
+	f := &Forwarder{
+		stop: sync.OnceFunc(func() {
+			cancel()
+			closeInputs()
+		}),
+		done: make(chan struct{}),
+	}
 	go func() {
 		var workers sync.WaitGroup
-		defer close(f.done)
-		defer func() { <-stopped; workers.Wait() }()
-		defer mx.Close()
-		for {
-			var conn net.Conn
-			var stream *smux.Stream
-			var err error
-			if listener != nil {
-				conn, err = listener.Accept()
-				if err != nil {
-					return
-				}
-				stream, err = mx.OpenStream()
-				if err != nil {
-					_ = conn.Close()
-					return
-				}
-			} else {
-				stream, err = mx.AcceptStream()
-				if err != nil {
-					return
-				}
-			}
-			workers.Go(func() {
-				defer stream.Close()
-				if conn == nil {
-					var err error
-					address := net.JoinHostPort("127.0.0.1", strconv.Itoa(target))
-					conn, err = (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", address)
-					if err != nil {
-						return
-					}
-				}
-				Splice(ctx, conn, stream)
-			})
-		}
+		serve(ctx, &workers, f.stop)
+		f.Stop()
+		workers.Wait()
+		close(f.done)
 	}()
 	return f
 }
 
-// Wait returns only after the listener and every data connection have stopped.
-func (f *MuxForward) Wait() { <-f.done }
+// StartForwardListener takes ownership of a listener and relays each accepted
+// connection to the supplied dial target.
+func StartForwardListener(listener net.Listener, dial func(context.Context) (net.Conn, error)) *Forwarder {
+	return startForwarder(func() { _ = listener.Close() }, func(ctx context.Context, workers *sync.WaitGroup, _ func()) {
+		forwardAccepted(ctx, workers, listener.Accept, dial)
+	})
+}
 
-// Close aborts the mux and joins its forwarding workers. It is safe to repeat.
-func (f *MuxForward) Close() error {
-	_ = f.mux.Close()
+// StartMuxForward takes ownership of a mux with its control streams already
+// established. It opens a stream for each listener connection, or dials the
+// validated loopback target for each peer stream if listener is nil.
+func StartMuxForward(mx *smux.Session, listener net.Listener, target int) *Forwarder {
+	if listener != nil {
+		return startForwarder(func() {
+			_ = listener.Close()
+			_ = mx.Close()
+		}, func(ctx context.Context, workers *sync.WaitGroup, stop func()) {
+			// The TCP accept loop cannot see mux errors. AcceptStream detects
+			// transport loss or an unsolicited peer stream even while idle.
+			workers.Go(func() {
+				_, _ = mx.AcceptStream()
+				stop()
+			})
+			for {
+				conn, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				stream, err := mx.OpenStream()
+				if err != nil {
+					_ = conn.Close()
+					return
+				}
+				workers.Go(func() { Splice(ctx, conn, stream) })
+			}
+		})
+	}
+	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(target))
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	return startForwarder(func() { _ = mx.Close() }, func(ctx context.Context, workers *sync.WaitGroup, _ func()) {
+		forwardAccepted(ctx, workers, mx.AcceptStream, func(ctx context.Context) (net.Conn, error) {
+			return dialer.DialContext(ctx, "tcp", address)
+		})
+	})
+}
+
+func forwardAccepted[Incoming io.ReadWriteCloser](ctx context.Context, workers *sync.WaitGroup, accept func() (Incoming, error), dial func(context.Context) (net.Conn, error)) {
+	for {
+		incoming, err := accept()
+		if err != nil {
+			return
+		}
+		workers.Go(func() {
+			outgoing, err := dial(ctx)
+			if err != nil {
+				_ = incoming.Close()
+				return
+			}
+			Splice(ctx, incoming, outgoing)
+		})
+	}
+}
+
+// Stop cancels forwarding and closes the inputs.
+func (f *Forwarder) Stop() { f.stop() }
+
+// Wait returns once all forwarding workers have exited.
+func (f *Forwarder) Wait() { <-f.done }
+
+// Close stops forwarding and joins its workers. It is safe to repeat.
+func (f *Forwarder) Close() error {
+	f.Stop()
 	f.Wait()
 	return nil
 }

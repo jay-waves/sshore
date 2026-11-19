@@ -127,7 +127,7 @@ func TestApprovedSFTPCancelBlockedHandshake(t *testing.T) {
 	}()
 	done := make(chan error, 1)
 	go func() {
-		done <- executeApprovedFile(ctx, client, operation{Kind: "download", Path: "/source", Name: "source", Size: 1, LocalPath: filepath.Join(t.TempDir(), "target")}, nil, true)
+		done <- executeApprovedFile(ctx, client, newApprovedFile(operation{Kind: "download", Path: "/source", Name: "source", Size: 1}, filepath.Join(t.TempDir(), "target"), nil), true)
 	}()
 	select {
 	case <-ready:

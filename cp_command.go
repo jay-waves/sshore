@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/pkg/sftp"
@@ -20,10 +21,15 @@ import (
 
 func runCopy(args []string) (int, error) {
 	if os.Getenv("SSHORE_SOCKET") != "" {
-		if _, _, _, err := remoteCopyRequest(args); err != nil {
+		kind, paths, hint, err := remoteCopyRequest(args)
+		if err != nil {
 			return 2, err
 		}
-		return 0, serverCommand(append([]string{"cp"}, args...))
+		ops, err := prepareFileRequest(kind, paths, hint)
+		if err != nil {
+			return 1, err
+		}
+		return 0, requestOperations("cp", ops)
 	}
 	o, err := parseCopyCommand(args)
 	if err != nil {
@@ -44,17 +50,17 @@ func runCopy(args []string) (int, error) {
 		return 1, err
 	}
 	defer stopActivity()
+	var picked *files.Source
+	defer closeCopySource(&picked)
 	if o.upload && o.sources[0].pick {
 		input, err := newLocalInput()
 		if err != nil {
 			return 2, err
 		}
 		termui.Log(os.Stdout, termui.Info, "To %s:%s. Submit source to copy.\n", cleanText(o.host), cleanText(o.target.path))
-		source, err := readCopyPath(input, "Local file (Tab; Enter starts): ", "", func(p string) (string, error) {
-			f, e := files.OpenSource(p)
-			if e == nil {
-				f.Close()
-			}
+		source, err := readCopyPath(input, "Local file (Tab; Enter starts): ", func(p string) (string, error) {
+			var e error
+			picked, e = files.OpenSource(p)
 			return p, e
 		})
 		closeErr := input.Close()
@@ -68,48 +74,134 @@ func runCopy(args []string) (int, error) {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	connection := sshio.Options{Host: o.host, Args: append([]string{"-o", "ClearAllForwardings=yes"}, o.ssh...), Command: remoteCommand(options{command: "cp-agent", host: o.host}), Confirm: confirmSSHHost, Secret: promptSSHSecret}
-	pipes, err := sshio.Start(ctx, connection, os.Stderr)
+	connection := sshio.Options{Host: o.host, Args: o.ssh, Command: remoteCommand(options{command: "cp-agent", host: o.host}), Confirm: confirmSSHHost, Secret: promptSSHSecret}
+	stream, err := sshio.Start(ctx, connection, os.Stderr)
 	if err != nil {
 		return 1, err
 	}
-	stdin := pipes.Stdin()
-	defer func() { cancel(); pipes.CloseAndWait() }()
-	setup := options{command: "cp-agent", host: o.host, ssh: o.ssh}
-	if err = negotiateSetup(pipes, stdin, &setup); err != nil {
+	defer stream.CloseAndWait()
+	remoteHome, err := negotiateSetup(stream, stream, o.host, false)
+	if err != nil {
 		return 1, err
 	}
 	if o.upload {
-		o.target.path, err = files.ExpandRemoteHome(o.target.path, setup.remoteHome)
+		o.target.path, err = files.ExpandRemoteHome(o.target.path, remoteHome)
 		if err != nil {
 			return 1, err
 		}
 	} else {
 		for i := range o.sources {
-			o.sources[i].path, err = files.ExpandRemoteHome(o.sources[i].path, setup.remoteHome)
+			o.sources[i].path, err = files.ExpandRemoteHome(o.sources[i].path, remoteHome)
 			if err != nil {
 				return 1, err
 			}
 		}
 	}
-	client, err := files.NewSFTP(pipes, stdin)
-	if err != nil {
-		return 1, err
-	}
-	defer func() { _ = pipes.Close(); _ = client.Close() }()
-	if o.sources[0].stream {
-		stopInput := context.AfterFunc(ctx, func() { _ = os.Stdin.Close() })
-		defer stopInput()
-	}
-	if o.sources[0].stream || o.target.stream {
-		err = executeStreamCopy(client, o, os.Stdin, os.Stdout)
-	} else {
-		err = executeCopy(client, o)
-	}
-	if err != nil {
+	if err := withCopySFTP(stream, func(client *sftp.Client) error {
+		if o.sources[0].stream {
+			stopInput := context.AfterFunc(ctx, func() { _ = os.Stdin.Close() })
+			defer stopInput()
+		}
+		if o.sources[0].stream || o.target.stream {
+			return executeStreamCopy(client, o, os.Stdin, os.Stdout)
+		}
+		source := picked
+		picked = nil // The batch now owns the selected source.
+		return executeCopy(ctx, client, o, source)
+	}); err != nil {
 		return 1, err
 	}
 	return 0, nil
+}
+
+// Closing the full transport first releases SFTP reads and writes before
+// client closure joins the protocol goroutines.
+func withCopySFTP(stream io.ReadWriteCloser, run func(*sftp.Client) error) error {
+	client, err := files.NewSFTP(stream, stream)
+	if err != nil {
+		_ = stream.Close()
+		return err
+	}
+	defer func() { _ = stream.Close(); _ = client.Close() }()
+	return run(client)
+}
+
+type fileCopy struct {
+	source, target string
+	downloadSize   int64
+	opened         *files.Source
+	approval       *operation // Original request for a scoped transfer.
+}
+
+func (f fileCopy) size() int64 {
+	if f.opened != nil {
+		return f.opened.Size()
+	}
+	if f.approval != nil {
+		return f.approval.Size
+	}
+	return f.downloadSize
+}
+
+func closeCopySource(source **files.Source) {
+	if *source != nil {
+		(*source).Close()
+		*source = nil
+	}
+}
+
+func closeCopyBatch(batch []fileCopy) {
+	for i := range batch {
+		closeCopySource(&batch[i].opened)
+	}
+}
+
+// A failed transfer leaves earlier files published. The caller owns cleanup
+// for any sources still open when this returns.
+func transferCopyBatch(batch []fileCopy, transfer func(int, fileCopy) error) (int, error) {
+	for i, item := range batch {
+		if err := transfer(i, item); err != nil {
+			return i, err
+		}
+		closeCopySource(&batch[i].opened)
+	}
+	return len(batch), nil
+}
+
+func (f fileCopy) transfer(ctx context.Context, client *sftp.Client, progress *atomic.Int64) error {
+	if f.opened != nil {
+		return f.opened.Upload(client, f.target, progress)
+	}
+	return files.Download(ctx, client, f.source, f.target, f.size(), progress)
+}
+
+func prepareFileRequest(kind string, paths []string, hint string) ([]operation, error) {
+	ops := make([]operation, 0, len(paths))
+	for _, path := range paths {
+		absolute, err := absoluteLocalPath(path)
+		if err != nil {
+			return nil, err
+		}
+		op := operation{Kind: kind, Path: absolute, LocalHint: hint}
+		if kind == "download" {
+			f, err := files.OpenSource(absolute)
+			if err != nil {
+				return nil, err
+			}
+			op.Name, op.Size = f.Name(), f.Size()
+			f.Close()
+		} else {
+			info, err := os.Stat(absolute)
+			if err != nil {
+				return nil, err
+			}
+			if !info.IsDir() {
+				return nil, fmt.Errorf("upload destination must be a directory")
+			}
+		}
+		ops = append(ops, op)
+	}
+	return ops, nil
 }
 
 // Streams refer to this process, independently of origin endpoint selection.
@@ -126,44 +218,76 @@ func executeStreamCopy(client *sftp.Client, o copyOptions, input io.Reader, outp
 		return files.UploadReader(client, input, o.target.path, -1)
 	}
 	source := o.sources[0].path
-	info, err := client.Lstat(source)
+	size, err := remoteCopySize(client, source)
 	if err != nil {
 		return err
 	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("only ordinary files are supported")
-	}
-	return files.DownloadTo(client, source, output, info.Size(), nil)
+	return files.DownloadTo(client, source, output, size, nil)
 }
 
-func executeCopy(client *sftp.Client, o copyOptions) error {
-	sourceStat, targetStat, targetLstat := client.Lstat, os.Stat, os.Lstat
-	base, join := path.Base, filepath.Join
-	transfer := files.Download
+func remoteCopySize(client *sftp.Client, source string) (int64, error) {
+	info, err := client.Lstat(source)
+	if err != nil {
+		return 0, err
+	}
+	if !info.Mode().IsRegular() {
+		return 0, fmt.Errorf("only ordinary files are supported")
+	}
+	return info.Size(), nil
+}
+
+func executeCopy(ctx context.Context, client *sftp.Client, o copyOptions, picked *files.Source) error {
+	items := make([]fileCopy, len(o.sources))
+	if picked != nil {
+		items[0].opened = picked
+	}
+	defer closeCopyBatch(items)
+	if err := prepareCopyBatch(client, o, items); err != nil {
+		return err
+	}
+	completed, err := transferCopyBatch(items, func(_ int, item fileCopy) error {
+		if err := item.transfer(ctx, client, nil); err != nil {
+			return err
+		}
+		source, target := item.source, item.target
+		if o.upload {
+			target = o.host + ":" + target
+		} else {
+			source = o.host + ":" + source
+		}
+		termui.Log(os.Stderr, termui.Success, "Copied %s -> %s\n", cleanText(source), cleanText(target))
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("%d completed, copy failed, %d not started: %w", completed, len(items)-completed-1, err)
+	}
+	return nil
+}
+
+// Resolve all paths and open local sources before handing the batch to execution.
+// The caller owns cleanup, even if preparation fails partway through.
+func prepareCopyBatch(client *sftp.Client, o copyOptions, items []fileCopy) (err error) {
+	targetStat, targetLstat := os.Stat, os.Lstat
+	join := filepath.Join
 	if o.upload {
-		sourceStat, targetStat, targetLstat = os.Lstat, client.Stat, client.Lstat
-		base, join = filepath.Base, path.Join
-		transfer = files.Upload
+		targetStat, targetLstat = client.Stat, client.Lstat
+		join = path.Join
 	}
 
-	// Preflight the full batch and collect all destination choices before writing.
-	type item struct {
-		source, target string
-		size           int64
-	}
-	var items []item
 	var input *termui.Input
+	var targetDir bool
 	if o.target.pick {
-		var err error
 		input, err = newLocalInput()
 		if err != nil {
 			return err
 		}
-		defer input.Close()
+		defer func() {
+			if closeErr := input.Close(); err == nil {
+				err = closeErr
+			}
+		}()
 		termui.Log(os.Stdout, termui.Info, "From %s. Submit all destinations to copy; Ctrl-C cancels.\n", cleanText(o.host))
-	}
-	targetDir := false
-	if !o.target.pick {
+	} else {
 		info, err := targetStat(o.target.path)
 		if err == nil {
 			targetDir = info.IsDir()
@@ -175,59 +299,55 @@ func executeCopy(client *sftp.Client, o copyOptions) error {
 		}
 	}
 	seen := map[string]bool{}
-	for _, source := range o.sources {
-		name := base(source.path)
-		info, err := sourceStat(source.path)
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("only ordinary files are supported")
-		}
-		if err = files.ValidateName(name); err != nil {
-			return err
-		}
-		target := o.target.path
-		if targetDir {
-			target = join(target, name)
-		}
-		if input != nil {
-			termui.Log(os.Stdout, termui.Info, "Copy %s:%s · %s\n", cleanText(o.host), cleanText(source.path), displayBytes(info.Size()))
-			target, err = readCopyPath(input, "Save as (Tab; Enter accepts): ", "", func(p string) (string, error) { return files.DownloadDestination(p, name) })
+	for i, source := range o.sources {
+		item := &items[i]
+		item.source = source.path
+		var name string
+		if o.upload {
+			if item.opened == nil {
+				f, err := files.OpenSource(source.path)
+				if err != nil {
+					return err
+				}
+				item.opened = f
+			}
+			name = item.opened.Name()
+		} else {
+			size, err := remoteCopySize(client, source.path)
 			if err != nil {
 				return err
 			}
+			name, item.downloadSize = path.Base(source.path), size
+			if err := files.ValidateName(name); err != nil {
+				return err
+			}
 		}
-		_, err = targetLstat(target)
-		if err == nil {
-			return fmt.Errorf("destination already exists: %s", target)
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return err
+		target := o.target.path
+		if input != nil {
+			termui.Log(os.Stdout, termui.Info, "Copy %s:%s · %s\n", cleanText(o.host), cleanText(source.path), displayBytes(item.size()))
+			var err error
+			target, err = readCopyPath(input, "Save as (Tab; Enter accepts): ", func(p string) (string, error) { return files.DownloadDestination(p, name) })
+			if err != nil {
+				return err
+			}
+		} else {
+			if targetDir {
+				target = join(target, name)
+			}
+			if o.upload {
+				if err := files.ValidateName(path.Base(target)); err != nil {
+					return err
+				}
+			}
+			if err := files.CheckCopyTarget(target, targetLstat); err != nil {
+				return err
+			}
 		}
 		if seen[target] {
 			return fmt.Errorf("duplicate destination: %s", target)
 		}
 		seen[target] = true
-		items = append(items, item{source.path, target, info.Size()})
-	}
-	if input != nil {
-		if err := input.Close(); err != nil {
-			return err
-		}
-	}
-	for i, item := range items {
-		err := transfer(client, item.source, item.target, item.size, nil)
-		if err != nil {
-			return fmt.Errorf("%d completed, copy failed, %d not started: %w", i, len(items)-i-1, err)
-		}
-		source, target := item.source, item.target
-		if o.upload {
-			target = o.host + ":" + target
-		} else {
-			source = o.host + ":" + source
-		}
-		termui.Log(os.Stderr, termui.Success, "Copied %s -> %s\n", cleanText(source), cleanText(target))
+		item.target = target
 	}
 	return nil
 }

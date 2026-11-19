@@ -33,17 +33,18 @@ func TestResourceIdentityAndLifetime(t *testing.T) {
 	tasks := startRequestDaemon(t)
 	for i, kind := range []string{"mount", "forward"} {
 		task, _ := registerTestResource(t, tasks, kind, "work", fmt.Sprintf("%032x", i+1))
-		r, err := findRunningResource(kind, "work")
-		if err != nil || r.UID != task.record.UID {
-			t.Fatalf("resource: %+v %v", r, err)
+		rows, err := collectLocalResources("", false)
+		if err != nil || len(rows) != 1 || rows[0].Identity != resourceIdentity(task.record) {
+			t.Fatalf("resources: %+v %v", rows, err)
 		}
+		r := rows[0]
 		if err := stopResource(kind, "work", "replacement"); err == nil {
 			t.Fatal("accepted replacement")
 		}
-		if err := stopResource(kind, "work", resourceIdentity(r)); err != nil {
+		if err := stopResource(kind, "work", r.Identity); err != nil {
 			t.Fatal(err)
 		}
-		if rows, err := collectRunningResources(""); err != nil || len(rows) != 0 {
+		if rows, err := collectLocalResources("", false); err != nil || len(rows) != 0 {
 			t.Fatalf("ended resources retained: %+v %v", rows, err)
 		}
 	}
@@ -53,23 +54,24 @@ func TestKillPendingRequest(t *testing.T) {
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "nonexistent-ssh"))
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	startRequestDaemon(t)
-	id, err := queueRequest(testRequestOptions(), []operation{{Kind: "upload", Path: "/tmp"}})
+	queued, err := queueRequest(testRequestOptions(), []operation{{Kind: "upload", Path: "/tmp"}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	id := queued.ID
 	for _, args := range [][]string{{"kill", "review/" + id, "extra"}, {"review", id, "--reject"}} {
 		if _, err := run(args); err == nil {
 			t.Fatal("accepted", args)
 		}
 	}
 
-	if _, err := readRequest(id); err != nil {
+	if _, err := findRequest(id); err != nil {
 		t.Fatal("invalid invocation consumed request", err)
 	}
 	if code, err := run([]string{"kill", "review/" + id}); code != 0 || err != nil {
 		t.Fatal(code, err)
 	}
-	if _, err := readRequest(id); err == nil {
+	if _, err := findRequest(id); err == nil {
 		t.Fatal(err)
 	}
 	if _, err := run([]string{"kill", "review/" + id}); err == nil {
@@ -85,12 +87,15 @@ func TestKillPendingRequest(t *testing.T) {
 func TestInventoryDoesNotExposeCapabilities(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	tasks := startRequestDaemon(t)
-	task, _ := registerTestResource(t, tasks, "forward", "web", strings.Repeat("a", 32))
+	registerTestResource(t, tasks, "forward", "web", strings.Repeat("a", 32))
 	record, err := existingDaemonRecord()
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows := inspectResources([]resourceRecord{task.record})
+	rows, err := collectLocalResources("", true)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("resources: %+v %v", rows, err)
+	}
 	b, e := json.Marshal(rows)
 	if e != nil {
 		t.Fatal(e)
@@ -105,14 +110,15 @@ func TestInventoryBoundedStatusWait(t *testing.T) {
 	tasks := startRequestDaemon(t)
 	release := make(chan struct{})
 	defer close(release)
-	var records []resourceRecord
 	for i := range 24 {
 		task, _ := registerTestResource(t, tasks, "forward", fmt.Sprintf("web-%d", i), fmt.Sprintf("%032x", i+1))
 		task.control = func(string) resourceReply { <-release; return resourceReply{} }
-		records = append(records, task.record)
 	}
 	start := time.Now()
-	rows := inspectResources(records)
+	rows, err := collectLocalResources("", true)
+	if err != nil || len(rows) != 24 {
+		t.Fatalf("resources: %+v %v", rows, err)
+	}
 	if time.Since(start) > 3*time.Second {
 		t.Fatal("status checks exceeded aggregate deadline")
 	}
@@ -129,13 +135,13 @@ func TestResourceFailureReceipt(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	s := &resourceService{record: resourceRecord{Kind: "mount", Name: "work", Host: "work", Token: "secret", Address: "127.0.0.1:1"}, recordPath: filepath.Join(dir, "work.json")}
-	s.saveResult(1, io.ErrUnexpectedEOF)
-	rows := collectResourceResults("", nil)
+	s := &resourceService{record: resourceRecord{Kind: "mount", Name: "work", Host: "work", Token: "secret", Address: "127.0.0.1:1"}, resultPath: filepath.Join(dir, "work"+resourceResultSuffix)}
+	s.saveResult(1, io.ErrUnexpectedEOF, s.record.Name)
+	rows := collectResourceResults(nil)
 	if len(rows) != 1 || rows[0].Transport != "failed" || rows[0].LastError != "unexpected EOF" {
 		t.Fatal(rows)
 	}
-	b, _ := os.ReadFile(s.recordPath + ".result")
+	b, _ := os.ReadFile(s.resultPath)
 	if strings.Contains(string(b), "secret") {
 		t.Fatal("receipt leaked capability")
 	}
@@ -148,20 +154,23 @@ func TestResourceReceiptUsesInstanceRatherThanAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := resourceRecord{UID: strings.Repeat("a", 32), Kind: "forward", Name: "web", Host: "work"}
-	receipt := resourceResult{Record: old, DisplayName: "web", Finished: time.Now()}
+	receipt := struct {
+		resourceResult
+		DisplayName string
+	}{resourceResult: resourceResult{Record: old, Finished: time.Now()}, DisplayName: "web"}
 	if err := writeStateJSON(filepath.Join(dir, old.storageName()+".json.result"), receipt); err != nil {
 		t.Fatal(err)
 	}
 	// Reusing an alias must preserve the previous instance's failure receipt.
 	replacement := old
 	replacement.UID = strings.Repeat("b", 32)
-	if rows := collectResourceResults("", []resourceView{viewRecord(replacement)}); len(rows) != 1 {
+	if rows := collectResourceResults([]resourceView{viewRecord(replacement)}); len(rows) != 1 {
 		t.Fatalf("reused alias hid previous instance: %+v", rows)
 	}
 	// Renaming an instance must not make its receipt appear beside its live row.
 	renamed := old
 	renamed.Name = "renamed"
-	if rows := collectResourceResults("", []resourceView{viewRecord(renamed)}); len(rows) != 0 {
+	if rows := collectResourceResults([]resourceView{viewRecord(renamed)}); len(rows) != 0 {
 		t.Fatalf("renamed instance duplicated: %+v", rows)
 	}
 }
@@ -171,23 +180,23 @@ func TestFTPSessionDefaults(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if o.remote != "." || o.mountpoint != "" || o.foreground || o.name != "" {
+	if o.Remote != "." || o.Mountpoint != "" || o.foreground || o.Name != "" {
 		t.Fatalf("unexpected defaults: %+v", o)
 	}
 	o, e = parseFTPOptions([]string{"work:project", "self:", "--foreground"})
-	if e != nil || o.name != "" || !o.foreground || o.remote != "project" {
+	if e != nil || o.Name != "" || !o.foreground || o.Remote != "project" {
 		t.Fatalf("options: %+v %v", o, e)
 	}
 
 }
-func TestFTPControlCapability(t *testing.T) {
+func TestSSHAuthBrokerCapability(t *testing.T) {
 	called := make(chan struct{}, 1)
-	l, s, e := resourceListen("secret", func(w http.ResponseWriter, r *http.Request) { called <- struct{}{}; w.WriteHeader(204) })
+	l, s, e := listenSSHAuth(context.Background(), "secret", func(w http.ResponseWriter, r *http.Request) { called <- struct{}{}; w.WriteHeader(204) })
 	if e != nil {
 		t.Fatal(e)
 	}
 	defer s.Close()
-	r, e := resourceHTTPContext(context.Background(), l.Addr().String(), "wrong", "POST", "/stop", nil)
+	r, e := postSSHAuth(context.Background(), l.Addr().String(), "wrong", "/unlock", nil)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -200,7 +209,7 @@ func TestFTPControlCapability(t *testing.T) {
 		t.Fatal("unauthorized control request dispatched")
 	default:
 	}
-	r, e = resourceHTTPContext(context.Background(), l.Addr().String(), "secret", "POST", "/stop", nil)
+	r, e = postSSHAuth(context.Background(), l.Addr().String(), "secret", "/unlock", nil)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -208,14 +217,14 @@ func TestFTPControlCapability(t *testing.T) {
 	if r.StatusCode != 204 {
 		t.Fatal(r.Status)
 	}
-	if _, e = resourceHTTPContext(context.Background(), "example.com:80", "secret", "POST", "/stop", nil); e == nil {
+	if _, e = postSSHAuth(context.Background(), "example.com:80", "secret", "/unlock", nil); e == nil {
 		t.Fatal("accepted non-loopback address")
 	}
 }
 
 func TestFTPOptions(t *testing.T) {
 	o, e := parseFTPOptions([]string{"host:/remote folder", ".:mount", "--read-only", "--", "-J", "jump"})
-	if e != nil || !o.readOnly || o.remote != "/remote folder" {
+	if e != nil || !o.ReadOnly || o.Remote != "/remote folder" {
 		t.Fatalf("%+v %v", o, e)
 	}
 	for _, args := range [][]string{{}, {"host", "/", "mount", "-f"}, {"--", "-bad", "/", "mount"}} {
@@ -241,7 +250,7 @@ func TestMountSourceEndpoints(t *testing.T) {
 		{[]string{remotePathOperand("alice@2001:db8::1", "/srv/project"), ".:X:"}, "alice@2001:db8::1", "/srv/project", "X:"},
 	} {
 		o, err := parseFTPOptions(tc.args)
-		if err != nil || o.host != tc.host || o.remote != tc.remote || o.mountpoint != tc.mountpoint {
+		if err != nil || o.Host != tc.host || o.Remote != tc.remote || o.Mountpoint != tc.mountpoint {
 			t.Fatalf("mount %v: %+v, %v", tc.args, o, err)
 		}
 	}
@@ -254,7 +263,7 @@ func TestMountSourceEndpoints(t *testing.T) {
 
 func TestFTPStatsOptions(t *testing.T) {
 	o, err := parseFTPOptions([]string{"host:", "self:", "--stats"})
-	if err != nil || !o.stats {
+	if err != nil || !o.Stats {
 		t.Fatalf("%+v %v", o, err)
 	}
 }
@@ -285,7 +294,7 @@ func TestFTPNotifyRecovery(t *testing.T) {
 func TestRemoteMountRequest(t *testing.T) {
 	for _, args := range [][]string{{".:.", "origin:"}, {"self:", "::"}, {"--read-only", ".:/tmp", "origin:/client/mount"}, {".:/tmp", "::/client/mount"}} {
 		op, err := remoteMountRequest(args)
-		if err != nil || op.Kind != "mount" || op.LocalPath != "" {
+		if err != nil || op.Kind != "mount" {
 			t.Fatalf("%+v %v", op, err)
 		}
 	}
@@ -310,8 +319,8 @@ func TestAbsoluteMountPath(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got, err := absoluteMountPath(tc.input); err != nil || got != want {
-			t.Errorf("absoluteMountPath(%q) = %q, %v; want %q", tc.input, got, err, want)
+		if got, err := absoluteLocalPath(tc.input); err != nil || got != want {
+			t.Errorf("absoluteLocalPath(%q) = %q, %v; want %q", tc.input, got, err, want)
 		}
 	}
 }
@@ -328,11 +337,11 @@ func TestMountApprovalSelection(t *testing.T) {
 
 func TestMountTimeoutOptions(t *testing.T) {
 	o, e := parseFTPOptions([]string{"work:", "self:"})
-	if e != nil || o.ioTimeout != time.Minute || o.startupTimeout != 0 {
+	if e != nil || o.IOTimeout != time.Minute || o.StartupTimeout != 0 {
 		t.Fatal(o, e)
 	}
 	o, e = parseFTPOptions([]string{"work:", "self:", "--io-timeout", "0s", "--startup-timeout", "2m"})
-	if e != nil || o.ioTimeout != 0 || o.startupTimeout != 2*time.Minute {
+	if e != nil || o.IOTimeout != 0 || o.StartupTimeout != 2*time.Minute {
 		t.Fatal(o, e)
 	}
 	for _, a := range [][]string{{"work:", "self:", "--io-timeout", "-1s"}, {"work:", "self:", "--startup-timeout", "bad"}} {
@@ -342,11 +351,11 @@ func TestMountTimeoutOptions(t *testing.T) {
 	}
 }
 
-func TestResourceHTTPReuseAndCancellation(t *testing.T) {
+func TestSSHAuthHTTPReuseAndCancellation(t *testing.T) {
 	peers := make(chan string, 2)
 	waiting := make(chan struct{})
 	aborted := make(chan struct{})
-	l, server, err := resourceListen("secret", func(w http.ResponseWriter, r *http.Request) {
+	l, server, err := listenSSHAuth(context.Background(), "secret", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/ask" {
 			close(waiting)
 			<-r.Context().Done()
@@ -360,9 +369,9 @@ func TestResourceHTTPReuseAndCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	defer resourceHTTPTransport.CloseIdleConnections()
+	defer sshAuthHTTPClient.CloseIdleConnections()
 	for range 2 {
-		response, err := resourceHTTPContext(context.Background(), l.Addr().String(), "secret", "POST", "/setup-log", nil)
+		response, err := postSSHAuth(context.Background(), l.Addr().String(), "secret", "/unlock", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -379,7 +388,7 @@ func TestResourceHTTPReuseAndCancellation(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		response, err := resourceHTTPContext(ctx, l.Addr().String(), "secret", "POST", "/ask", nil)
+		response, err := postSSHAuth(ctx, l.Addr().String(), "secret", "/ask", nil)
 		if response != nil {
 			response.Body.Close()
 		}

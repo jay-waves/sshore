@@ -20,7 +20,7 @@ func run(args []string) (code int, resultErr error) {
 	if len(args) > 0 {
 		args = append([]string(nil), args...)
 		args[0] = canonicalCommand(args[0])
-		if _, public := commandHelp[args[0]]; public {
+		if cliCommands[args[0]].help != "" {
 			if len(args) == 2 && args[1] == "--tldr" {
 				return 0, showTLDR(args[0], os.Stdout)
 			}
@@ -141,19 +141,6 @@ func usage(format string, args ...any) error { return &usageError{fmt.Sprintf(fo
 
 var errHelp = errors.New("help requested")
 
-// --all selects a snapshot, never a process name or a cached PID.
-func parseKillAll(args []string) (options, bool, error) {
-	parsed, err := parseCLI(args, "kill")
-	if !parsed.has("--all") {
-		return options{}, false, nil
-	}
-	if err != nil {
-		return options{}, true, err
-	}
-	o, err := killAllOptions(parsed)
-	return o, true, err
-}
-
 func killAllOptions(parsed cliArguments) (options, error) {
 	o, err := shellOptions("list", parsed)
 	if o.local {
@@ -164,15 +151,6 @@ func killAllOptions(parsed cliArguments) (options, error) {
 
 type reviewOptions struct {
 	id string
-}
-
-func parseReview(args []string) (reviewOptions, error) {
-	var o reviewOptions
-	parsed, err := parseCLI(args, "review")
-	if err != nil {
-		return o, err
-	}
-	return reviewArguments(parsed)
 }
 
 func reviewArguments(parsed cliArguments) (reviewOptions, error) {
@@ -244,7 +222,7 @@ func runTargetCommand(args []string) (int, error) {
 				return runRenameResource(target.kind, target.name, parsed.operands[1], target.identity)
 			})
 		case "review":
-			parsed.operands = []string{target.requestID}
+			parsed.operands = []string{canonicalTaskUID(target.identity)}
 		}
 	}
 	if command == "review" {
@@ -292,8 +270,8 @@ func runTargetCommand(args []string) (int, error) {
 		o.taskIdentity, o.instance = target.identity, target.instance
 		o.hosted = target.hosted
 		if !o.local {
-			if target.connection != nil {
-				applyConnectionOptions(&o, *target.connection)
+			if target.snapshot != nil && target.snapshot.Connection != nil {
+				applyConnectionOptions(&o, *target.snapshot.Connection)
 			} else if err := applyRecentConnection(&o); err != nil {
 				return 1, err
 			}

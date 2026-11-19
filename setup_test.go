@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -35,7 +36,7 @@ func (s *stubSetupInput) ReadPrefilled(prompt string, paths bool, initial string
 func TestSetupRejectsRecoveryMode(t *testing.T) {
 	var stream bytes.Buffer
 	writeMessage(&stream, message{Type: "setup_ready", SoftwareVersion: version, Action: "plain"})
-	if err := negotiateSetup(&stream, &bytes.Buffer{}, &options{}); err == nil {
+	if _, err := negotiateSetup(&stream, &bytes.Buffer{}, "", false); err == nil {
 		t.Fatal("obsolete recovery mode accepted")
 	}
 }
@@ -60,10 +61,10 @@ func TestAttachSessionSelection(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var incoming, outgoing bytes.Buffer
-			writeMessage(&incoming, message{Type: "session_choice", SoftwareVersion: version, Names: []string{"pikachu", "eevee"}})
+			writeMessage(&incoming, message{Type: "session_choice", SoftwareVersion: version, Targets: []sessionTarget{{Name: "pikachu", Instance: strings.Repeat("a", 32)}, {Name: "eevee", Instance: strings.Repeat("b", 32)}}})
 			writeMessage(&incoming, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed"})
 			input := &stubSetupInput{answers: tc.answers, closeErr: tc.closeErr}
-			err := negotiateSetupWithInput(&incoming, &outgoing, &options{command: "attach"}, func() (setupInput, error) { return input, nil })
+			_, err := negotiateSetupWithInput(&incoming, &outgoing, "", true, func() (setupInput, error) { return input, nil })
 			if tc.closeErr != nil && !errors.Is(err, tc.closeErr) {
 				t.Fatalf("lost terminal restoration error: %v", err)
 			}

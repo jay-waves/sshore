@@ -112,7 +112,7 @@ func TestPasteWithEmbeddedControlsAndMissingClose(t *testing.T) {
 	if !bytes.Equal(data, want) || len(actions) != 0 {
 		t.Fatal("unterminated paste interpreted shortcuts or changed payload")
 	}
-	if len(k.marker) > 6 {
+	if k.pasteEnd >= len("\x1b[201~") {
 		t.Fatal("paste delimiter state grew with payload")
 	}
 	data, actions = collectKeys(&k, []byte("\x1b[20"), []byte("1~\x02r"))
@@ -135,27 +135,6 @@ func TestPasteCompletionBoundary(t *testing.T) {
 	}
 }
 
-func TestSessionOrderAndCycle(t *testing.T) {
-	names := []string{"z", "a", "a"}
-	if got := SessionOrder("m", names); !reflect.DeepEqual(got, []string{"a", "m", "z"}) {
-		t.Fatal(got)
-	}
-	if !reflect.DeepEqual(names, []string{"z", "a", "a"}) {
-		t.Fatal("mutated input")
-	}
-	for _, tc := range []struct {
-		current string
-		step    int
-		want    string
-	}{{"m", 1, "z"}, {"z", 1, "a"}, {"a", -1, "z"}} {
-		if got := AdjacentSession(tc.current, names, tc.step); got != tc.want {
-			t.Fatalf("got %s", got)
-		}
-	}
-	if AdjacentSession("only", nil, 1) != "only" {
-		t.Fatal("single session moved")
-	}
-}
 func TestSessionKeys(t *testing.T) {
 	for _, key := range []byte{'c', 'n', 'p', 'l'} {
 		var k Keys

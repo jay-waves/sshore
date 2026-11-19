@@ -4,15 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
+	"io"
 	"os"
 	"strings"
 
+	"github.com/jay-waves/sshore/internal/wire"
 	cryptossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 )
 
-func (c *connectionConfig) agentSigners(ctx context.Context) ([]cryptossh.Signer, net.Conn, error) {
+func (c *connectionConfig) agentSigners(ctx context.Context) ([]cryptossh.Signer, io.Closer, error) {
 	address := c.get("identityagent")
 	if address == "none" {
 		return nil, nil, nil
@@ -41,14 +42,13 @@ func (c *connectionConfig) agentSigners(ctx context.Context) ([]cryptossh.Signer
 	if err != nil {
 		return nil, nil, fmt.Errorf("SSH agent unavailable: %w", err)
 	}
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
-	defer stop()
-	signers, err := agent.NewClient(conn).Signers()
+	stream := wire.OwnTransport(ctx, conn, nil)
+	signers, err := agent.NewClient(stream).Signers()
 	if err != nil {
-		conn.Close()
+		stream.Close()
 		return nil, nil, err
 	}
-	return signers, conn, nil
+	return signers, stream, nil
 }
 
 func publicIdentity(path string) cryptossh.PublicKey {
@@ -72,7 +72,11 @@ func (c *connectionConfig) publicIdentities() (map[string]bool, []*cryptossh.Cer
 		if key == nil {
 			return
 		}
-		allowed[string(key.Marshal())] = true
+		id := string(key.Marshal())
+		if allowed[id] {
+			return
+		}
+		allowed[id] = true
 		if cert, ok := key.(*cryptossh.Certificate); ok {
 			certificates = append(certificates, cert)
 			allowed[string(cert.Key.Marshal())] = true
@@ -87,11 +91,12 @@ func (c *connectionConfig) publicIdentities() (map[string]bool, []*cryptossh.Cer
 			failures = append(failures, err)
 			continue
 		}
-		remember(publicIdentity(path + ".pub"))
+		public := publicIdentity(path + ".pub")
+		remember(public)
 		remember(publicIdentity(path + "-cert.pub"))
-		if key := publicIdentity(path); key != nil {
-			remember(key)
-		} else if publicIdentity(path+".pub") == nil {
+		key := publicIdentity(path)
+		remember(key)
+		if key == nil && public == nil {
 			missing = append(missing, path+".pub (load the private key with ssh-add)")
 		}
 	}

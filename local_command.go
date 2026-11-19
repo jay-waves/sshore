@@ -1,13 +1,12 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
-	"strings"
-	"sync"
+	"slices"
 	"time"
 )
 
@@ -15,7 +14,6 @@ type localShellView struct {
 	hosted    bool
 	Lifetime  string `json:"lifetime"`
 	Temporary bool   `json:"temporary,omitempty"`
-	order     uint64
 	ShortID   string `json:"short_id,omitempty"`
 	identity  string
 	Name      string `json:"name"`
@@ -25,21 +23,17 @@ type localShellView struct {
 	Directory string `json:"directory,omitempty"`
 }
 
-func localRequest(name string, request message, expected ...string) (message, error) {
-	r, err := readLocalSession(name)
-	if err != nil {
-		return message{}, err
-	}
-	if len(expected) > 0 && expected[0] != "" && r.identity() != expected[0] {
-		return message{}, fmt.Errorf("local task changed; refresh with sshore list")
-	}
-	c, err := dialLocalSession(r)
+func localRequest(ref, identity string, request message) (message, error) {
+	c, record, err := openNativeShell(context.Background(), ref, identity)
 	if err != nil {
 		return message{}, err
 	}
 	defer c.Close()
-	if request.Type == "handoff" {
+	switch request.Type {
+	case "handoff":
 		_ = c.SetDeadline(time.Now().Add(2 * time.Minute))
+	case "rename":
+		request.Action = record.Name
 	}
 	if err = writeMessage(c, request); err != nil {
 		return message{}, err
@@ -47,92 +41,36 @@ func localRequest(name string, request message, expected ...string) (message, er
 	return readMessage(c)
 }
 
-func localShells(details ...bool) ([]localShellView, error) {
+func localShells(withDirectory bool) ([]localShellView, error) {
 	rows, err := nativeShells()
 	if err != nil {
 		return nil, err
 	}
-	hosted, err := hostedShellInventory(len(details) > 0 && details[0])
+	detail := "health"
+	if withDirectory {
+		detail = "inventory"
+	}
+	hosted, err := hostedShells(detail)
 	if err != nil {
 		return nil, err
 	}
-	if len(hosted.Errors) > 0 {
-		return nil, fmt.Errorf("inventory incomplete: %s", strings.Join(hosted.Errors, "; "))
+	for _, s := range hosted {
+		identity := s.identity("local")
+		rows = append(rows, localShellView{hosted: true, Lifetime: s.Lifetime, Temporary: s.Temporary, ShortID: taskShortCode(identity), identity: identity, Name: s.Name, State: s.State, PID: s.PID, Directory: s.Directory})
 	}
-	if err := numberInventoryShells(&hosted); err != nil {
-		return nil, err
-	}
-	for _, s := range hosted.Shells {
-		rows = append(rows, localShellView{hosted: true, Lifetime: s.Lifetime, Temporary: s.Temporary, order: s.order, ShortID: s.ShortID, identity: remoteShellIdentity("local", s.Instance), Name: s.Name, State: s.State, PID: s.PID, Directory: s.Directory})
-	}
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].order < rows[j].order })
+	sortLocalShells(rows)
 	return rows, nil
 }
 
-func nativeShells() ([]localShellView, error) {
-	records, err := nativeShellRecords()
-	if err != nil {
-		return nil, err
-	}
-	rows := make([]localShellView, len(records))
-	deadline := time.Now().Add(2 * time.Second)
-	jobs := make(chan int)
-	var workers sync.WaitGroup
-	for range min(8, len(records)) {
-		workers.Go(func() {
-			for i := range jobs {
-				rows[i] = inspectLocalShell(records[i], deadline)
-			}
-		})
-	}
-	for i := range records {
-		jobs <- i
-	}
-	close(jobs)
-	workers.Wait()
-	keys := make([]string, len(rows))
-	for i := range rows {
-		keys[i] = rows[i].identity
-	}
-	ids, err := assignTaskIDs(keys)
-	if err != nil {
-		return nil, err
-	}
-	for i := range rows {
-		id := ids[rows[i].identity]
-		rows[i].order, rows[i].ShortID = id.order, id.code
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].order < rows[j].order })
-	return rows, nil
-}
-
-func inspectLocalShell(r localShellRecord, deadline time.Time) localShellView {
-	row := localShellView{Lifetime: shellLifetime(r.Owner.PID != 0, false), Temporary: r.Owner.PID != 0, identity: r.identity(), Name: r.Name, State: "unavailable", Version: r.Version, Directory: r.Directory}
-	c, err := dialLocalSessionUntil(r, deadline)
-	if err != nil {
-		return row
-	}
-	defer c.Close()
-	if err := writeMessage(c, message{Type: "status"}); err != nil {
-		return row
-	}
-	m, err := readMessage(c)
-	if err != nil || m.Type != "session" {
-		return row
-	}
-	row.PID = m.PID
-	row.State = "detached"
-	if m.Attached {
-		row.State = "attached"
-	} else if m.PID == 0 {
-		row.State = "starting"
-	}
-	return row
+func sortLocalShells(rows []localShellView) {
+	slices.SortStableFunc(rows, func(a, b localShellView) int {
+		return cmp.Compare(taskUID(a.identity), taskUID(b.identity))
+	})
 }
 
 func resolveLocalAttach(o *options) error {
 	if o.command == "attach" && o.session == "" {
-		rows, err := localShells()
+		rows, err := localShells(false)
 		if err != nil {
 			return err
 		}
@@ -146,7 +84,7 @@ func resolveLocalAttach(o *options) error {
 			o.session = r.Name
 			o.hosted, o.taskIdentity = r.hosted, r.identity
 			if r.hosted {
-				o.instance = strings.TrimPrefix(r.identity, "task:")
+				o.instance = canonicalTaskUID(r.identity)
 			}
 		}
 		if o.session == "" {
@@ -164,7 +102,7 @@ func runLocalCommand(o options) (int, error) {
 	case "launch", "spawn", "attach":
 		return runClient(o)
 	case "list":
-		rows, err := localShells(o.listJSON)
+		rows, err := localShells(true)
 		if err != nil {
 			return 1, err
 		}
@@ -174,13 +112,13 @@ func runLocalCommand(o options) (int, error) {
 		printTaskInventory(inventory{LocalShells: rows})
 		return 0, nil
 	case "kill":
-		m, err := localRequest(o.session, message{Type: "kill"}, o.taskIdentity)
+		m, err := localRequest(o.session, o.taskIdentity, message{Type: "kill"})
 		if err == nil && m.Type != "killed" {
 			err = fmt.Errorf("kill local shell: %s", cleanText(m.Error))
 		}
 		return 0, err
 	case "rename":
-		m, err := localRequest(o.session, message{Type: "rename", Name: o.newName}, o.taskIdentity)
+		m, err := localRequest(o.session, o.taskIdentity, message{Type: "rename", Name: o.newName})
 		if err == nil && m.Type != "renamed" {
 			err = fmt.Errorf("rename local shell: %s", cleanText(m.Error))
 		}

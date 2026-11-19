@@ -38,7 +38,7 @@ func serverCommand(args []string) error {
 		if len(args) != 1 {
 			return usage("cp-agent takes no arguments")
 		}
-		stop, err := leaseActivity(activityRequest{Kind: "heartbeat"}, nil)
+		stop, err := leaseActivity(activityRequest{Kind: "heartbeat"})
 		if err != nil {
 			return err
 		}
@@ -51,7 +51,7 @@ func serverCommand(args []string) error {
 		if len(args) != 1 {
 			return usage("mount-agent takes no arguments")
 		}
-		stop, err := leaseActivity(activityRequest{Kind: "heartbeat"}, nil)
+		stop, err := leaseActivity(activityRequest{Kind: "heartbeat"})
 		if err != nil {
 			return err
 		}
@@ -118,40 +118,12 @@ func serverCommand(args []string) error {
 			return usage("usage: sshore sessions")
 		}
 		return listSessions()
-	case "mount":
-		op, err := remoteMountRequest(args[1:])
-		if err != nil {
-			return err
-		}
-		op.Path, err = absoluteMountPath(op.Path)
-		if err != nil {
-			return err
-		}
-		info, err := os.Stat(op.Path)
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("mount source must be a directory")
-		}
-		return requestOperations([]operation{op})
-	case "forward":
-		op, err := remoteForwardRequest(args[1:])
-		if err != nil {
-			return err
-		}
-		return requestOperations([]operation{op})
 	case "detach":
 		if len(args) != 1 {
 			return usage("usage: sshore detach")
 		}
 		return detachHelper()
-	case "cp":
-		kind, paths, hint, err := remoteCopyRequest(args[1:])
-		if err != nil {
-			return err
-		}
-		return requestFilesWithHint(kind, paths, hint)
+
 	}
 	return fmt.Errorf("unknown server command")
 }
@@ -161,17 +133,27 @@ func serverCommand(args []string) error {
 func watchRemoteTask() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer cancel()
-	return watchPeerRecords(ctx, os.Stdin, "", func(err error) {
+	// Inherited stdin can block even after a signal. Give the watcher a reader
+	// we can close independently so it releases the lease before this helper exits.
+	input, output := io.Pipe()
+	defer input.Close()
+	stop := context.AfterFunc(ctx, func() { input.Close() })
+	defer stop()
+	go func() {
+		_, err := io.Copy(output, os.Stdin)
+		_ = output.CloseWithError(err)
+	}()
+	err := watchPeerRecords(input, "", func(err error) {
 		termui.Log(os.Stderr, termui.Warning, "[sshore] Peer inventory unavailable; forward active: %s\n", cleanText(err.Error()))
 	})
+	if ctx.Err() != nil {
+		return nil
+	}
+	return err
 }
 
 // The original SSH connection is the lifetime lease; individual attachments
 // can end without closing it. Its first stream carries the initial attachment.
-func bridgeSpawn(path string, lease net.Conn, readyMode string) error {
-	return bridgeSpawnTransport(path, lease, readyMode, &wire.Pipe{Reader: os.Stdin, Writer: os.Stdout})
-}
-
 func bridgeSpawnTransport(path string, lease net.Conn, readyMode string, transport io.ReadWriteCloser) error {
 	if err := writeMessage(lease, message{Type: "spawn_owner", SoftwareVersion: version}); err != nil {
 		return err

@@ -13,7 +13,7 @@ import (
 
 func TestClientReconnectsToSession(t *testing.T) {
 	ctx := context.Background()
-	remote := NewSessionsManager()
+	remote := newSessionFixture()
 	dial := func(_ context.Context, host string) (io.ReadWriteCloser, error) {
 		if host != "work" {
 			t.Fatalf("unexpected host %q", host)

@@ -730,9 +730,8 @@ func TestClientInterruptDuringSwitchRestoresOriginal(t *testing.T) {
 	cmd, terminal, wait := startPrefixClient(t, e)
 	wait("Connected fixture:keys")
 	flag := filepath.Join(e.dir, "switch-started")
-	release := filepath.Join(e.dir, "release-setup")
-	t.Cleanup(func() { _ = os.WriteFile(release, nil, 0600) })
-	script := "#!/bin/sh\nif [ ! -e " + shellQuote(flag) + " ]; then : > " + shellQuote(flag) + "; while [ ! -e " + shellQuote(release) + " ]; do sleep 0.01; done; fi\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n"
+	// Block the first setup until its SSH input closes on cancellation.
+	script := "#!/bin/sh\nif [ ! -e " + shellQuote(flag) + " ]; then : > " + shellQuote(flag) + "; exec cat >/dev/null; fi\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n"
 	if err := os.WriteFile(filepath.Join(e.dir, "ssh-keys"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -749,9 +748,6 @@ func TestClientInterruptDuringSwitchRestoresOriginal(t *testing.T) {
 	}
 	terminal.Write([]byte{3})
 	wait("Target unavailable; restoring keys.")
-	if err := os.WriteFile(release, nil, 0600); err != nil {
-		t.Fatal(err)
-	}
 	wait("Connected fixture:keys")
 	io.WriteString(terminal, "printf 'RESTORED_%s\\n' input\n")
 	wait("RESTORED_input")

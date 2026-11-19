@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	_ "embed"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"text/template"
@@ -27,10 +29,10 @@ type setupProcess struct {
 	Start   string `json:"start"`
 }
 
-// No keyboard reader runs before SSH authentication. The setup exchange and
-// shell/mux exchange use the same pipes and authenticated SSH connection.
-func negotiateSetup(r io.Reader, w io.Writer, o *options) error {
-	return negotiateSetupWithInput(r, w, o, func() (setupInput, error) { return termui.NewInput() })
+// Return the remote home directory from the readiness reply. Shell selection
+// opens terminal input only after SSH authentication.
+func negotiateSetup(r io.Reader, w io.Writer, host string, chooseShell bool) (string, error) {
+	return negotiateSetupWithInput(r, w, host, chooseShell, func() (setupInput, error) { return termui.NewInput() })
 }
 
 type setupInput interface {
@@ -38,53 +40,52 @@ type setupInput interface {
 	Close() error
 }
 
-func negotiateSetupWithInput(r io.Reader, w io.Writer, o *options, openInput func() (setupInput, error)) error {
+func negotiateSetupWithInput(r io.Reader, w io.Writer, host string, chooseShell bool, openInput func() (setupInput, error)) (string, error) {
 	for {
 		m, err := readMessage(r)
 		if err != nil {
-			return fmt.Errorf("remote setup failed: %w", err)
+			return "", fmt.Errorf("remote setup failed: %w", err)
 		}
 		if m.Type == "setup_diagnostic" {
 			termui.Log(os.Stderr, termui.Info, "%s\n", cleanText(strings.TrimSpace(m.Error)))
 			continue
 		}
 		if m.Type == "fatal" {
-			return fmt.Errorf("%s", m.Error)
+			return "", fmt.Errorf("%s", m.Error)
 		}
 		if m.SoftwareVersion != version {
-			return fmt.Errorf("Unexpected remote version %q. %s", m.SoftwareVersion, remoteVersionHelp(o.host))
+			return "", fmt.Errorf("Unexpected remote version %q. %s", m.SoftwareVersion, remoteVersionHelp(host))
 		}
 		switch m.Type {
 		case "setup_ready":
 			if m.Action != "managed" {
-				return fmt.Errorf("invalid setup mode")
+				return "", fmt.Errorf("invalid setup mode")
 			}
-			o.remoteHome = m.HomeDirectory
-			return nil
+			return m.HomeDirectory, nil
 		case "session_choice":
-			if o.command != "attach" || o.session != "" || len(m.Names) < 2 || len(m.Names) > 128 {
-				return fmt.Errorf("unexpected shell selection")
+			if !chooseShell || len(m.Targets) < 2 {
+				return "", fmt.Errorf("unexpected shell selection")
 			}
-			for _, name := range m.Names {
-				if err := validSession(name); err != nil {
-					return err
-				}
+			names, err := sessionTargetNames(m.Targets)
+			if err != nil {
+				return "", err
 			}
 			input, err := openInput()
 			if err != nil {
-				return err
+				return "", err
 			}
-			selected, selectErr := chooseSetupSession(input, m.Names)
+			selected, selectErr := chooseSetupSession(input, names)
 			closeErr := input.Close()
 			if err := errors.Join(selectErr, closeErr); err != nil {
-				return err
+				return "", err
 			}
 
 			if err := writeMessage(w, message{Type: "session_select", Name: selected}); err != nil {
-				return err
+				return "", err
 			}
+			chooseShell = false
 		default:
-			return fmt.Errorf("unexpected setup response: %s", m.Type)
+			return "", fmt.Errorf("unexpected setup response: %s", m.Type)
 		}
 	}
 }
@@ -158,52 +159,49 @@ func remoteVersionHelp(host string) string {
 		" to update the remote, or sshore install if this machine is older. For a custom remote path, use HOST:/absolute/path."
 }
 
-// Parse stable release labels for upgrade direction; this is not a compatibility series.
-func releaseSeries(v string) (string, bool) {
-	parts := strings.Split(v, ".")
-	if len(parts) != 3 {
-		return "", false
+// Return the canonical components for exact matching and upgrade ordering.
+func releaseParts(v string) ([3]string, bool) {
+	major, rest, hasMinor := strings.Cut(v, ".")
+	minor, patch, hasPatch := strings.Cut(rest, ".")
+	if !hasMinor || !hasPatch {
+		return [3]string{}, false
 	}
+	parts := [3]string{major, minor, patch}
 	for _, part := range parts {
 		if part == "" || len(part) > 1 && part[0] == '0' {
-			return "", false
+			return [3]string{}, false
 		}
 		for _, c := range part {
 			if c < '0' || c > '9' {
-				return "", false
+				return [3]string{}, false
 			}
 		}
 	}
-	return parts[0] + "." + parts[1], true
+	return parts, true
 }
 
 func sameRelease(local, peer string) bool {
-	_, canonical := releaseSeries(local)
-	return canonical && local == peer
+	if local != peer {
+		return false
+	}
+	_, canonical := releaseParts(local)
+	return canonical
 }
 
 // Compare numeric release components without integer overflow. Custom labels
 // cannot be ordered and must be handled manually when they differ.
 func compareReleaseVersions(a, b string) (int, bool) {
-	if _, ok := releaseSeries(a); !ok {
+	aa, ok := releaseParts(a)
+	if !ok {
 		return 0, false
 	}
-	if _, ok := releaseSeries(b); !ok {
+	bb, ok := releaseParts(b)
+	if !ok {
 		return 0, false
 	}
-	aa, bb := strings.Split(a, "."), strings.Split(b, ".")
 	for i := range aa {
-		if len(aa[i]) < len(bb[i]) {
-			return -1, true
-		}
-		if len(aa[i]) > len(bb[i]) {
-			return 1, true
-		}
-		if aa[i] < bb[i] {
-			return -1, true
-		}
-		if aa[i] > bb[i] {
-			return 1, true
+		if order := cmp.Or(cmp.Compare(len(aa[i]), len(bb[i])), strings.Compare(aa[i], bb[i])); order != 0 {
+			return order, true
 		}
 	}
 	return 0, true
@@ -233,9 +231,6 @@ var remoteStartupTemplate = template.Must(template.New("remote.sh.tmpl").Funcs(t
 }).Parse(remoteStartupScript))
 
 func remoteCommand(o options) string {
-	if o.server == "" {
-		o.server = "sshore"
-	}
 	mode := "bridge"
 	if o.command == "spawn" {
 		mode = "spawn"
@@ -249,16 +244,32 @@ func remoteCommand(o options) string {
 	if o.list {
 		mode = "sessions"
 	}
-	var b strings.Builder
+	session := o.session
+	if mode == "attach" && validTaskUID(o.instance) {
+		session = o.instance
+	}
 	data := struct {
 		Version, Host, Server, Command, Mode, Session, Action, NewName, TaskIdentity, Instance string
 		List, ListJSON                                                                         bool
 	}{
-		Version: version, Host: o.host, Server: o.server, Command: o.command, Mode: mode, Session: o.session,
+		Version: version, Host: o.host, Server: o.server, Command: o.command, Mode: mode, Session: session,
 		Action: o.command + "-session", NewName: o.newName, TaskIdentity: o.taskIdentity, Instance: o.instance,
 		List: o.list, ListJSON: o.listJSON,
 	}
-	if err := remoteStartupTemplate.Execute(&b, data); err != nil {
+	return renderRemoteCommand("remote.sh.tmpl", data)
+}
+
+func remoteHelperCommand(host, server, command, ready string, args ...string) string {
+	data := struct {
+		Version, Host, Server, Command, Ready string
+		Args                                  []string
+	}{version, host, server, command, ready, args}
+	return renderRemoteCommand("helper", data)
+}
+
+func renderRemoteCommand(name string, data any) string {
+	var b strings.Builder
+	if err := remoteStartupTemplate.ExecuteTemplate(&b, name, data); err != nil {
 		panic(err)
 	}
 	return "sh -c " + shellQuote(b.String())
@@ -335,8 +346,9 @@ func installRelease(target string) error {
 	}
 	defer startup.Close()
 	var installed string
-	if info, err := os.Lstat(target); err == nil {
-		if !info.Mode().IsRegular() {
+	previous, err := os.Lstat(target)
+	if err == nil {
+		if !previous.Mode().IsRegular() {
 			return fmt.Errorf("installation target must be a regular executable: %s", target)
 		}
 		installed, err = executableVersion(target)
@@ -365,11 +377,32 @@ func installRelease(target string) error {
 		}
 	}
 
-	staged, err := prepareReplacement(target)
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		return err
+	}
+	if err := validateInstallTarget(target); err != nil {
+		return err
+	}
+	staged, err := stageReplacement(target)
 	if err != nil {
 		return err
 	}
 	defer os.Remove(staged)
+	stagedVersion, err := executableVersion(staged)
+	if err != nil {
+		return fmt.Errorf("prepared executable verification failed: %w", err)
+	}
+	if stagedVersion != version {
+		return fmt.Errorf("prepared executable reports sshore %q, expected %q", stagedVersion, version)
+	}
+	if err := verifyInstallTarget(target, previous); err != nil {
+		return err
+	}
+	if runtime.GOOS == "linux" && installed != "" && installed != version {
+		if err := os.Link(target, target+"-"+installed); err != nil && !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("back up old executable: %w", err)
+		}
+	}
 	if running {
 		if installed == record.Version {
 			// The installed release also speaks its daemon's administrative protocol.
@@ -378,8 +411,17 @@ func installRelease(target string) error {
 			if err := cmd.Run(); err != nil {
 				return fmt.Errorf("stopping the account daemon: %w", err)
 			}
-		} else if _, err := runKillAll(options{}); err != nil {
-			return fmt.Errorf("stopping the account daemon: %w", err)
+		} else {
+			reply, err := daemonAdministrationAt(context.Background(), record, "snapshot", nil)
+			if err != nil {
+				return fmt.Errorf("reading account daemon snapshot: %w", err)
+			}
+			if err := confirmDaemonShutdown("", reply.Snapshot, nil); err != nil {
+				return err
+			}
+			if err := requestDaemonShutdown(reply.Snapshot); err != nil {
+				return fmt.Errorf("stopping the account daemon: %w", err)
+			}
 		}
 	}
 	// A direct daemon invocation can race even while we hold the startup lock.
@@ -388,10 +430,26 @@ func installRelease(target string) error {
 		return fmt.Errorf("cannot take ownership for installation: %w", err)
 	}
 	defer owner.Close()
+	if err := verifyInstallTarget(target, previous); err != nil {
+		return err
+	}
 	return os.Rename(staged, target)
 }
 
-// Copy and verify in the destination filesystem before any task is stopped.
+func verifyInstallTarget(path string, previous os.FileInfo) error {
+	current, err := os.Lstat(path)
+	if os.IsNotExist(err) && previous == nil {
+		return nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if previous == nil || current == nil || !os.SameFile(previous, current) {
+		return fmt.Errorf("installation target changed; restart installation")
+	}
+	return nil
+}
+
 func stageReplacement(target string) (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -402,33 +460,10 @@ func stageReplacement(target string) (string, error) {
 		return "", err
 	}
 	defer source.Close()
-	file, err := os.CreateTemp(filepath.Dir(target), ".sshore-update-*.exe")
-	if err != nil {
-		return "", err
-	}
-	path := file.Name()
-	success := false
-	defer func() {
-		file.Close()
-		if !success {
-			os.Remove(path)
+	return stageSiblingFile(target, ".sshore-update-*.exe", func(file *os.File) error {
+		if _, err := io.Copy(file, source); err != nil {
+			return err
 		}
-	}()
-	if _, err = io.Copy(file, source); err != nil {
-		return "", err
-	}
-	if err = file.Chmod(0755); err != nil {
-		return "", err
-	}
-	if err = file.Sync(); err != nil {
-		return "", err
-	}
-	if err = file.Close(); err != nil {
-		return "", err
-	}
-	if v, err := executableVersion(path); err != nil || v != version {
-		return "", fmt.Errorf("prepared executable verification failed: %v", err)
-	}
-	success = true
-	return path, nil
+		return file.Chmod(0755)
+	})
 }

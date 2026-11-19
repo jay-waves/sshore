@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -14,8 +13,8 @@ import (
 
 func TestApprovedForwardCarriesSourceInstance(t *testing.T) {
 	instance := strings.Repeat("c", 32)
-	command := approvedForwardCommand(forwardConfig{Session: "work", ResumePID: 123, ApprovalID: strings.Repeat("a", 32), Instance: instance})
-	if !strings.HasSuffix(command, " "+shellQuote(instance)) {
+	command := forwardRemoteCommand(forwardConfig{Session: "work", ResumePID: 123, ApprovalID: strings.Repeat("a", 32), Instance: instance})
+	if !strings.Contains(command, " "+strings.ReplaceAll(shellQuote(instance), "'", "'\\''")+"\n") {
 		t.Fatalf("source instance missing from forward validation: %s", command)
 	}
 }
@@ -138,22 +137,23 @@ func TestForwardTransportOptions(t *testing.T) {
 }
 
 func TestBlockedHeartbeatCancellation(t *testing.T) {
+	activityFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	heartbeat := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		_, err := runForwardTransport(ctx, forwardTransport{
-			Log: io.Discard,
-			Start: func(ctx context.Context, _ bool, _ io.Writer) (*forwardConnection, error) {
+		_, err := runForwardAttempt(ctx, &resourceService{log: io.Discard}, []byte("heartbeat"), nil,
+			func(ctx context.Context, _ io.Writer) (*forwardConnection, error) {
 				client, server := net.Pipe()
 				go func() { io.WriteString(server, forwardReadyMarker+"\n"); <-ctx.Done(); server.Close() }()
-				stop := context.AfterFunc(ctx, func() { client.Close() })
-				return &forwardConnection{Input: client, Output: client, Close: func() error { stop(); return client.Close() }, Wait: func() error { <-ctx.Done(); return ctx.Err() }}, nil
-			},
-			Ready: func() error { return nil }, Status: func(string, error) {},
-			Heartbeat: func() ([]byte, error) { close(heartbeat); return bytes.Repeat([]byte("x"), 1<<20), nil },
-		})
+				return &forwardConnection{
+					Writer: observedHeartbeatInput{Writer: client, started: heartbeat},
+					Reader: client,
+					close:  client.Close,
+					Wait:   func() error { <-ctx.Done(); return ctx.Err() },
+				}, nil
+			})
 		done <- err
 	}()
 	select {
@@ -166,12 +166,22 @@ func TestBlockedHeartbeatCancellation(t *testing.T) {
 	cancel()
 	select {
 	case err := <-done:
-		if err != nil {
+		if !errors.Is(err, context.Canceled) {
 			t.Fatal(err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("cancellation did not join blocked heartbeat and process")
 	}
+}
+
+type observedHeartbeatInput struct {
+	io.Writer
+	started chan struct{}
+}
+
+func (w observedHeartbeatInput) Write(p []byte) (int, error) {
+	close(w.started)
+	return w.Writer.Write(p)
 }
 
 func TestForwardInvocation(t *testing.T) {
@@ -211,24 +221,20 @@ func (w failedHeartbeatInput) Write([]byte) (int, error) { return 0, w.err }
 func (w failedHeartbeatInput) Close() error              { return nil }
 
 func TestForwardHeartbeatPreservesExitCause(t *testing.T) {
+	activityFixture(t)
 	synctest.Test(t, func(t *testing.T) {
 		failure := errors.New("peer refused input")
-		started := false
-		code, err := runAttempt(context.Background(), forwardTransport{
-			Log: io.Discard,
-			Start: func(ctx context.Context, _ bool, _ io.Writer) (*forwardConnection, error) {
+		ready, err := runForwardAttempt(context.Background(), &resourceService{log: io.Discard}, []byte("heartbeat"), nil,
+			func(ctx context.Context, _ io.Writer) (*forwardConnection, error) {
 				return &forwardConnection{
-					Input:  failedHeartbeatInput{failure},
-					Output: strings.NewReader(forwardReadyMarker + "\n"),
-					Close:  func() error { return nil },
+					Writer: failedHeartbeatInput{failure},
+					Reader: strings.NewReader(forwardReadyMarker + "\n"),
+					close:  func() error { return nil },
 					Wait:   func() error { <-ctx.Done(); return ctx.Err() },
 				}, nil
-			},
-			Ready:     func() error { return nil },
-			Heartbeat: func() ([]byte, error) { return []byte("heartbeat"), nil },
-		}, true, &started)
-		if code != 1 || !errors.Is(err, failure) || !strings.Contains(err.Error(), "heartbeat write failed") {
-			t.Fatalf("code=%d err=%v", code, err)
+			})
+		if !ready || !errors.Is(err, failure) || !strings.Contains(err.Error(), "heartbeat write failed") {
+			t.Fatalf("ready=%v err=%v", ready, err)
 		}
 	})
 }

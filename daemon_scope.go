@@ -30,8 +30,21 @@ func daemonStateRoot(root string, explicit bool) (string, error) {
 	return daemonStateRootAt(dir, root, explicit)
 }
 
-func daemonStateRootAt(dir, root string, explicit bool) (string, error) {
+// Open the existing account lock without creating state or taking ownership.
+func openDaemonOwner(dir string) (*os.File, error) {
 	owner, err := os.OpenFile(filepath.Join(dir, "owner.lock"), os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := privateStatePath(owner.Name(), false); err != nil {
+		owner.Close()
+		return nil, fmt.Errorf("validate account owner lock: %w", err)
+	}
+	return owner, nil
+}
+
+func daemonStateRootAt(dir, root string, explicit bool) (string, error) {
+	owner, err := openDaemonOwner(dir)
 	if os.IsNotExist(err) {
 		return root, nil
 	}
@@ -39,9 +52,6 @@ func daemonStateRootAt(dir, root string, explicit bool) (string, error) {
 		return "", err
 	}
 	defer owner.Close()
-	if err := privateStatePath(owner.Name(), false); err != nil {
-		return "", err
-	}
 	err = lockResourceState(owner)
 	if err == nil {
 		return root, nil

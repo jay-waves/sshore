@@ -6,9 +6,9 @@ import (
 )
 
 type selectedTask struct {
-	kind, name, host, identity, instance, requestID string
-	connection                                      *recentConnection
-	hosted                                          bool
+	kind, name, host, identity, instance string
+	snapshot                             *shellSnapshot
+	hosted                               bool
 }
 
 // Selection reads local identities only. Execution still validates the selected
@@ -36,143 +36,205 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 	}
 	localKill := command == "kill" && compact && !typed && (!parsed.has("--local") || parsed.explicitHost)
 	localShell := parsed.has("--local") && !localKill
-	if !isTaskIDPrefix(code) {
-		if compact && !typed {
-			target, found, err := findTaskAlias(command, ref, localShell)
-			if err != nil || !found {
-				return empty, false, err
-			}
-			return routeSelectedTask(command, parsed, target, 0)
-		}
+	prefix := ""
+	if isTaskIDPrefix(code) {
+		prefix = strings.ToLower(code)
+	}
+	alias := ""
+	if compact && !typed && (prefix == "" || len(prefix) < 6 || command == "review") {
+		alias = ref
+	}
+	if prefix == "" && alias == "" {
 		return empty, false, nil
 	}
-	keys, err := availableTaskIdentities()
+	host := ""
+	if position == 1 {
+		host = parsed.operands[0]
+	}
+	selections, err := readTaskSelections(command, alias, prefix, host, localShell)
 	if err != nil {
 		return empty, false, err
 	}
-	identity := ""
-	matched := false
-	for key := range keys {
-		if strings.HasPrefix(taskUID(key), strings.ToLower(code)) {
-			matched = matched || !localKill
-			if strings.HasPrefix(key, "peer-task:") && validTaskUID(strings.TrimPrefix(key, "peer-task:")) {
-				if _, err := findTaskIdentity("task:" + strings.TrimPrefix(key, "peer-task:")); err == nil {
-					continue
-				}
+	scoped := typed || localShell || localKill || host != ""
+	var target selectedTask
+	found := false
+	matched := !localKill && len(selections.byID) > 0
+	for _, candidate := range selections.byID {
+		if scoped {
+			if candidate.kind == "" || candidate.kind == "peer" {
+				continue
 			}
-			if typed || localShell || localKill || position == 1 {
-				var hosts []string
-				if position == 1 {
-					hosts = []string{parsed.operands[0]}
-				}
-				candidate, err := findTaskIdentity(key, hosts...)
-				if err != nil {
-					continue
-				}
-				if typed && kind != candidate.kind && !((kind == "spawn" || kind == "launch") && candidate.kind == "shell") {
-					continue
-				}
-				if localShell && (candidate.kind != "shell" || candidate.host != "") || localKill && candidate.host != "" {
-					continue
-				}
-				if position == 1 && (candidate.kind != "shell" || candidate.host != parsed.operands[0]) {
-					continue
-				}
+			if typed && kind != candidate.kind && !((kind == "spawn" || kind == "launch") && candidate.kind == "shell") {
+				continue
 			}
-			matched = true
-			if identity != "" {
-				return empty, false, fmt.Errorf("ambiguous task ID %s; use a longer prefix, full UID, HOST or a type prefix", code)
+			if localShell && (candidate.kind != "shell" || candidate.host != "") || localKill && candidate.host != "" {
+				continue
 			}
-			identity = key
 		}
+		if found {
+			return empty, false, fmt.Errorf("ambiguous task ID %s; use a longer prefix, full UID, HOST or a type prefix", code)
+		}
+		target, found = candidate, true
 	}
-	if identity == "" {
-		// Short hexadecimal labels remain valid aliases when no UID prefix matches.
-		if !matched && len(code) < 6 && compact && !typed {
-			target, found, err := findTaskAlias(command, ref, localShell)
-			if err != nil {
-				return empty, false, err
-			}
-			if found {
-				return routeSelectedTask(command, parsed, target, 0)
-			}
+	// A hexadecimal alias is a fallback only after checking the ID prefix.
+	if !found && !matched && alias != "" {
+		if selections.aliasAmbiguous {
+			return empty, false, usage("ambiguous alias %s; use a task ID or explicit scope", alias)
 		}
+		target, found = selections.alias, selections.alias.kind != ""
+	}
+	if !found {
 		if matched {
 			return empty, false, usage("task ID %s does not belong to the requested scope", code)
 		}
+		if prefix == "" {
+			return empty, false, nil
+		}
 		// Explicit HOST/--local/type scopes still accept hexadecimal names.
 		if compact && !typed && !parsed.has("--local") {
-			if command == "review" {
-				if record, err := findRequest(ref); err == nil && record.DisplayName() == ref {
-					return empty, false, nil
-				}
-			}
 			return empty, false, usage("unknown task ID %s; use sshore list", ref)
 		}
 		return empty, false, nil
 	}
-	var hosts []string
-	if position == 1 {
-		hosts = []string{parsed.operands[0]}
-	}
-	target, err := findTaskIdentity(identity, hosts...)
-	if err != nil {
-		return empty, false, err
-	}
-	if kind != "" && kind != target.kind && !((kind == "spawn" || kind == "launch") && target.kind == "shell") {
-		return empty, false, usage("task ID %s is a %s", code, target.kind)
-	}
-	if localShell && (target.kind != "shell" || target.host != "") || localKill && target.host != "" {
-		return empty, false, usage("task ID %s is not a local shell", code)
-	}
-	if position == 1 && (target.kind != "shell" || target.host != parsed.operands[0]) {
-		return empty, false, usage("task ID %s does not belong to host %s", code, parsed.operands[0])
+	switch target.kind {
+	case "peer":
+		return empty, false, usage("peer tasks are read-only here; kill the resource on its managing computer")
+	case "":
+		return empty, false, fmt.Errorf("task is no longer available here; refresh with sshore list")
 	}
 	return routeSelectedTask(command, parsed, target, position)
 }
 
-// Enumerate only registered local tasks and known remote observations.
-func availableTaskIdentities() (map[string]bool, error) {
-	keys := map[string]bool{}
-	native, err := nativeShellRecords()
-	if err != nil {
-		return nil, err
+type taskSelections struct {
+	byID           map[string]selectedTask
+	alias          selectedTask
+	aliasAmbiguous bool
+}
+
+// Compare two observations of the same identity. A registered local shell
+// takes priority over saved history, and a native shell over a hosted copy.
+func (t selectedTask) preferredTo(old selectedTask) bool {
+	if old.kind == "" {
+		return true
 	}
-	for _, r := range native {
-		keys[r.identity()] = true
+	if t.snapshot == nil {
+		return t.kind == "shell" && (old.snapshot != nil || !t.hosted && old.hosted)
 	}
-	hosted, err := hostedShellTasks()
-	if err != nil {
-		return nil, err
+	if old.snapshot == nil {
+		return false
 	}
-	for _, r := range hosted {
-		keys[r.identity] = true
+	ended, oldEnded := endedShellState(t.snapshot.State), endedShellState(old.snapshot.State)
+	if ended != oldEnded {
+		return !ended
 	}
-	snapshots, err := readShellSnapshots()
-	if err != nil {
-		return nil, err
+	return t.snapshot.ConfirmedAt.After(old.snapshot.ConfirmedAt)
+}
+
+// Retain only prefix matches. An empty entry records an observed identity that
+// cannot supply a route in the requested scope.
+func readTaskSelections(command, alias, prefix, host string, localShell bool) (taskSelections, error) {
+	var selections taskSelections
+	byID := prefix != ""
+	if byID {
+		selections.byID = make(map[string]selectedTask)
 	}
-	for _, r := range snapshots {
-		if !r.Forgotten {
-			keys[remoteShellIdentity(r.Host, r.Instance)] = true
+	addAlias := func(task selectedTask) {
+		if alias == "" || task.name != alias {
+			return
+		}
+		if localShell && (task.kind != "shell" || task.host != "") {
+			return
+		}
+		if command == "attach" && task.kind != "shell" || command == "review" && task.kind != "review" {
+			return
+		}
+		if selections.alias.kind != "" && selections.alias.identity != task.identity {
+			selections.aliasAmbiguous = true
+		} else if task.preferredTo(selections.alias) {
+			selections.alias = task
 		}
 	}
-	resources, err := collectLocalResources("")
-	if err != nil {
-		return nil, err
+	matchesID := func(identity string) bool {
+		return byID && identity != "" && strings.HasPrefix(taskUID(identity), prefix)
 	}
-	for _, r := range resources {
-		keys[resourceIdentity(r)] = true
+	add := func(task selectedTask, allowAlias, inScope bool) {
+		if allowAlias {
+			addAlias(task)
+		}
+		if !matchesID(task.identity) {
+			return
+		}
+		current, observed := selections.byID[task.identity]
+		if inScope && task.preferredTo(current) {
+			selections.byID[task.identity] = task
+		} else if !observed {
+			selections.byID[task.identity] = selectedTask{}
+		}
 	}
-	peers, err := collectPeerViews()
-	if err != nil {
-		return nil, err
+
+	if byID || command != "review" {
+		rows, err := localShells(false)
+		if err != nil {
+			return taskSelections{}, err
+		}
+		for _, row := range rows {
+			task := selectedTask{kind: "shell", name: row.Name, identity: row.identity, hosted: row.hosted}
+			if row.hosted {
+				task.instance = canonicalTaskUID(row.identity)
+			}
+			add(task, true, host == "")
+		}
 	}
-	for _, r := range peers {
-		keys[peerTaskIdentity(r)] = true
+
+	remoteAliases := !localShell && command != "kill" && command != "review"
+	if byID || remoteAliases {
+		snapshots, err := readShellSnapshots()
+		if err != nil {
+			return taskSelections{}, err
+		}
+		for i := range snapshots {
+			record := &snapshots[i]
+			if record.Forgotten {
+				continue
+			}
+			task := snapshotTaskSelection(record)
+			add(task, remoteAliases && !endedShellState(record.State), record.State != "renamed" && (host == "" || record.Host == host))
+		}
 	}
-	delete(keys, "")
-	return keys, nil
+
+	if byID || (!localShell && command != "attach") {
+		resources, err := collectLocalResources("", false)
+		if err != nil {
+			return taskSelections{}, err
+		}
+		for _, resource := range resources {
+			kind, name := resource.kindAndName()
+			task := selectedTask{kind: kind, name: name, identity: resource.Identity}
+			add(task, true, host == "")
+		}
+	}
+	if byID {
+		peers, err := collectPeerViews()
+		if err != nil {
+			return taskSelections{}, err
+		}
+		for _, peer := range peers {
+			if validTaskUID(peer.UID) && selections.byID["task:"+peer.UID].kind != "" {
+				continue
+			}
+			if identity := peerTaskIdentity(peer); matchesID(identity) {
+				selections.byID[identity] = selectedTask{kind: "peer"}
+			}
+		}
+	}
+	return selections, nil
+}
+
+func snapshotTaskSelection(record *shellSnapshot) selectedTask {
+	return selectedTask{
+		kind: "shell", name: record.Name, host: record.Host,
+		identity: remoteShellIdentity(record.Host, record.Instance), instance: record.Instance, snapshot: record,
+	}
 }
 
 func routeSelectedTask(command string, parsed *cliArguments, target selectedTask, position int) (selectedTask, bool, error) {
@@ -193,135 +255,4 @@ func routeSelectedTask(command string, parsed *cliArguments, target selectedTask
 		parsed.operands = append([]string{target.host, target.name}, parsed.operands[position+1:]...)
 	}
 	return target, true, nil
-}
-
-func findTaskIdentity(identity string, hosts ...string) (selectedTask, error) {
-	empty := selectedTask{}
-	if len(hosts) == 0 && (strings.HasPrefix(identity, "local:") || strings.HasPrefix(identity, "task:")) {
-		records, err := nativeShellRecords()
-		if err != nil {
-			return empty, err
-		}
-		for _, r := range records {
-			if r.identity() == identity {
-				return selectedTask{kind: "shell", name: r.Name, identity: identity}, nil
-			}
-		}
-	}
-	if strings.HasPrefix(identity, "remote:") || strings.HasPrefix(identity, "task:") {
-		if len(hosts) == 0 {
-			tasks, err := hostedShellTasks()
-			if err != nil {
-				return empty, err
-			}
-			for _, task := range tasks {
-				if task.identity == identity {
-					return task, nil
-				}
-			}
-		}
-		snapshots, err := readShellSnapshots()
-		if err != nil {
-			return empty, err
-		}
-		var best *shellSnapshot
-		for i := range snapshots {
-			s := &snapshots[i]
-			if s.Forgotten || s.State == "renamed" || remoteShellIdentity(s.Host, s.Instance) != identity || len(hosts) > 0 && s.Host != hosts[0] {
-				continue
-			}
-			if best == nil || endedShellState(best.State) && !endedShellState(s.State) || endedShellState(best.State) == endedShellState(s.State) && s.ConfirmedAt.After(best.ConfirmedAt) {
-				best = s
-			}
-		}
-		if best != nil {
-			return selectedTask{kind: "shell", name: best.Name, host: best.Host, identity: identity, instance: best.Instance, connection: best.Connection}, nil
-		}
-	}
-	if strings.HasPrefix(identity, "task:") || strings.HasPrefix(identity, "mount:") || strings.HasPrefix(identity, "forward:") || strings.HasPrefix(identity, "review:") {
-		records, err := collectLocalResources("")
-		if err != nil {
-			return empty, err
-		}
-		for _, r := range records {
-			if resourceIdentity(r) == identity {
-				target := selectedTask{kind: r.Kind, name: r.Name, identity: identity}
-				if r.Kind == "review" {
-					target.requestID = r.Token
-				}
-				return target, nil
-			}
-		}
-	}
-	if strings.HasPrefix(identity, "peer:") || strings.HasPrefix(identity, "peer-task:") {
-		return empty, usage("peer tasks are read-only here; kill the resource on its managing computer")
-	}
-	return empty, fmt.Errorf("task is no longer available here; refresh with sshore list")
-}
-
-func findTaskAlias(command, alias string, localShell bool) (selectedTask, bool, error) {
-	var matches []selectedTask
-	add := func(target selectedTask) {
-		if localShell && (target.kind != "shell" || target.host != "") {
-			return
-		}
-		if command == "attach" && target.kind != "shell" || command == "review" && target.kind != "review" {
-			return
-		}
-		for _, old := range matches {
-			if old.identity == target.identity {
-				return
-			}
-		}
-		matches = append(matches, target)
-	}
-	if command != "review" {
-		tasks, err := hostedShellTasks()
-		if err != nil {
-			return selectedTask{}, false, err
-		}
-		for _, task := range tasks {
-			if task.name == alias {
-				add(task)
-			}
-		}
-		records, err := nativeShellRecords()
-		if err != nil {
-			return selectedTask{}, false, err
-		}
-		for _, r := range records {
-			if r.Name == alias {
-				add(selectedTask{kind: "shell", name: r.Name, identity: r.identity()})
-			}
-		}
-		if !localShell && command != "kill" {
-			snapshots, err := readShellSnapshots()
-			if err != nil {
-				return selectedTask{}, false, err
-			}
-			for _, r := range snapshots {
-				if r.Name == alias && !r.Forgotten && !endedShellState(r.State) {
-					add(selectedTask{kind: "shell", name: r.Name, host: r.Host, identity: remoteShellIdentity(r.Host, r.Instance), instance: r.Instance, connection: r.Connection})
-				}
-			}
-		}
-	}
-	if command != "attach" {
-		records, err := collectLocalResources("")
-		if err != nil {
-			return selectedTask{}, false, err
-		}
-		for _, r := range records {
-			if r.Name == alias {
-				add(selectedTask{kind: r.Kind, name: r.Name, identity: resourceIdentity(r), requestID: r.Token})
-			}
-		}
-	}
-	if len(matches) > 1 {
-		return selectedTask{}, false, usage("ambiguous alias %s; use a task ID or explicit scope", alias)
-	}
-	if len(matches) == 1 {
-		return matches[0], true, nil
-	}
-	return selectedTask{}, false, nil
 }

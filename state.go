@@ -6,44 +6,120 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/jay-waves/sshore/internal/wire"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/wire"
 )
+
+const exitReceiptLimit = 100
+const exitReceiptLifetime = 7 * 24 * time.Hour
+
+// Both callers read directory entries in filename order. Keep that order for
+// identical timestamps, then partition at the shared age and count limits.
+func partitionExitReceipts[T any](records []T, cutoff time.Time, timestamp func(T) time.Time) (recent, discarded []T) {
+	slices.SortStableFunc(records, func(a, b T) int { return timestamp(b).Compare(timestamp(a)) })
+	keep := min(len(records), exitReceiptLimit)
+	for i, record := range records[:keep] {
+		if timestamp(record).Before(cutoff) {
+			keep = i
+			break
+		}
+	}
+	return records[:keep], records[keep:]
+}
+
+// readStateJSON checks privacy before opening and bounds the entire record.
+func readStateJSON(path string, maxBytes int, value any) error {
+	if err := privateStatePath(path, false); err != nil {
+		return err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return readBoundedStateJSON(f, maxBytes, value)
+}
+
+func readBoundedStateJSON(f *os.File, maxBytes int, value any) error {
+	data, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxBytes {
+		return fmt.Errorf("state record is too large: %s", f.Name())
+	}
+	return json.Unmarshal(data, value)
+}
 
 // writeStateJSON encodes metadata before replacing its private state file.
 func writeStateJSON(path string, value any) error {
-	data, err := json.Marshal(value)
+	return writeBoundedStateJSON(path, value, 0)
+}
+
+func writeBoundedStateJSON(path string, value any, maxBytes int) error {
+	data, err := marshalBoundedStateJSON(path, value, maxBytes)
 	if err != nil {
 		return err
 	}
 	return writeStateFile(path, data)
 }
 
+func marshalBoundedStateJSON(path string, value any, maxBytes int) ([]byte, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	if maxBytes > 0 && len(data) > maxBytes {
+		return nil, fmt.Errorf("state record is too large: %s", path)
+	}
+	return data, nil
+}
+
 // writeStateFile replaces metadata only after a complete private write. File transfers use
 // no-overwrite publication instead; pending approvals use exclusive creation.
 func writeStateFile(path string, data []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), ".state-*")
+	staged, err := stageSiblingFile(path, ".state-*", func(f *os.File) error {
+		if err := privateStatePath(f.Name(), false); err != nil {
+			return err
+		}
+		return wire.WriteFull(f, data)
+	})
 	if err != nil {
 		return err
 	}
-	defer os.Remove(f.Name())
-	defer f.Close()
-	if err = privateStatePath(f.Name(), false); err != nil {
-		return err
+	defer os.Remove(staged)
+	return os.Rename(staged, path)
+}
+
+// stageSiblingFile gives the caller a closed, synced file on the destination
+// filesystem. It owns cleanup until the path is returned.
+func stageSiblingFile(target, pattern string, prepare func(*os.File) error) (staged string, err error) {
+	f, err := os.CreateTemp(filepath.Dir(target), pattern)
+	if err != nil {
+		return "", err
 	}
-	if err = wire.WriteFull(f, data); err != nil {
-		return err
+	defer func() {
+		if staged == "" {
+			_ = f.Close()
+			_ = os.Remove(f.Name())
+		}
+	}()
+	if err = prepare(f); err != nil {
+		return "", err
 	}
 	if err = f.Sync(); err != nil {
-		return err
+		return "", err
 	}
 	if err = f.Close(); err != nil {
-		return err
+		return "", err
 	}
-	return os.Rename(f.Name(), path)
+	return f.Name(), nil
 }
 
 // Path resolves a state path without creating directories or changing permissions.
@@ -52,7 +128,8 @@ func statePath(name string) (string, error) {
 		return filepath.Join(hub.root, name), nil
 	}
 	root := os.Getenv("SSHORE_STATE_DIR")
-	if root == "" {
+	explicit := root != ""
+	if !explicit {
 		var err error
 		root, err = os.UserConfigDir()
 		if err != nil {
@@ -64,7 +141,7 @@ func statePath(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	root, err = daemonStateRoot(root, os.Getenv("SSHORE_STATE_DIR") != "")
+	root, err = daemonStateRoot(root, explicit)
 	if err != nil {
 		return "", err
 	}
@@ -77,17 +154,24 @@ func stateDir(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err = os.MkdirAll(root, 0700); err != nil {
+	return prepareStateDir(root, name)
+}
+
+func prepareStateDir(root, name string) (string, error) {
+	if err := os.MkdirAll(root, 0700); err != nil {
 		return "", err
 	}
-	if err = privateStatePath(root, true); err != nil {
+	if err := privateStatePath(root, true); err != nil {
 		return "", err
 	}
 	dir := filepath.Join(root, name)
-	if err = os.MkdirAll(dir, 0700); err != nil {
+	if dir == root {
+		return root, nil
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
-	if err = privateStatePath(dir, true); err != nil {
+	if err := privateStatePath(dir, true); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -137,9 +221,7 @@ func persistentMachineIdentity(reset bool) (string, error) {
 	salt, err := os.ReadFile(path)
 	if reset || os.IsNotExist(err) {
 		salt = make([]byte, 32)
-		if _, err = rand.Read(salt); err != nil {
-			return "", err
-		}
+		rand.Read(salt)
 		if err = writeStateFile(path, salt); err != nil {
 			return "", err
 		}

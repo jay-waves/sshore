@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/jay-waves/sshore/internal/sshtest"
 	"io"
 	"net"
 	"os"
@@ -15,6 +14,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/sshtest"
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 func TestSpawnTransportDrainsExistingStreamsAfterShellExit(t *testing.T) {
@@ -244,11 +246,7 @@ func TestSpawnLifetime(t *testing.T) {
 				conn = c
 			} else {
 				t.Setenv("SSHORE_STATE_DIR", state)
-				r, err := readLocalSession("temporary")
-				if err != nil {
-					t.Fatal(err)
-				}
-				c, err := dialLocalSession(r)
+				c, _, err := openNativeShell(context.Background(), "temporary", "")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -284,7 +282,7 @@ func TestSpawnLifetime(t *testing.T) {
 				t.Fatal(err)
 			}
 			go io.Copy(io.Discard, terminal)
-			if err = detachControl(control); err != nil {
+			if err = tmux.Detach(control); err != nil {
 				t.Fatal(err)
 			}
 			mx.Close()

@@ -16,7 +16,7 @@ import (
 	"github.com/xtaci/smux"
 )
 
-func requestOperations(ops []operation) error {
+func requestOperations(_ string, ops []operation) error {
 	if err := validateOperations(ops); err != nil {
 		return err
 	}
@@ -43,46 +43,13 @@ func requestOperations(ops []operation) error {
 	termui.Log(os.Stderr, termui.Info, "[sshore] Request queued. Detach, then run sshore review locally.\n")
 	return nil
 }
-func requestFilesWithHint(kind string, paths []string, hint string) error {
-	var ops []operation
-	for _, path := range paths {
-		path, err := termui.ExpandHomePath(path)
-		if err != nil {
-			return err
-		}
-		absolute, err := filepath.Abs(path)
-		if err != nil {
-			return err
-		}
-		op := operation{Kind: kind, Path: absolute, LocalHint: hint}
-		if kind == "download" {
-			f, err := files.OpenSource(absolute)
-			if err != nil {
-				return err
-			}
-			op.Name = f.Name()
-			op.Size = f.Size()
-			f.Close()
-		} else {
-			info, err := os.Stat(absolute)
-			if err != nil {
-				return err
-			}
-			if !info.IsDir() {
-				return fmt.Errorf("upload destination must be a directory")
-			}
-		}
-		ops = append(ops, op)
-	}
-	return requestOperations(ops)
-}
 
 func (s *remoteShell) requestApproval(c net.Conn, m message) error {
 	if err := validateOperations(m.Operations); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	p := s.lifecycle.Active()
+	p := s.active
 	s.mu.Unlock()
 	if p == nil {
 		return fmt.Errorf("no attached client")
@@ -109,15 +76,16 @@ func (s *remoteShell) requestApproval(c net.Conn, m message) error {
 	if reply.Type != "queued" {
 		return fileResponseError(reply)
 	}
-	if reply.PeerTask != nil && reply.PeerTask.State == "pending" {
-		_ = storeRemoteTask(*reply.PeerTask)
-	}
 	// Acknowledge the helper before allowing the client to detach.
 	_ = c.SetWriteDeadline(time.Now().Add(requestTimeout))
 	if err = writeMessage(c, message{Type: "queued"}); err != nil {
 		return err
 	}
-	return writeMessage(st, message{Type: "queued_ack"})
+	published := reply.PeerTask != nil && reply.PeerTask.State == "pending" && storeRemoteTask(*reply.PeerTask) == nil
+	if err = writeMessage(st, message{Type: "queued_ack"}); err != nil && published {
+		_ = removeRemoteTask(reply.PeerTask.Key)
+	}
+	return err
 }
 
 // Only a client-initiated stream can execute an approved file operation. The
@@ -135,12 +103,12 @@ func approvedRemoteTransfer(st *smux.Stream, m message) {
 		var f *files.Source
 		f, err = files.OpenSource(op.Path)
 		if err == nil {
+			defer f.Close()
 			if f.Name() != op.Name || f.Size() != op.Size {
 				err = fmt.Errorf("remote file metadata changed; request again")
 			}
-			f.Close()
 		}
-		backend = files.NewSourceFS(op.Path, op.Size)
+		backend = files.NewSourceFS(f)
 	case "upload":
 		err = files.ValidateName(m.Name)
 		if m.Size < 0 {
@@ -220,10 +188,10 @@ func (s *remoteShell) checkApprovalSource(m message) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lifecycle.Exited() || s.process.PID == 0 || s.process.PID != m.PID || s.name != m.Name || m.Instance != "" && m.Instance != s.instance {
+	if s.exited || s.process.PID == 0 || s.process.PID != m.PID || s.name != m.Name || m.Instance != "" && m.Instance != s.instance {
 		return fmt.Errorf("approved shell changed; request the operation again")
 	}
-	if s.lifecycle.Active() != nil {
+	if s.active != nil {
 		return fmt.Errorf("source shell is attached; detach it before reviewing the request")
 	}
 	return removeRemoteTask(m.ApprovalID)

@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
 	"runtime"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -78,7 +80,11 @@ func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observ
 	if err != nil {
 		return err
 	}
-	defer mux.Close()
+	var workers sync.WaitGroup
+	defer func() {
+		mux.Close()
+		workers.Wait()
+	}()
 	data, err := mux.AcceptStream()
 	if err != nil {
 		return err
@@ -102,39 +108,44 @@ func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observ
 		return err
 	}
 	defer stdout.Close()
-	defer childOutput.Close()
 	cmd.Stdout, cmd.Stderr = childOutput, os.Stderr
 	cmd.Env = append(os.Environ(), "SSHORE_SOCKET=", "SSHORE_CONFIRM_ADDR=", "SSHORE_CONFIRM_TOKEN=")
-	if err = cmd.Start(); err != nil {
-		return err
-	}
+	err = cmd.Start()
 	childOutput.Close()
-	inputDone, outputDone := make(chan struct{}), make(chan struct{})
-	go func() { defer close(inputDone); _, _ = io.Copy(stdin, data); stdin.Close() }()
-	go func() { defer close(outputDone); _, _ = io.Copy(data, stdout); data.Close() }()
-	defer func() { data.Close(); stdin.Close(); stdout.Close(); <-inputDone; <-outputDone }()
-
-	watchDone := make(chan struct{})
-	go func() { defer close(watchDone); serveFTPWatch(events) }()
-	childDone := make(chan error, 1)
-	go func() { childDone <- cmd.Wait() }()
-	defer func() { mux.Close(); events.Close(); <-watchDone }()
-	select {
-	case err = <-childDone:
-		// Preserve final replies while bounding cleanup for a peer that stopped reading.
-		timer := time.NewTimer(time.Second)
-		defer timer.Stop()
-		select {
-		case <-outputDone:
-		case <-mux.CloseChan():
-		case <-timer.C:
-		}
+	if err != nil {
 		return err
-	case <-mux.CloseChan():
-		cancel()
-		data.Close() // release the stdin copier before waiting
-		return <-childDone
 	}
+	workers.Go(func() {
+		select {
+		case <-mux.CloseChan():
+			cancel()
+		case <-ctx.Done():
+		}
+	})
+	outputDone := make(chan struct{})
+	workers.Go(func() {
+		defer stdin.Close()
+		_, _ = io.Copy(stdin, data)
+	})
+	workers.Go(func() {
+		defer close(outputDone)
+		if _, err := io.Copy(data, stdout); err != nil {
+			cancel()
+			return
+		}
+		_ = data.CloseWrite()
+	})
+	workers.Go(func() { serveFTPWatch(events) })
+	err = cmd.Wait()
+	// Preserve final replies while bounding cleanup for a peer that stopped reading.
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case <-outputDone:
+	case <-mux.CloseChan():
+	case <-timer.C:
+	}
+	return err
 }
 
 func serveFTPWatch(stream *smux.Stream) {
@@ -143,11 +154,17 @@ func serveFTPWatch(stream *smux.Stream) {
 	if err != nil {
 		return
 	} // stream EOF makes the client fall back to TTL
-	defer watcher.Close()
 	stop := make(chan struct{})
-	defer close(stop)
+	var workers sync.WaitGroup
+	defer func() {
+		close(stop)
+		// Release a blocked read before joining, independently of the stream FIN.
+		_ = stream.SetReadDeadline(time.Now())
+		watcher.Close()
+		workers.Wait()
+	}()
 	requests := make(chan message, 1)
-	go func() {
+	workers.Go(func() {
 		defer close(requests)
 		for {
 			m, e := readMessage(stream)
@@ -160,12 +177,14 @@ func serveFTPWatch(stream *smux.Stream) {
 				return
 			}
 		}
-	}()
-	// Drain inotify even while the network writer is blocked. A one-slot signal
-	// coalesces bursts; overflow loses detail but always invalidates the cache.
-	changed := make(chan struct{}, 1)
-	var changes watchChanges
-	go func() {
+	})
+	// The collector owns pending changes until the writer takes the whole batch.
+	// Continue draining inotify while the writer is busy or cooling down.
+	changed := make(chan watchChanges)
+	workers.Go(func() {
+		defer close(changed)
+		var pending watchChanges
+		var ready chan<- watchChanges
 		for {
 			select {
 			case e, ok := <-watcher.Events:
@@ -173,32 +192,29 @@ func serveFTPWatch(stream *smux.Stream) {
 					return
 				}
 				reset := e.Has(fsnotify.Remove) || e.Has(fsnotify.Rename)
-				changes.add(path.Dir(e.Name), reset)
-				if !reset && slices.Contains(watcher.WatchList(), e.Name) {
-					changes.add(e.Name, false)
+				pending.add(path.Dir(e.Name), reset)
+				if !pending.reset && slices.Contains(watcher.WatchList(), e.Name) {
+					pending.add(e.Name, false)
 				}
 			case _, ok := <-watcher.Errors:
 				if !ok {
 					return
 				}
-				changes.add("", true)
+				pending.add("", true)
+			case ready <- pending:
+				pending = watchChanges{}
+				ready = nil
+				continue
 			case <-stop:
 				return
 			}
-			select {
-			case changed <- struct{}{}:
-			default:
-			}
+			ready = changed
 		}
-	}()
-	var cooldown <-chan time.Time
-	var timer *time.Timer
-	defer func() {
-		if timer != nil {
-			timer.Stop()
-		}
-	}()
-	var notifications <-chan struct{} = changed
+	})
+	timer := time.NewTimer(50 * time.Millisecond)
+	timer.Stop()
+	defer timer.Stop()
+	var notifications <-chan watchChanges = changed
 	send := func(m message) error {
 		_ = stream.SetWriteDeadline(time.Now().Add(ftpWatchTimeout))
 		return writeMessage(stream, m)
@@ -215,36 +231,28 @@ func serveFTPWatch(stream *smux.Stream) {
 			if m.Name != "" {
 				_ = watcher.Remove(m.Name)
 			}
-			var e error
-			info, statErr := os.Stat(m.Directory)
-			if statErr != nil {
-				e = statErr
-			} else if !info.IsDir() {
-				e = fmt.Errorf("watch target is not a directory")
-			}
-			if e == nil {
+			ack := message{Type: "watch_ack", Error: "directory notifications unavailable"}
+			if info, err := os.Stat(m.Directory); err == nil && info.IsDir() {
 				watches := watcher.WatchList()
-				if len(watches) >= ftpWatchLimit && !slices.Contains(watches, m.Directory) {
-					e = fmt.Errorf("watch limit reached")
-				} else {
-					e = watcher.Add(m.Directory)
+				if (len(watches) < ftpWatchLimit || slices.Contains(watches, m.Directory)) && watcher.Add(m.Directory) == nil {
+					ack.Error = ""
 				}
-			}
-			ack := message{Type: "watch_ack"}
-			if e != nil {
-				ack.Error = "directory notifications unavailable"
 			}
 			if send(ack) != nil {
 				return
 			}
-		case <-notifications:
-
-			reset, dirs := changes.take()
-			if reset {
+		case changes, ok := <-notifications:
+			if !ok {
+				return
+			}
+			if changes.reset {
 				if send(message{Type: "watch_reset"}) != nil {
 					return
 				}
 			} else {
+				dirs := make([]string, 0, len(changes.dirs))
+				dirs = slices.AppendSeq(dirs, maps.Keys(changes.dirs))
+				slices.Sort(dirs)
 				for _, dir := range dirs {
 					if send(message{Type: "watch_dirty", Directory: dir}) != nil {
 						return
@@ -252,14 +260,9 @@ func serveFTPWatch(stream *smux.Stream) {
 				}
 			}
 			notifications = nil
-			if timer == nil {
-				timer = time.NewTimer(50 * time.Millisecond)
-			} else {
-				timer.Reset(50 * time.Millisecond)
-			}
-			cooldown = timer.C
-		case <-cooldown:
-			notifications, cooldown = changed, nil
+			timer.Reset(50 * time.Millisecond)
+		case <-timer.C:
+			notifications = changed
 		}
 	}
 }

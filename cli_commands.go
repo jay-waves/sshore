@@ -3,12 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/jay-waves/sshore/internal/files"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 func parseOptions(args []string) (options, error) {
@@ -42,38 +40,8 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 	o.noLogin = parsed.has("--no-login")
 	o.noProfile = parsed.has("--no-profile")
 	o.listJSON = parsed.has("--json")
-	if command == "launch" || command == "spawn" {
-		target := parsed.operand(0, "")
-		o.local = target == ""
-		if o.local {
-			o.host = "local"
-			if len(o.ssh) > 0 || o.serverSet || o.downloadDir != "" {
-				return o, usage("local shells do not accept SSH or transfer options")
-			}
-			return o, nil
-		}
-		host, suffix, err := splitEndpoint(target)
-		if err != nil {
-			return o, err
-		}
-		if suffix != "" {
-			return o, usage("create with %s HOST: and set an alias with rename", command)
-		}
-		if host == "origin" {
-			return o, usage("create shells on self: or an SSH host")
-		}
-		if host == "self" {
-			o.local, o.host = true, "local"
-			if len(o.ssh) > 0 || o.serverSet || o.downloadDir != "" {
-				return o, usage("local shells do not accept SSH or transfer options")
-			}
-			return o, nil
-		}
-		o.host = host
-		return o, nil
-	}
 	firstName := 1
-	o.host = parsed.operand(0, "")
+	o.host = parsed.operand(0)
 	if o.local {
 		o.host, firstName = "local", 0
 		if len(o.ssh) > 0 || o.serverSet || o.downloadDir != "" {
@@ -81,10 +49,10 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 		}
 	}
 	if !o.list {
-		o.session = parsed.operand(firstName, "")
+		o.session = parsed.operand(firstName)
 	}
 	if command == "rename" {
-		o.newName = parsed.operand(firstName+1, "")
+		o.newName = parsed.operand(firstName + 1)
 	}
 
 	if o.host == "" && o.list && len(o.ssh) == 0 && o.server == "sshore" {
@@ -161,6 +129,29 @@ func normalizeHostOperand(command string, parsed *cliArguments) error {
 
 func normalizeShellSelector(command string, parsed *cliArguments) error {
 	count := len(parsed.operands)
+	if command == "launch" || command == "spawn" {
+		host := "self"
+		if count != 0 {
+			endpoint, suffix, err := splitEndpoint(parsed.operands[0])
+			if err != nil {
+				return err
+			}
+			if suffix != "" {
+				return usage("create with %s HOST: and set an alias with rename", command)
+			}
+			if endpoint == "origin" {
+				return usage("create shells on self: or an SSH host")
+			}
+			host = endpoint
+		}
+		if host == "self" {
+			parsed.values["--local"] = ""
+			parsed.operands = nil
+		} else {
+			parsed.operands[0] = host
+		}
+		return nil
+	}
 	if parsed.has("--all") || !((command == "attach" || command == "kill") && count == 1 || command == "rename" && count == 2) {
 		return nil
 	}
@@ -210,7 +201,6 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 
 type options struct {
 	recovering            bool
-	transports            clientTransports
 	reusable              *clientTransport
 	routeTarget           bool
 	handoffDone           func(context.Context, error) error
@@ -225,7 +215,6 @@ type options struct {
 	command               string
 	newName               string
 	downloadDir           string
-	remoteHome            string
 	list, quiet, noEscape bool
 	listJSON              bool
 	ssh                   []string
@@ -257,7 +246,7 @@ func executeShellCommand(o options) (int, error) {
 		return 0, nil
 	}
 	if o.command == "attach" && o.session == "" && o.taskIdentity == "" {
-		if _, err := resolveDetachedAttach(&o); err != nil {
+		if err := resolveDetachedAttach(&o); err != nil {
 			return 1, err
 		}
 	}
@@ -542,19 +531,6 @@ func parseCopyCommand(args []string) (copyOptions, error) {
 	return o, nil
 }
 
-type ftpOptions struct {
-	approval                  *files.MountApproval
-	ioTimeout, startupTimeout time.Duration
-	host, remote, mountpoint  string
-	ssh                       []string
-	readOnly                  bool
-	directIO                  bool
-	foreground                bool
-	stats                     bool
-	server                    string
-	name                      string
-}
-
 func parseFTPOptions(args []string) (ftpOptions, error) {
 	parsed, err := parseCLI(args, "mount")
 	if err != nil {
@@ -575,13 +551,13 @@ func parseFTPOptions(args []string) (ftpOptions, error) {
 		remote = "."
 	}
 	o := ftpOptions{
-		host: host, remote: remote, mountpoint: mountpoint,
-		ssh:        parsed.ssh,
+		Host: host, Remote: remote, Mountpoint: mountpoint,
+		SSH:        parsed.ssh,
 		foreground: parsed.has("--foreground"),
-		readOnly:   parsed.has("--read-only"), stats: parsed.has("--stats"), directIO: parsed.has("--direct-io"),
-		ioTimeout: parsed.duration("--io-timeout", 60*time.Second), startupTimeout: parsed.duration("--startup-timeout", 0),
+		ReadOnly:   parsed.has("--read-only"), Stats: parsed.has("--stats"), DirectIO: parsed.has("--direct-io"),
+		IOTimeout: parsed.duration("--io-timeout", defaultMountIOTimeout), StartupTimeout: parsed.duration("--startup-timeout", 0),
 	}
-	if strings.ContainsRune(o.remote, 0) || strings.ContainsRune(o.mountpoint, 0) {
+	if strings.ContainsRune(o.Remote, 0) || strings.ContainsRune(o.Mountpoint, 0) {
 		return o, usage("invalid mount path")
 	}
 	return o, nil

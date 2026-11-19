@@ -13,10 +13,10 @@ import (
 type Request struct {
 	Version string       `json:"version"`
 	Method  string       `json:"method"`
-	Open    OpenInput    `json:"open,omitempty"`
-	Session SessionInput `json:"session,omitempty"`
-	Execute ExecuteInput `json:"execute,omitempty"`
-	Read    ReadInput    `json:"read,omitempty"`
+	Open    OpenInput    `json:"open,omitzero"`
+	Session SessionInput `json:"session,omitzero"`
+	Execute ExecuteInput `json:"execute,omitzero"`
+	Read    ReadInput    `json:"read,omitzero"`
 }
 type Response struct {
 	Version   string     `json:"version"`
@@ -28,7 +28,7 @@ type Response struct {
 	Closed    *Closed    `json:"closed,omitempty"`
 }
 
-// Dispatch invokes one operation after the caller has validated the release.
+// Dispatch validates the exact release before invoking an operation.
 func Dispatch(ctx context.Context, b Backend, req Request, version string) Response {
 	res := Response{Version: version}
 	if req.Version != version {
@@ -61,45 +61,71 @@ func Dispatch(ctx context.Context, b Backend, req Request, version string) Respo
 		err = fmt.Errorf("unknown operation")
 	}
 	if err != nil {
-		res.Error = err.Error()
-		res.Session = nil
-		res.Sessions = nil
-		res.Execution = nil
-		res.Output = nil
-		res.Closed = nil
+		return Response{Version: version, Error: err.Error()}
 	}
 	return res
 }
 
 func WriteRequest(w io.Writer, req Request) error {
-	data, err := json.Marshal(req)
-	if err != nil {
-		return err
-	}
-	return wire.WriteFrame(w, 0, data)
+	return writeRPCFrame(w, req)
 }
 func ReadRequest(r io.Reader) (Request, error) {
 	var req Request
-	_, data, err := wire.ReadFrame(r)
-	if err != nil {
-		return req, err
-	}
-	err = json.Unmarshal(data, &req)
+	err := readRPCFrame(r, &req)
 	return req, err
 }
 func WriteResponse(w io.Writer, res Response) error {
-	data, err := json.Marshal(res)
+	return writeRPCFrame(w, res)
+}
+func ReadResponse(r io.Reader) (Response, error) {
+	var res Response
+	err := readRPCFrame(r, &res)
+	return res, err
+}
+
+func writeRPCFrame(w io.Writer, value any) error {
+	data, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
 	return wire.WriteFrame(w, 0, data)
 }
-func ReadResponse(r io.Reader) (Response, error) {
-	var res Response
-	_, data, err := wire.ReadFrame(r)
+func readRPCFrame(r io.Reader, value any) error {
+	data, err := readRPCPayload(r)
 	if err != nil {
-		return res, err
+		return err
 	}
-	err = json.Unmarshal(data, &res)
-	return res, err
+	return json.Unmarshal(data, value)
+}
+
+func readRPCPayload(r io.Reader) ([]byte, error) {
+	kind, data, err := wire.ReadFrame(r)
+	if err != nil {
+		return nil, err
+	}
+	if kind != 0 {
+		return nil, fmt.Errorf("expected MCP JSON frame")
+	}
+	return data, nil
+}
+
+// Relay passes one bounded JSON exchange at a time to the authenticated daemon.
+// The daemon decodes requests and owns release checks and dispatch.
+func Relay(r io.Reader, w io.Writer, exchange func(json.RawMessage) (json.RawMessage, error)) error {
+	for {
+		request, err := readRPCPayload(r)
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		response, err := exchange(request)
+		if err != nil {
+			return err
+		}
+		if err := wire.WriteFrame(w, 0, response); err != nil {
+			return err
+		}
+	}
 }

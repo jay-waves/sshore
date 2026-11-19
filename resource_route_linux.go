@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/jay-waves/sshore/internal/files"
-
 	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
@@ -24,24 +23,24 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message) {
 		fail(err)
 		return
 	}
-	s.mu.Lock()
-	unavailable := s.lifecycle.Exited() || request.Instance == "" || request.Instance != s.instance
-	s.mu.Unlock()
-	if unavailable || os.Getenv("SSHORE_DISABLED") == "1" {
+	if request.Instance == "" || os.Getenv("SSHORE_DISABLED") == "1" {
 		fail(fmt.Errorf("resource shell changed or unavailable"))
 		return
 	}
-	if request.Type == "route_forward" {
+	var forward operation
+	switch request.Type {
+	case "route_forward":
 		if len(request.Operations) != 1 || request.Operations[0].Kind != "forward" {
 			fail(fmt.Errorf("invalid forward request"))
 			return
 		}
-		op := request.Operations[0]
-		if err := (forwardConfig{Port: op.Port, Target: op.TargetPort}).Validate(); err != nil {
+		forward = request.Operations[0]
+		if err := (forwardConfig{Port: forward.Port, Target: forward.TargetPort}).Validate(); err != nil {
 			fail(err)
 			return
 		}
-	} else if request.Type != "route_mount" && request.Type != "route_files" {
+	case "route_mount", "route_files":
+	default:
 		fail(fmt.Errorf("invalid resource request"))
 		return
 	}
@@ -49,22 +48,14 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message) {
 		fail(err)
 		return
 	}
-	if request.Type == "route_files" {
-		if err := writeMessage(c, message{Type: "resource_ready", SoftwareVersion: version}); err != nil {
-			return
-		}
-		mx, err := smux.Server(c, wire.MuxConfig())
-		if err != nil {
-			return
-		}
-		defer mx.Close()
-		serveApprovedStreams(context.Background(), mx)
+	if request.Type == "route_forward" {
+		serveRoutedForward(c, forward)
+		return
+	}
+	if err := writeMessage(c, message{Type: "resource_ready", SoftwareVersion: version}); err != nil {
 		return
 	}
 	if request.Type == "route_mount" {
-		if err := writeMessage(c, message{Type: "resource_ready", SoftwareVersion: version}); err != nil {
-			return
-		}
 		account, _ := localMachineIdentity()
 		_ = files.ServeAgentWithPeer(c, version, account, func(data json.RawMessage) func() {
 			var task peerRecord
@@ -80,34 +71,40 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message) {
 		})
 		return
 	}
-	op := request.Operations[0]
-	var listener net.Listener
-	if op.Reverse {
-		var err error
-		listener, err = net.Listen("tcp", loopbackPort(op.Port))
-		if err != nil {
-			fail(err)
-			return
-		}
-		defer listener.Close()
-	}
-	if err := writeMessage(c, message{Type: "resource_ready", SoftwareVersion: version}); err != nil {
-		return
-	}
 	mx, err := smux.Server(c, wire.MuxConfig())
 	if err != nil {
 		return
 	}
 	defer mx.Close()
-	control, err := mx.AcceptStream()
+	serveApprovedStreams(context.Background(), mx)
+}
+
+func serveRoutedForward(c net.Conn, forward operation) {
+	var listener net.Listener
+	if forward.Reverse {
+		var err error
+		listener, err = net.Listen("tcp", loopbackPort(forward.Port))
+		if err != nil {
+			_ = writeMessage(c, message{Type: "error", SoftwareVersion: version, Error: err.Error()})
+			return
+		}
+		defer func() {
+			if listener != nil {
+				_ = listener.Close()
+			}
+		}()
+	}
+	if err := writeMessage(c, message{Type: "resource_ready", SoftwareVersion: version}); err != nil {
+		return
+	}
+	tunnel, control, err := openResourceMuxForward(c, listener, forward.TargetPort, false)
 	if err != nil {
 		return
 	}
-	defer control.Close()
-	forward := wire.StartMuxForward(mx, listener, op.TargetPort)
-	defer forward.Close()
+	listener = nil // The forwarding workers now own the listener.
+	defer tunnel.Close()
 	if _, err = fmt.Fprintln(control, forwardReadyMarker); err != nil {
 		return
 	}
-	_ = watchPeerRecords(context.Background(), control, "forward", nil)
+	_ = watchPeerRecords(control, "forward", nil)
 }

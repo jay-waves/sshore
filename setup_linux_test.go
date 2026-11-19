@@ -68,8 +68,7 @@ func TestRemoteHelpersRequireMatchingRelease(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer func() { input.Close(); output.Close(); cmd.Process.Kill(); cmd.Wait() }()
-				setup := options{command: mode, host: "fixture"}
-				err = negotiateSetup(output, input, &setup)
+				remoteHome, err := negotiateSetup(output, input, "fixture", false)
 				if !tc.success {
 					if err == nil || !strings.Contains(err.Error(), "sshore install") || !strings.Contains(err.Error(), version) {
 						t.Fatalf("expected version and setup guidance: %v", err)
@@ -86,13 +85,13 @@ func TestRemoteHelpersRequireMatchingRelease(t *testing.T) {
 				if err != nil {
 					t.Fatalf("setup: %v", err)
 				}
-				if setup.remoteHome != home {
-					t.Fatalf("remote home = %q, want %q", setup.remoteHome, home)
+				if remoteHome != home {
+					t.Fatalf("remote home = %q, want %q", remoteHome, home)
 				}
 				wire := &wire.Pipe{Reader: output, Writer: input, Closers: []io.Closer{input, output}}
 				var data io.ReadWriteCloser = wire
 				if mode == "mount-agent" {
-					mux, stream, _, err := files.OpenMux(wire, version)
+					mux, stream, _, err := files.OpenMux(wire, version, nil, nil, nil)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -120,7 +119,7 @@ func TestRemoteHelpersRequireMatchingRelease(t *testing.T) {
 				if staged, _ := filepath.Glob(filepath.Join(home, "sshore-setup.*")); len(staged) != 0 {
 					t.Fatalf("staging retained: %v", staged)
 				}
-				if records, err := hostedTaskRecords(); err != nil || len(records) != 0 {
+				if records, err := hostedShells("health"); err != nil || len(records) != 0 {
 					t.Fatalf("helper created a persistent shell: %+v %v", records, err)
 				}
 			})

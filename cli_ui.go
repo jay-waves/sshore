@@ -84,9 +84,10 @@ func chooseSetupSession(input setupInput, names []string) (string, error) {
 func chooseLocalItem(input setupInput, names, labels []string, prompt, kind string) (int, error) {
 	visible := make([]bool, len(names))
 	show := func(filter string) {
+		filter = strings.ToLower(filter)
 		matches := 0
 		for i := range names {
-			visible[i] = strings.Contains(strings.ToLower(labels[i]), strings.ToLower(filter))
+			visible[i] = strings.Contains(strings.ToLower(labels[i]), filter)
 			if visible[i] {
 				termui.Log(os.Stderr, termui.Info, "  #%d  %s\n", i+1, cleanText(labels[i]))
 				matches++
@@ -196,20 +197,13 @@ func readReviewPath(input reviewPromptReader, prompt, initial string, allowEmpty
 	}
 }
 
-func readCopyPath(input promptReader, prompt, defaultPath string, validate func(string) (string, error)) (string, error) {
-	return readSelectedPath(input, prompt, defaultPath, validate, "copy cancelled")
-}
-
-func readSelectedPath(input promptReader, prompt, defaultPath string, validate func(string) (string, error), cancellation string) (string, error) {
+func readCopyPath(input promptReader, prompt string, validate func(string) (string, error)) (string, error) {
 	for {
 		line, err := input.Read(prompt, true)
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", cancellation, err)
+			return "", fmt.Errorf("copy cancelled: %w", err)
 		}
-		path := defaultPath
-		if line != "" || path == "" {
-			path, err = termui.ParsePath([]byte(line))
-		}
+		path, err := termui.ParsePath([]byte(line))
 		if err == nil {
 			path, err = filepath.Abs(path)
 		}
@@ -235,17 +229,11 @@ func displayBytes(size int64) string {
 	return fmt.Sprintf("%d B", size)
 }
 
-func readSelectedPort(input promptReader, label, hint, cancellation string) (int, error) {
-	if hint != "" {
-		label += " [" + hint + "]"
-	}
+func readForwardPort(input promptReader, label string) (int, error) {
 	for {
 		value, err := input.Read(label+" (Enter starts; Ctrl-C cancels): ", false)
 		if err != nil {
-			return 0, fmt.Errorf("%s: %w", cancellation, err)
-		}
-		if value == "" {
-			value = hint
+			return 0, fmt.Errorf("forward cancelled: %w", err)
 		}
 		port, err := parsePort(value)
 		if err == nil {

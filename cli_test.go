@@ -140,7 +140,10 @@ func TestSessionCommandSemantics(t *testing.T) {
 			t.Fatalf("accepted obsolete/invalid syntax: %v", args)
 		}
 	}
-	for command := range commandHelp {
+	for command, spec := range cliCommands {
+		if spec.help == "" {
+			continue
+		}
 		for _, flag := range []string{"--help", "-h"} {
 			if code, err := run([]string{command, flag}); code != 0 || err != nil {
 				t.Fatalf("%s %s: %d %v", command, flag, code, err)
@@ -184,7 +187,7 @@ func TestSharedCLIGrammar(t *testing.T) {
 		{"mount", []string{"work:", "self:"}, func(a []string) error { _, err := parseFTPOptions(a); return err }},
 		{"forward", []string{".:8080", "work:3000"}, func(a []string) error { _, _, err := parseForwardCommand(a); return err }},
 		{"cp", []string{"work:source", ".:target"}, func(a []string) error { _, err := parseCopyCommand(a); return err }},
-		{"review", []string{"request"}, func(a []string) error { _, err := parseReview(a); return err }},
+		{"review", []string{"request"}, func(a []string) error { _, err := parseCLI(a, "review"); return err }},
 	}
 	for _, parser := range parsers {
 		t.Run(parser.name, func(t *testing.T) {
@@ -199,7 +202,7 @@ func TestSharedCLIGrammar(t *testing.T) {
 		})
 	}
 	mount, err := parseFTPOptions([]string{"work:", "self:", "--io-timeout=5s", "--startup-timeout=1m"})
-	if err != nil || mount.name != "" || mount.ioTimeout.String() != "5s" || mount.startupTimeout.String() != "1m0s" {
+	if err != nil || mount.Name != "" || mount.IOTimeout.String() != "5s" || mount.StartupTimeout.String() != "1m0s" {
 		t.Fatalf("mount equals values: %+v %v", mount, err)
 	}
 	forward, _, err := parseForwardCommand([]string{".:8080", "work:3000", "--retries=2"})
@@ -222,9 +225,6 @@ func TestSharedCLIGrammar(t *testing.T) {
 		if _, _, err := parseForwardCommand(args); err == nil {
 			t.Fatalf("accepted forward %v", args)
 		}
-	}
-	if _, err := parseReview([]string{"--stay", "--stay"}); err == nil {
-		t.Fatal("accepted duplicate --stay")
 	}
 	for _, command := range []string{"list", "kill", "rename"} {
 		if _, err := parseOptions([]string{command, "work", "--", "-L8080:localhost:80"}); err == nil {
@@ -434,7 +434,7 @@ func TestNativeSSHPort(t *testing.T) {
 		t.Fatal(o, err)
 	}
 	mounted, err := parseFTPOptions([]string{"host:remote", "self:", "--port", "2222"})
-	if err != nil || !reflect.DeepEqual(mounted.ssh, []string{"-p", "2222"}) {
+	if err != nil || !reflect.DeepEqual(mounted.SSH, []string{"-p", "2222"}) {
 		t.Fatal(mounted, err)
 	}
 }
@@ -611,23 +611,13 @@ func TestDisplayBytes(t *testing.T) {
 	}
 }
 
-func TestSelectedPort(t *testing.T) {
-	for _, tc := range []struct {
-		answers []string
-		hint    string
-		want    int
-	}{
-		{[]string{"", "0", "65536", "8080"}, "", 8080},
-		{[]string{""}, "3000", 3000},
-		{[]string{"8080"}, "3000", 8080},
-	} {
-		port, err := readSelectedPort(&stubSetupInput{answers: tc.answers}, "Local port", tc.hint, "cancelled")
-		if err != nil || port != tc.want {
-			t.Fatal(port, err)
-		}
+func TestForwardPort(t *testing.T) {
+	port, err := readForwardPort(&stubSetupInput{answers: []string{"", "0", "65536", "8080"}}, "Local port")
+	if err != nil || port != 8080 {
+		t.Fatal(port, err)
 	}
-	if _, err := readSelectedPort(&stubSetupInput{}, "Local port", "3000", "cancelled"); err == nil || !strings.Contains(err.Error(), "cancelled") {
-		t.Fatal("EOF accepted a suggestion", err)
+	if _, err := readForwardPort(&stubSetupInput{}, "Local port"); !errors.Is(err, io.EOF) {
+		t.Fatal(err)
 	}
 }
 
@@ -675,7 +665,7 @@ func TestUnifiedEndpointSyntax(t *testing.T) {
 	if o, err := parseCopyCommand([]string{".:report", "work:"}); err != nil || !o.upload || o.sources[0].path != "report" || o.target.path != "." {
 		t.Fatal(o, err)
 	}
-	if o, err := parseFTPOptions([]string{"work:", "self:"}); err != nil || o.remote != "." || o.mountpoint != "" {
+	if o, err := parseFTPOptions([]string{"work:", "self:"}); err != nil || o.Remote != "." || o.Mountpoint != "" {
 		t.Fatal(o, err)
 	}
 	if f, _, err := parseForwardCommand([]string{"work:3000", ".:8080"}); err != nil || !f.Reverse || f.Target != 8080 {

@@ -152,15 +152,15 @@ func TestLegacyPublicKeyAlgorithmPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := &connectionConfig{values: map[string][]string{"pubkeyacceptedkeytypes": {cryptossh.KeyAlgoRSASHA512}}}
-	if c.acceptsSignature(key, cryptossh.KeyAlgoED25519) {
+	if allowsSignature(c.signatureAlgorithms(), key.Type(), cryptossh.KeyAlgoED25519) {
 		t.Fatal("legacy algorithm restriction ignored")
 	}
 	c.values["pubkeyacceptedkeytypes"] = []string{cryptossh.CertAlgoED25519v01}
-	if !c.acceptsSignature(&cryptossh.Certificate{Key: key}, cryptossh.KeyAlgoED25519) || c.acceptsSignature(key, cryptossh.KeyAlgoED25519) {
+	if !allowsSignature(c.signatureAlgorithms(), (&cryptossh.Certificate{Key: key}).Type(), cryptossh.KeyAlgoED25519) || allowsSignature(c.signatureAlgorithms(), key.Type(), cryptossh.KeyAlgoED25519) {
 		t.Fatal("legacy certificate policy lost")
 	}
 	c.values["pubkeyacceptedalgorithms"] = []string{cryptossh.KeyAlgoED25519}
-	if !c.acceptsSignature(key, cryptossh.KeyAlgoED25519) {
+	if !allowsSignature(c.signatureAlgorithms(), key.Type(), cryptossh.KeyAlgoED25519) {
 		t.Fatal("modern algorithm policy did not take precedence")
 	}
 }

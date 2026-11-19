@@ -1,7 +1,5 @@
 package main
 
-import "fmt"
-
 // Display context only: this process is never registered or adopted as a task.
 type spawnProcessView struct {
 	PID                          int
@@ -39,38 +37,18 @@ func verifiedSpawnProcessName(p *spawnProcessView) string {
 	return name
 }
 
-func externalSpawnParents(nodes []shellTreeNode, machine string) []shellTreeNode {
-	visible := make(map[string]bool, len(nodes))
-	for _, n := range nodes {
-		visible[n.Identity] = true
-	}
-	// Copy so augmenting display context cannot change cached ownership metadata.
-	result := append([]shellTreeNode(nil), nodes...)
-	for i := range nodes {
-		n := &result[i]
-		p := n.OwnerProcess
-		spawn := n.Kind == "spawn" || n.Kind == "" && (n.Lifetime == "parent" || n.Lifetime == "heartbeat")
-		if !spawn || visible[n.Owner] || !validSpawnProcessView(p) {
-			continue
+func externalSpawnNode(id, machine string, p *spawnProcessView) shellTreeNode {
+	name, state := "unavailable", "unavailable"
+	if p.MachineID == machine {
+		if current := verifiedSpawnProcessName(p); current != "" {
+			name, state = current, "active"
 		}
-		id := fmt.Sprintf("external:%s:%d:%s", p.MachineID, p.PID, p.Start)
-		n.Owner = id
-		if !visible[id] {
-			name, state := "unavailable", "unavailable"
-			if p.MachineID == machine {
-				if current := verifiedSpawnProcessName(p); current != "" {
-					name, state = current, "active"
-				}
-			} else {
-				// Never query a foreign PID in the local process namespace.
-				if p.Name != "" {
-					name = p.Name
-				}
-				name += " on " + p.Host
-			}
-			result = append(result, shellTreeNode{Identity: id, Kind: "external", Name: name, State: state, OwnerProcess: p})
-			visible[id] = true
+	} else {
+		// Never query a foreign PID in the local process namespace.
+		if p.Name != "" {
+			name = p.Name
 		}
+		name += " on " + p.Host
 	}
-	return result
+	return shellTreeNode{Identity: id, Kind: "external", Name: name, State: state, OwnerProcess: p}
 }

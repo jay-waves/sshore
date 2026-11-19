@@ -144,10 +144,15 @@ Each pending request:
 System OpenSSH, local configuration and `Match exec` hooks are trusted inputs.
 Go SSH owns the connection and host-key verification. Changed host keys are
 rejected; background retries cannot establish new trust or prompt for credentials.
+Host-key verification reads the current configured user and system known_hosts
+files. After interactive confirmation, the client reloads those files before
+saving the key, including files created during confirmation.
 Private-key loading and unlocking belong to the system agent. Passwords and
 keyboard-interactive answers are requested through the initiating frontend and
 are not cached or persisted. Agent authentication is not operation approval;
 removing a key affects future authentication, not existing connections.
+The local prompt broker serializes terminal access and bounds request and
+response sizes for host confirmation and authentication prompts.
 
 Servers may accept SSH `none` authentication, such as Tailscale SSH; host-key
 verification and operation approval still apply. Unsupported authentication and
@@ -165,20 +170,22 @@ Private records are not tamper-proof against their owner.
 
 ### File substitution, overwrite and malicious content
 
-Direct copies are explicit local grants. Approved copies expose only the selected
-file and temporary upload, not a general remote filesystem. Both paths use bounded
-transfers, temporary files and atomic hard-link publication without overwriting;
-there is no overwrite-prone fallback. Approved file sizes bound received bytes.
+Direct copies are explicit local grants. Approved downloads expose the selected
+source, and approved uploads allow writing only to the private staging file.
+Both paths use bounded transfers, temporary files and atomic hard-link
+publication without overwriting. Approved file sizes bound received bytes.
 Changed metadata is rejected, and uploads verify stored temporary content by
 size and SHA-256 readback on the receiving sshore before publication. The sender
 provides its digest; the receiver closes writes, verifies its temporary file and
 permits publication only on a match. File content is not downloaded for verification.
 
 Local sources reject final-component symlinks/reparse points and compare opened
-file identity with the initial check. A reviewed upload reads from the file
-handle opened when the local user submitted the path. Linux uses nonblocking
-opens so a substituted FIFO cannot stall validation. These checks do not lock parent directories or stop
-changes to the contents of the same file. Same-size content changes remain possible.
+file identity with the initial check. Uploads keep the file handle opened during
+path selection or batch preflight. Approved downloads keep the remote handle
+opened when the transfer validates source metadata. Linux uses nonblocking opens
+so a substituted FIFO cannot stall validation. These checks do not lock parent
+directories or stop changes to the contents of the same file. Same-size content
+changes remain possible.
 
 SSH integrity and readback checks do not authenticate file provenance. Downloaded
 content can be malicious; avoid destinations that automatically load scripts or
@@ -264,7 +271,10 @@ Remote shell cancellation uses the same authenticated, exact-release control
 entry and signals only the child identities owned by that task.
 Single-shell `kill` ends an attached shell immediately using KILL on Linux or job termination on Windows. `kill --all` displays a
 fresh snapshot and requires confirmation at a `[Y/n]` prompt. Enter confirms,
-and EOF cancels. Any task change requires fresh review.
+and EOF cancels. A change to a reviewed task requires fresh review. For a
+remote host, the remote daemon stops first. The local daemon then verifies the
+identities and names of all displayed local resources before stopping any of
+them.
 Other managers' advertisements are excluded. Administrative shutdown may cross
 release versions; individual task control still requires an exact release.
 
@@ -331,11 +341,13 @@ or replaces it while the account daemon still owns tasks.
 Managed remote commands require the exact full release, including PATCH.
 `install HOST:` uses authenticated SSH to run the bundled installer on the target.
 Installers verify the release checksum and executable version. The prepared binary
-stages the replacement before invoking authenticated `kill --all` on the target
-account, using the installed release when it matches the running daemon.
-Active tasks require confirmation of the displayed snapshot. Publication
-requires both the startup and owner locks. Unknown or newer installed releases require
-manual handling.
+stages the replacement before requesting shutdown. It invokes the installed
+release's `kill --all` when that release owns the daemon. Otherwise it requests
+the administrative snapshot from the daemon identified during preflight.
+Active tasks require confirmation of the displayed snapshot. Before publishing
+under the startup and owner locks, the installer rechecks the installation target
+against the file it inspected. Unknown or newer installed releases require manual
+handling.
 
 Replacement requires a user-owned regular file and a user-owned directory
 without group/world write permission on Linux. Replacement does not elevate
@@ -350,7 +362,9 @@ replacement is published. See [release mechanics](SSHORE.md#release).
 
 `reset` uses the authenticated administrative snapshot and shutdown before clearing
 local state and cached releases. Failed shutdown stops reset; busy mounts may refuse
-cleanup. Coordination locks remain to prevent concurrent daemon startup.
+cleanup. Custom state roots are cleared by entry name, including when inherited
+from the running daemon. Account cleanup removes the daemon locator and log and
+preserves coordination locks to prevent concurrent startup.
 
 ## Setup failure and legacy recovery
 

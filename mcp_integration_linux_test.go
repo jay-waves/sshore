@@ -162,9 +162,7 @@ func TestSharedDaemonMCPSession(t *testing.T) {
 		t.Fatalf("output %+v", output)
 	}
 	call(mcp.Request{Method: "close", Session: mcp.SessionInput{SessionID: session.ID}})
-	tasks.mu.Lock()
-	snapshot := tasks.snapshot(record)
-	tasks.mu.Unlock()
+	snapshot := tasks.adminSnapshot(record).Snapshot
 	if _, err := daemonAdministrationAt(context.Background(), record, "shutdown", &snapshot); err != nil {
 		t.Fatal(err)
 	}

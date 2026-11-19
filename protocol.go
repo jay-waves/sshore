@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,6 +24,12 @@ const (
 	output
 )
 
+type sessionTarget struct {
+	Name     string `json:"name"`
+	Instance string `json:"instance"`
+	Hosted   bool   `json:"hosted,omitempty"`
+}
+
 // Control metadata uses JSON; terminal bytes remain binary.
 type message struct {
 	OwnerProcess    *spawnProcessView   `json:"owner_process,omitempty"`
@@ -41,7 +48,7 @@ type message struct {
 	Directory       string              `json:"directory,omitempty"`
 	HomeDirectory   string              `json:"home_directory,omitempty"`
 	AgeSeconds      *int64              `json:"age_seconds,omitempty"`
-	Names           []string            `json:"names,omitempty"`
+	Targets         []sessionTarget     `json:"targets,omitempty"`
 	SoftwareVersion string              `json:"software_version,omitempty"`
 	Operations      []operation         `json:"operations,omitempty"`
 	Action          string              `json:"action,omitempty"`
@@ -59,6 +66,56 @@ type message struct {
 	Error           string              `json:"error,omitempty"`
 	Code            int                 `json:"code,omitempty"`
 	Data            []byte              `json:"-"`
+}
+
+func validateSessionTargets(targets []sessionTarget) error {
+	if len(targets) > 128 {
+		return fmt.Errorf("too many session targets")
+	}
+	for i, target := range targets {
+		if validSession(target.Name) != nil || !validTaskUID(target.Instance) ||
+			slices.ContainsFunc(targets[:i], func(other sessionTarget) bool { return other.Name == target.Name }) {
+			return fmt.Errorf("invalid session target")
+		}
+	}
+	return nil
+}
+
+func sessionTargetNames(targets []sessionTarget) ([]string, error) {
+	if err := validateSessionTargets(targets); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(targets))
+	for _, target := range targets {
+		names = append(names, target.Name)
+	}
+	return names, nil
+}
+
+// Find the closest name in the requested direction and wrap at the end.
+func adjacentSessionTarget(current string, targets []sessionTarget, previous bool) sessionTarget {
+	before := func(a, b string) bool {
+		if previous {
+			return a > b
+		}
+		return a < b
+	}
+	var nearest, wrap sessionTarget
+	for _, target := range targets {
+		if target.Name == current {
+			continue
+		}
+		if wrap.Name == "" || before(target.Name, wrap.Name) {
+			wrap = target
+		}
+		if before(current, target.Name) && (nearest.Name == "" || before(target.Name, nearest.Name)) {
+			nearest = target
+		}
+	}
+	if nearest.Name == "" {
+		return wrap
+	}
+	return nearest
 }
 
 func (m *message) FrameType() string                 { return m.Type }
@@ -173,14 +230,12 @@ func validateAttach(m message) error {
 
 type attachment struct {
 	*tmux.Attachment
-	approvalRequests chan struct{}
+	input            shellInput    // Lease installed and released by the shell host.
+	approvalRequests chan struct{} // Hosted attachments accept approval requests.
 }
 
 func newAttachment(mx *smux.Session, control, terminal *smux.Stream) *attachment {
-	return &attachment{Attachment: tmux.NewAttachment(mx, control, terminal), approvalRequests: make(chan struct{}, 8)}
+	return &attachment{Attachment: tmux.NewAttachment(mx, control, terminal)}
 }
 func (p *attachment) controlMessage(m message) error { return p.Control(m.Type, m.Data, m) }
 func (p *attachment) output(m message) error         { return p.Output(m.Type, m.Data, m) }
-func (p *attachment) readInput(input tmux.Input, owner *tmux.Lifecycle[*attachment]) {
-	p.ReadInput(input, func() bool { return owner.Active() == p })
-}

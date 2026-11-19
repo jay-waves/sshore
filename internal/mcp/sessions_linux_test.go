@@ -5,16 +5,83 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
+// The protocol fixtures run without the application daemon's task registry.
+type sessionFixture struct {
+	mu       sync.Mutex
+	sessions map[string]*BashSession
+}
+
+func newSessionFixture() *sessionFixture {
+	return &sessionFixture{sessions: make(map[string]*BashSession)}
+}
+
+func (f *sessionFixture) Open(ctx context.Context, in OpenInput) (Session, error) {
+	bash, err := StartBashSession(ctx)
+	if err != nil {
+		return Session{}, err
+	}
+	id := rand.Text()
+	f.mu.Lock()
+	f.sessions[id] = bash
+	f.mu.Unlock()
+	return Session{ID: id, Host: in.Host, State: "ready"}, nil
+}
+
+func (f *sessionFixture) List(_ context.Context, in OpenInput) (Sessions, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	result := Sessions{Sessions: make([]Session, 0, len(f.sessions))}
+	for id, bash := range f.sessions {
+		result.Sessions = append(result.Sessions, Session{ID: id, Host: in.Host, State: bash.State()})
+	}
+	return result, nil
+}
+
+func (f *sessionFixture) session(id string) *BashSession {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sessions[id]
+}
+
+func (f *sessionFixture) Execute(ctx context.Context, in ExecuteInput) (Execution, error) {
+	if bash := f.session(in.SessionID); bash != nil {
+		return bash.Execute(ctx, in)
+	}
+	return Execution{}, fmt.Errorf("session not found")
+}
+
+func (f *sessionFixture) Read(ctx context.Context, in ReadInput) (Output, error) {
+	if bash := f.session(in.SessionID); bash != nil {
+		return bash.Read(ctx, in)
+	}
+	return Output{}, fmt.Errorf("session not found")
+}
+
+func (f *sessionFixture) Close(_ context.Context, in SessionInput) (Closed, error) {
+	f.mu.Lock()
+	bash := f.sessions[in.SessionID]
+	delete(f.sessions, in.SessionID)
+	f.mu.Unlock()
+	if bash == nil {
+		return Closed{}, fmt.Errorf("session not found")
+	}
+	err := bash.Close()
+	return Closed{Closed: err == nil}, err
+}
+
 func TestSessionsRetainBashState(t *testing.T) {
 	ctx := context.Background()
-	m := NewSessionsManager()
+	m := newSessionFixture()
 	s, err := m.Open(ctx, OpenInput{Host: "host"})
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +125,7 @@ func TestSessionsRetainBashState(t *testing.T) {
 
 func TestSessionsBoundedOutputAndBinary(t *testing.T) {
 	ctx := context.Background()
-	m := NewSessionsManager()
+	m := newSessionFixture()
 	session, err := m.Open(ctx, OpenInput{Host: "test"})
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +168,7 @@ func TestSessionsBoundedOutputAndBinary(t *testing.T) {
 
 func TestSessionsReportsUnknownAndPreservesOutput(t *testing.T) {
 	ctx := context.Background()
-	m := NewSessionsManager()
+	m := newSessionFixture()
 	s, err := m.Open(ctx, OpenInput{Host: "host"})
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +196,7 @@ func TestSessionsReportsUnknownAndPreservesOutput(t *testing.T) {
 
 func TestReadWaitReturnsOnOutput(t *testing.T) {
 	ctx := context.Background()
-	m := NewSessionsManager()
+	m := newSessionFixture()
 	s, err := m.Open(ctx, OpenInput{Host: "host"})
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +224,7 @@ func TestReadWaitReturnsOnOutput(t *testing.T) {
 
 func TestCompletedExecutionEviction(t *testing.T) {
 	ctx := context.Background()
-	manager := NewSessionsManager()
+	manager := newSessionFixture()
 	session, err := manager.Open(ctx, OpenInput{Host: "test"})
 	if err != nil {
 		t.Fatal(err)
@@ -193,7 +260,7 @@ func TestCompletedExecutionEviction(t *testing.T) {
 
 func TestExitedSessionIsNotReportedReady(t *testing.T) {
 	ctx := context.Background()
-	m := NewSessionsManager()
+	m := newSessionFixture()
 	s, err := m.Open(ctx, OpenInput{Host: "host"})
 	if err != nil {
 		t.Fatal(err)
@@ -225,7 +292,7 @@ func TestExitedSessionIsNotReportedReady(t *testing.T) {
 func TestRPCSessions(t *testing.T) {
 	client, server := net.Pipe()
 	defer client.Close()
-	manager := NewSessionsManager()
+	manager := newSessionFixture()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -271,7 +338,7 @@ func TestRPCSessions(t *testing.T) {
 }
 
 func TestRPCRejectsMismatchedRelease(t *testing.T) {
-	m := NewSessionsManager()
+	m := newSessionFixture()
 	result := Dispatch(context.Background(), m, Request{Version: "1.2.2", Method: "open", Open: OpenInput{Host: "work"}}, "1.2.3")
 	if result.Error == "" || result.Session != nil {
 		t.Fatalf("%+v", result)

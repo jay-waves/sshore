@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func registerTestShell(t *testing.T, tasks *daemonTasks, name, id string) localShellRecord {
@@ -32,11 +33,7 @@ func TestDaemonTaskConnectionsDoNotOwnLifetime(t *testing.T) {
 	tasks := startRequestDaemon(t)
 	r := registerTestShell(t, tasks, "work", strings.Repeat("c", 32))
 	for range 2 {
-		found, err := readLocalSession(r.UID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		c, err := dialLocalSession(found)
+		c, _, err := openNativeShell(context.Background(), r.UID, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -57,10 +54,10 @@ func TestDaemonTaskConnectionsDoNotOwnLifetime(t *testing.T) {
 	close(tasks.records[r.UID].(*nativeShellTask).shell.done)
 	tasks.mu.Unlock()
 	registerTestShell(t, tasks, "work", strings.Repeat("d", 32))
-	if _, err := readLocalSession(r.UID); !os.IsNotExist(err) {
+	if _, _, err := openNativeShell(context.Background(), r.UID, ""); !os.IsNotExist(err) {
 		t.Fatalf("ended ID resolved: %v", err)
 	}
-	if c, err := dialLocalSession(r); err == nil {
+	if c, err := dialLocalSessionContext(context.Background(), r, time.Now().Add(5*time.Second)); err == nil {
 		c.Close()
 		t.Fatal("ended ID opened replacement")
 	}
@@ -79,7 +76,7 @@ func TestDaemonTaskNamesSharedWithRequests(t *testing.T) {
 	if err := tasks.Save(r); err != nil {
 		t.Fatal(err)
 	}
-	if err := tasks.Rename(r.ID, "work"); err == nil {
+	if _, _, err := tasks.mutateResource("rename", resourceMutation{Kind: "review", Ref: r.ID, NewName: "work"}); err == nil {
 		t.Fatal("request renamed over a shell")
 	}
 	if err := tasks.Consume(strings.Repeat("c", 32)); err == nil {
@@ -176,7 +173,7 @@ func TestDaemonAdministrationAcrossReleases(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	tasks := startRequestDaemon(t, "0.0.1")
 	_, done := registerTestResource(t, tasks, "forward", "older", strings.Repeat("a", 32))
-	if _, err := nativeShellRecords(); err == nil {
+	if _, err := nativeShells(); err == nil {
 		t.Fatal("normal control accepted a different release")
 	}
 	snapshot, err := daemonAdmin(context.Background(), "snapshot", nil)

@@ -21,14 +21,26 @@ func runReset() error {
 	if err != nil {
 		return err
 	}
-	account, err := daemonDirectory()
+	account, err := daemonLocation()
 	if err != nil {
 		return err
 	}
-	for _, path := range []string{root, cache, filepath.Dir(account)} {
-		if err := validateResetDirectory(path); err != nil {
+	accountRoot := filepath.Dir(account)
+	for _, path := range []*string{&root, &cache, &accountRoot, &account} {
+		checked, err := validateResetDirectory(*path)
+		if err != nil {
 			return err
 		}
+		*path = checked
+	}
+	custom := os.Getenv("SSHORE_STATE_DIR") != ""
+	if !custom {
+		base, err := os.UserConfigDir()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(filepath.Join(base, "sshore"), root)
+		custom = err != nil || rel != "."
 	}
 	setup, err := setupLock()
 	if err != nil {
@@ -56,32 +68,38 @@ func runReset() error {
 	defer owner.Close()
 	// Keep lock inodes stable: a waiting client must never acquire a deleted lock
 	// while another client starts a replacement daemon under a different inode.
-	keep := map[string]bool{
-		setup.Name(): true, startup.Name(): true, owner.Name(): true,
+	keep := make(map[string]bool)
+	for _, lock := range []*os.File{setup, startup, owner} {
+		parent, err := filepath.EvalSymlinks(filepath.Dir(lock.Name()))
+		if err != nil {
+			return err
+		}
+		keep[filepath.Join(parent, filepath.Base(lock.Name()))] = true
 	}
 	if err := resetRuntimeState(reply.Runtime); err != nil {
 		return err
 	}
-	if os.Getenv("SSHORE_STATE_DIR") != "" {
+	if custom {
 		// A custom state directory may contain user files; clear only sshore's
 		// known entries and leave unrelated contents alone.
 		for _, name := range []string{"identity", "shells", "shell-tree", "connections", "approvals", "requests", "mounts", "mount-history", "forwards", "peers", "names", "activity"} {
-			if err := os.RemoveAll(filepath.Join(root, name)); err != nil {
+			if err := removeResetEntry(filepath.Join(root, name), keep); err != nil {
 				return err
 			}
 		}
+		keep[root] = true
 	} else if err := removeResetData(root, keep); err != nil {
 		return err
 	}
 	if err := removeResetData(cache, keep); err != nil {
 		return err
 	}
-	if filepath.Dir(account) == root && os.Getenv("SSHORE_STATE_DIR") != "" {
-		if err := removeResetData(account, keep); err != nil {
+	// The account directory has a fixed layout. Its other files and the
+	// coordination lock files are outside reset's removal set.
+	for _, name := range []string{"daemon.json", "local.log"} {
+		if err := os.Remove(filepath.Join(account, name)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-	} else if err := removeResetData(filepath.Dir(account), keep); err != nil {
-		return err
 	}
 	fmt.Println("Reset complete; local tasks ended and application state and caches cleared.")
 	return nil
@@ -89,49 +107,58 @@ func runReset() error {
 
 // State/cache roots must be dedicated directories, never a home directory,
 // filesystem root, or an ancestor containing the installed executable.
-func validateResetDirectory(path string) error {
+func validateResetDirectory(path string) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return err
+		return "", err
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return err
+		return "", err
 	}
 	executable, err := os.Executable()
 	if err != nil {
-		return err
+		return "", err
 	}
-	if absolute == filepath.Dir(absolute) || absolute == home || resetContains(absolute, executable) {
-		return fmt.Errorf("refusing to reset unsafe state directory: %s", path)
+	sameHome := resetContains(absolute, home) && resetContains(home, absolute)
+	if absolute == filepath.Dir(absolute) || sameHome || resetContains(absolute, executable) {
+		return "", fmt.Errorf("refusing to reset unsafe state directory: %s", path)
 	}
 	info, err := os.Lstat(absolute)
 	if os.IsNotExist(err) {
-		return nil
+		return absolute, nil
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("reset requires a real application directory: %s", path)
+		return "", fmt.Errorf("reset requires a real application directory: %s", path)
 	}
-	return privateStatePath(absolute, true)
+	if homeInfo, err := os.Stat(home); err == nil && os.SameFile(info, homeInfo) {
+		return "", fmt.Errorf("refusing to reset unsafe state directory: %s", path)
+	}
+	real, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", err
+	}
+	realExecutable, err := filepath.EvalSymlinks(executable)
+	if err == nil && resetContains(real, realExecutable) || real == filepath.Dir(real) {
+		return "", fmt.Errorf("refusing to reset unsafe state directory: %s", path)
+	}
+	return real, privateStatePath(absolute, true)
 }
 
 func resetContains(parent, path string) bool {
-	for {
-		if parent == path {
-			return true
-		}
-		next := filepath.Dir(path)
-		if next == path {
-			return false
-		}
-		path = next
-	}
+	relative, err := filepath.Rel(parent, path)
+	return err == nil && filepath.IsLocal(relative)
 }
 
 func removeResetData(root string, keep map[string]bool) error {
+	for protected := range keep {
+		if resetContains(protected, root) {
+			return nil
+		}
+	}
 	entries, err := os.ReadDir(root)
 	if os.IsNotExist(err) {
 		return nil
@@ -140,26 +167,25 @@ func removeResetData(root string, keep map[string]bool) error {
 		return err
 	}
 	for _, entry := range entries {
-		path := filepath.Join(root, entry.Name())
-		if keep[path] {
-			continue
-		}
-		containsLock := false
-		for lock := range keep {
-			if resetContains(path, lock) {
-				containsLock = true
-				break
-			}
-		}
-		if containsLock {
-			if err := removeResetData(path, keep); err != nil {
-				return err
-			}
-		} else if err := os.RemoveAll(path); err != nil {
+		if err := removeResetEntry(filepath.Join(root, entry.Name()), keep); err != nil {
 			return err
 		}
 	}
 	// Empty roots have no remaining state; locked coordination directories stay.
 	_ = os.Remove(root)
 	return nil
+}
+
+func removeResetEntry(path string, keep map[string]bool) error {
+	for protected := range keep {
+		if resetContains(protected, path) {
+			return nil
+		}
+	}
+	for protected := range keep {
+		if resetContains(path, protected) {
+			return removeResetData(path, keep)
+		}
+	}
+	return os.RemoveAll(path)
 }

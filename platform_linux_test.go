@@ -26,21 +26,21 @@ func TestFTPDefaultMountParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o.name = r.name
+	o.Name = r.name
 	cleanup, err := prepareFTPPaths(&o)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	if o.mountpoint != filepath.Join(root, o.name) {
-		t.Fatalf("mountpoint: %s", o.mountpoint)
+	if o.Mountpoint != filepath.Join(root, o.Name) {
+		t.Fatalf("mountpoint: %s", o.Mountpoint)
 	}
 	cleanup()
 	if err := os.Chmod(root, 0777); err != nil {
 		t.Fatal(err)
 	}
 	defer os.Chmod(root, 0755)
-	o.mountpoint = ""
+	o.Mountpoint = ""
 	if _, err := prepareFTPPaths(&o); err == nil {
 		t.Fatal("accepted other-user-writable mount parent")
 	}
@@ -81,7 +81,7 @@ func TestForwardRequiresMatchingRelease(t *testing.T) {
 				t.Fatal(e)
 			}
 		}
-		cmd := exec.Command("/bin/sh", "-c", forwardWatchCommand("fixture", server))
+		cmd := exec.Command("/bin/sh", "-c", forwardRemoteCommand(forwardConfig{Host: "fixture", Server: server}))
 		cmd.Stdin = strings.NewReader("ignored metadata\n")
 		b, e := cmd.CombinedOutput()
 		if e == nil || !strings.Contains(string(b), "sshore install") || strings.Contains(string(b), forwardReadyMarker) {

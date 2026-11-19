@@ -1,13 +1,14 @@
 package files
 
 import (
+	"container/list"
 	"context"
 	"os"
 	"path"
 	"slices"
 	"strings"
 	"sync"
-
+	"sync/atomic"
 	"time"
 )
 
@@ -18,7 +19,7 @@ const metadataRefreshMaxWait = 500 * time.Millisecond
 const metadataRefreshInterval = 100 * time.Millisecond
 
 type metadataRefreshTask struct {
-	priority    uint64
+	entry       *list.Element
 	first, last time.Time
 }
 
@@ -35,18 +36,16 @@ func (t metadataRefreshTask) readyAt() time.Time {
 type metadataRefresh struct {
 	fs          *ftpFS
 	ctx         context.Context
-	cancel      context.CancelFunc
+	fetch       func(context.Context, ftpCacheKey) (ftpCacheValue, error)
 	wake        chan struct{}
 	done        chan struct{}
-	queue       map[string]metadataRefreshTask
-	next        uint64
+	queue       []metadataRefreshTask // Oldest access first.
 	nextAllowed time.Time
 	failures    int
 }
 
-func startMetadataRefresh(parent context.Context, fs *ftpFS) *metadataRefresh {
-	ctx, cancel := context.WithCancel(parent)
-	r := &metadataRefresh{fs: fs, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{}), queue: make(map[string]metadataRefreshTask)}
+func startMetadataRefresh(ctx context.Context, fs *ftpFS) *metadataRefresh {
+	r := &metadataRefresh{fs: fs, ctx: ctx, fetch: fs.fetchMetadata, wake: make(chan struct{}, 1), done: make(chan struct{})}
 	fs.cache.mu.Lock()
 	fs.cache.refresh = r
 	fs.cache.mu.Unlock()
@@ -54,39 +53,43 @@ func startMetadataRefresh(parent context.Context, fs *ftpFS) *metadataRefresh {
 	return r
 }
 
-func (r *metadataRefresh) scheduleLocked(key string) {
+func (r *metadataRefresh) enqueueLocked(e *list.Element) bool {
 	if r == nil || r.ctx.Err() != nil {
-		return
+		return false
 	}
-	e := r.fs.cache.entries[key]
-	if e == nil {
-		return
-	}
+	c := &r.fs.cache
 	v := e.Value.(ftpCacheValue)
-	if v.prefetched || !time.Now().Before(v.expires) || (v.fetch == nil && !strings.HasPrefix(key, "s:")) {
-		return
+	if v.prefetched || v.revision == c.revision {
+		return false
 	}
 	now := time.Now()
-	task, exists := r.queue[key]
-	if !exists {
-		task.first = now
-		r.fs.cache.counters.RefreshQueued++
-	} else {
-		r.fs.cache.counters.RefreshCoalesced++
+	if !now.Before(v.expires) || r.fetch == nil {
+		return false
 	}
-	r.next++
-	task.last, task.priority = now, r.next
-	r.queue[key] = task
-	if len(r.queue) > metadataRefreshLimit {
-		oldest := key
-		for k, task := range r.queue {
-			if task.priority < r.queue[oldest].priority {
-				oldest = k
-			}
+	task := metadataRefreshTask{entry: e, first: now, last: now}
+	coalesced := false
+	r.queue = slices.DeleteFunc(r.queue, func(pending metadataRefreshTask) bool {
+		if pending.entry == e {
+			task.first = pending.first
+			coalesced = true
+			return true
 		}
-		delete(r.queue, oldest)
-		r.fs.cache.counters.RefreshDropped++
+		return pending.entry.Value == nil
+	})
+	if coalesced {
+		c.counters.RefreshCoalesced++
+	} else {
+		c.counters.RefreshQueued++
+		if len(r.queue) == metadataRefreshLimit {
+			r.queue = slices.Delete(r.queue, 0, 1)
+			c.counters.RefreshDropped++
+		}
 	}
+	r.queue = append(r.queue, task)
+	return true
+}
+
+func (r *metadataRefresh) signal() {
 	select {
 	case r.wake <- struct{}{}:
 	default:
@@ -97,65 +100,71 @@ func (r *metadataRefresh) scheduleRecentLocked() {
 	if r == nil {
 		return
 	}
-	var keys []string
-	for e := r.fs.cache.lru.Front(); e != nil && len(keys) < metadataRefreshRecent; e = e.Next() {
-		keys = append(keys, e.Value.(ftpCacheValue).key)
+	c := &r.fs.cache
+	var last *list.Element
+	for e, count := c.lru.Front(), 0; e != nil && count < metadataRefreshRecent; e, count = e.Next(), count+1 {
+		last = e
 	}
-	for _, key := range slices.Backward(keys) {
-		r.scheduleLocked(key)
+	for e := last; e != nil; e = e.Prev() {
+		r.enqueueLocked(e)
+	}
+	// Completing the last mutation can unblock work already in the queue.
+	if len(r.queue) != 0 {
+		r.signal()
 	}
 }
 
-// A negative wait means there is no runnable work. Expired and superseded
-// entries are retired before they can consume request capacity.
-func (r *metadataRefresh) nextLocked(now time.Time) (string, time.Duration) {
+// A negative wait means there is no runnable work. Detached and expired nodes
+// can be discarded in the same pass that picks the next refresh.
+func (r *metadataRefresh) nextLocked(now time.Time) (int, time.Duration) {
 	c := &r.fs.cache
 	if c.writers != 0 || len(c.mutations) != 0 {
-		return "", -1
+		return -1, -1
 	}
-	var key string
-	var priority uint64
+	chosen := -1
 	var earliest time.Time
-	for k, task := range r.queue {
-		e := c.entries[k]
-		if e == nil || e.Value.(ftpCacheValue).prefetched || e.Value.(ftpCacheValue).revision == c.revision || !now.Before(e.Value.(ftpCacheValue).expires) {
-			delete(r.queue, k)
+	live := r.queue[:0]
+	for _, task := range r.queue {
+		v, liveEntry := task.entry.Value.(ftpCacheValue)
+		if !liveEntry || !now.Before(v.expires) {
 			continue
 		}
 		ready := task.readyAt()
 		if earliest.IsZero() || ready.Before(earliest) {
 			earliest = ready
 		}
-		if !ready.After(now) && task.priority > priority {
-			key, priority = k, task.priority
+		if !ready.After(now) {
+			chosen = len(live)
 		}
+		live = append(live, task)
 	}
+	clear(r.queue[len(live):])
+	r.queue = live
 	if earliest.IsZero() {
-		return "", -1
+		return -1, -1
 	}
 	if r.nextAllowed.After(earliest) {
 		earliest = r.nextAllowed
 	}
 	if earliest.After(now) {
-		return "", earliest.Sub(now)
+		return -1, earliest.Sub(now)
 	}
-	return key, 0
+	return chosen, 0
 }
 
 func (r *metadataRefresh) run() {
 	defer close(r.done)
+	timer := time.NewTimer(metadataRefreshInterval)
+	timer.Stop()
+	defer timer.Stop()
 	for r.ctx.Err() == nil {
-		r.fs.cache.mu.Lock()
-		_, delay := r.nextLocked(time.Now())
-		r.fs.cache.mu.Unlock()
+		delay := r.step()
 		if delay == 0 {
-			r.step()
 			continue
 		}
-		var timer *time.Timer
 		var tick <-chan time.Time
 		if delay > 0 {
-			timer = time.NewTimer(delay)
+			timer.Reset(delay)
 			tick = timer.C
 		}
 		select {
@@ -163,36 +172,30 @@ func (r *metadataRefresh) run() {
 		case <-r.wake:
 		case <-tick:
 		}
-		if timer != nil {
-			timer.Stop()
-		}
+		timer.Stop()
 	}
 }
 
-func (r *metadataRefresh) step() bool {
+// Run one ready verification or return the delay before the next one.
+func (r *metadataRefresh) step() time.Duration {
 	c := &r.fs.cache
 	c.mu.Lock()
-	key, wait := r.nextLocked(time.Now())
-	if r.ctx.Err() != nil || wait != 0 || key == "" {
+	index, wait := r.nextLocked(time.Now())
+	if r.ctx.Err() != nil || wait != 0 {
 		c.mu.Unlock()
-		return false
+		return wait
 	}
-	delete(r.queue, key)
-	e := c.entries[key]
-	if e == nil {
-		c.mu.Unlock()
-		return true
-	}
+	e := r.queue[index].entry
+	r.queue = slices.Delete(r.queue, index, index+1)
 	old := e.Value.(ftpCacheValue)
-	if old.revision == c.revision || !time.Now().Before(old.expires) {
-		c.mu.Unlock()
-		return true
-	}
-	token, revision := ftpCacheToken{c.epoch, time.Now()}, c.revision
-	r.nextAllowed = token.started.Add(metadataRefreshInterval)
+	key := old.key
+	started, revision := time.Now(), c.revision
+	r.nextAllowed = started.Add(metadataRefreshInterval)
 	c.mu.Unlock()
 
-	fresh, err := r.fetch(old)
+	ctx, cancel := context.WithTimeout(r.ctx, 2*time.Second)
+	fresh, err := key.read(ctx, r.fetch, started, revision)
+	cancel()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err != nil && !os.IsNotExist(err) && !os.IsPermission(err) && r.ctx.Err() == nil {
@@ -202,77 +205,46 @@ func (r *metadataRefresh) step() bool {
 		r.failures = 0
 	}
 	// A later mutation, notification, eviction or foreground fetch wins.
-	if r.ctx.Err() != nil || c.entries[key] != e || c.revision != revision || c.epoch != token.epoch {
+	if r.ctx.Err() != nil || c.entries[key] != e || c.revision != revision {
 		c.counters.RefreshDiscarded++
-		return true
+		return 0
 	}
 	if err != nil {
 		c.removeLocked(e)
 		c.counters.RefreshErrors++
-		return true
+		return 0
 	}
-	// Verification must not make an old entry look like a new user access.
-	var previous string
-	if before := e.Prev(); before != nil {
-		previous = before.Value.(ftpCacheValue).key
+	if c.storeLocked(fresh, true) {
+		c.counters.RefreshCompleted++
+	} else {
+		c.counters.RefreshDiscarded++
 	}
-	fresh.key, fresh.scope, fresh.fetch = key, old.scope, old.fetch
-	fresh.revision, fresh.prefetched = revision, old.prefetched
-	ttl := ftpMetadataTTL
-	if strings.HasPrefix(key, "v:") {
-		ttl = ftpCapacityTTL
-	}
-	if fresh.directory {
-		ttl = ftpDirectoryTTL
-		c.directoryLocked(token, strings.TrimPrefix(key, "d:"), fresh.entries)
-	}
-	fresh.expires = token.started.Add(ttl)
-	c.putLocked(token, fresh)
-	if current, before := c.entries[key], c.entries[previous]; current != nil && before != nil {
-		c.lru.MoveAfter(current, before)
-	}
-	c.counters.RefreshCompleted++
-	return true
-}
-
-func (r *metadataRefresh) fetch(v ftpCacheValue) (ftpCacheValue, error) {
-	if strings.HasPrefix(v.key, "d:") {
-		ctx, cancel := context.WithTimeout(r.ctx, 2*time.Second)
-		defer cancel()
-		entries, err := r.fs.fetchDirectory(ctx, v.key[2:])
-		return directoryValue(v.key[2:], entries, false), err
-	}
-	if strings.HasPrefix(v.key, "s:") {
-		info, err := r.fs.client.Stat(v.key[2:])
-		return ftpCacheValue{info: info, bytes: 256 + len(v.key[2:]) + ftpInfoBytes(info)}, err
-	}
-	fresh, err := v.fetch()
-	fresh.bytes += len(v.scope)
-	return fresh, err
+	return 0
 }
 
 const directoryPrefetchCount = 10
 const directoryPrefetchConcurrency = 4
 
+type directoryPrefetchBatch struct {
+	targets [directoryPrefetchCount]string
+	ctx     context.Context
+	cancel  context.CancelFunc
+}
+
 type directoryPrefetch struct {
 	fs             *ftpFS
 	ctx            context.Context
-	cancel         context.CancelFunc
 	mu             sync.Mutex
 	history, delta VisitHistory
 	lastParent     string
-	targets        [directoryPrefetchCount]string
 	scheduled      time.Time
-	batch          context.Context
-	cancelBatch    context.CancelFunc
-	pending        [directoryPrefetchCount]string
-	wake, done     chan struct{}
+	latest         *directoryPrefetchBatch
+	pending        chan *directoryPrefetchBatch
+	done           chan struct{}
 }
 
-func startDirectoryPrefetch(parent context.Context, fs *ftpFS, history VisitHistory) *directoryPrefetch {
-	ctx, cancel := context.WithCancel(parent)
-
-	p := &directoryPrefetch{fs: fs, ctx: ctx, cancel: cancel, history: history, delta: VisitHistory{}, wake: make(chan struct{}, 1), done: make(chan struct{})}
+func startDirectoryPrefetch(ctx context.Context, fs *ftpFS, history VisitHistory) *directoryPrefetch {
+	p := &directoryPrefetch{fs: fs, ctx: ctx, history: history, delta: VisitHistory{}, pending: make(chan *directoryPrefetchBatch, 1), done: make(chan struct{})}
 	go p.run()
 	return p
 }
@@ -294,55 +266,64 @@ func (p *directoryPrefetch) schedule(parent string, entries []os.FileInfo) {
 		key := strings.TrimPrefix(parent, prefix)
 		p.delta.add(key, 1, now)
 	}
-	var best [directoryPrefetchCount]string
-	var scores [directoryPrefetchCount]float64
+	type candidate struct {
+		dir    string
+		weight float64
+	}
+	var ranked [directoryPrefetchCount]candidate
 	visible := 0
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".") || !e.IsDir() || e.Mode()&os.ModeSymlink != 0 || ValidateName(e.Name()) != nil {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") || !e.IsDir() || e.Mode()&os.ModeSymlink != 0 || ValidateName(name) != nil {
 			continue
 		}
 		visible++
-		dir := path.Join(parent, e.Name())
+		dir := path.Join(parent, name)
 		key := strings.TrimPrefix(dir, prefix)
-		w := p.history[key].weight(now) + p.delta[key].weight(now)
-		if visible > directoryPrefetchCount && w == 0 {
+		weight := p.history[key].weight(now) + p.delta[key].weight(now)
+		if visible > directoryPrefetchCount && weight == 0 {
 			continue
 		}
-		for i, score := range scores {
-			if dir == best[i] {
+		for i, other := range ranked[:] {
+			if dir == other.dir {
 				break
 			}
-			if best[i] == "" || w > score || w == score && dir < best[i] {
-				copy(scores[i+1:], scores[i:])
-				copy(best[i+1:], best[i:])
-				scores[i], best[i] = w, dir
-				break
-			}
-		}
-	}
-	if visible > directoryPrefetchCount {
-		for i, score := range scores {
-			if score == 0 {
-				clear(best[i:])
+			if other.dir == "" || weight > other.weight || weight == other.weight && dir < other.dir {
+				copy(ranked[i+1:], ranked[i:])
+				ranked[i] = candidate{dir: dir, weight: weight}
 				break
 			}
 		}
 	}
-	if parent == p.lastParent && best == p.targets && now.Sub(p.scheduled) < ftpDirectoryTTL {
+	var best [directoryPrefetchCount]string
+	for i, entry := range ranked {
+		if visible > directoryPrefetchCount && entry.weight == 0 {
+			break
+		}
+		best[i] = entry.dir
+	}
+	var previous [directoryPrefetchCount]string
+	if p.latest != nil {
+		previous = p.latest.targets
+	}
+	if parent == p.lastParent && best == previous && now.Sub(p.scheduled) < ftpDirectoryTTL {
 		return
 	}
-	p.lastParent, p.targets, p.scheduled = parent, best, now
-	if p.cancelBatch != nil {
-		p.cancelBatch()
+	p.lastParent, p.scheduled = parent, now
+	if p.latest != nil {
+		p.latest.cancel()
+		p.latest = nil
 	}
-	p.pending = best
-	if best[0] == "" {
-		return
-	}
-	p.batch, p.cancelBatch = context.WithCancel(p.ctx)
+	// Scheduling owns replacement of the single pending batch. The worker
+	// can take the immutable batch directly without reacquiring the lock.
 	select {
-	case p.wake <- struct{}{}:
+	case <-p.pending:
 	default:
+	}
+	if best[0] != "" {
+		ctx, cancel := context.WithCancel(p.ctx)
+		p.latest = &directoryPrefetchBatch{targets: best, ctx: ctx, cancel: cancel}
+		p.pending <- p.latest
 	}
 }
 func (p *directoryPrefetch) run() {
@@ -351,37 +332,38 @@ func (p *directoryPrefetch) run() {
 		select {
 		case <-p.ctx.Done():
 			return
-		case <-p.wake:
-		}
-		p.mu.Lock()
-		dirs, batch := p.pending, p.batch
-		p.pending = [directoryPrefetchCount]string{}
-		p.mu.Unlock()
-		jobs := make(chan string, len(dirs))
-		for _, dir := range dirs {
-			if dir == "" {
-				break
+		case batch := <-p.pending:
+			if batch.ctx.Err() == nil {
+				p.prefetchBatch(batch.ctx, batch.targets[:])
 			}
-			jobs <- dir
+			batch.cancel()
 		}
-		close(jobs)
-		var workers sync.WaitGroup
-		for range min(len(jobs), directoryPrefetchConcurrency) {
-			workers.Go(func() {
-				for dir := range jobs {
-					if batch.Err() != nil {
-						return
-					}
-					p.fs.notifications.ensure(dir)
-					if batch.Err() != nil {
-						return
-					}
-					ctx, cancel := context.WithTimeout(batch, 2*time.Second)
-					_, _ = p.fs.loadDirectoryMode(ctx, dir, true)
-					cancel()
-				}
-			})
-		}
-		workers.Wait()
 	}
+}
+
+func (p *directoryPrefetch) prefetchBatch(ctx context.Context, dirs []string) {
+	if end := slices.Index(dirs, ""); end >= 0 {
+		dirs = dirs[:end]
+	}
+	var next atomic.Int32
+	var workers sync.WaitGroup
+	for range min(len(dirs), directoryPrefetchConcurrency) {
+		workers.Go(func() {
+			for ctx.Err() == nil {
+				i := int(next.Add(1)) - 1
+				if i >= len(dirs) {
+					return
+				}
+				dir := dirs[i]
+				p.fs.notifications.ensure(ctx, dir)
+				if ctx.Err() != nil {
+					return
+				}
+				listing, cancel := context.WithTimeout(ctx, 2*time.Second)
+				_, _ = p.fs.loadDirectoryMode(listing, dir, true)
+				cancel()
+			}
+		})
+	}
+	workers.Wait()
 }

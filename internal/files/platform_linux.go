@@ -16,7 +16,6 @@ import (
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
-	"github.com/pkg/sftp"
 	"golang.org/x/sys/unix"
 )
 
@@ -55,8 +54,12 @@ type ftpNode struct {
 	backend *ftpFS
 }
 
-func (n *ftpNode) name() string   { return n.Path(nil) }
-func (n *ftpNode) remote() string { p, _ := n.backend.remotePath(n.name()); return p }
+func (n *ftpNode) name() string { return n.Path(nil) }
+func (n *ftpNode) childName(name string) string {
+	// Preserve the components until remotePath validates them.
+	return n.name() + "/" + name
+}
+func (n *ftpNode) remote() (string, error) { return n.backend.remotePath(n.name()) }
 func ftpMode(i os.FileInfo) uint32 {
 	m := uint32(i.Mode().Perm())
 	switch {
@@ -85,7 +88,10 @@ func ftpAttr(i os.FileInfo, a *fuse.Attr) {
 	a.Blocks = (a.Size + 511) / 512
 }
 func (n *ftpNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	p := path.Join(n.remote(), name)
+	p, e := n.backend.remotePath(n.childName(name))
+	if e != nil {
+		return nil, ftpErrno(e)
+	}
 	i, e := n.backend.lstat(p)
 	if e != nil {
 		return nil, ftpErrno(e)
@@ -94,12 +100,25 @@ func (n *ftpNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 	return n.NewInode(ctx, &ftpNode{backend: n.backend}, fs.StableAttr{Mode: ftpMode(i)}), 0
 }
 func (n *ftpNode) Getattr(ctx context.Context, h fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	f, _ := h.(*ftpLinuxFile)
+	var p string
+	if f == nil {
+		var err error
+		p, err = n.remote()
+		if err != nil {
+			return ftpErrno(err)
+		}
+	}
+	return n.getattrAt(p, f, out)
+}
+
+func (n *ftpNode) getattrAt(p string, f *ftpLinuxFile, out *fuse.AttrOut) syscall.Errno {
 	var i os.FileInfo
 	var e error
-	if f, ok := h.(*ftpLinuxFile); ok {
+	if f != nil {
 		i, e = f.file.Stat()
 	} else {
-		i, e = n.backend.lstat(n.remote())
+		i, e = n.backend.lstat(p)
 	}
 	if e != nil {
 		return ftpErrno(e)
@@ -108,22 +127,31 @@ func (n *ftpNode) Getattr(ctx context.Context, h fs.FileHandle, out *fuse.AttrOu
 	return 0
 }
 func (n *ftpNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	p, e := n.backend.remotePath(n.name())
+	p, e := n.remote()
 	if e != nil {
 		return nil, ftpErrno(e)
 	}
-	list, e := n.backend.readDirectory(p)
+	dir, e := n.backend.openDirectory(p)
 	if e != nil {
 		return nil, ftpErrno(e)
 	}
-	entries := make([]fuse.DirEntry, 0, len(list))
-	for _, i := range list {
-		if i.Name() == "." || i.Name() == ".." {
-			continue
-		}
-		entries = append(entries, fuse.DirEntry{Name: i.Name(), Mode: ftpMode(i)})
+	return &ftpLinuxDirStream{ftpDirectory: dir}, 0
+}
+
+type ftpLinuxDirStream struct{ ftpDirectory }
+
+func (d *ftpLinuxDirStream) HasNext() bool { return d.hasNext() }
+func (d *ftpLinuxDirStream) Next() (fuse.DirEntry, syscall.Errno) {
+	entry := d.take(1)[0]
+	return fuse.DirEntry{Name: entry.Name(), Mode: ftpMode(entry), Off: uint64(d.offset)}, 0
+}
+func (d *ftpLinuxDirStream) Close() { d.ftpDirectory = ftpDirectory{} }
+func (d *ftpLinuxDirStream) Seekdir(_ context.Context, off uint64) syscall.Errno {
+	if off > uint64(len(d.entries)) {
+		return syscall.EINVAL
 	}
-	return fs.NewListDirStream(entries), 0
+	d.offset = int(off)
+	return 0
 }
 
 // Without KEEP_CACHE, reopening invalidates cached content. WritebackCache is
@@ -143,7 +171,7 @@ func (n *ftpNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32
 	return &ftpLinuxFile{file: h}, n.openFlags(), 0
 }
 func (n *ftpNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (*fs.Inode, fs.FileHandle, uint32, syscall.Errno) {
-	h, e := n.backend.open(path.Join(n.name(), name), int(flags)|os.O_CREATE, os.FileMode(mode))
+	h, e := n.backend.open(n.childName(name), int(flags)|os.O_CREATE, os.FileMode(mode))
 	if e != nil {
 		return nil, nil, 0, ftpErrno(e)
 	}
@@ -156,16 +184,16 @@ func (n *ftpNode) Create(ctx context.Context, name string, flags uint32, mode ui
 	return n.NewInode(ctx, &ftpNode{backend: n.backend}, fs.StableAttr{Mode: ftpMode(i)}), &ftpLinuxFile{file: h}, n.openFlags(), 0
 }
 func (n *ftpNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	if e := n.backend.mkdir(path.Join(n.name(), name), os.FileMode(mode)); e != nil {
+	if e := n.backend.mkdir(n.childName(name), os.FileMode(mode)); e != nil {
 		return nil, ftpErrno(e)
 	}
 	return n.Lookup(ctx, name, out)
 }
 func (n *ftpNode) Unlink(ctx context.Context, name string) syscall.Errno {
-	return ftpErrno(n.backend.remove(path.Join(n.name(), name), false))
+	return ftpErrno(n.backend.remove(n.childName(name), false))
 }
 func (n *ftpNode) Rmdir(ctx context.Context, name string) syscall.Errno {
-	return ftpErrno(n.backend.remove(path.Join(n.name(), name), true))
+	return ftpErrno(n.backend.remove(n.childName(name), true))
 }
 func (n *ftpNode) Rename(ctx context.Context, name string, parent fs.InodeEmbedder, newname string, flags uint32) syscall.Errno {
 	if flags != 0 {
@@ -175,27 +203,32 @@ func (n *ftpNode) Rename(ctx context.Context, name string, parent fs.InodeEmbedd
 	if !ok {
 		return syscall.EXDEV
 	}
-	return ftpErrno(n.backend.rename(path.Join(n.name(), name), path.Join(p.name(), newname)))
+	return ftpErrno(n.backend.rename(n.childName(name), p.childName(newname)))
 }
 
 // A remote symlink must never resolve into the local machine outside the
 // mount. Rewrite absolute targets within the selected remote tree to relative
 // paths; reject escaping links. The SFTP account can still follow links remotely.
 func (n *ftpNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
-	target, e := n.backend.client.ReadLink(n.remote())
+	p, e := n.remote()
 	if e != nil {
 		return nil, ftpErrno(e)
 	}
+	target, e := n.backend.client.ReadLink(p)
+	if e != nil {
+		return nil, ftpErrno(e)
+	}
+	parent := path.Dir(p)
 	resolved := target
 	if !path.IsAbs(resolved) {
-		resolved = path.Join(path.Dir(n.remote()), resolved)
+		resolved = path.Join(parent, resolved)
 	}
 	resolved = path.Clean(resolved)
 	root := n.backend.root
 	if resolved != root && !strings.HasPrefix(resolved, strings.TrimSuffix(root, "/")+"/") {
 		return nil, syscall.EACCES
 	}
-	relative, e := filepath.Rel(path.Dir(n.remote()), resolved)
+	relative, e := filepath.Rel(parent, resolved)
 	if e != nil {
 		return nil, syscall.EIO
 	}
@@ -203,7 +236,6 @@ func (n *ftpNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
 }
 
 func (n *ftpNode) Setattr(ctx context.Context, h fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
-	defer n.backend.cache.beginMutation(n.remote())()
 	if e := n.backend.writable(); e != nil {
 		return ftpErrno(e)
 	}
@@ -213,50 +245,34 @@ func (n *ftpNode) Setattr(ctx context.Context, h fs.FileHandle, in *fuse.SetAttr
 	if _, ok := in.GetGID(); ok {
 		return syscall.ENOTSUP
 	}
-	p := n.remote()
+	p, err := n.remote()
+	if err != nil {
+		return ftpErrno(err)
+	}
+	f, _ := h.(*ftpLinuxFile)
+	var opened *ftpFile
+	if f != nil {
+		opened = f.file
+	}
+	var update ftpAttributeUpdate
 	if size, ok := in.GetSize(); ok {
-		var e error
-		if f, ok := h.(*ftpLinuxFile); ok {
-			e = f.file.Truncate(int64(size))
-		} else {
-			e = n.backend.client.Truncate(p, int64(size))
-		}
-		if e != nil {
-			return ftpErrno(e)
-		}
+		length := int64(size)
+		update.size = &length
 	}
 	if mode, ok := in.GetMode(); ok {
-		var e error
-		if f, ok := h.(*ftpLinuxFile); ok {
-			e = f.file.Chmod(os.FileMode(mode))
-		} else {
-			e = n.backend.client.Chmod(p, os.FileMode(mode))
-		}
-		if e != nil {
-			return ftpErrno(e)
-		}
+		perm := os.FileMode(mode)
+		update.mode = &perm
 	}
-	at, aok := in.GetATime()
-	mt, mok := in.GetMTime()
-	if aok || mok {
-		info, e := n.backend.client.Stat(p)
-		if e != nil {
-			return ftpErrno(e)
-		}
-		if !aok {
-			at = info.ModTime()
-			if raw, ok := info.Sys().(*sftp.FileStat); ok {
-				at = time.Unix(int64(raw.Atime), 0)
-			}
-		}
-		if !mok {
-			mt = info.ModTime()
-		}
-		if e = n.backend.client.Chtimes(p, at, mt); e != nil {
-			return ftpErrno(e)
-		}
+	if at, ok := in.GetATime(); ok {
+		update.atime = &at
 	}
-	return n.Getattr(ctx, h, out)
+	if mt, ok := in.GetMTime(); ok {
+		update.mtime = &mt
+	}
+	if err := n.backend.setAttributes(p, opened, update); err != nil {
+		return ftpErrno(err)
+	}
+	return n.getattrAt(p, f, out)
 }
 
 type ftpLinuxFile struct{ file *ftpFile }
@@ -281,7 +297,11 @@ func (f *ftpLinuxFile) Fsync(ctx context.Context, flags uint32) syscall.Errno {
 var _ fs.NodeStatfser = (*ftpNode)(nil)
 
 func (n *ftpNode) Statfs(_ context.Context, out *fuse.StatfsOut) syscall.Errno {
-	s, err := ftpRemoteCapacity(n.backend.client, n.remote())
+	p, err := n.remote()
+	if err != nil {
+		return ftpErrno(err)
+	}
+	s, err := n.backend.cachedCapacity(p)
 	if err != nil {
 		return ftpErrno(err)
 	}

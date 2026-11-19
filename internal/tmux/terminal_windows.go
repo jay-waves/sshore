@@ -2,11 +2,12 @@ package tmux
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -18,17 +19,16 @@ import (
 type Terminal struct {
 	input, output *os.File
 	console       windows.Handle
-	process       windows.Handle
 	job           windows.Handle
 	pid           int
-	once          sync.Once
+	closePipes    sync.Once
+	closeHandles  sync.Once
 	mu            sync.Mutex
-	closed        bool
 	size          Size
 	waitResult    func() error
 }
 
-func Start(c Config) (*Terminal, error) {
+func Start(c Config) (result *Terminal, _ error) {
 	if err := c.Size.validate(); err != nil {
 		return nil, err
 	}
@@ -37,6 +37,10 @@ func Start(c Config) (*Terminal, error) {
 		return nil, err
 	}
 	path, err = filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	application, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, err
 	}
@@ -55,78 +59,50 @@ func Start(c Config) (*Terminal, error) {
 			return nil, err
 		}
 	}
+	block, err := terminalEnvironment(c.Env)
+	if err != nil {
+		return nil, err
+	}
 	var env *uint16
-	var block []uint16
-	if c.Env != nil {
-		items := make([]string, 0, len(c.Env)+1)
-		seen := make(map[string]bool)
-		for i := len(c.Env) - 1; i >= 0; i-- {
-			value := c.Env[i]
-			offset := 0
-			if strings.HasPrefix(value, "=") {
-				offset = 1
-			}
-			split := strings.IndexByte(value[offset:], '=')
-			if split < 0 {
-				return nil, fmt.Errorf("invalid terminal environment entry")
-			}
-			key := strings.ToUpper(value[:offset+split])
-			if !seen[key] {
-				items = append(items, value)
-				seen[key] = true
-			}
-		}
-		if !seen["SYSTEMROOT"] {
-			items = append(items, "SYSTEMROOT="+os.Getenv("SYSTEMROOT"))
-		}
-		sort.SliceStable(items, func(i, j int) bool { return strings.ToUpper(items[i]) < strings.ToUpper(items[j]) })
-		for _, v := range items {
-			if v == "" {
-				return nil, fmt.Errorf("empty terminal environment entry")
-			}
-			u, e := windows.UTF16FromString(v)
-			if e != nil {
-				return nil, e
-			}
-			block = append(block, u...)
-		}
-		block = append(block, 0)
-		if len(block) == 1 {
-			block = append(block, 0)
-		}
+	if len(block) != 0 {
 		env = &block[0]
 	}
+	t := &Terminal{size: c.Size}
+	// Release the child-facing pipe ends before rollback or starting the waiter.
+	defer func() {
+		if result == nil {
+			_ = t.Close()
+			return
+		}
+		// ConPTY keeps its output pipe open after the child exits.
+		go t.Wait()
+	}()
 	inR, inW, err := consolePipe()
 	if err != nil {
 		return nil, err
 	}
+	t.input = inW
 	defer inR.Close()
 	outR, outW, err := consolePipe()
 	if err != nil {
-		inW.Close()
 		return nil, err
 	}
+	t.output = outR
 	defer outW.Close()
-	t := &Terminal{input: inW, output: outR, size: c.Size}
-	t.waitResult = sync.OnceValue(t.wait)
 	t.job, err = windows.CreateJobObject(nil, nil)
 	if err != nil {
-		t.Close()
 		return nil, err
 	}
 	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
 	limits.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 	if _, err = windows.SetInformationJobObject(t.job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
-		t.Close()
 		return nil, err
 	}
 	if err = windows.CreatePseudoConsole(windows.Coord{X: int16(c.Size.Cols), Y: int16(c.Size.Rows)}, windows.Handle(inR.Fd()), windows.Handle(outW.Fd()), 0, &t.console); err != nil {
-		t.Close()
 		return nil, err
 	}
 	attrs, err := windows.NewProcThreadAttributeList(2)
 	if err != nil {
-		t.Close()
 		return nil, err
 	}
 	defer attrs.Delete()
@@ -134,13 +110,11 @@ func Start(c Config) (*Terminal, error) {
 	// Reinterpret the native handle without a uintptr-to-Go-pointer conversion.
 	consolePointer := *(*unsafe.Pointer)(unsafe.Pointer(&t.console))
 	if err = attrs.Update(windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, consolePointer, unsafe.Sizeof(t.console)); err != nil {
-		t.Close()
 		return nil, err
 	}
 	// Assign the job atomically with process creation, before any child code runs.
 	const jobListAttribute = 0x0002000D // PROC_THREAD_ATTRIBUTE_JOB_LIST
 	if err = attrs.Update(jobListAttribute, unsafe.Pointer(&t.job), unsafe.Sizeof(t.job)); err != nil {
-		t.Close()
 		return nil, err
 	}
 	si := windows.StartupInfoEx{}
@@ -153,27 +127,50 @@ func Start(c Config) (*Terminal, error) {
 	si.StdErr = windows.InvalidHandle
 	si.ProcThreadAttributeList = attrs.List()
 	var pi windows.ProcessInformation
-	application, err := windows.UTF16PtrFromString(path)
-	if err != nil {
-		t.Close()
-		return nil, err
-	}
 	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT)
 	err = windows.CreateProcess(application, &line[0], nil, nil, false, flags, env, dir, &si.StartupInfo, &pi)
 	runtime.KeepAlive(block)
 	runtime.KeepAlive(attrs)
 	if err != nil {
-		t.Close()
 		return nil, err
 	}
 	windows.CloseHandle(pi.Thread)
-	t.process = pi.Process
 	t.pid = int(pi.ProcessId)
-	// ConPTY keeps its output pipe open after the client process exits. Reap
-	// independently so closing the console can finish the active output reader.
-	go t.Wait()
+	t.waitResult = sync.OnceValue(func() error { return t.wait(pi.Process) })
 	return t, nil
 }
+
+func terminalEnvironment(env []string) ([]uint16, error) {
+	if env == nil {
+		return nil, nil
+	}
+	entries := make(map[string]string, len(env)+1)
+	for _, value := range env {
+		// A drive's working directory uses a name such as =C:.
+		offset := 0
+		if strings.HasPrefix(value, "=") {
+			offset = 1
+		}
+		split := strings.IndexByte(value[offset:], '=')
+		if split < 0 {
+			return nil, fmt.Errorf("invalid terminal environment entry")
+		}
+		entries[strings.ToUpper(value[:offset+split])] = value
+	}
+	if _, ok := entries["SYSTEMROOT"]; !ok {
+		entries["SYSTEMROOT"] = "SYSTEMROOT=" + os.Getenv("SYSTEMROOT")
+	}
+	var block []uint16
+	for _, name := range slices.Sorted(maps.Keys(entries)) {
+		entry, err := windows.UTF16FromString(entries[name])
+		if err != nil {
+			return nil, err
+		}
+		block = append(block, entry...)
+	}
+	return append(block, 0), nil
+}
+
 func (t *Terminal) Read(p []byte) (int, error)  { return t.output.Read(p) }
 func (t *Terminal) Write(p []byte) (int, error) { return t.input.Write(p) }
 func (t *Terminal) PID() int                    { return t.pid }
@@ -183,7 +180,7 @@ func (t *Terminal) Resize(s Size) error {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.closed {
+	if t.console == 0 {
 		return os.ErrClosed
 	}
 	if t.size == s {
@@ -198,14 +195,14 @@ func (t *Terminal) Resize(s Size) error {
 
 // Wait reaps the process once; concurrent callers receive the same result.
 func (t *Terminal) Wait() error { return t.waitResult() }
-func (t *Terminal) wait() error {
-	defer windows.CloseHandle(t.process)
+func (t *Terminal) wait(process windows.Handle) error {
+	defer windows.CloseHandle(process)
 	defer t.closeConsole()
-	if _, err := windows.WaitForSingleObject(t.process, windows.INFINITE); err != nil {
+	if _, err := windows.WaitForSingleObject(process, windows.INFINITE); err != nil {
 		return err
 	}
 	var code uint32
-	if err := windows.GetExitCodeProcess(t.process, &code); err != nil {
+	if err := windows.GetExitCodeProcess(process, &code); err != nil {
 		return err
 	}
 	if code != 0 {
@@ -223,34 +220,39 @@ func consolePipe() (*os.File, *os.File, error) {
 	return os.NewFile(uintptr(read), "conpty-read"), os.NewFile(uintptr(write), "conpty-write"), nil
 }
 func (t *Terminal) Close() error {
-	t.once.Do(func() {
-		t.input.Close()
+	t.closePipes.Do(func() {
+		if t.input != nil {
+			_ = t.input.Close()
+		}
 		// Close output before ConPTY so shutdown never depends on a reader.
-		t.output.Close()
-		t.closeConsole()
+		if t.output != nil {
+			_ = t.output.Close()
+		}
 	})
+	t.closeConsole()
 	return nil
 }
 
 func (t *Terminal) closeConsole() {
-	t.mu.Lock()
-	t.closed = true
-	h, job := t.console, t.job
-	t.console, t.job = 0, 0
-	t.mu.Unlock()
-	if job != 0 {
-		windows.CloseHandle(job)
-	}
-	if h != 0 {
-		windows.ClosePseudoConsole(h)
-	}
+	t.closeHandles.Do(func() {
+		t.mu.Lock()
+		h, job := t.console, t.job
+		t.console, t.job = 0, 0
+		t.mu.Unlock()
+		if job != 0 {
+			windows.CloseHandle(job)
+		}
+		if h != 0 {
+			windows.ClosePseudoConsole(h)
+		}
+	})
 }
 
 // A temporary size change asks ConPTY to repaint without injecting input.
 func RequestRedraw(t *Terminal, _ int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.closed || t.size.Cols < 2 {
+	if t.console == 0 || t.size.Cols < 2 {
 		return
 	}
 	changed := windows.Coord{X: int16(t.size.Cols - 1), Y: int16(t.size.Rows)}

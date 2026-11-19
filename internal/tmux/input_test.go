@@ -64,11 +64,11 @@ func TestMouseSavedModes(t *testing.T) {
 	s.Observe([]byte("\x1b[?1003;1006h\x1b[?1003;1006s\x1b[?1003;1006l"))
 	var resumed InputState
 	resumed.Observe(s.Replay())
-	if resumed.enabled != s.enabled || resumed.saved != s.saved {
+	if !sameEnabledModes(&resumed, &s) || resumed.saved != s.saved {
 		t.Fatal("saved/current state not preserved")
 	}
 	resumed.Observe([]byte("\x1b[?1003;1006r"))
-	if !resumed.enabled[4] || !resumed.enabled[6] {
+	if resumed.current[4] != modeOn || resumed.current[6] != modeOn {
 		t.Fatalf("saved modes lost: %+v", resumed)
 	}
 }
@@ -92,7 +92,7 @@ func TestFocusPasteStateAcrossAttachment(t *testing.T) {
 		// Saved enabled values can appear in the replay, but final current values are off.
 		var disabled InputState
 		disabled.Observe([]byte(got))
-		if disabled.enabled[9] || disabled.enabled[10] {
+		if disabled.current[9] == modeOn || disabled.current[10] == modeOn {
 			t.Fatalf("split %d: stale enabled mode", split)
 		}
 	}
@@ -145,7 +145,7 @@ func TestAttachInsideOpaqueControlString(t *testing.T) {
 			resumed.Observe(original.Replay())
 			original.Observe([]byte(input[split:]))
 			resumed.Observe([]byte(input[split:]))
-			if resumed.enabled != original.enabled || resumed.MouseEnabled() {
+			if !sameEnabledModes(&resumed, &original) || resumed.MouseEnabled() {
 				t.Fatalf("kind %c split %d: opaque payload became input modes", kind, split)
 			}
 		}
@@ -166,7 +166,7 @@ func TestApplicationKeysAcrossAttachment(t *testing.T) {
 			resumed.Observe(state.Replay())
 			state.Observe([]byte(input[split:]))
 			resumed.Observe([]byte(input[split:]))
-			if state.enabled != resumed.enabled || state.keypad != resumed.keypad || state.saved != resumed.saved {
+			if !sameEnabledModes(&state, &resumed) || state.keypad != resumed.keypad || state.saved != resumed.saved {
 				t.Fatalf("input %q split %d: application key state changed", input, split)
 			}
 		}
@@ -176,11 +176,11 @@ func TestApplicationKeysAcrossAttachment(t *testing.T) {
 	var resumed InputState
 	resumed.Observe(state.Replay())
 	resumed.Observe([]byte("\x1b[?1r"))
-	if !resumed.enabled[11] || !resumed.keypad {
+	if resumed.current[11] != modeOn || resumed.keypad != modeOn {
 		t.Fatal("saved application cursor mode or keypad lost on attachment")
 	}
 	resumed.Observe([]byte(terminalInputResetSequence()))
-	if resumed.enabled[11] || resumed.keypad {
+	if resumed.current[11] == modeOn || resumed.keypad == modeOn {
 		t.Fatal("application keys left active at local prompt")
 	}
 }
@@ -191,12 +191,12 @@ func TestInputStateRISResetsFreshAttachment(t *testing.T) {
 	var terminal InputState
 	terminal.Observe([]byte("\x1b[?1;1003;1004;2004h\x1b="))
 	terminal.Observe(application.Replay())
-	for i, on := range terminal.enabled {
-		if on {
-			t.Errorf("RIS replay left mode %s enabled", inputModes[i])
+	for i, on := range terminal.current {
+		if on == modeOn {
+			t.Errorf("RIS replay left mode %d enabled", inputModes[i])
 		}
 	}
-	if terminal.keypad {
+	if terminal.keypad == modeOn {
 		t.Error("RIS replay left application keypad enabled")
 	}
 }
@@ -231,9 +231,9 @@ func TestBoundaryCleanupAfterTruncatedControl(t *testing.T) {
 			for _, c := range []byte(terminalInputResetSequence()) {
 				state.Observe([]byte{c})
 			}
-			for i, enabled := range state.enabled {
-				if enabled {
-					t.Fatalf("mode %s survived cleanup", inputModes[i])
+			for i, enabled := range state.current {
+				if enabled == modeOn {
+					t.Fatalf("mode %d survived cleanup", inputModes[i])
 				}
 			}
 			state.Observe([]byte("\x1b[?1003h"))
@@ -331,4 +331,13 @@ func TestConsoleOutputModes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func sameEnabledModes(a, b *InputState) bool {
+	for i, setting := range a.current {
+		if (setting == modeOn) != (b.current[i] == modeOn) {
+			return false
+		}
+	}
+	return true
 }

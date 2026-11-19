@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -88,8 +89,12 @@ func TestShellHistoryRetention(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("%+v", rows)
 	}
+	dir, err := statePath("shells")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, state := range []string{"unknown", "exited", "renamed"} {
-		path, _ := shellCachePath("work", state)
+		path, _ := (shellSnapshot{Host: "work", Name: state}).cachePath(dir)
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("expired %s remains: %v", state, err)
 		}
@@ -130,7 +135,7 @@ func TestEndedShellCleanup(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := 0; i < 2; i++ {
-			code, err := runClientOnce(options{host: "work", session: state, command: "kill"}, "", func(options) {})
+			code, err := runClientOnce(options{host: "work", session: state, command: "kill"}, "", nil, func(options) {})
 			if code != 0 || err != nil {
 				t.Fatalf("named cleanup: %d %v", code, err)
 			}
@@ -149,7 +154,7 @@ func TestEndedShellCleanup(t *testing.T) {
 	if err != nil || len(inv.Shells) != 0 {
 		t.Fatalf("forgotten history visible: %+v %v", inv.Shells, err)
 	}
-	if nodes := inventoryShellTrees(knownShellTrees(), inv); len(nodes) != 0 {
+	if nodes := localShellTreeNodes(inv); len(nodes) != 0 {
 		t.Fatal(nodes)
 	}
 	// A stale ID must never forget a new instance that reused the name.
@@ -169,7 +174,11 @@ func TestShellExitReconcilesHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	saveShellTree("remote:instance", "job", nil, "exited")
-	path, err := s.cachePath()
+	dir, err := statePath("shells")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := s.cachePath(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,8 +206,8 @@ func TestShellExitReconcilesHistory(t *testing.T) {
 	}
 	// Late cached attachment data cannot resurrect an ended instance.
 	rememberShellTree([]shellTreeNode{{Identity: "remote:instance", Host: "work", Name: "job", State: "attached"}})
-	nodes := inventoryShellTrees(knownShellTrees(), inventory{Shells: []shellView{{Host: "work", Name: "job", Instance: "instance", State: "attached", Historical: true}}})
-	if len(nodes) != 0 {
+	nodes := shellTreeFor("remote:instance")
+	if len(nodes) != 1 || nodes[0].State != "exited" {
 		t.Fatal(nodes)
 	}
 }
@@ -350,7 +359,7 @@ func TestRememberShellRenamePreservesHistory(t *testing.T) {
 	if err := saveShellSnapshot(snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if err := rememberShellRename("work", "old", "new"); err != nil {
+	if err := rememberShellRename("work", "old", "new", ""); err != nil {
 		t.Fatal(err)
 	}
 	records, err := readRecentConnections()
@@ -578,6 +587,19 @@ func TestDetachedMRUScopes(t *testing.T) {
 	}
 	locals := []localShellView{{identity: "task:" + a, hosted: true, Name: "local-renamed", State: "detached"}}
 	snapshots := []shellSnapshot{{Host: "work", Name: "remote-renamed", Instance: b, State: "detached"}, {Host: "other", Name: "other-job", Instance: c, State: "detached"}}
+	match := func(t *testing.T, snapshots []shellSnapshot) []recentAttachment {
+		t.Helper()
+		candidates, err := matchDetachedSnapshots(slices.Clone(rows), func(visit func(shellSnapshot)) error {
+			for _, snapshot := range snapshots {
+				visit(snapshot)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return candidates
+	}
 	for _, tc := range []struct {
 		name, host string
 		want       string
@@ -589,11 +611,11 @@ func TestDetachedMRUScopes(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := options{command: "attach", host: tc.host, local: false}
-			found := selectDetachedAttach(&o, rows, locals, snapshots)
+			found := selectDetachedAttach(&o, match(t, snapshots), locals)
 			if found != (tc.want != "") || o.session != tc.want {
 				t.Fatalf("found=%v options=%+v", found, o)
 			}
-			if found && !o.local && o.server != "/custom/sshore" {
+			if found && !o.local && (o.server != "/custom/sshore" || o.taskIdentity != "task:"+o.instance) {
 				t.Fatal("lost route")
 			}
 		})
@@ -601,7 +623,7 @@ func TestDetachedMRUScopes(t *testing.T) {
 	// A global remote detach becomes first without changing either scoped order.
 	rows = []recentAttachment{rows[1], rows[0], rows[2]}
 	o := options{command: "attach"}
-	if !selectDetachedAttach(&o, rows, locals, snapshots) || o.session != "remote-renamed" {
+	if !selectDetachedAttach(&o, match(t, snapshots), locals) || o.session != "remote-renamed" {
 		t.Fatal(o)
 	}
 	// Attached, forgotten, uncertain and replaced tasks cannot hide an older entry.
@@ -621,7 +643,7 @@ func TestDetachedMRUScopes(t *testing.T) {
 				changed[0].State = state
 			}
 			o := options{command: "attach"}
-			if !selectDetachedAttach(&o, rows, locals, changed) || !o.local {
+			if !selectDetachedAttach(&o, match(t, changed), locals) || !o.local {
 				t.Fatalf("stale entry selected: %+v", o)
 			}
 		})
@@ -652,9 +674,9 @@ func TestDetachedMRUPromotionAndPersistence(t *testing.T) {
 		t.Fatal(names)
 	}
 	// Reloading persisted history preserves ordering without promoting an entry.
-	accountActivity.Load().metadata.attachmentPath = ""
-	rows, err := attachmentMRULocal(nil)
-	if err != nil || !reflect.DeepEqual(rows, reply.Attachments) {
-		t.Fatalf("reload: %+v %v", rows, err)
+	activityFixture(t)
+	reloaded, err := metadataRPC(metadataRequest{Action: "attach_get"})
+	if err != nil || !reflect.DeepEqual(reloaded.Attachments, reply.Attachments) {
+		t.Fatalf("reload: %+v %v", reloaded.Attachments, err)
 	}
 }

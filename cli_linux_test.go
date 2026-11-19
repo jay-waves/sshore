@@ -144,12 +144,12 @@ func TestSSHUnlockPTYHelper(t *testing.T) {
 	defer cancel()
 	unlock := promptSSHSecret
 	if mode == "broker" || mode == "kill" {
-		env, stop, err := startSpawnAuth()
+		auth, stop, err := startSSHAuthBroker()
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer stop()
-		unlock = brokerSSHSecret(env)
+		_, unlock = auth.callbacks()
 	}
 	secret, err := unlock(ctx, "fixture-key")
 	if mode == "kill" {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,7 +31,7 @@ func TestHostedShellHandoffPreservesLocalInstance(t *testing.T) {
 	}
 }
 
-func TestNativeShellListingBoundsUnresponsiveWorkers(t *testing.T) {
+func TestNativeShellListingReadsDaemonState(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	tasks := startRequestDaemon(t)
 	release := make(chan struct{})
@@ -51,8 +52,8 @@ func TestNativeShellListingBoundsUnresponsiveWorkers(t *testing.T) {
 		t.Fatalf("returned %d rows", len(rows))
 	}
 	for _, row := range rows {
-		if row.State != "unavailable" {
-			t.Fatalf("unresponsive shell state: %s", row.State)
+		if row.State != "starting" {
+			t.Fatalf("unexpected registered shell state: %s", row.State)
 		}
 	}
 }
@@ -88,7 +89,7 @@ func TestSpawnOptionsAndInventory(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	writeTaskInventory(&out, inventory{LocalShells: []localShellView{{order: 1, Name: "persistent", State: "detached"}, {order: 2, Name: "temporary", State: "detached", Temporary: true}}, Shells: []shellView{{order: 3, Name: "remote", Host: "host", State: "detached", Temporary: true, Historical: true}}})
+	writeTaskInventory(&out, inventory{LocalShells: []localShellView{{Name: "persistent", State: "detached"}, {Name: "temporary", State: "detached", Temporary: true}}, Shells: []shellView{{Name: "remote", Host: "host", State: "detached", Temporary: true, Historical: true}}})
 	for _, want := range []string{"(persistent)", "(temporary)", "(remote)", "launch", "spawn", "never checked"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %s: %s", want, &out)
@@ -110,7 +111,18 @@ func TestClientConnectionCancellation(t *testing.T) {
 			defer listener.Close()
 			tasks := startRequestDaemon(t)
 			record := registerTestShell(t, tasks, "root", strings.Repeat("a", 32))
-			tasks.records[record.UID].(*nativeShellTask).shell.record.Address = listener.Addr().String()
+			daemon, err := existingDaemonRecord()
+			if err != nil {
+				t.Fatal(err)
+			}
+			path, err := daemonPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			daemon.Address = listener.Addr().String()
+			if err := writeStateJSON(path, daemon); err != nil {
+				t.Fatal(err)
+			}
 			reached, closed := make(chan error, 1), make(chan struct{})
 			go func() {
 				defer close(closed)
@@ -124,6 +136,9 @@ func TestClientConnectionCancellation(t *testing.T) {
 				_, err = http.ReadRequest(bufio.NewReader(c))
 				if err == nil && stage == "nested-route" {
 					_, err = fmt.Fprintf(c, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: %s\r\nSshore-Version: %s\r\n\r\n", daemonUpgrade, version)
+					if err == nil {
+						err = json.NewEncoder(c).Encode(localStartup{Record: record})
+					}
 					if err == nil {
 						_, err = readMessage(c)
 					}
@@ -147,7 +162,7 @@ func TestClientConnectionCancellation(t *testing.T) {
 			defer cancel()
 			result := make(chan error, 1)
 			go func() {
-				c, err := openClientTransportContext(ctx, &o)
+				c, err := openClientTransportContext(ctx, &o, nil)
 				if c != nil {
 					c.Close()
 				}

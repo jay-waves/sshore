@@ -36,96 +36,99 @@ type shellSnapshot struct {
 	Active      bool              `json:"active,omitempty"`
 }
 
-func shellCachePath(host, name string, scope ...string) (string, error) {
-	if validSSHDestination(host) != nil || validSession(name) != nil {
+func (s shellSnapshot) cachePath(dir string) (string, error) {
+	if validSSHDestination(s.Host) != nil || validSession(s.Name) != nil {
 		return "", fmt.Errorf("invalid shell identity")
 	}
-	dir, err := statePath("shells")
-	if err != nil {
-		return "", err
-	}
-	key := host + "\x00" + name
-	if len(scope) > 0 {
-		key += "\x00" + scope[0]
+	key := s.Host + "\x00" + s.Name
+	if s.Connection != nil && s.Connection.Parent != nil {
+		key += "\x00" + s.Instance
 	}
 	sum := sha256.Sum256([]byte(key))
 	return filepath.Join(dir, hex.EncodeToString(sum[:])+".json"), nil
 }
-func (s shellSnapshot) cachePath() (string, error) {
-	if s.Connection != nil && s.Connection.Parent != nil {
-		return shellCachePath(s.Host, s.Name, s.Instance)
+
+func (s shellSnapshot) validateRoute() error {
+	route := s.Connection
+	if route == nil {
+		return nil
 	}
-	return shellCachePath(s.Host, s.Name)
+	if route.Host != s.Host || route.Parent != nil && (route.Session != s.Name || route.Instance != s.Instance) {
+		return fmt.Errorf("invalid shell connection identity")
+	}
+	return validateRecentConnection(*route)
 }
 
 func saveShellSnapshot(s shellSnapshot) error {
 	_, err := metadataRPC(metadataRequest{Action: "shell_save", Snapshot: &s})
 	return err
 }
-func saveShellSnapshotLocked(s shellSnapshot) error {
-	path, err := s.cachePath()
+
+// Routes passed here are owned by the daemon and read-only. Internal state
+// updates can reuse them, and rows from the same inventory can share ancestors.
+func (a *daemonActivity) saveShellSnapshotLocked(s shellSnapshot) error {
+	if err := s.validateRoute(); err != nil {
+		return err
+	}
+	path, err := s.cachePath(a.metadata.shellRoot)
 	if err != nil {
 		return err
 	}
 	s.Active = false
-	if s.Connection != nil {
-		connection := s.Connection.clone()
-		s.Connection = &connection
+	writeErr := writeBoundedStateJSON(path, s, maxShellSnapshot)
+	if writeErr == nil {
+		a.metadata.snapshots[path] = s
 	}
-	accountActivity.Load().metadata.snapshots[path] = s
 	var treeErr error
 	if s.State == "exited" {
-		treeErr = recordRemoteShellTreeState(s)
+		treeErr = a.metadata.recordRemoteShellTreeStateLocal(s)
 	}
-	return errors.Join(treeErr, writeStateJSON(path, s))
+	return errors.Join(writeErr, treeErr)
 }
 func readShellSnapshots() ([]shellSnapshot, error) {
 	r, err := metadataRPC(metadataRequest{Action: "shell_get"})
+	slices.SortFunc(r.Snapshots, func(a, b shellSnapshot) int {
+		return cmp.Or(cmp.Compare(a.Host, b.Host), cmp.Compare(a.Name, b.Name))
+	})
 	return r.Snapshots, err
 }
-func readShellSnapshotsLocked() ([]shellSnapshot, error) {
-	reply := accountActivity.Load().request(activityRequest{Kind: "list"})
-	active := map[string]bool{}
-	for _, key := range reply.Active {
-		active[key] = true
-	}
+
+func (a *daemonActivity) readShellSnapshotsLocked(match func(shellSnapshot) bool) ([]shellSnapshot, error) {
 	var rows []shellSnapshot
-	for path, s := range accountActivity.Load().metadata.snapshots {
-		if s.Connection != nil {
-			if s.Connection.Host != s.Host || s.Connection.Parent != nil && (s.Connection.Session != s.Name || s.Connection.Instance != s.Instance) {
-				return nil, fmt.Errorf("invalid shell connection host")
-			}
-			if err := validateRecentConnection(*s.Connection); err != nil {
-				return nil, err
-			}
+	if err := a.walkShellSnapshotsLocked(func(s shellSnapshot) {
+		if match(s) {
+			rows = append(rows, s)
 		}
+	}); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// Reconcile and prune the full history before returning. The visitor must
+// treat projected connection routes as read-only.
+func (a *daemonActivity) walkShellSnapshotsLocked(visit func(shellSnapshot)) error {
+	active := a.activeShellPaths()
+	now := time.Now()
+	for path, s := range a.metadata.snapshots {
 		if s.Instance != "" && !endedShellState(s.State) {
-			for _, n := range shellTreeFor(remoteTreeIdentity(s.Instance)) {
-				if n.Identity == remoteTreeIdentity(s.Instance) && n.State == "exited" {
-					// Project the original evidence; reading history is not a new confirmation.
-					s.State, s.Unconfirmed, s.ConfirmedAt = n.State, false, n.CheckedAt
-					break
-				}
+			id := remoteTreeIdentity(s.Instance)
+			if n, ok := a.metadata.treeNode(id); ok && n.State == "exited" {
+				// Project the original evidence; reading history is not a new confirmation.
+				s.State, s.Unconfirmed, s.ConfirmedAt = n.State, false, n.CheckedAt
 			}
 		}
 		s.Active = active[path]
-		if !s.Active && (endedShellState(s.State) || s.Unconfirmed) && !s.ConfirmedAt.IsZero() && time.Since(s.ConfirmedAt) > shellHistoryRetention {
-			delete(accountActivity.Load().metadata.snapshots, path)
+		if !s.Active && (endedShellState(s.State) || s.Unconfirmed) && !s.ConfirmedAt.IsZero() && now.Sub(s.ConfirmedAt) > shellHistoryRetention {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				return nil, err
+				return err
 			}
+			delete(a.metadata.snapshots, path)
 			continue
 		}
-		if s.Connection != nil {
-			connection := s.Connection.clone()
-			s.Connection = &connection
-		}
-		rows = append(rows, s)
+		visit(s)
 	}
-	slices.SortFunc(rows, func(a, b shellSnapshot) int {
-		return cmp.Or(cmp.Compare(a.Host, b.Host), cmp.Compare(a.Name, b.Name))
-	})
-	return rows, nil
+	return nil
 }
 
 type shellConnection struct {
@@ -142,11 +145,15 @@ func trackShellConnection(o options) (*shellConnection, error) {
 		return nil, err
 	}
 	snapshot := shellSnapshot{Connection: &connection, Temporary: o.temporary, Instance: o.instance, Host: o.host, Name: o.session, State: "attached", ConfirmedAt: time.Now()}
-	path, err := snapshot.cachePath()
+	dir, err := statePath("shells")
 	if err != nil {
 		return nil, err
 	}
-	stop, err := leaseActivity(activityRequest{Kind: "shell", Key: path}, nil)
+	path, err := snapshot.cachePath(dir)
+	if err != nil {
+		return nil, err
+	}
+	stop, err := leaseActivity(activityRequest{Kind: "shell", Key: path})
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +197,10 @@ func (s *shellConnection) close() {
 }
 
 func cacheRemoteShells(host string, inv inventory, connection ...options) error {
-	request := metadataRequest{Action: "shell_cache", Host: host, Inventory: &inv}
+	// Shell history needs only the observations and whether the query was
+	// complete. Keep resource rows, peer rows and tree history out of this RPC.
+	observed := inventory{MachineID: inv.MachineID, Hostname: inv.Hostname, Shells: inv.Shells, Errors: inv.Errors}
+	request := metadataRequest{Action: "shell_cache", Host: host, Inventory: &observed}
 	if len(connection) > 0 {
 		route, err := connectionFromOptions(connection[0])
 		if err != nil {
@@ -201,7 +211,7 @@ func cacheRemoteShells(host string, inv inventory, connection ...options) error 
 	_, err := metadataRPC(request)
 	return err
 }
-func cacheRemoteShellsLocked(host string, inv inventory, connection ...recentConnection) error {
+func (a *daemonActivity) cacheRemoteShellsLocked(host string, inv inventory, connection *recentConnection) error {
 	seen := map[string]bool{}
 	names := map[string]string{}
 	now := time.Now()
@@ -211,25 +221,23 @@ func cacheRemoteShellsLocked(host string, inv inventory, connection ...recentCon
 		}
 		seen[shell.Name] = true
 		snapshot := shellSnapshot{Temporary: shell.Temporary, Instance: shell.Instance, Host: host, MachineID: inv.MachineID, Hostname: inv.Hostname, Name: shell.Name, State: shell.State, ConfirmedAt: now}
-		if len(connection) > 0 {
-			route := connection[0]
+		if connection != nil {
+			route := *connection
 			if route.Parent != nil && shell.Instance != route.Instance {
 				route.RouteTarget = true
 			}
 			route.Host, route.Session, route.Instance = host, shell.Name, shell.Instance
 			snapshot.Connection = &route
 		}
-		if err := saveShellSnapshotLocked(snapshot); err != nil {
+		if err := a.saveShellSnapshotLocked(snapshot); err != nil {
 			return err
 		}
 		// A fresh remote observation can supersede an earlier absence report.
 		if shell.Instance != "" && !endedShellState(shell.State) {
-			for _, n := range shellTreeFor(remoteTreeIdentity(shell.Instance)) {
-				if n.Identity == remoteTreeIdentity(shell.Instance) && endedShellState(n.State) {
-					if err := recordRemoteShellTreeState(snapshot); err != nil {
-						return err
-					}
-					break
+			id := remoteTreeIdentity(shell.Instance)
+			if n, ok := a.metadata.treeNode(id); ok && endedShellState(n.State) {
+				if err := a.metadata.recordRemoteShellTreeStateLocal(snapshot); err != nil {
+					return err
 				}
 			}
 		}
@@ -238,19 +246,21 @@ func cacheRemoteShellsLocked(host string, inv inventory, connection ...recentCon
 	if len(inv.Errors) != 0 {
 		return nil
 	}
-	previous, err := readShellSnapshotsLocked()
+	previous, err := a.readShellSnapshotsLocked(func(s shellSnapshot) bool {
+		return s.Host == host && !endedShellState(s.State)
+	})
 	if err != nil {
 		return err
 	}
 	for _, old := range previous {
 		sameScope := old.Connection == nil || old.Connection.Parent == nil
 		missing := !seen[old.Name]
-		if len(connection) > 0 && connection[0].Parent != nil {
+		if connection != nil && connection.Parent != nil {
 			// The same alias on another parent does not describe this inventory.
-			sameScope = old.Connection != nil && old.Connection.Parent != nil && old.Connection.RouteToken == connection[0].RouteToken && old.Connection.Parent.Instance == connection[0].Parent.Instance
+			sameScope = old.Connection != nil && old.Connection.Parent != nil && old.Connection.RouteToken == connection.RouteToken && old.Connection.Parent.Instance == connection.Parent.Instance
 			missing = names[old.Instance] != old.Name
 		}
-		if old.Host == host && sameScope && missing && !endedShellState(old.State) {
+		if sameScope && missing {
 			if names[old.Instance] != "" {
 				old.State, old.ConfirmedAt, old.Unconfirmed = "renamed", now, false
 			} else if old.Active || old.Unconfirmed {
@@ -258,7 +268,7 @@ func cacheRemoteShellsLocked(host string, inv inventory, connection ...recentCon
 			} else {
 				old.Unconfirmed = true
 			}
-			if err := saveShellSnapshotLocked(old); err != nil {
+			if err := a.saveShellSnapshotLocked(old); err != nil {
 				return err
 			}
 		}
@@ -266,31 +276,21 @@ func cacheRemoteShellsLocked(host string, inv inventory, connection ...recentCon
 	return nil
 }
 
-// renameShellSnapshot retains the last actual confirmation and leaves live locks
-// with their owning clients. It never creates evidence for an uncached shell.
-func renameShellSnapshot(host, old, name string) error {
-	_, err := metadataRPC(metadataRequest{Action: "shell_rename", Host: host, Key: old, Name: name})
-	return err
-}
-func renameShellSnapshotLocked(host, old, name string) error {
-	rows, err := readShellSnapshotsLocked()
+// Retain the last actual confirmation and leave live locks with their owners.
+func (a *daemonActivity) renameShellSnapshotLocked(host, old, name, instance string) error {
+	rows, err := a.readShellSnapshotsLocked(func(s shellSnapshot) bool {
+		return s.Host == host && s.Name == old && s.State != "renamed" && (instance == "" || s.Instance == instance)
+	})
 	if err != nil {
 		return err
 	}
-	var snapshot shellSnapshot
-	found := false
-	for _, row := range rows {
-		if row.Host != host || row.Name != old || row.State == "renamed" {
-			continue
-		}
-		if found {
-			return fmt.Errorf("ambiguous shell route; select the shell by task ID")
-		}
-		snapshot, found = row, true
-	}
-	if !found {
+	if len(rows) == 0 {
 		return nil
 	}
+	if len(rows) > 1 {
+		return fmt.Errorf("ambiguous shell route; select the shell by task ID")
+	}
+	snapshot := rows[0]
 	renamed := snapshot
 	renamed.Name = name
 	if snapshot.Connection != nil {
@@ -298,11 +298,11 @@ func renameShellSnapshotLocked(host, old, name string) error {
 		connection.Session = name
 		renamed.Connection = &connection
 	}
-	if err = saveShellSnapshotLocked(renamed); err != nil {
+	if err = a.saveShellSnapshotLocked(renamed); err != nil {
 		return err
 	}
 	snapshot.State = "renamed"
-	return saveShellSnapshotLocked(snapshot)
+	return a.saveShellSnapshotLocked(snapshot)
 }
 
 // Cleanup is local and instance-bound; a replacement with the same name is not
@@ -311,41 +311,42 @@ func forgetEndedShell(host, name, instance string) (bool, error) {
 	r, err := metadataRPC(metadataRequest{Action: "shell_forget", Host: host, Name: name, Instance: instance})
 	return r.Found, err
 }
-func forgetEndedShellLocal(host, name, instance string) (bool, error) {
-	rows, err := readShellSnapshotsLocked()
+func (a *daemonActivity) forgetEndedShellLocal(host, name, instance string) (bool, error) {
+	rows, err := a.readShellSnapshotsLocked(func(s shellSnapshot) bool {
+		return s.Host == host && s.Name == name && (instance == "" || s.Instance == instance)
+	})
 	if err != nil {
 		return false, err
 	}
-	for _, s := range rows {
-		if s.Host != host || s.Name != name || (instance != "" && s.Instance != instance) {
-			continue
-		}
-		if s.State != "exited" {
-			return false, nil
-		}
-		s.Forgotten = true
-		return true, saveShellSnapshotLocked(s)
+	if len(rows) == 0 || rows[0].State != "exited" {
+		return false, nil
 	}
-	return false, nil
+	s := rows[0]
+	if s.Forgotten {
+		return true, nil
+	}
+	s.Forgotten = true
+	return true, a.saveShellSnapshotLocked(s)
 }
 
 func confirmKilledShell(host, name, instance string) error {
 	_, err := metadataRPC(metadataRequest{Action: "shell_cancel", Host: host, Name: name, Instance: instance})
 	return err
 }
-func confirmKilledShellLocal(host, name, instance string) error {
-	rows, err := readShellSnapshotsLocked()
+func (a *daemonActivity) confirmKilledShellLocal(host, name, instance string) error {
+	rows, err := a.readShellSnapshotsLocked(func(s shellSnapshot) bool {
+		return s.Host == host && s.Name == name && s.Instance == instance
+	})
 	if err != nil {
 		return err
 	}
-	for _, s := range rows {
-		if s.Host == host && s.Name == name && s.Instance == instance {
-			s.State, s.Unconfirmed, s.ConfirmedAt = "exited", false, time.Now()
-			return saveShellSnapshotLocked(s)
-		}
+	if len(rows) != 0 {
+		s := rows[0]
+		s.State, s.Unconfirmed, s.ConfirmedAt = "exited", false, time.Now()
+		return a.saveShellSnapshotLocked(s)
 	}
 	if instance != "" {
-		return recordRemoteShellTreeState(shellSnapshot{Host: host, Name: name, Instance: instance, State: "exited", ConfirmedAt: time.Now()})
+		return a.metadata.recordRemoteShellTreeStateLocal(shellSnapshot{Host: host, Name: name, Instance: instance, State: "exited", ConfirmedAt: time.Now()})
 	}
 	return nil
 }

@@ -1,11 +1,21 @@
 //go:build linux
 
-package tmux
+package mcp
 
 import (
+	"context"
+	"slices"
 	"testing"
 	"time"
 )
+
+func (e *bashExecution) Result() (bashResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r := e.result
+	r.Stdout, r.Stderr = slices.Clone(r.Stdout), slices.Clone(r.Stderr)
+	return r, r.Err
+}
 
 func await(t *testing.T, ch <-chan struct{}) {
 	t.Helper()
@@ -16,12 +26,12 @@ func await(t *testing.T, ch <-chan struct{}) {
 	}
 }
 func TestBashStateAndOutput(t *testing.T) {
-	b, err := StartBash()
+	b, err := StartBashSession(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	a, err := b.Run("x=42; cd /; printf one; printf error >&2; false", "")
+	a, err := b.run(context.Background(), "x=42; cd /; printf one; printf error >&2; false", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +41,7 @@ func TestBashStateAndOutput(t *testing.T) {
 	if err != nil || r.ExitCode != 1 || string(r.Stdout) != "one" || string(r.Stderr) != "error" {
 		t.Fatalf("%+v %v", r, err)
 	}
-	a, err = b.Run("printf '%s:%s' \"$x\" \"$PWD\"", "")
+	a, err = b.run(context.Background(), "printf '%s:%s' \"$x\" \"$PWD\"", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,12 +53,12 @@ func TestBashStateAndOutput(t *testing.T) {
 	}
 }
 func TestBashBackgroundOutput(t *testing.T) {
-	b, err := StartBash()
+	b, err := StartBashSession(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	a, err := b.Run("(sleep .1; printf later) & printf now", "")
+	a, err := b.run(context.Background(), "(sleep .1; printf later) & printf now", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,12 +75,12 @@ func TestBashBackgroundOutput(t *testing.T) {
 }
 
 func TestBashInputAndExit(t *testing.T) {
-	b, err := StartBash()
+	b, err := StartBashSession(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	a, err := b.Run("read -r value; printf '%s' \"$value\"", "hello\n")
+	a, err := b.run(context.Background(), "read -r value; printf '%s' \"$value\"", "hello\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +90,7 @@ func TestBashInputAndExit(t *testing.T) {
 	if err != nil || string(r.Stdout) != "hello" {
 		t.Fatalf("%+v %v", r, err)
 	}
-	a, err = b.Run("exit 9", "")
+	a, err = b.run(context.Background(), "exit 9", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,12 +102,12 @@ func TestBashInputAndExit(t *testing.T) {
 }
 
 func TestBashStreamsBeforeCompletion(t *testing.T) {
-	b, err := StartBash()
+	b, err := StartBashSession(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	execution, err := b.Run("printf ready; sleep .3; printf done", "")
+	execution, err := b.run(context.Background(), "printf ready; sleep .3; printf done", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,11 +137,11 @@ func TestBashStreamsBeforeCompletion(t *testing.T) {
 }
 
 func TestCloseInterruptsBusyBash(t *testing.T) {
-	b, err := StartBash()
+	b, err := StartBashSession(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	execution, err := b.Run("while :; do :; done", "")
+	execution, err := b.run(context.Background(), "while :; do :; done", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,15 +163,15 @@ func TestCloseInterruptsBusyBash(t *testing.T) {
 }
 
 func TestBashRejectsConcurrentExecution(t *testing.T) {
-	b, err := StartBash()
+	b, err := StartBashSession(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := b.Run("while :; do :; done", "")
+	first, err := b.run(context.Background(), "while :; do :; done", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = b.Run("printf unexpected", ""); err == nil {
+	if _, err = b.run(context.Background(), "printf unexpected", ""); err == nil {
 		t.Fatal("accepted execution while busy")
 	}
 	if err = b.Close(); err != nil {
@@ -171,12 +181,12 @@ func TestBashRejectsConcurrentExecution(t *testing.T) {
 }
 
 func TestBashRejectsAfterControlCorruption(t *testing.T) {
-	b, err := StartBash()
+	b, err := StartBashSession(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	execution, err := b.Run("printf 'invalid\\n' >&3", "")
+	execution, err := b.run(context.Background(), "printf 'invalid\\n' >&3", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,18 +194,18 @@ func TestBashRejectsAfterControlCorruption(t *testing.T) {
 	if _, err = execution.Result(); err == nil {
 		t.Fatal("invalid control message accepted")
 	}
-	if _, err = b.Run("printf must-not-run", ""); err == nil {
+	if _, err = b.run(context.Background(), "printf must-not-run", ""); err == nil {
 		t.Fatal("broken session accepted work")
 	}
 }
 
 func TestBashExitDoesNotWaitForInheritedControl(t *testing.T) {
-	b, err := StartBash()
+	b, err := StartBashSession(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer b.Close()
-	execution, err := b.Run("sleep .5 & exit 9", "")
+	execution, err := b.run(context.Background(), "sleep .5 & exit 9", "")
 	if err != nil {
 		t.Fatal(err)
 	}

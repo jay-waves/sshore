@@ -43,10 +43,11 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := queueRequest(options{host: "fixture", session: "main", server: e.bin, shellPID: pid, instance: instance}, []operation{{Kind: "forward", TargetPort: 31235}})
+	queued, err := queueRequest(options{host: "fixture", session: "main", server: e.bin, shellPID: pid, instance: instance}, []operation{{Kind: "forward", TargetPort: 31235}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	id := queued.ID
 	run := func(args ...string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -137,21 +138,22 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		t.Fatal(out, err)
 	}
 	// The independent watcher synchronizes only this resource to the peer list.
+	// This fixture uses one account on both ends, so list hides the duplicate.
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		out, err = run("list", "--json")
-		if err != nil || json.Unmarshal([]byte(out), &snapshot) != nil {
-			t.Fatal(out, err)
+		peers, err := collectPeerViews()
+		if err != nil {
+			t.Fatal(err)
 		}
 		found := false
-		for _, peer := range snapshot.Peers {
+		for _, peer := range peers {
 			found = found || strings.HasPrefix(peer.ID, "peer/") && strings.HasSuffix(peer.ID, "/forward/"+name)
 		}
 		if found {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("missing peer task", out)
+			t.Fatal("missing peer task", peers)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -184,12 +186,13 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	if err != nil || strings.Contains(out, "forward/"+name) {
 		t.Fatal(out, err)
 	}
-	rejected, e2 := queueRequest(options{host: "fixture", session: "main", server: e.bin, shellPID: pid, instance: instance}, []operation{{Kind: "forward", TargetPort: 31235}})
+	queued, e2 := queueRequest(options{host: "fixture", session: "main", server: e.bin, shellPID: pid, instance: instance}, []operation{{Kind: "forward", TargetPort: 31235}})
 	if e2 != nil {
 		t.Fatal(e2)
 	}
+	rejected := queued.ID
 	publishPending(rejected)
-	request, e2 := readRequest(rejected)
+	request, e2 := findRequest(rejected)
 	if e2 != nil {
 		t.Fatal(e2)
 	}
@@ -345,7 +348,7 @@ func TestKillUpdatesShellHistory(t *testing.T) {
 		if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "detached", ConfirmedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
-		code, err := runClientOnce(options{host: "work", session: "job", instance: "instance", command: "kill", server: "sshore"}, "", func(options) {})
+		code, err := runClientOnce(options{host: "work", session: "job", instance: "instance", command: "kill", server: "sshore"}, "", nil, func(options) {})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -383,11 +386,7 @@ func TestShortTaskRemoteCommandRouting(t *testing.T) {
 	if err := rememberConnection(options{host: "work", session: "other", server: "/other/sshore", ssh: []string{"-p", "9999"}}); err != nil {
 		t.Fatal(err)
 	}
-	ids, err := assignTaskIDs([]string{remoteShellIdentity("work", "original-instance")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := ids[remoteShellIdentity("work", "original-instance")].code
+	id := taskShortCode(remoteShellIdentity("work", "original-instance"))
 	for _, tc := range []struct {
 		args                 []string
 		port, server, action string
@@ -527,7 +526,7 @@ func TestHostedShellTaskCommandRouting(t *testing.T) {
 		t.Fatalf("automatic local attachment lost hosted route: %+v %v", automatic, err)
 	}
 	choices := localSessionTargets("other", message{Action: "select", Name: "hosted"})
-	if choices.Error != "" || len(choices.Names) != 1 || choices.Names[0] != "hosted" {
+	if choices.Error != "" || len(choices.Targets) != 1 || choices.Targets[0].Name != "hosted" || !choices.Targets[0].Hosted {
 		t.Fatalf("hosted shell missing from local switcher: %+v", choices)
 	}
 	for _, args := range [][]string{{id}, {"hosted"}} {
@@ -550,7 +549,7 @@ func TestHostedShellTaskCommandRouting(t *testing.T) {
 	o := options{command: "attach", local: true, hosted: true, session: target.name, instance: target.instance}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c, err := openClientTransportContext(ctx, &o)
+	c, err := openClientTransportContext(ctx, &o, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

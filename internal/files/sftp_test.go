@@ -27,10 +27,10 @@ func TestSFTPRequestTimeoutIgnoresHealthySibling(t *testing.T) {
 	if e := wire.record(packet); e != nil {
 		t.Fatal(e)
 	}
-	fired := make(chan struct{})
-	watch := &sftpWatch{}
-	stop := wire.watchRequests(30*time.Millisecond, watch, func() { close(fired) })
-	defer stop()
+	fired := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { fired <- wire.watchRequests(ctx, 30*time.Millisecond) }()
 	// Keep a second request/reply moving; it must not reset the stuck request's age.
 	for i := uint32(2); i < 6; i++ {
 		binary.BigEndian.PutUint32(packet[1:], i)
@@ -44,12 +44,12 @@ func TestSFTPRequestTimeoutIgnoresHealthySibling(t *testing.T) {
 		packet[0] = 3
 	}
 	select {
-	case <-fired:
+	case err := <-fired:
+		if err == nil || !strings.Contains(err.Error(), "no retry") {
+			t.Fatal(err)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("request failed to time out")
-	}
-	if watch.err() == nil || !strings.Contains(watch.err().Error(), "no retry") {
-		t.Fatal(watch.err())
 	}
 }
 
@@ -58,11 +58,13 @@ type nopWriteCloser struct{ io.Writer }
 func (nopWriteCloser) Close() error { return nil }
 func TestSFTPIdleDoesNotTimeout(t *testing.T) {
 	wire := newFTPWire(strings.NewReader(""), nopWriteCloser{io.Discard})
-	watch := &sftpWatch{}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	stop := wire.watchRequests(10*time.Millisecond, watch, cancel)
-	defer stop()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	go func() {
+		if err := wire.watchRequests(ctx, 10*time.Millisecond); err != nil {
+			cancel(err)
+		}
+	}()
 	select {
 	case <-ctx.Done():
 		t.Fatal("idle connection aborted")
@@ -83,9 +85,14 @@ func TestSFTPTimeoutUnblocksPendingCall(t *testing.T) {
 		io.Copy(io.Discard, a)                     // Consume requests, never respond.
 	}()
 	wire := newFTPWire(b, b)
-	watch := &sftpWatch{}
-	stop := wire.watchRequests(30*time.Millisecond, watch, func() { b.Close() })
-	defer stop()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	go func() {
+		if err := wire.watchRequests(ctx, 30*time.Millisecond); err != nil {
+			cancel(err)
+			b.Close()
+		}
+	}()
 	client, e := sftp.NewClientPipe(wire, wire)
 	if e != nil {
 		t.Fatal(e)
@@ -95,8 +102,8 @@ func TestSFTPTimeoutUnblocksPendingCall(t *testing.T) {
 	go func() { _, e := client.RealPath("."); done <- e }()
 	select {
 	case e := <-done:
-		if e == nil || watch.err() == nil {
-			t.Fatal(e, watch.err())
+		if e == nil || context.Cause(ctx) == nil {
+			t.Fatal(e, context.Cause(ctx))
 		}
 	case <-time.After(time.Second):
 		t.Fatal("pending SFTP call leaked")

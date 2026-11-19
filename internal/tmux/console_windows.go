@@ -129,31 +129,65 @@ func StartKeyboard(parent context.Context, emit func([]byte, error)) (func(), er
 	return sync.OnceFunc(func() { stop(); windows.CloseHandle(handle) }), nil
 }
 
-func startTerminalKeyboardReader(parent context.Context, emit func([]byte, error), reader io.Reader) (func(), error) {
+// startConsoleThread owns a synchronous I/O thread and its native handle.
+func startConsoleThread(parent context.Context, run func(context.Context)) (stop func(), stopping <-chan struct{}, err error) {
 	if err := cancelSynchronousIO.Find(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
-	type startup struct {
-		thread windows.Handle
-		err    error
-	}
-	ready := make(chan startup)
-	readDone := make(chan struct{})
-	cancelDone := make(chan struct{})
+	ready := make(chan error, 1)
 	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
-		defer close(done)
 		thread, err := windows.OpenThread(windows.THREAD_TERMINATE, false, windows.GetCurrentThreadId())
-		ready <- startup{thread: thread, err: err}
 		if err != nil {
+			ready <- err
 			return
 		}
 		defer windows.CloseHandle(thread)
-		// The cancellation worker must stop before this OS thread can be reused.
-		defer func() { close(readDone); <-cancelDone }()
+		finished := make(chan struct{})
+		interrupt := sync.OnceFunc(func() {
+			// Cancellation can race with entry into the native call.
+			timer := time.NewTicker(10 * time.Millisecond)
+			defer timer.Stop()
+			for {
+				select {
+				case <-finished:
+					return
+				default:
+				}
+				cancelSynchronousIO.Call(uintptr(thread))
+				select {
+				case <-finished:
+					return
+				case <-timer.C:
+				}
+			}
+		})
+		stopInterrupt := context.AfterFunc(ctx, interrupt)
+		defer func() {
+			// Join cancellation before releasing the handle and unpinning.
+			close(finished)
+			if !stopInterrupt() {
+				interrupt()
+			}
+			cancel()
+		}()
+		ready <- nil
+		run(ctx)
+	}()
+	if err := <-ready; err != nil {
+		cancel()
+		<-done
+		return nil, nil, err
+	}
+	return func() { cancel(); <-done }, ctx.Done(), nil
+}
+
+func startTerminalKeyboardReader(parent context.Context, emit func([]byte, error), reader io.Reader) (func(), error) {
+	stop, _, err := startConsoleThread(parent, func(ctx context.Context) {
 		buf := make([]byte, 4096)
 		defer clear(buf)
 		for ctx.Err() == nil {
@@ -169,130 +203,66 @@ func startTerminalKeyboardReader(parent context.Context, emit func([]byte, error
 				return
 			}
 		}
-	}()
-	started := <-ready
-	if started.err != nil {
-		cancel()
-		<-done
-		return nil, started.err
-	}
-	go func() {
-		defer close(cancelDone)
-		select {
-		case <-readDone:
-			return
-		case <-ctx.Done():
-		}
-		// A single cancellation can miss the gap before ReadConsole starts. Retry on
-		// a timer until the reader exits, keeping the thread pinned throughout.
-		timer := time.NewTicker(10 * time.Millisecond)
-		defer timer.Stop()
-		for {
-			cancelSynchronousIO.Call(uintptr(started.thread))
-			select {
-			case <-readDone:
-				return
-			case <-timer.C:
-			}
-		}
-	}()
-	return func() { cancel(); <-done }, nil
+	})
+	return stop, err
 }
 
-type writeRequest struct {
-	data   []byte
-	result chan writeResult
-}
 type writeResult struct {
 	n   int
 	err error
 }
 type threadInput struct {
-	requests             chan writeRequest
-	stop, done, released chan struct{}
-	once                 sync.Once
-	thread               windows.Handle
+	mu       sync.Mutex // One caller owns the write and its result.
+	requests chan []byte
+	result   chan writeResult
+	stopping <-chan struct{}
+	stop     func()
 }
 
 func NewTerminalInput(t *Terminal) (*threadInput, error) {
-	if err := cancelSynchronousIO.Find(); err != nil {
-		return nil, err
-	}
-	l := &threadInput{requests: make(chan writeRequest), stop: make(chan struct{}), done: make(chan struct{}), released: make(chan struct{})}
-	ready := make(chan error, 1)
-	go func() {
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
-		defer func() { close(l.done); <-l.released }()
-		var err error
-		l.thread, err = windows.OpenThread(windows.THREAD_TERMINATE, false, windows.GetCurrentThreadId())
-		ready <- err
-		if err != nil {
-			return
-		}
-		// Stop owns this handle until the cancellation loop has joined the writer.
+	l := &threadInput{requests: make(chan []byte), result: make(chan writeResult, 1)}
+	stop, stopping, err := startConsoleThread(context.Background(), func(ctx context.Context) {
 		for {
 			select {
-			case <-l.stop:
+			case <-ctx.Done():
 				return
-			case request := <-l.requests:
-				select {
-				case <-l.stop:
-					request.result <- writeResult{err: os.ErrClosed}
+			case data := <-l.requests:
+				if ctx.Err() != nil {
+					l.result <- writeResult{err: os.ErrClosed}
 					return
-				default:
 				}
-				n, err := t.Write(request.data)
-				request.result <- writeResult{n, err}
+				n, err := t.Write(data)
+				l.result <- writeResult{n, err}
 			}
 		}
-	}()
-	if err := <-ready; err != nil {
-		close(l.released)
-		<-l.done
+	})
+	if err != nil {
 		return nil, err
 	}
+	l.stop, l.stopping = stop, stopping
 	return l, nil
 }
 
 func (l *threadInput) Write(p []byte) (int, error) {
-	r := writeRequest{data: p, result: make(chan writeResult, 1)}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	select {
-	case <-l.stop:
+	case <-l.stopping:
 		return 0, os.ErrClosed
-	case l.requests <- r:
+	case l.requests <- p:
 	}
-	result := <-r.result
+	result := <-l.result
 	return result.n, result.err
 }
 
 func (l *threadInput) Stop() error {
-	l.once.Do(func() {
-		close(l.stop)
-		defer close(l.released)
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
-		defer windows.CloseHandle(l.thread)
-		for {
-			select {
-			case <-l.done:
-				return
-			default:
-			}
-			cancelSynchronousIO.Call(uintptr(l.thread))
-			select {
-			case <-l.done:
-				return
-			case <-ticker.C:
-			}
-		}
-	})
+	l.stop()
 	return nil
 }
 
 func (l *threadInput) Stopped() bool {
 	select {
-	case <-l.stop:
+	case <-l.stopping:
 		return true
 	default:
 		return false

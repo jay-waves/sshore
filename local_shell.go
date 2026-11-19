@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/jay-waves/sshore/internal/tmux"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 // The token is a local connection capability, never part of public inventory.
@@ -28,30 +30,33 @@ type localShellRecord struct {
 	Name, Address, Token, Version, Directory string
 }
 
-func readLocalSession(name string) (localShellRecord, error) {
-	records, err := nativeShellRecords()
+func openNativeShell(ctx context.Context, ref, identity string) (net.Conn, localShellRecord, error) {
+	record, err := existingDaemonRecord()
 	if err != nil {
-		return localShellRecord{}, err
+		return nil, localShellRecord{}, err
 	}
-	var found *localShellRecord
-	for _, r := range records {
-		if r.UID == name || isShortTaskID(name) && strings.HasPrefix(r.UID, strings.ToLower(name)) {
-			if found != nil {
-				return localShellRecord{}, fmt.Errorf("ambiguous task ID")
-			}
-			copy := r
-			found = &copy
+	path := "/tasks/native/open?" + url.Values{"ref": {ref}, "identity": {identity}}.Encode()
+	conn, err := dialDaemonStream(ctx, record, time.Now().Add(5*time.Second), path, nil)
+	if err != nil {
+		return nil, localShellRecord{}, err
+	}
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
+	var reply localStartup
+	err = json.NewDecoder(conn).Decode(&reply)
+	if err == nil {
+		switch {
+		case reply.Error != "":
+			err = errors.New(reply.Error)
+		case !validTaskUID(reply.Record.UID):
+			err = os.ErrNotExist
 		}
 	}
-	if found != nil {
-		return *found, nil
+	if err != nil {
+		conn.Close()
+		return nil, localShellRecord{}, err
 	}
-	for _, r := range records {
-		if r.Name == name {
-			return r, nil
-		}
-	}
-	return localShellRecord{}, os.ErrNotExist
+	return conn, reply.Record, nil
 }
 
 func readLocalRecord(path, name string) (localShellRecord, error) {
@@ -79,10 +84,6 @@ func readLocalRecord(path, name string) (localShellRecord, error) {
 
 // Authenticate before sending any shell commands. Each exchange is bounded;
 // callers clear the deadline only when they take ownership of the connection.
-func dialLocalSession(r localShellRecord) (net.Conn, error) {
-	return dialLocalSessionUntil(r, time.Now().Add(5*time.Second))
-}
-
 func dialLocalSessionUntil(r localShellRecord, deadline time.Time) (net.Conn, error) {
 	return dialLocalSessionContext(context.Background(), r, deadline)
 }
@@ -136,7 +137,7 @@ func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, read
 		s.mu.Lock()
 		empty := s.terminal == nil
 		if empty {
-			s.lifecycle.End()
+			s.endTerminal()
 		}
 		s.mu.Unlock()
 		if empty {
@@ -149,12 +150,49 @@ func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, read
 }
 
 type shellTerminal struct {
-	mu         sync.Mutex
+	mu         sync.Mutex // Protect shell state and attachment ownership.
 	terminalMu sync.Mutex // Serialize replay and redraw with live output. Acquire before mu.
+	renameMu   sync.Mutex // Keep each shell's history renames in live update order.
 	terminal   *tmux.Terminal
 	process    processIdentity
 	modes      tmux.InputState
-	lifecycle  tmux.Lifecycle[*attachment]
+	active     *attachment
+	exited     bool
+}
+
+// change runs with both the task table and shell locked and returns the tree
+// identity to persist. The rename lock preserves write order for this shell.
+func (s *shellTerminal) renameTask(tasks *daemonTasks, uid, name string, change func() (string, error)) error {
+	if err := validAlias(name); err != nil {
+		return err
+	}
+	s.renameMu.Lock()
+	defer s.renameMu.Unlock()
+	tasks.mu.Lock()
+	if err := tasks.checkNameLocked(uid, name, time.Now()); err != nil {
+		tasks.mu.Unlock()
+		return err
+	}
+	s.mu.Lock()
+	identity, err := change()
+	s.mu.Unlock()
+	tasks.mu.Unlock()
+	if err == nil && identity != "" {
+		renameShellTree(identity, name)
+	}
+	return err
+}
+
+var (
+	errShellExited   = errors.New("session is exiting")
+	errShellAttached = errors.New("session already attached")
+)
+
+// Call with mu held.
+func (s *shellTerminal) endTerminal() *attachment {
+	p := s.active
+	s.active, s.exited = nil, true
+	return p
 }
 
 type shellInput interface {
@@ -192,7 +230,10 @@ func (s *shellTerminal) pumpTerminal(t *tmux.Terminal, exited func(error, int)) 
 		if n > 0 {
 			s.terminalMu.Lock()
 			s.modes.Observe(buf[:n])
-			p := s.lifecycle.Active()
+			// Keep live output ordered without holding the shell lock during I/O.
+			s.mu.Lock()
+			p := s.active
+			s.mu.Unlock()
 			if p != nil && p.output(message{Type: "output", Data: buf[:n]}) != nil {
 				p.Close()
 			}
@@ -215,57 +256,142 @@ func (s *shellTerminal) pumpTerminal(t *tmux.Terminal, exited func(error, int)) 
 
 // Caller holds both host locks. The attachment acquires ownership only after
 // startup, terminal setup and the ready handshake have succeeded.
-func (s *shellTerminal) attachTerminal(p *attachment, m message, start func(message) error, ready func() error) (shellInput, error) {
-	var input shellInput
+func (s *shellTerminal) attachTerminal(p *attachment, m message, start func(message) error, ready func() error) error {
+	if s.exited {
+		return errShellExited
+	}
+	if s.active != nil {
+		return errShellAttached
+	}
 	initial := s.terminal == nil
-	err := s.lifecycle.Attach(p, func() error {
-		if !initial && (m.NoLogin || m.NoProfile) {
-			return fmt.Errorf("startup options require a new managed shell")
-		}
-		if initial {
-			if err := start(m); err != nil {
-				return err
-			}
-		}
-		if err := s.terminal.Resize(shellSize(m)); err != nil {
+	if initial {
+		if err := start(m); err != nil {
 			return err
 		}
-		lease, err := tmux.NewTerminalInput(s.terminal)
-		if err != nil {
-			return err
+	} else if m.NoLogin || m.NoProfile {
+		return fmt.Errorf("startup options require a new managed shell")
+	}
+	if err := s.terminal.Resize(shellSize(m)); err != nil {
+		return err
+	}
+	lease, err := tmux.NewTerminalInput(s.terminal)
+	if err != nil {
+		return err
+	}
+	if err = ready(); err == nil {
+		if data := s.modes.Replay(); len(data) > 0 {
+			err = p.output(message{Type: "output", Data: data})
 		}
-		if err = ready(); err == nil {
-			if data := s.modes.Replay(); len(data) > 0 {
-				err = p.output(message{Type: "output", Data: data})
-			}
-		}
-		if err != nil {
-			lease.Stop()
-			return err
-		}
-		input = lease
-		return nil
-	})
-	if err == nil && !initial && !p.Muted() {
+	}
+	if err != nil {
+		lease.Stop()
+		return err
+	}
+	p.input = lease
+	s.active = p
+	if !initial {
 		tmux.RequestRedraw(s.terminal, s.process.PID)
 	}
-	return input, err
+	return nil
 }
 
 // Hold mu through Stop so no successor can acquire the terminal's writer.
-func (s *shellTerminal) detachTerminal(p *attachment, input shellInput) (bool, error) {
-	if s.lifecycle.Active() != p {
-		// An exited shell has no successor, but the input worker still needs joining.
-		if s.lifecycle.Exited() {
-			_ = input.Stop()
-		}
+func (s *shellTerminal) detachTerminal(p *attachment) (bool, error) {
+	active := s.active == p
+	if p.input == nil || !active && !s.exited {
 		return false, nil
 	}
-	if err := input.Stop(); err != nil {
-		s.lifecycle.EndIfAttached(p)
+	input := p.input
+	p.input = nil
+	err := input.Stop()
+	// An exited shell has no successor, but its input worker must still join.
+	if !active {
+		return false, nil
+	}
+	if err != nil {
+		s.endTerminal()
 		return false, err
 	}
-	return s.lifecycle.Detach(p), nil
+	s.active = nil
+	return true, nil
+}
+
+// Once attached, only this loop reads control frames. The host records release
+// under the shell lock, and may return cleanup that needs to run outside it.
+func (s *shellTerminal) serveAttachment(p *attachment, control io.Reader, resizeAck bool, onRelease func(error) (string, func()), extra func(message) error) error {
+	release := func() (string, error) {
+		s.mu.Lock()
+		detached, err := s.detachTerminal(p)
+		var name string
+		var cleanup func()
+		if detached || err != nil {
+			name, cleanup = onRelease(err)
+		}
+		s.mu.Unlock()
+		if cleanup != nil {
+			cleanup()
+		}
+		return name, err
+	}
+	released := false
+	inputDone := make(chan struct{})
+	defer func() {
+		p.Close()
+		if !released {
+			_, _ = release()
+		}
+		<-inputDone
+	}()
+	input := p.input
+	go func() {
+		defer close(inputDone)
+		p.ReadInput(input, func() bool {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			return s.active == p
+		})
+	}()
+	for {
+		m, err := readMessage(control)
+		if err != nil {
+			return err
+		}
+		switch m.Type {
+		case "detach":
+			released = true
+			name, err := release()
+			if err == nil && name != "" {
+				return p.FinishDetach(name)
+			}
+			return err
+		case "resize":
+			s.mu.Lock()
+			if s.active == p {
+				err = s.terminal.Resize(shellSize(m))
+			}
+			s.mu.Unlock()
+			if err != nil {
+				return fmt.Errorf("resize terminal: %w", err)
+			}
+			if resizeAck {
+				err = p.controlMessage(message{Type: "resized", Cols: m.Cols, Rows: m.Rows})
+			}
+		case "redraw":
+			s.terminalMu.Lock()
+			s.mu.Lock()
+			if s.active == p {
+				tmux.RequestRedraw(s.terminal, s.process.PID)
+			}
+			s.mu.Unlock()
+			s.terminalMu.Unlock()
+			err = p.controlMessage(message{Type: "redrawn"})
+		default:
+			err = extra(m)
+		}
+		if err != nil {
+			return err
+		}
+	}
 }
 
 type localShell struct {
@@ -276,6 +402,27 @@ type localShell struct {
 	done        chan struct{}
 	once        sync.Once
 	handoff     *localHandoff
+}
+
+func (s *localShell) view() localShellView {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	temporary := s.record.Owner.PID != 0
+	view := localShellView{
+		Lifetime: shellLifetime(temporary, false), Temporary: temporary, identity: s.record.identity(),
+		Name: s.record.Name, Directory: s.record.Directory, Version: s.record.Version, PID: s.process.PID,
+	}
+	switch {
+	case s.exited:
+		view.State = "unavailable"
+	case s.active != nil:
+		view.State = "attached"
+	case view.PID == 0:
+		view.State = "starting"
+	default:
+		view.State = "detached"
+	}
+	return view
 }
 
 func (s *localShell) kill() error {
@@ -294,8 +441,9 @@ func (s *localShell) kill() error {
 func (s *localShell) close() {
 	s.once.Do(func() {
 		s.mu.Lock()
-		terminal, owner := s.terminal, s.lifecycle.End()
+		terminal, owner := s.terminal, s.endTerminal()
 		temporary, process := s.record.Owner.PID != 0, s.process
+		identity, name := s.record.identity(), s.record.Name
 		s.mu.Unlock()
 		if owner != nil {
 			owner.Close()
@@ -306,7 +454,7 @@ func (s *localShell) close() {
 			}
 			terminal.Close()
 		}
-		saveShellTree(s.record.identity(), s.record.Name, nil, "exited")
+		saveShellTree(identity, name, nil, "exited")
 		close(s.done)
 	})
 }
@@ -330,7 +478,7 @@ func (s *localShell) start(m message) error {
 			reason = err.Error()
 		}
 		s.mu.Lock()
-		p := s.lifecycle.End()
+		p := s.endTerminal()
 		s.mu.Unlock()
 		if p != nil {
 			p.FinishExit(code, reason)
@@ -356,25 +504,20 @@ func localShellEnvironment(source []string, term, identity string) []string {
 	return env
 }
 
-func (s *localShell) rename(name string) error {
-	if err := validAlias(name); err != nil {
-		return err
-	}
-	s.tasks.mu.Lock()
-	defer s.tasks.mu.Unlock()
-	for id, task := range s.tasks.records {
-		if id != s.record.UID && task.taskName() == name {
-			return fmt.Errorf("%s: %w", name, errObjectNameInUse)
+func (s *localShell) rename(old, name string) error {
+	return s.renameTask(s.tasks, s.record.UID, name, func() (string, error) {
+		if s.exited {
+			return "", fmt.Errorf("local shell has ended")
 		}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.lifecycle.Exited() {
-		return fmt.Errorf("local shell has ended")
-	}
-	s.record.Name = name
-	renameShellTree(s.record.identity(), name)
-	return nil
+		if old != "" && s.record.Name != old {
+			return "", fmt.Errorf("local shell changed; refresh with sshore list")
+		}
+		if s.record.Name == name {
+			return "", nil
+		}
+		s.record.Name = name
+		return s.record.identity(), nil
+	})
 }
 
 func (s *localShell) targets(request message) message {
@@ -386,17 +529,7 @@ func (s *localShell) targets(request message) message {
 
 func localSessionTargets(name string, request message) message {
 	reply := message{Type: "session_targets", Action: request.Action, Name: name}
-	if request.Action == "new" {
-		reservation, err := chooseTaskIdentity("shell", "")
-		if err != nil {
-			reply.Error = err.Error()
-			return reply
-		}
-		reply.Names = []string{reservation.name}
-
-		return reply
-	}
-	rows, err := localShells()
+	rows, err := localShells(false)
 	if err != nil {
 		reply.Error = err.Error()
 		return reply
@@ -408,37 +541,27 @@ func localSessionTargets(name string, request message) message {
 		if request.Action == "select" && row.Name != request.Name {
 			continue
 		}
-		reply.Names = append(reply.Names, row.Name)
+		reply.Targets = append(reply.Targets, sessionTarget{Name: row.Name, Instance: canonicalTaskUID(row.identity), Hosted: row.hosted})
 	}
-	if request.Action == "select" && len(reply.Names) != 1 {
+	if request.Action == "select" && len(reply.Targets) != 1 {
 		reply.Error = fmt.Sprintf("local shell %s unavailable", cleanText(request.Name))
 	}
-	if len(reply.Names) > 128 {
-		reply.Names = nil
+	if len(reply.Targets) > 128 {
+		reply.Targets = nil
 		reply.Error = "too many local shells; use sshore list --local"
 	}
 	return reply
 }
 
 func detachLocalShell(identity string) error {
-	rows, err := localShells()
+	m, err := localRequest("", identity, message{Type: "detach"})
 	if err != nil {
 		return err
 	}
-	for _, row := range rows {
-		if row.identity != identity {
-			continue
-		}
-		m, err := localRequest(row.Name, message{Type: "detach"}, identity)
-		if err != nil {
-			return err
-		}
-		if m.Type != "detach_requested" && m.Type != "detached" {
-			return fmt.Errorf("local detach unconfirmed")
-		}
-		return nil
+	if m.Type != "detach_requested" && m.Type != "detached" {
+		return fmt.Errorf("local detach unconfirmed")
 	}
-	return fmt.Errorf("local shell is unavailable")
+	return nil
 }
 
 func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, ready func(localShellRecord) error) error {
@@ -451,15 +574,13 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, re
 		case "handoff":
 			return s.requestHandoff(c, m.Handoff)
 		case "status":
-			s.mu.Lock()
-			reply := message{Type: "session", Temporary: s.record.Owner.PID != 0, Name: s.record.Name, SoftwareVersion: version, Attached: s.lifecycle.Active() != nil}
-			if s.terminal != nil {
-				reply.PID = s.terminal.PID()
-			}
-			s.mu.Unlock()
-			return writeMessage(c, reply)
+			view := s.view()
+			return writeMessage(c, message{
+				Type: "session", Temporary: view.Temporary, Name: view.Name, SoftwareVersion: view.Version,
+				Attached: view.State == "attached", PID: view.PID,
+			})
 		case "rename":
-			err := s.rename(m.Name)
+			err := s.rename(m.Action, m.Name)
 			reply := message{Type: "renamed", Name: m.Name}
 			if err != nil {
 				reply.Type = "error"
@@ -468,7 +589,7 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, re
 			return writeMessage(c, reply)
 		case "detach":
 			s.mu.Lock()
-			p := s.lifecycle.Active()
+			p := s.active
 			s.mu.Unlock()
 			if p == nil {
 				return writeMessage(c, message{Type: "detached"})
@@ -501,86 +622,53 @@ func (s *localShell) attach(c net.Conn) error {
 	if err != nil {
 		return err
 	}
-	defer mx.Close()
-	p := newAttachment(mx, control, terminal)
 	if err := validateAttach(m); err != nil {
+		mx.Close()
 		return err
 	}
+	p := newAttachment(mx, control, terminal)
 	s.terminalMu.Lock()
 	s.mu.Lock()
 	initial := s.terminal == nil
-	lease, err := s.attachTerminal(p, m, s.start, func() error {
+	err = s.attachTerminal(p, m, s.start, func() error {
 		saveShellTreeWithProcess(s.record.identity(), s.record.Name, m.Tree, "attached", describeSpawnOwner(s.record.Owner), shellLifetime(s.record.Owner.PID != 0, false), m.SourceHost, m.SourceMachineID)
 		return p.controlMessage(message{Type: "ready", Tree: shellTreeFor(s.record.identity()), Temporary: s.record.Owner.PID != 0, Name: s.record.Name, PID: s.process.PID})
 	})
-	if err != nil && initial && !errors.Is(err, tmux.ErrAttached) {
-		s.lifecycle.End()
+	if err != nil && initial && !errors.Is(err, errShellAttached) {
+		s.endTerminal()
 	}
-	t := s.terminal
 	s.mu.Unlock()
 	s.terminalMu.Unlock()
 	if err != nil {
-		if errors.Is(err, tmux.ErrExited) || errors.Is(err, tmux.ErrAttached) {
+		if errors.Is(err, errShellExited) || errors.Is(err, errShellAttached) {
 			err = fmt.Errorf("local shell unavailable or already attached")
 		} else if initial {
 			s.close()
 		}
 		_ = p.controlMessage(message{Type: "fatal", Error: err.Error()})
+		p.Close()
 		return err
 	}
-	release := sync.OnceValues(func() (string, error) {
-		s.mu.Lock()
-		detached, err := s.detachTerminal(p, lease)
-		if detached {
-			saveShellTree(s.record.identity(), s.record.Name, nil, "detached")
-		}
-		name := s.record.Name
-		s.mu.Unlock()
+	return s.serveAttachment(p, control, false, func(err error) (string, func()) {
 		if err != nil {
-			s.close()
+			return "", s.close
 		}
-		return name, err
-	})
-	defer release()
-	go p.readInput(lease, &s.lifecycle)
-
-	for {
-		m, err := readMessage(control)
-		if err != nil {
-			return err
-		}
+		saveShellTree(s.record.identity(), s.record.Name, nil, "detached")
+		return s.record.Name, nil
+	}, func(m message) error {
 		switch m.Type {
 		case "handoff_result":
 			s.finishHandoff(p, m)
-		case "detach":
-			name, err := release()
-			if err != nil {
-				return err
-			}
-			p.FinishDetach(name)
-			return nil
 		case "spawn_child":
 			s.mu.Lock()
 			h := &clientHandoff{Args: []string{"spawn", localEndpointPrefix}, Owner: s.process, Directory: s.record.Directory, Environment: append([]string(nil), s.environment...), Tree: shellTreeFor(s.record.identity())}
 			s.mu.Unlock()
 			go serveShortcutSpawn(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
 		case "session_targets":
-			if err = p.controlMessage(s.targets(m)); err != nil {
-				return err
-			}
-		case "resize":
-			if err = t.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}); err != nil {
-				return err
-			}
-		case "redraw":
-			redrawLocalTerminal(t)
-			if err = p.controlMessage(message{Type: "redrawn"}); err != nil {
-				return err
-			}
+			return p.controlMessage(s.targets(m))
 		default:
 			return fmt.Errorf("unexpected local control request")
 		}
-	}
+		return nil
+	})
 }
-
-func redrawLocalTerminal(t *tmux.Terminal) { tmux.RequestRedraw(t, t.PID()) }

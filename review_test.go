@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func testRequestOptions() options {
@@ -16,7 +17,7 @@ func testRequestOptions() options {
 
 func reviewName(t *testing.T, id string) string {
 	t.Helper()
-	r, err := readRequest(id)
+	r, err := findRequest(id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,17 +27,18 @@ func reviewName(t *testing.T, id string) string {
 func TestRequestSingleConsumption(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	startRequestDaemon(t)
-	id, err := queueRequest(testRequestOptions(), []operation{{Kind: "upload", Path: "/tmp"}})
+	queued, err := queueRequest(testRequestOptions(), []operation{{Kind: "upload", Path: "/tmp"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := readRequest(id)
+	id := queued.ID
+	r, err := findRequest(id)
 	if err != nil || r.ID != id {
 		t.Fatal(r, err)
 	}
-	r.Operations[0].LocalPath = "private selection"
-	original, err := readRequest(id)
-	if err != nil || original.Operations[0].LocalPath != "" {
+	r.Operations[0].Path = "/changed"
+	original, err := findRequest(id)
+	if err != nil || original.Operations[0].Path != "/tmp" {
 		t.Fatal("selection changed pending intent", err)
 	}
 	var count atomic.Int32
@@ -52,7 +54,7 @@ func TestRequestSingleConsumption(t *testing.T) {
 	if count.Load() != 1 {
 		t.Fatalf("consumed %d times", count.Load())
 	}
-	if _, err := readRequest(id); err == nil {
+	if _, err := findRequest(id); err == nil {
 		t.Fatal("consumed request remained")
 	}
 	root, _ := statePath("")
@@ -71,11 +73,12 @@ func TestRequestSeparatesLocalDefaultsFromConnectionDirectory(t *testing.T) {
 	o := testRequestOptions()
 	o.sshDirectory = t.TempDir()
 	o.ssh = []string{"-F", "ssh.conf"}
-	id, err := queueRequest(o, []operation{{Kind: "upload", Path: "/tmp"}})
+	queued, err := queueRequest(o, []operation{{Kind: "upload", Path: "/tmp"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := readRequest(id)
+	id := queued.ID
+	r, err := findRequest(id)
 	if err != nil || r.Directory != cwd || r.Connection.Directory != o.sshDirectory {
 		t.Fatal(r, err)
 	}
@@ -88,29 +91,38 @@ func TestRequestPreservesHostedConnection(t *testing.T) {
 	o.local = true
 	o.hosted = true
 	o.host = "local"
-	id, err := queueRequest(o, []operation{{Kind: "forward", Port: 1234, TargetPort: 2345}})
+	queued, err := queueRequest(o, []operation{{Kind: "forward", Port: 1234, TargetPort: 2345}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := readRequest(id)
+	id := queued.ID
+	r, err := findRequest(id)
 	if err != nil || !r.Connection.Hosted || r.Connection.Instance != o.instance {
 		t.Fatal(r, err)
 	}
 	r.Connection.Host = "remote"
-	if validateRequestRecord(r) == nil {
+	if r.validate(time.Now()) == nil {
 		t.Fatal("hosted request accepted an SSH target")
 	}
 }
 
 func TestReviewCLI(t *testing.T) {
+	parse := func(args []string) error {
+		parsed, err := parseCLI(args, "review")
+		if err != nil {
+			return err
+		}
+		_, err = reviewArguments(parsed)
+		return err
+	}
 	id := strings.Repeat("a", 32)
 	for _, args := range [][]string{nil, {id}} {
-		if _, err := parseReview(args); err != nil {
+		if err := parse(args); err != nil {
 			t.Fatal(args, err)
 		}
 	}
-	for _, args := range [][]string{{"--stay"}, {"--attach"}, {"--list"}, {"--reject"}, {"../bad"}, {id, id}} {
-		if _, err := parseReview(args); err == nil {
+	for _, args := range [][]string{{"--stay"}, {"--stay", "--stay"}, {"--attach"}, {"--list"}, {"--reject"}, {"../bad"}, {id, id}} {
+		if err := parse(args); err == nil {
 			t.Fatal("accepted", args)
 		}
 	}
@@ -142,7 +154,8 @@ func TestApprovalValidation(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"kind":"upload","path":"/tmp","LocalPath":"/etc/passwd"}`), &op); err != nil {
 		t.Fatal(err)
 	}
-	if op.LocalPath != "" {
-		t.Fatal("remote selected local path")
+	data, err := json.Marshal(op)
+	if err != nil || string(data) != `{"kind":"upload","path":"/tmp"}` {
+		t.Fatalf("unexpected approval payload %s: %v", data, err)
 	}
 }

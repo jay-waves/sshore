@@ -2,7 +2,6 @@ package ssh
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -13,37 +12,45 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/wire"
 	cryptossh "golang.org/x/crypto/ssh"
 )
 
-// Client owns one authenticated connection, its jump chain and agent connections.
+// Client owns one authenticated connection and its jump chain.
 // Closing a session never transfers connection ownership to another task.
 type Client struct {
 	*cryptossh.Client
-	config    *connectionConfig
-	resources []io.Closer
+	jump      *Client
 	once      sync.Once
 	done      chan struct{}
-	forwards  forwarding
+	forwardMu sync.Mutex
+	forward   *wire.Forwarder
 }
 
 func (c *Client) Close() error {
 	c.once.Do(func() {
 		close(c.done)
-		c.Client.Close()
-		c.forwards.close()
-		for _, v := range slices.Backward(c.resources) {
-			v.Close()
+		// A tunneled connection can block sending channel-close on its jump.
+		// Close the owned chain from the TCP connection outward.
+		if c.jump != nil {
+			c.jump.Close()
 		}
-		c.forwards.workers.Wait()
+		c.Client.Close()
+		c.forwardMu.Lock()
+		forward := c.forward
+		c.forwardMu.Unlock()
+		if forward != nil {
+			forward.Close()
+		}
 	})
 	return nil
 }
 
 func Dial(ctx context.Context, o Options) (*Client, error) {
-	return dial(context.WithValue(ctx, authenticationBudgetKey{}, &authenticationBudgets{entries: make(map[*authenticationBudget]bool)}), o, 0)
+	var budgets authenticationBudgets
+	return dial(ctx, o, 0, &budgets)
 }
-func dial(ctx context.Context, o Options, depth int) (result *Client, err error) {
+func dial(ctx context.Context, o Options, depth int, budgets *authenticationBudgets) (*Client, error) {
 	if depth > 8 {
 		return nil, fmt.Errorf("SSH ProxyJump chain exceeds eight hops")
 	}
@@ -53,129 +60,72 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 	if err != nil {
 		return nil, err
 	}
-	// ssh -G preserves brackets around literal IPv6 destinations, including
-	// ProxyJump hosts. Go's network and known-host helpers add their own.
-	if strings.HasPrefix(cfg.host, "[") && strings.HasSuffix(cfg.host, "]") && strings.Contains(cfg.host, ":") {
-		cfg.host = cfg.host[1 : len(cfg.host)-1]
-	}
-	connecting, cancel := context.WithCancel(ctx)
-	defer cancel()
-	budgets, _ := ctx.Value(authenticationBudgetKey{}).(*authenticationBudgets)
-	if budgets == nil {
-		budgets = &authenticationBudgets{entries: make(map[*authenticationBudget]bool)}
-		connecting = context.WithValue(connecting, authenticationBudgetKey{}, budgets)
-	}
-	releaseBudget := budgets.add(cfg.timeout, cancel)
-	defer releaseBudget()
-	if confirm := cfg.options.Confirm; confirm != nil {
-		cfg.options.Confirm = func(ctx context.Context, prompt string) (bool, error) {
-			resume := budgets.pause()
-			defer resume()
-			return confirm(ctx, prompt)
-		}
-	}
-	callback, hostAlgos, err := cfg.hostKeys(connecting)
+	client, err := cfg.handshake(ctx, depth, budgets)
 	if err != nil {
 		return nil, err
 	}
-	var resources []io.Closer
-	var stopAgent func() bool
-	defer func() {
-		if stopAgent != nil {
-			stopAgent()
+	if strings.HasPrefix(strings.ToUpper(cfg.get("loglevel")), "DEBUG") {
+		if metadata, ok := client.Conn.(cryptossh.AlgorithmsConnMetadata); ok {
+			out := o.Diagnostic
+			if out == nil {
+				out = os.Stderr
+			}
+			algorithms := metadata.Algorithms()
+			direction := func(a cryptossh.DirectionAlgorithms) string {
+				if a.MAC == "" {
+					return a.Cipher + " (AEAD)"
+				}
+				return a.Cipher + " / " + a.MAC
+			}
+			fmt.Fprintf(out, "[sshore] SSH %q: kex=%s hostkey=%s send=%s receive=%s\n", o.Host, algorithms.KeyExchange, algorithms.HostKey, direction(algorithms.Write), direction(algorithms.Read))
 		}
-	}()
-	defer func() {
+	}
+	client.keepalive(cfg.get("serveraliveinterval"), cfg.get("serveralivecountmax"))
+	if o.Forward != nil {
+		// Remote listener setup can block waiting for the server's reply.
+		stop := context.AfterFunc(ctx, func() { client.Close() })
+		err := client.startForwarding(*o.Forward)
+		stop()
+		if err == nil {
+			err = ctx.Err()
+		}
 		if err != nil {
-			for _, resource := range slices.Backward(resources) {
-				resource.Close()
+			client.Close()
+			return nil, err
+		}
+	}
+	return client, nil
+}
+
+func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *authenticationBudgets) (client *Client, resultErr error) {
+	connecting, cancel := context.WithCancel(ctx)
+	defer cancel()
+	releaseBudget := budgets.add(cfg.timeout, cancel)
+	cc := &cryptossh.ClientConfig{User: cfg.user}
+	closeAuth, err := cfg.configureAuthentication(connecting, cc, budgets)
+	if err != nil {
+		releaseBudget()
+		return nil, err
+	}
+	var parent *Client
+	var stopTransport func() bool
+	defer func() {
+		releaseBudget()
+		if stopTransport != nil {
+			stopTransport()
+		}
+		closeAuth()
+		// Disarm cancellation before checking whether the client can be
+		// handed off. A cancellation that already fired still wins.
+		if client != nil {
+			if err := connecting.Err(); err != nil {
+				client.Close()
+				client, resultErr = nil, err
 			}
+		} else if parent != nil {
+			parent.Close()
 		}
 	}()
-	cc := &cryptossh.ClientConfig{User: cfg.user, HostKeyCallback: callback, HostKeyAlgorithms: hostAlgos}
-	// Let the server accept none authentication before requiring local identities.
-	attempts := map[string]int{}
-	preferred := cfg.get("preferredauthentications")
-	if preferred == "" {
-		preferred = "publickey,keyboard-interactive,password"
-	}
-	limit, e := strconv.Atoi(cfg.get("numberofpasswordprompts"))
-	if e != nil {
-		limit = 3
-	}
-	var identityErr error
-	ask := func(prompt string) (string, error) {
-		resume := budgets.pause()
-		defer resume()
-		secret, err := cfg.options.Secret(connecting, prompt)
-		defer clear(secret)
-		return string(secret), err
-	}
-	cc.AuthCallback = func(state *cryptossh.ClientAuthContext) (cryptossh.AuthMethod, error) {
-		for method := range strings.SplitSeq(preferred, ",") {
-			if !slices.Contains(state.AllowedMethods, method) {
-				continue
-			}
-			if method == "publickey" {
-				if attempts[method] > 0 {
-					continue
-				}
-				attempts[method]++
-				methods, agentConn, err := cfg.authentication(connecting)
-				identityErr = err
-				if err != nil {
-					continue
-				}
-				if agentConn != nil {
-					resources = append(resources, agentConn)
-					stopAgent = context.AfterFunc(connecting, func() { agentConn.Close() })
-				}
-				return methods[0], nil
-			}
-			if cfg.enabled("batchmode") || cfg.options.Secret == nil || attempts[method] >= limit {
-				continue
-			}
-			switch method {
-			case "password":
-				if cfg.get("passwordauthentication") == "no" || cfg.get("passwordauthentication") == "false" {
-					continue
-				}
-				attempts[method]++
-				return cryptossh.PasswordCallback(func() (string, error) { return ask("\x00password:" + cfg.user + "@" + cfg.host) }), nil
-			case "keyboard-interactive":
-				if cfg.get("kbdinteractiveauthentication") == "no" || cfg.get("kbdinteractiveauthentication") == "false" {
-					continue
-				}
-				attempts[method]++
-				return cryptossh.KeyboardInteractive(func(name, instruction string, questions []string, echoes []bool) ([]string, error) {
-					if len(questions) != len(echoes) {
-						return nil, fmt.Errorf("invalid SSH authentication challenge")
-					}
-					answers := make([]string, len(questions))
-					for i, question := range questions {
-						prompt := Challenge{Title: name, Instruction: instruction, Question: question, Echo: echoes[i]}
-						if i > 0 {
-							prompt.Title, prompt.Instruction = "", ""
-						}
-						data, err := json.Marshal(prompt)
-						if err != nil {
-							return nil, err
-						}
-						answers[i], err = ask("\x00challenge:" + string(data))
-						if err != nil {
-							return nil, err
-						}
-					}
-					return answers, nil
-				}), nil
-			}
-		}
-		if attempts["password"] > 0 || attempts["keyboard-interactive"] > 0 {
-			return nil, fmt.Errorf("server rejected SSH authentication for %s@%s; check the login credentials and server authentication policy", cfg.user, cfg.host)
-		}
-		return nil, identityErr
-	}
-
 	modern := cryptossh.SupportedAlgorithms()
 	choose := func(key string, allowed []string) ([]string, error) {
 		value := cfg.get(key)
@@ -205,36 +155,15 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 	address := net.JoinHostPort(cfg.host, cfg.port)
 	var raw net.Conn
 	if jump := cfg.get("proxyjump"); jump != "" && jump != "none" {
-		hops := strings.Split(jump, ",")
-		first := hops[len(hops)-1]
-		jo := Options{Host: first, Executable: cfg.options.Executable, Environment: cfg.options.Environment, Directory: o.Directory, Confirm: o.Confirm, Diagnostic: o.Diagnostic}
-		jo.Secret = o.Secret
-		for i := 0; i < len(o.Args); i++ {
-			if o.Args[i] == "-F" && i+1 < len(o.Args) {
-				jo.Args = append(jo.Args, "-F", o.Args[i+1])
-				i++
-			} else if strings.HasPrefix(o.Args[i], "-F") && len(o.Args[i]) > 2 {
-				jo.Args = append(jo.Args, o.Args[i])
-			}
+		hop, jumpErr := dial(connecting, cfg.proxyJumpOptions(jump), depth+1, budgets)
+		if jumpErr != nil {
+			return nil, jumpErr
 		}
-		if len(hops) > 1 {
-			jo.Args = append(jo.Args, "-J", strings.Join(hops[:len(hops)-1], ","))
-		}
-		// ssh -G accepts user@host but not ProxyJump's optional :port suffix.
-		if at := strings.LastIndex(first, ":"); at >= 0 && (!strings.Contains(first, "]") || at > strings.LastIndex(first, "]")) {
-			if _, e := strconv.Atoi(first[at+1:]); e == nil {
-				jo.Args = append(jo.Args, "-p", first[at+1:])
-				jo.Host = first[:at]
-			}
-		}
-		parent, e := dial(connecting, jo, depth+1)
-		if e != nil {
-			return nil, e
-		}
-		resources = append(resources, parent)
-		stop := context.AfterFunc(connecting, func() { parent.Close() })
-		raw, err = parent.Dial("tcp", address)
-		stop()
+		// Closing the jump unblocks both a pending channel open and I/O
+		// on the channel once it exists.
+		parent = hop
+		stopTransport = context.AfterFunc(connecting, func() { _ = hop.Close() })
+		raw, err = hop.Dial("tcp", address)
 	} else {
 		dialer := net.Dialer{}
 		if bind := cfg.get("bindaddress"); bind != "" && bind != "*" {
@@ -244,77 +173,64 @@ func dial(ctx context.Context, o Options, depth int) (result *Client, err error)
 			}
 		}
 		raw, err = dialer.DialContext(connecting, cfg.network, address)
-	}
-	if err != nil {
-		return nil, err
-	}
-	resources = append(resources, raw)
-	stop := context.AfterFunc(connecting, func() { raw.Close() })
-	defer stop()
-	// The cancellation budget closes raw; interactive prompts pause all jump budgets.
-	conn, ch, req, err := cryptossh.NewClientConn(raw, address, cc)
-	cc.Auth = nil
-	cc.AuthCallback = nil
-	if err != nil {
-		return nil, fmt.Errorf("SSH %s: %w", o.Host, err)
-	}
-	if err = connecting.Err(); err != nil {
-		conn.Close()
-		return nil, err
-	}
-	raw.SetDeadline(time.Time{})
-	if strings.HasPrefix(strings.ToUpper(cfg.get("loglevel")), "DEBUG") {
-		if metadata, ok := conn.(cryptossh.AlgorithmsConnMetadata); ok {
-			out := o.Diagnostic
-			if out == nil {
-				out = os.Stderr
-			}
-			algorithms := metadata.Algorithms()
-			direction := func(a cryptossh.DirectionAlgorithms) string {
-				if a.MAC == "" {
-					return a.Cipher + " (AEAD)"
-				}
-				return a.Cipher + " / " + a.MAC
-			}
-			fmt.Fprintf(out, "[sshore] SSH %q: kex=%s hostkey=%s send=%s receive=%s\n", o.Host, algorithms.KeyExchange, algorithms.HostKey, direction(algorithms.Write), direction(algorithms.Read))
+		if err == nil {
+			stopTransport = context.AfterFunc(connecting, func() { _ = raw.Close() })
 		}
 	}
-	client := &Client{Client: cryptossh.NewClient(conn, ch, req), config: cfg, resources: resources, done: make(chan struct{})}
-	client.keepalive()
-	return client, nil
+	if err != nil {
+		return nil, err
+	}
+	// NewClientConn takes ownership of raw, including on handshake failure.
+	conn, ch, req, err := cryptossh.NewClientConn(raw, address, cc)
+	if err != nil {
+		return nil, fmt.Errorf("SSH %s: %w", cfg.options.Host, err)
+	}
+	return &Client{Client: cryptossh.NewClient(conn, ch, req), jump: parent, done: make(chan struct{})}, nil
 }
-func (c *Client) keepalive() {
-	seconds, _ := strconv.Atoi(c.config.get("serveraliveinterval"))
+func (cfg *connectionConfig) proxyJumpOptions(jump string) Options {
+	last := strings.LastIndexByte(jump, ',')
+	host := jump[last+1:]
+	o := cfg.options
+	options := Options{
+		Host: host, Executable: o.Executable, Environment: o.Environment,
+		Directory: o.Directory, Confirm: o.Confirm, Secret: o.Secret, Diagnostic: o.Diagnostic,
+		Args: slices.Clip(cfg.configFileArgs),
+	}
+	if last >= 0 {
+		options.Args = append(options.Args, "-J", jump[:last])
+	}
+	// ssh -G accepts user@host but not ProxyJump's optional :port suffix.
+	if at := strings.LastIndex(host, ":"); at >= 0 && at > strings.LastIndex(host, "]") {
+		if _, err := strconv.Atoi(host[at+1:]); err == nil {
+			options.Args = append(options.Args, "-p", host[at+1:])
+			options.Host = host[:at]
+		}
+	}
+	return options
+}
+
+func (c *Client) keepalive(interval, count string) {
+	seconds, _ := strconv.Atoi(interval)
 	if seconds <= 0 {
 		seconds = 15
 	}
-	limit, _ := strconv.Atoi(c.config.get("serveralivecountmax"))
+	limit, _ := strconv.Atoi(count)
 	if limit <= 0 {
 		limit = 3
 	}
 	go func() {
 		timer := time.NewTicker(time.Duration(seconds) * time.Second)
 		defer timer.Stop()
+		deadline := time.Duration(seconds*limit) * time.Second
 		for {
 			select {
 			case <-c.done:
 				return
 			case <-timer.C:
-				result := make(chan error, 1)
-				go func() { _, _, err := c.SendRequest("keepalive@openssh.com", true, nil); result <- err }()
-				timeout := time.NewTimer(time.Duration(seconds*limit) * time.Second)
-				select {
-				case err := <-result:
-					timeout.Stop()
-					if err != nil {
-						c.Close()
-						return
-					}
-				case <-timeout.C:
+				timeout := time.AfterFunc(deadline, func() { c.Close() })
+				_, _, err := c.SendRequest("keepalive@openssh.com", true, nil)
+				if !timeout.Stop() || err != nil {
 					c.Close()
-					return
-				case <-c.done:
-					timeout.Stop()
 					return
 				}
 			}
@@ -322,16 +238,14 @@ func (c *Client) keepalive() {
 	}()
 }
 
-// Process is an SSH exec channel and its owning connection. Stdin().Close sends
+// Process is an SSH exec channel and its owning connection. CloseWrite sends
 // channel EOF; Close aborts all I/O. Wait must be called after consuming stdout.
 type Process struct {
-	stdin   processInput
-	stdout  io.Reader
-	session *cryptossh.Session
-	client  *Client
-	stop    func() bool
-	once    sync.Once
-	wait    func() error
+	stdin  processInput
+	stdout io.Reader
+	client *Client
+	stop   func() bool
+	wait   func() error
 }
 
 // DialTCP opens a sibling TCP channel. Closing it leaves the exec channel alive.
@@ -342,17 +256,11 @@ func (p *Process) DialTCP(ctx context.Context, address string) (net.Conn, error)
 func (p *Process) Read(b []byte) (int, error)  { return p.stdout.Read(b) }
 func (p *Process) Write(b []byte) (int, error) { return p.stdin.Write(b) }
 
-// Stdin closes independently to send EOF while the caller continues reading stdout.
-func (p *Process) Stdin() io.WriteCloser { return &p.stdin }
+// CloseWrite sends EOF while the caller continues reading stdout.
+func (p *Process) CloseWrite() error { return p.stdin.Close() }
 func (p *Process) Close() error {
-	p.once.Do(func() {
-		if p.stop != nil {
-			p.stop()
-		}
-		p.client.Close()
-		p.session.Close()
-	})
-	return nil
+	p.stop()
+	return p.client.Close()
 }
 
 // Wait returns the same exit result to every caller, including concurrent ones.
@@ -364,7 +272,7 @@ func (p *Process) CloseAndWait() error {
 	_ = p.Close()
 	return p.Wait()
 }
-func Start(ctx context.Context, o Options, diagnostic io.Writer) (*Process, error) {
+func Start(ctx context.Context, o Options, diagnostic io.Writer) (process *Process, err error) {
 	if o.Diagnostic == nil {
 		o.Diagnostic = diagnostic
 	}
@@ -373,29 +281,26 @@ func Start(ctx context.Context, o Options, diagnostic io.Writer) (*Process, erro
 		return nil, err
 	}
 	stop := context.AfterFunc(ctx, func() { client.Close() })
-	if err := client.StartForwarding(); err != nil {
-		stop()
-		client.Close()
-		return nil, err
-	}
+	defer func() {
+		if process == nil {
+			stop()
+			client.Close()
+		}
+	}()
 	session, err := client.NewSession()
 	if err != nil {
-		stop()
-		client.Close()
 		return nil, err
 	}
-	p := &Process{session: session, client: client, stop: stop, wait: sync.OnceValue(session.Wait)}
+	p := &Process{client: client, stop: stop, wait: sync.OnceValue(session.Wait)}
 	session.Stderr = diagnostic
 	p.stdin.writer, err = session.StdinPipe()
 	if err == nil {
 		p.stdout, err = session.StdoutPipe()
 	}
 	if err != nil {
-		p.Close()
 		return nil, err
 	}
 	if err = session.Start(o.Command); err != nil {
-		p.Close()
 		return nil, err
 	}
 	return p, nil
@@ -405,12 +310,12 @@ func Run(ctx context.Context, o Options, input io.Reader, output, diagnostic io.
 	if err != nil {
 		return err
 	}
-	defer p.Close()
+	defer p.CloseAndWait()
 	// Input may be an interactive terminal. Application owns and cancels its reader.
 	if input != nil {
-		go func() { io.Copy(p, input); p.stdin.Close() }()
+		go func() { io.Copy(p, input); p.CloseWrite() }()
 	} else {
-		p.stdin.Close()
+		p.CloseWrite()
 	}
 	if output == nil {
 		output = io.Discard
@@ -426,13 +331,12 @@ func Run(ctx context.Context, o Options, input io.Reader, output, diagnostic io.
 type processInput struct {
 	mu     sync.Mutex
 	writer io.WriteCloser
-	closed bool
 }
 
 func (p *processInput) Write(data []byte) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed {
+	if p.writer == nil {
 		return 0, io.ErrClosedPipe
 	}
 	return p.writer.Write(data)
@@ -440,64 +344,91 @@ func (p *processInput) Write(data []byte) (int, error) {
 func (p *processInput) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed {
+	if p.writer == nil {
 		return nil
 	}
-	p.closed = true
-	return p.writer.Close()
+	writer := p.writer
+	p.writer = nil
+	return writer.Close()
 }
 
-// A prompt suspends only connection budgets, never caller cancellation. Jump
-// handshakes share this group so a parent's budget cannot expire during input.
-type authenticationBudgetKey struct{}
+// A prompt suspends connection budgets across the jump chain. Each hop
+// retains its own deadline, but only the earliest deadline needs a timer.
 type authenticationBudget struct {
-	duration   time.Duration
-	cancel     context.CancelFunc
-	timer      *time.Timer
-	generation uint64
-}
-type authenticationBudgets struct {
-	mu      sync.Mutex
-	entries map[*authenticationBudget]bool
-	paused  int
+	deadline time.Time
+	cancel   context.CancelFunc
 }
 
-func (g *authenticationBudgets) start(b *authenticationBudget) {
-	b.generation++
-	generation := b.generation
-	b.timer = time.AfterFunc(b.duration, func() {
+type authenticationBudgets struct {
+	mu       sync.Mutex
+	entries  []*authenticationBudget
+	timer    *time.Timer
+	paused   int
+	pausedAt time.Time
+}
+
+func (g *authenticationBudgets) scheduleLocked() {
+	if g.timer != nil {
+		g.timer.Stop()
+		g.timer = nil
+	}
+	now := time.Now()
+	if g.paused != 0 {
+		now = g.pausedAt
+	}
+	var earliest time.Time
+	g.entries = slices.DeleteFunc(g.entries, func(entry *authenticationBudget) bool {
+		if !entry.deadline.After(now) {
+			entry.cancel()
+			return true
+		}
+		if earliest.IsZero() || entry.deadline.Before(earliest) {
+			earliest = entry.deadline
+		}
+		return false
+	})
+	if earliest.IsZero() || g.paused != 0 {
+		return
+	}
+
+	var timer *time.Timer
+	timer = time.AfterFunc(time.Until(earliest), func() {
 		g.mu.Lock()
 		defer g.mu.Unlock()
-		if g.entries[b] && g.paused == 0 && generation == b.generation {
-			b.cancel()
+		if g.timer == timer {
+			g.timer = nil
+			g.scheduleLocked()
 		}
 	})
+	g.timer = timer
 }
+
 func (g *authenticationBudgets) add(duration time.Duration, cancel context.CancelFunc) func() {
 	g.mu.Lock()
-	b := &authenticationBudget{duration: duration, cancel: cancel}
-	g.entries[b] = true
-	if g.paused == 0 {
-		g.start(b)
+	start := time.Now()
+	if g.paused != 0 {
+		start = g.pausedAt
 	}
+	entry := &authenticationBudget{deadline: start.Add(duration), cancel: cancel}
+	g.entries = append(g.entries, entry)
+	g.scheduleLocked()
 	g.mu.Unlock()
 	return func() {
 		g.mu.Lock()
-		delete(g.entries, b)
-		if b.timer != nil {
-			b.timer.Stop()
+		defer g.mu.Unlock()
+		if i := slices.Index(g.entries, entry); i >= 0 {
+			g.entries = slices.Delete(g.entries, i, i+1)
+			g.scheduleLocked()
 		}
-		g.mu.Unlock()
 	}
 }
+
 func (g *authenticationBudgets) pause() func() {
 	g.mu.Lock()
 	g.paused++
-	for b := range g.entries {
-		b.generation++
-		if b.timer != nil {
-			b.timer.Stop()
-		}
+	if g.paused == 1 {
+		g.pausedAt = time.Now()
+		g.scheduleLocked()
 	}
 	g.mu.Unlock()
 	return func() {
@@ -505,9 +436,11 @@ func (g *authenticationBudgets) pause() func() {
 		defer g.mu.Unlock()
 		g.paused--
 		if g.paused == 0 {
-			for b := range g.entries {
-				g.start(b)
+			waited := time.Since(g.pausedAt)
+			for _, entry := range g.entries {
+				entry.deadline = entry.deadline.Add(waited)
 			}
+			g.scheduleLocked()
 		}
 	}
 }

@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -32,7 +32,6 @@ type operation struct {
 	Reverse    bool   `json:"reverse,omitempty"`
 	TargetPort int    `json:"target_port,omitempty"`
 	LocalHint  string `json:"local_hint,omitempty"`
-	LocalPath  string `json:"-"`
 }
 
 type requestRecord struct {
@@ -123,39 +122,34 @@ func validateRequestOperations(ops []operation) error {
 func validRequestID(id string) bool { return validTaskUID(id) }
 
 func cloneRequest(r requestRecord) requestRecord {
-	r.Connection = r.Connection.clone()
+	r.Connection = *r.Connection.clone()
 	r.Operations = slices.Clone(r.Operations)
 	return r
 }
-func (s *daemonTasks) prune(now time.Time) {
-	for id, r := range s.records {
-		if r.expired(now) {
-			delete(s.records, id)
-		}
-	}
-}
-func (s *daemonTasks) Busy() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.prune(time.Now())
-	return len(s.records) != 0
-}
-func (s *daemonTasks) Save(r requestRecord) error {
+func (r requestRecord) validate(now time.Time) error {
 	if !validRequestID(r.ID) {
 		return fmt.Errorf("invalid request ID")
 	}
 	if !sameRelease(version, r.SoftwareVersion) {
 		return fmt.Errorf("incompatible request release")
 	}
-	now := time.Now()
-	if now.Sub(r.Created) > requestTTL || r.Created.After(now.Add(time.Minute)) {
+	if r.expired(now) || r.Created.After(now.Add(time.Minute)) {
 		return fmt.Errorf("request expired; request it again")
 	}
 	if err := validateRequestOperations(r.Operations); err != nil {
 		return err
 	}
-	if err := validateRequestRecord(r); err != nil {
-		return err
+	if err := validateRecentConnection(r.Connection); err != nil {
+		return fmt.Errorf("saved connection is incompatible; request it again: %w", err)
+	}
+	if r.PID <= 0 || !validTaskUID(r.Connection.Instance) {
+		return fmt.Errorf("invalid review identity")
+	}
+	if r.Name != "" && validSession(r.Name) != nil {
+		return fmt.Errorf("invalid review name")
+	}
+	if !filepath.IsAbs(r.Directory) {
+		return fmt.Errorf("invalid local approval directory")
 	}
 	data, err := json.Marshal(r)
 	if err != nil {
@@ -164,68 +158,21 @@ func (s *daemonTasks) Save(r requestRecord) error {
 	if len(data) > maxRequestRecord {
 		return fmt.Errorf("request record too large")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.insertRequest(r, now)
-}
-
-func (s *daemonTasks) insertRequest(r requestRecord, now time.Time) error {
-	if s.draining {
-		return errDaemonDraining
-	}
-	s.prune(now)
-	if _, exists := s.records[r.ID]; exists {
-		return fmt.Errorf("request already exists")
-	}
-	pending := 0
-	for _, task := range s.records {
-		if _, ok := task.(requestRecord); ok {
-			pending++
-		}
-	}
-	if pending >= maxPendingRequests {
-		return fmt.Errorf("too many pending requests; use sshore list and cancel")
-	}
-	if r.Name != "" {
-		for _, old := range s.records {
-			if old.taskName() == r.Name {
-				return fmt.Errorf("%s: %w", r.Name, errObjectNameInUse)
-			}
-		}
-	}
-	if s.records == nil {
-		s.records = make(map[string]daemonTask)
-	}
-	r = cloneRequest(r)
-	for i := range r.Operations {
-		r.Operations[i].LocalPath = ""
-	}
-	s.records[r.ID] = r
 	return nil
 }
-func (s *daemonTasks) Read(id string) (requestRecord, error) {
-	if !validRequestID(id) {
-		return requestRecord{}, fmt.Errorf("invalid request ID")
+
+func (s *daemonTasks) Save(r requestRecord) error {
+	now := time.Now()
+	if err := r.validate(now); err != nil {
+		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.prune(time.Now())
-	task, found := s.records[id]
-	r, isRequest := task.(requestRecord)
-	if !found || !isRequest {
-		return requestRecord{}, fmt.Errorf("request no longer exists or expired: %w", os.ErrNotExist)
-	}
-	return cloneRequest(r), nil
+	return s.register(r.ID, cloneRequest(r))
 }
+
 func (s *daemonTasks) Pending() []requestRecord {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.prune(time.Now())
-	records := make([]requestRecord, 0, len(s.records))
-	for _, r := range s.records {
-		if r, ok := r.(requestRecord); ok {
-			records = append(records, cloneRequest(r))
-		}
+	records := liveTasks[requestRecord](s)
+	for i, r := range records {
+		records[i] = cloneRequest(r)
 	}
 	slices.SortFunc(records, func(a, b requestRecord) int {
 		return cmp.Or(a.Created.Compare(b.Created), cmp.Compare(a.ID, b.ID))
@@ -233,69 +180,64 @@ func (s *daemonTasks) Pending() []requestRecord {
 	return records
 }
 func (s *daemonTasks) Find(ref string) (requestRecord, error) {
+	s.mu.Lock()
+	r, err := s.findRequestLocked(ref, time.Now())
+	s.mu.Unlock()
+	if err != nil {
+		return requestRecord{}, err
+	}
+	// The stored connection and operations are immutable. Copy after lookup so
+	// other tasks do not wait for the route and operation slices to be cloned.
+	return cloneRequest(r), nil
+}
+
+func (s *daemonTasks) findRequestLocked(ref string, now time.Time) (requestRecord, error) {
 	if validRequestID(ref) {
-		return s.Read(ref)
+		if r, found := s.lookupLocked(ref, now).(requestRecord); found {
+			return r, nil
+		}
+		return requestRecord{}, fmt.Errorf("request no longer exists or expired: %w", os.ErrNotExist)
 	}
 	if err := validSession(ref); err != nil {
 		return requestRecord{}, err
 	}
-	records := s.Pending()
-	var found *requestRecord
-	for _, r := range records {
-		if isShortTaskID(ref) && strings.HasPrefix(r.ID, strings.ToLower(ref)) {
-			if found != nil {
+	var prefixMatch, nameMatch requestRecord
+	prefix := shortTaskPrefix(ref)
+	for id, task := range s.liveLocked(now) {
+		r, ok := task.(requestRecord)
+		if !ok {
+			continue
+		}
+		if prefix != "" && strings.HasPrefix(id, prefix) {
+			if prefixMatch.ID != "" {
 				return requestRecord{}, fmt.Errorf("ambiguous request ID %s", ref)
 			}
-			copy := r
-			found = &copy
+			prefixMatch = r
 		}
-	}
-	if found != nil {
-		return *found, nil
-	}
-	for _, r := range records {
 		if r.Name == ref {
-			return r, nil
+			nameMatch = r
 		}
+	}
+	if prefixMatch.ID != "" {
+		return prefixMatch, nil
+	}
+	if nameMatch.ID != "" {
+		return nameMatch, nil
 	}
 	return requestRecord{}, fmt.Errorf("request no longer exists or expired: %w", os.ErrNotExist)
 }
+
 func (s *daemonTasks) Consume(id string) error {
 	if !validRequestID(id) {
 		return fmt.Errorf("invalid request ID")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.prune(time.Now())
-	if _, found := s.records[id].(requestRecord); !found {
-		return fmt.Errorf("request no longer exists or expired: %w", os.ErrNotExist)
+	record, err := s.findRequestLocked(id, time.Now())
+	if err == nil {
+		delete(s.records, record.ID)
 	}
-	delete(s.records, id)
-	return nil
-}
-func (s *daemonTasks) Rename(id, name string) error {
-	if !validRequestID(id) {
-		return fmt.Errorf("invalid request ID")
-	}
-	if err := validSession(name); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.prune(time.Now())
-	task, found := s.records[id]
-	r, isRequest := task.(requestRecord)
-	if !found || !isRequest {
-		return fmt.Errorf("request no longer exists or expired: %w", os.ErrNotExist)
-	}
-	for key, old := range s.records {
-		if key != id && old.taskName() == name {
-			return fmt.Errorf("%s: %w", name, errObjectNameInUse)
-		}
-	}
-	r.Name = name
-	s.records[id] = r
-	return nil
+	return err
 }
 
 type requestRPCReply struct {
@@ -308,25 +250,24 @@ type requestRPCReply struct {
 func (s *daemonTasks) serveRequest(w http.ResponseWriter, r *http.Request) {
 	reply := requestRPCReply{}
 	var err error
+	ref := r.URL.Query().Get("ref")
 	switch r.PathValue("action") {
-	case "request_save":
+	case "save":
 		var record requestRecord
-		err = json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestRecord+1)).Decode(&record)
+		err = decodeDaemonBody(w, r, maxRequestRecord+1, &record)
 		if err == nil {
 			err = s.Save(record)
 		}
-	case "request_get":
+	case "get":
 		var record requestRecord
-		record, err = s.Find(r.URL.Query().Get("name"))
+		record, err = s.Find(ref)
 		if err == nil {
 			reply.Request = &record
 		}
-	case "request_list":
+	case "list":
 		reply.Requests = s.Pending()
-	case "request_consume":
-		err = s.Consume(r.URL.Query().Get("ref"))
-	case "request_rename":
-		err = s.Rename(r.URL.Query().Get("ref"), r.URL.Query().Get("name"))
+	case "consume":
+		err = s.Consume(ref)
 	default:
 		err = fmt.Errorf("invalid request store action")
 	}
@@ -336,13 +277,13 @@ func (s *daemonTasks) serveRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewEncoder(w).Encode(reply)
 }
-func requestRPC(action, ref, name string, request *requestRecord) (requestRPCReply, error) {
+func requestRPC(action, ref string, request *requestRecord) (requestRPCReply, error) {
 	var reply requestRPCReply
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 	var record localShellRecord
 	var err error
-	if action == "request_save" {
+	if action == "save" {
 		record, err = ensureLocalDaemonContext(ctx)
 	} else {
 		record, err = existingDaemonRecord()
@@ -350,18 +291,11 @@ func requestRPC(action, ref, name string, request *requestRecord) (requestRPCRep
 	if err != nil {
 		return reply, err
 	}
-	path := "/requests/" + action + "?" + url.Values{"ref": {ref}, "name": {name}}.Encode()
-	req, err := daemonRequest(ctx, record, path, request)
-	if err != nil {
-		return reply, err
+	path := "/requests/" + action
+	if ref != "" {
+		path += "?ref=" + url.QueryEscape(ref)
 	}
-	resp, err := daemonDo(req)
-	if err != nil {
-		return reply, err
-	}
-	defer resp.Body.Close()
-	decoder := json.NewDecoder(io.LimitReader(resp.Body, maxPendingRequests*maxRequestRecord+4096))
-	if err := decoder.Decode(&reply); err != nil {
+	if err := daemonJSONLimit(ctx, record, path, request, &reply, maxPendingRequests*maxRequestRecord+4096); err != nil {
 		return reply, err
 	}
 	if reply.NotFound {
@@ -373,18 +307,18 @@ func requestRPC(action, ref, name string, request *requestRecord) (requestRPCRep
 	return reply, nil
 }
 func saveRequest(r requestRecord) error {
-	_, err := requestRPC("request_save", "", "", &r)
+	_, err := requestRPC("save", "", &r)
 	return err
 }
 func pendingRequests() ([]requestRecord, error) {
-	result, err := requestRPC("request_list", "", "", nil)
+	result, err := requestRPC("list", "", nil)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	return result.Requests, err
 }
 func findRequest(ref string) (requestRecord, error) {
-	result, err := requestRPC("request_get", "", ref, nil)
+	result, err := requestRPC("get", ref, nil)
 	if err != nil {
 		return requestRecord{}, err
 	}
@@ -393,17 +327,7 @@ func findRequest(ref string) (requestRecord, error) {
 	}
 	return *result.Request, nil
 }
-func readRequest(id string) (requestRecord, error) {
-	if !validRequestID(id) {
-		return requestRecord{}, fmt.Errorf("invalid request ID")
-	}
-	return findRequest(id)
-}
 func consumeRequest(id string) error {
-	_, err := requestRPC("request_consume", id, "", nil)
-	return err
-}
-func renameRequest(id, name string) error {
-	_, err := requestRPC("request_rename", id, name, nil)
+	_, err := requestRPC("consume", id, nil)
 	return err
 }

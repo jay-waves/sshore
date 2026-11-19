@@ -40,16 +40,7 @@ func (c *ownedTransport) Close() error {
 // endpoints and joins both copies. Used for attachment routes, where EOF ends
 // the whole route. Close must unblock concurrent reads and writes.
 func Bridge(a, b io.ReadWriteCloser) {
-	closeBoth := sync.OnceFunc(func() { _ = a.Close(); _ = b.Close() })
-	done := make(chan struct{})
-	go func() {
-		_, _ = io.Copy(b, a)
-		closeBoth()
-		close(done)
-	}()
-	_, _ = io.Copy(a, b)
-	closeBoth()
-	<-done
+	relay(context.Background(), a, b, false)
 }
 
 // Splice relays a request/response connection, preserving half-close on clean
@@ -57,18 +48,30 @@ func Bridge(a, b io.ReadWriteCloser) {
 // Errors or cancellation abort both endpoints; return joins both copies and
 // cancellation cleanup. Endpoints without CloseWrite fall back to full Close.
 func Splice(ctx context.Context, a, b io.ReadWriteCloser) {
-	var once sync.Once
-	closeBoth := func() { once.Do(func() { _ = a.Close(); _ = b.Close() }) }
-	cancelled := make(chan struct{})
-	stop := context.AfterFunc(ctx, func() { closeBoth(); close(cancelled) })
-	defer func() {
-		closeBoth()
-		if !stop() {
-			<-cancelled
-		}
-	}()
-	copyTo := func(dst, src io.ReadWriteCloser) {
-		if _, err := io.Copy(dst, src); err != nil {
+	relay(ctx, a, b, true)
+}
+
+func relay(ctx context.Context, a, b io.ReadWriteCloser, halfClose bool) {
+	closeA := sync.OnceFunc(func() { _ = a.Close() })
+	closeB := sync.OnceFunc(func() { _ = b.Close() })
+	closeBoth := sync.OnceFunc(func() {
+		// A protocol close can block on its underlying transport. Start
+		// closing the other endpoint without waiting for it.
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			closeB()
+		}()
+		closeA()
+		<-done
+	})
+	defer closeBoth()
+	if ctx.Done() != nil {
+		stop := context.AfterFunc(ctx, closeBoth)
+		defer stop()
+	}
+	copyTo := func(dst, src io.ReadWriteCloser, closeDst func()) {
+		if _, err := io.Copy(dst, src); err != nil || !halfClose {
 			closeBoth()
 			return
 		}
@@ -77,11 +80,11 @@ func Splice(ctx context.Context, a, b io.ReadWriteCloser) {
 				closeBoth()
 			}
 		} else {
-			_ = dst.Close()
+			closeDst()
 		}
 	}
 	done := make(chan struct{})
-	go func() { copyTo(b, a); close(done) }()
-	copyTo(a, b)
+	go func() { copyTo(b, a, closeB); close(done) }()
+	copyTo(a, b, closeA)
 	<-done
 }

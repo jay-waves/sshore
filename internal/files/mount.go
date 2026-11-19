@@ -36,7 +36,6 @@ type MountConfig struct {
 // MountLifecycle connects a background worker to the mount. Nil means foreground.
 type MountLifecycle struct {
 	Abandoned          <-chan struct{}
-	Environment        []string
 	OperationCompleted func()
 	Ready              func(string, string) error
 	// Stop receives a reply channel for the graceful-unmount result.
@@ -55,8 +54,14 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 	if err = ValidateMountpoint(o.Mountpoint); err != nil {
 		return 1, err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	defer func() {
+		if cause := context.Cause(ctx); cause != nil && cause != context.Canceled && !errors.Is(resultErr, cause) {
+			code = 1
+			resultErr = errors.Join(resultErr, cause)
+		}
+	}()
 	interrupts := make(chan os.Signal, 2)
 	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(interrupts)
@@ -64,53 +69,87 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 	if service != nil {
 		abandoned = service.Abandoned
 	}
-	setupFinished, setupStopped := make(chan struct{}), make(chan struct{})
+	var startupTimer *time.Timer
+	var startupDeadline <-chan time.Time
+	if o.StartupTimeout > 0 {
+		startupTimer = time.NewTimer(o.StartupTimeout)
+		startupDeadline = startupTimer.C
+	}
+	setup, endSetup := context.WithCancel(ctx)
+	setupStopped := make(chan struct{})
 	go func() {
 		defer close(setupStopped)
+		if startupTimer != nil {
+			defer startupTimer.Stop()
+		}
 		select {
 		case <-abandoned:
-			cancel()
+			cancel(errors.New("mount startup abandoned"))
 		case <-interrupts:
-			cancel()
-		case <-setupFinished:
-		case <-ctx.Done():
+			cancel(errors.New("mount startup interrupted"))
+		case <-startupDeadline:
+			cancel(fmt.Errorf("mount startup timed out after %s (including SSH authentication)", o.StartupTimeout))
+		case <-setup.Done():
 		}
 	}()
-	defer func() { cancel(); <-setupStopped }()
-	connection := o.Connection
-	if service != nil {
-		connection.Environment = service.Environment
-	}
+	finishSetup := func() { endSetup(); <-setupStopped }
+	defer finishSetup()
 	var transport io.ReadWriteCloser
 	if o.Open != nil {
 		transport, err = o.Open(ctx)
+		if err == nil {
+			transport = wire.OwnTransport(ctx, transport, nil)
+		}
 	} else {
 		var pipes *sshio.Process
-		pipes, err = sshio.Start(ctx, connection, os.Stderr)
+		pipes, err = sshio.Start(ctx, o.Connection, os.Stderr)
 		if err == nil {
 			transport = pipes
-			defer pipes.CloseAndWait()
+			defer pipes.Wait()
 		}
 	}
 	if err != nil {
 		return 1, err
 	}
-	defer transport.Close()
-	stdout, stdin := transport, transport
-	watch := &sftpWatch{}
-	abortIO := func() { cancel(); _ = stdout.Close(); _ = stdin.Close() }
+	disconnect := func(reason error) {
+		cancel(reason)
+		_ = transport.Close()
+	}
+	var account, root string
+	var mux *smux.Session
+	var client *sftp.Client
+	var backend *ftpFS
+	var stopStats func()
+	var sftpWorkers sync.WaitGroup
 	defer func() {
-		if failure := watch.err(); failure != nil {
-			code = 1
-			resultErr = errors.Join(resultErr, failure)
+		// Cut transport before joining any worker with outstanding SFTP I/O.
+		// Client.Close itself can wait behind a blocked write.
+		disconnect(nil)
+		if backend != nil {
+			<-backend.prefetch.done
+			<-backend.cache.refresh.done
+			if o.History != nil && account != "" {
+				backend.prefetch.mu.Lock()
+				delta := backend.prefetch.delta
+				backend.prefetch.delta = nil
+				backend.prefetch.mu.Unlock()
+				if len(delta) > 0 {
+					o.History(account, root, delta)
+				}
+			}
+			if stopStats != nil {
+				stopStats()
+			}
+			backend.notifications.Close()
+		}
+		if client != nil {
+			_ = client.Close()
+		}
+		sftpWorkers.Wait()
+		if mux != nil {
+			_ = mux.Close()
 		}
 	}()
-	if o.StartupTimeout > 0 {
-		watch.timer = time.AfterFunc(o.StartupTimeout, func() {
-			watch.fail(fmt.Errorf("mount startup timed out after %s (including SSH authentication)", o.StartupTimeout), abortIO)
-		})
-		defer watch.timer.Stop()
-	}
 	var home string
 	if o.Prepare != nil {
 		if home, err = o.Prepare(ctx, transport); err != nil {
@@ -121,27 +160,39 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 	if err != nil {
 		return 1, err
 	}
-	var account string
-	mux, data, events, err := openMux(transport, o.Version, o.Approval, o.PeerMetadata, &account)
+	mux, data, events, err := OpenMux(transport, o.Version, o.Approval, o.PeerMetadata, &account)
 	if err != nil {
 		return 1, fmt.Errorf("mount agent handshake: %w", err)
 	}
-	defer mux.Close()
-	wire := newFTPWire(data, data)
-	wire.metrics = o.Stats
-	if service != nil {
-		wire.onReply = service.OperationCompleted
+	ftp := newFTPWire(data, data)
+	if o.Stats {
+		ftp.enableMetrics()
 	}
-	stopWatch := wire.watchRequests(o.IOTimeout, watch, abortIO)
-	defer stopWatch()
-	client, err := sftp.NewClientPipe(wire, wire)
+	if service != nil {
+		ftp.onReply = service.OperationCompleted
+	}
+	if o.IOTimeout > 0 {
+		sftpWorkers.Go(func() {
+			if err := ftp.watchRequests(ctx, o.IOTimeout); err != nil {
+				cancel(err)
+			}
+		})
+	}
+	client, err = sftp.NewClientPipe(ftp, ftp)
 	if err != nil {
+		if cause := context.Cause(ctx); cause != nil {
+			return 1, cause
+		}
 		return 1, fmt.Errorf("SFTP handshake: %w", err)
 	}
-	// Direct pipe closure must precede Client.Close: pkg/sftp serializes Close
-	// with writes and otherwise cannot interrupt a blocked outgoing request.
-	defer func() { cancel(); _ = stdout.Close(); _ = stdin.Close(); _ = client.Close() }()
-	root, err := client.RealPath(remote)
+	sftpWorkers.Go(func() {
+		err := client.Wait()
+		if err == nil {
+			err = io.EOF
+		}
+		cancel(fmt.Errorf("SFTP disconnected: %w", err))
+	})
+	root, err = client.RealPath(remote)
 	if err != nil {
 		return 1, fmt.Errorf("remote directory: %w", err)
 	}
@@ -159,137 +210,113 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 			}
 		}
 	}
-	backend := &ftpFS{client: client, root: path.Clean(root), readOnly: o.ReadOnly, directIO: o.DirectIO}
-	backend.notifications = startFTPNotifications(events, &backend.cache)
-	defer backend.notifications.Close()
-	backend.watchDirectory(backend.root)
-	if o.Stats {
-		backend.metrics = &ftpCallbackMetrics{}
-		stopStats := startFTPStats(wire, backend, os.Stderr)
-		defer stopStats()
-	}
-	refresh := startMetadataRefresh(ctx, backend)
 	var history VisitHistory
 	if o.History != nil && account != "" {
 		history = o.History(account, root, nil)
 	}
+	backend = &ftpFS{client: client, root: path.Clean(root), readOnly: o.ReadOnly, directIO: o.DirectIO}
+	backend.notifications = startFTPNotifications(events, &backend.cache)
+	backend.notifications.enqueue(backend.root)
+	if o.Stats {
+		backend.metrics = &ftpCallbackMetrics{}
+		stopStats = startFTPStats(ftp, backend, os.Stderr)
+	}
+	startMetadataRefresh(ctx, backend)
 	backend.prefetch = startDirectoryPrefetch(ctx, backend, history)
-	defer func() {
-		backend.prefetch.cancel()
-		refresh.cancel()
-		// Release an outstanding SFTP CLOSE before waiting for the worker.
-		abortIO()
-		<-backend.prefetch.done
-		<-refresh.done
-		if o.History != nil && account != "" {
-			backend.prefetch.mu.Lock()
-			defer backend.prefetch.mu.Unlock()
-			if len(backend.prefetch.delta) > 0 {
-				o.History(account, root, backend.prefetch.delta)
-			}
-		}
-	}()
 	mount, err := mountFTP(backend, o.Mountpoint)
 	if err != nil {
 		return 1, err
 	}
-	if watch.timer != nil {
-		watch.timer.Stop()
-	}
-	if err := watch.err(); err != nil {
-		_ = mount.Unmount()
-		return 1, err
-	}
-	close(setupFinished)
-	<-setupStopped
-	if service != nil {
-		if err = service.Ready(root, o.Mountpoint); err != nil {
-			cancel()
-			_ = stdout.Close()
-			_ = stdin.Close()
-			_ = mount.Unmount()
-			return 1, err
-		}
-	}
-	fmt.Fprintf(os.Stderr, "Mounted %s:%s -> %s (SFTP). Close files, then Ctrl-C to unmount.\n", termui.CleanText(o.Host), termui.CleanText(root), termui.CleanText(o.Mountpoint))
-	done := make(chan struct{})
-	go func() { mount.Wait(); close(done) }()
-	lost := make(chan error, 1)
-	go func() { lost <- client.Wait() }()
-	abort := func() { cancel(); _ = stdout.Close(); _ = stdin.Close() }
+	finishSetup()
 	var requests <-chan chan error
 	if service != nil {
 		requests = service.Stop
+		if ctx.Err() == nil {
+			if err := service.Ready(root, o.Mountpoint); err != nil {
+				cancel(err)
+			}
+		}
+	}
+	var done <-chan struct{}
+	if ctx.Err() == nil {
+		fmt.Fprintf(os.Stderr, "Mounted %s:%s -> %s (SFTP). Close files, then Ctrl-C to unmount.\n", termui.CleanText(o.Host), termui.CleanText(root), termui.CleanText(o.Mountpoint))
+		mounted := make(chan struct{})
+		go func() { mount.Wait(); close(mounted) }()
+		done = mounted
 	}
 	for {
-		select {
-		case request := <-requests:
-			stopped, stopErr := stopFTPMount(mount, interrupts, abort, 10*time.Second)
-			request <- stopErr
-			if stopped {
-				if stopErr != nil {
-					return 1, stopErr
+		var request chan error
+		if ctx.Err() == nil {
+			select {
+			case request = <-requests:
+				if request == nil {
+					requests = nil
+					continue
 				}
+			case <-done:
 				return 0, nil
+			case <-ctx.Done():
+			case <-interrupts:
+				fmt.Fprintln(os.Stderr, "Unmounting (up to 10s). Ctrl-C again forces disconnect.")
 			}
-		case <-done:
-			return 0, nil
-		case <-ctx.Done():
-			abort()
-			_ = mount.Unmount()
-			return 1, fmt.Errorf("mount connection interrupted during setup")
-		case <-interrupts:
-			fmt.Fprintln(os.Stderr, "Unmounting (up to 10s). Ctrl-C again forces disconnect.")
-			stopped, stopErr := stopFTPMount(mount, interrupts, abort, 10*time.Second)
-			if !stopped {
-				fmt.Fprintf(os.Stderr, "Unmount failed: %s. Still connected; close files and retry Ctrl-C.\n", termui.CleanText(stopErr.Error()))
-				continue
-			}
+		}
+		stopped, stopErr := stopFTPMount(ctx, mount, interrupts, disconnect, 10*time.Second)
+		if request != nil {
+			request <- stopErr
+		}
+		if stopped {
 			if stopErr != nil {
 				return 1, stopErr
 			}
 			return 0, nil
-		case err = <-lost:
-			abort()
-			_, unmountErr := stopFTPMount(mount, interrupts, abort, 5*time.Second)
-			if unmountErr != nil {
-				return 1, fmt.Errorf("SFTP disconnected (%v); unmount: %w", err, unmountErr)
-			}
-			return 1, fmt.Errorf("SFTP disconnected: %v", err)
+		}
+		if request == nil {
+			fmt.Fprintf(os.Stderr, "Unmount failed: %s. Still connected; close files and retry Ctrl-C.\n", termui.CleanText(stopErr.Error()))
 		}
 	}
 }
 
 // stopFTPMount leaves a busy mount connected after a normal unmount refusal.
 // It only interrupts transport after the grace period or an explicit second
-// signal. Waiting is bounded even if a platform's unmount cannot be interrupted.
-func stopFTPMount(m ftpMount, interrupts <-chan os.Signal, abort func(), grace time.Duration) (bool, error) {
+// signal, or follows a transport failure into the bounded forced wait.
+func stopFTPMount(ctx context.Context, m ftpMount, interrupts <-chan os.Signal, disconnect func(error), grace time.Duration) (bool, error) {
+	reason := context.Cause(ctx)
+	wait := grace
+	if reason != nil {
+		disconnect(reason)
+		wait = 10 * time.Second
+	}
 	result := make(chan error, 1)
 	go func() { result <- m.Unmount() }()
-	timer := time.NewTimer(grace)
+	timer := time.NewTimer(wait)
 	defer timer.Stop()
-	reason := "unmount timed out"
+	if reason == nil {
+		select {
+		case err := <-result:
+			if cause := context.Cause(ctx); cause != nil {
+				return true, errors.Join(cause, err)
+			}
+			return err == nil, err
+		case <-interrupts:
+			reason = errors.New("forced disconnect")
+		case <-ctx.Done():
+			reason = context.Cause(ctx)
+		case <-timer.C:
+			reason = errors.New("unmount timed out")
+		}
+		timer.Stop()
+		disconnect(reason)
+		timer.Reset(5 * time.Second)
+	}
 	select {
 	case e := <-result:
 		if e != nil {
-			return false, e
-		}
-		return true, nil
-	case <-interrupts:
-		reason = "forced disconnect"
-	case <-timer.C:
-	}
-	abort()
-	timer.Reset(5 * time.Second)
-	select {
-	case e := <-result:
-		if e != nil {
-			return true, fmt.Errorf("%s; unmount failed: %w", reason, e)
+			return true, fmt.Errorf("%w; unmount failed: %w", reason, e)
 		}
 	case <-timer.C:
-		return true, fmt.Errorf("%s; unmount still pending; in-flight writes may be incomplete", reason)
+		return true, fmt.Errorf("%w; unmount still pending; in-flight writes may be incomplete", reason)
 	}
-	return true, fmt.Errorf("%s; in-flight writes may be incomplete", reason)
+	return true, fmt.Errorf("%w; in-flight writes may be incomplete", reason)
 }
 
 type MountApproval struct {
@@ -348,12 +375,35 @@ type ftpCallbackTotals struct {
 	Calls          uint64
 	TotalNS, MaxNS int64
 }
-type ftpCallbackMetrics struct {
-	mu     sync.Mutex
-	totals map[string]ftpCallbackTotals
+type ftpCallback uint8
+
+const (
+	ftpCallbackOpen ftpCallback = iota
+	ftpCallbackCreate
+	ftpCallbackClose
+	ftpCallbackRename
+	ftpCallbackSetBasicInfo
+	ftpCallbackReadDirectory
+	ftpCallbackGetFileInfo
+	ftpCallbackCount
+)
+
+var ftpCallbackNames = [ftpCallbackCount]string{
+	ftpCallbackOpen:          "Open",
+	ftpCallbackCreate:        "Create",
+	ftpCallbackClose:         "Close",
+	ftpCallbackRename:        "Rename",
+	ftpCallbackSetBasicInfo:  "SetBasicInfo",
+	ftpCallbackReadDirectory: "ReadDirectory",
+	ftpCallbackGetFileInfo:   "GetFileInfo",
 }
 
-func (m *ftpCallbackMetrics) observe(name string) func() {
+type ftpCallbackMetrics struct {
+	mu     sync.Mutex
+	totals [ftpCallbackCount]ftpCallbackTotals
+}
+
+func (m *ftpCallbackMetrics) observe(callback ftpCallback) func() {
 	if m == nil {
 		return func() {}
 	}
@@ -362,14 +412,10 @@ func (m *ftpCallbackMetrics) observe(name string) func() {
 		elapsed := int64(time.Since(start))
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		if m.totals == nil {
-			m.totals = make(map[string]ftpCallbackTotals)
-		}
-		v := m.totals[name]
+		v := &m.totals[callback]
 		v.Calls++
 		v.TotalNS += elapsed
 		v.MaxNS = max(v.MaxNS, elapsed)
-		m.totals[name] = v
 	}
 }
 func writeFTPStats(w *ftpWire, f *ftpFS, out io.Writer) {
@@ -381,24 +427,31 @@ func writeFTPStats(w *ftpWire, f *ftpFS, out io.Writer) {
 		CacheBytes, MetadataEntries, Directories, DirectoryEntries int
 		Callbacks                                                  map[string]ftpCallbackTotals
 	}{Type: "mount_stats", Requests: make(map[string]ftpRequestTotals), Callbacks: make(map[string]ftpCallbackTotals)}
+	var requests [256]ftpRequestTotals
 	w.mu.Lock()
-	for k, v := range w.totals {
+	if w.totals != nil {
+		requests = *w.totals
+	}
+	report.Inflight, report.PeakInflight = len(w.requests), w.peakRequests
+	w.mu.Unlock()
+	for k, v := range requests {
 		if v.Started != 0 {
 			report.Requests[ftpRequestName(byte(k))] = v
 		}
 	}
-	report.Inflight, report.PeakInflight = len(w.requests), w.peakRequests
-	w.mu.Unlock()
 	f.cache.mu.Lock()
 	report.Cache = f.cache.counters
-	report.CacheBytes, report.MetadataEntries, report.Directories, report.DirectoryEntries = f.cache.bytes, f.cache.stats, f.cache.dirs, f.cache.dirEntries
+	report.CacheBytes, report.MetadataEntries, report.Directories, report.DirectoryEntries = f.cache.bytes, f.cache.metadataEntriesLocked(), f.cache.dirs, f.cache.dirEntries
 	f.cache.mu.Unlock()
 	if f.metrics != nil {
 		f.metrics.mu.Lock()
-		for k, v := range f.metrics.totals {
-			report.Callbacks[k] = v
-		}
+		callbacks := f.metrics.totals
 		f.metrics.mu.Unlock()
+		for k, v := range callbacks {
+			if v.Calls != 0 {
+				report.Callbacks[ftpCallbackNames[k]] = v
+			}
+		}
 	}
 	_ = json.NewEncoder(out).Encode(report)
 }
@@ -421,9 +474,15 @@ func startFTPStats(w *ftpWire, f *ftpFS, out io.Writer) func() {
 	return func() { close(stop); <-done }
 }
 
+var ftpRequestNames = [256]string{
+	3: "OPEN", 4: "CLOSE", 5: "READ", 6: "WRITE", 7: "LSTAT", 8: "FSTAT",
+	9: "SETSTAT", 10: "FSETSTAT", 11: "OPENDIR", 12: "READDIR", 13: "REMOVE",
+	14: "MKDIR", 15: "RMDIR", 16: "REALPATH", 17: "STAT", 18: "RENAME",
+	19: "READLINK", 20: "SYMLINK", 200: "EXTENDED",
+}
+
 func ftpRequestName(kind byte) string {
-	names := map[byte]string{3: "OPEN", 4: "CLOSE", 5: "READ", 6: "WRITE", 7: "LSTAT", 8: "FSTAT", 9: "SETSTAT", 10: "FSETSTAT", 11: "OPENDIR", 12: "READDIR", 13: "REMOVE", 14: "MKDIR", 15: "RMDIR", 16: "REALPATH", 17: "STAT", 18: "RENAME", 19: "READLINK", 20: "SYMLINK", 200: "EXTENDED"}
-	if name, ok := names[kind]; ok {
+	if name := ftpRequestNames[kind]; name != "" {
 		return name
 	}
 	return fmt.Sprintf("TYPE_%d", kind)

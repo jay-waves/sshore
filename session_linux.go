@@ -2,74 +2,70 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"golang.org/x/sys/unix"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Public names resolve through the account daemon's task table. Control and
 // data connections select the immutable ID at the authenticated TCP endpoint.
 
 func resolveSession(name string, expected ...string) (string, error) {
+	task, err := resolveHostedShell(name, firstExpectedInstance(expected))
+	return task.Instance, err
+}
+
+func resolveHostedShell(name, instance string) (shellView, error) {
 	if err := validSession(name); err != nil {
-		return "", err
+		return shellView{}, err
 	}
-	records, err := hostedTaskRecords()
+	if active := accountActivity.Load(); active != nil && active.tasks != nil {
+		return active.tasks.resolveHostedShell(name, instance)
+	}
+	record, err := existingDaemonRecord()
+	if os.IsNotExist(err) {
+		return shellView{}, nil
+	}
 	if err != nil {
-		return "", err
+		return shellView{}, err
 	}
-	instance := firstExpectedInstance(expected)
-	var found string
-	for _, task := range records {
-		match := task.Name == name || task.ID == name || isShortTaskID(name) && strings.HasPrefix(task.ID, strings.ToLower(name))
-		if instance != "" {
-			match = task.ID == instance
-		}
-		if match {
-			if found != "" {
-				return "", fmt.Errorf("ambiguous shell name %s", name)
-			}
-			found = task.ID
-		}
+	query := url.Values{"name": {name}}
+	if instance != "" {
+		query.Set("instance", instance)
 	}
-	return found, nil
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var view shellView
+	err = daemonJSON(ctx, record, "/tasks/hosted/resolve?"+query.Encode(), nil, &view)
+	return view, err
 }
 
 func renameSession(old, name string, expected ...string) error {
 	if err := validAlias(name); err != nil {
 		return err
 	}
-	gate, err := setupLock()
+	task, err := resolveHostedShell(old, firstExpectedInstance(expected))
 	if err != nil {
 		return err
 	}
-	defer gate.Close()
-	path, err := resolveSession(old, expected...)
-	if err != nil {
-		return err
-	}
-	if path == "" {
+	if task.Instance == "" {
 		return fmt.Errorf("shell %s does not exist", old)
 	}
 
-	old, err = readSessionName(path)
-	if err != nil {
-		return err
-	}
-	gate.Close() // The daemon takes the gate and rechecks the old label and destination.
-	c, err := dialHostedTask(context.Background(), path, time.Second)
+	// The daemon rechecks the selected label and UID when it changes the name.
+	c, err := dialHostedTask(context.Background(), task.Instance, time.Second)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	if err := writeMessage(c, message{Type: "rename", Instance: firstExpectedInstance(expected), Name: name, Action: old, SoftwareVersion: version}); err != nil {
+	if err := writeMessage(c, message{Type: "rename", Instance: task.Instance, Name: name, Action: task.Name, SoftwareVersion: version}); err != nil {
 		return err
 	}
 	m, err := readMessage(c)
@@ -79,55 +75,24 @@ func renameSession(old, name string, expected ...string) error {
 	if m.Type != "renamed" {
 		return fmt.Errorf("rename: %s", m.Error)
 	}
-	fmt.Fprintf(os.Stdout, "Renamed shell %s to %s\n", old, name)
+	fmt.Fprintf(os.Stdout, "Renamed shell %s to %s\n", task.Name, name)
 	return nil
-}
-
-func sessionLabel(m message, filename string) string {
-	if validSession(m.Name) == nil {
-		return m.Name
-	}
-	return cleanText(strings.TrimSuffix(filename, ".sock"))
 }
 
 func (s *remoteShell) rename(old, name string, expected ...string) error {
-	if err := validAlias(name); err != nil {
-		return err
-	}
-	s.tasks.mu.Lock()
-	defer s.tasks.mu.Unlock()
-	for id, task := range s.tasks.records {
-		if id != s.instance && task.taskName() == name {
-			return fmt.Errorf("%s: %w", name, errObjectNameInUse)
+	return s.renameTask(s.tasks, s.instance, name, func() (string, error) {
+		if instance := firstExpectedInstance(expected); instance != "" && instance != s.instance {
+			return "", fmt.Errorf("shell instance changed; refresh with sshore list")
 		}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if firstExpectedInstance(expected) != "" && firstExpectedInstance(expected) != s.instance {
-		return fmt.Errorf("shell instance changed; refresh with sshore list")
-	}
-	if s.lifecycle.Exited() || s.name != old {
-		return fmt.Errorf("shell changed or is exiting; refresh the shell list")
-	}
-	if s.name == name {
-		return nil
-	}
-	s.name = name
-	renameShellTree(remoteTreeIdentity(s.instance), name)
-	return nil
-}
-
-func readSessionName(id string) (string, error) {
-	records, err := hostedTaskRecords()
-	if err != nil {
-		return "", err
-	}
-	for _, task := range records {
-		if task.ID == id {
-			return task.Name, nil
+		if s.killing || s.exited || s.name != old {
+			return "", fmt.Errorf("shell changed or is exiting; refresh the shell list")
 		}
-	}
-	return "", os.ErrNotExist
+		if s.name == name {
+			return "", nil
+		}
+		s.name = name
+		return remoteTreeIdentity(s.instance), nil
+	})
 }
 
 func firstExpectedInstance(expected []string) string {
@@ -152,21 +117,8 @@ func killSession(name string, expected ...string) error {
 		return err
 	}
 	defer c.Close()
-	if err := writeMessage(c, message{Type: "status", Action: "health"}); err != nil {
-		return err
-	}
-	m, err := readMessage(c)
-	if err != nil || m.Type != "session" {
-		return fmt.Errorf("shell status unavailable: %v", err)
-	}
-	c.Close()
-	c, err = dialHostedTask(context.Background(), m.Instance, time.Second)
-	if err != nil {
-		return err
-	}
-	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	if err := writeMessage(c, message{Type: "kill", Instance: m.Instance, SoftwareVersion: version}); err != nil {
+	if err := writeMessage(c, message{Type: "kill", Instance: path, SoftwareVersion: version}); err != nil {
 		return err
 	}
 	reply, err := readMessage(c)
@@ -195,6 +147,8 @@ type sessionExit struct {
 	file   string
 }
 
+const sessionExitMaxBytes = 4096
+
 func readSessionExits(dir string) []sessionExit {
 	entries, _ := os.ReadDir(dir)
 	var records []sessionExit
@@ -209,12 +163,12 @@ func readSessionExits(dir string) []sessionExit {
 		}
 		f := os.NewFile(uintptr(fd), path)
 		info, err := f.Stat()
-		if err != nil || !info.Mode().IsRegular() || info.Size() > 4096 {
+		if err != nil || !info.Mode().IsRegular() || info.Size() > sessionExitMaxBytes {
 			f.Close()
 			continue
 		}
 		var record sessionExit
-		err = json.NewDecoder(io.LimitReader(f, 4096)).Decode(&record)
+		err = readBoundedStateJSON(f, sessionExitMaxBytes, &record)
 		f.Close()
 		if err != nil || validSession(record.Name) != nil || record.At.IsZero() {
 			continue
@@ -222,7 +176,6 @@ func readSessionExits(dir string) []sessionExit {
 		record.file = path
 		records = append(records, record)
 	}
-	sort.Slice(records, func(i, j int) bool { return records[i].At.After(records[j].At) })
 	return records
 }
 
@@ -236,18 +189,23 @@ func saveSessionExit(socket, name, reason string) {
 		return
 	}
 	defer gate.Close()
-	if writeStateJSON(socket+".exit.json", sessionExit{Name: name, Reason: reason, At: time.Now().UTC()}) != nil {
+	if writeBoundedStateJSON(socket+".exit.json", sessionExit{Name: name, Reason: reason, At: time.Now().UTC()}, sessionExitMaxBytes) != nil {
 		return
 	}
-	pruneSessionExits(dir)
+	recentSessionExits(dir, true)
 }
 
-func pruneSessionExits(dir string) {
-	for i, record := range readSessionExits(dir) {
-		if i >= 100 || time.Since(record.At) > 7*24*time.Hour {
+// Write-side callers hold the exit lock through pruning.
+func recentSessionExits(dir string, prune bool) []sessionExit {
+	records := readSessionExits(dir)
+	cutoff := time.Now().Add(-exitReceiptLifetime)
+	recent, discarded := partitionExitReceipts(records, cutoff, func(record sessionExit) time.Time { return record.At })
+	if prune {
+		for _, record := range discarded {
 			_ = os.Remove(record.file)
 		}
 	}
+	return recent
 }
 
 func printSessionExits(dir string, out io.Writer) error {
@@ -255,18 +213,12 @@ func printSessionExits(dir string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	pruneSessionExits(dir)
-	records := readSessionExits(dir)
+	records := recentSessionExits(dir, true)
 	gate.Close()
-	heading := false
+	if len(records) != 0 {
+		fmt.Fprintln(out, "\nRecent exits:")
+	}
 	for _, record := range records {
-		if time.Since(record.At) > 7*24*time.Hour {
-			continue
-		}
-		if !heading {
-			fmt.Fprintln(out, "\nRecent exits:")
-			heading = true
-		}
 		fmt.Fprintf(out, "%s [ended] · %s · %s\n", record.Name, record.At.Local().Format("2006-01-02 15:04:05 MST"), cleanText(record.Reason))
 	}
 	return nil

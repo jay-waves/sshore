@@ -2,8 +2,10 @@ package tmux
 
 import (
 	"context"
+	"encoding/binary"
 	"io"
 	"os"
+	"sync"
 
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
@@ -20,18 +22,37 @@ func startTerminalKeyboardFile(parent context.Context, input *os.File, emit func
 	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != nil {
 		return nil, err
 	}
+	wake, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(parent)
+	signal := sync.OnceFunc(func() {
+		var value [8]byte
+		binary.NativeEndian.PutUint64(value[:], 1)
+		for {
+			if _, err := unix.Write(wake, value[:]); err != unix.EINTR {
+				return
+			}
+		}
+	})
+	stopWake := context.AfterFunc(ctx, signal)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer func() {
+			if !stopWake() {
+				// Join the wake before releasing its file descriptor.
+				signal()
+			}
+			_ = unix.Close(wake)
+			cancel()
+		}()
 		buf := make([]byte, 4096)
 		defer clear(buf)
-		poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-			n, err := unix.Poll(poll, 50)
+		poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}, {Fd: int32(wake), Events: unix.POLLIN}}
+		for ctx.Err() == nil {
+			_, err := unix.Poll(poll, -1)
 			if err == unix.EINTR {
 				continue
 			}
@@ -41,9 +62,6 @@ func startTerminalKeyboardFile(parent context.Context, input *os.File, emit func
 			if err != nil {
 				emit(nil, err)
 				return
-			}
-			if n == 0 {
-				continue
 			}
 			if poll[0].Revents&unix.POLLNVAL != 0 {
 				emit(nil, os.ErrClosed)
@@ -57,7 +75,7 @@ func startTerminalKeyboardFile(parent context.Context, input *os.File, emit func
 			if ctx.Err() != nil {
 				return
 			}
-			n, err = input.Read(buf)
+			n, err := input.Read(buf)
 			if ctx.Err() != nil {
 				return
 			}

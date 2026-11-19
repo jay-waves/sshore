@@ -1,6 +1,7 @@
 package files
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,15 +61,19 @@ func TestFTPMetadataReuseAndExpiry(t *testing.T) {
 
 func TestFTPMetadataDirectoryBudgetAndLinks(t *testing.T) {
 	var cache ftpMetadataCache
-	epoch := cache.snapshot()
-	cache.directory(epoch, "/dir", []os.FileInfo{
-		ftpCacheInfo{name: "file"}, ftpCacheInfo{name: "link", mode: os.ModeSymlink},
-		ftpCacheInfo{name: ".."}, ftpCacheInfo{name: "a/b"},
+	_, err := cache.readDir("/dir", func() ([]os.FileInfo, error) {
+		return []os.FileInfo{
+			ftpCacheInfo{name: "file"}, ftpCacheInfo{name: "link", mode: os.ModeSymlink},
+			ftpCacheInfo{name: ".."}, ftpCacheInfo{name: "a/b"},
+		}, nil
 	})
-	if len(cache.entries) != 1 {
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cache.metadataEntriesLocked() != 1 {
 		t.Fatalf("unexpected cached entries: %v", cache.entries)
 	}
-	_, err := cache.stat("/dir/file", func() (os.FileInfo, error) {
+	_, err = cache.stat("/dir/file", func() (os.FileInfo, error) {
 		t.Fatal("directory metadata did not avoid a remote Stat")
 		return nil, nil
 	})
@@ -79,29 +84,38 @@ func TestFTPMetadataDirectoryBudgetAndLinks(t *testing.T) {
 	for i := range entries {
 		entries[i] = ftpCacheInfo{name: fmt.Sprint(i)}
 	}
-	cache.directory(epoch, "/dir", entries)
-	if len(cache.entries) != ftpMetadataLimit {
-		t.Fatalf("cache budget: %d", len(cache.entries))
+	if _, err := cache.readDir("/many", func() ([]os.FileInfo, error) { return entries, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if count := cache.metadataEntriesLocked(); count != ftpMetadataLimit {
+		t.Fatalf("cache budget: %d", count)
 	}
 	cache.beginMutation()()
-	epoch.started = time.Now().Add(-2 * ftpMetadataTTL)
-	cache.directory(epoch, "/dir", entries[:1])
-	if len(cache.entries) != 0 {
-		t.Fatal("an old directory snapshot refreshed expired entries")
+	if _, err := cache.readDirMode(context.Background(), "/dir", true, func(context.Context) ([]os.FileInfo, error) {
+		return entries[:1], nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e := cache.entries[ftpCacheKey{kind: ftpDirectoryKey, name: "/dir"}]
+	listing := e.Value.(ftpCacheValue)
+	listing.expires = time.Now().Add(ftpDirectoryTTL - 2*ftpMetadataTTL)
+	e.Value = listing
+	_, err = cache.readDir("/dir", func() ([]os.FileInfo, error) { t.Fatal("promotion fetched listing"); return nil, nil })
+	if err != nil || cache.metadataEntriesLocked() != 0 {
+		t.Fatal("promotion seeded attributes from an older listing", err)
 	}
 }
 
 func TestFTPMetadataMutationRejectsInflightReads(t *testing.T) {
 	var cache ftpMetadataCache
 	info := ftpCacheInfo{name: "file"}
-	old := cache.snapshot()
 	started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = cache.stat("/file", func() (os.FileInfo, error) {
+		_, _ = cache.readDir("/", func() ([]os.FileInfo, error) {
 			close(started)
 			<-release
-			return info, nil
+			return []os.FileInfo{info}, nil
 		})
 	}()
 	<-started
@@ -109,10 +123,6 @@ func TestFTPMetadataMutationRejectsInflightReads(t *testing.T) {
 	completeMutation()
 	close(release)
 	<-done
-	if len(cache.entries) != 0 {
-		t.Fatal("in-flight response repopulated invalidated metadata")
-	}
-	cache.directory(old, "/", []os.FileInfo{info})
 	if len(cache.entries) != 0 {
 		t.Fatal("in-flight directory read repopulated invalidated metadata")
 	}
@@ -142,7 +152,7 @@ func TestFTPCacheLRU(t *testing.T) {
 	}
 	_, _ = cache.stat("0", fetch)
 	_, _ = cache.stat("new", fetch)
-	if cache.entries["s:0"] == nil || cache.entries["s:1"] != nil || cache.entries["s:new"] == nil {
+	if cache.entries[ftpCacheKey{kind: ftpStatKey, name: "0"}] == nil || cache.entries[ftpCacheKey{kind: ftpStatKey, name: "1"}] != nil || cache.entries[ftpCacheKey{kind: ftpStatKey, name: "new"}] == nil {
 		t.Fatal("LRU did not preserve hot entry and admit new entry")
 	}
 	if cache.counters.Evictions != 1 {
@@ -154,16 +164,26 @@ func TestFTPCacheConcurrentReads(t *testing.T) {
 	for _, directory := range []bool{false, true} {
 		t.Run(fmt.Sprint(directory), func(t *testing.T) {
 			var cache ftpMetadataCache
+			key := ftpCacheKey{kind: ftpStatKey, name: "key"}
+			if directory {
+				key.kind = ftpDirectoryKey
+			}
 			entered, release := make(chan struct{}), make(chan struct{})
 			done := make(chan error, 2)
 			fetch := func() (ftpCacheValue, error) {
 				close(entered)
 				<-release
-				return ftpCacheValue{info: ftpCacheInfo{name: "file"}, directory: directory, bytes: 256}, nil
+				return ftpCacheValue{info: ftpCacheInfo{name: "file"}, bytes: 256}, nil
 			}
-			go func() { _, err := cache.load("key", time.Second, fetch); done <- err }()
+			go func() {
+				_, err := cache.load(key, fetch)
+				done <- err
+			}()
 			<-entered
-			go func() { _, err := cache.load("key", time.Second, fetch); done <- err }()
+			go func() {
+				_, err := cache.load(key, fetch)
+				done <- err
+			}()
 			// Observe the waiter rather than relying on scheduler timing.
 			deadline := time.After(2 * time.Second)
 			tick := time.NewTicker(time.Millisecond)
@@ -224,7 +244,7 @@ func TestFTPCacheDirectoryReuseAndBudget(t *testing.T) {
 	if err != nil || len(list) != len(huge) {
 		t.Fatal("uncacheable directory was truncated")
 	}
-	if cache.entries["d:/huge"] != nil {
+	if cache.entries[ftpCacheKey{kind: ftpDirectoryKey, name: "/huge"}] != nil {
 		t.Fatal("oversized directory retained")
 	}
 	for i := 0; i < ftpDirectoryCacheLimit+1; i++ {
@@ -274,12 +294,12 @@ func TestFTPCacheExtendedAttributeBudget(t *testing.T) {
 	fetch := func() (os.FileInfo, error) { return info, nil }
 	_, _ = cache.stat("a", fetch)
 	_, _ = cache.stat("b", fetch)
-	if cache.entries["s:a"] != nil || cache.entries["s:b"] == nil || cache.bytes > ftpCacheBytes {
+	if cache.entries[ftpCacheKey{kind: ftpStatKey, name: "a"}] != nil || cache.entries[ftpCacheKey{kind: ftpStatKey, name: "b"}] == nil || cache.bytes > ftpCacheBytes {
 		t.Fatal("extended attributes escaped byte budget")
 	}
 	info.extended = append(ext, ext...)
 	_, err := cache.stat("oversized", fetch)
-	if err != nil || cache.entries["s:oversized"] != nil {
+	if err != nil || cache.entries[ftpCacheKey{kind: ftpStatKey, name: "oversized"}] != nil {
 		t.Fatal("oversized attributes must be returned without retention")
 	}
 }
@@ -466,7 +486,7 @@ func TestFTPCacheScopedMutation(t *testing.T) {
 	_, _ = cache.readDir("/a", func() ([]os.FileInfo, error) { return nil, nil })
 	finish1 := cache.beginMutation("/a/file")
 	finish2 := cache.beginMutation("/a/file")
-	if cache.entries["s:/a/file"] != nil || cache.entries["d:/a"] != nil {
+	if cache.entries[ftpCacheKey{kind: ftpStatKey, name: "/a/file"}] != nil || cache.entries[ftpCacheKey{kind: ftpDirectoryKey, name: "/a"}] != nil {
 		t.Fatal("mutation retained affected metadata")
 	}
 	for _, name := range []string{"/a/sibling", "/b/file"} {
@@ -477,16 +497,16 @@ func TestFTPCacheScopedMutation(t *testing.T) {
 	}
 	finish1()
 	_, _ = cache.stat("/a/file", fetch)
-	if cache.entries["s:/a/file"] != nil {
+	if cache.entries[ftpCacheKey{kind: ftpStatKey, name: "/a/file"}] != nil {
 		t.Fatal("cached metadata while overlapping mutation was active")
 	}
 	_, _ = cache.stat("/b/new", fetch)
-	if cache.entries["s:/b/new"] == nil {
+	if cache.entries[ftpCacheKey{kind: ftpStatKey, name: "/b/new"}] == nil {
 		t.Fatal("unrelated cache population blocked by mutation")
 	}
 	finish2()
 	_, _ = cache.stat("/a/file", fetch)
-	if cache.entries["s:/a/file"] == nil || len(cache.mutations) != 0 {
+	if cache.entries[ftpCacheKey{kind: ftpStatKey, name: "/a/file"}] == nil || len(cache.mutations) != 0 {
 		t.Fatal("cache did not recover after mutation")
 	}
 }
@@ -513,18 +533,19 @@ func TestFTPCacheScopedMutationRejectsInflightDirectory(t *testing.T) {
 
 func TestFTPCacheRenameInvalidatesBothTreesAndHandles(t *testing.T) {
 	var cache ftpMetadataCache
-	keys := map[string]string{
-		"s:/a/tree/child": "", "d:/a/tree/sub": "", "l:/b/tree/link": "",
-		"d:/a": "", "d:/b": "", "h:source": "/a/tree/sub", "h:destination": "/b",
+	keys := []ftpCacheKey{
+		{kind: ftpStatKey, name: "/a/tree/child"}, {kind: ftpDirectoryKey, name: "/a/tree/sub"},
+		{kind: ftpLstatKey, name: "/b/tree/link"}, {kind: ftpDirectoryKey, name: "/a"},
+		{kind: ftpDirectoryKey, name: "/b"}, testHandleKey("/a/tree/sub"), testHandleKey("/b"),
 	}
-	for key, scope := range keys {
-		_, _ = cache.loadScoped(key, scope, time.Second, func() (ftpCacheValue, error) {
+	for _, key := range keys {
+		_, _ = cache.load(key, func() (ftpCacheValue, error) {
 			return ftpCacheValue{info: ftpCacheInfo{name: "file"}}, nil
 		})
 	}
 	_, _ = cache.stat("/unrelated/file", func() (os.FileInfo, error) { return ftpCacheInfo{name: "file"}, nil })
 	cache.beginMutation("/a/tree", "/b/tree")()
-	if len(cache.entries) != 1 || cache.entries["s:/unrelated/file"] == nil {
+	if len(cache.entries) != 1 || cache.entries[ftpCacheKey{kind: ftpStatKey, name: "/unrelated/file"}] == nil {
 		t.Fatalf("unexpected entries after rename: %v", cache.entries)
 	}
 }
@@ -568,16 +589,16 @@ func TestFTPWritePreservesUnrelatedMetadata(t *testing.T) {
 func TestPrefetchAdmissionAndForegroundPromotion(t *testing.T) {
 	var c ftpMetadataCache
 	listing := func() ([]os.FileInfo, error) { return []os.FileInfo{ftpCacheInfo{name: "child"}}, nil }
-	if _, err := c.readDirMode("/cold", true, listing); err != nil {
+	if _, err := c.readDirMode(context.Background(), "/cold", true, func(context.Context) ([]os.FileInfo, error) { return listing() }); err != nil {
 		t.Fatal(err)
 	}
-	if c.stats != 0 {
+	if c.metadataEntriesLocked() != 0 {
 		t.Fatal("unused listing seeded file attributes")
 	}
 	if _, err := c.readDir("/cold", func() ([]os.FileInfo, error) { t.Fatal("promotion fetched listing"); return nil, nil }); err != nil {
 		t.Fatal(err)
 	}
-	if c.entries["s:/cold/child"] == nil {
+	if c.entries[ftpCacheKey{kind: ftpStatKey, name: "/cold/child"}] == nil {
 		t.Fatal("fresh foreground listing did not seed attributes")
 	}
 	empty := func() ([]os.FileInfo, error) { return nil, nil }
@@ -586,16 +607,47 @@ func TestPrefetchAdmissionAndForegroundPromotion(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := c.readDirMode("/speculative", true, empty); err != nil {
+	if _, err := c.readDirMode(context.Background(), "/speculative", true, func(context.Context) ([]os.FileInfo, error) { return empty() }); err != nil {
 		t.Fatal(err)
 	}
-	if c.entries["d:/speculative"] != nil || c.entries["d:/cold"] == nil {
+	if c.entries[ftpCacheKey{kind: ftpDirectoryKey, name: "/speculative"}] != nil || c.entries[ftpCacheKey{kind: ftpDirectoryKey, name: "/cold"}] == nil {
 		t.Fatal("speculation displaced foreground data")
 	}
 	if _, err := c.stat("/cold/child", func() (os.FileInfo, error) { return ftpCacheInfo{name: "child"}, nil }); err != nil {
 		t.Fatal(err)
 	}
-	if prev := c.lru.Front().Next(); prev == nil || prev.Value.(ftpCacheValue).key != "d:/cold" {
+	cold := ftpCacheKey{kind: ftpDirectoryKey, name: "/cold"}
+	if prev := c.lru.Front().Next(); prev == nil || prev.Value.(ftpCacheValue).key != cold {
 		t.Fatal("file lookup did not touch parent")
 	}
+}
+
+func testHandleKey(directory string) ftpCacheKey {
+	return ftpCacheKey{kind: ftpHandleKey, name: directory, file: &ftpFile{}}
+}
+
+func (c *ftpMetadataCache) load(key ftpCacheKey, fetch func() (ftpCacheValue, error)) (ftpCacheValue, error) {
+	return c.loadMode(context.Background(), key, false, func(context.Context, ftpCacheKey) (ftpCacheValue, error) {
+		return fetch()
+	})
+}
+
+func (c *ftpMetadataCache) stat(name string, fetch func() (os.FileInfo, error)) (os.FileInfo, error) {
+	v, err := c.load(ftpCacheKey{kind: ftpStatKey, name: name}, func() (ftpCacheValue, error) {
+		info, err := fetch()
+		return statCacheValue(name, info), err
+	})
+	return v.info, err
+}
+
+func (c *ftpMetadataCache) readDir(name string, fetch func() ([]os.FileInfo, error)) ([]os.FileInfo, error) {
+	return c.readDirMode(context.Background(), name, false, func(context.Context) ([]os.FileInfo, error) { return fetch() })
+}
+func (c *ftpMetadataCache) readDirMode(ctx context.Context, name string, prefetch bool, fetch func(context.Context) ([]os.FileInfo, error)) ([]os.FileInfo, error) {
+	key := ftpCacheKey{kind: ftpDirectoryKey, name: name}
+	v, err := c.loadMode(ctx, key, prefetch, func(ctx context.Context, _ ftpCacheKey) (ftpCacheValue, error) {
+		entries, err := fetch(ctx)
+		return directoryValue(name, entries), err
+	})
+	return v.entries, err
 }

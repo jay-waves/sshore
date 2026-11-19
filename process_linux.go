@@ -159,27 +159,25 @@ func waitOwnedProcesses(tasks []setupTask, timeout time.Duration) bool {
 	}
 }
 
-// Session listings show a best-effort /proc snapshot rooted at the shell PID.
-// Only same-user descendants are included, in PID order. Display comm names,
-// never command lines or environment, and sanitize terminal control characters.
-// Tree branches distinguish ancestry; [fg] marks the shell PTY's active
-// process group. Limit depth/nodes so pathological trees cannot flood output.
-
+// One best-effort snapshot supplies names and trees for display. Process
+// ownership and identity checks used for signaling are performed separately.
 type listedProcess struct {
 	pid, parent, group, foreground int
 	name                           string
 }
 
-func sessionProcessTree(root string, shellPID int) string {
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return fmt.Sprintf("%d [process unavailable]\n", shellPID)
-	}
-	processes := map[int]listedProcess{}
-	children := map[int][]int{}
+type processSnapshot struct {
+	processes map[int]listedProcess
+	children  map[int][]int
+	groups    map[int][]string
+}
+
+func readProcessSnapshot(root string) processSnapshot {
+	entries, _ := os.ReadDir(root)
+	var processes []listedProcess
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
+		if err != nil || pid <= 0 {
 			continue
 		}
 		path := filepath.Join(root, entry.Name())
@@ -195,28 +193,61 @@ func sessionProcessTree(root string, shellPID int) string {
 		if err != nil {
 			continue
 		}
+		// comm can contain spaces, newlines, and parentheses.
 		stat := string(data)
 		start, end := strings.IndexByte(stat, '('), strings.LastIndexByte(stat, ')')
 		if start < 0 || end <= start {
 			continue
 		}
 		fields := strings.Fields(stat[end+1:])
-		if len(fields) < 6 {
+		if len(fields) < 3 {
 			continue
 		}
-		parent, e1 := strconv.Atoi(fields[1])
-		group, e2 := strconv.Atoi(fields[2])
-		foreground, e3 := strconv.Atoi(fields[5])
-		if e1 != nil || e2 != nil || e3 != nil {
+		group, err := strconv.Atoi(fields[2])
+		if err != nil {
 			continue
 		}
-		processes[pid] = listedProcess{pid, parent, group, foreground, cleanText(stat[start+1 : end])}
-		children[parent] = append(children[parent], pid)
+		process := listedProcess{pid: pid, parent: -1, group: group, foreground: -1, name: cleanText(stat[start+1 : end])}
+		if len(fields) >= 6 {
+			parent, parentErr := strconv.Atoi(fields[1])
+			foreground, foregroundErr := strconv.Atoi(fields[5])
+			if parentErr == nil && foregroundErr == nil {
+				process.parent, process.foreground = parent, foreground
+			}
+		}
+		processes = append(processes, process)
 	}
-	for parent := range children {
-		sort.Ints(children[parent])
+	sort.Slice(processes, func(i, j int) bool { return processes[i].pid < processes[j].pid })
+
+	snapshot := processSnapshot{
+		processes: make(map[int]listedProcess, len(processes)),
+		children:  make(map[int][]int),
+		groups:    make(map[int][]string),
 	}
-	foreground := processes[shellPID].foreground
+	for _, process := range processes {
+		if process.group > 0 {
+			snapshot.groups[process.group] = append(snapshot.groups[process.group], process.name)
+		}
+		if process.parent >= 0 {
+			snapshot.processes[process.pid] = process
+			snapshot.children[process.parent] = append(snapshot.children[process.parent], process.pid)
+		}
+	}
+	return snapshot
+}
+
+func (snapshot processSnapshot) foregroundPrograms(group int) string {
+	names := snapshot.groups[group]
+	if len(names) == 0 {
+		return "—"
+	}
+	return strings.Join(names, " | ")
+}
+
+// Display same-user descendants in PID order. Limit depth and nodes so a
+// pathological tree cannot flood output.
+func (snapshot processSnapshot) sessionTree(shellPID int) string {
+	foreground := snapshot.processes[shellPID].foreground
 	var out strings.Builder
 	seen := map[int]bool{}
 	var walk func(int, string, bool, int)
@@ -236,7 +267,7 @@ func sessionProcessTree(root string, shellPID int) string {
 			return
 		}
 		seen[pid] = true
-		p, ok := processes[pid]
+		p, ok := snapshot.processes[pid]
 		if !ok {
 			fmt.Fprintf(&out, "%s%s%d [process unavailable]\n", prefix, branch, pid)
 			return
@@ -246,8 +277,8 @@ func sessionProcessTree(root string, shellPID int) string {
 			label = " [fg]"
 		}
 		fmt.Fprintf(&out, "%s%s%s (%d)%s\n", prefix, branch, p.name, pid, label)
-		for i, child := range children[pid] {
-			walk(child, prefix+next, i == len(children[pid])-1, depth+1)
+		for i, child := range snapshot.children[pid] {
+			walk(child, prefix+next, i == len(snapshot.children[pid])-1, depth+1)
 			if len(seen) >= 128 {
 				break
 			}
@@ -255,75 +286,6 @@ func sessionProcessTree(root string, shellPID int) string {
 	}
 	walk(shellPID, "", true, 0)
 	return out.String()
-}
-
-// Snapshot the PTY foreground process group only when listing sessions. proc stat
-// contains comm in parentheses (possibly with spaces or parentheses itself), so
-// split at the last closing parenthesis before parsing pgrp. Processes can exit
-// during the scan; unreadable entries are skipped. Names are shown in PID order,
-// joined with " | ": this groups foreground processes, not reconstructed shell
-// pipeline syntax. Never expose command-line arguments or background jobs.
-
-func foregroundStat(stat string) (string, int, bool) {
-	start, end := strings.IndexByte(stat, '('), strings.LastIndexByte(stat, ')')
-	if start < 0 || end <= start {
-		return "", 0, false
-	}
-	fields := strings.Fields(stat[end+1:])
-	if len(fields) < 3 {
-		return "", 0, false
-	}
-	group, err := strconv.Atoi(fields[2])
-	if err != nil || group <= 0 {
-		return "", 0, false
-	}
-	return stat[start+1 : end], group, true
-}
-
-func foregroundPrograms(root string, group int) string {
-	if group <= 0 {
-		return "—"
-	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return "—"
-	}
-	type process struct {
-		pid  int
-		name string
-	}
-	var processes []process
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 0 {
-			continue
-		}
-		info, err := os.Stat(filepath.Join(root, entry.Name()))
-		if err != nil {
-			continue
-		}
-		owner, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || owner.Uid != uint32(os.Geteuid()) {
-			continue
-		}
-		stat, err := os.ReadFile(filepath.Join(root, entry.Name(), "stat"))
-		if err != nil {
-			continue
-		}
-		name, pgid, ok := foregroundStat(string(stat))
-		if ok && pgid == group {
-			processes = append(processes, process{pid, cleanText(name)})
-		}
-	}
-	sort.Slice(processes, func(i, j int) bool { return processes[i].pid < processes[j].pid })
-	var names []string
-	for _, p := range processes {
-		names = append(names, p.name)
-	}
-	if len(names) == 0 {
-		return "—"
-	}
-	return strings.Join(names, " | ")
 }
 
 // Prefer the foreground group leader's cwd, falling back to the session shell.

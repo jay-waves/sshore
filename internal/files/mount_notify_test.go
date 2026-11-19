@@ -1,6 +1,7 @@
 package files
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -55,7 +56,7 @@ func TestFTPNotifyInvalidationBeforeSubscriptionAck(t *testing.T) {
 	n := startFTPNotifications(local, &cache)
 	defer n.Close()
 	done := make(chan struct{})
-	go func() { n.ensure("/"); close(done) }()
+	go func() { n.ensure(context.Background(), "/"); close(done) }()
 	m, err := readMessage(remote)
 	if err != nil || m.Type != "watch" {
 		t.Fatalf("%+v %v", m, err)
@@ -71,9 +72,12 @@ func TestFTPNotifyInvalidationBeforeSubscriptionAck(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("invalidation deadlocked subscription")
 	}
+	n.mu.Lock()
+	generation := n.generation
+	n.mu.Unlock()
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	if len(cache.entries) != 0 || n.generation.Load() != 1 {
+	if len(cache.entries) != 0 || generation != 1 {
 		t.Fatal("reset did not invalidate cached metadata and subscriptions")
 	}
 }
@@ -164,9 +168,14 @@ func TestNewDirectoriesDoNotWaitForWatchAck(t *testing.T) {
 	if err != nil || len(entries) != 2 {
 		t.Fatalf("stale pre-subscription listing: %v %v", entries, err)
 	}
-	n.queueMu.Lock()
-	pending := len(n.pending)
-	n.queueMu.Unlock()
+	n.mu.Lock()
+	pending := 0
+	for _, entry := range n.dirs {
+		if entry.ready != nil {
+			pending++
+		}
+	}
+	n.mu.Unlock()
 	if pending > ftpWatchLimit+1 {
 		t.Fatalf("unbounded subscriptions: %d", pending)
 	}
@@ -198,10 +207,9 @@ func TestWatchRenewalPreservesContinuousCache(t *testing.T) {
 	exchange := func(failure string, reset bool) {
 		t.Helper()
 		n.mu.Lock()
-		if e := n.dirs["/dir"]; e != nil {
-			v := e.Value.(ftpWatchEntry)
+		if v, ok := n.dirs["/dir"]; ok {
 			v.expires = time.Now().Add(-time.Second)
-			e.Value = v
+			n.dirs["/dir"] = v
 		}
 		n.mu.Unlock()
 		done := make(chan error, 1)
@@ -216,7 +224,7 @@ func TestWatchRenewalPreservesContinuousCache(t *testing.T) {
 			}
 			done <- e
 		}()
-		n.ensure("/dir")
+		n.ensure(context.Background(), "/dir")
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
@@ -228,17 +236,21 @@ func TestWatchRenewalPreservesContinuousCache(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	has := func() bool { cache.mu.Lock(); defer cache.mu.Unlock(); return cache.entries["s:/dir/file"] != nil }
+	has := func() bool {
+		cache.mu.Lock()
+		defer cache.mu.Unlock()
+		return cache.entries[ftpCacheKey{kind: ftpStatKey, name: "/dir/file"}] != nil
+	}
 	seed()
 	cache.mu.Lock()
-	expires := cache.entries["s:/dir/file"].Value.(ftpCacheValue).expires
+	expires := cache.entries[ftpCacheKey{kind: ftpStatKey, name: "/dir/file"}].Value.(ftpCacheValue).expires
 	cache.mu.Unlock()
 	exchange("", false)
 	if !has() {
 		t.Fatal("continuous renewal discarded valid cache")
 	}
 	cache.mu.Lock()
-	renewed := cache.entries["s:/dir/file"].Value.(ftpCacheValue).expires
+	renewed := cache.entries[ftpCacheKey{kind: ftpStatKey, name: "/dir/file"}].Value.(ftpCacheValue).expires
 	cache.mu.Unlock()
 	if renewed != expires {
 		t.Fatal("renewal extended cache TTL")
@@ -264,34 +276,29 @@ func TestWatchChangesBounded(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		changes.add("/same", false)
 	}
-	reset, dirs := changes.take()
-	if reset || len(dirs) != 1 || dirs[0] != "/same" {
-		t.Fatal(reset, dirs)
+	if _, ok := changes.dirs["/same"]; changes.reset || len(changes.dirs) != 1 || !ok {
+		t.Fatal(changes)
 	}
+	changes = watchChanges{}
 	for i := 0; i <= ftpWatchLimit; i++ {
 		changes.add(fmt.Sprintf("/dir%d", i), false)
 	}
-	reset, dirs = changes.take()
-	if !reset || len(dirs) != 0 {
-		t.Fatal("overflow lost reset", reset, dirs)
+	if !changes.reset || len(changes.dirs) != 0 {
+		t.Fatal("overflow lost reset", changes)
 	}
+	changes = watchChanges{}
 	changes.add("/a", false)
 	changes.add("", true)
 	changes.add("/b", false)
-	reset, dirs = changes.take()
-	if !reset || len(dirs) != 0 {
+	if !changes.reset || len(changes.dirs) != 0 {
 		t.Fatal("reset did not dominate")
-	}
-	reset, dirs = changes.take()
-	if reset || len(dirs) != 0 {
-		t.Fatal("changes not drained")
 	}
 }
 func TestPrefetchStatistics(t *testing.T) {
 	var c ftpMetadataCache
 	fetch := func() ([]os.FileInfo, error) { return []os.FileInfo{ftpCacheInfo{name: "file"}}, nil }
-	_, _ = c.readDirMode("/used", true, fetch)
-	_, _ = c.readDirMode("/unused", true, fetch)
+	_, _ = c.readDirMode(context.Background(), "/used", true, func(context.Context) ([]os.FileInfo, error) { return fetch() })
+	_, _ = c.readDirMode(context.Background(), "/unused", true, func(context.Context) ([]os.FileInfo, error) { return fetch() })
 	_, _ = c.readDir("/used", fetch)
 	_, _ = c.readDir("/used", fetch)
 	c.invalidateRemote()

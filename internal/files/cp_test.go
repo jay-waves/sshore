@@ -2,6 +2,7 @@ package files
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -58,15 +59,15 @@ func TestFileRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer s.Close()
-			r, err := newReceiving(dst, s.size)
+			r, err := stageCopyFile(dst)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer r.close()
+			defer discardCopyFile(r)
 			if err = CopyExactSize(r, s.file, s.size); err != nil {
 				t.Fatal(err)
 			}
-			if err = r.publish(); err != nil {
+			if err = publishCopyFile(context.Background(), r, dst, s.size); err != nil {
 				t.Fatal(err)
 			}
 			got, err := os.ReadFile(dst)
@@ -79,34 +80,47 @@ func TestFileRoundTrip(t *testing.T) {
 func TestFileFailureAndNoClobber(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "target")
-	r, err := newReceiving(dst, 2)
+	r, err := stageCopyFile(dst)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = r.put([]byte("bad")); err == nil {
+	if _, err := r.WriteString("bad"); err != nil {
+		t.Fatal(err)
+	}
+	if publishCopyFile(context.Background(), r, dst, 2) == nil {
 		t.Fatal("accepted excess data")
 	}
-	r.close()
-	r, _ = newReceiving(dst, 2)
-	_ = r.put([]byte("o"))
-	if r.publish() == nil {
+	discardCopyFile(r)
+	r, err = stageCopyFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.WriteString("o"); err != nil {
+		t.Fatal(err)
+	}
+	if publishCopyFile(context.Background(), r, dst, 2) == nil {
 		t.Fatal("accepted incomplete file")
 	}
+	discardCopyFile(r)
 	if _, err = os.Stat(dst); !os.IsNotExist(err) {
 		t.Fatal("published corrupt file")
 	}
-	r, _ = newReceiving(dst, 0)
+	r, err = stageCopyFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err = os.WriteFile(dst, []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if r.publish() == nil {
+	if publishCopyFile(context.Background(), r, dst, 0) == nil {
 		t.Fatal("overwrote race-created file")
 	}
+	discardCopyFile(r)
 	got, _ := os.ReadFile(dst)
 	if string(got) != "keep" {
 		t.Fatal("existing file changed")
 	}
-	if _, err = newReceiving(dst, 0); err == nil {
+	if _, err = stageCopyFile(dst); err == nil {
 		t.Fatal("accepted existing file")
 	}
 	entries, _ := os.ReadDir(dir)
@@ -218,7 +232,7 @@ func TestSFTPDownloadSizeAndWriterFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out bytes.Buffer
-		err = copySFTPExact(&out, file, size)
+		err = copySFTPExact(&out, file, size, nil)
 		file.Close()
 		if err == nil || int64(out.Len()) > size {
 			t.Fatal("accepted changed size or emitted excess data", size, out.Len(), err)

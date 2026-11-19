@@ -2,6 +2,7 @@ package files
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -33,7 +34,7 @@ func testFTPBackendWithWire(t *testing.T) (*ftpFS, *ftpWire) {
 	}
 	go func() { _ = server.Serve(); _ = server.Close() }()
 	wire := newFTPWire(b, b)
-	wire.metrics = true
+	wire.enableMetrics()
 	client, e := sftp.NewClientPipe(wire, wire)
 	if e != nil {
 		t.Fatal(e)
@@ -198,7 +199,7 @@ func TestFTPDirectoryCacheDoesNotRenewAttributes(t *testing.T) {
 	if _, err := backend.readDirectory(backend.root); err != nil {
 		t.Fatal(err)
 	}
-	key := "s:" + backend.root + "/child"
+	key := ftpCacheKey{kind: ftpStatKey, name: backend.root + "/child"}
 	backend.cache.mu.Lock()
 	e := backend.cache.entries[key]
 	if e == nil {
@@ -272,7 +273,7 @@ func TestFTPCapacityInvalidReplies(t *testing.T) {
 
 func TestFTPRequestStats(t *testing.T) {
 	wire := newFTPWire(nil, nil)
-	wire.metrics = true
+	wire.enableMetrics()
 	for _, id := range []uint32{1, 2} {
 		packet := make([]byte, 5)
 		packet[0] = 17
@@ -297,7 +298,7 @@ func TestFTPRequestStats(t *testing.T) {
 		t.Fatalf("%+v peak=%d", totals, wire.peakRequests)
 	}
 	backend := &ftpFS{metrics: &ftpCallbackMetrics{}}
-	backend.metrics.observe("Open")()
+	backend.metrics.observe(ftpCallbackOpen)()
 	var output bytes.Buffer
 	writeFTPStats(wire, backend, &output)
 	var report struct {
@@ -532,7 +533,7 @@ func (m ftpTestMount) Wait()          {}
 func TestFTPGracefulUnmount(t *testing.T) {
 	for _, failure := range []error{nil, syscall.EBUSY} {
 		aborted := false
-		stopped, e := stopFTPMount(ftpTestMount{func() error { return failure }}, nil, func() { aborted = true }, time.Second)
+		stopped, e := stopFTPMount(context.Background(), ftpTestMount{func() error { return failure }}, nil, func(error) { aborted = true }, time.Second)
 		if aborted || stopped != (failure == nil) || !errors.Is(e, failure) {
 			t.Fatalf("stopped=%v aborted=%v error=%v", stopped, aborted, e)
 		}
@@ -548,7 +549,7 @@ func TestFTPForcedUnmount(t *testing.T) {
 				grace = time.Second
 				go func() { <-entered; signals <- os.Interrupt }()
 			}
-			stopped, e := stopFTPMount(ftpTestMount{func() error { close(entered); <-released; return nil }}, signals, func() { close(released) }, grace)
+			stopped, e := stopFTPMount(context.Background(), ftpTestMount{func() error { close(entered); <-released; return nil }}, signals, func(error) { close(released) }, grace)
 			if !stopped || e == nil {
 				t.Fatalf("forced unmount lost error: %v %v", stopped, e)
 			}
@@ -575,11 +576,11 @@ func (ftpWriteCloser) Close() error { return nil }
 
 func TestFTPCapacityCache(t *testing.T) {
 	f, wire := testFTPBackendWithWire(t)
-	_, firstErr := f.cachedCapacity()
+	_, firstErr := f.cachedCapacity(f.root)
 	count := func() uint64 { wire.mu.Lock(); defer wire.mu.Unlock(); return wire.totals[200].Started }
 	before := count()
 	for range 20 {
-		if _, err := f.cachedCapacity(); (err == nil) != (firstErr == nil) {
+		if _, err := f.cachedCapacity(f.root); (err == nil) != (firstErr == nil) {
 			t.Fatalf("cached capacity error changed: %v", err)
 		}
 	}
@@ -591,7 +592,7 @@ func TestFTPCapacityCache(t *testing.T) {
 		func() { f.cache.invalidateDirectory(f.root) },
 		func() {
 			f.cache.mu.Lock()
-			e := f.cache.entries["v:"+f.root]
+			e := f.cache.entries[ftpCacheKey{kind: ftpCapacityKey, name: f.root}]
 			v := e.Value.(ftpCacheValue)
 			v.expires = time.Now().Add(-time.Second)
 			e.Value = v
@@ -599,7 +600,7 @@ func TestFTPCapacityCache(t *testing.T) {
 		},
 	} {
 		invalidate()
-		_, _ = f.cachedCapacity()
+		_, _ = f.cachedCapacity(f.root)
 		if count() != before+1 {
 			t.Fatal("capacity was not refreshed")
 		}
@@ -623,7 +624,7 @@ func TestFTPLateDirectoryReplyAfterHandleReuse(t *testing.T) {
 	for _, id := range []uint32{1, 3} {
 		packet := binary.BigEndian.AppendUint32([]byte{104}, id)
 		reply, err := w.filter(binary.BigEndian.AppendUint32(packet, 1))
-		if err != nil || reply[0] != 104 {
+		if err != nil || reply != nil {
 			t.Fatal("directory budget crossed handle reuse", id, err)
 		}
 	}

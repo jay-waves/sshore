@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,245 +22,275 @@ const copyVerifyAttribute = "sha256@sshore"
 // Each approved stream sees one virtual source or target, never a general
 // filesystem. Its temporary upload is removed when the stream ends.
 type FS struct {
-	mu             sync.Mutex
-	source, target string
-	size           int64
-	single         *copyUpload
-	transfers      map[string]*copyUpload
-	ctx            context.Context
+	mu      sync.Mutex
+	source  *Source
+	target  string
+	size    int64
+	direct  bool
+	uploads map[string]*copyUpload
+	ctx     context.Context
 }
 
 type copyUpload struct {
-	mu               sync.RWMutex
-	virtual          string
-	size             int64
-	upload           *receivingFile
-	sealed, verified bool
+	mu    sync.RWMutex
+	size  int64
+	file  *os.File
+	state uploadState
 }
 
+type uploadState uint8
+
+const (
+	uploadWriting uploadState = iota
+	uploadSealed
+	uploadVerified
+	uploadDiscarding
+)
+
 func (f *FS) Fileread(r *sftp.Request) (io.ReaderAt, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.transfers != nil {
+	if f.direct {
 		file, err := OpenSource(r.Filepath)
 		if err != nil {
 			return nil, err
 		}
 		return file.file, nil
 	}
-	name := ""
-	if f.single != nil && r.Filepath == f.single.virtual {
-		name = f.single.upload.temp
+	if r.Filepath == "/source" && f.source != nil {
+		info, err := f.source.file.Stat()
+		if err != nil {
+			return nil, err
+		}
+		if info.Size() != f.source.size {
+			return nil, fmt.Errorf("source metadata changed")
+		}
+		// Individual SFTP handles may close before the operation ends.
+		return struct{ io.ReaderAt }{f.source.file}, nil
 	}
-	if r.Filepath == "/source" && f.source != "" {
-		name = f.source
-	} else if name == "" {
-		return nil, os.ErrPermission
-	}
-	file, err := OpenSource(name)
-	if err != nil {
-		return nil, err
-	}
-	if file.size != f.size {
-		file.Close()
-		return nil, fmt.Errorf("source metadata changed")
-	}
-	return file.file, nil
+	return nil, os.ErrPermission
 }
 
 func (f *FS) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	flags := r.Pflags()
-	if !flags.Write || !flags.Creat || !flags.Excl || flags.Read || flags.Append {
+	if f.uploads == nil || !flags.Write || !flags.Creat || !flags.Excl || flags.Read || flags.Append {
 		return nil, os.ErrPermission
 	}
 	target, size := f.target, f.size
-	if f.transfers != nil {
-		if len(f.transfers) >= 32 || f.transfers[r.Filepath] != nil || !strings.HasPrefix(filepath.Base(r.Filepath), ".sshore-") {
+	if f.direct {
+		if len(f.uploads) >= 32 || f.uploads[r.Filepath] != nil || !strings.HasPrefix(filepath.Base(r.Filepath), ".sshore-") {
 			return nil, os.ErrPermission
 		}
 		target, size = r.Filepath, -1
-	} else if target == "" || f.single != nil || !strings.HasPrefix(r.Filepath, "/.sshore-") || strings.Contains(r.Filepath[1:], "/") {
+	} else if target == "" || size < 0 || len(f.uploads) != 0 || !strings.HasPrefix(r.Filepath, "/.sshore-") || strings.Contains(r.Filepath[1:], "/") {
 		return nil, os.ErrPermission
 	}
-	file, err := newReceiving(target, f.size)
+	file, err := stageCopyFile(target)
 	if err != nil {
 		return nil, err
 	}
-	u := &copyUpload{virtual: r.Filepath, size: size, upload: file}
-	if f.transfers != nil {
-		f.transfers[r.Filepath] = u
-	} else {
-		f.single = u
-	}
+	u := &copyUpload{size: size, file: file}
+	f.uploads[r.Filepath] = u
 	return u, nil
 }
 
 func (f *FS) Filecmd(r *sftp.Request) error {
 	f.mu.Lock()
-	direct := f.transfers != nil
-	u := f.single
-	if direct {
-		u = f.transfers[r.Filepath]
-	}
-	if u == nil || u.virtual != r.Filepath {
-		f.mu.Unlock()
+	u := f.uploads[r.Filepath]
+	f.mu.Unlock()
+	if u == nil {
 		return os.ErrPermission
 	}
-	if direct && r.Method == "Remove" {
-		delete(f.transfers, r.Filepath)
-	}
-	f.mu.Unlock()
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	return u.command(r, direct, f.ctx)
-}
-func (f *copyUpload) command(r *sftp.Request, direct bool, ctx context.Context) error {
+	if r.Method == "Remove" {
+		return f.discardUploadLocked(r.Filepath, u)
+	}
+	if u.state == uploadDiscarding {
+		return os.ErrNotExist
+	}
+	ctx := f.ctx
+	if ctx == nil {
+		ctx = r.Context()
+	}
 	switch r.Method {
 	case "Setstat":
 		// The private temporary file is already 0600; no other mutation is allowed.
 		attrs := r.Attributes()
-		if len(attrs.Extended) != 0 {
-			flags := r.AttrFlags()
-			if flags.Size || flags.UidGid || flags.Permissions || flags.Acmodtime {
-				return os.ErrPermission
-			}
-			if ctx == nil {
-				ctx = r.Context()
-			}
-			return f.verify(ctx, attrs.Extended)
-		}
 		flags := r.AttrFlags()
-		if flags.Permissions && !flags.Size && !flags.UidGid && !flags.Acmodtime && r.Attributes().Mode == 0600 {
-			return nil
+		if flags.Size || flags.UidGid || flags.Acmodtime {
+			return os.ErrPermission
 		}
-	case "Remove":
-		f.upload.close()
-		return nil
+		if flags.Permissions {
+			if len(attrs.Extended) == 0 && attrs.Mode == 0600 {
+				return nil
+			}
+			return os.ErrPermission
+		}
+		if len(attrs.Extended) != 1 || attrs.Extended[0].ExtType != copyVerifyAttribute {
+			return os.ErrPermission
+		}
+		return u.verify(ctx, attrs.Extended[0].ExtData)
 	case "Link":
-		if !f.sealed || !f.verified {
+		if u.state != uploadVerified {
 			return fmt.Errorf("upload is not verified")
 		}
-		if direct {
-			if filepath.Dir(r.Target) != filepath.Dir(f.virtual) {
+		target := f.target
+		if f.direct {
+			if filepath.Dir(r.Target) != filepath.Dir(u.file.Name()) {
 				return os.ErrPermission
 			}
 			if err := ValidateName(filepath.Base(r.Target)); err != nil {
 				return err
 			}
-			f.upload.target = r.Target
+			target = r.Target
 		} else if r.Target != "/target" {
 			return os.ErrPermission
 		}
-		info, err := f.upload.file.Stat()
-		if err != nil {
-			return err
-		}
-		if info.Size() != f.size {
-			return fmt.Errorf("incomplete file")
-		}
-		f.upload.done = info.Size()
-		return f.upload.publish()
+		defer f.discardUploadLocked(r.Filepath, u)
+		return publishCopyFile(ctx, u.file, target, u.size)
 	}
 	return os.ErrPermission
 }
 
-func (f *FS) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.transfers != nil {
-		name := r.Filepath
-		if child := f.transfers[name]; child != nil {
-			name = child.upload.temp
-		}
-		var info os.FileInfo
-		var err error
-		if r.Method == "Lstat" {
-			info, err = os.Lstat(name)
-		} else if r.Method == "Stat" {
-			info, err = os.Stat(name)
-		} else {
-			return nil, os.ErrPermission
-		}
-		return transferInfo{info}, err
+// Keep failed removals registered for retry. Approved streams keep their one
+// upload slot reserved even after its temporary file is gone.
+func (f *FS) discardUploadLocked(path string, u *copyUpload) error {
+	if err := u.discardLocked(); err != nil {
+		return err
 	}
-	name := ""
-	switch r.Filepath {
-	case "/source":
-		name = f.source
-	case "/target":
-		name = f.target
-	default:
-		if f.single != nil && r.Filepath == f.single.virtual {
-			name = f.single.upload.temp
+	if f.direct {
+		f.mu.Lock()
+		if f.uploads[path] == u {
+			delete(f.uploads, path)
 		}
+		f.mu.Unlock()
 	}
-	if name == "" || r.Method != "Stat" {
-		return nil, os.ErrPermission
-	}
-	info, err := os.Lstat(name)
-	return transferInfo{info}, err
+	return nil
 }
 
-type transferInfo []os.FileInfo
+// The caller holds the upload lock. Keep the file path if removal needs a retry.
+func (u *copyUpload) discardLocked() error {
+	u.state = uploadDiscarding
+	if u.file == nil {
+		return nil
+	}
+	if err := discardCopyFile(u.file); err != nil {
+		return err
+	}
+	u.file = nil
+	return nil
+}
+
+func (f *FS) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
+	info, err := f.stat(r)
+	if err != nil {
+		return nil, err
+	}
+	return transferInfo{info}, nil
+}
+
+func (f *FS) stat(r *sftp.Request) (os.FileInfo, error) {
+	if r.Method != "Stat" && !(f.direct && r.Method == "Lstat") {
+		return nil, os.ErrPermission
+	}
+	f.mu.Lock()
+	upload := f.uploads[r.Filepath]
+	f.mu.Unlock()
+	if upload != nil {
+		upload.mu.RLock()
+		defer upload.mu.RUnlock()
+		if upload.state == uploadDiscarding {
+			return nil, os.ErrNotExist
+		}
+		return upload.file.Stat()
+	}
+	if f.direct {
+		if r.Method == "Lstat" {
+			return os.Lstat(r.Filepath)
+		}
+		return os.Stat(r.Filepath)
+	}
+	switch r.Filepath {
+	case "/source":
+		if f.source != nil {
+			return f.source.file.Stat()
+		}
+	case "/target":
+		if f.target != "" {
+			return os.Lstat(f.target)
+		}
+	}
+	return nil, os.ErrPermission
+}
+
+type transferInfo struct{ os.FileInfo }
 
 func (infos transferInfo) ListAt(dst []os.FileInfo, offset int64) (int, error) {
-	if offset >= int64(len(infos)) {
+	if offset != 0 || len(dst) == 0 {
 		return 0, io.EOF
 	}
-	return copy(dst, infos[offset:]), io.EOF
+	dst[0] = infos.FileInfo
+	return 1, io.EOF
 }
 
 func (u *copyUpload) WriteAt(p []byte, off int64) (int, error) {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
-	if u.sealed || off < 0 || u.size >= 0 && (off > u.size || int64(len(p)) > u.size-off) {
+	if u.state != uploadWriting || off < 0 || u.size >= 0 && (off > u.size || int64(len(p)) > u.size-off) {
 		return 0, os.ErrPermission
 	}
-	return u.upload.file.WriteAt(p, off)
+	return u.file.WriteAt(p, off)
 }
 func (u *copyUpload) Close() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.sealed = true
+	if u.state == uploadWriting {
+		u.state = uploadSealed
+	}
 	return nil
 }
-func (f *copyUpload) verify(ctx context.Context, attrs []sftp.StatExtended) error {
-	if !f.sealed || len(attrs) != 1 || attrs[0].ExtType != copyVerifyAttribute {
+func (u *copyUpload) verify(ctx context.Context, sizeAndDigest string) error {
+	if u.state == uploadWriting {
 		return os.ErrPermission
 	}
-	parts := strings.Split(attrs[0].ExtData, ":")
-	if len(parts) != 2 {
+	sizeText, digestText, ok := strings.Cut(sizeAndDigest, ":")
+	if !ok {
 		return fmt.Errorf("invalid upload digest")
 	}
-	size, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || size < 0 || f.size >= 0 && size != f.size {
+	size, err := strconv.ParseInt(sizeText, 10, 64)
+	if err != nil || size < 0 || u.size >= 0 && size != u.size {
 		return fmt.Errorf("invalid upload size")
 	}
-	expected, err := hex.DecodeString(parts[1])
-	if err != nil || len(expected) != sha256.Size {
+	var expected [sha256.Size]byte
+	if len(digestText) != hex.EncodedLen(len(expected)) {
 		return fmt.Errorf("invalid upload digest")
 	}
-	info, err := f.upload.file.Stat()
+	if _, err := hex.Decode(expected[:], []byte(digestText)); err != nil {
+		return fmt.Errorf("invalid upload digest")
+	}
+	info, err := u.file.Stat()
 	if err != nil {
 		return err
 	}
 	if info.Size() != size {
 		return fmt.Errorf("uploaded size mismatch")
 	}
-	if err := f.upload.file.Sync(); err != nil {
-		return err
-	}
 	hash := sha256.New()
-	if err := CopyExactSize(copyContextWriter{ctx, hash}, io.NewSectionReader(f.upload.file, 0, size), size); err != nil {
+	reader := io.NewSectionReader(u.file, 0, math.MaxInt64)
+	if err := CopyExactSize(copyContextWriter{ctx, hash}, reader, size); err != nil {
+		if err == errCopySizeChanged {
+			return fmt.Errorf("uploaded size mismatch")
+		}
 		return err
 	}
-	if !bytes.Equal(hash.Sum(nil), expected) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !bytes.Equal(hash.Sum(nil), expected[:]) {
 		return fmt.Errorf("uploaded content verification failed")
 	}
-	f.size, f.upload.size = size, size
-	f.verified = true
+	u.size, u.state = size, uploadVerified
 	return nil
 }
 
@@ -275,7 +306,7 @@ func (w copyContextWriter) Write(p []byte) (int, error) {
 	return w.Writer.Write(p)
 }
 
-func newCopyFS() *FS                                       { return &FS{transfers: make(map[string]*copyUpload)} }
+func newCopyFS() *FS                                       { return &FS{direct: true, uploads: make(map[string]*copyUpload)} }
 func (f *FS) Lstat(r *sftp.Request) (sftp.ListerAt, error) { return f.Filelist(r) }
 func ServeCopy(conn io.ReadWriteCloser) error              { return ServeTransfer(conn, newCopyFS()) }
 
@@ -294,11 +325,12 @@ func (c copyConn) Read(p []byte) (int, error) {
 }
 func (c copyConn) Close() error { c.cancel(); return c.ReadWriteCloser.Close() }
 func ServeTransfer(conn io.ReadWriteCloser, backend *FS) error {
+	defer backend.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	backend.ctx = ctx
 	cwd := "/"
-	if backend.transfers != nil {
+	if backend.direct {
 		var err error
 		cwd, err = os.Getwd()
 		if err != nil {
@@ -306,7 +338,6 @@ func ServeTransfer(conn io.ReadWriteCloser, backend *FS) error {
 		}
 	}
 	server := sftp.NewRequestServer(copyConn{conn, cancel}, sftp.Handlers{FileGet: backend, FilePut: backend, FileCmd: backend, FileList: backend}, sftp.WithStartDirectory(filepath.ToSlash(cwd)))
-	defer backend.Close()
 	defer server.Close()
 	err := server.Serve()
 	if err == io.EOF {
@@ -315,19 +346,19 @@ func ServeTransfer(conn io.ReadWriteCloser, backend *FS) error {
 	return err
 }
 
-func NewSourceFS(path string, size int64) *FS { return &FS{source: path, size: size} }
-func NewTargetFS(path string, size int64) *FS { return &FS{target: path, size: size} }
+// NewSourceFS borrows the source until ServeTransfer returns.
+func NewSourceFS(source *Source) *FS { return &FS{source: source} }
+func NewTargetFS(path string, size int64) *FS {
+	return &FS{target: path, size: size, uploads: make(map[string]*copyUpload)}
+}
 func (f *FS) Close() {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, child := range f.transfers {
-		child.mu.Lock()
-		child.upload.close()
-		child.mu.Unlock()
-	}
-	if f.single != nil {
-		f.single.mu.Lock()
-		defer f.single.mu.Unlock()
-		f.single.upload.close()
+	uploads := f.uploads
+	f.uploads = nil
+	f.mu.Unlock()
+	for _, upload := range uploads {
+		upload.mu.Lock()
+		upload.discardLocked()
+		upload.mu.Unlock()
 	}
 }

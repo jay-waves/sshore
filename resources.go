@@ -2,76 +2,90 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	transportio "github.com/jay-waves/sshore/internal/ssh"
-	"github.com/jay-waves/sshore/internal/termui"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	transportio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
-func collectRunningResources(host string) ([]resourceRecord, error) {
-	reply, err := daemonResourceRequest(context.Background(), "/resources", nil)
+func collectLocalResources(host string, withStatus bool) ([]resourceView, error) {
+	daemon, err := existingDaemonRecord()
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	var records []resourceRecord
-	for _, r := range reply.Records {
-		if host == "" || r.Host == host {
-			records = append(records, r)
-		}
+	query := url.Values{}
+	if host != "" {
+		query.Set("host", host)
 	}
-	return records, nil
-}
-
-func collectLocalResources(host string) ([]resourceRecord, error) {
-	records, e := collectRunningResources(host)
-	if e != nil {
-		return nil, e
+	timeout := daemonRequestTimeout
+	if withStatus {
+		query.Set("status", "1")
+		timeout = resourceStatusTimeout
 	}
-	pending, e := pendingRequests()
-	if e != nil {
-		return nil, e
-	}
-	for _, r := range pending {
-		if host == "" || r.Connection.Host == host {
-			records = append(records, resourceRecord{UID: r.ID, Token: r.ID, Kind: "review", Name: r.DisplayName(), Host: r.Connection.Host, Detail: r.Connection.Session + ": " + requestSummary(r.Operations)})
-		}
-	}
-	sort.Slice(records, func(i, j int) bool {
-		a, b := records[i], records[j]
-		if a.Host != b.Host {
-			return a.Host < b.Host
-		}
-		if a.Kind != b.Kind {
-			return a.Kind < b.Kind
-		}
-		return a.Name < b.Name
-	})
-	return records, nil
-}
-
-func findRunningResource(kind, name string) (resourceRecord, error) {
-	if err := validSession(name); err != nil {
-		return resourceRecord{}, err
-	}
-	rows, err := collectRunningResources("")
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	request, err := daemonRequest(ctx, daemon, "/resources?"+query.Encode(), nil)
 	if err != nil {
-		return resourceRecord{}, err
+		return nil, err
 	}
-	for _, row := range rows {
-		if row.Kind == kind && (row.Name == name || row.UID == name) {
-			return row, nil
+	response, err := daemonDo(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	dec := json.NewDecoder(response.Body)
+	var reply resourceReply
+	if err := dec.Decode(&reply); err != nil {
+		return nil, err
+	}
+	if reply.Error != "" {
+		return nil, fmt.Errorf("%s", reply.Error)
+	}
+
+	views := make([]resourceView, 0, len(reply.Records))
+	pending := make(map[string]int)
+	for _, record := range reply.Records {
+		view := viewRecord(record)
+		if withStatus && record.Kind != "review" {
+			view.LastError = "local worker unavailable or status deadline exceeded"
+			pending[record.UID] = len(views)
+		}
+		views = append(views, view)
+	}
+	for len(pending) > 0 {
+		var row resourceStatusRow
+		if err := dec.Decode(&row); err != nil {
+			break
+		}
+		if index, ok := pending[row.UID]; ok {
+			view := &views[index]
+			if row.Status.Version != version {
+				view.LastError = "incompatible or invalid worker status"
+			} else {
+				view.Worker, view.resourceStatus = "running", row.Status
+			}
+			delete(pending, row.UID)
 		}
 	}
-	return resourceRecord{}, fmt.Errorf("%s/%s no longer exists; refresh with sshore list", kind, name)
+	slices.SortFunc(views, func(a, b resourceView) int {
+		return cmp.Or(cmp.Compare(a.Host, b.Host), cmp.Compare(a.ID, b.ID))
+	})
+	return views, nil
 }
 
 func runRenameResource(kind, old, name string, expected ...string) (int, error) {
@@ -81,49 +95,26 @@ func runRenameResource(kind, old, name string, expected ...string) (int, error) 
 	if err := validAlias(name); err != nil {
 		return 2, err
 	}
-	if kind == "review" {
-		record, err := findRequest(old)
-		if err != nil {
-			return 1, err
-		}
-		if len(expected) > 0 && resourceIdentity(resourceRecord{UID: record.ID, Kind: "review", Token: record.ID}) != expected[0] {
-			return 1, fmt.Errorf("request changed; refresh with sshore list")
-		}
-		if record.DisplayName() == name {
-			return 0, nil
-		}
-		if err := renameRequest(record.ID, name); err != nil {
-			return 1, err
-		}
-	} else {
-		row, err := findRunningResource(kind, old)
-		if err != nil {
-			return 1, err
-		}
-		if len(expected) > 0 && resourceIdentity(row) != expected[0] {
-			return 1, fmt.Errorf("task changed; refresh with sshore list")
-		}
-		if _, err := daemonResourceRequest(context.Background(), "/resources/"+row.UID+"/rename", name); err != nil {
-			return 1, err
-		}
-
+	change := resourceMutation{Kind: kind, Ref: old, NewName: name}
+	if len(expected) > 0 {
+		change.Identity = expected[0]
 	}
-	fmt.Printf("Renamed %s/%s to %s/%s.\n", kind, old, kind, name)
+	reply, err := daemonResourceRequest(context.Background(), "/resources/rename", change)
+	if err != nil {
+		return 1, err
+	}
+	if !reply.Unchanged {
+		fmt.Printf("Renamed %s/%s to %s/%s.\n", kind, old, kind, name)
+	}
 	return 0, nil
 }
 
-// Resource references resolve through the account daemon before cancellation.
 func runKillResource(kind, name string) (int, error) {
 	switch kind {
 	case "review":
-		record, readErr := findRequest(name)
-		if readErr != nil {
-			return 1, readErr
-		}
-		if err := consumeRequest(record.ID); err != nil {
+		if err := stopResource(kind, name); err != nil {
 			return 1, err
 		}
-		removeRejectedPeerTask(record)
 		termui.Log(os.Stderr, termui.Success, "[sshore] Request discarded\n")
 		return 0, nil
 	case "mount", "forward":
@@ -133,13 +124,69 @@ func runKillResource(kind, name string) (int, error) {
 	}
 }
 
+func stopResource(kind, name string, expected ...string) error {
+	change := resourceMutation{Kind: kind, Ref: name}
+	if len(expected) > 0 {
+		change.Identity = expected[0]
+	}
+	reply, err := daemonResourceRequest(context.Background(), "/resources/kill", change)
+	if err != nil {
+		return err
+	}
+	if kind == "review" {
+		if reply.Request == nil {
+			return fmt.Errorf("invalid request cancellation response")
+		}
+		removeRejectedPeerTask(*reply.Request)
+	}
+	printStoppedResource(kind, name)
+	return nil
+}
+
+func printStoppedResource(kind, name string) {
+	switch kind {
+	case "mount":
+		fmt.Fprintf(os.Stdout, "Unmounted mount/%s.\n", name)
+	case "forward":
+		fmt.Fprintf(os.Stdout, "Closed forward/%s.\n", name)
+	}
+}
+
+func stopConfirmedResources(ctx context.Context, views []resourceView) error {
+	if len(views) == 0 {
+		return nil
+	}
+	changes := make([]resourceMutation, len(views))
+	for i, view := range views {
+		kind, name, _ := strings.Cut(view.ID, "/")
+		changes[i] = resourceMutation{Kind: kind, Ref: name, Identity: view.Identity}
+	}
+	reply, err := daemonResourceRequest(ctx, "/resources/stop-confirmed", changes)
+	if err != nil {
+		return err
+	}
+	if len(reply.Failures) != len(changes) {
+		return fmt.Errorf("invalid resource cancellation response")
+	}
+	var failures []error
+	for i, failure := range reply.Failures {
+		change := changes[i]
+		if failure != "" {
+			failures = append(failures, fmt.Errorf("%s/%s: %s", change.Kind, change.Ref, failure))
+		} else {
+			printStoppedResource(change.Kind, change.Ref)
+		}
+	}
+	return errors.Join(failures...)
+}
+
 // Kill-all uses administrative control, independent of normal release matching.
 func runKillAll(o options) (int, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var snapshot daemonSnapshot
 	var stop func() error
-	var records []resourceRecord
+	var views []resourceView
 	if o.host == "" {
 		var err error
 		snapshot, err = daemonAdmin(ctx, "snapshot", nil)
@@ -153,7 +200,7 @@ func runKillAll(o options) (int, error) {
 		stop = func() error { return requestDaemonShutdown(snapshot) }
 	} else {
 		var err error
-		records, err = collectLocalResources(o.host)
+		views, err = collectLocalResources(o.host, true)
 		if err != nil {
 			return 1, err
 		}
@@ -186,34 +233,37 @@ func runKillAll(o options) (int, error) {
 			return err
 		}
 	}
-	if len(snapshot.Tasks)+len(records) > 0 {
-		host := o.host
-		if host == "" {
-			host = "local"
-		}
-		printDaemonSnapshot(os.Stdout, host, snapshot)
-		if len(records) > 0 {
-			printTaskInventory(inventory{Resources: inspectResources(records)})
-		}
-		fmt.Fprint(os.Stderr, "End the listed tasks and stop the account daemon? [Y/n] ")
-		if !confirmKillAll(os.Stdin) {
-			return 1, fmt.Errorf("cancelled; no tasks ended")
-		}
+	if err := confirmDaemonShutdown(o.host, snapshot, views); err != nil {
+		return 1, err
 	}
 	if err := stop(); err != nil {
 		return 1, err
 	}
-	var failures []error
-	for _, r := range records {
-		if err := killResourceIdentity(r.Kind+"/"+r.Name, resourceIdentity(r)); err != nil {
-			failures = append(failures, err)
-		}
-	}
-	if len(failures) > 0 {
-		return 1, errors.Join(failures...)
+	if err := stopConfirmedResources(ctx, views); err != nil {
+		return 1, fmt.Errorf("remote daemon stopped; local resource cleanup: %w", err)
 	}
 	fmt.Println("Tasks ended; daemon stopped.")
 	return 0, nil
+}
+
+func confirmDaemonShutdown(host string, snapshot daemonSnapshot, resources []resourceView) error {
+	if len(snapshot.Tasks)+len(resources) == 0 {
+		return nil
+	}
+	if host == "" {
+		host = "local"
+	}
+	printDaemonSnapshot(os.Stdout, host, snapshot)
+	if len(resources) > 0 {
+		inv := inventory{Resources: slices.Clone(resources)}
+		inv.setTaskReferences()
+		printTaskInventory(inv)
+	}
+	fmt.Fprint(os.Stderr, "End the listed tasks and stop the account daemon? [Y/n] ")
+	if !confirmKillAll(os.Stdin) {
+		return fmt.Errorf("cancelled; no tasks ended")
+	}
+	return nil
 }
 
 func confirmKillAll(input io.Reader) bool {
@@ -233,20 +283,22 @@ func printDaemonSnapshot(w io.Writer, host string, snapshot daemonSnapshot) {
 	fmt.Fprintf(w, "HOST  %s · daemon %s\n", cleanText(host), cleanText(snapshot.Version))
 	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(table, "ID\tNAME")
-	for _, task := range snapshot.Tasks {
-		id := strings.TrimPrefix(task.ID, "task:")
-		width := min(6, len(id))
-		for _, other := range snapshot.Tasks {
-			otherID := strings.TrimPrefix(other.ID, "task:")
-			if other.ID == task.ID {
+	tasks := slices.Clone(snapshot.Tasks)
+	for i := range tasks {
+		tasks[i].ID = strings.TrimPrefix(tasks[i].ID, "task:")
+	}
+	slices.SortStableFunc(tasks, func(a, b daemonTaskInfo) int { return cmp.Compare(a.ID, b.ID) })
+	for i, task := range tasks {
+		width := min(6, len(task.ID))
+		for _, neighbor := range []int{i - 1, i + 1} {
+			if neighbor < 0 || neighbor >= len(tasks) {
 				continue
 			}
-			for width < len(id) && strings.HasPrefix(otherID, id[:width]) {
+			for width < len(task.ID) && strings.HasPrefix(tasks[neighbor].ID, task.ID[:width]) {
 				width++
 			}
 		}
-		id = id[:width]
-		fmt.Fprintf(table, "%s\t(%s)\n", cleanText(id), cleanText(task.Name))
+		fmt.Fprintf(table, "%s\t(%s)\n", cleanText(task.ID[:width]), cleanText(task.Name))
 	}
 	table.Flush()
 }
@@ -256,20 +308,7 @@ func killResourceIdentity(id, identity string) error {
 	if !ok || identity == "" {
 		return fmt.Errorf("missing resource identity")
 	}
-	if kind != "review" {
-		return stopResource(kind, name, identity)
-	}
-	record, err := findRequest(name)
-	if err != nil {
-		return err
-	}
-	if resourceIdentity(resourceRecord{UID: record.ID, Kind: "review", Token: record.ID}) != identity {
-		return fmt.Errorf("request changed; refresh with sshore list")
-	}
-	if err = consumeRequest(record.ID); err == nil {
-		removeRejectedPeerTask(record)
-	}
-	return err
+	return stopResource(kind, name, identity)
 }
 
 // Status separates local worker liveness from transport state and target health.
@@ -314,53 +353,128 @@ func (s *resourceService) operationCompleted() {
 	defer s.statusMu.Unlock()
 	s.status.LastOperation = time.Now().UTC()
 }
-func (s *resourceService) saveResult(code int, err error) {
+func (s *resourceService) saveResult(code int, err error, name string) {
 	state := "stopped"
 	if code != 0 || err != nil {
 		state = "failed"
 	}
 	s.setTransport(state, err)
-	// UID-backed resources retain one receipt per instance; legacy slots reuse it.
-	r := resourceResult{Record: s.record, DisplayName: s.record.Name, Status: s.statusSnapshot(), Finished: time.Now().UTC()}
-	r.Record.Token, r.Record.Address = "", ""
-	if writeStateJSON(s.recordPath+".result", r) == nil {
-		pruneResourceResults(filepath.Dir(s.recordPath))
+	record := s.record
+	// UID-backed receipts keep the final alias in the record itself. An old
+	// name-keyed slot still needs its original name for lookup.
+	if validTaskUID(record.UID) && validSession(name) == nil {
+		record.Name = name
 	}
+	result := resourceResult{Record: record, Status: s.statusSnapshot(), Finished: time.Now().UTC()}
+	if err := writeResourceResult(s.resultPath, result); err != nil {
+		return
+	}
+	_, discarded := resourceResultFiles(filepath.Dir(s.resultPath), result.Finished.Add(-exitReceiptLifetime))
+	for _, file := range discarded {
+		_ = os.Remove(file.path)
+	}
+}
+
+func writeResourceResult(path string, r resourceResult) error {
+	r.Record.Token, r.Record.Address = "", ""
+	return writeBoundedStateJSON(path, r, resourceResultMaxBytes)
 }
 
 type resourceResult struct {
-	DisplayName string `json:",omitempty"`
-	Record      resourceRecord
-	Status      resourceStatus
-	Finished    time.Time
+	Record   resourceRecord
+	Status   resourceStatus
+	Finished time.Time
 }
 
-// Retain at most 100 receipts per resource kind for seven days. Active records
-// are separate files and are never removed by history cleanup.
-func pruneResourceResults(dir string) {
-	entries, e := os.ReadDir(dir)
-	if e != nil {
+const resourceResultSuffix = ".json.result"
+const resourceResultMaxBytes = 128 * 1024
+
+type resourceResultFile struct {
+	path, slot string
+	at         time.Time
+}
+
+// The same age and count bounds apply whether reading history or pruning it.
+// Use file metadata here so cleanup never needs to decode old receipts.
+func resourceResultFiles(dir string, cutoff time.Time) (recent, discarded []resourceResultFile) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, nil
+	}
+	var files []resourceResultFile
+	for _, entry := range entries {
+		slot, ok := strings.CutSuffix(entry.Name(), resourceResultSuffix)
+		if !ok || validSession(slot) != nil {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		files = append(files, resourceResultFile{path: filepath.Join(dir, entry.Name()), slot: slot, at: info.ModTime()})
+	}
+	return partitionExitReceipts(files, cutoff, func(file resourceResultFile) time.Time { return file.at })
+}
+
+func (file resourceResultFile) read(kind string, cutoff time.Time) (resourceResult, bool) {
+	var stored struct {
+		resourceResult
+		DisplayName string // Older receipts stored the displayed alias separately.
+	}
+	if err := readStateJSON(file.path, resourceResultMaxBytes, &stored); err != nil ||
+		stored.Record.storageName() != file.slot || stored.Record.Kind != kind || stored.Finished.Before(cutoff) {
+		return resourceResult{}, false
+	}
+	if validSession(stored.DisplayName) == nil {
+		stored.Record.slot, stored.Record.Name = file.slot, stored.DisplayName
+	}
+	return stored.resourceResult, true
+}
+
+// A mount worker can record its exit even if it loses its parent. When the
+// daemon owns the exit, it publishes the final label under the same UID.
+func updateMountResultName(path, uid, name string) {
+	file := resourceResultFile{path: path, slot: uid}
+	result, ok := file.read("mount", time.Now().Add(-exitReceiptLifetime))
+	if !ok || result.Record.UID != uid {
 		return
 	}
-	type resultFile struct {
-		name string
-		at   time.Time
+	result.Record.Name = name
+	_ = writeResourceResult(path, result)
+}
+
+func collectResourceResults(active []resourceView) []resourceView {
+	seen := make(map[string]bool, len(active)*2)
+	for _, view := range active {
+		seen[view.Identity] = true
+		seen[view.ID] = true
 	}
-	var files []resultFile
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".json.result") {
+	cutoff := time.Now().Add(-exitReceiptLifetime)
+	var rows []resourceView
+	for _, kind := range []string{"mount", "forward"} {
+		dir, err := resourceStateDir(kind)
+		if err != nil {
 			continue
 		}
-		info, e := entry.Info()
-		if e != nil {
-			continue
+		recent, _ := resourceResultFiles(dir, cutoff)
+		for _, file := range recent {
+			result, ok := file.read(kind, cutoff)
+			if !ok {
+				continue
+			}
+			record := result.Record
+			if validTaskUID(record.UID) {
+				if seen[resourceIdentity(record)] {
+					continue
+				}
+			} else if seen[kind+"/"+file.slot] || seen[kind+"/"+record.Name] {
+				continue
+			}
+			view := viewRecord(record)
+			view.Worker, view.resourceStatus = "exited", result.Status
+			rows = append(rows, view)
 		}
-		files = append(files, resultFile{entry.Name(), info.ModTime()})
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].at.After(files[j].at) })
-	for i, f := range files {
-		if i >= 100 || time.Since(f.at) > 7*24*time.Hour {
-			_ = os.Remove(filepath.Join(dir, f.name))
-		}
-	}
+	slices.SortFunc(rows, func(a, b resourceView) int { return cmp.Compare(a.ID, b.ID) })
+	return rows
 }

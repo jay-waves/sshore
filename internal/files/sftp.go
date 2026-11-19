@@ -1,7 +1,7 @@
 package files
 
 import (
-	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -25,6 +25,7 @@ const (
 	ftpMaxDirectoryBytes = 32 * 1024 * 1024
 	ftpMaxRequests       = 4096
 	sftpCopyConcurrency  = 64
+	ftpHandshakeRequest  = uint64(1) << 32 // INIT and VERSION have no request ID.
 )
 
 type ftpRequest struct {
@@ -35,48 +36,52 @@ type ftpRequest struct {
 type ftpDirectoryBudget struct{ entries, bytes uint64 }
 type ftpWire struct {
 	onReply                       func()
-	metrics                       bool
-	totals                        [256]ftpRequestTotals
+	totals                        *[256]ftpRequestTotals
 	peakRequests                  int
 	reader                        io.Reader
 	writer                        io.WriteCloser
 	readBuffer, writeBuffer       []byte
 	readOffset                    int
 	mu                            sync.Mutex
-	requests                      map[uint32]ftpRequest
+	requests                      map[uint64]ftpRequest
+	requestWake                   chan struct{} // idle/busy transition
 	directories                   map[string]*ftpDirectoryBudget
 	maxEntries, maxDirectoryBytes uint64
 }
 
 func newFTPWire(r io.Reader, w io.WriteCloser) *ftpWire {
-	return &ftpWire{reader: r, writer: w, requests: make(map[uint32]ftpRequest), directories: make(map[string]*ftpDirectoryBudget), maxEntries: ftpMaxDirectoryEntries, maxDirectoryBytes: ftpMaxDirectoryBytes}
+	return &ftpWire{reader: r, writer: w, requests: make(map[uint64]ftpRequest), maxEntries: ftpMaxDirectoryEntries, maxDirectoryBytes: ftpMaxDirectoryBytes}
 }
+
+// Enable counters before passing the wire to the SFTP client.
+func (w *ftpWire) enableMetrics() { w.totals = new([256]ftpRequestTotals) }
+
 func NewSFTP(reader io.Reader, writer io.WriteCloser) (*sftp.Client, error) {
 	wire := newFTPWire(reader, writer)
 	return sftp.NewClientPipe(wire, wire, sftp.MaxConcurrentRequestsPerFile(sftpCopyConcurrency))
 }
 func (w *ftpWire) Close() error { return w.writer.Close() }
-func ftpWireString(b []byte) (string, bool) {
+func ftpWireString(b []byte) ([]byte, bool) {
 	if len(b) < 4 {
-		return "", false
+		return nil, false
 	}
 	n := uint64(binary.BigEndian.Uint32(b))
 	if n > uint64(len(b)-4) {
-		return "", false
+		return nil, false
 	}
-	return string(b[4 : 4+int(n)]), true
+	return b[4 : 4+int(n)], true
 }
 func (w *ftpWire) record(packet []byte) error {
 	if len(packet) < 5 {
 		return fmt.Errorf("short outgoing SFTP packet")
 	}
 	kind := packet[0]
-	if kind == 1 {
-		return nil
-	} // INIT has a version instead of an ID.
 	id := binary.BigEndian.Uint32(packet[1:5])
-	req := ftpRequest{kind: kind, started: time.Now()}
-	var handle string
+	key := uint64(id)
+	if kind == 1 {
+		key = ftpHandshakeRequest
+	}
+	var handle []byte
 	if kind == 12 || kind == 4 {
 		var ok bool
 		handle, ok = ftpWireString(packet[5:])
@@ -89,49 +94,66 @@ func (w *ftpWire) record(packet []byte) error {
 	if len(w.requests) >= ftpMaxRequests {
 		return fmt.Errorf("too many outstanding SFTP requests")
 	}
+	if _, exists := w.requests[key]; exists {
+		return fmt.Errorf("duplicate outstanding SFTP request ID %d", id)
+	}
+	req := ftpRequest{kind: kind, started: time.Now()}
 	switch kind {
 	case 12: // Bind the reply to this enumeration even if CLOSE races with it.
-		req.budget = w.directories[handle]
+		req.budget = w.directories[string(handle)]
 		if req.budget == nil {
 			req.budget = &ftpDirectoryBudget{}
-			w.directories[handle] = req.budget
+			if w.directories == nil {
+				w.directories = make(map[string]*ftpDirectoryBudget)
+			}
+			w.directories[string(handle)] = req.budget
 		}
 	case 4:
-		delete(w.directories, handle)
+		delete(w.directories, string(handle))
 	}
-	w.requests[id] = req
-	if w.metrics {
+	empty := len(w.requests) == 0
+	w.requests[key] = req
+	if empty {
+		w.wakeRequestWatchLocked()
+	}
+	if w.totals != nil && kind != 1 {
 		w.totals[kind].Started++
 		w.totals[kind].SentBytes += uint64(len(packet) + 4)
 		w.peakRequests = max(w.peakRequests, len(w.requests))
 	}
 	return nil
 }
+func (w *ftpWire) wakeRequestWatchLocked() {
+	select {
+	case w.requestWake <- struct{}{}:
+	default:
+	}
+}
+
 func (w *ftpWire) Write(p []byte) (int, error) {
 	// pkg/sftp serializes writes, but can split a frame between header and data.
 	accepted := 0
 	for len(p) > 0 {
-		need := 4 - len(w.writeBuffer)
-		if need <= 0 {
-			n := int(binary.BigEndian.Uint32(w.writeBuffer[:4]))
-			if n < 5 || n > ftpMaxPacket {
-				return accepted, fmt.Errorf("invalid SFTP request size %d", n)
-			}
-			need = 4 + n - len(w.writeBuffer)
-		}
-		take := min(need, len(p))
-		w.writeBuffer = append(w.writeBuffer, p[:take]...)
-		p = p[take:]
-		accepted += take
 		if len(w.writeBuffer) < 4 {
-			continue
+			take := min(4-len(w.writeBuffer), len(p))
+			w.writeBuffer = append(w.writeBuffer, p[:take]...)
+			p = p[take:]
+			accepted += take
+			if len(w.writeBuffer) < 4 {
+				break
+			}
 		}
-		n := int(binary.BigEndian.Uint32(w.writeBuffer[:4]))
+		n := binary.BigEndian.Uint32(w.writeBuffer[:4])
 		if n < 5 || n > ftpMaxPacket {
 			return accepted, fmt.Errorf("invalid SFTP request size %d", n)
 		}
-		if len(w.writeBuffer) != n+4 {
-			continue
+		frameSize := 4 + int(n)
+		take := min(frameSize-len(w.writeBuffer), len(p))
+		w.writeBuffer = append(w.writeBuffer, p[:take]...)
+		p = p[take:]
+		accepted += take
+		if len(w.writeBuffer) < frameSize {
+			break
 		}
 		if e := w.record(w.writeBuffer[4:]); e != nil {
 			return accepted, e
@@ -144,57 +166,63 @@ func (w *ftpWire) Write(p []byte) (int, error) {
 	return accepted, nil
 }
 func ftpDirectoryFailure(id uint32) []byte {
-	var b bytes.Buffer
-	b.WriteByte(101) // SSH_FXP_STATUS
-	_ = binary.Write(&b, binary.BigEndian, id)
-	_ = binary.Write(&b, binary.BigEndian, uint32(4)) // SSH_FX_FAILURE
-	msg := "directory exceeds sshore listing limit"
-	_ = binary.Write(&b, binary.BigEndian, uint32(len(msg)))
-	b.WriteString(msg)
-	_ = binary.Write(&b, binary.BigEndian, uint32(0)) // language
-	return b.Bytes()
+	const msg = "directory exceeds sshore listing limit"
+	b := make([]byte, 1, 17+len(msg))
+	b[0] = 101 // SSH_FXP_STATUS
+	b = binary.BigEndian.AppendUint32(b, id)
+	b = binary.BigEndian.AppendUint32(b, 4) // SSH_FX_FAILURE
+	b = binary.BigEndian.AppendUint32(b, uint32(len(msg)))
+	b = append(b, msg...)
+	return binary.BigEndian.AppendUint32(b, 0) // language
 }
+
+// A non-nil result replaces the response sent to pkg/sftp.
 func (w *ftpWire) filter(packet []byte) ([]byte, error) {
 	if len(packet) < 5 {
 		return nil, fmt.Errorf("short SFTP response")
 	}
+	id := binary.BigEndian.Uint32(packet[1:5])
+	key := uint64(id)
 	if packet[0] == 2 {
-		return packet, nil
-	} // VERSION
-	if w.onReply != nil {
+		key = ftpHandshakeRequest
+	} else if w.onReply != nil {
 		w.onReply()
 	}
-	id := binary.BigEndian.Uint32(packet[1:5])
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	req, ok := w.requests[id]
-	delete(w.requests, id)
+	req, ok := w.requests[key]
 	if !ok {
-		return packet, nil
+		return nil, nil
 	} // pkg/sftp diagnoses unsolicited IDs.
-	if w.metrics {
-		total := &w.totals[req.kind]
-		elapsed := time.Since(req.started)
-		total.Completed++
-		total.TotalNS += int64(elapsed)
-		total.MaxNS = max(total.MaxNS, int64(elapsed))
-		total.ReceivedBytes += uint64(len(packet) + 4)
-		if packet[0] == 101 && len(packet) >= 9 && binary.BigEndian.Uint32(packet[5:9]) > 1 {
-			total.Errors++
-		}
+	delete(w.requests, key)
+	if len(w.requests) == 0 {
+		w.wakeRequestWatchLocked()
 	}
-	if req.kind == 12 && packet[0] == 104 { // READDIR -> NAME
+	overBudget := false
+	if req.budget != nil && packet[0] == 104 { // READDIR -> NAME
 		if len(packet) < 9 {
 			return nil, fmt.Errorf("short SFTP directory response")
 		}
 		budget := req.budget
 		budget.entries += uint64(binary.BigEndian.Uint32(packet[5:9]))
 		budget.bytes += uint64(len(packet))
-		if budget.entries > w.maxEntries || budget.bytes > w.maxDirectoryBytes {
-			return ftpDirectoryFailure(id), nil
+		overBudget = budget.entries > w.maxEntries || budget.bytes > w.maxDirectoryBytes
+	}
+	if w.totals != nil && key != ftpHandshakeRequest {
+		total := &w.totals[req.kind]
+		elapsed := time.Since(req.started)
+		total.Completed++
+		total.TotalNS += int64(elapsed)
+		total.MaxNS = max(total.MaxNS, int64(elapsed))
+		total.ReceivedBytes += uint64(len(packet) + 4)
+		if overBudget || packet[0] == 101 && len(packet) >= 9 && binary.BigEndian.Uint32(packet[5:9]) > 1 {
+			total.Errors++
 		}
 	}
-	return packet, nil
+	if overBudget {
+		return ftpDirectoryFailure(id), nil
+	}
+	return nil, nil
 }
 func (w *ftpWire) Read(p []byte) (int, error) {
 	if len(p) == 0 {
@@ -218,18 +246,16 @@ func (w *ftpWire) Read(p []byte) (int, error) {
 		if _, e := io.ReadFull(w.reader, w.readBuffer[4:]); e != nil {
 			return 0, e
 		}
-		packet, e := w.filter(w.readBuffer[4:])
+		replacement, e := w.filter(w.readBuffer[4:])
 		if e != nil {
 			return 0, e
 		}
-		needed = 4 + len(packet)
-		if cap(w.readBuffer) < needed {
-			w.readBuffer = make([]byte, needed)
+		if replacement != nil {
+			w.readBuffer = binary.BigEndian.AppendUint32(w.readBuffer[:0], uint32(len(replacement)))
+			w.readBuffer = append(w.readBuffer, replacement...)
 		} else {
-			w.readBuffer = w.readBuffer[:needed]
+			copy(w.readBuffer, header[:])
 		}
-		binary.BigEndian.PutUint32(w.readBuffer, uint32(len(packet)))
-		copy(w.readBuffer[4:], packet)
 		w.readOffset = 0
 	}
 	n := copy(p, w.readBuffer[w.readOffset:])
@@ -243,54 +269,51 @@ func (w *ftpWire) Read(p []byte) (int, error) {
 // have no request deadline. Authentication is covered only by an opt-in startup
 // deadline, since the subsystem protocol cannot distinguish an SSH prompt.
 
-type sftpWatch struct {
-	mu      sync.Mutex
-	failure error
-	timer   *time.Timer
-}
-
-func (w *sftpWatch) fail(err error, abort func()) {
+func (w *ftpWire) watchRequests(ctx context.Context, timeout time.Duration) error {
+	wake := make(chan struct{}, 1)
 	w.mu.Lock()
-	first := w.failure == nil
-	if first {
-		w.failure = err
-	}
+	w.requestWake = wake
 	w.mu.Unlock()
-	if first {
-		abort()
-	}
-}
-func (w *sftpWatch) err() error { w.mu.Lock(); defer w.mu.Unlock(); return w.failure }
-func (w *ftpWire) watchRequests(timeout time.Duration, watch *sftpWatch, abort func()) func() {
-	stop, done := make(chan struct{}), make(chan struct{})
-	go func() {
-		defer close(done)
-		if timeout <= 0 {
-			<-stop
-			return
-		}
-		tick := time.NewTicker(min(time.Second, max(time.Millisecond, timeout/4)))
-		defer tick.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case now := <-tick.C:
-				w.mu.Lock()
-				expired := false
-				for _, r := range w.requests {
-					if !r.started.IsZero() && now.Sub(r.started) >= timeout {
-						expired = true
-						break
-					}
-				}
-				w.mu.Unlock()
-				if expired {
-					watch.fail(fmt.Errorf("SFTP request timed out after %s; connection closed, remote writes may be incomplete or have completed; no retry performed", timeout), abort)
-					return
-				}
+	defer func() {
+		w.mu.Lock()
+		w.requestWake = nil
+		w.mu.Unlock()
+	}()
+
+	timer := time.NewTimer(timeout)
+	timer.Stop()
+	defer timer.Stop()
+	for ctx.Err() == nil {
+		w.mu.Lock()
+		var oldest ftpRequest
+		for _, request := range w.requests {
+			if oldest.started.IsZero() || request.started.Before(oldest.started) {
+				oldest = request
 			}
 		}
-	}()
-	return func() { close(stop); <-done }
+		expires := oldest.started.Add(timeout)
+		expired := !oldest.started.IsZero() && !time.Now().Before(expires)
+		w.mu.Unlock()
+
+		if expired {
+			if oldest.kind == 1 {
+				return fmt.Errorf("SFTP handshake timed out after %s", timeout)
+			}
+			return fmt.Errorf("SFTP request timed out after %s; connection closed, remote writes may be incomplete or have completed; no retry performed", timeout)
+		}
+		// New requests cannot make an existing deadline sooner.
+		var deadline <-chan time.Time
+		if !oldest.started.IsZero() {
+			timer.Reset(time.Until(expires))
+			deadline = timer.C
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-wake:
+			timer.Stop()
+		case <-deadline:
+		}
+	}
+	return nil
 }

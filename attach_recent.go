@@ -1,13 +1,6 @@
 package main
 
-import (
-	"encoding/json"
-	"fmt"
-	"io"
-	"os"
-	"path/filepath"
-	"strings"
-)
+import "fmt"
 
 // A confirmed detach promotes one stable shell identity across all scopes.
 // Connection history remains responsible only for SSH defaults and old clients.
@@ -18,55 +11,21 @@ type recentAttachment struct {
 	Connection *recentConnection `json:",omitempty"`
 }
 
-func attachmentMRULocal(promote *recentAttachment) ([]recentAttachment, error) {
-	dir, err := stateDir("connections")
-	if err != nil {
-		return nil, err
+func (m *daemonMetadata) rememberDetachedAttachmentLocal(row recentAttachment) error {
+	if err := validateRecentAttachment(row); err != nil {
+		return err
 	}
-	path := filepath.Join(dir, "detached.json")
-	hub := &accountActivity.Load().metadata
-	rows := hub.attachments
-	if hub.attachmentPath != path {
-		rows = nil
-		f, err := os.Open(path)
-		if err == nil {
-			defer f.Close()
-			if err := privateStatePath(path, false); err != nil {
-				return nil, err
-			}
-			if err := json.NewDecoder(io.LimitReader(f, 1024*1024)).Decode(&rows); err != nil {
-				return nil, err
-			}
-		} else if !os.IsNotExist(err) {
-			return nil, err
-		}
-		if len(rows) > recentConnectionLimit {
-			return nil, fmt.Errorf("too many detached attachments")
-		}
-		for _, row := range rows {
-			if err := validateRecentAttachment(row); err != nil {
-				return nil, err
-			}
-		}
-		hub.attachmentPath, hub.attachments = path, rows
+	if err := m.loadDetachedAttachments(); err != nil {
+		return err
 	}
-	if promote == nil {
-		return cloneAttachments(rows), nil
-	}
-	if err := validateRecentAttachment(*promote); err != nil {
-		return nil, err
-	}
-	next := []recentAttachment{*promote}
-	for _, row := range rows {
-		if row.Identity != promote.Identity && len(next) < recentConnectionLimit {
-			next = append(next, row)
-		}
-	}
-	if err := writeStateJSON(path, next); err != nil {
-		return nil, err
-	}
-	hub.attachments = cloneAttachments(next)
-	return cloneAttachments(next), nil
+	row.Connection = row.Connection.clone()
+	return m.attachments.promote(row, func(previous recentAttachment) bool {
+		return previous.Identity == row.Identity
+	})
+}
+
+func (m *daemonMetadata) loadDetachedAttachments() error {
+	return m.attachments.load("detached.json", 1024*1024, validateRecentAttachment)
 }
 
 func validateRecentAttachment(row recentAttachment) error {
@@ -104,59 +63,117 @@ func rememberDetachedAttachment(o options) error {
 	return err
 }
 
-func resolveDetachedAttach(o *options) (bool, error) {
-	reply, err := metadataRPC(metadataRequest{Action: "attach_get"})
-	if err != nil {
-		return false, err
+// The caller holds shellMu across both history reads.
+func (a *daemonActivity) detachedAttachmentCandidates(local bool, host string) ([]recentAttachment, error) {
+	m := &a.metadata
+	if err := m.loadDetachedAttachments(); err != nil {
+		return nil, err
 	}
-	if len(reply.Attachments) == 0 {
-		return false, nil
-	}
-	var locals []localShellView
-	if o.host == "" || o.local {
-		locals, err = localShells()
-		if err != nil {
-			return false, err
+	var rows []recentAttachment
+	hasRemote := false
+	for _, row := range m.attachments.rows {
+		if !row.inScope(local, host) {
+			continue
 		}
+		rows = append(rows, row)
+		hasRemote = hasRemote || !row.Local
 	}
-	var snapshots []shellSnapshot
-	if !o.local {
-		snapshots, err = readShellSnapshots()
-		if err != nil {
-			return false, err
+	if hasRemote {
+		if err := m.loadShells(); err != nil {
+			return nil, err
 		}
+		m.treeMu.Lock()
+		defer m.treeMu.Unlock()
+		_ = m.loadTrees()
+		return matchDetachedSnapshots(rows, a.walkShellSnapshotsLocked)
 	}
-	return selectDetachedAttach(o, reply.Attachments, locals, snapshots), nil
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	return rows, nil
 }
 
-func selectDetachedAttach(o *options, rows []recentAttachment, locals []localShellView, snapshots []shellSnapshot) bool {
+func resolveDetachedAttach(o *options) error {
+	reply, err := metadataRPC(metadataRequest{Action: "attach_get", Local: o.local, Host: o.host})
+	if err != nil {
+		return err
+	}
+	var locals []localShellView
+	if len(reply.Attachments) > 0 && reply.Attachments[0].Local {
+		locals, err = localShells(false)
+		if err != nil {
+			return err
+		}
+	}
+	selectDetachedAttach(o, reply.Attachments, locals)
+	return nil
+}
+
+func matchDetachedSnapshots(rows []recentAttachment, walk func(func(shellSnapshot)) error) ([]recentAttachment, error) {
+	type key struct{ host, identity string }
+	observed := make(map[key]shellSnapshot, len(rows))
 	for _, row := range rows {
-		if !row.inScope(*o) {
+		if !row.Local && row.Connection != nil {
+			observed[key{row.Connection.Host, row.Identity}] = shellSnapshot{}
+		}
+	}
+	if err := walk(func(snapshot shellSnapshot) {
+		if snapshot.State != "detached" || snapshot.Unconfirmed || snapshot.Forgotten || snapshot.Active {
+			return
+		}
+		k := key{snapshot.Host, remoteShellIdentity(snapshot.Host, snapshot.Instance)}
+		old, wanted := observed[k]
+		if wanted && (old.Name == "" || snapshot.ConfirmedAt.After(old.ConfirmedAt) ||
+			snapshot.ConfirmedAt.Equal(old.ConfirmedAt) && snapshot.Name < old.Name) {
+			observed[k] = snapshot
+		}
+	}); err != nil {
+		return nil, err
+	}
+	candidates := rows[:0]
+	for _, row := range rows {
+		if !row.Local {
+			if row.Connection == nil {
+				continue
+			}
+			name := observed[key{row.Connection.Host, row.Identity}].Name
+			if name == "" {
+				continue
+			}
+			route := row.Connection.clone()
+			route.Session = name
+			row.Name, row.Connection = name, route
+		}
+		candidates = append(candidates, row)
+	}
+	return candidates, nil
+}
+
+func selectDetachedAttach(o *options, rows []recentAttachment, locals []localShellView) bool {
+	detached := make(map[string]localShellView)
+	for _, local := range locals {
+		if _, exists := detached[local.identity]; !exists && local.State == "detached" {
+			detached[local.identity] = local
+		}
+	}
+	for _, row := range rows {
+		if !row.inScope(o.local, o.host) {
 			continue
 		}
 		if row.Local {
-			for _, local := range locals {
-				if local.identity != row.Identity || local.State != "detached" {
-					continue
-				}
+			if local, ok := detached[row.Identity]; ok {
 				o.local, o.hosted = true, local.hosted
 				o.host, o.session, o.taskIdentity = "local", local.Name, local.identity
 				if local.hosted {
-					o.instance = strings.TrimPrefix(local.identity, "task:")
+					o.instance = canonicalTaskUID(local.identity)
 				}
 				return true
 			}
-		} else if !o.local && row.Connection != nil {
-			for _, snapshot := range snapshots {
-				if remoteShellIdentity(snapshot.Host, snapshot.Instance) != row.Identity || snapshot.Host != row.Connection.Host || snapshot.State != "detached" || snapshot.Unconfirmed || snapshot.Forgotten || snapshot.Active {
-					continue
-				}
-				o.host, o.session, o.instance = snapshot.Host, snapshot.Name, snapshot.Instance
-				route := row.Connection.clone()
-				route.Session = snapshot.Name
-				applyConnectionOptions(o, route)
-				return true
-			}
+		} else if row.Connection != nil {
+			o.host, o.session, o.instance = row.Connection.Host, row.Name, row.Connection.Instance
+			o.taskIdentity = row.Identity
+			applyConnectionOptions(o, *row.Connection)
+			return true
 		}
 	}
 	return false
@@ -164,23 +181,12 @@ func selectDetachedAttach(o *options, rows []recentAttachment, locals []localShe
 
 // Host selection filters the global order; local shells are selected globally
 // or explicitly by identity, without a separate public local scope.
-func (r recentAttachment) inScope(o options) bool {
-	if o.local {
+func (r recentAttachment) inScope(local bool, host string) bool {
+	if local {
 		return r.Local
 	}
-	if o.host == "" {
+	if host == "" {
 		return true
 	}
-	return !r.Local && r.Connection != nil && r.Connection.Host == o.host
-}
-
-func cloneAttachments(rows []recentAttachment) []recentAttachment {
-	result := append([]recentAttachment(nil), rows...)
-	for i := range result {
-		if result[i].Connection != nil {
-			route := result[i].Connection.clone()
-			result[i].Connection = &route
-		}
-	}
-	return result
+	return !r.Local && r.Connection != nil && r.Connection.Host == host
 }

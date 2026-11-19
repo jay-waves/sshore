@@ -1,16 +1,16 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-
 	"os"
 	"path/filepath"
-	"reflect"
-	"sort"
+	"slices"
+	"sync"
 	"time"
 )
 
@@ -24,6 +24,10 @@ func requestDaemonShutdown(expected daemonSnapshot) error {
 	if record.identity() != expected.Instance {
 		return fmt.Errorf("daemon changed; review again")
 	}
+	dir, err := daemonLocation()
+	if err != nil {
+		return err
+	}
 	waitForExit, closeProcess, err := daemonProcessWaiter(record.ManagerPID)
 	if err != nil {
 		return fmt.Errorf("cannot wait for daemon exit: %w", err)
@@ -31,38 +35,40 @@ func requestDaemonShutdown(expected daemonSnapshot) error {
 	if closeProcess != nil {
 		defer closeProcess()
 	}
+	if err := shutdownDaemonEndpoint(ctx, dir, record, expected); err != nil {
+		return err
+	}
+	if waitForExit != nil {
+		deadline, _ := ctx.Deadline()
+		return waitForExit(deadline)
+	}
+	return nil
+}
+
+func shutdownDaemonEndpoint(ctx context.Context, dir string, record localShellRecord, expected daemonSnapshot) error {
+	// The account lock file survives shutdown and reset. Poll the same handle
+	// until ownership is released, then close it before any process-exit wait.
+	owner, err := openDaemonOwner(dir)
+	if err != nil {
+		return err
+	}
+	defer owner.Close()
 	if _, err := daemonAdministrationAt(ctx, record, "shutdown", &expected); err != nil {
 		return err
 	}
+	recordPath := filepath.Join(dir, "daemon.json")
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		dir, err := daemonLocation()
-		if err != nil {
-			return err
-		}
-		owner, err := os.OpenFile(filepath.Join(dir, "owner.lock"), os.O_RDWR, 0600)
-		if err != nil {
-			return err
-		}
-		if err := privateStatePath(owner.Name(), false); err != nil {
-			owner.Close()
-			return err
-		}
 		lockErr := lockResourceState(owner)
-		owner.Close()
 		if lockErr == nil {
-			if waitForExit != nil {
-				deadline, _ := ctx.Deadline()
-				return waitForExit(deadline)
-			}
 			return nil
 		}
 		if !resourceLockBusy(lockErr) {
 			return lockErr
 		}
 		// Locator removal precedes owner release; absence alone is not exit.
-		r, err := readLocalRecord(filepath.Join(dir, "daemon.json"), "daemon")
+		r, err := readLocalRecord(recordPath, "daemon")
 		if err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -90,15 +96,24 @@ type daemonAdminReply struct {
 	Runtime  []string `json:",omitempty"`
 }
 
-func (s *daemonTasks) snapshot(record localShellRecord) daemonSnapshot {
-	s.prune(time.Now()) // caller holds the task table lock
-	r := daemonSnapshot{Version: record.Version, Instance: record.identity()}
-	for id, task := range s.records {
-		r.Tasks = append(r.Tasks, daemonTaskInfo{ID: id, Name: task.taskName()})
+func (s *daemonTasks) adminSnapshot(record localShellRecord) daemonAdminReply {
+	snapshot := daemonSnapshot{Version: record.Version, Instance: record.identity()}
+	var directories []string
+	s.mu.Lock()
+	for id, task := range s.liveLocked(time.Now()) {
+		snapshot.Tasks = append(snapshot.Tasks, daemonTaskInfo{ID: id, Name: task.taskName()})
+		if owner, ok := task.(interface{ runtimeDirectory() string }); ok {
+			if dir := owner.runtimeDirectory(); dir != "" {
+				directories = append(directories, dir)
+			}
+		}
 	}
-	sort.Slice(r.Tasks, func(i, j int) bool { return r.Tasks[i].ID < r.Tasks[j].ID })
-	return r
+	s.mu.Unlock()
+	slices.SortFunc(snapshot.Tasks, func(a, b daemonTaskInfo) int { return cmp.Compare(a.ID, b.ID) })
+	slices.Sort(directories)
+	return daemonAdminReply{Snapshot: snapshot, Runtime: slices.Compact(directories)}
 }
+
 func daemonAdmin(ctx context.Context, action string, expected *daemonSnapshot) (daemonSnapshot, error) {
 	reply, err := daemonAdministration(ctx, action, expected)
 	return reply.Snapshot, err
@@ -121,64 +136,111 @@ func daemonAdministrationAt(ctx context.Context, r localShellRecord, action stri
 	}
 	return reply, nil
 }
-func (s *daemonTasks) shutdown(record localShellRecord, expected daemonSnapshot) (result error) {
+
+type stoppableDaemonTask interface {
+	daemonTask
+	stopTask() error
+}
+
+func (s *daemonTasks) beginShutdown(record localShellRecord, expected daemonSnapshot) ([]stoppableDaemonTask, error) {
+	changed := errors.New("tasks changed; review again")
+	if record.Version != expected.Version || record.identity() != expected.Instance {
+		return nil, changed
+	}
 	s.mu.Lock()
-	if !reflect.DeepEqual(s.snapshot(record), expected) {
-		s.mu.Unlock()
-		return fmt.Errorf("tasks changed; review again")
+	defer s.mu.Unlock()
+	now := time.Now()
+	// Only extra entries need a table scan. Exact lookups check expiration
+	// for the confirmed entries themselves.
+	if len(s.records) > len(expected.Tasks) {
+		s.pruneLocked(now)
+	}
+	if len(s.records) != len(expected.Tasks) {
+		return nil, changed
+	}
+	var stops []stoppableDaemonTask
+	var requests []string
+	previousID := ""
+	for _, entry := range expected.Tasks {
+		if entry.ID <= previousID {
+			return nil, changed
+		}
+		previousID = entry.ID
+		task := s.lookupLocked(entry.ID, now)
+		if task == nil || task.taskName() != entry.Name {
+			return nil, changed
+		}
+		switch task := task.(type) {
+		case stoppableDaemonTask:
+			stops = append(stops, task)
+		case requestRecord:
+			requests = append(requests, entry.ID)
+		default:
+			return nil, fmt.Errorf("task %s does not support daemon shutdown", cleanText(entry.Name))
+		}
 	}
 	if s.draining {
-		s.mu.Unlock()
-		return fmt.Errorf("daemon is already shutting down")
+		return nil, fmt.Errorf("daemon is already shutting down")
 	}
 	s.draining = true
-	defer func() {
-		if result != nil {
-			s.mu.Lock()
-			s.draining = false
-			s.mu.Unlock()
+	for _, id := range requests {
+		delete(s.records, id)
+	}
+	return stops, nil
+}
+
+func (s *daemonTasks) resumeAdmission() {
+	s.mu.Lock()
+	s.draining = false
+	s.mu.Unlock()
+}
+
+func (s *daemonTasks) shutdown(record localShellRecord, expected daemonSnapshot) error {
+	stops, err := s.beginShutdown(record, expected)
+	if err != nil {
+		return err
+	}
+	if len(stops) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	result := make(chan error)
+	go func() {
+		var workers sync.WaitGroup
+		failures := make([]error, len(stops))
+		for i, task := range stops {
+			workers.Go(func() {
+				if err := task.stopTask(); err != nil {
+					failures[i] = fmt.Errorf("%s: %w", cleanText(task.taskName()), err)
+				}
+			})
+		}
+		workers.Wait()
+		err := errors.Join(failures...)
+		if err != nil {
+			s.resumeAdmission()
+		}
+		select {
+		case result <- err:
+		case <-ctx.Done():
+			// The caller timed out. Admission stays closed until all stops finish.
+			if err == nil {
+				s.resumeAdmission()
+			}
 		}
 	}()
-	var stops []interface{ stopTask() error }
-	for id, task := range s.records {
-		if stoppable, ok := task.(interface{ stopTask() error }); ok {
-			stops = append(stops, stoppable)
-		} else if _, ok := task.(requestRecord); ok {
-			delete(s.records, id)
-		}
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("daemon task cleanup timed out; shutdown stopped")
 	}
-	s.mu.Unlock()
-	results := make(chan error, len(stops))
-	for _, task := range stops {
-		go func() {
-			err := task.stopTask()
-			if err != nil {
-				err = fmt.Errorf("%s: %w", cleanText(task.(daemonTask).taskName()), err)
-			}
-			results <- err
-		}()
-	}
-	timer := time.NewTimer(25 * time.Second)
-	defer timer.Stop()
-	var failures []error
-	for range stops {
-		select {
-		case err := <-results:
-			if err != nil {
-				failures = append(failures, err)
-			}
-		case <-timer.C:
-			return fmt.Errorf("daemon task cleanup timed out; shutdown stopped")
-		}
-	}
-	return errors.Join(failures...)
 }
 func (t *nativeShellTask) stopTask() error { return t.shell.kill() }
 func (t *daemonResourceTask) stopTask() error {
-	if reply := t.stop(); reply.Error != "" {
-		return fmt.Errorf("%s", reply.Error)
-	}
-	return nil
+	// Shutdown owns the deadline and keeps admission closed until accepted stops finish.
+	return t.stop(0)
 }
 
 // An SSH exec channel exposes only the authenticated account's admin exchange.
@@ -203,7 +265,7 @@ func serveDaemonAdmin(input io.Reader, output io.Writer) error {
 	if err := json.NewDecoder(io.LimitReader(input, 1<<20)).Decode(&expected); err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(snapshot, expected) {
+	if snapshot.Instance != expected.Instance || snapshot.Version != expected.Version || !slices.Equal(snapshot.Tasks, expected.Tasks) {
 		return encoder.Encode(daemonAdminReply{Error: "tasks changed; review again"})
 	}
 	if snapshot.Instance != "" {
@@ -214,21 +276,4 @@ func serveDaemonAdmin(input io.Reader, output io.Writer) error {
 		reply.Error = err.Error()
 	}
 	return encoder.Encode(reply)
-}
-
-func (s *daemonTasks) runtimeDirectories() []string {
-	seen := map[string]bool{}
-	for _, task := range s.records {
-		if owner, ok := task.(interface{ runtimeDirectory() string }); ok {
-			if dir := owner.runtimeDirectory(); dir != "" {
-				seen[dir] = true
-			}
-		}
-	}
-	var directories []string
-	for dir := range seen {
-		directories = append(directories, dir)
-	}
-	sort.Strings(directories)
-	return directories
 }

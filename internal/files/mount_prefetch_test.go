@@ -21,12 +21,13 @@ func TestDirectoryPrefetchBoundedAndUseful(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	fs.prefetch = startDirectoryPrefetch(context.Background(), fs, nil)
-	defer func() { fs.prefetch.cancel(); <-fs.prefetch.done }()
+	ctx, cancel := context.WithCancel(context.Background())
+	fs.prefetch = startDirectoryPrefetch(ctx, fs, nil)
+	defer func() { cancel(); <-fs.prefetch.done }()
 	if _, err := fs.readDirectory(fs.root); err != nil {
 		t.Fatal(err)
 	}
-	if got := fs.prefetch.targets; got[0] != path.Join(fs.root, "dir00") || got[9] != path.Join(fs.root, "dir17") {
+	if got := fs.prefetch.latest.targets; got[0] != path.Join(fs.root, "dir00") || got[9] != path.Join(fs.root, "dir17") {
 		t.Fatalf("ranked siblings = %v", got)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -34,7 +35,7 @@ func TestDirectoryPrefetchBoundedAndUseful(t *testing.T) {
 		fs.cache.mu.Lock()
 		ready := true
 		for _, name := range []string{"dir00", "dir01", "dir02", "dir03", "dir04", "dir05", "dir06", "dir07", "dir16", "dir17"} {
-			if fs.cache.entries["d:"+path.Join(fs.root, name)] == nil {
+			if fs.cache.entries[ftpCacheKey{kind: ftpDirectoryKey, name: path.Join(fs.root, name)}] == nil {
 				ready = false
 			}
 		}
@@ -46,18 +47,18 @@ func TestDirectoryPrefetchBoundedAndUseful(t *testing.T) {
 			fs.cache.mu.Lock()
 			var keys []string
 			for key := range fs.cache.entries {
-				keys = append(keys, key)
+				keys = append(keys, key.name)
 			}
 			fs.cache.mu.Unlock()
 			t.Fatalf("child directories were not prefetched: %v", keys)
 		}
 		time.Sleep(time.Millisecond)
 	}
-	fs.prefetch.cancel()
+	cancel()
 	<-fs.prefetch.done
 	fs.cache.mu.Lock()
 	for _, name := range []string{".git", "dir00/nested"} {
-		if fs.cache.entries["d:"+path.Join(fs.root, name)] != nil {
+		if fs.cache.entries[ftpCacheKey{kind: ftpDirectoryKey, name: path.Join(fs.root, name)}] != nil {
 			t.Error("unexpected speculative read", name)
 		}
 	}
@@ -88,9 +89,10 @@ func TestDirectoryPrefetchLearnsForegroundVisits(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	p := startDirectoryPrefetch(context.Background(), fs, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := &directoryPrefetch{fs: fs, ctx: ctx, delta: VisitHistory{}, pending: make(chan *directoryPrefetchBatch, 1)}
 	fs.prefetch = p
-	defer func() { p.cancel(); <-p.done }()
 	visit := func(dir string) {
 		t.Helper()
 		if _, err := fs.readDirectory(path.Join(fs.root, dir)); err != nil {
@@ -98,29 +100,29 @@ func TestDirectoryPrefetchLearnsForegroundVisits(t *testing.T) {
 		}
 	}
 	visit("")
-	if p.targets[0] != "" {
+	if p.latest != nil {
 		t.Fatal("cold wide directory scheduled prefetch")
 	}
 	visit("src")
 	visit("src")
 	visit("")
-	if p.targets[0] != path.Join(fs.root, "src") || p.targets[1] != "" {
+	if p.latest == nil || p.latest.targets[0] != path.Join(fs.root, "src") || p.latest.targets[1] != "" {
 		t.Fatal("expected only visited child")
 	}
 	visit("src")
 	visit("")
-	if p.targets[0] != path.Join(fs.root, "src") {
-		t.Fatal("missing repeat prediction", p.targets[0])
+	if p.latest == nil || p.latest.targets[0] != path.Join(fs.root, "src") {
+		t.Fatal("missing repeat prediction")
 	}
 	if len(p.delta) != 1 || p.delta["src"].Score > 2 {
 		t.Fatal("unexpected visit history", p.delta)
 	}
-	batch := p.batch
+	batch := p.latest.ctx
 	visit("docs")
 	if batch.Err() != context.Canceled {
 		t.Fatal("navigation did not cancel previous batch")
 	}
-	if p.targets[0] != "" {
+	if p.latest != nil {
 		t.Fatal("stale prediction")
 	}
 }
@@ -161,13 +163,13 @@ func TestWatchRegistrationPreservesSiblingPrefetch(t *testing.T) {
 	<-done
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	if cache.entries["d:/sibling"] == nil {
+	if cache.entries[ftpCacheKey{kind: ftpDirectoryKey, name: "/sibling"}] == nil {
 		t.Fatal("unrelated prefetch was evicted")
 	}
-	if cache.entries["s:/new/old"] != nil {
+	if cache.entries[ftpCacheKey{kind: ftpStatKey, name: "/new/old"}] != nil {
 		t.Fatal("pre-registration attributes repopulated cache")
 	}
-	if cache.entries["d:/new"] != nil {
+	if cache.entries[ftpCacheKey{kind: ftpDirectoryKey, name: "/new"}] != nil {
 		t.Fatal("pre-registration response repopulated cache")
 	}
 }
@@ -175,15 +177,16 @@ func TestWatchRegistrationPreservesSiblingPrefetch(t *testing.T) {
 func TestRegistrationScopesOpenHandleCache(t *testing.T) {
 	var cache ftpMetadataCache
 	fetch := func() (ftpCacheValue, error) { return ftpCacheValue{info: ftpCacheInfo{name: "file"}, bytes: 256}, nil }
-	for _, dir := range []string{"/one", "/two"} {
-		if _, err := cache.loadScoped("h:"+dir, dir, time.Second, fetch); err != nil {
+	one, two, pending := testHandleKey("/one"), testHandleKey("/two"), testHandleKey("/one")
+	for _, key := range []ftpCacheKey{one, two} {
+		if _, err := cache.load(key, fetch); err != nil {
 			t.Fatal(err)
 		}
 	}
 	started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = cache.loadScoped("h:pending", "/one", time.Second, func() (ftpCacheValue, error) { close(started); <-release; return fetch() })
+		_, _ = cache.load(pending, func() (ftpCacheValue, error) { close(started); <-release; return fetch() })
 	}()
 	<-started
 	cache.registered("/one")
@@ -191,10 +194,10 @@ func TestRegistrationScopesOpenHandleCache(t *testing.T) {
 	<-done
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	if cache.entries["h:/one"] != nil || cache.entries["h:pending"] != nil {
+	if cache.entries[one] != nil || cache.entries[pending] != nil {
 		t.Fatal("affected handle metadata survived confirmation")
 	}
-	if cache.entries["h:/two"] == nil {
+	if cache.entries[two] == nil {
 		t.Fatal("unrelated open handle metadata was invalidated")
 	}
 	if cache.counters.RemoteInvalidations != 0 || cache.counters.SubscriptionConfirmations != 1 {
@@ -216,7 +219,7 @@ func TestDirectoryPrefetchWithResponseLatency(t *testing.T) {
 	}
 	go func() { _ = server.Serve(); server.Close() }()
 	wire := newFTPWire(b, b)
-	wire.metrics = true
+	wire.enableMetrics()
 	client, err := sftp.NewClientPipe(wire, wire)
 	if err != nil {
 		t.Fatal(err)
@@ -233,15 +236,16 @@ func TestDirectoryPrefetchWithResponseLatency(t *testing.T) {
 	}
 	cold := time.Since(start)
 	f.cache.invalidateRemote()
-	f.prefetch = startDirectoryPrefetch(context.Background(), f, VisitHistory{"child": {2, time.Now()}})
-	defer func() { f.prefetch.cancel(); b.Close(); <-f.prefetch.done }()
+	ctx, cancel := context.WithCancel(context.Background())
+	f.prefetch = startDirectoryPrefetch(ctx, f, VisitHistory{"child": {2, time.Now()}})
+	defer func() { cancel(); b.Close(); <-f.prefetch.done }()
 	if _, err = f.readDirectory(f.root); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
 	for {
 		f.cache.mu.Lock()
-		e := f.cache.entries["d:"+target]
+		e := f.cache.entries[ftpCacheKey{kind: ftpDirectoryKey, name: target}]
 		f.cache.mu.Unlock()
 		if e != nil {
 			break
@@ -251,7 +255,7 @@ func TestDirectoryPrefetchWithResponseLatency(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	f.prefetch.cancel()
+	cancel()
 	<-f.prefetch.done
 	wire.mu.Lock()
 	before := wire.totals[12].Started
@@ -272,33 +276,43 @@ func TestDirectoryPrefetchWithResponseLatency(t *testing.T) {
 
 func TestMetadataRefreshPrioritizesRecentAccessAndBoundsQueue(t *testing.T) {
 	fs := &ftpFS{}
-	r := &metadataRefresh{fs: fs, ctx: context.Background(), wake: make(chan struct{}, 1), queue: make(map[string]metadataRefreshTask)}
+	r := &metadataRefresh{fs: fs, ctx: context.Background(), wake: make(chan struct{}, 1)}
 	fs.cache.refresh = r
-	var order []string
-	for _, key := range []string{"h:old", "h:recent"} {
-		_, _ = fs.cache.loadScoped(key, "/unrelated", time.Minute, func() (ftpCacheValue, error) {
-			order = append(order, key)
-			return ftpCacheValue{info: ftpCacheInfo{name: key}, bytes: 256}, nil
-		})
+	var order []int
+	old, recent := testHandleKey("/unrelated"), testHandleKey("/unrelated")
+	r.fetch = func(_ context.Context, key ftpCacheKey) (ftpCacheValue, error) {
+		if key == old {
+			order = append(order, 0)
+		} else {
+			order = append(order, 1)
+		}
+		return ftpCacheValue{info: ftpCacheInfo{name: "file"}, bytes: 256}, nil
+	}
+	for _, key := range []ftpCacheKey{old, recent} {
+		_, _ = fs.cache.load(key, func() (ftpCacheValue, error) { return r.fetch(context.Background(), key) })
 	}
 	order = nil
 	fs.cache.beginMutation("/changed/file")()
-	_, _ = fs.cache.loadScoped("h:old", "/unrelated", time.Minute, func() (ftpCacheValue, error) {
+	_, _ = fs.cache.load(old, func() (ftpCacheValue, error) {
 		t.Fatal("foreground hit waited for verification")
 		return ftpCacheValue{}, nil
 	})
 	makeRefreshReady(r)
 	r.step()
-	if len(order) != 1 || order[0] != "h:old" {
+	if len(order) != 1 || order[0] != 0 {
 		t.Fatalf("latest access was not prioritized: %v", order)
 	}
 	for i := 0; i < metadataRefreshLimit+20; i++ {
-		key := "s:" + string(rune('a'+i))
-		_, _ = fs.cache.stat(key[2:], func() (os.FileInfo, error) { return ftpCacheInfo{name: key}, nil })
-		fs.cache.mu.Lock()
-		r.scheduleLocked(key)
-		fs.cache.mu.Unlock()
+		name := string(rune('a' + i))
+		_, _ = fs.cache.stat(name, func() (os.FileInfo, error) { return ftpCacheInfo{name: name}, nil })
 	}
+	fs.cache.mu.Lock()
+	fs.cache.revision++
+	for i := 0; i < metadataRefreshLimit+20; i++ {
+		key := ftpCacheKey{kind: ftpStatKey, name: string(rune('a' + i))}
+		r.enqueueLocked(fs.cache.entries[key])
+	}
+	fs.cache.mu.Unlock()
 	if len(r.queue) != metadataRefreshLimit {
 		t.Fatalf("queue length: %d", len(r.queue))
 	}
@@ -306,7 +320,7 @@ func TestMetadataRefreshPrioritizesRecentAccessAndBoundsQueue(t *testing.T) {
 
 func TestMetadataRefreshDoesNotBlockForegroundOrPublishAfterMutation(t *testing.T) {
 	fs := &ftpFS{}
-	r := &metadataRefresh{fs: fs, ctx: context.Background(), wake: make(chan struct{}, 1), queue: make(map[string]metadataRefreshTask)}
+	r := &metadataRefresh{fs: fs, ctx: context.Background(), wake: make(chan struct{}, 1)}
 	fs.cache.refresh = r
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	calls := 0
@@ -318,14 +332,16 @@ func TestMetadataRefreshDoesNotBlockForegroundOrPublishAfterMutation(t *testing.
 		}
 		return ftpCacheValue{info: ftpCacheInfo{name: "old"}, bytes: 256}, nil
 	}
-	_, _ = fs.cache.loadScoped("h:file", "/alias", time.Minute, fetch)
+	key := testHandleKey("/alias")
+	r.fetch = func(context.Context, ftpCacheKey) (ftpCacheValue, error) { return fetch() }
+	_, _ = fs.cache.load(key, fetch)
 	fs.cache.beginMutation("/changed/file")()
 	makeRefreshReady(r)
 	go func() { r.step(); close(done) }()
 	<-entered
 	foreground := make(chan error, 1)
 	go func() {
-		_, err := fs.cache.loadScoped("h:file", "/alias", time.Minute, func() (ftpCacheValue, error) {
+		_, err := fs.cache.load(key, func() (ftpCacheValue, error) {
 			return ftpCacheValue{}, errors.New("foreground unexpectedly fetched")
 		})
 		foreground <- err
@@ -341,7 +357,7 @@ func TestMetadataRefreshDoesNotBlockForegroundOrPublishAfterMutation(t *testing.
 	fs.cache.beginMutation("/changed/file")()
 	close(release)
 	<-done
-	if fs.cache.counters.RefreshDiscarded != 1 || fs.cache.entries["h:file"].Value.(ftpCacheValue).revision == fs.cache.revision {
+	if fs.cache.counters.RefreshDiscarded != 1 || fs.cache.entries[key].Value.(ftpCacheValue).revision == fs.cache.revision {
 		t.Fatal("verification from before a later mutation was published")
 	}
 }
@@ -357,8 +373,9 @@ func TestMetadataRefreshUpdatesHardLinkAliasWithoutForegroundRead(t *testing.T) 
 	if _, err := fs.stat("alias"); err != nil {
 		t.Fatal(err)
 	}
-	r := startMetadataRefresh(context.Background(), fs)
-	defer func() { r.cancel(); <-r.done }()
+	ctx, cancel := context.WithCancel(context.Background())
+	r := startMetadataRefresh(ctx, fs)
+	defer func() { cancel(); <-r.done }()
 	f, err := fs.open("original", os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -370,7 +387,7 @@ func TestMetadataRefreshUpdatesHardLinkAliasWithoutForegroundRead(t *testing.T) 
 	deadline := time.Now().Add(time.Second)
 	for {
 		fs.cache.mu.Lock()
-		e := fs.cache.entries["s:"+filepath.ToSlash(filepath.Join(fs.root, "alias"))]
+		e := fs.cache.entries[ftpCacheKey{kind: ftpStatKey, name: filepath.ToSlash(filepath.Join(fs.root, "alias"))}]
 		updated := e != nil && e.Value.(ftpCacheValue).info.Size() == 6 && fs.cache.counters.RefreshCompleted != 0
 		fs.cache.mu.Unlock()
 		if updated {
@@ -387,33 +404,33 @@ func TestMetadataRefreshUpdatesHardLinkAliasWithoutForegroundRead(t *testing.T) 
 func makeRefreshReady(r *metadataRefresh) {
 	r.fs.cache.mu.Lock()
 	defer r.fs.cache.mu.Unlock()
-	for key, task := range r.queue {
-		task.first, task.last = time.Now().Add(-time.Second), time.Now().Add(-time.Second)
-		r.queue[key] = task
+	ready := time.Now().Add(-time.Second)
+	for i := range r.queue {
+		r.queue[i].first, r.queue[i].last = ready, ready
 	}
 }
 
 func TestMetadataRefreshDebounceDeadlineAndRateLimit(t *testing.T) {
 	fs := &ftpFS{}
-	r := &metadataRefresh{fs: fs, ctx: context.Background(), wake: make(chan struct{}, 1), queue: make(map[string]metadataRefreshTask)}
-	_, _ = fs.cache.loadScoped("h:file", "/alias", time.Minute, func() (ftpCacheValue, error) {
+	r := &metadataRefresh{fs: fs, ctx: context.Background(), wake: make(chan struct{}, 1)}
+	key := testHandleKey("/alias")
+	_, _ = fs.cache.load(key, func() (ftpCacheValue, error) {
 		return ftpCacheValue{info: ftpCacheInfo{name: "file"}, bytes: 256}, nil
 	})
 	fs.cache.revision++
 	now := time.Now()
-	r.queue["h:file"] = metadataRefreshTask{priority: 1, first: now, last: now}
+	entry := fs.cache.entries[key]
+	r.queue = append(r.queue, metadataRefreshTask{entry: entry, first: now, last: now})
 	if _, delay := r.nextLocked(now); delay != metadataRefreshDebounce {
 		t.Fatalf("quiet debounce = %s", delay)
 	}
 	// Repeated activity postpones quiet time but preserves the original deadline.
-	task := r.queue["h:file"]
-	task.last = now.Add(450 * time.Millisecond)
-	r.queue["h:file"] = task
+	r.queue[0].last = now.Add(450 * time.Millisecond)
 	if _, delay := r.nextLocked(now.Add(450 * time.Millisecond)); delay != 50*time.Millisecond {
 		t.Fatalf("continuous activity exceeded max debounce: %s", delay)
 	}
-	if key, delay := r.nextLocked(now.Add(metadataRefreshMaxWait)); key != "h:file" || delay != 0 {
-		t.Fatalf("deadline did not release work: %q %s", key, delay)
+	if index, delay := r.nextLocked(now.Add(metadataRefreshMaxWait)); index < 0 || r.queue[index].entry != entry || delay != 0 {
+		t.Fatalf("deadline did not release work: index=%d delay=%s", index, delay)
 	}
 	r.nextAllowed = now.Add(metadataRefreshMaxWait + metadataRefreshInterval)
 	if _, delay := r.nextLocked(now.Add(metadataRefreshMaxWait)); delay != metadataRefreshInterval {
@@ -427,24 +444,27 @@ func TestMetadataRefreshDebounceDeadlineAndRateLimit(t *testing.T) {
 func TestMetadataRefreshFailureBackoffAndCancellation(t *testing.T) {
 	fs := &ftpFS{}
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &metadataRefresh{fs: fs, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{}), queue: make(map[string]metadataRefreshTask)}
+	r := &metadataRefresh{fs: fs, ctx: ctx, wake: make(chan struct{}, 1), done: make(chan struct{})}
 	fs.cache.refresh = r
 	calls := 0
-	_, _ = fs.cache.loadScoped("h:failed", "/alias", time.Minute, func() (ftpCacheValue, error) {
+	failed := testHandleKey("/alias")
+	fetch := func() (ftpCacheValue, error) {
 		calls++
 		if calls > 1 {
 			return ftpCacheValue{}, errors.New("transport unavailable")
 		}
 		return ftpCacheValue{info: ftpCacheInfo{name: "file"}, bytes: 256}, nil
-	})
+	}
+	r.fetch = func(context.Context, ftpCacheKey) (ftpCacheValue, error) { return fetch() }
+	_, _ = fs.cache.load(failed, fetch)
 	fs.cache.beginMutation("/changed/file")()
 	makeRefreshReady(r)
 	before := time.Now()
 	r.step()
-	if r.nextAllowed.Before(before.Add(500*time.Millisecond)) || r.failures != 1 || fs.cache.entries["h:failed"] != nil {
+	if r.nextAllowed.Before(before.Add(500*time.Millisecond)) || r.failures != 1 || fs.cache.entries[failed] != nil {
 		t.Fatal("failure did not back off and retire stale metadata")
 	}
-	_, err := fs.cache.loadScoped("h:foreground", "/other", time.Minute, func() (ftpCacheValue, error) {
+	_, err := fs.cache.load(testHandleKey("/other"), func() (ftpCacheValue, error) {
 		return ftpCacheValue{info: ftpCacheInfo{name: "foreground"}, bytes: 256}, nil
 	})
 	if err != nil {

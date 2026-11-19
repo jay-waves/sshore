@@ -12,10 +12,17 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
-const daemonUpgrade = "sshore-stream"
+const (
+	daemonUpgrade        = "sshore-stream"
+	daemonBodyLimit      = 1 << 20
+	daemonRequestTimeout = 40 * time.Second
+	daemonSnapshotRoute  = "/admin/snapshot"
+	daemonShutdownRoute  = "/admin/shutdown"
+)
 
 func daemonRequest(ctx context.Context, record localShellRecord, path string, input any) (*http.Request, error) {
 	var body bytes.Buffer
@@ -40,7 +47,11 @@ var daemonHTTPClient = &http.Client{Transport: &http.Transport{DisableKeepAlives
 
 // daemonJSON sends a daemon request and decodes its response when output is non-nil.
 func daemonJSON(ctx context.Context, r localShellRecord, path string, input, output any) error {
-	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
+	return daemonJSONLimit(ctx, r, path, input, output, 0)
+}
+
+func daemonJSONLimit(ctx context.Context, r localShellRecord, path string, input, output any, limit int64) error {
+	ctx, cancel := context.WithTimeout(ctx, daemonRequestTimeout)
 	defer cancel()
 	req, err := daemonRequest(ctx, r, path, input)
 	if err != nil {
@@ -54,7 +65,11 @@ func daemonJSON(ctx context.Context, r localShellRecord, path string, input, out
 	if output == nil {
 		return nil
 	}
-	return json.NewDecoder(resp.Body).Decode(output)
+	var body io.Reader = resp.Body
+	if limit > 0 {
+		body = io.LimitReader(body, limit)
+	}
+	return json.NewDecoder(body).Decode(output)
 }
 
 func daemonAuthorized(r *http.Request, record localShellRecord) bool {
@@ -69,11 +84,16 @@ type daemonStream struct {
 func (s daemonStream) Read(b []byte) (int, error) { return s.reader.Read(b) }
 
 func upgradeDaemonConn(ctx context.Context, c net.Conn, record localShellRecord, path string, input any) (stream net.Conn, result error) {
-	stop := context.AfterFunc(ctx, func() { c.Close() })
-	defer stop()
+	closeConn := sync.OnceFunc(func() { _ = c.Close() })
+	stop := context.AfterFunc(ctx, closeConn)
 	defer func() {
-		if result != nil {
-			c.Close()
+		// Retire handshake cancellation before the caller takes the stream.
+		stop()
+		if err := ctx.Err(); err != nil {
+			stream, result = nil, err
+		}
+		if stream == nil {
+			closeConn()
 		}
 	}()
 	if err := checkPeerVersion(record.Version, "daemon"); err != nil {
@@ -93,8 +113,14 @@ func upgradeDaemonConn(ctx context.Context, c net.Conn, record localShellRecord,
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode != http.StatusSwitchingProtocols || resp.Header.Get("Upgrade") != daemonUpgrade || resp.Header.Get("Sshore-Version") != version {
+	if resp.StatusCode != http.StatusSwitchingProtocols {
 		return nil, daemonResponseError(resp)
+	}
+	if resp.Header.Get("Upgrade") != daemonUpgrade {
+		return nil, fmt.Errorf("invalid daemon stream upgrade response")
+	}
+	if resp.Header.Get("Sshore-Version") != version {
+		return nil, fmt.Errorf("daemon version mismatch during stream upgrade")
 	}
 	return daemonStream{c, reader}, nil
 }
@@ -120,17 +146,23 @@ func serveDaemonStream(w http.ResponseWriter, r *http.Request, serve func(net.Co
 }
 
 func readDaemonBody(w http.ResponseWriter, r *http.Request, out any) bool {
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-	if err := decoder.Decode(out); err != nil {
+	if err := decodeDaemonBody(w, r, daemonBodyLimit, out); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return false
 	}
-	// Consume the complete body before an upgrade takes ownership of the connection.
-	if err := decoder.Decode(new(json.RawMessage)); err != io.EOF {
-		http.Error(w, "invalid trailing request data", http.StatusBadRequest)
-		return false
-	}
 	return true
+}
+
+func decodeDaemonBody(w http.ResponseWriter, r *http.Request, limit int64, out any) error {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	// Consume the complete body before an upgrade takes ownership of the connection.
+	if _, err := decoder.Token(); err != io.EOF {
+		return fmt.Errorf("invalid trailing request data")
+	}
+	return nil
 }
 
 func daemonDo(req *http.Request) (*http.Response, error) {
@@ -154,60 +186,37 @@ func daemonResponseError(resp *http.Response) error {
 
 func daemonRoutes(record localShellRecord, tasks *daemonTasks, services daemonServices, stop func()) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /admin/{action}", func(w http.ResponseWriter, r *http.Request) {
-		reply := daemonAdminReply{}
-		tasks.mu.Lock()
-		reply.Snapshot = tasks.snapshot(record)
-		reply.Runtime = tasks.runtimeDirectories()
-		tasks.mu.Unlock()
-		switch r.PathValue("action") {
-		case "snapshot":
-		case "shutdown":
-			var expected daemonSnapshot
-			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&expected); err != nil {
-				reply.Error = err.Error()
-			} else if err = tasks.shutdown(record, expected); err != nil {
-				reply.Error = err.Error()
-			}
-		default:
-			http.NotFound(w, r)
+	mux.HandleFunc("POST "+daemonSnapshotRoute, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(tasks.adminSnapshot(record))
+	})
+	mux.HandleFunc("POST "+daemonShutdownRoute, func(w http.ResponseWriter, r *http.Request) {
+		var expected daemonSnapshot
+		err := decodeDaemonBody(w, r, daemonBodyLimit, &expected)
+		if err == nil {
+			err = tasks.shutdown(record, expected)
+		}
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(daemonAdminReply{Error: err.Error()})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(reply)
-		if r.PathValue("action") == "shutdown" && reply.Error == "" {
-			stop()
-		}
+		_ = json.NewEncoder(w).Encode(daemonAdminReply{Snapshot: expected})
+		stop()
 	})
-	mux.HandleFunc("POST /tasks/native", func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(tasks.nativeRecords()) })
-	mux.HandleFunc("POST /resources", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(resourceReply{Records: tasks.resourceRecords()})
-	})
-	mux.HandleFunc("POST /tasks/names", func(w http.ResponseWriter, r *http.Request) {
-		names := map[string]bool{}
-		tasks.mu.Lock()
-		tasks.prune(time.Now())
-		except := r.URL.Query().Get("except")
-		for id, t := range tasks.records {
-			if id != except {
-				names[t.taskName()] = true
-			}
-		}
-		tasks.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(names)
-	})
-	mux.HandleFunc("POST /resources/{id}/{operation}", tasks.resourceControl)
-	mux.HandleFunc("POST /resources/{id}/rename", func(w http.ResponseWriter, r *http.Request) {
-		var name string
-		if !readDaemonBody(w, r, &name) {
+	mux.HandleFunc("POST /tasks/native", func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(tasks.nativeViews()) })
+	mux.HandleFunc("POST /resources", tasks.serveResources)
+	mux.HandleFunc("POST /tasks/name", func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		uid, name := query.Get("uid"), query.Get("name")
+		if !validTaskUID(uid) || name != "" && validSession(name) != nil {
+			http.Error(w, "invalid task name selection", http.StatusBadRequest)
 			return
 		}
-		reply := resourceReply{}
-		if err := tasks.renameResource(r.PathValue("id"), name); err != nil {
-			reply.Error = err.Error()
-		}
-		_ = json.NewEncoder(w).Encode(reply)
+		_ = json.NewEncoder(w).Encode(tasks.availableName(uid, name, query.Get("reuse") == "1"))
 	})
+	mux.HandleFunc("POST /resources/stop-confirmed", tasks.serveConfirmedResourceStops)
+	mux.HandleFunc("POST /resources/{action}", tasks.serveResourceMutation)
 	mux.HandleFunc("POST /ready", func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(true) })
+	mux.HandleFunc("POST /tasks/native/open", tasks.openNative)
 	mux.HandleFunc("POST /tasks/{id}/open", tasks.open)
 	activityHandler := func(w http.ResponseWriter, r *http.Request) {
 		var req activityRequest

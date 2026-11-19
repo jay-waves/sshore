@@ -27,8 +27,8 @@ func TestPeerTaskPrivacyAndStorage(t *testing.T) {
 	if err := storeRemoteTask(task); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := collectPeerRows()
-	if err != nil || len(rows) != 1 || rows[0].task != task {
+	rows, err := collectPeerViews()
+	if err != nil || len(rows) != 1 || rows[0].ID != "peer/"+task.Key[:8]+"/"+task.ID || rows[0].Identity != task.Key || rows[0].Detail != task.Detail {
 		t.Fatal(rows, err)
 	}
 	if removeRemoteTask("../outside") == nil {
@@ -37,7 +37,7 @@ func TestPeerTaskPrivacyAndStorage(t *testing.T) {
 	if err := removeRemoteTask(task.Key); err != nil {
 		t.Fatal(err)
 	}
-	rows, err = collectPeerRows()
+	rows, err = collectPeerViews()
 	if err != nil || len(rows) != 0 {
 		t.Fatal(rows, err)
 	}
@@ -60,12 +60,12 @@ func TestPeerTaskLeaseStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	state.peers[task.Key] = peerAdvertisement{Record: task, Seen: time.Now().Add(-2 * time.Minute)}
-	rows, err := collectPeerRows()
-	if err != nil || len(rows) != 1 || rows[0].state != "unknown" {
+	rows, err := collectPeerViews()
+	if err != nil || len(rows) != 1 || rows[0].State != "unknown" {
 		t.Fatal(rows, err)
 	}
 	state.peers[task.Key] = peerAdvertisement{Record: task, Seen: time.Now().Add(-25 * time.Hour)}
-	rows, err = collectPeerRows()
+	rows, err = collectPeerViews()
 	if err != nil || len(rows) != 0 {
 		t.Fatal(rows, err)
 	}
@@ -110,7 +110,7 @@ func TestDaemonActivitySocketLease(t *testing.T) {
 	if err != nil || ready.Type != "activity_ready" {
 		t.Fatal(ready, err)
 	}
-	if len(state.request(activityRequest{Kind: "list"}).Incoming) != 1 {
+	if len(state.request(activityRequest{Kind: "incoming"}).Peers) != 1 {
 		t.Fatal("lease missing")
 	}
 	state.tick(time.Now())
@@ -127,7 +127,7 @@ func TestDaemonActivitySocketLease(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("EOF did not release lease")
 	}
-	if len(state.request(activityRequest{Kind: "list"}).Incoming) != 0 {
+	if len(state.request(activityRequest{Kind: "incoming"}).Peers) != 0 {
 		t.Fatal("ended lease retained")
 	}
 }
@@ -141,7 +141,11 @@ func TestDaemonMetadataHistoryCannotRecreateLiveState(t *testing.T) {
 	}
 	defer connection.stop()
 	saveShellTree("task", "shell", nil, "attached")
-	path, err := connection.snapshot.cachePath()
+	dir, err := statePath("shells")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := connection.snapshot.cachePath(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +203,10 @@ func TestDaemonResetPreservesLiveOwnership(t *testing.T) {
 
 func TestDaemonClockChecksOwnerIdentity(t *testing.T) {
 	state := activityFixture(t)
-	lease := state.add(activityRequest{Kind: "owner", Owner: processIdentity{PID: os.Getpid(), Start: "different-process-identity"}})
+	lease, err := state.registerLease(activityRequest{Kind: "owner", Owner: processIdentity{PID: os.Getpid(), Start: "different-process-identity"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !state.busy() {
 		t.Fatal("owner lease did not retain daemon")
 	}
@@ -217,10 +224,11 @@ func TestDaemonClockChecksOwnerIdentity(t *testing.T) {
 func TestDaemonRejectsBrokenHistoryUntilReset(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	if _, err := stateDir("shells"); err != nil {
+	dir, err := stateDir("shells")
+	if err != nil {
 		t.Fatal(err)
 	}
-	path, err := shellCachePath("work", "shell")
+	path, err := (shellSnapshot{Host: "work", Name: "shell"}).cachePath(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +240,7 @@ func TestDaemonRejectsBrokenHistoryUntilReset(t *testing.T) {
 			t.Fatal("broken history was accepted")
 		}
 	}
-	dir, err := stateDir("connections")
+	dir, err = stateDir("connections")
 	if err != nil {
 		t.Fatal(err)
 	}

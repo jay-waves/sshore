@@ -4,24 +4,27 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
-	"sort"
 	"strings"
 )
 
-type taskReference struct {
-	order uint64
-	code  string
+func canonicalTaskUID(key string) string {
+	kind, uid, ok := strings.Cut(key, ":")
+	if ok && (kind == "task" || kind == "peer-task") && validTaskUID(uid) {
+		return uid
+	}
+	return ""
 }
 
 func taskUID(key string) string {
-	kind, uid, ok := strings.Cut(key, ":")
-	if ok && (kind == "task" || kind == "peer-task") && validTaskUID(uid) {
+	if key == "" {
+		return ""
+	}
+	if uid := canonicalTaskUID(key); uid != "" {
 		return uid
 	}
 	// Legacy observations retain a deterministic reference without allocating state.
@@ -30,38 +33,25 @@ func taskUID(key string) string {
 }
 
 func canonicalTaskCode(key string) string {
-	kind, uid, ok := strings.Cut(key, ":")
-	if ok && (kind == "task" || kind == "peer-task") && validTaskUID(uid) {
+	if uid := canonicalTaskUID(key); uid != "" {
 		return uid[:6]
 	}
 	return ""
 }
 
 func validTaskUID(uid string) bool {
-	raw, err := hex.DecodeString(uid)
-	return err == nil && len(raw) == 16 && hex.EncodeToString(raw) == uid
+	return len(uid) == 32 && strings.Trim(uid, "0123456789abcdef") == ""
 }
 
-func newTaskUID() (string, error) {
+func newTaskUID() string {
 	var random [16]byte
 	rand.Read(random[:])
-	return hex.EncodeToString(random[:]), nil
+	return hex.EncodeToString(random[:])
 }
 
-func taskShortCode(key string) string { return taskUID(key)[:6] }
-
-// References are derived from identities; observing tasks never reserves IDs.
-func assignTaskIDs(keys []string) (map[string]taskReference, error) {
-	result := make(map[string]taskReference, len(keys))
-	for _, key := range keys {
-		if key == "" {
-			return nil, fmt.Errorf("missing task identity")
-		}
-		uid := taskUID(key)
-		raw, _ := hex.DecodeString(uid)
-		result[key] = taskReference{order: binary.BigEndian.Uint64(raw[:8]), code: uid[:6]}
-	}
-	return result, nil
+func taskShortCode(key string) string {
+	uid := taskUID(key)
+	return uid[:min(6, len(uid))]
 }
 
 func resourceIdentity(r resourceRecord) string {
@@ -74,25 +64,6 @@ func resourceIdentity(r resourceRecord) string {
 	return fmt.Sprintf("%s:%x", r.Kind, sha256.Sum256([]byte(r.Token)))
 }
 
-func numberInventoryResources(inv *inventory) error {
-	keys := []string{}
-	for _, r := range inv.Resources {
-		if r.Identity != "" {
-			keys = append(keys, r.Identity)
-		}
-	}
-	ids, err := assignTaskIDs(keys)
-	if err != nil {
-		return err
-	}
-	for i := range inv.Resources {
-		id := ids[inv.Resources[i].Identity]
-		inv.Resources[i].order, inv.Resources[i].ShortID = id.order, id.code
-	}
-	sort.SliceStable(inv.Resources, func(i, j int) bool { return inv.Resources[i].order < inv.Resources[j].order })
-	return nil
-}
-
 func remoteShellIdentity(host, instance string) string {
 	if validTaskUID(instance) {
 		return "task:" + instance
@@ -101,44 +72,6 @@ func remoteShellIdentity(host, instance string) string {
 		return ""
 	}
 	return "remote:" + host + ":" + instance
-}
-
-func numberInventoryShells(inv *inventory) error {
-	keys := []string{}
-	for _, s := range inv.Shells {
-		host := s.Host
-		if host == "" {
-			host = inv.Host
-		}
-		if key := remoteShellIdentity(host, s.Instance); key != "" {
-			keys = append(keys, key)
-		}
-	}
-	ids, err := assignTaskIDs(keys)
-	if err != nil {
-		return err
-	}
-	for i := range inv.Shells {
-		s := &inv.Shells[i]
-		host := s.Host
-		if host == "" {
-			host = inv.Host
-		}
-		id := ids[remoteShellIdentity(host, s.Instance)]
-		s.order, s.ShortID = id.order, id.code
-	}
-	return nil
-}
-
-// Automatic labels are short references; user labels are optional aliases.
-func automaticSessionNames() []string {
-	names := make([]string, 32)
-	for i := range names {
-		var random [3]byte
-		rand.Read(random[:])
-		names[i] = hex.EncodeToString(random[:])
-	}
-	return names
 }
 
 func validSession(name string) error {
@@ -168,48 +101,58 @@ func chooseTaskIdentityExcept(kind, requested, exceptID string) (*taskIdentitySe
 			return nil, err
 		}
 	}
-	occupied, err := occupiedObjectNames(exceptID)
+	uid := exceptID
+	if uid == "" {
+		uid = newTaskUID()
+	} else if !validTaskUID(uid) {
+		return nil, fmt.Errorf("invalid task ID")
+	}
+
+	name, err := availableTaskName(uid, requested, exceptID != "")
 	if err != nil {
 		return nil, err
 	}
-	uid := exceptID
-	if uid == "" {
-		uid, err = newTaskUID()
-		if err != nil {
-			return nil, err
-		}
-	}
-	name := requested
 	if name == "" {
-		for length := 6; length <= len(uid); length++ {
-			name = uid[:length]
-			if !occupied[name] {
-				return &taskIdentitySelection{name: name, uid: uid}, nil
-			}
+		if requested == "" {
+			return nil, fmt.Errorf("task UID already exists")
 		}
-		return nil, fmt.Errorf("task UID already exists")
-	}
-	if occupied[name] {
-		return nil, fmt.Errorf("%s/%s: %w", kind, name, errObjectNameInUse)
+		return nil, fmt.Errorf("%s/%s: %w", kind, requested, errObjectNameInUse)
 	}
 	return &taskIdentitySelection{name: name, uid: uid}, nil
 }
 
-func occupiedObjectNames(exceptID string) (map[string]bool, error) {
-	r, err := existingDaemonRecord()
+func availableTaskName(uid, requested string, reuse bool) (string, error) {
+	if active := accountActivity.Load(); active != nil && active.tasks != nil {
+		return active.tasks.availableName(uid, requested, reuse), nil
+	}
+	record, err := existingDaemonRecord()
 	if os.IsNotExist(err) {
-		return map[string]bool{}, nil
+		if requested == "" {
+			requested = uid[:6]
+		}
+		return requested, nil
 	}
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	var names map[string]bool
-	err = daemonJSON(context.Background(), r, "/tasks/names?except="+url.QueryEscape(exceptID), nil, &names)
-	return names, err
+	query := url.Values{"uid": {uid}, "name": {requested}}
+	if reuse {
+		query.Set("reuse", "1")
+	}
+	var name string
+	err = daemonJSON(context.Background(), record, "/tasks/name?"+query.Encode(), nil, &name)
+	return name, err
 }
 
 // Displayed IDs stay six characters; selectors may use shorter unique prefixes.
 func isShortTaskID(name string) bool { return len(name) >= 6 && isTaskIDPrefix(name) }
+
+func shortTaskPrefix(name string) string {
+	if isShortTaskID(name) {
+		return strings.ToLower(name)
+	}
+	return ""
+}
 
 func isTaskIDPrefix(name string) bool {
 	if len(name) < 2 || len(name) > 32 {

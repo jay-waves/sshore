@@ -4,8 +4,8 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"golang.org/x/term"
 	"net"
 	"os"
 	"os/exec"
@@ -14,11 +14,12 @@ import (
 
 	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
+	"golang.org/x/term"
 )
 
 type spawnRoute struct {
-	mux       *smux.Session
-	connected chan error
+	mux          *smux.Session
+	confirmation chan error // consumed once under the shell lock
 }
 
 // The route exposes only attachment streams, never the initiating environment.
@@ -36,10 +37,11 @@ func (s *remoteShell) connectSpawnRoute(c net.Conn, request message) {
 	}
 	stream, err := route.mux.OpenStream()
 	if err != nil {
+		_ = writeMessage(c, message{Type: "error", Error: "spawn route is unavailable"})
 		return
 	}
-	defer stream.Close()
 	if writeMessage(c, message{Type: "route_connected", SoftwareVersion: version}) != nil {
+		_ = stream.Close()
 		return
 	}
 	wire.Bridge(c, stream)
@@ -56,7 +58,7 @@ func (s *remoteShell) requestSpawnRoute(c net.Conn, request message) {
 		return
 	}
 	s.mu.Lock()
-	parent := s.lifecycle.Active()
+	parent := s.active
 	s.mu.Unlock()
 	if parent == nil {
 		_ = writeMessage(c, message{Type: "fatal", Error: "managed attachment required"})
@@ -64,13 +66,14 @@ func (s *remoteShell) requestSpawnRoute(c net.Conn, request message) {
 	}
 	runConnection := runSpawnConnection
 	if req.Spawn.Local {
-		runConnection = runLocalSpawnRoute
+		runConnection = s.runLocalSpawnRoute
 	}
 	err = runConnection(c, *req, func(mx *smux.Session) error {
 		token := resourceToken()
-		route := &spawnRoute{mux: mx, connected: make(chan error, 1)}
+		confirmed := make(chan error, 1)
+		route := &spawnRoute{mux: mx, confirmation: confirmed}
 		s.mu.Lock()
-		if s.lifecycle.Active() != parent {
+		if s.active != parent {
 			s.mu.Unlock()
 			return fmt.Errorf("parent attachment changed")
 		}
@@ -88,12 +91,14 @@ func (s *remoteShell) requestSpawnRoute(c net.Conn, request message) {
 			return err
 		}
 		select {
-		case err := <-route.connected:
+		case err := <-confirmed:
 			if err != nil {
 				return err
 			}
 		case <-s.done:
 			return fmt.Errorf("parent shell exited")
+		case <-mx.CloseChan():
+			return fmt.Errorf("spawn transport closed before attachment")
 		case <-time.After(15 * time.Second):
 			return fmt.Errorf("spawn attachment timed out")
 		}
@@ -129,13 +134,15 @@ func handoffRemoteSpawn(o options) (bool, error) {
 		}
 		env = append(env, "SSHORE_SSH="+executable)
 	}
-	auth, stop, err := startSpawnAuth()
-	if err != nil {
-		return true, err
-	}
-	defer stop()
-	env = append(env, auth...)
 	req := &localDaemonRequest{Record: localShellRecord{Owner: o.owner, Directory: cwd}, Env: env, Spawn: &spawnConfig{NoLogin: o.noLogin, NoProfile: o.noProfile, Tree: currentShellTree(), Local: o.local, Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh}}
+	if !o.local {
+		auth, stop, err := startSSHAuthBroker()
+		if err != nil {
+			return true, err
+		}
+		defer stop()
+		req.Auth = auth
+	}
 	c, err := dialHostedTask(context.Background(), socket, requestTimeout)
 	if err != nil {
 		return true, err
@@ -144,7 +151,7 @@ func handoffRemoteSpawn(o options) (bool, error) {
 	if err := writeMessage(c, message{Type: "spawn_route_request", SoftwareVersion: version, LocalRequest: req}); err != nil {
 		return true, err
 	}
-	if err := negotiateSetup(c, c, &o); err != nil {
+	if _, err := negotiateSetup(c, c, o.host, false); err != nil {
 		return true, err
 	}
 	reply, err := readMessage(c)
@@ -164,39 +171,44 @@ func (s *remoteShell) confirmSpawnRoute(c net.Conn, request message) {
 	}
 	s.mu.Lock()
 	route := s.spawnRoutes[request.Token]
-	s.mu.Unlock()
 	if route == nil {
+		s.mu.Unlock()
 		_ = writeMessage(c, message{Type: "error", Error: "spawn route expired"})
+		return
+	}
+	if route.confirmation == nil {
+		s.mu.Unlock()
+		_ = writeMessage(c, message{Type: "error", Error: "spawn route confirmation already received"})
 		return
 	}
 	var err error
 	if request.Error != "" {
-		err = fmt.Errorf("%s", request.Error)
+		err = errors.New(request.Error)
 	}
-	select {
-	case route.connected <- err:
-	default:
-	}
+	route.confirmation <- err
+	route.confirmation = nil
+	s.mu.Unlock()
 	_ = writeMessage(c, message{Type: "route_confirmed"})
 }
 
-func createRouteShell(req localDaemonRequest, temporary bool) (net.Conn, error) {
+func (s *remoteShell) createRouteShell(req localDaemonRequest, temporary bool) (net.Conn, error) {
 	selected, err := selectHostedShell(req.Spawn.Name, "new")
 	if err != nil {
 		return nil, err
 	}
-	executable, err := os.Executable()
+	runtime, err := runtimeDir()
 	if err != nil {
 		return nil, err
 	}
-	if err := createRemoteShell(executable, selected.taskIdentitySelection, temporary, req.Record.Directory, req.Env); err != nil {
+	launch := hostedShellRequest{Runtime: runtime, Directory: req.Record.Directory, Name: selected.name, UID: selected.uid, Env: req.Env, Temporary: temporary}
+	if err := s.tasks.registerHostedShell(launch); err != nil {
 		return nil, err
 	}
 	return dialHostedTask(context.Background(), selected.uid, time.Second)
 }
 
-func runLocalSpawnRoute(c net.Conn, req localDaemonRequest, attached func(*smux.Session) error) error {
-	transport, err := createRouteShell(req, true)
+func (s *remoteShell) runLocalSpawnRoute(c net.Conn, req localDaemonRequest, attached func(*smux.Session) error) error {
+	transport, err := s.createRouteShell(req, true)
 	if err != nil {
 		return err
 	}
@@ -210,7 +222,7 @@ func runLocalSpawnRoute(c net.Conn, req localDaemonRequest, attached func(*smux.
 	}
 	defer mx.Close()
 	_ = transport.SetDeadline(time.Time{})
-	stopWatching := superviseSpawnOwner(req.Record.Owner, func() { mx.Close(); transport.Close() })
+	stopWatching := superviseSpawnOwner(req.Record.Owner, func() { _ = mx.Close() })
 	defer stopWatching()
 	if err := writeMessage(c, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed"}); err != nil {
 		return err
@@ -236,7 +248,7 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 	req := localDaemonRequest{Record: localShellRecord{Directory: s.directory, Owner: s.process}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Name: request.Name}}
 	s.mu.Unlock()
 	if request.Action == "spawn" {
-		return runLocalSpawnRoute(c, req, func(mx *smux.Session) error {
+		return s.runLocalSpawnRoute(c, req, func(mx *smux.Session) error {
 			stream, err := mx.OpenStream()
 			if err != nil {
 				return err
@@ -264,7 +276,7 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 			return err
 		}
 	case "launch":
-		target, err = createRouteShell(req, false)
+		target, err = s.createRouteShell(req, false)
 		if err != nil {
 			return err
 		}

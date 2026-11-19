@@ -9,6 +9,7 @@ package files
 // Windows files inherit the destination directory ACL.
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -23,7 +24,6 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/pkg/sftp"
 )
 
@@ -95,63 +95,61 @@ func OpenSource(path string) (*Source, error) {
 }
 func (f *Source) Close() { _ = f.file.Close() }
 
-type receivingFile struct {
-	file         *os.File
-	temp, target string
-	size, done   int64
+// CheckCopyTarget verifies that a local or SFTP destination has no entry,
+// including a dangling symlink.
+func CheckCopyTarget(target string, lstat func(string) (os.FileInfo, error)) error {
+	_, err := lstat(target)
+	if err == nil {
+		return fmt.Errorf("destination already exists: %s", target)
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
-func newReceiving(target string, size int64) (*receivingFile, error) {
-	if size < 0 {
-		return nil, fmt.Errorf("invalid file size")
-	}
-	if _, err := os.Lstat(target); err == nil {
-		return nil, fmt.Errorf("destination already exists: %s", target)
-	} else if !errors.Is(err, os.ErrNotExist) {
+func stageCopyFile(target string) (*os.File, error) {
+	if err := CheckCopyTarget(target, os.Lstat); err != nil {
 		return nil, err
 	}
-	f, err := os.CreateTemp(filepath.Dir(target), ".sshore-*.part")
-	if err != nil {
-		return nil, err
-	}
-	return &receivingFile{file: f, temp: f.Name(), target: target, size: size}, nil
+	return os.CreateTemp(filepath.Dir(target), ".sshore-*.part")
 }
-func (f *receivingFile) close() { _ = f.file.Close(); _ = os.Remove(f.temp) }
-func (f *receivingFile) put(b []byte) error {
-	if int64(len(b)) > f.size-f.done {
-		return fmt.Errorf("received more data than announced")
+
+func discardCopyFile(file *os.File) error {
+	_ = file.Close()
+	err := os.Remove(file.Name())
+	if os.IsNotExist(err) {
+		return nil
 	}
-	if err := wire.WriteFull(f.file, b); err != nil {
+	return err
+}
+
+func publishCopyFile(ctx context.Context, file *os.File, target string, size int64) error {
+	info, err := file.Stat()
+	if err != nil {
 		return err
 	}
-	f.done += int64(len(b))
-	return nil
-}
-func (f *receivingFile) Write(b []byte) (int, error) {
-	if err := f.put(b); err != nil {
-		return 0, err
-	}
-	return len(b), nil
-}
-
-func (f *receivingFile) publish() error {
-	defer f.close()
-	if f.done != f.size {
+	if info.Size() != size {
 		return fmt.Errorf("incomplete file")
 	}
-	if err := f.file.Sync(); err != nil {
+	if err := file.Sync(); err != nil {
 		return err
 	}
-	if err := f.file.Close(); err != nil {
+	if err := file.Close(); err != nil {
 		return err
 	}
-	// Atomic no-clobber publication. Both paths are on the same filesystem.
-	// Unlike Rename on Unix, Link cannot replace an existing destination.
-	if err := os.Link(f.temp, f.target); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// The temporary file is on the same filesystem. Link fails if the
+	// destination has appeared since preflight.
+	if err := os.Link(file.Name(), target); err != nil {
 		return fmt.Errorf("publish file without overwriting: %w", err)
 	}
 	return nil
 }
+
+var errCopySizeChanged = errors.New("source size changed")
 
 // Read exactly the declared size and reject growth without size+1 overflow.
 func CopyExactSize(dst io.Writer, src io.Reader, size int64) error {
@@ -167,12 +165,12 @@ func CopyExactSize(dst io.Writer, src io.Reader, size int64) error {
 
 func checkCopySize(src io.Reader, n, size int64) error {
 	if n != size {
-		return fmt.Errorf("source size changed")
+		return errCopySizeChanged
 	}
 	var extra [1]byte
 	nread, err := io.ReadFull(src, extra[:])
 	if nread != 0 {
-		return fmt.Errorf("source size changed")
+		return errCopySizeChanged
 	}
 	if err != io.EOF {
 		return err
@@ -180,40 +178,28 @@ func checkCopySize(src io.Reader, n, size int64) error {
 	return nil
 }
 
-func Upload(client *sftp.Client, source, target string, size int64, progress *atomic.Int64) error {
-	f, err := OpenSource(source)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return f.Upload(client, target, size, progress)
-}
-
 // Upload transfers the file already opened by OpenSource.
-func (f *Source) Upload(client *sftp.Client, target string, size int64, progress *atomic.Int64) error {
-	if f.size != size {
-		return fmt.Errorf("source size changed")
-	}
-	return UploadReader(client, progressReader{f.file, progress}, target, size)
+func (f *Source) Upload(client *sftp.Client, target string, progress *atomic.Int64) error {
+	return UploadReader(client, progressReader{f.file, progress}, target, f.size)
 }
 
 // A negative size denotes stdin: count bytes until EOF, then verify that count
 // and digest before publishing. File sources still require their declared size.
-func UploadReader(client *sftp.Client, source io.Reader, target string, size int64) error {
+func UploadReader(client *sftp.Client, source io.Reader, target string, size int64) (err error) {
 	var nonce [16]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return err
-	}
+	rand.Read(nonce[:])
 	temporary := path.Join(path.Dir(target), ".sshore-"+hex.EncodeToString(nonce[:])+".part")
 	remote, err := client.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY)
 	if err != nil {
 		return err
 	}
-	defer client.Remove(temporary)
-	defer remote.Close()
-	if err = remote.Chmod(0600); err != nil {
-		return err
-	}
+	defer func() {
+		// A successful Link transfers cleanup to the receiver. On failure it
+		// may still own the temporary pathname, so ask it to discard again.
+		if err != nil {
+			_ = client.Remove(temporary)
+		}
+	}()
 	digest := sha256.New()
 	input := source
 	if size >= 0 {
@@ -221,21 +207,18 @@ func UploadReader(client *sftp.Client, source io.Reader, target string, size int
 	}
 	// Hash in source order; only the private temporary file receives concurrent writes.
 	n, err := remote.ReadFromWithConcurrency(io.TeeReader(input, digest), sftpCopyConcurrency)
-	if err == nil {
-		if size < 0 {
-			size = n
-		} else {
-			err = checkCopySize(source, n, size)
-		}
+	if err == nil && size >= 0 {
+		err = checkCopySize(source, n, size)
 	}
+	closeErr := remote.Close()
 	if err != nil {
 		return err
 	}
-	if err = remote.Close(); err != nil {
-		return err
+	if closeErr != nil {
+		return closeErr
 	}
 	// The receiving sshore reads its sealed temporary file and verifies this digest.
-	if err = client.SetExtendedData(temporary, []sftp.StatExtended{{ExtType: copyVerifyAttribute, ExtData: fmt.Sprintf("%d:%x", size, digest.Sum(nil))}}); err != nil {
+	if err = client.SetExtendedData(temporary, []sftp.StatExtended{{ExtType: copyVerifyAttribute, ExtData: fmt.Sprintf("%d:%x", n, digest.Sum(nil))}}); err != nil {
 		return fmt.Errorf("remote upload verification: %w", err)
 	}
 	if err = client.Link(temporary, target); err != nil {
@@ -244,16 +227,22 @@ func UploadReader(client *sftp.Client, source io.Reader, target string, size int
 	return nil
 }
 
-func Download(client *sftp.Client, source, target string, size int64, progress *atomic.Int64) error {
-	receiver, err := newReceiving(target, size)
+func Download(ctx context.Context, client *sftp.Client, source, target string, size int64, progress *atomic.Int64) error {
+	if size < 0 {
+		return fmt.Errorf("invalid file size")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	receiver, err := stageCopyFile(target)
 	if err != nil {
 		return err
 	}
-	defer receiver.close()
+	defer discardCopyFile(receiver)
 	if err = DownloadTo(client, source, receiver, size, progress); err != nil {
 		return err
 	}
-	return receiver.publish()
+	return publishCopyFile(ctx, receiver, target, size)
 }
 
 func DownloadTo(client *sftp.Client, source string, target io.Writer, size int64, progress *atomic.Int64) error {
@@ -269,22 +258,22 @@ func DownloadTo(client *sftp.Client, source string, target io.Writer, size int64
 	if !info.Mode().IsRegular() || info.Size() != size {
 		return fmt.Errorf("source metadata changed")
 	}
-	return copySFTPExact(progressWriter{target, progress}, sourceFile, size)
+	return copySFTPExact(target, sourceFile, size, progress)
 }
 
 // Keep WriteTo visible so pkg/sftp pipelines reads, while bounding output even
 // if the source grows after its metadata was checked. WriteTo drains its workers
 // before returning; the destination and digest are written in file order.
-func copySFTPExact(dst io.Writer, src *sftp.File, size int64) error {
+func copySFTPExact(dst io.Writer, src *sftp.File, size int64, progress *atomic.Int64) error {
 	if size < 0 {
 		return fmt.Errorf("invalid file size")
 	}
-	writer := &exactCopyWriter{Writer: dst, remaining: size}
+	writer := &exactCopyWriter{Writer: dst, remaining: size, progress: progress}
 	if _, err := src.WriteTo(writer); err != nil {
 		return err
 	}
 	if writer.remaining != 0 {
-		return fmt.Errorf("source size changed")
+		return errCopySizeChanged
 	}
 	return nil
 }
@@ -292,29 +281,20 @@ func copySFTPExact(dst io.Writer, src *sftp.File, size int64) error {
 type exactCopyWriter struct {
 	io.Writer
 	remaining int64
+	progress  *atomic.Int64
 }
 
 func (w *exactCopyWriter) Write(p []byte) (int, error) {
 	if int64(len(p)) > w.remaining {
-		return 0, fmt.Errorf("source size changed")
+		return 0, errCopySizeChanged
 	}
 	n, err := w.Writer.Write(p)
 	w.remaining -= int64(n)
+	if w.progress != nil {
+		w.progress.Add(int64(n))
+	}
 	if err == nil && n != len(p) {
 		err = io.ErrShortWrite
-	}
-	return n, err
-}
-
-type progressWriter struct {
-	io.Writer
-	count *atomic.Int64
-}
-
-func (w progressWriter) Write(p []byte) (int, error) {
-	n, err := w.Writer.Write(p)
-	if w.count != nil {
-		w.count.Add(int64(n))
 	}
 	return n, err
 }
@@ -341,9 +321,7 @@ func DownloadDestination(path, name string) (string, error) {
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
 		path = filepath.Join(path, name)
 	}
-	if _, err := os.Lstat(path); err == nil {
-		return "", fmt.Errorf("destination already exists: %s", path)
-	} else if !os.IsNotExist(err) {
+	if err := CheckCopyTarget(path, os.Lstat); err != nil {
 		return "", err
 	}
 	info, err := os.Stat(filepath.Dir(path))

@@ -39,15 +39,15 @@ func TestForwardApprovalPreservesDetachedSession(t *testing.T) {
 			}
 		})
 	}
-	_ = s.lifecycle.Attach(&attachment{}, func() error { return nil })
+	s.active = &attachment{}
 	if s.checkApprovalSource(m) == nil {
 		t.Fatal("attached shell accepted")
 	}
-	s.lifecycle.Detach(s.lifecycle.Active())
+	s.active = nil
 	if err := s.checkApprovalSource(m); err != nil {
 		t.Fatal(err)
 	}
-	if s.lifecycle.Active() != nil || s.lifecycle.Exited() {
+	if s.active != nil || s.exited {
 		t.Fatal("validation changed shell lifetime")
 	}
 }
@@ -116,23 +116,13 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	ack := make(chan error, 1)
-	ack <- nil
-	s := &resourceService{record: resourceRecord{Kind: "forward", Name: "web", Host: "work", Version: version}, recordPath: filepath.Join(dir, "web.json"), ack: ack, stop: make(chan chan error), abandoned: make(chan struct{})}
+	s := &resourceService{record: resourceRecord{Kind: "forward", Name: "web", Host: "work", Version: version}, resultPath: filepath.Join(dir, "web"+resourceResultSuffix)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, e := runForward(forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, Retries: 1}, s)
+		_, e := runForward(ctx, forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, Retries: 1}, s, nil)
 		done <- e
-	}()
-	stopped := false
-	defer func() {
-		if !stopped {
-			select {
-			case s.stop <- make(chan error, 1):
-			case <-done:
-			case <-time.After(time.Second):
-			}
-		}
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -145,20 +135,15 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	reply := make(chan error, 1)
-	s.stop <- reply
+	cancel()
 	select {
-	case e := <-reply:
+	case e := <-done:
 		if e != nil {
 			t.Fatal(e)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("cancel stalled")
 	}
-	if e := <-done; e != nil {
-		t.Fatal(e)
-	}
-	stopped = true
 	args, _ := os.ReadFile(filepath.Join(root, "args"))
 	if strings.Count(string(args), "--\nfixture\n") != 2 {
 		t.Fatal(string(args))
@@ -186,12 +171,12 @@ func TestForwardRetryBoundaries(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			ack := make(chan error, 1)
-			ack <- nil
-			s := &resourceService{record: resourceRecord{Kind: "forward", Name: "web", Host: "work", Version: version}, recordPath: filepath.Join(dir, "web.json"), ack: ack, stop: make(chan chan error), abandoned: make(chan struct{})}
+			s := &resourceService{record: resourceRecord{Kind: "forward", Name: "web", Host: "work", Version: version}, resultPath: filepath.Join(dir, "web"+resourceResultSuffix)}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 			done := make(chan error, 1)
 			go func() {
-				_, e := runForward(forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, Retries: 1}, s)
+				_, e := runForward(ctx, forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, Retries: 1}, s, nil)
 				done <- e
 			}()
 			if scenario == "cancel-backoff" {
@@ -202,13 +187,7 @@ func TestForwardRetryBoundaries(t *testing.T) {
 					}
 					time.Sleep(time.Millisecond)
 				}
-				reply := make(chan error, 1)
-				s.stop <- reply
-				select {
-				case <-reply:
-				case <-time.After(time.Second):
-					t.Fatal("backoff cancellation stalled")
-				}
+				cancel()
 			}
 			select {
 			case e := <-done:
@@ -243,7 +222,7 @@ func TestForegroundReverseForwardStartupCancellation(t *testing.T) {
 	defer cancel()
 	result := make(chan error, 1)
 	go func() {
-		_, err := runForwardTransportForeground(ctx, executable, forwardConfig{Host: "fixture", Port: 18888, Target: 18889, Reverse: true}, nil, io.Discard, io.Discard)
+		_, err := runForwardTransportForeground(ctx, executable, forwardConfig{Host: "fixture", Port: 18888, Target: 18889, Reverse: true}, io.Discard)
 		result <- err
 	}()
 	select {

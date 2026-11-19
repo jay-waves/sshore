@@ -2,8 +2,6 @@ package tmux
 
 import (
 	"bytes"
-	"slices"
-	"sort"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/parser"
@@ -39,10 +37,9 @@ type Keys struct {
 	Interrupted    bool // Ctrl+C press/repeat outside bracketed paste in the latest Feed.
 	prefix         []byte
 	paste          bool
-	marker         []byte
+	pasteEnd       int
 	parser         *ansi.Parser
 	sequence       []byte
-	streaming      bool
 	consumed       map[int]bool
 }
 
@@ -59,11 +56,9 @@ func (k *Keys) FlushPending() []KeyEvent {
 	delete(k.consumed, 'b')
 	k.reports, k.forwardReports = nil, nil
 	k.prefix, k.sequence = nil, nil
-	k.streaming = true
 	// A lone Escape is now a complete key, rather than an unfinished sequence.
 	if k.parser.State() == parser.EscapeState {
 		k.parser.Reset()
-		k.streaming = false
 	}
 	return []KeyEvent{{Data: data}}
 }
@@ -196,17 +191,17 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 		}
 		if k.paste {
 			out = append(out, c)
-			target := []byte("\x1b[201~")
-			k.marker = append(k.marker, c)
-			if !bytes.HasPrefix(target, k.marker) {
-				k.marker = nil
-				if c == 0x1b {
-					k.marker = append(k.marker, c)
+			const end = "\x1b[201~"
+			switch {
+			case c == end[k.pasteEnd]:
+				k.pasteEnd++
+				if k.pasteEnd == len(end) {
+					k.paste, k.pasteEnd = false, 0
 				}
-			}
-			if bytes.Equal(target, k.marker) {
-				k.paste = false
-				k.marker = nil
+			case c == end[0]:
+				k.pasteEnd = 1
+			default:
+				k.pasteEnd = 0
 			}
 			continue
 		}
@@ -228,23 +223,25 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 		}
 		// ESC cancels an unfinished CSI/Escape. Preserve the abandoned bytes.
 		state := k.parser.State()
-		if c == 0x1b && (state == parser.EscapeState || state == parser.CsiEntryState || state == parser.CsiParamState || state == parser.CsiIntermediateState) {
+		// A non-ground parser with no buffered bytes is forwarding a sequence
+		// that was already flushed or exceeded the buffer limit.
+		streamed := state != parser.GroundState && len(k.sequence) == 0
+		if c == 0x1b && keySequenceState(state) {
 			literal(k.sequence)
 			k.sequence = nil
-			k.streaming = false
+			streamed = false
 		}
 		if state == parser.EscapeState && bytes.ContainsRune([]byte("]P^_X"), rune(c)) {
 			literal(k.sequence)
 			out = append(out, c)
 			k.sequence = nil
-			k.streaming = false
 			k.opaque = c
 			k.opaqueEscape = false
 			k.parser.Reset()
 			continue
 		}
 		k.parser.Advance(c)
-		if k.streaming {
+		if streamed {
 			out = append(out, c)
 		} else {
 			k.sequence = append(k.sequence, c)
@@ -252,17 +249,13 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 		if k.parser.State() != parser.GroundState {
 			// Only Escape/CSI can be a supported key. Stream opaque control strings
 			// and overlong sequences without retaining their payload.
-			st := k.parser.State()
-			candidate := st == parser.EscapeState || st == parser.CsiEntryState || st == parser.CsiParamState || st == parser.CsiIntermediateState
-			if !k.streaming && (!candidate || len(k.sequence) > 128) {
+			if !streamed && (!keySequenceState(k.parser.State()) || len(k.sequence) > 128) {
 				literal(k.sequence)
 				k.sequence = nil
-				k.streaming = true
 			}
 			continue
 		}
-		if k.streaming {
-			k.streaming = false
+		if streamed {
 			continue
 		}
 		raw := k.sequence
@@ -286,10 +279,18 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 	return events
 }
 
+func keySequenceState(state parser.State) bool {
+	switch state {
+	case parser.EscapeState, parser.CsiEntryState, parser.CsiParamState, parser.CsiIntermediateState:
+		return true
+	}
+	return false
+}
+
 // decodeKey adds only the keyboard semantics sshore needs to the ANSI parser.
 // Unknown or malformed reports retain their original representation.
 func decodeKey(p *ansi.Parser, raw []byte) (code, mods, event int, ok bool) {
-	if len(raw) > 128 || !bytes.HasPrefix(raw, []byte("\x1b[")) {
+	if len(raw) < 3 || len(raw) > 128 || !bytes.HasPrefix(raw, []byte("\x1b[")) {
 		return
 	}
 	digits := 0
@@ -307,45 +308,50 @@ func decodeKey(p *ansi.Parser, raw []byte) (code, mods, event int, ok bool) {
 		}
 	}
 	params := p.Params()
-	var groups [][]int
-	for i := 0; i < len(params); {
-		var group []int
-		for {
-			value, more, _ := params.Param(i, -1)
-			group = append(group, value)
-			i++
-			if !more || i >= len(params) {
-				break
-			}
+	// Only the first three subparameters of a group can affect shortcuts.
+	// Keep the full widths for validation, including Kitty's optional text.
+	var groups [3][3]int
+	var widths [len(groups)]int
+	group := 0
+	for i := range params {
+		if group == len(groups) {
+			return
 		}
-		groups = append(groups, group)
+		value, more, _ := params.Param(i, -1)
+		if width := widths[group]; width < len(groups[group]) {
+			groups[group][width] = value
+		}
+		widths[group]++
+		if !more {
+			group++
+		}
 	}
 	event = 1
 	switch p.Command() {
 	case 'u':
-		if len(groups) < 1 || len(groups) > 3 || len(groups[0]) > 3 {
+		if widths[0] == 0 || widths[0] > 3 {
 			return
 		}
 		code = groups[0][0]
 		// Kitty can supply the ASCII key in the standard layout for shortcuts.
-		if code > 127 && len(groups[0]) == 3 && groups[0][2] > 0 && groups[0][2] < 128 {
+		if code > 127 && widths[0] == 3 && groups[0][2] > 0 && groups[0][2] < 128 {
 			code = groups[0][2]
 		}
 		mods = 1
-		if len(groups) > 1 {
-			if len(groups[1]) > 2 {
+		if widths[1] != 0 {
+			if widths[1] > 2 {
 				return
 			}
 			mods = groups[1][0]
 			if mods == -1 {
 				mods = 1
 			}
-			if len(groups[1]) == 2 {
+			if widths[1] == 2 {
 				event = groups[1][1]
 			}
 		}
 	case '~':
-		if len(groups) != 3 || len(groups[0]) != 1 || len(groups[1]) != 1 || len(groups[2]) != 1 || groups[0][0] != 27 {
+		if widths != [3]int{1, 1, 1} || groups[0][0] != 27 {
 			return
 		}
 		mods, code = groups[1][0], groups[2][0]
@@ -361,15 +367,3 @@ func decodeKey(p *ansi.Parser, raw []byte) (code, mods, event int, ok bool) {
 }
 
 func (a KeyAction) IsSessionCommand() bool { return a >= KeyNew && a <= KeyLast }
-
-// SessionOrder is stable, includes current, and never changes caller-owned data.
-func SessionOrder(current string, names []string) []string {
-	all := append([]string{current}, names...)
-	sort.Strings(all)
-	return slices.Compact(all)
-}
-func AdjacentSession(current string, names []string, step int) string {
-	all := SessionOrder(current, names)
-	i := sort.SearchStrings(all, current)
-	return all[(i+step%len(all)+len(all))%len(all)]
-}

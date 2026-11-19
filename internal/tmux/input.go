@@ -1,236 +1,220 @@
 package tmux
 
-// Track bounded 7-bit xterm input modes while detached or muted. Screen,
+// Track bounded 7-bit xterm input modes while detached. Screen,
 // scrollback, enhanced keyboard stacks and passthrough wrappers are not reconstructed.
 
 import (
 	"bytes"
+	"slices"
 	"strconv"
 	"strings"
 )
 
-var mouseModes = [...]string{"9", "1000", "1001", "1002", "1003", "1005", "1006", "1015", "1016"}
-var inputModes = [...]string{"9", "1000", "1001", "1002", "1003", "1005", "1006", "1015", "1016", "1004", "2004", "1", "2031", "2033", "2048"}
+var inputModes = [...]int{9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016, 1004, 2004, 1, 2031, 2033, 2048}
+
+const (
+	mouseModeCount    = 9
+	trackingModeCount = 5
+)
+
+type modeSetting uint8
+
+const (
+	modeUnset modeSetting = iota
+	modeOff
+	modeOn
+)
+
+func writeMode(b *strings.Builder, mode int, action byte) {
+	b.WriteString("\x1b[?")
+	b.WriteString(strconv.Itoa(mode))
+	b.WriteByte(action)
+}
 
 func MouseResetSequence() string {
 	var b strings.Builder
-	for _, mode := range mouseModes {
-		b.WriteString("\x1b[?" + mode + "l")
+	for _, mode := range inputModes[:mouseModeCount] {
+		writeMode(&b, mode, 'l')
 	}
 	return b.String()
 }
 
-// Observe, never filter, the PTY byte stream. Keep tracking while detached or
-// muted so a later attachment restores the application's current mouse modes.
-// Control strings are opaque: text inside OSC/DCS must not enable mouse input.
-// The parser is bounded and accepts CSI sequences split across arbitrary reads.
+const (
+	inputText = iota
+	inputEscape
+	inputCSI
+	inputDiscardCSI
+	inputString
+)
+
+const escape = 0x1b
+
+// Observe, never filter, the PTY byte stream. Track modes while detached and
+// retain only the control prefix needed at the next attachment boundary.
 type InputState struct {
-	enabled               [len(inputModes)]bool
-	saved                 [len(inputModes)]bool
-	savedSet              [len(inputModes)]bool
-	touched               [len(inputModes)]bool
-	seen                  bool
-	state                 byte
-	csi                   []byte
-	stringKind            byte
-	keypad, keypadTouched bool
+	current, saved [len(inputModes)]modeSetting
+	prefix         []byte
+	state          uint8
+	keypad         modeSetting
 }
 
 func (s *InputState) Observe(data []byte) {
 	for len(data) > 0 {
-		if s.state == 0 {
-			// Ordinary output cannot change input modes; scan directly to the next ESC.
-			i := bytes.IndexByte(data, 0x1b)
+		if s.state == inputText {
+			i := bytes.IndexByte(data, escape)
 			if i < 0 {
 				return
 			}
-			data = data[i:]
+			s.prefix = append(s.prefix[:0], escape)
+			s.state = inputEscape
+			data = data[i+1:]
+			continue
 		}
 		c := data[0]
 		data = data[1:]
 		if c == 0x18 || c == 0x1a {
-			s.state = 0
-			s.csi = s.csi[:0]
+			s.state = inputText
 			continue
 		}
 		switch s.state {
-		case 's', 't':
-			if (c == 7 && s.stringKind == ']') || (s.state == 't' && c == '\\') {
-				s.state = 0
-			} else if c == 0x1b {
-				s.state = 't'
+		case inputString:
+			if c == 7 && s.prefix[1] == ']' || c == '\\' && len(s.prefix) == 3 {
+				s.state = inputText
+			} else if c == escape {
+				s.prefix = append(s.prefix[:2], escape)
 			} else {
-				s.state = 's'
+				s.prefix = s.prefix[:2]
 			}
-		case 'e':
+		case inputEscape:
 			switch c {
 			case '[':
-				s.state = 'c'
-				s.csi = s.csi[:0]
+				s.prefix = append(s.prefix, c)
+				s.state = inputCSI
 			case ']', 'P', '^', '_', 'X':
-				s.state = 's'
-				s.stringKind = c
+				s.prefix = append(s.prefix, c)
+				s.state = inputString
+			case escape:
+				continue
 			case 'c':
-				s.enabled = [len(inputModes)]bool{}
-				// RIS resets every tracked mode, including modes never explicitly
-				// set by this application on the previous terminal attachment.
-				for i := range s.touched {
-					s.touched[i] = true
+				// RIS explicitly resets every tracked mode.
+				for i := range s.current {
+					s.current[i] = modeOff
 				}
-				s.saved = [len(inputModes)]bool{}
-				s.savedSet = [len(inputModes)]bool{}
-				s.seen = true
-				s.keypad = false
-				s.keypadTouched = true
-				s.state = 0
+				clear(s.saved[:])
+				s.keypad = modeOff
+				s.state = inputText
 			case '=', '>':
-				s.keypad = c == '='
-				s.keypadTouched = true
-				s.state = 0
-			case 0x1b:
+				s.keypad = modeOff
+				if c == '=' {
+					s.keypad = modeOn
+				}
+				s.state = inputText
 			default:
-				s.state = 0
+				s.state = inputText
 			}
-		case 'c':
-			if c == 0x1b {
-				s.state = 'e'
-				continue
-			}
-			if c < 0x20 || c == 0x7f {
-				continue
-			}
-			if c >= 0x40 && c <= 0x7e {
-				if c == 'h' || c == 'l' || c == 's' || c == 'r' {
+		case inputCSI, inputDiscardCSI:
+			switch {
+			case c == escape:
+				s.prefix = s.prefix[:1]
+				s.state = inputEscape
+			case c >= 0x40 && c <= 0x7e:
+				if s.state == inputCSI && (c == 'h' || c == 'l' || c == 's' || c == 'r') {
 					s.apply(c)
 				}
-				s.state = 0
-			} else if len(s.csi) < 128 {
-				s.csi = append(s.csi, c)
-			} else {
-				s.state = 'd'
-			}
-		case 'd':
-			if c == 0x1b {
-				s.state = 'e'
-			} else if c >= 0x40 && c <= 0x7e {
-				s.state = 0
-			}
-		default:
-			if c == 0x1b {
-				s.state = 'e'
+				s.state = inputText
+			case s.state == inputCSI && c >= 0x20 && c != 0x7f:
+				if len(s.prefix) == 2+128 {
+					s.state = inputDiscardCSI
+				} else {
+					s.prefix = append(s.prefix, c)
+				}
 			}
 		}
 	}
 }
 
 func (s *InputState) apply(action byte) {
-	if len(s.csi) == 0 || s.csi[0] != '?' {
+	if len(s.prefix) < 3 || s.prefix[2] != '?' {
 		return
 	}
-	params := strings.Split(string(s.csi[1:]), ";")
-	for _, p := range params {
-		if _, err := strconv.ParseUint(p, 10, 16); err != nil {
+	// Commit the whole CSI only after all parameters have validated.
+	current, saved := s.current, s.saved
+	for param := range strings.SplitSeq(string(s.prefix[3:]), ";") {
+		number, err := strconv.ParseUint(param, 10, 16)
+		if err != nil {
 			return
 		}
-	}
-	for _, p := range params {
-		n, _ := strconv.Atoi(p)
-		for i, mode := range inputModes {
-			if strconv.Itoa(n) == mode {
-				s.touched[i] = true
-				if action == 's' {
-					s.saved[i] = s.enabled[i]
-					s.savedSet[i] = true
-					s.seen = true
-					continue
+		i := slices.Index(inputModes[:], int(number))
+		if i < 0 {
+			continue
+		}
+		setting := modeOff
+		switch action {
+		case 's':
+			if current[i] == modeUnset {
+				current[i] = modeOff
+			}
+			saved[i] = current[i]
+			continue
+		case 'r':
+			if saved[i] == modeOn {
+				setting = modeOn
+			}
+		case 'h':
+			setting = modeOn
+		}
+		// X10, normal, highlight, button and any-motion tracking are exclusive.
+		if setting == modeOn && i < trackingModeCount {
+			for j := range trackingModeCount {
+				if current[j] == modeOn {
+					current[j] = modeOff
 				}
-				on := action == 'h'
-				if action == 'r' {
-					on = s.saved[i]
-				}
-				// X10, normal, highlight, button and any-motion tracking are exclusive.
-				if on && i < 5 {
-					for j := 0; j < 5; j++ {
-						s.enabled[j] = false
-					}
-				}
-				s.enabled[i] = on
-				s.seen = true
 			}
 		}
+		current[i] = setting
 	}
-}
-
-func (s *InputState) resetSequence() string {
-	var b strings.Builder
-	b.WriteString(MouseResetSequence())
-	for i := len(mouseModes); i < len(inputModes); i++ {
-		if s.touched[i] {
-			b.WriteString("\x1b[?" + inputModes[i] + "l")
-		}
-	}
-	return b.String()
+	s.current, s.saved = current, saved
 }
 
 func (s *InputState) Replay() []byte {
 	var b strings.Builder
-	if s.seen {
-		b.WriteString(s.resetSequence())
-	}
-	// Recreate the application's saved values as well: a later private-mode restore
-	// may arrive without another save on this new terminal attachment.
-	saved := false
-	for i, mode := range inputModes {
-		if s.savedSet[i] {
-			saved = true
-			if s.saved[i] {
-				b.WriteString("\x1b[?" + mode + "h")
-			}
-			b.WriteString("\x1b[?" + mode + "s")
-			if s.saved[i] {
-				b.WriteString("\x1b[?" + mode + "l")
+	if s.current != [len(inputModes)]modeSetting{} {
+		for i, mode := range inputModes {
+			if i < mouseModeCount || s.current[i] != modeUnset {
+				writeMode(&b, mode, 'l')
 			}
 		}
 	}
-	if saved {
-		b.WriteString(s.resetSequence())
+	// Recreate saved values and leave each mode off until restoring current modes.
+	for i, mode := range inputModes {
+		switch s.saved[i] {
+		case modeOn:
+			writeMode(&b, mode, 'h')
+			writeMode(&b, mode, 's')
+			writeMode(&b, mode, 'l')
+		case modeOff:
+			writeMode(&b, mode, 's')
+		}
 	}
 	for i, mode := range inputModes {
-		if s.enabled[i] {
-			b.WriteString("\x1b[?" + mode + "h")
+		if s.current[i] == modeOn {
+			writeMode(&b, mode, 'h')
 		}
 	}
-	if s.keypadTouched {
-		if s.keypad {
-			b.WriteString("\x1b=")
-		} else {
-			b.WriteString("\x1b>")
-		}
+	switch s.keypad {
+	case modeOn:
+		b.WriteString("\x1b=")
+	case modeOff:
+		b.WriteString("\x1b>")
 	}
-	// Preserve an in-flight control prefix at the attachment boundary.
-	if s.state == 'c' {
-		b.WriteString("\x1b[")
-		b.Write(s.csi)
-	} else if s.state == 'e' {
-		b.WriteByte(0x1b)
-	} else if s.state == 's' || s.state == 't' {
-		// Do not expose the remainder of an opaque string as terminal commands
-		// when attaching between its opener and terminator. No payload is saved.
-		b.WriteByte(0x1b)
-		b.WriteByte(s.stringKind)
-		if s.state == 't' {
-			b.WriteByte(0x1b)
-		}
+	switch s.state {
+	case inputEscape, inputCSI, inputString:
+		b.Write(s.prefix)
 	}
 	return []byte(b.String())
 }
 
 // MouseEnabled reports whether native mouse capture is requested.
 func (s *InputState) MouseEnabled() bool {
-	for _, on := range s.enabled[:5] {
-		if on {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.current[:trackingModeCount], modeOn)
 }

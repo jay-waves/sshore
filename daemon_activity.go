@@ -3,15 +3,20 @@ package main
 import (
 	"context"
 	"fmt"
+	"iter"
 	"net"
 	"os"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/wire"
 )
 
 const daemonHeartbeatInterval = 20 * time.Second
 const daemonHeartbeatTimeout = 75 * time.Second
+const peerAdvertisementTTL = 24 * time.Hour
+const maxPeerAdvertisements = 512
 
 type activityRequest struct {
 	Metadata  *metadataRequest
@@ -26,14 +31,13 @@ type peerAdvertisement struct {
 type activityReply struct {
 	Metadata *metadataReply
 	Peers    []peerAdvertisement
-	Incoming []peerRecord
-	Active   []string
 	Error    string
 }
 type activityLease struct {
-	request activityRequest
-	pulse   chan struct{}
-	expired chan struct{}
+	shellPath string
+	peer      *peerRecord
+	owner     processIdentity
+	expired   chan struct{}
 }
 
 // All live advertisements and leases belong to the account daemon. No state
@@ -45,65 +49,148 @@ type daemonActivity struct {
 	mu        sync.Mutex
 	leases    map[*activityLease]struct{}
 	peers     map[string]peerAdvertisement
+	pulse     chan struct{}
 	lastPulse time.Time
 }
 
 var accountActivity atomic.Pointer[daemonActivity]
 
-func (s *daemonActivity) add(request activityRequest) *activityLease {
-	l := &activityLease{request: request, pulse: make(chan struct{}, 1), expired: make(chan struct{})}
+func (s *daemonActivity) registerLease(request activityRequest) (*activityLease, error) {
+	if (request.Kind != "incoming" && request.Peer != nil) || (request.Kind != "owner" && request.Owner != (processIdentity{})) {
+		return nil, fmt.Errorf("unexpected activity lease metadata")
+	}
+	l := &activityLease{}
+	switch request.Kind {
+	case "shell":
+		l.shellPath = request.Key
+	case "heartbeat":
+	case "incoming":
+		if request.Peer == nil {
+			return nil, fmt.Errorf("invalid incoming task")
+		}
+		peer := *request.Peer
+		if validateRemoteTask(peer) != nil || peer.State != "active" {
+			return nil, fmt.Errorf("invalid incoming task")
+		}
+		l.peer = &peer
+	case "owner":
+		if request.Owner.PID <= 1 || request.Owner.Start == "" {
+			return nil, fmt.Errorf("invalid activity owner")
+		}
+		l.owner = request.Owner
+		l.expired = make(chan struct{})
+	default:
+		return nil, fmt.Errorf("invalid activity lease kind")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.leases == nil {
 		s.leases = make(map[*activityLease]struct{})
 	}
 	s.leases[l] = struct{}{}
-	return l
+	return l, nil
 }
 func (s *daemonActivity) remove(l *activityLease) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.leases, l)
 }
+
+func (s *daemonActivity) activeShellPaths() map[string]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	paths := make(map[string]bool)
+	for l := range s.leases {
+		if l.shellPath != "" {
+			paths[l.shellPath] = true
+		}
+	}
+	return paths
+}
+
+// The clock closes one channel per heartbeat. Each consumer subscribes to the
+// next heartbeat before doing I/O so one can arrive while it is busy.
+func (s *daemonActivity) heartbeat() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pulse == nil {
+		s.pulse = make(chan struct{})
+	}
+	return s.pulse
+}
+
+// The caller holds the activity lock. All readers and admission checks use the
+// same expiry rule, including when the housekeeping tick has not run yet.
+func (s *daemonActivity) livePeersLocked(now time.Time) iter.Seq2[string, peerAdvertisement] {
+	return func(yield func(string, peerAdvertisement) bool) {
+		for key, peer := range s.peers {
+			if now.Sub(peer.Seen) > peerAdvertisementTTL {
+				delete(s.peers, key)
+				continue
+			}
+			if !yield(key, peer) {
+				return
+			}
+		}
+	}
+}
+
 func (s *daemonActivity) tick(now time.Time) {
 	s.mu.Lock()
-	pulse := now.Sub(s.lastPulse) >= daemonHeartbeatInterval
-	if pulse {
+	if now.Sub(s.lastPulse) >= daemonHeartbeatInterval {
 		s.lastPulse = now
+		if s.pulse != nil {
+			close(s.pulse)
+			s.pulse = nil
+		}
 	}
 	var owners []*activityLease
-	for key, p := range s.peers {
-		if now.Sub(p.Seen) > 24*time.Hour {
-			delete(s.peers, key)
-		}
+	for range s.livePeersLocked(now) {
 	}
 	for l := range s.leases {
-		if l.request.Owner.PID != 0 {
+		if l.owner.PID != 0 {
 			owners = append(owners, l)
-		}
-		if pulse {
-			select {
-			case l.pulse <- struct{}{}:
-			default:
-			}
 		}
 	}
 	s.mu.Unlock()
+	if len(owners) == 0 {
+		return
+	}
+
+	// Read each PID once outside the activity lock. Reuse the snapshot for
+	// expired leases, then retire only those still registered.
+	identities := make(map[int]string, len(owners))
+	expired := owners[:0]
 	for _, l := range owners {
-		identity, err := spawnProcessIdentity(l.request.Owner.PID)
-		if err != nil || identity != l.request.Owner.Start {
-			s.mu.Lock()
-			if _, active := s.leases[l]; active {
-				delete(s.leases, l)
-				close(l.expired)
+		owner := l.owner
+		identity, checked := identities[owner.PID]
+		if !checked {
+			var err error
+			identity, err = spawnProcessIdentity(owner.PID)
+			if err != nil {
+				identity = "" // Registered owners always have a start identity.
 			}
-			s.mu.Unlock()
+			identities[owner.PID] = identity
+		}
+		if identity != owner.Start {
+			expired = append(expired, l)
+		}
+	}
+	if len(expired) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, l := range expired {
+		if _, active := s.leases[l]; active {
+			delete(s.leases, l)
+			close(l.expired)
 		}
 	}
 }
 func (s *daemonActivity) request(r activityRequest) activityReply {
 	if r.Kind == "metadata" && r.Metadata != nil {
-		reply := s.metadata.handle(*r.Metadata)
+		reply := s.handleMetadata(*r.Metadata)
 		return activityReply{Metadata: &reply}
 	}
 
@@ -120,44 +207,42 @@ func (s *daemonActivity) request(r activityRequest) activityReply {
 		if s.peers == nil {
 			s.peers = make(map[string]peerAdvertisement)
 		}
-		if len(s.peers) >= 512 {
-			if _, ok := s.peers[r.Peer.Key]; !ok {
+		now := time.Now()
+		if _, exists := s.peers[r.Peer.Key]; !exists && len(s.peers) >= maxPeerAdvertisements {
+			for range s.livePeersLocked(now) {
+			}
+			if len(s.peers) >= maxPeerAdvertisements {
 				return activityReply{Error: "peer inventory is full"}
 			}
 		}
-		s.peers[r.Peer.Key] = peerAdvertisement{Record: *r.Peer, Seen: time.Now()}
+		s.peers[r.Peer.Key] = peerAdvertisement{Record: *r.Peer, Seen: now}
 	case "peer_remove":
 		if !validRequestID(r.Key) {
 			return activityReply{Error: "invalid peer task key"}
 		}
 		delete(s.peers, r.Key)
-	case "list":
+	case "list", "incoming":
 		reply := activityReply{}
-		incoming := map[string]peerRecord{}
+		now := time.Now()
+		liveOnly := r.Kind == "incoming"
+		peers := map[string]peerAdvertisement{}
 		for l := range s.leases {
-			if l.request.Kind == "shell" {
-				reply.Active = append(reply.Active, l.request.Key)
-			}
-			if l.request.Peer != nil {
-				incoming[l.request.Peer.Key] = *l.request.Peer
+			if peer := l.peer; peer != nil {
+				peers[peer.Key] = peerAdvertisement{Record: *peer, Seen: now}
 			}
 		}
-		for key, p := range s.peers {
-			if time.Since(p.Seen) > 24*time.Hour {
-				delete(s.peers, key)
+		for key, p := range s.livePeersLocked(now) {
+			live, leased := peers[key]
+			if leased && live.Record.UID == p.Record.UID && p.Record.State == "active" {
+				p.Seen = now
+			} else if liveOnly {
+				// Keep the lease's own record when the advertisement disagrees.
 				continue
 			}
-			if previous, ok := incoming[key]; ok && previous.UID == p.Record.UID && p.Record.State == "active" {
-				incoming[key] = p.Record
-				p.Seen = time.Now()
-			}
-			reply.Peers = append(reply.Peers, p)
+			peers[key] = p
 		}
-		for key, p := range incoming {
-			if _, ok := s.peers[key]; !ok {
-				reply.Peers = append(reply.Peers, peerAdvertisement{Record: p, Seen: time.Now()})
-			}
-			reply.Incoming = append(reply.Incoming, p)
+		for _, peer := range peers {
+			reply.Peers = append(reply.Peers, peer)
 		}
 		return reply
 	default:
@@ -167,7 +252,7 @@ func (s *daemonActivity) request(r activityRequest) activityReply {
 }
 func activityRPC(r activityRequest) (activityReply, error) {
 	if !activityAllowed() {
-		readOnly := r.Kind == "list" || r.Kind == "metadata" && r.Metadata != nil && (r.Metadata.Action == "tree_get" || r.Metadata.Action == "tree_list" || r.Metadata.Action == "shell_get" || r.Metadata.Action == "connection_get")
+		readOnly := r.Kind == "list" || r.Kind == "incoming" || r.Kind == "metadata" && r.Metadata != nil && (r.Metadata.Action == "tree_get" || r.Metadata.Action == "tree_list" || r.Metadata.Action == "shell_get" || r.Metadata.Action == "connection_get" || r.Metadata.Action == "connection_select")
 		if !readOnly {
 			return activityReply{}, fmt.Errorf("daemon activity is disabled in recovery mode")
 		}
@@ -211,92 +296,110 @@ func activityDaemon(ctx context.Context) (localShellRecord, error) {
 	return existingDaemonRecord()
 }
 func (s *daemonActivity) serve(c net.Conn, r activityRequest) {
-	if r.Kind != "shell" && r.Kind != "incoming" && r.Kind != "heartbeat" && r.Kind != "owner" {
+	l, err := s.registerLease(r)
+	if err != nil {
 		return
 	}
-	if r.Kind == "incoming" && (r.Peer == nil || validateRemoteTask(*r.Peer) != nil || r.Peer.State != "active") {
-		return
-	}
-	if r.Kind == "owner" && (r.Owner.PID <= 1 || r.Owner.Start == "") {
-		return
-	}
-	l := s.add(r)
-	defer s.remove(l)
+	pulse := s.heartbeat()
 	if writeMessage(c, message{Type: "activity_ready"}) != nil {
+		s.remove(l)
+		_ = c.Close()
 		return
 	}
 	_ = c.SetDeadline(time.Time{})
-	received := make(chan string, 1)
+	done := make(chan struct{})
+	defer func() {
+		_ = c.Close()
+		<-done
+	}()
+	var requestedRelease bool // Published by closing done.
 	go func() {
+		defer close(done)
+		// Read-side termination retires the lease even if a pulse write is blocked.
+		defer s.remove(l)
 		for {
 			_ = c.SetReadDeadline(time.Now().Add(daemonHeartbeatTimeout))
 			m, err := readMessage(c)
 			if err != nil {
-				received <- "closed"
 				return
 			}
 			if m.Type != "alive" {
-				received <- m.Type
+				requestedRelease = m.Type == "release"
 				return
 			}
 		}
 	}()
 	for {
 		select {
-		case kind := <-received:
-			s.remove(l)
-			if kind == "release" {
-				_ = writeMessage(c, message{Type: "released"})
+		case <-done:
+			if requestedRelease {
+				_ = sendLeaseMessage(c, "released")
 			}
 			return
 		case <-l.expired:
 			return
-		case <-l.pulse:
-			_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if writeMessage(c, message{Type: "pulse"}) != nil {
+		case <-pulse:
+			pulse = s.heartbeat()
+			if sendLeaseMessage(c, "pulse") != nil {
 				return
 			}
 		}
 	}
 }
 
+func sendLeaseMessage(c net.Conn, kind string) error {
+	_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	defer c.SetWriteDeadline(time.Time{})
+	return writeMessage(c, message{Type: kind})
+}
+
 // A client has no polling timer. The daemon sends pulses and observes EOF or
 // missed acknowledgements; closing this lease releases activity immediately.
-func leaseActivity(r activityRequest, pulse func()) (func(), error) {
+func leaseActivity(r activityRequest) (func(), error) {
 	if s := accountActivity.Load(); s != nil {
-		if r.Kind == "incoming" && (r.Peer == nil || validateRemoteTask(*r.Peer) != nil || r.Peer.State != "active") {
-			return nil, fmt.Errorf("invalid incoming task")
+		l, err := s.registerLease(r)
+		if err != nil {
+			return nil, err
 		}
-		l := s.add(r)
 		return func() { s.remove(l) }, nil
 	}
-	c, err := openActivity(context.Background(), r)
+	stop, _, err := remoteActivity(context.Background(), r)
+	return stop, err
+}
+
+func remoteActivity(ctx context.Context, r activityRequest) (func(), <-chan struct{}, error) {
+	c, err := openActivity(ctx, r)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	ready, err := readMessage(c)
-	if err != nil || ready.Type != "activity_ready" {
-		c.Close()
-		return nil, fmt.Errorf("activity registration failed: %v", err)
+	stream := wire.OwnTransport(ctx, c, nil)
+	ready, err := readMessage(stream)
+	switch {
+	case ctx.Err() != nil:
+		err = ctx.Err()
+	case err != nil:
+		err = fmt.Errorf("activity registration failed: %w", err)
+	case ready.Type != "activity_ready":
+		err = fmt.Errorf("unexpected activity registration reply: %s", ready.Type)
+	}
+	if err != nil {
+		_ = stream.Close()
+		return nil, nil, err
 	}
 	_ = c.SetDeadline(time.Time{})
 	var writeMu sync.Mutex
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		defer c.Close()
+		defer stream.Close()
 		for {
 			_ = c.SetReadDeadline(time.Now().Add(daemonHeartbeatTimeout))
-			m, err := readMessage(c)
+			m, err := readMessage(stream)
 			if err != nil || m.Type != "pulse" {
 				return
 			}
-			if pulse != nil {
-				pulse()
-			}
 			writeMu.Lock()
-			_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			err = writeMessage(c, message{Type: "alive"})
+			err = sendLeaseMessage(c, "alive")
 			writeMu.Unlock()
 			if err != nil {
 				return
@@ -304,9 +407,13 @@ func leaseActivity(r activityRequest, pulse func()) (func(), error) {
 		}
 	}()
 	return sync.OnceFunc(func() {
+		select {
+		case <-finished:
+			return
+		default:
+		}
 		writeMu.Lock()
-		_ = c.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		err := writeMessage(c, message{Type: "release"})
+		err := sendLeaseMessage(c, "release")
 		writeMu.Unlock()
 		if err == nil {
 			select {
@@ -314,36 +421,9 @@ func leaseActivity(r activityRequest, pulse func()) (func(), error) {
 			case <-time.After(5 * time.Second):
 			}
 		}
-		c.Close()
-	}), nil
-}
-
-func startDaemonHeartbeat(ctx context.Context, pulse func()) (func(), error) {
-	if s := accountActivity.Load(); s != nil {
-		ctx, cancel := context.WithCancel(ctx)
-		l := s.add(activityRequest{Kind: "heartbeat"})
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			defer s.remove(l)
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-l.pulse:
-					if pulse != nil {
-						pulse()
-					}
-				}
-			}
-		}()
-		return func() { cancel(); <-done }, nil
-	}
-	stop, err := leaseActivity(activityRequest{Kind: "heartbeat"}, pulse)
-	if err != nil {
-		return nil, err
-	}
-	return stop, nil
+		_ = stream.Close()
+		<-finished
+	}), finished, nil
 }
 
 func activityAllowed() bool { return os.Getenv("SSHORE_DISABLED") != "1" }
@@ -354,7 +434,7 @@ func beginCommandActivity() (func(), error) {
 	if !activityAllowed() {
 		return func() {}, nil
 	}
-	return leaseActivity(activityRequest{Kind: "heartbeat"}, nil)
+	return leaseActivity(activityRequest{Kind: "heartbeat"})
 }
 func withDaemonActivity(execute func() (int, error)) (int, error) {
 	stop, err := beginCommandActivity()

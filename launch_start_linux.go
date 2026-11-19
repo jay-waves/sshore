@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/wire"
 	"golang.org/x/sys/unix"
 )
 
@@ -76,15 +77,15 @@ type shellSelection struct {
 func selectHostedShell(name, mode string) (shellSelection, error) {
 	attach := mode == "attach" || mode == "resume"
 	if name != "" {
-		id, err := resolveSession(name)
+		task, err := resolveHostedShell(name, "")
 		if err != nil {
 			return shellSelection{}, err
 		}
-		if id != "" {
+		if task.Instance != "" {
 			if mode == "new" || mode == "spawn" {
 				return shellSelection{}, fmt.Errorf("shell %s already exists; use sshore attach HOST:%s", name, name)
 			}
-			return shellSelection{taskIdentitySelection: taskIdentitySelection{name: name, uid: id}, existing: true}, nil
+			return shellSelection{taskIdentitySelection: taskIdentitySelection{name: task.Name, uid: task.Instance}, existing: true}, nil
 		}
 	}
 	if attach {
@@ -133,23 +134,26 @@ func bridgePrepared(name, mode, executable string, gate *os.File, readyMode stri
 			return err
 		}
 	}
-	name = selected.uid
-	conn, err := dialHostedTask(context.Background(), name, time.Second)
+	record, err := existingDaemonRecord()
+	if err != nil {
+		return err
+	}
+	record.UID = selected.uid
+	if os.Getenv("SSHORE_DIRECT_TRANSPORT") == "1" {
+		if err := checkPeerVersion(record.Version, "daemon"); err != nil {
+			return err
+		}
+		gate.Close()
+		return writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode, LocalRequest: &localDaemonRequest{Record: record}})
+	}
+	conn, err := dialLocalSessionUntil(record, time.Now().Add(time.Second))
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 	gate.Close()
-	if os.Getenv("SSHORE_DIRECT_TRANSPORT") == "1" {
-		record, err := existingDaemonRecord()
-		if err != nil {
-			return err
-		}
-		record.UID = name
-		return writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode, LocalRequest: &localDaemonRequest{Record: record}})
-	}
 	if mode == "spawn" {
-		return bridgeSpawn(name, conn, readyMode)
+		return bridgeSpawnTransport(record.UID, conn, readyMode, &wire.Pipe{Reader: os.Stdin, Writer: os.Stdout})
 	}
 	if readyMode != "" {
 		if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
@@ -170,39 +174,23 @@ func listSessions() error {
 	if err != nil {
 		return err
 	}
-	records, err := hostedTaskRecords()
+	rows, err := hostedShells("sessions")
 	if err != nil {
 		return err
 	}
 	out := os.Stdout
 	count := 0
-	for _, task := range records {
-		c, err := dialHostedTask(context.Background(), task.ID, time.Second)
-		if err != nil {
+	for _, shell := range rows {
+		if shell.State == "unavailable" {
 			continue
-		}
-		_ = c.SetDeadline(time.Now().Add(time.Second))
-		err = writeMessage(c, message{Type: "status"})
-		if err != nil {
-			c.Close()
-			continue
-		}
-		m, err := readMessage(c)
-		c.Close()
-		if err != nil || m.Type != "session" {
-			continue
-		}
-		state := "detached"
-		if m.Attached {
-			state = "attached"
 		}
 		if count > 0 {
 			fmt.Fprintln(out)
 		}
 		count++
-		fmt.Fprintf(out, "%s [%s]%s\n", sessionLabel(m, task.Name), state, sessionAge(m.AgeSeconds))
-		fmt.Fprintf(out, "  %s · %s\n", cleanText(m.Foreground), cleanText(m.Directory))
-		fmt.Fprint(out, sessionProcessTree("/proc", m.PID))
+		fmt.Fprintf(out, "%s [%s]%s\n", shell.Name, shell.State, sessionAge(shell.Age))
+		fmt.Fprintf(out, "  %s · %s\n", shell.Foreground, shell.Directory)
+		fmt.Fprint(out, shell.ProcessTree)
 	}
 	if count == 0 {
 		fmt.Fprintln(out, "No shells")
@@ -213,44 +201,23 @@ func listSessions() error {
 	return listRemoteTasks()
 }
 
-// Candidates are read-only status probes in this account's current runtime
-// directory. Selection is advisory: the bridge and daemon recheck existence and
-// exclusive attachment after the user answers, without holding the setup lock.
-func detachedSessionNames() ([]string, error) {
-	records, err := hostedTaskRecords()
+// Keep each label with the instance it represents until selection is complete.
+func detachedHostedShells() ([]sessionTarget, error) {
+	rows, err := hostedShells("health")
 	if err != nil {
 		return nil, err
 	}
-	names := []string{}
-	deadline := time.Now().Add(2 * time.Second)
-	for _, task := range records {
-		if time.Until(deadline) <= 0 {
-			return nil, fmt.Errorf("session lookup timed out")
-		}
-		c, err := dialHostedTask(context.Background(), task.ID, min(time.Second, time.Until(deadline)))
-		if err != nil {
-			continue
-		}
-		probeDeadline := time.Now().Add(time.Second)
-		if deadline.Before(probeDeadline) {
-			probeDeadline = deadline
-		}
-		_ = c.SetDeadline(probeDeadline)
-		err = writeMessage(c, message{Type: "status"})
-		var m message
-		if err == nil {
-			m, err = readMessage(c)
-		}
-		c.Close()
-		if err == nil && m.Type == "session" && !m.Attached && m.PID > 0 {
-			names = append(names, sessionLabel(m, task.Name))
-			if len(names) > 128 {
-				return nil, fmt.Errorf("too many shells to select; use sshore list HOST, then sshore attach HOST:ID")
-			}
+	var targets []sessionTarget
+	for _, shell := range rows {
+		if shell.State == "detached" {
+			targets = append(targets, sessionTarget{Name: shell.Name, Instance: shell.Instance})
 		}
 	}
-	sort.Strings(names)
-	return names, nil
+	if len(targets) > 128 {
+		return nil, fmt.Errorf("too many shells to select; use sshore list HOST, then sshore attach HOST:ID")
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].Name < targets[j].Name })
+	return targets, nil
 }
 
 func detachHelper() error {
@@ -282,36 +249,18 @@ func (s *remoteShell) sessionTargets(request message) message {
 	current := s.name
 	s.mu.Unlock()
 	reply := message{Type: "session_targets", Action: request.Action, Name: current}
-	if request.Action == "new" {
-		occupied, err := occupiedObjectNames("")
-		if err != nil {
-			reply.Error = err.Error()
-			return reply
-		}
-		for _, name := range automaticSessionNames() {
-			if !occupied[name] {
-				reply.Names = []string{name}
-				return reply
-			}
-		}
-		reply.Error = "no automatic shell names available"
-		return reply
-	}
-	names, err := detachedSessionNames()
+	rows, err := detachedHostedShells()
 	if err != nil {
 		reply.Error = err.Error()
 		return reply
 	}
-	if request.Action == "select" {
-		for _, name := range names {
-			if name == request.Name {
-				reply.Names = []string{name}
-				return reply
-			}
+	for _, shell := range rows {
+		if request.Action != "select" || request.Name == shell.Name {
+			reply.Targets = append(reply.Targets, shell)
 		}
-		reply.Error = fmt.Sprintf("shell %s is unavailable", cleanText(request.Name))
-		return reply
 	}
-	reply.Names = names
+	if request.Action == "select" && len(reply.Targets) != 1 {
+		reply.Error = fmt.Sprintf("shell %s is unavailable", cleanText(request.Name))
+	}
 	return reply
 }

@@ -384,7 +384,7 @@ func TestCertificateAgentAuthentication(t *testing.T) {
 	}
 	client.Close()
 	cfg := &connectionConfig{values: map[string][]string{"pubkeyacceptedalgorithms": {cryptossh.CertAlgoED25519v01}}}
-	if !cfg.acceptsSignature(certificate, cryptossh.KeyAlgoED25519) || cfg.acceptsSignature(signer.PublicKey(), cryptossh.KeyAlgoED25519) {
+	if !allowsSignature(cfg.signatureAlgorithms(), certificate.Type(), cryptossh.KeyAlgoED25519) || allowsSignature(cfg.signatureAlgorithms(), signer.PublicKey().Type(), cryptossh.KeyAlgoED25519) {
 		t.Fatal("certificate algorithm policy lost")
 	}
 }

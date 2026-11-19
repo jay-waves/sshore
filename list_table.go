@@ -14,8 +14,7 @@ import (
 )
 
 type taskTableRow struct {
-	order                                                    uint64
-	code, alias, kind, owner, target, state, detail, checked string
+	uid, code, alias, kind, owner, target, state, detail, checked string
 }
 
 func printTaskInventory(inv inventory) {
@@ -42,7 +41,7 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, color bool) {
 		if currentLocal != "" && s.identity == currentLocal && state == "attached" {
 			state += " (current)"
 		}
-		rows = append(rows, taskTableRow{s.order, s.ShortID, s.Name, shellTaskKind(s.Temporary), "local", "-", state, s.Directory, "now"})
+		rows = append(rows, taskTableRow{taskUID(s.identity), s.ShortID, s.Name, shellTaskKind(s.Temporary), "local", "-", state, s.Directory, "now"})
 	}
 	for _, s := range inv.Shells {
 		if s.State == "renamed" || (s.Historical && endedShellState(s.State)) {
@@ -68,12 +67,10 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, color bool) {
 				state += " (unconfirmed)"
 			}
 		}
-		rows = append(rows, taskTableRow{s.order, s.ShortID, s.Name, shellTaskKind(s.Temporary), host, "-", state, s.Directory, checked})
+		rows = append(rows, taskTableRow{taskUID(s.identity(inv.Host)), s.ShortID, s.Name, shellTaskKind(s.Temporary), host, "-", state, s.Directory, checked})
 	}
 	for _, r := range inv.Resources {
-		if r.Kind == "" {
-			r.Kind, _, _ = strings.Cut(r.ID, "/")
-		}
+		kind, name := r.kindAndName()
 		host := r.Host
 		if host == "" {
 			host = "-"
@@ -86,20 +83,15 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, color bool) {
 		if r.Worker == "exited" {
 			checked = "-"
 		}
-		rows = append(rows, taskTableRow{r.order, r.ShortID, strings.TrimPrefix(r.ID, r.Kind+"/"), r.Kind, owner, host, r.Worker, resourceListDetail(r), checked})
+		rows = append(rows, taskTableRow{taskUID(r.Identity), r.ShortID, name, kind, owner, host, r.Worker, resourceListDetail(r), checked})
 	}
 	for _, p := range inv.Peers {
-		name := p.ID
-		if strings.HasPrefix(name, "peer/") {
-			if _, resource, ok := strings.Cut(strings.TrimPrefix(name, "peer/"), "/"); ok {
-				name = resource
-			}
-		}
+		kind, name, _ := strings.Cut(peerResourceID(p.ID), "/")
 		target := inv.Host
 		if target == "" {
 			target = "local"
 		}
-		rows = append(rows, taskTableRow{p.order, p.ShortID, peerName(name), peerKind(name), p.Manager, target, p.State + " (read-only)", p.Detail, "-"})
+		rows = append(rows, taskTableRow{taskUID(peerTaskIdentity(p)), p.ShortID, name, kind, p.Manager, target, p.State + " (read-only)", p.Detail, "-"})
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].owner != rows[j].owner {
@@ -111,13 +103,13 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, color bool) {
 			}
 			return rows[i].owner < rows[j].owner
 		}
-		if rows[i].order == 0 {
+		if rows[i].uid == "" {
 			return false
 		}
-		if rows[j].order == 0 {
+		if rows[j].uid == "" {
 			return true
 		}
-		return rows[i].order < rows[j].order
+		return rows[i].uid < rows[j].uid
 	})
 	if len(rows) == 0 {
 		fmt.Fprintln(out, "No tasks. Create a local shell with sshore launch.")
@@ -169,7 +161,7 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, color bool) {
 			if checked == "" {
 				cells = append(cells, r.checked)
 			}
-			cells = append(cells, compactTaskDetail(r.detail, -1))
+			cells = append(cells, r.detail)
 			table = append(table, cells)
 		}
 		writeTaskTable(out, table, color, screenWidth)
@@ -189,17 +181,21 @@ func compactTaskDetail(detail string, limit int) string {
 	if detail == "" {
 		return "-"
 	}
-	if limit < 0 || (readline.Runes{}).WidthAll([]rune(detail)) <= limit {
+	if limit < 0 {
 		return detail
 	}
-	if limit == 0 {
-		return ""
-	}
 	width := 0
+	cut := len(detail)
 	for i, r := range detail {
 		width += (readline.Runes{}).Width(r)
-		if width > limit-1 {
-			return detail[:i] + "…"
+		if width >= limit && cut == len(detail) {
+			cut = i
+		}
+		if width > limit {
+			if limit == 0 {
+				return ""
+			}
+			return detail[:cut] + "…"
 		}
 	}
 	return detail
@@ -227,47 +223,43 @@ func shellCheckedAge(checked, now time.Time) string {
 }
 
 func writeTaskTable(out io.Writer, table [][]string, color bool, screenWidth int) {
-	widths := make([]int, len(table[0]))
-	for _, row := range table {
-		for j := range row {
-			row[j] = cleanText(row[j])
-			widths[j] = max(widths[j], (readline.Runes{}).WidthAll([]rune(row[j])))
-		}
-	}
+	last := len(table[0]) - 1
+	widths := make([]int, last)
+	aliasLimit := -1
 	if screenWidth > 0 && table[0][0] == "ID" {
-		aliasLimit := min(32, max(0, screenWidth/4-9))
-		widths[0] = len("ID")
-		for i := range table {
-			if i > 0 {
-				code, alias, ok := strings.Cut(table[i][0], " (")
-				if ok {
-					alias = strings.TrimSuffix(alias, ")")
-					table[i][0] = code
+		aliasLimit = min(32, max(0, screenWidth/4-9))
+	}
+	for i, row := range table {
+		for j, cell := range row[:last] {
+			cell = cleanText(cell)
+			if j == 0 && i > 0 && aliasLimit >= 0 {
+				if code, alias, ok := strings.Cut(cell, " ("); ok {
+					cell = code
 					if aliasLimit > 0 {
-						table[i][0] += " (" + compactTaskDetail(alias, aliasLimit) + ")"
+						cell += " (" + compactTaskDetail(strings.TrimSuffix(alias, ")"), aliasLimit) + ")"
 					}
 				}
 			}
-			widths[0] = max(widths[0], (readline.Runes{}).WidthAll([]rune(table[i][0])))
+			row[j] = cell
+			widths[j] = max(widths[j], (readline.Runes{}).WidthAll([]rune(cell)))
 		}
 	}
 	// Task IDs and state stay intact; DETAIL uses the remaining terminal width.
+	columns, remaining := last+1, -1
 	if screenWidth > 0 {
-		last := len(widths) - 1
-		remaining := screenWidth
-		for _, width := range widths[:last] {
+		remaining = screenWidth
+		for _, width := range widths {
 			remaining -= width + 2
 		}
-		for i := range table {
-			if remaining <= 0 {
-				table[i] = table[i][:last]
-			} else {
-				table[i][last] = compactTaskDetail(table[i][last], remaining)
-			}
+		if remaining <= 0 {
+			columns = last
 		}
 	}
 	for i, row := range table {
-		for j, cell := range row {
+		for j, cell := range row[:columns] {
+			if j == last {
+				cell = compactTaskDetail(cell, remaining)
+			}
 			level := termui.Color("")
 			if i == 0 || j == 0 || j >= 4 || cell == "-" {
 				level = "90"
@@ -281,29 +273,12 @@ func writeTaskTable(out io.Writer, table [][]string, color bool, screenWidth int
 				}
 			}
 			fmt.Fprint(out, termui.Format(color && level != "", level, "%s", cell))
-			if j < len(row)-1 {
+			if j < columns-1 {
 				fmt.Fprint(out, strings.Repeat(" ", widths[j]-(readline.Runes{}).WidthAll([]rune(cell))+2))
 			}
 		}
 		fmt.Fprintln(out)
 	}
-}
-
-func numberInventoryPeers(inv *inventory) error {
-	keys := []string{}
-	for _, p := range inv.Peers {
-		keys = append(keys, peerTaskIdentity(p))
-	}
-	ids, err := assignTaskIDs(keys)
-	if err != nil {
-		return err
-	}
-	for i := range inv.Peers {
-		p := &inv.Peers[i]
-		id := ids[peerTaskIdentity(*p)]
-		p.order, p.ShortID = id.order, id.code
-	}
-	return nil
 }
 
 func peerTaskIdentity(p peerView) string {
@@ -353,22 +328,14 @@ func showConnectedTasks(control *smux.Stream, o options) error {
 		}
 	}
 	inv.Shells = shells
-	records, err := collectLocalResources(o.host)
+	resources, err := collectLocalResources(o.host, true)
 	if err != nil {
 		return err
 	}
-	inv.Resources = append(inv.Resources, inspectResources(records)...)
+	inv.Resources = append(inv.Resources, resources...)
 	// A local resource may also advertise itself as a peer on this host.
-	inv.Peers = excludeLocalResourcePeers(inv.Peers, records)
-	if err := numberInventoryShells(&inv); err != nil {
-		return err
-	}
-	if err := numberInventoryResources(&inv); err != nil {
-		return err
-	}
-	if err := numberInventoryPeers(&inv); err != nil {
-		return err
-	}
+	inv.Peers = excludeLocalResourcePeers(inv.Peers, resources)
+	inv.setTaskReferences()
 	if len(inv.Shells)+len(inv.Resources)+len(inv.Peers) > 0 {
 		fmt.Fprintln(os.Stderr, "Background tasks:")
 		writeTaskInventory(os.Stderr, inv)
@@ -379,22 +346,13 @@ func showConnectedTasks(control *smux.Stream, o options) error {
 	return nil
 }
 
-func excludeLocalResourcePeers(peers []peerView, records []resourceRecord) []peerView {
-	localIDs := make(map[string]struct{}, len(records))
-	for _, r := range records {
-		localIDs[r.Kind+"/"+r.Name] = struct{}{}
-	}
-	manager := taskManagerLabel()
-	filtered := peers[:0]
-	for _, p := range peers {
-		_, resourceID, wrapped := strings.Cut(strings.TrimPrefix(p.ID, "peer/"), "/")
-		_, duplicate := localIDs[resourceID]
-		duplicate = wrapped && strings.HasPrefix(p.ID, "peer/") && duplicate
-		if p.Manager != manager || !duplicate {
-			filtered = append(filtered, p)
+func peerResourceID(id string) string {
+	if rest, wrapped := strings.CutPrefix(id, "peer/"); wrapped {
+		if _, resource, ok := strings.Cut(rest, "/"); ok {
+			return resource
 		}
 	}
-	return filtered
+	return id
 }
 
 func shellTaskKind(temporary bool) string {
@@ -407,11 +365,6 @@ func shellTaskKind(temporary bool) string {
 func peerKind(name string) string {
 	kind, _, _ := strings.Cut(name, "/")
 	return kind
-}
-
-func peerName(name string) string {
-	_, alias, _ := strings.Cut(name, "/")
-	return alias
 }
 
 func taskDisplayID(code, alias string) string {

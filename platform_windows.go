@@ -92,12 +92,12 @@ func daemonProcessWaiter(pid int) (func(time.Time) error, func(), error) {
 
 func prepareFTPPaths(o *ftpOptions) (func(), error) {
 	cleanup := func() {}
-	if o.mountpoint != "" {
-		if len(o.mountpoint) == 2 && o.mountpoint[1] == ':' {
+	if o.Mountpoint != "" {
+		if len(o.Mountpoint) == 2 && o.Mountpoint[1] == ':' {
 			return cleanup, nil
 		}
-		p, e := absoluteMountPath(o.mountpoint)
-		o.mountpoint = p
+		p, e := absoluteLocalPath(o.Mountpoint)
+		o.Mountpoint = p
 		return cleanup, e
 	}
 	drives, e := windows.GetLogicalDrives()
@@ -106,7 +106,7 @@ func prepareFTPPaths(o *ftpOptions) (func(), error) {
 	}
 	for c := byte('Z'); c >= 'D'; c-- {
 		if drives&(1<<uint(c-'A')) == 0 {
-			o.mountpoint = string(c) + ":"
+			o.Mountpoint = string(c) + ":"
 			return cleanup, nil
 		}
 	}
@@ -185,6 +185,10 @@ func serverCommand(args []string) error {
 	return fmt.Errorf("%s runs on the Linux server, inside the remote shell", args[0])
 }
 
+func requestOperations(command string, _ []operation) error {
+	return serverCommand([]string{command})
+}
+
 func systemMachineID() string {
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Cryptography`, registry.QUERY_VALUE|registry.WOW64_64KEY)
 	if err != nil {
@@ -199,7 +203,9 @@ func hostedShellInventory(detailed bool) (inventory, error) {
 	return emptyInventory(), nil
 }
 
-func hostedShellTasks() ([]selectedTask, error) { return nil, nil }
+func hostedExitHistory() []exitView { return []exitView{} }
+
+func hostedShells(string) ([]shellView, error) { return nil, nil }
 
 func newDaemonServices(tasks *daemonTasks) daemonServices { return nil }
 
@@ -224,34 +230,31 @@ func checkPlatform() error {
 
 func resetRuntimeState([]string) error { return nil }
 
-func prepareReplacement(target string) (string, error) {
-	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-		return "", err
-	}
+func validateInstallTarget(target string) error {
 	for _, path := range []string{filepath.Dir(target), target} {
 		info, err := os.Lstat(path)
 		if errors.Is(err, os.ErrNotExist) && path == target {
 			continue
 		}
 		if err != nil {
-			return "", err
+			return err
 		}
 		name, err := windows.UTF16PtrFromString(path)
 		if err != nil {
-			return "", err
+			return err
 		}
 		attributes, err := windows.GetFileAttributes(name)
 		if err != nil {
-			return "", err
+			return err
 		}
 		if attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-			return "", fmt.Errorf("installation path must not be a reparse point")
+			return fmt.Errorf("installation path must not be a reparse point")
 		}
 		if info.Mode()&os.ModeSymlink != 0 || path == target && !info.Mode().IsRegular() || path != target && !info.IsDir() {
-			return "", fmt.Errorf("installation target must be a regular executable in a real directory")
+			return fmt.Errorf("installation target must be a regular executable in a real directory")
 		}
 	}
-	return stageReplacement(target)
+	return nil
 }
 
 func spawnProcessName(pid int) (string, error) {

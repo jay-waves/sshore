@@ -144,25 +144,30 @@ func loopback(port int) string { return net.JoinHostPort("127.0.0.1", strconv.It
 
 // Remote helper selection is application policy; the engine receives opaque command text.
 func forwardRemoteCommand(f forwardConfig) string {
-	if f.ApprovalID != "" {
-		return approvedForwardCommand(f)
+	if f.ApprovalID == "" {
+		return remoteHelperCommand(f.Host, f.Server, "task-watch", forwardReadyMarker)
 	}
-	return forwardWatchCommand(f.Host, f.Server)
+	args := []string{f.Session, strconv.Itoa(f.ResumePID), f.ApprovalID}
+	if f.Instance != "" {
+		args = append(args, f.Instance)
+	}
+	return remoteHelperCommand(f.Host, f.Server, "forward-watch", "", args...)
 }
 
 func runForwardForeground(f forwardConfig) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	fmt.Fprintf(os.Stderr, "Starting %s (%s); Ctrl-C stops it.\n", describeForward(f.Port, f.Target, f.Reverse), cleanText(f.Host))
-	return runForwardTransportForeground(ctx, sshExecutable(), f, os.Stdin, os.Stdout, os.Stderr)
+	return runForwardTransportForeground(ctx, sshExecutable(), f, os.Stderr)
 }
 
 func runEndpointForward(args []string) (int, error) {
 	if os.Getenv("SSHORE_SOCKET") != "" {
-		if _, err := remoteForwardRequest(args); err != nil {
+		op, err := remoteForwardRequest(args)
+		if err != nil {
 			return 2, err
 		}
-		return 0, serverCommand(append([]string{"forward"}, args...))
+		return 0, requestOperations("forward", []operation{op})
 	}
 	f, foreground, err := parseForwardCommand(args)
 	if err != nil {
@@ -186,7 +191,7 @@ func runEndpointForward(args []string) (int, error) {
 			remote = f.Port
 		}
 		termui.Log(os.Stdout, termui.Info, "Remote %s:%d. Submit local port to forward.\n", cleanText(f.Host), remote)
-		port, err := readSelectedPort(input, label, "", "forward cancelled")
+		port, err := readForwardPort(input, label)
 		if err != nil {
 			return 1, err
 		}
@@ -270,50 +275,43 @@ func startForwardSession(f forwardConfig) (int, error) {
 	if e := validateForwardConfig(f); e != nil {
 		return 2, e
 	}
-	return startResourceBackground(resourceConfig{Forward: &f}, "forward")
+	return startResourceBackground(resourceConfig{Forward: &f})
 }
 
 // Reconnect only an already-established, explicitly opted-in local forward.
 // Each retry owns a new transport; application TCP connections are not resumed.
-func runForward(f forwardConfig, s *resourceService) (int, error) {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+func runForward(parent context.Context, f forwardConfig, s *resourceService, onReady func() error) (int, error) {
+	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	var stopped chan error
-	watcherDone := make(chan struct{})
-	go func() {
-		defer close(watcherDone)
-		select {
-		case stopped = <-s.stop:
-			cancel()
-		case <-s.abandoned:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-	defer func() {
-		cancel()
-		<-watcherDone
-		if stopped != nil {
-			stopped <- nil
-		}
-	}()
-	return runForwardTransport(ctx, forwardTransport{
-		Retries:     f.Retries,
-		Description: describeForward(f.Port, f.Target, f.Reverse),
-		Log:         s.logWriter(),
-		Start: func(ctx context.Context, initial bool, diagnostic io.Writer) (*forwardConnection, error) {
+	s.record.Detail = describeForward(f.Port, f.Target, f.Reverse)
+	advertisement, err := json.Marshal(s.peerTask())
+	if err != nil {
+		return 1, err
+	}
+	advertisement = append(advertisement, '\n')
+	attempt := func(initial bool, ready func() error) (bool, error) {
+		return runForwardAttempt(ctx, s, advertisement, ready, func(ctx context.Context, diagnostic io.Writer) (*forwardConnection, error) {
 			return startForwardConnection(ctx, f, s, initial, diagnostic)
-		},
-		Ready: func() error {
-			s.record.Detail = describeForward(f.Port, f.Target, f.Reverse)
-			return s.ready("", "")
-		},
-		Status: s.setTransport,
-		Heartbeat: func() ([]byte, error) {
-			data, err := json.Marshal(s.peerTask())
-			return append(data, '\n'), err
-		},
-	})
+		})
+	}
+	established, err := attempt(true, onReady)
+	for retry := 1; established && retry <= f.Retries && ctx.Err() == nil; retry++ {
+		s.setTransport("reconnecting", err)
+		delay := time.Second * time.Duration(1<<min(retry-1, 5))
+		fmt.Fprintf(s.logWriter(), "[sshore] Forward disconnected; TCP connections lost. Retry %d/%d in %s.\n", retry, f.Retries, delay)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return 0, nil
+		case <-timer.C:
+		}
+		_, err = attempt(false, nil)
+	}
+	if ctx.Err() != nil {
+		return 0, nil
+	}
+	return 1, err
 }
 
 func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceService, initial bool, diagnostic io.Writer) (*forwardConnection, error) {
@@ -321,10 +319,9 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 		return startRoutedForward(ctx, f)
 	}
 	connection := forwardSSHOptions(f, forwardRemoteCommand(f))
-	connection.Environment, connection.Directory = s.sshEnvironment(), s.directory
+	connection.Environment, connection.Directory = s.baseEnvironment(), s.directory
 	if initial {
-		connection.Confirm = brokerSSHConfirmation(connection.Environment)
-		connection.Secret = brokerSSHSecret(connection.Environment)
+		connection.Confirm, connection.Secret = s.config.Auth.callbacks()
 	} else {
 		connection.Args = append([]string{"-o", "StrictHostKeyChecking=yes"}, connection.Args...)
 	}
@@ -332,32 +329,7 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 	if err != nil {
 		return nil, err
 	}
-	return &forwardConnection{Input: process.Stdin(), Output: process, Wait: process.Wait, Close: process.Close}, nil
-}
-
-func forwardWatchCommand(host, server string) string {
-	return forwardHelperCommand(host, server) + "printf '%s\\n' " + shellQuote(forwardReadyMarker) +
-		"; \"$server\" task-watch " + shellQuote(version) + " || exec cat >/dev/null"
-}
-
-func approvedForwardCommand(f forwardConfig) string {
-	command := forwardHelperCommand(f.Host, f.Server) + "exec \"$server\" forward-watch " + shellQuote(version) + " " + shellQuote(f.Session) + fmt.Sprintf(" %d ", f.ResumePID) + shellQuote(f.ApprovalID)
-	if f.Instance != "" {
-		command += " " + shellQuote(f.Instance)
-	}
-	return command
-}
-
-func forwardHelperCommand(host, server string) string {
-	if server == "" {
-		server = "sshore"
-	}
-	command := "unset SSHORE_SOCKET SSHORE_CONFIRM_ADDR SSHORE_CONFIRM_TOKEN; server=" + shellQuote(server) + `; if command -v "$server" >/dev/null 2>&1; then server=$(command -v "$server"); `
-	if server == "sshore" {
-		command += `else server="$HOME/.local/bin/sshore"; `
-	}
-	return command + `fi; if [ "$("$server" --version 2>/dev/null)" != ` + shellQuote("sshore "+version) +
-		` ]; then printf '%s\n' ` + shellQuote(remoteVersionHelp(host)) + ` >&2; exit 1; fi; `
+	return &forwardConnection{Reader: process, Writer: process, Wait: process.Wait, close: process.Close}, nil
 }
 
 var errForwardRetries = errors.New("--retries must be between 0 and 10")
@@ -401,22 +373,20 @@ func forwardSSHOptions(c forwardConfig, command string) sshio.Options {
 }
 
 // Foreground forwards own their connection until explicit cancellation or loss.
-func runForwardTransportForeground(ctx context.Context, executable string, c forwardConfig, in io.Reader, out, diagnostic io.Writer) (int, error) {
+func runForwardTransportForeground(ctx context.Context, executable string, c forwardConfig, diagnostic io.Writer) (int, error) {
 	options := forwardSSHOptions(c, "")
 	options.Executable, options.Confirm, options.Secret = executable, confirmSSHHost, promptSSHSecret
+	options.Diagnostic = diagnostic
 	connection, err := sshio.Dial(ctx, options)
 	if err != nil {
-		return 1, err
-	}
-	defer connection.Close()
-	stop := context.AfterFunc(ctx, func() { connection.Close() })
-	defer stop()
-	if err := connection.StartForwarding(); err != nil {
 		if ctx.Err() != nil {
 			return 0, nil
 		}
 		return 1, err
 	}
+	defer connection.Close()
+	stop := context.AfterFunc(ctx, func() { connection.Close() })
+	defer stop()
 	err = connection.Wait()
 	if ctx.Err() != nil {
 		return 0, nil
@@ -437,141 +407,95 @@ func validRetries(n int) bool { return n >= 0 && n <= 10 }
 
 const forwardReadyMarker = "sshore-forward-ready"
 
-// forwardTransport joins SSH attempts, readiness, heartbeat and cancellation.
-// Command returns a fresh, context-bound command; all hooks and Log are required.
-// Heartbeat returns a complete wire record once per attempt, after readiness.
-// The caller owns its schema; the engine writes the bytes unchanged.
-type forwardTransport struct {
-	Retries     int
-	Description string
-	Log         io.Writer
-	Start       func(context.Context, bool, io.Writer) (*forwardConnection, error)
-	Ready       func() error
-	Status      func(string, error)
-	Heartbeat   func() ([]byte, error)
-}
-
-// runForwardTransport retries established forwards only. Cancellation closes this transport,
-// while existing application TCP connections are never replayed.
-func runForwardTransport(ctx context.Context, runtime forwardTransport) (int, error) {
-	started := false
-	for attempt := 0; ; attempt++ {
-		code, err := runAttempt(ctx, runtime, attempt == 0, &started)
-		if ctx.Err() != nil {
-			return 0, nil
-		}
-		if err == nil || attempt >= runtime.Retries || !started {
-			return code, err
-		}
-		runtime.Status("reconnecting", err)
-		delay := retryDelay(attempt)
-		fmt.Fprintf(runtime.Log, "[sshore] Forward disconnected; TCP connections lost. Retry %d/%d in %s.\n", attempt+1, runtime.Retries, delay)
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return 0, nil
-		case <-timer.C:
-		}
-	}
-}
-func retryDelay(attempt int) time.Duration {
-	return time.Second * time.Duration(1<<min(attempt, 5))
-}
-
 type forwardConnection struct {
-	Input  io.WriteCloser
-	Output io.Reader
-	Wait   func() error
-	Close  func() error
+	io.Reader
+	io.Writer
+	Wait  func() error
+	close func() error
 }
 
-func runAttempt(parent context.Context, runtime forwardTransport, initial bool, started *bool) (int, error) {
+// Close interrupts both stream I/O and Wait.
+func (c *forwardConnection) Close() error { return c.close() }
+
+func runForwardAttempt(parent context.Context, s *resourceService, advertisement []byte, onReady func() error, open func(context.Context, io.Writer) (*forwardConnection, error)) (bool, error) {
 	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
 	var diagnostics diagnosticsTail
-	connection, e := runtime.Start(ctx, initial, io.MultiWriter(runtime.Log, &diagnostics))
-	if e != nil {
-		return 1, e
+	connection, err := open(ctx, io.MultiWriter(s.logWriter(), &diagnostics))
+	if err != nil {
+		return false, err
 	}
-	input, output := connection.Input, connection.Output
-	done := make(chan struct{})
-	var waitErr error
-	go func() { waitErr = connection.Wait(); close(done) }()
+	stream := wire.OwnTransport(ctx, connection, nil)
 	var heartbeat sync.WaitGroup
-	stop := sync.OnceFunc(func() {
+	defer func() {
 		cancel(nil)
-		// Abort before joining: stdin.Close can wait behind a blocked write.
-		connection.Close()
-		<-done
+		_ = stream.Close()
 		heartbeat.Wait()
-	})
-	defer stop()
+	}()
 	// Read only the bounded protocol marker. Unexpected login output is an error.
-	marker, e := bufio.NewReader(io.LimitReader(output, int64(len(forwardReadyMarker)+2))).ReadString('\n')
-	if e != nil {
-		stop()
+	marker, readErr := bufio.NewReader(io.LimitReader(stream, int64(len(forwardReadyMarker)+2))).ReadString('\n')
+	startupErr := readErr
+	switch {
+	case readErr != nil:
+	case marker != forwardReadyMarker+"\n":
+		startupErr = fmt.Errorf("unexpected forward startup response: %q", termui.CleanText(marker))
+	default:
+		s.setTransport("connected", nil)
+		if onReady != nil {
+			startupErr = onReady()
+		}
+	}
+	if startupErr != nil {
+		// A failed handshake can leave the peer waiting for input.
+		cancel(startupErr)
+	} else {
+		heartbeat.Go(func() {
+			activity := accountActivity.Load()
+			if activity == nil {
+				cancel(errors.New("forward heartbeat requires the account daemon"))
+				return
+			}
+			// The registered forward already keeps the account daemon busy.
+			pulse := activity.heartbeat()
+			for ctx.Err() == nil {
+				if err := wire.WriteFull(stream, advertisement); err != nil {
+					cancel(fmt.Errorf("forward heartbeat write failed: %w", err))
+					return
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-pulse:
+					pulse = activity.heartbeat()
+				}
+			}
+		})
+	}
+
+	err = connection.Wait()
+	if readErr != nil {
 		detail := diagnostics.String()
 		if detail == "" {
-			detail = fmt.Sprint(waitErr)
+			if err == nil {
+				err = readErr
+			}
+			detail = err.Error()
 		}
 		if strings.Contains(detail, "remote port forwarding failed") {
 			detail += "; remote listening port is occupied or denied by SSH policy; choose another remote port or inspect existing forwards"
 		}
-		return 1, fmt.Errorf("forward startup failed (%s): %s", runtime.Description, detail)
+		return false, fmt.Errorf("forward startup failed (%s): %s", s.record.Detail, detail)
 	}
-	if marker != forwardReadyMarker+"\n" {
-		return 1, fmt.Errorf("unexpected forward startup response: %q", termui.CleanText(marker))
+	if startupErr != nil {
+		return false, startupErr
 	}
-	*started = true
-	if initial {
-		if e = runtime.Ready(); e != nil {
-			return 1, e
-		}
-	} else {
-		runtime.Status("connected", nil)
+	if cause := context.Cause(ctx); cause != nil {
+		return true, cause
 	}
-	task, err := runtime.Heartbeat()
-	if err != nil {
-		return 1, err
+	if err == nil {
+		err = errors.New("forward transport closed")
 	}
-	heartbeat.Go(func() {
-		pulse := func() {
-			if err := wire.WriteFull(input, task); err != nil {
-				cancel(fmt.Errorf("forward heartbeat write failed: %w", err))
-			}
-		}
-		pulse()
-		if ctx.Err() != nil {
-			return
-		}
-		stop, err := startDaemonHeartbeat(ctx, pulse)
-		if err != nil {
-			cancel(fmt.Errorf("forward heartbeat registration failed: %w", err))
-			return
-		}
-		<-ctx.Done()
-		stop()
-	})
-
-	select {
-	case <-done:
-		if parent.Err() != nil {
-			return 0, nil
-		}
-		if cause := context.Cause(ctx); cause != nil {
-			return 1, cause
-		}
-		if waitErr != nil {
-			return 1, waitErr
-		}
-		return 1, fmt.Errorf("forward transport closed")
-	case <-ctx.Done():
-		if parent.Err() != nil {
-			return 0, nil
-		}
-		return 1, context.Cause(ctx)
-	}
+	return true, err
 }
 
 // Keep only the current attempt's diagnostic tail, never earlier log entries.

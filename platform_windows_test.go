@@ -157,12 +157,13 @@ func TestWindowsPlatform(t *testing.T) {
 
 func TestWindowsSSHSecret(t *testing.T) {
 	if os.Getenv("SSHORE_TEST_SECRET_CONSOLE") == "1" {
-		env, stop, err := startSpawnAuth()
+		auth, stop, err := startSSHAuthBroker()
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer stop()
-		secret, err := brokerSSHSecret(env)(context.Background(), "TEST_PASSWORD")
+		_, unlock := auth.callbacks()
+		secret, err := unlock(context.Background(), "TEST_PASSWORD")
 		if err != nil || string(secret) != "test-Password!42" {
 			t.Fatalf("synthetic password mismatch: length=%d error=%v", len(secret), err)
 		}

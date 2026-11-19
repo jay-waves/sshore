@@ -13,10 +13,30 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/wire"
 	"github.com/xtaci/smux"
 )
+
+func TestSessionTargetCycle(t *testing.T) {
+	first := sessionTarget{Name: "a", Instance: strings.Repeat("a", 32)}
+	last := sessionTarget{Name: "z", Instance: strings.Repeat("b", 32), Hosted: true}
+	targets := []sessionTarget{last, first}
+	for _, tc := range []struct {
+		current  string
+		previous bool
+		want     sessionTarget
+	}{{"m", false, last}, {"z", false, first}, {"a", true, last}} {
+		if got := adjacentSessionTarget(tc.current, targets, tc.previous); got != tc.want {
+			t.Fatalf("current %q, previous=%t: got %+v, want %+v", tc.current, tc.previous, got, tc.want)
+		}
+	}
+	if targets[0] != last || targets[1] != first {
+		t.Fatal("mutated input")
+	}
+	if got := adjacentSessionTarget("only", nil, false); got.Name != "" {
+		t.Fatal("single session moved")
+	}
+}
 
 type fragmentedReader struct{ io.Reader }
 
@@ -146,7 +166,7 @@ func TestSpawnTransportKeepsIndependentAttachmentStreams(t *testing.T) {
 		}}}
 	for _, kind := range []string{"spawn_route_connect", "spawn_route_confirm", "mux"} {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		c, err := openClientTransportContext(ctx, &o)
+		c, err := openClientTransportContext(ctx, &o, nil)
 		if err != nil {
 			cancel()
 			t.Fatal(err)
@@ -214,7 +234,7 @@ func TestApprovalMismatchDoesNotWriteFile(t *testing.T) {
 		_, _ = readMessage(st)
 		_ = writeMessage(st, message{Type: "offer", Name: "other", Size: 3})
 	}()
-	err := executeApprovedFile(context.Background(), client, operation{Kind: "download", Path: "/tmp/a", Name: "a", Size: 3, LocalPath: target}, nil, false)
+	err := executeApprovedFile(context.Background(), client, newApprovedFile(operation{Kind: "download", Path: "/tmp/a", Name: "a", Size: 3}, target, nil), false)
 	if err == nil {
 		t.Fatal("mismatch accepted")
 	}
@@ -223,39 +243,16 @@ func TestApprovalMismatchDoesNotWriteFile(t *testing.T) {
 	}
 }
 
-func TestMismatchedApprovedUploadIsNotSent(t *testing.T) {
+func TestApprovedUploadRequiresOpenedSource(t *testing.T) {
 	client, server := muxPair(t)
-	path := filepath.Join(t.TempDir(), "source")
-	if err := os.WriteFile(path, []byte("changed"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	source, err := files.OpenSource(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer source.Close()
-	result := make(chan error, 1)
-	go func() {
-		st, err := server.AcceptStream()
-		if err != nil {
-			result <- err
-			return
-		}
-		defer st.Close()
-		_, err = readMessage(st)
-		result <- err
-	}()
-	err = executeApprovedFile(context.Background(), client, operation{Kind: "upload", Path: "/tmp", Name: "source", Size: 1, LocalPath: path}, source, true)
+	err := executeApprovedFile(context.Background(), client, newApprovedFile(operation{Kind: "upload", Path: "/tmp"}, "", nil), true)
 	if err == nil {
-		t.Fatal("changed upload accepted")
+		t.Fatal("upload without an opened source accepted")
 	}
-	select {
-	case err := <-result:
-		if err == nil {
-			t.Fatal("unapproved upload sent")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("worker did not close")
+	_ = server.SetDeadline(time.Now().Add(time.Second))
+	if stream, err := server.AcceptStream(); err == nil {
+		_ = stream.Close()
+		t.Fatal("unapproved upload opened a stream")
 	}
 }
 
@@ -289,38 +286,36 @@ func TestFrontendReleasesUnreachableTransports(t *testing.T) {
 	owned := make(clientTransports)
 	open := func(context.Context) (io.ReadWriteCloser, error) { a, b := net.Pipe(); b.Close(); return a, nil }
 	var parentClosed, childrenClosed int
-	parent := options{transports: owned}
-	stream, err := openTaskStream(ctx, &parent, open, func() { parentClosed++ })
+	var parent options
+	stream, err := owned.openTaskStream(ctx, &parent, open, func() { parentClosed++ })
 	if err != nil {
 		t.Fatal(err)
 	}
 	stream.Close()
 	for i := 1; i <= 32; i++ {
-		child := options{transports: owned, routeParent: &parent}
-		c, err := openTaskStream(ctx, &child, open, func() { childrenClosed++ })
+		child := options{routeParent: &parent}
+		c, err := owned.openTaskStream(ctx, &child, open, func() { childrenClosed++ })
 		if err != nil {
 			t.Fatal(err)
 		}
-		keep := make(clientTransports)
-		keepRoute(keep, &child)
-		owned.releaseExcept(keep)
+		owned.retainRoute(&child)
+		owned.releaseUnreferenced()
 		if len(owned) != 2 {
 			t.Fatal("lost a route ancestor")
 		}
 		c.Close()
-		keep = make(clientTransports)
-		keepRoute(keep, &parent)
-		owned.releaseExcept(keep)
+		owned.retainRoute(&parent)
+		owned.releaseUnreferenced()
 		if parentClosed != 0 || childrenClosed != i || len(owned) != 1 {
 			t.Fatal("return retained an obsolete transport or closed parent")
 		}
 	}
-	owned.releaseExcept(nil)
+	owned.releaseUnreferenced()
 	if parentClosed != 1 {
 		t.Fatal("parent was not released exactly once")
 	}
 	closed := 0
-	_, err = openTaskStream(ctx, &parent, func(context.Context) (io.ReadWriteCloser, error) { return nil, io.EOF }, func() { closed++ })
+	_, err = owned.openTaskStream(ctx, &parent, func(context.Context) (io.ReadWriteCloser, error) { return nil, io.EOF }, func() { closed++ })
 	if err != io.EOF || closed != 1 || len(owned) != 0 {
 		t.Fatal("failed first stream retained transport")
 	}

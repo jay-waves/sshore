@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
@@ -17,12 +18,65 @@ import (
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
+const defaultMountIOTimeout = time.Minute
+
+// The CLI and review build the same configuration the mount worker receives.
+type ftpOptions struct {
+	Approval                  *files.MountApproval
+	Connection                *recentConnection
+	IOTimeout, StartupTimeout time.Duration
+	Host, Remote, Mountpoint  string
+	SSH                       []string
+	ReadOnly, DirectIO, Stats bool
+	Name                      string
+	foreground                bool
+}
+
+func validateMountConfig(o ftpOptions) error {
+	if err := validSSHDestination(o.Host); err != nil {
+		return err
+	}
+	if o.Host == "self" || o.Host == "origin" || o.Remote == "" || strings.ContainsRune(o.Remote, 0) || strings.ContainsRune(o.Mountpoint, 0) {
+		return fmt.Errorf("invalid mount endpoints")
+	}
+	if o.IOTimeout < 0 || o.StartupTimeout < 0 {
+		return fmt.Errorf("invalid mount timeout")
+	}
+	approval := o.Approval
+	if approval != nil && (approval.PID <= 0 || validSession(approval.Session) != nil || !validRequestID(approval.ID)) {
+		return fmt.Errorf("invalid mount approval")
+	}
+	if connection := o.Connection; connection != nil {
+		if approval == nil || connection.Session != approval.Session || connection.Instance != approval.Instance || connection.Host != o.Host {
+			return fmt.Errorf("invalid mount approval connection")
+		}
+		return validateRecentConnection(*connection)
+	}
+	if len(o.SSH) != 0 {
+		_, _, err := parseSSHOptions(o.SSH, false)
+		return err
+	}
+	return nil
+}
+
 func runMount(args []string) (int, error) {
 	if os.Getenv("SSHORE_SOCKET") != "" {
-		if _, err := remoteMountRequest(args); err != nil {
+		op, err := remoteMountRequest(args)
+		if err != nil {
 			return 2, err
 		}
-		return 0, serverCommand(append([]string{"mount"}, args...))
+		op.Path, err = absoluteLocalPath(op.Path)
+		if err != nil {
+			return 1, err
+		}
+		info, err := os.Stat(op.Path)
+		if err != nil {
+			return 1, err
+		}
+		if !info.IsDir() {
+			return 1, fmt.Errorf("mount source must be a directory")
+		}
+		return 0, requestOperations("mount", []operation{op})
 	}
 
 	o, err := parseFTPOptions(args)
@@ -41,58 +95,53 @@ func runMount(args []string) (int, error) {
 		return 1, err
 	}
 	if !o.foreground {
-		return startResourceBackground(resourceConfig{Args: args}, "mount")
+		return startResourceBackground(resourceConfig{Mount: &o})
 	}
 	reservation, err := chooseTaskIdentity("mount", "")
 	if err != nil {
 		return 1, err
 	}
 
-	o.name = reservation.name
+	o.Name = reservation.name
 	cleanup, err := prepareFTPPaths(&o)
 	if err != nil {
 		return 1, err
 	}
 	defer cleanup()
-	return runFTPMount(o, nil)
+	return runFTPMount(o, nil, nil)
 }
 
-func runFTPMount(o ftpOptions, s *resourceService) (int, error) {
-	c := files.MountConfig{Approval: o.approval, Host: o.host, Remote: o.remote, Mountpoint: o.mountpoint, Version: version, ReadOnly: o.readOnly, DirectIO: o.directIO, Stats: o.stats, StartupTimeout: o.startupTimeout, IOTimeout: o.ioTimeout}
+func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecycle) (int, error) {
+	c := files.MountConfig{Approval: o.Approval, Host: o.Host, Remote: o.Remote, Mountpoint: o.Mountpoint, Version: version, ReadOnly: o.ReadOnly, DirectIO: o.DirectIO, Stats: o.Stats, StartupTimeout: o.StartupTimeout, IOTimeout: o.IOTimeout}
 	c.History = mountVisitHistory
 	c.Connection = mountSSHOptions(o)
 	if s != nil {
-		c.Connection.Environment = s.sshEnvironment()
+		c.Connection.Environment = s.baseEnvironment()
 		c.Connection.Directory = s.directory
-		c.Connection.Confirm = brokerSSHConfirmation(c.Connection.Environment)
-		c.Connection.Secret = brokerSSHSecret(c.Connection.Environment)
-	}
-	if s != nil {
+		c.Connection.Confirm, c.Connection.Secret = s.config.Auth.callbacks()
 		c.PeerMetadata, _ = json.Marshal(s.peerTask())
 	}
 	c.Prepare = func(_ context.Context, wire io.ReadWriter) (string, error) {
-		setup := options{command: "mount-agent", host: o.host}
-		err := negotiateSetup(wire, wire, &setup)
-		return setup.remoteHome, err
+		return negotiateSetup(wire, wire, o.Host, false)
 	}
-	if s != nil && s.config.MountConnection != nil && s.config.MountConnection.viaShell() {
+	if o.Connection != nil && o.Connection.viaShell() {
 		c.Prepare = nil
 		c.Open = func(ctx context.Context) (io.ReadWriteCloser, error) {
-			return openRoutedResource(ctx, *s.config.MountConnection, message{Type: "route_mount", Name: o.approval.Session, PID: o.approval.PID, ApprovalID: o.approval.ID})
+			return openRoutedResource(ctx, *o.Connection, message{Type: "route_mount", Name: o.Approval.Session, PID: o.Approval.PID, ApprovalID: o.Approval.ID})
 		}
-	}
-	var lifecycle *files.MountLifecycle
-	if s != nil {
-		lifecycle = &files.MountLifecycle{Abandoned: s.abandoned, Environment: s.sshEnvironment(), OperationCompleted: s.operationCompleted, Ready: s.ready, Stop: s.stop}
 	}
 	return files.RunMount(c, lifecycle)
 }
 
 func mountSSHOptions(o ftpOptions) sshio.Options {
-	return sshio.Options{Host: o.host, Args: append([]string{"-o", "ClearAllForwardings=yes"}, sshio.WithoutForwarding(o.ssh)...), Command: remoteCommand(options{command: "mount-agent", host: o.host, server: o.server}), Confirm: confirmSSHHost, Secret: promptSSHSecret}
+	args, server := o.SSH, ""
+	if o.Connection != nil {
+		args, server = o.Connection.SSH, o.Connection.Server
+	}
+	return sshio.Options{Host: o.Host, Args: sshio.WithoutForwarding(args), Command: remoteCommand(options{command: "mount-agent", host: o.Host, server: server}), Confirm: confirmSSHHost, Secret: promptSSHSecret}
 }
 
-func absoluteMountPath(path string) (string, error) {
+func absoluteLocalPath(path string) (string, error) {
 	path, err := termui.ExpandHomePath(path)
 	if err != nil {
 		return "", err
@@ -115,6 +164,7 @@ func readMountApprovalPath(input reviewPromptReader, hint string) (string, error
 
 // Merge this mount's observations under the account state lock on unmount.
 func mountVisitHistory(account, root string, delta files.VisitHistory) files.VisitHistory {
+	const maxHistoryBytes = files.VisitHistoryLimit * (6*4096 + 128)
 	if !validMachineID(account) {
 		return nil
 	}
@@ -128,19 +178,13 @@ func mountVisitHistory(account, root string, delta files.VisitHistory) files.Vis
 	}
 	defer lock.Close()
 	file := filepath.Join(dir, fmt.Sprintf("%x.json", sha256.Sum256([]byte(account+"\x00"+root))))
-	h := files.VisitHistory{}
-	if privateStatePath(file, false) == nil {
-		if info, err := os.Stat(file); err == nil && info.Size() <= files.VisitHistoryLimit*(6*4096+128) {
-			if data, err := os.ReadFile(file); err == nil {
-				if json.Unmarshal(data, &h) != nil || h == nil || len(h) > files.VisitHistoryLimit {
-					h = files.VisitHistory{}
-				}
-			}
-		}
+	var h files.VisitHistory
+	if err := readStateJSON(file, maxHistoryBytes, &h); err != nil || h == nil || len(h) > files.VisitHistoryLimit {
+		h = files.VisitHistory{}
 	}
 	h.Merge(delta, time.Now())
 	if len(delta) > 0 {
-		_ = writeStateJSON(file, h)
+		_ = writeBoundedStateJSON(file, h, maxHistoryBytes)
 	}
 	return h
 }

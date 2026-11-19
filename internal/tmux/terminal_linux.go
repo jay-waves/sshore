@@ -5,76 +5,73 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
 )
 
 type Terminal struct {
-	master   *os.File
-	cmd      *exec.Cmd
-	once     sync.Once
-	closeErr error
-	wait     func() error
+	master      *os.File
+	cmd         *exec.Cmd
+	closeMaster func() error
+	wait        func() error
 }
 
 // Start owns the command and its controlling terminal from creation to Wait.
-func Start(c Config) (*Terminal, error) {
+func Start(c Config) (result *Terminal, _ error) {
 	if err := c.Size.validate(); err != nil {
 		return nil, err
 	}
 	cmd := exec.Command(c.Path, c.Args...)
 	cmd.Env, cmd.Dir = c.Env, c.Dir
-	master, slave, err := pty.Open()
+	// Keep the master pollable from startup so deadlines can interrupt I/O.
+	// SyscallConn lets us configure it without changing its blocking mode.
+	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if result == nil {
+			_ = master.Close()
+		}
+	}()
+	terminal := &Terminal{master: master, cmd: cmd, closeMaster: sync.OnceValue(master.Close)}
+	var number int
+	if err := terminal.control(func(fd int) error {
+		var err error
+		number, err = unix.IoctlGetInt(fd, unix.TIOCGPTN)
+		if err != nil {
+			return err
+		}
+		return unix.IoctlSetPointerInt(fd, unix.TIOCSPTLCK, 0)
+	}); err != nil {
+		return nil, err
+	}
+	slave, err := os.OpenFile("/dev/pts/"+strconv.Itoa(number), os.O_RDWR|unix.O_NOCTTY, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer slave.Close()
-	if err := pty.Setsize(master, &pty.Winsize{Cols: c.Size.Cols, Rows: c.Size.Rows}); err != nil {
-		master.Close()
+	if err := terminal.setWinsize(&unix.Winsize{Col: c.Size.Cols, Row: c.Size.Rows}); err != nil {
 		return nil, err
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 	cmd.Env = append(cmd.Environ(), "SSHORE_TTY="+slave.Name())
 	if err := cmd.Start(); err != nil {
-		master.Close()
 		return nil, err
 	}
-	// creack/pty uses Fd during setup, which marks its os.File as blocking.
-	// Rewrap a nonblocking duplicate so Close and deadlines can interrupt I/O.
-	fd := -1
-	raw, e := master.SyscallConn()
-	if e == nil {
-		e = raw.Control(func(handle uintptr) { fd, err = unix.FcntlInt(handle, unix.F_DUPFD_CLOEXEC, 0) })
-	}
-	if e != nil {
-		err = e
-	}
-	if err == nil {
-		err = unix.SetNonblock(fd, true)
-	}
-	if err != nil {
-		if fd >= 0 {
-			unix.Close(fd)
-		}
-		master.Close()
-		cmd.Process.Kill()
-		cmd.Wait()
-		return nil, err
-	}
-	master.Close()
-	master = os.NewFile(uintptr(fd), "mux-pty")
-	terminal := &Terminal{master: master, cmd: cmd, wait: sync.OnceValue(cmd.Wait)}
 	// A descendant may retain the slave after the shell exits. Reap the shell
 	// independently, then bound output draining so it cannot keep the session alive.
-	go func() {
-		_ = terminal.Wait()
+	terminal.wait = sync.OnceValue(func() error {
+		err := cmd.Wait()
 		_ = master.SetReadDeadline(time.Now().Add(time.Second))
-	}()
+		return err
+	})
+	go terminal.Wait()
 	return terminal, nil
 }
 func (t *Terminal) Read(p []byte) (int, error) {
@@ -90,9 +87,7 @@ func (t *Terminal) Resize(s Size) error {
 	if err := s.validate(); err != nil {
 		return err
 	}
-	return t.control(func(fd int) error {
-		return unix.IoctlSetWinsize(fd, unix.TIOCSWINSZ, &unix.Winsize{Col: s.Cols, Row: s.Rows})
-	})
+	return t.setWinsize(&unix.Winsize{Col: s.Cols, Row: s.Rows})
 }
 func (t *Terminal) PID() int { return t.cmd.Process.Pid }
 
@@ -100,10 +95,7 @@ func (t *Terminal) PID() int { return t.cmd.Process.Pid }
 func (t *Terminal) Wait() error { return t.wait() }
 
 // Close hangs up the terminal; deliberately detached descendants may survive.
-func (t *Terminal) Close() error {
-	t.once.Do(func() { t.closeErr = t.master.Close() })
-	return t.closeErr
-}
+func (t *Terminal) Close() error { return t.closeMaster() }
 
 func (t *Terminal) SetWriteDeadline(at time.Time) error { return t.master.SetWriteDeadline(at) }
 func (t *Terminal) control(fn func(int) error) error {

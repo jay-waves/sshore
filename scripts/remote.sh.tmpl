@@ -1,25 +1,50 @@
+{{define "resolveServer"}}
+server={{q .Server}}
+[ -n "$server" ] || server=sshore
+if command -v "$server" >/dev/null 2>&1; then
+    server=$(command -v "$server")
+elif [ "$server" = sshore ]; then
+    server="$HOME/.local/bin/sshore"
+fi
+case "$server" in /*) ;; *) server="$PWD/$server" ;; esac
+{{end}}
+{{define "readVersion"}}
+remote_version=
+if [ -e "$server" ]; then
+    remote_version=$("$server" --version{{if .}} 2>/dev/null{{end}}) || remote_version=
+fi
+{{end}}
+{{define "helper"}}
+unset SSHORE_CONFIRM_ADDR SSHORE_CONFIRM_TOKEN
+{{if ne .Command "task-remove"}}unset SSHORE_SOCKET{{end}}
+version={{q .Version}}
+{{template "resolveServer" .}}
+{{template "readVersion" true}}
+if [ "$remote_version" != "sshore $version" ]; then
+{{if eq .Command "task-remove"}}    exit 0
+{{else}}    printf '%s\n' {{q (versionHelp .Host)}} >&2
+    exit 1
+{{end}}fi
+{{if .Ready}}
+printf '%s\n' {{q .Ready}}
+"$server" task-watch "$version" || exec cat >/dev/null
+{{else}}
+exec "$server" {{q .Command}} "$version"{{range .Args}} {{q .}}{{end}}
+{{end}}
+{{end}}
 # Embedded remote entry point. Rendered values are shell-quoted by Go.
 # Keep stdin free for startup frames and the eventual session.
 version={{q .Version}}
-server={{q .Server}}
 command={{q .Command}}
 mode={{q .Mode}}
 name={{q .Session}}
-
-if command -v "$server" >/dev/null 2>&1; then
-    server=$(command -v "$server")
-{{if eq .Server "sshore"}}else
-    server="$HOME/.local/bin/sshore"
-{{end}}fi
-case "$server" in /*) ;; *) server="$PWD/$server" ;; esac
-remote_version=
-if [ -e "$server" ]; then
-    remote_version=$("$server" --version) || remote_version=
-fi
-
+{{template "resolveServer" .}}
 {{if eq .Command "daemon-admin"}}
 exec "$server" daemon-admin
-{{else if .List}}
+{{else}}
+{{template "readVersion" false}}
+
+{{if .List}}
 if [ "$remote_version" != "sshore $version" ]; then
     printf '%s\n' 'sshore: inventory requires matching remote release; no software changed' >&2
     exit 1
@@ -45,5 +70,6 @@ fi
 exec "$server" "$mode" "$version"
 {{else}}
 exec "$server" bridge "$version" "$mode" "$name"
+{{end}}
 {{end}}
 {{end}}

@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -59,9 +58,9 @@ func daemonProcessWaiter(_ int) (func(time.Time) error, func(), error) {
 
 func prepareFTPPaths(o *ftpOptions) (func(), error) {
 	cleanup := func() {}
-	if o.mountpoint != "" {
-		p, e := absoluteMountPath(o.mountpoint)
-		o.mountpoint = p
+	if o.Mountpoint != "" {
+		p, e := absoluteLocalPath(o.Mountpoint)
+		o.Mountpoint = p
 		return cleanup, e
 	}
 	home, e := os.UserHomeDir()
@@ -82,15 +81,15 @@ func prepareFTPPaths(o *ftpOptions) (func(), error) {
 	if !info.IsDir() || !ok || st.Uid != uint32(os.Geteuid()) || info.Mode().Perm()&0022 != 0 {
 		return cleanup, fmt.Errorf("mount parent must be a directory owned by you and not writable by others: %s", root)
 	}
-	o.mountpoint = filepath.Join(root, o.name)
-	e = os.Mkdir(o.mountpoint, 0700)
+	o.Mountpoint = filepath.Join(root, o.Name)
+	e = os.Mkdir(o.Mountpoint, 0700)
 	if os.IsExist(e) {
-		return cleanup, files.ValidateMountpoint(o.mountpoint)
+		return cleanup, files.ValidateMountpoint(o.Mountpoint)
 	}
 	if e != nil {
 		return cleanup, e
 	}
-	return func() { _ = os.Remove(o.mountpoint) }, nil
+	return func() { _ = os.Remove(o.Mountpoint) }, nil
 }
 
 func resourceLockBusy(err error) bool { return errors.Is(err, unix.EWOULDBLOCK) }
@@ -126,69 +125,31 @@ func systemMachineID() string {
 func hostedShellInventory(detailed bool) (inventory, error) {
 	inv := emptyInventory()
 	inv.MachineID, inv.Hostname = localMachineIdentity()
-	inv.ShellTree = knownShellTrees()
-	dir, e := runtimeDir()
-	if e != nil {
+	if _, e := runtimeDir(); e != nil {
 		return inv, e
 	}
-	records, e := hostedTaskRecords()
-	if e != nil {
-		return inv, e
-	}
-	sort.Slice(records, func(i, j int) bool { return records[i].ID < records[j].ID })
-	unavailable := func(task hostedTaskRecord) {
-		inv.Shells = append(inv.Shells, shellView{Name: task.Name, Instance: task.ID, State: "unavailable"})
-	}
-	action := "inventory"
+	detail := "inventory"
 	if detailed {
-		action = ""
+		detail = ""
 	}
-	for _, task := range records {
-		c, e := dialHostedTask(context.Background(), task.ID, time.Second)
-		if e != nil {
-			unavailable(task)
-			inv.Errors = append(inv.Errors, "shell unavailable: "+cleanText(task.Name))
-			continue
-		}
-		c.SetDeadline(time.Now().Add(time.Second))
-		if e = writeMessage(c, message{Type: "status", Action: action}); e != nil {
-			c.Close()
-			unavailable(task)
-			inv.Errors = append(inv.Errors, "shell status request failed: "+cleanText(task.Name))
-			continue
-		}
-		m, e := readMessage(c)
-		c.Close()
-		if e != nil || m.Type != "session" || validSession(m.Name) != nil {
-			unavailable(task)
-			inv.Errors = append(inv.Errors, "invalid shell status: "+cleanText(task.Name))
-			continue
-		}
-		state := "detached"
-		if m.Attached {
-			state = "attached"
-		}
-		inv.Shells = append(inv.Shells, shellView{Lifetime: shellLifetime(m.Temporary, true), Temporary: m.Temporary, Instance: m.Instance, ID: shellTaskName(cleanText(m.Name), m.Temporary), Name: cleanText(m.Name), State: state, PID: m.PID, Age: m.AgeSeconds, Foreground: cleanText(m.Foreground), Directory: cleanText(m.Directory)})
+	shells, e := hostedShells(detail)
+	if e != nil {
+		return inv, e
 	}
-	for _, r := range readSessionExits(dir) {
-		if time.Since(r.At) > 7*24*time.Hour {
-			continue
-		}
-		inv.Exits = append(inv.Exits, exitView{Name: r.Name, Reason: r.Reason, Time: r.At})
-	}
+	inv.Shells = append(inv.Shells, shells...)
 	return inv, nil
 }
 
-func hostedShellTasks() ([]selectedTask, error) {
-	records, err := hostedTaskRecords()
+func hostedExitHistory() []exitView {
+	exits := []exitView{}
+	dir, err := runtimeDir()
 	if err != nil {
-		return nil, err
+		return exits
 	}
-	var tasks []selectedTask
-	for _, task := range records {
-		tasks = append(tasks, selectedTask{kind: "shell", name: task.Name, identity: remoteShellIdentity("local", task.ID), instance: task.ID, hosted: true})
+	for _, r := range recentSessionExits(dir, false) {
+		exits = append(exits, exitView{Name: r.Name, Reason: r.Reason, Time: r.At})
 	}
-	return tasks, nil
+	return exits
 }
 
 func openHostedTransport(ctx context.Context, o options) (net.Conn, error) {
@@ -216,25 +177,9 @@ func runHostedCommand(o options) (int, error) {
 }
 
 func localSessionInventory(details ...bool) inventory {
-	detailed := len(details) > 0 && details[0]
-	inv, e := hostedShellInventory(detailed)
-	if e != nil {
-		inv.Errors = append(inv.Errors, cleanText(e.Error()))
-	}
-
-	records, e := collectLocalResources("")
-	if e != nil {
-		inv.Errors = append(inv.Errors, cleanText(e.Error()))
-	} else {
-		inv.Resources = inspectResources(records)
-		if detailed {
-			inv.Resources = append(inv.Resources, collectResourceResults("", inv.Resources)...)
-		}
-	}
-	inv.Peers, e = collectPeerViews()
-	if e != nil {
-		inv.Errors = append(inv.Errors, cleanText(e.Error()))
-	}
+	inv := collectManagedInventory(len(details) > 0 && details[0], false)
+	inv.collectShellHistory()
+	inv.collectPeers()
 	return inv
 }
 

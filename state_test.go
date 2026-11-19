@@ -93,10 +93,11 @@ func TestPendingRequestOwnsName(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	startRequestDaemon(t)
-	id, err := queueRequest(testRequestOptions(), []operation{{Kind: "forward", TargetPort: 3000}})
+	queued, err := queueRequest(testRequestOptions(), []operation{{Kind: "forward", TargetPort: 3000}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	id := queued.ID
 	name := reviewName(t, id)
 	for _, kind := range []string{"mount", "forward", "shell"} {
 		if _, err := chooseTaskIdentity(kind, name); err == nil {
@@ -117,15 +118,13 @@ func TestPendingRequestOwnsName(t *testing.T) {
 
 func TestSessionNames(t *testing.T) {
 	activityFixture(t)
-	seen := map[string]bool{}
-	for _, name := range automaticSessionNames() {
-		if err := validSession(name); err != nil || seen[name] {
-			t.Fatalf("invalid or duplicate name %q", name)
-		}
-		seen[name] = true
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	selection, err := chooseTaskIdentity("shell", "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(seen) == 0 {
-		t.Fatal("missing automatic IDs")
+	if err := validSession(selection.name); err != nil || !strings.HasPrefix(selection.uid, selection.name) {
+		t.Fatalf("invalid automatic name %q for %q: %v", selection.name, selection.uid, err)
 	}
 }
 
@@ -161,11 +160,7 @@ func TestTaskNamesClaimedAtomicallyByDaemon(t *testing.T) {
 	done := make(chan struct{})
 	for range 32 {
 		wg.Go(func() {
-			id, err := newTaskUID()
-			if err != nil {
-				t.Error(err)
-				return
-			}
+			id := newTaskUID()
 			task := &daemonResourceTask{record: resourceRecord{UID: id, Name: "shared", Kind: "forward"}, done: done}
 			if tasks.register(id, task) == nil {
 				wins <- id

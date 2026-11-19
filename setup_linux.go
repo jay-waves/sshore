@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,43 +41,18 @@ func serveRemote(mode, name, peerVersion string) (result error) {
 			return err
 		}
 		if mode == "attach" && name == "" {
-			names, err := detachedSessionNames()
 			lock.Close()
+			selected, err := chooseDetachedHostedShell()
 			if err != nil {
 				return err
 			}
-			if len(names) == 0 {
-				return fmt.Errorf("no detached shells; use sshore launch HOST: to create one")
-			}
-			if len(names) == 1 {
-				name = names[0]
-				continue
-			}
-			if err := writeMessage(os.Stdout, message{Type: "session_choice", SoftwareVersion: version, Names: names}); err != nil {
-				return err
-			}
-			reply, err := readMessage(os.Stdin)
-			if err != nil {
-				return err
-			}
-			if reply.Type != "session_select" {
-				return fmt.Errorf("invalid shell selection")
-			}
-			for _, candidate := range names {
-				if reply.Name == candidate {
-					name = candidate
-					break
-				}
-			}
-			if name == "" {
-				return fmt.Errorf("invalid shell selection")
-			}
+			name = selected.Instance
 			continue // Recheck setup after waiting without the account lock.
 		}
 		readyMode := "managed"
 		if mode == "mcp-agent" {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_, err := ensureLocalDaemonContext(ctx, target)
+			record, err := ensureLocalDaemonContext(ctx, target)
 			cancel()
 			lock.Close()
 			if err != nil {
@@ -87,7 +61,7 @@ func serveRemote(mode, name, peerVersion string) (result error) {
 			if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode}); err != nil {
 				return err
 			}
-			return bridgeMCP(target)
+			return bridgeMCP(record)
 		}
 		if mode == "mount-agent" || mode == "cp-agent" {
 			lock.Close()
@@ -101,48 +75,50 @@ func serveRemote(mode, name, peerVersion string) (result error) {
 	}
 }
 
-func prepareReplacement(target string) (string, error) {
-	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-		return "", err
+func chooseDetachedHostedShell() (sessionTarget, error) {
+	targets, err := detachedHostedShells()
+	if err != nil {
+		return sessionTarget{}, err
 	}
+	switch len(targets) {
+	case 0:
+		return sessionTarget{}, fmt.Errorf("no detached shells; use sshore launch HOST: to create one")
+	case 1:
+		return targets[0], nil
+	}
+	if err := writeMessage(os.Stdout, message{Type: "session_choice", SoftwareVersion: version, Targets: targets}); err != nil {
+		return sessionTarget{}, err
+	}
+	reply, err := readMessage(os.Stdin)
+	if err != nil {
+		return sessionTarget{}, err
+	}
+	if reply.Type == "session_select" {
+		for _, shell := range targets {
+			if reply.Name == shell.Name {
+				return shell, nil
+			}
+		}
+	}
+	return sessionTarget{}, fmt.Errorf("invalid shell selection")
+}
 
+func validateInstallTarget(target string) error {
 	dirInfo, err := os.Stat(filepath.Dir(target))
 	if err != nil {
-		return "", err
+		return err
 	}
 	owner, ok := dirInfo.Sys().(*syscall.Stat_t)
 	if !ok || owner.Uid != uint32(os.Geteuid()) || dirInfo.Mode().Perm()&0022 != 0 {
-		return "", fmt.Errorf("automatic update requires a user-owned directory without group/world write access; install manually")
+		return fmt.Errorf("automatic update requires a user-owned directory without group/world write access; install manually")
 	}
 	if info, e := os.Lstat(target); e == nil {
 		owner, ok := info.Sys().(*syscall.Stat_t)
 		if !ok || owner.Uid != uint32(os.Geteuid()) || !info.Mode().IsRegular() {
-			return "", fmt.Errorf("automatic update requires a user-owned regular executable; install manually")
+			return fmt.Errorf("automatic update requires a user-owned regular executable; install manually")
 		}
-	} else if !errors.Is(e, os.ErrNotExist) {
-		return "", e
+	} else if !os.IsNotExist(e) {
+		return e
 	}
-	path, err := stageReplacement(target)
-	if err != nil {
-		return "", err
-	}
-	success := false
-	defer func() {
-		if !success {
-			os.Remove(path)
-		}
-	}()
-	// Probe atomic replacement permissions before publishing.
-	if info, e := os.Lstat(target); e == nil && !info.Mode().IsRegular() {
-		return "", fmt.Errorf("automatic update requires a regular executable target")
-	}
-	if old, e := executableVersion(target); e == nil && old != version {
-		if _, ok := releaseSeries(old); ok {
-			if err := os.Link(target, target+"-"+old); err != nil && !errors.Is(err, os.ErrExist) {
-				return "", fmt.Errorf("back up old executable: %w", err)
-			}
-		}
-	}
-	success = true
-	return path, nil
+	return nil
 }

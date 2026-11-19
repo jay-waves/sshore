@@ -27,7 +27,6 @@ func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\'
 
 type clientEvent struct {
 	keyAction      tmux.KeyAction
-	keyDone        chan struct{}
 	inputFailure   bool
 	approvalStream *smux.Stream
 	approval       []operation
@@ -36,9 +35,9 @@ type clientEvent struct {
 	err            error
 }
 
-// Automatic connections learn their shell name before saving approval metadata.
+// Learn the current shell name before saving approval metadata.
 func acceptSessionName(o *options, name string) error {
-	if o.session != "" {
+	if o.session != "" && !(o.command == "attach" && (!o.local || o.hosted) && validTaskUID(o.instance)) {
 		return nil
 	}
 	if err := validSession(name); err != nil {
@@ -48,7 +47,7 @@ func acceptSessionName(o *options, name string) error {
 	return nil
 }
 
-func runClientOnce(o options, previous string, ready func(options)) (resultCode int, resultErr error) {
+func runClientOnce(o options, previous string, transports clientTransports, ready func(options)) (resultCode int, resultErr error) {
 	attached := false
 	var ended func()
 	// Report after input shutdown and console restoration, including nested returns.
@@ -91,7 +90,7 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 			}
 		}
 		if err == nil && o.command == "rename" {
-			if cacheErr := rememberShellRename(o.host, o.session, o.newName); cacheErr != nil {
+			if cacheErr := rememberShellRename(o.host, o.session, o.newName, o.instance); cacheErr != nil {
 				termui.Log(os.Stderr, termui.Warning, "[sshore] Renamed; local history not updated: %s\n", cleanText(cacheErr.Error()))
 			}
 		}
@@ -104,7 +103,7 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 		return 1, fmt.Errorf("an interactive terminal is required")
 	}
 	tmux.ResetInputModes()
-	transport, err := openClientTransportContext(ctx, &o)
+	transport, err := openClientTransportContext(ctx, &o, transports)
 	if err != nil {
 		return 1, err
 	}
@@ -148,6 +147,9 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 	}
 	if m.Type != "ready" {
 		return 1, fmt.Errorf("unexpected attach handshake")
+	}
+	if (!o.local || o.hosted) && validTaskUID(o.instance) && o.instance != m.Instance {
+		return 1, fmt.Errorf("shell instance changed; refresh with sshore list")
 	}
 	if err := acceptSessionName(&o, m.Name); err != nil {
 		return 1, err
@@ -197,7 +199,7 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 		}
 	}
 	if o.detached {
-		if err := detachControl(control, confirmDetach); err != nil {
+		if err := tmux.Detach(control, confirmDetach); err != nil {
 			return 1, err
 		}
 		fmt.Fprintf(os.Stdout, "Started %s (%s).\n", cleanText(shellDisplayEndpoint(o)), shellTaskKind(o.temporary))
@@ -223,6 +225,8 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 
 	events := make(chan clientEvent, 32)
 	inputDrained := make(chan struct{}, 1)
+	// The writer waits for each shortcut before sending the next one.
+	keyHandled := make(chan struct{}, 1)
 	emit := func(e clientEvent) {
 		select {
 		case events <- e:
@@ -281,23 +285,12 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 	if err != nil {
 		return 1, err
 	}
-	defer func() { cancel(); stopKeyboard() }()
-	if o.handoffDone != nil {
-		if err := o.handoffDone(ctx, nil); err != nil {
-			return 1, err
-		}
-		o.handoffDone = nil
-	}
-	o.recovering = false
-	interruptSignals.interactive.Store(true)
-	attached = true
-	ready(o)
-
-	sessionNotice(termui.Success, "Connected %s (%s)", cleanText(shellDisplayEndpoint(o)), shellTaskKind(o.temporary))
 	// One terminal writer preserves keystroke order without making file I/O or a
 	// stalled PTY block the main UI/control loop.
 	inputQueue := make(chan []tmux.KeyEvent, 16)
+	inputDone := make(chan struct{})
 	go func() {
+		defer close(inputDone)
 		for {
 			select {
 			case <-ctx.Done():
@@ -310,19 +303,16 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 								emit(clientEvent{err: err, inputFailure: true})
 								return
 							}
+							// The control loop owns the detach deadline.
 							select {
 							case <-inputDrained:
 							case <-ctx.Done():
 								return
-							case <-time.After(5 * time.Second):
-								emit(clientEvent{err: fmt.Errorf("terminal input acknowledgement timed out"), inputFailure: true})
-								return
 							}
 						}
-						done := make(chan struct{})
-						emit(clientEvent{keyAction: b.Action, keyDone: done})
+						emit(clientEvent{keyAction: b.Action})
 						select {
-						case <-done:
+						case <-keyHandled:
 						case <-ctx.Done():
 							return
 						}
@@ -339,6 +329,24 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 			}
 		}
 	}()
+	defer func() {
+		cancel()
+		stopKeyboard()
+		_ = transport.Close()
+		<-inputDone
+	}()
+	if o.handoffDone != nil {
+		if err := o.handoffDone(ctx, nil); err != nil {
+			return 1, err
+		}
+		o.handoffDone = nil
+	}
+	o.recovering = false
+	interruptSignals.interactive.Store(true)
+	attached = true
+	ready(o)
+
+	sessionNotice(termui.Success, "Connected %s (%s)", cleanText(shellDisplayEndpoint(o)), shellTaskKind(o.temporary))
 	color := termui.ColorEnabled(os.Stdout)
 	notice := func(level termui.Color, format string, args ...any) {
 		fmt.Fprint(os.Stdout, termui.Format(color, level, format, args...))
@@ -347,101 +355,132 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 	defer ticker.Stop()
 	var outputMouse tmux.InputState
 	keys := tmux.Keys{Bypass: o.noEscape}
+	var keyTimer *time.Timer
+	defer func() {
+		if keyTimer != nil {
+			keyTimer.Stop()
+		}
+	}()
 	var keySequenceTimeout <-chan time.Time
 	armKeyTimeout := func() {
-		keySequenceTimeout = nil
-		if keys.Pending() {
-			keySequenceTimeout = time.After(50 * time.Millisecond)
+		if !keys.Pending() {
+			if keyTimer != nil {
+				keyTimer.Stop()
+			}
+			keySequenceTimeout = nil
+			return
+		}
+		if keyTimer == nil {
+			keyTimer = time.NewTimer(50 * time.Millisecond)
+		} else {
+			keyTimer.Reset(50 * time.Millisecond)
+		}
+		keySequenceTimeout = keyTimer.C
+	}
+	const (
+		detachIdle = iota
+		drainingInput
+		awaitingDetach
+	)
+	detachPhase := detachIdle
+	var detachDeadline <-chan time.Time
+	drainInput := func() {
+		detachPhase = drainingInput
+		detachDeadline = time.After(5 * time.Second)
+	}
+	queueDetach := func() bool {
+		select {
+		case inputQueue <- []tmux.KeyEvent{{Action: tmux.KeyDetach}}:
+			drainInput()
+			return true
+		default:
+			return false
 		}
 	}
-	detaching := false
-	detachPending := false
-	var detachTimeout <-chan time.Time
-	var inputFlushTimeout <-chan time.Time
-	var switchTimeout <-chan time.Time
-	var switchPending bool
-	var switchAction string
-	var switchTarget *options
-	returnLocal := false
-	var handoffTarget *options
-	var handoffToken string
-	var handoffDeadline time.Time
-	queueSwitch := func(name, command string) error {
-		if name == o.session && command == "attach" {
-			return nil
+	sendDetach := func(inputUnconfirmed bool) error {
+		if inputUnconfirmed {
+			notice(termui.Warning, "\r\n[sshore] Input delivery unconfirmed; detaching.\r\n")
 		}
+		if err := streamMessage(control, message{Type: "detach"}); err != nil {
+			return err
+		}
+		detachPhase = awaitingDetach
+		detachDeadline = time.After(5 * time.Second)
+		return nil
+	}
+	// A nonempty action awaits a reply, including the commit for a prepared
+	// handoff. A target with no action is ready to use after detach confirms.
+	type transitionRequest struct {
+		action   string
+		next     *sessionSwitch
+		token    string
+		deadline time.Time
+		timeout  <-chan time.Time
+	}
+	var pending transitionRequest
+	clearTransition := func() { pending = transitionRequest{} }
+	awaitResponse := func(delay time.Duration) {
+		pending.deadline = time.Now().Add(delay)
+		pending.timeout = time.After(time.Until(pending.deadline))
+	}
+	transitioning := func() bool { return pending.action != "" || pending.next != nil }
+	actionForKey := func(action tmux.KeyAction) string {
+		switch action {
+		case tmux.KeyNew:
+			return "spawn_child"
+		case tmux.KeyNext:
+			return "next"
+		case tmux.KeyPrevious:
+			return "previous"
+		case tmux.KeyLast:
+			return "last"
+		}
+		return ""
+	}
+	queueSwitch := func(next *sessionSwitch) bool {
+		if !queueDetach() {
+			return false
+		}
+		pending = transitionRequest{next: next}
+		return true
+	}
+	switchTo := func(selected sessionTarget) bool {
 		target := o
 		if o.routeParent != nil {
 			target.routeTarget = true
 		}
-		target.command = command
-		target.temporary = command == "spawn"
-		if command != "spawn" {
-			target.owner = processIdentity{}
-		}
-		target.taskIdentity = ""
-		target.instance = ""
-		target.session = name
-		if o.local {
-			target.hosted = false
-			if command == "attach" {
-				selected, found, err := findTaskAlias("attach", name, true)
-				if err != nil {
-					return err
-				}
-				if !found {
-					return fmt.Errorf("local shell is no longer available")
-				}
-				target.hosted, target.taskIdentity, target.instance = selected.hosted, selected.identity, selected.instance
-			}
-		}
-		select {
-		case inputQueue <- []tmux.KeyEvent{{Action: tmux.KeyDetach}}:
-			switchTarget = &target
-			switchPending = false
-			detachPending = true
-			inputFlushTimeout = time.After(5 * time.Second)
-			return nil
-		default:
-			return fmt.Errorf("terminal input queue is busy")
-		}
+		target.command, target.session = "attach", selected.Name
+		target.owner = processIdentity{}
+		target.temporary = false
+		target.instance, target.taskIdentity = selected.Instance, "task:"+selected.Instance
+		target.hosted = o.local && selected.Hosted
+		return queueSwitch(&sessionSwitch{to: target})
 	}
-	requestTargets := func(action, name string) error {
-		switchPending = true
-		switchAction = action
-		switchTimeout = time.After(5 * time.Second)
+	requestTargets := func(action string) error {
+		awaitResponse(5 * time.Second)
+		request := message{Type: "session_targets", Action: action}
 		if o.local {
 			current := o.session
-			go func() { emit(clientEvent{m: localSessionTargets(current, message{Action: action, Name: name})}) }()
+			go func() { emit(clientEvent{m: localSessionTargets(current, request)}) }()
 			return nil
 		}
-		return streamMessage(control, message{Type: "session_targets", Action: action, Name: name})
+		return streamMessage(control, request)
 	}
 	interrupt := func() error {
-		if switchPending || switchTarget != nil || handoffTarget != nil {
-			for _, target := range []*options{switchTarget, handoffTarget} {
-				if target != nil && target.handoffDone != nil {
-					_ = target.handoffDone(ctx, context.Canceled)
-					target.handoffDone = nil
-				}
+		if transitioning() {
+			if pending.next != nil && pending.next.to.handoffDone != nil {
+				_ = pending.next.to.handoffDone(ctx, context.Canceled)
 			}
-			target := o
-			target.command, target.recovering = "attach", true
-			if !detaching && !detachPending {
-				select {
-				case inputQueue <- []tmux.KeyEvent{{Action: tmux.KeyDetach}}:
-					detachPending = true
-					inputFlushTimeout = time.After(5 * time.Second)
-				default:
-					return fmt.Errorf("terminal input queue is busy")
-				}
+			source := o
+			source.command, source.recovering = "attach", true
+			if detachPhase == detachIdle && !queueDetach() {
+				return fmt.Errorf("terminal input queue is busy")
 			}
-			switchTarget, returnLocal, handoffTarget = &target, false, nil
-			switchPending, switchAction, switchTimeout = false, "", nil
+			pending = transitionRequest{next: &sessionSwitch{to: source}}
 			notice(termui.Info, "\r\n[sshore] Cancelled; returning to %s.\r\n", cleanText(o.session))
 			return nil
 		}
-		if detaching || detachPending {
+		if detachPhase != detachIdle {
 			return nil
 		}
 		select {
@@ -462,29 +501,29 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 		case <-keySequenceTimeout:
 			keySequenceTimeout = nil
 			batch := keys.FlushPending()
-			if len(batch) > 0 && !switchPending && switchTarget == nil && handoffTarget == nil && !detaching && !detachPending {
+			if len(batch) > 0 && !transitioning() && detachPhase == detachIdle {
 				select {
 				case inputQueue <- batch:
 				default:
 					return 255, fmt.Errorf("terminal input stalled; closing connection; reconnect to check the shell")
 				}
 			}
-		case <-switchTimeout:
-			switchTimeout = nil
-			switchPending = false
-			notice(termui.Warning, "\r\n[sshore] Session lookup timed out; staying here.\r\n")
-		case <-inputFlushTimeout:
-			inputFlushTimeout = nil
-			if !detaching {
-				notice(termui.Warning, "\r\n[sshore] Input delivery unconfirmed; detaching.\r\n")
-				if err = streamMessage(control, message{Type: "detach"}); err != nil {
-					return 255, err
-				}
-				detaching = true
-				detachTimeout = time.After(5 * time.Second)
+		case <-pending.timeout:
+			if pending.action == "handoff" {
+				report := pending.next.to.handoffDone
+				go func() { _ = report(ctx, context.DeadlineExceeded) }()
+				notice(termui.Warning, "\r\n[sshore] Handoff timed out; staying here.\r\n")
+			} else {
+				notice(termui.Warning, "\r\n[sshore] Session lookup timed out; staying here.\r\n")
 			}
-		case <-detachTimeout:
-			return 255, fmt.Errorf("detach response timed out; shell preservation is unconfirmed")
+			clearTransition()
+		case <-detachDeadline:
+			if detachPhase == awaitingDetach {
+				return 255, fmt.Errorf("detach response timed out; shell preservation is unconfirmed")
+			}
+			if err = sendDetach(true); err != nil {
+				return 255, err
+			}
 		case <-ticker.C:
 			c, r, e := term.GetSize(int(os.Stdout.Fd()))
 			if e == nil && (c != cols || r != rows) {
@@ -496,96 +535,66 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 
 		case e := <-events:
 			if e.keyAction != tmux.KeyNone {
-				err = nil
-				func() {
-					defer close(e.keyDone)
-					if detaching {
-						return
-					}
+				var keyErr error
+				if detachPhase != awaitingDetach {
 					switch e.keyAction {
-					case tmux.KeyNew:
-						if detachPending {
-							return
+					case tmux.KeyNew, tmux.KeyNext, tmux.KeyPrevious, tmux.KeyLast:
+						action := actionForKey(e.keyAction)
+						if detachPhase != detachIdle || action != pending.action {
+							break
 						}
-						switchPending, switchAction = true, "spawn_child"
-						switchTimeout = time.After(30 * time.Second)
-						err = streamMessage(control, message{Type: "spawn_child"})
-					case tmux.KeyNext, tmux.KeyPrevious, tmux.KeyLast:
-						action := map[tmux.KeyAction]string{tmux.KeyNext: "next", tmux.KeyPrevious: "previous", tmux.KeyLast: "last"}[e.keyAction]
-						err = requestTargets(action, previous)
-
+						if e.keyAction == tmux.KeyNew {
+							awaitResponse(30 * time.Second)
+							keyErr = streamMessage(control, message{Type: action})
+						} else {
+							keyErr = requestTargets(action)
+						}
 					case tmux.KeyDetach:
-						err = streamMessage(control, message{Type: "detach"})
-						if err == nil {
-							detaching = true
-							detachTimeout = time.After(5 * time.Second)
-						}
+						keyErr = sendDetach(false)
 					case tmux.KeyRedraw:
-						err = streamMessage(control, message{Type: "redraw"})
+						keyErr = streamMessage(control, message{Type: "redraw"})
 					}
-				}()
-				if err != nil {
-					return 255, err
+				}
+				keyHandled <- struct{}{}
+				if keyErr != nil {
+					return 255, keyErr
 				}
 				continue
 			}
 			if e.approvalStream != nil {
 				st := e.approvalStream
-				if detaching || detachPending || switchPending {
+				if detachPhase != detachIdle || transitioning() {
 					st.Close()
 					continue
 				}
-				id, err := queueRequest(o, e.approval)
+				request, err := queueRequest(o, e.approval)
 				if err != nil {
 					_ = streamMessage(st, message{Type: "error", Error: err.Error()})
 					st.Close()
 					notice(termui.Error, "\r\n[sshore] Request rejected: %s\r\n", cleanText(err.Error()))
 					continue
 				}
-				_ = st.SetDeadline(time.Now().Add(requestTimeout))
-				request, err := readRequest(id)
-				if err != nil {
-					st.Close()
+				if err := confirmQueuedRequest(st, request); err != nil {
 					return 1, err
 				}
-				task := pendingRemoteTask(id, request.DisplayName(), e.approval)
-				err = writeMessage(st, message{Type: "queued", PeerTask: &task})
-				if err == nil {
-					var ack message
-					ack, err = readMessage(st)
-					if err == nil && ack.Type != "queued_ack" {
-						err = fmt.Errorf("unexpected request acknowledgement")
-					}
-				}
-				st.Close()
-				if err != nil {
-					_ = consumeRequest(id)
+				notice(termui.Info, "\r\n[sshore] Request saved: %s\r\n[sshore] Run sshore review from your LOCAL shell after this client exits.\r\n", request.ID)
+				if err = sendDetach(false); err != nil {
 					return 1, err
 				}
-				notice(termui.Info, "\r\n[sshore] Request saved: %s\r\n[sshore] Run sshore review from your LOCAL shell after this client exits.\r\n", id)
-				if err = streamMessage(control, message{Type: "detach"}); err != nil {
-					return 1, err
-				}
-				detaching = true
-				detachTimeout = time.After(5 * time.Second)
 				continue
 			}
 			if e.err != nil {
-				if e.inputFailure && detachPending {
-					if !detaching {
-						notice(termui.Warning, "\r\n[sshore] Input delivery unconfirmed; detaching.\r\n")
-						if err = streamMessage(control, message{Type: "detach"}); err != nil {
+				if e.inputFailure && detachPhase != detachIdle {
+					if detachPhase == drainingInput {
+						if err = sendDetach(true); err != nil {
 							return 255, err
 						}
-						detaching = true
-						detachTimeout = time.After(5 * time.Second)
 					}
-					inputFlushTimeout = nil
 					continue
 				}
 				return 255, fmt.Errorf("connection lost; reconnect to check the shell: %w", e.err)
 			} else if e.input != nil {
-				if switchPending || switchTarget != nil || handoffTarget != nil {
+				if transitioning() {
 					// Keep paste boundaries across reads while ordinary input is
 					// suppressed. A pasted Ctrl+C must not cancel the handoff.
 					bypass := keys.Bypass
@@ -600,7 +609,7 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 					}
 					continue
 				}
-				if detaching || detachPending {
+				if detachPhase != detachIdle {
 					continue
 				}
 				batch := keys.Feed(e.input)
@@ -609,12 +618,11 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 					select {
 					case inputQueue <- batch:
 						for _, key := range batch {
-							if key.Action.IsSessionCommand() {
-								switchPending = true
+							if action := actionForKey(key.Action); action != "" {
+								pending.action = action
 							}
 							if key.Action == tmux.KeyDetach {
-								detachPending = true
-								inputFlushTimeout = time.After(5 * time.Second)
+								drainInput()
 								break
 							}
 						}
@@ -626,60 +634,54 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 			} else {
 				switch e.m.Type {
 				case "spawn_child_error":
-					if switchAction == "spawn_child" {
-						switchPending, switchAction, switchTimeout = false, "", nil
+					if pending.timeout != nil && pending.action == "spawn_child" {
+						clearTransition()
 					}
 					notice(termui.Warning, "\r\n[sshore] %s\r\n", cleanText(e.m.Error))
 				case "session_targets":
-					if !switchPending || e.m.Action != switchAction {
+					if pending.timeout == nil || pending.action == "handoff" || e.m.Action != pending.action {
 						continue
 					}
-					switchTimeout = nil
-					switchPending = false
+					clearTransition()
 					if e.m.Error != "" {
 						notice(termui.Warning, "\r\n[sshore] %s\r\n", cleanText(e.m.Error))
 						continue
 					}
-					if len(e.m.Names) > 128 || validSession(e.m.Name) != nil {
-						return 255, fmt.Errorf("invalid session targets")
+					if validSession(e.m.Name) != nil {
+						return 255, fmt.Errorf("invalid current session")
 					}
-					for _, name := range e.m.Names {
-						if validSession(name) != nil {
-							return 255, fmt.Errorf("invalid session target")
-						}
+					if err := validateSessionTargets(e.m.Targets); err != nil {
+						return 255, err
 					}
 					o.session = e.m.Name
-					var target string
+					var selected sessionTarget
 					switch e.m.Action {
-					case "new", "select":
-						if len(e.m.Names) != 1 {
-							return 255, fmt.Errorf("missing session target")
+					case "next", "previous":
+						selected = adjacentSessionTarget(o.session, e.m.Targets, e.m.Action == "previous")
+						if selected.Name == "" {
+							continue
 						}
-						target = e.m.Names[0]
-					case "next":
-						target = tmux.AdjacentSession(o.session, e.m.Names, 1)
-					case "previous":
-						target = tmux.AdjacentSession(o.session, e.m.Names, -1)
 					case "last":
-						for _, name := range e.m.Names {
-							if name == previous {
-								target = name
+						for _, target := range e.m.Targets {
+							if target.Instance == previous {
+								selected = target
 								break
 							}
 						}
-						if target == "" {
+						if selected.Instance == "" {
 							notice(termui.Info, "\r\n[sshore] Previous session unavailable.\r\n")
 							continue
 						}
 					}
-					command := "attach"
-
-					if err = queueSwitch(target, command); err != nil {
-						notice(termui.Warning, "\r\n[sshore] %s\r\n", err.Error())
+					if selected.Instance == "" {
+						return 255, fmt.Errorf("missing session target")
+					}
+					if !switchTo(selected) {
+						notice(termui.Warning, "\r\n[sshore] terminal input queue is busy\r\n")
 					}
 
 				case "output":
-					if detaching {
+					if detachPhase == awaitingDetach {
 						continue
 					}
 					if err = wire.WriteFull(terminalOutput, e.m.Data); err != nil {
@@ -690,8 +692,8 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 						return 1, fmt.Errorf("update terminal mouse mode: %w", err)
 					}
 				case "spawn_route":
-					if switchAction == "spawn_child" {
-						switchPending, switchAction, switchTimeout = false, "", nil
+					if pending.timeout != nil && pending.action == "spawn_child" {
+						clearTransition()
 					}
 					if o.local && !o.hosted || len(e.m.Token) != 64 {
 						continue
@@ -703,7 +705,7 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 							_ = confirmSpawnRoute(ctx, parent, token, fmt.Errorf("client is switching sessions; try again"))
 						}()
 					}
-					if detaching || detachPending || switchPending {
+					if detachPhase != detachIdle || transitioning() {
 						reject()
 						continue
 					}
@@ -712,17 +714,12 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 						target.host = o.host
 					}
 					target.handoffDone = func(ctx context.Context, result error) error { return confirmSpawnRoute(ctx, parent, token, result) }
-					select {
-					case inputQueue <- []tmux.KeyEvent{{Action: tmux.KeyDetach}}:
-						switchTarget, returnLocal = &target, true
-						detachPending = true
-						inputFlushTimeout = time.After(5 * time.Second)
-					default:
+					if !queueSwitch(&sessionSwitch{to: target, returnToParent: true}) {
 						reject()
 					}
 				case "handoff":
-					if switchAction == "spawn_child" {
-						switchPending, switchAction, switchTimeout = false, "", nil
+					if pending.timeout != nil && pending.action == "spawn_child" {
+						clearTransition()
 					}
 					// Only authenticated local control can redirect this frontend.
 					if !o.local {
@@ -735,7 +732,7 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 						if result != nil {
 							request.Error = result.Error()
 						}
-						reply, err := localRequest(strings.TrimPrefix(source.taskIdentity, "task:"), request, source.taskIdentity)
+						reply, err := localRequest("", source.taskIdentity, request)
 						if err != nil {
 							return err
 						}
@@ -744,15 +741,19 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 						}
 						return nil
 					}
-					if detaching || detachPending || switchPending || handoffTarget != nil && time.Now().Before(handoffDeadline) {
+					if detachPhase != detachIdle || transitioning() {
 						handoffErr = fmt.Errorf("client is switching sessions")
 					}
 					reply := message{Type: "handoff_result", Token: e.m.Token}
 					if handoffErr != nil {
 						reply.Error = handoffErr.Error()
 					} else {
-						handoffTarget, handoffToken = &target, e.m.Token
-						handoffDeadline = time.Now().Add(5 * time.Second)
+						pending = transitionRequest{
+							action: "handoff",
+							next:   &sessionSwitch{to: target, returnToParent: true},
+							token:  e.m.Token,
+						}
+						awaitResponse(5 * time.Second)
 					}
 					if err = streamMessage(control, reply); err != nil {
 						return 255, err
@@ -761,39 +762,33 @@ func runClientOnce(o options, previous string, ready func(options)) (resultCode 
 					if !o.local {
 						return 1, fmt.Errorf("remote attachment requested local handoff")
 					}
-					if handoffTarget == nil || handoffToken != e.m.Token || time.Now().After(handoffDeadline) {
+					if pending.action != "handoff" || pending.token != e.m.Token || time.Now().After(pending.deadline) {
 						continue
 					}
-					target := handoffTarget
-					handoffTarget = nil
-					if detaching || detachPending || switchPending {
-						notice(termui.Warning, "\r\n[sshore] Remote handoff interrupted by session switch.\r\n")
-						continue
+					target := pending.next
+					clearTransition()
+					var handoffErr error
+					if detachPhase != detachIdle {
+						handoffErr = errors.New("remote handoff interrupted by session switch")
+					} else if !queueSwitch(target) {
+						handoffErr = errors.New("remote handoff failed: terminal input queue is busy")
 					}
-					select {
-					case inputQueue <- []tmux.KeyEvent{{Action: tmux.KeyDetach}}:
-						switchTarget, returnLocal = target, true
-						detachPending = true
-						inputFlushTimeout = time.After(5 * time.Second)
-					default:
-						notice(termui.Warning, "\r\n[sshore] Remote handoff failed: terminal input queue is busy.\r\n")
+					if handoffErr != nil {
+						go func() { _ = target.to.handoffDone(ctx, handoffErr) }()
+						notice(termui.Warning, "\r\n[sshore] %s.\r\n", handoffErr)
 					}
 				case "detach_requested":
-					if !detaching && !detachPending {
-						if err = streamMessage(control, message{Type: "detach"}); err != nil {
+					if detachPhase == detachIdle {
+						if err = sendDetach(false); err != nil {
 							return 255, err
 						}
-						detaching = true
-						detachTimeout = time.After(5 * time.Second)
 					}
 				case "detached":
 					confirmDetach(e.m.Name)
-					if validSession(e.m.Name) == nil {
-						o.session = e.m.Name
-					}
 					_ = streamMessage(control, message{Type: "bye"})
-					if switchTarget != nil {
-						return 0, &sessionSwitch{from: o, to: *switchTarget, returnLocal: returnLocal}
+					if pending.action == "" && pending.next != nil {
+						pending.next.from = returnTarget{options: o, previous: previous}
+						return 0, pending.next
 					}
 					if o.temporary {
 						sessionNotice(termui.Success, "Background; %s on %s ends with the original parent shell.\r\nReturn: %s", shellTaskName(cleanText(o.session), true), cleanText(o.host), reconnectCommand(o))
@@ -846,11 +841,6 @@ func sessionNotice(level termui.Color, format string, args ...any) {
 	termui.Log(os.Stderr, level, "\r\n\r\n\r\n[sshore] "+format+"\r\n\r\n", args...)
 }
 
-// detachControl is used before an interactive control reader has started.
-func detachControl(control *smux.Stream, confirmed ...func(string)) error {
-	return tmux.Detach(control, confirmed...)
-}
-
 // Retain transport options in the reconnect hint, including custom ports and keys.
 // Use POSIX shell quoting on Linux and PowerShell quoting on Windows.
 func shellDisplayEndpoint(o options) string {
@@ -882,7 +872,11 @@ func reconnectCommand(o options) string {
 		if identity == "" {
 			identity = remoteShellIdentity(o.host, o.instance)
 		}
-		args = []string{"sshore", "attach", localEndpointPrefix + taskUID(identity)}
+		selector := taskUID(identity)
+		if selector == "" {
+			selector = o.session
+		}
+		args = []string{"sshore", "attach", localEndpointPrefix + selector}
 	}
 	if o.server != "" && o.server != "sshore" {
 		args = append(args, "--server", o.server)

@@ -5,19 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"time"
+
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 type resourceView struct {
-	local      bool // Set only for records inspected by this process; never sent over the wire.
-	order      uint64
+	local      bool   // Set only for records inspected by this process; never sent over the wire.
 	ShortID    string `json:"short_id,omitempty"`
 	Identity   string `json:"identity,omitempty"`
 	ID         string `json:"id"`
@@ -32,13 +30,21 @@ type resourceView struct {
 	Log        string `json:"log,omitempty"`
 	resourceStatus
 }
+
+func (r resourceView) kindAndName() (string, string) {
+	kind := r.Kind
+	if kind == "" {
+		kind, _, _ = strings.Cut(r.ID, "/")
+	}
+	return kind, strings.TrimPrefix(r.ID, kind+"/")
+}
+
 type shellView struct {
-	MachineID   string `json:"machine_id,omitempty"`
-	Hostname    string `json:"hostname,omitempty"`
-	Lifetime    string `json:"lifetime"`
-	Temporary   bool   `json:"temporary,omitempty"`
-	Instance    string `json:"instance,omitempty"`
-	order       uint64
+	MachineID   string    `json:"machine_id,omitempty"`
+	Hostname    string    `json:"hostname,omitempty"`
+	Lifetime    string    `json:"lifetime"`
+	Temporary   bool      `json:"temporary,omitempty"`
+	Instance    string    `json:"instance,omitempty"`
 	ShortID     string    `json:"short_id,omitempty"`
 	Host        string    `json:"host,omitempty"`
 	ID          string    `json:"id"`
@@ -52,6 +58,7 @@ type shellView struct {
 	Age         *int64    `json:"age_seconds"`
 	Foreground  string    `json:"foreground"`
 	Directory   string    `json:"directory"`
+	ProcessTree string    `json:"process_tree,omitempty"`
 }
 type exitView struct {
 	Name   string    `json:"name"`
@@ -62,7 +69,6 @@ type peerView struct {
 	Direction string `json:"direction,omitempty"`
 	UID       string `json:"uid,omitempty"`
 	Identity  string `json:"identity,omitempty"`
-	order     uint64
 	ShortID   string `json:"short_id,omitempty"`
 	ID        string `json:"id"`
 	Manager   string `json:"manager"`
@@ -94,8 +100,9 @@ func viewRecord(r resourceRecord) resourceView {
 		v.Transport = "not-started"
 		return v
 	}
-	dir, _ := resourceStateDir(r.Kind)
-	v.Log = filepath.Join(dir, r.storageName()+".log")
+	if log, err := statePath(filepath.Join(r.Kind+"s", r.storageName()+".log")); err == nil {
+		v.Log = log
+	}
 	v.Protocol = "SSH/TCP"
 	if r.Kind == "mount" {
 		v.Protocol = "SFTP over SSH"
@@ -106,184 +113,166 @@ func viewRecord(r resourceRecord) resourceView {
 	}
 	return v
 }
-func inspectResources(records []resourceRecord) []resourceView {
-	views := make([]resourceView, len(records))
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	var wg sync.WaitGroup
-	jobs := make(chan int)
-	for n := 0; n < min(8, len(records)); n++ {
-		wg.Go(func() {
-			for i := range jobs {
-				views[i] = inspectResource(ctx, records[i])
-			}
-		})
-	}
-	for i := range records {
-		jobs <- i
-	}
-	close(jobs)
-	wg.Wait()
-	return views
-}
-func inspectResource(ctx context.Context, r resourceRecord) resourceView {
-	v := viewRecord(r)
-	if r.Kind == "review" {
-		return v
-	}
-	reply, err := daemonResourceRequest(ctx, "/resources/"+r.UID+"/status", nil)
+
+// Build the live inventory from the account's registered tasks. Callers add
+// the shell history and peer observations available at their own entry point.
+func collectManagedInventory(detailed, includeNative bool) inventory {
+	inv, err := hostedShellInventory(detailed)
 	if err != nil {
-		v.LastError = "local worker unavailable or status deadline exceeded"
-		return v
+		inv.Errors = append(inv.Errors, cleanText(err.Error()))
 	}
-	status := reply.Status
-	if status.Version != version {
-		v.LastError = "incompatible or invalid worker status"
-		return v
+	if includeNative {
+		inv.LocalShells, err = nativeShells()
+		if err != nil {
+			inv.Errors = append(inv.Errors, cleanText(err.Error()))
+		}
 	}
-	v.Worker, v.resourceStatus = "running", status
-	return v
+	resources, err := collectLocalResources("", true)
+	if err != nil {
+		inv.Errors = append(inv.Errors, cleanText(err.Error()))
+	} else {
+		inv.Resources = resources
+		if detailed {
+			inv.Resources = append(inv.Resources, collectResourceResults(inv.Resources)...)
+		}
+	}
+	return inv
 }
 
-func collectResourceResults(host string, active []resourceView) []resourceView {
-	seen := map[string]bool{}
-	for _, v := range active {
-		if v.Identity != "" {
-			seen[v.Identity] = true
-		}
-		seen[v.ID] = true
+func (inv *inventory) collectPeers() {
+	peers, err := collectPeerViews()
+	if err != nil {
+		inv.Errors = append(inv.Errors, cleanText(err.Error()))
 	}
-	var rows []resourceView
-	for _, kind := range []string{"mount", "forward"} {
-		dir, e := resourceStateDir(kind)
-		if e != nil {
+	inv.Peers = excludeLocalResourcePeers(peers, inv.Resources)
+}
+
+func (inv *inventory) collectShellHistory() {
+	inv.Exits = hostedExitHistory()
+	if inv.Hostname != "" {
+		inv.ShellTree = knownShellTrees()
+	}
+}
+
+func excludeLocalResourcePeers(peers []peerView, resources []resourceView) []peerView {
+	if len(peers) == 0 || len(resources) == 0 {
+		return peers
+	}
+	// Resource labels contain a slash, so they can share the index with UIDs.
+	localIDs := make(map[string]bool, len(resources))
+	for _, resource := range resources {
+		if resource.Worker == "exited" {
 			continue
 		}
-		entries, e := os.ReadDir(dir)
-		if e != nil {
-			continue
+		localIDs[resource.ID] = true
+		if uid := canonicalTaskUID(resource.Identity); uid != "" {
+			localIDs[uid] = true
 		}
-		for _, entry := range entries {
-			if !strings.HasSuffix(entry.Name(), ".json.result") {
-				continue
-			}
-			name := strings.TrimSuffix(entry.Name(), ".json.result")
-			if validSession(name) != nil {
-				continue
-			}
-			path := filepath.Join(dir, entry.Name())
-			if privateStatePath(path, false) != nil {
-				continue
-			}
-			f, e := os.Open(path)
-			if e != nil {
-				continue
-			}
-			var r resourceResult
-			e = json.NewDecoder(io.LimitReader(f, 128*1024)).Decode(&r)
-			f.Close()
-			if e != nil || r.Record.storageName() != name || r.Record.Kind != kind || time.Since(r.Finished) > 7*24*time.Hour || (host != "" && r.Record.Host != host) {
-				continue
-			}
-			if validTaskUID(r.Record.UID) && seen[resourceIdentity(r.Record)] {
-				continue
-			}
-			if !validTaskUID(r.Record.UID) && seen[kind+"/"+name] {
-				continue
-			}
-			if validSession(r.DisplayName) == nil {
-				r.Record.slot, r.Record.Name = name, r.DisplayName
-				if !validTaskUID(r.Record.UID) && seen[kind+"/"+r.DisplayName] {
+	}
+	manager := taskManagerLabel()
+	filtered := peers[:0]
+	for _, p := range peers {
+		resourceID := peerResourceID(p.ID)
+		if resourceID != p.ID {
+			if validTaskUID(p.UID) {
+				if localIDs[p.UID] {
 					continue
 				}
-			}
-			v := viewRecord(r.Record)
-			v.Worker = "exited"
-			v.resourceStatus = r.Status
-			rows = append(rows, v)
-		}
-	}
-	slices.SortFunc(rows, func(a, b resourceView) int { return cmp.Compare(a.ID, b.ID) })
-	return rows
-}
-func collectInventory(o options) (inventory, error) {
-	inv := emptyInventory()
-	inv.Host = o.host
-	if o.host != "" {
-		var output limitedInventoryBuffer
-		err := sshio.Run(context.Background(), sshConnectionOptions(o), nil, &output, os.Stderr)
-		if err == nil {
-			err = json.Unmarshal(output.data, &inv)
-		}
-		if err == nil && inv.Version != version {
-			err = fmt.Errorf("inventory release mismatch")
-		}
-		if err != nil {
-			inv = emptyInventory()
-			inv.Host = o.host
-			inv.Errors = append(inv.Errors, "remote query failed: "+cleanText(err.Error()))
-		} else {
-			inv.Host, inv.RemoteQueried = o.host, true
-			if warn, routeErr := observeIdentityRoute(inv.MachineID, o.host, o.ssh); routeErr == nil && warn {
-				fmt.Fprintln(os.Stderr, "[sshore] Same identity through a new entry point; if this is a clone, run sshore reset there.")
-			}
-			if err := cacheRemoteShells(o.host, inv, o); err != nil {
-				inv.Errors = append(inv.Errors, "could not save shell history: "+cleanText(err.Error()))
-			}
-		}
-	} else {
-		hosted, hostedErr := hostedShellInventory(o.listJSON)
-		inv.MachineID, inv.Hostname = hosted.MachineID, hosted.Hostname
-		inv.ShellTree = hosted.ShellTree
-		inv.Shells, inv.Exits = hosted.Shells, hosted.Exits
-		inv.Errors = append(inv.Errors, hosted.Errors...)
-		if hostedErr != nil {
-			inv.Errors = append(inv.Errors, cleanText(hostedErr.Error()))
-		}
-		for i := range inv.Shells {
-			inv.Shells[i].Host = "local"
-		}
-		local, localErr := nativeShells()
-		inv.LocalShells = local
-		if localErr != nil {
-			inv.Errors = append(inv.Errors, cleanText(localErr.Error()))
-		}
-		records, err := collectLocalResources("")
-		if err != nil {
-			inv.Errors = append(inv.Errors, cleanText(err.Error()))
-		}
-		inv.Resources = inspectResources(records)
-		if o.listJSON {
-			inv.Resources = append(inv.Resources, collectResourceResults("", inv.Resources)...)
-		}
-		snapshots, err := readShellSnapshots()
-		if err != nil {
-			inv.Errors = append(inv.Errors, cleanText(err.Error()))
-		}
-		for _, s := range snapshots {
-			if s.Forgotten {
+			} else if p.Manager == manager && localIDs[resourceID] {
 				continue
 			}
-			inv.Shells = append(inv.Shells, shellView{Lifetime: shellLifetime(s.Temporary, true), Temporary: s.Temporary, Instance: s.Instance, ID: shellTaskName(s.Name, s.Temporary), Host: s.Host, MachineID: s.MachineID, Hostname: s.Hostname, Name: s.Name, State: s.State, ConfirmedAt: s.ConfirmedAt, Unconfirmed: s.Unconfirmed, Active: s.Active, Historical: true})
 		}
-		inv.Peers, err = collectPeerViews()
-		if err != nil {
-			inv.Errors = append(inv.Errors, cleanText(err.Error()))
+		filtered = append(filtered, p)
+	}
+	return filtered
+}
+
+func collectInventory(o options) (inventory, error) {
+	if o.host != "" {
+		return collectRemoteInventory(o).finalize()
+	}
+
+	inv := collectManagedInventory(o.listJSON, true)
+	if o.listJSON {
+		inv.collectShellHistory()
+	}
+	for i := range inv.Shells {
+		inv.Shells[i].Host = "local"
+	}
+	snapshots, err := readShellSnapshots()
+	if err != nil {
+		inv.Errors = append(inv.Errors, cleanText(err.Error()))
+	}
+	for _, s := range snapshots {
+		if s.Forgotten {
+			continue
 		}
+		inv.Shells = append(inv.Shells, shellView{Lifetime: shellLifetime(s.Temporary, true), Temporary: s.Temporary, Instance: s.Instance, ID: shellTaskName(s.Name, s.Temporary), Host: s.Host, MachineID: s.MachineID, Hostname: s.Hostname, Name: s.Name, State: s.State, ConfirmedAt: s.ConfirmedAt, Unconfirmed: s.Unconfirmed, Active: s.Active, Historical: true})
 	}
-	if err := numberInventoryResources(&inv); err != nil {
-		return inv, err
+	inv.collectPeers()
+	return inv.finalize()
+}
+
+func collectRemoteInventory(o options) inventory {
+	inv := emptyInventory()
+	var output limitedInventoryBuffer
+	err := sshio.Run(context.Background(), sshConnectionOptions(o), nil, &output, os.Stderr)
+	if err == nil {
+		err = json.Unmarshal(output.data, &inv)
 	}
-	if err := numberInventoryShells(&inv); err != nil {
-		return inv, err
+	if err == nil && inv.Version != version {
+		err = fmt.Errorf("inventory release mismatch")
 	}
-	if err := numberInventoryPeers(&inv); err != nil {
-		return inv, err
+	if err != nil {
+		inv = emptyInventory()
+		inv.Host = o.host
+		inv.Errors = append(inv.Errors, "remote query failed: "+cleanText(err.Error()))
+		return inv
 	}
+	inv.Host, inv.RemoteQueried = o.host, true
+	if warn, routeErr := observeIdentityRoute(inv.MachineID, o.host, o.ssh); routeErr == nil && warn {
+		fmt.Fprintln(os.Stderr, "[sshore] Same identity through a new entry point; if this is a clone, run sshore reset there.")
+	}
+	if err := cacheRemoteShells(o.host, inv, o); err != nil {
+		inv.Errors = append(inv.Errors, "could not save shell history: "+cleanText(err.Error()))
+	}
+	return inv
+}
+
+func (inv inventory) finalize() (inventory, error) {
+	inv.setTaskReferences()
 	if len(inv.Errors) > 0 {
 		return inv, fmt.Errorf("inventory incomplete: %s", strings.Join(inv.Errors, "; "))
 	}
 	return inv, nil
+}
+
+func (s shellView) identity(defaultHost string) string {
+	if s.Host != "" {
+		return remoteShellIdentity(s.Host, s.Instance)
+	}
+	return remoteShellIdentity(defaultHost, s.Instance)
+}
+
+func (inv *inventory) setTaskReferences() {
+	for i := range inv.Shells {
+		shell := &inv.Shells[i]
+		shell.ShortID = taskShortCode(shell.identity(inv.Host))
+	}
+	for i := range inv.Resources {
+		resource := &inv.Resources[i]
+		resource.ShortID = taskShortCode(resource.Identity)
+	}
+	slices.SortStableFunc(inv.Resources, func(a, b resourceView) int {
+		if order := cmp.Compare(a.ShortID, b.ShortID); order != 0 {
+			return order
+		}
+		return cmp.Compare(taskUID(a.Identity), taskUID(b.Identity))
+	})
+	for i := range inv.Peers {
+		peer := &inv.Peers[i]
+		peer.ShortID = taskShortCode(peerTaskIdentity(*peer))
+	}
 }
 
 func runInventory(o options) (int, error) {

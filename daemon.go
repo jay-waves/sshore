@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -21,6 +22,7 @@ import (
 
 type localDaemonRequest struct {
 	Spawn  *spawnConfig
+	Auth   *sshAuthEndpoint `json:",omitempty"`
 	Kind   string
 	Record localShellRecord
 	Env    []string
@@ -51,14 +53,11 @@ func existingDaemonRecord() (localShellRecord, error) {
 	if err != nil {
 		return localShellRecord{}, err
 	}
-	owner, err := os.OpenFile(filepath.Join(dir, "owner.lock"), os.O_RDWR, 0600)
+	owner, err := openDaemonOwner(dir)
 	if err != nil {
 		return localShellRecord{}, err
 	}
 	defer owner.Close()
-	if err := privateStatePath(owner.Name(), false); err != nil {
-		return localShellRecord{}, err
-	}
 	if err := lockResourceState(owner); err == nil {
 		return localShellRecord{}, os.ErrNotExist
 	} else if !resourceLockBusy(err) {
@@ -251,15 +250,35 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 	active := 0
 	last := time.Now()
 	stopping := false
+	// Only sockets still reading their initial headers are pending.
+	pending := make(map[net.Conn]struct{})
 	busy := func() bool {
 		if activity := accountActivity.Load(); activity != nil && activity.busy() {
 			return true
 		}
 		return tasks.Busy()
 	}
+	stop := func(onlyIfIdle bool) bool {
+		mu.Lock()
+		if stopping || (onlyIfIdle && (active != 0 || busy() || time.Since(last) <= 30*time.Second)) {
+			mu.Unlock()
+			return false
+		}
+		stopping = true
+		headers := pending
+		pending = nil
+		mu.Unlock()
+		listener.Close()
+		for c := range headers {
+			c.Close()
+		}
+		return true
+	}
 	done := make(chan struct{})
-	defer close(done)
+	clockDone := make(chan struct{})
+	defer func() { close(done); <-clockDone }()
 	go func() {
+		defer close(clockDone)
 		tick := time.NewTicker(time.Second)
 		defer tick.Stop()
 		for {
@@ -270,38 +289,32 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 				if activity := accountActivity.Load(); activity != nil {
 					activity.tick(now)
 				}
-				mu.Lock()
-				idle := active == 0 && !busy() && time.Since(last) > 30*time.Second
-				if idle {
-					stopping = true
-				}
-				mu.Unlock()
-				if idle {
-					listener.Close()
+				if stop(true) {
 					return
 				}
 			}
 		}
 	}()
-	mux := daemonRoutes(record, tasks, services, func() { mu.Lock(); stopping = true; mu.Unlock(); listener.Close() })
-	// Limit connections that are still reading their HTTP headers.
-	pending := make(map[net.Conn]struct{})
+	mux := daemonRoutes(record, tasks, services, func() { stop(false) })
 	server := http.Server{
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       5 * time.Second,
 		MaxHeaderBytes:    8192,
 		ConnState: func(c net.Conn, state http.ConnState) {
 			mu.Lock()
-			defer mu.Unlock()
+			reject := false
 			switch state {
 			case http.StateNew:
-				if stopping || len(pending) >= 64 {
-					_ = c.Close()
-					return
+				reject = stopping || len(pending) >= 64
+				if !reject {
+					pending[c] = struct{}{}
 				}
-				pending[c] = struct{}{}
 			case http.StateActive, http.StateClosed:
 				delete(pending, c)
+			}
+			mu.Unlock()
+			if reject {
+				_ = c.Close()
 			}
 		},
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -309,7 +322,7 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 				http.Error(w, "unauthorized", 401)
 				return
 			}
-			if !strings.HasPrefix(r.URL.Path, "/admin/") && r.Header.Get("Sshore-Version") != record.Version {
+			if r.URL.Path != daemonSnapshotRoute && r.URL.Path != daemonShutdownRoute && r.Header.Get("Sshore-Version") != record.Version {
 				http.Error(w, "daemon version mismatch", 409)
 				return
 			}
@@ -326,17 +339,17 @@ func serveDaemon(listener net.Listener, record localShellRecord, services daemon
 		}),
 	}
 	server.SetKeepAlivesEnabled(false)
-	err := server.Serve(listener)
-	mu.Lock()
-	closedForShutdown := stopping
-	mu.Unlock()
-	if !closedForShutdown {
-		return err
+	serveErr := server.Serve(listener)
+	// A listener failure uses the same connection cleanup as an explicit
+	// shutdown. If another path already stopped the listener, Serve's error
+	// just reports that closure.
+	if !stop(false) {
+		serveErr = nil
 	}
-	// Let the shutdown response finish before releasing the daemon owner.
+	// Drain admitted requests before releasing the daemon owner.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return server.Shutdown(ctx)
+	return errors.Join(serveErr, server.Shutdown(ctx))
 }
 
 func runDaemonLaunch(c net.Conn, req localDaemonRequest, record localShellRecord, tasks *daemonTasks) {
@@ -400,20 +413,14 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 		return err
 	}
 	_ = c.SetReadDeadline(time.Time{})
-	if request.Kind == "forward" {
-		if config.Forward == nil || config.Forward.Name != request.Record.Name {
-			return fmt.Errorf("invalid forward startup")
-		}
-	} else {
-		_, err := parseFTPOptions(config.Args)
-		if err != nil {
-			return err
-		}
-		if config.Forward != nil || config.MountName != request.Record.Name {
-			return fmt.Errorf("invalid mount startup")
-		}
+	kind := config.kind()
+	if kind == "" || kind != request.Kind {
+		return fmt.Errorf("invalid %s startup", request.Kind)
 	}
-	dir, err := resourceStateDir(request.Kind)
+	if (kind == "forward" && config.Forward.Name != request.Record.Name) || (kind == "mount" && config.Mount.Name != request.Record.Name) {
+		return fmt.Errorf("invalid %s startup", kind)
+	}
+	dir, err := resourceStateDir(kind)
 	if err != nil {
 		return err
 	}
@@ -429,10 +436,13 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 	if err = privateStatePath(logPath, false); err != nil {
 		return err
 	}
-	if config.Forward != nil {
-		_, err := runConfiguredResource(config, dec, c, log, request.Env, request.Record.Directory, func() { c.Close() }, tasks)
-		return err
+	if kind == "forward" {
+		return runDaemonForward(config, enc, dec, c, log, request, tasks)
 	}
+	return runDaemonMount(config, enc, dec, c, log, filepath.Join(dir, config.UID+resourceResultSuffix), request, tasks)
+}
+
+func runDaemonMount(config resourceConfig, enc *json.Encoder, dec *json.Decoder, c net.Conn, log io.Writer, resultPath string, request localDaemonRequest, tasks *daemonTasks) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -447,96 +457,183 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 		return err
 	}
 	defer input.Close()
-	output, err := cmd.StdoutPipe()
+	// Keep the read end independent of Cmd.Wait so a control request can
+	// consume the worker's final reply after it exits.
+	output, childOutput, err := os.Pipe()
 	if err != nil {
 		return err
 	}
 	defer output.Close()
-	if err = cmd.Start(); err != nil {
+	defer childOutput.Close()
+	cmd.Stdout = childOutput
+	finished := make(chan struct{})
+	task := &daemonResourceTask{
+		record: resourceRecord{Kind: "mount", UID: config.UID, Name: config.Mount.Name, Host: config.Mount.Host, ReadOnly: config.Mount.ReadOnly, Direction: "<-", Version: version},
+		done:   finished,
+	}
+	childInput := json.NewEncoder(input)
+	child := json.NewDecoder(output)
+	const (
+		starting = iota
+		cancelled
+		running
+	)
+	var pipeMu sync.Mutex
+	phase := starting // Protected by pipeMu.
+	cancelStartupLocked := func() {
+		if phase == starting {
+			phase = cancelled
+			// Closing input also interrupts a blocked startup write.
+			_ = input.Close()
+		}
+	}
+	task.control = func(action string) resourceReply {
+		pipeMu.Lock()
+		defer pipeMu.Unlock()
+		select {
+		case <-finished:
+			return resourceReply{Error: "mount worker exited"}
+		default:
+		}
+		if phase != running {
+			switch action {
+			case "status":
+				return resourceReply{Status: resourceStatus{Version: version, Transport: "starting", Target: "unchecked"}}
+			case "kill":
+				cancelStartupLocked()
+				return resourceReply{}
+			default:
+				return resourceReply{Error: "invalid resource operation"}
+			}
+		}
+		if err := childInput.Encode(action); err != nil {
+			return resourceReply{Error: err.Error()}
+		}
+		var reply resourceReply
+		if err := child.Decode(&reply); err != nil {
+			return resourceReply{Error: err.Error()}
+		}
+		return reply
+	}
+	// Claim the task name before the worker can prepare its mountpoint.
+	if err := tasks.register(config.UID, task); err != nil {
 		return err
 	}
-	finished := make(chan struct{})
-	defer close(finished)
-	committed := false
-	defer func() {
-		if committed {
-			return
-		}
-		input.Close()
-		output.Close()
-		done := make(chan struct{})
-		go func() { cmd.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(12 * time.Second):
-			_ = cmd.Process.Kill()
-			<-done
+	if err = cmd.Start(); err != nil {
+		close(finished)
+		return err
+	}
+	childOutput.Close()
+	go func() {
+		defer close(finished)
+		_ = cmd.Wait()
+		if name := task.finalName(); name != config.Mount.Name {
+			updateMountResultName(resultPath, config.UID, name)
 		}
 	}()
-	if err = json.NewEncoder(input).Encode(config); err != nil {
+	defer func() {
+		input.Close()
+		timer := time.NewTimer(12 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-finished:
+		case <-timer.C:
+			_ = cmd.Process.Kill()
+			<-finished
+		}
+		// The worker has exited. Let any control call consume its final reply
+		// before closing the read end.
+		pipeMu.Lock()
+		output.Close()
+		pipeMu.Unlock()
+	}()
+	// Watch the initiator before writing to the worker, so cancellation also
+	// interrupts a blocked configuration write.
+	commit := awaitResourceCommit(dec.Decode, func() {
+		pipeMu.Lock()
+		defer pipeMu.Unlock()
+		cancelStartupLocked()
+	})
+	defer func() { _ = c.SetReadDeadline(time.Now()) }()
+	if err = childInput.Encode(config); err != nil {
 		return err
 	}
-	child := json.NewDecoder(output)
 	var startup resourceStartup
 	if err = child.Decode(&startup); err != nil {
 		return err
 	}
-	var pipeMu sync.Mutex
+	if startup.Error != "" {
+		return enc.Encode(startup)
+	}
+	record := task.publishReady(startup.Detail, startup.Remote, startup.Mountpoint)
+	if err = offerResourceStartup(enc, record, commit, finished); err != nil {
+		return err
+	}
+	// Startup still owns both codecs. A stop request may close the input pipe
+	// at any time, including while the commit write is blocked.
+	if err = commitResourceStartup(childInput, child); err != nil {
+		return err
+	}
 	pipeMu.Lock()
-	pipeLocked := true
-	defer func() {
-		if pipeLocked {
-			pipeMu.Unlock()
+	if phase == cancelled {
+		pipeMu.Unlock()
+		return fmt.Errorf("mount startup cancelled")
+	}
+	phase = running
+	pipeMu.Unlock()
+	acknowledgeResourceStartup(enc, c)
+	<-finished
+	return nil
+}
+
+func runDaemonForward(config resourceConfig, enc *json.Encoder, dec *json.Decoder, c net.Conn, log io.Writer, request localDaemonRequest, tasks *daemonTasks) error {
+	f := *config.Forward
+	if err := validateForwardConfig(f); err != nil {
+		return err
+	}
+	record := resourceRecord{Kind: "forward", Name: f.Name, Host: f.Host, Direction: "<-"}
+	if f.Reverse {
+		record.Direction = "->"
+	}
+	s, err := newResourceService(config, record)
+	if err != nil {
+		return err
+	}
+	s.log = log
+	s.environment, s.directory = request.Env, request.Record.Directory
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	task := &daemonResourceTask{record: s.record, done: s.done, control: func(action string) resourceReply {
+		switch action {
+		case "kill":
+			cancel()
+			return resourceReply{}
+		case "status":
+			return resourceReply{Status: s.statusSnapshot()}
+		default:
+			return resourceReply{Error: "invalid resource operation"}
 		}
-	}()
-	if startup.Error == "" {
-		task := &daemonResourceTask{record: startup.resourceRecord, done: finished, control: func(action string) resourceReply {
-			pipeMu.Lock()
-			defer pipeMu.Unlock()
-			if err := json.NewEncoder(input).Encode(action); err != nil {
-				return resourceReply{Error: err.Error()}
-			}
-			var reply resourceReply
-			if err := child.Decode(&reply); err != nil {
-				return resourceReply{Error: err.Error()}
-			}
-			return reply
-		}}
-		if err := tasks.register(config.UID, task); err != nil {
+	}}
+	if err := tasks.register(config.UID, task); err != nil {
+		return err
+	}
+	ack := awaitResourceCommit(dec.Decode, cancel)
+	code, err := runForward(ctx, f, s, func() error {
+		record := task.publishReady(s.record.Detail, "", "")
+		if err := offerResourceStartup(enc, record, ack, nil); err != nil {
 			return err
 		}
-	}
-	if err = enc.Encode(startup); err != nil {
-		return err
-	}
-	if startup.Error != "" {
+		acknowledgeResourceStartup(enc, c)
 		return nil
-	}
-	var ack string
-	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
-	if err = dec.Decode(&ack); err != nil {
-		return err
-	}
-	if ack != "commit" {
-		return fmt.Errorf("invalid resource commit")
-	}
-	if err = json.NewEncoder(input).Encode(ack); err != nil {
-		return err
-	}
-	if err = child.Decode(&ack); err != nil {
-		return err
-	}
-	if ack != "started" {
-		return fmt.Errorf("resource not started")
-	}
-	// From this point the worker owns the task even if the acknowledgement is lost.
-	committed = true
-	pipeMu.Unlock()
-	pipeLocked = false
-	_ = enc.Encode(ack)
-	c.Close()
-	_ = cmd.Wait()
-	return nil
+	})
+	s.finish(code, err, task.finalName())
+	return err
+}
+
+func acknowledgeResourceStartup(enc *json.Encoder, c net.Conn) {
+	// The daemon owns the committed task even if the initiator loses its reply.
+	_ = enc.Encode("started")
+	_ = c.Close()
 }
 
 func launchLocalDaemonContext(ctx context.Context, executable ...string) (localShellRecord, error) {
@@ -544,6 +641,10 @@ func launchLocalDaemonContext(ctx context.Context, executable ...string) (localS
 		return localShellRecord{}, err
 	}
 	var empty localShellRecord
+	request, err := newDaemonRecord()
+	if err != nil {
+		return empty, err
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return empty, err
@@ -582,50 +683,47 @@ func launchLocalDaemonContext(ctx context.Context, executable ...string) (localS
 	}
 	committed := false
 	defer func() {
-		if !committed {
-			_ = cmd.Process.Kill()
+		if committed {
+			go cmd.Wait()
+			return
 		}
-		go cmd.Wait()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 	}()
-	request, err := newDaemonRecord()
+	startup, cancel := context.WithTimeoutCause(ctx, 10*time.Second, errors.New("local daemon startup timed out"))
+	defer cancel()
+	stopIO := context.AfterFunc(startup, func() { input.Close(); output.Close() })
+	defer stopIO()
+	pipeError := func(err error) error {
+		if cause := context.Cause(startup); cause != nil {
+			return cause
+		}
+		return err
+	}
+	enc := json.NewEncoder(input)
+	if err := enc.Encode(request); err != nil {
+		return empty, pipeError(err)
+	}
+	var reply localStartup
+	if err := json.NewDecoder(output).Decode(&reply); err != nil {
+		return empty, pipeError(fmt.Errorf("start local daemon: %w", err))
+	}
+	if reply.Error != "" {
+		return empty, fmt.Errorf("start local daemon: %s", reply.Error)
+	}
+	r, err := readLocalRecord(filepath.Join(dir, "daemon.json"), "daemon")
 	if err != nil {
 		return empty, err
 	}
-	if err = json.NewEncoder(input).Encode(request); err != nil {
-		return empty, err
+	if r != reply.Record || r.Token != request.Token || r.Version != version {
+		return empty, fmt.Errorf("local daemon changed during startup")
 	}
-	result := make(chan localStartup, 1)
-	go func() {
-		var reply localStartup
-		if e := json.NewDecoder(output).Decode(&reply); e != nil {
-			reply.Error = e.Error()
-		}
-		result <- reply
-	}()
-	select {
-	case <-ctx.Done():
-		return empty, ctx.Err()
-	case reply := <-result:
-		if reply.Error != "" {
-			return empty, fmt.Errorf("start local daemon: %s", reply.Error)
-		}
-		path, err := daemonPath()
-		if err != nil {
-			return empty, err
-		}
-		r, err := readLocalRecord(path, "daemon")
-		if err != nil {
-			return empty, err
-		}
-		if r != reply.Record || r.Token != request.Token || r.Version != version {
-			return empty, fmt.Errorf("local daemon changed during startup")
-		}
-		if err = json.NewEncoder(input).Encode("ready"); err != nil {
-			return empty, err
-		}
-		committed = true
-		return r, nil
-	case <-time.After(10 * time.Second):
-		return empty, fmt.Errorf("local daemon startup timed out")
+	if cause := context.Cause(startup); cause != nil {
+		return empty, cause
 	}
+	if err := enc.Encode("ready"); err != nil {
+		return empty, pipeError(err)
+	}
+	committed = true
+	return r, nil
 }

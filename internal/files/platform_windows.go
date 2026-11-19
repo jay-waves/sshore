@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pkg/sftp"
 	"github.com/winfsp/go-winfsp"
 	"github.com/winfsp/go-winfsp/gofs"
 	"golang.org/x/sys/windows"
@@ -53,10 +52,11 @@ func mountFTP(f *ftpFS, p string) (ftpMount, error) {
 	if f.readOnly {
 		opts = append(opts, winfsp.Attributes(winfsp.FspFSAttributeReadOnlyVolume))
 	}
-	base := gofs.New(&ftpWindowsFS{backend: f}).(ftpWindowsBehaviour)
+	filesystem := &ftpWindowsFS{backend: f}
+	base := gofs.New(filesystem).(ftpWindowsBehaviour)
 	pool := &ftpWindowsMetadataPool{backend: f, entries: make(map[string]*ftpWindowsMetadataEntry)}
-	metadata := gofs.New(&ftpWindowsMetadataFS{ftpWindowsFS: &ftpWindowsFS{backend: f}, pool: pool}).(ftpWindowsBehaviour)
-	adapter := &ftpWindowsAttributes{ftpWindowsBehaviour: base, metadata: metadata, metadataHandles: make(map[uintptr]bool), backend: f, names: make(map[uintptr]string)}
+	metadata := gofs.New(&ftpWindowsMetadataFS{ftpWindowsFS: filesystem, pool: pool}).(ftpWindowsBehaviour)
+	adapter := &ftpWindowsAttributes{ftpWindowsBehaviour: base, metadata: metadata, backend: f}
 	host, e := winfsp.Mount(adapter, p, opts...)
 	if e != nil {
 		pool.close()
@@ -255,92 +255,110 @@ type ftpWindowsBehaviour interface {
 	winfsp.BehaviourDefaultOptions
 }
 
+type ftpWindowsHandle struct {
+	name     string
+	metadata bool
+}
+
 type ftpWindowsAttributes struct {
 	ftpWindowsBehaviour
-	backend         *ftpFS
-	metadata        ftpWindowsBehaviour
-	metadataHandles map[uintptr]bool
-	// Exclusive callbacks wait for in-flight opens before changing tracked paths.
+	backend  *ftpFS
+	metadata ftpWindowsBehaviour
+	// Rename and attribute updates exclude opens and path retirement.
 	mu      sync.RWMutex
-	namesMu sync.Mutex
-	names   map[uintptr]string
+	handles sync.Map // uintptr -> ftpWindowsHandle
+}
+
+func (a *ftpWindowsAttributes) handle(h uintptr) (ftpWindowsHandle, bool) {
+	value, _ := a.handles.Load(h)
+	handle, ok := value.(ftpWindowsHandle)
+	return handle, ok
+}
+
+func (a *ftpWindowsAttributes) behaviourFor(metadata bool) ftpWindowsBehaviour {
+	if metadata {
+		return a.metadata
+	}
+	return a.ftpWindowsBehaviour
+}
+
+func (a *ftpWindowsAttributes) handleBehaviour(h uintptr) ftpWindowsBehaviour {
+	handle, _ := a.handle(h)
+	return a.behaviourFor(handle.metadata)
 }
 
 func (a *ftpWindowsAttributes) Open(ref *winfsp.FileSystemRef, name string, opts, access uint32, info *winfsp.FSP_FSCTL_FILE_INFO) (uintptr, error) {
-	defer a.backend.metrics.observe("Open")()
+	defer a.backend.metrics.observe(ftpCallbackOpen)()
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	behaviour := a.ftpWindowsBehaviour
 	metadata := a.metadata != nil && ftpWindowsMetadataOpen(opts, access)
-	if metadata {
-		behaviour = a.metadata
-	}
-	h, e := behaviour.Open(ref, name, opts, access, info)
+	h, e := a.behaviourFor(metadata).Open(ref, name, opts, access, info)
 	if e == nil {
-		a.namesMu.Lock()
-		if metadata {
-			a.metadataHandles[h] = true
-		} else {
-			a.names[h] = name
-		}
-		a.namesMu.Unlock()
+		a.handles.Store(h, ftpWindowsHandle{name: name, metadata: metadata})
 	}
 	return h, e
 }
 func (a *ftpWindowsAttributes) Create(ref *winfsp.FileSystemRef, name string, opts, access, attrs uint32, sd *windows.SECURITY_DESCRIPTOR, size uint64, info *winfsp.FSP_FSCTL_FILE_INFO) (uintptr, error) {
-	defer a.backend.metrics.observe("Create")()
+	defer a.backend.metrics.observe(ftpCallbackCreate)()
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	h, e := a.ftpWindowsBehaviour.Create(ref, name, opts, access, attrs, sd, size, info)
 	if e == nil {
-		a.namesMu.Lock()
-		a.names[h] = name
-		a.namesMu.Unlock()
+		a.handles.Store(h, ftpWindowsHandle{name: name})
 	}
 	return h, e
 }
 func (a *ftpWindowsAttributes) Close(ref *winfsp.FileSystemRef, h uintptr) {
-	defer a.backend.metrics.observe("Close")()
-	a.mu.Lock()
-	a.namesMu.Lock()
-	metadata := a.metadataHandles[h]
-	delete(a.metadataHandles, h)
-	a.namesMu.Unlock()
-	delete(a.names, h)
-	a.mu.Unlock()
-	if metadata {
-		a.metadata.Close(ref, h)
-	} else {
-		a.ftpWindowsBehaviour.Close(ref, h)
-	}
+	defer a.backend.metrics.observe(ftpCallbackClose)()
+	a.mu.RLock()
+	value, _ := a.handles.LoadAndDelete(h)
+	a.mu.RUnlock()
+	handle, _ := value.(ftpWindowsHandle)
+	a.behaviourFor(handle.metadata).Close(ref, h)
+}
+func (a *ftpWindowsAttributes) Cleanup(ref *winfsp.FileSystemRef, h uintptr, name string, flags uint32) {
+	a.handleBehaviour(h).Cleanup(ref, h, name, flags)
+}
+func (a *ftpWindowsAttributes) Flush(ref *winfsp.FileSystemRef, h uintptr, info *winfsp.FSP_FSCTL_FILE_INFO) error {
+	return a.handleBehaviour(h).Flush(ref, h, info)
+}
+func (a *ftpWindowsAttributes) GetSecurity(ref *winfsp.FileSystemRef, h uintptr) (*windows.SECURITY_DESCRIPTOR, error) {
+	return a.handleBehaviour(h).GetSecurity(ref, h)
 }
 func (a *ftpWindowsAttributes) Rename(ref *winfsp.FileSystemRef, h uintptr, old, new string, replace bool) error {
-	defer a.backend.metrics.observe("Rename")()
+	defer a.backend.metrics.observe(ftpCallbackRename)()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	source, ok := a.names[h]
-	if !ok {
+	entry, ok := a.handle(h)
+	if !ok || entry.metadata {
 		return windows.STATUS_INVALID_HANDLE
 	}
+	source := entry.name
 	if e := a.ftpWindowsBehaviour.Rename(ref, h, old, new, replace); e != nil {
 		return e
 	}
+	descendants := source + `\`
 	// Handles to an overwritten target must not apply path-based attributes to
 	// the replacement. Their existing data handles remain under gofs ownership.
-	if source != new {
-		for handle, name := range a.names {
-			if name == new {
-				delete(a.names, handle)
-			}
+	a.handles.Range(func(h, value any) bool {
+		handle := value.(ftpWindowsHandle)
+		if handle.metadata {
+			return true
 		}
-	}
-	for handle, name := range a.names {
-		if name == source {
-			a.names[handle] = new
-		} else if strings.HasPrefix(name, source+`\`) {
-			a.names[handle] = new + strings.TrimPrefix(name, source)
+		switch {
+		case handle.name == source:
+			handle.name = new
+		case handle.name == new:
+			a.handles.Delete(h)
+			return true
+		case strings.HasPrefix(handle.name, descendants):
+			handle.name = new + handle.name[len(source):]
+		default:
+			return true
 		}
-	}
+		a.handles.Store(h, handle)
+		return true
+	})
 	return nil
 }
 func ftpWindowsTime(v uint64) time.Time {
@@ -348,14 +366,14 @@ func ftpWindowsTime(v uint64) time.Time {
 	return time.Unix(0, t.Nanoseconds())
 }
 func (a *ftpWindowsAttributes) SetBasicInfo(ref *winfsp.FileSystemRef, h uintptr, flags winfsp.SetBasicInfoFlags, attrs uint32, creation, access, write, change uint64, info *winfsp.FSP_FSCTL_FILE_INFO) error {
-	defer a.backend.metrics.observe("SetBasicInfo")()
+	defer a.backend.metrics.observe(ftpCallbackSetBasicInfo)()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if e := a.backend.writable(); e != nil {
 		return ftpWindowsError(e)
 	}
-	name, ok := a.names[h]
-	if !ok {
+	handle, ok := a.handle(h)
+	if !ok || handle.metadata {
 		return windows.STATUS_INVALID_HANDLE
 	}
 	// Verify the underlying gofs handle before using its tracked pathname.
@@ -365,7 +383,7 @@ func (a *ftpWindowsAttributes) SetBasicInfo(ref *winfsp.FileSystemRef, h uintptr
 	if flags&(winfsp.SetBasicInfoAttributes|winfsp.SetBasicInfoLastAccessTime|winfsp.SetBasicInfoLastWriteTime) == 0 {
 		return nil
 	}
-	name, e := ftpWindowsPath(name)
+	name, e := ftpWindowsPath(handle.name)
 	if e != nil {
 		return e
 	}
@@ -373,53 +391,36 @@ func (a *ftpWindowsAttributes) SetBasicInfo(ref *winfsp.FileSystemRef, h uintptr
 	if e != nil {
 		return ftpWindowsError(e)
 	}
-	defer a.backend.cache.beginMutation(p)()
-	stat, e := a.backend.client.Stat(p)
-	if e != nil {
-		return ftpWindowsError(e)
+	var update ftpAttributeUpdate
+	if flags&winfsp.SetBasicInfoAttributes != 0 {
+		readOnly := attrs&windows.FILE_ATTRIBUTE_READONLY != 0
+		update.readOnly = &readOnly
 	}
-	if flags&winfsp.SetBasicInfoAttributes != 0 && !stat.IsDir() {
-		mode := stat.Mode().Perm()
-		if attrs&windows.FILE_ATTRIBUTE_READONLY != 0 {
-			mode &^= 0222
-		} else {
-			mode |= 0200
-		}
-		if mode != stat.Mode().Perm() {
-			if e = a.backend.client.Chmod(p, os.FileMode(mode)); e != nil {
-				return ftpWindowsError(e)
-			}
-		}
+	if flags&winfsp.SetBasicInfoLastAccessTime != 0 {
+		at := ftpWindowsTime(access)
+		update.atime = &at
 	}
-	if flags&(winfsp.SetBasicInfoLastAccessTime|winfsp.SetBasicInfoLastWriteTime) != 0 {
-		at, mt := stat.ModTime(), stat.ModTime()
-		if raw, ok := stat.Sys().(*sftp.FileStat); ok {
-			at = time.Unix(int64(raw.Atime), 0)
-		}
-		if flags&winfsp.SetBasicInfoLastAccessTime != 0 {
-			at = ftpWindowsTime(access)
-		}
-		if flags&winfsp.SetBasicInfoLastWriteTime != 0 {
-			mt = ftpWindowsTime(write)
-		}
-		if e = a.backend.client.Chtimes(p, at, mt); e != nil {
-			return ftpWindowsError(e)
-		}
+	if flags&winfsp.SetBasicInfoLastWriteTime != 0 {
+		mt := ftpWindowsTime(write)
+		update.mtime = &mt
+	}
+	if err := a.backend.setAttributes(p, nil, update); err != nil {
+		return ftpWindowsError(err)
 	}
 	return a.GetFileInfo(ref, h, info)
 }
 
 func (a *ftpWindowsAttributes) ReadDirectory(ref *winfsp.FileSystemRef, h uintptr, pattern string, fill func(string, *winfsp.FSP_FSCTL_FILE_INFO) (bool, error)) error {
-	defer a.backend.metrics.observe("ReadDirectory")()
+	defer a.backend.metrics.observe(ftpCallbackReadDirectory)()
 	return a.ftpWindowsBehaviour.ReadDirectory(ref, h, pattern, fill)
 }
 func (a *ftpWindowsAttributes) GetFileInfo(ref *winfsp.FileSystemRef, h uintptr, info *winfsp.FSP_FSCTL_FILE_INFO) error {
-	defer a.backend.metrics.observe("GetFileInfo")()
+	defer a.backend.metrics.observe(ftpCallbackGetFileInfo)()
 	return a.handleBehaviour(h).GetFileInfo(ref, h, info)
 }
 
 func (a *ftpWindowsAttributes) GetVolumeInfo(ref *winfsp.FileSystemRef, info *winfsp.FSP_FSCTL_VOLUME_INFO) error {
-	s, err := a.backend.cachedCapacity()
+	s, err := a.backend.cachedCapacity(a.backend.root)
 	if err != nil {
 		return ftpWindowsError(err)
 	}

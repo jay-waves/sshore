@@ -182,7 +182,7 @@ func TestPrivateFileDoesNotAuthenticateWithoutAgent(t *testing.T) {
 
 func TestAuthenticationBudgetPausesJumpChain(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		g := &authenticationBudgets{entries: make(map[*authenticationBudget]bool)}
+		var g authenticationBudgets
 		outer, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		inner, stop := context.WithCancel(outer)

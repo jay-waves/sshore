@@ -101,12 +101,17 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 		}
 		if args[0] == "fixture-launch" {
 			t.Setenv("SSHORE_STATE_DIR", state)
-			records, err := nativeShellRecords()
+			rows, err := nativeShells()
 			if err != nil {
 				t.Fatal(err)
 			}
 			var first, second localShellRecord
-			for _, record := range records {
+			for _, row := range rows {
+				conn, record, err := openNativeShell(context.Background(), "", row.identity)
+				if err != nil {
+					t.Fatal(err)
+				}
+				conn.Close()
 				if record.Name == "localtest" {
 					first = record
 				} else {
@@ -165,14 +170,17 @@ func TestInitialAttachmentFailureEndsCreatedTerminal(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 	s := &remoteShell{name: "failed", done: make(chan struct{})}
 	p := closedAttachment(t)
-	if _, err := s.attach(p, message{Type: "attach", Term: "xterm-256color", Cols: 80, Rows: 24}); err == nil {
+	if err := s.attach(p, message{Type: "attach", Term: "xterm-256color", Cols: 80, Rows: 24}); err == nil {
 		t.Fatal("accepted closed attachment")
 	}
 	if s.terminal == nil {
 		t.Fatal("test did not reach terminal startup")
 	}
 	defer s.terminal.Close()
-	if !s.lifecycle.Exited() || s.lifecycle.Active() != nil {
+	s.mu.Lock()
+	exited := s.exited && s.active == nil
+	s.mu.Unlock()
+	if !exited {
 		t.Fatal("initial failure preserved shell")
 	}
 	done := make(chan struct{})
@@ -191,10 +199,13 @@ func TestFailedReattachmentPreservesDetachedTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { s.terminal.Close(); s.terminal.Wait() }()
-	if _, err := s.attach(closedAttachment(t), message{Type: "attach", Term: "xterm-256color", Cols: 80, Rows: 24}); err == nil {
+	if err := s.attach(closedAttachment(t), message{Type: "attach", Term: "xterm-256color", Cols: 80, Rows: 24}); err == nil {
 		t.Fatal("accepted closed attachment")
 	}
-	if s.lifecycle.Exited() || s.lifecycle.Active() != nil {
+	s.mu.Lock()
+	detached := !s.exited && s.active == nil
+	s.mu.Unlock()
+	if !detached {
 		t.Fatal("failed reconnect ended detached terminal")
 	}
 }
@@ -202,9 +213,7 @@ func TestFailedReattachmentPreservesDetachedTerminal(t *testing.T) {
 func TestDetachReportsFailedClientNotification(t *testing.T) {
 	s := &remoteShell{done: make(chan struct{})}
 	p := closedAttachment(t)
-	if err := s.lifecycle.Attach(p, func() error { return nil }); err != nil {
-		t.Fatal(err)
-	}
+	s.active = p
 	client, server := net.Pipe()
 	defer client.Close()
 	_ = client.SetDeadline(time.Now().Add(2 * time.Second))
@@ -288,10 +297,7 @@ func TestPSTreeKeepsUnavailableHostedShell(t *testing.T) {
 	defer os.RemoveAll(dir)
 	t.Setenv("SSHORE_RUNTIME_DIR", dir)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(dir, "state"))
-	uid, err := newTaskUID()
-	if err != nil {
-		t.Fatal(err)
-	}
+	uid := newTaskUID()
 	tasks := startRequestDaemon(t)
 	shell := &remoteShell{tasks: tasks, instance: uid, name: "blocked", lifetime: awaitingSpawnOwner, done: make(chan struct{})}
 	if err := tasks.register(uid, shell); err != nil {
@@ -304,9 +310,9 @@ func TestPSTreeKeepsUnavailableHostedShell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodes := localShellTreeNodes(inventoryShellTrees(knownShellTrees(), inv), inv)
+	nodes := localShellTreeNodes(inv)
 	var out bytes.Buffer
-	writeShellTree(&out, nodes, false)
+	writeShellTree(&out, nodes, inv.MachineID, false)
 	if !strings.Contains(out.String(), uid[:6]+" (blocked)") || !strings.Contains(out.String(), "spawn/") {
 		t.Fatal(out.String())
 	}
@@ -473,14 +479,13 @@ func TestShellTerminalReleasesWriterAfterExit(t *testing.T) {
 	var host shellTerminal
 	active, stale := new(attachment), new(attachment)
 	input := new(trackedShellInput)
-	if err := host.lifecycle.Attach(active, func() error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if detached, err := host.detachTerminal(stale, input); detached || err != nil || input.Stopped() {
+	active.input = input
+	host.active = active
+	if detached, err := host.detachTerminal(stale); detached || err != nil || input.Stopped() {
 		t.Fatal("stale attachment affected the active writer")
 	}
-	host.lifecycle.End()
-	if detached, err := host.detachTerminal(active, input); detached || err != nil || input.stops != 1 {
+	host.endTerminal()
+	if detached, err := host.detachTerminal(active); detached || err != nil || input.stops != 1 {
 		t.Fatal("exited terminal's writer was not stopped")
 	}
 }

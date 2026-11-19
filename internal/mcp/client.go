@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
+
+	"github.com/jay-waves/sshore/internal/wire"
 )
 
 type DialFunc func(context.Context, string) (io.ReadWriteCloser, error)
@@ -20,9 +23,10 @@ type Client struct {
 	closed      bool
 }
 type clientConnection struct {
-	busy   bool
-	conn   io.ReadWriteCloser
+	ctx    context.Context
 	cancel context.CancelFunc
+	conn   io.ReadWriteCloser
+	idle   bool // Protected by Client.mu.
 }
 
 const maxHostConnections = 8
@@ -34,12 +38,15 @@ type clientPool struct {
 
 // Each transport carries one protocol exchange at a time. Concurrent calls grow
 // a host's pool on demand instead of waiting behind an unrelated long read.
-func (c *Client) acquire(ctx context.Context, host string) (*clientConnection, func(), error) {
+func (c *Client) acquire(ctx context.Context, host string) (*clientConnection, error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		c.mu.Lock()
 		if c.closed {
 			c.mu.Unlock()
-			return nil, nil, fmt.Errorf("MCP client closed")
+			return nil, fmt.Errorf("MCP client closed")
 		}
 		if c.connections == nil {
 			c.connections = make(map[string]*clientPool)
@@ -49,35 +56,48 @@ func (c *Client) acquire(ctx context.Context, host string) (*clientConnection, f
 			pool = &clientPool{changed: make(chan struct{})}
 			c.connections[host] = pool
 		}
-		var entry *clientConnection
-		for _, candidate := range pool.connections {
-			if !candidate.busy {
-				entry = candidate
-				break
+		for _, entry := range pool.connections {
+			if entry.idle {
+				entry.idle = false
+				c.mu.Unlock()
+				return entry, nil
 			}
 		}
-		if entry == nil && len(pool.connections) < maxHostConnections {
-			entry = &clientConnection{}
+		if len(pool.connections) < maxHostConnections {
+			lifetime, cancel := context.WithCancel(context.WithoutCancel(ctx))
+			entry := &clientConnection{ctx: lifetime, cancel: cancel}
 			pool.connections = append(pool.connections, entry)
-		}
-		if entry != nil {
-			entry.busy = true
 			c.mu.Unlock()
-			return entry, func() {
-				c.mu.Lock()
-				entry.busy = false
-				close(pool.changed)
-				pool.changed = make(chan struct{})
-				c.mu.Unlock()
-			}, nil
+			return entry, nil
 		}
 		changed := pool.changed
 		c.mu.Unlock()
 		select {
 		case <-ctx.Done():
-			return nil, nil, ctx.Err()
+			return nil, ctx.Err()
 		case <-changed:
 		}
+	}
+}
+
+func (c *Client) release(host string, entry *clientConnection, reuse bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	pool := c.connections[host]
+	if reuse {
+		entry.idle = true
+	} else {
+		i := slices.Index(pool.connections, entry)
+		pool.connections = slices.Delete(pool.connections, i, i+1)
+	}
+	close(pool.changed)
+	if len(pool.connections) == 0 {
+		delete(c.connections, host)
+	} else {
+		pool.changed = make(chan struct{})
 	}
 }
 
@@ -85,23 +105,23 @@ func (c *Client) acquire(ctx context.Context, host string) (*clientConnection, f
 func (c *Client) Shutdown() {
 	c.mu.Lock()
 	c.closed = true
-	var connections []io.ReadWriteCloser
-	for _, pool := range c.connections {
-		close(pool.changed)
-		pool.changed = make(chan struct{})
-		for _, entry := range pool.connections {
-			if entry.cancel != nil {
-				entry.cancel()
-			}
-			if entry.conn != nil {
-				connections = append(connections, entry.conn)
-			}
-		}
-	}
+	pools := c.connections
 	c.connections = nil
 	c.mu.Unlock()
-	for _, conn := range connections {
-		_ = conn.Close()
+	// A closed client can neither publish a stream nor change a pool.
+	// Cancel every slot before waiting for any transport to close.
+	for _, pool := range pools {
+		close(pool.changed)
+		for _, entry := range pool.connections {
+			entry.cancel()
+		}
+	}
+	for _, pool := range pools {
+		for _, entry := range pool.connections {
+			if entry.conn != nil {
+				_ = entry.conn.Close()
+			}
+		}
 	}
 }
 
@@ -137,6 +157,7 @@ func decodeReference(id string) (sessionReference, error) {
 	}
 	return ref, nil
 }
+
 func (c *Client) call(ctx context.Context, host string, req Request) (Response, error) {
 	if err := validateHost(host); err != nil {
 		return Response{}, err
@@ -144,77 +165,54 @@ func (c *Client) call(ctx context.Context, host string, req Request) (Response, 
 	if c.Dial == nil {
 		return Response{}, fmt.Errorf("transport unavailable")
 	}
-	entry, release, err := c.acquire(ctx, host)
+	entry, err := c.acquire(ctx, host)
 	if err != nil {
 		return Response{}, err
 	}
-	defer release()
-	if err := ctx.Err(); err != nil {
-		return Response{}, err
-	}
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return Response{}, fmt.Errorf("MCP client closed")
-	}
 	conn := entry.conn
-	c.mu.Unlock()
-	if conn == nil {
-		// The transport outlives this request; request cancellation still aborts dialing.
-		connectionCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-		c.mu.Lock()
-		if c.closed {
-			c.mu.Unlock()
-			cancel()
-			return Response{}, fmt.Errorf("MCP client closed")
-		}
-		entry.cancel = cancel
-		c.mu.Unlock()
-		stopDial := context.AfterFunc(ctx, cancel)
-		conn, err = c.Dial(connectionCtx, host)
-		stopped := stopDial()
-		if err != nil || !stopped || connectionCtx.Err() != nil {
-			cancel()
+	reuse := false
+	stop := context.AfterFunc(ctx, entry.cancel)
+	defer func() {
+		keep := stop() && reuse && ctx.Err() == nil
+		if !keep {
+			entry.cancel()
 			if conn != nil {
 				_ = conn.Close()
 			}
-			if err != nil {
-				return Response{}, err
-			}
-			if ctx.Err() != nil {
-				return Response{}, ctx.Err()
-			}
-			return Response{}, fmt.Errorf("MCP client closed")
 		}
-		c.mu.Lock()
-		if c.closed {
-			c.mu.Unlock()
-			cancel()
-			_ = conn.Close()
-			return Response{}, fmt.Errorf("MCP client closed")
-		}
-		entry.conn = conn
-		c.mu.Unlock()
-	}
-	healthy := false
-	stopped := make(chan struct{})
-	stop := context.AfterFunc(ctx, func() { _ = conn.Close(); close(stopped) })
-	defer func() {
-		if !stop() {
-			<-stopped
-			healthy = false
-		}
-		if !healthy {
-			_ = conn.Close()
-			c.mu.Lock()
-			entry.conn = nil
-			if entry.cancel != nil {
-				entry.cancel()
-				entry.cancel = nil
-			}
-			c.mu.Unlock()
-		}
+		c.release(host, entry, keep)
 	}()
+	if err := ctx.Err(); err != nil {
+		return Response{}, err
+	}
+	if err := entry.ctx.Err(); err != nil {
+		return Response{}, err
+	}
+	if conn == nil {
+		conn, err = c.Dial(entry.ctx, host)
+		if err != nil {
+			return Response{}, err
+		}
+		if conn == nil {
+			return Response{}, fmt.Errorf("transport unavailable")
+		}
+		conn = wire.OwnTransport(entry.ctx, conn, nil)
+
+		// Publish under the same lock that detaches pools during shutdown.
+		c.mu.Lock()
+		requestErr := ctx.Err()
+		closed := c.closed || entry.ctx.Err() != nil
+		if requestErr == nil && !closed {
+			entry.conn = conn
+		}
+		c.mu.Unlock()
+		if requestErr != nil {
+			return Response{}, requestErr
+		}
+		if closed {
+			return Response{}, fmt.Errorf("MCP client closed")
+		}
+	}
 	req.Version = c.Version
 	if err = WriteRequest(conn, req); err != nil {
 		return Response{}, fmt.Errorf("send request: %w", err)
@@ -226,7 +224,7 @@ func (c *Client) call(ctx context.Context, host string, req Request) (Response, 
 	if res.Version != c.Version {
 		return Response{}, fmt.Errorf("remote release mismatch")
 	}
-	healthy = true
+	reuse = true
 	if res.Error != "" {
 		return Response{}, fmt.Errorf("remote: %s", res.Error)
 	}

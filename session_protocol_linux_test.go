@@ -19,6 +19,7 @@ import (
 	"github.com/xtaci/smux"
 
 	"github.com/jay-waves/sshore/internal/files"
+	"github.com/jay-waves/sshore/internal/tmux"
 
 	"github.com/jay-waves/sshore/internal/wire"
 )
@@ -417,8 +418,8 @@ func TestTransferRoundTripsCancellationAndNoOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := filepath.Join(e.dir, "download")
-	op := operation{Kind: "download", Path: source, Name: filepath.Base(source), Size: int64(len(data)), LocalPath: target}
-	if err := executeApprovedFile(context.Background(), mux, op, nil, true); err != nil {
+	download := newApprovedFile(operation{Kind: "download", Path: source, Name: filepath.Base(source), Size: int64(len(data))}, target, nil)
+	if err := executeApprovedFile(context.Background(), mux, download, true); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(target)
@@ -429,7 +430,7 @@ func TestTransferRoundTripsCancellationAndNoOverwrite(t *testing.T) {
 	if err = os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	op = operation{Kind: "upload", Path: dir, Name: filepath.Base(source), Size: int64(len(data)), LocalPath: source}
+	op := newApprovedFile(operation{Kind: "upload", Path: dir}, source, nil)
 	approved, err := files.OpenSource(source)
 	if err != nil {
 		t.Fatal(err)
@@ -441,20 +442,22 @@ func TestTransferRoundTripsCancellationAndNoOverwrite(t *testing.T) {
 	if err = os.WriteFile(source, make([]byte, len(data)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err = executeApprovedFile(context.Background(), mux, op, approved, true); err != nil {
+	op.opened = approved
+	if err = executeApprovedFile(context.Background(), mux, op, true); err != nil {
 		t.Fatal(err)
 	}
-	got, err = os.ReadFile(filepath.Join(dir, op.Name))
+	got, err = os.ReadFile(filepath.Join(dir, op.approvedName()))
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatal("upload corrupted", err)
 	}
-	upload := func(op operation) error {
-		approved, err := files.OpenSource(op.LocalPath)
+	upload := func(op fileCopy) error {
+		approved, err := files.OpenSource(op.source)
 		if err != nil {
 			return err
 		}
 		defer approved.Close()
-		return executeApprovedFile(context.Background(), mux, op, approved, true)
+		op.opened = approved
+		return executeApprovedFile(context.Background(), mux, op, true)
 	}
 	if err = upload(op); err == nil {
 		t.Fatal("overwrite accepted")
@@ -465,15 +468,12 @@ func TestTransferRoundTripsCancellationAndNoOverwrite(t *testing.T) {
 	if err = os.WriteFile(source, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	op.Size = 0
-	op.Path = e.dir
 	// A different empty source exercises zero-byte publication.
-	op.LocalPath = filepath.Join(t.TempDir(), "empty")
-	op.Name = "empty"
-	if err = os.WriteFile(op.LocalPath, nil, 0600); err != nil {
+	empty := filepath.Join(t.TempDir(), "empty")
+	if err = os.WriteFile(empty, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err = upload(op); err != nil {
+	if err = upload(newApprovedFile(operation{Kind: "upload", Path: e.dir}, empty, nil)); err != nil {
 		t.Fatal(err)
 	}
 	partialUpload(t, mux, dir, "lost")
@@ -499,7 +499,12 @@ func TestConcurrentStreamsCancelIsolation(t *testing.T) {
 	if err := os.WriteFile(source, []byte("ok"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := files.Upload(fast, source, "/target", 2, nil); err != nil {
+	opened, err := files.OpenSource(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	if err := opened.Upload(fast, "/target", nil); err != nil {
 		t.Fatal(err)
 	}
 	waitUploadFiles(t, dir, 1)
@@ -604,7 +609,7 @@ func waitSessionEnded(t *testing.T, e *testEnv, name string, pid int) {
 func TestExplicitDetachControlPreservesSession(t *testing.T) {
 	e := newEnv(t)
 	b, pid := e.attach("stay")
-	if err := detachControl(b.in.(*smux.Stream)); err != nil {
+	if err := tmux.Detach(b.in.(*smux.Stream)); err != nil {
 		t.Fatal(err)
 	}
 	b.close()
@@ -664,7 +669,8 @@ func TestNewAndAttachLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := recv(t, out)
-	if m.Type != "session_choice" || strings.Join(m.Names, ",") != "build,other" {
+	names, err := sessionTargetNames(m.Targets)
+	if m.Type != "session_choice" || err != nil || strings.Join(names, ",") != "build,other" {
 		t.Fatalf("choice: %+v", m)
 	}
 	in.Close()

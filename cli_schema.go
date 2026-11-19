@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 // Aliases resolve only command names, never operands or SSH arguments.
@@ -27,8 +29,6 @@ type cliValue uint8
 const (
 	cliBool cliValue = iota
 	cliText
-	cliPath
-	cliDirectory
 	cliDuration
 	cliRetries
 	cliPort
@@ -49,7 +49,7 @@ var cliOptions = map[string]cliOption{
 	"--server":       {kind: cliText},
 	"--apply":        {},
 	"--port":         {kind: cliPort},
-	"--download-dir": {kind: cliDirectory},
+	"--download-dir": {kind: cliText},
 	"--quiet":        {alias: "-q"},
 	"--no-escape":    {}, "--detach": {}, "--no-login": {}, "--no-profile": {},
 	"--json":       {},
@@ -64,55 +64,21 @@ type cliSpec struct {
 	flags       []string
 	ssh, native bool
 	min, max    int
+	help        string
+	examples    string
 }
 
 func commandSpec(command string) (cliSpec, bool) {
-	command = canonicalCommand(command)
-	base := []string{"--local", "--server"}
-	interactive := []string{"--server", "--download-dir", "--quiet", "--no-escape"}
-	spec := cliSpec{}
-	switch command {
-	case "":
-		spec = cliSpec{[]string{"--version"}, false, false, 0, 0}
-	case "daemon":
-		spec = cliSpec{nil, false, false, 0, 1}
-	case "install":
-		spec = cliSpec{[]string{"--apply"}, true, false, 0, 1}
-	case "mcp":
-		spec = cliSpec{nil, false, false, 0, 0}
-	case "exec":
-		spec = cliSpec{nil, false, false, 2, 2}
-	case "launch", "spawn":
-		spec = cliSpec{append(interactive, "--detach", "--no-login", "--no-profile"), true, true, 0, 1}
-	case "attach":
-		spec = cliSpec{strings.Fields("--server --download-dir --quiet --no-escape"), true, true, 0, 2}
-	case "list":
-		spec = cliSpec{append(base, "--json"), true, false, 0, 1}
-	case "pstree":
-		spec = cliSpec{nil, false, false, 0, 0}
-	case "kill":
-		spec = cliSpec{append(base, "--all"), true, false, 0, 2}
-	case "rename":
-		spec = cliSpec{base, true, false, 2, 3}
-	case "cp":
-		spec = cliSpec{nil, true, false, 2, -1}
-	case "mount":
-		spec = cliSpec{strings.Fields("--foreground --read-only --io-timeout --startup-timeout --stats --direct-io"), true, false, 2, 2}
-	case "forward":
-		spec = cliSpec{strings.Fields("--retries --foreground"), true, false, 2, 2}
-	case "review":
-		spec = cliSpec{nil, false, false, 0, 1}
-	case "help":
-		spec = cliSpec{nil, false, false, 0, 1}
-	case "detach", "reset":
-	default:
-		return spec, false
+	spec, ok := cliCommands[command]
+	if !ok {
+		return cliSpec{}, false
 	}
+	spec.flags = append(make([]string, 0, len(spec.flags)+3), spec.flags...)
 	if spec.ssh {
 		spec.flags = append(spec.flags, "--port")
 	}
 	spec.flags = append(spec.flags, "--help")
-	if _, ok := commandExamples[command]; ok {
+	if spec.examples != "" {
 		spec.flags = append(spec.flags, "--tldr")
 	}
 	return spec, true
@@ -142,11 +108,11 @@ func (a cliArguments) value(name, fallback string) string {
 	}
 	return fallback
 }
-func (a cliArguments) operand(index int, fallback string) string {
+func (a cliArguments) operand(index int) string {
 	if index < len(a.operands) {
 		return a.operands[index]
 	}
-	return fallback
+	return ""
 }
 func (a cliArguments) duration(name string, fallback time.Duration) time.Duration {
 	if !a.has(name) {
@@ -190,7 +156,6 @@ func validateCLIValue(name, value string, option cliOption) error {
 // Product aliases share one slot; repeated SSH options retain their order.
 // Parsing never starts work or reads state.
 func parseCLI(args []string, command string) (cliArguments, error) {
-
 	command = canonicalCommand(command)
 	a := cliArguments{values: make(map[string]string)}
 	spec, ok := commandSpec(command)
@@ -198,10 +163,17 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 		return a, usage("unknown command: %s", command)
 	}
 	var err error
+	hasSSHPort := false
 	if spec.ssh {
-		args, a.ssh, err = splitSSHOptions(args, spec.native)
-		if err != nil {
-			return a, err
+		if at := slices.Index(args, "--"); at >= 0 {
+			if at+1 == len(args) {
+				return a, usage("expected SSH options after --")
+			}
+			a.ssh, hasSSHPort, err = parseSSHOptions(args[at+1:], spec.native)
+			if err != nil {
+				return a, err
+			}
+			args = args[:at]
 		}
 	}
 	for i := 0; i < len(args); i++ {
@@ -237,7 +209,6 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 		if option.kind != cliBool {
 			if !attached {
 				i++
-
 				if i == len(args) || strings.HasPrefix(args[i], "--") {
 					return a, usage("missing value for %s", name)
 				}
@@ -265,16 +236,8 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 		}
 	}
 	if a.has("--port") {
-		flags := sshOptionKinds(spec.native)
-		for i := 0; i < len(a.ssh); i++ {
-			name := a.ssh[i]
-			if flags[name] == cliBool {
-				continue
-			}
-			i++
-			if i < len(a.ssh) && sshPortSetting(name, a.ssh[i]) {
-				return a, usage("--port cannot be combined with SSH -p or -o Port")
-			}
+		if hasSSHPort {
+			return a, usage("--port cannot be combined with SSH -p or -o Port")
 		}
 		a.ssh = append([]string{"-p", a.values["--port"]}, a.ssh...)
 	}
@@ -289,9 +252,11 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 		return a, usage("unexpected argument: %s", a.operands[max])
 	}
 	if len(a.operands) != 0 && (command == "list" || command == "exec" || command == "kill" && a.has("--all")) {
-		return a, normalizeHostOperand(command, &a)
+		err = normalizeHostOperand(command, &a)
+	} else {
+		err = normalizeShellSelector(command, &a)
 	}
-	return a, normalizeShellSelector(command, &a)
+	return a, err
 }
 
 func (s cliSpec) maxOperands(command string, a cliArguments) int {
@@ -308,89 +273,29 @@ func (s cliSpec) maxOperands(command string, a cliArguments) int {
 	return max
 }
 
-// One allowlist defines SSH options; only shell attachments permit
-// native forwarding. SSH option repetition is intentional and retains order.
-func sshOptionKinds(native bool) map[string]cliValue {
-	result := map[string]cliValue{
-		"-p": cliText, "-i": cliPath, "-J": cliText, "-F": cliPath,
-		"-l": cliText, "-o": cliText, "-E": cliPath,
-		"-C": cliBool, "-v": cliBool, "-vv": cliBool, "-vvv": cliBool, "-4": cliBool, "-6": cliBool,
-	}
-	if native {
-		for _, name := range []string{"-L", "-R", "-D"} {
-			result[name] = cliText
-		}
-	}
-	return result
-}
-
-func sshOption(arg string, flags map[string]cliValue) (name, value string, kind cliValue, ok bool) {
-	if kind, ok = flags[arg]; ok {
-		return arg, "", kind, true
-	}
-	if len(arg) > 2 {
-		name = arg[:2]
-		kind, ok = flags[name]
-		if ok && kind != cliBool {
-			return name, arg[2:], kind, true
-		}
-	}
-	return "", "", cliBool, false
-}
-
-func splitSSHOptions(args []string, nativeForwarding bool) ([]string, []string, error) {
-	at := slices.Index(args, "--")
-	if at < 0 {
-		return args, nil, nil
-	}
-	suffix := args[at+1:]
-	if len(suffix) == 0 {
-		return nil, nil, usage("expected SSH options after --")
-	}
-	ssh, _, err := scanSSHOptions(suffix, nativeForwarding)
-	return args[:at], ssh, err
-}
-
-func scanSSHOptions(args []string, native bool) ([]string, cliValue, error) {
-	flags := sshOptionKinds(native)
+func parseSSHOptions(suffix []string, nativeForwarding bool) ([]string, bool, error) {
 	var ssh []string
-	for i := 0; i < len(args); i++ {
-		name, value, kind, ok := sshOption(args[i], flags)
-		if !ok {
-			return nil, cliBool, usage("unsupported SSH option after --: %s; put sshore arguments before --", args[i])
+	hasPort := false
+	for len(suffix) > 0 {
+		name, value, n := sshio.SplitOption(suffix)
+		if name == "" || !nativeForwarding && sshio.ForwardingOption(name, "") {
+			return nil, false, usage("unsupported SSH option after --: %s; put sshore arguments before --", suffix[0])
 		}
+		if n == 0 || value == "--" {
+			return nil, false, usage("missing value for %s", name)
+		}
+		hasPort = hasPort || sshio.PortOption(name, value)
 		ssh = append(ssh, name)
-		if kind == cliBool {
-			continue
+		if value != "" {
+			ssh = append(ssh, value)
 		}
-		if value == "" {
-			i++
-			if i == len(args) {
-				return nil, cliBool, usage("missing value for %s", name)
-			}
-			value = args[i]
-		}
-		if value == "" || value == "--" {
-			return nil, cliBool, usage("missing value for %s", name)
-		}
-		ssh = append(ssh, value)
+		suffix = suffix[n:]
 	}
-	return ssh, cliBool, nil
-}
-
-func sshPortSetting(name, value string) bool {
-	if name == "-p" {
-		return true
-	}
-	if name != "-o" {
-		return false
-	}
-	fields := strings.FieldsFunc(value, func(r rune) bool { return r == '=' || r == ' ' || r == '\t' })
-	return len(fields) > 0 && strings.EqualFold(fields[0], "Port")
+	return ssh, hasPort, nil
 }
 
 func misplacedSSHOption(a string) error {
-	if _, _, _, ok := sshOption(a, sshOptionKinds(true)); ok {
+	if name, _, _ := sshio.SplitOption([]string{a}); name != "" {
 		return usage("SSH option %s must follow -- (example: sshore launch HOST: -- -J jump)", a)
 	}
 	return nil

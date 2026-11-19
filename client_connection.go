@@ -2,27 +2,27 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	transportio "github.com/jay-waves/sshore/internal/ssh"
-	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/jay-waves/sshore/internal/wire"
-	"golang.org/x/term"
 	"io"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
+
+	transportio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/internal/wire"
+	"golang.org/x/term"
 )
 
-// The frontend retains local daemon leases across attachment changes.
-// Saved routes get new leases and authenticate normally.
+// The frontend owns these daemon leases. A true entry marks a lease referenced
+// by the current, pending or parent route during a sweep.
 type clientTransports map[*clientTransport]bool
 
 type clientTransport struct {
@@ -31,35 +31,37 @@ type clientTransport struct {
 	session, instance string
 }
 
-func (ts clientTransports) releaseExcept(keep clientTransports) {
-	for t := range ts {
-		if !keep[t] {
-			delete(ts, t)
-			t.close()
+func (ts clientTransports) releaseUnreferenced() {
+	for t, keep := range ts {
+		if keep {
+			ts[t] = false
+			continue
 		}
+		delete(ts, t)
+		t.close()
 	}
 }
 
 // A routed target may still need its ancestor's authenticated transport.
-func keepRoute(keep clientTransports, o *options) {
+func (ts clientTransports) retainRoute(o *options) {
 	for ; o != nil; o = o.routeParent {
-		if o.reusable != nil {
-			keep[o.reusable] = true
+		if _, owned := ts[o.reusable]; owned {
+			ts[o.reusable] = true
 		}
 	}
 }
-func openTaskStream(ctx context.Context, o *options, open func(context.Context) (io.ReadWriteCloser, error), closeTask func()) (io.ReadWriteCloser, error) {
+func (ts clientTransports) openTaskStream(ctx context.Context, o *options, open func(context.Context) (io.ReadWriteCloser, error), closeTask func()) (io.ReadWriteCloser, error) {
 	stream, err := open(ctx)
 	if err != nil {
 		closeTask()
 		return nil, err
 	}
-	if o.transports == nil {
+	if ts == nil {
 		return wire.OwnTransport(ctx, stream, closeTask), nil
 	}
 	t := &clientTransport{open: open, close: closeTask}
 	o.reusable = t
-	o.transports[t] = true
+	ts[t] = false
 	return wire.OwnTransport(ctx, stream, nil), nil
 }
 
@@ -73,7 +75,7 @@ func openReusableTransport(ctx context.Context, connection *clientTransport) (io
 
 // The returned stream owns its cleanup. Reused attachments release only their
 // own stream. A retained daemon lease can open another stream without reauthenticating.
-func openClientTransportContext(ctx context.Context, o *options) (stream io.ReadWriteCloser, err error) {
+func openClientTransportContext(ctx context.Context, o *options, transports clientTransports) (stream io.ReadWriteCloser, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -88,36 +90,7 @@ func openClientTransportContext(ctx context.Context, o *options) (stream io.Read
 	}
 	o.reusable = nil
 	if o.routeParent != nil {
-		parent := routeParentOptions(*o.routeParent)
-		c, err := openClientTransportContext(ctx, &parent)
-		if err != nil {
-			return nil, err
-		}
-		if err = writeMessage(c, message{Type: "spawn_route_connect", Token: o.routeToken, Instance: parent.instance, SoftwareVersion: version}); err == nil {
-			var reply message
-			reply, err = readMessage(c)
-			if err == nil && reply.Type != "route_connected" {
-				err = fmt.Errorf("spawn route: %s", reply.Error)
-			}
-		}
-		if err != nil {
-			c.Close()
-			return nil, err
-		}
-		if o.routeTarget {
-			if err = writeMessage(c, message{Type: "shell_connect", Action: o.command, Name: o.session, Instance: o.instance, SoftwareVersion: version}); err == nil {
-				var reply message
-				reply, err = readMessage(c)
-				if err == nil && reply.Type != "setup_ready" {
-					err = fmt.Errorf("shell connection: %s", reply.Error)
-				}
-			}
-			if err != nil {
-				c.Close()
-				return nil, err
-			}
-		}
-		return c, nil
+		return openSessionRoute(ctx, o)
 	}
 	if o.local {
 		if o.hosted {
@@ -127,141 +100,119 @@ func openClientTransportContext(ctx context.Context, o *options) (stream io.Read
 			}
 			return wire.OwnTransport(ctx, c, nil), nil
 		}
+		var c net.Conn
 		var r localShellRecord
 		var err error
 		if o.command == "launch" || o.command == "spawn" {
 			r, err = startLocalSessionContext(ctx, *o)
-		} else {
-			name := o.session
-			if strings.HasPrefix(o.taskIdentity, "task:") {
-				name = strings.TrimPrefix(o.taskIdentity, "task:")
+			if err == nil {
+				if o.taskIdentity != "" && o.taskIdentity != r.identity() {
+					return nil, fmt.Errorf("local task changed; refresh with sshore list")
+				}
+				c, err = dialLocalSessionContext(ctx, r, time.Now().Add(5*time.Second))
 			}
-			r, err = readLocalSession(name)
+		} else {
+			ref := o.session
+			if canonicalTaskUID(o.taskIdentity) != "" {
+				ref = ""
+			}
+			c, r, err = openNativeShell(ctx, ref, o.taskIdentity)
 		}
 		if err != nil {
 			return nil, err
-		}
-		if o.taskIdentity != "" && o.taskIdentity != r.identity() {
-			return nil, fmt.Errorf("local task changed; refresh with sshore list")
 		}
 		o.taskIdentity = r.identity()
 		o.session = r.Name
 		o.temporary = r.Owner.PID != 0
-		c, err := dialLocalSessionContext(ctx, r, time.Now().Add(5*time.Second))
-		if err != nil {
-			return nil, err
-		}
 		_ = c.SetDeadline(time.Time{})
 		return wire.OwnTransport(ctx, c, nil), nil
 	}
-	return openRemoteShellTransport(ctx, o)
+	return openRemoteShellTransport(ctx, o, transports)
 }
 
-// SSH carries TCP channels to the same loopback endpoint used by native clients.
-func openRemoteDaemonTask(ctx context.Context, dial func(context.Context, string) (net.Conn, error), record localShellRecord) (net.Conn, error) {
-	host, _, err := net.SplitHostPort(record.Address)
-	if err != nil || host != "127.0.0.1" || !validTaskUID(record.UID) || len(record.Token) != 64 {
-		return nil, fmt.Errorf("invalid daemon endpoint")
-	}
-	authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	c, err := dial(authCtx, record.Address)
-	if err != nil {
-		return nil, err
-	}
-	return upgradeDaemonConn(authCtx, c, record, "/tasks/"+record.UID+"/open", nil)
+type returnTarget struct {
+	options  options
+	previous string
 }
 
 type sessionSwitch struct {
-	from, to    options
-	returnLocal bool
+	from           returnTarget
+	to             options
+	returnToParent bool
 }
 
 func (s *sessionSwitch) Error() string { return "switch session" }
 func runClient(o options) (int, error) {
 	transports := make(clientTransports)
-	defer transports.releaseExcept(nil)
+	defer transports.releaseUnreferenced()
 	// Keep the frontend alive while an attempt unwinds and restores its parent.
 	// Each attempt routes interrupts according to its connection phase.
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
 	previous := ""
-	type returnTarget struct {
-		options  options
-		previous string
-	}
-	var returns []returnTarget
-	var fallback *sessionSwitch
-	fallbackPrevious := ""
+	var parents []returnTarget
+	var pending *sessionSwitch
 	prune := func(current *options) {
-		keep := make(clientTransports)
-		keepRoute(keep, current)
-		if fallback != nil {
-			keepRoute(keep, &fallback.from)
+		transports.retainRoute(current)
+		if pending != nil {
+			transports.retainRoute(&pending.from.options)
 		}
-		for i := range returns {
-			keepRoute(keep, &returns[i].options)
+		for i := range parents {
+			transports.retainRoute(&parents[i].options)
 		}
-		transports.releaseExcept(keep)
+		transports.releaseUnreferenced()
 	}
 	for {
 		prune(&o)
-		o.transports = transports
-		ready := false
-		code, err := runClientOnce(o, previous, func(current options) {
-			ready = true
+		code, err := runClientOnce(o, previous, transports, func(current options) {
 			o.handoffDone = nil
-			fallback = nil
+			if pending != nil {
+				if pending.returnToParent {
+					parents = append(parents, pending.from)
+				}
+				pending = nil
+			}
 			prune(&current)
 		})
-		if !ready && o.handoffDone != nil {
+		if o.handoffDone != nil {
 			_ = o.handoffDone(context.Background(), err)
 			o.handoffDone = nil
 		}
 		if next, ok := errors.AsType[*sessionSwitch](err); ok {
-			if next.returnLocal {
-				returns = append(returns, returnTarget{next.from, previous})
-			}
-			fallback = next
-			fallbackPrevious = previous
-			previous = next.from.session
-			if next.returnLocal {
+			pending = next
+			source := next.from.options
+			switch {
+			case next.returnToParent:
 				previous = ""
+			case source.local && !source.hosted:
+				previous = canonicalTaskUID(source.taskIdentity)
+			default:
+				previous = source.instance
 			}
 			o = next.to
 			continue
 		}
-		if !ready && fallback != nil {
-			termui.Log(os.Stderr, termui.Warning, "[sshore] Target unavailable; restoring %s.\n", cleanText(fallback.from.session))
-			if fallback.returnLocal && len(returns) > 0 {
-				returns = returns[:len(returns)-1]
-			}
-			o = fallback.from
-			o.command = "attach"
-			o.recovering = true
-			previous = fallbackPrevious
-			fallback = nil
-			continue
-		}
-		if len(returns) > 0 {
+		var target returnTarget
+		switch {
+		case pending != nil:
+			target = pending.from
+			pending = nil
+			termui.Log(os.Stderr, termui.Warning, "[sshore] Target unavailable; restoring %s.\n", cleanText(target.options.session))
+		case len(parents) == 0:
+			return code, err
+		default:
+			last := len(parents) - 1
+			target = parents[last]
+			parents = slices.Delete(parents, last, last+1)
 			if err != nil {
 				termui.Log(os.Stderr, termui.Warning, "[sshore] %s\n", cleanText(err.Error()))
 			}
-			target := returns[len(returns)-1]
-			returns = returns[:len(returns)-1]
-			o = target.options
-			o.command = "attach"
-			o.recovering = true
-			fallback = nil
-			previous = target.previous
-			continue
 		}
-		return code, err
+		o, previous = target.options, target.previous
+		o.command, o.recovering = "attach", true
 	}
 }
-
-const recentConnectionLimit = 32
 
 type recentConnection struct {
 	Hosted                           bool              `json:",omitempty"`
@@ -275,102 +226,60 @@ type recentConnection struct {
 
 func (r recentConnection) viaShell() bool { return r.Hosted || r.Parent != nil }
 
-func (c recentConnection) clone() recentConnection {
-	c.SSH = append([]string(nil), c.SSH...)
-	if c.Parent != nil {
-		parent := c.Parent.clone()
-		c.Parent = &parent
+const maxConnectionHops = 64
+
+func (c *recentConnection) clone() *recentConnection {
+	if c == nil {
+		return nil
 	}
-	return c
+	cloned := *c
+	for hop := &cloned; hop != nil; hop = hop.Parent {
+		hop.SSH = append([]string(nil), hop.SSH...)
+		if hop.Parent != nil {
+			parent := *hop.Parent
+			hop.Parent = &parent
+		}
+	}
+	return &cloned
 }
 
 func readRecentConnections() ([]recentConnection, error) {
 	r, err := metadataRPC(metadataRequest{Action: "connection_get"})
 	return r.Connections, err
 }
-func readRecentConnectionsLocal() (result []recentConnection, resultErr error) {
-	hub := &accountActivity.Load().metadata
-	root, err := statePath("connections")
-	if err != nil {
-		return nil, err
-	}
-	if hub.connectionRoot == root {
-		records := make([]recentConnection, len(hub.connections))
-		for i, record := range hub.connections {
-			records[i] = record.clone()
-		}
-		return records, nil
-	}
-	defer func() {
-		if resultErr == nil {
-			hub.connectionRoot = root
-			hub.connections = append([]recentConnection(nil), result...)
-		}
-	}()
-	dir, err := stateDir("connections")
-	if err != nil {
-		return nil, err
-	}
-	path := filepath.Join(dir, "recent.json")
-	if err := privateStatePath(path, false); os.IsNotExist(err) {
-		return nil, nil
-	} else if err != nil {
-		return nil, err
-	}
-	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	var records []recentConnection
-	if err = json.NewDecoder(io.LimitReader(f, 128*1024)).Decode(&records); err != nil {
+func (m *daemonMetadata) readRecentConnectionsLocal() ([]recentConnection, error) {
+	if err := m.connections.load("recent.json", 128*1024, validateRecentConnection); err != nil {
 		return nil, fmt.Errorf("cannot read recent connections: %w", err)
 	}
-	if len(records) > recentConnectionLimit {
-		return nil, fmt.Errorf("too many recent connections")
-	}
-	for _, r := range records {
-		if err := validateRecentConnection(r); err != nil {
-			return nil, err
-		}
-	}
-	return records, nil
+	return m.connections.rows, nil
 }
 
 func validateRecentConnection(r recentConnection) error {
-	return validateConnectionDepth(r, 0)
-}
-
-func validateConnectionDepth(r recentConnection, depth int) error {
-	if depth >= 64 {
-		return fmt.Errorf("too many connection hops")
-	}
-	if r.Hosted && (r.Host != "local" || !validTaskUID(r.Instance) || len(r.SSH) != 0 || r.Parent != nil) {
-		return fmt.Errorf("invalid hosted shell connection")
-	}
-	if r.Parent != nil {
-		token, err := hex.DecodeString(r.RouteToken)
-		if err != nil || len(token) != 32 || r.RouteToken != strings.ToLower(r.RouteToken) || r.Instance == "" || r.Parent.Instance == "" {
-			return fmt.Errorf("invalid saved spawn route")
+	for depth, hop := 0, &r; hop != nil; depth, hop = depth+1, hop.Parent {
+		if depth >= maxConnectionHops {
+			return fmt.Errorf("too many connection hops")
 		}
-		if err := validateConnectionDepth(*r.Parent, depth+1); err != nil {
-			return err
+		if hop.Hosted && (hop.Host != "local" || !validTaskUID(hop.Instance) || len(hop.SSH) != 0 || hop.Parent != nil) {
+			return fmt.Errorf("invalid hosted shell connection")
 		}
-	} else if r.RouteToken != "" || r.RouteTarget {
-		return fmt.Errorf("spawn route parent missing")
-	}
-	if validSSHDestination(r.Host) != nil || validSession(r.Session) != nil || r.Server == "" || strings.ContainsAny(r.Server, "\x00\r\n") {
-		return fmt.Errorf("invalid recent connection")
-	}
-	if r.Directory != "" && !filepath.IsAbs(r.Directory) {
-		return fmt.Errorf("invalid recent connection directory")
-	}
-	if len(r.SSH) > 0 {
-		if _, _, err := splitSSHOptions(append([]string{"--"}, r.SSH...), false); err != nil {
-			return err
+		if hop.Parent != nil {
+			token := hop.RouteToken
+			if len(token) != 64 || strings.Trim(token, "0123456789abcdef") != "" || hop.Instance == "" || hop.Parent.Instance == "" {
+				return fmt.Errorf("invalid saved spawn route")
+			}
+		} else if hop.RouteToken != "" || hop.RouteTarget {
+			return fmt.Errorf("spawn route parent missing")
+		}
+		if validSSHDestination(hop.Host) != nil || validSession(hop.Session) != nil || hop.Server == "" || strings.ContainsAny(hop.Server, "\x00\r\n") {
+			return fmt.Errorf("invalid recent connection")
+		}
+		if hop.Directory != "" && !filepath.IsAbs(hop.Directory) {
+			return fmt.Errorf("invalid recent connection directory")
+		}
+		if len(hop.SSH) > 0 {
+			if _, _, err := parseSSHOptions(hop.SSH, false); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -384,46 +293,16 @@ func resolveRecentAttach(o *options) error {
 }
 
 func applyRecentConnection(o *options) error {
-	if o.host != "" && o.session != "" {
-		rows, err := readShellSnapshots()
-		if err != nil {
-			return err
-		}
-		var saved *recentConnection
-		for _, row := range rows {
-			if row.Host != o.host || row.Name != o.session || row.State == "renamed" || (o.instance != "" && row.Instance != o.instance) {
-				continue
-			}
-			if row.Connection == nil {
-				continue
-			}
-			if saved != nil && saved.Instance != row.Instance && (saved.Parent != nil || row.Connection.Parent != nil) {
-				return fmt.Errorf("ambiguous shell route; select the shell by task ID")
-			}
-			saved = row.Connection
-		}
-		if saved != nil && saved.Parent != nil {
-			applyConnectionOptions(o, *saved)
-			return nil
-		}
-	}
-
-	records, err := readRecentConnections()
+	reply, err := metadataRPC(metadataRequest{Action: "connection_select", Host: o.host, Name: o.session, Instance: o.instance})
 	if err != nil {
 		return err
 	}
-	for _, r := range records {
-		if o.host != "" && o.host != r.Host {
-			continue
-		}
-		if r.Parent != nil && o.session != "" && o.session != r.Session {
-			return fmt.Errorf("no saved route to %s/%s; attach from its parent shell", cleanText(o.host), cleanText(o.session))
-		}
+	if r := reply.Connection; r != nil {
 		o.host = r.Host
 		if o.session == "" {
 			o.session = r.Session
 		}
-		applyConnectionOptions(o, r)
+		applyConnectionOptions(o, *r)
 		return nil
 	}
 	if o.host == "" {
@@ -432,39 +311,91 @@ func applyRecentConnection(o *options) error {
 	return nil
 }
 
-func connectionFromOptions(o options) (recentConnection, error) {
-	return connectionFromOptionsDepth(o, 0)
+// Resolve shell history and the recent host fallback under the same metadata lock.
+func (a *daemonActivity) selectRecentConnection(host, name, instance string) (*recentConnection, error) {
+	if host != "" && name != "" {
+		var routed *recentConnection
+		var firstInstance string
+		found, ambiguous := false, false
+		err := a.walkShellSnapshotsLocked(func(s shellSnapshot) {
+			if s.Host != host || s.Name != name || s.State == "renamed" || s.Connection == nil ||
+				(instance != "" && s.Instance != instance) {
+				return
+			}
+			if !found {
+				firstInstance, found = s.Instance, true
+			} else if s.Instance != firstInstance {
+				ambiguous = true
+			}
+			if s.Connection.Parent != nil {
+				routed = s.Connection
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		if routed != nil {
+			if ambiguous {
+				return nil, fmt.Errorf("ambiguous shell route; select the shell by task ID")
+			}
+			return routed.clone(), nil
+		}
+	}
+
+	records, err := a.metadata.readRecentConnectionsLocal()
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range records {
+		if host != "" && host != r.Host {
+			continue
+		}
+		if r.Parent != nil && name != "" && name != r.Session {
+			return nil, fmt.Errorf("no saved route to %s/%s; attach from its parent shell", cleanText(host), cleanText(name))
+		}
+		return r.clone(), nil
+	}
+	return nil, nil
 }
 
-func connectionFromOptionsDepth(o options, depth int) (recentConnection, error) {
-	if depth >= 64 {
-		return recentConnection{}, fmt.Errorf("too many connection hops")
-	}
-	// Forwarding flags belong to the original connection and must never replay
-	// merely because the user selected a recent shell.
-	ssh := transportio.WithoutForwarding(o.ssh)
-	directory := o.sshDirectory
-	if len(ssh) == 0 {
-		directory = ""
-	} else if directory == "" {
-		var err error
-		directory, err = os.Getwd()
-		if err != nil {
-			return recentConnection{}, err
+func connectionFromOptions(o options) (recentConnection, error) {
+	var record recentConnection
+	var cwd string
+	dst := &record
+	for depth, src := 0, &o; src != nil; depth, src = depth+1, src.routeParent {
+		if depth >= maxConnectionHops {
+			return recentConnection{}, fmt.Errorf("too many connection hops")
 		}
-	}
-	server := o.server
-	if server == "" {
-		server = "sshore"
-	}
-	record := recentConnection{Hosted: o.hosted, Directory: directory, Host: o.host, Session: o.session, Server: server, SSH: ssh, Instance: o.instance}
-	if o.routeParent != nil {
-		parent, err := connectionFromOptionsDepth(*o.routeParent, depth+1)
-		if err != nil {
-			return recentConnection{}, err
+		// A remembered route must not replay the original forwarding rules.
+		ssh := transportio.WithoutForwarding(src.ssh)
+		directory := src.sshDirectory
+		if len(ssh) == 0 {
+			directory = ""
+		} else if directory == "" {
+			if cwd == "" {
+				var err error
+				cwd, err = os.Getwd()
+				if err != nil {
+					return recentConnection{}, err
+				}
+			}
+			directory = cwd
 		}
-		record.Parent, record.RouteToken, record.RouteTarget = &parent, o.routeToken, o.routeTarget
-		if err := validateConnectionDepth(record, depth); err != nil {
+		server := src.server
+		if server == "" {
+			server = "sshore"
+		}
+		*dst = recentConnection{
+			Hosted: src.hosted, Directory: directory, Host: src.host, Session: src.session,
+			Server: server, SSH: ssh, Instance: src.instance,
+		}
+		if src.routeParent != nil {
+			dst.Parent, dst.RouteToken, dst.RouteTarget = new(recentConnection), src.routeToken, src.routeTarget
+		}
+		dst = dst.Parent
+	}
+	if record.Parent != nil {
+		if err := validateRecentConnection(record); err != nil {
 			return recentConnection{}, err
 		}
 	}
@@ -472,42 +403,32 @@ func connectionFromOptionsDepth(o options, depth int) (recentConnection, error) 
 }
 
 func applyConnectionOptions(o *options, r recentConnection) {
-	if r.Hosted {
-		o.local, o.hosted = true, true
-		o.taskIdentity = "task:" + r.Instance
-	}
-	if r.Parent != nil {
-		parent := options{command: "attach", host: r.Parent.Host, session: r.Parent.Session}
-		applyConnectionOptions(&parent, *r.Parent)
-		o.routeParent, o.routeToken, o.routeTarget = &parent, r.RouteToken, r.RouteTarget
-	}
-	if o.instance == "" && (o.session == "" || o.session == r.Session) {
-		o.instance = r.Instance
-	}
-
-	if !o.serverSet {
-		o.server = r.Server
-	}
-	if o.portOverrideOnly {
-		flags := sshOptionKinds(true)
-		for i := 0; i < len(r.SSH); {
-			end := i + 1
-			if flags[r.SSH[i]] != cliBool {
-				end++
-			}
-			if end > len(r.SSH) {
-				break
-			}
-			if end == i+1 || !sshPortSetting(r.SSH[i], r.SSH[i+1]) {
-				o.ssh = append(o.ssh, r.SSH[i:end]...)
-			}
-			i = end
+	for hop := &r; ; hop = hop.Parent {
+		if hop.Hosted {
+			o.local, o.hosted = true, true
+			o.taskIdentity = "task:" + hop.Instance
 		}
-		o.sshDirectory = r.Directory
-		o.portOverrideOnly = false
-	} else if len(o.ssh) == 0 {
-		o.ssh = append([]string(nil), r.SSH...)
-		o.sshDirectory = r.Directory
+		if o.instance == "" && (o.session == "" || o.session == hop.Session) {
+			o.instance = hop.Instance
+		}
+		if !o.serverSet {
+			o.server = hop.Server
+		}
+		if o.portOverrideOnly {
+			o.ssh = transportio.AppendWithoutPort(o.ssh, hop.SSH)
+			o.sshDirectory = hop.Directory
+			o.portOverrideOnly = false
+		} else if len(o.ssh) == 0 {
+			o.ssh = append([]string(nil), hop.SSH...)
+			o.sshDirectory = hop.Directory
+		}
+		parent := hop.Parent
+		if parent == nil {
+			return
+		}
+		o.routeParent = &options{command: "attach", host: parent.Host, session: parent.Session}
+		o.routeToken, o.routeTarget = hop.RouteToken, hop.RouteTarget
+		o = o.routeParent
 	}
 }
 
@@ -522,67 +443,55 @@ func rememberConnection(o options) error {
 	_, err = metadataRPC(metadataRequest{Action: "connection_save", Connection: &record})
 	return err
 }
-func rememberConnectionLocal(record recentConnection) error {
+func (m *daemonMetadata) rememberConnectionLocal(record recentConnection) error {
 	if err := validateRecentConnection(record); err != nil {
 		return err
 	}
-	record = record.clone()
-	records, err := readRecentConnectionsLocal()
-	if err != nil {
+	if _, err := m.readRecentConnectionsLocal(); err != nil {
 		return err
 	}
-	next := []recentConnection{record}
-	for _, old := range records {
-		if old.Host != record.Host && len(next) < recentConnectionLimit {
-			next = append(next, old)
-		}
-	}
-	return writeRecentConnectionsLocal(next)
-}
-func writeRecentConnectionsLocal(records []recentConnection) error {
-	dir, err := stateDir("connections")
-	if err != nil {
-		return err
-	}
-	accountActivity.Load().metadata.connections = records
-	return writeStateJSON(filepath.Join(dir, "recent.json"), records)
+	return m.connections.promote(*record.clone(), func(previous recentConnection) bool {
+		return previous.Host == record.Host
+	})
 }
 
 // rememberShellRename changes cached labels only after a successful remote rename.
 // It does not reorder recent hosts or treat rename as an attachment confirmation.
-func rememberShellRename(host, old, name string) error {
-	_, err := metadataRPC(metadataRequest{Action: "connection_rename", Host: host, Key: old, Name: name})
+func rememberShellRename(host, old, name, instance string) error {
+	_, err := metadataRPC(metadataRequest{Action: "connection_rename", Host: host, Key: old, Name: name, Instance: instance})
 	return err
 }
-func rememberShellRenameLocal(host, old, name string) error {
+func (a *daemonActivity) rememberShellRenameLocal(host, old, name, instance string) error {
 	if validSSHDestination(host) != nil || validSession(old) != nil || validSession(name) != nil {
 		return fmt.Errorf("invalid shell rename identity")
 	}
 	if old == name {
 		return nil
 	}
-	snapshotErr := renameShellSnapshotLocked(host, old, name)
-	records, err := readRecentConnectionsLocal()
+	snapshotErr := a.renameShellSnapshotLocked(host, old, name, instance)
+	m := &a.metadata
+	records, err := m.readRecentConnectionsLocal()
 	if err != nil {
 		return errors.Join(snapshotErr, err)
 	}
 	changed := false
 	for i := range records {
-		if records[i].Host == host && records[i].Session == old {
+		if records[i].Host == host && records[i].Session == old && (instance == "" || records[i].Instance == instance) {
+			if !changed {
+				records = slices.Clone(records)
+			}
 			records[i].Session = name
 			changed = true
 		}
 	}
 	if changed {
-		err = writeRecentConnectionsLocal(records)
+		err = m.connections.replace(records)
 	}
 	return errors.Join(snapshotErr, err)
 }
 
 func routeParentOptions(parent options) options {
 	parent.command = "attach"
-	// A route borrows an existing connection. A fresh dial belongs to this stream.
-	parent.transports = nil
 	// The remote entry point accepts immutable task UIDs, so an ancestor rename cannot sever
 	// an otherwise live child route. This transport never attaches a terminal.
 	if validTaskUID(parent.instance) {
@@ -591,23 +500,58 @@ func routeParentOptions(parent options) options {
 	return parent
 }
 
+func openSessionRoute(ctx context.Context, o *options) (_ io.ReadWriteCloser, err error) {
+	parent := routeParentOptions(*o.routeParent)
+	c, err := openClientTransportContext(ctx, &parent, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = c.Close()
+		}
+	}()
+	reply, err := exchangeRouteRequest(c, message{Type: "spawn_route_connect", Token: o.routeToken, Instance: parent.instance})
+	if err != nil {
+		return nil, err
+	}
+	if reply.Type != "route_connected" {
+		return nil, fmt.Errorf("spawn route: %s", reply.Error)
+	}
+	if o.routeTarget {
+		reply, err := exchangeRouteRequest(c, message{Type: "shell_connect", Action: o.command, Name: o.session, Instance: o.instance})
+		if err != nil {
+			return nil, err
+		}
+		if reply.Type != "setup_ready" {
+			return nil, fmt.Errorf("shell connection: %s", reply.Error)
+		}
+	}
+	return c, nil
+}
+
+func exchangeRouteRequest(c io.ReadWriter, request message) (message, error) {
+	request.SoftwareVersion = version
+	if err := writeMessage(c, request); err != nil {
+		return message{}, err
+	}
+	return readMessage(c)
+}
+
 func confirmSpawnRoute(ctx context.Context, parent options, token string, result error) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	parent = routeParentOptions(parent)
-	c, err := openClientTransportContext(ctx, &parent)
+	c, err := openClientTransportContext(ctx, &parent, nil)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	request := message{Type: "spawn_route_confirm", Token: token, Instance: parent.instance, SoftwareVersion: version}
+	request := message{Type: "spawn_route_confirm", Token: token, Instance: parent.instance}
 	if result != nil {
 		request.Error = cleanText(result.Error())
 	}
-	if err := writeMessage(c, request); err != nil {
-		return err
-	}
-	reply, err := readMessage(c)
+	reply, err := exchangeRouteRequest(c, request)
 	if err != nil {
 		return err
 	}
@@ -709,44 +653,46 @@ func handoffLocalClient(o options) (bool, error) {
 		environment = append(environment, "SSHORE_SSH="+ssh)
 	}
 	h := &clientHandoff{Hosted: o.hosted, Args: args, Owner: o.owner, Directory: cwd, Environment: environment, Tree: currentShellTree(), TaskIdentity: o.taskIdentity, Instance: o.instance}
-	rows, err := localShells()
+	m, err := localRequest("", identity, message{Type: "handoff", Handoff: h})
 	if err != nil {
 		return true, err
 	}
-	for _, row := range rows {
-		if row.identity != identity {
-			continue
-		}
-		m, err := localRequest(row.Name, message{Type: "handoff", Handoff: h}, identity)
-		if err != nil {
-			return true, err
-		}
-		if m.Type != "handoff_accepted" {
-			return true, fmt.Errorf("remote handoff: %s", m.Error)
-		}
-		return true, nil
+	if m.Type != "handoff_accepted" {
+		return true, fmt.Errorf("remote handoff: %s", m.Error)
 	}
-	return true, fmt.Errorf("local shell is unavailable for remote handoff")
+	return true, nil
 }
 
 type localHandoff struct {
 	token      string
-	attachment *attachment
-	result     chan message
+	attachment *attachment // The preparing frontend; nil while awaiting startup.
+	reply      chan string // Owned by one phase and cleared on delivery.
+}
+
+// The caller holds the shell lock.
+func (h *localHandoff) deliver(errorText string) bool {
+	if h.reply == nil {
+		return false
+	}
+	h.reply <- errorText
+	h.reply = nil
+	return true
 }
 
 func (s *localShell) requestHandoff(c net.Conn, h *clientHandoff) error {
-	_ = c.SetDeadline(time.Now().Add(2 * time.Minute))
+	deadline := time.Now().Add(2 * time.Minute)
+	_ = c.SetDeadline(deadline)
 	if _, err := h.options(); err != nil {
 		return writeMessage(c, message{Type: "error", Error: err.Error()})
 	}
 	s.mu.Lock()
-	p := s.lifecycle.Active()
+	p := s.active
 	if p == nil || s.handoff != nil {
 		s.mu.Unlock()
 		return writeMessage(c, message{Type: "error", Error: "local frontend unavailable or busy"})
 	}
-	pending := &localHandoff{token: resourceToken(), attachment: p, result: make(chan message, 1)}
+	prepared := make(chan string, 1)
+	pending := &localHandoff{token: resourceToken(), attachment: p, reply: prepared}
 	s.handoff = pending
 	s.mu.Unlock()
 	defer func() {
@@ -760,26 +706,30 @@ func (s *localShell) requestHandoff(c net.Conn, h *clientHandoff) error {
 		return err
 	}
 	select {
-	case result := <-pending.result:
-		if result.Error != "" {
-			return writeMessage(c, message{Type: "error", Error: result.Error})
-		}
-		if err := p.controlMessage(message{Type: "handoff_commit", Token: pending.token}); err != nil {
-			return err
-		}
-		select {
-		case result := <-pending.result:
-			if result.Error != "" {
-				return writeMessage(c, message{Type: "error", Error: result.Error})
-			}
-			return writeMessage(c, message{Type: "handoff_accepted"})
-		case <-time.After(2 * time.Minute):
-			return writeMessage(c, message{Type: "error", Error: "attachment startup timed out"})
+	case errorText := <-prepared:
+		if errorText != "" {
+			return writeMessage(c, message{Type: "error", Error: errorText})
 		}
 	case <-p.Done():
 		return writeMessage(c, message{Type: "error", Error: "local frontend disconnected"})
 	case <-time.After(4 * time.Second):
 		return writeMessage(c, message{Type: "error", Error: "local frontend handoff timed out"})
+	}
+	started := make(chan string, 1)
+	s.mu.Lock()
+	pending.attachment, pending.reply = nil, started
+	s.mu.Unlock()
+	if err := p.controlMessage(message{Type: "handoff_commit", Token: pending.token}); err != nil {
+		return err
+	}
+	select {
+	case errorText := <-started:
+		if errorText != "" {
+			return writeMessage(c, message{Type: "error", Error: errorText})
+		}
+		return writeMessage(c, message{Type: "handoff_accepted"})
+	case <-time.After(time.Until(deadline)):
+		return writeMessage(c, message{Type: "error", Error: "attachment startup timed out"})
 	}
 }
 
@@ -787,24 +737,17 @@ func (s *localShell) finishHandoff(p *attachment, m message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if h := s.handoff; h != nil && h.attachment == p && h.token == m.Token {
-		select {
-		case h.result <- m:
-		default:
-		}
+		h.deliver(m.Error)
 	}
 }
 
 func (s *localShell) confirmHandoff(c net.Conn, m message) error {
 	s.mu.Lock()
 	pending := s.handoff
-	if pending == nil || pending.token != m.Token {
-		s.mu.Unlock()
-		return writeMessage(c, message{Type: "error", Error: "handoff expired"})
-	}
-	select {
-	case pending.result <- m:
-	default:
-	}
+	delivered := pending != nil && pending.attachment == nil && pending.token == m.Token && pending.deliver(m.Error)
 	s.mu.Unlock()
+	if !delivered {
+		return writeMessage(c, message{Type: "error", Error: "handoff expired or not committed"})
+	}
 	return writeMessage(c, message{Type: "handoff_confirmed"})
 }

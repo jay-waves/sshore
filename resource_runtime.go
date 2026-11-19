@@ -3,16 +3,13 @@ package main
 // The account daemon owns resource identity and control. Mounts isolate native
 // filesystem code in a child connected by pipes; forwards run in the daemon.
 import (
-	"context"
+	"bufio"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,39 +43,39 @@ type resourceStartup struct {
 }
 
 type resourceConfig struct {
-	UID                    string `json:",omitempty"`
-	MountName              string
-	MountApproval          *files.MountApproval
-	MountConnection        *recentConnection
-	Forward                *forwardConfig
-	Args                   []string
-	AuthAddress, AuthToken string
+	UID     string `json:",omitempty"`
+	Mount   *ftpOptions
+	Forward *forwardConfig
+	Auth    *sshAuthEndpoint `json:",omitempty"`
 }
+
+func (c resourceConfig) kind() string {
+	switch {
+	case c.Mount != nil && c.Forward == nil:
+		return "mount"
+	case c.Forward != nil && c.Mount == nil:
+		return "forward"
+	default:
+		return ""
+	}
+}
+
 type resourceService struct {
-	startup     io.Writer
 	log         io.Writer
 	environment []string
 	directory   string
-	committed   func()
 
-	controlMu  sync.Mutex
 	statusMu   sync.Mutex
 	status     resourceStatus
 	record     resourceRecord
 	config     resourceConfig
-	stop       chan chan error
-	ack        <-chan error
-	abandoned  <-chan struct{}
 	done       chan struct{}
-	publish    func(resourceRecord)
-	recordPath string
+	resultPath string
 }
 
 func resourceToken() string {
 	var b [32]byte
-	if _, e := rand.Read(b[:]); e != nil {
-		panic(e)
-	}
+	rand.Read(b[:])
 	return hex.EncodeToString(b[:])
 }
 func resourceStateDir(kind string) (string, error) {
@@ -88,52 +85,6 @@ func resourceStateDir(kind string) (string, error) {
 	return stateDir(kind + "s")
 }
 
-// Reuse loopback control connections across setup logs and authentication
-// requests. Bound idle retention; interactive responses keep caller cancellation
-// without imposing a deadline on the user's decision.
-var resourceHTTPTransport = &http.Transport{
-	Proxy:               nil,
-	DialContext:         (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-	MaxIdleConns:        16,
-	MaxIdleConnsPerHost: 2,
-	IdleConnTimeout:     5 * time.Second,
-}
-
-func resourceHTTPContext(ctx context.Context, address, token, method, route string, body io.Reader) (*http.Response, error) {
-	host, _, e := net.SplitHostPort(address)
-	if e != nil || host != "127.0.0.1" {
-		return nil, fmt.Errorf("invalid resource control address")
-	}
-	req, e := http.NewRequestWithContext(ctx, method, "http://"+address+route, body)
-	if e != nil {
-		return nil, e
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	timeout := 20 * time.Second
-	if route == "/status" {
-		timeout = time.Second
-	}
-	if route == "/ask" || route == "/unlock" {
-		timeout = 0
-	}
-	c := &http.Client{Timeout: timeout, Transport: resourceHTTPTransport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return c.Do(req)
-}
-func resourceListen(token string, handler http.HandlerFunc) (net.Listener, *http.Server, error) {
-	l, e := net.Listen("tcp4", "127.0.0.1:0")
-	if e != nil {
-		return nil, nil, e
-	}
-	s := &http.Server{ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 5 * time.Second, MaxHeaderBytes: 8192, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
-			http.Error(w, "unauthorized", 401)
-			return
-		}
-		handler(w, r)
-	})}
-	go s.Serve(l)
-	return l, s, nil
-}
 func (s *resourceService) baseEnvironment() []string {
 	if s.environment != nil {
 		return s.environment
@@ -146,180 +97,199 @@ func (s *resourceService) logWriter() io.Writer {
 	}
 	return os.Stderr
 }
-func (s *resourceService) startupWriter() io.Writer {
-	if s.startup != nil {
-		return s.startup
-	}
-	return os.Stdout
-}
-func (s *resourceService) sshEnvironment() []string {
-	return append(append([]string(nil), s.baseEnvironment()...), "SSHORE_CONFIRM_ADDR="+s.config.AuthAddress, "SSHORE_CONFIRM_TOKEN="+s.config.AuthToken)
-}
-func (s *resourceService) ready(root, mountpoint string) error {
-	s.setTransport("connected", nil)
-	s.record.Remote = root
-	s.record.Mountpoint = mountpoint
-	if s.publish != nil {
-		s.publish(s.record)
-	}
-	var e error
-	if e = json.NewEncoder(s.startupWriter()).Encode(s.record); e != nil {
-		return e
-	}
-
-	select {
-	case e = <-s.ack:
-	case <-time.After(10 * time.Second):
-		e = fmt.Errorf("resource startup acknowledgement timed out")
-	}
-	if e != nil {
-		return e
-	}
-	err := json.NewEncoder(s.startupWriter()).Encode("started")
-	if err == nil && s.committed != nil {
-		s.committed()
-	}
-	return err
-}
 func runMountDaemon() (code int, resultErr error) {
+	enc := json.NewEncoder(os.Stdout)
+	committed := false
 	defer func() {
-		if resultErr != nil {
-			_ = json.NewEncoder(os.Stdout).Encode(resourceStartup{Error: cleanText(resultErr.Error())})
+		if !committed && resultErr != nil {
+			_ = enc.Encode(resourceStartup{Error: cleanText(resultErr.Error())})
 		}
 	}()
 
-	dec := json.NewDecoder(io.LimitReader(os.Stdin, 1<<20))
+	// The daemon encodes one JSON record per line. Bound each record so a
+	// long-lived control stream never exhausts a cumulative input budget.
+	input := bufio.NewScanner(os.Stdin)
+	input.Buffer(nil, 1<<20)
+	read := func(value any) error {
+		if input.Scan() {
+			return json.Unmarshal(input.Bytes(), value)
+		}
+		if err := input.Err(); err != nil {
+			return err
+		}
+		return io.EOF
+	}
 	var config resourceConfig
-	if e := dec.Decode(&config); e != nil {
+	if e := read(&config); e != nil {
 		return 1, e
 	}
-	return runConfiguredResource(config, dec, os.Stdout, os.Stderr, os.Environ(), "", nil, nil)
+	if config.kind() != "mount" {
+		return 1, fmt.Errorf("mount worker requires mount configuration")
+	}
+	o := *config.Mount
+	if err := validateMountConfig(o); err != nil {
+		return 1, err
+	}
+	record := resourceRecord{Kind: "mount", Name: o.Name, Host: o.Host, ReadOnly: o.ReadOnly, Direction: "<-"}
+	s, err := newResourceService(config, record)
+	if err != nil {
+		return 1, err
+	}
+	cleanup, err := prepareFTPPaths(&o)
+	if err != nil {
+		return 1, err
+	}
+	defer cleanup()
+	abandoned := make(chan struct{})
+	ack := awaitResourceCommit(read, func() { close(abandoned) })
+	unmount := make(chan chan error)
+	var replyMu sync.Mutex
+	ready := func(root, mountpoint string) error {
+		s.setTransport("connected", nil)
+		s.record.Remote, s.record.Mountpoint = root, mountpoint
+		if err := offerResourceStartup(enc, s.record, ack, nil); err != nil {
+			return err
+		}
+		if err := enc.Encode("started"); err != nil {
+			return err
+		}
+		committed = true
+		go s.serveWorkerControl(read, enc, unmount, &replyMu)
+		return nil
+	}
+	defer func() {
+		s.finish(code, resultErr, s.record.Name)
+		// Let an in-flight reply finish before returning to the worker entry point.
+		replyMu.Lock()
+		replyMu.Unlock()
+	}()
+	lifecycle := &files.MountLifecycle{Abandoned: abandoned, OperationCompleted: s.operationCompleted, Ready: ready, Stop: unmount}
+	return runFTPMount(o, s, lifecycle)
 }
 
-func runConfiguredResource(config resourceConfig, dec *json.Decoder, startup, log io.Writer, env []string, directory string, committed func(), tasks *daemonTasks) (code int, resultErr error) {
-	kind := "mount"
-	var o ftpOptions
-	var e error
-	if config.Forward != nil {
-		kind = "forward"
-		if e = validateForwardConfig(*config.Forward); e != nil {
-			return 1, e
-		}
-		o.host = config.Forward.Host
-		o.name = config.Forward.Name
-	} else {
-		o, e = parseFTPOptions(config.Args)
-		if e != nil {
-			return 1, e
-		}
-		o.name = config.MountName
-		o.approval = config.MountApproval
-		if o.approval != nil && (o.approval.PID <= 0 || validSession(o.approval.Session) != nil || !validRequestID(o.approval.ID)) {
-			return 1, fmt.Errorf("invalid mount approval")
-		}
-		if connection := config.MountConnection; connection != nil {
-			if err := validateRecentConnection(*connection); err != nil {
-				return 1, err
-			}
-			if o.approval == nil || connection.Session != o.approval.Session || connection.Instance != o.approval.Instance || connection.Host != o.host {
-				return 1, fmt.Errorf("invalid mount approval connection")
-			}
-			o.server, o.ssh = connection.Server, connection.SSH
-		}
-	}
-	if e = validSession(o.name); e != nil {
-		return 1, e
-	}
-	dir, e := resourceStateDir(kind)
-	if e != nil {
-		return 1, e
+func newResourceService(config resourceConfig, record resourceRecord) (*resourceService, error) {
+	if err := validSession(record.Name); err != nil {
+		return nil, err
 	}
 	if !validTaskUID(config.UID) {
-		return 1, fmt.Errorf("invalid resource task ID")
+		return nil, fmt.Errorf("invalid resource task ID")
 	}
-	slot := config.UID
-	if kind == "mount" {
-		cleanup, e := prepareFTPPaths(&o)
-		if e != nil {
-			return 1, e
-		}
-		defer cleanup()
+	dir, err := resourceStateDir(record.Kind)
+	if err != nil {
+		return nil, err
 	}
-	ack := make(chan error, 1)
-	abandoned := make(chan struct{})
-	go func() {
-		var v string
-		e := dec.Decode(&v)
-		if e == nil && v != "commit" {
-			e = fmt.Errorf("invalid startup acknowledgement")
-		}
-		if e != nil {
-			close(abandoned)
-		}
-		ack <- e
-	}()
-	direction := "<-"
-	if kind == "forward" && config.Forward.Reverse {
-		direction = "->"
+	record.UID, record.Version = config.UID, version
+	s := &resourceService{
+		record: record, config: config, done: make(chan struct{}),
+		resultPath: filepath.Join(dir, record.UID+resourceResultSuffix),
 	}
-	s := &resourceService{startup: startup, log: log, environment: env, directory: directory, committed: committed, record: resourceRecord{UID: config.UID, Kind: kind, Name: o.name, Host: o.host, Version: version, ReadOnly: o.readOnly, Direction: direction}, config: config, stop: make(chan chan error), ack: ack, abandoned: abandoned, done: make(chan struct{}), recordPath: filepath.Join(dir, slot+".json")}
-	defer func() { close(s.done); s.controlMu.Lock(); s.controlMu.Unlock() }()
 	s.setTransport("starting", nil)
-	defer func() { s.saveResult(code, resultErr) }()
-	if tasks != nil {
-		task := &daemonResourceTask{record: s.record, done: s.done, control: s.control}
-		if err := tasks.register(config.UID, task); err != nil {
-			return 1, err
-		}
-		s.publish = task.publish
-	} else {
-		// The manager retains both pipes after commit. Losing that owner asks
-		// the isolated mount to stop; no endpoint or recovery record is needed.
-		s.committed = func() {
-			go func() {
-				for {
-					var action string
-					if err := dec.Decode(&action); err != nil {
-						s.control("kill")
-						return
-					}
-					s.controlMu.Lock()
-					select {
-					case <-s.done:
-						s.controlMu.Unlock()
-						return
-					default:
-					}
-					err := json.NewEncoder(startup).Encode(s.control(action))
-					s.controlMu.Unlock()
-					if err != nil {
-						s.control("kill")
-						return
-					}
-				}
-			}()
-		}
-	}
-	if config.Forward != nil {
-		return runForward(*config.Forward, s)
-	}
-	return runFTPMount(o, s)
+	return s, nil
 }
-func startResourceBackground(config resourceConfig, kind string) (int, error) {
+
+func awaitResourceCommit(read func(any) error, abandon func()) <-chan error {
+	ack := make(chan error, 1)
+	go func() {
+		var answer string
+		err := read(&answer)
+		if err == nil && answer != "commit" {
+			err = fmt.Errorf("invalid startup acknowledgement")
+		}
+		if err != nil {
+			abandon()
+		}
+		ack <- err
+	}()
+	return ack
+}
+
+func offerResourceStartup(enc *json.Encoder, startup resourceRecord, ack <-chan error, finished <-chan struct{}) error {
+	if err := enc.Encode(startup); err != nil {
+		return err
+	}
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-ack:
+		return err
+	case <-finished:
+		return fmt.Errorf("resource worker exited before startup acknowledgement")
+	case <-timer.C:
+		return fmt.Errorf("resource startup acknowledgement timed out")
+	}
+}
+
+func commitResourceStartup(enc *json.Encoder, dec *json.Decoder) error {
+	if err := enc.Encode("commit"); err != nil {
+		return err
+	}
+	var reply json.RawMessage
+	if err := dec.Decode(&reply); err != nil {
+		return fmt.Errorf("resource startup was not acknowledged: %w", err)
+	}
+	var answer string
+	if json.Unmarshal(reply, &answer) == nil && answer == "started" {
+		return nil
+	}
+	var failure resourceStartup
+	if json.Unmarshal(reply, &failure) == nil && failure.Error != "" {
+		return fmt.Errorf("resource startup: %s", failure.Error)
+	}
+	return fmt.Errorf("invalid resource startup reply")
+}
+
+func (s *resourceService) finish(code int, err error, name string) {
+	s.saveResult(code, err, name)
+	close(s.done)
+}
+
+// The account daemon retains the worker pipes after commit. Losing that owner
+// stops the filesystem worker, including when no task-control RPC is in flight.
+func (s *resourceService) serveWorkerControl(read func(any) error, enc *json.Encoder, unmount chan<- chan error, replyMu *sync.Mutex) {
+	for {
+		var action string
+		if err := read(&action); err != nil {
+			break
+		}
+		replyMu.Lock()
+		select {
+		case <-s.done:
+			replyMu.Unlock()
+			return
+		default:
+		}
+		err := enc.Encode(s.mountControl(action, unmount))
+		replyMu.Unlock()
+		if err != nil {
+			break
+		}
+	}
+	s.mountControl("kill", unmount)
+}
+
+func startResourceBackground(config resourceConfig) (int, error) {
+	kind := config.kind()
+	if kind == "" {
+		return 1, fmt.Errorf("invalid resource configuration")
+	}
 	reservation, e := chooseTaskIdentity(kind, "")
 	if e != nil {
 		return 1, e
 	}
 
-	return startSelectedResource(config, kind, reservation)
+	return startSelectedResource(config, reservation, "")
 }
-func startSelectedResource(config resourceConfig, kind string, reservation *taskIdentitySelection) (int, error) {
+func startSelectedResource(config resourceConfig, reservation *taskIdentitySelection, directory string) (int, error) {
+	kind := config.kind()
 	name := reservation.name
 	config.UID = reservation.uid
-	if config.Forward != nil {
+	switch kind {
+	case "forward":
 		config.Forward.Name = name
-	} else {
-		config.MountName = name
+	case "mount":
+		config.Mount.Name = name
+	default:
+		return 1, fmt.Errorf("invalid resource configuration")
 	}
 	if e := validSession(name); e != nil {
 		return 1, e
@@ -328,42 +298,28 @@ func startSelectedResource(config resourceConfig, kind string, reservation *task
 	if e != nil {
 		return 1, e
 	}
-	token := resourceToken()
-	prompts := make(chan struct{}, 1)
-	l, broker, e := resourceListen(token, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/ask" && r.URL.Path != "/unlock" {
-			http.NotFound(w, r)
-			return
-		}
-		select {
-		case prompts <- struct{}{}:
-			defer func() { <-prompts }()
-		case <-r.Context().Done():
-			return
-		}
-		serveSSHConfirmation(w, r)
-	})
+	auth, stopAuth, e := startSSHAuthBroker()
 	if e != nil {
 		return 1, e
 	}
-	defer broker.Close()
+	defer stopAuth()
 	logPath := filepath.Join(dir, config.UID+".log")
-	cwd, e := os.Getwd()
-	if e != nil {
-		return 1, e
+	if directory == "" {
+		directory, e = os.Getwd()
+		if e != nil {
+			return 1, e
+		}
 	}
-	c, e := openLocalDaemon(localDaemonRequest{Kind: kind, Record: localShellRecord{Name: name, Directory: cwd}, Env: os.Environ()})
+	c, e := openLocalDaemon(localDaemonRequest{Kind: kind, Record: localShellRecord{Name: name, Directory: directory}, Env: os.Environ()})
 	if e != nil {
 		return 1, e
 	}
 	defer c.Close()
-	input, output := c, c
-	config.AuthAddress = l.Addr().String()
-	config.AuthToken = token
-	if e = json.NewEncoder(input).Encode(config); e != nil {
+	config.Auth = auth
+	enc, dec := json.NewEncoder(c), json.NewDecoder(c)
+	if e = enc.Encode(config); e != nil {
 		return 1, e
 	}
-	dec := json.NewDecoder(output)
 	var startup resourceStartup
 	if e = dec.Decode(&startup); e != nil {
 		return 1, fmt.Errorf("resource startup failed; see %s: %w", logPath, e)
@@ -372,12 +328,8 @@ func startSelectedResource(config resourceConfig, kind string, reservation *task
 		return 1, fmt.Errorf("%s (log: %s)", startup.Error, logPath)
 	}
 	record := startup.resourceRecord
-	if e = json.NewEncoder(input).Encode("commit"); e != nil {
+	if e = commitResourceStartup(enc, dec); e != nil {
 		return 1, e
-	}
-	var ack string
-	if e = dec.Decode(&ack); e != nil || ack != "started" {
-		return 1, fmt.Errorf("resource startup was not acknowledged: %v", e)
 	}
 	detail := record.Detail
 	switch kind {
@@ -399,25 +351,6 @@ func startSelectedResource(config resourceConfig, kind string, reservation *task
 	fmt.Fprintf(os.Stdout, "Started %s/%s: %s\n", kind, record.Name, cleanText(detail))
 
 	return 0, nil
-}
-
-func stopResource(kind, name string, expected ...string) error {
-	r, err := findRunningResource(kind, name)
-	if err != nil {
-		return err
-	}
-	if len(expected) > 0 && resourceIdentity(r) != expected[0] {
-		return fmt.Errorf("task changed; refresh with sshore list")
-	}
-	if _, err := daemonResourceRequest(context.Background(), "/resources/"+r.UID+"/kill", nil); err != nil {
-		return err
-	}
-	if kind == "mount" {
-		fmt.Fprintf(os.Stdout, "Unmounted mount/%s.\n", name)
-	} else {
-		fmt.Fprintf(os.Stdout, "Closed forward/%s.\n", name)
-	}
-	return nil
 }
 
 func (s *resourceService) peerTask() peerRecord {

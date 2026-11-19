@@ -45,7 +45,7 @@ func TestShellTreeAttachmentSnapshots(t *testing.T) {
 	if chain = currentShellTree(); len(chain) != 1 || chain[0].Parent != "" {
 		t.Fatalf("cycle accepted: %+v", chain)
 	}
-	path, _ := shellTreePath("child")
+	path, _ := statePath(filepath.Join("shell-tree", shellTreeFilename("child")))
 	if info, err := os.Stat(path); err != nil || runtime.GOOS == "linux" && info.Mode().Perm()&0077 != 0 {
 		t.Fatalf("private snapshot: %v %v", info, err)
 	}
@@ -108,7 +108,7 @@ func TestShellTreeRendering(t *testing.T) {
 	}
 	for _, color := range []bool{false, true} {
 		var out bytes.Buffer
-		writeShellTree(&out, nodes, color)
+		writeShellTree(&out, nodes, "", color)
 		text := out.String()
 		if !strings.Contains(text, "   ├─ ") || !strings.Contains(text, "   └─ ") || !strings.Contains(text, "*current") || strings.Contains(text, "CHECKED") {
 			t.Fatal(text)
@@ -124,7 +124,7 @@ func TestShellTreeRendering(t *testing.T) {
 	nodes[0].ShortID = "bad\x1b[2J"
 	nodes[0].Lifetime = "bad\x1b[2J"
 	var out bytes.Buffer
-	writeShellTree(&out, nodes, false)
+	writeShellTree(&out, nodes, "", false)
 	if strings.Contains(out.String(), "\x1b") {
 		t.Fatal("terminal control injection")
 	}
@@ -180,7 +180,11 @@ func TestShellTreeLifetimeOwnership(t *testing.T) {
 func TestShellTreeInventoryRefresh(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_TREE_ID", "remote:instance")
-	nodes := inventoryShellTrees([]shellTreeNode{{Identity: "remote:instance", Owner: "owner", Parent: "other", State: "attached", Cached: true}}, inventory{Host: "server", Shells: []shellView{{Instance: "instance", Name: "job", State: "detached", Temporary: true}}})
+	nodes := localShellTreeNodes(inventory{
+		Host:      "server",
+		ShellTree: []shellTreeNode{{Identity: "remote:instance", Owner: "owner", Parent: "other", State: "attached", Cached: true}},
+		Shells:    []shellView{{Instance: "instance", Name: "job", State: "detached", Temporary: true}},
+	})
 	if len(nodes) != 1 || nodes[0].State != "detached" || nodes[0].Cached || !nodes[0].Current || nodes[0].Owner != "owner" || nodes[0].Parent != "" || nodes[0].Lifetime != "heartbeat" {
 		t.Fatalf("inventory refresh: %+v", nodes)
 	}
@@ -193,7 +197,7 @@ func TestShellTreePersistentAttachmentIsNotOwnership(t *testing.T) {
 		{Identity: "origin", Host: "local", Name: "work", Lifetime: "persistent"},
 		{Identity: "independent", Parent: "origin", Host: "remote", Name: "job", Lifetime: "persistent"},
 		{Identity: "temporary", Owner: "origin", Host: "remote", Name: "temp", State: "detached", Lifetime: "heartbeat"},
-	}, false)
+	}, "", false)
 	text := out.String()
 	if !strings.Contains(text, "(temp)") || !strings.Contains(text, "(job)") || strings.Contains(text, "attach via") {
 		t.Fatal(text)
@@ -212,7 +216,7 @@ func TestShellTreeCompactStates(t *testing.T) {
 				{Identity: "unknown", Owner: "root", Host: "workstation", Name: "unknown-state", Cached: cached},
 			}
 			var out bytes.Buffer
-			writeShellTree(&out, nodes, false)
+			writeShellTree(&out, nodes, "", false)
 			output := out.String()
 			if strings.Contains(output, "attached") || strings.Contains(output, "detached") || strings.Contains(output, "CHECKED") || strings.Contains(output, "@dev") {
 				t.Fatal(output)
@@ -232,7 +236,7 @@ func TestShellTreeCyclesRemainVisible(t *testing.T) {
 	writeShellTree(&out, []shellTreeNode{
 		{Identity: "a", Owner: "b", Host: "alpha", Name: "cycle-a", State: "detached"},
 		{Identity: "b", Owner: "a", Host: "beta", Name: "cycle-b", State: "attached"},
-	}, false)
+	}, "", false)
 	for _, name := range []string{"cycle-a", "cycle-b"} {
 		if strings.Count(out.String(), name) != 1 {
 			t.Fatal(out.String())
@@ -242,12 +246,12 @@ func TestShellTreeCyclesRemainVisible(t *testing.T) {
 
 func TestShellTreeOmitsEndedOwners(t *testing.T) {
 	activityFixture(t)
-	nodes := inventoryShellTrees([]shellTreeNode{
-		{Identity: "gone", Host: "local", Name: "old", State: "exited"},
-		{Identity: "child", Owner: "gone", Host: "local", Name: "live", State: "detached", Lifetime: "parent"},
-	}, inventory{})
+	nodes := localShellTreeNodes(inventory{
+		ShellTree:   []shellTreeNode{{Identity: "gone", Name: "old", State: "exited"}, {Identity: "child", Owner: "gone"}},
+		LocalShells: []localShellView{{identity: "child", Name: "live", State: "detached", Temporary: true}},
+	})
 	var out bytes.Buffer
-	writeShellTree(&out, nodes, false)
+	writeShellTree(&out, nodes, "", false)
 	if strings.Contains(out.String(), "old") || !strings.Contains(out.String(), "(live)") || strings.Contains(out.String(), "owner ended") {
 		t.Fatal(out.String())
 	}
@@ -262,7 +266,7 @@ func TestTaskTreeIndependentResources(t *testing.T) {
 		nodes[i].Host, nodes[i].MachineID = "laptop", ""
 	}
 	var out bytes.Buffer
-	writeShellTree(&out, nodes, false)
+	writeShellTree(&out, nodes, "", false)
 	for _, text := range []string{"launch/a0123b (work)  *current", "mount/b0123c", "\n"} {
 		if !strings.Contains(out.String(), text) {
 			t.Fatal(out.String())
@@ -279,19 +283,19 @@ func TestTaskTreeIndependentResources(t *testing.T) {
 func TestLocalTreeScopeAndSources(t *testing.T) {
 	activityFixture(t)
 	machine, foreign := strings.Repeat("a", 32), strings.Repeat("b", 32)
-	inv := inventory{MachineID: machine, Hostname: "here", LocalShells: []localShellView{{identity: "local", Name: "local"}}, Shells: []shellView{{Instance: "hosted", State: "attached"}, {Instance: "cached", State: "detached", Historical: true}}}
-	nodes := []shellTreeNode{
+	inv := inventory{MachineID: machine, Hostname: "here", LocalShells: []localShellView{{identity: "local", Name: "local", State: "attached"}}, Shells: []shellView{{Instance: "hosted", State: "attached"}, {Instance: "cached", State: "detached", Historical: true}}}
+	inv.ShellTree = []shellTreeNode{
 		{Identity: "foreign", Host: "there", MachineID: foreign},
 		{Identity: "local", Name: "local", SourceHost: "here", SourceMachineID: machine, State: "attached"},
 		{Identity: "remote:hosted", Name: "hosted", Owner: "foreign", Parent: "foreign", SourceHost: "there", SourceMachineID: foreign, State: "attached"},
 		{Identity: "remote:cached", Name: "cached"},
 	}
-	got := localShellTreeNodes(nodes, inv)
+	got := localShellTreeNodes(inv)
 	if len(got) != 2 || got[0].Remote != "" || got[1].Remote != "there" || got[1].Direction != "<-" {
 		t.Fatalf("scope/source: %+v", got)
 	}
-	nodes[2].State = "detached"
-	if got := localShellTreeNodes(nodes, inv); got[1].Remote != "" {
+	inv.Shells[0].State = "detached"
+	if got := localShellTreeNodes(inv); got[1].Remote != "" {
 		t.Fatalf("stale attachment source: %+v", got)
 	}
 }
@@ -308,7 +312,7 @@ func TestTaskTreeCurrentAndCheckedOrder(t *testing.T) {
 		{Identity: "unknown", ShortID: "e0123f", Name: "e0123f", State: "unavailable"},
 	}
 	var out bytes.Buffer
-	writeShellTree(&out, nodes, false)
+	writeShellTree(&out, nodes, "", false)
 	text := out.String()
 	positions := []int{strings.Index(text, "(work)"), strings.Index(text, "*current"), strings.Index(text, "(data)"), strings.Index(text, "(export)"), strings.Index(text, "(web)"), strings.Index(text, "launch/e0123f ?")}
 	for i, p := range positions {
@@ -334,7 +338,7 @@ func TestTaskTreeResourceDirections(t *testing.T) {
 		{Identity: "in-reverse", ShortID: "666666", ID: "forward/incoming", Direction: "->", Manager: "laptop"},
 	}}
 	var out bytes.Buffer
-	writeShellTree(&out, inventoryResourceTrees(nil, inv), false)
+	writeShellTree(&out, inventoryResourceTrees(nil, inv), inv.MachineID, false)
 	for _, line := range []string{"mount/111111 (data)  <- server", "forward/222222 (db)  <- server", "forward/333333 (web)  -> server", "mount/444444 (export)  -> laptop", "forward/555555 (service)  -> laptop", "forward/666666 (incoming)  <- laptop"} {
 		if !strings.Contains(out.String(), line) {
 			t.Fatal(out.String())
@@ -371,19 +375,19 @@ func TestExternalSpawnParentDisplay(t *testing.T) {
 		{Identity: "two", Name: "two", Lifetime: "heartbeat", OwnerProcess: p},
 		{Identity: "persistent", Lifetime: "persistent", OwnerProcess: p},
 	}
-	nodes := externalSpawnParents(input, machine)
-	if len(nodes) != 4 || nodes[0].Owner == "" || nodes[0].Owner != nodes[1].Owner || nodes[2].Owner != "" || input[0].Owner != "" {
+	nodes, owners := shellTreeOwners(input, machine)
+	if len(nodes) != 4 || owners[0] != 3 || owners[1] != 3 || owners[2] != -1 || input[0].Owner != "" {
 		t.Fatalf("bad external ownership: %+v", nodes)
 	}
 	var out bytes.Buffer
-	writeShellTree(&out, nodes, false)
+	writeShellTree(&out, input, machine, false)
 	if !strings.Contains(out.String(), fmt.Sprintf("(pid %d)", os.Getpid())) || strings.Contains(out.String(), "external ") || strings.Contains(out.String(), "stale-name") || strings.Contains(out.String(), " ?") {
 		t.Fatal(out.String())
 	}
 	input = append(input, shellTreeNode{Identity: "managed", Lifetime: "persistent"})
 	input[0].Owner = "managed"
-	nodes = externalSpawnParents(input, machine)
-	if nodes[0].Owner != "managed" {
+	_, owners = shellTreeOwners(input, machine)
+	if owners[0] != 3 {
 		t.Fatal("replaced a visible managed owner")
 	}
 }
@@ -395,7 +399,7 @@ func TestExternalSpawnParentUnavailable(t *testing.T) {
 		if foreign {
 			p.MachineID = strings.Repeat("b", 32)
 		}
-		nodes := externalSpawnParents([]shellTreeNode{{Identity: "spawn", Lifetime: "parent", OwnerProcess: p}}, machine)
+		nodes, _ := shellTreeOwners([]shellTreeNode{{Identity: "spawn", Lifetime: "parent", OwnerProcess: p}}, machine)
 		if len(nodes) != 2 || nodes[1].State != "unavailable" {
 			t.Fatalf("trusted unverified identity: %+v", nodes)
 		}

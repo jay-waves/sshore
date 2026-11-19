@@ -17,9 +17,9 @@ policy or depending on mutable application state.
 
 | Responsibility | Start here |
 | --- | --- |
-| MCP tools and remote Bash | `internal/mcp/`, `internal/tmux/bash_linux.go`; application coordination in `mcp_client.go`, `mcp_server_linux.go` and the shared daemon |
+| MCP tools and remote Bash | `internal/mcp/`; application coordination in `mcp_client.go`, `mcp_server_linux.go` and the shared daemon |
 | One-off SSH execution | `cli.go`: exec adapter uses the shared SSH connection layer without remote setup |
-| CLI grammar, dispatch and help | `cli_schema.go`: shared command aliases and product/SSH grammar; `cli_commands.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
+| CLI grammar, dispatch and help | `cli_help.go`: command definitions, help and examples; `cli_schema.go`: aliases and product/SSH parsing; `cli_commands.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
 | Connections and session switching | `client.go`, `client_connection.go` |
 | Prepared installation and exact-release policy | `setup.go` handles version checks and installation policy. `setup_linux.go` handles remote service startup |
 | Shell hosting, identity and cancellation | `launch_*_linux.go`, `session_linux.go`, `server_linux.go`; process inspection in `process_linux.go` |
@@ -70,8 +70,11 @@ including packaged documents. Never modify published assets to update documentat
 
 ### CLI parsing and help
 
-`cli_schema.go` owns command grammar; command adapters interpret parsed operands.
-`cli_help.go` owns command help and concise workflow examples (`--tldr`).
+`cli_schema.go` parses command definitions; command adapters interpret parsed operands.
+Shell creation and attachment normalize their endpoints before the adapter
+builds connection options.
+`cli_help.go` keeps each command's operand limits and options alongside its
+help and concise workflow examples (`--tldr`).
 Keep options, aliases, arity and shared conflicts in the schema. Parsing and help
 have no execution side effects. `kill` is the termination command; do not add a
 `cancel` alias or a separate protocol compatibility counter.
@@ -85,6 +88,11 @@ clients, not a remote shell server.
 ConPTY children join their kill-on-close Job during process creation. Native
 console I/O remains synchronous as required by ConPTY; pinned I/O threads use
 CancelSynchronousIo before transferring input ownership.
+Each ConPTY input lease uses one result channel for its serial writes.
+ConPTY startup releases child-facing pipe ends before rollback or starting the
+process waiter. The Windows environment keeps the last value for each
+case-insensitive name and emits one sorted block.
+Natural exit and explicit close share the same Job and pseudoconsole shutdown.
 Each interactive shell owns one terminal and permits one attachment at a time. MCP
 Bash sessions use pipes and do not support terminal attachment. Split panes,
 tiling, screen emulation and scrollback replay are outside scope.
@@ -114,12 +122,30 @@ attachment does not close a daemon-owned spawn lease. OpenSSH configuration is
 resolved in the initiating environment and directory, including its remote
 command. No persistent SSH subprocess,
 ControlMaster, askpass executable or implicit reconnect is used.
+The CLI, saved connections and ProxyJump use the same SSH option parser.
+Shell and file startup, forward watchers and peer cleanup share the remote
+executable lookup and version probe. Each command handles a version mismatch
+according to its own protocol.
+The CLI detects an SSH port while parsing the suffix. An explicit `--port`
+used by itself replaces the saved port and keeps the other saved SSH options
+in their original order.
+Forwarding filters operate on whole options, including the attached forms of
+`-L`, `-R`, `-D` and `-o`.
 
 MCP grows a bounded pool of SSH transports per host when concurrent calls need
-independent protocol exchanges. Idle transports are reused. Successful calls leave them open;
-cancelling a call closes its transport, while submitted scripts may continue.
+independent protocol exchanges. The pool keeps a list of slots, and each slot
+tracks whether it is idle. A call owns its slot from reservation through
+dialing and response receipt. On exit it either returns the connection to the
+pool or cancels and closes it before freeing the slot. A complete exchange
+allows reuse while submitted scripts continue independently.
 Failed requests are never replayed automatically; the next call reconnects.
-Closing MCP releases transports without ending persistent remote Bash sessions.
+Closing MCP detaches its pools and cancels every slot before waiting for
+published transports to close. Persistent remote Bash sessions remain available.
+Each SSH transport stays bound to the account daemon selected at setup. If that
+daemon is replaced, the next request retires that transport and a later call can
+open a new one. The SSH bridge checks frame kind and size and relays the JSON
+payload through the authenticated daemon endpoint. The daemon decodes the typed
+request, checks its release and dispatches it.
 
 The server may accept SSH `none` authentication (for example Tailscale SSH).
 Only when public-key authentication is requested is the system agent queried. Linux
@@ -127,6 +153,11 @@ uses a Unix agent socket; Windows uses its OpenSSH agent pipe. Configuration
 resolution and agent connections are per connection. Unsupported execution hooks and authentication
 modes fail explicitly. Keep resolver arguments compatible with Windows in-box
 OpenSSH; Windows system path tokens use the resolver's initiating environment.
+The resolver collects explicit `-F` options for ProxyJump while checking the
+original argument list. Each hop resolves its own settings.
+Public-key authentication tries certificates matching configured identities,
+then their raw keys, then other agent keys when allowed. A certificate can use
+the agent signer for its underlying key.
 Modern algorithm negotiation uses the supported Go SSH
 algorithms intersected with resolved configuration, preserving configured order
 within the allowed set. SSH debug logging (`-v` or `LogLevel DEBUG`) reports the
@@ -134,18 +165,42 @@ negotiated key exchange, host-key algorithm and both traffic directions, marking
 AEAD integrity protection. Normal connections remain quiet. Host verification uses the
 local known_hosts policy; unknown-host confirmation is routed to the initiating
 frontend over private local control. Background retries never prompt.
+An interactive authentication prompt pauses the connection timeouts across the
+active ProxyJump chain. Each hop resumes with its remaining time. One timer
+tracks the earliest deadline, and caller cancellation stays active throughout
+setup.
+Each handshake watches either its direct TCP connection or its jump, which
+owns the channel carrying the handshake. Authentication configures host-key
+checks and login prompts together for each handshake. A separate hook covers
+agent key listing and signing. The handshake retires its hooks and closes its
+agent connection before handing off the authenticated client. Each client keeps its
+immediate jump open for its lifetime and closes the chain starting from the
+underlying TCP connection.
 
 For remote launch, attach and spawn, the initiating daemon owns SSH and forwards
 shell selection and authentication prompts to the frontend. After version checks it opens an SSH
 TCP channel to the
 account daemon's loopback endpoint. Native and SSH clients authenticate there and
-open streams by immutable task ID. The preparation process exits; SSH TCP
-forwarding must be permitted. A version mismatch stops the connection before opening a shell.
+open streams by immutable task ID. All three modes require the preparation
+process to hand back an authenticated daemon endpoint. A spawn establishes its
+lifetime mux before reporting readiness. The preparation process exits and SSH
+TCP forwarding must be permitted. A version mismatch stops the connection
+before opening a shell.
+Only an attach without a selected shell can accept a setup menu, and it can
+answer one menu per handshake. File helpers read the remote home directory
+from the setup reply when resolving paths.
 
-Native port forwards belong to their connection. Application forwards retain
-separate connections and their explicit retry policy. Cancellation closes owned
+Native port forwards belong to their connection. Application forwards use
+separate connections. The initial attempt must complete startup before the
+configured retries can begin. Retries open a fresh transport without repeating
+the initiator handoff. Cancellation closes owned
 connections to interrupt channel I/O before joining workers. Preserve this order
 when adapting streams; session stdin must serialize EOF with writes.
+Application forward listeners and local service dials use IPv4 loopback.
+SSH AddressFamily selects the SSH endpoint's network.
+SSH command runners drain stdout before waiting on normal exit. If reading or
+forwarding stdout fails, they close the owning connection before joining the
+command.
 When a spawn's shell lease ends, its bridge rejects new streams and drains
 established resource streams before closing the transport.
 
@@ -172,6 +227,8 @@ It never inherits launch lifetime or injects a command into terminal input.
 Exit or detach returns one level; the parent program continues running.
 
 The client at the user's terminal owns terminal input and shortcuts.
+Ctrl+B n and Ctrl+B p select the next or previous validated target by name
+and wrap at the ends. The client keeps the selected target's instance ID.
 `x/ansi` provides sequence framing and parameter parsing; the shortcut adapter
 recognizes legacy controls, CSI-u/Kitty and xterm modifyOtherKeys. Consumed keys'
 repeat/release reports stay local; unconsumed input retains its original bytes.
@@ -202,10 +259,13 @@ Connection boundary cleanup disables Kitty keyboard
 event reporting and xterm modifyOtherKeys before returning to the local prompt.
 The Linux account daemon catches SIGHUP for its entire lifetime, including
 intervals without hosted shells; child shells retain their normal HUP behavior.
-The frontend holds local daemon leases for the active route and return stack.
-During handoff it keeps the previous route for recovery. Once the target is ready,
-it closes unreferenced leases. Each lease can open independent attachment streams
-over the daemon-owned SSH connection. Saved routes authenticate anew.
+The frontend holds local daemon leases for the active route, the source of a
+pending switch and the parent return stack. A child adds its parent to the stack
+once startup succeeds. The frontend then closes unreferenced leases.
+Each lease can open independent attachment streams
+over the daemon-owned SSH connection. Only the interactive frontend retains
+leases across attempts. A fresh dial for a saved route or control request
+belongs to its stream.
 
 The shell host holds a terminal and the verified process identity used for task
 operations. Each attachment owns a mux and borrows one input lease from the host.
@@ -215,9 +275,28 @@ sockets and authenticated SSH channels use the same frames from `internal/wire`.
 For a next-hop connection, the initiating host's daemon uses that shell's
 configuration, signing credentials, environment and working directory. The terminal client follows
 a private attachment route, not remote-supplied local execution instructions.
+The first attachment confirmation consumes only the startup reply slot. The
+private route remains usable for later attachments until its transport closes.
 Local managed shells also support handoff for remote `launch` and `attach`.
 Detached startup keeps its noninteractive path. Reuse the existing connection and
 attachment mechanisms; do not run a second terminal frontend inside a daemon.
+Native and hosted shells release the input lease through the same control
+loop. It confirms detach only after the active attachment releases its lease,
+then waits for `bye`. On exit it closes the transport and joins its input
+reader even if the reply fails.
+The frontend waits separately for queued input to drain and for the detach
+confirmation. The control loop owns both deadlines and joins the terminal
+writer on exit. Once detach has been sent, a failure on the input stream leaves
+the control stream available to receive that confirmation.
+If a local handoff is prepared but its commit does not arrive within five
+seconds, the frontend resumes input on the current attachment and reports the
+timeout to the requesting daemon.
+The frontend keeps reply deadlines with the pending request. Once it has a
+target, it queues detach with the switch and uses the same switch to continue
+after the detach confirmation.
+The daemon accepts one preparation reply from the attachment that received the
+handoff offer and one startup result in the commit phase. A duplicate reply
+cannot satisfy the next phase.
 
 Local handoff lives in `client_connection.go`; remote child ownership and routing in
 `spawn_route_linux.go`; the frontend return stack and connection restoration in
@@ -228,23 +307,42 @@ child's host alias as a direct destination. See the
 
 Commands select tasks by name or short ID. A bare kill selector and
 `self:ID` are restricted to tasks managed on this machine. Remote kill
-selectors require the host in `HOST:ID`, including for cached rows. The task index
-reserves short IDs against immutable instances and preserves internal ordering.
-Short-ID operations reuse the
+selectors require the host in `HOST:ID`, including for cached rows. The list
+displays the first six characters of each task UID and orders tasks by full UID
+within each owner group. Short-ID operations reuse the
 connection settings of their observation. Confirmed detach acknowledgements
 (including Ctrl+B d, helper detach, switching, and --detach startup) promote the
 immutable shell identity in one bounded, daemon-serialized MRU stored in
 `connections/detached.json`. Global attach considers that entire
 order; HOST filters it to one remote host before choosing a still-detached
 candidate. Local shells can be selected directly by ID; attach has no --local
-filter. Unique ID prefixes of 2–32 hexadecimal characters resolve exactly;
-ambiguous prefixes fail without choosing a candidate. A single attach operand
+filter. The account daemon resolves a native shell and opens its control stream
+in the same authenticated request. Detach and handoff from a native shell use
+its registered identity directly. A hosted shell chosen from the startup menu
+is attached by the UID captured when the menu was shown. The next, previous and
+last shortcuts also attach by UID. Last remembers the instance across a rename.
+Unique ID prefixes of 2–32 hexadecimal characters resolve exactly;
+ambiguous prefixes fail without choosing a candidate. When an operand can be
+an ID prefix or an alias, both checks use the same task observations.
+Native and hosted shell renames resolve the ID and current label together.
+The daemon rechecks the selected task and label while claiming the new name
+under the task-table lock. A single attach operand
 must name a known task or a host in the daemon’s shell observations; unknown
-targets fail before SSH connection setup. HOST NAME is an explicit remote request. Remote candidates retain their
-exact saved route and instance; local candidates resolve against live registered
-tasks. Inventory refreshes never promote entries. Legacy connection history is a
-fallback when no eligible MRU entry is available. Explicit names and IDs bypass
-MRU selection; an actual later detach updates it.
+targets fail before SSH connection setup. HOST NAME is an explicit remote request.
+The daemon checks remote detach candidates against shell history in the same
+request. Selection retains the saved route and exact instance, using the latest
+confirmed label. The daemon holds saved routes read-only, so shell snapshots
+from one inventory can share route ancestors in memory. Local candidates
+resolve against live registered tasks.
+Inventory refreshes never promote entries. Legacy connection history is a
+fallback when no eligible MRU entry is available. The daemon checks saved shell
+routes and recent host defaults under one lock and returns the selected
+connection. After a confirmed remote rename, one metadata operation updates
+the shell snapshot and the recent connection label. When the command selected
+an instance, both updates match that instance. Scoped history operations
+collect matching snapshots from the same
+scan that expires old records. Explicit names and IDs bypass MRU selection;
+an actual later detach updates it.
 Actions revalidate immutable
 instances, capabilities or process identities at their authority. Displayed process
 ancestry is not permission to signal. Follow the
@@ -258,25 +356,57 @@ lifecycle and live connection relationships; it is never reconstructed after a
 crash. The loopback TCP listener serves HTTP/1.1. Control requests use JSON
 with an account token and exact release version. The same token authenticates
 administrative snapshot and shutdown requests across releases that speak HTTP.
-Linux hosted shell creation returns after task registration. Interactive task
-and lease connections and multi-step startup use HTTP Upgrade.
+Linux hosted shell creation returns after task registration. Nested routes on
+the same daemon resolve names and register children directly in the task table.
+Interactive task and lease connections and multi-step startup use HTTP Upgrade.
 Upgraded connections carry the existing task streams, including smux where
 the session uses multiple streams.
 Only endpoint discovery and credentials need private daemon files.
 Every normal public command registers with this daemon after argument parsing;
 help, version output and diagnostics remain free of startup side
 effects. The daemon's single one-second clock checks external spawn-owner process
-identities, drives lease heartbeats every 20 seconds and reclaims idle daemons.
-Socket leases expire after 75 seconds without acknowledgement; EOF releases them
-immediately. Tasks and live leases prevent idle exit; after the last activity the
-normal idle grace is 30 seconds. Explicit idle shutdown and reviewed upgrades keep
-their existing bounded shutdown semantics.
+identities, broadcasts a shared lease heartbeat every 20 seconds and reclaims idle daemons.
+Each tick reads a given owner PID once and compares its creation identity
+against all leases watching that PID.
+In-process and socket leases share the same registration checks. The daemon
+retains only the data needed by each live lease. An incoming lease owns a copy
+of its peer metadata, and owner leases require a process identity. Socket
+leases expire after 75 seconds without acknowledgement. The
+daemon's reader removes a lease on EOF, timeout or explicit release, even if a heartbeat
+write is blocked. Client cancellation, reader exit and explicit release share
+one stream close. Explicit release waits briefly for acknowledgement and joins
+the client reader after closing the stream. Tasks and live leases
+prevent idle exit. After the last activity, the normal idle grace is 30 seconds.
+Idle exit, reviewed shutdown and listener failure share the same cleanup for
+sockets still reading initial HTTP headers. Admitted HTTP requests get a
+bounded drain, and the daemon joins its activity clock before releasing the
+owner lock.
+The HTTP upgrade hands over a stream only after validating the protocol and
+full release and checking that the handshake context is still active.
 
 Peer advertisements, incoming-resource participation and client attachment leases
-live in daemon memory. Task trees, remote shell observations and recent connection
+live in daemon memory. Expired advertisements are removed during listing, on
+clock ticks, or before rejecting a new advertisement for lack of space. A matching
+live lease keeps the displayed record fresh while that lease remains active.
+Each inventory request returns either the peer view or the incoming resources
+backed by live leases.
+Task trees, remote shell observations and recent connection
 routes are loaded once from private history and then served from daemon memory;
-only the daemon persists changes. Loaded relationships are cached observations,
-never reconstructed live tasks. Clients do not poll files, hold liveness locks or
+only the daemon persists changes. Recent connection and detached attachment
+history retain their own order and use the same bounded file handling. History
+loading resolves the state root once and prepares directories under that root.
+Recent-history updates validate the directory of the loaded file before replacing
+it, then publish the new rows in memory. Saved
+shell routes are validated when loaded or updated. A saved spawn route is
+ambiguous when multiple instances share its host and name. Select by task ID
+in that case. The daemon reconciles shell
+history against each task-tree record's owning node and prunes expired rows
+under lock. Detached attachment lookup keeps only observations for identities
+in its recent list. Remote inventory submits shell observations and the query's
+error state to the history cache. Listings sort the returned rows, while cache
+updates use them directly. All task-tree writes use the same size limits as
+reads. Loaded relationships are cached observations. The task registry supplies
+live tasks. Clients do not poll files, hold liveness locks or
 publish advertisements through SFTP. Forward metadata uses the same daemon clock;
 mount metadata is registered with its existing agent connection. UI progress,
 terminal mechanics, SSH protocol keepalives and filesystem cache deadlines retain
@@ -285,22 +415,102 @@ their own timers because they do not establish product task liveness.
 Its private owner lock is independent of
 client runtime directories. While it is running, its explicit application state
 root is authoritative; a conflicting `SSHORE_STATE_DIR` is rejected. Test builds
-use isolated account roots. Mounts use separate `sshore daemon mount` processes to isolate native filesystem
-work. Their inherited pipes carry startup and control; workers publish no
-independent control endpoint or live-state files. Mounts and independent forwards
-retain their own SSH transports and lifetimes. MCP stdio adapters are transient
-clients of the same daemon, not another persistent manager.
+use isolated account roots. The daemon supervises mounts through inherited pipes
+to a separate `sshore daemon mount` process, which owns the native filesystem
+work. The daemon runs forwards directly and handles their control requests in
+process. The launcher derives the resource kind from its configuration, and
+the daemon checks that it matches the requested startup kind. Reviewed mounts
+and forwards are validated before selecting a task name and consuming approval.
+Both use the same startup commit exchange and keep their own SSH
+transports. The daemon keeps a committed task if the initiator loses the
+final acknowledgement. The mount worker owns its commit reader and unmount
+requests. The forward's caller owns its commit reader and acknowledges only the first ready
+connection. The daemon registers the mount before starting its worker, so the
+task name is claimed during setup. Startup updates the registered record's
+runtime details and reports the identity and name held by the daemon.
+An initiator disconnect and a daemon stop share the same mount startup
+cancellation, which closes worker input. Cancellation and the handoff to task
+control use the same lock. Startup owns both pipes through the configuration
+write, the commit write and the worker's acknowledgement.
+The daemon then uses them for task control and can read the final reply even if
+the worker has already exited. MCP stdio adapters are transient clients of the
+same daemon.
 
-Creation and rename claim names atomically in the task table. Request payloads
-remain in daemon memory until expiry or single consumption; reviewed endpoints
-exist only in the executing memory copy. Review does not attach a terminal.
+The daemon checks proposed names and selects automatic names from the task ID's
+prefixes. Creation and rename use the same name check under the table lock.
+Registering a review also checks pending request capacity in that scan. Table scans
+discard expired entries with a single time reference. Lookup, name checks and
+batch confirmation within a task-table operation use the same reference time.
+Batch stop resolves each confirmed task ID directly and checks its displayed
+reference and kind using the same check as single-task operations. It verifies
+the whole batch before removing pending requests or stopping workers.
+Registration checks expiry after acquiring the table lock. Request reads copy
+the stored connection and operations after releasing the table lock. Inventory
+collects task references under the lock and reads their details after releasing
+it. Shell rename writes history after releasing the table and shell
+state locks. Renames of the same shell write history in live update order.
+Native and hosted shell state come directly from the account
+daemon. Native shell selection uses a direct lookup for a confirmed UID and
+copies the selected record after resolving an alias or prefix. Hosted shell
+selection resolves one task in the daemon's table without
+collecting process diagnostics or sending the full shell inventory.
+Local shortcuts, task ID lookup and detached-shell selection use the same
+native and hosted shell rows. They use the hosted shell health query, which
+skips working-directory and process diagnostics. The local list also reads
+working directories.
+Detailed listings share one account-owned process snapshot across hosted shells.
+Resource cancellation and rename resolve the target in the
+daemon task table. A target selected from inventory must still have the same
+identity and label. The resource inventory includes pending request summaries
+from the same task table as mounts and forwards. The daemon selects matching
+resources during the table scan and reads worker details after releasing the
+lock. It sends resource records first, then streams completed status probes
+from the same selection.
+A stalled worker leaves its record visible alongside any statuses already
+received. The client applies each probe to the resource row for that identity.
+Task selection uses the same rows without waiting for probes. Batch shutdown
+passes the confirmed rows' names and identities back to the daemon for rechecking.
+Request payloads remain in
+daemon memory until expiry or single consumption. If the shell fails to confirm that it notified the request
+helper, the client cancels the saved request by ID. The shell publishes its
+advisory row after notifying the helper and removes it if it cannot acknowledge
+the client. Local selections exist only in the review process. An approved upload derives its transfer
+metadata from the same open file handle that supplies its contents.
+Review does not attach a terminal.
 
 Updates query the authenticated administrative endpoint, compare the confirmed
 task snapshot and request shutdown after preparing the replacement. A refusal,
 unreachable endpoint or timeout stops the update. There is no daemon process
 scan or forced shutdown fallback. Administrative inspection/shutdown is separate
 from exact-release normal control and cannot start work or open task streams.
+State replacement and executable staging share the same temporary-file
+lifecycle. The file is synced and closed on the destination filesystem before
+the caller takes ownership. Installation verifies the staged version before
+stopping tasks.
+The daemon verifies confirmed task IDs, names and expiration by direct lookup.
+It scans for expired extras only when the task table has more entries than the
+snapshot. Pending requests are removed after the entire snapshot is verified.
 
+The account task table defines the scope for MCP session lookup, limits,
+listing and shutdown. MCP sessions remain registered during cleanup, and the
+task table can retire them after cleanup succeeds. Failed cleanup can be
+retried against the same registered task. Each session owns its Bash process
+and bounded execution history. The latest execution's foreground completion
+determines when the next script can start. Older executions remain readable
+while their output streams are open. Output reads copy at most 4 KiB
+from each stream at the supplied cursor. The response reports output closed
+once both streams have closed and all retained output has been read.
+The execution owns the wait for new output and creates a notification channel
+only when a reader needs to wait.
+The runner opens output readers before submitting a script and waits for Bash
+to open the corresponding writers before it starts draining. If Bash exits
+during setup, the readers can reach EOF without waiting for a writer to appear.
+Failed staging closes any opened readers and removes only the directory created
+for that execution. A submission write failure makes the shell unavailable,
+since Bash may have read part of the command.
+One cleanup path joins both output readers and publishes their combined result.
+The process waiter owns control-descriptor and temporary-directory cleanup on
+both natural exit and explicit close.
 Concurrent MCP calls create additional authenticated SSH transports on demand,
 up to eight per host; further calls wait with cancellation. Spawn bridges open an
 independent local data connection for each stream instead of rejecting the ninth
@@ -309,13 +519,29 @@ instead of dropping valid connection bursts.
 
 Startup must have an explicit ownership handoff. Carry the initiating client's
 working directory and environment, not whichever environment started the daemon.
+The launcher bounds startup pipe I/O and verifies the daemon's published record
+before confirming readiness. If the handshake fails, it reaps the child before
+releasing the startup lock.
+The mount CLI and approval flow send the same structured settings. The worker
+validates those settings and the approval route before preparing the mountpoint.
+Approved resource routes acknowledge readiness after checking the source shell
+and reserving any required remote listener. Approved uploads check the pinned
+local source before opening a transfer stream.
 Do not hold bookkeeping locks across terminal I/O, authentication or worker startup.
 Daemon liveness comes from its owner lock; orphaned metadata cannot block startup
-with a version mismatch. `kill --all` uses authenticated administration across releases that speak HTTP,
-rechecks the reviewed task snapshot, kills owned shells and their identified processes,
-and waits for the daemon to release its account endpoint. On Windows it also waits
-for the daemon process to exit so the installer can replace its executable. No new
-tasks are admitted while shutdown is in progress.
+with a version mismatch. `kill --all` uses authenticated administration across
+releases that speak HTTP. Under the task-table lock, the daemon expires stale
+records, checks that the reviewed task count matches, and verifies each ID and
+name directly against the table before collecting the workers to stop. It
+then stops those workers and their identified processes and releases its account
+endpoint. The client polls one validated handle to the account lock throughout
+shutdown. On Windows it releases that handle before waiting for the daemon
+process to exit so the installer can replace its executable. Whole-daemon shutdown owns the
+cleanup deadline. The shutdown request waits for each accepted stop. On timeout,
+that wait continues in the background. Admission resumes after an error or
+timeout once cleanup finishes. After remote shutdown succeeds, host-scoped `kill --all`
+rechecks the entire displayed set of local resources in one operation before
+starting local cleanup.
 Cancellation must close owned resources and join background work before reporting
 completion; persisted PIDs are diagnostic, not authority to terminate.
 
@@ -337,27 +563,75 @@ and consent stay in the application.
 Client transport openers return one owned byte stream: `Close` releases its entire
 owned path, and context cancellation invokes the same cleanup exactly once. A
 reused attachment owns only its stream; the frontend retains the authenticated
-connection across attachment changes. Resource route adapters keep instance,
-full-release and approval checks in the application. SSH exec channels cache their
-exit result for concurrent waiters; `CloseAndWait` aborts before joining, while
-normal completion consumes output before `Wait`.
+connection across attachment changes. Resource routing checks the full release
+version and requires a shell instance. Approval checks the instance under the
+same lock as the shell name, process and attachment state. File and mount routes
+can acknowledge readiness after approval. A reverse forward binds its listener
+before acknowledging readiness.
 
-Loopback HTTP control uses a shared, bounded idle connection pool without proxies
-or redirects. Dialing is bounded independently of interactive approval waits;
-caller cancellation still interrupts those waits. Forward attempts preserve heartbeat
-write and registration failures as context cancellation causes; user cancellation
-remains a normal exit. Forward connection registries
-release their lock before closing sockets and remove completed connections in
-constant time.
+SSH exec streams own their connection's cancellation and cache the exit result
+for concurrent waiters. Direct copies and mounts use that stream directly.
+`CloseWrite` sends channel EOF while leaving output available. `CloseAndWait`
+aborts before joining, while normal completion consumes output before `Wait`.
+
+The SSH authentication broker uses a shared, bounded loopback connection pool
+without proxies or redirects. Its loopback endpoint and token travel as
+private startup fields outside the subprocess environment. Dialing is bounded
+independently of interactive input. Visible prompts feed the line editor through
+the cancellable keyboard reader. Finishing a prompt cancels that reader, closes
+the input pipe and waits for the reader to exit before restoring the terminal.
+Closing the broker cancels requests and waits for terminal restoration.
+Background forwards use their task registration for daemon liveness and reuse
+one heartbeat advertisement across connection attempts. Each attempt starts
+heartbeats after readiness and preserves write failures as its cancellation
+cause. It waits for the transport once and joins connection cleanup and any
+heartbeat work before retrying. User cancellation remains a normal exit.
+The remote watcher reads records directly from a routed control stream. The
+standalone SSH helper adapts inherited stdin so signals can release its lease
+even while stdin is blocked.
+The daemon cancels a forward directly. Mount workers return the result of a
+graceful unmount so the daemon can report a busy mount while it remains
+connected. Single stops, batch stops and daemon shutdown share the same
+worker stop operation. Once a stop is accepted, concurrent callers wait
+independently for the same task to exit. A refused stop can be retried.
+SSH and resource mux forwarding share a lifecycle that cancels pending dials and
+relays, closes the inputs, and waits for workers when accepting ends or the owner
+stops the forward.
 
 Shared relays distinguish opaque attachment bridges (EOF closes both directions)
 from request/response splices (clean EOF sends `CloseWrite`, preserving replies;
-I/O errors and cancellation abort both ends). Both join their copy workers. A
-resource mux forward owns its listener, local target connections and mux; closing
-or waiting for it joins its accept loop, cancellation watcher and data workers.
+I/O errors and cancellation abort both ends). Both join their copy workers.
+Full shutdown starts closing both endpoints before waiting for either protocol
+close to finish. Both ends of a routed forward establish the control stream
+before starting data forwarding. The forwarder then takes over the mux and
+the optional listener.
+Forward attempts share one transport close across cancellation, handshake
+failure and normal cleanup.
+The listening side opens each data stream and watches for mux failures or
+unexpected incoming streams even while idle. The dialing side accepts data
+streams and connects to the local target. Shutdown joins both the accept loop
+and all forwarding workers, including the listener's mux watcher.
 
 Copy concurrency must stay bounded and preserve exact-size checks, ordered digest
 calculation, receiver-side upload verification and no-overwrite publication.
+Direct copy resolves all paths, validates remote upload filenames and opens
+local sources during batch preparation. The destination picker closes before
+execution begins. Destination selection and local staging both check for
+existing entries, including dangling symlinks. Direct and approved copies
+share a sequential batch executor that closes each completed source before
+advancing and stops on the first failure. Review keeps the original request
+with each prepared copy and assigns the approved stream's virtual paths
+during local selection.
+Downloads and verified uploads publish through the same size check, file sync
+and hard link. Both check cancellation after syncing and before creating the
+link. Upload verification also checks cancellation when the file is empty.
+Direct uploads resolve publication against the staging file's directory.
+Approved uploads publish to the destination selected for that stream.
+The receiver removes its temporary upload during publication, on a cancellation
+request or when the stream closes. Successful removal releases the slot for
+direct copies. An approved stream reserves its single slot until it closes.
+If removal fails, cleanup can retry while the upload remains closed to writes
+and publication.
 Transport window budgets live in `internal/wire/protocol.go` and `internal/files/mount.go`; size them
 for latency without allowing stalled file streams to exhaust terminal capacity.
 
@@ -365,39 +639,171 @@ Mounts always use the remote sshore helper and the same setup/version safeguards
 `cp`; there is no plain SFTP compatibility path.
 
 Mount failures can leave writes uncertain; never replay writes implicitly.
+If exclusive creation reports a collision or generic SFTP v3 failure, a
+nonexclusive open can recover by checking for an existing regular file and
+opening it without creation.
+The SFTP timeout checker scans the bounded set of outstanding requests at timer
+wakeups or idle transitions. The initial SFTP version exchange uses the same
+request timeout after SSH authentication. Replies remove requests without
+updating a second ordering structure. Mount cleanup uses the mount context to
+stop the timeout checker and joins it alongside the SFTP disconnect watcher.
+The SFTP wire creates directory budgets on the first read of each handle.
+An oversized listing counts as a failed request and leaves the connection
+available for other operations.
 Keep caches and notifications bounded and advisory. Invalidate affected paths
 and parents on mutation; notification loss or unknown scope requires full
-invalidation. Background verification must not delay foreground reads.
-Mounts learn from successful foreground directory listings. Per remote account and resolved root, they remember up to 1,024 relative paths, halve visit weight every seven days and forget paths after 30 days without a visit. After a foreground listing, mounts prefetch all direct child directories when there are at most ten, excluding dot-prefixed entries and symbolic links from both the count and the candidates. In wider directories they fetch up to ten children with positive visit weights, highest first. Up to four listings run concurrently through the shared mount cache. Prefetch never trains history or walks descendants. Clean unmount merges visit counts into private local state.
-Unused prefetched listings occupy the lowest eviction priority and do not seed per-file attributes or schedule background verification. A foreground listing promotes them and seeds attributes within their original freshness window. Foreground metadata lookups also touch the cached foreground parent listing. Recency affects eviction order without extending freshness deadlines.
+invalidation. The bounded refresh queue keeps entries in access order and
+resumes pending work when mutations finish. Each refresh refers to a specific
+cache entry. Removing an entry releases its payload immediately. The scheduler
+discards the detached node when it next scans the queue. Invalidation also
+retires matching in-flight lookups. A lookup can store its result only while
+its request is still registered, and a refresh can update only the entry it read.
+Lookups affected by an in-progress mutation go directly to the server. They
+skip the shared cache and in-flight registry and leave parent recency alone.
+Foreground reads and background verification use the same query and freshness
+rules, including how directory listings seed child attributes. Each cache key
+carries the query kind and remote path, or the open handle and its parent
+directory. Foreground lookups derive the watch and parent recency from that
+key. A directory listing watches the listed directory itself.
+The refresh scheduler drops expired work and selects the newest eligible entry
+in one pass. It reuses one timer for debounce and rate limits.
+Background verification uses its own context and
+must not delay foreground reads. A cancelled waiter leaves the
+shared query available to other readers.
+Foreground lookups and prefetch share a bounded directory subscription queue.
+Foreground lookups proceed immediately. A single timer bounds each serial
+registration. The stream reader handles acknowledgements in order with dirty
+and reset messages. An acknowledgement received with no registration in
+progress disables notifications. Each queued directory has one completion
+signal shared by the registration worker and any prefetch waiting to read it.
+Prefetch can wait for registration to avoid having its listing discarded by
+the acknowledgement.
+The Linux agent merges filesystem events by directory in a bounded batch. Its
+collector keeps draining events while the writer is busy and hands off each
+batch when the writer can accept it. Overflow sends a full reset. The agent
+ends notifications when its filesystem watcher stops and joins both the request
+reader and event collector before returning. The client
+invalidates its cache before releasing registration waiters through a shared
+signal. File transfers continue on their own stream.
+The mount agent waits for its SFTP subprocess directly. Multiplexer closure or
+a reply write failure cancels the subprocess. After the subprocess exits, the
+agent gives final replies up to one second to drain, then closes the multiplexer
+and joins its workers.
+For a background mount, startup cancellation closes the worker's input. The
+daemon starts its worker-exit deadline before waiting for final control replies.
+The worker uses one reader through startup and control, with a size limit
+on each JSON record.
+On the client, one startup watcher handles the deadline, interruption and
+initiator disconnect. Those events, request timeouts and transport loss share
+a cancellation path that retains the first failure and closes the owned byte
+stream. Shutdown closes that stream before joining background cache work or
+closing the SFTP client, so blocked requests cannot hold up cleanup. The mount
+joins the startup watcher before reporting readiness.
+A failed startup or lost connection closes the transport and gives unmount up
+to ten seconds to finish. If the transport fails during a graceful unmount,
+the same attempt gets up to five seconds to finish after transport shutdown.
+The SFTP request watchdog sleeps while the wire is idle and reads the oldest
+outstanding request directly from the wire's request table.
+Mounts learn from successful foreground directory listings. Per remote account
+and resolved root, they remember up to 1,024 relative paths, halve visit weight
+every seven days and forget paths after 30 days without a visit. After a
+foreground listing, mounts prefetch all direct child directories when there
+are at most ten, excluding dot-prefixed entries and symbolic links from both the
+count and the candidates. In wider directories they fetch up to ten children
+with positive visit weights, highest first. Up to four workers take the ranked
+targets in order and fetch listings through the shared cache.
+Navigation publishes a batch with its own targets and context. It cancels the
+previous batch and replaces any queued work. The worker waits for the current
+batch to finish before it takes the replacement.
+Prefetch never trains history or walks descendants. Mount shutdown cancels and
+joins both background workers before merging visit counts into private local
+state.
+Foreground entries and unused prefetches each keep their own recency order.
+Eviction takes the oldest unused prefetch first. A foreground listing moves
+a prefetched entry to the front of the foreground list and seeds its file
+attributes within their original freshness window. A foreground request that joins an
+in-flight prefetch gives it foreground priority at publication. Foreground
+metadata lookups also touch the cached foreground parent listing. Recency
+affects eviction order without extending freshness deadlines. Background
+verification considers only foreground entries.
 Scheduling and cache behavior belong in `internal/files/` and its tests.
 
 Windows mount metadata-only opens reuse bounded, short-lived SFTP handles in
-`internal/files/mount_metadata_windows.go`. Data and mutation opens remain separate;
-active metadata leases keep their original remote handle after cache retirement.
-Handle retention, attribute freshness and capacity probes have separate lifetimes.
-Handle reuse is bounded from opening, rather than extended indefinitely by access.
-Local mutations and remote invalidation stop reuse; expiry and unmount close idle
-handles. Volume capacity, including probe failures, uses the metadata cache and is
-invalidated by mutations. These caches do not buffer file writes.
+`internal/files/mount_metadata_windows.go`. Data and mutation opens get fresh
+handles. Handle retention, attribute freshness and capacity probes have
+separate lifetimes. One timer expires reusable handles based on when they
+opened. Active leases still refer to the original pool entry and its handle.
+The last release of a retired entry, or pool shutdown, removes that entry
+from the ownership table before closing the handle. Shutdown waits for
+pending opens to close any handles they obtain.
+Local mutations and remote invalidation advance the handle reuse epoch.
+The pool checks the epoch and replaces stale entries under the same lock.
+Expiry and unmount close idle handles. Both platforms cache volume capacity and
+probe failures by remote path and invalidate them on mutations. Each directory
+handle has its own cursor over an immutable cached listing. Linux translates
+entries as FUSE reads them. These caches do not buffer file writes.
+Both mount adapters use the same attribute update and cache invalidation path.
+Partial SFTP time updates preserve the omitted timestamp. Supplying both
+timestamps avoids a read to fill in missing attributes.
+Linux validates path components before normalization and reuses the resolved
+path when reporting attributes after a change.
 
 ### Inventory and diagnostics
 
 Separate live observations, cached records and unknown state.
+The shell rows in `pstree` come from registered local shells. Saved snapshots
+supply ownership and attachment context for those rows. Available shell rows
+take precedence over unavailable copies. Among equal-priority rows, newer
+timestamps take precedence. Saved evidence with equal priority and timestamps
+is resolved in filename order.
 A spawn without a visible owner task may display its original direct parent
-process, using its saved PID and creation identity. Reattachment preserves this
-context. Only a matching local process identity supplies a live name; foreign
-processes are not probed in the local PID namespace. These external nodes are
+process, using its saved PID and creation identity. Tree history copies that
+display data when it enters or leaves the daemon. Internal updates can share
+the read-only copy. Reattachment preserves this context. Only a matching local
+process identity supplies a live
+name. Foreign processes are not probed in the local PID namespace. These external nodes are
 rendering context, not registered tasks or additional process ancestors.
-`pstree` relationships never authorize operations. Task IDs are allocated at creation;
+The renderer indexes visible tasks and external parents together and creates
+display edges without rewriting ownership records.
+`pstree` cuts a display edge at the lowest identity in each ownership cycle so
+inventory order cannot change which node becomes the root. It groups rows by
+their display owner in the same pass that marks the current shell's ancestry.
+Resources from one inventory share a timestamp, so equal-freshness rows sort
+by kind and name.
+These relationships
+never authorize operations. Task IDs are allocated at creation;
 alias changes preserve the instance and storage identity. Prefix collisions at creation
 require a new identity; imported ambiguous references require an explicit scope.
+Selection checks ID prefixes before treating a hexadecimal reference as an
+alias. It keeps one candidate per identity. Registered local shells take
+precedence, and a live remote observation takes precedence over an ended
+record for the same identity. A local-shell alias lookup reads only local
+shell sources.
 Keep allocation and reference policy in `task_identity.go`, separate from capabilities.
 Spawn owner context stays fixed;
 the current attachment source may change. Neither is verified OS process ancestry.
 
 Keep normal output compact and distinguish cached, live and unknown state.
-Full diagnostics belong in `list --json`. Incoming resources require a live
+The local and background inventories match a live local resource's peer
+advertisement by UID when available. Advertisements without a UID use the
+manager and resource label. Exit receipts do not hide peer advertisements.
+The account daemon filters local resources by host and captures their names
+in one pass under the task table lock. A request for status also captures the
+workers, then streams their results by UID outside that lock.
+Pending reviews have no worker to probe.
+Full diagnostics belong in `list --json`. The local JSON view and remote
+inventory endpoint add shell exit receipts and saved tree context to the live
+inventory. The attachment shortcut streams task rows and errors directly
+from the live inventory. `pstree` reads saved relationships for its live rows.
+Resource history reads at most the 100 newest receipts per kind from the last
+seven days, matching on-disk pruning.
+Shell exit history and resource receipts share these limits. Entries with equal
+retention timestamps follow filename order.
+Exit receipts retain the task UID across renames. New receipts store the
+final alias in the resource record. When a mount worker exits, the account
+daemon applies any later alias without repeating history pruning. The reader
+also accepts older receipts with a separate display name.
+Incoming resources require a live
 local transport socket lease, not merely a historical advertisement. Worker liveness
 is not target health. Exclude capabilities and credentials from public output.
 See [inventory privacy](SECURITY.md#inventory-and-privacy).
@@ -520,7 +926,8 @@ can affect behavior; record meaningful regressions as focused tests.
 ## Release
 
 1. Keep `VERSION` and the source default in `main.go` equal to the new full release
-   version. Add changes and migration consequences in `scripts/release.sh`.
+   version. Update the notes block in `scripts/release.sh` with the new version's
+   changes and migration consequences. Earlier notes are available in Git history.
 2. Run checks appropriate to the changes, then commit and push. A push to `main`
    triggers Linux/Windows amd64 builds and packaging; successful builds permit
    publication only while that commit remains the branch head.

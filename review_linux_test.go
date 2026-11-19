@@ -57,7 +57,7 @@ func TestApprovedTransferRequiresMatchingMetadata(t *testing.T) {
 	target := filepath.Join(e.dir, "target")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err = executeApprovedFile(ctx, mx, operation{Kind: "download", Path: source, Name: "source", Size: 1, LocalPath: target}, nil, true)
+	err = executeApprovedFile(ctx, mx, newApprovedFile(operation{Kind: "download", Path: source, Name: "source", Size: 1}, target, nil), true)
 	if err == nil {
 		t.Fatal("changed remote file accepted")
 	}
@@ -65,7 +65,7 @@ func TestApprovedTransferRequiresMatchingMetadata(t *testing.T) {
 		t.Fatal("unapproved file created", err)
 	}
 	// The same stream path succeeds for the exact approved metadata.
-	if err = executeApprovedFile(ctx, mx, operation{Kind: "download", Path: source, Name: "source", Size: 7, LocalPath: target}, nil, true); err != nil {
+	if err = executeApprovedFile(ctx, mx, newApprovedFile(operation{Kind: "download", Path: source, Name: "source", Size: 7}, target, nil), true); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(target)
@@ -142,7 +142,7 @@ func TestEndpointRequestHelpers(t *testing.T) {
 		if op.Kind != tc.kind || op.LocalHint != tc.hint || op.Reverse != tc.reverse {
 			t.Fatal(op)
 		}
-		if op.Kind == "mount" && (op.Path != e.dir || op.LocalPath != "" || op.ReadOnly != (tc.hint != "")) {
+		if op.Kind == "mount" && (op.Path != e.dir || op.ReadOnly != (tc.hint != "")) {
 			t.Fatal(op)
 		}
 		if op.Kind == "forward" && (!op.LocalPortPending() || op.ServerPort() != 3000) {
@@ -224,10 +224,11 @@ exit 1
 			startRequestDaemon(t)
 			o := testRequestOptions()
 			o.host = "example.invalid"
-			id, err := queueRequest(o, ops)
+			queued, err := queueRequest(o, ops)
 			if err != nil {
 				t.Fatal(err)
 			}
+			id := queued.ID
 			args := []string{"review", id}
 			if scenario == "publish" || scenario == "subscribe" || scenario == "port-cancel" {
 				args = []string{"review", id}
@@ -261,11 +262,16 @@ exit 1
 				}
 			}()
 			var output strings.Builder
+			seen := 0
 			await := func(marker string) {
 				t.Helper()
 				deadline := time.NewTimer(10 * time.Second)
 				defer deadline.Stop()
-				for !strings.Contains(output.String(), marker) {
+				for {
+					if i := strings.Index(output.String()[seen:], marker); i >= 0 {
+						seen += i + len(marker)
+						return
+					}
 					select {
 					case s, ok := <-chunks:
 						if !ok {
@@ -318,6 +324,7 @@ exit 1
 						await(filepath.Join(cwd, "second"))
 						io.WriteString(terminal, "\x15"+filepath.Join(root, "new")+"\r")
 						await("destination already selected")
+						await("Save as: " + filepath.Join(cwd, "second"))
 						io.WriteString(terminal, "\x03")
 						await("approval cancelled")
 					} else {
@@ -367,7 +374,7 @@ exit 1
 			if strings.Contains(scenario, "cancel") && strings.Contains(output.String(), "SSH-STARTED") {
 				t.Fatal("cancelled operation started SSH")
 			}
-			_, err = readRequest(id)
+			_, err = findRequest(id)
 			if scenario == "publish" || scenario == "subscribe" || scenario == "download" || scenario == "upload" || scenario == "retry" || scenario == "menu" || scenario == "many" || scenario == "picker" {
 				if err == nil {
 					t.Fatal("approved request not consumed", err)

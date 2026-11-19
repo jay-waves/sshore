@@ -76,7 +76,7 @@ func (s *remoteShell) start(m message) error {
 	}
 	err = s.startTerminal(shellPath, args, tmux.StartupEnv(shellPath, env, m.NoProfile), s.directory, m, func(err error, code int) {
 		s.mu.Lock()
-		p := s.lifecycle.End()
+		p := s.endTerminal()
 		if s.exitReason == "" {
 			s.exitReason = fmt.Sprintf("shell exited (code %d)", code)
 			if e, ok := errors.AsType[*exec.ExitError](err); ok {
@@ -97,84 +97,72 @@ func (s *remoteShell) start(m message) error {
 	}
 	return err
 }
-func (s *remoteShell) attach(p *attachment, m message) (shellInput, error) {
+func (s *remoteShell) attach(p *attachment, m message) error {
 	s.terminalMu.Lock()
 	defer s.terminalMu.Unlock()
 	if err := validateAttach(m); err != nil {
-		return nil, err
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.killing {
-		return nil, fmt.Errorf("shell is being killed")
+		return fmt.Errorf("shell is being killed")
 	}
 	if m.Instance != "" && m.Instance != s.instance {
-		return nil, fmt.Errorf("shell instance changed; refresh with sshore list")
+		return fmt.Errorf("shell instance changed; refresh with sshore list")
 	}
 	initial := s.terminal == nil
 	if m.Action == "existing" && initial {
-		return nil, fmt.Errorf("shell has not started; use sshore list HOST")
+		return fmt.Errorf("shell has not started; use sshore list HOST")
 	}
-	lease, err := s.attachTerminal(p, m, s.start, func() error {
+	err := s.attachTerminal(p, m, s.start, func() error {
 		saveShellTreeWithProcess(remoteTreeIdentity(s.instance), s.name, m.Tree, "attached", m.OwnerProcess, shellLifetime(s.lifetime != persistentLaunch, true), m.SourceHost, m.SourceMachineID)
 		return p.controlMessage(message{Type: "ready", Tree: shellTreeFor(remoteTreeIdentity(s.instance)), Temporary: s.lifetime != persistentLaunch, Instance: s.instance, PID: s.process.PID, Name: s.name})
 	})
 	if err != nil && initial && s.terminal != nil {
-		s.lifecycle.End()
+		s.endTerminal()
 		s.exitReason = "initial attachment failed"
 		s.terminal.Close()
 		s.stop()
 	}
 
-	if errors.Is(err, tmux.ErrExited) {
-		return nil, fmt.Errorf("shell is exiting; use sshore launch HOST: to create a new one")
+	if errors.Is(err, errShellExited) {
+		return fmt.Errorf("shell is exiting; use sshore launch HOST: to create a new one")
 	}
-	if errors.Is(err, tmux.ErrAttached) {
-		return nil, fmt.Errorf("shell already attached; detach the other connection first")
+	if errors.Is(err, errShellAttached) {
+		return fmt.Errorf("shell already attached; detach the other connection first")
 	}
-	return lease, err
+	return err
 }
 
-// Only the current attachment may stop the terminal's writer and hand it off.
-func (s *remoteShell) clearAttachment(p *attachment, lease shellInput) (string, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	detached, err := s.detachTerminal(p, lease)
-	if err != nil {
-		s.exitReason = "terminal input cancellation failed"
-		s.stop()
-	}
-	if !detached {
-		return "", false
-	}
-	saveShellTree(remoteTreeIdentity(s.instance), s.name, nil, "detached")
-	return s.name, true
-}
 func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
 	mux, control, terminal, m, err := acceptMux(c)
 	if err != nil {
 		return err
 	}
-	defer mux.Close()
 	p := newAttachment(mux, control, terminal)
-	lease, err := s.attach(p, m)
+	p.approvalRequests = make(chan struct{}, 8)
+	err = s.attach(p, m)
 	if err != nil {
 		_ = p.controlMessage(message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
 		_ = control.SetReadDeadline(time.Now().Add(2 * time.Second))
 		_, _ = readMessage(control)
+		p.Close()
 		return err
 	}
-	defer func() { p.Close(); s.clearAttachment(p, lease) }()
-	go p.readInput(lease, &s.lifecycle)
-
-	for {
-		m, err := readMessage(control)
+	return s.serveAttachment(p, control, true, func(err error) (string, func()) {
 		if err != nil {
-			return err
+			s.exitReason = "terminal input cancellation failed"
+			s.stop()
+			return "", nil
 		}
+		saveShellTree(remoteTreeIdentity(s.instance), s.name, nil, "detached")
+		return s.name, nil
+	}, func(m message) error {
 		switch m.Type {
 		case "inventory":
-			inv := localSessionInventory()
+			inv := collectManagedInventory(false, false)
+			inv.collectPeers()
 			for _, row := range inv.Shells {
 				if err := p.controlMessage(message{Type: "inventory_row", Inventory: &inventory{Shells: []shellView{row}}}); err != nil {
 					return err
@@ -204,40 +192,13 @@ func (s *remoteShell) serveMux(c io.ReadWriteCloser) error {
 			if err := p.controlMessage(s.sessionTargets(m)); err != nil {
 				return err
 			}
-		case "redraw":
-			s.terminalMu.Lock()
-			s.mu.Lock()
-			if s.lifecycle.Active() == p && !p.Muted() {
-				tmux.RequestRedraw(s.terminal, s.process.PID)
-			}
-			s.mu.Unlock()
-			s.terminalMu.Unlock()
-			if err := p.controlMessage(message{Type: "redrawn"}); err != nil {
-				return err
-			}
-		case "resize":
-			s.mu.Lock()
-			var resizeErr error
-			if s.lifecycle.Active() == p {
-				resizeErr = s.terminal.Resize(tmux.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)})
-			}
-			s.mu.Unlock()
-			if resizeErr != nil {
-				return fmt.Errorf("resize terminal: %w", resizeErr)
-			}
-			if err := p.controlMessage(message{Type: "resized", Cols: m.Cols, Rows: m.Rows}); err != nil {
-				return err
-			}
-		case "detach":
-			if name, ok := s.clearAttachment(p, lease); ok {
-				p.FinishDetach(name)
-			}
-			return nil
 		default:
 			return fmt.Errorf("unexpected control message: %s", m.Type)
 		}
-	}
+		return nil
+	})
 }
+
 func (s *remoteShell) handle(c net.Conn) {
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
@@ -317,28 +278,20 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 		}
 		_ = writeMessage(c, message{Type: "renamed", Name: first.Name})
 	case "status":
-		s.mu.Lock()
-		m := message{Type: "session", Temporary: s.lifetime != persistentLaunch, Instance: s.instance, Attached: s.lifecycle.Active() != nil, Name: s.name, SoftwareVersion: version}
-		group := 0
-		if s.terminal != nil {
-			group, _ = s.terminal.ForegroundGroup()
-		}
-		if s.process.PID != 0 {
-			m.PID = s.process.PID
-			age := int64(time.Since(s.started) / time.Second)
-			m.AgeSeconds = &age
-		}
-		s.mu.Unlock()
-		if first.Action != "health" {
-			if first.Action != "inventory" {
-				m.Foreground = foregroundPrograms("/proc", group)
+		view, group := s.view(first.Action)
+		if first.Action != "health" && first.Action != "inventory" {
+			view.Foreground = "—"
+			if group > 0 {
+				view.Foreground = readProcessSnapshot("/proc").foregroundPrograms(group)
 			}
-			m.Directory = sessionDirectory(group, m.PID)
 		}
-		_ = writeMessage(c, m)
+		_ = writeMessage(c, message{
+			Type: "session", Temporary: view.Temporary, Instance: view.Instance, Name: view.Name, SoftwareVersion: version,
+			Attached: view.State == "attached", PID: view.PID, AgeSeconds: view.Age, Foreground: view.Foreground, Directory: view.Directory,
+		})
 	case "detach":
 		s.mu.Lock()
-		p := s.lifecycle.Active()
+		p := s.active
 		s.mu.Unlock()
 		// Ask the attachment's control loop to handle finalization, avoiding two
 		// concurrent readers of the control stream.
@@ -399,7 +352,7 @@ func (s *remoteShell) watchLifetime(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			s.mu.Lock()
-			s.lifecycle.End()
+			s.endTerminal()
 			s.stop()
 			s.mu.Unlock()
 			return
@@ -409,7 +362,7 @@ func (s *remoteShell) watchLifetime(ctx context.Context) {
 			s.mu.Lock()
 			empty := s.terminal == nil
 			if empty {
-				s.lifecycle.End()
+				s.endTerminal()
 				s.stop()
 			}
 			s.mu.Unlock()
@@ -432,7 +385,7 @@ func (s *remoteShell) killWithReason(instance, reason string) error {
 		return fmt.Errorf("shell instance changed; refresh with sshore list")
 	}
 	if s.process.PID == 0 {
-		s.lifecycle.End()
+		s.endTerminal()
 		s.stop()
 		s.mu.Unlock()
 		return nil
@@ -451,6 +404,39 @@ func (s *remoteShell) killWithReason(instance, reason string) error {
 	}
 	s.stop()
 	return nil
+}
+
+func (s *remoteShell) view(detail string) (shellView, int) {
+	s.mu.Lock()
+	temporary := s.lifetime != persistentLaunch
+	view := shellView{
+		Lifetime: shellLifetime(temporary, true), Temporary: temporary, Instance: s.instance,
+		ID: shellTaskName(s.name, temporary), Name: s.name, PID: s.process.PID,
+	}
+	switch {
+	case s.exited:
+		view.State = "unavailable"
+	case s.active != nil:
+		view.State = "attached"
+	case view.PID == 0:
+		view.State = "starting"
+	default:
+		view.State = "detached"
+	}
+	if view.PID != 0 {
+		age := int64(time.Since(s.started) / time.Second)
+		view.Age = &age
+	}
+	group := 0
+	if detail != "health" && s.terminal != nil {
+		group, _ = s.terminal.ForegroundGroup()
+	}
+	s.mu.Unlock()
+
+	if detail != "health" {
+		view.Directory = cleanText(sessionDirectory(group, view.PID))
+	}
+	return view, group
 }
 
 func (s *remoteShell) taskName() string {

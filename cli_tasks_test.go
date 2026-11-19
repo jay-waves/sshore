@@ -19,9 +19,6 @@ func TestShortTaskExplicitHostScopesSharedIdentity(t *testing.T) {
 	if err := saveShellSnapshot(shellSnapshot{Host: "remote", Name: "remote-copy", Instance: uid, State: "detached"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := assignTaskIDs([]string{"task:" + uid}); err != nil {
-		t.Fatal(err)
-	}
 	parsed, err := parseCLI([]string{"remote", uid[:6]}, "attach")
 	if err != nil {
 		t.Fatal(err)
@@ -41,23 +38,20 @@ func TestShortTaskShellSelectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	remoteKey := remoteShellIdentity(remote.Host, remote.Instance)
-	ids, err := assignTaskIDs([]string{local.identity(), remoteKey})
-	if err != nil {
-		t.Fatal(err)
-	}
+	localCode, remoteCode := taskShortCode(local.identity()), taskShortCode(remoteKey)
 	for _, tc := range []struct {
 		command    string
 		args, want []string
 		identity   string
 	}{
-		{"attach", []string{ids[local.identity()].code}, []string{"work"}, local.identity()},
-		{"kill", []string{"--local", ids[local.identity()].code}, []string{"work"}, local.identity()},
-		{"kill", []string{ids[local.identity()].code}, []string{"work"}, local.identity()},
-		{"rename", []string{ids[local.identity()].code, "new"}, []string{"work", "new"}, local.identity()},
-		{"attach", []string{ids[remoteKey].code}, []string{"host", "build"}, remoteKey},
-		{"kill", []string{"host:" + ids[remoteKey].code}, []string{"host", "build"}, remoteKey},
-		{"rename", []string{ids[remoteKey].code, "new"}, []string{"host", "build", "new"}, remoteKey},
-		{"rename", []string{"host", ids[remoteKey].code, "new"}, []string{"host", "build", "new"}, remoteKey},
+		{"attach", []string{localCode}, []string{"work"}, local.identity()},
+		{"kill", []string{"--local", localCode}, []string{"work"}, local.identity()},
+		{"kill", []string{localCode}, []string{"work"}, local.identity()},
+		{"rename", []string{localCode, "new"}, []string{"work", "new"}, local.identity()},
+		{"attach", []string{remoteCode}, []string{"host", "build"}, remoteKey},
+		{"kill", []string{"host:" + remoteCode}, []string{"host", "build"}, remoteKey},
+		{"rename", []string{remoteCode, "new"}, []string{"host", "build", "new"}, remoteKey},
+		{"rename", []string{"host", remoteCode, "new"}, []string{"host", "build", "new"}, remoteKey},
 	} {
 		parsed, err := parseCLI(tc.args, tc.command)
 		if err != nil {
@@ -72,7 +66,7 @@ func TestShortTaskShellSelectors(t *testing.T) {
 			t.Fatalf("%+v %v", o, err)
 		}
 	}
-	for _, args := range [][]string{{"other", ids[remoteKey].code}, {"--local", ids[remoteKey].code}, {ids[remoteKey].code}} {
+	for _, args := range [][]string{{"other", remoteCode}, {"--local", remoteCode}, {remoteCode}} {
 		parsed, err := parseCLI(args, "kill")
 		if err != nil {
 			t.Fatal(err)
@@ -91,13 +85,13 @@ func TestShortTaskShellSelectors(t *testing.T) {
 	// A reused name must never make the old code act on its replacement.
 	close(tasks.records[local.UID].(*nativeShellTask).shell.done)
 	registerTestShell(t, tasks, "work", strings.Repeat("b", 32))
-	if _, err = run([]string{"kill", ids[local.identity()].code}); err == nil {
+	if _, err = run([]string{"kill", localCode}); err == nil {
 		t.Fatal("accepted replaced local shell")
 	}
-	if err = renameShellSnapshot("host", "build", "renamed"); err != nil {
+	if err = rememberShellRename("host", "build", "renamed", remote.Instance); err != nil {
 		t.Fatal(err)
 	}
-	parsed, err = parseCLI([]string{ids[remoteKey].code}, "attach")
+	parsed, err = parseCLI([]string{remoteCode}, "attach")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +104,7 @@ func TestShortTaskShellSelectors(t *testing.T) {
 	if err = saveShellSnapshot(remote); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = run([]string{"kill", "host:" + ids[remoteKey].code}); err == nil {
+	if _, err = run([]string{"kill", "host:" + remoteCode}); err == nil {
 		t.Fatal("accepted replaced remote shell")
 	}
 }
@@ -119,22 +113,19 @@ func TestShortTaskReviewLifecycle(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "no-ssh"))
 	startRequestDaemon(t)
-	id, err := queueRequest(testRequestOptions(), []operation{{Kind: "upload", Path: "/tmp"}})
+	queued, err := queueRequest(testRequestOptions(), []operation{{Kind: "upload", Path: "/tmp"}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	id := queued.ID
 	key := resourceIdentity(resourceRecord{UID: id, Kind: "review", Token: id})
-	ids, err := assignTaskIDs([]string{key})
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := ids[key].code
+	code := taskShortCode(key)
 	parsed, err := parseCLI([]string{code}, "review")
 	if err != nil {
 		t.Fatal(err)
 	}
 	target, ok, err := resolveShortTask("review", &parsed)
-	if err != nil || !ok || target.requestID != id {
+	if err != nil || !ok || canonicalTaskUID(target.identity) != id {
 		t.Fatalf("%+v %v", target, err)
 	}
 	if _, err = run([]string{"attach", code}); err == nil {
@@ -147,7 +138,7 @@ func TestShortTaskReviewLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err = readRequest(id); err == nil {
+	if _, err = findRequest(id); err == nil {
 		t.Fatal("request not consumed", err)
 	}
 	if _, err = run([]string{"kill", code}); err == nil {
@@ -162,12 +153,8 @@ func TestShortTaskResourceRenameAndReplacement(t *testing.T) {
 		task, done := registerTestResource(t, tasks, kind, kind+"job", strings.Repeat(string(rune('a'+i)), 32))
 		r := task.record
 		key := resourceIdentity(r)
-		ids, err := assignTaskIDs([]string{key})
-		if err != nil {
-			t.Fatal(err)
-		}
-		code := ids[key].code
-		if _, err = run([]string{"rename", code, kind + "new"}); err != nil {
+		code := taskShortCode(key)
+		if _, err := run([]string{"rename", code, kind + "new"}); err != nil {
 			t.Fatal(err)
 		}
 		parsed, err := parseCLI([]string{kind + "/" + code}, "kill")
@@ -208,10 +195,11 @@ func TestShortTaskUnknownAndScopedNames(t *testing.T) {
 		}
 	}
 	startRequestDaemon(t)
-	id, err := queueRequest(testRequestOptions(), []operation{{Kind: "upload", Path: "/tmp"}})
+	queued, err := queueRequest(testRequestOptions(), []operation{{Kind: "upload", Path: "/tmp"}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	id := queued.ID
 	if _, err = run([]string{"rename", "review/" + id, "abcdef"}); err == nil {
 		t.Fatal("hex alias accepted")
 	}
@@ -222,9 +210,6 @@ func TestShortTaskLocalCommandRouting(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	tasks := startRequestDaemon(t)
 	r := registerTestShell(t, tasks, "work", "123456"+strings.Repeat("a", 26))
-	if _, err := assignTaskIDs([]string{r.identity()}); err != nil {
-		t.Fatal(err)
-	}
 	requests := make(chan message, 2)
 	tasks.records[r.UID].(*nativeShellTask).serve = func(c net.Conn, m message) error {
 		requests <- m
@@ -265,8 +250,12 @@ func TestShortTaskRemoteHistoryPrefersCurrentName(t *testing.T) {
 	if err := cacheRemoteShells("work", inventory{Shells: []shellView{{Name: "new", Instance: "instance", State: "detached"}}}); err != nil {
 		t.Fatal(err)
 	}
-	target, err := findTaskIdentity(remoteShellIdentity("work", "instance"))
-	if err != nil || target.name != "new" {
+	parsed, err := parseCLI([]string{taskShortCode(remoteShellIdentity("work", "instance"))}, "attach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, selected, err := resolveShortTask("attach", &parsed)
+	if err != nil || !selected || target.name != "new" {
 		t.Fatalf("%+v %v", target, err)
 	}
 }
@@ -301,14 +290,19 @@ func TestShortTaskRejectsInvalidConnection(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	snapshot := shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "detached", Connection: &recentConnection{Host: "other", Session: "job", Server: "sshore"}}
-	if err := saveShellSnapshot(snapshot); err != nil {
-		t.Fatal(err)
-	}
-	ids, err := assignTaskIDs([]string{remoteShellIdentity("work", "instance")})
+	dir, err := stateDir("shells")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = run([]string{"kill", "work:" + ids[remoteShellIdentity("work", "instance")].code}); err == nil || !strings.Contains(err.Error(), "invalid shell connection host") {
+	path, err := snapshot.cachePath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeStateJSON(path, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	code := taskShortCode(remoteShellIdentity("work", "instance"))
+	if _, err := run([]string{"kill", "work:" + code}); err == nil || !strings.Contains(err.Error(), "invalid shell connection identity") {
 		t.Fatal("mismatched route accepted", err)
 	}
 }
@@ -368,9 +362,14 @@ func TestKillAllScope(t *testing.T) {
 		{[]string{"fedora", "shell", "--all"}, "", true, true},
 		{[]string{"--all", "--all"}, "", true, true},
 		{[]string{"--all", "--json"}, "", true, true},
-		{[]string{"fedora", "shell", "--", "--all"}, "", false, false},
+		{[]string{"fedora", "shell", "--", "--all"}, "", false, true},
 	} {
-		o, all, err := parseKillAll(tc.args)
+		parsed, err := parseCLI(tc.args, "kill")
+		all := parsed.has("--all")
+		var o options
+		if err == nil && all {
+			o, err = killAllOptions(parsed)
+		}
 		if all != tc.all || (err != nil) != tc.bad || (!tc.bad && all && o.host != tc.host) {
 			t.Errorf("%v: host=%q all=%t err=%v", tc.args, o.host, all, err)
 		}
