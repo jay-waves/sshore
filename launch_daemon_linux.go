@@ -187,6 +187,15 @@ func (s *remoteShell) serveControl(c net.Conn) error {
 			go serveShortcutSpawn(p, s.done, func(c net.Conn) {
 				s.requestSpawnRoute(c, message{SoftwareVersion: version, LocalRequest: req})
 			})
+		case "launch_child":
+			s.mu.Lock()
+			req := localDaemonRequest{Record: localShellRecord{Directory: s.directory}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Tree: shellTreeFor(remoteTreeIdentity(s.instance))}}
+			s.mu.Unlock()
+			go serveShortcutSpawn(p, s.done, func(c net.Conn) {
+				if err := s.serveLocalLaunchRoute(c, p, req); err != nil {
+					_ = writeMessage(c, message{Type: "fatal", Error: err.Error()})
+				}
+			})
 		case "approval_ready":
 			p.approvals.enable()
 		case "queued", "approval_rejected":

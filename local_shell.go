@@ -676,9 +676,10 @@ func (s *localShell) attach(c net.Conn) error {
 		switch m.Type {
 		case "handoff_result":
 			s.finishHandoff(p, m)
-		case "spawn_child":
+		case "spawn_child", "launch_child":
+			command := strings.TrimSuffix(m.Type, "_child")
 			s.mu.Lock()
-			h := &clientHandoff{Args: []string{"spawn", localEndpointPrefix}, Owner: s.process, Directory: s.record.Directory, Environment: append([]string(nil), s.environment...), Tree: shellTreeFor(s.record.identity())}
+			h := &clientHandoff{Args: []string{command, localEndpointPrefix}, Owner: s.process, Directory: s.record.Directory, Environment: append([]string(nil), s.environment...), Tree: shellTreeFor(s.record.identity())}
 			s.mu.Unlock()
 			go serveShortcutSpawn(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
 		case "session_targets":

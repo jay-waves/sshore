@@ -69,6 +69,10 @@ func runEndpointForward(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	return executeEndpointForward(f, foreground)
+}
+
+func executeEndpointForward(f forwardConfig, foreground bool) (int, error) {
 	stopActivity, err := beginCommandActivity()
 	if err != nil {
 		return 1, err

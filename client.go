@@ -452,7 +452,6 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	notice := func(level termui.Color, format string, args ...any) {
 		if console != nil {
 			return
-			return
 		}
 		fmt.Fprint(os.Stdout, termui.Format(color, level, format, args...))
 	}
@@ -525,6 +524,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		timeout  <-chan time.Time
 	}
 	var pending transitionRequest
+	var consoleResource *consoleResourceCommand
 	var consoleRequest uint64
 	var openingConsole bool
 	var openingInput []byte
@@ -582,8 +582,8 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		}
 		return streamMessage(control, request)
 	}
-	startChild := func() error {
-		pending.action = "spawn_child"
+	startChild := func(command string) error {
+		pending.action = command + "_child"
 		awaitResponse(30 * time.Second)
 		return streamMessage(control, message{Type: pending.action})
 	}
@@ -716,23 +716,44 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					}
 				case e.consoleLine != nil:
 					args := strings.Fields(*e.consoleLine)
-					if len(args) == 1 && args[0] == "exit" {
-						if err := leaveConsole(); err != nil {
-							return 255, err
-						}
-						continue
-					}
-					if len(args) == 0 || args[0] != "sshore" {
-						console.show(consoleHelp)
-						continue
-					}
-					args = args[1:]
 					switch {
-					case len(args) == 1 && args[0] == "spawn":
+					case len(args) > 0 && (args[0] == "cp" || args[0] == "forward"):
+						argv, err := consoleResourceArgs(*e.consoleLine)
+						var command *consoleResourceCommand
+						if err == nil {
+							command, err = prepareConsoleResource(argv)
+						}
+						if errors.Is(err, errHelp) {
+							var help strings.Builder
+							if err := showHelp(args[:1], &help); err != nil {
+								console.show(err.Error())
+							} else {
+								console.show(help.String())
+							}
+							continue
+						}
+						if err != nil {
+							console.show(err.Error())
+							continue
+						}
+						if !queueDetach() {
+							console.show("Terminal input queue is busy. Try again.")
+							continue
+						}
+						consoleResource = command
 						if err := closeConsole(); err != nil {
 							return 1, err
 						}
-						if err := startChild(); err != nil {
+
+					case len(args) == 1 && args[0] == "exit":
+						if err := leaveConsole(); err != nil {
+							return 255, err
+						}
+					case len(args) == 1 && (args[0] == "spawn" || args[0] == "launch"):
+						if err := closeConsole(); err != nil {
+							return 1, err
+						}
+						if err := startChild(args[0]); err != nil {
 							return 255, err
 						}
 					case len(args) == 2 && args[0] == "attach":
@@ -770,7 +791,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 							break
 						}
 						if e.keyAction == pty.KeyNew {
-							keyErr = startChild()
+							keyErr = startChild("spawn")
 						} else {
 							keyErr = requestTargets(action)
 						}
@@ -914,7 +935,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 			} else {
 				switch e.m.Type {
 				case "spawn_child_error":
-					if pending.timeout != nil && pending.action == "spawn_child" {
+					if pending.timeout != nil && (pending.action == "spawn_child" || pending.action == "launch_child") {
 						clearTransition()
 					}
 					notice(termui.Warning, "\r\n[sshore] %s\r\n", cleanText(e.m.Error))
@@ -991,7 +1012,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					}
 
 				case "spawn_route":
-					if pending.timeout != nil && pending.action == "spawn_child" {
+					if pending.timeout != nil && (pending.action == "spawn_child" || pending.action == "launch_child") {
 						clearTransition()
 					}
 					if o.local && !o.hosted || len(e.m.Token) != 64 {
@@ -1009,7 +1030,11 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						continue
 					}
 					target := options{noLogin: e.m.NoLogin, noProfile: e.m.NoProfile, tree: e.m.Tree, command: "spawn", host: e.m.SourceHost, session: e.m.Name, temporary: true, routeParent: &parent, routeToken: e.m.Token, quiet: o.quiet}
-					if e.m.Action == "local" {
+					switch e.m.Action {
+					case "local-launch":
+						target.command, target.temporary = "launch", false
+						fallthrough
+					case "local":
 						target.host = o.host
 					}
 					target.handoffDone = func(ctx context.Context, result error) error { return confirmSpawnRoute(ctx, parent, token, result) }
@@ -1017,7 +1042,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						reject()
 					}
 				case "handoff":
-					if pending.timeout != nil && pending.action == "spawn_child" {
+					if pending.timeout != nil && (pending.action == "spawn_child" || pending.action == "launch_child") {
 						clearTransition()
 					}
 					// Only authenticated local control can redirect this frontend.
@@ -1141,6 +1166,9 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						} else {
 							sessionNotice(termui.Success, "Detached; %s on %s keeps running.\r\nReconnect: %s", shellTaskName(cleanText(o.session), false), cleanText(o.host), reconnectCommand(o))
 						}
+					}
+					if consoleResource != nil {
+						return 0, consoleResource
 					}
 					return 0, nil
 				case "exit":

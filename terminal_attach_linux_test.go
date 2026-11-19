@@ -302,11 +302,9 @@ func TestClientCommandConsole(t *testing.T) {
 	wait("sshore commands")
 	wait("  alpha")
 	wait("Switch session")
-	io.WriteString(terminal, "spawn\r")
-	wait("sshore spawn             Open a nested shell")
-	io.WriteString(terminal, "sshore list\r")
+	io.WriteString(terminal, "list\r")
 	wait("sshore> ")
-	io.WriteString(terminal, "sshore ps\r")
+	io.WriteString(terminal, "ps\r")
 	wait("sshore> ")
 	io.WriteString(terminal, "\x1b")
 	wait("\x1b[?1049l")
@@ -314,11 +312,11 @@ func TestClientCommandConsole(t *testing.T) {
 	wait("CONSOLE-restored")
 	io.WriteString(terminal, "\x02:")
 	wait("  alpha")
-	io.WriteString(terminal, "ss\tatt\tal\t\r")
+	io.WriteString(terminal, "att\tal\t\r")
 	wait("Connected fixture:alpha")
 	io.WriteString(terminal, "\x02:")
 	wait("sshore commands")
-	io.WriteString(terminal, "sshore spawn\r")
+	io.WriteString(terminal, "spawn\r")
 	wait("(spawn)")
 	io.WriteString(terminal, "exit\n")
 	wait("Connected fixture:alpha")
@@ -326,13 +324,28 @@ func TestClientCommandConsole(t *testing.T) {
 	wait("sshore> ")
 	beta, _ := e.attach("beta")
 	detachTestClient(t, beta)
-	io.WriteString(terminal, "sshore attach beta\r")
+	io.WriteString(terminal, "attach beta\r")
 	wait("Connected fixture:beta")
-	io.WriteString(terminal, "exit\n")
+	io.WriteString(terminal, "\x02:forward self:0 fixture:3000\r")
+	wait("sshore>")
+	source, target := filepath.Join(e.dir, "source with spaces"), filepath.Join(e.dir, "copied")
+	if err := os.WriteFile(source, []byte("console copy"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nexec " + shellQuote(e.bin) + " cp-agent " + shellQuote(version) + "\n"
+	if err := os.WriteFile(filepath.Join(e.dir, "ssh-keys"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	io.WriteString(terminal, "cp 'self:"+filepath.Join(e.dir, "source")+"\t"+shellQuote("fixture:"+target)+"\r")
+	wait("Detached;")
+
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"keys", "alpha"} {
+	if data, err := os.ReadFile(target); err != nil || string(data) != "console copy" {
+		t.Fatalf("console copy: %q, %v", data, err)
+	}
+	for _, name := range []string{"keys", "alpha", "beta"} {
 		b, _ := e.attach(name, "attach")
 		b.writeInput(t, []byte("exit\n"))
 		b.readExit(t)
@@ -784,6 +797,47 @@ func TestClientNestedRemoteSpawnReusesAuthentication(t *testing.T) {
 			}
 			io.WriteString(terminal, "exit\n")
 			if err := cmd.Wait(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestClientConsoleLaunchSurvivesParent(t *testing.T) {
+	for _, host := range []string{"self:", "fixture"} {
+		t.Run(host, func(t *testing.T) {
+			t.Setenv("SSHORE_LOCAL_SESSION", "")
+			t.Setenv("SSHORE_SOCKET", "")
+			e := newEnv(t)
+			label := strings.TrimSuffix(host, ":")
+			var sshArgs []string
+			if host != "self:" {
+				sshArgs = []string{"--server", e.bin}
+			}
+			cmd, terminal, wait := startSessionClient(t, e, append([]string{"fixture-launch", host, "root"}, sshArgs...))
+			wait("Connected " + label + ":root")
+			io.WriteString(terminal, "\x02:launch\r")
+			wait("Connected " + label + ":")
+			wait("(launch)")
+			marker := filepath.Join(e.dir, "launch-id")
+			io.WriteString(terminal, "printf '%s' \"${SSHORE_SOCKET:-${SSHORE_LOCAL_SESSION#task:}}\" > "+shellQuote(marker)+"; printf 'LAUNCH-%s' ready\n")
+			wait("LAUNCH-ready")
+			uid, err := os.ReadFile(marker)
+			if err != nil || !validTaskUID(string(uid)) {
+				t.Fatalf("launch identity: %q, %v", uid, err)
+			}
+			io.WriteString(terminal, "\x02d")
+			wait("Connected " + label + ":root")
+			io.WriteString(terminal, "exit\n")
+			if err := cmd.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			resumed, tty, await := startSessionClient(t, e, append([]string{"attach", label + ":" + string(uid)}, sshArgs...))
+			await("Connected " + label + ":")
+			tty.WriteString("printf 'LAUNCH-%s' survived\n")
+			await("LAUNCH-survived")
+			tty.WriteString("exit\n")
+			if err := resumed.Wait(); err != nil {
 				t.Fatal(err)
 			}
 		})

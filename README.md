@@ -93,13 +93,19 @@ Press **Ctrl+B** and then one of these keys:
 | `:` | Open the full-screen sshore command prompt. |
 | `Ctrl+B` | Send a literal Ctrl+B to the application. |
 
-At the command prompt, use `sshore list` for task inventory, `sshore ps` for the
-local task tree, `sshore attach <ID|name>` to switch to a detached session in
-the current scope, and `sshore spawn` to open a nested shell. Tab completes commands, session names and
+At the command prompt, use `list` for task inventory, `ps` for the local task
+tree, `attach <ID|name>` to switch to a detached session in the current scope,
+`spawn` to open a nested shell, and `launch` to open an independent shell on
+the current host. Tab completes commands, session names and
 short IDs. Use the arrow keys to edit input or recall commands from the current
 prompt. Type `help` for commands. Press Esc
 or type `exit` to return. Applications already using the alternate screen
 redraw on return.
+
+Use `cp self:FILE HOST:PATH` or `forward self:PORT HOST:PORT` to run the
+corresponding local CLI command after detaching. Both endpoints are required.
+Quote paths with spaces. Tab completes command names, flags, and local
+`self:` paths for `cp`. Enter remote paths and ports manually.
 
 Use `--no-escape` if the application needs all keystrokes.
 

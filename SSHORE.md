@@ -227,6 +227,10 @@ Exit or detach returns one level; the parent program continues running.
 The client at the user's terminal owns terminal input and shortcuts.
 Ctrl+B : opens a frontend command prompt using the terminal screen. It uses the
 same validated session targets and instance-based switching as other shortcuts.
+The prompt’s launch opens a persistent shell on the current host. Detach or
+exit returns to the previous attachment. On a hosted shell the return route
+may end with the parent, while the new launch remains independently attachable
+by ID on its host.
 While the prompt has focus, PTY output is buffered up to 256 KiB. If the buffer
 fills, the prompt closes and output resumes. On return, the frontend requests a
 redraw for the underlying application.

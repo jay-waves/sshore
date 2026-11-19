@@ -80,7 +80,7 @@ func (s *remoteShell) requestSpawnRoute(c net.Conn, request message) {
 		if err == nil {
 			defer stop()
 			ready := message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: instance}
-			err = s.serveSpawnRoute(c, parent, req.Spawn, open, ready, done)
+			err = s.serveSpawnRoute(c, parent, req.Spawn, open, ready, done, false)
 		}
 		if err != nil {
 			_ = writeMessage(c, message{Type: "fatal", Error: err.Error()})
@@ -89,11 +89,11 @@ func (s *remoteShell) requestSpawnRoute(c net.Conn, request message) {
 	}
 	// withRemoteSpawn reports setup and attachment failures on c.
 	_ = withRemoteSpawn(c, *req, func(open taskEndpoint, ready message, done <-chan struct{}) error {
-		return s.serveSpawnRoute(c, parent, req.Spawn, open, ready, done)
+		return s.serveSpawnRoute(c, parent, req.Spawn, open, ready, done, false)
 	})
 }
 
-func (s *remoteShell) serveSpawnRoute(c net.Conn, parent *attachment, spawn *spawnConfig, open taskEndpoint, ready message, ownerDone <-chan struct{}) error {
+func (s *remoteShell) serveSpawnRoute(c net.Conn, parent *attachment, spawn *spawnConfig, open taskEndpoint, ready message, ownerDone <-chan struct{}, persistent bool) error {
 	drain, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	token := resourceToken()
@@ -136,6 +136,9 @@ func (s *remoteShell) serveSpawnRoute(c net.Conn, parent *attachment, spawn *spa
 	action := "remote"
 	if spawn.Local {
 		action = "local"
+		if persistent {
+			action = "local-launch"
+		}
 	}
 	if err := parent.controlMessage(message{Type: "spawn_route", Action: action, Token: token, Name: spawn.Name, SourceHost: spawn.Host, NoLogin: spawn.NoLogin, NoProfile: spawn.NoProfile, Tree: spawn.Tree}); err != nil {
 		return err
@@ -254,6 +257,31 @@ func (s *remoteShell) createRouteShell(req localDaemonRequest, temporary bool) (
 		return "", err
 	}
 	return selected.uid, nil
+}
+
+// The route is temporary, but the target has its own persistent lifetime.
+func (s *remoteShell) serveLocalLaunchRoute(c net.Conn, parent *attachment, req localDaemonRequest) error {
+	instance, err := s.createRouteShell(req, false)
+	if err != nil {
+		return err
+	}
+	child, ok := s.tasks.lookup(instance).(*remoteShell)
+	if !ok {
+		return fmt.Errorf("new launch is unavailable")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-s.done:
+		case <-child.done:
+		case <-ctx.Done():
+		}
+		cancel()
+	}()
+	open := func() (net.Conn, error) { return openHostedEndpoint(ctx, instance) }
+	ready := message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: instance}
+	return s.serveSpawnRoute(c, parent, req.Spawn, open, ready, ctx.Done(), true)
 }
 
 func (s *remoteShell) startLocalSpawn(req localDaemonRequest) (taskEndpoint, string, <-chan struct{}, func(), error) {

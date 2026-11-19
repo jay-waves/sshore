@@ -46,7 +46,7 @@ func TestSpawnRouteKeepsOwnerAndDrainsExistingEndpoint(t *testing.T) {
 	routeDone := make(chan error, 1)
 	go func() {
 		ready := message{Type: "setup_ready", SoftwareVersion: version, Instance: child}
-		routeDone <- shell.serveSpawnRoute(setup, parent, &spawnConfig{Local: true}, open, ready, ownerDone)
+		routeDone <- shell.serveSpawnRoute(setup, parent, &spawnConfig{Local: true}, open, ready, ownerDone, false)
 	}()
 	if m := recv(t, launcher); m.Type != "setup_ready" || m.Instance != child {
 		t.Fatalf("startup: %+v", m)

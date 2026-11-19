@@ -44,7 +44,7 @@ func TestCompleteLocalPath(t *testing.T) {
 		{"missing/file", nil, 4},
 	} {
 		t.Run(tc.input, func(t *testing.T) {
-			got, length := completeLocalPath([]rune(tc.input), len([]rune(tc.input)))
+			got, length := CompleteLocalPath([]rune(tc.input), len([]rune(tc.input)))
 			var actual []string
 			for _, s := range got {
 				actual = append(actual, string(s))
@@ -58,11 +58,11 @@ func TestCompleteLocalPath(t *testing.T) {
 		})
 	}
 	line := []rune(`"tank n"`)
-	got, _ := completeLocalPath(line, len(line)-1)
+	got, _ := CompleteLocalPath(line, len(line)-1)
 	if len(got) != 1 || string(got[0]) != "otes.txt" {
 		t.Fatal(got)
 	}
-	if got, _ := completeLocalPath([]rune("tank_notes"), 5); len(got) != 0 {
+	if got, _ := CompleteLocalPath([]rune("tank_notes"), 5); len(got) != 0 {
 		t.Fatal("completed inside filename", got)
 	}
 	home, err := os.UserHomeDir()
@@ -74,12 +74,12 @@ func TestCompleteLocalPath(t *testing.T) {
 		t.Skip("temporary directory is on a different volume")
 	}
 	homePath := "~/" + filepath.Join(rel, "tank_")
-	got, _ = completeLocalPath([]rune(homePath), len([]rune(homePath)))
+	got, _ = CompleteLocalPath([]rune(homePath), len([]rune(homePath)))
 	if len(got) != 1 || string(got[0]) != "v7585.tar.gz" {
 		t.Fatal("home expansion", got)
 	}
 	abs := filepath.Join(root, "tank_")
-	got, _ = completeLocalPath([]rune(abs), len([]rune(abs)))
+	got, _ = CompleteLocalPath([]rune(abs), len([]rune(abs)))
 	if len(got) != 1 || string(got[0]) != "v7585.tar.gz" {
 		t.Fatal("absolute path", got)
 	}

@@ -112,10 +112,10 @@ func (p *Input) Do(line []rune, pos int) ([][]rune, int) {
 	return p.completePath(line, pos)
 }
 
-// Treat the input as one path, including spaces, rather than shell words.
+// CompleteLocalPath treats the input as one path, including spaces.
 // Completion is offered at the end (or immediately before a closing quote),
 // so inserting a candidate cannot corrupt a filename suffix after the cursor.
-func completeLocalPath(line []rune, pos int) ([][]rune, int) {
+func CompleteLocalPath(line []rune, pos int) ([][]rune, int) {
 	if pos < 0 || pos > len(line) {
 		return nil, 0
 	}
@@ -218,7 +218,7 @@ func (p *Input) completePath(line []rune, pos int) ([][]rune, int) {
 		c.pendingPos = c.pos + len(suffix)
 		return nil, 0
 	}
-	candidates, offset := completeLocalPath(line, pos)
+	candidates, offset := CompleteLocalPath(line, pos)
 	if len(candidates) <= 1 {
 		return candidates, offset
 	}
