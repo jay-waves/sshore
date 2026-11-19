@@ -109,6 +109,8 @@ The shell and native terminal retain interactive state. Redraw is best effort;
 do not inject Enter, Ctrl+L or editor commands to reconstruct it. Terminal bytes
 must retain order and bounded buffering. Unsupported terminal protocols must not
 silently become local shortcuts.
+On Linux, redraw briefly changes the PTY width and restores it so foreground
+applications that respond to actual size changes can refresh their display.
 The frontend leaves an alternate screen selected by the shell before returning
 to the calling terminal. The host reapplies the shell's buffer selection on
 reattachment before requesting a redraw.
