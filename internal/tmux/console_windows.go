@@ -130,9 +130,9 @@ func StartKeyboard(parent context.Context, emit func([]byte, error)) (func(), er
 }
 
 // startConsoleThread owns a synchronous I/O thread and its native handle.
-func startConsoleThread(parent context.Context, run func(context.Context)) (stop func(), stopping <-chan struct{}, err error) {
+func startConsoleThread(parent context.Context, run func(context.Context)) (func(), error) {
 	if err := cancelSynchronousIO.Find(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
 	ready := make(chan error, 1)
@@ -181,13 +181,13 @@ func startConsoleThread(parent context.Context, run func(context.Context)) (stop
 	if err := <-ready; err != nil {
 		cancel()
 		<-done
-		return nil, nil, err
+		return nil, err
 	}
-	return func() { cancel(); <-done }, ctx.Done(), nil
+	return func() { cancel(); <-done }, nil
 }
 
 func startTerminalKeyboardReader(parent context.Context, emit func([]byte, error), reader io.Reader) (func(), error) {
-	stop, _, err := startConsoleThread(parent, func(ctx context.Context) {
+	return startConsoleThread(parent, func(ctx context.Context) {
 		buf := make([]byte, 4096)
 		defer clear(buf)
 		for ctx.Err() == nil {
@@ -204,67 +204,4 @@ func startTerminalKeyboardReader(parent context.Context, emit func([]byte, error
 			}
 		}
 	})
-	return stop, err
-}
-
-type writeResult struct {
-	n   int
-	err error
-}
-type threadInput struct {
-	mu       sync.Mutex // One caller owns the write and its result.
-	requests chan []byte
-	result   chan writeResult
-	stopping <-chan struct{}
-	stop     func()
-}
-
-func NewTerminalInput(t *Terminal) (*threadInput, error) {
-	l := &threadInput{requests: make(chan []byte), result: make(chan writeResult, 1)}
-	stop, stopping, err := startConsoleThread(context.Background(), func(ctx context.Context) {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case data := <-l.requests:
-				if ctx.Err() != nil {
-					l.result <- writeResult{err: os.ErrClosed}
-					return
-				}
-				n, err := t.Write(data)
-				l.result <- writeResult{n, err}
-			}
-		}
-	})
-	if err != nil {
-		return nil, err
-	}
-	l.stop, l.stopping = stop, stopping
-	return l, nil
-}
-
-func (l *threadInput) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	select {
-	case <-l.stopping:
-		return 0, os.ErrClosed
-	case l.requests <- p:
-	}
-	result := <-l.result
-	return result.n, result.err
-}
-
-func (l *threadInput) Stop() error {
-	l.stop()
-	return nil
-}
-
-func (l *threadInput) Stopped() bool {
-	select {
-	case <-l.stopping:
-		return true
-	default:
-		return false
-	}
 }

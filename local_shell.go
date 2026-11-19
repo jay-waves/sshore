@@ -274,11 +274,9 @@ func (s *shellTerminal) attachTerminal(p *attachment, m message, start func(mess
 	if err := s.terminal.Resize(shellSize(m)); err != nil {
 		return err
 	}
-	lease, err := tmux.NewTerminalInput(s.terminal)
-	if err != nil {
-		return err
-	}
-	if err = ready(); err == nil {
+	lease := tmux.NewInputLease(s.terminal)
+	err := ready()
+	if err == nil {
 		if data := s.modes.Replay(); len(data) > 0 {
 			err = p.output(message{Type: "output", Data: data})
 		}

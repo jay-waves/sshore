@@ -1,6 +1,8 @@
 package tmux
 
 import (
+	"crypto/rand"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -77,7 +80,7 @@ func Start(c Config) (result *Terminal, _ error) {
 		// ConPTY keeps its output pipe open after the child exits.
 		go t.Wait()
 	}()
-	inR, inW, err := consolePipe()
+	inR, inW, err := consoleInputPipe()
 	if err != nil {
 		return nil, err
 	}
@@ -174,6 +177,9 @@ func terminalEnvironment(env []string) ([]uint16, error) {
 func (t *Terminal) Read(p []byte) (int, error)  { return t.output.Read(p) }
 func (t *Terminal) Write(p []byte) (int, error) { return t.input.Write(p) }
 func (t *Terminal) PID() int                    { return t.pid }
+func (t *Terminal) SetWriteDeadline(at time.Time) error {
+	return t.input.SetWriteDeadline(at)
+}
 func (t *Terminal) Resize(s Size) error {
 	if err := s.validate(); err != nil {
 		return err
@@ -211,7 +217,43 @@ func (t *Terminal) wait(process windows.Handle) error {
 	return nil
 }
 
-// consolePipe requests bounded buffering without making handles inheritable.
+// ConPTY reads synchronously. Only our write end uses overlapped I/O so Go
+// can cancel a blocked write by deadline without closing the terminal.
+// TODO: On native Windows amd64, run the ConPTY tests and verify Ctrl+B
+// detach/reattach during blocked input and final output on shell exit.
+func consoleInputPipe() (read, write *os.File, err error) {
+	name, err := windows.UTF16PtrFromString(`\\.\pipe\sshore-conpty-` + rand.Text())
+	if err != nil {
+		return nil, nil, err
+	}
+	r, err := windows.CreateNamedPipe(name, windows.PIPE_ACCESS_INBOUND|windows.FILE_FLAG_FIRST_PIPE_INSTANCE,
+		windows.PIPE_REJECT_REMOTE_CLIENTS, 1, 0, 64*1024, 0, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = windows.CloseHandle(r)
+		}
+	}()
+	w, err := windows.CreateFile(name, windows.GENERIC_WRITE, 0, nil, windows.OPEN_EXISTING,
+		windows.FILE_FLAG_OVERLAPPED|windows.SECURITY_SQOS_PRESENT|windows.SECURITY_IDENTIFICATION, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err = windows.ConnectNamedPipe(r, nil); err != nil && !errors.Is(err, windows.ERROR_PIPE_CONNECTED) {
+		_ = windows.CloseHandle(w)
+		return nil, nil, err
+	}
+	writer := os.NewFile(uintptr(w), "conpty-input")
+	if err = writer.SetWriteDeadline(time.Time{}); err != nil {
+		_ = writer.Close()
+		return nil, nil, err
+	}
+	return os.NewFile(uintptr(r), "conpty-input-read"), writer, nil
+}
+
+// consolePipe requests bounded output buffering without inheritable handles.
 func consolePipe() (*os.File, *os.File, error) {
 	var read, write windows.Handle
 	if err := windows.CreatePipe(&read, &write, nil, 64*1024); err != nil {

@@ -149,5 +149,3 @@ func RequestRedraw(master *Terminal, shellPID int) {
 	}
 	_ = unix.Kill(-group, unix.SIGWINCH)
 }
-
-func NewTerminalInput(t *Terminal) (*InputLease, error) { return NewInputLease(t), nil }

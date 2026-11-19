@@ -85,10 +85,11 @@ Support Linux and Windows **amd64 only**, with remote shell hosting on Linux.
 See the [OS and shell support matrix](README.md#os-and-shell-support) for
 supported systems and shells. Windows provides local ConPTY sessions and SSH
 clients, not a remote shell server.
-ConPTY children join their kill-on-close Job during process creation. Native
-console I/O remains synchronous as required by ConPTY; pinned I/O threads use
-CancelSynchronousIo before transferring input ownership.
-Each ConPTY input lease uses one result channel for its serial writes.
+ConPTY children join their kill-on-close Job during process creation. ConPTY
+reads its input pipe synchronously. The daemon opens the other end for
+overlapped I/O, so Linux PTYs and Windows ConPTY use the same deadline-based
+input lease. The Windows frontend still pins its native keyboard reader and
+uses CancelSynchronousIo to release it before transferring stdin ownership.
 ConPTY startup releases child-facing pipe ends before rollback or starting the
 process waiter. The Windows environment keeps the last value for each
 case-insensitive name and emits one sorted block.
