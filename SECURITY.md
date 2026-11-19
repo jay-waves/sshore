@@ -145,12 +145,15 @@ System OpenSSH, local configuration and `Match exec` hooks are trusted inputs.
 Go SSH owns the connection and host-key verification. Changed host keys are
 rejected; background retries cannot establish new trust or prompt for credentials.
 Host-key verification reads the current configured user and system known_hosts
-files. After interactive confirmation, the client reloads those files before
+files, including Windows OpenSSH lists with multiple drive-qualified paths.
+After interactive confirmation, the client reloads those files before
 saving the key, including files created during confirmation.
 Private-key loading and unlocking belong to the system agent. Passwords and
 keyboard-interactive answers are requested through the initiating frontend and
-are not cached or persisted. Agent authentication is not operation approval;
-removing a key affects future authentication, not existing connections.
+are not cached or persisted. Ctrl+C at an authentication prompt aborts the
+connection attempt and releases terminal input. Agent authentication is not
+operation approval; removing a key affects future authentication, not existing
+connections.
 The local prompt broker serializes terminal access and bounds request and
 response sizes for host confirmation and authentication prompts.
 

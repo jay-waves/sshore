@@ -2,6 +2,7 @@ package ssh
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os/exec"
@@ -20,6 +21,10 @@ func defaultAgent() string { return `\\.\pipe\openssh-ssh-agent` }
 func hideConfigCommand(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 }
+
+// A joined list of drive-qualified paths can fail the whole-filename probe
+// with ERROR_INVALID_NAME because it contains a second drive colon.
+func isInvalidFilename(err error) bool { return errors.Is(err, windows.ERROR_INVALID_NAME) }
 
 func (c *connectionConfig) expandSystemPath(path string) (string, error) {
 	const token = "__PROGRAMDATA__"

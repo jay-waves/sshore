@@ -46,15 +46,24 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 	if e != nil {
 		limit = 3
 	}
-	var identityErr error
+	var identityErr, promptErr error
 	ask := func(prompt string) (string, error) {
 		resume := budgets.pause()
 		defer resume()
 		secret, err := c.options.Secret(ctx, prompt)
 		defer clear(secret)
-		return string(secret), err
+		if err != nil {
+			promptErr = err
+			return "", err
+		}
+		return string(secret), nil
 	}
 	cc.AuthCallback = func(state *cryptossh.ClientAuthContext) (cryptossh.AuthMethod, error) {
+		// SSH may ask for another method after a method callback fails.
+		// A failed local prompt ends authentication for this connection.
+		if promptErr != nil {
+			return nil, promptErr
+		}
 		for method := range strings.SplitSeq(preferred, ",") {
 			if !slices.Contains(state.AllowedMethods, method) {
 				continue
@@ -309,7 +318,7 @@ func (c *connectionConfig) knownHostsPaths() (paths []string, userPath string, e
 			if _, err = os.Stat(whole); err == nil {
 				paths = append(paths, whole)
 				continue
-			} else if !errors.Is(err, os.ErrNotExist) {
+			} else if !errors.Is(err, os.ErrNotExist) && !isInvalidFilename(err) {
 				return nil, "", err
 			}
 			for _, entry := range entries {

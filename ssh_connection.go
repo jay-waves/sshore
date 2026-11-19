@@ -169,6 +169,10 @@ func readSSHSecret(parent context.Context, prompt string) ([]byte, error) {
 			return nil, ctx.Err()
 		case event := <-incoming:
 			for _, key := range event.data {
+				if key == 3 {
+					clear(event.data)
+					return nil, context.Canceled
+				}
 				if escape > 0 {
 					if escape == 1 && (key == '[' || key == 'O') {
 						escape = 2
@@ -182,9 +186,6 @@ func readSSHSecret(parent context.Context, prompt string) ([]byte, error) {
 					clear(event.data)
 					accepted = true
 					return secret, nil
-				case 3:
-					clear(event.data)
-					return nil, context.Canceled
 				case 4:
 					clear(event.data)
 					return nil, io.EOF

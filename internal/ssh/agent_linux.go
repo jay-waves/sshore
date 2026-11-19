@@ -13,4 +13,6 @@ func defaultAgent() string { return "" }
 
 func hideConfigCommand(cmd *exec.Cmd) {}
 
+func isInvalidFilename(error) bool { return false }
+
 func (c *connectionConfig) expandSystemPath(path string) (string, error) { return path, nil }

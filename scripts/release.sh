@@ -48,6 +48,8 @@ if [[ "$version" == "0.7.12" ]]; then
 - Windows ConPTY uses native synchronous child pipe handles, overlapped daemon
   I/O and thread-pool process waits. Shell exit codes follow drained output.
 - ProxyJump hops inherit explicitly supplied SSH configuration files.
+- Windows OpenSSH known_hosts lists support multiple drive-qualified paths.
+- Ctrl+C aborts SSH password and keyboard-interactive prompts without retrying.
 
 Update both endpoints to 0.7.12 for managed connections. Save work before
 installing because the installer stops the target account daemon.

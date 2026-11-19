@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -23,14 +24,16 @@ func TestInteractiveLogin(t *testing.T) {
 	if _, err := exec.LookPath("ssh"); err != nil {
 		t.Skip("OpenSSH configuration resolver unavailable")
 	}
-	for _, mode := range []string{"password", "keyboard-interactive", "excluded", "batch", "rejected"} {
+	for _, mode := range []string{"password", "keyboard-interactive", "cancel-password", "cancel-keyboard-interactive", "excluded", "batch", "rejected"} {
 		t.Run(mode, func(t *testing.T) {
+			cancelPrompt := strings.HasPrefix(mode, "cancel-")
+			interactive := strings.HasSuffix(mode, "keyboard-interactive")
 			_, private, _ := ed25519.GenerateKey(rand.Reader)
 			host, _ := cryptossh.NewSignerFromKey(private)
 			server := &cryptossh.ServerConfig{PublicKeyCallback: func(cryptossh.ConnMetadata, cryptossh.PublicKey) (*cryptossh.Permissions, error) {
 				return nil, fmt.Errorf("key rejected")
 			}}
-			if mode == "keyboard-interactive" {
+			if interactive {
 				server.KeyboardInteractiveCallback = func(_ cryptossh.ConnMetadata, challenge cryptossh.KeyboardInteractiveChallenge) (*cryptossh.Permissions, error) {
 					answers, err := challenge("Login", "Enter code", []string{"Code: ", "Name: "}, []bool{false, true})
 					if err != nil {
@@ -85,7 +88,10 @@ func TestInteractiveLogin(t *testing.T) {
 			options.Args[9] = "UserKnownHostsFile=" + known
 			options.Secret = func(_ context.Context, prompt string) ([]byte, error) {
 				calls++
-				if mode == "keyboard-interactive" {
+				if cancelPrompt {
+					return nil, context.Canceled
+				}
+				if interactive {
 					var c Challenge
 					if err := json.Unmarshal([]byte(strings.TrimPrefix(prompt, "\x00challenge:")), &c); err != nil {
 						t.Fatal(err)
@@ -106,7 +112,14 @@ func TestInteractiveLogin(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			client, err := Dial(ctx, options)
-			if mode == "rejected" {
+			if cancelPrompt {
+				if client != nil {
+					client.Close()
+				}
+				if !errors.Is(err, context.Canceled) || calls != 1 {
+					t.Fatalf("expected cancellation after one prompt, got %v after %d prompts", err, calls)
+				}
+			} else if mode == "rejected" {
 				if err == nil {
 					client.Close()
 					t.Fatal("rejected password accepted")
@@ -131,7 +144,7 @@ func TestInteractiveLogin(t *testing.T) {
 				}
 				client.Close()
 				want := 1
-				if mode == "keyboard-interactive" {
+				if interactive {
 					want = 2
 				}
 				if calls != want {

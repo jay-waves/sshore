@@ -17,14 +17,14 @@ import (
 )
 
 func TestWindowsHandoffPassword(t *testing.T) {
-	for _, interrupt := range []bool{false, true} {
-		t.Run(fmt.Sprintf("interrupt=%t", interrupt), func(t *testing.T) {
-			testWindowsHandoffPassword(t, interrupt)
+	for _, phase := range []string{"submit", "cancel-prompt", "cancel-handshake"} {
+		t.Run(phase, func(t *testing.T) {
+			testWindowsHandoffPassword(t, phase)
 		})
 	}
 }
 
-func testWindowsHandoffPassword(t *testing.T, interrupt bool) {
+func testWindowsHandoffPassword(t *testing.T, phase string) {
 	bin := testBinary(t)
 	shell, err := exec.LookPath("bash")
 	if err != nil {
@@ -38,7 +38,7 @@ func testWindowsHandoffPassword(t *testing.T, interrupt bool) {
 	defer close(release)
 	config := &cryptossh.ServerConfig{PasswordCallback: func(_ cryptossh.ConnMetadata, password []byte) (*cryptossh.Permissions, error) {
 		received <- string(password)
-		if interrupt {
+		if phase == "cancel-handshake" {
 			<-release
 		}
 		return nil, fmt.Errorf("fixture authentication stopped")
@@ -62,13 +62,17 @@ func testWindowsHandoffPassword(t *testing.T, interrupt bool) {
 	known := filepath.Join(dir, "known_hosts")
 	os.WriteFile(known, []byte(fmt.Sprintf("[127.0.0.1]:%d %s", port, cryptossh.MarshalAuthorizedKey(host.PublicKey()))), 0600)
 	cfg := filepath.Join(dir, "config")
-	os.WriteFile(cfg, []byte(fmt.Sprintf("Host fixture\n HostName 127.0.0.1\n Port %d\n User fixture\n IdentityAgent none\n UserKnownHostsFile %s\n StrictHostKeyChecking yes\n NumberOfPasswordPrompts 1\n", port, filepath.ToSlash(known))), 0600)
+	prompts := 1
+	if phase == "cancel-prompt" {
+		prompts = 3
+	}
+	os.WriteFile(cfg, []byte(fmt.Sprintf("Host fixture\n HostName 127.0.0.1\n Port %d\n User fixture\n IdentityAgent none\n UserKnownHostsFile %s\n StrictHostKeyChecking yes\n NumberOfPasswordPrompts %d\n", port, filepath.ToSlash(known), prompts)), 0600)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(dir, "state"))
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	t.Setenv("SHELL", shell)
 	env := os.Environ()
-	terminal, err := tmux.Start(tmux.Config{Path: bin, Args: []string{"launch", "--local", "pw" + filepath.Base(dir)}, Env: env, Size: tmux.Size{Cols: 120, Rows: 40}})
+	terminal, err := tmux.Start(tmux.Config{Path: bin, Args: []string{"launch", "self:"}, Env: env, Size: tmux.Size{Cols: 120, Rows: 40}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +82,7 @@ func testWindowsHandoffPassword(t *testing.T, interrupt bool) {
 	stop := make(chan struct{})
 	defer close(stop)
 	go func() {
+		defer close(chunks)
 		b := make([]byte, 4096)
 		for {
 			n, e := terminal.Read(b)
@@ -99,14 +104,17 @@ func testWindowsHandoffPassword(t *testing.T, interrupt bool) {
 		timeout := time.After(15 * time.Second)
 		for !strings.Contains(output.String(), marker) {
 			select {
-			case text := <-chunks:
+			case text, ok := <-chunks:
+				if !ok {
+					t.Fatalf("console closed while waiting for %s: %s", marker, output.String())
+				}
 				output.WriteString(text)
 			case <-timeout:
 				t.Fatalf("waiting for %s: %s", marker, output.String())
 			}
 		}
 	}
-	wait("Connected self:pw" + filepath.Base(dir))
+	wait("Connected self:")
 	// Wait for the child shell to begin accepting commands.
 	terminal.Write([]byte("echo SHELL_READY\r"))
 	wait("SHELL_READY")
@@ -114,6 +122,27 @@ func testWindowsHandoffPassword(t *testing.T, interrupt bool) {
 	command := fmt.Sprintf("'%s' spawn fixture: -- -F '%s'\r", filepath.ToSlash(bin), filepath.ToSlash(cfg))
 	terminal.Write([]byte(command))
 	wait("fixture@127.0.0.1's password:")
+	cancelAndReturn := func() {
+		t.Helper()
+		output.Reset()
+		if _, err := terminal.Write([]byte{3}); err != nil {
+			t.Fatal(err)
+		}
+		wait("Target unavailable; restoring")
+		wait("Connected self:")
+	}
+	if phase == "cancel-prompt" {
+		if _, err := terminal.Write([]byte("partial-password")); err != nil {
+			t.Fatal(err)
+		}
+		cancelAndReturn()
+		select {
+		case <-received:
+			t.Fatal("server received a password after prompt cancellation")
+		default:
+		}
+		return
+	}
 	for _, b := range []byte("test-Password!42\r") {
 		terminal.Write([]byte{b})
 		time.Sleep(5 * time.Millisecond)
@@ -126,14 +155,9 @@ func testWindowsHandoffPassword(t *testing.T, interrupt bool) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("server received no password")
 	}
-	if interrupt {
+	if phase == "cancel-handshake" {
 		// The password reader has restored cooked mode, but SSH has not finished.
 		// ConPTY delivers a console interrupt here, not a remote Ctrl+C byte.
-		output.Reset()
-		if _, err := terminal.Write([]byte{3}); err != nil {
-			t.Fatal(err)
-		}
-		wait("Target unavailable; restoring")
-		wait("Connected self:pw" + filepath.Base(dir))
+		cancelAndReturn()
 	}
 }
