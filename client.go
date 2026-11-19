@@ -338,11 +338,8 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		c := console
 		console = nil
 		escapeTick = nil
-		c.cancel()
-		if err := writeFull(terminalOutput, []byte(c.closeSequence())); err != nil {
-			return err
-		}
-		if err := writeFull(terminalOutput, outputModes.ReplayModes()); err != nil {
+		c.editor.Close()
+		if err := outputModes.EndConsole(terminalOutput); err != nil {
 			return err
 		}
 		if err := writeFull(terminalOutput, c.output); err != nil {
@@ -602,12 +599,10 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		return streamMessage(control, message{Type: "redraw"})
 	}
 	sendConsoleInput := func(data []byte) error {
-		select {
-		case console.input <- data:
+		if console.editor.TryInput(data) {
 			return nil
-		default:
-			return leaveConsole()
 		}
+		return leaveConsole()
 	}
 	interrupt := func() error {
 		if transitioning() {
@@ -801,12 +796,10 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 							openingInput = nil
 							break
 						}
-						console = &commandConsole{alternate: outputModes.AlternateScreen()}
-						if !console.alternate {
-							_, _ = io.WriteString(terminalOutput, "\x1b[?1049h")
+						if keyErr = outputModes.BeginConsole(terminalOutput); keyErr != nil {
+							break
 						}
-						_, _ = io.WriteString(terminalOutput, "\x1b[>0u")
-						pty.ResetInputModes()
+						console = &commandConsole{}
 						console.draw(terminalOutput, "Loading sessions…")
 						console.start(ctx, emit, cols)
 						if len(openingInput) > 0 {

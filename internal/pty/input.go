@@ -245,12 +245,3 @@ func (s *InputState) Replay() []byte {
 func (s *InputState) MouseEnabled() bool {
 	return slices.Contains(s.current[:trackingModeCount], modeOn)
 }
-
-// AlternateScreen reports whether the application owns the alternate buffer.
-func (s *InputState) AlternateScreen() bool { return s.alternateScreen != 0 }
-
-// ReplayModes restores input modes without selecting a screen buffer.
-func (s InputState) ReplayModes() []byte {
-	s.alternateScreen = 0
-	return append([]byte(s.modifyOtherKeys), s.Replay()...)
-}

@@ -225,8 +225,11 @@ It never inherits launch lifetime or injects a command into terminal input.
 Exit or detach returns one level; the parent program continues running.
 
 The client at the user's terminal owns terminal input and shortcuts.
-Ctrl+B : opens a frontend command prompt using the terminal screen. It uses the
-same validated session targets and instance-based switching as other shortcuts.
+Ctrl+B : opens a frontend command prompt using the terminal screen.
+`internal/termui` draws the prompt and runs Readline. The frontend owns terminal
+handoff, command dispatch, and the completion data. `internal/pty` handles the
+screen transition and input-mode restoration. The frontend uses the same validated
+session targets and instance-based switching as other shortcuts.
 The prompt’s launch opens a persistent shell on the current host. Detach or
 exit returns to the previous attachment. On a hosted shell the return route
 may end with the parent, while the new launch remains independently attachable

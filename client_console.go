@@ -11,49 +11,20 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/chzyer/readline"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
 type commandConsole struct {
-	alternate bool
-	output    []byte
-	cancel    context.CancelFunc
-	input     chan []byte
-	prompts   chan consolePrompt
-	attach    string
-	targets   []sessionTarget
-}
-
-func (c *commandConsole) closeSequence() string {
-	if c.alternate {
-		return "\x1b[<1u\x1b[2J\x1b[H"
-	}
-	return "\x1b[<1u\x1b[?1049l"
-}
-
-func (c *commandConsole) draw(out io.Writer, body string) {
-	fmt.Fprintf(out, "\x1b[2J\x1b[Hsshore commands  (Esc to return)\r\n\r\n%s\r\n\r\n", cleanTextMultiline(body))
-}
-
-func cleanTextMultiline(body string) string {
-	lines := strings.Split(body, "\n")
-	for i := range lines {
-		lines[i] = cleanText(lines[i])
-	}
-	return strings.Join(lines, "\r\n")
-}
-
-type consolePrompt struct {
-	body    string
+	output  []byte
+	editor  *termui.Console
+	attach  string
 	targets []sessionTarget
 }
 
-type consoleEventWriter func([]byte)
+const consoleTitle = "sshore commands  (Esc to return)"
 
-func (w consoleEventWriter) Write(p []byte) (int, error) {
-	w(bytes.Clone(p))
-	return len(p), nil
+func (c *commandConsole) draw(out io.Writer, body string) {
+	termui.DrawConsole(out, consoleTitle, body)
 }
 
 const consoleHelp = `list              Show task inventory
@@ -66,59 +37,9 @@ forward <from> <to> Start a background forward after detaching
 exit              Return to the current shell`
 
 func (c *commandConsole) start(ctx context.Context, send func(clientEvent), width int) {
-	ctx, c.cancel = context.WithCancel(ctx)
-	c.input = make(chan []byte, 32)
-	c.prompts = make(chan consolePrompt, 1)
-	reader, writer := io.Pipe()
-	go func() {
-		defer writer.Close()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case data := <-c.input:
-				if _, err := writer.Write(data); err != nil {
-					return
-				}
-			}
-		}
-	}()
-	go func() {
-		defer reader.Close()
-		var targets []sessionTarget
-		out := consoleEventWriter(func(p []byte) { send(clientEvent{consoleSource: c, consoleOutput: p}) })
-		rl, err := readline.NewEx(&readline.Config{
-			Prompt: "sshore> ", Stdin: reader, Stdout: out, Stderr: out,
-			ForceUseInteractive: true, HistoryLimit: 100,
-			FuncGetWidth: func() int { return max(20, width) },
-			FuncMakeRaw:  func() error { return nil }, FuncExitRaw: func() error { return nil },
-			FuncOnWidthChanged:  func(func()) {},
-			FuncFilterInputRune: func(r rune) (rune, bool) { return r, r != readline.CharCtrlZ },
-			AutoComplete:        consoleCompleter(func() []sessionTarget { return targets }),
-		})
-		if err != nil {
-			send(clientEvent{consoleSource: c, consoleClosed: true})
-			return
-		}
-		defer rl.Close()
-		stop := context.AfterFunc(ctx, func() { _ = reader.Close() })
-		defer stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case prompt := <-c.prompts:
-				targets = prompt.targets
-				c.draw(out, prompt.body)
-			}
-			line, err := rl.Readline()
-			if err != nil {
-				send(clientEvent{consoleSource: c, consoleClosed: true})
-				return
-			}
-			send(clientEvent{consoleSource: c, consoleLine: &line})
-		}
-	}()
+	c.editor = termui.StartConsole(ctx, consoleTitle, "sshore> ", width, func(e termui.ConsoleEvent) {
+		send(clientEvent{consoleSource: c, consoleOutput: e.Output, consoleLine: e.Line, consoleClosed: e.Closed})
+	})
 }
 
 type consoleCompleter func() []sessionTarget
@@ -164,7 +85,8 @@ func (targets consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
 }
 
 func (c *commandConsole) show(body string) {
-	c.prompts <- consolePrompt{body: body, targets: c.targets}
+	targets := c.targets
+	c.editor.Show(body, consoleCompleter(func() []sessionTarget { return targets }))
 }
 
 func consoleTargetSummary(targets []sessionTarget, rows int) string {

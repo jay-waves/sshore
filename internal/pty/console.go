@@ -35,6 +35,27 @@ func ResetInputModes() {
 	writeTerminalControl(os.Stdout, terminalInputResetSequence())
 }
 
+// BeginConsole prepares the screen and input modes for a temporary local
+// prompt. Keep observing application output suspended until EndConsole returns.
+func (s InputState) BeginConsole(out io.Writer) error {
+	sequence := "\x1b[>0u" + terminalInputResetSequence()
+	if s.alternateScreen == 0 {
+		sequence = "\x1b[?1049h" + sequence
+	}
+	return writeFull(out, []byte(sequence))
+}
+
+// EndConsole restores the application screen and input modes before buffered
+// output is replayed. Applications on the alternate screen may need a redraw.
+func (s InputState) EndConsole(out io.Writer) error {
+	sequence := "\x1b[<1u\x1b[?1049l"
+	if s.alternateScreen != 0 {
+		sequence = "\x1b[<1u\x1b[2J\x1b[H"
+	}
+	s.alternateScreen = 0
+	return writeFull(out, append([]byte(sequence+s.modifyOtherKeys), s.Replay()...))
+}
+
 // SetTitle requests an xterm-compatible window title and returns a restoration
 // function. Terminals without title-stack support may ignore the push and pop.
 func SetTitle(title string) func() {
