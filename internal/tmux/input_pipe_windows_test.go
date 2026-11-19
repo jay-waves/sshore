@@ -10,10 +10,11 @@ import (
 )
 
 func TestConPTYInputPipeStopsBlockedWriteBeforeNewOwner(t *testing.T) {
-	reader, writer, err := consolePipe(false)
+	console, writer, err := consolePipe(false)
 	if err != nil {
 		t.Fatal(err)
 	}
+	reader := os.NewFile(uintptr(console), "conpty-input-reader")
 	defer writer.Close()
 	defer reader.Close()
 
@@ -82,10 +83,11 @@ func TestConPTYInputPipeStopsBlockedWriteBeforeNewOwner(t *testing.T) {
 }
 
 func TestConPTYOutputPipeReadDeadline(t *testing.T) {
-	reader, writer, err := consolePipe(true)
+	console, reader, err := consolePipe(true)
 	if err != nil {
 		t.Fatal(err)
 	}
+	writer := os.NewFile(uintptr(console), "conpty-output-writer")
 	defer reader.Close()
 	defer writer.Close()
 

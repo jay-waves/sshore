@@ -79,18 +79,18 @@ func Start(c Config) (result *Terminal, _ error) {
 		// ConPTY keeps its output pipe open after the child exits.
 		go t.Wait()
 	}()
-	inR, inW, err := consolePipe(false)
+	consoleInput, input, err := consolePipe(false)
 	if err != nil {
 		return nil, err
 	}
-	t.input = inW
-	defer inR.Close()
-	outR, outW, err := consolePipe(true)
+	t.input = input
+	defer windows.CloseHandle(consoleInput)
+	consoleOutput, output, err := consolePipe(true)
 	if err != nil {
 		return nil, err
 	}
-	t.output = outR
-	defer outW.Close()
+	t.output = output
+	defer windows.CloseHandle(consoleOutput)
 	t.job, err = windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return nil, err
@@ -100,7 +100,7 @@ func Start(c Config) (result *Terminal, _ error) {
 	if _, err = windows.SetInformationJobObject(t.job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
 		return nil, err
 	}
-	if err = windows.CreatePseudoConsole(windows.Coord{X: int16(c.Size.Cols), Y: int16(c.Size.Rows)}, windows.Handle(inR.Fd()), windows.Handle(outW.Fd()), 0, &t.console); err != nil {
+	if err = windows.CreatePseudoConsole(windows.Coord{X: int16(c.Size.Cols), Y: int16(c.Size.Rows)}, consoleInput, consoleOutput, 0, &t.console); err != nil {
 		return nil, err
 	}
 	attrs, err := windows.NewProcThreadAttributeList(2)
@@ -223,12 +223,11 @@ func (e processExitError) Error() string {
 }
 func (e processExitError) ExitCode() int { return int(e) }
 
-// Only the daemon's end is overlapped. CreatePseudoConsole requires its
-// handles to use synchronous I/O.
-func consolePipe(daemonReads bool) (*os.File, *os.File, error) {
+// Return the synchronous ConPTY handle and the daemon's pollable end.
+func consolePipe(daemonReads bool) (windows.Handle, *os.File, error) {
 	name, err := windows.UTF16PtrFromString(`\\.\pipe\sshore-conpty-` + rand.Text())
 	if err != nil {
-		return nil, nil, err
+		return 0, nil, err
 	}
 	readMode := uint32(windows.PIPE_ACCESS_INBOUND | windows.FILE_FLAG_FIRST_PIPE_INSTANCE)
 	writeFlags := uint32(windows.SECURITY_SQOS_PRESENT | windows.SECURITY_IDENTIFICATION)
@@ -240,43 +239,38 @@ func consolePipe(daemonReads bool) (*os.File, *os.File, error) {
 	r, err := windows.CreateNamedPipe(name, readMode,
 		windows.PIPE_REJECT_REMOTE_CLIENTS, 1, 0, 64*1024, 0, nil)
 	if err != nil {
-		return nil, nil, err
+		return 0, nil, err
 	}
 	// CreateFile connects to the single server instance before returning.
 	w, err := windows.CreateFile(name, windows.GENERIC_WRITE, 0, nil, windows.OPEN_EXISTING, writeFlags, 0)
 	if err != nil {
 		_ = windows.CloseHandle(r)
-		return nil, nil, err
+		return 0, nil, err
 	}
-	pollHandle := &w
+	console, daemon := r, w
 	if daemonReads {
-		pollHandle = &r
+		console, daemon = w, r
 	}
 	// After the startup pipe closes, Windows may reuse its stdin handle value.
 	// os.NewFile skips overlapped detection for that original value.
-	if *pollHandle == windows.Handle(syscall.Stdin) {
+	if daemon == windows.Handle(syscall.Stdin) {
 		current := windows.CurrentProcess()
 		var duplicate windows.Handle
-		if err := windows.DuplicateHandle(current, *pollHandle, current, &duplicate, 0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
-			_ = windows.CloseHandle(r)
-			_ = windows.CloseHandle(w)
-			return nil, nil, err
+		err := windows.DuplicateHandle(current, daemon, current, &duplicate, 0, false, windows.DUPLICATE_SAME_ACCESS)
+		_ = windows.CloseHandle(daemon)
+		if err != nil {
+			_ = windows.CloseHandle(console)
+			return 0, nil, err
 		}
-		_ = windows.CloseHandle(*pollHandle)
-		*pollHandle = duplicate
+		daemon = duplicate
 	}
-	reader := os.NewFile(uintptr(r), "conpty-read")
-	writer := os.NewFile(uintptr(w), "conpty-write")
-	pollable := writer
-	if daemonReads {
-		pollable = reader
-	}
+	pollable := os.NewFile(uintptr(daemon), "conpty-daemon")
 	if err := pollable.SetDeadline(time.Time{}); err != nil {
-		_ = reader.Close()
-		_ = writer.Close()
-		return nil, nil, fmt.Errorf("enable ConPTY pipe deadlines: %w", err)
+		_ = pollable.Close()
+		_ = windows.CloseHandle(console)
+		return 0, nil, fmt.Errorf("enable ConPTY pipe deadlines: %w", err)
 	}
-	return reader, writer, nil
+	return console, pollable, nil
 }
 
 func (t *Terminal) Close() error {
