@@ -77,8 +77,12 @@ preserve the original lifetime. Both commands accept `--detach` to start in the
 background. Daemon failure or a host restart can end any shell. Screens and
 scrollback are not saved.
 
-Each session has one terminal and requires no tmux installation. Press **Ctrl+B**
-and then one of these keys:
+Each session has one terminal and requires no tmux installation.
+While attached, sshore requests a terminal window title containing the session
+endpoint. Applications may change it, and supported terminals restore the prior
+title when the attachment ends.
+
+Press **Ctrl+B** and then one of these keys:
 
 | Key | Action |
 | --- | --- |

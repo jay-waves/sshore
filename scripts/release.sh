@@ -39,15 +39,14 @@ Includes Linux and Windows binaries for amd64 (x86-64) only.
 Verify downloaded archives against SHA256SUMS.
 Commit: $GITHUB_SHA
 NOTES
-if [[ "$version" == "0.7.14" ]]; then
+if [[ "$version" == "0.7.16" ]]; then
   cat >> release-notes.md <<NOTES
 
-- Remove the MCP command and its remote Bash session service. Existing MCP
-  sessions end when their owning daemon stops; save their work before updating.
-- Simplify the account daemon routing and consolidate related client and daemon
-  code. Shell, copy, mount and forwarding remain available.
+- Request a terminal title for attached shells and restore the previous title
+  when the terminal supports a title stack.
+- Improve redraw on Linux reattachment and Ctrl+B r by briefly resizing the PTY.
 
-Update both endpoints to 0.7.14 for managed connections. Save work before
+Update both endpoints to 0.7.16 for managed connections. Save work before
 installing because the installer stops the target account daemon.
 NOTES
 fi

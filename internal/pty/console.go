@@ -35,6 +35,19 @@ func ResetInputModes() {
 	writeTerminalControl(os.Stdout, terminalInputResetSequence())
 }
 
+// SetTitle requests an xterm-compatible window title and returns a restoration
+// function. Terminals without title-stack support may ignore the push and pop.
+func SetTitle(title string) func() {
+	var safe strings.Builder
+	for _, r := range title {
+		if r >= 0x20 && r != 0x7f && !(r >= 0x80 && r <= 0x9f) {
+			safe.WriteRune(r)
+		}
+	}
+	writeTerminalControl(os.Stdout, "\x1b[22;0t\x1b]2;"+safe.String()+"\x1b\\")
+	return func() { writeTerminalControl(os.Stdout, "\x1b[23;0t") }
+}
+
 // RestoreScreen returns to the invoking terminal's main buffer if this
 // attachment entered the alternate buffer.
 func (s *InputState) RestoreScreen() {

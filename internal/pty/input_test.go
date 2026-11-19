@@ -335,6 +335,7 @@ func TestConsoleOutputModes(t *testing.T) {
 		{"cancelled request", "\x1b[?9001\x18h", "\x1b[?9001\x18h"},
 		{"combined", "\x1b[?1;09001;1006h\x1b[?9001;2004l", "\x1b[?1;1006h\x1b[?2004l"},
 		{"other modes", "\x1b[?1004h\x1b[?2004h\x1b[?1l\x1b[2J\x1b[31m中文😀", "\x1b[?1004h\x1b[?2004h\x1b[?1l\x1b[2J\x1b[31m中文😀"},
+		{"common terminal sequences", "\x1b]7;file://host/path\x1b\\\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\\x1b]133;A\a\x1b]9;4;1;50\a\x1b[?2026htext\x1b[?2026l", "\x1b]7;file://host/path\x1b\\\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\\x1b]133;A\a\x1b]9;4;1;50\a\x1b[?2026htext\x1b[?2026l"},
 		{"opaque strings", "\x1b]2;\x1b[?9001h\a\x1bP\x1b[?9001l\x1b\\", "\x1b]2;\x1b[?9001h\a\x1bP\x1b[?9001l\x1b\\"},
 		{"partial", "text\x1b[?900", "text\x1b[?900"},
 		{"aborted", "\x1b[?900\x1b[?9001h", "\x1b[?900"},

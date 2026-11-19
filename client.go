@@ -312,6 +312,8 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		return 1, err
 	}
 	defer func() { restore(); _ = pty.FlushInput() }()
+	restoreTitle := pty.SetTitle("sshore: " + shellDisplayEndpoint(o))
+	defer restoreTitle()
 	var outputModes pty.InputState
 	defer outputModes.RestoreScreen()
 	terminalOutput, flushOutput := pty.OutputWriter()
