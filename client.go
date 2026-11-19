@@ -716,11 +716,18 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					}
 				case e.consoleLine != nil:
 					args := strings.Fields(*e.consoleLine)
-					switch {
-					case len(args) == 1 && args[0] == "exit":
+					if len(args) == 1 && args[0] == "exit" {
 						if err := leaveConsole(); err != nil {
 							return 255, err
 						}
+						continue
+					}
+					if len(args) == 0 || args[0] != "sshore" {
+						console.show(consoleHelp)
+						continue
+					}
+					args = args[1:]
+					switch {
 					case len(args) == 1 && args[0] == "spawn":
 						if err := closeConsole(); err != nil {
 							return 1, err

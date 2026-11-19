@@ -39,16 +39,15 @@ Includes Linux and Windows binaries for amd64 (x86-64) only.
 Verify downloaded archives against SHA256SUMS.
 Commit: $GITHUB_SHA
 NOTES
-if [[ "$version" == "0.7.17" ]]; then
+if [[ "$version" == "0.7.18" ]]; then
   cat >> release-notes.md <<NOTES
 
-- Open the full-screen command prompt with Ctrl+B followed by : for list,
-  pstree, attach, and spawn. Readline adds command history and Tab completion.
-- Show active handoff destinations in list details and pstree. Detached return
-  targets remain available for attachment, and failed returns exit cleanly.
-- Keep process tree ordering stable by task ID.
+- In the full-screen prompt, use the same command names as the CLI:
+  sshore list, sshore ps, sshore attach, and sshore spawn.
+- Tab completes the sshore prefix, subcommands, and attachment targets.
+  Esc, exit, and help remain available directly in the prompt.
 
-Update both endpoints to 0.7.17 for managed connections. Save work before
+Update both endpoints to 0.7.18 for managed connections. Save work before
 installing because the installer stops the target account daemon.
 NOTES
 fi

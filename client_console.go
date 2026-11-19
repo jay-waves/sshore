@@ -53,11 +53,12 @@ func (w consoleEventWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-const consoleHelp = `list              Show task inventory
-ps                Show the local task tree
-attach <ID|name>  Switch session (Tab completes)
-spawn             Open a nested shell
-exit              Return to the current shell`
+const consoleHelp = `sshore list              Show task inventory
+sshore ps                Show the local task tree
+sshore attach <ID|name>  Switch session (Tab completes)
+sshore spawn             Open a nested shell
+help                     Show commands
+exit                     Return to the current shell`
 
 func (c *commandConsole) start(ctx context.Context, send func(clientEvent), width int) {
 	ctx, c.cancel = context.WithCancel(ctx)
@@ -120,11 +121,16 @@ type consoleCompleter func() []sessionTarget
 func (targets consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	prefix := string(line[:pos])
 	word := prefix
-	candidates := []string{"attach", "exit", "help", "list", "ps", "pstree", "spawn"}
-	if rest, ok := strings.CutPrefix(prefix, "attach "); ok {
-		word, candidates = rest, nil
-		for _, target := range targets() {
-			candidates = append(candidates, target.Name, taskShortCode("task:"+target.Instance))
+	candidates := []string{"exit", "help", "sshore"}
+	if rest, ok := strings.CutPrefix(prefix, "sshore "); ok {
+		word = strings.TrimLeft(rest, " ")
+		candidates = []string{"attach", "list", "ps", "pstree", "spawn"}
+		if selector, ok := strings.CutPrefix(word, "attach "); ok {
+			word = strings.TrimLeft(selector, " ")
+			candidates = nil
+			for _, target := range targets() {
+				candidates = append(candidates, target.Name, taskShortCode("task:"+target.Instance))
+			}
 		}
 	}
 	slices.Sort(candidates)
