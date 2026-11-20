@@ -115,7 +115,7 @@ func normalizeHostOperand(command string, parsed *cliArguments) error {
 	case "origin":
 		return usage("%s requires here: or an SSH host", command)
 	case "here":
-		if command == "exec" || command == "ping" {
+		if command == "exec" || command == "ping" || command == "copy-id" {
 			return usage("%s requires an SSH host", command)
 		}
 		if len(parsed.ssh) != 0 || parsed.has("--server") {

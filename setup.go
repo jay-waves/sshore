@@ -99,16 +99,19 @@ func runInstall(args []string) (int, error) {
 		return 2, err
 	}
 	host, target := "here", ""
+	local, bare := true, false
 	if len(parsed.operands) != 0 {
-		host, target, err = splitEndpoint(parsed.operands[0])
+		bare = isBareSSHHost(parsed.operands[0])
+		host, target, err = installTarget(parsed.operands[0])
 		if err != nil {
 			return 2, err
 		}
+		local = !bare && host == "here"
 	}
 	if strings.ContainsAny(target, "\x00\r\n") {
 		return 2, usage("invalid installation path")
 	}
-	if host == "here" {
+	if local {
 		if len(parsed.ssh) != 0 {
 			return 2, usage("SSH options require a remote installation target")
 		}
@@ -123,7 +126,7 @@ func runInstall(args []string) (int, error) {
 		}
 		return 0, runLocalInstaller(target)
 	}
-	if host == "origin" {
+	if host == "origin" && !bare {
 		return 2, usage("install requires here: or an SSH host")
 	}
 	if parsed.has("--apply") {
@@ -148,6 +151,16 @@ func runInstall(args []string) (int, error) {
 		return 1, fmt.Errorf("remote installation on %s: %w", cleanText(host), err)
 	}
 	return 0, nil
+}
+
+func installTarget(value string) (string, string, error) {
+	if isBareSSHHost(value) {
+		if err := validSSHDestination(value); err != nil {
+			return "", "", err
+		}
+		return value, "", nil
+	}
+	return splitEndpoint(value)
 }
 
 func remoteVersionHelp(host string) string {

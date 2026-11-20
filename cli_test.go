@@ -483,7 +483,7 @@ func TestRemovedCommands(t *testing.T) {
 }
 
 func TestInstallGrammar(t *testing.T) {
-	for _, args := range [][]string{nil, {"work:"}, {".:/tmp/sshore"}, {"work:/tmp/sshore", "--", "-p", "2222"}} {
+	for _, args := range [][]string{nil, {"work"}, {"work:"}, {".:/tmp/sshore"}, {"work:/tmp/sshore", "--", "-p", "2222"}} {
 		if _, err := parseCLI(args, "install"); err != nil {
 			t.Fatalf("rejected %q: %v", args, err)
 		}
@@ -493,7 +493,7 @@ func TestInstallGrammar(t *testing.T) {
 			t.Fatalf("accepted %q", args)
 		}
 	}
-	for _, args := range [][]string{{"bootstrap"}, {"setup", "--apply", "--path", "/tmp/sshore"}, {"install", "work"}, {"install", "work:relative"}, {"install", "here:relative"}, {"install", "origin:"}, {"install", "work:/tmp/sshore", "--apply"}, {"install", "--", "-p", "2222"}} {
+	for _, args := range [][]string{{"bootstrap"}, {"setup", "--apply", "--path", "/tmp/sshore"}, {"install", "work:relative"}, {"install", "here:relative"}, {"install", "origin:"}, {"install", "work:/tmp/sshore", "--apply"}, {"install", "--", "-p", "2222"}} {
 		if code, err := run(args); code != 2 || err == nil {
 			t.Fatalf("accepted %q: %d %v", args, code, err)
 		}

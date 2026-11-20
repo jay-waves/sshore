@@ -20,13 +20,7 @@ func runCopyID(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	host, suffix, err := splitEndpoint(parsed.operands[0])
-	if err != nil {
-		return 2, err
-	}
-	if host == "here" || host == "origin" || suffix != "" {
-		return 2, usage("copy-id requires an SSH host in HOST: form")
-	}
+	host := parsed.operands[0]
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	connection := sshio.Options{Host: host, Args: parsed.ssh, Confirm: confirmSSHHost, Secret: promptSSHSecret}

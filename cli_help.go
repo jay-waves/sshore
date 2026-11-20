@@ -85,48 +85,48 @@ More examples: sshore launch|spawn|cp|mount|forward --tldr
 	"help": {max: 1},
 	"copy-id": {
 		ssh: true, min: 1, max: 1,
-		help: `Usage: sshore copy-id HOST: [-- SSH_OPTIONS]
+		help: `Usage: sshore copy-id HOST [-- SSH_OPTIONS]
 
 Install a public key from the host's effective IdentityFile settings into
 the remote account's ~/.ssh/authorized_keys. If several keys are available,
 choose one in the terminal with Tab completion.
 ` + sshOptions,
-		examples: "Install the configured public key\n  sshore copy-id work:\n",
+		examples: "Install the configured public key\n  sshore copy-id work\n",
 	},
 	"install": {
 		ssh: true, max: 1, flags: []string{"--apply"},
-		help: `Usage: sshore install [HOST:[PATH]] [-- SSH_OPTIONS]
+		help: `Usage: sshore install [HOST[:PATH]] [-- SSH_OPTIONS]
 
 Update this computer to the latest published release, or update HOST to the
 exact local version over SSH. Before replacement, install stops the target daemon.
 If it owns tasks, review the list and follow the confirmation prompt.
-Omit the target or use here: to install locally. Use HOST: to select a remote
+Omit the target or use here: to install locally. Use HOST or HOST: to select a remote
 default path, or append an absolute path to either endpoint.
 ` + sshOptions,
-		examples: "Update this computer\n  sshore install\nUpdate a remote host to match this computer\n  sshore install work:\n",
+		examples: "Update this computer\n  sshore install\nUpdate a remote host to match this computer\n  sshore install work\n",
 	},
 	"exec": {
 		min: 2, max: 2,
-		help: `Usage: sshore exec HOST: 'COMMAND'
+		help: `Usage: sshore exec HOST 'COMMAND'
 
 Execute COMMAND once over SSH without a remote PTY. Uses system ssh -G
 configuration and private key files. Interactive login requires a terminal.
 Standard streams and the SSH exit status pass through.
 No persistent sshore shell is created and no remote installation is required.
-Use an SSH config host alias for connection options. Plain SSH hosts still work.
+Use an SSH config host alias for connection options.
 
-Example: sshore exec work: 'uname -a'
+Example: sshore exec work 'uname -a'
 `,
 	},
 	"ping": {
 		ssh: true, min: 1, max: 1, flags: []string{"--count"},
-		help: `Usage: sshore ping HOST: [--count N] [--port PORT] [-- SSH_OPTIONS]
+		help: `Usage: sshore ping HOST [--count N] [--port PORT] [-- SSH_OPTIONS]
 
 Measure authenticated SSH connection time and character round-trip latency
 over one SSH session. The remote account must be able to run cat.
 --count accepts 1 to 1000 samples (default 10). Echo testing has a 30s budget.
 ` + sshOptions,
-		examples: "Measure latency to an SSH host\n  sshore ping work: --count 20\n",
+		examples: "Measure latency to an SSH host\n  sshore ping work --count 20\n",
 	},
 	"launch": {
 		ssh: true, native: true, max: 1, flags: strings.Fields(connectionFlags + " --detach --no-login --no-profile"),
@@ -207,7 +207,7 @@ Remote rename requires matching releases and never installs software.
 	},
 	"list": {
 		ssh: true, max: 1, flags: []string{"--server", "--json"},
-		help: `Usage: sshore list [HOST:] [options] [-- SSH_OPTIONS]
+		help: `Usage: sshore list [HOST] [options] [-- SSH_OPTIONS]
 
 Without an endpoint, show local tasks, shells hosted by this Unix account, and saved
 remote observations without SSH.

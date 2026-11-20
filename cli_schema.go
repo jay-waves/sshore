@@ -243,7 +243,7 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 	if max >= 0 && len(a.operands) > max {
 		return a, usage("unexpected argument: %s", a.operands[max])
 	}
-	if len(a.operands) != 0 && (command == "list" || command == "exec" || command == "ping" || command == "kill" && a.has("--all")) {
+	if len(a.operands) != 0 && (command == "list" || command == "exec" || command == "ping" || command == "copy-id" || command == "kill" && a.has("--all")) {
 		err = normalizeHostOperand(command, &a)
 	} else {
 		err = normalizeShellSelector(command, &a)

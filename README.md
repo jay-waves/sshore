@@ -26,7 +26,7 @@ SSH configuration. Linux hosts remote shells through an existing SSH server.
 See [OS and shell support](#os-and-shell-support).
 
 Before 1.0.0, breaking changes are frequent, so client and remote versions must
-match exactly, including the patch version. Run `sshore install work:` to
+match exactly, including the patch version. Run `sshore install work` to
 install the client's version on the remote Linux host `work`. On a Windows
 controlled host, install the matching version manually using the Windows
 installer above.
@@ -140,7 +140,7 @@ computer.
 Use hosts and aliases from your SSH config. Public-key login reads private keys
 from the effective `IdentityFile` settings. Encrypted
 private keys, password and keyboard-interactive login require a terminal.
-Run `sshore copy-id work:` to add one of the host's configured public keys to
+Run `sshore copy-id work` to add one of the host's configured public keys to
 the remote account's `~/.ssh/authorized_keys`. When several keys are available,
 choose one by number or complete its path with Tab.
 The remote Linux host needs `flock`, `ssh-keygen`, `awk` and `tail`. On hosts
