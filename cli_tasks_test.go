@@ -347,7 +347,7 @@ func TestKillAllScope(t *testing.T) {
 func TestListNumbersAreNotSelectors(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	code, err := run([]string{"kill", "1"})
-	if code != 2 || err == nil || !strings.Contains(err.Error(), "display-only") {
+	if code != 2 || err == nil || !strings.Contains(err.Error(), "requires HOST:ID") {
 		t.Fatalf("kill: %d %v", code, err)
 	}
 	o, err := parseOptions([]string{"attach", "1"})

@@ -13,10 +13,9 @@ cat packages/*.sha256 > packages/SHA256SUMS
 cat > release-notes.md <<NOTES
 sshore $version
 
-- Measure SSH connection and echo latency with ping.
-- Simplify file endpoints and shell targets; local session selectors now require
-  a prefix such as :NAME, while a bare shell target names an SSH host.
-- Name shells at creation with HOST:NAME or :NAME.
+- Streamline local approval and terminal prompts.
+- Colorize console inventory output.
+- Accept bare SSH hosts for install and copy-id.
 
 Includes Linux and Windows amd64 binaries. Verify archives against SHA256SUMS.
 Update both endpoints to $version for managed connections. Save work before
