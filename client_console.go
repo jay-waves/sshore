@@ -26,6 +26,7 @@ ps (pstree)       Show the task tree on this host
 attach (a) <ID|name>  Switch session (Tab completes)
 spawn (sh)        Open a nested shell
 launch (mux)      Open an independent shell on this host
+detach (d)        Detach from the current shell
 exit              Return to the current shell`
 
 func (c *commandConsole) start(ctx context.Context, out io.Writer, send func(clientEvent), width int, color bool) {
@@ -42,7 +43,7 @@ type consoleCompleter func() []sessionTarget
 func (targets consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	prefix := string(line[:pos])
 	word := prefix
-	candidates := []string{"attach", "exit", "help", "launch", "list", "pstree", "spawn"}
+	candidates := []string{"attach", "detach", "exit", "help", "launch", "list", "pstree", "spawn"}
 	for alias, command := range commandAliases {
 		if slices.Contains(candidates, command) {
 			candidates = append(candidates, alias)

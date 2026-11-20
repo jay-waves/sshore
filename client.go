@@ -713,6 +713,18 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						args[0] = canonicalCommand(args[0])
 					}
 					switch {
+					case len(args) == 1 && args[0] == "detach":
+						if detachPhase != detachIdle {
+							break
+						}
+						if !queueDetach() {
+							console.show("Terminal input queue is busy. Try again.")
+							break
+						}
+						clearTransition()
+						if err := closeConsole(); err != nil {
+							return 255, err
+						}
 					case len(args) == 1 && args[0] == "exit":
 						if err := leaveConsole(); err != nil {
 							return 255, err

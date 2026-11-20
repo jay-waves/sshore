@@ -95,7 +95,8 @@ with `(current)` and the tree with `*current`. The shell stays open.
 Use `attach <ID|name>` to switch to a detached session in the current scope,
 `spawn` to open a nested shell, and `launch` to open an independent shell on the
 current host.
-The aliases `ls`, `a`, `sh`, and `mux` work here too.
+Use `detach` to detach from the current shell and leave it running.
+The aliases `ls`, `a`, `sh`, `mux`, and `d` work here too.
 
 Tab completes commands, session names and short IDs. Use the arrow keys to
 edit input or recall commands from the current prompt. Results append below the

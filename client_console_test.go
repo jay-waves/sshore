@@ -19,6 +19,8 @@ func TestConsoleCompletion(t *testing.T) {
 		{"ls", []string{" "}},
 		{"sh", []string{" "}},
 		{"mux", []string{" "}},
+		{"de", []string{"tach "}},
+		{"d", []string{" ", "etach "}},
 		{"cp", nil},
 		{"forward", nil},
 	} {

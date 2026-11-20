@@ -377,7 +377,7 @@ func TestClientCommandConsole(t *testing.T) {
 	wait("Show task inventory on this host")
 	io.WriteString(terminal, "exit\r")
 	wait("\x1b[?1049l")
-	io.WriteString(terminal, "\x02d")
+	io.WriteString(terminal, "\x02:d\r")
 	wait("Detached;")
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
