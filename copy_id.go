@@ -58,6 +58,6 @@ func runCopyID(args []string) (int, error) {
 	if err := sshio.CopyID(ctx, connection, selectKey, os.Stdout, os.Stderr); err != nil {
 		return 1, err
 	}
-	fmt.Fprintf(os.Stdout, "Public key installed on %s.\n", cleanText(host))
+	fmt.Fprintf(os.Stdout, "Public key is authorized on %s in ~/.ssh/authorized_keys (added or already present).\n", cleanText(host))
 	return 0, nil
 }

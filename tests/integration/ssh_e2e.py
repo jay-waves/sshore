@@ -479,6 +479,17 @@ LogLevel ERROR
                 assert authorized.read_text() == 'from="127.0.0.1" ' + installed.rstrip("\n")
                 assert authorized.parent.stat().st_mode & 0o777 == 0o700
 
+                authorized.unlink()
+                authorized.mkdir()
+                failure = subprocess.run(install, capture_output=True, text=True, timeout=10)
+                assert failure.returncode != 0 and "not a regular file" in failure.stderr, failure.stderr
+                authorized.rmdir()
+                authorized.symlink_to(root / "missing-authorized-keys")
+                failure = subprocess.run(install, capture_output=True, text=True, timeout=10)
+                assert failure.returncode != 0 and "symbolic link" in failure.stderr, failure.stderr
+                authorized.unlink()
+                authorized.write_text(installed)
+
                 second = root / "second key"
                 subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(second)], check=True)
                 select_key = Terminal([*install, "-i", str(second)], wait_ready=False)
@@ -486,7 +497,7 @@ LogLevel ERROR
                 select_key.expect(re.escape(str(second.with_suffix(".pub"))))
                 select_key.expect("Public key: ")
                 select_key.send(str(second) + "\t\n")
-                select_key.expect("Public key installed")
+                select_key.expect("Public key is authorized")
                 select_key.wait()
                 lines = authorized.read_text().splitlines()
                 assert len(lines) == 2, lines

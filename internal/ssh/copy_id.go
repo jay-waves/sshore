@@ -23,6 +23,14 @@ directory="${HOME:?}/.ssh"
 file="$directory/authorized_keys"
 mkdir -p "$directory"
 chmod 700 "$directory"
+if [ -L "$file" ]; then
+    printf 'copy-id: %s is a symbolic link; use a regular authorized_keys file\n' "$file" >&2
+    exit 1
+fi
+if [ -e "$file" ] && [ ! -f "$file" ]; then
+    printf 'copy-id: %s exists but is not a regular file; check the remote path\n' "$file" >&2
+    exit 1
+fi
 exec 9>>"$file"
 flock -x 9
 chmod 600 "$file"
