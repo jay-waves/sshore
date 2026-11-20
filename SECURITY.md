@@ -2,7 +2,7 @@
 
 sshore separates remote shell interaction from permission to access local files
 and services. **An authenticated remote host is not necessarily trustworthy.**
-Remote requests are proposals; only an explicit local command or local review
+Remote requests are proposals; only an explicit local command or local approval
 grants access.
 
 This document describes threats, controls and their limits. Implementation and
@@ -41,17 +41,15 @@ flowchart LR
     end
     subgraph local["Trusted local OS and user account"]
         client["Terminal client"]
-        pending["Daemon memory: bounded, expiring Request"]
         user["Local user"]
-        review["Separate local review: select paths, mountpoint or ports"]
+        review["Local approval: confirm and select paths, mountpoint or ports"]
         grant["Fixed operation; consume approval once"]
         resources["Selected files, forward or mount"]
         control["Account daemon TCP endpoint: authentication, task IDs and live leases"]
         update["Verify release and require stopped daemon"]
     end
     shell -->|"Authenticated SSH; content remains untrusted"| client
-    client -->|"Save metadata and detach; no operation yet"| pending
-    pending --> review
+    client -->|"Detach; present request locally"| review
     user --> review
     review --> grant
     grant -->|"Revalidate original shell; reject changed setup"| resources
@@ -82,7 +80,7 @@ before the launcher reports success; the original spawn owner remains authoritat
 Routes are private capabilities bound to the parent shell instance. Each route
 opens authenticated endpoints to the fixed child instance, using local daemon
 connections or native channels on the initiating daemon's existing SSH session.
-Reattachment and review preserve that route. An expired route or changed parent
+Reattachment and approval preserve that route. An expired route or changed parent
 blocks the request and prohibits falling back to a direct connection using a remote-supplied host alias. Route messages
 and returned terminal content remain untrusted. They grant no file, mount or
 forward approval. Host-key confirmation uses an authenticated broker on the
@@ -99,7 +97,7 @@ Preparation and bridge processes are not retained as per-shell trust boundaries.
 
 | Attack scenario | Primary gate | Remaining risk |
 | --- | --- | --- |
-| Remote output tricks the user into granting local access | [Separate local review](#local-approval) | A user may still approve a deceptive request. |
+| Remote output tricks the user into granting local access | [Local approval](#local-approval) | A user may still approve a deceptive request. |
 | An old request is replayed or redirected to another shell | Single-use records and original-shell checks | A malicious server can lie about its own identity. |
 | A file request overwrites a local file or changes after approval | [Selected paths and no-overwrite publication](#files-and-forwarding) | Content can be malicious or change without changing size. |
 | A remote program exposes a local service | Locally selected, fixed forwarding endpoints | Loopback is not per-user isolation; server policy can alter reverse binds. |
@@ -113,37 +111,19 @@ Preparation and bridge processes are not retained as per-shell trust boundaries.
 **Threat:** a remote program asks the connected client to read a local file,
 write a destination, expose a mount, open a listener or reach a local service without consent.
 
-Receiving a request saves bounded metadata and detaches. It does not execute a
-local shell command, create a mount, open a listener or transfer a selected file. Unsolicited
-transfer offers, forward-add streams and reverse connection streams are rejected.
-A suggested path or port is not permission.
-The shell confirms the helper's queued reply before acknowledging the saved
-request on the attachment's control connection. The frontend waits for that
-acknowledgement before detaching and removes the unconfirmed request if the
-exchange fails. A token correlates the messages for this exchange. Approval
-authority remains with local review.
+A request contains bounded operation metadata and suggested paths or ports;
+receiving it grants no permission. The client leaves the remote attachment and
+presents the request in a local approval screen. The user must explicitly enter
+`Y` before selecting local endpoints. Suggested values are editable and path
+completion does not submit them. Cancel, EOF or lack of an interactive terminal
+rejects the request without executing it. There is no persistent grant or pending
+request queue. Unsolicited transfer offers, forward-add streams and reverse
+connection streams remain rejected.
 
-Sensitive review happens in a **separate local `sshore review` invocation** after
-the connected client exits. Suggested values are prefilled as editable local
-input. Pressing Enter submits the field and approves once all requested fields
-are valid. File batches collect all paths before starting.
-Ctrl-C or EOF during selection starts no operation and leaves the request pending.
-Completion can browse local paths but does not submit them. Approved execution
-uses a separate resource connection. Each approved file opens an authenticated
-endpoint and rechecks the exact release and the original detached shell's
-identity and PID.
-
-Each pending request:
-
-- Lives only in the account daemon's memory, expires after ten minutes and is
-  subject to request/operation limits. Daemon failure loses pending requests.
-- Stores connection options and operation metadata, not collected SSH credentials.
-- Is consumed before reconnecting, even if connection or execution fails. A normal
-  shell connection cannot execute it; there is no persisted grant or automatic retry.
-- Retains its original shell identity and PID. Review does not silently create a
-  replacement shell. Rename or replacement can invalidate a pending request.
-- Fixes the approved operation locally. Setup changes skip execution;
-  the user must request the operation again.
+Approved operations fix the selected local endpoints, validate the original
+shell identity and exact release, and use a separate resource connection.
+File batches select all paths before execution. SSH authentication is separate
+from operation approval.
 
 System OpenSSH, local configuration and `Match exec` hooks are trusted inputs.
 Go SSH owns the connection and host-key verification. Changed host keys are
@@ -170,7 +150,7 @@ outside explicit forward retry policy.
 
 **Limit:** remote output can imitate local prompts, and processes sharing the
 remote account can submit requests. A request does not prove who typed it. Do not
-enter credentials or invoke review solely because remote output tells you to.
+enter credentials or approve a request solely because remote output tells you to.
 Private records are not tamper-proof against their owner.
 
 ## Files and forwarding
@@ -211,7 +191,7 @@ Forwarding fixes direction, listener and destination before execution. Independe
 forwards request IPv4 loopback listeners and loopback destinations; occupied ports
 fail without substitution. Remote requests need local port selection or acceptance.
 Their helper rechecks the original shell version, name, PID and detached state.
-No software update runs during forward review. The SSH transport may bind an approved
+No software update runs during forward approval. The SSH transport may bind an approved
 listener before that check; failure closes the transport before it reports ready.
 
 **Limits:** loopback is not per-user isolation. SSH server `GatewayPorts` policy
@@ -290,7 +270,7 @@ A local `mount` command explicitly grants access to a remote directory. Applicat
 with access to that mount can read and, unless `--read-only` is set, overwrite,
 rename or delete files using the remote account's permissions. A remote program
 may request a mount through the [local approval gate](#local-approval), but cannot
-approve it or choose the final local mountpoint. Review displays the access mode;
+approve it or choose the final local mountpoint. Approval displays the access mode;
 startup revalidates the original detached shell on the mount's SSH connection.
 The resulting mount is independent of that shell. Legacy disabled mode rejects it.
 

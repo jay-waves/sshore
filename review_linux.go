@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
-	"github.com/jay-waves/sshore/internal/termui"
 )
 
 func requestOperations(_ string, ops []operation) error {
@@ -26,21 +25,26 @@ func requestOperations(_ string, ops []operation) error {
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(2 * requestTimeout))
-	if err = writeMessage(c, message{Type: "approval_request", Operations: ops}); err != nil {
+	if err = writeMessage(c, message{Type: "approval_request", SoftwareVersion: version, Operations: ops}); err != nil {
 		return err
 	}
 	m, err := readMessage(c)
 	if err != nil {
 		return err
 	}
-	if m.Type != "queued" {
+	if err = checkPeerVersion(m.SoftwareVersion, "approval host"); err != nil {
+		return err
+	}
+	if m.Type != "approval_handoff" {
 		return fileResponseError(m)
 	}
-	termui.Log(os.Stderr, termui.Info, "[sshore] Request queued. Detach, then run sshore review locally.\n")
 	return nil
 }
 
 func (s *remoteShell) requestApproval(c net.Conn, m message) error {
+	if err := checkPeerVersion(m.SoftwareVersion, "requesting helper"); err != nil {
+		return err
+	}
 	if err := validateOperations(m.Operations); err != nil {
 		return err
 	}
@@ -100,7 +104,7 @@ func approvedRemoteTransfer(st net.Conn, m message) {
 	_ = files.ServeTransfer(st, backend)
 }
 
-// Validate the original detached shell without attaching to it. A failed
+// Validate the original shell without opening an attachment. A failed
 // validation must never terminate the shell or start a replacement session.
 func checkApprovalSource(name string, pid int, approval string, expected ...string) error {
 	if err := validSession(name); err != nil {
@@ -156,7 +160,7 @@ func (s *remoteShell) checkApprovalSource(m message) error {
 		return fmt.Errorf("approved shell changed; request the operation again")
 	}
 	if s.active != nil {
-		return fmt.Errorf("source shell is attached; detach it before reviewing the request")
+		return fmt.Errorf("source shell remains attached; request the operation again")
 	}
-	return removeRemoteTask(m.ApprovalID)
+	return nil
 }

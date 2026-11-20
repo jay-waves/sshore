@@ -235,7 +235,6 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *htt
 	}
 	mux.HandleFunc("POST /activity", activityHandler)
 	mux.HandleFunc("POST /leases", activityHandler)
-	mux.HandleFunc("POST /requests/{action}", tasks.serveRequest)
 	registerPlatformDaemonRoutes(mux, tasks)
 	mux.HandleFunc("POST /launch", func(w http.ResponseWriter, r *http.Request) {
 		var req localDaemonRequest

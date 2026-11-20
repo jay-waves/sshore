@@ -101,7 +101,9 @@ with `(current)` and the tree with `*current`. The shell stays open.
 Use `attach <ID|name>` to switch to a detached session in the current scope,
 `spawn` to open a nested shell, and `launch` to open an independent shell on the
 current host.
-Use `detach` to detach from the current shell and leave it running.
+Use `detach` to detach from the current shell. A root local spawn asks for
+confirmation because leaving the frontend may close the terminal window; its
+lifetime still depends on its original parent.
 The aliases `ls`, `a`, `sh`, `mux`, and `d` work here too.
 
 Tab completes commands, session names and short IDs. Use the arrow keys to
@@ -211,7 +213,7 @@ on Linux or [WinFsp](https://winfsp.dev/) on Windows. Omit `--read-only` to
 allow writes. An interrupted write can leave a partial file. Close open files
 before running the kill command printed at startup.
 
-An `origin:~/...` path expands on the client during review.
+An `origin:~/...` path expands on the client during approval.
 
 ## Request access from a remote shell
 
@@ -225,12 +227,12 @@ sshore forward origin: .:3000     # Request a client port for this remote servic
 sshore mount .:./ origin:         # Request a client mountpoint for this directory.
 ```
 
-Return to the client and run `sshore review`. The input field starts with the
-suggested path or port when supplied, or a local default when available. Edit it
-if needed and press Enter to approve. Without a suggested path, downloads default
-to the client directory recorded when the request was queued. For batch downloads, submit each destination
-before the transfer starts. A forward request detaches the shell. Use `attach` to
-resume it after review.
+The client leaves the remote session and opens a local approval screen. Enter
+`Y` to continue, then choose each local path or port. Suggested values are
+editable, and Tab completes paths. Downloads without a suggested destination
+start in the client directory. Cancel the prompt to reject the request. By default the client returns to the
+original shell after the operation; choose `n` to remain locally.
+
 
 ## Help and troubleshooting
 

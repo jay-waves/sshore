@@ -28,7 +28,7 @@ func TestCLIOptionsAndHelp(t *testing.T) {
 			t.Fatal("accepted", args)
 		}
 	}
-	for _, topic := range []string{"launch", "list", "attach", "cp", "detach", "forward", "review", "kill", "mount", "daemon"} {
+	for _, topic := range []string{"launch", "list", "attach", "cp", "detach", "forward", "kill", "mount", "daemon"} {
 		var b bytes.Buffer
 		if err = showHelp([]string{topic}, &b); err != nil || !strings.Contains(b.String(), "Usage: sshore "+topic) {
 			t.Fatal(topic, err)
@@ -172,7 +172,6 @@ func TestSharedCLIGrammar(t *testing.T) {
 		{"mount", []string{"work:", "here:"}, func(a []string) error { _, err := parseFTPOptions(a); return err }},
 		{"forward", []string{".:8080", "work:3000"}, func(a []string) error { _, _, err := parseForwardCommand(a); return err }},
 		{"cp", []string{"work:source", ".:target"}, func(a []string) error { _, err := parseCopyCommand(a); return err }},
-		{"review", []string{"request"}, func(a []string) error { _, err := parseCLI(a, "review"); return err }},
 	}
 	for _, parser := range parsers {
 		t.Run(parser.name, func(t *testing.T) {
@@ -380,7 +379,6 @@ func TestTargetDispatchRejectsInvalidArgumentsBeforeExecution(t *testing.T) {
 		{"kill", "--all", "--local", "host"},
 		{"attach", "host", "name", "extra"},
 		{"rename", "host", "old"},
-		{"review", "one", "two"},
 	} {
 		code, err := runTargetCommand(args)
 		if code != 2 || err == nil {
@@ -423,9 +421,6 @@ func TestNativeSSHPort(t *testing.T) {
 	}
 	if _, err := parseOptions([]string{"launch", "host:", "--port", "22", "--", "-o", "ProxyCommand=ssh -p 23 jump"}); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := parseCLI([]string{"--port", "22"}, "review"); err == nil {
-		t.Fatal("review accepted SSH port")
 	}
 	o, err := parseCopyCommand([]string{".:local", "host:remote", "--port", "2222"})
 	if err != nil || !reflect.DeepEqual(o.ssh, []string{"-p", "2222"}) {
@@ -579,7 +574,7 @@ func TestApprovalPathRetry(t *testing.T) {
 func TestApprovalPathCancellation(t *testing.T) {
 	calls := 0
 	_, err := readApprovalPath(&stubSetupInput{answers: []string{""}}, "File: ", "", func(path string) (string, error) { calls++; return path, nil })
-	if err == nil || !strings.Contains(err.Error(), "remains pending") || !strings.Contains(err.Error(), io.EOF.Error()) || calls != 0 {
+	if err == nil || !strings.Contains(err.Error(), "approval cancelled") || !errors.Is(err, io.EOF) || calls != 0 {
 		t.Fatal(err, calls)
 	}
 }

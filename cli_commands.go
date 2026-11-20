@@ -213,6 +213,7 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 type options struct {
 	handoffHint           *handoffObservation
 	recovering            bool
+	rootFrontend          bool
 	reusable              *clientTransport
 	routeTarget           bool
 	handoffDone           func(context.Context, error) error

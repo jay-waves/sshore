@@ -580,7 +580,7 @@ func TestApprovalAcknowledgesHelperBeforeClient(t *testing.T) {
 				if err != nil || request.Type != "approval_request" || request.Token == "" {
 					t.Fatalf("approval request: %+v %v", request, err)
 				}
-				p.approvals.reply(message{Type: "queued", Token: "another request"})
+				p.approvals.reply(message{Type: "approval_handoff", Token: "another request"})
 				replies := make(chan message, 1)
 				go func() { m, _ := readMessage(client); replies <- m }()
 				synctest.Wait()
@@ -589,19 +589,27 @@ func TestApprovalAcknowledgesHelperBeforeClient(t *testing.T) {
 					t.Fatalf("unrelated token completed the request: %+v", reply)
 				default:
 				}
-				p.approvals.reply(message{Type: "queued", Token: request.Token})
+				p.approvals.reply(message{Type: "approval_handoff", Token: request.Token})
 				synctest.Wait()
 				select {
 				case reply := <-replies:
 					t.Fatalf("client replied before helper: %+v", reply)
 				default:
 				}
-				wantType := "queued_ack"
+				wantType := "approval_ack"
 				if helperDisconnects {
 					helper.Close()
-					wantType = "approval_failed"
-				} else if reply, err := readMessage(helper); err != nil || reply.Type != "queued" {
+					wantType = "approval_cancelled"
+				} else if reply, err := readMessage(helper); err != nil || reply.Type != "approval_handoff" || reply.SoftwareVersion != version {
 					t.Fatalf("helper reply: %+v %v", reply, err)
+				} else {
+					synctest.Wait()
+					select {
+					case reply := <-replies:
+						t.Fatalf("client replied before remote helper closed: %+v", reply)
+					default:
+					}
+					helper.Close()
 				}
 				if reply := <-replies; reply.Type != wantType || reply.Token != request.Token {
 					t.Fatalf("client reply: %+v", reply)
@@ -609,7 +617,7 @@ func TestApprovalAcknowledgesHelperBeforeClient(t *testing.T) {
 				if err := <-done; (err != nil) != helperDisconnects {
 					t.Fatalf("approval result: %v", err)
 				}
-				if len(p.approvals.waiting) != 0 {
+				if p.approvals.response != nil {
 					t.Fatal("approval slot leaked")
 				}
 			})
@@ -623,56 +631,19 @@ func TestApprovalSlotsRequireReadyControl(t *testing.T) {
 		t.Fatal("opened an approval before startup completed")
 	}
 	exchanges.enable()
-	for i := range 8 {
-		if _, err := exchanges.open(fmt.Sprint(i)); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := exchanges.open("first"); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := exchanges.open("overflow"); err == nil {
-		t.Fatal("opened a ninth approval")
+	if _, err := exchanges.open("concurrent"); err == nil {
+		t.Fatal("opened a second approval")
 	}
-	exchanges.remove("0")
+	exchanges.remove("first")
 	if _, err := exchanges.open("available"); err != nil {
 		t.Fatal(err)
 	}
 	exchanges.disable()
-	exchanges.remove("1")
+	exchanges.remove("available")
 	if _, err := exchanges.open("detaching"); err == nil {
 		t.Fatal("opened an approval during detach")
-	}
-}
-
-func TestClientDetachWaitsForMatchingQueuedAck(t *testing.T) {
-	client, peer := net.Pipe()
-	defer client.Close()
-	defer peer.Close()
-	approval := queuedApproval{request: requestRecord{ID: "local-request"}, token: "exchange"}
-	tryDetach := func() {
-		t.Helper()
-		if sent, err := approval.sendDetach(client); err != nil || sent {
-			t.Fatalf("premature detach: sent=%t err=%v", sent, err)
-		}
-	}
-	tryDetach()
-	if _, confirmed := approval.confirm("unrelated"); confirmed {
-		t.Fatal("unrelated acknowledgement confirmed the request")
-	}
-	tryDetach()
-	if request, confirmed := approval.confirm("exchange"); !confirmed || request.ID != "local-request" {
-		t.Fatalf("request not retained: %+v, confirmed=%t", request, confirmed)
-	}
-	done := make(chan error, 1)
-	go func() {
-		m, err := readMessage(peer)
-		if err == nil && m.Type != "detach" {
-			err = fmt.Errorf("expected detach, got %s", m.Type)
-		}
-		done <- err
-	}()
-	if sent, err := approval.sendDetach(client); err != nil || !sent {
-		t.Fatalf("confirmed detach: sent=%t err=%v", sent, err)
-	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
 	}
 }

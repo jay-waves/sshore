@@ -167,9 +167,9 @@ func runForwardForeground(f forwardConfig) (int, error) {
 
 func pendingPortDescription(op operation) string {
 	if op.Reverse {
-		return fmt.Sprintf("server %s -> local service (choose port in review)", loopback(op.ServerPort()))
+		return fmt.Sprintf("Remote listener %s -> local service", loopback(op.ServerPort()))
 	}
-	return fmt.Sprintf("local listener (choose port in review) -> server %s", loopback(op.ServerPort()))
+	return fmt.Sprintf("Local listener -> remote service %s", loopback(op.ServerPort()))
 }
 
 func resolveLocalPort(op *operation, port int) {

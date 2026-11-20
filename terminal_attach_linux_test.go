@@ -410,6 +410,123 @@ func TestClientLocalConsoleInventory(t *testing.T) {
 	}
 }
 
+func TestRootLocalSpawnDetachConfirmation(t *testing.T) {
+	t.Setenv("SSHORE_SOCKET", "")
+	e := newEnv(t)
+	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-spawn", "here:", "confirm-detach", "--no-profile"})
+	wait("Connected")
+	io.WriteString(terminal, "\x02d")
+	wait("Detaching may close this terminal window")
+	io.WriteString(terminal, "\r")
+	wait("\x1b[?1049l")
+	io.WriteString(terminal, "printf CONFIRM_ALIVE\n")
+	wait("CONFIRM_ALIVE")
+	io.WriteString(terminal, "\x02:detach\r")
+	wait("Detaching may close this terminal window")
+	io.WriteString(terminal, "detach\r")
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientDetachesBeforeLocalCopyApproval(t *testing.T) {
+	t.Setenv("SSHORE_SOCKET", "")
+	t.Setenv("NO_COLOR", "1")
+	for _, tc := range []struct {
+		name, answer string
+		spawn, stay  bool
+	}{
+		{name: "default declines", answer: "\r"},
+		{name: "interrupt cancels", answer: "\x03"},
+		{name: "explicit consent from spawn", answer: "Y\r", spawn: true},
+		{name: "stay locally", answer: "Y\r", stay: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			command := "fixture-launch"
+			if tc.spawn {
+				command = "fixture-spawn"
+			}
+			cmd, terminal, wait := startSessionClient(t, e, []string{command, "fixture", "keys", "--server", e.bin})
+			wait("Connected fixture:keys")
+			source := filepath.Join(e.dir, "approval-source")
+			suggested := filepath.Join(e.dir, "suggested")
+			selected := filepath.Join(e.dir, "selected file")
+			if err := os.WriteFile(source, []byte("approved contents"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			request := message{Type: "approval_request", SoftwareVersion: version, Operations: []operation{{
+				Kind: "download", Path: source, Name: filepath.Base(source), Size: int64(len("approved contents")), LocalHint: suggested,
+			}}}
+			helper, err := e.dial("keys")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer helper.Close()
+			_ = helper.SetDeadline(time.Now().Add(5 * time.Second))
+			sendTest(t, helper, request)
+			if m := recv(t, helper); m.Type != "approval_handoff" || m.SoftwareVersion != version {
+				t.Fatalf("approval handoff: %+v", m)
+			}
+			helper.Close()
+
+			wait("\x1b[?1049h")
+			wait("From fixture / keys")
+			wait("Download " + source)
+			wait("Approve this request? [y/N]")
+			status, err := e.dial("keys")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer status.Close()
+			sendTest(t, status, message{Type: "status", Action: "health"})
+			if m := recv(t, status); m.Type != "session" || m.Attached || m.PID <= 0 || m.Temporary != tc.spawn {
+				t.Fatalf("source shell was not detached and alive during approval: %+v", m)
+			}
+
+			write := func(s string) {
+				t.Helper()
+				if _, err := io.WriteString(terminal, s); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write(tc.answer)
+			if tc.answer != "Y\r" {
+				wait("approval cancelled")
+				if _, err := os.Stat(selected); !os.IsNotExist(err) {
+					t.Fatalf("cancelled destination: %v", err)
+				}
+			} else {
+				wait("Save as:")
+				wait(suggested)
+				write("\x15" + selected + "\r")
+				wait("Return to session after operation? [Y/n]")
+				if tc.stay {
+					write("n\r")
+				} else {
+					write("\r")
+				}
+				wait("Saved " + selected)
+				data, err := os.ReadFile(selected)
+				if err != nil || string(data) != "approved contents" {
+					t.Fatalf("selected destination: %q, %v", data, err)
+				}
+			}
+			if !tc.stay {
+				wait("Connected fixture:keys")
+				write("exit\n")
+			}
+			if err := cmd.Wait(); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := os.Stat(suggested); !os.IsNotExist(err) {
+				t.Fatalf("unused destination: %v", err)
+			}
+		})
+	}
+}
+
 func TestClientFailedSwitchRestoresOriginal(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)

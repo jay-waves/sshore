@@ -110,43 +110,6 @@ func TestShortTaskShellSelectors(t *testing.T) {
 	}
 }
 
-func TestShortTaskReviewLifecycle(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "no-ssh"))
-	startRequestDaemon(t)
-	queued, err := queueRequest(testRequestOptions(), []operation{{Kind: "upload", Path: "/tmp"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := queued.ID
-	key := resourceIdentity(resourceRecord{UID: id, Kind: "review", Token: id})
-	code := taskShortCode(key)
-	parsed, err := parseCLI([]string{code}, "review")
-	if err != nil {
-		t.Fatal(err)
-	}
-	target, ok, err := resolveShortTask("review", &parsed)
-	if err != nil || !ok || canonicalTaskUID(target.identity) != id {
-		t.Fatalf("%+v %v", target, err)
-	}
-	if _, err = run([]string{"attach", ":" + code}); err == nil {
-		t.Fatal("attached review")
-	}
-	if _, err = run([]string{"rename", ":" + code, "renamed"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = run([]string{"kill", ":" + code}); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err = findRequest(id); err == nil {
-		t.Fatal("request not consumed", err)
-	}
-	if _, err = run([]string{"kill", ":" + code}); err == nil {
-		t.Fatal("reused ended request")
-	}
-}
-
 func TestShortTaskResourceRenameAndReplacement(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	tasks := startRequestDaemon(t)
@@ -199,7 +162,7 @@ func TestShortTaskUnknownAndScopedNames(t *testing.T) {
 			t.Fatalf("%v: %d %v", args, code, err)
 		}
 	}
-	for _, args := range [][]string{{"here:abcdef"}, {"host:abcdef"}, {"review/abcdef"}} {
+	for _, args := range [][]string{{"here:abcdef"}, {"host:abcdef"}, {"mount/abcdef"}} {
 		parsed, err := parseCLI(args, "kill")
 		if err != nil {
 			t.Fatal(err)
@@ -207,15 +170,6 @@ func TestShortTaskUnknownAndScopedNames(t *testing.T) {
 		if _, selected, err := resolveShortTask("kill", &parsed); selected || err != nil {
 			t.Fatalf("hex name rejected: %v %v", args, err)
 		}
-	}
-	startRequestDaemon(t)
-	queued, err := queueRequest(testRequestOptions(), []operation{{Kind: "upload", Path: "/tmp"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := queued.ID
-	if _, err = run([]string{"rename", "review/" + id, "abcdef"}); err == nil {
-		t.Fatal("hex alias accepted")
 	}
 
 }
@@ -392,9 +346,9 @@ func TestKillAllScope(t *testing.T) {
 
 func TestListNumbersAreNotSelectors(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	code, err := run([]string{"review", "1"})
+	code, err := run([]string{"kill", "1"})
 	if code != 2 || err == nil || !strings.Contains(err.Error(), "display-only") {
-		t.Fatalf("review: %d %v", code, err)
+		t.Fatalf("kill: %d %v", code, err)
 	}
 	o, err := parseOptions([]string{"attach", "1"})
 	if err != nil || o.local || o.host != "1" {

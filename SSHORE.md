@@ -12,7 +12,7 @@ to the platform implementation and its tests.
 | --- | --- |
 | How is a command parsed and dispatched? | [Command definitions and help](cli_help.go), [parser](cli_schema.go), [dispatch](cli.go) |
 | How does a client connect and authenticate? | [Client connections](client_connection.go), [SSH transport and host verification](internal/ssh/) |
-| How are installation and approval enforced? | [Setup](setup.go), [approval handling](review.go), [approval storage](review_store.go) |
+| How are installation and approval enforced? | [Setup](setup.go), [approval handling](review.go), [request validation](review_store.go) |
 | How do copy, mount and forwarding reach their target? | [Resource commands](cli_resources.go), [shell routes](resource_route.go), [filesystem operations](internal/files/), [forwarding](forward.go) |
 | Where is behavior tested? | Module tests beside the implementation, [public CLI workflows](tests/) and [real-SSH scenarios](tests/integration/) |
 
@@ -69,7 +69,7 @@ before changing update, reset or approval behavior.
 Distinguish live observations, cached records and unknown state. Saved ownership
 and attachment records provide display context. Only the account daemon's
 registry establishes management authority. The live inventory takes one snapshot
-of registered shells, resources and pending requests. Resource status probes run
+of registered shells and resources. Resource status probes run
 after the snapshot within their own time budget. Clients add history and peer
 observations separately. Linux hosted-shell exit receipts use
 the private account-daemon directory. Older runtime-directory receipts remain

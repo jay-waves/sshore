@@ -115,7 +115,7 @@ func TestHelpAndExamplesBeforeExecution(t *testing.T) {
 		{[]string{"detach", "--tldr"}, false},
 		{[]string{"shell", "--help"}, false},
 	}
-	for _, command := range []string{"launch", "spawn", "attach", "detach", "exec", "list", "cp", "mount", "forward", "review", "kill", "rename"} {
+	for _, command := range []string{"launch", "spawn", "attach", "detach", "exec", "list", "cp", "mount", "forward", "kill", "rename"} {
 		cases = append(cases, helpCase{[]string{command, "--help"}, true})
 	}
 	for _, command := range []string{"launch", "spawn", "cp", "mnt", "fwd"} {

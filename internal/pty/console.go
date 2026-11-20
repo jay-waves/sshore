@@ -42,7 +42,7 @@ func (s InputState) BeginConsole(out io.Writer) error {
 	if s.alternateScreen == 0 {
 		sequence = "\x1b[?1049h" + sequence
 	}
-	return writeFull(out, []byte(sequence))
+	return writeFull(out, []byte(sequence+"\x1b[2J\x1b[H"))
 }
 
 // EndConsole restores the application screen and input modes before buffered

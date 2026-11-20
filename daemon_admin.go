@@ -140,7 +140,6 @@ func (s *daemonTasks) beginShutdown(record localShellRecord, expected daemonSnap
 		return nil, changed
 	}
 	var stops []stoppableDaemonTask
-	var requests []string
 	previousID := ""
 	for _, entry := range expected.Tasks {
 		if entry.ID <= previousID {
@@ -154,8 +153,6 @@ func (s *daemonTasks) beginShutdown(record localShellRecord, expected daemonSnap
 		switch task := task.(type) {
 		case stoppableDaemonTask:
 			stops = append(stops, task)
-		case requestRecord:
-			requests = append(requests, entry.ID)
 		default:
 			return nil, fmt.Errorf("task %s does not support daemon shutdown", cleanText(entry.Name))
 		}
@@ -164,9 +161,6 @@ func (s *daemonTasks) beginShutdown(record localShellRecord, expected daemonSnap
 		return nil, fmt.Errorf("daemon is already shutting down")
 	}
 	s.draining = true
-	for _, id := range requests {
-		delete(s.records, id)
-	}
 	return stops, nil
 }
 

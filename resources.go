@@ -16,7 +16,6 @@ import (
 	"time"
 
 	transportio "github.com/jay-waves/sshore/internal/ssh"
-	"github.com/jay-waves/sshore/internal/termui"
 )
 
 func collectLocalResources(host string, withStatus bool) ([]resourceView, error) {
@@ -31,7 +30,7 @@ func resourceViews(records []resourceRecord, statuses map[string]resourceStatus,
 	views := make([]resourceView, 0, len(records))
 	for _, record := range records {
 		view := viewRecord(record)
-		if withStatus && record.Kind != "review" {
+		if withStatus {
 			switch status, ok := statuses[record.UID]; {
 			case !ok:
 				view.LastError = "local worker unavailable or status deadline exceeded"
@@ -48,8 +47,8 @@ func resourceViews(records []resourceRecord, statuses map[string]resourceStatus,
 }
 
 func runRenameResource(kind, old, name string, expected ...string) (int, error) {
-	if kind != "mount" && kind != "forward" && kind != "review" {
-		return 2, usage("rename expects mount/NAME, forward/NAME or review/NAME")
+	if kind != "mount" && kind != "forward" {
+		return 2, usage("rename expects mount/NAME or forward/NAME")
 	}
 	if err := validAlias(name); err != nil {
 		return 2, err
@@ -70,16 +69,10 @@ func runRenameResource(kind, old, name string, expected ...string) (int, error) 
 
 func runKillResource(kind, name string) (int, error) {
 	switch kind {
-	case "review":
-		if err := stopResource(kind, name); err != nil {
-			return 1, err
-		}
-		termui.Log(os.Stderr, termui.Success, "[sshore] Request discarded\n")
-		return 0, nil
 	case "mount", "forward":
 		return 0, stopResource(kind, name)
 	default:
-		return 2, usage("resource ID must be review/NAME, mount/NAME or forward/NAME")
+		return 2, usage("resource ID must be mount/NAME or forward/NAME")
 	}
 }
 
@@ -88,15 +81,9 @@ func stopResource(kind, name string, expected ...string) error {
 	if len(expected) > 0 {
 		change.Identity = expected[0]
 	}
-	reply, err := daemonResourceRequest(context.Background(), "/resources/kill", change)
+	_, err := daemonResourceRequest(context.Background(), "/resources/kill", change)
 	if err != nil {
 		return err
-	}
-	if kind == "review" {
-		if reply.Request == nil {
-			return fmt.Errorf("invalid request cancellation response")
-		}
-		removeRejectedPeerTask(*reply.Request)
 	}
 	printStoppedResource(kind, name)
 	return nil

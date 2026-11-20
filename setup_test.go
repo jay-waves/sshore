@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"github.com/jay-waves/sshore/internal/termui"
 	"io"
 	"strings"
 	"testing"
@@ -24,6 +25,10 @@ func (s *stubSetupInput) Read(string, bool) (string, error) {
 }
 
 func (s *stubSetupInput) Close() error { s.closed = true; return s.closeErr }
+
+func (s *stubSetupInput) ReadPath(prompt string, options termui.PathOptions) (string, error) {
+	return termui.ReadPath(s, prompt, options)
+}
 
 func (s *stubSetupInput) ReadPrefilled(prompt string, paths bool, initial string) (string, error) {
 	line, err := s.Read(prompt, paths)

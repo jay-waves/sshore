@@ -193,8 +193,7 @@ func (a *attachment) ReadInput(input interface {
 	}
 }
 
-// requestApproval waits for the control reader to route the client's reply.
-// The helper must receive queued before the client can keep its saved request.
+// The helper and attachment remain connected until the local client accepts the handoff.
 func (p *attachment) requestApproval(c net.Conn, m message) error {
 	token := rand.Text()
 	responses, err := p.approvals.open(token)
@@ -208,41 +207,61 @@ func (p *attachment) requestApproval(c net.Conn, m message) error {
 	if err := p.controlMessage(m); err != nil {
 		return err
 	}
+	helperDone := make(chan error, 1)
+	go func() {
+		var unexpected [1]byte
+		_, err := io.ReadFull(c, unexpected[:])
+		helperDone <- err
+	}()
+	cancel := func(err error) error {
+		_ = p.controlMessage(message{Type: "approval_cancelled", Token: token})
+		return err
+	}
 	var reply message
 	select {
 	case reply = <-responses:
 	case <-p.Done():
 		return io.ErrClosedPipe
+	case <-helperDone:
+		return cancel(io.ErrClosedPipe)
 	case <-timer.C:
-		return fmt.Errorf("approval request timed out")
+		return cancel(fmt.Errorf("approval request timed out"))
 	}
-	if reply.Type != "queued" {
+	if reply.Type != "approval_handoff" {
 		return fileResponseError(reply)
 	}
 	select {
 	case <-p.Done():
 		return io.ErrClosedPipe
+	case <-helperDone:
+		return cancel(io.ErrClosedPipe)
 	default:
 	}
-	// Acknowledge the helper before allowing the client to detach.
 	_ = c.SetWriteDeadline(time.Now().Add(requestTimeout))
-	if err := writeMessage(c, message{Type: "queued"}); err != nil {
-		_ = p.controlMessage(message{Type: "approval_failed", Token: token, Error: "could not confirm request to helper"})
-		return err
+	if err := writeMessage(c, message{Type: "approval_handoff", SoftwareVersion: version}); err != nil {
+		return cancel(err)
 	}
-	published := reply.PeerTask != nil && reply.PeerTask.State == "pending" && storeRemoteTask(*reply.PeerTask) == nil
-	err = p.controlMessage(message{Type: "queued_ack", Token: token})
-	if err != nil && published {
-		_ = removeRemoteTask(reply.PeerTask.Key)
+	// The remote invocation owns its connection. Wait until it has received
+	// the handoff and closed before the frontend detaches and switches screens.
+	select {
+	case err := <-helperDone:
+		if err != io.EOF {
+			return cancel(fmt.Errorf("approval helper did not close its request"))
+		}
+	case <-p.Done():
+		return io.ErrClosedPipe
+	case <-timer.C:
+		return cancel(fmt.Errorf("approval request timed out"))
 	}
-	return err
+	return p.controlMessage(message{Type: "approval_ack", Token: token})
 }
 
-// Hosted helpers use these slots to correlate replies read by the control loop.
+// Only one helper can hand a request to the attached client at a time.
 type approvalExchanges struct {
-	mu      sync.Mutex
-	waiting map[string]chan message
-	ready   bool
+	mu       sync.Mutex
+	token    string
+	response chan message
+	ready    bool
 }
 
 func (a *approvalExchanges) enable() {
@@ -263,26 +282,28 @@ func (a *approvalExchanges) open(token string) (<-chan message, error) {
 	if !a.ready {
 		return nil, fmt.Errorf("attached client unavailable for approval")
 	}
-	if len(a.waiting) >= 8 {
-		return nil, fmt.Errorf("too many pending requests")
+	if a.response != nil {
+		return nil, fmt.Errorf("another approval is in progress")
 	}
-	if a.waiting == nil {
-		a.waiting = make(map[string]chan message)
-	}
-	reply := make(chan message, 1)
-	a.waiting[token] = reply
-	return reply, nil
+	a.token = token
+	a.response = make(chan message, 1)
+	return a.response, nil
 }
 func (a *approvalExchanges) remove(token string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	delete(a.waiting, token)
+	if a.token == token {
+		a.token, a.response = "", nil
+	}
 }
 func (a *approvalExchanges) reply(m message) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.token != m.Token {
+		return
+	}
 	select {
-	case a.waiting[m.Token] <- m:
+	case a.response <- m:
 	default:
 	}
 }

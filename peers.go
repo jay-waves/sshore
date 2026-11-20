@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,8 +9,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 // Peer advertisements are advisory; only daemon socket leases establish activity.
@@ -56,10 +53,6 @@ func validateRemoteTask(t peerRecord) error {
 		if validSession(name) != nil || t.State != "active" {
 			return fmt.Errorf("invalid peer resource")
 		}
-	case "review":
-		if validSession(name) != nil || t.State != "pending" {
-			return fmt.Errorf("invalid pending task")
-		}
 	default:
 		return fmt.Errorf("unsupported peer resource")
 	}
@@ -80,19 +73,6 @@ func removeRemoteTask(key string) error {
 	_, err := activityRPC(activityRequest{Kind: "peer_remove", Key: key})
 	return err
 }
-func pendingRemoteTask(id, name string, ops []operation) peerRecord {
-	detail := fmt.Sprintf("%d requested operation(s)", len(ops))
-	if len(ops) == 1 {
-		op := ops[0]
-		if op.Kind == "forward" {
-			detail = strings.ReplaceAll(requestSummary([]operation{op}), "your computer", "manager")
-		} else {
-			detail = op.Kind + " " + op.Path
-		}
-	}
-	return peerRecord{Version: version, Key: id, ID: "review/" + name, Manager: taskManagerLabel(), State: "pending", Detail: cleanText(detail)}
-}
-
 func collectPeerViews() ([]peerView, error) {
 	reply, err := activityRPC(activityRequest{Kind: "list"})
 	if err != nil {
@@ -115,18 +95,6 @@ func collectPeerViews() ([]peerView, error) {
 
 func (t peerRecord) view() peerView {
 	return peerView{Direction: t.Direction, UID: t.UID, Identity: t.Key, ID: t.ID, Manager: t.Manager, State: t.State, Detail: t.Detail}
-}
-
-// Rejection has no live session transport. Remove only its advisory remote
-// record, best effort, with existing authentication and a short timeout. Never
-// prompt or change known_hosts; an unreachable mirror expires independently.
-func removeRejectedPeerTask(r requestRecord) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	command := remoteHelperCommand(r.Connection.Host, r.Connection.Server, remoteServiceRequest{Operation: "task-remove", Identity: r.ID})
-	args := []string{"-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=2", "-o", "ConnectionAttempts=1", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "-o", "ClearAllForwardings=yes", "-o", "ForkAfterAuthentication=no", "-o", "RemoteCommand=none", "-o", "SessionType=default"}
-	args = append(args, r.Connection.SSH...)
-	_ = sshio.Run(ctx, sshio.Options{Host: r.Connection.Host, Args: args, Command: command, Directory: r.Connection.Directory}, nil, io.Discard, io.Discard)
 }
 
 func beginIncomingTask(t peerRecord) func() {

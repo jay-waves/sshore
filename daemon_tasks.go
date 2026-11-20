@@ -29,9 +29,6 @@ type daemonTasks struct {
 	records  map[string]daemonTask
 }
 
-func (r requestRecord) taskName() string           { return r.Name }
-func (r requestRecord) expired(now time.Time) bool { return now.Sub(r.Created) > requestTTL }
-
 type nativeShellTask struct {
 	shell *localShell
 	serve func(net.Conn, message) error
@@ -50,17 +47,10 @@ func (s *daemonTasks) register(id string, task daemonTask) error {
 		return errDaemonDraining
 	}
 	now := time.Now()
-	_, isRequest := task.(requestRecord)
-	if isRequest && task.expired(now) {
-		return fmt.Errorf("request expired; request it again")
-	}
 	if s.lookupLocked(id, now) != nil {
-		if isRequest {
-			return fmt.Errorf("request already exists")
-		}
 		return fmt.Errorf("task already exists")
 	}
-	if err := s.checkAdmissionLocked("", task.taskName(), now, isRequest); err != nil {
+	if err := s.checkNameLocked("", task.taskName(), now); err != nil {
 		return err
 	}
 	if s.records == nil {
@@ -71,35 +61,10 @@ func (s *daemonTasks) register(id string, task daemonTask) error {
 }
 
 func (s *daemonTasks) checkNameLocked(except, name string, now time.Time) error {
-	return s.checkAdmissionLocked(except, name, now, false)
-}
-
-// A new review counts pending requests in the same pass and reports capacity
-// before a name conflict. Unnamed reviews do not reserve an alias.
-func (s *daemonTasks) checkAdmissionLocked(except, name string, now time.Time, addingReview bool) error {
-	pending := 0
-	conflict := false
 	for id, task := range s.liveLocked(now) {
-		if addingReview {
-			if _, ok := task.(requestRecord); ok {
-				pending++
-				if pending == maxPendingRequests {
-					return fmt.Errorf("too many pending requests; use sshore list and cancel")
-				}
-			}
-			if name == "" || conflict {
-				continue
-			}
-		}
 		if id != except && task.taskName() == name {
-			conflict = true
-			if !addingReview {
-				break
-			}
+			return fmt.Errorf("%s: %w", name, errObjectNameInUse)
 		}
-	}
-	if conflict {
-		return fmt.Errorf("%s: %w", name, errObjectNameInUse)
 	}
 	return nil
 }
@@ -308,8 +273,7 @@ func (change resourceMutation) confirmedUID() string {
 }
 
 type resourceReply struct {
-	Request   *requestRecord `json:",omitempty"`
-	Unchanged bool           `json:",omitempty"`
+	Unchanged bool `json:",omitempty"`
 	Status    resourceStatus
 	Records   []resourceRecord `json:",omitempty"`
 	Error     string           `json:",omitempty"`
@@ -517,14 +481,7 @@ func (s *daemonTasks) taskInventory(request taskInventoryRequest) (taskInventory
 			if request.Status {
 				workers = append(workers, t)
 			}
-		case requestRecord:
-			if !request.Resources || request.Host != "" && t.Connection.Host != request.Host {
-				continue
-			}
-			snapshot.Resources = append(snapshot.Resources, resourceRecord{
-				UID: t.ID, Kind: "review", Name: t.DisplayName(), Host: t.Connection.Host,
-				Detail: t.Connection.Session + ": " + requestSummary(t.Operations),
-			})
+
 		}
 	}
 	s.mu.Unlock()
@@ -568,21 +525,6 @@ func (s *daemonTasks) mutateResource(action string, change resourceMutation) (re
 	if err != nil {
 		return resourceReply{}, nil, err
 	}
-	if record, ok := target.(requestRecord); ok {
-		if action == "kill" {
-			delete(s.records, id)
-			return resourceReply{Request: &record}, nil, nil
-		}
-		if record.DisplayName() == change.NewName {
-			return resourceReply{Unchanged: true}, nil, nil
-		}
-		if err := s.checkNameLocked(id, change.NewName, now); err != nil {
-			return resourceReply{}, nil, err
-		}
-		record.Name = change.NewName
-		s.records[id] = record
-		return resourceReply{}, nil, nil
-	}
 
 	task := target.(*daemonResourceTask)
 	if action == "kill" {
@@ -602,7 +544,7 @@ func (s *daemonTasks) mutateResource(action string, change resourceMutation) (re
 
 func (s *daemonTasks) resolveResourceLocked(change resourceMutation, now time.Time) (string, daemonTask, error) {
 	switch change.Kind {
-	case "review", "mount", "forward":
+	case "mount", "forward":
 	default:
 		return "", nil, fmt.Errorf("invalid resource type")
 	}
@@ -613,14 +555,7 @@ func (s *daemonTasks) resolveResourceLocked(change resourceMutation, now time.Ti
 				return id, task, nil
 			}
 		}
-		if change.Kind == "review" {
-			return "", nil, fmt.Errorf("request changed; refresh with sshore list")
-		}
 		return "", nil, fmt.Errorf("task changed; refresh with sshore list")
-	}
-	if change.Kind == "review" {
-		record, err := s.findRequestLocked(change.Ref, now)
-		return record.ID, record, err
 	}
 	id, task := s.findResourceLocked(change, now)
 	if task == nil {
@@ -631,10 +566,6 @@ func (s *daemonTasks) resolveResourceLocked(change resourceMutation, now time.Ti
 
 func (s *daemonTasks) confirmedResourceLocked(change resourceMutation, id string, now time.Time) daemonTask {
 	switch task := s.lookupLocked(id, now).(type) {
-	case requestRecord:
-		if change.Kind == "review" && task.ID == id && (change.Ref == task.DisplayName() || change.Ref == id) {
-			return task
-		}
 	case *daemonResourceTask:
 		if (change.Kind == "mount" || change.Kind == "forward") && task.matches(change) {
 			return task
@@ -681,11 +612,6 @@ func (s *daemonTasks) confirmedResourceStops(changes []resourceMutation) ([]*dae
 			return nil, fmt.Errorf("invalid confirmed resource selection")
 		}
 		switch change.Kind {
-		case "review":
-			if _, ok := s.confirmedResourceLocked(change, id, now).(requestRecord); !ok {
-				return nil, fmt.Errorf("request changed; refresh with sshore list")
-			}
-			selected[id] = true
 		case "mount", "forward":
 			task, ok := s.confirmedResourceLocked(change, id, now).(*daemonResourceTask)
 			if !ok {
@@ -695,11 +621,6 @@ func (s *daemonTasks) confirmedResourceStops(changes []resourceMutation) ([]*dae
 			selected[id] = false
 		default:
 			return nil, fmt.Errorf("invalid confirmed resource type")
-		}
-	}
-	for id, remove := range selected {
-		if remove {
-			delete(s.records, id)
 		}
 	}
 	return stops, nil

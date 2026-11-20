@@ -176,3 +176,27 @@ func TestLogUnicodeAndColor(t *testing.T) {
 		t.Fatalf("colored log: %q", got)
 	}
 }
+
+type pathTestInput struct {
+	line  string
+	calls int
+}
+
+func (p *pathTestInput) ReadPrefilled(_ string, _ bool, _ string) (string, error) {
+	p.calls++
+	return p.line, nil
+}
+
+func TestReadPathPrefillAndControlCharacters(t *testing.T) {
+	input := &pathTestInput{line: "\"literal\""}
+	validate := func(path string) (string, error) { return path, nil }
+	got, err := ReadPath(input, "Path: ", PathOptions{Initial: input.line, Validate: validate})
+	if err != nil || got != input.line {
+		t.Fatalf("unchanged prefill = %q, %v", got, err)
+	}
+	input.calls = 0
+	_, err = ReadPath(input, "Path: ", PathOptions{Initial: "unsafe\x1b[2J", Validate: validate})
+	if err == nil || input.calls != 0 {
+		t.Fatalf("unsafe prefill: calls=%d, err=%v", input.calls, err)
+	}
+}

@@ -89,33 +89,6 @@ func TestIdentityResetAndRoutes(t *testing.T) {
 	}
 }
 
-func TestPendingRequestOwnsName(t *testing.T) {
-	activityFixture(t)
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	startRequestDaemon(t)
-	queued, err := queueRequest(testRequestOptions(), []operation{{Kind: "forward", TargetPort: 3000}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := queued.ID
-	name := reviewName(t, id)
-	for _, kind := range []string{"mount", "forward", "shell"} {
-		if _, err := chooseTaskIdentity(kind, name); err == nil {
-			t.Fatalf("%s stole pending request name", kind)
-		}
-	}
-	reservation, err := chooseTaskIdentityExcept("forward", name, id)
-	if err != nil || reservation.uid != id {
-		t.Fatal(reservation, err)
-	}
-	if err := consumeRequest(id); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := chooseTaskIdentity("mount", name); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestSessionNames(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))

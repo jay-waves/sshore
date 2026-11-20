@@ -8,7 +8,7 @@ CLI help owns command syntax; [SSHORE.md](SSHORE.md) owns implementation and
 
 | Term | Meaning |
 | --- | --- |
-| Task | A daemon-owned item: a terminal shell, mount, forward or pending request. One in-memory account table owns its identity and lifecycle; each kind retains its execution mechanism. Programs running inside a shell are its processes, not another sshore task type. |
+| Task | A daemon-owned item: a terminal shell, mount or forward. One in-memory account table owns its identity and lifecycle; each kind retains its execution mechanism. Programs running inside a shell are its processes, not another sshore task type. |
 | Shell / session | A daemon-owned shell process with one terminal. Local shells run on Linux or Windows; remote shells currently run on Linux. A session means a shell session, never a mount or forward. |
 | Spawn | A shell created by `spawn`. It ends with its original owner; a remote spawn also ends when its daemon-owned lifetime SSH connection is lost. A shell created by `launch` survives detach and connection loss. |
 | Mount | A remote directory exposed to local applications through SFTP and FUSE/WinFsp. |
@@ -39,8 +39,8 @@ credentials to the user's computer. See
 
 | Term | Meaning |
 | --- | --- |
-| Request | An immutable proposed copy, mount or forward held in daemon memory until local review or expiry. A pending approval is this request's state, not another object. Receiving or selecting a request grants no permission. |
-| Approval | The user's explicit acceptance of the local endpoints in `review`, after source validation. Consent means the same thing; SSH authentication alone is insufficient. Approval is single-use. |
+| Request | An immutable proposed copy, mount or forward presented to the local user. Receiving a request grants no permission. |
+| Approval | The user's explicit acceptance of a request and local endpoints, after source validation. Consent means the same thing; SSH authentication alone is insufficient. Approval is single-use. |
 | Legacy recovery | A temporary shell offered by older releases when setup could not complete. Current setup aborts instead; inherited disabled-mode restrictions remain until reconnecting. |
 
 An approved copy runs on a separate file stream without terminal attachment. An approved mount or forward becomes
@@ -49,7 +49,7 @@ Ending a source shell does not stop its independent resources.
 
 `here:` and `.:` identify the machine running the command. `origin:` and `::`
 identify the currently attached client. A remote request's path or port is an
-editable default in local review.
+editable default in local approval.
 
 ## Identity and state
 
@@ -61,8 +61,7 @@ editable default in local review.
 ### Task ID
 
 The UID identifies the instance; its prefix is the short form of that same ID.
-NAME is optional and does not change the ID or lifetime. Shells, mounts, forwards
-and pending requests share the managing computer's name namespace.
+NAME is optional and does not change the ID or lifetime. Shells, mounts and forwards share the managing computer's name namespace.
 Allocation and reference rules belong to `task_identity.go`.
 
 Lists, cached connections, peer records and exit history are observations, not

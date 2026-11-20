@@ -200,6 +200,15 @@ type pathCompletion struct {
 	notice     string
 }
 
+// cycle inserts the next candidate while retaining text after the cursor.
+func (c *pathCompletion) cycle() {
+	c.selected = (c.selected + 1) % len(c.candidates)
+	c.pending = append([]rune(nil), c.line[:c.pos]...)
+	c.pending = append(c.pending, c.candidates[c.selected]...)
+	c.pending = append(c.pending, c.line[c.pos:]...)
+	c.pendingPos = c.pos + len(c.candidates[c.selected])
+}
+
 func (p *Input) filterCompletionKey(key rune) (rune, bool) {
 	p.completionMu.Lock()
 	defer p.completionMu.Unlock()
@@ -230,12 +239,7 @@ func (p *Input) completionChanged(line []rune, pos int, key rune) ([]rune, int, 
 func (p *Input) completePath(line []rune, pos int) ([][]rune, int) {
 	c := &p.completion
 	if len(c.candidates) > 0 {
-		c.selected = (c.selected + 1) % len(c.candidates)
-		suffix := c.candidates[c.selected]
-		c.pending = append([]rune(nil), c.line[:c.pos]...)
-		c.pending = append(c.pending, suffix...)
-		c.pending = append(c.pending, c.line[c.pos:]...)
-		c.pendingPos = c.pos + len(suffix)
+		c.cycle()
 		return nil, 0
 	}
 	candidates, offset := CompleteLocalPath(line, pos)

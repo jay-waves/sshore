@@ -19,13 +19,13 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		return empty, false, nil
 	}
 	switch command {
-	case "attach", "kill", "rename", "review":
+	case "attach", "kill", "rename":
 	default:
 		return empty, false, nil
 	}
 	position := 0
 	compact := len(parsed.operands) == 1 || command == "rename" && len(parsed.operands) == 2
-	if !compact && !parsed.local && command != "review" {
+	if !compact && !parsed.local {
 		position = 1
 	}
 	ref := parsed.operands[position]
@@ -41,7 +41,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		prefix = strings.ToLower(code)
 	}
 	alias := ""
-	if compact && !typed && (prefix == "" || len(prefix) < 6 || command == "review") {
+	if compact && !typed && (prefix == "" || len(prefix) < 6) {
 		alias = ref
 	}
 	if prefix == "" && alias == "" {
@@ -145,7 +145,7 @@ func readTaskSelections(command, alias, prefix, host string, localShell bool) (t
 		if localShell && (task.kind != "shell" || task.host != "") {
 			return
 		}
-		if command == "attach" && task.kind != "shell" || command == "review" && task.kind != "review" {
+		if command == "attach" && task.kind != "shell" {
 			return
 		}
 		if selections.alias.kind != "" && selections.alias.identity != task.identity {
@@ -172,7 +172,7 @@ func readTaskSelections(command, alias, prefix, host string, localShell bool) (t
 		}
 	}
 
-	if byID || command != "review" {
+	{
 		rows, err := localShells(false)
 		if err != nil {
 			return taskSelections{}, err
@@ -238,7 +238,7 @@ func snapshotTaskSelection(record *shellSnapshot) selectedTask {
 
 func routeSelectedTask(command string, parsed *cliArguments, target selectedTask, position int) (selectedTask, bool, error) {
 	empty := selectedTask{}
-	if command == "attach" && target.kind != "shell" || command == "review" && target.kind != "review" {
+	if command == "attach" && target.kind != "shell" {
 		return empty, false, usage("%s does not accept %s tasks", command, target.kind)
 	}
 	if target.kind != "shell" {

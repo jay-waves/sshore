@@ -1,7 +1,7 @@
 package main
 
 // The frontend owns terminal interaction; daemon-owned tasks outlive its
-// connections. Remote operation requests are stored for separate local review.
+// connections. Remote operation requests are approved in the local terminal.
 
 import (
 	"context"
@@ -172,7 +172,9 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 			ended()
 			return
 		}
-		if _, switching := errors.AsType[*sessionSwitch](resultErr); attached && resultErr != nil && !switching {
+		_, switching := errors.AsType[*sessionSwitch](resultErr)
+		_, approving := errors.AsType[*localApproval](resultErr)
+		if attached && resultErr != nil && !switching && !approving {
 			sessionNotice(termui.Warning, "Disconnected from %s on %s (client code %d; %s). Shell state unconfirmed.", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host), resultCode, sessionDisconnectReason(resultErr))
 		}
 	}()
@@ -426,7 +428,8 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		_ = transport.Close()
 		<-inputDone
 	}()
-	if !o.local || o.hosted {
+	canApprove := (!o.local || o.hosted) && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("TERM") != "dumb"
+	if canApprove {
 		if err := streamMessage(control, message{Type: "approval_ready"}); err != nil {
 			return 255, err
 		}
@@ -501,11 +504,15 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 			return false
 		}
 	}
-	var approval queuedApproval
-	defer func() { resultErr = approval.cancel(resultErr) }()
+	type approvalHandoff struct {
+		request   requestRecord
+		token     string
+		confirmed bool
+	}
+	var approval *approvalHandoff
+	var approvalDeadline <-chan time.Time
 	sendDetach := func(inputUnconfirmed bool) error {
-		sent, err := approval.sendDetach(control)
-		if err != nil || !sent {
+		if err := streamMessage(control, message{Type: "detach"}); err != nil {
 			return err
 		}
 		if inputUnconfirmed {
@@ -527,6 +534,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	var pending transitionRequest
 	var consoleRequest uint64
 	var openingConsole bool
+	var openingConfirmation bool
 	var openingInput []byte
 	var handoffHint *handoffObservation
 	defer func() {
@@ -554,7 +562,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		return ""
 	}
 	queueSwitch := func(next *sessionSwitch) bool {
-		if approval.pending() || !queueDetach() {
+		if approval != nil || !queueDetach() {
 			return false
 		}
 		pending = transitionRequest{next: next}
@@ -655,7 +663,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		case <-keySequenceTimeout:
 			keySequenceTimeout = nil
 			batch := keys.FlushPending()
-			if len(batch) > 0 && !transitioning() && detachPhase == detachIdle {
+			if len(batch) > 0 && !transitioning() && approval == nil && detachPhase == detachIdle {
 				select {
 				case inputQueue <- batch:
 				default:
@@ -680,8 +688,9 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 				notice(termui.Warning, "\r\n[sshore] Session lookup timed out; staying here.\r\n")
 			}
 			clearTransition()
-		case <-approval.timeout:
-			return 1, approval.cancel(fmt.Errorf("request acknowledgement timed out"))
+		case <-approvalDeadline:
+			approvalDeadline = nil
+			approval = nil
 		case <-detachDeadline:
 			if detachPhase == awaitingDetach {
 				return 255, fmt.Errorf("detach response timed out; shell preservation is unconfirmed")
@@ -713,6 +722,21 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						return 255, err
 					}
 				case e.consoleLine != nil:
+					if console.confirm {
+						if strings.TrimSpace(*e.consoleLine) == "detach" {
+							if !queueDetach() {
+								console.showConfirmation("Terminal input queue is busy. Try again.\n\n" + detachConfirmation)
+								continue
+							}
+							clearTransition()
+							if err := closeConsole(); err != nil {
+								return 255, err
+							}
+						} else if err := leaveConsole(); err != nil {
+							return 255, err
+						}
+						continue
+					}
 					args := strings.Fields(*e.consoleLine)
 					if len(args) > 0 {
 						args[0] = canonicalCommand(args[0])
@@ -720,6 +744,11 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					switch {
 					case len(args) == 1 && args[0] == "detach":
 						if detachPhase != detachIdle {
+							break
+						}
+						if o.local && o.temporary && o.rootFrontend {
+							clearTransition()
+							console.showConfirmation(detachConfirmation)
 							break
 						}
 						if !queueDetach() {
@@ -773,7 +802,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					switch e.keyAction {
 					case pty.KeyNew, pty.KeyNext, pty.KeyPrevious, pty.KeyLast:
 						action := actionForKey(e.keyAction)
-						if detachPhase != detachIdle || approval.pending() || action != pending.action {
+						if detachPhase != detachIdle || approval != nil || action != pending.action {
 							break
 						}
 						if e.keyAction == pty.KeyNew {
@@ -783,7 +812,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						}
 					case pty.KeyConsole:
 						openingConsole = false
-						if detachPhase != detachIdle || approval.pending() || transitioning() {
+						if detachPhase != detachIdle || approval != nil || transitioning() {
 							openingInput = nil
 							break
 						}
@@ -791,14 +820,19 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 							break
 						}
 						console = &commandConsole{}
-						console.start(ctx, terminalOutput, emit, cols, color)
+						console.start(ctx, terminalOutput, emit, cols, color, openingConfirmation)
 						if len(openingInput) > 0 {
 							keyErr = sendConsoleInput(openingInput)
 						}
 						openingInput = nil
 						if keyErr == nil && console != nil {
-							keyErr = requestConsoleTargets()
+							if openingConfirmation {
+								console.showConfirmation(detachConfirmation)
+							} else {
+								keyErr = requestConsoleTargets()
+							}
 						}
+						openingConfirmation = false
 					case pty.KeyDetach:
 						keyErr = sendDetach(false)
 					case pty.KeyRedraw:
@@ -888,10 +922,19 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					}
 					continue
 				}
-				if detachPhase != detachIdle || approval.pending() {
+				if detachPhase != detachIdle || approval != nil {
 					continue
 				}
 				batch := keys.Feed(e.input)
+				if o.local && o.temporary && o.rootFrontend {
+					for i := range batch {
+						if batch[i].Action == pty.KeyDetach {
+							batch[i].Action = pty.KeyConsole
+							openingConfirmation = true
+							break
+						}
+					}
+				}
 				armKeyTimeout()
 				if len(batch) > 0 {
 					select {
@@ -1097,37 +1140,36 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						notice(termui.Warning, "\r\n[sshore] %s.\r\n", handoffErr)
 					}
 				case "approval_request":
-					if detachPhase != detachIdle || transitioning() || console != nil || approval.pending() || len(e.m.Token) != 26 {
+					if !canApprove || detachPhase != detachIdle || transitioning() || openingConsole || console != nil || approval != nil || len(e.m.Token) != 26 {
 						if err := streamMessage(control, message{Type: "approval_rejected", Token: e.m.Token, Error: "client unavailable for approval"}); err != nil {
 							return 255, err
 						}
 						continue
 					}
-					request, err := queueRequest(o, e.m.Operations)
-					if err != nil {
-						_ = streamMessage(control, message{Type: "approval_rejected", Token: e.m.Token, Error: err.Error()})
-						notice(termui.Error, "\r\n[sshore] Request rejected: %s\r\n", cleanText(err.Error()))
+					request, approvalErr := newApprovalRequest(o, e.m.Operations)
+					if approvalErr != nil {
+						if err := streamMessage(control, message{Type: "approval_rejected", Token: e.m.Token, Error: approvalErr.Error()}); err != nil {
+							return 255, err
+						}
 						continue
 					}
-					approval = queuedApproval{request: request, token: e.m.Token, timeout: time.After(requestTimeout)}
-					task := pendingRemoteTask(request.ID, request.DisplayName(), request.Operations)
-					if err := streamMessage(control, message{Type: "queued", Token: approval.token, PeerTask: &task}); err != nil {
-						return 1, err
+					approval = &approvalHandoff{request: request, token: e.m.Token}
+					approvalDeadline = time.After(requestTimeout)
+					if err := streamMessage(control, message{Type: "approval_handoff", Token: e.m.Token}); err != nil {
+						return 255, err
 					}
-				case "approval_failed":
-					if !approval.matches(e.m.Token) {
+				case "approval_cancelled":
+					if approval != nil && approval.token == e.m.Token && !approval.confirmed {
+						approval, approvalDeadline = nil, nil
+					}
+				case "approval_ack":
+					if approval == nil || approval.token != e.m.Token || approval.confirmed || detachPhase != detachIdle {
 						continue
 					}
-					return 1, approval.cancel(fileResponseError(e.m))
-				case "queued_ack":
-					request, confirmed := approval.confirm(e.m.Token)
-					if !confirmed {
-						continue
+					if !queueDetach() {
+						return 1, fmt.Errorf("terminal input queue is busy; request the operation again")
 					}
-					notice(termui.Info, "\r\n[sshore] Request saved: %s\r\n[sshore] Run sshore review from your LOCAL shell after this client exits.\r\n", request.ID)
-					if err := sendDetach(false); err != nil {
-						return 1, err
-					}
+					approval.confirmed, approvalDeadline = true, nil
 				case "detach_requested":
 					if err := closeConsole(); err != nil {
 						return 1, err
@@ -1140,6 +1182,9 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 				case "detached":
 					confirmDetach(e.m.Name)
 					_ = streamMessage(control, message{Type: "bye"})
+					if approval != nil && approval.confirmed {
+						return 0, &localApproval{request: approval.request, source: o}
+					}
 					if pending.action == "" && pending.next != nil {
 						pending.next.from = returnTarget{options: o, previous: previous}
 						if pending.next.returnToParent && handoffHint != nil {

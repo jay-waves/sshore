@@ -88,27 +88,6 @@ func TestDaemonTaskConnectionsDoNotOwnLifetime(t *testing.T) {
 	}
 }
 
-func TestDaemonTaskNamesSharedWithRequests(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	tasks := startRequestDaemon(t)
-	registerTestShell(t, tasks, "work", strings.Repeat("c", 32))
-	r := pendingRequestFixture(t)
-	r.Name = "work"
-	if err := tasks.Save(r); err == nil {
-		t.Fatal("request reused a live shell name")
-	}
-	r.Name = "request"
-	if err := tasks.Save(r); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := tasks.mutateResource("rename", resourceMutation{Kind: "review", Ref: r.ID, NewName: "work"}); err == nil {
-		t.Fatal("request renamed over a shell")
-	}
-	if err := tasks.Consume(strings.Repeat("c", 32)); err == nil {
-		t.Fatal("request consumption removed a shell")
-	}
-}
-
 func registerTestResource(t *testing.T, tasks *daemonTasks, kind, name, id string) (*daemonResourceTask, chan struct{}) {
 	t.Helper()
 	done := make(chan struct{})

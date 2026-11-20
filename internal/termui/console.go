@@ -222,11 +222,7 @@ func (c *consoleCompletion) Do(line []rune, pos int) ([][]rune, int) {
 		state.line, state.pos = slices.Clone(line), pos
 		state.candidates, state.selected = candidates, -1
 	}
-	state.selected = (state.selected + 1) % len(state.candidates)
-	suffix := state.candidates[state.selected]
-	state.pending = append(slices.Clone(state.line[:state.pos]), suffix...)
-	state.pending = append(state.pending, state.line[state.pos:]...)
-	state.pendingPos = state.pos + len(suffix)
+	state.cycle()
 	return nil, 0
 }
 
@@ -251,3 +247,16 @@ func (c *Console) TryInput(data []byte) bool {
 }
 
 func (c *Console) Close() { c.cancel() }
+
+// Choices completes a fixed set of whole-line choices.
+type Choices []string
+
+func (choices Choices) Do(line []rune, pos int) ([][]rune, int) {
+	var matches [][]rune
+	for _, choice := range choices {
+		if suffix, ok := strings.CutPrefix(choice, string(line[:pos])); ok {
+			matches = append(matches, []rune(suffix))
+		}
+	}
+	return matches, pos
+}

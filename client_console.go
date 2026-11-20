@@ -15,6 +15,7 @@ import (
 type commandConsole struct {
 	output  []byte
 	editor  *termui.Console
+	confirm bool
 	attach  string
 	targets []sessionTarget
 }
@@ -29,9 +30,13 @@ launch (mux)      Open an independent shell on this host
 detach (d)        Detach from the current shell
 exit              Return to the current shell`
 
-func (c *commandConsole) start(ctx context.Context, out io.Writer, send func(clientEvent), width int, color bool) {
-	fmt.Fprintf(out, "\x1b[2J\x1b[H%s\r\n\r\n", termui.Format(color, termui.Info, "%s", consoleTitle))
-	termui.WriteConsoleBody(out, "Loading sessions…")
+func (c *commandConsole) start(ctx context.Context, out io.Writer, send func(clientEvent), width int, color bool, confirmation bool) {
+	title, body := consoleTitle, "Loading sessions…"
+	if confirmation {
+		title, body = "Confirm detach  (Tab: choose, Esc: return)", ""
+	}
+	fmt.Fprintf(out, "%s\r\n\r\n", termui.Format(color, termui.Info, "%s", title))
+	termui.WriteConsoleBody(out, body)
 	prompt := termui.Format(color, termui.Info, "sshore> ")
 	c.editor = termui.StartConsole(ctx, prompt, width, func(e termui.ConsoleEvent) {
 		send(clientEvent{consoleSource: c, consoleOutput: e.Output, consoleLine: e.Line, consoleClosed: e.Closed})
@@ -70,6 +75,14 @@ func (targets consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
 func (c *commandConsole) show(body string) {
 	targets := c.targets
 	c.editor.Show(body, consoleCompleter(func() []sessionTarget { return targets }))
+}
+
+const detachConfirmation = "Detaching may close this terminal window.\nA spawn depends on its original parent and may end.\n\nType detach to continue, or press Enter or Esc to return."
+
+// showConfirmation presents a temporary choice through the console editor.
+func (c *commandConsole) showConfirmation(body string) {
+	c.confirm = true
+	c.editor.Show(body, termui.Choices{"detach", "cancel"})
 }
 
 func consoleTargetSummary(targets []sessionTarget, rows int) string {

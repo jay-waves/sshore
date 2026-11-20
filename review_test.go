@@ -2,130 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
-	"time"
 )
 
 func testRequestOptions() options {
 	return options{host: "work", session: "source", server: "sshore", instance: strings.Repeat("a", 32), shellPID: 123}
-}
-
-func reviewName(t *testing.T, id string) string {
-	t.Helper()
-	r, err := findRequest(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return r.DisplayName()
-}
-
-func TestRequestSingleConsumption(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	startRequestDaemon(t)
-	queued, err := queueRequest(testRequestOptions(), []operation{{Kind: "upload", Path: "/tmp"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := queued.ID
-	r, err := findRequest(id)
-	if err != nil || r.ID != id {
-		t.Fatal(r, err)
-	}
-	r.Operations[0].Path = "/changed"
-	original, err := findRequest(id)
-	if err != nil || original.Operations[0].Path != "/tmp" {
-		t.Fatal("selection changed pending intent", err)
-	}
-	var count atomic.Int32
-	var workers sync.WaitGroup
-	for range 8 {
-		workers.Go(func() {
-			if consumeRequest(id) == nil {
-				count.Add(1)
-			}
-		})
-	}
-	workers.Wait()
-	if count.Load() != 1 {
-		t.Fatalf("consumed %d times", count.Load())
-	}
-	if _, err := findRequest(id); err == nil {
-		t.Fatal("consumed request remained")
-	}
-	root, _ := statePath("")
-	if _, err := os.Stat(filepath.Join(root, "approvals")); !os.IsNotExist(err) {
-		t.Fatal("request state persisted", err)
-	}
-}
-
-func TestRequestSeparatesLocalDefaultsFromConnectionDirectory(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	startRequestDaemon(t)
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	o := testRequestOptions()
-	o.sshDirectory = t.TempDir()
-	o.ssh = []string{"-F", "ssh.conf"}
-	queued, err := queueRequest(o, []operation{{Kind: "upload", Path: "/tmp"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := queued.ID
-	r, err := findRequest(id)
-	if err != nil || r.Directory != cwd || r.Connection.Directory != o.sshDirectory {
-		t.Fatal(r, err)
-	}
-}
-
-func TestRequestPreservesHostedConnection(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	startRequestDaemon(t)
-	o := testRequestOptions()
-	o.local = true
-	o.hosted = true
-	o.host = "local"
-	queued, err := queueRequest(o, []operation{{Kind: "forward", Port: 1234, TargetPort: 2345}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := queued.ID
-	r, err := findRequest(id)
-	if err != nil || !r.Connection.Hosted || r.Connection.Instance != o.instance {
-		t.Fatal(r, err)
-	}
-	r.Connection.Host = "remote"
-	if r.validate(time.Now()) == nil {
-		t.Fatal("hosted request accepted an SSH target")
-	}
-}
-
-func TestReviewCLI(t *testing.T) {
-	parse := func(args []string) error {
-		parsed, err := parseCLI(args, "review")
-		if err != nil {
-			return err
-		}
-		_, err = reviewArguments(parsed)
-		return err
-	}
-	id := strings.Repeat("a", 32)
-	for _, args := range [][]string{nil, {id}} {
-		if err := parse(args); err != nil {
-			t.Fatal(args, err)
-		}
-	}
-	for _, args := range [][]string{{"--stay"}, {"--stay", "--stay"}, {"--attach"}, {"--list"}, {"--reject"}, {"../bad"}, {id, id}} {
-		if err := parse(args); err == nil {
-			t.Fatal("accepted", args)
-		}
-	}
 }
 
 func TestApprovalValidation(t *testing.T) {
@@ -157,5 +39,27 @@ func TestApprovalValidation(t *testing.T) {
 	data, err := json.Marshal(op)
 	if err != nil || string(data) != `{"kind":"upload","path":"/tmp"}` {
 		t.Fatalf("unexpected approval payload %s: %v", data, err)
+	}
+}
+
+type approvalReturnInput struct{ lines []string }
+
+func (i *approvalReturnInput) ReadPrefilled(_ string, _ bool, _ string) (string, error) {
+	line := i.lines[0]
+	i.lines = i.lines[1:]
+	return line, nil
+}
+
+func TestApprovalReturnChoice(t *testing.T) {
+	for _, tc := range []struct {
+		lines []string
+		want  bool
+	}{
+		{[]string{""}, true}, {[]string{"Y"}, true}, {[]string{"n"}, false}, {[]string{"invalid", "N"}, false},
+	} {
+		got, err := chooseApprovalReturn(&approvalReturnInput{lines: tc.lines})
+		if err != nil || got != tc.want {
+			t.Fatalf("%q: got %v, %v", tc.lines, got, err)
+		}
 	}
 }

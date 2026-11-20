@@ -96,11 +96,6 @@ func emptyInventory() inventory {
 }
 func viewRecord(r resourceRecord) resourceView {
 	v := resourceView{local: true, Identity: resourceIdentity(r), ID: r.Kind + "/" + r.Name, Host: r.Host, Kind: r.Kind, Direction: r.Direction, Worker: "unavailable", Detail: r.Detail, resourceStatus: resourceStatus{Version: r.Version, Transport: "unknown", Target: "unchecked"}}
-	if r.Kind == "review" {
-		v.Worker = "pending"
-		v.Transport = "not-started"
-		return v
-	}
 	if log, err := statePath(filepath.Join(r.Kind+"s", r.storageName()+".log")); err == nil {
 		v.Log = log
 	}

@@ -122,7 +122,7 @@ func (s *remoteShell) serveControl(c net.Conn) error {
 			})
 		case "approval_ready":
 			p.approvals.enable()
-		case "queued", "approval_rejected":
+		case "approval_handoff", "approval_rejected":
 			p.approvals.reply(m)
 		case "session_targets":
 			if err := p.controlMessage(s.sessionTargets(m)); err != nil {
@@ -180,7 +180,7 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 		_ = writeMessage(c, reply)
 	case "approval_request":
 		if err := s.requestApproval(c, first); err != nil {
-			_ = writeMessage(c, message{Type: "error", Error: err.Error()})
+			_ = writeMessage(c, message{Type: "error", SoftwareVersion: version, Error: err.Error()})
 		}
 	default:
 		_ = writeMessage(c, message{Type: "fatal", Error: "unsupported connection; update sshore on both computers"})

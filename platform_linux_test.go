@@ -89,22 +89,3 @@ func TestForwardRequiresMatchingRelease(t *testing.T) {
 		}
 	}
 }
-
-func TestRejectedTaskCleanupUsesSavedDirectory(t *testing.T) {
-	directory := t.TempDir()
-	marker := filepath.Join(t.TempDir(), "cleaned")
-	config := filepath.Join(directory, "ssh.conf")
-	if err := os.WriteFile(config, []byte("fixture"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	ssh := filepath.Join(t.TempDir(), "ssh")
-	script := "#!/bin/sh\n[ -f ssh.conf ] || exit 1\nprintf done > " + shellQuote(marker) + "\n"
-	if err := os.WriteFile(ssh, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("SSHORE_SSH", ssh)
-	removeRejectedPeerTask(requestRecord{Directory: t.TempDir(), Connection: recentConnection{Host: "work", Server: "sshore", Directory: directory, SSH: []string{"-F", "ssh.conf"}}, ID: strings.Repeat("a", 32)})
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("cleanup did not use saved SSH working directory: %v", err)
-	}
-}

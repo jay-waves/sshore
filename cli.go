@@ -100,7 +100,7 @@ func run(args []string) (code int, resultErr error) {
 			return 2, usage("usage: sshore daemon [mount]")
 		}
 		return runMountDaemon()
-	case "launch", "spawn", "attach", "rename", "kill", "list", "review":
+	case "launch", "spawn", "attach", "rename", "kill", "list":
 		return runTargetCommand(args)
 	case "mount":
 		return runMount(args[1:])
@@ -139,25 +139,9 @@ func killAllOptions(parsed cliArguments) (options, error) {
 	return o, err
 }
 
-type reviewOptions struct {
-	id string
-}
-
-func reviewArguments(parsed cliArguments) (reviewOptions, error) {
-	var o reviewOptions
-	if len(parsed.operands) == 1 {
-		a := strings.TrimPrefix(parsed.operands[0], "review/")
-		if !validRequestID(a) && validSession(a) != nil {
-			return o, usage("invalid review name")
-		}
-		o.id = a
-	}
-	return o, nil
-}
-
 func parseKillTarget(args []string) (kind, name string, typed bool, err error) {
 	if len(args) == 0 {
-		return "", "", false, usage("use sshore kill review/NAME, mount/NAME, forward/NAME, or HOST:ID")
+		return "", "", false, usage("use sshore kill mount/NAME, forward/NAME, or HOST:ID")
 	}
 	kind, name, typed = strings.Cut(args[0], "/")
 	if !typed {
@@ -170,13 +154,9 @@ func parseKillTarget(args []string) (kind, name string, typed bool, err error) {
 	switch kind {
 	case "peer":
 		err = usage("peer tasks are read-only here; kill the resource on its managing computer")
-	case "review":
-		if !validRequestID(name) && validSession(name) != nil {
-			err = usage("invalid approval ID")
-		}
 	case "mount", "forward":
 	default:
-		err = usage("resource ID must be review/NAME, mount/NAME or forward/NAME")
+		err = usage("resource ID must be mount/NAME or forward/NAME")
 	}
 	return
 }
@@ -189,7 +169,7 @@ func runTargetCommand(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	if (command == "attach" || command == "kill" || command == "review") && len(parsed.operands) == 1 && !parsed.local && !parsed.has("--all") && !parsed.explicitHost {
+	if (command == "attach" || command == "kill") && len(parsed.operands) == 1 && !parsed.local && !parsed.has("--all") && !parsed.explicitHost {
 		ref := parsed.operands[0]
 		if ref != "" && !isTaskIDPrefix(ref) && strings.Trim(ref, "0123456789") == "" {
 			return 2, usage("list sequence numbers are display-only; select the task by name or short ID")
@@ -212,16 +192,8 @@ func runTargetCommand(args []string) (int, error) {
 			return withDaemonActivity(func() (int, error) {
 				return runRenameResource(target.kind, target.name, parsed.operands[1], target.identity)
 			})
-		case "review":
-			parsed.operands = []string{canonicalTaskUID(target.identity)}
+
 		}
-	}
-	if command == "review" {
-		a, err := reviewArguments(parsed)
-		if err != nil {
-			return 2, err
-		}
-		return withDaemonActivity(func() (int, error) { return executeReview(a) })
 	}
 	if command == "kill" {
 		if parsed.has("--all") {

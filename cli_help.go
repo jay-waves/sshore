@@ -23,7 +23,6 @@ Files and ports
   cp          Copy files over SSH
   mount       Mount a remote directory
   forward     Forward a TCP port
-  review      Approve remote shell requests
 
 Tasks and installation
   copy-id     Install an SSH public key on a host
@@ -196,12 +195,11 @@ Use attach to reconnect. Ctrl+B d also detaches.
 		ssh: true, min: 2, max: 2, flags: []string{"--server"},
 		help: `Usage: sshore rename HOST:ID NEW [--server PATH] [-- SSH_OPTIONS]
        sshore rename here:ID NEW
-       sshore rename {mount|forward|review}/OLD NEW
+       sshore rename {mount|forward}/OLD NEW
 
-Set or replace a shell, resource or pending review alias without restarting it.
+Set or replace a shell or resource alias without restarting it.
 NEW must be unused and cannot be 6–32 hexadecimal characters.
 A short ID from list may replace OLD; the task ID stays unchanged.
-After renaming a shell, request its pending approvals again.
 Remote rename requires matching releases and never installs software.
 ` + sshOptions,
 	},
@@ -218,8 +216,8 @@ DETAIL summarizes directories, mappings or errors; terminal output is shortened
 to fit the available width. Redirected output preserves full details.
 ID shows the first six UID characters followed by an optional (alias).
 Use a longer prefix or full UID when a reference is ambiguous.
-TYPE uses launch, spawn, mount, forward or review. Peer entries are read-only.
-Use aliases or short IDs for attach, rename, kill and review.
+TYPE uses launch, spawn, mount or forward. Peer entries are read-only.
+Use aliases or short IDs for attach, rename and kill.
 A matching short ID takes precedence over a name.
 
 Options:
@@ -248,7 +246,7 @@ No SSH is started by this command.
 	"kill": {
 		ssh: true, max: 1, flags: []string{"--server", "--all"},
 		help: `Usage: sshore kill :ID
-       sshore kill {review|mount|forward}/NAME
+       sshore kill {mount|forward}/NAME
        sshore kill HOST:ID [--server PATH] [-- SSH_OPTIONS]
        sshore kill [HOST:] --all [--server PATH] [-- SSH_OPTIONS]
 
@@ -259,7 +257,6 @@ instance across renames; an unavailable instance cannot select its replacement.
 Effects:
   Shell     Kills the shell and its identified processes without confirmation.
             Unsaved work may be lost. Confirmed ended history is only cleared.
-  Review    Discards the pending request without executing it.
   Mount     Unmounts first; a busy mount stays active for retry.
   Forward   Closes the forward and its active connections.
 
@@ -271,32 +268,13 @@ prompts [Y/n]. Enter confirms and n cancels. Peer records are read-only.
 control requires matching releases. Neither form installs software.
 ` + sshOptions,
 	},
-	"review": {
-		max: 1,
-		help: `Usage: sshore review [NAME|ID]
-
-Run locally. Mount review shows its access mode
-and mountpoint; copy review shows file direction and paths; forward review shows
-the listener and target ports. Omit NAME to select a request,
-or use a name or short ID from list. Selecting it opens review only.
-
-Submitting all valid paths or the port starts the operation without another
-confirmation. Tab completes local paths; Ctrl-C cancels before submission.
-A request is single-use,
-even if execution fails, and expires after 10 minutes.
-
-Execution returns locally; use attach separately to enter a shell.
-Mounts and forwards run independently and leave the source detached.
-To discard a request: sshore kill review/NAME.
-`,
-	},
 	"cp": {
 		ssh: true, min: 2, max: -1,
 		help: `Usage: sshore cp SOURCE... TARGET [-- SSH_OPTIONS]
 
 A bare path belongs to the machine running this command. Use HOST:PATH
 for an SSH host. Use here: or .: for an explicit local endpoint.
-In an attached remote shell, origin: or :: selects the client for review.
+In an attached remote shell, origin: or :: requests local approval.
 Leave a local path empty to choose it. Use - for standard input or output.
 Copy supports up to 16 regular files. Batches with an explicit target require a directory.
 
@@ -339,7 +317,7 @@ Options:
   --direct-io                  Disable kernel read caching (Linux)
 
 From a remote shell, origin: and :: select the attached client.
-The request detaches you. Run review locally to choose a mountpoint.
+Approve the request locally and choose a mountpoint.
 Busy mounts stay active. A second Ctrl-C during unmount forces disconnect
 and can interrupt writes. Request timeouts close the whole mount connection;
 affected writes are not retried.
@@ -362,7 +340,7 @@ Requires FUSE on Linux or WinFsp on Windows.
 
 The listener comes first. Use a bare port for the current machine and
 HOST:PORT for an SSH host. Leave the client-side port empty to choose it.
-From a remote shell, use origin: or :: for the attached client and review locally.
+From a remote shell, use origin: or :: for the attached client and request local approval.
 
   sshore forward 8080 work:3000
   sshore forward work:3000 8080

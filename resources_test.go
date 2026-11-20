@@ -50,40 +50,6 @@ func TestResourceIdentityAndLifetime(t *testing.T) {
 	}
 }
 
-func TestKillPendingRequest(t *testing.T) {
-	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "nonexistent-ssh"))
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	startRequestDaemon(t)
-	queued, err := queueRequest(testRequestOptions(), []operation{{Kind: "upload", Path: "/tmp"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := queued.ID
-	for _, args := range [][]string{{"kill", "review/" + id, "extra"}, {"review", id, "--reject"}} {
-		if _, err := run(args); err == nil {
-			t.Fatal("accepted", args)
-		}
-	}
-
-	if _, err := findRequest(id); err != nil {
-		t.Fatal("invalid invocation consumed request", err)
-	}
-	if code, err := run([]string{"kill", "review/" + id}); code != 0 || err != nil {
-		t.Fatal(code, err)
-	}
-	if _, err := findRequest(id); err == nil {
-		t.Fatal(err)
-	}
-	if _, err := run([]string{"kill", "review/" + id}); err == nil {
-		t.Fatal("cancelled twice")
-	}
-	for _, args := range [][]string{{"ftp", "host"}, {"approve"}, {"stop", "forward/x"}, {"cancel", "host", "work"}, {"kill"}, {"kill", "host"}, {"kill", "peer/forward/x"}, {"review", "--list"}, {"mount", "--list"}, {"forward", "--list"}} {
-		if _, err := run(args); err == nil {
-			t.Fatal("accepted", args)
-		}
-	}
-}
-
 func TestInventoryDoesNotExposeCapabilities(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	tasks := startRequestDaemon(t)

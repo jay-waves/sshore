@@ -1,27 +1,21 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
-	"golang.org/x/term"
-
-	"github.com/jay-waves/sshore/internal/pty"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
 func newLocalInput() (*termui.Input, error) {
-	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
-		return nil, usage("local selection requires an interactive terminal; specify the local endpoint")
+	input, err := termui.NewLocalInput()
+	if errors.Is(err, termui.ErrTerminalRequired) {
+		return nil, usage("%s", err)
 	}
-	pty.ResetInputModes()
-	if err := pty.FlushInput(); err != nil {
-		return nil, err
-	}
-	return termui.NewInput()
+	return input, err
 }
 
 func cleanText(s string) string { return termui.CleanText(s) }
@@ -64,75 +58,39 @@ func chooseSetupSession(input setupInput, names []string) (string, error) {
 
 // Return the original row so callers can use the identity attached to it.
 func chooseLocalItem(input setupInput, names, labels []string, prompt, kind string) (int, error) {
-	visible := make([]bool, len(names))
-	show := func(filter string) {
-		filter = strings.ToLower(filter)
-		matches := 0
-		for i := range names {
-			visible[i] = strings.Contains(strings.ToLower(labels[i]), filter)
-			if visible[i] {
-				termui.Log(os.Stderr, termui.Info, "  #%d  %s\n", i+1, cleanText(labels[i]))
-				matches++
-			}
-		}
-		if matches == 0 {
-			termui.Log(os.Stderr, termui.Warning, "No matches. / clears the filter.\n")
-		}
-	}
-	show("")
-	for {
-		answer, err := input.Read(prompt, false)
-		if err != nil {
-			return -1, fmt.Errorf("%s selection cancelled: %w", kind, err)
-		}
-		answer = strings.TrimSpace(answer)
-		if answer == "" {
-			return -1, fmt.Errorf("%s selection cancelled", kind)
-		}
-		if strings.HasPrefix(answer, "/") {
-			show(strings.TrimSpace(answer[1:]))
-			continue
-		}
-		for i, name := range names {
-			if visible[i] && answer == name {
-				return i, nil
-			}
-		}
-		n, err := strconv.Atoi(strings.TrimPrefix(answer, "#"))
-		if strings.HasPrefix(answer, "#") && err == nil && n >= 1 && n <= len(names) && visible[n-1] {
-			return n - 1, nil
-		}
-		termui.Log(os.Stderr, termui.Warning, "Choose a listed #number or exact identity; /text filters.\n")
-	}
+	return termui.ChooseItem(input, names, labels, prompt, kind)
 }
 
 // Path fields reuse readline editing/completion and retry only local validation.
-// No files are created, requests consumed or connections opened here. Review
-// fields start with an editable suggestion and still require local submission.
-// Control-C/EOF return to the caller with the approval still pending. Transfer
-// code independently rechecks paths at execution time (this is only UI feedback).
+// Fields start with an editable suggestion and require local submission.
+// Transfer code independently checks paths at execution time.
 
 type promptReader interface {
 	Read(string, bool) (string, error)
 }
 
-type reviewPromptReader interface {
+type prefilledPromptReader interface {
 	ReadPrefilled(string, bool, string) (string, error)
 }
 
-func readReviewField(input reviewPromptReader, label string, paths bool, initial string) (string, error) {
+type reviewPromptReader interface {
+	prefilledPromptReader
+	ReadPath(string, termui.PathOptions) (string, error)
+}
+
+func readReviewField(input prefilledPromptReader, label string, paths bool, initial string) (string, error) {
 	// Terminal control bytes must never enter the readline buffer.
 	if cleanText(initial) != initial {
-		return "", fmt.Errorf("invalid suggested value; request remains pending")
+		return "", fmt.Errorf("invalid suggested value")
 	}
 	line, err := input.ReadPrefilled(label, paths, initial)
 	if err != nil {
-		return "", fmt.Errorf("approval cancelled; request remains pending: %w", err)
+		return "", fmt.Errorf("approval cancelled: %w", err)
 	}
 	return line, nil
 }
 
-func readApprovalPort(input reviewPromptReader, label, initial string) (int, error) {
+func readApprovalPort(input prefilledPromptReader, label, initial string) (int, error) {
 	for {
 		line, err := readReviewField(input, label+": ", false, initial)
 		if err != nil {
@@ -142,7 +100,7 @@ func readApprovalPort(input reviewPromptReader, label, initial string) (int, err
 		if err == nil {
 			return port, nil
 		}
-		termui.Log(os.Stdout, termui.Warning, "%s\n", err)
+		termui.Log(os.Stdout, termui.Warning, "%s\n", cleanText(err.Error()))
 	}
 }
 
@@ -157,46 +115,25 @@ func readApprovalPath(input reviewPromptReader, prompt, defaultPath string, vali
 }
 
 func readReviewPath(input reviewPromptReader, prompt, initial string, allowEmpty bool, validate func(string) (string, error)) (string, error) {
-	for {
-		line, err := readReviewField(input, prompt, true, initial)
+	path, err := input.ReadPath(prompt, termui.PathOptions{Initial: initial, AllowEmpty: allowEmpty, Validate: validate})
+	if err != nil {
+		return "", fmt.Errorf("approval cancelled: %w", err)
+	}
+	return path, nil
+}
+
+func readCopyPath(input reviewPromptReader, prompt string, validate func(string) (string, error)) (string, error) {
+	path, err := input.ReadPath(prompt, termui.PathOptions{Validate: func(path string) (string, error) {
+		path, err := filepath.Abs(path)
 		if err != nil {
 			return "", err
 		}
-		if line == "" && allowEmpty {
-			return "", nil
-		}
-		path := line
-		if line == "" || line != initial {
-			path, err = termui.ParsePath([]byte(line))
-		}
-		if err == nil {
-			path, err = validate(path)
-		}
-		if err == nil {
-			return path, nil
-		}
-		termui.Log(os.Stdout, termui.Warning, "%s\n", cleanText(err.Error()))
+		return validate(path)
+	}})
+	if err != nil {
+		return "", fmt.Errorf("copy cancelled: %w", err)
 	}
-}
-
-func readCopyPath(input promptReader, prompt string, validate func(string) (string, error)) (string, error) {
-	for {
-		line, err := input.Read(prompt, true)
-		if err != nil {
-			return "", fmt.Errorf("copy cancelled: %w", err)
-		}
-		path, err := termui.ParsePath([]byte(line))
-		if err == nil {
-			path, err = filepath.Abs(path)
-		}
-		if err == nil {
-			path, err = validate(path)
-		}
-		if err == nil {
-			return path, nil
-		}
-		termui.Log(os.Stdout, termui.Warning, "%s\n", cleanText(err.Error()))
-	}
+	return path, nil
 }
 
 func displayBytes(size int64) string {

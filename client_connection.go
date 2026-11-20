@@ -201,6 +201,7 @@ func runClient(o options) (int, error) {
 	}
 	for {
 		prune(&o)
+		o.rootFrontend = len(parents) == 0
 		code, err := runClientOnce(o, previous, transports, func(current options) {
 			o.handoffDone = nil
 			returning = false
@@ -236,6 +237,20 @@ func runClient(o options) (int, error) {
 				previous = source.instance
 			}
 			o = next.to
+			continue
+		}
+		if approval, ok := errors.AsType[*localApproval](err); ok {
+			var resume bool
+			code, resume, err = executeLocalApproval(approval.request, approval.source)
+			if !resume {
+				return code, err
+			}
+			if err != nil {
+				termui.Log(os.Stderr, termui.Warning, "[sshore] %s\n", cleanText(err.Error()))
+			}
+			returning, returnCode = true, code
+			o = approval.source
+			o.command, o.recovering = "attach", true
 			continue
 		}
 		var target returnTarget
