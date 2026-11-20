@@ -25,6 +25,7 @@ Files and ports
   review      Approve remote shell requests
 
 Tasks and installation
+  copy-id     Install an SSH public key on a host
   list        Show tasks and when they were last checked
   pstree      Show shell ownership and attachments
   kill        Kill shells or stop other tasks
@@ -43,9 +44,9 @@ const sshOptions = `
 for example: --port 2222 -- -J jump. The legacy -- -p PORT form is supported.
 Do not combine --port with SSH -p or -o Port.
 Configuration options: -p -i -J -F -l -o -E -v/-vv/-vvv -4 -6.
-Keys must be loaded into the system agent with ssh-add. IdentityFile/-i selects
-agent identities via public keys or .pub sidecars. Password and keyboard-interactive
-login require an interactive terminal. SSH config forwarding is disabled; use forward. Compression, agent/X11
+IdentityFile/-i selects private key files. An interactive
+terminal is required for passphrases, passwords and keyboard-interactive login.
+SSH config forwarding is disabled; use forward. Compression, agent/X11
 forwarding and ProxyCommand are unsupported; unsupported requests fail.
 `
 
@@ -81,6 +82,16 @@ More examples: sshore launch|spawn|cp|mount|forward --tldr
 `,
 	},
 	"help": {max: 1},
+	"copy-id": {
+		ssh: true, min: 1, max: 1,
+		help: `Usage: sshore copy-id HOST: [-- SSH_OPTIONS]
+
+Install a public key from the host's effective IdentityFile settings into
+the remote account's ~/.ssh/authorized_keys. If several keys are available,
+choose one in the terminal with Tab completion.
+` + sshOptions,
+		examples: "Install the configured public key\n  sshore copy-id work:\n",
+	},
 	"install": {
 		ssh: true, max: 1, flags: []string{"--apply"},
 		help: `Usage: sshore install [HOST:[PATH]] [-- SSH_OPTIONS]
@@ -98,7 +109,7 @@ default path, or append an absolute path to either endpoint.
 		help: `Usage: sshore exec HOST: 'COMMAND'
 
 Execute COMMAND once over SSH without a remote PTY. Uses system ssh -G
-configuration and agent keys; password login requires an interactive terminal.
+configuration and private key files. Interactive login requires a terminal.
 Standard streams and the SSH exit status pass through.
 No persistent sshore shell is created and no remote installation is required.
 Use an SSH config host alias for connection options. Plain SSH hosts still work.

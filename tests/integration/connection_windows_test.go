@@ -66,7 +66,7 @@ func testWindowsHandoffPassword(t *testing.T, phase string) {
 	if phase == "cancel-prompt" {
 		prompts = 3
 	}
-	os.WriteFile(cfg, []byte(fmt.Sprintf("Host fixture\n HostName 127.0.0.1\n Port %d\n User fixture\n IdentityAgent none\n UserKnownHostsFile %s\n StrictHostKeyChecking yes\n NumberOfPasswordPrompts %d\n", port, filepath.ToSlash(known), prompts)), 0600)
+	os.WriteFile(cfg, []byte(fmt.Sprintf("Host fixture\n HostName 127.0.0.1\n Port %d\n User fixture\n UserKnownHostsFile %s\n StrictHostKeyChecking yes\n NumberOfPasswordPrompts %d\n", port, filepath.ToSlash(known), prompts)), 0600)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(dir, "state"))
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")

@@ -131,8 +131,15 @@ computer.
 
 ## Connect over SSH
 
-Use hosts and aliases from your SSH config. For public-key login, load the key
-with `ssh-add`. Password and keyboard-interactive login require a terminal.
+Use hosts and aliases from your SSH config. Public-key login reads private keys
+from the effective `IdentityFile` settings. Encrypted
+private keys, password and keyboard-interactive login require a terminal.
+Run `sshore copy-id work:` to add one of the host's configured public keys to
+the remote account's `~/.ssh/authorized_keys`. When several keys are available,
+choose one by number or complete its path with Tab.
+The remote Linux host needs `flock`, `ssh-keygen`, `awk` and `tail`. On hosts
+with SELinux enabled, SSH access also depends on the policy and labels for the
+account's SSH directory.
 Managed remote shells require the SSH server to allow TCP forwarding to
 loopback. Put SSH options after `--`, for example:
 

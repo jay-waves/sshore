@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	cryptossh "golang.org/x/crypto/ssh"
 )
 
 // Options describes one owned SSH connection. Executable is used only for ssh -G.
@@ -34,6 +36,9 @@ type connectionConfig struct {
 	values                    map[string][]string
 	host, user, port, network string
 	timeout                   time.Duration
+	passphrase                func(string) ([]byte, error)
+	passphraseAttempts        int
+	retainIdentity            func(cryptossh.Signer)
 }
 
 func environment(env []string, key string) string {

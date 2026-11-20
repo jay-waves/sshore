@@ -86,8 +86,9 @@ Reattachment and review preserve that route. An expired route or changed parent
 blocks the request and prohibits falling back to a direct connection using a remote-supplied host alias. Route messages
 and returned terminal content remain untrusted. They grant no file, mount or
 forward approval. Host-key confirmation uses an authenticated broker on the
-initiating host. Private keys remain with its system agent; interactive answers
-use the private authenticated broker and are never included in route records.
+initiating host. Private keys are used by the initiating host's SSH connection.
+Interactive answers use the private authenticated broker and are never included
+in route records.
 
 Managed shell channels reach the account daemon's loopback TCP endpoint through
 SSH TCP forwarding. Every channel authenticates with the account capability before
@@ -151,12 +152,12 @@ Host-key verification reads the current configured user and system known_hosts
 files, including Windows OpenSSH lists with multiple drive-qualified paths.
 After interactive confirmation, the client reloads those files before
 saving the key, including files created during confirmation.
-Private-key loading and unlocking belong to the system agent. Passwords and
-keyboard-interactive answers are requested through the initiating frontend and
-are not cached or persisted. Ctrl+C at an authentication prompt aborts the
-connection attempt and releases terminal input. Agent authentication is not
-operation approval; removing a key affects future authentication, not existing
-connections.
+The SSH client can load configured private keys and holds their decrypted signers
+for the lifetime of the connection. The initiating frontend requests passphrases,
+passwords and keyboard-interactive answers as needed and does not cache or persist
+them. Ctrl+C at an authentication prompt aborts the
+connection attempt and releases terminal input. Removing a key affects future
+authentication.
 The local prompt broker serializes terminal access and bounds request and
 response sizes for host confirmation and authentication prompts.
 

@@ -1,67 +1,135 @@
 package ssh
 
 import (
-	"context"
+	"bytes"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"strings"
-	"sync"
 
 	cryptossh "golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
 )
 
-func (c *connectionConfig) agentSigners(ctx context.Context) ([]cryptossh.Signer, io.Closer, error) {
-	address := c.get("identityagent")
-	if address == "none" {
-		return nil, nil, nil
-	}
-	if strings.HasPrefix(address, "$") && !strings.HasPrefix(address, "${") {
-		name := strings.TrimPrefix(address, "$")
-		address = environment(c.options.Environment, name)
-		if address == "" {
-			return nil, nil, fmt.Errorf("IdentityAgent environment variable %s is unset or empty", name)
-		}
-	}
-	if address == "" || address == "SSH_AUTH_SOCK" {
-		address = environment(c.options.Environment, "SSH_AUTH_SOCK")
-	}
-	if address == "" {
-		address = defaultAgent()
-	}
-	if address == "" {
-		return nil, nil, nil
-	}
-	address, err := c.expand(address)
-	if err != nil {
-		return nil, nil, err
-	}
-	conn, err := connectAgent(ctx, address)
-	if err != nil {
-		return nil, nil, fmt.Errorf("SSH agent unavailable: %w", err)
-	}
-	closeConn := sync.OnceValue(conn.Close)
-	stop := context.AfterFunc(ctx, func() { _ = closeConn() })
-	lease := agentLease(func() error { stop(); return closeConn() })
-	signers, err := agent.NewClient(conn).Signers()
-	if err != nil {
-		lease.Close()
-		return nil, nil, err
-	}
-	return signers, lease, nil
+// privateFileSigner defers unlocking until the server accepts the public key.
+type privateFileSigner struct {
+	key  cryptossh.PublicKey
+	load func() (cryptossh.Signer, error)
 }
 
-type agentLease func() error
+func (s privateFileSigner) PublicKey() cryptossh.PublicKey { return s.key }
 
-func (c agentLease) Close() error { return c() }
+func (s privateFileSigner) Sign(random io.Reader, data []byte) (*cryptossh.Signature, error) {
+	return s.SignWithAlgorithm(random, data, "")
+}
+
+func (s privateFileSigner) SignWithAlgorithm(random io.Reader, data []byte, algorithm string) (*cryptossh.Signature, error) {
+	signer, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	if algorithm == "" || algorithm == signer.PublicKey().Type() {
+		return signer.Sign(random, data)
+	}
+	if algorithmSigner, ok := signer.(cryptossh.AlgorithmSigner); ok {
+		return algorithmSigner.SignWithAlgorithm(random, data, algorithm)
+	}
+	return nil, fmt.Errorf("IdentityFile key does not support %s", algorithm)
+}
+
+func privateIdentity(path string) (cryptossh.Signer, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(data)
+	return cryptossh.ParsePrivateKey(data)
+}
+
+func (c *connectionConfig) unlockIdentity(path string) (cryptossh.Signer, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(data)
+	for i := 0; i < c.passphraseAttempts; i++ {
+		secret, err := c.passphrase("Passphrase for " + path)
+		if err == nil {
+			var signer cryptossh.Signer
+			signer, err = cryptossh.ParsePrivateKeyWithPassphrase(data, secret)
+			clear(secret)
+			if !errors.Is(err, x509.IncorrectPasswordError) {
+				return signer, err
+			}
+		} else {
+			clear(secret)
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("incorrect passphrase for IdentityFile %q", path)
+}
+
+func (c *connectionConfig) privateIdentities(paths []string) ([]cryptossh.Signer, error) {
+	seen := make(map[string]bool)
+	var signers []cryptossh.Signer
+	var failures []error
+	for _, path := range paths {
+		public := publicIdentity(path + ".pub")
+		signer, err := privateIdentity(path)
+		switch {
+		case err == nil:
+			public = signer.PublicKey()
+		default:
+			var encrypted *cryptossh.PassphraseMissingError
+			if !errors.As(err, &encrypted) || c.passphrase == nil || c.passphraseAttempts <= 0 {
+				failures = append(failures, fmt.Errorf("IdentityFile %q: %w", path, err))
+				continue
+			}
+			if encrypted.PublicKey != nil {
+				public = encrypted.PublicKey
+			}
+			if public == nil {
+				signer, err = c.unlockIdentity(path)
+				if err != nil {
+					failures = append(failures, err)
+					continue
+				}
+				public = signer.PublicKey()
+			}
+		}
+		id := string(public.Marshal())
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		retained := false
+		signers = append(signers, privateFileSigner{key: public, load: func() (cryptossh.Signer, error) {
+			if signer == nil {
+				loaded, err := c.unlockIdentity(path)
+				if err != nil {
+					return nil, err
+				}
+				if !bytes.Equal(public.Marshal(), loaded.PublicKey().Marshal()) {
+					return nil, fmt.Errorf("IdentityFile %q does not match its public key", path)
+				}
+				signer = loaded
+			}
+			if !retained && c.retainIdentity != nil {
+				c.retainIdentity(signer)
+				retained = true
+			}
+			return signer, nil
+		}})
+	}
+	return signers, errors.Join(failures...)
+}
 
 func publicIdentity(path string) cryptossh.PublicKey {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
+	defer clear(data)
 	key, _, _, _, err := cryptossh.ParseAuthorizedKey(data)
 	if err != nil {
 		return nil
@@ -69,25 +137,9 @@ func publicIdentity(path string) cryptossh.PublicKey {
 	return key
 }
 
-func (c *connectionConfig) publicIdentities() (map[string]bool, []*cryptossh.Certificate, error) {
-	var certificates []*cryptossh.Certificate
-	allowed := map[string]bool{}
+func (c *connectionConfig) identityPaths() ([]string, error) {
+	var paths []string
 	var failures []error
-	var missing []string
-	remember := func(key cryptossh.PublicKey) {
-		if key == nil {
-			return
-		}
-		id := string(key.Marshal())
-		if allowed[id] {
-			return
-		}
-		allowed[id] = true
-		if cert, ok := key.(*cryptossh.Certificate); ok {
-			certificates = append(certificates, cert)
-			allowed[string(cert.Key.Marshal())] = true
-		}
-	}
 	for _, name := range c.values["identityfile"] {
 		if name == "none" {
 			continue
@@ -97,32 +149,26 @@ func (c *connectionConfig) publicIdentities() (map[string]bool, []*cryptossh.Cer
 			failures = append(failures, err)
 			continue
 		}
-		public := publicIdentity(path + ".pub")
-		remember(public)
-		remember(publicIdentity(path + "-cert.pub"))
-		key := publicIdentity(path)
-		remember(key)
-		if key == nil && public == nil {
-			missing = append(missing, path+".pub (load the private key with ssh-add)")
+		paths = append(paths, path)
+	}
+	return paths, errors.Join(failures...)
+}
+
+func (c *connectionConfig) identityCertificates(paths []string) []*cryptossh.Certificate {
+	var certificates []*cryptossh.Certificate
+	for _, path := range paths {
+		if cert, ok := publicIdentity(path + "-cert.pub").(*cryptossh.Certificate); ok {
+			certificates = append(certificates, cert)
 		}
 	}
 	for _, name := range c.values["certificatefile"] {
-		if name == "none" {
-			continue
-		}
-		path, err := c.expand(name)
-		if err != nil {
-			failures = append(failures, err)
-			continue
-		}
-		remember(publicIdentity(path))
-	}
-	if len(allowed) == 0 && len(failures) == 0 {
-		if len(missing) > 0 {
-			failures = append(failures, fmt.Errorf("IdentityFile not found: %s", strings.Join(missing, ", ")))
-		} else {
-			failures = append(failures, fmt.Errorf("no IdentityFile configured"))
+		if name != "none" {
+			if path, err := c.expand(name); err == nil {
+				if cert, ok := publicIdentity(path).(*cryptossh.Certificate); ok {
+					certificates = append(certificates, cert)
+				}
+			}
 		}
 	}
-	return allowed, certificates, errors.Join(failures...)
+	return certificates
 }

@@ -23,7 +23,6 @@ require (
 )
 
 require (
-	github.com/Microsoft/go-winio v0.6.4
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/skeema/knownhosts v1.3.3

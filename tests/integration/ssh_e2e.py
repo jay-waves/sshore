@@ -119,7 +119,7 @@ def handoff_smoke(binary, host, options, root):
         terminal.close()
 
 
-def nested_smoke(binary, host, options, root, agent_socket):
+def nested_smoke(binary, host, options, root, remote_options):
     terminal = Terminal([binary, "launch", host + ":", *options], wait_ready=False)
     refs = {"nested-root": terminal.expect(r"Connected (\S+) \(launch\)").group(1).decode()}
     def processes():
@@ -137,9 +137,8 @@ def nested_smoke(binary, host, options, root, agent_socket):
         baseline = processes()
         for name in ("nested-child", "nested-grandchild", "nested-local"):
             marker = root / "remote-files" / (name + "-returned")
-            command = "export SSH_AUTH_SOCK=" + shlex.quote(str(agent_socket)) + "; "
-            args = [binary, "spawn", ".:"] if name == "nested-local" else [binary, "spawn", host + ":", *options]
-            command += shlex.join(args)
+            args = [binary, "spawn", ".:"] if name == "nested-local" else [binary, "spawn", host + ":", *remote_options]
+            command = shlex.join(args)
             terminal.send(command + "; printf '%s' \"$?\" > " + shlex.quote(str(marker)) + "\n")
             refs[name] = terminal.expect(r"Connected (\S+) \(spawn\)").group(1).decode()
             deadline = time.monotonic() + 5
@@ -403,14 +402,6 @@ def main():
         hostkey = root / "hostkey"
         for path in (key, hostkey):
             subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(path)], check=True)
-        agent_socket = root / 'agent.sock'
-        agent_process = subprocess.Popen(['ssh-agent', '-D', '-a', str(agent_socket)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        os.environ['SSH_AUTH_SOCK'] = str(agent_socket)
-        for _ in range(100):
-            if agent_socket.exists():
-                break
-            time.sleep(0.01)
-        subprocess.run(['ssh-add', str(key)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
@@ -419,7 +410,7 @@ def main():
 Port {port}
 HostKey {hostkey}
 PidFile {root / 'sshd.pid'}
-AuthorizedKeysFile {key}.pub
+AuthorizedKeysFile {key}.pub {root / 'remote-home' / '.ssh' / 'authorized_keys'}
 StrictModes no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
@@ -474,24 +465,43 @@ LogLevel ERROR
                        "-i", str(key), "-F", "/dev/null", "-o", "IdentitiesOnly=yes",
                        "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={known}"]
             if args.identity_only:
-                # IdentityFile selects an agent identity; private keys must never
-                # be loaded by sshore, including when the agent is disabled.
-                rejected = Terminal([*command[:2], command[2] + ":", *command[3:], "-o", "IdentityAgent=none"], wait_ready=False)
-                terms.append(rejected)
-                rejected.expect("no usable SSH public-key identity")
-                rejected.wait(expected=1)
+                direct_options = command[5:]
+                authorized = home / ".ssh" / "authorized_keys"
+                install = [binary, "copy-id", command[2] + ":", *direct_options]
+                subprocess.run(install, check=True, timeout=10)
+                installed = authorized.read_text()
+                assert installed.split() == key.with_suffix(".pub").read_text().split()[:2], installed
+                assert authorized.stat().st_mode & 0o777 == 0o600
+                assert authorized.parent.stat().st_mode & 0o777 == 0o700
+                authorized.write_text('from="127.0.0.1" ' + installed.rstrip("\n"))
+                authorized.parent.chmod(0o777)
+                subprocess.run(install, check=True, timeout=10)
+                assert authorized.read_text() == 'from="127.0.0.1" ' + installed.rstrip("\n")
+                assert authorized.parent.stat().st_mode & 0o777 == 0o700
+
+                second = root / "second key"
+                subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(second)], check=True)
+                select_key = Terminal([*install, "-i", str(second)], wait_ready=False)
+                terms.append(select_key)
+                select_key.expect(re.escape(str(second.with_suffix(".pub"))))
+                select_key.expect("Public key: ")
+                select_key.send(str(second) + "\t\n")
+                select_key.expect("Public key installed")
+                select_key.wait()
+                lines = authorized.read_text().splitlines()
+                assert len(lines) == 2, lines
+                assert lines[1].split() == second.with_suffix(".pub").read_text().split()[:2], lines
+
                 secret = "sshore-file-key-secret"
                 subprocess.run(["ssh-keygen", "-q", "-p", "-P", "", "-N", secret, "-f", str(key)], check=True, stdout=subprocess.DEVNULL)
-                for action in ("launch", "spawn"):
-                    agent_command = command[:]
-                    agent_command[1] = action
-                    terminal = Terminal([*agent_command[:2], agent_command[2] + ":", *agent_command[3:]])
-                    terms.append(terminal)
-                    terminal.send("printf 'AGENT-%s\\n' ready\n")
-                    terminal.expect("AGENT-ready")
-                    terminal.send("exit\n")
-                    terminal.wait()
-                print("identity: agent selection with encrypted private key and rejection without agent OK")
+                direct = Terminal([*command[:2], command[2] + ":", *command[3:]], wait_ready=False)
+                terms.append(direct)
+                direct.expect("Passphrase for " + re.escape(str(key)) + ": ")
+                direct.send(secret + "\n")
+                direct.expect(r"\[sshore\] Connected")
+                direct.send("exit\n")
+                direct.wait()
+                print("identity: copy-id selection and idempotence, and encrypted private keys OK")
                 return
             if args.handoff_only:
                 handoff_smoke(binary, command[2], command[3:], root)
@@ -500,20 +510,8 @@ LogLevel ERROR
                 remote_key = home / "key"
                 shutil.copy2(key, remote_key)
                 os.chown(remote_key, remote_account.pw_uid, remote_account.pw_gid)
-                remote_socket = home / "agent.sock"
-                run_as_remote = ["runuser", "-u", username, "--"]
-                remote_agent = subprocess.Popen(run_as_remote + ["ssh-agent", "-D", "-a", str(remote_socket)],
-                                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                try:
-                    for _ in range(100):
-                        if remote_socket.exists():
-                            break
-                        time.sleep(0.01)
-                    subprocess.run(run_as_remote + ["env", f"SSH_AUTH_SOCK={remote_socket}", "ssh-add", str(remote_key)], check=True)
-                    nested_smoke(binary, command[2], command[3:], root, remote_socket)
-                finally:
-                    remote_agent.terminate()
-                    remote_agent.wait(timeout=5)
+                remote_options = [str(remote_key) if option == str(key) else option for option in command[3:]]
+                nested_smoke(binary, command[2], command[3:], root, remote_options)
                 return
             if args.spawn_only:
                 spawn_smoke(binary, command[2], command[3:])
@@ -771,8 +769,6 @@ LogLevel ERROR
             finally:
                 daemon.terminate()
                 daemon.wait(timeout=5)
-                agent_process.terminate()
-                agent_process.wait(timeout=5)
                 log.close()
 
 

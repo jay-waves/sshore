@@ -34,7 +34,6 @@ func Start(t testing.TB, options Options) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agentPath := startAgent(t, dir, private)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -134,5 +133,5 @@ func Start(t testing.TB, options Options) string {
 		mu.Unlock()
 		workers.Wait()
 	})
-	return writeConfig(t, dir, listener.Addr().String(), agentPath, signer.PublicKey(), options.ConfigPrelude)
+	return writeConfig(t, dir, listener.Addr().String(), private, signer.PublicKey(), options.ConfigPrelude)
 }

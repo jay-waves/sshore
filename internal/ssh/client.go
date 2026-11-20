@@ -22,6 +22,7 @@ type Client struct {
 	jump *Client
 	once sync.Once
 	done chan struct{}
+	keys []cryptossh.Signer
 }
 
 func (c *Client) Close() error {
@@ -33,6 +34,8 @@ func (c *Client) Close() error {
 			c.jump.Close()
 		}
 		c.Client.Close()
+		clear(c.keys)
+		c.keys = nil
 	})
 	return nil
 }
@@ -45,17 +48,26 @@ func dial(ctx context.Context, o Options, depth int, budgets *authenticationBudg
 	if depth > 8 {
 		return nil, fmt.Errorf("SSH ProxyJump chain exceeds eight hops")
 	}
-	configContext, stopConfig := context.WithTimeout(ctx, 15*time.Second)
-	cfg, err := resolveConfig(configContext, o)
-	stopConfig()
+	cfg, err := resolveDialConfig(ctx, o)
 	if err != nil {
 		return nil, err
 	}
+	return cfg.dial(ctx, depth, budgets)
+}
+
+func resolveDialConfig(ctx context.Context, o Options) (*connectionConfig, error) {
+	configContext, stopConfig := context.WithTimeout(ctx, 15*time.Second)
+	defer stopConfig()
+	return resolveConfig(configContext, o)
+}
+
+func (cfg *connectionConfig) dial(ctx context.Context, depth int, budgets *authenticationBudgets) (*Client, error) {
 	client, err := cfg.handshake(ctx, depth, budgets)
 	if err != nil {
 		return nil, err
 	}
 	if strings.HasPrefix(strings.ToUpper(cfg.get("loglevel")), "DEBUG") {
+		o := cfg.options
 		if metadata, ok := client.Conn.(cryptossh.AlgorithmsConnMetadata); ok {
 			out := o.Diagnostic
 			if out == nil {
@@ -80,8 +92,8 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 	defer cancel()
 	releaseBudget := budgets.add(cfg.timeout, cancel)
 	cc := &cryptossh.ClientConfig{User: cfg.user}
-	closeAuth, err := cfg.configureAuthentication(connecting, cc, budgets)
-	if err != nil {
+	var keys []cryptossh.Signer
+	if err := cfg.configureAuthentication(connecting, cc, budgets, &keys); err != nil {
 		releaseBudget()
 		return nil, err
 	}
@@ -92,7 +104,6 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 		if stopTransport != nil {
 			stopTransport()
 		}
-		closeAuth()
 		// Disarm cancellation before checking whether the client can be
 		// handed off. A cancellation that already fired still wins.
 		if client != nil {
@@ -105,6 +116,7 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 		}
 	}()
 	modern := cryptossh.SupportedAlgorithms()
+	var err error
 	choose := func(key string, allowed []string) ([]string, error) {
 		value := cfg.get(key)
 		if value == "" {
@@ -163,7 +175,7 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 	if err != nil {
 		return nil, fmt.Errorf("SSH %s: %w", cfg.options.Host, err)
 	}
-	return &Client{Client: cryptossh.NewClient(conn, ch, req), jump: parent, done: make(chan struct{})}, nil
+	return &Client{Client: cryptossh.NewClient(conn, ch, req), jump: parent, done: make(chan struct{}), keys: keys}, nil
 }
 func (cfg *connectionConfig) proxyJumpOptions(jump string) Options {
 	last := strings.LastIndexByte(jump, ',')

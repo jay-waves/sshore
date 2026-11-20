@@ -13,10 +13,9 @@ cat packages/*.sha256 > packages/SHA256SUMS
 cat > release-notes.md <<NOTES
 sshore $version
 
-- Share the shell lifecycle across local and hosted tasks and serve live inventory from a single daemon snapshot.
-- Store Linux hosted-shell exit records in the private account daemon directory. Older records remain readable until they expire.
-- Keep command panel results on screen and add color to the title and prompt.
-- Add an experimental macOS arm64 client build from source.
+- Install configured SSH public keys with copy-id and interactive identity selection.
+- Read and unlock configured private keys directly; external SSH agent authentication is no longer supported.
+- Allow detaching from the session command panel.
 
 Includes Linux and Windows amd64 binaries. Verify archives against SHA256SUMS.
 Update both endpoints to $version for managed connections. Save work before

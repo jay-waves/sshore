@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -17,7 +18,6 @@ import (
 	"time"
 
 	cryptossh "golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
 )
 
 func TestHostKeyConfiguredOrder(t *testing.T) {
@@ -84,6 +84,11 @@ type connectionFixture struct {
 	key     cryptossh.PublicKey
 }
 
+type fixtureIdentity struct {
+	PrivateKey  any
+	Certificate *cryptossh.Certificate
+}
+
 func newConnectionFixture(t *testing.T, identities ...any) *connectionFixture {
 	t.Helper()
 	return newConnectionFixtureAt(t, "127.0.0.1:0", identities...)
@@ -100,8 +105,8 @@ func newConnectionFixtureAt(t *testing.T, listenAddress string, identities ...an
 	if len(identities) > 0 {
 		identity = identities[0]
 	}
-	added := agent.AddedKey{PrivateKey: identity}
-	if value, ok := identity.(agent.AddedKey); ok {
+	added := fixtureIdentity{PrivateKey: identity}
+	if value, ok := identity.(fixtureIdentity); ok {
 		added = value
 	}
 	signer, err := cryptossh.NewSignerFromKey(added.PrivateKey)
@@ -114,15 +119,6 @@ func newConnectionFixtureAt(t *testing.T, listenAddress string, identities ...an
 		if err != nil {
 			t.Fatal(err)
 		}
-	}
-	keyring := agent.NewKeyring()
-	if err := keyring.Add(added); err != nil {
-		t.Fatal(err)
-	}
-	agentPath := filepath.Join(dir, "agent.sock")
-	al, err := net.Listen("unix", agentPath)
-	if err != nil {
-		t.Fatal(err)
 	}
 	allowNone := listenAddress == "none"
 	allowPassword := listenAddress == "password"
@@ -138,16 +134,6 @@ func newConnectionFixtureAt(t *testing.T, listenAddress string, identities ...an
 	var workers sync.WaitGroup
 	track := func(c net.Conn) { mu.Lock(); connections = append(connections, c); mu.Unlock() }
 	done := make(chan struct{})
-	workers.Go(func() {
-		for {
-			c, err := al.Accept()
-			if err != nil {
-				return
-			}
-			track(c)
-			workers.Go(func() { defer c.Close(); agent.ServeAgent(keyring, c) })
-		}
-	})
 	sc := &cryptossh.ServerConfig{NoClientAuth: allowNone, PublicKeyCallback: func(_ cryptossh.ConnMetadata, key cryptossh.PublicKey) (*cryptossh.Permissions, error) {
 		if string(key.Marshal()) != string(signer.PublicKey().Marshal()) {
 			return nil, fmt.Errorf("unexpected identity")
@@ -212,7 +198,6 @@ func newConnectionFixtureAt(t *testing.T, listenAddress string, identities ...an
 	})
 	t.Cleanup(func() {
 		close(done)
-		al.Close()
 		server.Close()
 		mu.Lock()
 		for _, c := range connections {
@@ -221,14 +206,25 @@ func newConnectionFixtureAt(t *testing.T, listenAddress string, identities ...an
 		mu.Unlock()
 		workers.Wait()
 	})
-	publicPath := filepath.Join(dir, "identity")
-	os.WriteFile(publicPath+".pub", cryptossh.MarshalAuthorizedKey(signer.PublicKey()), 0600)
+	identityPath := filepath.Join(dir, "identity")
+	block, err := cryptossh.MarshalPrivateKey(added.PrivateKey, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identityPath, pem.EncodeToMemory(block), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if added.Certificate != nil {
+		if err := os.WriteFile(identityPath+"-cert.pub", cryptossh.MarshalAuthorizedKey(added.Certificate), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	knownPath := filepath.Join(dir, "known_hosts")
 	address := server.Addr().String()
 	host, port, _ := net.SplitHostPort(address)
 	// Normalize non-default ports exactly as OpenSSH's known_hosts format.
 	os.WriteFile(knownPath, []byte("["+host+"]:"+port+" "+string(cryptossh.MarshalAuthorizedKey(hostSigner.PublicKey()))), 0600)
-	config := fmt.Sprintf("hostname %s\nuser fixture\nport %s\nidentityagent %s\nidentityfile %s\nidentitiesonly yes\nuserknownhostsfile %s\nstricthostkeychecking yes\n", host, port, agentPath, publicPath, knownPath)
+	config := fmt.Sprintf("hostname %s\nuser fixture\nport %s\nidentityfile %s\nidentitiesonly yes\nuserknownhostsfile %s\nstricthostkeychecking yes\n", host, port, identityPath, knownPath)
 	executable := filepath.Join(dir, "ssh-config")
 	os.WriteFile(executable, []byte("#!/bin/sh\n[ \"$1\" = -G ] || exit 90\ncat <<'SSHORE_CONFIG'\n"+config+"SSHORE_CONFIG\n"), 0700)
 	return &connectionFixture{options: Options{Host: "fixture", Command: "echo", Executable: executable}, address: address, key: signer.PublicKey()}
@@ -335,7 +331,7 @@ func TestNativeSSHRejectsChangedHostKey(t *testing.T) {
 	}
 }
 
-func TestRSAAgentAuthentication(t *testing.T) {
+func TestRSAFileAuthentication(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -350,7 +346,7 @@ func TestRSAAgentAuthentication(t *testing.T) {
 	client.Close()
 }
 
-func TestCertificateAgentAuthentication(t *testing.T) {
+func TestCertificateFileAuthentication(t *testing.T) {
 	_, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -363,18 +359,7 @@ func TestCertificateAgentAuthentication(t *testing.T) {
 	if err := certificate.SignCert(rand.Reader, signer); err != nil {
 		t.Fatal(err)
 	}
-	fixture := newConnectionFixture(t, agent.AddedKey{PrivateKey: key, Certificate: certificate})
-	config, err := os.ReadFile(fixture.options.Executable)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fixture.options.Executable, []byte(strings.Replace(string(config), "identityfile ", "certificatefile ", 1)), 0700); err != nil {
-		t.Fatal(err)
-	}
-	identity := filepath.Join(filepath.Dir(fixture.options.Executable), "identity")
-	if err := os.Rename(identity+".pub", identity); err != nil {
-		t.Fatal(err)
-	}
+	fixture := newConnectionFixture(t, fixtureIdentity{PrivateKey: key, Certificate: certificate})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -419,13 +404,9 @@ func TestServerAcceptedNoneAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = append(data[:len(data)-len("SSHORE_CONFIG\n")], []byte("identityagent none\npubkeyauthentication no\nSSHORE_CONFIG\n")...)
-	// Replace the existing agent field, since ssh -G uses first-value semantics.
+	data = append(data[:len(data)-len("SSHORE_CONFIG\n")], []byte("pubkeyauthentication no\nSSHORE_CONFIG\n")...)
 	lines := strings.Split(string(data), "\n")
 	for i, line := range lines {
-		if strings.HasPrefix(line, "identityagent ") {
-			lines[i] = "identityagent none"
-		}
 		if strings.HasPrefix(line, "identityfile ") {
 			lines[i] = "identityfile /missing/identity"
 		}
@@ -460,9 +441,6 @@ func TestServerRejectsNoneWithoutIdentity(t *testing.T) {
 	}
 	lines := strings.Split(string(data), "\n")
 	for i, line := range lines {
-		if strings.HasPrefix(line, "identityagent ") {
-			lines[i] = "identityagent none"
-		}
 		if strings.HasPrefix(line, "identityfile ") {
 			lines[i] = "identityfile /missing/identity"
 		}
@@ -488,9 +466,6 @@ func TestPasswordFallbackWithoutKeys(t *testing.T) {
 	}
 	lines := strings.Split(string(data), "\n")
 	for i, line := range lines {
-		if strings.HasPrefix(line, "identityagent ") {
-			lines[i] = "identityagent none"
-		}
 		if strings.HasPrefix(line, "identityfile ") {
 			lines[i] = "identityfile /missing/key"
 		}

@@ -32,6 +32,10 @@ func confirmSSHHost(ctx context.Context, prompt string) (bool, error) {
 }
 
 func readSSHLine(ctx context.Context, prompt string) (string, error) {
+	return readSSHInput(ctx, func(input *termui.Input) (string, error) { return input.Read(prompt, false) })
+}
+
+func readSSHInput(ctx context.Context, read func(*termui.Input) (string, error)) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -79,7 +83,7 @@ func readSSHLine(ctx context.Context, prompt string) (string, error) {
 		_ = writer.Close()
 		stopKeyboard()
 	}()
-	answer, err := input.Read(prompt, false)
+	answer, err := read(input)
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}

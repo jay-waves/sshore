@@ -32,6 +32,7 @@ type Input struct {
 	completionMu  sync.Mutex
 	editor        *readline.Instance
 	paths         bool
+	choices       []string
 	color         bool
 	restoreOutput func() error
 	completion    pathCompletion
@@ -69,8 +70,17 @@ func (p *Input) Read(prompt string, paths bool) (string, error) {
 }
 
 func (p *Input) ReadPrefilled(prompt string, paths bool, initial string) (string, error) {
+	return p.read(prompt, paths, nil, initial)
+}
+
+func (p *Input) ReadChoice(prompt string, choices []string) (string, error) {
+	return p.read(prompt, false, choices, "")
+}
+
+func (p *Input) read(prompt string, paths bool, choices []string, initial string) (string, error) {
 	p.completionMu.Lock()
 	p.paths = paths
+	p.choices = choices
 	p.completion = pathCompletion{}
 	p.completionMu.Unlock()
 	p.editor.SetPrompt(formatInputPrompt(p.color, prompt))
@@ -106,6 +116,16 @@ func (p *Input) Close() error {
 func (p *Input) Do(line []rune, pos int) ([][]rune, int) {
 	p.completionMu.Lock()
 	defer p.completionMu.Unlock()
+	if len(p.choices) > 0 && pos == len(line) {
+		prefix := string(line)
+		var candidates [][]rune
+		for _, choice := range p.choices {
+			if strings.HasPrefix(choice, prefix) {
+				candidates = append(candidates, []rune(choice[len(prefix):]))
+			}
+		}
+		return candidates, pos
+	}
 	if !p.paths {
 		return nil, 0
 	}

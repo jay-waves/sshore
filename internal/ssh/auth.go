@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -20,8 +19,8 @@ import (
 	xknownhosts "golang.org/x/crypto/ssh/knownhosts"
 )
 
-// Keep callbacks and their agent connection local to this handshake.
-func (c connectionConfig) configureAuthentication(ctx context.Context, cc *cryptossh.ClientConfig, budgets *authenticationBudgets) (func(), error) {
+// Keep authentication prompts local to this handshake.
+func (c connectionConfig) configureAuthentication(ctx context.Context, cc *cryptossh.ClientConfig, budgets *authenticationBudgets, keys *[]cryptossh.Signer) error {
 	if confirm := c.options.Confirm; confirm != nil {
 		c.options.Confirm = func(ctx context.Context, prompt string) (bool, error) {
 			resume := budgets.pause()
@@ -31,11 +30,10 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 	}
 	hostKey, algorithms, err := c.hostKeys(ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	cc.HostKeyCallback, cc.HostKeyAlgorithms = hostKey, algorithms
 
-	var agent io.Closer
 	// Let the server accept none authentication before requiring local identities.
 	attempts := map[string]int{}
 	preferred := c.get("preferredauthentications")
@@ -47,17 +45,27 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 		limit = 3
 	}
 	var identityErr, promptErr error
-	ask := func(prompt string) (string, error) {
+	readSecret := func(prompt string) ([]byte, error) {
+		if promptErr != nil {
+			return nil, promptErr
+		}
 		resume := budgets.pause()
 		defer resume()
 		secret, err := c.options.Secret(ctx, prompt)
-		defer clear(secret)
 		if err != nil {
 			promptErr = err
-			return "", err
 		}
-		return string(secret), nil
+		return secret, err
 	}
+	ask := func(prompt string) (string, error) {
+		secret, err := readSecret(prompt)
+		defer clear(secret)
+		return string(secret), err
+	}
+	if !c.enabled("batchmode") && c.options.Secret != nil {
+		c.passphrase, c.passphraseAttempts = readSecret, limit
+	}
+	c.retainIdentity = func(signer cryptossh.Signer) { *keys = append(*keys, signer) }
 	cc.AuthCallback = func(state *cryptossh.ClientAuthContext) (cryptossh.AuthMethod, error) {
 		// SSH may ask for another method after a method callback fails.
 		// A failed local prompt ends authentication for this connection.
@@ -73,12 +81,14 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 					continue
 				}
 				attempts[method]++
-				method, agentConn, err := c.authentication(ctx)
+				method, err := c.authentication()
+				if promptErr != nil {
+					return nil, promptErr
+				}
 				identityErr = err
 				if err != nil {
 					continue
 				}
-				agent = agentConn
 				return method, nil
 			}
 			if c.enabled("batchmode") || c.options.Secret == nil || attempts[method] >= limit {
@@ -124,88 +134,50 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 		}
 		return nil, identityErr
 	}
-	return func() {
-		if agent != nil {
-			_ = agent.Close()
-		}
-	}, nil
+	return nil
 }
 
-func (c *connectionConfig) authentication(ctx context.Context) (_ cryptossh.AuthMethod, agentConn io.Closer, _ error) {
+func (c *connectionConfig) authentication() (cryptossh.AuthMethod, error) {
 	if preferred := c.get("preferredauthentications"); preferred != "" && !slices.Contains(strings.Split(preferred, ","), "publickey") {
-		return nil, nil, fmt.Errorf("PreferredAuthentications excludes publickey; public-key authentication is disabled")
+		return nil, fmt.Errorf("PreferredAuthentications excludes publickey; public-key authentication is disabled")
 	}
 	minimumRSA, err := c.minimumRSASize()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if c.get("pubkeyauthentication") == "false" || c.get("pubkeyauthentication") == "no" {
-		return nil, nil, fmt.Errorf("public-key authentication is disabled")
+		return nil, fmt.Errorf("public-key authentication is disabled")
 	}
-	signers, conn, agentErr := c.agentSigners(ctx)
-	defer func() {
-		if conn != nil && agentConn == nil {
-			conn.Close()
+	paths, pathErr := c.identityPaths()
+	signers, privateErr := c.privateIdentities(paths)
+	signers = slices.DeleteFunc(signers, func(signer cryptossh.Signer) bool {
+		return checkRSAKeySize(signer.PublicKey(), minimumRSA) != nil
+	})
+	byKey := make(map[string]cryptossh.Signer, len(signers))
+	for _, signer := range signers {
+		byKey[string(signer.PublicKey().Marshal())] = signer
+	}
+	var certificates []cryptossh.Signer
+	seen := make(map[string]bool)
+	for _, cert := range c.identityCertificates(paths) {
+		signer := byKey[string(cert.Key.Marshal())]
+		id := string(cert.Marshal())
+		if signer != nil && !seen[id] {
+			if certSigner, err := cryptossh.NewCertSigner(cert, signer); err == nil {
+				seen[id] = true
+				certificates = append(certificates, certSigner)
+			}
 		}
-	}()
-	allowed, certificates, fileErr := c.publicIdentities()
-	selected := selectIdentitySigners(signers, allowed, certificates, c.enabled("identitiesonly"), minimumRSA)
-	constrained, err := constrainIdentitySigners(selected, c.signatureAlgorithms())
+	}
+	constrained, err := constrainIdentitySigners(append(certificates, signers...), c.signatureAlgorithms())
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if len(constrained) == 0 {
-		detail := errors.Join(fileErr, agentErr, errors.New("load a key with ssh-add; check IdentityFile public keys and SSH agent"))
-		return nil, nil, fmt.Errorf("no usable SSH public-key identity: %s", strings.ReplaceAll(detail.Error(), "\n", "; "))
+		detail := errors.Join(pathErr, privateErr, errors.New("check IdentityFile and public-key authentication settings"))
+		return nil, fmt.Errorf("no usable SSH public-key identity: %s", strings.ReplaceAll(detail.Error(), "\n", "; "))
 	}
-	return cryptossh.PublicKeys(constrained...), conn, nil
-}
-
-func selectIdentitySigners(signers []cryptossh.Signer, allowed map[string]bool, certificates []*cryptossh.Certificate, identitiesOnly bool, minimumRSA int) []cryptossh.Signer {
-	var preferredCertificates, preferredKeys, others []cryptossh.Signer
-	// Every entry records an observed key. Only allowed raw keys retain a
-	// signer for use with a configured certificate.
-	keys := make(map[string]cryptossh.Signer, len(signers))
-	for _, signer := range signers {
-		// Agent keys expose wire blobs. Decode each once for identity matching,
-		// certificate classification and the minimum RSA size check.
-		key, err := cryptossh.ParsePublicKey(signer.PublicKey().Marshal())
-		if err != nil || checkRSAKeySize(key, minimumRSA) != nil {
-			continue
-		}
-		id := string(key.Marshal())
-		if _, seen := keys[id]; seen {
-			continue
-		}
-		keys[id] = nil
-		cert, certified := key.(*cryptossh.Certificate)
-		switch {
-		case certified && (allowed[id] || allowed[string(cert.Key.Marshal())]):
-			preferredCertificates = append(preferredCertificates, signer)
-		case allowed[id]:
-			preferredKeys = append(preferredKeys, signer)
-			keys[id] = signer
-		case !identitiesOnly:
-			others = append(others, signer)
-		}
-	}
-	// Certificates reuse the chosen agent signer for their underlying key.
-	for _, cert := range certificates {
-		signer := keys[string(cert.Key.Marshal())]
-		if signer == nil {
-			continue
-		}
-		id := string(cert.Marshal())
-		if _, seen := keys[id]; seen {
-			continue
-		}
-		certSigner, err := cryptossh.NewCertSigner(cert, signer)
-		if err == nil {
-			keys[id] = nil
-			preferredCertificates = append(preferredCertificates, certSigner)
-		}
-	}
-	return slices.Concat(preferredCertificates, preferredKeys, others)
+	return cryptossh.PublicKeys(constrained...), nil
 }
 
 func constrainIdentitySigners(signers []cryptossh.Signer, configured []string) ([]cryptossh.Signer, error) {

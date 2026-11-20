@@ -108,6 +108,8 @@ func run(args []string) (code int, resultErr error) {
 		return runEndpointForward(args[1:])
 	case "cp":
 		return runCopy(args[1:])
+	case "copy-id":
+		return runCopyID(args[1:])
 	case "detach":
 		if len(args) != 1 {
 			return 2, usage("detach takes no arguments")
