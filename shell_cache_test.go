@@ -332,7 +332,7 @@ func TestRecentAttachForms(t *testing.T) {
 	if err := rememberConnection(original); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"attach"}, {"attach", "work"}, {"attach", "work", "eevee"}} {
+	for _, args := range [][]string{{"attach"}, {"attach", "work"}, {"attach", "work:eevee"}} {
 		o, err := parseOptions(args)
 		if err != nil {
 			t.Fatal(err)
@@ -462,7 +462,7 @@ func TestNativePortOverridesSavedConnection(t *testing.T) {
 		{"-p", "2222", "-J", "jump", "-i", "key"},
 		{"-o", "Port=2222", "-J", "jump", "-i", "key"},
 	} {
-		parsed, err := parseCLI([]string{"host", "job", "--port", "3333"}, "attach")
+		parsed, err := parseCLI([]string{"host:job", "--port", "3333"}, "attach")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -492,7 +492,7 @@ func TestRoutedShellConnectionRecovery(t *testing.T) {
 	if err := rememberConnection(child); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"attach"}, {"attach", "private-alias", "child"}} {
+	for _, args := range [][]string{{"attach"}, {"attach", "private-alias:child"}} {
 		o, err := parseOptions(args)
 		if err != nil {
 			t.Fatal(err)

@@ -199,9 +199,10 @@ def spawn_smoke(binary, host, options):
     def inventory():
         return json.loads(subprocess.check_output(cli("list", "--json"), text=True))
 
-    terminal = Terminal([binary, "spawn", host + ":", *options], wait_ready=False)
+    terminal = Terminal([binary, "sh", host + ":spawn-demo", *options], wait_ready=False)
     foreground = terminal.expect(r"Connected (\S+) \(spawn\)").group(1).decode().rsplit(":", 1)[-1]
     try:
+        assert foreground == "spawn-demo", foreground
         terminal.send("sleep 2; printf 'SPAWN-%s\\n' retained\n")
         terminal.expect("SPAWN-retained")
         rows = {row["name"]: row for row in inventory()["shells"]}
@@ -211,9 +212,13 @@ def spawn_smoke(binary, host, options):
     finally:
         terminal.close()
 
-    started = subprocess.check_output([binary, "launch", host + ":", "--detach", *options], text=True)
+    creation = [binary, "mux", host + ":launch-demo", "--detach", *options]
+    started = subprocess.check_output(creation, text=True)
     persistent_ref = re.search(r"Started (\S+)", started).group(1)
     persistent = persistent_ref.rsplit(":", 1)[-1]
+    assert persistent == "launch-demo", persistent
+    duplicate = subprocess.run(creation, capture_output=True, text=True, timeout=15)
+    assert duplicate.returncode != 0 and "already exists" in duplicate.stderr, duplicate
     parent = subprocess.Popen(
         ["sh", "-c", '\"$@\"; code=$?; echo READY:$code; read answer', "parent",
          binary, "spawn", host + ":", "--detach", *options],
@@ -532,6 +537,9 @@ LogLevel ERROR
                 reset_smoke(binary, root)
                 return
             base_command = command[:]
+            ping_args = [base_command[2] + ":", "--count", "3", *base_command[5:]]
+            ping = subprocess.check_output([binary, "ping", *ping_args], text=True, timeout=10)
+            assert "SSH connection:" in ping and "Echo RTT (3 samples):" in ping, ping
             auto_names=[]
             for _ in range(2):
                 auto = Terminal([*base_command[:2], base_command[2] + ":", *base_command[3:]], wait_ready=False)

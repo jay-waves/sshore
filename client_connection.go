@@ -554,17 +554,10 @@ func handoffLocalClient(o options) (bool, error) {
 		cwd = o.sshDirectory
 	}
 	args := []string{o.command}
-	switch {
-	case o.local && o.command == "attach":
+	if o.local {
 		args = append(args, localEndpointPrefix+o.session)
-	case o.local:
-		args = append(args, localEndpointPrefix)
-	case o.command == "attach":
+	} else {
 		args = append(args, remotePathOperand(o.host, o.session))
-	default:
-		args = append(args, remotePathOperand(o.host, ""))
-	}
-	if !o.local {
 		args = append(args, "--server", o.server)
 	}
 	for _, flag := range []struct {

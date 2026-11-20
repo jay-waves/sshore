@@ -20,7 +20,7 @@ func TestShortTaskExplicitHostScopesSharedIdentity(t *testing.T) {
 	if err := saveShellSnapshot(shellSnapshot{Host: "remote", Name: "remote-copy", Instance: uid, State: "detached"}); err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := parseCLI([]string{"remote", uid[:6]}, "attach")
+	parsed, err := parseCLI([]string{"remote:" + uid[:6]}, "attach")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,14 +45,14 @@ func TestShortTaskShellSelectors(t *testing.T) {
 		args, want []string
 		identity   string
 	}{
-		{"attach", []string{localCode}, []string{"work"}, local.identity()},
+		{"attach", []string{":" + localCode}, []string{"work"}, local.identity()},
 		{"kill", []string{"here:" + localCode}, []string{"work"}, local.identity()},
-		{"kill", []string{localCode}, []string{"work"}, local.identity()},
-		{"rename", []string{localCode, "new"}, []string{"work", "new"}, local.identity()},
-		{"attach", []string{remoteCode}, []string{"host", "build"}, remoteKey},
+		{"kill", []string{":" + localCode}, []string{"work"}, local.identity()},
+		{"rename", []string{":" + localCode, "new"}, []string{"work", "new"}, local.identity()},
+		{"attach", []string{"host:" + remoteCode}, []string{"host", "build"}, remoteKey},
 		{"kill", []string{"host:" + remoteCode}, []string{"host", "build"}, remoteKey},
-		{"rename", []string{remoteCode, "new"}, []string{"host", "build", "new"}, remoteKey},
-		{"rename", []string{"host", remoteCode, "new"}, []string{"host", "build", "new"}, remoteKey},
+		{"rename", []string{"host:" + remoteCode, "new"}, []string{"host", "build", "new"}, remoteKey},
+		{"rename", []string{"host:" + remoteCode, "new"}, []string{"host", "build", "new"}, remoteKey},
 	} {
 		parsed, err := parseCLI(tc.args, tc.command)
 		if err != nil {
@@ -67,7 +67,7 @@ func TestShortTaskShellSelectors(t *testing.T) {
 			t.Fatalf("%+v %v", o, err)
 		}
 	}
-	for _, args := range [][]string{{"other", remoteCode}, {"here:" + remoteCode}, {remoteCode}} {
+	for _, args := range [][]string{{"other:" + remoteCode}, {"here:" + remoteCode}, {":" + remoteCode}} {
 		parsed, err := parseCLI(args, "kill")
 		if err != nil {
 			t.Fatal(err)
@@ -76,7 +76,7 @@ func TestShortTaskShellSelectors(t *testing.T) {
 			t.Fatal("accepted wrong scope", args)
 		}
 	}
-	parsed, err := parseCLI([]string{remote.Name}, "kill")
+	parsed, err := parseCLI([]string{":" + remote.Name}, "kill")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,13 +86,13 @@ func TestShortTaskShellSelectors(t *testing.T) {
 	// A reused name must never make the old code act on its replacement.
 	close(tasks.records[local.UID].(*nativeShellTask).shell.done)
 	registerTestShell(t, tasks, "work", strings.Repeat("b", 32))
-	if _, err = run([]string{"kill", localCode}); err == nil {
+	if _, err = run([]string{"kill", ":" + localCode}); err == nil {
 		t.Fatal("accepted replaced local shell")
 	}
 	if err = rememberShellRename("host", "build", "renamed", remote.Instance); err != nil {
 		t.Fatal(err)
 	}
-	parsed, err = parseCLI([]string{remoteCode}, "attach")
+	parsed, err = parseCLI([]string{"host:" + remoteCode}, "attach")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,20 +129,20 @@ func TestShortTaskReviewLifecycle(t *testing.T) {
 	if err != nil || !ok || canonicalTaskUID(target.identity) != id {
 		t.Fatalf("%+v %v", target, err)
 	}
-	if _, err = run([]string{"attach", code}); err == nil {
+	if _, err = run([]string{"attach", ":" + code}); err == nil {
 		t.Fatal("attached review")
 	}
-	if _, err = run([]string{"rename", code, "renamed"}); err != nil {
+	if _, err = run([]string{"rename", ":" + code, "renamed"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = run([]string{"kill", code}); err != nil {
+	if _, err = run([]string{"kill", ":" + code}); err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err = findRequest(id); err == nil {
 		t.Fatal("request not consumed", err)
 	}
-	if _, err = run([]string{"kill", code}); err == nil {
+	if _, err = run([]string{"kill", ":" + code}); err == nil {
 		t.Fatal("reused ended request")
 	}
 }
@@ -159,7 +159,7 @@ func TestShortTaskResourceRenameAndReplacement(t *testing.T) {
 		if _, err := run([]string{"rename", kind + "/" + r.Name, previousAlias}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := run([]string{"rename", code, kind + "new"}); err != nil {
+		if _, err := run([]string{"rename", ":" + code, kind + "new"}); err != nil {
 			t.Fatal(err)
 		}
 		inv, err := collectInventory(options{})
@@ -184,7 +184,7 @@ func TestShortTaskResourceRenameAndReplacement(t *testing.T) {
 		if err = killResourceIdentity(kind+"/"+r.Name, key); err == nil || !strings.Contains(err.Error(), "changed") {
 			t.Fatal("accepted replacement", err)
 		}
-		if _, err = run([]string{"rename", code, "other"}); err == nil {
+		if _, err = run([]string{"rename", ":" + code, "other"}); err == nil {
 			t.Fatal("renamed replacement by old ID")
 		}
 	}
@@ -194,12 +194,12 @@ func TestShortTaskUnknownAndScopedNames(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "must-not-connect"))
-	for _, args := range [][]string{{"attach", "abcdef"}, {"kill", "123456"}, {"rename", "ABCDEF", "new"}, {"review", "abcdef"}} {
+	for _, args := range [][]string{{"kill", "123456"}, {"rename", "ABCDEF", "new"}, {"review", "abcdef"}} {
 		if code, err := run(args); code != 2 || err == nil {
 			t.Fatalf("%v: %d %v", args, code, err)
 		}
 	}
-	for _, args := range [][]string{{"here:abcdef"}, {"host", "abcdef"}, {"review/abcdef"}} {
+	for _, args := range [][]string{{"here:abcdef"}, {"host:abcdef"}, {"review/abcdef"}} {
 		parsed, err := parseCLI(args, "kill")
 		if err != nil {
 			t.Fatal(err)
@@ -234,7 +234,7 @@ func TestShortTaskLocalCommandRouting(t *testing.T) {
 		return writeMessage(c, message{Type: reply})
 	}
 	for _, command := range []string{"kill", "rename"} {
-		args := []string{command, "123456"}
+		args := []string{command, ":123456"}
 		if command == "rename" {
 			args = []string{command, "here:123456", "new"}
 		}
@@ -264,7 +264,7 @@ func TestShortTaskRemoteHistoryPrefersCurrentName(t *testing.T) {
 	if err := cacheRemoteShells("work", inventory{Shells: []shellView{{Name: "new", Instance: "instance", State: "detached"}}}); err != nil {
 		t.Fatal(err)
 	}
-	parsed, err := parseCLI([]string{taskShortCode(remoteShellIdentity("work", "instance"))}, "attach")
+	parsed, err := parseCLI([]string{"work:" + taskShortCode(remoteShellIdentity("work", "instance"))}, "attach")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestTaskPrefixCollisionResolution(t *testing.T) {
 	for _, tc := range []struct{ ref, uid string }{
 		{"ab", ""}, {"abcdef", ""}, {"abcdef1", first}, {first, first}, {second, second}, {"ABCDEF2", second},
 	} {
-		parsed, err := parseCLI([]string{tc.ref}, "attach")
+		parsed, err := parseCLI([]string{":" + tc.ref}, "attach")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -322,14 +322,14 @@ func TestShortTaskRejectsInvalidConnection(t *testing.T) {
 }
 
 func TestKillOptions(t *testing.T) {
-	o, err := parseOptions([]string{"kill", "host", "build", "--server", "/a b/sshore", "--", "-p", "2222"})
+	o, err := parseOptions([]string{"kill", "host:build", "--server", "/a b/sshore", "--", "-p", "2222"})
 	if err != nil || o.command != "kill" || o.session != "build" || o.list {
 		t.Fatalf("%+v %v", o, err)
 	}
 	for _, args := range [][]string{
 		{"kill"}, {"kill", "host"}, {"kill", "host", "../other"},
-		{"kill", "host", "one", "two"}, {"kill", "host", "one", "--quiet"},
-		{"kill", "host", "one", "--download-dir", "/tmp"}, {"kill", "host", "one", "--no-escape"},
+		{"kill", "host", "one", "two"}, {"kill", "host:one", "--quiet"},
+		{"kill", "host:one", "--download-dir", "/tmp"}, {"kill", "host:one", "--no-escape"},
 	} {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatal("accepted", args)
@@ -342,7 +342,7 @@ func TestKillOptions(t *testing.T) {
 }
 
 func TestRenameOptions(t *testing.T) {
-	for _, args := range [][]string{{"rename", "host", "old", "new"}, {"rename", "host", "old", "new", "--", "-p22"}} {
+	for _, args := range [][]string{{"rename", "host:old", "new"}, {"rename", "host:old", "new", "--", "-p22"}} {
 		o, err := parseOptions(args)
 		if err != nil || o.session != "old" || o.newName != "new" {
 			t.Fatal(o, err)
@@ -354,7 +354,7 @@ func TestRenameOptions(t *testing.T) {
 		}
 	}
 
-	o, err := parseOptions([]string{"rename", "12", "old", "new"})
+	o, err := parseOptions([]string{"rename", "12:old", "new"})
 	if err != nil || o.host != "12" || o.session != "old" || o.newName != "new" {
 		t.Fatalf("numeric host: %+v %v", o, err)
 	}
@@ -392,11 +392,13 @@ func TestKillAllScope(t *testing.T) {
 
 func TestListNumbersAreNotSelectors(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	for _, command := range []string{"attach", "kill", "review"} {
-		code, err := run([]string{command, "1"})
-		if code != 2 || err == nil || !strings.Contains(err.Error(), "display-only") {
-			t.Fatalf("%s: %d %v", command, code, err)
-		}
+	code, err := run([]string{"review", "1"})
+	if code != 2 || err == nil || !strings.Contains(err.Error(), "display-only") {
+		t.Fatalf("review: %d %v", code, err)
+	}
+	o, err := parseOptions([]string{"attach", "1"})
+	if err != nil || o.local || o.host != "1" {
+		t.Fatalf("numeric host: %+v %v", o, err)
 	}
 }
 
@@ -410,8 +412,8 @@ func TestAttachUnknownTargetNeverConnects(t *testing.T) {
 	}
 	t.Setenv("SSHORE_SSH", ssh)
 	for _, ref := range []string{"xxxyyy", "3a"} {
-		code, err := run([]string{"attach", ref})
-		if code != 2 || err == nil {
+		code, err := run([]string{"attach", ":" + ref})
+		if err == nil {
 			t.Fatalf("unknown %s: %d %v", ref, code, err)
 		}
 	}
@@ -426,7 +428,7 @@ func TestTwoCharacterTaskPrefix(t *testing.T) {
 	first := "3aaaaa" + strings.Repeat("1", 26)
 	registerTestShell(t, tasks, "short-prefix", first)
 	registerTestShell(t, tasks, "db", strings.Repeat("c", 32))
-	parsed, err := parseCLI([]string{"3a"}, "attach")
+	parsed, err := parseCLI([]string{":3a"}, "attach")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,12 +436,12 @@ func TestTwoCharacterTaskPrefix(t *testing.T) {
 	if err != nil || !selected || target.identity != "task:"+first {
 		t.Fatalf("unique short prefix: %+v %v", target, err)
 	}
-	alias, _ := parseCLI([]string{"db"}, "attach")
+	alias, _ := parseCLI([]string{":db"}, "attach")
 	if candidate, ok, err := resolveShortTask("attach", &alias); err != nil || !ok || candidate.name != "db" {
 		t.Fatalf("short hex alias lost: %+v %v", candidate, err)
 	}
 	registerTestShell(t, tasks, "collision", "3abbbb"+strings.Repeat("2", 26))
-	parsed, _ = parseCLI([]string{"3a"}, "attach")
+	parsed, _ = parseCLI([]string{":3a"}, "attach")
 	if _, selected, err := resolveShortTask("attach", &parsed); err == nil || selected || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("ambiguous short prefix selected: %v", err)
 	}

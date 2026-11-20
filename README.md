@@ -39,8 +39,8 @@ shell for `attach`, `work:/tmp/report.zip` names a file for `cp`, and
 `work:3000` names a port for `forward`. Here, `work` can be a hostname or an
 SSH config alias.
 
-Keeping the machine alongside each value makes direction visible in the command.
-For example, `sshore cp .:report.zip work:/tmp/` reads the file on the machine
+For copy and mount, a plain path belongs to the machine running the command.
+For example, `sshore cp report.zip work:/tmp/` reads the file on the machine
 running the command and writes it on `work`. This also works from inside an
 attached remote shell, where “here” and “my computer” can mean different things.
 
@@ -50,20 +50,26 @@ attached remote shell, where “here” and “my computer” can mean different
 | `here:` or `.:` | The machine running the command. For example, `.:report.zip` is relative to the current directory there. |
 | `origin:` or `::` | The attached client, when requesting a copy, forward or mount from a remote shell. You approve the request on that client. |
 
-Use an empty value for host-only commands such as `sshore list work:` and
-`sshore exec work: 'uname -a'`. Both still accept the plain SSH host for
-compatibility.
+Host-only commands accept a plain SSH host, such as `sshore list work` or
+`sshore exec work 'uname -a'`.
+On Windows, `C:\dir\file` is a local path. Write `here:C:/dir/file` for a
+drive path with forward slashes; `C:/dir/file` denotes host `C`. Prefix a local
+filename containing a colon with `./` or `here:`.
 
 ## Start and resume shells
 
 ```sh
-sshore launch work:         # Start a persistent shell. Omit work: for a local one.
+sshore launch work:build    # Start a persistent remote shell named build.
 # Press Ctrl+B, then d to detach. Return later with:
 sshore attach               # Resume the most recently detached local or remote shell.
 sshore attach work:         # Resume the most recently detached shell on work.
 sshore list work:           # Find a specific shell's ID or name.
-sshore attach work:7afe22   # Resume that shell.
+sshore attach work:build    # Resume that shell by name.
 ```
+
+Use `sshore launch :build` to name a local shell. Run `sshore launch` locally
+or `sshore launch work` remotely to use the generated task ID. `spawn` and the
+aliases `sh` and `mux` accept the same target syntax.
 
 Choose `launch` for work that should survive a client exit or network loss.
 Choose `spawn` (or its alias `sh`, as in `sshore sh work:`) for a shell that
@@ -123,7 +129,7 @@ cannot return to it, it prints the reason and exits.
 Use an ID or name from `list` to select a task. For example,
 `sshore rename work:7afe22 build` lets you resume it with
 `sshore attach work:build`. To end the shell, run `sshore kill work:build`.
-A bare selector such as `sshore kill 123eef` searches only locally managed
+A local selector such as `sshore kill :123eef` searches only locally managed
 tasks, like `sshore kill here:123eef`. For a remote row from cached or live
 output, include its host, as in `sshore kill work:123eef`. Killing a shell can
 discard unsaved work. Manage read-only peer entries on their original
@@ -150,6 +156,10 @@ sshore launch work: -- -J jump -p 2222
 For a single command, run `sshore exec work: 'uname -a'`. For port forwarding,
 use `sshore forward`.
 
+Run `sshore ping work: --count 20` to measure authenticated connection setup
+and character round-trip latency through an SSH session. The remote host only
+needs to accept SSH exec requests and provide `cat`.
+
 ## OS and shell support
 
 | OS (amd64/x86-64 only) | bash | sh | zsh | fish | PowerShell 7 (pwsh) | cmd |
@@ -165,8 +175,8 @@ host to select the shell used by sshore sessions.
 ## Copy files
 
 ```sh
-sshore cp .:report.zip work:/tmp/     # Upload to the remote directory.
-sshore cp work:/tmp/report.zip .:./   # Download to the current directory.
+sshore cp report.zip work:/tmp/       # Upload to the remote directory.
+sshore cp work:/tmp/report.zip ./     # Download to the current directory.
 ```
 
 Direct copies require a matching remote sshore helper. Copy supports regular
@@ -209,8 +219,8 @@ Inside an attached remote shell, use `origin:` when an operation needs a file,
 port or mountpoint on your client computer.
 
 ```sh
-sshore cp .:report.zip origin:    # Send a remote file to your computer.
-sshore cp origin: .:./            # Ask for a file from your computer.
+sshore cp report.zip origin:      # Send a remote file to your computer.
+sshore cp origin: ./              # Ask for a file from your computer.
 sshore forward origin: .:3000     # Request a client port for this remote service.
 sshore mount .:./ origin:         # Request a client mountpoint for this directory.
 ```
@@ -244,6 +254,7 @@ resume it after review.
 Reference projects and inspiration:
 
 - [dtach](https://github.com/crigler/dtach): lightweight shell detach and reattach.
+- [sshping](https://github.com/spook/sshping): SSH connection and echo latency measurement.
 - [trzsz](https://github.com/trzsz/trzsz): terminal-oriented file transfer workflows.
     sshore does not implement the trzsz protocol.
 

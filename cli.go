@@ -60,6 +60,8 @@ func run(args []string) (code int, resultErr error) {
 	}
 
 	switch args[0] {
+	case "ping":
+		return runPing(args[1:])
 	case "exec":
 		return runExec(args[1:])
 	case "reset":
@@ -155,7 +157,7 @@ func reviewArguments(parsed cliArguments) (reviewOptions, error) {
 
 func parseKillTarget(args []string) (kind, name string, typed bool, err error) {
 	if len(args) == 0 {
-		return "", "", false, usage("use sshore kill review/NAME, mount/NAME, forward/NAME, or HOST NAME")
+		return "", "", false, usage("use sshore kill review/NAME, mount/NAME, forward/NAME, or HOST:ID")
 	}
 	kind, name, typed = strings.Cut(args[0], "/")
 	if !typed {
@@ -199,7 +201,7 @@ func runTargetCommand(args []string) (int, error) {
 		return 2, err
 	}
 	if command == "attach" && !parsed.explicitHost && operandCount != 0 && !(operandCount == 1 && selected) {
-		return 2, usage("use attach ID or attach HOST:ID; run sshore list for available shells")
+		return 2, usage("use attach :ID or attach HOST:ID; run sshore list for available shells")
 	}
 
 	if selected && target.kind != "shell" {

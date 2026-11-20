@@ -29,6 +29,13 @@ func parsePort(s string) (int, error) {
 	return n, nil
 }
 
+func splitPortEndpoint(value string) (string, string, error) {
+	if value != "" && !strings.Contains(value, ":") {
+		return "here", value, nil
+	}
+	return splitEndpoint(value)
+}
+
 // A qualified endpoint identifies the peer; the first endpoint always listens.
 func parseForwardEndpoints(args []string) (string, int, int, bool, error) {
 	fail := func() (string, int, int, bool, error) {
@@ -38,7 +45,7 @@ func parseForwardEndpoints(args []string) (string, int, int, bool, error) {
 		return fail()
 	}
 	endpoint := func(value string) (string, int, error) {
-		host, port, err := splitEndpoint(value)
+		host, port, err := splitPortEndpoint(value)
 		if err != nil {
 			return "", 0, err
 		}
@@ -93,11 +100,11 @@ func remoteForwardRequest(args []string) (operation, error) {
 	if len(args) != 2 {
 		return op, usage("forward requires a listener and a service")
 	}
-	leftHost, leftPort, err := splitEndpoint(args[0])
+	leftHost, leftPort, err := splitPortEndpoint(args[0])
 	if err != nil {
 		return op, err
 	}
-	rightHost, rightPort, err := splitEndpoint(args[1])
+	rightHost, rightPort, err := splitPortEndpoint(args[1])
 	if err != nil {
 		return op, err
 	}

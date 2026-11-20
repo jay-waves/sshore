@@ -13,9 +13,10 @@ cat packages/*.sha256 > packages/SHA256SUMS
 cat > release-notes.md <<NOTES
 sshore $version
 
-- Install configured SSH public keys with copy-id and interactive identity selection.
-- Read and unlock configured private keys directly; external SSH agent authentication is no longer supported.
-- Allow detaching from the session command panel.
+- Measure SSH connection and echo latency with ping.
+- Simplify file endpoints and shell targets; local session selectors now require
+  a prefix such as :NAME, while a bare shell target names an SSH host.
+- Name shells at creation with HOST:NAME or :NAME.
 
 Includes Linux and Windows amd64 binaries. Verify archives against SHA256SUMS.
 Update both endpoints to $version for managed connections. Save work before

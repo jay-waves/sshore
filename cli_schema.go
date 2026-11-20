@@ -32,6 +32,7 @@ const (
 	cliDuration
 	cliRetries
 	cliPort
+	cliPingCount
 )
 
 type cliOption struct {
@@ -55,6 +56,7 @@ var cliOptions = map[string]cliOption{
 	"--read-only":  {}, "--stats": {}, "--direct-io": {},
 	"--io-timeout": {kind: cliDuration}, "--startup-timeout": {kind: cliDuration},
 	"--retries": {kind: cliRetries},
+	"--count":   {kind: cliPingCount},
 }
 
 type cliSpec struct {
@@ -139,6 +141,11 @@ func validateCLIValue(name, value string, option cliOption) error {
 	case cliRetries:
 		if _, err := parseForwardRetries(value); err != nil {
 			return usage("%s: %s", name, err)
+		}
+	case cliPingCount:
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n > 1000 || strings.Trim(value, "0123456789") != "" {
+			return usage("%s requires a count from 1 to 1000", name)
 		}
 	}
 	if name == "--server" && strings.ContainsAny(value, "\x00\r\n") {
@@ -236,7 +243,7 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 	if max >= 0 && len(a.operands) > max {
 		return a, usage("unexpected argument: %s", a.operands[max])
 	}
-	if len(a.operands) != 0 && (command == "list" || command == "exec" || command == "kill" && a.has("--all")) {
+	if len(a.operands) != 0 && (command == "list" || command == "exec" || command == "ping" || command == "kill" && a.has("--all")) {
 		err = normalizeHostOperand(command, &a)
 	} else {
 		err = normalizeShellSelector(command, &a)

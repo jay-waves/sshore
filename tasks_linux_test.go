@@ -160,7 +160,7 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if out, err = run("kill", name); err != nil {
+	if out, err = run("kill", ":"+name); err != nil {
 		t.Fatal(out, err)
 	}
 	out, err = run("list")

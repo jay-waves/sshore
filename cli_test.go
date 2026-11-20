@@ -40,7 +40,7 @@ func TestDefaultSessions(t *testing.T) {
 	if err != nil || automatic.session != "" {
 		t.Fatalf("automatic: %+v %v", automatic, err)
 	}
-	named, err := parseOptions([]string{"attach", "host", "eevee"})
+	named, err := parseOptions([]string{"attach", "host:eevee"})
 	if err != nil || named.session != "eevee" {
 		t.Fatalf("resume: %+v %v", named, err)
 	}
@@ -98,8 +98,8 @@ func TestExplicitSessionRouting(t *testing.T) {
 			t.Fatalf("shell %s routed as a subcommand: %v", host, err)
 		}
 	}
-	if _, err := run([]string{"launch"}); err == nil {
-		t.Fatal("missing host accepted")
+	if o, err := parseOptions([]string{"launch"}); err != nil || !o.local || o.session != "" {
+		t.Fatalf("default launch: %+v, %v", o, err)
 	}
 }
 
@@ -394,9 +394,9 @@ func TestNativeSSHPort(t *testing.T) {
 		command  string
 		operands []string
 	}{
-		{"launch", []string{"host:"}}, {"spawn", []string{"host:"}}, {"attach", []string{"host", "work"}},
-		{"list", []string{"host"}}, {"kill", []string{"host", "work"}},
-		{"rename", []string{"host", "old", "new"}}, {"cp", []string{".:local", "host:remote"}},
+		{"launch", []string{"host:"}}, {"spawn", []string{"host:"}}, {"attach", []string{"host:work"}},
+		{"list", []string{"host"}}, {"kill", []string{"host:work"}},
+		{"rename", []string{"host:old", "new"}}, {"cp", []string{".:local", "host:remote"}},
 		{"mount", []string{"host:remote", "here:"}}, {"forward", []string{".:8080", "host:80"}},
 	} {
 		args := append(append([]string(nil), tc.operands...), "--port=2222", "--", "-J", "jump")
@@ -621,8 +621,8 @@ func TestUnifiedEndpointSyntax(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{
-		{"launch", "work"}, {"spawn", "work:build"}, {"attach", "7afe22"},
-		{"cp", "file", "work:"}, {"fwd", "3000", "work:80"}, {"mnt", "work:", "./mnt"},
+		{"launch", ":work", "--port", "22"}, {"spawn", "origin:build"}, {"kill", "7afe22"},
+		{"cp", "file", "dest"}, {"fwd", "3000", "80"}, {"mnt", "./src", "./mnt"},
 	} {
 		if code, err := run(args); code != 2 || err == nil {
 			t.Fatalf("%v: %d %v", args, code, err)
@@ -663,5 +663,32 @@ func TestUnifiedEndpointSyntax(t *testing.T) {
 	}
 	if op, err := remoteForwardRequest([]string{"origin:", ".:3000"}); err != nil || !op.LocalPortPending() || op.ServerPort() != 3000 {
 		t.Fatal(op, err)
+	}
+}
+
+func TestNamedShellCreationTargets(t *testing.T) {
+	for _, tc := range []struct {
+		command, target, host, name string
+		local                       bool
+	}{
+		{"launch", "build", "build", "", false},
+		{"spawn", "here:build", "local", "build", true},
+		{"sh", ".:build", "local", "build", true},
+		{"mux", "work:build", "work", "build", false},
+		{"spawn", "user@[::1]:build", "user@::1", "build", false},
+		{"launch", "work:", "work", "", false},
+	} {
+		o, err := parseOptions([]string{tc.command, tc.target})
+		if err != nil || o.host != tc.host || o.session != tc.name || o.local != tc.local || o.command != canonicalCommand(tc.command) {
+			t.Errorf("%s %s: %+v, %v", tc.command, tc.target, o, err)
+		}
+		if !tc.local && tc.name != "" && !strings.Contains(remoteCommand(o), `"name":"`+tc.name+`"`) {
+			t.Errorf("%s %s did not carry the requested name to the server", tc.command, tc.target)
+		}
+	}
+	for _, target := range []string{"origin:build", "work:abcdef", "here:bad/name"} {
+		if _, err := parseOptions([]string{"spawn", target}); err == nil {
+			t.Errorf("accepted invalid creation target %q", target)
+		}
 	}
 }

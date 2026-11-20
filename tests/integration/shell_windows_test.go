@@ -155,7 +155,7 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	wait("SSHORE_INNER>")
 	send("\x02d")
 	wait("OUTER_detached_again")
-	send(fmt.Sprintf("%s attach %s; printf 'OUTER_exit_%%s\\n' \"$?\"\r", bin, id))
+	send(fmt.Sprintf("%s attach :%s; printf 'OUTER_exit_%%s\\n' \"$?\"\r", bin, id))
 	wait("SSHORE_INNER>")
 	rows = e.shells(t)
 	if len(rows) != 1 || rows[0].PID != pid || rows[0].State != "attached" {

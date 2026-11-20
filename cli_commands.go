@@ -72,7 +72,7 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 		}
 	}
 	if o.command == "kill" && (o.session == "") {
-		return o, usage("kill requires HOST NAME and accepts SSH options, --server and --port")
+		return o, usage("kill requires HOST:ID, :ID or TYPE/ID")
 	}
 	if o.session == "" {
 		return o, nil
@@ -80,24 +80,29 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 	return o, validSession(o.session)
 }
 
-// Host-only commands accept the legacy SSH destination as well as HOST:.
-func normalizeHostOperand(command string, parsed *cliArguments) error {
-	ref := parsed.operands[0]
+// Endpoints with a value require bracketed IPv6; a host alone may omit the brackets.
+func isBareSSHHost(ref string) bool {
 	if !strings.Contains(ref, ":") {
-		return validSSHDestination(ref)
+		return true
 	}
-	// Keep legacy unbracketed IPv6 destinations. Endpoints use [IPv6]:.
-	_, address, hasUser := strings.Cut(ref, "@")
-	if !hasUser {
-		address = ref
+	address := ref
+	if _, after, ok := strings.Cut(ref, "@"); ok {
+		address = after
 	}
 	if ref != "::" && net.ParseIP(address) != nil {
-		return validSSHDestination(ref)
+		return true
 	}
 	if strings.HasSuffix(address, "]") {
-		if _, err := endpointHost(ref); err == nil {
-			return nil
-		}
+		_, err := endpointHost(ref)
+		return err == nil
+	}
+	return false
+}
+
+func normalizeHostOperand(command string, parsed *cliArguments) error {
+	ref := parsed.operands[0]
+	if isBareSSHHost(ref) {
+		return validSSHDestination(ref)
 	}
 	host, value, err := splitEndpoint(ref)
 	if err != nil {
@@ -110,8 +115,8 @@ func normalizeHostOperand(command string, parsed *cliArguments) error {
 	case "origin":
 		return usage("%s requires here: or an SSH host", command)
 	case "here":
-		if command == "exec" {
-			return usage("exec requires an SSH host")
+		if command == "exec" || command == "ping" {
+			return usage("%s requires an SSH host", command)
 		}
 		if len(parsed.ssh) != 0 || parsed.has("--server") {
 			return usage("local tasks do not accept SSH options")
@@ -127,25 +132,30 @@ func normalizeHostOperand(command string, parsed *cliArguments) error {
 func normalizeShellSelector(command string, parsed *cliArguments) error {
 	count := len(parsed.operands)
 	if command == "launch" || command == "spawn" {
-		host := "here"
-		if count != 0 {
-			endpoint, suffix, err := splitEndpoint(parsed.operands[0])
+		host, name := parsed.operand(0), ""
+		parsed.local = count == 0
+		if !isBareSSHHost(host) {
+			var err error
+			host, name, err = splitEndpoint(host)
 			if err != nil {
 				return err
 			}
-			if suffix != "" {
-				return usage("create with %s HOST: and set an alias with rename", command)
-			}
-			if endpoint == "origin" {
+			parsed.local = host == "here"
+			if host == "origin" {
 				return usage("create shells on here: or an SSH host")
 			}
-			host = endpoint
 		}
-		if host == "here" {
-			parsed.local = true
-			parsed.operands = nil
-		} else {
-			parsed.operands[0] = host
+		if name != "" {
+			if err := validAlias(name); err != nil {
+				return err
+			}
+		}
+		parsed.operands = nil
+		if !parsed.local {
+			parsed.operands = append(parsed.operands, host)
+		}
+		if name != "" {
+			parsed.operands = append(parsed.operands, name)
 		}
 		return nil
 	}
@@ -153,6 +163,13 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 		return nil
 	}
 	ref := parsed.operands[0]
+	if !strings.Contains(ref, "/") && isBareSSHHost(ref) {
+		if command != "attach" {
+			return usage("%s requires HOST:ID, :ID or TYPE/ID", command)
+		}
+		parsed.explicitHost = true
+		return validSSHDestination(ref)
+	}
 	if !strings.Contains(ref, ":") || strings.Contains(ref, "/") {
 		return nil
 	}
@@ -310,18 +327,37 @@ func splitEndpoint(value string) (host, suffix string, err error) {
 	return host, value[separator+1:], err
 }
 
+// A colon before the first path separator qualifies a file endpoint.
+func splitFileEndpoint(value string) (string, string, error) {
+	if value == "" {
+		return "", "", usage("empty file operand; use here: to select a local path")
+	}
+	colon := strings.IndexByte(value, ':')
+	slash := strings.IndexAny(value, "/\\")
+	drive := colon == 1 && strings.HasPrefix(value[2:], "\\") && ((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z'))
+	if colon < 0 || slash >= 0 && slash < colon || drive {
+		return "here", value, nil
+	}
+	return splitEndpoint(value)
+}
+
 func remoteCopyRequest(args []string) (string, []string, string, error) {
 	fail := func() (string, []string, string, error) {
 		return "", nil, "", usage("use cp here:SOURCE... origin:[PATH] or cp origin:[PATH] here:DIRECTORY")
 	}
-	if len(args) < 2 {
-		return fail()
-	}
-	first, firstPath, err := splitEndpoint(args[0])
+	parsed, err := parseCLI(args, "cp")
 	if err != nil {
 		return "", nil, "", err
 	}
-	last, lastPath, err := splitEndpoint(args[len(args)-1])
+	if len(parsed.ssh) != 0 {
+		return "", nil, "", usage("remote copy requests inherit the attached connection")
+	}
+	args = parsed.operands
+	first, firstPath, err := splitFileEndpoint(args[0])
+	if err != nil {
+		return "", nil, "", err
+	}
+	last, lastPath, err := splitFileEndpoint(args[len(args)-1])
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -338,7 +374,7 @@ func remoteCopyRequest(args []string) (string, []string, string, error) {
 	}
 	paths := make([]string, 0, len(sources))
 	for _, source := range sources {
-		host, path, err := splitEndpoint(source)
+		host, path, err := splitFileEndpoint(source)
 		if err != nil || host != "here" || path == "-" || (path == "" && kind != "upload") {
 			return fail()
 		}
@@ -378,11 +414,11 @@ func remoteMountRequest(args []string) (operation, error) {
 	if err != nil {
 		return operation{}, err
 	}
-	sourceHost, source, err := splitEndpoint(parsed.operands[0])
+	sourceHost, source, err := splitFileEndpoint(parsed.operands[0])
 	if err != nil {
 		return operation{}, err
 	}
-	targetHost, hint, err := splitEndpoint(parsed.operands[1])
+	targetHost, hint, err := splitFileEndpoint(parsed.operands[1])
 	if err != nil {
 		return operation{}, err
 	}
@@ -431,7 +467,7 @@ type copyOptions struct {
 }
 
 func parseCopyEndpoint(value string) (copyEndpoint, error) {
-	host, path, err := splitEndpoint(value)
+	host, path, err := splitFileEndpoint(value)
 	if err != nil {
 		return copyEndpoint{}, err
 	}
@@ -508,11 +544,11 @@ func parseFTPOptions(args []string) (ftpOptions, error) {
 	if err != nil {
 		return ftpOptions{}, err
 	}
-	host, remote, err := splitEndpoint(parsed.operands[0])
+	host, remote, err := splitFileEndpoint(parsed.operands[0])
 	if err != nil {
 		return ftpOptions{}, err
 	}
-	targetHost, mountpoint, err := splitEndpoint(parsed.operands[1])
+	targetHost, mountpoint, err := splitFileEndpoint(parsed.operands[1])
 	if err != nil {
 		return ftpOptions{}, err
 	}

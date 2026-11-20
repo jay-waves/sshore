@@ -298,7 +298,7 @@ func TestRemoteMountRequest(t *testing.T) {
 			t.Fatalf("%+v %v", op, err)
 		}
 	}
-	for _, args := range [][]string{{"origin:", "."}, {".", "origin:", "--no-watch"}, {".", "origin:", "--foreground"}, {".", "origin:", "--", "-J", "jump"}, {"host:/tmp", "origin:"}, {"-", "origin:"}, {".", "origin:", "extra"}} {
+	for _, args := range [][]string{{"origin:", "."}, {".", "origin:", "--no-watch"}, {".", "origin:", "--foreground"}, {".", "origin:", "--", "-J", "jump"}, {"host:/tmp", "origin:"}, {"origin:", "origin:"}, {".", "origin:", "extra"}} {
 		if _, err := remoteMountRequest(args); err == nil {
 			t.Fatal(args)
 		}

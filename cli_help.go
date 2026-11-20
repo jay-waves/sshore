@@ -19,6 +19,7 @@ Shells
   rename      Rename a running shell
 
 Files and ports
+  ping        Measure SSH connection and echo latency
   cp          Copy files over SSH
   mount       Mount a remote directory
   forward     Forward a TCP port
@@ -74,9 +75,9 @@ var cliCommands = map[string]cliSpec{
 Resume it after detaching with Ctrl+B d
   sshore attach work:7afe22
 Upload a file
-  sshore cp .:./report.txt work:/tmp/report.txt
+  sshore cp ./report.txt work:/tmp/report.txt
 Forward a local port to a remote service
-  sshore forward .:8080 work:3000
+  sshore forward 8080 work:3000
 
 More examples: sshore launch|spawn|cp|mount|forward --tldr
 `,
@@ -117,12 +118,23 @@ Use an SSH config host alias for connection options. Plain SSH hosts still work.
 Example: sshore exec work: 'uname -a'
 `,
 	},
+	"ping": {
+		ssh: true, min: 1, max: 1, flags: []string{"--count"},
+		help: `Usage: sshore ping HOST: [--count N] [--port PORT] [-- SSH_OPTIONS]
+
+Measure authenticated SSH connection time and character round-trip latency
+over one SSH session. The remote account must be able to run cat.
+--count accepts 1 to 1000 samples (default 10). Echo testing has a 30s budget.
+` + sshOptions,
+		examples: "Measure latency to an SSH host\n  sshore ping work: --count 20\n",
+	},
 	"launch": {
 		ssh: true, native: true, max: 1, flags: strings.Fields(connectionFlags + " --detach --no-login --no-profile"),
-		help: `Usage: sshore launch [HOST:] [options] [-- SSH_OPTIONS]
+		help: `Usage: sshore launch [HOST|HOST:NAME|:NAME] [options] [-- SSH_OPTIONS]
 
 Start a new shell. It survives detach and connection loss; exit ends it.
-Omit the target or use here: or .: for local use. Create aliases with rename.
+Omit the target for a local shell or use HOST for a remote shell.
+Use :NAME to name a local shell or HOST:NAME to name a remote shell.
 To resume, use attach.
 
 Options:
@@ -130,7 +142,7 @@ Options:
 		examples: `Start a persistent remote shell
   sshore launch work:
 Start a local shell
-  sshore launch here:
+  sshore launch :build
 Connect through a jump host
   sshore launch work: -- -J jump
 
@@ -140,16 +152,18 @@ The remote sshore release must match exactly.
 	},
 	"spawn": {
 		ssh: true, native: true, max: 1, flags: strings.Fields(connectionFlags + " --detach --no-login --no-profile"),
-		help: `Usage: sshore spawn [HOST:] [options] [-- SSH_OPTIONS]
+		help: `Usage: sshore spawn [HOST|HOST:NAME|:NAME] [options] [-- SSH_OPTIONS]
 
-Start a shell bound to the launching parent. Use here: or .: for local use.
+Start a shell bound to the launching parent. Omit the target for a local shell
+or use HOST for a remote shell. Use :NAME to name a local shell or
+HOST:NAME to name a remote shell.
 It ends when that parent exits; a remote spawn also ends if its lifetime SSH connection is lost.
 Detach and attach do not change the owner. Use launch for a persistent shell.
 
 Options:
 ` + shellStartupOptions + connectionOptions + shellConnectionHelp,
 		examples: `Start a remote shell tied to this owner and connection
-  sshore spawn work:
+  sshore spawn work:build
 Start without attaching
   sshore spawn work: --detach
 
@@ -158,11 +172,12 @@ The remote sshore release must match exactly.
 `,
 	},
 	"attach": {
-		ssh: true, native: true, max: 2, flags: strings.Fields(connectionFlags),
-		help: `Usage: sshore attach [ID|HOST:[ID]] [options] [-- SSH_OPTIONS]
+		ssh: true, native: true, max: 1, flags: strings.Fields(connectionFlags),
+		help: `Usage: sshore attach [HOST|HOST:ID|:ID] [options] [-- SSH_OPTIONS]
 
 With no target, resume the most recently detached local or remote shell.
-Use an ID or unique alias from list, or specify HOST: to select on that host.
+Use HOST to resume on that host. Use HOST:ID or :ID to select a shell
+by its ID or alias from list.
 Use here: for the local machine, or .: as shorthand. IDs accept unique
 hexadecimal prefixes.
 
@@ -178,7 +193,7 @@ Use attach to reconnect. Ctrl+B d also detaches.
 `,
 	},
 	"rename": {
-		ssh: true, min: 2, max: 3, flags: []string{"--server"},
+		ssh: true, min: 2, max: 2, flags: []string{"--server"},
 		help: `Usage: sshore rename HOST:ID NEW [--server PATH] [-- SSH_OPTIONS]
        sshore rename here:ID NEW
        sshore rename {mount|forward|review}/OLD NEW
@@ -231,15 +246,14 @@ No SSH is started by this command.
 `,
 	},
 	"kill": {
-		ssh: true, max: 2, flags: []string{"--server", "--all"},
-		help: `Usage: sshore kill [here:]ID
+		ssh: true, max: 1, flags: []string{"--server", "--all"},
+		help: `Usage: sshore kill :ID
        sshore kill {review|mount|forward}/NAME
        sshore kill HOST:ID [--server PATH] [-- SSH_OPTIONS]
        sshore kill [HOST:] --all [--server PATH] [-- SSH_OPTIONS]
 
-Use a name or short ID from list as the endpoint value. A bare selector
-searches only locally managed tasks, like here:ID. Include HOST: for remote
-shells. IDs stay bound to their original
+Use a name or short ID from list as the endpoint value. Use :ID for a locally managed
+task and HOST:ID for a remote shell. IDs stay bound to their original
 instance across renames; an unavailable instance cannot select its replacement.
 
 Effects:
@@ -280,24 +294,25 @@ To discard a request: sshore kill review/NAME.
 		ssh: true, min: 2, max: -1,
 		help: `Usage: sshore cp SOURCE... TARGET [-- SSH_OPTIONS]
 
-Write both endpoints as HOST:PATH. Use here: or .: for the current machine.
+A bare path belongs to the machine running this command. Use HOST:PATH
+for an SSH host. Use here: or .: for an explicit local endpoint.
 In an attached remote shell, origin: or :: selects the client for review.
-Leave a local path empty to choose it. Use .:- for standard input or output.
+Leave a local path empty to choose it. Use - for standard input or output.
 Copy supports up to 16 regular files. Batches with an explicit target require a directory.
 
-  sshore cp .:report.zip work:/tmp/
-  sshore cp work:/tmp/report.txt .:-
-  sshore cp .:- work:/tmp/report.txt
+  sshore cp report.zip work:/tmp/
+  sshore cp work:/tmp/report.txt -
+  sshore cp - work:/tmp/report.txt
 
 A failure stops the batch and keeps completed files. Stdout may already
 contain partial data. The remote sshore release must match exactly.
 ` + sshOptions,
 		examples: `Upload a file
-  sshore cp .:./report.txt work:/tmp/report.txt
+  sshore cp ./report.txt work:/tmp/report.txt
 Download a file
-  sshore cp work:/tmp/report.txt .:./report.txt
+  sshore cp work:/tmp/report.txt ./report.txt
 Use a different SSH port
-  sshore cp .:./report.txt work:/tmp/report.txt --port 2222
+  sshore cp ./report.txt work:/tmp/report.txt --port 2222
 `,
 	},
 	"mount": {
@@ -309,7 +324,7 @@ Mount a remote directory through the remote sshore helper using SFTP.
 The remote sshore release must match exactly.
 Background mounts receive fixed task IDs. HOST: selects the remote home.
 Use [HOST]:SOURCE for an IPv6 address.
-Use here:PATH or .:PATH for the mountpoint. Leave PATH empty
+Use a bare path for the mountpoint. Use here: with an empty path
 to use ~/mnt/NAME on Linux or a free drive letter on Windows.
 Requires FUSE on Linux or WinFsp on Windows.
 A custom mountpoint must be an existing empty directory on Linux, or a
@@ -345,12 +360,12 @@ Requires FUSE on Linux or WinFsp on Windows.
 		ssh: true, min: 2, max: 2, flags: []string{"--retries", "--foreground"},
 		help: `Usage: sshore forward LISTENER SERVICE [options] [-- SSH_OPTIONS]
 
-Write both endpoints as HOST:PORT, with the listener first. Use here: or .:
-for the current machine. Leave the client-side port empty to choose it.
+The listener comes first. Use a bare port for the current machine and
+HOST:PORT for an SSH host. Leave the client-side port empty to choose it.
 From a remote shell, use origin: or :: for the attached client and review locally.
 
-  sshore forward .:8080 work:3000
-  sshore forward work:3000 .:8080
+  sshore forward 8080 work:3000
+  sshore forward work:3000 8080
 
 Options:
   --foreground   Run in this terminal; Ctrl-C stops forwarding
@@ -360,11 +375,11 @@ Retries cannot prompt for credentials or host keys. Existing connections
 do not survive reconnect. SSH -L/-R/-D are not accepted here.
 ` + sshOptions,
 		examples: `Expose a remote service on a local port
-  sshore forward .:8080 work:3000
+  sshore forward 8080 work:3000
 Expose a local service on a remote port
   sshore forward work:8080 .:3000
 Run until Ctrl-C
-  sshore forward .:8080 work:3000 --foreground
+  sshore forward 8080 work:3000 --foreground
 `,
 	},
 	"daemon": {

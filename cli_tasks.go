@@ -34,8 +34,8 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		code = ref
 		kind = ""
 	}
-	localKill := command == "kill" && compact && !typed && (!parsed.local || parsed.explicitHost)
-	localShell := parsed.local && !localKill
+	localTask := parsed.local && (command == "kill" || command == "rename")
+	localShell := parsed.local && !localTask
 	prefix := ""
 	if isTaskIDPrefix(code) {
 		prefix = strings.ToLower(code)
@@ -55,7 +55,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 	if err != nil {
 		return empty, false, err
 	}
-	scoped := typed || localShell || localKill || host != ""
+	scoped := typed || localShell || localTask || host != ""
 	var target selectedTask
 	found := false
 	matched := len(selections.byID) > 0
@@ -67,7 +67,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 			if typed && kind != candidate.kind && !((kind == "spawn" || kind == "launch") && candidate.kind == "shell") {
 				continue
 			}
-			if localShell && (candidate.kind != "shell" || candidate.host != "") || localKill && candidate.host != "" {
+			if localShell && (candidate.kind != "shell" || candidate.host != "") || localTask && candidate.host != "" {
 				continue
 			}
 		}
@@ -186,8 +186,7 @@ func readTaskSelections(command, alias, prefix, host string, localShell bool) (t
 		}
 	}
 
-	remoteAliases := !localShell && command != "kill" && command != "review"
-	if byID || remoteAliases {
+	if byID {
 		snapshots, err := readShellSnapshots()
 		if err != nil {
 			return taskSelections{}, err
@@ -198,7 +197,7 @@ func readTaskSelections(command, alias, prefix, host string, localShell bool) (t
 				continue
 			}
 			task := snapshotTaskSelection(record)
-			add(task, remoteAliases && !endedShellState(record.State), record.State != "renamed" && (host == "" || record.Host == host))
+			add(task, false, record.State != "renamed" && (host == "" || record.Host == host))
 		}
 	}
 
@@ -243,7 +242,7 @@ func routeSelectedTask(command string, parsed *cliArguments, target selectedTask
 		return empty, false, usage("%s does not accept %s tasks", command, target.kind)
 	}
 	if target.kind != "shell" {
-		if parsed.local && !(command == "kill" && parsed.explicitHost) || len(parsed.ssh) != 0 || parsed.has("--server") {
+		if len(parsed.ssh) != 0 || parsed.has("--server") {
 			return empty, false, usage("local resources do not accept SSH options")
 		}
 		return target, true, nil

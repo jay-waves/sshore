@@ -26,7 +26,7 @@ func TestHostedShellHandoffPreservesLocalInstance(t *testing.T) {
 	if err != nil || !o.local || !o.hosted || o.instance != uid || o.taskIdentity != h.TaskIdentity {
 		t.Fatalf("hosted route lost: %+v %v", o, err)
 	}
-	h.Args = []string{"attach", "remote", "work"}
+	h.Args = []string{"attach", "remote:work"}
 	if _, err := h.options(); err == nil {
 		t.Fatal("hosted route accepted an SSH destination")
 	}
