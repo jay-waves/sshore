@@ -19,8 +19,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/jay-waves/sshore/internal/pty"
 )
 
 // The token is a local connection capability, never part of public inventory.
@@ -228,12 +226,8 @@ func (s *localShell) start(m message) error {
 		source = os.Environ()
 	}
 	path := localShellPath(source)
-	args, err := pty.StartupArgs(path, m.NoLogin, m.NoProfile)
-	if err != nil {
-		return err
-	}
-	env := pty.StartupEnv(path, localShellEnvironment(source, m.Term, s.record.identity()), m.NoProfile)
-	return s.startTerminal(path, args, env, s.record.Directory, m, func(err error, code int) {
+	env := localShellEnvironment(source, m.Term, s.record.identity())
+	return s.startShell(path, env, s.record.Directory, m, func(err error, code int) {
 		reason := "shell exited"
 		if err != nil {
 			reason = err.Error()
@@ -309,7 +303,7 @@ func localSessionTargets(name string, request message) message {
 	}
 	if len(reply.Targets) > 128 {
 		reply.Targets = nil
-		reply.Error = "too many local shells; use sshore list self:"
+		reply.Error = "too many local shells; use sshore list here:"
 	}
 	return reply
 }

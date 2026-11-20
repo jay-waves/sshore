@@ -188,7 +188,7 @@ function Install-Sshore([string]$Version = '', [string]$Path = '') {
             $legacy = $LASTEXITCODE -ne 0
         }
         if ($legacy) { & $stage setup --apply --path $target }
-        else { & $stage install --apply "self:$target" }
+        else { & $stage install --apply "here:$target" }
         if ($LASTEXITCODE -ne 0) { throw 'Installation stopped. Close remaining sshore clients if the executable is still in use, then retry.' }
         [IO.File]::Delete($stage)
         $stage = $null

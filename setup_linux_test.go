@@ -183,6 +183,10 @@ func writeRemoteVersionStub(t *testing.T, path, release string) {
 	}
 }
 
+func remoteServiceStubOutput(req remoteServiceRequest) string {
+	return "<" + strings.Join(remoteServiceArgs(req), ">\n<") + ">\n"
+}
+
 func TestRemoteFallbackAndArgumentQuoting(t *testing.T) {
 	home := t.TempDir()
 	bin := filepath.Join(home, ".local", "bin", "sshore")
@@ -193,10 +197,11 @@ func TestRemoteFallbackAndArgumentQuoting(t *testing.T) {
 			o.command = "launch"
 		}
 		out, err := runRemoteCommand(t, home, o)
-		want := "<bridge>\n<" + version + ">\n<" + mode + ">\n<main>\n"
+		req := remoteServiceRequest{Operation: "shell", Mode: mode, Name: "main"}
 		if mode == "sessions" {
-			want = "<inventory>\n<" + version + ">\n"
+			req = remoteServiceRequest{Operation: "inventory"}
 		}
+		want := remoteServiceStubOutput(req)
 		if err != nil || out != want {
 			t.Fatal(out, err)
 		}
@@ -205,12 +210,26 @@ func TestRemoteFallbackAndArgumentQuoting(t *testing.T) {
 	if err := os.Rename(bin, odd); err != nil {
 		t.Fatal(err)
 	}
-	out, err := runRemoteCommand(t, home, options{server: odd, session: "main"})
-	if err != nil || out != "<bridge>\n<"+version+">\n<bridge>\n<main>\n" {
+	name := "name ' $(touch INJECTED)"
+	out, err := runRemoteCommand(t, home, options{server: odd, session: name})
+	if err != nil || out != remoteServiceStubOutput(remoteServiceRequest{Operation: "shell", Mode: "bridge", Name: name}) {
 		t.Fatal(out, err)
 	}
 	if _, err := os.Stat("INJECTED"); !os.IsNotExist(err) {
 		t.Fatal("shell interpolation occurred", err)
+	}
+}
+
+func TestRemoteServiceRejectsUnsupportedProtocol(t *testing.T) {
+	for _, args := range [][]string{
+		{remoteServiceCommand},
+		{remoteServiceCommand, `{"protocol":"1","operation":"daemon-admin"}`},
+		{remoteServiceCommand, `{"protocol":2,"release":"999.0.0","operation":"daemon-admin"}`},
+		{remoteServiceCommand, `{"protocol":1,"operation":"daemon-admin"}`},
+	} {
+		if _, err := run(args); err == nil || !strings.Contains(err.Error(), "invalid remote service request") {
+			t.Fatalf("%q: %v", args, err)
+		}
 	}
 }
 
@@ -224,13 +243,13 @@ func TestRemoteKillRequiresMatchingRelease(t *testing.T) {
 			}
 			out, err := runRemoteCommand(t, home, options{command: "kill", server: bin, session: "build"})
 			if release == version {
-				if err != nil || out != "<kill-session>\n<build>\n<"+version+">\n" {
+				if err != nil || out != remoteServiceStubOutput(remoteServiceRequest{Operation: "kill-session", Name: "build"}) {
 					t.Fatal(out, err)
 				}
 			} else if err == nil || !strings.Contains(out, "kill requires") {
 				t.Fatal(out, err)
 			}
-			if strings.Contains(out, "Downloading") || strings.Contains(out, "<bridge>") {
+			if strings.Contains(out, "Downloading") || strings.Contains(out, `"operation":"shell"`) {
 				t.Fatal(out)
 			}
 		})
@@ -243,7 +262,7 @@ func TestRenameRemoteRouting(t *testing.T) {
 	writeRemoteVersionStub(t, bin, version)
 	o := options{command: "rename", server: bin, session: "old", newName: "new"}
 	out, err := runRemoteCommand(t, home, o)
-	if err != nil || out != "<rename-session>\n<old>\n<new>\n<"+version+">\n" {
+	if err != nil || out != remoteServiceStubOutput(remoteServiceRequest{Operation: "rename-session", Name: "old", NewName: "new"}) {
 		t.Fatal(out, err)
 	}
 	writeRemoteVersionStub(t, bin, "999.0.0")
@@ -270,7 +289,7 @@ func TestRemoteShellRejectsVersionMismatch(t *testing.T) {
 func TestSetupAppliesPreparedRelease(t *testing.T) {
 	e := newEnv(t)
 	target := filepath.Join(t.TempDir(), "custom name")
-	cmd := exec.Command(e.bin, "install", "--apply", "self:"+target)
+	cmd := exec.Command(e.bin, "install", "--apply", "here:"+target)
 	cmd.Env = e.env
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("setup: %v: %s", err, out)
@@ -288,7 +307,7 @@ func TestInstallWithRunningTasks(t *testing.T) {
 	apply := func(target, answer string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, e.bin, "install", "--apply", "self:"+target)
+		cmd := exec.CommandContext(ctx, e.bin, "install", "--apply", "here:"+target)
 		cmd.Env = e.env
 		cmd.Stdin = strings.NewReader(answer)
 		out, err := cmd.CombinedOutput()

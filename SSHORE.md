@@ -21,10 +21,10 @@ policy or depending on mutable application state.
 | CLI grammar, dispatch and help | `cli_help.go`: command definitions, help and examples; `cli_schema.go`: aliases and product/SSH parsing; `cli_commands.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
 | Mount command and execution | `cli_resources.go` handles resource command entry; `mount.go` coordinates the operation and adapts SSH and routed connections |
 | Connections and session switching | `client.go`, `client_connection.go`; saved connection records in `daemon_metadata.go` |
-| Prepared installation and exact-release policy | `setup.go` handles version checks and installation policy. `setup_linux.go` handles remote service startup and Linux installation. `setup_windows.go` handles Windows installation |
-| Shell hosting, identity and cancellation | `launch_*_linux.go`, `shell_lifecycle_linux.go`, `server_linux.go`; process inspection in `process_linux.go` |
-| Account daemon and local shell control | `daemon*.go` (task registry and resource control in `daemon_tasks.go`, plus activity leases and metadata), `local_command.go`, `local_shell.go`; hosted Unix shell adapters in `platform_*.go` |
-| Spawn ownership, lifetime SSH and nested routes | `spawn_transport.go` coordinates owner leases and relay lifetime; `spawn_route_linux.go` and `platform_*.go` handle nested routes |
+| Prepared installation and exact-release policy | `setup.go` handles version checks and installation policy. `setup_linux.go` handles remote service startup and Linux installation; `setup_windows.go` handles Windows installation |
+| Shell hosting, identity and cancellation | `server_commands.go` defines the SSH service request; `launch_daemon_linux.go`, `launch_start_linux.go`, `shell_lifecycle_linux.go`, and `server_linux.go` implement Linux hosting; process inspection in `process_linux.go` |
+| Account daemon and local shell control | `daemon*.go` (task registry and resource control in `daemon_tasks.go`, plus activity leases and metadata), `local_command.go`, `local_shell.go`; hosted shell adapters in `platform_*.go` |
+| Spawn ownership, lifetime SSH and nested routes | `spawn_transport.go` coordinates owner leases and relay lifetime; `spawn_route_linux.go` handles nested routes |
 | Shell startup and attachment I/O | `shell_terminal.go` shares terminal startup, output and input lease handoff between native and SSH-hosted shells. `internal/pty/` owns native terminal hosts |
 | Native PTY and ConPTY hosts | `internal/pty/` |
 | Shell attachment protocol and endpoints | `protocol.go`, `shell_attachment.go` |
@@ -35,13 +35,13 @@ policy or depending on mutable application state.
 | SSH connections | `internal/ssh/` owns SSH authentication, host verification, jump connections and channel primitives |
 | Multiplexed relays | `spawn_transport.go` owns the local frontend-to-daemon mux and spawn ownership. `internal/forward/` owns forwarding relays and multiplexing |
 | Copy and mount mechanisms | Flat `internal/files/`; command entry in `cli_resources.go`, operations in `cp_command.go` and `mount.go` |
-| Pending requests and atomic approval | `review_store.go`, application coordination in `review.go` (including shared source-shell validation in `review_linux.go`) |
+| Pending requests and atomic approval | `review_store.go`, application coordination in `review.go` and `review_linux.go` |
 | Forward transport and retries | `forward.go`: endpoint parsing, command execution and direct SSH forwarding lifecycle |
 | Shell-routed resources | `resource_route.go` opens the route; `resource_route_linux.go` checks release and approval before serving file, mount and forward endpoints |
 | Resource startup and control | `resource_runtime.go`, `resources.go` |
 | Private storage and name reservations | `state.go` (including account identity and remembered entry points), `task_identity.go`; native checks in `platform_*.go` |
 | Inventory, stable IDs and shell relationships | `inventory*.go`, `list*.go`, `shell_cache.go`, `pstree*.go`, `peers*.go` |
-| Platform adapters | `platform_linux.go` / `platform_windows.go` in the application and file/transport packages; `console_linux.go` / `console_windows.go` in terminal/UI packages |
+| Platform adapters | `platform_linux.go` / `platform_windows.go` in the application and file/transport packages; terminal/UI adapters in `internal/pty` and `internal/termui` |
 | Product workflow tests | `tests/`: shared isolated CLI build, public command workflows and native terminal handoff; module and private protocol regressions remain with their owning code |
 | Installation, packaging and publication | `install.sh`, `install.ps1`, `scripts/`, `.github/workflows/` |
 
@@ -86,10 +86,22 @@ have no execution side effects. `kill` is the termination command; do not add a
 
 ### Terminal and mux design scope
 
-Support Linux and Windows **amd64 only**, with remote shell hosting on Linux.
-See the [OS and shell support matrix](README.md#os-and-shell-support) for
-supported systems and shells. Windows provides local ConPTY sessions and SSH
-clients, not a remote shell server.
+The project targets multi-platform clients and Unix-like controlled hosts.
+Currently supported clients are Linux and Windows amd64; Linux amd64 is the
+supported controlled SSH host. Windows remote hosting is out of scope. See the
+[OS and shell support matrix](README.md#os-and-shell-support). sshore implements
+the SSH client and uses system OpenSSH to evaluate SSH configuration.
+
+Client portability work for macOS, FreeBSD, and Android is exploratory. The
+macOS arm64 client groundwork shares Unix SSH agent and terminal UI adapters
+and the Linux keyboard reader. A private pipe wakes the keyboard reader on
+cancellation so it can release stdin before the next reader starts. Terminal
+input flushing uses the native ioctl on each OS. Linux and macOS arm64 also
+share terminal lifecycle code, with platform-specific PTY creation. macOS client
+support still requires process and application adapters and native validation.
+
+Native and hosted sessions share shell startup rules. Hosted environment
+construction uses the platform path separator.
 ConPTY children join their kill-on-close Job during process creation. ConPTY
 uses synchronous pipe handles. The daemon uses overlapped handles for input
 writes and output reads. Input deadlines let Linux PTYs and Windows ConPTY
@@ -230,10 +242,13 @@ Ctrl+B : or Ctrl+B s opens a frontend command prompt using the terminal screen.
 handoff, command dispatch, and the completion data. `internal/pty` handles the
 screen transition and input-mode restoration. The frontend uses the same validated
 session targets and instance-based switching as other shortcuts. Tab completes
-the common prefix or cycles matching candidates in the input line, keeping the
-full-screen layout stable for long paths and large directories. Readline's erase
-and redraw are sent together with synchronized-output markers to reduce flicker;
-the markers are ignored by terminals that do not support them.
+the common prefix or cycles matching command names and session targets.
+The prompt sends `list`, `ps`, and `pstree` requests over the existing attachment
+control stream without allocating a PTY or starting SSH. The host running the
+current shell renders a bounded text response from its account's registered tasks.
+Readline sends erase and redraw together with synchronized-output markers to
+reduce flicker.
+Terminals that lack support ignore the markers.
 The prompt’s launch opens a persistent shell on the current host. Detach or
 exit returns to the previous attachment. On a hosted shell the return route
 may end with the parent, while the new launch remains independently attachable
@@ -361,7 +376,7 @@ child's host alias as a direct destination. See the
 [handoff trust boundary](SECURITY.md#trust-boundaries).
 
 Commands select tasks by name or short ID. A bare kill selector and
-`self:ID` are restricted to tasks managed on this machine. Remote kill
+`here:ID` are restricted to tasks managed on this machine. Remote kill
 selectors require the host in `HOST:ID`, including for cached rows. The list
 displays the first six characters of each task UID and orders tasks by full UID
 within each owner group. The process tree sorts roots and siblings by short
@@ -371,7 +386,7 @@ connection settings of their observation. Confirmed detach acknowledgements
 immutable shell identity in one bounded, daemon-serialized MRU stored in
 `connections/detached.json`. Global attach considers that entire
 order; HOST filters it to one remote host before choosing a still-detached
-candidate. Local shells can be selected directly by ID or with `self:ID`. The account daemon resolves a native shell and opens its control stream
+candidate. Local shells can be selected directly by ID or with `here:ID`. The account daemon resolves a native shell and opens its control stream
 in the same authenticated request. Detach and handoff from a native shell use
 its registered identity directly. A hosted shell chosen from the startup menu
 is attached by the UID captured when the menu was shown. The next, previous and
@@ -405,13 +420,13 @@ ancestry is not permission to signal. Follow the
 
 ### Account daemon and mounts
 
-One `sshore daemon` per OS user account owns native terminals, hosted Unix shells
+One `sshore daemon` per OS user account owns native terminals, hosted shells
 and resources in one in-memory task table. That table owns identity,
 lifecycle and live connection relationships; it is never reconstructed after a
 crash. The loopback TCP listener serves HTTP/1.1. Control requests use JSON
 with an account token and exact release version. The same token authenticates
 administrative snapshot and shutdown requests across releases that speak HTTP.
-Linux hosted shell creation returns after task registration. Nested routes on
+Hosted shell creation returns after task registration. Nested routes on
 the same daemon resolve names and register children directly in the task table.
 Interactive task and lease connections and multi-step startup use HTTP Upgrade.
 Upgraded connections carry the existing task streams, including smux where
@@ -548,6 +563,15 @@ snapshot. Pending requests are removed after the entire snapshot is verified.
 Spawn bridges open an independent local data connection for each stream. Mux
 buffers remain bounded, and authentication admission applies backpressure
 instead of dropping valid connection bursts.
+
+An authenticated SSH exec channel starts the internal `service` command with
+one shell-quoted JSON argument. Its protocol version and operation select the
+handler, and its release identifies the client. Standard input and output stay
+available for the selected handler's existing protocol. Normal services check
+the exact full release. Whole-daemon administration uses the service protocol
+version and the daemon's existing snapshot and confirmation exchange. For an
+older remote executable without the service command, run its installed
+`sshore kill --all` on the host.
 
 Startup must have an explicit ownership handoff. Carry the initiating client's
 working directory and environment, not whichever environment started the daemon.

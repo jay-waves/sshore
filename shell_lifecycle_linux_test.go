@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -17,31 +18,31 @@ import (
 // Every lifecycle process uses newEnv's isolated CLI test executable.
 func TestSessionMetadataLifecycle(t *testing.T) {
 	e := newEnv(t)
-	run := func(args ...string) (string, error) {
-		cmd := exec.Command(e.bin, args...)
+	run := func(req remoteServiceRequest) (string, error) {
+		cmd := exec.Command(e.bin, remoteServiceArgs(req)...)
 		cmd.Env = e.env
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
 	b, pid := e.attach("original")
 	shellOutput(t, b, "cd /tmp; printf 'DIRECTORY_%s\\n' ready", "DIRECTORY_ready")
-	if out, err := run("rename-session", "original", "work", "999.0.0"); err == nil {
+	if out, err := run(remoteServiceRequest{Operation: "rename-session", Name: "original", NewName: "work", Release: "999.0.0"}); err == nil {
 		t.Fatal("version mismatch accepted", out)
 	}
-	if out, err := run("rename-session", "original", "work", version); err != nil {
+	if out, err := run(remoteServiceRequest{Operation: "rename-session", Name: "original", NewName: "work"}); err != nil {
 		t.Fatal(out, err)
 	}
-	if out, err := run("sessions"); err != nil || !strings.Contains(out, "work [attached]") || !strings.Contains(out, "sh · /tmp") || strings.Contains(out, "original [attached]") {
+	if out, err := run(remoteServiceRequest{Operation: "inventory", Diagnostics: true}); err != nil || !strings.Contains(out, `"name":"work","state":"attached"`) || !strings.Contains(out, `"foreground":"sh","directory":"/tmp"`) || strings.Contains(out, `"name":"original","state":"attached"`) {
 		t.Fatal(out, err)
 	}
 	b.writeInput(t, []byte("sleep 30\n"))
 	foregroundSeen := false
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
-		out, err := run("sessions")
+		out, err := run(remoteServiceRequest{Operation: "inventory", Diagnostics: true})
 		if err != nil {
 			t.Fatal(out, err)
 		}
-		if strings.Contains(out, "sleep · /tmp") {
+		if strings.Contains(out, `"foreground":"sleep","directory":"/tmp"`) {
 			foregroundSeen = true
 			break
 		}
@@ -77,19 +78,19 @@ func TestSessionMetadataLifecycle(t *testing.T) {
 	if otherPID == pid {
 		t.Fatal("old label not reusable")
 	}
-	if out, err := run("rename-session", "work", "original", version); err == nil {
+	if out, err := run(remoteServiceRequest{Operation: "rename-session", Name: "work", NewName: "original"}); err == nil {
 		t.Fatal("collision accepted", out)
 	}
 	shellOutput(t, b, "printf 'RENAMED_%s\\n' alive", "RENAMED_alive")
 	b.writeInput(t, []byte("exit 7\n"))
 	b.readExit(t)
 	waitExitReceipt(t, e.dir, "work", "shell exited (code 7)")
-	if out, err := run("kill-session", "original", version); err != nil {
+	if out, err := run(remoteServiceRequest{Operation: "kill-session", Name: "original"}); err != nil {
 		t.Fatal(out, err)
 	}
 	_ = other
 	waitExitReceipt(t, e.dir, "original", "killed by sshore kill")
-	if out, err := run("sessions"); err != nil || !strings.Contains(out, "Recent exits:") || !strings.Contains(out, "work [ended]") {
+	if out, err := run(remoteServiceRequest{Operation: "inventory", Diagnostics: true}); err != nil || !strings.Contains(out, `"name":"work","reason":"shell exited (code 7)"`) {
 		t.Fatal(out, err)
 	}
 }
@@ -190,7 +191,7 @@ func TestShellTaskIDIndependentOfAlias(t *testing.T) {
 		t.Fatalf("alias became identity: %q %v", uid, err)
 	}
 	detachTestClient(t, b)
-	cmd := exec.Command(e.bin, "rename-session", uid[:6], "work", version, uid)
+	cmd := exec.Command(e.bin, remoteServiceArgs(remoteServiceRequest{Operation: "rename-session", Name: uid[:6], NewName: "work", Instance: uid})...)
 	cmd.Env = e.env
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("rename by immutable reference: %s %v", out, err)
@@ -222,7 +223,7 @@ func TestKillSessionLifecycle(t *testing.T) {
 		return recv(t, c)
 	}
 	run := func(name, release string) (string, error) {
-		cmd := exec.Command(e.bin, "kill-session", name, release)
+		cmd := exec.Command(e.bin, remoteServiceArgs(remoteServiceRequest{Operation: "kill-session", Name: name, Release: release})...)
 		cmd.Env = e.env
 		out, err := cmd.CombinedOutput()
 		return string(out), err
@@ -232,14 +233,15 @@ func TestKillSessionLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	blocked := exec.Command(e.bin, "kill-session", "keep", version)
+	blocked := exec.Command(e.bin, remoteServiceArgs(remoteServiceRequest{Operation: "kill-session", Name: "keep"})...)
 	blocked.Env = append(append([]string{}, e.env...), "SSHORE_DISABLED=1")
 	if out, err := blocked.CombinedOutput(); err == nil || !strings.Contains(string(out), "disabled") {
 		t.Fatal("recovery allowed kill", string(out), err)
 	}
-	listing := exec.Command(e.bin, "sessions")
+	listing := exec.Command(e.bin, remoteServiceArgs(remoteServiceRequest{Operation: "inventory"})...)
 	listing.Env = e.env
-	if out, err := listing.CombinedOutput(); err != nil || !strings.Contains(string(out), "keep [attached] · started ") {
+	var inv inventory
+	if out, err := listing.CombinedOutput(); err != nil || json.Unmarshal(out, &inv) != nil || len(inv.Shells) != 1 || inv.Shells[0].Name != "keep" || inv.Shells[0].State != "attached" || inv.Shells[0].Age == nil {
 		t.Fatal("missing list age", string(out), err)
 	}
 	for _, detached := range []bool{false, true} {

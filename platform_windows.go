@@ -162,12 +162,16 @@ func privateStatePath(path string, directory bool) error {
 	return nil
 }
 
-func serverCommand(args []string) error {
-	return fmt.Errorf("%s runs on the Linux server, inside the remote shell", args[0])
+func serveRemoteRequest(remoteServiceRequest) error {
+	return fmt.Errorf("remote services run on the Linux server")
+}
+
+func detachHelper() error {
+	return fmt.Errorf("run this command inside an sshore shell")
 }
 
 func requestOperations(command string, _ []operation) error {
-	return serverCommand([]string{command})
+	return fmt.Errorf("%s runs on the Linux server, inside the remote shell", command)
 }
 
 func systemMachineID() string {

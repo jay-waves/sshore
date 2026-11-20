@@ -116,7 +116,7 @@ func TestSourceVersionMatchesRelease(t *testing.T) {
 func TestSessionCommandSemantics(t *testing.T) {
 	for _, tc := range []struct{ command, target, mode string }{{"launch", "host:", "new"}, {"attach", "host:build", "attach"}} {
 		o, err := parseOptions([]string{tc.command, tc.target, "--", "-p2222"})
-		if err != nil || o.command != tc.command || !strings.Contains(remoteCommand(o), shellQuote(tc.mode)) {
+		if err != nil || o.command != tc.command || !strings.Contains(remoteCommand(o), `"mode":"`+tc.mode+`"`) {
 			t.Fatalf("%+v %v", o, err)
 		}
 	}
@@ -152,7 +152,7 @@ func TestRecoveryDiagnosticsStayLocal(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime"))
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "must-not-run"))
-	for _, args := range [][]string{{"ls", "--json"}, {"list", "self:", "--json"}, {"pstree"}} {
+	for _, args := range [][]string{{"ls", "--json"}, {"list", "here:", "--json"}, {"pstree"}} {
 		if code, err := run(args); code != 0 || err != nil {
 			t.Fatalf("local diagnostics %v: %d %v", args, code, err)
 		}
@@ -169,7 +169,7 @@ func TestSharedCLIGrammar(t *testing.T) {
 		parse func([]string) error
 	}{
 		{"shell", []string{"launch", "work:"}, func(a []string) error { _, err := parseOptions(a); return err }},
-		{"mount", []string{"work:", "self:"}, func(a []string) error { _, err := parseFTPOptions(a); return err }},
+		{"mount", []string{"work:", "here:"}, func(a []string) error { _, err := parseFTPOptions(a); return err }},
 		{"forward", []string{".:8080", "work:3000"}, func(a []string) error { _, _, err := parseForwardCommand(a); return err }},
 		{"cp", []string{"work:source", ".:target"}, func(a []string) error { _, err := parseCopyCommand(a); return err }},
 		{"review", []string{"request"}, func(a []string) error { _, err := parseCLI(a, "review"); return err }},
@@ -186,7 +186,7 @@ func TestSharedCLIGrammar(t *testing.T) {
 			}
 		})
 	}
-	mount, err := parseFTPOptions([]string{"work:", "self:", "--io-timeout=5s", "--startup-timeout=1m"})
+	mount, err := parseFTPOptions([]string{"work:", "here:", "--io-timeout=5s", "--startup-timeout=1m"})
 	if err != nil || mount.Name != "" || mount.IOTimeout.String() != "5s" || mount.StartupTimeout.String() != "1m0s" {
 		t.Fatalf("mount equals values: %+v %v", mount, err)
 	}
@@ -195,12 +195,12 @@ func TestSharedCLIGrammar(t *testing.T) {
 		t.Fatalf("forward equals values: %+v %v", forward, err)
 	}
 	for _, args := range [][]string{
-		{"work:", "self:", "--name=a"},
-		{"work:", "self:", "--read-only=false"},
-		{"work:", "self:", "--server", "--read-only"},
-		{"work:", "self:", "--server="},
-		{"work:", "self:", "--server=/bin/sshore"},
-		{"work:", "self:", "--no-watch"},
+		{"work:", "here:", "--name=a"},
+		{"work:", "here:", "--read-only=false"},
+		{"work:", "here:", "--server", "--read-only"},
+		{"work:", "here:", "--server="},
+		{"work:", "here:", "--server=/bin/sshore"},
+		{"work:", "here:", "--no-watch"},
 	} {
 		if _, err := parseFTPOptions(args); err == nil {
 			t.Fatalf("accepted mount %v", args)
@@ -303,7 +303,7 @@ func TestSSHSeparatorBoundaries(t *testing.T) {
 			return e
 		},
 		"mount": func(a []string) error {
-			args := append([]string{a[0] + ":", "self:"}, a[1:]...)
+			args := append([]string{a[0] + ":", "here:"}, a[1:]...)
 			_, e := parseFTPOptions(args)
 			return e
 		},
@@ -342,7 +342,7 @@ func TestSSHSeparatorBoundaries(t *testing.T) {
 
 func TestReconnectCommandSSHSeparator(t *testing.T) {
 	uid := strings.Repeat("a", 32)
-	if got := reconnectCommand(options{local: true, taskIdentity: "task:" + uid, session: "local-job"}); got != "sshore attach self:"+uid {
+	if got := reconnectCommand(options{local: true, taskIdentity: "task:" + uid, session: "local-job"}); got != "sshore attach here:"+uid {
 		t.Fatal(got)
 	}
 
@@ -361,7 +361,7 @@ func TestSharedHostValidation(t *testing.T) {
 		if _, err := parseOptions([]string{"launch", host}); err == nil {
 			t.Fatal("shell accepted", host)
 		}
-		if _, err := parseFTPOptions([]string{host + ":", "self:"}); err == nil {
+		if _, err := parseFTPOptions([]string{host + ":", "here:"}); err == nil {
 			t.Fatal("mount accepted", host)
 		}
 		if _, err := parseCopyCommand([]string{"file", host + ":/tmp"}); err == nil {
@@ -397,7 +397,7 @@ func TestNativeSSHPort(t *testing.T) {
 		{"launch", []string{"host:"}}, {"spawn", []string{"host:"}}, {"attach", []string{"host", "work"}},
 		{"list", []string{"host"}}, {"kill", []string{"host", "work"}},
 		{"rename", []string{"host", "old", "new"}}, {"cp", []string{".:local", "host:remote"}},
-		{"mount", []string{"host:remote", "self:"}}, {"forward", []string{".:8080", "host:80"}},
+		{"mount", []string{"host:remote", "here:"}}, {"forward", []string{".:8080", "host:80"}},
 	} {
 		args := append(append([]string(nil), tc.operands...), "--port=2222", "--", "-J", "jump")
 		parsed, err := parseCLI(args, tc.command)
@@ -431,7 +431,7 @@ func TestNativeSSHPort(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(o.ssh, []string{"-p", "2222"}) {
 		t.Fatal(o, err)
 	}
-	mounted, err := parseFTPOptions([]string{"host:remote", "self:", "--port", "2222"})
+	mounted, err := parseFTPOptions([]string{"host:remote", "here:", "--port", "2222"})
 	if err != nil || !reflect.DeepEqual(mounted.SSH, []string{"-p", "2222"}) {
 		t.Fatal(mounted, err)
 	}
@@ -446,14 +446,14 @@ func TestListHostEndpoint(t *testing.T) {
 		{"work", "work", false},
 		{"user@[2001:db8::1]:", "user@2001:db8::1", false},
 		{"2001:db8::1", "2001:db8::1", false},
-		{"self:", "local", true},
+		{"here:", "local", true},
 	} {
 		o, err := parseOptions([]string{"list", tc.target})
 		if err != nil || o.host != tc.host || o.local != tc.local {
 			t.Fatalf("%s: %+v, %v", tc.target, o, err)
 		}
 	}
-	for _, args := range [][]string{{"work:path"}, {"origin:"}, {"self:", "--port", "2222"}} {
+	for _, args := range [][]string{{"work:path"}, {"origin:"}, {"here:", "--port", "2222"}} {
 		if _, err := parseCLI(args, "list"); err == nil {
 			t.Fatalf("accepted %v", args)
 		}
@@ -467,7 +467,7 @@ func TestExecArguments(t *testing.T) {
 			t.Fatalf("command %q: %+v, %v", command, parsed, err)
 		}
 	}
-	for _, args := range [][]string{nil, {"work"}, {"work", "echo", "extra"}, {"-host", "echo"}, {"work:path", "echo"}, {"self:", "echo"}, {"origin:", "echo"}} {
+	for _, args := range [][]string{nil, {"work"}, {"work", "echo", "extra"}, {"-host", "echo"}, {"work:path", "echo"}, {"here:", "echo"}, {"origin:", "echo"}} {
 		if _, err := parseCLI(args, "exec"); err == nil {
 			t.Fatalf("accepted %q", args)
 		}
@@ -493,7 +493,7 @@ func TestInstallGrammar(t *testing.T) {
 			t.Fatalf("accepted %q", args)
 		}
 	}
-	for _, args := range [][]string{{"bootstrap"}, {"setup", "--apply", "--path", "/tmp/sshore"}, {"install", "work"}, {"install", "work:relative"}, {"install", "self:relative"}, {"install", "origin:"}, {"install", "work:/tmp/sshore", "--apply"}, {"install", "--", "-p", "2222"}} {
+	for _, args := range [][]string{{"bootstrap"}, {"setup", "--apply", "--path", "/tmp/sshore"}, {"install", "work"}, {"install", "work:relative"}, {"install", "here:relative"}, {"install", "origin:"}, {"install", "work:/tmp/sshore", "--apply"}, {"install", "--", "-p", "2222"}} {
 		if code, err := run(args); code != 2 || err == nil {
 			t.Fatalf("accepted %q: %d %v", args, code, err)
 		}
@@ -505,23 +505,6 @@ func TestInstallGrammar(t *testing.T) {
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
 		t.Fatalf("help changed state: %v", err)
-	}
-}
-
-func TestSessionAge(t *testing.T) {
-	if sessionAge(nil) != "" {
-		t.Fatal("missing age displayed")
-	}
-	for _, tc := range []struct {
-		seconds int64
-		want    string
-	}{
-		{-1, "0s"}, {0, "0s"}, {59, "59s"}, {60, "1m"}, {3599, "59m"},
-		{3600, "1h"}, {86399, "23h"}, {86400, "1d"}, {172800, "2d"},
-	} {
-		if got := sessionAge(&tc.seconds); got != " · started "+tc.want+" ago" {
-			t.Fatalf("%d: %q", tc.seconds, got)
-		}
 	}
 }
 
@@ -627,7 +610,7 @@ func TestCleanTerminalText(t *testing.T) {
 
 func TestUnifiedEndpointSyntax(t *testing.T) {
 	for _, tc := range []struct{ value, host, suffix string }{
-		{"self:", "self", ""}, {".:x", "self", "x"}, {":x", "self", "x"},
+		{"here:", "here", ""}, {".:x", "here", "x"}, {":x", "here", "x"},
 		{"origin:", "origin", ""}, {"::8080", "origin", "8080"},
 		{"work:/files/[name]", "work", "/files/[name]"},
 		{"user@[::1]:3000", "user@::1", "3000"},
@@ -645,7 +628,7 @@ func TestUnifiedEndpointSyntax(t *testing.T) {
 			t.Fatalf("%v: %d %v", args, code, err)
 		}
 	}
-	for _, target := range []string{"self:", ".:", ":"} {
+	for _, target := range []string{"here:", ".:", ":"} {
 		o, err := parseOptions([]string{"launch", target})
 		if err != nil || !o.local || o.session != "" {
 			t.Fatalf("%q: %+v %v", target, o, err)
@@ -663,7 +646,7 @@ func TestUnifiedEndpointSyntax(t *testing.T) {
 	if o, err := parseCopyCommand([]string{".:report", "work:"}); err != nil || !o.upload || o.sources[0].path != "report" || o.target.path != "." {
 		t.Fatal(o, err)
 	}
-	if o, err := parseFTPOptions([]string{"work:", "self:"}); err != nil || o.Remote != "." || o.Mountpoint != "" {
+	if o, err := parseFTPOptions([]string{"work:", "here:"}); err != nil || o.Remote != "." || o.Mountpoint != "" {
 		t.Fatal(o, err)
 	}
 	if f, _, err := parseForwardCommand([]string{"work:3000", ".:8080"}); err != nil || !f.Reverse || f.Target != 8080 {
@@ -672,10 +655,10 @@ func TestUnifiedEndpointSyntax(t *testing.T) {
 	if _, paths, hint, err := remoteCopyRequest([]string{".:/tmp/report", "::report"}); err != nil || !reflect.DeepEqual(paths, []string{"/tmp/report"}) || hint != "report" {
 		t.Fatal(paths, hint, err)
 	}
-	if kind, paths, _, err := remoteCopyRequest([]string{"origin:", "self:"}); err != nil || kind != "upload" || !reflect.DeepEqual(paths, []string{"."}) {
+	if kind, paths, _, err := remoteCopyRequest([]string{"origin:", "here:"}); err != nil || kind != "upload" || !reflect.DeepEqual(paths, []string{"."}) {
 		t.Fatal(kind, paths, err)
 	}
-	if op, err := remoteMountRequest([]string{"self:", "::"}); err != nil || op.Path != "." || op.LocalHint != "" {
+	if op, err := remoteMountRequest([]string{"here:", "::"}); err != nil || op.Path != "." || op.LocalHint != "" {
 		t.Fatal(op, err)
 	}
 	if op, err := remoteForwardRequest([]string{"origin:", ".:3000"}); err != nil || !op.LocalPortPending() || op.ServerPort() != 3000 {

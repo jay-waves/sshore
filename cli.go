@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 func run(args []string) (code int, resultErr error) {
@@ -40,7 +41,7 @@ func run(args []string) (code int, resultErr error) {
 	if os.Getenv("SSHORE_DISABLED") == "1" && len(args) > 0 {
 		allowed := true
 		switch args[0] {
-		case "--version", "-V", "--help", "-h", "--tldr", "help", "sessions", "inventory", "pstree", "reset":
+		case "--version", "-V", "--help", "-h", "--tldr", "help", remoteServiceCommand, "pstree", "reset":
 		case "list":
 			o, err := parseOptions(args)
 			if err != nil {
@@ -51,7 +52,7 @@ func run(args []string) (code int, resultErr error) {
 			allowed = false
 		}
 		if !allowed {
-			return 1, fmt.Errorf("sshore features are disabled in this recovery shell; finish maintenance and reconnect from your local shell")
+			return 1, disabledFeaturesError()
 		}
 	}
 	if len(args) == 0 {
@@ -81,21 +82,10 @@ func run(args []string) (code int, resultErr error) {
 		}
 		fmt.Println("sshore", version)
 		return 0, nil
-	case "kill-resource":
-		if len(args) != 4 {
-			return 2, usage("invalid resource cancellation")
-		}
-		if err := checkPeerVersion(args[1], "client"); err != nil {
-			return 1, err
-		}
-		return 0, killResourceIdentity(args[2], args[3])
 	case "install":
 		return runInstall(args[1:])
-	case "daemon-admin":
-		if len(args) != 1 {
-			return 2, usage("daemon-admin takes no arguments")
-		}
-		return 0, serveDaemonAdmin(os.Stdin, os.Stdout)
+	case remoteServiceCommand:
+		return 0, runRemoteService(args[1:])
 	case "daemon":
 		parsed, err := parseCLI(args[1:], "daemon")
 		if err != nil {
@@ -125,9 +115,7 @@ func run(args []string) (code int, resultErr error) {
 		if identity := os.Getenv("SSHORE_LOCAL_SESSION"); identity != "" {
 			return 0, detachLocalShell(identity)
 		}
-		return 0, serverCommand(args)
-	case "forward-watch", "mount-agent", "cp-agent", "bridge", "resume", "sessions", "kill-session", "rename-session", "task-watch", "task-remove", "inventory":
-		return 0, serverCommand(args)
+		return 0, detachHelper()
 	}
 	return 2, usage("unknown command: %s", args[0])
 }
@@ -259,7 +247,7 @@ func runTargetCommand(args []string) (int, error) {
 		}
 	}
 	if !parsed.explicitHost && (command == "rename" || command == "kill" && !(selected && target.host == "")) {
-		return 2, usage("use %s HOST:ID or %s self:ID", command, command)
+		return 2, usage("use %s HOST:ID or %s here:ID", command, command)
 	}
 	o, err := shellOptions(command, parsed)
 	if err != nil {

@@ -9,7 +9,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	sshio "github.com/jay-waves/sshore/internal/ssh"
@@ -81,32 +80,6 @@ func removeRemoteTask(key string) error {
 	_, err := activityRPC(activityRequest{Kind: "peer_remove", Key: key})
 	return err
 }
-func listRemoteTasks() error { return printRemoteTasks(os.Stdout) }
-
-func printRemoteTasks(output io.Writer) error {
-	rows, e := collectPeerViews()
-	if e != nil {
-		return e
-	}
-	if len(rows) == 0 {
-		return nil
-	}
-	sort.SliceStable(rows, func(i, j int) bool {
-		a, b := rows[i], rows[j]
-		if a.Manager != b.Manager {
-			return a.Manager < b.Manager
-		}
-		return peerResourceID(a.ID) < peerResourceID(b.ID)
-	})
-	fmt.Fprintln(output, "\nPeer-managed tasks (read-only; unknown = last known state):")
-	out := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
-	defer out.Flush()
-	fmt.Fprintln(out, "ID\tMANAGED BY\tSTATE\tDETAILS")
-	for _, row := range rows {
-		fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", row.ID, cleanText(row.Manager), row.State, cleanText(row.Detail))
-	}
-	return nil
-}
 func pendingRemoteTask(id, name string, ops []operation) peerRecord {
 	detail := fmt.Sprintf("%d requested operation(s)", len(ops))
 	if len(ops) == 1 {
@@ -150,7 +123,7 @@ func (t peerRecord) view() peerView {
 func removeRejectedPeerTask(r requestRecord) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	command := remoteHelperCommand(r.Connection.Host, r.Connection.Server, "task-remove", "", r.ID)
+	command := remoteHelperCommand(r.Connection.Host, r.Connection.Server, remoteServiceRequest{Operation: "task-remove", Identity: r.ID})
 	args := []string{"-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=2", "-o", "ConnectionAttempts=1", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "-o", "ClearAllForwardings=yes", "-o", "ForkAfterAuthentication=no", "-o", "RemoteCommand=none", "-o", "SessionType=default"}
 	args = append(args, r.Connection.SSH...)
 	_ = sshio.Run(ctx, sshio.Options{Host: r.Connection.Host, Args: args, Command: command, Directory: r.Connection.Directory}, nil, io.Discard, io.Discard)

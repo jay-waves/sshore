@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -206,20 +205,4 @@ func recentSessionExits(dir string, prune bool) []sessionExit {
 		}
 	}
 	return recent
-}
-
-func printSessionExits(dir string, out io.Writer) error {
-	gate, err := openLock(filepath.Join(dir, ".exit.lock"), false)
-	if err != nil {
-		return err
-	}
-	records := recentSessionExits(dir, true)
-	gate.Close()
-	if len(records) != 0 {
-		fmt.Fprintln(out, "\nRecent exits:")
-	}
-	for _, record := range records {
-		fmt.Fprintf(out, "%s [ended] · %s · %s\n", record.Name, record.At.Local().Format("2006-01-02 15:04:05 MST"), cleanText(record.Reason))
-	}
-	return nil
 }

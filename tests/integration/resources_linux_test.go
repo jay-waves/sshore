@@ -27,10 +27,10 @@ func TestKillAllLocalSnapshot(t *testing.T) {
 		return string(out), err
 	}
 	for _, name := range []string{"one", "two"} {
-		if out, err := run("", "fixture-launch", "self:", name, "--detach"); err != nil {
+		if out, err := run("", "fixture-launch", "here:", name, "--detach"); err != nil {
 			t.Fatal(out, err)
 		}
-		t.Cleanup(func() { run("", "kill", "self:"+name) })
+		t.Cleanup(func() { run("", "kill", "here:"+name) })
 	}
 	if out, err := run("no\n", "kill", "--all"); err == nil || !strings.Contains(out, "(one)") || !strings.Contains(out, "(two)") {
 		t.Fatal(out, err)
@@ -65,8 +65,8 @@ func TestKillAllStopsIdleDaemon(t *testing.T) {
 			t.Fatalf("%v: %v %s", args, err, out)
 		}
 	}
-	run("fixture-launch", "self:", "idle", "--detach")
-	run("kill", "self:idle")
+	run("fixture-launch", "here:", "idle", "--detach")
+	run("kill", "here:idle")
 	if len(backgroundProcesses(t, e, state)) == 0 {
 		t.Fatal("expected idle daemon")
 	}
@@ -90,8 +90,8 @@ func TestKillAllDoesNotCancelReplacement(t *testing.T) {
 		}
 		return string(out)
 	}
-	run("fixture-launch", "self:", "same", "--detach")
-	defer run("kill", "self:same")
+	run("fixture-launch", "here:", "same", "--detach")
+	defer run("kill", "here:same")
 	cmd := exec.CommandContext(ctx, e.bin, "kill", "--all")
 	cmd.Env = env
 	input, err := cmd.StdinPipe()
@@ -116,8 +116,8 @@ func TestKillAllDoesNotCancelReplacement(t *testing.T) {
 		}
 		text.WriteByte(b)
 	}
-	run("kill", "self:same")
-	run("fixture-launch", "self:", "same", "--detach")
+	run("kill", "here:same")
+	run("fixture-launch", "here:", "same", "--detach")
 	io.WriteString(input, "\n")
 	input.Close()
 	tail, _ := io.ReadAll(reader)
@@ -226,7 +226,7 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 			for {
 				n, err := terminal.Read(buf)
 				b.Write(buf[:n])
-				if !announced && strings.Contains(b.String(), "Connected self:") {
+				if !announced && strings.Contains(b.String(), "Connected here:") {
 					announced = true
 					ready <- struct{}{}
 				}
@@ -261,8 +261,8 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 		}
 		return out
 	}
-	first, terminal, _ := start([]string{"fixture-launch", "self:", "persistent"}, env)
-	defer run("kill", "self:persistent")
+	first, terminal, _ := start([]string{"fixture-launch", "here:", "persistent"}, env)
+	defer run("kill", "here:persistent")
 	first.Process.Kill()
 	first.Wait()
 	terminal.Close()
@@ -279,7 +279,7 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	pid := rows[0].PID
-	second, terminal, done := start([]string{"attach", "self:" + rows[0].ShortID}, append(env, "SSHORE_TEST_VALUE=second"))
+	second, terminal, done := start([]string{"attach", "here:" + rows[0].ShortID}, append(env, "SSHORE_TEST_VALUE=second"))
 	io.WriteString(terminal, "printf 'SAVED_%s_VALUE\\n' \"$SSHORE_TEST_VALUE\"\n")
 	select {
 	case <-saved:
@@ -325,8 +325,8 @@ func TestLocalNoLoginStartup(t *testing.T) {
 			t.Fatalf("%v: %v %s", args, err, out)
 		}
 	}
-	run("fixture-launch", "self:", "startup", "--no-login", "--detach")
-	defer run("kill", "self:startup")
+	run("fixture-launch", "here:", "startup", "--no-login", "--detach")
+	defer run("kill", "here:startup")
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		data, err := os.ReadFile(marker)

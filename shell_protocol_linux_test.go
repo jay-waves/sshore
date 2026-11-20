@@ -98,7 +98,7 @@ func (e *testEnv) bridge(name string, modes ...string) *bridgeConn {
 	if len(modes) > 0 {
 		mode = modes[0]
 	}
-	cmd := exec.Command(e.bin, "bridge", version, mode, name)
+	cmd := exec.Command(e.bin, remoteServiceArgs(remoteServiceRequest{Operation: "shell", Mode: mode, Name: name})...)
 	cmd.Env = e.env
 	cmd.Stderr = os.Stderr
 	data, err := cmd.Output()
@@ -310,7 +310,7 @@ func TestSessionPersistenceIsolationAndResize(t *testing.T) {
 	if otherPID == pid {
 		t.Fatal("named shells share a PID")
 	}
-	cmd := exec.Command(e.bin, "sessions")
+	cmd := exec.Command(e.bin, remoteServiceArgs(remoteServiceRequest{Operation: "inventory"})...)
 	cmd.Env = e.env
 	listing, err := cmd.CombinedOutput()
 	if err != nil || !bytes.Contains(listing, []byte("main")) || !bytes.Contains(listing, []byte("build")) {
@@ -643,7 +643,7 @@ func TestNewAndAttachLifecycle(t *testing.T) {
 	e := newEnv(t)
 	expectFailure := func(mode, name, contains string) {
 		t.Helper()
-		cmd := exec.Command(e.bin, "bridge", version, mode, name)
+		cmd := exec.Command(e.bin, remoteServiceArgs(remoteServiceRequest{Operation: "shell", Mode: mode, Name: name})...)
 		cmd.Env = e.env
 		data, err := cmd.Output()
 		if err == nil {
@@ -675,7 +675,7 @@ func TestNewAndAttachLifecycle(t *testing.T) {
 	untilType(t, second.out, "detached")
 	second.close()
 	// Observe the real multi-session offer, then cancel by closing the transport.
-	cmd := exec.Command(e.bin, "bridge", version, "attach", "")
+	cmd := exec.Command(e.bin, remoteServiceArgs(remoteServiceRequest{Operation: "shell", Mode: "attach"})...)
 	cmd.Env = e.env
 	in, _ := cmd.StdinPipe()
 	out, _ := cmd.StdoutPipe()

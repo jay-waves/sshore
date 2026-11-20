@@ -56,6 +56,7 @@ type message struct {
 	Attached        bool                `json:"attached,omitempty"`
 	Name            string              `json:"name,omitempty"`
 	Size            int64               `json:"size,omitempty"`
+	Output          string              `json:"output,omitempty"`
 	Error           string              `json:"error,omitempty"`
 	Code            int                 `json:"code,omitempty"`
 }

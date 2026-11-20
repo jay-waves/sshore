@@ -21,19 +21,15 @@ curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | 
 irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 ```
 
-Linux and Windows clients require system OpenSSH. Remote shell hosting requires
-Linux. See [OS and shell support](#os-and-shell-support).
+sshore implements the SSH client and uses the system OpenSSH client to resolve
+SSH configuration. Linux hosts remote shells through an existing SSH server.
+See [OS and shell support](#os-and-shell-support).
 
-Run `sshore install` to update this computer to the latest release. Run
-`sshore install work:` to install this client's exact version on a remote Linux
-host named `work`. Use `work:/absolute/path/to/sshore` for a custom install path.
-Client and remote versions must match, including the patch version. When
-upgrading from v0.7.9, use the standalone installer above on each target.
-
-When replacement is needed, the installer stops the target account’s daemon.
-If it owns tasks, review the list and type `kill` to end them and continue.
-For remote installs, enter the confirmation in your local terminal. On Windows, close other
-clients using the executable and reopen your terminal if PATH changed.
+Before 1.0.0, breaking changes are frequent, so client and remote versions must
+match exactly, including the patch version. Run `sshore install work:` to
+install the client's version on the remote Linux host `work`. On a Windows
+controlled host, install the matching version manually using the Windows
+installer above.
 
 ## Reading `HOST:VALUE`
 
@@ -51,7 +47,7 @@ attached remote shell, where “here” and “my computer” can mean different
 | Endpoint | Where it points |
 | --- | --- |
 | `work:` | The named host. An empty value takes the command's default, such as the remote home directory for `mount`. |
-| `self:` or `.:` | The machine running the command. For example, `.:report.zip` is relative to the current directory there. |
+| `here:` or `.:` | The machine running the command. For example, `.:report.zip` is relative to the current directory there. |
 | `origin:` or `::` | The attached client, when requesting a copy, forward or mount from a remote shell. You approve the request on that client. |
 
 Use an empty value for host-only commands such as `sshore list work:` and
@@ -93,19 +89,17 @@ Press **Ctrl+B** and then one of these keys:
 | `:`, `s` | Open the full-screen sshore command prompt. |
 | `Ctrl+B` | Send a literal Ctrl+B to the application. |
 
-At the command prompt, use `list` for task inventory, `ps` for the local task
-tree, `attach <ID|name>` to switch to a detached session in the current scope,
-`spawn` to open a nested shell, and `launch` to open an independent shell on
-the current host. Tab completes commands, session names and
-short IDs. Use the arrow keys to edit input or recall commands from the current
-prompt. Type `help` for commands. Press Esc
-or type `exit` to return. Applications already using the alternate screen
-redraw on return.
+At the command prompt, use `list` for task inventory and `ps` or `pstree` for
+the task tree on the machine running the current shell. Both use the active
+attachment, so the current shell stays open. Use `attach <ID|name>` to switch
+to a detached session in the current scope, `spawn` to open a nested shell,
+and `launch` to open an independent shell on the current host.
+The aliases `ls`, `a`, `sh`, and `mux` work here too.
 
-Use `cp self:FILE HOST:PATH` or `forward self:PORT HOST:PORT` to run the
-corresponding local CLI command after detaching. Both endpoints are required.
-Quote paths with spaces. Tab completes command names, flags, and local
-`self:` paths for `cp`; repeat Tab to cycle matches. Enter remote paths and ports manually.
+Tab completes commands, session names and short IDs. Use the arrow keys to
+edit input or recall commands from the current prompt. Type `help` for
+commands. Press Esc or type `exit` to return. Applications already using the
+alternate screen redraw on return.
 
 Use `--no-escape` if the application needs all keystrokes.
 
@@ -127,7 +121,7 @@ Use an ID or name from `list` to select a task. For example,
 `sshore rename work:7afe22 build` lets you resume it with
 `sshore attach work:build`. To end the shell, run `sshore kill work:build`.
 A bare selector such as `sshore kill 123eef` searches only locally managed
-tasks, like `sshore kill self:123eef`. For a remote row from cached or live
+tasks, like `sshore kill here:123eef`. For a remote row from cached or live
 output, include its host, as in `sshore kill work:123eef`. Killing a shell can
 discard unsaved work. Manage read-only peer entries on their original
 computer.
@@ -153,7 +147,10 @@ use `sshore forward`.
 | Linux | ✓ | ✓ | ✓ | ✓ | — | — |
 | Windows 11 / Server 2025 or newer | — | — | — | — | ✓ | ✓ |
 
-Windows can connect to Linux hosts and run local shells.
+Windows clients can connect to Linux hosts and run local shells. The project
+aims to support more client platforms and Unix-like controlled hosts; today,
+Linux amd64 is the supported controlled host. Set `SHELL` on the controlled
+host to select the shell used by sshore sessions.
 
 ## Copy files
 

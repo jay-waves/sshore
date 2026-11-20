@@ -1,4 +1,8 @@
-{{define "resolveServer"}}
+# Keep stdin free for the selected service's protocol.
+{{if .Helper}}
+unset SSHORE_CONFIRM_ADDR SSHORE_CONFIRM_TOKEN
+{{if not .KeepSocket}}unset SSHORE_SOCKET{{end}}
+{{end}}
 server={{q .Server}}
 [ -n "$server" ] || server=sshore
 if command -v "$server" >/dev/null 2>&1; then
@@ -7,69 +11,18 @@ elif [ "$server" = sshore ]; then
     server="$HOME/.local/bin/sshore"
 fi
 case "$server" in /*) ;; *) server="$PWD/$server" ;; esac
-{{end}}
-{{define "readVersion"}}
+{{if .Mismatch}}
 remote_version=
 if [ -e "$server" ]; then
-    remote_version=$("$server" --version{{if .}} 2>/dev/null{{end}}) || remote_version=
+    remote_version=$("$server" --version{{if .Helper}} 2>/dev/null{{end}}) || remote_version=
+fi
+if [ "$remote_version" != {{q (printf "sshore %s" .Version)}} ]; then
+    {{.Mismatch}}
 fi
 {{end}}
-{{define "helper"}}
-unset SSHORE_CONFIRM_ADDR SSHORE_CONFIRM_TOKEN
-{{if ne .Command "task-remove"}}unset SSHORE_SOCKET{{end}}
-version={{q .Version}}
-{{template "resolveServer" .}}
-{{template "readVersion" true}}
-if [ "$remote_version" != "sshore $version" ]; then
-{{if eq .Command "task-remove"}}    exit 0
-{{else}}    printf '%s\n' {{q (versionHelp .Host)}} >&2
-    exit 1
-{{end}}fi
 {{if .Ready}}
 printf '%s\n' {{q .Ready}}
-"$server" task-watch "$version" || exec cat >/dev/null
+"$server" {{.Request}} || exec cat >/dev/null
 {{else}}
-exec "$server" {{q .Command}} "$version"{{range .Args}} {{q .}}{{end}}
-{{end}}
-{{end}}
-# Embedded remote entry point. Rendered values are shell-quoted by Go.
-# Keep stdin free for startup frames and the eventual session.
-version={{q .Version}}
-command={{q .Command}}
-mode={{q .Mode}}
-name={{q .Session}}
-{{template "resolveServer" .}}
-{{if eq .Command "daemon-admin"}}
-exec "$server" daemon-admin
-{{else}}
-{{template "readVersion" false}}
-
-{{if .List}}
-if [ "$remote_version" != "sshore $version" ]; then
-    printf '%s\n' 'sshore: inventory requires matching remote release; no software changed' >&2
-    exit 1
-fi
-exec "$server" inventory "$version"{{if .ListJSON}} --diagnostics{{end}}
-{{else if or (eq .Command "kill") (eq .Command "kill-resource") (eq .Command "rename")}}
-# Management never installs or updates software.
-if [ "$remote_version" != "sshore $version" ]; then
-    printf '%s\n' "sshore: $command requires the installed remote version to match $version; no software changed" >&2
-    exit 1
-fi
-{{if eq .Command "kill-resource"}}
-exec "$server" kill-resource "$version" "$name" {{q .TaskIdentity}}
-{{else}}
-exec "$server" {{q .Action}} "$name"{{if eq .Command "rename"}} {{q .NewName}}{{end}} "$version"{{if .Instance}} {{q .Instance}}{{end}}
-{{end}}
-{{else}}
-if [ "$remote_version" != "sshore $version" ]; then
-    printf 'Remote executable: %s\n' "$server" >&2
-    {{fatal (versionHelp .Host)}}
-fi
-{{if or (eq .Mode "cp-agent") (eq .Mode "mount-agent")}}
-exec "$server" "$mode" "$version"
-{{else}}
-exec "$server" bridge "$version" "$mode" "$name"
-{{end}}
-{{end}}
+exec "$server" {{.Request}}
 {{end}}

@@ -1,3 +1,5 @@
+//go:build linux || (darwin && arm64)
+
 package pty_test
 
 import (

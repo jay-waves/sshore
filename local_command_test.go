@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -20,7 +21,7 @@ import (
 
 func TestHostedShellHandoffPreservesLocalInstance(t *testing.T) {
 	uid := strings.Repeat("a", 32)
-	h := clientHandoff{Hosted: true, Args: []string{"attach", "self:work"}, Directory: t.TempDir(), TaskIdentity: "task:" + uid, Instance: uid}
+	h := clientHandoff{Hosted: true, Args: []string{"attach", "here:work"}, Directory: t.TempDir(), TaskIdentity: "task:" + uid, Instance: uid}
 	o, err := h.options()
 	if err != nil || !o.local || !o.hosted || o.instance != uid || o.taskIdentity != h.TaskIdentity {
 		t.Fatalf("hosted route lost: %+v %v", o, err)
@@ -81,8 +82,25 @@ func TestLocalShellEnvironment(t *testing.T) {
 	}
 }
 
+func TestHostedShellEnvironment(t *testing.T) {
+	source := []string{"PATH=" + filepath.Join("base", "bin"), "KEEP=value"}
+	executable := filepath.Join("install", "sshore")
+	got := hostedShellEnvironment(source, "xterm", "instance", executable)
+	for _, want := range []string{
+		"TERM=xterm", "SSHORE_SOCKET=instance", "SSHORE_TREE_ID=" + remoteTreeIdentity("instance"),
+		"PATH=" + filepath.Dir(executable) + string(os.PathListSeparator) + filepath.Join("base", "bin"),
+	} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+	if len(source) != 2 || source[0] != "PATH="+filepath.Join("base", "bin") {
+		t.Fatal("mutated source environment")
+	}
+}
+
 func TestSpawnOptionsAndInventory(t *testing.T) {
-	for _, args := range [][]string{{"spawn"}, {"spawn", "self:", "--detach"}, {"spawn", "host:", "--", "-p", "2222"}} {
+	for _, args := range [][]string{{"spawn"}, {"spawn", "here:", "--detach"}, {"spawn", "host:", "--", "-p", "2222"}} {
 		o, err := parseOptions(args)
 		if err != nil || o.command != "spawn" {
 			t.Fatalf("%v: %+v %v", args, o, err)
@@ -240,10 +258,10 @@ func TestLocalCommandRouting(t *testing.T) {
 	}{
 		{[]string{"launch"}, true, ""},
 		{[]string{"launch", "--quiet", "--no-escape"}, true, ""},
-		{[]string{"launch", "self:"}, true, ""},
+		{[]string{"launch", "here:"}, true, ""},
 		{[]string{"launch", "work:"}, false, ""},
 		{[]string{"attach"}, false, ""},
-		{[]string{"list", "self:"}, true, ""},
+		{[]string{"list", "here:"}, true, ""},
 	} {
 		o, err := parseOptions(tc.args)
 		local := o.local

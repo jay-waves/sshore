@@ -33,8 +33,8 @@ func TestWindowsKillAllWaitsForIdleDaemonExit(t *testing.T) {
 			t.Fatalf("%v: %v: %s", args, err, out)
 		}
 	}
-	run("fixture-launch", "self:", "idle", "--detach")
-	run("kill", "self:idle")
+	run("fixture-launch", "here:", "idle", "--detach")
+	run("kill", "here:idle")
 	data, err := os.ReadFile(filepath.Join(state, "daemon", "daemon.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -125,8 +125,8 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	}
 	bin := "'" + strings.ReplaceAll(filepath.ToSlash(e.bin), "'", "'\"'\"'") + "'"
 	wait("SSHORE_OUTER>")
-	send(fmt.Sprintf("%s fixture-launch self: nativecheck; printf 'OUTER_%%s\\n' detached\r", bin))
-	wait("Connected self:nativecheck")
+	send(fmt.Sprintf("%s fixture-launch here: nativecheck; printf 'OUTER_%%s\\n' detached\r", bin))
+	wait("Connected here:nativecheck")
 	// The echoed assignment must not match the prompt it installs.
 	send("PS1='SSHORE_''INNER> '\r")
 	wait("SSHORE_INNER>")

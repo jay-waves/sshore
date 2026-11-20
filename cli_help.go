@@ -88,7 +88,7 @@ More examples: sshore launch|spawn|cp|mount|forward --tldr
 Update this computer to the latest published release, or update HOST to the
 exact local version over SSH. Before replacement, install stops the target daemon.
 If it owns tasks, review the list and follow the confirmation prompt.
-Omit the target or use self: to install locally. Use HOST: to select a remote
+Omit the target or use here: to install locally. Use HOST: to select a remote
 default path, or append an absolute path to either endpoint.
 ` + sshOptions,
 		examples: "Update this computer\n  sshore install\nUpdate a remote host to match this computer\n  sshore install work:\n",
@@ -111,7 +111,7 @@ Example: sshore exec work: 'uname -a'
 		help: `Usage: sshore launch [HOST:] [options] [-- SSH_OPTIONS]
 
 Start a new shell. It survives detach and connection loss; exit ends it.
-Omit the target or use self: or .: for local use. Create aliases with rename.
+Omit the target or use here: or .: for local use. Create aliases with rename.
 To resume, use attach.
 
 Options:
@@ -119,7 +119,7 @@ Options:
 		examples: `Start a persistent remote shell
   sshore launch work:
 Start a local shell
-  sshore launch self:
+  sshore launch here:
 Connect through a jump host
   sshore launch work: -- -J jump
 
@@ -131,7 +131,7 @@ The remote sshore release must match exactly.
 		ssh: true, native: true, max: 1, flags: strings.Fields(connectionFlags + " --detach --no-login --no-profile"),
 		help: `Usage: sshore spawn [HOST:] [options] [-- SSH_OPTIONS]
 
-Start a shell bound to the launching parent. Use self: or .: for local use.
+Start a shell bound to the launching parent. Use here: or .: for local use.
 It ends when that parent exits; a remote spawn also ends if its lifetime SSH connection is lost.
 Detach and attach do not change the owner. Use launch for a persistent shell.
 
@@ -152,7 +152,7 @@ The remote sshore release must match exactly.
 
 With no target, resume the most recently detached local or remote shell.
 Use an ID or unique alias from list, or specify HOST: to select on that host.
-Use self: for the local machine, or .: as shorthand. IDs accept unique
+Use here: for the local machine, or .: as shorthand. IDs accept unique
 hexadecimal prefixes.
 
 Options:
@@ -169,7 +169,7 @@ Use attach to reconnect. Ctrl+B d also detaches.
 	"rename": {
 		ssh: true, min: 2, max: 3, flags: []string{"--server"},
 		help: `Usage: sshore rename HOST:ID NEW [--server PATH] [-- SSH_OPTIONS]
-       sshore rename self:ID NEW
+       sshore rename here:ID NEW
        sshore rename {mount|forward|review}/OLD NEW
 
 Set or replace a shell, resource or pending review alias without restarting it.
@@ -186,7 +186,7 @@ Remote rename requires matching releases and never installs software.
 Without an endpoint, show local tasks, shells hosted by this Unix account, and saved
 remote observations without SSH.
 Use HOST: to query a remote account live. The remote release must match.
-Use self: or .: to show only local shells. Plain SSH hosts still work.
+Use here: or .: to show only local shells. Plain SSH hosts still work.
 CHECKED shows when state was last confirmed, not whether it is still live.
 DETAIL summarizes directories, mappings or errors; terminal output is shortened
 to fit the available width. Redirected output preserves full details.
@@ -221,13 +221,13 @@ No SSH is started by this command.
 	},
 	"kill": {
 		ssh: true, max: 2, flags: []string{"--server", "--all"},
-		help: `Usage: sshore kill [self:]ID
+		help: `Usage: sshore kill [here:]ID
        sshore kill {review|mount|forward}/NAME
        sshore kill HOST:ID [--server PATH] [-- SSH_OPTIONS]
        sshore kill [HOST:] --all [--server PATH] [-- SSH_OPTIONS]
 
 Use a name or short ID from list as the endpoint value. A bare selector
-searches only locally managed tasks, like self:ID. Include HOST: for remote
+searches only locally managed tasks, like here:ID. Include HOST: for remote
 shells. IDs stay bound to their original
 instance across renames; an unavailable instance cannot select its replacement.
 
@@ -269,7 +269,7 @@ To discard a request: sshore kill review/NAME.
 		ssh: true, min: 2, max: -1,
 		help: `Usage: sshore cp SOURCE... TARGET [-- SSH_OPTIONS]
 
-Write both endpoints as HOST:PATH. Use self: or .: for the current machine.
+Write both endpoints as HOST:PATH. Use here: or .: for the current machine.
 In an attached remote shell, origin: or :: selects the client for review.
 Leave a local path empty to choose it. Use .:- for standard input or output.
 Copy supports up to 16 regular files. Batches with an explicit target require a directory.
@@ -292,13 +292,13 @@ Use a different SSH port
 	"mount": {
 		ssh: true, min: 2, max: 2, flags: strings.Fields("--foreground --read-only --io-timeout --startup-timeout --stats --direct-io"),
 		help: `Usage: sshore mount HOST:SOURCE MOUNTPOINT [options] [-- SSH_OPTIONS]
-       sshore mount self:[DIRECTORY] origin:[MOUNTPOINT] [--read-only]
+       sshore mount here:[DIRECTORY] origin:[MOUNTPOINT] [--read-only]
 
 Mount a remote directory through the remote sshore helper using SFTP.
 The remote sshore release must match exactly.
 Background mounts receive fixed task IDs. HOST: selects the remote home.
 Use [HOST]:SOURCE for an IPv6 address.
-Use self:PATH or .:PATH for the mountpoint. Leave PATH empty
+Use here:PATH or .:PATH for the mountpoint. Leave PATH empty
 to use ~/mnt/NAME on Linux or a free drive letter on Windows.
 Requires FUSE on Linux or WinFsp on Windows.
 A custom mountpoint must be an existing empty directory on Linux, or a
@@ -334,7 +334,7 @@ Requires FUSE on Linux or WinFsp on Windows.
 		ssh: true, min: 2, max: 2, flags: []string{"--retries", "--foreground"},
 		help: `Usage: sshore forward LISTENER SERVICE [options] [-- SSH_OPTIONS]
 
-Write both endpoints as HOST:PORT, with the listener first. Use self: or .:
+Write both endpoints as HOST:PORT, with the listener first. Use here: or .:
 for the current machine. Leave the client-side port empty to choose it.
 From a remote shell, use origin: or :: for the attached client and review locally.
 

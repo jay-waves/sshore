@@ -272,8 +272,9 @@ Other managers' advertisements are excluded. Administrative shutdown may cross
 release versions; individual task control still requires an exact release.
 
 Linux managed cleanup sends KILL only to confirmed same-user shells and their identified tasks, with process identity validation.
-Windows spawns use kill-on-close jobs. Ordinary PTY closure relies on terminal hangup
-semantics: programs ignoring hangup or deliberately escaping/reparenting may survive.
+Windows native shells run in daemon-owned kill-on-close jobs. Ordinary Linux
+PTY closure relies on terminal hangup semantics, so programs ignoring hangup
+or deliberately escaping or reparenting may survive.
 No process-name-wide kill is used. A daemon failure can affect all terminals it owns.
 
 Recorded owner contexts and attachment sources are display metadata, not verified
@@ -332,6 +333,10 @@ notifications nor status queries authorize file operations or write replay. See
 or replaces it while the account daemon still owns tasks.
 
 Managed remote commands require the exact full release, including PATCH.
+The authenticated SSH exec channel passes a versioned service request before
+starting the selected protocol. The request selects a handler and carries no
+additional authority. Approved routes and task mutations retain their existing
+source, identity and account-daemon checks.
 `install HOST:` uses authenticated SSH to run the bundled installer on the target.
 Installers verify the release checksum and executable version. The prepared binary
 stages the replacement before requesting shutdown. It invokes the installed
@@ -394,7 +399,9 @@ health or authority to control the resource. Attachment-source metadata is advis
 Cached shell relationships, task IDs, exit receipts and worker liveness
 are not proof of identity, successful cleanup or remote service health. Targets
 are not probed. Detailed remote inventory checks the exact release but never
-installs or updates software.
+installs or updates software. The command prompt reads the current host’s
+registered tasks through its authenticated attachment and displays the
+response as plain text.
 
 Private exit records are bounded and expire. Shell receipts contain name, time and
 reason, not terminal content, arguments or working directories; resource receipts

@@ -98,7 +98,7 @@ def handoff_smoke(binary, host, options, root):
         while not marker.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert marker.read_text() == "0", "nested command did not exit after handoff"
-        rows = json.loads(subprocess.check_output([binary, "list", "self:", "--json"], text=True))
+        rows = json.loads(subprocess.check_output([binary, "list", "here:", "--json"], text=True))
         local_name = local_ref.split(":", 1)[1]
         assert any(row["name"] == local_name and row["state"] == "detached"
                    and row.get("connected_host") == host for row in rows), rows
@@ -353,7 +353,7 @@ def setup_smoke(binary, host, options, root):
 
 
 def reset_smoke(binary, root):
-    subprocess.run([binary, "launch", "self:", "--detach"], check=True)
+    subprocess.run([binary, "launch", "here:", "--detach"], check=True)
     state = root / "state"
     history = state / "shells" / "reset-history"
     history.parent.mkdir(mode=0o700, exist_ok=True)

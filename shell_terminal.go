@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -66,6 +68,24 @@ type shellInput interface {
 
 func shellSize(m message) pty.Size {
 	return pty.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}
+}
+
+func hostedShellEnvironment(source []string, term, instance, executable string) []string {
+	env := append(append([]string(nil), source...), "TERM="+term, "SSHORE_SOCKET="+instance, "SSHORE_TREE_ID="+remoteTreeIdentity(instance))
+	if executable != "" {
+		env = append(env, "PATH="+filepath.Dir(executable)+string(os.PathListSeparator)+localEnvironmentValue(source, "PATH"))
+	}
+	return env
+}
+
+// Both native and hosted sessions use the same shell startup rules; the caller
+// chooses the platform-specific shell and prepares its session environment.
+func (s *shellTerminal) startShell(path string, env []string, dir string, m message, exited func(error, int)) error {
+	args, err := pty.StartupArgs(path, m.NoLogin, m.NoProfile)
+	if err != nil {
+		return err
+	}
+	return s.startTerminal(path, args, pty.StartupEnv(path, env, m.NoProfile), dir, m, exited)
 }
 
 // The caller holds mu while publishing the terminal. The exit handler owns
@@ -244,6 +264,8 @@ func (s *shellTerminal) serveAttachment(p *attachment, control io.Reader, resize
 			if resizeAck {
 				err = p.controlMessage(message{Type: "resized", Cols: m.Cols, Rows: m.Rows})
 			}
+		case "console_inventory":
+			err = p.controlMessage(consoleInventory(m))
 		case "redraw":
 			s.terminalMu.Lock()
 			s.mu.Lock()

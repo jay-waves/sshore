@@ -142,7 +142,7 @@ func TestSpawnLifetime(t *testing.T) {
 				t.Fatal(err)
 			}
 			saveShellTree("original", "work", nil, "attached", "persistent")
-			args := []string{"fixture-" + tc.command, "self:", "temporary", "--detach"}
+			args := []string{"fixture-" + tc.command, "here:", "temporary", "--detach"}
 			if remote {
 				remoteEnv := append(append([]string(nil), env...), "SSHORE_ASKPASS=", "SSHORE_ASKPASS_ADDR=", "SSHORE_ASKPASS_TOKEN=", "SSH_ASKPASS=")
 				ssh := sshtest.Start(t, sshtest.Options{AllowForward: true, Exec: func(ctx context.Context, command string, stream cryptossh.Channel) {
@@ -190,7 +190,7 @@ func TestSpawnLifetime(t *testing.T) {
 				t.Fatal("startup timeout")
 			}
 			inspect := func() ([]byte, error) {
-				args := []string{"list", "self:", "--json"}
+				args := []string{"list", "here:", "--json"}
 				if remote {
 					args = []string{"list", "fake-host", "--json", "--server", e.bin}
 				}

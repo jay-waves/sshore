@@ -66,8 +66,8 @@ package main
 import ("fmt"; "os"; "strings")
 func main() {
  if len(os.Args) == 2 && os.Args[1] == "--version" { fmt.Println("sshore 0.3.3"); return }
- if len(os.Args) != 4 || os.Args[1] != "install" || os.Args[2] != "--apply" || !strings.HasPrefix(os.Args[3], "self:") { os.Exit(2) }
- target := strings.TrimPrefix(os.Args[3], "self:")
+ if len(os.Args) != 4 || os.Args[1] != "install" || os.Args[2] != "--apply" || !strings.HasPrefix(os.Args[3], "here:") { os.Exit(2) }
+ target := strings.TrimPrefix(os.Args[3], "here:")
  exe, err := os.Executable()
  if err == nil {
   var data []byte

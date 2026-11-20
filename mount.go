@@ -35,7 +35,7 @@ func validateMountConfig(o ftpOptions) error {
 	if err := validSSHDestination(o.Host); err != nil {
 		return err
 	}
-	if o.Host == "self" || o.Host == "origin" || o.Remote == "" || strings.ContainsRune(o.Remote, 0) || strings.ContainsRune(o.Mountpoint, 0) {
+	if o.Host == "here" || o.Host == "origin" || o.Remote == "" || strings.ContainsRune(o.Remote, 0) || strings.ContainsRune(o.Mountpoint, 0) {
 		return fmt.Errorf("invalid mount endpoints")
 	}
 	if o.IOTimeout < 0 || o.StartupTimeout < 0 {

@@ -32,7 +32,7 @@ func parsePort(s string) (int, error) {
 // A qualified endpoint identifies the peer; the first endpoint always listens.
 func parseForwardEndpoints(args []string) (string, int, int, bool, error) {
 	fail := func() (string, int, int, bool, error) {
-		return "", 0, 0, false, usage("invalid port mapping; use forward self:[PORT] HOST:PORT or forward HOST:PORT self:[PORT]")
+		return "", 0, 0, false, usage("invalid port mapping; use forward here:[PORT] HOST:PORT or forward HOST:PORT here:[PORT]")
 	}
 	if len(args) != 2 {
 		return fail()
@@ -45,7 +45,7 @@ func parseForwardEndpoints(args []string) (string, int, int, bool, error) {
 		if host == "origin" {
 			return "", 0, usage("origin: requires an attached sshore shell")
 		}
-		if host == "self" {
+		if host == "here" {
 			if port == "" {
 				return "", 0, nil
 			}
@@ -103,12 +103,12 @@ func remoteForwardRequest(args []string) (operation, error) {
 	}
 	var remote string
 	switch {
-	case leftHost == "origin" && rightHost == "self":
+	case leftHost == "origin" && rightHost == "here":
 		op.LocalHint, remote = leftPort, rightPort
-	case leftHost == "self" && rightHost == "origin":
+	case leftHost == "here" && rightHost == "origin":
 		remote, op.LocalHint, op.Reverse = leftPort, rightPort, true
 	default:
-		return op, usage("forward between self:PORT and origin:[PORT]")
+		return op, usage("forward between here:PORT and origin:[PORT]")
 	}
 	if op.LocalHint != "" {
 		if _, err := parsePort(op.LocalHint); err != nil {
@@ -144,14 +144,11 @@ func loopback(port int) string { return net.JoinHostPort("127.0.0.1", strconv.It
 
 // Remote helper selection is application policy; the engine receives opaque command text.
 func forwardRemoteCommand(f forwardConfig) string {
-	if f.ApprovalID == "" {
-		return remoteHelperCommand(f.Host, f.Server, "task-watch", forwardReadyMarker)
+	req := remoteServiceRequest{Operation: "task-watch"}
+	if f.ApprovalID != "" {
+		req = remoteServiceRequest{Operation: "forward-watch", Name: f.Session, Instance: f.Instance, PID: f.ResumePID, ApprovalID: f.ApprovalID}
 	}
-	args := []string{f.Session, strconv.Itoa(f.ResumePID), f.ApprovalID}
-	if f.Instance != "" {
-		args = append(args, f.Instance)
-	}
-	return remoteHelperCommand(f.Host, f.Server, "forward-watch", "", args...)
+	return remoteHelperCommand(f.Host, f.Server, req)
 }
 
 func runForwardForeground(f forwardConfig) (int, error) {

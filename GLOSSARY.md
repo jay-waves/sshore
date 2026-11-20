@@ -9,7 +9,7 @@ CLI help owns command syntax; [SSHORE.md](SSHORE.md) owns implementation and
 | Term | Meaning |
 | --- | --- |
 | Task | A daemon-owned item: a terminal shell, mount, forward or pending request. One in-memory account table owns its identity and lifecycle; each kind retains its execution mechanism. Programs running inside a shell are its processes, not another sshore task type. |
-| Shell / session | A daemon-owned shell process with one terminal. Local shells run on Linux or Windows; remote shells run on Linux. A session means a shell session, never a mount or forward. |
+| Shell / session | A daemon-owned shell process with one terminal. Local shells run on Linux or Windows; remote shells currently run on Linux. A session means a shell session, never a mount or forward. |
 | Spawn | A shell created by `spawn`. It ends with its original owner; a remote spawn also ends when its daemon-owned lifetime SSH connection is lost. A shell created by `launch` survives detach and connection loss. |
 | Mount | A remote directory exposed to local applications through SFTP and FUSE/WinFsp. |
 | Forward | A fixed TCP port mapping through SSH. It carries TCP traffic, including an existing SOCKS service, but does not implement SOCKS itself. Use this term instead of tunnel. |
@@ -47,7 +47,7 @@ An approved copy runs on a separate file stream without terminal attachment. An 
 an independent resource and retains the request's ID and NAME.
 Ending a source shell does not stop its independent resources.
 
-`self:` and `.:` identify the machine running the command. `origin:` and `::`
+`here:` and `.:` identify the machine running the command. `origin:` and `::`
 identify the currently attached client. A remote request's path or port is an
 editable default in local review.
 

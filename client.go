@@ -69,7 +69,6 @@ type clientEvent struct {
 	consoleSource *commandConsole
 	consoleLine   *string
 	consoleOutput []byte
-	consoleBody   *string
 	consoleClosed bool
 	inputBarrier  bool
 	inputOffset   uint64
@@ -199,7 +198,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 			}
 		}
 	}
-	if o.list || o.command == "kill" || o.command == "kill-resource" || o.command == "rename" {
+	if o.list || o.command == "kill" || o.command == "rename" {
 		err := transportio.Run(context.Background(), sshConnectionOptions(o), os.Stdin, os.Stdout, os.Stderr)
 		if err == nil && o.command == "kill" {
 			if cacheErr := confirmKilledShell(o.host, o.session, killedInstance); cacheErr != nil {
@@ -521,7 +520,6 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		timeout  <-chan time.Time
 	}
 	var pending transitionRequest
-	var consoleResource *consoleResourceCommand
 	var consoleRequest uint64
 	var openingConsole bool
 	var openingInput []byte
@@ -660,7 +658,9 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 				}
 			}
 		case <-pending.timeout:
-			if strings.HasPrefix(pending.action, "console:") && console != nil {
+			if strings.HasPrefix(pending.action, "console:inventory:") && console != nil {
+				console.show("Inventory lookup timed out.")
+			} else if strings.HasPrefix(pending.action, "console:") && console != nil {
 				console.attach = ""
 				console.show("Session lookup timed out.")
 			} else if pending.action == "handoff" {
@@ -703,43 +703,16 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					if err := writeFull(terminalOutput, e.consoleOutput); err != nil {
 						return 1, err
 					}
-				case e.consoleBody != nil:
-					console.show(*e.consoleBody)
 				case e.consoleClosed:
 					if err := leaveConsole(); err != nil {
 						return 255, err
 					}
 				case e.consoleLine != nil:
 					args := strings.Fields(*e.consoleLine)
+					if len(args) > 0 {
+						args[0] = canonicalCommand(args[0])
+					}
 					switch {
-					case len(args) > 0 && (args[0] == "cp" || args[0] == "forward"):
-						argv, err := consoleResourceArgs(*e.consoleLine)
-						var command *consoleResourceCommand
-						if err == nil {
-							command, err = prepareConsoleResource(argv)
-						}
-						if errors.Is(err, errHelp) {
-							var help strings.Builder
-							if err := showHelp(args[:1], &help); err != nil {
-								console.show(err.Error())
-							} else {
-								console.show(help.String())
-							}
-							continue
-						}
-						if err != nil {
-							console.show(err.Error())
-							continue
-						}
-						if !queueDetach() {
-							console.show("Terminal input queue is busy. Try again.")
-							continue
-						}
-						consoleResource = command
-						if err := closeConsole(); err != nil {
-							return 1, err
-						}
-
 					case len(args) == 1 && args[0] == "exit":
 						if err := leaveConsole(); err != nil {
 							return 255, err
@@ -759,11 +732,12 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						}
 					case len(args) == 1 && (args[0] == "list" || args[0] == "ps" || args[0] == "pstree"):
 						console.draw(terminalOutput, "Loading "+args[0]+"…")
-						c, command, height := console, args[0], rows
-						go func() {
-							body := consoleInventory(command, height)
-							emit(clientEvent{consoleSource: c, consoleBody: &body})
-						}()
+						consoleRequest++
+						pending.action = fmt.Sprintf("console:inventory:%d", consoleRequest)
+						awaitResponse(requestTimeout)
+						if err := streamMessage(control, message{Type: "console_inventory", Action: pending.action, Name: args[0]}); err != nil {
+							return 255, err
+						}
 					default:
 						console.show(consoleHelp)
 					}
@@ -932,6 +906,11 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						clearTransition()
 					}
 					notice(termui.Warning, "\r\n[sshore] %s\r\n", cleanText(e.m.Error))
+				case "console_inventory":
+					if console != nil && strings.HasPrefix(pending.action, "console:inventory:") && e.m.Action == pending.action {
+						clearTransition()
+						console.show(consoleInventoryBody(e.m.Output, rows))
+					}
 				case "session_targets":
 					if pending.timeout == nil || pending.action == "handoff" || e.m.Action != pending.action {
 						continue
@@ -1159,9 +1138,6 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						} else {
 							sessionNotice(termui.Success, "Detached; %s on %s keeps running.\r\nReconnect: %s", shellTaskName(cleanText(o.session), false), cleanText(o.host), reconnectCommand(o))
 						}
-					}
-					if consoleResource != nil {
-						return 0, consoleResource
 					}
 					return 0, nil
 				case "exit":

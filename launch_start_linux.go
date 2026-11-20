@@ -6,8 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -74,7 +72,7 @@ type shellSelection struct {
 }
 
 func selectHostedShell(name, mode string) (shellSelection, error) {
-	attach := mode == "attach" || mode == "resume"
+	attach := mode == "attach"
 	if name != "" {
 		task, err := resolveHostedShell(name, "")
 		if err != nil {
@@ -99,23 +97,7 @@ func selectHostedShell(name, mode string) (shellSelection, error) {
 	}
 	return shellSelection{taskIdentitySelection: *id}, nil
 }
-func bridge(name, mode string) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	lock, err := setupLock()
-	if err != nil {
-		return err
-	}
-	if err := requireInstalledRelease(exe); err != nil {
-		lock.Close()
-		return err
-	}
-	return bridgePrepared(name, mode, exe, lock, "")
-}
-
-func bridgePrepared(name, mode, executable string, gate *os.File, readyMode string) error {
+func prepareHostedShell(name, mode, executable string, gate *os.File) error {
 	defer gate.Close()
 	if (mode == "new" || mode == "spawn") && isShortTaskID(name) {
 		name = ""
@@ -138,58 +120,11 @@ func bridgePrepared(name, mode, executable string, gate *os.File, readyMode stri
 		return err
 	}
 	record.UID = selected.uid
-	if readyMode != "" {
-		if err := checkPeerVersion(record.Version, "daemon"); err != nil {
-			return err
-		}
-		gate.Close()
-		return writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode, Instance: record.UID, LocalRequest: &localDaemonRequest{Record: record}})
-	}
-	conn, err := dialLocalSessionUntil(record, time.Now().Add(time.Second))
-	if err != nil {
+	if err := checkPeerVersion(record.Version, "daemon"); err != nil {
 		return err
 	}
-	defer conn.Close()
 	gate.Close()
-	_ = conn.SetDeadline(time.Time{})
-	go func() { _, _ = io.Copy(conn, os.Stdin); _ = conn.Close() }()
-	_, err = io.Copy(os.Stdout, conn)
-	if errors.Is(err, net.ErrClosed) {
-		return nil
-	}
-	return err
-}
-
-func listSessions() error {
-	dir, err := runtimeDir()
-	if err != nil {
-		return err
-	}
-	rows, err := hostedShells("sessions")
-	if err != nil {
-		return err
-	}
-	out := os.Stdout
-	count := 0
-	for _, shell := range rows {
-		if shell.State == "unavailable" {
-			continue
-		}
-		if count > 0 {
-			fmt.Fprintln(out)
-		}
-		count++
-		fmt.Fprintf(out, "%s [%s]%s\n", shell.Name, shell.State, sessionAge(shell.Age))
-		fmt.Fprintf(out, "  %s · %s\n", shell.Foreground, shell.Directory)
-		fmt.Fprint(out, shell.ProcessTree)
-	}
-	if count == 0 {
-		fmt.Fprintln(out, "No shells")
-	}
-	if err = printSessionExits(dir, out); err != nil {
-		return err
-	}
-	return listRemoteTasks()
+	return writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: record.UID, LocalRequest: &localDaemonRequest{Record: record}})
 }
 
 // Keep each label with the instance it represents until selection is complete.

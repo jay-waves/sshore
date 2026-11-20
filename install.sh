@@ -115,7 +115,7 @@ main() {
     if [ "$install_version" = 0.7.9 ] && ! "$install_tmp/sshore" install --help >/dev/null 2>&1; then
         "$install_tmp/sshore" setup --apply --path "$install_target" || fail 'installation stopped'
     else
-        "$install_tmp/sshore" install --apply "self:$install_target" || fail 'installation stopped'
+        "$install_tmp/sshore" install --apply "here:$install_target" || fail 'installation stopped'
     fi
     printf 'Installed sshore %s: %s\n' "$install_version" "$install_target"
     printf '%s\n' 'SHA256 verified. No sudo or shell configuration changes.'

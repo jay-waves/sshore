@@ -23,8 +23,8 @@ func TestCopyParsing(t *testing.T) {
 		{[]string{".:", "user@[::1]:/tmp"}, true, "user@::1", 1},
 		{[]string{"work:/a", ":"}, false, "work", 1},
 		{[]string{".:./a", "work:/b", "--", "-p2222"}, true, "work", 1},
-		{[]string{"self:./a", "work:/b"}, true, "work", 1},
-		{[]string{"work:/a", "self:"}, false, "work", 1},
+		{[]string{"here:./a", "work:/b"}, true, "work", 1},
+		{[]string{"work:/a", "here:"}, false, "work", 1},
 	} {
 		o, err := parseCopyCommand(tc.args)
 		if err != nil || o.upload != tc.upload || o.host != tc.host || len(o.sources) != tc.count {
@@ -39,7 +39,7 @@ func TestCopyParsing(t *testing.T) {
 }
 
 func TestLocalEndpointHints(t *testing.T) {
-	for _, prefix := range []string{"self:", ".:"} {
+	for _, prefix := range []string{"here:", ".:"} {
 		placeholder, err := parseCopyEndpoint(prefix)
 		if err != nil || !placeholder.pick {
 			t.Fatal(prefix, placeholder, err)

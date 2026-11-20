@@ -187,16 +187,16 @@ func TestKillAllRemoteScope(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
-	if out, err := run("", "fixture-launch", "self:", "keep", "--detach"); err != nil {
+	if out, err := run("", "fixture-launch", "here:", "keep", "--detach"); err != nil {
 		t.Fatal(out, err)
 	}
-	defer run("", "kill", "self:keep")
+	defer run("", "kill", "here:keep")
 	if out, err := run("kill\n", "kill", "fixture", "--all", "--server", e.bin); err != nil {
 		t.Fatal(out, err)
 	}
 	waitSessionEnded(t, e, "one", firstPID)
 	waitSessionEnded(t, e, "two", secondPID)
-	out, err := run("", "list", "self:", "--json")
+	out, err := run("", "list", "here:", "--json")
 	var rows []localShellView
 	if err != nil || json.Unmarshal([]byte(out), &rows) != nil || len(rows) != 1 || rows[0].Name != "keep" {
 		t.Fatal(out, err)
@@ -534,10 +534,10 @@ func TestHostedShellTaskCommandRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Close()
-	if code, err := run([]string{"rename", "self:" + id, "renamed"}); code != 0 || err != nil {
+	if code, err := run([]string{"rename", "here:" + id, "renamed"}); code != 0 || err != nil {
 		t.Fatalf("rename listed ID: %d %v", code, err)
 	}
-	if code, err := run([]string{"kill", "self:" + id}); code != 0 || err != nil {
+	if code, err := run([]string{"kill", "here:" + id}); code != 0 || err != nil {
 		t.Fatalf("cancel renamed ID: %d %v", code, err)
 	}
 }

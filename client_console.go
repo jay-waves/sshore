@@ -6,10 +6,8 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/jay-waves/sshore/internal/termui"
 )
@@ -27,13 +25,11 @@ func (c *commandConsole) draw(out io.Writer, body string) {
 	termui.DrawConsole(out, consoleTitle, body)
 }
 
-const consoleHelp = `list              Show task inventory
-ps                Show the local task tree
-attach <ID|name>  Switch session (Tab completes)
-spawn             Open a nested shell
-launch            Open an independent shell on this host
-cp <source> <dest> Copy files after detaching
-forward <from> <to> Start a background forward after detaching
+const consoleHelp = `list (ls)         Show task inventory on this host
+ps (pstree)       Show the task tree on this host
+attach (a) <ID|name>  Switch session (Tab completes)
+spawn (sh)        Open a nested shell
+launch (mux)      Open an independent shell on this host
 exit              Return to the current shell`
 
 func (c *commandConsole) start(ctx context.Context, send func(clientEvent), width int) {
@@ -46,31 +42,18 @@ type consoleCompleter func() []sessionTarget
 
 func (targets consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	prefix := string(line[:pos])
-	if pos == len(line) {
-		args, endpoint, quote, _ := scanConsoleResource(prefix)
-		if len(args) > 0 && args[0] == "cp" && !slices.Contains(args, "--") {
-			if path, ok := strings.CutPrefix(endpoint, "self:"); ok {
-				return completeConsoleCopyPath(path, quote)
-			}
+	word := prefix
+	candidates := []string{"attach", "exit", "help", "launch", "list", "pstree", "spawn"}
+	for alias, command := range commandAliases {
+		if slices.Contains(candidates, command) {
+			candidates = append(candidates, alias)
 		}
 	}
-	word := prefix
-	candidates := []string{"attach", "cp", "exit", "forward", "help", "launch", "list", "ps", "pstree", "spawn"}
-	if rest, ok := strings.CutPrefix(prefix, "attach "); ok {
+	command, rest, ok := strings.Cut(prefix, " ")
+	if ok && canonicalCommand(command) == "attach" {
 		word, candidates = rest, nil
 		for _, target := range targets() {
 			candidates = append(candidates, target.Name, taskShortCode("task:"+target.Instance))
-		}
-	}
-	if command, rest, ok := strings.Cut(prefix, " "); ok && (command == "cp" || command == "forward") {
-		word = rest
-		if i := strings.LastIndexByte(rest, ' '); i >= 0 {
-			word = rest[i+1:]
-		}
-		candidates = nil
-		if strings.HasPrefix(word, "-") && !slices.Contains(strings.Fields(rest), "--") {
-			spec, _ := commandSpec(command)
-			candidates = slices.DeleteFunc(spec.flags, func(flag string) bool { return flag == "--foreground" })
 		}
 	}
 
@@ -122,124 +105,49 @@ func resolveConsoleTarget(targets []sessionTarget, selector string) (sessionTarg
 	return selected, ""
 }
 
-func consoleInventory(command string, rows int) string {
+const consoleMoreRows = "… more rows in the standalone command on this host"
+
+func consoleInventory(request message) message {
+	reply := message{Type: "console_inventory", Action: request.Action}
 	var body bytes.Buffer
 	var err error
-	if command == "list" {
-		var inv inventory
-		inv, err = collectInventory(options{})
+	switch request.Name {
+	case "list":
+		inv := collectManagedInventory(false, true)
+		inv.Host = "local"
+		inv.collectPeers()
+		inv, err = inv.finalize()
 		writeTaskInventory(&body, inv)
-	} else {
+	case "ps", "pstree":
 		var inv inventory
 		inv, err = localTreeInventory()
 		writeShellTree(&body, inventoryResourceTrees(localShellTreeNodes(inv), inv), inv.MachineID, false)
+	default:
+		reply.Output = "Unknown inventory command."
+		return reply
 	}
 	if err != nil {
 		fmt.Fprintln(&body, err)
 	}
-	lines := strings.Split(strings.TrimRight(body.String(), "\n"), "\n")
+	reply.Output = strings.TrimRight(body.String(), "\n")
+	// Leave room for JSON escaping and control metadata in one frame.
+	const outputLimit = 8 * 1024
+	if len(reply.Output) > outputLimit {
+		i := strings.LastIndexByte(reply.Output[:outputLimit], '\n')
+		if i < 0 {
+			reply.Output = consoleMoreRows
+		} else {
+			reply.Output = reply.Output[:i] + "\n" + consoleMoreRows
+		}
+	}
+	return reply
+}
+
+func consoleInventoryBody(body string, rows int) string {
 	limit := max(1, rows-8)
+	lines := strings.SplitN(body, "\n", limit+1)
 	if len(lines) > limit {
-		lines = append(lines[:limit:limit], "… more rows in the standalone command")
+		lines[limit] = consoleMoreRows
 	}
 	return strings.Join(lines, "\n")
-}
-
-// consoleResourceArgs groups quoted paths without interpreting shell syntax.
-func consoleResourceArgs(line string) ([]string, error) {
-	args, word, quote, haveWord := scanConsoleResource(line)
-	if quote != 0 {
-		return nil, usage("unclosed quote")
-	}
-	if haveWord {
-		args = append(args, word)
-	}
-	return args, nil
-}
-
-func scanConsoleResource(line string) ([]string, string, rune, bool) {
-	var args []string
-	var word strings.Builder
-	var quote rune
-	haveWord := false
-	for _, r := range line {
-		switch {
-		case quote != 0:
-			if r == quote {
-				quote = 0
-			} else {
-				word.WriteRune(r)
-			}
-		case r == '\'' || r == '"':
-			quote, haveWord = r, true
-		case unicode.IsSpace(r):
-			if haveWord {
-				args = append(args, word.String())
-				word.Reset()
-				haveWord = false
-			}
-		default:
-			word.WriteRune(r)
-			haveWord = true
-		}
-	}
-	return args, word.String(), quote, haveWord
-}
-
-func completeConsoleCopyPath(path string, quote rune) ([][]rune, int) {
-	input := []rune(path)
-	suffixes, offset := termui.CompleteLocalPath(input, len(input))
-	for i, raw := range suffixes {
-		suffix := string(raw)
-		directory := len(suffix) != 0 && os.IsPathSeparator(suffix[len(suffix)-1])
-		switch {
-		case quote != 0:
-			mark := string(quote)
-			other := "'"
-			if quote == rune(other[0]) {
-				other = `"`
-			}
-			suffix = strings.ReplaceAll(suffix, mark, mark+other+mark+other+mark) + mark
-		case strings.IndexFunc(suffix, func(r rune) bool {
-			return unicode.IsSpace(r) || r == 39 || r == 34
-		}) >= 0:
-			suffix = "'" + strings.ReplaceAll(suffix, "'", `'"'"'`) + "'"
-		}
-		if !directory {
-			suffix += " "
-		}
-		suffixes[i] = []rune(suffix)
-	}
-	return suffixes, offset
-}
-
-// Execute only after the active attachment has confirmed detach and the
-// frontend has restored the terminal. The CLI then owns any SSH prompts.
-type consoleResourceCommand struct {
-	run func() (int, error)
-}
-
-func (c *consoleResourceCommand) Error() string { return "run console resource command" }
-
-func prepareConsoleResource(args []string) (*consoleResourceCommand, error) {
-	if args[0] == "cp" {
-		o, err := parseCopyCommand(args[1:])
-		if err != nil {
-			return nil, err
-		}
-		for _, endpoint := range append(slices.Clone(o.sources), o.target) {
-			if endpoint.pick || endpoint.stream {
-				return nil, usage("console cp requires explicit paths and file endpoints")
-			}
-		}
-		return &consoleResourceCommand{run: func() (int, error) { return executeCopyCommand(o) }}, nil
-	}
-	f, foreground, err := parseForwardCommand(args[1:])
-	if err != nil {
-		return nil, err
-	}
-	if foreground || f.Port == 0 || f.Target == 0 {
-		return nil, usage("console forward requires both ports and runs in the background")
-	}
-	return &consoleResourceCommand{run: func() (int, error) { return executeEndpointForward(f, false) }}, nil
 }

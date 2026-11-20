@@ -90,7 +90,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		if prefix == "" {
 			return empty, false, nil
 		}
-		// Explicit HOST/self:/type scopes still accept hexadecimal names.
+		// Explicit HOST/here:/type scopes still accept hexadecimal names.
 		if compact && !typed && !parsed.local {
 			return empty, false, usage("unknown task ID %s; use sshore list", ref)
 		}

@@ -72,7 +72,7 @@ func testWindowsHandoffPassword(t *testing.T, phase string) {
 	t.Setenv("SSHORE_SOCKET", "")
 	t.Setenv("SHELL", shell)
 	env := os.Environ()
-	terminal, err := pty.Start(pty.Config{Path: bin, Args: []string{"launch", "self:"}, Env: env, Size: pty.Size{Cols: 120, Rows: 40}})
+	terminal, err := pty.Start(pty.Config{Path: bin, Args: []string{"launch", "here:"}, Env: env, Size: pty.Size{Cols: 120, Rows: 40}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func testWindowsHandoffPassword(t *testing.T, phase string) {
 			}
 		}
 	}
-	wait("Connected self:")
+	wait("Connected here:")
 	// Wait for the child shell to begin accepting commands.
 	terminal.Write([]byte("echo SHELL_READY\r"))
 	wait("SHELL_READY")
@@ -129,7 +129,7 @@ func testWindowsHandoffPassword(t *testing.T, phase string) {
 			t.Fatal(err)
 		}
 		wait("Target unavailable; restoring")
-		wait("Connected self:")
+		wait("Connected here:")
 	}
 	if phase == "cancel-prompt" {
 		if _, err := terminal.Write([]byte("partial-password")); err != nil {

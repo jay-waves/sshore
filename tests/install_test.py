@@ -54,7 +54,7 @@ shutil.copyfile(source,args[args.index('-o')+1])
     [ "$2" = --apply ] && [ "$3" = --path ] || exit 2
     shift 2""" if legacy else """install)
     [ "$2" = --apply ] || exit 2
-    case "$3" in self:*) target=${3#self:} ;; *) exit 2 ;; esac
+    case "$3" in here:*) target=${3#here:} ;; *) exit 2 ;; esac
     set -- install "$target"
 """.rstrip()
         payload = f"""#!/bin/sh

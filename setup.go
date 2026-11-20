@@ -98,7 +98,7 @@ func runInstall(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	host, target := "self", ""
+	host, target := "here", ""
 	if len(parsed.operands) != 0 {
 		host, target, err = splitEndpoint(parsed.operands[0])
 		if err != nil {
@@ -108,7 +108,7 @@ func runInstall(args []string) (int, error) {
 	if strings.ContainsAny(target, "\x00\r\n") {
 		return 2, usage("invalid installation path")
 	}
-	if host == "self" {
+	if host == "here" {
 		if len(parsed.ssh) != 0 {
 			return 2, usage("SSH options require a remote installation target")
 		}
@@ -117,17 +117,17 @@ func runInstall(args []string) (int, error) {
 		}
 		if parsed.has("--apply") {
 			if target == "" {
-				return 2, usage("applying a prepared release requires self:PATH")
+				return 2, usage("applying a prepared release requires here:PATH")
 			}
 			return 0, installRelease(target)
 		}
 		return 0, runLocalInstaller(target)
 	}
 	if host == "origin" {
-		return 2, usage("install requires self: or an SSH host")
+		return 2, usage("install requires here: or an SSH host")
 	}
 	if parsed.has("--apply") {
-		return 2, usage("applying a prepared release requires self:PATH")
+		return 2, usage("applying a prepared release requires here:PATH")
 	}
 	if target != "" && !strings.HasPrefix(target, "/") {
 		return 2, usage("remote installation path must be absolute")
@@ -227,49 +227,70 @@ func startupFrame(m message) string {
 var remoteStartupScript string
 
 var remoteStartupTemplate = template.Must(template.New("remote.sh.tmpl").Funcs(template.FuncMap{
-	"q": shellQuote, "fatal": startupFailure, "versionHelp": remoteVersionHelp,
+	"q": shellQuote,
 }).Parse(remoteStartupScript))
 
+type remoteStartup struct {
+	Server, Version, Request, Mismatch, Ready string
+	Helper, KeepSocket                        bool
+}
+
 func remoteCommand(o options) string {
-	mode := "bridge"
-	if o.command == "spawn" {
-		mode = "spawn"
-	} else if o.command == "launch" {
-		mode = "new"
-	} else if o.command == "attach" {
-		mode = "attach"
-	} else if o.command == "mount-agent" || o.command == "cp-agent" {
-		mode = o.command
+	req := remoteServiceRequest{Name: o.session, Instance: o.instance}
+	data := remoteStartup{Server: o.server}
+	switch {
+	case o.list:
+		req = remoteServiceRequest{Operation: "inventory", Diagnostics: o.listJSON}
+		data.Mismatch = remoteStartupError("sshore: inventory requires matching remote release; no software changed")
+	case o.command == "daemon-admin":
+		req.Operation = "daemon-admin"
+	case o.command == "kill" || o.command == "rename":
+		req.Operation = o.command + "-session"
+		req.NewName = o.newName
+		data.Mismatch = remoteStartupError(fmt.Sprintf("sshore: %s requires the installed remote version to match %s; no software changed", o.command, version))
+	default:
+		switch o.command {
+		case "cp-agent", "mount-agent":
+			req.Operation = o.command
+		default:
+			req.Operation, req.Mode = "shell", "bridge"
+			switch o.command {
+			case "launch":
+				req.Mode = "new"
+			case "spawn", "attach":
+				req.Mode = o.command
+			}
+			if req.Mode == "attach" && validTaskUID(o.instance) {
+				req.Name = o.instance
+			}
+		}
+		data.Mismatch = "printf 'Remote executable: %s\\n' \"$server\" >&2\n" + startupFailure(remoteVersionHelp(o.host))
 	}
-	if o.list {
-		mode = "sessions"
-	}
-	session := o.session
-	if mode == "attach" && validTaskUID(o.instance) {
-		session = o.instance
-	}
-	data := struct {
-		Version, Host, Server, Command, Mode, Session, Action, NewName, TaskIdentity, Instance string
-		List, ListJSON                                                                         bool
-	}{
-		Version: version, Host: o.host, Server: o.server, Command: o.command, Mode: mode, Session: session,
-		Action: o.command + "-session", NewName: o.newName, TaskIdentity: o.taskIdentity, Instance: o.instance,
-		List: o.list, ListJSON: o.listJSON,
-	}
-	return renderRemoteCommand("remote.sh.tmpl", data)
+	return renderRemoteCommand(data, req)
 }
 
-func remoteHelperCommand(host, server, command, ready string, args ...string) string {
-	data := struct {
-		Version, Host, Server, Command, Ready string
-		Args                                  []string
-	}{version, host, server, command, ready, args}
-	return renderRemoteCommand("helper", data)
+func remoteStartupError(reason string) string {
+	return "printf '%s\\n' " + shellQuote(reason) + " >&2; exit 1"
 }
 
-func renderRemoteCommand(name string, data any) string {
+func remoteHelperCommand(host, server string, req remoteServiceRequest) string {
+	data := remoteStartup{Server: server, Helper: true, Mismatch: remoteStartupError(remoteVersionHelp(host))}
+	switch req.Operation {
+	case "task-watch":
+		data.Ready = forwardReadyMarker
+	case "task-remove":
+		data.KeepSocket = true
+		data.Mismatch = "exit 0"
+	}
+	return renderRemoteCommand(data, req)
+}
+
+func renderRemoteCommand(data remoteStartup, req remoteServiceRequest) string {
+	data.Version = version
+	args := remoteServiceArgs(req)
+	data.Request = shellQuote(args[0]) + " " + shellQuote(args[1])
 	var b strings.Builder
-	if err := remoteStartupTemplate.ExecuteTemplate(&b, name, data); err != nil {
+	if err := remoteStartupTemplate.Execute(&b, data); err != nil {
 		panic(err)
 	}
 	return "sh -c " + shellQuote(b.String())

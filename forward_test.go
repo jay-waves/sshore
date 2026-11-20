@@ -16,7 +16,7 @@ import (
 func TestApprovedForwardCarriesSourceInstance(t *testing.T) {
 	instance := strings.Repeat("c", 32)
 	command := forwardRemoteCommand(forwardConfig{Session: "work", ResumePID: 123, ApprovalID: strings.Repeat("a", 32), Instance: instance})
-	if !strings.Contains(command, " "+strings.ReplaceAll(shellQuote(instance), "'", "'\\''")+"\n") {
+	if !strings.Contains(command, `"instance":"`+instance+`"`) {
 		t.Fatalf("source instance missing from forward validation: %s", command)
 	}
 }
@@ -243,9 +243,9 @@ func TestForwardInvocation(t *testing.T) {
 	}{
 		{[]string{".:8080", "work:3000"}, false, 8080, 3000},
 		{[]string{"work:3000", ".:8080"}, true, 3000, 8080},
-		{[]string{"self:8080", "work:3000"}, false, 8080, 3000},
-		{[]string{"work:3000", "self:8080"}, true, 3000, 8080},
-		{[]string{"self:", "work:3000"}, false, 0, 3000},
+		{[]string{"here:8080", "work:3000"}, false, 8080, 3000},
+		{[]string{"work:3000", "here:8080"}, true, 3000, 8080},
+		{[]string{"here:", "work:3000"}, false, 0, 3000},
 		{[]string{"work:3000", ".:"}, true, 3000, 0},
 		{[]string{".:8080", "work:3000"}, false, 8080, 3000},
 	} {
@@ -257,7 +257,7 @@ func TestForwardInvocation(t *testing.T) {
 }
 
 func TestForwardRejectsInvalidLocalEndpoint(t *testing.T) {
-	for _, args := range [][]string{{"origin:work:3000", "8080"}, {"origin:0", "work:3000"}, {"work:3000", "origin:65536"}, {"origin:3000", ".:8080"}, {"origin:3000", "self:8080"}, {"self:8080", "work:"}, {"3000", "8080"}} {
+	for _, args := range [][]string{{"origin:work:3000", "8080"}, {"origin:0", "work:3000"}, {"work:3000", "origin:65536"}, {"origin:3000", ".:8080"}, {"origin:3000", "here:8080"}, {"here:8080", "work:"}, {"3000", "8080"}} {
 		if _, _, err := parseForwardCommand(args); err == nil {
 			t.Fatal("accepted", args)
 		}

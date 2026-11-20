@@ -17,99 +17,53 @@ import (
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
-func serverCommand(args []string) error {
-	switch args[0] {
+func serveRemoteRequest(req remoteServiceRequest) error {
+	switch req.Operation {
+	case "shell", "cp-agent", "mount-agent":
+		return serveRemote(req)
+	case "daemon-admin":
+		// Maintenance keeps its own snapshot and shutdown verification.
+		return serveDaemonAdmin(os.Stdin, os.Stdout)
+	}
+	if err := checkPeerVersion(req.Release, "client"); err != nil {
+		return err
+	}
+	switch req.Operation {
 	case "forward-watch":
-		return runApprovedForwardWatch(args[1:])
-	case "cp-agent":
-		if len(args) == 2 {
-			return serveRemote(args[0], "", args[1])
-		}
-		if len(args) != 1 {
-			return usage("cp-agent takes no arguments")
-		}
-		stop, err := leaseActivity(activityRequest{Kind: "heartbeat"})
-		if err != nil {
+		if err := checkApprovalSource(req.Name, req.PID, req.ApprovalID, req.Instance); err != nil {
 			return err
 		}
-		defer stop()
-		return files.ServeCopy(agentStdio())
-	case "mount-agent":
-		if len(args) == 2 {
-			return serveRemote(args[0], "", args[1])
-		}
-		if len(args) != 1 {
-			return usage("mount-agent takes no arguments")
-		}
-		stop, err := leaseActivity(activityRequest{Kind: "heartbeat"})
-		if err != nil {
+		if _, err := fmt.Fprintln(os.Stdout, forwardReadyMarker); err != nil {
 			return err
-		}
-		defer stop()
-		account, _ := localMachineIdentity()
-		return files.ServeAgentWithPeer(agentStdio(), version, account, beginIncomingMountTask, func(a files.MountApproval) error { return checkApprovalSource(a.Session, a.PID, a.ID, a.Instance) })
-	case "rename-session":
-		if len(args) != 4 && len(args) != 5 {
-			return usage("rename-session requires old name, new name and client version")
-		}
-		if err := checkPeerVersion(args[3], "client"); err != nil {
-			return err
-		}
-		return renameSession(args[1], args[2], args[4:]...)
-	case "kill-session":
-		if len(args) != 3 && len(args) != 4 {
-			return usage("kill-session requires a name and client version")
-		}
-		if err := checkPeerVersion(args[2], "client"); err != nil {
-			return err
-		}
-		return killSession(args[1], args[3:]...)
-	case "bridge", "resume":
-		if args[0] == "bridge" && len(args) == 4 {
-			return serveRemote(args[2], args[3], args[1])
-		}
-		if len(args) != 2 {
-			return fmt.Errorf("internal command requires a shell name")
-		}
-		return bridge(args[1], args[0])
-	case "task-watch":
-		if len(args) != 2 {
-			return usage("invalid task watcher arguments")
-		}
-		if e := checkPeerVersion(args[1], "client"); e != nil {
-			return e
 		}
 		return watchRemoteTask()
+	case "rename-session":
+		return renameSession(req.Name, req.NewName, req.Instance)
+	case "kill-session":
+		return killSession(req.Name, req.Instance)
+	case "task-watch":
+		return watchRemoteTask()
 	case "task-remove":
-		if len(args) != 3 {
-			return usage("invalid task removal arguments")
-		}
-		if e := checkPeerVersion(args[1], "client"); e != nil {
-			return e
-		}
-		return removeRemoteTask(args[2])
+		return removeRemoteTask(req.Identity)
 	case "inventory":
-		if len(args) != 2 && (len(args) != 3 || args[2] != "--diagnostics") {
-			return usage("inventory requires client version")
-		}
-		if e := checkPeerVersion(args[1], "client"); e != nil {
-			return e
-		}
-		inv := localSessionInventory(len(args) == 3)
-		return json.NewEncoder(os.Stdout).Encode(inv)
-	case "sessions":
-		if len(args) != 1 {
-			return usage("usage: sshore sessions")
-		}
-		return listSessions()
-	case "detach":
-		if len(args) != 1 {
-			return usage("usage: sshore detach")
-		}
-		return detachHelper()
-
+		return json.NewEncoder(os.Stdout).Encode(localSessionInventory(req.Diagnostics))
 	}
-	return fmt.Errorf("unknown server command")
+	return usage("unknown remote service operation")
+}
+
+func serveRemoteFiles(operation string) error {
+	stop, err := leaseActivity(activityRequest{Kind: "heartbeat"})
+	if err != nil {
+		return err
+	}
+	defer stop()
+	if operation == "cp-agent" {
+		return files.ServeCopy(agentStdio())
+	}
+	account, _ := localMachineIdentity()
+	return files.ServeAgentWithPeer(agentStdio(), version, account, beginIncomingMountTask, func(a files.MountApproval) error {
+		return checkApprovalSource(a.Session, a.PID, a.ID, a.Instance)
+	})
 }
 
 // The existing SSH transport owns this watcher. EOF or termination removes its

@@ -24,9 +24,9 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 	state := filepath.Join(e.dir, "local-state")
 	t.Cleanup(func() { shutdownFixtureDaemon(t, state) })
 	env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SHELL=/bin/sh", "TERM=xterm-256color")
-	for _, args := range [][]string{{"fixture-launch", "self:", "localtest", "--no-profile"}, {"attach", "self:"}} {
+	for _, args := range [][]string{{"fixture-launch", "here:", "localtest", "--no-profile"}, {"attach", "here:"}} {
 		if args[0] == "attach" {
-			list := exec.Command(e.bin, "list", "self:", "--json")
+			list := exec.Command(e.bin, "list", "here:", "--json")
 			list.Env = env
 			data, err := list.Output()
 			if err != nil {
@@ -37,12 +37,12 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 				t.Fatalf("list: %s %v", data, err)
 			}
 			originalID := rows[0].ShortID
-			rename := exec.Command(e.bin, "rename", "self:"+originalID, "renamed")
+			rename := exec.Command(e.bin, "rename", "here:"+originalID, "renamed")
 			rename.Env = env
 			if out, err := rename.CombinedOutput(); err != nil {
 				t.Fatalf("rename: %s %v", out, err)
 			}
-			list = exec.Command(e.bin, "list", "self:", "--json")
+			list = exec.Command(e.bin, "list", "here:", "--json")
 			list.Env = env
 			data, err = list.Output()
 			if err != nil {
@@ -51,7 +51,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 			if err = json.Unmarshal(data, &rows); err != nil || len(rows) != 1 || rows[0].Name != "renamed" || rows[0].ShortID != originalID {
 				t.Fatalf("renamed list: %s %v", data, err)
 			}
-			args = []string{"attach", "self:" + originalID}
+			args = []string{"attach", "here:" + originalID}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		cmd := exec.CommandContext(ctx, e.bin, args...)
@@ -69,7 +69,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 			for {
 				n, err := terminal.Read(buf)
 				out.Write(buf[:n])
-				if stage == 0 && strings.Contains(out.String(), "Connected self:") {
+				if stage == 0 && strings.Contains(out.String(), "Connected here:") {
 					stage = 1
 					if args[0] == "fixture-launch" {
 						io.WriteString(terminal, "\x02c")
@@ -77,11 +77,11 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 						io.WriteString(terminal, "exit\n")
 					}
 				}
-				if args[0] == "fixture-launch" && stage == 1 && strings.Count(out.String(), "Connected self:") >= 2 {
+				if args[0] == "fixture-launch" && stage == 1 && strings.Count(out.String(), "Connected here:") >= 2 {
 					stage = 2
 					io.WriteString(terminal, "\x02d")
 				}
-				if args[0] == "fixture-launch" && stage == 2 && strings.Count(out.String(), "Connected self:localtest") >= 2 {
+				if args[0] == "fixture-launch" && stage == 2 && strings.Count(out.String(), "Connected here:localtest") >= 2 {
 					stage = 3
 					io.WriteString(terminal, "\x02d")
 				}
@@ -124,7 +124,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 			if first.ManagerPID <= 0 || first.ManagerPID != second.ManagerPID {
 				t.Fatalf("shells do not share a daemon: %d, %d", first.ManagerPID, second.ManagerPID)
 			}
-			cleanup := exec.Command(e.bin, "kill", "self:"+second.UID[:6])
+			cleanup := exec.Command(e.bin, "kill", "here:"+second.UID[:6])
 			cleanup.Env = env
 			if output, err := cleanup.CombinedOutput(); err != nil {
 				t.Fatalf("cleanup: %s %v", output, err)
@@ -320,8 +320,8 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 		}
 		return string(out)
 	}
-	run(env, "fixture-launch", "self:", "keeper", "--detach")
-	defer run(env, "kill", "self:keeper")
+	run(env, "fixture-launch", "here:", "keeper", "--detach")
+	defer run(env, "kill", "here:keeper")
 	raw, err := os.ReadFile(filepath.Join(state, "daemon", "daemon.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -421,7 +421,7 @@ func TestLocalDaemonIgnoresOrphanedVersion(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSHORE_LOCAL_SESSION=")
-			cmd := exec.CommandContext(ctx, e.bin, "fixture-spawn", "self:", "fresh", "--detach")
+			cmd := exec.CommandContext(ctx, e.bin, "fixture-spawn", "here:", "fresh", "--detach")
 			cmd.Env = env
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("orphaned record blocked spawn: %v %s", err, out)

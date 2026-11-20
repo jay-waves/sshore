@@ -221,10 +221,6 @@ func runClient(o options) (int, error) {
 			_ = o.handoffDone(context.Background(), err)
 			o.handoffDone = nil
 		}
-		if command, ok := errors.AsType[*consoleResourceCommand](err); ok {
-			signal.Stop(signals)
-			return command.run()
-		}
 		if next, ok := errors.AsType[*sessionSwitch](err); ok {
 			pending = next
 			if next.from.options.handoffHint != nil {

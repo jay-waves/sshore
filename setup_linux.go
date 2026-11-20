@@ -8,15 +8,17 @@ import (
 	"syscall"
 )
 
-func serveRemote(mode, name, peerVersion string) (result error) {
+func serveRemote(req remoteServiceRequest) (result error) {
+	mode, name := req.Mode, req.Name
+	fileService := req.Operation != "shell"
 	target, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	if mode != "bridge" && mode != "resume" && mode != "new" && mode != "attach" && mode != "spawn" && mode != "mount-agent" && mode != "cp-agent" {
+	if !fileService && mode != "bridge" && mode != "new" && mode != "attach" && mode != "spawn" {
 		return fmt.Errorf("invalid remote service")
 	}
-	if mode == "resume" || name != "" {
+	if name != "" {
 		if err := validSession(name); err != nil {
 			return err
 		}
@@ -27,7 +29,7 @@ func serveRemote(mode, name, peerVersion string) (result error) {
 			_ = writeMessage(os.Stdout, message{Type: "fatal", SoftwareVersion: version, Error: result.Error()})
 		}
 	}()
-	if err := checkPeerVersion(peerVersion, "client"); err != nil {
+	if err := checkPeerVersion(req.Release, "client"); err != nil {
 		return err
 	}
 	for {
@@ -39,7 +41,7 @@ func serveRemote(mode, name, peerVersion string) (result error) {
 			lock.Close()
 			return err
 		}
-		if mode == "attach" && name == "" {
+		if !fileService && mode == "attach" && name == "" {
 			lock.Close()
 			selected, err := chooseDetachedHostedShell()
 			if err != nil {
@@ -48,16 +50,15 @@ func serveRemote(mode, name, peerVersion string) (result error) {
 			name = selected.Instance
 			continue // Recheck setup after waiting without the account lock.
 		}
-		readyMode := "managed"
-		if mode == "mount-agent" || mode == "cp-agent" {
+		if fileService {
 			lock.Close()
 			home, _ := os.UserHomeDir()
-			if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: readyMode, HomeDirectory: home}); err != nil {
+			if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", HomeDirectory: home}); err != nil {
 				return err
 			}
-			return serverCommand([]string{mode})
+			return serveRemoteFiles(req.Operation)
 		}
-		return bridgePrepared(name, mode, target, lock, readyMode)
+		return prepareHostedShell(name, mode, target, lock)
 	}
 }
 

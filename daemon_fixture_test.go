@@ -52,8 +52,8 @@ func TestMain(m *testing.M) {
 		if len(os.Args) >= 4 && (os.Args[1] == "fixture-launch" || os.Args[1] == "fixture-spawn") {
 			// Named fixtures let lifecycle tests locate processes independently of shell ID generation.
 			target := os.Args[2] + ":"
-			if os.Args[2] == "self:" {
-				target = "self:"
+			if os.Args[2] == "here:" {
+				target = "here:"
 			}
 			o, err := parseOptions(append([]string{strings.TrimPrefix(os.Args[1], "fixture-"), target}, os.Args[4:]...))
 			if err == nil {

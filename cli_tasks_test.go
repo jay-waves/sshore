@@ -46,7 +46,7 @@ func TestShortTaskShellSelectors(t *testing.T) {
 		identity   string
 	}{
 		{"attach", []string{localCode}, []string{"work"}, local.identity()},
-		{"kill", []string{"self:" + localCode}, []string{"work"}, local.identity()},
+		{"kill", []string{"here:" + localCode}, []string{"work"}, local.identity()},
 		{"kill", []string{localCode}, []string{"work"}, local.identity()},
 		{"rename", []string{localCode, "new"}, []string{"work", "new"}, local.identity()},
 		{"attach", []string{remoteCode}, []string{"host", "build"}, remoteKey},
@@ -67,7 +67,7 @@ func TestShortTaskShellSelectors(t *testing.T) {
 			t.Fatalf("%+v %v", o, err)
 		}
 	}
-	for _, args := range [][]string{{"other", remoteCode}, {"self:" + remoteCode}, {remoteCode}} {
+	for _, args := range [][]string{{"other", remoteCode}, {"here:" + remoteCode}, {remoteCode}} {
 		parsed, err := parseCLI(args, "kill")
 		if err != nil {
 			t.Fatal(err)
@@ -199,7 +199,7 @@ func TestShortTaskUnknownAndScopedNames(t *testing.T) {
 			t.Fatalf("%v: %d %v", args, code, err)
 		}
 	}
-	for _, args := range [][]string{{"self:abcdef"}, {"host", "abcdef"}, {"review/abcdef"}} {
+	for _, args := range [][]string{{"here:abcdef"}, {"host", "abcdef"}, {"review/abcdef"}} {
 		parsed, err := parseCLI(args, "kill")
 		if err != nil {
 			t.Fatal(err)
@@ -236,7 +236,7 @@ func TestShortTaskLocalCommandRouting(t *testing.T) {
 	for _, command := range []string{"kill", "rename"} {
 		args := []string{command, "123456"}
 		if command == "rename" {
-			args = []string{command, "self:123456", "new"}
+			args = []string{command, "here:123456", "new"}
 		}
 		code, err := run(args)
 		if code != 0 || err != nil {
@@ -369,10 +369,10 @@ func TestKillAllScope(t *testing.T) {
 	}{
 		{[]string{"--all"}, "", true, false},
 		{[]string{"fedora:", "--all"}, "fedora", true, false},
-		{[]string{"self:", "--all"}, "", true, false},
+		{[]string{"here:", "--all"}, "", true, false},
 		{[]string{"fedora", "--all"}, "fedora", true, false},
 		{[]string{"--all", "fedora", "--", "-p", "2222"}, "fedora", true, false},
-		{[]string{"self:", "--all"}, "", true, false},
+		{[]string{"here:", "--all"}, "", true, false},
 		{[]string{"fedora", "shell", "--all"}, "", true, true},
 		{[]string{"--all", "--all"}, "", true, true},
 		{[]string{"--all", "--json"}, "", true, true},

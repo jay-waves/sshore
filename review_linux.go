@@ -6,7 +6,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
@@ -160,24 +159,4 @@ func (s *remoteShell) checkApprovalSource(m message) error {
 		return fmt.Errorf("source shell is attached; detach it before reviewing the request")
 	}
 	return removeRemoteTask(m.ApprovalID)
-}
-
-func runApprovedForwardWatch(args []string) error {
-	if len(args) != 4 && len(args) != 5 {
-		return usage("forward-watch requires client version, shell, PID and approval identity")
-	}
-	if err := checkPeerVersion(args[0], "approval client"); err != nil {
-		return err
-	}
-	pid, err := strconv.Atoi(args[2])
-	if err != nil {
-		return fmt.Errorf("invalid source shell PID")
-	}
-	if err = checkApprovalSource(args[1], pid, args[3], args[4:]...); err != nil {
-		return err
-	}
-	if _, err = fmt.Fprintln(os.Stdout, forwardReadyMarker); err != nil {
-		return err
-	}
-	return watchRemoteTask()
 }

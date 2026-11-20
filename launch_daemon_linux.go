@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/proc"
-	"github.com/jay-waves/sshore/internal/pty"
 )
 
 // A launch is persistent. A spawn can be attached only after its single
@@ -66,15 +65,9 @@ func (s *remoteShell) start(m message) error {
 	if shellPath == "" {
 		shellPath = "/bin/bash"
 	}
-	args, err := pty.StartupArgs(shellPath, m.NoLogin, m.NoProfile)
-	if err != nil {
-		return err
-	}
-	env = append(append([]string(nil), env...), "TERM="+m.Term, "SSHORE_SOCKET="+s.instance, "SSHORE_TREE_ID="+remoteTreeIdentity(s.instance))
-	if exe, err := os.Executable(); err == nil {
-		env = append(env, "PATH="+filepath.Dir(exe)+":"+localEnvironmentValue(env, "PATH"))
-	}
-	err = s.startTerminal(shellPath, args, pty.StartupEnv(shellPath, env, m.NoProfile), s.directory, m, func(err error, code int) {
+	exe, _ := os.Executable()
+	env = hostedShellEnvironment(env, m.Term, s.instance, exe)
+	err := s.startShell(shellPath, env, s.directory, m, func(err error, code int) {
 		s.mu.Lock()
 		p := s.endTerminal()
 		if s.exitReason == "" {
