@@ -154,7 +154,7 @@ func TestEndedShellCleanup(t *testing.T) {
 	if err != nil || len(inv.Shells) != 0 {
 		t.Fatalf("forgotten history visible: %+v %v", inv.Shells, err)
 	}
-	if nodes := localShellTreeNodes(inv); len(nodes) != 0 {
+	if nodes := localShellTreeNodes(inv, ""); len(nodes) != 0 {
 		t.Fatal(nodes)
 	}
 	// A stale ID must never forget a new instance that reused the name.

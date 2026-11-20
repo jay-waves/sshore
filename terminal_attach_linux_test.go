@@ -338,7 +338,7 @@ func TestClientCommandConsole(t *testing.T) {
 	wait("Switch session")
 	beforeInventory := sshCommands.Load()
 	io.WriteString(terminal, "ls\r")
-	wait("alpha")
+	wait("attached (current)")
 	wait("sshore> ")
 	io.WriteString(terminal, "ps\r")
 	wait("alpha")
@@ -358,6 +358,11 @@ func TestClientCommandConsole(t *testing.T) {
 	wait("sshore commands")
 	io.WriteString(terminal, "sh\r")
 	wait("(spawn)")
+	io.WriteString(terminal, "\x02:ps\r")
+	wait("spawn/")
+	wait("  *current")
+	io.WriteString(terminal, "\x1b")
+	wait("\x1b[?1049l")
 	io.WriteString(terminal, "exit\n")
 	wait("Connected fixture:alpha")
 	io.WriteString(terminal, "\x02:")
@@ -387,14 +392,15 @@ func TestClientCommandConsole(t *testing.T) {
 func TestClientLocalConsoleInventory(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-launch", "here:", "panel-local", "--no-profile"})
+	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-spawn", "here:", "panel-local", "--no-profile"})
 	wait("Connected")
 	io.WriteString(terminal, "\x02:list\r")
 	wait("HOST  local")
 	wait("panel-local")
+	wait("attached (current)")
 	wait("sshore> ")
 	io.WriteString(terminal, "pstree\r")
-	wait("panel-local")
+	wait("(panel-local)  *current")
 	wait("sshore> ")
 	io.WriteString(terminal, "exit\r")
 	wait("\x1b[?1049l")
@@ -764,11 +770,6 @@ func TestClientHandoffReturnTargetTaken(t *testing.T) {
 	wait("Connected here:")
 	other, otherTerminal, otherWait := startSessionClient(t, e, []string{"attach", "here:origin"})
 	otherWait("Connected here:origin")
-	tree := exec.Command(e.bin, "pstree")
-	tree.Env = cmd.Env
-	if out, err := tree.CombinedOutput(); err != nil || !strings.Contains(string(out), "-> local") {
-		t.Fatalf("occupied source should still show handoff: %s: %v", out, err)
-	}
 	io.WriteString(terminal, "\x02d")
 	wait("Detached;")
 	wait("Could not return to origin")
@@ -787,12 +788,12 @@ func TestClientHandoffHintReleasedOnFrontendExit(t *testing.T) {
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-launch", "here:", "origin", "--no-profile"})
+	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-launch", "here:", "origin", "--no-profile"}, sessionSSH(t, e, ""))
 	t.Cleanup(func() { cleanup := exec.Command(e.bin, "kill", "--all"); cleanup.Env = cmd.Env; _ = cleanup.Run() })
 	wait("Connected here:origin")
 	wait("sshore-test> ")
-	io.WriteString(terminal, shellQuote(e.bin)+" spawn here: --no-profile\n")
-	wait("Connected here:")
+	io.WriteString(terminal, shellQuote(e.bin)+" spawn fixture: --no-profile --server "+shellQuote(e.bin)+"\n")
+	wait("Connected fixture:")
 	check := func(wantHost string) bool {
 		list := exec.Command(e.bin, "list", "here:", "--json")
 		list.Env = cmd.Env
@@ -811,12 +812,12 @@ func TestClientHandoffHintReleasedOnFrontendExit(t *testing.T) {
 		}
 		return false
 	}
-	if !check("local") {
-		t.Fatal("parent is not connected during local handoff")
+	if !check("fixture") {
+		t.Fatal("parent does not show remote handoff")
 	}
 	// The hint stream must outlive the daemon stream handshake deadline.
 	time.Sleep(5200 * time.Millisecond)
-	if !check("local") {
+	if !check("fixture") {
 		t.Fatal("handoff hint expired while the frontend remained connected")
 	}
 	if err := cmd.Process.Kill(); err != nil {

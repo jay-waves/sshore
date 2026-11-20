@@ -106,7 +106,7 @@ func resolveConsoleTarget(targets []sessionTarget, selector string) (sessionTarg
 
 const consoleMoreRows = "… more rows in the standalone command on this host"
 
-func consoleInventory(request message) message {
+func consoleInventory(request message, current string) message {
 	reply := message{Type: "console_inventory", Action: request.Action}
 	var body bytes.Buffer
 	var err error
@@ -116,11 +116,11 @@ func consoleInventory(request message) message {
 		inv.Host = "local"
 		inv.collectPeers()
 		inv, err = inv.finalize()
-		writeTaskInventory(&body, inv)
+		writeTaskInventoryColor(&body, inv, current, false)
 	case "ps", "pstree":
 		var inv inventory
 		inv, err = localTreeInventory()
-		writeShellTree(&body, inventoryResourceTrees(localShellTreeNodes(inv), inv), inv.MachineID, false)
+		writeShellTree(&body, inventoryResourceTrees(localShellTreeNodes(inv, current), inv), inv.MachineID, false)
 	default:
 		reply.Output = "Unknown inventory command."
 		return reply

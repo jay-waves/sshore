@@ -529,7 +529,10 @@ func (s *shellTask) serveAttachment(p *attachment, control io.Reader, resizeAck 
 				err = p.controlMessage(message{Type: "resized", Cols: m.Cols, Rows: m.Rows})
 			}
 		case "console_inventory":
-			err = p.controlMessage(consoleInventory(m))
+			s.mu.Lock()
+			current := s.treeIdentity()
+			s.mu.Unlock()
+			err = p.controlMessage(consoleInventory(m, current))
 		case "redraw":
 			s.terminalMu.Lock()
 			s.mu.Lock()

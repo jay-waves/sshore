@@ -90,10 +90,11 @@ Press **Ctrl+B** and then one of these keys:
 | `Ctrl+B` | Send a literal Ctrl+B to the application. |
 
 At the command prompt, use `list` for task inventory and `ps` or `pstree` for
-the task tree on the machine running the current shell. Both use the active
-attachment, so the current shell stays open. Use `attach <ID|name>` to switch
-to a detached session in the current scope, `spawn` to open a nested shell,
-and `launch` to open an independent shell on the current host.
+the task tree on the machine running the current shell. The list marks that shell
+with `(current)` and the tree with `*current`. The shell stays open.
+Use `attach <ID|name>` to switch to a detached session in the current scope,
+`spawn` to open a nested shell, and `launch` to open an independent shell on the
+current host.
 The aliases `ls`, `a`, `sh`, and `mux` work here too.
 
 Tab completes commands, session names and short IDs. Use the arrow keys to
@@ -113,8 +114,8 @@ sshore pstree                # Show local task relationships.
 sshore list --json           # Include diagnostics and resource log paths.
 ```
 
-When a native local shell hands its terminal to another sshore session, `list`
-adds `-> HOST` (or `-> local`) to DETAIL, and `pstree` shows the same destination.
+When a native local shell hands its terminal to a remote sshore session, `list`
+adds `-> HOST` to DETAIL, and `pstree` shows the same destination.
 The source shell can be attached while it is detached. If the original frontend
 cannot return to it, it prints the reason and exits.
 

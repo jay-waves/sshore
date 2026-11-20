@@ -225,13 +225,20 @@ func runPSTree(args []string) (int, error) {
 	}
 	defer stopActivity()
 	inv, err := localTreeInventory()
-	nodes := localShellTreeNodes(inv)
+	nodes := localShellTreeNodes(inv, shellIdentityFromEnvironment())
 	nodes = inventoryResourceTrees(nodes, inv)
 	writeShellTree(os.Stdout, nodes, inv.MachineID, termui.ColorEnabled(os.Stdout))
 	if err != nil {
 		return 1, err
 	}
 	return 0, nil
+}
+
+func shellIdentityFromEnvironment() string {
+	if id := os.Getenv("SSHORE_TREE_ID"); id != "" {
+		return id
+	}
+	return os.Getenv("SSHORE_LOCAL_SESSION")
 }
 
 func currentShellTree() []shellTreeNode {
@@ -454,7 +461,7 @@ func localTreeInventory() (inventory, error) {
 
 // Only registered local shells become rows. Saved snapshots contribute
 // relationship metadata and can supply the source of an incoming attachment.
-func localShellTreeNodes(inv inventory) []shellTreeNode {
+func localShellTreeNodes(inv inventory, current string) []shellTreeNode {
 	type treeEntry struct {
 		saved      *shellTreeNode
 		visibleRow int // One-based index in nodes; zero means no visible row.
@@ -466,10 +473,6 @@ func localShellTreeNodes(inv inventory) []shellTreeNode {
 	}
 	count := len(inv.LocalShells) + len(inv.Shells)
 	nodes := make([]shellTreeNode, 0, count)
-	current := os.Getenv("SSHORE_TREE_ID")
-	if current == "" {
-		current = os.Getenv("SSHORE_LOCAL_SESSION")
-	}
 	now := time.Now()
 	add := func(n shellTreeNode) {
 		if endedShellState(n.State) {

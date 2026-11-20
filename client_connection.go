@@ -686,7 +686,7 @@ func (s *localShell) requestHandoff(c net.Conn, h *clientHandoff) error {
 	}
 	host := target.host
 	if target.local {
-		host = "local"
+		host = ""
 	}
 	s.mu.Lock()
 	p := s.active

@@ -164,6 +164,7 @@ func (s *localShell) view() localShellView {
 	view.State = s.state()
 	if len(s.handoffHints) != 0 {
 		hosts := slices.Sorted(maps.Values(s.handoffHints))
+		hosts = slices.DeleteFunc(hosts, func(host string) bool { return host == "" })
 		view.ConnectedHost = strings.Join(slices.Compact(hosts), ", ")
 	}
 	return view

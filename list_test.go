@@ -41,13 +41,12 @@ func TestTaskInventoryCurrentShell(t *testing.T) {
 	activityFixture(t)
 	for _, current := range []string{"", "local:current", "local:replaced"} {
 		t.Run(current, func(t *testing.T) {
-			t.Setenv("SSHORE_LOCAL_SESSION", current)
 			var out bytes.Buffer
-			writeTaskInventory(&out, inventory{LocalShells: []localShellView{
+			writeTaskInventoryColor(&out, inventory{LocalShells: []localShellView{
 				{identity: "local:current", Name: "work", State: "attached", Temporary: true},
 				{identity: "local:other", Name: "other", State: "attached"},
 				{identity: "local:replaced", Name: "old", State: "unavailable"},
-			}, Shells: []shellView{{Host: "remote", Name: "work", State: "attached", Historical: true}}})
+			}, Shells: []shellView{{Host: "remote", Name: "work", State: "attached", Historical: true}}}, current, false)
 			want := 0
 			if current == "local:current" {
 				want = 1
@@ -228,10 +227,9 @@ func TestTaskInventoryCheckedAndColor(t *testing.T) {
 	inv.Shells[1].ConfirmedAt = now.Add(-2 * time.Hour)
 	inv.Shells = append(inv.Shells, shellView{Host: "work", Name: "missing", State: "attached", Historical: true})
 	inv.LocalShells = []localShellView{{identity: "here", Name: "current", State: "attached"}}
-	t.Setenv("SSHORE_LOCAL_SESSION", "here")
 	var plain, colored bytes.Buffer
-	writeTaskInventoryColor(&plain, inv, false)
-	writeTaskInventoryColor(&colored, inv, true)
+	writeTaskInventoryColor(&plain, inv, "here", false)
+	writeTaskInventoryColor(&colored, inv, "here", true)
 	for _, want := range []string{"CHECKED", "12m ago", "2h ago", "never", "unknown"} {
 		if !strings.Contains(plain.String(), want) {
 			t.Fatal(plain.String())
@@ -314,12 +312,11 @@ func TestTaskInventoryIdentityAndType(t *testing.T) {
 
 func TestTaskInventoryCurrentHostedShell(t *testing.T) {
 	activityFixture(t)
-	t.Setenv("SSHORE_TREE_ID", remoteTreeIdentity("current"))
 	var out bytes.Buffer
-	writeTaskInventory(&out, inventory{Shells: []shellView{
+	writeTaskInventoryColor(&out, inventory{Shells: []shellView{
 		{Name: "nested", Host: "local", Instance: "current", State: "attached", Temporary: true},
 		{Name: "cached", Host: "remote", Instance: "current", State: "attached", Historical: true},
-	}})
+	}}, remoteTreeIdentity("current"), false)
 	if strings.Count(out.String(), "(current)") != 1 || !strings.Contains(out.String(), "spawn") || strings.Contains(out.String(), "No tasks") {
 		t.Fatal(out.String())
 	}

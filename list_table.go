@@ -17,27 +17,23 @@ type taskTableRow struct {
 }
 
 func printTaskInventory(inv inventory) {
-	writeTaskInventoryColor(os.Stdout, inv, termui.ColorEnabled(os.Stdout))
+	writeTaskInventoryColor(os.Stdout, inv, shellIdentityFromEnvironment(), termui.ColorEnabled(os.Stdout))
 }
 
 func writeTaskInventory(out io.Writer, inv inventory) {
-	writeTaskInventoryColor(out, inv, false)
+	writeTaskInventoryColor(out, inv, "", false)
 }
 
-func writeTaskInventoryColor(out io.Writer, inv inventory, color bool) {
+func writeTaskInventoryColor(out io.Writer, inv inventory, current string, color bool) {
 	now := time.Now()
 	screenWidth := 0
 	if f, ok := out.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		screenWidth, _, _ = term.GetSize(int(f.Fd()))
 	}
 	rows := []taskTableRow{}
-	currentLocal := os.Getenv("SSHORE_LOCAL_SESSION")
-	if currentLocal == "" {
-		currentLocal = os.Getenv("SSHORE_TREE_ID")
-	}
 	for _, s := range inv.LocalShells {
 		state := s.State
-		if currentLocal != "" && s.identity == currentLocal && state == "attached" {
+		if current != "" && s.identity == current && state == "attached" {
 			state += " (current)"
 		}
 		detail := s.Directory
@@ -55,8 +51,8 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, color bool) {
 			host = inv.Host
 		}
 		state, checked := s.State, "now"
-		if !s.Historical && inv.Host == "" && s.Instance != "" &&
-			remoteTreeIdentity(s.Instance) == os.Getenv("SSHORE_TREE_ID") && state == "attached" {
+		if !s.Historical && !inv.RemoteQueried && s.Instance != "" &&
+			remoteTreeIdentity(s.Instance) == current && state == "attached" {
 			state += " (current)"
 		}
 		if s.Historical {

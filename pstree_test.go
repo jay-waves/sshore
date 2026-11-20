@@ -181,12 +181,11 @@ func TestShellTreeLifetimeOwnership(t *testing.T) {
 
 func TestShellTreeInventoryRefresh(t *testing.T) {
 	activityFixture(t)
-	t.Setenv("SSHORE_TREE_ID", "remote:instance")
 	nodes := localShellTreeNodes(inventory{
 		Host:      "server",
 		ShellTree: []shellTreeNode{{Identity: "remote:instance", Owner: "owner", Parent: "other", State: "attached", Cached: true}},
 		Shells:    []shellView{{Instance: "instance", Name: "job", State: "detached", Temporary: true}},
-	})
+	}, "remote:instance")
 	if len(nodes) != 1 || nodes[0].State != "detached" || nodes[0].Cached || !nodes[0].Current || nodes[0].Owner != "owner" || nodes[0].Parent != "" || nodes[0].Lifetime != "heartbeat" {
 		t.Fatalf("inventory refresh: %+v", nodes)
 	}
@@ -251,7 +250,7 @@ func TestShellTreeOmitsEndedOwners(t *testing.T) {
 	nodes := localShellTreeNodes(inventory{
 		ShellTree:   []shellTreeNode{{Identity: "gone", Name: "old", State: "exited"}, {Identity: "child", Owner: "gone"}},
 		LocalShells: []localShellView{{identity: "child", Name: "live", State: "detached", Temporary: true}},
-	})
+	}, "")
 	var out bytes.Buffer
 	writeShellTree(&out, nodes, "", false)
 	if strings.Contains(out.String(), "old") || !strings.Contains(out.String(), "(live)") || strings.Contains(out.String(), "owner ended") {
@@ -292,12 +291,12 @@ func TestLocalTreeScopeAndSources(t *testing.T) {
 		{Identity: "remote:hosted", Name: "hosted", Owner: "foreign", Parent: "foreign", SourceHost: "there", SourceMachineID: foreign, State: "attached"},
 		{Identity: "remote:cached", Name: "cached"},
 	}
-	got := localShellTreeNodes(inv)
+	got := localShellTreeNodes(inv, "")
 	if len(got) != 2 || got[0].Remote != "" || got[1].Remote != "there" || got[1].Direction != "<-" {
 		t.Fatalf("scope/source: %+v", got)
 	}
 	inv.Shells[0].State = "detached"
-	if got := localShellTreeNodes(inv); got[1].Remote != "" {
+	if got := localShellTreeNodes(inv, ""); got[1].Remote != "" {
 		t.Fatalf("stale attachment source: %+v", got)
 	}
 }
