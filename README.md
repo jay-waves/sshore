@@ -85,7 +85,7 @@ Press **Ctrl+B** and then one of these keys:
 | `d` | Detach. Run `sshore attach` to return to the last detached local or remote shell. |
 | `l`, `n`, `p` | Switch to the last, next or previous session. |
 | `c` | Spawn a nested shell on the current host. Exit or detach to return one level. |
-| `r` | Request a redraw. |
+| `r` | Request a redraw. Windows local shells repaint at the current window size. |
 | `:`, `s` | Open the full-screen sshore command prompt. |
 | `Ctrl+B` | Send a literal Ctrl+B to the application. |
 

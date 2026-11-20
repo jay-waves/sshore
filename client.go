@@ -451,7 +451,12 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		}
 		fmt.Fprint(os.Stdout, termui.Format(color, level, format, args...))
 	}
-	ticker := time.NewTicker(100 * time.Millisecond)
+	resizeInterval := 100 * time.Millisecond
+	if runtime.GOOS == "windows" {
+		// Keep the nested ConPTY close to the display size while dragging.
+		resizeInterval = 50 * time.Millisecond
+	}
+	ticker := time.NewTicker(resizeInterval)
 	defer ticker.Stop()
 	keys := pty.Keys{Bypass: o.noEscape}
 	var keyTimer *time.Timer

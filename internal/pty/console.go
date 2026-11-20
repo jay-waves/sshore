@@ -176,7 +176,9 @@ func (w *consoleOutput) Write(data []byte) (int, error) {
 			}
 		case 'c':
 			if c == 0x1b {
+				// Preserve cancellation even if the new escape sequence is filtered.
 				out = append(out, w.pending...)
+				out = append(out, 0x18)
 				w.pending = append(w.pending[:0], c)
 				w.state = 'e'
 				continue

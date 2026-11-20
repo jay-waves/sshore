@@ -321,7 +321,7 @@ func TestConsoleOutputModes(t *testing.T) {
 		{"common terminal sequences", "\x1b]7;file://host/path\x1b\\\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\\x1b]133;A\a\x1b]9;4;1;50\a\x1b[?2026htext\x1b[?2026l", "\x1b]7;file://host/path\x1b\\\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\\x1b]133;A\a\x1b]9;4;1;50\a\x1b[?2026htext\x1b[?2026l"},
 		{"opaque strings", "\x1b]2;\x1b[?9001h\a\x1bP\x1b[?9001l\x1b\\", "\x1b]2;\x1b[?9001h\a\x1bP\x1b[?9001l\x1b\\"},
 		{"partial", "text\x1b[?900", "text\x1b[?900"},
-		{"aborted", "\x1b[?900\x1b[?9001h", "\x1b[?900"},
+		{"aborted", "\x1b[?900\x1b[?9001hA", "\x1b[?900\x18A"},
 		{"bounded", "\x1b[?" + strings.Repeat("1;", 100) + "h", "\x1b[?" + strings.Repeat("1;", 100) + "h"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

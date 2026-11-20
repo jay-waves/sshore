@@ -302,21 +302,13 @@ func (t *Terminal) closeConsole() {
 	})
 }
 
-// A temporary size change asks ConPTY to repaint without injecting input.
+// ConPTY repaints its screen when asked to resize to its current dimensions.
+// Changing columns here makes it emit rows wrapped for a different display.
 func RequestRedraw(t *Terminal) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.console == 0 || t.size.Cols < 2 {
+	if t.console == 0 {
 		return
 	}
-	changed := windows.Coord{X: int16(t.size.Cols - 1), Y: int16(t.size.Rows)}
-	if windows.ResizePseudoConsole(t.console, changed) == nil {
-		original := t.size
-		t.size.Cols--
-		// Track the actual size even if restoration fails, so the next Resize
-		// retries instead of incorrectly treating the original size as current.
-		if windows.ResizePseudoConsole(t.console, windows.Coord{X: int16(original.Cols), Y: int16(original.Rows)}) == nil {
-			t.size = original
-		}
-	}
+	_ = windows.ResizePseudoConsole(t.console, windows.Coord{X: int16(t.size.Cols), Y: int16(t.size.Rows)})
 }
