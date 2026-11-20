@@ -1,5 +1,4 @@
 """Check publication and immutable-tag handling without contacting GitHub."""
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -10,50 +9,37 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/release.sh"
 
 
 class ReleaseTest(unittest.TestCase):
-    def run_release(self, stale=False, existing=False, fail=False):
+    def run_release(self, ref='refs/tags/v0.4.1', fail=False):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "VERSION").write_text("0.4.1\n")
             (root / "packages").mkdir()
             for name in ("linux.tar.gz", "windows.zip", "linux.sha256"):
                 (root / "packages" / name).write_text("test\n")
-            gh = root / "gh"
-            gh.write_text('''#!/usr/bin/env python3
-import json, os, sys
-args = sys.argv[1:]
-with open("calls", "a") as f:
-    f.write(json.dumps(args) + "\\n")
-if "git/ref/heads/main" in " ".join(args):
-    print("old" if os.environ["STALE"] == "1" else "abc")
-elif "git/matching-refs/tags/v0.4.1" in " ".join(args) and os.environ["EXISTING"] == "1":
-    print("refs/tags/v0.4.1")
-elif args[:2] == ["release", "create"] and os.environ["FAIL"] == "1":
-    sys.exit(1)
-''')
-            gh.chmod(0o755)
-            env = dict(os.environ, PATH=tmp + os.pathsep + os.environ["PATH"],
-                       GH_REPO="test/repo", GITHUB_SHA="abc", STALE=str(int(stale)),
-                       EXISTING=str(int(existing)), FAIL=str(int(fail)))
-            result = subprocess.run(["bash", str(SCRIPT)], cwd=root, env=env,
-                                    capture_output=True, text=True)
-            calls = [json.loads(line) for line in (root / "calls").read_text().splitlines()]
+            (root / "calls").touch()
+            env = dict(os.environ, GITHUB_SHA="abc", GITHUB_REF=ref, FAIL=str(int(fail)))
+            driver = '''gh() {
+  printf '%s\\n' "$*" >> calls
+  [[ "$FAIL" == 0 ]]
+}
+source "$1"
+'''
+            shell = os.environ.get("NIU_SHELL", "bash")
+            result = subprocess.run([shell, "-c", driver, "release-test", SCRIPT.as_posix()],
+                                    cwd=root, env=env, capture_output=True, text=True)
+            calls = (root / "calls").read_text().splitlines()
             return result, calls
 
     def test_publish_new_release(self):
         result, calls = self.run_release()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(any(c[:2] == ["release", "create"] for c in calls))
-        self.assertFalse(any("DELETE" in c for c in calls))
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0].startswith("release create v0.4.1 --verify-tag "))
 
-    def test_existing_tag_is_not_changed(self):
-        result, calls = self.run_release(existing=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(any(c[:2] == ["release", "create"] or "POST" in c for c in calls))
-
-    def test_stale_commit_does_not_publish(self):
-        result, calls = self.run_release(stale=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(any(c[:2] == ["release", "create"] or "POST" in c for c in calls))
+    def test_mismatched_tag_does_not_publish(self):
+        result, calls = self.run_release(ref="refs/tags/v0.4.2")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
 
     def test_publish_failure_is_reported(self):
         result, _ = self.run_release(fail=True)

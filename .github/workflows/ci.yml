@@ -2,12 +2,12 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -15,29 +15,19 @@ concurrency:
 
 jobs:
   build:
-    name: Build and publish
+    name: Build packages
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      CGO_ENABLED: '0'
-      GOARCH: amd64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: stable
       - name: Build and package
-        run: |
-          version=$(cat VERSION)
-          for target in linux windows; do
-            binary=sshore
-            if [[ "$target" == windows ]]; then binary=sshore.exe; fi
-            GOOS="$target" go build -trimpath -ldflags="-s -w -X main.version=$version" -o "dist/$binary" .
-            python3 scripts/package.py --binary "dist/$binary" --version "$version" --os "$target" --arch "$GOARCH"
-          done
-      - name: Publish release
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: bash scripts/release.sh
+        run: bash scripts/build-packages.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sshore-amd64
+          path: packages/
+          retention-days: 3
+          if-no-files-found: error

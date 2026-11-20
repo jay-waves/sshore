@@ -1,24 +1,14 @@
 #!/usr/bin/env bash
-# Publish the current main commit once; published tags and assets are immutable.
+# Publish the pushed release tag; published tags and assets are immutable.
 set -euo pipefail
 
 version=$(cat VERSION)
 tag="v$version"
-head=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')
-if [[ "$head" != "$GITHUB_SHA" ]]; then
-  echo "Skipping release: this commit is no longer the main branch head."
-  exit 0
+if [[ "$GITHUB_REF" != "refs/tags/$tag" ]]; then
+  echo "Expected refs/tags/$tag for VERSION $version, got $GITHUB_REF." >&2
+  exit 1
 fi
 
-existing=$(gh api "repos/$GH_REPO/git/matching-refs/tags/$tag" \
-  --jq ".[] | select(.ref == \"refs/tags/$tag\") | .ref")
-if [[ -n "$existing" ]]; then
-  echo "Skipping release: $tag already exists; published tags are immutable."
-  exit 0
-fi
-
-gh api --method POST "repos/$GH_REPO/git/refs" \
-  -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" > /dev/null
 cat packages/*.sha256 > packages/SHA256SUMS
 cat > release-notes.md <<NOTES
 sshore $version
