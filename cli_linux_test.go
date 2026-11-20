@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"github.com/creack/pty"
-	"github.com/jay-waves/sshore/internal/sshtest"
 	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/tests/testutil/sshtest"
+	cryptossh "golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -236,24 +236,17 @@ func TestSSHUnlockPTY(t *testing.T) {
 
 func TestExecInvokesSSHWithoutPTY(t *testing.T) {
 	activityFixture(t)
-	dir := t.TempDir()
-	script := filepath.Join(dir, "ssh")
-	argsFile := filepath.Join(dir, "args")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SSHORE_TEST_ARGS\"\nexit 7\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("SSHORE_SSH", script)
-	t.Setenv("SSHORE_TEST_ARGS", argsFile)
-	t.Setenv("SSHORE_SSH", sshtest.Wrap(t, script, os.Environ()))
+	commands := make(chan string, 1)
+	config := sshtest.Start(t, sshtest.Options{Exec: func(_ context.Context, command string, stream cryptossh.Channel) {
+		commands <- command
+		sshtest.Exit(stream, 7)
+	}})
+	t.Setenv("SSHORE_SSH", config)
 	code, err := run([]string{"exec", "work", "printf '%s' --help"})
 	if err != nil || code != 7 {
 		t.Fatalf("exit %d: %v", code, err)
 	}
-	data, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"); len(got) != 3 || got[0] != "--" || got[1] != "fixture" || got[2] != "printf '%s' --help" {
-		t.Fatalf("args %q", got)
+	if got := <-commands; got != "printf '%s' --help" {
+		t.Fatalf("command %q", got)
 	}
 }

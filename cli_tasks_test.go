@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -154,8 +155,21 @@ func TestShortTaskResourceRenameAndReplacement(t *testing.T) {
 		r := task.record
 		key := resourceIdentity(r)
 		code := taskShortCode(key)
+		previousAlias := kind + "alias"
+		if _, err := run([]string{"rename", kind + "/" + r.Name, previousAlias}); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := run([]string{"rename", code, kind + "new"}); err != nil {
 			t.Fatal(err)
+		}
+		inv, err := collectInventory(options{})
+		if err != nil || !slices.ContainsFunc(inv.Resources, func(row resourceView) bool {
+			return row.Identity == key && row.ID == kind+"/"+kind+"new" && row.ShortID == code && row.Worker == "running"
+		}) {
+			t.Fatalf("renamed resource inventory: %+v %v", inv.Resources, err)
+		}
+		if _, err := run([]string{"kill", kind + "/" + previousAlias}); err == nil {
+			t.Fatal("old alias still selects the resource")
 		}
 		parsed, err := parseCLI([]string{kind + "/" + code}, "kill")
 		if err != nil {

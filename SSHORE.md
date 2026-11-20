@@ -301,7 +301,9 @@ retain any bytes buffered during a handshake when the connection switches to
 a raw protocol.
 
 The local frontend-to-daemon lease uses smux to open independent endpoint
-streams over its shared connection. Each SSH connection uses native channels
+streams over its shared connection, with 32 KiB maximum frames to reduce local
+bulk-transfer overhead. Indirect forward muxes use 16 KiB frames to retain finer
+interleaving on network transports. Each SSH connection uses native channels
 over a single underlying TCP connection. Indirect forwarding uses its own smux
 relay.
 
@@ -913,6 +915,10 @@ subsequent change or unresolved failure warrants repeating them.
 
 Go lifecycle fixtures re-execute the test binary with temporary daemon and cache
 paths. Use a normal build when the fixture isolates daemon ownership with OS accounts.
+Use `tests/testutil/sshtest` for Go workflows that need an authenticated
+loopback SSH connection. Tests provide the exec or forwarding behavior they
+exercise. Configuration-only checks can observe the SSH configuration command,
+and local-only workflows use the daemon or the terminal fixture directly.
 The external CLI and real-SSH scenarios live under `tests/integration/`.
 For local real-SSH checks on Linux amd64, run the Python fixture through Docker.
 The runner uses the host Go toolchain to build the normal binary. Each scenario
@@ -948,6 +954,10 @@ The Docker runner defaults to all scenarios, each with an isolated fixture; use
 `--core-only`, `--spawn-only`, `--identity-only`, `--nested-only`, `--handoff-only`,
 or `--setup-only` for a focused rerun.
 Local in-process benchmarks are not WAN performance evidence.
+Benchmarks live under `tests/benchmarks/` and can be run separately with
+`go test ./tests/benchmarks -run '^$' -bench .`; use `-bench` to select a narrower
+workload when comparing changes. The smux benchmark fixes its own limits to
+compare frame sizes; it does not check production configuration.
 
 ### Shell and terminal validation
 
@@ -972,14 +982,15 @@ can affect behavior; record meaningful regressions as focused tests.
    triggers Linux/Windows amd64 builds and packaging; successful builds permit
    publication only while that commit remains the branch head.
 3. After publication, verify the release, commit/tag identity, both platform archives
-   and checksums. Full validation remains independent of publication.
+   and checksums. Then remove older releases in the same series, retaining their
+   Git tags. Full validation remains independent of publication.
 
 Published tags and assets are immutable. Source-only edits at an already published
 version do not update its archives. Retain only the highest published patch in each
 major/minor series after verifying complete replacement assets; never delete Git
 tags or prune on failed/incomplete publication. Drafts, prereleases and noncanonical
-tags are excluded. Packaging and retention rules live in `scripts/package.py`,
-`scripts/release.sh` and `scripts/prune_releases.py`.
+tags are excluded. Packaging and publication live in `scripts/package.py` and
+`scripts/release.sh`; the publisher performs retention after verification.
 
 ## Planned work
 

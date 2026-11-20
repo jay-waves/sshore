@@ -17,7 +17,8 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/proc"
-	"github.com/jay-waves/sshore/internal/sshtest"
+	"github.com/jay-waves/sshore/tests/testutil/sshtest"
+	cryptossh "golang.org/x/crypto/ssh"
 )
 
 func TestSpawnRouteKeepsOwnerAndDrainsExistingEndpoint(t *testing.T) {
@@ -143,11 +144,10 @@ func TestSpawnLifetime(t *testing.T) {
 			saveShellTree("original", "work", nil, "attached", "persistent")
 			args := []string{"fixture-" + tc.command, "self:", "temporary", "--detach"}
 			if remote {
-				ssh := filepath.Join(e.dir, "ssh")
-				if err := os.WriteFile(ssh, []byte("#!/bin/sh\nunset SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN SSH_ASKPASS\nfor arg do last=$arg; done\nexec sh -c \"$last\"\n"), 0700); err != nil {
-					t.Fatal(err)
-				}
-				ssh = sshtest.Wrap(t, ssh, env)
+				remoteEnv := append(append([]string(nil), env...), "SSHORE_ASKPASS=", "SSHORE_ASKPASS_ADDR=", "SSHORE_ASKPASS_TOKEN=", "SSH_ASKPASS=")
+				ssh := sshtest.Start(t, sshtest.Options{AllowForward: true, Exec: func(ctx context.Context, command string, stream cryptossh.Channel) {
+					sshtest.Shell(ctx, command, stream, e.dir, remoteEnv)
+				}})
 				env = append(env, "SSHORE_SSH="+ssh)
 				args = []string{"fixture-" + tc.command, "fake-host", "temporary", "--detach", "--server", e.bin}
 			}

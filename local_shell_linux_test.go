@@ -15,7 +15,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/jay-waves/sshore/internal/sshtest"
+	"github.com/jay-waves/sshore/tests/testutil/sshtest"
+	cryptossh "golang.org/x/crypto/ssh"
 )
 
 func TestLocalShellDetachAndReattach(t *testing.T) {
@@ -346,19 +347,21 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 	}()
 	for _, name := range []string{"first", "second"} {
 		observation := filepath.Join(e.dir, name+"-parent")
-		stub := filepath.Join(e.dir, name+"-ssh")
-		script := "#!/bin/sh\nprintf 'sshore-forward-ready\n'\nexec cat >/dev/null\n"
-		if err = os.WriteFile(stub, []byte(script), 0700); err != nil {
-			t.Fatal(err)
-		}
-		stub = sshtest.Wrap(t, stub, env)
+		stub := sshtest.Start(t, sshtest.Options{
+			AllowForward:  true,
+			ConfigPrelude: `printf '%s\n%s\n' "$PPID" "$PWD" > ` + shellQuote(observation),
+			Exec: func(_ context.Context, _ string, stream cryptossh.Channel) {
+				io.WriteString(stream, "sshore-forward-ready\n")
+				io.Copy(io.Discard, stream)
+			},
+		})
 		probe, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}
 		port := fmt.Sprint(probe.Addr().(*net.TCPAddr).Port)
 		probe.Close()
-		out := run(append(append([]string(nil), env...), "SSHORE_TEST_CONFIG_OWNER="+observation, "SSHORE_SSH="+stub), "forward", ".:"+port, "fixture:"+fmt.Sprint(target.Addr().(*net.TCPAddr).Port))
+		out := run(append(append([]string(nil), env...), "SSHORE_SSH="+stub), "forward", ".:"+port, "fixture:"+fmt.Sprint(target.Addr().(*net.TCPAddr).Port))
 		conn, err := net.DialTimeout("tcp4", net.JoinHostPort("127.0.0.1", port), time.Second)
 		if err != nil {
 			t.Fatal(err)

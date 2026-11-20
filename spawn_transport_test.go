@@ -1,14 +1,47 @@
 package main
 
 import (
-	"github.com/xtaci/smux"
+	"bytes"
 	"io"
 	"net"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/xtaci/smux"
 )
+
+func TestFrontendMuxLargeStream(t *testing.T) {
+	client, server := spawnNetworkMuxPair(t)
+	send, err := client.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	receive, err := server.AcceptStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := send.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := receive.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte("sshore-mux-data"), 32*1024)
+	done := make(chan error, 1)
+	go func() { _, err := send.Write(payload); done <- err }()
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(receive, got); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatal("large mux stream changed data")
+	}
+}
 
 func TestDirectSpawnOwnerAndDrain(t *testing.T) {
 	t.Run("frontend disconnect preserves owner", func(t *testing.T) {

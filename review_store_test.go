@@ -231,6 +231,21 @@ func TestRequestRPCDoesNotCreatePersistentApprovalFiles(t *testing.T) {
 	if _, err := findRequest(r.ID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("RPC restored a consumed request:", err)
 	}
+	if err := saveRequest(r); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run([]string{"rename", "review/" + r.Name, "renamed-request"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := findRequest("renamed-request"); err != nil || got.ID != r.ID {
+		t.Fatal("rename changed the approval identity", got, err)
+	}
+	if _, err := run([]string{"kill", "review/renamed-request"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := findRequest(r.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("cancelled request still exists:", err)
+	}
 	files, _ := statePath("approvals")
 	if _, err := os.Stat(files); !os.IsNotExist(err) {
 		t.Fatal("request RPC created approval files")

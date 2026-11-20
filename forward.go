@@ -240,16 +240,25 @@ func runForward(parent context.Context, f forwardConfig, s *resourceService, onR
 		return 1, err
 	}
 	advertisement = append(advertisement, '\n')
-	attempt := func(initial bool, ready func() error) (bool, error) {
+	attempt := func(initial bool) (bool, error) {
+		var ready func() error
+		if initial {
+			ready = onReady
+		}
 		return runForwardAttempt(ctx, s, advertisement, ready, func(ctx context.Context, diagnostic io.Writer) (*forwardConnection, error) {
 			return startForwardConnection(ctx, f, s, initial, diagnostic)
 		})
 	}
-	established, err := attempt(true, onReady)
-	for retry := 1; established && retry <= f.Retries && ctx.Err() == nil; retry++ {
+	return retryForward(ctx, f.Retries, s, attempt)
+}
+
+// retryForward owns retry policy; an attempt owns the underlying connection.
+func retryForward(ctx context.Context, retries int, s *resourceService, attempt func(bool) (bool, error)) (int, error) {
+	established, err := attempt(true)
+	for retry := 1; established && retry <= retries && ctx.Err() == nil; retry++ {
 		s.setTransport("reconnecting", err)
 		delay := time.Second * time.Duration(1<<min(retry-1, 5))
-		fmt.Fprintf(s.logWriter(), "[sshore] Forward disconnected; TCP connections lost. Retry %d/%d in %s.\n", retry, f.Retries, delay)
+		fmt.Fprintf(s.logWriter(), "[sshore] Forward disconnected; TCP connections lost. Retry %d/%d in %s.\n", retry, retries, delay)
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -257,7 +266,7 @@ func runForward(parent context.Context, f forwardConfig, s *resourceService, onR
 			return 0, nil
 		case <-timer.C:
 		}
-		_, err = attempt(false, nil)
+		_, err = attempt(false)
 	}
 	if ctx.Err() != nil {
 		return 0, nil

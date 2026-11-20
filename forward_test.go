@@ -122,6 +122,55 @@ func TestRetryPolicy(t *testing.T) {
 	}
 }
 
+func TestForwardRetryBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		established   bool
+		cancelBackoff bool
+		wantAttempts  int
+	}{
+		{"initial-failure", false, false, 1},
+		{"exhausted", true, false, 2},
+		{"cancel-backoff", true, true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				s := &resourceService{log: io.Discard}
+				failure := errors.New("transport lost")
+				var attempts []bool
+				type result struct {
+					code int
+					err  error
+				}
+				done := make(chan result, 1)
+				go func() {
+					code, err := retryForward(ctx, 1, s, func(initial bool) (bool, error) {
+						attempts = append(attempts, initial)
+						return tc.established, failure
+					})
+					done <- result{code, err}
+				}()
+				if tc.cancelBackoff {
+					synctest.Wait()
+					if s.statusSnapshot().Transport != "reconnecting" {
+						t.Fatal("missing reconnecting state")
+					}
+					cancel()
+				}
+				got := <-done
+				if tc.cancelBackoff && (got.code != 0 || got.err != nil) || !tc.cancelBackoff && (got.code != 1 || !errors.Is(got.err, failure)) {
+					t.Fatalf("result: %+v", got)
+				}
+				if len(attempts) != tc.wantAttempts || !attempts[0] || len(attempts) > 1 && attempts[1] {
+					t.Fatalf("attempts: %v", attempts)
+				}
+			})
+		})
+	}
+}
+
 func TestForwardTransportOptions(t *testing.T) {
 	f, fg, e := parseForwardCommand([]string{".:8080", "work:3000", "--", "-Jjump", "-i", "key with spaces", "-p2222", "-F", "config"})
 	if e != nil || fg || f.Name != "" || strings.Join(f.SSH, "|") != "-J|jump|-i|key with spaces|-p|2222|-F|config" {

@@ -9,13 +9,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/creack/pty"
 	"github.com/jay-waves/sshore/internal/proc"
-	"github.com/jay-waves/sshore/internal/sshtest"
+	"github.com/jay-waves/sshore/tests/testutil/sshtest"
+	cryptossh "golang.org/x/crypto/ssh"
 	"golang.org/x/sys/unix"
 )
 
@@ -58,18 +60,39 @@ func startPrefixClient(t *testing.T, e *testEnv) (*exec.Cmd, *os.File, func(stri
 	return startSessionClient(t, e, []string{"fixture-launch", "fixture", "keys", "--server", e.bin})
 }
 
+func sessionSSH(t *testing.T, e *testEnv, prelude string) string {
+	return sessionSSHWithHook(t, e, prelude, nil)
+}
+
+func sessionSSHWithHook(t *testing.T, e *testEnv, prelude string, hook func(context.Context, string, cryptossh.Channel) bool) string {
+	t.Helper()
+	remoteEnv := append(append([]string(nil), e.env...),
+		"PATH="+filepath.Dir(e.bin)+":"+localEnvironmentValue(e.env, "PATH"),
+		"SSHORE_ASKPASS=", "SSHORE_ASKPASS_ADDR=", "SSHORE_ASKPASS_TOKEN=", "SSH_ASKPASS=", "SSHORE_LOCAL_SESSION=", "SSHORE_SOCKET=",
+	)
+	return sshtest.Start(t, sshtest.Options{AllowForward: true, ConfigPrelude: prelude, Exec: func(ctx context.Context, command string, stream cryptossh.Channel) {
+		if hook != nil && hook(ctx, command, stream) {
+			return
+		}
+		sshtest.Shell(ctx, command, stream, e.dir, remoteEnv)
+	}})
+}
+
 func startSessionClient(t *testing.T, e *testEnv, args []string) (*exec.Cmd, *os.File, func(string)) {
 	t.Helper()
-	wrapper := filepath.Join(e.dir, "ssh-keys")
-	script := "#!/bin/sh\nunset SSHORE_ASKPASS SSHORE_ASKPASS_ADDR SSHORE_ASKPASS_TOKEN SSHORE_LOCAL_SESSION SSHORE_SOCKET\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0700); err != nil {
-		t.Fatal(err)
+	config := filepath.Join(e.dir, "unused-ssh")
+	if !strings.HasPrefix(args[1], "self:") {
+		config = sessionSSH(t, e, "")
 	}
-	wrapper = sshtest.Wrap(t, wrapper, e.env)
+	return startSessionClientWithSSH(t, e, args, config)
+}
+
+func startSessionClientWithSSH(t *testing.T, e *testEnv, args []string, config string) (*exec.Cmd, *os.File, func(string)) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
 	cmd := exec.CommandContext(ctx, e.bin, args...)
-	cmd.Env = append(e.env, "SSHORE_SSH="+wrapper, "SSHORE_SOCKET=", "SSHORE_STATE_DIR="+filepath.Join(e.dir, "client-state"), "TERM=xterm-256color", "SSHORE_TEST_CONFIG_CONTEXT="+filepath.Join(e.dir, "config-context"))
+	cmd.Env = append(e.env, "SSHORE_SSH="+config, "SSHORE_SOCKET=", "SSHORE_STATE_DIR="+filepath.Join(e.dir, "client-state"), "TERM=xterm-256color")
 	t.Cleanup(func() { shutdownFixtureDaemon(t, filepath.Join(e.dir, "client-state")) })
 	terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 120})
 	if err != nil {
@@ -122,7 +145,8 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-launch", "self:", "origin", "--no-profile"})
+	config := sessionSSH(t, e, `printf '%s\n%s\n' "$PWD" "$HANDOFF_VALUE" > `+shellQuote(filepath.Join(e.dir, "config-context")))
+	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-launch", "self:", "origin", "--no-profile"}, config)
 	t.Cleanup(func() {
 		cleanup := exec.Command(e.bin, "kill", "--all")
 		cleanup.Env = cmd.Env
@@ -332,10 +356,7 @@ func TestClientCommandConsole(t *testing.T) {
 	if err := os.WriteFile(source, []byte("console copy"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\nexec " + shellQuote(e.bin) + " cp-agent " + shellQuote(version) + "\n"
-	if err := os.WriteFile(filepath.Join(e.dir, "ssh-keys"), []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
+
 	io.WriteString(terminal, "cp 'self:"+filepath.Join(e.dir, "source")+"\t"+shellQuote("fixture:"+target)+"\r")
 	wait("Detached;")
 
@@ -357,14 +378,18 @@ func TestClientFailedSwitchRestoresOriginal(t *testing.T) {
 	e := newEnv(t)
 	alpha, _ := e.attach("alpha")
 	detachTestClient(t, alpha)
-	cmd, terminal, wait := startPrefixClient(t, e)
+	var fail atomic.Bool
+	config := sessionSSHWithHook(t, e, "", func(_ context.Context, _ string, stream cryptossh.Channel) bool {
+		if !fail.CompareAndSwap(true, false) {
+			return false
+		}
+		sshtest.Exit(stream, 42)
+		return true
+	})
+	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-launch", "fixture", "keys", "--server", e.bin}, config)
 	wait("Connected fixture:keys")
 	// Fail exactly the next SSH launch, after preflight has accepted alpha.
-	flag := filepath.Join(e.dir, "switch-failed")
-	script := "#!/bin/sh\nif [ ! -e " + shellQuote(flag) + " ]; then : > " + shellQuote(flag) + "; exit 42; fi\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n"
-	if err := os.WriteFile(filepath.Join(e.dir, "ssh-keys"), []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
+	fail.Store(true)
 	if _, err := terminal.Write([]byte{2, 'n'}); err != nil {
 		t.Fatal(err)
 	}
@@ -927,24 +952,25 @@ func TestClientInterruptDuringSwitchRestoresOriginal(t *testing.T) {
 	e := newEnv(t)
 	alpha, _ := e.attach("alpha")
 	detachTestClient(t, alpha)
-	cmd, terminal, wait := startPrefixClient(t, e)
+	var block atomic.Bool
+	started := make(chan struct{})
+	config := sessionSSHWithHook(t, e, "", func(_ context.Context, _ string, stream cryptossh.Channel) bool {
+		if !block.CompareAndSwap(true, false) {
+			return false
+		}
+		close(started)
+		_, _ = io.Copy(io.Discard, stream)
+		return true
+	})
+	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-launch", "fixture", "keys", "--server", e.bin}, config)
 	wait("Connected fixture:keys")
-	flag := filepath.Join(e.dir, "switch-started")
 	// Block the first setup until its SSH input closes on cancellation.
-	script := "#!/bin/sh\nif [ ! -e " + shellQuote(flag) + " ]; then : > " + shellQuote(flag) + "; exec cat >/dev/null; fi\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n"
-	if err := os.WriteFile(filepath.Join(e.dir, "ssh-keys"), []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
+	block.Store(true)
 	terminal.Write([]byte{2, 'n'})
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(flag); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("switch never reached setup")
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("switch never reached setup")
 	}
 	terminal.Write([]byte{3})
 	wait("Target unavailable; restoring keys.")

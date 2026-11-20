@@ -6,11 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/sshtest"
+	"github.com/jay-waves/sshore/tests/testutil/sshtest"
+	cryptossh "golang.org/x/crypto/ssh"
 )
 
 func TestCopyCLI(t *testing.T) {
@@ -29,7 +29,7 @@ func TestCopyCLI(t *testing.T) {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, e.bin, args...)
 		cmd.Dir = root
-		cmd.Env = append(e.env, "SSHORE_SSH="+wrapper, "SSHORE_TEST_BINARY="+e.bin)
+		cmd.Env = append(e.env, "SSHORE_SSH="+wrapper)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Log(string(output))
@@ -86,7 +86,7 @@ func TestCopyCLI(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		cmd := exec.CommandContext(ctx, e.bin, args...)
 		cmd.Dir = root
-		cmd.Env = append(e.env, "SSHORE_SSH="+wrapper, "SSHORE_TEST_BINARY="+e.bin)
+		cmd.Env = append(e.env, "SSHORE_SSH="+wrapper)
 		cmd.Stdin = bytes.NewReader(data)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
@@ -161,17 +161,8 @@ func TestCopyPreflight(t *testing.T) {
 
 func copySSH(t *testing.T, e *cliFixture) string {
 	t.Helper()
-	wrapper := filepath.Join(e.dir, "ssh")
-	script := "#!/bin/sh\nexec \"$SSHORE_TEST_BINARY\" cp-agent \"$SSHORE_TEST_VERSION\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	versionCommand := exec.Command(e.bin, "--version")
-	versionCommand.Env = e.env
-	versionOutput, err := versionCommand.CombinedOutput()
-	if err != nil {
-		t.Fatalf("version: %v: %s", err, versionOutput)
-	}
-	wrapper = sshtest.Wrap(t, wrapper, append(e.env, "SSHORE_TEST_BINARY="+e.bin, "SSHORE_TEST_VERSION="+strings.TrimPrefix(strings.TrimSpace(string(versionOutput)), "sshore ")))
-	return wrapper
+	env := append(append([]string(nil), e.env...), "PATH="+filepath.Dir(e.bin)+":"+os.Getenv("PATH"))
+	return sshtest.Start(t, sshtest.Options{Exec: func(ctx context.Context, command string, stream cryptossh.Channel) {
+		sshtest.Shell(ctx, command, stream, e.dir, env)
+	}})
 }

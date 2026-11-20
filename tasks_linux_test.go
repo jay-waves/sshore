@@ -4,18 +4,21 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"github.com/jay-waves/sshore/internal/sshtest"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/chzyer/readline"
 	"github.com/creack/pty"
+	"github.com/jay-waves/sshore/tests/testutil/sshtest"
+	cryptossh "golang.org/x/crypto/ssh"
 )
 
 // Uses the existing isolated CLI test executable and isolated daemon fixture. The
@@ -33,11 +36,11 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	untilType(t, b.out, "detached")
 	sendTest(t, b.in, message{Type: "bye"})
 	b.close()
-	wrapper := filepath.Join(e.dir, "ssh")
-	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf x >> "+shellQuote(filepath.Join(e.dir, "ssh-connections"))+"\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	wrapper = sshtest.Wrap(t, wrapper, e.env)
+	var reviewCommands atomic.Int32
+	wrapper := sshtest.Start(t, sshtest.Options{Exec: func(ctx context.Context, command string, stream cryptossh.Channel) {
+		reviewCommands.Add(1)
+		sshtest.Shell(ctx, command, stream, e.dir, e.env)
+	}})
 	env := append(e.env, "SSHORE_SSH="+wrapper)
 	instance, err := resolveSession("main")
 	if err != nil {
@@ -109,9 +112,8 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		t.Fatalf("approve: %v %s", err, <-output)
 	}
 	out = <-output
-	connections, readErr := os.ReadFile(filepath.Join(e.dir, "ssh-connections"))
-	if readErr != nil || string(connections) != "x" {
-		t.Fatalf("review must authenticate only once: %q %v", connections, readErr)
+	if got := reviewCommands.Load(); got != 1 {
+		t.Fatalf("review opened %d command sessions, want 1", got)
 	}
 	if !strings.Contains(out, "Started forward/"+name) {
 		t.Fatal(out)
@@ -157,28 +159,6 @@ func TestApprovedForwardIndependent(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	// Direct forwards no longer accept an explicit resource name.
-	if out, err = run("forward", "origin:31234", "fixture:31235", "--name", name); err == nil || !strings.Contains(out, "unsupported option: --name") {
-		t.Fatal("expected unsupported name option", out, err)
-	}
-	renamed := "renamed-forward"
-	if out, err = run("rename", "forward/"+name, renamed); err != nil {
-		t.Fatal(out, err)
-	}
-	out, err = run("list", "--json")
-	if err != nil || json.Unmarshal([]byte(out), &snapshot) != nil || len(snapshot.Resources) != 1 ||
-		snapshot.Resources[0].ID != "forward/"+renamed || snapshot.Resources[0].Worker != "running" {
-		t.Fatal(out, err)
-	}
-	if snapshot.Resources[0].ShortID != name {
-		t.Fatal("alias changed the task ID", out)
-	}
-	if out, err = run("rename", name, "renamed-again"); err != nil {
-		t.Fatal(out, err)
-	}
-	if out, err = run("kill", "forward/"+renamed); err == nil {
-		t.Fatal("old alias still selects the forward", out)
-	}
 	if out, err = run("kill", name); err != nil {
 		t.Fatal(out, err)
 	}
@@ -186,26 +166,6 @@ func TestApprovedForwardIndependent(t *testing.T) {
 	if err != nil || strings.Contains(out, "forward/"+name) {
 		t.Fatal(out, err)
 	}
-	queued, e2 := queueRequest(options{host: "fixture", session: "main", server: e.bin, shellPID: pid, instance: instance}, []operation{{Kind: "forward", TargetPort: 31235}})
-	if e2 != nil {
-		t.Fatal(e2)
-	}
-	rejected := queued.ID
-	publishPending(rejected)
-	request, e2 := findRequest(rejected)
-	if e2 != nil {
-		t.Fatal(e2)
-	}
-	if out, err = run("rename", "review/"+request.DisplayName(), "renamed-request"); err != nil {
-		t.Fatal(out, err)
-	}
-	if request, e2 := findRequest("renamed-request"); e2 != nil || request.ID != rejected {
-		t.Fatal("rename changed the approval identity", request, e2)
-	}
-	if out, err = run("kill", "review/renamed-request"); err != nil {
-		t.Fatal(out, err)
-	}
-
 }
 
 func TestKillAllRemoteScope(t *testing.T) {
@@ -216,12 +176,9 @@ func TestKillAllRemoteScope(t *testing.T) {
 	defer second.close()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	wrapper := filepath.Join(e.dir, "ssh-batch")
-	script := "#!/bin/sh\nexport SSHORE_STATE_DIR=" + shellQuote(filepath.Join(e.dir, "state")) + "\nfor last; do :; done\nexec /bin/sh -c \"$last\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	wrapper = sshtest.Wrap(t, wrapper, e.env)
+	wrapper := sshtest.Start(t, sshtest.Options{Exec: func(ctx context.Context, command string, stream cryptossh.Channel) {
+		sshtest.Shell(ctx, command, stream, e.dir, e.env)
+	}})
 	env := append(e.env, "SSHORE_SSH="+wrapper, "SSHORE_SOCKET=", "SSHORE_STATE_DIR="+filepath.Join(e.dir, "local-state"))
 	run := func(input string, args ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, e.bin, args...)
@@ -256,12 +213,17 @@ func TestListScopes(t *testing.T) {
 	if err = saveShellSnapshot(shellSnapshot{Host: "work", Name: "cached", State: "detached", ConfirmedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	marker := filepath.Join(root, "ssh-called")
-	wrapper := filepath.Join(root, "ssh")
-	if err = os.WriteFile(wrapper, []byte("#!/bin/sh\ntouch "+shellQuote(marker)+"\nprintf '%s\\n' "+shellQuote(`{"version":"`+version+`","resources":[],"shells":[{"name":"remote-only","state":"detached"}],"peers":[],"errors":[]}`)+"\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	configTool := sshtest.Wrap(t, wrapper, os.Environ())
+	var called, fail atomic.Bool
+	configTool := sshtest.Start(t, sshtest.Options{Exec: func(_ context.Context, _ string, stream cryptossh.Channel) {
+		called.Store(true)
+		status := uint32(0)
+		if fail.Load() {
+			status = 23
+		} else {
+			_, _ = io.WriteString(stream, `{"version":"`+version+`","resources":[],"shells":[{"name":"remote-only","state":"detached"}],"peers":[],"errors":[]}`+"\n")
+		}
+		sshtest.Exit(stream, status)
+	}})
 	run := func(args ...string) (inventory, string, error) {
 		cmd := exec.Command(testBinary(t), args...)
 		cmd.Env = append(os.Environ(), "SSHORE_SSH="+configTool, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SSHORE_RUNTIME_DIR="+filepath.Join(root, "runtime"), "HOME="+root)
@@ -278,16 +240,14 @@ func TestListScopes(t *testing.T) {
 	if err != nil || local.RemoteQueried || len(local.Resources) != 1 || len(local.Shells) != 1 {
 		t.Fatalf("%+v %v", local, err)
 	}
-	if _, err = os.Stat(marker); !os.IsNotExist(err) {
+	if called.Load() {
 		t.Fatal("offline list invoked SSH")
 	}
 	remote, stderr, err := run("list", "work", "--json")
 	if err != nil || !remote.RemoteQueried || len(remote.Resources) != 0 || len(remote.Shells) != 1 || remote.Shells[0].Name != "remote-only" || stderr != "" {
 		t.Fatalf("%+v %s %v", remote, stderr, err)
 	}
-	if err = os.WriteFile(wrapper, []byte("#!/bin/sh\nexit 23\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
+	fail.Store(true)
 	_, stderr, err = run("list", "work", "--json")
 	if err == nil || !strings.Contains(stderr, "remote query failed") {
 		t.Fatalf("%s %v", stderr, err)
@@ -338,13 +298,11 @@ func TestInventoryOmitsExpiredExitReceipts(t *testing.T) {
 func TestKillUpdatesShellHistory(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	wrapper := filepath.Join(t.TempDir(), "ssh")
-	t.Setenv("SSHORE_SSH", wrapper)
-	for _, exit := range []string{"23", "0"} {
-		if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nexit "+exit+"\n"), 0700); err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv("SSHORE_SSH", sshtest.Wrap(t, wrapper, os.Environ()))
+	for _, exit := range []uint32{23, 0} {
+		config := sshtest.Start(t, sshtest.Options{Exec: func(_ context.Context, _ string, stream cryptossh.Channel) {
+			sshtest.Exit(stream, exit)
+		}})
+		t.Setenv("SSHORE_SSH", config)
 		if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "detached", ConfirmedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
@@ -356,7 +314,7 @@ func TestKillUpdatesShellHistory(t *testing.T) {
 		if err != nil || len(rows) != 1 {
 			t.Fatalf("%+v %v", rows, err)
 		}
-		if exit == "0" {
+		if exit == 0 {
 			if code != 0 || rows[0].State != "exited" {
 				t.Fatalf("%d %+v", code, rows)
 			}
@@ -370,13 +328,13 @@ func TestShortTaskRemoteCommandRouting(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	root := t.TempDir()
-	wrapper, output := filepath.Join(root, "ssh"), filepath.Join(root, "args")
-	t.Setenv("SSHORE_SSH", wrapper)
-	t.Setenv("SSHORE_TEST_ARGS", output)
-	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$SSHORE_TEST_ARGS\"\nexit 37\n"), 0700); err != nil {
+	observation := filepath.Join(root, "ssh-arguments")
+	config := filepath.Join(root, "ssh-config")
+	script := "#!/bin/sh\nprintf '%s\\0' \"$PWD\" \"$@\" > " + shellQuote(observation) + "\nprintf 'routing probe stopped\\n' >&2\nexit 37\n"
+	if err := os.WriteFile(config, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SSHORE_SSH", sshtest.Wrap(t, wrapper, os.Environ()))
+	t.Setenv("SSHORE_SSH", config)
 	observed := options{host: "work", server: "/observed/sshore", sshDirectory: root, ssh: []string{"-p", "2222", "-J", "jump", "-L", "8080:localhost:80"}}
 	inv := inventory{Shells: []shellView{{Name: "job", Instance: "original-instance", State: "detached"}}}
 	if err := cacheRemoteShells("work", inv, observed); err != nil {
@@ -387,29 +345,47 @@ func TestShortTaskRemoteCommandRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := taskShortCode(remoteShellIdentity("work", "original-instance"))
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
-		args                 []string
-		port, server, action string
+		args                      []string
+		dir, port, server, action string
 	}{
-		{[]string{"kill", "work:" + id}, "2222", "/observed/sshore", "kill-session"},
-		{[]string{"rename", "work:" + id, "new"}, "2222", "/observed/sshore", "rename-session"},
-		{[]string{"kill", "work:" + id, "--server", "/explicit/sshore", "--", "-p", "3333"}, "3333", "/explicit/sshore", "kill-session"},
+		{[]string{"kill", "work:" + id}, root, "2222", "/observed/sshore", "kill-session"},
+		{[]string{"rename", "work:" + id, "new"}, root, "2222", "/observed/sshore", "rename-session"},
+		{[]string{"kill", "work:" + id, "--server", "/explicit/sshore", "--", "-p", "3333"}, workingDir, "3333", "/explicit/sshore", "kill-session"},
 	} {
-		if code, err := run(tc.args); err != nil || code != 37 {
-			t.Fatalf("%v: %d %v", tc.args, code, err)
+		if _, err := run(tc.args); err == nil || !strings.Contains(err.Error(), "routing probe stopped") {
+			t.Fatalf("%v: %v", tc.args, err)
 		}
-		data, err := os.ReadFile(output)
+		raw, err := os.ReadFile(observation)
 		if err != nil {
 			t.Fatal(err)
 		}
-		text := string(data)
+		configArgs := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
+		if len(configArgs) < 5 || configArgs[0] != tc.dir || configArgs[1] != "-G" || configArgs[len(configArgs)-2] != "work" {
+			t.Fatalf("wrong SSH config invocation: %q", configArgs)
+		}
+		text := configArgs[len(configArgs)-1]
+		flags := configArgs[2 : len(configArgs)-3]
+		foundPort := false
+		for i := 0; i+1 < len(flags); i++ {
+			if flags[i] == "-p" {
+				if foundPort || flags[i+1] != tc.port {
+					t.Fatalf("wrong SSH port in %q", flags)
+				}
+				foundPort = true
+			}
+		}
+		if !foundPort || slices.Contains(flags, "-L") || slices.Contains(flags, "8080:localhost:80") {
+			t.Fatalf("wrong transport restored: %q", flags)
+		}
 		for _, want := range []string{tc.server, tc.action, "original-instance"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("missing %q in %s", want, text)
 			}
-		}
-		if strings.Contains(text, "9999") || strings.Contains(text, "8080") {
-			t.Fatal("wrong transport restored", text)
 		}
 	}
 	records, err := readRecentConnections()

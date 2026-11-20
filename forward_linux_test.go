@@ -4,16 +4,17 @@ package main
 
 import (
 	"context"
-	"github.com/jay-waves/sshore/internal/sshtest"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/jay-waves/sshore/tests/testutil/sshtest"
 	cryptossh "golang.org/x/crypto/ssh"
 )
 
@@ -99,18 +100,26 @@ func TestForwardLocalSelection(t *testing.T) {
 	}
 }
 
-// Local subprocess fixture only: no SSH server, account sessions or upgrades.
+// Exercise reconnection over an authenticated loopback SSH endpoint.
 
 func TestForwardReconnectAndCancel(t *testing.T) {
 	activityFixture(t)
 	root := t.TempDir()
-	attempts := filepath.Join(root, "attempts")
-	stub := filepath.Join(root, "ssh")
-	script := "#!/bin/sh\ncount=0\n[ ! -f " + shellQuote(attempts) + " ] || count=$(cat " + shellQuote(attempts) + ")\ncount=$((count+1))\nprintf '%s' \"$count\" > " + shellQuote(attempts) + "\nprintf '%s\\n' \"$@\" >> " + shellQuote(filepath.Join(root, "args")) + "\nprintf 'sshore-forward-ready\\n'\nif [ \"$count\" = 1 ]; then sleep 0.1; exit 17; fi\nexec cat >/dev/null\n"
-	if e := os.WriteFile(stub, []byte(script), 0700); e != nil {
-		t.Fatal(e)
-	}
-	t.Setenv("SSHORE_SSH", sshtest.Wrap(t, stub, os.Environ()))
+	var attempts atomic.Int32
+	first := make(chan struct{})
+	t.Setenv("SSHORE_SSH", sshtest.Start(t, sshtest.Options{Exec: func(ctx context.Context, _ string, stream cryptossh.Channel) {
+		attempt := attempts.Add(1)
+		io.WriteString(stream, "sshore-forward-ready\n")
+		if attempt == 1 {
+			select {
+			case <-first:
+				sshtest.Exit(stream, 17)
+			case <-ctx.Done():
+			}
+			return
+		}
+		io.Copy(io.Discard, stream)
+	}}))
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
 	dir, e := resourceStateDir("forward")
 	if e != nil {
@@ -124,17 +133,19 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 		_, e := runForward(ctx, forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, Retries: 1}, s, nil)
 		done <- e
 	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		b, _ := os.ReadFile(attempts)
-		if string(b) == "2" && s.statusSnapshot().Transport == "connected" {
-			break
+	waitConnected := func(attempt int32) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for attempts.Load() != attempt || s.statusSnapshot().Transport != "connected" {
+			if time.Now().After(deadline) {
+				t.Fatalf("attempt %d did not connect: %+v", attempt, s.statusSnapshot())
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("forward did not reconnect", s.statusSnapshot())
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
+	waitConnected(1)
+	close(first)
+	waitConnected(2)
 	cancel()
 	select {
 	case e := <-done:
@@ -144,80 +155,17 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("cancel stalled")
 	}
-	args, _ := os.ReadFile(filepath.Join(root, "args"))
-	if strings.Count(string(args), "--\nfixture\n") != 2 {
-		t.Fatal(string(args))
-	}
-}
-
-func TestForwardRetryBoundaries(t *testing.T) {
-	activityFixture(t)
-	for _, scenario := range []string{"initial-failure", "exhausted", "cancel-backoff"} {
-		t.Run(scenario, func(t *testing.T) {
-			root := t.TempDir()
-			attempts := filepath.Join(root, "attempts")
-			stub := filepath.Join(root, "ssh")
-			body := "#!/bin/sh\nprintf x >> " + shellQuote(attempts) + "\n"
-			if scenario != "initial-failure" {
-				body += "printf 'sshore-forward-ready\\n'\nsleep 0.05\n"
-			}
-			body += "exit 17\n"
-			if e := os.WriteFile(stub, []byte(body), 0700); e != nil {
-				t.Fatal(e)
-			}
-			t.Setenv("SSHORE_SSH", sshtest.Wrap(t, stub, os.Environ()))
-			t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
-			dir, e := resourceStateDir("forward")
-			if e != nil {
-				t.Fatal(e)
-			}
-			s := &resourceService{record: resourceRecord{Kind: "forward", Name: "web", Host: "work", Version: version}, resultPath: filepath.Join(dir, "web"+resourceResultSuffix)}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			done := make(chan error, 1)
-			go func() {
-				_, e := runForward(ctx, forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, Retries: 1}, s, nil)
-				done <- e
-			}()
-			if scenario == "cancel-backoff" {
-				deadline := time.Now().Add(time.Second)
-				for s.statusSnapshot().Transport != "reconnecting" {
-					if time.Now().After(deadline) {
-						t.Fatal("missing retry backoff")
-					}
-					time.Sleep(time.Millisecond)
-				}
-				cancel()
-			}
-			select {
-			case e := <-done:
-				if (e == nil) != (scenario == "cancel-backoff") {
-					t.Fatal(e)
-				}
-			case <-time.After(3 * time.Second):
-				t.Fatal("retry limit ignored")
-			}
-			b, _ := os.ReadFile(attempts)
-			want := 1
-			if scenario == "exhausted" {
-				want = 2
-			}
-			if len(b) != want {
-				t.Fatal("unexpected attempts", string(b))
-			}
-		})
-	}
 }
 
 func TestForegroundReverseForwardStartupCancellation(t *testing.T) {
 	requested := make(chan struct{}, 1)
-	executable := sshtest.Wrap(t, "unused", nil, func(request *cryptossh.Request) {
+	executable := sshtest.Start(t, sshtest.Options{GlobalRequest: func(request *cryptossh.Request) {
 		if request.Type == "tcpip-forward" {
 			requested <- struct{}{}
 			return
 		}
 		request.Reply(false, nil)
-	})
+	}})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan error, 1)

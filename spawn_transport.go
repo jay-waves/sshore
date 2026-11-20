@@ -443,7 +443,9 @@ func validShellLifetime(value string) bool {
 func relayMuxConfig() *smux.Config {
 	c := smux.DefaultConfig()
 	c.Version = 2
-	c.MaxFrameSize = 16 * 1024
+	// This mux runs only between the local frontend and daemon. Larger frames
+	// reduce per-frame overhead for bulk streams without changing WAN relays.
+	c.MaxFrameSize = 32 * 1024
 	c.MaxStreamBuffer = 1024 * 1024
 	c.MaxReceiveBuffer = 44 * c.MaxStreamBuffer
 	c.KeepAliveInterval = 10 * time.Second

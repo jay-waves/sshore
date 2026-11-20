@@ -126,23 +126,6 @@ func TestFocusPasteStateAcrossAttachment(t *testing.T) {
 	}
 }
 
-func BenchmarkTerminalInputObserve(b *testing.B) {
-	for _, tc := range []struct{ name, data string }{
-		{"plain", strings.Repeat("build output: ordinary UTF-8 中文 text\r\n", 180)},
-		{"styled", strings.Repeat("\x1b[32mbuild output\x1b[0m ordinary text\r\n", 180)},
-	} {
-		b.Run(tc.name, func(b *testing.B) {
-			data := []byte(tc.data)
-			b.SetBytes(int64(len(data)))
-			b.ReportAllocs()
-			var state InputState
-			for b.Loop() {
-				state.Observe(data)
-			}
-		})
-	}
-}
-
 func TestInputModesBulkMatchesBytewise(t *testing.T) {
 	data := []byte(strings.Repeat("普通 output\r\n", 900) + "\x1b[?1004;2004h\x1b]opaque\x1b[?2004l\x07" + strings.Repeat("more output", 900) + "\x1b[?1003;1006h\x1b[?1004s\x1b[?1004l\x1b[?2004")
 	var bulk, bytewise InputState
