@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -268,77 +267,6 @@ func runClient(o options) (int, error) {
 	}
 }
 
-type recentConnection struct {
-	Hosted                           bool              `json:",omitempty"`
-	RouteTarget                      bool              `json:",omitempty"`
-	Parent                           *recentConnection `json:",omitempty"`
-	RouteToken                       string            `json:",omitempty"`
-	Instance                         string            `json:",omitempty"`
-	Host, Session, Server, Directory string
-	SSH                              []string
-}
-
-func (r recentConnection) viaShell() bool { return r.Hosted || r.Parent != nil }
-
-const maxConnectionHops = 64
-
-func (c *recentConnection) clone() *recentConnection {
-	if c == nil {
-		return nil
-	}
-	cloned := *c
-	for hop := &cloned; hop != nil; hop = hop.Parent {
-		hop.SSH = append([]string(nil), hop.SSH...)
-		if hop.Parent != nil {
-			parent := *hop.Parent
-			hop.Parent = &parent
-		}
-	}
-	return &cloned
-}
-
-func readRecentConnections() ([]recentConnection, error) {
-	r, err := metadataRPC(metadataRequest{Action: "connection_get"})
-	return r.Connections, err
-}
-func (m *daemonMetadata) readRecentConnectionsLocal() ([]recentConnection, error) {
-	if err := m.connections.load("recent.json", 128*1024, validateRecentConnection); err != nil {
-		return nil, fmt.Errorf("cannot read recent connections: %w", err)
-	}
-	return m.connections.rows, nil
-}
-
-func validateRecentConnection(r recentConnection) error {
-	for depth, hop := 0, &r; hop != nil; depth, hop = depth+1, hop.Parent {
-		if depth >= maxConnectionHops {
-			return fmt.Errorf("too many connection hops")
-		}
-		if hop.Hosted && (hop.Host != "local" || !validTaskUID(hop.Instance) || len(hop.SSH) != 0 || hop.Parent != nil) {
-			return fmt.Errorf("invalid hosted shell connection")
-		}
-		if hop.Parent != nil {
-			token := hop.RouteToken
-			if len(token) != 64 || strings.Trim(token, "0123456789abcdef") != "" || hop.Instance == "" || hop.Parent.Instance == "" {
-				return fmt.Errorf("invalid saved spawn route")
-			}
-		} else if hop.RouteToken != "" || hop.RouteTarget {
-			return fmt.Errorf("spawn route parent missing")
-		}
-		if validSSHDestination(hop.Host) != nil || validSession(hop.Session) != nil || hop.Server == "" || strings.ContainsAny(hop.Server, "\x00\r\n") {
-			return fmt.Errorf("invalid recent connection")
-		}
-		if hop.Directory != "" && !filepath.IsAbs(hop.Directory) {
-			return fmt.Errorf("invalid recent connection directory")
-		}
-		if len(hop.SSH) > 0 {
-			if _, _, err := parseSSHOptions(hop.SSH, false); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 func resolveRecentAttach(o *options) error {
 	if o.command != "attach" {
 		return nil
@@ -497,53 +425,6 @@ func rememberConnection(o options) error {
 	_, err = metadataRPC(metadataRequest{Action: "connection_save", Connection: &record})
 	return err
 }
-func (m *daemonMetadata) rememberConnectionLocal(record recentConnection) error {
-	if err := validateRecentConnection(record); err != nil {
-		return err
-	}
-	if _, err := m.readRecentConnectionsLocal(); err != nil {
-		return err
-	}
-	return m.connections.promote(*record.clone(), func(previous recentConnection) bool {
-		return previous.Host == record.Host
-	})
-}
-
-// rememberShellRename changes cached labels only after a successful remote rename.
-// It does not reorder recent hosts or treat rename as an attachment confirmation.
-func rememberShellRename(host, old, name, instance string) error {
-	_, err := metadataRPC(metadataRequest{Action: "connection_rename", Host: host, Key: old, Name: name, Instance: instance})
-	return err
-}
-func (a *daemonActivity) rememberShellRenameLocal(host, old, name, instance string) error {
-	if validSSHDestination(host) != nil || validSession(old) != nil || validSession(name) != nil {
-		return fmt.Errorf("invalid shell rename identity")
-	}
-	if old == name {
-		return nil
-	}
-	snapshotErr := a.renameShellSnapshotLocked(host, old, name, instance)
-	m := &a.metadata
-	records, err := m.readRecentConnectionsLocal()
-	if err != nil {
-		return errors.Join(snapshotErr, err)
-	}
-	changed := false
-	for i := range records {
-		if records[i].Host == host && records[i].Session == old && (instance == "" || records[i].Instance == instance) {
-			if !changed {
-				records = slices.Clone(records)
-			}
-			records[i].Session = name
-			changed = true
-		}
-	}
-	if changed {
-		err = m.connections.replace(records)
-	}
-	return errors.Join(snapshotErr, err)
-}
-
 func routeParentOptions(parent options) options {
 	parent.command = "attach"
 	// The remote entry point accepts immutable task UIDs, so an ancestor rename cannot sever

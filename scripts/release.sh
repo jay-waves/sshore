@@ -23,12 +23,7 @@ cat packages/*.sha256 > packages/SHA256SUMS
 cat > release-notes.md <<NOTES
 sshore $version
 
-- Preserve shell detachment when terminal input is blocked.
-- Keep command-console completion on the input line to prevent layout corruption.
-- Open the command console with Ctrl+B s as well as Ctrl+B :.
-- Reduce command-console input flicker by grouping redraws.
-- Reduce local multiplexing overhead and simplify test and release workflows.
-- Correct fish reconnection tests to wait for the next prompt.
+- Group saved connection records, shared shell terminal handling and platform installers by responsibility. CLI behavior and stored data formats are unchanged.
 
 Includes Linux and Windows amd64 binaries. Verify archives against SHA256SUMS.
 Update both endpoints to $version for managed connections. Save work before

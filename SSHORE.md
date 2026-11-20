@@ -20,12 +20,12 @@ policy or depending on mutable application state.
 | One-off SSH execution | `cli.go`: exec adapter uses the shared SSH connection layer without remote setup |
 | CLI grammar, dispatch and help | `cli_help.go`: command definitions, help and examples; `cli_schema.go`: aliases and product/SSH parsing; `cli_commands.go`: command semantics; `cli.go`: dispatch; `cli_tasks.go`: short-ID selection |
 | Mount command and execution | `cli_resources.go` handles resource command entry; `mount.go` coordinates the operation and adapts SSH and routed connections |
-| Connections and session switching | `client.go`, `client_connection.go` |
-| Prepared installation and exact-release policy | `setup.go` handles version checks and installation policy. `setup_linux.go` handles remote service startup |
+| Connections and session switching | `client.go`, `client_connection.go`; saved connection records in `daemon_metadata.go` |
+| Prepared installation and exact-release policy | `setup.go` handles version checks and installation policy. `setup_linux.go` handles remote service startup and Linux installation. `setup_windows.go` handles Windows installation |
 | Shell hosting, identity and cancellation | `launch_*_linux.go`, `shell_lifecycle_linux.go`, `server_linux.go`; process inspection in `process_linux.go` |
 | Account daemon and local shell control | `daemon*.go` (task registry and resource control in `daemon_tasks.go`, plus activity leases and metadata), `local_command.go`, `local_shell.go`; hosted Unix shell adapters in `platform_*.go` |
 | Spawn ownership, lifetime SSH and nested routes | `spawn_transport.go` coordinates owner leases and relay lifetime; `spawn_route_linux.go` and `platform_*.go` handle nested routes |
-| Shell startup and attachment I/O | `local_shell.go` shares terminal startup, output and input lease handoff between native and SSH-hosted shells. `internal/pty/` owns native terminal hosts |
+| Shell startup and attachment I/O | `shell_terminal.go` shares terminal startup, output and input lease handoff between native and SSH-hosted shells. `internal/pty/` owns native terminal hosts |
 | Native PTY and ConPTY hosts | `internal/pty/` |
 | Shell attachment protocol and endpoints | `protocol.go`, `shell_attachment.go` |
 | Console I/O and shortcuts | `internal/pty/` |
