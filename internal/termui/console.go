@@ -65,18 +65,21 @@ func (w *consoleWriter) flush() {
 	}
 }
 
-// DrawConsole clears the current screen and draws a plain text title and body.
-func DrawConsole(out io.Writer, title, body string) {
+// WriteConsoleBody appends plain text at the start of the current line.
+func WriteConsoleBody(out io.Writer, body string) {
+	if body == "" {
+		return
+	}
 	lines := strings.Split(body, "\n")
 	for i := range lines {
 		lines[i] = CleanText(lines[i])
 	}
-	fmt.Fprintf(out, "\x1b[2J\x1b[H%s\r\n\r\n%s\r\n\r\n", CleanText(title), strings.Join(lines, "\r\n"))
+	fmt.Fprintf(out, "\r%s\r\n\r\n", strings.Join(lines, "\r\n"))
 }
 
 // StartConsole starts a Readline editor. The caller continues to own the
 // terminal modes and serializes emitted output with its other terminal writes.
-func StartConsole(ctx context.Context, title, prompt string, width int, send func(ConsoleEvent)) *Console {
+func StartConsole(ctx context.Context, prompt string, width int, send func(ConsoleEvent)) *Console {
 	ctx, cancel := context.WithCancel(ctx)
 	c := &Console{ctx: ctx, cancel: cancel, input: make(chan []byte, 32), prompts: make(chan consolePrompt, 1)}
 	reader, writer := io.Pipe()
@@ -93,11 +96,11 @@ func StartConsole(ctx context.Context, title, prompt string, width int, send fun
 			}
 		}
 	}()
-	go c.edit(reader, title, prompt, width, send)
+	go c.edit(reader, prompt, width, send)
 	return c
 }
 
-func (c *Console) edit(in *io.PipeReader, title, prompt string, width int, send func(ConsoleEvent)) {
+func (c *Console) edit(in *io.PipeReader, prompt string, width int, send func(ConsoleEvent)) {
 	defer c.Close()
 	defer in.Close()
 	stop := context.AfterFunc(c.ctx, func() { _ = in.Close() })
@@ -126,7 +129,7 @@ func (c *Console) edit(in *io.PipeReader, title, prompt string, width int, send 
 			return
 		case screen := <-c.prompts:
 			complete.set(screen.completer)
-			DrawConsole(out, title, screen.body)
+			WriteConsoleBody(out, screen.body)
 		}
 		line, err := editor.Readline()
 		out.flush()

@@ -248,14 +248,7 @@ def spawn_smoke(binary, host, options):
         parent.wait(timeout=5)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            try:
-                rows = {row["name"]: row for row in inventory()["shells"]}
-            except subprocess.CalledProcessError as error:
-                snapshot = json.loads(error.output)
-                if snapshot.get("errors") != [f"shell unavailable: {temporary}.sock"]:
-                    raise
-                time.sleep(0.1)
-                continue
+            rows = {row["name"]: row for row in inventory()["shells"]}
             if temporary not in rows:
                 assert persistent in rows, rows
                 print("spawn: real SSH detach, reattach, owner cleanup and persistent sibling OK")
@@ -781,9 +774,6 @@ LogLevel ERROR
                 agent_process.terminate()
                 agent_process.wait(timeout=5)
                 log.close()
-                deadline = time.monotonic() + 3
-                while runtime.exists() and list(runtime.glob("*.sock")) and time.monotonic() < deadline:
-                    time.sleep(0.05)
 
 
 if __name__ == "__main__":

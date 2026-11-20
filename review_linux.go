@@ -152,7 +152,7 @@ func (s *remoteShell) checkApprovalSource(m message) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.exited || s.process.PID == 0 || s.process.PID != m.PID || s.name != m.Name || m.Instance != "" && m.Instance != s.instance {
+	if s.exited || s.process.PID == 0 || s.process.PID != m.PID || s.record.Name != m.Name || m.Instance != "" && m.Instance != s.record.UID {
 		return fmt.Errorf("approved shell changed; request the operation again")
 	}
 	if s.active != nil {

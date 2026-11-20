@@ -39,7 +39,7 @@ func registerTestShell(t *testing.T, tasks *daemonTasks, name, id string) localS
 		t.Fatal(err)
 	}
 	r.Name, r.UID = name, id
-	s := &localShell{record: r, tasks: tasks, done: make(chan struct{})}
+	s := &localShell{shellTask: shellTask{record: r, tasks: tasks, done: make(chan struct{})}}
 	task := &nativeShellTask{shell: s, serve: func(c net.Conn, m message) error {
 		return writeMessage(c, message{Type: "session", Name: name, Instance: id})
 	}}

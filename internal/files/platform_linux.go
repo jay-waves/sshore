@@ -16,7 +16,6 @@ import (
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
-	"golang.org/x/sys/unix"
 )
 
 // Linux exposes remote modes/UIDs as the mounting user, while the SSH account
@@ -311,14 +310,3 @@ func (n *ftpNode) Statfs(_ context.Context, out *fuse.StatfsOut) syscall.Errno {
 }
 
 func CheckMountPlatform() error { return nil }
-
-func openSourceFile(path string) (*os.File, error) {
-	// Nonblocking open prevents a replacement FIFO from waiting for a writer
-	// before OpenSource can reject its type. The returned handle never follows
-	// a replacement symlink and cannot leak across exec.
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, &os.PathError{Op: "open", Path: path, Err: err}
-	}
-	return os.NewFile(uintptr(fd), path), nil
-}

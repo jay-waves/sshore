@@ -4,8 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
+
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -162,18 +161,6 @@ func privateStatePath(path string, directory bool) error {
 	return nil
 }
 
-func serveRemoteRequest(remoteServiceRequest) error {
-	return fmt.Errorf("remote services run on the Linux server")
-}
-
-func detachHelper() error {
-	return fmt.Errorf("run this command inside an sshore shell")
-}
-
-func requestOperations(command string, _ []operation) error {
-	return fmt.Errorf("%s runs on the Linux server, inside the remote shell", command)
-}
-
 func systemMachineID() string {
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Cryptography`, registry.QUERY_VALUE|registry.WOW64_64KEY)
 	if err != nil {
@@ -184,26 +171,6 @@ func systemMachineID() string {
 	return value
 }
 
-func hostedShellInventory(detailed bool) (inventory, error) {
-	return emptyInventory(), nil
-}
-
-func hostedExitHistory() []exitView { return []exitView{} }
-
-func hostedShells(string) ([]shellView, error) { return nil, nil }
-
-func registerPlatformDaemonRoutes(*http.ServeMux, *daemonTasks) {}
-
-func openHostedTransport(context.Context, options) (net.Conn, error) {
-	return nil, fmt.Errorf("Windows does not host Unix shells")
-}
-
-func runHostedCommand(options) (int, error) {
-	return 1, fmt.Errorf("Windows does not host Unix shells")
-}
-
-func handoffRemoteSpawn(o options) (bool, error) { return false, nil }
-
 // checkPlatform uses the real kernel version, independent of manifest shims.
 func checkPlatform() error {
 	version := windows.RtlGetVersion()
@@ -212,5 +179,3 @@ func checkPlatform() error {
 	}
 	return nil
 }
-
-func resetRuntimeState([]string) error { return nil }

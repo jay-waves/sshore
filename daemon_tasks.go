@@ -8,44 +8,11 @@ import (
 	"iter"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
-
-func nativeShells() ([]localShellView, error) {
-	record, err := existingDaemonRecord()
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var views map[string]localShellView
-	if err := daemonJSON(context.Background(), record, "/tasks/native", nil, &views); err != nil {
-		return nil, err
-	}
-	rows := make([]localShellView, 0, len(views))
-	for identity, view := range views {
-		view.identity = identity
-		view.ShortID = taskShortCode(identity)
-		rows = append(rows, view)
-	}
-	sortLocalShells(rows)
-	return rows, nil
-}
-
-func (s *daemonTasks) nativeViews() map[string]localShellView {
-	tasks := liveTasks[*nativeShellTask](s)
-	views := make(map[string]localShellView, len(tasks))
-	for _, task := range tasks {
-		view := task.shell.view()
-		views[view.identity] = view
-	}
-	return views
-}
 
 // The daemon owns task identities and their live implementations. Entries are
 // never reconstructed after a daemon restart.
@@ -70,19 +37,8 @@ type nativeShellTask struct {
 	serve func(net.Conn, message) error
 }
 
-func (t *nativeShellTask) taskName() string {
-	t.shell.mu.Lock()
-	defer t.shell.mu.Unlock()
-	return t.shell.record.Name
-}
-func (t *nativeShellTask) expired(time.Time) bool {
-	select {
-	case <-t.shell.done:
-		return true
-	default:
-		return false
-	}
-}
+func (t *nativeShellTask) taskName() string           { return t.shell.taskName() }
+func (t *nativeShellTask) expired(now time.Time) bool { return t.shell.expired(now) }
 
 func (s *daemonTasks) register(id string, task daemonTask) error {
 	if !validTaskUID(id) {
@@ -394,15 +350,19 @@ type resourceStatusRow struct {
 	Status resourceStatus
 }
 
-func (s *daemonTasks) serveResources(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query()
-	withStatus := query.Get("status") == "1"
-	records, workers := s.resourceRecords(query.Get("host"), withStatus)
-	enc := json.NewEncoder(w)
-	if withStatus {
-		w.Header().Set("Content-Type", "application/x-ndjson")
+func (s *daemonTasks) serveTaskInventory(w http.ResponseWriter, r *http.Request) {
+	var request taskInventoryRequest
+	if !readDaemonBody(w, r, &request) {
+		return
 	}
-	if err := enc.Encode(resourceReply{Records: records}); err != nil || !withStatus || len(workers) == 0 {
+	if request.Detail != "" && request.Detail != "health" && request.Detail != "inventory" && request.Detail != "sessions" {
+		http.Error(w, "invalid shell inventory detail", http.StatusBadRequest)
+		return
+	}
+	snapshot, workers := s.taskInventory(request)
+	enc := json.NewEncoder(w)
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	if err := enc.Encode(snapshot); err != nil || len(workers) == 0 {
 		return
 	}
 	controller := http.NewResponseController(w)
@@ -413,6 +373,12 @@ func (s *daemonTasks) serveResources(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	deadline, _ := ctx.Deadline()
 	_ = controller.SetWriteDeadline(deadline)
+	probeResourceStatus(ctx, workers, func(row resourceStatusRow) bool {
+		return enc.Encode(row) == nil && controller.Flush() == nil
+	})
+}
+
+func probeResourceStatus(ctx context.Context, workers []*daemonResourceTask, emit func(resourceStatusRow) bool) {
 
 	probes := len(workers)
 	concurrency := min(8, probes)
@@ -436,13 +402,8 @@ func (s *daemonTasks) serveResources(w http.ResponseWriter, r *http.Request) {
 		select {
 		case row := <-rows:
 			startNext()
-			if row.UID != "" {
-				if err := enc.Encode(row); err != nil {
-					return
-				}
-				if err := controller.Flush(); err != nil {
-					return
-				}
+			if row.UID != "" && !emit(row) {
+				return
 			}
 		case <-ctx.Done():
 			return
@@ -513,36 +474,62 @@ func (t *daemonResourceTask) publishReady(detail, root, mountpoint string) resou
 	return t.record
 }
 
-func (s *daemonTasks) resourceRecords(host string, withStatus bool) ([]resourceRecord, []*daemonResourceTask) {
-	var records []resourceRecord
+type hostedShellView interface {
+	hostedView(string) (shellView, int)
+}
+
+type taskInventoryRequest struct {
+	Native, Hosted, Resources, Status bool
+	Host, Detail                      string
+}
+
+type taskInventorySnapshot struct {
+	Native    map[string]localShellView
+	Shells    []shellView
+	Resources []resourceRecord
+}
+
+func (s *daemonTasks) taskInventory(request taskInventoryRequest) (taskInventorySnapshot, []*daemonResourceTask) {
+	snapshot := taskInventorySnapshot{Native: make(map[string]localShellView)}
+	var groups []int
 	var workers []*daemonResourceTask
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for _, task := range s.liveLocked(time.Now()) {
 		switch t := task.(type) {
+		case *nativeShellTask:
+			if request.Native {
+				view := t.shell.view()
+				snapshot.Native[view.identity] = view
+			}
+		case hostedShellView:
+			if request.Hosted {
+				view, group := t.hostedView(request.Detail)
+				snapshot.Shells = append(snapshot.Shells, view)
+				groups = append(groups, group)
+			}
 		case *daemonResourceTask:
-			if host != "" && t.record.Host != host {
+			if !request.Resources || request.Host != "" && t.record.Host != request.Host {
 				continue
 			}
-			// Capture each alias while the table still excludes renames and
-			// admission. Status probes operate on the captured workers later.
 			t.mu.Lock()
-			records = append(records, t.record)
+			snapshot.Resources = append(snapshot.Resources, t.record)
 			t.mu.Unlock()
-			if withStatus {
+			if request.Status {
 				workers = append(workers, t)
 			}
 		case requestRecord:
-			if host != "" && t.Connection.Host != host {
+			if !request.Resources || request.Host != "" && t.Connection.Host != request.Host {
 				continue
 			}
-			records = append(records, resourceRecord{
+			snapshot.Resources = append(snapshot.Resources, resourceRecord{
 				UID: t.ID, Kind: "review", Name: t.DisplayName(), Host: t.Connection.Host,
 				Detail: t.Connection.Session + ": " + requestSummary(t.Operations),
 			})
 		}
 	}
-	return records, workers
+	s.mu.Unlock()
+	hostedDiagnostics(snapshot.Shells, groups, request.Detail)
+	return snapshot, workers
 }
 
 func (s *daemonTasks) serveResourceMutation(w http.ResponseWriter, r *http.Request) {

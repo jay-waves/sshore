@@ -4,6 +4,7 @@ package main
 // filesystem code in a child connected by pipes; forwards run in the daemon.
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -310,16 +311,16 @@ func startSelectedResource(config resourceConfig, reservation *taskIdentitySelec
 			return 1, e
 		}
 	}
-	c, e := openLocalDaemon(localDaemonRequest{Kind: kind, Record: localShellRecord{Name: name, Directory: directory}, Env: os.Environ()})
+	config.Auth = auth
+	c, e := openLocalDaemonContext(context.Background(), localDaemonRequest{
+		Kind: "resource", Record: localShellRecord{Directory: directory},
+		Env: os.Environ(), Resource: &config,
+	})
 	if e != nil {
 		return 1, e
 	}
 	defer c.Close()
-	config.Auth = auth
 	enc, dec := json.NewEncoder(c), json.NewDecoder(c)
-	if e = enc.Encode(config); e != nil {
-		return 1, e
-	}
 	var startup resourceStartup
 	if e = dec.Decode(&startup); e != nil {
 		return 1, fmt.Errorf("resource startup failed; see %s: %w", logPath, e)

@@ -4,66 +4,11 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
-	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
-
-func runtimeLocation() (string, error) {
-	dir := os.Getenv("SSHORE_RUNTIME_DIR")
-	if dir == "" {
-		if root := os.Getenv("XDG_RUNTIME_DIR"); root != "" {
-			dir = filepath.Join(root, "sshore")
-		} else {
-			dir = fmt.Sprintf("/tmp/sshore-%d", os.Geteuid())
-		}
-	}
-	if !filepath.IsAbs(dir) {
-		return "", fmt.Errorf("runtime directory must be absolute")
-	}
-	return dir, nil
-}
-
-func runtimeDir() (string, error) {
-	dir, err := runtimeLocation()
-	if err != nil {
-		return "", err
-	}
-	if err := os.Mkdir(dir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
-		return "", err
-	}
-	info, err := os.Lstat(dir)
-	if err != nil {
-		return "", err
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.IsDir() || st.Uid != uint32(os.Geteuid()) || info.Mode().Perm()&0077 != 0 {
-		return "", fmt.Errorf("runtime directory must be owned by you with mode 0700: %s", dir)
-	}
-	return dir, nil
-}
-func openLock(path string, nonblocking bool) (*os.File, error) {
-	fd, err := unix.Open(path, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
-	if err != nil {
-		return nil, err
-	}
-	f := os.NewFile(uintptr(fd), path)
-	flags := unix.LOCK_EX
-	if nonblocking {
-		flags |= unix.LOCK_NB
-	}
-	if err := unix.Flock(fd, flags); err != nil {
-		f.Close()
-		return nil, err
-	}
-	return f, nil
-}
 
 // Selection opens no task streams. Only daemon registration claims a new identity.
 type shellSelection struct {
@@ -172,7 +117,7 @@ func detachHelper() error {
 
 func (s *remoteShell) sessionTargets(request message) message {
 	s.mu.Lock()
-	current := s.name
+	current := s.record.Name
 	s.mu.Unlock()
 	reply := message{Type: "session_targets", Action: request.Action, Name: current}
 	rows, err := detachedHostedShells()

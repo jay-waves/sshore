@@ -194,7 +194,7 @@ func TestDaemonResetPreservesLiveOwnership(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	id := strings.Repeat("c", 32)
 	state.tasks = &daemonTasks{}
-	shell := &localShell{record: localShellRecord{Name: "shell", UID: id}, done: make(chan struct{})}
+	shell := &localShell{shellTask: shellTask{record: localShellRecord{Name: "shell", UID: id}, done: make(chan struct{})}}
 	if err := state.tasks.register(id, &nativeShellTask{shell: shell}); err != nil {
 		t.Fatal(err)
 	}

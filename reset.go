@@ -84,7 +84,7 @@ func runReset() error {
 		}
 		keep[filepath.Join(parent, filepath.Base(lock.Name()))] = true
 	}
-	if err := resetRuntimeState(reply.Runtime); err != nil {
+	if err := resetHostedExitState(account, reply.Runtime); err != nil {
 		return err
 	}
 	if custom {

@@ -726,12 +726,12 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						}
 					case len(args) == 2 && args[0] == "attach":
 						console.attach = args[1]
-						console.draw(terminalOutput, "Looking up session…")
+						termui.WriteConsoleBody(terminalOutput, "Looking up session…")
 						if err := requestConsoleTargets(); err != nil {
 							return 255, err
 						}
 					case len(args) == 1 && (args[0] == "list" || args[0] == "ps" || args[0] == "pstree"):
-						console.draw(terminalOutput, "Loading "+args[0]+"…")
+						termui.WriteConsoleBody(terminalOutput, "Loading "+args[0]+"…")
 						consoleRequest++
 						pending.action = fmt.Sprintf("console:inventory:%d", consoleRequest)
 						awaitResponse(requestTimeout)
@@ -774,8 +774,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 							break
 						}
 						console = &commandConsole{}
-						console.draw(terminalOutput, "Loading sessions…")
-						console.start(ctx, emit, cols)
+						console.start(ctx, terminalOutput, emit, cols, color)
 						if len(openingInput) > 0 {
 							keyErr = sendConsoleInput(openingInput)
 						}

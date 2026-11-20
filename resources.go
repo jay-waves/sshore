@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,71 +20,31 @@ import (
 )
 
 func collectLocalResources(host string, withStatus bool) ([]resourceView, error) {
-	daemon, err := existingDaemonRecord()
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
+	snapshot, statuses, err := readTaskInventory(taskInventoryRequest{Resources: true, Status: withStatus, Host: host})
 	if err != nil {
 		return nil, err
 	}
-	query := url.Values{}
-	if host != "" {
-		query.Set("host", host)
-	}
-	timeout := daemonRequestTimeout
-	if withStatus {
-		query.Set("status", "1")
-		timeout = resourceStatusTimeout
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	request, err := daemonRequest(ctx, daemon, "/resources?"+query.Encode(), nil)
-	if err != nil {
-		return nil, err
-	}
-	response, err := daemonDo(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	dec := json.NewDecoder(response.Body)
-	var reply resourceReply
-	if err := dec.Decode(&reply); err != nil {
-		return nil, err
-	}
-	if reply.Error != "" {
-		return nil, fmt.Errorf("%s", reply.Error)
-	}
+	return resourceViews(snapshot.Resources, statuses, withStatus), nil
+}
 
-	views := make([]resourceView, 0, len(reply.Records))
-	pending := make(map[string]int)
-	for _, record := range reply.Records {
+func resourceViews(records []resourceRecord, statuses map[string]resourceStatus, withStatus bool) []resourceView {
+	views := make([]resourceView, 0, len(records))
+	for _, record := range records {
 		view := viewRecord(record)
 		if withStatus && record.Kind != "review" {
-			view.LastError = "local worker unavailable or status deadline exceeded"
-			pending[record.UID] = len(views)
+			switch status, ok := statuses[record.UID]; {
+			case !ok:
+				view.LastError = "local worker unavailable or status deadline exceeded"
+			case status.Version != version:
+				view.LastError = "incompatible or invalid worker status"
+			default:
+				view.Worker, view.resourceStatus = "running", status
+			}
 		}
 		views = append(views, view)
 	}
-	for len(pending) > 0 {
-		var row resourceStatusRow
-		if err := dec.Decode(&row); err != nil {
-			break
-		}
-		if index, ok := pending[row.UID]; ok {
-			view := &views[index]
-			if row.Status.Version != version {
-				view.LastError = "incompatible or invalid worker status"
-			} else {
-				view.Worker, view.resourceStatus = "running", row.Status
-			}
-			delete(pending, row.UID)
-		}
-	}
-	slices.SortFunc(views, func(a, b resourceView) int {
-		return cmp.Or(cmp.Compare(a.Host, b.Host), cmp.Compare(a.ID, b.ID))
-	})
-	return views, nil
+	slices.SortFunc(views, func(a, b resourceView) int { return cmp.Or(cmp.Compare(a.Host, b.Host), cmp.Compare(a.ID, b.ID)) })
+	return views
 }
 
 func runRenameResource(kind, old, name string, expected ...string) (int, error) {

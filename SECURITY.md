@@ -361,8 +361,9 @@ replacement is published. See [release mechanics](SSHORE.md#release).
 `reset` uses the authenticated administrative snapshot and shutdown before clearing
 local state and cached releases. Failed shutdown stops reset; busy mounts may refuse
 cleanup. Custom state roots are cleared by entry name, including when inherited
-from the running daemon. Account cleanup removes the daemon locator and log and
-preserves coordination locks to prevent concurrent startup.
+from the running daemon. Account cleanup removes the daemon locator, log and hosted-shell exit receipts.
+It also clears known receipt and socket entries from older runtime directories
+and preserves coordination locks to prevent concurrent startup.
 
 ## Setup failure and legacy recovery
 

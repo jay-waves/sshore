@@ -81,25 +81,18 @@ type daemonSnapshot struct {
 type daemonAdminReply struct {
 	Snapshot daemonSnapshot
 	Error    string   `json:",omitempty"`
-	Runtime  []string `json:",omitempty"`
+	Runtime  []string `json:",omitempty"` // Received from older daemons during reset.
 }
 
 func (s *daemonTasks) adminSnapshot(record localShellRecord) daemonAdminReply {
 	snapshot := daemonSnapshot{Version: record.Version, Instance: record.identity()}
-	var directories []string
 	s.mu.Lock()
 	for id, task := range s.liveLocked(time.Now()) {
 		snapshot.Tasks = append(snapshot.Tasks, daemonTaskInfo{ID: id, Name: task.taskName()})
-		if owner, ok := task.(interface{ runtimeDirectory() string }); ok {
-			if dir := owner.runtimeDirectory(); dir != "" {
-				directories = append(directories, dir)
-			}
-		}
 	}
 	s.mu.Unlock()
 	slices.SortFunc(snapshot.Tasks, func(a, b daemonTaskInfo) int { return cmp.Compare(a.ID, b.ID) })
-	slices.Sort(directories)
-	return daemonAdminReply{Snapshot: snapshot, Runtime: slices.Compact(directories)}
+	return daemonAdminReply{Snapshot: snapshot}
 }
 
 func daemonAdmin(ctx context.Context, action string, expected *daemonSnapshot) (daemonSnapshot, error) {
@@ -225,7 +218,7 @@ func (s *daemonTasks) shutdown(record localShellRecord, expected daemonSnapshot)
 		return fmt.Errorf("daemon task cleanup timed out; shutdown stopped")
 	}
 }
-func (t *nativeShellTask) stopTask() error { return t.shell.kill() }
+func (t *nativeShellTask) stopTask() error { return t.shell.stopTask() }
 func (t *daemonResourceTask) stopTask() error {
 	// Shutdown owns the deadline and keeps admission closed until accepted stops finish.
 	return t.stop(0)

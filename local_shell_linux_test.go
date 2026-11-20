@@ -150,7 +150,7 @@ func closedAttachment(t *testing.T) *attachment {
 }
 func TestInitialAttachmentFailureEndsCreatedTerminal(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
-	s := &remoteShell{name: "failed", done: make(chan struct{})}
+	s := &remoteShell{shellTask: shellTask{hosted: true, record: localShellRecord{Name: "failed"}, done: make(chan struct{})}}
 	p := closedAttachment(t)
 	if err := s.attach(p, message{Type: "attach", Term: "xterm-256color", Cols: 80, Rows: 24}); err == nil {
 		t.Fatal("accepted closed attachment")
@@ -176,7 +176,7 @@ func TestInitialAttachmentFailureEndsCreatedTerminal(t *testing.T) {
 }
 func TestFailedReattachmentPreservesDetachedTerminal(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
-	s := &remoteShell{name: "detached", done: make(chan struct{})}
+	s := &remoteShell{shellTask: shellTask{hosted: true, record: localShellRecord{Name: "detached"}, done: make(chan struct{})}}
 	if err := s.start(message{Cols: 80, Rows: 24, Term: "xterm-256color"}); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestFailedReattachmentPreservesDetachedTerminal(t *testing.T) {
 }
 
 func TestDetachReportsFailedClientNotification(t *testing.T) {
-	s := &remoteShell{done: make(chan struct{})}
+	s := &remoteShell{shellTask: shellTask{hosted: true, done: make(chan struct{})}}
 	p := closedAttachment(t)
 	s.active = p
 	client, server := net.Pipe()
@@ -274,7 +274,7 @@ func TestPSTreeKeepsUnavailableHostedShell(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(dir, "state"))
 	uid := newTaskUID()
 	tasks := startRequestDaemon(t)
-	shell := &remoteShell{tasks: tasks, instance: uid, name: "blocked", lifetime: awaitingSpawnOwner, done: make(chan struct{})}
+	shell := &remoteShell{lifetime: awaitingSpawnOwner, shellTask: shellTask{hosted: true, tasks: tasks, record: localShellRecord{UID: uid, Name: "blocked"}, done: make(chan struct{})}}
 	if err := tasks.register(uid, shell); err != nil {
 		t.Fatal(err)
 	}
@@ -453,7 +453,7 @@ func (i *trackedShellInput) Stop() error {
 }
 
 func TestShellTerminalReleasesWriterAfterExit(t *testing.T) {
-	var host shellTerminal
+	var host shellTask
 	active, stale := new(attachment), new(attachment)
 	input := new(trackedShellInput)
 	active.input = input

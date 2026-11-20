@@ -1,6 +1,6 @@
 package main
 
-// Session lifecycle fixtures use isolated runtime directories and the CLI test executable.
+// Session lifecycle fixtures use isolated state directories and the CLI test executable.
 
 import (
 	"bytes"

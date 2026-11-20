@@ -18,6 +18,7 @@ import (
 // Every lifecycle process uses newEnv's isolated CLI test executable.
 func TestSessionMetadataLifecycle(t *testing.T) {
 	e := newEnv(t)
+	e.env = append(e.env, "SSHORE_RUNTIME_DIR=unusable-relative-runtime")
 	run := func(req remoteServiceRequest) (string, error) {
 		cmd := exec.Command(e.bin, remoteServiceArgs(req)...)
 		cmd.Env = e.env
@@ -84,19 +85,23 @@ func TestSessionMetadataLifecycle(t *testing.T) {
 	shellOutput(t, b, "printf 'RENAMED_%s\\n' alive", "RENAMED_alive")
 	b.writeInput(t, []byte("exit 7\n"))
 	b.readExit(t)
-	waitExitReceipt(t, e.dir, "work", "shell exited (code 7)")
+	waitExitReceipt(t, "work", "shell exited (code 7)")
 	if out, err := run(remoteServiceRequest{Operation: "kill-session", Name: "original"}); err != nil {
 		t.Fatal(out, err)
 	}
 	_ = other
-	waitExitReceipt(t, e.dir, "original", "killed by sshore kill")
+	waitExitReceipt(t, "original", "killed by sshore kill")
 	if out, err := run(remoteServiceRequest{Operation: "inventory", Diagnostics: true}); err != nil || !strings.Contains(out, `"name":"work","reason":"shell exited (code 7)"`) {
 		t.Fatal(out, err)
 	}
 }
 
-func waitExitReceipt(t *testing.T, dir, name, reason string) {
+func waitExitReceipt(t *testing.T, name, reason string) {
 	t.Helper()
+	dir, err := daemonLocation()
+	if err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		for _, record := range readSessionExits(dir) {
@@ -110,25 +115,30 @@ func waitExitReceipt(t *testing.T, dir, name, reason string) {
 }
 
 func TestSessionExitReceiptBounds(t *testing.T) {
-	dir := t.TempDir()
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	dir, err := daemonDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
 	outside := filepath.Join(t.TempDir(), "outside")
 	if err := os.WriteFile(outside, []byte("untouched"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	socket := filepath.Join(dir, "test.sock")
-	if err := os.Symlink(outside, socket+".exit.json"); err != nil {
+	id := fmt.Sprintf("%032x", 102)
+	receipt := filepath.Join(dir, id+".exit.json")
+	if err := os.Symlink(outside, receipt); err != nil {
 		t.Fatal(err)
 	}
-	saveSessionExit(socket, "test", "shell exited (code 0)")
+	saveHostedExit(id, "test", "shell exited (code 0)")
 	if b, _ := os.ReadFile(outside); string(b) != "untouched" {
 		t.Fatal("followed symlink")
 	}
-	if info, err := os.Stat(socket + ".exit.json"); err != nil || info.Mode().Perm() != 0600 {
+	if info, err := os.Stat(receipt); err != nil || info.Mode().Perm() != 0600 {
 		t.Fatal(info, err)
 	}
 	for i := 0; i < 102; i++ {
 		// Distinct names are not necessary: receipts are keyed by identity.
-		saveSessionExit(filepath.Join(dir, time.Unix(int64(i), 0).Format("150405")+".sock"), "test", "ended")
+		saveHostedExit(fmt.Sprintf("%032x", i), "test", "ended")
 	}
 	if got := len(readSessionExits(dir)); got != 100 {
 		t.Fatal("unbounded receipts", got)
@@ -139,7 +149,7 @@ func TestAutomaticSessionSelection(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	tasks := startRequestDaemon(t)
 	id := strings.Repeat("a", 32)
-	shell := &remoteShell{tasks: tasks, instance: id, name: "pikachu", done: make(chan struct{})}
+	shell := &remoteShell{shellTask: shellTask{hosted: true, tasks: tasks, record: localShellRecord{UID: id, Name: "pikachu"}, done: make(chan struct{})}}
 	if err := tasks.register(id, shell); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +175,7 @@ func TestSessionNameResolutionUsesTaskTable(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	tasks := startRequestDaemon(t)
 	id := strings.Repeat("a", 32)
-	shell := &remoteShell{tasks: tasks, instance: id, name: "work", done: make(chan struct{})}
+	shell := &remoteShell{shellTask: shellTask{hosted: true, tasks: tasks, record: localShellRecord{UID: id, Name: "work"}, done: make(chan struct{})}}
 	if err := tasks.register(id, shell); err != nil {
 		t.Fatal(err)
 	}

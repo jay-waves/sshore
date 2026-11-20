@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -114,27 +115,103 @@ func viewRecord(r resourceRecord) resourceView {
 	return v
 }
 
-// Build the live inventory from the account's registered tasks. Callers add
-// the shell history and peer observations available at their own entry point.
+// Read only registered tasks here. Historical and peer observations are
+// collected separately and cannot become part of this snapshot.
+func readTaskInventory(request taskInventoryRequest) (taskInventorySnapshot, map[string]resourceStatus, error) {
+	timeout := daemonRequestTimeout
+	if request.Status && !request.Native && !request.Hosted {
+		timeout = resourceStatusTimeout
+	}
+	if request.Detail == "health" {
+		timeout = 2 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	statuses := make(map[string]resourceStatus)
+	var snapshot taskInventorySnapshot
+	record, err := existingDaemonRecord()
+	if os.IsNotExist(err) {
+		return snapshot, nil, nil
+	}
+	if err != nil {
+		return snapshot, nil, err
+	}
+	req, err := daemonRequest(ctx, record, "/tasks/snapshot", request)
+	if err != nil {
+		return snapshot, nil, err
+	}
+	resp, err := daemonDo(req)
+	if err != nil {
+		return snapshot, nil, err
+	}
+	defer resp.Body.Close()
+	dec := json.NewDecoder(resp.Body)
+	if err := dec.Decode(&snapshot); err != nil {
+		return snapshot, nil, err
+	}
+	if request.Status {
+		for range snapshot.Resources {
+			var row resourceStatusRow
+			if dec.Decode(&row) != nil {
+				break
+			}
+			statuses[row.UID] = row.Status
+		}
+	}
+	return snapshot, statuses, nil
+}
+
+func (snapshot taskInventorySnapshot) nativeShells() []localShellView {
+	rows := make([]localShellView, 0, len(snapshot.Native))
+	for identity, view := range snapshot.Native {
+		view.identity, view.ShortID = identity, taskShortCode(identity)
+		rows = append(rows, view)
+	}
+	sortLocalShells(rows)
+	return rows
+}
+
 func collectManagedInventory(detailed, includeNative bool) inventory {
-	inv, err := hostedShellInventory(detailed)
-	if err != nil {
-		inv.Errors = append(inv.Errors, cleanText(err.Error()))
+	return managedInventory(nil, detailed, includeNative)
+}
+
+func managedInventory(tasks *daemonTasks, detailed, includeNative bool) inventory {
+	inv := emptyInventory()
+	if runtime.GOOS == "linux" {
+		inv.MachineID, inv.Hostname = localMachineIdentity()
 	}
-	if includeNative {
-		inv.LocalShells, err = nativeShells()
-		if err != nil {
-			inv.Errors = append(inv.Errors, cleanText(err.Error()))
-		}
+	detail := "inventory"
+	if detailed {
+		detail = ""
 	}
-	resources, err := collectLocalResources("", true)
-	if err != nil {
-		inv.Errors = append(inv.Errors, cleanText(err.Error()))
+	request := taskInventoryRequest{Native: includeNative, Hosted: true, Resources: true, Status: true, Detail: detail}
+	var snapshot taskInventorySnapshot
+	var statuses map[string]resourceStatus
+	var err error
+	if tasks == nil {
+		snapshot, statuses, err = readTaskInventory(request)
 	} else {
-		inv.Resources = resources
-		if detailed {
-			inv.Resources = append(inv.Resources, collectResourceResults(inv.Resources)...)
-		}
+		var workers []*daemonResourceTask
+		snapshot, workers = tasks.taskInventory(request)
+		statuses = make(map[string]resourceStatus)
+		ctx, cancel := context.WithTimeout(context.Background(), resourceStatusTimeout)
+		defer cancel()
+		probeResourceStatus(ctx, workers, func(row resourceStatusRow) bool {
+			statuses[row.UID] = row.Status
+			return true
+		})
+	}
+	if err != nil {
+		inv.Errors = append(inv.Errors, cleanText(err.Error()))
+		return inv
+	}
+	inv.Shells = append(inv.Shells, snapshot.Shells...)
+	if includeNative {
+		inv.LocalShells = snapshot.nativeShells()
+	}
+	inv.Resources = resourceViews(snapshot.Resources, statuses, true)
+	if detailed {
+		inv.Resources = append(inv.Resources, collectResourceResults(inv.Resources)...)
 	}
 	return inv
 }

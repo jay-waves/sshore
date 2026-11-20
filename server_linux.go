@@ -92,15 +92,15 @@ func watchRemoteTask() error {
 
 func (s *remoteShell) serveSpawnOwner(c net.Conn, first message) {
 	s.mu.Lock()
-	if s.lifetime != awaitingSpawnOwner || checkPeerVersion(first.SoftwareVersion, "client") != nil || first.Instance != s.instance {
+	if s.lifetime != awaitingSpawnOwner || checkPeerVersion(first.SoftwareVersion, "client") != nil || first.Instance != s.record.UID {
 		s.mu.Unlock()
 		_ = writeMessage(c, message{Type: "error", Error: "spawn lifetime already owned or unavailable"})
 		return
 	}
 	s.lifetime = ownedSpawn
-	instance := s.instance
+	instance := s.record.UID
 	s.mu.Unlock()
-	defer func() { _ = s.killWithReason(instance, "spawn lifetime connection closed") }()
+	defer func() { _ = s.kill(instance, "spawn lifetime connection closed") }()
 
 	done := make(chan struct{})
 	defer close(done)

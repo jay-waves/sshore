@@ -21,7 +21,7 @@ func TestApprovalSourceRejectsReusedNameAndPID(t *testing.T) {
 	if err := s.checkApprovalSource(request); err == nil {
 		t.Fatal("approval accepted another instance with the same name and PID")
 	}
-	request.Instance = s.instance
+	request.Instance = s.record.UID
 	if err := s.checkApprovalSource(request); err != nil {
 		t.Fatal(err)
 	}

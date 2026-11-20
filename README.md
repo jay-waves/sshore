@@ -97,7 +97,8 @@ and `launch` to open an independent shell on the current host.
 The aliases `ls`, `a`, `sh`, and `mux` work here too.
 
 Tab completes commands, session names and short IDs. Use the arrow keys to
-edit input or recall commands from the current prompt. Type `help` for
+edit input or recall commands from the current prompt. Results append below the
+prompt and scroll up as the panel fills. Type `help` for
 commands. Press Esc or type `exit` to return. Applications already using the
 alternate screen redraw on return.
 

@@ -17,7 +17,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -149,12 +148,7 @@ func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, read
 }
 
 type localShell struct {
-	shellTerminal
-	environment  []string
-	tasks        *daemonTasks
-	record       localShellRecord
-	done         chan struct{}
-	once         sync.Once
+	shellTask
 	handoff      *localHandoff
 	handoffHints map[net.Conn]string
 }
@@ -167,16 +161,7 @@ func (s *localShell) view() localShellView {
 		Lifetime: shellLifetime(temporary, false), Temporary: temporary, identity: s.record.identity(),
 		Name: s.record.Name, Directory: s.record.Directory, Version: s.record.Version, PID: s.process.PID,
 	}
-	switch {
-	case s.exited:
-		view.State = "unavailable"
-	case s.active != nil:
-		view.State = "attached"
-	case view.PID == 0:
-		view.State = "starting"
-	default:
-		view.State = "detached"
-	}
+	view.State = s.state()
 	if len(s.handoffHints) != 0 {
 		hosts := slices.Sorted(maps.Values(s.handoffHints))
 		view.ConnectedHost = strings.Join(slices.Compact(hosts), ", ")
@@ -184,62 +169,9 @@ func (s *localShell) view() localShellView {
 	return view
 }
 
-func (s *localShell) kill() error {
-	s.mu.Lock()
-	process := s.process
-	s.mu.Unlock()
-	if process.PID != 0 {
-		if err := stopSpawnTerminal(process.PID, process.Start); err != nil {
-			return err
-		}
-	}
-	s.close()
-	return nil
-}
-
-func (s *localShell) close() {
-	s.once.Do(func() {
-		s.mu.Lock()
-		terminal, owner := s.terminal, s.endTerminal()
-		temporary, process := s.record.Owner.PID != 0, s.process
-		identity, name := s.record.identity(), s.record.Name
-		s.mu.Unlock()
-		if owner != nil {
-			owner.Close()
-		}
-		if terminal != nil {
-			if temporary {
-				_ = stopSpawnTerminal(process.PID, process.Start)
-			}
-			terminal.Close()
-		}
-		saveShellTree(identity, name, nil, "exited")
-		close(s.done)
-	})
-}
-
-// Caller holds mu while starting and publishing the terminal. One reader owns
-// terminal output for its lifetime, including periods without an attachment.
 func (s *localShell) start(m message) error {
-	source := s.environment
-	if source == nil {
-		source = os.Environ()
-	}
-	path := localShellPath(source)
-	env := localShellEnvironment(source, m.Term, s.record.identity())
-	return s.startShell(path, env, s.record.Directory, m, func(err error, code int) {
-		reason := "shell exited"
-		if err != nil {
-			reason = err.Error()
-		}
-		s.mu.Lock()
-		p := s.endTerminal()
-		s.mu.Unlock()
-		if p != nil {
-			p.FinishExit(code, reason)
-		}
-		s.close()
-	})
+	source := s.shellEnvironment()
+	return s.startManagedShell(localShellPath(source), localShellEnvironment(source, m.Term, s.record.identity()), m)
 }
 
 func localShellEnvironment(source []string, term, identity string) []string {
@@ -257,22 +189,6 @@ func localShellEnvironment(source []string, term, identity string) []string {
 	}
 	env = append(env, "TERM="+term, "SSHORE_LOCAL_SESSION="+identity, "SSHORE_TREE_ID="+identity)
 	return env
-}
-
-func (s *localShell) rename(old, name string) error {
-	return s.renameTask(s.tasks, s.record.UID, name, func() (string, error) {
-		if s.exited {
-			return "", fmt.Errorf("local shell has ended")
-		}
-		if old != "" && s.record.Name != old {
-			return "", fmt.Errorf("local shell changed; refresh with sshore list")
-		}
-		if s.record.Name == name {
-			return "", nil
-		}
-		s.record.Name = name
-		return s.record.identity(), nil
-	})
 }
 
 func (s *localShell) targets(request message) message {
@@ -320,7 +236,10 @@ func detachLocalShell(identity string) error {
 }
 
 func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, ready func(localShellRecord) error) error {
-	s := &localShell{done: make(chan struct{}), environment: env}
+	if runtime.GOOS == "darwin" {
+		return fmt.Errorf("local shells are unsupported on macOS")
+	}
+	s := &localShell{shellTask: shellTask{done: make(chan struct{}), environment: env}}
 	defer s.close()
 	return serveLocalShell(tasks, s, record, ready, func(c net.Conn, m message) error {
 		switch m.Type {
@@ -330,50 +249,21 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, re
 			return s.confirmHandoff(c, m)
 		case "handoff":
 			return s.requestHandoff(c, m.Handoff)
-		case "status":
-			view := s.view()
-			return writeMessage(c, message{
-				Type: "session", Temporary: view.Temporary, Name: view.Name, SoftwareVersion: view.Version,
-				Attached: view.State == "attached", PID: view.PID,
-			})
-		case "rename":
-			err := s.rename(m.Action, m.Name)
-			reply := message{Type: "renamed", Name: m.Name}
-			if err != nil {
-				reply.Type = "error"
-				reply.Error = err.Error()
-			}
-			return writeMessage(c, reply)
-		case "detach":
-			s.mu.Lock()
-			p := s.active
-			s.mu.Unlock()
-			if p == nil {
-				return writeMessage(c, message{Type: "detached"})
-			}
-			if err := p.controlMessage(message{Type: "detach_requested"}); err != nil {
-				return err
-			}
-			return writeMessage(c, message{Type: "detach_requested"})
-		case "kill":
-			if err := s.kill(); err != nil {
-				return writeMessage(c, message{Type: "error", Error: err.Error()})
-			}
-			return writeMessage(c, message{Type: "killed"})
-		case "terminal_open":
-			return s.endpoints.serve(c, m)
-		case "attach_control":
-			if m.SoftwareVersion != version {
-				return fmt.Errorf("local version mismatch")
-			}
-			if err := writeMessage(c, message{Type: "attach_control_ready", SoftwareVersion: version}); err != nil {
-				return err
-			}
-			return s.attach(c)
+
 		default:
+			handled, err := s.serveCommand(c, m, s.attach, s.status)
+			if handled {
+				return err
+			}
 			return fmt.Errorf("unexpected local request")
 		}
 	})
+}
+
+func (s *localShell) status(_ string) message {
+	view := s.view()
+	return message{Type: "session", Temporary: view.Temporary, Name: view.Name, SoftwareVersion: view.Version,
+		Attached: view.State == "attached", PID: view.PID}
 }
 
 func (s *localShell) attach(c net.Conn) error {
@@ -381,28 +271,10 @@ func (s *localShell) attach(c net.Conn) error {
 	if err != nil {
 		return err
 	}
-	if err := validateAttach(m); err != nil {
-		terminal.Close()
-		return err
-	}
 	p := newAttachment(c, terminal)
-	s.terminalMu.Lock()
-	s.mu.Lock()
-	initial := s.terminal == nil
-	err = s.attachTerminal(p, m, s.start, func() error {
-		saveShellTreeWithProcess(s.record.identity(), s.record.Name, m.Tree, "attached", describeSpawnOwner(s.record.Owner), shellLifetime(s.record.Owner.PID != 0, false), m.SourceHost, m.SourceMachineID)
-		return p.controlMessage(message{Type: "ready", Tree: shellTreeFor(s.record.identity()), Temporary: s.record.Owner.PID != 0, Name: s.record.Name, PID: s.process.PID})
-	})
-	if err != nil && initial && !errors.Is(err, errShellAttached) {
-		s.endTerminal()
-	}
-	s.mu.Unlock()
-	s.terminalMu.Unlock()
-	if err != nil {
+	if err := s.attachManaged(p, m, s.start, false); err != nil {
 		if errors.Is(err, errShellExited) || errors.Is(err, errShellAttached) {
 			err = fmt.Errorf("local shell unavailable or already attached")
-		} else if initial {
-			s.close()
 		}
 		_ = p.controlMessage(message{Type: "fatal", Error: err.Error()})
 		p.Close()

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	nativepty "github.com/creack/pty"
 	"golang.org/x/sys/unix"
 )
 
@@ -19,6 +20,34 @@ type Terminal struct {
 	cmd         *exec.Cmd
 	closeMaster func() error
 	wait        func() error
+}
+
+func openTerminalPair() (*os.File, *os.File, error) {
+	original, slave, err := nativepty.Open()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer original.Close()
+
+	// The dependency opens a blocking master. Register the nonblocking
+	// duplicate with Go's I/O poller at construction to enable deadlines.
+	fd, err := unix.FcntlInt(original.Fd(), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		_ = slave.Close()
+		return nil, nil, err
+	}
+	if err := unix.SetNonblock(fd, true); err != nil {
+		_ = unix.Close(fd)
+		_ = slave.Close()
+		return nil, nil, err
+	}
+	master := os.NewFile(uintptr(fd), original.Name())
+	if err := master.SetWriteDeadline(time.Time{}); err != nil {
+		_ = master.Close()
+		_ = slave.Close()
+		return nil, nil, err
+	}
+	return master, slave, nil
 }
 
 // Start owns the command and its controlling terminal from creation to Wait.
@@ -110,7 +139,7 @@ func (t *Terminal) setWinsize(size *unix.Winsize) error {
 
 // The caller holds the session locks while output is enabled. A real size
 // change prompts applications that ignore a SIGWINCH with unchanged dimensions.
-func RequestRedraw(master *Terminal, _ int) {
+func RequestRedraw(master *Terminal) {
 	group, err := master.ForegroundGroup()
 	if err != nil || group <= 0 {
 		return

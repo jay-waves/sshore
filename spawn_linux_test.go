@@ -32,7 +32,7 @@ func TestSpawnRouteKeepsOwnerAndDrainsExistingEndpoint(t *testing.T) {
 	_ = launcher.SetDeadline(time.Now().Add(5 * time.Second))
 
 	parent := &attachment{control: parentControl}
-	shell := &remoteShell{instance: strings.Repeat("a", 32), done: make(chan struct{})}
+	shell := &remoteShell{shellTask: shellTask{hosted: true, record: localShellRecord{UID: strings.Repeat("a", 32)}, done: make(chan struct{})}}
 	shell.active = parent
 	child := strings.Repeat("b", 32)
 	peers := make(chan net.Conn, 3)
@@ -56,7 +56,7 @@ func TestSpawnRouteKeepsOwnerAndDrainsExistingEndpoint(t *testing.T) {
 	if route.Type != "spawn_route" || route.Token == "" {
 		t.Fatalf("route: %+v", route)
 	}
-	request := message{Token: route.Token, Instance: shell.instance, SoftwareVersion: version}
+	request := message{Token: route.Token, Instance: shell.record.UID, SoftwareVersion: version}
 	connect := func(request message) (net.Conn, message) {
 		client, server := net.Pipe()
 		t.Cleanup(func() { client.Close() })
@@ -293,7 +293,7 @@ func TestSpawnLifetime(t *testing.T) {
 			for time.Now().Before(deadline) {
 				if _, err := proc.LiveIdentity(pid); err != nil {
 					if remote {
-						waitExitReceipt(t, e.dir, "temporary", "spawn lifetime connection closed")
+						waitExitReceipt(t, "temporary", "spawn lifetime connection closed")
 					}
 					return
 				}

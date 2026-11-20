@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 )
 
 func serveRemote(req remoteServiceRequest) (result error) {
@@ -88,26 +87,6 @@ func chooseDetachedHostedShell() (sessionTarget, error) {
 		}
 	}
 	return sessionTarget{}, fmt.Errorf("invalid shell selection")
-}
-
-func validateInstallTarget(target string) error {
-	dirInfo, err := os.Stat(filepath.Dir(target))
-	if err != nil {
-		return err
-	}
-	owner, ok := dirInfo.Sys().(*syscall.Stat_t)
-	if !ok || owner.Uid != uint32(os.Geteuid()) || dirInfo.Mode().Perm()&0022 != 0 {
-		return fmt.Errorf("automatic update requires a user-owned directory without group/world write access; install manually")
-	}
-	if info, e := os.Lstat(target); e == nil {
-		owner, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || owner.Uid != uint32(os.Geteuid()) || !info.Mode().IsRegular() {
-			return fmt.Errorf("automatic update requires a user-owned regular executable; install manually")
-		}
-	} else if !os.IsNotExist(e) {
-		return e
-	}
-	return nil
 }
 
 func runLocalInstaller(target string) error {

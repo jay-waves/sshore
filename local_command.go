@@ -42,20 +42,22 @@ func localRequest(ref, identity string, request message) (message, error) {
 	return readMessage(c)
 }
 
+func nativeShells() ([]localShellView, error) {
+	snapshot, _, err := readTaskInventory(taskInventoryRequest{Native: true})
+	return snapshot.nativeShells(), err
+}
+
 func localShells(withDirectory bool) ([]localShellView, error) {
-	rows, err := nativeShells()
-	if err != nil {
-		return nil, err
-	}
 	detail := "health"
 	if withDirectory {
 		detail = "inventory"
 	}
-	hosted, err := hostedShells(detail)
+	snapshot, _, err := readTaskInventory(taskInventoryRequest{Native: true, Hosted: true, Detail: detail})
 	if err != nil {
 		return nil, err
 	}
-	for _, s := range hosted {
+	rows := snapshot.nativeShells()
+	for _, s := range snapshot.Shells {
 		identity := s.identity("local")
 		rows = append(rows, localShellView{hosted: true, Lifetime: s.Lifetime, Temporary: s.Temporary, ShortID: taskShortCode(identity), identity: identity, Name: s.Name, State: s.State, PID: s.PID, Directory: s.Directory})
 	}

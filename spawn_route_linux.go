@@ -27,7 +27,7 @@ type spawnRoute struct {
 
 // Open an authenticated task endpoint within the scope of the parent capability.
 func (s *remoteShell) connectSpawnRoute(c net.Conn, request message) {
-	if checkPeerVersion(request.SoftwareVersion, "client") != nil || request.Instance != s.instance {
+	if checkPeerVersion(request.SoftwareVersion, "client") != nil || request.Instance != s.record.UID {
 		_ = writeMessage(c, message{Type: "error", Error: "parent shell instance changed"})
 		return
 	}
@@ -217,7 +217,7 @@ func handoffRemoteSpawn(o options) (bool, error) {
 }
 
 func (s *remoteShell) confirmSpawnRoute(c net.Conn, request message) {
-	if checkPeerVersion(request.SoftwareVersion, "client") != nil || request.Instance != s.instance {
+	if checkPeerVersion(request.SoftwareVersion, "client") != nil || request.Instance != s.record.UID {
 		_ = writeMessage(c, message{Type: "error", Error: "parent shell instance changed"})
 		return
 	}
@@ -248,11 +248,7 @@ func (s *remoteShell) createRouteShell(req localDaemonRequest, temporary bool) (
 	if err != nil {
 		return "", err
 	}
-	runtime, err := runtimeDir()
-	if err != nil {
-		return "", err
-	}
-	launch := hostedShellRequest{Runtime: runtime, Directory: req.Record.Directory, Name: selected.name, UID: selected.uid, Env: req.Env, Temporary: temporary}
+	launch := hostedShellRequest{Directory: req.Record.Directory, Name: selected.name, UID: selected.uid, Env: req.Env, Temporary: temporary}
 	if err := s.tasks.registerHostedShell(launch); err != nil {
 		return "", err
 	}
@@ -330,7 +326,7 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 		s.mu.Unlock()
 		return fmt.Errorf("managed shell required")
 	}
-	req := localDaemonRequest{Record: localShellRecord{Directory: s.directory, Owner: s.process}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Name: request.Name}}
+	req := localDaemonRequest{Record: localShellRecord{Directory: s.record.Directory, Owner: s.process}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Name: request.Name}}
 	s.mu.Unlock()
 
 	var instance string

@@ -1,0 +1,41 @@
+//go:build windows || (darwin && arm64)
+
+package main
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"runtime"
+)
+
+func serveRemoteRequest(remoteServiceRequest) error {
+	return fmt.Errorf("remote services run on the Linux server")
+}
+
+func detachHelper() error {
+	return fmt.Errorf("run this command inside an sshore shell")
+}
+
+func requestOperations(command string, _ []operation) error {
+	return fmt.Errorf("%s runs on the Linux server, inside the remote shell", command)
+}
+
+func hostedExitHistory() []exitView { return []exitView{} }
+
+func hostedDiagnostics([]shellView, []int, string) {}
+
+func registerPlatformDaemonRoutes(*http.ServeMux, *daemonTasks) {}
+
+func openHostedTransport(context.Context, options) (net.Conn, error) {
+	return nil, fmt.Errorf("%s does not host Unix shells", runtime.GOOS)
+}
+
+func runHostedCommand(options) (int, error) {
+	return 1, fmt.Errorf("%s does not host Unix shells", runtime.GOOS)
+}
+
+func handoffRemoteSpawn(o options) (bool, error) { return false, nil }
+
+func resetHostedExitState(string, []string) error { return nil }

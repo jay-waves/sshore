@@ -21,10 +21,6 @@ type commandConsole struct {
 
 const consoleTitle = "sshore commands  (Tab: next, Esc: return)"
 
-func (c *commandConsole) draw(out io.Writer, body string) {
-	termui.DrawConsole(out, consoleTitle, body)
-}
-
 const consoleHelp = `list (ls)         Show task inventory on this host
 ps (pstree)       Show the task tree on this host
 attach (a) <ID|name>  Switch session (Tab completes)
@@ -32,8 +28,11 @@ spawn (sh)        Open a nested shell
 launch (mux)      Open an independent shell on this host
 exit              Return to the current shell`
 
-func (c *commandConsole) start(ctx context.Context, send func(clientEvent), width int) {
-	c.editor = termui.StartConsole(ctx, consoleTitle, "sshore> ", width, func(e termui.ConsoleEvent) {
+func (c *commandConsole) start(ctx context.Context, out io.Writer, send func(clientEvent), width int, color bool) {
+	fmt.Fprintf(out, "\x1b[2J\x1b[H%s\r\n\r\n", termui.Format(color, termui.Info, "%s", consoleTitle))
+	termui.WriteConsoleBody(out, "Loading sessions…")
+	prompt := termui.Format(color, termui.Info, "sshore> ")
+	c.editor = termui.StartConsole(ctx, prompt, width, func(e termui.ConsoleEvent) {
 		send(clientEvent{consoleSource: c, consoleOutput: e.Output, consoleLine: e.Line, consoleClosed: e.Closed})
 	})
 }

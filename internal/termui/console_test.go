@@ -58,7 +58,7 @@ func TestConsoleCompletionCommonPrefixAndReset(t *testing.T) {
 
 func TestConsoleCompletionCyclesWithoutListing(t *testing.T) {
 	events := make(chan ConsoleEvent, 1024)
-	c := StartConsole(context.Background(), "title", "sshore> ", 24, func(e ConsoleEvent) { events <- e })
+	c := StartConsole(context.Background(), "sshore> ", 24, func(e ConsoleEvent) { events <- e })
 	defer c.Close()
 	c.Show("", completionFunc(func(_ []rune, _ int) ([][]rune, int) {
 		return [][]rune{[]rune("alpha"), []rune("中文" + strings.Repeat("x", 80))}, 0
@@ -104,6 +104,12 @@ func TestConsoleCompletionCyclesWithoutListing(t *testing.T) {
 			if e.Line != nil {
 				if *e.Line != "x"+want {
 					t.Fatalf("submitted %q", *e.Line)
+				}
+				c.Show("command result", nil)
+				output := waitOutput("sshore> ")
+				if !bytes.Contains(output, []byte("\rcommand result\r\n")) ||
+					bytes.Contains(output, []byte("\x1b[2J")) || bytes.Contains(output, []byte("\x1b[H")) {
+					t.Fatalf("expected result to append before the next prompt: %q", output)
 				}
 				return
 			}

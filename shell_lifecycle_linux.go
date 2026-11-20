@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -78,22 +79,6 @@ func renameSession(old, name string, expected ...string) error {
 	return nil
 }
 
-func (s *remoteShell) rename(old, name string, expected ...string) error {
-	return s.renameTask(s.tasks, s.instance, name, func() (string, error) {
-		if instance := firstExpectedInstance(expected); instance != "" && instance != s.instance {
-			return "", fmt.Errorf("shell instance changed; refresh with sshore list")
-		}
-		if s.killing || s.exited || s.name != old {
-			return "", fmt.Errorf("shell changed or is exiting; refresh the shell list")
-		}
-		if s.name == name {
-			return "", nil
-		}
-		s.name = name
-		return remoteTreeIdentity(s.instance), nil
-	})
-}
-
 func firstExpectedInstance(expected []string) string {
 	if len(expected) > 0 {
 		return expected[0]
@@ -104,20 +89,20 @@ func firstExpectedInstance(expected []string) string {
 // Cancellation is authorized and applied by the task owner. Process identity
 // validation belongs to the daemon immediately before it signals its child.
 func killSession(name string, expected ...string) error {
-	path, err := resolveSession(name, expected...)
+	id, err := resolveSession(name, expected...)
 	if err != nil {
 		return err
 	}
-	if path == "" {
+	if id == "" {
 		return fmt.Errorf("shell %s does not exist or its instance changed", name)
 	}
-	c, err := dialHostedTask(context.Background(), path, time.Second)
+	c, err := dialHostedTask(context.Background(), id, time.Second)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	if err := writeMessage(c, message{Type: "kill", Instance: path, SoftwareVersion: version}); err != nil {
+	if err := writeMessage(c, message{Type: "kill", Instance: id, SoftwareVersion: version}); err != nil {
 		return err
 	}
 	reply, err := readMessage(c)
@@ -131,14 +116,12 @@ func killSession(name string, expected ...string) error {
 	return nil
 }
 
-// Exit receipts are best-effort diagnostics, not evidence of task cleanup. Each
-// immutable socket identity has at most one receipt; newer lifetimes replace it.
-// Keep at most 100 receipts for seven days in the private runtime directory.
-// Atomic 0600 writes and bounded no-follow reads avoid partial/unbounded records.
-// Abrupt SIGKILL, reboot or directory removal may leave no receipt. Explicit kill
-// and verified update cleanup write receipts after successful process teardown,
-// including old daemons that cannot report their own reasons.
+// The owner lock gives a single daemon write access. Its shell goroutines
+// serialize writes and pruning so the receipt limit applies across all shells.
+var shellExitMu sync.Mutex
 
+// Exit receipts are best-effort diagnostics. Keep at most 100 receipts for
+// seven days. Atomic writes and bounded no-follow reads protect the records.
 type sessionExit struct {
 	Name   string    `json:"name"`
 	Reason string    `json:"reason"`
@@ -149,10 +132,14 @@ type sessionExit struct {
 const sessionExitMaxBytes = 4096
 
 func readSessionExits(dir string) []sessionExit {
+	if privateStatePath(dir, true) != nil {
+		return nil
+	}
 	entries, _ := os.ReadDir(dir)
 	var records []sessionExit
 	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".exit.json") {
+		id, receipt := strings.CutSuffix(e.Name(), ".exit.json")
+		if !receipt || !validTaskUID(strings.TrimSuffix(id, ".sock")) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
@@ -178,31 +165,87 @@ func readSessionExits(dir string) []sessionExit {
 	return records
 }
 
-func saveSessionExit(socket, name, reason string) {
-	if validSession(name) != nil || reason == "" {
+func saveHostedExit(id, name, reason string) {
+	if !validTaskUID(id) || validSession(name) != nil || reason == "" {
 		return
 	}
-	dir := filepath.Dir(socket)
-	gate, err := openLock(filepath.Join(dir, ".exit.lock"), false)
+	dir, err := daemonLocation()
 	if err != nil {
 		return
 	}
-	defer gate.Close()
-	if writeBoundedStateJSON(socket+".exit.json", sessionExit{Name: name, Reason: reason, At: time.Now().UTC()}, sessionExitMaxBytes) != nil {
+	shellExitMu.Lock()
+	defer shellExitMu.Unlock()
+	path := filepath.Join(dir, id+".exit.json")
+	if writeBoundedStateJSON(path, sessionExit{Name: name, Reason: reason, At: time.Now().UTC()}, sessionExitMaxBytes) != nil {
 		return
 	}
-	recentSessionExits(dir, true)
+	_, discarded := partitionSessionExits(readSessionExits(dir))
+	for _, record := range discarded {
+		_ = os.Remove(record.file)
+	}
 }
 
-// Write-side callers hold the exit lock through pruning.
-func recentSessionExits(dir string, prune bool) []sessionExit {
-	records := readSessionExits(dir)
+func partitionSessionExits(records []sessionExit) ([]sessionExit, []sessionExit) {
 	cutoff := time.Now().Add(-exitReceiptLifetime)
-	recent, discarded := partitionExitReceipts(records, cutoff, func(record sessionExit) time.Time { return record.At })
-	if prune {
-		for _, record := range discarded {
-			_ = os.Remove(record.file)
+	return partitionExitReceipts(records, cutoff, func(record sessionExit) time.Time { return record.At })
+}
+
+func hostedExitHistory() []exitView {
+	exits := []exitView{}
+	account, _ := daemonLocation()
+	records := readSessionExits(account)
+	if dir := legacyShellRuntime(); filepath.IsAbs(dir) && dir != account {
+		records = append(records, readSessionExits(dir)...)
+	}
+	recent, _ := partitionSessionExits(records)
+	for _, r := range recent {
+		exits = append(exits, exitView{Name: r.Name, Reason: r.Reason, Time: r.At})
+	}
+	return exits
+}
+
+// Older releases wrote receipts beside their former sockets. Read those
+// observations until they expire and allow reset to clear their known files.
+func legacyShellRuntime() string {
+	if dir := os.Getenv("SSHORE_RUNTIME_DIR"); dir != "" {
+		return dir
+	}
+	if root := os.Getenv("XDG_RUNTIME_DIR"); root != "" {
+		return filepath.Join(root, "sshore")
+	}
+	return fmt.Sprintf("/tmp/sshore-%d", os.Geteuid())
+}
+
+func resetHostedExitState(account string, directories []string) error {
+	// Reset holds the account owner lock, so no daemon can write new receipts.
+	directories = append(directories, account)
+	// A stale runtime override cannot block reset of current state.
+	if dir := legacyShellRuntime(); filepath.IsAbs(dir) && privateStatePath(dir, true) == nil {
+		directories = append(directories, dir)
+	}
+	for _, dir := range directories {
+		if !filepath.IsAbs(dir) {
+			return fmt.Errorf("invalid legacy runtime directory")
+		}
+		if err := privateStatePath(dir, true); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			id, receipt := strings.CutSuffix(name, ".exit.json")
+			socketID, socket := strings.CutSuffix(name, ".sock")
+			if receipt && validTaskUID(strings.TrimSuffix(id, ".sock")) || socket && validTaskUID(socketID) || name == ".exit.lock" {
+				if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+					return err
+				}
+			}
 		}
 	}
-	return recent
+	return nil
 }

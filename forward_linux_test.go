@@ -20,7 +20,7 @@ import (
 
 func TestForwardApprovalPreservesDetachedSession(t *testing.T) {
 	activityFixture(t)
-	s := &remoteShell{name: "eevee", shellTerminal: shellTerminal{process: processIdentity{PID: 123}}}
+	s := &remoteShell{shellTask: shellTask{hosted: true, record: localShellRecord{Name: "eevee"}, process: processIdentity{PID: 123}}}
 	m := message{SoftwareVersion: version, Name: "eevee", PID: 123, ApprovalID: strings.Repeat("a", 32)}
 	t.Setenv("HOME", t.TempDir())
 	for _, test := range []struct {

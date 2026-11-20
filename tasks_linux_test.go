@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -254,7 +255,7 @@ func TestListScopes(t *testing.T) {
 	}
 }
 
-func TestInventoryPreservesOtherModulesAfterShellFailure(t *testing.T) {
+func TestInventoryIgnoresUnusableLegacyRuntime(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
 	brokenRuntime := filepath.Join(root, "not-a-directory")
@@ -267,22 +268,33 @@ func TestInventoryPreservesOtherModulesAfterShellFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	inv := localSessionInventory()
-	if len(inv.Errors) == 0 || len(inv.Resources) != 1 || inv.Resources[0].Kind != "review" {
-		t.Fatalf("shell failure discarded other task observations: %+v", inv)
+	if len(inv.Errors) != 0 || len(inv.Resources) != 1 || inv.Resources[0].Kind != "review" {
+		t.Fatalf("legacy runtime affected live inventory: %+v", inv)
 	}
 }
 
-func TestInventoryOmitsExpiredExitReceipts(t *testing.T) {
+func TestExitReceiptInventoryAndReset(t *testing.T) {
 	activityFixture(t)
 	root := t.TempDir()
 	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(root, "runtime"))
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
-	dir, err := runtimeDir()
+	dir, err := daemonDirectory()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, age := range map[string]time.Duration{"recent": time.Hour, "expired": 8 * 24 * time.Hour} {
-		if err := writeStateJSON(filepath.Join(dir, name+".sock.exit.json"), sessionExit{Name: name, Reason: "exited", At: time.Now().Add(-age)}); err != nil {
+	legacy := legacyShellRuntime()
+	if err := os.Mkdir(legacy, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, receipt := range []struct {
+		path, name string
+		age        time.Duration
+	}{
+		{filepath.Join(dir, fmt.Sprintf("%032x.exit.json", 1)), "recent", time.Minute},
+		{filepath.Join(legacy, fmt.Sprintf("%032x.sock.exit.json", 2)), "legacy", time.Hour},
+		{filepath.Join(legacy, fmt.Sprintf("%032x.sock.exit.json", 3)), "expired", 8 * 24 * time.Hour},
+	} {
+		if err := writeStateJSON(receipt.path, sessionExit{Name: receipt.name, Reason: "exited", At: time.Now().Add(-receipt.age)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -290,8 +302,33 @@ func TestInventoryOmitsExpiredExitReceipts(t *testing.T) {
 	if len(inv.Errors) != 0 {
 		t.Fatal(inv.Errors)
 	}
-	if len(inv.Exits) != 1 || inv.Exits[0].Name != "recent" {
+	if len(inv.Exits) != 2 || inv.Exits[0].Name != "recent" || inv.Exits[1].Name != "legacy" {
 		t.Fatalf("exit receipts: %#v", inv.Exits)
+	}
+	// An older daemon can report a separate runtime directory inherited at startup.
+	inherited := filepath.Join(root, "inherited")
+	if err := os.Mkdir(inherited, 0700); err != nil {
+		t.Fatal(err)
+	}
+	oldSocket := filepath.Join(inherited, fmt.Sprintf("%032x.sock", 4))
+	for _, path := range []string{oldSocket, oldSocket + ".exit.json", filepath.Join(legacy, "unrelated.exit.json")} {
+		if err := os.WriteFile(path, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := resetHostedExitState(dir, []string{inherited}); err != nil {
+		t.Fatal(err)
+	}
+	if len(hostedExitHistory()) != 0 {
+		t.Fatal("reset retained exit receipts")
+	}
+	for _, path := range []string{oldSocket, oldSocket + ".exit.json", filepath.Join(dir, fmt.Sprintf("%032x.exit.json", 1))} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("reset retained %s: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(legacy, "unrelated.exit.json")); err != nil {
+		t.Fatal("reset removed unrelated file", err)
 	}
 }
 

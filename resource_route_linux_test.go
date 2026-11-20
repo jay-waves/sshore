@@ -20,8 +20,8 @@ func routedResourceFixture(t *testing.T) (*remoteShell, message) {
 	t.Helper()
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", t.TempDir())
-	s := &remoteShell{instance: "resource-instance", name: "source", shellTerminal: shellTerminal{process: processIdentity{PID: os.Getpid()}}, done: make(chan struct{})}
-	return s, message{Type: "route_mount", SoftwareVersion: version, Instance: s.instance, Name: s.name, PID: os.Getpid(), ApprovalID: strings.Repeat("a", 32)}
+	s := &remoteShell{shellTask: shellTask{hosted: true, record: localShellRecord{UID: "resource-instance", Name: "source"}, process: processIdentity{PID: os.Getpid()}, done: make(chan struct{})}}
+	return s, message{Type: "route_mount", SoftwareVersion: version, Instance: s.record.UID, Name: s.record.Name, PID: os.Getpid(), ApprovalID: strings.Repeat("a", 32)}
 }
 
 func TestRoutedResourceRejectsChangedSource(t *testing.T) {

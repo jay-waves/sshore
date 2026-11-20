@@ -9,28 +9,21 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/proc"
 )
 
-func (tasks *daemonTasks) hostedViews(detail string) []shellView {
-	shells := liveTasks[*remoteShell](tasks)
-	diagnostics := detail == "" || detail == "sessions"
-	var views []shellView
-	var groups []int
-	for _, shell := range shells {
-		view, group := shell.view(detail)
-		views = append(views, view)
-		if diagnostics {
-			groups = append(groups, group)
+func hostedDiagnostics(views []shellView, groups []int, detail string) {
+	if detail != "health" {
+		for i, group := range groups {
+			views[i].Directory = cleanText(sessionDirectory(group, views[i].PID))
 		}
 	}
-	if diagnostics && len(views) > 0 {
+	if len(views) != 0 && (detail == "" || detail == "sessions") {
 		snapshot := newProcessSnapshot(proc.ReadProcesses())
 		for i, group := range groups {
 			views[i].Foreground = snapshot.foregroundPrograms(group)
@@ -39,30 +32,17 @@ func (tasks *daemonTasks) hostedViews(detail string) []shellView {
 			}
 		}
 	}
-	sort.Slice(views, func(i, j int) bool { return views[i].Instance < views[j].Instance })
-	return views
+	slices.SortFunc(views, func(a, b shellView) int { return strings.Compare(a.Instance, b.Instance) })
 }
 
 func hostedShells(detail string) ([]shellView, error) {
-	if active := accountActivity.Load(); active != nil && active.tasks != nil {
-		return active.tasks.hostedViews(detail), nil
+	request := taskInventoryRequest{Hosted: true, Detail: detail}
+	if a := accountActivity.Load(); a != nil && a.tasks != nil {
+		snapshot, _ := a.tasks.taskInventory(request)
+		return snapshot.Shells, nil
 	}
-	record, err := existingDaemonRecord()
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	ctx := context.Background()
-	if detail == "health" {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
-	}
-	var views []shellView
-	err = daemonJSON(ctx, record, "/tasks/hosted?detail="+detail, nil, &views)
-	return views, err
+	snapshot, _, err := readTaskInventory(request)
+	return snapshot.Shells, err
 }
 
 func (tasks *daemonTasks) resolveHostedShell(name, instance string) (shellView, error) {
@@ -76,7 +56,7 @@ func (tasks *daemonTasks) resolveHostedShell(name, instance string) (shellView, 
 	}
 	if id != "" {
 		if shell, ok := tasks.lookupLocked(id, now).(*remoteShell); ok {
-			view, _ := shell.view("health")
+			view, _ := shell.hostedView("health")
 			return view, nil
 		}
 		if instance != "" {
@@ -98,7 +78,7 @@ func (tasks *daemonTasks) resolveHostedShell(name, instance string) (shellView, 
 	if found == nil {
 		return shellView{}, nil
 	}
-	view, _ := found.view("health")
+	view, _ := found.hostedView("health")
 	return view, nil
 }
 
@@ -115,9 +95,9 @@ func dialHostedTask(ctx context.Context, ref string, timeout time.Duration) (net
 }
 
 type hostedShellRequest struct {
-	Runtime, Directory, Name, UID string
-	Env                           []string
-	Temporary                     bool
+	Directory, Name, UID string
+	Env                  []string
+	Temporary            bool
 }
 
 func registerPlatformDaemonRoutes(mux *http.ServeMux, tasks *daemonTasks) {
@@ -135,25 +115,13 @@ func registerPlatformDaemonRoutes(mux *http.ServeMux, tasks *daemonTasks) {
 		}
 		_ = json.NewEncoder(w).Encode(view)
 	})
-	mux.HandleFunc("POST /tasks/hosted", func(w http.ResponseWriter, r *http.Request) {
-		detail := r.URL.Query().Get("detail")
-		if detail != "" && detail != "health" && detail != "inventory" && detail != "sessions" {
-			http.Error(w, "invalid shell inventory detail", http.StatusBadRequest)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(tasks.hostedViews(detail))
-	})
 	mux.HandleFunc("POST /shells", func(w http.ResponseWriter, r *http.Request) {
 		var req hostedShellRequest
 		if !readDaemonBody(w, r, &req) {
 			return
 		}
-		if !validTaskUID(req.UID) || validSession(req.Name) != nil || !filepath.IsAbs(req.Directory) || !filepath.IsAbs(req.Runtime) {
+		if !validTaskUID(req.UID) || validSession(req.Name) != nil || !filepath.IsAbs(req.Directory) {
 			http.Error(w, "invalid shell creation", 400)
-			return
-		}
-		if err := privateStatePath(req.Runtime, true); err != nil {
-			http.Error(w, err.Error(), 400)
 			return
 		}
 		if err := tasks.registerHostedShell(req); err != nil {
@@ -174,10 +142,6 @@ func createRemoteShell(executable string, id taskIdentitySelection, temporary bo
 	if err != nil {
 		return err
 	}
-	dir, err := runtimeDir()
-	if err != nil {
-		return err
-	}
-	req := hostedShellRequest{Runtime: dir, Directory: cwd, Name: id.name, UID: id.uid, Env: env, Temporary: temporary}
+	req := hostedShellRequest{Directory: cwd, Name: id.name, UID: id.uid, Env: env, Temporary: temporary}
 	return daemonJSON(ctx, record, "/shells", req, nil)
 }

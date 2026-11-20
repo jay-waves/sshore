@@ -118,11 +118,12 @@ var daemonLocation = func() (string, error) {
 }
 
 type localDaemonRequest struct {
-	Spawn  *spawnConfig
-	Auth   *sshAuthEndpoint `json:",omitempty"`
-	Kind   string
-	Record localShellRecord
-	Env    []string
+	Spawn    *spawnConfig
+	Resource *resourceConfig  `json:",omitempty"`
+	Auth     *sshAuthEndpoint `json:",omitempty"`
+	Kind     string
+	Record   localShellRecord
+	Env      []string
 }
 
 func localEnvironmentValue(env []string, name string) string {
@@ -185,10 +186,6 @@ func daemonFileLock(name string) (*os.File, error) {
 		return nil, err
 	}
 	return f, nil
-}
-
-func openLocalDaemon(request localDaemonRequest) (net.Conn, error) {
-	return openLocalDaemonContext(context.Background(), request)
 }
 
 func openLocalDaemonContext(ctx context.Context, request localDaemonRequest) (net.Conn, error) {
@@ -492,26 +489,14 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 			_ = enc.Encode(resourceStartup{Error: result.Error()})
 		}
 	}()
-	dec := json.NewDecoder(io.LimitReader(c, 1<<20))
-	var config resourceConfig
-	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
-	if err := dec.Decode(&config); err != nil {
-		return err
-	}
-	_ = c.SetReadDeadline(time.Time{})
+	config := *request.Resource
 	kind := config.kind()
-	if kind == "" || kind != request.Kind {
-		return fmt.Errorf("invalid %s startup", request.Kind)
-	}
-	if (kind == "forward" && config.Forward.Name != request.Record.Name) || (kind == "mount" && config.Mount.Name != request.Record.Name) {
-		return fmt.Errorf("invalid %s startup", kind)
+	if !validTaskUID(config.UID) {
+		return fmt.Errorf("invalid resource task ID")
 	}
 	dir, err := resourceStateDir(kind)
 	if err != nil {
 		return err
-	}
-	if !validTaskUID(config.UID) {
-		return fmt.Errorf("invalid resource task ID")
 	}
 	logPath := filepath.Join(dir, config.UID+".log")
 	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
@@ -522,6 +507,7 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 	if err = privateStatePath(logPath, false); err != nil {
 		return err
 	}
+	dec := json.NewDecoder(io.LimitReader(c, daemonBodyLimit))
 	if kind == "forward" {
 		return runDaemonForward(config, enc, dec, c, log, request, tasks)
 	}
@@ -529,6 +515,9 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 }
 
 func runDaemonMount(config resourceConfig, enc *json.Encoder, dec *json.Decoder, c net.Conn, log io.Writer, resultPath string, request localDaemonRequest, tasks *daemonTasks) error {
+	if err := validSession(config.Mount.Name); err != nil {
+		return err
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err

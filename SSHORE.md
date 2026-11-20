@@ -33,6 +33,16 @@ The shell and terminal preserve interactive state across detach. Redraw is best
 effort and must preserve user input. See the [support matrix](README.md#os-and-shell-support)
 and [native terminal adapters](internal/pty/).
 
+Local and hosted shells share one [shell task lifecycle](shell_terminal.go).
+Their entry points supply owner supervision and the commands specific to
+local handoff or hosted resources.
+
+An experimental Apple Silicon client can be built from source with
+`GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o sshore .`. It targets
+SSH connections to Linux hosts. Local shell hosting, local mounts and the
+automatic local installer are unavailable. Cross-compilation alone does not
+validate macOS terminal input, SSH authentication or daemon lifetime.
+
 ### Shell ownership and attachment
 
 A spawned shell depends on its original parent and, for a remote spawn, its
@@ -47,6 +57,9 @@ giving its successor the terminal. See [spawn transport](spawn_transport.go),
 One authenticated daemon per OS account owns registered shells and resources.
 Normal connections require the exact full release version. Validate process
 identity before signaling and preserve approval checks for shell-routed resources.
+Mount and forward configuration travels in the authenticated launch request.
+The upgraded stream carries readiness and the caller's commit. The mount worker
+uses a separate pipe exchange because it can outlive the launch connection.
 Trace changes through the [task registry](daemon_tasks.go), [mount coordinator](mount.go)
 and [route authorization](resource_route_linux.go). Consult [SECURITY.md](SECURITY.md)
 before changing update, reset or approval behavior.
@@ -55,7 +68,12 @@ before changing update, reset or approval behavior.
 
 Distinguish live observations, cached records and unknown state. Saved ownership
 and attachment records provide display context. Only the account daemon's
-registry establishes management authority. See [inventory](inventory.go),
+registry establishes management authority. The live inventory takes one snapshot
+of registered shells, resources and pending requests. Resource status probes run
+after the snapshot within their own time budget. Clients add history and peer
+observations separately. Linux hosted-shell exit receipts use
+the private account-daemon directory. Older runtime-directory receipts remain
+visible until they expire. See [inventory](inventory.go),
 [tree rendering](pstree.go) and [daemon metadata](daemon_metadata.go).
 
 ## Build and validate

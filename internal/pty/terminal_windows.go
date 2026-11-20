@@ -303,7 +303,7 @@ func (t *Terminal) closeConsole() {
 }
 
 // A temporary size change asks ConPTY to repaint without injecting input.
-func RequestRedraw(t *Terminal, _ int) {
+func RequestRedraw(t *Terminal) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.console == 0 || t.size.Cols < 2 {

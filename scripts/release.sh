@@ -13,7 +13,10 @@ cat packages/*.sha256 > packages/SHA256SUMS
 cat > release-notes.md <<NOTES
 sshore $version
 
-- Simplify daemon task lookup, state-root resolution, readiness checks and lease release while preserving authentication and task lifecycle safeguards.
+- Share the shell lifecycle across local and hosted tasks and serve live inventory from a single daemon snapshot.
+- Store Linux hosted-shell exit records in the private account daemon directory. Older records remain readable until they expire.
+- Keep command panel results on screen and add color to the title and prompt.
+- Add an experimental macOS arm64 client build from source.
 
 Includes Linux and Windows amd64 binaries. Verify archives against SHA256SUMS.
 Update both endpoints to $version for managed connections. Save work before

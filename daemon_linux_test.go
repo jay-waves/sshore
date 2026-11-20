@@ -33,9 +33,14 @@ func TestDaemonHostedTaskRouting(t *testing.T) {
 	if err := createRemoteShell("", selection, false, root, nil); err == nil || !strings.Contains(err.Error(), "task already exists") {
 		t.Fatalf("duplicate hosted shell creation: %v", err)
 	}
-	records, err := hostedShells("health")
-	if err != nil || len(records) != 1 || records[0].Instance != id {
-		t.Fatalf("hosted inventory: %+v %v", records, err)
+	native := registerTestShell(t, tasks, "native", strings.Repeat("c", 32))
+	worker, _ := registerTestResource(t, tasks, "forward", "web", strings.Repeat("d", 32))
+	request := taskInventoryRequest{Native: true, Hosted: true, Resources: true, Status: true, Detail: "health"}
+	snapshot, statuses, err := readTaskInventory(request)
+	if err != nil || len(snapshot.Shells) != 1 || snapshot.Shells[0].Instance != id ||
+		snapshot.Native[native.identity()].Name != native.Name || len(snapshot.Resources) != 1 ||
+		snapshot.Resources[0].UID != worker.record.UID || statuses[worker.record.UID].Transport != "connected" {
+		t.Fatalf("combined inventory: %+v %+v %v", snapshot, statuses, err)
 	}
 	for range 2 {
 		c, err := dialHostedTask(context.Background(), id, time.Second)
@@ -53,6 +58,10 @@ func TestDaemonHostedTaskRouting(t *testing.T) {
 	}
 	if err := shell.stopTask(); err != nil {
 		t.Fatal(err)
+	}
+	snapshot, _, err = readTaskInventory(request)
+	if err != nil || len(snapshot.Shells) != 0 || len(snapshot.Native) != 1 || len(snapshot.Resources) != 1 {
+		t.Fatalf("ended shell should disappear from the live snapshot: %+v %v", snapshot, err)
 	}
 	if c, err := dialHostedTask(context.Background(), id, time.Second); err == nil {
 		c.Close()
@@ -110,7 +119,7 @@ func TestDaemonHangupBetweenHostedShells(t *testing.T) {
 	b.writeInput(t, []byte("exit\n"))
 	b.readExit(t)
 	b.close()
-	waitExitReceipt(t, e.dir, "before-hangup", "shell exited (code 0)")
+	waitExitReceipt(t, "before-hangup", "shell exited (code 0)")
 	if current, err := proc.StartToken(record.ManagerPID); err != nil || current != identity {
 		t.Fatalf("fixture daemon changed: %v", err)
 	}

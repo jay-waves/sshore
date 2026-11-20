@@ -200,8 +200,7 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *htt
 		_ = json.NewEncoder(w).Encode(daemonAdminReply{Snapshot: expected})
 		stop()
 	})
-	mux.HandleFunc("POST /tasks/native", func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(tasks.nativeViews()) })
-	mux.HandleFunc("POST /resources", tasks.serveResources)
+	mux.HandleFunc("POST /tasks/snapshot", tasks.serveTaskInventory)
 	mux.HandleFunc("POST /tasks/name", func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
 		uid, name := query.Get("uid"), query.Get("name")
@@ -243,7 +242,9 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *htt
 		if !readDaemonBody(w, r, &req) {
 			return
 		}
-		if (req.Kind != "remote-shell" && req.Kind != "shell" && req.Kind != "mount" && req.Kind != "forward") || validSession(req.Record.Name) != nil || !filepath.IsAbs(req.Record.Directory) {
+		shell := (req.Kind == "remote-shell" || req.Kind == "shell") && validSession(req.Record.Name) == nil
+		resource := req.Kind == "resource" && req.Resource != nil
+		if !(shell || resource) || !filepath.IsAbs(req.Record.Directory) {
 			http.Error(w, "invalid launch", 400)
 			return
 		}

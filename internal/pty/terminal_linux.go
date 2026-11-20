@@ -3,43 +3,41 @@ package pty
 import (
 	"os"
 	"os/exec"
-	"strconv"
 
-	"github.com/jay-waves/sshore/internal/proc"
 	"golang.org/x/sys/unix"
 )
 
-func openTerminalPair() (master, slave *os.File, err error) {
-	// Open the master nonblocking so deadlines can interrupt terminal I/O.
-	master, err = os.OpenFile("/dev/ptmx", os.O_RDWR|unix.O_NOCTTY|unix.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, nil, err
-	}
-	closeMaster := master.Close
-	defer func() {
-		if err != nil {
-			_ = closeMaster()
-		}
-	}()
-	var number int
-	var ioctlErr error
-	control, err := master.SyscallConn()
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := control.Control(func(fd uintptr) {
-		number, ioctlErr = unix.IoctlGetInt(int(fd), unix.TIOCGPTN)
-		if ioctlErr == nil {
-			ioctlErr = unix.IoctlSetPointerInt(int(fd), unix.TIOCSPTLCK, 0)
-		}
-	}); err != nil {
-		return nil, nil, err
-	}
-	if ioctlErr != nil {
-		return nil, nil, ioctlErr
-	}
-	slave, err = os.OpenFile("/dev/pts/"+strconv.Itoa(number), os.O_RDWR|unix.O_NOCTTY, 0)
-	return master, slave, err
+// waitTerminalChild parks in Go's I/O poller until a started child exits, then reaps it.
+// The caller must own the command's single Wait call.
+func waitTerminalChild(cmd *exec.Cmd) error {
+	awaitExit(cmd.Process.Pid)
+	return cmd.Wait()
 }
 
-func waitTerminalChild(cmd *exec.Cmd) error { return proc.Wait(cmd) }
+// The child is still unreaped, so its PID remains reserved while opening the
+// pidfd. Park in Go's I/O poller before reaping to avoid a blocked OS thread
+// per live terminal. When pidfds or polling are unavailable, cmd.Wait reaps
+// the child directly.
+func awaitExit(pid int) {
+	fd, err := unix.PidfdOpen(pid, unix.PIDFD_NONBLOCK)
+	if err != nil {
+		return
+	}
+	file := os.NewFile(uintptr(fd), "terminal-pidfd")
+	defer file.Close()
+	raw, err := file.SyscallConn()
+	if err != nil {
+		return
+	}
+	_ = raw.Read(func(fd uintptr) bool {
+		// Check readiness even on the first call, since the child may
+		// already have exited before the runtime arms this read.
+		poll := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+		for {
+			n, err := unix.Poll(poll, 0)
+			if err != unix.EINTR {
+				return n != 0 || err != nil
+			}
+		}
+	})
+}
