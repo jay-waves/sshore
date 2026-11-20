@@ -117,11 +117,11 @@ func consoleInventory(request message, current string) message {
 		inv.Host = "local"
 		inv.collectPeers()
 		inv, err = inv.finalize()
-		writeTaskInventoryColor(&body, inv, current, false)
+		writeTaskInventoryColor(&body, inv, current, request.Color)
 	case "ps", "pstree":
 		var inv inventory
 		inv, err = localTreeInventory()
-		writeShellTree(&body, inventoryResourceTrees(localShellTreeNodes(inv, current), inv), inv.MachineID, false)
+		writeShellTree(&body, inventoryResourceTrees(localShellTreeNodes(inv, current), inv), inv.MachineID, request.Color)
 	default:
 		reply.Output = "Unknown inventory command."
 		return reply

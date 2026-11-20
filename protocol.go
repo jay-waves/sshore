@@ -48,6 +48,7 @@ type message struct {
 	Type            string              `json:"type"`
 	Cols            uint16              `json:"cols,omitempty"`
 	Rows            uint16              `json:"rows,omitempty"`
+	Color           bool                `json:"color,omitempty"`
 	NoProfile       bool                `json:"no_profile,omitempty"`
 	NoLogin         bool                `json:"no_login,omitempty"`
 	Term            string              `json:"term,omitempty"`

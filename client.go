@@ -752,7 +752,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						consoleRequest++
 						pending.action = fmt.Sprintf("console:inventory:%d", consoleRequest)
 						awaitResponse(requestTimeout)
-						if err := streamMessage(control, message{Type: "console_inventory", Action: pending.action, Name: args[0]}); err != nil {
+						if err := streamMessage(control, message{Type: "console_inventory", Action: pending.action, Name: args[0], Color: color}); err != nil {
 							return 255, err
 						}
 					default:

@@ -118,3 +118,11 @@ func TestConsoleCompletionCyclesWithoutListing(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanConsoleLine(t *testing.T) {
+	input := "\x1b[32mok\x1b[39m \x1b[2J \x1b]0;title\a"
+	want := "\x1b[32mok\x1b[39m �[2J �]0;title�"
+	if got := cleanConsoleLine(input); got != want {
+		t.Fatalf("cleanConsoleLine = %q, want %q", got, want)
+	}
+}
