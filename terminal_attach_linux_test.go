@@ -373,6 +373,34 @@ func TestClientCommandConsole(t *testing.T) {
 	}
 }
 
+func TestClientConsolePathCompletion(t *testing.T) {
+	t.Setenv("SSHORE_SOCKET", "")
+	e := newEnv(t)
+	for _, name := range []string{"complete-alpha.txt", "complete-beta 中文.txt"} {
+		if err := os.WriteFile(filepath.Join(e.dir, name), []byte(name), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd, terminal, wait := startPrefixClient(t, e)
+	wait("Connected fixture:keys")
+	io.WriteString(terminal, "\x02s")
+	wait("sshore> ")
+	io.WriteString(terminal, "cp self:"+filepath.Join(e.dir, "complete-")+"\t")
+	wait("\x1b[?2026h")
+	wait("alpha.txt")
+	io.WriteString(terminal, "\t")
+	wait("beta 中文.txt")
+	target := filepath.Join(e.dir, "completed-copy")
+	io.WriteString(terminal, "fixture:"+target+"\r")
+	wait("Detached;")
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != "complete-beta 中文.txt" {
+		t.Fatalf("completed copy: %q %v", data, err)
+	}
+}
+
 func TestClientFailedSwitchRestoresOriginal(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
@@ -597,7 +625,11 @@ func TestReconnectPreservesStoppedJob(t *testing.T) {
 			if name == "fish" {
 				expectTerminalText(t, b, "JOB-PROMPT> ")
 			}
-			responsiveShellOutput(t, b, "printf 'CONTROL-%s' restored", "CONTROL-restored")
+			output := responsiveShellOutput(t, b, "printf 'CONTROL-%s' restored", "CONTROL-restored")
+			_, tail, _ := strings.Cut(output, "CONTROL-restored")
+			if name == "fish" && !strings.Contains(tail, "JOB-PROMPT> ") {
+				expectTerminalText(t, b, "JOB-PROMPT> ")
+			}
 			b.writeInput(t, []byte("exit\n"))
 			b.readExit(t)
 			b.close()
@@ -628,7 +660,11 @@ func TestReconnectPreservesShellEditor(t *testing.T) {
 				t.Fatalf("pending command executed: %v", err)
 			}
 			b.writeInput(t, []byte("b\n"))
-			expectTerminalText(t, b, "DONE-ready")
+			output := expectTerminalText(t, b, "DONE-ready")
+			_, tail, _ := strings.Cut(output, "DONE-ready")
+			if name == "fish" && !strings.Contains(tail, "EDITOR-READY> ") {
+				expectTerminalText(t, b, "EDITOR-READY> ")
+			}
 			if data, err := os.ReadFile(marker); err != nil || string(data) != "abc" {
 				t.Fatalf("editor state lost: %q, %v", data, err)
 			}

@@ -26,6 +26,30 @@ type terminalEOFControl struct {
 	terminalEOF chan struct{}
 }
 
+func TestInputDrainTimeoutKeepsControlAvailable(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		control, peer := net.Pipe()
+		terminal, terminalPeer := net.Pipe()
+		defer peer.Close()
+		defer terminalPeer.Close()
+		a := newAttachment(control, terminal)
+		defer a.Close()
+		if err := a.DrainInput(1); err != nil {
+			t.Fatal(err)
+		}
+		// No input_drained was sent; the next frame can still confirm detach.
+		done := make(chan error, 1)
+		go func() { done <- a.controlMessage(message{Type: "detached"}) }()
+		m, err := readMessage(peer)
+		if err != nil || m.Type != "detached" {
+			t.Fatalf("control after timeout: %+v %v", m, err)
+		}
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 func (c terminalEOFControl) SetReadDeadline(at time.Time) error {
 	err := c.Conn.SetReadDeadline(at)
 	close(c.terminalEOF)

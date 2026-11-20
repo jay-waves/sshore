@@ -33,7 +33,7 @@ Tasks and installation
   daemon      Run the account task manager
 
 Start: sshore launch work:     Resume: sshore attach work:7afe22
-In a session: Ctrl+B c spawns; d detaches; n/p switches; l returns; r redraws.
+In a session: Ctrl+B c spawns; d detaches; n/p switches; l returns; r redraws; s or : opens commands.
 Examples: sshore --tldr             Details: sshore COMMAND --help
 Version: sshore --version
 `

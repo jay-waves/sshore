@@ -157,7 +157,7 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 				action = KeyNext
 			case 'p':
 				action = KeyPrevious
-			case ':':
+			case ':', 's':
 				action = KeyConsole
 			case 'l':
 				action = KeyLast

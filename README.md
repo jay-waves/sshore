@@ -90,7 +90,7 @@ Press **Ctrl+B** and then one of these keys:
 | `l`, `n`, `p` | Switch to the last, next or previous session. |
 | `c` | Spawn a nested shell on the current host. Exit or detach to return one level. |
 | `r` | Request a redraw. |
-| `:` | Open the full-screen sshore command prompt. |
+| `:`, `s` | Open the full-screen sshore command prompt. |
 | `Ctrl+B` | Send a literal Ctrl+B to the application. |
 
 At the command prompt, use `list` for task inventory, `ps` for the local task
@@ -105,7 +105,7 @@ redraw on return.
 Use `cp self:FILE HOST:PATH` or `forward self:PORT HOST:PORT` to run the
 corresponding local CLI command after detaching. Both endpoints are required.
 Quote paths with spaces. Tab completes command names, flags, and local
-`self:` paths for `cp`. Enter remote paths and ports manually.
+`self:` paths for `cp`; repeat Tab to cycle matches. Enter remote paths and ports manually.
 
 Use `--no-escape` if the application needs all keystrokes.
 

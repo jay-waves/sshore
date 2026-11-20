@@ -21,7 +21,7 @@ type commandConsole struct {
 	targets []sessionTarget
 }
 
-const consoleTitle = "sshore commands  (Esc to return)"
+const consoleTitle = "sshore commands  (Tab: next, Esc: return)"
 
 func (c *commandConsole) draw(out io.Writer, body string) {
 	termui.DrawConsole(out, consoleTitle, body)

@@ -23,8 +23,12 @@ cat packages/*.sha256 > packages/SHA256SUMS
 cat > release-notes.md <<NOTES
 sshore $version
 
-- Reduce local frontend-to-daemon multiplexing overhead for bulk streams.
-- Refine SSH workflow fixtures and isolate benchmarks under tests/benchmarks.
+- Preserve shell detachment when terminal input is blocked.
+- Keep command-console completion on the input line to prevent layout corruption.
+- Open the command console with Ctrl+B s as well as Ctrl+B :.
+- Reduce command-console input flicker by grouping redraws.
+- Reduce local multiplexing overhead and simplify test and release workflows.
+- Correct fish reconnection tests to wait for the next prompt.
 
 Includes Linux and Windows amd64 binaries. Verify archives against SHA256SUMS.
 Update both endpoints to $version for managed connections. Save work before

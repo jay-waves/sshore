@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/chzyer/readline"
 )
@@ -29,11 +31,38 @@ type ConsoleEvent struct {
 	Closed bool
 }
 
-type consoleWriter func([]byte)
+type consoleWriter struct {
+	mu      sync.Mutex
+	pending []byte
+	send    func([]byte)
+}
 
-func (w consoleWriter) Write(p []byte) (int, error) {
-	w(bytes.Clone(p))
+func (w *consoleWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if bytes.HasPrefix(p, []byte("\x1b[J\x1b[2K")) {
+		w.pending = append(w.pending, p...)
+	} else if len(w.pending) > 0 {
+		// Readline emits the erase and redraw separately. Send them together
+		// and let terminals that support synchronized output paint once.
+		output := append([]byte("\x1b[?2026h"), w.pending...)
+		output = append(output, p...)
+		output = append(output, "\x1b[?2026l"...)
+		w.pending = nil
+		w.send(output)
+	} else {
+		w.send(bytes.Clone(p))
+	}
 	return len(p), nil
+}
+
+func (w *consoleWriter) flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.pending) != 0 {
+		w.send(w.pending)
+		w.pending = nil
+	}
 }
 
 // DrawConsole clears the current screen and draws a plain text title and body.
@@ -73,31 +102,34 @@ func (c *Console) edit(in *io.PipeReader, title, prompt string, width int, send 
 	defer in.Close()
 	stop := context.AfterFunc(c.ctx, func() { _ = in.Close() })
 	defer stop()
-	out := consoleWriter(func(p []byte) { send(ConsoleEvent{Output: p}) })
-	var complete readline.AutoCompleter
+	out := &consoleWriter{send: func(p []byte) { send(ConsoleEvent{Output: p}) }}
+	complete := &consoleCompletion{}
 	editor, err := readline.NewEx(&readline.Config{
 		Prompt: prompt, Stdin: in, Stdout: out, Stderr: out,
 		ForceUseInteractive: true, HistoryLimit: 100,
-		FuncGetWidth: func() int { return max(20, width) },
+		FuncGetWidth: func() int { return max(2, width) },
 		FuncMakeRaw:  func() error { return nil }, FuncExitRaw: func() error { return nil },
 		FuncOnWidthChanged:  func(func()) {},
-		FuncFilterInputRune: func(r rune) (rune, bool) { return r, r != readline.CharCtrlZ },
-		AutoComplete:        consoleCompletion{current: &complete},
+		FuncFilterInputRune: complete.filter,
+		Listener:            readline.FuncListener(complete.changed),
+		AutoComplete:        complete,
 	})
 	if err != nil {
+		out.flush()
 		send(ConsoleEvent{Closed: true})
 		return
 	}
-	defer editor.Close()
+	defer func() { editor.Close(); out.flush() }()
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		case screen := <-c.prompts:
-			complete = screen.completer
+			complete.set(screen.completer)
 			DrawConsole(out, title, screen.body)
 		}
 		line, err := editor.Readline()
+		out.flush()
 		if err != nil {
 			send(ConsoleEvent{Closed: true})
 			return
@@ -107,13 +139,62 @@ func (c *Console) edit(in *io.PipeReader, title, prompt string, width int, send 
 }
 
 type consoleCompletion struct {
-	current *readline.AutoCompleter
+	mu      sync.Mutex
+	current readline.AutoCompleter
+	cycle   pathCompletion
 }
 
-func (c consoleCompletion) Do(line []rune, pos int) ([][]rune, int) {
-	if complete := *c.current; complete != nil {
-		return complete.Do(line, pos)
+func (c *consoleCompletion) set(complete readline.AutoCompleter) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.current, c.cycle = complete, pathCompletion{}
+}
+
+func (c *consoleCompletion) filter(r rune) (rune, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if r != readline.CharTab {
+		c.cycle = pathCompletion{}
 	}
+	return r, r != readline.CharCtrlZ
+}
+
+func (c *consoleCompletion) changed(_ []rune, _ int, _ rune) ([]rune, int, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cycle.pending == nil {
+		return nil, 0, false
+	}
+	line, pos := c.cycle.pending, c.cycle.pendingPos
+	c.cycle.pending = nil
+	return line, pos, true
+}
+
+// Readline's candidate grid assumes terminal newline processing and can scroll
+// the full-screen prompt. Cycle matches in the input line instead.
+func (c *consoleCompletion) Do(line []rune, pos int) ([][]rune, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state := &c.cycle
+	if len(state.candidates) == 0 {
+		if c.current == nil {
+			return nil, 0
+		}
+		candidates, offset := c.current.Do(line, pos)
+		if len(candidates) <= 1 {
+			return candidates, offset
+		}
+		if common, n := (readline.Runes{}).Aggregate(candidates); n > 0 {
+			return [][]rune{common}, offset
+		}
+		state.line, state.pos = slices.Clone(line), pos
+		state.candidates, state.selected = candidates, -1
+	}
+	state.selected = (state.selected + 1) % len(state.candidates)
+	suffix := state.candidates[state.selected]
+	state.pending = append(slices.Clone(state.line[:state.pos]), suffix...)
+	state.pending = append(state.pending, state.line[state.pos:]...)
+	state.pendingPos = state.pos + len(suffix)
 	return nil, 0
 }
 

@@ -26,7 +26,7 @@ func TestPrefixKeysAcrossReads(t *testing.T) {
 		input, want string
 		action      KeyAction
 	}{
-		{"a\x02\x02b", "a\x02b", KeyNone}, {"before\x02dignored", "before", KeyDetach}, {"a\x02rZ", "aZ", KeyRedraw}, {"\x02i", "\x02i", KeyNone}, {"\x02?", "\x02?", KeyNone}, {"\x02x", "\x02x", KeyNone}, {"\x02s", "\x02s", KeyNone}, {"\x02w", "\x02w", KeyNone}, {"before\x1dignored", "before\x1dignored", KeyNone},
+		{"a\x02\x02b", "a\x02b", KeyNone}, {"before\x02dignored", "before", KeyDetach}, {"a\x02rZ", "aZ", KeyRedraw}, {"\x02i", "\x02i", KeyNone}, {"\x02?", "\x02?", KeyNone}, {"\x02x", "\x02x", KeyNone}, {"\x02s", "", KeyConsole}, {"\x02w", "\x02w", KeyNone}, {"before\x1dignored", "before\x1dignored", KeyNone},
 	} {
 		for split := 0; split <= len(tc.input); split++ {
 			var k Keys
@@ -169,7 +169,7 @@ func TestInterruptDetectionAcrossReads(t *testing.T) {
 
 func TestEnhancedPrefixProtocols(t *testing.T) {
 	for _, prefix := range []string{"\x02", "\x1b[98;5u", "\x1b[98;5:1u", "\x1b[98;69u", "\x1b[27;5;98~", "\x1b[1080::98;5u"} {
-		for command, action := range map[byte]KeyAction{'c': KeyNew, 'd': KeyDetach, 'n': KeyNext, 'p': KeyPrevious, 'l': KeyLast, 'r': KeyRedraw} {
+		for command, action := range map[byte]KeyAction{'c': KeyNew, 'd': KeyDetach, 'n': KeyNext, 'p': KeyPrevious, 'l': KeyLast, 'r': KeyRedraw, 's': KeyConsole, ':': KeyConsole} {
 			for _, next := range []string{string(command), fmt.Sprintf("\x1b[%d;1u", command), fmt.Sprintf("\x1b[27;1;%d~", command)} {
 				input := prefix + next
 				for split := 0; split <= len(input); split++ {

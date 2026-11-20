@@ -225,11 +225,15 @@ It never inherits launch lifetime or injects a command into terminal input.
 Exit or detach returns one level; the parent program continues running.
 
 The client at the user's terminal owns terminal input and shortcuts.
-Ctrl+B : opens a frontend command prompt using the terminal screen.
+Ctrl+B : or Ctrl+B s opens a frontend command prompt using the terminal screen.
 `internal/termui` draws the prompt and runs Readline. The frontend owns terminal
 handoff, command dispatch, and the completion data. `internal/pty` handles the
 screen transition and input-mode restoration. The frontend uses the same validated
-session targets and instance-based switching as other shortcuts.
+session targets and instance-based switching as other shortcuts. Tab completes
+the common prefix or cycles matching candidates in the input line, keeping the
+full-screen layout stable for long paths and large directories. Readline's erase
+and redraw are sent together with synchronized-output markers to reduce flicker;
+the markers are ignored by terminals that do not support them.
 The prompt’s launch opens a persistent shell on the current host. Detach or
 exit returns to the previous attachment. On a hosted shell the return route
 may end with the parent, while the new launch remains independently attachable
@@ -337,6 +341,8 @@ The frontend waits separately for queued input to drain and for the detach
 confirmation. The control loop owns both deadlines and joins the terminal
 writer on exit. Once detach has been sent, a failure on the input stream leaves
 the control stream available to receive that confirmation.
+If input does not drain in time, the host leaves the barrier unacknowledged and
+continues reading control so the frontend can detach with an uncertainty warning.
 If a local handoff is prepared but its commit does not arrive within five
 seconds, the frontend resumes input on the current attachment and reports the
 timeout to the requesting daemon.

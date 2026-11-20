@@ -156,7 +156,9 @@ func (a *attachment) DrainInput(offset uint64) error {
 		case <-a.Done():
 			return io.ErrClosedPipe
 		case <-timer.C:
-			return fmt.Errorf("terminal input drain timed out")
+			// Leave the barrier unacknowledged so the client can report
+			// uncertain input and send detach without losing the shell.
+			return nil
 		}
 	}
 	return a.controlMessage(message{Type: "input_drained"})
