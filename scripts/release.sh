@@ -23,15 +23,13 @@ cat packages/*.sha256 > packages/SHA256SUMS
 cat > release-notes.md <<NOTES
 sshore $version
 
-- Rename the current-machine endpoint from self: to here: (.: remains available).
-- Run command-panel inventory on the current session host, add CLI aliases, and remove panel cp and forward.
-- Consolidate remote service requests and begin shared Unix and macOS arm64 client groundwork; macOS is not yet supported.
+- Simplify daemon task lookup, state-root resolution, readiness checks and lease release while preserving authentication and task lifecycle safeguards.
 
 Includes Linux and Windows amd64 binaries. Verify archives against SHA256SUMS.
 Update both endpoints to $version for managed connections. Save work before
 installing because the installer stops the target account daemon.
-Older remote releases do not support the new service entry. If remote maintenance
-is needed before upgrading, run that release's sshore kill --all on the host.
+Remote releases before 0.7.22 do not support the current service entry. If remote
+maintenance is needed before upgrading, run that release's sshore kill --all on the host.
 Commit: $GITHUB_SHA
 NOTES
 gh release create "$tag" --verify-tag --title "sshore $tag" \

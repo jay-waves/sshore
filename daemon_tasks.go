@@ -283,7 +283,11 @@ func (s *daemonTasks) findNativeShell(ref, identity string) (*nativeShellTask, l
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
-	if id := canonicalTaskUID(identity); id != "" {
+	if identity != "" {
+		id := canonicalTaskUID(identity)
+		if id == "" {
+			return nil, localShellRecord{}, nil
+		}
 		task, ok := s.lookupLocked(id, now).(*nativeShellTask)
 		if !ok {
 			return nil, localShellRecord{}, nil
@@ -295,7 +299,7 @@ func (s *daemonTasks) findNativeShell(ref, identity string) (*nativeShellTask, l
 		return task, record, nil
 	}
 	prefix := shortTaskPrefix(ref)
-	if identity == "" && validTaskUID(prefix) {
+	if validTaskUID(prefix) {
 		if task, ok := s.lookupLocked(prefix, now).(*nativeShellTask); ok {
 			return task, task.snapshot(), nil
 		}
@@ -305,13 +309,6 @@ func (s *daemonTasks) findNativeShell(ref, identity string) (*nativeShellTask, l
 	for id, candidate := range s.liveLocked(now) {
 		task, ok := candidate.(*nativeShellTask)
 		if !ok {
-			continue
-		}
-		if identity != "" {
-			record := task.snapshot()
-			if record.identity() == identity && (ref == "" || ref == record.Name || ref == record.UID) {
-				return task, record, nil
-			}
 			continue
 		}
 		if prefix != "" && strings.HasPrefix(id, prefix) {

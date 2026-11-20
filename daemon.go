@@ -93,13 +93,16 @@ func daemonStateRootAt(dir, root string, explicit bool) (string, error) {
 	if !filepath.IsAbs(record.Directory) {
 		return "", fmt.Errorf("invalid account daemon state root")
 	}
+	if !explicit {
+		return record.Directory, nil
+	}
 	same := filepath.Clean(root) == filepath.Clean(record.Directory)
 	if !same {
 		a, aErr := os.Stat(root)
 		b, bErr := os.Stat(record.Directory)
 		same = aErr == nil && bErr == nil && os.SameFile(a, b)
 	}
-	if explicit && !same {
+	if !same {
 		return "", fmt.Errorf("account daemon uses %s; SSHORE_STATE_DIR cannot select another root while it is running", record.Directory)
 	}
 	return record.Directory, nil
@@ -243,8 +246,7 @@ func ensureLocalDaemonContext(ctx context.Context, executable ...string) (localS
 	if err = checkPeerVersion(r.Version, "local daemon"); err != nil {
 		return empty, err
 	}
-	var ready bool
-	if err := daemonJSON(ctx, r, "/ready", nil, &ready); err != nil {
+	if err := daemonJSON(ctx, r, "/ready", nil, nil); err != nil {
 		return empty, fmt.Errorf("local daemon is unavailable; its owner is still active: %w", err)
 	}
 	return r, nil

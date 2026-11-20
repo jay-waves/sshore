@@ -1061,8 +1061,7 @@ func TestClientDaemonLossRestoresTerminal(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var ready bool
-			err = daemonJSON(context.Background(), record, "/ready", nil, &ready)
+			err = daemonJSON(context.Background(), record, "/ready", nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

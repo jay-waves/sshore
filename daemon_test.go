@@ -18,13 +18,16 @@ func TestDaemonRoutesAfterMCPRemoval(t *testing.T) {
 		path string
 		want int
 	}{
-		{path: "/ready", want: http.StatusOK},
+		{path: "/ready", want: http.StatusNoContent},
 		{path: "/mcp", want: http.StatusNotFound},
 	} {
 		recorder := httptest.NewRecorder()
 		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, tc.path, nil))
 		if recorder.Code != tc.want {
 			t.Errorf("POST %s: got %d, want %d", tc.path, recorder.Code, tc.want)
+		}
+		if tc.want == http.StatusNoContent && recorder.Body.Len() != 0 {
+			t.Errorf("POST %s: unexpected response body %q", tc.path, recorder.Body.String())
 		}
 	}
 }
@@ -51,6 +54,9 @@ func TestDaemonTaskConnectionsDoNotOwnLifetime(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", root)
 	tasks := startRequestDaemon(t)
 	r := registerTestShell(t, tasks, "work", strings.Repeat("c", 32))
+	if _, _, err := openNativeShell(context.Background(), r.Name, "invalid"); !os.IsNotExist(err) {
+		t.Fatalf("invalid identity resolved by name: %v", err)
+	}
 	for range 2 {
 		c, _, err := openNativeShell(context.Background(), r.UID, "")
 		if err != nil {

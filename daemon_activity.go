@@ -312,7 +312,6 @@ func (s *daemonActivity) serve(c net.Conn, r activityRequest) {
 		_ = c.Close()
 		<-done
 	}()
-	var requestedRelease bool // Published by closing done.
 	go func() {
 		defer close(done)
 		// Read-side termination retires the lease even if a pulse write is blocked.
@@ -324,7 +323,6 @@ func (s *daemonActivity) serve(c net.Conn, r activityRequest) {
 				return
 			}
 			if m.Type != "alive" {
-				requestedRelease = m.Type == "release"
 				return
 			}
 		}
@@ -332,9 +330,6 @@ func (s *daemonActivity) serve(c net.Conn, r activityRequest) {
 	for {
 		select {
 		case <-done:
-			if requestedRelease {
-				_ = sendLeaseMessage(c, "released")
-			}
 			return
 		case <-l.expired:
 			return

@@ -97,9 +97,6 @@ func upgradeDaemonConn(ctx context.Context, c net.Conn, record localShellRecord,
 			closeConn()
 		}
 	}()
-	if err := checkPeerVersion(record.Version, "daemon"); err != nil {
-		return nil, err
-	}
 	req, err := daemonRequest(ctx, record, path, input)
 	if err != nil {
 		return nil, err
@@ -216,7 +213,9 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *htt
 	})
 	mux.HandleFunc("POST /resources/stop-confirmed", tasks.serveConfirmedResourceStops)
 	mux.HandleFunc("POST /resources/{action}", tasks.serveResourceMutation)
-	mux.HandleFunc("POST /ready", func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(true) })
+	mux.HandleFunc("POST /ready", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("POST /tasks/native/open", tasks.openNative)
 	mux.HandleFunc("POST /tasks/{id}/open", tasks.open)
 	activityHandler := func(w http.ResponseWriter, r *http.Request) {

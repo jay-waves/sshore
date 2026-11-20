@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -95,6 +96,12 @@ func TestIncomingTaskLifetime(t *testing.T) {
 	}
 }
 func TestDaemonActivitySocketLease(t *testing.T) {
+	t.Run("EOF", func(t *testing.T) { testDaemonActivitySocketLease(t, false) })
+	t.Run("release", func(t *testing.T) { testDaemonActivitySocketLease(t, true) })
+}
+
+func testDaemonActivitySocketLease(t *testing.T, release bool) {
+	t.Helper()
 	state := &daemonActivity{}
 	server, client := net.Pipe()
 	defer client.Close()
@@ -121,11 +128,20 @@ func TestDaemonActivitySocketLease(t *testing.T) {
 	if err := writeMessage(client, message{Type: "alive"}); err != nil {
 		t.Fatal(err)
 	}
-	client.Close()
+	if release {
+		if err := writeMessage(client, message{Type: "release"}); err != nil {
+			t.Fatal(err)
+		}
+		if msg, err := readMessage(client); err != io.EOF {
+			t.Fatalf("release reply: got %+v, %v, want EOF", msg, err)
+		}
+	} else {
+		client.Close()
+	}
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("EOF did not release lease")
+		t.Fatal("lease did not end")
 	}
 	if len(state.request(activityRequest{Kind: "incoming"}).Peers) != 0 {
 		t.Fatal("ended lease retained")
