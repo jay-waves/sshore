@@ -11,7 +11,7 @@ fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-GOOS=linux GOARCH=amd64 go build -buildvcs=false -o "$fixture/sshore" .
+GOOS=linux GOARCH=amd64 go build -buildvcs=false -ldflags '-X main.version=0.0.0' -o "$fixture/sshore" .
 cp tests/integration/ssh_e2e.py "$fixture/"
 
 image=sshore-ssh-test:local

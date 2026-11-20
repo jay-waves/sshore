@@ -88,7 +88,7 @@ Windows. Choose the smallest check that exercises the changed behavior.
 | SSH or remote setup | Use the [loopback Go fixture](tests/testutil/sshtest/) for protocol tests. Run local real-SSH checks in the disposable Linux amd64 Docker fixture with `tests/integration/ssh_docker.sh`. Use `--setup-only` for installation changes. |
 | Terminal or native mount | Exercise the affected OS. For terminal handoff check pending input, redraw, interrupts and cleanup across detach/reattach. On a FUSE/WinFsp host, set `SSHORE_TEST_FTP_MOUNT=1` and run `go test -count=1 -run '^TestFTPNativeMount$' ./internal/files`. |
 | Installer or release | Run the corresponding tests under [tests/](tests/). |
-| Documentation | Check relative links, anchors, fences and affected diagrams in the packaged documents. |
+| Documentation | Check relative links, anchors, fences and affected diagrams in the root documents. |
 
 Go lifecycle fixtures use temporary state directories and re-execute the test
 binary. Use a normal build when separate OS accounts isolate client and server
@@ -98,18 +98,19 @@ validation independently of builds and publication.
 
 ## Release
 
-1. Set [VERSION](VERSION) and the default in [main.go](main.go) to the same full
-   version. Update the release notes and migration consequences in the
-   [publisher](scripts/release.sh).
+1. Update migration consequences in the [publisher](scripts/release.sh) when needed.
 2. Run the relevant checks and push to `main`. [CI](.github/workflows/ci.yml)
    builds Linux and Windows amd64 archives and checksums as short-lived artifacts.
-3. At the intended commit, run `git tag "v$(cat VERSION)"` and
-   `git push origin "v$(cat VERSION)"`. [Publish](.github/workflows/publish.yml)
-   rebuilds the tagged source and checks the tag against its version.
+3. At the intended commit, run `git tag vX.Y.Z` and
+   `git push origin vX.Y.Z`. [Publish](.github/workflows/publish.yml)
+   validates the tag and injects its version into the rebuilt binaries.
 4. Verify the published commit/tag, both archives and their checksums before
    pruning older releases in the same major/minor series. Retain the highest
    published patch and all Git tags. Exclude drafts, prereleases and noncanonical
    tags from pruning. Published tags and assets are immutable.
+
+Run `go run ./scripts` to build development packages using the nearest
+full release tag for managed connections. A plain `go build` reports `dev`.
 
 ## Planned work
 

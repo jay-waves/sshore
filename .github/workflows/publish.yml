@@ -17,7 +17,10 @@ jobs:
         with:
           go-version: stable
       - name: Build and package
-        run: bash scripts/build-packages.sh
+        run: |
+          [[ "$GITHUB_REF" =~ ^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$GITHUB_REF" != refs/tags/v0.0.0 ]]
+          go run ./scripts "${GITHUB_REF#refs/tags/v}"
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

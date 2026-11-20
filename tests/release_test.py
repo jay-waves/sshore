@@ -12,7 +12,6 @@ class ReleaseTest(unittest.TestCase):
     def run_release(self, ref='refs/tags/v0.4.1', fail=False):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "VERSION").write_text("0.4.1\n")
             (root / "packages").mkdir()
             for name in ("linux.tar.gz", "windows.zip", "linux.sha256"):
                 (root / "packages" / name).write_text("test\n")
@@ -36,10 +35,12 @@ source "$1"
         self.assertEqual(len(calls), 1)
         self.assertTrue(calls[0].startswith("release create v0.4.1 --verify-tag "))
 
-    def test_mismatched_tag_does_not_publish(self):
-        result, calls = self.run_release(ref="refs/tags/v0.4.2")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(calls, [])
+    def test_invalid_tag_does_not_publish(self):
+        for ref in ("refs/tags/v0.4", "refs/tags/v0.0.0"):
+            with self.subTest(ref=ref):
+                result, calls = self.run_release(ref=ref)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(calls, [])
 
     def test_publish_failure_is_reported(self):
         result, _ = self.run_release(fail=True)

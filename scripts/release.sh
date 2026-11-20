@@ -2,20 +2,16 @@
 # Publish the pushed release tag; published tags and assets are immutable.
 set -euo pipefail
 
-version=$(cat VERSION)
-tag="v$version"
-if [[ "$GITHUB_REF" != "refs/tags/$tag" ]]; then
-  echo "Expected refs/tags/$tag for VERSION $version, got $GITHUB_REF." >&2
+tag=${GITHUB_REF#refs/tags/}
+if [[ "$GITHUB_REF" != "refs/tags/$tag" || "$tag" == v0.0.0 || ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+  echo "Expected a full release tag, got $GITHUB_REF." >&2
   exit 1
 fi
+version=${tag#v}
 
 cat packages/*.sha256 > packages/SHA256SUMS
 cat > release-notes.md <<NOTES
 sshore $version
-
-- Streamline local approval and terminal prompts.
-- Colorize console inventory output.
-- Accept bare SSH hosts for install and copy-id.
 
 Includes Linux and Windows amd64 binaries. Verify archives against SHA256SUMS.
 Update both endpoints to $version for managed connections. Save work before
@@ -24,6 +20,6 @@ Remote releases before 0.7.22 do not support the current service entry. If remot
 maintenance is needed before upgrading, run that release's sshore kill --all on the host.
 Commit: $GITHUB_SHA
 NOTES
-gh release create "$tag" --verify-tag --title "sshore $tag" \
+gh release create "$tag" --verify-tag --generate-notes --title "sshore $tag" \
   --notes-file release-notes.md --latest \
   packages/*.tar.gz packages/*.zip packages/SHA256SUMS

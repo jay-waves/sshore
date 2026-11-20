@@ -27,6 +27,7 @@ func fixtureBinaryName() string {
 }
 
 func TestMain(m *testing.M) {
+	version = "0.0.0"
 	daemonLocation = func() (string, error) {
 		root, err := fixtureStateDir()
 		if err != nil {
