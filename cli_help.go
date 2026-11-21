@@ -56,8 +56,8 @@ const connectionOptions = `  --server PATH         Remote executable (default: P
 `
 
 const shellStartupOptions = `  --detach              Start without attaching
-  --no-login            Use non-login startup (Linux)
-  --no-profile          Skip optional shell startup files; implies --no-login on Linux
+  --no-login            Use non-login startup (Linux and macOS)
+  --no-profile          Skip optional shell startup files; implies --no-login on Linux and macOS
 `
 
 const shellConnectionHelp = `

@@ -79,16 +79,12 @@ func (s *shellTask) close() {
 	s.once.Do(func() {
 		s.mu.Lock()
 		terminal, attachment := s.terminal, s.endTerminal()
-		stop := s.record.Owner.PID != 0
-		process, identity, name := s.process, s.treeIdentity(), s.record.Name
+		identity, name := s.treeIdentity(), s.record.Name
 		s.mu.Unlock()
 		if attachment != nil {
 			attachment.Close()
 		}
 		if terminal != nil {
-			if stop {
-				_ = stopSpawnTerminal(process.PID, process.Start)
-			}
 			_ = terminal.Close()
 		}
 		saveShellTree(identity, name, nil, "exited")
@@ -100,9 +96,29 @@ func (s *shellTask) stopTask() error {
 	return s.kill(s.record.UID, "killed by sshore kill")
 }
 
-func (s *shellTask) kill(instance, reason string) error {
+func (s *shellTask) stopLocal(reason string) error {
 	s.mu.Lock()
-	if s.hosted && (instance == "" || instance != s.record.UID) {
+	s.killing = true
+	if s.exitReason == "" {
+		s.exitReason = reason
+	}
+	terminal := s.terminal
+	s.mu.Unlock()
+	if terminal != nil {
+		if err := terminal.Stop(); err != nil {
+			return err
+		}
+	}
+	s.close()
+	return nil
+}
+
+func (s *shellTask) kill(instance, reason string) error {
+	if !s.hosted {
+		return s.stopLocal(reason)
+	}
+	s.mu.Lock()
+	if instance == "" || instance != s.record.UID {
 		s.mu.Unlock()
 		return fmt.Errorf("shell instance changed; refresh with sshore list")
 	}
@@ -111,7 +127,7 @@ func (s *shellTask) kill(instance, reason string) error {
 	if s.exitReason == "" {
 		s.exitReason = reason
 	}
-	if s.hosted && process.PID == 0 {
+	if process.PID == 0 {
 		s.endTerminal()
 		s.finishLocked()
 		s.mu.Unlock()
@@ -124,13 +140,9 @@ func (s *shellTask) kill(instance, reason string) error {
 		s.mu.Unlock()
 		return err
 	}
-	if !s.hosted {
-		s.close()
-	} else {
-		s.mu.Lock()
-		s.finishLocked()
-		s.mu.Unlock()
-	}
+	s.mu.Lock()
+	s.finishLocked()
+	s.mu.Unlock()
 	return nil
 }
 
@@ -307,7 +319,7 @@ func (s *shellTask) attachManaged(p *attachment, m message, start func(message) 
 	s.mu.Unlock()
 	s.terminalMu.Unlock()
 	if failedInitial && !s.hosted {
-		s.close()
+		_ = s.stopLocal("initial attachment failed")
 	}
 	return err
 }

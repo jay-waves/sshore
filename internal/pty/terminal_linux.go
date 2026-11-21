@@ -1,17 +1,30 @@
 package pty
 
 import (
+	"errors"
 	"os"
-	"os/exec"
 
 	"golang.org/x/sys/unix"
 )
 
 // waitTerminalChild parks in Go's I/O poller until a started child exits, then reaps it.
 // The caller must own the command's single Wait call.
-func waitTerminalChild(cmd *exec.Cmd) error {
-	awaitExit(cmd.Process.Pid)
-	return cmd.Wait()
+func (t *Terminal) waitChild() error {
+	awaitExit(t.cmd.Process.Pid)
+	return t.cmd.Wait()
+}
+
+func (t *Terminal) forceChild() error {
+	var err error
+	if handleErr := t.cmd.Process.WithHandle(func(fd uintptr) {
+		err = unix.PidfdSendSignal(int(fd), unix.SIGKILL, nil, 0)
+	}); handleErr != nil {
+		err = handleErr
+	}
+	if errors.Is(err, os.ErrProcessDone) || errors.Is(err, unix.ESRCH) {
+		return nil
+	}
+	return err
 }
 
 // The child is still unreaped, so its PID remains reserved while opening the

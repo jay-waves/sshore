@@ -39,8 +39,8 @@ local handoff or hosted resources.
 
 An experimental Apple Silicon client can be built from source with
 `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o sshore .`. It targets
-SSH connections to Linux hosts. Local shell hosting and the automatic local
-installer are unavailable. Local SFTP mounts use the traditional macFUSE kernel
+SSH connections to Linux hosts and supports local interactive shells. Install
+the client manually. Local SFTP mounts use the traditional macFUSE kernel
 extension through go-fuse. Install macFUSE and enable its kernel extension before
 mounting. The Apple Silicon client is built manually from source.
 

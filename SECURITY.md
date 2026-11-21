@@ -242,7 +242,8 @@ Control resolves the immutable task ID in the daemon's memory table. Ending a
 task removes its live registration; clients do not infer lifetime from stale files.
 Remote shell cancellation uses the same authenticated, exact-release control
 entry and signals only the child identities owned by that task.
-Single-shell `kill` ends an attached shell immediately using KILL on Linux or job termination on Windows. `kill --all` displays a
+Local shell `kill` requests terminal closure and waits for the directly started
+shell to exit. Hosted shell `kill` terminates confirmed Linux tasks. `kill --all` displays a
 fresh snapshot and requires confirmation at a `[Y/n]` prompt. Enter confirms,
 and EOF cancels. A change to a reviewed task requires fresh review. For a
 remote host, the remote daemon stops first. The local daemon then verifies the
@@ -251,10 +252,13 @@ them.
 Other managers' advertisements are excluded. Administrative shutdown may cross
 release versions; individual task control still requires an exact release.
 
-Linux managed cleanup sends KILL only to confirmed same-user shells and their identified tasks, with process identity validation.
-Windows native shells run in daemon-owned kill-on-close jobs. Ordinary Linux
-PTY closure relies on terminal hangup semantics, so programs ignoring hangup
-or deliberately escaping or reparenting may survive.
+Linux hosted cleanup sends KILL only to confirmed same-user shells and their
+identified tasks, with process identity validation. Local Unix shells handle
+PTY hangup according to their own job-control rules. After a grace period,
+forced termination targets only the directly started shell. Programs ignoring
+hangup or deliberately escaping may survive. Windows closes ConPTY to notify
+console applications, then releases the daemon-owned kill-on-close job after
+the shell exits or the grace period expires.
 No process-name-wide kill is used. A daemon failure can affect all terminals it owns.
 
 Recorded owner contexts and attachment sources are display metadata, not verified

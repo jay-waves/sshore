@@ -123,7 +123,7 @@ func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, read
 	}
 	s.record = r
 	s.tasks = tasks
-	stopWatching := superviseSpawnOwner(r.Owner, s.close)
+	stopWatching := superviseSpawnOwner(r.Owner, func() { _ = s.stopLocal("shell owner exited") })
 	defer stopWatching()
 	if err := tasks.register(r.UID, &nativeShellTask{shell: s, serve: serve}); err != nil {
 		return err
@@ -237,9 +237,6 @@ func detachLocalShell(identity string) error {
 }
 
 func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, ready func(localShellRecord) error) error {
-	if runtime.GOOS == "darwin" {
-		return fmt.Errorf("local shells are unsupported on macOS")
-	}
 	s := &localShell{shellTask: shellTask{done: make(chan struct{}), environment: env}}
 	defer s.close()
 	return serveLocalShell(tasks, s, record, ready, func(c net.Conn, m message) error {

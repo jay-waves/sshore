@@ -37,7 +37,8 @@ tasks, review the task list before confirming replacement.
 Both clients can connect to Linux over SSH. sshore reads host settings through
 the system OpenSSH client. For managed shells, the host's SSH server must allow
 TCP forwarding to loopback. See [development notes](SSHORE.md#terminal-and-mux-design-scope)
-for the experimental Apple Silicon client.
+for the experimental Apple Silicon client, which supports local shells using
+the login shell selected by `$SHELL`.
 
 ## ssh — Run remote commands and forward ports
 

@@ -28,6 +28,8 @@ type Terminal struct {
 	mu            sync.Mutex
 	size          Size
 	waitResult    func() error
+	exited        chan struct{}
+	stop          func() error
 }
 
 func Start(c Config) (result *Terminal, _ error) {
@@ -69,7 +71,14 @@ func Start(c Config) (result *Terminal, _ error) {
 	if len(block) != 0 {
 		env = &block[0]
 	}
-	t := &Terminal{size: c.Size}
+	t := &Terminal{size: c.Size, exited: make(chan struct{})}
+	t.stop = sync.OnceValue(func() error {
+		return stopTerminal(t.exited, func() error {
+			t.closeIO()
+			go t.closePseudoConsole()
+			return nil
+		}, t.closeJob)
+	})
 	// Release the child-facing pipe ends before rollback or starting the waiter.
 	defer func() {
 		if result == nil {
@@ -206,6 +215,7 @@ func (t *Terminal) wait(process windows.Handle) error {
 	if err := waitForProcessExit(process); err != nil {
 		return err
 	}
+	close(t.exited)
 	var code uint32
 	if err := windows.GetExitCodeProcess(process, &code); err != nil {
 		return err
@@ -273,7 +283,15 @@ func consolePipe(daemonReads bool) (windows.Handle, *os.File, error) {
 	return console, pollable, nil
 }
 
+func (t *Terminal) Stop() error { return t.stop() }
+
 func (t *Terminal) Close() error {
+	t.closeIO()
+	t.closeConsole()
+	return nil
+}
+
+func (t *Terminal) closeIO() {
 	t.closePipes.Do(func() {
 		if t.input != nil {
 			_ = t.input.Close()
@@ -283,19 +301,32 @@ func (t *Terminal) Close() error {
 			_ = t.output.Close()
 		}
 	})
-	t.closeConsole()
-	return nil
 }
 
 func (t *Terminal) closeConsole() {
+	_ = t.closeJob()
+	t.closePseudoConsole()
+}
+
+func (t *Terminal) closeJob() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.job == 0 {
+		return nil
+	}
+	if err := windows.CloseHandle(t.job); err != nil {
+		return err
+	}
+	t.job = 0
+	return nil
+}
+
+func (t *Terminal) closePseudoConsole() {
 	t.closeHandles.Do(func() {
 		t.mu.Lock()
-		h, job := t.console, t.job
-		t.console, t.job = 0, 0
+		h := t.console
+		t.console = 0
 		t.mu.Unlock()
-		if job != 0 {
-			windows.CloseHandle(job)
-		}
 		if h != 0 {
 			windows.ClosePseudoConsole(h)
 		}

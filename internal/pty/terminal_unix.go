@@ -20,6 +20,10 @@ type Terminal struct {
 	cmd         *exec.Cmd
 	closeMaster func() error
 	wait        func() error
+	exited      chan struct{}
+	stop        func() error
+	childMu     sync.Mutex
+	signalSafe  bool
 }
 
 func openTerminalPair() (*os.File, *os.File, error) {
@@ -66,7 +70,7 @@ func Start(c Config) (result *Terminal, _ error) {
 			_ = master.Close()
 		}
 	}()
-	terminal := &Terminal{master: master, cmd: cmd, closeMaster: sync.OnceValue(master.Close)}
+	terminal := &Terminal{master: master, cmd: cmd, closeMaster: sync.OnceValue(master.Close), exited: make(chan struct{})}
 	defer slave.Close()
 	if err := terminal.setWinsize(&unix.Winsize{Col: c.Size.Cols, Row: c.Size.Rows}); err != nil {
 		return nil, err
@@ -80,9 +84,13 @@ func Start(c Config) (result *Terminal, _ error) {
 	// A descendant may retain the slave after the shell exits. Reap the shell
 	// independently, then bound output draining so it cannot keep the session alive.
 	terminal.wait = sync.OnceValue(func() error {
-		err := waitTerminalChild(cmd)
+		err := terminal.waitChild()
+		close(terminal.exited)
 		_ = master.SetReadDeadline(time.Now().Add(time.Second))
 		return err
+	})
+	terminal.stop = sync.OnceValue(func() error {
+		return stopTerminal(terminal.exited, terminal.Close, terminal.forceChild)
 	})
 	go terminal.Wait()
 	return terminal, nil
@@ -110,6 +118,8 @@ func (t *Terminal) Wait() error { return t.wait() }
 
 // Close hangs up the terminal; deliberately detached descendants may survive.
 func (t *Terminal) Close() error { return t.closeMaster() }
+
+func (t *Terminal) Stop() error { return t.stop() }
 
 func (t *Terminal) SetWriteDeadline(at time.Time) error { return t.master.SetWriteDeadline(at) }
 func (t *Terminal) control(fn func(int) error) error {

@@ -85,7 +85,7 @@ func startupArgs(platform, path string, noLogin, noProfile bool) ([]string, erro
 	name := filepath.Base(path)
 	if platform == "windows" {
 		if noLogin {
-			return nil, fmt.Errorf("--no-login is Linux-only; use --no-profile to skip Windows shell startup configuration")
+			return nil, fmt.Errorf("--no-login requires a Unix shell; use --no-profile to skip Windows shell startup configuration")
 		}
 		if !noProfile {
 			return nil, nil
