@@ -21,263 +21,109 @@ curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | 
 irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 ```
 
-sshore implements the SSH client and uses the system OpenSSH client to resolve
-SSH configuration. Linux hosts remote shells through an existing SSH server.
-See [OS and shell support](#os-and-shell-support).
-
-Before 1.0.0, breaking changes are frequent, so client and remote versions must
-match exactly, including the patch version. Run `sshore install work` to
-install the client's version on the remote Linux host `work`. On a Windows
-controlled host, install the matching version manually using the Windows
-installer above.
-
-## Reading `HOST:VALUE`
-
-The part before the colon tells you **which machine**. The command tells you
-**what the value on that machine means**. For example, `work:7afe22` selects a
-shell for `attach`, `work:/tmp/report.zip` names a file for `cp`, and
-`work:3000` names a port for `forward`. Here, `work` can be a hostname or an
-SSH config alias.
-
-For copy and mount, a plain path belongs to the machine running the command.
-For example, `sshore cp report.zip work:/tmp/` reads the file on the machine
-running the command and writes it on `work`. This also works from inside an
-attached remote shell, where “here” and “my computer” can mean different things.
-
-| Endpoint | Where it points |
-| --- | --- |
-| `work:` | The named host. An empty value takes the command's default, such as the remote home directory for `mount`. |
-| `here:` or `.:` | The machine running the command. For example, `.:report.zip` is relative to the current directory there. |
-| `origin:` or `::` | The attached client, when requesting a copy, forward or mount from a remote shell. You approve the request on that client. |
-
-Host-only commands accept a plain SSH host, such as `sshore list work` or
-`sshore exec work 'uname -a'`.
-On Windows, `C:\dir\file` is a local path. Write `here:C:/dir/file` for a
-drive path with forward slashes; `C:/dir/file` denotes host `C`. Prefix a local
-filename containing a colon with `./` or `here:`.
-
-## Start and resume shells
-
-```sh
-sshore launch work:build    # Start a persistent remote shell named build.
-# Press Ctrl+B, then d to detach. Return later with:
-sshore attach               # Resume the most recently detached local shell.
-sshore attach work:         # Resume the most recently detached shell on work.
-sshore list work:           # Find an ID among shells used from this client.
-sshore attach work:build    # Resume that shell by name.
-```
-
-Use `sshore launch :build` to name a local shell. Run `sshore launch` locally
-or `sshore launch work` remotely to use the generated task ID. `spawn` and the
-aliases `sh` and `mux` accept the same target syntax.
-
-Choose `launch` for work that should survive a client exit or network loss.
-Choose `spawn` (or its alias `sh`, as in `sshore sh work:`) for a shell that
-should end when its original parent exits.
-A remote spawn also ends if its SSH heartbeat times out. Detaching and reattaching
-preserve the original lifetime. Both commands accept `--detach` to start in the
-background. Daemon failure or a host restart can end any shell. Screens and
-scrollback are not saved.
-
-Each session has one terminal and requires no tmux installation.
-While attached, sshore requests a terminal window title containing the session
-endpoint. Applications may change it, and supported terminals restore the prior
-title when the attachment ends.
-
-Press **Ctrl+B** and then one of these keys:
-
-| Key | Action |
-| --- | --- |
-| `d` | Detach. Run `sshore attach` for the last detached local shell, or specify its remote host. |
-| `l`, `n`, `p` | Switch to the last, next or previous session. |
-| `c` | Spawn a nested shell on the current host. Exit or detach to return one level. |
-| `r` | Request a redraw. Windows local shells repaint at the current window size. |
-| `:`, `s` | Open the full-screen sshore command prompt. |
-| `Ctrl+B` | Send a literal Ctrl+B to the application. |
-
-At the command prompt, use `list` for task inventory and `ps` or `pstree` for
-the task tree on the machine running the current shell. The list marks that shell
-with `(current)` and the tree with `*current`. Tree branches use rounded
-connectors. The shell stays open.
-Set `NO_COLOR=1` to disable color in the command prompt and CLI output.
-Use `attach <ID|name>` to switch to a detached session in the current scope,
-`spawn` to open a nested shell, and `launch` to open an independent shell on the
-current host.
-Use `detach` to detach from the current shell. For a root local spawn, enter
-`y` at `Detach? [y/N]` to continue, or press Enter, Esc, or Ctrl+C to return
-to the shell. Detaching may close the terminal window, and the spawn may end
-when its original parent exits.
-The aliases `ls`, `a`, `sh`, `mux`, and `d` work here too.
-
-Tab completes commands, session names and short IDs. Use the arrow keys to
-edit input or recall commands from the current prompt. Results append below the
-prompt and scroll up as the panel fills. Type `help` for
-commands. Press Esc or type `exit` to return. Applications already using the
-alternate screen redraw on return.
-
-Use `--no-escape` if the application needs all keystrokes.
-
-## Find and manage tasks
-
-```sh
-sshore list                  # Tasks and incoming resources on this machine.
-sshore list work:            # Show this client’s last known tasks on work, even offline.
-sshore pstree                # Show local task relationships.
-sshore list --json           # Show the same tasks as JSON.
-```
-
-Interactive lists use a bordered table when it fits; narrow terminals use a
-compact layout. Redirected output stays plain text.
-
-When a native local shell hands its terminal to a remote sshore session, `list`
-adds `-> HOST` to DETAIL, and `pstree` shows the same destination.
-The source shell can be attached while it is detached. If the original frontend
-cannot return to it, it prints the reason and exits.
-
-Use an ID or name from `list` to select a task. For example,
-`sshore rename work:7afe22 build` lets you resume it with
-`sshore attach work:build`. To end the shell, run `sshore kill work:build`.
-A bare hexadecimal ID selects a local task, so `sshore attach 123eef` and
-`sshore attach :123eef` select the same shell. For a remote task use
-`work:123eef`. The daemon on `work` resolves the ID even on your first
-connection. To select a host with a hexadecimal name, include the colon,
-as in `sshore attach db:`. Killing a shell can
-discard unsaved work. Manage read-only peer entries on their original
-computer.
-
-## Connect over SSH
-
-Use hosts and aliases from your SSH config. Public-key login reads private keys
-from the effective `IdentityFile` settings. Encrypted
-private keys, password and keyboard-interactive login require a terminal.
-Run `sshore copy-id work` to add one of the host's configured public keys to
-the remote account's `~/.ssh/authorized_keys`. When several keys are available,
-choose one by number or complete its path with Tab.
-The remote Linux host needs `flock`, `ssh-keygen`, `awk` and `tail`. On hosts
-with SELinux enabled, SSH access also depends on the policy and labels for the
-account's SSH directory.
-Managed remote shells require the SSH server to allow TCP forwarding to
-loopback. Put SSH options after `--`, for example:
-
-```sh
-sshore launch work: -- -J jump -p 2222
-```
-
-For a single command, run `sshore exec work: 'uname -a'`. For port forwarding,
-use `sshore forward`.
-
-Run `sshore ping work: --count 20` to measure authenticated connection setup
-and character round-trip latency through an SSH session. By default, it measures
-three groups of 10 samples, with one second between groups. The remote host only
-needs to accept SSH exec requests and provide `cat`.
+Install the matching release on your Linux host with `sshore install work`,
+where `work` is a hostname or SSH config alias. Managed connections require
+the same full release version on both ends. When updating a host with active
+tasks, review the task list before confirming replacement.
 
 ## OS and shell support
 
-| OS (amd64/x86-64 only) | bash | sh | zsh | fish | PowerShell 7 (pwsh) | cmd |
-| --- | --- | --- | --- | --- | --- | --- |
-| Linux | ✓ | ✓ | ✓ | ✓ | — | — |
-| Windows 11 / Server 2025 or newer | — | — | — | — | ✓ | ✓ |
+| Platform (amd64) | Local shells | Remote hosting |
+| --- | --- | --- |
+| Linux | bash, sh, zsh, fish | Supported |
+| Windows 11 / Server 2025 or newer | PowerShell 7, cmd | — |
 
-Windows clients can connect to Linux hosts and run local shells. The project
-aims to support more client platforms and Unix-like controlled hosts; today,
-Linux amd64 is the supported controlled host. Set `SHELL` on the controlled
-host to select the shell used by sshore sessions.
+Both clients can connect to Linux over SSH. sshore reads host settings through
+the system OpenSSH client. For managed shells, the host's SSH server must allow
+TCP forwarding to loopback. See [development notes](SSHORE.md#terminal-and-mux-design-scope)
+for the experimental Apple Silicon client.
 
-## Copy files
-
-```sh
-sshore cp report.zip work:/tmp/       # Upload to the remote directory.
-sshore cp work:/tmp/report.zip ./     # Download to the current directory.
-```
-
-Direct copies require a matching remote sshore helper. Copy supports regular
-files and refuses to overwrite existing destinations. If a batch fails, files
-already copied stay in place.
-
-In copy and mount endpoints, `~` and `~/...` refer to the home directory on
-that endpoint's machine. For example, `sshore cp .:report.zip work:~` saves
-`report.zip` in the remote user's home directory. Use `./~` for a path named
-`~`.
-
-## Forward a port
+## ssh — Run remote commands and forward ports
 
 ```sh
-sshore forward .:8080 work:3000
+sshore exec work 'uname -a'         # Run one command on work.
+sshore spawn work: -- -J jump       # Open a remote shell through a jump host.
+sshore forward .:8080 work:3000     # Reach the remote service on local port 8080.
+sshore ping work:                   # Measure SSH latency.
 ```
 
-Connect to port 8080 on this computer to reach port 3000 on `work`. The listener
-comes first and requests an IPv4 loopback address. For reverse forwards, SSH
-server policy can override the bind address. A disconnect ends the forward by
-default. To stop it yourself, run the kill command printed at startup.
-
-## Mount remote files
+## tmux — Start, detach and resume shell sessions
 
 ```sh
-sshore mount work: .: --read-only
+sshore launch work:build     # Start a remote shell named build.
+# Press Ctrl+B, then d to detach.
+sshore attach work:build     # Return to the same shell.
 ```
 
-This mounts the remote home directory and prints the local mountpoint. Give a
-path after either colon to choose a directory. Mounts use SFTP and require FUSE
-on Linux or [WinFsp](https://winfsp.dev/) on Windows. Omit `--read-only` to
-allow writes. An interrupted write can leave a partial file. Close open files
-before running the kill command printed at startup.
+Use `launch` for work that should survive a disconnect. Use `spawn` for a shell
+that should end when its original parent exits. A remote spawn also ends if its
+lifetime SSH connection times out. Reattaching preserves the original lifetime.
+Each shell has one terminal. Scrollback is not replayed on attach.
 
-An `origin:~/...` path expands on the client during approval.
+For a local shell, run `sshore launch :build`. With no selector, `sshore attach`
+resumes the most recently detached local shell. Use `sshore attach work:` for
+the most recently detached shell on that host.
 
-## Request access from a remote shell
+While attached, press **Ctrl+B** followed by `d` to detach, `c` to spawn a
+nested shell, or `:` to open the command prompt. Type `help` there to explore
+commands and Esc to return to the shell.
 
-Inside an attached remote shell, use `origin:` when an operation needs a file,
-port or mountpoint on your client computer.
+### Find and manage tasks
 
 ```sh
-sshore cp report.zip origin:      # Send a remote file to your computer.
-sshore cp origin: ./              # Ask for a file from your computer.
-sshore forward origin: .:3000     # Request a client port for this remote service.
-sshore mount .:./ origin:         # Request a client mountpoint for this directory.
+sshore list                 # Local tasks and incoming resources.
+sshore list work:           # This client's last known tasks on work, even offline.
+sshore list --json          # Machine-readable local inventory.
+sshore pstree               # Local ownership and attachments. *current marks this shell.
 ```
 
-The client leaves the remote session and opens a local approval screen. Enter
-`Y` to continue, then choose each local path or port. Suggested values are
-editable, and Tab completes paths. Downloads without a suggested destination
-start in the client directory. Cancel the prompt to reject the request. By default the client returns to the
-original shell after the operation; choose `n` to remain locally.
+Use a task name or ID from the list to attach, rename or end a shell.
+For example, `sshore kill work:build` ends the shell and can discard unsaved work.
 
+## copy-id — Install an SSH public key for remote login
+
+Run `sshore copy-id work` to add a configured SSH public key to the remote
+account's `~/.ssh/authorized_keys`.
+
+## scp (+lrzsz) — Transfer files from either end of an SSH session
+
+```sh
+sshore cp report.zip work:/tmp/           # Upload a file.
+sshore cp work:/tmp/report.zip ./         # Download a file.
+sshore cp report.zip origin:              # From an attached remote shell, send a file to the client.
+```
+
+`work:VALUE` selects a path or port on the SSH host. `here:` (or `.:`) selects
+the machine running the command. A bare file path also belongs to that machine.
+On Windows, use `C:\dir\file` or `here:C:/dir/file` for a local drive path.
+
+Copy accepts regular files and refuses to overwrite existing destinations.
+Inside an attached remote shell, `origin:` refers to the attached client.
+Review the transfer request on that client and choose the local path.
+
+## sftp (sshfs) — Mount a remote directory locally
+
+```sh
+sshore mount work:/srv/project .: --read-only
+```
+
+Mounts use SFTP and require FUSE on Linux or [WinFsp](https://winfsp.dev/) on
+Windows. The mount command above prints the chosen mountpoint. Close open files
+before stopping a mount with the kill command printed at startup.
 
 ## Help and troubleshooting
 
-- For common examples, run `sshore --tldr` or `sshore cp --tldr`. For options
-  and defaults, run `sshore COMMAND --help`.
-- If a reattached screen looks stale, press Ctrl-L or use the application's redraw key.
-- To diagnose SSH failures, run `sshore launch work: -- -vvv -E ./ssh-debug.log`.
+- Run `sshore --tldr` for examples or `sshore COMMAND --help` for options.
 - For an active mount or forward, `sshore list --json` includes its log path.
-- To reset this computer, save your work and run `sshore reset` outside managed
-  shells. It ends local tasks and clears local application state and caches.
 
 ## Project documents
 
-- [SSHORE.md](SSHORE.md): architecture, validation, releases and planned work.
-- [SECURITY.md](SECURITY.md): trust boundaries, update safeguards and cleanup limits.
-- [GLOSSARY.md](GLOSSARY.md): terms and relationships.
-- [AGENTS.md](AGENTS.md): contributor rules.
+[Architecture and development](SSHORE.md) · [Security](SECURITY.md) ·
+[Glossary](GLOSSARY.md) · [Contributor rules](AGENTS.md)
 
 ## Acknowledgements
 
-Reference projects and inspiration:
+Inspired by [dtach](https://github.com/crigler/dtach),
+[sshping](https://github.com/spook/sshping) and [trzsz](https://github.com/trzsz/trzsz).
 
-- [dtach](https://github.com/crigler/dtach): lightweight shell detach and reattach.
-- [sshping](https://github.com/spook/sshping): SSH connection and echo latency measurement.
-- [trzsz](https://github.com/trzsz/trzsz): terminal-oriented file transfer workflows.
-    sshore does not implement the trzsz protocol.
-
-Built with
-
-- [OpenSSH](https://www.openssh.com/),
-- [smux](https://github.com/xtaci/smux),
-- [creack/pty](https://github.com/creack/pty),
-- [pkg/sftp](https://github.com/pkg/sftp),
-- [go-fuse](https://github.com/hanwen/go-fuse),
-- [WinFsp](https://winfsp.dev/) / [go-winfsp](https://github.com/winfsp/go-winfsp),
-- [readline](https://github.com/chzyer/readline) and the Go ecosystem.
-
-[MIT license](LICENSE); third-party license notices are collected in
-[THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt).
+[MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_LICENSES.txt)

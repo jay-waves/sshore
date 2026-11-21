@@ -89,7 +89,7 @@ func writeShellTree(out io.Writer, rows []taskTreeRow, current string, color boo
 		fmt.Fprintln(out, "No known tasks.")
 		return
 	}
-	branchStyle := lipgloss.NewStyle()
+	branchStyle := lipgloss.NewStyle().PaddingRight(1)
 	if color {
 		branchStyle = branchStyle.Foreground(ansi.BrightBlack)
 	}
@@ -98,11 +98,10 @@ func writeShellTree(out io.Writer, rows []taskTreeRow, current string, color boo
 	for i, row := range rows {
 		selected := current != "" && row.Identity == current && row.Kind != "external"
 		t := tree.Root(shellTreeLabel(row, selected, color)).Enumerator(func(children tree.Children, index int) string {
-			return tree.RoundedEnumerator(children, index) + " "
-		}).Indenter(func(children tree.Children, index int) string {
-			return tree.DefaultIndenter(children, index) + " "
+			return "│\n" + tree.RoundedEnumerator(children, index)
 		}).
-			EnumeratorStyle(branchStyle).IndenterStyle(branchStyle)
+			EnumeratorStyle(branchStyle).IndenterStyle(branchStyle).
+			ItemStyle(lipgloss.NewStyle().PaddingTop(1))
 		trees[i] = t
 		if row.Owner > 0 && row.Owner <= i {
 			trees[row.Owner-1].Child(t)
@@ -110,7 +109,10 @@ func writeShellTree(out io.Writer, rows []taskTreeRow, current string, color boo
 			roots = append(roots, t)
 		}
 	}
-	for _, root := range roots {
+	for i, root := range roots {
+		if i > 0 {
+			fmt.Fprintln(out)
+		}
 		fmt.Fprintln(out, root)
 	}
 }

@@ -113,7 +113,10 @@ func TestShellTreeRendering(t *testing.T) {
 		var out bytes.Buffer
 		writeShellTree(&out, normalizeTaskTree(nodes, ""), "c", color)
 		text := out.String()
-		if !strings.Contains(text, "├── ") || !strings.Contains(text, "╰── ") || !strings.Contains(text, "*current") || strings.Contains(text, "CHECKED") {
+		lines := strings.Split(strings.TrimSuffix(ansi.Strip(text), "\n"), "\n")
+		if len(lines) != 5 || strings.TrimSpace(lines[1]) != "│" || !strings.HasPrefix(lines[2], "├── ") ||
+			strings.TrimSpace(lines[3]) != "│" || !strings.HasPrefix(lines[4], "╰── ") ||
+			!strings.Contains(text, "*current") || strings.Contains(text, "CHECKED") {
 			t.Fatal(text)
 		}
 		if strings.Contains(text, "HOST  ") || strings.Contains(text, "@") {
