@@ -1,11 +1,9 @@
-package tests_test
+package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -35,15 +33,8 @@ func TestWindowsKillAllWaitsForIdleDaemonExit(t *testing.T) {
 	}
 	run("fixture-launch", "here:", "idle", "--detach")
 	run("kill", "here:idle")
-	data, err := os.ReadFile(filepath.Join(state, "daemon", "daemon.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var record struct{ ManagerPID uint32 }
-	if err := json.Unmarshal(data, &record); err != nil {
-		t.Fatal(err)
-	}
-	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, record.ManagerPID)
+	record := fixtureDaemon(t, state)
+	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(record.ManagerPID))
 	if err != nil {
 		t.Fatal(err)
 	}

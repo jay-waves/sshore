@@ -39,9 +39,8 @@ jobs:
         env:
           TEST_REF: ${{ inputs.ref || github.ref }}
         run: |
-          command -v go python3 bash
+          command -v go bash
           go version
-          python3 --version
           if [[ "$TEST_REF" == refs/tags/* || "$TEST_REF" == v* ]]; then
             tag=${TEST_REF#refs/tags/}
             [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
@@ -63,22 +62,16 @@ jobs:
       - run: go vet ./...
       - name: Linux Go tests with race detector
         if: runner.os == 'Linux'
+        shell: bash
         env:
           GOFLAGS: -race
-        run: go test -json -count=1 -timeout=10m ./... > core-tests.jsonl
+        run: go test -json -count=1 -timeout=10m ./... | tee core-tests.jsonl
       - name: Windows build and platform compatibility
         if: runner.os == 'Windows'
         shell: bash
         run: |
           go build ./...
-          go test -run '^(TestLocalShellPath|TestWindowsPlatform|TestMountDaemonHasNoConsole|TestWindowsPrivateStateHandle)$' .
-      - name: Installer and release tests (Linux)
-        if: ${{ !cancelled() && runner.os == 'Linux' }}
-        run: |
-          sh -n install.sh
-          bash -n scripts/release.sh
-          python3 tests/install_test.py
-          python3 tests/release_test.py
+          go test -run '^(TestScripts|TestLocalShellPath|TestWindowsPlatform|TestMountDaemonHasNoConsole|TestWindowsPrivateStateHandle)$' .
       - name: Installer tests (Windows PowerShell 5.1)
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: powershell
@@ -87,29 +80,9 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/install_windows_test.ps1
-      - name: All real SSH scenarios (Linux)
+      - name: Real SSH Go integration test (Linux)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         run: tests/integration/ssh_docker.sh
-      - name: Show failed and skipped Go tests
-        if: ${{ always() && runner.os == 'Linux' }}
-        shell: bash
-        run: |
-          python3 -X utf8 - <<'PY'
-          import json, os
-          from pathlib import Path
-          log = Path('core-tests.jsonl')
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-              summary.write('### Go test failures and skips\n\n')
-              if not log.exists():
-                  summary.write('Core test log unavailable; check preceding steps.\n')
-              else:
-                  for line in log.read_text(encoding='utf-8-sig').splitlines():
-                      event = json.loads(line)
-                      if event['Action'] in ('fail', 'skip'):
-                          summary.write(f"- {event['Action']}: {event['Package']} {event.get('Test', '')}\n")
-                      if event['Action'] == 'output':
-                          print(event['Output'], end='')
-          PY
       - uses: actions/upload-artifact@v4
         if: ${{ always() && runner.os == 'Linux' }}
         with:

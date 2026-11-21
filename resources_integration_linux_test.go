@@ -1,4 +1,4 @@
-package tests_test
+package main
 
 import (
 	"bufio"
@@ -12,17 +12,16 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/jay-waves/sshore/internal/proc"
 )
 
 func TestKillAllLocalSnapshot(t *testing.T) {
 	e := newCLI(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	env := append(e.env, "SSHORE_STATE_DIR="+filepath.Join(e.dir, "batch-state"), "SSHORE_SOCKET=", "SSHORE_LOCAL_SESSION=")
-	e.env = env
 	run := func(input string, args ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, e.bin, args...)
-		cmd.Env, cmd.Stdin = env, strings.NewReader(input)
+		cmd.Env, cmd.Stdin = e.env, strings.NewReader(input)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
@@ -30,7 +29,6 @@ func TestKillAllLocalSnapshot(t *testing.T) {
 		if out, err := run("", "fixture-launch", "here:", name, "--detach"); err != nil {
 			t.Fatal(out, err)
 		}
-		t.Cleanup(func() { run("", "kill", "here:"+name) })
 	}
 	if out, err := run("no\n", "kill", "--all"); err == nil || !strings.Contains(out, "(one)") || !strings.Contains(out, "(two)") {
 		t.Fatal(out, err)
@@ -39,10 +37,11 @@ func TestKillAllLocalSnapshot(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("expected two shells: %+v", rows)
 	}
+	wait := waitFixtureDaemon(t, filepath.Join(e.dir, "state"))
 	if out, err := run("\n", "kill", "--all"); err != nil {
 		t.Fatal(out, err)
 	}
-	waitBackgroundExit(t, e, filepath.Join(e.dir, "batch-state"))
+	wait()
 	if out, err := run("", "kill", "--all"); err != nil {
 		t.Fatal(out, err)
 	}
@@ -53,37 +52,31 @@ func TestKillAllLocalSnapshot(t *testing.T) {
 
 func TestKillAllStopsIdleDaemon(t *testing.T) {
 	e := newCLI(t)
-	state := filepath.Join(e.dir, "idle-state")
-	e.env = append(e.env, "SSHORE_STATE_DIR="+state)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	run := func(args ...string) {
 		t.Helper()
 		cmd := exec.CommandContext(ctx, e.bin, args...)
-		cmd.Env = append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSHORE_LOCAL_SESSION=")
+		cmd.Env = e.env
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v %s", args, err, out)
 		}
 	}
 	run("fixture-launch", "here:", "idle", "--detach")
 	run("kill", "here:idle")
-	if len(backgroundProcesses(t, e, state)) == 0 {
-		t.Fatal("expected idle daemon")
-	}
+	wait := waitFixtureDaemon(t, filepath.Join(e.dir, "state"))
 	run("kill", "--all")
-	waitBackgroundExit(t, e, state)
+	wait()
 }
 
 func TestKillAllDoesNotCancelReplacement(t *testing.T) {
 	e := newCLI(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	env := append(e.env, "SSHORE_STATE_DIR="+filepath.Join(e.dir, "replacement-state"), "SSHORE_SOCKET=", "SSHORE_LOCAL_SESSION=")
-	e.env = env
 	run := func(args ...string) string {
 		t.Helper()
 		cmd := exec.CommandContext(ctx, e.bin, args...)
-		cmd.Env = env
+		cmd.Env = e.env
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("%v: %v %s", args, err, out)
@@ -91,9 +84,8 @@ func TestKillAllDoesNotCancelReplacement(t *testing.T) {
 		return string(out)
 	}
 	run("fixture-launch", "here:", "same", "--detach")
-	defer run("kill", "here:same")
 	cmd := exec.CommandContext(ctx, e.bin, "kill", "--all")
-	cmd.Env = env
+	cmd.Env = e.env
 	input, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -130,51 +122,25 @@ func TestKillAllDoesNotCancelReplacement(t *testing.T) {
 	}
 }
 
-// Inspect only this fixture's executable and isolated environment through /proc.
-func backgroundProcesses(t *testing.T, e *cliFixture, state string) []string {
+func waitFixtureDaemon(t *testing.T, state string) func() {
 	t.Helper()
-	entries, err := os.ReadDir("/proc")
+	pid := fixtureDaemon(t, state).ManagerPID
+	start, err := proc.LiveIdentity(pid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var found []string
-	for _, entry := range entries {
-		path := filepath.Join("/proc", entry.Name())
-		executable, err := os.Readlink(filepath.Join(path, "exe"))
-		if err != nil || executable != e.bin {
-			continue
-		}
-		args, _ := os.ReadFile(filepath.Join(path, "cmdline"))
-		words := strings.Split(string(args), "\x00")
-		if len(words) < 2 || words[1] != "daemon" {
-			continue
-		}
-		env, err := os.ReadFile(filepath.Join(path, "environ"))
-		if err != nil {
-			continue
-		}
-		for _, item := range strings.Split(string(env), "\x00") {
-			if item == "SSHORE_STATE_DIR="+state {
-				found = append(found, entry.Name())
-				break
+	return func() {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			if current, err := proc.LiveIdentity(pid); err != nil || current != start {
+				return
 			}
+			if time.Now().After(deadline) {
+				t.Fatalf("daemon %d still running after kill --all", pid)
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
-	}
-	return found
-}
-
-func waitBackgroundExit(t *testing.T, e *cliFixture, state string) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		pids := backgroundProcesses(t, e, state)
-		if len(pids) == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("cancel --all left background processes running: %v", pids)
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 

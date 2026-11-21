@@ -1,0 +1,96 @@
+[!linux] skip
+env HOME=$WORK PATH=$WORK/tools:$PATH INSTALL=$REPO/install.sh
+env 'BIN=directory with spaces'
+chmod 755 tools/curl tools/uname
+mkdir $BIN
+cp old $BIN/sshore
+chmod 755 $BIN/sshore
+
+# Bad arguments must fail before download or installation.
+! exec sh $INSTALL --version ../main
+! exec sh $INSTALL --version
+! exec sh $INSTALL --unknown
+env TEST_ARCH=aarch64
+! exec sh $INSTALL
+env TEST_ARCH=x86_64 TEST_OS=Darwin
+! exec sh $INSTALL
+env TEST_OS=Linux
+! exists downloads
+
+exec sh bundle 0.3.1
+cp SHA256SUMS good-sums
+exec sh -c 'cat good-sums good-sums > SHA256SUMS'
+! exec sh $INSTALL --bin-dir $BIN
+cmp $BIN/sshore old
+cp good-sums SHA256SUMS
+env TEST_DOWNLOAD_FAIL=1
+! exec sh $INSTALL --bin-dir $BIN --version 0.3.1
+cmp $BIN/sshore old
+! exists $BIN/sshore-backup
+env TEST_DOWNLOAD_FAIL=
+rm downloads
+
+stdin $INSTALL
+exec sh -s -- --bin-dir $BIN
+stdout 'Installed sshore 0.3.1'
+exec $BIN/sshore --version
+stdout '^sshore 0.3.1$'
+cmp $BIN/sshore-backup old
+grep '/latest/download/SHA256SUMS' downloads
+grep '/download/v0.3.1/sshore_0.3.1_linux_amd64.tar.gz' downloads
+
+exec sh -c 'printf tampered >> sshore_0.3.1_linux_amd64.tar.gz'
+! exec sh $INSTALL --bin-dir $BIN
+stderr 'SHA256 mismatch'
+cmp $BIN/sshore sshore
+cmp $BIN/sshore-backup old
+
+exec sh bundle 0.7.8
+exec sh $INSTALL --bin-dir $BIN --version 0.7.8
+stdout 'Installed sshore 0.7.8'
+exec sh bundle 0.7.9
+exec sh $INSTALL --bin-dir $BIN --version 0.7.9
+stdout 'Installed sshore 0.7.9'
+
+-- bundle --
+set -eu
+asset=sshore_${1}_linux_amd64.tar.gz
+printf '#!/bin/sh\nversion=%s\n' "$1" > sshore
+cat payload >> sshore
+chmod 755 sshore
+tar -czf "$asset" sshore
+sha256sum "$asset" > SHA256SUMS
+-- payload --
+set -eu
+if [ "$1" = --version ]; then echo "sshore $version"; exit; fi
+if [ "$version" = 0.7.9 ]; then
+    [ "$1" = setup ] && [ "$2" = --apply ] && [ "$3" = --path ] || exit 2
+    target=$4
+else
+    [ "$1" = install ] && [ "$2" = --apply ] || exit 2
+    target=${3#here:}
+fi
+cp -p "$target" "$target-backup"
+cp "$0" "$target.next"
+mv "$target.next" "$target"
+-- tools/uname --
+#!/bin/sh
+case "$1" in -s) echo "${TEST_OS:-Linux}";; -m) echo "${TEST_ARCH:-x86_64}";; esac
+-- tools/curl --
+#!/bin/sh
+set -eu
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --proto|--proto-redir) test "$2" = '=https'; secure=${secure:-}x; shift ;;
+        -o) out=$2; shift ;;
+        https://*) url=$1 ;;
+    esac
+    shift
+done
+test "${secure:-}" = xx
+printf '%s\n' "$url" >> "$HOME/downloads"
+test -z "${TEST_DOWNLOAD_FAIL:-}"
+cp "$HOME/${url##*/}" "$out"
+-- old --
+#!/bin/sh
+echo 'sshore 0.3.0'

@@ -1,0 +1,16 @@
+env SSHORE_STATE_DIR=$WORK/unused-state GORACE=atexit_sleep_ms=0
+! exec $SSHORE_BIN completion bash
+stderr 'unknown command'
+! exec $SSHORE_BIN __complete words
+stderr 'unknown command'
+! exec $SSHORE_BIN --tldr cp
+! exec $SSHORE_BIN detach --tldr
+! exec $SSHORE_BIN shell --help
+
+env SSHORE_DISABLED=1
+exec $SSHORE_BIN --tldr
+exec $SSHORE_BIN launch --help
+stdout 'Usage: sshore launch'
+exec $SSHORE_BIN launch --tldr
+exec $SSHORE_BIN mnt --tldr
+! exists unused-state

@@ -14,7 +14,7 @@ to the platform implementation and its tests.
 | How does a client connect and authenticate? | [Client connections](client_connection.go), [SSH transport and host verification](internal/ssh/) |
 | How are installation and approval enforced? | [Setup](setup.go), [approval handling](review.go), [request validation](review_store.go) |
 | How do copy, mount and forwarding reach their target? | [Resource commands](cli_resources.go), [shell routes](resource_route.go), [filesystem operations](internal/files/), [forwarding](forward.go) |
-| Where is behavior tested? | Module tests beside the implementation, [public CLI workflows](tests/) and [real-SSH scenarios](tests/integration/) |
+| Where is behavior tested? | Module and CLI tests beside the implementation, [the OpenSSH integration test](tests/integration/) and the [loopback SSH fixture](tests/testutil/sshtest/) |
 
 ## Documentation ownership
 
@@ -92,9 +92,9 @@ Windows. Choose the smallest check that exercises the changed behavior.
 | Change | Validation |
 | --- | --- |
 | Command or module | Run the owning package's tests with `-run`. For broad changes use `go test -count=1 -timeout=5m ./...`. For race checks that include subprocess builds, set `GOFLAGS=-race`. |
-| SSH or remote setup | Use the [loopback Go fixture](tests/testutil/sshtest/) for protocol tests. Run local real-SSH checks in the disposable Linux amd64 Docker fixture with `tests/integration/ssh_docker.sh`. Use `--setup-only` for installation changes. |
+| SSH or remote setup | Use the [loopback Go fixture](tests/testutil/sshtest/) for protocol tests and `tests/integration/ssh_docker.sh` for a real OpenSSH check in a disposable Linux amd64 container. |
 | Terminal or native mount | Exercise the affected OS. For terminal handoff check pending input, redraw, interrupts and cleanup across detach/reattach. On a FUSE/WinFsp host, set `SSHORE_TEST_FTP_MOUNT=1` and run `go test -count=1 -run '^TestFTPNativeMount$' ./internal/files`. |
-| Installer or release | Run the corresponding tests under [tests/](tests/). |
+| Installer or release | On Linux, run `go test -run TestScripts .`. Cases and fixtures live in [testdata/cli](testdata/cli/). |
 | Documentation | Check relative links, anchors, fences and affected diagrams in the root documents. |
 
 Go lifecycle fixtures use temporary state directories and re-execute the test
