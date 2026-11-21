@@ -25,10 +25,10 @@ import (
 func TestClientPrefixKeysAndDetach(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	background, _ := e.attach("background")
-	sendTest(t, background.in, message{Type: "detach"})
-	untilType(t, background.out, "detached")
-	background.close()
+	background, _, _ := startSessionClient(t, e, []string{"fixture-launch", "fixture", "background", "--server", e.bin, "--detach"})
+	if err := background.Wait(); err != nil {
+		t.Fatal(err)
+	}
 	cmd, terminal, wait := startPrefixClient(t, e)
 	wait("Background tasks:")
 	wait("(background)")
@@ -577,7 +577,7 @@ func reattachTestWithTree(t *testing.T, e *testEnv, name string, pid int, tree .
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := e.bridge(name)
+	b := e.bridge(name, "attach")
 	b.sendAttach(t, message{Type: "attach", Action: "existing", Instance: id, Tree: tree, Term: "xterm", Cols: 80, Rows: 24})
 	if m := recv(t, b.out); m.Type != "ready" || m.PID != pid {
 		t.Fatalf("reattach: %+v", m)
@@ -624,11 +624,7 @@ func TestReconnectRestoresMouseAndRedrawsForegroundJob(t *testing.T) {
 	// signal the persistent shell. Split markers avoid matching input echo.
 	shellOutput(t, b, `sh -c 'trap '\''printf "REDRAW-%s\n" ready'\'' WINCH; printf "\033[?1003;1006;1004;2004hJOB-%s\n" ready; while :; do sleep 1; done'`, "JOB-ready")
 	detachTestClient(t, b)
-	b, _ = e.attach("redraw")
-	assertMouseReplay(t, expectTerminalText(t, b, "REDRAW-ready"), true)
-	detachTestClient(t, b)
-	var resumedPID int
-	b, resumedPID = e.attach("redraw", "attach")
+	b, resumedPID := e.attach("redraw", "attach")
 	if resumedPID != pid {
 		t.Fatal("reattachment replaced the shell")
 	}
@@ -673,7 +669,7 @@ func TestReconnectRedrawsBashWithoutExecutingInput(t *testing.T) {
 	b.writeInput(t, []byte("touch "+shellQuote(marker)))
 	expectTerminalText(t, b, "touch ")
 	detachTestClient(t, b)
-	b, _ = e.attach("bashprompt")
+	b, _ = e.attach("bashprompt", "attach")
 	expectTerminalText(t, b, "READY-PROMPT> ")
 	if data, err := os.ReadFile(filepath.Join(home, ".startup-count")); err != nil || string(data) != "x" {
 		t.Fatalf("startup rerun: %q %v", data, err)
@@ -687,7 +683,7 @@ func TestReconnectRedrawsBashWithoutExecutingInput(t *testing.T) {
 	b.writeInput(t, []byte("printf 'EDIT-%s\\n' ac\x1b[D"))
 	expectTerminalText(t, b, "printf ")
 	detachTestClient(t, b)
-	b, _ = e.attach("bashprompt")
+	b, _ = e.attach("bashprompt", "attach")
 	expectTerminalText(t, b, "READY-PROMPT> ")
 	b.writeInput(t, []byte("b\n"))
 	expectTerminalText(t, b, "EDIT-abc")
@@ -726,7 +722,7 @@ func TestReconnectPreservesStoppedJob(t *testing.T) {
 				t.Fatalf("job did not stop: %q", output)
 			}
 			detachTestClient(t, b)
-			b, _ = e.attach("jobcontrol")
+			b, _ = e.attach("jobcontrol", "attach")
 			responsiveShellOutput(t, b, "jobs -l", stopped)
 			// A stopped job must remain resumable in the background and foreground.
 			responsiveShellOutput(t, b, "bg; jobs", running)
@@ -784,7 +780,7 @@ func TestReconnectPreservesShellEditor(t *testing.T) {
 			// Move to the beginning and then into the two-character argument.
 			b.writeInput(t, []byte("\x01"+strings.Repeat("\x1b[C", len("printf '%s' a"))))
 			detachTestClient(t, b)
-			b, _ = e.attach("editor")
+			b, _ = e.attach("editor", "attach")
 			expectTerminalText(t, b, "EDITOR-READY> ")
 			if _, err := os.Stat(marker); !os.IsNotExist(err) {
 				t.Fatalf("pending command executed: %v", err)

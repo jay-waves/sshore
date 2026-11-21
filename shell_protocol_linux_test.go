@@ -289,8 +289,8 @@ func TestSessionPersistenceIsolationAndResize(t *testing.T) {
 	if !strings.Contains(output, fmt.Sprintf("PID_%d", pid)) {
 		t.Fatal(output)
 	}
-	occupied := e.bridge("main")
-	occupied.sendAttach(t, message{Type: "attach", Term: "xterm"})
+	occupied := e.bridge("main", "attach")
+	occupied.sendAttach(t, message{Type: "attach", Action: "existing", Term: "xterm"})
 	if recv(t, occupied.out).Type != "fatal" {
 		t.Fatal("accepted second attachment")
 	}
@@ -301,7 +301,7 @@ func TestSessionPersistenceIsolationAndResize(t *testing.T) {
 	sendTest(t, b.in, message{Type: "detach"})
 	untilType(t, b.out, "detached")
 	b.close()
-	b, pid2 := e.attach("main")
+	b, pid2 := e.attach("main", "attach")
 	if pid2 != pid {
 		t.Fatal("PID changed", pid, pid2)
 	}
@@ -323,7 +323,7 @@ func TestSessionPersistenceIsolationAndResize(t *testing.T) {
 	_, done := e.helper("detach", "")
 	untilType(t, b.out, "detached")
 	waitHelper(t, done, true)
-	b, _ = e.attach("main")
+	b, _ = e.attach("main", "attach")
 	b.writeInput(t, []byte("exit\n"))
 	b.readExit(t)
 }
@@ -539,7 +539,7 @@ func TestDisconnectCleansBothConcurrentUploads(t *testing.T) {
 	cancel()
 	waitUploadFiles(t, dir, 0)
 	b.close()
-	resumed, resumedPID := e.attach("main")
+	resumed, resumedPID := e.attach("main", "attach")
 	if resumedPID != pid {
 		t.Fatal("upload disconnect replaced the shell")
 	}
@@ -564,7 +564,7 @@ func TestAutomaticSessionsAndNamedResume(t *testing.T) {
 	if thirdPID == pid || thirdPID == otherPID {
 		t.Fatal("automatic connection reused an occupied name")
 	}
-	resumed, resumedPID := e.attach(firstName)
+	resumed, resumedPID := e.attach(firstName, "attach")
 	if resumedPID != pid {
 		t.Fatal("named reconnect did not resume the first automatic shell")
 	}
@@ -627,7 +627,7 @@ func TestExplicitDetachControlPreservesSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.close()
-	next, resumedPID := e.attach("stay")
+	next, resumedPID := e.attach("stay", "attach")
 	if resumedPID != pid {
 		t.Fatal("explicit detach replaced shell")
 	}

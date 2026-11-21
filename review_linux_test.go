@@ -79,14 +79,14 @@ func TestApprovedAttachRejectsChangedSession(t *testing.T) {
 	untilType(t, b.out, "detached")
 	sendTest(t, b.in, message{Type: "bye"})
 	b.close()
-	next := e.bridge("main")
-	next.sendAttach(t, message{Type: "attach", Action: "approved", PID: pid + 1, Term: "xterm", Cols: 80, Rows: 24})
-	if m := recv(t, next.out); m.Type != "fatal" {
-		t.Fatal("accepted wrong shell", m)
+	next := e.bridge("main", "attach")
+	next.sendAttach(t, message{Type: "attach", Action: "existing", Instance: newTaskUID(), Term: "xterm", Cols: 80, Rows: 24})
+	if m := recv(t, next.out); m.Type != "fatal" || !strings.Contains(m.Error, "shell changed") {
+		t.Fatalf("stale shell instance: %+v", m)
 	}
 	sendTest(t, next.in, message{Type: "bye"})
 	next.close()
-	resumed, resumedPID := e.attach("main")
+	resumed, resumedPID := e.attach("main", "attach")
 	if resumedPID != pid {
 		t.Fatal("shell was replaced")
 	}
