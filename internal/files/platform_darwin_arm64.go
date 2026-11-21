@@ -1,9 +1,14 @@
 package files
 
-import "errors"
+import (
+	"fmt"
+	"os"
+)
 
-var errMountUnsupported = errors.New("local mounts are unsupported on macOS")
-
-func CheckMountPlatform() error                 { return errMountUnsupported }
-func ValidateMountpoint(string) error           { return errMountUnsupported }
-func mountFTP(*ftpFS, string) (ftpMount, error) { return nil, errMountUnsupported }
+func CheckMountPlatform() error {
+	const helper = "/Library/Filesystems/macfuse.fs/Contents/Resources/mount_macfuse"
+	if _, err := os.Stat(helper); err != nil {
+		return fmt.Errorf("macFUSE mount helper unavailable; install macFUSE from https://macfuse.github.io/: %w", err)
+	}
+	return nil
+}

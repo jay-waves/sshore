@@ -304,9 +304,10 @@ The remote sshore release must match exactly.
 Background mounts receive fixed task IDs. HOST: selects the remote home.
 Use [HOST]:SOURCE for an IPv6 address.
 Use a bare path for the mountpoint. Use here: with an empty path
-to use ~/mnt/NAME on Linux or a free drive letter on Windows.
-Requires FUSE on Linux or WinFsp on Windows.
-A custom mountpoint must be an existing empty directory on Linux, or a
+to use ~/mnt/NAME on Linux or macOS, or a free drive letter on Windows.
+Requires FUSE on Linux, WinFsp on Windows, or macFUSE with its kernel extension
+on Apple Silicon Macs (experimental).
+A custom mountpoint must be an existing empty directory on Linux or macOS, or a
 free drive letter or nonexistent directory on Windows.
 
 Options:
@@ -332,7 +333,8 @@ Mount read-only
 Run in the foreground
   sshore mount work:/srv/project .: --foreground
 
-Requires FUSE on Linux or WinFsp on Windows.
+Requires FUSE on Linux, WinFsp on Windows, or macFUSE with its kernel extension
+on Apple Silicon Macs (experimental).
 `,
 	},
 	"forward": {

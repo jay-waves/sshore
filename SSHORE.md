@@ -39,9 +39,15 @@ local handoff or hosted resources.
 
 An experimental Apple Silicon client can be built from source with
 `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o sshore .`. It targets
-SSH connections to Linux hosts. Local shell hosting, local mounts and the
-automatic local installer are unavailable. Cross-compilation alone does not
-validate macOS terminal input, SSH authentication or daemon lifetime.
+SSH connections to Linux hosts. Local shell hosting and the automatic local
+installer are unavailable. Local SFTP mounts use the traditional macFUSE kernel
+extension through go-fuse. Install macFUSE and enable its kernel extension before
+mounting. The Apple Silicon client is built manually from source.
+
+TODO: Add a macFUSE FSKit backend that preserves `CGO_ENABLED=0`.
+
+Cross-compilation alone does not validate macOS terminal input, SSH
+authentication, daemon lifetime or native mounts.
 
 ### Shell ownership and attachment
 
@@ -93,7 +99,7 @@ Windows. Choose the smallest check that exercises the changed behavior.
 | --- | --- |
 | Command or module | Run the owning package's tests with `-run`. For broad changes use `go test -count=1 -timeout=5m ./...`. For race checks that include subprocess builds, set `GOFLAGS=-race`. |
 | SSH or remote setup | Use the [loopback Go fixture](tests/testutil/sshtest/) for protocol tests and `tests/integration/ssh_docker.sh` for a real OpenSSH check in a disposable Linux amd64 container. |
-| Terminal or native mount | Exercise the affected OS. For terminal handoff check pending input, redraw, interrupts and cleanup across detach/reattach. On a FUSE/WinFsp host, set `SSHORE_TEST_FTP_MOUNT=1` and run `go test -count=1 -run '^TestFTPNativeMount$' ./internal/files`. |
+| Terminal or native mount | Exercise the affected OS. For terminal handoff check pending input, redraw, interrupts and cleanup across detach/reattach. On a FUSE/macFUSE/WinFsp client, set `SSHORE_TEST_FTP_MOUNT=1` and run `go test -count=1 -run '^TestFTPNativeMount$' ./internal/files`. |
 | Installer or release | On Linux, run `go test -run TestScripts .`. Cases and fixtures live in [testdata/cli](testdata/cli/). |
 | Documentation | Check relative links, anchors, fences and affected diagrams in the root documents. |
 

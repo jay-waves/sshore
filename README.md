@@ -110,8 +110,10 @@ Review the transfer request on that client and choose the local path.
 sshore mount work:/srv/project .: --read-only
 ```
 
-Mounts use SFTP and require FUSE on Linux or [WinFsp](https://winfsp.dev/) on
-Windows. The mount command above prints the chosen mountpoint. Close open files
+Mounts use SFTP and require FUSE on Linux, [WinFsp](https://winfsp.dev/) on
+Windows, or [macFUSE](https://macfuse.github.io/) with its kernel extension on
+Apple Silicon Macs using the experimental source build. The mount command
+above prints the chosen mountpoint. Close open files
 before stopping a mount with the kill command printed at startup.
 
 ## Help and troubleshooting

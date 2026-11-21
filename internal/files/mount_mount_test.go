@@ -1,9 +1,9 @@
-//go:build linux || windows
+//go:build linux || windows || (darwin && arm64)
 
 package files
 
 // Opt-in native mount smoke: uses an in-process SFTP server and temporary files,
-// never a real SSH account or persistent session. Requires existing FUSE/WinFsp.
+// never a real SSH account or persistent session. Requires existing FUSE/macFUSE/WinFsp.
 // Run SSHORE_TEST_FTP_MOUNT=1 go test -count=1 -run TestFTPNativeMount ./internal/files.
 
 import (
@@ -16,11 +16,11 @@ import (
 
 func TestFTPNativeMount(t *testing.T) {
 	if os.Getenv("SSHORE_TEST_FTP_MOUNT") != "1" {
-		t.Skip("set SSHORE_TEST_FTP_MOUNT=1 to use native FUSE/WinFsp")
+		t.Skip("set SSHORE_TEST_FTP_MOUNT=1 to use native FUSE/macFUSE/WinFsp")
 	}
 	backend := testFTPBackend(t)
 	mountpoint := filepath.Join(t.TempDir(), "mounted")
-	if runtime.GOOS == "linux" {
+	if runtime.GOOS != "windows" {
 		if e := os.Mkdir(mountpoint, 0700); e != nil {
 			t.Fatal(e)
 		}

@@ -182,7 +182,7 @@ func TestLinuxSetattrModeUsesOpenHandle(t *testing.T) {
 	var in fuse.SetAttrIn
 	in.Valid, in.Mode = fuse.FATTR_MODE, 0600
 	var out fuse.AttrOut
-	if errno := child.Setattr(context.Background(), &ftpLinuxFile{file: file}, &in, &out); errno != 0 {
+	if errno := child.Setattr(context.Background(), &ftpFuseFile{file: file}, &in, &out); errno != 0 {
 		t.Fatal(errno)
 	}
 	for name, want := range map[string]os.FileMode{original: 0600, replacement: 0644} {
