@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -230,5 +232,181 @@ func TestDaemonStateRootFollowsOnlyLiveOwner(t *testing.T) {
 	owner.Close()
 	if root, err := daemonStateRootAt(dir, requested, false); err != nil || root != requested {
 		t.Fatalf("stale locator pinned scope: %s %v", root, err)
+	}
+}
+
+func TestDaemonListsLocalTasks(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	registerTestResource(t, tasks, "forward", "web", strings.Repeat("a", 32))
+	activity := accountActivity.Load()
+	stale := testPeerTask()
+	activity.request(activityRequest{Kind: "peer_put", Peer: &stale})
+	active := stale
+	active.Key = strings.Repeat("d", 32)
+	lease, err := activity.registerLease(activityRequest{Kind: "incoming", Peer: &active})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer activity.remove(lease)
+	record, err := existingDaemonRecord()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var local inventory
+	if err := daemonJSON(context.Background(), record, "/tasks/list", taskListRequest{Native: true}, &local); err != nil {
+		t.Fatal(err)
+	}
+	if len(local.Shells) != 0 {
+		t.Fatalf("remote observations visible in local list: %+v", local.Shells)
+	}
+	if len(local.Peers) != 1 || local.Peers[0].Identity != active.Key {
+		t.Fatalf("list included stale peer or omitted an active incoming resource: %+v", local.Peers)
+	}
+	plain, err := collectInventory(options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsonView, err := collectInventory(options{listJSON: true})
+	if err != nil || !reflect.DeepEqual(plain, jsonView) {
+		t.Fatalf("JSON selected different data: %+v, %+v (%v)", plain, jsonView, err)
+	}
+	remote, err := collectInventory(options{host: "work"})
+	if err != nil || len(remote.Resources) != 1 || remote.Resources[0].ID != "forward/web" {
+		t.Fatalf("host-scoped list: %+v (%v)", remote, err)
+	}
+	remoteJSON, err := collectInventory(options{host: "work", listJSON: true})
+	if err != nil || !reflect.DeepEqual(remote, remoteJSON) {
+		t.Fatalf("host-scoped JSON selected different data: %+v, %+v (%v)", remote, remoteJSON, err)
+	}
+}
+
+func TestTaskTreeMetadataWithinDaemon(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	activityFixture(t)
+	if _, err := metadataRPC(metadataRequest{Action: "tree_save", Key: "child", Name: "child", Tree: []shellTreeNode{{Identity: "parent"}}, State: "attached"}); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := metadataRPC(metadataRequest{Action: "tree_get", Key: "child"})
+	if err != nil || len(reply.Tree) != 2 || reply.Tree[0].Identity != "parent" || reply.Tree[1].Identity != "child" {
+		t.Fatalf("tree metadata: %+v, %v", reply.Tree, err)
+	}
+}
+
+func TestTaskTreeDaemonSnapshot(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	first := registerTestShell(t, tasks, "first", strings.Repeat("a", 32)).identity()
+	second := registerTestShell(t, tasks, "second", strings.Repeat("b", 32)).identity()
+	saveShellTree(first, "first", []shellTreeNode{{Identity: second}}, "attached", "parent")
+	saveShellTree(second, "second", []shellTreeNode{{Identity: first}}, "attached", "parent")
+	saveShellTree("cache-only", "cache-only", nil, "detached", "persistent")
+
+	snapshot, _, err := readTaskInventory(taskInventoryRequest{Detail: "tree"})
+	if err != nil || snapshot.Error != "" {
+		t.Fatalf("tree snapshot: %+v, %v", snapshot, err)
+	}
+	rows := snapshot.Tree
+	if len(rows) != 2 || rows[0].Identity != first || rows[0].Owner != 0 || rows[1].Identity != second || rows[1].Owner != 1 {
+		t.Fatalf("cycle or cache changed the registered tree: %+v", rows)
+	}
+	bin := testBinary(t)
+	for _, current := range []string{first, second} {
+		t.Run(current, func(t *testing.T) {
+			t.Parallel()
+			cmd := exec.Command(bin, "pstree")
+			cmd.Env = append(os.Environ(), "SSHORE_TREE_ID="+current, "NO_COLOR=1")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("pstree: %s (%v)", out, err)
+			}
+			text := strings.TrimSpace(string(out))
+			console := consoleInventory(message{Name: "pstree"}, current)
+			if text != console.Output {
+				t.Fatalf("standalone tree %q, console tree %q", text, console.Output)
+			}
+			want := "(first)  *current"
+			if current == second {
+				want = "(second)  *current"
+			}
+			if strings.Count(text, "*current") != 1 || !strings.Contains(text, want) {
+				t.Fatal(text)
+			}
+		})
+	}
+}
+
+func TestTaskTreeSnapshotUnlocksBeforeStatus(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	defer close(release)
+	id := strings.Repeat("c", 32)
+	task := &daemonResourceTask{record: resourceRecord{UID: id, Kind: "forward", Name: "worker", Version: version},
+		done: make(chan struct{}), control: func(string) resourceReply {
+			close(started)
+			<-release
+			return resourceReply{}
+		}}
+	if err := tasks.register(id, task); err != nil {
+		t.Fatal(err)
+	}
+
+	first := make(chan []taskTreeRow, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	activity := accountActivity.Load()
+	go func() {
+		rows, err := activity.taskTreeSnapshot(ctx)
+		if err != nil {
+			t.Error(err)
+		}
+		first <- rows
+	}()
+	select {
+	case <-started:
+	case <-time.After(requestTimeout):
+		t.Fatal("status probe did not start")
+	}
+
+	shell := registerTestShell(t, tasks, "new", strings.Repeat("d", 32))
+	second, _, err := readTaskInventory(taskInventoryRequest{Detail: "tree"})
+	if err != nil || second.Error != "" || len(second.Tree) != 2 || second.Tree[1].Identity != shell.identity() {
+		t.Fatalf("second snapshot: %+v, %v", second.Tree, err)
+	}
+	cancel()
+	select {
+	case snapshot := <-first:
+		if len(snapshot) != 1 || snapshot[0].Identity != "task:"+id {
+			t.Fatalf("first snapshot changed after registration: %+v", snapshot)
+		}
+	case <-time.After(requestTimeout):
+		t.Fatal("snapshot did not finish after cancel")
+	}
+}
+
+func TestTaskTreeDaemonUnavailable(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	t.Setenv("SSHORE_STATE_DIR", root)
+	bin := testBinary(t)
+	out, err := exec.Command(bin, "pstree").CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) != "No known tasks." {
+		t.Fatalf("pstree without daemon: %s (%v)", out, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "daemon")); !os.IsNotExist(err) {
+		t.Fatalf("read created a daemon locator directory: %v", err)
+	}
+
+	startRequestDaemon(t)
+	path, err := daemonPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, err = exec.Command(bin, "pstree").CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "No known tasks.") || !strings.Contains(string(out), "unexpected EOF") {
+		t.Fatalf("pstree with corrupt daemon endpoint: %s (%v)", out, err)
 	}
 }

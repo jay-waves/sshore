@@ -142,14 +142,12 @@ func TestRecoveryDiagnosticsStayLocal(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime"))
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "must-not-run"))
-	for _, args := range [][]string{{"ls", "--json"}, {"list", "here:", "--json"}, {"pstree"}} {
+	for _, args := range [][]string{{"ls", "--json"}, {"list", "here:", "--json"}, {"list", "remote", "--json"}, {"pstree"}} {
 		if code, err := run(args); code != 0 || err != nil {
 			t.Fatalf("local diagnostics %v: %d %v", args, code, err)
 		}
 	}
-	if _, err := run([]string{"list", "remote", "--json"}); err == nil || !strings.Contains(err.Error(), "disabled") {
-		t.Fatalf("recovery attempted remote diagnostics: %v", err)
-	}
+
 }
 
 func TestSharedCLIGrammar(t *testing.T) {
@@ -208,8 +206,8 @@ func TestSharedCLIGrammar(t *testing.T) {
 }
 
 func TestShellListOptionsAndSSHBoundary(t *testing.T) {
-	o, err := parseOptions([]string{"list", "host", "--json", "--", "-v"})
-	if err != nil || !o.listJSON || len(o.ssh) != 1 || o.ssh[0] != "-v" {
+	o, err := parseOptions([]string{"list", "host", "--json"})
+	if err != nil || !o.listJSON || o.host != "host" {
 		t.Fatalf("%+v %v", o, err)
 	}
 	for _, flag := range []string{"-v", "--verbose", "--details", "--version", "--verbosal"} {
@@ -383,7 +381,7 @@ func TestNativeSSHPort(t *testing.T) {
 		operands []string
 	}{
 		{"launch", []string{"host:"}}, {"spawn", []string{"host:"}}, {"attach", []string{"host:work"}},
-		{"list", []string{"host"}}, {"kill", []string{"host:work"}},
+		{"kill", []string{"host:work"}},
 		{"rename", []string{"host:old", "new"}}, {"cp", []string{".:local", "host:remote"}},
 		{"mount", []string{"host:remote", "here:"}}, {"forward", []string{".:8080", "host:80"}},
 	} {

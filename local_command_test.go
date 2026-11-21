@@ -107,8 +107,8 @@ func TestSpawnOptionsAndInventory(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	writeTaskInventory(&out, inventory{LocalShells: []localShellView{{Name: "persistent", State: "detached"}, {Name: "temporary", State: "detached", Temporary: true}}, Shells: []shellView{{Name: "remote", Host: "host", State: "detached", Temporary: true, Historical: true}}})
-	for _, want := range []string{"(persistent)", "(temporary)", "(remote)", "launch", "spawn", "never checked"} {
+	writeTaskInventory(&out, inventory{LocalShells: []localShellView{{Name: "persistent", State: "detached"}, {Name: "temporary", State: "detached", Temporary: true}}, Shells: []shellView{{Name: "remote", Host: "host", State: "detached", Temporary: true}}})
+	for _, want := range []string{"(persistent)", "(temporary)", "(remote)", "launch", "spawn"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %s: %s", want, &out)
 		}
@@ -260,7 +260,7 @@ func TestLocalCommandRouting(t *testing.T) {
 		{[]string{"launch", "--quiet", "--no-escape"}, true, ""},
 		{[]string{"launch", "here:"}, true, ""},
 		{[]string{"launch", "work:"}, false, ""},
-		{[]string{"attach"}, false, ""},
+		{[]string{"attach"}, true, ""},
 		{[]string{"list", "here:"}, true, ""},
 	} {
 		o, err := parseOptions(tc.args)

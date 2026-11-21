@@ -121,11 +121,11 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 		io.Copy(io.Discard, stream)
 	}}))
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
-	dir, e := resourceStateDir("forward")
+	_, e := resourceStateDir("forward")
 	if e != nil {
 		t.Fatal(e)
 	}
-	s := &resourceService{record: resourceRecord{Kind: "forward", Name: "web", Host: "work", Version: version}, resultPath: filepath.Join(dir, "web"+resourceResultSuffix)}
+	s := &resourceService{record: resourceRecord{Kind: "forward", Name: "web", Host: "work", Version: version}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)

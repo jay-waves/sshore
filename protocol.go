@@ -32,7 +32,6 @@ type message struct {
 	SourceMachineID string              `json:"source_machine_id,omitempty"`
 	Tree            []shellTreeNode     `json:"shell_tree,omitempty"`
 	Temporary       bool                `json:"temporary,omitempty"`
-	Inventory       *inventory          `json:"inventory,omitempty"`
 	LocalRequest    *localDaemonRequest `json:"local_request,omitempty"`
 	Instance        string              `json:"instance,omitempty"`
 	Token           string              `json:"token,omitempty"`

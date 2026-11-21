@@ -66,12 +66,11 @@ type resourceService struct {
 	environment []string
 	directory   string
 
-	statusMu   sync.Mutex
-	status     resourceStatus
-	record     resourceRecord
-	config     resourceConfig
-	done       chan struct{}
-	resultPath string
+	statusMu sync.Mutex
+	status   resourceStatus
+	record   resourceRecord
+	config   resourceConfig
+	done     chan struct{}
 }
 
 func resourceToken() string {
@@ -159,7 +158,7 @@ func runMountDaemon() (code int, resultErr error) {
 		return nil
 	}
 	defer func() {
-		s.finish(code, resultErr, s.record.Name)
+		s.finish()
 		// Let an in-flight reply finish before returning to the worker entry point.
 		replyMu.Lock()
 		replyMu.Unlock()
@@ -175,15 +174,12 @@ func newResourceService(config resourceConfig, record resourceRecord) (*resource
 	if !validTaskUID(config.UID) {
 		return nil, fmt.Errorf("invalid resource task ID")
 	}
-	dir, err := resourceStateDir(record.Kind)
+	_, err := resourceStateDir(record.Kind)
 	if err != nil {
 		return nil, err
 	}
 	record.UID, record.Version = config.UID, version
-	s := &resourceService{
-		record: record, config: config, done: make(chan struct{}),
-		resultPath: filepath.Join(dir, record.UID+resourceResultSuffix),
-	}
+	s := &resourceService{record: record, config: config, done: make(chan struct{})}
 	s.setTransport("starting", nil)
 	return s, nil
 }
@@ -239,8 +235,7 @@ func commitResourceStartup(enc *json.Encoder, dec *json.Decoder) error {
 	return fmt.Errorf("invalid resource startup reply")
 }
 
-func (s *resourceService) finish(code int, err error, name string) {
-	s.saveResult(code, err, name)
+func (s *resourceService) finish() {
 	close(s.done)
 }
 

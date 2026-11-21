@@ -22,8 +22,6 @@ func requestOperations(command string, _ []operation) error {
 	return fmt.Errorf("%s runs on the Linux server, inside the remote shell", command)
 }
 
-func hostedExitHistory() []exitView { return []exitView{} }
-
 func hostedDiagnostics([]shellView, []int, string) {}
 
 func registerPlatformDaemonRoutes(*http.ServeMux, *daemonTasks) {}

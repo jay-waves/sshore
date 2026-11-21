@@ -89,10 +89,11 @@ func runHostedCommand(o options) (int, error) {
 	}
 }
 
-func localSessionInventory(details ...bool) inventory {
-	inv := collectManagedInventory(len(details) > 0 && details[0], false)
-	inv.collectShellHistory()
-	inv.collectPeers()
+func localSessionInventory() inventory {
+	inv, err := daemonListTasks(taskListRequest{})
+	if err != nil {
+		inv.Errors = append(inv.Errors, cleanText(err.Error()))
+	}
 	return inv
 }
 

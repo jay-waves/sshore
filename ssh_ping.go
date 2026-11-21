@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,22 +33,41 @@ func runPing(args []string) (int, error) {
 	return 0, err
 }
 
+const pingBatchSize = 10
+
+type pingBatch struct {
+	minimum, total, maximum time.Duration
+	count                   int
+}
+
+func (b *pingBatch) add(elapsed time.Duration) {
+	if b.count == 0 || elapsed < b.minimum {
+		b.minimum = elapsed
+	}
+	if elapsed > b.maximum {
+		b.maximum = elapsed
+	}
+	b.total += elapsed
+	b.count++
+}
+
 type pingSummary struct {
-	connection, minimum, average, maximum time.Duration
-	count                                 int
+	connection time.Duration
+	batches    []pingBatch
 }
 
 func (s pingSummary) render(color bool) string {
-	connection := termui.Render(color, termui.Heading, "SSH connection")
-	echo := termui.Render(color, termui.Heading, "Echo RTT")
-	return fmt.Sprintf("%s: %s\n%s (%d samples): min %s, avg %s, max %s",
-		connection, s.connection.Round(time.Microsecond), echo, s.count,
-		s.minimum.Round(time.Microsecond), s.average.Round(time.Microsecond), s.maximum.Round(time.Microsecond))
+	var out strings.Builder
+	fmt.Fprintf(&out, "%s: %s", termui.Render(color, termui.Heading, "SSH connection"), s.connection.Round(time.Microsecond))
+	for i, batch := range s.batches {
+		fmt.Fprintf(&out, "\n%s %d (%d samples): min %s, avg %s, max %s", termui.Render(color, termui.Heading, "Echo RTT"), i+1, batch.count, batch.minimum.Round(time.Microsecond), (batch.total / time.Duration(batch.count)).Round(time.Microsecond), batch.maximum.Round(time.Microsecond))
+	}
+	return out.String()
 }
 
 func measureSSHPing(ctx context.Context, options sshio.Options, count int, diagnostic io.Writer) (pingSummary, error) {
 	if count == 0 {
-		count = 10
+		count = 30
 	}
 	start := time.Now()
 	client, err := sshio.Dial(ctx, options)
@@ -57,54 +77,77 @@ func measureSSHPing(ctx context.Context, options sshio.Options, count int, diagn
 	}
 	defer client.Close()
 
-	echoContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+	echoContext, cancel := context.WithTimeout(ctx, 30*time.Second+time.Duration((count-1)/pingBatchSize)*time.Second)
 	defer cancel()
 	stop := context.AfterFunc(echoContext, func() { client.Close() })
 	defer stop()
 
-	minimum, average, maximum, err := measureSSHEcho(client, count, diagnostic)
+	batches, err := measureSSHEcho(echoContext, client, count, diagnostic)
 	if err != nil {
 		if echoContext.Err() != nil {
 			err = echoContext.Err()
 		}
 		return pingSummary{}, fmt.Errorf("SSH echo: %w", err)
 	}
-	return pingSummary{connection: connectionTime, minimum: minimum, average: average, maximum: maximum, count: count}, nil
+	return pingSummary{connection: connectionTime, batches: batches}, nil
 }
 
-func measureSSHEcho(client *sshio.Client, count int, diagnostic io.Writer) (min, avg, max time.Duration, err error) {
+func measureSSHEcho(ctx context.Context, client *sshio.Client, count int, diagnostic io.Writer) ([]pingBatch, error) {
 	process, err := client.Start("cat", diagnostic)
 	if err != nil {
-		return 0, 0, 0, err
+		return nil, err
 	}
-	var total time.Duration
+	batches, err := measurePingSamples(ctx, process, count, waitPingInterval)
+	if err != nil {
+		return nil, err
+	}
+	if err := process.CloseWrite(); err != nil {
+		return nil, err
+	}
+	if err := process.Wait(); err != nil {
+		return nil, err
+	}
+	return batches, nil
+}
+
+func waitPingInterval(ctx context.Context) error {
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func measurePingSamples(ctx context.Context, stream io.ReadWriter, count int, pause func(context.Context) error) ([]pingBatch, error) {
+	batches := make([]pingBatch, 0, (count+pingBatchSize-1)/pingBatchSize)
+	var batch pingBatch
 	var sent, received [1]byte
 	for i := range count {
 		sent[0] = byte(i)
 		start := time.Now()
-		if _, err := process.Write(sent[:]); err != nil {
-			return 0, 0, 0, err
+		if _, err := stream.Write(sent[:]); err != nil {
+			return nil, err
 		}
-		if _, err := io.ReadFull(process, received[:]); err != nil {
-			return 0, 0, 0, err
+		if _, err := io.ReadFull(stream, received[:]); err != nil {
+			return nil, err
 		}
 		elapsed := time.Since(start)
 		if received != sent {
-			return 0, 0, 0, fmt.Errorf("remote command returned an unexpected byte")
+			return nil, fmt.Errorf("remote command returned an unexpected byte")
 		}
-		if i == 0 || elapsed < min {
-			min = elapsed
+		batch.add(elapsed)
+		if batch.count == pingBatchSize || i == count-1 {
+			batches = append(batches, batch)
+			batch = pingBatch{}
+			if i+1 < count {
+				if err := pause(ctx); err != nil {
+					return nil, err
+				}
+			}
 		}
-		if elapsed > max {
-			max = elapsed
-		}
-		total += elapsed
 	}
-	if err := process.CloseWrite(); err != nil {
-		return 0, 0, 0, err
-	}
-	if err := process.Wait(); err != nil {
-		return 0, 0, 0, err
-	}
-	return min, total / time.Duration(count), max, nil
+	return batches, nil
 }

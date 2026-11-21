@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -47,17 +46,14 @@ func resourceViews(records []resourceRecord, statuses map[string]resourceStatus,
 	return views
 }
 
-func runRenameResource(kind, old, name string, expected ...string) (int, error) {
+func runRenameResource(kind, old, name, identity string) (int, error) {
 	if kind != "mount" && kind != "forward" {
 		return 2, usage("rename expects mount/NAME or forward/NAME")
 	}
 	if err := validAlias(name); err != nil {
 		return 2, err
 	}
-	change := resourceMutation{Kind: kind, Ref: old, NewName: name}
-	if len(expected) > 0 {
-		change.Identity = expected[0]
-	}
+	change := resourceMutation{Kind: kind, Ref: old, NewName: name, Identity: identity}
 	reply, err := daemonResourceRequest(context.Background(), "/resources/rename", change)
 	if err != nil {
 		return 1, err
@@ -68,20 +64,8 @@ func runRenameResource(kind, old, name string, expected ...string) (int, error) 
 	return 0, nil
 }
 
-func runKillResource(kind, name string) (int, error) {
-	switch kind {
-	case "mount", "forward":
-		return 0, stopResource(kind, name)
-	default:
-		return 2, usage("resource ID must be mount/NAME or forward/NAME")
-	}
-}
-
-func stopResource(kind, name string, expected ...string) error {
-	change := resourceMutation{Kind: kind, Ref: name}
-	if len(expected) > 0 {
-		change.Identity = expected[0]
-	}
+func stopResource(kind, name, identity string) error {
+	change := resourceMutation{Kind: kind, Ref: name, Identity: identity}
 	_, err := daemonResourceRequest(context.Background(), "/resources/kill", change)
 	if err != nil {
 		return err
@@ -251,14 +235,6 @@ func printDaemonSnapshot(w io.Writer, host string, snapshot daemonSnapshot) {
 	table.Flush()
 }
 
-func killResourceIdentity(id, identity string) error {
-	kind, name, ok := strings.Cut(id, "/")
-	if !ok || identity == "" {
-		return fmt.Errorf("missing resource identity")
-	}
-	return stopResource(kind, name, identity)
-}
-
 // Status separates local worker liveness from transport state and target health.
 // Target services are never probed by listing. Exported views deliberately omit
 // control capabilities, addresses, SSH options, credentials and terminal output.
@@ -300,129 +276,4 @@ func (s *resourceService) operationCompleted() {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	s.status.LastOperation = time.Now().UTC()
-}
-func (s *resourceService) saveResult(code int, err error, name string) {
-	state := "stopped"
-	if code != 0 || err != nil {
-		state = "failed"
-	}
-	s.setTransport(state, err)
-	record := s.record
-	// UID-backed receipts keep the final alias in the record itself. An old
-	// name-keyed slot still needs its original name for lookup.
-	if validTaskUID(record.UID) && validSession(name) == nil {
-		record.Name = name
-	}
-	result := resourceResult{Record: record, Status: s.statusSnapshot(), Finished: time.Now().UTC()}
-	if err := writeResourceResult(s.resultPath, result); err != nil {
-		return
-	}
-	_, discarded := resourceResultFiles(filepath.Dir(s.resultPath), result.Finished.Add(-exitReceiptLifetime))
-	for _, file := range discarded {
-		_ = os.Remove(file.path)
-	}
-}
-
-func writeResourceResult(path string, r resourceResult) error {
-	r.Record.Token, r.Record.Address = "", ""
-	return writeBoundedStateJSON(path, r, resourceResultMaxBytes)
-}
-
-type resourceResult struct {
-	Record   resourceRecord
-	Status   resourceStatus
-	Finished time.Time
-}
-
-const resourceResultSuffix = ".json.result"
-const resourceResultMaxBytes = 128 * 1024
-
-type resourceResultFile struct {
-	path, slot string
-	at         time.Time
-}
-
-// The same age and count bounds apply whether reading history or pruning it.
-// Use file metadata here so cleanup never needs to decode old receipts.
-func resourceResultFiles(dir string, cutoff time.Time) (recent, discarded []resourceResultFile) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, nil
-	}
-	var files []resourceResultFile
-	for _, entry := range entries {
-		slot, ok := strings.CutSuffix(entry.Name(), resourceResultSuffix)
-		if !ok || validSession(slot) != nil {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		files = append(files, resourceResultFile{path: filepath.Join(dir, entry.Name()), slot: slot, at: info.ModTime()})
-	}
-	return partitionExitReceipts(files, cutoff, func(file resourceResultFile) time.Time { return file.at })
-}
-
-func (file resourceResultFile) read(kind string, cutoff time.Time) (resourceResult, bool) {
-	var stored struct {
-		resourceResult
-		DisplayName string // Older receipts stored the displayed alias separately.
-	}
-	if err := readStateJSON(file.path, resourceResultMaxBytes, &stored); err != nil ||
-		stored.Record.storageName() != file.slot || stored.Record.Kind != kind || stored.Finished.Before(cutoff) {
-		return resourceResult{}, false
-	}
-	if validSession(stored.DisplayName) == nil {
-		stored.Record.slot, stored.Record.Name = file.slot, stored.DisplayName
-	}
-	return stored.resourceResult, true
-}
-
-// A mount worker can record its exit even if it loses its parent. When the
-// daemon owns the exit, it publishes the final label under the same UID.
-func updateMountResultName(path, uid, name string) {
-	file := resourceResultFile{path: path, slot: uid}
-	result, ok := file.read("mount", time.Now().Add(-exitReceiptLifetime))
-	if !ok || result.Record.UID != uid {
-		return
-	}
-	result.Record.Name = name
-	_ = writeResourceResult(path, result)
-}
-
-func collectResourceResults(active []resourceView) []resourceView {
-	seen := make(map[string]bool, len(active)*2)
-	for _, view := range active {
-		seen[view.Identity] = true
-		seen[view.ID] = true
-	}
-	cutoff := time.Now().Add(-exitReceiptLifetime)
-	var rows []resourceView
-	for _, kind := range []string{"mount", "forward"} {
-		dir, err := resourceStateDir(kind)
-		if err != nil {
-			continue
-		}
-		recent, _ := resourceResultFiles(dir, cutoff)
-		for _, file := range recent {
-			result, ok := file.read(kind, cutoff)
-			if !ok {
-				continue
-			}
-			record := result.Record
-			if validTaskUID(record.UID) {
-				if seen[resourceIdentity(record)] {
-					continue
-				}
-			} else if seen[kind+"/"+file.slot] || seen[kind+"/"+record.Name] {
-				continue
-			}
-			view := viewRecord(record)
-			view.Worker, view.resourceStatus = "exited", result.Status
-			rows = append(rows, view)
-		}
-	}
-	slices.SortFunc(rows, func(a, b resourceView) int { return cmp.Compare(a.ID, b.ID) })
-	return rows
 }

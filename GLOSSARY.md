@@ -64,7 +64,7 @@ The UID identifies the instance; its prefix is the short form of that same ID.
 NAME is optional and does not change the ID or lifetime. Shells, mounts and forwards share the managing computer's name namespace.
 Allocation and reference rules belong to `task_identity.go`.
 
-Lists, cached connections, peer records and exit history are observations, not
-authorization. A running worker does not prove its SSH connection or target is
+The selected host resolves task IDs in its live registry. Saved connections
+supply SSH settings and routes for reconnecting. A running worker does not prove its SSH connection or target is
 healthy. Missing observations mean unknown state, not confirmed termination.
 See [inventory and diagnostics](SSHORE.md#inventory-and-diagnostics).

@@ -49,7 +49,10 @@ func (tasks *daemonTasks) resolveHostedShell(name, instance string) (shellView, 
 	tasks.mu.Lock()
 	defer tasks.mu.Unlock()
 	now := time.Now()
-	prefix := shortTaskPrefix(name)
+	prefix := ""
+	if isTaskIDPrefix(name) {
+		prefix = strings.ToLower(name)
+	}
 	id := instance
 	if id == "" && validTaskUID(prefix) {
 		id, prefix = prefix, ""
@@ -64,16 +67,24 @@ func (tasks *daemonTasks) resolveHostedShell(name, instance string) (shellView, 
 		}
 	}
 	// A full hexadecimal reference with no matching ID may be an existing alias.
-	var found *remoteShell
+	var found, alias *remoteShell
 	for id, task := range tasks.liveLocked(now) {
 		shell, ok := task.(*remoteShell)
-		if !ok || (prefix == "" || !strings.HasPrefix(id, prefix)) && shell.taskName() != name {
+		if !ok {
 			continue
 		}
-		if found != nil {
-			return shellView{}, fmt.Errorf("ambiguous shell name %s", name)
+		if prefix != "" && strings.HasPrefix(id, prefix) {
+			if found != nil {
+				return shellView{}, fmt.Errorf("ambiguous shell reference %s", name)
+			}
+			found = shell
 		}
-		found = shell
+		if shell.taskName() == name {
+			alias = shell
+		}
+	}
+	if found == nil {
+		found = alias
 	}
 	if found == nil {
 		return shellView{}, nil

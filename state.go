@@ -9,27 +9,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 )
-
-const exitReceiptLimit = 100
-const exitReceiptLifetime = 7 * 24 * time.Hour
-
-// Both callers read directory entries in filename order. Keep that order for
-// identical timestamps, then partition at the shared age and count limits.
-func partitionExitReceipts[T any](records []T, cutoff time.Time, timestamp func(T) time.Time) (recent, discarded []T) {
-	slices.SortStableFunc(records, func(a, b T) int { return timestamp(b).Compare(timestamp(a)) })
-	keep := min(len(records), exitReceiptLimit)
-	for i, record := range records[:keep] {
-		if timestamp(record).Before(cutoff) {
-			keep = i
-			break
-		}
-	}
-	return records[:keep], records[keep:]
-}
 
 // readStateJSON checks privacy before opening and bounds the entire record.
 func readStateJSON(path string, maxBytes int, value any) error {

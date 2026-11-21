@@ -279,22 +279,28 @@ func runClient(o options) (int, error) {
 }
 
 func resolveRecentAttach(o *options) error {
-	if o.command != "attach" {
+	if o.command != "attach" || o.local {
 		return nil
 	}
 	return applyRecentConnection(o)
 }
 
 func applyRecentConnection(o *options) error {
-	reply, err := metadataRPC(metadataRequest{Action: "connection_select", Host: o.host, Name: o.session, Instance: o.instance})
+	reply, err := metadataRPC(metadataRequest{Action: "connection_select", Host: o.host, Instance: o.instance, Direct: len(o.ssh) > 0 || o.serverSet})
 	if err != nil {
 		return err
 	}
 	if r := reply.Connection; r != nil {
 		o.host = r.Host
-		if o.session == "" {
-			o.session = r.Session
+		if r.Parent != nil {
+			if o.session == "" {
+				return usage("no recent detached task on %s; specify an ID or alias", cleanText(r.Host))
+			}
+			r.RouteTarget = true
 		}
+		// The history supplies only transport configuration. The authenticated
+		// target resolves the supplied selector and confirms the actual instance.
+		r.Instance = ""
 		applyConnectionOptions(o, *r)
 		return nil
 	}
@@ -304,51 +310,29 @@ func applyRecentConnection(o *options) error {
 	return nil
 }
 
-// Resolve shell history and the recent host fallback under the same metadata lock.
-func (a *daemonActivity) selectRecentConnection(host, name, instance string) (*recentConnection, error) {
-	if host != "" && name != "" {
-		var routed *recentConnection
-		var firstInstance string
-		found, ambiguous := false, false
-		err := a.walkShellSnapshotsLocked(func(s shellSnapshot) {
-			if s.Host != host || s.Name != name || s.State == "renamed" || s.Connection == nil ||
-				(instance != "" && s.Instance != instance) {
-				return
-			}
-			if !found {
-				firstInstance, found = s.Instance, true
-			} else if s.Instance != firstInstance {
-				ambiguous = true
-			}
-			if s.Connection.Parent != nil {
-				routed = s.Connection
-			}
-		})
-		if err != nil {
-			return nil, err
-		}
-		if routed != nil {
-			if ambiguous {
-				return nil, fmt.Errorf("ambiguous shell route; select the shell by task ID")
-			}
-			return routed.clone(), nil
-		}
-	}
-
-	records, err := a.metadata.readRecentConnectionsLocal()
+func (m *daemonMetadata) selectRecentConnection(host, instance string, direct bool) (*recentConnection, error) {
+	records, err := m.readRecentConnectionsLocal()
 	if err != nil {
 		return nil, err
 	}
-	for _, r := range records {
-		if host != "" && host != r.Host {
+	var match *recentConnection
+	for i := range records {
+		record := &records[i]
+		if host != "" && host != record.Host || direct && record.Parent != nil {
 			continue
 		}
-		if r.Parent != nil && name != "" && name != r.Session {
-			return nil, fmt.Errorf("no saved route to %s/%s; attach from its parent shell", cleanText(host), cleanText(name))
+		if instance != "" && instance == record.Instance {
+			return record.clone(), nil
 		}
-		return r.clone(), nil
+		if match != nil && !sameRecentEndpoint(*match, *record) {
+			return nil, fmt.Errorf("multiple saved routes for %s; specify SSH options or attach from its parent shell", cleanText(host))
+		}
+		match = record
+		if host == "" {
+			break
+		}
 	}
-	return nil, nil
+	return match.clone(), nil
 }
 
 func connectionFromOptions(o options) (recentConnection, error) {

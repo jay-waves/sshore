@@ -19,7 +19,7 @@ import (
 
 const defaultMountIOTimeout = time.Minute
 
-// The CLI and review build the same configuration the mount worker receives.
+// Direct and locally approved mounts use the same worker configuration.
 type ftpOptions struct {
 	Approval                  *files.MountApproval
 	Connection                *recentConnection

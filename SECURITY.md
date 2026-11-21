@@ -214,8 +214,7 @@ The account daemon and native shell endpoints listen on loopback and require ran
 from current-user private state. Unix ownership/permissions and Windows DACLs
 protect that state. Exact release checks and lifetime locks prevent silent takeover
 or downgrade. Launch environments remain in memory, not public inventory or
-persistent daemon records. History is loaded as cached observations; only the
-daemon owns live records. Lease loss releases participation, never another
+persistent daemon records. The selected host’s daemon resolves task IDs against its live registrations. Lease loss releases participation, never another
 persistent shell. This is a same-user trust boundary, not a sandbox.
 
 `launch` reserves a fresh name; `attach` requires an existing shell and never evicts
@@ -342,7 +341,7 @@ replacement is published. See [release mechanics](SSHORE.md#release).
 `reset` uses the authenticated administrative snapshot and shutdown before clearing
 local state and cached releases. Failed shutdown stops reset; busy mounts may refuse
 cleanup. Custom state roots are cleared by entry name, including when inherited
-from the running daemon. Account cleanup removes the daemon locator, log and hosted-shell exit receipts.
+from the running daemon. Account cleanup removes the daemon locator, log and legacy hosted-shell exit receipts.
 It also clears known receipt and socket entries from older runtime directories
 and preserves coordination locks to prevent concurrent startup.
 
@@ -378,16 +377,12 @@ authenticated socket lease. EOF or a missed heartbeat releases that registration
 filesystem records cannot establish participation. This establishes transport participation, not target
 health or authority to control the resource. Attachment-source metadata is advisory.
 
-Cached shell relationships, task IDs, exit receipts and worker liveness
+Cached shell relationships, task IDs, legacy exit receipts and worker liveness
 are not proof of identity, successful cleanup or remote service health. Targets
-are not probed. Detailed remote inventory checks the exact release but never
-installs or updates software. The command prompt reads the current host’s
+are not probed. `list HOST:` reads local observations. The host resolves task selectors against its live registry. The command prompt reads the current host’s
 registered tasks through its authenticated attachment and displays the
 response as plain text.
 
-Private exit records are bounded and expire. Shell receipts contain name, time and
-reason, not terminal content, arguments or working directories; resource receipts
-can contain paths and errors. Abrupt termination can prevent cleanup or recording.
 See [inventory and diagnostics](SSHORE.md#inventory-and-diagnostics) for implementation entry points.
 
 ## Remaining risks

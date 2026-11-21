@@ -70,10 +70,15 @@ Distinguish live observations, cached records and unknown state. Saved ownership
 and attachment records provide display context. Only the account daemon's
 registry establishes management authority. The live inventory takes one snapshot
 of registered shells and resources. Resource status probes run
-after the snapshot within their own time budget. Clients add history and peer
-observations separately. Linux hosted-shell exit receipts use
-the private account-daemon directory. Older runtime-directory receipts remain
-visible until they expire. See [inventory](inventory.go),
+after the snapshot within their own time budget. For `pstree`, the daemon reads
+registered tasks, saved tree metadata and incoming transport leases independently
+and returns a normalized, sorted tree. The caller marks its current shell.
+For `list`, the daemon combines registered tasks and active incoming resources.
+Plain and JSON output use the same task data. `list HOST:` reads the local daemon’s
+records of shells used from this client and local resources targeting HOST.
+A shell connection refreshes the known shells against the host’s live list.
+For `HOST:ID`, that same host resolves the selector against its current registrations.
+A client can use a remote ID without running `list` first. See [inventory](inventory.go),
 [tree rendering](pstree.go) and [daemon metadata](daemon_metadata.go).
 
 ## Build and validate

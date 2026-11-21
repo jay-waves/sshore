@@ -281,13 +281,12 @@ func TestPSTreeKeepsUnavailableHostedShell(t *testing.T) {
 	// A task's status can fail without erasing its known identity.
 	saveShellTree(remoteTreeIdentity(uid), "blocked", nil, "detached", "heartbeat")
 	// The listening socket never answers, but its local lifetime lock stays held.
-	inv, err := localTreeInventory()
+	rows, err := readTaskTree()
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodes := localShellTreeNodes(inv, "")
 	var out bytes.Buffer
-	writeShellTree(&out, nodes, inv.MachineID, false)
+	writeShellTree(&out, rows, "", false)
 	if !strings.Contains(out.String(), uid[:6]+" (blocked)") || !strings.Contains(out.String(), "spawn/") {
 		t.Fatal(out.String())
 	}

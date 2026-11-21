@@ -5,14 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -62,28 +59,14 @@ func TestKillAllRemoteScope(t *testing.T) {
 
 func TestListScopes(t *testing.T) {
 	root := t.TempDir()
-	state := filepath.Join(root, "state")
-	t.Setenv("SSHORE_STATE_DIR", state)
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
 	tasks := startRequestDaemon(t)
 	registerTestResource(t, tasks, "forward", "local-only", strings.Repeat("a", 32))
-	var err error
-	if err = saveShellSnapshot(shellSnapshot{Host: "work", Name: "cached", State: "detached", ConfirmedAt: time.Now()}); err != nil {
-		t.Fatal(err)
-	}
-	var called, fail atomic.Bool
-	configTool := sshtest.Start(t, sshtest.Options{Exec: func(_ context.Context, _ string, stream cryptossh.Channel) {
-		called.Store(true)
-		status := uint32(0)
-		if fail.Load() {
-			status = 23
-		} else {
-			_, _ = io.WriteString(stream, `{"version":"`+version+`","resources":[],"shells":[{"name":"remote-only","state":"detached"}],"peers":[],"errors":[]}`+"\n")
-		}
-		sshtest.Exit(stream, status)
-	}})
+	other, _ := registerTestResource(t, tasks, "forward", "other", strings.Repeat("b", 32))
+	other.record.Host = "elsewhere"
 	run := func(args ...string) (inventory, string, error) {
 		cmd := exec.Command(testBinary(t), args...)
-		cmd.Env = append(os.Environ(), "SSHORE_SSH="+configTool, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SSHORE_RUNTIME_DIR="+filepath.Join(root, "runtime"), "HOME="+root)
+		cmd.Env = append(os.Environ(), "SSHORE_SSH="+filepath.Join(root, "must-not-run"), "SSHORE_SOCKET=", "SSH_CONNECTION=", "HOME="+root)
 		var stderr strings.Builder
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
@@ -94,20 +77,16 @@ func TestListScopes(t *testing.T) {
 		return inv, stderr.String(), err
 	}
 	local, _, err := run("list", "--json")
-	if err != nil || local.RemoteQueried || len(local.Resources) != 1 || len(local.Shells) != 1 {
+	if err != nil || len(local.Resources) != 2 {
 		t.Fatalf("%+v %v", local, err)
 	}
-	if called.Load() {
-		t.Fatal("offline list invoked SSH")
-	}
 	remote, stderr, err := run("list", "work", "--json")
-	if err != nil || !remote.RemoteQueried || len(remote.Resources) != 0 || len(remote.Shells) != 1 || remote.Shells[0].Name != "remote-only" || stderr != "" {
+	if err != nil || stderr != "" || len(remote.Resources) != 1 || remote.Resources[0].ID != "forward/local-only" || len(remote.Shells) != 0 {
 		t.Fatalf("%+v %s %v", remote, stderr, err)
 	}
-	fail.Store(true)
-	_, stderr, err = run("list", "work", "--json")
-	if err == nil || !strings.Contains(stderr, "remote query failed") {
-		t.Fatalf("%s %v", stderr, err)
+	empty, stderr, err := run("list", "unknown:", "--json")
+	if err != nil || stderr != "" || len(empty.Resources) != 0 || len(empty.Shells) != 0 {
+		t.Fatalf("%+v %s %v", empty, stderr, err)
 	}
 }
 
@@ -124,24 +103,10 @@ func TestExitReceiptInventoryAndReset(t *testing.T) {
 	if err := os.Mkdir(legacy, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, receipt := range []struct {
-		path, name string
-		age        time.Duration
-	}{
-		{filepath.Join(dir, fmt.Sprintf("%032x.exit.json", 1)), "recent", time.Minute},
-		{filepath.Join(legacy, fmt.Sprintf("%032x.sock.exit.json", 2)), "legacy", time.Hour},
-		{filepath.Join(legacy, fmt.Sprintf("%032x.sock.exit.json", 3)), "expired", 8 * 24 * time.Hour},
-	} {
-		if err := writeStateJSON(receipt.path, sessionExit{Name: receipt.name, Reason: "exited", At: time.Now().Add(-receipt.age)}); err != nil {
+	for _, path := range []string{filepath.Join(dir, fmt.Sprintf("%032x.exit.json", 1)), filepath.Join(legacy, fmt.Sprintf("%032x.sock.exit.json", 2))} {
+		if err := os.WriteFile(path, nil, 0600); err != nil {
 			t.Fatal(err)
 		}
-	}
-	inv := localSessionInventory()
-	if len(inv.Errors) != 0 {
-		t.Fatal(inv.Errors)
-	}
-	if len(inv.Exits) != 2 || inv.Exits[0].Name != "recent" || inv.Exits[1].Name != "legacy" {
-		t.Fatalf("exit receipts: %#v", inv.Exits)
 	}
 	// An older daemon can report a separate runtime directory inherited at startup.
 	inherited := filepath.Join(root, "inherited")
@@ -157,9 +122,6 @@ func TestExitReceiptInventoryAndReset(t *testing.T) {
 	if err := resetHostedExitState(dir, []string{inherited}); err != nil {
 		t.Fatal(err)
 	}
-	if len(hostedExitHistory()) != 0 {
-		t.Fatal("reset retained exit receipts")
-	}
 	for _, path := range []string{oldSocket, oldSocket + ".exit.json", filepath.Join(dir, fmt.Sprintf("%032x.exit.json", 1))} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("reset retained %s: %v", path, err)
@@ -167,116 +129,6 @@ func TestExitReceiptInventoryAndReset(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(legacy, "unrelated.exit.json")); err != nil {
 		t.Fatal("reset removed unrelated file", err)
-	}
-}
-
-func TestKillUpdatesShellHistory(t *testing.T) {
-	activityFixture(t)
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	for _, exit := range []uint32{23, 0} {
-		config := sshtest.Start(t, sshtest.Options{Exec: func(_ context.Context, _ string, stream cryptossh.Channel) {
-			sshtest.Exit(stream, exit)
-		}})
-		t.Setenv("SSHORE_SSH", config)
-		if err := saveShellSnapshot(shellSnapshot{Host: "work", Name: "job", Instance: "instance", State: "detached", ConfirmedAt: time.Now()}); err != nil {
-			t.Fatal(err)
-		}
-		code, err := runClientOnce(options{host: "work", session: "job", instance: "instance", command: "kill", server: "sshore"}, "", nil, func(options) {})
-		if err != nil {
-			t.Fatal(err)
-		}
-		rows, err := readShellSnapshots()
-		if err != nil || len(rows) != 1 {
-			t.Fatalf("%+v %v", rows, err)
-		}
-		if exit == 0 {
-			if code != 0 || rows[0].State != "exited" {
-				t.Fatalf("%d %+v", code, rows)
-			}
-		} else if code != 23 || rows[0].State != "detached" {
-			t.Fatalf("failure changed history: %d %+v", code, rows)
-		}
-	}
-}
-
-func TestShortTaskRemoteCommandRouting(t *testing.T) {
-	activityFixture(t)
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	root := t.TempDir()
-	observation := filepath.Join(root, "ssh-arguments")
-	config := filepath.Join(root, "ssh-config")
-	script := "#!/bin/sh\nprintf '%s\\0' \"$PWD\" \"$@\" > " + shellQuote(observation) + "\nprintf 'routing probe stopped\\n' >&2\nexit 37\n"
-	if err := os.WriteFile(config, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("SSHORE_SSH", config)
-	observed := options{host: "work", server: "/observed/sshore", sshDirectory: root, ssh: []string{"-p", "2222", "-J", "jump", "-L", "8080:localhost:80"}}
-	inv := inventory{Shells: []shellView{{Name: "job", Instance: "original-instance", State: "detached"}}}
-	if err := cacheRemoteShells("work", inv, observed); err != nil {
-		t.Fatal(err)
-	}
-	// A later attachment default must not overwrite the selected observation's route.
-	if err := rememberConnection(options{host: "work", session: "other", server: "/other/sshore", ssh: []string{"-p", "9999"}}); err != nil {
-		t.Fatal(err)
-	}
-	id := taskShortCode(remoteShellIdentity("work", "original-instance"))
-	workingDir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		args                      []string
-		dir, port, server, action string
-	}{
-		{[]string{"kill", "work:" + id}, root, "2222", "/observed/sshore", "kill-session"},
-		{[]string{"rename", "work:" + id, "new"}, root, "2222", "/observed/sshore", "rename-session"},
-		{[]string{"kill", "work:" + id, "--server", "/explicit/sshore", "--", "-p", "3333"}, workingDir, "3333", "/explicit/sshore", "kill-session"},
-	} {
-		if _, err := run(tc.args); err == nil || !strings.Contains(err.Error(), "routing probe stopped") {
-			t.Fatalf("%v: %v", tc.args, err)
-		}
-		raw, err := os.ReadFile(observation)
-		if err != nil {
-			t.Fatal(err)
-		}
-		configArgs := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
-		if len(configArgs) < 5 || configArgs[0] != tc.dir || configArgs[1] != "-G" || configArgs[len(configArgs)-2] != "work" {
-			t.Fatalf("wrong SSH config invocation: %q", configArgs)
-		}
-		text := configArgs[len(configArgs)-1]
-		flags := configArgs[2 : len(configArgs)-3]
-		foundPort := false
-		for i := 0; i+1 < len(flags); i++ {
-			if flags[i] == "-p" {
-				if foundPort || flags[i+1] != tc.port {
-					t.Fatalf("wrong SSH port in %q", flags)
-				}
-				foundPort = true
-			}
-		}
-		if !foundPort || slices.Contains(flags, "-L") || slices.Contains(flags, "8080:localhost:80") {
-			t.Fatalf("wrong transport restored: %q", flags)
-		}
-		for _, want := range []string{tc.server, tc.action, "original-instance"} {
-			if !strings.Contains(text, want) {
-				t.Fatalf("missing %q in %s", want, text)
-			}
-		}
-	}
-	records, err := readRecentConnections()
-	if err != nil || len(records) != 1 || records[0].Session != "other" {
-		t.Fatalf("attachment default changed: %+v %v", records, err)
-	}
-	public, err := collectInventory(options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, err := json.Marshal(public)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(encoded), "/observed/sshore") || strings.Contains(string(encoded), "2222") {
-		t.Fatal("private connection settings leaked into inventory")
 	}
 }
 
@@ -330,7 +182,7 @@ func TestListIncludesAccountHostedShells(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range inv.Shells {
-		if s.Name == "hosted" && s.Host == "local" && s.State == "attached" && !s.Historical && s.ShortID != "" {
+		if s.Name == "hosted" && s.Host == "local" && s.State == "attached" && s.ShortID != "" {
 			return
 		}
 	}
@@ -394,7 +246,7 @@ func TestHostedShellTaskCommandRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	target, selected, err := resolveShortTask("attach", &parsed)
-	if err != nil || !selected || !target.hosted || target.host != "" {
+	if err != nil || !selected || !target.hosted {
 		t.Fatalf("wrong local route: %+v %v", target, err)
 	}
 	o := options{command: "attach", local: true, hosted: true, session: target.name, instance: target.instance}

@@ -130,15 +130,16 @@ func consoleInventory(request message, current string) message {
 	var err error
 	switch request.Name {
 	case "list":
-		inv := collectManagedInventory(false, true)
-		inv.Host = "local"
-		inv.collectPeers()
-		inv, err = inv.finalize()
+		var inv inventory
+		inv, err = daemonListTasks(taskListRequest{Native: true})
+		if err == nil {
+			err = inv.incompleteError()
+		}
 		writeTaskInventoryWidth(&body, inv, current, request.Color, int(request.Cols))
 	case "ps", "pstree":
-		var inv inventory
-		inv, err = localTreeInventory()
-		writeShellTree(&body, inventoryResourceTrees(localShellTreeNodes(inv, current), inv), inv.MachineID, request.Color)
+		var rows []taskTreeRow
+		rows, err = readTaskTree()
+		writeShellTree(&body, rows, current, request.Color)
 	default:
 		reply.Output = "Unknown inventory command."
 		return reply

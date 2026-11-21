@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -92,52 +91,6 @@ func TestInventoryBoundedStatusWait(t *testing.T) {
 		if r.Worker != "unavailable" {
 			t.Fatal(r)
 		}
-	}
-}
-
-func TestResourceFailureReceipt(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	dir, e := resourceStateDir("mount")
-	if e != nil {
-		t.Fatal(e)
-	}
-	s := &resourceService{record: resourceRecord{Kind: "mount", Name: "work", Host: "work", Token: "secret", Address: "127.0.0.1:1"}, resultPath: filepath.Join(dir, "work"+resourceResultSuffix)}
-	s.saveResult(1, io.ErrUnexpectedEOF, s.record.Name)
-	rows := collectResourceResults(nil)
-	if len(rows) != 1 || rows[0].Transport != "failed" || rows[0].LastError != "unexpected EOF" {
-		t.Fatal(rows)
-	}
-	b, _ := os.ReadFile(s.resultPath)
-	if strings.Contains(string(b), "secret") {
-		t.Fatal("receipt leaked capability")
-	}
-}
-
-func TestResourceReceiptUsesInstanceRatherThanAlias(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	dir, err := resourceStateDir("forward")
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := resourceRecord{UID: strings.Repeat("a", 32), Kind: "forward", Name: "web", Host: "work"}
-	receipt := struct {
-		resourceResult
-		DisplayName string
-	}{resourceResult: resourceResult{Record: old, Finished: time.Now()}, DisplayName: "web"}
-	if err := writeStateJSON(filepath.Join(dir, old.storageName()+".json.result"), receipt); err != nil {
-		t.Fatal(err)
-	}
-	// Reusing an alias must preserve the previous instance's failure receipt.
-	replacement := old
-	replacement.UID = strings.Repeat("b", 32)
-	if rows := collectResourceResults([]resourceView{viewRecord(replacement)}); len(rows) != 1 {
-		t.Fatalf("reused alias hid previous instance: %+v", rows)
-	}
-	// Renaming an instance must not make its receipt appear beside its live row.
-	renamed := old
-	renamed.Name = "renamed"
-	if rows := collectResourceResults([]resourceView{viewRecord(renamed)}); len(rows) != 0 {
-		t.Fatalf("renamed instance duplicated: %+v", rows)
 	}
 }
 

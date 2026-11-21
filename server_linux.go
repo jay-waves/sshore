@@ -46,7 +46,7 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 	case "task-remove":
 		return removeRemoteTask(req.Identity)
 	case "inventory":
-		return json.NewEncoder(os.Stdout).Encode(localSessionInventory(req.Diagnostics))
+		return json.NewEncoder(os.Stdout).Encode(localSessionInventory())
 	}
 	return usage("unknown remote service operation")
 }

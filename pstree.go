@@ -1,7 +1,8 @@
 package main
 
 import (
-	"cmp"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -9,6 +10,10 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/tree"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/jay-waves/sshore/internal/proc"
 	"github.com/jay-waves/sshore/internal/termui"
@@ -19,7 +24,6 @@ import (
 type shellTreeNode struct {
 	OwnerProcess                                         *spawnProcessView `json:",omitempty"`
 	Identity, Parent, Owner, Lifetime, Host, Name, State string
-	Current                                              bool `json:"-"`
 	Cached                                               bool
 	ShortID, Kind                                        string    `json:",omitempty"`
 	SourceHost, SourceMachineID                          string    `json:",omitempty"`
@@ -80,129 +84,65 @@ func cloneShellTree(chain []shellTreeNode) []shellTreeNode {
 	return cloned
 }
 
-// Build display edges directly. Synthetic parents share the lookup with
-// registered tasks and never change a shell's saved owner.
-func shellTreeOwners(nodes []shellTreeNode, machine string) ([]shellTreeNode, []int) {
-	byID := make(map[string]int, len(nodes))
-	for i, n := range nodes {
-		if n.Identity != "" {
-			byID[n.Identity] = i
-		}
-	}
-	owners := make([]int, len(nodes))
-	for i, n := range nodes {
-		owner, found := byID[n.Owner]
-		if !found {
-			p := n.OwnerProcess
-			spawn := n.Kind == "spawn" || n.Kind == "" && (n.Lifetime == "parent" || n.Lifetime == "heartbeat")
-			if spawn && validSpawnProcessView(p) {
-				id := fmt.Sprintf("external:%s:%d:%s", p.MachineID, p.PID, p.Start)
-				owner, found = byID[id]
-				if !found {
-					owner, found = len(nodes), true
-					byID[id] = owner
-					nodes = append(nodes, externalSpawnNode(id, machine, p))
-					owners = append(owners, -1)
-				}
-			}
-		}
-		if !found || owner == i {
-			owner = -1
-		}
-		owners[i] = owner
-	}
-	return nodes, owners
-}
-
-func writeShellTree(out io.Writer, nodes []shellTreeNode, machine string, color bool) {
-	if len(nodes) == 0 {
+func writeShellTree(out io.Writer, rows []taskTreeRow, current string, color bool) {
+	if len(rows) == 0 {
 		fmt.Fprintln(out, "No known tasks.")
 		return
 	}
-	nodes, owners := shellTreeOwners(nodes, machine)
-	// Each node has at most one owner. Cut a display edge at each cycle so
-	// every component has a root, even when cached relationships disagree.
-	marks := make([]int, len(nodes))
-	for i := range nodes {
-		walk := i + 1
-		for p := i; p >= 0; p = owners[p] {
-			if marks[p] != 0 {
-				if marks[p] == walk {
-					// Give the same cycle a root regardless of inventory order.
-					root := p
-					for member := owners[p]; member != p; member = owners[member] {
-						if nodes[member].Identity < nodes[root].Identity {
-							root = member
-						}
-					}
-					owners[root] = -1
-				}
-				break
-			}
-			marks[p] = walk
+	branchStyle := lipgloss.NewStyle()
+	if color {
+		branchStyle = branchStyle.Foreground(ansi.BrightBlack)
+	}
+	trees := make([]*tree.Tree, len(rows))
+	var roots []*tree.Tree
+	for i, row := range rows {
+		selected := current != "" && row.Identity == current && row.Kind != "external"
+		t := tree.Root(shellTreeLabel(row, selected, color)).Enumerator(func(children tree.Children, index int) string {
+			return tree.RoundedEnumerator(children, index) + " "
+		}).Indenter(func(children tree.Children, index int) string {
+			return tree.DefaultIndenter(children, index) + " "
+		}).
+			EnumeratorStyle(branchStyle).IndenterStyle(branchStyle)
+		trees[i] = t
+		if row.Owner > 0 && row.Owner <= i {
+			trees[row.Owner-1].Child(t)
+		} else {
+			roots = append(roots, t)
 		}
 	}
-	// Bucket zero holds roots; the rest hold each owner's children.
-	children := make([][]int, len(nodes)+1)
-	for i, owner := range owners {
-		bucket := owner + 1
-		children[bucket] = append(children[bucket], i)
+	for _, root := range roots {
+		fmt.Fprintln(out, root)
 	}
-	compare := func(a, b int) int {
-		return cmp.Or(cmp.Compare(nodes[a].displayCode(), nodes[b].displayCode()),
-			cmp.Compare(nodes[a].Identity, nodes[b].Identity))
-	}
-	for _, siblings := range children {
-		slices.SortStableFunc(siblings, compare)
-	}
-
-	var prefix []byte
-	var draw func([]int)
-	draw = func(siblings []int) {
-		for index, i := range siblings {
-			branch, next := "├─ ", "│  "
-			if index == len(siblings)-1 {
-				branch, next = "└─ ", "   "
-			}
-			writeShellTreeRow(out, nodes[i], color, prefix, branch)
-			if len(children[i+1]) != 0 {
-				depth := len(prefix)
-				prefix = append(prefix, next...)
-				draw(children[i+1])
-				prefix = prefix[:depth]
-			}
-		}
-	}
-	draw(children[0])
 }
 
-func (n shellTreeNode) displayCode() string {
-	if n.ShortID != "" {
-		return n.ShortID
+func shellTreeLabel(n taskTreeRow, current, color bool) string {
+	label := cleanText(n.Kind) + "/" + taskDisplayID(n.Code, n.Name)
+	if n.Kind == "external" && n.PID > 0 {
+		label = fmt.Sprintf("%s (pid %d)", cleanText(n.Name), n.PID)
 	}
-	return taskShortCode(n.Identity)
-}
-
-func writeShellTreeRow(out io.Writer, n shellTreeNode, color bool, prefix []byte, branch string) {
-	kind := n.Kind
-	if kind == "" {
-		kind = shellTaskKind(n.Lifetime == "parent" || n.Lifetime == "heartbeat")
-	}
-	label := cleanText(kind) + "/" + taskDisplayID(n.displayCode(), n.Name)
-	if kind == "external" && n.OwnerProcess != nil {
-		label = fmt.Sprintf("%s (pid %d)", cleanText(n.Name), n.OwnerProcess.PID)
-	}
-	fmt.Fprint(out, termui.Render(color, termui.Muted, string(prefix)+branch), termui.Render(color && n.Current, termui.Accent, label))
+	var out strings.Builder
+	fmt.Fprint(&out, termui.Render(color && current, termui.Accent, label))
 	if n.State == "unavailable" {
-		fmt.Fprint(out, termui.Render(color, termui.Warning, " ?"))
+		fmt.Fprint(&out, termui.Render(color, termui.Warning, " ?"))
 	}
 	if n.Remote != "" {
-		fmt.Fprint(out, termui.Render(color, termui.Muted, "  "+cleanText(n.Direction)+" "+cleanText(n.Remote)))
+		fmt.Fprint(&out, termui.Render(color, termui.Muted, "  "+cleanText(n.Direction)+" "+cleanText(n.Remote)))
 	}
-	if n.Current {
-		fmt.Fprint(out, termui.Render(color, termui.Success, "  *current"))
+	if current {
+		fmt.Fprint(&out, termui.Render(color, termui.Success, "  *current"))
 	}
-	fmt.Fprintln(out)
+	return out.String()
+}
+
+func readTaskTree() ([]taskTreeRow, error) {
+	if activity := accountActivity.Load(); activity != nil {
+		return activity.taskTreeSnapshot(context.Background())
+	}
+	reply, _, err := readTaskInventory(taskInventoryRequest{Detail: "tree"})
+	if reply.Error != "" {
+		err = fmt.Errorf("%s", reply.Error)
+	}
+	return reply.Tree, err
 }
 
 func runPSTree(args []string) (int, error) {
@@ -215,15 +155,8 @@ func runPSTree(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	stopActivity, err := beginCommandActivity()
-	if err != nil {
-		return 1, err
-	}
-	defer stopActivity()
-	inv, err := localTreeInventory()
-	nodes := localShellTreeNodes(inv, shellIdentityFromEnvironment())
-	nodes = inventoryResourceTrees(nodes, inv)
-	writeShellTree(os.Stdout, nodes, inv.MachineID, termui.ColorEnabled(os.Stdout))
+	rows, err := readTaskTree()
+	writeShellTree(os.Stdout, rows, shellIdentityFromEnvironment(), termui.ColorEnabled(os.Stdout))
 	if err != nil {
 		return 1, err
 	}
@@ -317,7 +250,6 @@ func (m *daemonMetadata) saveShellTreeLocal(id, name string, chain []shellTreeNo
 		owner = n.Owner
 	}
 	for i := range chain {
-		chain[i].Current = false
 		chain[i].Cached = true
 	}
 	chain = append(chain, self)
@@ -390,7 +322,6 @@ func (m *daemonMetadata) rememberShellTreeLocal(chain []shellTreeNode) {
 	chain = cloneShellTree(chain)
 	for i := range chain {
 		chain[i].Cached = true
-		chain[i].Current = false
 	}
 	_ = m.writeTreeLocal(chain)
 }
@@ -407,27 +338,36 @@ func (m *daemonMetadata) renameShellTreeLocal(id, name string) {
 	_ = m.writeTreeLocal(chain)
 }
 
-func (m *daemonMetadata) recordRemoteShellTreeStateLocal(s shellSnapshot) error {
-	if m.trees == nil {
-		if err := m.loadTrees(); err != nil {
-			return err
-		}
+func rememberShellExit(o options) error {
+	detachErr := removeRecentDetach(o)
+	if o.local || !validTaskUID(o.instance) {
+		return detachErr
 	}
-	id := remoteTreeIdentity(s.Instance)
-	if s.Instance == "" {
-		id = s.Host + ":" + s.Name
+	return errors.Join(detachErr, recordRemoteShellExit(o.host, o.session, o.instance), forgetParticipatingShell(o.host, o.instance))
+}
+
+func recordRemoteShellExit(host, name, instance string) error {
+	if !validTaskUID(instance) {
+		return fmt.Errorf("invalid remote shell instance")
 	}
+	_, err := metadataRPC(metadataRequest{Action: "tree_remote_exit", Host: host, Name: name, Instance: instance})
+	return err
+}
+
+func (m *daemonMetadata) recordRemoteShellTreeExitLocal(host, name, instance string) error {
+	if !validTaskUID(instance) {
+		return fmt.Errorf("invalid remote shell instance")
+	}
+	id := remoteTreeIdentity(instance)
 	self, found := m.treeNode(id)
 	if !found {
-		self = shellTreeNode{Identity: id, Host: s.Host, Name: s.Name, Cached: true}
+		if name == "" {
+			name = taskShortCode(id)
+		}
+		self = shellTreeNode{Identity: id, Host: host, Name: name, Cached: true}
 	}
-	self.State, self.Parent, self.Current = s.State, "", false
-	self.CheckedAt = s.ConfirmedAt
-	if s.MachineID != "" {
-		self.MachineID, self.Host = s.MachineID, s.Hostname
-	}
-	// Retain terminal evidence so older copies in descendant snapshots cannot
-	// resurrect this instance after its list history expires or is forgotten.
+	self.State, self.Parent = "exited", ""
+	self.CheckedAt = time.Now()
 	return m.writeTreeLocal([]shellTreeNode{self})
 }
 
@@ -436,160 +376,4 @@ func remoteTreeIdentity(instance string) string {
 		return "task:" + instance
 	}
 	return "remote:" + instance
-}
-
-// Collect hosted Unix shells and native local terminals; saved remote shells and
-// peer advertisements never become local process nodes.
-func localTreeInventory() (inventory, error) {
-	inv := collectManagedInventory(false, true)
-	if inv.Hostname == "" {
-		inv.MachineID, inv.Hostname = localMachineIdentity()
-	}
-	inv.ShellTree = knownShellTrees()
-	inv.Host = inv.Hostname
-	incoming, err := collectIncomingTasks()
-	if err != nil {
-		inv.Errors = append(inv.Errors, cleanText(err.Error()))
-	}
-	inv.Peers = incoming
-	return inv.finalize()
-}
-
-// Only registered local shells become rows. Saved snapshots contribute
-// relationship metadata and can supply the source of an incoming attachment.
-func localShellTreeNodes(inv inventory, current string) []shellTreeNode {
-	type treeEntry struct {
-		saved      *shellTreeNode
-		visibleRow int // One-based index in nodes; zero means no visible row.
-	}
-	byID := make(map[string]treeEntry, len(inv.ShellTree))
-	for i := range inv.ShellTree {
-		n := &inv.ShellTree[i]
-		byID[n.Identity] = treeEntry{saved: n}
-	}
-	count := len(inv.LocalShells) + len(inv.Shells)
-	nodes := make([]shellTreeNode, 0, count)
-	now := time.Now()
-	add := func(n shellTreeNode) {
-		if endedShellState(n.State) {
-			return
-		}
-		entry := byID[n.Identity]
-		var old shellTreeNode
-		if entry.saved != nil {
-			old = *entry.saved
-		}
-		n.Cached = n.State == "unavailable"
-		if n.Cached {
-			if endedShellState(old.State) {
-				return
-			}
-			if n.CheckedAt.IsZero() {
-				n.CheckedAt = old.CheckedAt
-			}
-		} else {
-			n.CheckedAt = now
-		}
-		n.Owner, n.OwnerProcess = old.Owner, old.OwnerProcess
-		if n.State == "attached" {
-			n.Parent, n.SourceHost, n.SourceMachineID = old.Parent, old.SourceHost, old.SourceMachineID
-		}
-		if n.MachineID == "" && old.MachineID != "" {
-			n.MachineID, n.Host = old.MachineID, old.Host
-		}
-		n.Current = current != "" && n.Identity == current
-		if entry.visibleRow != 0 {
-			i := entry.visibleRow - 1
-			if n.strongerEvidenceThan(nodes[i]) {
-				nodes[i] = n
-			}
-			return
-		}
-		nodes = append(nodes, n)
-		entry.visibleRow = len(nodes)
-		byID[n.Identity] = entry
-	}
-	for _, s := range inv.LocalShells {
-		add(shellTreeNode{Identity: s.identity, ShortID: s.ShortID, Host: inv.Hostname, MachineID: inv.MachineID, Name: s.Name, State: s.State, Lifetime: shellLifetime(s.Temporary, false), Remote: s.ConnectedHost, Direction: "->"})
-	}
-	for _, s := range inv.Shells {
-		if s.Historical {
-			continue
-		}
-		host := inv.Hostname
-		if host == "" {
-			host = s.Host
-			if host == "" {
-				host = inv.Host
-			}
-		}
-		add(shellTreeNode{Identity: shellViewTreeIdentity(s, inv), ShortID: s.ShortID, Host: host, MachineID: inv.MachineID, CheckedAt: s.ConfirmedAt, Name: s.Name, State: s.State, Lifetime: shellLifetime(s.Temporary, true)})
-	}
-	for i := range nodes {
-		n := &nodes[i]
-		if n.State != "attached" {
-			continue
-		}
-		if n.SourceHost != "" && validMachineID(n.SourceMachineID) {
-			if n.SourceMachineID != inv.MachineID {
-				n.Remote, n.Direction = n.SourceHost, "<-"
-			}
-			continue
-		}
-		// A legacy snapshot may identify its source shell without endpoint metadata.
-		source := byID[n.Parent]
-		if source.visibleRow != 0 || source.saved == nil {
-			continue
-		}
-		old := source.saved
-		if old.Host != "" && !endedShellState(old.State) && old.MachineID != inv.MachineID && (old.MachineID != "" || old.Host != inv.Hostname) {
-			n.Remote, n.Direction = old.Host, "<-"
-		}
-	}
-	return nodes
-}
-
-func inventoryResourceTrees(nodes []shellTreeNode, inv inventory) []shellTreeNode {
-	now := time.Now()
-	for _, r := range inv.Resources {
-		kind, name := r.kindAndName()
-		direction := "<-"
-		if kind == "forward" {
-			direction = r.Direction
-			if direction != "<-" && direction != "->" {
-				direction = "?"
-			}
-		}
-		checked := now
-		if r.Worker == "unavailable" {
-			checked = time.Time{}
-		}
-		if r.Worker == "exited" {
-			continue
-		}
-		nodes = append(nodes, shellTreeNode{Identity: r.Identity, ShortID: r.ShortID, Kind: kind, CheckedAt: checked, State: r.Worker, Name: name, Remote: r.Host, Direction: direction})
-	}
-	for _, p := range inv.Peers {
-		kind, name, _ := strings.Cut(peerResourceID(p.ID), "/")
-		direction := "?"
-		if kind == "mount" || p.Direction == "<-" {
-			direction = "->"
-		} else if p.Direction == "->" {
-			direction = "<-"
-		}
-		nodes = append(nodes, shellTreeNode{Identity: peerTaskIdentity(p), ShortID: p.ShortID, Kind: kind, Name: name, Remote: p.Manager, Direction: direction, CheckedAt: now})
-	}
-
-	return nodes
-}
-
-func shellViewTreeIdentity(s shellView, inv inventory) string {
-	if s.Instance != "" {
-		return remoteTreeIdentity(s.Instance)
-	}
-	host := s.Host
-	if host == "" {
-		host = inv.Host
-	}
-	return host + ":" + s.Name
 }

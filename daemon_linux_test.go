@@ -119,7 +119,6 @@ func TestDaemonHangupBetweenHostedShells(t *testing.T) {
 	b.writeInput(t, []byte("exit\n"))
 	b.readExit(t)
 	b.close()
-	waitExitReceipt(t, "before-hangup", "shell exited (code 0)")
 	if current, err := proc.StartToken(record.ManagerPID); err != nil || current != identity {
 		t.Fatalf("fixture daemon changed: %v", err)
 	}
@@ -154,5 +153,42 @@ func TestResetRetainsStateWhenShutdownRefused(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("state lost on refusal: %v", err)
+	}
+}
+
+func TestHostedShellReferences(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	first := "abcd" + strings.Repeat("1", 28)
+	second := "abef" + strings.Repeat("2", 28)
+	for uid, name := range map[string]string{first: "worker", second: strings.Repeat("f", 32), strings.Repeat("d", 32): "abc"} {
+		shell := &remoteShell{shellTask: shellTask{
+			tasks: tasks, record: localShellRecord{UID: uid, Name: name}, hosted: true, done: make(chan struct{}),
+		}}
+		if err := tasks.register(uid, shell); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for ref, want := range map[string]string{
+		"ABCD": first, "ABC": first, "abc": first, strings.ToUpper(first): first, "worker": first,
+		"ab": "", "a": "", strings.Repeat("f", 32): second,
+	} {
+		got, err := resolveSession(ref)
+		if got != want || (err != nil) != (ref == "ab") {
+			t.Fatalf("resolve %q: %q %v, want %q", ref, got, err, want)
+		}
+	}
+	if selection, err := selectHostedShell("abcd", "new"); err != nil || selection.name != "abcd" || selection.existing {
+		t.Fatalf("new shell name treated as a task selector: %+v %v", selection, err)
+	}
+	if got, err := resolveSession("AB", first); err != nil || got != first {
+		t.Fatalf("exact selection: %q %v", got, err)
+	}
+	if got, err := resolveSession("worker", strings.Repeat("9", 32)); err != nil || got != "" {
+		t.Fatalf("stale instance resolved through a live alias: %q %v", got, err)
+	}
+	close(tasks.records[second].(*remoteShell).done)
+	if got, err := resolveSession("AB"); err != nil || got != first {
+		t.Fatalf("unique two-character prefix: %q %v", got, err)
 	}
 }

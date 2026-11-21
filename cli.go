@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	sshio "github.com/jay-waves/sshore/internal/ssh"
@@ -41,13 +40,7 @@ func run(args []string) (code int, resultErr error) {
 	if os.Getenv("SSHORE_DISABLED") == "1" && len(args) > 0 {
 		allowed := true
 		switch args[0] {
-		case "--version", "-V", "--help", "-h", "--tldr", "help", remoteServiceCommand, "pstree", "reset":
-		case "list":
-			o, err := parseOptions(args)
-			if err != nil {
-				return 2, err
-			}
-			allowed = o.local || o.host == ""
+		case "--version", "-V", "--help", "-h", "--tldr", "help", remoteServiceCommand, "pstree", "reset", "list":
 		default:
 			allowed = false
 		}
@@ -139,28 +132,6 @@ func killAllOptions(parsed cliArguments) (options, error) {
 	return o, err
 }
 
-func parseKillTarget(args []string) (kind, name string, typed bool, err error) {
-	if len(args) == 0 {
-		return "", "", false, usage("use sshore kill mount/NAME, forward/NAME, or HOST:ID")
-	}
-	kind, name, typed = strings.Cut(args[0], "/")
-	if !typed {
-		return
-	}
-	if len(args) != 1 {
-		err = usage("local cancellation accepts exactly one resource ID")
-		return
-	}
-	switch kind {
-	case "peer":
-		err = usage("peer tasks are read-only here; kill the resource on its managing computer")
-	case "mount", "forward":
-	default:
-		err = usage("resource ID must be mount/NAME or forward/NAME")
-	}
-	return
-}
-
 // Route task selectors before command semantics; no execution starts while
 // selecting a route. Ordinary shell and kill forms share one parsed result.
 func runTargetCommand(args []string) (int, error) {
@@ -169,61 +140,26 @@ func runTargetCommand(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	if (command == "attach" || command == "kill") && len(parsed.operands) == 1 && !parsed.local && !parsed.has("--all") && !parsed.explicitHost {
-		ref := parsed.operands[0]
-		if ref != "" && !isTaskIDPrefix(ref) && strings.Trim(ref, "0123456789") == "" {
-			return 2, usage("list sequence numbers are display-only; select the task by name or short ID")
-		}
-	}
-	operandCount := len(parsed.operands)
 	target, selected, err := resolveShortTask(command, &parsed)
 	if err != nil {
 		return 2, err
 	}
-	if command == "attach" && !parsed.explicitHost && operandCount != 0 && !(operandCount == 1 && selected) {
-		return 2, usage("use attach :ID or attach HOST:ID; run sshore list for available shells")
-	}
-
 	if selected && target.kind != "shell" {
 		switch command {
 		case "kill":
-			return withDaemonActivity(func() (int, error) { return 0, killResourceIdentity(target.kind+"/"+target.name, target.identity) })
+			return withDaemonActivity(func() (int, error) { return 0, stopResource(target.kind, target.name, target.identity) })
 		case "rename":
 			return withDaemonActivity(func() (int, error) {
 				return runRenameResource(target.kind, target.name, parsed.operands[1], target.identity)
 			})
-
 		}
 	}
-	if command == "kill" {
-		if parsed.has("--all") {
-			o, err := killAllOptions(parsed)
-			if err != nil {
-				return 2, err
-			}
-			return runKillAll(o)
-		}
-		kind, name, typed, err := parseKillTarget(parsed.operands)
+	if command == "kill" && parsed.has("--all") {
+		o, err := killAllOptions(parsed)
 		if err != nil {
 			return 2, err
 		}
-		if typed {
-			if len(parsed.values) != 0 || len(parsed.ssh) != 0 {
-				return 2, usage("local cancellation accepts exactly one resource ID")
-			}
-			return withDaemonActivity(func() (int, error) { return runKillResource(kind, name) })
-		}
-	}
-	if command == "rename" {
-		if kind, old, typed := strings.Cut(parsed.operands[0], "/"); typed {
-			if len(parsed.operands) != 2 || len(parsed.values) != 0 || len(parsed.ssh) != 0 {
-				return 2, usage("use rename TYPE/NAME NEW")
-			}
-			return withDaemonActivity(func() (int, error) { return runRenameResource(kind, old, parsed.operands[1]) })
-		}
-	}
-	if !parsed.explicitHost && (command == "rename" || command == "kill" && !(selected && target.host == "")) {
-		return 2, usage("use %s HOST:ID or %s here:ID", command, command)
+		return runKillAll(o)
 	}
 	o, err := shellOptions(command, parsed)
 	if err != nil {
@@ -232,13 +168,6 @@ func runTargetCommand(args []string) (int, error) {
 	if selected && target.kind == "shell" {
 		o.taskIdentity, o.instance = target.identity, target.instance
 		o.hosted = target.hosted
-		if !o.local {
-			if target.snapshot != nil && target.snapshot.Connection != nil {
-				applyConnectionOptions(&o, *target.snapshot.Connection)
-			} else if err := applyRecentConnection(&o); err != nil {
-				return 1, err
-			}
-		}
 	}
 	return withDaemonActivity(func() (int, error) { return executeShellCommand(o) })
 }

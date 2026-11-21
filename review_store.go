@@ -30,7 +30,7 @@ type requestRecord struct {
 	Operations []operation
 }
 
-// Port always denotes the listener, TargetPort the service, including pending requests.
+// Port denotes the listener and TargetPort denotes the service.
 func (op operation) ServerPort() int {
 	if op.Reverse {
 		return op.Port

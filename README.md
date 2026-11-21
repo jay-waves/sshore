@@ -61,9 +61,9 @@ filename containing a colon with `./` or `here:`.
 ```sh
 sshore launch work:build    # Start a persistent remote shell named build.
 # Press Ctrl+B, then d to detach. Return later with:
-sshore attach               # Resume the most recently detached local or remote shell.
+sshore attach               # Resume the most recently detached local shell.
 sshore attach work:         # Resume the most recently detached shell on work.
-sshore list work:           # Find a specific shell's ID or name.
+sshore list work:           # Find an ID among shells used from this client.
 sshore attach work:build    # Resume that shell by name.
 ```
 
@@ -88,7 +88,7 @@ Press **Ctrl+B** and then one of these keys:
 
 | Key | Action |
 | --- | --- |
-| `d` | Detach. Run `sshore attach` to return to the last detached local or remote shell. |
+| `d` | Detach. Run `sshore attach` for the last detached local shell, or specify its remote host. |
 | `l`, `n`, `p` | Switch to the last, next or previous session. |
 | `c` | Spawn a nested shell on the current host. Exit or detach to return one level. |
 | `r` | Request a redraw. Windows local shells repaint at the current window size. |
@@ -97,7 +97,8 @@ Press **Ctrl+B** and then one of these keys:
 
 At the command prompt, use `list` for task inventory and `ps` or `pstree` for
 the task tree on the machine running the current shell. The list marks that shell
-with `(current)` and the tree with `*current`. The shell stays open.
+with `(current)` and the tree with `*current`. Tree branches use rounded
+connectors. The shell stays open.
 Set `NO_COLOR=1` to disable color in the command prompt and CLI output.
 Use `attach <ID|name>` to switch to a detached session in the current scope,
 `spawn` to open a nested shell, and `launch` to open an independent shell on the
@@ -119,11 +120,14 @@ Use `--no-escape` if the application needs all keystrokes.
 ## Find and manage tasks
 
 ```sh
-sshore list                  # Local tasks and cached remote shells.
-sshore list work:            # Query the remote host now.
+sshore list                  # Tasks and incoming resources on this machine.
+sshore list work:            # Show this client’s last known tasks on work, even offline.
 sshore pstree                # Show local task relationships.
-sshore list --json           # Include diagnostics and resource log paths.
+sshore list --json           # Show the same tasks as JSON.
 ```
+
+Interactive lists use a bordered table when it fits; narrow terminals use a
+compact layout. Redirected output stays plain text.
 
 When a native local shell hands its terminal to a remote sshore session, `list`
 adds `-> HOST` to DETAIL, and `pstree` shows the same destination.
@@ -133,9 +137,11 @@ cannot return to it, it prints the reason and exits.
 Use an ID or name from `list` to select a task. For example,
 `sshore rename work:7afe22 build` lets you resume it with
 `sshore attach work:build`. To end the shell, run `sshore kill work:build`.
-A local selector such as `sshore kill :123eef` searches only locally managed
-tasks, like `sshore kill here:123eef`. For a remote row from cached or live
-output, include its host, as in `sshore kill work:123eef`. Killing a shell can
+A bare hexadecimal ID selects a local task, so `sshore attach 123eef` and
+`sshore attach :123eef` select the same shell. For a remote task use
+`work:123eef`. The daemon on `work` resolves the ID even on your first
+connection. To select a host with a hexadecimal name, include the colon,
+as in `sshore attach db:`. Killing a shell can
 discard unsaved work. Manage read-only peer entries on their original
 computer.
 
@@ -161,7 +167,8 @@ For a single command, run `sshore exec work: 'uname -a'`. For port forwarding,
 use `sshore forward`.
 
 Run `sshore ping work: --count 20` to measure authenticated connection setup
-and character round-trip latency through an SSH session. The remote host only
+and character round-trip latency through an SSH session. By default, it measures
+three groups of 10 samples, with one second between groups. The remote host only
 needs to accept SSH exec requests and provide `cat`.
 
 ## OS and shell support
@@ -242,7 +249,7 @@ original shell after the operation; choose `n` to remain locally.
   and defaults, run `sshore COMMAND --help`.
 - If a reattached screen looks stale, press Ctrl-L or use the application's redraw key.
 - To diagnose SSH failures, run `sshore launch work: -- -vvv -E ./ssh-debug.log`.
-- For a failed mount or forward, check the log path in `sshore list --json`.
+- For an active mount or forward, `sshore list --json` includes its log path.
 - To reset this computer, save your work and run `sshore reset` outside managed
   shells. It ends local tasks and clears local application state and caches.
 

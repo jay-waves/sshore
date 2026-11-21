@@ -131,6 +131,10 @@ func normalizeHostOperand(command string, parsed *cliArguments) error {
 
 func normalizeShellSelector(command string, parsed *cliArguments) error {
 	count := len(parsed.operands)
+	if command == "attach" && count == 0 {
+		parsed.local = true
+		return nil
+	}
 	if command == "launch" || command == "spawn" {
 		host, name := parsed.operand(0), ""
 		parsed.local = count == 0
@@ -164,10 +168,13 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 	}
 	ref := parsed.operands[0]
 	if !strings.Contains(ref, "/") && isBareSSHHost(ref) {
+		if isTaskIDPrefix(ref) {
+			parsed.local = true
+			return nil
+		}
 		if command != "attach" {
 			return usage("%s requires HOST:ID, :ID or TYPE/ID", command)
 		}
-		parsed.explicitHost = true
 		return validSSHDestination(ref)
 	}
 	if !strings.Contains(ref, ":") || strings.Contains(ref, "/") {
@@ -186,7 +193,6 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 		}
 	}
 	tail := parsed.operands[1:]
-	parsed.explicitHost = true
 	if host == "origin" {
 		return usage("shell selectors require here: or an SSH host")
 	}

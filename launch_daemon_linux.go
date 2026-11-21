@@ -83,27 +83,6 @@ func (s *remoteShell) serveControl(c net.Conn) error {
 		return s.record.Name, nil
 	}, func(m message) error {
 		switch m.Type {
-		case "inventory":
-			inv := managedInventory(s.tasks, false, false)
-			inv.collectPeers()
-			for _, row := range inv.Shells {
-				if err := p.controlMessage(message{Type: "inventory_row", Inventory: &inventory{Shells: []shellView{row}}}); err != nil {
-					return err
-				}
-			}
-			for _, row := range inv.Resources {
-				if err := p.controlMessage(message{Type: "inventory_row", Inventory: &inventory{Resources: []resourceView{row}}}); err != nil {
-					return err
-				}
-			}
-			for _, row := range inv.Peers {
-				if err := p.controlMessage(message{Type: "inventory_row", Inventory: &inventory{Peers: []peerView{row}}}); err != nil {
-					return err
-				}
-			}
-			if err := p.controlMessage(message{Type: "inventory_done", Inventory: &inventory{Errors: inv.Errors}}); err != nil {
-				return err
-			}
 		case "spawn_child":
 			s.mu.Lock()
 			req := &localDaemonRequest{Record: localShellRecord{Directory: s.record.Directory, Owner: s.process}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Tree: shellTreeFor(remoteTreeIdentity(s.record.UID))}}
@@ -223,13 +202,6 @@ func (s *remoteShell) watchLifetime(ctx context.Context) {
 	defer func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if s.process.PID != 0 {
-			reason := s.exitReason
-			if reason == "" {
-				reason = "daemon stopped (signal or shutdown)"
-			}
-			saveHostedExit(s.record.UID, s.record.Name, reason)
-		}
 		if s.terminal != nil {
 			_ = s.terminal.Close()
 		}

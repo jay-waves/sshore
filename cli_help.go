@@ -123,7 +123,9 @@ Example: sshore exec work 'uname -a'
 
 Measure authenticated SSH connection time and character round-trip latency
 over one SSH session. The remote account must be able to run cat.
---count accepts 1 to 1000 samples (default 10). Echo testing has a 30s budget.
+--count accepts 1 to 1000 total samples (default 30). Each group has up to
+10 samples; groups are 1 second apart. Echo testing has a 30s budget, excluding
+the intervals.
 ` + sshOptions,
 		examples: "Measure latency to an SSH host\n  sshore ping work --count 20\n",
 	},
@@ -172,11 +174,11 @@ The remote sshore release must match exactly.
 	},
 	"attach": {
 		ssh: true, native: true, max: 1, flags: strings.Fields(connectionFlags),
-		help: `Usage: sshore attach [HOST|HOST:ID|:ID] [options] [-- SSH_OPTIONS]
+		help: `Usage: sshore attach [ID|HOST|HOST:ID|:ID] [options] [-- SSH_OPTIONS]
 
-With no target, resume the most recently detached local or remote shell.
-Use HOST to resume on that host. Use HOST:ID or :ID to select a shell
-by its ID or alias from list.
+With no target, resume the most recently detached local shell.
+A bare hexadecimal ID selects a local shell. Use HOST:ID for a remote shell,
+or HOST: to resume on that host (including hexadecimal hostnames such as db:).
 Use here: for the local machine, or .: as shorthand. IDs accept unique
 hexadecimal prefixes.
 
@@ -194,7 +196,7 @@ Use attach to reconnect. Ctrl+B d also detaches.
 	"rename": {
 		ssh: true, min: 2, max: 2, flags: []string{"--server"},
 		help: `Usage: sshore rename HOST:ID NEW [--server PATH] [-- SSH_OPTIONS]
-       sshore rename here:ID NEW
+       sshore rename ID NEW
        sshore rename {mount|forward}/OLD NEW
 
 Set or replace a shell or resource alias without restarting it.
@@ -204,14 +206,13 @@ Remote rename requires matching releases and never installs software.
 ` + sshOptions,
 	},
 	"list": {
-		ssh: true, max: 1, flags: []string{"--server", "--json"},
-		help: `Usage: sshore list [HOST] [options] [-- SSH_OPTIONS]
+		max: 1, flags: []string{"--json"},
+		help: `Usage: sshore list [HOST:] [--json]
 
-Without an endpoint, show local tasks, shells hosted by this Unix account, and saved
-remote observations without SSH.
-Use HOST: to query a remote account live. The remote release must match.
+Without an endpoint, show this machine's active tasks and incoming resources.
+Use HOST: for shells this client has used and local resources targeting that host.
+The list shows the last observed state and can be read offline.
 Use here: or .: to show only local shells. Plain SSH hosts still work.
-CHECKED shows when state was last confirmed, not whether it is still live.
 DETAIL summarizes directories, mappings or errors; terminal output is shortened
 to fit the available width. Redirected output preserves full details.
 ID shows the first six UID characters followed by an optional (alias).
@@ -221,31 +222,30 @@ Use aliases or short IDs for attach, rename and kill.
 A matching short ID takes precedence over a name.
 
 Options:
-  --json           Emit full diagnostics and recent history as JSON
-  --server PATH    Select the remote executable
+  --json           Emit the same task list as JSON
 
 Examples:
   sshore list
   sshore list work:
-` + sshOptions,
+`,
 	},
 	"pstree": {
 		help: `Usage: sshore pstree
 
 Show local managed tasks and live local resource transports as TYPE/ID (alias).
 The tree containing *current comes first; other nodes sort by newest check.
-Branches show local spawn ownership. Cached remote shells and stale peer mirrors
-are excluded. <- HOST on a shell identifies its current remote attachment source.
+Branches show local spawn ownership. <- HOST on a shell identifies its
+current remote attachment source.
 Resource arrows run from provider to consumer: importing a mount or remote service
 shows <- HOST; exporting a mount or local service shows -> HOST.
 ? marks an unconfirmed local entry or an unknown legacy direction.
-Incoming resources are read-only here. Use list for states and observation times.
+Incoming resources are read-only here. Use list for current task states.
 No SSH is started by this command.
 `,
 	},
 	"kill": {
 		ssh: true, max: 1, flags: []string{"--server", "--all"},
-		help: `Usage: sshore kill :ID
+		help: `Usage: sshore kill ID
        sshore kill {mount|forward}/NAME
        sshore kill HOST:ID [--server PATH] [-- SSH_OPTIONS]
        sshore kill [HOST:] --all [--server PATH] [-- SSH_OPTIONS]
@@ -256,7 +256,7 @@ instance across renames; an unavailable instance cannot select its replacement.
 
 Effects:
   Shell     Kills the shell and its identified processes without confirmation.
-            Unsaved work may be lost. Confirmed ended history is only cleared.
+            Unsaved work may be lost.
   Mount     Unmounts first; a busy mount stays active for retry.
   Forward   Closes the forward and its active connections.
 

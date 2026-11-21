@@ -266,7 +266,7 @@ func remoteCommand(o options) string {
 	data := remoteStartup{Server: o.server}
 	switch {
 	case o.list:
-		req = remoteServiceRequest{Operation: "inventory", Diagnostics: o.listJSON}
+		req = remoteServiceRequest{Operation: "inventory"}
 		data.Mismatch = remoteStartupError("sshore: inventory requires matching remote release; no software changed")
 	case o.command == "daemon-admin":
 		req.Operation = "daemon-admin"

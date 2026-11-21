@@ -17,6 +17,9 @@ func serveRemote(req remoteServiceRequest) (result error) {
 	if !fileService && mode != "bridge" && mode != "new" && mode != "attach" && mode != "spawn" {
 		return fmt.Errorf("invalid remote service")
 	}
+	if mode == "attach" && name == "" {
+		name = req.Instance
+	}
 	if name != "" {
 		if err := validSession(name); err != nil {
 			return err
@@ -57,7 +60,7 @@ func serveRemote(req remoteServiceRequest) (result error) {
 			}
 			return serveRemoteFiles(req.Operation)
 		}
-		return prepareHostedShell(name, mode, target, lock)
+		return prepareHostedShell(name, mode, req.Instance, target, lock)
 	}
 }
 

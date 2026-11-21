@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/jay-waves/sshore/internal/proc"
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 func TestShellTreeAttachmentSnapshots(t *testing.T) {
@@ -83,7 +85,6 @@ func TestShellTreeSnapshotSources(t *testing.T) {
 				t.Fatal(err)
 			}
 			for i, node := range []shellTreeNode{tc.first, tc.second} {
-				node.Current = true
 				path := filepath.Join(dir, fmt.Sprintf("%d.json", i))
 				if err := writeStateJSON(path, []shellTreeNode{node}); err != nil {
 					t.Fatal(err)
@@ -106,13 +107,13 @@ func TestShellTreeRendering(t *testing.T) {
 	nodes := []shellTreeNode{
 		{Identity: "p", Host: "alpha", Name: "root"},
 		{Identity: "b", Owner: "p", Host: "beta", Name: "one", Cached: true},
-		{Identity: "c", Owner: "p", Host: "gamma", Name: "two", Current: true},
+		{Identity: "c", Owner: "p", Host: "gamma", Name: "two"},
 	}
 	for _, color := range []bool{false, true} {
 		var out bytes.Buffer
-		writeShellTree(&out, nodes, "", color)
+		writeShellTree(&out, normalizeTaskTree(nodes, ""), "c", color)
 		text := out.String()
-		if !strings.Contains(text, "   ├─ ") || !strings.Contains(text, "   └─ ") || !strings.Contains(text, "*current") || strings.Contains(text, "CHECKED") {
+		if !strings.Contains(text, "├── ") || !strings.Contains(text, "╰── ") || !strings.Contains(text, "*current") || strings.Contains(text, "CHECKED") {
 			t.Fatal(text)
 		}
 		if strings.Contains(text, "HOST  ") || strings.Contains(text, "@") {
@@ -126,9 +127,23 @@ func TestShellTreeRendering(t *testing.T) {
 	nodes[0].ShortID = "bad\x1b[2J"
 	nodes[0].Lifetime = "bad\x1b[2J"
 	var out bytes.Buffer
-	writeShellTree(&out, nodes, "", false)
+	writeShellTree(&out, normalizeTaskTree(nodes, ""), "", false)
 	if strings.Contains(out.String(), "\x1b") {
 		t.Fatal("terminal control injection")
+	}
+}
+
+func TestShellTreeConsoleStyles(t *testing.T) {
+	nodes := []shellTreeNode{{Identity: "root", Name: "work"}, {Identity: "child", Owner: "root", Name: "build"}}
+	var plain, styled, console bytes.Buffer
+	writeShellTree(&plain, normalizeTaskTree(nodes, ""), "child", false)
+	writeShellTree(&styled, normalizeTaskTree(nodes, ""), "child", true)
+	if ansi.Strip(styled.String()) != plain.String() {
+		t.Fatalf("styles changed tree content: %q", styled.String())
+	}
+	termui.WriteConsoleBody(&console, styled.String())
+	if strings.Contains(console.String(), "�") {
+		t.Fatalf("console damaged tree styles: %q", console.String())
 	}
 }
 
@@ -185,8 +200,8 @@ func TestShellTreeInventoryRefresh(t *testing.T) {
 		Host:      "server",
 		ShellTree: []shellTreeNode{{Identity: "remote:instance", Owner: "owner", Parent: "other", State: "attached", Cached: true}},
 		Shells:    []shellView{{Instance: "instance", Name: "job", State: "detached", Temporary: true}},
-	}, "remote:instance")
-	if len(nodes) != 1 || nodes[0].State != "detached" || nodes[0].Cached || !nodes[0].Current || nodes[0].Owner != "owner" || nodes[0].Parent != "" || nodes[0].Lifetime != "heartbeat" {
+	})
+	if len(nodes) != 1 || nodes[0].State != "detached" || nodes[0].Cached || nodes[0].Owner != "owner" || nodes[0].Parent != "" || nodes[0].Lifetime != "heartbeat" {
 		t.Fatalf("inventory refresh: %+v", nodes)
 	}
 }
@@ -194,11 +209,11 @@ func TestShellTreeInventoryRefresh(t *testing.T) {
 func TestShellTreePersistentAttachmentIsNotOwnership(t *testing.T) {
 	activityFixture(t)
 	var out bytes.Buffer
-	writeShellTree(&out, []shellTreeNode{
+	writeShellTree(&out, normalizeTaskTree([]shellTreeNode{
 		{Identity: "origin", Host: "local", Name: "work", Lifetime: "persistent"},
 		{Identity: "independent", Parent: "origin", Host: "remote", Name: "job", Lifetime: "persistent"},
 		{Identity: "temporary", Owner: "origin", Host: "remote", Name: "temp", State: "detached", Lifetime: "heartbeat"},
-	}, "", false)
+	}, ""), "", false)
 	text := out.String()
 	if !strings.Contains(text, "(temp)") || !strings.Contains(text, "(job)") || strings.Contains(text, "attach via") {
 		t.Fatal(text)
@@ -212,12 +227,12 @@ func TestShellTreeCompactStates(t *testing.T) {
 			nodes := []shellTreeNode{
 				{Identity: "root", Host: "workstation", Name: "work", Lifetime: "persistent", State: "attached", Cached: cached},
 				{Identity: "api", Owner: "root", Host: "dev", Name: "api", Lifetime: "heartbeat", State: "attached", Cached: cached},
-				{Identity: "debug", Owner: "api", Host: "dev", Name: "debug", Lifetime: "heartbeat", State: "attached", Current: true, Cached: cached},
+				{Identity: "debug", Owner: "api", Host: "dev", Name: "debug", Lifetime: "heartbeat", State: "attached", Cached: cached},
 				{Identity: "test", Owner: "root", Host: "dev", Name: "test", Lifetime: "heartbeat", State: "detached", Cached: true},
 				{Identity: "unknown", Owner: "root", Host: "workstation", Name: "unknown-state", Cached: cached},
 			}
 			var out bytes.Buffer
-			writeShellTree(&out, nodes, "", false)
+			writeShellTree(&out, normalizeTaskTree(nodes, ""), "debug", false)
 			output := out.String()
 			if strings.Contains(output, "attached") || strings.Contains(output, "detached") || strings.Contains(output, "CHECKED") || strings.Contains(output, "@dev") {
 				t.Fatal(output)
@@ -234,10 +249,10 @@ func TestShellTreeCompactStates(t *testing.T) {
 func TestShellTreeCyclesRemainVisible(t *testing.T) {
 	activityFixture(t)
 	var out bytes.Buffer
-	writeShellTree(&out, []shellTreeNode{
+	writeShellTree(&out, normalizeTaskTree([]shellTreeNode{
 		{Identity: "a", Owner: "b", Host: "alpha", Name: "cycle-a", State: "detached"},
 		{Identity: "b", Owner: "a", Host: "beta", Name: "cycle-b", State: "attached"},
-	}, "", false)
+	}, ""), "", false)
 	for _, name := range []string{"cycle-a", "cycle-b"} {
 		if strings.Count(out.String(), name) != 1 {
 			t.Fatal(out.String())
@@ -250,9 +265,9 @@ func TestShellTreeOmitsEndedOwners(t *testing.T) {
 	nodes := localShellTreeNodes(inventory{
 		ShellTree:   []shellTreeNode{{Identity: "gone", Name: "old", State: "exited"}, {Identity: "child", Owner: "gone"}},
 		LocalShells: []localShellView{{identity: "child", Name: "live", State: "detached", Temporary: true}},
-	}, "")
+	})
 	var out bytes.Buffer
-	writeShellTree(&out, nodes, "", false)
+	writeShellTree(&out, normalizeTaskTree(nodes, ""), "", false)
 	if strings.Contains(out.String(), "old") || !strings.Contains(out.String(), "(live)") || strings.Contains(out.String(), "owner ended") {
 		t.Fatal(out.String())
 	}
@@ -260,20 +275,20 @@ func TestShellTreeOmitsEndedOwners(t *testing.T) {
 
 func TestTaskTreeIndependentResources(t *testing.T) {
 	activityFixture(t)
-	root := shellTreeNode{Identity: "root", ShortID: "a0123b", Name: "work", Host: "laptop", Current: true}
+	root := shellTreeNode{Identity: "root", ShortID: "a0123b", Name: "work", Host: "laptop"}
 	nodes := inventoryResourceTrees([]shellTreeNode{root}, inventory{Resources: []resourceView{{Identity: "mount-id", ShortID: "b0123c", ID: "mount/b0123c", Kind: "mount"}, {Identity: "forward-id", ShortID: "c0123d", ID: "forward/db", Kind: "forward"}}})
 	// Force one display host so sibling placement is asserted independently of the fixture computer's name.
 	for i := range nodes {
 		nodes[i].Host, nodes[i].MachineID = "laptop", ""
 	}
 	var out bytes.Buffer
-	writeShellTree(&out, nodes, "", false)
+	writeShellTree(&out, normalizeTaskTree(nodes, ""), "root", false)
 	for _, text := range []string{"launch/a0123b (work)  *current", "mount/b0123c", "\n"} {
 		if !strings.Contains(out.String(), text) {
 			t.Fatal(out.String())
 		}
 	}
-	if strings.Contains(out.String(), "   └─ mount/") || strings.Contains(out.String(), "CHECKED") {
+	if strings.Contains(out.String(), "╰── mount/") || strings.Contains(out.String(), "CHECKED") {
 		t.Fatal(out.String())
 	}
 	if !strings.Contains(out.String(), "forward/c0123d (db)") {
@@ -284,19 +299,19 @@ func TestTaskTreeIndependentResources(t *testing.T) {
 func TestLocalTreeScopeAndSources(t *testing.T) {
 	activityFixture(t)
 	machine, foreign := strings.Repeat("a", 32), strings.Repeat("b", 32)
-	inv := inventory{MachineID: machine, Hostname: "here", LocalShells: []localShellView{{identity: "local", Name: "local", State: "attached"}}, Shells: []shellView{{Instance: "hosted", State: "attached"}, {Instance: "cached", State: "detached", Historical: true}}}
+	inv := inventory{MachineID: machine, Hostname: "here", LocalShells: []localShellView{{identity: "local", Name: "local", State: "attached"}}, Shells: []shellView{{Instance: "hosted", State: "attached"}}}
 	inv.ShellTree = []shellTreeNode{
 		{Identity: "foreign", Host: "there", MachineID: foreign},
 		{Identity: "local", Name: "local", SourceHost: "here", SourceMachineID: machine, State: "attached"},
 		{Identity: "remote:hosted", Name: "hosted", Owner: "foreign", Parent: "foreign", SourceHost: "there", SourceMachineID: foreign, State: "attached"},
 		{Identity: "remote:cached", Name: "cached"},
 	}
-	got := localShellTreeNodes(inv, "")
+	got := localShellTreeNodes(inv)
 	if len(got) != 2 || got[0].Remote != "" || got[1].Remote != "there" || got[1].Direction != "<-" {
 		t.Fatalf("scope/source: %+v", got)
 	}
 	inv.Shells[0].State = "detached"
-	if got := localShellTreeNodes(inv, ""); got[1].Remote != "" {
+	if got := localShellTreeNodes(inv); got[1].Remote != "" {
 		t.Fatalf("stale attachment source: %+v", got)
 	}
 }
@@ -307,13 +322,13 @@ func TestTaskTreeStableIDOrder(t *testing.T) {
 	nodes := []shellTreeNode{
 		{Identity: "new", ShortID: "b0123c", Kind: "mount", Name: "data", Remote: "server", Direction: "<-", CheckedAt: now},
 		{Identity: "parent", ShortID: "a0123b", Name: "work", CheckedAt: now.Add(-time.Hour)},
-		{Identity: "current", ShortID: "d0123e", Kind: "spawn", Name: "build", Owner: "parent", Current: true, Remote: "laptop", Direction: "<-", CheckedAt: now.Add(-time.Hour)},
+		{Identity: "current", ShortID: "d0123e", Kind: "spawn", Name: "build", Owner: "parent", Remote: "laptop", Direction: "<-", CheckedAt: now.Add(-time.Hour)},
 		{Identity: "export", ShortID: "f0123a", Kind: "mount", Name: "export", Remote: "laptop", Direction: "->", CheckedAt: now.Add(-30 * time.Second)},
 		{Identity: "old", ShortID: "c0123d", Kind: "forward", Name: "web", Remote: "server", Direction: "->", CheckedAt: now.Add(-time.Minute)},
 		{Identity: "unknown", ShortID: "e0123f", Name: "e0123f", State: "unavailable"},
 	}
 	var out bytes.Buffer
-	writeShellTree(&out, nodes, "", false)
+	writeShellTree(&out, normalizeTaskTree(nodes, ""), "current", false)
 	text := out.String()
 	positions := []int{strings.Index(text, "(work)"), strings.Index(text, "*current"), strings.Index(text, "(data)"), strings.Index(text, "(web)"), strings.Index(text, "launch/e0123f ?"), strings.Index(text, "(export)")}
 	for i, p := range positions {
@@ -339,7 +354,7 @@ func TestTaskTreeResourceDirections(t *testing.T) {
 		{Identity: "in-reverse", ShortID: "666666", ID: "forward/incoming", Direction: "->", Manager: "laptop"},
 	}}
 	var out bytes.Buffer
-	writeShellTree(&out, inventoryResourceTrees(nil, inv), inv.MachineID, false)
+	writeShellTree(&out, normalizeTaskTree(inventoryResourceTrees(nil, inv), inv.MachineID), "", false)
 	for _, line := range []string{"mount/111111 (data)  <- server", "forward/222222 (db)  <- server", "forward/333333 (web)  -> server", "mount/444444 (export)  -> laptop", "forward/555555 (service)  -> laptop", "forward/666666 (incoming)  <- laptop"} {
 		if !strings.Contains(out.String(), line) {
 			t.Fatal(out.String())
@@ -381,7 +396,7 @@ func TestExternalSpawnParentDisplay(t *testing.T) {
 		t.Fatalf("bad external ownership: %+v", nodes)
 	}
 	var out bytes.Buffer
-	writeShellTree(&out, input, machine, false)
+	writeShellTree(&out, normalizeTaskTree(input, machine), "", false)
 	if !strings.Contains(out.String(), fmt.Sprintf("(pid %d)", os.Getpid())) || strings.Contains(out.String(), "external ") || strings.Contains(out.String(), "stale-name") || strings.Contains(out.String(), " ?") {
 		t.Fatal(out.String())
 	}

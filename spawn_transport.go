@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -302,7 +304,7 @@ func withRemoteSpawn(c net.Conn, req localDaemonRequest, use func(taskEndpoint, 
 		}
 		defer func() {
 			stop()
-			if err := confirmKilledShell(req.Spawn.Host, "", ready.Instance); err != nil {
+			if err := rememberShellExit(options{host: req.Spawn.Host, instance: ready.Instance}); err != nil {
 				fmt.Fprintf(os.Stderr, "sshore: record spawn lifetime end: %v\n", err)
 			}
 		}()
@@ -363,6 +365,10 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 		return err
 	}
 	ready.LocalRequest = nil
+	since := time.Now()
+	if shells, err := connectedHostedShells(ctx, record, pipes.DialTCP); err == nil {
+		_ = reconcileParticipatingShells(f.Host, shells, since)
+	}
 	open := func() (net.Conn, error) {
 		authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
@@ -373,6 +379,41 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 		return upgradeDaemonConn(authCtx, channel, record, "/tasks/"+record.UID+"/open", nil)
 	}
 	return use(open, ready)
+}
+
+// Query only registered hosted shells using a channel on the authenticated SSH
+// connection. The attachment control stream is independent of the query.
+func connectedHostedShells(parent context.Context, record localShellRecord, dial func(context.Context, string) (net.Conn, error)) ([]shellView, error) {
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+	defer cancel()
+	req, err := daemonRequest(ctx, record, "/tasks/snapshot", taskInventoryRequest{Hosted: true, Detail: "health"})
+	if err != nil {
+		return nil, err
+	}
+	transport := &http.Transport{
+		DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, _, address string) (net.Conn, error) {
+			return dial(ctx, address)
+		},
+	}
+	client := &http.Client{Transport: transport, CheckRedirect: daemonHTTPClient.CheckRedirect}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, daemonResponseError(resp)
+	}
+	var snapshot struct{ Shells json.RawMessage }
+	if err := json.NewDecoder(io.LimitReader(resp.Body, daemonBodyLimit)).Decode(&snapshot); err != nil {
+		return nil, err
+	}
+	var shells []shellView
+	if err := json.Unmarshal(snapshot.Shells, &shells); err != nil {
+		return nil, err
+	}
+	return shells, nil
 }
 
 // Relay the selection exchange until the remote setup process hands over a task.

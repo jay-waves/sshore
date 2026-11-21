@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,12 +13,12 @@ import (
 // History is persisted by the daemon; running clients never coordinate through
 // these files. Each domain is loaded once and thereafter served from memory.
 type daemonMetadata struct {
-	attachments         recentHistory[recentAttachment]
-	connections         recentHistory[recentConnection]
-	treeMu, shellMu     sync.Mutex
-	treeRoot, shellRoot string
-	trees               map[string][]shellTreeNode
-	snapshots           map[string]shellSnapshot
+	attachments     recentHistory[recentAttachment]
+	connections     recentHistory[recentConnection]
+	participation   recentHistory[participatingShell]
+	treeMu, shellMu sync.Mutex
+	treeRoot        string
+	trees           map[string][]shellTreeNode
 }
 
 // The two histories retain independent orderings and share the same file lifecycle.
@@ -32,6 +31,10 @@ type recentHistory[T any] struct {
 }
 
 func (h *recentHistory[T]) load(file string, maxBytes int, validate func(T) error) error {
+	return h.loadEntries(file, maxBytes, recentHistoryLimit, validate)
+}
+
+func (h *recentHistory[T]) loadEntries(file string, maxBytes, maxEntries int, validate func(T) error) error {
 	root, err := statePath("")
 	if err != nil {
 		return err
@@ -47,7 +50,7 @@ func (h *recentHistory[T]) load(file string, maxBytes int, validate func(T) erro
 	if err := readStateJSON(path, maxBytes, &rows); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if len(rows) > recentHistoryLimit {
+	if len(rows) > maxEntries {
 		return fmt.Errorf("too many entries in %s", file)
 	}
 	for _, row := range rows {
@@ -86,23 +89,22 @@ func (h *recentHistory[T]) replace(rows []T) error {
 
 type metadataRequest struct {
 	OwnerProcess                             *spawnProcessView
-	Local                                    bool `json:",omitempty"`
+	Local, Direct                            bool `json:",omitempty"`
 	Action, Key, Host, Name, State, Instance string
 	Tree                                     []shellTreeNode
 	Lifetime                                 []string
-	Snapshot                                 *shellSnapshot
-	Inventory                                *inventory
 	Attachment                               *recentAttachment
 	Connection                               *recentConnection
+	Participant                              *participatingShell
+	Participation                            *participationRefresh
 }
 type metadataReply struct {
-	Attachments []recentAttachment
-	Connection  *recentConnection `json:",omitempty"`
-	Connections []recentConnection
-	Tree        []shellTreeNode
-	Snapshots   []shellSnapshot
-	Found       bool
-	Error       string
+	Attachments  []recentAttachment
+	Connection   *recentConnection `json:",omitempty"`
+	Connections  []recentConnection
+	Participants []participatingShell
+	Tree         []shellTreeNode
+	Error        string
 }
 
 func metadataRPC(r metadataRequest) (metadataReply, error) {
@@ -121,37 +123,27 @@ func metadataRPC(r metadataRequest) (metadataReply, error) {
 func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply) {
 	s := &a.metadata
 	tree := strings.HasPrefix(r.Action, "tree_")
-	shell := strings.HasPrefix(r.Action, "shell_") || r.Action == "connection_rename" ||
-		r.Action == "connection_select" && r.Host != "" && r.Name != ""
-	if !tree {
-		s.shellMu.Lock()
-		defer s.shellMu.Unlock()
-	}
-	if shell {
-		if err := s.loadShells(); err != nil {
-			reply.Error = err.Error()
-			return
-		}
-	}
-	// Reconcile shell history and tree evidence under the same locks. Tree
-	// operations never take shellMu, so the lock order is always shell then tree.
-	if tree || shell && (r.Action != "shell_save" || r.Snapshot != nil && r.Snapshot.State == "exited") {
+	if tree {
 		s.treeMu.Lock()
 		defer s.treeMu.Unlock()
-		// Shell history remains readable when tree evidence is unavailable.
-		if err := s.loadTrees(); err != nil && tree {
+		if err := s.loadTrees(); err != nil {
 			reply.Error = err.Error()
 			return
 		}
+	} else {
+		s.shellMu.Lock()
+		defer s.shellMu.Unlock()
 	}
 	var err error
 	switch r.Action {
 	case "attach_get":
-		reply.Attachments, err = a.detachedAttachmentCandidates(r.Local, r.Host)
+		reply.Attachments, err = s.detachedAttachmentCandidates(r.Local, r.Host)
 	case "attach_detach":
 		if r.Attachment != nil {
 			err = s.rememberDetachedAttachmentLocal(*r.Attachment)
 		}
+	case "attach_remove":
+		err = s.removeRecentDetachLocal(r.Key)
 	case "connection_get":
 		var records []recentConnection
 		records, err = s.readRecentConnectionsLocal()
@@ -159,13 +151,15 @@ func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply)
 			reply.Connections = append(reply.Connections, *record.clone())
 		}
 	case "connection_select":
-		reply.Connection, err = a.selectRecentConnection(r.Host, r.Name, r.Instance)
+		reply.Connection, err = s.selectRecentConnection(r.Host, r.Instance, r.Direct)
 	case "connection_save":
 		if r.Connection != nil {
 			err = s.rememberConnectionLocal(*r.Connection)
 		}
-	case "connection_rename":
-		err = a.rememberShellRenameLocal(r.Host, r.Key, r.Name, r.Instance)
+	case "participation_get":
+		reply.Participants, err = s.readParticipatingShellsLocal(r.Host)
+	case "participation_observe", "participation_state", "participation_forget", "participation_rename", "participation_refresh":
+		err = s.updateParticipation(r)
 	case "tree_get":
 		reply.Tree = cloneShellTree(s.treeChain(r.Key))
 	case "tree_list":
@@ -176,31 +170,8 @@ func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply)
 		s.rememberShellTreeLocal(r.Tree)
 	case "tree_rename":
 		s.renameShellTreeLocal(r.Key, r.Name)
-	case "shell_get":
-		reply.Snapshots = make([]shellSnapshot, 0, len(s.snapshots))
-		err = a.walkShellSnapshotsLocked(func(snapshot shellSnapshot) {
-			snapshot.Connection = snapshot.Connection.clone()
-			reply.Snapshots = append(reply.Snapshots, snapshot)
-		})
-		if err != nil {
-			reply.Snapshots = nil
-		}
-	case "shell_save":
-		if r.Snapshot != nil {
-			snapshot := *r.Snapshot
-			snapshot.Connection = snapshot.Connection.clone()
-			err = a.saveShellSnapshotLocked(snapshot)
-		}
-	case "shell_cache":
-		if r.Inventory == nil {
-			err = fmt.Errorf("inventory missing")
-			break
-		}
-		err = a.cacheRemoteShellsLocked(r.Host, *r.Inventory, r.Connection.clone())
-	case "shell_forget":
-		reply.Found, err = a.forgetEndedShellLocal(r.Host, r.Name, r.Instance)
-	case "shell_cancel":
-		err = a.confirmKilledShellLocal(r.Host, r.Name, r.Instance)
+	case "tree_remote_exit":
+		err = s.recordRemoteShellTreeExitLocal(r.Host, r.Name, r.Instance)
 	default:
 		err = fmt.Errorf("invalid metadata operation")
 	}
@@ -242,48 +213,6 @@ func (s *daemonMetadata) loadTrees() error {
 		trees[entry.Name()] = chain
 	}
 	s.trees, s.treeRoot = trees, root
-	return nil
-}
-func (s *daemonMetadata) loadShells() error {
-	stateRoot, err := statePath("")
-	if err != nil {
-		return err
-	}
-	root := filepath.Join(stateRoot, "shells")
-	if s.snapshots != nil && s.shellRoot == root {
-		return nil
-	}
-	if _, err = prepareStateDir(stateRoot, "shells"); err != nil {
-		return err
-	}
-	records := make(map[string]shellSnapshot)
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		path := filepath.Join(root, entry.Name())
-		var snapshot shellSnapshot
-		if err = readStateJSON(path, maxShellSnapshot, &snapshot); err != nil {
-			return err
-		}
-		if err = snapshot.validateRoute(); err != nil {
-			return err
-		}
-		expected, e := snapshot.cachePath(root)
-		if e != nil || expected != path {
-			return fmt.Errorf("invalid shell history")
-		}
-		snapshot.Active = false
-		if !endedShellState(snapshot.State) {
-			snapshot.Unconfirmed = true
-		}
-		records[path] = snapshot
-	}
-	s.snapshots, s.shellRoot = records, root
 	return nil
 }
 
@@ -408,41 +337,23 @@ func (m *daemonMetadata) rememberConnectionLocal(record recentConnection) error 
 		return err
 	}
 	return m.connections.promote(*record.clone(), func(previous recentConnection) bool {
-		return previous.Host == record.Host
+		return sameRecentEndpoint(previous, record)
 	})
 }
 
-// rememberShellRename changes cached labels only after a successful remote rename.
-// It does not reorder recent hosts or treat rename as an attachment confirmation.
-func rememberShellRename(host, old, name, instance string) error {
-	_, err := metadataRPC(metadataRequest{Action: "connection_rename", Host: host, Key: old, Name: name, Instance: instance})
-	return err
-}
-func (a *daemonActivity) rememberShellRenameLocal(host, old, name, instance string) error {
-	if validSSHDestination(host) != nil || validSession(old) != nil || validSession(name) != nil {
-		return fmt.Errorf("invalid shell rename identity")
+// Sibling routes can have different capabilities into the same target account.
+func sameRecentEndpoint(a, b recentConnection) bool {
+	if a.Host != b.Host || (a.Parent == nil) != (b.Parent == nil) {
+		return false
 	}
-	if old == name {
-		return nil
+	if a.Parent == nil {
+		return true
 	}
-	snapshotErr := a.renameShellSnapshotLocked(host, old, name, instance)
-	m := &a.metadata
-	records, err := m.readRecentConnectionsLocal()
-	if err != nil {
-		return errors.Join(snapshotErr, err)
-	}
-	changed := false
-	for i := range records {
-		if records[i].Host == host && records[i].Session == old && (instance == "" || records[i].Instance == instance) {
-			if !changed {
-				records = slices.Clone(records)
-			}
-			records[i].Session = name
-			changed = true
+	for p, q := a.Parent, b.Parent; p != nil && q != nil; p, q = p.Parent, q.Parent {
+		if p.Host != q.Host || p.Instance != q.Instance || p.Server != q.Server ||
+			p.Directory != q.Directory || !slices.Equal(p.SSH, q.SSH) || (p.Parent == nil) != (q.Parent == nil) {
+			return false
 		}
 	}
-	if changed {
-		err = m.connections.replace(records)
-	}
-	return errors.Join(snapshotErr, err)
+	return a.Server == b.Server && a.Directory == b.Directory && slices.Equal(a.SSH, b.SSH)
 }

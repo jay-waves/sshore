@@ -74,7 +74,11 @@ func removeRemoteTask(key string) error {
 	return err
 }
 func collectPeerViews() ([]peerView, error) {
-	reply, err := activityRPC(activityRequest{Kind: "list"})
+	return peerViews("list")
+}
+
+func peerViews(kind string) ([]peerView, error) {
+	reply, err := activityRPC(activityRequest{Kind: kind})
 	if err != nil {
 		return nil, err
 	}
@@ -103,18 +107,6 @@ func beginIncomingTask(t peerRecord) func() {
 		return func() {}
 	}
 	return stop
-}
-
-func collectIncomingTasks() ([]peerView, error) {
-	reply, err := activityRPC(activityRequest{Kind: "incoming"})
-	if err != nil {
-		return nil, err
-	}
-	result := make([]peerView, 0, len(reply.Peers))
-	for _, entry := range reply.Peers {
-		result = append(result, entry.Record.view())
-	}
-	return result, nil
 }
 
 func watchPeerRecords(input io.Reader, kind string, report func(error)) error {

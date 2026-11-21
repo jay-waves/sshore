@@ -2,8 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -165,4 +171,48 @@ func spawnNetworkMuxPair(t *testing.T) (*smux.Session, *smux.Session) {
 	}
 	t.Cleanup(func() { a.Close(); b.Close() })
 	return a, b
+}
+
+func TestConnectedHostedShellsUsesAuthenticatedChannel(t *testing.T) {
+	id := strings.Repeat("a", 32)
+	token := strings.Repeat("b", 64)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request taskInventoryRequest
+		if r.URL.Path != "/tasks/snapshot" || r.Header.Get("Authorization") != "Bearer "+token ||
+			r.Header.Get("Sshore-Version") != version || json.NewDecoder(r.Body).Decode(&request) != nil ||
+			request != (taskInventoryRequest{Hosted: true, Detail: "health"}) {
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(taskInventorySnapshot{Native: map[string]localShellView{}, Shells: []shellView{{Instance: id}}})
+	}))
+	defer server.Close()
+	dialed := 0
+	dial := func(ctx context.Context, address string) (net.Conn, error) {
+		dialed++
+		return (&net.Dialer{}).DialContext(ctx, "tcp", address)
+	}
+	rows, err := connectedHostedShells(context.Background(), localShellRecord{Address: server.Listener.Addr().String(), Token: token}, dial)
+	if err != nil || dialed != 1 || len(rows) != 1 || rows[0].Instance != id {
+		t.Fatalf("hosted task snapshot: %+v, %d channels, %v", rows, dialed, err)
+	}
+}
+
+func TestRemoteSpawnExitRemovesParticipation(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	activityFixture(t)
+	row := participatingShell{Host: "work", Instance: strings.Repeat("a", 32), Name: "job",
+		State: "detached", Lifetime: "heartbeat", PID: 42, Temporary: true, Attachment: strings.Repeat("b", 32)}
+	if err := observeParticipatingShell(row); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := readParticipatingShells(row.Host); err != nil || len(rows) != 1 {
+		t.Fatalf("missing detached spawn: %+v %v", rows, err)
+	}
+	if err := rememberShellExit(options{host: row.Host, instance: row.Instance}); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := readParticipatingShells(row.Host); err != nil || len(rows) != 0 {
+		t.Fatalf("spawn survived owner exit: %+v %v", rows, err)
+	}
 }

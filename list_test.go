@@ -3,11 +3,37 @@ package main
 import (
 	"bytes"
 	"github.com/chzyer/readline"
+	"github.com/jay-waves/sshore/internal/termui"
+	"io"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 )
+
+func TestConnectedListUsesLocalHostScope(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	registerTestResource(t, tasks, "forward", "web", strings.Repeat("a", 32))
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = write
+	err = showConnectedTasks(options{host: "work"})
+	os.Stderr = old
+	write.Close()
+	output, readErr := io.ReadAll(read)
+	read.Close()
+	if err != nil || readErr != nil {
+		t.Fatalf("list: %v, read: %v", err, readErr)
+	}
+	if text := string(output); !strings.Contains(text, "web") {
+		t.Fatalf("unexpected list: %s", text)
+	}
+}
 
 func TestExcludeLocalResourcePeers(t *testing.T) {
 	activityFixture(t)
@@ -46,7 +72,7 @@ func TestTaskInventoryCurrentShell(t *testing.T) {
 				{identity: "local:current", Name: "work", State: "attached", Temporary: true},
 				{identity: "local:other", Name: "other", State: "attached"},
 				{identity: "local:replaced", Name: "old", State: "unavailable"},
-			}, Shells: []shellView{{Host: "remote", Name: "work", State: "attached", Historical: true}}}, current, false)
+			}, Shells: []shellView{{Host: "remote", Name: "work", State: "attached"}}}, current, false)
 			want := 0
 			if current == "local:current" {
 				want = 1
@@ -75,7 +101,7 @@ func TestTaskInventoryCompactDetails(t *testing.T) {
 			{ID: "mount/data", Detail: "/mnt/data -> /srv/data"},
 			{ID: "forward/db", Detail: "localhost:5432 -> server:5432"},
 			{ID: "forward/failed", Detail: "mapping", resourceStatus: resourceStatus{LastError: "connection refused"}},
-			{ID: "review/copy", Detail: strings.Repeat("数据", 50) + "\x1b\nend"},
+			{ID: "forward/copy", Detail: strings.Repeat("数据", 50) + "\x1b\nend"},
 		},
 	}
 	writeTaskInventory(&out, inv)
@@ -204,89 +230,19 @@ func TestInventoryHostGroups(t *testing.T) {
 			t.Fatal(line)
 		}
 	}
-	if !strings.HasPrefix(out.String(), "HOST  local · checked now\n") {
+	if !strings.HasPrefix(out.String(), "HOST  local\n") {
 		t.Fatal("local group must come first")
 	}
 }
 
-func TestTaskInventoryEndedHistory(t *testing.T) {
-	activityFixture(t)
-	now := time.Now()
-	inv := inventory{Shells: []shellView{
-		{Host: "work", Name: "gone", State: "detached", Historical: true, Unconfirmed: true, ConfirmedAt: now},
-		{Host: "work", Name: "finished", State: "exited", Historical: true},
-		{Host: "work", Name: "uncertain", State: "attached", Historical: true, ConfirmedAt: now},
-		{Host: "work", Name: "lost-owner", State: "exited", Historical: true, Temporary: true, ConfirmedAt: now},
-		{Host: "work", Name: "active", State: "attached", Historical: true, Active: true, Temporary: true, ConfirmedAt: now},
-		{Host: "work", Name: "detached", State: "detached", Historical: true, Temporary: true, ConfirmedAt: now},
-		{Host: "work", Name: "live", State: "attached", Temporary: true},
-	}}
-	var out bytes.Buffer
-	writeTaskInventory(&out, inv)
-	for _, name := range []string{"finished", "lost-owner"} {
-		if strings.Contains(out.String(), "("+name+")") {
-			t.Fatal(out.String())
-		}
-	}
-	for _, name := range []string{"gone", "uncertain", "active", "detached", "live"} {
-		if !strings.Contains(out.String(), "("+name+")") {
-			t.Fatal(out.String())
-		}
-	}
-	if strings.Contains(out.String(), "attached (unconfirmed)") || !strings.Contains(out.String(), "unconfirmed") {
-		t.Fatal(out.String())
-	}
-}
-
-func TestTaskInventoryCheckedAndColor(t *testing.T) {
-	activityFixture(t)
-	now := time.Now()
-	inv := inventory{Shells: []shellView{
-		{Host: "work", Name: "api", State: "detached", Historical: true, ConfirmedAt: now.Add(-12 * time.Minute)},
-		{Host: "work", Name: "构建", State: "attached", Historical: true, ConfirmedAt: now.Add(-12 * time.Minute)},
-	}}
-	var out bytes.Buffer
-	writeTaskInventory(&out, inv)
-	if !strings.Contains(out.String(), "HOST  work · checked 12m ago") || strings.Contains(out.String(), "CHECKED") || strings.Contains(out.String(), "LIFETIME") || strings.Contains(out.String(), "cached") {
-		t.Fatal(out.String())
-	}
-	inv.Shells[1].ConfirmedAt = now.Add(-2 * time.Hour)
-	inv.Shells = append(inv.Shells, shellView{Host: "work", Name: "missing", State: "attached", Historical: true})
-	inv.LocalShells = []localShellView{{identity: "here", Name: "current", State: "attached"}}
+func TestTaskInventoryColor(t *testing.T) {
+	inv := inventory{LocalShells: []localShellView{{identity: "here", Name: "current", State: "attached"}}}
 	var plain, colored bytes.Buffer
 	writeTaskInventoryColor(&plain, inv, "here", false)
 	writeTaskInventoryColor(&colored, inv, "here", true)
-	for _, want := range []string{"CHECKED", "12m ago", "2h ago", "never", "unknown"} {
-		if !strings.Contains(plain.String(), want) {
-			t.Fatal(plain.String())
-		}
-	}
-	for _, code := range []string{"\x1b[1m", "\x1b[90m", "\x1b[32m", "\x1b[33m"} {
-		if !strings.Contains(colored.String(), code) {
-			t.Fatalf("missing style %q: %q", code, colored.String())
-		}
-	}
 	ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)
-	if ansi.ReplaceAllString(colored.String(), "") != plain.String() {
-		t.Fatal("color changed table alignment")
-	}
-	t.Log("\n" + plain.String())
-}
-
-func TestShellCheckedAge(t *testing.T) {
-	activityFixture(t)
-	now := time.Now()
-	for _, tc := range []struct {
-		at   time.Time
-		want string
-	}{
-		{time.Time{}, "never"}, {now.Add(time.Minute), "unknown"},
-		{now, "<1m ago"}, {now.Add(-12 * time.Minute), "12m ago"},
-		{now.Add(-2 * time.Hour), "2h ago"}, {now.Add(-48 * time.Hour), "2d ago"},
-	} {
-		if got := shellCheckedAge(tc.at, now); got != tc.want {
-			t.Fatalf("%s != %s", got, tc.want)
-		}
+	if ansi.ReplaceAllString(colored.String(), "") != plain.String() || !strings.Contains(colored.String(), "\x1b[") {
+		t.Fatal("color changed table output")
 	}
 }
 
@@ -341,9 +297,32 @@ func TestTaskInventoryCurrentHostedShell(t *testing.T) {
 	var out bytes.Buffer
 	writeTaskInventoryColor(&out, inventory{Shells: []shellView{
 		{Name: "nested", Host: "local", Instance: "current", State: "attached", Temporary: true},
-		{Name: "cached", Host: "remote", Instance: "current", State: "attached", Historical: true},
 	}}, remoteTreeIdentity("current"), false)
 	if strings.Count(out.String(), "(current)") != 1 || !strings.Contains(out.String(), "spawn") || strings.Contains(out.String(), "No tasks") {
 		t.Fatal(out.String())
+	}
+}
+
+func TestTaskTableUsesBorderedLayoutWhenItFits(t *testing.T) {
+	for _, color := range []bool{false, true} {
+		rows := [][]string{{"ID", "TYPE", "REMOTE", "STATE", "DETAIL"}, {"a0123b", "spawn", "work", "running", "/tmp/项目"}}
+		var out bytes.Buffer
+		writeTaskTable(&out, rows, color, 100)
+		var console bytes.Buffer
+		termui.WriteConsoleBody(&console, out.String())
+		if strings.Contains(console.String(), "�") {
+			t.Fatalf("console corrupted styles: %q", console.String())
+		}
+		plain := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(out.String(), "")
+		for _, want := range []string{"╭", "│ ID", "a0123b", "running", "/tmp/项目"} {
+			if !strings.Contains(plain, want) {
+				t.Fatalf("missing %q: %s", want, plain)
+			}
+		}
+		for _, line := range strings.Split(plain, "\n") {
+			if (readline.Runes{}).WidthAll([]rune(line)) > 100 {
+				t.Fatalf("line too wide: %q", line)
+			}
+		}
 	}
 }

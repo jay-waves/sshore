@@ -34,10 +34,9 @@ type activityReply struct {
 	Error    string
 }
 type activityLease struct {
-	shellPath string
-	peer      *peerRecord
-	owner     processIdentity
-	expired   chan struct{}
+	peer    *peerRecord
+	owner   processIdentity
+	expired chan struct{}
 }
 
 // All live advertisements and leases belong to the account daemon. No state
@@ -61,8 +60,6 @@ func (s *daemonActivity) registerLease(request activityRequest) (*activityLease,
 	}
 	l := &activityLease{}
 	switch request.Kind {
-	case "shell":
-		l.shellPath = request.Key
 	case "heartbeat":
 	case "incoming":
 		if request.Peer == nil {
@@ -94,18 +91,6 @@ func (s *daemonActivity) remove(l *activityLease) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.leases, l)
-}
-
-func (s *daemonActivity) activeShellPaths() map[string]bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	paths := make(map[string]bool)
-	for l := range s.leases {
-		if l.shellPath != "" {
-			paths[l.shellPath] = true
-		}
-	}
-	return paths
 }
 
 // The clock closes one channel per heartbeat. Each consumer subscribes to the
@@ -252,7 +237,7 @@ func (s *daemonActivity) request(r activityRequest) activityReply {
 }
 func activityRPC(r activityRequest) (activityReply, error) {
 	if !activityAllowed() {
-		readOnly := r.Kind == "list" || r.Kind == "incoming" || r.Kind == "metadata" && r.Metadata != nil && (r.Metadata.Action == "tree_get" || r.Metadata.Action == "tree_list" || r.Metadata.Action == "shell_get" || r.Metadata.Action == "connection_get" || r.Metadata.Action == "connection_select")
+		readOnly := r.Kind == "list" || r.Kind == "incoming" || r.Kind == "metadata" && r.Metadata != nil && (r.Metadata.Action == "tree_get" || r.Metadata.Action == "tree_list" || r.Metadata.Action == "connection_get" || r.Metadata.Action == "connection_select" || r.Metadata.Action == "participation_get")
 		if !readOnly {
 			return activityReply{}, fmt.Errorf("daemon activity is disabled in recovery mode")
 		}

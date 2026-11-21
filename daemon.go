@@ -511,10 +511,10 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 	if kind == "forward" {
 		return runDaemonForward(config, enc, dec, c, log, request, tasks)
 	}
-	return runDaemonMount(config, enc, dec, c, log, filepath.Join(dir, config.UID+resourceResultSuffix), request, tasks)
+	return runDaemonMount(config, enc, dec, c, log, request, tasks)
 }
 
-func runDaemonMount(config resourceConfig, enc *json.Encoder, dec *json.Decoder, c net.Conn, log io.Writer, resultPath string, request localDaemonRequest, tasks *daemonTasks) error {
+func runDaemonMount(config resourceConfig, enc *json.Encoder, dec *json.Decoder, c net.Conn, log io.Writer, request localDaemonRequest, tasks *daemonTasks) error {
 	if err := validSession(config.Mount.Name); err != nil {
 		return err
 	}
@@ -602,9 +602,7 @@ func runDaemonMount(config resourceConfig, enc *json.Encoder, dec *json.Decoder,
 	go func() {
 		defer close(finished)
 		_ = cmd.Wait()
-		if name := task.finalName(); name != config.Mount.Name {
-			updateMountResultName(resultPath, config.UID, name)
-		}
+		task.finalName()
 	}()
 	defer func() {
 		input.Close()
@@ -693,7 +691,7 @@ func runDaemonForward(config resourceConfig, enc *json.Encoder, dec *json.Decode
 		return err
 	}
 	ack := awaitResourceCommit(dec.Decode, cancel)
-	code, err := runForward(ctx, f, s, func() error {
+	_, err = runForward(ctx, f, s, func() error {
 		record := task.publishReady(s.record.Detail, "", "")
 		if err := offerResourceStartup(enc, record, ack, nil); err != nil {
 			return err
@@ -701,7 +699,8 @@ func runDaemonForward(config resourceConfig, enc *json.Encoder, dec *json.Decode
 		acknowledgeResourceStartup(enc, c)
 		return nil
 	})
-	s.finish(code, err, task.finalName())
+	task.finalName()
+	s.finish()
 	return err
 }
 

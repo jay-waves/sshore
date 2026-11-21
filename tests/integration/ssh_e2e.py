@@ -193,11 +193,8 @@ def nested_smoke(binary, host, options, root, remote_options):
 
 
 def spawn_smoke(binary, host, options):
-    def cli(action, *extra):
-        return [binary, action, host, *extra, *options]
-
     def inventory():
-        return json.loads(subprocess.check_output(cli("list", "--json"), text=True))
+        return json.loads(subprocess.check_output([binary, "list", host, "--json"], text=True))
 
     terminal = Terminal([binary, "sh", host + ":spawn-demo", *options], wait_ready=False)
     foreground = terminal.expect(r"Connected (\S+) \(spawn\)").group(1).decode().rsplit(":", 1)[-1]
@@ -221,7 +218,7 @@ def spawn_smoke(binary, host, options):
     assert duplicate.returncode != 0 and "already exists" in duplicate.stderr, duplicate
     parent = subprocess.Popen(
         ["sh", "-c", '\"$@\"; code=$?; echo READY:$code; read answer', "parent",
-         binary, "spawn", host + ":", "--detach", *options],
+         binary, "spawn", host + ":spawn-by-id", "--detach", *options],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         output = b""
@@ -239,8 +236,9 @@ def spawn_smoke(binary, host, options):
         assert rows[temporary]["temporary"] and rows[temporary]["state"] == "detached", rows
         assert not rows[persistent].get("temporary"), rows
         pid = rows[temporary]["pid"]
-        terminal = Terminal([binary, "attach", temporary_ref, *options])
+        terminal = Terminal([binary, "attach", host + ":" + rows[temporary]["short_id"], *options], wait_ready=False)
         try:
+            terminal.expect("Connected " + re.escape(temporary_ref))
             terminal.send("printf 'SPAWN-%s\\n' alive\n")
             terminal.expect("SPAWN-alive")
             terminal.send(b"\x02d")
@@ -325,19 +323,21 @@ def setup_smoke(binary, host, options, root):
     owner = target.stat()
     os.chown(installer_target, owner.st_uid, owner.st_gid)
     installer_command = [binary, "install", host + ":" + str(installer_target), *options]
-    installed = [binary, "list", "--json", host, "--server", str(target), *options]
+    installed = [binary, "list", "--json", host]
 
     def installer_tasks():
         return {row["name"]: row["pid"] for row in json.loads(
             subprocess.check_output(installed, timeout=15))["shells"]}
 
     original_pid = installer_tasks()[shell_name]
+    assert original_pid > 0
+    shell_start = Path(f"/proc/{original_pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
     result = subprocess.run(installer_command, input="no\n",
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 1 and "cancelled" in result.stderr, result.stderr
     assert "stop the account daemon? [Y/n]" in result.stderr and shell_name in result.stdout, result
     assert installer_target.read_bytes() == original
-    assert installer_tasks()[shell_name] == original_pid
+    assert Path(f"/proc/{original_pid}/stat").read_text().rsplit(")", 1)[1].split()[19] == shell_start
     result = subprocess.run(installer_command, input="yes\n",
                             capture_output=True, text=True, timeout=15)
     assert result.returncode == 0 and shell_name in result.stdout, result
@@ -580,14 +580,8 @@ LogLevel ERROR
             term.expect("37 103")
             term.send("printf 'RUN_%s\\n' sleep; sleep 30\n")
             term.expect("RUN_sleep")
-            deadline = time.monotonic() + 5
-            while True:
-                listing = subprocess.check_output([binary, "list", "--json"] + base_command[2:], text=True)
-                if "sleep" in listing:
-                    break
-                if time.monotonic() >= deadline:
-                    raise AssertionError(f"missing foreground sleep: {listing}")
-                time.sleep(0.05)
+            listing = json.loads(subprocess.check_output([binary, "list", base_command[2], "--json"], text=True))
+            assert any(row["name"] == main_name and row["state"] == "attached" for row in listing["shells"])
             term.send(b"\x03")
             term.send("printf 'INT_%s\\n' survived\n")
             term.expect("INT_survived")
@@ -618,7 +612,7 @@ LogLevel ERROR
             def finish_review(approval):
                 approval.wait()
                 snapshot = json.loads(subprocess.check_output(
-                    [binary, "list", "--json"] + base_command[2:], text=True))
+                    [binary, "list", base_command[2], "--json"], text=True))
                 shell = next(row for row in snapshot["shells"] if row["name"] == main_name)
                 assert shell["state"] == "detached" and shell["pid"] == shell_pid, shell
 
@@ -673,7 +667,7 @@ LogLevel ERROR
             def unsolicited(metadata):
                 record = json.loads((Path(remote_account.pw_dir) / ".sshore" / "daemon" / "daemon.json").read_text())
                 snapshot = json.loads(subprocess.check_output(
-                    [binary, "list", "--json"] + base_command[2:], text=True))
+                    [binary, "list", base_command[2], "--json"], text=True))
                 instance = next(row["instance"] for row in snapshot["shells"] if row["name"] == main_name)
                 address, port = record["Address"].rsplit(":", 1)
                 with socket.create_connection((address, int(port)), timeout=10) as peer:

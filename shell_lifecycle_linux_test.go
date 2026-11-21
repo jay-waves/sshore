@@ -33,27 +33,9 @@ func TestSessionMetadataLifecycle(t *testing.T) {
 	if out, err := run(remoteServiceRequest{Operation: "rename-session", Name: "original", NewName: "work"}); err != nil {
 		t.Fatal(out, err)
 	}
-	if out, err := run(remoteServiceRequest{Operation: "inventory", Diagnostics: true}); err != nil || !strings.Contains(out, `"name":"work","state":"attached"`) || !strings.Contains(out, `"foreground":"sh","directory":"/tmp"`) || strings.Contains(out, `"name":"original","state":"attached"`) {
+	if out, err := run(remoteServiceRequest{Operation: "inventory"}); err != nil || !strings.Contains(out, `"name":"work","state":"attached"`) || !strings.Contains(out, `"directory":"/tmp"`) || strings.Contains(out, `"name":"original","state":"attached"`) {
 		t.Fatal(out, err)
 	}
-	b.writeInput(t, []byte("sleep 30\n"))
-	foregroundSeen := false
-	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
-		out, err := run(remoteServiceRequest{Operation: "inventory", Diagnostics: true})
-		if err != nil {
-			t.Fatal(out, err)
-		}
-		if strings.Contains(out, `"foreground":"sleep","directory":"/tmp"`) {
-			foregroundSeen = true
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !foregroundSeen {
-		t.Fatal("foreground process or directory missing")
-	}
-	b.writeInput(t, []byte{3})
-	shellOutput(t, b, "printf 'INTERRUPTED_%s\\n' ready", "INTERRUPTED_ready")
 	// The helper retains the original task ID after rename.
 	helper := exec.Command(e.bin, "detach")
 	helper.Env = append(append([]string{}, e.env...), "SSHORE_SOCKET="+func() string {
@@ -85,64 +67,10 @@ func TestSessionMetadataLifecycle(t *testing.T) {
 	shellOutput(t, b, "printf 'RENAMED_%s\\n' alive", "RENAMED_alive")
 	b.writeInput(t, []byte("exit 7\n"))
 	b.readExit(t)
-	waitExitReceipt(t, "work", "shell exited (code 7)")
 	if out, err := run(remoteServiceRequest{Operation: "kill-session", Name: "original"}); err != nil {
 		t.Fatal(out, err)
 	}
 	_ = other
-	waitExitReceipt(t, "original", "killed by sshore kill")
-	if out, err := run(remoteServiceRequest{Operation: "inventory", Diagnostics: true}); err != nil || !strings.Contains(out, `"name":"work","reason":"shell exited (code 7)"`) {
-		t.Fatal(out, err)
-	}
-}
-
-func waitExitReceipt(t *testing.T, name, reason string) {
-	t.Helper()
-	dir, err := daemonLocation()
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		for _, record := range readSessionExits(dir) {
-			if record.Name == name && record.Reason == reason {
-				return
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("missing exit receipt %s / %s: %+v", name, reason, readSessionExits(dir))
-}
-
-func TestSessionExitReceiptBounds(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	dir, err := daemonDirectory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	outside := filepath.Join(t.TempDir(), "outside")
-	if err := os.WriteFile(outside, []byte("untouched"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	id := fmt.Sprintf("%032x", 102)
-	receipt := filepath.Join(dir, id+".exit.json")
-	if err := os.Symlink(outside, receipt); err != nil {
-		t.Fatal(err)
-	}
-	saveHostedExit(id, "test", "shell exited (code 0)")
-	if b, _ := os.ReadFile(outside); string(b) != "untouched" {
-		t.Fatal("followed symlink")
-	}
-	if info, err := os.Stat(receipt); err != nil || info.Mode().Perm() != 0600 {
-		t.Fatal(info, err)
-	}
-	for i := 0; i < 102; i++ {
-		// Distinct names are not necessary: receipts are keyed by identity.
-		saveHostedExit(fmt.Sprintf("%032x", i), "test", "ended")
-	}
-	if got := len(readSessionExits(dir)); got != 100 {
-		t.Fatal("unbounded receipts", got)
-	}
 }
 
 func TestAutomaticSessionSelection(t *testing.T) {
@@ -201,12 +129,13 @@ func TestShellTaskIDIndependentOfAlias(t *testing.T) {
 		t.Fatalf("alias became identity: %q %v", uid, err)
 	}
 	detachTestClient(t, b)
-	cmd := exec.Command(e.bin, remoteServiceArgs(remoteServiceRequest{Operation: "rename-session", Name: uid[:6], NewName: "work", Instance: uid})...)
+	ref := strings.ToUpper(uid[:2])
+	cmd := exec.Command(e.bin, remoteServiceArgs(remoteServiceRequest{Operation: "rename-session", Name: ref, NewName: "work"})...)
 	cmd.Env = e.env
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("rename by immutable reference: %s %v", out, err)
 	}
-	b, resumedPID := e.attach(uid[:6], "attach")
+	b, resumedPID := e.attach(ref, "attach")
 	if resumedPID != pid {
 		t.Fatal("alias change replaced the shell")
 	}
@@ -214,8 +143,43 @@ func TestShellTaskIDIndependentOfAlias(t *testing.T) {
 	if err != nil || resolved != uid {
 		t.Fatalf("alias changed identity: %q %v", resolved, err)
 	}
-	b.writeInput(t, []byte("exit\n"))
-	b.readExit(t)
+	sibling := strings.Repeat("b", 32)
+	if strings.HasPrefix(sibling, strings.ToLower(ref)) {
+		sibling = strings.Repeat("c", 32)
+	}
+	if err := createRemoteShell(e.bin, taskIdentitySelection{name: "sibling", uid: sibling}, false, e.dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	c, err := e.dial("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	reply, err := exchangeRouteRequest(c, message{Type: "shell_connect", Action: "attach", Name: strings.ToUpper(sibling[:2])})
+	c.Close()
+	if err != nil || reply.Type != "setup_ready" || reply.Instance != sibling {
+		t.Fatalf("nested prefix selection: %+v %v", reply, err)
+	}
+	stale := strings.Repeat("0", 32)
+	if stale == uid {
+		stale = strings.Repeat("1", 32)
+	}
+	cmd = exec.Command(e.bin, remoteServiceArgs(remoteServiceRequest{Operation: "shell", Mode: "attach", Name: "work", Instance: stale})...)
+	cmd.Env = e.env
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "does not exist") {
+		t.Fatalf("stale attach selected a live alias: %s %v", out, err)
+	}
+	cmd = exec.Command(e.bin, remoteServiceArgs(remoteServiceRequest{Operation: "kill-session", Name: "work", Instance: stale})...)
+	cmd.Env = e.env
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "instance changed") {
+		t.Fatalf("stale kill selected a live alias: %s %v", out, err)
+	}
+	cmd = exec.Command(e.bin, remoteServiceArgs(remoteServiceRequest{Operation: "kill-session", Name: ref})...)
+	cmd.Env = e.env
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("kill by prefix: %s %v", out, err)
+	}
+	waitSessionEnded(t, e, "work", pid)
 	b.close()
 }
 

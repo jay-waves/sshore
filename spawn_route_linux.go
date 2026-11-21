@@ -332,9 +332,6 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 	var instance string
 	switch request.Action {
 	case "attach":
-		if err := validSession(request.Name); err != nil {
-			return err
-		}
 		instance, err = resolveSession(request.Name, request.Instance)
 		if err != nil {
 			return err

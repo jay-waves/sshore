@@ -153,7 +153,7 @@ func readAttachmentEvents(ctx context.Context, control attachmentControl, termin
 
 // Learn the current shell name before saving approval metadata.
 func acceptSessionName(o *options, name string) error {
-	if o.session != "" && !(o.command == "attach" && (!o.local || o.hosted) && validTaskUID(o.instance)) {
+	if o.session != "" && !(o.command == "attach" && (!o.local || o.hosted)) {
 		return nil
 	}
 	if err := validSession(name); err != nil {
@@ -184,32 +184,29 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	// until the keyboard has stopped and terminal restoration has completed.
 	ctx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
-	killedInstance := o.instance
-	if o.command == "kill" {
-		if cleared, err := forgetEndedShell(o.host, o.session, o.instance); cleared || err != nil {
-			return 0, err
-		}
-		snapshots, err := readShellSnapshots()
-		if err != nil {
-			return 1, err
-		}
-		for _, s := range snapshots {
-			if s.Host == o.host && s.Name == o.session && (o.instance == "" || s.Instance == o.instance) {
-				killedInstance = s.Instance
-				break
-			}
-		}
-	}
 	if o.list || o.command == "kill" || o.command == "rename" {
-		err := transportio.Run(context.Background(), sshConnectionOptions(o), os.Stdin, os.Stdout, os.Stderr)
-		if err == nil && o.command == "kill" {
-			if cacheErr := confirmKilledShell(o.host, o.session, killedInstance); cacheErr != nil {
-				termui.Log(os.Stderr, termui.Warning, "[sshore] Cancelled; local history not updated: %s\n", cleanText(cacheErr.Error()))
+		var target participatingShell
+		if !o.list {
+			var lookupErr error
+			target, lookupErr = participatingMutationTarget(o)
+			if lookupErr != nil {
+				termui.Log(os.Stderr, termui.Warning, "[sshore] Could not read participating shells: %s\n", cleanText(lookupErr.Error()))
 			}
 		}
-		if err == nil && o.command == "rename" {
-			if cacheErr := rememberShellRename(o.host, o.session, o.newName, o.instance); cacheErr != nil {
-				termui.Log(os.Stderr, termui.Warning, "[sshore] Renamed; local history not updated: %s\n", cleanText(cacheErr.Error()))
+		err := transportio.Run(context.Background(), sshConnectionOptions(o), os.Stdin, os.Stdout, os.Stderr)
+		if err == nil && target.Instance != "" {
+			var updateErr error
+			if o.command == "kill" {
+				if validTaskUID(o.instance) {
+					updateErr = rememberShellExit(o)
+				} else {
+					updateErr = forgetParticipatingShell(o.host, target.Instance)
+				}
+			} else {
+				updateErr = renameParticipatingShell(o.host, target.Instance, o.newName)
+			}
+			if updateErr != nil {
+				termui.Log(os.Stderr, termui.Warning, "[sshore] Could not update participating shells: %s\n", cleanText(updateErr.Error()))
 			}
 		}
 		if e, ok := errors.AsType[exitStatusError](err); ok {
@@ -285,18 +282,46 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		o.reusable.session, o.reusable.instance = o.session, o.instance
 	}
 	o.temporary = m.Temporary
-	connection, cacheErr := trackShellConnection(o)
-	if cacheErr != nil {
-		termui.Log(os.Stderr, termui.Warning, "[sshore] Shell tracking failed: %s\n", cleanText(cacheErr.Error()))
+	var participation *participatingShell
+	var terminalStateConfirmed bool
+	updateParticipation := func(state string) {
+		if participation != nil {
+			participation.Name, participation.State = o.session, state
+			if err := setParticipatingShellState(*participation); err != nil {
+				termui.Log(os.Stderr, termui.Warning, "[sshore] Could not update participating shell: %s\n", cleanText(err.Error()))
+			}
+		}
 	}
-	defer connection.close()
+	if !o.local {
+		row := participatingShell{Host: o.host, Instance: o.instance, Name: o.session, State: "attached",
+			Lifetime: shellLifetime(m.Temporary, true), Temporary: m.Temporary, PID: m.PID, Attachment: newTaskUID()}
+		if err := observeParticipatingShell(row); err != nil {
+			termui.Log(os.Stderr, termui.Warning, "[sshore] Could not record participating shell: %s\n", cleanText(err.Error()))
+		} else {
+			participation = &row
+		}
+		defer func() {
+			if !terminalStateConfirmed {
+				updateParticipation("unconfirmed")
+			}
+		}()
+	}
+	if err := removeRecentDetach(o); err != nil {
+		termui.Log(os.Stderr, termui.Warning, "[sshore] Could not update recent detaches: %s\n", cleanText(err.Error()))
+	}
+	if !o.local {
+		if e := rememberConnection(o); e != nil {
+			termui.Log(os.Stderr, termui.Warning, "[sshore] Connection history not saved: %s\n", cleanText(e.Error()))
+		}
+	}
 	o.shellPID = m.PID
 
 	confirmDetach := func(name string) {
-		connection.confirm(name, "detached")
+		terminalStateConfirmed = true
 		if validSession(name) == nil {
 			o.session = name
 		}
+		updateParticipation("detached")
 		if err := rememberDetachedAttachment(o); err != nil {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Detach history not saved: %s\n", cleanText(err.Error()))
 		}
@@ -310,7 +335,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		return 0, nil
 	}
 	if !o.local && !o.quiet {
-		if err := showConnectedTasks(control, o); err != nil {
+		if err := showConnectedTasks(o); err != nil {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Task list unavailable: %s\n", cleanText(err.Error()))
 		}
 	}
@@ -351,11 +376,6 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		return pty.SyncMouse(&outputModes)
 	}
 	defer func() { _ = closeConsole() }()
-	if !o.local {
-		if e := rememberConnection(o); e != nil {
-			termui.Log(os.Stderr, termui.Warning, "[sshore] Connection history not saved: %s\n", cleanText(e.Error()))
-		}
-	}
 
 	events := make(chan clientEvent, 32)
 	inputDrained := make(chan struct{}, 1)
@@ -1203,7 +1223,10 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					}
 					return 0, nil
 				case "exit":
-					connection.confirm(e.m.Name, "exited")
+					terminalStateConfirmed = true
+					if exitErr := rememberShellExit(o); exitErr != nil {
+						notice(termui.Warning, "\r\n[sshore] Could not record shell exit: %s\r\n", cleanText(exitErr.Error()))
+					}
 					level := termui.Success
 					if e.m.Code != 0 {
 						level = termui.Warning

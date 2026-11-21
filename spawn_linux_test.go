@@ -192,7 +192,7 @@ func TestSpawnLifetime(t *testing.T) {
 			inspect := func() ([]byte, error) {
 				args := []string{"list", "here:", "--json"}
 				if remote {
-					args = []string{"list", "fake-host", "--json", "--server", e.bin}
+					args = []string{"list", "fake-host", "--json"}
 				}
 				cmd := exec.Command(e.bin, args...)
 				cmd.Env = env
@@ -292,9 +292,6 @@ func TestSpawnLifetime(t *testing.T) {
 			deadline := time.Now().Add(8 * time.Second)
 			for time.Now().Before(deadline) {
 				if _, err := proc.LiveIdentity(pid); err != nil {
-					if remote {
-						waitExitReceipt(t, "temporary", "spawn lifetime connection closed")
-					}
 					return
 				}
 				time.Sleep(50 * time.Millisecond)

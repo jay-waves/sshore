@@ -201,6 +201,18 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *htt
 		stop()
 	})
 	mux.HandleFunc("POST /tasks/snapshot", tasks.serveTaskInventory)
+	mux.HandleFunc("POST /tasks/list", func(w http.ResponseWriter, r *http.Request) {
+		var request taskListRequest
+		if !readDaemonBody(w, r, &request) {
+			return
+		}
+		activity := accountActivity.Load()
+		if activity == nil {
+			http.Error(w, "activity unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(activity.listTasks(r.Context(), request))
+	})
 	mux.HandleFunc("POST /tasks/name", func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
 		uid, name := query.Get("uid"), query.Get("name")

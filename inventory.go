@@ -11,8 +11,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 type resourceView struct {
@@ -41,30 +39,21 @@ func (r resourceView) kindAndName() (string, string) {
 }
 
 type shellView struct {
-	MachineID   string    `json:"machine_id,omitempty"`
-	Hostname    string    `json:"hostname,omitempty"`
-	Lifetime    string    `json:"lifetime"`
-	Temporary   bool      `json:"temporary,omitempty"`
-	Instance    string    `json:"instance,omitempty"`
-	ShortID     string    `json:"short_id,omitempty"`
-	Host        string    `json:"host,omitempty"`
-	ID          string    `json:"id"`
-	ConfirmedAt time.Time `json:"confirmed_at,omitempty"`
-	Unconfirmed bool      `json:"remote_state_unconfirmed,omitempty"`
-	Active      bool      `json:"local_connection_active,omitempty"`
-	Historical  bool      `json:"historical"`
-	Name        string    `json:"name"`
-	State       string    `json:"state"`
-	PID         int       `json:"pid"`
-	Age         *int64    `json:"age_seconds"`
-	Foreground  string    `json:"foreground"`
-	Directory   string    `json:"directory"`
-	ProcessTree string    `json:"process_tree,omitempty"`
-}
-type exitView struct {
-	Name   string    `json:"name"`
-	Reason string    `json:"reason"`
-	Time   time.Time `json:"time"`
+	MachineID   string `json:"machine_id,omitempty"`
+	Hostname    string `json:"hostname,omitempty"`
+	Lifetime    string `json:"lifetime"`
+	Temporary   bool   `json:"temporary,omitempty"`
+	Instance    string `json:"instance,omitempty"`
+	ShortID     string `json:"short_id,omitempty"`
+	Host        string `json:"host,omitempty"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	State       string `json:"state"`
+	PID         int    `json:"pid"`
+	Age         *int64 `json:"age_seconds"`
+	Foreground  string `json:"foreground"`
+	Directory   string `json:"directory"`
+	ProcessTree string `json:"process_tree,omitempty"`
 }
 type peerView struct {
 	Direction string `json:"direction,omitempty"`
@@ -87,12 +76,11 @@ type inventory struct {
 	Resources     []resourceView   `json:"resources"`
 	Shells        []shellView      `json:"shells"`
 	Peers         []peerView       `json:"peers"`
-	Exits         []exitView       `json:"exits"`
 	Errors        []string         `json:"errors"`
 }
 
 func emptyInventory() inventory {
-	return inventory{Version: version, Resources: []resourceView{}, Shells: []shellView{}, Peers: []peerView{}, Exits: []exitView{}, Errors: []string{}}
+	return inventory{Version: version, Resources: []resourceView{}, Shells: []shellView{}, Peers: []peerView{}, Errors: []string{}}
 }
 func viewRecord(r resourceRecord) resourceView {
 	v := resourceView{local: true, Identity: resourceIdentity(r), ID: r.Kind + "/" + r.Name, Host: r.Host, Kind: r.Kind, Direction: r.Direction, Worker: "unavailable", Detail: r.Detail, resourceStatus: resourceStatus{Version: r.Version, Transport: "unknown", Target: "unchecked"}}
@@ -166,64 +154,34 @@ func (snapshot taskInventorySnapshot) nativeShells() []localShellView {
 	return rows
 }
 
-func collectManagedInventory(detailed, includeNative bool) inventory {
-	return managedInventory(nil, detailed, includeNative)
-}
-
-func managedInventory(tasks *daemonTasks, detailed, includeNative bool) inventory {
+func managedInventory(ctx context.Context, tasks *daemonTasks, detail string, includeNative bool, host string) inventory {
 	inv := emptyInventory()
 	if runtime.GOOS == "linux" {
 		inv.MachineID, inv.Hostname = localMachineIdentity()
 	}
-	detail := "inventory"
-	if detailed {
-		detail = ""
-	}
-	request := taskInventoryRequest{Native: includeNative, Hosted: true, Resources: true, Status: true, Detail: detail}
-	var snapshot taskInventorySnapshot
-	var statuses map[string]resourceStatus
-	var err error
-	if tasks == nil {
-		snapshot, statuses, err = readTaskInventory(request)
-	} else {
-		var workers []*daemonResourceTask
-		snapshot, workers = tasks.taskInventory(request)
-		statuses = make(map[string]resourceStatus)
-		ctx, cancel := context.WithTimeout(context.Background(), resourceStatusTimeout)
-		defer cancel()
-		probeResourceStatus(ctx, workers, func(row resourceStatusRow) bool {
-			statuses[row.UID] = row.Status
-			return true
-		})
-	}
-	if err != nil {
-		inv.Errors = append(inv.Errors, cleanText(err.Error()))
-		return inv
-	}
+	request := taskInventoryRequest{Native: includeNative, Hosted: host == "", Resources: true, Status: true, Detail: detail, Host: host}
+	snapshot, workers := tasks.taskInventory(request)
+	statuses := make(map[string]resourceStatus)
+	ctx, cancel := context.WithTimeout(ctx, resourceStatusTimeout)
+	defer cancel()
+	probeResourceStatus(ctx, workers, func(row resourceStatusRow) bool {
+		statuses[row.UID] = row.Status
+		return true
+	})
 	inv.Shells = append(inv.Shells, snapshot.Shells...)
 	if includeNative {
 		inv.LocalShells = snapshot.nativeShells()
 	}
 	inv.Resources = resourceViews(snapshot.Resources, statuses, true)
-	if detailed {
-		inv.Resources = append(inv.Resources, collectResourceResults(inv.Resources)...)
-	}
 	return inv
 }
 
 func (inv *inventory) collectPeers() {
-	peers, err := collectPeerViews()
+	peers, err := peerViews("incoming")
 	if err != nil {
 		inv.Errors = append(inv.Errors, cleanText(err.Error()))
 	}
 	inv.Peers = excludeLocalResourcePeers(peers, inv.Resources)
-}
-
-func (inv *inventory) collectShellHistory() {
-	inv.Exits = hostedExitHistory()
-	if inv.Hostname != "" {
-		inv.ShellTree = knownShellTrees()
-	}
 }
 
 func excludeLocalResourcePeers(peers []peerView, resources []resourceView) []peerView {
@@ -259,65 +217,70 @@ func excludeLocalResourcePeers(peers []peerView, resources []resourceView) []pee
 	return filtered
 }
 
-func collectInventory(o options) (inventory, error) {
-	if o.host != "" {
-		return collectRemoteInventory(o).finalize()
-	}
-
-	inv := collectManagedInventory(o.listJSON, true)
-	if o.listJSON {
-		inv.collectShellHistory()
-	}
-	for i := range inv.Shells {
-		inv.Shells[i].Host = "local"
-	}
-	snapshots, err := readShellSnapshots()
-	if err != nil {
-		inv.Errors = append(inv.Errors, cleanText(err.Error()))
-	}
-	for _, s := range snapshots {
-		if s.Forgotten {
-			continue
-		}
-		unconfirmed := s.Unconfirmed || s.State == "attached" && !s.Active
-		inv.Shells = append(inv.Shells, shellView{Lifetime: shellLifetime(s.Temporary, true), Temporary: s.Temporary, Instance: s.Instance, ID: shellTaskName(s.Name, s.Temporary), Host: s.Host, MachineID: s.MachineID, Hostname: s.Hostname, Name: s.Name, State: s.State, ConfirmedAt: s.ConfirmedAt, Unconfirmed: unconfirmed, Active: s.Active, Historical: true})
-	}
-	inv.collectPeers()
-	return inv.finalize()
+type taskListRequest struct {
+	Native bool
+	Host   string
 }
 
-func collectRemoteInventory(o options) inventory {
-	inv := emptyInventory()
-	var output limitedInventoryBuffer
-	err := sshio.Run(context.Background(), sshConnectionOptions(o), nil, &output, os.Stderr)
-	if err == nil {
-		err = json.Unmarshal(output.data, &inv)
-	}
-	if err == nil && inv.Version != version {
-		err = fmt.Errorf("inventory release mismatch")
-	}
-	if err != nil {
-		inv = emptyInventory()
-		inv.Host = o.host
-		inv.Errors = append(inv.Errors, "remote query failed: "+cleanText(err.Error()))
+func (a *daemonActivity) listTasks(ctx context.Context, request taskListRequest) inventory {
+	inv := managedInventory(ctx, a.tasks, "inventory", request.Native, request.Host)
+	if request.Host != "" {
+		inv.Host = request.Host
+		rows, err := readParticipatingShells(request.Host)
+		if err != nil {
+			inv.Errors = append(inv.Errors, cleanText(err.Error()))
+		}
+		for _, row := range rows {
+			inv.Shells = append(inv.Shells, shellView{Host: row.Host, Instance: row.Instance, ID: shellTaskName(row.Name, row.Temporary), Name: row.Name, State: row.State, Temporary: row.Temporary, Lifetime: row.Lifetime, PID: row.PID})
+		}
+		inv.setTaskReferences()
 		return inv
 	}
-	inv.Host, inv.RemoteQueried = o.host, true
-	if warn, routeErr := observeIdentityRoute(inv.MachineID, o.host, o.ssh); routeErr == nil && warn {
-		fmt.Fprintln(os.Stderr, "[sshore] Same identity through a new entry point; if this is a clone, run sshore reset there.")
+	if request.Native {
+		inv.Host = "local"
+		for i := range inv.Shells {
+			inv.Shells[i].Host = "local"
+		}
 	}
-	if err := cacheRemoteShells(o.host, inv, o); err != nil {
-		inv.Errors = append(inv.Errors, "could not save shell history: "+cleanText(err.Error()))
-	}
+	inv.collectPeers()
+	inv.setTaskReferences()
 	return inv
 }
 
-func (inv inventory) finalize() (inventory, error) {
-	inv.setTaskReferences()
-	if len(inv.Errors) > 0 {
-		return inv, fmt.Errorf("inventory incomplete: %s", strings.Join(inv.Errors, "; "))
+func daemonListTasks(request taskListRequest) (inventory, error) {
+	var reply inventory
+	if activity := accountActivity.Load(); activity != nil {
+		reply = activity.listTasks(context.Background(), request)
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), daemonRequestTimeout)
+		defer cancel()
+		record, err := activityDaemon(ctx)
+		if os.IsNotExist(err) && !activityAllowed() {
+			return emptyInventory(), nil
+		}
+		if err != nil {
+			return emptyInventory(), err
+		}
+		if err := daemonJSON(ctx, record, "/tasks/list", request, &reply); err != nil {
+			return emptyInventory(), err
+		}
 	}
-	return inv, nil
+	return reply, nil
+}
+
+func collectInventory(o options) (inventory, error) {
+	inv, err := daemonListTasks(taskListRequest{Native: o.host == "", Host: o.host})
+	if err != nil {
+		inv.Errors = append(inv.Errors, cleanText(err.Error()))
+	}
+	return inv, inv.incompleteError()
+}
+
+func (inv inventory) incompleteError() error {
+	if len(inv.Errors) > 0 {
+		return fmt.Errorf("inventory incomplete: %s", strings.Join(inv.Errors, "; "))
+	}
+	return nil
 }
 
 func (s shellView) identity(defaultHost string) string {
@@ -361,24 +324,4 @@ func runInventory(o options) (int, error) {
 		return 1, err
 	}
 	return 0, nil
-}
-
-func snapshotState(s shellView) string {
-	if s.Active {
-		return "local active"
-	}
-	if s.Unconfirmed || s.State == "attached" || s.ConfirmedAt.IsZero() {
-		return "unconfirmed"
-	}
-	return "-"
-}
-
-type limitedInventoryBuffer struct{ data []byte }
-
-func (b *limitedInventoryBuffer) Write(p []byte) (int, error) {
-	if len(b.data)+len(p) > 8*1024*1024 {
-		return 0, fmt.Errorf("remote inventory exceeds 8 MiB")
-	}
-	b.data = append(b.data, p...)
-	return len(p), nil
 }

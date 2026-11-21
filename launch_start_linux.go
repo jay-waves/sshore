@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -16,38 +17,35 @@ type shellSelection struct {
 	existing bool
 }
 
-func selectHostedShell(name, mode string) (shellSelection, error) {
-	attach := mode == "attach"
-	if name != "" {
-		task, err := resolveHostedShell(name, "")
-		if err != nil {
-			return shellSelection{}, err
-		}
-		if task.Instance != "" {
-			if mode == "new" || mode == "spawn" {
-				return shellSelection{}, fmt.Errorf("shell %s already exists; use sshore attach HOST:%s", name, name)
-			}
-			return shellSelection{taskIdentitySelection: taskIdentitySelection{name: task.Name, uid: task.Instance}, existing: true}, nil
-		}
-	}
-	if attach {
+func selectHostedShell(name, mode string, expected ...string) (shellSelection, error) {
+	if mode == "attach" {
 		if name == "" {
 			return shellSelection{}, fmt.Errorf("attach requires a shell name")
 		}
-		return shellSelection{}, fmt.Errorf("shell %s does not exist; use sshore list HOST", name)
+		task, err := resolveHostedShell(name, firstExpectedInstance(expected))
+		if err != nil {
+			return shellSelection{}, err
+		}
+		if task.Instance == "" {
+			return shellSelection{}, fmt.Errorf("shell %s does not exist; use sshore list HOST", name)
+		}
+		return shellSelection{taskIdentitySelection: taskIdentitySelection{name: task.Name, uid: task.Instance}, existing: true}, nil
 	}
 	id, err := chooseTaskIdentity("shell", name)
 	if err != nil {
+		if errors.Is(err, errObjectNameInUse) {
+			return shellSelection{}, fmt.Errorf("name %s already exists; use a different shell name", name)
+		}
 		return shellSelection{}, err
 	}
 	return shellSelection{taskIdentitySelection: *id}, nil
 }
-func prepareHostedShell(name, mode, executable string, gate *os.File) error {
+func prepareHostedShell(name, mode, instance, executable string, gate *os.File) error {
 	defer gate.Close()
 	if (mode == "new" || mode == "spawn") && isShortTaskID(name) {
 		name = ""
 	}
-	selected, err := selectHostedShell(name, mode)
+	selected, err := selectHostedShell(name, mode, instance)
 	if err != nil {
 		return err
 	}

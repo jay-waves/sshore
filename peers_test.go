@@ -14,7 +14,7 @@ import (
 
 func activityFixture(t *testing.T) *daemonActivity {
 	t.Helper()
-	state := &daemonActivity{}
+	state := &daemonActivity{tasks: &daemonTasks{}}
 	previous := accountActivity.Swap(state)
 	t.Cleanup(func() { accountActivity.Store(previous) })
 	return state
@@ -72,27 +72,27 @@ func TestPeerTaskLeaseStates(t *testing.T) {
 	}
 }
 func TestIncomingTaskLifetime(t *testing.T) {
-	activityFixture(t)
+	state := activityFixture(t)
 	task := testPeerTask()
 	task.UID, task.Direction = strings.Repeat("b", 32), "<-"
 	stop := beginIncomingTask(task)
 	defer stop()
-	rows, err := collectIncomingTasks()
-	if err != nil || len(rows) != 1 || rows[0].UID != task.UID {
-		t.Fatal(rows, err)
+	rows := state.request(activityRequest{Kind: "incoming"}).Peers
+	if len(rows) != 1 || rows[0].Record.UID != task.UID {
+		t.Fatal(rows)
 	}
 	task.ID = "forward/new-alias"
 	if err := storeRemoteTask(task); err != nil {
 		t.Fatal(err)
 	}
-	rows, err = collectIncomingTasks()
-	if err != nil || len(rows) != 1 || rows[0].ID != task.ID {
-		t.Fatal(rows, err)
+	rows = state.request(activityRequest{Kind: "incoming"}).Peers
+	if len(rows) != 1 || rows[0].Record.ID != task.ID {
+		t.Fatal(rows)
 	}
 	stop()
-	rows, err = collectIncomingTasks()
-	if err != nil || len(rows) != 0 {
-		t.Fatal(rows, err)
+	rows = state.request(activityRequest{Kind: "incoming"}).Peers
+	if len(rows) != 0 {
+		t.Fatal(rows)
 	}
 }
 func TestDaemonActivitySocketLease(t *testing.T) {
@@ -151,38 +151,8 @@ func testDaemonActivitySocketLease(t *testing.T, release bool) {
 func TestDaemonMetadataHistoryCannotRecreateLiveState(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	connection, err := trackShellConnection(options{host: "work", session: "shell"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer connection.stop()
 	saveShellTree("task", "shell", nil, "attached")
-	dir, err := statePath("shells")
-	if err != nil {
-		t.Fatal(err)
-	}
-	path, err := connection.snapshot.cachePath(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	forged := connection.snapshot
-	forged.State = "exited"
-	if err = writeStateJSON(path, forged); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := readShellSnapshots()
-	if err != nil || len(rows) != 1 || rows[0].State != "attached" || !rows[0].Active {
-		t.Fatal(rows, err)
-	}
-	// Persisted data is history after a daemon restart, never a live lease.
-	if err = writeStateJSON(path, connection.snapshot); err != nil {
-		t.Fatal(err)
-	}
 	activityFixture(t)
-	rows, err = readShellSnapshots()
-	if err != nil || len(rows) != 1 || rows[0].Active || !rows[0].Unconfirmed {
-		t.Fatal(rows, err)
-	}
 	tree := shellTreeFor("task")
 	if len(tree) != 1 || !tree[0].Cached {
 		t.Fatal("history became a live task", tree)
@@ -199,21 +169,12 @@ func TestDaemonResetPreservesLiveOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	saveShellTree("task:"+id, "shell", []shellTreeNode{{Identity: "owner", Name: "parent"}}, "attached", "parent")
-	connection, err := trackShellConnection(options{host: "work", session: "remote"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer connection.stop()
-	if err = runReset(); err != nil {
+	if err := runReset(); err != nil {
 		t.Fatal(err)
 	}
 	tree := shellTreeFor("task:" + id)
 	if len(tree) != 2 || tree[1].Owner != "owner" || tree[1].Parent != "owner" {
 		t.Fatal("reset changed live ownership", tree)
-	}
-	rows, err := readShellSnapshots()
-	if err != nil || len(rows) != 1 || !rows[0].Active {
-		t.Fatal("reset lost active lease", rows, err)
 	}
 }
 
@@ -240,23 +201,7 @@ func TestDaemonClockChecksOwnerIdentity(t *testing.T) {
 func TestDaemonRejectsBrokenHistoryUntilReset(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	dir, err := stateDir("shells")
-	if err != nil {
-		t.Fatal(err)
-	}
-	path, err := (shellSnapshot{Host: "work", Name: "shell"}).cachePath(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = writeStateFile(path, []byte("invalid history")); err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		if _, err = readShellSnapshots(); err == nil {
-			t.Fatal("broken history was accepted")
-		}
-	}
-	dir, err = stateDir("connections")
+	dir, err := stateDir("connections")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,9 +216,6 @@ func TestDaemonRejectsBrokenHistoryUntilReset(t *testing.T) {
 	if err = runReset(); err != nil {
 		t.Fatal(err)
 	}
-	if rows, err := readShellSnapshots(); err != nil || len(rows) != 0 {
-		t.Fatal(rows, err)
-	}
 	if rows, err := readRecentConnections(); err != nil || len(rows) != 0 {
 		t.Fatal(rows, err)
 	}
@@ -283,25 +225,17 @@ func TestDaemonLiveMetadataDoesNotReadHistoryFiles(t *testing.T) {
 	activityFixture(t)
 	root := filepath.Join(t.TempDir(), "state")
 	t.Setenv("SSHORE_STATE_DIR", root)
-	connection, err := trackShellConnection(options{host: "work", session: "shell"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer connection.stop()
 	saveShellTree("task", "shell", nil, "attached")
-	if err = rememberConnection(options{host: "work", session: "shell", server: "sshore"}); err != nil {
+	if err := rememberConnection(options{host: "work", session: "shell", server: "sshore"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, dir := range []string{"shells", "shell-tree", "connections"} {
-		if err = os.RemoveAll(filepath.Join(root, dir)); err != nil {
+	for _, dir := range []string{"shell-tree", "connections"} {
+		if err := os.RemoveAll(filepath.Join(root, dir)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if tree := shellTreeFor("task"); len(tree) != 1 || tree[0].State != "attached" {
 		t.Fatal(tree)
-	}
-	if rows, err := readShellSnapshots(); err != nil || len(rows) != 1 || !rows[0].Active {
-		t.Fatal(rows, err)
 	}
 	if rows, err := readRecentConnections(); err != nil || len(rows) != 1 || rows[0].Host != "work" {
 		t.Fatal(rows, err)

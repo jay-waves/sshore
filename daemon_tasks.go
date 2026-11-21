@@ -319,6 +319,20 @@ func (s *daemonTasks) serveTaskInventory(w http.ResponseWriter, r *http.Request)
 	if !readDaemonBody(w, r, &request) {
 		return
 	}
+	if request.Detail == "tree" {
+		activity := accountActivity.Load()
+		if activity == nil {
+			http.Error(w, "activity unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		rows, err := activity.taskTreeSnapshot(r.Context())
+		reply := taskInventorySnapshot{Tree: rows}
+		if err != nil {
+			reply.Error = err.Error()
+		}
+		_ = json.NewEncoder(w).Encode(reply)
+		return
+	}
 	if request.Detail != "" && request.Detail != "health" && request.Detail != "inventory" && request.Detail != "sessions" {
 		http.Error(w, "invalid shell inventory detail", http.StatusBadRequest)
 		return
@@ -448,6 +462,8 @@ type taskInventoryRequest struct {
 }
 
 type taskInventorySnapshot struct {
+	Tree      []taskTreeRow `json:",omitempty"`
+	Error     string        `json:",omitempty"`
 	Native    map[string]localShellView
 	Shells    []shellView
 	Resources []resourceRecord
