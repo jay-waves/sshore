@@ -54,13 +54,11 @@ func runRenameResource(kind, old, name, identity string) (int, error) {
 		return 2, err
 	}
 	change := resourceMutation{Kind: kind, Ref: old, NewName: name, Identity: identity}
-	reply, err := daemonResourceRequest(context.Background(), "/resources/rename", change)
+	_, err := daemonResourceRequest(context.Background(), "/resources/rename", change)
 	if err != nil {
 		return 1, err
 	}
-	if !reply.Unchanged {
-		fmt.Printf("Renamed %s/%s to %s/%s.\n", kind, old, kind, name)
-	}
+	fmt.Printf("Renamed %s/%s to %s/%s.\n", kind, old, kind, name)
 	return 0, nil
 }
 
@@ -135,7 +133,7 @@ func runKillAll(o options) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		o.command, o.list = "daemon-admin", false
+		o.command = "daemon-admin"
 		process, err := transportio.Start(ctx, sshConnectionOptions(o), os.Stderr)
 		if err != nil {
 			return 1, err

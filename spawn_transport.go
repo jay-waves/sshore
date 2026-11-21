@@ -234,7 +234,7 @@ func superviseSpawnOwner(owner processIdentity, lost func()) func() {
 }
 
 func waitSpawnOwner(ctx context.Context, owner processIdentity) {
-	request := activityRequest{Kind: "owner", Owner: owner}
+	request := leaseRequest{Kind: "owner", Owner: owner}
 	if s := accountActivity.Load(); s != nil {
 		lease, err := s.registerLease(request)
 		if err != nil {

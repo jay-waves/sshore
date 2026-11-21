@@ -22,79 +22,76 @@ func activityFixture(t *testing.T) *daemonActivity {
 func testPeerTask() peerRecord {
 	return peerRecord{Version: version, Key: strings.Repeat("a", 32), ID: "forward/web", Manager: "test-client", State: "active", Detail: "server 8080 -> manager 3000"}
 }
-func TestPeerTaskPrivacyAndStorage(t *testing.T) {
-	activityFixture(t)
+func TestPeerTaskPrivacyAndRegistration(t *testing.T) {
+	state := activityFixture(t)
 	task := testPeerTask()
-	if err := storeRemoteTask(task); err != nil {
-		t.Fatal(err)
+	stop := beginIncomingTask(task)
+	defer stop()
+	rows := peerViews(state.incomingPeers())
+	if len(rows) != 1 || rows[0].ID != "peer/"+task.Key[:8]+"/"+task.ID || rows[0].Identity != task.Key || rows[0].Detail != task.Detail {
+		t.Fatal(rows)
 	}
-	rows, err := collectPeerViews()
-	if err != nil || len(rows) != 1 || rows[0].ID != "peer/"+task.Key[:8]+"/"+task.ID || rows[0].Identity != task.Key || rows[0].Detail != task.Detail {
-		t.Fatal(rows, err)
-	}
-	if removeRemoteTask("../outside") == nil {
+	invalid := task
+	invalid.Key = "../outside"
+	if _, err := state.registerLease(leaseRequest{Kind: "incoming", Peer: &invalid}); err == nil {
 		t.Fatal("accepted invalid key")
 	}
-	if err := removeRemoteTask(task.Key); err != nil {
-		t.Fatal(err)
-	}
-	rows, err = collectPeerViews()
-	if err != nil || len(rows) != 0 {
-		t.Fatal(rows, err)
-	}
-	service := &resourceService{record: resourceRecord{Kind: "mount", Name: "work", Remote: "/project", Mountpoint: "/private/local/path", Address: "127.0.0.1:9999", Token: "secret-token", Host: "private-alias"}}
+	service := &resourceService{record: resourceRecord{Kind: "mount", Name: "work", Remote: "/project", Mountpoint: "/private/local/path", Host: "private-alias"}}
 	data, _ := json.Marshal(service.peerTask())
-	for _, secret := range []string{"/private/local/path", "secret-token", "9999", "private-alias"} {
+	for _, secret := range []string{"/private/local/path", "private-alias"} {
 		if strings.Contains(string(data), secret) {
 			t.Fatal("private data published", string(data))
 		}
 	}
 	task.Version = "older"
-	if storeRemoteTask(task) == nil {
+	if _, err := state.registerLease(leaseRequest{Kind: "incoming", Peer: &task}); err == nil {
 		t.Fatal("accepted incompatible version")
 	}
 }
-func TestPeerTaskLeaseStates(t *testing.T) {
-	state := activityFixture(t)
-	task := testPeerTask()
-	if err := storeRemoteTask(task); err != nil {
-		t.Fatal(err)
-	}
-	state.peers[task.Key] = peerAdvertisement{Record: task, Seen: time.Now().Add(-2 * time.Minute)}
-	rows, err := collectPeerViews()
-	if err != nil || len(rows) != 1 || rows[0].State != "unknown" {
-		t.Fatal(rows, err)
-	}
-	state.peers[task.Key] = peerAdvertisement{Record: task, Seen: time.Now().Add(-25 * time.Hour)}
-	rows, err = collectPeerViews()
-	if err != nil || len(rows) != 0 {
-		t.Fatal(rows, err)
-	}
-}
 func TestIncomingTaskLifetime(t *testing.T) {
-	state := activityFixture(t)
-	task := testPeerTask()
-	task.UID, task.Direction = strings.Repeat("b", 32), "<-"
-	stop := beginIncomingTask(task)
-	defer stop()
-	rows := state.request(activityRequest{Kind: "incoming"}).Peers
-	if len(rows) != 1 || rows[0].Record.UID != task.UID {
-		t.Fatal(rows)
-	}
-	task.ID = "forward/new-alias"
-	if err := storeRemoteTask(task); err != nil {
-		t.Fatal(err)
-	}
-	rows = state.request(activityRequest{Kind: "incoming"}).Peers
-	if len(rows) != 1 || rows[0].Record.ID != task.ID {
-		t.Fatal(rows)
-	}
-	stop()
-	rows = state.request(activityRequest{Kind: "incoming"}).Peers
-	if len(rows) != 0 {
-		t.Fatal(rows)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		state := activityFixture(t)
+		task := testPeerTask()
+		task.UID, task.Direction = strings.Repeat("b", 32), "<-"
+		older := beginIncomingTask(task)
+		input, output := io.Pipe()
+		defer input.Close()
+		done := make(chan error, 1)
+		go func() { done <- watchPeerRecords(input, "forward", nil) }()
+		send := func() {
+			t.Helper()
+			if err := json.NewEncoder(output).Encode(task); err != nil {
+				t.Fatal(err)
+			}
+			synctest.Wait()
+		}
+		send()
+		order := state.nextPeerOrder
+		send()
+		if state.nextPeerOrder != order {
+			t.Fatal("identical heartbeat replaced its lease")
+		}
+		task.ID = "forward/new-alias"
+		send()
+		checkAlias := func() {
+			t.Helper()
+			if rows := state.incomingPeers(); len(rows) != 1 || rows[0] != task {
+				t.Fatalf("old connection masked new alias: %+v", rows)
+			}
+		}
+		checkAlias()
+		older()
+		checkAlias()
+		output.Close()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if rows := state.incomingPeers(); len(rows) != 0 {
+			t.Fatal("closed watcher retained", rows)
+		}
+	})
 }
+
 func TestDaemonActivitySocketLease(t *testing.T) {
 	t.Run("EOF", func(t *testing.T) { testDaemonActivitySocketLease(t, false) })
 	t.Run("release", func(t *testing.T) { testDaemonActivitySocketLease(t, true) })
@@ -110,14 +107,14 @@ func testDaemonActivitySocketLease(t *testing.T, release bool) {
 	go func() {
 		defer close(done)
 		defer server.Close()
-		state.serve(server, activityRequest{Kind: "incoming", Peer: &task})
+		state.serve(server, leaseRequest{Kind: "incoming", Peer: &task})
 	}()
 	client.SetDeadline(time.Now().Add(time.Second))
 	ready, err := readMessage(client)
 	if err != nil || ready.Type != "activity_ready" {
 		t.Fatal(ready, err)
 	}
-	if len(state.request(activityRequest{Kind: "incoming"}).Peers) != 1 {
+	if len(state.incomingPeers()) != 1 {
 		t.Fatal("lease missing")
 	}
 	state.tick(time.Now())
@@ -143,7 +140,7 @@ func testDaemonActivitySocketLease(t *testing.T, release bool) {
 	case <-time.After(time.Second):
 		t.Fatal("lease did not end")
 	}
-	if len(state.request(activityRequest{Kind: "incoming"}).Peers) != 0 {
+	if len(state.incomingPeers()) != 0 {
 		t.Fatal("ended lease retained")
 	}
 }
@@ -180,7 +177,7 @@ func TestDaemonResetPreservesLiveOwnership(t *testing.T) {
 
 func TestDaemonClockChecksOwnerIdentity(t *testing.T) {
 	state := activityFixture(t)
-	lease, err := state.registerLease(activityRequest{Kind: "owner", Owner: processIdentity{PID: os.Getpid(), Start: "different-process-identity"}})
+	lease, err := state.registerLease(leaseRequest{Kind: "owner", Owner: processIdentity{PID: os.Getpid(), Start: "different-process-identity"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +196,7 @@ func TestDaemonClockChecksOwnerIdentity(t *testing.T) {
 }
 
 func TestDaemonRejectsBrokenHistoryUntilReset(t *testing.T) {
-	activityFixture(t)
+	fixture := activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	dir, err := stateDir("connections")
 	if err != nil {
@@ -209,20 +206,20 @@ func TestDaemonRejectsBrokenHistoryUntilReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if _, err = readRecentConnections(); err == nil {
+		if _, err = fixture.metadata.readRecentConnectionsLocal(); err == nil {
 			t.Fatal("broken routes were accepted")
 		}
 	}
 	if err = runReset(); err != nil {
 		t.Fatal(err)
 	}
-	if rows, err := readRecentConnections(); err != nil || len(rows) != 0 {
+	if rows, err := fixture.metadata.readRecentConnectionsLocal(); err != nil || len(rows) != 0 {
 		t.Fatal(rows, err)
 	}
 }
 
 func TestDaemonLiveMetadataDoesNotReadHistoryFiles(t *testing.T) {
-	activityFixture(t)
+	fixture := activityFixture(t)
 	root := filepath.Join(t.TempDir(), "state")
 	t.Setenv("SSHORE_STATE_DIR", root)
 	saveShellTree("task", "shell", nil, "attached")
@@ -237,7 +234,7 @@ func TestDaemonLiveMetadataDoesNotReadHistoryFiles(t *testing.T) {
 	if tree := shellTreeFor("task"); len(tree) != 1 || tree[0].State != "attached" {
 		t.Fatal(tree)
 	}
-	if rows, err := readRecentConnections(); err != nil || len(rows) != 1 || rows[0].Host != "work" {
+	if rows, err := fixture.metadata.readRecentConnectionsLocal(); err != nil || len(rows) != 1 || rows[0].Host != "work" {
 		t.Fatal(rows, err)
 	}
 }

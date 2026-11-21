@@ -157,7 +157,7 @@ def nested_smoke(binary, host, options, root, remote_options):
             payload.write_bytes(b"routed approval data")
             reattached.send(shlex.join([binary, "cp", ".:" + str(payload), "origin:"]) + "\n")
             request = reattached.expect(r"Request saved: ([a-f0-9]{32})").group(1).decode()
-            reattached.expect("Background;")
+            reattached.expect("Backgrounded ")
             reattached.wait()
             reattached.close()
             reattached = None

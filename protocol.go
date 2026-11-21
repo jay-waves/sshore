@@ -35,7 +35,6 @@ type message struct {
 	LocalRequest    *localDaemonRequest `json:"local_request,omitempty"`
 	Instance        string              `json:"instance,omitempty"`
 	Token           string              `json:"token,omitempty"`
-	PeerTask        *peerRecord         `json:"peer_task,omitempty"`
 	ApprovalID      string              `json:"approval_id,omitempty"`
 	Directory       string              `json:"directory,omitempty"`
 	HomeDirectory   string              `json:"home_directory,omitempty"`

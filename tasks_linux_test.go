@@ -225,7 +225,7 @@ func TestHostedShellTaskCommandRouting(t *testing.T) {
 	}
 	detachTestClient(t, b)
 	automatic := options{command: "attach", local: true}
-	if err := resolveLocalAttach(&automatic); err != nil || !automatic.hosted || automatic.instance == "" {
+	if err := resolveDetachedAttach(&automatic); err != nil || !automatic.hosted || automatic.instance == "" {
 		t.Fatalf("automatic local attachment lost hosted route: %+v %v", automatic, err)
 	}
 	choices := localSessionTargets("other", message{Action: "select", Name: "hosted"})
@@ -237,7 +237,7 @@ func TestHostedShellTaskCommandRouting(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if task, ok, err := resolveShortTask("attach", &parsed); err != nil || !ok || !task.hosted {
+		if task, ok, err := resolveShortTask("attach", &parsed); err != nil || !ok || !task.Hosted {
 			t.Fatalf("hosted selector %v: %+v %v", args, task, err)
 		}
 	}
@@ -246,10 +246,10 @@ func TestHostedShellTaskCommandRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	target, selected, err := resolveShortTask("attach", &parsed)
-	if err != nil || !selected || !target.hosted {
+	if err != nil || !selected || !target.Hosted {
 		t.Fatalf("wrong local route: %+v %v", target, err)
 	}
-	o := options{command: "attach", local: true, hosted: true, session: target.name, instance: target.instance}
+	o := options{command: "attach", local: true, hosted: true, session: target.Name, instance: target.Instance}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	c, err := openClientTransportContext(ctx, &o, nil)

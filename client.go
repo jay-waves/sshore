@@ -67,14 +67,12 @@ func newClientSignals(recovering bool) (context.Context, *clientSignals, func())
 
 type clientEvent struct {
 	consoleSource *commandConsole
-	consoleLine   *string
-	consoleOutput []byte
-	consoleClosed bool
+	console       termui.ConsoleEvent
 	inputBarrier  bool
 	inputOffset   uint64
 	keyAction     pty.KeyAction
 	inputFailure  bool
-	m             message
+	m             *message
 	input         []byte
 	output        []byte
 	err           error
@@ -122,7 +120,7 @@ func readAttachmentEvents(ctx context.Context, control attachmentControl, termin
 				}
 				continue
 			}
-			emit(clientEvent{m: m})
+			emit(clientEvent{m: &m})
 			if m.Type == "exit" || m.Type == "detached" || m.Type == "fatal" {
 				return
 			}
@@ -163,7 +161,7 @@ func acceptSessionName(o *options, name string) error {
 	return nil
 }
 
-func runClientOnce(o options, previous string, transports clientTransports, ready func(options)) (resultCode int, resultErr error) {
+func runClientOnce(o options, previous string, rootFrontend bool, transports clientTransports, ready func(options) string) (resultCode int, resultErr error) {
 	attached := false
 	var ended func()
 	// Report after input shutdown and console restoration, including nested returns.
@@ -175,7 +173,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		_, switching := errors.AsType[*sessionSwitch](resultErr)
 		_, approving := errors.AsType[*localApproval](resultErr)
 		if attached && resultErr != nil && !switching && !approving {
-			sessionNotice(termui.Warning, fmt.Sprintf("Disconnected from %s on %s (client code %d; %s). Shell state unconfirmed.", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host), resultCode, sessionDisconnectReason(resultErr)), "")
+			sessionNotice(termui.Warning, fmt.Sprintf("Disconnected from %s (%s). Shell state unconfirmed.", cleanText(shellDisplayEndpoint(o)), sessionDisconnectReason(resultErr)), "")
 		}
 	}()
 	signalCtx, interruptSignals, stopSignals := newClientSignals(o.recovering)
@@ -184,9 +182,9 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	// until the keyboard has stopped and terminal restoration has completed.
 	ctx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
-	if o.list || o.command == "kill" || o.command == "rename" {
+	if o.command == "list" || o.command == "kill" || o.command == "rename" {
 		var target participatingShell
-		if !o.list {
+		if o.command != "list" {
 			var lookupErr error
 			target, lookupErr = participatingMutationTarget(o)
 			if lookupErr != nil {
@@ -314,7 +312,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Connection history not saved: %s\n", cleanText(e.Error()))
 		}
 	}
-	o.shellPID = m.PID
+	shellPID := m.PID
 
 	confirmDetach := func(name string) {
 		terminalStateConfirmed = true
@@ -331,7 +329,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 			return 1, err
 		}
 		started := fmt.Sprintf("Started %s (%s).", cleanText(shellDisplayEndpoint(o)), shellTaskKind(o.temporary))
-		fmt.Fprintln(os.Stdout, termui.StatusLine(termui.ColorEnabled(os.Stdout), termui.Success, started))
+		fmt.Fprintln(os.Stdout, formatSessionNotice(os.Stdout, termui.Info, started))
 		return 0, nil
 	}
 	if !o.local && !o.quiet {
@@ -464,10 +462,17 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	o.recovering = false
 	interruptSignals.interactive.Store(true)
 	attached = true
-	ready(o)
+	from := ready(o)
 	o.handoffHint = nil
 
-	sessionNotice(termui.Success, fmt.Sprintf("Connected %s (%s)", cleanText(shellDisplayEndpoint(o)), shellTaskKind(o.temporary)), "")
+	connected := "Connected " + cleanText(shellDisplayEndpoint(o))
+	if from != "" {
+		connected += " from " + cleanText(from)
+	}
+	if o.command != "attach" {
+		connected += " (" + shellTaskKind(o.temporary) + ")"
+	}
+	sessionNotice(termui.Info, connected, "")
 	color := termui.ColorEnabled(os.Stdout)
 	notice := func(level termui.Color, format string, args ...any) {
 		if console != nil {
@@ -606,7 +611,10 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		request := message{Type: "session_targets", Action: action}
 		if o.local {
 			current := o.session
-			go func() { emit(clientEvent{m: localSessionTargets(current, request)}) }()
+			go func() {
+				targets := localSessionTargets(current, request)
+				emit(clientEvent{m: &targets})
+			}()
 			return nil
 		}
 		return streamMessage(control, request)
@@ -734,17 +742,17 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					continue
 				}
 				switch {
-				case e.consoleOutput != nil:
-					if err := writeFull(terminalOutput, e.consoleOutput); err != nil {
+				case e.console.Output != nil:
+					if err := writeFull(terminalOutput, e.console.Output); err != nil {
 						return 1, err
 					}
-				case e.consoleClosed:
+				case e.console.Closed:
 					if err := leaveConsole(); err != nil {
 						return 255, err
 					}
-				case e.consoleLine != nil:
+				case e.console.Line != nil:
 					if console.confirm {
-						if termui.ConfirmYes(*e.consoleLine) {
+						if termui.ConfirmYes(*e.console.Line) {
 							if !queueDetach() {
 								console.showConfirmation("Terminal input queue is busy. Try again.")
 								continue
@@ -758,7 +766,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						}
 						continue
 					}
-					args := strings.Fields(*e.consoleLine)
+					args := strings.Fields(*e.console.Line)
 					if len(args) > 0 {
 						args[0] = canonicalCommand(args[0])
 					}
@@ -767,7 +775,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						if detachPhase != detachIdle {
 							break
 						}
-						if o.local && o.temporary && o.rootFrontend {
+						if o.local && o.temporary && rootFrontend {
 							clearTransition()
 							console.showConfirmation("")
 							break
@@ -947,7 +955,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					continue
 				}
 				batch := keys.Feed(e.input)
-				if o.local && o.temporary && o.rootFrontend {
+				if o.local && o.temporary && rootFrontend {
 					for i := range batch {
 						if batch[i].Action == pty.KeyDetach {
 							batch[i].Action = pty.KeyConsole
@@ -979,7 +987,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					}
 				}
 
-			} else {
+			} else if e.m != nil {
 				switch e.m.Type {
 				case "spawn_child_error":
 					if pending.timeout != nil && (pending.action == "spawn_child" || pending.action == "launch_child") {
@@ -1167,7 +1175,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						}
 						continue
 					}
-					request, approvalErr := newApprovalRequest(o, e.m.Operations)
+					request, approvalErr := newApprovalRequest(o, shellPID, e.m.Operations)
 					if approvalErr != nil {
 						if err := streamMessage(control, message{Type: "approval_rejected", Token: e.m.Token, Error: approvalErr.Error()}); err != nil {
 							return 255, err
@@ -1216,9 +1224,9 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					}
 					ended = func() {
 						if o.temporary {
-							sessionNotice(termui.Success, fmt.Sprintf("Background; %s on %s ends with the original parent shell.", shellTaskName(cleanText(o.session), true), cleanText(o.host)), "Return: "+cleanText(reconnectCommand(o)))
+							sessionNotice("", "Backgrounded "+cleanText(shellDisplayEndpoint(o))+" until its parent shell exits", "Return: "+cleanText(reconnectCommand(o)))
 						} else {
-							sessionNotice(termui.Success, fmt.Sprintf("Detached; %s on %s keeps running.", shellTaskName(cleanText(o.session), false), cleanText(o.host)), "Reconnect: "+cleanText(reconnectCommand(o)))
+							sessionNotice("", "Detached from "+cleanText(shellDisplayEndpoint(o))+" (still running)", "Reconnect: "+cleanText(reconnectCommand(o)))
 						}
 					}
 					return 0, nil
@@ -1227,17 +1235,18 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					if exitErr := rememberShellExit(o); exitErr != nil {
 						notice(termui.Warning, "\r\n[sshore] Could not record shell exit: %s\r\n", cleanText(exitErr.Error()))
 					}
-					level := termui.Success
+					var level termui.Color
 					if e.m.Code != 0 {
-						level = termui.Warning
+						level = termui.Error
 					}
 					exit := e.m
 					ended = func() {
 						reason := cleanText(exit.Reason)
-						if reason == "" || strings.HasPrefix(reason, "shell exited (code ") {
-							reason = "shell exited"
+						title := fmt.Sprintf("Exited %s (code %d)", cleanText(shellDisplayEndpoint(o)), exit.Code)
+						if reason != "" && !strings.HasPrefix(reason, "shell exited (code ") {
+							title += ": " + reason
 						}
-						sessionNotice(level, fmt.Sprintf("Exited %s on %s (code %d). Reason: %s.", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host), exit.Code, reason), "")
+						sessionNotice(level, title, "")
 					}
 					return e.m.Code, nil
 				case "fatal":
@@ -1267,23 +1276,19 @@ func sessionDisconnectReason(err error) string {
 }
 
 func sessionNotice(level termui.Color, title, detail string) {
-	color := termui.ColorEnabled(os.Stderr)
-	if !term.IsTerminal(int(os.Stderr.Fd())) {
-		if detail != "" {
-			title += "\r\n" + detail
-		}
-		fmt.Fprintf(os.Stderr, "\r\n\r\n\r\n[sshore] %s\r\n\r\n", title)
-		return
-	}
-	if color {
-		title = termui.StatusLine(true, level, title)
-	} else {
-		title = "[sshore] " + title
-	}
+	title = formatSessionNotice(os.Stderr, level, title)
 	if detail != "" {
 		title += "\r\n  " + detail
 	}
-	fmt.Fprintf(os.Stderr, "\r\n\r\n\r\n%s\r\n\r\n", title)
+	fmt.Fprintf(os.Stderr, "\r\n%s\r\n", title)
+}
+
+func formatSessionNotice(f *os.File, level termui.Color, title string) string {
+	if level != "" && termui.ColorEnabled(f) {
+		word, rest, _ := strings.Cut(title, " ")
+		title = termui.Render(true, level, word) + " " + rest
+	}
+	return "[sshore] " + title
 }
 
 // Retain transport options in the reconnect hint, including custom ports and keys.

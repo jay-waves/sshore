@@ -42,8 +42,59 @@ func TestRecentAttachForms(t *testing.T) {
 		t.Fatalf("explicit options overwritten: %+v", o)
 	}
 }
+func TestResolveBareRemoteAttachID(t *testing.T) {
+	activity := activityFixture(t)
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	uid := strings.Repeat("a", 32)
+	shell := options{host: "work", session: "build", instance: uid, server: "sshore"}
+	if err := rememberDetachedAttachment(shell); err != nil {
+		t.Fatal(err)
+	}
+
+	resolve := func(ref string) (selectedTask, cliArguments, error) {
+		t.Helper()
+		parsed, err := parseCLI([]string{ref}, "attach")
+		if err != nil {
+			t.Fatal(err)
+		}
+		target, _, err := resolveShortTask("attach", &parsed)
+		return target, parsed, err
+	}
+	target, parsed, err := resolve(strings.ToUpper(uid))
+	if err != nil || target.Instance != uid || target.Connection == nil || parsed.local ||
+		parsed.operand(0) != shell.host || parsed.operand(1) != uid {
+		t.Fatalf("bare remote ID: %+v %+v %v", target, parsed, err)
+	}
+	target, _, err = resolve(uid[:6])
+	if err != nil || target.Instance != uid || target.Connection == nil {
+		t.Fatalf("short remote ID: %+v %v", target, err)
+	}
+	if _, _, err := resolve("here:" + uid[:6]); err == nil || !strings.Contains(err.Error(), "unknown task") {
+		t.Fatalf("explicit local lookup: %v", err)
+	}
+	localID := uid[:6] + strings.Repeat("b", 26)
+	local := &localShell{shellTask: shellTask{record: localShellRecord{Name: "local", UID: localID}, done: make(chan struct{})}}
+	if err := activity.tasks.register(localID, &nativeShellTask{shell: local}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := resolve(uid[:6]); err == nil || !strings.Contains(err.Error(), "ambiguous task ID") {
+		t.Fatalf("expected ambiguity across local and remote tasks, got %v", err)
+	}
+	target, parsed, err = resolve(localID[:7])
+	if err != nil || !parsed.local || target.Identity != "task:"+localID || target.Connection != nil {
+		t.Fatalf("longer local prefix: %+v %+v %v", target, parsed, err)
+	}
+	shell.host = "other"
+	if err := rememberConnection(shell); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := resolve(uid); err == nil || !strings.Contains(err.Error(), "multiple saved connections") {
+		t.Fatalf("expected ambiguous remote ID, got %v", err)
+	}
+}
+
 func TestRecentAttachMissingAndPerHost(t *testing.T) {
-	activityFixture(t)
+	fixture := activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	for _, r := range []options{{host: "work", session: "eevee", server: "sshore"}, {host: "other", session: "pikachu", server: "sshore"}, {host: "work", session: "snorlax", server: "sshore"}} {
 		if err := rememberConnection(r); err != nil {
@@ -59,14 +110,14 @@ func TestRecentAttachMissingAndPerHost(t *testing.T) {
 			t.Fatalf("%q: %q", host, o.session)
 		}
 	}
-	records, err := readRecentConnections()
+	records, err := fixture.metadata.readRecentConnectionsLocal()
 	if err != nil || len(records) != 2 {
 		t.Fatalf("%+v %v", records, err)
 	}
 }
 
 func TestRecentConnectionsFollowStateDirectory(t *testing.T) {
-	activityFixture(t)
+	fixture := activityFixture(t)
 	first := filepath.Join(t.TempDir(), "first")
 	second := filepath.Join(t.TempDir(), "second")
 	t.Setenv("SSHORE_STATE_DIR", first)
@@ -74,14 +125,14 @@ func TestRecentConnectionsFollowStateDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SSHORE_STATE_DIR", second)
-	if rows, err := readRecentConnections(); err != nil || len(rows) != 0 {
+	if rows, err := fixture.metadata.readRecentConnectionsLocal(); err != nil || len(rows) != 0 {
 		t.Fatalf("new state directory inherited recent connections: %+v %v", rows, err)
 	}
 	if err := rememberConnection(options{host: "two", session: "shell", server: "sshore"}); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("SSHORE_STATE_DIR", first)
-	if rows, err := readRecentConnections(); err != nil || len(rows) != 1 || rows[0].Host != "one" {
+	if rows, err := fixture.metadata.readRecentConnectionsLocal(); err != nil || len(rows) != 1 || rows[0].Host != "one" {
 		t.Fatalf("original recent connections lost: %+v %v", rows, err)
 	}
 }
@@ -142,8 +193,8 @@ func TestRoutedShellConnectionRecovery(t *testing.T) {
 	}
 	if runtime.GOOS != "windows" {
 		// A new daemon revalidates history; the running daemon never reloads live state from files.
-		activityFixture(t)
-		if _, err := readRecentConnections(); err == nil {
+		fixture := activityFixture(t)
+		if _, err := fixture.metadata.readRecentConnectionsLocal(); err == nil {
 			t.Fatal("public route capabilities accepted")
 		}
 	}
@@ -202,32 +253,44 @@ func TestRoutedParentUsesImmutableRemoteIdentity(t *testing.T) {
 }
 
 func TestDetachedMRUPromotionAndPersistence(t *testing.T) {
-	activityFixture(t)
+	fixture := activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	detach := func(name string) {
+	register := func(name, id string) *localShell {
 		t.Helper()
-		if err := rememberDetachedAttachment(options{local: true, taskIdentity: "task:" + name, session: name}); err != nil {
+		shell := &localShell{shellTask: shellTask{
+			record:  localShellRecord{Name: name, UID: id},
+			process: processIdentity{PID: 1},
+			done:    make(chan struct{}),
+		}}
+		if err := fixture.tasks.register(id, &nativeShellTask{shell: shell}); err != nil {
+			t.Fatal(err)
+		}
+		return shell
+	}
+	first := register("first", strings.Repeat("a", 32))
+	assertTarget := func(want *localShell) {
+		t.Helper()
+		o := options{local: true}
+		if err := resolveDetachedAttach(&o); err != nil || o.taskIdentity != want.record.identity() {
+			t.Fatalf("attach selected %q, want %q: %v", o.taskIdentity, want.record.identity(), err)
+		}
+	}
+	assertTarget(first)
+	second := register("second", strings.Repeat("b", 32))
+	if err := resolveDetachedAttach(&options{local: true}); err == nil || !strings.Contains(err.Error(), "multiple local shells") {
+		t.Fatalf("automatic attach selected an unrecorded shell: %v", err)
+	}
+	for _, shell := range []*localShell{first, second, first} {
+		if err := rememberDetachedAttachment(options{local: true, taskIdentity: shell.record.identity(), session: shell.record.Name}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	detach("first")
-	detach("second")
-	detach("first")
-	reply, err := metadataRPC(metadataRequest{Action: "attach_get", Local: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	names := []string{}
-	for _, r := range reply.Attachments {
-		names = append(names, r.Name)
-	}
-	if !reflect.DeepEqual(names, []string{"first", "second"}) {
-		t.Fatal(names)
-	}
-	// Reloading persisted history preserves ordering without promoting an entry.
-	activityFixture(t)
-	reloaded, err := metadataRPC(metadataRequest{Action: "attach_get", Local: true})
-	if err != nil || !reflect.DeepEqual(reloaded.Attachments, reply.Attachments) {
-		t.Fatalf("reload: %+v %v", reloaded.Attachments, err)
-	}
+	assertTarget(first)
+
+	// Reload the history while keeping both task registrations for the test.
+	reloaded := activityFixture(t)
+	reloaded.tasks = fixture.tasks
+	assertTarget(first)
+	first.active = &attachment{}
+	assertTarget(second)
 }

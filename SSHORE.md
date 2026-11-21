@@ -77,7 +77,9 @@ For `list`, the daemon combines registered tasks and active incoming resources.
 Plain and JSON output use the same task data. `list HOST:` reads the local daemon’s
 records of shells used from this client and local resources targeting HOST.
 A shell connection refreshes the known shells against the host’s live list.
-For `HOST:ID`, that same host resolves the selector against its current registrations.
+The local daemon resolves implicit attach targets from detach history and live
+local registrations. For `HOST:ID`, the named host resolves the selector against
+its current registrations.
 A client can use a remote ID without running `list` first. See [inventory](inventory.go),
 [tree rendering](pstree.go) and [daemon metadata](daemon_metadata.go).
 

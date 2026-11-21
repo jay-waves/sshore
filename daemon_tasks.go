@@ -18,7 +18,7 @@ import (
 // never reconstructed after a daemon restart.
 type daemonTask interface {
 	taskName() string
-	expired(time.Time) bool
+	expired() bool
 }
 
 var errDaemonDraining = errors.New("daemon is shutting down")
@@ -34,8 +34,8 @@ type nativeShellTask struct {
 	serve func(net.Conn, message) error
 }
 
-func (t *nativeShellTask) taskName() string           { return t.shell.taskName() }
-func (t *nativeShellTask) expired(now time.Time) bool { return t.shell.expired(now) }
+func (t *nativeShellTask) taskName() string { return t.shell.taskName() }
+func (t *nativeShellTask) expired() bool    { return t.shell.expired() }
 
 func (s *daemonTasks) register(id string, task daemonTask) error {
 	if !validTaskUID(id) {
@@ -46,11 +46,10 @@ func (s *daemonTasks) register(id string, task daemonTask) error {
 	if s.draining {
 		return errDaemonDraining
 	}
-	now := time.Now()
-	if s.lookupLocked(id, now) != nil {
+	if s.lookupLocked(id) != nil {
 		return fmt.Errorf("task already exists")
 	}
-	if err := s.checkNameLocked("", task.taskName(), now); err != nil {
+	if err := s.checkNameLocked("", task.taskName()); err != nil {
 		return err
 	}
 	if s.records == nil {
@@ -60,8 +59,8 @@ func (s *daemonTasks) register(id string, task daemonTask) error {
 	return nil
 }
 
-func (s *daemonTasks) checkNameLocked(except, name string, now time.Time) error {
-	for id, task := range s.liveLocked(now) {
+func (s *daemonTasks) checkNameLocked(except, name string) error {
+	for id, task := range s.liveLocked() {
 		if id != except && task.taskName() == name {
 			return fmt.Errorf("%s: %w", name, errObjectNameInUse)
 		}
@@ -69,12 +68,11 @@ func (s *daemonTasks) checkNameLocked(except, name string, now time.Time) error 
 	return nil
 }
 
-// The caller holds the task table lock. Every scan uses the same expiry time
-// and removes expired entries as it passes them.
-func (s *daemonTasks) liveLocked(now time.Time) iter.Seq2[string, daemonTask] {
+// The caller holds the task table lock. Scans remove finished entries.
+func (s *daemonTasks) liveLocked() iter.Seq2[string, daemonTask] {
 	return func(yield func(string, daemonTask) bool) {
 		for id, task := range s.records {
-			if task.expired(now) {
+			if task.expired() {
 				delete(s.records, id)
 				continue
 			}
@@ -87,9 +85,9 @@ func (s *daemonTasks) liveLocked(now time.Time) iter.Seq2[string, daemonTask] {
 
 // The caller holds the task table lock. A targeted lookup need only retire
 // the requested entry; global scans remain responsible for other entries.
-func (s *daemonTasks) lookupLocked(id string, now time.Time) daemonTask {
+func (s *daemonTasks) lookupLocked(id string) daemonTask {
 	task := s.records[id]
-	if task != nil && task.expired(now) {
+	if task != nil && task.expired() {
 		delete(s.records, id)
 		return nil
 	}
@@ -99,14 +97,14 @@ func (s *daemonTasks) lookupLocked(id string, now time.Time) daemonTask {
 func (s *daemonTasks) lookup(id string) daemonTask {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.lookupLocked(id, time.Now())
+	return s.lookupLocked(id)
 }
 
 func liveTasks[T daemonTask](s *daemonTasks) []T {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var result []T
-	for _, task := range s.liveLocked(time.Now()) {
+	for _, task := range s.liveLocked() {
 		if t, ok := task.(T); ok {
 			result = append(result, t)
 		}
@@ -117,32 +115,31 @@ func liveTasks[T daemonTask](s *daemonTasks) []T {
 func (s *daemonTasks) Busy() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pruneLocked(time.Now())
+	s.pruneLocked()
 	return len(s.records) != 0
 }
 
-func (s *daemonTasks) pruneLocked(now time.Time) {
-	for range s.liveLocked(now) {
+func (s *daemonTasks) pruneLocked() {
+	for range s.liveLocked() {
 	}
 }
 
 func (s *daemonTasks) availableName(uid, requested string, reuse bool) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now()
 	except := ""
 	if reuse {
 		except = uid
 	}
 	if requested != "" {
-		if s.checkNameLocked(except, requested, now) != nil {
+		if s.checkNameLocked(except, requested) != nil {
 			return ""
 		}
 		return requested
 	}
 	// An automatic name can only collide with prefixes of this UID.
 	var taken [33]bool
-	for id, task := range s.liveLocked(now) {
+	for id, task := range s.liveLocked() {
 		if id == except {
 			continue
 		}
@@ -203,13 +200,12 @@ func serveTaskCommand(c net.Conn, serve func(net.Conn, message) error) {
 func (s *daemonTasks) findNativeShell(ref, identity string) (*nativeShellTask, localShellRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now()
 	if identity != "" {
 		id := canonicalTaskUID(identity)
 		if id == "" {
 			return nil, localShellRecord{}, nil
 		}
-		task, ok := s.lookupLocked(id, now).(*nativeShellTask)
+		task, ok := s.lookupLocked(id).(*nativeShellTask)
 		if !ok {
 			return nil, localShellRecord{}, nil
 		}
@@ -221,13 +217,13 @@ func (s *daemonTasks) findNativeShell(ref, identity string) (*nativeShellTask, l
 	}
 	prefix := shortTaskPrefix(ref)
 	if validTaskUID(prefix) {
-		if task, ok := s.lookupLocked(prefix, now).(*nativeShellTask); ok {
+		if task, ok := s.lookupLocked(prefix).(*nativeShellTask); ok {
 			return task, task.snapshot(), nil
 		}
 		prefix = "" // A full UID that did not match can still be an alias.
 	}
 	var nameTask, prefixTask *nativeShellTask
-	for id, candidate := range s.liveLocked(now) {
+	for id, candidate := range s.liveLocked() {
 		task, ok := candidate.(*nativeShellTask)
 		if !ok {
 			continue
@@ -273,11 +269,9 @@ func (change resourceMutation) confirmedUID() string {
 }
 
 type resourceReply struct {
-	Unchanged bool `json:",omitempty"`
-	Status    resourceStatus
-	Records   []resourceRecord `json:",omitempty"`
-	Error     string           `json:",omitempty"`
-	Failures  []string         `json:",omitempty"`
+	Status   resourceStatus
+	Error    string   `json:",omitempty"`
+	Failures []string `json:",omitempty"`
 }
 
 // A mount owns a child process; a forward owns an in-process executor. Both
@@ -288,7 +282,6 @@ type daemonResourceTask struct {
 	done          <-chan struct{}
 	control       func(string) resourceReply
 	statusPending atomic.Bool
-	finalizing    bool
 	stopMu        sync.Mutex
 	stopAccepted  bool // Protected by stopMu.
 }
@@ -298,7 +291,7 @@ func (t *daemonResourceTask) taskName() string {
 	defer t.mu.Unlock()
 	return t.record.Name
 }
-func (t *daemonResourceTask) expired(time.Time) bool {
+func (t *daemonResourceTask) expired() bool {
 	select {
 	case <-t.done:
 		return true
@@ -390,7 +383,7 @@ func probeResourceStatus(ctx context.Context, workers []*daemonResourceTask, emi
 }
 
 func (task *daemonResourceTask) readStatus() resourceStatusRow {
-	if task.expired(time.Now()) || !task.statusPending.CompareAndSwap(false, true) {
+	if task.expired() || !task.statusPending.CompareAndSwap(false, true) {
 		return resourceStatusRow{}
 	}
 	// A blocked worker can retain one probe across concurrent inventories.
@@ -407,7 +400,7 @@ const resourceStopTimeout = 20 * time.Second
 func (t *daemonResourceTask) requestStop() error {
 	t.stopMu.Lock()
 	defer t.stopMu.Unlock()
-	if t.stopAccepted || t.expired(time.Time{}) {
+	if t.stopAccepted || t.expired() {
 		return nil
 	}
 	reply := t.control("kill")
@@ -437,11 +430,10 @@ func (t *daemonResourceTask) stop(timeout time.Duration) error {
 	}
 }
 
-func (t *daemonResourceTask) finalName() string {
+func (t *daemonResourceTask) finish(done chan struct{}) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.finalizing = true
-	return t.record.Name
+	close(done)
 }
 
 // Startup supplies runtime details. The task table owns identity and naming.
@@ -474,7 +466,7 @@ func (s *daemonTasks) taskInventory(request taskInventoryRequest) (taskInventory
 	var groups []int
 	var workers []*daemonResourceTask
 	s.mu.Lock()
-	for _, task := range s.liveLocked(time.Now()) {
+	for _, task := range s.liveLocked() {
 		switch t := task.(type) {
 		case *nativeShellTask:
 			if request.Native {
@@ -510,10 +502,11 @@ func (s *daemonTasks) serveResourceMutation(w http.ResponseWriter, r *http.Reque
 	if !readDaemonBody(w, r, &mutation) {
 		return
 	}
-	reply, task, err := s.mutateResource(r.PathValue("action"), mutation)
+	task, err := s.mutateResource(r.PathValue("action"), mutation)
 	if err == nil && task != nil {
 		err = task.stop(resourceStopTimeout)
 	}
+	var reply resourceReply
 	if err != nil {
 		reply.Error = err.Error()
 	}
@@ -521,44 +514,42 @@ func (s *daemonTasks) serveResourceMutation(w http.ResponseWriter, r *http.Reque
 }
 
 // A stop returns the exact registered worker to stop outside the task table
-// lock. Renames and request removals complete under the same lock as lookup.
-func (s *daemonTasks) mutateResource(action string, change resourceMutation) (resourceReply, *daemonResourceTask, error) {
+// lock. Renames complete under the same lock as lookup.
+func (s *daemonTasks) mutateResource(action string, change resourceMutation) (*daemonResourceTask, error) {
 	if action != "kill" && action != "rename" {
-		return resourceReply{}, nil, fmt.Errorf("invalid resource operation")
+		return nil, fmt.Errorf("invalid resource operation")
 	}
 	if err := validSession(change.Ref); err != nil {
-		return resourceReply{}, nil, err
+		return nil, err
 	}
 	if action == "rename" {
 		if err := validAlias(change.NewName); err != nil {
-			return resourceReply{}, nil, err
+			return nil, err
 		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now()
-	id, target, err := s.resolveResourceLocked(change, now)
+	id, task, err := s.resolveResourceLocked(change)
 	if err != nil {
-		return resourceReply{}, nil, err
+		return nil, err
 	}
 
-	task := target.(*daemonResourceTask)
 	if action == "kill" {
-		return resourceReply{}, task, nil
+		return task, nil
 	}
-	if err := s.checkNameLocked(id, change.NewName, now); err != nil {
-		return resourceReply{}, nil, err
+	if err := s.checkNameLocked(id, change.NewName); err != nil {
+		return nil, err
 	}
 	task.mu.Lock()
 	defer task.mu.Unlock()
-	if task.finalizing {
-		return resourceReply{}, nil, fmt.Errorf("task is exiting; refresh with sshore list")
+	if task.expired() {
+		return nil, fmt.Errorf("task is exiting; refresh with sshore list")
 	}
 	task.record.Name = change.NewName
-	return resourceReply{}, nil, nil
+	return nil, nil
 }
 
-func (s *daemonTasks) resolveResourceLocked(change resourceMutation, now time.Time) (string, daemonTask, error) {
+func (s *daemonTasks) resolveResourceLocked(change resourceMutation) (string, *daemonResourceTask, error) {
 	switch change.Kind {
 	case "mount", "forward":
 	default:
@@ -567,25 +558,23 @@ func (s *daemonTasks) resolveResourceLocked(change resourceMutation, now time.Ti
 	if change.Identity != "" {
 		id := change.confirmedUID()
 		if id != "" {
-			if task := s.confirmedResourceLocked(change, id, now); task != nil {
+			if task := s.confirmedResourceLocked(change, id); task != nil {
 				return id, task, nil
 			}
 		}
 		return "", nil, fmt.Errorf("task changed; refresh with sshore list")
 	}
-	id, task := s.findResourceLocked(change, now)
+	id, task := s.findResourceLocked(change)
 	if task == nil {
 		return "", nil, fmt.Errorf("%s/%s no longer exists; refresh with sshore list", change.Kind, change.Ref)
 	}
 	return id, task, nil
 }
 
-func (s *daemonTasks) confirmedResourceLocked(change resourceMutation, id string, now time.Time) daemonTask {
-	switch task := s.lookupLocked(id, now).(type) {
-	case *daemonResourceTask:
-		if (change.Kind == "mount" || change.Kind == "forward") && task.matches(change) {
-			return task
-		}
+func (s *daemonTasks) confirmedResourceLocked(change resourceMutation, id string) *daemonResourceTask {
+	task, _ := s.lookupLocked(id).(*daemonResourceTask)
+	if task != nil && task.matches(change) {
+		return task
 	}
 	return nil
 }
@@ -598,13 +587,13 @@ func (t *daemonResourceTask) matches(change resourceMutation) bool {
 		(change.Identity == "" || resourceIdentity(r) == change.Identity)
 }
 
-func (s *daemonTasks) findResourceLocked(change resourceMutation, now time.Time) (string, *daemonResourceTask) {
+func (s *daemonTasks) findResourceLocked(change resourceMutation) (string, *daemonResourceTask) {
 	if validTaskUID(change.Ref) {
-		if task, ok := s.lookupLocked(change.Ref, now).(*daemonResourceTask); ok && task.matches(change) {
+		if task, ok := s.lookupLocked(change.Ref).(*daemonResourceTask); ok && task.matches(change) {
 			return change.Ref, task
 		}
 	}
-	for id, registered := range s.liveLocked(now) {
+	for id, registered := range s.liveLocked() {
 		if task, ok := registered.(*daemonResourceTask); ok && task.matches(change) {
 			return id, task
 		}
@@ -612,15 +601,12 @@ func (s *daemonTasks) findResourceLocked(change resourceMutation, now time.Time)
 	return "", nil
 }
 
-// Resolve all confirmed identities before removing requests or stopping workers.
+// Resolve all confirmed identities before stopping any workers.
 func (s *daemonTasks) confirmedResourceStops(changes []resourceMutation) ([]*daemonResourceTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now()
 	stops := make([]*daemonResourceTask, len(changes))
-	// Membership detects duplicates. The value identifies requests to remove
-	// once every selected task has been verified.
-	selected := make(map[string]bool, len(changes))
+	selected := make(map[string]struct{}, len(changes))
 	for i, change := range changes {
 		id := change.confirmedUID()
 		_, duplicate := selected[id]
@@ -629,12 +615,12 @@ func (s *daemonTasks) confirmedResourceStops(changes []resourceMutation) ([]*dae
 		}
 		switch change.Kind {
 		case "mount", "forward":
-			task, ok := s.confirmedResourceLocked(change, id, now).(*daemonResourceTask)
-			if !ok {
+			task := s.confirmedResourceLocked(change, id)
+			if task == nil {
 				return nil, fmt.Errorf("%s/%s changed; review again", change.Kind, change.Ref)
 			}
 			stops[i] = task
-			selected[id] = false
+			selected[id] = struct{}{}
 		default:
 			return nil, fmt.Errorf("invalid confirmed resource type")
 		}
@@ -656,19 +642,15 @@ func (s *daemonTasks) serveConfirmedResourceStops(w http.ResponseWriter, r *http
 	failures := make([]string, len(stops))
 	// Each worker owns its result slot and can signal even if the caller leaves.
 	finished := make(chan struct{}, len(stops))
-	pending := 0
 	for i, task := range stops {
-		if task != nil {
-			pending++
-			go func() {
-				if err := task.stop(resourceStopTimeout); err != nil {
-					failures[i] = err.Error()
-				}
-				finished <- struct{}{}
-			}()
-		}
+		go func() {
+			if err := task.stop(resourceStopTimeout); err != nil {
+				failures[i] = err.Error()
+			}
+			finished <- struct{}{}
+		}()
 	}
-	for range pending {
+	for range stops {
 		select {
 		case <-finished:
 		case <-r.Context().Done():

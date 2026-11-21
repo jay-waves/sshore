@@ -192,10 +192,10 @@ func TestTaskTableFitsLongDestinationAroundIDAndState(t *testing.T) {
 func TestInventoryHostGroups(t *testing.T) {
 	activityFixture(t)
 	var out bytes.Buffer
-	inv := inventory{Host: "server", RemoteQueried: true,
+	inv := inventory{Host: "server",
 		Shells: []shellView{{Name: "build", State: "detached"}},
 		Resources: []resourceView{
-			{ID: "mount/local", Host: "server", Worker: "running", local: true},
+			{ID: "mount/local", Host: "server", Worker: "running"},
 			{ID: "forward/remote", Host: "upstream", Worker: "running"},
 		},
 		Peers: []peerView{{ID: "peer/abcd1234/mount/work", Manager: "laptop", State: "unknown"}},
@@ -210,7 +210,7 @@ func TestInventoryHostGroups(t *testing.T) {
 		t.Fatal("internal peer key in compact view")
 	}
 	group := ""
-	wantGroup := map[string]string{"(build)": "server", "(local)": "local", "(remote)": "server", "(work)": "laptop"}
+	wantGroup := map[string]string{"(build)": "server", "(local)": "local", "(remote)": "local", "(work)": "laptop"}
 	for _, line := range strings.Split(out.String(), "\n") {
 		if strings.HasPrefix(line, "HOST  ") {
 			group, _, _ = strings.Cut(strings.TrimPrefix(line, "HOST  "), " · ")

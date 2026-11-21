@@ -58,10 +58,7 @@ func resourceIdentity(r resourceRecord) string {
 	if validTaskUID(r.UID) {
 		return "task:" + r.UID
 	}
-	if r.Token == "" {
-		return ""
-	}
-	return fmt.Sprintf("%s:%x", r.Kind, sha256.Sum256([]byte(r.Token)))
+	return ""
 }
 
 func remoteShellIdentity(host, instance string) string {

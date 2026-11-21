@@ -139,7 +139,7 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	wait("FULLSCREEN_ready")
 	send("\x02d")
 	wait("\x1b[?1049l")
-	wait("Detached;")
+	wait("Detached from ")
 	wait("OUTER_detached")
 	rows := e.shells(t)
 	if len(rows) != 1 || rows[0].PID == 0 || rows[0].State != "detached" {

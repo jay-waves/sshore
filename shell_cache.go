@@ -66,20 +66,6 @@ func rememberDetachedAttachment(o options) error {
 	return err
 }
 
-func (m *daemonMetadata) detachedAttachmentCandidates(local bool, host string) ([]recentAttachment, error) {
-	if err := m.loadDetachedAttachments(); err != nil {
-		return nil, err
-	}
-	var rows []recentAttachment
-	for _, row := range m.attachments.rows {
-		if row.inScope(local, host) {
-			row.Connection = row.Connection.clone()
-			rows = append(rows, row)
-		}
-	}
-	return rows, nil
-}
-
 func removeRecentDetach(o options) error {
 	id := o.taskIdentity
 	if id == "" {
@@ -106,59 +92,57 @@ func (m *daemonMetadata) removeRecentDetachLocal(id string) error {
 }
 
 func resolveDetachedAttach(o *options) error {
-	reply, err := metadataRPC(metadataRequest{Action: "attach_get", Local: o.local, Host: o.host})
-	if err != nil {
+	reply, err := metadataRPC(metadataRequest{Action: "attach_recent", Local: o.local, Host: o.host})
+	if err != nil || reply.Target == nil {
 		return err
 	}
-	var locals []localShellView
-	if slices.ContainsFunc(reply.Attachments, func(row recentAttachment) bool { return row.Local }) {
-		locals, err = localShells(false)
-		if err != nil {
-			return err
-		}
+	target := reply.Target
+	o.session, o.taskIdentity, o.instance, o.hosted = target.Name, target.Identity, target.Instance, target.Hosted
+	if route := target.Connection; route != nil {
+		o.host = route.Host
+		applyConnectionOptions(o, *route)
 	}
-	selectDetachedAttach(o, reply.Attachments, locals)
 	return nil
 }
 
-func selectDetachedAttach(o *options, rows []recentAttachment, locals []localShellView) bool {
-	detached := make(map[string]localShellView)
-	for _, local := range locals {
-		if _, exists := detached[local.identity]; !exists && local.State == "detached" {
-			detached[local.identity] = local
-		}
+func (a *daemonActivity) selectDetachedAttach(local bool, host string) (*selectedTask, error) {
+	if err := a.metadata.loadDetachedAttachments(); err != nil {
+		return nil, err
 	}
-	for _, row := range rows {
-		if !row.inScope(o.local, o.host) {
-			continue
-		}
-		if row.Local {
-			if local, ok := detached[row.Identity]; ok {
-				o.local, o.hosted = true, local.hosted
-				o.host, o.session, o.taskIdentity = "local", local.Name, local.identity
-				if local.hosted {
-					o.instance = canonicalTaskUID(local.identity)
-				}
-				return true
+	history := a.metadata.attachments.rows
+	if !local {
+		for _, row := range history {
+			if route := row.Connection; route != nil && route.Host == host {
+				return &selectedTask{Name: row.Name, Identity: row.Identity, Instance: route.Instance, Connection: route.clone()}, nil
 			}
-		} else if row.Connection != nil {
-			o.host, o.session, o.instance = row.Connection.Host, row.Name, row.Connection.Instance
-			o.taskIdentity = row.Identity
-			applyConnectionOptions(o, *row.Connection)
-			return true
+		}
+		return nil, nil
+	}
+
+	snapshot, _ := a.tasks.taskInventory(taskInventoryRequest{Native: true, Hosted: true, Detail: "health"})
+	detached := make(map[string]*selectedTask)
+	for _, row := range snapshot.localShells() {
+		if row.State == "detached" {
+			target := &selectedTask{Name: row.Name, Identity: row.identity, Hosted: row.hosted}
+			if row.hosted {
+				target.Instance = canonicalTaskUID(row.identity)
+			}
+			detached[row.identity] = target
 		}
 	}
-	return false
-}
-
-// Host selection filters the global order; local shells are selected globally
-// or explicitly by identity, without a separate public local scope.
-func (r recentAttachment) inScope(local bool, host string) bool {
-	if local {
-		return r.Local
+	for _, row := range history {
+		if target := detached[row.Identity]; row.Local && target != nil {
+			return target, nil
+		}
 	}
-	if host == "" {
-		return true
+	// A registered shell can be detached without a saved history entry.
+	switch len(detached) {
+	case 0:
+		return nil, fmt.Errorf("no detached local shells; use sshore launch")
+	case 1:
+		for _, target := range detached {
+			return target, nil
+		}
 	}
-	return !r.Local && r.Connection != nil && r.Connection.Host == host
+	return nil, fmt.Errorf("multiple local shells; use sshore list, then sshore attach :ID")
 }

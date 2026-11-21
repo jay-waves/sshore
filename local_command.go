@@ -56,45 +56,23 @@ func localShells(withDirectory bool) ([]localShellView, error) {
 	if err != nil {
 		return nil, err
 	}
+	return snapshot.localShells(), nil
+}
+
+func (snapshot taskInventorySnapshot) localShells() []localShellView {
 	rows := snapshot.nativeShells()
 	for _, s := range snapshot.Shells {
 		identity := s.identity("local")
 		rows = append(rows, localShellView{hosted: true, Lifetime: s.Lifetime, Temporary: s.Temporary, ShortID: taskShortCode(identity), identity: identity, Name: s.Name, State: s.State, PID: s.PID, Directory: s.Directory})
 	}
 	sortLocalShells(rows)
-	return rows, nil
+	return rows
 }
 
 func sortLocalShells(rows []localShellView) {
 	slices.SortStableFunc(rows, func(a, b localShellView) int {
 		return cmp.Compare(taskUID(a.identity), taskUID(b.identity))
 	})
-}
-
-func resolveLocalAttach(o *options) error {
-	if o.command == "attach" && o.session == "" {
-		rows, err := localShells(false)
-		if err != nil {
-			return err
-		}
-		for _, r := range rows {
-			if r.State != "detached" {
-				continue
-			}
-			if o.session != "" {
-				return fmt.Errorf("multiple local shells; use sshore list, then sshore attach :ID")
-			}
-			o.session = r.Name
-			o.hosted, o.taskIdentity = r.hosted, r.identity
-			if r.hosted {
-				o.instance = canonicalTaskUID(r.identity)
-			}
-		}
-		if o.session == "" {
-			return fmt.Errorf("no detached local shells; use sshore launch")
-		}
-	}
-	return nil
 }
 
 func runLocalCommand(o options) (int, error) {

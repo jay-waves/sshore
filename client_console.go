@@ -39,7 +39,7 @@ func (c *commandConsole) start(ctx context.Context, out io.Writer, send func(cli
 	}
 	prompt := termui.FormatPrompt(color, "sshore> ")
 	c.editor = termui.StartConsole(ctx, prompt, width, color, func(e termui.ConsoleEvent) {
-		send(clientEvent{consoleSource: c, consoleOutput: e.Output, consoleLine: e.Line, consoleClosed: e.Closed})
+		send(clientEvent{consoleSource: c, console: e})
 	})
 }
 

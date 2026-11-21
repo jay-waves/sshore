@@ -21,21 +21,10 @@ import (
 )
 
 type resourceRecord struct {
-	UID                                                                   string `json:",omitempty"`
-	Kind, Detail, Name, Host, Remote, Mountpoint, Address, Token, Version string
-	ReadOnly                                                              bool
-	Direction                                                             string `json:",omitempty"`
-	slot                                                                  string
-}
-
-func (r resourceRecord) storageName() string {
-	if validTaskUID(r.UID) {
-		return r.UID
-	}
-	if r.slot != "" {
-		return r.slot
-	}
-	return r.Name
+	UID                                                   string `json:",omitempty"`
+	Kind, Detail, Name, Host, Remote, Mountpoint, Version string
+	ReadOnly                                              bool
+	Direction                                             string `json:",omitempty"`
 }
 
 type resourceStartup struct {

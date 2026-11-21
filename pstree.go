@@ -278,11 +278,12 @@ func (n shellTreeNode) strongerEvidenceThan(old shellTreeNode) bool {
 	return n.CheckedAt.After(old.CheckedAt)
 }
 
-func knownShellTrees() []shellTreeNode {
-	r, _ := metadataRPC(metadataRequest{Action: "tree_list"})
-	return r.Tree
-}
-func (m *daemonMetadata) knownShellTreesLocal() []shellTreeNode {
+func (m *daemonMetadata) knownShellTrees() ([]shellTreeNode, error) {
+	m.treeMu.Lock()
+	defer m.treeMu.Unlock()
+	if err := m.loadTrees(); err != nil {
+		return nil, err
+	}
 	byID := make(map[string]int, len(m.trees))
 	result := make([]shellTreeNode, 0, len(m.trees))
 	// Visit files in a fixed order so otherwise equal evidence has a stable tie.
@@ -303,7 +304,7 @@ func (m *daemonMetadata) knownShellTreesLocal() []shellTreeNode {
 		result[i] = result[i].clone()
 		result[i].Cached = true
 	}
-	return result
+	return result, nil
 }
 
 func shellTreeFor(id string) []shellTreeNode {

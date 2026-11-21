@@ -595,14 +595,13 @@ func runDaemonMount(config resourceConfig, enc *json.Encoder, dec *json.Decoder,
 		return err
 	}
 	if err = cmd.Start(); err != nil {
-		close(finished)
+		task.finish(finished)
 		return err
 	}
 	childOutput.Close()
 	go func() {
-		defer close(finished)
 		_ = cmd.Wait()
-		task.finalName()
+		task.finish(finished)
 	}()
 	defer func() {
 		input.Close()
@@ -699,8 +698,7 @@ func runDaemonForward(config resourceConfig, enc *json.Encoder, dec *json.Decode
 		acknowledgeResourceStartup(enc, c)
 		return nil
 	})
-	task.finalName()
-	s.finish()
+	task.finish(s.done)
 	return err
 }
 

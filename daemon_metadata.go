@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
 // History is persisted by the daemon; running clients never coordinate through
@@ -99,27 +101,44 @@ type metadataRequest struct {
 	Participation                            *participationRefresh
 }
 type metadataReply struct {
-	Attachments  []recentAttachment
+	Target       *selectedTask     `json:",omitempty"`
 	Connection   *recentConnection `json:",omitempty"`
-	Connections  []recentConnection
 	Participants []participatingShell
 	Tree         []shellTreeNode
 	Error        string
 }
 
 func metadataRPC(r metadataRequest) (metadataReply, error) {
-	reply, err := activityRPC(activityRequest{Kind: "metadata", Metadata: &r})
-	if err != nil {
-		return metadataReply{}, err
+	var reply metadataReply
+	if !activityAllowed() {
+		switch r.Action {
+		case "tree_get", "connection_select", "participation_get":
+			if _, err := existingDaemonRecord(); os.IsNotExist(err) {
+				return reply, nil
+			}
+		default:
+			return reply, fmt.Errorf("daemon activity is disabled in recovery mode")
+		}
 	}
-	if reply.Metadata == nil {
-		return metadataReply{}, fmt.Errorf("daemon metadata response missing")
+	if activity := accountActivity.Load(); activity != nil {
+		reply = activity.handleMetadata(r)
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		record, err := activityDaemon(ctx)
+		if err != nil {
+			return reply, err
+		}
+		if err := daemonJSON(ctx, record, "/metadata", r, &reply); err != nil {
+			return reply, err
+		}
 	}
-	if reply.Metadata.Error != "" {
-		return *reply.Metadata, fmt.Errorf("%s", reply.Metadata.Error)
+	if reply.Error != "" {
+		return reply, fmt.Errorf("%s", reply.Error)
 	}
-	return *reply.Metadata, nil
+	return reply, nil
 }
+
 func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply) {
 	s := &a.metadata
 	tree := strings.HasPrefix(r.Action, "tree_")
@@ -136,20 +155,16 @@ func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply)
 	}
 	var err error
 	switch r.Action {
-	case "attach_get":
-		reply.Attachments, err = s.detachedAttachmentCandidates(r.Local, r.Host)
+	case "attach_by_id":
+		reply.Target, err = a.resolveBareAttachID(r.Instance)
+	case "attach_recent":
+		reply.Target, err = a.selectDetachedAttach(r.Local, r.Host)
 	case "attach_detach":
 		if r.Attachment != nil {
 			err = s.rememberDetachedAttachmentLocal(*r.Attachment)
 		}
 	case "attach_remove":
 		err = s.removeRecentDetachLocal(r.Key)
-	case "connection_get":
-		var records []recentConnection
-		records, err = s.readRecentConnectionsLocal()
-		for _, record := range records {
-			reply.Connections = append(reply.Connections, *record.clone())
-		}
 	case "connection_select":
 		reply.Connection, err = s.selectRecentConnection(r.Host, r.Instance, r.Direct)
 	case "connection_save":
@@ -162,8 +177,6 @@ func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply)
 		err = s.updateParticipation(r)
 	case "tree_get":
 		reply.Tree = cloneShellTree(s.treeChain(r.Key))
-	case "tree_list":
-		reply.Tree = s.knownShellTreesLocal()
 	case "tree_save":
 		s.saveShellTreeLocal(r.Key, r.Name, r.Tree, r.State, r.OwnerProcess, r.Lifetime...)
 	case "tree_remember":
@@ -288,10 +301,6 @@ func (c *recentConnection) clone() *recentConnection {
 	return &cloned
 }
 
-func readRecentConnections() ([]recentConnection, error) {
-	r, err := metadataRPC(metadataRequest{Action: "connection_get"})
-	return r.Connections, err
-}
 func (m *daemonMetadata) readRecentConnectionsLocal() ([]recentConnection, error) {
 	if err := m.connections.load("recent.json", 128*1024, validateRecentConnection); err != nil {
 		return nil, fmt.Errorf("cannot read recent connections: %w", err)
@@ -329,6 +338,30 @@ func validateRecentConnection(r recentConnection) error {
 	}
 	return nil
 }
+
+// A bare ID resolves among registered local shells and known direct SSH routes.
+func (a *daemonActivity) resolveBareAttachID(ref string) (*selectedTask, error) {
+	if !isTaskIDPrefix(ref) {
+		return nil, fmt.Errorf("invalid task ID")
+	}
+	records, err := a.metadata.readRecentConnectionsLocal()
+	if err != nil {
+		return nil, err
+	}
+	if err := a.metadata.loadDetachedAttachments(); err != nil {
+		return nil, err
+	}
+	routes := slices.Clone(records)
+	for _, row := range a.metadata.attachments.rows {
+		if row.Connection != nil {
+			routes = append(routes, *row.Connection)
+		}
+	}
+	snapshot, _ := a.tasks.taskInventory(taskInventoryRequest{Native: true, Hosted: true, Detail: "health"})
+	target, err := selectTask(snapshot, "", ref, routes)
+	return &target, err
+}
+
 func (m *daemonMetadata) rememberConnectionLocal(record recentConnection) error {
 	if err := validateRecentConnection(record); err != nil {
 		return err

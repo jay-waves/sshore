@@ -14,7 +14,6 @@ import (
 )
 
 type resourceView struct {
-	local      bool   // Set only for records inspected by this process; never sent over the wire.
 	ShortID    string `json:"short_id,omitempty"`
 	Identity   string `json:"identity,omitempty"`
 	ID         string `json:"id"`
@@ -72,7 +71,7 @@ type inventory struct {
 	LocalShells   []localShellView `json:"local_shells,omitempty"`
 	Version       string           `json:"version"`
 	Host          string           `json:"host,omitempty"`
-	RemoteQueried bool             `json:"remote_queried"`
+	RemoteQueried bool             `json:"remote_queried"` // Legacy JSON key. Inventory reads the local daemon.
 	Resources     []resourceView   `json:"resources"`
 	Shells        []shellView      `json:"shells"`
 	Peers         []peerView       `json:"peers"`
@@ -83,8 +82,8 @@ func emptyInventory() inventory {
 	return inventory{Version: version, Resources: []resourceView{}, Shells: []shellView{}, Peers: []peerView{}, Errors: []string{}}
 }
 func viewRecord(r resourceRecord) resourceView {
-	v := resourceView{local: true, Identity: resourceIdentity(r), ID: r.Kind + "/" + r.Name, Host: r.Host, Kind: r.Kind, Direction: r.Direction, Worker: "unavailable", Detail: r.Detail, resourceStatus: resourceStatus{Version: r.Version, Transport: "unknown", Target: "unchecked"}}
-	if log, err := statePath(filepath.Join(r.Kind+"s", r.storageName()+".log")); err == nil {
+	v := resourceView{Identity: resourceIdentity(r), ID: r.Kind + "/" + r.Name, Host: r.Host, Kind: r.Kind, Direction: r.Direction, Worker: "unavailable", Detail: r.Detail, resourceStatus: resourceStatus{Version: r.Version, Transport: "unknown", Target: "unchecked"}}
+	if log, err := statePath(filepath.Join(r.Kind+"s", r.UID+".log")); err == nil {
 		v.Log = log
 	}
 	v.Protocol = "SSH/TCP"
@@ -176,14 +175,6 @@ func managedInventory(ctx context.Context, tasks *daemonTasks, detail string, in
 	return inv
 }
 
-func (inv *inventory) collectPeers() {
-	peers, err := peerViews("incoming")
-	if err != nil {
-		inv.Errors = append(inv.Errors, cleanText(err.Error()))
-	}
-	inv.Peers = excludeLocalResourcePeers(peers, inv.Resources)
-}
-
 func excludeLocalResourcePeers(peers []peerView, resources []resourceView) []peerView {
 	if len(peers) == 0 || len(resources) == 0 {
 		return peers
@@ -242,7 +233,7 @@ func (a *daemonActivity) listTasks(ctx context.Context, request taskListRequest)
 			inv.Shells[i].Host = "local"
 		}
 	}
-	inv.collectPeers()
+	inv.Peers = excludeLocalResourcePeers(peerViews(a.incomingPeers()), inv.Resources)
 	inv.setTaskReferences()
 	return inv
 }

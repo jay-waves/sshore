@@ -258,14 +258,14 @@ var remoteStartupTemplate = template.Must(template.New("remote.sh.tmpl").Funcs(t
 
 type remoteStartup struct {
 	Server, Version, Request, Mismatch, Ready string
-	Helper, KeepSocket                        bool
+	Helper                                    bool
 }
 
 func remoteCommand(o options) string {
 	req := remoteServiceRequest{Name: o.session, Instance: o.instance}
 	data := remoteStartup{Server: o.server}
 	switch {
-	case o.list:
+	case o.command == "list":
 		req = remoteServiceRequest{Operation: "inventory"}
 		data.Mismatch = remoteStartupError("sshore: inventory requires matching remote release; no software changed")
 	case o.command == "daemon-admin":
@@ -301,12 +301,8 @@ func remoteStartupError(reason string) string {
 
 func remoteHelperCommand(host, server string, req remoteServiceRequest) string {
 	data := remoteStartup{Server: server, Helper: true, Mismatch: remoteStartupError(remoteVersionHelp(host))}
-	switch req.Operation {
-	case "task-watch":
+	if req.Operation == "task-watch" {
 		data.Ready = forwardReadyMarker
-	case "task-remove":
-		data.KeepSocket = true
-		data.Mismatch = "exit 0"
 	}
 	return renderRemoteCommand(data, req)
 }

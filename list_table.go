@@ -53,7 +53,7 @@ func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color
 			host = inv.Host
 		}
 		state := s.State
-		if !inv.RemoteQueried && s.Instance != "" &&
+		if s.Instance != "" &&
 			remoteTreeIdentity(s.Instance) == current && state == "attached" {
 			state += " (current)"
 		}
@@ -65,11 +65,7 @@ func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color
 		if host == "" {
 			host = "-"
 		}
-		owner := "local"
-		if inv.RemoteQueried && !r.local {
-			owner = inv.Host
-		}
-		rows = append(rows, taskTableRow{taskUID(r.Identity), r.ShortID, name, kind, owner, host, r.Worker, resourceListDetail(r)})
+		rows = append(rows, taskTableRow{taskUID(r.Identity), r.ShortID, name, kind, "local", host, r.Worker, resourceListDetail(r)})
 	}
 	for _, p := range inv.Peers {
 		kind, name, _ := strings.Cut(peerResourceID(p.ID), "/")

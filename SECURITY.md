@@ -370,12 +370,12 @@ status can reveal working-directory/project names, paths, ports and errors.
 
 Peer records expose only their resource identity, manager label, remote-facing
 path or port direction, and state. They exclude local mount paths and unrelated
-hosts. A remote account can forge its own inventory. Records expire, can become
-unknown and are read-only; removing a record never signals a process.
-`pstree` includes incoming resources only while a local transport holds its
-authenticated socket lease. EOF or a missed heartbeat releases that registration;
-filesystem records cannot establish participation. This establishes transport participation, not target
-health or authority to control the resource. Attachment-source metadata is advisory.
+hosts. A remote account can forge its own inventory. The account daemon displays
+incoming resources in `list` and `pstree` for the lifetime of their authenticated
+socket leases. When connections overlap, it displays the newest live lease for
+each resource key. EOF or a missed heartbeat releases that connection's
+registration. These read-only entries establish transport participation.
+Resource control requires separate authorization. Attachment-source metadata is advisory.
 
 Cached shell relationships, task IDs, legacy exit receipts and worker liveness
 are not proof of identity, successful cleanup or remote service health. Targets

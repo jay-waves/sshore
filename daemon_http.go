@@ -230,22 +230,24 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *htt
 	mux.HandleFunc("POST /tasks/native/open", tasks.openNative)
 	mux.HandleFunc("POST /tasks/{id}/open", tasks.open)
 	activityHandler := func(w http.ResponseWriter, r *http.Request) {
-		var req activityRequest
-		if !readDaemonBody(w, r, &req) {
-			return
-		}
 		activity := accountActivity.Load()
 		if activity == nil {
-			http.Error(w, "activity unavailable", 503)
+			http.Error(w, "activity unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		if r.URL.Path == "/activity" {
-			_ = json.NewEncoder(w).Encode(activity.request(req))
+		if r.URL.Path == "/leases" {
+			var req leaseRequest
+			if readDaemonBody(w, r, &req) {
+				serveDaemonStream(w, r, func(c net.Conn) { activity.serve(c, req) })
+			}
 			return
 		}
-		serveDaemonStream(w, r, func(c net.Conn) { activity.serve(c, req) })
+		var req metadataRequest
+		if readDaemonBody(w, r, &req) {
+			_ = json.NewEncoder(w).Encode(activity.handleMetadata(req))
+		}
 	}
-	mux.HandleFunc("POST /activity", activityHandler)
+	mux.HandleFunc("POST /metadata", activityHandler)
 	mux.HandleFunc("POST /leases", activityHandler)
 	registerPlatformDaemonRoutes(mux, tasks)
 	mux.HandleFunc("POST /launch", func(w http.ResponseWriter, r *http.Request) {

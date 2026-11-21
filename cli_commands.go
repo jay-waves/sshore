@@ -14,9 +14,7 @@ func parseOptions(args []string) (options, error) {
 	}
 	o.command = canonicalCommand(args[0])
 	switch o.command {
-	case "launch", "spawn", "attach", "kill", "rename":
-	case "list":
-		o.list = true
+	case "launch", "spawn", "attach", "kill", "rename", "list":
 	default:
 		return o, usage("choose an action: sshore launch [HOST:], sshore spawn [HOST:], sshore list HOST:, sshore attach HOST:ID, sshore kill HOST:ID, or sshore rename HOST:ID NEW")
 	}
@@ -28,7 +26,7 @@ func parseOptions(args []string) (options, error) {
 }
 
 func shellOptions(command string, parsed cliArguments) (options, error) {
-	o := options{command: command, list: command == "list", server: parsed.value("--server", "sshore")}
+	o := options{command: command, server: parsed.value("--server", "sshore")}
 	o.ssh, o.local = parsed.ssh, parsed.local
 	o.portOverrideOnly = parsed.has("--port") && len(parsed.ssh) == 2
 	o.serverSet = parsed.has("--server")
@@ -45,14 +43,14 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 			return o, usage("local shells do not accept SSH options")
 		}
 	}
-	if !o.list {
+	if command != "list" {
 		o.session = parsed.operand(firstName)
 	}
 	if command == "rename" {
 		o.newName = parsed.operand(firstName + 1)
 	}
 
-	if o.host == "" && o.list && len(o.ssh) == 0 && o.server == "sshore" {
+	if o.host == "" && command == "list" && len(o.ssh) == 0 && o.server == "sshore" {
 		return o, nil
 	}
 	if o.host != "" || o.command != "attach" {
@@ -60,7 +58,7 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 			return o, err
 		}
 	}
-	if o.list {
+	if o.command == "list" {
 		return o, nil
 	}
 	if o.command == "rename" {
@@ -169,6 +167,7 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 	ref := parsed.operands[0]
 	if !strings.Contains(ref, "/") && isBareSSHHost(ref) {
 		if isTaskIDPrefix(ref) {
+			parsed.bareAttachID = command == "attach"
 			parsed.local = true
 			return nil
 		}
@@ -219,7 +218,6 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 type options struct {
 	handoffHint           *handoffObservation
 	recovering            bool
-	rootFrontend          bool
 	reusable              *clientTransport
 	routeTarget           bool
 	handoffDone           func(context.Context, error) error
@@ -233,10 +231,9 @@ type options struct {
 	host, session, server string
 	command               string
 	newName               string
-	list, quiet, noEscape bool
+	quiet, noEscape       bool
 	listJSON              bool
 	ssh                   []string
-	shellPID              int
 	local                 bool
 	detached              bool
 	noLogin               bool
@@ -269,9 +266,6 @@ func executeShellCommand(o options) (int, error) {
 		}
 	}
 	if o.local {
-		if err := resolveLocalAttach(&o); err != nil {
-			return 1, err
-		}
 		if handled, err := handoffLocalClient(o); handled {
 			if err != nil {
 				return 1, err
@@ -285,7 +279,7 @@ func executeShellCommand(o options) (int, error) {
 			return 1, err
 		}
 	}
-	if o.list {
+	if o.command == "list" {
 		return runInventory(o)
 	}
 	if handled, err := handoffLocalClient(o); handled {

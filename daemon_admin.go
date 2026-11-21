@@ -87,7 +87,7 @@ type daemonAdminReply struct {
 func (s *daemonTasks) adminSnapshot(record localShellRecord) daemonAdminReply {
 	snapshot := daemonSnapshot{Version: record.Version, Instance: record.identity()}
 	s.mu.Lock()
-	for id, task := range s.liveLocked(time.Now()) {
+	for id, task := range s.liveLocked() {
 		snapshot.Tasks = append(snapshot.Tasks, daemonTaskInfo{ID: id, Name: task.taskName()})
 	}
 	s.mu.Unlock()
@@ -130,11 +130,10 @@ func (s *daemonTasks) beginShutdown(record localShellRecord, expected daemonSnap
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now()
 	// Only extra entries need a table scan. Exact lookups check expiration
 	// for the confirmed entries themselves.
 	if len(s.records) > len(expected.Tasks) {
-		s.pruneLocked(now)
+		s.pruneLocked()
 	}
 	if len(s.records) != len(expected.Tasks) {
 		return nil, changed
@@ -146,7 +145,7 @@ func (s *daemonTasks) beginShutdown(record localShellRecord, expected daemonSnap
 			return nil, changed
 		}
 		previousID = entry.ID
-		task := s.lookupLocked(entry.ID, now)
+		task := s.lookupLocked(entry.ID)
 		if task == nil || task.taskName() != entry.Name {
 			return nil, changed
 		}

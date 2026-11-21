@@ -51,7 +51,7 @@ func validateOperations(ops []operation) error {
 	return err
 }
 
-func newApprovalRequest(o options, ops []operation) (requestRecord, error) {
+func newApprovalRequest(o options, shellPID int, ops []operation) (requestRecord, error) {
 	if err := validateOperations(ops); err != nil {
 		return requestRecord{}, err
 	}
@@ -63,7 +63,7 @@ func newApprovalRequest(o options, ops []operation) (requestRecord, error) {
 	if err != nil {
 		return requestRecord{}, err
 	}
-	request := requestRecord{Connection: connection, PID: o.shellPID, ID: newTaskUID(), Directory: cwd, Quiet: o.quiet, Operations: ops}
+	request := requestRecord{Connection: connection, PID: shellPID, ID: newTaskUID(), Directory: cwd, Quiet: o.quiet, Operations: ops}
 	if !validTaskUID(connection.Instance) || request.PID <= 0 {
 		return requestRecord{}, fmt.Errorf("invalid source shell identity")
 	}

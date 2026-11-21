@@ -44,7 +44,7 @@ func (s *shellTask) taskName() string {
 	return s.record.Name
 }
 
-func (s *shellTask) expired(time.Time) bool {
+func (s *shellTask) expired() bool {
 	select {
 	case <-s.done:
 		return true
@@ -201,7 +201,7 @@ func (s *shellTask) rename(old, name, instance string) error {
 	s.renameMu.Lock()
 	defer s.renameMu.Unlock()
 	s.tasks.mu.Lock()
-	if err := s.tasks.checkNameLocked(s.record.UID, name, time.Now()); err != nil {
+	if err := s.tasks.checkNameLocked(s.record.UID, name); err != nil {
 		s.tasks.mu.Unlock()
 		return err
 	}

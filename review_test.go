@@ -2,13 +2,8 @@ package main
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 )
-
-func testRequestOptions() options {
-	return options{host: "work", session: "source", server: "sshore", instance: strings.Repeat("a", 32), shellPID: 123}
-}
 
 func TestApprovalValidation(t *testing.T) {
 	for _, ops := range [][]operation{

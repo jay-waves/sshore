@@ -187,6 +187,7 @@ func runClient(o options) (int, error) {
 	previous := ""
 	var parents []returnTarget
 	var pending *sessionSwitch
+	var currentEndpoint string
 	returning := false
 	returnCode := 0
 	prune := func(current *options) {
@@ -201,8 +202,12 @@ func runClient(o options) (int, error) {
 	}
 	for {
 		prune(&o)
-		o.rootFrontend = len(parents) == 0
-		code, err := runClientOnce(o, previous, transports, func(current options) {
+		code, err := runClientOnce(o, previous, len(parents) == 0, transports, func(current options) string {
+			from := currentEndpoint
+			currentEndpoint = shellDisplayEndpoint(current)
+			if from == currentEndpoint {
+				from = ""
+			}
 			o.handoffDone = nil
 			returning = false
 			if current.handoffHint != nil {
@@ -217,6 +222,7 @@ func runClient(o options) (int, error) {
 				pending = nil
 			}
 			prune(&current)
+			return from
 		})
 		if o.handoffDone != nil {
 			_ = o.handoffDone(context.Background(), err)

@@ -56,7 +56,7 @@ func TestShellTreeAttachmentSnapshots(t *testing.T) {
 }
 
 func TestShellTreeSnapshotSources(t *testing.T) {
-	activityFixture(t)
+	fixture := activityFixture(t)
 	now := time.Now()
 	old := shellTreeNode{Identity: "task", Name: "old", State: "attached", Cached: true, CheckedAt: now.Add(-time.Hour)}
 	fresh := old
@@ -94,7 +94,10 @@ func TestShellTreeSnapshotSources(t *testing.T) {
 					t.Fatalf("display selection persisted: %s %v", data, err)
 				}
 			}
-			nodes := knownShellTrees()
+			nodes, err := fixture.metadata.knownShellTrees()
+			if err != nil {
+				t.Fatal(err)
+			}
 			if len(nodes) != 1 || nodes[0].Name != tc.want {
 				t.Fatalf("wrong snapshot source: %+v", nodes)
 			}

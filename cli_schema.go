@@ -94,10 +94,11 @@ func (s cliSpec) option(name string) (string, cliOption, bool) {
 }
 
 type cliArguments struct {
-	local    bool
-	operands []string
-	values   map[string]string
-	ssh      []string
+	bareAttachID bool
+	local        bool
+	operands     []string
+	values       map[string]string
+	ssh          []string
 }
 
 func (a cliArguments) has(name string) bool { _, ok := a.values[name]; return ok }

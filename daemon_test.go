@@ -241,10 +241,11 @@ func TestDaemonListsLocalTasks(t *testing.T) {
 	registerTestResource(t, tasks, "forward", "web", strings.Repeat("a", 32))
 	activity := accountActivity.Load()
 	stale := testPeerTask()
-	activity.request(activityRequest{Kind: "peer_put", Peer: &stale})
+	stop := beginIncomingTask(stale)
+	stop()
 	active := stale
 	active.Key = strings.Repeat("d", 32)
-	lease, err := activity.registerLease(activityRequest{Kind: "incoming", Peer: &active})
+	lease, err := activity.registerLease(leaseRequest{Kind: "incoming", Peer: &active})
 	if err != nil {
 		t.Fatal(err)
 	}

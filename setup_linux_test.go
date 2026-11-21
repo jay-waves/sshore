@@ -191,14 +191,14 @@ func TestRemoteFallbackAndArgumentQuoting(t *testing.T) {
 	home := t.TempDir()
 	bin := filepath.Join(home, ".local", "bin", "sshore")
 	writeRemoteVersionStub(t, bin, version)
-	for _, mode := range []string{"bridge", "sessions", "new", "attach"} {
-		o := options{server: "sshore", session: "main", list: mode == "sessions", command: mode}
+	for _, mode := range []string{"bridge", "list", "new", "attach"} {
+		o := options{server: "sshore", session: "main", command: mode}
 		if mode == "new" {
 			o.command = "launch"
 		}
 		out, err := runRemoteCommand(t, home, o)
 		req := remoteServiceRequest{Operation: "shell", Mode: mode, Name: "main"}
-		if mode == "sessions" {
+		if mode == "list" {
 			req = remoteServiceRequest{Operation: "inventory"}
 		}
 		want := remoteServiceStubOutput(req)

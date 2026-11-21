@@ -46,7 +46,7 @@ func TestClientPrefixKeysAndDetach(t *testing.T) {
 	if _, err = io.WriteString(terminal, "touch "+shellQuote(marker)+"\n\x02d"); err != nil {
 		t.Fatal(err)
 	}
-	wait("Detached;")
+	wait("Detached from ")
 	if err = cmd.Wait(); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestClientDetachWithBlockedInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	wait("Input delivery unconfirmed; detaching.")
-	wait("Detached;")
+	wait("Detached from ")
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestClientSessionShortcuts(t *testing.T) {
 	press('l')
 	wait("Connected fixture:alpha")
 	press('d')
-	wait("Detached;")
+	wait("Detached from ")
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +353,7 @@ func TestClientCommandConsole(t *testing.T) {
 	io.WriteString(terminal, "\x02:")
 	wait("  alpha")
 	io.WriteString(terminal, "att\tal\t\r")
-	wait("Connected fixture:alpha")
+	wait("Connected fixture:alpha from fixture:keys")
 	io.WriteString(terminal, "\x02:")
 	wait("sshore commands")
 	io.WriteString(terminal, "sh\r")
@@ -378,7 +378,7 @@ func TestClientCommandConsole(t *testing.T) {
 	io.WriteString(terminal, "exit\r")
 	wait("\x1b[?1049l")
 	io.WriteString(terminal, "\x02:d\r")
-	wait("Detached;")
+	wait("Detached from ")
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +560,7 @@ func TestClientFailedSwitchRestoresOriginal(t *testing.T) {
 	if _, err := terminal.Write([]byte{2, 'd'}); err != nil {
 		t.Fatal(err)
 	}
-	wait("Detached;")
+	wait("Detached from ")
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
 	}
@@ -892,7 +892,7 @@ func TestClientHandoffReturnTargetTaken(t *testing.T) {
 	other, otherTerminal, otherWait := startSessionClient(t, e, []string{"attach", "here:origin"})
 	otherWait("Connected here:origin")
 	io.WriteString(terminal, "\x02d")
-	wait("Detached;")
+	wait("Detached from ")
 	wait("Could not return to origin")
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
@@ -1139,7 +1139,7 @@ func TestClientInterruptDuringSwitchRestoresOriginal(t *testing.T) {
 	io.WriteString(terminal, "printf 'RESTORED_%s\\n' input\n")
 	wait("RESTORED_input")
 	terminal.Write([]byte{2, 'd'})
-	wait("Detached;")
+	wait("Detached from ")
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
 	}
@@ -1194,7 +1194,7 @@ func TestClientDaemonLossRestoresTerminal(t *testing.T) {
 				t.Fatal(err)
 			}
 			wait("\x1b[=0u\x1b[>4;0m")
-			wait("Disconnected from " + command + "/crash on fixture")
+			wait("Disconnected from fixture:crash")
 			wait("Shell state unconfirmed.")
 			if err := cmd.Wait(); err == nil {
 				t.Fatal("daemon loss reported success")
@@ -1228,7 +1228,7 @@ func TestClientDetachPromotesSharedMRU(t *testing.T) {
 			if _, err := io.WriteString(terminal, "\x02d"); err != nil {
 				t.Fatal(err)
 			}
-			wait("Detached;")
+			wait("Detached from ")
 			if err := cmd.Wait(); err != nil {
 				t.Fatal(err)
 			}
@@ -1246,7 +1246,7 @@ func TestClientDetachPromotesSharedMRU(t *testing.T) {
 			// No operands must reattach the same local or remote shell using MRU.
 			selectorsList := [][]string{{label + ":"}, {label + ":" + taskUID(rows[0].Identity)[:2]}}
 			if host != "here:" {
-				selectorsList = append(selectorsList, []string{host + ":"})
+				selectorsList = append(selectorsList, []string{taskUID(rows[0].Identity)[:6]})
 			}
 			for _, selectors := range selectorsList {
 				reattach := append([]string{"attach"}, selectors...)
@@ -1255,7 +1255,7 @@ func TestClientDetachPromotesSharedMRU(t *testing.T) {
 				if _, err := io.WriteString(tty, "\x02d"); err != nil {
 					t.Fatal(err)
 				}
-				await("Detached;")
+				await("Detached from ")
 				if err := next.Wait(); err != nil {
 					t.Fatal(err)
 				}
@@ -1283,7 +1283,7 @@ func TestClientEnhancedPrefixKeysAndEscape(t *testing.T) {
 	wait("REDRAW_alive")
 	// xterm modifyOtherKeys uses a different encoding for the same prefix.
 	io.WriteString(terminal, "\x1b[27;5;98~\x1b[100;1u")
-	wait("Detached;")
+	wait("Detached from ")
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
 	}
@@ -1309,11 +1309,7 @@ func TestClientExitNotices(t *testing.T) {
 					cmd, terminal, wait := startSessionClient(t, e, args)
 					wait("Connected " + label + ":exit-notice")
 					io.WriteString(terminal, "exit "+code+"\n")
-					exitHost := host
-					if host == "here:" {
-						exitHost = "local"
-					}
-					wait("Exited " + command + "/exit-notice on " + exitHost + " (code " + code + "). Reason:")
+					wait("Exited " + label + ":exit-notice (code " + code + ")")
 					err := cmd.Wait()
 					if code == "0" && err != nil {
 						t.Fatal(err)
@@ -1340,8 +1336,8 @@ func TestClientRemoteExitReason(t *testing.T) {
 	if out, err := kill.CombinedOutput(); err != nil {
 		t.Fatalf("kill fixture shell: %v %s", err, out)
 	}
-	wait("Exited launch/keys on fixture")
-	wait("Reason: killed by sshore kill.")
+	wait("Exited fixture:keys")
+	wait("killed by sshore kill")
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("killed shell reported success")
 	}
@@ -1367,7 +1363,7 @@ func TestClientExternalSpawnParent(t *testing.T) {
 		t.Fatalf("missing direct parent: %s", out)
 	}
 	io.WriteString(terminal, "exit\n")
-	wait("Exited spawn/external-parent on local")
+	wait("Exited here:external-parent")
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
 	}

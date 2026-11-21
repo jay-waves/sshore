@@ -5,8 +5,8 @@ import subprocess
 import tempfile
 import unittest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts/release.sh"
 
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts/release.sh"
 
 class ReleaseTest(unittest.TestCase):
     def run_release(self, ref='refs/tags/v0.4.1', fail=False):

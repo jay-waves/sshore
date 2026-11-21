@@ -1,7 +1,6 @@
 # Keep stdin free for the selected service's protocol.
 {{if .Helper}}
-unset SSHORE_CONFIRM_ADDR SSHORE_CONFIRM_TOKEN
-{{if not .KeepSocket}}unset SSHORE_SOCKET{{end}}
+unset SSHORE_CONFIRM_ADDR SSHORE_CONFIRM_TOKEN SSHORE_SOCKET
 {{end}}
 server={{q .Server}}
 [ -n "$server" ] || server=sshore

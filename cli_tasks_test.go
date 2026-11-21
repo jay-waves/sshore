@@ -44,7 +44,7 @@ func TestTaskSelectorsResolveOnTheirOwnHost(t *testing.T) {
 				if selected || o.local || o.host != "remote" || o.session != "aaaaaa" {
 					t.Fatalf("%s %s should pass the ID to remote: %+v", command, ref, o)
 				}
-			} else if !selected || !o.local || o.session != "work" || target.identity != local.identity() {
+			} else if !selected || !o.local || o.session != "work" || target.Identity != local.identity() {
 				t.Fatalf("%s %s resolved to %+v", command, ref, target)
 			}
 		}
@@ -85,7 +85,7 @@ func TestShortTaskResourceRenameAndReplacement(t *testing.T) {
 			t.Fatal(err)
 		}
 		target, ok, err := resolveShortTask("kill", &parsed)
-		if err != nil || !ok || target.name != kind+"new" {
+		if err != nil || !ok || target.Name != kind+"new" {
 			t.Fatalf("%+v %v", target, err)
 		}
 		close(done)
@@ -169,7 +169,7 @@ func TestTaskPrefixCollisionResolution(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "ambiguous") {
 				t.Fatalf("accepted ambiguous prefix: %v", err)
 			}
-		} else if err != nil || !selected || target.identity != "task:"+tc.uid {
+		} else if err != nil || !selected || target.Identity != "task:"+tc.uid {
 			t.Fatalf("%s: %+v %v", tc.ref, target, err)
 		}
 	}
@@ -178,7 +178,7 @@ func TestTaskPrefixCollisionResolution(t *testing.T) {
 
 func TestKillOptions(t *testing.T) {
 	o, err := parseOptions([]string{"kill", "host:build", "--server", "/a b/sshore", "--", "-p", "2222"})
-	if err != nil || o.command != "kill" || o.session != "build" || o.list {
+	if err != nil || o.command != "kill" || o.session != "build" {
 		t.Fatalf("%+v %v", o, err)
 	}
 	for _, args := range [][]string{
@@ -288,11 +288,11 @@ func TestTwoCharacterTaskPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	target, selected, err := resolveShortTask("attach", &parsed)
-	if err != nil || !selected || target.identity != "task:"+first {
+	if err != nil || !selected || target.Identity != "task:"+first {
 		t.Fatalf("unique short prefix: %+v %v", target, err)
 	}
 	alias, _ := parseCLI([]string{":db"}, "attach")
-	if candidate, ok, err := resolveShortTask("attach", &alias); err != nil || !ok || candidate.name != "db" {
+	if candidate, ok, err := resolveShortTask("attach", &alias); err != nil || !ok || candidate.Name != "db" {
 		t.Fatalf("short hex alias lost: %+v %v", candidate, err)
 	}
 	registerTestShell(t, tasks, "collision", "3abbbb"+strings.Repeat("2", 26))

@@ -24,19 +24,19 @@ type taskTreeRow struct {
 func (a *daemonActivity) taskTreeSnapshot(ctx context.Context) ([]taskTreeRow, error) {
 	// Copy each source independently before probing. Metadata supplies context
 	// for registered rows, and leases supply the incoming rows.
-	metadata := a.handleMetadata(metadataRequest{Action: "tree_list"})
-	incoming := a.request(activityRequest{Kind: "incoming"}).Peers
+	tree, err := a.metadata.knownShellTrees()
+	incoming := a.incomingPeers()
 	inv := managedInventory(ctx, a.tasks, "health", true, "")
 	if inv.Hostname == "" {
 		inv.MachineID, inv.Hostname = localMachineIdentity()
 	}
 	inv.Host = inv.Hostname
-	inv.ShellTree = metadata.Tree
-	if metadata.Error != "" {
-		inv.Errors = append(inv.Errors, cleanText(metadata.Error))
+	inv.ShellTree = tree
+	if err != nil {
+		inv.Errors = append(inv.Errors, cleanText(err.Error()))
 	}
 	for _, entry := range incoming {
-		inv.Peers = append(inv.Peers, entry.Record.view())
+		inv.Peers = append(inv.Peers, entry.view())
 	}
 	nodes := inventoryResourceTrees(localShellTreeNodes(inv), inv)
 	return normalizeTaskTree(nodes, inv.MachineID), inv.incompleteError()

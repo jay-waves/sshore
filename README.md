@@ -1,5 +1,6 @@
 # sshore
 
+
 [![CI](https://github.com/jay-waves/sshore/actions/workflows/ci.yml/badge.svg)](https://github.com/jay-waves/sshore/actions/workflows/ci.yml)
 
 Start a shell on this computer or over SSH, detach, and pick up where you left
@@ -62,7 +63,9 @@ Each shell has one terminal. Scrollback is not replayed on attach.
 
 For a local shell, run `sshore launch :build`. With no selector, `sshore attach`
 resumes the most recently detached local shell. Use `sshore attach work:` for
-the most recently detached shell on that host.
+the most recently detached shell on that host. A bare task ID or unique prefix
+can select a local shell or a remote shell with a saved direct SSH connection.
+If the ID is ambiguous, use a longer prefix or specify `HOST:ID`.
 
 While attached, press **Ctrl+B** followed by `d` to detach, `c` to spawn a
 nested shell, or `:` to open the command prompt. Type `help` there to explore

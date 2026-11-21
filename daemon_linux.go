@@ -48,7 +48,6 @@ func hostedShells(detail string) ([]shellView, error) {
 func (tasks *daemonTasks) resolveHostedShell(name, instance string) (shellView, error) {
 	tasks.mu.Lock()
 	defer tasks.mu.Unlock()
-	now := time.Now()
 	prefix := ""
 	if isTaskIDPrefix(name) {
 		prefix = strings.ToLower(name)
@@ -58,7 +57,7 @@ func (tasks *daemonTasks) resolveHostedShell(name, instance string) (shellView, 
 		id, prefix = prefix, ""
 	}
 	if id != "" {
-		if shell, ok := tasks.lookupLocked(id, now).(*remoteShell); ok {
+		if shell, ok := tasks.lookupLocked(id).(*remoteShell); ok {
 			view, _ := shell.hostedView("health")
 			return view, nil
 		}
@@ -68,7 +67,7 @@ func (tasks *daemonTasks) resolveHostedShell(name, instance string) (shellView, 
 	}
 	// A full hexadecimal reference with no matching ID may be an existing alias.
 	var found, alias *remoteShell
-	for id, task := range tasks.liveLocked(now) {
+	for id, task := range tasks.liveLocked() {
 		shell, ok := task.(*remoteShell)
 		if !ok {
 			continue

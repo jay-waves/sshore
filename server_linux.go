@@ -43,8 +43,6 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 		return killSession(req.Name, req.Instance)
 	case "task-watch":
 		return watchRemoteTask()
-	case "task-remove":
-		return removeRemoteTask(req.Identity)
 	case "inventory":
 		return json.NewEncoder(os.Stdout).Encode(localSessionInventory())
 	}
@@ -52,7 +50,7 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 }
 
 func serveRemoteFiles(operation string) error {
-	stop, err := leaseActivity(activityRequest{Kind: "heartbeat"})
+	stop, err := leaseActivity(leaseRequest{Kind: "heartbeat"})
 	if err != nil {
 		return err
 	}
@@ -67,7 +65,7 @@ func serveRemoteFiles(operation string) error {
 }
 
 // The existing SSH transport owns this watcher. EOF or termination removes its
-// one lease; a crash leaves a record that expires to unknown, never a live claim.
+// lease, removing its resource from the incoming inventory.
 func watchRemoteTask() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer cancel()
@@ -112,7 +110,7 @@ func (s *remoteShell) serveSpawnOwner(c net.Conn, first message) {
 		}
 	}()
 	if activity := accountActivity.Load(); activity != nil {
-		activity.serve(c, activityRequest{Kind: "heartbeat"})
+		activity.serve(c, leaseRequest{Kind: "heartbeat"})
 	}
 }
 

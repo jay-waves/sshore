@@ -130,10 +130,10 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 				t.Fatalf("cleanup: %s %v", output, err)
 			}
 		}
-		if args[0] == "fixture-launch" && !strings.Contains(out, "Detached;") {
+		if args[0] == "fixture-launch" && !strings.Contains(out, "Detached from ") {
 			t.Fatal(out)
 		}
-		if args[0] == "attach" && !strings.Contains(out, "Exited launch/renamed on local (code 0).") {
+		if args[0] == "attach" && !strings.Contains(out, "Exited here:renamed (code 0)") {
 			t.Fatalf("missing shell exit notice: %s", out)
 		}
 	}

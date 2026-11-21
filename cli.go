@@ -144,13 +144,13 @@ func runTargetCommand(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	if selected && target.kind != "shell" {
+	if selected && target.Kind != "shell" {
 		switch command {
 		case "kill":
-			return withDaemonActivity(func() (int, error) { return 0, stopResource(target.kind, target.name, target.identity) })
+			return withDaemonActivity(func() (int, error) { return 0, stopResource(target.Kind, target.Name, target.Identity) })
 		case "rename":
 			return withDaemonActivity(func() (int, error) {
-				return runRenameResource(target.kind, target.name, parsed.operands[1], target.identity)
+				return runRenameResource(target.Kind, target.Name, parsed.operands[1], target.Identity)
 			})
 		}
 	}
@@ -165,9 +165,12 @@ func runTargetCommand(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	if selected && target.kind == "shell" {
-		o.taskIdentity, o.instance = target.identity, target.instance
-		o.hosted = target.hosted
+	if selected && target.Kind == "shell" {
+		o.taskIdentity, o.instance = target.Identity, target.Instance
+		o.hosted = target.Hosted
+		if target.Connection != nil {
+			applyConnectionOptions(&o, *target.Connection)
+		}
 	}
 	return withDaemonActivity(func() (int, error) { return executeShellCommand(o) })
 }

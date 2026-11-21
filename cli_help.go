@@ -177,8 +177,9 @@ The remote sshore release must match exactly.
 		help: `Usage: sshore attach [ID|HOST|HOST:ID|:ID] [options] [-- SSH_OPTIONS]
 
 With no target, resume the most recently detached local shell.
-A bare hexadecimal ID selects a local shell. Use HOST:ID for a remote shell,
-or HOST: to resume on that host (including hexadecimal hostnames such as db:).
+A bare hexadecimal ID or unique prefix selects a local shell or one with a
+saved direct SSH connection. Use HOST:ID to specify the
+remote host, or HOST: to resume there (including hexadecimal hosts such as db:).
 Use here: for the local machine, or .: as shorthand. IDs accept unique
 hexadecimal prefixes.
 

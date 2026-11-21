@@ -18,7 +18,6 @@ type remoteServiceRequest struct {
 	Name       string `json:"name,omitempty"`
 	NewName    string `json:"new_name,omitempty"`
 	Instance   string `json:"instance,omitempty"`
-	Identity   string `json:"identity,omitempty"`
 	ApprovalID string `json:"approval_id,omitempty"`
 	PID        int    `json:"pid,omitempty"`
 }
