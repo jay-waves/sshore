@@ -83,7 +83,7 @@ func (p *Input) read(prompt string, paths bool, choices []string, initial string
 	p.choices = choices
 	p.completion = pathCompletion{}
 	p.completionMu.Unlock()
-	p.editor.SetPrompt(formatInputPrompt(p.color, prompt))
+	p.editor.SetPrompt(FormatPrompt(p.color, prompt))
 	// readline ignores errors from EnterRawMode. Check our Windows hook before
 	// starting its reader; repeated entry is idempotent.
 	if runtime.GOOS == "windows" {
@@ -94,8 +94,9 @@ func (p *Input) read(prompt string, paths bool, choices []string, initial string
 	return p.editor.ReadlineWithDefault(initial)
 }
 
-func formatInputPrompt(color bool, prompt string) string {
-	return Format(color, Info, "%s", prompt)
+// ConfirmYes accepts an explicit affirmative answer to a default-no prompt.
+func ConfirmYes(line string) bool {
+	return strings.EqualFold(strings.TrimSpace(line), "y")
 }
 
 func (p *Input) Close() error {
@@ -347,14 +348,6 @@ const (
 
 func ColorEnabled(f *os.File) bool {
 	return os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb" && term.IsTerminal(int(f.Fd())) && supportsANSI(f)
-}
-
-func Format(color bool, level Color, format string, args ...any) string {
-	text := fmt.Sprintf(format, args...)
-	if color {
-		return "\x1b[" + string(level) + "m" + text + "\x1b[39m"
-	}
-	return text
 }
 
 func Log(f *os.File, level Color, format string, args ...any) {

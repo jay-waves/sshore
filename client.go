@@ -175,7 +175,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		_, switching := errors.AsType[*sessionSwitch](resultErr)
 		_, approving := errors.AsType[*localApproval](resultErr)
 		if attached && resultErr != nil && !switching && !approving {
-			sessionNotice(termui.Warning, "Disconnected from %s on %s (client code %d; %s). Shell state unconfirmed.", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host), resultCode, sessionDisconnectReason(resultErr))
+			sessionNotice(termui.Warning, fmt.Sprintf("Disconnected from %s on %s (client code %d; %s). Shell state unconfirmed.", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host), resultCode, sessionDisconnectReason(resultErr)), "")
 		}
 	}()
 	signalCtx, interruptSignals, stopSignals := newClientSignals(o.recovering)
@@ -305,7 +305,8 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		if err := detachAttachment(control, confirmDetach); err != nil {
 			return 1, err
 		}
-		fmt.Fprintf(os.Stdout, "Started %s (%s).\n", cleanText(shellDisplayEndpoint(o)), shellTaskKind(o.temporary))
+		started := fmt.Sprintf("Started %s (%s).", cleanText(shellDisplayEndpoint(o)), shellTaskKind(o.temporary))
+		fmt.Fprintln(os.Stdout, termui.StatusLine(termui.ColorEnabled(os.Stdout), termui.Success, started))
 		return 0, nil
 	}
 	if !o.local && !o.quiet {
@@ -446,7 +447,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	ready(o)
 	o.handoffHint = nil
 
-	sessionNotice(termui.Success, "Connected %s (%s)", cleanText(shellDisplayEndpoint(o)), shellTaskKind(o.temporary))
+	sessionNotice(termui.Success, fmt.Sprintf("Connected %s (%s)", cleanText(shellDisplayEndpoint(o)), shellTaskKind(o.temporary)), "")
 	color := termui.ColorEnabled(os.Stdout)
 	notice := func(level termui.Color, format string, args ...any) {
 		if console != nil {
@@ -723,9 +724,9 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					}
 				case e.consoleLine != nil:
 					if console.confirm {
-						if strings.TrimSpace(*e.consoleLine) == "detach" {
+						if termui.ConfirmYes(*e.consoleLine) {
 							if !queueDetach() {
-								console.showConfirmation("Terminal input queue is busy. Try again.\n\n" + detachConfirmation)
+								console.showConfirmation("Terminal input queue is busy. Try again.")
 								continue
 							}
 							clearTransition()
@@ -748,7 +749,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						}
 						if o.local && o.temporary && o.rootFrontend {
 							clearTransition()
-							console.showConfirmation(detachConfirmation)
+							console.showConfirmation("")
 							break
 						}
 						if !queueDetach() {
@@ -781,7 +782,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						consoleRequest++
 						pending.action = fmt.Sprintf("console:inventory:%d", consoleRequest)
 						awaitResponse(requestTimeout)
-						if err := streamMessage(control, message{Type: "console_inventory", Action: pending.action, Name: args[0], Color: color}); err != nil {
+						if err := streamMessage(control, message{Type: "console_inventory", Action: pending.action, Name: args[0], Color: color, Cols: uint16(cols)}); err != nil {
 							return 255, err
 						}
 					default:
@@ -827,7 +828,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						openingInput = nil
 						if keyErr == nil && console != nil {
 							if openingConfirmation {
-								console.showConfirmation(detachConfirmation)
+								console.showConfirmation("")
 							} else {
 								keyErr = requestConsoleTargets()
 							}
@@ -1195,9 +1196,9 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					}
 					ended = func() {
 						if o.temporary {
-							sessionNotice(termui.Success, "Background; %s on %s ends with the original parent shell.\r\nReturn: %s", shellTaskName(cleanText(o.session), true), cleanText(o.host), reconnectCommand(o))
+							sessionNotice(termui.Success, fmt.Sprintf("Background; %s on %s ends with the original parent shell.", shellTaskName(cleanText(o.session), true), cleanText(o.host)), "Return: "+cleanText(reconnectCommand(o)))
 						} else {
-							sessionNotice(termui.Success, "Detached; %s on %s keeps running.\r\nReconnect: %s", shellTaskName(cleanText(o.session), false), cleanText(o.host), reconnectCommand(o))
+							sessionNotice(termui.Success, fmt.Sprintf("Detached; %s on %s keeps running.", shellTaskName(cleanText(o.session), false), cleanText(o.host)), "Reconnect: "+cleanText(reconnectCommand(o)))
 						}
 					}
 					return 0, nil
@@ -1213,7 +1214,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						if reason == "" || strings.HasPrefix(reason, "shell exited (code ") {
 							reason = "shell exited"
 						}
-						sessionNotice(level, "Exited %s on %s (code %d). Reason: %s.", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host), exit.Code, reason)
+						sessionNotice(level, fmt.Sprintf("Exited %s on %s (code %d). Reason: %s.", shellTaskName(cleanText(o.session), o.temporary), cleanText(o.host), exit.Code, reason), "")
 					}
 					return e.m.Code, nil
 				case "fatal":
@@ -1242,8 +1243,24 @@ func sessionDisconnectReason(err error) string {
 	}
 }
 
-func sessionNotice(level termui.Color, format string, args ...any) {
-	termui.Log(os.Stderr, level, "\r\n\r\n\r\n[sshore] "+format+"\r\n\r\n", args...)
+func sessionNotice(level termui.Color, title, detail string) {
+	color := termui.ColorEnabled(os.Stderr)
+	if !term.IsTerminal(int(os.Stderr.Fd())) {
+		if detail != "" {
+			title += "\r\n" + detail
+		}
+		fmt.Fprintf(os.Stderr, "\r\n\r\n\r\n[sshore] %s\r\n\r\n", title)
+		return
+	}
+	if color {
+		title = termui.StatusLine(true, level, title)
+	} else {
+		title = "[sshore] " + title
+	}
+	if detail != "" {
+		title += "\r\n  " + detail
+	}
+	fmt.Fprintf(os.Stderr, "\r\n\r\n\r\n%s\r\n\r\n", title)
 }
 
 // Retain transport options in the reconnect hint, including custom ports and keys.

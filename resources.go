@@ -16,6 +16,7 @@ import (
 	"time"
 
 	transportio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 func collectLocalResources(host string, withStatus bool) ([]resourceView, error) {
@@ -205,7 +206,8 @@ func confirmDaemonShutdown(host string, snapshot daemonSnapshot, resources []res
 		inv.setTaskReferences()
 		printTaskInventory(inv)
 	}
-	fmt.Fprint(os.Stderr, "End the listed tasks and stop the account daemon? [Y/n] ")
+	prompt := termui.StatusLine(termui.ColorEnabled(os.Stderr), termui.Warning, "End the listed tasks and stop the account daemon? [Y/n]")
+	fmt.Fprint(os.Stderr, prompt+" ")
 	if !confirmKillAll(os.Stdin) {
 		return fmt.Errorf("cancelled; no tasks ended")
 	}

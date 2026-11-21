@@ -7,17 +7,26 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/chzyer/readline"
 )
 
 func TestFormatApprovalPrompt(t *testing.T) {
 	const prompt = "Type update to END listed old shells/tasks and install; Enter for a recovery shell: "
-	if got := formatInputPrompt(false, prompt); got != prompt {
+	if got := FormatPrompt(false, prompt); got != prompt {
 		t.Fatalf("uncolored prompt = %q", got)
 	}
-	got := formatInputPrompt(true, prompt)
-	if want := Format(true, Info, "%s", prompt); got != want {
-		t.Fatalf("colored prompt = %q, want %q", got, want)
+	got := FormatPrompt(true, prompt)
+	if ansi.Strip(got) != prompt || !strings.HasSuffix(got, ansi.ResetStyle+" ") {
+		t.Fatalf("colored prompt = %q", got)
+	}
+}
+
+func TestFormatStatusPreservesLineEndings(t *testing.T) {
+	const plain = "\r\nwaiting\tfor shell\r\n\nready\n"
+	got := Format(true, Info, "%s", plain)
+	if ansi.Strip(got) != plain || !strings.Contains(got, "shell"+ansi.ResetStyle+"\r\n\n") {
+		t.Fatalf("colored status = %q", got)
 	}
 }
 
@@ -110,7 +119,7 @@ func TestLocalPathHomeAndUnicode(t *testing.T) {
 func TestCompletionListing(t *testing.T) {
 	candidates := [][]rune{[]rune("folder/"), []rune("file.txt")}
 	text, fits := completionListing(candidates, "", 80, 24, true)
-	if !fits || !strings.Contains(text, "\x1b[36mfolder/\x1b[39m") || strings.Contains(text, "\x1b[36mfile.txt") {
+	if !fits || !strings.Contains(text, "\x1b[36mfolder/"+ansi.ResetStyle) || strings.Contains(text, "\x1b[36mfile.txt") {
 		t.Fatalf("directory-only color: %q", text)
 	}
 	text, _ = completionListing(candidates, "", 80, 24, false)
@@ -172,7 +181,7 @@ func TestLogUnicodeAndColor(t *testing.T) {
 	if got := Format(false, Success, "%s", text); got != text {
 		t.Fatalf("plain log: %q", got)
 	}
-	if got := Format(true, Success, "%s", text); got != "\x1b[32m"+text+"\x1b[39m" {
+	if got := Format(true, Success, "%s", text); got != "\x1b[32m"+strings.TrimSuffix(text, "\n")+ansi.ResetStyle+"\n" {
 		t.Fatalf("colored log: %q", got)
 	}
 }

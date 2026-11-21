@@ -15,12 +15,11 @@ import (
 type commandConsole struct {
 	output  []byte
 	editor  *termui.Console
+	color   bool
 	confirm bool
 	attach  string
 	targets []sessionTarget
 }
-
-const consoleTitle = "sshore commands  (Tab: next, Esc: return)"
 
 const consoleHelp = `list (ls)         Show task inventory on this host
 ps (pstree)       Show the task tree on this host
@@ -31,14 +30,15 @@ detach (d)        Detach from the current shell
 exit              Return to the current shell`
 
 func (c *commandConsole) start(ctx context.Context, out io.Writer, send func(clientEvent), width int, color bool, confirmation bool) {
-	title, body := consoleTitle, "Loading sessions…"
-	if confirmation {
-		title, body = "Confirm detach  (Tab: choose, Esc: return)", ""
+	c.color = color
+	if !confirmation {
+		title := termui.Render(color, termui.Heading, "sshore commands")
+		keys := termui.Render(color, termui.Muted, "(Tab: next, Esc: return)")
+		fmt.Fprintf(out, "%s  %s\r\n\r\n", title, keys)
+		termui.WriteConsoleBody(out, termui.Render(color, termui.Muted, "Loading sessions…"))
 	}
-	fmt.Fprintf(out, "%s\r\n\r\n", termui.Format(color, termui.Info, "%s", title))
-	termui.WriteConsoleBody(out, body)
-	prompt := termui.Format(color, termui.Info, "sshore> ")
-	c.editor = termui.StartConsole(ctx, prompt, width, func(e termui.ConsoleEvent) {
+	prompt := termui.FormatPrompt(color, "sshore> ")
+	c.editor = termui.StartConsole(ctx, prompt, width, color, func(e termui.ConsoleEvent) {
 		send(clientEvent{consoleSource: c, consoleOutput: e.Output, consoleLine: e.Line, consoleClosed: e.Closed})
 	})
 }
@@ -77,12 +77,16 @@ func (c *commandConsole) show(body string) {
 	c.editor.Show(body, consoleCompleter(func() []sessionTarget { return targets }))
 }
 
-const detachConfirmation = "Detaching may close this terminal window.\nA spawn depends on its original parent and may end.\n\nType detach to continue, or press Enter or Esc to return."
-
 // showConfirmation presents a temporary choice through the console editor.
-func (c *commandConsole) showConfirmation(body string) {
+func (c *commandConsole) showConfirmation(problem string) {
 	c.confirm = true
-	c.editor.Show(body, termui.Choices{"detach", "cancel"})
+	body := termui.StatusLine(c.color, termui.Warning, "Detaching may close this terminal window.") +
+		"\nThis spawn may end when its original parent exits."
+	if problem != "" {
+		body += "\n\n" + termui.Render(c.color, termui.Warning, problem)
+	}
+	prompt := termui.FormatPrompt(c.color, "Detach? [y/N] ")
+	c.editor.Replace(body, prompt)
 }
 
 func consoleTargetSummary(targets []sessionTarget, rows int) string {
@@ -130,7 +134,7 @@ func consoleInventory(request message, current string) message {
 		inv.Host = "local"
 		inv.collectPeers()
 		inv, err = inv.finalize()
-		writeTaskInventoryColor(&body, inv, current, request.Color)
+		writeTaskInventoryWidth(&body, inv, current, request.Color, int(request.Cols))
 	case "ps", "pstree":
 		var inv inventory
 		inv, err = localTreeInventory()
@@ -140,13 +144,13 @@ func consoleInventory(request message, current string) message {
 		return reply
 	}
 	if err != nil {
-		fmt.Fprintln(&body, err)
+		fmt.Fprintln(&body, cleanText(err.Error()))
 	}
 	reply.Output = strings.TrimRight(body.String(), "\n")
 	// Leave room for JSON escaping and control metadata in one frame.
 	const outputLimit = 8 * 1024
 	if len(reply.Output) > outputLimit {
-		i := strings.LastIndexByte(reply.Output[:outputLimit], '\n')
+		i := strings.LastIndexByte(reply.Output[:outputLimit-len(consoleMoreRows)], '\n')
 		if i < 0 {
 			reply.Output = consoleMoreRows
 		} else {

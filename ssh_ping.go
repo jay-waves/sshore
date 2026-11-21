@@ -10,6 +10,7 @@ import (
 	"time"
 
 	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 func runPing(args []string) (int, error) {
@@ -27,11 +28,24 @@ func runPing(args []string) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	_, err = fmt.Fprintln(os.Stdout, summary)
+	_, err = fmt.Fprintln(os.Stdout, summary.render(termui.ColorEnabled(os.Stdout)))
 	return 0, err
 }
 
-func measureSSHPing(ctx context.Context, options sshio.Options, count int, diagnostic io.Writer) (string, error) {
+type pingSummary struct {
+	connection, minimum, average, maximum time.Duration
+	count                                 int
+}
+
+func (s pingSummary) render(color bool) string {
+	connection := termui.Render(color, termui.Heading, "SSH connection")
+	echo := termui.Render(color, termui.Heading, "Echo RTT")
+	return fmt.Sprintf("%s: %s\n%s (%d samples): min %s, avg %s, max %s",
+		connection, s.connection.Round(time.Microsecond), echo, s.count,
+		s.minimum.Round(time.Microsecond), s.average.Round(time.Microsecond), s.maximum.Round(time.Microsecond))
+}
+
+func measureSSHPing(ctx context.Context, options sshio.Options, count int, diagnostic io.Writer) (pingSummary, error) {
 	if count == 0 {
 		count = 10
 	}
@@ -39,7 +53,7 @@ func measureSSHPing(ctx context.Context, options sshio.Options, count int, diagn
 	client, err := sshio.Dial(ctx, options)
 	connectionTime := time.Since(start)
 	if err != nil {
-		return "", err
+		return pingSummary{}, err
 	}
 	defer client.Close()
 
@@ -53,11 +67,9 @@ func measureSSHPing(ctx context.Context, options sshio.Options, count int, diagn
 		if echoContext.Err() != nil {
 			err = echoContext.Err()
 		}
-		return "", fmt.Errorf("SSH echo: %w", err)
+		return pingSummary{}, fmt.Errorf("SSH echo: %w", err)
 	}
-	return fmt.Sprintf("SSH connection: %s\nEcho RTT (%d samples): min %s, avg %s, max %s",
-		connectionTime.Round(time.Microsecond), count,
-		minimum.Round(time.Microsecond), average.Round(time.Microsecond), maximum.Round(time.Microsecond)), nil
+	return pingSummary{connection: connectionTime, minimum: minimum, average: average, maximum: maximum, count: count}, nil
 }
 
 func measureSSHEcho(client *sshio.Client, count int, diagnostic io.Writer) (min, avg, max time.Duration, err error) {

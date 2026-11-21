@@ -58,7 +58,7 @@ func TestConsoleCompletionCommonPrefixAndReset(t *testing.T) {
 
 func TestConsoleCompletionCyclesWithoutListing(t *testing.T) {
 	events := make(chan ConsoleEvent, 1024)
-	c := StartConsole(context.Background(), "sshore> ", 24, func(e ConsoleEvent) { events <- e })
+	c := StartConsole(context.Background(), "sshore> ", 24, false, func(e ConsoleEvent) { events <- e })
 	defer c.Close()
 	c.Show("", completionFunc(func(_ []rune, _ int) ([][]rune, int) {
 		return [][]rune{[]rune("alpha"), []rune("中文" + strings.Repeat("x", 80))}, 0
@@ -122,7 +122,7 @@ func TestConsoleCompletionCyclesWithoutListing(t *testing.T) {
 func TestCleanConsoleLine(t *testing.T) {
 	input := "\x1b[32mok\x1b[39m \x1b[2J \x1b]0;title\a"
 	want := "\x1b[32mok\x1b[39m �[2J �]0;title�"
-	if got := cleanConsoleLine(input); got != want {
+	if got := cleanConsoleLine(input, true); got != want {
 		t.Fatalf("cleanConsoleLine = %q, want %q", got, want)
 	}
 }

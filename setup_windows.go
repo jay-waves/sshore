@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/sys/windows"
 )
 
@@ -63,7 +64,7 @@ func runLocalInstaller(target string) error {
 		os.Remove(f.Name())
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "Continue setup in the installer window.")
+	fmt.Fprintln(os.Stderr, termui.StatusLine(termui.ColorEnabled(os.Stderr), termui.Info, "Continue setup in the installer window."))
 	return nil
 }
 

@@ -20,6 +20,7 @@ import (
 
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
+	"golang.org/x/term"
 )
 
 type setupProcess struct {
@@ -124,6 +125,9 @@ func runInstall(args []string) (int, error) {
 			}
 			return 0, installRelease(target)
 		}
+		if runtime.GOOS == "linux" {
+			showInstallDestination(host, target)
+		}
 		return 0, runLocalInstaller(target)
 	}
 	if host == "origin" && !bare {
@@ -146,11 +150,20 @@ func runInstall(args []string) (int, error) {
 		command = "if target=$(command -v sshore); then case \"$target\" in /*) ;; *) target=\"$PWD/$target\";; esac; set -- --path \"$target\"; else set --; fi; " +
 			command + " \"$@\""
 	}
+	showInstallDestination(host, target)
 	connection := sshio.Options{Host: host, Args: parsed.ssh, Command: command, Confirm: confirmSSHHost, Secret: promptSSHSecret}
 	if err := sshio.Run(ctx, connection, os.Stdin, os.Stdout, os.Stderr); err != nil {
 		return 1, fmt.Errorf("remote installation on %s: %w", cleanText(host), err)
 	}
 	return 0, nil
+}
+
+func showInstallDestination(host, target string) {
+	if !term.IsTerminal(int(os.Stderr.Fd())) {
+		return
+	}
+	destination := remotePathOperand(host, target)
+	fmt.Fprintln(os.Stderr, termui.StatusLine(termui.ColorEnabled(os.Stderr), termui.Info, "Installing sshore · "+cleanText(destination)))
 }
 
 func installTarget(value string) (string, string, error) {

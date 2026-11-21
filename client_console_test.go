@@ -1,9 +1,10 @@
 package main
 
 import (
-	"github.com/jay-waves/sshore/internal/termui"
 	"slices"
 	"testing"
+
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 func TestConsoleCompletion(t *testing.T) {
@@ -43,10 +44,15 @@ func TestConsoleInventoryBody(t *testing.T) {
 	}
 }
 
-func TestConsoleChoices(t *testing.T) {
-	choices := termui.Choices{"detach", "cancel"}
-	got, offset := choices.Do([]rune("det"), 3)
-	if offset != 3 || len(got) != 1 || string(got[0]) != "ach" {
-		t.Fatalf("completion = %q, offset %d", got, offset)
+func TestConsoleConfirmationRequiresExplicitYes(t *testing.T) {
+	for _, answer := range []string{"", "n", "detach", "yes", "cancel"} {
+		if termui.ConfirmYes(answer) {
+			t.Errorf("accepted %q", answer)
+		}
+	}
+	for _, answer := range []string{"y", "Y"} {
+		if !termui.ConfirmYes(answer) {
+			t.Errorf("rejected %q", answer)
+		}
 	}
 }

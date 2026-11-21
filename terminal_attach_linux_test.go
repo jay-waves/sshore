@@ -415,15 +415,19 @@ func TestRootLocalSpawnDetachConfirmation(t *testing.T) {
 	e := newEnv(t)
 	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-spawn", "here:", "confirm-detach", "--no-profile"})
 	wait("Connected")
-	io.WriteString(terminal, "\x02d")
-	wait("Detaching may close this terminal window")
-	io.WriteString(terminal, "\r")
-	wait("\x1b[?1049l")
-	io.WriteString(terminal, "printf CONFIRM_ALIVE\n")
-	wait("CONFIRM_ALIVE")
+	for _, cancel := range []string{"\r", "\x1b", "\x03"} {
+		io.WriteString(terminal, "\x02d")
+		wait("Detaching may close this terminal window")
+		wait("This spawn may end when its original parent exits.")
+		wait("Detach? [y/N]")
+		io.WriteString(terminal, cancel)
+		wait("\x1b[?1049l")
+		io.WriteString(terminal, "printf 'CONFIRM_%s\\n' ALIVE\n")
+		wait("CONFIRM_ALIVE")
+	}
 	io.WriteString(terminal, "\x02:detach\r")
-	wait("Detaching may close this terminal window")
-	io.WriteString(terminal, "detach\r")
+	wait("Detach? [y/N]")
+	io.WriteString(terminal, "Y\r")
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
 	}

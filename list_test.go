@@ -137,6 +137,32 @@ func TestTaskTableTerminalWidth(t *testing.T) {
 	}
 }
 
+func TestTaskTableFitsLongDestinationAroundIDAndState(t *testing.T) {
+	const id, state = "abcd12", "attached (current)"
+	destination := strings.Repeat("遠端", 30)
+	for _, columns := range []int{42, 0} {
+		table := [][]string{{"ID", "TYPE", "REMOTE", "STATE", "DETAIL"}, {id, "spawn", destination, state, "-"}}
+		var out bytes.Buffer
+		writeTaskTable(&out, table, false, columns)
+		if !strings.Contains(out.String(), id) || !strings.Contains(out.String(), state) {
+			t.Fatal(out.String())
+		}
+		if columns == 0 && !strings.Contains(out.String(), destination) {
+			t.Fatal("redirected destination was truncated")
+		}
+		if columns > 0 {
+			if !strings.Contains(out.String(), "…") {
+				t.Fatal("destination was not shortened")
+			}
+			for _, line := range strings.Split(out.String(), "\n") {
+				if width := (readline.Runes{}).WidthAll([]rune(line)); width > columns {
+					t.Fatalf("width %d: %q", width, line)
+				}
+			}
+		}
+	}
+}
+
 func TestInventoryHostGroups(t *testing.T) {
 	activityFixture(t)
 	var out bytes.Buffer

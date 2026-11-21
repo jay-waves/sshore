@@ -192,19 +192,15 @@ func writeShellTreeRow(out io.Writer, n shellTreeNode, color bool, prefix []byte
 	if kind == "external" && n.OwnerProcess != nil {
 		label = fmt.Sprintf("%s (pid %d)", cleanText(n.Name), n.OwnerProcess.PID)
 	}
-	fmt.Fprint(out, termui.Format(color, "90", "%s%s", prefix, branch), termui.Format(color && n.Current, termui.Success, "%s", label))
+	fmt.Fprint(out, termui.Render(color, termui.Muted, string(prefix)+branch), termui.Render(color && n.Current, termui.Accent, label))
 	if n.State == "unavailable" {
-		fmt.Fprint(out, termui.Format(color, termui.Warning, " ?"))
+		fmt.Fprint(out, termui.Render(color, termui.Warning, " ?"))
 	}
 	if n.Remote != "" {
-		fmt.Fprint(out, termui.Format(color, "90", "  %s %s", n.Direction, cleanText(n.Remote)))
+		fmt.Fprint(out, termui.Render(color, termui.Muted, "  "+cleanText(n.Direction)+" "+cleanText(n.Remote)))
 	}
 	if n.Current {
-		marker := "*current"
-		if color {
-			marker = "\x1b[1m" + marker + "\x1b[22m"
-		}
-		fmt.Fprint(out, termui.Format(color, termui.Success, "  %s", marker))
+		fmt.Fprint(out, termui.Render(color, termui.Success, "  *current"))
 	}
 	fmt.Fprintln(out)
 }

@@ -98,12 +98,14 @@ Press **Ctrl+B** and then one of these keys:
 At the command prompt, use `list` for task inventory and `ps` or `pstree` for
 the task tree on the machine running the current shell. The list marks that shell
 with `(current)` and the tree with `*current`. The shell stays open.
+Set `NO_COLOR=1` to disable color in the command prompt and CLI output.
 Use `attach <ID|name>` to switch to a detached session in the current scope,
 `spawn` to open a nested shell, and `launch` to open an independent shell on the
 current host.
-Use `detach` to detach from the current shell. A root local spawn asks for
-confirmation because leaving the frontend may close the terminal window; its
-lifetime still depends on its original parent.
+Use `detach` to detach from the current shell. For a root local spawn, enter
+`y` at `Detach? [y/N]` to continue, or press Enter, Esc, or Ctrl+C to return
+to the shell. Detaching may close the terminal window, and the spawn may end
+when its original parent exits.
 The aliases `ls`, `a`, `sh`, `mux`, and `d` work here too.
 
 Tab completes commands, session names and short IDs. Use the arrow keys to

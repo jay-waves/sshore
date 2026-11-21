@@ -83,7 +83,7 @@ type approvedOperation struct {
 func selectApprovedOperation(input reviewPromptReader, request requestRecord) (approvedOperation, error) {
 	selected := approvedOperation{request: request}
 	line, err := input.ReadPrefilled("Approve this request? [y/N] ", false, "")
-	if err != nil || !strings.EqualFold(strings.TrimSpace(line), "y") {
+	if err != nil || !termui.ConfirmYes(line) {
 		return selected, errors.New("approval cancelled")
 	}
 	switch request.Operations[0].Kind {

@@ -2,14 +2,16 @@ package main
 
 import (
 	"fmt"
-	"github.com/chzyer/readline"
-	"github.com/jay-waves/sshore/internal/termui"
-	"golang.org/x/term"
 	"io"
 	"os"
 	"sort"
 	"strings"
 	"time"
+
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/jay-waves/sshore/internal/termui"
+	"golang.org/x/term"
 )
 
 type taskTableRow struct {
@@ -25,11 +27,15 @@ func writeTaskInventory(out io.Writer, inv inventory) {
 }
 
 func writeTaskInventoryColor(out io.Writer, inv inventory, current string, color bool) {
-	now := time.Now()
 	screenWidth := 0
 	if f, ok := out.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		screenWidth, _, _ = term.GetSize(int(f.Fd()))
 	}
+	writeTaskInventoryWidth(out, inv, current, color, screenWidth)
+}
+
+func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color bool, screenWidth int) {
+	now := time.Now()
 	rows := []taskTableRow{}
 	for _, s := range inv.LocalShells {
 		state := s.State
@@ -134,17 +140,13 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, current string, color
 				break
 			}
 		}
-		title := "HOST  " + cleanText(host)
-		if color {
-			title = "\x1b[1m" + title + "\x1b[22m"
-		}
-		fmt.Fprint(out, title)
+		fmt.Fprint(out, termui.Render(color, termui.Accent, "HOST  "+cleanText(host)))
 		if checked != "" && checked != "-" {
 			label := "checked " + checked
 			if checked == "never" {
 				label = "never checked"
 			}
-			fmt.Fprint(out, termui.Format(color, "90", " · %s", label))
+			fmt.Fprint(out, termui.Render(color, termui.Muted, " · "+label))
 		}
 		fmt.Fprintln(out)
 		table := [][]string{{"ID", "TYPE", "REMOTE", "STATE"}}
@@ -184,21 +186,7 @@ func compactTaskDetail(detail string, limit int) string {
 	if limit < 0 {
 		return detail
 	}
-	width := 0
-	cut := len(detail)
-	for i, r := range detail {
-		width += (readline.Runes{}).Width(r)
-		if width >= limit && cut == len(detail) {
-			cut = i
-		}
-		if width > limit {
-			if limit == 0 {
-				return ""
-			}
-			return detail[:cut] + "…"
-		}
-	}
-	return detail
+	return ansi.Truncate(detail, limit, "…")
 }
 
 func shellCheckedAge(checked, now time.Time) string {
@@ -241,7 +229,22 @@ func writeTaskTable(out io.Writer, table [][]string, color bool, screenWidth int
 				}
 			}
 			row[j] = cell
-			widths[j] = max(widths[j], (readline.Runes{}).WidthAll([]rune(cell)))
+			widths[j] = max(widths[j], lipgloss.Width(cell))
+		}
+	}
+	const remote = 2
+	if screenWidth > 0 && last > remote && table[0][remote] == "REMOTE" {
+		// Keep the ID and state readable when a destination is wider than the panel.
+		width := screenWidth
+		for j, w := range widths {
+			if j != remote {
+				width -= w
+			}
+		}
+		width -= 2 * (last - 1)
+		widths[remote] = min(widths[remote], max(width, lipgloss.Width(table[0][remote])))
+		for _, row := range table[1:] {
+			row[remote] = ansi.Truncate(row[remote], widths[remote], "…")
 		}
 	}
 	// Task IDs and state stay intact; DETAIL uses the remaining terminal width.
@@ -256,28 +259,27 @@ func writeTaskTable(out io.Writer, table [][]string, color bool, screenWidth int
 		}
 	}
 	for i, row := range table {
+		var line strings.Builder
 		for j, cell := range row[:columns] {
+			padding := 0
+			if j < columns-1 {
+				padding = widths[j] - lipgloss.Width(cell) + 2
+			}
 			if j == last {
 				cell = compactTaskDetail(cell, remaining)
 			}
-			level := termui.Color("")
-			if i == 0 || j == 0 || j >= 4 || cell == "-" {
-				level = "90"
-			}
 			if i > 0 && j == 3 {
 				switch {
-				case strings.Contains(cell, "(current)"):
-					level = termui.Success
-				case strings.Contains(cell, "unconfirmed"), strings.HasPrefix(cell, "unknown"), strings.HasPrefix(cell, "unavailable"), strings.HasPrefix(cell, "failed"), strings.HasPrefix(cell, "error"):
-					level = termui.Warning
+				case strings.Contains(cell, "(current)"), cell == "running":
+					cell = termui.Render(color, termui.Success, cell)
+				case strings.Contains(cell, "unconfirmed"), strings.HasPrefix(cell, "unknown"), strings.HasPrefix(cell, "unavailable"), strings.HasPrefix(cell, "failed"), strings.HasPrefix(cell, "error"), cell == "exited":
+					cell = termui.Render(color, termui.Warning, cell)
 				}
 			}
-			fmt.Fprint(out, termui.Format(color && level != "", level, "%s", cell))
-			if j < columns-1 {
-				fmt.Fprint(out, strings.Repeat(" ", widths[j]-(readline.Runes{}).WidthAll([]rune(cell))+2))
-			}
+			line.WriteString(cell)
+			line.WriteString(strings.Repeat(" ", padding))
 		}
-		fmt.Fprintln(out)
+		fmt.Fprintln(out, termui.Render(color && i == 0, termui.Heading, line.String()))
 	}
 }
 

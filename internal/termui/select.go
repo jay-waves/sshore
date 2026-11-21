@@ -31,6 +31,7 @@ type ItemReader interface {
 }
 
 func ChooseItem(input ItemReader, names, labels []string, prompt, kind string) (int, error) {
+	color := ColorEnabled(os.Stderr)
 	visible := make([]bool, len(names))
 	show := func(filter string) {
 		filter = strings.ToLower(filter)
@@ -38,12 +39,13 @@ func ChooseItem(input ItemReader, names, labels []string, prompt, kind string) (
 		for i := range names {
 			visible[i] = strings.Contains(strings.ToLower(labels[i]), filter)
 			if visible[i] {
-				Log(os.Stderr, Info, "  #%d  %s\n", i+1, CleanText(labels[i]))
+				id := Render(color, Accent, fmt.Sprintf("#%d", i+1))
+				fmt.Fprintf(os.Stderr, "  %s  %s\n", id, CleanText(labels[i]))
 				matches++
 			}
 		}
 		if matches == 0 {
-			Log(os.Stderr, Warning, "No matches. / clears the filter.\n")
+			fmt.Fprintln(os.Stderr, StatusLine(color, Warning, "No matches. / clears the filter."))
 		}
 	}
 	show("")
@@ -69,7 +71,7 @@ func ChooseItem(input ItemReader, names, labels []string, prompt, kind string) (
 		if strings.HasPrefix(answer, "#") && err == nil && n >= 1 && n <= len(names) && visible[n-1] {
 			return n - 1, nil
 		}
-		Log(os.Stderr, Warning, "Choose a listed #number or exact identity; /text filters.\n")
+		fmt.Fprintln(os.Stderr, StatusLine(color, Warning, "Choose a listed #number or exact identity; /text filters."))
 	}
 }
 
