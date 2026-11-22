@@ -162,7 +162,7 @@ func showInstallDestination(host, target string) {
 	if !term.IsTerminal(int(os.Stderr.Fd())) {
 		return
 	}
-	destination := remotePathOperand(host, target)
+	destination := sshio.FormatEndpoint(host, target)
 	fmt.Fprintln(os.Stderr, termui.StatusLine(termui.ColorEnabled(os.Stderr), termui.Info, "Installing sshore · "+cleanText(destination)))
 }
 
@@ -179,7 +179,7 @@ func installTarget(value string) (string, string, error) {
 func remoteVersionHelp(host string) string {
 	target := "HOST:"
 	if host != "" {
-		target = shellQuote(remotePathOperand(host, ""))
+		target = shellQuote(sshio.FormatEndpoint(host, ""))
 	}
 	return "Remote sshore must match local version " + version + ". Run sshore install " + target +
 		" to update the remote, or sshore install if this machine is older. For a custom remote path, use HOST:/absolute/path."

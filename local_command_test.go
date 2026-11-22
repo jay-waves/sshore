@@ -85,9 +85,10 @@ func TestLocalShellEnvironment(t *testing.T) {
 func TestHostedShellEnvironment(t *testing.T) {
 	source := []string{"PATH=" + filepath.Join("base", "bin"), "KEEP=value"}
 	executable := filepath.Join("install", "sshore")
-	got := hostedShellEnvironment(source, "xterm", "instance", executable)
+	uid := newTaskUID()
+	got := hostedShellEnvironment(source, "xterm", uid, executable)
 	for _, want := range []string{
-		"TERM=xterm", "SSHORE_SOCKET=instance", "SSHORE_TREE_ID=" + remoteTreeIdentity("instance"),
+		"TERM=xterm", "SSHORE_SOCKET=" + uid, "SSHORE_TREE_ID=task:" + uid,
 		"PATH=" + filepath.Dir(executable) + string(os.PathListSeparator) + filepath.Join("base", "bin"),
 	} {
 		if !slices.Contains(got, want) {

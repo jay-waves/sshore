@@ -22,6 +22,8 @@ type localShellView struct {
 	PID           int    `json:"pid,omitempty"`
 	Version       string `json:"version"`
 	Directory     string `json:"directory,omitempty"`
+
+	handoffAttachments []string
 }
 
 func localRequest(ref, identity string, request message) (message, error) {
@@ -62,7 +64,7 @@ func localShells(withDirectory bool) ([]localShellView, error) {
 func (snapshot taskInventorySnapshot) localShells() []localShellView {
 	rows := snapshot.nativeShells()
 	for _, s := range snapshot.Shells {
-		identity := s.identity("local")
+		identity := identityFromUID(s.Instance)
 		rows = append(rows, localShellView{hosted: true, Lifetime: s.Lifetime, Temporary: s.Temporary, ShortID: taskShortCode(identity), identity: identity, Name: s.Name, State: s.State, PID: s.PID, Directory: s.Directory})
 	}
 	sortLocalShells(rows)

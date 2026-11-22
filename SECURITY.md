@@ -384,6 +384,7 @@ Resource control requires separate authorization. Attachment-source metadata is 
 Cached shell relationships, task IDs, legacy exit receipts and worker liveness
 are not proof of identity, successful cleanup or remote service health. Targets
 are not probed. `list` reads remote shell observations from the local daemon.
+`pstree` uses those observations to display recorded remote detaches.
 The host resolves task selectors against its live registry. The command prompt reads the current host’s
 registered tasks through its authenticated attachment and displays the
 response as plain text.

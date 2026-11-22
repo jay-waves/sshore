@@ -62,7 +62,7 @@ func (s *shellTask) shellEnvironment() []string {
 
 func (s *shellTask) treeIdentity() string {
 	if s.hosted {
-		return remoteTreeIdentity(s.record.UID)
+		return identityFromUID(s.record.UID)
 	}
 	return s.record.identity()
 }
@@ -70,7 +70,7 @@ func (s *shellTask) treeIdentity() string {
 // Call with mu held.
 func (s *shellTask) finishLocked() {
 	s.once.Do(func() {
-		saveShellTree(s.treeIdentity(), s.record.Name, nil, "exited")
+		saveShellTree(s.treeIdentity(), s.record.Name, nil, taskExited)
 		close(s.done)
 	})
 }
@@ -87,7 +87,7 @@ func (s *shellTask) close() {
 		if terminal != nil {
 			_ = terminal.Close()
 		}
-		saveShellTree(identity, name, nil, "exited")
+		saveShellTree(identity, name, nil, taskExited)
 		close(s.done)
 	})
 }
@@ -194,13 +194,13 @@ func (s *shellTask) startManagedShell(path string, env []string, m message) erro
 func (s *shellTask) state() string {
 	switch {
 	case s.exited:
-		return "unavailable"
+		return taskUnknown
 	case s.active != nil:
-		return "attached"
+		return taskActive
 	case s.process.PID == 0:
-		return "starting"
+		return taskStarting
 	default:
-		return "detached"
+		return taskDetached
 	}
 }
 
@@ -304,7 +304,7 @@ func (s *shellTask) attachManaged(p *attachment, m message, start func(message) 
 			temporary, owner, instance = s.record.Owner.PID != 0, describeSpawnOwner(s.record.Owner), ""
 		}
 		tree := s.treeIdentity()
-		saveShellTreeWithProcess(tree, s.record.Name, m.Tree, "attached", owner, shellLifetime(temporary, s.hosted), m.SourceHost, m.SourceMachineID)
+		saveShellTreeWithProcess(tree, s.record.Name, m.Tree, taskActive, owner, shellLifetime(temporary, s.hosted), m.SourceHost, m.SourceMachineID)
 		return p.controlMessage(message{Type: "ready", Tree: shellTreeFor(tree), Temporary: temporary, Instance: instance, PID: s.process.PID, Name: s.record.Name})
 	})
 	failedInitial := err != nil && initial && !errors.Is(err, errShellAttached) && !errors.Is(err, errShellExited)
@@ -347,7 +347,7 @@ func shellSize(m message) pty.Size {
 }
 
 func hostedShellEnvironment(source []string, term, instance, executable string) []string {
-	env := append(append([]string(nil), source...), "TERM="+term, "SSHORE_SOCKET="+instance, "SSHORE_TREE_ID="+remoteTreeIdentity(instance))
+	env := append(append([]string(nil), source...), "TERM="+term, "SSHORE_SOCKET="+instance, "SSHORE_TREE_ID="+identityFromUID(instance))
 	if executable != "" {
 		env = append(env, "PATH="+filepath.Dir(executable)+string(os.PathListSeparator)+localEnvironmentValue(source, "PATH"))
 	}

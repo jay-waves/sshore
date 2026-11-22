@@ -82,16 +82,22 @@ of registered shells and resources. Resource status probes run
 after the snapshot within their own time budget. For `pstree`, the daemon reads
 registered tasks, saved tree metadata and incoming transport leases independently
 and returns a normalized, sorted tree. The caller marks its current shell.
+Shell and resource arrows appear on their task lines. The daemon appends remote
+shells last observed detached as roots, most recent first.
 For `list`, the daemon combines registered tasks, active incoming resources and
 its records of remote shells used from this account. The list is available offline.
-Plain and JSON output use the same task data. Remote shell states appear as
-`last seen` in the table and carry `observed: true` in JSON.
+Plain and JSON output use the same task data. The table shows when remote
+shells were seen and marks read-only access in DETAIL. The daemon uses `active`
+for attached shells, running workers, and live incoming leases. It uses
+`unknown` when a state cannot be confirmed. JSON uses the same `state` field for shells, resources and peers and
+includes `observed: true` and `seen_at` on recorded remote shells.
+Invalid saved shell-tree states cause an inventory error. Resource leases require a task UID and direction.
 A shell connection refreshes the known shells against the host’s live list.
 The local daemon resolves implicit attach targets from detach history and live
 local registrations. For `HOST:ID`, the named host resolves the selector against
 its current registrations.
-A client can use a remote ID without running `list` first. See [inventory](inventory.go),
-[tree rendering](pstree.go) and [daemon metadata](daemon_metadata.go).
+A client can use a remote ID without running `list` first. See
+[inventory and tree rendering](inventory.go) and [daemon metadata](daemon_metadata.go).
 
 ## Build and validate
 

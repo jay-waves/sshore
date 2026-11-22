@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -150,7 +149,13 @@ func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, read
 type localShell struct {
 	shellTask
 	handoff      *localHandoff
-	handoffHints map[net.Conn]string
+	handoffHints map[net.Conn]*localHandoff
+}
+
+// Use the handoff's attachment ID for inventory and keep the token private.
+func handoffAttachmentID(token string) string {
+	digest := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(digest[:16])
 }
 
 func (s *localShell) view() localShellView {
@@ -162,11 +167,15 @@ func (s *localShell) view() localShellView {
 		Name: s.record.Name, Directory: s.record.Directory, Version: s.record.Version, PID: s.process.PID,
 	}
 	view.State = s.state()
-	if len(s.handoffHints) != 0 {
-		hosts := slices.Sorted(maps.Values(s.handoffHints))
-		hosts = slices.DeleteFunc(hosts, func(host string) bool { return host == "" })
-		view.ConnectedHost = strings.Join(slices.Compact(hosts), ", ")
+	var hosts []string
+	for _, h := range s.handoffHints {
+		if h.host != "" {
+			hosts = append(hosts, h.host)
+			view.handoffAttachments = append(view.handoffAttachments, handoffAttachmentID(h.token))
+		}
 	}
+	slices.Sort(hosts)
+	view.ConnectedHost = strings.Join(slices.Compact(hosts), ", ")
 	return view
 }
 
@@ -207,7 +216,7 @@ func localSessionTargets(name string, request message) message {
 		return reply
 	}
 	for _, row := range rows {
-		if row.State != "detached" {
+		if row.State != taskDetached {
 			continue
 		}
 		if request.Action == "select" && row.Name != request.Name {
@@ -261,7 +270,7 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, re
 func (s *localShell) status(_ string) message {
 	view := s.view()
 	return message{Type: "session", Temporary: view.Temporary, Name: view.Name, SoftwareVersion: view.Version,
-		Attached: view.State == "attached", PID: view.PID}
+		Attached: view.State == taskActive, PID: view.PID}
 }
 
 func (s *localShell) attach(c net.Conn) error {
@@ -282,7 +291,7 @@ func (s *localShell) attach(c net.Conn) error {
 		if err != nil {
 			return "", s.close
 		}
-		saveShellTree(s.record.identity(), s.record.Name, nil, "detached")
+		saveShellTree(s.record.identity(), s.record.Name, nil, taskDetached)
 		return s.record.Name, nil
 	}, func(m message) error {
 		switch m.Type {

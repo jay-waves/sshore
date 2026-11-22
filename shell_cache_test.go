@@ -161,9 +161,9 @@ func TestNativePortOverridesSavedConnection(t *testing.T) {
 func TestRoutedShellConnectionRecovery(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	root := options{host: "entry", session: "parent", instance: "parent-instance", server: "/custom/sshore", ssh: []string{"-p", "2222", "-L", "8080:localhost:80"}, sshDirectory: t.TempDir()}
-	middle := options{host: "private-alias", session: "middle", instance: "middle-instance", routeParent: &root, routeToken: strings.Repeat("a", 64)}
-	child := options{host: "private-alias", session: "child", instance: "child-instance", routeParent: &middle, routeToken: strings.Repeat("b", 64), routeTarget: true}
+	root := options{host: "entry", session: "parent", instance: newTaskUID(), server: "/custom/sshore", ssh: []string{"-p", "2222", "-L", "8080:localhost:80"}, sshDirectory: t.TempDir()}
+	middle := options{host: "private-alias", session: "middle", instance: newTaskUID(), routeParent: &root, routeToken: strings.Repeat("a", 64)}
+	child := options{host: "private-alias", session: "child", instance: newTaskUID(), routeParent: &middle, routeToken: strings.Repeat("b", 64), routeTarget: true}
 	if err := rememberDetachedAttachment(child); err != nil {
 		t.Fatal(err)
 	}

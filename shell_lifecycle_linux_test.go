@@ -33,7 +33,7 @@ func TestSessionMetadataLifecycle(t *testing.T) {
 	if out, err := run(remoteServiceRequest{Operation: "rename-session", Name: "original", NewName: "work"}); err != nil {
 		t.Fatal(out, err)
 	}
-	if out, err := run(remoteServiceRequest{Operation: "inventory"}); err != nil || !strings.Contains(out, `"name":"work","state":"attached"`) || !strings.Contains(out, `"directory":"/tmp"`) || strings.Contains(out, `"name":"original","state":"attached"`) {
+	if out, err := run(remoteServiceRequest{Operation: "inventory"}); err != nil || !strings.Contains(out, `"name":"work","state":"active"`) || !strings.Contains(out, `"directory":"/tmp"`) || strings.Contains(out, `"name":"original","state":"active"`) {
 		t.Fatal(out, err)
 	}
 	// The helper retains the original task ID after rename.
@@ -215,7 +215,7 @@ func TestKillSessionLifecycle(t *testing.T) {
 	listing := exec.Command(e.bin, remoteServiceArgs(remoteServiceRequest{Operation: "inventory"})...)
 	listing.Env = e.env
 	var inv inventory
-	if out, err := listing.CombinedOutput(); err != nil || json.Unmarshal(out, &inv) != nil || len(inv.Shells) != 1 || inv.Shells[0].Name != "keep" || inv.Shells[0].State != "attached" || inv.Shells[0].Age == nil {
+	if out, err := listing.CombinedOutput(); err != nil || json.Unmarshal(out, &inv) != nil || len(inv.Shells) != 1 || inv.Shells[0].Name != "keep" || inv.Shells[0].State != taskActive || inv.Shells[0].Age == nil {
 		t.Fatal("missing list age", string(out), err)
 	}
 	for _, detached := range []bool{false, true} {

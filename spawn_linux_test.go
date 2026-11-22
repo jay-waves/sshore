@@ -141,7 +141,7 @@ func TestSpawnLifetime(t *testing.T) {
 			if _, err := ensureLocalDaemonContext(context.Background(), e.bin); err != nil {
 				t.Fatal(err)
 			}
-			saveShellTree("original", "work", nil, "attached", "persistent")
+			saveShellTree("original", "work", nil, taskActive, "persistent")
 			args := []string{"fixture-" + tc.command, "here:", "temporary", "--detach"}
 			if remote {
 				remoteEnv := append(append([]string(nil), env...), "SSHORE_ASKPASS=", "SSHORE_ASKPASS_ADDR=", "SSHORE_ASKPASS_TOKEN=", "SSH_ASKPASS=")
@@ -204,13 +204,13 @@ func TestSpawnLifetime(t *testing.T) {
 			}
 			var pid int
 			if remote {
-				if len(inv.Shells) != 1 || !inv.Shells[0].Temporary || inv.Shells[0].Lifetime != "heartbeat" || inv.Shells[0].State != "detached" {
+				if len(inv.Shells) != 1 || !inv.Shells[0].Temporary || inv.Shells[0].Lifetime != "heartbeat" || inv.Shells[0].State != taskDetached {
 					t.Fatalf("unexpected shells: %s", out)
 				}
 				pid = inv.Shells[0].PID
 			} else {
 				rows := inv.LocalShells
-				if len(rows) != 1 || !rows[0].Temporary || rows[0].Lifetime != "parent" || rows[0].State != "detached" {
+				if len(rows) != 1 || !rows[0].Temporary || rows[0].Lifetime != "parent" || rows[0].State != taskDetached {
 					t.Fatalf("unexpected shells: %s", out)
 				}
 				pid = rows[0].PID

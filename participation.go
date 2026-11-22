@@ -9,11 +9,12 @@ import (
 
 // Participation records only tasks opened through this client account.
 type participatingShell struct {
-	Host, Instance, Name, State, Lifetime string
-	PID                                   int
-	Temporary                             bool
-	Attachment                            string
-	ChangedAt                             time.Time
+	Host, Instance, Name, Lifetime string
+	State                          string
+	PID                            int
+	Temporary                      bool
+	Attachment                     string
+	ChangedAt                      time.Time
 }
 
 type participationRefresh struct {
@@ -84,7 +85,7 @@ func validateParticipatingShell(row participatingShell) error {
 		return fmt.Errorf("invalid participating shell")
 	}
 	switch row.State {
-	case "attached", "detached", "unconfirmed":
+	case taskActive, taskDetached, taskUnknown:
 		return nil
 	default:
 		return fmt.Errorf("invalid participating shell state")
@@ -127,20 +128,21 @@ func (m *daemonMetadata) updateParticipation(r metadataRequest) error {
 		i := slices.IndexFunc(rows, func(old participatingShell) bool {
 			return old.Host == row.Host && old.Instance == row.Instance
 		})
-		if r.Action == "participation_observe" {
-			if i < 0 {
-				if len(rows) == 4096 {
-					return fmt.Errorf("participating shell limit reached")
-				}
-				rows = append(rows, row)
-			} else {
-				rows[i] = row
+		switch {
+		case r.Action == "participation_state":
+			if i < 0 || rows[i].Attachment != row.Attachment {
+				return nil
 			}
-		} else if i >= 0 && rows[i].Attachment == row.Attachment {
-			if row.State == "detached" {
+			if row.State == taskDetached {
 				rows[i].Name = row.Name
 			}
 			rows[i].State, rows[i].ChangedAt = row.State, now
+		case i >= 0:
+			rows[i] = row
+		case len(rows) == 4096:
+			return fmt.Errorf("participating shell limit reached")
+		default:
+			rows = append(rows, row)
 		}
 	case "participation_forget", "participation_rename":
 		if !validTaskUID(r.Instance) || validSSHDestination(r.Host) != nil {
@@ -163,6 +165,11 @@ func (m *daemonMetadata) updateParticipation(r metadataRequest) error {
 		if r.Participation == nil || validSSHDestination(r.Host) != nil {
 			return fmt.Errorf("invalid participating shell refresh")
 		}
+		for _, view := range r.Participation.Shells {
+			if !validTaskUID(view.Instance) || !validShellTreeState(view.State) {
+				return fmt.Errorf("invalid shell in participation refresh")
+			}
+		}
 		rows = refreshParticipation(rows, r.Host, *r.Participation, now)
 	}
 	if slices.Equal(rows, m.participation.rows) {
@@ -174,9 +181,7 @@ func (m *daemonMetadata) updateParticipation(r metadataRequest) error {
 func refreshParticipation(rows []participatingShell, host string, refresh participationRefresh, now time.Time) []participatingShell {
 	observed := make(map[string]shellView, len(refresh.Shells))
 	for _, view := range refresh.Shells {
-		if validTaskUID(view.Instance) {
-			observed[view.Instance] = view
-		}
+		observed[view.Instance] = view
 	}
 	updated := rows[:0]
 	for _, row := range rows {
@@ -185,11 +190,9 @@ func refreshParticipation(rows []participatingShell, host string, refresh partic
 			if !found {
 				continue
 			}
-			if validSession(view.Name) == nil && view.PID > 0 && validShellLifetime(view.Lifetime) && (view.State == "attached" || view.State == "detached") {
-				if row.Name != view.Name || row.State != view.State || row.PID != view.PID || row.Temporary != view.Temporary || row.Lifetime != view.Lifetime {
-					row.Name, row.State, row.PID = view.Name, view.State, view.PID
-					row.Temporary, row.Lifetime, row.ChangedAt = view.Temporary, view.Lifetime, now
-				}
+			if validSession(view.Name) == nil && view.PID > 0 && validShellLifetime(view.Lifetime) && (view.State == taskActive || view.State == taskDetached) {
+				row.Name, row.State, row.PID = view.Name, view.State, view.PID
+				row.Temporary, row.Lifetime, row.ChangedAt = view.Temporary, view.Lifetime, now
 			}
 		}
 		updated = append(updated, row)

@@ -213,28 +213,30 @@ Remote rename requires matching releases and never installs software.
 Show this machine's tasks and incoming resources, along with remote shells
 recorded by the local daemon. Remote shell states are the last locally observed
 states and are available offline.
-DETAIL summarizes directories, mappings or errors; terminal output is shortened
-to fit the available width. Redirected output preserves full details.
+DETAIL shows observation times, directories, mappings, errors and read-only access.
+Terminal output is shortened to fit the width. Redirected output keeps full details.
+The current shell is highlighted and marked with *.
 ID shows the first six UID characters followed by an optional (alias).
 Use a longer prefix or full UID when a reference is ambiguous.
-TYPE uses launch, spawn, mount or forward. Peer entries are read-only.
+TYPE uses launch, spawn, mount or forward.
 Use aliases or short IDs for attach, rename and kill.
 A matching short ID takes precedence over a name.
 
 Options:
-  --json           Emit the same task list as JSON. Recorded shells have observed: true.
+  --json           Emit the daemon's inventory JSON, including seen_at for recorded shells.
 `,
 	},
 	"pstree": {
 		help: `Usage: sshore pstree
 
-Show local managed tasks and live local resource transports as TYPE/ID (alias).
-The tree containing *current comes first; other nodes sort by newest check.
-Branches show local spawn ownership. <- HOST on a shell identifies its
-current remote attachment source.
-Resource arrows run from provider to consumer: importing a mount or remote service
-shows <- HOST; exporting a mount or local service shows -> HOST.
-? marks an unconfirmed local entry or an unknown legacy direction.
+Show local managed tasks, live resource transports and recorded remote detaches.
+The current shell is highlighted and marked with *.
+Branches show spawn ownership, including ordinary parent processes.
+Shell lines show their remote attachment source or destination.
+Recorded remote detaches appear at the end with their last observation age.
+Resource arrows run from provider to consumer. Importing a mount or remote
+service shows <- HOST. Exporting a mount or local service shows -> HOST.
+? marks an unconfirmed local entry.
 Incoming resources are read-only here. Use list for current task states.
 No SSH is started by this command.
 `,

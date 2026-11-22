@@ -198,21 +198,24 @@ func TestSharedCLIGrammar(t *testing.T) {
 			t.Fatalf("accepted forward %v", args)
 		}
 	}
-	for _, command := range []string{"list", "kill", "rename"} {
+	for _, command := range []string{"kill", "rename"} {
 		if _, err := parseOptions([]string{command, "work", "--", "-L8080:localhost:80"}); err == nil {
 			t.Fatalf("%s accepts unrelated forwarding option", command)
 		}
 	}
 }
 
-func TestShellListOptionsAndSSHBoundary(t *testing.T) {
-	o, err := parseOptions([]string{"list", "--json"})
-	if err != nil || !o.listJSON {
-		t.Fatalf("%+v %v", o, err)
+func TestInventoryOptions(t *testing.T) {
+	parsed, err := parseCLI([]string{"--json"}, "list")
+	if err != nil || !parsed.has("--json") {
+		t.Fatalf("%+v %v", parsed, err)
 	}
-	for _, flag := range []string{"-v", "--verbose", "--details", "--version", "--verbosal"} {
-		if _, err := parseOptions([]string{"list", flag}); err == nil {
-			t.Fatalf("accepted %s", flag)
+	for _, args := range [][]string{
+		{"list", "-v"}, {"list", "--verbose"}, {"list", "--version"},
+		{"ls", "--", "-L8080:localhost:80"}, {"ps", "--json"}, {"ps", "work:"},
+	} {
+		if code, err := run(args); code != 2 || err == nil {
+			t.Fatalf("%v: %d %v", args, code, err)
 		}
 	}
 }
@@ -271,7 +274,7 @@ func TestCommandAliases(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(parsed.operands, []string{"a", "d"}) || !reflect.DeepEqual(parsed.ssh, []string{"-J", "ps"}) {
 		t.Fatalf("operands rewritten: %+v %v", parsed, err)
 	}
-	for _, args := range [][]string{{"a", "host:"}, {"ls"}, {"sh", "host:"}, {"mux", "host:"}} {
+	for _, args := range [][]string{{"a", "host:"}, {"sh", "host:"}, {"mux", "host:"}} {
 		o, err := parseOptions(args)
 		if err != nil || o.command != canonicalCommand(args[0]) {
 			t.Fatalf("shell policy: %+v %v", o, err)
@@ -858,7 +861,7 @@ func TestShortTaskResourceRenameAndReplacement(t *testing.T) {
 		}
 		inv, err := collectInventory()
 		if err != nil || !slices.ContainsFunc(inv.Resources, func(row resourceView) bool {
-			return row.Identity == key && row.ID == kind+"/"+kind+"new" && row.ShortID == code && row.Worker == "running"
+			return row.Identity == key && row.ID == kind+"/"+kind+"new" && row.ShortID == code && row.State == taskActive
 		}) {
 			t.Fatalf("renamed resource inventory: %+v %v", inv.Resources, err)
 		}

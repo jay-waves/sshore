@@ -257,7 +257,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 	if m.Type != "ready" {
 		return 1, fmt.Errorf("unexpected attach handshake")
 	}
-	if (!o.local || o.hosted) && validTaskUID(o.instance) && o.instance != m.Instance {
+	if (!o.local || o.hosted) && (!validTaskUID(m.Instance) || o.instance != "" && o.instance != m.Instance) {
 		return 1, fmt.Errorf("shell instance changed; refresh with sshore list")
 	}
 	if err := acceptSessionName(&o, m.Name); err != nil {
@@ -287,8 +287,12 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 		}
 	}
 	if !o.local {
-		row := participatingShell{Host: o.host, Instance: o.instance, Name: o.session, State: "attached",
-			Lifetime: shellLifetime(m.Temporary, true), Temporary: m.Temporary, PID: m.PID, Attachment: newTaskUID()}
+		attachment := o.handoffAttachment
+		if attachment == "" {
+			attachment = newTaskUID()
+		}
+		row := participatingShell{Host: o.host, Instance: o.instance, Name: o.session, State: taskActive,
+			Lifetime: shellLifetime(m.Temporary, true), Temporary: m.Temporary, PID: m.PID, Attachment: attachment}
 		if err := observeParticipatingShell(row); err != nil {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Could not record participating shell: %s\n", cleanText(err.Error()))
 		} else {
@@ -296,7 +300,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 		}
 		defer func() {
 			if !terminalStateConfirmed {
-				updateParticipation("unconfirmed")
+				updateParticipation(taskUnknown)
 			}
 		}()
 	}
@@ -315,7 +319,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 		if validSession(name) == nil {
 			o.session = name
 		}
-		updateParticipation("detached")
+		updateParticipation(taskDetached)
 		if err := rememberDetachedAttachment(o); err != nil {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Detach history not saved: %s\n", cleanText(err.Error()))
 		}
@@ -1107,6 +1111,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 					}
 					target, handoffErr := e.m.Handoff.options()
 					source, token := o, e.m.Token
+					target.handoffAttachment = handoffAttachmentID(token)
 					target.handoffDone = func(_ context.Context, result error) error {
 						request := message{Type: "handoff_confirm", Token: token}
 						if result != nil {
@@ -1293,7 +1298,7 @@ func shellDisplayEndpoint(o options) string {
 	if o.local {
 		return localEndpointPrefix + o.session
 	}
-	return remotePathOperand(o.host, o.session)
+	return transportio.FormatEndpoint(o.host, o.session)
 }
 
 func reconnectCommand(o options) string {
@@ -1312,11 +1317,11 @@ func reconnectCommand(o options) string {
 	if validTaskUID(o.instance) {
 		selector = o.instance
 	}
-	args := []string{"sshore", "attach", remotePathOperand(o.host, selector)}
+	args := []string{"sshore", "attach", transportio.FormatEndpoint(o.host, selector)}
 	if o.local {
 		identity := o.taskIdentity
 		if identity == "" {
-			identity = remoteShellIdentity(o.host, o.instance)
+			identity = identityFromUID(o.instance)
 		}
 		selector := taskUID(identity)
 		if selector == "" {

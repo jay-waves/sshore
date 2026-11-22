@@ -345,5 +345,5 @@ func (s *resourceService) peerTask() peerRecord {
 	}
 	// Derive a stable mirror key without exposing the local control token.
 	key := sha256.Sum256([]byte("peer:" + s.record.UID))
-	return peerRecord{Direction: s.record.Direction, UID: s.record.UID, Version: version, Key: hex.EncodeToString(key[:16]), ID: s.record.Kind + "/" + s.record.Name, Manager: taskManagerLabel(), State: "active", Detail: cleanText(detail)}
+	return peerRecord{Direction: s.record.Direction, UID: s.record.UID, Version: version, Key: hex.EncodeToString(key[:16]), ID: s.record.Kind + "/" + s.record.Name, Manager: taskManagerLabel(), Detail: cleanText(detail)}
 }

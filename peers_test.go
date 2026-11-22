@@ -20,7 +20,7 @@ func activityFixture(t *testing.T) *daemonActivity {
 	return state
 }
 func testPeerTask() peerRecord {
-	return peerRecord{Version: version, Key: strings.Repeat("a", 32), ID: "forward/web", Manager: "test-client", State: "active", Detail: "server 8080 -> manager 3000"}
+	return peerRecord{UID: strings.Repeat("b", 32), Direction: "<-", Version: version, Key: strings.Repeat("a", 32), ID: "forward/web", Manager: "test-client", Detail: "server 8080 -> manager 3000"}
 }
 func TestPeerTaskPrivacyAndRegistration(t *testing.T) {
 	state := activityFixture(t)
@@ -52,7 +52,6 @@ func TestIncomingTaskLifetime(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		state := activityFixture(t)
 		task := testPeerTask()
-		task.UID, task.Direction = strings.Repeat("b", 32), "<-"
 		older := beginIncomingTask(task)
 		input, output := io.Pipe()
 		defer input.Close()
@@ -148,7 +147,7 @@ func testDaemonActivitySocketLease(t *testing.T, release bool) {
 func TestDaemonMetadataHistoryCannotRecreateLiveState(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	saveShellTree("task", "shell", nil, "attached")
+	saveShellTree("task", "shell", nil, taskActive)
 	activityFixture(t)
 	tree := shellTreeFor("task")
 	if len(tree) != 1 || !tree[0].Cached {
@@ -165,7 +164,7 @@ func TestDaemonResetPreservesLiveOwnership(t *testing.T) {
 	if err := state.tasks.register(id, &nativeShellTask{shell: shell}); err != nil {
 		t.Fatal(err)
 	}
-	saveShellTree("task:"+id, "shell", []shellTreeNode{{Identity: "owner", Name: "parent"}}, "attached", "parent")
+	saveShellTree("task:"+id, "shell", []shellTreeNode{{Identity: "owner", Name: "parent", State: taskActive}}, taskActive, "parent")
 	if err := runReset(); err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +221,7 @@ func TestDaemonLiveMetadataDoesNotReadHistoryFiles(t *testing.T) {
 	fixture := activityFixture(t)
 	root := filepath.Join(t.TempDir(), "state")
 	t.Setenv("SSHORE_STATE_DIR", root)
-	saveShellTree("task", "shell", nil, "attached")
+	saveShellTree("task", "shell", nil, taskActive)
 	if err := rememberConnection(options{host: "work", session: "shell", server: "sshore"}); err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +230,7 @@ func TestDaemonLiveMetadataDoesNotReadHistoryFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if tree := shellTreeFor("task"); len(tree) != 1 || tree[0].State != "attached" {
+	if tree := shellTreeFor("task"); len(tree) != 1 || tree[0].State != taskActive {
 		t.Fatal(tree)
 	}
 	if rows, err := fixture.metadata.readRecentConnectionsLocal(); err != nil || len(rows) != 1 || rows[0].Host != "work" {

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 func TestConfirmKillAll(t *testing.T) {
@@ -65,7 +67,7 @@ func TestInventoryDoesNotExposeCapabilities(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if strings.Contains(string(b), record.Token) || strings.Contains(string(b), record.Address) || rows[0].Worker != "running" || rows[0].Target != "unchecked" {
+	if strings.Contains(string(b), record.Token) || strings.Contains(string(b), record.Address) || rows[0].State != taskActive || rows[0].Target != "unchecked" {
 		t.Fatal(string(b))
 	}
 }
@@ -88,7 +90,7 @@ func TestInventoryBoundedStatusWait(t *testing.T) {
 		t.Fatal("status checks exceeded aggregate deadline")
 	}
 	for _, r := range rows {
-		if r.Worker != "unavailable" {
+		if r.State != taskUnknown {
 			t.Fatal(r)
 		}
 	}
@@ -166,7 +168,7 @@ func TestMountSourceEndpoints(t *testing.T) {
 		{[]string{"work:project", ".:./local:"}, "work", "project", "./local:"},
 		{[]string{"work:/srv/name@::1", "here:"}, "work", "/srv/name@::1", ""},
 		{[]string{"alice@[2001:db8::1]:/srv/project", ".:X:"}, "alice@2001:db8::1", "/srv/project", "X:"},
-		{[]string{remotePathOperand("alice@2001:db8::1", "/srv/project"), ".:X:"}, "alice@2001:db8::1", "/srv/project", "X:"},
+		{[]string{sshio.FormatEndpoint("alice@2001:db8::1", "/srv/project"), ".:X:"}, "alice@2001:db8::1", "/srv/project", "X:"},
 	} {
 		o, err := parseFTPOptions(tc.args)
 		if err != nil || o.Host != tc.host || o.Remote != tc.remote || o.Mountpoint != tc.mountpoint {

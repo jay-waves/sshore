@@ -79,20 +79,20 @@ func (s *remoteShell) serveControl(c net.Conn) error {
 			s.finishLocked()
 			return "", nil
 		}
-		saveShellTree(remoteTreeIdentity(s.record.UID), s.record.Name, nil, "detached")
+		saveShellTree(identityFromUID(s.record.UID), s.record.Name, nil, taskDetached)
 		return s.record.Name, nil
 	}, func(m message) error {
 		switch m.Type {
 		case "spawn_child":
 			s.mu.Lock()
-			req := &localDaemonRequest{Record: localShellRecord{Directory: s.record.Directory, Owner: s.process}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Tree: shellTreeFor(remoteTreeIdentity(s.record.UID))}}
+			req := &localDaemonRequest{Record: localShellRecord{Directory: s.record.Directory, Owner: s.process}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Tree: shellTreeFor(identityFromUID(s.record.UID))}}
 			s.mu.Unlock()
 			go serveShortcutSpawn(p, s.done, func(c net.Conn) {
 				s.requestSpawnRoute(c, message{SoftwareVersion: version, LocalRequest: req})
 			})
 		case "launch_child":
 			s.mu.Lock()
-			req := localDaemonRequest{Record: localShellRecord{Directory: s.record.Directory}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Tree: shellTreeFor(remoteTreeIdentity(s.record.UID))}}
+			req := localDaemonRequest{Record: localShellRecord{Directory: s.record.Directory}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Tree: shellTreeFor(identityFromUID(s.record.UID))}}
 			s.mu.Unlock()
 			go serveShortcutSpawn(p, s.done, func(c net.Conn) {
 				if err := s.serveLocalLaunchRoute(c, p, req); err != nil {
@@ -177,7 +177,7 @@ func (s *remoteShell) status(detail string) message {
 		}
 	}
 	return message{Type: "session", Temporary: view.Temporary, Instance: view.Instance, Name: view.Name, SoftwareVersion: version,
-		Attached: view.State == "attached", PID: view.PID, AgeSeconds: view.Age, Foreground: view.Foreground, Directory: view.Directory}
+		Attached: view.State == taskActive, PID: view.PID, AgeSeconds: view.Age, Foreground: view.Foreground, Directory: view.Directory}
 }
 func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) error {
 	s := &remoteShell{

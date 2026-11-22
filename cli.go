@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -98,12 +99,12 @@ func run(args []string) (code int, resultErr error) {
 			return 2, usage("usage: sshore daemon [mount]")
 		}
 		return runMountDaemon()
-	case "launch", "spawn", "attach", "rename", "kill", "list":
+	case "launch", "spawn", "attach", "rename", "kill":
 		return runTargetCommand(args)
+	case "list", "pstree":
+		return runInventoryCommand(args[0], args[1:])
 	case "mount":
 		return runMount(args[1:])
-	case "pstree":
-		return runPSTree(args[1:])
 	case "forward":
 		return runEndpointForward(args[1:])
 	case "cp":
@@ -211,13 +212,13 @@ func runExec(args []string) (int, error) {
 func parseOptions(args []string) (options, error) {
 	o := options{server: "sshore"}
 	if len(args) == 0 {
-		return o, usage("expected launch, spawn, list, attach, kill or rename; see sshore --help")
+		return o, usage("expected launch, spawn, attach, kill or rename; see sshore --help")
 	}
 	o.command = canonicalCommand(args[0])
 	switch o.command {
-	case "launch", "spawn", "attach", "kill", "rename", "list":
+	case "launch", "spawn", "attach", "kill", "rename":
 	default:
-		return o, usage("choose an action: sshore launch [HOST:], sshore spawn [HOST:], sshore list, sshore attach HOST:ID, sshore kill HOST:ID, or sshore rename HOST:ID NEW")
+		return o, usage("choose an action: sshore launch [HOST:], sshore spawn [HOST:], sshore attach HOST:ID, sshore kill HOST:ID, or sshore rename HOST:ID NEW")
 	}
 	parsed, err := parseCLI(args[1:], o.command)
 	if err != nil {
@@ -228,10 +229,6 @@ func parseOptions(args []string) (options, error) {
 
 func shellOptions(command string, parsed cliArguments) (options, error) {
 	o := options{command: command, server: parsed.value("--server", "sshore")}
-	if command == "list" {
-		o.listJSON = parsed.has("--json")
-		return o, nil
-	}
 	o.ssh, o.local = parsed.ssh, parsed.local
 	o.portOverrideOnly = parsed.has("--port") && len(parsed.ssh) == 2
 	o.serverSet = parsed.has("--server")
@@ -417,6 +414,7 @@ type options struct {
 	reusable              *clientTransport
 	routeTarget           bool
 	handoffDone           func(context.Context, error) error
+	handoffAttachment     string
 	routeParent           *options
 	routeToken            string
 	environment           []string
@@ -428,7 +426,6 @@ type options struct {
 	command               string
 	newName               string
 	quiet, noEscape       bool
-	listJSON              bool
 	ssh                   []string
 	local                 bool
 	detached              bool
@@ -442,9 +439,6 @@ type options struct {
 }
 
 func executeShellCommand(o options) (int, error) {
-	if o.command == "list" {
-		return runInventory(o.listJSON)
-	}
 	var err error
 	if o.command == "spawn" {
 		o.temporary = true
@@ -680,18 +674,6 @@ func parseCopyEndpoint(value string) (copyEndpoint, error) {
 	return copyEndpoint{host: host, path: path}, nil
 }
 
-// remotePathOperand encodes a normalized SSH destination for a generated command.
-func remotePathOperand(host, path string) string {
-	prefix, addr := "", host
-	if i := strings.LastIndexByte(host, '@'); i >= 0 {
-		prefix, addr = host[:i+1], host[i+1:]
-	}
-	if strings.Contains(addr, ":") && !strings.HasPrefix(addr, "[") {
-		addr = "[" + addr + "]"
-	}
-	return prefix + addr + ":" + path
-}
-
 func parseCopyCommand(args []string) (copyOptions, error) {
 	var o copyOptions
 	parsed, err := parseCLI(args, "cp")
@@ -856,7 +838,7 @@ func selectTask(snapshot taskInventorySnapshot, kind, ref string, routes []recen
 		consider(selectedTask{Kind: "shell", Name: row.Name, Identity: identity})
 	}
 	for _, row := range snapshot.Shells {
-		consider(selectedTask{Kind: "shell", Name: row.Name, Identity: row.identity("local"), Instance: row.Instance, Hosted: true})
+		consider(selectedTask{Kind: "shell", Name: row.Name, Identity: identityFromUID(row.Instance), Instance: row.Instance, Hosted: true})
 	}
 	for _, row := range snapshot.Resources {
 		consider(selectedTask{Kind: row.Kind, Name: row.Name, Identity: resourceIdentity(row)})
@@ -965,7 +947,7 @@ func executeEndpointForward(f forwardConfig, foreground bool) (int, error) {
 			label = "Local service port"
 			remote = f.Port
 		}
-		termui.Log(os.Stdout, termui.Info, "Remote %s:%d. Submit local port to forward.\n", cleanText(f.Host), remote)
+		termui.Log(os.Stdout, termui.Info, "Remote %s. Submit local port to forward.\n", cleanText(sshio.FormatEndpoint(f.Host, strconv.Itoa(remote))))
 		port, err := readForwardPort(input, label)
 		if err != nil {
 			return 1, err

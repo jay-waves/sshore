@@ -78,7 +78,7 @@ func detachedHostedShells() ([]sessionTarget, error) {
 	}
 	var targets []sessionTarget
 	for _, shell := range rows {
-		if shell.State == "detached" {
+		if shell.State == taskDetached {
 			targets = append(targets, sessionTarget{Name: shell.Name, Instance: shell.Instance})
 		}
 	}

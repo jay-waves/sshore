@@ -55,20 +55,14 @@ func taskShortCode(key string) string {
 }
 
 func resourceIdentity(r resourceRecord) string {
-	if validTaskUID(r.UID) {
-		return "task:" + r.UID
-	}
-	return ""
+	return identityFromUID(r.UID)
 }
 
-func remoteShellIdentity(host, instance string) string {
-	if validTaskUID(instance) {
-		return "task:" + instance
-	}
-	if instance == "" {
+func identityFromUID(uid string) string {
+	if !validTaskUID(uid) {
 		return ""
 	}
-	return "remote:" + host + ":" + instance
+	return "task:" + uid
 }
 
 func validSession(name string) error {

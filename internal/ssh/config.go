@@ -18,6 +18,18 @@ import (
 	cryptossh "golang.org/x/crypto/ssh"
 )
 
+// FormatEndpoint joins an SSH destination and its operand, bracketing IPv6 addresses.
+func FormatEndpoint(host, operand string) string {
+	prefix, addr := "", host
+	if i := strings.LastIndexByte(host, '@'); i >= 0 {
+		prefix, addr = host[:i+1], host[i+1:]
+	}
+	if strings.Contains(addr, ":") && !strings.HasPrefix(addr, "[") {
+		addr = "[" + addr + "]"
+	}
+	return prefix + addr + ":" + operand
+}
+
 // Options describes one owned SSH connection. Executable is used only for ssh -G.
 // Environment and Directory belong to the initiating command, never daemon startup.
 type Options struct {

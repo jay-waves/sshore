@@ -37,7 +37,7 @@ func resourceViews(records []resourceRecord, statuses map[string]resourceStatus,
 			case status.Version != version:
 				view.LastError = "incompatible or invalid worker status"
 			default:
-				view.Worker, view.resourceStatus = "running", status
+				view.State, view.resourceStatus = taskActive, status
 			}
 		}
 		views = append(views, view)
@@ -186,7 +186,7 @@ func confirmDaemonShutdown(host string, snapshot daemonSnapshot, resources []res
 	if len(resources) > 0 {
 		inv := inventory{Resources: slices.Clone(resources)}
 		inv.setTaskReferences()
-		printTaskInventory(inv)
+		writeTaskInventoryColor(os.Stdout, inv, "", termui.ColorEnabled(os.Stdout))
 	}
 	prompt := termui.StatusLine(termui.ColorEnabled(os.Stderr), termui.Warning, "End the listed tasks and stop the account daemon? [Y/n]")
 	fmt.Fprint(os.Stderr, prompt+" ")

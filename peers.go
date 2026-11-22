@@ -15,12 +15,11 @@ const maxRemoteTaskSize = 8192
 
 type peerRecord struct {
 	Direction string `json:"direction,omitempty"`
-	UID       string `json:"uid,omitempty"`
+	UID       string `json:"uid"`
 	Version   string `json:"version"`
 	Key       string `json:"key"`
 	ID        string `json:"id"`
 	Manager   string `json:"manager"`
-	State     string `json:"state"`
 	Detail    string `json:"detail"`
 }
 
@@ -36,7 +35,7 @@ func taskManagerLabel() string {
 	return h
 }
 func validateRemoteTask(t peerRecord) error {
-	if t.UID != "" && !validTaskUID(t.UID) || t.Direction != "" && t.Direction != "<-" && t.Direction != "->" {
+	if !validTaskUID(t.UID) || t.Direction != "<-" && t.Direction != "->" {
 		return fmt.Errorf("invalid peer identity or direction")
 	}
 	if t.Version != version || !validRequestID(t.Key) || t.Manager == "" || len(t.Manager) > 128 || len(t.Detail) > 4096 {
@@ -48,7 +47,7 @@ func validateRemoteTask(t peerRecord) error {
 	}
 	switch kind {
 	case "mount", "forward":
-		if validSession(name) != nil || t.State != "active" {
+		if validSession(name) != nil {
 			return fmt.Errorf("invalid peer resource")
 		}
 	default:
@@ -75,7 +74,7 @@ func peerViews(peers []peerRecord) []peerView {
 }
 
 func (t peerRecord) view() peerView {
-	return peerView{Direction: t.Direction, UID: t.UID, Identity: t.Key, ID: t.ID, Manager: t.Manager, State: t.State, Detail: t.Detail}
+	return peerView{Direction: t.Direction, UID: t.UID, Identity: t.Key, ID: t.ID, Manager: t.Manager, State: taskActive, Detail: t.Detail}
 }
 
 func beginIncomingTask(t peerRecord) func() {

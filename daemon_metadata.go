@@ -90,15 +90,16 @@ func (h *recentHistory[T]) replace(rows []T) error {
 }
 
 type metadataRequest struct {
-	OwnerProcess                             *spawnProcessView
-	Local, Direct                            bool `json:",omitempty"`
-	Action, Key, Host, Name, State, Instance string
-	Tree                                     []shellTreeNode
-	Lifetime                                 []string
-	Attachment                               *recentAttachment
-	Connection                               *recentConnection
-	Participant                              *participatingShell
-	Participation                            *participationRefresh
+	OwnerProcess                      *spawnProcessView
+	Local, Direct                     bool `json:",omitempty"`
+	Action, Key, Host, Name, Instance string
+	State                             string
+	Tree                              []shellTreeNode
+	Lifetime                          []string
+	Attachment                        *recentAttachment
+	Connection                        *recentConnection
+	Participant                       *participatingShell
+	Participation                     *participationRefresh
 }
 type metadataReply struct {
 	Target       *selectedTask     `json:",omitempty"`
@@ -178,9 +179,9 @@ func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply)
 	case "tree_get":
 		reply.Tree = cloneShellTree(s.treeChain(r.Key))
 	case "tree_save":
-		s.saveShellTreeLocal(r.Key, r.Name, r.Tree, r.State, r.OwnerProcess, r.Lifetime...)
+		err = s.saveShellTreeLocal(r.Key, r.Name, r.Tree, r.State, r.OwnerProcess, r.Lifetime...)
 	case "tree_remember":
-		s.rememberShellTreeLocal(r.Tree)
+		err = s.rememberShellTreeLocal(r.Tree)
 	case "tree_rename":
 		s.renameShellTreeLocal(r.Key, r.Name)
 	case "tree_remote_exit":
@@ -217,8 +218,11 @@ func (s *daemonMetadata) loadTrees() error {
 			continue
 		}
 		var chain []shellTreeNode
-		if err := readStateJSON(filepath.Join(root, entry.Name()), maxShellTreeBytes, &chain); err != nil || len(chain) == 0 || len(chain) > maxShellTreeNodes {
-			continue
+		if err := readStateJSON(filepath.Join(root, entry.Name()), maxShellTreeBytes, &chain); err != nil {
+			return err
+		}
+		if !validSavedShellTree(chain) {
+			return fmt.Errorf("invalid shell tree in %s", entry.Name())
 		}
 		for i := range chain {
 			chain[i].Cached = true
@@ -238,6 +242,20 @@ func shellTreeFilename(id string) string {
 	return fmt.Sprintf("%x.json", sha256.Sum256([]byte(id)))
 }
 
+func validShellTreeState(state string) bool {
+	switch state {
+	case taskStarting, taskActive, taskDetached, taskUnknown, taskExited:
+		return true
+	default:
+		return false
+	}
+}
+
+func validSavedShellTree(chain []shellTreeNode) bool {
+	return len(chain) > 0 && len(chain) <= maxShellTreeNodes && chain[len(chain)-1].Identity != "" &&
+		!slices.ContainsFunc(chain, func(node shellTreeNode) bool { return !validShellTreeState(node.State) })
+}
+
 func (s *daemonMetadata) treeChain(id string) []shellTreeNode {
 	chain := s.trees[shellTreeFilename(id)]
 	if len(chain) != 0 && chain[len(chain)-1].Identity == id {
@@ -249,7 +267,7 @@ func (s *daemonMetadata) treeChain(id string) []shellTreeNode {
 // The final node owns the record. The caller supplies an owned slice.
 // Daemon-owned process display data is read-only and can be shared.
 func (s *daemonMetadata) writeTreeLocal(chain []shellTreeNode) error {
-	if len(chain) == 0 || len(chain) > maxShellTreeNodes || chain[len(chain)-1].Identity == "" {
+	if !validSavedShellTree(chain) {
 		return fmt.Errorf("invalid shell tree")
 	}
 	file := shellTreeFilename(chain[len(chain)-1].Identity)

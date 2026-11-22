@@ -64,7 +64,7 @@ func TestListIncludesRecordedRemoteShellsOffline(t *testing.T) {
 	other, _ := registerTestResource(t, tasks, "forward", "other", strings.Repeat("b", 32))
 	other.record.Host = "elsewhere"
 	if err := observeParticipatingShell(participatingShell{
-		Host: "work", Instance: newTaskUID(), Name: "remembered", State: "detached",
+		Host: "work", Instance: newTaskUID(), Name: "remembered", State: taskDetached,
 		PID: 1234, Lifetime: "persistent", Attachment: newTaskUID(),
 	}); err != nil {
 		t.Fatal(err)
@@ -134,7 +134,7 @@ func TestTaskInventoryOutputTerminalWidth(t *testing.T) {
 	for _, columns := range []int{60, 100} {
 		t.Run(strconv.Itoa(columns), func(t *testing.T) {
 			var output bytes.Buffer
-			inv := inventory{Resources: []resourceView{{ID: "mount/data", Host: "server", Worker: "running", Detail: strings.Repeat("路径/", 40)}}}
+			inv := inventory{Resources: []resourceView{{ID: "mount/data", Host: "server", State: taskActive, Detail: strings.Repeat("路径/", 40)}}}
 			writeTaskInventoryWidth(&output, inv, "", false, columns)
 			for line := range strings.SplitSeq(output.String(), "\n") {
 				if (readline.Runes{}).WidthAll([]rune(line)) > columns {
@@ -165,7 +165,7 @@ func TestListIncludesAccountHostedShells(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range inv.Shells {
-		if s.Name == "hosted" && s.Host == "local" && s.State == "attached" && s.ShortID != "" {
+		if s.Name == "hosted" && s.Host == "local" && s.State == taskActive && s.ShortID != "" {
 			return
 		}
 	}

@@ -77,7 +77,7 @@ commands and Esc to return to the shell.
 ```sh
 sshore list                 # Local tasks, incoming resources and last seen remote shells.
 sshore list --json          # The same inventory as JSON.
-sshore pstree               # Local ownership and attachments. *current marks this shell.
+sshore pstree               # Local ownership and attachments. * marks this shell.
 ```
 
 Use a task name or ID from the list to attach, rename or end a shell.

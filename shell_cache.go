@@ -39,7 +39,7 @@ func validateRecentAttachment(row recentAttachment) error {
 		if row.Connection == nil {
 			return fmt.Errorf("detached attachment route missing")
 		}
-		if row.Identity != remoteShellIdentity(row.Connection.Host, row.Connection.Instance) {
+		if row.Identity != identityFromUID(row.Connection.Instance) {
 			return fmt.Errorf("detached attachment identity does not match route")
 		}
 		return validateRecentConnection(*row.Connection)
@@ -53,7 +53,7 @@ func validateRecentAttachment(row recentAttachment) error {
 func rememberDetachedAttachment(o options) error {
 	row := recentAttachment{Identity: o.taskIdentity, Local: o.local, Name: o.session}
 	if row.Identity == "" {
-		row.Identity = remoteShellIdentity(o.host, o.instance)
+		row.Identity = identityFromUID(o.instance)
 	}
 	if !o.local {
 		connection, err := connectionFromOptions(o)
@@ -69,7 +69,7 @@ func rememberDetachedAttachment(o options) error {
 func removeRecentDetach(o options) error {
 	id := o.taskIdentity
 	if id == "" {
-		id = remoteShellIdentity(o.host, o.instance)
+		id = identityFromUID(o.instance)
 	}
 	if id == "" {
 		return nil
@@ -122,7 +122,7 @@ func (a *daemonActivity) selectDetachedAttach(local bool, host string) (*selecte
 	snapshot, _ := a.tasks.taskInventory(taskInventoryRequest{Native: true, Hosted: true, Detail: "health"})
 	detached := make(map[string]*selectedTask)
 	for _, row := range snapshot.localShells() {
-		if row.State == "detached" {
+		if row.State == taskDetached {
 			target := &selectedTask{Name: row.Name, Identity: row.identity, Hosted: row.hosted}
 			if row.hosted {
 				target.Instance = canonicalTaskUID(row.identity)

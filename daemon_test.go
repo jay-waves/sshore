@@ -241,7 +241,7 @@ func TestDaemonListsLocalTasksAndRecordedShells(t *testing.T) {
 	activity := accountActivity.Load()
 	for _, host := range []string{"work", "home"} {
 		row := participatingShell{
-			Host: host, Instance: newTaskUID(), Name: "build", State: "detached",
+			Host: host, Instance: newTaskUID(), Name: "build", State: taskDetached,
 			PID: 1234, Lifetime: "persistent", Attachment: newTaskUID(),
 		}
 		if err := observeParticipatingShell(row); err != nil {
@@ -281,13 +281,13 @@ func TestDaemonListsLocalTasksAndRecordedShells(t *testing.T) {
 	}
 	for i, host := range []string{"work", "home"} {
 		shell := combined.Shells[i]
-		if shell.Host != host || !shell.Observed || shell.State != "detached" || shell.ShortID == "" {
+		if shell.Host != host || !shell.Observed || shell.State != taskDetached || shell.ShortID == "" || shell.SeenAt.IsZero() {
 			t.Fatalf("recorded shell: %+v", shell)
 		}
 	}
 	var rendered strings.Builder
 	writeTaskInventory(&rendered, combined)
-	for _, want := range []string{"HOST  local", "HOST  work", "HOST  home", "detached (last seen)"} {
+	for _, want := range []string{"HOST  local", "HOST  work", "HOST  home", "seen just now"} {
 		if !strings.Contains(rendered.String(), want) {
 			t.Fatalf("missing %q: %s", want, rendered.String())
 		}
@@ -297,7 +297,7 @@ func TestDaemonListsLocalTasksAndRecordedShells(t *testing.T) {
 func TestTaskTreeMetadataWithinDaemon(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	activityFixture(t)
-	if _, err := metadataRPC(metadataRequest{Action: "tree_save", Key: "child", Name: "child", Tree: []shellTreeNode{{Identity: "parent"}}, State: "attached"}); err != nil {
+	if _, err := metadataRPC(metadataRequest{Action: "tree_save", Key: "child", Name: "child", Tree: []shellTreeNode{{Identity: "parent", State: taskActive}}, State: taskActive}); err != nil {
 		t.Fatal(err)
 	}
 	reply, err := metadataRPC(metadataRequest{Action: "tree_get", Key: "child"})
@@ -311,17 +311,29 @@ func TestTaskTreeDaemonSnapshot(t *testing.T) {
 	tasks := startRequestDaemon(t)
 	first := registerTestShell(t, tasks, "first", strings.Repeat("a", 32)).identity()
 	second := registerTestShell(t, tasks, "second", strings.Repeat("b", 32)).identity()
-	saveShellTree(first, "first", []shellTreeNode{{Identity: second}}, "attached", "parent")
-	saveShellTree(second, "second", []shellTreeNode{{Identity: first}}, "attached", "parent")
-	saveShellTree("cache-only", "cache-only", nil, "detached", "persistent")
+	saveShellTree(first, "first", []shellTreeNode{{Identity: second, State: taskActive}}, taskActive, "parent")
+	saveShellTree(second, "second", []shellTreeNode{{Identity: first, State: taskActive}}, taskActive, "parent")
+	saveShellTree("cache-only", "cache-only", nil, taskDetached, "persistent")
+	for _, state := range []string{taskActive, taskDetached} {
+		err := observeParticipatingShell(participatingShell{
+			Host: "work", Instance: newTaskUID(), Name: state, State: state,
+			PID: 1234, Lifetime: "persistent", Attachment: newTaskUID(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	snapshot, _, err := readTaskInventory(taskInventoryRequest{Detail: "tree"})
 	if err != nil || snapshot.Error != "" {
 		t.Fatalf("tree snapshot: %+v, %v", snapshot, err)
 	}
 	rows := snapshot.Tree
-	if len(rows) != 2 || rows[0].Identity != first || rows[0].Owner != 0 || rows[1].Identity != second || rows[1].Owner != 1 {
+	if len(rows) != 3 || rows[0].Identity != first || rows[0].Owner != 0 || rows[1].Identity != second || rows[1].Owner != 1 {
 		t.Fatalf("cycle or cache changed the registered tree: %+v", rows)
+	}
+	if row := rows[2]; row.Owner != 0 || row.Remote != "work" || row.Code == "" || row.State != taskDetached || row.SeenAt.IsZero() {
+		t.Fatalf("recorded detach: %+v", row)
 	}
 	bin := testBinary(t)
 	for _, current := range []string{first, second} {
@@ -338,12 +350,15 @@ func TestTaskTreeDaemonSnapshot(t *testing.T) {
 			if text != console.Output {
 				t.Fatalf("standalone tree %q, console tree %q", text, console.Output)
 			}
-			want := "(first)  *current"
+			want := "(first)  *"
 			if current == second {
-				want = "(second)  *current"
+				want = "(second)  *"
 			}
-			if strings.Count(text, "*current") != 1 || !strings.Contains(text, want) {
+			if strings.Count(text, "  *") != 1 || !strings.Contains(text, want) {
 				t.Fatal(text)
+			}
+			if !strings.HasSuffix(text, "launch/"+rows[2].Code+" (detached)  -> work  detached, seen just now") {
+				t.Fatalf("recorded detach must be the last root: %q", text)
 			}
 		})
 	}

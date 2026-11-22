@@ -202,10 +202,16 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 	if !found {
 		t.Fatalf("missing connected return target: %s", out)
 	}
+	var remoteCode string
+	for _, shell := range inv.Shells {
+		if shell.Host == "fixture" && shell.Temporary && shell.Observed {
+			remoteCode = shell.ShortID
+		}
+	}
 	tree := exec.Command(e.bin, "pstree")
 	tree.Env = cmd.Env
 	out, err = tree.CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "-> fixture") {
+	if err != nil || remoteCode == "" || !strings.Contains(string(out), "-> fixture: spawn/"+remoteCode) {
 		t.Fatalf("connected tree: %s: %v", out, err)
 	}
 	table := exec.Command(e.bin, "list")
@@ -338,7 +344,7 @@ func TestClientCommandConsole(t *testing.T) {
 	wait("Switch session")
 	beforeInventory := sshCommands.Load()
 	io.WriteString(terminal, "ls\r")
-	wait("attached (current)")
+	wait("* ")
 	wait("sshore> ")
 	io.WriteString(terminal, "ps\r")
 	wait("alpha")
@@ -360,7 +366,7 @@ func TestClientCommandConsole(t *testing.T) {
 	wait("(spawn)")
 	io.WriteString(terminal, "\x02:ps\r")
 	wait("spawn/")
-	wait("  *current")
+	wait("  *")
 	io.WriteString(terminal, "\x1b")
 	wait("\x1b[?1049l")
 	io.WriteString(terminal, "exit\n")
@@ -396,11 +402,11 @@ func TestClientLocalConsoleInventory(t *testing.T) {
 	wait("Connected")
 	io.WriteString(terminal, "\x02:list\r")
 	wait("HOST  local")
+	wait("* ")
 	wait("panel-local")
-	wait("attached (current)")
 	wait("sshore> ")
 	io.WriteString(terminal, "pstree\r")
-	wait("(panel-local)  *current")
+	wait("(panel-local)  *")
 	wait("sshore> ")
 	io.WriteString(terminal, "exit\r")
 	wait("\x1b[?1049l")

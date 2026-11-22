@@ -562,7 +562,7 @@ func handoffLocalClient(o options) (bool, error) {
 	if o.local {
 		args = append(args, localEndpointPrefix+o.session)
 	} else {
-		args = append(args, remotePathOperand(o.host, o.session))
+		args = append(args, transportio.FormatEndpoint(o.host, o.session))
 		args = append(args, "--server", o.server)
 	}
 	for _, flag := range []struct {
@@ -632,9 +632,9 @@ func (s *localShell) watchHandoff(c net.Conn, m message) error {
 		return writeMessage(c, message{Type: "error", Error: "handoff unavailable"})
 	}
 	if s.handoffHints == nil {
-		s.handoffHints = make(map[net.Conn]string)
+		s.handoffHints = make(map[net.Conn]*localHandoff)
 	}
-	s.handoffHints[c] = h.host
+	s.handoffHints[c] = h
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 	sftp "github.com/pkg/sftp/v2"
 	sshfx "github.com/pkg/sftp/v2/encoding/ssh/filexfer"
@@ -248,7 +249,7 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 	}
 	var done <-chan struct{}
 	if ctx.Err() == nil {
-		fmt.Fprintf(os.Stderr, "Mounted %s:%s -> %s (SFTP). Close files, then Ctrl-C to unmount.\n", termui.CleanText(o.Host), termui.CleanText(root), termui.CleanText(o.Mountpoint))
+		fmt.Fprintf(os.Stderr, "Mounted %s -> %s (SFTP). Close files, then Ctrl-C to unmount.\n", termui.CleanText(sshio.FormatEndpoint(o.Host, root)), termui.CleanText(o.Mountpoint))
 		mounted := make(chan struct{})
 		go func() { mount.Wait(); close(mounted) }()
 		done = mounted
