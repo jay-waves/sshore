@@ -16,7 +16,7 @@ import (
 	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/pty"
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/pkg/sftp"
+	sftp "github.com/pkg/sftp/v2"
 )
 
 func newApprovedFile(op operation, localPath string, opened *files.Source) fileCopy {
@@ -397,7 +397,7 @@ func executeApprovedFile(ctx context.Context, open func() (net.Conn, error), fil
 	if m.Type != "sftp" {
 		return fileResponseError(m)
 	}
-	err = withCopySFTP(stream, func(client *sftp.Client) error {
+	err = withCopySFTP(ctx, stream, func(client *sftp.Client) error {
 		_ = st.SetDeadline(time.Time{})
 		var completed *atomic.Int64
 		if !quiet {

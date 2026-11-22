@@ -79,7 +79,7 @@ func BenchmarkSFTPCopyLatency(b *testing.B) {
 				a, z := net.Pipe()
 				conn := newLatencyConn(a, delay)
 				go func() { files.ServeCopy(conn); conn.Close() }()
-				client, err := files.NewSFTP(z, z)
+				client, err := files.NewCopyClient(b.Context(), z)
 				if err != nil {
 					b.Fatal(err)
 				}

@@ -11,7 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pkg/sftp"
+	"github.com/jay-waves/sshore/tests/testutil"
+	sftp "github.com/pkg/sftp/v2"
 )
 
 func TestDirectoryPrefetchBoundedAndUseful(t *testing.T) {
@@ -212,19 +213,15 @@ func (c delayedDirectoryConn) Write(b []byte) (int, error) {
 	return c.Conn.Write(b)
 }
 func TestDirectoryPrefetchWithResponseLatency(t *testing.T) {
-	a, b := net.Pipe()
-	server, err := sftp.NewServer(delayedDirectoryConn{a})
-	if err != nil {
-		t.Fatal(err)
-	}
-	go func() { _ = server.Serve(); server.Close() }()
+	a, b := testutil.TCPPair(t)
+	go serveTestSFTP(delayedDirectoryConn{a})
 	wire := newFTPWire(b, b)
 	wire.enableMetrics()
-	client, err := sftp.NewClientPipe(wire, wire)
+	client, err := sftp.NewClientPipe(t.Context(), wire, wire)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { b.Close(); client.Close(); server.Close() }()
+	defer func() { b.Close(); client.Close() }()
 	f := &ftpFS{client: client, root: filepath.ToSlash(t.TempDir())}
 	target := path.Join(f.root, "child")
 	if err = os.Mkdir(target, 0700); err != nil {

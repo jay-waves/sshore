@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pkg/sftp"
+	sftp "github.com/pkg/sftp/v2"
 )
 
 // SFTP v3 framing guard. pkg/sftp's ReadDir accumulates all NAME packets before
@@ -54,9 +54,9 @@ func newFTPWire(r io.Reader, w io.WriteCloser) *ftpWire {
 // Enable counters before passing the wire to the SFTP client.
 func (w *ftpWire) enableMetrics() { w.totals = new([256]ftpRequestTotals) }
 
-func NewSFTP(reader io.Reader, writer io.WriteCloser) (*sftp.Client, error) {
-	wire := newFTPWire(reader, writer)
-	return sftp.NewClientPipe(wire, wire, sftp.MaxConcurrentRequestsPerFile(sftpCopyConcurrency))
+func NewCopyClient(ctx context.Context, stream io.ReadWriteCloser) (*sftp.Client, error) {
+	wire := newFTPWire(stream, stream)
+	return sftp.NewClientPipe(ctx, wire, wire, sftp.WithMaxInflight(sftpCopyConcurrency))
 }
 func (w *ftpWire) Close() error { return w.writer.Close() }
 func ftpWireString(b []byte) ([]byte, bool) {

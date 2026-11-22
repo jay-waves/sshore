@@ -24,7 +24,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/pkg/sftp"
+	sftp "github.com/pkg/sftp/v2"
 )
 
 func ValidateName(name string) error {
@@ -189,7 +189,7 @@ func UploadReader(client *sftp.Client, source io.Reader, target string, size int
 	var nonce [16]byte
 	rand.Read(nonce[:])
 	temporary := path.Join(path.Dir(target), ".sshore-"+hex.EncodeToString(nonce[:])+".part")
-	remote, err := client.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY)
+	remote, err := client.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
@@ -206,9 +206,12 @@ func UploadReader(client *sftp.Client, source io.Reader, target string, size int
 		input = io.LimitReader(source, size)
 	}
 	// Hash in source order; only the private temporary file receives concurrent writes.
-	n, err := remote.ReadFromWithConcurrency(io.TeeReader(input, digest), sftpCopyConcurrency)
+	n, err := remote.ReadFrom(io.TeeReader(input, digest))
 	if err == nil && size >= 0 {
 		err = checkCopySize(source, n, size)
+	}
+	if err == nil {
+		_, err = remote.WriteAt(digest.Sum(nil), n)
 	}
 	closeErr := remote.Close()
 	if err != nil {
@@ -216,10 +219,6 @@ func UploadReader(client *sftp.Client, source io.Reader, target string, size int
 	}
 	if closeErr != nil {
 		return closeErr
-	}
-	// The receiving sshore reads its sealed temporary file and verifies this digest.
-	if err = client.SetExtendedData(temporary, []sftp.StatExtended{{ExtType: copyVerifyAttribute, ExtData: fmt.Sprintf("%d:%x", n, digest.Sum(nil))}}); err != nil {
-		return fmt.Errorf("remote upload verification: %w", err)
 	}
 	if err = client.Link(temporary, target); err != nil {
 		return fmt.Errorf("publish file without overwriting: %w", err)

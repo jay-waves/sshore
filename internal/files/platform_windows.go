@@ -147,7 +147,7 @@ func (f *ftpWindowsFS) Remove(p string) error {
 	if e != nil {
 		return ftpWindowsError(e)
 	}
-	i, e := f.backend.client.Lstat(remote)
+	i, e := f.backend.client.LStat(remote)
 	if e != nil {
 		return ftpWindowsError(e)
 	}
@@ -427,8 +427,8 @@ func (a *ftpWindowsAttributes) GetVolumeInfo(ref *winfsp.FileSystemRef, info *wi
 	if err := a.ftpWindowsBehaviour.GetVolumeInfo(ref, info); err != nil {
 		return err
 	}
-	info.TotalSize = s.Blocks * s.Frsize
-	info.FreeSize = s.Bavail * s.Frsize
+	info.TotalSize = s.Blocks * s.FragmentSize
+	info.FreeSize = s.BlocksAvail * s.FragmentSize
 	return nil
 }
 

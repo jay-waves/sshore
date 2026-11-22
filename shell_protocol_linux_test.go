@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/proc"
-	"github.com/pkg/sftp"
-
 	"github.com/jay-waves/sshore/internal/files"
+	"github.com/jay-waves/sshore/internal/proc"
+	"github.com/jay-waves/sshore/tests/testutil"
+	sftp "github.com/pkg/sftp/v2"
 )
 
 type testEnv struct {
@@ -359,7 +359,7 @@ func approvedTestEndpoints(t *testing.T) (func() (net.Conn, error), func()) {
 	var workers sync.WaitGroup
 	t.Cleanup(func() { cancel(); workers.Wait() })
 	return func() (net.Conn, error) {
-		client, server := net.Pipe()
+		client, server := testutil.TCPPair(t)
 		workers.Go(func() {
 			defer server.Close()
 			serveApprovedFileEndpoint(server)
@@ -383,7 +383,7 @@ func approvedSFTP(t *testing.T, open func() (net.Conn, error), op operation) (*s
 	if m := recv(t, st); m.Type != "sftp" {
 		t.Fatal(m)
 	}
-	client, err := files.NewSFTP(st, st)
+	client, err := files.NewCopyClient(t.Context(), st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func approvedSFTP(t *testing.T, open func() (net.Conn, error), op operation) (*s
 func partialUpload(t *testing.T, open func() (net.Conn, error), dir, name string) io.ReadWriteCloser {
 	t.Helper()
 	client, st := approvedSFTP(t, open, operation{Kind: "upload", Path: dir, Name: name, Size: 100})
-	file, err := client.OpenFile("/.sshore-part", os.O_CREATE|os.O_EXCL|os.O_WRONLY)
+	file, err := client.OpenFile("/.sshore-part", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +539,7 @@ func TestDisconnectCleansBothConcurrentUploads(t *testing.T) {
 	cancel()
 	waitUploadFiles(t, dir, 0)
 	b.close()
-	resumed, resumedPID := e.attach("main")
+	resumed, resumedPID := e.attach("main", "attach")
 	if resumedPID != pid {
 		t.Fatal("upload disconnect replaced the shell")
 	}

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pkg/sftp"
+	sftp "github.com/pkg/sftp/v2"
 )
 
 func TestSFTPRequestTimeoutIgnoresHealthySibling(t *testing.T) {
@@ -86,7 +86,7 @@ func TestSFTPTimeoutUnblocksPendingCall(t *testing.T) {
 			b.Close()
 		}
 	}()
-	client, e := sftp.NewClientPipe(wire, wire)
+	client, e := sftp.NewClientPipe(t.Context(), wire, wire)
 	if e != nil {
 		t.Fatal(e)
 	}

@@ -9,7 +9,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/hanwen/go-fuse/v2 v2.12.1
-	github.com/pkg/sftp v1.13.12
+	github.com/pkg/sftp/v2 v2.0.0-alpha2.0.20261019091321-39fa4458b3a8
 	github.com/rogpeppe/go-internal v1.16.0
 	github.com/winfsp/go-winfsp v1.0.6
 	github.com/xtaci/smux v1.5.58
@@ -29,13 +29,13 @@ require (
 	github.com/mattn/go-runewidth v0.0.27 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/tools v0.26.0 // indirect
 )
 
 require (
-	github.com/kr/fs v0.1.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/skeema/knownhosts v1.3.3
 	golang.org/x/crypto v0.54.0

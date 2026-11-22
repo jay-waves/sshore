@@ -10,13 +10,14 @@ import (
 	"os"
 	"os/signal"
 	"path"
-	"runtime"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/termui"
-	"github.com/pkg/sftp"
+	sftp "github.com/pkg/sftp/v2"
+	sshfx "github.com/pkg/sftp/v2/encoding/ssh/filexfer"
+	"github.com/pkg/sftp/v2/encoding/ssh/filexfer/openssh"
 )
 
 // MountConfig contains mount settings and endpoint openers.
@@ -184,13 +185,8 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 			}
 		})
 	}
-	var sftpOptions []sftp.ClientOption
-	if runtime.GOOS == "linux" {
-		// The mount agent runs OpenSSH sftp-server. Two 64 KiB
-		// requests cover a typical 128 KiB FUSE read.
-		sftpOptions = append(sftpOptions, sftp.MaxPacketUnchecked(64*1024))
-	}
-	client, err = sftp.NewClientPipe(ftp, ftp, sftpOptions...)
+	// The same limit covers directory replies on every client and 128 KiB FUSE reads in two requests.
+	client, err = sftp.NewClientPipe(ctx, ftp, ftp, sftp.WithMaxDataLength(mountSFTPDataLength))
 	if err != nil {
 		if cause := context.Cause(ctx); cause != nil {
 			return 1, cause
@@ -216,9 +212,9 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		return 1, fmt.Errorf("remote path is not a directory")
 	}
 	if !o.ReadOnly {
-		for _, ext := range []string{"posix-rename@openssh.com", "fsync@openssh.com"} {
-			if _, ok := client.HasExtension(ext); !ok {
-				return 1, fmt.Errorf("writable mounts require SFTP extension %s; use --read-only or update the server", ext)
+		for _, extension := range []*sshfx.ExtensionPair{openssh.ExtensionPOSIXRename(), openssh.ExtensionFSync()} {
+			if !client.HasExtension(extension) {
+				return 1, fmt.Errorf("writable mounts require SFTP extension %s; use --read-only or update the server", extension.Name)
 			}
 		}
 	}
@@ -350,7 +346,10 @@ type message struct {
 	Name            string `json:"name,omitempty"`
 }
 
-const maxMountMessage = 64*1024 + 4096
+const (
+	mountSFTPDataLength = 64 * 1024
+	maxMountMessage     = 64*1024 + 4096
+)
 
 type mountStream struct {
 	io.ReadWriteCloser
@@ -364,12 +363,6 @@ func newMountStream(c io.ReadWriteCloser) *mountStream {
 func (c *mountStream) Read(b []byte) (int, error)           { return c.reader.Read(b) }
 func (c *mountStream) ReadByte() (byte, error)              { return c.reader.ReadByte() }
 func (c *mountStream) ReadSlice(delim byte) ([]byte, error) { return c.reader.ReadSlice(delim) }
-func (c *mountStream) CloseWrite() error {
-	if stream, ok := c.ReadWriteCloser.(interface{ CloseWrite() error }); ok {
-		return stream.CloseWrite()
-	}
-	return nil
-}
 
 func writeMessage(w io.Writer, m message) error {
 	body, err := json.Marshal(m)

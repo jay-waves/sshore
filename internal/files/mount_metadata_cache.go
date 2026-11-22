@@ -10,7 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pkg/sftp"
+	sshfx "github.com/pkg/sftp/v2/encoding/ssh/filexfer"
+	"github.com/pkg/sftp/v2/encoding/ssh/filexfer/openssh"
 )
 
 const ftpMetadataLimit = 4096
@@ -62,7 +63,7 @@ func (k ftpCacheKey) lifetime() time.Duration {
 type ftpCacheValue struct {
 	key         ftpCacheKey
 	info        os.FileInfo
-	capacity    *sftp.StatVFS
+	capacity    *openssh.StatVFSExtendedReplyPacket
 	capacityErr error
 	entries     []os.FileInfo
 	expires     time.Time
@@ -411,9 +412,9 @@ func ftpInfoBytes(info os.FileInfo) int {
 		return 0
 	}
 	size := 256 + len(info.Name())
-	if ext, ok := info.(sftp.FileInfoExtendedData); ok {
-		for _, v := range ext.Extended() {
-			size += 32 + len(v.ExtType) + len(v.ExtData)
+	if ext, ok := info.Sys().(*sshfx.Attributes); ok {
+		for _, v := range ext.GetExtended() {
+			size += 32 + len(v.Type) + len(v.Data)
 		}
 	}
 	return size

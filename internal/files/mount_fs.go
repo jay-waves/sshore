@@ -12,7 +12,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pkg/sftp"
+	sftp "github.com/pkg/sftp/v2"
+	sshfx "github.com/pkg/sftp/v2/encoding/ssh/filexfer"
+	"github.com/pkg/sftp/v2/encoding/ssh/filexfer/openssh"
 )
 
 // The mount backend uses SFTP handles directly: writes wait for server replies,
@@ -146,8 +148,8 @@ func (f *ftpFS) setAttributes(p string, opened *ftpFile, update ftpAttributeUpda
 	}
 	if atime == nil {
 		value := info.ModTime()
-		if raw, ok := info.Sys().(*sftp.FileStat); ok {
-			value = time.Unix(int64(raw.Atime), 0)
+		if raw, ok := info.Sys().(*sshfx.Attributes); ok {
+			value = time.Unix(int64(raw.ATime), 0)
 		}
 		atime = &value
 	}
@@ -167,7 +169,7 @@ func (f *ftpFS) mkdir(name string, mode os.FileMode) error {
 		return e
 	}
 	defer f.cache.beginMutation(p)()
-	if e = f.client.Mkdir(p); e != nil {
+	if e = f.client.Mkdir(p, mode.Perm()); e != nil {
 		return e
 	}
 	return f.client.Chmod(p, mode.Perm())
@@ -185,7 +187,9 @@ func (f *ftpFS) remove(name string, dir bool) error {
 	}
 	defer f.cache.beginMutation(p)()
 	if dir {
-		return f.client.RemoveDirectory(p)
+		// A trailing slash requires a directory at the host syscall, including
+		// when the SFTP client tries unlink before rmdir.
+		p += "/"
 	}
 	return f.client.Remove(p)
 }
@@ -207,7 +211,7 @@ func (f *ftpFS) rename(old, new string) error {
 	defer f.cache.beginMutation(a, b)()
 	// Require the atomic overwrite extension at connection setup for writable
 	// mounts. Never emulate replacement by deleting the destination first.
-	return f.client.PosixRename(a, b)
+	return f.client.Rename(a, b)
 }
 func (f *ftpFS) open(name string, flags int, mode os.FileMode) (*ftpFile, error) {
 	return f.openWithMetadata(name, flags, mode, false)
@@ -236,7 +240,7 @@ func (f *ftpFS) openWithMetadata(name string, flags int, mode os.FileMode, cache
 	} else {
 		info, e = f.client.Stat(p)
 	}
-	if e != nil && (!os.IsNotExist(e) || flags&os.O_CREATE == 0) {
+	if e != nil && (!errors.Is(e, os.ErrNotExist) || flags&os.O_CREATE == 0) {
 		return nil, e
 	}
 	if e == nil {
@@ -266,25 +270,22 @@ func mountedRegularFile(info os.FileInfo) error {
 
 func (f *ftpFS) openRegular(p string, flags int, mode os.FileMode, exists bool) (*sftp.File, error) {
 	if flags&os.O_CREATE == 0 {
-		return f.client.OpenFile(p, flags)
+		return f.client.OpenFile(p, flags, mode.Perm())
 	}
-	// SFTP's public OpenFile API cannot attach creation permissions. Create
-	// exclusively, then chmod the empty file before returning its handle. Never
-	// chmod an existing destination or retry a failed write. If another creator
-	// wins, open the existing file without O_CREATE so disappearance fails closed.
+	// Create exclusively before applying the locally requested mode. The
+	// host umask can mask bits, and an existing file keeps its permissions.
 	exclusive := flags&os.O_EXCL != 0
 	existingFlags := flags &^ os.O_CREATE
 	if exists && !exclusive {
-		file, err := f.client.OpenFile(p, existingFlags)
-		if !os.IsNotExist(err) {
+		file, err := f.client.OpenFile(p, existingFlags, mode.Perm())
+		if !errors.Is(err, os.ErrNotExist) {
 			return file, err
 		}
 	}
-	file, err := f.client.OpenFile(p, flags|os.O_EXCL)
+	file, err := f.client.OpenFile(p, flags|os.O_EXCL, mode.Perm())
 	if err != nil {
 		// SFTP v3 servers can report an existing target as a generic failure.
-		status, reported := errors.AsType[*sftp.StatusError](err)
-		mayExist := errors.Is(err, os.ErrExist) || reported && status.FxCode() == sftp.ErrSSHFxFailure
+		mayExist := errors.Is(err, os.ErrExist) || errors.Is(err, sshfx.StatusFailure)
 		if exclusive || !mayExist {
 			return nil, err
 		}
@@ -295,7 +296,7 @@ func (f *ftpFS) openRegular(p string, flags int, mode os.FileMode, exists bool) 
 		if typeErr := mountedRegularFile(info); typeErr != nil {
 			return nil, typeErr
 		}
-		return f.client.OpenFile(p, existingFlags)
+		return f.client.OpenFile(p, existingFlags, mode.Perm())
 	}
 	if err = file.Chmod(mode.Perm()); err != nil {
 		_ = file.Close()
@@ -438,28 +439,19 @@ func ftpErrno(err error) syscall.Errno {
 		return 0
 	}
 
-	if status, ok := errors.AsType[*sftp.StatusError](err); ok {
-		switch status.FxCode() {
-		case sftp.ErrSSHFxNoSuchFile:
-			return syscall.ENOENT
-		case sftp.ErrSSHFxPermissionDenied:
-			return syscall.EACCES
-		case sftp.ErrSSHFxOpUnsupported:
-			return syscall.ENOTSUP
-		default:
-			return syscall.EIO
-		}
+	if errors.Is(err, sshfx.StatusOpUnsupported) {
+		return syscall.ENOTSUP
 	}
 	if errno, ok := errors.AsType[syscall.Errno](err); ok {
 		return errno
 	}
-	if os.IsNotExist(err) {
+	if errors.Is(err, os.ErrNotExist) {
 		return syscall.ENOENT
 	}
-	if os.IsPermission(err) {
+	if errors.Is(err, os.ErrPermission) {
 		return syscall.EACCES
 	}
-	if os.IsExist(err) {
+	if errors.Is(err, os.ErrExist) {
 		return syscall.EEXIST
 	}
 	if errors.Is(err, os.ErrInvalid) {
@@ -519,12 +511,12 @@ func (f *ftpFS) lstat(p string) (os.FileInfo, error) {
 }
 
 type ftpCapacityClient interface {
-	HasExtension(string) (string, bool)
-	StatVFS(string) (*sftp.StatVFS, error)
+	HasExtension(*sshfx.ExtensionPair) bool
+	StatVFS(string) (*openssh.StatVFSExtendedReplyPacket, error)
 }
 
 // Capacity is advisory; local mutations invalidate it and remote changes age out.
-func (f *ftpFS) cachedCapacity(p string) (*sftp.StatVFS, error) {
+func (f *ftpFS) cachedCapacity(p string) (*openssh.StatVFSExtendedReplyPacket, error) {
 	v, err := f.loadMetadata(context.Background(), ftpCacheKey{kind: ftpCapacityKey, name: p}, false)
 	if err != nil {
 		return nil, err
@@ -551,10 +543,15 @@ func (f *ftpFS) fetchMetadata(ctx context.Context, key ftpCacheKey) (ftpCacheVal
 		info, err := f.client.Stat(name)
 		return statCacheValue(name, info), err
 	case ftpLstatKey:
-		info, err := f.client.Lstat(name)
+		info, err := f.client.LStat(name)
 		return statCacheValue(name, info), err
 	case ftpDirectoryKey:
-		entries, err := f.client.ReadDirContext(ctx, name)
+		dir, err := f.client.OpenDir(name)
+		if err != nil {
+			return ftpCacheValue{}, err
+		}
+		defer dir.Close()
+		entries, err := dir.ReaddirContext(ctx, 0)
 		if err != nil {
 			return ftpCacheValue{}, err
 		}
@@ -574,9 +571,8 @@ func (f *ftpFS) fetchMetadata(ctx context.Context, key ftpCacheKey) (ftpCacheVal
 	}
 }
 
-func ftpRemoteCapacity(client ftpCapacityClient, root string) (*sftp.StatVFS, error) {
-	version, ok := client.HasExtension("statvfs@openssh.com")
-	if !ok || version != "2" {
+func ftpRemoteCapacity(client ftpCapacityClient, root string) (*openssh.StatVFSExtendedReplyPacket, error) {
+	if !client.HasExtension(openssh.ExtensionStatVFS()) {
 		return nil, syscall.ENOTSUP
 	}
 	stat, err := client.StatVFS(root)
@@ -589,11 +585,11 @@ func ftpRemoteCapacity(client ftpCapacityClient, root string) (*sftp.StatVFS, er
 	return stat, nil
 }
 
-func validateFTPCapacity(s *sftp.StatVFS) error {
+func validateFTPCapacity(s *openssh.StatVFSExtendedReplyPacket) error {
 	// Validate before narrowing FUSE fields or converting block counts to bytes.
-	if s == nil || s.Frsize == 0 || s.Bsize == 0 ||
-		s.Frsize > math.MaxUint32 || s.Bsize > math.MaxUint32 || s.Namemax > math.MaxUint32 ||
-		s.Blocks > math.MaxUint64/s.Frsize || s.Bfree > s.Blocks || s.Bavail > s.Bfree {
+	if s == nil || s.FragmentSize == 0 || s.BlockSize == 0 ||
+		s.FragmentSize > math.MaxUint32 || s.BlockSize > math.MaxUint32 || s.MaxNameLength > math.MaxUint32 ||
+		s.Blocks > math.MaxUint64/s.FragmentSize || s.BlocksFree > s.Blocks || s.BlocksAvail > s.BlocksFree {
 		return syscall.EIO
 	}
 	return nil

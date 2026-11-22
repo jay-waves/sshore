@@ -51,7 +51,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y bash zsh fish openssh-client openssh-sftp-server
+          sudo apt-get install -y bash zsh fish openssh-client
           command -v bash zsh fish ssh ssh-keygen
           bash --version
           zsh --version

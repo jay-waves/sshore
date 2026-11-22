@@ -163,8 +163,8 @@ Both paths use bounded transfers, temporary files and atomic hard-link
 publication without overwriting. Approved file sizes bound received bytes.
 Changed metadata is rejected, and uploads verify stored temporary content by
 size and SHA-256 readback on the receiving sshore before publication. The sender
-provides its digest; the receiver closes writes, verifies its temporary file and
-permits publication only on a match. File content is not downloaded for verification.
+appends a 32-byte digest to the transfer. The receiver seals the temporary file,
+verifies its contents, and strips the digest before publishing the payload.
 
 Local sources reject final-component symlinks/reparse points and compare opened
 file identity with the initial check. Uploads keep the file handle opened during
@@ -285,10 +285,10 @@ instead of silently aliasing them. Remote filenames, attributes and data remain
 untrusted.
 
 Mounts require a matching release before starting a transient agent. The agent
-needs remote command execution and does not inherit an
-internal-sftp-only policy or SFTP subsystem-specific command flags. SSH/account
-policy remains authoritative; the mount connection disables native forwarding,
-backgrounding and ControlMaster sharing.
+serves SFTP in Go under the authenticated account and requires remote command
+execution. Accounts restricted to `internal-sftp` cannot start the agent.
+OpenSSH subsystem flags apply only to the SSH subsystem. The mount connection
+disables native forwarding, backgrounding and ControlMaster sharing.
 
 Outstanding SFTP requests have individual deadlines that other responses or
 keepalives cannot extend. Timeout aborts the connection; **a write may already have

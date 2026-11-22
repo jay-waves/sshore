@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
+	sftp "github.com/pkg/sftp/v2"
 )
 
 func TestRemoteHelpersRequireMatchingRelease(t *testing.T) {
@@ -95,7 +96,7 @@ func TestRemoteHelpersRequireMatchingRelease(t *testing.T) {
 						t.Fatalf("mount agent handshake: %+v", reply)
 					}
 				}
-				client, err := files.NewSFTP(data, data)
+				client, err := sftp.NewClientPipe(t.Context(), data, data)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -145,9 +146,6 @@ func TestMountAgentControlCompatibility(t *testing.T) {
 	reply, err := readMessage(b)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if strings.Contains(reply.Error, "sftp-server executable unavailable") {
-		t.Skip(reply.Error)
 	}
 	if reply.Type != "mount_ready" || reply.SoftwareVersion != version {
 		t.Fatalf("incompatible mount reply: %+v", reply)

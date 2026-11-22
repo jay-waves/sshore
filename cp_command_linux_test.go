@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +11,8 @@ import (
 	"testing/iotest"
 
 	"github.com/jay-waves/sshore/internal/files"
-	"github.com/pkg/sftp"
+	"github.com/jay-waves/sshore/tests/testutil"
+	sftp "github.com/pkg/sftp/v2"
 )
 
 func TestCopyStreams(t *testing.T) {
@@ -69,12 +69,12 @@ func testCopyCommandBackend(t *testing.T) *struct {
 	root   string
 } {
 	t.Helper()
-	a, b := net.Pipe()
+	a, b := testutil.TCPPair(t)
 	go func() {
 		_ = files.ServeCopy(a)
 		_ = a.Close()
 	}()
-	client, err := files.NewSFTP(b, b)
+	client, err := files.NewCopyClient(t.Context(), b)
 	if err != nil {
 		t.Fatal(err)
 	}

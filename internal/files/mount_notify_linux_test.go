@@ -5,6 +5,7 @@ package files
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,16 +15,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pkg/sftp"
+	"github.com/jay-waves/sshore/tests/testutil"
+	sftp "github.com/pkg/sftp/v2"
 )
 
 func testFTPAgent(t *testing.T) *ftpFS {
 	t.Helper()
-	if _, err := ftpSFTPServerExecutable(); err != nil {
-		t.Skip(err)
-	}
 	open := func(mode string) io.ReadWriteCloser {
-		a, b := net.Pipe()
+		a, b := testutil.TCPPair(t)
 		done := make(chan error, 1)
 		go func() { done <- ServeAgent(a, "test-release") }()
 		t.Cleanup(func() {
@@ -41,7 +40,7 @@ func testFTPAgent(t *testing.T) *ftpFS {
 		return endpoint
 	}
 	data, events := open("mount_data"), open("mount_watch")
-	client, err := sftp.NewClientPipe(data, data)
+	client, err := sftp.NewClientPipe(t.Context(), data, data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +106,7 @@ func TestFTPNotifyRemoteChanges(t *testing.T) {
 			waitFTPInvalidation(t, f, before)
 			info, err := f.stat("file")
 			if tc.size < 0 {
-				if !os.IsNotExist(err) {
+				if !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("deleted file: %v", err)
 				}
 			} else if err != nil || info.Size() != tc.size {
@@ -220,10 +219,7 @@ func TestFTPNotifyVersionMismatch(t *testing.T) {
 	}
 }
 
-func TestFTPNotifySFTPExitStopsAgent(t *testing.T) {
-	if _, err := ftpSFTPServerExecutable(); err != nil {
-		t.Skip(err)
-	}
+func TestMountAgentRejectsOversizedSFTPHandshake(t *testing.T) {
 	a, b := net.Pipe()
 	defer b.Close()
 	done := make(chan error, 1)
@@ -232,15 +228,17 @@ func TestFTPNotifySFTPExitStopsAgent(t *testing.T) {
 	if err := negotiateMount(data, "mount_data", "test-release", nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	// OpenSSH rejects this oversized packet and exits while its data connection remains
-	// open. The agent must reap the child without waiting for another client read.
+	// The built-in server rejects oversized packets before reading their bodies.
 	if _, err := data.Write([]byte{255, 255, 255, 255, 1}); err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case <-done:
+	case err := <-done:
+		if err == nil {
+			t.Fatal("accepted oversized handshake")
+		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("agent stuck after SFTP child exit")
+		t.Fatal("agent stuck after oversized handshake")
 	}
 }
 
@@ -296,9 +294,6 @@ func TestMountApprovalSourceGate(t *testing.T) {
 }
 
 func TestMountAgentPeerMetadataLifetime(t *testing.T) {
-	if _, err := ftpSFTPServerExecutable(); err != nil {
-		t.Skip(err)
-	}
 	a, b := net.Pipe()
 	defer b.Close()
 	peer := json.RawMessage(`{"id":"mount/example"}`)
@@ -339,9 +334,6 @@ func TestMountAgentPeerMetadataLifetime(t *testing.T) {
 
 // Independent endpoints must not couple notification lifetime to SFTP I/O.
 func TestMountEndpointsCloseIndependently(t *testing.T) {
-	if _, err := ftpSFTPServerExecutable(); err != nil {
-		t.Skip(err)
-	}
 	open := func(mode string) net.Conn {
 		server, client := net.Pipe()
 		_ = client.SetDeadline(time.Now().Add(5 * time.Second))
@@ -362,7 +354,7 @@ func TestMountEndpointsCloseIndependently(t *testing.T) {
 	}
 	data := open("mount_data")
 	events := open("mount_watch")
-	client, err := sftp.NewClientPipe(data, data)
+	client, err := sftp.NewClientPipe(t.Context(), data, data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +365,7 @@ func TestMountEndpointsCloseIndependently(t *testing.T) {
 	if err := os.WriteFile(filename, []byte("still connected"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	f, err := client.Open(filename)
+	f, err := client.OpenFile(filename, os.O_RDWR, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,5 +373,47 @@ func TestMountEndpointsCloseIndependently(t *testing.T) {
 	got, err := io.ReadAll(f)
 	if err != nil || string(got) != "still connected" {
 		t.Fatalf("SFTP after notification close: %q, %v", got, err)
+	}
+	if err := f.Sync(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMountAgentClosesOpenHandlesOnDisconnect(t *testing.T) {
+	a, b := net.Pipe()
+	defer b.Close()
+	_ = b.SetDeadline(time.Now().Add(3 * time.Second))
+	done := make(chan error, 1)
+	go func() { done <- ServeAgent(a, "test-release") }()
+	data := newMountStream(b)
+	if err := negotiateMount(data, "mount_data", "test-release", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	client, err := sftp.NewClientPipe(t.Context(), data, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	filename := filepath.Join(root, "left-open")
+	if _, err := client.Create(filename); err != nil {
+		t.Fatal(err)
+	}
+	_ = b.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("mount agent did not exit")
+	}
+	descriptors, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fd := range descriptors {
+		if name, _ := os.Readlink(filepath.Join("/proc/self/fd", fd.Name())); name == filename {
+			t.Fatalf("mount agent left descriptor %s open for %s", fd.Name(), name)
+		}
 	}
 }

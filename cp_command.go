@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/pkg/sftp"
+	sftp "github.com/pkg/sftp/v2"
 
 	"github.com/jay-waves/sshore/internal/files"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
@@ -83,7 +83,7 @@ func executeCopyCommand(o copyOptions) (int, error) {
 			}
 		}
 	}
-	if err := withCopySFTP(stream, func(client *sftp.Client) error {
+	if err := withCopySFTP(ctx, stream, func(client *sftp.Client) error {
 		if o.sources[0].stream {
 			stopInput := context.AfterFunc(ctx, func() { _ = os.Stdin.Close() })
 			defer stopInput()
@@ -102,8 +102,8 @@ func executeCopyCommand(o copyOptions) (int, error) {
 
 // Closing the full transport first releases SFTP reads and writes before
 // client closure joins the protocol goroutines.
-func withCopySFTP(stream io.ReadWriteCloser, run func(*sftp.Client) error) error {
-	client, err := files.NewSFTP(stream, stream)
+func withCopySFTP(ctx context.Context, stream io.ReadWriteCloser, run func(*sftp.Client) error) error {
+	client, err := files.NewCopyClient(ctx, stream)
 	if err != nil {
 		_ = stream.Close()
 		return err
@@ -196,7 +196,7 @@ func executeStreamCopy(client *sftp.Client, o copyOptions, input io.Reader, outp
 		if err := files.ValidateName(path.Base(o.target.path)); err != nil {
 			return err
 		}
-		if _, err := client.Lstat(o.target.path); err == nil {
+		if _, err := client.LStat(o.target.path); err == nil {
 			return fmt.Errorf("stdin requires a new destination filename: %s", o.target.path)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -212,7 +212,7 @@ func executeStreamCopy(client *sftp.Client, o copyOptions, input io.Reader, outp
 }
 
 func remoteCopySize(client *sftp.Client, source string) (int64, error) {
-	info, err := client.Lstat(source)
+	info, err := client.LStat(source)
 	if err != nil {
 		return 0, err
 	}
@@ -256,7 +256,7 @@ func prepareCopyBatch(client *sftp.Client, o copyOptions, items []fileCopy) (err
 	targetStat, targetLstat := os.Stat, os.Lstat
 	join := filepath.Join
 	if o.upload {
-		targetStat, targetLstat = client.Stat, client.Lstat
+		targetStat, targetLstat = client.Stat, client.LStat
 		join = path.Join
 	}
 

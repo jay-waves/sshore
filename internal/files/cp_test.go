@@ -6,9 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"github.com/pkg/sftp"
 	"io"
-	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -17,6 +15,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"testing/iotest"
+
+	"github.com/jay-waves/sshore/tests/testutil"
+	sftp "github.com/pkg/sftp/v2"
 )
 
 func TestExpandRemoteHome(t *testing.T) {
@@ -261,99 +262,45 @@ type copyFailWriter struct{ err error }
 func (w copyFailWriter) Write(p []byte) (int, error) { return 0, w.err }
 
 type copyTestBackend struct {
-	*ftpFS
-	localRoot string
+	client          *sftp.Client
+	root, localRoot string
 }
-
-// Requests use Unix paths; only the fixture adapter sees native host paths.
-type copyTestFS struct {
-	*FS
-	root string
-}
-
-func (f *copyTestFS) request(r *sftp.Request) (*sftp.Request, error) {
-	clone := r.WithContext(r.Context())
-	translate := func(p string) (string, error) {
-		if p != "/fixture" && !strings.HasPrefix(p, "/fixture/") {
-			return "", os.ErrPermission
-		}
-		return filepath.Join(f.root, filepath.FromSlash(strings.TrimPrefix(p, "/fixture"))), nil
-	}
-	var err error
-	clone.Filepath, err = translate(r.Filepath)
-	if err != nil {
-		return nil, err
-	}
-	if r.Target != "" {
-		clone.Target, err = translate(r.Target)
-	}
-	return clone, err
-}
-func (f *copyTestFS) Fileread(r *sftp.Request) (io.ReaderAt, error) {
-	r, err := f.request(r)
-	if err != nil {
-		return nil, err
-	}
-	return f.FS.Fileread(r)
-}
-func (f *copyTestFS) Filewrite(r *sftp.Request) (io.WriterAt, error) {
-	r, err := f.request(r)
-	if err != nil {
-		return nil, err
-	}
-	return f.FS.Filewrite(r)
-}
-func (f *copyTestFS) Filecmd(r *sftp.Request) error {
-	r, err := f.request(r)
-	if err != nil {
-		return err
-	}
-	return f.FS.Filecmd(r)
-}
-func (f *copyTestFS) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
-	r, err := f.request(r)
-	if err != nil {
-		return nil, err
-	}
-	return f.FS.Filelist(r)
-}
-func (f *copyTestFS) Lstat(r *sftp.Request) (sftp.ListerAt, error) { return f.Filelist(r) }
 
 func testCopyBackend(t *testing.T) *copyTestBackend {
 	t.Helper()
-	a, b := net.Pipe()
 	root := t.TempDir()
-	backend := &copyTestFS{FS: newCopyFS(), root: root}
-	server := sftp.NewRequestServer(a, sftp.Handlers{FileGet: backend, FilePut: backend, FileCmd: backend, FileList: backend})
-	go func() { _ = server.Serve(); _ = server.Close() }()
-	client, err := NewSFTP(b, b)
+	client := testTransferConnection(t, newCopyFS())
+	return &copyTestBackend{client: client, root: filepath.ToSlash(root), localRoot: root}
+}
+
+func testTransferConnection(t *testing.T, backend *FS) *sftp.Client {
+	t.Helper()
+	a, b := testutil.TCPPair(t)
+	done := make(chan struct{})
+	go func() { defer close(done); _ = ServeTransfer(a, backend) }()
+	t.Cleanup(func() { b.Close(); <-done })
+	client, err := NewCopyClient(t.Context(), b)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { b.Close(); client.Close(); server.Close(); backend.Close() })
-	return &copyTestBackend{ftpFS: &ftpFS{client: client, root: "/fixture"}, localRoot: root}
+	return client
 }
 
 func TestUploadReceiverVerification(t *testing.T) {
-	a, b := net.Pipe()
-	localRoot := t.TempDir()
-	backend := &copyTestFS{FS: newCopyFS(), root: localRoot}
-	noRead := &copyRejectReads{}
-	server := sftp.NewRequestServer(a, sftp.Handlers{FileGet: noRead, FilePut: backend, FileCmd: backend, FileList: backend})
-	go func() { server.Serve(); server.Close() }()
-	client, err := NewSFTP(b, b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { b.Close(); client.Close(); server.Close(); backend.Close() })
-	root := "/fixture"
+	backend := testCopyBackend(t)
+	client := backend.client
+	localRoot, root := backend.localRoot, backend.root
 	data := bytes.Repeat([]byte("verified"), 10000)
 	virtual := path.Join(root, ".sshore-corrupt.part")
-	file, err := client.OpenFile(virtual, os.O_CREATE|os.O_EXCL|os.O_WRONLY)
+	file, err := client.OpenFile(virtual, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = file.Write([]byte("bad")); err != nil {
+		t.Fatal(err)
+	}
+	wrongDigest := sha256.Sum256([]byte("different"))
+	if _, err := file.WriteAt(wrongDigest[:], 3); err != nil {
 		t.Fatal(err)
 	}
 	if err = file.Close(); err != nil {
@@ -363,16 +310,9 @@ func TestUploadReceiverVerification(t *testing.T) {
 	if err := UploadReader(client, bytes.NewReader(data), path.Join(root, "good"), int64(len(data))); err != nil {
 		t.Fatal(err)
 	}
-	if noRead.calls.Load() != 0 {
-		t.Fatal("upload downloaded content for verification")
-	}
 	actual, err := os.ReadFile(filepath.Join(localRoot, "good"))
 	if err != nil || !bytes.Equal(actual, data) {
 		t.Fatal("published data mismatch", err)
-	}
-	expected := fmt.Sprintf("3:%x", sha256.Sum256([]byte("good")))
-	if err = client.SetExtendedData(virtual, []sftp.StatExtended{{ExtType: copyVerifyAttribute, ExtData: expected}}); err == nil {
-		t.Fatal("accepted corrupt content")
 	}
 	if err = client.Link(virtual, path.Join(root, "bad")); err == nil {
 		t.Fatal("published unverified file")
@@ -386,37 +326,26 @@ func TestUploadReceiverVerification(t *testing.T) {
 	}
 }
 
-type copyRejectReads struct{ calls atomic.Int64 }
-
-func (r *copyRejectReads) Fileread(*sftp.Request) (io.ReaderAt, error) {
-	r.calls.Add(1)
-	return nil, errors.New("readback is forbidden")
-}
-
 func TestTransferSFTPScope(t *testing.T) {
 	dir := t.TempDir()
 	backend := NewTargetFS(filepath.Join(dir, "target"), 2)
-	a, b := net.Pipe()
-	server := sftp.NewRequestServer(a, sftp.Handlers{FileGet: backend, FilePut: backend, FileCmd: backend, FileList: backend})
-	done := make(chan struct{})
-	go func() { defer close(done); _ = server.Serve() }()
-	client, err := NewSFTP(b, b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { b.Close(); client.Close(); server.Close(); <-done })
+	client := testTransferConnection(t, backend)
+	var err error
 	if _, err = client.Open(filepath.ToSlash(filepath.Join(dir, "outside"))); err == nil {
 		t.Fatal("arbitrary read allowed")
 	}
 	if _, err = client.Create("/outside"); err == nil {
 		t.Fatal("arbitrary write allowed")
 	}
-	file, err := client.OpenFile("/.sshore-part", os.O_CREATE|os.O_EXCL|os.O_WRONLY)
+	file, err := client.OpenFile("/.sshore-part", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = file.Write([]byte("x")); err != nil {
 		t.Fatal(err)
+	}
+	if err := file.Truncate(0); err == nil {
+		t.Fatal("approved handle allowed arbitrary truncation")
 	}
 	if err = client.Link("/.sshore-part", "/target"); err == nil {
 		t.Fatal("partial upload published")
@@ -424,13 +353,11 @@ func TestTransferSFTPScope(t *testing.T) {
 	if _, err = file.Write([]byte("y")); err != nil {
 		t.Fatal(err)
 	}
-	if err = file.Close(); err != nil {
+	sum := sha256.Sum256([]byte("xy"))
+	if _, err = file.WriteAt(sum[:], 2); err != nil {
 		t.Fatal(err)
 	}
-	if err = client.Link("/.sshore-part", "/target"); err == nil {
-		t.Fatal("unverified publication allowed")
-	}
-	if err = client.SetExtendedData("/.sshore-part", []sftp.StatExtended{{ExtType: "sha256@sshore", ExtData: fmt.Sprintf("2:%x", sha256.Sum256([]byte("xy")))}}); err != nil {
+	if err = file.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if err = client.Link("/.sshore-part", "/outside"); err == nil {

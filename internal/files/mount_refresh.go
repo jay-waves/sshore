@@ -3,6 +3,7 @@ package files
 import (
 	"container/list"
 	"context"
+	"errors"
 	"os"
 	"path"
 	"slices"
@@ -198,7 +199,7 @@ func (r *metadataRefresh) step() time.Duration {
 	cancel()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err != nil && !os.IsNotExist(err) && !os.IsPermission(err) && r.ctx.Err() == nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, os.ErrPermission) && r.ctx.Err() == nil {
 		r.failures = min(r.failures+1, 5)
 		r.nextAllowed = time.Now().Add(min(500*time.Millisecond*time.Duration(1<<(r.failures-1)), 5*time.Second))
 	} else if err == nil {

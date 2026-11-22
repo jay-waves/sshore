@@ -66,6 +66,9 @@ identity before signaling and preserve approval checks for shell-routed resource
 Mount and forward configuration travels in the authenticated launch request.
 The upgraded stream carries readiness and the caller's commit. The mount worker
 uses a separate pipe exchange because it can outlive the launch connection.
+Copy clients and mount clients use `pkg/sftp/v2` alongside the embedded agents.
+The pinned upstream revision includes the client disconnect fix and supports the
+project's Go version. Directory change notifications use their own stream.
 Trace changes through the [task registry](daemon_tasks.go), [mount coordinator](mount.go)
 and [route authorization](resource_route_linux.go). Consult [SECURITY.md](SECURITY.md)
 before changing update, reset or approval behavior.

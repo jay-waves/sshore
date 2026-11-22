@@ -4,12 +4,7 @@ package files
 
 import (
 	"context"
-	"encoding/binary"
-	"fmt"
-	"io"
-	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -17,86 +12,19 @@ import (
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
-	"github.com/pkg/sftp"
+	sshfx "github.com/pkg/sftp/v2/encoding/ssh/filexfer"
 )
-
-// The ordinary pkg/sftp server fixture synthesizes atime from mtime. This peer
-// exposes distinct timestamps and applies the actual SETSTAT request instead.
-func testTimestampBackend(t *testing.T, atime, mtime uint32) *ftpFS {
-	t.Helper()
-	server, conn := net.Pipe()
-	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	done := make(chan error, 1)
-	go func() {
-		for {
-			kind, body, err := readTimestampPacket(server)
-			if err != nil {
-				done <- err
-				return
-			}
-			if kind == 1 {
-				err = writeTimestampPacket(server, 2, []byte{0, 0, 0, 3})
-				if err != nil {
-					done <- err
-					return
-				}
-				continue
-			}
-			if len(body) < 4 {
-				done <- fmt.Errorf("short metadata request")
-				return
-			}
-			id := binary.BigEndian.Uint32(body)
-			var reply []byte
-			put := func(n uint32) { reply = binary.BigEndian.AppendUint32(reply, n) }
-			put(id)
-			switch kind {
-			case 7, 17: // LSTAT / STAT
-				put(4 | 8)
-				put(syscall.S_IFREG | 0600)
-				put(atime)
-				put(mtime)
-				err = writeTimestampPacket(server, 105, reply)
-			case 9: // SETSTAT: request ID, path string, flags, attributes
-				if len(body) < 8 {
-					done <- fmt.Errorf("short SETSTAT")
-					return
-				}
-				offset := 8 + int(binary.BigEndian.Uint32(body[4:]))
-				if len(body) != offset+12 || binary.BigEndian.Uint32(body[offset:]) != 8 {
-					done <- fmt.Errorf("unexpected SETSTAT attributes")
-					return
-				}
-				atime = binary.BigEndian.Uint32(body[offset+4:])
-				mtime = binary.BigEndian.Uint32(body[offset+8:])
-				put(0)
-				put(0)
-				put(0)
-				err = writeTimestampPacket(server, 101, reply)
-			default:
-				done <- fmt.Errorf("unexpected metadata request %d", kind)
-				return
-			}
-			if err != nil {
-				done <- err
-				return
-			}
-		}
-	}()
-	client, err := sftp.NewClientPipe(conn, conn)
-	if err != nil {
-		conn.Close()
-		server.Close()
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { client.Close(); conn.Close(); server.Close(); <-done })
-	return &ftpFS{client: client, root: t.TempDir()}
-}
 
 func TestLinuxSetattrMtimePreservesAtime(t *testing.T) {
 	atime, mtime := uint32(1700000000), uint32(1700001000)
-	backend := testTimestampBackend(t, atime, mtime)
+	backend := testFTPAgent(t)
+	filename := filepath.Join(backend.root, "file")
+	if err := os.WriteFile(filename, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filename, time.Unix(int64(atime), 0), time.Unix(int64(mtime), 0)); err != nil {
+		t.Fatal(err)
+	}
 	root := &ftpNode{backend: backend}
 	fs.NewNodeFS(root, nil)
 	child := &ftpNode{backend: backend}
@@ -113,48 +41,16 @@ func TestLinuxSetattrMtimePreservesAtime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, ok := info.Sys().(*sftp.FileStat)
+	raw, ok := info.Sys().(*sshfx.Attributes)
 	if !ok {
 		t.Fatalf("unexpected stat representation %T", info.Sys())
 	}
-	if raw.Atime != atime {
-		t.Fatalf("atime changed: got %d want %d", raw.Atime, atime)
+	if raw.ATime != atime {
+		t.Fatalf("atime changed: got %d want %d", raw.ATime, atime)
 	}
 	if !info.ModTime().Equal(wanted) {
 		t.Fatalf("mtime=%v want %v", info.ModTime(), wanted)
 	}
-}
-
-func readTimestampPacket(r io.Reader) (byte, []byte, error) {
-	var header [4]byte
-	if _, err := io.ReadFull(r, header[:]); err != nil {
-		return 0, nil, err
-	}
-	size := binary.BigEndian.Uint32(header[:])
-	if size < 1 || size > 4096 {
-		return 0, nil, fmt.Errorf("invalid metadata packet size %d", size)
-	}
-	body := make([]byte, size)
-	if _, err := io.ReadFull(r, body); err != nil {
-		return 0, nil, err
-	}
-	return body[0], body[1:], nil
-}
-func writeTimestampPacket(w io.Writer, kind byte, body []byte) error {
-	data := binary.BigEndian.AppendUint32(nil, uint32(len(body)+1))
-	data = append(data, kind)
-	data = append(data, body...)
-	for len(data) > 0 {
-		n, err := w.Write(data)
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
-		data = data[n:]
-	}
-	return nil
 }
 
 func TestLinuxSetattrModeUsesOpenHandle(t *testing.T) {
@@ -197,7 +93,7 @@ func TestLinuxSetattrModeUsesOpenHandle(t *testing.T) {
 }
 
 func TestFTPCapacitySFTP(t *testing.T) {
-	f := testFTPBackend(t)
+	f := testFTPAgent(t)
 	s, err := ftpRemoteCapacity(f.client, f.root)
 	if err != nil {
 		t.Fatal(err)
@@ -210,55 +106,72 @@ func TestFTPCapacitySFTP(t *testing.T) {
 	if errno := n.Statfs(context.Background(), &out); errno != 0 {
 		t.Fatal(errno)
 	}
-	if out.Blocks != s.Blocks || uint64(out.Frsize) != s.Frsize || uint64(out.Bsize) != s.Bsize {
+	if out.Blocks != s.Blocks || uint64(out.Frsize) != s.FragmentSize || uint64(out.Bsize) != s.BlockSize {
 		t.Fatalf("capacity mapping: %+v, source %+v", out, s)
 	}
 }
 
-func TestFTPOpenSSHSync(t *testing.T) {
-	var executable string
-	for _, p := range []string{"/usr/libexec/openssh/sftp-server", "/usr/lib/openssh/sftp-server"} {
-		if _, e := os.Stat(p); e == nil {
-			executable = p
-			break
-		}
-	}
-	if executable == "" {
-		t.Skip("OpenSSH sftp-server is not installed")
-	}
-	cmd := exec.Command(executable)
-	out, e := cmd.StdoutPipe()
-	if e != nil {
-		t.Fatal(e)
-	}
-	in, e := cmd.StdinPipe()
-	if e != nil {
-		t.Fatal(e)
-	}
-	if e = cmd.Start(); e != nil {
-		t.Fatal(e)
-	}
-	defer func() { in.Close(); out.Close(); cmd.Process.Kill(); cmd.Wait() }()
-	client, e := NewSFTP(out, in)
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer client.Close()
-	backend := &ftpFS{client: client, root: t.TempDir()}
-	h, e := backend.open("saved", os.O_CREATE|os.O_RDWR, 0600)
-	if e != nil {
-		t.Fatal(e)
+func TestMountAgentSyncAfterRename(t *testing.T) {
+	backend := testFTPAgent(t)
+	h, err := backend.open("saved", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
 	}
 	defer h.Close()
-	if _, e = h.Write([]byte("saved remotely")); e != nil {
-		t.Fatal(e)
+	const content = "saved remotely"
+	if _, err := h.Write([]byte(content)); err != nil {
+		t.Fatal(err)
 	}
-	if e = h.Sync(); e != nil {
-		t.Fatal(e)
+	if err := backend.rename("saved", "renamed"); err != nil {
+		t.Fatal(err)
 	}
-	data, e := os.ReadFile(backend.root + "/saved")
-	if e != nil || string(data) != "saved remotely" {
-		t.Fatalf("%q %v", data, e)
+	if err := h.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(backend.root, "renamed"))
+	if err != nil || string(data) != content {
+		t.Fatalf("%q %v", data, err)
+	}
+}
+
+func TestMountAgentSymlinkPaths(t *testing.T) {
+	backend := testFTPAgent(t)
+	dir := filepath.Join(backend.root, "directory")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{"link": "directory", "dangling": "missing"} {
+		if err := os.Symlink(target, filepath.Join(backend.root, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolved, err := backend.client.RealPath(filepath.Join(backend.root, "link"))
+	if err != nil || resolved != dir {
+		t.Fatalf("realpath = %q, %v", resolved, err)
+	}
+	file := filepath.Join(backend.root, "file")
+	if err := os.WriteFile(file, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.remove("file", true); err == nil {
+		t.Fatal("rmdir accepted a regular file")
+	}
+	if _, err := os.Stat(file); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.remove("link", true); err == nil {
+		t.Fatal("rmdir accepted a symlink")
+	}
+	for _, name := range []string{"link", "dangling"} {
+		if err := backend.remove(name, false); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Lstat(filepath.Join(backend.root, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists: %v", name, err)
+		}
+	}
+	if err := backend.remove("directory", true); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -6,9 +6,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"github.com/pkg/sftp/v2/encoding/ssh/filexfer/openssh"
 	"io"
 	"math"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,8 +17,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pkg/sftp"
+	"github.com/jay-waves/sshore/tests/testutil"
+	sftp "github.com/pkg/sftp/v2"
+	sshfx "github.com/pkg/sftp/v2/encoding/ssh/filexfer"
 )
+
+func serveTestSFTP(conn io.ReadWriteCloser) {
+	defer conn.Close()
+	_ = serveMountData(conn)
+}
 
 func testFTPBackend(t *testing.T) *ftpFS {
 	t.Helper()
@@ -27,20 +34,21 @@ func testFTPBackend(t *testing.T) *ftpFS {
 }
 func testFTPBackendWithWire(t *testing.T) (*ftpFS, *ftpWire) {
 	t.Helper()
-	a, b := net.Pipe()
-	server, e := sftp.NewServer(a)
-	if e != nil {
-		t.Fatal(e)
-	}
-	go func() { _ = server.Serve(); _ = server.Close() }()
+	a, b := testutil.TCPPair(t)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveTestSFTP(a)
+	}()
+	root := filepath.ToSlash(t.TempDir())
 	wire := newFTPWire(b, b)
 	wire.enableMetrics()
-	client, e := sftp.NewClientPipe(wire, wire)
+	client, e := sftp.NewClientPipe(t.Context(), wire, wire, sftp.WithMaxDataLength(mountSFTPDataLength))
 	if e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
-	return &ftpFS{client: client, root: filepath.ToSlash(t.TempDir())}, wire
+	t.Cleanup(func() { _ = b.Close(); _ = client.Close(); <-done })
+	return &ftpFS{client: client, root: root}, wire
 }
 func TestFTPEditorSave(t *testing.T) {
 	f := testFTPBackend(t)
@@ -83,7 +91,7 @@ func TestFTPEditorSave(t *testing.T) {
 	if string(data) != "NEWlac" {
 		t.Fatalf("got %q", data)
 	}
-	if _, e = f.stat(".save.tmp"); !os.IsNotExist(e) {
+	if _, e = f.stat(".save.tmp"); !errors.Is(e, os.ErrNotExist) {
 		t.Fatalf("temporary name remains: %v", e)
 	}
 }
@@ -229,13 +237,16 @@ func TestFTPDirectoryCacheDoesNotRenewAttributes(t *testing.T) {
 
 type ftpCapacityStub struct {
 	version string
-	stat    *sftp.StatVFS
+	stat    *openssh.StatVFSExtendedReplyPacket
 	err     error
 	path    string
 }
 
-func (s *ftpCapacityStub) HasExtension(string) (string, bool)      { return s.version, s.version != "" }
-func (s *ftpCapacityStub) StatVFS(p string) (*sftp.StatVFS, error) { s.path = p; return s.stat, s.err }
+func (s *ftpCapacityStub) HasExtension(ext *sshfx.ExtensionPair) bool { return s.version == ext.Data }
+func (s *ftpCapacityStub) StatVFS(p string) (*openssh.StatVFSExtendedReplyPacket, error) {
+	s.path = p
+	return s.stat, s.err
+}
 
 func TestFTPCapacityNegotiation(t *testing.T) {
 	for _, version := range []string{"", "1", "3"} {
@@ -244,7 +255,7 @@ func TestFTPCapacityNegotiation(t *testing.T) {
 			t.Fatalf("version %q: err=%v path=%q", version, err, c.path)
 		}
 	}
-	c := &ftpCapacityStub{version: "2", stat: &sftp.StatVFS{Bsize: 4096, Frsize: 512, Blocks: 100, Bfree: 40, Bavail: 30}}
+	c := &ftpCapacityStub{version: "2", stat: &openssh.StatVFSExtendedReplyPacket{BlockSize: 4096, FragmentSize: 512, Blocks: 100, BlocksFree: 40, BlocksAvail: 30}}
 	s, err := ftpRemoteCapacity(c, "/data")
 	if err != nil || s != c.stat || c.path != "/data" {
 		t.Fatalf("stat=%v err=%v path=%q", s, err, c.path)
@@ -256,14 +267,14 @@ func TestFTPCapacityNegotiation(t *testing.T) {
 }
 
 func TestFTPCapacityInvalidReplies(t *testing.T) {
-	for _, s := range []*sftp.StatVFS{
+	for _, s := range []*openssh.StatVFSExtendedReplyPacket{
 		nil,
 		{},
-		{Bsize: 4096, Frsize: 4096, Blocks: math.MaxUint64},
-		{Bsize: 4096, Frsize: 4096, Blocks: 10, Bfree: 11},
-		{Bsize: 4096, Frsize: 4096, Blocks: 10, Bfree: 5, Bavail: 6},
-		{Bsize: math.MaxUint64, Frsize: 4096},
-		{Bsize: 4096, Frsize: 4096, Namemax: math.MaxUint64},
+		{BlockSize: 4096, FragmentSize: 4096, Blocks: math.MaxUint64},
+		{BlockSize: 4096, FragmentSize: 4096, Blocks: 10, BlocksFree: 11},
+		{BlockSize: 4096, FragmentSize: 4096, Blocks: 10, BlocksFree: 5, BlocksAvail: 6},
+		{BlockSize: math.MaxUint64, FragmentSize: 4096},
+		{BlockSize: 4096, FragmentSize: 4096, MaxNameLength: math.MaxUint64},
 	} {
 		if err := validateFTPCapacity(s); !errors.Is(err, syscall.EIO) {
 			t.Fatalf("%+v: %v", s, err)
@@ -470,7 +481,7 @@ func TestFTPOpenHandleAfterRename(t *testing.T) {
 	if err != nil || string(data) != "AFTER!" {
 		t.Fatalf("renamed destination: %q, %v", data, err)
 	}
-	if _, err := os.Stat(filepath.Join(f.root, "before")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(f.root, "before")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("old name remains: %v", err)
 	}
 }
@@ -484,23 +495,18 @@ func TestFTPDirectoryBudgetKeepsConnection(t *testing.T) {
 	}
 	for _, limit := range []string{"entries", "bytes"} {
 		t.Run(limit, func(t *testing.T) {
-			a, b := net.Pipe()
-			server, e := sftp.NewServer(a)
-			if e != nil {
-				t.Fatal(e)
-			}
-			go func() { _ = server.Serve(); _ = server.Close() }()
+			a, b := testutil.TCPPair(t)
+			go serveTestSFTP(a)
 			wire := newFTPWire(b, b)
 			if limit == "entries" {
 				wire.maxEntries = 2
 			} else {
 				wire.maxDirectoryBytes = 16
 			}
-			client, e := sftp.NewClientPipe(wire, wire)
+			client, e := sftp.NewClientPipe(t.Context(), wire, wire, sftp.WithMaxDataLength(mountSFTPDataLength))
 			if e != nil {
 				t.Fatal(e)
 			}
-			defer server.Close()
 			defer client.Close()
 			_, e = client.ReadDir(filepath.ToSlash(root))
 			if e == nil || !strings.Contains(e.Error(), "listing limit") {
@@ -576,6 +582,9 @@ func (ftpWriteCloser) Close() error { return nil }
 
 func TestFTPCapacityCache(t *testing.T) {
 	f, wire := testFTPBackendWithWire(t)
+	if !f.client.HasExtension(openssh.ExtensionStatVFS()) {
+		t.Skip("local fixture filesystem capacity extension unavailable")
+	}
 	_, firstErr := f.cachedCapacity(f.root)
 	count := func() uint64 { wire.mu.Lock(); defer wire.mu.Unlock(); return wire.totals[200].Started }
 	before := count()
@@ -636,7 +645,7 @@ func TestFTPLateDirectoryReplyAfterHandleReuse(t *testing.T) {
 
 func TestFTPOpenRequestCounts(t *testing.T) {
 	f, w := testFTPBackendWithWire(t)
-	if _, err := f.open("missing", os.O_RDONLY, 0); !os.IsNotExist(err) {
+	if _, err := f.open("missing", os.O_RDONLY, 0); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(f.root, "existing"), nil, 0600); err != nil {

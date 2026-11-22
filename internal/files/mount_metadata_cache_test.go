@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pkg/sftp"
+	sshfx "github.com/pkg/sftp/v2/encoding/ssh/filexfer"
 )
 
 type ftpCacheInfo struct {
@@ -20,6 +20,7 @@ type ftpCacheInfo struct {
 
 func (i ftpCacheInfo) Name() string      { return i.name }
 func (i ftpCacheInfo) Mode() os.FileMode { return i.mode }
+func (i ftpCacheInfo) Sys() any          { return nil }
 
 func TestFTPMetadataReuseAndExpiry(t *testing.T) {
 	var cache ftpMetadataCache
@@ -278,17 +279,19 @@ func TestFTPCacheMutationSeparatesFlights(t *testing.T) {
 
 type ftpCacheExtendedInfo struct {
 	ftpCacheInfo
-	extended []sftp.StatExtended
+	extended []sshfx.ExtendedAttribute
 }
 
-func (i ftpCacheExtendedInfo) Extended() []sftp.StatExtended { return i.extended }
+func (i ftpCacheExtendedInfo) Sys() any {
+	return &sshfx.Attributes{Flags: sshfx.AttrExtended, Extended: i.extended}
+}
 func TestFTPCacheExtendedAttributeBudget(t *testing.T) {
 	var cache ftpMetadataCache
 	// Reuse the backing string to exercise accounting without a large allocation.
 	payload := strings.Repeat("x", 16*1024)
-	ext := make([]sftp.StatExtended, 1024)
+	ext := make([]sshfx.ExtendedAttribute, 1024)
 	for i := range ext {
-		ext[i] = sftp.StatExtended{ExtType: "test", ExtData: payload}
+		ext[i] = sshfx.ExtendedAttribute{Type: "test", Data: payload}
 	}
 	info := ftpCacheExtendedInfo{ftpCacheInfo: ftpCacheInfo{name: "file"}, extended: ext}
 	fetch := func() (os.FileInfo, error) { return info, nil }

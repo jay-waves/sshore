@@ -58,8 +58,7 @@ func TestFTPNativeMount(t *testing.T) {
 	if e = h.Truncate(6); e != nil {
 		t.Fatal(e)
 	}
-	// The lightweight fixture has no fsync extension; OpenSSHSync separately
-	// verifies fsync. Native mapping must not hide that unsupported operation.
+	// TestMountAgentSyncAfterRename exercises fsync with the built-in server.
 	if e = h.Close(); e != nil {
 		t.Fatal(e)
 	}

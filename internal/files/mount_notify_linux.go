@@ -3,13 +3,11 @@
 package files
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
 	"os"
-	"os/exec"
 	"path"
 	"runtime"
 	"slices"
@@ -18,15 +16,6 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 )
-
-func ftpSFTPServerExecutable() (string, error) {
-	for _, name := range []string{"/usr/libexec/openssh/sftp-server", "/usr/lib/openssh/sftp-server", "/usr/lib/ssh/sftp-server", "/usr/libexec/sftp-server", "sftp-server"} {
-		if p, err := exec.LookPath(name); err == nil {
-			return p, nil
-		}
-	}
-	return "", fmt.Errorf("OpenSSH sftp-server executable unavailable; install the OpenSSH server component")
-}
 
 func ServeAgent(conn io.ReadWriteCloser, version string, check ...func(MountApproval) error) error {
 	return ServeAgentWithPeer(conn, version, "", nil, check...)
@@ -56,10 +45,6 @@ func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observ
 			err = check[0](*m.Approval)
 		}
 	}
-	executable := ""
-	if err == nil && m.Type != "mount_watch" {
-		executable, err = ftpSFTPServerExecutable()
-	}
 	if err == nil && observe != nil && len(m.PeerMetadata) > 0 {
 		if cleanup := observe(m.PeerMetadata); cleanup != nil {
 			defer cleanup()
@@ -80,60 +65,7 @@ func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observ
 		serveFTPWatch(conn)
 		return nil
 	}
-	return serveMountData(conn, executable)
-}
-
-func serveMountData(data io.ReadWriteCloser, executable string) error {
-	var workers sync.WaitGroup
-	defer func() { data.Close(); workers.Wait() }()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	cmd := exec.CommandContext(ctx, executable)
-	// Own the copying goroutines: os/exec.Wait must not depend on a stream Read
-	// that can remain blocked after the child has exited.
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return err
-	}
-	defer stdin.Close()
-	stdout, childOutput, err := os.Pipe()
-	if err != nil {
-		return err
-	}
-	defer stdout.Close()
-	cmd.Stdout, cmd.Stderr = childOutput, os.Stderr
-	cmd.Env = append(os.Environ(), "SSHORE_SOCKET=", "SSHORE_CONFIRM_ADDR=", "SSHORE_CONFIRM_TOKEN=")
-	err = cmd.Start()
-	childOutput.Close()
-	if err != nil {
-		return err
-	}
-	outputDone := make(chan struct{})
-	workers.Go(func() {
-		defer stdin.Close()
-		if _, err := io.Copy(stdin, data); err != nil {
-			cancel()
-		}
-	})
-	workers.Go(func() {
-		defer close(outputDone)
-		if _, err := io.Copy(data, stdout); err != nil {
-			cancel()
-			return
-		}
-		if stream, ok := data.(interface{ CloseWrite() error }); ok {
-			_ = stream.CloseWrite()
-		}
-	})
-	err = cmd.Wait()
-	// Preserve final replies while bounding cleanup for a peer that stopped reading.
-	timer := time.NewTimer(time.Second)
-	defer timer.Stop()
-	select {
-	case <-outputDone:
-	case <-timer.C:
-	}
-	return err
+	return serveMountData(conn)
 }
 
 func serveFTPWatch(stream io.ReadWriteCloser) {

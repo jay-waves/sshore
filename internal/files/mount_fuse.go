@@ -304,7 +304,7 @@ func (n *ftpNode) Statfs(_ context.Context, out *fuse.StatfsOut) syscall.Errno {
 	if err != nil {
 		return ftpErrno(err)
 	}
-	*out = fuse.StatfsOut{Blocks: s.Blocks, Bfree: s.Bfree, Bavail: s.Bavail,
-		Files: s.Files, Ffree: s.Ffree, Bsize: uint32(s.Bsize), Frsize: uint32(s.Frsize), NameLen: uint32(s.Namemax)}
+	*out = fuse.StatfsOut{Blocks: s.Blocks, Bfree: s.BlocksFree, Bavail: s.BlocksAvail,
+		Files: s.Files, Ffree: s.FilesFree, Bsize: uint32(s.BlockSize), Frsize: uint32(s.FragmentSize), NameLen: uint32(s.MaxNameLength)}
 	return 0
 }
