@@ -9,7 +9,7 @@ fi
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 chmod 755 "$fixture"
-go build -buildvcs=false -ldflags '-X main.version=0.0.0' -o "$fixture/sshore" .
+go run ./scripts go build -buildvcs=false -ldflags '-X main.version=0.0.0' -o "$fixture/sshore" .
 go test -c -o "$fixture/integration.test" ./tests/integration
 
 image=sshore-ssh-test:local

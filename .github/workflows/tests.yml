@@ -59,19 +59,19 @@ jobs:
       - name: Formatting
         shell: bash
         run: test -z "$(git ls-files -z '*.go' | xargs -0 gofmt -l)"
-      - run: go vet ./...
+      - run: go run ./scripts go vet ./...
       - name: Linux Go tests with race detector
         if: runner.os == 'Linux'
         shell: bash
         env:
           GOFLAGS: -race
-        run: go test -json -count=1 -timeout=10m ./... | tee core-tests.jsonl
+        run: go run ./scripts go test -json -count=1 -timeout=10m ./... | tee core-tests.jsonl
       - name: Windows build and platform compatibility
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          go build ./...
-          go test -run '^(TestScripts|TestLocalShellPath|TestWindowsPlatform|TestMountDaemonHasNoConsole|TestWindowsPrivateStateHandle)$' .
+          go run ./scripts go build ./...
+          go run ./scripts go test -run '^(TestScripts|TestLocalShellPath|TestWindowsPlatform|TestMountDaemonHasNoConsole|TestWindowsPrivateStateHandle)$' .
       - name: Installer tests (Windows PowerShell 5.1)
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: powershell

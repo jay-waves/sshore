@@ -187,11 +187,9 @@ func (f *ftpFS) remove(name string, dir bool) error {
 	}
 	defer f.cache.beginMutation(p)()
 	if dir {
-		// A trailing slash requires a directory at the host syscall, including
-		// when the SFTP client tries unlink before rmdir.
-		p += "/"
+		return f.client.RemoveDirectory(p)
 	}
-	return f.client.Remove(p)
+	return f.client.RemoveFile(p)
 }
 func (f *ftpFS) rename(old, new string) error {
 	if e := f.writable(); e != nil {

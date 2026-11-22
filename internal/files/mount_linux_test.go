@@ -170,6 +170,12 @@ func TestMountAgentSymlinkPaths(t *testing.T) {
 			t.Fatalf("%s still exists: %v", name, err)
 		}
 	}
+	if err := backend.remove("directory", false); err == nil {
+		t.Fatal("unlink accepted a directory")
+	}
+	if err := backend.remove("file", false); err != nil {
+		t.Fatal(err)
+	}
 	if err := backend.remove("directory", true); err != nil {
 		t.Fatal(err)
 	}

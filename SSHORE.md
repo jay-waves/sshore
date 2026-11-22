@@ -37,8 +37,8 @@ Local and hosted shells share one [shell task lifecycle](shell_terminal.go).
 Their entry points supply owner supervision and the commands specific to
 local handoff or hosted resources.
 
-An experimental Apple Silicon client can be built from source with
-`GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -o sshore .`. It targets
+Build the experimental Apple Silicon client on Apple Silicon with
+`CGO_ENABLED=0 go run ./scripts go build -o sshore .`. It targets
 SSH connections to Linux hosts and supports local interactive shells. Install
 the client manually. Local SFTP mounts use the traditional macFUSE kernel
 extension through go-fuse. Install macFUSE and enable its kernel extension before
@@ -94,16 +94,19 @@ A client can use a remote ID without running `list` first. See [inventory](inven
 
 ## Build and validate
 
-Use Go from the shared PATH and check its version against [go.mod](go.mod).
-Build with `go build -o dist/sshore .` on Linux or use `dist/sshore.exe` on
-Windows. Choose the smallest check that exercises the changed behavior.
+Use Go and Git from the shared PATH and check the Go version against
+[go.mod](go.mod). From the repository root, run
+`go run ./scripts go build -o dist/sshore .` on Linux or target
+`dist/sshore.exe` on Windows. The script applies the [SFTP patch](scripts/patches/pkg-sftp-v2.patch)
+to a temporary copy of the pinned module and runs the build in a temporary
+Go workspace. Use the same entry point for tests and vet.
 
 | Change | Validation |
 | --- | --- |
-| Command or module | Run the owning package's tests with `-run`. For broad changes use `go test -count=1 -timeout=5m ./...`. For race checks that include subprocess builds, set `GOFLAGS=-race`. |
+| Command or module | Run the owning package's tests with `-run`. For broad changes use `go run ./scripts go test -count=1 -timeout=5m ./...`. For race checks that include subprocess builds, set `GOFLAGS=-race`. |
 | SSH or remote setup | Use the [loopback Go fixture](tests/testutil/sshtest/) for protocol tests and `tests/integration/ssh_docker.sh` for a real OpenSSH check in a disposable Linux amd64 container. |
-| Terminal or native mount | Exercise the affected OS. For terminal handoff check pending input, redraw, interrupts and cleanup across detach/reattach. On a FUSE/macFUSE/WinFsp client, set `SSHORE_TEST_FTP_MOUNT=1` and run `go test -count=1 -run '^TestFTPNativeMount$' ./internal/files`. |
-| Installer or release | On Linux, run `go test -run TestScripts .`. Cases and fixtures live in [testdata/cli](testdata/cli/). |
+| Terminal or native mount | Exercise the affected OS. For terminal handoff check pending input, redraw, interrupts and cleanup across detach/reattach. On a FUSE/macFUSE/WinFsp client, set `SSHORE_TEST_FTP_MOUNT=1` and run `go run ./scripts go test -count=1 -run '^TestFTPNativeMount$' ./internal/files`. |
+| Installer or release | On Linux, run `go run ./scripts go test -run TestScripts .`. Cases and fixtures live in [testdata/cli](testdata/cli/). |
 | Documentation | Check relative links, anchors, fences and affected diagrams in the root documents. |
 
 Go lifecycle fixtures use temporary state directories and re-execute the test
@@ -126,7 +129,8 @@ validation independently of builds and publication.
    tags from pruning. Published tags and assets are immutable.
 
 Run `go run ./scripts` to build development packages using the nearest
-full release tag for managed connections. A plain `go build` reports `dev`.
+full release tag for managed connections. The single-binary build above
+reports `dev`.
 
 ## Planned work
 

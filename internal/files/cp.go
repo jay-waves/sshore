@@ -197,7 +197,7 @@ func UploadReader(client *sftp.Client, source io.Reader, target string, size int
 		// A successful Link transfers cleanup to the receiver. On failure it
 		// may still own the temporary pathname, so ask it to discard again.
 		if err != nil {
-			_ = client.Remove(temporary)
+			_ = client.RemoveFile(temporary)
 		}
 	}()
 	digest := sha256.New()

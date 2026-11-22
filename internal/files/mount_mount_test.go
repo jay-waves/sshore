@@ -4,7 +4,7 @@ package files
 
 // Opt-in native mount smoke: uses an in-process SFTP server and temporary files,
 // never a real SSH account or persistent session. Requires existing FUSE/macFUSE/WinFsp.
-// Run SSHORE_TEST_FTP_MOUNT=1 go test -count=1 -run TestFTPNativeMount ./internal/files.
+// Run SSHORE_TEST_FTP_MOUNT=1 go run ./scripts go test -count=1 -run TestFTPNativeMount ./internal/files.
 
 import (
 	"os"

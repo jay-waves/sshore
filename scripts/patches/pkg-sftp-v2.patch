@@ -1,0 +1,16 @@
+--- a/client.go
++++ b/client.go
+@@ -885,3 +885,13 @@
++// RemoveFile removes a file by sending SSH_FXP_REMOVE.
++func (cl *Client) RemoveFile(name string) error {
++	return wrapPathError("remove", name, cl.sendPacket(context.Background(), nil, &sshfx.RemovePacket{Path: name}))
++}
++
++// RemoveDirectory removes an empty directory by sending SSH_FXP_RMDIR.
++func (cl *Client) RemoveDirectory(name string) error {
++	return wrapPathError("rmdir", name, cl.sendPacket(context.Background(), nil, &sshfx.RmdirPacket{Path: name}))
++}
++
+ // Remove removes the named file or (empty) directory.
+ //
+ // If both operations fail, then Remove will stat the named filesystem object.

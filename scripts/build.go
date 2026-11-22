@@ -16,6 +16,17 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "go" {
+		if len(os.Args) < 3 {
+			log.Fatal("usage: go run ./scripts go <command> [args...]")
+		}
+		if err := withPatchedSFTP(func(workspace string) error {
+			return workspaceGo(workspace, os.Args[2:]...).Run()
+		}); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	var tag string
 	switch len(os.Args) {
 	case 1:
@@ -40,22 +51,26 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-	for _, target := range []string{"linux", "windows"} {
-		if err := build(version, target); err != nil {
-			log.Fatal(err)
+	if err := withPatchedSFTP(func(workspace string) error {
+		for _, target := range []string{"linux", "windows"} {
+			if err := build(version, target, workspace); err != nil {
+				return err
+			}
 		}
+		return nil
+	}); err != nil {
+		log.Fatal(err)
 	}
 }
 
-func build(version, target string) error {
+func build(version, target, workspace string) error {
 	name, ext := "sshore", ".tar.gz"
 	if target == "windows" {
 		name, ext = "sshore.exe", ".zip"
 	}
 	binary := filepath.Join("dist", name)
-	cmd := exec.Command("go", "build", "-trimpath", "-ldflags", "-s -w -X main.version="+version, "-o", binary, ".")
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOARCH=amd64", "GOOS="+target)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	cmd := workspaceGo(workspace, "build", "-trimpath", "-ldflags", "-s -w -X main.version="+version, "-o", binary, ".")
+	cmd.Env = append(cmd.Env, "CGO_ENABLED=0", "GOARCH=amd64", "GOOS="+target)
 	if err := cmd.Run(); err != nil {
 		return err
 	}
