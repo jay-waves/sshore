@@ -183,18 +183,18 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	// Show the live handoff separately from attachment state.
-	list := exec.Command(e.bin, "list", "here:", "--json")
+	list := exec.Command(e.bin, "list", "--json")
 	list.Env = cmd.Env
 	out, err := list.CombinedOutput()
 	if err != nil {
 		t.Fatalf("list connected shell: %s: %v", out, err)
 	}
-	var rows []localShellView
-	if err := json.Unmarshal(out, &rows); err != nil {
+	var inv inventory
+	if err := json.Unmarshal(out, &inv); err != nil {
 		t.Fatalf("list JSON: %s: %v", out, err)
 	}
 	found := false
-	for _, row := range rows {
+	for _, row := range inv.LocalShells {
 		if row.Name == "origin" && row.State == "detached" && row.ConnectedHost == "fixture" {
 			found = true
 		}
@@ -208,7 +208,7 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 	if err != nil || !strings.Contains(string(out), "-> fixture") {
 		t.Fatalf("connected tree: %s: %v", out, err)
 	}
-	table := exec.Command(e.bin, "list", "here:")
+	table := exec.Command(e.bin, "list")
 	table.Env = cmd.Env
 	out, err = table.CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "-> fixture") {
@@ -912,17 +912,17 @@ func TestClientHandoffHintReleasedOnFrontendExit(t *testing.T) {
 	io.WriteString(terminal, shellQuote(e.bin)+" spawn fixture: --no-profile --server "+shellQuote(e.bin)+"\n")
 	wait("Connected fixture:")
 	check := func(wantHost string) bool {
-		list := exec.Command(e.bin, "list", "here:", "--json")
+		list := exec.Command(e.bin, "list", "--json")
 		list.Env = cmd.Env
 		out, err := list.Output()
 		if err != nil {
 			return false
 		}
-		var rows []localShellView
-		if json.Unmarshal(out, &rows) != nil {
+		var inv inventory
+		if json.Unmarshal(out, &inv) != nil {
 			return false
 		}
-		for _, row := range rows {
+		for _, row := range inv.LocalShells {
 			if row.Name == "origin" && row.State == "detached" && row.ConnectedHost == wantHost {
 				return true
 			}

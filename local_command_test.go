@@ -261,7 +261,6 @@ func TestLocalCommandRouting(t *testing.T) {
 		{[]string{"launch", "here:"}, true, ""},
 		{[]string{"launch", "work:"}, false, ""},
 		{[]string{"attach"}, true, ""},
-		{[]string{"list", "here:"}, true, ""},
 	} {
 		o, err := parseOptions(tc.args)
 		local := o.local

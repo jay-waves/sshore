@@ -13,7 +13,7 @@ to the platform implementation and its tests.
 | How is a command parsed and dispatched? | [Command definitions and help](cli_help.go), [parser](cli_schema.go), [dispatch](cli.go) |
 | How does a client connect and authenticate? | [Client connections](client_connection.go), [SSH transport and host verification](internal/ssh/) |
 | How are installation and approval enforced? | [Setup](setup.go), [approval handling](review.go), [request validation](review_store.go) |
-| How do copy, mount and forwarding reach their target? | [Resource commands](cli_resources.go), [shell routes](resource_route.go), [filesystem operations](internal/files/), [forwarding](forward.go) |
+| How do copy, mount and forwarding reach their target? | [Resource commands](cli.go), [shell routes](resource_route.go), [filesystem operations](internal/files/), [forwarding](forward.go) |
 | Where is behavior tested? | Module and CLI tests beside the implementation, [the OpenSSH integration test](tests/integration/) and the [loopback SSH fixture](tests/testutil/sshtest/) |
 
 ## Documentation ownership
@@ -82,9 +82,10 @@ of registered shells and resources. Resource status probes run
 after the snapshot within their own time budget. For `pstree`, the daemon reads
 registered tasks, saved tree metadata and incoming transport leases independently
 and returns a normalized, sorted tree. The caller marks its current shell.
-For `list`, the daemon combines registered tasks and active incoming resources.
-Plain and JSON output use the same task data. `list HOST:` reads the local daemon’s
-records of shells used from this client and local resources targeting HOST.
+For `list`, the daemon combines registered tasks, active incoming resources and
+its records of remote shells used from this account. The list is available offline.
+Plain and JSON output use the same task data. Remote shell states appear as
+`last seen` in the table and carry `observed: true` in JSON.
 A shell connection refreshes the known shells against the host’s live list.
 The local daemon resolves implicit attach targets from detach history and live
 local registrations. For `HOST:ID`, the named host resolves the selector against

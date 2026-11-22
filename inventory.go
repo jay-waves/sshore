@@ -48,6 +48,7 @@ type shellView struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	State       string `json:"state"`
+	Observed    bool   `json:"observed,omitempty"`
 	PID         int    `json:"pid"`
 	Age         *int64 `json:"age_seconds"`
 	Foreground  string `json:"foreground"`
@@ -209,31 +210,33 @@ func excludeLocalResourcePeers(peers []peerView, resources []resourceView) []pee
 }
 
 type taskListRequest struct {
-	Native bool
-	Host   string
+	Native   bool
+	Host     string
+	Observed bool
 }
 
 func (a *daemonActivity) listTasks(ctx context.Context, request taskListRequest) inventory {
 	inv := managedInventory(ctx, a.tasks, "inventory", request.Native, request.Host)
 	if request.Host != "" {
 		inv.Host = request.Host
-		rows, err := readParticipatingShells(request.Host)
-		if err != nil {
-			inv.Errors = append(inv.Errors, cleanText(err.Error()))
+	} else {
+		if request.Native {
+			inv.Host = "local"
+			for i := range inv.Shells {
+				inv.Shells[i].Host = "local"
+			}
 		}
-		for _, row := range rows {
-			inv.Shells = append(inv.Shells, shellView{Host: row.Host, Instance: row.Instance, ID: shellTaskName(row.Name, row.Temporary), Name: row.Name, State: row.State, Temporary: row.Temporary, Lifetime: row.Lifetime, PID: row.PID})
-		}
-		inv.setTaskReferences()
-		return inv
+		inv.Peers = excludeLocalResourcePeers(peerViews(a.incomingPeers()), inv.Resources)
 	}
-	if request.Native {
-		inv.Host = "local"
-		for i := range inv.Shells {
-			inv.Shells[i].Host = "local"
+	if request.Observed || request.Host != "" {
+		reply := a.handleMetadata(metadataRequest{Action: "participation_get", Host: request.Host})
+		if reply.Error != "" {
+			inv.Errors = append(inv.Errors, cleanText(reply.Error))
+		}
+		for _, row := range reply.Participants {
+			inv.Shells = append(inv.Shells, shellView{Host: row.Host, Instance: row.Instance, ID: shellTaskName(row.Name, row.Temporary), Name: row.Name, State: row.State, Observed: true, Temporary: row.Temporary, Lifetime: row.Lifetime, PID: row.PID})
 		}
 	}
-	inv.Peers = excludeLocalResourcePeers(peerViews(a.incomingPeers()), inv.Resources)
 	inv.setTaskReferences()
 	return inv
 }
@@ -259,8 +262,8 @@ func daemonListTasks(request taskListRequest) (inventory, error) {
 	return reply, nil
 }
 
-func collectInventory(o options) (inventory, error) {
-	inv, err := daemonListTasks(taskListRequest{Native: o.host == "", Host: o.host})
+func collectInventory() (inventory, error) {
+	inv, err := daemonListTasks(taskListRequest{Native: true, Observed: true})
 	if err != nil {
 		inv.Errors = append(inv.Errors, cleanText(err.Error()))
 	}
@@ -302,9 +305,9 @@ func (inv *inventory) setTaskReferences() {
 	}
 }
 
-func runInventory(o options) (int, error) {
-	inv, err := collectInventory(o)
-	if o.listJSON {
+func runInventory(listJSON bool) (int, error) {
+	inv, err := collectInventory()
+	if listJSON {
 		if encodeErr := json.NewEncoder(os.Stdout).Encode(inv); encodeErr != nil {
 			return 1, encodeErr
 		}

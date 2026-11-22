@@ -26,7 +26,7 @@ Files and ports
 
 Tasks and installation
   copy-id     Install an SSH public key on a host
-  list        Show tasks and when they were last checked
+  list        Show local tasks and known remote shells
   pstree      Show shell ownership and attachments
   kill        Kill shells or stop other tasks
   install     Install or update sshore
@@ -207,13 +207,12 @@ Remote rename requires matching releases and never installs software.
 ` + sshOptions,
 	},
 	"list": {
-		max: 1, flags: []string{"--json"},
-		help: `Usage: sshore list [HOST:] [--json]
+		flags: []string{"--json"},
+		help: `Usage: sshore list [--json]
 
-Without an endpoint, show this machine's active tasks and incoming resources.
-Use HOST: for shells this client has used and local resources targeting that host.
-The list shows the last observed state and can be read offline.
-Use here: or .: to show only local shells. Plain SSH hosts still work.
+Show this machine's tasks and incoming resources, along with remote shells
+recorded by the local daemon. Remote shell states are the last locally observed
+states and are available offline.
 DETAIL summarizes directories, mappings or errors; terminal output is shortened
 to fit the available width. Redirected output preserves full details.
 ID shows the first six UID characters followed by an optional (alias).
@@ -223,11 +222,7 @@ Use aliases or short IDs for attach, rename and kill.
 A matching short ID takes precedence over a name.
 
 Options:
-  --json           Emit the same task list as JSON
-
-Examples:
-  sshore list
-  sshore list work:
+  --json           Emit the same task list as JSON. Recorded shells have observed: true.
 `,
 	},
 	"pstree": {

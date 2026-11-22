@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -235,11 +234,20 @@ func TestDaemonStateRootFollowsOnlyLiveOwner(t *testing.T) {
 	}
 }
 
-func TestDaemonListsLocalTasks(t *testing.T) {
+func TestDaemonListsLocalTasksAndRecordedShells(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	tasks := startRequestDaemon(t)
 	registerTestResource(t, tasks, "forward", "web", strings.Repeat("a", 32))
 	activity := accountActivity.Load()
+	for _, host := range []string{"work", "home"} {
+		row := participatingShell{
+			Host: host, Instance: newTaskUID(), Name: "build", State: "detached",
+			PID: 1234, Lifetime: "persistent", Attachment: newTaskUID(),
+		}
+		if err := observeParticipatingShell(row); err != nil {
+			t.Fatal(err)
+		}
+	}
 	stale := testPeerTask()
 	stop := beginIncomingTask(stale)
 	stop()
@@ -264,21 +272,25 @@ func TestDaemonListsLocalTasks(t *testing.T) {
 	if len(local.Peers) != 1 || local.Peers[0].Identity != active.Key {
 		t.Fatalf("list included stale peer or omitted an active incoming resource: %+v", local.Peers)
 	}
-	plain, err := collectInventory(options{})
-	if err != nil {
+	var combined inventory
+	if err := daemonJSON(context.Background(), record, "/tasks/list", taskListRequest{Native: true, Observed: true}, &combined); err != nil {
 		t.Fatal(err)
 	}
-	jsonView, err := collectInventory(options{listJSON: true})
-	if err != nil || !reflect.DeepEqual(plain, jsonView) {
-		t.Fatalf("JSON selected different data: %+v, %+v (%v)", plain, jsonView, err)
+	if len(combined.Resources) != 1 || len(combined.Peers) != 1 || len(combined.Shells) != 2 {
+		t.Fatalf("incomplete inventory: %+v", combined)
 	}
-	remote, err := collectInventory(options{host: "work"})
-	if err != nil || len(remote.Resources) != 1 || remote.Resources[0].ID != "forward/web" {
-		t.Fatalf("host-scoped list: %+v (%v)", remote, err)
+	for i, host := range []string{"work", "home"} {
+		shell := combined.Shells[i]
+		if shell.Host != host || !shell.Observed || shell.State != "detached" || shell.ShortID == "" {
+			t.Fatalf("recorded shell: %+v", shell)
+		}
 	}
-	remoteJSON, err := collectInventory(options{host: "work", listJSON: true})
-	if err != nil || !reflect.DeepEqual(remote, remoteJSON) {
-		t.Fatalf("host-scoped JSON selected different data: %+v, %+v (%v)", remote, remoteJSON, err)
+	var rendered strings.Builder
+	writeTaskInventory(&rendered, combined)
+	for _, want := range []string{"HOST  local", "HOST  work", "HOST  home", "detached (last seen)"} {
+		if !strings.Contains(rendered.String(), want) {
+			t.Fatalf("missing %q: %s", want, rendered.String())
+		}
 	}
 }
 

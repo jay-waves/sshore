@@ -10,13 +10,26 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"golang.org/x/sys/unix"
 )
+
+func CheckMountPlatform() error {
+	if runtime.GOOS == "linux" {
+		return nil
+	}
+	const helper = "/Library/Filesystems/macfuse.fs/Contents/Resources/mount_macfuse"
+	if _, err := os.Stat(helper); err != nil {
+		return fmt.Errorf("macFUSE mount helper unavailable; install macFUSE from https://macfuse.github.io/: %w", err)
+	}
+	return nil
+}
 
 // FUSE exposes remote modes/UIDs as the mounting user, while the SSH account
 // remains the authority for remote access. Read caching lasts until close/reopen unless direct IO is selected;
@@ -307,4 +320,15 @@ func (n *ftpNode) Statfs(_ context.Context, out *fuse.StatfsOut) syscall.Errno {
 	*out = fuse.StatfsOut{Blocks: s.Blocks, Bfree: s.BlocksFree, Bavail: s.BlocksAvail,
 		Files: s.Files, Ffree: s.FilesFree, Bsize: uint32(s.BlockSize), Frsize: uint32(s.FragmentSize), NameLen: uint32(s.MaxNameLength)}
 	return 0
+}
+
+func openSourceFile(path string) (*os.File, error) {
+	// Nonblocking open prevents a replacement FIFO from waiting for a writer
+	// before OpenSource can reject its type. The returned handle never follows
+	// a replacement symlink and cannot leak across exec.
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	return os.NewFile(uintptr(fd), path), nil
 }

@@ -27,7 +27,7 @@ func selectHostedShell(name, mode string, expected ...string) (shellSelection, e
 			return shellSelection{}, err
 		}
 		if task.Instance == "" {
-			return shellSelection{}, fmt.Errorf("shell %s does not exist; use sshore list HOST", name)
+			return shellSelection{}, fmt.Errorf("shell %s does not exist; check known IDs with sshore list", name)
 		}
 		return shellSelection{taskIdentitySelection: taskIdentitySelection{name: task.Name, uid: task.Instance}, existing: true}, nil
 	}
@@ -83,7 +83,7 @@ func detachedHostedShells() ([]sessionTarget, error) {
 		}
 	}
 	if len(targets) > 128 {
-		return nil, fmt.Errorf("too many shells to select; use sshore list HOST, then sshore attach HOST:ID")
+		return nil, fmt.Errorf("too many shells to select; use sshore attach HOST:ID")
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].Name < targets[j].Name })
 	return targets, nil

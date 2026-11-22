@@ -220,7 +220,7 @@ func localSessionTargets(name string, request message) message {
 	}
 	if len(reply.Targets) > 128 {
 		reply.Targets = nil
-		reply.Error = "too many local shells; use sshore list here:"
+		reply.Error = "too many local shells; use sshore list"
 	}
 	return reply
 }

@@ -2,15 +2,22 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
+	"github.com/rogpeppe/go-internal/testscript"
 )
 
 func TestCLIOptionsAndHelp(t *testing.T) {
@@ -43,13 +50,6 @@ func TestDefaultSessions(t *testing.T) {
 	named, err := parseOptions([]string{"attach", "host:eevee"})
 	if err != nil || named.session != "eevee" {
 		t.Fatalf("resume: %+v %v", named, err)
-	}
-	listing, err := parseOptions([]string{"list", "host"})
-	if err != nil || listing.session != "" {
-		t.Fatalf("list: %+v %v", listing, err)
-	}
-	if _, err := parseOptions([]string{"list", "host", "main"}); err == nil {
-		t.Fatal("list accepted a shell option")
 	}
 }
 
@@ -142,7 +142,7 @@ func TestRecoveryDiagnosticsStayLocal(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime"))
 	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "must-not-run"))
-	for _, args := range [][]string{{"ls", "--json"}, {"list", "here:", "--json"}, {"list", "remote", "--json"}, {"pstree"}} {
+	for _, args := range [][]string{{"ls", "--json"}, {"pstree"}} {
 		if code, err := run(args); code != 0 || err != nil {
 			t.Fatalf("local diagnostics %v: %d %v", args, code, err)
 		}
@@ -206,8 +206,8 @@ func TestSharedCLIGrammar(t *testing.T) {
 }
 
 func TestShellListOptionsAndSSHBoundary(t *testing.T) {
-	o, err := parseOptions([]string{"list", "host", "--json"})
-	if err != nil || !o.listJSON || o.host != "host" {
+	o, err := parseOptions([]string{"list", "--json"})
+	if err != nil || !o.listJSON {
 		t.Fatalf("%+v %v", o, err)
 	}
 	for _, flag := range []string{"-v", "--verbose", "--details", "--version", "--verbosal"} {
@@ -271,13 +271,9 @@ func TestCommandAliases(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(parsed.operands, []string{"a", "d"}) || !reflect.DeepEqual(parsed.ssh, []string{"-J", "ps"}) {
 		t.Fatalf("operands rewritten: %+v %v", parsed, err)
 	}
-	for _, alias := range []string{"a", "ls", "sh", "mux"} {
-		target := "host"
-		if alias == "sh" || alias == "mux" || alias == "a" {
-			target += ":"
-		}
-		o, err := parseOptions([]string{alias, target})
-		if err != nil || o.command != canonicalCommand(alias) {
+	for _, args := range [][]string{{"a", "host:"}, {"ls"}, {"sh", "host:"}, {"mux", "host:"}} {
+		o, err := parseOptions(args)
+		if err != nil || o.command != canonicalCommand(args[0]) {
 			t.Fatalf("shell policy: %+v %v", o, err)
 		}
 	}
@@ -420,25 +416,12 @@ func TestNativeSSHPort(t *testing.T) {
 	}
 }
 
-func TestListHostEndpoint(t *testing.T) {
-	for _, tc := range []struct {
-		target, host string
-		local        bool
-	}{
-		{"work:", "work", false},
-		{"work", "work", false},
-		{"user@[2001:db8::1]:", "user@2001:db8::1", false},
-		{"2001:db8::1", "2001:db8::1", false},
-		{"here:", "local", true},
-	} {
-		o, err := parseOptions([]string{"list", tc.target})
-		if err != nil || o.host != tc.host || o.local != tc.local {
-			t.Fatalf("%s: %+v, %v", tc.target, o, err)
-		}
-	}
-	for _, args := range [][]string{{"work:path"}, {"origin:"}, {"here:", "--port", "2222"}} {
-		if _, err := parseCLI(args, "list"); err == nil {
-			t.Fatalf("accepted %v", args)
+func TestListRejectsHostEndpoint(t *testing.T) {
+	for _, command := range []string{"list", "ls"} {
+		for _, host := range []string{"work", "work:", "here:", ".:", "user@[2001:db8::1]:"} {
+			if code, err := run([]string{command, host, "--json"}); code != 2 || err == nil {
+				t.Fatalf("%s %s: %d %v", command, host, code, err)
+			}
 		}
 	}
 }
@@ -674,4 +657,511 @@ func TestNamedShellCreationTargets(t *testing.T) {
 			t.Errorf("accepted invalid creation target %q", target)
 		}
 	}
+}
+
+func TestBareFilePathsAndExplicitRemoteEndpoints(t *testing.T) {
+	for _, tc := range []struct {
+		args   []string
+		host   string
+		upload bool
+		paths  []string
+		target string
+	}{
+		{[]string{"report", "work:"}, "work", true, []string{"report"}, "."},
+		{[]string{"one", "two", "work:/dest"}, "work", true, []string{"one", "two"}, "/dest"},
+		{[]string{"work:/one", "work:/two", "out"}, "work", false, []string{"/one", "/two"}, "out"},
+		{[]string{`C:\Users\me\report`, "work:"}, "work", true, []string{`C:\Users\me\report`}, "."},
+		{[]string{"user@[::1]:/file", "out"}, "user@::1", false, []string{"/file"}, "out"},
+	} {
+		o, err := parseCopyCommand(tc.args)
+		if err != nil {
+			t.Errorf("%q: %v", tc.args, err)
+			continue
+		}
+		var paths []string
+		for _, source := range o.sources {
+			paths = append(paths, source.path)
+		}
+		if o.host != tc.host || o.upload != tc.upload || !reflect.DeepEqual(paths, tc.paths) || o.target.path != tc.target {
+			t.Errorf("%q: got %+v, paths %q", tc.args, o, paths)
+		}
+	}
+	for _, args := range [][]string{
+		{"one", "two"}, {"work:a", "other:b", "out"}, {"work:a", "other:b"},
+		{"origin:a", "out"}, {"work:a", "origin:b"},
+	} {
+		if _, err := parseCopyCommand(args); err == nil {
+			t.Errorf("accepted %q", args)
+		}
+	}
+	for _, args := range [][]string{{"work:/data", "mountpoint"}, {"user@[::1]:", `C:\mount`}} {
+		o, err := parseFTPOptions(args)
+		if err != nil || o.Mountpoint != args[1] {
+			t.Errorf("%q: %+v %v", args, o, err)
+		}
+	}
+	for _, args := range [][]string{{"data", "mountpoint"}, {"work:data", "other:mount"}, {"origin:data", "mountpoint"}} {
+		if _, err := parseFTPOptions(args); err == nil {
+			t.Errorf("accepted %q", args)
+		}
+	}
+}
+
+func TestOriginRequestsUseExecutionHostPaths(t *testing.T) {
+	for _, tc := range []struct {
+		args  []string
+		kind  string
+		paths []string
+		hint  string
+	}{
+		{[]string{"one", "two", "origin:/dest"}, "download", []string{"one", "two"}, "/dest"},
+		{[]string{"origin:/file", "out"}, "upload", []string{"out"}, "/file"},
+	} {
+		kind, paths, hint, err := remoteCopyRequest(tc.args)
+		if err != nil || kind != tc.kind || !reflect.DeepEqual(paths, tc.paths) || hint != tc.hint {
+			t.Errorf("%q: %q %q %q %v", tc.args, kind, paths, hint, err)
+		}
+	}
+	for _, args := range [][]string{{"one", "two"}, {"work:a", "origin:b"}, {"origin:a", "work:b"}, {"origin:a", "origin:b"}} {
+		if _, _, _, err := remoteCopyRequest(args); err == nil {
+			t.Errorf("accepted %q", args)
+		}
+	}
+	op, err := remoteMountRequest([]string{"data", "origin:/mnt", "--read-only"})
+	if err != nil || op.Path != "data" || op.LocalHint != "/mnt" || !op.ReadOnly {
+		t.Fatalf("%+v %v", op, err)
+	}
+	for _, args := range [][]string{{"data", "mnt"}, {"work:data", "origin:mnt"}, {"data", "origin:mnt", "--port", "22"}} {
+		if _, err := remoteMountRequest(args); err == nil {
+			t.Errorf("accepted %q", args)
+		}
+	}
+}
+
+func TestShellSingleTargetGrammar(t *testing.T) {
+	for _, command := range []string{"launch", "spawn"} {
+		for _, tc := range []struct {
+			target, host, name string
+			local              bool
+		}{
+			{"", "local", "", true}, {"work", "work", "", false},
+			{"work:build", "work", "build", false}, {":build", "local", "build", true},
+			{"user@[::1]:build", "user@::1", "build", false},
+		} {
+			args := []string{command}
+			if tc.target != "" {
+				args = append(args, tc.target)
+			}
+			o, err := parseOptions(args)
+			if err != nil || o.host != tc.host || o.session != tc.name || o.local != tc.local {
+				t.Errorf("%q: %+v %v", args, o, err)
+			}
+		}
+	}
+}
+
+func TestConsoleDoesNotOfferPing(t *testing.T) {
+	complete := consoleCompleter(func() []sessionTarget { return nil })
+	got, _ := complete.Do([]rune("ping"), 4)
+	if len(got) != 0 || strings.Contains(consoleHelp, "ping") {
+		t.Fatalf("console offers ping: %q, %q", got, consoleHelp)
+	}
+	if _, err := parseCLI([]string{"work:"}, "ping"); err != nil {
+		t.Fatalf("standalone ping: %v", err)
+	}
+}
+
+func TestAttachTargetAndSSHPort(t *testing.T) {
+	for _, tc := range []struct {
+		target, host, name string
+		local              bool
+	}{
+		{"work", "work", "", false},
+		{"work:build", "work", "build", false},
+		{":build", "local", "build", true},
+		{"user@[::1]:build", "user@::1", "build", false},
+	} {
+		o, err := parseOptions([]string{"attach", tc.target})
+		if err != nil || o.host != tc.host || o.session != tc.name || o.local != tc.local {
+			t.Errorf("%q: %+v %v", tc.target, o, err)
+		}
+	}
+	o, err := parseCopyCommand([]string{"file", "work:", "--port", "2222"})
+	if err != nil || !reflect.DeepEqual(o.ssh, []string{"-p", "2222"}) {
+		t.Fatalf("copy SSH port: %+v %v", o, err)
+	}
+	if _, err := parseCopyCommand([]string{"file", "work:", "--port", "2222", "--", "-p", "22"}); err == nil {
+		t.Fatal("accepted conflicting SSH ports")
+	}
+}
+
+func TestTaskSelectorsResolveOnTheirOwnHost(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	local := registerTestShell(t, tasks, "work", strings.Repeat("a", 32))
+	// Leftover observations from older releases cannot affect either scope.
+	legacy, err := stateDir("shells")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "stale.json"), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{"attach", "kill", "rename"} {
+		for _, ref := range []string{"aaaaaa", ":aaaaaa", "here:aaaaaa", "remote:aaaaaa"} {
+			args := []string{ref}
+			if command == "rename" {
+				args = append(args, "new")
+			}
+			parsed, err := parseCLI(args, command)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target, selected, err := resolveShortTask(command, &parsed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			o, err := shellOptions(command, parsed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.HasPrefix(ref, "remote:") {
+				if selected || o.local || o.host != "remote" || o.session != "aaaaaa" {
+					t.Fatalf("%s %s should pass the ID to remote: %+v", command, ref, o)
+				}
+			} else if !selected || !o.local || o.session != "work" || target.Identity != local.identity() {
+				t.Fatalf("%s %s resolved to %+v", command, ref, target)
+			}
+		}
+	}
+	close(tasks.records[local.UID].(*nativeShellTask).shell.done)
+	registerTestShell(t, tasks, "work", strings.Repeat("b", 32))
+	if _, err := run([]string{"kill", "aaaaaa"}); err == nil {
+		t.Fatal("old local ID selected a replacement")
+	}
+}
+
+func TestShortTaskResourceRenameAndReplacement(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	for i, kind := range []string{"mount", "forward"} {
+		task, done := registerTestResource(t, tasks, kind, kind+"job", strings.Repeat(string(rune('a'+i)), 32))
+		r := task.record
+		key := resourceIdentity(r)
+		code := taskShortCode(key)
+		previousAlias := kind + "alias"
+		if _, err := run([]string{"rename", kind + "/" + r.Name, previousAlias}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := run([]string{"rename", ":" + code, kind + "new"}); err != nil {
+			t.Fatal(err)
+		}
+		inv, err := collectInventory()
+		if err != nil || !slices.ContainsFunc(inv.Resources, func(row resourceView) bool {
+			return row.Identity == key && row.ID == kind+"/"+kind+"new" && row.ShortID == code && row.Worker == "running"
+		}) {
+			t.Fatalf("renamed resource inventory: %+v %v", inv.Resources, err)
+		}
+		if _, err := run([]string{"kill", kind + "/" + previousAlias}); err == nil {
+			t.Fatal("old alias still selects the resource")
+		}
+		parsed, err := parseCLI([]string{kind + "/" + code}, "kill")
+		if err != nil {
+			t.Fatal(err)
+		}
+		target, ok, err := resolveShortTask("kill", &parsed)
+		if err != nil || !ok || target.Name != kind+"new" {
+			t.Fatalf("%+v %v", target, err)
+		}
+		close(done)
+		registerTestResource(t, tasks, kind, r.Name, strings.Repeat(string(rune('c'+i)), 32))
+		if err = stopResource(kind, r.Name, key); err == nil || !strings.Contains(err.Error(), "changed") {
+			t.Fatal("accepted replacement", err)
+		}
+		if _, err = run([]string{"rename", ":" + code, "other"}); err == nil {
+			t.Fatal("renamed replacement by old ID")
+		}
+	}
+}
+
+func TestShortTaskUnknownAndScopedNames(t *testing.T) {
+	activityFixture(t)
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "must-not-connect"))
+	for _, args := range [][]string{{"kill", "123456"}, {"rename", "ABCDEF", "new"}, {"review", "abcdef"}} {
+		if code, err := run(args); code != 2 || err == nil {
+			t.Fatalf("%v: %d %v", args, code, err)
+		}
+	}
+	for _, ref := range []string{"here:abcdef", "host:abcdef", "mount/abcdef"} {
+		parsed, err := parseCLI([]string{ref}, "kill")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, selected, err := resolveShortTask("kill", &parsed)
+		if selected || (err == nil) != (ref == "host:abcdef") {
+			t.Fatalf("unexpected scope for %s: selected=%t, %v", ref, selected, err)
+		}
+	}
+
+}
+
+func TestShortTaskLocalCommandRouting(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	r := registerTestShell(t, tasks, "work", "123456"+strings.Repeat("a", 26))
+	requests := make(chan message, 2)
+	tasks.records[r.UID].(*nativeShellTask).serve = func(c net.Conn, m message) error {
+		requests <- m
+		reply := "killed"
+		if m.Type == "rename" {
+			reply = "renamed"
+		}
+		return writeMessage(c, message{Type: reply})
+	}
+	for _, command := range []string{"kill", "rename"} {
+		args := []string{command, ":123456"}
+		if command == "rename" {
+			args = []string{command, "here:123456", "new"}
+		}
+		code, err := run(args)
+		if code != 0 || err != nil {
+			t.Fatalf("%v: %d %v", args, code, err)
+		}
+		m := <-requests
+		if m.Type != command || command == "rename" && m.Name != "new" {
+			t.Fatalf("wrong route: %+v", m)
+		}
+	}
+}
+
+func TestTaskPrefixCollisionResolution(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	first := "abcdef" + strings.Repeat("1", 26)
+	second := "abcdef" + strings.Repeat("2", 26)
+	registerTestShell(t, tasks, "one", first)
+	registerTestShell(t, tasks, "two", second)
+	for _, tc := range []struct{ ref, uid string }{
+		{"ab", ""}, {"abcdef", ""}, {"abcdef1", first}, {first, first}, {second, second}, {"ABCDEF2", second},
+	} {
+		parsed, err := parseCLI([]string{":" + tc.ref}, "attach")
+		if err != nil {
+			t.Fatal(err)
+		}
+		target, selected, err := resolveShortTask("attach", &parsed)
+		if tc.uid == "" {
+			if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+				t.Fatalf("accepted ambiguous prefix: %v", err)
+			}
+		} else if err != nil || !selected || target.Identity != "task:"+tc.uid {
+			t.Fatalf("%s: %+v %v", tc.ref, target, err)
+		}
+	}
+
+}
+
+func TestKillOptions(t *testing.T) {
+	o, err := parseOptions([]string{"kill", "host:build", "--server", "/a b/sshore", "--", "-p", "2222"})
+	if err != nil || o.command != "kill" || o.session != "build" {
+		t.Fatalf("%+v %v", o, err)
+	}
+	for _, args := range [][]string{
+		{"kill"}, {"kill", "host"}, {"kill", "host", "../other"},
+		{"kill", "host", "one", "two"}, {"kill", "host:one", "--quiet"},
+		{"kill", "host:one", "--download-dir", "/tmp"}, {"kill", "host:one", "--no-escape"},
+	} {
+		if _, err := parseOptions(args); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+	var out bytes.Buffer
+	if err := showHelp([]string{"kill"}, &out); err != nil || !strings.Contains(out.String(), "without confirmation") {
+		t.Fatal(out.String(), err)
+	}
+}
+
+func TestRenameOptions(t *testing.T) {
+	for _, args := range [][]string{{"rename", "host:old", "new"}, {"rename", "host:old", "new", "--", "-p22"}} {
+		o, err := parseOptions(args)
+		if err != nil || o.session != "old" || o.newName != "new" {
+			t.Fatal(o, err)
+		}
+	}
+	for _, args := range [][]string{{"rename", "host", "old"}, {"rename", "host", "old", "new", "extra"}, {"rename", "host", "old", "bad/name"}, {"rename", "host", "old", "new", "--quiet"}} {
+		if _, err := parseOptions(args); err == nil {
+			t.Fatal("accepted", args)
+		}
+	}
+
+	o, err := parseOptions([]string{"rename", "12:old", "new"})
+	if err != nil || o.host != "12" || o.session != "old" || o.newName != "new" {
+		t.Fatalf("numeric host: %+v %v", o, err)
+	}
+
+}
+
+func TestKillAllScope(t *testing.T) {
+	for _, tc := range []struct {
+		args     []string
+		host     string
+		all, bad bool
+	}{
+		{[]string{"--all"}, "", true, false},
+		{[]string{"fedora:", "--all"}, "fedora", true, false},
+		{[]string{"here:", "--all"}, "", true, false},
+		{[]string{"fedora", "--all"}, "fedora", true, false},
+		{[]string{"--all", "fedora", "--", "-p", "2222"}, "fedora", true, false},
+		{[]string{"here:", "--all"}, "", true, false},
+		{[]string{"fedora", "shell", "--all"}, "", true, true},
+		{[]string{"--all", "--all"}, "", true, true},
+		{[]string{"--all", "--json"}, "", true, true},
+		{[]string{"fedora", "shell", "--", "--all"}, "", false, true},
+	} {
+		parsed, err := parseCLI(tc.args, "kill")
+		all := parsed.has("--all")
+		var o options
+		if err == nil && all {
+			o, err = killAllOptions(parsed)
+		}
+		if all != tc.all || (err != nil) != tc.bad || (!tc.bad && all && o.host != tc.host) {
+			t.Errorf("%v: host=%q all=%t err=%v", tc.args, o.host, all, err)
+		}
+	}
+}
+
+func TestListNumbersAreNotSelectors(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	code, err := run([]string{"kill", "1"})
+	if code != 2 || err == nil || !strings.Contains(err.Error(), "requires HOST:ID") {
+		t.Fatalf("kill: %d %v", code, err)
+	}
+	o, err := parseOptions([]string{"attach", "1"})
+	if err != nil || o.local || o.host != "1" {
+		t.Fatalf("numeric host: %+v %v", o, err)
+	}
+}
+
+func TestAttachUnknownTargetNeverConnects(t *testing.T) {
+	activityFixture(t)
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	marker := filepath.Join(t.TempDir(), "ssh-invoked")
+	ssh := filepath.Join(t.TempDir(), "ssh")
+	if err := os.WriteFile(ssh, []byte("#!/bin/sh\ntouch "+shellQuote(marker)+"\nexit 99\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSHORE_SSH", ssh)
+	for _, ref := range []string{"xxxyyy", "3a"} {
+		code, err := run([]string{"attach", ":" + ref})
+		if err == nil {
+			t.Fatalf("unknown %s: %d %v", ref, code, err)
+		}
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("unknown target started SSH: %v", err)
+	}
+}
+
+func TestTwoCharacterTaskPrefix(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
+	tasks := startRequestDaemon(t)
+	first := "3aaaaa" + strings.Repeat("1", 26)
+	registerTestShell(t, tasks, "short-prefix", first)
+	registerTestShell(t, tasks, "db", strings.Repeat("c", 32))
+	parsed, err := parseCLI([]string{":3a"}, "attach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, selected, err := resolveShortTask("attach", &parsed)
+	if err != nil || !selected || target.Identity != "task:"+first {
+		t.Fatalf("unique short prefix: %+v %v", target, err)
+	}
+	alias, _ := parseCLI([]string{":db"}, "attach")
+	if candidate, ok, err := resolveShortTask("attach", &alias); err != nil || !ok || candidate.Name != "db" {
+		t.Fatalf("short hex alias lost: %+v %v", candidate, err)
+	}
+	registerTestShell(t, tasks, "collision", "3abbbb"+strings.Repeat("2", 26))
+	parsed, _ = parseCLI([]string{":3a"}, "attach")
+	if _, selected, err := resolveShortTask("attach", &parsed); err == nil || selected || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous short prefix selected: %v", err)
+	}
+}
+
+type cliFixture struct {
+	bin, dir string
+	env      []string
+}
+
+func fixtureDaemon(t *testing.T, state string) localShellRecord {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(state, "daemon", "daemon.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record localShellRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatal(err)
+	}
+	return record
+}
+
+// These fields are the documented JSON command output, not persisted records.
+type cliShell struct {
+	ShortID string `json:"short_id"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	State   string `json:"state"`
+	PID     int    `json:"pid"`
+}
+
+func (e *cliFixture) shells(t *testing.T) []cliShell {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, e.bin, "list", "--json")
+	cmd.Env = e.env
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inv struct {
+		LocalShells []cliShell `json:"local_shells"`
+	}
+	if err := json.Unmarshal(out, &inv); err != nil {
+		t.Fatalf("list output: %v: %s", err, out)
+	}
+	return inv.LocalShells
+}
+
+func newCLI(t *testing.T) *cliFixture {
+	t.Helper()
+	e := &cliFixture{bin: testBinary(t), dir: t.TempDir()}
+	e.env = append(os.Environ(), "HOME="+e.dir, "SSHORE_STATE_DIR="+filepath.Join(e.dir, "state"), "SSHORE_RUNTIME_DIR="+filepath.Join(e.dir, "runtime"), "SSHORE_SOCKET=", "SSHORE_LOCAL_SESSION=", "SSHORE_DISABLED=", "SSH_CONNECTION=", "SSHORE_TREE_ID=", "GORACE=atexit_sleep_ms=0", "SHELL=/bin/sh", "PS1=sshore-test> ")
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, e.bin, "kill", "--all")
+		cmd.Env, cmd.Stdin = e.env, strings.NewReader("kill\n")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("CLI cleanup: %v\n%s", err, output)
+		}
+	})
+	return e
+}
+
+func TestScripts(t *testing.T) {
+	bin := testBinary(t)
+	repo, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testscript.Run(t, testscript.Params{
+		Dir: "testdata/cli",
+		Setup: func(env *testscript.Env) error {
+			env.Setenv("REPO", repo)
+			env.Setenv("SSHORE_BIN", bin)
+			env.Setenv("SSHORE_TEST_CLI", "1")
+			return nil
+		},
+	})
 }

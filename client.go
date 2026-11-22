@@ -182,14 +182,10 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 	// until the keyboard has stopped and terminal restoration has completed.
 	ctx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
-	if o.command == "list" || o.command == "kill" || o.command == "rename" {
-		var target participatingShell
-		if o.command != "list" {
-			var lookupErr error
-			target, lookupErr = participatingMutationTarget(o)
-			if lookupErr != nil {
-				termui.Log(os.Stderr, termui.Warning, "[sshore] Could not read participating shells: %s\n", cleanText(lookupErr.Error()))
-			}
+	if o.command == "kill" || o.command == "rename" {
+		target, lookupErr := participatingMutationTarget(o)
+		if lookupErr != nil {
+			termui.Log(os.Stderr, termui.Warning, "[sshore] Could not read participating shells: %s\n", cleanText(lookupErr.Error()))
 		}
 		err := transportio.Run(context.Background(), sshConnectionOptions(o), os.Stdin, os.Stdout, os.Stderr)
 		if err == nil && target.Instance != "" {

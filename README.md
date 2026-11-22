@@ -75,9 +75,8 @@ commands and Esc to return to the shell.
 ### Find and manage tasks
 
 ```sh
-sshore list                 # Local tasks and incoming resources.
-sshore list work:           # This client's last known tasks on work, even offline.
-sshore list --json          # Machine-readable local inventory.
+sshore list                 # Local tasks, incoming resources and last seen remote shells.
+sshore list --json          # The same inventory as JSON.
 sshore pstree               # Local ownership and attachments. *current marks this shell.
 ```
 

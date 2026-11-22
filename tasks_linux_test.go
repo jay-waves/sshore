@@ -49,20 +49,26 @@ func TestKillAllRemoteScope(t *testing.T) {
 	}
 	waitSessionEnded(t, e, "one", firstPID)
 	waitSessionEnded(t, e, "two", secondPID)
-	out, err := run("", "list", "here:", "--json")
-	var rows []localShellView
-	if err != nil || json.Unmarshal([]byte(out), &rows) != nil || len(rows) != 1 || rows[0].Name != "keep" {
+	out, err := run("", "list", "--json")
+	var inv inventory
+	if err != nil || json.Unmarshal([]byte(out), &inv) != nil || len(inv.LocalShells) != 1 || inv.LocalShells[0].Name != "keep" {
 		t.Fatal(out, err)
 	}
 }
 
-func TestListScopes(t *testing.T) {
+func TestListIncludesRecordedRemoteShellsOffline(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
 	tasks := startRequestDaemon(t)
 	registerTestResource(t, tasks, "forward", "local-only", strings.Repeat("a", 32))
 	other, _ := registerTestResource(t, tasks, "forward", "other", strings.Repeat("b", 32))
 	other.record.Host = "elsewhere"
+	if err := observeParticipatingShell(participatingShell{
+		Host: "work", Instance: newTaskUID(), Name: "remembered", State: "detached",
+		PID: 1234, Lifetime: "persistent", Attachment: newTaskUID(),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	run := func(args ...string) (inventory, string, error) {
 		cmd := exec.Command(testBinary(t), args...)
 		cmd.Env = append(os.Environ(), "SSHORE_SSH="+filepath.Join(root, "must-not-run"), "SSHORE_SOCKET=", "SSH_CONNECTION=", "HOME="+root)
@@ -75,17 +81,10 @@ func TestListScopes(t *testing.T) {
 		}
 		return inv, stderr.String(), err
 	}
-	local, _, err := run("list", "--json")
-	if err != nil || len(local.Resources) != 2 {
-		t.Fatalf("%+v %v", local, err)
-	}
-	remote, stderr, err := run("list", "work", "--json")
-	if err != nil || stderr != "" || len(remote.Resources) != 1 || remote.Resources[0].ID != "forward/local-only" || len(remote.Shells) != 0 {
-		t.Fatalf("%+v %s %v", remote, stderr, err)
-	}
-	empty, stderr, err := run("list", "unknown:", "--json")
-	if err != nil || stderr != "" || len(empty.Resources) != 0 || len(empty.Shells) != 0 {
-		t.Fatalf("%+v %s %v", empty, stderr, err)
+	inv, stderr, err := run("ls", "--json")
+	if err != nil || stderr != "" || len(inv.Resources) != 2 || len(inv.Shells) != 1 ||
+		inv.Shells[0].Host != "work" || inv.Shells[0].Name != "remembered" || !inv.Shells[0].Observed {
+		t.Fatalf("%+v %s %v", inv, stderr, err)
 	}
 }
 
@@ -194,7 +193,7 @@ func TestHostedShellTaskCommandRouting(t *testing.T) {
 	t.Setenv("SSHORE_RUNTIME_DIR", e.dir)
 	b, _ := e.attach("hosted")
 	defer b.close()
-	inv, err := collectInventory(options{})
+	inv, err := collectInventory()
 	if err != nil {
 		t.Fatal(err)
 	}

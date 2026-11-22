@@ -190,11 +190,7 @@ func TestSpawnLifetime(t *testing.T) {
 				t.Fatal("startup timeout")
 			}
 			inspect := func() ([]byte, error) {
-				args := []string{"list", "here:", "--json"}
-				if remote {
-					args = []string{"list", "fake-host", "--json"}
-				}
-				cmd := exec.Command(e.bin, args...)
+				cmd := exec.Command(e.bin, "list", "--json")
 				cmd.Env = env
 				return cmd.CombinedOutput()
 			}
@@ -202,21 +198,18 @@ func TestSpawnLifetime(t *testing.T) {
 			if err != nil {
 				t.Fatalf("list: %s %v", out, err)
 			}
+			var inv inventory
+			if err = json.Unmarshal(out, &inv); err != nil {
+				t.Fatalf("%s: %v", out, err)
+			}
 			var pid int
 			if remote {
-				var inv inventory
-				if err = json.Unmarshal(out, &inv); err != nil {
-					t.Fatalf("%s: %v", out, err)
-				}
 				if len(inv.Shells) != 1 || !inv.Shells[0].Temporary || inv.Shells[0].Lifetime != "heartbeat" || inv.Shells[0].State != "detached" {
 					t.Fatalf("unexpected shells: %s", out)
 				}
 				pid = inv.Shells[0].PID
 			} else {
-				var rows []localShellView
-				if err = json.Unmarshal(out, &rows); err != nil {
-					t.Fatal(err)
-				}
+				rows := inv.LocalShells
 				if len(rows) != 1 || !rows[0].Temporary || rows[0].Lifetime != "parent" || rows[0].State != "detached" {
 					t.Fatalf("unexpected shells: %s", out)
 				}

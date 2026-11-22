@@ -53,7 +53,9 @@ func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color
 			host = inv.Host
 		}
 		state := s.State
-		if s.Instance != "" &&
+		if s.Observed {
+			state += " (last seen)"
+		} else if s.Instance != "" &&
 			remoteTreeIdentity(s.Instance) == current && state == "attached" {
 			state += " (current)"
 		}

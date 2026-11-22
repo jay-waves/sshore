@@ -82,16 +82,6 @@ func runLocalCommand(o options) (int, error) {
 	switch o.command {
 	case "launch", "spawn", "attach":
 		return runClient(o)
-	case "list":
-		rows, err := localShells(true)
-		if err != nil {
-			return 1, err
-		}
-		if o.listJSON {
-			return 0, json.NewEncoder(os.Stdout).Encode(rows)
-		}
-		printTaskInventory(inventory{LocalShells: rows})
-		return 0, nil
 	case "kill":
 		m, err := localRequest(o.session, o.taskIdentity, message{Type: "kill"})
 		if err == nil && m.Type != "killed" {

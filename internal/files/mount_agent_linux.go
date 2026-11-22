@@ -3,18 +3,22 @@
 package files
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	sshfx "github.com/pkg/sftp/v2/encoding/ssh/filexfer"
+	"golang.org/x/sys/unix"
 )
 
 func ServeAgent(conn io.ReadWriteCloser, version string, check ...func(MountApproval) error) error {
@@ -66,6 +70,26 @@ func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observ
 		return nil
 	}
 	return serveMountData(conn)
+}
+
+func (h *mountSFTPHandler) RealPath(_ context.Context, req *sshfx.RealPathPacket) (string, error) {
+	name := req.Path
+	if name == "" {
+		name = "."
+	}
+	resolved, err := filepath.EvalSymlinks(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Abs(resolved)
+}
+
+func (h *mountSFTPHandler) Remove(_ context.Context, req *sshfx.RemovePacket) error {
+	return unix.Unlink(req.Path)
+}
+
+func (h *mountSFTPHandler) Rmdir(_ context.Context, req *sshfx.RmdirPacket) error {
+	return unix.Rmdir(req.Path)
 }
 
 func serveFTPWatch(stream io.ReadWriteCloser) {

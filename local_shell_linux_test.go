@@ -26,29 +26,29 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 	env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SHELL=/bin/sh", "TERM=xterm-256color")
 	for _, args := range [][]string{{"fixture-launch", "here:", "localtest", "--no-profile"}, {"attach", "here:"}} {
 		if args[0] == "attach" {
-			list := exec.Command(e.bin, "list", "here:", "--json")
+			list := exec.Command(e.bin, "list", "--json")
 			list.Env = env
 			data, err := list.Output()
 			if err != nil {
 				t.Fatal(err)
 			}
-			var rows []localShellView
-			if err = json.Unmarshal(data, &rows); err != nil || len(rows) != 1 {
+			var inv inventory
+			if err = json.Unmarshal(data, &inv); err != nil || len(inv.LocalShells) != 1 {
 				t.Fatalf("list: %s %v", data, err)
 			}
-			originalID := rows[0].ShortID
+			originalID := inv.LocalShells[0].ShortID
 			rename := exec.Command(e.bin, "rename", "here:"+originalID, "renamed")
 			rename.Env = env
 			if out, err := rename.CombinedOutput(); err != nil {
 				t.Fatalf("rename: %s %v", out, err)
 			}
-			list = exec.Command(e.bin, "list", "here:", "--json")
+			list = exec.Command(e.bin, "list", "--json")
 			list.Env = env
 			data, err = list.Output()
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = json.Unmarshal(data, &rows); err != nil || len(rows) != 1 || rows[0].Name != "renamed" || rows[0].ShortID != originalID {
+			if err = json.Unmarshal(data, &inv); err != nil || len(inv.LocalShells) != 1 || inv.LocalShells[0].Name != "renamed" || inv.LocalShells[0].ShortID != originalID {
 				t.Fatalf("renamed list: %s %v", data, err)
 			}
 			args = []string{"attach", "here:" + originalID}
