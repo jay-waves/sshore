@@ -81,8 +81,12 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 					stage = 2
 					io.WriteString(terminal, "\x02d")
 				}
-				if args[0] == "fixture-launch" && stage == 2 && strings.Count(out.String(), "Connected here:localtest") >= 2 {
+				if stage == 2 && strings.Contains(out.String(), "Detach? [y/N]") {
 					stage = 3
+					io.WriteString(terminal, "y\r")
+				}
+				if stage == 3 && strings.Count(out.String(), "Connected here:localtest") >= 2 {
+					stage = 4
 					io.WriteString(terminal, "\x02d")
 				}
 				if err != nil {
@@ -228,7 +232,7 @@ func TestPSTreeReattachmentAncestry(t *testing.T) {
 		}
 		detachTestClient(t, b)
 	}
-	b, _ = e.attach("tree")
+	b, _ = e.attach("tree", "attach")
 	b.writeInput(t, []byte("exit\n"))
 	b.readExit(t)
 	b.close()

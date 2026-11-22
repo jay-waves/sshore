@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/chzyer/readline"
-	"github.com/creack/pty"
 	"github.com/jay-waves/sshore/tests/testutil/sshtest"
 	cryptossh "golang.org/x/crypto/ssh"
 )
@@ -133,30 +132,15 @@ func TestExitReceiptInventoryAndReset(t *testing.T) {
 }
 
 func TestTaskInventoryOutputTerminalWidth(t *testing.T) {
-	for _, columns := range []uint16{60, 100} {
-		t.Run(strconv.Itoa(int(columns)), func(t *testing.T) {
-			master, slave, err := pty.Open()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer master.Close()
-			defer slave.Close()
-			if err := pty.Setsize(slave, &pty.Winsize{Rows: 24, Cols: columns}); err != nil {
-				t.Fatal(err)
-			}
-			writeTaskInventory(slave, inventory{Resources: []resourceView{{ID: "mount/data", Host: "server", Worker: "running", Detail: strings.Repeat("路径/", 40)}}})
-			reader := bufio.NewReader(master)
-			var output strings.Builder
-			for range 3 {
-				line, err := reader.ReadString('\n')
-				if err != nil {
-					t.Fatal(err)
-				}
-				line = strings.TrimRight(line, "\r\n")
-				if (readline.Runes{}).WidthAll([]rune(line)) > int(columns) {
+	for _, columns := range []int{60, 100} {
+		t.Run(strconv.Itoa(columns), func(t *testing.T) {
+			var output bytes.Buffer
+			inv := inventory{Resources: []resourceView{{ID: "mount/data", Host: "server", Worker: "running", Detail: strings.Repeat("路径/", 40)}}}
+			writeTaskInventoryWidth(&output, inv, "", false, columns)
+			for line := range strings.SplitSeq(output.String(), "\n") {
+				if (readline.Runes{}).WidthAll([]rune(line)) > columns {
 					t.Fatalf("width %d: %q", columns, line)
 				}
-				output.WriteString(line)
 			}
 			if !strings.Contains(output.String(), "…") {
 				t.Fatal(output.String())
@@ -232,7 +216,7 @@ func TestHostedShellTaskCommandRouting(t *testing.T) {
 	if choices.Error != "" || len(choices.Targets) != 1 || choices.Targets[0].Name != "hosted" || !choices.Targets[0].Hosted {
 		t.Fatalf("hosted shell missing from local switcher: %+v", choices)
 	}
-	for _, args := range [][]string{{id}, {"hosted"}} {
+	for _, args := range [][]string{{id}, {"here:hosted"}} {
 		parsed, err := parseCLI(args, "attach")
 		if err != nil {
 			t.Fatal(err)

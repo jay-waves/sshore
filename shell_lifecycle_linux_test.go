@@ -248,7 +248,7 @@ func TestKillSessionLifecycle(t *testing.T) {
 			sendTest(t, b.in, message{Type: "detach"})
 			untilType(t, b.out, "detached")
 			b.close()
-			b, resumedPID := e.attach(name)
+			b, resumedPID := e.attach(name, "attach")
 			if resumedPID != pid || query(name).AgeSeconds == nil || *query(name).AgeSeconds < *age {
 				t.Fatal("age or identity reset")
 			}

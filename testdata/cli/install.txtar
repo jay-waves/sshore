@@ -1,7 +1,8 @@
 [!linux] skip
 env HOME=$WORK PATH=$WORK/tools:$PATH INSTALL=$REPO/install.sh
 env 'BIN=directory with spaces'
-chmod 755 tools/curl tools/uname
+chmod 755 tools/curl
+chmod 755 tools/uname
 mkdir $BIN
 cp old $BIN/sshore
 chmod 755 $BIN/sshore
