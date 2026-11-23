@@ -63,7 +63,7 @@ const shellStartupOptions = `  --detach              Start without attaching
 
 const shellConnectionHelp = `
 The remote release must match exactly. Update the older side before connecting.
-` + sshOptions + "Shell connections also accept SSH -L, -R and -D.\n"
+` + sshOptions
 
 const connectionFlags = "--server --quiet --no-escape"
 

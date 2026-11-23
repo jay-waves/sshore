@@ -1336,7 +1336,8 @@ func TestClientRemoteExitReason(t *testing.T) {
 	e := newEnv(t)
 	cmd, _, wait := startPrefixClient(t, e)
 	wait("Connected fixture:keys")
-	kill := exec.Command(e.bin, "kill", "fixture:keys", "--server", e.bin)
+	config := cmd.Args[len(cmd.Args)-1]
+	kill := exec.Command(e.bin, "kill", "fixture:keys", "--server", e.bin, "--", "-F", config)
 	kill.Env = cmd.Env
 	if out, err := kill.CombinedOutput(); err != nil {
 		t.Fatalf("kill fixture shell: %v %s", err, out)

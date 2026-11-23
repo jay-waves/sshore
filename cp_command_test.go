@@ -23,6 +23,7 @@ func TestCopyParsing(t *testing.T) {
 		{[]string{".:", "user@[::1]:/tmp"}, true, "user@::1", 1},
 		{[]string{"work:/a", ":"}, false, "work", 1},
 		{[]string{".:./a", "work:/b", "--", "-p2222"}, true, "work", 1},
+		{[]string{".:a", "work:/b", "--", "-L8080:localhost:80"}, true, "work", 1},
 		{[]string{"here:./a", "work:/b"}, true, "work", 1},
 		{[]string{"work:/a", "here:"}, false, "work", 1},
 	} {
@@ -31,7 +32,7 @@ func TestCopyParsing(t *testing.T) {
 			t.Fatal(tc.args, o, err)
 		}
 	}
-	for _, args := range [][]string{{"a"}, {"a", "b"}, {"a:/x", "b:/y"}, {":", ":"}, {"work:/a", "other:/b", "."}, {"a", ":", "work:/b"}, {".:a", "work:/b", "--", "-L8080:localhost:80"}, {".:a", "work:/b", "-p2222"}} {
+	for _, args := range [][]string{{"a"}, {"a", "b"}, {"a:/x", "b:/y"}, {":", ":"}, {"work:/a", "other:/b", "."}, {"a", ":", "work:/b"}, {".:a", "work:/b", "-p2222"}} {
 		if _, err := parseCopyCommand(args); err == nil {
 			t.Fatal("accepted", args)
 		}

@@ -45,7 +45,7 @@ func run(args []string) error {
 	case 1:
 		tag = args[0]
 		if tag == "publish" {
-			return publish()
+			return publish(buildPackages)
 		}
 	default:
 		return fmt.Errorf("usage: go run ./scripts [version|publish]")

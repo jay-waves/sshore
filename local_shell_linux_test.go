@@ -224,7 +224,7 @@ func TestPSTreeReattachmentAncestry(t *testing.T) {
 	for _, parent := range []string{"parent-a", "parent-b"} {
 		b = reattachTestWithTree(t, e, "tree", pid, shellTreeNode{Identity: "origin", Host: "workstation", Name: "origin", State: taskActive}, shellTreeNode{Parent: "origin", Identity: parent, Host: "upstream", Name: parent, State: taskActive})
 		output := shellOutput(t, b, shellQuote(e.bin)+" pstree; printf 'TREE-%s' done", "TREE-done")
-		if !strings.Contains(output, "<- upstream  *") || strings.Contains(output, "HOST  ") || strings.Contains(output, "("+parent+")") {
+		if !strings.Contains(output, "(tree)  *") || strings.Contains(output, "<- upstream") || strings.Contains(output, "HOST  ") || strings.Contains(output, "("+parent+")") {
 			t.Fatalf("incorrect local scope/source/current: %q", output)
 		}
 		if parent == "parent-b" && strings.Contains(output, "parent-a") {

@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func publish() error {
+func publish(build func(string) ([]string, error)) error {
 	ref := os.Getenv("GITHUB_REF")
 	version, ok := strings.CutPrefix(ref, "refs/tags/v")
 	if !ok || version == "0.0.0" || !fullVersion.MatchString(version) {
@@ -19,7 +19,7 @@ func publish() error {
 	}
 	token := os.Getenv("GH_TOKEN")
 	os.Unsetenv("GH_TOKEN")
-	assets, err := buildPackages(version)
+	assets, err := build(version)
 	if err != nil {
 		return err
 	}
