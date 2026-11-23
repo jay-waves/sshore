@@ -1,21 +1,16 @@
 package ssh
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
-
-	cryptossh "golang.org/x/crypto/ssh"
 )
 
 // FormatEndpoint joins an SSH destination and its operand, bracketing IPv6 addresses.
@@ -30,14 +25,18 @@ func FormatEndpoint(host, operand string) string {
 	return prefix + addr + ":" + operand
 }
 
-// Options describes one owned SSH connection. Executable is used only for ssh -G.
+// Options describes one owned SSH connection.
 // Environment and Directory belong to the initiating command, never daemon startup.
 type Options struct {
-	Host, Command, Executable, Directory string
-	Args, Environment                    []string
-	// Diagnostic receives negotiated algorithms only when SSH LogLevel is DEBUG or higher.
+	Host, Command, Directory string
+	Args, Environment        []string
+	// Diagnostic receives warnings and, at DEBUG or higher, negotiated algorithms.
 	Diagnostic io.Writer
-	// Confirm receives a host key fingerprint. A nil callback requires an existing trusted key.
+	// Warn delivers a warning to the initiating terminal and reports whether it was shown.
+	Warn func(context.Context, string) bool
+	// RequireKnownHost prevents all hops from learning new host keys.
+	RequireKnownHost bool
+	// Confirm receives a host key fingerprint when StrictHostKeyChecking is ask.
 	Confirm func(context.Context, string) (bool, error)
 	// Secret is available only through the initiating interactive frontend.
 	Secret func(context.Context, string) ([]byte, error)
@@ -46,11 +45,12 @@ type Options struct {
 type connectionConfig struct {
 	options                   Options
 	values                    map[string][]string
+	origins                   map[string]string
+	originalHost, localUser   string
 	host, user, port, network string
 	timeout                   time.Duration
 	passphrase                func(string) ([]byte, error)
 	passphraseAttempts        int
-	retainIdentity            func(cryptossh.Signer)
 }
 
 func environment(env []string, key string) string {
@@ -73,6 +73,18 @@ func (c *connectionConfig) enabled(key string) bool {
 	v := c.get(key)
 	return v == "yes" || v == "true"
 }
+
+// An explicit empty list restricts the feature to zero algorithms.
+func (c *connectionConfig) algorithms(key string, defaults []string) []string {
+	if len(c.values[key]) == 0 {
+		return defaults
+	}
+	if value := c.get(key); value != "" {
+		return strings.Split(value, ",")
+	}
+	return []string{}
+}
+
 func resolveConfig(ctx context.Context, o Options) (*connectionConfig, error) {
 	if o.Host == "" || strings.HasPrefix(o.Host, "-") || strings.ContainsAny(o.Host, "\x00\r\n\t ") {
 		return nil, fmt.Errorf("invalid SSH destination")
@@ -80,57 +92,28 @@ func resolveConfig(ctx context.Context, o Options) (*connectionConfig, error) {
 	if o.Environment == nil {
 		o.Environment = os.Environ()
 	}
-	if o.Executable == "" {
-		o.Executable = environment(o.Environment, "SSHORE_SSH")
-		if o.Executable == "" {
-			o.Executable = "ssh"
-		}
-	}
-	// SSH settings are evaluated with the actual remote command for Match command.
-	args := []string{"-G", "-T", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "-o", "RequestTTY=no", "-o", "RemoteCommand=none", "-o", "ClearAllForwardings=yes"}
-	c := &connectionConfig{options: o, values: map[string][]string{}, network: "tcp", timeout: 15 * time.Second}
-	for args := o.Args; len(args) > 0; {
-		name, value, n := SplitOption(args)
-		if ForwardingOption(name, value) {
-			return nil, fmt.Errorf("SSH configuration forwarding is unsupported; use sshore forward")
-		}
-		args = args[max(n, 1):]
-	}
-	args = append(args, o.Args...)
-	args = append(args, "--", o.Host)
-	if o.Command != "" {
-		args = append(args, o.Command)
-	}
-	cmd := exec.CommandContext(ctx, o.Executable, args...)
-	// Match exec children may retain output pipes after the resolver is canceled.
-	cmd.WaitDelay = 100 * time.Millisecond
-	cmd.Env = o.Environment
-	cmd.Dir = o.Directory
-	hideConfigCommand(cmd)
-	var diagnostic bytes.Buffer
-	cmd.Stderr = &diagnostic
-	data, err := cmd.Output()
+	resolved, err := resolveNativeConfig(ctx, o)
 	if err != nil {
-		return nil, fmt.Errorf("SSH configuration: %w: %s", err, strings.TrimSpace(diagnostic.String()))
+		return nil, fmt.Errorf("SSH configuration: %w", err)
 	}
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 4096), 1024*1024)
-	for scanner.Scan() {
-		key, value, ok := strings.Cut(scanner.Text(), " ")
-		if ok {
-			key = strings.ToLower(key)
-			c.values[key] = append(c.values[key], value)
-		}
+	c := &connectionConfig{
+		options: o, network: "tcp", timeout: 15 * time.Second,
+		values: resolved.Values, origins: resolved.Origins,
+		originalHost: resolved.OriginalHost, localUser: resolved.LocalUser,
 	}
-	if err := scanner.Err(); err != nil {
+	if err := c.validate(); err != nil {
 		return nil, err
 	}
+	return c, nil
+}
+
+func (c *connectionConfig) validate() error {
 	c.host, c.user, c.port = c.get("hostname"), c.get("user"), c.get("port")
 	n, err := strconv.Atoi(c.port)
 	if c.host == "" || c.user == "" || err != nil || n < 1 || n > 65535 {
-		return nil, fmt.Errorf("ssh -G returned an invalid connection configuration")
+		return fmt.Errorf("invalid SSH hostname, user, or port")
 	}
-	// ssh -G preserves IPv6 brackets. Go's endpoint helpers add their own.
+	// Go's endpoint helpers add their own IPv6 brackets.
 	if strings.HasPrefix(c.host, "[") && strings.HasSuffix(c.host, "]") && strings.Contains(c.host, ":") {
 		c.host = c.host[1 : len(c.host)-1]
 	}
@@ -143,46 +126,51 @@ func resolveConfig(ctx context.Context, o Options) (*connectionConfig, error) {
 	if value := c.get("connecttimeout"); value != "" && value != "none" {
 		n, err := strconv.Atoi(value)
 		if err != nil || n < 1 || int64(n) > int64((1<<63-1)/time.Second) {
-			return nil, fmt.Errorf("invalid ConnectTimeout")
+			return fmt.Errorf("invalid ConnectTimeout")
 		}
 		c.timeout = time.Duration(n) * time.Second
 	}
-	for _, key := range []string{"proxycommand", "knownhostscommand", "pkcs11provider", "revokedhostkeys"} {
+	for _, key := range []string{"proxycommand", "knownhostscommand", "revokedhostkeys"} {
 		if v := c.get(key); v != "" && v != "none" {
-			return nil, fmt.Errorf("%s is not supported by the built-in SSH client", key)
+			return c.unsupported(key)
 		}
 	}
-	for _, key := range []string{"forwardx11", "gssapiauthentication", "hostbasedauthentication", "permitlocalcommand", "compression", "verifyhostkeydns"} {
+	for _, key := range []string{"forwardx11", "gssapikeyexchange", "nohostauthenticationforlocalhost", "permitlocalcommand", "compression", "verifyhostkeydns"} {
 		if c.enabled(key) {
-			return nil, fmt.Errorf("%s is not supported by the built-in SSH client", key)
+			return c.unsupported(key)
 		}
 	}
 	if v := c.get("forwardagent"); v != "" && v != "no" && v != "false" {
-		return nil, fmt.Errorf("ForwardAgent is not supported")
+		return fmt.Errorf("ForwardAgent is not supported")
 	}
 	if c.get("tunnel") == "yes" || c.get("tunnel") == "point-to-point" || c.get("tunnel") == "ethernet" {
-		return nil, fmt.Errorf("Tunnel is not supported")
+		return fmt.Errorf("Tunnel is not supported")
 	}
-	if v := c.get("permitremoteopen"); v != "" && v != "any" {
-		return nil, fmt.Errorf("PermitRemoteOpen restrictions are not supported by the built-in SSH client")
+	if v := c.get("permitremoteopen"); v != "" && (v != "any" || len(c.values["permitremoteopen"]) != 1) {
+		return fmt.Errorf("PermitRemoteOpen restrictions are not supported by the built-in SSH client")
 	}
 	if v := c.get("bindinterface"); v != "" {
-		return nil, fmt.Errorf("BindInterface is not supported by the built-in SSH client")
+		return fmt.Errorf("BindInterface is not supported by the built-in SSH client")
+	}
+	if v := c.get("canonicalizehostname"); v != "" && v != "no" {
+		return c.unsupported("canonicalizehostname")
 	}
 	policy := c.get("stricthostkeychecking")
 	if policy != "yes" && policy != "true" && policy != "ask" && policy != "accept-new" {
-		return nil, fmt.Errorf("StrictHostKeyChecking must be yes, ask or accept-new")
+		return fmt.Errorf("StrictHostKeyChecking must be yes, ask or accept-new")
 	}
-	return c, nil
+	return nil
 }
+
+func (c *connectionConfig) unsupported(key string) error {
+	if where := c.origins[key]; where != "" {
+		return fmt.Errorf("%s: %s is not supported by the built-in SSH client", where, key)
+	}
+	return fmt.Errorf("%s is not supported by the built-in SSH client", key)
+}
+
 func (c *connectionConfig) expand(value string) (string, error) {
-	home := environment(c.options.Environment, "HOME")
-	if runtime.GOOS == "windows" {
-		home = environment(c.options.Environment, "USERPROFILE")
-	}
-	if home == "" {
-		home, _ = os.UserHomeDir()
-	}
+	home := homeDirectory(c.options.Environment)
 	var out strings.Builder
 	for i := 0; i < len(value); i++ {
 		if value[i] == '%' {
@@ -202,7 +190,9 @@ func (c *connectionConfig) expand(value string) (string, error) {
 			case 'p':
 				out.WriteString(c.port)
 			case 'n':
-				out.WriteString(c.options.Host)
+				out.WriteString(c.originalHost)
+			case 'u':
+				out.WriteString(c.localUser)
 			default:
 				return "", fmt.Errorf("unsupported SSH path token %%%c", value[i])
 			}
@@ -224,10 +214,7 @@ func (c *connectionConfig) expand(value string) (string, error) {
 		}
 		out.WriteByte(value[i])
 	}
-	result, err := c.expandSystemPath(out.String())
-	if err != nil {
-		return "", err
-	}
+	result := out.String()
 	if result == "~" {
 		result = home
 	} else if strings.HasPrefix(result, "~/") || strings.HasPrefix(result, "~\\") {

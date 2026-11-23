@@ -1,26 +1,33 @@
 package ssh
 
 import (
+	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
 func TestWindowsProgramDataPath(t *testing.T) {
-	directory := filepath.Join(t.TempDir(), "shared data %folder")
-	c := &connectionConfig{options: Options{Directory: t.TempDir(), Environment: []string{"pRoGrAmDaTa=" + directory}}}
-	for _, token := range []string{"__PROGRAMDATA__", "__programdata__"} {
-		for _, suffix := range []string{`\ssh/ssh_known_hosts`, `/ssh/ssh_known_hosts2`, ""} {
-			got, err := c.expand(token + suffix)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got != directory+suffix || !filepath.IsAbs(got) {
-				t.Fatalf("expanded path %q, want %q", got, directory+suffix)
-			}
-		}
+	programData := filepath.Join(t.TempDir(), "shared data %folder")
+	system := filepath.Join(programData, "ssh")
+	if err := os.MkdirAll(system, 0700); err != nil {
+		t.Fatal(err)
 	}
-	c.options.Environment = nil
-	if _, err := c.expand(`__PROGRAMDATA__\ssh/ssh_known_hosts`); err == nil {
-		t.Fatal("missing ProgramData accepted")
+	if err := os.WriteFile(filepath.Join(system, "ssh_config"), []byte("Host fixture\n Port 2222\n User alice\n UserKnownHostsFile none\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := resolveConfig(t.Context(), Options{Host: "fixture", Environment: []string{
+		"USERPROFILE=" + t.TempDir(), "pRoGrAmDaTa=" + programData,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.port != "2222" || config.user != "alice" {
+		t.Fatalf("ProgramData ssh_config was not applied: port %s, user %s", config.port, config.user)
+	}
+	paths, _, err := config.knownHostsPaths()
+	want := []string{filepath.Join(system, "ssh_known_hosts"), filepath.Join(system, "ssh_known_hosts2")}
+	if err != nil || !slices.Equal(paths, want) {
+		t.Fatalf("global known_hosts paths = %q, %v, want %q", paths, err, want)
 	}
 }

@@ -34,13 +34,32 @@ tasks, review the task list before confirming replacement.
 | Linux | bash, sh, zsh, fish | Supported |
 | Windows 11 / Server 2025 or newer | PowerShell 7, cmd | — |
 
-Both clients can connect to Linux over SSH. sshore reads host settings through
-the system OpenSSH client. For managed shells, the host's SSH server must allow
+Both clients can connect to Linux over SSH. sshore reads client configuration
+with its built-in resolver. For managed shells, the host's SSH server must allow
 TCP forwarding to loopback. See [development notes](SSHORE.md#terminal-and-mux-design-scope)
 for the experimental Apple Silicon client, which supports local shells using
 the login shell selected by `$SHELL`.
 
 ## ssh — Run remote commands and forward ports
+
+The resolver reads the user and system `ssh_config` files. It supports host
+aliases, `Include`, static `Match` rules including `Match final`, private
+keys, certificates, known-hosts files, jump hosts and algorithm lists. Use
+`-- -F FILE` to select a different file, or `-- -F none` for built-in defaults.
+Dynamic rules such as `Match exec` and DNS-based hostname canonicalization
+produce a configuration error. Any session-routing environment variables
+needed by sshore are set automatically.
+
+During SSH login, sshore skips unsupported methods such as GSSAPI and host-based
+authentication. It tries the remaining methods offered by the server in
+`PreferredAuthentications` order, respecting the local authentication settings.
+Public-key authentication uses identity files and their certificates. SSH agent
+and PKCS#11 signers are outside the current client scope.
+The default `ServerAliveInterval` is 15 seconds. Set it to `0` to disable SSH
+keepalive probes.
+
+SSH forwarding rules in matching config sections and on the command line
+produce a warning and open no listeners. Use `sshore forward` for TCP forwarding.
 
 ```sh
 sshore exec work 'uname -a'         # Run one command on work.
@@ -86,7 +105,9 @@ For example, `sshore kill work:build` ends the shell and can discard unsaved wor
 ## copy-id — Install an SSH public key for remote login
 
 Run `sshore copy-id work` to add a configured SSH public key to the remote
-account's `~/.ssh/authorized_keys`.
+account's `~/.ssh/authorized_keys`. The account must allow SSH command execution.
+The host needs `flock`, `base64` and `tail`. You can run this before installing
+sshore on the host. Existing entries for the same key keep their restrictions.
 
 ## scp (+lrzsz) — Transfer files from either end of an SSH session
 

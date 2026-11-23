@@ -51,8 +51,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y bash zsh fish openssh-client
-          command -v bash zsh fish ssh ssh-keygen
+          sudo apt-get install -y bash zsh fish
+          command -v bash zsh fish
           bash --version
           zsh --version
           fish --version
@@ -71,6 +71,7 @@ jobs:
         shell: bash
         run: |
           go run ./scripts go build ./...
+          go run ./scripts go test ./internal/ssh ./internal/sshconfig
           go run ./scripts go test -run '^(TestScripts|TestLocalShellPath|TestWindowsPlatform|TestMountDaemonHasNoConsole|TestWindowsPrivateStateHandle)$' .
       - name: Installer tests (Windows PowerShell 5.1)
         if: ${{ !cancelled() && runner.os == 'Windows' }}

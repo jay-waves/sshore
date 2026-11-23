@@ -181,7 +181,6 @@ func runTargetCommand(args []string) (int, error) {
 	return withDaemonActivity(func() (int, error) { return executeShellCommand(o) })
 }
 
-// runExec delegates execution and SSH configuration to the system client.
 type exitStatusError interface {
 	error
 	ExitStatus() int
@@ -199,7 +198,7 @@ func runExec(args []string) (int, error) {
 	defer stopActivity()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	connection := sshio.Options{Host: parsed.operands[0], Command: parsed.operands[1], Confirm: confirmSSHHost, Secret: promptSSHSecret}
+	connection := sshio.Options{Host: parsed.operands[0], Command: parsed.operands[1], Args: parsed.ssh, Confirm: confirmSSHHost, Secret: promptSSHSecret}
 	if err := sshio.Run(ctx, connection, os.Stdin, os.Stdout, os.Stderr); err != nil {
 		if exit, ok := errors.AsType[exitStatusError](err); ok {
 			return exit.ExitStatus(), nil
@@ -230,7 +229,7 @@ func parseOptions(args []string) (options, error) {
 func shellOptions(command string, parsed cliArguments) (options, error) {
 	o := options{command: command, server: parsed.value("--server", "sshore")}
 	o.ssh, o.local = parsed.ssh, parsed.local
-	o.portOverrideOnly = parsed.has("--port") && len(parsed.ssh) == 2
+	o.portOverrideOnly = parsed.has("--port") && len(sshio.WithoutForwarding(parsed.ssh)) == 2
 	o.serverSet = parsed.has("--server")
 	o.quiet, o.noEscape = parsed.has("--quiet"), parsed.has("--no-escape")
 	o.detached = parsed.has("--detach")
@@ -636,13 +635,6 @@ func validSSHDestination(host string) error {
 		return usage("invalid SSH destination")
 	}
 	return nil
-}
-
-func sshExecutable() string {
-	if exe := os.Getenv("SSHORE_SSH"); exe != "" {
-		return exe
-	}
-	return "ssh"
 }
 
 type copyEndpoint struct {

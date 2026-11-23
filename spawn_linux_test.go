@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -148,8 +149,7 @@ func TestSpawnLifetime(t *testing.T) {
 				ssh := sshtest.Start(t, sshtest.Options{AllowForward: true, Exec: func(ctx context.Context, command string, stream cryptossh.Channel) {
 					sshtest.Shell(ctx, command, stream, e.dir, remoteEnv)
 				}})
-				env = append(env, "SSHORE_SSH="+ssh)
-				args = []string{"fixture-" + tc.command, "fake-host", "temporary", "--detach", "--server", e.bin}
+				args = []string{"fixture-" + tc.command, "fake-host", "temporary", "--detach", "--server", e.bin, "--", "-F", ssh}
 			}
 			// This parent stays alive after the detached CLI exits, then exits on EOF.
 			parent := exec.Command("sh", append([]string{"-c", `"$@"; result=$?; printf 'READY:%s\n' "$result"; read answer`, "parent", e.bin}, args...)...)
@@ -204,10 +204,14 @@ func TestSpawnLifetime(t *testing.T) {
 			}
 			var pid int
 			if remote {
-				if len(inv.Shells) != 1 || !inv.Shells[0].Temporary || inv.Shells[0].Lifetime != "heartbeat" || inv.Shells[0].State != taskDetached {
+				// The loopback host also reports the hosted task from its local daemon.
+				index := slices.IndexFunc(inv.Shells, func(row shellView) bool {
+					return row.Observed && row.Host == "fake-host" && row.Name == "temporary"
+				})
+				if index < 0 || !inv.Shells[index].Temporary || inv.Shells[index].Lifetime != "heartbeat" || inv.Shells[index].State != taskDetached {
 					t.Fatalf("unexpected shells: %s", out)
 				}
-				pid = inv.Shells[0].PID
+				pid = inv.Shells[index].PID
 			} else {
 				rows := inv.LocalShells
 				if len(rows) != 1 || !rows[0].Temporary || rows[0].Lifetime != "parent" || rows[0].State != taskDetached {
@@ -261,7 +265,8 @@ func TestSpawnLifetime(t *testing.T) {
 			if err := clientAttachment(control); err != nil {
 				t.Fatal(err)
 			}
-			if err = writeMessage(control, message{Type: "attach", Token: token, Tree: []shellTreeNode{{Identity: "other", Host: "elsewhere", Name: "other"}}, Cols: 80, Rows: 24, Term: "xterm"}); err != nil {
+			parentTree := []shellTreeNode{{Identity: "other", Host: "elsewhere", Name: "other", State: taskActive, Lifetime: "persistent"}}
+			if err = writeMessage(control, message{Type: "attach", Token: token, Tree: parentTree, Cols: 80, Rows: 24, Term: "xterm"}); err != nil {
 				t.Fatal(err)
 			}
 			ready, err := readMessage(control)

@@ -49,9 +49,9 @@ func runCopyID(args []string) (int, error) {
 			fmt.Fprintln(os.Stderr, "Choose a listed public key by number or press Tab to complete.")
 		}
 	}
-	if err := sshio.CopyID(ctx, connection, selectKey, os.Stdout, os.Stderr); err != nil {
+	if err := sshio.CopyID(ctx, connection, selectKey, os.Stderr); err != nil {
 		return 1, err
 	}
-	fmt.Fprintf(os.Stdout, "Public key is authorized on %s in ~/.ssh/authorized_keys (added or already present).\n", cleanText(host))
+	fmt.Fprintf(os.Stdout, "Public key is present in ~/.ssh/authorized_keys on %s.\n", cleanText(host))
 	return 0, nil
 }

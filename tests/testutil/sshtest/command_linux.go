@@ -46,7 +46,3 @@ func runProcess(stream cryptossh.Channel, cmd *exec.Cmd) {
 	stream.Close()
 	<-copied
 }
-
-func Exit(stream cryptossh.Channel, status uint32) {
-	_, _ = stream.SendRequest("exit-status", false, cryptossh.Marshal(struct{ Status uint32 }{status}))
-}

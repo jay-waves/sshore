@@ -20,7 +20,7 @@ import (
 )
 
 // Keep authentication prompts local to this handshake.
-func (c connectionConfig) configureAuthentication(ctx context.Context, cc *cryptossh.ClientConfig, budgets *authenticationBudgets, keys *[]cryptossh.Signer) error {
+func (c connectionConfig) configureAuthentication(ctx context.Context, cc *cryptossh.ClientConfig, budgets *authenticationBudgets) error {
 	if confirm := c.options.Confirm; confirm != nil {
 		c.options.Confirm = func(ctx context.Context, prompt string) (bool, error) {
 			resume := budgets.pause()
@@ -45,6 +45,8 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 		limit = 3
 	}
 	var identityErr, promptErr error
+	var publicKeys []cryptossh.Signer
+	var publicKeysLoaded bool
 	readSecret := func(prompt string) ([]byte, error) {
 		if promptErr != nil {
 			return nil, promptErr
@@ -65,7 +67,6 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 	if !c.enabled("batchmode") && c.options.Secret != nil {
 		c.passphrase, c.passphraseAttempts = readSecret, limit
 	}
-	c.retainIdentity = func(signer cryptossh.Signer) { *keys = append(*keys, signer) }
 	cc.AuthCallback = func(state *cryptossh.ClientAuthContext) (cryptossh.AuthMethod, error) {
 		// SSH may ask for another method after a method callback fails.
 		// A failed local prompt ends authentication for this connection.
@@ -77,19 +78,21 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 				continue
 			}
 			if method == "publickey" {
-				if attempts[method] > 0 {
+				if !publicKeysLoaded {
+					publicKeysLoaded = true
+					publicKeys, identityErr = c.publicKeySigners()
+					if promptErr != nil {
+						return nil, promptErr
+					}
+				}
+				if len(publicKeys) == 0 {
 					continue
 				}
-				attempts[method]++
-				method, err := c.authentication()
-				if promptErr != nil {
-					return nil, promptErr
-				}
-				identityErr = err
-				if err != nil {
-					continue
-				}
-				return method, nil
+				// One signer per attempt lets the next identity run even when
+				// the previous signer failed locally after its public-key probe.
+				signer := publicKeys[0]
+				publicKeys = publicKeys[1:]
+				return cryptossh.PublicKeys(signer), nil
 			}
 			if c.enabled("batchmode") || c.options.Secret == nil || attempts[method] >= limit {
 				continue
@@ -137,16 +140,17 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 	return nil
 }
 
-func (c *connectionConfig) authentication() (cryptossh.AuthMethod, error) {
-	if preferred := c.get("preferredauthentications"); preferred != "" && !slices.Contains(strings.Split(preferred, ","), "publickey") {
-		return nil, fmt.Errorf("PreferredAuthentications excludes publickey; public-key authentication is disabled")
-	}
+func (c *connectionConfig) publicKeySigners() ([]cryptossh.Signer, error) {
 	minimumRSA, err := c.minimumRSASize()
 	if err != nil {
 		return nil, err
 	}
 	if c.get("pubkeyauthentication") == "false" || c.get("pubkeyauthentication") == "no" {
 		return nil, fmt.Errorf("public-key authentication is disabled")
+	}
+	algorithms := c.algorithms("pubkeyacceptedalgorithms", nil)
+	if algorithms != nil && len(algorithms) == 0 {
+		return nil, errors.New("PubkeyAcceptedAlgorithms permits no supported SSH public-key signature algorithm")
 	}
 	paths, pathErr := c.identityPaths()
 	signers, privateErr := c.privateIdentities(paths)
@@ -169,7 +173,7 @@ func (c *connectionConfig) authentication() (cryptossh.AuthMethod, error) {
 			}
 		}
 	}
-	constrained, err := constrainIdentitySigners(append(certificates, signers...), c.signatureAlgorithms())
+	constrained, err := constrainIdentitySigners(append(certificates, signers...), algorithms)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +181,7 @@ func (c *connectionConfig) authentication() (cryptossh.AuthMethod, error) {
 		detail := errors.Join(pathErr, privateErr, errors.New("check IdentityFile and public-key authentication settings"))
 		return nil, fmt.Errorf("no usable SSH public-key identity: %s", strings.ReplaceAll(detail.Error(), "\n", "; "))
 	}
-	return cryptossh.PublicKeys(constrained...), nil
+	return constrained, nil
 }
 
 func constrainIdentitySigners(signers []cryptossh.Signer, configured []string) ([]cryptossh.Signer, error) {
@@ -244,17 +248,6 @@ func checkRSAKeySize(key cryptossh.PublicKey, minimum int) error {
 	return nil
 }
 
-func (c *connectionConfig) signatureAlgorithms() []string {
-	configured := c.get("pubkeyacceptedalgorithms")
-	if configured == "" {
-		configured = c.get("pubkeyacceptedkeytypes")
-	}
-	if configured == "" {
-		return nil
-	}
-	return strings.Split(configured, ",")
-}
-
 func allowsSignature(configured []string, keyType, algorithm string) bool {
 	if configured == nil {
 		return true
@@ -268,41 +261,22 @@ func allowsSignature(configured []string, keyType, algorithm string) bool {
 var knownHostsMu sync.Mutex
 
 func (c *connectionConfig) knownHostsPaths() (paths []string, userPath string, err error) {
-	absolute := *c
-	absolute.options.Directory = ""
 	for _, key := range []string{"userknownhostsfile", "globalknownhostsfile"} {
 		first := len(paths)
+		if key == "globalknownhostsfile" && len(c.values[key]) == 0 {
+			system := systemConfigDirectory(c.options.Environment)
+			paths = append(paths, filepath.Join(system, "ssh_known_hosts"), filepath.Join(system, "ssh_known_hosts2"))
+			continue
+		}
 		for _, value := range c.values[key] {
 			if value == "" || value == "none" {
 				continue
 			}
-			whole, err := c.expand(value)
+			path, err := c.expand(value)
 			if err != nil {
 				return nil, "", err
 			}
-			// ssh -G does not quote path lists. An existing whole filename
-			// wins; otherwise a list must contain unambiguous absolute paths.
-			entries := strings.Fields(value)
-			if len(entries) <= 1 {
-				paths = append(paths, whole)
-				continue
-			}
-			if _, err = os.Stat(whole); err == nil {
-				paths = append(paths, whole)
-				continue
-			} else if !errors.Is(err, os.ErrNotExist) && !isInvalidFilename(err) {
-				return nil, "", err
-			}
-			for _, entry := range entries {
-				path, err := absolute.expand(entry)
-				if err != nil {
-					return nil, "", err
-				}
-				if !filepath.IsAbs(path) {
-					return nil, "", fmt.Errorf("ambiguous known_hosts path list from ssh -G: %q; use existing absolute files", value)
-				}
-				paths = append(paths, path)
-			}
+			paths = append(paths, path)
 		}
 		if key == "userknownhostsfile" && len(paths) > first {
 			userPath = paths[first]
@@ -346,10 +320,11 @@ func (c *connectionConfig) hostKeys(ctx context.Context) (cryptossh.HostKeyCallb
 		return nil, nil, err
 	}
 	policy := c.get("stricthostkeychecking")
-	canRemember := userPath != "" && policy != "true" && policy != "yes"
+	canRemember := userPath != "" && !c.options.RequireKnownHost && (policy == "ask" || policy == "accept-new")
 	ask := canRemember && policy == "ask"
 	hashHosts, batch := c.enabled("hashknownhosts"), c.enabled("batchmode")
 	confirm := c.options.Confirm
+	caPolicy := c.algorithms("casignaturealgorithms", nil)
 	check := func(remote net.Addr, key cryptossh.PublicKey, remember bool) error {
 		knownHostsMu.Lock()
 		defer knownHostsMu.Unlock()
@@ -373,6 +348,12 @@ func (c *connectionConfig) hostKeys(ctx context.Context) (cryptossh.HostKeyCallb
 	callback := func(_ string, remote net.Addr, key cryptossh.PublicKey) error {
 		if err := checkRSAKeySize(key, minimumRSA); err != nil {
 			return err
+		}
+		if cert, ok := key.(*cryptossh.Certificate); ok {
+			if caPolicy != nil &&
+				(cert.Signature == nil || !slices.Contains(caPolicy, cert.Signature.Format)) {
+				return fmt.Errorf("SSH host certificate signature is disallowed by CASignatureAlgorithms")
+			}
 		}
 		err := check(remote, key, canRemember && !ask)
 		if !ask || !knownhosts.IsHostUnknown(err) {
@@ -407,6 +388,11 @@ func (c *connectionConfig) hostKeys(ctx context.Context) (cryptossh.HostKeyCallb
 			}
 		}
 		allowed = ordered
+	}
+	if caPolicy != nil && len(caPolicy) == 0 {
+		allowed = slices.DeleteFunc(slices.Clone(allowed), func(algorithm string) bool {
+			return strings.HasSuffix(algorithm, "-cert-v01@openssh.com")
+		})
 	}
 	if len(allowed) == 0 {
 		return nil, nil, fmt.Errorf("no supported modern SSH host key algorithm")

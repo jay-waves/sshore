@@ -13,6 +13,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/jay-waves/sshore/internal/proc"
+	"github.com/jay-waves/sshore/tests/testutil/sshtest"
 )
 
 func TestKillAllLocalSnapshot(t *testing.T) {
@@ -147,15 +148,12 @@ func waitFixtureDaemon(t *testing.T, state string) func() {
 func TestForwardStartupShowsSSHFailure(t *testing.T) {
 	e := newCLI(t)
 	root := e.dir
-	script := filepath.Join(root, "ssh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' 'Error: remote port forwarding failed for listen port 5173' >&2\nexit 255\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(e.bin, "forward", "work:5173", ".:7777")
-	cmd.Env = append(e.env, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SSHORE_STATE_DIR="+filepath.Join(root, "state"), "SSHORE_SSH="+script)
+	config := sshtest.Start(t, sshtest.Options{})
+	cmd := exec.Command(e.bin, "forward", "work:5173", ".:7777", "--", "-F", config)
+	cmd.Env = append(e.env, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SSHORE_STATE_DIR="+filepath.Join(root, "state"))
 	e.env = cmd.Env
 	out, err := cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(out), "remote port forwarding failed for listen port 5173") || strings.Contains(string(out), "startup failed; see") {
+	if err == nil || !strings.Contains(string(out), "tcpip-forward request denied by peer") || strings.Contains(string(out), "startup failed; see") {
 		t.Fatalf("native cause hidden: %v %s", err, out)
 	}
 }

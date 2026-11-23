@@ -349,7 +349,7 @@ func validateRecentConnection(r recentConnection) error {
 			return fmt.Errorf("invalid recent connection directory")
 		}
 		if len(hop.SSH) > 0 {
-			if _, _, err := parseSSHOptions(hop.SSH, false); err != nil {
+			if _, _, err := parseSSHOptions(hop.SSH); err != nil {
 				return err
 			}
 		}

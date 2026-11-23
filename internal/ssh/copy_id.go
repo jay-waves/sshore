@@ -1,24 +1,27 @@
 package ssh
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"net/textproto"
 	"strings"
 
 	cryptossh "golang.org/x/crypto/ssh"
 )
 
-// Install the canonical key line under an exclusive lock. Fingerprinting also
-// recognizes existing authorizations whose lines contain options or comments.
+const copyIDHeader = "sshore-copy-id"
+
+// Hold the lock across the snapshot and the client's append decision.
 const copyIDScript = `set -eu
 umask 077
-for tool in flock ssh-keygen awk tail; do
+for tool in flock base64 tail; do
     command -v "$tool" >/dev/null || { printf 'copy-id requires %s on the remote host\n' "$tool" >&2; exit 1; }
 done
-IFS= read -r fingerprint
-IFS= read -r key
 directory="${HOME:?}/.ssh"
 file="$directory/authorized_keys"
 mkdir -p "$directory"
@@ -34,9 +37,11 @@ fi
 exec 9>>"$file"
 flock -x 9
 chmod 600 "$file"
-if ssh-keygen -E sha256 -lf "$file" 2>/dev/null | awk -v fingerprint="$fingerprint" '$2 == fingerprint { found = 1 } END { exit !found }'; then
-    exit 0
-fi
+printf '%s\n' '` + copyIDHeader + `'
+base64 "$file"
+printf '.\n'
+IFS= read -r key
+[ -n "$key" ] || exit 0
 if [ -s "$file" ] && [ -n "$(tail -c 1 "$file")" ]; then
     printf '\n' >&9
 fi
@@ -84,8 +89,8 @@ func (c *connectionConfig) installIdentities() ([]installIdentity, error) {
 
 // CopyID installs one configured public key on the remote account. Select is
 // called only when several distinct configured keys are available.
-func CopyID(ctx context.Context, options Options, selectKey func([]string) (int, error), output, diagnostic io.Writer) error {
-	command := "sh -c '" + strings.ReplaceAll(copyIDScript, "'", "'\"'\"'") + "'"
+func CopyID(ctx context.Context, options Options, selectKey func([]string) (int, error), diagnostic io.Writer) error {
+	command := "exec sh -c '" + strings.ReplaceAll(copyIDScript, "'", "'\"'\"'") + "'"
 	options.Command, options.Diagnostic = command, diagnostic
 	cfg, err := resolveDialConfig(ctx, options)
 	if err != nil {
@@ -97,6 +102,9 @@ func CopyID(ctx context.Context, options Options, selectKey func([]string) (int,
 	}
 	choice := 0
 	if len(identities) > 1 {
+		if selectKey == nil {
+			return errors.New("multiple IdentityFile keys require a public key selection")
+		}
 		paths := make([]string, len(identities))
 		for i, identity := range identities {
 			paths[i] = identity.path
@@ -114,19 +122,66 @@ func CopyID(ctx context.Context, options Options, selectKey func([]string) (int,
 	if err != nil {
 		return err
 	}
-	defer client.Close()
 	stop := context.AfterFunc(ctx, func() { _ = client.Close() })
 	defer stop()
-	session, err := client.NewSession()
+	stream, err := client.Start(command, diagnostic)
 	if err != nil {
+		client.Close()
 		return err
 	}
-	defer session.Close()
-	key := identities[choice].key
-	session.Stdin = strings.NewReader(cryptossh.FingerprintSHA256(key) + "\n" + string(cryptossh.MarshalAuthorizedKey(key)))
-	session.Stdout, session.Stderr = output, diagnostic
-	if err := session.Run(command); err != nil {
+	defer stream.Wait()
+	defer client.Close()
+
+	reader := bufio.NewReader(stream)
+	line, err := copyIDKeyLine(reader, identities[choice].key)
+	if err != nil {
+		return fmt.Errorf("read authorized_keys on %s: %w", options.Host, err)
+	}
+	if _, err := stream.Write(line); err != nil {
+		return fmt.Errorf("install public key on %s: %w", options.Host, err)
+	}
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		return fmt.Errorf("install public key on %s: %w", options.Host, err)
+	}
+	if err := stream.Wait(); err != nil {
 		return fmt.Errorf("install public key on %s: %w", options.Host, err)
 	}
 	return nil
+}
+
+// A blank reply keeps the existing entry. Read through the end marker before
+// replying, so incomplete snapshots cannot lead to an append.
+func copyIDKeyLine(reader *bufio.Reader, key cryptossh.PublicKey) ([]byte, error) {
+	header, err := reader.ReadSlice('\n')
+	if err != nil {
+		return nil, err
+	}
+	if string(header) != copyIDHeader+"\n" {
+		return nil, errors.New("unexpected output from remote shell")
+	}
+	// Base64 keeps the dot terminator separate from arbitrary file contents.
+	encoded := textproto.NewReader(reader).DotReader()
+	lines := bufio.NewScanner(base64.NewDecoder(base64.StdEncoding, encoded))
+	wanted := key.Marshal()
+	present := false
+	for lines.Scan() {
+		if present {
+			continue
+		}
+		existing, _, _, _, err := cryptossh.ParseAuthorizedKey(lines.Bytes())
+		if err != nil {
+			continue
+		}
+		if cert, ok := existing.(*cryptossh.Certificate); ok {
+			existing = cert.Key
+		}
+		present = bytes.Equal(existing.Marshal(), wanted)
+	}
+	if err := lines.Err(); err != nil {
+		return nil, err
+	}
+	if present {
+		return []byte("\n"), nil
+	}
+	return cryptossh.MarshalAuthorizedKey(key), nil
 }

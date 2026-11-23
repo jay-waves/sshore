@@ -43,11 +43,12 @@ const sshOptions = `
 --port PORT selects the SSH port (1–65535). Other SSH options follow --,
 for example: --port 2222 -- -J jump. The legacy -- -p PORT form is supported.
 Do not combine --port with SSH -p or -o Port.
-Configuration options: -p -i -J -F -l -o -E -v/-vv/-vvv -4 -6.
+Configuration options: -p -i -J -F -l -o -c -m -v/-vv/-vvv -4 -6.
 IdentityFile/-i selects private key files. An interactive
 terminal is required for passphrases, passwords and keyboard-interactive login.
-SSH config forwarding is disabled; use forward. Compression, agent/X11
-forwarding and ProxyCommand are unsupported; unsupported requests fail.
+Forwarding rules in SSH config and -L, -R, -D produce a warning and are ignored.
+Use sshore forward for TCP forwarding. Compression, agent/X11 forwarding and
+ProxyCommand are unsupported.
 `
 
 const connectionOptions = `  --server PATH         Remote executable (default: PATH, then ~/.local/bin/sshore)
@@ -105,17 +106,17 @@ default path, or append an absolute path to either endpoint.
 		examples: "Update this computer\n  sshore install\nUpdate a remote host to match this computer\n  sshore install work\n",
 	},
 	"exec": {
-		min: 2, max: 2,
-		help: `Usage: sshore exec HOST 'COMMAND'
+		ssh: true, min: 2, max: 2,
+		help: `Usage: sshore exec HOST 'COMMAND' [-- SSH_OPTIONS]
 
-Execute COMMAND once over SSH without a remote PTY. Uses system ssh -G
+Execute COMMAND once over SSH without a remote PTY. Uses SSH client
 configuration and private key files. Interactive login requires a terminal.
 Standard streams and the SSH exit status pass through.
 No persistent sshore shell is created and no remote installation is required.
-Use an SSH config host alias for connection options.
+Use an SSH config host alias or pass connection options after --.
 
 Example: sshore exec work 'uname -a'
-`,
+` + sshOptions,
 	},
 	"ping": {
 		ssh: true, min: 1, max: 1, flags: []string{"--count"},
@@ -130,7 +131,7 @@ the intervals.
 		examples: "Measure latency to an SSH host\n  sshore ping work --count 20\n",
 	},
 	"launch": {
-		ssh: true, native: true, max: 1, flags: strings.Fields(connectionFlags + " --detach --no-login --no-profile"),
+		ssh: true, max: 1, flags: strings.Fields(connectionFlags + " --detach --no-login --no-profile"),
 		help: `Usage: sshore launch [HOST|HOST:NAME|:NAME] [options] [-- SSH_OPTIONS]
 
 Start a new shell. It survives detach and connection loss; exit ends it.
@@ -152,7 +153,7 @@ The remote sshore release must match exactly.
 `,
 	},
 	"spawn": {
-		ssh: true, native: true, max: 1, flags: strings.Fields(connectionFlags + " --detach --no-login --no-profile"),
+		ssh: true, max: 1, flags: strings.Fields(connectionFlags + " --detach --no-login --no-profile"),
 		help: `Usage: sshore spawn [HOST|HOST:NAME|:NAME] [options] [-- SSH_OPTIONS]
 
 Start a shell bound to the launching parent. Omit the target for a local shell
@@ -173,7 +174,7 @@ The remote sshore release must match exactly.
 `,
 	},
 	"attach": {
-		ssh: true, native: true, max: 1, flags: strings.Fields(connectionFlags),
+		ssh: true, max: 1, flags: strings.Fields(connectionFlags),
 		help: `Usage: sshore attach [ID|HOST|HOST:ID|:ID] [options] [-- SSH_OPTIONS]
 
 With no target, resume the most recently detached local shell.

@@ -57,8 +57,8 @@ func TestForwardLocalSelection(t *testing.T) {
 	e := newEnv(t)
 	for _, reverse := range []bool{false, true} {
 		root := t.TempDir()
-		wrapper := filepath.Join(root, "ssh")
-		if err := os.WriteFile(wrapper, []byte("#!/bin/sh\nprintf 'SSH-ARGS %s\\n' \"$*\" >&2\nexit 7\n"), 0700); err != nil {
+		config := filepath.Join(root, "config")
+		if err := os.WriteFile(config, []byte("Port invalid\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
 		args := []string{"forward", "here:", "work:3000", "--foreground"}
@@ -68,8 +68,8 @@ func TestForwardLocalSelection(t *testing.T) {
 			marker = "Local service port"
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		cmd := exec.CommandContext(ctx, testBinary(t), args...)
-		cmd.Env = append(e.env, "SSHORE_SOCKET=", "SSHORE_DISABLED=", "SSHORE_SSH="+wrapper, "TERM=xterm")
+		cmd := exec.CommandContext(ctx, testBinary(t), append(args, "--", "-F", config)...)
+		cmd.Env = append(e.env, "SSHORE_SOCKET=", "SSHORE_DISABLED=", "TERM=xterm")
 		terminal, err := pty.Start(cmd)
 		if err != nil {
 			cancel()
@@ -94,7 +94,7 @@ func TestForwardLocalSelection(t *testing.T) {
 		terminal.Close()
 		err = cmd.Wait()
 		cancel()
-		if err == nil || !answered || !strings.Contains(output.String(), "SSH-ARGS -G") {
+		if err == nil || !answered || !strings.Contains(output.String(), "invalid numeric value") {
 			t.Fatal(output.String(), err)
 		}
 	}
@@ -107,7 +107,7 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 	root := t.TempDir()
 	var attempts atomic.Int32
 	first := make(chan struct{})
-	t.Setenv("SSHORE_SSH", sshtest.Start(t, sshtest.Options{Exec: func(ctx context.Context, _ string, stream cryptossh.Channel) {
+	config := sshtest.Start(t, sshtest.Options{Exec: func(ctx context.Context, _ string, stream cryptossh.Channel) {
 		attempt := attempts.Add(1)
 		io.WriteString(stream, "sshore-forward-ready\n")
 		if attempt == 1 {
@@ -119,7 +119,7 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 			return
 		}
 		io.Copy(io.Discard, stream)
-	}}))
+	}})
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(root, "state"))
 	_, e := resourceStateDir("forward")
 	if e != nil {
@@ -130,7 +130,7 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, e := runForward(ctx, forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, Retries: 1}, s, nil)
+		_, e := runForward(ctx, forwardConfig{Host: "work", Name: "web", Port: 8080, Target: 3000, Retries: 1, SSH: []string{"-F", config}}, s, nil)
 		done <- e
 	}()
 	waitConnected := func(attempt int32) {
@@ -159,7 +159,7 @@ func TestForwardReconnectAndCancel(t *testing.T) {
 
 func TestForegroundReverseForwardStartupCancellation(t *testing.T) {
 	requested := make(chan struct{}, 1)
-	executable := sshtest.Start(t, sshtest.Options{GlobalRequest: func(request *cryptossh.Request) {
+	config := sshtest.Start(t, sshtest.Options{GlobalRequest: func(request *cryptossh.Request) {
 		if request.Type == "tcpip-forward" {
 			requested <- struct{}{}
 			return
@@ -170,7 +170,7 @@ func TestForegroundReverseForwardStartupCancellation(t *testing.T) {
 	defer cancel()
 	result := make(chan error, 1)
 	go func() {
-		_, err := runForwardTransportForeground(ctx, executable, forwardConfig{Host: "fixture", Port: 18888, Target: 18889, Reverse: true}, io.Discard)
+		_, err := runForwardTransportForeground(ctx, forwardConfig{Host: "fixture", Port: 18888, Target: 18889, Reverse: true, SSH: []string{"-F", config}}, io.Discard)
 		result <- err
 	}()
 	select {

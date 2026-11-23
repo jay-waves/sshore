@@ -84,12 +84,13 @@ func TestForwardDiagnosticsBounded(t *testing.T) {
 
 func TestTransportArgumentsAndConfig(t *testing.T) {
 	for _, reverse := range []bool{false, true} {
-		c := forwardConfig{Host: "work", Port: 8080, Target: 3000, Reverse: reverse, SSH: []string{"-p", "2222", "-L", "9999:localhost:9"}}
+		c := forwardConfig{Host: "work", Port: 8080, Target: 3000, Reverse: reverse,
+			SSH: []string{"-p", "2222", "-L", "9999:localhost:9", "-o", "ServerAliveInterval=0"}}
 		if err := c.Validate(); err != nil {
 			t.Fatal(err)
 		}
 		options := forwardSSHOptions(c, "opaque helper")
-		if options.Host != c.Host || options.Command != "opaque helper" || strings.Contains(strings.Join(options.Args, " "), "9999") {
+		if options.Host != c.Host || options.Command != "opaque helper" || strings.Join(options.Args, " ") != strings.Join(c.SSH, " ") {
 			t.Fatal(options)
 		}
 	}
@@ -97,14 +98,6 @@ func TestTransportArgumentsAndConfig(t *testing.T) {
 		if c.Validate() == nil {
 			t.Fatal("invalid config accepted", c)
 		}
-	}
-}
-
-func TestForwardTransportDoesNotReplayOtherRules(t *testing.T) {
-	options := forwardSSHOptions(forwardConfig{Host: "work", Port: 8080, Target: 3000, SSH: []string{"-p", "2222", "-L", "9999:localhost:9999", "-R", "8888:localhost:8888", "-D", "7777", "-o", "RemoteForward=6666 localhost:66", "-o", "LocalForward 5555 localhost:55"}}, "opaque helper")
-	joined := strings.Join(options.Args, " ")
-	if strings.Contains(joined, "9999") || strings.Contains(joined, "8888") || strings.Contains(joined, "7777") || strings.Contains(joined, "6666") || strings.Contains(joined, "5555") || !strings.Contains(joined, "-p 2222") {
-		t.Fatal(options)
 	}
 }
 
@@ -180,7 +173,7 @@ func TestForwardTransportOptions(t *testing.T) {
 	if !strings.Contains(command, "-J jump") {
 		t.Fatal(command)
 	}
-	for _, bad := range [][]string{{".:8080", "work:3000", "-i"}, {".:8080", "work:3000", "-D", "1080"}, {".:8080", "work:3000", "--unknown"}} {
+	for _, bad := range [][]string{{".:8080", "work:3000", "-i"}, {".:8080", "work:3000", "-D"}, {".:8080", "work:3000", "--unknown"}} {
 		if _, _, e := parseForwardCommand(bad); e == nil {
 			t.Fatal(bad)
 		}

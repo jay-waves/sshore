@@ -16,7 +16,7 @@ func SplitOption(args []string) (name, value string, consumed int) {
 	}
 	if len(arg) >= 2 {
 		switch arg[:2] {
-		case "-p", "-i", "-J", "-F", "-l", "-o", "-E", "-L", "-R", "-D":
+		case "-p", "-i", "-J", "-F", "-l", "-o", "-c", "-m", "-L", "-R", "-D":
 			if len(arg) > 2 {
 				return arg[:2], arg[2:], 1
 			}
@@ -38,16 +38,25 @@ func ConfigKey(value string) string {
 }
 
 func ForwardingOption(name, value string) bool {
+	return forwardingKey(name, value) != ""
+}
+
+func forwardingKey(name, value string) string {
 	switch name {
-	case "-L", "-R", "-D":
-		return true
+	case "-L":
+		return "localforward"
+	case "-R":
+		return "remoteforward"
+	case "-D":
+		return "dynamicforward"
 	case "-o":
-		switch ConfigKey(value) {
+		key := ConfigKey(value)
+		switch key {
 		case "localforward", "remoteforward", "dynamicforward":
-			return true
+			return key
 		}
 	}
-	return false
+	return ""
 }
 
 func PortOption(name, value string) bool {

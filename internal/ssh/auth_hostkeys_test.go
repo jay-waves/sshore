@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -151,16 +150,27 @@ func TestLegacyPublicKeyAlgorithmPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &connectionConfig{values: map[string][]string{"pubkeyacceptedkeytypes": {cryptossh.KeyAlgoRSASHA512}}}
-	if allowsSignature(c.signatureAlgorithms(), key.Type(), cryptossh.KeyAlgoED25519) {
+	algorithms := func(options ...string) []string {
+		t.Helper()
+		args := []string{"-F", "none", "-l", "fixture"}
+		for _, option := range options {
+			args = append(args, "-o", option)
+		}
+		c, err := resolveConfig(t.Context(), Options{Host: "fixture", Args: args})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.algorithms("pubkeyacceptedalgorithms", nil)
+	}
+	if allowsSignature(algorithms("PubkeyAcceptedKeyTypes="+cryptossh.KeyAlgoRSASHA512), key.Type(), cryptossh.KeyAlgoED25519) {
 		t.Fatal("legacy algorithm restriction ignored")
 	}
-	c.values["pubkeyacceptedkeytypes"] = []string{cryptossh.CertAlgoED25519v01}
-	if !allowsSignature(c.signatureAlgorithms(), (&cryptossh.Certificate{Key: key}).Type(), cryptossh.KeyAlgoED25519) || allowsSignature(c.signatureAlgorithms(), key.Type(), cryptossh.KeyAlgoED25519) {
+	certificateOnly := algorithms("PubkeyAcceptedKeyTypes=" + cryptossh.CertAlgoED25519v01)
+	if !allowsSignature(certificateOnly, (&cryptossh.Certificate{Key: key}).Type(), cryptossh.KeyAlgoED25519) || allowsSignature(certificateOnly, key.Type(), cryptossh.KeyAlgoED25519) {
 		t.Fatal("legacy certificate policy lost")
 	}
-	c.values["pubkeyacceptedalgorithms"] = []string{cryptossh.KeyAlgoED25519}
-	if !allowsSignature(c.signatureAlgorithms(), key.Type(), cryptossh.KeyAlgoED25519) {
+	withAlias := algorithms("PubkeyAcceptedAlgorithms="+cryptossh.KeyAlgoED25519, "PubkeyAcceptedKeyTypes="+cryptossh.CertAlgoED25519v01)
+	if !allowsSignature(withAlias, key.Type(), cryptossh.KeyAlgoED25519) {
 		t.Fatal("modern algorithm policy did not take precedence")
 	}
 }
@@ -180,31 +190,21 @@ func TestKnownHostsPathLists(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := []struct {
-		name, global string
-		reject       bool
+		name   string
+		global []string
 	}{
-		{"missing absolute files", filepath.Join(dir, "missing") + " " + filepath.Join(dir, "missing2"), false},
-		{"environment paths", "${HOSTS_DIR}/missing ${HOSTS_DIR}/missing2", false},
-		{"ambiguous relative paths", "missing hosts", true},
+		{"missing absolute files", []string{filepath.Join(dir, "missing"), filepath.Join(dir, "missing2")}},
+		{"environment paths", []string{"${HOSTS_DIR}/missing", "${HOSTS_DIR}/missing2"}},
+		{"quoted relative paths", []string{"missing hosts", "other hosts"}},
 	}
-	if runtime.GOOS == "windows" {
-		cases = append(cases, struct {
-			name, global string
-			reject       bool
-		}{"Windows OpenSSH defaults", `__PROGRAMDATA__\ssh/ssh_known_hosts __PROGRAMDATA__\ssh/ssh_known_hosts2`, false})
-	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c := &connectionConfig{options: Options{Directory: dir, Environment: []string{"HOSTS_DIR=" + dir, "ProgramData=" + dir}}, host: "fixture", port: "22", values: map[string][]string{
-				"userknownhostsfile": {known}, "globalknownhostsfile": {tc.global}, "stricthostkeychecking": {"yes"},
+				"userknownhostsfile": {known}, "globalknownhostsfile": tc.global, "stricthostkeychecking": {"yes"},
 			}}
 			verify, _, err := c.hostKeys(context.Background())
-			if tc.reject {
-				if err == nil || !strings.Contains(err.Error(), "ambiguous known_hosts") {
-					t.Fatalf("expected ambiguous path rejection, got %v", err)
-				}
-				return
-			}
+
 			if err != nil {
 				t.Fatal(err)
 			}

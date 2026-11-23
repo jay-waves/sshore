@@ -57,7 +57,7 @@ func TestSSHLightweightPassthrough(t *testing.T) {
 	values := map[string]string{
 		"-p": "2222", "-i": "key with spaces", "-J": "jump1,jump2", "-F": "ssh config",
 		"-l": "alice", "-o": "ServerAliveInterval=15", "-L": "127.0.0.1:8080:localhost:80",
-		"-R": "127.0.0.1:9000:localhost:3000", "-D": "127.0.0.1:1080", "-E": "debug log.txt",
+		"-R": "127.0.0.1:9000:localhost:3000", "-D": "127.0.0.1:1080", "-c": "^aes128-ctr", "-m": "hmac-sha2-256",
 	}
 	for flag, value := range values {
 		for _, args := range [][]string{{"host:", "--", flag, value}, {"host:", "--", flag + value}} {
@@ -141,7 +141,6 @@ func TestRecoveryDiagnosticsStayLocal(t *testing.T) {
 	t.Setenv("SSHORE_DISABLED", "1")
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	t.Setenv("SSHORE_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime"))
-	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "must-not-run"))
 	for _, args := range [][]string{{"ls", "--json"}, {"pstree"}} {
 		if code, err := run(args); code != 0 || err != nil {
 			t.Fatalf("local diagnostics %v: %d %v", args, code, err)
@@ -198,9 +197,12 @@ func TestSharedCLIGrammar(t *testing.T) {
 			t.Fatalf("accepted forward %v", args)
 		}
 	}
-	for _, command := range []string{"kill", "rename"} {
-		if _, err := parseOptions([]string{command, "work", "--", "-L8080:localhost:80"}); err == nil {
-			t.Fatalf("%s accepts unrelated forwarding option", command)
+	for _, args := range [][]string{
+		{"kill", "work:old", "--", "-L8080:localhost:80"},
+		{"rename", "work:old", "new", "--", "-L8080:localhost:80"},
+	} {
+		if _, err := parseOptions(args); err != nil {
+			t.Fatalf("%v: %v", args, err)
 		}
 	}
 }
@@ -301,7 +303,11 @@ func TestSSHSeparatorBoundaries(t *testing.T) {
 	}
 	for name, parse := range parsers {
 		t.Run(name, func(t *testing.T) {
-			for _, args := range [][]string{{"work"}, {"work", "--", "-Jjump", "-p", "2222", "-o", "IdentityFile=key with spaces"}} {
+			for _, args := range [][]string{
+				{"work"}, {"work", "--", "-Jjump", "-p", "2222", "-o", "IdentityFile=key with spaces"},
+				{"work", "-L8080:localhost:80", "--", "-D1080"},
+				{"work", "-o", "RemoteForward=9000 localhost:9000"},
+			} {
 				if e := parse(args); e != nil {
 					t.Fatal(args, e)
 				}
@@ -318,11 +324,6 @@ func TestSSHSeparatorBoundaries(t *testing.T) {
 				}
 			}
 		})
-	}
-	for _, parse := range []func([]string) error{parsers["mount"], parsers["forward"]} {
-		if e := parse([]string{"work", "--", "-D1080"}); e == nil {
-			t.Fatal("resource accepted native forwarding")
-		}
 	}
 }
 
@@ -430,7 +431,7 @@ func TestListRejectsHostEndpoint(t *testing.T) {
 }
 
 func TestExecArguments(t *testing.T) {
-	for _, command := range []string{"uname -a", "printf '%s' --help", "--help", "echo x -- -p 22"} {
+	for _, command := range []string{"uname -a", "printf '%s' --help", "--help", "--", "echo x -- -p 22"} {
 		parsed, err := parseCLI([]string{"work:", command}, "exec")
 		if err != nil || len(parsed.operands) != 2 || parsed.operands[0] != "work" || parsed.operands[1] != command {
 			t.Fatalf("command %q: %+v, %v", command, parsed, err)
@@ -890,7 +891,6 @@ func TestShortTaskResourceRenameAndReplacement(t *testing.T) {
 func TestShortTaskUnknownAndScopedNames(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	t.Setenv("SSHORE_SSH", filepath.Join(t.TempDir(), "must-not-connect"))
 	for _, args := range [][]string{{"kill", "123456"}, {"rename", "ABCDEF", "new"}, {"review", "abcdef"}} {
 		if code, err := run(args); code != 2 || err == nil {
 			t.Fatalf("%v: %d %v", args, code, err)
@@ -1048,20 +1048,20 @@ func TestListNumbersAreNotSelectors(t *testing.T) {
 func TestAttachUnknownTargetNeverConnects(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	marker := filepath.Join(t.TempDir(), "ssh-invoked")
-	ssh := filepath.Join(t.TempDir(), "ssh")
-	if err := os.WriteFile(ssh, []byte("#!/bin/sh\ntouch "+shellQuote(marker)+"\nexit 99\n"), 0700); err != nil {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.Mkdir(filepath.Join(home, ".ssh"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("SSHORE_SSH", ssh)
+	if err := os.WriteFile(filepath.Join(home, ".ssh", "config"), []byte("UnexpectedConnection yes\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	for _, ref := range []string{"xxxyyy", "3a"} {
 		code, err := run([]string{"attach", ":" + ref})
-		if err == nil {
+		if err == nil || strings.Contains(err.Error(), "UnexpectedConnection") {
 			t.Fatalf("unknown %s: %d %v", ref, code, err)
 		}
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("unknown target started SSH: %v", err)
 	}
 }
 

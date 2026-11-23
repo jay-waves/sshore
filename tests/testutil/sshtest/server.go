@@ -19,10 +19,14 @@ type Options struct {
 	Exec          func(context.Context, string, cryptossh.Channel)
 	GlobalRequest func(*cryptossh.Request)
 	AllowForward  bool
-	ConfigPrelude string // Optional shell statements to observe calls to the ssh -G shim.
 }
 
-// Start creates an authenticated loopback endpoint and returns its ssh -G shim.
+// Exit sends a remote command's exit status on its session channel.
+func Exit(stream cryptossh.Channel, status uint32) {
+	_, _ = stream.SendRequest("exit-status", false, cryptossh.Marshal(struct{ Status uint32 }{status}))
+}
+
+// Start creates an authenticated loopback endpoint and returns its configuration.
 func Start(t testing.TB, options Options) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -133,5 +137,5 @@ func Start(t testing.TB, options Options) string {
 		mu.Unlock()
 		workers.Wait()
 	})
-	return writeConfig(t, dir, listener.Addr().String(), private, signer.PublicKey(), options.ConfigPrelude)
+	return writeConfig(t, dir, listener.Addr().String(), private, signer.PublicKey())
 }

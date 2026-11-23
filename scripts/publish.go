@@ -31,6 +31,9 @@ func publish() error {
 	cmd.Stdin = strings.NewReader(fmt.Sprintf(`sshore %s
 
 Includes Linux and Windows amd64 binaries. Verify archives against SHA256SUMS.
+The built-in client reads SSH configuration directly. Forwarding rules in SSH
+configuration or SSH arguments produce a warning. Use sshore forward for TCP
+forwarding.
 Update both endpoints to %[1]s for managed connections. Save work before
 installing because the installer stops the target account daemon.
 Remote releases before 0.7.22 do not support the current service entry. If remote

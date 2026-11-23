@@ -19,7 +19,7 @@ import (
 )
 
 // Uses the existing isolated CLI test executable and isolated daemon fixture. The
-// SSH wrapper runs only fixture commands; no real account sessions or hosts.
+// SSH endpoint runs only fixture commands; no real account sessions or hosts.
 
 func TestKillAllRemoteScope(t *testing.T) {
 	e := newEnv(t)
@@ -32,7 +32,7 @@ func TestKillAllRemoteScope(t *testing.T) {
 	wrapper := sshtest.Start(t, sshtest.Options{Exec: func(ctx context.Context, command string, stream cryptossh.Channel) {
 		sshtest.Shell(ctx, command, stream, e.dir, e.env)
 	}})
-	env := append(e.env, "SSHORE_SSH="+wrapper, "SSHORE_SOCKET=", "SSHORE_STATE_DIR="+filepath.Join(e.dir, "local-state"))
+	env := append(e.env, "SSHORE_SOCKET=", "SSHORE_STATE_DIR="+filepath.Join(e.dir, "local-state"))
 	run := func(input string, args ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, e.bin, args...)
 		cmd.Env = env
@@ -44,7 +44,7 @@ func TestKillAllRemoteScope(t *testing.T) {
 		t.Fatal(out, err)
 	}
 	defer run("", "kill", "here:keep")
-	if out, err := run("kill\n", "kill", "fixture", "--all", "--server", e.bin); err != nil {
+	if out, err := run("kill\n", "kill", "fixture", "--all", "--server", e.bin, "--", "-F", wrapper); err != nil {
 		t.Fatal(out, err)
 	}
 	waitSessionEnded(t, e, "one", firstPID)
@@ -71,7 +71,7 @@ func TestListIncludesRecordedRemoteShellsOffline(t *testing.T) {
 	}
 	run := func(args ...string) (inventory, string, error) {
 		cmd := exec.Command(testBinary(t), args...)
-		cmd.Env = append(os.Environ(), "SSHORE_SSH="+filepath.Join(root, "must-not-run"), "SSHORE_SOCKET=", "SSH_CONNECTION=", "HOME="+root)
+		cmd.Env = append(os.Environ(), "SSHORE_SOCKET=", "SSH_CONNECTION=", "HOME="+root)
 		var stderr strings.Builder
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()

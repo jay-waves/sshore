@@ -311,7 +311,7 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSHORE_LOCAL_SESSION=", "SSHORE_SSH=/missing/initial-ssh")
+	env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSHORE_LOCAL_SESSION=")
 	run := func(environment []string, args ...string) string {
 		t.Helper()
 		cmd := exec.CommandContext(ctx, e.bin, args...)
@@ -348,11 +348,9 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 			c.Close()
 		}
 	}()
-	for _, name := range []string{"first", "second"} {
-		observation := filepath.Join(e.dir, name+"-parent")
-		stub := sshtest.Start(t, sshtest.Options{
-			AllowForward:  true,
-			ConfigPrelude: `printf '%s\n%s\n' "$PPID" "$PWD" > ` + shellQuote(observation),
+	for range 2 {
+		config := sshtest.Start(t, sshtest.Options{
+			AllowForward: true,
 			Exec: func(_ context.Context, _ string, stream cryptossh.Channel) {
 				io.WriteString(stream, "sshore-forward-ready\n")
 				io.Copy(io.Discard, stream)
@@ -364,7 +362,11 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 		}
 		port := fmt.Sprint(probe.Addr().(*net.TCPAddr).Port)
 		probe.Close()
-		out := run(append(append([]string(nil), env...), "SSHORE_SSH="+stub), "forward", ".:"+port, "fixture:"+fmt.Sprint(target.Addr().(*net.TCPAddr).Port))
+		relativeConfig, err := filepath.Rel(e.dir, config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := run(env, "forward", ".:"+port, "fixture:"+fmt.Sprint(target.Addr().(*net.TCPAddr).Port), "--", "-F", relativeConfig)
 		conn, err := net.DialTimeout("tcp4", net.JoinHostPort("127.0.0.1", port), time.Second)
 		if err != nil {
 			t.Fatal(err)
@@ -386,12 +388,10 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 			t.Fatalf("invalid forward name: %s", out)
 		}
 		defer run(env, "kill", "forward/"+assigned)
-		raw, err = os.ReadFile(observation)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(raw) != fmt.Sprintf("%d\n%s\n", manager.ManagerPID, e.dir) {
-			t.Fatalf("forward has a wrapper process or lost cwd: %s", raw)
+		raw, err = os.ReadFile(filepath.Join(state, "daemon", "daemon.json"))
+		var active localShellRecord
+		if err != nil || json.Unmarshal(raw, &active) != nil || active.ManagerPID != manager.ManagerPID {
+			t.Fatalf("forward changed daemon ownership: %s (%v)", raw, err)
 		}
 	}
 }

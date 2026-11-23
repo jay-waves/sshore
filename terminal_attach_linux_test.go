@@ -61,17 +61,17 @@ func startPrefixClient(t *testing.T, e *testEnv) (*exec.Cmd, *os.File, func(stri
 	return startSessionClient(t, e, []string{"fixture-launch", "fixture", "keys", "--server", e.bin})
 }
 
-func sessionSSH(t *testing.T, e *testEnv, prelude string) string {
-	return sessionSSHWithHook(t, e, prelude, nil)
+func sessionSSH(t *testing.T, e *testEnv) string {
+	return sessionSSHWithHook(t, e, nil)
 }
 
-func sessionSSHWithHook(t *testing.T, e *testEnv, prelude string, hook func(context.Context, string, cryptossh.Channel) bool) string {
+func sessionSSHWithHook(t *testing.T, e *testEnv, hook func(context.Context, string, cryptossh.Channel) bool) string {
 	t.Helper()
 	remoteEnv := append(append([]string(nil), e.env...),
 		"PATH="+filepath.Dir(e.bin)+":"+localEnvironmentValue(e.env, "PATH"),
 		"SSHORE_ASKPASS=", "SSHORE_ASKPASS_ADDR=", "SSHORE_ASKPASS_TOKEN=", "SSH_ASKPASS=", "SSHORE_LOCAL_SESSION=", "SSHORE_SOCKET=",
 	)
-	return sshtest.Start(t, sshtest.Options{AllowForward: true, ConfigPrelude: prelude, Exec: func(ctx context.Context, command string, stream cryptossh.Channel) {
+	return sshtest.Start(t, sshtest.Options{AllowForward: true, Exec: func(ctx context.Context, command string, stream cryptossh.Channel) {
 		if hook != nil && hook(ctx, command, stream) {
 			return
 		}
@@ -81,9 +81,9 @@ func sessionSSHWithHook(t *testing.T, e *testEnv, prelude string, hook func(cont
 
 func startSessionClient(t *testing.T, e *testEnv, args []string) (*exec.Cmd, *os.File, func(string)) {
 	t.Helper()
-	config := filepath.Join(e.dir, "unused-ssh")
+	config := ""
 	if !strings.HasPrefix(args[1], "here:") {
-		config = sessionSSH(t, e, "")
+		config = sessionSSH(t, e)
 	}
 	return startSessionClientWithSSH(t, e, args, config)
 }
@@ -92,8 +92,11 @@ func startSessionClientWithSSH(t *testing.T, e *testEnv, args []string, config s
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
+	if config != "" {
+		args = append(args, "--", "-F", config)
+	}
 	cmd := exec.CommandContext(ctx, e.bin, args...)
-	cmd.Env = append(e.env, "SSHORE_SSH="+config, "SSHORE_SOCKET=", "SSHORE_STATE_DIR="+filepath.Join(e.dir, "client-state"), "TERM=xterm-256color")
+	cmd.Env = append(e.env, "SSHORE_SOCKET=", "SSHORE_STATE_DIR="+filepath.Join(e.dir, "client-state"), "TERM=xterm-256color")
 	t.Cleanup(func() { shutdownFixtureDaemon(t, filepath.Join(e.dir, "client-state")) })
 	terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 120})
 	if err != nil {
@@ -146,8 +149,8 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	config := sessionSSH(t, e, `printf '%s\n%s\n' "$PWD" "$HANDOFF_VALUE" > `+shellQuote(filepath.Join(e.dir, "config-context")))
-	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-launch", "here:", "origin", "--no-profile"}, config)
+	config := sessionSSH(t, e)
+	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-launch", "here:", "origin", "--no-profile"}, "")
 	t.Cleanup(func() {
 		cleanup := exec.Command(e.bin, "kill", "--all")
 		cleanup.Env = cmd.Env
@@ -160,12 +163,14 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 	if err := os.Mkdir(directory, 0700); err != nil {
 		t.Fatal(err)
 	}
-	wrapper := "#!/bin/sh\nexec " + shellQuote(localEnvironmentValue(cmd.Env, "SSHORE_SSH")) + " \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(directory, "ssh"), []byte(wrapper), 0700); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, "ssh"), []byte("#!/bin/sh\nexit 97\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	// The command returns to its owner shell while the frontend is remote.
-	command := "cd " + shellQuote(directory) + "; export HANDOFF_VALUE=preserved; export PATH=" + shellQuote(directory) + ":$PATH; unset SSHORE_SSH; " + shellQuote(e.bin) + " spawn fixture: --quiet --server " + shellQuote(e.bin) + "; printf '%s' \"$?\" > " + shellQuote(marker) + "\n"
+	if err := os.WriteFile(filepath.Join(directory, "client.conf"), []byte("Include ${HANDOFF_CONFIG}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The frontend needs both the initiating directory and environment to resolve the connection.
+	command := "cd " + shellQuote(directory) + "; export HANDOFF_CONFIG=" + shellQuote(config) + "; export PATH=" + shellQuote(directory) + ":$PATH; " + shellQuote(e.bin) + " spawn fixture: --quiet --server " + shellQuote(e.bin) + " -- -F client.conf; printf '%s' \"$?\" > " + shellQuote(marker) + "\n"
 	io.WriteString(terminal, command)
 	wait("Connected fixture:")
 	deadline := time.Now().Add(3 * time.Second)
@@ -223,10 +228,7 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 	// Redraw remains local to the frontend; ordinary input reaches the remote shell.
 	io.WriteString(terminal, "\x02rprintf 'HANDOFF_%s\\n' remote\n")
 	wait("HANDOFF_remote")
-	contextData, err := os.ReadFile(filepath.Join(e.dir, "config-context"))
-	if err != nil || string(contextData) != directory+"\npreserved\n" {
-		t.Fatalf("SSH config context: %q %v", contextData, err)
-	}
+
 	rename := exec.Command(e.bin, "rename", "here:origin", "returned")
 	rename.Env = cmd.Env
 	if out, err := rename.CombinedOutput(); err != nil {
@@ -328,7 +330,7 @@ func TestClientCommandConsole(t *testing.T) {
 	alpha, _ := e.attach("alpha")
 	detachTestClient(t, alpha)
 	var sshCommands atomic.Int32
-	config := sessionSSHWithHook(t, e, "", func(context.Context, string, cryptossh.Channel) bool {
+	config := sessionSSHWithHook(t, e, func(context.Context, string, cryptossh.Channel) bool {
 		sshCommands.Add(1)
 		return false
 	})
@@ -543,7 +545,7 @@ func TestClientFailedSwitchRestoresOriginal(t *testing.T) {
 	alpha, _ := e.attach("alpha")
 	detachTestClient(t, alpha)
 	var fail atomic.Bool
-	config := sessionSSHWithHook(t, e, "", func(_ context.Context, _ string, stream cryptossh.Channel) bool {
+	config := sessionSSHWithHook(t, e, func(_ context.Context, _ string, stream cryptossh.Channel) bool {
 		if !fail.CompareAndSwap(true, false) {
 			return false
 		}
@@ -911,11 +913,12 @@ func TestClientHandoffHintReleasedOnFrontendExit(t *testing.T) {
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-launch", "here:", "origin", "--no-profile"}, sessionSSH(t, e, ""))
+	config := sessionSSH(t, e)
+	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-launch", "here:", "origin", "--no-profile"}, "")
 	t.Cleanup(func() { cleanup := exec.Command(e.bin, "kill", "--all"); cleanup.Env = cmd.Env; _ = cleanup.Run() })
 	wait("Connected here:origin")
 	wait("sshore-test> ")
-	io.WriteString(terminal, shellQuote(e.bin)+" spawn fixture: --no-profile --server "+shellQuote(e.bin)+"\n")
+	io.WriteString(terminal, shellQuote(e.bin)+" spawn fixture: --no-profile --server "+shellQuote(e.bin)+" -- -F "+shellQuote(config)+"\n")
 	wait("Connected fixture:")
 	check := func(wantHost string) bool {
 		list := exec.Command(e.bin, "list", "--json")
@@ -967,8 +970,8 @@ func TestClientNestedRemoteSpawnReusesAuthentication(t *testing.T) {
 			io.WriteString(terminal, "printf 'READY_%s\\n' shell\n")
 			wait("READY_shell")
 			// Any new authentication attempt now fails at SSH configuration lookup.
-			ssh := localEnvironmentValue(cmd.Env, "SSHORE_SSH")
-			if err := os.WriteFile(ssh, []byte("#!/bin/sh\necho unexpected-reauthentication >&2\nexit 91\n"), 0700); err != nil {
+			config := cmd.Args[len(cmd.Args)-1]
+			if err := os.WriteFile(config, []byte("UnexpectedReauthentication yes\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			for range 2 {
@@ -1117,7 +1120,7 @@ func TestClientInterruptDuringSwitchRestoresOriginal(t *testing.T) {
 	detachTestClient(t, alpha)
 	var block atomic.Bool
 	started := make(chan struct{})
-	config := sessionSSHWithHook(t, e, "", func(_ context.Context, _ string, stream cryptossh.Channel) bool {
+	config := sessionSSHWithHook(t, e, func(_ context.Context, _ string, stream cryptossh.Channel) bool {
 		if !block.CompareAndSwap(true, false) {
 			return false
 		}

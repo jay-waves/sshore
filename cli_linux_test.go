@@ -241,8 +241,7 @@ func TestExecInvokesSSHWithoutPTY(t *testing.T) {
 		commands <- command
 		sshtest.Exit(stream, 7)
 	}})
-	t.Setenv("SSHORE_SSH", config)
-	code, err := run([]string{"exec", "work", "printf '%s' --help"})
+	code, err := run([]string{"exec", "work", "printf '%s' --help", "--", "-F", config})
 	if err != nil || code != 7 {
 		t.Fatalf("exit %d: %v", code, err)
 	}

@@ -102,7 +102,6 @@ func (c *connectionConfig) privateIdentities(paths []string) ([]cryptossh.Signer
 			continue
 		}
 		seen[id] = true
-		retained := false
 		signers = append(signers, privateFileSigner{key: public, load: func() (cryptossh.Signer, error) {
 			if signer == nil {
 				loaded, err := c.unlockIdentity(path)
@@ -113,10 +112,6 @@ func (c *connectionConfig) privateIdentities(paths []string) ([]cryptossh.Signer
 					return nil, fmt.Errorf("IdentityFile %q does not match its public key", path)
 				}
 				signer = loaded
-			}
-			if !retained && c.retainIdentity != nil {
-				c.retainIdentity(signer)
-				retained = true
 			}
 			return signer, nil
 		}})

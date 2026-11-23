@@ -162,7 +162,7 @@ func runForwardForeground(f forwardConfig) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	fmt.Fprintf(os.Stderr, "Starting %s (%s); Ctrl-C stops it.\n", describeForward(f.Port, f.Target, f.Reverse), cleanText(f.Host))
-	return runForwardTransportForeground(ctx, sshExecutable(), f, os.Stderr)
+	return runForwardTransportForeground(ctx, f, os.Stderr)
 }
 
 func pendingPortDescription(op operation) string {
@@ -180,12 +180,6 @@ func resolveLocalPort(op *operation, port int) {
 	}
 	op.LocalHint = ""
 }
-
-// Independent forwards use an owned SSH connection and a transient remote Unix
-// helper, never a shell session daemon. OpenSSH's forwarding failure gate runs
-// before the helper command, whose fixed marker acknowledges startup. Killing a
-// forward closes only this transport. Approved forwards require the existing
-// remote executable to validate the source session; no installation is attempted.
 
 // Keep persisted task identity together with its forwarding configuration.
 type forwardConfig struct {
@@ -286,8 +280,9 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 	connection.Environment, connection.Directory = s.baseEnvironment(), s.directory
 	if initial {
 		connection.Confirm, connection.Secret = s.config.Auth.callbacks()
+		connection.Warn = s.config.Auth.warn
 	} else {
-		connection.Args = append([]string{"-o", "StrictHostKeyChecking=yes"}, connection.Args...)
+		connection.RequireKnownHost = true
 	}
 	connection.Diagnostic = diagnostic
 	client, close, err := openDirectForward(ctx, connection, f)
@@ -335,9 +330,7 @@ func (c forwardConfig) Validate() error {
 
 // SSH resolves connection settings; the application binds its own forwarding rule.
 func forwardSSHOptions(c forwardConfig, command string) sshio.Options {
-	args := []string{"-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"}
-	args = append(args, sshio.WithoutForwarding(c.SSH)...)
-	return sshio.Options{Host: c.Host, Command: command, Args: args}
+	return sshio.Options{Host: c.Host, Command: command, Args: c.SSH}
 }
 
 // openDirectForward owns both the SSH connection and its forwarding workers.
@@ -397,9 +390,9 @@ func startDirectForward(c *sshio.Client, rule forwardConfig) (*forwardio.Forward
 }
 
 // Foreground forwards own their connection until explicit cancellation or loss.
-func runForwardTransportForeground(ctx context.Context, executable string, c forwardConfig, diagnostic io.Writer) (int, error) {
+func runForwardTransportForeground(ctx context.Context, c forwardConfig, diagnostic io.Writer) (int, error) {
 	options := forwardSSHOptions(c, "")
-	options.Executable, options.Confirm, options.Secret = executable, confirmSSHHost, promptSSHSecret
+	options.Confirm, options.Secret = confirmSSHHost, promptSSHSecret
 	options.Diagnostic = diagnostic
 	connection, close, err := openDirectForward(ctx, options, c)
 	if err != nil {
@@ -504,9 +497,6 @@ func runForwardAttempt(parent context.Context, s *resourceService, advertisement
 				err = readErr
 			}
 			detail = err.Error()
-		}
-		if strings.Contains(detail, "remote port forwarding failed") {
-			detail += "; remote listening port is occupied or denied by SSH policy; choose another remote port or inspect existing forwards"
 		}
 		return false, fmt.Errorf("forward startup failed (%s): %s", s.record.Detail, detail)
 	}

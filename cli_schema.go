@@ -2,7 +2,6 @@ package main
 
 import (
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -60,11 +59,11 @@ var cliOptions = map[string]cliOption{
 }
 
 type cliSpec struct {
-	flags       []string
-	ssh, native bool
-	min, max    int
-	help        string
-	examples    string
+	flags    []string
+	ssh      bool
+	min, max int
+	help     string
+	examples string
 }
 
 func commandSpec(command string) (cliSpec, bool) {
@@ -169,20 +168,20 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 	}
 	var err error
 	hasSSHPort := false
-	if spec.ssh {
-		if at := slices.Index(args, "--"); at >= 0 {
-			if at+1 == len(args) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if spec.ssh && arg == "--" && (command != "exec" || len(a.operands) == 2) {
+			if i+1 == len(args) {
 				return a, usage("expected SSH options after --")
 			}
-			a.ssh, hasSSHPort, err = parseSSHOptions(args[at+1:], spec.native)
+			var suffix []string
+			suffix, hasSSHPort, err = parseSSHOptions(args[i+1:])
 			if err != nil {
 				return a, err
 			}
-			args = args[:at]
+			a.ssh = append(a.ssh, suffix...)
+			break
 		}
-	}
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
 		if arg == "" {
 			return a, usage("empty argument")
 		}
@@ -198,6 +197,14 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 		}
 		if arg == "-" || !strings.HasPrefix(arg, "-") {
 			a.operands = append(a.operands, arg)
+			continue
+		}
+		if name, value, count := sshio.SplitOption(args[i:]); spec.ssh && sshio.ForwardingOption(name, value) {
+			if count == 0 {
+				return a, usage("missing value for %s", name)
+			}
+			a.ssh = append(a.ssh, name, value)
+			i += count - 1
 			continue
 		}
 		if err := misplacedSSHOption(arg); err != nil {
@@ -259,12 +266,12 @@ func (s cliSpec) maxOperands(command string, a cliArguments) int {
 	return max
 }
 
-func parseSSHOptions(suffix []string, nativeForwarding bool) ([]string, bool, error) {
+func parseSSHOptions(suffix []string) ([]string, bool, error) {
 	var ssh []string
 	hasPort := false
 	for len(suffix) > 0 {
 		name, value, n := sshio.SplitOption(suffix)
-		if name == "" || !nativeForwarding && sshio.ForwardingOption(name, "") {
+		if name == "" {
 			return nil, false, usage("unsupported SSH option after --: %s; put sshore arguments before --", suffix[0])
 		}
 		if n == 0 || value == "--" {

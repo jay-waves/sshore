@@ -338,6 +338,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	connection := sshConnectionOptions(o)
 	connection.Environment = req.Env
 	connection.Confirm, connection.Secret = req.Auth.callbacks()
+	connection.Warn = req.Auth.warn
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	if command == "spawn" {

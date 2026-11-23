@@ -269,6 +269,20 @@ type sshAuthEndpoint struct {
 	Token   string
 }
 
+func (auth *sshAuthEndpoint) warn(ctx context.Context, warning string) bool {
+	if auth == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	response, err := postSSHAuth(ctx, auth.Address, auth.Token, "/warn", strings.NewReader(warning))
+	if err != nil {
+		return false
+	}
+	response.Body.Close()
+	return response.StatusCode == http.StatusNoContent
+}
+
 func (auth *sshAuthEndpoint) callbacks() (confirm func(context.Context, string) (bool, error), secret func(context.Context, string) ([]byte, error)) {
 	if auth == nil {
 		return nil, nil
@@ -317,7 +331,22 @@ func startSSHAuthBroker() (*sshAuthEndpoint, func(), error) {
 	token := resourceToken()
 	prompts := make(chan struct{}, 1)
 	listener, broker, err := listenSSHAuth(ctx, token, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/ask" && r.URL.Path != "/unlock" {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		switch r.URL.Path {
+		case "/warn":
+			warning, err := io.ReadAll(io.LimitReader(r.Body, maxSSHPrompt+1))
+			if err != nil || len(warning) > maxSSHPrompt {
+				http.Error(w, "invalid warning", http.StatusBadRequest)
+				return
+			}
+			sshio.LogWarning(os.Stderr, string(warning))
+			w.WriteHeader(http.StatusNoContent)
+			return
+		case "/ask", "/unlock":
+		default:
 			http.NotFound(w, r)
 			return
 		}

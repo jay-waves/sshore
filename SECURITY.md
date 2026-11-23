@@ -125,28 +125,31 @@ shell identity and exact release, and use a separate resource connection.
 File batches select all paths before execution. SSH authentication is separate
 from operation approval.
 
-System OpenSSH, local configuration and `Match exec` hooks are trusted inputs.
-Go SSH owns the connection and host-key verification. Changed host keys are
-rejected; background retries cannot establish new trust or prompt for credentials.
+Local client configuration is a trusted input. The built-in resolver evaluates
+static `Match` conditions without executing configuration hooks. Go SSH owns
+the connection and verifies host keys. Changed host keys are rejected.
+Background forward retries require existing host trust on every hop and run
+without interactive credentials.
 Host-key verification reads the current configured user and system known_hosts
-files, including Windows OpenSSH lists with multiple drive-qualified paths.
+files, including quoted paths and multiple drive-qualified paths on Windows.
+Configured algorithm lists restrict the Go SSH implementation's supported
+algorithms. Host certificate signature restrictions apply during verification.
 After interactive confirmation, the client reloads those files before
 saving the key, including files created during confirmation.
-The SSH client can load configured private keys and holds their decrypted signers
-for the lifetime of the connection. The initiating frontend requests passphrases,
-passwords and keyboard-interactive answers as needed and does not cache or persist
-them. Ctrl+C at an authentication prompt aborts the
-connection attempt and releases terminal input. Removing a key affects future
-authentication.
+The SSH client uses configured private keys during the authentication handshake.
+The initiating frontend requests passphrases, passwords and keyboard-interactive
+answers as needed. These credentials are scoped to the handshake. Ctrl+C at an
+authentication prompt aborts the connection attempt and releases terminal input.
 The local prompt broker serializes terminal access and bounds request and
 response sizes for host confirmation and authentication prompts.
 
 Servers may accept SSH `none` authentication, such as Tailscale SSH; host-key
-verification and operation approval still apply. Unsupported authentication and
-execution hooks fail explicitly. Public-key restrictions and RSA size requirements
-remain enforced. `RevokedHostKeys` files are rejected; known_hosts revocation
-markers are supported. Connections do not share ControlMaster state or reconnect
-outside explicit forward retry policy.
+verification and operation approval still apply. The client skips unsupported
+authentication methods and reports failure when SSH authentication exhausts the
+available methods. Unsupported execution hooks fail explicitly. Public-key
+restrictions and RSA size requirements remain enforced. `RevokedHostKeys` files
+are rejected. The client honors known_hosts revocation markers. Connections use
+independent transports. Forward retry policy is explicit.
 
 **Limit:** remote output can imitate local prompts, and processes sharing the
 remote account can submit requests. A request does not prove who typed it. Do not

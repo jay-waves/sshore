@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"strings"
 	"testing"
 	"time"
 
@@ -33,16 +32,11 @@ func TestFileAuthenticationPolicies(t *testing.T) {
 			t.Fatal(err)
 		}
 		cfg.values["requiredrsasize"] = []string{"2048"}
-		if _, err := cfg.authentication(); err == nil {
+		if _, err := cfg.publicKeySigners(); err == nil {
 			t.Fatal("undersized RSA key accepted")
 		}
 		cfg.values["requiredrsasize"] = []string{"1024"}
-		cfg.values["preferredauthentications"] = []string{"password,keyboard-interactive"}
-		if _, err := cfg.authentication(); err == nil || !strings.Contains(err.Error(), "excludes publickey") {
-			t.Fatalf("public-key exclusion ignored: %v", err)
-		}
-		cfg.values["preferredauthentications"] = []string{"publickey"}
-		if _, err := cfg.authentication(); err != nil {
+		if _, err := cfg.publicKeySigners(); err != nil {
 			t.Fatal(err)
 		}
 	}

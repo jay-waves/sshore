@@ -27,9 +27,9 @@ func TestCopyCLI(t *testing.T) {
 	run := func(args ...string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, e.bin, args...)
+		cmd := exec.CommandContext(ctx, e.bin, append(args, "--", "-F", wrapper)...)
 		cmd.Dir = root
-		cmd.Env = append(e.env, "SSHORE_SSH="+wrapper)
+		cmd.Env = e.env
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Log(string(output))
@@ -84,9 +84,9 @@ func TestCopyCLI(t *testing.T) {
 	data = bytes.Repeat([]byte("pipe data\x00\xff\n"), 10000)
 	for _, args := range [][]string{{"cp", ".:-", "work:" + streamTarget}, {"cp", "work:" + streamTarget, ".:-"}} {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		cmd := exec.CommandContext(ctx, e.bin, args...)
+		cmd := exec.CommandContext(ctx, e.bin, append(args, "--", "-F", wrapper)...)
 		cmd.Dir = root
-		cmd.Env = append(e.env, "SSHORE_SSH="+wrapper)
+		cmd.Env = e.env
 		cmd.Stdin = bytes.NewReader(data)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
@@ -123,8 +123,8 @@ func TestCopyPreflight(t *testing.T) {
 		for _, source := range sources {
 			args = append(args, ".:"+source)
 		}
-		cmd := exec.CommandContext(ctx, e.bin, append(args, "work:"+remote)...)
-		cmd.Env = append(e.env, "SSHORE_SSH="+wrapper)
+		cmd := exec.CommandContext(ctx, e.bin, append(args, "work:"+remote, "--", "-F", wrapper)...)
+		cmd.Env = e.env
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Log(string(out))

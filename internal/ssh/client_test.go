@@ -12,11 +12,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jay-waves/sshore/tests/testutil/sshtest"
 	cryptossh "golang.org/x/crypto/ssh"
 )
 
@@ -47,12 +49,12 @@ func TestNegotiatedAlgorithmDiagnostics(t *testing.T) {
 	for _, level := range []string{"INFO", "DEBUG", "DEBUG3"} {
 		t.Run(level, func(t *testing.T) {
 			fixture := newConnectionFixture(t)
-			config, err := os.ReadFile(fixture.options.Executable)
+			config, err := os.ReadFile(fixture.config)
 			if err != nil {
 				t.Fatal(err)
 			}
 			config = bytes.Replace(config, []byte("hostname 127.0.0.1"), []byte("loglevel "+level+"\nhostname 127.0.0.1"), 1)
-			if err := os.WriteFile(fixture.options.Executable, config, 0700); err != nil {
+			if err := os.WriteFile(fixture.config, config, 0600); err != nil {
 				t.Fatal(err)
 			}
 			var diagnostic bytes.Buffer
@@ -80,6 +82,7 @@ func TestNegotiatedAlgorithmDiagnostics(t *testing.T) {
 
 type connectionFixture struct {
 	options Options
+	config  string
 	address string
 	key     cryptossh.PublicKey
 }
@@ -224,10 +227,12 @@ func newConnectionFixtureAt(t *testing.T, listenAddress string, identities ...an
 	host, port, _ := net.SplitHostPort(address)
 	// Normalize non-default ports exactly as OpenSSH's known_hosts format.
 	os.WriteFile(knownPath, []byte("["+host+"]:"+port+" "+string(cryptossh.MarshalAuthorizedKey(hostSigner.PublicKey()))), 0600)
-	config := fmt.Sprintf("hostname %s\nuser fixture\nport %s\nidentityfile %s\nidentitiesonly yes\nuserknownhostsfile %s\nstricthostkeychecking yes\n", host, port, identityPath, knownPath)
-	executable := filepath.Join(dir, "ssh-config")
-	os.WriteFile(executable, []byte("#!/bin/sh\n[ \"$1\" = -G ] || exit 90\ncat <<'SSHORE_CONFIG'\n"+config+"SSHORE_CONFIG\n"), 0700)
-	return &connectionFixture{options: Options{Host: "fixture", Command: "echo", Executable: executable}, address: address, key: signer.PublicKey()}
+	config := fmt.Sprintf("hostname %s\nuser fixture\nport %s\nidentityfile %q\nidentitiesonly yes\nuserknownhostsfile %q\nstricthostkeychecking yes\n", host, port, filepath.ToSlash(identityPath), filepath.ToSlash(knownPath))
+	configPath := filepath.Join(dir, "ssh_config")
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return &connectionFixture{options: Options{Host: "fixture", Command: "echo", Args: []string{"-F", configPath}}, config: configPath, address: address, key: signer.PublicKey()}
 }
 func TestNativeSSHSessionAndIsolation(t *testing.T) {
 	a, b := newConnectionFixture(t), newConnectionFixture(t)
@@ -269,7 +274,7 @@ func TestNativeSSHCancelHandshake(t *testing.T) {
 		listener.Close()
 		t.Fatal("fixture did not bind its endpoint")
 	}
-	config, err := os.ReadFile(f.options.Executable)
+	config, err := os.ReadFile(f.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +292,7 @@ func TestNativeSSHCancelHandshake(t *testing.T) {
 	}()
 	oldPort := strings.Split(f.address, ":")[1]
 	newPort := strings.Split(blocked.Addr().String(), ":")[1]
-	os.WriteFile(f.options.Executable, []byte(strings.Replace(string(config), "port "+oldPort, "port "+newPort, 1)), 0700)
+	os.WriteFile(f.config, []byte(strings.Replace(string(config), "port "+oldPort, "port "+newPort, 1)), 0600)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
@@ -314,6 +319,64 @@ func TestNativeSSHCancelHandshake(t *testing.T) {
 		t.Fatal("cancel did not interrupt handshake")
 	}
 }
+
+func TestProxyJumpRequiresKnownHostOnEveryHop(t *testing.T) {
+	jump := sshtest.Start(t, sshtest.Options{AllowForward: true})
+	target := newConnectionFixture(t)
+	jumpConfig, err := os.ReadFile(jump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetConfig, err := os.ReadFile(target.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jumpConfig = bytes.Replace(jumpConfig, []byte("stricthostkeychecking yes"), []byte("stricthostkeychecking accept-new"), 1)
+	known := filepath.Join(filepath.Dir(jump), "known_hosts")
+	if err := os.Remove(known); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "config")
+	data := fmt.Sprintf("GlobalKnownHostsFile none\nHost fixture\n%sHost jump\n%s", targetConfig, jumpConfig)
+	if err := os.WriteFile(config, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	options := Options{Host: "fixture", Args: []string{"-F", config, "-J", "jump"}, RequireKnownHost: true}
+	if client, err := Dial(ctx, options); err == nil {
+		client.Close()
+		t.Fatal("unattended connection accepted an unknown jump key")
+	}
+	if _, err := os.Stat(known); !os.IsNotExist(err) {
+		t.Fatalf("unattended connection wrote jump known_hosts: %v", err)
+	}
+	for _, requireKnown := range []bool{false, true} {
+		options.RequireKnownHost = requireKnown
+		client, err := Dial(ctx, options)
+		if err != nil {
+			t.Fatalf("connect with RequireKnownHost=%t: %v", requireKnown, err)
+		}
+		client.Close()
+	}
+}
+
+func TestProxyJumpIPv6Endpoints(t *testing.T) {
+	config := connectionConfig{}
+	for _, tc := range []struct {
+		input, host string
+		args        []string
+	}{
+		{"alice@2001:db8::1234", "alice@2001:db8::1234", nil},
+		{"alice@[2001:db8::1234]:2222", "alice@2001:db8::1234", []string{"-p", "2222"}},
+	} {
+		options, err := config.proxyJumpOptions(tc.input)
+		if err != nil || options.Host != tc.host || !slices.Equal(options.Args, tc.args) {
+			t.Fatalf("ProxyJump %q resolved to %q %v: %v", tc.input, options.Host, options.Args, err)
+		}
+	}
+}
+
 func TestNativeSSHRejectsChangedHostKey(t *testing.T) {
 	f := newConnectionFixture(t)
 	cfg, err := resolveConfig(context.Background(), f.options)
@@ -369,7 +432,8 @@ func TestCertificateFileAuthentication(t *testing.T) {
 	}
 	client.Close()
 	cfg := &connectionConfig{values: map[string][]string{"pubkeyacceptedalgorithms": {cryptossh.CertAlgoED25519v01}}}
-	if !allowsSignature(cfg.signatureAlgorithms(), certificate.Type(), cryptossh.KeyAlgoED25519) || allowsSignature(cfg.signatureAlgorithms(), signer.PublicKey().Type(), cryptossh.KeyAlgoED25519) {
+	algorithms := cfg.algorithms("pubkeyacceptedalgorithms", nil)
+	if !allowsSignature(algorithms, certificate.Type(), cryptossh.KeyAlgoED25519) || allowsSignature(algorithms, signer.PublicKey().Type(), cryptossh.KeyAlgoED25519) {
 		t.Fatal("certificate algorithm policy lost")
 	}
 }
@@ -381,12 +445,12 @@ func TestBracketedIPv6Connection(t *testing.T) {
 	}
 	probe.Close()
 	fixture := newConnectionFixtureAt(t, "[::1]:0")
-	config, err := os.ReadFile(fixture.options.Executable)
+	config, err := os.ReadFile(fixture.config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	config = bytes.Replace(config, []byte("hostname ::1"), []byte("hostname [::1]"), 1)
-	if err = os.WriteFile(fixture.options.Executable, config, 0700); err != nil {
+	if err = os.WriteFile(fixture.config, config, 0600); err != nil {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
@@ -400,18 +464,18 @@ func TestBracketedIPv6Connection(t *testing.T) {
 
 func TestServerAcceptedNoneAuthentication(t *testing.T) {
 	f := newConnectionFixtureAt(t, "none")
-	data, err := os.ReadFile(f.options.Executable)
+	data, err := os.ReadFile(f.config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = append(data[:len(data)-len("SSHORE_CONFIG\n")], []byte("pubkeyauthentication no\nSSHORE_CONFIG\n")...)
+	data = append(data, "pubkeyauthentication no\n"...)
 	lines := strings.Split(string(data), "\n")
 	for i, line := range lines {
 		if strings.HasPrefix(line, "identityfile ") {
 			lines[i] = "identityfile /missing/identity"
 		}
 	}
-	if err := os.WriteFile(f.options.Executable, []byte(strings.Join(lines, "\n")), 0700); err != nil {
+	if err := os.WriteFile(f.config, []byte(strings.Join(lines, "\n")), 0600); err != nil {
 		t.Fatal(err)
 	}
 	c, err := Dial(context.Background(), f.options)
@@ -424,7 +488,7 @@ func TestServerAcceptedNoneAuthentication(t *testing.T) {
 			lines[i] = "userknownhostsfile /missing/known_hosts"
 		}
 	}
-	if err := os.WriteFile(f.options.Executable, []byte(strings.Join(lines, "\n")), 0700); err != nil {
+	if err := os.WriteFile(f.config, []byte(strings.Join(lines, "\n")), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if c, err := Dial(context.Background(), f.options); err == nil {
@@ -435,7 +499,7 @@ func TestServerAcceptedNoneAuthentication(t *testing.T) {
 
 func TestServerRejectsNoneWithoutIdentity(t *testing.T) {
 	f := newConnectionFixture(t)
-	data, err := os.ReadFile(f.options.Executable)
+	data, err := os.ReadFile(f.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +509,7 @@ func TestServerRejectsNoneWithoutIdentity(t *testing.T) {
 			lines[i] = "identityfile /missing/identity"
 		}
 	}
-	if err := os.WriteFile(f.options.Executable, []byte(strings.Join(lines, "\n")), 0700); err != nil {
+	if err := os.WriteFile(f.config, []byte(strings.Join(lines, "\n")), 0600); err != nil {
 		t.Fatal(err)
 	}
 	c, err := Dial(context.Background(), f.options)
@@ -460,7 +524,7 @@ func TestServerRejectsNoneWithoutIdentity(t *testing.T) {
 
 func TestPasswordFallbackWithoutKeys(t *testing.T) {
 	f := newConnectionFixtureAt(t, "password")
-	data, err := os.ReadFile(f.options.Executable)
+	data, err := os.ReadFile(f.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +534,7 @@ func TestPasswordFallbackWithoutKeys(t *testing.T) {
 			lines[i] = "identityfile /missing/key"
 		}
 	}
-	if err := os.WriteFile(f.options.Executable, []byte(strings.Join(lines, "\n")), 0700); err != nil {
+	if err := os.WriteFile(f.config, []byte(strings.Join(lines, "\n")), 0600); err != nil {
 		t.Fatal(err)
 	}
 	calls := 0
@@ -489,8 +553,8 @@ func TestPasswordFallbackWithoutKeys(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("prompts %d", calls)
 	}
-	policyConfig := strings.Replace(strings.Join(lines, "\n"), "\nSSHORE_CONFIG\n", "\npreferredauthentications publickey\nSSHORE_CONFIG\n", 1)
-	if err := os.WriteFile(f.options.Executable, []byte(policyConfig), 0700); err != nil {
+	policyConfig := strings.Join(lines, "\n") + "preferredauthentications publickey\n"
+	if err := os.WriteFile(f.config, []byte(policyConfig), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if c, err := Dial(context.Background(), f.options); err == nil {

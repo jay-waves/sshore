@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/tests/testutil/sshtest"
+	cryptossh "golang.org/x/crypto/ssh"
 )
 
 func TestPingArguments(t *testing.T) {
@@ -22,7 +27,6 @@ func TestPingArguments(t *testing.T) {
 	}
 	for _, input := range [][]string{
 		nil, {"here:"}, {"work:session"}, {"work:", "--count", "0"}, {"work:", "--count", "1001"},
-		{"work:", "--", "-L", "1234:localhost:1234"},
 		{"work:", "-c", "5"},
 	} {
 		if _, err := parseCLI(input, "ping"); err == nil {
@@ -48,6 +52,32 @@ func TestPingSampleGroups(t *testing.T) {
 	start := time.Now()
 	if err := waitPingInterval(ctx); !errors.Is(err, context.Canceled) || time.Since(start) > 500*time.Millisecond {
 		t.Fatalf("cancelled wait: %v", err)
+	}
+}
+
+func TestPingResolvesMatchCommand(t *testing.T) {
+	path := sshtest.Start(t, sshtest.Options{Exec: func(_ context.Context, command string, stream cryptossh.Channel) {
+		if command == "cat" {
+			_, _ = io.Copy(stream, stream)
+			sshtest.Exit(stream, 0)
+		}
+	}})
+	config, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config = append(config, []byte("Match command cat\n ProxyCommand none\nMatch all\n ProxyCommand unused\n")...)
+	if err := os.WriteFile(path, config, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	summary, err := measureSSHPing(ctx, sshio.Options{Host: "fixture", Args: []string{"-F", path}}, 1, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.batches) != 1 || summary.batches[0].count != 1 {
+		t.Fatalf("ping reported %+v", summary)
 	}
 }
 

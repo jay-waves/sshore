@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -175,17 +174,6 @@ func handoffRemoteSpawn(o options) (bool, error) {
 		return true, err
 	}
 	env := os.Environ()
-	if !o.local {
-		executable, err := exec.LookPath(sshExecutable())
-		if err != nil {
-			return true, err
-		}
-		executable, err = filepath.Abs(executable)
-		if err != nil {
-			return true, err
-		}
-		env = append(env, "SSHORE_SSH="+executable)
-	}
 	req := &localDaemonRequest{Record: localShellRecord{Owner: o.owner, Directory: cwd}, Env: env, Spawn: &spawnConfig{NoLogin: o.noLogin, NoProfile: o.noProfile, Tree: currentShellTree(), Local: o.local, Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh}}
 	if !o.local {
 		auth, stop, err := startSSHAuthBroker()

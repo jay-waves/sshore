@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net"
+	"net/netip"
 	"os"
 	"slices"
 	"strconv"
@@ -12,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/termui"
 	cryptossh "golang.org/x/crypto/ssh"
 )
 
@@ -22,7 +25,6 @@ type Client struct {
 	jump *Client
 	once sync.Once
 	done chan struct{}
-	keys []cryptossh.Signer
 }
 
 func (c *Client) Close() error {
@@ -34,8 +36,6 @@ func (c *Client) Close() error {
 			c.jump.Close()
 		}
 		c.Client.Close()
-		clear(c.keys)
-		c.keys = nil
 	})
 	return nil
 }
@@ -62,6 +62,7 @@ func resolveDialConfig(ctx context.Context, o Options) (*connectionConfig, error
 }
 
 func (cfg *connectionConfig) dial(ctx context.Context, depth int, budgets *authenticationBudgets) (*Client, error) {
+	cfg.warnIgnoredForwarding(ctx)
 	client, err := cfg.handshake(ctx, depth, budgets)
 	if err != nil {
 		return nil, err
@@ -83,8 +84,38 @@ func (cfg *connectionConfig) dial(ctx context.Context, depth int, budgets *authe
 			fmt.Fprintf(out, "[sshore] SSH %q: kex=%s hostkey=%s send=%s receive=%s\n", o.Host, algorithms.KeyExchange, algorithms.HostKey, direction(algorithms.Write), direction(algorithms.Read))
 		}
 	}
-	client.keepalive(cfg.get("serveraliveinterval"), cfg.get("serveralivecountmax"))
+	interval, _ := strconv.Atoi(cfg.get("serveraliveinterval"))
+	count, _ := strconv.Atoi(cfg.get("serveralivecountmax"))
+	client.keepalive(time.Duration(interval)*time.Second, count)
 	return client, nil
+}
+
+func (cfg *connectionConfig) warnIgnoredForwarding(ctx context.Context) {
+	if cfg.get("localforward") == "" && cfg.get("remoteforward") == "" && cfg.get("dynamicforward") == "" {
+		return
+	}
+	warning := IgnoredForwardingWarning(cfg.options.Host)
+	if warn := cfg.options.Warn; warn != nil && warn(ctx, warning) {
+		return
+	}
+	LogWarning(cfg.options.Diagnostic, warning)
+}
+
+func IgnoredForwardingWarning(host string) string {
+	return fmt.Sprintf("Ignoring SSH forwarding rules for %q. Use sshore forward for TCP forwarding.", host)
+}
+
+// LogWarning renders a warning for a local terminal or a plain diagnostic stream.
+func LogWarning(out io.Writer, warning string) {
+	if out == nil {
+		out = os.Stderr
+	}
+	warning = termui.CleanText(warning)
+	if file, ok := out.(*os.File); ok {
+		termui.Log(file, termui.Warning, "[sshore] WARNING: %s\n", warning)
+		return
+	}
+	fmt.Fprintf(out, "[sshore] WARNING: %s\n", warning)
 }
 
 func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *authenticationBudgets) (client *Client, resultErr error) {
@@ -92,8 +123,7 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 	defer cancel()
 	releaseBudget := budgets.add(cfg.timeout, cancel)
 	cc := &cryptossh.ClientConfig{User: cfg.user}
-	var keys []cryptossh.Signer
-	if err := cfg.configureAuthentication(connecting, cc, budgets, &keys); err != nil {
+	if err := cfg.configureAuthentication(connecting, cc, budgets); err != nil {
 		releaseBudget()
 		return nil, err
 	}
@@ -117,35 +147,17 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 	}()
 	modern := cryptossh.SupportedAlgorithms()
 	var err error
-	choose := func(key string, allowed []string) ([]string, error) {
-		value := cfg.get(key)
-		if value == "" {
-			return allowed, nil
-		}
-		var result []string
-		for a := range strings.SplitSeq(value, ",") {
-			if slices.Contains(allowed, a) {
-				result = append(result, a)
-			}
-		}
-		if len(result) == 0 {
-			return nil, fmt.Errorf("%s has no supported modern algorithm", key)
-		}
-		return result, nil
-	}
-	if cc.KeyExchanges, err = choose("kexalgorithms", modern.KeyExchanges); err != nil {
-		return nil, err
-	}
-	if cc.Ciphers, err = choose("ciphers", modern.Ciphers); err != nil {
-		return nil, err
-	}
-	if cc.MACs, err = choose("macs", modern.MACs); err != nil {
-		return nil, err
-	}
+	cc.KeyExchanges = cfg.algorithms("kexalgorithms", modern.KeyExchanges)
+	cc.Ciphers = cfg.algorithms("ciphers", modern.Ciphers)
+	cc.MACs = cfg.algorithms("macs", modern.MACs)
 	address := net.JoinHostPort(cfg.host, cfg.port)
 	var raw net.Conn
 	if jump := cfg.get("proxyjump"); jump != "" && jump != "none" {
-		hop, jumpErr := dial(connecting, cfg.proxyJumpOptions(jump), depth+1, budgets)
+		options, jumpErr := cfg.proxyJumpOptions(jump)
+		if jumpErr != nil {
+			return nil, jumpErr
+		}
+		hop, jumpErr := dial(connecting, options, depth+1, budgets)
 		if jumpErr != nil {
 			return nil, jumpErr
 		}
@@ -175,15 +187,17 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 	if err != nil {
 		return nil, fmt.Errorf("SSH %s: %w", cfg.options.Host, err)
 	}
-	return &Client{Client: cryptossh.NewClient(conn, ch, req), jump: parent, done: make(chan struct{}), keys: keys}, nil
+	return &Client{Client: cryptossh.NewClient(conn, ch, req), jump: parent, done: make(chan struct{})}, nil
 }
-func (cfg *connectionConfig) proxyJumpOptions(jump string) Options {
+func (cfg *connectionConfig) proxyJumpOptions(jump string) (Options, error) {
 	last := strings.LastIndexByte(jump, ',')
 	host := jump[last+1:]
 	o := cfg.options
 	options := Options{
-		Host: host, Executable: o.Executable, Environment: o.Environment,
+		Host: host, Environment: o.Environment,
 		Directory: o.Directory, Confirm: o.Confirm, Secret: o.Secret, Diagnostic: o.Diagnostic,
+		Warn:             o.Warn,
+		RequireKnownHost: o.RequireKnownHost,
 	}
 	for args := o.Args; len(args) > 0; {
 		name, _, n := SplitOption(args)
@@ -195,29 +209,40 @@ func (cfg *connectionConfig) proxyJumpOptions(jump string) Options {
 	if last >= 0 {
 		options.Args = append(options.Args, "-J", jump[:last])
 	}
-	// ssh -G accepts user@host but not ProxyJump's optional :port suffix.
-	if at := strings.LastIndex(host, ":"); at >= 0 && at > strings.LastIndex(host, "]") {
-		if _, err := strconv.Atoi(host[at+1:]); err == nil {
-			options.Args = append(options.Args, "-p", host[at+1:])
-			options.Host = host[:at]
-		}
+	// An unbracketed IP literal carries no port.
+	prefix, address := "", host
+	if user, tail, ok := strings.Cut(host, "@"); ok {
+		prefix, address = user+"@", tail
 	}
-	return options
+	literal := address
+	if strings.HasPrefix(literal, "[") && strings.HasSuffix(literal, "]") {
+		literal = literal[1 : len(literal)-1]
+	}
+	if _, err := netip.ParseAddr(literal); err == nil {
+		return options, nil
+	}
+	if strings.Contains(address, ":") {
+		name, port, err := net.SplitHostPort(address)
+		if err != nil || name == "" || port == "" {
+			return Options{}, fmt.Errorf("invalid SSH ProxyJump destination %q", host)
+		}
+		options.Args = append(options.Args, "-p", port)
+		options.Host = prefix + name
+	}
+	return options, nil
 }
 
-func (c *Client) keepalive(interval, count string) {
-	seconds, _ := strconv.Atoi(interval)
-	if seconds <= 0 {
-		seconds = 15
+func (c *Client) keepalive(interval time.Duration, count int) {
+	if interval == 0 {
+		return
 	}
-	limit, _ := strconv.Atoi(count)
-	if limit <= 0 {
-		limit = 3
+	if count == 0 {
+		count = 3
 	}
+	deadline := min(time.Duration(count), math.MaxInt64/interval) * interval
 	go func() {
-		timer := time.NewTicker(time.Duration(seconds) * time.Second)
+		timer := time.NewTicker(interval)
 		defer timer.Stop()
-		deadline := time.Duration(seconds*limit) * time.Second
 		for {
 			select {
 			case <-c.done:

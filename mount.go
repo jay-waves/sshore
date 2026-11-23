@@ -52,7 +52,7 @@ func validateMountConfig(o ftpOptions) error {
 		return validateRecentConnection(*connection)
 	}
 	if len(o.SSH) != 0 {
-		_, _, err := parseSSHOptions(o.SSH, false)
+		_, _, err := parseSSHOptions(o.SSH)
 		return err
 	}
 	return nil
@@ -140,6 +140,7 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 		connection.Environment = s.baseEnvironment()
 		connection.Directory = s.directory
 		connection.Confirm, connection.Secret = s.config.Auth.callbacks()
+		connection.Warn = s.config.Auth.warn
 		c.PeerMetadata, _ = json.Marshal(s.peerTask())
 	}
 	c.Prepare = func(_ context.Context, wire io.ReadWriter) (string, error) {
@@ -186,5 +187,5 @@ func mountSSHOptions(o ftpOptions) sshio.Options {
 	if o.Connection != nil {
 		args, server = o.Connection.SSH, o.Connection.Server
 	}
-	return sshio.Options{Host: o.Host, Args: sshio.WithoutForwarding(args), Command: remoteCommand(options{command: "mount-agent", host: o.Host, server: server}), Confirm: confirmSSHHost, Secret: promptSSHSecret}
+	return sshio.Options{Host: o.Host, Args: args, Command: remoteCommand(options{command: "mount-agent", host: o.Host, server: server}), Confirm: confirmSSHHost, Secret: promptSSHSecret}
 }

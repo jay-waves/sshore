@@ -34,6 +34,7 @@ func runPing(args []string) (int, error) {
 }
 
 const pingBatchSize = 10
+const pingEchoCommand = "cat"
 
 type pingBatch struct {
 	minimum, total, maximum time.Duration
@@ -70,6 +71,7 @@ func measureSSHPing(ctx context.Context, options sshio.Options, count int, diagn
 		count = 30
 	}
 	start := time.Now()
+	options.Command = pingEchoCommand
 	client, err := sshio.Dial(ctx, options)
 	connectionTime := time.Since(start)
 	if err != nil {
@@ -93,7 +95,7 @@ func measureSSHPing(ctx context.Context, options sshio.Options, count int, diagn
 }
 
 func measureSSHEcho(ctx context.Context, client *sshio.Client, count int, diagnostic io.Writer) ([]pingBatch, error) {
-	process, err := client.Start("cat", diagnostic)
+	process, err := client.Start(pingEchoCommand, diagnostic)
 	if err != nil {
 		return nil, err
 	}

@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"slices"
@@ -113,10 +112,12 @@ func openClientTransportContext(ctx context.Context, o *options, transports clie
 	}()
 	if o.reusable != nil && o.command == "attach" &&
 		(o.instance != "" && o.instance == o.reusable.instance || o.instance == "" && o.session == o.reusable.session) {
+		warnUnusedRouteForwarding(o)
 		return openReusableTransport(ctx, o.reusable)
 	}
 	o.reusable = nil
 	if o.routeParent != nil {
+		warnUnusedRouteForwarding(o)
 		return openSessionRoute(ctx, o, transports)
 	}
 	if o.local {
@@ -292,7 +293,7 @@ func resolveRecentAttach(o *options) error {
 }
 
 func applyRecentConnection(o *options) error {
-	reply, err := metadataRPC(metadataRequest{Action: "connection_select", Host: o.host, Instance: o.instance, Direct: len(o.ssh) > 0 || o.serverSet})
+	reply, err := metadataRPC(metadataRequest{Action: "connection_select", Host: o.host, Instance: o.instance, Direct: len(transportio.WithoutForwarding(o.ssh)) > 0 || o.serverSet})
 	if err != nil {
 		return err
 	}
@@ -401,8 +402,8 @@ func applyConnectionOptions(o *options, r recentConnection) {
 			o.ssh = transportio.AppendWithoutPort(o.ssh, hop.SSH)
 			o.sshDirectory = hop.Directory
 			o.portOverrideOnly = false
-		} else if len(o.ssh) == 0 {
-			o.ssh = append([]string(nil), hop.SSH...)
+		} else if len(transportio.WithoutForwarding(o.ssh)) == 0 {
+			o.ssh = append(o.ssh, hop.SSH...)
 			o.sshDirectory = hop.Directory
 		}
 		parent := hop.Parent
@@ -412,6 +413,14 @@ func applyConnectionOptions(o *options, r recentConnection) {
 		o.routeParent = &options{command: "attach", host: parent.Host, session: parent.Session}
 		o.routeToken, o.routeTarget = hop.RouteToken, hop.RouteTarget
 		o = o.routeParent
+	}
+}
+
+func warnUnusedRouteForwarding(o *options) {
+	args := transportio.WithoutForwarding(o.ssh)
+	if len(args) != len(o.ssh) {
+		transportio.LogWarning(os.Stderr, transportio.IgnoredForwardingWarning(o.host))
+		o.ssh = args
 	}
 }
 
@@ -577,18 +586,6 @@ func handoffLocalClient(o options) (bool, error) {
 		args = append(append(args, "--"), o.ssh...)
 	}
 	environment := os.Environ()
-	if !o.local {
-		// Resolve the initiating shell's executable before handing off.
-		ssh, err := exec.LookPath(sshExecutable())
-		if err != nil {
-			return true, fmt.Errorf("system OpenSSH: %w", err)
-		}
-		ssh, err = filepath.Abs(ssh)
-		if err != nil {
-			return true, err
-		}
-		environment = append(environment, "SSHORE_SSH="+ssh)
-	}
 	h := &clientHandoff{Hosted: o.hosted, Args: args, Owner: o.owner, Directory: cwd, Environment: environment, Tree: currentShellTree(), TaskIdentity: o.taskIdentity, Instance: o.instance}
 	m, err := localRequest("", identity, message{Type: "handoff", Handoff: h})
 	if err != nil {
