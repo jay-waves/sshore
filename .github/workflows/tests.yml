@@ -97,6 +97,7 @@ jobs:
           }
           $suiteDir = Join-Path $env:RUNNER_TEMP winfsp-tests
           Expand-Archive -LiteralPath $suite -DestinationPath $suiteDir
+          (Join-Path ${env:ProgramFiles(x86)} 'WinFsp\bin') >> $env:GITHUB_PATH
           "SSHORE_TEST_WINFSP_SUITE=$(Join-Path $suiteDir winfsp-tests-x64.exe)" >> $env:GITHUB_ENV
       - name: Set up the Linux SSH fixture
         if: ${{ !cancelled() && steps.winfsp.outcome == 'success' }}

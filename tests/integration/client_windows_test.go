@@ -110,7 +110,7 @@ func TestWindowsConPTY(t *testing.T) {
 		send("\x02d")
 		wait("Detached from " + endpoint)
 		wait("No shell attached.")
-		wait("sshore on local> ")
+		wait("sshore on local>")
 		send("exit\r")
 	})
 	runWindowsTerminal(t, ctx, command("attach", endpoint), func(send func(string), wait terminalWait) {
@@ -119,7 +119,7 @@ func TestWindowsConPTY(t *testing.T) {
 		wait("WIN_RESUMED=retained:" + directory)
 		send("exit\r")
 		wait("No shell attached.")
-		wait("sshore on local> ")
+		wait("sshore on local>")
 		send("exit\r")
 	})
 	var inventory struct {
