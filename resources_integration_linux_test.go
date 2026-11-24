@@ -27,7 +27,7 @@ func TestKillAllLocalSnapshot(t *testing.T) {
 		return string(out), err
 	}
 	for _, name := range []string{"one", "two"} {
-		if out, err := run("", "fixture-launch", "here:", name, "--detach"); err != nil {
+		if out, err := run("", "fixture-sh", "here:", name, "--detach"); err != nil {
 			t.Fatal(out, err)
 		}
 	}
@@ -63,7 +63,7 @@ func TestKillAllStopsIdleDaemon(t *testing.T) {
 			t.Fatalf("%v: %v %s", args, err, out)
 		}
 	}
-	run("fixture-launch", "here:", "idle", "--detach")
+	run("fixture-sh", "here:", "idle", "--detach")
 	run("kill", "here:idle")
 	wait := waitFixtureDaemon(t, filepath.Join(e.dir, "state"))
 	run("kill", "--all")
@@ -84,7 +84,7 @@ func TestKillAllDoesNotCancelReplacement(t *testing.T) {
 		}
 		return string(out)
 	}
-	run("fixture-launch", "here:", "same", "--detach")
+	run("fixture-sh", "here:", "same", "--detach")
 	cmd := exec.CommandContext(ctx, e.bin, "kill", "--all")
 	cmd.Env = e.env
 	input, err := cmd.StdinPipe()
@@ -110,7 +110,7 @@ func TestKillAllDoesNotCancelReplacement(t *testing.T) {
 		text.WriteByte(b)
 	}
 	run("kill", "here:same")
-	run("fixture-launch", "here:", "same", "--detach")
+	run("fixture-sh", "here:", "same", "--detach")
 	io.WriteString(input, "\n")
 	input.Close()
 	tail, _ := io.ReadAll(reader)
@@ -166,6 +166,7 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	saved := make(chan struct{}, 1)
+	menu := make(chan struct{}, 1)
 	start := func(args []string, environment []string) (*exec.Cmd, *os.File, <-chan string) {
 		t.Helper()
 		cmd := exec.CommandContext(ctx, e.bin, args...)
@@ -193,6 +194,12 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 				if !announced && strings.Contains(b.String(), "Connected here:") {
 					announced = true
 					ready <- struct{}{}
+				}
+				if strings.Contains(b.String(), "No shell attached.") {
+					select {
+					case menu <- struct{}{}:
+					default:
+					}
 				}
 				if strings.Contains(b.String(), "SAVED_first_VALUE") {
 					select {
@@ -225,7 +232,7 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 		}
 		return out
 	}
-	first, terminal, _ := start([]string{"fixture-launch", "here:", "persistent"}, env)
+	first, terminal, _ := start([]string{"fixture-sh", "here:", "persistent", "--pin"}, env)
 	defer run("kill", "here:persistent")
 	first.Process.Kill()
 	first.Wait()
@@ -251,6 +258,12 @@ func TestLocalDaemonPreservesShellOnClientLoss(t *testing.T) {
 		t.Fatal("shell did not answer", ctx.Err())
 	}
 	io.WriteString(terminal, "\x02d")
+	select {
+	case <-menu:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	io.WriteString(terminal, "exit\r")
 	if err := second.Wait(); err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +302,7 @@ func TestLocalNoLoginStartup(t *testing.T) {
 			t.Fatalf("%v: %v %s", args, err, out)
 		}
 	}
-	run("fixture-launch", "here:", "startup", "--no-login", "--detach")
+	run("fixture-sh", "here:", "startup", "--no-login", "--detach")
 	defer run("kill", "here:startup")
 	deadline := time.Now().Add(3 * time.Second)
 	for {

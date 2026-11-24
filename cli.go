@@ -99,7 +99,7 @@ func run(args []string) (code int, resultErr error) {
 			return 2, usage("usage: sshore daemon [mount]")
 		}
 		return runMountDaemon()
-	case "launch", "spawn", "attach", "rename", "kill":
+	case "sh", "attach", "rename", "kill":
 		return runTargetCommand(args)
 	case "list", "pstree":
 		return runInventoryCommand(args[0], args[1:])
@@ -112,13 +112,14 @@ func run(args []string) (code int, resultErr error) {
 	case "copy-id":
 		return runCopyID(args[1:])
 	case "detach":
-		if len(args) != 1 {
-			return 2, usage("detach takes no arguments")
+		m, err := parseDetachCommand(args[1:])
+		if err != nil {
+			return 2, err
 		}
 		if identity := os.Getenv("SSHORE_LOCAL_SESSION"); identity != "" {
-			return 0, detachLocalShell(identity)
+			return 0, retentionLocalShell(identity, m)
 		}
-		return 0, detachHelper()
+		return 0, retentionHostedShell(m)
 	}
 	return 2, usage("unknown command: %s", args[0])
 }
@@ -211,13 +212,13 @@ func runExec(args []string) (int, error) {
 func parseOptions(args []string) (options, error) {
 	o := options{server: "sshore"}
 	if len(args) == 0 {
-		return o, usage("expected launch, spawn, attach, kill or rename; see sshore --help")
+		return o, usage("expected sh, attach, kill or rename; see sshore --help")
 	}
 	o.command = canonicalCommand(args[0])
 	switch o.command {
-	case "launch", "spawn", "attach", "kill", "rename":
+	case "sh", "attach", "kill", "rename":
 	default:
-		return o, usage("choose an action: sshore launch [HOST:], sshore spawn [HOST:], sshore attach HOST:ID, sshore kill HOST:ID, or sshore rename HOST:ID NEW")
+		return o, usage("choose an action: sshore sh [HOST:], sshore attach HOST:ID, sshore kill HOST:ID, or sshore rename HOST:ID NEW")
 	}
 	parsed, err := parseCLI(args[1:], o.command)
 	if err != nil {
@@ -233,6 +234,7 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 	o.serverSet = parsed.has("--server")
 	o.quiet, o.noEscape = parsed.has("--quiet"), parsed.has("--no-escape")
 	o.detached = parsed.has("--detach")
+	o.pin = parsed.has("--pin")
 	o.noLogin = parsed.has("--no-login")
 	o.noProfile = parsed.has("--no-profile")
 	firstName := 1
@@ -325,7 +327,7 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 		parsed.local = true
 		return nil
 	}
-	if command == "launch" || command == "spawn" {
+	if command == "sh" {
 		host, name := parsed.operand(0), ""
 		parsed.local = count == 0
 		if !isBareSSHHost(host) {
@@ -412,15 +414,14 @@ type options struct {
 	recovering            bool
 	reusable              *clientTransport
 	routeTarget           bool
+	sameHostRoute         bool
 	handoffDone           func(context.Context, error) error
 	handoffAttachment     string
 	routeParent           *options
 	routeToken            string
 	environment           []string
 	tree                  []shellTreeNode
-	temporary             bool
 	hosted                bool
-	owner                 processIdentity
 	host, session, server string
 	command               string
 	newName               string
@@ -428,10 +429,12 @@ type options struct {
 	ssh                   []string
 	local                 bool
 	detached              bool
+	pin                   bool
 	noLogin               bool
 	noProfile             bool
 	taskIdentity          string
 	instance              string
+	parent                string
 	portOverrideOnly      bool
 	serverSet             bool
 	sshDirectory          string
@@ -439,14 +442,7 @@ type options struct {
 
 func executeShellCommand(o options) (int, error) {
 	var err error
-	if o.command == "spawn" {
-		o.temporary = true
-		o.owner, err = currentSpawnOwner()
-		if err != nil {
-			return 1, err
-		}
-	}
-	if handled, err := handoffRemoteSpawn(o); handled {
+	if handled, err := handoffRemoteShell(o); handled {
 		if err != nil {
 			return 1, err
 		}
@@ -805,7 +801,7 @@ func selectTask(snapshot taskInventorySnapshot, kind, ref string, routes []recen
 	prefix := strings.ToLower(ref)
 	byID := isTaskIDPrefix(prefix)
 	consider := func(task selectedTask) {
-		if kind != "" && kind != task.Kind && !((kind == "spawn" || kind == "launch") && task.Kind == "shell") {
+		if kind != "" && kind != task.Kind && !(kind == "sh" && task.Kind == "shell") {
 			return
 		}
 		switch {

@@ -117,9 +117,6 @@ func executeLocalApproval(request requestRecord, source options) (int, bool, err
 	defer closeCopyBatch(selection.files)
 	resume := true
 	if selectionErr == nil {
-		if source.temporary && !source.local {
-			termui.WriteConsoleBody(out, "Leaving locally ends this remote spawn when its connection closes.")
-		}
 		resume, selectionErr = chooseApprovalReturn(input)
 	}
 	displayErr := (pty.InputState{}).EndConsole(out)

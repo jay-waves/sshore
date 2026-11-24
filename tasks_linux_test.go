@@ -40,7 +40,7 @@ func TestKillAllRemoteScope(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
-	if out, err := run("", "fixture-launch", "here:", "keep", "--detach"); err != nil {
+	if out, err := run("", "fixture-sh", "here:", "keep", "--detach"); err != nil {
 		t.Fatal(out, err)
 	}
 	defer run("", "kill", "here:keep")
@@ -65,7 +65,7 @@ func TestListIncludesRecordedRemoteShellsOffline(t *testing.T) {
 	other.record.Host = "elsewhere"
 	if err := observeParticipatingShell(participatingShell{
 		Host: "work", Instance: newTaskUID(), Name: "remembered", State: taskDetached,
-		PID: 1234, Lifetime: "persistent", Attachment: newTaskUID(),
+		PID: 1234, Attachment: newTaskUID(),
 	}); err != nil {
 		t.Fatal(err)
 	}

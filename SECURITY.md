@@ -58,7 +58,7 @@ flowchart LR
     user -->|"kill --all: confirm snapshot; cross-release admin only"| control
     user -->|"reset: stop tasks before clearing local state"| control
     control -->|"Private handoff; child readiness required"| client
-    shell -->|"Explicit nested spawn"| relay
+    shell -->|"Explicit nested shell"| relay
     relay <-->|"Next-hop SSH; same exact release"| child
     relay <-->|"Private attachment route; no local command or credentials"| client
     resources -->|"Require exact release"| setup
@@ -71,11 +71,11 @@ capabilities. Local control requires private state and authentication. Remote
 operations remain constrained by the authenticated account and SSH server policy.
 
 Local attachment handoff is accepted through authenticated local control, never
-inferred from terminal output. A nested remote spawn is executed by the daemon on
+inferred from terminal output. A nested remote shell is executed by the daemon on
 its initiating host, using that host's configuration and signing credentials. The terminal client
 receives an attachment route, not an instruction to execute the remote command or
 use the root account's credentials for the next hop. Child readiness is required
-before the launcher reports success; the original spawn owner remains authoritative.
+before the launcher reports success. The authenticated daemon tracks the parent scope.
 
 Routes are private capabilities bound to the parent shell instance. Each route
 opens authenticated endpoints to the fixed child instance, using local daemon
@@ -220,21 +220,21 @@ or downgrade. Launch environments remain in memory, not public inventory or
 persistent daemon records. The selected host’s daemon resolves task IDs against its live registrations. Lease loss releases participation, never another
 persistent shell. This is a same-user trust boundary, not a sandbox.
 
-`launch` reserves a fresh name; `attach` requires an existing shell and never evicts
+`sh` reserves a fresh name; `attach` requires an existing shell and never evicts
 its attached client. Selection is rechecked before attachment. Recent targets only
 supply defaults: they do not carry typed passwords, authorize takeover or recreate
 ended shells. Rename changes a label, not process identity or approval authority.
 
-Lifecycle is fixed at startup:
+The authenticated starting lease owns the lifetime of a top-level shell.
+A same-host nested shell follows the registered parent task. A cross-host
+child uses a lease scoped to that parent. A lost lease is detected by its
+closure or the heartbeat deadline.
 
-- `spawn` retains the original parent PID and creation identity, even after detach
-  or attachment elsewhere. PID reuse does not extend its lifetime.
-- Remote spawn additionally requires an exclusive lifetime SSH lease on its exact
-  endpoint. Detach preserves that lease; owner exit or detected connection loss
-  ends the spawn. Silent network loss is detected after a timeout.
-- `launch` survives client exit and connection loss. Exit, explicit cancellation,
-  daemon failure or host restart can end it. Independent mounts and forwards do
-  not end merely because a shell ends.
+`sh --pin` retains the shell until it exits. Explicit `detach [DURATION]`
+sets retention under the same lock as task termination before releasing the
+attachment. Internal terminal switches and approval handoffs release an
+attachment under the existing scope. When a parent ends, a pinned child
+retains its subtree. Independent mounts and forwards retain their own scopes.
 
 Explicit cancellation validates the target instance, capability or process identity;
 it never kills a PID solely because a record contains it. Short-ID selection is
@@ -369,10 +369,8 @@ apply it. Install help is read-only.
 
 Public inventory is an allowlist: it excludes control addresses/tokens, SSH options
 and terminal contents. Shell process listings show sanitized same-user names and
-PIDs, not arguments or environments. Root spawn trees may include the original
-direct parent process as display context, checked against its creation identity;
-this does not adopt that process or authorize signaling it. Foreign parent PIDs
-are never resolved against local processes. Foreground summaries and detailed resource
+PIDs, excluding arguments and environments. Live tree edges describe registered
+parent shells. Foreground summaries and detailed resource
 status can reveal working-directory/project names, paths, ports and errors.
 
 Peer records expose only their resource identity, manager label, remote-facing
@@ -389,8 +387,9 @@ are not proof of identity, successful cleanup or remote service health. Targets
 are not probed. `list` reads remote shell observations from the local daemon.
 `pstree` uses those observations to display recorded remote detaches.
 The host resolves task selectors against its live registry. The command prompt reads the current host’s
-registered tasks through its authenticated attachment and displays the
-response as plain text.
+registered tasks through its authenticated attachment or through a direct,
+exact-release SSH inventory request after leaving the root shell. The client
+sanitizes the response for terminal display.
 
 See [inventory and diagnostics](SSHORE.md#inventory-and-diagnostics) for implementation entry points.
 

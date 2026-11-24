@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func stopSpawnTerminal(pid int, start string) error {
+func stopHostedTerminal(pid int, start string) error {
 	return stopOwnedProcesses([]setupProcess{{PID: pid, Start: start}})
 }
 

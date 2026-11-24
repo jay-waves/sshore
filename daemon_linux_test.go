@@ -20,7 +20,7 @@ func TestDaemonHostedTaskRouting(t *testing.T) {
 	tasks := startRequestDaemon(t)
 	id := strings.Repeat("e", 32)
 	selection := taskIdentitySelection{name: "hosted", uid: id}
-	if err := createRemoteShell("", selection, false, root, nil); err != nil {
+	if err := createRemoteShell("", selection, root, nil); err != nil {
 		t.Fatal(err)
 	}
 	tasks.mu.Lock()
@@ -30,7 +30,7 @@ func TestDaemonHostedTaskRouting(t *testing.T) {
 		t.Fatal("creation returned before registering the hosted shell")
 	}
 	t.Cleanup(func() { _ = shell.stopTask() })
-	if err := createRemoteShell("", selection, false, root, nil); err == nil || !strings.Contains(err.Error(), "task already exists") {
+	if err := createRemoteShell("", selection, root, nil); err == nil || !strings.Contains(err.Error(), "task already exists") {
 		t.Fatalf("duplicate hosted shell creation: %v", err)
 	}
 	native := registerTestShell(t, tasks, "native", strings.Repeat("c", 32))

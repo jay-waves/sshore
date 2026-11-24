@@ -36,7 +36,7 @@ effort and must preserve user input. See the [support matrix](README.md#os-and-s
 and [native terminal adapters](internal/pty/).
 
 Local and hosted shells share one [shell task lifecycle](shell_terminal.go).
-Their entry points supply owner supervision and the commands specific to
+Their entry points provide the commands specific to
 local handoff or hosted resources.
 
 Build the experimental Apple Silicon client on Apple Silicon with
@@ -53,12 +53,14 @@ authentication, daemon lifetime or native mounts.
 
 ### Shell ownership and attachment
 
-A spawned shell depends on its original parent and, for a remote spawn, its
-lifetime SSH connection. A launched shell survives its launching client.
-Detaching or switching changes who interacts with the shell. Its original
-lifetime rules still apply. During handoff, release the old input reader before
-giving its successor the terminal. See [spawn transport](spawn_transport.go),
-[Linux launch](launch_daemon_linux.go) and [attachment handling](shell_attachment.go).
+A root shell follows the authenticated frontend lease. A same-host child
+follows its registered parent task. For a child on another host, the initiating
+daemon owns an SSH lease scoped to the parent. Explicit detach sets a pin on the
+same task before releasing input. Internal switches and approval handoffs release
+input under the original scope. The daemon serializes pin expiry, scope loss and
+reattachment under the task lock. When the scope ends, an effective pin keeps the
+shell and its dependent descendants running. See [retention](shell_retention.go),
+[transport](shell_transport.go) and [attachments](shell_attachment.go).
 
 ### Account daemon and mounts
 
@@ -83,7 +85,10 @@ registry establishes management authority. The live inventory takes one snapshot
 of registered shells and resources. Resource status probes run
 after the snapshot within their own time budget. For `pstree`, the daemon reads
 registered tasks, saved tree metadata and incoming transport leases independently
-and returns a normalized, sorted tree. The caller marks its current shell.
+and returns a normalized, sorted tree.
+Branches show live parent shells. Each shell row shows its own current
+attachment state and `*` marks the shell using the current terminal. Siblings
+are sorted by task ID, so detach and reattach do not move them in the tree.
 Shell and resource arrows appear on their task lines. The daemon appends remote
 shells last observed detached as roots, most recent first.
 For `list`, the daemon combines registered tasks, active incoming resources and
@@ -93,7 +98,9 @@ shells were seen and marks read-only access in DETAIL. The daemon uses `active`
 for attached shells, running workers, and live incoming leases. It uses
 `unknown` when a state cannot be confirmed. JSON uses the same `state` field for shells, resources and peers and
 includes `observed: true` and `seen_at` on recorded remote shells.
-Invalid saved shell-tree states cause an inventory error. Resource leases require a task UID and direction.
+Invalid shell-tree or participation history makes the inventory incomplete.
+Diagnostics identify the unavailable source, and invalid records report the
+file, entry and rejected field. Resource leases require a task UID and direction.
 A shell connection refreshes the known shells against the host’s live list.
 The local daemon resolves implicit attach targets from detach history and live
 local registrations. For `HOST:ID`, the named host resolves the selector against

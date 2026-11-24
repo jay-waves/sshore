@@ -14,7 +14,7 @@ func serveRemoteRequest(remoteServiceRequest) error {
 	return fmt.Errorf("remote services run on the Linux server")
 }
 
-func detachHelper() error {
+func retentionHostedShell(message) error {
 	return fmt.Errorf("run this command inside an sshore shell")
 }
 
@@ -34,6 +34,6 @@ func runHostedCommand(options) (int, error) {
 	return 1, fmt.Errorf("%s does not host Unix shells", runtime.GOOS)
 }
 
-func handoffRemoteSpawn(o options) (bool, error) { return false, nil }
+func handoffRemoteShell(o options) (bool, error) { return false, nil }
 
 func resetHostedExitState(string, []string) error { return nil }

@@ -42,7 +42,7 @@ func selectHostedShell(name, mode string, expected ...string) (shellSelection, e
 }
 func prepareHostedShell(name, mode, instance, executable string, gate *os.File) error {
 	defer gate.Close()
-	if (mode == "new" || mode == "spawn") && isShortTaskID(name) {
+	if (mode == "new") && isShortTaskID(name) {
 		name = ""
 	}
 	selected, err := selectHostedShell(name, mode, instance)
@@ -54,7 +54,7 @@ func prepareHostedShell(name, mode, instance, executable string, gate *os.File) 
 		if err != nil {
 			return err
 		}
-		if err := createRemoteShell(executable, selected.taskIdentitySelection, mode == "spawn", cwd, os.Environ()); err != nil {
+		if err := createRemoteShell(executable, selected.taskIdentitySelection, cwd, os.Environ()); err != nil {
 			return err
 		}
 	}
@@ -89,7 +89,7 @@ func detachedHostedShells() ([]sessionTarget, error) {
 	return targets, nil
 }
 
-func detachHelper() error {
+func retentionHostedShell(m message) error {
 	sock := os.Getenv("SSHORE_SOCKET")
 	if sock == "" {
 		return fmt.Errorf("run this command inside an sshore shell")
@@ -100,17 +100,7 @@ func detachHelper() error {
 	}
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(requestTimeout))
-	if err := writeMessage(c, message{Type: "detach"}); err != nil {
-		return err
-	}
-	m, err := readMessage(c)
-	if err != nil {
-		return err
-	}
-	if m.Type != "detached" {
-		return fileResponseError(m)
-	}
-	return nil
+	return requestShellRetention(c, m)
 }
 
 func (s *remoteShell) sessionTargets(request message) message {

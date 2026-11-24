@@ -192,7 +192,7 @@ func TestRemoteFallbackAndArgumentQuoting(t *testing.T) {
 	for _, mode := range []string{"bridge", "list", "new", "attach"} {
 		o := options{server: "sshore", session: "main", command: mode}
 		if mode == "new" {
-			o.command = "launch"
+			o.command = "sh"
 		}
 		out, err := runRemoteCommand(t, home, o)
 		req := remoteServiceRequest{Operation: "shell", Mode: mode, Name: "main"}
@@ -271,7 +271,7 @@ func TestRenameRemoteRouting(t *testing.T) {
 }
 
 func TestRemoteShellRejectsVersionMismatch(t *testing.T) {
-	for _, command := range []string{"launch", "spawn", "attach"} {
+	for _, command := range []string{"sh", "attach"} {
 		t.Run(command, func(t *testing.T) {
 			home := t.TempDir()
 			target := filepath.Join(home, "sshore")

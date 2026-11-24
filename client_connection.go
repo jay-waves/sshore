@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/proc"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/term"
@@ -54,12 +53,13 @@ type clientTransports map[*clientTransport]bool
 type clientTransport struct {
 	open              func(context.Context) (net.Conn, error)
 	close             func()
+	ownsShell         bool
 	session, instance string
 }
 
-func (ts clientTransports) releaseUnreferenced() {
+func (ts clientTransports) releaseUnreferenced(keepShells bool) {
 	for t, keep := range ts {
-		if keep {
+		if keep || keepShells && t.ownsShell {
 			ts[t] = false
 			continue
 		}
@@ -85,7 +85,7 @@ func (ts clientTransports) openTaskStream(ctx context.Context, o *options, open 
 	if ts == nil {
 		return ownClientTransport(ctx, stream, closeTask), nil
 	}
-	t := &clientTransport{open: open, close: closeTask, session: o.session, instance: o.instance}
+	t := &clientTransport{open: open, close: closeTask, ownsShell: o.command == "sh", session: o.session, instance: o.instance}
 	o.reusable = t
 	ts[t] = false
 	return ownClientTransport(ctx, stream, nil), nil
@@ -132,13 +132,28 @@ func openClientTransportContext(ctx context.Context, o *options, transports clie
 		var c net.Conn
 		var r localShellRecord
 		var err error
-		if o.command == "launch" || o.command == "spawn" {
+		if o.command == "sh" {
 			r, err = startLocalSessionContext(ctx, *o)
 			if err == nil {
 				if o.taskIdentity != "" && o.taskIdentity != r.identity() {
 					return nil, fmt.Errorf("local task changed; refresh with sshore list")
 				}
-				c, err = dialLocalSessionContext(ctx, r, time.Now().Add(5*time.Second))
+				open := func(ctx context.Context) (net.Conn, error) {
+					c, err := dialLocalSessionContext(ctx, r, time.Now().Add(5*time.Second))
+					if err == nil {
+						_ = c.SetDeadline(time.Time{})
+					}
+					return c, err
+				}
+				o.taskIdentity, o.session = r.identity(), r.Name
+				if o.parent == "" {
+					stop, _, err := claimShellOwner(context.Background(), func() (net.Conn, error) { return open(ctx) }, r.UID)
+					if err != nil {
+						return nil, err
+					}
+					return transports.openTaskStream(ctx, o, open, stop)
+				}
+				c, err = open(ctx)
 			}
 		} else {
 			ref := o.session
@@ -152,7 +167,6 @@ func openClientTransportContext(ctx context.Context, o *options, transports clie
 		}
 		o.taskIdentity = r.identity()
 		o.session = r.Name
-		o.temporary = r.Owner.PID != 0
 		_ = c.SetDeadline(time.Time{})
 		return ownClientTransport(ctx, c, nil), nil
 	}
@@ -179,7 +193,7 @@ func runClient(o options) (int, error) {
 			r.conn.Close()
 		}
 	}()
-	defer transports.releaseUnreferenced()
+	defer transports.releaseUnreferenced(false)
 	// Keep the frontend alive while an attempt unwinds and restores its parent.
 	// Each attempt routes interrupts according to its connection phase.
 	signals := make(chan os.Signal, 1)
@@ -189,6 +203,8 @@ func runClient(o options) (int, error) {
 	var parents []returnTarget
 	var pending *sessionSwitch
 	var currentEndpoint string
+	var menu *options
+	var current options
 	returning := false
 	returnCode := 0
 	prune := func(current *options) {
@@ -199,11 +215,12 @@ func runClient(o options) (int, error) {
 		for i := range parents {
 			transports.retainRoute(&parents[i].options)
 		}
-		transports.releaseUnreferenced()
+		transports.releaseUnreferenced(true)
 	}
 	for {
 		prune(&o)
-		code, err := runClientOnce(o, previous, len(parents) == 0, transports, func(current options) string {
+		code, err := runClientOnce(o, previous, transports, func(attached options) string {
+			current, menu = attached, nil
 			from := currentEndpoint
 			currentEndpoint = shellDisplayEndpoint(current)
 			if from == currentEndpoint {
@@ -270,7 +287,23 @@ func runClient(o options) (int, error) {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Could not return to %s: %s. Leaving this frontend.\n", cleanText(o.session), cleanText(err.Error()))
 			return returnCode, nil
 		case len(parents) == 0:
-			return code, err
+			if o.detached || o.command == "kill" || o.command == "rename" || err != nil && menu == nil {
+				return code, err
+			}
+			problem := ""
+			if err != nil {
+				problem, current = err.Error(), *menu
+			}
+			next, menuErr := runRootConsole(current, problem)
+			if menuErr != nil {
+				return 1, menuErr
+			}
+			if next == nil {
+				return code, nil
+			}
+			menu = &current
+			o, previous, returning = *next, "", false
+			continue
 		default:
 			last := len(parents) - 1
 			target = parents[last]
@@ -312,7 +345,7 @@ func applyRecentConnection(o *options) error {
 		return nil
 	}
 	if o.host == "" {
-		return usage("no recent connection; use sshore attach HOST:[ID] or sshore launch HOST:")
+		return usage("no recent connection; use sshore attach HOST:[ID] or sshore sh HOST:")
 	}
 	return nil
 }
@@ -428,6 +461,7 @@ func rememberConnection(o options) error {
 	if o.host == "" || o.session == "" {
 		return nil
 	}
+	o = directShellOptions(o)
 	record, err := connectionFromOptions(o)
 	if err != nil {
 		return err
@@ -435,6 +469,19 @@ func rememberConnection(o options) error {
 	_, err = metadataRPC(metadataRequest{Action: "connection_save", Connection: &record})
 	return err
 }
+func directShellOptions(o options) options {
+	// A same-host child can be reached directly even after its parent exits.
+	hop := &o
+	for hop.sameHostRoute && hop.routeParent != nil {
+		hop = hop.routeParent
+	}
+	if hop != &o && hop.routeParent == nil && !hop.local {
+		o.routeParent, o.routeToken, o.routeTarget = nil, "", false
+		o.server, o.ssh, o.sshDirectory = hop.server, hop.ssh, hop.sshDirectory
+	}
+	return o
+}
+
 func routeParentOptions(parent options) options {
 	parent.command = "attach"
 	// The remote entry point accepts immutable task UIDs, so an ancestor rename cannot sever
@@ -456,14 +503,14 @@ func openSessionRoute(ctx context.Context, o *options, transports clientTranspor
 			_ = c.Close()
 		}
 	}()
-	reply, err := exchangeRouteRequest(c, message{Type: "spawn_route_connect", Token: o.routeToken, Instance: parent.instance})
+	reply, err := exchangeRouteRequest(c, message{Type: "shell_route_connect", Token: o.routeToken, Instance: parent.instance})
 	if err != nil {
 		return nil, err
 	}
 	if reply.Type != "route_connected" {
-		return nil, fmt.Errorf("spawn route: %s", reply.Error)
+		return nil, fmt.Errorf("shell route: %s", reply.Error)
 	}
-	if err := checkPeerVersion(reply.SoftwareVersion, "spawn route"); err != nil {
+	if err := checkPeerVersion(reply.SoftwareVersion, "shell route"); err != nil {
 		return nil, err
 	}
 	if o.routeTarget {
@@ -494,7 +541,7 @@ func exchangeRouteRequest(c io.ReadWriter, request message) (message, error) {
 	return readMessage(c)
 }
 
-func confirmSpawnRoute(ctx context.Context, parent options, token string, result error) error {
+func confirmShellRoute(ctx context.Context, parent options, token string, result error) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	parent = routeParentOptions(parent)
@@ -503,7 +550,7 @@ func confirmSpawnRoute(ctx context.Context, parent options, token string, result
 		return err
 	}
 	defer c.Close()
-	request := message{Type: "spawn_route_confirm", Token: token, Instance: parent.instance}
+	request := message{Type: "shell_route_confirm", Token: token, Instance: parent.instance}
 	if result != nil {
 		request.Error = cleanText(result.Error())
 	}
@@ -512,7 +559,7 @@ func confirmSpawnRoute(ctx context.Context, parent options, token string, result
 		return err
 	}
 	if reply.Type != "route_confirmed" {
-		return fmt.Errorf("spawn confirmation: %s", reply.Error)
+		return fmt.Errorf("shell confirmation: %s", reply.Error)
 	}
 	return nil
 }
@@ -536,18 +583,11 @@ func (h *clientHandoff) options() (options, error) {
 	if err != nil {
 		return o, err
 	}
-	if o.detached || (o.command != "spawn" && o.command != "launch" && o.command != "attach") || !filepath.IsAbs(h.Directory) {
+	if o.detached || (o.command != "sh" && o.command != "attach") || !filepath.IsAbs(h.Directory) {
 		return o, fmt.Errorf("invalid remote handoff")
 	}
 	if h.Hosted && (!o.local || o.command != "attach" || !validTaskUID(h.Instance) || h.TaskIdentity != "task:"+h.Instance) {
 		return o, fmt.Errorf("invalid hosted shell handoff")
-	}
-	if o.command == "spawn" {
-		identity, err := proc.LiveIdentity(h.Owner.PID)
-		if h.Owner.PID <= 1 || err != nil || identity != h.Owner.Start {
-			return o, fmt.Errorf("spawn owner exited")
-		}
-		o.temporary, o.owner = true, h.Owner
 	}
 	o.sshDirectory, o.environment, o.tree = h.Directory, h.Environment, h.Tree
 	o.taskIdentity, o.instance = h.TaskIdentity, h.Instance
@@ -557,7 +597,7 @@ func (h *clientHandoff) options() (options, error) {
 
 func handoffLocalClient(o options) (bool, error) {
 	identity := os.Getenv("SSHORE_LOCAL_SESSION")
-	if identity == "" || o.detached || (o.command != "spawn" && o.command != "launch" && o.command != "attach") || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+	if identity == "" || o.detached || (o.command != "sh" && o.command != "attach") || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return false, nil
 	}
 	cwd, err := os.Getwd()
@@ -577,7 +617,7 @@ func handoffLocalClient(o options) (bool, error) {
 	for _, flag := range []struct {
 		name    string
 		enabled bool
-	}{{"--quiet", o.quiet}, {"--no-escape", o.noEscape}, {"--no-login", o.noLogin}, {"--no-profile", o.noProfile}} {
+	}{{"--quiet", o.quiet}, {"--no-escape", o.noEscape}, {"--pin", o.pin}, {"--no-login", o.noLogin}, {"--no-profile", o.noProfile}} {
 		if flag.enabled {
 			args = append(args, flag.name)
 		}
@@ -586,7 +626,7 @@ func handoffLocalClient(o options) (bool, error) {
 		args = append(append(args, "--"), o.ssh...)
 	}
 	environment := os.Environ()
-	h := &clientHandoff{Hosted: o.hosted, Args: args, Owner: o.owner, Directory: cwd, Environment: environment, Tree: currentShellTree(), TaskIdentity: o.taskIdentity, Instance: o.instance}
+	h := &clientHandoff{Hosted: o.hosted, Args: args, Directory: cwd, Environment: environment, Tree: currentShellTree(), TaskIdentity: o.taskIdentity, Instance: o.instance}
 	m, err := localRequest("", identity, message{Type: "handoff", Handoff: h})
 	if err != nil {
 		return true, err

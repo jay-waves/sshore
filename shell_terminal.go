@@ -36,6 +36,12 @@ type shellTask struct {
 	hosted, killing bool
 	started         time.Time
 	exitReason      string
+	parent          *shellTask
+	ownerClaimed    bool
+	scopeLost       bool
+	pinned          bool
+	pinUntil        time.Time
+	pinTimer        *time.Timer
 }
 
 func (s *shellTask) taskName() string {
@@ -70,6 +76,9 @@ func (s *shellTask) treeIdentity() string {
 // Call with mu held.
 func (s *shellTask) finishLocked() {
 	s.once.Do(func() {
+		if s.pinTimer != nil {
+			s.pinTimer.Stop()
+		}
 		saveShellTree(s.treeIdentity(), s.record.Name, nil, taskExited)
 		close(s.done)
 	})
@@ -78,6 +87,9 @@ func (s *shellTask) finishLocked() {
 func (s *shellTask) close() {
 	s.once.Do(func() {
 		s.mu.Lock()
+		if s.pinTimer != nil {
+			s.pinTimer.Stop()
+		}
 		terminal, attachment := s.terminal, s.endTerminal()
 		identity, name := s.treeIdentity(), s.record.Name
 		s.mu.Unlock()
@@ -96,61 +108,62 @@ func (s *shellTask) stopTask() error {
 	return s.kill(s.record.UID, "killed by sshore kill")
 }
 
-func (s *shellTask) stopLocal(reason string) error {
-	s.mu.Lock()
-	s.killing = true
-	if s.exitReason == "" {
-		s.exitReason = reason
-	}
-	terminal := s.terminal
-	s.mu.Unlock()
-	if terminal != nil {
-		if err := terminal.Stop(); err != nil {
-			return err
-		}
-	}
-	s.close()
-	return nil
-}
-
 func (s *shellTask) kill(instance, reason string) error {
-	if !s.hosted {
-		return s.stopLocal(reason)
-	}
 	s.mu.Lock()
-	if instance == "" || instance != s.record.UID {
+	if s.hosted && (instance == "" || instance != s.record.UID) {
 		s.mu.Unlock()
 		return fmt.Errorf("shell instance changed; refresh with sshore list")
 	}
-	process := s.process
-	s.killing = true
-	if s.exitReason == "" {
-		s.exitReason = reason
-	}
-	if process.PID == 0 {
-		s.endTerminal()
-		s.finishLocked()
+	if s.exited {
 		s.mu.Unlock()
 		return nil
 	}
+	if s.killing {
+		s.mu.Unlock()
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-s.done:
+			return nil
+		case <-timer.C:
+			return fmt.Errorf("shell has not finished stopping")
+		}
+	}
+	s.killing, s.exitReason = true, reason
 	s.mu.Unlock()
-	if err := s.signal(process); err != nil {
+	return s.stopTerminal()
+}
+
+// The caller claims shutdown under mu before stopping the validated terminal.
+func (s *shellTask) stopTerminal() error {
+	s.mu.Lock()
+	terminal, process := s.terminal, s.process
+	s.mu.Unlock()
+	var err error
+	if terminal != nil {
+		if s.hosted {
+			err = stopHostedTerminal(process.PID, process.Start)
+		} else {
+			err = terminal.Stop()
+		}
+	}
+	if err != nil {
 		s.mu.Lock()
 		s.killing = false
 		s.mu.Unlock()
 		return err
 	}
+	if !s.hosted {
+		s.close()
+		return nil
+	}
 	s.mu.Lock()
+	if terminal == nil {
+		s.endTerminal()
+	}
 	s.finishLocked()
 	s.mu.Unlock()
 	return nil
-}
-
-func (s *shellTask) signal(process processIdentity) error {
-	if process.PID == 0 {
-		return nil
-	}
-	return stopSpawnTerminal(process.PID, process.Start)
 }
 
 func (s *shellTask) startManagedShell(path string, env []string, m message) error {
@@ -250,17 +263,28 @@ func (s *shellTask) serveCommand(c net.Conn, m message, attach func(net.Conn) er
 		return true, attach(c)
 	case "status":
 		reply = status(m.Action)
+	case "shell_owner":
+		return true, s.serveOwner(c, m)
 	case "detach":
+		if err := checkPeerVersion(m.SoftwareVersion, "client"); err != nil {
+			return true, writeMessage(c, message{Type: "error", Error: err.Error()})
+		}
 		s.mu.Lock()
 		p := s.active
-		s.mu.Unlock()
-		// The control loop owns final detachment.
-		if p != nil {
-			if err := p.controlMessage(message{Type: "detach_requested"}); err != nil {
-				return true, writeMessage(c, message{Type: "error", Error: "detach request could not reach the client; reconnect to check the shell"})
-			}
+		var err error
+		if p == nil {
+			err = fmt.Errorf("shell has no active attachment")
+		} else {
+			err = s.pinLocked(m.TTL)
 		}
-		reply.Type = "detached"
+		reply = message{Type: "pinned", PinUntil: s.pinUntil}
+		s.mu.Unlock()
+		if err == nil {
+			err = p.controlMessage(message{Type: "detach_requested"})
+		}
+		if err != nil {
+			reply = message{Type: "error", Error: err.Error()}
+		}
 	case "rename", "kill":
 		var err error
 		if s.hosted {
@@ -286,12 +310,13 @@ func (s *shellTask) serveCommand(c net.Conn, m message, attach func(net.Conn) er
 
 // Both entry points publish readiness only after a successful attach. Hosted
 // shells obtain their owner context from the authenticated attachment.
-func (s *shellTask) attachManaged(p *attachment, m message, start func(message) error, hostedTemporary bool) error {
+func (s *shellTask) attachManaged(p *attachment, m message, start func(message) error) error {
 	if err := validateAttach(m); err != nil {
 		return err
 	}
 	s.terminalMu.Lock()
 	s.mu.Lock()
+	s.reapUnretainedLocked()
 	initial := s.terminal == nil
 	if s.killing || s.hosted && (m.Instance != "" && m.Instance != s.record.UID || initial && m.Action == "existing") {
 		s.mu.Unlock()
@@ -299,13 +324,18 @@ func (s *shellTask) attachManaged(p *attachment, m message, start func(message) 
 		return fmt.Errorf("shell changed or is unavailable; refresh with sshore list")
 	}
 	err := s.attachTerminal(p, m, start, func() error {
-		temporary, owner, instance := hostedTemporary, m.OwnerProcess, s.record.UID
+		if initial && m.Pinned {
+			if err := s.pinLocked(0); err != nil {
+				return err
+			}
+		}
+		instance := s.record.UID
 		if !s.hosted {
-			temporary, owner, instance = s.record.Owner.PID != 0, describeSpawnOwner(s.record.Owner), ""
+			instance = ""
 		}
 		tree := s.treeIdentity()
-		saveShellTreeWithProcess(tree, s.record.Name, m.Tree, taskActive, owner, shellLifetime(temporary, s.hosted), m.SourceHost, m.SourceMachineID)
-		return p.controlMessage(message{Type: "ready", Tree: shellTreeFor(tree), Temporary: temporary, Instance: instance, PID: s.process.PID, Name: s.record.Name})
+		saveShellTree(tree, s.record.Name, m.Tree, taskActive, m.SourceHost, m.SourceMachineID)
+		return p.controlMessage(message{Type: "ready", Tree: shellTreeFor(tree), Pinned: s.pinned, PinUntil: s.pinUntil, Instance: instance, PID: s.process.PID, Name: s.record.Name})
 	})
 	failedInitial := err != nil && initial && !errors.Is(err, errShellAttached) && !errors.Is(err, errShellExited)
 	if failedInitial && s.hosted && s.terminal != nil {
@@ -314,12 +344,13 @@ func (s *shellTask) attachManaged(p *attachment, m message, start func(message) 
 		_ = s.terminal.Close()
 		s.finishLocked()
 	} else if failedInitial && !s.hosted {
+		s.killing, s.exitReason = true, "initial attachment failed"
 		s.endTerminal()
 	}
 	s.mu.Unlock()
 	s.terminalMu.Unlock()
 	if failedInitial && !s.hosted {
-		_ = s.stopLocal("initial attachment failed")
+		_ = s.stopTerminal()
 	}
 	return err
 }
@@ -488,6 +519,7 @@ func (s *shellTask) serveAttachment(p *attachment, control io.Reader, resizeAck 
 		if detached || err != nil {
 			name, cleanup = onRelease(err)
 		}
+		s.reapUnretainedLocked()
 		s.mu.Unlock()
 		if cleanup != nil {
 			cleanup()
@@ -519,11 +551,25 @@ func (s *shellTask) serveAttachment(p *attachment, control io.Reader, resizeAck 
 		}
 		switch m.Type {
 		case "detach":
+			if m.Action != "switch" {
+				s.mu.Lock()
+				err := s.pinLocked(m.TTL)
+				s.mu.Unlock()
+				if err != nil {
+					if err := p.controlMessage(message{Type: "pin_failed", Error: err.Error()}); err != nil {
+						return err
+					}
+					continue
+				}
+			}
 			p.approvals.disable()
 			released = true
 			name, err := release()
 			if err == nil && name != "" {
-				return p.FinishDetach(name)
+				s.mu.Lock()
+				reply := message{Type: "detached", Name: name, Pinned: s.pinned, PinUntil: s.pinUntil}
+				s.mu.Unlock()
+				return p.FinishDetach(reply)
 			}
 			return err
 		case "input_barrier":

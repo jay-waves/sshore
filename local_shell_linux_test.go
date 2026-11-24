@@ -24,7 +24,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 	state := filepath.Join(e.dir, "local-state")
 	t.Cleanup(func() { shutdownFixtureDaemon(t, state) })
 	env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSH_CONNECTION=", "SHELL=/bin/sh", "TERM=xterm-256color")
-	for _, args := range [][]string{{"fixture-launch", "here:", "localtest", "--no-profile"}, {"attach", "here:"}} {
+	for _, args := range [][]string{{"fixture-sh", "here:", "localtest", "--no-profile"}, {"attach", "here:"}} {
 		if args[0] == "attach" {
 			list := exec.Command(e.bin, "list", "--json")
 			list.Env = env
@@ -71,23 +71,23 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 				out.Write(buf[:n])
 				if stage == 0 && strings.Contains(out.String(), "Connected here:") {
 					stage = 1
-					if args[0] == "fixture-launch" {
+					if args[0] == "fixture-sh" {
 						io.WriteString(terminal, "\x02c")
 					} else {
 						io.WriteString(terminal, "exit\n")
 					}
 				}
-				if args[0] == "fixture-launch" && stage == 1 && strings.Count(out.String(), "Connected here:") >= 2 {
+				if args[0] == "fixture-sh" && stage == 1 && strings.Count(out.String(), "Connected here:") >= 2 {
 					stage = 2
 					io.WriteString(terminal, "\x02d")
 				}
-				if stage == 2 && strings.Contains(out.String(), "Detach? [y/N]") {
+				if stage == 2 && strings.Count(out.String(), "Connected here:localtest") >= 2 {
 					stage = 3
-					io.WriteString(terminal, "y\r")
-				}
-				if stage == 3 && strings.Count(out.String(), "Connected here:localtest") >= 2 {
-					stage = 4
 					io.WriteString(terminal, "\x02d")
+				}
+				if stage < 4 && strings.Contains(out.String(), "No shell attached.") {
+					stage = 4
+					io.WriteString(terminal, "exit\r")
 				}
 				if err != nil {
 					break
@@ -102,7 +102,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%v: %v %s", args, err, out)
 		}
-		if args[0] == "fixture-launch" {
+		if args[0] == "fixture-sh" {
 			t.Setenv("SSHORE_STATE_DIR", state)
 			rows, err := nativeShells()
 			if err != nil {
@@ -134,7 +134,7 @@ func TestLocalShellDetachAndReattach(t *testing.T) {
 				t.Fatalf("cleanup: %s %v", output, err)
 			}
 		}
-		if args[0] == "fixture-launch" && !strings.Contains(out, "Detached from ") {
+		if args[0] == "fixture-sh" && !strings.Contains(out, "Detached from ") {
 			t.Fatal(out)
 		}
 		if args[0] == "attach" && !strings.Contains(out, "Exited here:renamed (code 0)") {
@@ -174,7 +174,7 @@ func TestInitialAttachmentFailureEndsCreatedTerminal(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
-		_ = stopSpawnTerminal(s.process.PID, s.process.Start)
+		_ = stopHostedTerminal(s.process.PID, s.process.Start)
 		t.Fatal("failed initial terminal survived")
 	}
 }
@@ -224,7 +224,7 @@ func TestPSTreeReattachmentAncestry(t *testing.T) {
 	for _, parent := range []string{"parent-a", "parent-b"} {
 		b = reattachTestWithTree(t, e, "tree", pid, shellTreeNode{Identity: "origin", Host: "workstation", Name: "origin", State: taskActive}, shellTreeNode{Parent: "origin", Identity: parent, Host: "upstream", Name: parent, State: taskActive})
 		output := shellOutput(t, b, shellQuote(e.bin)+" pstree; printf 'TREE-%s' done", "TREE-done")
-		if !strings.Contains(output, "(tree)  *") || strings.Contains(output, "<- upstream") || strings.Contains(output, "HOST  ") || strings.Contains(output, "("+parent+")") {
+		if !strings.Contains(output, "(tree)  [active]  [pinned]  *") || strings.Contains(output, "<- upstream") || strings.Contains(output, "HOST  ") || strings.Contains(output, "("+parent+")") {
 			t.Fatalf("incorrect local scope/source/current: %q", output)
 		}
 		if parent == "parent-b" && strings.Contains(output, "parent-a") {
@@ -278,7 +278,7 @@ func TestPSTreeKeepsUnavailableHostedShell(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(dir, "state"))
 	uid := newTaskUID()
 	tasks := startRequestDaemon(t)
-	shell := &remoteShell{lifetime: awaitingSpawnOwner, shellTask: shellTask{hosted: true, tasks: tasks, record: localShellRecord{UID: uid, Name: "blocked"}, done: make(chan struct{})}}
+	shell := &remoteShell{shellTask: shellTask{hosted: true, tasks: tasks, record: localShellRecord{UID: uid, Name: "blocked"}, done: make(chan struct{})}}
 	if err := tasks.register(uid, shell); err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestPSTreeKeepsUnavailableHostedShell(t *testing.T) {
 	}
 	var out bytes.Buffer
 	writeShellTree(&out, rows, "", false)
-	if !strings.Contains(out.String(), uid[:6]+" (blocked)") || !strings.Contains(out.String(), "spawn/") {
+	if !strings.Contains(out.String(), uid[:6]+" (blocked)") || !strings.Contains(out.String(), "sh/") {
 		t.Fatal(out.String())
 	}
 }
@@ -323,7 +323,7 @@ func TestLocalDaemonOwnsForwardTransports(t *testing.T) {
 		}
 		return string(out)
 	}
-	run(env, "fixture-launch", "here:", "keeper", "--detach")
+	run(env, "fixture-sh", "here:", "keeper", "--detach")
 	defer run(env, "kill", "here:keeper")
 	raw, err := os.ReadFile(filepath.Join(state, "daemon", "daemon.json"))
 	if err != nil {
@@ -424,7 +424,7 @@ func TestLocalDaemonIgnoresOrphanedVersion(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			env := append(e.env, "SSHORE_STATE_DIR="+state, "SSHORE_SOCKET=", "SSHORE_LOCAL_SESSION=")
-			cmd := exec.CommandContext(ctx, e.bin, "fixture-spawn", "here:", "fresh", "--detach")
+			cmd := exec.CommandContext(ctx, e.bin, "fixture-sh", "here:", "fresh", "--detach")
 			cmd.Env = env
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("orphaned record blocked spawn: %v %s", err, out)

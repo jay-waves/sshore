@@ -118,9 +118,10 @@ var daemonLocation = func() (string, error) {
 }
 
 type localDaemonRequest struct {
-	Spawn    *spawnConfig
+	Shell    *shellConfig
 	Resource *resourceConfig  `json:",omitempty"`
 	Auth     *sshAuthEndpoint `json:",omitempty"`
+	Parent   string
 	Kind     string
 	Record   localShellRecord
 	Env      []string
@@ -161,11 +162,15 @@ func existingDaemonRecord() (localShellRecord, error) {
 	} else if !resourceLockBusy(err) {
 		return localShellRecord{}, err
 	}
-	record, err := readLocalRecord(filepath.Join(dir, "daemon.json"), "daemon")
+	path := filepath.Join(dir, "daemon.json")
+	record, err := readLocalRecord(path, "daemon")
 	if os.IsNotExist(err) {
 		return record, fmt.Errorf("account daemon owns its lock but its endpoint is unavailable")
 	}
-	return record, err
+	if err != nil {
+		return record, fmt.Errorf("read account daemon endpoint %s: %w", path, err)
+	}
+	return record, nil
 }
 
 func daemonFileLock(name string) (*os.File, error) {
@@ -452,12 +457,21 @@ func runDaemonLaunch(c net.Conn, req localDaemonRequest, record localShellRecord
 	_ = c.SetDeadline(time.Time{})
 
 	if req.Kind == "remote-shell" {
-		_ = runRemoteShell(c, req)
+		_ = runRemoteShell(c, req, tasks)
 		return
 	}
 	if req.Kind == "shell" {
 		req.Record.Address, req.Record.Token = record.Address, record.Token
-		err := runLocalShell(tasks, req.Record, req.Env, func(r localShellRecord) error {
+		var parent *shellTask
+		if req.Parent != "" {
+			task, ok := tasks.lookup(req.Parent).(*nativeShellTask)
+			if !ok {
+				_ = json.NewEncoder(c).Encode(localStartup{Error: "parent shell is unavailable"})
+				return
+			}
+			parent = &task.shell.shellTask
+		}
+		err := runLocalShell(tasks, req.Record, req.Env, parent, func(r localShellRecord) error {
 			_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 			if e := json.NewEncoder(c).Encode(localStartup{Record: r}); e != nil {
 				return e

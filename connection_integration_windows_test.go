@@ -72,7 +72,7 @@ func testWindowsHandoffPassword(t *testing.T, phase string) {
 	t.Setenv("SSHORE_SOCKET", "")
 	t.Setenv("SHELL", shell)
 	env := os.Environ()
-	terminal, err := pty.Start(pty.Config{Path: bin, Args: []string{"launch", "here:"}, Env: env, Size: pty.Size{Cols: 120, Rows: 40}})
+	terminal, err := pty.Start(pty.Config{Path: bin, Args: []string{"sh", "here:"}, Env: env, Size: pty.Size{Cols: 120, Rows: 40}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func testWindowsHandoffPassword(t *testing.T, phase string) {
 	terminal.Write([]byte("echo SHELL_READY\r"))
 	wait("SHELL_READY")
 	time.Sleep(200 * time.Millisecond)
-	command := fmt.Sprintf("'%s' spawn fixture: -- -F '%s'\r", filepath.ToSlash(bin), filepath.ToSlash(cfg))
+	command := fmt.Sprintf("'%s' sh fixture: -- -F '%s'\r", filepath.ToSlash(bin), filepath.ToSlash(cfg))
 	terminal.Write([]byte(command))
 	wait("fixture@127.0.0.1's password:")
 	cancelAndReturn := func() {

@@ -63,41 +63,54 @@ produce a warning and open no listeners. Use `sshore forward` for TCP forwarding
 
 ```sh
 sshore exec work 'uname -a'         # Run one command on work.
-sshore spawn work: -- -J jump       # Open a remote shell through a jump host.
+sshore sh work: -- -J jump       # Open a remote shell through a jump host.
 sshore forward .:8080 work:3000     # Reach the remote service on local port 8080.
 sshore ping work:                   # Measure SSH latency.
 ```
 
-## tmux — Start, detach and resume shell sessions
+## Shells — Start, detach and resume
 
 ```sh
-sshore launch work:build     # Start a remote shell named build.
-# Press Ctrl+B, then d to detach.
-sshore attach work:build     # Return to the same shell.
+sshore sh work:build         # Open a temporary shell.
+sshore sh work:build --pin   # Start a shell that survives disconnection.
+sshore attach work:build     # Resume a detached shell.
 ```
 
-Use `launch` for work that should survive a disconnect. Use `spawn` for a shell
-that should end when its original parent exits. A remote spawn also ends if its
-lifetime SSH connection times out. Reattaching preserves the original lifetime.
-Each shell has one terminal. Scrollback is not replayed on attach.
+A top-level shell started with `sh` ends when its starting client disconnects.
+A nested shell follows its parent. Start with `--pin` to retain a shell until it
+exits. `sshore detach` keeps the current shell until it exits and leaves its
+terminal. `sshore detach 2h` keeps it for two hours. When a pin expires, a shell
+whose original owner has already ended is removed once it is detached. Pinned
+children survive parent exit and retain any descendants still following them.
 
-For a local shell, run `sshore launch :build`. With no selector, `sshore attach`
+While attached, press **Ctrl+B** followed by `c` for a nested shell, `d` to pin
+and detach, or `:` for the command prompt and the current host's `pstree`.
+The prompt shows the host, for example `sshore on work>`. Local shells show
+`sshore on local>`. Run `detach 30m` there to set a deadline.
+
+Leaving a nested shell returns to its parent. At the root, detaching or
+running `exit` in the shell opens the command prompt. Use `attach build` or
+`sh` there to continue, or type `exit` to leave sshore.
+
+For a local shell, run `sshore sh :build`. With no selector, `sshore attach`
 resumes the most recently detached local shell. Use `sshore attach work:` for
-the most recently detached shell on that host. A bare task ID or unique prefix
-can select a local shell or a remote shell with a saved direct SSH connection.
-If the ID is ambiguous, use a longer prefix or specify `HOST:ID`.
+the most recent detach on that host. A bare task ID or unique prefix can select
+a local shell or a remote shell with a saved direct SSH connection. If the ID is
+ambiguous, use a longer prefix or specify `HOST:ID`.
 
-While attached, press **Ctrl+B** followed by `d` to detach, `c` to spawn a
-nested shell, or `:` to open the command prompt. Type `help` there to explore
-commands and Esc to return to the shell.
+Each shell has one terminal. Scrollback is not replayed on attach.
 
 ### Find and manage tasks
 
 ```sh
 sshore list                 # Local tasks, incoming resources and last seen remote shells.
 sshore list --json          # The same inventory as JSON.
-sshore pstree               # Local ownership and attachments. * marks this shell.
+sshore pstree               # Shell ownership and attachment states. * marks this shell.
 ```
+
+In `pstree` (or `ps` at the command prompt), a nested shell stays under its
+original owner when either shell detaches. `active` means the shell has an
+attached client. `*` identifies the shell using your terminal.
 
 Use a task name or ID from the list to attach, rename or end a shell.
 For example, `sshore kill work:build` ends the shell and can discard unsaved work.

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -25,7 +24,7 @@ import (
 func TestClientPrefixKeysAndDetach(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	background, _, _ := startSessionClient(t, e, []string{"fixture-launch", "fixture", "background", "--server", e.bin, "--detach"})
+	background, _, _ := startSessionClient(t, e, []string{"fixture-sh", "fixture", "background", "--server", e.bin, "--detach"})
 	if err := background.Wait(); err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +57,7 @@ func TestClientPrefixKeysAndDetach(t *testing.T) {
 
 func startPrefixClient(t *testing.T, e *testEnv) (*exec.Cmd, *os.File, func(string)) {
 	t.Helper()
-	return startSessionClient(t, e, []string{"fixture-launch", "fixture", "keys", "--server", e.bin})
+	return startSessionClient(t, e, []string{"fixture-sh", "fixture", "keys", "--server", e.bin})
 }
 
 func sessionSSH(t *testing.T, e *testEnv) string {
@@ -88,7 +87,7 @@ func startSessionClient(t *testing.T, e *testEnv, args []string) (*exec.Cmd, *os
 	return startSessionClientWithSSH(t, e, args, config)
 }
 
-func startSessionClientWithSSH(t *testing.T, e *testEnv, args []string, config string) (*exec.Cmd, *os.File, func(string)) {
+func startSessionClientWithSSH(t *testing.T, e *testEnv, args []string, config string, stayAtRoot ...bool) (*exec.Cmd, *os.File, func(string)) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
@@ -108,11 +107,23 @@ func startSessionClientWithSSH(t *testing.T, e *testEnv, args []string, config s
 	go func() {
 		defer close(chunks)
 		buf := make([]byte, 4096)
+		var suffix string
+		quitRoot := len(stayAtRoot) == 0 || !stayAtRoot[0]
 		for {
 			n, err := terminal.Read(buf)
 			if n > 0 {
+				data := string(buf[:n])
+				if quitRoot {
+					const rootPrompt = "No shell attached. Use attach or sh"
+					suffix += data
+					if strings.Contains(suffix, rootPrompt) {
+						quitRoot = false
+						_, _ = io.WriteString(terminal, "exit\r")
+					}
+					suffix = suffix[max(0, len(suffix)-len(rootPrompt)):]
+				}
 				select {
-				case chunks <- string(buf[:n]):
+				case chunks <- data:
 				case <-ctx.Done():
 					return
 				}
@@ -150,7 +161,7 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
 	config := sessionSSH(t, e)
-	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-launch", "here:", "origin", "--no-profile"}, "")
+	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-sh", "here:", "origin", "--no-profile"}, "")
 	t.Cleanup(func() {
 		cleanup := exec.Command(e.bin, "kill", "--all")
 		cleanup.Env = cmd.Env
@@ -170,7 +181,7 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The frontend needs both the initiating directory and environment to resolve the connection.
-	command := "cd " + shellQuote(directory) + "; export HANDOFF_CONFIG=" + shellQuote(config) + "; export PATH=" + shellQuote(directory) + ":$PATH; " + shellQuote(e.bin) + " spawn fixture: --quiet --server " + shellQuote(e.bin) + " -- -F client.conf; printf '%s' \"$?\" > " + shellQuote(marker) + "\n"
+	command := "cd " + shellQuote(directory) + "; export HANDOFF_CONFIG=" + shellQuote(config) + "; export PATH=" + shellQuote(directory) + ":$PATH; " + shellQuote(e.bin) + " sh fixture: --quiet --server " + shellQuote(e.bin) + " -- -F client.conf; printf '%s' \"$?\" > " + shellQuote(marker) + "\n"
 	io.WriteString(terminal, command)
 	wait("Connected fixture:")
 	deadline := time.Now().Add(3 * time.Second)
@@ -209,14 +220,14 @@ func TestClientLocalRemoteHandoff(t *testing.T) {
 	}
 	var remoteCode string
 	for _, shell := range inv.Shells {
-		if shell.Host == "fixture" && shell.Temporary && shell.Observed {
+		if shell.Host == "fixture" && !shell.Pinned && shell.Observed {
 			remoteCode = shell.ShortID
 		}
 	}
 	tree := exec.Command(e.bin, "pstree")
 	tree.Env = cmd.Env
 	out, err = tree.CombinedOutput()
-	if err != nil || remoteCode == "" || !strings.Contains(string(out), "-> fixture: spawn/"+remoteCode) {
+	if err != nil || remoteCode == "" || !strings.Contains(string(out), "-> fixture: sh/"+remoteCode) {
 		t.Fatalf("connected tree: %s: %v", out, err)
 	}
 	table := exec.Command(e.bin, "list")
@@ -337,20 +348,20 @@ func TestClientCommandConsole(t *testing.T) {
 	// Keep hosted registrations invisible to reads of the frontend's runtime.
 	hostEnv := e.env
 	e.env = append(slices.Clone(hostEnv), "SSHORE_RUNTIME_DIR="+filepath.Join(e.dir, "client-runtime"))
-	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-launch", "fixture", "keys", "--server", e.bin}, config)
+	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-sh", "fixture", "keys", "--pin", "--server", e.bin}, config)
 	e.env = hostEnv
 	wait("Connected fixture:keys")
+	beforeInventory := sshCommands.Load()
 	io.WriteString(terminal, "\x02:help\r")
 	wait("sshore commands")
-	wait("  alpha")
+	wait("(keys)  [active]")
 	wait("Switch session")
-	beforeInventory := sshCommands.Load()
 	io.WriteString(terminal, "ls\r")
 	wait("* ")
-	wait("sshore> ")
+	wait("sshore on fixture> ")
 	io.WriteString(terminal, "ps\r")
 	wait("alpha")
-	wait("sshore> ")
+	wait("sshore on fixture> ")
 	io.WriteString(terminal, "\x1b")
 	wait("\x1b[?1049l")
 	io.WriteString(terminal, "printf 'CONSOLE-%s' restored\n")
@@ -359,22 +370,24 @@ func TestClientCommandConsole(t *testing.T) {
 		t.Fatalf("panel inventory started an SSH command: %d before, %d after", beforeInventory, got)
 	}
 	io.WriteString(terminal, "\x02:")
-	wait("  alpha")
+	wait("(keys)  [active]")
+	wait("sshore on fixture> ")
 	io.WriteString(terminal, "att\tal\t\r")
 	wait("Connected fixture:alpha from fixture:keys")
 	io.WriteString(terminal, "\x02:")
 	wait("sshore commands")
 	io.WriteString(terminal, "sh\r")
-	wait("(spawn)")
+	wait("(sh)")
 	io.WriteString(terminal, "\x02:ps\r")
-	wait("spawn/")
+	wait("sh/")
 	wait("  *")
+	wait("sshore on fixture> ")
 	io.WriteString(terminal, "\x1b")
 	wait("\x1b[?1049l")
 	io.WriteString(terminal, "exit\n")
 	wait("Connected fixture:alpha")
 	io.WriteString(terminal, "\x02:")
-	wait("sshore> ")
+	wait("sshore on fixture> ")
 	beta, _ := e.attach("beta")
 	detachTestClient(t, beta)
 	io.WriteString(terminal, "a beta\r")
@@ -400,16 +413,17 @@ func TestClientCommandConsole(t *testing.T) {
 func TestClientLocalConsoleInventory(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-spawn", "here:", "panel-local", "--no-profile"})
+	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-sh", "here:", "panel-local", "--no-profile"})
 	wait("Connected")
 	io.WriteString(terminal, "\x02:list\r")
+	wait("(panel-local)  [active]  *")
 	wait("HOST  local")
 	wait("* ")
 	wait("panel-local")
-	wait("sshore> ")
+	wait("sshore on local> ")
 	io.WriteString(terminal, "pstree\r")
-	wait("(panel-local)  *")
-	wait("sshore> ")
+	wait("(panel-local)  [active]  *")
+	wait("sshore on local> ")
 	io.WriteString(terminal, "exit\r")
 	wait("\x1b[?1049l")
 	io.WriteString(terminal, "exit\n")
@@ -418,26 +432,40 @@ func TestClientLocalConsoleInventory(t *testing.T) {
 	}
 }
 
-func TestRootLocalSpawnDetachConfirmation(t *testing.T) {
-	t.Setenv("SSHORE_SOCKET", "")
-	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-spawn", "here:", "confirm-detach", "--no-profile"})
-	wait("Connected")
-	for _, cancel := range []string{"\r", "\x1b", "\x03"} {
-		io.WriteString(terminal, "\x02d")
-		wait("Detaching may close this terminal window")
-		wait("This spawn may end when its original parent exits.")
-		wait("Detach? [y/N]")
-		io.WriteString(terminal, cancel)
-		wait("\x1b[?1049l")
-		io.WriteString(terminal, "printf 'CONFIRM_%s\\n' ALIVE\n")
-		wait("CONFIRM_ALIVE")
-	}
-	io.WriteString(terminal, "\x02:detach\r")
-	wait("Detach? [y/N]")
-	io.WriteString(terminal, "Y\r")
-	if err := cmd.Wait(); err != nil {
-		t.Fatal(err)
+func TestClientConsoleExitRedrawsForegroundJob(t *testing.T) {
+	for _, host := range []string{"here:", "fixture"} {
+		t.Run(host, func(t *testing.T) {
+			t.Setenv("SSHORE_LOCAL_SESSION", "")
+			t.Setenv("SSHORE_SOCKET", "")
+			e := newEnv(t)
+			args := []string{"fixture-sh", host, "redraw", "--no-profile"}
+			label, endpoint := "local", host
+			if host != "here:" {
+				args = append(args, "--server", e.bin)
+				label, endpoint = host, host+":"
+			}
+			cmd, terminal, wait := startSessionClient(t, e, args)
+			wait("Connected " + endpoint + "redraw")
+			done := filepath.Join(e.dir, "foreground-done")
+			job := `trap 'printf "CONSOLE-REDRAW-%s\n" ready' WINCH
+printf '\033[?1049hFOREGROUND-%s\n' ready
+while [ ! -e "$1" ]; do sleep 0.05; done
+printf '\033[?1049lFOREGROUND-%s\n' done`
+			io.WriteString(terminal, "sh -c "+shellQuote(job)+" sh "+shellQuote(done)+"\n")
+			wait("FOREGROUND-ready")
+			io.WriteString(terminal, "\x02:")
+			wait("sshore on " + label + "> ")
+			io.WriteString(terminal, "exit\r")
+			wait("CONSOLE-REDRAW-ready")
+			if err := os.WriteFile(done, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			wait("FOREGROUND-done")
+			io.WriteString(terminal, "exit 0\n")
+			if err := cmd.Wait(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
@@ -446,20 +474,16 @@ func TestClientDetachesBeforeLocalCopyApproval(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	for _, tc := range []struct {
 		name, answer string
-		spawn, stay  bool
+		stay         bool
 	}{
 		{name: "default declines", answer: "\r"},
 		{name: "interrupt cancels", answer: "\x03"},
-		{name: "explicit consent from spawn", answer: "Y\r", spawn: true},
+		{name: "explicit consent", answer: "Y\r"},
 		{name: "stay locally", answer: "Y\r", stay: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t)
-			command := "fixture-launch"
-			if tc.spawn {
-				command = "fixture-spawn"
-			}
-			cmd, terminal, wait := startSessionClient(t, e, []string{command, "fixture", "keys", "--server", e.bin})
+			cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-sh", "fixture", "keys", "--server", e.bin})
 			wait("Connected fixture:keys")
 			source := filepath.Join(e.dir, "approval-source")
 			suggested := filepath.Join(e.dir, "suggested")
@@ -492,7 +516,7 @@ func TestClientDetachesBeforeLocalCopyApproval(t *testing.T) {
 			}
 			defer status.Close()
 			sendTest(t, status, message{Type: "status", Action: "health"})
-			if m := recv(t, status); m.Type != "session" || m.Attached || m.PID <= 0 || m.Temporary != tc.spawn {
+			if m := recv(t, status); m.Type != "session" || m.Attached || m.PID <= 0 || m.Pinned {
 				t.Fatalf("source shell was not detached and alive during approval: %+v", m)
 			}
 
@@ -552,7 +576,7 @@ func TestClientFailedSwitchRestoresOriginal(t *testing.T) {
 		sshtest.Exit(stream, 42)
 		return true
 	})
-	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-launch", "fixture", "keys", "--server", e.bin}, config)
+	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-sh", "fixture", "keys", "--server", e.bin}, config)
 	wait("Connected fixture:keys")
 	// Fail exactly the next SSH launch, after preflight has accepted alpha.
 	fail.Store(true)
@@ -848,13 +872,14 @@ func TestClientNestedLocalSpawnHandoff(t *testing.T) {
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-launch", "here:", "root", "--no-profile"})
+	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-sh", "here:", "root", "--no-profile"})
 	t.Cleanup(func() { cleanup := exec.Command(e.bin, "kill", "--all"); cleanup.Env = cmd.Env; _ = cleanup.Run() })
 	wait("Connected here:root")
 	wait("sshore-test> ")
+	parent := "root"
 	for _, name := range []string{"child", "grandchild"} {
 		marker := filepath.Join(e.dir, name+"-returned")
-		io.WriteString(terminal, shellQuote(e.bin)+" spawn here: --no-profile; printf done > "+shellQuote(marker)+"\n")
+		io.WriteString(terminal, shellQuote(e.bin)+" sh here:"+name+" --no-profile; printf done > "+shellQuote(marker)+"\n")
 		wait("Connected here:")
 		wait("sshore-test> ")
 		deadline := time.Now().Add(3 * time.Second)
@@ -868,11 +893,29 @@ func TestClientNestedLocalSpawnHandoff(t *testing.T) {
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
+		io.WriteString(terminal, "\x02:ls\r")
+		wait("HOST  local")
+		wait("(" + name + ")")
+		wait("active")
+		wait("sshore on local> ")
+		io.WriteString(terminal, "ps\r")
+		wait("(" + parent + ")  [detached]")
+		wait("╰── sh/")
+		wait("(" + name + ")  [active]  *")
+		wait("sshore on local> ")
+		io.WriteString(terminal, "exit\r")
+		wait("\x1b[?1049l")
+		parent = name
 	}
 	for range 2 {
 		io.WriteString(terminal, "exit\n")
 		wait("Connected here:")
 	}
+	io.WriteString(terminal, "\x02:ps\r")
+	wait("(root)  [active]  *")
+	wait("sshore on local> ")
+	io.WriteString(terminal, "exit\r")
+	wait("\x1b[?1049l")
 	io.WriteString(terminal, "exit\n")
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
@@ -883,7 +926,7 @@ func TestClientHandoffReturnTargetTaken(t *testing.T) {
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-launch", "here:", "origin", "--no-profile"})
+	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-sh", "here:", "origin", "--pin", "--no-profile"})
 	t.Cleanup(func() {
 		cleanup := exec.Command(e.bin, "kill", "--all")
 		cleanup.Env = cmd.Env
@@ -891,7 +934,7 @@ func TestClientHandoffReturnTargetTaken(t *testing.T) {
 	})
 	wait("Connected here:origin")
 	wait("sshore-test> ")
-	io.WriteString(terminal, shellQuote(e.bin)+" launch here: --no-profile\n")
+	io.WriteString(terminal, shellQuote(e.bin)+" sh here: --no-profile\n")
 	wait("Connected here:")
 	other, otherTerminal, otherWait := startSessionClient(t, e, []string{"attach", "here:origin"})
 	otherWait("Connected here:origin")
@@ -914,11 +957,11 @@ func TestClientHandoffHintReleasedOnFrontendExit(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	e := newEnv(t)
 	config := sessionSSH(t, e)
-	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-launch", "here:", "origin", "--no-profile"}, "")
+	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-sh", "here:", "origin", "--pin", "--no-profile"}, "")
 	t.Cleanup(func() { cleanup := exec.Command(e.bin, "kill", "--all"); cleanup.Env = cmd.Env; _ = cleanup.Run() })
 	wait("Connected here:origin")
 	wait("sshore-test> ")
-	io.WriteString(terminal, shellQuote(e.bin)+" spawn fixture: --no-profile --server "+shellQuote(e.bin)+" -- -F "+shellQuote(config)+"\n")
+	io.WriteString(terminal, shellQuote(e.bin)+" sh fixture: --no-profile --server "+shellQuote(e.bin)+" -- -F "+shellQuote(config)+"\n")
 	wait("Connected fixture:")
 	check := func(wantHost string) bool {
 		list := exec.Command(e.bin, "list", "--json")
@@ -960,7 +1003,7 @@ func TestClientHandoffHintReleasedOnFrontendExit(t *testing.T) {
 }
 
 func TestClientNestedRemoteSpawnReusesAuthentication(t *testing.T) {
-	for _, command := range []string{"spawn", "launch"} {
+	for _, command := range []string{"sh"} {
 		t.Run(command, func(t *testing.T) {
 			t.Setenv("SSHORE_LOCAL_SESSION", "")
 			t.Setenv("SSHORE_SOCKET", "")
@@ -975,7 +1018,7 @@ func TestClientNestedRemoteSpawnReusesAuthentication(t *testing.T) {
 				t.Fatal(err)
 			}
 			for range 2 {
-				io.WriteString(terminal, shellQuote(e.bin)+" spawn --no-login --no-profile\n")
+				io.WriteString(terminal, shellQuote(e.bin)+" sh --no-login --no-profile\n")
 				wait("Connected fixture:")
 				io.WriteString(terminal, "printf 'READY_%s\\n' shell\n")
 				wait("READY_shell")
@@ -1005,11 +1048,11 @@ func TestClientConsoleLaunchSurvivesParent(t *testing.T) {
 			if host != "here:" {
 				sshArgs = []string{"--server", e.bin}
 			}
-			cmd, terminal, wait := startSessionClient(t, e, append([]string{"fixture-launch", host, "root"}, sshArgs...))
+			cmd, terminal, wait := startSessionClient(t, e, append([]string{"fixture-sh", host, "root"}, sshArgs...))
 			wait("Connected " + label + ":root")
-			io.WriteString(terminal, "\x02:launch\r")
+			io.WriteString(terminal, "\x02:sh\r")
 			wait("Connected " + label + ":")
-			wait("(launch)")
+			wait("(sh)")
 			marker := filepath.Join(e.dir, "launch-id")
 			io.WriteString(terminal, "printf '%s' \"${SSHORE_SOCKET:-${SSHORE_LOCAL_SESSION#task:}}\" > "+shellQuote(marker)+"; printf 'LAUNCH-%s' ready\n")
 			wait("LAUNCH-ready")
@@ -1036,7 +1079,7 @@ func TestClientConsoleLaunchSurvivesParent(t *testing.T) {
 }
 
 func TestClientSpawnShortcutReturnsToParent(t *testing.T) {
-	for _, tc := range []struct{ command, host string }{{"launch", "here:"}, {"spawn", "here:"}, {"launch", "fixture"}, {"spawn", "fixture"}} {
+	for _, tc := range []struct{ command, host string }{{"sh", "here:"}, {"sh", "fixture"}} {
 		host := tc.host
 		t.Run(tc.command+"/"+host, func(t *testing.T) {
 			t.Setenv("SSHORE_LOCAL_SESSION", "")
@@ -1058,7 +1101,7 @@ func TestClientSpawnShortcutReturnsToParent(t *testing.T) {
 			ready()
 			for range 2 {
 				io.WriteString(terminal, "\x02c")
-				wait("(spawn)")
+				wait("(sh)")
 				ready()
 			}
 			for range 2 {
@@ -1082,7 +1125,7 @@ func TestClientInterruptStaysAttached(t *testing.T) {
 			t.Setenv("SSHORE_LOCAL_SESSION", "")
 			t.Setenv("SSHORE_SOCKET", "")
 			e := newEnv(t)
-			args := []string{"fixture-launch", host, "interrupt", "--no-login", "--no-profile"}
+			args := []string{"fixture-sh", host, "interrupt", "--no-login", "--no-profile"}
 			label := "here"
 			if host != "here:" {
 				label = host
@@ -1128,7 +1171,7 @@ func TestClientInterruptDuringSwitchRestoresOriginal(t *testing.T) {
 		_, _ = io.Copy(io.Discard, stream)
 		return true
 	})
-	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-launch", "fixture", "keys", "--server", e.bin}, config)
+	cmd, terminal, wait := startSessionClientWithSSH(t, e, []string{"fixture-sh", "fixture", "keys", "--server", e.bin}, config)
 	wait("Connected fixture:keys")
 	// Block the first setup until its SSH input closes on cancellation.
 	block.Store(true)
@@ -1158,7 +1201,7 @@ func TestClientInterruptDuringSwitchRestoresOriginal(t *testing.T) {
 // Abrupt daemon death cannot deliver an exit frame or TUI cleanup. The client
 // must restore its own terminal on EOF for both persistent and spawned shells.
 func TestClientDaemonLossRestoresTerminal(t *testing.T) {
-	for _, command := range []string{"launch", "spawn"} {
+	for _, command := range []string{"sh"} {
 		t.Run(command, func(t *testing.T) {
 			t.Setenv("SSHORE_SOCKET", "")
 			t.Setenv("SSHORE_LOCAL_SESSION", "")
@@ -1222,7 +1265,7 @@ func TestClientDetachPromotesSharedMRU(t *testing.T) {
 			t.Setenv("SSHORE_SOCKET", "")
 			t.Setenv("SSHORE_LOCAL_SESSION", "")
 			e := newEnv(t)
-			args := []string{"fixture-launch", host, "mru-detach", "--no-login", "--no-profile"}
+			args := []string{"fixture-sh", host, "mru-detach", "--no-login", "--no-profile"}
 			label := "here"
 			if host != "here:" {
 				args = append(args, "--server", e.bin)
@@ -1299,7 +1342,7 @@ func TestClientEnhancedPrefixKeysAndEscape(t *testing.T) {
 
 func TestClientExitNotices(t *testing.T) {
 	for _, host := range []string{"here:", "fixture"} {
-		for _, command := range []string{"launch", "spawn"} {
+		for _, command := range []string{"sh"} {
 			for _, code := range []string{"0", "7"} {
 				t.Run(host+"/"+command+"/"+code, func(t *testing.T) {
 					t.Setenv("SSHORE_SOCKET", "")
@@ -1346,31 +1389,5 @@ func TestClientRemoteExitReason(t *testing.T) {
 	wait("killed by sshore kill")
 	if err := cmd.Wait(); err == nil {
 		t.Fatal("killed shell reported success")
-	}
-}
-
-func TestClientExternalSpawnParent(t *testing.T) {
-	t.Setenv("SSHORE_SOCKET", "")
-	t.Setenv("SSHORE_LOCAL_SESSION", "")
-	e := newEnv(t)
-	cmd, terminal, wait := startSessionClient(t, e, []string{"fixture-spawn", "here:", "external-parent", "--no-login", "--no-profile"})
-	wait("Connected here:external-parent")
-	ps := exec.Command(e.bin, "ps")
-	ps.Env = cmd.Env
-	out, err := ps.CombinedOutput()
-	if err != nil {
-		t.Fatalf("ps: %v %s", err, out)
-	}
-	name, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", os.Getpid()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(out), fmt.Sprintf("%s (pid %d)", strings.TrimSpace(string(name)), os.Getpid())) || !strings.Contains(string(out), "external-parent") {
-		t.Fatalf("missing direct parent: %s", out)
-	}
-	io.WriteString(terminal, "exit\n")
-	wait("Exited here:external-parent")
-	if err := cmd.Wait(); err != nil {
-		t.Fatal(err)
 	}
 }

@@ -12,13 +12,13 @@ import (
 	"time"
 
 	forwardio "github.com/jay-waves/sshore/internal/forward"
-	"github.com/jay-waves/sshore/internal/proc"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/xtaci/smux"
 )
 
-type spawnConfig struct {
+type shellConfig struct {
 	NoLogin, NoProfile bool
+	Pin                bool
 	Tree               []shellTreeNode
 	Local              bool
 	Host, Name, Server string
@@ -47,7 +47,7 @@ func openRemoteShellTransport(ctx context.Context, o *options, transports client
 	if env == nil {
 		env = os.Environ()
 	}
-	request := localDaemonRequest{Kind: "remote-shell", Record: localShellRecord{Name: "remote-shell", Directory: cwd, Owner: o.owner}, Env: env, Auth: auth, Spawn: &spawnConfig{Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh, Command: o.command, Instance: o.instance}}
+	request := localDaemonRequest{Kind: "remote-shell", Record: localShellRecord{Name: "remote-shell", Directory: cwd}, Env: env, Auth: auth, Parent: o.parent, Shell: &shellConfig{Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh, Command: o.command, Instance: o.instance}}
 	c, err := openLocalDaemonContext(ctx, request)
 	if err != nil {
 		return nil, err
@@ -80,13 +80,13 @@ func openRemoteShellTransport(ctx context.Context, o *options, transports client
 	return transports.openTaskStream(ctx, o, open, func() { mx.Close() })
 }
 
-type spawnDiagnostics struct {
+type shellDiagnostics struct {
 	mu     sync.Mutex
 	c      net.Conn
 	active bool
 }
 
-func (d *spawnDiagnostics) Write(b []byte) (int, error) {
+func (d *shellDiagnostics) Write(b []byte) (int, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.active {
@@ -115,16 +115,28 @@ func (c setupConnection) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func runRemoteShell(c net.Conn, req localDaemonRequest) error {
-	f := req.Spawn
-	if f == nil || f.Command != "launch" && f.Command != "attach" && f.Command != "spawn" {
+func runRemoteShell(c net.Conn, req localDaemonRequest, tasks *daemonTasks) error {
+	f := req.Shell
+	if f == nil || f.Command != "sh" && f.Command != "attach" {
 		return fmt.Errorf("invalid remote shell request")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	conn := c
-	if f.Command != "spawn" {
+	if req.Parent == "" {
 		conn = setupConnection{c, cancel}
+	} else {
+		parent, ok := tasks.lookup(req.Parent).(*nativeShellTask)
+		if !ok || f.Command != "sh" {
+			return fmt.Errorf("parent shell is unavailable")
+		}
+		go func() {
+			select {
+			case <-parent.shell.done:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
 	}
 	frontend, err := smux.Server(conn, relayMuxConfig())
 	if err != nil {
@@ -136,48 +148,19 @@ func runRemoteShell(c net.Conn, req localDaemonRequest) error {
 		return err
 	}
 	defer setup.Close()
-	if f.Command == "spawn" {
-		return withRemoteSpawn(setup, req, func(open taskEndpoint, ready message, ownerDone <-chan struct{}) error {
-			if err := streamMessage(setup, ready); err != nil {
-				return err
-			}
-			setup.Close()
-			relayDirectSpawn(frontend, ownerDone, open)
-			return nil
-		})
-	}
-
-	return withRemoteShell(ctx, setup, req, f.Command, func(open taskEndpoint, ready message) error {
+	return withRemoteShell(ctx, setup, req, f.Command, func(open taskEndpoint, ready message, ownerDone <-chan struct{}) error {
 		if err := streamMessage(setup, ready); err != nil {
 			return err
 		}
 		setup.Close()
+		stop := context.AfterFunc(ctx, func() { frontend.Close() })
+		defer stop()
 		relayRemoteStreams(frontend, open)
+		if req.Parent != "" {
+			<-ownerDone
+		}
 		return nil
 	})
-}
-
-// The owner channel, not an attachment, holds the temporary shell alive.
-// Data endpoints are sibling SSH channels opened by the authenticated dialer.
-func relayDirectSpawn(frontend *smux.Session, ownerDone <-chan struct{}, open taskEndpoint) {
-	relayDone := make(chan struct{})
-	go func() {
-		defer close(relayDone)
-		relayRemoteStreams(frontend, whileSpawnOwned(ownerDone, open))
-	}()
-
-	// Detach/front-end EOF does not revoke the owner's lease.
-	<-ownerDone
-	// Owner EOF can precede delivery of bytes already queued on sibling channels.
-	// Reject new endpoints immediately, but let the existing output drain briefly.
-	timer := time.NewTimer(spawnDrainTimeout)
-	defer timer.Stop()
-	select {
-	case <-relayDone:
-	case <-timer.C:
-	}
-	frontend.Close()
-	<-relayDone
 }
 
 func relayRemoteStreams(frontend *smux.Session, open taskEndpoint) {
@@ -206,115 +189,25 @@ type processIdentity struct {
 	Start string
 }
 
-func currentSpawnOwner() (processIdentity, error) {
-	pid := os.Getppid()
-	if pid <= 1 {
-		return processIdentity{}, fmt.Errorf("spawn requires a live parent shell")
-	}
-	start, err := proc.LiveIdentity(pid)
-	return processIdentity{PID: pid, Start: start}, err
-}
-
-// The task owns this watcher. Stopping it joins any in-flight owner-loss
-// callback, so cleanup cannot affect a later attachment or outlive the task.
-func superviseSpawnOwner(owner processIdentity, lost func()) func() {
-	if owner.PID == 0 {
-		return func() {}
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		waitSpawnOwner(ctx, owner)
-		if ctx.Err() == nil {
-			lost()
-		}
-	}()
-	return func() { cancel(); <-stopped }
-}
-
-func waitSpawnOwner(ctx context.Context, owner processIdentity) {
-	request := leaseRequest{Kind: "owner", Owner: owner}
-	if s := accountActivity.Load(); s != nil {
-		lease, err := s.registerLease(request)
-		if err != nil {
-			return
-		}
-		defer s.remove(lease)
-		select {
-		case <-ctx.Done():
-		case <-lease.expired:
-		}
-		return
-	}
-	stop, done, err := remoteActivity(ctx, request)
-	if err != nil {
-		return
-	}
-	defer stop()
-	<-done
-}
-
-const spawnDrainTimeout = 2 * time.Second
-
 type taskEndpoint func() (net.Conn, error)
 
-func spawnEnded(done <-chan struct{}) bool {
-	select {
-	case <-done:
-		return true
-	default:
-		return false
-	}
-}
-
-func whileSpawnOwned(done <-chan struct{}, open taskEndpoint) taskEndpoint {
-	return func() (net.Conn, error) {
-		if spawnEnded(done) {
-			return nil, io.ErrClosedPipe
-		}
-		c, err := open()
-		if err == nil && spawnEnded(done) {
-			c.Close()
-			return nil, io.ErrClosedPipe
-		}
-		return c, err
-	}
-}
-
-func claimSpawnOwner(ctx context.Context, open taskEndpoint, instance string) (func(), <-chan struct{}, error) {
-	owner, err := open()
+func claimShellOwner(ctx context.Context, open taskEndpoint, instance string) (func(), <-chan struct{}, error) {
+	c, err := open()
 	if err != nil {
 		return nil, nil, err
 	}
-	handshake := time.AfterFunc(5*time.Second, func() { owner.Close() })
+	handshake := time.AfterFunc(5*time.Second, func() { c.Close() })
 	defer handshake.Stop()
-	if err := writeMessage(owner, message{Type: "spawn_owner", SoftwareVersion: version, Instance: instance}); err != nil {
-		owner.Close()
+	if err := writeMessage(c, message{Type: "shell_owner", Instance: instance, SoftwareVersion: version}); err != nil {
+		c.Close()
 		return nil, nil, err
 	}
-	return acceptActivityLease(ctx, owner)
+	return acceptActivityLease(ctx, c)
 }
 
-func withRemoteSpawn(c net.Conn, req localDaemonRequest, use func(taskEndpoint, message, <-chan struct{}) error) error {
-	return withRemoteShell(context.Background(), c, req, "spawn", func(open taskEndpoint, ready message) error {
-		stop, done, err := claimSpawnOwner(context.Background(), open, ready.Instance)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			stop()
-			if err := rememberShellExit(options{host: req.Spawn.Host, instance: ready.Instance}); err != nil {
-				fmt.Fprintf(os.Stderr, "sshore: record spawn lifetime end: %v\n", err)
-			}
-		}()
-		return use(open, ready, done)
-	})
-}
-
-func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest, command string, use func(taskEndpoint, message) error) (resultErr error) {
-	f := req.Spawn
-	diagnostics := &spawnDiagnostics{c: c, active: true}
+func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest, command string, use func(taskEndpoint, message, <-chan struct{}) error) (resultErr error) {
+	f := req.Shell
+	diagnostics := &shellDiagnostics{c: c, active: true}
 	var pipes *transportio.Process
 	defer func() {
 		if resultErr != nil {
@@ -328,7 +221,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 			_ = pipes.CloseAndWait()
 		}
 	}()
-	if f == nil || command == "spawn" && req.Record.Owner.PID <= 1 {
+	if f == nil {
 		return fmt.Errorf("invalid remote shell request")
 	}
 	if err := validSSHDestination(f.Host); err != nil {
@@ -341,10 +234,6 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	connection.Warn = req.Auth.warn
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	if command == "spawn" {
-		stopWatching := superviseSpawnOwner(req.Record.Owner, func() { cancel(); c.Close() })
-		defer stopWatching()
-	}
 	var err error
 	pipes, err = transportio.Start(ctx, connection, diagnostics)
 	if err != nil {
@@ -379,7 +268,16 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 		}
 		return upgradeDaemonConn(authCtx, channel, record, "/tasks/"+record.UID+"/open", nil)
 	}
-	return use(open, ready)
+	var ownerDone <-chan struct{}
+	if command == "sh" {
+		stop, done, err := claimShellOwner(ctx, open, ready.Instance)
+		if err != nil {
+			return err
+		}
+		defer stop()
+		ownerDone = done
+	}
+	return use(open, ready, ownerDone)
 }
 
 // Query only registered hosted shells using a channel on the authenticated SSH
@@ -418,7 +316,7 @@ func connectedHostedShells(parent context.Context, record localShellRecord, dial
 }
 
 // Relay the selection exchange until the remote setup process hands over a task.
-func relayShellSetup(setup net.Conn, pipes io.ReadWriter, diagnostics *spawnDiagnostics) (message, error) {
+func relayShellSetup(setup net.Conn, pipes io.ReadWriter, diagnostics *shellDiagnostics) (message, error) {
 	for {
 		m, err := readMessage(pipes)
 		if err != nil {
@@ -457,28 +355,6 @@ func relayShellSetup(setup net.Conn, pipes io.ReadWriter, diagnostics *spawnDiag
 			return message{}, fmt.Errorf("unexpected remote shell setup response")
 		}
 	}
-}
-
-func shellTaskName(name string, temporary bool) string {
-	if temporary {
-		return "spawn/" + name
-	}
-	return "launch/" + name
-}
-
-// Lifetime is fixed by startup; attachment state never promotes a spawn.
-func shellLifetime(temporary, remote bool) string {
-	if !temporary {
-		return "persistent"
-	}
-	if remote {
-		return "heartbeat"
-	}
-	return "parent"
-}
-
-func validShellLifetime(value string) bool {
-	return value == "" || value == "persistent" || value == "parent" || value == "heartbeat"
 }
 
 // The local frontend-to-daemon connection carries independent task endpoints.

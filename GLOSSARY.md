@@ -10,7 +10,7 @@ CLI help owns command syntax; [SSHORE.md](SSHORE.md) owns implementation and
 | --- | --- |
 | Task | A daemon-owned item: a terminal shell, mount or forward. One in-memory account table owns its identity and lifecycle; each kind retains its execution mechanism. Programs running inside a shell are its processes, not another sshore task type. |
 | Shell / session | A daemon-owned shell process with one terminal. Local shells run on Linux or Windows; remote shells currently run on Linux. A session means a shell session, never a mount or forward. |
-| Spawn | A shell created by `spawn`. It ends with its original owner; a remote spawn also ends when its daemon-owned lifetime SSH connection is lost. A shell created by `launch` survives detach and connection loss. |
+| Pin | Retention on a shell. `sh --pin` retains it until exit. `detach [DURATION]` retains the running shell as it releases its terminal. |
 | Mount | A remote directory exposed to local applications through SFTP and FUSE/WinFsp. |
 | Forward | A fixed TCP port mapping through SSH. It carries TCP traffic, including an existing SOCKS service, but does not implement SOCKS itself. Use this term instead of tunnel. |
 | Copy / transfer | A one-time regular-file copy through SFTP, invoked directly or executed after approval. It belongs to its executing connection. |
@@ -24,9 +24,9 @@ CLI help owns command syntax; [SSHORE.md](SSHORE.md) owns implementation and
 | Client | The sshore process interacting with the user. For nested attachments, the client at the user's terminal continues to own input and shortcuts. |
 | Daemon | The unique background manager for an OS account, reached through one authenticated loopback TCP endpoint. It owns the in-memory task table, activity leases and current metadata; no daemon-crash recovery is promised. A mount isolation worker is an implementation role, not another manager. |
 | Activity lease | A daemon-owned registration retained by a live authenticated connection or an in-process owner. The shared daemon heartbeat detects lost clients. Releasing a lease ends that participation; persistent shell lifetime remains independent. |
-| Attachment | A client's live interactive connection to a shell. A shell permits one attachment at a time. Detach ends the attachment; disconnect loses its transport. Neither changes the shell's startup lifetime. Mux means this detach/reattach capability. |
-| Transport | The connection carrying operations, usually SSH; local attachments use local control connections. A remote spawn's lifetime SSH connection is separate from its foreground attachment. |
-| Owner | The original process whose lifetime controls a spawn, verified by process identity. Reattaching never transfers ownership. The managed shell shown as owner in `pstree` is display context, not proof of OS process ancestry. |
+| Attachment | A client's live interactive connection to a shell. A shell permits one attachment at a time. Explicit detach retains the shell before releasing the attachment. Loss of the terminal connection follows the current shell scope. Mux means this detach/reattach capability. |
+| Transport | The connection carrying operations, usually SSH; local attachments use local control connections. The authenticated starting lease is separate from the foreground attachment. |
+| Owner | The starting client lease or registered parent shell that supplies a temporary shell's lifetime. The account daemon applies pins and cleans up ended tasks. |
 | Attachment source | The managed shell from which the current attachment was opened. It may change on reattachment and does not control the target shell's lifetime. |
 | Peer | Another computer managing a resource. Its remotely visible peer record is advisory and read-only; it cannot control the original resource. |
 

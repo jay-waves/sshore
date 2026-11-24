@@ -5,12 +5,15 @@ stderr 'unknown command'
 stderr 'unknown command'
 ! exec $SSHORE_BIN --tldr cp
 ! exec $SSHORE_BIN detach --tldr
-! exec $SSHORE_BIN shell --help
+exec $SSHORE_BIN shell --help
+! exec $SSHORE_BIN spawn --help
+! exec $SSHORE_BIN launch --help
+! exec $SSHORE_BIN pin --help
 
 env SSHORE_DISABLED=1
 exec $SSHORE_BIN --tldr
-exec $SSHORE_BIN launch --help
-stdout 'Usage: sshore launch'
-exec $SSHORE_BIN launch --tldr
+exec $SSHORE_BIN sh --help
+stdout 'Usage: sshore sh'
+exec $SSHORE_BIN sh --tldr
 exec $SSHORE_BIN mnt --tldr
 ! exists unused-state

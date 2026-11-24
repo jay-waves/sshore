@@ -95,7 +95,7 @@ Match command "printf forwarding-check"
 			t.Fatalf("ignored forwarding: stdout %q, stderr %q, error %v", output, warning.String(), err)
 		}
 	}
-	out := run("launch", host+":", "--detach", "--no-profile", "--no-login", "--server", binary)
+	out := run("sh", host+":", "--detach", "--no-profile", "--no-login", "--server", binary)
 	endpoint := ""
 	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Fields(line)
@@ -149,6 +149,10 @@ Match command "printf forwarding-check"
 		}
 		for _, marker := range markers {
 			wait(marker)
+		}
+		wait("No shell attached.")
+		if _, err := io.WriteString(terminal, "exit\r"); err != nil {
+			t.Fatal(err)
 		}
 		if err := cmd.Wait(); err != nil {
 			t.Fatal(err)

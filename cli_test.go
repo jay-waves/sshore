@@ -21,21 +21,21 @@ import (
 )
 
 func TestCLIOptionsAndHelp(t *testing.T) {
-	o, err := parseOptions([]string{"launch", "host:", "--quiet", "--no-escape", "--", "-v", "-l", "user"})
+	o, err := parseOptions([]string{"sh", "host:", "--quiet", "--no-escape", "--", "-v", "-l", "user"})
 	if err != nil || o.session != "" || !o.quiet || !o.noEscape || len(o.ssh) != 3 {
 		t.Fatalf("%+v %v", o, err)
 	}
-	for _, args := range [][]string{{"launch", "host:", "--help"}, {"attach", "--help"}} {
+	for _, args := range [][]string{{"sh", "host:", "--help"}, {"attach", "--help"}} {
 		if _, err := parseOptions(args); !errors.Is(err, errHelp) {
 			t.Fatal(err)
 		}
 	}
-	for _, args := range [][]string{{"list", "host", "--quiet"}, {"launch", "host:", "--session="}, {"launch", "--quiet=true"}, {"launch", "host:", "--unknown"}, {"launch", "bad host"}, {"launch", "host:", ""}} {
+	for _, args := range [][]string{{"list", "host", "--quiet"}, {"sh", "host:", "--session="}, {"sh", "--quiet=true"}, {"sh", "host:", "--unknown"}, {"sh", "bad host"}, {"sh", "host:", ""}} {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatal("accepted", args)
 		}
 	}
-	for _, topic := range []string{"launch", "list", "attach", "cp", "detach", "forward", "kill", "mount", "daemon"} {
+	for _, topic := range []string{"sh", "list", "attach", "cp", "detach", "forward", "kill", "mount", "daemon"} {
 		var b bytes.Buffer
 		if err = showHelp([]string{topic}, &b); err != nil || !strings.Contains(b.String(), "Usage: sshore "+topic) {
 			t.Fatal(topic, err)
@@ -43,7 +43,7 @@ func TestCLIOptionsAndHelp(t *testing.T) {
 	}
 }
 func TestDefaultSessions(t *testing.T) {
-	automatic, err := parseOptions([]string{"launch", "host:"})
+	automatic, err := parseOptions([]string{"sh", "host:"})
 	if err != nil || automatic.session != "" {
 		t.Fatalf("automatic: %+v %v", automatic, err)
 	}
@@ -61,7 +61,7 @@ func TestSSHLightweightPassthrough(t *testing.T) {
 	}
 	for flag, value := range values {
 		for _, args := range [][]string{{"host:", "--", flag, value}, {"host:", "--", flag + value}} {
-			o, err := parseOptions(append([]string{"launch"}, args...))
+			o, err := parseOptions(append([]string{"sh"}, args...))
 			if err != nil || !reflect.DeepEqual(o.ssh, []string{flag, value}) {
 				t.Fatalf("%v: %+v %v", args, o, err)
 			}
@@ -70,22 +70,22 @@ func TestSSHLightweightPassthrough(t *testing.T) {
 				t.Fatal(connection.Args)
 			}
 		}
-		if _, err := parseOptions([]string{"launch", "host:", "--", flag}); err == nil {
+		if _, err := parseOptions([]string{"sh", "host:", "--", flag}); err == nil {
 			t.Fatal("missing value accepted:", flag)
 		}
 	}
 	flags := []string{"-C", "-vv", "-vvv", "-v", "-4", "-6"}
-	o, err := parseOptions(append([]string{"launch", "host:", "--"}, flags...))
+	o, err := parseOptions(append([]string{"sh", "host:", "--"}, flags...))
 	if err != nil || !reflect.DeepEqual(o.ssh, flags) {
 		t.Fatal(o, err)
 	}
-	o, err = parseOptions([]string{"launch", "host:", "--", "-R9000:localhost:3000", "-R", "9001:localhost:3001", "-D1080", "-D", "1081"})
+	o, err = parseOptions([]string{"sh", "host:", "--", "-R9000:localhost:3000", "-R", "9001:localhost:3001", "-D1080", "-D", "1081"})
 	want := []string{"-R", "9000:localhost:3000", "-R", "9001:localhost:3001", "-D", "1080", "-D", "1081"}
 	if err != nil || !reflect.DeepEqual(o.ssh, want) {
 		t.Fatal(o, err)
 	}
 	for _, flag := range []string{"-N", "-n", "-f", "-t", "-tt", "-W", "-O", "-X"} {
-		if _, err := parseOptions([]string{"launch", "host:", "--", flag}); err == nil {
+		if _, err := parseOptions([]string{"sh", "host:", "--", flag}); err == nil {
 			t.Fatal("unsupported SSH mode accepted:", flag)
 		}
 	}
@@ -93,24 +93,24 @@ func TestSSHLightweightPassthrough(t *testing.T) {
 
 func TestExplicitSessionRouting(t *testing.T) {
 	for _, host := range []string{"forward", "review", "help", "connect"} {
-		_, err := run([]string{"launch", host, "--invalid"})
+		_, err := run([]string{"sh", host, "--invalid"})
 		if err == nil || !strings.Contains(err.Error(), "unsupported option: --invalid") {
 			t.Fatalf("shell %s routed as a subcommand: %v", host, err)
 		}
 	}
-	if o, err := parseOptions([]string{"launch"}); err != nil || !o.local || o.session != "" {
+	if o, err := parseOptions([]string{"sh"}); err != nil || !o.local || o.session != "" {
 		t.Fatalf("default launch: %+v, %v", o, err)
 	}
 }
 
 func TestSessionCommandSemantics(t *testing.T) {
-	for _, tc := range []struct{ command, target, mode string }{{"launch", "host:", "new"}, {"attach", "host:build", "attach"}} {
+	for _, tc := range []struct{ command, target, mode string }{{"sh", "host:", "new"}, {"attach", "host:build", "attach"}} {
 		o, err := parseOptions([]string{tc.command, tc.target, "--", "-p2222"})
 		if err != nil || o.command != tc.command || !strings.Contains(remoteCommand(o), `"mode":"`+tc.mode+`"`) {
 			t.Fatalf("%+v %v", o, err)
 		}
 	}
-	for _, args := range [][]string{{"new"}, {"new", "host"}, {"host"}, {"host", "list"}, {"connect", "host"}, {"launch", "host:", "-s", "build"}, {"attach", "host", "--session=build"}, {"launch", "host:", "a", "b"}, {"list", "host", "--quiet"}} {
+	for _, args := range [][]string{{"new"}, {"new", "host"}, {"host"}, {"host", "list"}, {"connect", "host"}, {"sh", "host:", "-s", "build"}, {"attach", "host", "--session=build"}, {"sh", "host:", "a", "b"}, {"list", "host", "--quiet"}} {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatalf("accepted obsolete/invalid syntax: %v", args)
 		}
@@ -126,10 +126,10 @@ func TestSessionCommandSemantics(t *testing.T) {
 		}
 	}
 	t.Setenv("SSHORE_DISABLED", "1")
-	if code, err := run([]string{"launch", "--help"}); code != 0 || err != nil {
+	if code, err := run([]string{"sh", "--help"}); code != 0 || err != nil {
 		t.Fatal(code, err)
 	}
-	if _, err := run([]string{"launch", "host:"}); err == nil {
+	if _, err := run([]string{"sh", "host:"}); err == nil {
 		t.Fatal("recovery allowed shell")
 	}
 	if _, err := run([]string{"mount", "host:/remote", "mount"}); err == nil {
@@ -155,7 +155,7 @@ func TestSharedCLIGrammar(t *testing.T) {
 		args  []string
 		parse func([]string) error
 	}{
-		{"shell", []string{"launch", "work:"}, func(a []string) error { _, err := parseOptions(a); return err }},
+		{"shell", []string{"sh", "work:"}, func(a []string) error { _, err := parseOptions(a); return err }},
 		{"mount", []string{"work:", "here:"}, func(a []string) error { _, err := parseFTPOptions(a); return err }},
 		{"forward", []string{".:8080", "work:3000"}, func(a []string) error { _, _, err := parseForwardCommand(a); return err }},
 		{"cp", []string{"work:source", ".:target"}, func(a []string) error { _, err := parseCopyCommand(a); return err }},
@@ -223,13 +223,13 @@ func TestInventoryOptions(t *testing.T) {
 }
 
 func TestRemovedShellForms(t *testing.T) {
-	for _, args := range [][]string{{"attach", "--local"}, {"attach", "--local", "dev"}, {"shell"}, {"launch", "--name", "dev"}, {"spawn", "--name=dev"}} {
+	for _, args := range [][]string{{"attach", "--local"}, {"attach", "--local", "dev"}, {"spawn"}, {"launch"}, {"sh", "--name", "dev"}, {"sh", "--name=dev"}} {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatalf("accepted %v", args)
 		}
 	}
 	var out bytes.Buffer
-	if err := showHelp([]string{"shell"}, &out); err == nil {
+	if err := showHelp([]string{"spawn"}, &out); err == nil {
 		t.Fatal("accepted removed alias help")
 	}
 }
@@ -248,7 +248,7 @@ func TestRemovedScopeAndDownloadFlags(t *testing.T) {
 }
 
 func TestCommandAliases(t *testing.T) {
-	for alias, command := range map[string]string{"copy": "cp", "a": "attach", "d": "detach", "ps": "pstree", "ls": "list", "mnt": "mount", "fwd": "forward", "sh": "spawn", "mux": "launch"} {
+	for alias, command := range map[string]string{"copy": "cp", "a": "attach", "d": "detach", "ps": "pstree", "ls": "list", "mnt": "mount", "fwd": "forward", "shell": "sh"} {
 		t.Run(alias, func(t *testing.T) {
 			var got, want bytes.Buffer
 			if err := showHelp([]string{alias}, &got); err != nil {
@@ -276,7 +276,7 @@ func TestCommandAliases(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(parsed.operands, []string{"a", "d"}) || !reflect.DeepEqual(parsed.ssh, []string{"-J", "ps"}) {
 		t.Fatalf("operands rewritten: %+v %v", parsed, err)
 	}
-	for _, args := range [][]string{{"a", "host:"}, {"sh", "host:"}, {"mux", "host:"}} {
+	for _, args := range [][]string{{"a", "host:"}, {"sh", "host:"}, {"shell", "host:"}} {
 		o, err := parseOptions(args)
 		if err != nil || o.command != canonicalCommand(args[0]) {
 			t.Fatalf("shell policy: %+v %v", o, err)
@@ -287,7 +287,7 @@ func TestCommandAliases(t *testing.T) {
 func TestSSHSeparatorBoundaries(t *testing.T) {
 	parsers := map[string]func([]string) error{
 		"session": func(a []string) error {
-			_, e := parseOptions(append([]string{"launch", a[0] + ":"}, a[1:]...))
+			_, e := parseOptions(append([]string{"sh", a[0] + ":"}, a[1:]...))
 			return e
 		},
 		"mount": func(a []string) error {
@@ -345,7 +345,7 @@ func TestReconnectCommandSSHSeparator(t *testing.T) {
 
 func TestSharedHostValidation(t *testing.T) {
 	for _, host := range []string{"host name", "host\tname", "host\x7f", "host\nname"} {
-		if _, err := parseOptions([]string{"launch", host}); err == nil {
+		if _, err := parseOptions([]string{"sh", host}); err == nil {
 			t.Fatal("shell accepted", host)
 		}
 		if _, err := parseFTPOptions([]string{host + ":", "here:"}); err == nil {
@@ -380,7 +380,7 @@ func TestNativeSSHPort(t *testing.T) {
 		command  string
 		operands []string
 	}{
-		{"launch", []string{"host:"}}, {"spawn", []string{"host:"}}, {"attach", []string{"host:work"}},
+		{"sh", []string{"host:"}}, {"sh", []string{"host:"}}, {"attach", []string{"host:work"}},
 		{"kill", []string{"host:work"}},
 		{"rename", []string{"host:old", "new"}}, {"cp", []string{".:local", "host:remote"}},
 		{"mount", []string{"host:remote", "here:"}}, {"forward", []string{".:8080", "host:80"}},
@@ -392,7 +392,7 @@ func TestNativeSSHPort(t *testing.T) {
 		}
 	}
 	for _, port := range []string{"1", "65535"} {
-		if _, err := parseOptions([]string{"launch", "host:", "--port", port}); err != nil {
+		if _, err := parseOptions([]string{"sh", "host:", "--port", port}); err != nil {
 			t.Fatal(port, err)
 		}
 	}
@@ -403,11 +403,11 @@ func TestNativeSSHPort(t *testing.T) {
 		{"host", "--port", "22", "--", "-p", "23"}, {"host", "--port", "22", "--", "-p23"},
 		{"host", "--port", "22", "--", "-o", "Port=23"}, {"host", "--port", "22", "--", "-o", " pOrT 23"},
 	} {
-		if _, err := parseOptions(append([]string{"launch"}, args...)); err == nil {
+		if _, err := parseOptions(append([]string{"sh"}, args...)); err == nil {
 			t.Fatal("accepted", args)
 		}
 	}
-	if _, err := parseOptions([]string{"launch", "host:", "--port", "22", "--", "-o", "ProxyCommand=ssh -p 23 jump"}); err != nil {
+	if _, err := parseOptions([]string{"sh", "host:", "--port", "22", "--", "-o", "ProxyCommand=ssh -p 23 jump"}); err != nil {
 		t.Fatal(err)
 	}
 	o, err := parseCopyCommand([]string{".:local", "host:remote", "--port", "2222"})
@@ -591,7 +591,7 @@ func TestUnifiedEndpointSyntax(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{
-		{"launch", ":work", "--port", "22"}, {"spawn", "origin:build"}, {"kill", "7afe22"},
+		{"sh", ":work", "--port", "22"}, {"sh", "origin:build"}, {"kill", "7afe22"},
 		{"cp", "file", "dest"}, {"fwd", "3000", "80"}, {"mnt", "./src", "./mnt"},
 	} {
 		if code, err := run(args); code != 2 || err == nil {
@@ -599,12 +599,12 @@ func TestUnifiedEndpointSyntax(t *testing.T) {
 		}
 	}
 	for _, target := range []string{"here:", ".:", ":"} {
-		o, err := parseOptions([]string{"launch", target})
+		o, err := parseOptions([]string{"sh", target})
 		if err != nil || !o.local || o.session != "" {
 			t.Fatalf("%q: %+v %v", target, o, err)
 		}
 	}
-	if o, err := parseOptions([]string{"spawn", "work:"}); err != nil || o.host != "work" || o.session != "" {
+	if o, err := parseOptions([]string{"sh", "work:"}); err != nil || o.host != "work" || o.session != "" {
 		t.Fatal(o, err)
 	}
 	if o, err := parseOptions([]string{"attach", "work:7afe22"}); err != nil || o.host != "work" || o.session != "7afe22" {
@@ -641,12 +641,12 @@ func TestNamedShellCreationTargets(t *testing.T) {
 		command, target, host, name string
 		local                       bool
 	}{
-		{"launch", "build", "build", "", false},
-		{"spawn", "here:build", "local", "build", true},
+		{"sh", "build", "build", "", false},
+		{"sh", "here:build", "local", "build", true},
 		{"sh", ".:build", "local", "build", true},
-		{"mux", "work:build", "work", "build", false},
-		{"spawn", "user@[::1]:build", "user@::1", "build", false},
-		{"launch", "work:", "work", "", false},
+		{"shell", "work:build", "work", "build", false},
+		{"sh", "user@[::1]:build", "user@::1", "build", false},
+		{"sh", "work:", "work", "", false},
 	} {
 		o, err := parseOptions([]string{tc.command, tc.target})
 		if err != nil || o.host != tc.host || o.session != tc.name || o.local != tc.local || o.command != canonicalCommand(tc.command) {
@@ -657,7 +657,7 @@ func TestNamedShellCreationTargets(t *testing.T) {
 		}
 	}
 	for _, target := range []string{"origin:build", "work:abcdef", "here:bad/name"} {
-		if _, err := parseOptions([]string{"spawn", target}); err == nil {
+		if _, err := parseOptions([]string{"sh", target}); err == nil {
 			t.Errorf("accepted invalid creation target %q", target)
 		}
 	}
@@ -743,7 +743,7 @@ func TestOriginRequestsUseExecutionHostPaths(t *testing.T) {
 }
 
 func TestShellSingleTargetGrammar(t *testing.T) {
-	for _, command := range []string{"launch", "spawn"} {
+	for _, command := range []string{"sh"} {
 		for _, tc := range []struct {
 			target, host, name string
 			local              bool

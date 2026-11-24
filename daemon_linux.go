@@ -107,7 +107,7 @@ func dialHostedTask(ctx context.Context, ref string, timeout time.Duration) (net
 type hostedShellRequest struct {
 	Directory, Name, UID string
 	Env                  []string
-	Temporary            bool
+	parent               *shellTask
 }
 
 func registerPlatformDaemonRoutes(mux *http.ServeMux, tasks *daemonTasks) {
@@ -145,13 +145,13 @@ func registerPlatformDaemonRoutes(mux *http.ServeMux, tasks *daemonTasks) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 }
-func createRemoteShell(executable string, id taskIdentitySelection, temporary bool, cwd string, env []string) error {
+func createRemoteShell(executable string, id taskIdentitySelection, cwd string, env []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	record, err := ensureLocalDaemonContext(ctx, executable)
 	if err != nil {
 		return err
 	}
-	req := hostedShellRequest{Directory: cwd, Name: id.name, UID: id.uid, Env: env, Temporary: temporary}
+	req := hostedShellRequest{Directory: cwd, Name: id.name, UID: id.uid, Env: env}
 	return daemonJSON(ctx, record, "/shells", req, nil)
 }

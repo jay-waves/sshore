@@ -11,7 +11,7 @@ func TestParticipatingShellTransitions(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	first := participatingShell{Host: "work", Instance: strings.Repeat("a", 32), Name: "build",
-		State: taskActive, PID: 1234, Lifetime: "heartbeat", Temporary: true, Attachment: strings.Repeat("b", 32)}
+		State: taskActive, PID: 1234, Attachment: strings.Repeat("b", 32)}
 	must := func(err error) {
 		t.Helper()
 		if err != nil {
@@ -39,7 +39,7 @@ func TestParticipatingShellTransitions(t *testing.T) {
 	must(setParticipatingShellState(next))
 	must(renameParticipatingShell(next.Host, next.Instance, "renamed"))
 	activityFixture(t) // Read the persisted record through a new daemon instance.
-	if row := read(); row.Name != "renamed" || row.State != taskDetached || row.PID != next.PID || row.Lifetime != "heartbeat" {
+	if row := read(); row.Name != "renamed" || row.State != taskDetached || row.PID != next.PID {
 		t.Fatalf("persisted participation: %+v", row)
 	}
 	must(forgetParticipatingShell(next.Host, next.Instance))
@@ -53,7 +53,7 @@ func TestParticipationRefreshUpdatesOnlyKnownTasks(t *testing.T) {
 	activity := activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	first := participatingShell{Host: "work", Instance: strings.Repeat("a", 32), Name: "known",
-		State: taskActive, PID: 1234, Lifetime: "persistent", Attachment: strings.Repeat("b", 32)}
+		State: taskActive, PID: 1234, Attachment: strings.Repeat("b", 32)}
 	missing := first
 	missing.Instance, missing.Name = strings.Repeat("c", 32), "missing"
 	other := first
@@ -75,9 +75,9 @@ func TestParticipationRefreshUpdatesOnlyKnownTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	observed := []shellView{
-		{Instance: first.Instance, Name: "known-renamed", State: taskDetached, PID: first.PID, Lifetime: "persistent"},
-		{Instance: unchanged.Instance, Name: unchanged.Name, State: unchanged.State, PID: unchanged.PID, Lifetime: unchanged.Lifetime},
-		{Instance: strings.Repeat("e", 32), Name: "unrelated", State: taskActive, PID: 4321, Lifetime: "persistent"},
+		{Instance: first.Instance, Name: "known-renamed", State: taskDetached, PID: first.PID},
+		{Instance: unchanged.Instance, Name: unchanged.Name, State: unchanged.State, PID: unchanged.PID},
+		{Instance: strings.Repeat("e", 32), Name: "unrelated", State: taskActive, PID: 4321},
 	}
 	if err := reconcileParticipatingShells("work", observed, since); err != nil {
 		t.Fatal(err)

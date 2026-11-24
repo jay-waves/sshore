@@ -151,7 +151,7 @@ func readAttachmentEvents(ctx context.Context, control attachmentControl, termin
 
 // Learn the current shell name before saving approval metadata.
 func acceptSessionName(o *options, name string) error {
-	if o.session != "" && !(o.command == "attach" && (!o.local || o.hosted)) {
+	if o.session != "" && o.command != "attach" {
 		return nil
 	}
 	if err := validSession(name); err != nil {
@@ -161,7 +161,7 @@ func acceptSessionName(o *options, name string) error {
 	return nil
 }
 
-func runClientOnce(o options, previous string, rootFrontend bool, transports clientTransports, ready func(options) string) (resultCode int, resultErr error) {
+func runClientOnce(o options, previous string, transports clientTransports, ready func(options) string) (resultCode int, resultErr error) {
 	attached := false
 	var ended func()
 	// Report after input shutdown and console restoration, including nested returns.
@@ -243,7 +243,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 		tree = currentShellTree()
 	}
 	sourceMachine, sourceHost := localMachineIdentity()
-	if err = streamMessage(control, message{Type: "attach", Token: terminalToken, OwnerProcess: describeSpawnOwner(o.owner), SourceHost: sourceHost, SourceMachineID: sourceMachine, Tree: tree, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && (o.command == "launch" || o.command == "spawn"), NoLogin: o.noLogin && (o.command == "launch" || o.command == "spawn")}); err != nil {
+	if err = streamMessage(control, message{Type: "attach", Token: terminalToken, Pinned: o.command == "sh" && o.pin, SourceHost: sourceHost, SourceMachineID: sourceMachine, Tree: tree, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && o.command == "sh", NoLogin: o.noLogin && o.command == "sh"}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -275,7 +275,6 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 	if o.reusable != nil {
 		o.reusable.session, o.reusable.instance = o.session, o.instance
 	}
-	o.temporary = m.Temporary
 	var participation *participatingShell
 	var terminalStateConfirmed bool
 	updateParticipation := func(state string) {
@@ -292,7 +291,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 			attachment = newTaskUID()
 		}
 		row := participatingShell{Host: o.host, Instance: o.instance, Name: o.session, State: taskActive,
-			Lifetime: shellLifetime(m.Temporary, true), Temporary: m.Temporary, PID: m.PID, Attachment: attachment}
+			Pinned: m.Pinned, PinUntil: m.PinUntil, PID: m.PID, Attachment: attachment}
 		if err := observeParticipatingShell(row); err != nil {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Could not record participating shell: %s\n", cleanText(err.Error()))
 		} else {
@@ -314,10 +313,13 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 	}
 	shellPID := m.PID
 
-	confirmDetach := func(name string) {
+	confirmDetach := func(reply message) {
 		terminalStateConfirmed = true
-		if validSession(name) == nil {
-			o.session = name
+		if validSession(reply.Name) == nil {
+			o.session = reply.Name
+		}
+		if participation != nil {
+			participation.Pinned, participation.PinUntil = reply.Pinned, reply.PinUntil
 		}
 		updateParticipation(taskDetached)
 		if err := rememberDetachedAttachment(o); err != nil {
@@ -328,7 +330,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 		if err := detachAttachment(control, confirmDetach); err != nil {
 			return 1, err
 		}
-		started := fmt.Sprintf("Started %s (%s).", cleanText(shellDisplayEndpoint(o)), shellTaskKind(o.temporary))
+		started := fmt.Sprintf("Started %s (sh).", cleanText(shellDisplayEndpoint(o)))
 		fmt.Fprintln(os.Stdout, formatSessionNotice(os.Stdout, termui.Info, started))
 		return 0, nil
 	}
@@ -470,7 +472,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 		connected += " from " + cleanText(from)
 	}
 	if o.command != "attach" {
-		connected += " (" + shellTaskKind(o.temporary) + ")"
+		connected += " (sh)"
 	}
 	sessionNotice(termui.Info, connected, "")
 	color := termui.ColorEnabled(os.Stdout)
@@ -521,9 +523,12 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 		detachPhase = drainingInput
 		detachDeadline = time.After(5 * time.Second)
 	}
-	queueDetach := func() bool {
+	detachRequest := message{Type: "detach"}
+	explicitDetach := false
+	queueDetach := func(m message) bool {
 		select {
 		case inputQueue <- []pty.KeyEvent{{Action: pty.KeyDetach}}:
+			detachRequest = m
 			drainInput()
 			return true
 		default:
@@ -538,7 +543,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 	var approval *approvalHandoff
 	var approvalDeadline <-chan time.Time
 	sendDetach := func(inputUnconfirmed bool) error {
-		if err := streamMessage(control, message{Type: "detach"}); err != nil {
+		if err := streamMessage(control, detachRequest); err != nil {
 			return err
 		}
 		if inputUnconfirmed {
@@ -560,7 +565,6 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 	var pending transitionRequest
 	var consoleRequest uint64
 	var openingConsole bool
-	var openingConfirmation bool
 	var openingInput []byte
 	var handoffHint *handoffObservation
 	defer func() {
@@ -577,7 +581,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 	actionForKey := func(action pty.KeyAction) string {
 		switch action {
 		case pty.KeyNew:
-			return "spawn_child"
+			return "sh_child"
 		case pty.KeyNext:
 			return "next"
 		case pty.KeyPrevious:
@@ -588,7 +592,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 		return ""
 	}
 	queueSwitch := func(next *sessionSwitch) bool {
-		if approval != nil || !queueDetach() {
+		if approval != nil || !queueDetach(message{Type: "detach", Action: "switch"}) {
 			return false
 		}
 		pending = transitionRequest{next: next}
@@ -600,8 +604,6 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 			target.routeTarget = true
 		}
 		target.command, target.session = "attach", selected.Name
-		target.owner = processIdentity{}
-		target.temporary = false
 		target.instance, target.taskIdentity = selected.Instance, "task:"+selected.Instance
 		target.hosted = o.local && selected.Hosted
 		return queueSwitch(&sessionSwitch{to: target})
@@ -619,15 +621,32 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 		}
 		return streamMessage(control, request)
 	}
-	startChild := func(command string) error {
-		pending.action = command + "_child"
+	startChild := func(pin bool) error {
+		pending.action = "sh_child"
 		awaitResponse(30 * time.Second)
-		return streamMessage(control, message{Type: pending.action})
+		return streamMessage(control, message{Type: pending.action, Pinned: pin})
 	}
 	requestConsoleTargets := func() error {
 		consoleRequest++
 		pending.action = fmt.Sprintf("console:%d", consoleRequest)
 		return requestTargets(pending.action)
+	}
+	requestConsoleInventory := func(name string) error {
+		consoleRequest++
+		pending.action = fmt.Sprintf("console:inventory:%d", consoleRequest)
+		awaitResponse(requestTimeout)
+		return streamMessage(control, message{Type: "console_inventory", Action: pending.action, Name: name, Color: color, Cols: uint16(cols)})
+	}
+	requestOpeningInventory := func(targetWarning string) error {
+		console.targetWarning = targetWarning
+		return requestConsoleInventory("pstree")
+	}
+	showConsoleInventory := func(body string) {
+		if console.targetWarning != "" {
+			body = console.targetWarning + "\n\n" + body
+			console.targetWarning = ""
+		}
+		console.show(consoleInventoryBody(body, rows))
 	}
 	leaveConsole := func() error {
 		if strings.HasPrefix(pending.action, "console:") {
@@ -651,7 +670,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 			}
 			source := o
 			source.command, source.recovering = "attach", true
-			if detachPhase == detachIdle && !queueDetach() {
+			if detachPhase == detachIdle && !queueDetach(message{Type: "detach", Action: "switch"}) {
 				return fmt.Errorf("terminal input queue is busy")
 			}
 			pending = transitionRequest{next: &sessionSwitch{to: source}}
@@ -701,8 +720,14 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 			}
 		case <-pending.timeout:
 			if strings.HasPrefix(pending.action, "console:inventory:") && console != nil {
-				console.show("Inventory lookup timed out.")
+				showConsoleInventory("Inventory lookup timed out.")
 			} else if strings.HasPrefix(pending.action, "console:") && console != nil {
+				if console.attach == "" {
+					if err := requestOpeningInventory("Session lookup timed out."); err != nil {
+						return 255, err
+					}
+					continue
+				}
 				console.attach = ""
 				console.show("Session lookup timed out.")
 			} else if pending.action == "handoff" {
@@ -751,36 +776,18 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 						return 255, err
 					}
 				case e.console.Line != nil:
-					if console.confirm {
-						if termui.ConfirmYes(*e.console.Line) {
-							if !queueDetach() {
-								console.showConfirmation("Terminal input queue is busy. Try again.")
-								continue
-							}
-							clearTransition()
-							if err := closeConsole(); err != nil {
-								return 255, err
-							}
-						} else if err := leaveConsole(); err != nil {
-							return 255, err
-						}
-						continue
-					}
 					args := strings.Fields(*e.console.Line)
 					if len(args) > 0 {
 						args[0] = canonicalCommand(args[0])
 					}
 					switch {
-					case len(args) == 1 && args[0] == "detach":
-						if detachPhase != detachIdle {
+					case len(args) > 0 && args[0] == "detach":
+						request, err := parseDetachCommand(args[1:])
+						if err != nil {
+							console.show(err.Error())
 							break
 						}
-						if o.local && o.temporary && rootFrontend {
-							clearTransition()
-							console.showConfirmation("")
-							break
-						}
-						if !queueDetach() {
+						if !queueDetach(request) {
 							console.show("Terminal input queue is busy. Try again.")
 							break
 						}
@@ -792,11 +799,16 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 						if err := leaveConsole(); err != nil {
 							return 255, err
 						}
-					case len(args) == 1 && (args[0] == "spawn" || args[0] == "launch"):
+					case len(args) > 0 && args[0] == "sh":
+						parsed, err := parseCLI(args[1:], "sh")
+						if err != nil || len(parsed.operands) != 0 || len(parsed.ssh) != 0 || len(parsed.values) > 1 || len(parsed.values) == 1 && !parsed.has("--pin") {
+							console.show("Usage: sh [--pin]")
+							break
+						}
 						if err := closeConsole(); err != nil {
 							return 1, err
 						}
-						if err := startChild(args[0]); err != nil {
+						if err := startChild(parsed.has("--pin")); err != nil {
 							return 255, err
 						}
 					case len(args) == 2 && args[0] == "attach":
@@ -807,10 +819,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 						}
 					case len(args) == 1 && (args[0] == "list" || args[0] == "ps" || args[0] == "pstree"):
 						termui.WriteConsoleBody(terminalOutput, "Loading "+args[0]+"…")
-						consoleRequest++
-						pending.action = fmt.Sprintf("console:inventory:%d", consoleRequest)
-						awaitResponse(requestTimeout)
-						if err := streamMessage(control, message{Type: "console_inventory", Action: pending.action, Name: args[0], Color: color, Cols: uint16(cols)}); err != nil {
+						if err := requestConsoleInventory(args[0]); err != nil {
 							return 255, err
 						}
 					default:
@@ -835,7 +844,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 							break
 						}
 						if e.keyAction == pty.KeyNew {
-							keyErr = startChild("spawn")
+							keyErr = startChild(false)
 						} else {
 							keyErr = requestTargets(action)
 						}
@@ -848,20 +857,19 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 						if keyErr = outputModes.BeginConsole(terminalOutput); keyErr != nil {
 							break
 						}
+						host := o.host
+						if o.local {
+							host = "local"
+						}
 						console = &commandConsole{}
-						console.start(ctx, terminalOutput, emit, cols, color, openingConfirmation)
+						console.start(ctx, terminalOutput, emit, host, cols, color)
 						if len(openingInput) > 0 {
 							keyErr = sendConsoleInput(openingInput)
 						}
 						openingInput = nil
 						if keyErr == nil && console != nil {
-							if openingConfirmation {
-								console.showConfirmation("")
-							} else {
-								keyErr = requestConsoleTargets()
-							}
+							keyErr = requestConsoleTargets()
 						}
-						openingConfirmation = false
 					case pty.KeyDetach:
 						keyErr = sendDetach(false)
 					case pty.KeyRedraw:
@@ -955,15 +963,6 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 					continue
 				}
 				batch := keys.Feed(e.input)
-				if o.local && o.temporary && rootFrontend {
-					for i := range batch {
-						if batch[i].Action == pty.KeyDetach {
-							batch[i].Action = pty.KeyConsole
-							openingConfirmation = true
-							break
-						}
-					}
-				}
 				armKeyTimeout()
 				if len(batch) > 0 {
 					select {
@@ -978,6 +977,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 								pending.action = action
 							}
 							if key.Action == pty.KeyDetach {
+								detachRequest = message{Type: "detach"}
 								drainInput()
 								break
 							}
@@ -989,15 +989,15 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 
 			} else if e.m != nil {
 				switch e.m.Type {
-				case "spawn_child_error":
-					if pending.timeout != nil && (pending.action == "spawn_child" || pending.action == "launch_child") {
+				case "sh_child_error":
+					if pending.timeout != nil && pending.action == "sh_child" {
 						clearTransition()
 					}
 					notice(termui.Warning, "\r\n[sshore] %s\r\n", cleanText(e.m.Error))
 				case "console_inventory":
 					if console != nil && strings.HasPrefix(pending.action, "console:inventory:") && e.m.Action == pending.action {
 						clearTransition()
-						console.show(consoleInventoryBody(e.m.Output, rows))
+						showConsoleInventory(e.m.Output)
 					}
 				case "session_targets":
 					if pending.timeout == nil || pending.action == "handoff" || e.m.Action != pending.action {
@@ -1006,6 +1006,12 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 					clearTransition()
 					if e.m.Error != "" {
 						if console != nil && strings.HasPrefix(e.m.Action, "console:") {
+							if console.attach == "" {
+								if err := requestOpeningInventory("Session lookup failed. " + cleanText(e.m.Error)); err != nil {
+									return 255, err
+								}
+								continue
+							}
 							console.attach = ""
 							console.show(e.m.Error)
 							continue
@@ -1024,7 +1030,9 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 						if console != nil {
 							console.targets = e.m.Targets
 							if console.attach == "" {
-								console.show(consoleTargetSummary(console.targets, rows))
+								if err := requestOpeningInventory(""); err != nil {
+									return 255, err
+								}
 							} else {
 								target, problem := resolveConsoleTarget(console.targets, console.attach)
 								console.attach = ""
@@ -1071,8 +1079,8 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 						notice(termui.Warning, "\r\n[sshore] terminal input queue is busy\r\n")
 					}
 
-				case "spawn_route":
-					if pending.timeout != nil && (pending.action == "spawn_child" || pending.action == "launch_child") {
+				case "shell_route":
+					if pending.timeout != nil && pending.action == "sh_child" {
 						clearTransition()
 					}
 					if o.local && !o.hosted || len(e.m.Token) != 64 {
@@ -1082,27 +1090,23 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 					token := e.m.Token
 					reject := func() {
 						go func() {
-							_ = confirmSpawnRoute(ctx, parent, token, fmt.Errorf("client is switching sessions; try again"))
+							_ = confirmShellRoute(ctx, parent, token, fmt.Errorf("client is switching sessions; try again"))
 						}()
 					}
 					if detachPhase != detachIdle || transitioning() || console != nil {
 						reject()
 						continue
 					}
-					target := options{noLogin: e.m.NoLogin, noProfile: e.m.NoProfile, tree: e.m.Tree, command: "spawn", host: e.m.SourceHost, session: e.m.Name, temporary: true, routeParent: &parent, routeToken: e.m.Token, quiet: o.quiet}
-					switch e.m.Action {
-					case "local-launch":
-						target.command, target.temporary = "launch", false
-						fallthrough
-					case "local":
-						target.host = o.host
+					target := options{pin: e.m.Pinned, noLogin: e.m.NoLogin, noProfile: e.m.NoProfile, tree: e.m.Tree, command: "sh", host: e.m.SourceHost, session: e.m.Name, routeParent: &parent, routeToken: e.m.Token, quiet: o.quiet}
+					if e.m.Action == "local" {
+						target.host, target.sameHostRoute = o.host, true
 					}
-					target.handoffDone = func(ctx context.Context, result error) error { return confirmSpawnRoute(ctx, parent, token, result) }
+					target.handoffDone = func(ctx context.Context, result error) error { return confirmShellRoute(ctx, parent, token, result) }
 					if !queueSwitch(&sessionSwitch{to: target, returnToParent: true}) {
 						reject()
 					}
 				case "handoff":
-					if pending.timeout != nil && (pending.action == "spawn_child" || pending.action == "launch_child") {
+					if pending.timeout != nil && pending.action == "sh_child" {
 						clearTransition()
 					}
 					// Only authenticated local control can redirect this frontend.
@@ -1111,6 +1115,9 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 					}
 					target, handoffErr := e.m.Handoff.options()
 					source, token := o, e.m.Token
+					if target.command == "sh" {
+						target.parent = canonicalTaskUID(source.taskIdentity)
+					}
 					target.handoffAttachment = handoffAttachmentID(token)
 					target.handoffDone = func(_ context.Context, result error) error {
 						request := message{Type: "handoff_confirm", Token: token}
@@ -1196,11 +1203,20 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 					if approval == nil || approval.token != e.m.Token || approval.confirmed || detachPhase != detachIdle {
 						continue
 					}
-					if !queueDetach() {
+					if !queueDetach(message{Type: "detach", Action: "switch"}) {
 						return 1, fmt.Errorf("terminal input queue is busy; request the operation again")
 					}
 					approval.confirmed, approvalDeadline = true, nil
+				case "pin_failed":
+					detachPhase, detachDeadline = detachIdle, nil
+					if console != nil {
+						console.show(cleanText(e.m.Error))
+					} else {
+						notice(termui.Warning, "\r\n[sshore] %s\r\n", cleanText(e.m.Error))
+					}
 				case "detach_requested":
+					explicitDetach = true
+					detachRequest = message{Type: "detach", Action: "switch"}
 					if err := closeConsole(); err != nil {
 						return 1, err
 					}
@@ -1210,7 +1226,7 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 						}
 					}
 				case "detached":
-					confirmDetach(e.m.Name)
+					confirmDetach(*e.m)
 					_ = streamMessage(control, message{Type: "bye"})
 					if approval != nil && approval.confirmed {
 						return 0, &localApproval{request: approval.request, source: o}
@@ -1223,12 +1239,18 @@ func runClientOnce(o options, previous string, rootFrontend bool, transports cli
 						}
 						return 0, pending.next
 					}
+					if o.reusable != nil && o.reusable.ownsShell && (detachRequest.Action != "switch" || explicitDetach) {
+						o.reusable.ownsShell = false
+						o.reusable.close()
+						delete(transports, o.reusable)
+					}
+					retention := pinDetail("", e.m.Pinned, e.m.PinUntil)
 					ended = func() {
-						if o.temporary {
-							sessionNotice("", "Backgrounded "+cleanText(shellDisplayEndpoint(o))+" until its parent shell exits", "Return: "+cleanText(reconnectCommand(o)))
-						} else {
-							sessionNotice("", "Detached from "+cleanText(shellDisplayEndpoint(o))+" (still running)", "Reconnect: "+cleanText(reconnectCommand(o)))
+						title := "Detached from " + cleanText(shellDisplayEndpoint(o))
+						if retention != "" {
+							title += " (" + retention + ")"
 						}
+						sessionNotice("", title, "Reconnect: "+cleanText(reconnectCommand(o)))
 					}
 					return 0, nil
 				case "exit":
@@ -1302,6 +1324,7 @@ func shellDisplayEndpoint(o options) string {
 }
 
 func reconnectCommand(o options) string {
+	o = directShellOptions(o)
 	quote := func(s string) string {
 		if s != "" && strings.IndexFunc(s, func(r rune) bool {
 			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("@%_+=:,./-", r))

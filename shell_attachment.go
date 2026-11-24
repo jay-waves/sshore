@@ -43,8 +43,8 @@ func (a *attachment) controlMessage(m message) error {
 }
 
 // Replace the interactive launcher with an in-process request. The existing
-// handoff owns confirmation, rollback and the remote spawn lifetime connection.
-func serveShortcutSpawn(p *attachment, done <-chan struct{}, serve func(net.Conn)) {
+// handoff owns confirmation, rollback and the task lifetime.
+func serveChildShortcut(p *attachment, done <-chan struct{}, serve func(net.Conn)) {
 	client, server := net.Pipe()
 	defer client.Close()
 	finished := make(chan struct{})
@@ -65,7 +65,7 @@ func serveShortcutSpawn(p *attachment, done <-chan struct{}, serve func(net.Conn
 		m, err := readMessage(client)
 		if err != nil {
 			if !accepted {
-				_ = p.controlMessage(message{Type: "spawn_child_error", Error: "spawn handoff ended before confirmation"})
+				_ = p.controlMessage(message{Type: "sh_child_error", Error: "shell handoff ended before confirmation"})
 			}
 			return
 		}
@@ -73,7 +73,7 @@ func serveShortcutSpawn(p *attachment, done <-chan struct{}, serve func(net.Conn
 			accepted = true
 		}
 		if m.Error != "" {
-			_ = p.controlMessage(message{Type: "spawn_child_error", Error: m.Error})
+			_ = p.controlMessage(message{Type: "sh_child_error", Error: m.Error})
 			return
 		}
 	}
@@ -106,7 +106,7 @@ func (a *attachment) FinishExit(code int, reason string) {
 // Detach completes the detach/confirmation/bye handshake on an exclusively owned
 // control stream. Confirmation runs before bye, so callers can retain the name
 // even if the final acknowledgement fails.
-func detachAttachment(control attachmentControl, confirmed ...func(string)) error {
+func detachAttachment(control attachmentControl, confirmed ...func(message)) error {
 	_ = control.SetDeadline(time.Now().Add(5 * time.Second))
 	defer control.SetDeadline(time.Time{})
 	if err := writeMessage(control, message{Type: "detach"}); err != nil {
@@ -117,7 +117,7 @@ func detachAttachment(control attachmentControl, confirmed ...func(string)) erro
 		return err
 	}
 	for _, confirm := range confirmed {
-		confirm(m.Name)
+		confirm(m)
 	}
 	return writeMessage(control, message{Type: "bye"})
 }
@@ -135,9 +135,9 @@ func expectDetachMessage(r io.Reader, expected string) (message, error) {
 
 // FinishDetach confirms the handoff after the host releases the input lease.
 // Only the control loop may call it, since it consumes the final acknowledgement.
-func (a *attachment) FinishDetach(name string) error {
+func (a *attachment) FinishDetach(reply message) error {
 	defer a.Close()
-	if err := a.controlMessage(message{Type: "detached", Name: name}); err != nil {
+	if err := a.controlMessage(reply); err != nil {
 		return err
 	}
 	_ = a.control.SetReadDeadline(time.Now().Add(2 * time.Second))

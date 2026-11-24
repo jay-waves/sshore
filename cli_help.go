@@ -12,10 +12,9 @@ const help = `Usage: sshore COMMAND [ARGS]
 
 Shells
   exec        Execute a command over SSH
-  launch      Start a persistent shell
-  spawn       Start a shell that ends with its owner
+  sh          Start a shell (alias: shell)
   attach      Resume a detached shell
-  detach      Leave the current shell running
+  detach      Pin and leave the current shell
   rename      Rename a running shell
 
 Files and ports
@@ -33,8 +32,8 @@ Tasks and installation
   reset       End local tasks and clear application state
   daemon      Run the account task manager
 
-Start: sshore launch work:     Resume: sshore attach work:7afe22
-In a session: Ctrl+B c spawns; d detaches; n/p switches; l returns; r redraws; s or : opens commands.
+Start: sshore sh work:     Resume: sshore attach work:7afe22
+In a session: Ctrl+B c opens a nested shell; d pins and detaches; n/p switches; l returns; r redraws; s or : opens commands.
 Examples: sshore --tldr             Details: sshore COMMAND --help
 Version: sshore --version
 `
@@ -56,7 +55,8 @@ const connectionOptions = `  --server PATH         Remote executable (default: P
   --no-escape           Disable Ctrl+B shortcuts
 `
 
-const shellStartupOptions = `  --detach              Start without attaching
+const shellStartupOptions = `  --pin                 Keep the shell until it exits
+  --detach              Pin and detach immediately
   --no-login            Use non-login startup (Linux and macOS)
   --no-profile          Skip optional shell startup files; implies --no-login on Linux and macOS
 `
@@ -70,8 +70,8 @@ const connectionFlags = "--server --quiet --no-escape"
 var cliCommands = map[string]cliSpec{
 	"": {
 		flags: []string{"--version"},
-		examples: `Start a persistent remote shell
-  sshore launch work:
+		examples: `Start a temporary remote shell
+  sshore sh work:
 Resume it after detaching with Ctrl+B d
   sshore attach work:7afe22
 Upload a file
@@ -79,7 +79,7 @@ Upload a file
 Forward a local port to a remote service
   sshore forward 8080 work:3000
 
-More examples: sshore launch|spawn|cp|mount|forward --tldr
+More examples: sshore sh|cp|mount|forward --tldr
 `,
 	},
 	"help": {max: 1},
@@ -130,48 +130,14 @@ the intervals.
 ` + sshOptions,
 		examples: "Measure latency to an SSH host\n  sshore ping work --count 20\n",
 	},
-	"launch": {
-		ssh: true, max: 1, flags: strings.Fields(connectionFlags + " --detach --no-login --no-profile"),
-		help: `Usage: sshore launch [HOST|HOST:NAME|:NAME] [options] [-- SSH_OPTIONS]
+	"sh": {
+		ssh: true, max: 1, flags: strings.Fields(connectionFlags + " --detach --pin --no-login --no-profile"),
+		help: `Usage: sshore sh [HOST|HOST:NAME|:NAME] [options] [-- SSH_OPTIONS]
 
-Start a new shell. It survives detach and connection loss; exit ends it.
-Omit the target for a local shell or use HOST for a remote shell.
-Use :NAME to name a local shell or HOST:NAME to name a remote shell.
-To resume, use attach.
-
-Options:
+Start a shell on this machine or an SSH host. A shell ends with its starting
+connection or parent shell unless started with --pin or explicitly detached.
 ` + shellStartupOptions + connectionOptions + shellConnectionHelp,
-		examples: `Start a persistent remote shell
-  sshore launch work:
-Start a local shell
-  sshore launch :build
-Connect through a jump host
-  sshore launch work: -- -J jump
-
-Ctrl+B d detaches; sshore attach work:7afe22 resumes.
-The remote sshore release must match exactly.
-`,
-	},
-	"spawn": {
-		ssh: true, max: 1, flags: strings.Fields(connectionFlags + " --detach --no-login --no-profile"),
-		help: `Usage: sshore spawn [HOST|HOST:NAME|:NAME] [options] [-- SSH_OPTIONS]
-
-Start a shell bound to the launching parent. Omit the target for a local shell
-or use HOST for a remote shell. Use :NAME to name a local shell or
-HOST:NAME to name a remote shell.
-It ends when that parent exits; a remote spawn also ends if its lifetime SSH connection is lost.
-Detach and attach do not change the owner. Use launch for a persistent shell.
-
-Options:
-` + shellStartupOptions + connectionOptions + shellConnectionHelp,
-		examples: `Start a remote shell tied to this owner and connection
-  sshore spawn work:build
-Start without attaching
-  sshore spawn work: --detach
-
-The shell ends when its owner or lifetime connection is lost.
-The remote sshore release must match exactly.
-`,
+		examples: "Open a remote shell\n  sshore sh work:build\nOpen a local shell\n  sshore sh :build\n",
 	},
 	"attach": {
 		ssh: true, max: 1, flags: strings.Fields(connectionFlags),
@@ -188,11 +154,11 @@ Options:
 ` + connectionOptions + shellConnectionHelp,
 	},
 	"detach": {
-		help: `Usage: sshore detach
+		max: 1,
+		help: `Usage: sshore detach [DURATION]
 
-Disconnect this client and cancel its transfers. A persistent shell keeps
-running; a spawn still follows its owner and connection lifetime.
-Use attach to reconnect. Ctrl+B d also detaches.
+Pin the current shell and leave. Omit DURATION to keep it until it exits.
+Use attach to resume it. Ctrl+B d also pins and detaches.
 `,
 	},
 	"rename": {
@@ -219,7 +185,7 @@ Terminal output is shortened to fit the width. Redirected output keeps full deta
 The current shell is highlighted and marked with *.
 ID shows the first six UID characters followed by an optional (alias).
 Use a longer prefix or full UID when a reference is ambiguous.
-TYPE uses launch, spawn, mount or forward.
+TYPE uses sh, mount or forward.
 Use aliases or short IDs for attach, rename and kill.
 A matching short ID takes precedence over a name.
 
@@ -232,7 +198,7 @@ Options:
 
 Show local managed tasks, live resource transports and recorded remote detaches.
 The current shell is highlighted and marked with *.
-Branches show spawn ownership, including ordinary parent processes.
+Branches show shell ownership.
 Shell lines show their remote attachment source or destination.
 Recorded remote detaches appear at the end with their last observation age.
 Resource arrows run from provider to consumer. Importing a mount or remote

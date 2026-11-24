@@ -24,14 +24,15 @@ type sessionTarget struct {
 
 // Control metadata uses JSON; terminal bytes remain binary.
 type message struct {
+	TTL             time.Duration       `json:"ttl,omitempty"`
+	PinUntil        time.Time           `json:"pin_until,omitzero"`
 	TerminalOffset  uint64              `json:"terminal_offset,omitempty"`
-	OwnerProcess    *spawnProcessView   `json:"owner_process,omitempty"`
 	Reason          string              `json:"reason,omitempty"`
 	Handoff         *clientHandoff      `json:"handoff,omitempty"`
 	SourceHost      string              `json:"source_host,omitempty"`
 	SourceMachineID string              `json:"source_machine_id,omitempty"`
 	Tree            []shellTreeNode     `json:"shell_tree,omitempty"`
-	Temporary       bool                `json:"temporary,omitempty"`
+	Pinned          bool                `json:"pinned,omitempty"`
 	LocalRequest    *localDaemonRequest `json:"local_request,omitempty"`
 	Instance        string              `json:"instance,omitempty"`
 	Token           string              `json:"token,omitempty"`

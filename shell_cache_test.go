@@ -237,7 +237,7 @@ func TestScopedIDUsesSavedTransport(t *testing.T) {
 
 func TestRoutedParentUsesImmutableRemoteIdentity(t *testing.T) {
 	activityFixture(t)
-	parent := options{command: "spawn", host: "entry", session: "renamed-old-label", instance: strings.Repeat("a", 32)}
+	parent := options{command: "sh", host: "entry", session: "renamed-old-label", instance: strings.Repeat("a", 32)}
 	entry := routeParentOptions(parent)
 	command := remoteCommand(entry)
 	if entry.command != "attach" || entry.session != parent.instance || strings.Contains(command, parent.session) || !strings.Contains(command, parent.instance) {

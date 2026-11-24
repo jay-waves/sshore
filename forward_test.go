@@ -22,7 +22,7 @@ func TestApprovedForwardCarriesSourceInstance(t *testing.T) {
 }
 
 func TestForwardArguments(t *testing.T) {
-	o, err := parseOptions([]string{"launch", "host:", "--", "-L", "127.0.0.1:8080:localhost:80"})
+	o, err := parseOptions([]string{"sh", "host:", "--", "-L", "127.0.0.1:8080:localhost:80"})
 	if err != nil || len(o.ssh) != 2 {
 		t.Fatal(o, err)
 	}
@@ -33,7 +33,7 @@ func TestForwardArguments(t *testing.T) {
 }
 
 func TestForwardNativeOptions(t *testing.T) {
-	o, err := parseOptions([]string{"launch", "host:", "--", "-L8080:localhost:80", "-L", "8081:localhost:81"})
+	o, err := parseOptions([]string{"sh", "host:", "--", "-L8080:localhost:80", "-L", "8081:localhost:81"})
 	if err != nil || len(o.ssh) != 4 || o.ssh[1] != "8080:localhost:80" || o.ssh[3] != "8081:localhost:81" {
 		t.Fatal(o, err)
 	}

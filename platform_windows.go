@@ -35,7 +35,7 @@ func detachDaemon(cmd *exec.Cmd) {
 }
 
 // The terminal owns a kill-on-close job; Terminal.Close ends its process tree.
-func stopSpawnTerminal(pid int, start string) error { return nil }
+func stopHostedTerminal(pid int, start string) error { return nil }
 
 func lockResourceState(f *os.File) error {
 	return windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &windows.Overlapped{})

@@ -31,7 +31,7 @@ func TestWindowsKillAllWaitsForIdleDaemonExit(t *testing.T) {
 			t.Fatalf("%v: %v: %s", args, err, out)
 		}
 	}
-	run("fixture-launch", "here:", "idle", "--detach")
+	run("fixture-sh", "here:", "idle", "--detach")
 	run("kill", "here:idle")
 	record := fixtureDaemon(t, state)
 	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(record.ManagerPID))
@@ -116,7 +116,7 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	}
 	bin := "'" + strings.ReplaceAll(filepath.ToSlash(e.bin), "'", "'\"'\"'") + "'"
 	wait("SSHORE_OUTER>")
-	send(fmt.Sprintf("%s fixture-launch here: nativecheck; printf 'OUTER_%%s\\n' detached\r", bin))
+	send(fmt.Sprintf("%s fixture-sh here: nativecheck; printf 'OUTER_%%s\\n' detached\r", bin))
 	wait("Connected here:nativecheck")
 	// The echoed assignment must not match the prompt it installs.
 	send("PS1='SSHORE_''INNER> '\r")
@@ -131,6 +131,8 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	send("\x02d")
 	wait("\x1b[?1049l")
 	wait("Detached from ")
+	wait("sshore on local> ")
+	send("exit\r")
 	wait("OUTER_detached")
 	rows := e.shells(t)
 	if len(rows) != 1 || rows[0].PID == 0 || rows[0].State != "detached" {
@@ -145,6 +147,8 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	wait("RESTORED_ready")
 	wait("SSHORE_INNER>")
 	send("\x02d")
+	wait("sshore on local> ")
+	send("exit\r")
 	wait("OUTER_detached_again")
 	send(fmt.Sprintf("%s attach :%s; printf 'OUTER_exit_%%s\\n' \"$?\"\r", bin, id))
 	wait("SSHORE_INNER>")
@@ -154,5 +158,7 @@ func TestWindowsLocalDetachKeepsShell(t *testing.T) {
 	}
 	send("printf 'FINAL_%s\\n' output; exit 7\r")
 	wait("FINAL_output")
+	wait("sshore on local> ")
+	send("exit\r")
 	wait("OUTER_exit_7")
 }

@@ -268,6 +268,9 @@ func remoteCommand(o options) string {
 	case o.command == "list":
 		req = remoteServiceRequest{Operation: "inventory"}
 		data.Mismatch = remoteStartupError("sshore: inventory requires matching remote release; no software changed")
+	case o.command == "console-inventory":
+		req.Operation, req.Mode = "console-inventory", o.newName
+		data.Mismatch = remoteStartupError("sshore: inventory requires matching remote release")
 	case o.command == "daemon-admin":
 		req.Operation = "daemon-admin"
 	case o.command == "kill" || o.command == "rename":
@@ -281,9 +284,9 @@ func remoteCommand(o options) string {
 		default:
 			req.Operation, req.Mode = "shell", "bridge"
 			switch o.command {
-			case "launch":
+			case "sh":
 				req.Mode = "new"
-			case "spawn", "attach":
+			case "attach":
 				req.Mode = o.command
 			}
 			if req.Mode == "attach" && validTaskUID(o.instance) {

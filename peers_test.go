@@ -169,28 +169,8 @@ func TestDaemonResetPreservesLiveOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	tree := shellTreeFor("task:" + id)
-	if len(tree) != 2 || tree[1].Owner != "owner" || tree[1].Parent != "owner" {
+	if len(tree) != 2 || tree[1].Parent != "owner" {
 		t.Fatal("reset changed live ownership", tree)
-	}
-}
-
-func TestDaemonClockChecksOwnerIdentity(t *testing.T) {
-	state := activityFixture(t)
-	lease, err := state.registerLease(leaseRequest{Kind: "owner", Owner: processIdentity{PID: os.Getpid(), Start: "different-process-identity"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !state.busy() {
-		t.Fatal("owner lease did not retain daemon")
-	}
-	state.tick(time.Now())
-	select {
-	case <-lease.expired:
-	default:
-		t.Fatal("central clock ignored changed owner")
-	}
-	if state.busy() {
-		t.Fatal("expired owner retained daemon")
 	}
 }
 
@@ -236,40 +216,4 @@ func TestDaemonLiveMetadataDoesNotReadHistoryFiles(t *testing.T) {
 	if rows, err := fixture.metadata.readRecentConnectionsLocal(); err != nil || len(rows) != 1 || rows[0].Host != "work" {
 		t.Fatal(rows, err)
 	}
-}
-
-func TestSpawnOwnerWatcherLifetime(t *testing.T) {
-	state := activityFixture(t)
-	synctest.Test(t, func(t *testing.T) {
-		owner := processIdentity{PID: os.Getpid(), Start: "obsolete"}
-		lost := false
-		stop := superviseSpawnOwner(owner, func() { lost = true })
-		synctest.Wait()
-		if !state.busy() {
-			t.Fatal("owner lease missing")
-		}
-		stop()
-		if lost || state.busy() {
-			t.Fatal("normal shutdown reported owner loss or leaked its lease")
-		}
-
-		entered, release := make(chan struct{}), make(chan struct{})
-		stop = superviseSpawnOwner(owner, func() { close(entered); <-release })
-		synctest.Wait()
-		state.tick(time.Now())
-		<-entered
-		joined := make(chan struct{})
-		go func() { stop(); close(joined) }()
-		synctest.Wait()
-		select {
-		case <-joined:
-			t.Fatal("stop returned during owner cleanup")
-		default:
-		}
-		close(release)
-		<-joined
-		if state.busy() {
-			t.Fatal("expired owner lease survived")
-		}
-	})
 }

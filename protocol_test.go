@@ -125,7 +125,7 @@ func TestControlHandshakePreservesRawBytes(t *testing.T) {
 	}
 }
 func TestOptions(t *testing.T) {
-	o, err := parseOptions([]string{"launch", "myhost:", "--server", "/a b/sshore", "--", "-J", "jump"})
+	o, err := parseOptions([]string{"sh", "myhost:", "--server", "/a b/sshore", "--", "-J", "jump"})
 	if err != nil || o.session != "" || o.host != "myhost" || len(o.ssh) != 2 {
 		t.Fatalf("%+v %v", o, err)
 	}
@@ -134,7 +134,7 @@ func TestOptions(t *testing.T) {
 			t.Fatal("accepted", name)
 		}
 	}
-	for _, args := range [][]string{{"launch", "host", "-s"}, {"launch", "-evil"}, {"launch", "host", "name", "unexpected"}} {
+	for _, args := range [][]string{{"sh", "host", "-s"}, {"sh", "-evil"}, {"sh", "host", "name", "unexpected"}} {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatal("accepted", args)
 		}
@@ -191,7 +191,7 @@ func TestFrontendDaemonMuxKeepsIndependentTaskEndpoints(t *testing.T) {
 		reusable: &clientTransport{session: "parent", instance: "parent-instance", open: func(context.Context) (net.Conn, error) {
 			return frontend.OpenStream()
 		}}}
-	for _, kind := range []string{"spawn_route_connect", "spawn_route_confirm", "terminal_open"} {
+	for _, kind := range []string{"shell_route_connect", "shell_route_confirm", "terminal_open"} {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		c, err := openClientTransportContext(ctx, &o, nil)
 		if err != nil {
@@ -283,7 +283,7 @@ func TestApprovedFileEndpointsReuseAuthenticatedLease(t *testing.T) {
 			t.Fatal("closing one endpoint ended its authenticated lease")
 		}
 	}
-	transports.releaseUnreferenced()
+	transports.releaseUnreferenced(false)
 	if opened != 2 || released != 1 {
 		t.Fatalf("opened endpoints=%d, released leases=%d", opened, released)
 	}
@@ -298,9 +298,9 @@ func TestSpawnConfirmationCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- confirmSpawnRoute(ctx, parent, "token", nil) }()
+	go func() { done <- confirmShellRoute(ctx, parent, "token", nil) }()
 	request, err := readMessage(server)
-	if err != nil || request.Type != "spawn_route_confirm" {
+	if err != nil || request.Type != "shell_route_confirm" {
 		t.Fatalf("confirmation request: %+v, %v", request, err)
 	}
 	cancel()
@@ -332,18 +332,18 @@ func TestFrontendReleasesUnreachableTransports(t *testing.T) {
 			t.Fatal(err)
 		}
 		owned.retainRoute(&child)
-		owned.releaseUnreferenced()
+		owned.releaseUnreferenced(false)
 		if len(owned) != 2 {
 			t.Fatal("lost a route ancestor")
 		}
 		c.Close()
 		owned.retainRoute(&parent)
-		owned.releaseUnreferenced()
+		owned.releaseUnreferenced(false)
 		if parentClosed != 0 || childrenClosed != i || len(owned) != 1 {
 			t.Fatal("return retained an obsolete transport or closed parent")
 		}
 	}
-	owned.releaseUnreferenced()
+	owned.releaseUnreferenced(false)
 	if parentClosed != 1 {
 		t.Fatal("parent was not released exactly once")
 	}

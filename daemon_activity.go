@@ -8,23 +8,18 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/jay-waves/sshore/internal/proc"
 )
 
 const daemonHeartbeatInterval = 20 * time.Second
 const daemonHeartbeatTimeout = 75 * time.Second
 
 type leaseRequest struct {
-	Kind  string
-	Peer  *peerRecord
-	Owner processIdentity
+	Kind string
+	Peer *peerRecord
 }
 type activityLease struct {
-	order   uint64
-	peer    *peerRecord
-	owner   processIdentity
-	expired chan struct{}
+	order uint64
+	peer  *peerRecord
 }
 
 // All live advertisements and leases belong to the account daemon. No state
@@ -43,7 +38,7 @@ type daemonActivity struct {
 var accountActivity atomic.Pointer[daemonActivity]
 
 func (s *daemonActivity) registerLease(request leaseRequest) (*activityLease, error) {
-	if (request.Kind != "incoming" && request.Peer != nil) || (request.Kind != "owner" && request.Owner != (processIdentity{})) {
+	if request.Kind != "incoming" && request.Peer != nil {
 		return nil, fmt.Errorf("unexpected activity lease metadata")
 	}
 	l := &activityLease{}
@@ -58,12 +53,6 @@ func (s *daemonActivity) registerLease(request leaseRequest) (*activityLease, er
 			return nil, fmt.Errorf("invalid incoming task")
 		}
 		l.peer = &peer
-	case "owner":
-		if request.Owner.PID <= 1 || request.Owner.Start == "" {
-			return nil, fmt.Errorf("invalid activity owner")
-		}
-		l.owner = request.Owner
-		l.expired = make(chan struct{})
 	default:
 		return nil, fmt.Errorf("invalid activity lease kind")
 	}
@@ -105,47 +94,7 @@ func (s *daemonActivity) tick(now time.Time) {
 			s.pulse = nil
 		}
 	}
-	var owners []*activityLease
-	for l := range s.leases {
-		if l.owner.PID != 0 {
-			owners = append(owners, l)
-		}
-	}
 	s.mu.Unlock()
-	if len(owners) == 0 {
-		return
-	}
-
-	// Read each PID once outside the activity lock. Reuse the snapshot for
-	// expired leases, then retire only those still registered.
-	identities := make(map[int]string, len(owners))
-	expired := owners[:0]
-	for _, l := range owners {
-		owner := l.owner
-		identity, checked := identities[owner.PID]
-		if !checked {
-			var err error
-			identity, err = proc.LiveIdentity(owner.PID)
-			if err != nil {
-				identity = "" // Registered owners always have a start identity.
-			}
-			identities[owner.PID] = identity
-		}
-		if identity != owner.Start {
-			expired = append(expired, l)
-		}
-	}
-	if len(expired) == 0 {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, l := range expired {
-		if _, active := s.leases[l]; active {
-			delete(s.leases, l)
-			close(l.expired)
-		}
-	}
 }
 
 // Overlapping connections can describe the same resource. Show the newest
@@ -219,8 +168,6 @@ func (s *daemonActivity) serve(c net.Conn, r leaseRequest) {
 		select {
 		case <-done:
 			return
-		case <-l.expired:
-			return
 		case <-pulse:
 			pulse = s.heartbeat()
 			if sendLeaseMessage(c, "pulse") != nil {
@@ -258,7 +205,7 @@ func remoteActivity(ctx context.Context, r leaseRequest) (func(), <-chan struct{
 	return acceptActivityLease(ctx, c)
 }
 
-// Shared lease supervision also keeps a direct spawn owner alive over SSH.
+// Shell ownership uses the same heartbeat over SSH.
 func acceptActivityLease(ctx context.Context, c net.Conn) (func(), <-chan struct{}, error) {
 	closeConnection := sync.OnceFunc(func() { _ = c.Close() })
 	stop := context.AfterFunc(ctx, closeConnection)

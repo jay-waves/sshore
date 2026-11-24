@@ -147,7 +147,7 @@ func TestShellTaskIDIndependentOfAlias(t *testing.T) {
 	if strings.HasPrefix(sibling, strings.ToLower(ref)) {
 		sibling = strings.Repeat("c", 32)
 	}
-	if err := createRemoteShell(e.bin, taskIdentitySelection{name: "sibling", uid: sibling}, false, e.dir, nil); err != nil {
+	if err := createRemoteShell(e.bin, taskIdentitySelection{name: "sibling", uid: sibling}, e.dir, nil); err != nil {
 		t.Fatal(err)
 	}
 	c, err := e.dial("work")

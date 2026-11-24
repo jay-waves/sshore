@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
@@ -16,26 +15,12 @@ import (
 	"github.com/jay-waves/sshore/internal/proc"
 )
 
-// A launch is persistent. A spawn can be attached only after its single
-// lifetime connection has claimed it. Transitions are serialized by remoteShell.mu.
-type hostedLifetime uint8
-
-const (
-	persistentLaunch hostedLifetime = iota
-	awaitingSpawnOwner
-	ownedSpawn
-)
-
 type remoteShell struct {
 	shellTask
-	spawnRoutes map[string]*spawnRoute
-	lifetime    hostedLifetime
+	shellRoutes map[string]*shellRoute
 }
 
 func (s *remoteShell) start(m message) error {
-	if s.record.UID == "" {
-		s.record.UID = rand.Text()
-	}
 	env := s.shellEnvironment()
 	path := localEnvironmentValue(env, "SHELL")
 	if path == "" {
@@ -45,13 +30,10 @@ func (s *remoteShell) start(m message) error {
 	return s.startManagedShell(path, hostedShellEnvironment(env, m.Term, s.record.UID, exe), m)
 }
 func (s *remoteShell) attach(p *attachment, m message) error {
-	s.mu.Lock()
-	temporary := s.lifetime != persistentLaunch
-	s.mu.Unlock()
-	err := s.attachManaged(p, m, s.start, temporary)
+	err := s.attachManaged(p, m, s.start)
 
 	if errors.Is(err, errShellExited) {
-		return fmt.Errorf("shell is exiting; use sshore launch HOST: to create a new one")
+		return fmt.Errorf("shell is exiting; use sshore sh HOST: to create a new one")
 	}
 	if errors.Is(err, errShellAttached) {
 		return fmt.Errorf("shell already attached; detach the other connection first")
@@ -83,21 +65,12 @@ func (s *remoteShell) serveControl(c net.Conn) error {
 		return s.record.Name, nil
 	}, func(m message) error {
 		switch m.Type {
-		case "spawn_child":
+		case "sh_child":
 			s.mu.Lock()
-			req := &localDaemonRequest{Record: localShellRecord{Directory: s.record.Directory, Owner: s.process}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Tree: shellTreeFor(identityFromUID(s.record.UID))}}
+			req := &localDaemonRequest{Record: localShellRecord{Directory: s.record.Directory}, Env: append([]string(nil), s.environment...), Shell: &shellConfig{Local: true, Pin: m.Pinned, Tree: shellTreeFor(s.treeIdentity())}}
 			s.mu.Unlock()
-			go serveShortcutSpawn(p, s.done, func(c net.Conn) {
-				s.requestSpawnRoute(c, message{SoftwareVersion: version, LocalRequest: req})
-			})
-		case "launch_child":
-			s.mu.Lock()
-			req := localDaemonRequest{Record: localShellRecord{Directory: s.record.Directory}, Env: append([]string(nil), s.environment...), Spawn: &spawnConfig{Local: true, Tree: shellTreeFor(identityFromUID(s.record.UID))}}
-			s.mu.Unlock()
-			go serveShortcutSpawn(p, s.done, func(c net.Conn) {
-				if err := s.serveLocalLaunchRoute(c, p, req); err != nil {
-					_ = writeMessage(c, message{Type: "fatal", Error: err.Error()})
-				}
+			go serveChildShortcut(p, s.done, func(c net.Conn) {
+				s.requestShellRoute(c, message{SoftwareVersion: version, LocalRequest: req})
 			})
 		case "approval_ready":
 			p.approvals.enable()
@@ -125,15 +98,6 @@ func (s *remoteShell) handle(c net.Conn) {
 }
 
 func (s *remoteShell) handleTask(c net.Conn, first message) {
-	if first.Type == "attach_control" {
-		s.mu.Lock()
-		unowned := s.lifetime == awaitingSpawnOwner
-		s.mu.Unlock()
-		if unowned {
-			_ = writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: "spawn lifetime is not established"})
-			return
-		}
-	}
 	if handled, _ := s.serveCommand(c, first, s.serveControl, s.status); handled {
 		return
 	}
@@ -142,14 +106,12 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 		s.serveRoutedResource(c, first)
 	case "shell_connect":
 		_ = s.connectRouteShell(c, first)
-	case "spawn_route_confirm":
-		s.confirmSpawnRoute(c, first)
-	case "spawn_route_request":
-		s.requestSpawnRoute(c, first)
-	case "spawn_route_connect":
-		s.connectSpawnRoute(c, first)
-	case "spawn_owner":
-		s.serveSpawnOwner(c, first)
+	case "shell_route_confirm":
+		s.confirmShellRoute(c, first)
+	case "shell_route_request":
+		s.requestShellRoute(c, first)
+	case "shell_route_connect":
+		s.connectShellRoute(c, first)
 	case "approval_check":
 		reply := message{Type: "approval_checked", SoftwareVersion: version}
 		if err := s.checkApprovalSource(first); err != nil {
@@ -176,20 +138,18 @@ func (s *remoteShell) status(detail string) message {
 			view.Foreground = newProcessSnapshot(proc.ReadProcesses()).foregroundPrograms(group)
 		}
 	}
-	return message{Type: "session", Temporary: view.Temporary, Instance: view.Instance, Name: view.Name, SoftwareVersion: version,
+	return message{Type: "session", Pinned: view.Pinned, PinUntil: view.PinUntil, Instance: view.Instance, Name: view.Name, SoftwareVersion: version,
 		Attached: view.State == taskActive, PID: view.PID, AgeSeconds: view.Age, Foreground: view.Foreground, Directory: view.Directory}
 }
 func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) error {
 	s := &remoteShell{
 		shellTask: shellTask{tasks: tasks, record: localShellRecord{UID: req.UID, Name: req.Name, Directory: req.Directory}, hosted: true,
-			environment: req.Env, done: make(chan struct{})},
-	}
-	if req.Temporary {
-		s.lifetime = awaitingSpawnOwner
+			environment: req.Env, parent: req.parent, done: make(chan struct{})},
 	}
 	if err := tasks.register(req.UID, s); err != nil {
 		return err
 	}
+	s.watchParent()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	go func() {
 		defer stop()
@@ -239,10 +199,9 @@ func (s *remoteShell) watchLifetime(ctx context.Context) {
 func (s *remoteShell) hostedView(detail string) (shellView, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	temporary := s.lifetime != persistentLaunch
 	view := shellView{
-		Lifetime: shellLifetime(temporary, true), Temporary: temporary, Instance: s.record.UID,
-		ID: shellTaskName(s.record.Name, temporary), Name: s.record.Name, PID: s.process.PID,
+		Owner: s.parentIdentityLocked(), Pinned: s.pinned, PinUntil: s.pinUntil, Instance: s.record.UID,
+		ID: "sh/" + s.record.Name, Name: s.record.Name, PID: s.process.PID,
 	}
 	view.State = s.state()
 	if view.PID != 0 {

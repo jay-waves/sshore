@@ -2,42 +2,41 @@ package main
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"fmt"
 	"io"
 	"slices"
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
 type commandConsole struct {
-	output  []byte
-	editor  *termui.Console
-	color   bool
-	confirm bool
-	attach  string
-	targets []sessionTarget
+	output        []byte
+	editor        *termui.Console
+	color         bool
+	attach        string
+	targets       []sessionTarget
+	targetWarning string
 }
 
 const consoleHelp = `list (ls)         Show task inventory on this host
 ps (pstree)       Show the task tree on this host
 attach (a) <ID|name>  Switch session (Tab completes)
-spawn (sh)        Open a nested shell
-launch (mux)      Open an independent shell on this host
-detach (d)        Detach from the current shell
+sh [--pin]        Open a nested shell (alias: shell)
+detach [DURATION] Pin and detach the current shell
 exit              Return to the current shell`
 
-func (c *commandConsole) start(ctx context.Context, out io.Writer, send func(clientEvent), width int, color bool, confirmation bool) {
+func (c *commandConsole) start(ctx context.Context, out io.Writer, send func(clientEvent), host string, width int, color bool) {
 	c.color = color
-	if !confirmation {
-		title := termui.Render(color, termui.Heading, "sshore commands")
-		keys := termui.Render(color, termui.Muted, "(Tab: next, Esc: return)")
-		fmt.Fprintf(out, "%s  %s\r\n\r\n", title, keys)
-		termui.WriteConsoleBody(out, termui.Render(color, termui.Muted, "Loading sessions…"))
-	}
-	prompt := termui.FormatPrompt(color, "sshore> ")
+	title := termui.Render(color, termui.Heading, "sshore commands")
+	keys := termui.Render(color, termui.Muted, "(Tab: next, Esc: return)")
+	fmt.Fprintf(out, "%s  %s\r\n\r\n", title, keys)
+	termui.WriteConsoleBody(out, termui.Render(color, termui.Muted, "Loading pstree…"))
+	const prefix, suffix = "sshore on ", "> "
+	host = ansi.Truncate(cleanText(host), max(1, width-len(prefix)-len(suffix)-4), "…")
+	prompt := termui.FormatPrompt(color, prefix+host+suffix)
 	c.editor = termui.StartConsole(ctx, prompt, width, color, func(e termui.ConsoleEvent) {
 		send(clientEvent{consoleSource: c, console: e})
 	})
@@ -48,7 +47,7 @@ type consoleCompleter func() []sessionTarget
 func (targets consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	prefix := string(line[:pos])
 	word := prefix
-	candidates := []string{"attach", "detach", "exit", "help", "launch", "list", "pstree", "spawn"}
+	candidates := []string{"attach", "detach", "exit", "help", "sh", "list", "pstree"}
 	for alias, command := range commandAliases {
 		if slices.Contains(candidates, command) {
 			candidates = append(candidates, alias)
@@ -75,34 +74,6 @@ func (targets consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
 func (c *commandConsole) show(body string) {
 	targets := c.targets
 	c.editor.Show(body, consoleCompleter(func() []sessionTarget { return targets }))
-}
-
-// showConfirmation presents a temporary choice through the console editor.
-func (c *commandConsole) showConfirmation(problem string) {
-	c.confirm = true
-	body := termui.StatusLine(c.color, termui.Warning, "Detaching may close this terminal window.") +
-		"\nThis spawn may end when its original parent exits."
-	if problem != "" {
-		body += "\n\n" + termui.Render(c.color, termui.Warning, problem)
-	}
-	prompt := termui.FormatPrompt(c.color, "Detach? [y/N] ")
-	c.editor.Replace(body, prompt)
-}
-
-func consoleTargetSummary(targets []sessionTarget, rows int) string {
-	targets = slices.Clone(targets)
-	slices.SortFunc(targets, func(a, b sessionTarget) int { return cmp.Compare(a.Instance, b.Instance) })
-	var lines []string
-	for _, t := range targets[:min(max(1, rows-8), len(targets))] {
-		lines = append(lines, taskShortCode("task:"+t.Instance)+"  "+t.Name)
-	}
-	if len(lines) == 0 {
-		return "No detached sessions here."
-	}
-	if len(lines) < len(targets) {
-		lines = append(lines, "… more sessions available with Tab completion")
-	}
-	return strings.Join(lines, "\n")
 }
 
 func resolveConsoleTarget(targets []sessionTarget, selector string) (sessionTarget, string) {
@@ -134,20 +105,22 @@ func consoleInventory(request message, current string) message {
 		inv, err = daemonListTasks(taskListRequest{Native: true})
 		if err == nil {
 			err = inv.incompleteError()
+			writeTaskInventoryWidth(&body, inv, current, request.Color, int(request.Cols))
 		}
-		writeTaskInventoryWidth(&body, inv, current, request.Color, int(request.Cols))
 	case "ps", "pstree":
 		var rows []taskTreeRow
 		rows, err = readTaskTree()
-		writeShellTree(&body, rows, current, request.Color)
+		if err == nil || len(rows) > 0 {
+			writeShellTree(&body, rows, current, request.Color)
+		}
 	default:
 		reply.Output = "Unknown inventory command."
 		return reply
 	}
-	if err != nil {
-		fmt.Fprintln(&body, cleanText(err.Error()))
-	}
 	reply.Output = strings.TrimRight(body.String(), "\n")
+	if err != nil {
+		reply.Output = strings.TrimRight(cleanText(err.Error())+"\n\n"+reply.Output, "\n")
+	}
 	// Leave room for JSON escaping and control metadata in one frame.
 	const outputLimit = 8 * 1024
 	if len(reply.Output) > outputLimit {

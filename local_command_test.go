@@ -101,15 +101,15 @@ func TestHostedShellEnvironment(t *testing.T) {
 }
 
 func TestSpawnOptionsAndInventory(t *testing.T) {
-	for _, args := range [][]string{{"spawn"}, {"spawn", "here:", "--detach"}, {"spawn", "host:", "--", "-p", "2222"}} {
+	for _, args := range [][]string{{"sh"}, {"sh", "here:", "--detach"}, {"sh", "host:", "--", "-p", "2222"}} {
 		o, err := parseOptions(args)
-		if err != nil || o.command != "spawn" {
+		if err != nil || o.command != "sh" {
 			t.Fatalf("%v: %+v %v", args, o, err)
 		}
 	}
 	var out bytes.Buffer
-	writeTaskInventory(&out, inventory{LocalShells: []localShellView{{Name: "persistent", State: "detached"}, {Name: "temporary", State: "detached", Temporary: true}}, Shells: []shellView{{Name: "remote", Host: "host", State: "detached", Temporary: true}}})
-	for _, want := range []string{"(persistent)", "(temporary)", "(remote)", "launch", "spawn"} {
+	writeTaskInventory(&out, inventory{LocalShells: []localShellView{{Name: "persistent", State: "detached"}, {Name: "temporary", State: "detached"}}, Shells: []shellView{{Name: "remote", Host: "host", State: "detached"}}})
+	for _, want := range []string{"(persistent)", "(temporary)", "(remote)", "sh"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %s: %s", want, &out)
 		}
@@ -214,7 +214,7 @@ func TestClientConnectionCancellation(t *testing.T) {
 }
 
 func TestShellStartupOptions(t *testing.T) {
-	for _, command := range []string{"launch", "spawn"} {
+	for _, command := range []string{"sh"} {
 		for _, flag := range []bool{false, true} {
 			args := []string{command, "host:"}
 			if flag {
@@ -226,7 +226,7 @@ func TestShellStartupOptions(t *testing.T) {
 			}
 		}
 	}
-	for _, args := range [][]string{{"attach", "host", "--no-login"}, {"launch", "host", "--login"}} {
+	for _, args := range [][]string{{"attach", "host", "--no-login"}, {"sh", "host", "--login"}} {
 		if _, err := parseOptions(args); err == nil {
 			t.Fatalf("accepted %v", args)
 		}
@@ -237,7 +237,7 @@ func TestShellStartupOptions(t *testing.T) {
 }
 
 func TestNoProfileOptions(t *testing.T) {
-	for _, command := range []string{"launch", "spawn"} {
+	for _, command := range []string{"sh"} {
 		o, err := parseOptions([]string{command, "host:", "--no-profile", "--no-login"})
 		if err != nil || !o.noProfile || !o.noLogin {
 			t.Fatalf("%+v %v", o, err)
@@ -257,10 +257,10 @@ func TestLocalCommandRouting(t *testing.T) {
 		local bool
 		name  string
 	}{
-		{[]string{"launch"}, true, ""},
-		{[]string{"launch", "--quiet", "--no-escape"}, true, ""},
-		{[]string{"launch", "here:"}, true, ""},
-		{[]string{"launch", "work:"}, false, ""},
+		{[]string{"sh"}, true, ""},
+		{[]string{"sh", "--quiet", "--no-escape"}, true, ""},
+		{[]string{"sh", "here:"}, true, ""},
+		{[]string{"sh", "work:"}, false, ""},
 		{[]string{"attach"}, true, ""},
 	} {
 		o, err := parseOptions(tc.args)
@@ -273,9 +273,9 @@ func TestLocalCommandRouting(t *testing.T) {
 
 func TestLocalCommandRejectsAmbiguousOptions(t *testing.T) {
 	for _, args := range [][]string{
-		{"launch", "host", "--name", "work"},
-		{"launch", "--name="},
-		{"launch", "--local", "--server", "other"},
+		{"sh", "host", "--name", "work"},
+		{"sh", "--name="},
+		{"sh", "--local", "--server", "other"},
 		{"attach", "--local", "../work"},
 		{"kill", "--local"},
 		{"rename", "--local", "work"},

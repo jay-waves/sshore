@@ -22,7 +22,6 @@ import (
 // The token is a local connection capability, never part of public inventory.
 type localShellRecord struct {
 	UID                                      string `json:",omitempty"`
-	Owner                                    processIdentity
 	ManagerPID                               int
 	Name, Address, Token, Version, Directory string
 }
@@ -122,11 +121,10 @@ func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, read
 	}
 	s.record = r
 	s.tasks = tasks
-	stopWatching := superviseSpawnOwner(r.Owner, func() { _ = s.stopLocal("shell owner exited") })
-	defer stopWatching()
 	if err := tasks.register(r.UID, &nativeShellTask{shell: s, serve: serve}); err != nil {
 		return err
 	}
+	s.watchParent()
 	if err := ready(r); err != nil {
 		return err
 	}
@@ -161,9 +159,8 @@ func handoffAttachmentID(token string) string {
 func (s *localShell) view() localShellView {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	temporary := s.record.Owner.PID != 0
 	view := localShellView{
-		Lifetime: shellLifetime(temporary, false), Temporary: temporary, identity: s.record.identity(),
+		Owner: s.parentIdentityLocked(), Pinned: s.pinned, PinUntil: s.pinUntil, identity: s.record.identity(),
 		Name: s.record.Name, Directory: s.record.Directory, Version: s.record.Version, PID: s.process.PID,
 	}
 	view.State = s.state()
@@ -234,19 +231,20 @@ func localSessionTargets(name string, request message) message {
 	return reply
 }
 
-func detachLocalShell(identity string) error {
-	m, err := localRequest("", identity, message{Type: "detach"})
+func retentionLocalShell(identity string, m message) error {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	c, _, err := openNativeShell(ctx, "", identity)
 	if err != nil {
 		return err
 	}
-	if m.Type != "detach_requested" && m.Type != "detached" {
-		return fmt.Errorf("local detach unconfirmed")
-	}
-	return nil
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(requestTimeout))
+	return requestShellRetention(c, m)
 }
 
-func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, ready func(localShellRecord) error) error {
-	s := &localShell{shellTask: shellTask{done: make(chan struct{}), environment: env}}
+func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, parent *shellTask, ready func(localShellRecord) error) error {
+	s := &localShell{shellTask: shellTask{done: make(chan struct{}), environment: env, parent: parent}}
 	defer s.close()
 	return serveLocalShell(tasks, s, record, ready, func(c net.Conn, m message) error {
 		switch m.Type {
@@ -269,7 +267,7 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, re
 
 func (s *localShell) status(_ string) message {
 	view := s.view()
-	return message{Type: "session", Temporary: view.Temporary, Name: view.Name, SoftwareVersion: view.Version,
+	return message{Type: "session", Pinned: view.Pinned, PinUntil: view.PinUntil, Name: view.Name, SoftwareVersion: view.Version,
 		Attached: view.State == taskActive, PID: view.PID}
 }
 
@@ -279,7 +277,7 @@ func (s *localShell) attach(c net.Conn) error {
 		return err
 	}
 	p := newAttachment(c, terminal)
-	if err := s.attachManaged(p, m, s.start, false); err != nil {
+	if err := s.attachManaged(p, m, s.start); err != nil {
 		if errors.Is(err, errShellExited) || errors.Is(err, errShellAttached) {
 			err = fmt.Errorf("local shell unavailable or already attached")
 		}
@@ -297,12 +295,15 @@ func (s *localShell) attach(c net.Conn) error {
 		switch m.Type {
 		case "handoff_result":
 			s.finishHandoff(p, m)
-		case "spawn_child", "launch_child":
-			command := strings.TrimSuffix(m.Type, "_child")
+		case "sh_child":
 			s.mu.Lock()
-			h := &clientHandoff{Args: []string{command, localEndpointPrefix}, Owner: s.process, Directory: s.record.Directory, Environment: append([]string(nil), s.environment...), Tree: shellTreeFor(s.record.identity())}
+			args := []string{"sh", localEndpointPrefix}
+			if m.Pinned {
+				args = append(args, "--pin")
+			}
+			h := &clientHandoff{Args: args, Directory: s.record.Directory, Environment: append([]string(nil), s.environment...), Tree: shellTreeFor(s.record.identity())}
 			s.mu.Unlock()
-			go serveShortcutSpawn(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
+			go serveChildShortcut(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
 		case "session_targets":
 			return p.controlMessage(s.targets(m))
 		default:

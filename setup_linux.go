@@ -14,7 +14,7 @@ func serveRemote(req remoteServiceRequest) (result error) {
 	if err != nil {
 		return err
 	}
-	if !fileService && mode != "bridge" && mode != "new" && mode != "attach" && mode != "spawn" {
+	if !fileService && mode != "bridge" && mode != "new" && mode != "attach" {
 		return fmt.Errorf("invalid remote service")
 	}
 	if mode == "attach" && name == "" {
@@ -71,7 +71,7 @@ func chooseDetachedHostedShell() (sessionTarget, error) {
 	}
 	switch len(targets) {
 	case 0:
-		return sessionTarget{}, fmt.Errorf("no detached shells; use sshore launch HOST: to create one")
+		return sessionTarget{}, fmt.Errorf("no detached shells; use sshore sh HOST: to create one")
 	case 1:
 		return targets[0], nil
 	}

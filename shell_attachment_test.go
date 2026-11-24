@@ -12,7 +12,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -121,7 +120,7 @@ func TestRoutedTerminalEndpointKeepsSelectedInstance(t *testing.T) {
 		}
 		defer c.Close()
 		request, err := readMessage(c)
-		if err != nil || request.Type != "spawn_route_connect" || request.Token != routeToken || request.Instance != parentInstance {
+		if err != nil || request.Type != "shell_route_connect" || request.Token != routeToken || request.Instance != parentInstance {
 			return fmt.Errorf("unexpected parent route: %+v %v", request, err)
 		}
 		if err := writeMessage(c, message{Type: "route_connected", SoftwareVersion: version}); err != nil {
@@ -145,7 +144,7 @@ func TestRoutedTerminalEndpointKeepsSelectedInstance(t *testing.T) {
 	}
 	errs := make(chan error, 2)
 	go func() {
-		if err := serve("launch", ""); err != nil {
+		if err := serve("sh", ""); err != nil {
 			errs <- err
 			return
 		}
@@ -153,7 +152,7 @@ func TestRoutedTerminalEndpointKeepsSelectedInstance(t *testing.T) {
 	}()
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
-	o := options{command: "launch", session: "target", routeToken: routeToken, routeTarget: true, routeParent: &options{
+	o := options{command: "sh", session: "target", routeToken: routeToken, routeTarget: true, routeParent: &options{
 		session: parentInstance, instance: parentInstance,
 		reusable: &clientTransport{instance: parentInstance, open: func(context.Context) (net.Conn, error) {
 			return frontend.OpenStream()
@@ -275,63 +274,6 @@ func TestIndependentTerminalSSHChannels(t *testing.T) {
 	testTerminalEndpoints(t, terminalSSHFixture)
 }
 
-func TestDirectSpawnTerminalEndpoints(t *testing.T) {
-	testTerminalEndpoints(t, func(t *testing.T, handle func(net.Conn)) func(context.Context) (net.Conn, error) {
-		var channels atomic.Int32
-		release := make(chan struct{})
-		open := terminalSSHFixture(t, func(c net.Conn) {
-			if channels.Add(1) != 1 {
-				handle(c)
-				return
-			}
-			if err := writeMessage(c, message{Type: "activity_ready"}); err != nil {
-				return
-			}
-			if err := writeMessage(c, message{Type: "pulse"}); err != nil {
-				return
-			}
-			if m, err := readMessage(c); err != nil || m.Type != "alive" {
-				t.Errorf("owner heartbeat: %+v %v", m, err)
-				return
-			}
-			<-release
-		})
-		owner, err := open(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		stop, ownerDone, err := acceptActivityLease(t.Context(), owner.(net.Conn))
-		if err != nil {
-			owner.Close()
-			t.Fatal(err)
-		}
-		frontend, relay := muxPair(t)
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			relayDirectSpawn(relay, ownerDone, func() (net.Conn, error) {
-				c, err := open(t.Context())
-				if err != nil {
-					return nil, err
-				}
-				return c.(net.Conn), nil
-			})
-		}()
-		t.Cleanup(func() {
-			close(release)
-			frontend.Close()
-			owner.Close()
-			stop()
-			select {
-			case <-done:
-			case <-time.After(3 * time.Second):
-				t.Error("direct spawn relay did not stop")
-			}
-		})
-		return func(context.Context) (net.Conn, error) { return frontend.OpenStream() }
-	})
-}
-
 func testTerminalEndpoints(t *testing.T, fixture func(*testing.T, func(net.Conn)) func(context.Context) (net.Conn, error)) {
 	t.Helper()
 	var endpoints terminalEndpoints
@@ -377,7 +319,7 @@ func testTerminalEndpoints(t *testing.T, fixture func(*testing.T, func(net.Conn)
 					return
 				}
 			case "detach":
-				_ = p.FinishDetach("persistent")
+				_ = p.FinishDetach(message{Type: "detached", Name: "persistent"})
 				return
 			case "fixture_exit":
 				_ = p.Output([]byte("tail"))
@@ -549,7 +491,7 @@ func TestDetachHandshake(t *testing.T) {
 		done <- err
 	}()
 	confirmed := ""
-	if err := detachAttachment(client, func(name string) { confirmed = name }); err != nil {
+	if err := detachAttachment(client, func(reply message) { confirmed = reply.Name }); err != nil {
 		t.Fatal(err)
 	}
 	if confirmed != "work" {

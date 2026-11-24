@@ -242,7 +242,7 @@ func TestDaemonListsLocalTasksAndRecordedShells(t *testing.T) {
 	for _, host := range []string{"work", "home"} {
 		row := participatingShell{
 			Host: host, Instance: newTaskUID(), Name: "build", State: taskDetached,
-			PID: 1234, Lifetime: "persistent", Attachment: newTaskUID(),
+			PID: 1234, Attachment: newTaskUID(),
 		}
 		if err := observeParticipatingShell(row); err != nil {
 			t.Fatal(err)
@@ -317,7 +317,7 @@ func TestTaskTreeDaemonSnapshot(t *testing.T) {
 	for _, state := range []string{taskActive, taskDetached} {
 		err := observeParticipatingShell(participatingShell{
 			Host: "work", Instance: newTaskUID(), Name: state, State: state,
-			PID: 1234, Lifetime: "persistent", Attachment: newTaskUID(),
+			PID: 1234, Attachment: newTaskUID(),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -329,8 +329,8 @@ func TestTaskTreeDaemonSnapshot(t *testing.T) {
 		t.Fatalf("tree snapshot: %+v, %v", snapshot, err)
 	}
 	rows := snapshot.Tree
-	if len(rows) != 3 || rows[0].Identity != first || rows[0].Owner != 0 || rows[1].Identity != second || rows[1].Owner != 1 {
-		t.Fatalf("cycle or cache changed the registered tree: %+v", rows)
+	if len(rows) != 3 || rows[0].Identity != first || rows[0].Owner != 0 || rows[1].Identity != second || rows[1].Owner != 0 {
+		t.Fatalf("cached ownership changed the registered tree: %+v", rows)
 	}
 	if row := rows[2]; row.Owner != 0 || row.Remote != "work" || row.Code == "" || row.State != taskDetached || row.SeenAt.IsZero() {
 		t.Fatalf("recorded detach: %+v", row)
@@ -350,14 +350,14 @@ func TestTaskTreeDaemonSnapshot(t *testing.T) {
 			if text != console.Output {
 				t.Fatalf("standalone tree %q, console tree %q", text, console.Output)
 			}
-			want := "(first)  *"
+			want := "(first)  [starting]  *"
 			if current == second {
-				want = "(second)  *"
+				want = "(second)  [starting]  *"
 			}
 			if strings.Count(text, "  *") != 1 || !strings.Contains(text, want) {
 				t.Fatal(text)
 			}
-			if !strings.HasSuffix(text, "launch/"+rows[2].Code+" (detached)  -> work  detached, seen just now") {
+			if !strings.HasSuffix(text, "sh/"+rows[2].Code+" (detached)  [detached]  -> work  seen just now") {
 				t.Fatalf("recorded detach must be the last root: %q", text)
 			}
 		})
@@ -434,7 +434,8 @@ func TestTaskTreeDaemonUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err = exec.Command(bin, "pstree").CombinedOutput()
-	if err == nil || !strings.Contains(string(out), "No known tasks.") || !strings.Contains(string(out), "unexpected EOF") {
+	if err == nil || strings.Contains(string(out), "No known tasks.") || !strings.Contains(string(out), "read account daemon endpoint") ||
+		!strings.Contains(string(out), "daemon.json") || !strings.Contains(string(out), "unexpected EOF") {
 		t.Fatalf("pstree with corrupt daemon endpoint: %s (%v)", out, err)
 	}
 }

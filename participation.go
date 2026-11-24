@@ -9,12 +9,13 @@ import (
 
 // Participation records only tasks opened through this client account.
 type participatingShell struct {
-	Host, Instance, Name, Lifetime string
-	State                          string
-	PID                            int
-	Temporary                      bool
-	Attachment                     string
-	ChangedAt                      time.Time
+	Host, Instance, Name string
+	State                string
+	PID                  int
+	Pinned               bool
+	PinUntil             time.Time
+	Attachment           string
+	ChangedAt            time.Time
 }
 
 type participationRefresh struct {
@@ -80,15 +81,23 @@ func participatingMutationTarget(o options) (participatingShell, error) {
 }
 
 func validateParticipatingShell(row participatingShell) error {
-	if validSSHDestination(row.Host) != nil || !validTaskUID(row.Instance) ||
-		validSession(row.Name) != nil || row.PID <= 0 || !validTaskUID(row.Attachment) || !validShellLifetime(row.Lifetime) {
-		return fmt.Errorf("invalid participating shell")
+	switch {
+	case validSSHDestination(row.Host) != nil:
+		return fmt.Errorf("remote shell has an invalid SSH destination")
+	case !validTaskUID(row.Instance):
+		return fmt.Errorf("remote shell has an invalid task ID")
+	case validSession(row.Name) != nil:
+		return fmt.Errorf("remote shell has an invalid session name")
+	case row.PID <= 0:
+		return fmt.Errorf("remote shell has invalid PID %d (expected a positive PID)", row.PID)
+	case !validTaskUID(row.Attachment):
+		return fmt.Errorf("remote shell has an invalid attachment ID")
 	}
 	switch row.State {
 	case taskActive, taskDetached, taskUnknown:
 		return nil
 	default:
-		return fmt.Errorf("invalid participating shell state")
+		return fmt.Errorf("remote shell has invalid state %.40q (expected %s, %s or %s)", row.State, taskActive, taskDetached, taskUnknown)
 	}
 }
 
@@ -137,6 +146,7 @@ func (m *daemonMetadata) updateParticipation(r metadataRequest) error {
 				rows[i].Name = row.Name
 			}
 			rows[i].State, rows[i].ChangedAt = row.State, now
+			rows[i].Pinned, rows[i].PinUntil = row.Pinned, row.PinUntil
 		case i >= 0:
 			rows[i] = row
 		case len(rows) == 4096:
@@ -190,9 +200,9 @@ func refreshParticipation(rows []participatingShell, host string, refresh partic
 			if !found {
 				continue
 			}
-			if validSession(view.Name) == nil && view.PID > 0 && validShellLifetime(view.Lifetime) && (view.State == taskActive || view.State == taskDetached) {
+			if validSession(view.Name) == nil && view.PID > 0 && (view.State == taskActive || view.State == taskDetached) {
 				row.Name, row.State, row.PID = view.Name, view.State, view.PID
-				row.Temporary, row.Lifetime, row.ChangedAt = view.Temporary, view.Lifetime, now
+				row.Pinned, row.PinUntil, row.ChangedAt = view.Pinned, view.PinUntil, now
 			}
 		}
 		updated = append(updated, row)

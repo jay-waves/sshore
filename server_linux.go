@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -43,6 +42,8 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 		return killSession(req.Name, req.Instance)
 	case "task-watch":
 		return watchRemoteTask()
+	case "console-inventory":
+		return writeMessage(os.Stdout, consoleInventory(message{Name: req.Mode}, ""))
 	case "inventory":
 		return json.NewEncoder(os.Stdout).Encode(localSessionInventory())
 	}
@@ -86,32 +87,6 @@ func watchRemoteTask() error {
 		return nil
 	}
 	return err
-}
-
-func (s *remoteShell) serveSpawnOwner(c net.Conn, first message) {
-	s.mu.Lock()
-	if s.lifetime != awaitingSpawnOwner || checkPeerVersion(first.SoftwareVersion, "client") != nil || first.Instance != s.record.UID {
-		s.mu.Unlock()
-		_ = writeMessage(c, message{Type: "error", Error: "spawn lifetime already owned or unavailable"})
-		return
-	}
-	s.lifetime = ownedSpawn
-	instance := s.record.UID
-	s.mu.Unlock()
-	defer func() { _ = s.kill(instance, "spawn lifetime connection closed") }()
-
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-s.done:
-			c.Close()
-		case <-done:
-		}
-	}()
-	if activity := accountActivity.Load(); activity != nil {
-		activity.serve(c, leaseRequest{Kind: "heartbeat"})
-	}
 }
 
 type stdioPipe struct {

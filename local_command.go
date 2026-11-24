@@ -12,9 +12,10 @@ import (
 
 type localShellView struct {
 	hosted        bool
-	Lifetime      string `json:"lifetime"`
-	Temporary     bool   `json:"temporary,omitempty"`
-	ShortID       string `json:"short_id,omitempty"`
+	Owner         string    `json:"owner,omitempty"`
+	Pinned        bool      `json:"pinned,omitempty"`
+	PinUntil      time.Time `json:"pin_until,omitzero"`
+	ShortID       string    `json:"short_id,omitempty"`
 	identity      string
 	Name          string `json:"name"`
 	State         string `json:"state"`
@@ -65,7 +66,7 @@ func (snapshot taskInventorySnapshot) localShells() []localShellView {
 	rows := snapshot.nativeShells()
 	for _, s := range snapshot.Shells {
 		identity := identityFromUID(s.Instance)
-		rows = append(rows, localShellView{hosted: true, Lifetime: s.Lifetime, Temporary: s.Temporary, ShortID: taskShortCode(identity), identity: identity, Name: s.Name, State: s.State, PID: s.PID, Directory: s.Directory})
+		rows = append(rows, localShellView{hosted: true, Owner: s.Owner, Pinned: s.Pinned, PinUntil: s.PinUntil, ShortID: taskShortCode(identity), identity: identity, Name: s.Name, State: s.State, PID: s.PID, Directory: s.Directory})
 	}
 	sortLocalShells(rows)
 	return rows
@@ -82,7 +83,7 @@ func runLocalCommand(o options) (int, error) {
 		return runHostedCommand(o)
 	}
 	switch o.command {
-	case "launch", "spawn", "attach":
+	case "sh", "attach":
 		return runClient(o)
 	case "kill":
 		m, err := localRequest(o.session, o.taskIdentity, message{Type: "kill"})
@@ -136,8 +137,7 @@ func startLocalSessionContext(ctx context.Context, o options) (localShellRecord,
 	}
 
 	request := localShellRecord{UID: reservation.uid, Name: reservation.name, Directory: dir, Version: version}
-	request.Owner = o.owner
-	c, err := openLocalDaemonContext(ctx, localDaemonRequest{Kind: "shell", Record: request, Env: env})
+	c, err := openLocalDaemonContext(ctx, localDaemonRequest{Kind: "shell", Record: request, Env: env, Parent: o.parent})
 	if err != nil {
 		return empty, err
 	}

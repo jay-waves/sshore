@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/proc"
 	"github.com/jay-waves/sshore/internal/pty"
 	"golang.org/x/sys/windows"
 )
@@ -34,52 +32,6 @@ func TestLocalShellPath(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestWindowsSpawnOwnerClosesTerminal(t *testing.T) {
-	parent := exec.Command("cmd.exe", "/d", "/q")
-	input, err := parent.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer input.Close()
-	if err = parent.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { parent.Process.Kill(); parent.Wait() }()
-	identity, err := proc.LiveIdentity(parent.Process.Pid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := &localShell{shellTask: shellTask{environment: append(os.Environ(), "SHELL=cmd.exe"), record: localShellRecord{Directory: t.TempDir(), Owner: processIdentity{PID: parent.Process.Pid, Start: identity}}, done: make(chan struct{})}}
-	defer s.close()
-	if err = s.start(message{Term: "xterm", Cols: 80, Rows: 24}); err != nil {
-		t.Fatal(err)
-	}
-	stopWatching := superviseSpawnOwner(s.record.Owner, s.close)
-	defer stopWatching()
-	pid := s.terminal.PID()
-	// A normal foreground client is unnecessary for the owner to retain the shell.
-	if _, err = proc.LiveIdentity(pid); err != nil {
-		t.Fatal(err)
-	}
-	_, _ = io.WriteString(input, "exit\r\n")
-	if err = parent.Wait(); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-s.done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("spawn survived parent exit")
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err = proc.LiveIdentity(pid); err != nil {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("spawn terminal process survived owner cleanup")
 }
 
 func TestMountDaemonHasNoConsole(t *testing.T) {

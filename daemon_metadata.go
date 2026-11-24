@@ -50,14 +50,14 @@ func (h *recentHistory[T]) loadEntries(file string, maxBytes, maxEntries int, va
 	}
 	var rows []T
 	if err := readStateJSON(path, maxBytes, &rows); err != nil && !os.IsNotExist(err) {
-		return err
+		return fmt.Errorf("read %s: %w", path, err)
 	}
 	if len(rows) > maxEntries {
-		return fmt.Errorf("too many entries in %s", file)
+		return fmt.Errorf("%s has %d entries (maximum %d)", path, len(rows), maxEntries)
 	}
-	for _, row := range rows {
+	for i, row := range rows {
 		if err := validate(row); err != nil {
-			return err
+			return fmt.Errorf("entry %d: %w (%s)", i+1, err, path)
 		}
 	}
 	*h = recentHistory[T]{path: path, maxBytes: maxBytes, rows: rows}
@@ -90,12 +90,11 @@ func (h *recentHistory[T]) replace(rows []T) error {
 }
 
 type metadataRequest struct {
-	OwnerProcess                      *spawnProcessView
 	Local, Direct                     bool `json:",omitempty"`
 	Action, Key, Host, Name, Instance string
 	State                             string
 	Tree                              []shellTreeNode
-	Lifetime                          []string
+	Source                            []string
 	Attachment                        *recentAttachment
 	Connection                        *recentConnection
 	Participant                       *participatingShell
@@ -179,7 +178,7 @@ func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply)
 	case "tree_get":
 		reply.Tree = cloneShellTree(s.treeChain(r.Key))
 	case "tree_save":
-		err = s.saveShellTreeLocal(r.Key, r.Name, r.Tree, r.State, r.OwnerProcess, r.Lifetime...)
+		err = s.saveShellTreeLocal(r.Key, r.Name, r.Tree, r.State, r.Source...)
 	case "tree_remember":
 		err = s.rememberShellTreeLocal(r.Tree)
 	case "tree_rename":
@@ -218,11 +217,12 @@ func (s *daemonMetadata) loadTrees() error {
 			continue
 		}
 		var chain []shellTreeNode
-		if err := readStateJSON(filepath.Join(root, entry.Name()), maxShellTreeBytes, &chain); err != nil {
-			return err
+		path := filepath.Join(root, entry.Name())
+		if err := readStateJSON(path, maxShellTreeBytes, &chain); err != nil {
+			return fmt.Errorf("read %s: %w", path, err)
 		}
-		if !validSavedShellTree(chain) {
-			return fmt.Errorf("invalid shell tree in %s", entry.Name())
+		if err := validateSavedShellTree(chain); err != nil {
+			return fmt.Errorf("%w (%s)", err, path)
 		}
 		for i := range chain {
 			chain[i].Cached = true
@@ -251,9 +251,20 @@ func validShellTreeState(state string) bool {
 	}
 }
 
-func validSavedShellTree(chain []shellTreeNode) bool {
-	return len(chain) > 0 && len(chain) <= maxShellTreeNodes && chain[len(chain)-1].Identity != "" &&
-		!slices.ContainsFunc(chain, func(node shellTreeNode) bool { return !validShellTreeState(node.State) })
+func validateSavedShellTree(chain []shellTreeNode) error {
+	if len(chain) == 0 || len(chain) > maxShellTreeNodes {
+		return fmt.Errorf("shell tree has %d nodes (expected 1–%d)", len(chain), maxShellTreeNodes)
+	}
+	if chain[len(chain)-1].Identity == "" {
+		return fmt.Errorf("shell tree node %d is missing its task identity", len(chain))
+	}
+	for i, node := range chain {
+		if !validShellTreeState(node.State) {
+			return fmt.Errorf("shell tree node %d has invalid state %.40q (expected %s, %s, %s, %s or %s)",
+				i+1, node.State, taskStarting, taskActive, taskDetached, taskUnknown, taskExited)
+		}
+	}
+	return nil
 }
 
 func (s *daemonMetadata) treeChain(id string) []shellTreeNode {
@@ -265,10 +276,9 @@ func (s *daemonMetadata) treeChain(id string) []shellTreeNode {
 }
 
 // The final node owns the record. The caller supplies an owned slice.
-// Daemon-owned process display data is read-only and can be shared.
 func (s *daemonMetadata) writeTreeLocal(chain []shellTreeNode) error {
-	if !validSavedShellTree(chain) {
-		return fmt.Errorf("invalid shell tree")
+	if err := validateSavedShellTree(chain); err != nil {
+		return err
 	}
 	file := shellTreeFilename(chain[len(chain)-1].Identity)
 	path := filepath.Join(s.treeRoot, file)
@@ -337,10 +347,10 @@ func validateRecentConnection(r recentConnection) error {
 		if hop.Parent != nil {
 			token := hop.RouteToken
 			if len(token) != 64 || strings.Trim(token, "0123456789abcdef") != "" || hop.Instance == "" || hop.Parent.Instance == "" {
-				return fmt.Errorf("invalid saved spawn route")
+				return fmt.Errorf("invalid saved shell route")
 			}
 		} else if hop.RouteToken != "" || hop.RouteTarget {
-			return fmt.Errorf("spawn route parent missing")
+			return fmt.Errorf("shell route parent missing")
 		}
 		if validSSHDestination(hop.Host) != nil || validSession(hop.Session) != nil || hop.Server == "" || strings.ContainsAny(hop.Server, "\x00\r\n") {
 			return fmt.Errorf("invalid recent connection")

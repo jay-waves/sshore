@@ -56,7 +56,7 @@ func rememberDetachedAttachment(o options) error {
 		row.Identity = identityFromUID(o.instance)
 	}
 	if !o.local {
-		connection, err := connectionFromOptions(o)
+		connection, err := connectionFromOptions(directShellOptions(o))
 		if err != nil {
 			return err
 		}
@@ -138,7 +138,7 @@ func (a *daemonActivity) selectDetachedAttach(local bool, host string) (*selecte
 	// A registered shell can be detached without a saved history entry.
 	switch len(detached) {
 	case 0:
-		return nil, fmt.Errorf("no detached local shells; use sshore launch")
+		return nil, fmt.Errorf("no detached local shells; use sshore sh")
 	case 1:
 		for _, target := range detached {
 			return target, nil

@@ -50,7 +50,7 @@ func TestMain(m *testing.M) {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-		if len(os.Args) >= 4 && (os.Args[1] == "fixture-launch" || os.Args[1] == "fixture-spawn") {
+		if len(os.Args) >= 4 && os.Args[1] == "fixture-sh" {
 			// Named fixtures let lifecycle tests locate processes independently of shell ID generation.
 			target := os.Args[2] + ":"
 			if os.Args[2] == "here:" {
