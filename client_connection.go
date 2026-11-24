@@ -341,7 +341,7 @@ func applyRecentConnection(o *options) error {
 		return nil
 	}
 	if o.host == "" {
-		return usage("no recent connection; use sshore attach HOST:[ID] or sshore sh HOST:")
+		return usage("no recent connection; use sshore attach HOST:[ID] or sshore shell HOST:")
 	}
 	return nil
 }

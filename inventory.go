@@ -412,7 +412,7 @@ func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color
 		if inv.Host != "" && inv.Host != "local" {
 			fmt.Fprintf(out, "No tasks for %s.\n", cleanText(inv.Host))
 		} else {
-			fmt.Fprintln(out, "No tasks. Create a local shell with sshore sh.")
+			fmt.Fprintln(out, "No tasks. Create a local shell with sshore shell.")
 		}
 		return
 	}

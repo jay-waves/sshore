@@ -152,19 +152,19 @@ CLI or installer in isolation. OS-specific validation uses the affected OS
 and its real terminal or mount driver. Keep real account shells out of tests
 that simulate upgrade confirmation or reset.
 
-- The Windows Server 2025 CI job runs the native ConPTY detach and reattach
-  scenario against the built Windows executable. A disposable Ubuntu WSL 2
-  distribution runs the Linux installer and Linux client integration suite
-  against real OpenSSH, including the FUSE mount test. Separate Linux accounts
-  isolate daemon ownership. The Windows client uses the same OpenSSH server to
-  verify port forwarding in both directions. With WinFsp 2.2, it reads a
-  WSL-created file on a Windows drive letter, verifies a Windows replacement
-  from WSL, and checks unmount. The official WinFsp suite checks cached reads
-  and writes, append and directory enumeration on that drive. Run the fixture
-  only on a disposable Windows runner with a dedicated WSL distribution.
+- `tests/integration/ssh_docker.sh` runs the Linux installer and the built
+  Linux client in a disposable Alpine container with `/dev/fuse`. The client
+  and OpenSSH server run under separate Linux accounts. Mount scenarios cover
+  open handles across replacement, file I/O, directory operations, remote
+  changes, symlink handling, read-only mounts, and unmount.
+- On a Linux amd64 host with QEMU and `/dev/kvm`, run the same fixture in an
+  Alpine guest with `tests/integration/ssh_docker.sh --kvm`. Either mode accepts
+  a Go test pattern, for example `'^TestOpenSSH$/^mount'`.
+- The Windows Server 2025 CI job checks installation on PowerShell 5.1 and 7
+  and runs the native ConPTY detach and reattach scenario.
 
-The [Tests workflow](.github/workflows/tests.yml) runs on demand and when a
-push to `main` changes the integration tests or this workflow.
+The [Tests workflow](.github/workflows/tests.yml) runs on demand and on pushes
+to `main`.
 
 ## Release
 

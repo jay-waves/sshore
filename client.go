@@ -793,10 +793,10 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, root
 						if err := leaveConsole(); err != nil {
 							return 255, err
 						}
-					case len(args) > 0 && args[0] == "sh":
-						parsed, err := parseCLI(args[1:], "sh")
+					case len(args) > 0 && args[0] == "shell":
+						parsed, err := parseCLI(args[1:], "shell")
 						if err != nil || len(parsed.operands) != 0 || len(parsed.ssh) != 0 || len(parsed.values) > 1 || len(parsed.values) == 1 && !parsed.has("--pin") {
-							console.show("Usage: sh [--pin]")
+							console.show("Usage: shell [--pin]")
 							break
 						}
 						if err := closeConsole(); err != nil {

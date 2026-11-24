@@ -98,7 +98,7 @@ func run(args []string) (code int, resultErr error) {
 			return 2, usage("usage: sshore daemon [mount]")
 		}
 		return runMountDaemon()
-	case "sh", "attach", "rename", "kill":
+	case "shell", "attach", "rename", "kill":
 		return runTargetCommand(args)
 	case "list", "pstree":
 		return runInventoryCommand(args[0], args[1:])
@@ -211,23 +211,26 @@ func runExec(args []string) (int, error) {
 func parseOptions(args []string) (options, error) {
 	o := options{server: "sshore"}
 	if len(args) == 0 {
-		return o, usage("expected sh, attach, kill or rename; see sshore --help")
+		return o, usage("expected shell, attach, kill or rename; see sshore --help")
 	}
-	o.command = canonicalCommand(args[0])
-	switch o.command {
-	case "sh", "attach", "kill", "rename":
+	command := canonicalCommand(args[0])
+	switch command {
+	case "shell", "attach", "kill", "rename":
 	default:
-		return o, usage("choose an action: sshore sh [HOST:], sshore attach HOST:ID, sshore kill HOST:ID, or sshore rename HOST:ID NEW")
+		return o, usage("choose an action: sshore shell [HOST:], sshore attach HOST:ID, sshore kill HOST:ID, or sshore rename HOST:ID NEW")
 	}
-	parsed, err := parseCLI(args[1:], o.command)
+	parsed, err := parseCLI(args[1:], command)
 	if err != nil {
 		return o, err
 	}
-	return shellOptions(o.command, parsed)
+	return shellOptions(command, parsed)
 }
 
 func shellOptions(command string, parsed cliArguments) (options, error) {
 	o := options{command: command, server: parsed.value("--server", "sshore")}
+	if command == "shell" {
+		o.command = "sh" // Shell requests use the existing protocol operation.
+	}
 	o.ssh, o.local = parsed.ssh, parsed.local
 	o.portOverrideOnly = parsed.has("--port") && len(sshio.WithoutForwarding(parsed.ssh)) == 2
 	o.serverSet = parsed.has("--server")
@@ -325,7 +328,7 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 		parsed.local = true
 		return nil
 	}
-	if command == "sh" {
+	if command == "shell" {
 		host, name := parsed.operand(0), ""
 		parsed.local = count == 0
 		if !isBareSSHHost(host) {

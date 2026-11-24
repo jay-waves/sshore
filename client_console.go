@@ -24,7 +24,7 @@ type commandConsole struct {
 const consoleHelp = `pstree (ps)       Show the shell tree
 list (ls)         Show task details
 attach (a) <ID|name>  Enter a detached child or idle root (Tab completes)
-sh [--pin]        Open a nested shell (alias: shell)
+shell [--pin]     Open a nested shell (alias: sh)
 detach [DURATION] Pin and detach the current shell
 exit              Return to the current shell`
 
@@ -47,7 +47,7 @@ type consoleCompleter func() []sessionTarget
 func (targets consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	prefix := string(line[:pos])
 	word := prefix
-	candidates := []string{"attach", "detach", "exit", "help", "sh", "list", "pstree"}
+	candidates := []string{"attach", "detach", "exit", "help", "shell", "list", "pstree"}
 	for alias, command := range commandAliases {
 		if slices.Contains(candidates, command) {
 			candidates = append(candidates, alias)

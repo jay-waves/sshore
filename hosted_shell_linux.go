@@ -33,7 +33,7 @@ func (s *remoteShell) attach(p *attachment, m message) error {
 	err := s.attachManaged(p, m, s.start)
 
 	if errors.Is(err, errShellExited) {
-		return fmt.Errorf("shell is exiting; use sshore sh HOST: to create a new one")
+		return fmt.Errorf("shell is exiting; use sshore shell HOST: to create a new one")
 	}
 	if errors.Is(err, errShellAttached) {
 		return fmt.Errorf("shell already attached; detach the other connection first")

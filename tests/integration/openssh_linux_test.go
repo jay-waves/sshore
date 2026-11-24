@@ -5,7 +5,9 @@ package tests_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,12 +21,13 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
 func TestOpenSSH(t *testing.T) {
 	binary := os.Getenv("SSHORE_TEST_OPENSSH")
 	if binary == "" {
-		t.Skip("run in the disposable OpenSSH WSL fixture")
+		t.Skip("run in the disposable Alpine OpenSSH fixture")
 	}
 	fixture := filepath.Dir(binary)
 	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Second)
@@ -69,7 +72,7 @@ Match command "printf forwarding-check"
 	command := func(args ...string) *exec.Cmd {
 		return exec.CommandContext(ctx, binary, append(args, ssh...)...)
 	}
-	run := func(args ...string) string {
+	run := func(t *testing.T, args ...string) string {
 		t.Helper()
 		out, err := command(args...).CombinedOutput()
 		if err != nil {
@@ -78,7 +81,7 @@ Match command "printf forwarding-check"
 		return string(out)
 	}
 	t.Run("ssh trust and configuration", func(t *testing.T) {
-		connection := strings.Fields(run("exec", host, `printf '%s\n' "$SSH_CONNECTION"`))
+		connection := strings.Fields(run(t, "exec", host, `printf '%s\n' "$SSH_CONNECTION"`))
 		if len(connection) != 4 || connection[0] != "127.0.0.1" || connection[2] != "127.0.0.1" || connection[3] != "2222" {
 			t.Fatalf("SSH_CONNECTION from sshd = %q", connection)
 		}
@@ -120,8 +123,8 @@ Match command "printf forwarding-check"
 			t.Fatal(err)
 		}
 		remote := host + ":integration-copy"
-		run("cp", src, remote)
-		run("cp", remote, dst)
+		run(t, "cp", src, remote)
+		run(t, "cp", remote, dst)
 		requireFile(t, dst, payload)
 		if err := os.WriteFile(src, []byte("replacement"), 0600); err != nil {
 			t.Fatal(err)
@@ -129,7 +132,7 @@ Match command "printf forwarding-check"
 		if out, err := command("cp", src, remote).CombinedOutput(); err == nil || !strings.Contains(string(out), "already exists") {
 			t.Fatalf("copy over existing remote file: %v\n%s", err, out)
 		}
-		if got := run("exec", host, "cat integration-copy"); got != payload {
+		if got := run(t, "exec", host, "cat integration-copy"); got != payload {
 			t.Fatalf("upload changed the existing file: %q", got)
 		}
 
@@ -145,7 +148,7 @@ Match command "printf forwarding-check"
 	})
 
 	t.Run("file routed through a shell requires consent", func(t *testing.T) {
-		run("exec", host, "printf 'approved content' > approval-source")
+		run(t, "exec", host, "printf 'approved content' > approval-source")
 		declined, approved := filepath.Join(dir, "declined"), filepath.Join(dir, "approved")
 		endpoint := host + ":approval"
 		cmd := command("sh", endpoint, "--no-profile", "--server", binary)
@@ -225,10 +228,10 @@ Match command "printf forwarding-check"
 			t.Fatalf("reverse forward delivered %q (%v)", got, err)
 		}
 	})
-	t.Run("native mount keeps open handles across replacement", func(t *testing.T) {
-		run("exec", host, "mkdir mount-source && printf original > mount-source/target")
+	mount := func(t *testing.T, source string, options ...string) string {
+		t.Helper()
 		point := t.TempDir()
-		start := run("mount", host+":mount-source", "here:"+point)
+		start := run(t, append([]string{"mount", host + ":" + source, "here:" + point}, options...)...)
 		_, task, _ := strings.Cut(start, "Started mount/")
 		name, _, _ := strings.Cut(task, ":")
 		if name == "" {
@@ -239,8 +242,18 @@ Match command "printf forwarding-check"
 			defer cancel()
 			if out, err := exec.CommandContext(cleanup, binary, "kill", "mount/"+name).CombinedOutput(); err != nil {
 				t.Errorf("unmount: %s (%v)", out, err)
+				return
+			}
+			var stat unix.Statfs_t
+			if err := unix.Statfs(point, &stat); err != nil || stat.Type == unix.FUSE_SUPER_MAGIC {
+				t.Errorf("mountpoint remained active after unmount: %s (%v)", point, err)
 			}
 		})
+		return point
+	}
+	t.Run("mount keeps open handles across replacement", func(t *testing.T) {
+		run(t, "exec", host, "mkdir mount-source && printf original > mount-source/target")
+		point := mount(t, "mount-source")
 		target, replacement := filepath.Join(point, "target"), filepath.Join(point, "replacement")
 		old, err := os.Open(target)
 		if err != nil {
@@ -257,9 +270,110 @@ Match command "printf forwarding-check"
 			t.Fatalf("open handle followed the replacement: %q (%v)", got, err)
 		}
 		requireFile(t, target, "updated")
-		if got := run("exec", host, "cat mount-source/target"); got != "updated" {
+		if got := run(t, "exec", host, "cat mount-source/target"); got != "updated" {
 			t.Fatalf("mount did not publish the replacement: %q", got)
 		}
+	})
+	t.Run("mount file writes append and truncate", func(t *testing.T) {
+		run(t, "exec", host, "mkdir mount-io")
+		point := mount(t, "mount-io")
+		file := filepath.Join(point, "payload")
+		checkData := func(want []byte) {
+			t.Helper()
+			got, err := os.ReadFile(file)
+			if err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("mounted payload: got %d bytes with SHA-256 %x, want %d bytes with SHA-256 %x (%v)",
+					len(got), sha256.Sum256(got), len(want), sha256.Sum256(want), err)
+			}
+		}
+		data := bytes.Repeat([]byte("sshore-mount\n"), 32768)
+		if err := os.WriteFile(file, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		checkData(data)
+		f, err := os.OpenFile(file, os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if _, err := f.WriteString("appended"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		checkData(append(data, "appended"...))
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Truncate(file, 128<<10); err != nil {
+			t.Fatal(err)
+		}
+		want := fmt.Sprintf("%x", sha256.Sum256(data[:128<<10]))
+		if got := strings.Fields(run(t, "exec", host, "sha256sum mount-io/payload")); len(got) != 2 || got[0] != want {
+			t.Fatalf("remote payload after truncate: %v, want SHA-256 %s", got, want)
+		}
+	})
+	t.Run("mount creates lists renames and deletes directories", func(t *testing.T) {
+		run(t, "exec", host, "mkdir mount-dirs")
+		point := mount(t, "mount-dirs")
+		nested, renamed := filepath.Join(point, "nested"), filepath.Join(point, "renamed")
+		if err := os.Mkdir(nested, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(nested, "file"), []byte("nested content"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(nested, renamed); err != nil {
+			t.Fatal(err)
+		}
+		entries, err := os.ReadDir(point)
+		if err != nil || len(entries) != 1 || entries[0].Name() != "renamed" || !entries[0].IsDir() {
+			t.Fatalf("mount directory after rename: %v (%v)", entries, err)
+		}
+		if got := run(t, "exec", host, "cat mount-dirs/renamed/file"); got != "nested content" {
+			t.Fatalf("remote renamed file: %q", got)
+		}
+		if err := os.Remove(filepath.Join(renamed, "file")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(renamed); err != nil {
+			t.Fatal(err)
+		}
+		run(t, "exec", host, "test -z \"$(ls -A mount-dirs)\"")
+	})
+	t.Run("mount observes remote changes and rejects escaping symlinks", func(t *testing.T) {
+		run(t, "exec", host, "mkdir mount-remote && printf before > mount-remote/current && "+
+			"ln -s current mount-remote/inside && ln -s ../outside mount-remote/outside")
+		point := mount(t, "mount-remote")
+		inside := filepath.Join(point, "inside")
+		requireFile(t, inside, "before")
+		if _, err := os.Readlink(filepath.Join(point, "outside")); !errors.Is(err, os.ErrPermission) {
+			t.Fatalf("read escaping symlink: %v, want permission denied", err)
+		}
+		run(t, "exec", host, "printf after > mount-remote/new && mv mount-remote/new mount-remote/current")
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			if got, err := os.ReadFile(inside); err == nil && string(got) == "after" {
+				break
+			} else if time.Now().After(deadline) {
+				t.Fatalf("remote replacement through mounted symlink: %q (%v)", got, err)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	})
+	t.Run("mount read only denies changes", func(t *testing.T) {
+		run(t, "exec", host, "mkdir mount-ro && printf preserved > mount-ro/file")
+		point := mount(t, "mount-ro", "--read-only")
+		file := filepath.Join(point, "file")
+		requireFile(t, file, "preserved")
+		if err, want := os.WriteFile(file, []byte("changed"), 0600), unix.EROFS; !errors.Is(err, want) {
+			t.Errorf("write on read-only mount: %v, want %v", err, want)
+		}
+		if err := os.Mkdir(filepath.Join(point, "new"), 0700); !errors.Is(err, unix.EROFS) {
+			t.Errorf("mkdir on read-only mount: %v, want %v", err, unix.EROFS)
+		}
+		requireFile(t, file, "preserved")
 	})
 	cleanRemote := func(endpoint string) {
 		t.Cleanup(func() {
@@ -311,7 +425,7 @@ Match command "printf forwarding-check"
 		lookup := func(name string) shell {
 			t.Helper()
 			var inventory struct{ Shells []shell }
-			if err := json.Unmarshal([]byte(run("exec", host, "sshore list --json")), &inventory); err != nil {
+			if err := json.Unmarshal([]byte(run(t, "exec", host, "sshore list --json")), &inventory); err != nil {
 				t.Fatal(err)
 			}
 			for _, task := range inventory.Shells {
@@ -355,7 +469,7 @@ Match command "printf forwarding-check"
 				task := lookup(name)
 				if !pinned && task.Instance == "" {
 					probe := "if test -d /proc/" + strconv.Itoa(original.PID) + "; then echo live; fi"
-					if run("exec", host, probe) == "" {
+					if run(t, "exec", host, probe) == "" {
 						break
 					}
 				}
@@ -386,12 +500,12 @@ Match command "printf forwarding-check"
 		child := host + ":build"
 		cleanRemote(child)
 		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
-		parent := exec.CommandContext(ctx, binary, "sh", "here:dev", "--no-profile", "--no-login")
+		parent := exec.CommandContext(ctx, binary, "shell", "here:dev", "--no-profile", "--no-login")
 		const report = "printf 'BUILD_%s=%s:%s\\n' state \"$$\" \"$SSHORE_BUILD\"\n"
 		var recorded string
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
 			wait("Connected here:dev")
-			send(quote(binary) + " sh " + child + " --no-profile --no-login --server " + quote(binary) + " -- -F " + quote(config) + "\n")
+			send(quote(binary) + " shell " + child + " --no-profile --no-login --server " + quote(binary) + " -- -F " + quote(config) + "\n")
 			wait("Connected " + child)
 			send("export SSHORE_BUILD=retained; " + report)
 			const marker = "BUILD_state="

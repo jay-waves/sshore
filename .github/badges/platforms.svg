@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="236" height="20" viewBox="0 0 236 20" role="img" aria-labelledby="title">
+  <title id="title">Linux amd64 and Windows amd64</title>
+  <clipPath id="badge"><rect width="236" height="20" rx="3"/></clipPath>
+  <g clip-path="url(#badge)">
+    <path fill="#424952" d="M0 0h56v20H0z"/>
+    <path fill="#276348" d="M56 0h82v20H56z"/>
+    <path fill="#205b91" d="M138 0h98v20h-98z"/>
+  </g>
+  <g fill="#fff" font-family="Verdana, sans-serif" font-size="11" text-anchor="middle">
+    <text x="28" y="14">Platforms</text>
+    <text x="97" y="14">Linux amd64</text>
+    <text x="187" y="14">Windows amd64</text>
+  </g>
+</svg>

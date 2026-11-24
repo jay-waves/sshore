@@ -139,7 +139,7 @@ func (a *daemonActivity) selectDetachedAttach(parent, kind string) (*selectedTas
 	}
 	switch len(detached) {
 	case 0:
-		return nil, fmt.Errorf("no detached local shells; use sshore sh")
+		return nil, fmt.Errorf("no detached local shells; use sshore shell")
 	case 1:
 		return &detached[0], nil
 	default:

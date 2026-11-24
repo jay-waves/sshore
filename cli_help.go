@@ -12,7 +12,7 @@ const help = `Usage: sshore COMMAND [ARGS]
 
 Shells
   exec        Execute a command over SSH
-  sh          Start a shell (alias: shell)
+  shell       Start a shell (alias: sh)
   attach      Resume a detached shell
   detach      Pin and leave the current shell
   rename      Rename a running shell
@@ -32,7 +32,7 @@ Tasks and installation
   reset       End local tasks and clear application state
   daemon      Run the account task manager
 
-Start: sshore sh work:     Resume: sshore attach work:7afe22
+Start: sshore shell work:  Resume: sshore attach work:7afe22
 In a session: Ctrl+B c opens a nested shell; d pins and detaches; r redraws; s or : opens commands.
 Examples: sshore --tldr             Details: sshore COMMAND --help
 Version: sshore --version
@@ -69,7 +69,7 @@ var cliCommands = map[string]cliSpec{
 	"": {
 		flags: []string{"--version"},
 		examples: `Start a temporary remote shell
-  sshore sh work:
+  sshore shell work:
 Resume it after detaching with Ctrl+B d
   sshore attach work:7afe22
 Upload a file
@@ -77,7 +77,7 @@ Upload a file
 Forward a local port to a remote service
   sshore forward 8080 work:3000
 
-More examples: sshore sh|cp|mount|forward --tldr
+More examples: sshore shell|cp|mount|forward --tldr
 `,
 	},
 	"help": {max: 1},
@@ -130,15 +130,17 @@ the intervals.
 ` + sshOptions,
 		examples: "Measure latency to an SSH host\n  sshore ping work --count 20\n",
 	},
-	"sh": {
+	"shell": {
 		ssh: true, max: 1, flags: strings.Fields(connectionFlags + " --pin --no-login --no-profile"),
-		help: `Usage: sshore sh [HOST|HOST:NAME|:NAME] [options] [-- SSH_OPTIONS]
+		help: `Usage: sshore shell [HOST|HOST:NAME|:NAME] [options] [-- SSH_OPTIONS]
+
+Alias: sh
 
 Start a shell on this machine or an SSH host. A shell ends with its starting
 connection or parent shell unless started with --pin or explicitly detached.
-An interactive nested sh creates a child. Its parent waits for it to return.
+Opening a shell from an interactive session creates a child. Its parent waits for it to return.
 ` + shellStartupOptions + connectionOptions + shellConnectionHelp,
-		examples: "Open a remote shell\n  sshore sh work:build\nOpen a local shell\n  sshore sh :build\n",
+		examples: "Open a remote shell\n  sshore shell work:build\nOpen a local shell\n  sshore shell :build\n",
 	},
 	"attach": {
 		ssh: true, max: 1, flags: strings.Fields(connectionFlags),

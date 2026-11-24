@@ -32,12 +32,9 @@ func publish(build func(string) ([]string, error)) error {
 
 Includes Linux and Windows amd64 binaries. Verify archives against SHA256SUMS.
 
-Each shell tree has one foreground attachment. Detach keeps a shell under its
-parent. When the parent exits, pinned children become independent roots and
-the command prompt shows what stayed alive.
-
-Use pstree for shell relationships and list for task details. The list shows
-the parent short ID and includes forward direction in each port mapping.
+Start a session with sshore shell. The sh alias still works. Detach pins the
+shell under its parent. A pinned child becomes an independent root when its
+parent exits.
 
 Use sshore bootstrap to update both endpoints to %[1]s for managed connections.
 Bootstrap ends the target account's tasks, including pinned shells, and clears

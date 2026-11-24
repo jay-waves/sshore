@@ -14,7 +14,7 @@ import (
 	"golang.org/x/term"
 )
 
-const rootConsoleHelp = `sh [--pin]        Open a shell on this host
+const rootConsoleHelp = `shell [--pin]     Open a shell on this host (alias: sh)
 attach [ID|name]  Resume a detached shell
 pstree (ps)       Show the shell tree
 list (ls)         Show task details
@@ -26,14 +26,15 @@ func rootConsoleOptions(current options, args []string) (*options, error) {
 		server: current.server, serverSet: current.serverSet, ssh: current.ssh,
 		sshDirectory: current.sshDirectory, environment: current.environment, noEscape: current.noEscape}
 	switch command {
-	case "sh":
+	case "shell":
 		parsed, err := parseOptions(args)
 		if err != nil {
 			return nil, err
 		}
 		if len(parsed.ssh) != 0 || parsed.serverSet || !parsed.local {
-			return nil, usage("use sh [--pin] [:NAME] to open a shell on this host")
+			return nil, usage("use shell [--pin] [:NAME] to open a shell on this host")
 		}
+		next.command = parsed.command
 		next.session, next.pin = parsed.session, parsed.pin
 		next.noLogin, next.noProfile = parsed.noLogin, parsed.noProfile
 	case "attach":
@@ -55,7 +56,7 @@ func rootConsoleOptions(current options, args []string) (*options, error) {
 		return nil, usage("unknown command %q", args[0])
 	}
 	if !next.local && current.routeParent != nil {
-		if command == "sh" {
+		if command == "shell" {
 			return nil, fmt.Errorf("opening a new shell requires a direct connection to this host")
 		}
 		next.routeParent, next.routeToken, next.routeTarget = current.routeParent, current.routeToken, true
@@ -205,7 +206,7 @@ func runRootConsole(current options, problem string, ended sessionEnd, returnTo 
 		host = "local"
 	}
 	color := termui.ColorEnabled(os.Stdout)
-	hint := "No shell attached. Use attach or sh, or type exit to leave."
+	hint := "No shell attached. Use attach or shell, or type exit to leave."
 	if returnTo != "" {
 		hint = "Use exit or Esc to return to " + cleanText(returnTo) + "."
 	}

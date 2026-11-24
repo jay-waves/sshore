@@ -13,7 +13,7 @@ import (
 var commandAliases = map[string]string{
 	"copy": "cp", "a": "attach", "d": "detach", "ps": "pstree",
 	"ls": "list", "mnt": "mount", "fwd": "forward",
-	"shell": "sh",
+	"sh": "shell",
 }
 
 func canonicalCommand(name string) string {
@@ -289,7 +289,7 @@ func parseSSHOptions(suffix []string) ([]string, bool, error) {
 
 func misplacedSSHOption(a string) error {
 	if name, _, _ := sshio.SplitOption([]string{a}); name != "" {
-		return usage("SSH option %s must follow -- (example: sshore sh HOST: -- -J jump)", a)
+		return usage("SSH option %s must follow -- (example: sshore shell HOST: -- -J jump)", a)
 	}
 	return nil
 }
