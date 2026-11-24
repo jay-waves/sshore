@@ -94,7 +94,7 @@ func watchRemoteTask() error {
 		_ = output.CloseWithError(err)
 	}()
 	err := watchPeerRecords(input, "", func(err error) {
-		termui.Log(os.Stderr, termui.Warning, "[sshore] Peer inventory unavailable; forward active: %s\n", cleanText(err.Error()))
+		termui.Log(os.Stderr, "", termui.Warning, "[sshore] Peer inventory unavailable; forward active: %s\n", cleanText(err.Error()))
 	})
 	if ctx.Err() != nil {
 		return nil

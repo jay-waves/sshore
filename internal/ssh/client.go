@@ -112,7 +112,7 @@ func LogWarning(out io.Writer, warning string) {
 	}
 	warning = termui.CleanText(warning)
 	if file, ok := out.(*os.File); ok {
-		termui.Log(file, termui.Warning, "[sshore] WARNING: %s\n", warning)
+		termui.Log(file, "", termui.Warning, "[sshore] WARNING: %s\n", warning)
 		return
 	}
 	fmt.Fprintf(out, "[sshore] WARNING: %s\n", warning)

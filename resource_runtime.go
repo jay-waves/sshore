@@ -12,11 +12,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 type resourceRecord struct {
@@ -66,13 +66,6 @@ func resourceToken() string {
 	rand.Read(b[:])
 	return hex.EncodeToString(b[:])
 }
-func resourceStateDir(kind string) (string, error) {
-	if kind != "mount" && kind != "forward" {
-		return "", fmt.Errorf("unknown resource type")
-	}
-	return stateDir(kind + "s")
-}
-
 func (s *resourceService) baseEnvironment() []string {
 	if s.environment != nil {
 		return s.environment
@@ -243,19 +236,12 @@ func (s *resourceService) serveWorkerControl(read func(any) error, enc *json.Enc
 
 func startResourceBackground(config resourceConfig, directory string) (int, error) {
 	kind := config.kind()
-	// Startup failures can occur before the daemon replies. Keep the UID for
-	// locating the daemon's log even when the startup stream is interrupted.
 	config.UID = newTaskUID()
-	dir, e := resourceStateDir(kind)
-	if e != nil {
-		return 1, e
-	}
 	auth, stopAuth, e := startSSHAuthBroker()
 	if e != nil {
 		return 1, e
 	}
 	defer stopAuth()
-	logPath := filepath.Join(dir, config.UID+".log")
 	if directory == "" {
 		directory, e = os.Getwd()
 		if e != nil {
@@ -274,10 +260,10 @@ func startResourceBackground(config resourceConfig, directory string) (int, erro
 	enc, dec := json.NewEncoder(c), json.NewDecoder(c)
 	var startup resourceStartup
 	if e = dec.Decode(&startup); e != nil {
-		return 1, fmt.Errorf("resource startup failed; see %s: %w", logPath, e)
+		return 1, fmt.Errorf("resource startup failed: %w", e)
 	}
 	if startup.Error != "" {
-		return 1, fmt.Errorf("%s (log: %s)", startup.Error, logPath)
+		return 1, fmt.Errorf("%s", startup.Error)
 	}
 	record := startup.resourceRecord
 	if e = commitResourceStartup(enc, dec); e != nil {
@@ -296,7 +282,7 @@ func startResourceBackground(config resourceConfig, directory string) (int, erro
 			detail = f.description("local", f.Host)
 		}
 	}
-	fmt.Fprintf(os.Stdout, "Started %s/%s: %s\n", kind, record.Name, cleanText(detail))
+	termui.Log(os.Stdout, taskShortCode(record.UID), termui.Info, "Started %s/%s: %s", kind, record.Name, cleanText(detail))
 
 	return 0, nil
 }

@@ -41,7 +41,7 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, host string, chooseShell 
 			return "", fmt.Errorf("remote setup failed: %w", err)
 		}
 		if m.Type == "setup_diagnostic" {
-			termui.Log(os.Stderr, termui.Info, "%s\n", cleanText(strings.TrimSpace(m.Error)))
+			termui.Log(os.Stderr, "", termui.Info, "%s\n", cleanText(strings.TrimSpace(m.Error)))
 			continue
 		}
 		if m.Type == "fatal" {

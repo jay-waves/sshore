@@ -271,7 +271,7 @@ func selectApprovedFiles(input reviewPromptReader, r requestRecord) ([]fileCopy,
 			if hint != "" {
 				dest = hint
 			}
-			termui.Log(os.Stdout, termui.Info, "Download %s · %s\n", cleanText(op.Path), displayBytes(op.Size))
+			termui.Log(os.Stdout, "", termui.Info, "Download %s · %s\n", cleanText(op.Path), displayBytes(op.Size))
 			path, e := readApprovalPath(input, "Save as: ", dest, func(path string) (string, error) {
 				path, err := files.DownloadDestination(path, op.Name)
 				if err == nil && destinations[path] {
@@ -285,7 +285,7 @@ func selectApprovedFiles(input reviewPromptReader, r requestRecord) ([]fileCopy,
 			approvedFiles = append(approvedFiles, newApprovedFile(op, path, nil))
 			destinations[path] = true
 		case "upload":
-			termui.Log(os.Stdout, termui.Info, "Upload → %s\n", cleanText(op.Path))
+			termui.Log(os.Stdout, "", termui.Info, "Upload → %s\n", cleanText(op.Path))
 			var source *files.Source
 			path, e := readApprovalPath(input, "Local file to upload: ", hint, func(path string) (string, error) {
 				f, e := files.OpenSource(path)
@@ -329,12 +329,12 @@ func runApprovedFiles(r requestRecord, source options, approvedFiles []fileCopy)
 func executeApprovedFiles(ctx context.Context, open func() (net.Conn, error), batch []fileCopy) error {
 	completed, err := transferCopyBatch(batch, func(i int, file fileCopy) error {
 		if len(batch) > 1 {
-			termui.Log(os.Stderr, termui.Info, "[sshore] File %d/%d: %s %s\n", i+1, len(batch), file.approval.Kind, cleanText(file.approvedName()))
+			termui.Log(os.Stderr, "", termui.Info, "[sshore] File %d/%d: %s %s\n", i+1, len(batch), file.approval.Kind, cleanText(file.approvedName()))
 		}
 		return executeApprovedFile(ctx, open, file)
 	})
 	if err != nil {
-		termui.Log(os.Stderr, termui.Error, "[sshore] Transfer: %d done, 1 failed/cancelled, %d not started. Completed files kept.\n", completed, len(batch)-completed-1)
+		termui.Log(os.Stderr, "", termui.Error, "[sshore] Transfer: %d done, 1 failed/cancelled, %d not started. Completed files kept.\n", completed, len(batch)-completed-1)
 		for i, file := range batch {
 			state := "not started"
 			if i < completed {
@@ -342,13 +342,13 @@ func executeApprovedFiles(ctx context.Context, open func() (net.Conn, error), ba
 			} else if i == completed {
 				state = "failed/cancelled"
 			}
-			termui.Log(os.Stderr, termui.Info, "[sshore] %s: %s (%s)\n", state, cleanText(file.approvedName()), cleanText(file.approvedLocalPath()))
+			termui.Log(os.Stderr, "", termui.Info, "[sshore] %s: %s (%s)\n", state, cleanText(file.approvedName()), cleanText(file.approvedLocalPath()))
 		}
-		termui.Log(os.Stderr, termui.Info, "[sshore] Cleanup may leave .sshore-*.part downloads or partial uploads.\n")
+		termui.Log(os.Stderr, "", termui.Info, "[sshore] Cleanup may leave .sshore-*.part downloads or partial uploads.\n")
 		return err
 	}
 	if len(batch) > 1 {
-		termui.Log(os.Stderr, termui.Success, "[sshore] Transferred %d/%d files.\n", len(batch), len(batch))
+		termui.Log(os.Stderr, "", termui.Success, "[sshore] Transferred %d/%d files.\n", len(batch), len(batch))
 	}
 	return nil
 }
@@ -399,7 +399,7 @@ func executeApprovedFile(ctx context.Context, open func() (net.Conn, error), fil
 	if err != nil {
 		return err
 	}
-	termui.Log(os.Stderr, termui.Success, "[sshore] %s\n", cleanText(result))
+	termui.Log(os.Stderr, "", termui.Success, "[sshore] %s\n", cleanText(result))
 	return nil
 }
 
@@ -416,7 +416,7 @@ func reportTransferProgress(kind, name string, size int64, completed *atomic.Int
 			case <-stop:
 				return
 			case now := <-ticker.C:
-				termui.Log(os.Stderr, termui.Info, "[sshore] %s %s: %s\n", kind, cleanText(name), progress.sample(now, completed.Load(), size))
+				termui.Log(os.Stderr, "", termui.Info, "[sshore] %s %s: %s\n", kind, cleanText(name), progress.sample(now, completed.Load(), size))
 			}
 		}
 	}()

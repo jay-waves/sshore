@@ -8,6 +8,8 @@ import (
 	"os"
 	"slices"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 type localShellView struct {
@@ -72,7 +74,7 @@ func runLocalCommand(o options) (int, error) {
 			err = fmt.Errorf("rename local shell: %s", cleanText(m.Error))
 		}
 		if err == nil {
-			fmt.Fprintf(os.Stdout, "Renamed local shell %s to %s\n", o.session, o.newName)
+			termui.Log(os.Stdout, taskShortCode(o.taskIdentity), termui.Info, "Renamed local shell %s to %s", o.session, o.newName)
 		}
 		return 0, err
 	default:

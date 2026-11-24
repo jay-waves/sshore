@@ -857,7 +857,7 @@ func executeEndpointForward(f forwardConfig, foreground bool) (int, error) {
 			label = "Local service port"
 			remote = f.Port
 		}
-		termui.Log(os.Stdout, termui.Info, "Remote %s. Submit local port to forward.\n", cleanText(sshio.FormatEndpoint(f.Host, strconv.Itoa(remote))))
+		termui.Log(os.Stdout, "", termui.Info, "Remote %s. Submit local port to forward.\n", cleanText(sshio.FormatEndpoint(f.Host, strconv.Itoa(remote))))
 		port, err := readForwardPort(input, label)
 		if err != nil {
 			return 1, err
@@ -967,7 +967,7 @@ func readApprovalPort(input prefilledPromptReader, label, initial string) (int, 
 		if err == nil {
 			return port, nil
 		}
-		termui.Log(os.Stdout, termui.Warning, "%s\n", cleanText(err.Error()))
+		termui.Log(os.Stdout, "", termui.Warning, "%s\n", cleanText(err.Error()))
 	}
 }
 
@@ -1025,6 +1025,6 @@ func readForwardPort(input promptReader, label string) (int, error) {
 		if err == nil {
 			return port, nil
 		}
-		termui.Log(os.Stdout, termui.Warning, "%s\n", err)
+		termui.Log(os.Stdout, "", termui.Warning, "%s\n", err)
 	}
 }

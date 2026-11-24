@@ -46,12 +46,12 @@ func resourceViews(records []resourceRecord, statuses map[string]resourceStatus,
 	return views
 }
 
-func printStoppedResource(kind, name string) {
+func printStoppedResource(kind, name, identity string) {
 	switch kind {
 	case "mount":
-		fmt.Fprintf(os.Stdout, "Unmounted mount/%s.\n", name)
+		termui.Log(os.Stdout, taskShortCode(identity), termui.Info, "Unmounted mount/%s.", name)
 	case "forward":
-		fmt.Fprintf(os.Stdout, "Closed forward/%s.\n", name)
+		termui.Log(os.Stdout, taskShortCode(identity), termui.Info, "Closed forward/%s.", name)
 	}
 }
 
@@ -77,7 +77,7 @@ func stopConfirmedResources(ctx context.Context, views []resourceView) error {
 		if failure != "" {
 			failures = append(failures, fmt.Errorf("%s/%s: %s", change.Kind, change.Ref, failure))
 		} else {
-			printStoppedResource(change.Kind, change.Ref)
+			printStoppedResource(change.Kind, change.Ref, change.Identity)
 		}
 	}
 	return errors.Join(failures...)

@@ -110,7 +110,7 @@ func ReadPath(input prefilledReader, prompt string, options PathOptions) (string
 		if err == nil {
 			return path, nil
 		}
-		Log(os.Stdout, Warning, "%s\n", CleanText(err.Error()))
+		Log(os.Stdout, "", Warning, "%s\n", CleanText(err.Error()))
 	}
 }
 

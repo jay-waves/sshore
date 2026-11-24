@@ -192,13 +192,11 @@ A leading * marks the current shell. Use list for details.
 `,
 	},
 	"list": {
-		flags: []string{"--json"},
-		help: `Usage: sshore list [--json]  (alias: ls)
+		help: `Usage: sshore list  (alias: ls)
 
 List shell, mount and forward details, including incoming resources. PARENT
 shows the parent shell's short ID. DETAIL includes connection hosts and
 port mappings. A forward's arrow points toward the target service.
-Use --json for machine-readable task details and exact timestamps.
 `,
 	},
 	"kill": {

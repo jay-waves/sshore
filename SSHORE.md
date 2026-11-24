@@ -113,9 +113,7 @@ remote shell observations and open no SSH connections. The tree shows each
 shell UID once and favors a live registration over observations of that UID.
 `PARENT` shows the parent's short ID. For remote observations the list displays
 the last recorded parent and includes the observation time in `DETAIL`. Its
-resource status probes run under a separate time budget. `list --json`
-also includes the tree. In it, `parent_row` is a one-based row number, and
-roots omit it.
+resource status probes run under a separate time budget.
 
 Invalid remote participation history makes the inventory incomplete. Parent edges
 for registered tasks come directly from the daemon; no ancestry files are loaded.

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/term"
 )
 
@@ -323,7 +324,7 @@ func runDaemon() (result error) {
 		os.Stdin.Close()
 		os.Stdout.Close()
 	} else {
-		fmt.Fprintln(os.Stderr, "Daemon running.")
+		termui.Log(os.Stderr, "daemon", termui.Info, "Daemon running.")
 	}
 	tasks := &daemonTasks{}
 	activity := &daemonActivity{tasks: tasks, root: record.Directory}
@@ -500,6 +501,7 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 	enc := json.NewEncoder(c)
 	defer func() {
 		if result != nil {
+			termui.Log(os.Stderr, taskShortCode(request.Resource.UID), termui.Error, "%s", result)
 			_ = enc.Encode(resourceStartup{Error: result.Error()})
 		}
 	}()
@@ -508,19 +510,8 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 	if !validTaskUID(config.UID) {
 		return fmt.Errorf("invalid resource task ID")
 	}
-	dir, err := resourceStateDir(kind)
-	if err != nil {
-		return err
-	}
-	logPath := filepath.Join(dir, config.UID+".log")
-	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		return err
-	}
-	defer log.Close()
-	if err = privateStatePath(logPath, false); err != nil {
-		return err
-	}
+	log := &logStream{out: os.Stderr, id: taskShortCode(config.UID), level: termui.Error}
+	defer log.flush()
 	dec := json.NewDecoder(io.LimitReader(c, daemonBodyLimit))
 	if kind == "forward" {
 		return runDaemonForward(config, enc, dec, c, log, request, tasks)

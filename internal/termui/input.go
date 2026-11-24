@@ -350,10 +350,6 @@ func ColorEnabled(f *os.File) bool {
 	return os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb" && term.IsTerminal(int(f.Fd())) && supportsANSI(f)
 }
 
-func Log(f *os.File, level Color, format string, args ...any) {
-	fmt.Fprint(f, Format(ColorEnabled(f), level, format, args...))
-}
-
 func CleanText(s string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {

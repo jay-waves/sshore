@@ -43,7 +43,7 @@ func executeCopyCommand(o copyOptions) (int, error) {
 		if err != nil {
 			return 2, err
 		}
-		termui.Log(os.Stdout, termui.Info, "To %s. Submit source to copy.\n", cleanText(sshio.FormatEndpoint(o.host, o.target.path)))
+		termui.Log(os.Stdout, "", termui.Info, "To %s. Submit source to copy.\n", cleanText(sshio.FormatEndpoint(o.host, o.target.path)))
 		source, err := readCopyPath(input, "Local file (Tab; Enter starts): ", func(p string) (string, error) {
 			var e error
 			picked, e = files.OpenSource(p)
@@ -241,7 +241,7 @@ func executeCopy(ctx context.Context, client *sftp.Client, o copyOptions, picked
 		} else {
 			source = o.host + ":" + source
 		}
-		termui.Log(os.Stderr, termui.Success, "Copied %s -> %s\n", cleanText(source), cleanText(target))
+		termui.Log(os.Stderr, "", termui.Success, "Copied %s -> %s\n", cleanText(source), cleanText(target))
 		return nil
 	})
 	if err != nil {
@@ -272,7 +272,7 @@ func prepareCopyBatch(client *sftp.Client, o copyOptions, items []fileCopy) (err
 				err = closeErr
 			}
 		}()
-		termui.Log(os.Stdout, termui.Info, "From %s. Submit all destinations to copy; Ctrl-C cancels.\n", cleanText(o.host))
+		termui.Log(os.Stdout, "", termui.Info, "From %s. Submit all destinations to copy; Ctrl-C cancels.\n", cleanText(o.host))
 	} else {
 		info, err := targetStat(o.target.path)
 		if err == nil {
@@ -310,7 +310,7 @@ func prepareCopyBatch(client *sftp.Client, o copyOptions, items []fileCopy) (err
 		}
 		target := o.target.path
 		if input != nil {
-			termui.Log(os.Stdout, termui.Info, "Copy %s · %s\n", cleanText(sshio.FormatEndpoint(o.host, source.path)), displayBytes(item.size()))
+			termui.Log(os.Stdout, "", termui.Info, "Copy %s · %s\n", cleanText(sshio.FormatEndpoint(o.host, source.path)), displayBytes(item.size()))
 			var err error
 			target, err = readCopyPath(input, "Save as (Tab; Enter accepts): ", func(p string) (string, error) { return files.DownloadDestination(p, name) })
 			if err != nil {

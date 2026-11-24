@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"runtime"
 	"slices"
 	"sort"
@@ -45,7 +44,6 @@ type resourceView struct {
 	Mountpoint string `json:"mountpoint,omitempty"`
 	ReadOnly   bool   `json:"read_only,omitempty"`
 	Direction  string `json:"direction,omitempty"`
-	Log        string `json:"log,omitempty"`
 	resourceStatus
 }
 
@@ -106,9 +104,6 @@ func emptyInventory() inventory {
 }
 func viewRecord(r resourceRecord) resourceView {
 	v := resourceView{Identity: resourceIdentity(r), ID: r.Kind + "/" + r.Name, Host: r.Host, Kind: r.Kind, Direction: r.Direction, State: taskUnknown, Detail: r.Detail, resourceStatus: resourceStatus{Version: r.Version, Transport: "unknown", Target: "unchecked"}}
-	if log, err := statePath(filepath.Join(r.Kind+"s", r.UID+".log")); err == nil {
-		v.Log = log
-	}
 	v.Protocol = "SSH/TCP"
 	if r.Kind == "mount" {
 		v.Protocol = "SFTP over SSH"
@@ -315,20 +310,14 @@ func (inv *inventory) setTaskReferences() {
 }
 
 func runInventoryCommand(command string, args []string) (int, error) {
-	parsed, err := parseCLI(args, command)
+	_, err := parseCLI(args, command)
 	if err != nil {
 		return 2, err
 	}
 	current, color := shellIdentityFromEnvironment(), termui.ColorEnabled(os.Stdout)
 	inv, err := collectInventory(command == "pstree")
-	if parsed.has("--json") {
-		if err := json.NewEncoder(os.Stdout).Encode(inv); err != nil {
-			return 1, err
-		}
-	} else {
-		width, _, _ := term.GetSize(int(os.Stdout.Fd()))
-		writeInventory(os.Stdout, command, inv, current, color, width)
-	}
+	width, _, _ := term.GetSize(int(os.Stdout.Fd()))
+	writeInventory(os.Stdout, command, inv, current, color, width)
 	if err != nil {
 		return 1, err
 	}

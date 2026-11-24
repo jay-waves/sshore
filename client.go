@@ -199,7 +199,7 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 	if o.command == "kill" || o.command == "rename" {
 		target, lookupErr := participatingMutationTarget(o)
 		if lookupErr != nil {
-			termui.Log(os.Stderr, termui.Warning, "[sshore] Could not read participating shells: %s\n", cleanText(lookupErr.Error()))
+			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not read participating shells: %s\n", cleanText(lookupErr.Error()))
 		}
 		err := transportio.Run(context.Background(), sshConnectionOptions(o), os.Stdin, os.Stdout, os.Stderr)
 		if err == nil && target.Instance != "" {
@@ -214,7 +214,7 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 				updateErr = renameParticipatingShell(o.host, target.Instance, o.newName)
 			}
 			if updateErr != nil {
-				termui.Log(os.Stderr, termui.Warning, "[sshore] Could not update participating shells: %s\n", cleanText(updateErr.Error()))
+				termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not update participating shells: %s\n", cleanText(updateErr.Error()))
 			}
 		}
 		if e, ok := errors.AsType[exitStatusError](err); ok {
@@ -285,9 +285,9 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 	o.fromTree = ""
 	attachmentKey := m.TreeKey
 	if warn, err := observeIdentityRoute(m.MachineID, o.host, o.ssh); err != nil {
-		termui.Log(os.Stderr, termui.Warning, "[sshore] Identity tracking failed: %s\n", cleanText(err.Error()))
+		termui.Log(os.Stderr, "", termui.Warning, "[sshore] Identity tracking failed: %s\n", cleanText(err.Error()))
 	} else if warn {
-		termui.Log(os.Stderr, termui.Warning, "[sshore] Same identity through a new entry point; if this is a clone, run sshore reset there.\n")
+		termui.Log(os.Stderr, "", termui.Warning, "[sshore] Same identity through a new entry point; if this is a clone, run sshore reset there.\n")
 	}
 	o.instance = m.Instance
 	if o.reusable != nil {
@@ -299,7 +299,7 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 		if participation != nil {
 			participation.Name, participation.State = o.session, state
 			if err := setParticipatingShellState(*participation); err != nil {
-				termui.Log(os.Stderr, termui.Warning, "[sshore] Could not update participating shell: %s\n", cleanText(err.Error()))
+				termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not update participating shell: %s\n", cleanText(err.Error()))
 			}
 		}
 	}
@@ -307,7 +307,7 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 		row := participatingShell{Host: o.host, Owner: m.Owner, Instance: o.instance, Name: o.session, State: taskActive,
 			Pinned: m.Pinned, PinUntil: m.PinUntil, PID: m.PID, Attachment: newTaskUID()}
 		if err := observeParticipatingShell(row); err != nil {
-			termui.Log(os.Stderr, termui.Warning, "[sshore] Could not record participating shell: %s\n", cleanText(err.Error()))
+			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not record participating shell: %s\n", cleanText(err.Error()))
 		} else {
 			participation = &row
 		}
@@ -318,11 +318,11 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 		}()
 	}
 	if err := removeRecentDetach(o); err != nil {
-		termui.Log(os.Stderr, termui.Warning, "[sshore] Could not update recent detaches: %s\n", cleanText(err.Error()))
+		termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not update recent detaches: %s\n", cleanText(err.Error()))
 	}
 	if !o.local {
 		if e := rememberConnection(o); e != nil {
-			termui.Log(os.Stderr, termui.Warning, "[sshore] Connection history not saved: %s\n", cleanText(e.Error()))
+			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Connection history not saved: %s\n", cleanText(e.Error()))
 		}
 	}
 	shellPID := m.PID
@@ -342,13 +342,13 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 		}
 		if o.hold == nil {
 			if err := rememberDetachedAttachment(o); err != nil {
-				termui.Log(os.Stderr, termui.Warning, "[sshore] Detach history not saved: %s\n", cleanText(err.Error()))
+				termui.Log(os.Stderr, "", termui.Warning, "[sshore] Detach history not saved: %s\n", cleanText(err.Error()))
 			}
 		}
 	}
 	if !o.local {
 		if err := showConnectedTasks(o); err != nil {
-			termui.Log(os.Stderr, termui.Warning, "[sshore] Task list unavailable: %s\n", cleanText(err.Error()))
+			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Task list unavailable: %s\n", cleanText(err.Error()))
 		}
 	}
 	restore, err := pty.RawConsole()
@@ -1247,7 +1247,7 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 						}
 						report(level, title, detail)
 						if exitErr := rememberShellExit(o); exitErr != nil {
-							termui.Log(os.Stderr, termui.Warning, "[sshore] Could not record shell exit: %s\n", cleanText(exitErr.Error()))
+							termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not record shell exit: %s\n", cleanText(exitErr.Error()))
 						}
 					}
 					return e.m.Code, nil

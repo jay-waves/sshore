@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 // Kind limits the registry scan to a task type. Native and hosted are two
@@ -309,9 +311,9 @@ func mutateRegisteredTask(command string, target selectedTask, newName string) (
 		return 1, err
 	}
 	if command == "kill" {
-		printStoppedResource(target.Kind, target.Name)
+		printStoppedResource(target.Kind, target.Name, target.Identity)
 	} else {
-		fmt.Printf("Renamed %s/%s to %s.\n", target.Kind, target.Name, newName)
+		termui.Log(os.Stdout, taskShortCode(target.Identity), termui.Info, "Renamed %s/%s to %s.", target.Kind, target.Name, newName)
 	}
 	return 0, nil
 }

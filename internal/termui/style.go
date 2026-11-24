@@ -2,11 +2,37 @@ package termui
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
+
+// Log writes a diagnostic or status line to a terminal or log file.
+func Log(out io.Writer, id string, level Color, format string, args ...any) {
+	color := false
+	if f, ok := out.(*os.File); ok {
+		color = ColorEnabled(f)
+	}
+	if id == "" {
+		id = "-"
+	}
+	severity, label := Info, "info"
+	if level == Error || level == Warning {
+		severity, label = Error, "error"
+	}
+	stamp := Render(color, Muted, "["+time.Now().Format("2006-01-02 15:04:05")+"]")
+	identity := Render(color, Accent, "["+id+"]")
+	label = Render(color, severity, "["+label+"]")
+	message := strings.TrimSuffix(fmt.Sprintf(format, args...), "\n")
+	message = strings.TrimPrefix(message, "[sshore] ")
+	for line := range strings.SplitSeq(message, "\n") {
+		fmt.Fprintf(out, "%s %s %s %s\n", stamp, identity, label, line)
+	}
+}
 
 const (
 	Heading Color = "heading"

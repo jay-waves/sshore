@@ -248,7 +248,7 @@ func runClient(o options) (int, error) {
 				return code, err
 			}
 			if err != nil {
-				termui.Log(os.Stderr, termui.Warning, "[sshore] %s\n", cleanText(err.Error()))
+				termui.Log(os.Stderr, "", termui.Warning, "[sshore] %s\n", cleanText(err.Error()))
 			}
 			returning = true
 			o = approval.source
@@ -260,7 +260,7 @@ func runClient(o options) (int, error) {
 		}
 		if returning && err != nil {
 			problem := fmt.Sprintf("Could not return to %s: %s", cleanText(o.session), cleanText(err.Error()))
-			termui.Log(os.Stderr, termui.Warning, "[sshore] %s\n", problem)
+			termui.Log(os.Stderr, "", termui.Warning, "[sshore] %s\n", problem)
 			if len(parents) == 0 {
 				menu = &o
 			}
@@ -279,7 +279,7 @@ func runClient(o options) (int, error) {
 			if err != nil {
 				reason = " " + cleanText(err.Error())
 			}
-			termui.Log(os.Stderr, termui.Warning, "[sshore] Target unavailable; restoring %s.%s\n", cleanText(target.session), reason)
+			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Target unavailable; restoring %s.%s\n", cleanText(target.session), reason)
 		case len(parents) == 0:
 			if o.command == "kill" || o.command == "rename" || err != nil && menu == nil {
 				return code, err
@@ -310,7 +310,7 @@ func runClient(o options) (int, error) {
 				sessionNotice(ended.level, ended.title, ended.detail)
 			}
 			if err != nil && !returning {
-				termui.Log(os.Stderr, termui.Warning, "[sshore] %s\n", cleanText(err.Error()))
+				termui.Log(os.Stderr, "", termui.Warning, "[sshore] %s\n", cleanText(err.Error()))
 			}
 		}
 		returning = true

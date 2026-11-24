@@ -104,7 +104,7 @@ local named shell.
 
 ### Find and manage tasks
 
-Run `sshore list` for task details or add `--json` for scripts.
+Run `sshore list` for task details.
 Use `sshore kill ID` or `sshore rename ID NEW` for shells, mounts and forwards.
 `HOST:ID` selects the managing SSH account explicitly. Killing a shell can
 discard unsaved work.
@@ -146,7 +146,8 @@ it. Close open files before unmounting.
 ## Help and troubleshooting
 
 - Run `sshore --tldr` for examples or `sshore COMMAND --help` for options.
-- For an active mount or forward, `sshore list --json` includes its log path.
+- Background diagnostics are appended to the account daemon's `local.log`.
+- Status and diagnostic messages show local time, task ID when available, and severity.
 
 ## Project documents
 

@@ -169,7 +169,7 @@ func forwardRemoteCommand(f forwardConfig) string {
 func runForwardForeground(f forwardConfig) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	fmt.Fprintf(os.Stderr, "Starting %s; Ctrl-C stops it.\n", cleanText(f.description("local", f.Host)))
+	termui.Log(os.Stderr, "", termui.Info, "Starting %s; Ctrl-C stops it.", cleanText(f.description("local", f.Host)))
 	return runForwardTransportForeground(ctx, f, os.Stderr)
 }
 
@@ -264,7 +264,7 @@ func retryForward(ctx context.Context, retries int, s *resourceService, attempt 
 	for retry := 1; established && retry <= retries && ctx.Err() == nil; retry++ {
 		s.setTransport("reconnecting", err)
 		delay := time.Second * time.Duration(1<<min(retry-1, 5))
-		fmt.Fprintf(s.logWriter(), "[sshore] Forward disconnected; TCP connections lost. Retry %d/%d in %s.\n", retry, retries, delay)
+		termui.Log(os.Stderr, taskShortCode(s.record.UID), termui.Info, "Forward disconnected; TCP connections lost. Retry %d/%d in %s.", retry, retries, delay)
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -382,6 +382,9 @@ func startDirectForward(c *sshio.Client, rule forwardConfig) (*forwardio.Forward
 		listener, err = net.Listen("tcp4", listen)
 	}
 	if err != nil {
+		if rule.Reverse && err.Error() == "ssh: tcpip-forward request denied by peer" {
+			return nil, fmt.Errorf("forward %s: %w; the SSH server did not provide a reason; check its TCP forwarding policy and whether the remote port is already in use", listen, err)
+		}
 		return nil, fmt.Errorf("forward %s: %w", listen, err)
 	}
 

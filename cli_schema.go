@@ -48,7 +48,6 @@ var cliOptions = map[string]cliOption{
 	"--apply":     {},
 	"--port":      {kind: cliPort},
 	"--no-escape": {}, "--pin": {}, "--no-login": {}, "--no-profile": {},
-	"--json":       {},
 	"--all":        {},
 	"--foreground": {},
 	"--read-only":  {}, "--stats": {}, "--direct-io": {},
