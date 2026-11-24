@@ -35,10 +35,6 @@ jobs:
           go-version-file: go.mod
       - name: Core unit tests
         run: go run ./scripts go test ./...
-      - name: Linux installer
-        run: go test -tags=integration -run '^TestLinuxInstaller$' ./tests/integration
-      - name: OpenSSH integration
-        run: tests/integration/ssh_docker.sh
 
   windows:
     runs-on: windows-2025
@@ -54,29 +50,34 @@ jobs:
         shell: powershell
         run: ./tests/install_windows_test.ps1
       - name: Installer on PowerShell 7
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: ./tests/install_windows_test.ps1
       - name: Build the Windows client and Linux fixture
+        if: ${{ !cancelled() }}
         id: builds
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           $driver = Join-Path $env:RUNNER_TEMP sshore-build.exe
           $env:SSHORE_TEST_WINDOWS_CLIENT = Join-Path $env:RUNNER_TEMP sshore.exe
-          $env:SSHORE_TEST_WSL_SERVER = Join-Path $env:RUNNER_TEMP sshore-linux
+          $fixture = Join-Path $env:RUNNER_TEMP sshore-wsl
+          New-Item -ItemType Directory -Path $fixture | Out-Null
           "SSHORE_TEST_WINDOWS_CLIENT=$env:SSHORE_TEST_WINDOWS_CLIENT" >> $env:GITHUB_ENV
-          "SSHORE_TEST_WSL_SERVER=$env:SSHORE_TEST_WSL_SERVER" >> $env:GITHUB_ENV
+          "SSHORE_TEST_WSL_ARTIFACTS=$fixture" >> $env:GITHUB_ENV
           go build -o $driver ./scripts
           & $driver go build -ldflags '-X main.version=0.0.0' -o $env:SSHORE_TEST_WINDOWS_CLIENT .
           $env:GOOS = 'linux'
           $env:GOARCH = 'amd64'
           $env:CGO_ENABLED = '0'
-          & $driver go build -ldflags '-X main.version=0.0.0' -o $env:SSHORE_TEST_WSL_SERVER .
+          & $driver go build -ldflags '-X main.version=0.0.0' -o (Join-Path $fixture sshore) .
+          & $driver go build -ldflags '-X main.version=0.0.1' -o (Join-Path $fixture sshore-other) .
+          go test -tags=integration -c -o (Join-Path $fixture integration.test) ./tests/integration
       - name: Windows ConPTY integration
+        if: ${{ !cancelled() && steps.builds.outcome == 'success' }}
         run: go test -tags=integration -count=1 -timeout=90s -run '^TestWindowsConPTY$' -v ./tests/integration
       - name: Install WinFsp and prepare its official test suite
         if: ${{ !cancelled() && steps.builds.outcome == 'success' }}
-        id: winfsp
         shell: pwsh
         run: |
           $msi = Join-Path $env:RUNNER_TEMP winfsp-2.2.26323.msi
@@ -99,14 +100,14 @@ jobs:
           Expand-Archive -LiteralPath $suite -DestinationPath $suiteDir
           (Join-Path ${env:ProgramFiles(x86)} 'WinFsp\bin') >> $env:GITHUB_PATH
           "SSHORE_TEST_WINFSP_SUITE=$(Join-Path $suiteDir winfsp-tests-x64.exe)" >> $env:GITHUB_ENV
-      - name: Set up the Linux SSH fixture
-        if: ${{ !cancelled() && steps.winfsp.outcome == 'success' }}
+      - name: Set up Ubuntu WSL for integration tests
+        if: ${{ !cancelled() && steps.builds.outcome == 'success' }}
         id: wsl
         uses: Vampire/setup-wsl@f40fb59d850112c9a292b0218bca8271305b9127 # v5.0.0
         with:
           distribution: Ubuntu-24.04
           wsl-version: 2
-          additional-packages: openssh-server
-      - name: Windows WinFsp integration
+          additional-packages: openssh-server procps fuse3
+      - name: Windows and WSL integration
         if: ${{ !cancelled() && steps.wsl.outcome == 'success' }}
-        run: go test -tags=integration -count=1 -timeout=90s -run '^TestWindowsWinFsp$' -v ./tests/integration
+        run: go test -tags=integration -count=1 -timeout=150s -run '^TestWindowsWSL$' -v ./tests/integration

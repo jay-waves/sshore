@@ -135,16 +135,60 @@ func TestWindowsConPTY(t *testing.T) {
 	}
 }
 
-func TestWindowsWinFsp(t *testing.T) {
-	server := os.Getenv("SSHORE_TEST_WSL_SERVER")
-	if server == "" {
-		t.Skip("set SSHORE_TEST_WSL_SERVER to the Linux build on the WSL test runner")
+func TestWindowsWSL(t *testing.T) {
+	artifacts := os.Getenv("SSHORE_TEST_WSL_ARTIFACTS")
+	if artifacts == "" {
+		t.Skip("set SSHORE_TEST_WSL_ARTIFACTS to the Linux builds on the WSL test runner")
 	}
-	config := startWindowsSSH(t, server, t.TempDir())
+	const host = "winfsp-fixture"
+	config, fixture := startWindowsSSH(t, artifacts, t.TempDir())
+	t.Run("linux", func(t *testing.T) {
+		out := windowsRun(t, wslCommand(t.Context(), "/usr/bin/env",
+			"SSHORE_TEST_OPENSSH="+fixture+"/sshore", "SSHORE_STATE_DIR="+fixture+"/state", "TERM=xterm", "NO_COLOR=1",
+			fixture+"/integration.test", "-test.run", "^Test(OpenSSH|LinuxInstaller)$", "-test.v", "-test.timeout=60s"))
+		t.Log(string(out))
+	})
 	ctx, command := windowsClient(t)
 	ssh := func(args ...string) *exec.Cmd { return command(append(args, "--", "-F", config)...) }
-	windowsRun(t, ssh("exec", "winfsp-fixture", "printf original > share/target"))
-	start := string(windowsRun(t, ssh("mount", "winfsp-fixture:share", "here:")))
+	t.Run("windows_to_wsl_port", func(t *testing.T) {
+		probe, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := probe.Addr().String()
+		port := probe.Addr().(*net.TCPAddr).Port
+		probe.Close()
+		windowsRun(t, ssh("forward", fmt.Sprintf("here:%d", port), host+":2222"))
+		conn, err := net.DialTimeout("tcp4", addr, 3*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if banner, err := bufio.NewReader(conn).ReadString('\n'); err != nil || !strings.HasPrefix(banner, "SSH-2.0-OpenSSH") {
+			t.Fatalf("WSL OpenSSH banner through the Windows port: %q (%v)", banner, err)
+		}
+	})
+	t.Run("wsl_to_windows_port", func(t *testing.T) {
+		listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		const response = "reply from Windows\n"
+		port := listener.Addr().(*net.TCPAddr).Port
+		windowsRun(t, ssh("forward", host+":2223", fmt.Sprintf("here:%d", port)))
+		go func() {
+			if conn, err := listener.Accept(); err == nil {
+				defer conn.Close()
+				_, _ = io.WriteString(conn, response)
+			}
+		}()
+		if got := windowsRun(t, ssh("exec", host, "timeout 5 bash -c 'cat </dev/tcp/127.0.0.1/2223'")); string(got) != response {
+			t.Fatalf("Windows service response through the WSL port: %q", got)
+		}
+	})
+	start := string(windowsRun(t, ssh("mount", host+":share", "here:")))
 	_, suffix, _ := strings.Cut(start, "Started mount/")
 	name, _, _ := strings.Cut(suffix, ":")
 	if name == "" {
@@ -168,7 +212,12 @@ func TestWindowsWinFsp(t *testing.T) {
 	if len(root) != 3 || root[0] < 'A' || root[0] > 'Z' || root[1] != ':' {
 		t.Fatalf("missing mounted drive for %s: %+v", task, inventory.Resources)
 	}
-	t.Run("replace", func(t *testing.T) {
+	t.Run("wsl_to_windows_file", func(t *testing.T) {
+		windowsRun(t, ssh("exec", host, "printf from-wsl > share/wsl-created"))
+		requireFile(t, filepath.Join(root, "wsl-created"), "from-wsl")
+	})
+	t.Run("windows_to_wsl_replace", func(t *testing.T) {
+		windowsRun(t, ssh("exec", host, "printf original > share/target"))
 		target, temporary := filepath.Join(root, "target"), filepath.Join(root, "save.tmp")
 		requireFile(t, target, "original")
 		if err := os.WriteFile(temporary, []byte("replacement"), 0600); err != nil {
@@ -178,7 +227,7 @@ func TestWindowsWinFsp(t *testing.T) {
 			t.Fatal(err)
 		}
 		requireFile(t, target, "replacement")
-		if got := windowsRun(t, ssh("exec", "winfsp-fixture", "cat share/target")); string(got) != "replacement" {
+		if got := windowsRun(t, ssh("exec", host, "cat share/target")); string(got) != "replacement" {
 			t.Fatalf("remote file after replace: %q", got)
 		}
 	})
@@ -209,22 +258,24 @@ func TestWindowsWinFsp(t *testing.T) {
 	})
 }
 
-func startWindowsSSH(t *testing.T, server, dir string) string {
+func wslCommand(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, "wsl.exe", append([]string{"--distribution", "Ubuntu-24.04", "--user", "root", "--exec"}, args...)...)
+}
+
+func startWindowsSSH(t *testing.T, artifacts, dir string) (string, string) {
 	t.Helper()
-	ctx, stop := context.WithTimeout(context.Background(), 80*time.Second)
+	ctx, stop := context.WithCancel(t.Context())
 	t.Cleanup(stop)
-	wsl := func(args ...string) *exec.Cmd {
-		return exec.CommandContext(ctx, "wsl.exe", append([]string{"--distribution", "Ubuntu-24.04", "--user", "root", "--exec"}, args...)...)
-	}
 	toLinux := func(path string) string {
 		t.Helper()
-		return strings.TrimSpace(string(windowsRun(t, wsl("wslpath", "-a", path))))
+		return strings.TrimSpace(string(windowsRun(t, wslCommand(ctx, "wslpath", "-a", path))))
 	}
 	script, err := filepath.Abs("windows_ssh.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	sshd := wsl("/bin/sh", toLinux(script), toLinux(server), toLinux(dir))
+	fixture := strings.TrimSpace(string(windowsRun(t, wslCommand(ctx, "mktemp", "-d"))))
+	sshd := wslCommand(ctx, "/bin/sh", toLinux(script), toLinux(artifacts), toLinux(dir), fixture)
 	sshd.Stderr = os.Stderr
 	if err := sshd.Start(); err != nil {
 		t.Fatal(err)
@@ -253,7 +304,7 @@ func startWindowsSSH(t *testing.T, server, dir string) string {
 	content := fmt.Sprintf(`Host winfsp-fixture
     HostName 127.0.0.1
     Port 2222
-    User sshore-winfsp
+    User sshore-fixture
     BatchMode yes
     StrictHostKeyChecking yes
     IdentityFile "%s"
@@ -262,5 +313,5 @@ func startWindowsSSH(t *testing.T, server, dir string) string {
 	if err := os.WriteFile(config, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	return config
+	return config, fixture
 }

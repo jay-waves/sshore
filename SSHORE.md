@@ -152,21 +152,16 @@ CLI or installer in isolation. OS-specific validation uses the affected OS
 and its real terminal or mount driver. Keep real account shells out of tests
 that simulate upgrade confirmation or reset.
 
-- Run `tests/integration/ssh_docker.sh` for the built Linux client and real
-  OpenSSH. The disposable container separates client and server daemon
-  ownership by OS account. To exercise the native Linux mount driver as well,
-  use `SSHORE_TEST_FUSE=1` on a Docker host with `/dev/fuse`. Pass a Go test
-  pattern to run a single scenario, for example
-  `tests/integration/ssh_docker.sh '^TestOpenSSH$/shutdown_confirmation'`.
-- Run `go test -tags=integration -run '^TestLinuxInstaller$' ./tests/integration`
-  for the Linux installer. It uses temporary release fixtures and performs
-  no downloads.
 - The Windows Server 2025 CI job runs the native ConPTY detach and reattach
-  scenario against the built Windows executable. It installs WinFsp 2.2
-  and checks replacement and unmount on a real drive letter backed by OpenSSH
-  in an isolated Ubuntu WSL distribution. The official WinFsp suite checks
-  cached reads and writes, append and directory enumeration on that drive. Run these only on a disposable
-  Windows runner because daemon ownership is scoped to the OS account.
+  scenario against the built Windows executable. A disposable Ubuntu WSL 2
+  distribution runs the Linux installer and Linux client integration suite
+  against real OpenSSH, including the FUSE mount test. Separate Linux accounts
+  isolate daemon ownership. The Windows client uses the same OpenSSH server to
+  verify port forwarding in both directions. With WinFsp 2.2, it reads a
+  WSL-created file on a Windows drive letter, verifies a Windows replacement
+  from WSL, and checks unmount. The official WinFsp suite checks cached reads
+  and writes, append and directory enumeration on that drive. Run the fixture
+  only on a disposable Windows runner with a dedicated WSL distribution.
 
 The [Tests workflow](.github/workflows/tests.yml) runs on demand and when a
 push to `main` changes the integration tests or this workflow.

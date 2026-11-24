@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -23,8 +24,9 @@ import (
 func TestOpenSSH(t *testing.T) {
 	binary := os.Getenv("SSHORE_TEST_OPENSSH")
 	if binary == "" {
-		t.Skip("run in the disposable OpenSSH Docker fixture")
+		t.Skip("run in the disposable OpenSSH WSL fixture")
 	}
+	fixture := filepath.Dir(binary)
 	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Second)
 	defer cancel()
 	for {
@@ -47,12 +49,12 @@ func TestOpenSSH(t *testing.T) {
 	}
 	host := "fixture-alias"
 	config := filepath.Join(dir, "ssh_config")
-	if err := os.WriteFile(config, []byte(`Host fixture-alias
+	if err := os.WriteFile(config, []byte(fmt.Sprintf(`Host fixture-alias
     HostName 127.0.0.1
     User sshore-fixture
-    IdentityFile /tmp/fixture-key
+    IdentityFile %q
     StrictHostKeyChecking yes
-    UserKnownHostsFile /tmp/fixture-known-hosts
+    UserKnownHostsFile %q
     Ciphers ^aes128-ctr
     PreferredAuthentications gssapi-with-mic,publickey,password
 Match final all
@@ -60,7 +62,7 @@ Match final all
     GSSAPIAuthentication yes
 Match command "printf forwarding-check"
     RemoteForward 18889 localhost:18890
-`), 0600); err != nil {
+`, filepath.Join(fixture, "identity"), filepath.Join(fixture, "known_hosts"))), 0600); err != nil {
 		t.Fatal(err)
 	}
 	ssh := []string{"--", "-F", config}
@@ -80,7 +82,7 @@ Match command "printf forwarding-check"
 		if len(connection) != 4 || connection[0] != "127.0.0.1" || connection[2] != "127.0.0.1" || connection[3] != "2222" {
 			t.Fatalf("SSH_CONNECTION from sshd = %q", connection)
 		}
-		wrongKey, err := os.ReadFile("/tmp/fixture-key.pub")
+		wrongKey, err := os.ReadFile(filepath.Join(fixture, "identity.pub"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -223,44 +225,42 @@ Match command "printf forwarding-check"
 			t.Fatalf("reverse forward delivered %q (%v)", got, err)
 		}
 	})
-	if os.Getenv("SSHORE_TEST_FUSE") == "1" {
-		t.Run("native mount keeps open handles across replacement", func(t *testing.T) {
-			run("exec", host, "mkdir mount-source && printf original > mount-source/target")
-			point := t.TempDir()
-			start := run("mount", host+":mount-source", "here:"+point)
-			_, task, _ := strings.Cut(start, "Started mount/")
-			name, _, _ := strings.Cut(task, ":")
-			if name == "" {
-				t.Fatalf("missing mount name: %s", start)
-			}
-			t.Cleanup(func() {
-				cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if out, err := exec.CommandContext(cleanup, binary, "kill", "mount/"+name).CombinedOutput(); err != nil {
-					t.Errorf("unmount: %s (%v)", out, err)
-				}
-			})
-			target, replacement := filepath.Join(point, "target"), filepath.Join(point, "replacement")
-			old, err := os.Open(target)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer old.Close()
-			if err := os.WriteFile(replacement, []byte("updated"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Rename(replacement, target); err != nil {
-				t.Fatal(err)
-			}
-			if got, err := io.ReadAll(old); err != nil || string(got) != "original" {
-				t.Fatalf("open handle followed the replacement: %q (%v)", got, err)
-			}
-			requireFile(t, target, "updated")
-			if got := run("exec", host, "cat mount-source/target"); got != "updated" {
-				t.Fatalf("mount did not publish the replacement: %q", got)
+	t.Run("native mount keeps open handles across replacement", func(t *testing.T) {
+		run("exec", host, "mkdir mount-source && printf original > mount-source/target")
+		point := t.TempDir()
+		start := run("mount", host+":mount-source", "here:"+point)
+		_, task, _ := strings.Cut(start, "Started mount/")
+		name, _, _ := strings.Cut(task, ":")
+		if name == "" {
+			t.Fatalf("missing mount name: %s", start)
+		}
+		t.Cleanup(func() {
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if out, err := exec.CommandContext(cleanup, binary, "kill", "mount/"+name).CombinedOutput(); err != nil {
+				t.Errorf("unmount: %s (%v)", out, err)
 			}
 		})
-	}
+		target, replacement := filepath.Join(point, "target"), filepath.Join(point, "replacement")
+		old, err := os.Open(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer old.Close()
+		if err := os.WriteFile(replacement, []byte("updated"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(replacement, target); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := io.ReadAll(old); err != nil || string(got) != "original" {
+			t.Fatalf("open handle followed the replacement: %q (%v)", got, err)
+		}
+		requireFile(t, target, "updated")
+		if got := run("exec", host, "cat mount-source/target"); got != "updated" {
+			t.Fatalf("mount did not publish the replacement: %q", got)
+		}
+	})
 	cleanRemote := func(endpoint string) {
 		t.Cleanup(func() {
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
