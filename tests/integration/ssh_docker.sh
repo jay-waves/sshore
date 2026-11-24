@@ -31,6 +31,7 @@ docker run --rm --init --platform linux/amd64 --network none \
         cat /tmp/fixture-host.pub >> /tmp/fixture-known-hosts
         /usr/sbin/sshd -p 2222 -h /tmp/fixture-host -o ListenAddress=127.0.0.1 \
             -o AuthorizedKeysFile=authorized_keys -o PasswordAuthentication=no -o UsePAM=yes
+        ln -s /fixture/sshore /usr/local/bin/sshore
         export SSHORE_TEST_OPENSSH=/fixture/sshore TERM=xterm NO_COLOR=1
         exec /fixture/integration.test -test.run "^TestOpenSSH$" -test.v
     '

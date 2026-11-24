@@ -65,20 +65,24 @@ func newClientSignals(recovering bool) (context.Context, *clientSignals, func())
 	}
 }
 
+const terminalCloseGrace = 2 * time.Second
+
 type clientEvent struct {
-	consoleSource *commandConsole
-	console       termui.ConsoleEvent
-	inputBarrier  bool
-	inputOffset   uint64
-	keyAction     pty.KeyAction
-	inputFailure  bool
-	m             *message
-	input         []byte
-	output        []byte
-	err           error
+	consoleSource    *commandConsole
+	console          termui.ConsoleEvent
+	inputBarrier     bool
+	inputOffset      uint64
+	keyAction        pty.KeyAction
+	inputFailure     bool
+	outputIncomplete bool
+	m                *message
+	input            []byte
+	output           []byte
+	err              error
 }
 
-// Put all terminal bytes on the event queue before publishing a confirmed exit.
+// Drain the terminal tail before publishing a confirmed exit. A data-stream
+// failure can truncate the tail without invalidating the control frame.
 func readAttachmentEvents(ctx context.Context, control attachmentControl, terminal io.Reader, emit func(clientEvent), inputDrained chan<- struct{}) {
 	var outputBytes atomic.Uint64
 	outputProgress := make(chan struct{}, 1)
@@ -92,25 +96,21 @@ func readAttachmentEvents(ctx context.Context, control attachmentControl, termin
 			}
 			if m.Type == "exit" && outputBytes.Load() < m.TerminalOffset {
 				deadline := time.NewTimer(5 * time.Second)
-				defer deadline.Stop()
+			drain:
 				for outputBytes.Load() < m.TerminalOffset {
 					select {
 					case <-outputProgress:
 						deadline.Reset(5 * time.Second)
 					case <-deadline.C:
-						if outputBytes.Load() < m.TerminalOffset {
-							emit(clientEvent{err: io.ErrUnexpectedEOF})
-							return
-						}
+						break drain
 					case <-outputDone:
-						if outputBytes.Load() < m.TerminalOffset {
-							emit(clientEvent{err: io.ErrUnexpectedEOF})
-							return
-						}
+						break drain
 					case <-ctx.Done():
+						deadline.Stop()
 						return
 					}
 				}
+				deadline.Stop()
 			}
 			if m.Type == "input_drained" {
 				select {
@@ -120,7 +120,8 @@ func readAttachmentEvents(ctx context.Context, control attachmentControl, termin
 				}
 				continue
 			}
-			emit(clientEvent{m: &m})
+			outputIncomplete := m.Type == "exit" && (m.OutputIncomplete || outputBytes.Load() < m.TerminalOffset)
+			emit(clientEvent{m: &m, outputIncomplete: outputIncomplete})
 			if m.Type == "exit" || m.Type == "detached" || m.Type == "fatal" {
 				return
 			}
@@ -142,7 +143,7 @@ func readAttachmentEvents(ctx context.Context, control attachmentControl, termin
 			if e != nil {
 				// The control stream can still have a confirmed exit in
 				// flight when a relay closes the terminal connection.
-				_ = control.SetReadDeadline(time.Now().Add(2 * time.Second))
+				_ = control.SetReadDeadline(time.Now().Add(terminalCloseGrace))
 				return
 			}
 		}
@@ -161,9 +162,22 @@ func acceptSessionName(o *options, name string) error {
 	return nil
 }
 
-func runClientOnce(o options, previous string, transports clientTransports, ready func(options) string) (resultCode int, resultErr error) {
+type sessionEnd struct {
+	title, detail string
+	level         termui.Color
+	exit          bool
+	retained      []retainedShell
+}
+
+func runClientOnce(o options, transports clientTransports, end *sessionEnd, ready func(options) string) (resultCode int, resultErr error) {
 	attached := false
 	var ended func()
+	report := func(level termui.Color, title, detail string) {
+		end.level, end.title, end.detail = level, title, detail
+		if !end.exit {
+			sessionNotice(level, title, detail)
+		}
+	}
 	// Report after input shutdown and console restoration, including nested returns.
 	defer func() {
 		if ended != nil {
@@ -173,7 +187,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		_, switching := errors.AsType[*sessionSwitch](resultErr)
 		_, approving := errors.AsType[*localApproval](resultErr)
 		if attached && resultErr != nil && !switching && !approving {
-			sessionNotice(termui.Warning, fmt.Sprintf("Disconnected from %s (%s). Shell state unconfirmed.", cleanText(shellDisplayEndpoint(o)), sessionDisconnectReason(resultErr)), "")
+			report(termui.Warning, fmt.Sprintf("Disconnected from %s (%s). Shell state unconfirmed.", cleanText(shellDisplayEndpoint(o)), sessionDisconnectReason(resultErr)), "")
 		}
 	}()
 	signalCtx, interruptSignals, stopSignals := newClientSignals(o.recovering)
@@ -214,7 +228,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	pty.ResetInputModes()
 	transport, err := openClientTransportContext(ctx, &o, transports)
 	if err != nil {
-		return 1, err
+		return 1, fmt.Errorf("open shell connection: %w", err)
 	}
 	defer transport.Close()
 	control := transport
@@ -223,7 +237,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	}
 	terminal, terminalToken, err := openTerminalEndpoint(ctx, o)
 	if err != nil {
-		return 255, err
+		return 255, fmt.Errorf("open shell terminal: %w", err)
 	}
 	defer terminal.Close()
 	cols, rows, err := term.GetSize(int(os.Stdout.Fd()))
@@ -238,17 +252,17 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	if o.command == "attach" {
 		action = "existing"
 	}
-	tree := o.tree
-	if tree == nil {
-		tree = currentShellTree()
-	}
 	sourceMachine, sourceHost := localMachineIdentity()
-	if err = streamMessage(control, message{Type: "attach", Token: terminalToken, Pinned: o.command == "sh" && o.pin, SourceHost: sourceHost, SourceMachineID: sourceMachine, Tree: tree, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && o.command == "sh", NoLogin: o.noLogin && o.command == "sh"}); err != nil {
+	treeKey := o.fromTree
+	if o.hold != nil {
+		treeKey = o.hold.treeKey
+	}
+	if err = streamMessage(control, message{Type: "attach", TreeKey: treeKey, Token: terminalToken, Pinned: o.command == "sh" && o.pin, SourceHost: sourceHost, MachineID: sourceMachine, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && o.command == "sh", NoLogin: o.noLogin && o.command == "sh"}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
 	if err != nil {
-		return 255, err
+		return 255, fmt.Errorf("read shell readiness: %w", err)
 	}
 	if m.Type == "fatal" {
 		_ = streamMessage(control, message{Type: "bye"})
@@ -263,14 +277,18 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	if err := acceptSessionName(&o, m.Name); err != nil {
 		return 1, err
 	}
-	if len(m.Tree) > 0 {
-		if warn, err := observeIdentityRoute(m.Tree[len(m.Tree)-1].MachineID, o.host, o.ssh); err != nil {
-			termui.Log(os.Stderr, termui.Warning, "[sshore] Identity tracking failed: %s\n", cleanText(err.Error()))
-		} else if warn {
-			termui.Log(os.Stderr, termui.Warning, "[sshore] Same identity through a new entry point; if this is a clone, run sshore reset there.\n")
-		}
+	if o.hold != nil {
+		o.hold.close()
+		delete(transports, o.hold)
+		o.hold = nil
 	}
-	rememberShellTree(m.Tree)
+	o.fromTree = ""
+	attachmentKey := m.TreeKey
+	if warn, err := observeIdentityRoute(m.MachineID, o.host, o.ssh); err != nil {
+		termui.Log(os.Stderr, termui.Warning, "[sshore] Identity tracking failed: %s\n", cleanText(err.Error()))
+	} else if warn {
+		termui.Log(os.Stderr, termui.Warning, "[sshore] Same identity through a new entry point; if this is a clone, run sshore reset there.\n")
+	}
 	o.instance = m.Instance
 	if o.reusable != nil {
 		o.reusable.session, o.reusable.instance = o.session, o.instance
@@ -286,12 +304,8 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		}
 	}
 	if !o.local {
-		attachment := o.handoffAttachment
-		if attachment == "" {
-			attachment = newTaskUID()
-		}
-		row := participatingShell{Host: o.host, Instance: o.instance, Name: o.session, State: taskActive,
-			Pinned: m.Pinned, PinUntil: m.PinUntil, PID: m.PID, Attachment: attachment}
+		row := participatingShell{Host: o.host, Owner: m.Owner, Instance: o.instance, Name: o.session, State: taskActive,
+			Pinned: m.Pinned, PinUntil: m.PinUntil, PID: m.PID, Attachment: newTaskUID()}
 		if err := observeParticipatingShell(row); err != nil {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Could not record participating shell: %s\n", cleanText(err.Error()))
 		} else {
@@ -321,9 +335,15 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		if participation != nil {
 			participation.Pinned, participation.PinUntil = reply.Pinned, reply.PinUntil
 		}
-		updateParticipation(taskDetached)
-		if err := rememberDetachedAttachment(o); err != nil {
-			termui.Log(os.Stderr, termui.Warning, "[sshore] Detach history not saved: %s\n", cleanText(err.Error()))
+		if o.hold != nil {
+			updateParticipation(taskWaiting)
+		} else {
+			updateParticipation(taskDetached)
+		}
+		if o.hold == nil {
+			if err := rememberDetachedAttachment(o); err != nil {
+				termui.Log(os.Stderr, termui.Warning, "[sshore] Detach history not saved: %s\n", cleanText(err.Error()))
+			}
 		}
 	}
 	if o.detached {
@@ -457,7 +477,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	}
 	if o.handoffDone != nil {
 		if err := o.handoffDone(ctx, nil); err != nil {
-			return 1, err
+			return 1, fmt.Errorf("confirm shell handoff: %w", err)
 		}
 		o.handoffDone = nil
 	}
@@ -465,7 +485,6 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	interruptSignals.interactive.Store(true)
 	attached = true
 	from := ready(o)
-	o.handoffHint = nil
 
 	connected := "Connected " + cleanText(shellDisplayEndpoint(o))
 	if from != "" {
@@ -543,6 +562,13 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	var approval *approvalHandoff
 	var approvalDeadline <-chan time.Time
 	sendDetach := func(inputUnconfirmed bool) error {
+		if detachRequest.Action == "switch" && !explicitDetach && o.hold == nil {
+			hold, err := holdClientTree(o, attachmentKey, transports)
+			if err != nil {
+				return err
+			}
+			o.hold = hold
+		}
 		if err := streamMessage(control, detachRequest); err != nil {
 			return err
 		}
@@ -564,33 +590,14 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 	}
 	var pending transitionRequest
 	var consoleRequest uint64
-	var openingConsole bool
+	var openingConsole, inputClosed bool
 	var openingInput []byte
-	var handoffHint *handoffObservation
-	defer func() {
-		if handoffHint != nil {
-			handoffHint.conn.Close()
-		}
-	}()
 	clearTransition := func() { pending = transitionRequest{} }
 	awaitResponse := func(delay time.Duration) {
 		pending.deadline = time.Now().Add(delay)
 		pending.timeout = time.After(time.Until(pending.deadline))
 	}
 	transitioning := func() bool { return pending.action != "" || pending.next != nil }
-	actionForKey := func(action pty.KeyAction) string {
-		switch action {
-		case pty.KeyNew:
-			return "sh_child"
-		case pty.KeyNext:
-			return "next"
-		case pty.KeyPrevious:
-			return "previous"
-		case pty.KeyLast:
-			return "last"
-		}
-		return ""
-	}
 	queueSwitch := func(next *sessionSwitch) bool {
 		if approval != nil || !queueDetach(message{Type: "detach", Action: "switch"}) {
 			return false
@@ -602,11 +609,14 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 		target := o
 		if o.routeParent != nil {
 			target.routeTarget = true
+		} else if !o.local && o.parent != "" && o.reusable != nil {
+			parent := o
+			target.routeParent, target.routeTarget, target.sameHostRoute = &parent, true, true
 		}
 		target.command, target.session = "attach", selected.Name
 		target.instance, target.taskIdentity = selected.Instance, "task:"+selected.Instance
 		target.hosted = o.local && selected.Hosted
-		return queueSwitch(&sessionSwitch{to: target})
+		return queueSwitch(&sessionSwitch{to: target, sameDaemon: true})
 	}
 	requestTargets := func(action string) error {
 		awaitResponse(5 * time.Second)
@@ -731,10 +741,6 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 				console.attach = ""
 				console.show("Session lookup timed out.")
 			} else if pending.action == "handoff" {
-				if handoffHint != nil {
-					handoffHint.conn.Close()
-					handoffHint = nil
-				}
 				report := pending.next.to.handoffDone
 				go func() { _ = report(ctx, context.DeadlineExceeded) }()
 				notice(termui.Warning, "\r\n[sshore] Handoff timed out; staying here.\r\n")
@@ -817,7 +823,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						if err := requestConsoleTargets(); err != nil {
 							return 255, err
 						}
-					case len(args) == 1 && (args[0] == "list" || args[0] == "ps" || args[0] == "pstree"):
+					case len(args) == 1 && (args[0] == "list" || args[0] == "pstree"):
 						termui.WriteConsoleBody(terminalOutput, "Loading "+args[0]+"…")
 						if err := requestConsoleInventory(args[0]); err != nil {
 							return 255, err
@@ -838,15 +844,9 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 				var keyErr error
 				if detachPhase != awaitingDetach {
 					switch e.keyAction {
-					case pty.KeyNew, pty.KeyNext, pty.KeyPrevious, pty.KeyLast:
-						action := actionForKey(e.keyAction)
-						if detachPhase != detachIdle || approval != nil || action != pending.action {
-							break
-						}
-						if e.keyAction == pty.KeyNew {
+					case pty.KeyNew:
+						if detachPhase == detachIdle && approval == nil && pending.action == "sh_child" {
 							keyErr = startChild(false)
-						} else {
-							keyErr = requestTargets(action)
 						}
 					case pty.KeyConsole:
 						openingConsole = false
@@ -883,8 +883,12 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 				continue
 			}
 			if e.err != nil {
-				if e.inputFailure && detachPhase != detachIdle {
-					if detachPhase == drainingInput {
+				if e.inputFailure {
+					inputClosed = true
+					switch detachPhase {
+					case detachIdle:
+						_ = control.SetReadDeadline(time.Now().Add(terminalCloseGrace))
+					case drainingInput:
 						if err = sendDetach(true); err != nil {
 							return 255, err
 						}
@@ -912,7 +916,7 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 				if err = pty.SyncMouse(&outputModes); err != nil {
 					return 1, fmt.Errorf("update terminal mouse mode: %w", err)
 				}
-			} else if e.input != nil {
+			} else if e.input != nil && !inputClosed {
 				if openingConsole {
 					if len(openingInput)+len(e.input) <= 64*1024 {
 						openingInput = append(openingInput, e.input...)
@@ -973,8 +977,8 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 								openingInput = append(openingInput[:0], key.Data...)
 								break
 							}
-							if action := actionForKey(key.Action); action != "" {
-								pending.action = action
+							if key.Action == pty.KeyNew {
+								pending.action = "sh_child"
 							}
 							if key.Action == pty.KeyDetach {
 								detachRequest = message{Type: "detach"}
@@ -1053,56 +1057,35 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						}
 						continue
 					}
-					var selected sessionTarget
-					switch e.m.Action {
-					case "next", "previous":
-						selected = adjacentSessionTarget(o.session, e.m.Targets, e.m.Action == "previous")
-						if selected.Name == "" {
-							continue
-						}
-					case "last":
-						for _, target := range e.m.Targets {
-							if target.Instance == previous {
-								selected = target
-								break
-							}
-						}
-						if selected.Instance == "" {
-							notice(termui.Info, "\r\n[sshore] Previous session unavailable.\r\n")
-							continue
-						}
-					}
-					if selected.Instance == "" {
-						return 255, fmt.Errorf("missing session target")
-					}
-					if !switchTo(selected) {
-						notice(termui.Warning, "\r\n[sshore] terminal input queue is busy\r\n")
-					}
-
 				case "shell_route":
 					if pending.timeout != nil && pending.action == "sh_child" {
 						clearTransition()
 					}
-					if o.local && !o.hosted || len(e.m.Token) != 64 {
+					if o.local && !o.hosted || len(e.m.Token) != 64 || len(e.m.HandoffToken) != 64 {
 						continue
 					}
 					parent := o
-					token := e.m.Token
+					token, handoffToken := e.m.Token, e.m.HandoffToken
 					reject := func() {
 						go func() {
-							_ = confirmShellRoute(ctx, parent, token, fmt.Errorf("client is switching sessions; try again"))
+							_ = confirmShellRoute(ctx, parent, token, handoffToken, fmt.Errorf("client is switching sessions; try again"))
 						}()
 					}
 					if detachPhase != detachIdle || transitioning() || console != nil {
 						reject()
 						continue
 					}
-					target := options{pin: e.m.Pinned, noLogin: e.m.NoLogin, noProfile: e.m.NoProfile, tree: e.m.Tree, command: "sh", host: e.m.SourceHost, session: e.m.Name, routeParent: &parent, routeToken: e.m.Token, quiet: o.quiet}
-					if e.m.Action == "local" {
+					target := options{pin: e.m.Pinned, noLogin: e.m.NoLogin, noProfile: e.m.NoProfile, command: "sh", host: e.m.SourceHost, session: e.m.Name, instance: e.m.Instance, routeParent: &parent, routeToken: e.m.Token, quiet: o.quiet}
+					if e.m.Action == "attach" || e.m.Action == "remote_attach" {
+						target.command = "attach"
+					}
+					if e.m.Action == "local" || e.m.Action == "attach" {
 						target.host, target.sameHostRoute = o.host, true
 					}
-					target.handoffDone = func(ctx context.Context, result error) error { return confirmShellRoute(ctx, parent, token, result) }
-					if !queueSwitch(&sessionSwitch{to: target, returnToParent: true}) {
+					target.handoffDone = func(ctx context.Context, result error) error {
+						return confirmShellRoute(ctx, parent, token, handoffToken, result)
+					}
+					if !queueSwitch(&sessionSwitch{to: target, sameDaemon: target.sameHostRoute}) {
 						reject()
 					}
 				case "handoff":
@@ -1115,10 +1098,9 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					}
 					target, handoffErr := e.m.Handoff.options()
 					source, token := o, e.m.Token
-					if target.command == "sh" {
+					if target.command == "sh" || !target.local {
 						target.parent = canonicalTaskUID(source.taskIdentity)
 					}
-					target.handoffAttachment = handoffAttachmentID(token)
 					target.handoffDone = func(_ context.Context, result error) error {
 						request := message{Type: "handoff_confirm", Token: token}
 						if result != nil {
@@ -1136,16 +1118,13 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 					if detachPhase != detachIdle || transitioning() || console != nil {
 						handoffErr = fmt.Errorf("client is switching sessions")
 					}
-					if handoffErr == nil {
-						handoffHint, handoffErr = openHandoffHint(source.taskIdentity, token)
-					}
 					reply := message{Type: "handoff_result", Token: e.m.Token}
 					if handoffErr != nil {
 						reply.Error = handoffErr.Error()
 					} else {
 						pending = transitionRequest{
 							action: "handoff",
-							next:   &sessionSwitch{to: target, returnToParent: true},
+							next:   &sessionSwitch{to: target, sameDaemon: target.local},
 							token:  e.m.Token,
 						}
 						awaitResponse(5 * time.Second)
@@ -1169,10 +1148,6 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						handoffErr = errors.New("remote handoff failed: terminal input queue is busy")
 					}
 					if handoffErr != nil {
-						if handoffHint != nil {
-							handoffHint.conn.Close()
-							handoffHint = nil
-						}
 						go func() { _ = target.to.handoffDone(ctx, handoffErr) }()
 						notice(termui.Warning, "\r\n[sshore] %s.\r\n", handoffErr)
 					}
@@ -1232,10 +1207,17 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						return 0, &localApproval{request: approval.request, source: o}
 					}
 					if pending.action == "" && pending.next != nil {
-						pending.next.from = returnTarget{options: o, previous: previous}
-						if pending.next.returnToParent && handoffHint != nil {
-							pending.next.from.options.handoffHint = handoffHint
-							handoffHint = nil
+						pending.next.from = o
+						dest := &pending.next.to
+						if o.hold != nil {
+							switch {
+							case dest.recovering:
+								dest.hold = o.hold
+							case pending.next.sameDaemon:
+								dest.fromTree = o.hold.treeKey
+							case dest.parent != "":
+								dest.remoteParentKey = o.hold.treeKey
+							}
 						}
 						return 0, pending.next
 					}
@@ -1250,26 +1232,32 @@ func runClientOnce(o options, previous string, transports clientTransports, read
 						if retention != "" {
 							title += " (" + retention + ")"
 						}
-						sessionNotice("", title, "Reconnect: "+cleanText(reconnectCommand(o)))
+						report("", title, "Reconnect: "+cleanText(reconnectCommand(o)))
 					}
 					return 0, nil
 				case "exit":
 					terminalStateConfirmed = true
-					if exitErr := rememberShellExit(o); exitErr != nil {
-						notice(termui.Warning, "\r\n[sshore] Could not record shell exit: %s\r\n", cleanText(exitErr.Error()))
-					}
 					var level termui.Color
 					if e.m.Code != 0 {
 						level = termui.Error
 					}
 					exit := e.m
+					end.exit, end.retained = true, exit.RetainedShells
 					ended = func() {
 						reason := cleanText(exit.Reason)
 						title := fmt.Sprintf("Exited %s (code %d)", cleanText(shellDisplayEndpoint(o)), exit.Code)
-						if reason != "" && !strings.HasPrefix(reason, "shell exited (code ") {
+						if reason != "" && reason != "shell exited" && reason != fmt.Sprintf("exit status %d", exit.Code) &&
+							!strings.HasPrefix(reason, "shell exited (code ") {
 							title += ": " + reason
 						}
-						sessionNotice(level, title, "")
+						detail := ""
+						if e.outputIncomplete {
+							detail = "Final terminal output was incomplete."
+						}
+						report(level, title, detail)
+						if exitErr := rememberShellExit(o); exitErr != nil {
+							termui.Log(os.Stderr, termui.Warning, "[sshore] Could not record shell exit: %s\n", cleanText(exitErr.Error()))
+						}
 					}
 					return e.m.Code, nil
 				case "fatal":

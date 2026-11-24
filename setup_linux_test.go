@@ -70,7 +70,7 @@ func TestRemoteHelpersRequireMatchingRelease(t *testing.T) {
 				defer func() { input.Close(); output.Close(); cmd.Process.Kill(); cmd.Wait() }()
 				remoteHome, err := negotiateSetup(output, input, "fixture", false)
 				if !tc.success {
-					if err == nil || !strings.Contains(err.Error(), "sshore install") || !strings.Contains(err.Error(), version) {
+					if err == nil || !strings.Contains(err.Error(), "sshore bootstrap") || !strings.Contains(err.Error(), version) {
 						t.Fatalf("expected version and setup guidance: %v", err)
 					}
 					input.Close()
@@ -277,27 +277,66 @@ func TestRemoteShellRejectsVersionMismatch(t *testing.T) {
 			target := filepath.Join(home, "sshore")
 			writeRemoteVersionStub(t, target, "0.0.1")
 			out, err := runRemoteCommand(t, home, options{command: command, server: target})
-			if err == nil || !strings.Contains(out, "sshore install") || !strings.Contains(out, target) {
+			if err == nil || !strings.Contains(out, "sshore bootstrap") || !strings.Contains(out, target) {
 				t.Fatalf("expected setup guidance: %q %v", out, err)
 			}
 		})
 	}
 }
 
-func TestSetupAppliesPreparedRelease(t *testing.T) {
+func TestBootstrapReinstallsAndResetsSameRelease(t *testing.T) {
 	e := newEnv(t)
 	target := filepath.Join(t.TempDir(), "custom name")
-	cmd := exec.Command(e.bin, "install", "--apply", "here:"+target)
-	cmd.Env = e.env
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("setup: %v: %s", err, out)
+	state := os.Getenv("SSHORE_STATE_DIR")
+	identity := filepath.Join(state, "identity")
+	cache, err := resetCachePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	userFile := filepath.Join(state, "notes")
+	if err := os.WriteFile(userFile, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var previous os.FileInfo
+	for range 2 {
+		if err := os.WriteFile(identity, []byte("old identity"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(cache, 0700); err != nil {
+			t.Fatal(err)
+		}
+		archive := filepath.Join(cache, "old-release")
+		if err := os.WriteFile(archive, []byte("cached"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(e.bin, "bootstrap", "--apply", "here:"+target)
+		cmd.Env = e.env
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("bootstrap: %v: %s", err, out)
+		}
+		for _, path := range []string{identity, archive} {
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("reset left %s: %v", path, err)
+			}
+		}
+		current, err := os.Stat(target)
+		if err != nil || previous != nil && os.SameFile(current, previous) {
+			t.Fatalf("expected a new executable: %v", err)
+		}
+		previous = current
+	}
+	if content, err := os.ReadFile(userFile); err != nil || string(content) != "keep" {
+		t.Fatalf("unrelated custom state changed: %s %v", content, err)
 	}
 	if got, err := executableVersion(target); err != nil || got != version {
-		t.Fatalf("installation: %q %v", got, err)
+		t.Fatalf("installed release: %q %v", got, err)
 	}
 }
 
-func TestInstallWithRunningTasks(t *testing.T) {
+func TestBootstrapWithRunningTasks(t *testing.T) {
 	e := newEnv(t)
 	b, pid := e.attach("build")
 	defer b.close()
@@ -305,14 +344,14 @@ func TestInstallWithRunningTasks(t *testing.T) {
 	apply := func(target, answer string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, e.bin, "install", "--apply", "here:"+target)
+		cmd := exec.CommandContext(ctx, e.bin, "bootstrap", "--apply", "here:"+target)
 		cmd.Env = e.env
 		cmd.Stdin = strings.NewReader(answer)
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
 
-	if out, err := apply(e.bin, ""); err != nil || strings.Contains(out, "[Y/n]") {
+	if out, err := apply(e.bin, ""); err == nil || !strings.Contains(out, "build") || !strings.Contains(out, "cancelled") {
 		t.Fatalf("same release: %s %v", out, err)
 	}
 	target := filepath.Join(t.TempDir(), "sshore")

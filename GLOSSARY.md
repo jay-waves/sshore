@@ -24,9 +24,9 @@ CLI help owns command syntax; [SSHORE.md](SSHORE.md) owns implementation and
 | Client | The sshore process interacting with the user. For nested attachments, the client at the user's terminal continues to own input and shortcuts. |
 | Daemon | The unique background manager for an OS account, reached through one authenticated loopback TCP endpoint. It owns the in-memory task table, activity leases and current metadata; no daemon-crash recovery is promised. A mount isolation worker is an implementation role, not another manager. |
 | Activity lease | A daemon-owned registration retained by a live authenticated connection or an in-process owner. The shared daemon heartbeat detects lost clients. Releasing a lease ends that participation; persistent shell lifetime remains independent. |
-| Attachment | A client's live interactive connection to a shell. A shell permits one attachment at a time. Explicit detach retains the shell before releasing the attachment. Loss of the terminal connection follows the current shell scope. Mux means this detach/reattach capability. |
+| Attachment | A client's live interactive connection to a shell. Each shell tree grants its keyboard to one foreground shell. Its suspended parents are shown as `waiting`. Explicit detach retains the shell before releasing the attachment. Loss of the terminal connection follows the current shell scope. Mux means this detach/reattach capability. |
 | Transport | The connection carrying operations, usually SSH; local attachments use local control connections. The authenticated starting lease is separate from the foreground attachment. |
-| Owner | The starting client lease or registered parent shell that supplies a temporary shell's lifetime. The account daemon applies pins and cleans up ended tasks. |
+| Owner | The starting client lease or parent shell that supplies a temporary shell's lifetime. Entering an idle root from a shell on the same daemon makes that shell its parent. The account daemon applies pins and cleans up ended tasks. |
 | Attachment source | The managed shell from which the current attachment was opened. It may change on reattachment and does not control the target shell's lifetime. |
 | Peer | Another computer managing a resource. Its remotely visible peer record is advisory and read-only; it cannot control the original resource. |
 

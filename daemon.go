@@ -677,10 +677,7 @@ func runDaemonForward(config resourceConfig, enc *json.Encoder, dec *json.Decode
 	if err := validateForwardConfig(f); err != nil {
 		return err
 	}
-	record := resourceRecord{Kind: "forward", Name: f.Name, Host: f.Host, Direction: "<-"}
-	if f.Reverse {
-		record.Direction = "->"
-	}
+	record := resourceRecord{Kind: "forward", Name: f.Name, Host: f.Host, Direction: f.direction()}
 	s, err := newResourceService(config, record)
 	if err != nil {
 		return err

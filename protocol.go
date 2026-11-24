@@ -23,42 +23,51 @@ type sessionTarget struct {
 }
 
 // Control metadata uses JSON; terminal bytes remain binary.
+type retainedShell struct {
+	Host, Instance, Name string
+	PinUntil             time.Time
+}
+
 type message struct {
-	TTL             time.Duration       `json:"ttl,omitempty"`
-	PinUntil        time.Time           `json:"pin_until,omitzero"`
-	TerminalOffset  uint64              `json:"terminal_offset,omitempty"`
-	Reason          string              `json:"reason,omitempty"`
-	Handoff         *clientHandoff      `json:"handoff,omitempty"`
-	SourceHost      string              `json:"source_host,omitempty"`
-	SourceMachineID string              `json:"source_machine_id,omitempty"`
-	Tree            []shellTreeNode     `json:"shell_tree,omitempty"`
-	Pinned          bool                `json:"pinned,omitempty"`
-	LocalRequest    *localDaemonRequest `json:"local_request,omitempty"`
-	Instance        string              `json:"instance,omitempty"`
-	Token           string              `json:"token,omitempty"`
-	ApprovalID      string              `json:"approval_id,omitempty"`
-	Directory       string              `json:"directory,omitempty"`
-	HomeDirectory   string              `json:"home_directory,omitempty"`
-	AgeSeconds      *int64              `json:"age_seconds,omitempty"`
-	Targets         []sessionTarget     `json:"targets,omitempty"`
-	SoftwareVersion string              `json:"software_version,omitempty"`
-	Operations      []operation         `json:"operations,omitempty"`
-	Action          string              `json:"action,omitempty"`
-	Type            string              `json:"type"`
-	Cols            uint16              `json:"cols,omitempty"`
-	Rows            uint16              `json:"rows,omitempty"`
-	Color           bool                `json:"color,omitempty"`
-	NoProfile       bool                `json:"no_profile,omitempty"`
-	NoLogin         bool                `json:"no_login,omitempty"`
-	Term            string              `json:"term,omitempty"`
-	PID             int                 `json:"pid,omitempty"`
-	Foreground      string              `json:"foreground,omitempty"`
-	Attached        bool                `json:"attached,omitempty"`
-	Name            string              `json:"name,omitempty"`
-	Size            int64               `json:"size,omitempty"`
-	Output          string              `json:"output,omitempty"`
-	Error           string              `json:"error,omitempty"`
-	Code            int                 `json:"code,omitempty"`
+	RetainedShells   []retainedShell     `json:"retained_shells,omitempty"`
+	Owner            string              `json:"owner,omitempty"`
+	TreeKey          string              `json:"tree_key,omitempty"`
+	TTL              time.Duration       `json:"ttl,omitempty"`
+	PinUntil         time.Time           `json:"pin_until,omitzero"`
+	TerminalOffset   uint64              `json:"terminal_offset,omitempty"`
+	OutputIncomplete bool                `json:"output_incomplete,omitempty"`
+	Reason           string              `json:"reason,omitempty"`
+	Handoff          *clientHandoff      `json:"handoff,omitempty"`
+	SourceHost       string              `json:"source_host,omitempty"`
+	MachineID        string              `json:"machine_id,omitempty"`
+	Pinned           bool                `json:"pinned,omitempty"`
+	LocalRequest     *localDaemonRequest `json:"local_request,omitempty"`
+	Instance         string              `json:"instance,omitempty"`
+	Token            string              `json:"token,omitempty"`
+	HandoffToken     string              `json:"handoff_token,omitempty"`
+	ApprovalID       string              `json:"approval_id,omitempty"`
+	Directory        string              `json:"directory,omitempty"`
+	HomeDirectory    string              `json:"home_directory,omitempty"`
+	AgeSeconds       *int64              `json:"age_seconds,omitempty"`
+	Targets          []sessionTarget     `json:"targets,omitempty"`
+	SoftwareVersion  string              `json:"software_version,omitempty"`
+	Operations       []operation         `json:"operations,omitempty"`
+	Action           string              `json:"action,omitempty"`
+	Type             string              `json:"type"`
+	Cols             uint16              `json:"cols,omitempty"`
+	Rows             uint16              `json:"rows,omitempty"`
+	Color            bool                `json:"color,omitempty"`
+	NoProfile        bool                `json:"no_profile,omitempty"`
+	NoLogin          bool                `json:"no_login,omitempty"`
+	Term             string              `json:"term,omitempty"`
+	PID              int                 `json:"pid,omitempty"`
+	Foreground       string              `json:"foreground,omitempty"`
+	Attached         bool                `json:"attached,omitempty"`
+	Name             string              `json:"name,omitempty"`
+	Size             int64               `json:"size,omitempty"`
+	Output           string              `json:"output,omitempty"`
+	Error            string              `json:"error,omitempty"`
+	Code             int                 `json:"code,omitempty"`
 }
 
 func validateSessionTargets(targets []sessionTarget) error {
@@ -85,32 +94,6 @@ func sessionTargetNames(targets []sessionTarget) ([]string, error) {
 	return names, nil
 }
 
-// Find the closest name in the requested direction and wrap at the end.
-func adjacentSessionTarget(current string, targets []sessionTarget, previous bool) sessionTarget {
-	before := func(a, b string) bool {
-		if previous {
-			return a > b
-		}
-		return a < b
-	}
-	var nearest, wrap sessionTarget
-	for _, target := range targets {
-		if target.Name == current {
-			continue
-		}
-		if wrap.Name == "" || before(target.Name, wrap.Name) {
-			wrap = target
-		}
-		if before(current, target.Name) && (nearest.Name == "" || before(target.Name, nearest.Name)) {
-			nearest = target
-		}
-	}
-	if nearest.Name == "" {
-		return wrap
-	}
-	return nearest
-}
-
 const maxControlMessage = 64*1024 + 4096
 
 func writeMessage(w io.Writer, m message) error {
@@ -126,12 +109,23 @@ func writeMessage(w io.Writer, m message) error {
 
 func readMessage(r io.Reader) (message, error) {
 	var m message
+	if err := readControlJSON(r, &m); err != nil {
+		return m, err
+	}
+	switch m.Type {
+	case "", "input", "output", "chunk":
+		return m, fmt.Errorf("invalid control type")
+	}
+	return m, nil
+}
+
+func readControlJSON(r io.Reader, target any) error {
 	var body []byte
 	if lines, ok := r.(interface{ ReadSlice(byte) ([]byte, error) }); ok {
 		for {
 			part, err := lines.ReadSlice('\n')
 			if len(body)+len(part) > maxControlMessage+1 || err == bufio.ErrBufferFull && len(body)+len(part) > maxControlMessage {
-				return m, fmt.Errorf("control message exceeds %d bytes", maxControlMessage)
+				return fmt.Errorf("control message exceeds %d bytes", maxControlMessage)
 			}
 			if err == nil {
 				body = append(body, part[:len(part)-1]...)
@@ -141,7 +135,7 @@ func readMessage(r io.Reader) (message, error) {
 				if err == io.EOF && len(body)+len(part) != 0 {
 					err = io.ErrUnexpectedEOF
 				}
-				return m, err
+				return err
 			}
 			body = append(body, part...)
 		}
@@ -153,25 +147,18 @@ func readMessage(r io.Reader) (message, error) {
 				if err == io.EOF && len(body) != 0 {
 					err = io.ErrUnexpectedEOF
 				}
-				return m, err
+				return err
 			}
 			if b[0] == '\n' {
 				break
 			}
 			if len(body) == maxControlMessage {
-				return m, fmt.Errorf("control message exceeds %d bytes", maxControlMessage)
+				return fmt.Errorf("control message exceeds %d bytes", maxControlMessage)
 			}
 			body = append(body, b[0])
 		}
 	}
-	if err := json.Unmarshal(body, &m); err != nil {
-		return m, err
-	}
-	switch m.Type {
-	case "", "input", "output", "chunk":
-		return m, fmt.Errorf("invalid control type")
-	}
-	return m, nil
+	return json.Unmarshal(body, target)
 }
 
 func writeFull(w io.Writer, b []byte) error {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jay-waves/sshore/internal/pty"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
@@ -15,7 +16,8 @@ import (
 
 const rootConsoleHelp = `sh [--pin]        Open a shell on this host
 attach [ID|name]  Resume a detached shell
-ls / ps           Show tasks on this host
+pstree (ps)       Show the shell tree
+list (ls)         Show task details
 exit              Leave sshore`
 
 func rootConsoleOptions(current options, args []string) (*options, error) {
@@ -93,7 +95,43 @@ func rootConsoleInventory(ctx context.Context, current options, name string, col
 	return reply.Output
 }
 
-func runRootConsole(current options, problem string) (*options, error) {
+func formatSessionEnd(ended sessionEnd, current options) string {
+	if ended.title == "" {
+		return ""
+	}
+	var notice strings.Builder
+	notice.WriteString("[sshore] " + ended.title)
+	if ended.detail != "" {
+		notice.WriteString("\n  " + ended.detail)
+	}
+	if len(ended.retained) == 0 {
+		return notice.String()
+	}
+	notice.WriteString("\nPinned shells become independent roots:")
+	const shown = 8
+	for _, child := range ended.retained[:min(shown, len(ended.retained))] {
+		host := child.Host
+		if host == "" {
+			host = current.host
+			if current.local {
+				host = "here"
+			}
+		}
+		name := taskDisplayID(taskShortCode(identityFromUID(child.Instance)), child.Name)
+		endpoint := sshio.FormatEndpoint(host, name)
+		pin := "pinned indefinitely"
+		if !child.PinUntil.IsZero() {
+			pin = "pinned until " + child.PinUntil.Local().Format(time.DateTime)
+		}
+		fmt.Fprintf(&notice, "\n  %s · %s", cleanText(endpoint), pin)
+	}
+	if more := len(ended.retained) - shown; more > 0 {
+		fmt.Fprintf(&notice, "\n  … and %d more", more)
+	}
+	return notice.String()
+}
+
+func runRootConsole(current options, problem string, ended sessionEnd, returnTo string) (*options, error) {
 	current = directShellOptions(current)
 	ctx, _, stopSignals := newClientSignals(false)
 	defer stopSignals()
@@ -125,7 +163,12 @@ func runRootConsole(current options, problem string) (*options, error) {
 		host = "local"
 	}
 	color := termui.ColorEnabled(os.Stdout)
-	termui.WriteConsoleBody(terminalOutput, "No shell attached. Use attach or sh, or type exit to leave.")
+	hint := "No shell attached. Use attach or sh, or type exit to leave."
+	if returnTo != "" {
+		hint = "Use exit or Esc to return to " + cleanText(returnTo) + "."
+	}
+	termui.WriteConsoleBody(terminalOutput, formatSessionEnd(ended, current))
+	termui.WriteConsoleBody(terminalOutput, hint)
 	console := &commandConsole{}
 	console.start(ctx, terminalOutput, emit, host, cols, color)
 	defer console.editor.Close()
@@ -140,7 +183,10 @@ func runRootConsole(current options, problem string) (*options, error) {
 		stopSignals()
 		stopKeyboard()
 	}()
-	body := rootConsoleInventory(ctx, current, "pstree", color, cols)
+	body := ""
+	if returnTo == "" {
+		body = rootConsoleInventory(ctx, current, "pstree", color, cols)
+	}
 	if problem != "" {
 		body = cleanText(problem) + "\n\n" + body
 	}
@@ -176,11 +222,19 @@ func runRootConsole(current options, problem string) (*options, error) {
 				case "exit":
 					return nil, nil
 				case "help":
-					console.show(rootConsoleHelp)
+					if returnTo != "" {
+						console.show(hint)
+					} else {
+						console.show(rootConsoleHelp)
+					}
 				case "list", "pstree":
-					body := rootConsoleInventory(ctx, current, canonicalCommand(args[0]), color, cols)
+					body := rootConsoleInventory(ctx, current, command, color, cols)
 					console.show(consoleInventoryBody(body, rows))
 				default:
+					if returnTo != "" {
+						console.show(hint)
+						continue
+					}
 					next, err := rootConsoleOptions(current, args)
 					if err == nil {
 						return next, nil

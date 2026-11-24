@@ -20,7 +20,13 @@ type shellRoute struct {
 	open         taskEndpoint
 	drain        context.Context
 	streams      sync.WaitGroup
-	confirmation chan error // consumed once under the shell lock
+	childUID     string
+	confirmation *shellRouteConfirmation // consumed once under the shell lock
+}
+
+type shellRouteConfirmation struct {
+	token  string
+	result chan error
 }
 
 // Open an authenticated task endpoint within the scope of the parent capability.
@@ -58,7 +64,8 @@ func (s *remoteShell) connectShellRoute(c net.Conn, request message) {
 
 func (s *remoteShell) requestShellRoute(c net.Conn, request message) {
 	req := request.LocalRequest
-	if checkPeerVersion(request.SoftwareVersion, "launcher") != nil || req == nil || req.Shell == nil || !filepath.IsAbs(req.Record.Directory) {
+	if checkPeerVersion(request.SoftwareVersion, "launcher") != nil || req == nil || req.Shell == nil || !filepath.IsAbs(req.Record.Directory) ||
+		req.Shell.Command != "sh" && req.Shell.Command != "attach" {
 		return
 	}
 	s.mu.Lock()
@@ -90,48 +97,82 @@ func (s *remoteShell) requestShellRoute(c net.Conn, request message) {
 		case <-ctx.Done():
 		}
 	}()
-	_ = withRemoteShell(ctx, c, *req, "sh", func(open taskEndpoint, ready message, done <-chan struct{}) error {
+	_ = withRemoteShell(ctx, c, *req, &s.shellTask, func(open taskEndpoint, ready message, done <-chan struct{}) error {
 		return s.serveShellRoute(c, parent, req.Shell, open, ready, done)
 	})
 }
 
 func (s *remoteShell) serveShellRoute(c net.Conn, parent *attachment, config *shellConfig, open taskEndpoint, ready message, targetDone <-chan struct{}) error {
-	drain, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	token := resourceToken()
-	confirmed := make(chan error, 1)
-	route := &shellRoute{open: open, drain: drain, confirmation: confirmed}
+	confirmed := &shellRouteConfirmation{token: resourceToken(), result: make(chan error, 1)}
+	var token string
+	var route *shellRoute
 	s.mu.Lock()
 	if s.active != parent {
 		s.mu.Unlock()
 		return fmt.Errorf("parent attachment changed")
 	}
-	if s.shellRoutes == nil {
-		s.shellRoutes = make(map[string]*shellRoute)
+	if !config.Local {
+		for key, candidate := range s.shellRoutes {
+			if candidate.childUID == ready.Instance {
+				token, route = key, candidate
+				break
+			}
+		}
 	}
-	s.shellRoutes[token] = route
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		delete(s.shellRoutes, token)
+	newRoute := route == nil
+	if newRoute {
+		drain, cancel := context.WithCancel(context.Background())
+		token = resourceToken()
+		route = &shellRoute{open: open, drain: drain}
+		if !config.Local {
+			route.childUID = ready.Instance
+		}
+		if s.shellRoutes == nil {
+			s.shellRoutes = make(map[string]*shellRoute)
+		}
+		s.shellRoutes[token] = route
+		defer func() {
+			s.mu.Lock()
+			delete(s.shellRoutes, token)
+			s.mu.Unlock()
+			cancel()
+			route.streams.Wait()
+		}()
+	} else if route.confirmation != nil {
 		s.mu.Unlock()
-		cancel()
-		route.streams.Wait()
-	}()
+		return fmt.Errorf("child shell handoff already in progress")
+	} else {
+		// Keep the established route and its streams while renewing this
+		// handoff's confirmation.
+		defer func() {
+			s.mu.Lock()
+			if route.confirmation == confirmed {
+				route.confirmation = nil
+			}
+			s.mu.Unlock()
+		}()
+	}
+	route.confirmation = confirmed
+	s.mu.Unlock()
 	if err := writeMessage(c, ready); err != nil {
 		return err
 	}
 	action := "remote"
 	if config.Local {
 		action = "local"
+		if config.Command == "attach" {
+			action = "attach"
+		}
+	} else if config.Command == "attach" {
+		action = "remote_attach"
 	}
-	if err := parent.controlMessage(message{Type: "shell_route", Action: action, Token: token, Name: config.Name, SourceHost: config.Host, NoLogin: config.NoLogin, NoProfile: config.NoProfile, Pinned: config.Pin, Tree: config.Tree}); err != nil {
+	if err := parent.controlMessage(message{Type: "shell_route", Action: action, Token: token, HandoffToken: confirmed.token, Instance: ready.Instance, Name: config.Name, SourceHost: config.Host, NoLogin: config.NoLogin, NoProfile: config.NoProfile, Pinned: config.Pin}); err != nil {
 		return err
 	}
 	timer := time.NewTimer(15 * time.Second)
 	defer timer.Stop()
 	select {
-	case err := <-confirmed:
+	case err := <-confirmed.result:
 		if err != nil {
 			return err
 		}
@@ -146,6 +187,9 @@ func (s *remoteShell) serveShellRoute(c net.Conn, parent *attachment, config *sh
 		return err
 	}
 	_ = c.Close()
+	if !newRoute {
+		return nil
+	}
 	select {
 	case <-targetDone:
 	case <-s.done:
@@ -155,16 +199,21 @@ func (s *remoteShell) serveShellRoute(c net.Conn, parent *attachment, config *sh
 
 func handoffRemoteShell(o options) (bool, error) {
 	socket := os.Getenv("SSHORE_SOCKET")
-	if socket == "" || o.command != "sh" || o.detached || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+	if socket == "" || (o.command != "sh" && o.command != "attach") || o.detached || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return false, nil
+	}
+	if o.local && o.command == "attach" && o.instance == "" {
+		if err := resolveDetachedAttach(&o); err != nil {
+			return true, err
+		}
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return true, err
 	}
 	env := os.Environ()
-	req := &localDaemonRequest{Record: localShellRecord{Directory: cwd}, Env: env, Shell: &shellConfig{NoLogin: o.noLogin, NoProfile: o.noProfile, Pin: o.pin, Tree: currentShellTree(), Local: o.local, Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh}}
-	if !o.local {
+	req := &localDaemonRequest{Record: localShellRecord{Directory: cwd}, Env: env, Shell: &shellConfig{Command: o.command, Instance: o.instance, NoLogin: o.noLogin, NoProfile: o.noProfile, Pin: o.pin, Local: o.local, Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh}}
+	if !o.local && o.command == "sh" {
 		auth, stop, err := startSSHAuthBroker()
 		if err != nil {
 			return true, err
@@ -205,22 +254,29 @@ func (s *remoteShell) confirmShellRoute(c net.Conn, request message) {
 		_ = writeMessage(c, message{Type: "error", Error: "shell route expired"})
 		return
 	}
-	if route.confirmation == nil {
+	if route.confirmation == nil || route.confirmation.token != request.HandoffToken {
 		s.mu.Unlock()
-		_ = writeMessage(c, message{Type: "error", Error: "shell route confirmation already received"})
+		_ = writeMessage(c, message{Type: "error", Error: "shell route confirmation expired"})
 		return
 	}
 	var err error
 	if request.Error != "" {
 		err = errors.New(request.Error)
 	}
-	route.confirmation <- err
+	route.confirmation.result <- err
 	route.confirmation = nil
 	s.mu.Unlock()
 	_ = writeMessage(c, message{Type: "route_confirmed"})
 }
 
 func (s *remoteShell) createRouteShell(req localDaemonRequest) (*remoteShell, error) {
+	if req.Shell.Command == "attach" {
+		target, ok := s.tasks.lookup(req.Shell.Instance).(*remoteShell)
+		if !ok {
+			return nil, fmt.Errorf("choose a registered shell on this host with sshore attach :ID")
+		}
+		return target, nil
+	}
 	selected, err := selectHostedShell(req.Shell.Name, "new")
 	if err != nil {
 		return nil, err

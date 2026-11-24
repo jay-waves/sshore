@@ -6,7 +6,7 @@ import (
 )
 
 // A confirmed detach promotes one stable shell identity across all scopes.
-// Connection history remains responsible only for SSH defaults and old clients.
+// Connection history supplies direct SSH defaults.
 type recentAttachment struct {
 	Identity   string
 	Local      bool
@@ -42,7 +42,7 @@ func validateRecentAttachment(row recentAttachment) error {
 		if row.Identity != identityFromUID(row.Connection.Instance) {
 			return fmt.Errorf("detached attachment identity does not match route")
 		}
-		return validateRecentConnection(*row.Connection)
+		return validateShellHistoryConnection(*row.Connection)
 	}
 	if row.Connection != nil {
 		return fmt.Errorf("local detached attachment has remote route")
@@ -51,12 +51,16 @@ func validateRecentAttachment(row recentAttachment) error {
 }
 
 func rememberDetachedAttachment(o options) error {
+	if ownedRemoteRoute(o) {
+		return nil
+	}
+	o = directShellOptions(o)
 	row := recentAttachment{Identity: o.taskIdentity, Local: o.local, Name: o.session}
 	if row.Identity == "" {
 		row.Identity = identityFromUID(o.instance)
 	}
 	if !o.local {
-		connection, err := connectionFromOptions(directShellOptions(o))
+		connection, err := connectionFromOptions(o)
 		if err != nil {
 			return err
 		}
@@ -92,7 +96,7 @@ func (m *daemonMetadata) removeRecentDetachLocal(id string) error {
 }
 
 func resolveDetachedAttach(o *options) error {
-	reply, err := metadataRPC(metadataRequest{Action: "attach_recent", Local: o.local, Host: o.host})
+	reply, err := metadataRPC(metadataRequest{Action: "attach_recent", Key: shellIdentityFromEnvironment(), Local: o.local, Host: o.host})
 	if err != nil || reply.Target == nil {
 		return err
 	}
@@ -105,7 +109,7 @@ func resolveDetachedAttach(o *options) error {
 	return nil
 }
 
-func (a *daemonActivity) selectDetachedAttach(local bool, host string) (*selectedTask, error) {
+func (a *daemonActivity) selectDetachedAttach(local bool, host, parent string) (*selectedTask, error) {
 	if err := a.metadata.loadDetachedAttachments(); err != nil {
 		return nil, err
 	}
@@ -122,7 +126,7 @@ func (a *daemonActivity) selectDetachedAttach(local bool, host string) (*selecte
 	snapshot, _ := a.tasks.taskInventory(taskInventoryRequest{Native: true, Hosted: true, Detail: "health"})
 	detached := make(map[string]*selectedTask)
 	for _, row := range snapshot.localShells() {
-		if row.State == taskDetached {
+		if row.State == taskDetached && (row.Owner == "" || row.Owner == parent) {
 			target := &selectedTask{Name: row.Name, Identity: row.identity, Hosted: row.hosted}
 			if row.hosted {
 				target.Instance = canonicalTaskUID(row.identity)

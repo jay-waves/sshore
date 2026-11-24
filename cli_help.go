@@ -25,15 +25,15 @@ Files and ports
 
 Tasks and installation
   copy-id     Install an SSH public key on a host
-  list        Show local tasks and known remote shells
-  pstree      Show shell ownership and attachments
+  pstree      Show the shell tree (ps)
+  list        Show task details (ls)
   kill        Kill shells or stop other tasks
-  install     Install or update sshore
+  bootstrap   Reset the target account and reinstall sshore
   reset       End local tasks and clear application state
   daemon      Run the account task manager
 
 Start: sshore sh work:     Resume: sshore attach work:7afe22
-In a session: Ctrl+B c opens a nested shell; d pins and detaches; n/p switches; l returns; r redraws; s or : opens commands.
+In a session: Ctrl+B c opens a nested shell; d pins and detaches; r redraws; s or : opens commands.
 Examples: sshore --tldr             Details: sshore COMMAND --help
 Version: sshore --version
 `
@@ -56,7 +56,7 @@ const connectionOptions = `  --server PATH         Remote executable (default: P
 `
 
 const shellStartupOptions = `  --pin                 Keep the shell until it exits
-  --detach              Pin and detach immediately
+  --detach              Start a pinned background root
   --no-login            Use non-login startup (Linux and macOS)
   --no-profile          Skip optional shell startup files; implies --no-login on Linux and macOS
 `
@@ -93,17 +93,19 @@ choose one in the terminal with Tab completion.
 ` + sshOptions,
 		examples: "Install the configured public key\n  sshore copy-id work\n",
 	},
-	"install": {
+	"bootstrap": {
 		ssh: true, max: 1, flags: []string{"--apply"},
-		help: `Usage: sshore install [HOST[:PATH]] [-- SSH_OPTIONS]
+		help: `Usage: sshore bootstrap [HOST[:PATH]] [-- SSH_OPTIONS]
 
-Update this computer to the latest published release, or update HOST to the
-exact local version over SSH. Before replacement, install stops the target daemon.
-If it owns tasks, review the list and follow the confirmation prompt.
+Reset this account and reinstall the latest release, or reset HOST's account and
+install the exact local version over SSH. Every run ends the target's sshore
+tasks (including pinned shells) and clears its identity, history and caches.
+This also applies when the version already matches. If tasks are running,
+review the list and confirm before continuing. Run outside the target's managed shells.
 Omit the target or use here: to install locally. Use HOST or HOST: to select a remote
 default path, or append an absolute path to either endpoint.
 ` + sshOptions,
-		examples: "Update this computer\n  sshore install\nUpdate a remote host to match this computer\n  sshore install work\n",
+		examples: "Reset and reinstall this account\n  sshore bootstrap\nReset and reinstall the account on work\n  sshore bootstrap work\n",
 	},
 	"exec": {
 		ssh: true, min: 2, max: 2,
@@ -136,6 +138,7 @@ the intervals.
 
 Start a shell on this machine or an SSH host. A shell ends with its starting
 connection or parent shell unless started with --pin or explicitly detached.
+An interactive nested sh creates a child. Its parent waits for it to return.
 ` + shellStartupOptions + connectionOptions + shellConnectionHelp,
 		examples: "Open a remote shell\n  sshore sh work:build\nOpen a local shell\n  sshore sh :build\n",
 	},
@@ -143,7 +146,9 @@ connection or parent shell unless started with --pin or explicitly detached.
 		ssh: true, max: 1, flags: strings.Fields(connectionFlags),
 		help: `Usage: sshore attach [ID|HOST|HOST:ID|:ID] [options] [-- SSH_OPTIONS]
 
-With no target, resume the most recently detached local shell.
+From a terminal, enter an idle root. Inside a shell, enter a detached child
+or adopt an idle root on this daemon. Use HOST:ID for a child opened over SSH.
+With no target, resume the most recently detached eligible local shell.
 A bare hexadecimal ID or unique prefix selects a local shell or one with a
 saved direct SSH connection. Use HOST:ID to specify the
 remote host, or HOST: to resume there (including hexadecimal hosts such as db:).
@@ -157,7 +162,8 @@ Options:
 		max: 1,
 		help: `Usage: sshore detach [DURATION]
 
-Pin the current shell and leave. Omit DURATION to keep it until it exits.
+Pin the current shell and return to its parent or the root prompt.
+Detach keeps its parent edge. Omit DURATION to keep the shell until it exits.
 Use attach to resume it. Ctrl+B d also pins and detaches.
 `,
 	},
@@ -173,39 +179,21 @@ A short ID from list may replace OLD; the task ID stays unchanged.
 Remote rename requires matching releases and never installs software.
 ` + sshOptions,
 	},
-	"list": {
-		flags: []string{"--json"},
-		help: `Usage: sshore list [--json]
+	"pstree": {
+		help: `Usage: sshore pstree  (alias: ps)
 
-Show this machine's tasks and incoming resources, along with remote shells
-recorded by the local daemon. Remote shell states are the last locally observed
-states and are available offline.
-DETAIL shows observation times, directories, mappings, errors and read-only access.
-Terminal output is shortened to fit the width. Redirected output keeps full details.
-The current shell is highlighted and marked with *.
-ID shows the first six UID characters followed by an optional (alias).
-Use a longer prefix or full UID when a reference is ambiguous.
-TYPE uses sh, mount or forward.
-Use aliases or short IDs for attach, rename and kill.
-A matching short ID takes precedence over a name.
-
-Options:
-  --json           Emit the daemon's inventory JSON, including seen_at for recorded shells.
+Show shell names, short IDs and states in their parent-child tree.
+A leading * marks the current shell. Use list for details.
 `,
 	},
-	"pstree": {
-		help: `Usage: sshore pstree
+	"list": {
+		flags: []string{"--json"},
+		help: `Usage: sshore list [--json]  (alias: ls)
 
-Show local managed tasks, live resource transports and recorded remote detaches.
-The current shell is highlighted and marked with *.
-Branches show shell ownership.
-Shell lines show their remote attachment source or destination.
-Recorded remote detaches appear at the end with their last observation age.
-Resource arrows run from provider to consumer. Importing a mount or remote
-service shows <- HOST. Exporting a mount or local service shows -> HOST.
-? marks an unconfirmed local entry.
-Incoming resources are read-only here. Use list for current task states.
-No SSH is started by this command.
+List shell, mount and forward details, including incoming resources. PARENT
+shows the parent shell's short ID. DETAIL includes connection hosts and
+port mappings. A forward's arrow points toward the target service.
+Use --json for machine-readable task details and exact timestamps.
 `,
 	},
 	"kill": {

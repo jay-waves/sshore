@@ -71,14 +71,14 @@ func prepareHostedShell(name, mode, instance, executable string, gate *os.File) 
 }
 
 // Keep each label with the instance it represents until selection is complete.
-func detachedHostedShells() ([]sessionTarget, error) {
+func detachedHostedShells(parent string) ([]sessionTarget, error) {
 	rows, err := hostedShells("health")
 	if err != nil {
 		return nil, err
 	}
 	var targets []sessionTarget
 	for _, shell := range rows {
-		if shell.State == taskDetached {
+		if shell.State == taskDetached && (shell.Owner == "" || shell.Owner == parent) {
 			targets = append(targets, sessionTarget{Name: shell.Name, Instance: shell.Instance})
 		}
 	}
@@ -108,7 +108,7 @@ func (s *remoteShell) sessionTargets(request message) message {
 	current := s.record.Name
 	s.mu.Unlock()
 	reply := message{Type: "session_targets", Action: request.Action, Name: current}
-	rows, err := detachedHostedShells()
+	rows, err := detachedHostedShells(s.treeIdentity())
 	if err != nil {
 		reply.Error = err.Error()
 		return reply

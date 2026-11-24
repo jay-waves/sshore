@@ -61,13 +61,12 @@ func (s *remoteShell) serveControl(c net.Conn) error {
 			s.finishLocked()
 			return "", nil
 		}
-		saveShellTree(identityFromUID(s.record.UID), s.record.Name, nil, taskDetached)
 		return s.record.Name, nil
 	}, func(m message) error {
 		switch m.Type {
 		case "sh_child":
 			s.mu.Lock()
-			req := &localDaemonRequest{Record: localShellRecord{Directory: s.record.Directory}, Env: append([]string(nil), s.environment...), Shell: &shellConfig{Local: true, Pin: m.Pinned, Tree: shellTreeFor(s.treeIdentity())}}
+			req := &localDaemonRequest{Record: localShellRecord{Directory: s.record.Directory}, Env: append([]string(nil), s.environment...), Shell: &shellConfig{Command: "sh", Local: true, Pin: m.Pinned}}
 			s.mu.Unlock()
 			go serveChildShortcut(p, s.done, func(c net.Conn) {
 				s.requestShellRoute(c, message{SoftwareVersion: version, LocalRequest: req})
@@ -98,6 +97,25 @@ func (s *remoteShell) handle(c net.Conn) {
 }
 
 func (s *remoteShell) handleTask(c net.Conn, first message) {
+	if first.Type == "shell_owner_access" {
+		owned := &ownedShellConnection{Conn: c, token: first.Token}
+		s.mu.Lock()
+		allowed := s.remoteOwner != "" && s.checkRemoteOwnerLocked(owned) == nil
+		s.mu.Unlock()
+		if !allowed || first.SoftwareVersion != version || first.Instance != s.record.UID {
+			_ = writeMessage(c, message{Type: "error", Error: "shell owner route unavailable"})
+			return
+		}
+		if err := writeMessage(c, message{Type: "shell_owner_access_ready", SoftwareVersion: version}); err != nil {
+			return
+		}
+		var err error
+		first, err = readMessage(c)
+		if err != nil {
+			return
+		}
+		c = owned
+	}
 	if handled, _ := s.serveCommand(c, first, s.serveControl, s.status); handled {
 		return
 	}
@@ -138,7 +156,7 @@ func (s *remoteShell) status(detail string) message {
 			view.Foreground = newProcessSnapshot(proc.ReadProcesses()).foregroundPrograms(group)
 		}
 	}
-	return message{Type: "session", Pinned: view.Pinned, PinUntil: view.PinUntil, Instance: view.Instance, Name: view.Name, SoftwareVersion: version,
+	return message{Type: "session", Owner: view.Owner, Action: view.State, Pinned: view.Pinned, PinUntil: view.PinUntil, Instance: view.Instance, Name: view.Name, SoftwareVersion: version,
 		Attached: view.State == taskActive, PID: view.PID, AgeSeconds: view.Age, Foreground: view.Foreground, Directory: view.Directory}
 }
 func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) error {
@@ -149,7 +167,7 @@ func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) error {
 	if err := tasks.register(req.UID, s); err != nil {
 		return err
 	}
-	s.watchParent()
+	s.watchParent(req.parent)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	go func() {
 		defer stop()
@@ -204,6 +222,9 @@ func (s *remoteShell) hostedView(detail string) (shellView, int) {
 		ID: "sh/" + s.record.Name, Name: s.record.Name, PID: s.process.PID,
 	}
 	view.State = s.state()
+	if s.active != nil {
+		view.SourceHost = s.active.sourceHost
+	}
 	if view.PID != 0 {
 		age := int64(time.Since(s.started) / time.Second)
 		view.Age = &age

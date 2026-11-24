@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -19,30 +20,35 @@ import (
 // A daemon-owned shell with one terminal and at most one attachment. Entry
 // points supply owner supervision and their additional commands.
 type shellTask struct {
-	endpoints       terminalEndpoints
-	mu              sync.Mutex // Protect shell state and attachment ownership.
-	terminalMu      sync.Mutex // Serialize replay and redraw with live output. Acquire before mu.
-	renameMu        sync.Mutex // Keep each shell's history renames in live update order.
-	terminal        *pty.Terminal
-	process         processIdentity
-	modes           pty.InputState
-	active          *attachment
-	exited          bool
-	tasks           *daemonTasks
-	record          localShellRecord
-	environment     []string
-	done            chan struct{}
-	once            sync.Once
-	hosted, killing bool
-	started         time.Time
-	exitReason      string
-	parent          *shellTask
-	ownerClaimed    bool
-	scopeLost       bool
-	pinned          bool
-	pinUntil        time.Time
-	pinTimer        *time.Timer
+	endpoints                     terminalEndpoints
+	mu                            sync.Mutex // Protect shell state and attachment ownership.
+	terminalMu                    sync.Mutex // Serialize replay and redraw with live output. Acquire before mu.
+	renameMu                      sync.Mutex // Keep each shell's history renames in live update order.
+	terminal                      *pty.Terminal
+	process                       processIdentity
+	modes                         pty.InputState
+	active                        *attachment
+	exited                        bool
+	tasks                         *daemonTasks
+	record                        localShellRecord
+	environment                   []string
+	done                          chan struct{}
+	once                          sync.Once
+	hosted, killing               bool
+	started                       time.Time
+	exitReason                    string
+	parent                        *shellTask
+	treeEnded                     atomic.Bool // Published by the registry's forest lock.
+	ownerClaimed                  bool
+	remoteOwner, remoteOwnerToken string
+	remoteChildren                map[string]*remoteShellChild
+	scopeLost                     bool
+	pinned                        bool
+	pinUntil                      time.Time
+	pinTimer                      *time.Timer
 }
+
+func (s *shellTask) managedShell() *shellTask { return s }
 
 func (s *shellTask) taskName() string {
 	s.mu.Lock()
@@ -79,7 +85,9 @@ func (s *shellTask) finishLocked() {
 		if s.pinTimer != nil {
 			s.pinTimer.Stop()
 		}
-		saveShellTree(s.treeIdentity(), s.record.Name, nil, taskExited)
+		if s.tasks != nil {
+			s.tasks.forest.end(s)
+		}
 		close(s.done)
 	})
 }
@@ -91,7 +99,6 @@ func (s *shellTask) close() {
 			s.pinTimer.Stop()
 		}
 		terminal, attachment := s.terminal, s.endTerminal()
-		identity, name := s.treeIdentity(), s.record.Name
 		s.mu.Unlock()
 		if attachment != nil {
 			attachment.Close()
@@ -99,7 +106,6 @@ func (s *shellTask) close() {
 		if terminal != nil {
 			_ = terminal.Close()
 		}
-		saveShellTree(identity, name, nil, taskExited)
 		close(s.done)
 	})
 }
@@ -153,17 +159,19 @@ func (s *shellTask) stopTerminal() error {
 		s.mu.Unlock()
 		return err
 	}
-	if !s.hosted {
+	if terminal == nil {
 		s.close()
 		return nil
 	}
-	s.mu.Lock()
-	if terminal == nil {
-		s.endTerminal()
+	// The PTY pump reports the exit before closing the task and SSH lease.
+	timer := time.NewTimer(requestTimeout)
+	defer timer.Stop()
+	select {
+	case <-s.done:
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("shell process ended, but terminal cleanup timed out")
 	}
-	s.finishLocked()
-	s.mu.Unlock()
-	return nil
 }
 
 func (s *shellTask) startManagedShell(path string, env []string, m message) error {
@@ -187,7 +195,7 @@ func (s *shellTask) startManagedShell(path string, env []string, m message) erro
 		}
 		s.mu.Unlock()
 		if p != nil {
-			p.FinishExit(code, reason)
+			p.finishExit(message{Type: "exit", Code: code, Reason: reason, RetainedShells: s.retainedChildren()})
 		}
 		if !s.hosted {
 			s.close()
@@ -212,6 +220,8 @@ func (s *shellTask) state() string {
 		return taskActive
 	case s.process.PID == 0:
 		return taskStarting
+	case s.tasks != nil && s.tasks.forest.waiting(s):
+		return taskWaiting
 	default:
 		return taskDetached
 	}
@@ -233,7 +243,6 @@ func (s *shellTask) rename(old, name, instance string) error {
 	s.mu.Lock()
 	changed := s.exited || s.killing || (s.hosted || old != "") && s.record.Name != old || instance != "" && instance != s.record.UID
 	updated := !changed && s.record.Name != name
-	identity := s.treeIdentity()
 	if updated {
 		s.record.Name = name
 	}
@@ -242,15 +251,14 @@ func (s *shellTask) rename(old, name, instance string) error {
 	if changed {
 		return fmt.Errorf("shell changed or is exiting; refresh with sshore list")
 	}
-	if updated {
-		renameShellTree(identity, name)
-	}
 	return nil
 }
 
 func (s *shellTask) serveCommand(c net.Conn, m message, attach func(net.Conn) error, status func(string) message) (bool, error) {
 	var reply message
 	switch m.Type {
+	case "tree_hold":
+		return true, s.holdTree(c, m)
 	case "terminal_open":
 		return true, s.endpoints.serve(c, m)
 	case "attach_control":
@@ -316,14 +324,26 @@ func (s *shellTask) attachManaged(p *attachment, m message, start func(message) 
 	}
 	s.terminalMu.Lock()
 	s.mu.Lock()
-	s.reapUnretainedLocked()
+	if err := s.checkRemoteOwnerLocked(p.control); err != nil {
+		s.mu.Unlock()
+		s.terminalMu.Unlock()
+		return err
+	}
 	initial := s.terminal == nil
 	if s.killing || s.hosted && (m.Instance != "" && m.Instance != s.record.UID || initial && m.Action == "existing") {
 		s.mu.Unlock()
 		s.terminalMu.Unlock()
 		return fmt.Errorf("shell changed or is unavailable; refresh with sshore list")
 	}
-	err := s.attachTerminal(p, m, start, func() error {
+	oldParent := s.parent
+	claim, graft, err := s.tasks.forest.enter(s, m.TreeKey)
+	if err != nil {
+		s.mu.Unlock()
+		s.terminalMu.Unlock()
+		return err
+	}
+	p.claim = claim
+	err = s.attachTerminal(p, m, start, func() error {
 		if initial && m.Pinned {
 			if err := s.pinLocked(0); err != nil {
 				return err
@@ -333,10 +353,20 @@ func (s *shellTask) attachManaged(p *attachment, m message, start func(message) 
 		if !s.hosted {
 			instance = ""
 		}
-		tree := s.treeIdentity()
-		saveShellTree(tree, s.record.Name, m.Tree, taskActive, m.SourceHost, m.SourceMachineID)
-		return p.controlMessage(message{Type: "ready", Tree: shellTreeFor(tree), Pinned: s.pinned, PinUntil: s.pinUntil, Instance: instance, PID: s.process.PID, Name: s.record.Name})
+		machine, _ := localMachineIdentity()
+		if validMachineID(m.MachineID) && machine != m.MachineID && len(m.SourceHost) <= 256 {
+			p.sourceHost = cleanText(m.SourceHost)
+		}
+		return p.controlMessage(message{Type: "ready", Owner: s.parentIdentityLocked(), TreeKey: claim.key, MachineID: machine, Pinned: s.pinned, PinUntil: s.pinUntil, Instance: instance, PID: s.process.PID, Name: s.record.Name})
 	})
+	if err != nil {
+		s.tasks.forest.abort(claim, graft, oldParent)
+	} else if graft != nil {
+		s.scopeLost = false
+		s.watchParent(graft)
+	} else if m.TreeKey != "" {
+		s.tasks.forest.resume(s, m.TreeKey)
+	}
 	failedInitial := err != nil && initial && !errors.Is(err, errShellAttached) && !errors.Is(err, errShellExited)
 	if failedInitial && s.hosted && s.terminal != nil {
 		s.endTerminal()
@@ -364,6 +394,9 @@ var (
 func (s *shellTask) endTerminal() *attachment {
 	p := s.active
 	s.active, s.exited = nil, true
+	if s.tasks != nil {
+		s.tasks.forest.end(s)
+	}
 	return p
 }
 
@@ -425,8 +458,8 @@ func (s *shellTask) pumpTerminal(t *pty.Terminal, exited func(error, int)) {
 			s.mu.Lock()
 			p := s.active
 			s.mu.Unlock()
-			if p != nil && p.Output(buf[:n]) != nil {
-				p.Close()
+			if p != nil {
+				_ = p.Output(buf[:n])
 			}
 			s.terminalMu.Unlock()
 		}
@@ -514,6 +547,7 @@ func (s *shellTask) serveAttachment(p *attachment, control io.Reader, resizeAck 
 	release := func() (string, error) {
 		s.mu.Lock()
 		detached, err := s.detachTerminal(p)
+		s.tasks.forest.releaseInput(p.claim)
 		var name string
 		var cleanup func()
 		if detached || err != nil {

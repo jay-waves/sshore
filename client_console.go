@@ -21,9 +21,9 @@ type commandConsole struct {
 	targetWarning string
 }
 
-const consoleHelp = `list (ls)         Show task inventory on this host
-ps (pstree)       Show the task tree on this host
-attach (a) <ID|name>  Switch session (Tab completes)
+const consoleHelp = `pstree (ps)       Show the shell tree
+list (ls)         Show task details
+attach (a) <ID|name>  Enter a detached child or idle root (Tab completes)
 sh [--pin]        Open a nested shell (alias: shell)
 detach [DURATION] Pin and detach the current shell
 exit              Return to the current shell`
@@ -88,7 +88,7 @@ func resolveConsoleTarget(targets []sessionTarget, selector string) (sessionTarg
 		selected = t
 	}
 	if selected.Instance == "" {
-		return selected, "Session unavailable."
+		return selected, fmt.Sprintf("No detached child or idle root matches %q on this host.", cleanText(selector))
 	}
 	return selected, ""
 }
@@ -99,20 +99,12 @@ func consoleInventory(request message, current string) message {
 	reply := message{Type: "console_inventory", Action: request.Action}
 	var body bytes.Buffer
 	var err error
-	switch request.Name {
-	case "list":
+	command := canonicalCommand(request.Name)
+	switch command {
+	case "list", "pstree":
 		var inv inventory
-		inv, err = daemonListTasks(taskListRequest{Native: true})
-		if err == nil {
-			err = inv.incompleteError()
-			writeTaskInventoryWidth(&body, inv, current, request.Color, int(request.Cols))
-		}
-	case "ps", "pstree":
-		var rows []taskTreeRow
-		rows, err = readTaskTree()
-		if err == nil || len(rows) > 0 {
-			writeShellTree(&body, rows, current, request.Color)
-		}
+		inv, err = collectInventory(command == "pstree")
+		writeInventory(&body, command, inv, current, request.Color, int(request.Cols))
 	default:
 		reply.Output = "Unknown inventory command."
 		return reply

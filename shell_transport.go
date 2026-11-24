@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,10 +20,10 @@ import (
 type shellConfig struct {
 	NoLogin, NoProfile bool
 	Pin                bool
-	Tree               []shellTreeNode
 	Local              bool
 	Host, Name, Server string
 	Command, Instance  string
+	ParentKey          string `json:",omitempty"`
 	SSH                []string
 }
 
@@ -38,16 +39,20 @@ func openRemoteShellTransport(ctx context.Context, o *options, transports client
 	if err != nil {
 		return nil, err
 	}
-	auth, stopAuth, err := startSSHAuthBroker()
-	if err != nil {
-		return nil, err
+	var auth *sshAuthEndpoint
+	if o.parent == "" || o.command == "sh" {
+		var stopAuth func()
+		auth, stopAuth, err = startSSHAuthBroker()
+		if err != nil {
+			return nil, err
+		}
+		defer stopAuth()
 	}
-	defer stopAuth()
 	env := o.environment
 	if env == nil {
 		env = os.Environ()
 	}
-	request := localDaemonRequest{Kind: "remote-shell", Record: localShellRecord{Name: "remote-shell", Directory: cwd}, Env: env, Auth: auth, Parent: o.parent, Shell: &shellConfig{Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh, Command: o.command, Instance: o.instance}}
+	request := localDaemonRequest{Kind: "remote-shell", Record: localShellRecord{Name: "remote-shell", Directory: cwd}, Env: env, Auth: auth, Parent: o.parent, Shell: &shellConfig{Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh, Command: o.command, Instance: o.instance, ParentKey: o.remoteParentKey}}
 	c, err := openLocalDaemonContext(ctx, request)
 	if err != nil {
 		return nil, err
@@ -123,20 +128,14 @@ func runRemoteShell(c net.Conn, req localDaemonRequest, tasks *daemonTasks) erro
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	conn := c
+	var owner *shellTask
 	if req.Parent == "" {
 		conn = setupConnection{c, cancel}
 	} else {
 		parent, ok := tasks.lookup(req.Parent).(*nativeShellTask)
-		if !ok || f.Command != "sh" {
-			return fmt.Errorf("parent shell is unavailable")
+		if ok {
+			owner = &parent.shell.shellTask
 		}
-		go func() {
-			select {
-			case <-parent.shell.done:
-				cancel()
-			case <-ctx.Done():
-			}
-		}()
 	}
 	frontend, err := smux.Server(conn, relayMuxConfig())
 	if err != nil {
@@ -148,15 +147,36 @@ func runRemoteShell(c net.Conn, req localDaemonRequest, tasks *daemonTasks) erro
 		return err
 	}
 	defer setup.Close()
-	return withRemoteShell(ctx, setup, req, f.Command, func(open taskEndpoint, ready message, ownerDone <-chan struct{}) error {
+	if req.Parent != "" {
+		if owner == nil || !owner.suspendedBy(f.ParentKey) {
+			return writeMessage(setup, message{Type: "fatal", Error: "parent shell attachment changed"})
+		}
+		go func() {
+			select {
+			case <-owner.done:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
+	return withRemoteShell(ctx, setup, req, owner, func(open taskEndpoint, ready message, ownerDone <-chan struct{}) error {
 		if err := streamMessage(setup, ready); err != nil {
 			return err
 		}
 		setup.Close()
 		stop := context.AfterFunc(ctx, func() { frontend.Close() })
 		defer stop()
+		if ownerDone != nil {
+			go func() {
+				select {
+				case <-ownerDone:
+					frontend.Close()
+				case <-ctx.Done():
+				}
+			}()
+		}
 		relayRemoteStreams(frontend, open)
-		if req.Parent != "" {
+		if owner != nil && f.Command == "sh" {
 			<-ownerDone
 		}
 		return nil
@@ -191,21 +211,136 @@ type processIdentity struct {
 
 type taskEndpoint func() (net.Conn, error)
 
-func claimShellOwner(ctx context.Context, open taskEndpoint, instance string) (func(), <-chan struct{}, error) {
+type remoteShellChild struct {
+	host string
+	uid  string
+	open taskEndpoint
+	done <-chan struct{}
+}
+
+func (s *shellTask) rememberRemoteChild(child *remoteShellChild) func() {
+	s.mu.Lock()
+	if s.remoteChildren == nil {
+		s.remoteChildren = make(map[string]*remoteShellChild)
+	}
+	s.remoteChildren[child.uid] = child
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		delete(s.remoteChildren, child.uid)
+		s.mu.Unlock()
+	}
+}
+
+func (s *shellTask) selectRemoteChild(config *shellConfig) (*remoteShellChild, error) {
+	if config.Name == "" && config.Instance == "" {
+		return nil, fmt.Errorf("select a child with sshore attach HOST:ID")
+	}
+	s.mu.Lock()
+	var children []*remoteShellChild
+	for _, child := range s.remoteChildren {
+		if child.host == config.Host && (config.Instance == "" || child.uid == config.Instance) {
+			children = append(children, child)
+		}
+	}
+	s.mu.Unlock()
+
+	var lookupErr error
+	var idMatch, nameMatch *remoteShellChild
+	var ambiguousName bool
+	var idState, nameState string
+	for _, child := range children {
+		status, err := child.status()
+		if err != nil {
+			lookupErr = fmt.Errorf("could not check child %s on %s: %w", child.uid[:6], cleanText(child.host), err)
+			continue
+		}
+		if status.Owner != identityFromUID(s.record.UID) {
+			continue
+		}
+		if config.Instance != "" || isTaskIDPrefix(config.Name) && strings.HasPrefix(child.uid, strings.ToLower(config.Name)) {
+			if idMatch != nil {
+				return nil, fmt.Errorf("ambiguous child shell ID; use a longer prefix")
+			}
+			idMatch, idState = child, status.Action
+		} else if config.Name == status.Name {
+			ambiguousName = nameMatch != nil
+			nameMatch, nameState = child, status.Action
+		}
+	}
+	if idMatch != nil {
+		nameMatch, nameState, ambiguousName = idMatch, idState, false
+	}
+	if ambiguousName {
+		return nil, fmt.Errorf("ambiguous child shell name; use its ID")
+	}
+	if nameMatch == nil {
+		if lookupErr != nil {
+			return nil, lookupErr
+		}
+		return nil, fmt.Errorf("no live child matches %s on %s; enter it from the shell that opened it", cleanText(config.Name), cleanText(config.Host))
+	}
+	if nameState != taskDetached {
+		return nil, fmt.Errorf("child shell %s is %s; detach it before attaching", taskShortCode(identityFromUID(nameMatch.uid)), cleanText(nameState))
+	}
+	return nameMatch, nil
+}
+
+func (child *remoteShellChild) status() (message, error) {
+	select {
+	case <-child.done:
+		return message{}, fmt.Errorf("child shell route ended")
+	default:
+	}
+	c, err := child.open()
+	if err != nil {
+		return message{}, err
+	}
+	defer c.Close()
+	timeout := time.AfterFunc(5*time.Second, func() { c.Close() })
+	defer timeout.Stop()
+	reply, err := exchangeRouteRequest(c, message{Type: "status", Action: "health"})
+	if err == nil && (reply.Type != "session" || reply.Instance != child.uid || reply.SoftwareVersion != version) {
+		err = fmt.Errorf("child shell instance changed")
+	}
+	return reply, err
+}
+
+func ownedTaskEndpoint(open taskEndpoint, uid, token string) taskEndpoint {
+	return func() (net.Conn, error) {
+		c, err := open()
+		if err != nil {
+			return nil, err
+		}
+		timeout := time.AfterFunc(5*time.Second, func() { c.Close() })
+		defer timeout.Stop()
+		reply, err := exchangeRouteRequest(c, message{Type: "shell_owner_access", Instance: uid, Token: token})
+		if err == nil && (reply.Type != "shell_owner_access_ready" || reply.SoftwareVersion != version) {
+			err = fmt.Errorf("child shell route unavailable")
+		}
+		if err != nil {
+			c.Close()
+			return nil, err
+		}
+		return c, nil
+	}
+}
+
+func claimShellOwner(ctx context.Context, open taskEndpoint, instance, owner, token string) (func(), <-chan struct{}, error) {
 	c, err := open()
 	if err != nil {
 		return nil, nil, err
 	}
 	handshake := time.AfterFunc(5*time.Second, func() { c.Close() })
 	defer handshake.Stop()
-	if err := writeMessage(c, message{Type: "shell_owner", Instance: instance, SoftwareVersion: version}); err != nil {
+	if err := writeMessage(c, message{Type: "shell_owner", Instance: instance, Owner: owner, Token: token, SoftwareVersion: version}); err != nil {
 		c.Close()
 		return nil, nil, err
 	}
 	return acceptActivityLease(ctx, c)
 }
 
-func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest, command string, use func(taskEndpoint, message, <-chan struct{}) error) (resultErr error) {
+func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest, owner *shellTask, use func(taskEndpoint, message, <-chan struct{}) error) (resultErr error) {
 	f := req.Shell
 	diagnostics := &shellDiagnostics{c: c, active: true}
 	var pipes *transportio.Process
@@ -227,7 +362,15 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	if err := validSSHDestination(f.Host); err != nil {
 		return err
 	}
-	o := options{command: command, host: f.Host, session: f.Name, instance: f.Instance, server: f.Server, ssh: f.SSH, sshDirectory: req.Record.Directory}
+	if owner != nil && f.Command == "attach" {
+		child, err := owner.selectRemoteChild(f)
+		if err != nil {
+			return err
+		}
+		ready := message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: child.uid}
+		return use(child.open, ready, child.done)
+	}
+	o := options{command: f.Command, host: f.Host, session: f.Name, instance: f.Instance, server: f.Server, ssh: f.SSH, sshDirectory: req.Record.Directory}
 	connection := sshConnectionOptions(o)
 	connection.Environment = req.Env
 	connection.Confirm, connection.Secret = req.Auth.callbacks()
@@ -255,10 +398,6 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 		return err
 	}
 	ready.LocalRequest = nil
-	since := time.Now()
-	if shells, err := connectedHostedShells(ctx, record, pipes.DialTCP); err == nil {
-		_ = reconcileParticipatingShells(f.Host, shells, since)
-	}
 	open := func() (net.Conn, error) {
 		authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
@@ -269,13 +408,26 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 		return upgradeDaemonConn(authCtx, channel, record, "/tasks/"+record.UID+"/open", nil)
 	}
 	var ownerDone <-chan struct{}
-	if command == "sh" {
-		stop, done, err := claimShellOwner(ctx, open, ready.Instance)
+	if f.Command == "sh" {
+		var uid, token string
+		if owner != nil {
+			uid, token = owner.record.UID, resourceToken()
+		}
+		stop, done, err := claimShellOwner(ctx, open, ready.Instance, uid, token)
 		if err != nil {
 			return err
 		}
 		defer stop()
 		ownerDone = done
+		if owner != nil {
+			open = ownedTaskEndpoint(open, ready.Instance, token)
+			forget := owner.rememberRemoteChild(&remoteShellChild{host: f.Host, uid: ready.Instance, open: open, done: done})
+			defer forget()
+		}
+	}
+	since := time.Now()
+	if shells, err := connectedHostedShells(ctx, record, pipes.DialTCP); err == nil {
+		_ = reconcileParticipatingShells(f.Host, shells, since)
 	}
 	return use(open, ready, ownerDone)
 }

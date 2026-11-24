@@ -1,13 +1,132 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestRemoteOwnerLeaseLimitsAttachment(t *testing.T) {
+	e := newEnv(t)
+	id := taskIdentitySelection{name: "owned-child", uid: newTaskUID()}
+	if err := createRemoteShell(e.bin, id, e.dir, e.env); err != nil {
+		t.Fatal(err)
+	}
+	open := func() (net.Conn, error) { return openHostedEndpoint(t.Context(), id.uid) }
+	owner, token := newTaskUID(), resourceToken()
+	stop, done, err := claimShellOwner(t.Context(), open, id.uid, owner, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	owned := ownedTaskEndpoint(open, id.uid, token)
+
+	attach := func(open taskEndpoint, action string) (*bridgeConn, message) {
+		t.Helper()
+		control, err := open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { control.Close() })
+		_ = control.SetDeadline(time.Now().Add(5 * time.Second))
+		if err := clientAttachment(control); err != nil {
+			t.Fatal(err)
+		}
+		terminal, err := open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { terminal.Close() })
+		_ = terminal.SetDeadline(time.Now().Add(5 * time.Second))
+		ready, err := exchangeRouteRequest(terminal, message{Type: "terminal_open"})
+		if err != nil || ready.Type != "terminal_ready" {
+			t.Fatalf("terminal: %+v %v", ready, err)
+		}
+		b := &bridgeConn{in: control, out: control, tty: terminal, token: ready.Token}
+		b.sendAttach(t, message{Type: "attach", Action: action, Instance: id.uid, Term: "xterm", Cols: 80, Rows: 24})
+		return b, recv(t, control)
+	}
+	b, reply := attach(open, "")
+	if reply.Type != "fatal" || !strings.Contains(reply.Error, taskShortCode(identityFromUID(owner))) {
+		t.Fatalf("direct attach to owned child: %+v", reply)
+	}
+	b.close()
+	if c, err := ownedTaskEndpoint(open, id.uid, resourceToken())(); err == nil {
+		c.Close()
+		t.Fatal("accepted the wrong route capability")
+	}
+	b, reply = attach(owned, "")
+	if reply.Type != "ready" || reply.Owner != identityFromUID(owner) || reply.PID == 0 {
+		t.Fatalf("parent attach: %+v", reply)
+	}
+	pid := reply.PID
+	shellOutput(t, b, "export SHELL_MARKER=owned; printf 'CHILD_%s\\n' ready", "CHILD_ready")
+	outsider, blocked := attach(open, "existing")
+	if blocked.Type != "fatal" || !strings.Contains(blocked.Error, "from its parent") {
+		t.Fatalf("direct attach while child has input: %+v", blocked)
+	}
+	outsider.close()
+	detachTestClient(t, b)
+	outsider, blocked = attach(open, "existing")
+	if blocked.Type != "fatal" || !strings.Contains(blocked.Error, "from its parent") {
+		t.Fatalf("direct attach while child's parent lives: %+v", blocked)
+	}
+	outsider.close()
+
+	parent := &shellTask{record: localShellRecord{UID: owner}}
+	child := &remoteShellChild{host: "fixture", uid: id.uid, open: owned, done: done}
+	forget := parent.rememberRemoteChild(child)
+	defer forget()
+	config := &shellConfig{Host: "fixture", Name: id.name}
+	if selected, err := parent.selectRemoteChild(config); err != nil || selected != child {
+		t.Fatalf("original parent selection: %+v %v", selected, err)
+	}
+	other := &shellTask{record: localShellRecord{UID: newTaskUID()}}
+	forgetOther := other.rememberRemoteChild(child)
+	defer forgetOther()
+	if selected, err := other.selectRemoteChild(config); err == nil || selected != nil {
+		t.Fatalf("unrelated parent selection: %+v %v", selected, err)
+	}
+	b, reply = attach(child.open, "existing")
+	if reply.Type != "ready" || reply.PID != pid || reply.Owner != identityFromUID(owner) {
+		t.Fatalf("parent reattach: %+v", reply)
+	}
+	shellOutput(t, b, "printf 'MARKER_%s\\n' \"$SHELL_MARKER\"", "MARKER_owned")
+	detachTestClient(t, b)
+
+	stop()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for {
+		view, err := resolveHostedShell(id.name, id.uid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.Instance == id.uid && view.Owner == "" && view.State == taskDetached {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("ownership did not clear: %+v", view)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if c, err := owned(); err == nil {
+		c.Close()
+		t.Fatal("accepted capability after lease ended")
+	}
+	b, reply = attach(open, "existing")
+	if reply.Type != "ready" || reply.PID != pid || reply.Owner != "" {
+		t.Fatalf("attach after owner exit: %+v", reply)
+	}
+	b.writeInput(t, []byte("exit\n"))
+	b.readExit(t)
+}
 
 func TestShellRetentionAcrossClientLoss(t *testing.T) {
 	for _, host := range []string{"here:", "fixture"} {
@@ -138,6 +257,8 @@ func TestRemoteNestedPinReturnsAndSurvivesParent(t *testing.T) {
 	wait("Connected fixture:parent")
 	io.WriteString(terminal, "exit\n")
 	wait("Exited fixture:parent")
+	wait("Pinned shells become independent roots")
+	wait("(child) · pinned indefinitely")
 	wait("sshore on fixture> ")
 	io.WriteString(terminal, "attach child\r")
 	wait("Connected fixture:child")

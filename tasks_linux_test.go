@@ -193,7 +193,7 @@ func TestHostedShellTaskCommandRouting(t *testing.T) {
 	t.Setenv("SSHORE_RUNTIME_DIR", e.dir)
 	b, _ := e.attach("hosted")
 	defer b.close()
-	inv, err := collectInventory()
+	inv, err := collectInventory(false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,12 +14,10 @@ import (
 // History is persisted by the daemon; running clients never coordinate through
 // these files. Each domain is loaded once and thereafter served from memory.
 type daemonMetadata struct {
-	attachments     recentHistory[recentAttachment]
-	connections     recentHistory[recentConnection]
-	participation   recentHistory[participatingShell]
-	treeMu, shellMu sync.Mutex
-	treeRoot        string
-	trees           map[string][]shellTreeNode
+	attachments   recentHistory[recentAttachment]
+	connections   recentHistory[recentConnection]
+	participation recentHistory[participatingShell]
+	shellMu       sync.Mutex
 }
 
 // The two histories retain independent orderings and share the same file lifecycle.
@@ -90,29 +87,27 @@ func (h *recentHistory[T]) replace(rows []T) error {
 }
 
 type metadataRequest struct {
-	Local, Direct                     bool `json:",omitempty"`
+	Local                             bool `json:",omitempty"`
 	Action, Key, Host, Name, Instance string
-	State                             string
-	Tree                              []shellTreeNode
-	Source                            []string
-	Attachment                        *recentAttachment
-	Connection                        *recentConnection
-	Participant                       *participatingShell
-	Participation                     *participationRefresh
+
+	Attachment    *recentAttachment
+	Connection    *recentConnection
+	Participant   *participatingShell
+	Participation *participationRefresh
 }
 type metadataReply struct {
 	Target       *selectedTask     `json:",omitempty"`
 	Connection   *recentConnection `json:",omitempty"`
 	Participants []participatingShell
-	Tree         []shellTreeNode
-	Error        string
+
+	Error string
 }
 
 func metadataRPC(r metadataRequest) (metadataReply, error) {
 	var reply metadataReply
 	if !activityAllowed() {
 		switch r.Action {
-		case "tree_get", "connection_select", "participation_get":
+		case "connection_select", "participation_get":
 			if _, err := existingDaemonRecord(); os.IsNotExist(err) {
 				return reply, nil
 			}
@@ -141,24 +136,14 @@ func metadataRPC(r metadataRequest) (metadataReply, error) {
 
 func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply) {
 	s := &a.metadata
-	tree := strings.HasPrefix(r.Action, "tree_")
-	if tree {
-		s.treeMu.Lock()
-		defer s.treeMu.Unlock()
-		if err := s.loadTrees(); err != nil {
-			reply.Error = err.Error()
-			return
-		}
-	} else {
-		s.shellMu.Lock()
-		defer s.shellMu.Unlock()
-	}
+	s.shellMu.Lock()
+	defer s.shellMu.Unlock()
 	var err error
 	switch r.Action {
 	case "attach_by_id":
 		reply.Target, err = a.resolveBareAttachID(r.Instance)
 	case "attach_recent":
-		reply.Target, err = a.selectDetachedAttach(r.Local, r.Host)
+		reply.Target, err = a.selectDetachedAttach(r.Local, r.Host, r.Key)
 	case "attach_detach":
 		if r.Attachment != nil {
 			err = s.rememberDetachedAttachmentLocal(*r.Attachment)
@@ -166,7 +151,7 @@ func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply)
 	case "attach_remove":
 		err = s.removeRecentDetachLocal(r.Key)
 	case "connection_select":
-		reply.Connection, err = s.selectRecentConnection(r.Host, r.Instance, r.Direct)
+		reply.Connection, err = s.selectRecentConnection(r.Host)
 	case "connection_save":
 		if r.Connection != nil {
 			err = s.rememberConnectionLocal(*r.Connection)
@@ -175,16 +160,6 @@ func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply)
 		reply.Participants, err = s.readParticipatingShellsLocal(r.Host)
 	case "participation_observe", "participation_state", "participation_forget", "participation_rename", "participation_refresh":
 		err = s.updateParticipation(r)
-	case "tree_get":
-		reply.Tree = cloneShellTree(s.treeChain(r.Key))
-	case "tree_save":
-		err = s.saveShellTreeLocal(r.Key, r.Name, r.Tree, r.State, r.Source...)
-	case "tree_remember":
-		err = s.rememberShellTreeLocal(r.Tree)
-	case "tree_rename":
-		s.renameShellTreeLocal(r.Key, r.Name)
-	case "tree_remote_exit":
-		err = s.recordRemoteShellTreeExitLocal(r.Host, r.Name, r.Instance)
 	default:
 		err = fmt.Errorf("invalid metadata operation")
 	}
@@ -192,112 +167,6 @@ func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply)
 		reply.Error = err.Error()
 	}
 	return
-}
-func (s *daemonMetadata) loadTrees() error {
-	stateRoot, err := statePath("")
-	if err != nil {
-		s.trees = nil
-		return err
-	}
-	root := filepath.Join(stateRoot, "shell-tree")
-	if s.trees != nil && s.treeRoot == root {
-		return nil
-	}
-	s.trees = nil
-	if _, err = prepareStateDir(stateRoot, "shell-tree"); err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return err
-	}
-	trees := make(map[string][]shellTreeNode)
-	for _, entry := range entries {
-		if filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		var chain []shellTreeNode
-		path := filepath.Join(root, entry.Name())
-		if err := readStateJSON(path, maxShellTreeBytes, &chain); err != nil {
-			return fmt.Errorf("read %s: %w", path, err)
-		}
-		if err := validateSavedShellTree(chain); err != nil {
-			return fmt.Errorf("%w (%s)", err, path)
-		}
-		for i := range chain {
-			chain[i].Cached = true
-		}
-		trees[entry.Name()] = chain
-	}
-	s.trees, s.treeRoot = trees, root
-	return nil
-}
-
-const (
-	maxShellTreeNodes = 64
-	maxShellTreeBytes = 64 * 1024
-)
-
-func shellTreeFilename(id string) string {
-	return fmt.Sprintf("%x.json", sha256.Sum256([]byte(id)))
-}
-
-func validShellTreeState(state string) bool {
-	switch state {
-	case taskStarting, taskActive, taskDetached, taskUnknown, taskExited:
-		return true
-	default:
-		return false
-	}
-}
-
-func validateSavedShellTree(chain []shellTreeNode) error {
-	if len(chain) == 0 || len(chain) > maxShellTreeNodes {
-		return fmt.Errorf("shell tree has %d nodes (expected 1–%d)", len(chain), maxShellTreeNodes)
-	}
-	if chain[len(chain)-1].Identity == "" {
-		return fmt.Errorf("shell tree node %d is missing its task identity", len(chain))
-	}
-	for i, node := range chain {
-		if !validShellTreeState(node.State) {
-			return fmt.Errorf("shell tree node %d has invalid state %.40q (expected %s, %s, %s, %s or %s)",
-				i+1, node.State, taskStarting, taskActive, taskDetached, taskUnknown, taskExited)
-		}
-	}
-	return nil
-}
-
-func (s *daemonMetadata) treeChain(id string) []shellTreeNode {
-	chain := s.trees[shellTreeFilename(id)]
-	if len(chain) != 0 && chain[len(chain)-1].Identity == id {
-		return chain
-	}
-	return nil
-}
-
-// The final node owns the record. The caller supplies an owned slice.
-func (s *daemonMetadata) writeTreeLocal(chain []shellTreeNode) error {
-	if err := validateSavedShellTree(chain); err != nil {
-		return err
-	}
-	file := shellTreeFilename(chain[len(chain)-1].Identity)
-	path := filepath.Join(s.treeRoot, file)
-	data, err := marshalBoundedStateJSON(path, chain, maxShellTreeBytes)
-	if err != nil {
-		return err
-	}
-	// Preserve observed ownership in the running daemon if persistence fails.
-	s.trees[file] = chain
-	return writeStateFile(path, data)
-}
-
-// Only the owning node supplies shell-history evidence.
-func (s *daemonMetadata) treeNode(id string) (shellTreeNode, bool) {
-	chain := s.treeChain(id)
-	if len(chain) != 0 {
-		return chain[len(chain)-1], true
-	}
-	return shellTreeNode{}, false
 }
 
 type recentConnection struct {
@@ -330,7 +199,7 @@ func (c *recentConnection) clone() *recentConnection {
 }
 
 func (m *daemonMetadata) readRecentConnectionsLocal() ([]recentConnection, error) {
-	if err := m.connections.load("recent.json", 128*1024, validateRecentConnection); err != nil {
+	if err := m.connections.load("recent.json", 128*1024, validateShellHistoryConnection); err != nil {
 		return nil, fmt.Errorf("cannot read recent connections: %w", err)
 	}
 	return m.connections.rows, nil
@@ -390,31 +259,21 @@ func (a *daemonActivity) resolveBareAttachID(ref string) (*selectedTask, error) 
 	return &target, err
 }
 
+func validateShellHistoryConnection(record recentConnection) error {
+	if record.viaShell() {
+		return fmt.Errorf("shell history must use a direct SSH connection")
+	}
+	return validateRecentConnection(record)
+}
+
 func (m *daemonMetadata) rememberConnectionLocal(record recentConnection) error {
-	if err := validateRecentConnection(record); err != nil {
+	if err := validateShellHistoryConnection(record); err != nil {
 		return err
 	}
 	if _, err := m.readRecentConnectionsLocal(); err != nil {
 		return err
 	}
 	return m.connections.promote(*record.clone(), func(previous recentConnection) bool {
-		return sameRecentEndpoint(previous, record)
+		return previous.Host == record.Host
 	})
-}
-
-// Sibling routes can have different capabilities into the same target account.
-func sameRecentEndpoint(a, b recentConnection) bool {
-	if a.Host != b.Host || (a.Parent == nil) != (b.Parent == nil) {
-		return false
-	}
-	if a.Parent == nil {
-		return true
-	}
-	for p, q := a.Parent, b.Parent; p != nil && q != nil; p, q = p.Parent, q.Parent {
-		if p.Host != q.Host || p.Instance != q.Instance || p.Server != q.Server ||
-			p.Directory != q.Directory || !slices.Equal(p.SSH, q.SSH) || (p.Parent == nil) != (q.Parent == nil) {
-			return false
-		}
-	}
-	return a.Server == b.Server && a.Directory == b.Directory && slices.Equal(a.SSH, b.SSH)
 }

@@ -94,8 +94,8 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, host string, chooseShell 
 //go:embed install.sh
 var linuxInstaller string
 
-func runInstall(args []string) (int, error) {
-	parsed, err := parseCLI(args, "install")
+func runBootstrap(args []string) (int, error) {
+	parsed, err := parseCLI(args, "bootstrap")
 	if err != nil {
 		return 2, err
 	}
@@ -123,7 +123,7 @@ func runInstall(args []string) (int, error) {
 			if target == "" {
 				return 2, usage("applying a prepared release requires here:PATH")
 			}
-			return 0, installRelease(target)
+			return 0, bootstrapRelease(target)
 		}
 		if runtime.GOOS == "linux" {
 			showInstallDestination(host, target)
@@ -131,7 +131,7 @@ func runInstall(args []string) (int, error) {
 		return 0, runLocalInstaller(target)
 	}
 	if host == "origin" && !bare {
-		return 2, usage("install requires here: or an SSH host")
+		return 2, usage("bootstrap requires here: or an SSH host")
 	}
 	if parsed.has("--apply") {
 		return 2, usage("applying a prepared release requires here:PATH")
@@ -141,7 +141,7 @@ func runInstall(args []string) (int, error) {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	// Keep SSH stdin available for kill --all confirmation after authentication.
+	// Keep SSH stdin available for task shutdown confirmation after authentication.
 	command := "sh -c " + shellQuote(linuxInstaller) + " install.sh --version " + shellQuote(version)
 	if target != "" {
 		command += " --path " + shellQuote(target)
@@ -163,7 +163,7 @@ func showInstallDestination(host, target string) {
 		return
 	}
 	destination := sshio.FormatEndpoint(host, target)
-	fmt.Fprintln(os.Stderr, termui.StatusLine(termui.ColorEnabled(os.Stderr), termui.Info, "Installing sshore · "+cleanText(destination)))
+	fmt.Fprintln(os.Stderr, termui.StatusLine(termui.ColorEnabled(os.Stderr), termui.Info, "Resetting and reinstalling sshore · "+cleanText(destination)))
 }
 
 func installTarget(value string) (string, string, error) {
@@ -181,8 +181,8 @@ func remoteVersionHelp(host string) string {
 	if host != "" {
 		target = shellQuote(sshio.FormatEndpoint(host, ""))
 	}
-	return "Remote sshore must match local version " + version + ". Run sshore install " + target +
-		" to update the remote, or sshore install if this machine is older. For a custom remote path, use HOST:/absolute/path."
+	return "Remote sshore must match local version " + version + ". Run sshore bootstrap " + target +
+		" to reset and reinstall the remote account, or sshore bootstrap if this machine is older. Bootstrap ends tasks and clears sshore state. For a custom remote path, use HOST:/absolute/path."
 }
 
 // Return the canonical components for exact matching and upgrade ordering.
@@ -377,7 +377,7 @@ func requireInstalledRelease(target string) error {
 	return nil
 }
 
-func installRelease(target string) error {
+func bootstrapRelease(target string) error {
 	if !filepath.IsAbs(target) {
 		return fmt.Errorf("installation target must be absolute")
 	}
@@ -413,9 +413,6 @@ func installRelease(target string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if installed == version && (!running || record.Version == version) {
-		return nil
-	}
 	if running {
 		order, known := compareReleaseVersions(record.Version, version)
 		if !known || order > 0 {
@@ -428,6 +425,19 @@ func installRelease(target string) error {
 	}
 	if err := validateInstallTarget(target); err != nil {
 		return err
+	}
+	paths, err := prepareReset("bootstrap")
+	if err != nil {
+		return err
+	}
+	dir, err := filepath.EvalSymlinks(filepath.Dir(target))
+	if err != nil {
+		return err
+	}
+	for _, root := range []string{paths.state, paths.cache, paths.account} {
+		if resetContains(root, filepath.Join(dir, filepath.Base(target))) {
+			return fmt.Errorf("installation target is inside the sshore reset directory %s", root)
+		}
 	}
 	staged, err := stageReplacement(target)
 	if err != nil {
@@ -449,25 +459,18 @@ func installRelease(target string) error {
 			return fmt.Errorf("back up old executable: %w", err)
 		}
 	}
+	fmt.Fprintf(os.Stderr, "Bootstrap will end this account's sshore tasks, clear its identity, history and caches, and reinstall sshore %s at %s.\n", version, cleanText(target))
+	var reply daemonAdminReply
 	if running {
-		if installed == record.Version {
-			// The installed release also speaks its daemon's administrative protocol.
-			cmd := exec.Command(target, "kill", "--all")
-			cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("stopping the account daemon: %w", err)
-			}
-		} else {
-			reply, err := daemonAdministrationAt(context.Background(), record, "snapshot", nil)
-			if err != nil {
-				return fmt.Errorf("reading account daemon snapshot: %w", err)
-			}
-			if err := confirmDaemonShutdown("", reply.Snapshot, nil); err != nil {
-				return err
-			}
-			if err := requestDaemonShutdown(reply.Snapshot); err != nil {
-				return fmt.Errorf("stopping the account daemon: %w", err)
-			}
+		reply, err = daemonAdministrationAt(context.Background(), record, "snapshot", nil)
+		if err != nil {
+			return fmt.Errorf("reading account daemon snapshot: %w", err)
+		}
+		if err := confirmDaemonShutdown("", reply.Snapshot, nil); err != nil {
+			return err
+		}
+		if err := requestDaemonShutdown(reply.Snapshot); err != nil {
+			return fmt.Errorf("stopping the account daemon: %w", err)
 		}
 	}
 	// A direct daemon invocation can race even while we hold the startup lock.
@@ -479,7 +482,13 @@ func installRelease(target string) error {
 	if err := verifyInstallTarget(target, previous); err != nil {
 		return err
 	}
-	return os.Rename(staged, target)
+	if err := os.Rename(staged, target); err != nil {
+		return fmt.Errorf("replacing the executable before state cleanup: %w", err)
+	}
+	if err := paths.clear(reply.Runtime, gate, startup, owner); err != nil {
+		return fmt.Errorf("installed sshore %s, but reset did not finish: %w; retry bootstrap", version, err)
+	}
+	return nil
 }
 
 func verifyInstallTarget(path string, previous os.FileInfo) error {

@@ -31,13 +31,17 @@ func publish(build func(string) ([]string, error)) error {
 	cmd.Stdin = strings.NewReader(fmt.Sprintf(`sshore %s
 
 Includes Linux and Windows amd64 binaries. Verify archives against SHA256SUMS.
-The built-in client reads SSH configuration directly. Forwarding rules in SSH
-configuration or SSH arguments produce a warning. Use sshore forward for TCP
-forwarding.
-Update both endpoints to %[1]s for managed connections. Save work before
-installing because the installer stops the target account daemon.
-Remote releases before 0.7.22 do not support the current service entry. If remote
-maintenance is needed before upgrading, run that release's sshore kill --all on the host.
+
+Each shell tree has one foreground attachment. Detach keeps a shell under its
+parent. When the parent exits, pinned children become independent roots and
+the command prompt shows what stayed alive.
+
+Use pstree for shell relationships and list for task details. The list shows
+the parent short ID and includes forward direction in each port mapping.
+
+Use sshore bootstrap to update both endpoints to %[1]s for managed connections.
+Bootstrap ends the target account's tasks, including pinned shells, and clears
+its sshore identity, history and cached releases. Save work before bootstrapping.
 Commit: %[2]s
 `, version, commit))
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

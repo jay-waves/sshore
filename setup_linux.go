@@ -65,7 +65,7 @@ func serveRemote(req remoteServiceRequest) (result error) {
 }
 
 func chooseDetachedHostedShell() (sessionTarget, error) {
-	targets, err := detachedHostedShells()
+	targets, err := detachedHostedShells("")
 	if err != nil {
 		return sessionTarget{}, err
 	}

@@ -24,6 +24,7 @@ type daemonTask interface {
 var errDaemonDraining = errors.New("daemon is shutting down")
 
 type daemonTasks struct {
+	forest   shellForest
 	draining bool
 	mu       sync.Mutex
 	records  map[string]daemonTask
@@ -34,8 +35,9 @@ type nativeShellTask struct {
 	serve func(net.Conn, message) error
 }
 
-func (t *nativeShellTask) taskName() string { return t.shell.taskName() }
-func (t *nativeShellTask) expired() bool    { return t.shell.expired() }
+func (t *nativeShellTask) taskName() string         { return t.shell.taskName() }
+func (t *nativeShellTask) expired() bool            { return t.shell.expired() }
+func (t *nativeShellTask) managedShell() *shellTask { return &t.shell.shellTask }
 
 func (s *daemonTasks) register(id string, task daemonTask) error {
 	if !validTaskUID(id) {
@@ -312,20 +314,6 @@ func (s *daemonTasks) serveTaskInventory(w http.ResponseWriter, r *http.Request)
 	if !readDaemonBody(w, r, &request) {
 		return
 	}
-	if request.Detail == "tree" {
-		activity := accountActivity.Load()
-		if activity == nil {
-			http.Error(w, "activity unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		rows, err := activity.taskTreeSnapshot(r.Context())
-		reply := taskInventorySnapshot{Tree: rows}
-		if err != nil {
-			reply.Error = err.Error()
-		}
-		_ = json.NewEncoder(w).Encode(reply)
-		return
-	}
 	if request.Detail != "" && request.Detail != "health" && request.Detail != "inventory" && request.Detail != "sessions" {
 		http.Error(w, "invalid shell inventory detail", http.StatusBadRequest)
 		return
@@ -454,8 +442,6 @@ type taskInventoryRequest struct {
 }
 
 type taskInventorySnapshot struct {
-	Tree      []taskTreeRow `json:",omitempty"`
-	Error     string        `json:",omitempty"`
 	Native    map[string]localShellView
 	Shells    []shellView
 	Resources []resourceRecord

@@ -46,7 +46,7 @@ func run(args []string) (code int, resultErr error) {
 	if os.Getenv("SSHORE_DISABLED") == "1" && len(args) > 0 {
 		allowed := true
 		switch args[0] {
-		case "--version", "-V", "--help", "-h", "--tldr", "help", remoteServiceCommand, "pstree", "reset", "list":
+		case "--version", "-V", "--help", "-h", "--tldr", "help", remoteServiceCommand, "reset", "list", "pstree":
 		default:
 			allowed = false
 		}
@@ -83,8 +83,8 @@ func run(args []string) (code int, resultErr error) {
 		}
 		fmt.Println("sshore", version)
 		return 0, nil
-	case "install":
-		return runInstall(args[1:])
+	case "bootstrap":
+		return runBootstrap(args[1:])
 	case remoteServiceCommand:
 		return 0, runRemoteService(args[1:])
 	case "daemon":
@@ -410,17 +410,16 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 }
 
 type options struct {
-	handoffHint           *handoffObservation
+	hold                  *clientTransport
+	fromTree              string
 	recovering            bool
 	reusable              *clientTransport
 	routeTarget           bool
 	sameHostRoute         bool
 	handoffDone           func(context.Context, error) error
-	handoffAttachment     string
 	routeParent           *options
 	routeToken            string
 	environment           []string
-	tree                  []shellTreeNode
 	hosted                bool
 	host, session, server string
 	command               string
@@ -435,6 +434,7 @@ type options struct {
 	taskIdentity          string
 	instance              string
 	parent                string
+	remoteParentKey       string
 	portOverrideOnly      bool
 	serverSet             bool
 	sshDirectory          string
@@ -442,11 +442,24 @@ type options struct {
 
 func executeShellCommand(o options) (int, error) {
 	var err error
+	managedRemoteAttach := o.command == "attach" && !o.local && (os.Getenv("SSHORE_SOCKET") != "" || os.Getenv("SSHORE_LOCAL_SESSION") != "")
+	if managedRemoteAttach && o.session == "" && o.instance == "" {
+		return 1, usage("select a child with sshore attach HOST:ID")
+	}
 	if handled, err := handoffRemoteShell(o); handled {
 		if err != nil {
 			return 1, err
 		}
 		return 0, nil
+	}
+	if managedRemoteAttach {
+		if handled, err := handoffLocalClient(o); handled {
+			if err != nil {
+				return 1, err
+			}
+			return 0, nil
+		}
+		return 1, fmt.Errorf("attaching a remote child requires its parent's active terminal")
 	}
 	if o.command == "attach" && o.session == "" && o.taskIdentity == "" {
 		if err := resolveDetachedAttach(&o); err != nil {
@@ -764,7 +777,7 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		ref, kind = kind, ""
 	}
 	var target selectedTask
-	if parsed.bareAttachID {
+	if parsed.bareAttachID && shellIdentityFromEnvironment() == "" {
 		reply, err := metadataRPC(metadataRequest{Action: "attach_by_id", Instance: ref})
 		if err != nil {
 			return empty, false, err

@@ -214,7 +214,7 @@ func TestInventoryOptions(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"list", "-v"}, {"list", "--verbose"}, {"list", "--version"},
-		{"ls", "--", "-L8080:localhost:80"}, {"ps", "--json"}, {"ps", "work:"},
+		{"ls", "--", "-L8080:localhost:80"}, {"ps", "work:"}, {"pstree", "--json"},
 	} {
 		if code, err := run(args); code != 2 || err == nil {
 			t.Fatalf("%v: %d %v", args, code, err)
@@ -452,25 +452,25 @@ func TestRemovedCommands(t *testing.T) {
 	}
 }
 
-func TestInstallGrammar(t *testing.T) {
+func TestBootstrapGrammar(t *testing.T) {
 	for _, args := range [][]string{nil, {"work"}, {"work:"}, {".:/tmp/sshore"}, {"work:/tmp/sshore", "--", "-p", "2222"}} {
-		if _, err := parseCLI(args, "install"); err != nil {
+		if _, err := parseCLI(args, "bootstrap"); err != nil {
 			t.Fatalf("rejected %q: %v", args, err)
 		}
 	}
 	for _, args := range [][]string{{""}, {"work", "/tmp/sshore"}, {"--path"}, {"--path", ""}} {
-		if _, err := parseCLI(args, "install"); err == nil {
+		if _, err := parseCLI(args, "bootstrap"); err == nil {
 			t.Fatalf("accepted %q", args)
 		}
 	}
-	for _, args := range [][]string{{"bootstrap"}, {"setup", "--apply", "--path", "/tmp/sshore"}, {"install", "work:relative"}, {"install", "here:relative"}, {"install", "origin:"}, {"install", "work:/tmp/sshore", "--apply"}, {"install", "--", "-p", "2222"}} {
+	for _, args := range [][]string{{"install"}, {"setup", "--apply", "--path", "/tmp/sshore"}, {"bootstrap", "work:relative"}, {"bootstrap", "here:relative"}, {"bootstrap", "origin:"}, {"bootstrap", "work:/tmp/sshore", "--apply"}, {"bootstrap", "--", "-p", "2222"}} {
 		if code, err := run(args); code != 2 || err == nil {
 			t.Fatalf("accepted %q: %d %v", args, code, err)
 		}
 	}
 	root := filepath.Join(t.TempDir(), "state")
 	t.Setenv("SSHORE_STATE_DIR", root)
-	if code, err := run([]string{"install", "--help"}); code != 0 || err != nil {
+	if code, err := run([]string{"bootstrap", "--help"}); code != 0 || err != nil {
 		t.Fatalf("help: %d %v", code, err)
 	}
 	if _, err := os.Stat(root); !os.IsNotExist(err) {
@@ -860,7 +860,7 @@ func TestShortTaskResourceRenameAndReplacement(t *testing.T) {
 		if _, err := run([]string{"rename", ":" + code, kind + "new"}); err != nil {
 			t.Fatal(err)
 		}
-		inv, err := collectInventory()
+		inv, err := collectInventory(false)
 		if err != nil || !slices.ContainsFunc(inv.Resources, func(row resourceView) bool {
 			return row.Identity == key && row.ID == kind+"/"+kind+"new" && row.ShortID == code && row.State == taskActive
 		}) {

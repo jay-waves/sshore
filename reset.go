@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 var resetCachePath = func() (string, error) {
@@ -12,32 +13,40 @@ var resetCachePath = func() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Windows installs the executable in LocalAppData/sshore/bin alongside the cache.
+	if runtime.GOOS == "windows" {
+		return filepath.Join(root, "sshore", "releases"), nil
+	}
 	return filepath.Join(root, "sshore"), nil
 }
 
-// Reset is local administrative maintenance, independent of normal release
-// matching and daemon metadata. Data is removed only after the owner exits.
-func runReset() error {
+type resetPaths struct {
+	state, cache, account string
+	customState           bool
+}
+
+// Resolve the running daemon's state directory before shutdown removes its record.
+func prepareReset(command string) (resetPaths, error) {
 	if os.Getenv("SSHORE_LOCAL_SESSION") != "" || os.Getenv("SSHORE_SOCKET") != "" {
-		return fmt.Errorf("run reset outside managed shells; reset ends their tasks")
+		return resetPaths{}, fmt.Errorf("run %s outside managed shells; it ends their tasks", command)
 	}
 	root, err := statePath("")
 	if err != nil {
-		return err
+		return resetPaths{}, err
 	}
 	cache, err := resetCachePath()
 	if err != nil {
-		return err
+		return resetPaths{}, err
 	}
 	account, err := daemonLocation()
 	if err != nil {
-		return err
+		return resetPaths{}, err
 	}
 	accountRoot := filepath.Dir(account)
 	for _, path := range []*string{&root, &cache, &accountRoot, &account} {
 		checked, err := validateResetDirectory(*path)
 		if err != nil {
-			return err
+			return resetPaths{}, err
 		}
 		*path = checked
 	}
@@ -45,10 +54,18 @@ func runReset() error {
 	if !custom {
 		base, err := os.UserConfigDir()
 		if err != nil {
-			return err
+			return resetPaths{}, err
 		}
 		rel, err := filepath.Rel(filepath.Join(base, "sshore"), root)
 		custom = err != nil || rel != "."
+	}
+	return resetPaths{state: root, cache: cache, account: account, customState: custom}, nil
+}
+
+func runReset() error {
+	paths, err := prepareReset("reset")
+	if err != nil {
+		return err
 	}
 	setup, err := setupLock()
 	if err != nil {
@@ -74,42 +91,54 @@ func runReset() error {
 		return err
 	}
 	defer owner.Close()
+	if err := paths.clear(reply.Runtime, setup, startup, owner); err != nil {
+		return err
+	}
+	fmt.Println("Reset complete; local tasks ended and application state and caches cleared.")
+	return nil
+}
+
+// clear runs with setup, startup and owner locked.
+func (p resetPaths) clear(runtimeDirs []string, locks ...*os.File) error {
 	// Keep lock inodes stable: a waiting client must never acquire a deleted lock
 	// while another client starts a replacement daemon under a different inode.
 	keep := make(map[string]bool)
-	for _, lock := range []*os.File{setup, startup, owner} {
+	for _, lock := range locks {
 		parent, err := filepath.EvalSymlinks(filepath.Dir(lock.Name()))
 		if err != nil {
 			return err
 		}
 		keep[filepath.Join(parent, filepath.Base(lock.Name()))] = true
 	}
-	if err := resetHostedExitState(account, reply.Runtime); err != nil {
+	if err := resetHostedExitState(p.account, runtimeDirs); err != nil {
 		return err
 	}
-	if custom {
+	if p.customState {
 		// A custom state directory may contain user files; clear only sshore's
 		// known entries and leave unrelated contents alone.
 		for _, name := range []string{"identity", "shells", "shell-tree", "connections", "approvals", "requests", "mounts", "mount-history", "forwards", "peers", "names", "activity"} {
-			if err := removeResetEntry(filepath.Join(root, name), keep); err != nil {
+			if err := removeResetEntry(filepath.Join(p.state, name), keep); err != nil {
 				return err
 			}
 		}
-		keep[root] = true
-	} else if err := removeResetData(root, keep); err != nil {
+		// Preserve custom state if the cache contains it. A dedicated cache
+		// below the state directory can still be cleared normally.
+		if resetContains(p.cache, p.state) {
+			keep[p.state] = true
+		}
+	} else if err := removeResetData(p.state, keep); err != nil {
 		return err
 	}
-	if err := removeResetData(cache, keep); err != nil {
+	if err := removeResetData(p.cache, keep); err != nil {
 		return err
 	}
 	// The account directory has a fixed layout. Its other files and the
 	// coordination lock files are outside reset's removal set.
 	for _, name := range []string{"daemon.json", "local.log"} {
-		if err := os.Remove(filepath.Join(account, name)); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(filepath.Join(p.account, name)); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
-	fmt.Println("Reset complete; local tasks ended and application state and caches cleared.")
 	return nil
 }
 

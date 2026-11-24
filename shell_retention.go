@@ -1,9 +1,12 @@
 package main
 
 import (
+	"cmp"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"time"
 )
 
@@ -37,17 +40,19 @@ func requestShellRetention(c io.ReadWriter, request message) error {
 	return nil
 }
 
-// The root lease belongs to the frontend. Nested shells on this daemon
-// follow the registered parent task instead of a PID or another SSH lease.
+// A root lease belongs to the frontend. A child on another daemon gets its
+// parent identity and private entry token from this lease.
 func (s *shellTask) serveOwner(c net.Conn, m message) error {
 	s.mu.Lock()
-	if s.ownerClaimed || s.parent != nil || s.exited || s.killing || m.Instance != s.record.UID || m.SoftwareVersion != version {
+	if s.ownerClaimed || s.parent != nil || s.exited || s.killing || m.Instance != s.record.UID || m.SoftwareVersion != version ||
+		m.Owner == "" && m.Token != "" || m.Owner != "" && (!s.hosted || !validTaskUID(m.Owner) || len(m.Token) != 64 || s.terminal != nil) {
 		s.mu.Unlock()
 		return writeMessage(c, message{Type: "error", Error: "shell owner unavailable"})
 	}
 	s.ownerClaimed = true
+	s.remoteOwner, s.remoteOwnerToken = m.Owner, m.Token
 	s.mu.Unlock()
-	defer s.scopeEnded()
+	defer s.scopeEnded(nil)
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -64,22 +69,52 @@ func (s *shellTask) serveOwner(c net.Conn, m message) error {
 	return fmt.Errorf("account daemon unavailable")
 }
 
-func (s *shellTask) watchParent() {
-	if s.parent == nil {
+type ownedShellConnection struct {
+	net.Conn
+	token string
+}
+
+func (s *shellTask) checkRemoteOwnerLocked(c attachmentControl) error {
+	var token string
+	if owned, ok := c.(*ownedShellConnection); ok {
+		token = owned.token
+	}
+	if subtle.ConstantTimeCompare([]byte(token), []byte(s.remoteOwnerToken)) == 1 {
+		return nil
+	}
+	if s.remoteOwner != "" {
+		return fmt.Errorf("enter shell %s from its parent %s", taskShortCode(s.treeIdentity()), taskShortCode(identityFromUID(s.remoteOwner)))
+	}
+	return fmt.Errorf("parent shell route ended")
+}
+
+func (s *shellTask) watchParent(parent *shellTask) {
+	if parent == nil {
 		return
 	}
 	go func() {
 		select {
-		case <-s.parent.done:
-			s.scopeEnded()
+		case <-parent.done:
+			s.scopeEnded(parent)
 		case <-s.done:
 		}
 	}()
 }
 
-func (s *shellTask) scopeEnded() {
+func (s *shellTask) scopeEnded(owner *shellTask) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.parent != owner {
+		return
+	}
+	if owner == nil {
+		s.remoteOwner, s.remoteOwnerToken = "", ""
+	} else {
+		// Pinned survivors no longer need the terminated parent's task or routes.
+		s.tasks.forest.mu.Lock()
+		s.parent = nil
+		s.tasks.forest.mu.Unlock()
+	}
 	s.scopeLost = true
 	s.reapUnretainedLocked()
 }
@@ -117,6 +152,9 @@ func (s *shellTask) reapUnretainedLocked() {
 	if s.exited || s.killing {
 		return
 	}
+	if s.parent != nil && s.parent.treeEnded.Load() {
+		s.scopeLost = true
+	}
 	if s.pinned {
 		if s.pinUntil.IsZero() || time.Now().Before(s.pinUntil) || s.scopeLost && s.active != nil {
 			return
@@ -131,8 +169,65 @@ func (s *shellTask) reapUnretainedLocked() {
 }
 
 func (s *shellTask) parentIdentityLocked() string {
-	if s.parent == nil || s.parent.expired() {
-		return ""
+	if s.parent != nil && !s.parent.treeEnded.Load() {
+		return s.parent.treeIdentity()
 	}
-	return s.parent.treeIdentity()
+	return identityFromUID(s.remoteOwner)
+}
+
+// The owner lease is still live while the exit frame is being assembled.
+func (s *shellTask) retainedChildren() []retainedShell {
+	type managedTask interface {
+		daemonTask
+		managedShell() *shellTask
+	}
+	var retained []retainedShell
+	now := time.Now()
+	for _, task := range liveTasks[managedTask](s.tasks) {
+		child := task.managedShell()
+		child.mu.Lock()
+		if child.parent == s && !child.exited && !child.killing && child.pinned &&
+			(child.pinUntil.IsZero() || now.Before(child.pinUntil)) {
+			retained = append(retained, retainedShell{Instance: child.record.UID, Name: child.record.Name, PinUntil: child.pinUntil})
+		}
+		child.mu.Unlock()
+	}
+
+	s.mu.Lock()
+	remote := make([]*remoteShellChild, 0, len(s.remoteChildren))
+	for _, child := range s.remoteChildren {
+		remote = append(remote, child)
+	}
+	s.mu.Unlock()
+	if len(remote) > 0 {
+		replies := make(chan retainedShell, len(remote))
+		for _, child := range remote {
+			go func() {
+				status, err := child.status()
+				if err != nil || status.Owner != s.treeIdentity() || status.Action != taskDetached ||
+					!status.Pinned || !status.PinUntil.IsZero() && !time.Now().Before(status.PinUntil) {
+					replies <- retainedShell{}
+					return
+				}
+				replies <- retainedShell{Host: child.host, Instance: child.uid, Name: status.Name, PinUntil: status.PinUntil}
+			}()
+		}
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+	collect:
+		for range remote {
+			select {
+			case child := <-replies:
+				if child.Instance != "" {
+					retained = append(retained, child)
+				}
+			case <-timer.C:
+				break collect
+			}
+		}
+	}
+	slices.SortFunc(retained, func(a, b retainedShell) int {
+		return cmp.Or(cmp.Compare(a.Host, b.Host), cmp.Compare(a.Name, b.Name), cmp.Compare(a.Instance, b.Instance))
+	})
+	return retained[:min(len(retained), 64)]
 }

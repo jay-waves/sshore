@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -39,7 +38,7 @@ func openNativeShell(ctx context.Context, ref, identity string) (net.Conn, local
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	var reply localStartup
-	err = json.NewDecoder(conn).Decode(&reply)
+	err = readControlJSON(conn, &reply)
 	if err == nil {
 		switch {
 		case reply.Error != "":
@@ -121,10 +120,11 @@ func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, read
 	}
 	s.record = r
 	s.tasks = tasks
+	parent := s.parent
 	if err := tasks.register(r.UID, &nativeShellTask{shell: s, serve: serve}); err != nil {
 		return err
 	}
-	s.watchParent()
+	s.watchParent(parent)
 	if err := ready(r); err != nil {
 		return err
 	}
@@ -146,14 +146,7 @@ func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, read
 
 type localShell struct {
 	shellTask
-	handoff      *localHandoff
-	handoffHints map[net.Conn]*localHandoff
-}
-
-// Use the handoff's attachment ID for inventory and keep the token private.
-func handoffAttachmentID(token string) string {
-	digest := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(digest[:16])
+	handoff *localHandoff
 }
 
 func (s *localShell) view() localShellView {
@@ -164,15 +157,9 @@ func (s *localShell) view() localShellView {
 		Name: s.record.Name, Directory: s.record.Directory, Version: s.record.Version, PID: s.process.PID,
 	}
 	view.State = s.state()
-	var hosts []string
-	for _, h := range s.handoffHints {
-		if h.host != "" {
-			hosts = append(hosts, h.host)
-			view.handoffAttachments = append(view.handoffAttachments, handoffAttachmentID(h.token))
-		}
+	if s.active != nil {
+		view.SourceHost = s.active.sourceHost
 	}
-	slices.Sort(hosts)
-	view.ConnectedHost = strings.Join(slices.Compact(hosts), ", ")
 	return view
 }
 
@@ -212,8 +199,15 @@ func localSessionTargets(name string, request message) message {
 		reply.Error = err.Error()
 		return reply
 	}
+	parent := ""
 	for _, row := range rows {
-		if row.State != taskDetached {
+		if row.Name == name {
+			parent = row.identity
+			break
+		}
+	}
+	for _, row := range rows {
+		if row.State != taskDetached || row.Owner != "" && row.Owner != parent {
 			continue
 		}
 		if request.Action == "select" && row.Name != request.Name {
@@ -248,8 +242,6 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, pa
 	defer s.close()
 	return serveLocalShell(tasks, s, record, ready, func(c net.Conn, m message) error {
 		switch m.Type {
-		case "watch_handoff":
-			return s.watchHandoff(c, m)
 		case "handoff_confirm":
 			return s.confirmHandoff(c, m)
 		case "handoff":
@@ -289,7 +281,6 @@ func (s *localShell) attach(c net.Conn) error {
 		if err != nil {
 			return "", s.close
 		}
-		saveShellTree(s.record.identity(), s.record.Name, nil, taskDetached)
 		return s.record.Name, nil
 	}, func(m message) error {
 		switch m.Type {
@@ -301,7 +292,7 @@ func (s *localShell) attach(c net.Conn) error {
 			if m.Pinned {
 				args = append(args, "--pin")
 			}
-			h := &clientHandoff{Args: args, Directory: s.record.Directory, Environment: append([]string(nil), s.environment...), Tree: shellTreeFor(s.record.identity())}
+			h := &clientHandoff{Args: args, Directory: s.record.Directory, Environment: append([]string(nil), s.environment...)}
 			s.mu.Unlock()
 			go serveChildShortcut(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
 		case "session_targets":

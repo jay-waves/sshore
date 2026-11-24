@@ -8,7 +8,8 @@ on PATH; otherwise install to %LOCALAPPDATA%\sshore\bin and add it to the user
 and current session PATH. Verify SHA256SUMS and executable version before
 replacement. Never modify system PATH, profiles or execution
 policy; never elevate or create versioned backups. The installer stops the account daemon
-before replacement and prompts when it owns tasks.
+before replacement and prompts when it owns tasks. Bootstrap resets account
+state even at the same version.
 Remaining clients may still hold the executable open; close them and retry.
 .PARAMETER Version
 Published X.Y.Z version (without v). Defaults to the latest release.
@@ -181,14 +182,7 @@ function Install-Sshore([string]$Version = '', [string]$Path = '') {
         if ((Read-SshoreBinaryVersion $stage) -cne "sshore $Version") {
             throw 'Binary version does not match release; installation unchanged.'
         }
-        # The published 0.7.9 executable predates the install command.
-        $legacy = $false
-        if ($Version -eq '0.7.9') {
-            & $stage install --help *> $null
-            $legacy = $LASTEXITCODE -ne 0
-        }
-        if ($legacy) { & $stage setup --apply --path $target }
-        else { & $stage install --apply "here:$target" }
+        & $stage bootstrap --apply "here:$target"
         if ($LASTEXITCODE -ne 0) { throw 'Installation stopped. Close remaining sshore clients if the executable is still in use, then retry.' }
         [IO.File]::Delete($stage)
         $stage = $null

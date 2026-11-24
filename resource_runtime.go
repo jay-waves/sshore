@@ -13,7 +13,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -326,11 +325,7 @@ func startSelectedResource(config resourceConfig, reservation *taskIdentitySelec
 		detail = fmt.Sprintf("%s:%s -> %s · %s", record.Host, record.Remote, record.Mountpoint, mode)
 	case "forward":
 		if f := config.Forward; f != nil {
-			listener, service := "local", f.Host
-			if f.Reverse {
-				listener, service = service, listener
-			}
-			detail = fmt.Sprintf("%s %s -> %s %s", listener, loopback(f.Port), service, loopback(f.Target))
+			detail = f.description("local", f.Host)
 		}
 	}
 	fmt.Fprintf(os.Stdout, "Started %s/%s: %s\n", kind, record.Name, cleanText(detail))
@@ -338,11 +333,7 @@ func startSelectedResource(config resourceConfig, reservation *taskIdentitySelec
 	return 0, nil
 }
 
-func (s *resourceService) peerTask() peerRecord {
-	detail := strings.ReplaceAll(s.record.Detail, "your computer", "manager")
-	if s.record.Kind == "mount" {
-		detail = "remote directory: " + s.record.Remote
-	}
+func (s *resourceService) peerTask(detail string) peerRecord {
 	// Derive a stable mirror key without exposing the local control token.
 	key := sha256.Sum256([]byte("peer:" + s.record.UID))
 	return peerRecord{Direction: s.record.Direction, UID: s.record.UID, Version: version, Key: hex.EncodeToString(key[:16]), ID: s.record.Kind + "/" + s.record.Name, Manager: taskManagerLabel(), Detail: cleanText(detail)}

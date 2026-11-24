@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -154,7 +153,7 @@ func closedAttachment(t *testing.T) *attachment {
 }
 func TestInitialAttachmentFailureEndsCreatedTerminal(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
-	s := &remoteShell{shellTask: shellTask{hosted: true, record: localShellRecord{Name: "failed"}, done: make(chan struct{})}}
+	s := &remoteShell{shellTask: shellTask{tasks: &daemonTasks{}, hosted: true, record: localShellRecord{Name: "failed"}, done: make(chan struct{})}}
 	p := closedAttachment(t)
 	if err := s.attach(p, message{Type: "attach", Term: "xterm-256color", Cols: 80, Rows: 24}); err == nil {
 		t.Fatal("accepted closed attachment")
@@ -180,7 +179,7 @@ func TestInitialAttachmentFailureEndsCreatedTerminal(t *testing.T) {
 }
 func TestFailedReattachmentPreservesDetachedTerminal(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
-	s := &remoteShell{shellTask: shellTask{hosted: true, record: localShellRecord{Name: "detached"}, done: make(chan struct{})}}
+	s := &remoteShell{shellTask: shellTask{tasks: &daemonTasks{}, hosted: true, record: localShellRecord{Name: "detached"}, done: make(chan struct{})}}
 	if err := s.start(message{Cols: 80, Rows: 24, Term: "xterm-256color"}); err != nil {
 		t.Fatal(err)
 	}
@@ -216,19 +215,36 @@ func TestDetachReportsFailedClientNotification(t *testing.T) {
 	}
 }
 
-func TestPSTreeReattachmentAncestry(t *testing.T) {
+func TestListUpdatesAttachmentSource(t *testing.T) {
 	e := newEnv(t)
 	b, pid := e.attach("tree")
 	shellOutput(t, b, "printf 'START-%s' ready", "START-ready")
 	detachTestClient(t, b)
-	for _, parent := range []string{"parent-a", "parent-b"} {
-		b = reattachTestWithTree(t, e, "tree", pid, shellTreeNode{Identity: "origin", Host: "workstation", Name: "origin", State: taskActive}, shellTreeNode{Parent: "origin", Identity: parent, Host: "upstream", Name: parent, State: taskActive})
-		output := shellOutput(t, b, shellQuote(e.bin)+" pstree; printf 'TREE-%s' done", "TREE-done")
-		if !strings.Contains(output, "(tree)  [active]  [pinned]  *") || strings.Contains(output, "<- upstream") || strings.Contains(output, "HOST  ") || strings.Contains(output, "("+parent+")") {
-			t.Fatalf("incorrect local scope/source/current: %q", output)
+	serverID, _ := localMachineIdentity()
+	if !validMachineID(serverID) {
+		t.Fatalf("invalid fixture account identity %q", serverID)
+	}
+	for _, source := range []struct {
+		host, machineID string
+	}{
+		{"workstation-a", strings.Repeat("a", 32)},
+		{"workstation-b", strings.Repeat("b", 32)},
+		{"local-alias", serverID},
+	} {
+		b = e.bridge("tree", "attach")
+		b.sendAttach(t, message{Type: "attach", Action: "existing", SourceHost: source.host, MachineID: source.machineID, Term: "xterm", Cols: 80, Rows: 24})
+		if ready := recv(t, b.out); ready.Type != "ready" || ready.PID != pid || ready.MachineID != serverID || ready.Owner != "" {
+			t.Fatalf("reattach: %+v", ready)
 		}
-		if parent == "parent-b" && strings.Contains(output, "parent-a") {
-			t.Fatalf("stale parent after attach: %q", output)
+		output := shellOutput(t, b, shellQuote(e.bin)+" list | cat; printf 'TREE-%s' done", "TREE-done")
+		marker := "pinned"
+		incoming := 0
+		if source.machineID != serverID {
+			marker = "from " + source.host
+			incoming++
+		}
+		if !strings.Contains(output, "(tree)") || !strings.Contains(output, marker) || strings.Count(output, "from ") != incoming || !strings.Contains(output, "DETAIL") {
+			t.Fatalf("incorrect local scope/source/current: %q", output)
 		}
 		detachTestClient(t, b)
 	}
@@ -268,31 +284,17 @@ func TestNoProfileRemoteStartup(t *testing.T) {
 	b.readExit(t)
 }
 
-func TestPSTreeKeepsUnavailableHostedShell(t *testing.T) {
-	dir, err := os.MkdirTemp("", "sshore-tree-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(dir)
-	t.Setenv("SSHORE_RUNTIME_DIR", dir)
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(dir, "state"))
+func TestPSTreeIncludesRegisteredShellBeforeAttachment(t *testing.T) {
+	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	uid := newTaskUID()
 	tasks := startRequestDaemon(t)
 	shell := &remoteShell{shellTask: shellTask{hosted: true, tasks: tasks, record: localShellRecord{UID: uid, Name: "blocked"}, done: make(chan struct{})}}
 	if err := tasks.register(uid, shell); err != nil {
 		t.Fatal(err)
 	}
-	// A task's status can fail without erasing its known identity.
-	saveShellTree(identityFromUID(uid), "blocked", nil, taskDetached, "heartbeat")
-	// The listening socket never answers, but its local lifetime lock stays held.
 	rows, err := readTaskTree()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	writeShellTree(&out, rows, "", false)
-	if !strings.Contains(out.String(), uid[:6]+" (blocked)") || !strings.Contains(out.String(), "sh/") {
-		t.Fatal(out.String())
+	if err != nil || len(rows) != 1 || rows[0].Identity != identityFromUID(uid) || rows[0].Name != "blocked" || rows[0].State != taskStarting {
+		t.Fatalf("registered shell: %+v, %v", rows, err)
 	}
 }
 

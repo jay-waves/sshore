@@ -10,6 +10,7 @@ import (
 // Participation records only tasks opened through this client account.
 type participatingShell struct {
 	Host, Instance, Name string
+	Owner                string
 	State                string
 	PID                  int
 	Pinned               bool
@@ -86,6 +87,8 @@ func validateParticipatingShell(row participatingShell) error {
 		return fmt.Errorf("remote shell has an invalid SSH destination")
 	case !validTaskUID(row.Instance):
 		return fmt.Errorf("remote shell has an invalid task ID")
+	case row.Owner != "" && row.Owner != identityFromUID(canonicalTaskUID(row.Owner)):
+		return fmt.Errorf("remote shell has an invalid parent task ID")
 	case validSession(row.Name) != nil:
 		return fmt.Errorf("remote shell has an invalid session name")
 	case row.PID <= 0:
@@ -94,10 +97,10 @@ func validateParticipatingShell(row participatingShell) error {
 		return fmt.Errorf("remote shell has an invalid attachment ID")
 	}
 	switch row.State {
-	case taskActive, taskDetached, taskUnknown:
+	case taskActive, taskWaiting, taskDetached, taskUnknown:
 		return nil
 	default:
-		return fmt.Errorf("remote shell has invalid state %.40q (expected %s, %s or %s)", row.State, taskActive, taskDetached, taskUnknown)
+		return fmt.Errorf("remote shell has invalid state %.40q (expected %s, %s, %s or %s)", row.State, taskActive, taskWaiting, taskDetached, taskUnknown)
 	}
 }
 
@@ -176,8 +179,8 @@ func (m *daemonMetadata) updateParticipation(r metadataRequest) error {
 			return fmt.Errorf("invalid participating shell refresh")
 		}
 		for _, view := range r.Participation.Shells {
-			if !validTaskUID(view.Instance) || !validShellTreeState(view.State) {
-				return fmt.Errorf("invalid shell in participation refresh")
+			if !validTaskUID(view.Instance) || view.Owner != "" && view.Owner != identityFromUID(canonicalTaskUID(view.Owner)) {
+				return fmt.Errorf("invalid shell or parent ID in participation refresh")
 			}
 		}
 		rows = refreshParticipation(rows, r.Host, *r.Participation, now)
@@ -200,7 +203,8 @@ func refreshParticipation(rows []participatingShell, host string, refresh partic
 			if !found {
 				continue
 			}
-			if validSession(view.Name) == nil && view.PID > 0 && (view.State == taskActive || view.State == taskDetached) {
+			if validSession(view.Name) == nil && view.PID > 0 && (view.State == taskActive || view.State == taskWaiting || view.State == taskDetached) {
+				row.Owner = view.Owner
 				row.Name, row.State, row.PID = view.Name, view.State, view.PID
 				row.Pinned, row.PinUntil, row.ChangedAt = view.Pinned, view.PinUntil, now
 			}

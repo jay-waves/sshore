@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -95,6 +96,34 @@ Match command "printf forwarding-check"
 			t.Fatalf("ignored forwarding: stdout %q, stderr %q, error %v", output, warning.String(), err)
 		}
 	}
+	t.Run("reverse forward direction in list", func(t *testing.T) {
+		probe, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		remotePort := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
+		probe.Close()
+		localPort := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
+		start, err := command("forward", host+":"+remotePort, "here:"+localPort).CombinedOutput()
+		if err != nil {
+			t.Fatalf("start reverse forward: %s (%v)", start, err)
+		}
+		_, task, found := strings.Cut(string(start), "Started forward/")
+		name, _, _ := strings.Cut(task, ":")
+		if !found || name == "" {
+			t.Fatalf("reverse forward did not start: %s", start)
+		}
+		t.Cleanup(func() {
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = exec.CommandContext(cleanup, binary, "kill", "forward/"+name).Run()
+		})
+		inventory, err := exec.CommandContext(ctx, binary, "list").CombinedOutput()
+		if err != nil || !strings.Contains(string(inventory), "local:"+localPort+" <- "+host+":"+remotePort) ||
+			strings.Contains(string(inventory), "REMOTE") {
+			t.Fatalf("reverse forward inventory: %s (%v)", inventory, err)
+		}
+	})
 	out := run("sh", host+":", "--detach", "--no-profile", "--no-login", "--server", binary)
 	endpoint := ""
 	for _, line := range strings.Split(out, "\n") {
@@ -107,58 +136,149 @@ Match command "printf forwarding-check"
 	if !strings.HasPrefix(endpoint, host+":") {
 		t.Fatalf("detached launch: %q", out)
 	}
-	t.Cleanup(func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = exec.CommandContext(cleanup, binary, append([]string{"kill", endpoint, "--server", binary}, ssh...)...).Run()
-	})
+	cleanRemote := func(endpoint string) {
+		t.Cleanup(func() {
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = exec.CommandContext(cleanup, binary, append([]string{"kill", endpoint, "--server", binary}, ssh...)...).Run()
+		})
+	}
+	cleanRemote(endpoint)
 	attach := func(input string, markers ...string) {
 		t.Helper()
 		cmd := command("attach", endpoint, "--server", binary, "-D1080")
-		cmd.Env = append(os.Environ(), "NO_COLOR=")
-		terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 120})
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer terminal.Close()
-		stop := context.AfterFunc(ctx, func() { terminal.Close() })
-		defer stop()
-		defer func() {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-		}()
-		reader := bufio.NewReader(terminal)
-		wait := func(marker string) string {
-			t.Helper()
-			var transcript strings.Builder
-			for !strings.Contains(ansi.Strip(transcript.String()), marker) {
-				chunk, err := reader.ReadString('\n')
-				transcript.WriteString(chunk)
-				if err != nil {
-					t.Fatalf("waiting for %q: %v\n%s", marker, err, transcript.String())
-				}
+		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait func(string) string) {
+			if warning := wait("WARNING: Ignoring SSH forwarding rules"); !strings.Contains(warning, "\x1b[33m") {
+				t.Fatalf("forwarding warning lacks terminal color: %q", warning)
 			}
-			return transcript.String()
-		}
-		if warning := wait("WARNING: Ignoring SSH forwarding rules"); !strings.Contains(warning, "\x1b[33m") {
-			t.Fatalf("forwarding warning lacks terminal color: %q", warning)
-		}
-		wait("Connected ")
-		if _, err := io.WriteString(terminal, input); err != nil {
-			t.Fatal(err)
-		}
-		for _, marker := range markers {
-			wait(marker)
-		}
-		wait("No shell attached.")
-		if _, err := io.WriteString(terminal, "exit\r"); err != nil {
-			t.Fatal(err)
-		}
-		if err := cmd.Wait(); err != nil {
-			t.Fatal(err)
-		}
+			wait("Connected ")
+			send(input)
+			for _, marker := range markers {
+				wait(marker)
+			}
+			wait("No shell attached.")
+			send("exit\r")
+		})
 	}
 	attach("export SSHORE_FIXTURE=retained\n\x02d", "Detached from")
 	attach("printf 'VALUE=%s:%s\\n' \"$(id -un)\" \"$SSHORE_FIXTURE\"\nexit\n",
 		"VALUE=sshore-fixture:retained", "Exited ")
+
+	t.Run("remote child resumes after its parent exits", func(t *testing.T) {
+		child := host + ":build"
+		cleanRemote(child)
+		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+		parent := exec.CommandContext(ctx, binary, "sh", "here:dev", "--no-profile", "--no-login")
+		const report = "printf 'BUILD_%s=%s:%s\\n' state \"$$\" \"$SSHORE_BUILD\"\n"
+		var recorded string
+		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait func(string) string) {
+			wait("Connected here:dev")
+			send(quote(binary) + " sh " + child + " --no-profile --no-login --server " + quote(binary) + " -- -F " + quote(config) + "\n")
+			wait("Connected " + child)
+			send("export SSHORE_BUILD=retained; " + report)
+			const marker = "BUILD_state="
+			line := ansi.Strip(wait(marker))
+			_, state, _ := strings.Cut(strings.TrimSpace(line), marker)
+			pid, value, _ := strings.Cut(state, ":")
+			if number, err := strconv.Atoi(pid); err != nil || number <= 0 || value != "retained" {
+				t.Fatalf("unexpected remote shell state: %q", line)
+			}
+			recorded = marker + state
+			send("\x02d")
+			wait("Connected here:dev")
+			send(quote(binary) + " attach " + child + "\n")
+			wait("Connected " + child)
+			send(report)
+			wait(recorded)
+			send("\x02d")
+			wait("Connected here:dev")
+			send("exit\n")
+			wait("Exited here:dev")
+			wait("No shell attached.")
+			send("exit\r")
+		})
+		runOpenSSHTerminal(t, ctx, command("attach", child, "--server", binary), func(send func(string), wait func(string) string) {
+			wait("Connected " + child)
+			send(report)
+			wait(recorded)
+			send("exit\n")
+			wait("Exited " + child)
+			wait("No shell attached.")
+			send("exit\r")
+		})
+	})
+	t.Run("nested exit explains retained roots", func(t *testing.T) {
+		build, child := host+":nested-build", host+":saved-child"
+		cleanRemote(child)
+		cleanRemote(build)
+		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+		parent := exec.CommandContext(ctx, binary, "sh", "here:panel-dev", "--no-profile", "--no-login")
+		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait func(string) string) {
+			wait("Connected here:panel-dev")
+			send(quote(binary) + " sh " + build + " --no-profile --no-login --server " + quote(binary) + " -- -F " + quote(config) + "\n")
+			wait("Connected " + build)
+			send(quote(binary) + " sh here:saved-child --no-profile --no-login\n")
+			wait("Connected " + child)
+			send("export SSHORE_PANEL_CHECK=kept\n\x02d")
+			wait("Connected " + build)
+			send("exit\n")
+			wait("Exited " + build + " (code 0)")
+			wait("Pinned shells become independent roots")
+			wait("(saved-child) · pinned indefinitely")
+			wait("Use exit or Esc to return to here:panel-dev.")
+			send("exit\r")
+			wait("Connected here:panel-dev")
+			send("exit\n")
+			wait("No shell attached.")
+			send("exit\r")
+		})
+		runOpenSSHTerminal(t, ctx, command("attach", child, "--server", binary), func(send func(string), wait func(string) string) {
+			wait("Connected " + child)
+			send("printf 'SAVED_%s=%s\n' state \"$SSHORE_PANEL_CHECK\"\nexit\n")
+			wait("SAVED_state=kept")
+			wait("No shell attached.")
+			send("exit\r")
+		})
+	})
+}
+
+func runOpenSSHTerminal(t *testing.T, ctx context.Context, cmd *exec.Cmd, run func(send func(string), wait func(string) string)) {
+	t.Helper()
+	cmd.Env = append(os.Environ(), "NO_COLOR=")
+	terminal, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	stop := context.AfterFunc(ctx, func() { terminal.Close() })
+	defer stop()
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+	reader := bufio.NewReader(terminal)
+	var transcript strings.Builder
+	wait := func(marker string) string {
+		t.Helper()
+		for {
+			line, err := reader.ReadString('\n')
+			transcript.WriteString(line)
+			if strings.Contains(ansi.Strip(line), marker) {
+				return line
+			}
+			if err != nil {
+				t.Fatalf("waiting for %q: %v\n%s", marker, err, transcript.String())
+			}
+		}
+	}
+	send := func(input string) {
+		t.Helper()
+		if _, err := io.WriteString(terminal, input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run(send, wait)
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("terminal client: %v\n%s", err, transcript.String())
+	}
 }

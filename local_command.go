@@ -11,20 +11,18 @@ import (
 )
 
 type localShellView struct {
-	hosted        bool
-	Owner         string    `json:"owner,omitempty"`
-	Pinned        bool      `json:"pinned,omitempty"`
-	PinUntil      time.Time `json:"pin_until,omitzero"`
-	ShortID       string    `json:"short_id,omitempty"`
-	identity      string
-	Name          string `json:"name"`
-	State         string `json:"state"`
-	ConnectedHost string `json:"connected_host,omitempty"`
-	PID           int    `json:"pid,omitempty"`
-	Version       string `json:"version"`
-	Directory     string `json:"directory,omitempty"`
-
-	handoffAttachments []string
+	SourceHost string `json:"source_host,omitempty"`
+	hosted     bool
+	Owner      string    `json:"owner,omitempty"`
+	Pinned     bool      `json:"pinned,omitempty"`
+	PinUntil   time.Time `json:"pin_until,omitzero"`
+	ShortID    string    `json:"short_id,omitempty"`
+	identity   string
+	Name       string `json:"name"`
+	State      string `json:"state"`
+	PID        int    `json:"pid,omitempty"`
+	Version    string `json:"version"`
+	Directory  string `json:"directory,omitempty"`
 }
 
 func localRequest(ref, identity string, request message) (message, error) {

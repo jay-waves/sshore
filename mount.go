@@ -132,6 +132,10 @@ func executeMount(o ftpOptions) (int, error) {
 	return runFTPMount(o, nil, nil)
 }
 
+func (s *resourceService) mountPeerTask() peerRecord {
+	return s.peerTask("export " + s.record.Remote)
+}
+
 func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecycle) (int, error) {
 	c := files.MountConfig{Approval: o.Approval, Host: o.Host, Remote: o.Remote, Mountpoint: o.Mountpoint, Version: version, ReadOnly: o.ReadOnly, DirectIO: o.DirectIO, Stats: o.Stats, StartupTimeout: o.StartupTimeout, IOTimeout: o.IOTimeout}
 	c.History = mountVisitHistory
@@ -141,7 +145,7 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 		connection.Directory = s.directory
 		connection.Confirm, connection.Secret = s.config.Auth.callbacks()
 		connection.Warn = s.config.Auth.warn
-		c.PeerMetadata, _ = json.Marshal(s.peerTask())
+		c.PeerMetadata, _ = json.Marshal(s.mountPeerTask())
 	}
 	c.Prepare = func(_ context.Context, wire io.ReadWriter) (string, error) {
 		return negotiateSetup(wire, wire, o.Host, false)

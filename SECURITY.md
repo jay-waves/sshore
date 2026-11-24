@@ -324,14 +324,17 @@ The authenticated SSH exec channel passes a versioned service request before
 starting the selected protocol. The request selects a handler and carries no
 additional authority. Approved routes and task mutations retain their existing
 source, identity and account-daemon checks.
-`install HOST:` uses authenticated SSH to run the bundled installer on the target.
+`bootstrap HOST:` uses authenticated SSH to run the bundled installer on the target.
 Installers verify the release checksum and executable version. The prepared binary
-stages the replacement before requesting shutdown. It invokes the installed
-release's `kill --all` when that release owns the daemon. Otherwise it requests
-the administrative snapshot from the daemon identified during preflight.
+stages the replacement before requesting shutdown, including for same-version
+reinstalls. It reads one authenticated administrative snapshot and requests
+shutdown against the same daemon instance and task set.
 Active tasks require confirmation of the displayed snapshot. Before publishing
 under the startup and owner locks, the installer rechecks the installation target
-against the file it inspected. Unknown or newer installed releases require manual
+against the file it inspected. After replacement it clears the target account's
+identity, history, runtime state and cached releases under the same locks as
+`reset`. A cleanup failure reports the installed version and can be retried with
+`bootstrap`. Unknown or newer installed releases require manual
 handling.
 
 Replacement requires a user-owned regular file and a user-owned directory
@@ -363,20 +366,21 @@ escaped/reparented processes cannot be globally controlled. Native SSH forwardin
 remains the local user's policy.
 
 Installer scripts verify the release before invoking the prepared executable to
-apply it. Install help is read-only.
+apply it. Bootstrap help is read-only.
 
 ## Inventory and privacy
 
 Public inventory is an allowlist: it excludes control addresses/tokens, SSH options
 and terminal contents. Shell process listings show sanitized same-user names and
-PIDs, excluding arguments and environments. Live tree edges describe registered
-parent shells. Foreground summaries and detailed resource
+PIDs, excluding arguments and environments. Live tree edges describe registered parent shells or the holder of a live
+cross-host owner lease. Tree reservations and private child routes authorize
+foreground handoffs and stay outside the public inventory. Foreground summaries and detailed resource
 status can reveal working-directory/project names, paths, ports and errors.
 
 Peer records expose only their resource identity, manager label, remote-facing
 path or port direction, and state. They exclude local mount paths and unrelated
 hosts. A remote account can forge its own inventory. The account daemon displays
-incoming resources in `list` and `pstree` for the lifetime of their authenticated
+incoming resources in `list` for the lifetime of their authenticated
 socket leases. When connections overlap, it displays the newest live lease for
 each resource key. EOF or a missed heartbeat releases that connection's
 registration. These read-only entries establish transport participation.
@@ -385,7 +389,8 @@ Resource control requires separate authorization. Attachment-source metadata is 
 Cached shell relationships, task IDs, legacy exit receipts and worker liveness
 are not proof of identity, successful cleanup or remote service health. Targets
 are not probed. `list` reads remote shell observations from the local daemon.
-`pstree` uses those observations to display recorded remote detaches.
+`pstree` uses the last observed shell state and parent to render its branches.
+`list` includes the last known parent ID and observation time.
 The host resolves task selectors against its live registry. The command prompt reads the current host’s
 registered tasks through its authenticated attachment or through a direct,
 exact-release SSH inventory request after leaving the root shell. The client

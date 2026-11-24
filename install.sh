@@ -14,7 +14,8 @@ Usage: sh install.sh [--version X.Y.Z] [--path PATH | --bin-dir DIRECTORY]
 Install a published Linux amd64 release, without sudo or shell profile edits.
 Default: latest release into $HOME/.local/bin. Explicit --version is recommended
 when matching a local client. Requires curl, tar and sha256sum (or shasum).
-Upgrades stop the account daemon. If tasks are listed, follow the confirmation prompt.
+Bootstrap resets this account's sshore state and reinstalls even at the same
+version. Review any running tasks before confirming.
 Windows clients: use install.ps1 or the matching release ZIP.
 HELP
 }
@@ -111,12 +112,7 @@ main() {
     if ( : 2>/dev/null </dev/tty ); then
         exec </dev/tty
     fi
-    # The published 0.7.9 executable predates the install command.
-    if [ "$install_version" = 0.7.9 ] && ! "$install_tmp/sshore" install --help >/dev/null 2>&1; then
-        "$install_tmp/sshore" setup --apply --path "$install_target" || fail 'installation stopped'
-    else
-        "$install_tmp/sshore" install --apply "here:$install_target" || fail 'installation stopped'
-    fi
+    "$install_tmp/sshore" bootstrap --apply "here:$install_target"
     printf 'Installed sshore %s: %s\n' "$install_version" "$install_target"
     printf '%s\n' 'SHA256 verified. No sudo or shell configuration changes.'
     printf '%s\n' 'Use matching client/server versions. Remote accounts are updated separately.'

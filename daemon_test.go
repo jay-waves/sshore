@@ -294,46 +294,42 @@ func TestDaemonListsLocalTasksAndRecordedShells(t *testing.T) {
 	}
 }
 
-func TestTaskTreeMetadataWithinDaemon(t *testing.T) {
-	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	activityFixture(t)
-	if _, err := metadataRPC(metadataRequest{Action: "tree_save", Key: "child", Name: "child", Tree: []shellTreeNode{{Identity: "parent", State: taskActive}}, State: taskActive}); err != nil {
-		t.Fatal(err)
-	}
-	reply, err := metadataRPC(metadataRequest{Action: "tree_get", Key: "child"})
-	if err != nil || len(reply.Tree) != 2 || reply.Tree[0].Identity != "parent" || reply.Tree[1].Identity != "child" {
-		t.Fatalf("tree metadata: %+v, %v", reply.Tree, err)
-	}
-}
-
 func TestTaskTreeDaemonSnapshot(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
 	tasks := startRequestDaemon(t)
-	first := registerTestShell(t, tasks, "first", strings.Repeat("a", 32)).identity()
-	second := registerTestShell(t, tasks, "second", strings.Repeat("b", 32)).identity()
-	saveShellTree(first, "first", []shellTreeNode{{Identity: second, State: taskActive}}, taskActive, "parent")
-	saveShellTree(second, "second", []shellTreeNode{{Identity: first, State: taskActive}}, taskActive, "parent")
-	saveShellTree("cache-only", "cache-only", nil, taskDetached, "persistent")
-	for _, state := range []string{taskActive, taskDetached} {
-		err := observeParticipatingShell(participatingShell{
-			Host: "work", Instance: newTaskUID(), Name: state, State: state,
-			PID: 1234, Attachment: newTaskUID(),
-		})
-		if err != nil {
+	root := registerTestShell(t, tasks, "first", strings.Repeat("a", 32))
+	parent := tasks.lookup(root.UID).(*nativeShellTask).shell
+	child := localShellRecord{UID: strings.Repeat("b", 32), Name: "second", Version: version}
+	shell := &localShell{shellTask: shellTask{record: child, tasks: tasks, parent: &parent.shellTask, done: make(chan struct{})}}
+	if err := tasks.register(child.UID, &nativeShellTask{shell: shell}); err != nil {
+		t.Fatal(err)
+	}
+	first, second := root.identity(), child.identity()
+	active, detached := strings.Repeat("c", 32), strings.Repeat("d", 32)
+	for _, row := range []participatingShell{
+		{Instance: active, State: taskActive, Owner: second},
+		{Instance: detached, State: taskDetached},
+	} {
+		row.Host, row.Name, row.PID, row.Attachment = "work", row.State, 1234, newTaskUID()
+		if err := observeParticipatingShell(row); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	snapshot, _, err := readTaskInventory(taskInventoryRequest{Detail: "tree"})
-	if err != nil || snapshot.Error != "" {
-		t.Fatalf("tree snapshot: %+v, %v", snapshot, err)
+	rows, err := readTaskTree()
+	if err != nil || len(rows) != 4 {
+		t.Fatalf("combined snapshot: %+v %v", rows, err)
 	}
-	rows := snapshot.Tree
-	if len(rows) != 3 || rows[0].Identity != first || rows[0].Owner != 0 || rows[1].Identity != second || rows[1].Owner != 0 {
-		t.Fatalf("cached ownership changed the registered tree: %+v", rows)
-	}
-	if row := rows[2]; row.Owner != 0 || row.Remote != "work" || row.Code == "" || row.State != taskDetached || row.SeenAt.IsZero() {
-		t.Fatalf("recorded detach: %+v", row)
+	for i, want := range []struct {
+		identity string
+		owner    int
+	}{
+		{first, 0}, {second, 1}, {identityFromUID(active), 2}, {identityFromUID(detached), 0},
+	} {
+		row := rows[i]
+		if row.Identity != want.identity || row.Owner != want.owner || i >= 2 && (row.Remote != "work" || row.SeenAt.IsZero()) {
+			t.Fatalf("unexpected row %d: %+v", i, row)
+		}
 	}
 	bin := testBinary(t)
 	for _, current := range []string{first, second} {
@@ -350,14 +346,14 @@ func TestTaskTreeDaemonSnapshot(t *testing.T) {
 			if text != console.Output {
 				t.Fatalf("standalone tree %q, console tree %q", text, console.Output)
 			}
-			want := "(first)  [starting]  *"
+			want := "* first (" + taskShortCode(first) + ")  starting"
 			if current == second {
-				want = "(second)  [starting]  *"
+				want = "* second (" + taskShortCode(second) + ")  starting"
 			}
-			if strings.Count(text, "  *") != 1 || !strings.Contains(text, want) {
+			if strings.Count(text, "* ") != 1 || !strings.Contains(text, want) {
 				t.Fatal(text)
 			}
-			if !strings.HasSuffix(text, "sh/"+rows[2].Code+" (detached)  [detached]  -> work  seen just now") {
+			if !strings.Contains(text, "detached ("+taskShortCode(identityFromUID(detached))+") on work  detached") {
 				t.Fatalf("recorded detach must be the last root: %q", text)
 			}
 		})
@@ -385,11 +381,8 @@ func TestTaskTreeSnapshotUnlocksBeforeStatus(t *testing.T) {
 	defer cancel()
 	activity := accountActivity.Load()
 	go func() {
-		rows, err := activity.taskTreeSnapshot(ctx)
-		if err != nil {
-			t.Error(err)
-		}
-		first <- rows
+		inv := activity.listTasks(ctx, taskListRequest{Native: true, Observed: true})
+		first <- inv.Tree
 	}()
 	select {
 	case <-started:
@@ -398,14 +391,14 @@ func TestTaskTreeSnapshotUnlocksBeforeStatus(t *testing.T) {
 	}
 
 	shell := registerTestShell(t, tasks, "new", strings.Repeat("d", 32))
-	second, _, err := readTaskInventory(taskInventoryRequest{Detail: "tree"})
-	if err != nil || second.Error != "" || len(second.Tree) != 2 || second.Tree[1].Identity != shell.identity() {
-		t.Fatalf("second snapshot: %+v, %v", second.Tree, err)
+	second, err := collectInventory(true)
+	if err != nil || len(second.Tree) != 1 || second.Tree[0].Identity != shell.identity() || len(second.Resources) != 0 {
+		t.Fatalf("shell-only snapshot: %+v, %v", second, err)
 	}
 	cancel()
 	select {
 	case snapshot := <-first:
-		if len(snapshot) != 1 || snapshot[0].Identity != "task:"+id {
+		if len(snapshot) != 0 {
 			t.Fatalf("first snapshot changed after registration: %+v", snapshot)
 		}
 	case <-time.After(requestTimeout):
@@ -418,7 +411,7 @@ func TestTaskTreeDaemonUnavailable(t *testing.T) {
 	t.Setenv("SSHORE_STATE_DIR", root)
 	bin := testBinary(t)
 	out, err := exec.Command(bin, "pstree").CombinedOutput()
-	if err != nil || strings.TrimSpace(string(out)) != "No known tasks." {
+	if err != nil || strings.TrimSpace(string(out)) != "No shells." {
 		t.Fatalf("pstree without daemon: %s (%v)", out, err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "daemon")); !os.IsNotExist(err) {
@@ -434,7 +427,7 @@ func TestTaskTreeDaemonUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err = exec.Command(bin, "pstree").CombinedOutput()
-	if err == nil || strings.Contains(string(out), "No known tasks.") || !strings.Contains(string(out), "read account daemon endpoint") ||
+	if err == nil || strings.Contains(string(out), "No shells.") || !strings.Contains(string(out), "read account daemon endpoint") ||
 		!strings.Contains(string(out), "daemon.json") || !strings.Contains(string(out), "unexpected EOF") {
 		t.Fatalf("pstree with corrupt daemon endpoint: %s (%v)", out, err)
 	}

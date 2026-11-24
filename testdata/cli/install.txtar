@@ -46,13 +46,6 @@ stderr 'SHA256 mismatch'
 cmp $BIN/sshore sshore
 cmp $BIN/sshore-backup old
 
-exec sh bundle 0.7.8
-exec sh $INSTALL --bin-dir $BIN --version 0.7.8
-stdout 'Installed sshore 0.7.8'
-exec sh bundle 0.7.9
-exec sh $INSTALL --bin-dir $BIN --version 0.7.9
-stdout 'Installed sshore 0.7.9'
-
 -- bundle --
 set -eu
 asset=sshore_${1}_linux_amd64.tar.gz
@@ -64,13 +57,8 @@ sha256sum "$asset" > SHA256SUMS
 -- payload --
 set -eu
 if [ "$1" = --version ]; then echo "sshore $version"; exit; fi
-if [ "$version" = 0.7.9 ]; then
-    [ "$1" = setup ] && [ "$2" = --apply ] && [ "$3" = --path ] || exit 2
-    target=$4
-else
-    [ "$1" = install ] && [ "$2" = --apply ] || exit 2
-    target=${3#here:}
-fi
+[ "$1" = bootstrap ] && [ "$2" = --apply ] || exit 2
+target=${3#here:}
 cp -p "$target" "$target-backup"
 cp "$0" "$target.next"
 mv "$target.next" "$target"

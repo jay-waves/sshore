@@ -18,27 +18,6 @@ import (
 	"github.com/xtaci/smux"
 )
 
-func TestSessionTargetCycle(t *testing.T) {
-	first := sessionTarget{Name: "a", Instance: strings.Repeat("a", 32)}
-	last := sessionTarget{Name: "z", Instance: strings.Repeat("b", 32), Hosted: true}
-	targets := []sessionTarget{last, first}
-	for _, tc := range []struct {
-		current  string
-		previous bool
-		want     sessionTarget
-	}{{"m", false, last}, {"z", false, first}, {"a", true, last}} {
-		if got := adjacentSessionTarget(tc.current, targets, tc.previous); got != tc.want {
-			t.Fatalf("current %q, previous=%t: got %+v, want %+v", tc.current, tc.previous, got, tc.want)
-		}
-	}
-	if targets[0] != last || targets[1] != first {
-		t.Fatal("mutated input")
-	}
-	if got := adjacentSessionTarget("only", nil, false); got.Name != "" {
-		t.Fatal("single session moved")
-	}
-}
-
 type fragmentedReader struct{ io.Reader }
 
 func (r fragmentedReader) Read(b []byte) (int, error) {
@@ -83,6 +62,21 @@ func TestProtocolJSONLines(t *testing.T) {
 	}
 	if got, want := out.String(), "{\"type\":\"bye\"}\n{\"type\":\"bye\"}\n"; got != want {
 		t.Fatalf("encoded %q, want %q", got, want)
+	}
+}
+
+func TestNativeStartupFrameConsumesItsDelimiter(t *testing.T) {
+	stream := bufio.NewReader(io.MultiReader(
+		strings.NewReader(`{"Record":{"Name":"parent"}}`),
+		strings.NewReader("\n"),
+		strings.NewReader("{\"type\":\"terminal_ready\"}\n"),
+	))
+	var startup localStartup
+	if err := readControlJSON(stream, &startup); err != nil || startup.Record.Name != "parent" {
+		t.Fatalf("native startup frame: %+v, %v", startup, err)
+	}
+	if ready, err := readMessage(stream); err != nil || ready.Type != "terminal_ready" {
+		t.Fatalf("terminal frame after native startup: %+v, %v", ready, err)
 	}
 }
 
@@ -298,9 +292,9 @@ func TestSpawnConfirmationCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- confirmShellRoute(ctx, parent, "token", nil) }()
+	go func() { done <- confirmShellRoute(ctx, parent, "token", "handoff", nil) }()
 	request, err := readMessage(server)
-	if err != nil || request.Type != "shell_route_confirm" {
+	if err != nil || request.Type != "shell_route_confirm" || request.Token != "token" || request.HandoffToken != "handoff" {
 		t.Fatalf("confirmation request: %+v, %v", request, err)
 	}
 	cancel()

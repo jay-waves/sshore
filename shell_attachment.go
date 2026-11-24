@@ -13,11 +13,14 @@ import (
 
 // attachment owns the two connections and the terminal byte counters.
 type attachment struct {
+	sourceHost          string
+	claim               *treeClaim
 	control             attachmentControl
 	terminal            net.Conn
 	done                chan struct{}
 	closeOnce           sync.Once
 	outputBytes         uint64
+	outputErr           error
 	inputBytes          atomic.Uint64
 	inputProgress       chan struct{}
 	controlMu, outputMu sync.Mutex
@@ -82,19 +85,26 @@ func serveChildShortcut(p *attachment, done <-chan struct{}, serve func(net.Conn
 func (a *attachment) Output(data []byte) error {
 	a.outputMu.Lock()
 	defer a.outputMu.Unlock()
+	if a.outputErr != nil {
+		return a.outputErr
+	}
 	_ = a.terminal.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	err := writeFull(a.terminal, data)
 	_ = a.terminal.SetWriteDeadline(time.Time{})
-	if err == nil {
-		a.outputBytes += uint64(len(data))
+	if err != nil {
+		a.outputErr = err
+		_ = a.terminal.Close()
+		return err
 	}
-	return err
+	a.outputBytes += uint64(len(data))
+	return nil
 }
 
 // FinishExit follows terminal output, allowing bounded consumption before close.
-func (a *attachment) FinishExit(code int, reason string) {
+func (a *attachment) finishExit(exit message) {
 	a.outputMu.Lock()
-	_ = a.controlMessage(message{Type: "exit", Code: code, Reason: reason, TerminalOffset: a.outputBytes})
+	exit.TerminalOffset, exit.OutputIncomplete = a.outputBytes, a.outputErr != nil
+	_ = a.controlMessage(exit)
 	a.outputMu.Unlock()
 	select {
 	case <-a.Done():

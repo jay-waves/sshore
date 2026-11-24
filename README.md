@@ -22,10 +22,12 @@ curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | 
 irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 ```
 
-Install the matching release on your Linux host with `sshore install work`,
-where `work` is a hostname or SSH config alias. Managed connections require
-the same full release version on both ends. When updating a host with active
-tasks, review the task list before confirming replacement.
+Run `sshore bootstrap work` to reset your account on the Linux host `work` and
+install the exact local release. Omit `work` to reset this computer's sshore
+account and install the latest release. Every run, including a same-version
+reinstall, ends the target's tasks (including pinned shells) and clears its
+sshore identity, history and cached releases. Review and confirm the list of
+running tasks before continuing. Managed connections require matching releases.
 
 ## OS and shell support
 
@@ -76,41 +78,65 @@ sshore sh work:build --pin   # Start a shell that survives disconnection.
 sshore attach work:build     # Resume a detached shell.
 ```
 
-A top-level shell started with `sh` ends when its starting client disconnects.
-A nested shell follows its parent. Start with `--pin` to retain a shell until it
-exits. `sshore detach` keeps the current shell until it exits and leaves its
-terminal. `sshore detach 2h` keeps it for two hours. When a pin expires, a shell
-whose original owner has already ended is removed once it is detached. Pinned
-children survive parent exit and retain any descendants still following them.
+A top-level `sh` ends when its starting connection closes. Inside a shell,
+interactive `sh` creates a child and gives it the keyboard. Its parent waits.
+Each tree has one foreground shell. Independent roots can be used in parallel.
+For a script, `sh --detach` starts a pinned background root.
 
-While attached, press **Ctrl+B** followed by `c` for a nested shell, `d` to pin
-and detach, or `:` for the command prompt and the current host's `pstree`.
-The prompt shows the host, for example `sshore on work>`. Local shells show
-`sshore on local>`. Run `detach 30m` there to set a deadline.
+From an ordinary terminal or the root prompt, `attach` opens an idle root.
+Inside a shell on the same daemon, `attach :NAME` enters a detached direct
+child. If NAME is an idle root, it becomes a child here, along with its
+subtree. Follow the branches one level at a time. A nested `sh gpu:build`
+opens a child over SSH. Its parent can re-enter it with `attach gpu:build`
+while that connection lives. Other remote roots can be opened from a separate
+terminal.
 
-Leaving a nested shell returns to its parent. At the root, detaching or
-running `exit` in the shell opens the command prompt. Use `attach build` or
-`sh` there to continue, or type `exit` to leave sshore.
+`detach` pins the current shell and returns to its parent. Its position in
+the tree stays the same. A duration such as `detach 2h` sets a deadline.
+A deadline limits retention after the owner disappears. A live parent still
+keeps its child after the pin expires. With no duration, or with `sh --pin`,
+the pin lasts until exit. When a parent ends, each pinned child becomes an
+independent root with its descendants.
+Typing `exit` in a shell ends that shell even if pinned.
 
-For a local shell, run `sshore sh :build`. With no selector, `sshore attach`
-resumes the most recently detached local shell. Use `sshore attach work:` for
-the most recent detach on that host. A bare task ID or unique prefix can select
-a local shell or a remote shell with a saved direct SSH connection. If the ID is
-ambiguous, use a longer prefix or specify `HOST:ID`.
+Press **Ctrl+B** followed by `c` for a nested shell, `d` to detach, or
+`:` for the command prompt. Leaving the root by detach or exit also opens
+that prompt. It shows the exit or detach notice and the shell tree. Use
+`attach` or `sh` to continue, or type `exit` at the root prompt to leave
+sshore. When an exiting nested shell leaves pinned children, the prompt shows
+which children become independent roots. Press Esc or type `exit` to return
+to the previous shell.
 
-Each shell has one terminal. Scrollback is not replayed on attach.
+With no selector, `sshore attach` resumes the most recently detached eligible
+local shell. Use `sshore attach work:` for that host. From an ordinary terminal,
+a bare hexadecimal ID or unique prefix can select a local shell or a remote
+shell with a saved direct SSH connection. Use `HOST:ID` to disambiguate.
+Scrollback is not replayed on attach.
 
 ### Find and manage tasks
 
 ```sh
-sshore list                 # Local tasks, incoming resources and last seen remote shells.
-sshore list --json          # The same inventory as JSON.
-sshore pstree               # Shell ownership and attachment states. * marks this shell.
+sshore pstree               # Shell tree (ps).
+sshore list                 # Shell, mount and forward details (ls).
+sshore list --json          # Machine-readable inventory.
 ```
 
-In `pstree` (or `ps` at the command prompt), a nested shell stays under its
-original owner when either shell detaches. `active` means the shell has an
-attached client. `*` identifies the shell using your terminal.
+`pstree` shows shell names, short IDs and states. A leading `*` marks your
+current shell. `waiting` means a shell has handed off the keyboard. A remote
+observation shows its host and recorded state.
+
+```text
+dev (111111)  waiting
+├── * edit (222222)  active
+╰── build (333333) on gpu  detached
+```
+
+`list` includes working directories, pin deadlines, remote observation times,
+and resource details. `PARENT` shows the parent shell's short ID, or `-` for a
+root or a resource. For remote observations, it shows the last recorded parent.
+Connection hosts and endpoints appear in `DETAIL`. For example,
+`local:3000 <- gpu:8080` forwards connections from the listener on `gpu` to
+the local service on port 3000.
 
 Use a task name or ID from the list to attach, rename or end a shell.
 For example, `sshore kill work:build` ends the shell and can discard unsaved work.

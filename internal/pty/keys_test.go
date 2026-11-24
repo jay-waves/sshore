@@ -27,6 +27,7 @@ func TestPrefixKeysAcrossReads(t *testing.T) {
 		action      KeyAction
 	}{
 		{"a\x02\x02b", "a\x02b", KeyNone}, {"before\x02dignored", "before", KeyDetach}, {"a\x02rZ", "aZ", KeyRedraw}, {"\x02i", "\x02i", KeyNone}, {"\x02?", "\x02?", KeyNone}, {"\x02x", "\x02x", KeyNone}, {"\x02s", "", KeyConsole}, {"\x02w", "\x02w", KeyNone}, {"before\x1dignored", "before\x1dignored", KeyNone},
+		{"\x02n", "\x02n", KeyNone}, {"\x02p", "\x02p", KeyNone}, {"\x02l", "\x02l", KeyNone},
 	} {
 		for split := 0; split <= len(tc.input); split++ {
 			var k Keys
@@ -135,18 +136,16 @@ func TestPasteCompletionBoundary(t *testing.T) {
 	}
 }
 
-func TestSessionKeys(t *testing.T) {
-	for _, key := range []byte{'c', 'n', 'p', 'l'} {
-		var k Keys
-		events := k.Feed([]byte{2, key, 'x'})
-		if len(events) != 1 || !events[0].Action.IsSessionCommand() {
-			t.Fatalf("%c: %#v", key, events)
-		}
-		var paste Keys
-		data, actions := collectKeys(&paste, []byte("\x1b[200~"), []byte{2, key}, []byte("\x1b[201~"))
-		if len(actions) != 0 || len(data) == 0 {
-			t.Fatalf("paste intercepted %c", key)
-		}
+func TestNewShellKey(t *testing.T) {
+	var k Keys
+	events := k.Feed([]byte("\x02cx"))
+	if len(events) != 1 || events[0].Action != KeyNew {
+		t.Fatalf("new shell shortcut: %#v", events)
+	}
+	var paste Keys
+	data, actions := collectKeys(&paste, []byte("\x1b[200~"), []byte("\x02c"), []byte("\x1b[201~"))
+	if len(actions) != 0 || string(data) != "\x1b[200~\x02c\x1b[201~" {
+		t.Fatalf("paste changed new shell shortcut: %q %v", data, actions)
 	}
 }
 
@@ -169,7 +168,7 @@ func TestInterruptDetectionAcrossReads(t *testing.T) {
 
 func TestEnhancedPrefixProtocols(t *testing.T) {
 	for _, prefix := range []string{"\x02", "\x1b[98;5u", "\x1b[98;5:1u", "\x1b[98;69u", "\x1b[27;5;98~", "\x1b[1080::98;5u"} {
-		for command, action := range map[byte]KeyAction{'c': KeyNew, 'd': KeyDetach, 'n': KeyNext, 'p': KeyPrevious, 'l': KeyLast, 'r': KeyRedraw, 's': KeyConsole, ':': KeyConsole} {
+		for command, action := range map[byte]KeyAction{'c': KeyNew, 'd': KeyDetach, 'r': KeyRedraw, 's': KeyConsole, ':': KeyConsole} {
 			for _, next := range []string{string(command), fmt.Sprintf("\x1b[%d;1u", command), fmt.Sprintf("\x1b[27;1;%d~", command)} {
 				input := prefix + next
 				for split := 0; split <= len(input); split++ {

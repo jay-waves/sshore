@@ -14,9 +14,6 @@ const (
 	KeyDetach
 	KeyRedraw
 	KeyNew
-	KeyNext
-	KeyPrevious
-	KeyLast
 	KeyConsole
 )
 
@@ -153,14 +150,8 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 			switch code {
 			case 'c':
 				action = KeyNew
-			case 'n':
-				action = KeyNext
-			case 'p':
-				action = KeyPrevious
 			case ':', 's':
 				action = KeyConsole
-			case 'l':
-				action = KeyLast
 			case 'd':
 				action = KeyDetach
 			case 'r':
@@ -177,7 +168,7 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 		k.prefix = nil
 		flush()
 		events = append(events, KeyEvent{Action: action})
-		return action == KeyConsole || action == KeyDetach || action.IsSessionCommand()
+		return action == KeyConsole || action == KeyDetach || action == KeyNew
 	}
 	for i, c := range data {
 		if k.mouseTail > 0 {
@@ -375,5 +366,3 @@ func decodeKey(p *ansi.Parser, raw []byte) (code, mods, event int, ok bool) {
 	ok = true
 	return
 }
-
-func (a KeyAction) IsSessionCommand() bool { return a >= KeyNew && a <= KeyLast }

@@ -60,11 +60,13 @@ func TestTerminalEventsAfterDataEOF(t *testing.T) {
 		name         string
 		reply        message
 		wantErr      error
+		incomplete   bool
 		keepDataOpen bool
 	}{
 		{name: "complete exit", reply: message{Type: "exit", TerminalOffset: 4, Code: 7}},
-		{name: "truncated exit", reply: message{Type: "exit", TerminalOffset: 5}, wantErr: io.ErrUnexpectedEOF},
-		{name: "missing exit bytes", reply: message{Type: "exit", TerminalOffset: 5}, wantErr: io.ErrUnexpectedEOF, keepDataOpen: true},
+		{name: "truncated exit", reply: message{Type: "exit", TerminalOffset: 5, Code: 7}, incomplete: true},
+		{name: "missing exit bytes", reply: message{Type: "exit", TerminalOffset: 5, Code: 7}, incomplete: true, keepDataOpen: true},
+		{name: "host lost output", reply: message{Type: "exit", TerminalOffset: 4, Code: 7, OutputIncomplete: true}, incomplete: true},
 		{name: "detach", reply: message{Type: "detached"}},
 		{name: "control lost", wantErr: io.EOF},
 		{name: "control silent", wantErr: os.ErrDeadlineExceeded},
@@ -99,7 +101,8 @@ func TestTerminalEventsAfterDataEOF(t *testing.T) {
 					t.Fatalf("expected exit tail first, got %+v", e)
 				}
 				e := <-events
-				if !errors.Is(e.err, tc.wantErr) || tc.wantErr == nil && (e.m.Type != tc.reply.Type || e.m.Code != tc.reply.Code) {
+				if !errors.Is(e.err, tc.wantErr) || tc.wantErr == nil &&
+					(e.m == nil || e.m.Type != tc.reply.Type || e.m.Code != tc.reply.Code || e.outputIncomplete != tc.incomplete) {
 					t.Fatalf("unexpected final event: %+v", e)
 				}
 			})
@@ -323,7 +326,7 @@ func testTerminalEndpoints(t *testing.T, fixture func(*testing.T, func(net.Conn)
 				return
 			case "fixture_exit":
 				_ = p.Output([]byte("tail"))
-				p.FinishExit(7, "fixture exit")
+				p.finishExit(message{Type: "exit", Code: 7, Reason: "fixture exit"})
 				return
 			}
 		}

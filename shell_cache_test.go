@@ -1,10 +1,8 @@
 package main
 
 import (
-	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -158,45 +156,29 @@ func TestNativePortOverridesSavedConnection(t *testing.T) {
 	}
 }
 
-func TestRoutedShellConnectionRecovery(t *testing.T) {
-	activityFixture(t)
+func TestShellHistoryExcludesPrivateChildRoutes(t *testing.T) {
+	fixture := activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	root := options{host: "entry", session: "parent", instance: newTaskUID(), server: "/custom/sshore", ssh: []string{"-p", "2222", "-L", "8080:localhost:80"}, sshDirectory: t.TempDir()}
-	middle := options{host: "private-alias", session: "middle", instance: newTaskUID(), routeParent: &root, routeToken: strings.Repeat("a", 64)}
-	child := options{host: "private-alias", session: "child", instance: newTaskUID(), routeParent: &middle, routeToken: strings.Repeat("b", 64), routeTarget: true}
-	if err := rememberDetachedAttachment(child); err != nil {
-		t.Fatal(err)
-	}
-	if err := rememberConnection(child); err != nil {
-		t.Fatal(err)
-	}
-	for _, args := range [][]string{{"attach", "private-alias:child"}} {
-		o, err := parseOptions(args)
-		if err != nil {
+	parent := options{host: "entry", session: "parent", instance: newTaskUID()}
+	crossHost := options{host: "gpu", session: "build", instance: newTaskUID(), routeParent: &parent, routeToken: strings.Repeat("a", 64)}
+	nested := options{host: "gpu", session: "debug", instance: newTaskUID(), routeParent: &crossHost, sameHostRoute: true, routeToken: strings.Repeat("b", 64)}
+	for _, o := range []options{crossHost, nested} {
+		if err := rememberDetachedAttachment(o); err != nil {
 			t.Fatal(err)
 		}
-		if err := resolveRecentAttach(&o); err != nil {
+		if err := rememberConnection(o); err != nil {
 			t.Fatal(err)
 		}
-		if o.instance != "" || o.session != "child" || !o.routeTarget || o.routeToken != child.routeToken || o.routeParent == nil || o.routeParent.routeParent == nil {
-			t.Fatalf("route not restored: %+v", o)
-		}
-		restoredRoot := o.routeParent.routeParent
-		if restoredRoot.host != root.host || restoredRoot.instance != root.instance || restoredRoot.server != root.server || !reflect.DeepEqual(restoredRoot.ssh, []string{"-p", "2222"}) {
-			t.Fatalf("root changed: %+v", restoredRoot)
-		}
 	}
-	dir, _ := stateDir("connections")
-	path := filepath.Join(dir, "recent.json")
-	if err := os.Chmod(path, 0644); err != nil {
-		t.Fatal(err)
+	if rows, err := fixture.metadata.readRecentConnectionsLocal(); err != nil || len(rows) != 0 {
+		t.Fatalf("private child route in connection history: %+v %v", rows, err)
 	}
-	if runtime.GOOS != "windows" {
-		// A new daemon revalidates history; the running daemon never reloads live state from files.
-		fixture := activityFixture(t)
-		if _, err := fixture.metadata.readRecentConnectionsLocal(); err == nil {
-			t.Fatal("public route capabilities accepted")
-		}
+	if err := fixture.metadata.loadDetachedAttachments(); err != nil || len(fixture.metadata.attachments.rows) != 0 {
+		t.Fatalf("private child route in detach history: %+v %v", fixture.metadata.attachments.rows, err)
+	}
+	record, err := connectionFromOptions(crossHost)
+	if err != nil || validateShellHistoryConnection(record) == nil {
+		t.Fatalf("private child route accepted by history: %v", err)
 	}
 }
 
@@ -221,16 +203,15 @@ func TestRoutedConnectionValidation(t *testing.T) {
 func TestScopedIDUsesSavedTransport(t *testing.T) {
 	activityFixture(t)
 	t.Setenv("SSHORE_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	parent := options{host: "entry", session: "parent", instance: strings.Repeat("a", 32)}
-	child := options{host: "private", session: "first", instance: strings.Repeat("b", 32), routeParent: &parent, routeToken: strings.Repeat("a", 64)}
-	if err := rememberConnection(child); err != nil {
+	saved := options{host: "private", session: "first", instance: newTaskUID(), server: "/custom/sshore", ssh: []string{"-J", "entry"}}
+	if err := rememberConnection(saved); err != nil {
 		t.Fatal(err)
 	}
 	target := options{command: "attach", host: "private", session: "cccccc"}
 	if err := resolveRecentAttach(&target); err != nil {
 		t.Fatal(err)
 	}
-	if target.session != "cccccc" || target.instance != "" || !target.routeTarget || target.routeParent == nil || target.routeToken != child.routeToken {
+	if target.session != "cccccc" || target.instance != "" || target.server != saved.server || !reflect.DeepEqual(target.ssh, saved.ssh) {
 		t.Fatalf("remote selector lost its scope: %+v", target)
 	}
 }

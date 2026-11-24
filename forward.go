@@ -133,12 +133,20 @@ func remoteForwardRequest(args []string) (operation, error) {
 
 // Independent SSH workers own forwarding; no listener belongs to a shell attachment.
 
-func describeForward(port, target int, reverse bool) string {
-	listener, service := "your computer", "server"
-	if reverse {
-		listener, service = service, listener
+func (f forwardConfig) direction() string {
+	if f.Reverse {
+		return "<-"
 	}
-	return fmt.Sprintf("%s %s -> %s %s", listener, loopback(port), service, loopback(target))
+	return "->"
+}
+
+func (f forwardConfig) description(local, remote string) string {
+	localPort, remotePort := f.Port, f.Target
+	if f.Reverse {
+		localPort, remotePort = remotePort, localPort
+	}
+	return sshio.FormatEndpoint(local, strconv.Itoa(localPort)) + " " + f.direction() + " " +
+		sshio.FormatEndpoint(remote, strconv.Itoa(remotePort))
 }
 
 func loopback(port int) string { return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) }
@@ -161,7 +169,7 @@ func forwardRemoteCommand(f forwardConfig) string {
 func runForwardForeground(f forwardConfig) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	fmt.Fprintf(os.Stderr, "Starting %s (%s); Ctrl-C stops it.\n", describeForward(f.Port, f.Target, f.Reverse), cleanText(f.Host))
+	fmt.Fprintf(os.Stderr, "Starting %s; Ctrl-C stops it.\n", cleanText(f.description("local", f.Host)))
 	return runForwardTransportForeground(ctx, f, os.Stderr)
 }
 
@@ -232,8 +240,8 @@ func startForwardSession(f forwardConfig) (int, error) {
 func runForward(parent context.Context, f forwardConfig, s *resourceService, onReady func() error) (int, error) {
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	s.record.Detail = describeForward(f.Port, f.Target, f.Reverse)
-	advertisement, err := json.Marshal(s.peerTask())
+	s.record.Detail = f.description("local", f.Host)
+	advertisement, err := json.Marshal(s.peerTask(f.description("manager", "here")))
 	if err != nil {
 		return 1, err
 	}
