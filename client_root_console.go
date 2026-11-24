@@ -138,7 +138,7 @@ func remoteRootConsoleInventory(ctx context.Context, client *sshio.Client, comma
 	return reply.Output, nil
 }
 
-func formatSessionEnd(ended sessionEnd, current options) string {
+func formatSessionEnd(ended sessionEnd, current options, destination string) string {
 	if ended.title == "" {
 		return ""
 	}
@@ -147,7 +147,13 @@ func formatSessionEnd(ended sessionEnd, current options) string {
 	if ended.detail != "" {
 		notice.WriteString("\n  " + ended.detail)
 	}
+	if destination != "" {
+		notice.WriteString("\nNow in: " + cleanText(destination))
+	}
 	if len(ended.retained) == 0 {
+		if ended.exit {
+			notice.WriteString("\nNo pinned shells remain from this subtree.")
+		}
 		return notice.String()
 	}
 	notice.WriteString("\nPinned shells become independent roots:")
@@ -210,7 +216,7 @@ func runRootConsole(current options, problem string, ended sessionEnd, returnTo 
 	if returnTo != "" {
 		hint = "Use exit or Esc to return to " + cleanText(returnTo) + "."
 	}
-	termui.WriteConsoleBody(terminalOutput, formatSessionEnd(ended, current))
+	termui.WriteConsoleBody(terminalOutput, formatSessionEnd(ended, current, "temporary session"))
 	termui.WriteConsoleBody(terminalOutput, hint)
 	console := &commandConsole{}
 	console.start(ctx, terminalOutput, emit, host, cols, color)

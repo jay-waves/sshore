@@ -197,6 +197,8 @@ func runClient(o options) (int, error) {
 	var currentEndpoint string
 	var menu *options
 	var current options
+	var returnEnd *sessionEnd
+	var returnSource options
 	returning := false
 	lastExit := 0
 	prune := func(current *options) {
@@ -214,6 +216,10 @@ func runClient(o options) (int, error) {
 		var ended sessionEnd
 		code, err := runClientOnce(o, transports, &ended, func(attached options) string {
 			current, menu = attached, nil
+			if returnEnd != nil {
+				fmt.Fprintln(os.Stderr, formatSessionEnd(*returnEnd, returnSource, shellDisplayEndpoint(attached)))
+				returnEnd = nil
+			}
 			from := currentEndpoint
 			currentEndpoint = shellDisplayEndpoint(current)
 			if from == currentEndpoint {
@@ -276,6 +282,10 @@ func runClient(o options) (int, error) {
 			lastExit = code
 		}
 		if returning && err != nil {
+			if returnEnd != nil {
+				fmt.Fprintln(os.Stderr, formatSessionEnd(*returnEnd, returnSource, ""))
+				returnEnd = nil
+			}
 			problem := fmt.Sprintf("Could not return to %s: %s", cleanText(o.session), cleanText(err.Error()))
 			termui.Log(os.Stderr, "", termui.Warning, "[sshore] %s\n", problem)
 			if len(parents) == 0 {
@@ -303,7 +313,7 @@ func runClient(o options) (int, error) {
 			}
 			if !current.local && menu == nil {
 				if ended.title != "" {
-					fmt.Fprintln(os.Stderr, formatSessionEnd(ended, current))
+					fmt.Fprintln(os.Stderr, formatSessionEnd(ended, current, "calling terminal"))
 				}
 				return code, err
 			}
@@ -325,10 +335,8 @@ func runClient(o options) (int, error) {
 			last := len(parents) - 1
 			target = parents[last]
 			parents = slices.Delete(parents, last, last+1)
-			if len(ended.retained) > 0 {
-				fmt.Fprintln(os.Stderr, formatSessionEnd(ended, current))
-			} else if ended.exit {
-				sessionNotice(ended.level, ended.title, ended.detail)
+			if ended.exit {
+				returnEnd, returnSource = &ended, current
 			}
 			if err != nil && !returning {
 				termui.Log(os.Stderr, "", termui.Warning, "[sshore] %s\n", cleanText(err.Error()))

@@ -3,11 +3,9 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
@@ -71,14 +69,6 @@ func serveApprovedResource(c net.Conn, request message, check func(message) erro
 		return
 	}
 	serveApprovedFileEndpoint(c)
-}
-
-func beginIncomingMountTask(data json.RawMessage) func() {
-	var task peerRecord
-	if len(data) > maxRemoteTaskSize || json.Unmarshal(data, &task) != nil || !strings.HasPrefix(task.ID, "mount/") {
-		return func() {}
-	}
-	return beginIncomingTask(task)
 }
 
 func serveApprovedFileEndpoint(c net.Conn) {

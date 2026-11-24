@@ -36,6 +36,10 @@ exec sh -s -- --bin-dir $BIN
 stdout 'Installed sshore 0.3.1'
 exec $BIN/sshore --version
 stdout '^sshore 0.3.1$'
+exec sh -c '. "$HOME/.profile"; command -v sshore'
+stdout 'directory with spaces/sshore$'
+grep 'sshore_install_dir=' .bashrc
+grep 'sshore_install_dir=' .zshenv
 cmp $BIN/sshore-backup old
 grep '/latest/download/SHA256SUMS' downloads
 grep '/download/v0.3.1/sshore_0.3.1_linux_amd64.tar.gz' downloads

@@ -163,7 +163,7 @@ func forwardRemoteCommand(f forwardConfig) string {
 	if f.ApprovalID != "" {
 		req = remoteServiceRequest{Operation: "forward-watch", Name: f.Session, Instance: f.Instance, PID: f.ResumePID, ApprovalID: f.ApprovalID}
 	}
-	return remoteHelperCommand(f.Host, f.Server, req)
+	return renderRemoteCommand(f.Server, req)
 }
 
 func runForwardForeground(f forwardConfig) (int, error) {

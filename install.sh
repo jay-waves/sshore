@@ -2,7 +2,7 @@
 # Linux amd64 release installer.
 # Downloads HTTPS assets, verifies SHA256SUMS and version, then atomically installs.
 # Requires curl, tar and sha256sum/shasum. Default: ~/.local/bin; --bin-dir overrides.
-# No sudo or shell-profile edits. Upgrades stop the account daemon after any task confirmation.
+# No sudo. Upgrades stop the account daemon after any task confirmation.
 # Usage: curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | sh -s -- [--version 0.3.2] [--bin-dir DIR]
 set -eu
 
@@ -11,13 +11,27 @@ usage() {
     cat <<'HELP'
 Usage: sh install.sh [--version X.Y.Z] [--path PATH | --bin-dir DIRECTORY]
 
-Install a published Linux amd64 release, without sudo or shell profile edits.
+Install a published Linux amd64 release and add its directory to user PATH.
 Default: latest release into $HOME/.local/bin. Explicit --version is recommended
 when matching a local client. Requires curl, tar and sha256sum (or shasum).
 Bootstrap resets this account's sshore state and reinstalls even at the same
 version. Review any running tasks before confirming.
 Windows clients: use install.ps1 or the matching release ZIP.
 HELP
+}
+
+add_to_path() {
+    quoted_dir=$(printf '%s' "$install_bin_dir" | sed "s/'/'\\\\''/g")
+    assignment="sshore_install_dir='$quoted_dir'"
+    for profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshenv"; do
+        if [ ! -f "$profile" ] || ! grep -Fqx -- "$assignment" "$profile"; then
+            {
+                printf '\n%s\n' '# sshore executable directory' "$assignment"
+                printf '%s\n' 'case ":$PATH:" in *":$sshore_install_dir:"*) ;; *) export PATH="$sshore_install_dir:$PATH" ;; esac'
+                printf '%s\n' 'unset sshore_install_dir'
+            } >> "$profile"
+        fi
+    done
 }
 
 main() {
@@ -113,13 +127,11 @@ main() {
         exec </dev/tty
     fi
     "$install_tmp/sshore" bootstrap --apply "here:$install_target"
+    add_to_path
     printf 'Installed sshore %s: %s\n' "$install_version" "$install_target"
-    printf '%s\n' 'SHA256 verified. No sudo or shell configuration changes.'
+    printf '%s\n' 'SHA256 verified. No sudo required.'
     printf '%s\n' 'Use matching client/server versions. Remote accounts are updated separately.'
-    case ":$PATH:" in
-        *":$install_bin_dir:"*) ;;
-        *) printf 'Directory is not on PATH. Use the full path, or add %s to PATH.\n' "$install_bin_dir" ;;
-    esac
+    printf 'Added %s to user PATH; start a new shell to apply it.\n' "$install_bin_dir"
 }
 
 valid_version() {

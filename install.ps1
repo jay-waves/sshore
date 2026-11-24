@@ -4,8 +4,8 @@
 Install the Windows sshore client without requiring elevation.
 .DESCRIPTION
 Windows amd64 only; supports PowerShell 5.1 and 7. Updates the first sshore.exe
-on PATH; otherwise install to %LOCALAPPDATA%\sshore\bin and add it to the user
-and current session PATH. Verify SHA256SUMS and executable version before
+on PATH; otherwise install to %LOCALAPPDATA%\sshore\bin. Add a new or explicit
+install directory to the user and current session PATH. Verify SHA256SUMS and executable version before
 replacement. Never modify system PATH, profiles or execution
 policy; never elevate or create versioned backups. The installer stops the account daemon
 before replacement and prompts when it owns tasks. Bootstrap resets account
@@ -187,7 +187,7 @@ function Install-Sshore([string]$Version = '', [string]$Path = '') {
         [IO.File]::Delete($stage)
         $stage = $null
         Write-Host "Installed sshore ${Version}: $target"
-        if (-not $Path -and -not $foundOnPath) {
+        if ($Path -or -not $foundOnPath) {
             try {
                 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
                 $updatedPath = Add-SshorePathDirectory $userPath $directory

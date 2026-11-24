@@ -10,10 +10,6 @@ import (
 	"runtime"
 )
 
-func serveRemoteRequest(remoteServiceRequest) error {
-	return fmt.Errorf("remote services run on the Linux server")
-}
-
 func retentionHostedShell(message) error {
 	return fmt.Errorf("run this command inside an sshore shell")
 }

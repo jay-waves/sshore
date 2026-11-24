@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 
 	"github.com/jay-waves/sshore/internal/files"
@@ -28,18 +27,22 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 		return err
 	}
 	switch req.Operation {
-	case "forward-watch":
-		if err := checkApprovalSource(req.Name, req.PID, req.ApprovalID, req.Instance); err != nil {
-			return err
+	case "forward-watch", "task-watch":
+		for _, name := range []string{"SSHORE_CONFIRM_ADDR", "SSHORE_CONFIRM_TOKEN", "SSHORE_SOCKET"} {
+			_ = os.Unsetenv(name)
 		}
+		if req.Operation == "forward-watch" {
+			if err := checkApprovalSource(req.Name, req.PID, req.ApprovalID, req.Instance); err != nil {
+				return err
+			}
+		}
+
 		if _, err := fmt.Fprintln(os.Stdout, forwardReadyMarker); err != nil {
 			return err
 		}
 		return watchRemoteTask()
 	case "task-control":
 		return serveTaskControl(req)
-	case "task-watch":
-		return watchRemoteTask()
 	case "console-inventory":
 		return writeMessage(os.Stdout, consoleInventory(message{Name: req.Mode}, ""))
 	case "inventory":
@@ -100,24 +103,4 @@ func watchRemoteTask() error {
 		return nil
 	}
 	return err
-}
-
-type stdioPipe struct {
-	io.Reader
-	io.Writer
-	closers []io.Closer
-	once    sync.Once
-}
-
-func (p *stdioPipe) Close() error {
-	p.once.Do(func() {
-		for _, c := range p.closers {
-			_ = c.Close()
-		}
-	})
-	return nil
-}
-
-func agentStdio() *stdioPipe {
-	return &stdioPipe{Reader: os.Stdin, Writer: os.Stdout, closers: []io.Closer{os.Stdin, os.Stdout}}
 }

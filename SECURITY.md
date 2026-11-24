@@ -289,7 +289,9 @@ untrusted.
 
 Mounts require a matching release before starting a transient agent. The agent
 serves SFTP in Go under the authenticated account and requires remote command
-execution. Accounts restricted to `internal-sftp` cannot start the agent.
+execution and a matching `sshore` on the SSH session's PATH. Windows hosts accept
+direct mounts. A Windows agent rejects shell approval metadata.
+Accounts restricted to `internal-sftp` cannot start the agent.
 OpenSSH subsystem flags apply only to the SSH subsystem. The mount connection
 disables native forwarding, backgrounding and ControlMaster sharing.
 
@@ -339,8 +341,8 @@ handling.
 
 Replacement requires a user-owned regular file and a user-owned directory
 without group/world write permission on Linux. Replacement does not elevate
-privileges or modify shell profiles. See [Windows installation](README.md#install)
-for PATH behavior.
+privileges. The Linux installer adds its executable directory to user shell
+profiles. See [installation](README.md#install) for PATH behavior.
 
 Release checksums detect corruption, not publisher compromise. Cached artifacts are
 private and rechecked on reuse; unavailable assets never cause substitution of a

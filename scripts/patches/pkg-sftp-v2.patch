@@ -40,17 +40,13 @@
  
 --- a/localfs/file.go
 +++ b/localfs/file.go
-@@ -5,7 +5,9 @@
- 	"io/fs"
- 	"iter"
- 	"os"
-+	"runtime"
- 	"slices"
-+	"strconv"
- 	"sync"
- 	"time"
+@@ -150,12 +150,12 @@
  
-@@ -155,7 +157,7 @@
+ 	if attrs.HasPermissions() {
+ 		perm := attrs.GetPermissions()
+-		err = cmp.Or(f.Chmod(fs.FileMode(perm.Perm())), err)
++		err = cmp.Or(f.chmod(fs.FileMode(perm.Perm())), err)
+ 	}
  
  	if attrs.HasACModTime() {
  		atime, mtime := attrs.GetACModTime()
@@ -59,10 +55,61 @@
  	}
  
  	if attrs.HasUserGroup() {
-@@ -165,3 +167,19 @@
+--- a/localfs/server_windows.go
++++ b/localfs/server_windows.go
+@@ -46,6 +46,11 @@
+ 		return "", fs.ErrInvalid
+ 	}
  
- 	return err
++	// path.Clean drops the separator at a drive root.
++	if len(lp) == 2 && lp[1] == ':' && ((lp[0] >= 'A' && lp[0] <= 'Z') || (lp[0] >= 'a' && lp[0] <= 'z')) {
++		return lp + `\`, nil
++	}
++
+ 	if !filepath.IsAbs(lp) {
+ 		// In ServerHandler.toLocalPath, we already removed all repeat slashes with path.Clean.
+ 		// So, the only `filepath.IsAbs(lp) == true` paths are simple drive letter paths.
+@@ -55,12 +60,6 @@
+ 		return "", fs.ErrInvalid
+ 	}
+ 
+-	if len(lp) == 2 {
+-		// This could only be a simple drive letter.
+-		// We need to add a backslash at the end to be valid.
+-		return lp + `\`, nil
+-	}
+-
+ 	return lp, nil
  }
+ 
+@@ -203,7 +202,7 @@
+ 		return h.newWinRoot()
+ 	}
+ 
+-	f, err := os.OpenFile(path, flag, mode)
++	f, err := openSharedFile(path, flag, mode)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+--- /dev/null
++++ b/localfs/file_metadata_nowindows.go
+@@ -0,0 +1,32 @@
++//go:build !windows
++
++package localfs
++
++import (
++	"cmp"
++	"io/fs"
++	"os"
++	"runtime"
++	"strconv"
++	"time"
++)
++
++func (f *File) chmod(mode fs.FileMode) error {
++	return f.Chmod(mode)
++}
 +
 +// chtimes binds Linux FSETSTAT to the open descriptor across rename and unlink.
 +func (f *File) chtimes(atime, mtime time.Time) error {
@@ -78,4 +125,128 @@
 +		opErr = os.Chtimes("/proc/self/fd/"+strconv.FormatUint(uint64(fd), 10), atime, mtime)
 +	})
 +	return cmp.Or(err, opErr)
++}
+--- /dev/null
++++ b/localfs/file_metadata_windows.go
+@@ -0,0 +1,121 @@
++package localfs
++
++import (
++	"io/fs"
++	"os"
++	"path/filepath"
++	"strings"
++	"time"
++	"unsafe"
++
++	"golang.org/x/sys/windows"
++)
++
++const mountFileShare = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE
++
++// The SFTP server needs delete sharing so an open file can still be renamed
++// or replaced. os.OpenFile does not request it on Windows.
++func openSharedFile(name string, flag int, mode fs.FileMode) (*os.File, error) {
++	native, err := filepath.Abs(name)
++	if err != nil {
++		return nil, err
++	}
++	if strings.HasPrefix(native, `\\`) {
++		native = `\\?\UNC\` + native[2:]
++	} else {
++		native = `\\?\` + native
++	}
++	path, err := windows.UTF16PtrFromString(native)
++	if err != nil {
++		return nil, err
++	}
++
++	access, attrs := uint32(windows.GENERIC_READ), uint32(windows.FILE_ATTRIBUTE_NORMAL)
++	if mode&0200 == 0 {
++		attrs = windows.FILE_ATTRIBUTE_READONLY
++	}
++	switch flag & (os.O_WRONLY | os.O_RDWR) {
++	case os.O_WRONLY:
++		access = windows.GENERIC_WRITE
++	case os.O_RDWR:
++		access |= windows.GENERIC_WRITE
++	default:
++		attrs |= windows.FILE_FLAG_BACKUP_SEMANTICS
++	}
++	disposition := uint32(windows.OPEN_EXISTING)
++	if flag&os.O_CREATE != 0 {
++		access |= windows.GENERIC_WRITE
++		disposition = windows.OPEN_ALWAYS
++		if flag&os.O_EXCL != 0 {
++			disposition = windows.CREATE_NEW
++			attrs |= windows.FILE_FLAG_OPEN_REPARSE_POINT
++		}
++	}
++	handle, err := windows.CreateFile(path, access, mountFileShare, nil, disposition, attrs, 0)
++	if err != nil {
++		return nil, &os.PathError{Op: "open", Path: name, Err: err}
++	}
++	file := os.NewFile(uintptr(handle), name)
++	if flag&os.O_TRUNC != 0 {
++		if err := file.Truncate(0); err != nil {
++			file.Close()
++			return nil, err
++		}
++	}
++	return file, nil
++}
++
++var reopenFile = windows.NewLazySystemDLL("kernel32.dll").NewProc("ReOpenFile")
++
++// Reopen the file object for attributes instead of reopening its original
++// path, which can identify another file after rename or replacement.
++func (f *File) withWriteAttributes(update func(windows.Handle) error) error {
++	conn, err := f.SyscallConn()
++	if err != nil {
++		return err
++	}
++	var opErr error
++	err = conn.Control(func(fd uintptr) {
++		handle, _, callErr := reopenFile.Call(fd, windows.FILE_WRITE_ATTRIBUTES|windows.FILE_READ_ATTRIBUTES, mountFileShare, 0)
++		if windows.Handle(handle) == windows.InvalidHandle {
++			opErr = callErr
++			return
++		}
++		defer windows.CloseHandle(windows.Handle(handle))
++		opErr = update(windows.Handle(handle))
++	})
++	if err != nil {
++		return err
++	}
++	return opErr
++}
++
++func (f *File) chmod(mode fs.FileMode) error {
++	return f.withWriteAttributes(func(handle windows.Handle) error {
++		type fileBasicInfo struct {
++			create, access, write, change int64
++			attributes uint32
++		}
++		var info fileBasicInfo
++		data, size := (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))
++		if err := windows.GetFileInformationByHandleEx(handle, windows.FileBasicInfo, data, size); err != nil {
++			return err
++		}
++		attrs := info.attributes &^ (windows.FILE_ATTRIBUTE_READONLY | windows.FILE_ATTRIBUTE_NORMAL)
++		if mode&0200 == 0 {
++			attrs |= windows.FILE_ATTRIBUTE_READONLY
++		} else if attrs == 0 {
++			attrs = windows.FILE_ATTRIBUTE_NORMAL
++		}
++		info = fileBasicInfo{attributes: attrs}
++		return windows.SetFileInformationByHandle(handle, windows.FileBasicInfo, data, size)
++	})
++}
++
++func (f *File) chtimes(atime, mtime time.Time) error {
++	return f.withWriteAttributes(func(handle windows.Handle) error {
++		access := windows.NsecToFiletime(atime.UnixNano())
++		write := windows.NsecToFiletime(mtime.UnixNano())
++		return windows.SetFileTime(handle, nil, &access, &write)
++	})
 +}

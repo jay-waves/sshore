@@ -50,7 +50,7 @@ Use sshore forward for TCP forwarding. Compression, agent/X11 forwarding and
 ProxyCommand are unsupported.
 `
 
-const connectionOptions = `  --server PATH         Remote executable (default: PATH, then ~/.local/bin/sshore)
+const connectionOptions = `  --server PATH         Linux remote executable (default: sshore on SSH PATH)
   --no-escape           Disable Ctrl+B shortcuts
 `
 
@@ -254,7 +254,8 @@ Use a different SSH port
        sshore mount here:[DIRECTORY] origin:[MOUNTPOINT] [--read-only]
 
 Mount a remote directory through the remote sshore helper using SFTP.
-The remote sshore release must match exactly.
+The remote sshore release must match exactly and be on the SSH session's PATH.
+On a Windows host, use a drive-letter path such as HOST:E:/project.
 Background mounts receive fixed task IDs. HOST: selects the remote home.
 Use [HOST]:SOURCE for an IPv6 address.
 Use a bare path for the mountpoint. With an empty here: path, Linux and macOS

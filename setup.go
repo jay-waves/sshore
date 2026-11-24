@@ -1,10 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +15,6 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
-	"text/template"
 	"time"
 
 	sshio "github.com/jay-waves/sshore/internal/ssh"
@@ -233,50 +232,18 @@ func compareReleaseVersions(a, b string) (int, bool) {
 	return 0, true
 }
 
-// Encode a normal fatal frame before a remote Go executable is available.
-// Octal escapes keep binary framing and JSON out of shell interpolation.
-func startupFailure(reason string) string {
-	return startupFrame(message{Type: "fatal", Error: reason}) + "; exit 1"
-}
-
-func startupFrame(m message) string {
-	var frame bytes.Buffer
-	_ = writeMessage(&frame, m)
-	var escaped strings.Builder
-	for _, b := range frame.Bytes() {
-		fmt.Fprintf(&escaped, "\\%03o", b)
-	}
-	return "printf " + shellQuote(escaped.String())
-}
-
-//go:embed scripts/remote.sh.tmpl
-var remoteStartupScript string
-
-var remoteStartupTemplate = template.Must(template.New("remote.sh.tmpl").Funcs(template.FuncMap{
-	"q": shellQuote,
-}).Parse(remoteStartupScript))
-
-type remoteStartup struct {
-	Server, Version, Request, Mismatch, Ready string
-	Helper                                    bool
-}
-
 func remoteCommand(o options) string {
 	req := remoteServiceRequest{Name: o.session, Instance: o.instance}
-	data := remoteStartup{Server: o.server}
 	switch {
 	case o.command == "list":
 		req = remoteServiceRequest{Operation: "inventory"}
-		data.Mismatch = remoteStartupError("sshore: inventory requires matching remote release; no software changed")
 	case o.command == "console-inventory":
 		req.Operation, req.Mode = "console-inventory", o.newName
-		data.Mismatch = remoteStartupError("sshore: inventory requires matching remote release")
 	case o.command == "daemon-admin":
 		req.Operation = "daemon-admin"
 	case o.command == "kill" || o.command == "rename":
 		req.Operation, req.Mode = "task-control", o.command
 		req.NewName = o.newName
-		data.Mismatch = remoteStartupError(fmt.Sprintf("sshore: %s requires the installed remote version to match %s; no software changed", o.command, version))
 	default:
 		switch o.command {
 		case "cp-agent", "mount-agent":
@@ -293,32 +260,22 @@ func remoteCommand(o options) string {
 				req.Name = o.instance
 			}
 		}
-		data.Mismatch = "printf 'Remote executable: %s\\n' \"$server\" >&2\n" + startupFailure(remoteVersionHelp(o.host))
 	}
-	return renderRemoteCommand(data, req)
+	return renderRemoteCommand(o.server, req)
 }
 
-func remoteStartupError(reason string) string {
-	return "printf '%s\\n' " + shellQuote(reason) + " >&2; exit 1"
-}
-
-func remoteHelperCommand(host, server string, req remoteServiceRequest) string {
-	data := remoteStartup{Server: server, Helper: true, Mismatch: remoteStartupError(remoteVersionHelp(host))}
-	if req.Operation == "task-watch" {
-		data.Ready = forwardReadyMarker
+func renderRemoteCommand(server string, req remoteServiceRequest) string {
+	command := "sshore"
+	if server != "" && server != command {
+		// Explicit executable paths are used for the Linux remote shell.
+		command = shellQuote(server)
 	}
-	return renderRemoteCommand(data, req)
-}
-
-func renderRemoteCommand(data remoteStartup, req remoteServiceRequest) string {
-	data.Version = version
 	args := remoteServiceArgs(req)
-	data.Request = shellQuote(args[0]) + " " + shellQuote(args[1])
-	var b strings.Builder
-	if err := remoteStartupTemplate.Execute(&b, data); err != nil {
-		panic(err)
+	if req.Operation == "daemon-admin" {
+		// Maintenance must be able to inspect older Linux releases.
+		return command + " " + args[0] + " " + shellQuote(args[1])
 	}
-	return "sh -c " + shellQuote(b.String())
+	return command + " " + args[0] + " base64:" + base64.RawURLEncoding.EncodeToString([]byte(args[1]))
 }
 
 func executableVersion(path string) (string, error) {

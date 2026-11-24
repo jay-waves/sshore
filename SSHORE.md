@@ -30,8 +30,9 @@ update the responsible document and any affected diagrams.
 
 ## Terminal and mux design scope
 
-Clients support Linux and Windows amd64. Linux amd64 is the supported controlled
-host. Each interactive shell owns one terminal with one attachment at a time.
+Clients support Linux and Windows amd64. Linux amd64 hosts detached shells and
+remote services. Windows amd64 can host SFTP mounts on NTFS and ReFS drive
+volumes. Each interactive shell owns one terminal with one attachment at a time.
 Split panes, tiling, screen emulation and scrollback replay are outside scope.
 The shell and terminal preserve interactive state across detach. Redraw is best
 effort and must preserve user input. See the [support matrix](README.md#os-and-shell-support)
@@ -77,7 +78,8 @@ exit even if the tail is incomplete. The local root prompt opens before loading
 the shell tree. Remote exits return to the parent or the invoking terminal,
 and report surviving pinned children directly. Declining a return after local
 approval restores the local parent when one exists. A connection loss without
-an exit frame leaves the state unconfirmed.
+an exit frame leaves the state unconfirmed. Exit notices identify the restored
+shell, temporary session or calling terminal and whether pinned children remain.
 
 ### Account daemon and mounts
 

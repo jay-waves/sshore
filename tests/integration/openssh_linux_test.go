@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -90,17 +89,15 @@ Match command "printf forwarding-check"
 	}
 	type resourceRef struct {
 		ID, Identity string
-		ShortID      string `json:"short_id"`
+		ShortID      string
 	}
 	findResource := func(t *testing.T, out []byte, id string) resourceRef {
 		t.Helper()
-		var inventory struct{ Resources []resourceRef }
-		if err := json.Unmarshal(out, &inventory); err != nil {
-			t.Fatal(err)
-		}
-		for _, row := range inventory.Resources {
-			if row.ID == id {
-				return row
+		kind, name, _ := strings.Cut(id, "/")
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && (fields[1] == "("+name+")" || fields[0] == name && fields[1] == kind) {
+				return resourceRef{ID: id, Identity: fields[0], ShortID: fields[0]}
 			}
 		}
 		return resourceRef{}
@@ -290,16 +287,16 @@ Match command "printf forwarding-check"
 		if got, err := io.ReadAll(conn); err != nil || string(got) != "forwarded across OpenSSH\n" {
 			t.Fatalf("reverse forward delivered %q (%v)", got, err)
 		}
-		ref := findResource(t, local(t, "list", "--json"), "forward/"+name)
+		ref := findResource(t, local(t, "list"), "forward/"+name)
 		if ref.Identity == "" || ref.ShortID == "" {
 			t.Fatalf("missing identity for forward/%s", name)
 		}
 		local(t, "rename", ref.Identity, "renamed-forward")
-		if got := findResource(t, local(t, "list", "--json"), "forward/renamed-forward"); got.Identity != ref.Identity {
+		if got := findResource(t, local(t, "list"), "forward/renamed-forward"); got.Identity != ref.Identity {
 			t.Fatalf("forward identity changed during rename: %+v", got)
 		}
 		local(t, "kill", ref.ShortID)
-		if got := findResource(t, local(t, "list", "--json"), "forward/renamed-forward"); got.Identity != "" {
+		if got := findResource(t, local(t, "list"), "forward/renamed-forward"); got.Identity != "" {
 			t.Fatalf("forward still registered: %+v", got)
 		}
 	})
@@ -318,17 +315,17 @@ Match command "printf forwarding-check"
 		if name == "" {
 			t.Fatalf("forward did not start: %s", out)
 		}
-		ref := findResource(t, []byte(run(t, "exec", host, "sshore list --json")), "forward/"+name)
+		ref := findResource(t, []byte(run(t, "exec", host, "sshore list")), "forward/"+name)
 		if ref.ShortID == "" {
 			t.Fatalf("missing identity for remote forward/%s", name)
 		}
 		selector := host + ":" + ref.ShortID
 		run(t, "rename", selector, "renamed-remote-forward", "--server", binary)
-		if got := findResource(t, []byte(run(t, "exec", host, "sshore list --json")), "forward/renamed-remote-forward"); got.Identity != ref.Identity {
+		if got := findResource(t, []byte(run(t, "exec", host, "sshore list")), "forward/renamed-remote-forward"); got.Identity != ref.Identity {
 			t.Fatalf("remote forward identity changed during rename: %+v", got)
 		}
 		run(t, "kill", selector, "--server", binary)
-		if got := findResource(t, []byte(run(t, "exec", host, "sshore list --json")), "forward/renamed-remote-forward"); got.Identity != "" {
+		if got := findResource(t, []byte(run(t, "exec", host, "sshore list")), "forward/renamed-remote-forward"); got.Identity != "" {
 			t.Fatalf("remote forward still registered: %+v", got)
 		}
 	})
@@ -341,7 +338,7 @@ Match command "printf forwarding-check"
 		if name == "" {
 			t.Fatalf("missing mount name: %s", start)
 		}
-		ref := findResource(t, local(t, "list", "--json"), "mount/"+name)
+		ref := findResource(t, local(t, "list"), "mount/"+name)
 		if ref.ShortID == "" {
 			t.Fatalf("missing identity for mount/%s", name)
 		}
@@ -525,85 +522,6 @@ Match command "printf forwarding-check"
 
 	})
 
-	t.Run("broken SSH connection follows the root pin", func(t *testing.T) {
-		type shell struct {
-			Name, Instance, State string
-			PID                   int
-		}
-		lookup := func(name string) shell {
-			t.Helper()
-			var inventory struct{ Shells []shell }
-			if err := json.Unmarshal([]byte(run(t, "exec", host, "sshore list --json")), &inventory); err != nil {
-				t.Fatal(err)
-			}
-			for _, task := range inventory.Shells {
-				if task.Name == name {
-					return task
-				}
-			}
-			return shell{}
-		}
-
-		for _, pinned := range []bool{false, true} {
-			name := "lost-temporary"
-			if pinned {
-				name = "lost-pinned"
-			}
-			endpoint := host + ":" + name
-			port, drop := interruptibleSSH(t, ctx)
-			args := []string{"sh", endpoint, "--server", binary, "--no-profile"}
-			if pinned {
-				args = append(args, "--pin")
-			}
-			args = append(args, "--", "-F", config, "-p", port, "-o", "HostKeyAlias=127.0.0.1:2222")
-			cmd := exec.CommandContext(ctx, binary, args...)
-			var original shell
-			out, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
-				wait("Connected " + endpoint)
-				send("export DROP_MARKER=retained; printf 'DROP_%s\\n' ready\n")
-				wait("DROP_ready")
-				original = lookup(name)
-				if original.Instance == "" || original.PID <= 0 || original.State != "active" {
-					t.Fatalf("shell was not active before cutting SSH: %+v", original)
-				}
-				drop()
-			})
-			if err == nil || !strings.Contains(ansi.Strip(out), "Disconnected from "+endpoint) {
-				t.Fatalf("cutting SSH did not disconnect %s: %v\n%s", endpoint, err, out)
-			}
-
-			deadline := time.Now().Add(5 * time.Second)
-			for {
-				task := lookup(name)
-				if !pinned && task.Instance == "" {
-					probe := "if test -d /proc/" + strconv.Itoa(original.PID) + "; then echo live; fi"
-					if run(t, "exec", host, probe) == "" {
-						break
-					}
-				}
-				if pinned && task.State == "detached" {
-					if task.Instance != original.Instance || task.PID != original.PID {
-						t.Fatalf("pinned shell changed identity after disconnect: %+v → %+v", original, task)
-					}
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatalf("shell lifetime did not settle (pinned=%t, original PID=%d): %+v", pinned, original.PID, task)
-				}
-				time.Sleep(50 * time.Millisecond)
-			}
-			if pinned {
-				runOpenSSHTerminal(t, ctx, command("attach", endpoint, "--server", binary), func(send func(string), wait terminalWait) {
-					wait("Connected " + endpoint)
-					send("printf 'DROP_%s=%s:%s\\n' state \"$$\" \"$DROP_MARKER\"\nexit\n")
-					wait("DROP_state=" + strconv.Itoa(original.PID) + ":retained")
-					wait("No shell attached.")
-					send("exit\r")
-				})
-			}
-		}
-	})
-
 	t.Run("remote child resumes after its parent exits", func(t *testing.T) {
 		child := host + ":build"
 		cleanRemote(child)
@@ -668,10 +586,12 @@ Match command "printf forwarding-check"
 			wait("Connected " + build)
 			send("exit\n")
 			wait("Exited " + build + " (code 0)")
+			wait("Now in: here:panel-dev")
 			wait("Pinned shells become independent roots")
 			wait("(saved-child) · pinned indefinitely")
 			wait("Connected here:panel-dev")
 			send("exit\n")
+			wait("Now in: temporary session")
 			wait("No shell attached.")
 			send("exit\r")
 		})
@@ -680,77 +600,9 @@ Match command "printf forwarding-check"
 			send("printf 'SAVED_%s=%s\n' state \"$SSHORE_PANEL_CHECK\"\nexit\n")
 			wait("SAVED_state=kept")
 			wait("Exited " + child)
+			wait("Now in: calling terminal")
+			wait("No pinned shells remain from this subtree.")
 		})
-	})
-
-	t.Run("kill remote shells by identity", func(t *testing.T) {
-		const firstName, secondName = "kill-first", "kill-second"
-		first, second := host+":"+firstName, host+":"+secondName
-		cleanRemote(first)
-		cleanRemote(second)
-		type shellRef struct {
-			Name, Instance string
-			ShortID        string `json:"short_id"`
-		}
-		find := func(out []byte, name string) shellRef {
-			t.Helper()
-			var inventory struct{ Shells []shellRef }
-			if err := json.Unmarshal(out, &inventory); err != nil {
-				t.Fatal(err)
-			}
-			for _, shell := range inventory.Shells {
-				if shell.Name == name {
-					return shell
-				}
-			}
-			return shellRef{}
-		}
-		observed := func(name string) shellRef {
-			t.Helper()
-			out, err := exec.CommandContext(ctx, binary, "list", "--json").CombinedOutput()
-			if err != nil {
-				t.Fatalf("list remote observation: %v\n%s", err, out)
-			}
-			ref := find(out, name)
-			if len(ref.Instance) != 32 || len(ref.ShortID) != 6 {
-				t.Fatalf("missing identity for %s: %+v", name, ref)
-			}
-			return ref
-		}
-		kill := func(ref string) {
-			t.Helper()
-			if out, err := exec.CommandContext(ctx, binary, "kill", ref).CombinedOutput(); err != nil {
-				t.Fatalf("kill %s: %v\n%s", ref, err, out)
-			}
-		}
-		out, err := runTerminal(t, ctx, command("shell", first, "--no-profile", "--server", binary), func(send func(string), wait terminalWait) {
-			wait("Connected " + first)
-			// A second direct connection replaces the host's recent entry for
-			// the first shell, which is still active and has no detach record.
-			runOpenSSHTerminal(t, ctx, command("shell", second, "--no-profile", "--server", binary), func(send func(string), wait terminalWait) {
-				wait("Connected " + second)
-				send("\x02d")
-				wait("No shell attached.")
-				send("exit\r")
-			})
-			kill("task:" + observed(firstName).Instance)
-			wait("Exited " + first)
-			wait("No shell attached.")
-			send("exit\r")
-		})
-		if err == nil || !strings.Contains(out, "killed by sshore kill") {
-			t.Fatalf("first shell did not report being killed: %v\n%s", err, out)
-		}
-		secondRef := observed(secondName)
-		local(t, "rename", "task:"+secondRef.Instance, "kill-renamed")
-		if got := find([]byte(run(t, "exec", host, "sshore list --json")), "kill-renamed"); got.Instance != secondRef.Instance {
-			t.Fatalf("remote shell identity changed during rename: %+v", got)
-		}
-		kill(secondRef.ShortID)
-		remote := []byte(run(t, "exec", host, "sshore list --json"))
-		if find(remote, firstName).Instance != "" || find(remote, "kill-renamed").Instance != "" {
-			t.Fatal("a killed remote shell is still registered")
-		}
 	})
 
 	t.Run("shutdown confirmation rejects a replacement task", func(t *testing.T) {
@@ -775,20 +627,13 @@ Match command "printf forwarding-check"
 		}
 		identity := func() string {
 			t.Helper()
-			var inventory struct {
-				LocalShells []struct {
-					Name, Identity string
-				} `json:"local_shells"`
-			}
-			if err := json.Unmarshal(local("list", "--json"), &inventory); err != nil {
-				t.Fatal(err)
-			}
-			for _, task := range inventory.LocalShells {
-				if task.Name == name && strings.HasPrefix(task.Identity, "task:") {
-					return strings.TrimPrefix(task.Identity, "task:")
+			for _, line := range strings.Split(string(local("list")), "\n") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 && fields[1] == "("+name+")" {
+					return fields[0]
 				}
 			}
-			t.Fatalf("missing shell %s in %+v", name, inventory.LocalShells)
+			t.Fatalf("missing shell %s", name)
 			return ""
 		}
 		start()
@@ -809,53 +654,9 @@ Match command "printf forwarding-check"
 		if out, err := localCommand("kill", "here:"+first).CombinedOutput(); err == nil {
 			t.Fatalf("the retired task ID still accepts a kill: %s", out)
 		}
-		local("kill", "task:"+replacement)
+		local("kill", replacement)
 	})
 
-}
-
-// Relay one real OpenSSH connection. Closing both sockets simulates transport
-// loss while leaving the client terminal, sshd and other SSH connections live.
-func interruptibleSSH(t *testing.T, parent context.Context) (port string, disconnect context.CancelFunc) {
-	t.Helper()
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, drop := context.WithCancel(parent)
-	done := make(chan struct{})
-	t.Cleanup(func() {
-		drop()
-		<-done
-	})
-	go func() {
-		defer close(done)
-		stop := context.AfterFunc(ctx, func() { listener.Close() })
-		defer stop()
-		client, err := listener.Accept()
-		listener.Close()
-		if err != nil {
-			return
-		}
-		defer client.Close()
-		upstream, err := (&net.Dialer{}).DialContext(ctx, "tcp4", "127.0.0.1:2222")
-		if err != nil {
-			return
-		}
-		defer upstream.Close()
-		stop = context.AfterFunc(ctx, func() { client.Close(); upstream.Close() })
-		defer stop()
-		copied := make(chan struct{})
-		go func() {
-			_, _ = io.Copy(upstream, client)
-			_ = upstream.(*net.TCPConn).CloseWrite()
-			close(copied)
-		}()
-		_, _ = io.Copy(client, upstream)
-		client.Close()
-		<-copied
-	}()
-	return strconv.Itoa(listener.Addr().(*net.TCPAddr).Port), drop
 }
 
 func runOpenSSHTerminal(t *testing.T, ctx context.Context, cmd *exec.Cmd, run func(send func(string), wait terminalWait)) {

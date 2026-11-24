@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 const remoteServiceCommand = "service"
@@ -35,8 +37,19 @@ func remoteServiceArgs(req remoteServiceRequest) []string {
 }
 
 func runRemoteService(args []string) error {
+	if len(args) != 1 {
+		return usage("invalid remote service request")
+	}
+	data := []byte(args[0])
+	if encoded, ok := strings.CutPrefix(args[0], "base64:"); ok {
+		var err error
+		data, err = base64.RawURLEncoding.DecodeString(encoded)
+		if err != nil {
+			return usage("invalid remote service request")
+		}
+	}
 	var req remoteServiceRequest
-	if len(args) != 1 || json.Unmarshal([]byte(args[0]), &req) != nil ||
+	if json.Unmarshal(data, &req) != nil ||
 		req.Protocol != remoteServiceProtocol || req.Release == "" {
 		return usage("invalid remote service request")
 	}

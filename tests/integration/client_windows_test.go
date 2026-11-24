@@ -5,7 +5,6 @@ package tests_test
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -119,15 +118,7 @@ func TestWindowsConPTY(t *testing.T) {
 		wait("sshore on local>")
 		send("exit\r")
 	})
-	var inventory struct {
-		LocalShells []struct{ Name string } `json:"local_shells"`
-	}
-	if err := json.Unmarshal(windowsRun(t, command("list", "--json")), &inventory); err != nil {
-		t.Fatal(err)
-	}
-	for _, task := range inventory.LocalShells {
-		if task.Name == "conpty" {
-			t.Fatal("exited shell still registered")
-		}
+	if strings.Contains(string(windowsRun(t, command("list"))), "(conpty)") {
+		t.Fatal("exited shell still registered")
 	}
 }

@@ -22,6 +22,10 @@ curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | 
 irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 ```
 
+Installers add the executable directory to the user PATH. Linux updates `.profile`,
+`.bashrc` and `.zshenv`; Windows updates the user environment. New sessions are
+needed, and SSH server environment settings must allow that PATH to take effect.
+
 Managed connections require matching releases. `sshore bootstrap work` installs
 your exact release on the Linux host `work`. `sshore bootstrap` installs the
 latest release locally. Either command ends the target account's tasks, including
@@ -32,7 +36,7 @@ pinned shells, and clears its sshore identity, history and cached releases.
 | Platform (amd64) | Local shells | Remote hosting |
 | --- | --- | --- |
 | Linux | bash, sh, zsh, fish | Supported |
-| Windows 11 / Server 2025 or newer | PowerShell 7, cmd | — |
+| Windows 11 / Server 2025 or newer | PowerShell 7, cmd | SFTP mounts |
 
 Managed shells require the host's SSH server to allow TCP forwarding to
 loopback. See the [development notes](SSHORE.md#terminal-and-mux-design-scope)
@@ -136,8 +140,11 @@ Review the transfer request on that client and choose the local path.
 
 ```sh
 sshore mount work:/srv/project .: --read-only
+sshore mount winhost:E:/project .:
 ```
 
+The SSH account must find the matching sshore release on its PATH.
+Windows hosts serve directories on NTFS and ReFS volumes; other filesystems are rejected.
 Mounts use SFTP and require FUSE on Linux, [WinFsp](https://winfsp.dev/) on
 Windows, or the [macFUSE](https://macfuse.github.io/) kernel extension on
 experimental macOS builds. The command prints the mountpoint and how to stop
