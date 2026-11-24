@@ -163,13 +163,13 @@ func acceptSessionName(o *options, name string) error {
 }
 
 type sessionEnd struct {
-	title, detail, tree string
-	level               termui.Color
-	exit                bool
-	retained            []retainedShell
+	title, detail string
+	level         termui.Color
+	exit          bool
+	retained      []retainedShell
 }
 
-func runClientOnce(o options, transports clientTransports, end *sessionEnd, rootTree bool, ready func(options) string) (resultCode int, resultErr error) {
+func runClientOnce(o options, transports clientTransports, end *sessionEnd, ready func(options) string) (resultCode int, resultErr error) {
 	attached := false
 	var ended func()
 	report := func(level termui.Color, title, detail string) {
@@ -257,7 +257,7 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, root
 	if o.hold != nil {
 		treeKey = o.hold.treeKey
 	}
-	if err = streamMessage(control, message{Type: "attach", RootTree: rootTree, TreeKey: treeKey, Token: terminalToken, Pinned: o.command == "sh" && o.pin, SourceHost: sourceHost, MachineID: sourceMachine, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && o.command == "sh", NoLogin: o.noLogin && o.command == "sh"}); err != nil {
+	if err = streamMessage(control, message{Type: "attach", TreeKey: treeKey, Token: terminalToken, Pinned: o.command == "sh" && o.pin, SourceHost: sourceHost, MachineID: sourceMachine, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && o.command == "sh", NoLogin: o.noLogin && o.command == "sh"}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -561,7 +561,6 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, root
 			}
 			o.hold = hold
 		}
-		detachRequest.RootTree = rootTree && (detachRequest.Action != "switch" || explicitDetach)
 		if err := streamMessage(control, detachRequest); err != nil {
 			return err
 		}
@@ -1189,7 +1188,6 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, root
 					}
 				case "detached":
 					confirmDetach(*e.m)
-					end.tree = e.m.Output
 					_ = streamMessage(control, message{Type: "bye"})
 					if approval != nil && approval.confirmed {
 						return 0, &localApproval{request: approval.request, source: o}
@@ -1235,7 +1233,6 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, root
 						level = termui.Error
 					}
 					exit := e.m
-					end.tree = exit.Output
 					end.exit, end.retained = true, exit.RetainedShells
 					ended = func() {
 						reason := cleanText(exit.Reason)

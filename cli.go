@@ -138,27 +138,11 @@ func killAllOptions(parsed cliArguments) (options, error) {
 	return o, nil
 }
 
-// Route task selectors before command semantics; no execution starts while
-// selecting a route. Ordinary shell and kill forms share one parsed result.
 func runTargetCommand(args []string) (int, error) {
 	command := args[0]
 	parsed, err := parseCLI(args[1:], command)
 	if err != nil {
 		return 2, err
-	}
-	target, selected, err := resolveShortTask(command, &parsed)
-	if err != nil {
-		return 2, err
-	}
-	if selected && target.Kind != "shell" {
-		switch command {
-		case "kill":
-			return withDaemonActivity(func() (int, error) { return 0, stopResource(target.Kind, target.Name, target.Identity) })
-		case "rename":
-			return withDaemonActivity(func() (int, error) {
-				return runRenameResource(target.Kind, target.Name, parsed.operands[1], target.Identity)
-			})
-		}
 	}
 	if command == "kill" && parsed.has("--all") {
 		o, err := killAllOptions(parsed)
@@ -167,11 +151,34 @@ func runTargetCommand(args []string) (int, error) {
 		}
 		return runKillAll(o)
 	}
+	newName := ""
+	if command == "rename" {
+		newName = parsed.operands[len(parsed.operands)-1]
+		if err := validAlias(newName); err != nil {
+			return 2, err
+		}
+	}
+	target, err := selectCLITask(command, parsed)
+	if err != nil {
+		return 2, err
+	}
+	if target.Connection != nil {
+		parsed.local = false
+		parsed.operands = append([]string{target.Connection.Host, target.Instance}, parsed.operands[1:]...)
+	} else if target.Identity != "" {
+		if len(parsed.ssh) != 0 || parsed.has("--server") {
+			return 2, usage("local tasks do not accept SSH options")
+		}
+		if command != "attach" {
+			return withDaemonActivity(func() (int, error) { return mutateRegisteredTask(command, target, newName) })
+		}
+		parsed.operands[0] = target.Name
+	}
 	o, err := shellOptions(command, parsed)
 	if err != nil {
 		return 2, err
 	}
-	if selected && target.Kind == "shell" {
+	if target.Identity != "" {
 		o.taskIdentity, o.instance = target.Identity, target.Instance
 		o.hosted = target.Hosted
 		if target.Connection != nil {
@@ -260,12 +267,9 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 		if o.session == "" || o.newName == "" {
 			return o, usage("rename requires HOST:ID and a new alias")
 		}
-		if err := validAlias(o.newName); err != nil {
-			return o, err
-		}
 	}
 	if o.command == "kill" && (o.session == "") {
-		return o, usage("kill requires HOST:ID, :ID or TYPE/ID")
+		return o, usage("kill requires ID, HOST:ID, :ID or TYPE/ID")
 	}
 	if o.session == "" {
 		return o, nil
@@ -360,6 +364,9 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 		return nil
 	}
 	ref := parsed.operands[0]
+	if uid, ok := strings.CutPrefix(ref, "task:"); ok && validTaskUID(uid) {
+		ref, parsed.operands[0] = uid, uid
+	}
 	if kind, selector, typed := strings.Cut(ref, "/"); typed {
 		switch kind {
 		case "sh", "shell":
@@ -379,12 +386,12 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 	}
 	if isBareSSHHost(ref) {
 		if isTaskIDPrefix(ref) {
-			parsed.bareAttachID = command == "attach"
+			parsed.bareTaskID = true
 			parsed.local = true
 			return nil
 		}
 		if command != "attach" {
-			return usage("%s requires HOST:ID, :ID or TYPE/ID", command)
+			return usage("%s requires a task ID, HOST:ID, :ID or TYPE/ID", command)
 		}
 		return validSSHDestination(ref)
 	}
@@ -766,60 +773,6 @@ func parseFTPOptions(args []string) (ftpOptions, error) {
 		return o, usage("invalid mount path")
 	}
 	return o, nil
-}
-
-// A selector with a host is resolved by that host's daemon. Local selection
-// reads registered tasks together so a prefix is checked against one task set.
-func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool, error) {
-	var empty selectedTask
-	if len(parsed.operands) == 0 || parsed.has("--all") {
-		return empty, false, nil
-	}
-	switch command {
-	case "attach", "kill", "rename":
-	default:
-		return empty, false, nil
-	}
-	if !parsed.local {
-		return empty, false, nil
-	}
-	kind, ref := parsed.taskKind, parsed.operands[0]
-	var target selectedTask
-	if parsed.bareAttachID && shellIdentityFromEnvironment() == "" {
-		reply, err := metadataRPC(metadataRequest{Action: "attach_by_id", Instance: ref})
-		if err != nil {
-			return empty, false, err
-		}
-		target = *reply.Target
-	} else {
-		if command == "attach" {
-			kind = "shell"
-			if os.Getenv("SSHORE_SOCKET") != "" {
-				kind = "hosted"
-			}
-		}
-		matches, err := queryRegisteredTasks(taskQuery{Kind: kind, Ref: ref})
-		if err != nil {
-			return empty, false, err
-		}
-		if len(matches) == 0 {
-			return empty, false, usage("unknown task %s; use sshore list or specify HOST:ID", ref)
-		}
-		target = matches[0]
-	}
-	if target.Connection != nil {
-		parsed.local = false
-		parsed.operands = []string{target.Connection.Host, target.Instance}
-		return target, true, nil
-	}
-	if len(parsed.ssh) != 0 || parsed.has("--server") {
-		return empty, false, usage("local tasks do not accept SSH options")
-	}
-	if target.Kind == "shell" {
-		parsed.local = true
-		parsed.operands[0] = target.Name
-	}
-	return target, true, nil
 }
 
 func runMount(args []string) (int, error) {

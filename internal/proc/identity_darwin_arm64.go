@@ -26,10 +26,3 @@ func LiveIdentity(pid int) (string, error) {
 	}
 	return fmt.Sprintf("%d:%06d", p.P_starttime.Sec, p.P_starttime.Usec), nil
 }
-func processName(pid int) (string, error) {
-	p, e := liveProcess(pid)
-	if e != nil {
-		return "", e
-	}
-	return unix.ByteSliceToString(p.P_comm[:]), nil
-}

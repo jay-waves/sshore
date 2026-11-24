@@ -1,4 +1,4 @@
-// Package proc provides operating system process identity and waiting.
+// Package proc reads process identities and diagnostics and stops Linux sessions.
 package proc
 
 import (
@@ -6,36 +6,34 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 
 	"golang.org/x/sys/unix"
 )
 
-type Task struct {
-	PID, Parent, Session int
-	Start, State         string
+type task struct {
+	pid, parent, session int
+	start, state         string
 }
 
-func ReadTask(pid int) (Task, error) {
+func readTask(pid int) (task, error) {
 	_, fields, err := readOwnedStat(processPath(pid), pid)
 	if err != nil {
-		return Task{}, err
+		return task{}, err
 	}
 	if len(fields) < 20 {
-		return Task{}, fmt.Errorf("short process stat")
+		return task{}, fmt.Errorf("short process stat")
 	}
 	parent, e1 := strconv.Atoi(fields[1])
 	session, e2 := strconv.Atoi(fields[3])
 	if e1 != nil || e2 != nil {
-		return Task{}, fmt.Errorf("invalid process ancestry")
+		return task{}, fmt.Errorf("invalid process ancestry")
 	}
-	return Task{PID: pid, Parent: parent, Session: session, Start: fields[19], State: fields[0]}, nil
+	return task{pid: pid, parent: parent, session: session, start: fields[19], state: fields[0]}, nil
 }
-func StartToken(pid int) (string, error) { task, err := ReadTask(pid); return task.Start, err }
 
-func Signal(pid int, start string, signal unix.Signal) error {
+func signalTask(t task, signal unix.Signal) error {
 	// pidfds bind signals to the inspected process, even after PID reuse.
-	fd, err := unix.PidfdOpen(pid, 0)
+	fd, err := unix.PidfdOpen(t.pid, 0)
 	if errors.Is(err, unix.ESRCH) {
 		return nil
 	}
@@ -43,15 +41,15 @@ func Signal(pid int, start string, signal unix.Signal) error {
 		return err
 	}
 	defer unix.Close(fd)
-	current, err := StartToken(pid)
+	current, err := readTask(t.pid)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if current != start {
-		return fmt.Errorf("process %d changed during setup", pid)
+	if current.start != t.start {
+		return fmt.Errorf("process %d changed before signaling", t.pid)
 	}
 	if err = unix.PidfdSendSignal(fd, signal, nil, 0); errors.Is(err, unix.ESRCH) {
 		return nil
@@ -60,17 +58,12 @@ func Signal(pid int, start string, signal unix.Signal) error {
 }
 
 func LiveIdentity(pid int) (string, error) {
-	p, err := ReadTask(pid)
+	p, err := readTask(pid)
 	if err != nil {
 		return "", err
 	}
-	if p.State == "Z" || p.State == "X" {
+	if p.state == "Z" || p.state == "X" {
 		return "", fmt.Errorf("parent shell exited")
 	}
-	return p.Start, nil
-}
-
-func processName(pid int) (string, error) {
-	data, err := os.ReadFile(processPath(pid) + "/comm")
-	return strings.TrimSpace(string(data)), err
+	return p.start, nil
 }

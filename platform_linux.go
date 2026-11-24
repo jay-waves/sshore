@@ -2,17 +2,17 @@ package main
 
 import (
 	"context"
-
 	"fmt"
 	"net"
 	"os"
-
 	"strings"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/proc"
 )
 
 func stopHostedTerminal(pid int, start string) error {
-	return stopOwnedProcesses([]setupProcess{{PID: pid, Start: start}})
+	return proc.StopSession(pid, start)
 }
 
 // Read existing OS identity without changing system configuration.

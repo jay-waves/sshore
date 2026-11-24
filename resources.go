@@ -46,32 +46,6 @@ func resourceViews(records []resourceRecord, statuses map[string]resourceStatus,
 	return views
 }
 
-func runRenameResource(kind, old, name, identity string) (int, error) {
-	if kind != "mount" && kind != "forward" {
-		return 2, usage("rename expects mount/NAME or forward/NAME")
-	}
-	if err := validAlias(name); err != nil {
-		return 2, err
-	}
-	change := resourceMutation{Kind: kind, Ref: old, NewName: name, Identity: identity}
-	_, err := daemonResourceRequest(context.Background(), "/resources/rename", change)
-	if err != nil {
-		return 1, err
-	}
-	fmt.Printf("Renamed %s/%s to %s/%s.\n", kind, old, kind, name)
-	return 0, nil
-}
-
-func stopResource(kind, name, identity string) error {
-	change := resourceMutation{Kind: kind, Ref: name, Identity: identity}
-	_, err := daemonResourceRequest(context.Background(), "/resources/kill", change)
-	if err != nil {
-		return err
-	}
-	printStoppedResource(kind, name)
-	return nil
-}
-
 func printStoppedResource(kind, name string) {
 	switch kind {
 	case "mount":

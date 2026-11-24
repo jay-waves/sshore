@@ -73,9 +73,9 @@ preserves the original scope and pin. See [tree admission](shell_tree_control.go
 
 The authenticated exit frame carries the exit code and terminal output offset.
 The frontend drains the reported tail within a time budget and reports the
-exit even if the tail is incomplete. A remote root sends a bounded shell tree
-with its final frame. The root prompt can display it immediately and reuses one
-SSH connection for subsequent inventory requests.
+exit even if the tail is incomplete. The root prompt opens before loading the
+shell tree. It fetches inventory independently and reuses its SSH connection
+for subsequent requests to a directly reachable remote host.
 A nested exit opens the prompt when the daemon confirms surviving pinned
 children. Dismissing that prompt returns to the previous shell. A connection
 loss without an exit frame leaves the state unconfirmed.
@@ -97,9 +97,11 @@ before changing update, reset or approval behavior.
 
 ### Inventory and diagnostics
 
-Both inventory views read the current account daemon. `pstree` (`ps`) reads
-only shells and displays names, short IDs, hosts and states. Its branches follow
-parent UIDs and siblings sort by task ID. A leading `*` marks the current shell.
+Both inventory views read the current account daemon. The daemon captures task
+membership under the registry lock, then reads each task's state independently.
+`pstree` (`ps`) reads only shells and displays names, short IDs, hosts and states.
+Its branches follow parent UIDs and siblings sort by task ID. A leading `*` marks
+the current shell.
 `active` means a shell holds input, `waiting` means the frontend reserved its
 place while entering a child or handling an approval, and `detached` means no
 frontend holds it.
@@ -125,7 +127,10 @@ through the [task registry selector](task_selection.go). An explicit UID stays
 bound across renames. The selector limits attach choices to idle roots and the
 caller's detached direct children. For `attach HOST:`, the host supplies eligible
 roots during SSH setup and the client ranks them by detach history.
-A client can use a remote ID without running `list` first. See
+`kill` and `rename` use the same selector for shells, mounts and forwards.
+Bare IDs can resolve a remote shell through a saved direct SSH connection.
+`HOST:ID` selects a task in that authenticated account's registry. Incoming
+peer records identify their manager and confer no control authority. See
 [inventory and tree rendering](inventory.go) and [daemon metadata](daemon_metadata.go).
 
 ## Build and validate

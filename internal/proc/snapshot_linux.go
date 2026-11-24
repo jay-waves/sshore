@@ -14,12 +14,9 @@ const procRoot = "/proc"
 
 func processPath(pid int) string { return filepath.Join(procRoot, strconv.Itoa(pid)) }
 
-// ExecutablePath returns the procfs link for opening a process executable.
-func ExecutablePath(pid int) string { return filepath.Join(processPath(pid), "exe") }
-
 // WorkingDirectory reads the current directory of a same-user process.
 func WorkingDirectory(pid int) (string, error) {
-	if _, err := ReadTask(pid); err != nil {
+	if _, err := readTask(pid); err != nil {
 		return "", err
 	}
 	return os.Readlink(filepath.Join(processPath(pid), "cwd"))
@@ -47,26 +44,6 @@ func readOwnedStat(path string, pid int) (string, []string, error) {
 	return stat[start+1 : end], strings.Fields(stat[end+1:]), nil
 }
 
-// ReadTasks enumerates same-user task identities. Processes that disappear or
-// cannot be read during enumeration are skipped.
-func ReadTasks() (map[int]Task, error) {
-	entries, err := os.ReadDir(procRoot)
-	if err != nil {
-		return nil, err
-	}
-	tasks := make(map[int]Task)
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue
-		}
-		if task, err := ReadTask(pid); err == nil {
-			tasks[pid] = task
-		}
-	}
-	return tasks, nil
-}
-
 // Process holds advisory metadata from procfs. Parent and Foreground are -1
 // when the corresponding ancestry and terminal fields cannot both be read.
 type Process struct {
@@ -75,17 +52,15 @@ type Process struct {
 }
 
 // ReadProcesses returns a best-effort snapshot of same-user processes in PID order.
-func ReadProcesses() []Process { return readProcesses(procRoot) }
-
-func readProcesses(root string) []Process {
-	entries, _ := os.ReadDir(root)
+func ReadProcesses() []Process {
+	entries, _ := os.ReadDir(procRoot)
 	var processes []Process
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil || pid <= 0 {
 			continue
 		}
-		name, fields, err := readOwnedStat(filepath.Join(root, entry.Name()), pid)
+		name, fields, err := readOwnedStat(processPath(pid), pid)
 		if err != nil || len(fields) < 3 {
 			continue
 		}

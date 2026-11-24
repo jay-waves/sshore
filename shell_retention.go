@@ -184,7 +184,13 @@ func (s *shellTask) retainedChildren() []retainedShell {
 	}
 	var retained []retainedShell
 	now := time.Now()
-	for _, task := range liveTasks[managedTask](s.tasks) {
+	children := liveTasks[managedTask](s.tasks)
+	s.tasks.forest.mu.Lock()
+	children = slices.DeleteFunc(children, func(task managedTask) bool {
+		return task.managedShell().parent != s
+	})
+	s.tasks.forest.mu.Unlock()
+	for _, task := range children {
 		child := task.managedShell()
 		child.mu.Lock()
 		if child.parent == s && !child.exited && !child.killing && child.pinned &&

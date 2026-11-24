@@ -23,13 +23,6 @@ import (
 	"golang.org/x/term"
 )
 
-type setupProcess struct {
-	PID     int    `json:"pid"`
-	Name    string `json:"name"`
-	Version string `json:"version"`
-	Start   string `json:"start"`
-}
-
 // Return the remote home directory from the readiness reply. Shell selection
 // opens terminal input only after SSH authentication.
 func negotiateSetup(r io.Reader, w io.Writer, host string, chooseShell bool) (string, error) {
@@ -281,7 +274,7 @@ func remoteCommand(o options) string {
 	case o.command == "daemon-admin":
 		req.Operation = "daemon-admin"
 	case o.command == "kill" || o.command == "rename":
-		req.Operation = o.command + "-session"
+		req.Operation, req.Mode = "task-control", o.command
 		req.NewName = o.newName
 		data.Mismatch = remoteStartupError(fmt.Sprintf("sshore: %s requires the installed remote version to match %s; no software changed", o.command, version))
 	default:

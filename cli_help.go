@@ -65,6 +65,12 @@ The remote release must match exactly. Update the older side before connecting.
 
 const connectionFlags = "--server --no-escape"
 
+const taskSelectorsHelp = `
+Select a shell, mount or forward by its short ID or full task:<UID> identity.
+Use :ID for this account or HOST:ID for an explicit SSH account. Those forms
+also accept names. Stop or rename incoming resources on their managing account.
+`
+
 var cliCommands = map[string]cliSpec{
 	"": {
 		flags: []string{"--version"},
@@ -149,8 +155,8 @@ Opening a shell from an interactive session creates a child. Its parent waits fo
 From a terminal, enter an idle root. Inside a shell, enter a detached child
 or adopt an idle root on this daemon. Use HOST:ID for a child opened over SSH.
 With no target, resume the most recently detached eligible local shell.
-A bare hexadecimal ID or unique prefix selects a local shell or one with a
-saved direct SSH connection. Use HOST:ID to specify the
+A short ID or full task:<UID> selects a local shell or one with a saved direct
+SSH connection. Use HOST:ID to specify the
 remote host, or HOST: to resume there (including hexadecimal hosts such as db:).
 Use here: for the local machine, or .: as shorthand. IDs accept unique
 hexadecimal prefixes.
@@ -173,11 +179,10 @@ Use attach to resume it. Ctrl+B d also pins and detaches.
        sshore rename ID NEW
        sshore rename {mount|forward}/OLD NEW
 
-Set or replace a shell or resource alias without restarting it.
+Set or replace an alias without restarting the task or changing its ID.
 NEW must be unused and cannot be 6–32 hexadecimal characters.
-A short ID from list may replace OLD; the task ID stays unchanged.
-Remote rename requires matching releases and never installs software.
-` + sshOptions,
+Remote rename requires matching releases.
+` + taskSelectorsHelp + sshOptions,
 	},
 	"pstree": {
 		help: `Usage: sshore pstree  (alias: ps)
@@ -203,9 +208,8 @@ Use --json for machine-readable task details and exact timestamps.
        sshore kill HOST:ID [--server PATH] [-- SSH_OPTIONS]
        sshore kill [HOST:] --all [--server PATH] [-- SSH_OPTIONS]
 
-Use a name or short ID from list as the endpoint value. Use :ID for a locally managed
-task and HOST:ID for a remote shell. IDs stay bound to their original
-instance across renames; an unavailable instance cannot select its replacement.
+IDs stay bound to their original instance across renames.
+` + taskSelectorsHelp + `
 
 Effects:
   Shell     Kills the shell and its identified processes without confirmation.
@@ -216,7 +220,7 @@ Effects:
 --all stops the account daemon, even when idle. Without HOST it targets the
 local account. With HOST it targets the remote account and also ends local
 resources connected to HOST. When tasks are present, it previews them and
-prompts [Y/n]. Enter confirms and n cancels. Peer records are read-only.
+prompts [Y/n]. Enter confirms and n cancels.
 --all uses authenticated cross-release daemon shutdown. Individual remote task
 control requires matching releases. Neither form installs software.
 ` + sshOptions,

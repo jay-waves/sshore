@@ -32,9 +32,9 @@ func publish(build func(string) ([]string, error)) error {
 
 Includes Linux and Windows amd64 binaries. Verify archives against SHA256SUMS.
 
-Start a session with sshore shell. The sh alias still works. Detach pins the
-shell under its parent. A pinned child becomes an independent root when its
-parent exits.
+Use the same task ID with sshore kill and sshore rename for shells, mounts
+and forwards. A short ID or the full task:<UID> works across renames.
+Use HOST:ID to select the managing SSH account explicitly.
 
 Use sshore bootstrap to update both endpoints to %[1]s for managed connections.
 Bootstrap ends the target account's tasks, including pinned shells, and clears

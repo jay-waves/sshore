@@ -246,14 +246,31 @@ func runRootConsole(current options, problem string, ended sessionEnd, returnTo 
 	}()
 	prompts := make(chan func())
 	results := make(chan rootInventoryResult)
+	var pendingInventory, queuedInventory string
+	loadInventory := func(command string) {
+		if pendingInventory != "" {
+			queuedInventory = command
+			return
+		}
+		pendingInventory = command
+		if current.local {
+			go func() {
+				reply := consoleInventory(message{Name: command, Color: color, Cols: uint16(cols)}, "")
+				select {
+				case results <- rootInventoryResult{body: reply.Output}:
+				case <-ctx.Done():
+				}
+			}()
+			return
+		}
+		go loadRootConsoleInventory(ctx, current, command, remote, prompts, results)
+	}
 	body := ""
 	if returnTo == "" {
-		switch {
-		case current.local:
-			body = consoleInventory(message{Name: "pstree", Color: color, Cols: uint16(cols)}, "").Output
-		case ended.tree != "":
-			body = ended.tree
-		default:
+		if current.local || problem == "" && current.routeParent == nil {
+			loadInventory("pstree")
+			body = "Loading task inventory…"
+		} else {
 			body = "Use pstree or list to show this host's tasks."
 		}
 	}
@@ -273,7 +290,16 @@ func runRootConsole(current options, problem string, ended sessionEnd, returnTo 
 				return nil, err
 			}
 		case result := <-results:
+			completed := pendingInventory
+			pendingInventory = ""
 			remote = result.client
+			if queuedInventory != "" && (queuedInventory != completed || result.err != nil) {
+				command := queuedInventory
+				queuedInventory = ""
+				loadInventory(command)
+				continue
+			}
+			queuedInventory = ""
 			if result.err != nil {
 				result.body = "Task inventory unavailable: " + cleanText(result.err.Error())
 			}
@@ -311,16 +337,11 @@ func runRootConsole(current options, problem string, ended sessionEnd, returnTo 
 						console.show(rootConsoleHelp)
 					}
 				case "list", "pstree":
-					if current.local {
-						reply := consoleInventory(message{Name: command, Color: color, Cols: uint16(cols)}, "")
-						console.show(consoleInventoryBody(reply.Output, rows))
-						continue
-					}
-					if current.routeParent != nil {
+					if !current.local && current.routeParent != nil {
 						console.show("Showing this host's tasks requires a direct SSH connection.")
 						continue
 					}
-					go loadRootConsoleInventory(ctx, current, command, remote, prompts, results)
+					loadInventory(command)
 				default:
 					if returnTo != "" {
 						console.show(hint)

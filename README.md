@@ -53,55 +53,38 @@ sshore ping work:               # Measure SSH latency.
 
 ## Shells — Start, detach and resume
 
-Use `sshore shell :NAME` for a local shell or `sshore shell HOST:NAME` over SSH.
-`sh` is an alias. Start with `--pin` to retain a shell if its connection or
-parent ends.
+`sshore shell` (`sh`) starts a local or remote shell. Detach a child, exit its
+parent, then pick up the same shell under a new parent.
 
-1. Run `sshore shell :dev`, then run `sshore shell :build` inside `dev`.
-   `dev` waits while `build` has the keyboard. Run `sshore detach` in `build`
-   or press **Ctrl+B**, then `d`. This pins `build` and returns you to `dev`.
+```text
+$ sshore shell :dev
+dev$ sshore shell :build
+build$ sshore detach
+dev$ sshore pstree
+* dev  active
+╰── build  detached
 
-   ```text
-   * dev  active
-   ╰── build  detached
-   ```
+dev$ exit
+sshore> exit
+$ sshore pstree
+build  detached
 
-   While `dev` lives, only its session can enter `build`. To try it, run
-   `sshore attach :build` from `dev`, then detach again. Each tree has one
-   foreground shell, and independent roots can run in parallel.
+$ sshore shell :review
+review$ sshore attach :build
+build$ sshore pstree
+review  waiting
+╰── * build  active
+```
 
-2. Type `exit` in `dev`. The pinned `build` survives as an independent root
-   with its descendants. An unpinned child ends with its parent. Type `exit`
-   again at the `sshore` prompt to return to your terminal.
-
-   ```text
-   build  detached
-   ```
-
-3. Run `sshore shell :review`, then run `sshore attach :build` inside `review`.
-   Attaching an idle root on the same daemon grafts its whole subtree under
-   the current shell and hands it the keyboard.
-
-   ```text
-   review  waiting
-   ╰── * build  active
-   ```
-
-See `sshore attach --help` for selectors. Press **Ctrl+B**, then `:` for the
-sshore command prompt and `detach DURATION` to set a pin deadline.
+While `dev` is alive, only `dev` can reattach `build`. Each tree has one
+foreground shell.
 
 ### Find and manage tasks
 
-```sh
-sshore pstree               # Shell tree (ps).
-sshore list                 # Shell, mount and forward details (ls).
-sshore list --json          # Machine-readable inventory.
-```
-
-Use a task name or short ID to attach, rename or end a shell. A leading `*`
-marks your current shell. `sshore kill work:build` ends the shell and can
-discard unsaved work. See [inventory and diagnostics](SSHORE.md#inventory-and-diagnostics)
-for fields and forwarding direction.
+Run `sshore list` for task details or add `--json` for scripts.
+Use `sshore kill ID` or `sshore rename ID NEW` for shells, mounts and forwards.
+`HOST:ID` selects the managing SSH account explicitly. Killing a shell can
+discard unsaved work.
 
 ## copy-id — Install an SSH public key for remote login
 

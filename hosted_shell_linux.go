@@ -11,8 +11,6 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-
-	"github.com/jay-waves/sshore/internal/proc"
 )
 
 type remoteShell struct {
@@ -144,12 +142,12 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 func (s *remoteShell) status(detail string) message {
 	view, group := s.hostedView(detail)
 	if detail != "health" {
-		view.Directory = cleanText(sessionDirectory(group, view.PID))
+		view.Directory = sessionDirectory(group, view.PID)
 	}
 	if detail != "health" && detail != "inventory" {
 		view.Foreground = "—"
 		if group > 0 {
-			view.Foreground = newProcessSnapshot(proc.ReadProcesses()).foregroundPrograms(group)
+			view.Foreground = newProcessSnapshot().foregroundPrograms(group)
 		}
 	}
 	return message{Type: "session", Owner: view.Owner, Action: view.State, Pinned: view.Pinned, PinUntil: view.PinUntil, Instance: view.Instance, Name: view.Name, SoftwareVersion: version,

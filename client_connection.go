@@ -212,8 +212,7 @@ func runClient(o options) (int, error) {
 	for {
 		prune(&o)
 		var ended sessionEnd
-		rootTree := !o.local && pending == nil && len(parents) == 0
-		code, err := runClientOnce(o, transports, &ended, rootTree, func(attached options) string {
+		code, err := runClientOnce(o, transports, &ended, func(attached options) string {
 			current, menu = attached, nil
 			from := currentEndpoint
 			currentEndpoint = shellDisplayEndpoint(current)

@@ -223,8 +223,9 @@ func (s *daemonTasks) findNativeShell(ref, identity string) (*nativeShellTask, l
 }
 
 func (t *nativeShellTask) snapshot() localShellRecord {
-	t.shell.mu.Lock()
-	defer t.shell.mu.Unlock()
+	// Only the label changes after publication.
+	t.shell.nameMu.Lock()
+	defer t.shell.nameMu.Unlock()
 	return t.shell.record
 }
 
@@ -427,8 +428,9 @@ func (s *daemonTasks) taskInventory(request taskInventoryRequest) (taskInventory
 	var snapshot taskInventorySnapshot
 	var groups []int
 	var workers []*daemonResourceTask
-	s.mu.Lock()
-	for _, task := range s.liveLocked() {
+	// Capture membership before collecting runtime state. A shell view may wait
+	// for its terminal handshake, so it must not hold up unrelated task lookups.
+	for _, task := range liveTasks[daemonTask](s) {
 		switch t := task.(type) {
 		case *nativeShellTask:
 			if request.Native {
@@ -454,7 +456,6 @@ func (s *daemonTasks) taskInventory(request taskInventoryRequest) (taskInventory
 
 		}
 	}
-	s.mu.Unlock()
 	hostedDiagnostics(snapshot.Shells, groups, request.Detail)
 	return snapshot, workers
 }

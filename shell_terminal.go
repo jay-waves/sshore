@@ -23,6 +23,7 @@ type shellTask struct {
 	endpoints  terminalEndpoints
 	mu         sync.Mutex // Protect shell state and attachment ownership.
 	terminalMu sync.Mutex // Serialize replay and redraw with live output. Acquire before mu.
+	nameMu     sync.Mutex // Read the registry label without waiting for terminal I/O.
 
 	terminal                      *pty.Terminal
 	process                       processIdentity
@@ -55,8 +56,8 @@ func (s *shellTask) setInitialIdentity(uid, name string) {
 }
 
 func (s *shellTask) taskName() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.nameMu.Lock()
+	defer s.nameMu.Unlock()
 	return s.record.Name
 }
 
@@ -77,10 +78,10 @@ func (s *shellTask) shellEnvironment() []string {
 }
 
 func (s *shellTask) treeIdentity() string {
-	if s.hosted {
+	if s.hosted || validTaskUID(s.record.UID) {
 		return identityFromUID(s.record.UID)
 	}
-	return s.record.identity()
+	return (localShellRecord{Token: s.record.Token}).identity()
 }
 
 // Call with mu held.
@@ -199,7 +200,7 @@ func (s *shellTask) startManagedShell(path string, env []string, m message) erro
 		}
 		s.mu.Unlock()
 		if p != nil {
-			p.finishExit(message{Type: "exit", Code: code, Reason: reason, RetainedShells: s.retainedChildren(), Output: rootConsoleTree(p.rootTree)})
+			p.finishExit(message{Type: "exit", Code: code, Reason: reason, RetainedShells: s.retainedChildren()})
 		}
 		if !s.hosted {
 			s.close()
@@ -231,31 +232,26 @@ func (s *shellTask) state() string {
 	}
 }
 
-// The final control frame can show the remote tree even after the frontend
-// releases its SSH lease. Collect outside the shell lock used by inventory.
-func rootConsoleTree(requested bool) string {
-	if !requested {
-		return ""
-	}
-	return consoleInventory(message{Name: "pstree"}, "").Output
-}
-
 // The table excludes new claims while the shell verifies the old reference.
 func (s *shellTask) rename(old, name, instance string) error {
 	if err := validAlias(name); err != nil {
 		return err
 	}
+	// Wait for terminal state before taking the registry lock. Registry
+	// readers only need nameMu, which is acquired last during a rename.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.tasks.mu.Lock()
 	defer s.tasks.mu.Unlock()
 	if err := s.tasks.checkNameLocked(s.record.UID, name); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.exited || s.killing || (s.hosted || old != "") && s.record.Name != old || instance != "" && instance != s.record.UID {
 		return fmt.Errorf("shell changed or is exiting; refresh with sshore list")
 	}
+	s.nameMu.Lock()
 	s.record.Name = name
+	s.nameMu.Unlock()
 	return nil
 }
 
@@ -518,7 +514,6 @@ func (s *shellTask) attachTerminal(p *attachment, m message, start func(message)
 		return err
 	}
 	p.input = lease
-	p.rootTree = m.RootTree
 	s.active = p
 	if !initial {
 		pty.RequestRedraw(s.terminal)
@@ -609,7 +604,6 @@ func (s *shellTask) serveAttachment(p *attachment, control io.Reader, resizeAck 
 				s.mu.Lock()
 				reply := message{Type: "detached", Name: name, Pinned: s.pinned, PinUntil: s.pinUntil}
 				s.mu.Unlock()
-				reply.Output = rootConsoleTree(m.RootTree && p.rootTree)
 				return p.FinishDetach(reply)
 			}
 			return err

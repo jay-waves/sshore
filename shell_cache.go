@@ -124,10 +124,12 @@ func resolveDetachedAttach(o *options, parent string) error {
 }
 
 func (a *daemonActivity) selectDetachedAttach(parent, kind string) (*selectedTask, error) {
+	detached := (taskQuery{Kind: kind, Parent: parent, Detached: true}).registered(a.tasks)
+	a.metadata.shellMu.Lock()
+	defer a.metadata.shellMu.Unlock()
 	if err := a.metadata.loadDetachedAttachments(); err != nil {
 		return nil, err
 	}
-	detached := (taskQuery{Kind: kind, Parent: parent, Detached: true}).registered(a.tasks)
 	for _, row := range a.metadata.attachments.rows {
 		if row.Local {
 			for _, target := range detached {

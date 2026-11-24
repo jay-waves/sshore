@@ -13,7 +13,6 @@ import (
 
 // attachment owns the two connections and the terminal byte counters.
 type attachment struct {
-	rootTree            bool
 	sourceHost          string
 	claim               *treeClaim
 	control             attachmentControl

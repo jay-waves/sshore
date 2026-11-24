@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -136,15 +135,27 @@ func metadataRPC(r metadataRequest) (metadataReply, error) {
 }
 
 func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply) {
+	var err error
+	switch r.Action {
+	case "task_by_id":
+		reply.Target, err = a.selectTaskID(r.Instance, r.Kind)
+	case "attach_recent":
+		reply.Target, err = a.selectDetachedAttach(r.Key, r.Kind)
+	default:
+		return a.handleShellHistory(r)
+	}
+	if err != nil {
+		reply.Error = err.Error()
+	}
+	return
+}
+
+func (a *daemonActivity) handleShellHistory(r metadataRequest) (reply metadataReply) {
 	s := &a.metadata
 	s.shellMu.Lock()
 	defer s.shellMu.Unlock()
 	var err error
 	switch r.Action {
-	case "attach_by_id":
-		reply.Target, err = a.resolveBareAttachID(r.Instance)
-	case "attach_recent":
-		reply.Target, err = a.selectDetachedAttach(r.Key, r.Kind)
 	case "attach_remote_choice":
 		reply.Choice, err = s.recentRemoteChoice(r.Host, r.Targets)
 	case "attach_detach":
@@ -237,38 +248,6 @@ func validateRecentConnection(r recentConnection) error {
 		}
 	}
 	return nil
-}
-
-// A bare ID resolves among registered local shells and known direct SSH routes.
-func (a *daemonActivity) resolveBareAttachID(ref string) (*selectedTask, error) {
-	if !isTaskIDPrefix(ref) {
-		return nil, fmt.Errorf("invalid task ID")
-	}
-	records, err := a.metadata.readRecentConnectionsLocal()
-	if err != nil {
-		return nil, err
-	}
-	if err := a.metadata.loadDetachedAttachments(); err != nil {
-		return nil, err
-	}
-	routes := slices.Clone(records)
-	for _, row := range a.metadata.attachments.rows {
-		if row.Connection != nil {
-			routes = append(routes, *row.Connection)
-		}
-	}
-	candidates := (taskQuery{Kind: "shell"}).registered(a.tasks)
-	for i := range routes {
-		route := &routes[i]
-		if validTaskUID(route.Instance) && !route.viaShell() {
-			candidates = append(candidates, selectedTask{Kind: "shell", Identity: identityFromUID(route.Instance), Instance: route.Instance, Connection: route})
-		}
-	}
-	target, err := matchTask(ref, candidates)
-	if err == nil && target.Identity == "" {
-		return nil, usage("unknown task %s; use sshore list or specify HOST:ID", ref)
-	}
-	return &target, err
 }
 
 func validateShellHistoryConnection(record recentConnection) error {

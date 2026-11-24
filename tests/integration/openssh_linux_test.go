@@ -80,6 +80,31 @@ Match command "printf forwarding-check"
 		}
 		return string(out)
 	}
+	local := func(t *testing.T, args ...string) []byte {
+		t.Helper()
+		out, err := exec.CommandContext(ctx, binary, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+		return out
+	}
+	type resourceRef struct {
+		ID, Identity string
+		ShortID      string `json:"short_id"`
+	}
+	findResource := func(t *testing.T, out []byte, id string) resourceRef {
+		t.Helper()
+		var inventory struct{ Resources []resourceRef }
+		if err := json.Unmarshal(out, &inventory); err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range inventory.Resources {
+			if row.ID == id {
+				return row
+			}
+		}
+		return resourceRef{}
+	}
 	t.Run("ssh trust and configuration", func(t *testing.T) {
 		connection := strings.Fields(run(t, "exec", host, `printf '%s\n' "$SSH_CONNECTION"`))
 		if len(connection) != 4 || connection[0] != "127.0.0.1" || connection[2] != "127.0.0.1" || connection[3] != "2222" {
@@ -227,6 +252,47 @@ Match command "printf forwarding-check"
 		if got, err := io.ReadAll(conn); err != nil || string(got) != "forwarded across OpenSSH\n" {
 			t.Fatalf("reverse forward delivered %q (%v)", got, err)
 		}
+		ref := findResource(t, local(t, "list", "--json"), "forward/"+name)
+		if ref.Identity == "" || ref.ShortID == "" {
+			t.Fatalf("missing identity for forward/%s", name)
+		}
+		local(t, "rename", ref.Identity, "renamed-forward")
+		if got := findResource(t, local(t, "list", "--json"), "forward/renamed-forward"); got.Identity != ref.Identity {
+			t.Fatalf("forward identity changed during rename: %+v", got)
+		}
+		local(t, "kill", ref.ShortID)
+		if got := findResource(t, local(t, "list", "--json"), "forward/renamed-forward"); got.Identity != "" {
+			t.Fatalf("forward still registered: %+v", got)
+		}
+	})
+	t.Run("control forward on its SSH account", func(t *testing.T) {
+		probe, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
+		probe.Close()
+		// This dedicated fixture account may log in to its own OpenSSH server.
+		run(t, "exec", host, `ssh-keygen -q -t ed25519 -N '' -f task-id-key && cat task-id-key.pub >> authorized_keys`)
+		out := run(t, "exec", host, `sshore forward here:`+port+` 127.0.0.1:2222 --port 2222 -- -F none -i "$HOME/task-id-key" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$HOME/task-id-hosts"`)
+		_, description, _ := strings.Cut(out, "Started forward/")
+		name, _, _ := strings.Cut(description, ":")
+		if name == "" {
+			t.Fatalf("forward did not start: %s", out)
+		}
+		ref := findResource(t, []byte(run(t, "exec", host, "sshore list --json")), "forward/"+name)
+		if ref.ShortID == "" {
+			t.Fatalf("missing identity for remote forward/%s", name)
+		}
+		selector := host + ":" + ref.ShortID
+		run(t, "rename", selector, "renamed-remote-forward", "--server", binary)
+		if got := findResource(t, []byte(run(t, "exec", host, "sshore list --json")), "forward/renamed-remote-forward"); got.Identity != ref.Identity {
+			t.Fatalf("remote forward identity changed during rename: %+v", got)
+		}
+		run(t, "kill", selector, "--server", binary)
+		if got := findResource(t, []byte(run(t, "exec", host, "sshore list --json")), "forward/renamed-remote-forward"); got.Identity != "" {
+			t.Fatalf("remote forward still registered: %+v", got)
+		}
 	})
 	mount := func(t *testing.T, source string, options ...string) string {
 		t.Helper()
@@ -237,10 +303,14 @@ Match command "printf forwarding-check"
 		if name == "" {
 			t.Fatalf("missing mount name: %s", start)
 		}
+		ref := findResource(t, local(t, "list", "--json"), "mount/"+name)
+		if ref.ShortID == "" {
+			t.Fatalf("missing identity for mount/%s", name)
+		}
 		t.Cleanup(func() {
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if out, err := exec.CommandContext(cleanup, binary, "kill", "mount/"+name).CombinedOutput(); err != nil {
+			if out, err := exec.CommandContext(cleanup, binary, "kill", ref.ShortID).CombinedOutput(); err != nil {
 				t.Errorf("unmount: %s (%v)", out, err)
 				return
 			}
@@ -578,6 +648,76 @@ Match command "printf forwarding-check"
 		})
 	})
 
+	t.Run("kill remote shells by identity", func(t *testing.T) {
+		const firstName, secondName = "kill-first", "kill-second"
+		first, second := host+":"+firstName, host+":"+secondName
+		cleanRemote(first)
+		cleanRemote(second)
+		type shellRef struct {
+			Name, Instance string
+			ShortID        string `json:"short_id"`
+		}
+		find := func(out []byte, name string) shellRef {
+			t.Helper()
+			var inventory struct{ Shells []shellRef }
+			if err := json.Unmarshal(out, &inventory); err != nil {
+				t.Fatal(err)
+			}
+			for _, shell := range inventory.Shells {
+				if shell.Name == name {
+					return shell
+				}
+			}
+			return shellRef{}
+		}
+		observed := func(name string) shellRef {
+			t.Helper()
+			out, err := exec.CommandContext(ctx, binary, "list", "--json").CombinedOutput()
+			if err != nil {
+				t.Fatalf("list remote observation: %v\n%s", err, out)
+			}
+			ref := find(out, name)
+			if len(ref.Instance) != 32 || len(ref.ShortID) != 6 {
+				t.Fatalf("missing identity for %s: %+v", name, ref)
+			}
+			return ref
+		}
+		kill := func(ref string) {
+			t.Helper()
+			if out, err := exec.CommandContext(ctx, binary, "kill", ref).CombinedOutput(); err != nil {
+				t.Fatalf("kill %s: %v\n%s", ref, err, out)
+			}
+		}
+		out, err := runTerminal(t, ctx, command("shell", first, "--no-profile", "--server", binary), func(send func(string), wait terminalWait) {
+			wait("Connected " + first)
+			// A second direct connection replaces the host's recent entry for
+			// the first shell, which is still active and has no detach record.
+			runOpenSSHTerminal(t, ctx, command("shell", second, "--no-profile", "--server", binary), func(send func(string), wait terminalWait) {
+				wait("Connected " + second)
+				send("\x02d")
+				wait("No shell attached.")
+				send("exit\r")
+			})
+			kill("task:" + observed(firstName).Instance)
+			wait("Exited " + first)
+			wait("No shell attached.")
+			send("exit\r")
+		})
+		if err == nil || !strings.Contains(out, "killed by sshore kill") {
+			t.Fatalf("first shell did not report being killed: %v\n%s", err, out)
+		}
+		secondRef := observed(secondName)
+		local(t, "rename", "task:"+secondRef.Instance, "kill-renamed")
+		if got := find([]byte(run(t, "exec", host, "sshore list --json")), "kill-renamed"); got.Instance != secondRef.Instance {
+			t.Fatalf("remote shell identity changed during rename: %+v", got)
+		}
+		kill(secondRef.ShortID)
+		remote := []byte(run(t, "exec", host, "sshore list --json"))
+		if find(remote, firstName).Instance != "" || find(remote, "kill-renamed").Instance != "" {
+			t.Fatal("a killed remote shell is still registered")
+		}
+	})
+
 	t.Run("shutdown confirmation rejects a replacement task", func(t *testing.T) {
 		localCommand := func(args ...string) *exec.Cmd { return exec.CommandContext(ctx, binary, args...) }
 		local := func(args ...string) []byte {
@@ -622,7 +762,7 @@ Match command "printf forwarding-check"
 		out, err := runTerminal(t, ctx, localCommand("kill", "--all"), func(send func(string), wait terminalWait) {
 			wait(name)
 			wait("[Y/n]", true)
-			local("kill", "here:"+first)
+			local("kill", first[:6])
 			start()
 			replacement = identity()
 			send("y\n")
@@ -634,7 +774,7 @@ Match command "printf forwarding-check"
 		if out, err := localCommand("kill", "here:"+first).CombinedOutput(); err == nil {
 			t.Fatalf("the retired task ID still accepts a kill: %s", out)
 		}
-		local("kill", "here:"+replacement)
+		local("kill", "task:"+replacement)
 	})
 
 }

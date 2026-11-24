@@ -36,10 +36,8 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 			return err
 		}
 		return watchRemoteTask()
-	case "rename-session":
-		return renameSession(req.Name, req.NewName, req.Instance)
-	case "kill-session":
-		return killSession(req.Name, req.Instance)
+	case "task-control":
+		return serveTaskControl(req)
 	case "task-watch":
 		return watchRemoteTask()
 	case "console-inventory":
@@ -48,6 +46,21 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 		return json.NewEncoder(os.Stdout).Encode(localSessionInventory())
 	}
 	return usage("unknown remote service operation")
+}
+
+func serveTaskControl(req remoteServiceRequest) error {
+	if req.Mode != "kill" && req.Mode != "rename" {
+		return usage("invalid task operation")
+	}
+	if err := validSession(req.Name); err != nil {
+		return err
+	}
+	target, err := selectRegisteredTask(taskQuery{Ref: req.Name, UID: req.Instance})
+	if err != nil {
+		return err
+	}
+	_, err = withDaemonActivity(func() (int, error) { return mutateRegisteredTask(req.Mode, target, req.NewName) })
+	return err
 }
 
 func serveRemoteFiles(operation string) error {
