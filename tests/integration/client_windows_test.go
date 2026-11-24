@@ -79,7 +79,10 @@ func runWindowsTerminal(t *testing.T, ctx context.Context, cmd *exec.Cmd, run fu
 	defer terminal.Close()
 	stop := context.AfterFunc(ctx, func() { _ = terminal.Close() })
 	defer stop()
-	transcript := terminalDialogue(t, terminal, run)
+	transcript := terminalDialogue(t, terminal, func(send func(string), wait terminalWait) {
+		// ConPTY paints text with cursor movement and can omit the final newline.
+		run(send, func(marker string, _ ...bool) string { return wait(marker, true) })
+	})
 	if err := terminal.Wait(); err != nil {
 		t.Fatalf("Windows terminal client: %v\n%s", err, transcript)
 	}
@@ -107,7 +110,7 @@ func TestWindowsConPTY(t *testing.T) {
 		send("\x02d")
 		wait("Detached from " + endpoint)
 		wait("No shell attached.")
-		wait("> ", true)
+		wait("sshore on local> ")
 		send("exit\r")
 	})
 	runWindowsTerminal(t, ctx, command("attach", endpoint), func(send func(string), wait terminalWait) {
@@ -116,7 +119,7 @@ func TestWindowsConPTY(t *testing.T) {
 		wait("WIN_RESUMED=retained:" + directory)
 		send("exit\r")
 		wait("No shell attached.")
-		wait("> ", true)
+		wait("sshore on local> ")
 		send("exit\r")
 	})
 	var inventory struct {

@@ -57,6 +57,7 @@ jobs:
         shell: pwsh
         run: ./tests/install_windows_test.ps1
       - name: Build the Windows client and Linux fixture
+        id: builds
         shell: pwsh
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
@@ -74,6 +75,8 @@ jobs:
       - name: Windows ConPTY integration
         run: go test -tags=integration -count=1 -timeout=90s -run '^TestWindowsConPTY$' -v ./tests/integration
       - name: Install WinFsp and prepare its official test suite
+        if: ${{ !cancelled() && steps.builds.outcome == 'success' }}
+        id: winfsp
         shell: pwsh
         run: |
           $msi = Join-Path $env:RUNNER_TEMP winfsp-2.2.26323.msi
@@ -96,10 +99,13 @@ jobs:
           Expand-Archive -LiteralPath $suite -DestinationPath $suiteDir
           "SSHORE_TEST_WINFSP_SUITE=$(Join-Path $suiteDir winfsp-tests-x64.exe)" >> $env:GITHUB_ENV
       - name: Set up the Linux SSH fixture
+        if: ${{ !cancelled() && steps.winfsp.outcome == 'success' }}
+        id: wsl
         uses: Vampire/setup-wsl@f40fb59d850112c9a292b0218bca8271305b9127 # v5.0.0
         with:
           distribution: Ubuntu-24.04
           wsl-version: 2
           additional-packages: openssh-server
       - name: Windows WinFsp integration
+        if: ${{ !cancelled() && steps.wsl.outcome == 'success' }}
         run: go test -tags=integration -count=1 -timeout=90s -run '^TestWindowsWinFsp$' -v ./tests/integration
