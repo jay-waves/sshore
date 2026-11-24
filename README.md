@@ -39,7 +39,10 @@ pinned shells, and clears its sshore identity, history and cached releases.
 | Windows 11 / Server 2025 or newer | PowerShell 7, cmd | SFTP mounts |
 
 Managed shells require the host's SSH server to allow TCP forwarding to
-loopback. See the [development notes](SSHORE.md#terminal-and-mux-design-scope)
+loopback. Reverse forwards and nested SSH relays also use OpenSSH's
+`direct-streamlocal@openssh.com` channel and require local stream-local
+forwarding on the SSH server that hosts the private socket.
+See the [development notes](SSHORE.md#terminal-and-mux-design-scope)
 for experimental Apple Silicon support.
 
 ## ssh — Run remote commands and forward ports
@@ -161,7 +164,8 @@ it. Close open files before unmounting.
 - Run `sshore --tldr` for examples or `sshore COMMAND --help` for options.
 - Each host's account daemon records shell disconnects, retention and other
   background diagnostics in `~/.sshore/daemon/local.log`.
-- Status and diagnostic messages show local time, task ID when available, and severity.
+- Status and diagnostic messages show local time as `MM-DD HH:mm` on screen,
+  plus the task ID when available and severity. Log files include the year and seconds.
 
 ## Project documents
 
@@ -171,6 +175,7 @@ it. Close open files before unmounting.
 ## Acknowledgements
 
 Inspired by [dtach](https://github.com/crigler/dtach),
-[sshping](https://github.com/spook/sshping) and [trzsz](https://github.com/trzsz/trzsz).
+[sshping](https://github.com/spook/sshping), [trzsz](https://github.com/trzsz/trzsz)
+and [sshoq](https://github.com/h4sh5/sshoq).
 
 [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_LICENSES.txt)

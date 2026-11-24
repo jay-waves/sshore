@@ -174,7 +174,7 @@ func runTargetCommand(args []string) (int, error) {
 			return 2, usage("local tasks do not accept SSH options")
 		}
 		if command != "attach" {
-			return withDaemonActivity(func() (int, error) { return mutateRegisteredTask(command, target, newName) })
+			return mutateRegisteredTask(command, target, newName)
 		}
 		parsed.operands[0] = target.Name
 	}

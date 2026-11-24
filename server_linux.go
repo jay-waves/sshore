@@ -29,11 +29,6 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 		if err := (forwardConfig{Port: f.Port, Target: f.TargetPort}).Validate(); err != nil {
 			return err
 		}
-		if req.ApprovalID != "" {
-			if err := checkApprovalSource(req.Name, req.PID, req.ApprovalID, req.Instance); err != nil {
-				return err
-			}
-		}
 		serveRoutedForward(agentStdio(), *f)
 		return nil
 	case "task-control":
@@ -53,7 +48,7 @@ func serveTaskControl(req remoteServiceRequest) error {
 	if err != nil {
 		return err
 	}
-	_, err = withDaemonActivity(func() (int, error) { return mutateRegisteredTask(req.Mode, target, req.NewName) })
+	_, err = mutateRegisteredTask(req.Mode, target, req.NewName)
 	return err
 }
 
@@ -67,7 +62,5 @@ func serveRemoteFiles(operation string) error {
 		return files.ServeCopy(agentStdio())
 	}
 	account, _ := localMachineIdentity()
-	return files.ServeAgentWithPeer(agentStdio(), version, account, beginIncomingMountTask, func(a files.MountApproval) error {
-		return checkApprovalSource(a.Session, a.PID, a.ID, a.Instance)
-	})
+	return files.ServeAgentWithPeer(agentStdio(), version, account, beginIncomingMountTask)
 }

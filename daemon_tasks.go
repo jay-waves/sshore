@@ -18,6 +18,7 @@ import (
 // The daemon owns task identities and their live implementations. Entries are
 // never reconstructed after a daemon restart.
 type daemonTask interface {
+	stopTask() error
 	setInitialIdentity(uid, name string) // Called before publication in the registry.
 	taskName() string
 	expired() bool
@@ -379,15 +380,11 @@ func (t *daemonResourceTask) requestStop() error {
 	return nil
 }
 
-func (t *daemonResourceTask) stop(timeout time.Duration) error {
+func (t *daemonResourceTask) stopTask() error {
 	if err := t.requestStop(); err != nil {
 		return err
 	}
-	if timeout == 0 {
-		<-t.done
-		return nil
-	}
-	timer := time.NewTimer(timeout)
+	timer := time.NewTimer(resourceStopTimeout)
 	defer timer.Stop()
 	select {
 	case <-t.done:
@@ -437,6 +434,9 @@ func (s *daemonTasks) taskInventory(request taskInventoryRequest) (taskInventory
 		case *nativeShellTask:
 			if request.Native {
 				view := t.shell.view()
+				if request.Detail != "health" {
+					view.Directory = currentShellDirectory(view.PID, view.Directory)
+				}
 				snapshot.Native = append(snapshot.Native, view)
 			}
 		case hostedShellView:
@@ -469,7 +469,7 @@ func (s *daemonTasks) serveResourceMutation(w http.ResponseWriter, r *http.Reque
 	}
 	task, err := s.mutateResource(r.PathValue("action"), mutation)
 	if err == nil && task != nil {
-		err = task.stop(resourceStopTimeout)
+		err = task.stopTask()
 	}
 	var reply resourceReply
 	if err != nil {
@@ -609,7 +609,7 @@ func (s *daemonTasks) serveConfirmedResourceStops(w http.ResponseWriter, r *http
 	finished := make(chan struct{}, len(stops))
 	for i, task := range stops {
 		go func() {
-			if err := task.stop(resourceStopTimeout); err != nil {
+			if err := task.stopTask(); err != nil {
 				failures[i] = err.Error()
 			}
 			finished <- struct{}{}

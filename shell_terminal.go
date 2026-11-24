@@ -202,7 +202,11 @@ func (s *shellTask) startManagedShell(path string, env []string, m message) erro
 		s.mu.Unlock()
 		termui.Log(s.tasks.log, canonicalTaskCode(s.treeIdentity()), termui.Info, "Shell exited (code %d): %s", code, cleanText(reason))
 		if p != nil {
-			p.finishExit(message{Type: "exit", Code: code, Reason: reason, RetainedShells: s.retainedChildren()})
+			p.finishExit(message{
+				Type: "exit", Code: code, Reason: reason,
+				DaemonShutdown: s.tasks.isShuttingDown(),
+				RetainedShells: s.retainedChildren(),
+			})
 		}
 		if !s.hosted {
 			s.close()

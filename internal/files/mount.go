@@ -18,9 +18,11 @@ import (
 	sshfx "github.com/pkg/sftp/v2/encoding/ssh/filexfer"
 	"github.com/pkg/sftp/v2/encoding/ssh/filexfer/openssh"
 	"github.com/pkg/sftp/v2/localfs"
+	"github.com/xtaci/smux"
 )
 
-// MountConfig contains mount settings and endpoint openers.
+// MountConfig contains mount settings and endpoint openers. Open provides the
+// data channel for direct SSH or the transport for an approved mount.
 type MountConfig struct {
 	History                     func(account, root string, delta VisitHistory) VisitHistory
 	PeerMetadata                json.RawMessage
@@ -103,14 +105,34 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 	if err != nil {
 		return 1, err
 	}
-	data := newMountStream(endpoint)
-	closeData := sync.OnceFunc(func() { _ = data.Close() })
-	stopData := context.AfterFunc(ctx, closeData)
-	defer stopData()
+	closeEndpoint := endpoint.Close
+	var session *smux.Session
+	if o.Approval != nil {
+		session, err = smux.Client(endpoint, nil)
+		if err != nil {
+			_ = endpoint.Close()
+			return 1, err
+		}
+		closeEndpoint = session.Close
+		o.OpenNotifications = func(context.Context) (io.ReadWriteCloser, error) {
+			return session.OpenStream()
+		}
+	}
+	closeTransport := sync.OnceFunc(func() { _ = closeEndpoint() })
+	stopTransport := context.AfterFunc(ctx, closeTransport)
+	defer stopTransport()
 	disconnect := func(reason error) {
 		cancel(reason)
-		closeData()
+		closeTransport()
 	}
+	if session != nil {
+		endpoint, err = session.OpenStream()
+		if err != nil {
+			disconnect(nil)
+			return 1, err
+		}
+	}
+	data := newMountStream(endpoint)
 	var account, root string
 	var client *sftp.Client
 	var backend *ftpFS
@@ -342,6 +364,8 @@ type MountApproval struct {
 	Session  string
 	PID      int
 	ID       string
+	Path     string
+	ReadOnly bool
 }
 
 type message struct {

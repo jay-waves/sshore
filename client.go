@@ -163,13 +163,14 @@ func acceptSessionName(o *options, name string) error {
 }
 
 type sessionEnd struct {
-	title, detail string
-	level         termui.Color
-	exit          bool
-	retained      []retainedShell
+	title, detail       string
+	level               termui.Color
+	exit                bool
+	localDaemonShutdown bool
+	retained            []retainedShell
 }
 
-func runClientOnce(o options, transports clientTransports, end *sessionEnd, ready func(options) string) (resultCode int, resultErr error) {
+func runClientOnce(o options, transports clientTransports, panel *clientConsole, end *sessionEnd, ready func(options) string) (resultCode int, resultErr error) {
 	attached := false
 	var ended func()
 	report := func(level termui.Color, title, detail string) {
@@ -770,6 +771,8 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 						args[0] = canonicalCommand(args[0])
 					}
 					switch {
+					case len(args) == 1 && args[0] == "pwd":
+						console.show(cleanText(panel.directory))
 					case len(args) > 0 && args[0] == "detach":
 						request, err := parseDetachCommand(args[1:])
 						if err != nil {
@@ -844,8 +847,8 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 						if o.local {
 							host = "local"
 						}
-						console = &commandConsole{}
-						console.start(ctx, terminalOutput, emit, host, cols, color)
+						panel.directory = "Directory unavailable."
+						console = panel.open(ctx, terminalOutput, emit, host, cols, color)
 						if len(openingInput) > 0 {
 							keyErr = sendConsoleInput(openingInput)
 						}
@@ -1017,6 +1020,12 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 						if console != nil {
 							if console.attach == "" {
 								console.targets = e.m.Targets
+								if e.m.Directory != "" {
+									panel.directory = e.m.Directory
+									if o.local {
+										panel.localDirectory = panel.directory
+									}
+								}
 								if err := requestOpeningInventory(""); err != nil {
 									return 255, err
 								}
@@ -1149,7 +1158,7 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 					}
 					approval = &approvalHandoff{request: request, token: e.m.Token}
 					approvalDeadline = time.After(requestTimeout)
-					if err := streamMessage(control, message{Type: "approval_handoff", Token: e.m.Token}); err != nil {
+					if err := streamMessage(control, message{Type: "approval_handoff", Token: e.m.Token, ApprovalID: request.ID}); err != nil {
 						return 255, err
 					}
 				case "approval_cancelled":
@@ -1230,6 +1239,7 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 					}
 					exit := e.m
 					end.exit, end.retained = true, exit.RetainedShells
+					end.localDaemonShutdown = o.local && exit.DaemonShutdown
 					ended = func() {
 						reason := cleanText(exit.Reason)
 						title := fmt.Sprintf("Exited %s (code %d)", cleanText(shellDisplayEndpoint(o)), exit.Code)
@@ -1242,6 +1252,9 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 							detail = "Final terminal output was incomplete."
 						}
 						report(level, title, detail)
+						if end.localDaemonShutdown {
+							return
+						}
 						if exitErr := rememberShellExit(o); exitErr != nil {
 							termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not record shell exit: %s\n", cleanText(exitErr.Error()))
 						}

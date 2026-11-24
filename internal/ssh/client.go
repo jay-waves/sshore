@@ -20,9 +20,10 @@ import (
 // Closing a session never transfers connection ownership to another task.
 type Client struct {
 	*cryptossh.Client
-	jump *Client
-	once sync.Once
-	done chan struct{}
+	PasswordAuthenticated bool
+	jump                  *Client
+	once                  sync.Once
+	done                  chan struct{}
 }
 
 func (c *Client) Close() error {
@@ -91,7 +92,8 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 	seconds, _ := strconv.Atoi(cfg.get("connecttimeout"))
 	releaseBudget := budgets.add(time.Duration(seconds)*time.Second, cancel)
 	cc := &cryptossh.ClientConfig{User: cfg.user}
-	if err := cfg.configureAuthentication(connecting, cc, budgets); err != nil {
+	var passwordAuthenticated bool
+	if err := cfg.configureAuthentication(connecting, cc, budgets, &passwordAuthenticated); err != nil {
 		releaseBudget()
 		return nil, err
 	}
@@ -154,7 +156,7 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 	if err != nil {
 		return nil, fmt.Errorf("SSH %s: %w", cfg.options.Host, err)
 	}
-	return &Client{Client: cryptossh.NewClient(conn, ch, req), jump: parent, done: make(chan struct{})}, nil
+	return &Client{Client: cryptossh.NewClient(conn, ch, req), PasswordAuthenticated: passwordAuthenticated, jump: parent, done: make(chan struct{})}, nil
 }
 func (cfg *connectionConfig) proxyJumpOptions(jump string) (Options, error) {
 	last := strings.LastIndexByte(jump, ',')
@@ -239,7 +241,11 @@ type Process struct {
 
 // DialTCP opens a sibling TCP channel. Closing it leaves the exec channel alive.
 func (p *Process) DialTCP(ctx context.Context, address string) (net.Conn, error) {
-	return p.client.DialContext(ctx, "tcp", address)
+	return p.client.DialTCP(ctx, address)
+}
+
+func (c *Client) DialTCP(ctx context.Context, address string) (net.Conn, error) {
+	return c.DialContext(ctx, "tcp", address)
 }
 
 func (p *Process) Read(b []byte) (int, error)  { return p.stdout.Read(b) }

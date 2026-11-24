@@ -215,9 +215,6 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *htt
 	})
 	mux.HandleFunc("POST /resources/stop-confirmed", tasks.serveConfirmedResourceStops)
 	mux.HandleFunc("POST /resources/{action}", tasks.serveResourceMutation)
-	mux.HandleFunc("POST /ready", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
 	mux.HandleFunc("POST /tasks/select", func(w http.ResponseWriter, r *http.Request) {
 		var q taskQuery
 		if !readDaemonBody(w, r, &q) {

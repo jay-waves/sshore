@@ -185,7 +185,7 @@ func (a *attachment) ReadInput(input interface {
 }
 
 // The helper and attachment remain connected until the local client accepts the handoff.
-func (p *attachment) requestApproval(c net.Conn, m message) error {
+func (p *attachment) requestApproval(c net.Conn, m message, complete func(string) error) error {
 	token := rand.Text()
 	responses, err := p.approvals.open(token)
 	if err != nil {
@@ -243,6 +243,9 @@ func (p *attachment) requestApproval(c net.Conn, m message) error {
 		return io.ErrClosedPipe
 	case <-timer.C:
 		return cancel(fmt.Errorf("approval request timed out"))
+	}
+	if err := complete(reply.ApprovalID); err != nil {
+		return cancel(err)
 	}
 	return p.controlMessage(message{Type: "approval_ack", Token: token})
 }

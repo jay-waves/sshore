@@ -161,7 +161,7 @@ func (c *Console) edit(in *io.PipeReader, prompt string, width int, color bool, 
 	complete := &consoleCompletion{}
 	editor, err := readline.NewEx(&readline.Config{
 		Prompt: prompt, Stdin: in, Stdout: out, Stderr: out,
-		ForceUseInteractive: true, HistoryLimit: 100,
+		ForceUseInteractive: true, HistoryLimit: -1, DisableAutoSaveHistory: true,
 		FuncGetWidth: func() int { return max(2, width) },
 		FuncMakeRaw:  func() error { return nil }, FuncExitRaw: func() error { return nil },
 		FuncOnWidthChanged:  func(func()) {},

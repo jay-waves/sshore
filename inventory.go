@@ -215,16 +215,9 @@ func daemonListTasks(request taskListRequest) (inventory, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), daemonRequestTimeout)
 	defer cancel()
-	record, err := existingDaemonRecord()
-	if os.IsNotExist(err) {
-		root, pathErr := statePath("")
-		if pathErr != nil {
-			return emptyInventory(), pathErr
-		}
-		if _, statErr := os.Stat(root); os.IsNotExist(statErr) || !activityAllowed() {
-			return emptyInventory(), nil
-		}
-		record, err = ensureLocalDaemonContext(ctx)
+	record, err := activityDaemon(ctx)
+	if os.IsNotExist(err) && !activityAllowed() {
+		return emptyInventory(), nil
 	}
 	if err != nil {
 		return emptyInventory(), fmt.Errorf("open local task inventory: %w", err)

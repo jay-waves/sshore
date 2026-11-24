@@ -28,7 +28,14 @@ type retainedShell struct {
 	PinUntil             time.Time
 }
 
+type resourceHop struct {
+	Parent string
+	Token  string
+}
+
 type message struct {
+	ForwardSocket    string              `json:"forward_socket,omitempty"`
+	ResourceRoute    []resourceHop       `json:"resource_route,omitempty"`
 	NativeTargets    bool                `json:"native_targets,omitempty"`
 	RetainedShells   []retainedShell     `json:"retained_shells,omitempty"`
 	Owner            string              `json:"owner,omitempty"`
@@ -37,6 +44,7 @@ type message struct {
 	PinUntil         time.Time           `json:"pin_until,omitzero"`
 	TerminalOffset   uint64              `json:"terminal_offset,omitempty"`
 	OutputIncomplete bool                `json:"output_incomplete,omitempty"`
+	DaemonShutdown   bool                `json:"daemon_shutdown,omitempty"`
 	Reason           string              `json:"reason,omitempty"`
 	Handoff          *clientHandoff      `json:"handoff,omitempty"`
 	SourceHost       string              `json:"source_host,omitempty"`

@@ -58,38 +58,12 @@ func openDaemonOwner(dir string) (*os.File, error) {
 }
 
 func daemonStateRootAt(dir, root string, explicit bool) (string, error) {
-	owner, err := openDaemonOwner(dir)
+	record, err := ownedDaemonRecord(dir)
 	if os.IsNotExist(err) {
 		return root, nil
 	}
 	if err != nil {
 		return "", err
-	}
-	defer owner.Close()
-	err = lockResourceState(owner)
-	if err == nil {
-		return root, nil
-	}
-	if !resourceLockBusy(err) {
-		return "", err
-	}
-	var record localShellRecord
-	for until := time.Now().Add(time.Second); ; {
-		record, err = readLocalRecord(filepath.Join(dir, "daemon.json"), "daemon")
-		if !os.IsNotExist(err) || time.Now().After(until) {
-			break
-		}
-		// A creator publishes the locator after taking ownership; an idle daemon
-		// removes it just before releasing ownership. Neither gap changes scope.
-		if lockErr := lockResourceState(owner); lockErr == nil {
-			return root, nil
-		} else if !resourceLockBusy(lockErr) {
-			return "", lockErr
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if err != nil {
-		return "", fmt.Errorf("account daemon state unavailable: %w", err)
 	}
 	if !filepath.IsAbs(record.Directory) {
 		return "", fmt.Errorf("invalid account daemon state root")
@@ -153,25 +127,36 @@ func existingDaemonRecord() (localShellRecord, error) {
 	if err != nil {
 		return localShellRecord{}, err
 	}
+	return ownedDaemonRecord(dir)
+}
+
+func ownedDaemonRecord(dir string) (localShellRecord, error) {
 	owner, err := openDaemonOwner(dir)
 	if err != nil {
 		return localShellRecord{}, err
 	}
 	defer owner.Close()
-	if err := lockResourceState(owner); err == nil {
-		return localShellRecord{}, os.ErrNotExist
-	} else if !resourceLockBusy(err) {
-		return localShellRecord{}, err
-	}
 	path := filepath.Join(dir, "daemon.json")
-	record, err := readLocalRecord(path, "daemon")
-	if os.IsNotExist(err) {
-		return record, fmt.Errorf("account daemon owns its lock but its endpoint is unavailable")
+	for until := time.Now().Add(time.Second); ; {
+		if err := lockResourceState(owner); err == nil {
+			return localShellRecord{}, os.ErrNotExist
+		} else if !resourceLockBusy(err) {
+			return localShellRecord{}, err
+		}
+		record, err := readLocalRecord(path, "daemon")
+		if err == nil {
+			return record, nil
+		}
+		if !os.IsNotExist(err) {
+			return record, fmt.Errorf("read account daemon endpoint %s: %w", path, err)
+		}
+		// Startup publishes the endpoint after taking ownership. Exit removes it
+		// before releasing ownership. Recheck both under the same account scope.
+		if time.Now().After(until) {
+			return record, errors.New("account daemon owns its lock but its endpoint is unavailable")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if err != nil {
-		return record, fmt.Errorf("read account daemon endpoint %s: %w", path, err)
-	}
-	return record, nil
 }
 
 func daemonFileLock(name string) (*os.File, error) {
@@ -229,30 +214,14 @@ func ensureLocalDaemonContext(ctx context.Context, executable ...string) (localS
 		}
 	}
 	defer lock.Close()
-	path, err := daemonPath()
-	if err != nil {
-		return empty, err
-	}
-	// The owner lock, not a persisted record, establishes whether a daemon exists.
-	owner, err := daemonFileLock("owner")
-	if err == nil {
-		owner.Close()
+	record, err := existingDaemonRecord()
+	if os.IsNotExist(err) {
 		return launchLocalDaemonContext(ctx, executable...)
 	}
-	if !resourceLockBusy(err) {
-		return empty, err
-	}
-	r, err := readLocalRecord(path, "daemon")
 	if err != nil {
 		return empty, err
 	}
-	if err = checkPeerVersion(r.Version, "local daemon"); err != nil {
-		return empty, err
-	}
-	if err := daemonJSON(ctx, r, "/ready", nil, nil); err != nil {
-		return empty, fmt.Errorf("local daemon is unavailable; its owner is still active: %w", err)
-	}
-	return r, nil
+	return record, checkPeerVersion(record.Version, "local daemon")
 }
 
 func newDaemonRecord() (localShellRecord, error) {

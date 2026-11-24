@@ -17,6 +17,7 @@ const rootConsoleHelp = `shell [--pin]     Open a shell on this host (alias: sh)
 attach [ID|name]  Resume a detached shell
 pstree (ps)       Show the shell tree
 list (ls)         Show task details
+pwd               Show the local console directory
 exit              Leave sshore`
 
 func rootConsoleOptions(current options, args []string) (*options, error) {
@@ -95,7 +96,7 @@ func formatSessionEnd(ended sessionEnd, current options, destination string) str
 	return notice.String()
 }
 
-func runRootConsole(current options, problem string, ended sessionEnd) (*options, error) {
+func runRootConsole(current options, panel *clientConsole, problem string, ended sessionEnd) (*options, error) {
 	ctx, _, stopSignals := newClientSignals(false)
 	defer stopSignals()
 	restore, err := pty.RawConsole()
@@ -122,10 +123,9 @@ func runRootConsole(current options, problem string, ended sessionEnd) (*options
 		}
 	}
 	color := termui.ColorEnabled(os.Stdout)
-	termui.WriteConsoleBody(terminalOutput, formatSessionEnd(ended, current, "temporary session"))
+	termui.WriteConsoleBody(terminalOutput, formatSessionEnd(ended, current, "local console"))
 	termui.WriteConsoleBody(terminalOutput, "No shell attached. Use attach or shell, or type exit to leave.")
-	console := &commandConsole{}
-	console.start(ctx, terminalOutput, emit, "local", cols, color)
+	console := panel.open(ctx, terminalOutput, emit, "local", cols, color)
 	defer console.editor.Close()
 	keyCtx, cancelKeyboard := context.WithCancel(ctx)
 	stopKeyboard, err := pty.StartKeyboard(keyCtx, func(data []byte, err error) {
@@ -198,11 +198,13 @@ func runRootConsole(current options, problem string, ended sessionEnd) (*options
 					continue
 				}
 				command := canonicalCommand(args[0])
-				if len(args) > 1 && (command == "exit" || command == "help" || command == "list" || command == "pstree") {
+				if len(args) > 1 && (command == "exit" || command == "help" || command == "list" || command == "pstree" || command == "pwd") {
 					console.show("Unexpected argument: " + cleanText(args[1]))
 					continue
 				}
 				switch command {
+				case "pwd":
+					console.show(cleanText(panel.localDirectory))
 				case "exit":
 					return nil, nil
 				case "help":

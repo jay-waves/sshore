@@ -82,9 +82,12 @@ type approvedOperation struct {
 
 func selectApprovedOperation(input reviewPromptReader, request requestRecord) (approvedOperation, error) {
 	selected := approvedOperation{request: request}
-	line, err := input.ReadPrefilled("Approve this request? [y/N] ", false, "")
-	if err != nil || !termui.ConfirmYes(line) {
-		return selected, errors.New("approval cancelled")
+	var err error
+	if request.Operations[0].Kind != "forward" {
+		line, err := input.ReadPrefilled("Approve this request? [y/N] ", false, "")
+		if err != nil || !termui.ConfirmYes(line) {
+			return selected, errors.New("approval cancelled")
+		}
 	}
 	switch request.Operations[0].Kind {
 	case "mount", "forward":
@@ -189,7 +192,7 @@ func prepareApprovalDirectory(r *requestRecord) error {
 		r.Connection.Directory = r.Directory
 	}
 	for parent := r.Connection.Parent; parent != nil; parent = parent.Parent {
-		if parent.Directory == "" {
+		if !parent.Hosted && parent.Directory == "" {
 			parent.Directory = r.Connection.Directory
 		}
 	}
@@ -220,7 +223,7 @@ func selectApprovedResource(input reviewPromptReader, r *requestRecord) (resourc
 		return resourceConfig{Mount: &ftpOptions{
 			Host: r.Connection.Host, Remote: op.Path, Mountpoint: mountpoint, ReadOnly: op.ReadOnly,
 			IOTimeout:  defaultMountIOTimeout,
-			Approval:   &files.MountApproval{Session: r.Connection.Session, PID: r.PID, ID: r.ID, Instance: r.Connection.Instance},
+			Approval:   &files.MountApproval{Session: r.Connection.Session, PID: r.PID, ID: r.ID, Instance: r.Connection.Instance, Path: op.Path, ReadOnly: op.ReadOnly},
 			Connection: &r.Connection,
 		}}, nil
 	}
@@ -239,9 +242,7 @@ func selectApprovedResource(input reviewPromptReader, r *requestRecord) (resourc
 		Port: op.Port, Target: op.TargetPort, Reverse: op.Reverse, Session: r.Connection.Session,
 		ResumePID: r.PID, ApprovalID: r.ID, Instance: r.Connection.Instance,
 	}
-	if r.Connection.viaShell() {
-		f.Connection = &r.Connection
-	}
+	f.Connection = &r.Connection
 	return resourceConfig{Forward: &f}, nil
 }
 
@@ -308,7 +309,7 @@ func runApprovedFiles(r requestRecord, source options, approvedFiles []fileCopy)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	request := message{Type: "route_files", Name: r.Connection.Session, PID: r.PID, ApprovalID: r.ID}
-	target, err := routedResourceOptions(r.Connection, request.Type)
+	target, err := approvedFileOptions(r.Connection)
 	if err != nil {
 		return err
 	}

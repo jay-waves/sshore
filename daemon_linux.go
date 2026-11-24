@@ -20,8 +20,8 @@ import (
 
 func hostedDiagnostics(views []shellView, groups []int, detail string) {
 	if detail != "health" {
-		for i, group := range groups {
-			views[i].Directory = sessionDirectory(group, views[i].PID)
+		for i := range views {
+			views[i].Directory = sessionDirectory(views[i].PID)
 		}
 	}
 	if len(views) != 0 && (detail == "" || detail == "sessions") {
@@ -116,19 +116,18 @@ func (snapshot processSnapshot) sessionTree(shellPID int) string {
 	return out.String()
 }
 
-// Prefer the foreground group leader's cwd, falling back to the session shell.
-// This is a best-effort display snapshot, never an authorization decision.
-func sessionDirectory(group, shell int) string {
-	for _, pid := range []int{group, shell} {
-		if pid <= 0 {
-			continue
-		}
+func currentShellDirectory(pid int, fallback string) string {
+	if pid > 0 {
 		if cwd, err := proc.WorkingDirectory(pid); err == nil {
-			home, _ := os.UserHomeDir()
-			return shortDirectory(cwd, home)
+			return cwd
 		}
 	}
-	return "—"
+	return fallback
+}
+
+func sessionDirectory(pid int) string {
+	home, _ := os.UserHomeDir()
+	return shortDirectory(currentShellDirectory(pid, ""), home)
 }
 
 func hostedShells(detail string) ([]shellView, error) {

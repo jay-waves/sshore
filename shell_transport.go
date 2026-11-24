@@ -27,7 +27,7 @@ type shellConfig struct {
 	SSH                []string
 }
 
-func openRemoteShellTransport(ctx context.Context, o *options, transports clientTransports) (net.Conn, error) {
+func openRemoteShellTransport(ctx context.Context, o *options, transports clientTransports, auth *sshAuthEndpoint) (net.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -39,8 +39,7 @@ func openRemoteShellTransport(ctx context.Context, o *options, transports client
 	if err != nil {
 		return nil, err
 	}
-	var auth *sshAuthEndpoint
-	if o.parent == "" || o.command == "sh" {
+	if auth == nil && (o.parent == "" || o.command == "sh") {
 		var stopAuth func()
 		auth, stopAuth, err = startSSHAuthBroker()
 		if err != nil {
@@ -159,7 +158,7 @@ func runRemoteShell(c net.Conn, req localDaemonRequest, tasks *daemonTasks) erro
 			}
 		}()
 	}
-	return withRemoteShell(ctx, setup, req, owner, func(open taskEndpoint, ready message, ownerDone <-chan struct{}) error {
+	return withRemoteShell(ctx, setup, req, owner, func(open taskEndpoint, _ resourceEndpoint, ready message, ownerDone <-chan struct{}) error {
 		if err := streamMessage(setup, ready); err != nil {
 			return err
 		}
@@ -211,11 +210,25 @@ type processIdentity struct {
 
 type taskEndpoint func() (net.Conn, error)
 
+type resourceEndpoint func(context.Context) (net.Conn, error)
+
+type resourceSSHStream struct {
+	net.Conn
+	transport *transportio.Client
+}
+
+func (s resourceSSHStream) Close() error { return s.transport.Close() }
+
+func (s resourceSSHStream) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return s.transport.DialContext(ctx, network, address)
+}
+
 type remoteShellChild struct {
-	host string
-	uid  string
-	open taskEndpoint
-	done <-chan struct{}
+	host     string
+	uid      string
+	open     taskEndpoint
+	resource resourceEndpoint
+	done     <-chan struct{}
 }
 
 func (s *shellTask) rememberRemoteChild(child *remoteShellChild) func() {
@@ -352,7 +365,7 @@ func claimShellOwner(ctx context.Context, open taskEndpoint, instance, owner, to
 	return acceptActivityLease(ctx, c, hosted)
 }
 
-func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest, owner *shellTask, use func(taskEndpoint, message, <-chan struct{}) error) (resultErr error) {
+func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest, owner *shellTask, use func(taskEndpoint, resourceEndpoint, message, <-chan struct{}) error) (resultErr error) {
 	f := req.Shell
 	diagnostics := &shellDiagnostics{c: c, active: true}
 	var pipes *transportio.Process
@@ -380,7 +393,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 			return err
 		}
 		ready := message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: child.uid}
-		return use(child.open, ready, child.done)
+		return use(child.open, child.resource, ready, child.done)
 	}
 	o := options{command: f.Command, host: f.Host, session: f.Name, instance: f.Instance, server: f.Server, ssh: f.SSH, sshDirectory: req.Record.Directory}
 	connection := sshConnectionOptions(o)
@@ -398,26 +411,36 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	if err != nil {
 		return err
 	}
-	if ready.LocalRequest == nil {
-		return fmt.Errorf("remote daemon endpoint missing")
-	}
-	record := ready.LocalRequest.Record
-	host, _, err := net.SplitHostPort(record.Address)
-	if err != nil || host != "127.0.0.1" || !validTaskUID(record.UID) || ready.Instance != record.UID || len(record.Token) != 64 {
-		return fmt.Errorf("invalid daemon endpoint")
-	}
-	if err := checkPeerVersion(record.Version, "daemon"); err != nil {
+	record, err := remoteTaskRecord(ready)
+	if err != nil {
 		return err
 	}
 	ready.LocalRequest = nil
 	open := func() (net.Conn, error) {
 		authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		channel, err := pipes.DialTCP(authCtx, record.Address)
+		return openRemoteTaskEndpoint(authCtx, record, pipes.DialTCP)
+	}
+	// A nested resource redials here, where the original SSH options and
+	// credentials are available. The shell transport and its broker may end.
+	resourceSSH := connection
+	resourceSSH.Args = transportio.WithoutForwarding(connection.Args)
+	resourceSSH.Confirm, resourceSSH.Secret = nil, nil
+	resourceSSH.RequireKnownHost = true
+	resourceSSH = withSSHDiagnostics(resourceSSH, io.Discard, nil)
+	resource := func(ctx context.Context) (net.Conn, error) {
+		client, err := transportio.Dial(ctx, resourceSSH)
 		if err != nil {
 			return nil, err
 		}
-		return upgradeDaemonConn(authCtx, channel, record, "/tasks/"+record.UID+"/open", nil)
+		stop := context.AfterFunc(ctx, func() { _ = client.Close() })
+		defer stop()
+		stream, err := openRemoteTaskEndpoint(ctx, record, client.DialTCP)
+		if err != nil {
+			client.Close()
+			return nil, err
+		}
+		return resourceSSHStream{Conn: stream, transport: client}, nil
 	}
 	var ownerDone <-chan struct{}
 	if f.Command == "sh" {
@@ -433,7 +456,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 		ownerDone = done
 		if owner != nil {
 			open = ownedTaskEndpoint(open, ready.Instance, token)
-			forget := owner.rememberRemoteChild(&remoteShellChild{host: f.Host, uid: ready.Instance, open: open, done: done})
+			forget := owner.rememberRemoteChild(&remoteShellChild{host: f.Host, uid: ready.Instance, open: open, resource: resource, done: done})
 			defer forget()
 		}
 	}
@@ -441,7 +464,19 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	if shells, err := connectedHostedShells(ctx, record, pipes.DialTCP); err == nil {
 		_ = reconcileParticipatingShells(f.Host, shells, since)
 	}
-	return use(open, ready, ownerDone)
+	return use(open, resource, ready, ownerDone)
+}
+
+func remoteTaskRecord(ready message) (localShellRecord, error) {
+	if ready.LocalRequest == nil {
+		return localShellRecord{}, fmt.Errorf("remote daemon endpoint missing")
+	}
+	record := ready.LocalRequest.Record
+	host, _, err := net.SplitHostPort(record.Address)
+	if err != nil || host != "127.0.0.1" || !validTaskUID(record.UID) || ready.Instance != record.UID || len(record.Token) != 64 {
+		return localShellRecord{}, fmt.Errorf("invalid daemon endpoint")
+	}
+	return record, checkPeerVersion(record.Version, "daemon")
 }
 
 // Query only registered hosted shells using a channel on the authenticated SSH
@@ -502,6 +537,9 @@ func relayShellSetup(setup net.Conn, pipes io.ReadWriter, diagnostics *shellDiag
 			diagnostics.mu.Unlock()
 			return m, nil
 		case "session_choice":
+			if setup == nil {
+				return message{}, fmt.Errorf("unexpected remote shell selection")
+			}
 			diagnostics.mu.Lock()
 			err := writeMessage(setup, m)
 			diagnostics.mu.Unlock()

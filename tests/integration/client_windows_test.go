@@ -5,6 +5,7 @@ package tests_test
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -63,7 +64,7 @@ func windowsClient(t *testing.T) (context.Context, func(...string) *exec.Cmd) {
 	return ctx, command
 }
 
-func runWindowsTerminal(t *testing.T, ctx context.Context, cmd *exec.Cmd, run func(func(string), terminalWait)) {
+func runWindowsTerminal(t *testing.T, ctx context.Context, cmd *exec.Cmd, run func(func(string), terminalWait)) (string, error) {
 	t.Helper()
 	terminal, err := pty.Start(pty.Config{
 		Path: cmd.Path, Args: cmd.Args[1:], Env: cmd.Environ(), Dir: cmd.Dir,
@@ -79,9 +80,7 @@ func runWindowsTerminal(t *testing.T, ctx context.Context, cmd *exec.Cmd, run fu
 		// ConPTY paints text with cursor movement and can omit the final newline.
 		run(send, func(marker string, _ ...bool) string { return wait(marker, true) })
 	})
-	if err := terminal.Wait(); err != nil {
-		t.Fatalf("Windows terminal client: %v\n%s", err, transcript)
-	}
+	return transcript, terminal.Wait()
 }
 
 func windowsRun(t *testing.T, cmd *exec.Cmd) []byte {
@@ -95,9 +94,40 @@ func windowsRun(t *testing.T, cmd *exec.Cmd) []byte {
 
 func TestWindowsConPTY(t *testing.T) {
 	ctx, command := windowsClient(t)
+	t.Run("detach and reattach", func(t *testing.T) { testWindowsReattach(t, ctx, command) })
+	t.Run("confirmed shutdown", func(t *testing.T) {
+		const endpoint = "here:shutdown"
+		out, err := runWindowsTerminal(t, ctx, command("shell", endpoint, "--no-profile"), func(_ func(string), wait terminalWait) {
+			wait("Connected " + endpoint)
+			stop := command("kill", "--all")
+			stop.Stdin = strings.NewReader("y\n")
+			windowsRun(t, stop)
+			wait("Now in: calling terminal")
+		})
+		status, exited := errors.AsType[interface {
+			error
+			ExitCode() int
+		}](err)
+		if ctx.Err() != nil || err != nil && (!exited || status.ExitCode() != 1) {
+			t.Fatalf("Windows terminal client: %v\n%s", err, out)
+		}
+		if out := string(windowsRun(t, command("kill", "--all"))); !strings.Contains(out, "No account daemon is running.") {
+			t.Fatalf("shell client restarted the daemon:\n%s", out)
+		}
+	})
+}
+
+func testWindowsReattach(t *testing.T, ctx context.Context, command func(...string) *exec.Cmd) {
+	t.Helper()
+	run := func(cmd *exec.Cmd, steps func(func(string), terminalWait)) {
+		t.Helper()
+		if out, err := runWindowsTerminal(t, ctx, cmd, steps); err != nil {
+			t.Fatalf("Windows terminal client: %v\n%s", err, out)
+		}
+	}
 	directory := t.TempDir()
 	const endpoint = "here:conpty"
-	runWindowsTerminal(t, ctx, command("shell", endpoint, "--pin", "--no-profile"), func(send func(string), wait terminalWait) {
+	run(command("shell", endpoint, "--pin", "--no-profile"), func(send func(string), wait terminalWait) {
 		wait("Connected " + endpoint)
 		send("set \"SSHORE_RESUME=retained\"\r")
 		send("cd /d \"" + directory + "\"\r")
@@ -109,7 +139,7 @@ func TestWindowsConPTY(t *testing.T) {
 		wait("sshore on local>")
 		send("exit\r")
 	})
-	runWindowsTerminal(t, ctx, command("attach", endpoint), func(send func(string), wait terminalWait) {
+	run(command("attach", endpoint), func(send func(string), wait terminalWait) {
 		wait("WIN_READY=retained")
 		send("echo WIN_RESUMED=%SSHORE_RESUME%:%CD%\r")
 		wait("WIN_RESUMED=retained:" + directory)

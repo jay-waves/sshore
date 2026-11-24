@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/xtaci/smux"
 )
 
 func ServeAgent(conn io.ReadWriteCloser, version string, check ...func(MountApproval) error) error {
@@ -22,6 +23,41 @@ func ServeAgent(conn io.ReadWriteCloser, version string, check ...func(MountAppr
 }
 
 func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observe func(json.RawMessage) func(), check ...func(MountApproval) error) error {
+	return serveMountAgent(conn, version, account, observe, "", check)
+}
+
+func ServeApprovedMount(conn io.ReadWriteCloser, version, account string, observe func(json.RawMessage) func(), approval MountApproval) error {
+	session, err := smux.Server(conn, nil)
+	if err != nil {
+		_ = conn.Close()
+		return err
+	}
+	data, err := session.AcceptStream()
+	if err != nil {
+		_ = session.Close()
+		return err
+	}
+	check := []func(MountApproval) error{func(actual MountApproval) error {
+		if actual != approval {
+			return fmt.Errorf("mount approval identity changed")
+		}
+		return nil
+	}}
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		watch, err := session.AcceptStream()
+		if err == nil {
+			_ = serveMountAgent(watch, version, account, nil, "mount_watch", check)
+		}
+	}()
+	err = serveMountAgent(data, version, account, observe, "mount_data", check)
+	_ = session.Close()
+	<-watchDone
+	return err
+}
+
+func serveMountAgent(conn io.ReadWriteCloser, version, account string, observe func(json.RawMessage) func(), mode string, check []func(MountApproval) error) error {
 	defer conn.Close()
 	conn = newMountStream(conn)
 	if os.Getenv("SSHORE_DISABLED") == "1" {
@@ -37,6 +73,9 @@ func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observ
 	err = checkPeerVersion(version, m.SoftwareVersion, "mount client")
 	if err == nil && m.Type != "mount_data" && m.Type != "mount_watch" {
 		err = fmt.Errorf("invalid mount handshake")
+	}
+	if err == nil && mode != "" && (m.Type != mode || m.Approval == nil) {
+		err = fmt.Errorf("mount approval handshake changed")
 	}
 	if err == nil && m.Approval != nil {
 		if len(check) != 1 {

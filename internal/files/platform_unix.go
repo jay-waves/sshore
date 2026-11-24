@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -58,7 +59,12 @@ func mountFTP(f *ftpFS, p string) (ftpMount, error) {
 	if f.readOnly {
 		opts.MountOptions.Options = []string{"ro"}
 	}
-	return fs.Mount(p, &ftpNode{backend: f}, opts)
+	mounted, err := fs.Mount(p, &ftpNode{backend: f}, opts)
+	var helper *exec.Error
+	if runtime.GOOS == "linux" && errors.As(err, &helper) && errors.Is(err, os.ErrNotExist) && path.Base(helper.Name) == "fusermount" {
+		return nil, fmt.Errorf("%w; install fuse3 on the machine creating the mount (Fedora: sudo dnf install fuse3)", err)
+	}
+	return mounted, err
 }
 
 type ftpNode struct {

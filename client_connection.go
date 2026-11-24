@@ -174,7 +174,7 @@ func openClientTransportContext(ctx context.Context, o *options, transports clie
 		_ = c.SetDeadline(time.Time{})
 		return ownClientTransport(ctx, c, nil), nil
 	}
-	return openRemoteShellTransport(ctx, o, transports)
+	return openRemoteShellTransport(ctx, o, transports, nil)
 }
 
 type sessionSwitch struct {
@@ -185,6 +185,8 @@ type sessionSwitch struct {
 
 func (s *sessionSwitch) Error() string { return "switch session" }
 func runClient(o options) (int, error) {
+	dir, _ := os.Getwd()
+	console := &clientConsole{localDirectory: dir}
 	transports := make(clientTransports)
 	defer transports.releaseUnreferenced(false)
 	// Keep the frontend alive while an attempt unwinds and restores its parent.
@@ -214,7 +216,7 @@ func runClient(o options) (int, error) {
 	for {
 		prune(&o)
 		var ended sessionEnd
-		code, err := runClientOnce(o, transports, &ended, func(attached options) string {
+		code, err := runClientOnce(o, transports, console, &ended, func(attached options) string {
 			current, menu = attached, nil
 			if returnEnd != nil {
 				fmt.Fprintln(os.Stderr, formatSessionEnd(*returnEnd, returnSource, shellDisplayEndpoint(attached)))
@@ -237,6 +239,10 @@ func runClient(o options) (int, error) {
 		if o.handoffDone != nil && pending == nil {
 			_ = o.handoffDone(context.Background(), err)
 			o.handoffDone = nil
+		}
+		if ended.localDaemonShutdown {
+			fmt.Fprintln(os.Stderr, formatSessionEnd(ended, current, "calling terminal"))
+			return code, err
 		}
 		if next, ok := errors.AsType[*sessionSwitch](err); ok {
 			if next.to.recovering {
@@ -321,7 +327,7 @@ func runClient(o options) (int, error) {
 				}
 				return code, err
 			}
-			next, menuErr := runRootConsole(current, problem, ended)
+			next, menuErr := runRootConsole(current, console, problem, ended)
 			if menuErr != nil {
 				return 1, menuErr
 			}

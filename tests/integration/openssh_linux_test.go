@@ -217,19 +217,29 @@ Match command "printf forwarding-check"
 		}
 		localPort := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
 		probe.Close()
+		point := t.TempDir()
+		run(t, "exec", host, "mkdir -p approval-lifecycle")
 		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 		parent := exec.CommandContext(ctx, binary, "sh", "here:approval-parent", "--no-profile", "--no-login")
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
 			wait("Connected here:approval-parent")
 			send(quote(binary) + " sh " + endpoint + " --no-profile --server " + quote(binary) + " -- -F " + quote(config) + "\n")
 			wait("Connected " + endpoint)
-			send("sshore fwd origin: here:" + port + "\n")
+			send("printf '%s\\n' \"$$\" > approval-lifecycle/shell.pid && sshore mount here:approval-lifecycle origin: --read-only\n")
 			wait("Approve this request? [y/N]", true)
 			send("y\r")
+			wait("Mountpoint (empty for automatic):", true)
+			send(point + "\r")
+			wait("Return to session after operation? [Y/n]", true)
+			send("\r")
+			wait("Connected " + endpoint)
+			send("sshore fwd origin: here:" + port + "\n")
 			wait("Local listening port", true)
 			send(localPort + "\r")
 			wait("Return to session after operation? [Y/n]", true)
 			send("n\r")
+			wait("[y/N]", true)
+			send("y\r")
 			wait("Connected here:approval-parent")
 			send("printf 'LOCAL_APPROVAL_RETURNED\\n'\n")
 			wait("LOCAL_APPROVAL_RETURNED")
@@ -237,6 +247,43 @@ Match command "printf forwarding-check"
 			wait("No shell attached.")
 			send("exit\r")
 		})
+		// End the requesting shell as well as its frontend before exercising fresh I/O.
+		// It may already have ended with the parent.
+		cleanup()
+		run(t, "exec", host, `! kill -0 "$(cat approval-lifecycle/shell.pid)" 2>/dev/null`)
+		inventory := string(local(t, "list"))
+		resourceID := func(detail string) string {
+			t.Helper()
+			for _, line := range strings.Split(inventory, "\n") {
+				if strings.Contains(line, detail) {
+					return strings.Fields(line)[0]
+				}
+			}
+			t.Fatalf("resource %q missing after shell exit:\n%s", detail, inventory)
+			return ""
+		}
+		mountID := resourceID(point)
+		defer local(t, "kill", mountID)
+		forwardID := resourceID("local:" + localPort)
+		go func() {
+			c, err := listener.Accept()
+			if err == nil {
+				defer c.Close()
+				_, _ = io.WriteString(c, "still forwarding\n")
+			}
+		}()
+		c, err := net.DialTimeout("tcp4", "127.0.0.1:"+localPort, 3*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if got, err := io.ReadAll(c); err != nil || string(got) != "still forwarding\n" {
+			t.Fatalf("new forwarded connection after shell exit: %q (%v)", got, err)
+		}
+		local(t, "kill", forwardID)
+		run(t, "exec", host, "printf independent > approval-lifecycle/after-exit")
+		requireFile(t, filepath.Join(point, "after-exit"), "independent")
 	})
 
 	t.Run("reverse forward relays data", func(t *testing.T) {
@@ -587,7 +634,7 @@ Match command "printf forwarding-check"
 			wait("(saved-child) · pinned indefinitely")
 			wait("Connected here:panel-dev")
 			send("exit\n")
-			wait("Now in: temporary session")
+			wait("Now in: local console")
 			wait("No shell attached.")
 			send("exit\r")
 		})

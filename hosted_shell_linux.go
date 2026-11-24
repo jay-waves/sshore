@@ -15,7 +15,8 @@ import (
 
 type remoteShell struct {
 	shellTask
-	shellRoutes map[string]*shellRoute
+	shellRoutes      map[string]*shellRoute
+	resourceApproval resourceApproval
 }
 
 func (s *remoteShell) start(m message) error {
@@ -64,7 +65,7 @@ func (s *remoteShell) serveControl(c net.Conn) error {
 		switch m.Type {
 		case "sh_child":
 			s.mu.Lock()
-			req := &localDaemonRequest{Record: localShellRecord{Directory: s.record.Directory}, Env: append([]string(nil), s.environment...), Shell: &shellConfig{Command: "sh", Local: true, Pin: m.Pinned}}
+			req := &localDaemonRequest{Record: localShellRecord{Directory: currentShellDirectory(s.process.PID, s.record.Directory)}, Env: append([]string(nil), s.environment...), Shell: &shellConfig{Command: "sh", Local: true, Pin: m.Pinned}}
 			s.mu.Unlock()
 			go serveChildShortcut(p, s.done, func(c net.Conn) {
 				s.requestShellRoute(c, message{SoftwareVersion: version, LocalRequest: req})
@@ -124,13 +125,6 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 		s.requestShellRoute(c, first)
 	case "shell_route_connect":
 		s.connectShellRoute(c, first)
-	case "approval_check":
-		reply := message{Type: "approval_checked", SoftwareVersion: version}
-		if err := s.checkApprovalSource(first); err != nil {
-			reply.Type = "error"
-			reply.Error = err.Error()
-		}
-		_ = writeMessage(c, reply)
 	case "approval_request":
 		if err := s.requestApproval(c, first); err != nil {
 			_ = writeMessage(c, message{Type: "error", SoftwareVersion: version, Error: err.Error()})
@@ -142,7 +136,7 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 func (s *remoteShell) status(detail string) message {
 	view, group := s.hostedView(detail)
 	if detail != "health" {
-		view.Directory = sessionDirectory(group, view.PID)
+		view.Directory = sessionDirectory(view.PID)
 	}
 	if detail != "health" && detail != "inventory" {
 		view.Foreground = "—"

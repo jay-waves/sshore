@@ -41,6 +41,8 @@ type Options struct {
 	Confirm func(context.Context, string) (bool, error)
 	// Secret is available only through the initiating interactive frontend.
 	Secret func(context.Context, string) ([]byte, error)
+	// Password optionally replaces the password prompt for this destination.
+	Password func(context.Context, string) ([]byte, error)
 }
 
 type connectionConfig struct {

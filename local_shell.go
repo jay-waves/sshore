@@ -250,7 +250,7 @@ func (s *localShell) attach(c net.Conn) error {
 			if m.Pinned {
 				args = append(args, "--pin")
 			}
-			h := &clientHandoff{Args: args, Directory: s.record.Directory, Environment: append([]string(nil), s.environment...)}
+			h := &clientHandoff{Args: args, Directory: currentShellDirectory(s.process.PID, s.record.Directory), Environment: append([]string(nil), s.environment...)}
 			s.mu.Unlock()
 			go serveChildShortcut(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
 		default:

@@ -118,43 +118,29 @@ func daemonAdministrationAt(ctx context.Context, r localShellRecord, action stri
 	return reply, nil
 }
 
-type stoppableDaemonTask interface {
-	daemonTask
-	stopTask() error
-}
-
-func (s *daemonTasks) beginShutdown(record localShellRecord, expected daemonSnapshot) ([]stoppableDaemonTask, error) {
+func (s *daemonTasks) beginShutdown(record localShellRecord, expected daemonSnapshot) ([]daemonTask, error) {
 	changed := errors.New("tasks changed; review again")
 	if record.Version != expected.Version || record.identity() != expected.Instance {
 		return nil, changed
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Only extra entries need a table scan. Exact lookups check expiration
-	// for the confirmed entries themselves.
-	if len(s.records) > len(expected.Tasks) {
-		s.pruneLocked()
-	}
+	s.pruneLocked()
 	if len(s.records) != len(expected.Tasks) {
 		return nil, changed
 	}
-	var stops []stoppableDaemonTask
+	var stops []daemonTask
 	previousID := ""
 	for _, entry := range expected.Tasks {
 		if entry.ID <= previousID {
 			return nil, changed
 		}
 		previousID = entry.ID
-		task := s.lookupLocked(entry.ID)
+		task := s.records[entry.ID]
 		if task == nil || task.taskName() != entry.Name {
 			return nil, changed
 		}
-		switch task := task.(type) {
-		case stoppableDaemonTask:
-			stops = append(stops, task)
-		default:
-			return nil, fmt.Errorf("task %s does not support daemon shutdown", cleanText(entry.Name))
-		}
+		stops = append(stops, task)
 	}
 	if s.draining {
 		return nil, fmt.Errorf("daemon is already shutting down")
@@ -167,6 +153,12 @@ func (s *daemonTasks) resumeAdmission() {
 	s.mu.Lock()
 	s.draining = false
 	s.mu.Unlock()
+}
+
+func (s *daemonTasks) isShuttingDown() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.draining
 }
 
 func (s *daemonTasks) shutdown(record localShellRecord, expected daemonSnapshot) error {
@@ -212,10 +204,6 @@ func (s *daemonTasks) shutdown(record localShellRecord, expected daemonSnapshot)
 	}
 }
 func (t *nativeShellTask) stopTask() error { return t.shell.stopTask() }
-func (t *daemonResourceTask) stopTask() error {
-	// Shutdown owns the deadline and keeps admission closed until accepted stops finish.
-	return t.stop(0)
-}
 
 // An SSH exec channel exposes only the authenticated account's admin exchange.
 // Waiting for confirmation never grants the helper permission to start tasks.

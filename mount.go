@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"io"
 	"net"
 	"os"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -46,7 +46,7 @@ func validateMountConfig(o ftpOptions) error {
 		return fmt.Errorf("invalid mount timeout")
 	}
 	approval := o.Approval
-	if approval != nil && (approval.PID <= 0 || validSession(approval.Session) != nil || !validRequestID(approval.ID)) {
+	if approval != nil && (o.Connection == nil || !validTaskUID(approval.Instance) || approval.PID <= 0 || validSession(approval.Session) != nil || !validRequestID(approval.ID) || approval.Path != o.Remote || approval.ReadOnly != o.ReadOnly) {
 		return fmt.Errorf("invalid mount approval")
 	}
 	if connection := o.Connection; connection != nil {
@@ -160,6 +160,18 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 			}{Type: "mount_stats", MountStats: stats})
 		}
 	}
+	if s != nil {
+		c.PeerMetadata, _ = json.Marshal(s.mountPeerTask())
+	}
+	if o.Approval != nil {
+		c.Open = func(ctx context.Context) (io.ReadWriteCloser, error) {
+			return openIndependentResource(ctx, *o.Connection, message{
+				Type: "route_mount", Name: o.Approval.Session, PID: o.Approval.PID, ApprovalID: o.Approval.ID,
+				Operations: []operation{{Kind: "mount", Path: o.Remote, ReadOnly: o.ReadOnly}},
+			}, s)
+		}
+		return files.RunMount(c, lifecycle)
+	}
 	connection := mountSSHOptions(o)
 	var auth *sshAuthEndpoint
 	if s != nil {
@@ -167,7 +179,6 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 		connection.Environment = s.baseEnvironment()
 		connection.Directory = s.directory
 		connection.Confirm, connection.Secret = auth.callbacks()
-		c.PeerMetadata, _ = json.Marshal(s.mountPeerTask())
 	}
 	connection = withSSHDiagnostics(connection, os.Stderr, auth)
 	c.Prepare = func(_ context.Context, wire io.ReadWriter) (string, error) {
@@ -198,13 +209,6 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 			return nil, err
 		}
 		return watch, nil
-	}
-	if o.Connection != nil && o.Connection.viaShell() {
-		c.Prepare = nil
-		c.Open = func(ctx context.Context) (io.ReadWriteCloser, error) {
-			return openRoutedResource(ctx, *o.Connection, message{Type: "route_mount", Name: o.Approval.Session, PID: o.Approval.PID, ApprovalID: o.Approval.ID})
-		}
-		c.OpenNotifications = c.Open
 	}
 	return files.RunMount(c, lifecycle)
 }

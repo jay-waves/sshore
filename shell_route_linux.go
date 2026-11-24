@@ -18,6 +18,7 @@ import (
 
 type shellRoute struct {
 	open         taskEndpoint
+	resource     resourceEndpoint
 	drain        context.Context
 	streams      sync.WaitGroup
 	childUID     string
@@ -82,9 +83,10 @@ func (s *remoteShell) requestShellRoute(c net.Conn, request message) {
 			_ = writeMessage(c, message{Type: "fatal", Error: err.Error()})
 			return
 		}
-		open := func() (net.Conn, error) { return openHostedEndpoint(context.Background(), child.record.UID) }
+		resource := func(ctx context.Context) (net.Conn, error) { return openHostedEndpoint(ctx, child.record.UID) }
+		open := func() (net.Conn, error) { return resource(context.Background()) }
 		ready := message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: child.record.UID}
-		if err := s.serveShellRoute(c, parent, req.Shell, open, ready, child.done); err != nil {
+		if err := s.serveShellRoute(c, parent, req.Shell, open, resource, ready, child.done); err != nil {
 			_ = writeMessage(c, message{Type: "fatal", Error: err.Error()})
 		}
 		return
@@ -98,12 +100,12 @@ func (s *remoteShell) requestShellRoute(c net.Conn, request message) {
 		case <-ctx.Done():
 		}
 	}()
-	_ = withRemoteShell(ctx, c, *req, &s.shellTask, func(open taskEndpoint, ready message, done <-chan struct{}) error {
-		return s.serveShellRoute(c, parent, req.Shell, open, ready, done)
+	_ = withRemoteShell(ctx, c, *req, &s.shellTask, func(open taskEndpoint, resource resourceEndpoint, ready message, done <-chan struct{}) error {
+		return s.serveShellRoute(c, parent, req.Shell, open, resource, ready, done)
 	})
 }
 
-func (s *remoteShell) serveShellRoute(c net.Conn, parent *attachment, config *shellConfig, open taskEndpoint, ready message, targetDone <-chan struct{}) error {
+func (s *remoteShell) serveShellRoute(c net.Conn, parent *attachment, config *shellConfig, open taskEndpoint, resource resourceEndpoint, ready message, targetDone <-chan struct{}) error {
 	confirmed := &shellRouteConfirmation{token: resourceToken(), result: make(chan error, 1)}
 	var token string
 	var route *shellRoute
@@ -126,7 +128,7 @@ func (s *remoteShell) serveShellRoute(c net.Conn, parent *attachment, config *sh
 	if newRoute {
 		drain, cancel := context.WithCancel(context.Background())
 		token = resourceToken()
-		route = &shellRoute{open: open, drain: drain, childUID: ready.Instance, host: host}
+		route = &shellRoute{open: open, resource: resource, drain: drain, childUID: ready.Instance, host: host}
 		if s.shellRoutes == nil {
 			s.shellRoutes = make(map[string]*shellRoute)
 		}

@@ -79,14 +79,23 @@ before the launcher reports success. The authenticated daemon tracks the parent 
 
 Routes are private capabilities bound to the parent shell instance. Each route
 opens authenticated endpoints to the fixed child instance, using local daemon
-connections or native channels on the initiating daemon's existing SSH session.
-Reattachment and approval preserve that route. An expired route or changed parent
-blocks the request and prohibits falling back to a direct connection using a remote-supplied host alias. Route messages
-and returned terminal content remain untrusted. They grant no file, mount or
-forward approval. Host-key confirmation uses an authenticated broker on the
-initiating host. Private keys are used by the initiating host's SSH connection.
-Interactive answers use the private authenticated broker and are never included
-in route records.
+connections or native channels on the initiating daemon's SSH session.
+Reattachment and short file transfers reuse the attachment route. For approved
+mounts and forwards, a live route identifies each trusted initiating daemon and
+the exact destination task during startup. Each remote hop opens a fresh SSH
+connection using its original initiating host's configuration and credentials.
+An expired route or changed parent blocks startup. Remote-supplied aliases never
+select destinations in the terminal client's SSH configuration. After startup,
+the resource owns its connections and remains available when a source or
+ancestor shell exits.
+
+Route messages and terminal output grant no resource approval. Host-key
+confirmation and interactive answers use a private authenticated broker on the
+initiating host. Nested shell launchers close their broker after handoff. Resource
+redials on those hosts require known host keys and noninteractive SSH
+authentication. Standard SSH
+`ProxyJump` uses the initiating SSH client's usual authentication for its jump
+chain. Private keys and interactive answers stay on the initiating host.
 
 Managed shell channels reach the account daemon's loopback TCP endpoint through
 SSH TCP forwarding. Every channel authenticates with the account capability before
@@ -113,17 +122,22 @@ write a destination, expose a mount, open a listener or reach a local service wi
 
 A request contains bounded operation metadata and suggested paths or ports;
 receiving it grants no permission. The client leaves the remote attachment and
-presents the request in a local approval screen. The user must explicitly enter
-`Y` before selecting local endpoints. Suggested values are editable and path
+presents the request in a local approval screen. File and mount requests require
+`Y` before selecting local endpoints. For a forward the user selects the local
+port and approves the resulting mapping. A successful destination password
+prompt explicitly labeled with that mapping supplies this approval. Other
+authentication paths, including a password for a jump host, require `Y`.
+Suggested values are editable and path
 completion does not submit them. Cancel, EOF or lack of an interactive terminal
 rejects the request without executing it. There is no persistent grant or pending
 request queue. Unsolicited transfer offers, forward-add streams and reverse
 connection streams remain rejected.
 
-Approved operations fix the selected local endpoints, validate the original
-shell identity and exact release, and use a separate resource connection.
-File batches select all paths before execution. SSH authentication is separate
-from operation approval.
+Approved operations fix the selected local endpoints and validate the original
+shell identity and exact release. A mount or forward consumes its private
+handoff ID once, for the same task and requested remote operation. Mount data
+and notifications share the resulting resource connection. File batches select
+all paths before execution.
 
 Local client configuration is a trusted input. The built-in resolver evaluates
 static `Match` conditions without executing configuration hooks. Go SSH owns
@@ -196,9 +210,12 @@ fail without substitution. Remote requests need local port selection or acceptan
 Their helper rechecks the original shell version, name, PID and detached state.
 No software update runs during forward approval. The origin binds its local
 listener before approval is consumed. The resource endpoint binds reverse listeners
-after authorization. Both entries use the same smux forwarding engine.
-Direct forwarding uses an SSH exec service on the destination. Its listeners
-are created by that service under the authenticated account.
+after authorization. Each accepted TCP connection uses its own native SSH
+channel on the task transport. Nested relays and reverse listeners expose
+their data endpoint to SSH through a Unix socket in a private task directory.
+Explicit local forwarding uses an SSH exec service on the destination. Approved
+forwarding connects to the original shell's account daemon through a fresh SSH
+transport. The authenticated account owns the listeners.
 
 **Limits:** loopback is not per-user isolation. Forwarded services may be malicious.
 Local `--retries` explicitly permits bounded reconnection of the same mapping;
@@ -290,10 +307,10 @@ local tools into unrelated local files. Windows rejects unrepresentable names
 instead of silently aliasing them. Remote filenames, attributes and data remain
 untrusted.
 
-Mounts require a matching release before starting a transient agent. The agent
-serves SFTP in Go under the authenticated account and requires remote command
-execution and a matching `sshore` on the SSH session's PATH. Windows hosts accept
-direct mounts. A Windows agent rejects shell approval metadata.
+Mounts require a matching release. The agent serves SFTP in Go under the
+authenticated account. Remote startup requires command execution and a matching
+`sshore` on the SSH session's PATH. Windows hosts accept direct mounts.
+Approved mounts use the shell account daemon's SFTP agent.
 Accounts restricted to `internal-sftp` cannot start the agent.
 OpenSSH subsystem flags apply only to the SSH subsystem. The mount connection
 disables native forwarding, backgrounding and ControlMaster sharing.

@@ -5,16 +5,17 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 
-	forwardio "github.com/jay-waves/sshore/internal/forward"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
-// A routed resource reuses the authenticated path. Host is a display label here.
-func routedResourceOptions(connection recentConnection, kind string) (options, error) {
+// Short file transfers can reuse the authenticated attachment path.
+func approvedFileOptions(connection recentConnection) (options, error) {
 	if err := validateRecentConnection(connection); err != nil {
 		return options{}, err
 	}
-	if connection.Instance == "" || !connection.viaShell() && kind != "route_files" {
+	if !validTaskUID(connection.Instance) {
 		return options{}, fmt.Errorf("routed resource requires a live shell route")
 	}
 	o := options{command: "attach", host: connection.Host, session: connection.Session}
@@ -22,12 +23,37 @@ func routedResourceOptions(connection recentConnection, kind string) (options, e
 	return o, nil
 }
 
-func openRoutedResource(ctx context.Context, connection recentConnection, request message) (net.Conn, error) {
-	o, err := routedResourceOptions(connection, request.Type)
+func openIndependentResource(ctx context.Context, connection recentConnection, request message, service *resourceService) (net.Conn, error) {
+	o, err := independentResourceRoute(connection, &request)
 	if err != nil {
 		return nil, err
 	}
-	return openResourceEndpoint(ctx, &o, request, nil)
+	var c net.Conn
+	if o.hosted {
+		c, err = openClientTransportContext(ctx, &o, nil)
+	} else {
+		o.environment = service.baseEnvironment()
+		c, err = openRemoteShellTransport(ctx, &o, nil, service.config.Auth)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return negotiateResourceEndpoint(c, request)
+}
+
+func independentResourceRoute(connection recentConnection, request *message) (options, error) {
+	if err := validateRecentConnection(connection); err != nil {
+		return options{}, err
+	}
+	request.Instance = connection.Instance
+	root := &connection
+	for ; root.Parent != nil; root = root.Parent {
+		request.ResourceRoute = append(request.ResourceRoute, resourceHop{Parent: root.Parent.Instance, Token: root.RouteToken})
+	}
+	slices.Reverse(request.ResourceRoute)
+	o := routeParentOptions(options{command: "attach", host: root.Host, session: root.Session, instance: root.Instance})
+	applyConnectionOptions(&o, *root)
+	return o, nil
 }
 
 func openResourceEndpoint(ctx context.Context, o *options, request message, transports clientTransports) (_ net.Conn, err error) {
@@ -36,6 +62,10 @@ func openResourceEndpoint(ctx context.Context, o *options, request message, tran
 	if err != nil {
 		return nil, err
 	}
+	return negotiateResourceEndpoint(c, request)
+}
+
+func negotiateResourceEndpoint(c net.Conn, request message) (_ net.Conn, err error) {
 	defer func() {
 		if err != nil {
 			c.Close()
@@ -54,42 +84,30 @@ func openResourceEndpoint(ctx context.Context, o *options, request message, tran
 	return c, nil
 }
 
-func startRoutedForward(ctx context.Context, f forwardConfig) (*forwardConnection, error) {
-	request := message{Type: "route_forward", Name: f.Session, PID: f.ResumePID, ApprovalID: f.ApprovalID, Operations: []operation{{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse}}}
-	return openForwardStream(ctx, f, func() (io.ReadWriteCloser, error) {
-		return openRoutedResource(ctx, *f.Connection, request)
-	})
+func openForwardRoute(ctx context.Context, o options, client *sshio.Client, diagnostic io.Writer) (net.Conn, error) {
+	if o.hosted {
+		return openClientTransportContext(ctx, &o, nil)
+	}
+	setup, err := client.Start(remoteCommand(o), diagnostic)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.CloseAndWait()
+	ready, err := relayShellSetup(nil, setup, &shellDiagnostics{})
+	if err != nil {
+		return nil, err
+	}
+	record, err := remoteTaskRecord(ready)
+	if err != nil {
+		return nil, err
+	}
+	return openRemoteTaskEndpoint(ctx, record, client.DialTCP)
 }
 
-func openForwardStream(ctx context.Context, f forwardConfig, open func() (io.ReadWriteCloser, error)) (*forwardConnection, error) {
-	var listener net.Listener
-	// Bind the origin listener before consuming the remote approval.
-	if !f.Reverse {
-		var err error
-		listener, err = net.Listen("tcp", loopback(f.Port))
-		if err != nil {
-			return nil, err
-		}
-		defer func() {
-			if listener != nil {
-				_ = listener.Close()
-			}
-		}()
-	}
-	conn, err := open()
+func openRemoteTaskEndpoint(ctx context.Context, record localShellRecord, dial func(context.Context, string) (net.Conn, error)) (net.Conn, error) {
+	channel, err := dial(ctx, record.Address)
 	if err != nil {
 		return nil, err
 	}
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
-	defer stop()
-	forward, control, err := forwardio.Open(conn, listener, f.Target, true)
-	if err != nil {
-		return nil, err
-	}
-	listener = nil // The forwarding workers now own the listener.
-	return &forwardConnection{
-		Reader: control, Writer: control,
-		Wait:  func() error { forward.Wait(); return nil },
-		close: forward.Close,
-	}, nil
+	return upgradeDaemonConn(ctx, channel, record, "/tasks/"+record.UID+"/open", nil)
 }

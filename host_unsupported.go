@@ -20,6 +20,8 @@ func requestOperations(command string, _ []operation) error {
 
 func hostedDiagnostics([]shellView, []int, string) {}
 
+func currentShellDirectory(_ int, fallback string) string { return fallback }
+
 func registerPlatformDaemonRoutes(*http.ServeMux, *daemonTasks) {}
 
 func openHostedTransport(context.Context, options) (net.Conn, error) {

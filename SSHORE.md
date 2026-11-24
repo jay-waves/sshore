@@ -51,6 +51,8 @@ mounting. The Apple Silicon client is built manually from source.
 
 TODO: Add a macFUSE FSKit backend that preserves `CGO_ENABLED=0`.
 
+TODO: Support explicit `bash -c` in the command console, running on the host shown in the prompt with the console's working directory.
+
 Cross-compilation alone does not validate macOS terminal input, SSH
 authentication, daemon lifetime or native mounts.
 
@@ -77,18 +79,33 @@ preserves the original scope and pin. See [tree admission](shell_tree_control.go
 The authenticated exit frame carries the exit code and terminal output offset.
 The frontend drains the reported tail within a time budget and reports the
 exit even if the tail is incomplete. The local root prompt opens before loading
-the shell tree. Remote exits and detaches return to the parent or the invoking
-terminal. Exit notices report surviving pinned children directly. Declining a return after local
-approval restores the local parent when one exists. A connection loss without
-an exit frame leaves the state unconfirmed. Exit notices identify the restored
-shell, temporary session or calling terminal and whether pinned children remain.
+the shell tree. When the local account daemon shuts down, attached local clients
+exit to the invoking terminal. Remote exits and detaches return to the parent
+or the invoking terminal. Exit notices report surviving pinned children directly.
+Declining a return after local approval restores the local parent when one exists.
+A connection loss without an exit frame leaves the state unconfirmed. Exit notices identify the restored
+shell, local console or calling terminal and whether pinned children remain.
 
 ### Account daemon and mounts
 
 One authenticated daemon per OS account owns registered shells and resources.
+Daemon startup is serialized by the account startup lock. The owner lock
+identifies the live daemon, and its endpoint record supplies the address.
+Confirmed shutdown closes task admission, stops the reviewed tasks in parallel
+and waits for their results. A failed stop reports the task and reopens admission.
+The shutdown deadline bounds the response while accepted cleanup completes.
+Mounts and forwards use the same cleanup wait for individual and bulk stops.
 Normal connections require the exact full release version. Validate process
-identity before signaling and preserve approval checks for shell-routed resources.
-Mount and forward configuration travels in the authenticated launch request.
+identity before signaling. A remote shell's mount or forward approval is bound
+to the original task and its requested operation. The daemon opens fresh SSH
+connections through the authenticated route at startup. The resource owns those
+connections after startup, so exiting a source or ancestor shell leaves the
+resource running. Mount and forward configuration travels in the authenticated
+launch request.
+Each accepted forward client uses a native SSH channel on the rule's connection.
+The [forwarding package](internal/forward/forward.go) owns listeners, target
+dials and worker shutdown. The application supplies the authenticated transport
+and the startup exchange for the approved rule.
 The upgraded stream carries readiness and the caller's commit. The mount worker
 uses a separate pipe exchange because it can outlive the launch connection.
 The CLI formats SSH and mount diagnostics from callbacks. Copy clients and
@@ -101,7 +118,8 @@ before changing update, reset or approval behavior.
 
 ### Inventory and diagnostics
 
-Both inventory views read the current account daemon. The daemon captures task
+Both inventory views query the account daemon and start it on demand.
+The daemon captures task
 membership under the registry lock, then reads each task's state independently.
 `pstree` (`ps`) reads only shells and displays names, short IDs, hosts and states.
 Its branches follow parent UIDs and siblings sort by task ID. A leading `*` marks

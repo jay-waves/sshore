@@ -14,8 +14,12 @@ import (
 // Log writes a diagnostic or status line to a terminal or log file.
 func Log(out io.Writer, id string, level Color, format string, args ...any) {
 	color := false
+	layout := "01-02 15:04"
 	if f, ok := out.(*os.File); ok {
 		color = ColorEnabled(f)
+		if info, err := f.Stat(); err == nil && info.Mode().IsRegular() {
+			layout = time.DateTime
+		}
 	}
 	if id == "" {
 		id = "-"
@@ -24,7 +28,7 @@ func Log(out io.Writer, id string, level Color, format string, args ...any) {
 	if level == Error || level == Warning {
 		severity, label = Error, "error"
 	}
-	stamp := Render(color, Muted, "["+time.Now().Format("2006-01-02 15:04:05")+"]")
+	stamp := Render(color, Muted, "["+time.Now().Format(layout)+"]")
 	identity := Render(color, Accent, "["+id+"]")
 	label = Render(color, severity, "["+label+"]")
 	message := strings.TrimSuffix(fmt.Sprintf(format, args...), "\n")

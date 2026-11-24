@@ -20,7 +20,7 @@ import (
 )
 
 // Keep authentication prompts local to this handshake.
-func (c connectionConfig) configureAuthentication(ctx context.Context, cc *cryptossh.ClientConfig, budgets *authenticationBudgets) error {
+func (c connectionConfig) configureAuthentication(ctx context.Context, cc *cryptossh.ClientConfig, budgets *authenticationBudgets, passwordAuthenticated *bool) error {
 	if confirm := c.options.Confirm; confirm != nil {
 		c.options.Confirm = func(ctx context.Context, prompt string) (bool, error) {
 			resume := budgets.pause()
@@ -47,18 +47,19 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 	var identityErr, promptErr error
 	var publicKeys []cryptossh.Signer
 	var publicKeysLoaded bool
-	readSecret := func(prompt string) ([]byte, error) {
+	readSecretWith := func(prompt string, secretPrompt func(context.Context, string) ([]byte, error)) ([]byte, error) {
 		if promptErr != nil {
 			return nil, promptErr
 		}
 		resume := budgets.pause()
 		defer resume()
-		secret, err := c.options.Secret(ctx, prompt)
+		secret, err := secretPrompt(ctx, prompt)
 		if err != nil {
 			promptErr = err
 		}
 		return secret, err
 	}
+	readSecret := func(prompt string) ([]byte, error) { return readSecretWith(prompt, c.options.Secret) }
 	ask := func(prompt string) (string, error) {
 		secret, err := readSecret(prompt)
 		defer clear(secret)
@@ -68,6 +69,7 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 		c.passphrase, c.passphraseAttempts = readSecret, limit
 	}
 	cc.AuthCallback = func(state *cryptossh.ClientAuthContext) (cryptossh.AuthMethod, error) {
+		*passwordAuthenticated = slices.Contains(state.PartialSuccessMethods, "password")
 		// SSH may ask for another method after a method callback fails.
 		// A failed local prompt ends authentication for this connection.
 		if promptErr != nil {
@@ -103,7 +105,16 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 					continue
 				}
 				attempts[method]++
-				return cryptossh.PasswordCallback(func() (string, error) { return ask("\x00password:" + c.user + "@" + c.host) }), nil
+				return cryptossh.PasswordCallback(func() (string, error) {
+					*passwordAuthenticated = true // Cleared on the next callback if this attempt fails.
+					identity := c.user + "@" + c.host
+					if c.options.Password == nil {
+						return ask("\x00password:" + identity)
+					}
+					secret, err := readSecretWith(identity, c.options.Password)
+					defer clear(secret)
+					return string(secret), err
+				}), nil
 			case "keyboard-interactive":
 				if c.get("kbdinteractiveauthentication") == "no" || c.get("kbdinteractiveauthentication") == "false" {
 					continue

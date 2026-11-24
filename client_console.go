@@ -12,6 +12,12 @@ import (
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
+// clientConsole lives with the frontend. Each visible commandConsole owns only
+// its editor, pending requests and buffered terminal output.
+type clientConsole struct {
+	directory, localDirectory string
+}
+
 type commandConsole struct {
 	output        []byte
 	editor        *termui.Console
@@ -23,12 +29,14 @@ type commandConsole struct {
 
 const consoleHelp = `pstree (ps)       Show the shell tree
 list (ls)         Show task details
+pwd               Show this shell's directory
 attach (a) <ID|name>  Enter a detached child or idle root (Tab completes)
 shell [--pin]     Open a nested shell (alias: sh)
 detach [DURATION] Pin and detach the current shell
 exit              Return to the current shell`
 
-func (c *commandConsole) start(ctx context.Context, out io.Writer, send func(clientEvent), host string, width int, color bool) {
+func (state *clientConsole) open(ctx context.Context, out io.Writer, send func(clientEvent), host string, width int, color bool) *commandConsole {
+	c := &commandConsole{}
 	c.color = color
 	title := termui.Render(color, termui.Heading, "sshore commands")
 	keys := termui.Render(color, termui.Muted, "(Tab: next, Esc: return)")
@@ -40,6 +48,7 @@ func (c *commandConsole) start(ctx context.Context, out io.Writer, send func(cli
 	c.editor = termui.StartConsole(ctx, prompt, width, color, func(e termui.ConsoleEvent) {
 		send(clientEvent{consoleSource: c, console: e})
 	})
+	return c
 }
 
 type consoleCompleter func() []sessionTarget
@@ -47,7 +56,7 @@ type consoleCompleter func() []sessionTarget
 func (targets consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	prefix := string(line[:pos])
 	word := prefix
-	candidates := []string{"attach", "detach", "exit", "help", "shell", "list", "pstree"}
+	candidates := []string{"attach", "detach", "exit", "help", "shell", "list", "pstree", "pwd"}
 	for alias, command := range commandAliases {
 		if slices.Contains(candidates, command) {
 			candidates = append(candidates, alias)

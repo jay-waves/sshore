@@ -54,7 +54,20 @@ func (s *remoteShell) requestApproval(c net.Conn, m message) error {
 	if p == nil {
 		return fmt.Errorf("no attached client")
 	}
-	return p.requestApproval(c, m)
+	return p.requestApproval(c, m, func(id string) error {
+		if !validRequestID(id) {
+			return fmt.Errorf("invalid approval handoff")
+		}
+		op := m.Operations[0]
+		op.LocalHint = ""
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.resourceApproval = resourceApproval{}
+		if op.Kind == "mount" || op.Kind == "forward" {
+			s.resourceApproval = resourceApproval{id: id, op: op}
+		}
+		return nil
+	})
 }
 
 // The authenticated file endpoint serves one operation after its approval check.
@@ -102,49 +115,6 @@ func approvedRemoteTransfer(st net.Conn, m message) {
 	}
 	_ = st.SetDeadline(time.Time{})
 	_ = files.ServeTransfer(st, backend)
-}
-
-// Validate the original shell without opening an attachment. A failed
-// validation must never terminate the shell or start a replacement session.
-func checkApprovalSource(name string, pid int, approval string, expected ...string) error {
-	if err := validSession(name); err != nil {
-		return err
-	}
-	if pid <= 0 || !validRequestID(approval) {
-		return fmt.Errorf("invalid source approval")
-	}
-	gate, err := setupLock()
-	if err != nil {
-		return err
-	}
-	defer gate.Close()
-	socket, err := resolveSession(name, expected...)
-	if err != nil {
-		return err
-	}
-	if socket == "" {
-		return fmt.Errorf("approved shell no longer exists; request the operation again")
-	}
-	conn, err := dialHostedTask(context.Background(), socket, time.Second)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	if err = writeMessage(conn, message{Type: "approval_check", SoftwareVersion: version, Name: name, PID: pid, ApprovalID: approval, Instance: firstExpectedInstance(expected)}); err != nil {
-		return err
-	}
-	m, err := readMessage(conn)
-	if err != nil {
-		return err
-	}
-	if err = checkPeerVersion(m.SoftwareVersion, "source shell"); err != nil {
-		return err
-	}
-	if m.Type != "approval_checked" {
-		return fmt.Errorf("source approval: %s", m.Error)
-	}
-	return nil
 }
 
 func (s *remoteShell) checkApprovalSource(m message) error {
