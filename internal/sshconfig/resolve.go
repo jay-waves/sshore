@@ -68,7 +68,7 @@ func Resolve(ctx context.Context, req Request) (Result, error) {
 	}
 	if hostname := r.get("hostname"); hostname != "" {
 		var err error
-		r.host, err = expand(hostname, map[byte]string{'h': r.host}, nil)
+		r.host, err = Expand(hostname, map[byte]string{'h': r.host}, nil)
 		if err != nil {
 			return Result{}, fmt.Errorf("%s: HostName: %w", r.Origins["hostname"], err)
 		}
@@ -189,7 +189,7 @@ func (r *resolver) include(ctx context.Context, base string, patterns []string, 
 		'd': r.Home, 'h': host, 'n': r.OriginalHost, 'p': port, 'r': user, 'u': r.Request.LocalUser,
 	}
 	for _, pattern := range patterns {
-		path, err := expand(pattern, tokens, r.LookupEnv)
+		path, err := Expand(pattern, tokens, r.LookupEnv)
 		if err != nil {
 			return err
 		}
@@ -258,7 +258,7 @@ func (r *resolver) matchTarget(name string) (string, error) {
 	switch name {
 	case "host":
 		if hostname := r.get("hostname"); hostname != "" && !r.final {
-			return expand(hostname, map[byte]string{'h': r.host}, nil)
+			return Expand(hostname, map[byte]string{'h': r.host}, nil)
 		}
 		return r.host, nil
 	case "originalhost":
@@ -337,7 +337,9 @@ func (r *resolver) apply(opt Option) error {
 	return nil
 }
 
-func expand(value string, tokens map[byte]string, lookup func(string) string) (string, error) {
+// Expand substitutes the tokens accepted by an option. A nil environment
+// lookup leaves ${...} literal, as required for HostName.
+func Expand(value string, tokens map[byte]string, lookup func(string) string) (string, error) {
 	var out strings.Builder
 	for i := 0; i < len(value); i++ {
 		switch {

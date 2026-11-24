@@ -32,15 +32,56 @@ type Terminal struct {
 	stop          func() error
 }
 
+func (c Config) findExecutable(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		dir, err := filepath.Abs(c.Dir)
+		if err != nil {
+			return "", err
+		}
+		volume := filepath.VolumeName(path)
+		switch {
+		case volume != "":
+			// Drive-relative names use that drive's current directory.
+			if !strings.EqualFold(volume, filepath.VolumeName(dir)) {
+				dir = c.getenv("=" + volume)
+				if dir == "" {
+					dir = volume + `\`
+				}
+			}
+			path = filepath.Join(dir, path[len(volume):])
+		case os.IsPathSeparator(path[0]):
+			path = filepath.VolumeName(dir) + path
+		default:
+			path = filepath.Join(dir, path)
+		}
+	}
+	isFile := func(name string) bool {
+		info, err := os.Stat(name)
+		return err == nil && !info.IsDir()
+	}
+	if filepath.Ext(path) != "" && isFile(path) {
+		return path, nil
+	}
+	extensions := c.getenv("PATHEXT")
+	if extensions == "" {
+		extensions = ".COM;.EXE;.BAT;.CMD"
+	}
+	for ext := range strings.SplitSeq(extensions, ";") {
+		if ext != "" {
+			candidate := path + "." + strings.TrimPrefix(ext, ".")
+			if isFile(candidate) {
+				return candidate, nil
+			}
+		}
+	}
+	return "", &exec.Error{Name: path, Err: exec.ErrNotFound}
+}
+
 func Start(c Config) (result *Terminal, _ error) {
 	if err := c.Size.validate(); err != nil {
 		return nil, err
 	}
-	path, err := exec.LookPath(c.Path)
-	if err != nil {
-		return nil, err
-	}
-	path, err = filepath.Abs(path)
+	path, err := c.executablePath()
 	if err != nil {
 		return nil, err
 	}

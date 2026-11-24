@@ -75,10 +75,6 @@ func (s *remoteShell) serveControl(c net.Conn) error {
 			p.approvals.enable()
 		case "approval_handoff", "approval_rejected":
 			p.approvals.reply(m)
-		case "session_targets":
-			if err := p.controlMessage(s.sessionTargets(m)); err != nil {
-				return err
-			}
 		default:
 			return fmt.Errorf("unexpected control message: %s", m.Type)
 		}
@@ -159,13 +155,16 @@ func (s *remoteShell) status(detail string) message {
 	return message{Type: "session", Owner: view.Owner, Action: view.State, Pinned: view.Pinned, PinUntil: view.PinUntil, Instance: view.Instance, Name: view.Name, SoftwareVersion: version,
 		Attached: view.State == taskActive, PID: view.PID, AgeSeconds: view.Age, Foreground: view.Foreground, Directory: view.Directory}
 }
-func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) error {
+func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) (*remoteShell, error) {
 	s := &remoteShell{
-		shellTask: shellTask{tasks: tasks, record: localShellRecord{UID: req.UID, Name: req.Name, Directory: req.Directory}, hosted: true,
+		shellTask: shellTask{tasks: tasks, record: localShellRecord{Name: req.Name, Directory: req.Directory}, hosted: true,
 			environment: req.Env, parent: req.parent, done: make(chan struct{})},
 	}
-	if err := tasks.register(req.UID, s); err != nil {
-		return err
+	if err := tasks.register("", s); err != nil {
+		if errors.Is(err, errObjectNameInUse) {
+			return nil, fmt.Errorf("name %s already exists; use a different shell name", req.Name)
+		}
+		return nil, err
 	}
 	s.watchParent(req.parent)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -173,7 +172,7 @@ func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) error {
 		defer stop()
 		s.watchLifetime(ctx)
 	}()
-	return nil
+	return s, nil
 }
 
 func (s *remoteShell) watchLifetime(ctx context.Context) {

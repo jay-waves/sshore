@@ -36,13 +36,23 @@ func prepareFTPPaths(o *ftpOptions) (func(), error) {
 	if !info.IsDir() || !ok || st.Uid != uint32(os.Geteuid()) || info.Mode().Perm()&0022 != 0 {
 		return cleanup, fmt.Errorf("mount parent must be a directory owned by you and not writable by others: %s", root)
 	}
-	o.Mountpoint = filepath.Join(root, o.Name)
-	e = os.Mkdir(o.Mountpoint, 0700)
-	if os.IsExist(e) {
-		return cleanup, files.ValidateMountpoint(o.Mountpoint)
+	for {
+		name := o.Name
+		if name == "" {
+			name = newTaskUID()[:6]
+		}
+		path := filepath.Join(root, name)
+		err := os.Mkdir(path, 0700)
+		o.Mountpoint = path
+		if os.IsExist(err) {
+			if o.Name == "" {
+				continue // Each foreground mount owns its directory.
+			}
+			return cleanup, files.ValidateMountpoint(path)
+		}
+		if err != nil {
+			return cleanup, err
+		}
+		return func() { _ = os.Remove(path) }, nil
 	}
-	if e != nil {
-		return cleanup, e
-	}
-	return func() { _ = os.Remove(o.Mountpoint) }, nil
 }

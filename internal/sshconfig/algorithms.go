@@ -7,7 +7,7 @@ import (
 )
 
 // Algorithms applies a configured list to the implementation's supported
-// algorithms. A valid policy can leave an empty list.
+// algorithms. An explicit policy matching nothing returns a non-nil empty list.
 func Algorithms(supported []string, spec string) ([]string, error) {
 	if spec == "" {
 		return supported, nil
@@ -27,7 +27,7 @@ func Algorithms(supported []string, spec string) ([]string, error) {
 		return supported, nil
 	}
 
-	var result []string
+	result := []string{}
 	if mode == '-' {
 		for _, algorithm := range supported {
 			if !matchPatterns(patterns, algorithm) {

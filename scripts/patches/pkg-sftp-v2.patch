@@ -14,3 +14,68 @@
  // Remove removes the named file or (empty) directory.
  //
  // If both operations fail, then Remove will stat the named filesystem object.
+--- a/server.go
++++ b/server.go
+@@ -231,10 +231,6 @@
+ 	srv.mu.Unlock()
+ 
+ 	srv.wg.Wait()
+-
+-	for handle, f := range srv.handles.Range {
+-		fmt.Fprintf(srv.Debug, "sftp server file with handle %q left open: %T", handle, f.Name())
+-	}
+ 
+ 	return srv.err
+ }
+@@ -428,6 +424,10 @@
+ 	srv.wg.Add(1)
+ 	defer func() {
+ 		conn.Close()
++		for handle, file := range srv.handles.Range {
++			srv.handles.Delete(handle)
++			_ = file.Close()
++		}
+ 		srv.wg.Done()
+ 	}()
+ 
+--- a/localfs/file.go
++++ b/localfs/file.go
+@@ -5,7 +5,9 @@
+ 	"io/fs"
+ 	"iter"
+ 	"os"
++	"runtime"
+ 	"slices"
++	"strconv"
+ 	"sync"
+ 	"time"
+ 
+@@ -155,7 +157,7 @@
+ 
+ 	if attrs.HasACModTime() {
+ 		atime, mtime := attrs.GetACModTime()
+-		err = cmp.Or(os.Chtimes(f.filename, time.Unix(int64(atime), 0), time.Unix(int64(mtime), 0)), err)
++		err = cmp.Or(f.chtimes(time.Unix(int64(atime), 0), time.Unix(int64(mtime), 0)), err)
+ 	}
+ 
+ 	if attrs.HasUserGroup() {
+@@ -165,3 +167,19 @@
+ 
+ 	return err
+ }
++
++// chtimes binds Linux FSETSTAT to the open descriptor across rename and unlink.
++func (f *File) chtimes(atime, mtime time.Time) error {
++	if runtime.GOOS != "linux" {
++		return os.Chtimes(f.filename, atime, mtime)
++	}
++	conn, err := f.SyscallConn()
++	if err != nil {
++		return err
++	}
++	var opErr error
++	err = conn.Control(func(fd uintptr) {
++		opErr = os.Chtimes("/proc/self/fd/"+strconv.FormatUint(uint64(fd), 10), atime, mtime)
++	})
++	return cmp.Or(err, opErr)
++}

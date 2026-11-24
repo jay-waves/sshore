@@ -1,0 +1,86 @@
+--- a/gofs/gofs_windows.go
++++ b/gofs/gofs_windows.go
+@@ -40,6 +40,19 @@
+ 	Stat(name string) (os.FileInfo, error)
+ 	Rename(source, target string) error
+ 	Remove(name string) error
++}
++
++// FileSystemOpenFileEx receives the native open options and granted access.
++type FileSystemOpenFileEx interface {
++	FileSystem
++	OpenFileEx(name string, flags int, mode os.FileMode, createOptions, grantedAccess uint32) (File, error)
++}
++
++// FileSetBasicInfo updates an open file and returns its resulting attributes.
++// name is the locked, current path, or empty if the node was removed.
++type FileSetBasicInfo interface {
++	File
++	SetBasicInfo(name string, flags winfsp.SetBasicInfoFlags, attributes uint32, creationTime, lastAccessTime, lastWriteTime, changeTime uint64) (os.FileInfo, error)
+ }
+ 
+ // FileInfoFileID means the provided os.FileInfo
+@@ -553,7 +566,13 @@
+ 
+ 	// Attempt to open the file in the underlying file system.
+ 	dirCheckErr := windows.STATUS_NOT_A_DIRECTORY
+-	file, err := fs.inner.OpenFile(name, accessFlags|flags, mode)
++	open := func() (File, error) {
++		if native, ok := fs.inner.(FileSystemOpenFileEx); ok {
++			return native.OpenFileEx(name, accessFlags|flags, mode, createOptions, grantedAccess)
++		}
++		return fs.inner.OpenFile(name, accessFlags|flags, mode)
++	}
++	file, err := open()
+ 	if err != nil {
+ 		// We will only try again if it complains about opening a
+ 		// directory file failed, but we should be able to open the
+@@ -574,7 +593,7 @@
+ 				errors.Is(err, windows.ERROR_DIRECTORY)) {
+ 			accessFlags = os.O_RDONLY
+ 			flags = 0
+-			file, err = fs.inner.OpenFile(name, accessFlags|flags, mode)
++			file, err = open()
+ 			createOptions |= windows.FILE_DIRECTORY_FILE
+ 			dirCheckErr = windows.STATUS_OBJECT_NAME_NOT_FOUND
+ 		}
+@@ -873,6 +892,19 @@
+ 		return err
+ 	}
+ 	defer handle.unlockChecked()
++	if setter, ok := handle.file.(FileSetBasicInfo); ok {
++		lock := handle.node.RLockPath()
++		defer lock.Unlock()
++		var name string
++		if !lock.IsExile() {
++			name = lock.FilePath()
++		}
++		stat, err := setter.SetBasicInfo(name, flags, attribute, creationTime, lastAccessTime, lastWriteTime, changeTime)
++		if err != nil {
++			return err
++		}
++		return fs.fillInfoFromHandleLocked(info, handle, stat, nil)
++	}
+ 	err = fs.fillInfoFromHandle(info, handle, nil, nil)
+ 	if err != nil {
+ 		return err
+--- a/filesystem_windows.go
++++ b/filesystem_windows.go
+@@ -7,6 +7,7 @@
+ 	"reflect"
+ 	"runtime"
+ 	"sync"
++	"sync/atomic"
+ 	"syscall"
+ 	"time"
+ 	"unsafe"
+@@ -795,6 +796,9 @@
+ 
+ // Delete the directory buffer.
+ func (buf *DirBuffer) Delete() {
++	if atomic.LoadUintptr(&buf.ptr) == 0 {
++		return
++	}
+ 	_, _ = deleteDirectoryBuffer.Call(
+ 		uintptr(unsafe.Pointer(&buf.ptr)))
+ }

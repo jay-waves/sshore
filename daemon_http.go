@@ -213,19 +213,22 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *htt
 		}
 		_ = json.NewEncoder(w).Encode(activity.listTasks(r.Context(), request))
 	})
-	mux.HandleFunc("POST /tasks/name", func(w http.ResponseWriter, r *http.Request) {
-		query := r.URL.Query()
-		uid, name := query.Get("uid"), query.Get("name")
-		if !validTaskUID(uid) || name != "" && validSession(name) != nil {
-			http.Error(w, "invalid task name selection", http.StatusBadRequest)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(tasks.availableName(uid, name, query.Get("reuse") == "1"))
-	})
 	mux.HandleFunc("POST /resources/stop-confirmed", tasks.serveConfirmedResourceStops)
 	mux.HandleFunc("POST /resources/{action}", tasks.serveResourceMutation)
 	mux.HandleFunc("POST /ready", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /tasks/select", func(w http.ResponseWriter, r *http.Request) {
+		var q taskQuery
+		if !readDaemonBody(w, r, &q) {
+			return
+		}
+		matches, err := q.run(tasks)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(matches)
 	})
 	mux.HandleFunc("POST /tasks/native/open", tasks.openNative)
 	mux.HandleFunc("POST /tasks/{id}/open", tasks.open)
@@ -255,7 +258,7 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *htt
 		if !readDaemonBody(w, r, &req) {
 			return
 		}
-		shell := (req.Kind == "remote-shell" || req.Kind == "shell") && validSession(req.Record.Name) == nil
+		shell := req.Kind == "shell" || req.Kind == "remote-shell" && validSession(req.Record.Name) == nil
 		resource := req.Kind == "resource" && req.Resource != nil
 		if !(shell || resource) || !filepath.IsAbs(req.Record.Directory) {
 			http.Error(w, "invalid launch", 400)

@@ -65,7 +65,11 @@ func serveRemote(req remoteServiceRequest) (result error) {
 }
 
 func chooseDetachedHostedShell() (sessionTarget, error) {
-	targets, err := detachedHostedShells("")
+	rows, err := queryRegisteredTasks(taskQuery{Kind: "hosted", Detached: true})
+	if err != nil {
+		return sessionTarget{}, err
+	}
+	targets, err := attachmentChoices(rows)
 	if err != nil {
 		return sessionTarget{}, err
 	}

@@ -167,10 +167,9 @@ func readTaskInventory(request taskInventoryRequest) (taskInventorySnapshot, map
 }
 
 func (snapshot taskInventorySnapshot) nativeShells() []localShellView {
-	rows := make([]localShellView, 0, len(snapshot.Native))
-	for identity, view := range snapshot.Native {
-		view.identity, view.ShortID = identity, taskShortCode(identity)
-		rows = append(rows, view)
+	rows := snapshot.Native
+	for i := range rows {
+		rows[i].ShortID = taskShortCode(rows[i].Identity)
 	}
 	sortLocalShells(rows)
 	return rows
@@ -356,10 +355,10 @@ func writeTaskInventoryColor(out io.Writer, inv inventory, current string, color
 func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color bool, screenWidth int) {
 	rows := []taskTableRow{}
 	for _, s := range inv.LocalShells {
-		selected := current != "" && s.identity == current && s.State == taskActive
+		selected := current != "" && s.Identity == current && s.State == taskActive
 		detail := shellListDetail(s.Directory, s.SourceHost)
 		detail = pinDetail(detail, s.Pinned, s.PinUntil)
-		rows = append(rows, taskTableRow{taskUID(s.identity), s.ShortID, s.Name, "sh", "local", s.State, taskShortCode(s.Owner), detail, selected})
+		rows = append(rows, taskTableRow{taskUID(s.Identity), s.ShortID, s.Name, "sh", "local", s.State, taskShortCode(s.Owner), detail, selected})
 	}
 	now := time.Now()
 	for _, s := range inv.Shells {
@@ -804,7 +803,7 @@ func localShellTreeNodes(inv inventory) []shellTreeNode {
 		nodes = append(nodes, n)
 	}
 	for _, s := range inv.LocalShells {
-		add(shellTreeNode{Identity: s.identity, ShortID: s.ShortID, Owner: s.Owner, Name: s.Name, State: s.State, Directory: s.Directory,
+		add(shellTreeNode{Identity: s.Identity, ShortID: s.ShortID, Owner: s.Owner, Name: s.Name, State: s.State, Directory: s.Directory,
 			Remote: s.SourceHost, Direction: "<-", Pinned: s.Pinned, PinUntil: s.PinUntil})
 	}
 	for _, s := range inv.Shells {

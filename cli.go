@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -232,8 +231,7 @@ func shellOptions(command string, parsed cliArguments) (options, error) {
 	o.ssh, o.local = parsed.ssh, parsed.local
 	o.portOverrideOnly = parsed.has("--port") && len(sshio.WithoutForwarding(parsed.ssh)) == 2
 	o.serverSet = parsed.has("--server")
-	o.quiet, o.noEscape = parsed.has("--quiet"), parsed.has("--no-escape")
-	o.detached = parsed.has("--detach")
+	o.noEscape = parsed.has("--no-escape")
 	o.pin = parsed.has("--pin")
 	o.noLogin = parsed.has("--no-login")
 	o.noProfile = parsed.has("--no-profile")
@@ -359,7 +357,24 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 		return nil
 	}
 	ref := parsed.operands[0]
-	if !strings.Contains(ref, "/") && isBareSSHHost(ref) {
+	if kind, selector, typed := strings.Cut(ref, "/"); typed {
+		switch kind {
+		case "sh", "shell":
+			kind = "shell"
+		case "mount", "forward":
+			if command == "attach" {
+				return usage("attach requires a shell")
+			}
+		default:
+			return usage("unknown task type %q", kind)
+		}
+		if err := validSession(selector); err != nil {
+			return err
+		}
+		parsed.local, parsed.taskKind, parsed.operands[0] = true, kind, selector
+		return nil
+	}
+	if isBareSSHHost(ref) {
 		if isTaskIDPrefix(ref) {
 			parsed.bareAttachID = command == "attach"
 			parsed.local = true
@@ -370,7 +385,7 @@ func normalizeShellSelector(command string, parsed *cliArguments) error {
 		}
 		return validSSHDestination(ref)
 	}
-	if !strings.Contains(ref, ":") || strings.Contains(ref, "/") {
+	if !strings.Contains(ref, ":") {
 		return nil
 	}
 	host, selector, err := splitEndpoint(ref)
@@ -424,10 +439,9 @@ type options struct {
 	host, session, server string
 	command               string
 	newName               string
-	quiet, noEscape       bool
+	noEscape              bool
 	ssh                   []string
 	local                 bool
-	detached              bool
 	pin                   bool
 	noLogin               bool
 	noProfile             bool
@@ -461,8 +475,8 @@ func executeShellCommand(o options) (int, error) {
 		}
 		return 1, fmt.Errorf("attaching a remote child requires its parent's active terminal")
 	}
-	if o.command == "attach" && o.session == "" && o.taskIdentity == "" {
-		if err := resolveDetachedAttach(&o); err != nil {
+	if o.local && o.command == "attach" && o.session == "" && o.taskIdentity == "" {
+		if err := resolveDetachedAttach(&o, shellIdentityFromEnvironment()); err != nil {
 			return 1, err
 		}
 	}
@@ -751,12 +765,6 @@ func parseFTPOptions(args []string) (ftpOptions, error) {
 	return o, nil
 }
 
-type selectedTask struct {
-	Kind, Name, Identity, Instance string
-	Hosted                         bool
-	Connection                     *recentConnection
-}
-
 // A selector with a host is resolved by that host's daemon. Local selection
 // reads registered tasks together so a prefix is checked against one task set.
 func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool, error) {
@@ -769,13 +777,10 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 	default:
 		return empty, false, nil
 	}
-	kind, ref, typed := strings.Cut(parsed.operands[0], "/")
-	if !typed {
-		if !parsed.local {
-			return empty, false, nil
-		}
-		ref, kind = kind, ""
+	if !parsed.local {
+		return empty, false, nil
 	}
+	kind, ref := parsed.taskKind, parsed.operands[0]
 	var target selectedTask
 	if parsed.bareAttachID && shellIdentityFromEnvironment() == "" {
 		reply, err := metadataRPC(metadataRequest{Action: "attach_by_id", Instance: ref})
@@ -784,14 +789,20 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		}
 		target = *reply.Target
 	} else {
-		snapshot, _, err := readTaskInventory(taskInventoryRequest{Native: true, Hosted: true, Resources: command != "attach", Detail: "health"})
+		if command == "attach" {
+			kind = "shell"
+			if os.Getenv("SSHORE_SOCKET") != "" {
+				kind = "hosted"
+			}
+		}
+		matches, err := queryRegisteredTasks(taskQuery{Kind: kind, Ref: ref})
 		if err != nil {
 			return empty, false, err
 		}
-		target, err = selectTask(snapshot, kind, ref, nil)
-		if err != nil {
-			return empty, false, err
+		if len(matches) == 0 {
+			return empty, false, usage("unknown task %s; use sshore list or specify HOST:ID", ref)
 		}
+		target = matches[0]
 	}
 	if target.Connection != nil {
 		parsed.local = false
@@ -806,64 +817,6 @@ func resolveShortTask(command string, parsed *cliArguments) (selectedTask, bool,
 		parsed.operands[0] = target.Name
 	}
 	return target, true, nil
-}
-
-func selectTask(snapshot taskInventorySnapshot, kind, ref string, routes []recentConnection) (selectedTask, error) {
-	var idMatch, nameMatch selectedTask
-	var ambiguousID, ambiguousName, ambiguousRoute bool
-	prefix := strings.ToLower(ref)
-	byID := isTaskIDPrefix(prefix)
-	consider := func(task selectedTask) {
-		if kind != "" && kind != task.Kind && !(kind == "sh" && task.Kind == "shell") {
-			return
-		}
-		switch {
-		case byID && strings.HasPrefix(taskUID(task.Identity), prefix):
-			ambiguousID = ambiguousID || idMatch.Kind != "" && idMatch.Identity != task.Identity
-			if idMatch.Identity == task.Identity && task.Connection != nil {
-				// Prefer the registered local shell when SSH reaches the same task.
-				if saved := idMatch.Connection; saved != nil {
-					route := task.Connection
-					ambiguousRoute = ambiguousRoute || saved.Host != route.Host || saved.Server != route.Server ||
-						saved.Directory != route.Directory || !slices.Equal(saved.SSH, route.SSH)
-				}
-				return
-			}
-			idMatch = task
-		case ref == task.Name:
-			ambiguousName = ambiguousName || nameMatch.Kind != "" && nameMatch.Identity != task.Identity
-			nameMatch = task
-		}
-	}
-	for identity, row := range snapshot.Native {
-		consider(selectedTask{Kind: "shell", Name: row.Name, Identity: identity})
-	}
-	for _, row := range snapshot.Shells {
-		consider(selectedTask{Kind: "shell", Name: row.Name, Identity: identityFromUID(row.Instance), Instance: row.Instance, Hosted: true})
-	}
-	for _, row := range snapshot.Resources {
-		consider(selectedTask{Kind: row.Kind, Name: row.Name, Identity: resourceIdentity(row)})
-	}
-
-	for i := range routes {
-		route := &routes[i]
-		if validTaskUID(route.Instance) && !route.viaShell() {
-			consider(selectedTask{Kind: "shell", Identity: "task:" + route.Instance, Instance: route.Instance, Connection: route})
-		}
-	}
-	switch {
-	case ambiguousID:
-		return selectedTask{}, usage("ambiguous task ID %s; use a longer prefix or HOST:ID", ref)
-	case ambiguousRoute:
-		return selectedTask{}, usage("multiple saved connections for task %s; use sshore attach HOST:ID", idMatch.Instance)
-	case idMatch.Kind != "":
-		return idMatch, nil
-	case ambiguousName:
-		return selectedTask{}, usage("ambiguous alias %s; use a task ID", ref)
-	case nameMatch.Kind != "":
-		return nameMatch, nil
-	}
-	return selectedTask{}, usage("unknown task %s; use sshore list or specify HOST:ID", ref)
 }
 
 func runMount(args []string) (int, error) {

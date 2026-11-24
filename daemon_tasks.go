@@ -17,6 +17,7 @@ import (
 // The daemon owns task identities and their live implementations. Entries are
 // never reconstructed after a daemon restart.
 type daemonTask interface {
+	setInitialIdentity(uid, name string) // Called before publication in the registry.
 	taskName() string
 	expired() bool
 }
@@ -35,25 +36,40 @@ type nativeShellTask struct {
 	serve func(net.Conn, message) error
 }
 
-func (t *nativeShellTask) taskName() string         { return t.shell.taskName() }
-func (t *nativeShellTask) expired() bool            { return t.shell.expired() }
-func (t *nativeShellTask) managedShell() *shellTask { return &t.shell.shellTask }
+func (t *nativeShellTask) setInitialIdentity(uid, name string) { t.shell.setInitialIdentity(uid, name) }
+func (t *nativeShellTask) taskName() string                    { return t.shell.taskName() }
+func (t *nativeShellTask) expired() bool                       { return t.shell.expired() }
+func (t *nativeShellTask) managedShell() *shellTask            { return &t.shell.shellTask }
 
 func (s *daemonTasks) register(id string, task daemonTask) error {
-	if !validTaskUID(id) {
-		return fmt.Errorf("invalid task ID")
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.draining {
 		return errDaemonDraining
 	}
+	if id == "" {
+		id = newTaskUID()
+	} else if !validTaskUID(id) {
+		return fmt.Errorf("invalid task ID")
+	}
 	if s.lookupLocked(id) != nil {
 		return fmt.Errorf("task already exists")
 	}
-	if err := s.checkNameLocked("", task.taskName()); err != nil {
-		return err
+	name := task.taskName()
+	if name == "" {
+		name = s.automaticNameLocked(id)
+		if name == "" {
+			return fmt.Errorf("no available task name for %s", id)
+		}
+	} else {
+		if err := validSession(name); err != nil {
+			return err
+		}
+		if err := s.checkNameLocked("", name); err != nil {
+			return err
+		}
 	}
+	task.setInitialIdentity(id, name)
 	if s.records == nil {
 		s.records = make(map[string]daemonTask)
 	}
@@ -126,25 +142,10 @@ func (s *daemonTasks) pruneLocked() {
 	}
 }
 
-func (s *daemonTasks) availableName(uid, requested string, reuse bool) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	except := ""
-	if reuse {
-		except = uid
-	}
-	if requested != "" {
-		if s.checkNameLocked(except, requested) != nil {
-			return ""
-		}
-		return requested
-	}
+func (s *daemonTasks) automaticNameLocked(uid string) string {
 	// An automatic name can only collide with prefixes of this UID.
 	var taken [33]bool
-	for id, task := range s.liveLocked() {
-		if id == except {
-			continue
-		}
+	for _, task := range s.liveLocked() {
 		name := task.taskName()
 		if len(name) >= 6 && strings.HasPrefix(uid, name) {
 			taken[len(name)] = true
@@ -202,52 +203,23 @@ func serveTaskCommand(c net.Conn, serve func(net.Conn, message) error) {
 func (s *daemonTasks) findNativeShell(ref, identity string) (*nativeShellTask, localShellRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	query := taskQuery{Kind: "native", Ref: ref}
 	if identity != "" {
-		id := canonicalTaskUID(identity)
-		if id == "" {
+		query.UID = canonicalTaskUID(identity)
+		if query.UID == "" {
 			return nil, localShellRecord{}, nil
 		}
-		task, ok := s.lookupLocked(id).(*nativeShellTask)
-		if !ok {
-			return nil, localShellRecord{}, nil
-		}
-		record := task.snapshot()
-		if record.identity() != identity || (ref != "" && ref != record.Name && ref != record.UID) {
-			return nil, localShellRecord{}, fmt.Errorf("local task changed; refresh with sshore list")
-		}
-		return task, record, nil
 	}
-	prefix := shortTaskPrefix(ref)
-	if validTaskUID(prefix) {
-		if task, ok := s.lookupLocked(prefix).(*nativeShellTask); ok {
-			return task, task.snapshot(), nil
-		}
-		prefix = "" // A full UID that did not match can still be an alias.
+	target, err := query.selectLocked(s)
+	if err != nil || target.Identity == "" {
+		return nil, localShellRecord{}, err
 	}
-	var nameTask, prefixTask *nativeShellTask
-	for id, candidate := range s.liveLocked() {
-		task, ok := candidate.(*nativeShellTask)
-		if !ok {
-			continue
-		}
-		if prefix != "" && strings.HasPrefix(id, prefix) {
-			if prefixTask != nil {
-				return nil, localShellRecord{}, fmt.Errorf("ambiguous task ID")
-			}
-			prefixTask = task
-			continue
-		}
-		if prefixTask == nil && task.taskName() == ref {
-			nameTask = task
-		}
+	task := s.records[canonicalTaskUID(target.Identity)].(*nativeShellTask)
+	record := task.snapshot()
+	if identity != "" && (record.identity() != identity || ref != "" && ref != record.Name && ref != record.UID) {
+		return nil, localShellRecord{}, fmt.Errorf("local task changed; refresh with sshore list")
 	}
-	if prefixTask != nil {
-		return prefixTask, prefixTask.snapshot(), nil
-	}
-	if nameTask != nil {
-		return nameTask, nameTask.snapshot(), nil
-	}
-	return nil, localShellRecord{}, nil
+	return task, record, nil
 }
 
 func (t *nativeShellTask) snapshot() localShellRecord {
@@ -286,6 +258,10 @@ type daemonResourceTask struct {
 	statusPending atomic.Bool
 	stopMu        sync.Mutex
 	stopAccepted  bool // Protected by stopMu.
+}
+
+func (t *daemonResourceTask) setInitialIdentity(uid, name string) {
+	t.record.UID, t.record.Name = uid, name
 }
 
 func (t *daemonResourceTask) taskName() string {
@@ -442,13 +418,13 @@ type taskInventoryRequest struct {
 }
 
 type taskInventorySnapshot struct {
-	Native    map[string]localShellView
+	Native    []localShellView
 	Shells    []shellView
 	Resources []resourceRecord
 }
 
 func (s *daemonTasks) taskInventory(request taskInventoryRequest) (taskInventorySnapshot, []*daemonResourceTask) {
-	snapshot := taskInventorySnapshot{Native: make(map[string]localShellView)}
+	var snapshot taskInventorySnapshot
 	var groups []int
 	var workers []*daemonResourceTask
 	s.mu.Lock()
@@ -457,7 +433,7 @@ func (s *daemonTasks) taskInventory(request taskInventoryRequest) (taskInventory
 		case *nativeShellTask:
 			if request.Native {
 				view := t.shell.view()
-				snapshot.Native[view.identity] = view
+				snapshot.Native = append(snapshot.Native, view)
 			}
 		case hostedShellView:
 			if request.Hosted {

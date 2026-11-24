@@ -11,18 +11,17 @@ import (
 )
 
 type localShellView struct {
-	SourceHost string `json:"source_host,omitempty"`
-	hosted     bool
+	SourceHost string    `json:"source_host,omitempty"`
 	Owner      string    `json:"owner,omitempty"`
 	Pinned     bool      `json:"pinned,omitempty"`
 	PinUntil   time.Time `json:"pin_until,omitzero"`
 	ShortID    string    `json:"short_id,omitempty"`
-	identity   string
-	Name       string `json:"name"`
-	State      string `json:"state"`
-	PID        int    `json:"pid,omitempty"`
-	Version    string `json:"version"`
-	Directory  string `json:"directory,omitempty"`
+	Identity   string    `json:"identity"`
+	Name       string    `json:"name"`
+	State      string    `json:"state"`
+	PID        int       `json:"pid,omitempty"`
+	Version    string    `json:"version"`
+	Directory  string    `json:"directory,omitempty"`
 }
 
 func localRequest(ref, identity string, request message) (message, error) {
@@ -48,31 +47,9 @@ func nativeShells() ([]localShellView, error) {
 	return snapshot.nativeShells(), err
 }
 
-func localShells(withDirectory bool) ([]localShellView, error) {
-	detail := "health"
-	if withDirectory {
-		detail = "inventory"
-	}
-	snapshot, _, err := readTaskInventory(taskInventoryRequest{Native: true, Hosted: true, Detail: detail})
-	if err != nil {
-		return nil, err
-	}
-	return snapshot.localShells(), nil
-}
-
-func (snapshot taskInventorySnapshot) localShells() []localShellView {
-	rows := snapshot.nativeShells()
-	for _, s := range snapshot.Shells {
-		identity := identityFromUID(s.Instance)
-		rows = append(rows, localShellView{hosted: true, Owner: s.Owner, Pinned: s.Pinned, PinUntil: s.PinUntil, ShortID: taskShortCode(identity), identity: identity, Name: s.Name, State: s.State, PID: s.PID, Directory: s.Directory})
-	}
-	sortLocalShells(rows)
-	return rows
-}
-
 func sortLocalShells(rows []localShellView) {
 	slices.SortStableFunc(rows, func(a, b localShellView) int {
-		return cmp.Compare(taskUID(a.identity), taskUID(b.identity))
+		return cmp.Compare(taskUID(a.Identity), taskUID(b.Identity))
 	})
 }
 
@@ -108,6 +85,28 @@ type localStartup struct {
 	Error  string
 }
 
+type hostedShellRequest struct {
+	Directory, Name string
+	Env             []string
+	parent          *shellTask
+}
+
+func createHostedShell(ctx context.Context, executable, name, cwd string, env []string) (localShellRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	record, err := ensureLocalDaemonContext(ctx, executable)
+	if err != nil {
+		return localShellRecord{}, err
+	}
+	req := hostedShellRequest{Directory: cwd, Name: name, Env: env}
+	var target sessionTarget
+	if err := daemonJSON(ctx, record, "/shells", req, &target); err != nil {
+		return localShellRecord{}, err
+	}
+	record.UID, record.Name, record.Directory = target.Instance, target.Name, cwd
+	return record, nil
+}
+
 func startLocalSessionContext(ctx context.Context, o options) (localShellRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return localShellRecord{}, err
@@ -117,11 +116,7 @@ func startLocalSessionContext(ctx context.Context, o options) (localShellRecord,
 	if isShortTaskID(name) {
 		name = ""
 	}
-	reservation, err := chooseTaskIdentity("shell", name)
-	if err != nil {
-		return empty, err
-	}
-
+	var err error
 	dir := o.sshDirectory
 	if dir == "" {
 		dir, err = os.Getwd()
@@ -134,7 +129,7 @@ func startLocalSessionContext(ctx context.Context, o options) (localShellRecord,
 		env = os.Environ()
 	}
 
-	request := localShellRecord{UID: reservation.uid, Name: reservation.name, Directory: dir, Version: version}
+	request := localShellRecord{Name: name, Directory: dir, Version: version}
 	c, err := openLocalDaemonContext(ctx, localDaemonRequest{Kind: "shell", Record: request, Env: env, Parent: o.parent})
 	if err != nil {
 		return empty, err
@@ -150,7 +145,7 @@ func startLocalSessionContext(ctx context.Context, o options) (localShellRecord,
 	if reply.Error != "" {
 		return empty, fmt.Errorf("start local shell: %s", reply.Error)
 	}
-	if reply.Record.Name != request.Name || reply.Record.UID != request.UID || reply.Record.Version != version {
+	if !validTaskUID(reply.Record.UID) || validSession(reply.Record.Name) != nil || reply.Record.Version != version {
 		return empty, fmt.Errorf("invalid local shell startup response")
 	}
 	if err = json.NewEncoder(c).Encode("ready"); err != nil {

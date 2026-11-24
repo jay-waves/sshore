@@ -163,13 +163,13 @@ func acceptSessionName(o *options, name string) error {
 }
 
 type sessionEnd struct {
-	title, detail string
-	level         termui.Color
-	exit          bool
-	retained      []retainedShell
+	title, detail, tree string
+	level               termui.Color
+	exit                bool
+	retained            []retainedShell
 }
 
-func runClientOnce(o options, transports clientTransports, end *sessionEnd, ready func(options) string) (resultCode int, resultErr error) {
+func runClientOnce(o options, transports clientTransports, end *sessionEnd, rootTree bool, ready func(options) string) (resultCode int, resultErr error) {
 	attached := false
 	var ended func()
 	report := func(level termui.Color, title, detail string) {
@@ -222,7 +222,7 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 		}
 		return 0, err
 	}
-	if !o.detached && (!term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd()))) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return 1, fmt.Errorf("an interactive terminal is required")
 	}
 	pty.ResetInputModes()
@@ -257,7 +257,7 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 	if o.hold != nil {
 		treeKey = o.hold.treeKey
 	}
-	if err = streamMessage(control, message{Type: "attach", TreeKey: treeKey, Token: terminalToken, Pinned: o.command == "sh" && o.pin, SourceHost: sourceHost, MachineID: sourceMachine, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && o.command == "sh", NoLogin: o.noLogin && o.command == "sh"}); err != nil {
+	if err = streamMessage(control, message{Type: "attach", RootTree: rootTree, TreeKey: treeKey, Token: terminalToken, Pinned: o.command == "sh" && o.pin, SourceHost: sourceHost, MachineID: sourceMachine, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && o.command == "sh", NoLogin: o.noLogin && o.command == "sh"}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -346,15 +346,7 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 			}
 		}
 	}
-	if o.detached {
-		if err := detachAttachment(control, confirmDetach); err != nil {
-			return 1, err
-		}
-		started := fmt.Sprintf("Started %s (sh).", cleanText(shellDisplayEndpoint(o)))
-		fmt.Fprintln(os.Stdout, formatSessionNotice(os.Stdout, termui.Info, started))
-		return 0, nil
-	}
-	if !o.local && !o.quiet {
+	if !o.local {
 		if err := showConnectedTasks(o); err != nil {
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Task list unavailable: %s\n", cleanText(err.Error()))
 		}
@@ -569,6 +561,7 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 			}
 			o.hold = hold
 		}
+		detachRequest.RootTree = rootTree && (detachRequest.Action != "switch" || explicitDetach)
 		if err := streamMessage(control, detachRequest); err != nil {
 			return err
 		}
@@ -618,19 +611,6 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 		target.hosted = o.local && selected.Hosted
 		return queueSwitch(&sessionSwitch{to: target, sameDaemon: true})
 	}
-	requestTargets := func(action string) error {
-		awaitResponse(5 * time.Second)
-		request := message{Type: "session_targets", Action: action}
-		if o.local {
-			current := o.session
-			go func() {
-				targets := localSessionTargets(current, request)
-				emit(clientEvent{m: &targets})
-			}()
-			return nil
-		}
-		return streamMessage(control, request)
-	}
 	startChild := func(pin bool) error {
 		pending.action = "sh_child"
 		awaitResponse(30 * time.Second)
@@ -639,7 +619,15 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 	requestConsoleTargets := func() error {
 		consoleRequest++
 		pending.action = fmt.Sprintf("console:%d", consoleRequest)
-		return requestTargets(pending.action)
+		awaitResponse(5 * time.Second)
+		return streamMessage(control, message{Type: "session_targets", Action: pending.action, Name: console.attach, NativeTargets: o.local && o.routeParent == nil})
+	}
+	releaseOwnedTransport := func() {
+		if t := o.reusable; t != nil && t.ownsShell {
+			t.ownsShell = false
+			delete(transports, t)
+			t.close()
+		}
 	}
 	requestConsoleInventory := func(name string) error {
 		consoleRequest++
@@ -1032,18 +1020,17 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 					o.session = e.m.Name
 					if strings.HasPrefix(e.m.Action, "console:") {
 						if console != nil {
-							console.targets = e.m.Targets
 							if console.attach == "" {
+								console.targets = e.m.Targets
 								if err := requestOpeningInventory(""); err != nil {
 									return 255, err
 								}
 							} else {
-								target, problem := resolveConsoleTarget(console.targets, console.attach)
 								console.attach = ""
-								if problem != "" {
-									console.show(problem)
-									continue
+								if len(e.m.Targets) != 1 {
+									return 255, fmt.Errorf("invalid session selection")
 								}
+								target := e.m.Targets[0]
 								if err := closeConsole(); err != nil {
 									return 1, err
 								}
@@ -1075,7 +1062,7 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 						reject()
 						continue
 					}
-					target := options{pin: e.m.Pinned, noLogin: e.m.NoLogin, noProfile: e.m.NoProfile, command: "sh", host: e.m.SourceHost, session: e.m.Name, instance: e.m.Instance, routeParent: &parent, routeToken: e.m.Token, quiet: o.quiet}
+					target := options{pin: e.m.Pinned, noLogin: e.m.NoLogin, noProfile: e.m.NoProfile, command: "sh", host: e.m.SourceHost, session: e.m.Name, instance: e.m.Instance, routeParent: &parent, routeToken: e.m.Token}
 					if e.m.Action == "attach" || e.m.Action == "remote_attach" {
 						target.command = "attach"
 					}
@@ -1202,6 +1189,7 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 					}
 				case "detached":
 					confirmDetach(*e.m)
+					end.tree = e.m.Output
 					_ = streamMessage(control, message{Type: "bye"})
 					if approval != nil && approval.confirmed {
 						return 0, &localApproval{request: approval.request, source: o}
@@ -1221,10 +1209,8 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 						}
 						return 0, pending.next
 					}
-					if o.reusable != nil && o.reusable.ownsShell && (detachRequest.Action != "switch" || explicitDetach) {
-						o.reusable.ownsShell = false
-						o.reusable.close()
-						delete(transports, o.reusable)
+					if detachRequest.Action != "switch" || explicitDetach {
+						releaseOwnedTransport()
 					}
 					retention := pinDetail("", e.m.Pinned, e.m.PinUntil)
 					ended = func() {
@@ -1232,16 +1218,24 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 						if retention != "" {
 							title += " (" + retention + ")"
 						}
-						report("", title, "Reconnect: "+cleanText(reconnectCommand(o)))
+						hint, target := "Reconnect: ", o
+						if m.Owner != "" {
+							hint = "Reconnect from its parent: "
+							target.local = target.local || target.sameHostRoute
+							target.routeParent, target.server, target.ssh = nil, "", nil
+						}
+						report("", title, hint+cleanText(reconnectCommand(target)))
 					}
 					return 0, nil
 				case "exit":
 					terminalStateConfirmed = true
+					releaseOwnedTransport()
 					var level termui.Color
 					if e.m.Code != 0 {
 						level = termui.Error
 					}
 					exit := e.m
+					end.tree = exit.Output
 					end.exit, end.retained = true, exit.RetainedShells
 					ended = func() {
 						reason := cleanText(exit.Reason)

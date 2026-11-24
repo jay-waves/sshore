@@ -232,7 +232,7 @@ func startForwardSession(f forwardConfig) (int, error) {
 	if e := validateForwardConfig(f); e != nil {
 		return 2, e
 	}
-	return startResourceBackground(resourceConfig{Forward: &f})
+	return startResourceBackground(resourceConfig{Forward: &f}, "")
 }
 
 // Reconnect only an already-established, explicitly opted-in local forward.

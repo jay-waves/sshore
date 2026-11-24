@@ -44,7 +44,7 @@ credentials to the user's computer. See
 | Legacy recovery | A temporary shell offered by older releases when setup could not complete. Current setup aborts instead; inherited disabled-mode restrictions remain until reconnecting. |
 
 An approved copy runs on a separate file stream without terminal attachment. An approved mount or forward becomes
-an independent resource and retains the request's ID and NAME.
+an independent resource with its own task UID and name.
 Ending a source shell does not stop its independent resources.
 
 `here:` and `.:` identify the machine running the command. `origin:` and `::`
@@ -62,7 +62,9 @@ editable default in local approval.
 
 The UID identifies the instance; its prefix is the short form of that same ID.
 NAME is optional and does not change the ID or lifetime. Shells, mounts and forwards share the managing computer's name namespace.
-Allocation and reference rules belong to `task_identity.go`.
+The daemon claims the name when it registers the task. It rejects a requested name
+already in use. For an unnamed task it uses the shortest available prefix of the UID
+starting at six characters.
 
 The selected host resolves task IDs in its live registry. Saved connections
 supply SSH settings and routes for reconnecting. A running worker does not prove its SSH connection or target is

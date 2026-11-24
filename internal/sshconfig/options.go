@@ -83,8 +83,8 @@ func normalize(key string, kind optionKind, values []string) ([]string, error) {
 			return nil, fmt.Errorf("expected yes or no")
 		}
 	case number, seconds:
-		if kind == seconds && key == "connecttimeout" && strings.EqualFold(value, "none") {
-			return []string{"none"}, nil
+		if key == "connecttimeout" && strings.EqualFold(value, "none") {
+			return []string{"0"}, nil
 		}
 		n, err := strconv.ParseUint(value, 10, 31)
 		if err != nil && kind == seconds {

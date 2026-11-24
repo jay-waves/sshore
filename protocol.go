@@ -29,6 +29,8 @@ type retainedShell struct {
 }
 
 type message struct {
+	NativeTargets    bool                `json:"native_targets,omitempty"`
+	RootTree         bool                `json:"root_tree,omitempty"`
 	RetainedShells   []retainedShell     `json:"retained_shells,omitempty"`
 	Owner            string              `json:"owner,omitempty"`
 	TreeKey          string              `json:"tree_key,omitempty"`

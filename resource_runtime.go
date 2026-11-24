@@ -111,18 +111,18 @@ func runMountDaemon() (code int, resultErr error) {
 	if e := read(&config); e != nil {
 		return 1, e
 	}
-	if config.kind() != "mount" {
-		return 1, fmt.Errorf("mount worker requires mount configuration")
+	if config.kind() != "mount" || !validTaskUID(config.UID) {
+		return 1, fmt.Errorf("mount worker requires a registered mount configuration")
 	}
 	o := *config.Mount
+	if err := validSession(o.Name); err != nil {
+		return 1, err
+	}
 	if err := validateMountConfig(o); err != nil {
 		return 1, err
 	}
 	record := resourceRecord{Kind: "mount", Name: o.Name, Host: o.Host, ReadOnly: o.ReadOnly, Direction: "<-"}
-	s, err := newResourceService(config, record)
-	if err != nil {
-		return 1, err
-	}
+	s := newResourceService(config, record)
 	cleanup, err := prepareFTPPaths(&o)
 	if err != nil {
 		return 1, err
@@ -155,21 +155,11 @@ func runMountDaemon() (code int, resultErr error) {
 	return runFTPMount(o, s, lifecycle)
 }
 
-func newResourceService(config resourceConfig, record resourceRecord) (*resourceService, error) {
-	if err := validSession(record.Name); err != nil {
-		return nil, err
-	}
-	if !validTaskUID(config.UID) {
-		return nil, fmt.Errorf("invalid resource task ID")
-	}
-	_, err := resourceStateDir(record.Kind)
-	if err != nil {
-		return nil, err
-	}
+func newResourceService(config resourceConfig, record resourceRecord) *resourceService {
 	record.UID, record.Version = config.UID, version
 	s := &resourceService{record: record, config: config, done: make(chan struct{})}
 	s.setTransport("starting", nil)
-	return s, nil
+	return s
 }
 
 func awaitResourceCommit(read func(any) error, abandon func()) <-chan error {
@@ -251,33 +241,11 @@ func (s *resourceService) serveWorkerControl(read func(any) error, enc *json.Enc
 	s.mountControl("kill", unmount)
 }
 
-func startResourceBackground(config resourceConfig) (int, error) {
+func startResourceBackground(config resourceConfig, directory string) (int, error) {
 	kind := config.kind()
-	if kind == "" {
-		return 1, fmt.Errorf("invalid resource configuration")
-	}
-	reservation, e := chooseTaskIdentity(kind, "")
-	if e != nil {
-		return 1, e
-	}
-
-	return startSelectedResource(config, reservation, "")
-}
-func startSelectedResource(config resourceConfig, reservation *taskIdentitySelection, directory string) (int, error) {
-	kind := config.kind()
-	name := reservation.name
-	config.UID = reservation.uid
-	switch kind {
-	case "forward":
-		config.Forward.Name = name
-	case "mount":
-		config.Mount.Name = name
-	default:
-		return 1, fmt.Errorf("invalid resource configuration")
-	}
-	if e := validSession(name); e != nil {
-		return 1, e
-	}
+	// Startup failures can occur before the daemon replies. Keep the UID for
+	// locating the daemon's log even when the startup stream is interrupted.
+	config.UID = newTaskUID()
 	dir, e := resourceStateDir(kind)
 	if e != nil {
 		return 1, e

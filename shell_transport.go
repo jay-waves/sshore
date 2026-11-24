@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -221,13 +220,13 @@ type remoteShellChild struct {
 func (s *shellTask) rememberRemoteChild(child *remoteShellChild) func() {
 	s.mu.Lock()
 	if s.remoteChildren == nil {
-		s.remoteChildren = make(map[string]*remoteShellChild)
+		s.remoteChildren = make(map[*remoteShellChild]struct{})
 	}
-	s.remoteChildren[child.uid] = child
+	s.remoteChildren[child] = struct{}{}
 	s.mu.Unlock()
 	return func() {
 		s.mu.Lock()
-		delete(s.remoteChildren, child.uid)
+		delete(s.remoteChildren, child)
 		s.mu.Unlock()
 	}
 }
@@ -238,52 +237,52 @@ func (s *shellTask) selectRemoteChild(config *shellConfig) (*remoteShellChild, e
 	}
 	s.mu.Lock()
 	var children []*remoteShellChild
-	for _, child := range s.remoteChildren {
+	for child := range s.remoteChildren {
 		if child.host == config.Host && (config.Instance == "" || child.uid == config.Instance) {
 			children = append(children, child)
 		}
 	}
 	s.mu.Unlock()
 
+	// Status and ownership come from the child's authenticated endpoint.
+	type liveChild struct {
+		child *remoteShellChild
+		state string
+	}
+	live := make(map[string]liveChild)
+	var candidates []selectedTask
 	var lookupErr error
-	var idMatch, nameMatch *remoteShellChild
-	var ambiguousName bool
-	var idState, nameState string
 	for _, child := range children {
 		status, err := child.status()
 		if err != nil {
 			lookupErr = fmt.Errorf("could not check child %s on %s: %w", child.uid[:6], cleanText(child.host), err)
 			continue
 		}
-		if status.Owner != identityFromUID(s.record.UID) {
-			continue
-		}
-		if config.Instance != "" || isTaskIDPrefix(config.Name) && strings.HasPrefix(child.uid, strings.ToLower(config.Name)) {
-			if idMatch != nil {
-				return nil, fmt.Errorf("ambiguous child shell ID; use a longer prefix")
-			}
-			idMatch, idState = child, status.Action
-		} else if config.Name == status.Name {
-			ambiguousName = nameMatch != nil
-			nameMatch, nameState = child, status.Action
+		if status.Owner == s.treeIdentity() {
+			id := identityFromUID(child.uid)
+			live[id] = liveChild{child, status.Action}
+			candidates = append(candidates, selectedTask{Identity: id, Name: status.Name})
 		}
 	}
-	if idMatch != nil {
-		nameMatch, nameState, ambiguousName = idMatch, idState, false
+	ref := config.Name
+	if config.Instance != "" {
+		ref = config.Instance
 	}
-	if ambiguousName {
-		return nil, fmt.Errorf("ambiguous child shell name; use its ID")
+	target, err := matchTask(ref, candidates)
+	if err != nil {
+		return nil, err
 	}
-	if nameMatch == nil {
+	match, ok := live[target.Identity]
+	if !ok {
 		if lookupErr != nil {
 			return nil, lookupErr
 		}
-		return nil, fmt.Errorf("no live child matches %s on %s; enter it from the shell that opened it", cleanText(config.Name), cleanText(config.Host))
+		return nil, fmt.Errorf("no live child matches %s on %s; enter it from the shell that opened it", cleanText(ref), cleanText(config.Host))
 	}
-	if nameState != taskDetached {
-		return nil, fmt.Errorf("child shell %s is %s; detach it before attaching", taskShortCode(identityFromUID(nameMatch.uid)), cleanText(nameState))
+	if match.state != taskDetached {
+		return nil, fmt.Errorf("child shell %s is %s; detach it before attaching", taskShortCode(target.Identity), cleanText(match.state))
 	}
-	return nameMatch, nil
+	return match.child, nil
 }
 
 func (child *remoteShellChild) status() (message, error) {

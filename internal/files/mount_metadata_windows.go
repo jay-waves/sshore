@@ -20,14 +20,9 @@ func ftpWindowsMetadataOpen(opts, access uint32) bool {
 	return opts>>24 == windows.FILE_OPEN && opts&0xffffff & ^uint32(options) == 0 && access&windows.FILE_READ_ATTRIBUTES != 0 && access & ^uint32(allowed) == 0
 }
 
-type ftpWindowsMetadataFS struct {
-	*ftpWindowsFS
-	pool *ftpWindowsMetadataPool
-}
-
-func (f *ftpWindowsMetadataFS) OpenFile(name string, flags int, mode os.FileMode) (gofs.File, error) {
-	if flags != os.O_RDONLY {
-		return nil, windows.STATUS_ACCESS_DENIED
+func (f *ftpWindowsFS) OpenFileEx(name string, flags int, mode os.FileMode, opts, access uint32) (gofs.File, error) {
+	if !ftpWindowsMetadataOpen(opts, access) {
+		return f.OpenFile(name, flags, mode)
 	}
 	name, err := ftpWindowsPath(name)
 	if err != nil {
@@ -35,6 +30,8 @@ func (f *ftpWindowsMetadataFS) OpenFile(name string, flags int, mode os.FileMode
 	}
 	return f.pool.acquire(name)
 }
+
+var _ gofs.FileSystemOpenFileEx = (*ftpWindowsFS)(nil)
 
 const ftpWindowsMetadataHandles = 64
 

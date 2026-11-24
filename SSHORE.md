@@ -3,7 +3,9 @@
 ## Architecture and code map
 
 sshore resolves client configuration and establishes SSH connections in Go.
-`internal/sshconfig` evaluates file rules without opening connections.
+`internal/sshconfig` evaluates rules without opening connections. It applies
+command-line options before user and system files, retains earlier values on
+the final pass, and preserves file lists as separate entries.
 `internal/ssh` selects credentials and applies host-key and algorithm policy to
 the Go SSH library. The library handles the wire protocol, key exchange, signing
 and channels. The root package owns command policy, authorization and task
@@ -16,7 +18,7 @@ to the platform implementation and its tests.
 | How does a client connect and authenticate? | [Client connections](client_connection.go), [configuration evaluation](internal/sshconfig/), [SSH transport and host verification](internal/ssh/) |
 | How are installation and approval enforced? | [Setup](setup.go), [approval handling](review.go), [request validation](review_store.go) |
 | How do copy, mount and forwarding reach their target? | [Resource commands](cli.go), [shell routes](resource_route.go), [filesystem operations](internal/files/), [forwarding](forward.go) |
-| Where is behavior tested? | Module and CLI tests beside the implementation, [the OpenSSH integration test](tests/integration/) and the [loopback SSH fixture](tests/testutil/sshtest/) |
+| Where is behavior tested? | [External integration tests](tests/integration/) run the built CLI against OpenSSH, and installer checks run the platform scripts |
 
 ## Documentation ownership
 
@@ -71,7 +73,9 @@ preserves the original scope and pin. See [tree admission](shell_tree_control.go
 
 The authenticated exit frame carries the exit code and terminal output offset.
 The frontend drains the reported tail within a time budget and reports the
-exit even if the tail is incomplete. The root prompt displays the exit notice.
+exit even if the tail is incomplete. A remote root sends a bounded shell tree
+with its final frame. The root prompt can display it immediately and reuses one
+SSH connection for subsequent inventory requests.
 A nested exit opens the prompt when the daemon confirms surviving pinned
 children. Dismissing that prompt returns to the previous shell. A connection
 loss without an exit frame leaves the state unconfirmed.
@@ -116,9 +120,11 @@ for registered tasks come directly from the daemon; no ancestry files are loaded
 Diagnostics identify the unavailable source, and invalid records report the
 file, entry and rejected field. Resource leases require a task UID and direction.
 A shell connection refreshes the known shells against the host’s live list.
-The local daemon resolves implicit attach targets from detach history and live
-local registrations. For `HOST:ID`, the named host resolves the selector against
-its current registrations.
+The CLI, the root prompt and the attached terminal resolve names and ID prefixes
+through the [task registry selector](task_selection.go). An explicit UID stays
+bound across renames. The selector limits attach choices to idle roots and the
+caller's detached direct children. For `attach HOST:`, the host supplies eligible
+roots during SSH setup and the client ranks them by detach history.
 A client can use a remote ID without running `list` first. See
 [inventory and tree rendering](inventory.go) and [daemon metadata](daemon_metadata.go).
 
@@ -127,29 +133,43 @@ A client can use a remote ID without running `list` first. See
 Use Go and Git from the shared PATH and check the Go version against
 [go.mod](go.mod). From the repository root, run
 `go run ./scripts go build -o dist/sshore .` on Linux or target
-`dist/sshore.exe` on Windows. The script applies the [SFTP patch](scripts/patches/pkg-sftp-v2.patch)
-to a temporary copy of the pinned module and runs the build in a temporary
-Go workspace. Use the same entry point for tests and vet.
+`dist/sshore.exe` on Windows. The script applies the [SFTP](scripts/patches/pkg-sftp-v2.patch)
+and [WinFsp](scripts/patches/go-winfsp.patch) patches to temporary copies of
+the pinned modules and builds in a temporary Go workspace. Use the same entry point for tests and vet.
 
-| Change | Validation |
-| --- | --- |
-| Command or module | Run the owning package's tests with `-run`. For broad changes use `go run ./scripts go test -count=1 -timeout=5m ./...`. For race checks that include subprocess builds, set `GOFLAGS=-race`. |
-| SSH or remote setup | Use the [loopback Go fixture](tests/testutil/sshtest/) for protocol tests and `tests/integration/ssh_docker.sh` for a real OpenSSH check in a disposable Linux amd64 container. |
-| Terminal or native mount | Exercise the affected OS. For terminal handoff check pending input, redraw, interrupts and cleanup across detach/reattach. On a FUSE/macFUSE/WinFsp client, set `SSHORE_TEST_FTP_MOUNT=1` and run `go run ./scripts go test -count=1 -run '^TestFTPNativeMount$' ./internal/files`. |
-| Installer or release | On Linux, run `go run ./scripts go test -run TestScripts .`. Cases and fixtures live in [testdata/cli](testdata/cli/). |
-| Documentation | Check relative links, anchors, fences and affected diagrams in the root documents. |
+The permanent unit suite covers terminal byte handling, SSH option parsing
+and filtering of terminal output. Run it with `go run ./scripts go test ./...`.
+Go tests that drive a built product or installer live under `tests/integration`
+and use the `integration` build tag. Installer checks on Windows use the
+[PowerShell harness](tests/install_windows_test.ps1).
 
-The configuration resolver applies command-line options before user and system
-files, preserves earlier values on a final pass, and keeps file lists as
-separate entries. Its supported grammar can be extended independently of the
-transport. The Go tests check behavior recorded against OpenSSH, and the Docker
-fixture verifies connections against a real `sshd`.
+Use an ad hoc check for ordinary feature work. Keep scripts, temporary
+regressions and fixture files outside the checkout and discard them after
+validation. Keep permanent integration scenarios when they protect a shared
+lifecycle or trust boundary such as shell ownership, release matching,
+file integrity or explicit approval. Exercise those contracts through the
+CLI or installer in isolation. OS-specific validation uses the affected OS
+and its real terminal or mount driver. Keep real account shells out of tests
+that simulate upgrade confirmation or reset.
 
-Go lifecycle fixtures use temporary state directories and re-execute the test
-binary. Use a normal build when separate OS accounts isolate client and server
-daemon ownership. Never simulate upgrade confirmation against real account shells.
-The manual [Tests workflow](.github/workflows/tests.yml) runs Linux and Windows
-validation independently of builds and publication.
+- Run `tests/integration/ssh_docker.sh` for the built Linux client and real
+  OpenSSH. The disposable container separates client and server daemon
+  ownership by OS account. To exercise the native Linux mount driver as well,
+  use `SSHORE_TEST_FUSE=1` on a Docker host with `/dev/fuse`. Pass a Go test
+  pattern to run a single scenario, for example
+  `tests/integration/ssh_docker.sh '^TestOpenSSH$/shutdown_confirmation'`.
+- Run `go test -tags=integration -run '^TestLinuxInstaller$' ./tests/integration`
+  for the Linux installer. It uses temporary release fixtures and performs
+  no downloads.
+- The Windows Server 2025 CI job runs the native ConPTY detach and reattach
+  scenario against the built Windows executable. It installs WinFsp 2.2
+  and checks replacement and unmount on a real drive letter backed by OpenSSH
+  in an isolated Ubuntu WSL distribution. The official WinFsp suite checks
+  cached reads and writes, append and directory enumeration on that drive. Run these only on a disposable
+  Windows runner because daemon ownership is scoped to the OS account.
+
+The [Tests workflow](.github/workflows/tests.yml) runs on demand and when a
+push to `main` changes the integration tests or this workflow.
 
 ## Release
 

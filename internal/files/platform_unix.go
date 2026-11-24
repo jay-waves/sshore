@@ -91,7 +91,9 @@ func ftpAttr(i os.FileInfo, a *fuse.Attr) {
 	a.Size = uint64(i.Size())
 	a.Mtime = uint64(i.ModTime().Unix())
 	a.Mtimensec = uint32(i.ModTime().Nanosecond())
-	a.Atime = a.Mtime
+	at := ftpAccessTime(i)
+	a.Atime = uint64(at.Unix())
+	a.Atimensec = uint32(at.Nanosecond())
 	a.Ctime = a.Mtime
 	a.Uid = uint32(os.Getuid())
 	a.Gid = uint32(os.Getgid())

@@ -43,9 +43,6 @@ func resolveNativeConfig(ctx context.Context, o Options) (sshconfig.Result, erro
 	lookup := func(key string) string { return environment(o.Environment, key) }
 	req := sshconfig.Request{Home: home, LookupEnv: lookup, Command: o.Command}
 	target := o.Host
-	if strings.ContainsAny(target, "\x00\r\n\t ") {
-		return sshconfig.Result{}, fmt.Errorf("invalid SSH destination")
-	}
 	var login string
 	if account, host, ok := strings.Cut(target, "@"); ok {
 		login, target = account, host
@@ -98,7 +95,7 @@ func resolveNativeConfig(ctx context.Context, o Options) (sshconfig.Result, erro
 		return sshconfig.Result{}, err
 	}
 	for key, values := range map[string][]string{
-		"port": {"22"}, "stricthostkeychecking": {"ask"},
+		"port": {"22"}, "connecttimeout": {"15"}, "stricthostkeychecking": {"ask"},
 		"serveraliveinterval": {"15"}, "serveralivecountmax": {"3"},
 		"identityfile":       {"~/.ssh/id_rsa", "~/.ssh/id_ecdsa", "~/.ssh/id_ed25519"},
 		"userknownhostsfile": {"~/.ssh/known_hosts", "~/.ssh/known_hosts2"},
@@ -109,9 +106,9 @@ func resolveNativeConfig(ctx context.Context, o Options) (sshconfig.Result, erro
 	}
 
 	modern := cryptossh.SupportedAlgorithms()
-	signatures := append([]string(nil), modern.PublicKeyAuths...)
-	for _, name := range modern.PublicKeyAuths {
-		signatures = append(signatures, name+"-cert-v01@openssh.com")
+	signatures := slices.Clone(modern.PublicKeyAuths)
+	for _, algorithm := range modern.PublicKeyAuths {
+		signatures = append(signatures, certificateAlgorithm(algorithm))
 	}
 	for _, policy := range []struct {
 		key       string
@@ -123,16 +120,22 @@ func resolveNativeConfig(ctx context.Context, o Options) (sshconfig.Result, erro
 		{"pubkeyacceptedalgorithms", signatures, false},
 		{"casignaturealgorithms", modern.PublicKeyAuths, false},
 	} {
+		spec := ""
 		if configured := result.Values[policy.key]; len(configured) != 0 {
-			algorithms, err := sshconfig.Algorithms(policy.allowed, configured[0])
-			if err != nil {
-				return sshconfig.Result{}, fmt.Errorf("%s: %s: %w", result.Origins[policy.key], policy.key, err)
-			}
-			if policy.transport && len(algorithms) == 0 {
-				return sshconfig.Result{}, fmt.Errorf("%s: %s: no supported SSH algorithm remains", result.Origins[policy.key], policy.key)
-			}
-			result.Values[policy.key] = []string{strings.Join(algorithms, ",")}
+			spec = configured[0]
+		} else if policy.key == "hostkeyalgorithms" || policy.key == "casignaturealgorithms" {
+			// Absent an explicit policy, host-key verification keeps its
+			// known_hosts preference and the SSH library's CA checks.
+			continue
 		}
+		algorithms, err := sshconfig.Algorithms(policy.allowed, spec)
+		if err != nil {
+			return sshconfig.Result{}, fmt.Errorf("%s: %s: %w", result.Origins[policy.key], policy.key, err)
+		}
+		if policy.transport && len(algorithms) == 0 {
+			return sshconfig.Result{}, fmt.Errorf("%s: %s: no supported SSH algorithm remains", result.Origins[policy.key], policy.key)
+		}
+		result.Values[policy.key] = algorithms
 	}
 	return result, nil
 }

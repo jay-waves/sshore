@@ -24,14 +24,14 @@ func rootConsoleOptions(current options, args []string) (*options, error) {
 	command := canonicalCommand(args[0])
 	next := &options{command: command, local: current.local, host: current.host,
 		server: current.server, serverSet: current.serverSet, ssh: current.ssh,
-		sshDirectory: current.sshDirectory, environment: current.environment, quiet: current.quiet, noEscape: current.noEscape}
+		sshDirectory: current.sshDirectory, environment: current.environment, noEscape: current.noEscape}
 	switch command {
 	case "sh":
 		parsed, err := parseOptions(args)
 		if err != nil {
 			return nil, err
 		}
-		if len(parsed.ssh) != 0 || parsed.serverSet || parsed.detached || !parsed.local {
+		if len(parsed.ssh) != 0 || parsed.serverSet || !parsed.local {
 			return nil, usage("use sh [--pin] [:NAME] to open a shell on this host")
 		}
 		next.session, next.pin = parsed.session, parsed.pin
@@ -45,16 +45,11 @@ func rootConsoleOptions(current options, args []string) (*options, error) {
 				return nil, err
 			}
 			next.session = args[1]
-			if next.local {
-				for _, target := range localSessionTargets("", message{}).Targets {
-					if target.Name == next.session || target.Instance == next.session {
-						next.taskIdentity, next.instance, next.hosted = identityFromUID(target.Instance), target.Instance, target.Hosted
-						break
-					}
-				}
+		}
+		if next.local {
+			if err := resolveDetachedAttach(next, ""); err != nil {
+				return nil, err
 			}
-		} else if err := resolveDetachedAttach(next); err != nil {
-			return nil, err
 		}
 	default:
 		return nil, usage("unknown command %q", args[0])
@@ -68,31 +63,78 @@ func rootConsoleOptions(current options, args []string) (*options, error) {
 	return next, nil
 }
 
-func rootConsoleInventory(ctx context.Context, current options, name string, color bool, cols int) string {
-	if current.local {
-		return consoleInventory(message{Name: name, Color: color, Cols: uint16(cols)}, "").Output
+// Only the SSH callback that actually prompts borrows the terminal. The console
+// can still consume Esc while DNS, the handshake or the inventory reply is pending.
+func rootConsolePrompt[T any](requests chan<- func(), ask func(context.Context, string) (T, error)) func(context.Context, string) (T, error) {
+	return func(ctx context.Context, prompt string) (answer T, err error) {
+		done := make(chan struct{})
+		select {
+		case <-ctx.Done():
+			return answer, ctx.Err()
+		case requests <- func() {
+			answer, err = ask(ctx, prompt)
+			close(done)
+		}:
+			<-done
+			return answer, err
+		}
 	}
-	if current.routeParent != nil {
-		return "Showing this host's tasks requires a direct SSH connection."
+}
+
+type rootInventoryResult struct {
+	client *sshio.Client
+	body   string
+	err    error
+}
+
+func loadRootConsoleInventory(ctx context.Context, current options, name string, client *sshio.Client, prompts chan<- func(), results chan<- rootInventoryResult) {
+	current.command, current.newName = "console-inventory", name
+	connection := sshConnectionOptions(current)
+	var body string
+	var err error
+	if client == nil {
+		connection.Diagnostic = io.Discard
+		connection.Confirm = rootConsolePrompt(prompts, connection.Confirm)
+		connection.Secret = rootConsolePrompt(prompts, connection.Secret)
+		client, err = sshio.Dial(ctx, connection)
 	}
-	query := current
-	query.command, query.newName = "console-inventory", name
-	connection := sshConnectionOptions(query)
-	// An automatic inventory refresh shares the prompt with keyboard input.
-	connection.Confirm, connection.Secret = nil, nil
+	if err == nil {
+		body, err = remoteRootConsoleInventory(ctx, client, connection.Command)
+	}
+	if err != nil && client != nil {
+		client.Close()
+		client = nil
+	}
+	select {
+	case results <- rootInventoryResult{client, body, err}:
+	case <-ctx.Done():
+		if client != nil {
+			client.Close()
+		}
+	}
+}
+
+func remoteRootConsoleInventory(ctx context.Context, client *sshio.Client, command string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	process, err := sshio.Start(ctx, connection, io.Discard)
+	stop := context.AfterFunc(ctx, func() { client.Close() })
+	defer stop()
+	process, err := client.Start(command, io.Discard)
 	if err != nil {
-		return "Task inventory unavailable: " + cleanText(err.Error())
+		return "", err
 	}
 	defer process.CloseAndWait()
-	_ = process.CloseWrite()
-	reply, err := readMessage(process)
-	if err != nil || reply.Type != "console_inventory" {
-		return "Invalid task inventory response."
+	if err := process.CloseWrite(); err != nil {
+		return "", err
 	}
-	return reply.Output
+	reply, err := readMessage(process)
+	if err != nil {
+		return "", err
+	}
+	if reply.Type != "console_inventory" {
+		return "", fmt.Errorf("invalid task inventory response")
+	}
+	return reply.Output, nil
 }
 
 func formatSessionEnd(ended sessionEnd, current options) string {
@@ -172,20 +214,47 @@ func runRootConsole(current options, problem string, ended sessionEnd, returnTo 
 	console := &commandConsole{}
 	console.start(ctx, terminalOutput, emit, host, cols, color)
 	defer console.editor.Close()
-	stopKeyboard, err := pty.StartKeyboard(ctx, func(data []byte, err error) {
-		emit(clientEvent{input: data, err: err})
-	})
+	startKeyboard := func() (func(), error) {
+		keyCtx, cancel := context.WithCancel(ctx)
+		stop, err := pty.StartKeyboard(keyCtx, func(data []byte, err error) {
+			select {
+			case events <- clientEvent{input: data, err: err}:
+			case <-keyCtx.Done():
+			}
+		})
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		return func() { cancel(); stop() }, nil
+	}
+	stopKeyboard, err := startKeyboard()
 	if err != nil {
 		return nil, err
 	}
-	// Cancel publishers before joining the keyboard reader.
 	defer func() {
-		stopSignals()
-		stopKeyboard()
+		if stopKeyboard != nil {
+			stopKeyboard()
+		}
 	}()
+	var remote *sshio.Client
+	defer func() {
+		if remote != nil {
+			remote.Close()
+		}
+	}()
+	prompts := make(chan func())
+	results := make(chan rootInventoryResult)
 	body := ""
 	if returnTo == "" {
-		body = rootConsoleInventory(ctx, current, "pstree", color, cols)
+		switch {
+		case current.local:
+			body = consoleInventory(message{Name: "pstree", Color: color, Cols: uint16(cols)}, "").Output
+		case ended.tree != "":
+			body = ended.tree
+		default:
+			body = "Use pstree or list to show this host's tasks."
+		}
 	}
 	if problem != "" {
 		body = cleanText(problem) + "\n\n" + body
@@ -195,6 +264,19 @@ func runRootConsole(current options, problem string, ended sessionEnd, returnTo 
 		select {
 		case <-ctx.Done():
 			return nil, nil
+		case ask := <-prompts:
+			stopKeyboard()
+			ask()
+			stopKeyboard, err = startKeyboard()
+			if err != nil {
+				return nil, err
+			}
+		case result := <-results:
+			remote = result.client
+			if result.err != nil {
+				result.body = "Task inventory unavailable: " + cleanText(result.err.Error())
+			}
+			console.show(consoleInventoryBody(result.body, rows))
 		case event := <-events:
 			switch {
 			case event.err != nil || event.console.Closed:
@@ -228,8 +310,16 @@ func runRootConsole(current options, problem string, ended sessionEnd, returnTo 
 						console.show(rootConsoleHelp)
 					}
 				case "list", "pstree":
-					body := rootConsoleInventory(ctx, current, command, color, cols)
-					console.show(consoleInventoryBody(body, rows))
+					if current.local {
+						reply := consoleInventory(message{Name: command, Color: color, Cols: uint16(cols)}, "")
+						console.show(consoleInventoryBody(reply.Output, rows))
+						continue
+					}
+					if current.routeParent != nil {
+						console.show("Showing this host's tasks requires a direct SSH connection.")
+						continue
+					}
+					go loadRootConsoleInventory(ctx, current, command, remote, prompts, results)
 				default:
 					if returnTo != "" {
 						console.show(hint)

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -54,12 +55,28 @@ func openTerminalPair() (*os.File, *os.File, error) {
 	return master, slave, nil
 }
 
+func (c Config) findExecutable(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		var err error
+		path, err = filepath.Abs(filepath.Join(c.Dir, path))
+		if err != nil {
+			return "", err
+		}
+	}
+	return exec.LookPath(path)
+}
+
 // Start owns the command and its controlling terminal from creation to Wait.
 func Start(c Config) (result *Terminal, _ error) {
 	if err := c.Size.validate(); err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(c.Path, c.Args...)
+	path, err := c.executablePath()
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command(path, c.Args...)
+	cmd.Args[0] = c.Path
 	cmd.Env, cmd.Dir = c.Env, c.Dir
 	master, slave, err := openTerminalPair()
 	if err != nil {

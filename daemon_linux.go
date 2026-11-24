@@ -45,53 +45,6 @@ func hostedShells(detail string) ([]shellView, error) {
 	return snapshot.Shells, err
 }
 
-func (tasks *daemonTasks) resolveHostedShell(name, instance string) (shellView, error) {
-	tasks.mu.Lock()
-	defer tasks.mu.Unlock()
-	prefix := ""
-	if isTaskIDPrefix(name) {
-		prefix = strings.ToLower(name)
-	}
-	id := instance
-	if id == "" && validTaskUID(prefix) {
-		id, prefix = prefix, ""
-	}
-	if id != "" {
-		if shell, ok := tasks.lookupLocked(id).(*remoteShell); ok {
-			view, _ := shell.hostedView("health")
-			return view, nil
-		}
-		if instance != "" {
-			return shellView{}, nil
-		}
-	}
-	// A full hexadecimal reference with no matching ID may be an existing alias.
-	var found, alias *remoteShell
-	for id, task := range tasks.liveLocked() {
-		shell, ok := task.(*remoteShell)
-		if !ok {
-			continue
-		}
-		if prefix != "" && strings.HasPrefix(id, prefix) {
-			if found != nil {
-				return shellView{}, fmt.Errorf("ambiguous shell reference %s", name)
-			}
-			found = shell
-		}
-		if shell.taskName() == name {
-			alias = shell
-		}
-	}
-	if found == nil {
-		found = alias
-	}
-	if found == nil {
-		return shellView{}, nil
-	}
-	view, _ := found.hostedView("health")
-	return view, nil
-}
-
 func dialHostedTask(ctx context.Context, ref string, timeout time.Duration) (net.Conn, error) {
 	r, err := existingDaemonRecord()
 	if err != nil {
@@ -104,37 +57,18 @@ func dialHostedTask(ctx context.Context, ref string, timeout time.Duration) (net
 	return dialLocalSessionContext(ctx, r, time.Now().Add(timeout))
 }
 
-type hostedShellRequest struct {
-	Directory, Name, UID string
-	Env                  []string
-	parent               *shellTask
-}
-
 func registerPlatformDaemonRoutes(mux *http.ServeMux, tasks *daemonTasks) {
-	mux.HandleFunc("POST /tasks/hosted/resolve", func(w http.ResponseWriter, r *http.Request) {
-		query := r.URL.Query()
-		name := query.Get("name")
-		if err := validSession(name); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		view, err := tasks.resolveHostedShell(name, query.Get("instance"))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(view)
-	})
 	mux.HandleFunc("POST /shells", func(w http.ResponseWriter, r *http.Request) {
 		var req hostedShellRequest
 		if !readDaemonBody(w, r, &req) {
 			return
 		}
-		if !validTaskUID(req.UID) || validSession(req.Name) != nil || !filepath.IsAbs(req.Directory) {
+		if !filepath.IsAbs(req.Directory) {
 			http.Error(w, "invalid shell creation", 400)
 			return
 		}
-		if err := tasks.registerHostedShell(req); err != nil {
+		shell, err := tasks.registerHostedShell(req)
+		if err != nil {
 			status := http.StatusConflict
 			if errors.Is(err, errDaemonDraining) {
 				status = http.StatusServiceUnavailable
@@ -142,16 +76,6 @@ func registerPlatformDaemonRoutes(mux *http.ServeMux, tasks *daemonTasks) {
 			http.Error(w, err.Error(), status)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		_ = json.NewEncoder(w).Encode(sessionTarget{Instance: shell.record.UID, Name: shell.taskName()})
 	})
-}
-func createRemoteShell(executable string, id taskIdentitySelection, cwd string, env []string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	record, err := ensureLocalDaemonContext(ctx, executable)
-	if err != nil {
-		return err
-	}
-	req := hostedShellRequest{Directory: cwd, Name: id.name, UID: id.uid, Env: env}
-	return daemonJSON(ctx, record, "/shells", req, nil)
 }

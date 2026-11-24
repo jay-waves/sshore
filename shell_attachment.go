@@ -13,6 +13,7 @@ import (
 
 // attachment owns the two connections and the terminal byte counters.
 type attachment struct {
+	rootTree            bool
 	sourceHost          string
 	claim               *treeClaim
 	control             attachmentControl
@@ -111,25 +112,6 @@ func (a *attachment) finishExit(exit message) {
 	case <-time.After(2 * time.Second):
 		a.Close()
 	}
-}
-
-// Detach completes the detach/confirmation/bye handshake on an exclusively owned
-// control stream. Confirmation runs before bye, so callers can retain the name
-// even if the final acknowledgement fails.
-func detachAttachment(control attachmentControl, confirmed ...func(message)) error {
-	_ = control.SetDeadline(time.Now().Add(5 * time.Second))
-	defer control.SetDeadline(time.Time{})
-	if err := writeMessage(control, message{Type: "detach"}); err != nil {
-		return err
-	}
-	m, err := expectDetachMessage(control, "detached")
-	if err != nil {
-		return err
-	}
-	for _, confirm := range confirmed {
-		confirm(m)
-	}
-	return writeMessage(control, message{Type: "bye"})
 }
 
 func expectDetachMessage(r io.Reader, expected string) (message, error) {

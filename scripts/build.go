@@ -28,7 +28,7 @@ func run(args []string) error {
 		if len(args) == 1 {
 			return fmt.Errorf("usage: go run ./scripts go <command> [args...]")
 		}
-		return withPatchedSFTP(func(workspace string) error {
+		return withPatchedModules(func(workspace string) error {
 			return workspaceGo(workspace, args[1:]...).Run()
 		})
 	}
@@ -66,7 +66,7 @@ func buildPackages(version string) ([]string, error) {
 	}
 	var sums strings.Builder
 	var assets []string
-	err := withPatchedSFTP(func(workspace string) error {
+	err := withPatchedModules(func(workspace string) error {
 		for _, target := range []string{"linux", "windows"} {
 			archive, checksum, err := build(version, target, workspace)
 			if err != nil {

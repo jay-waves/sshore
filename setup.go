@@ -71,14 +71,21 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, host string, chooseShell 
 			if err != nil {
 				return "", err
 			}
-			input, err := openInput()
+			recent, err := metadataRPC(metadataRequest{Action: "attach_remote_choice", Host: host, Targets: m.Targets})
 			if err != nil {
 				return "", err
 			}
-			selected, selectErr := chooseSetupSession(input, names)
-			closeErr := input.Close()
-			if err := errors.Join(selectErr, closeErr); err != nil {
-				return "", err
+			selected := recent.Choice
+			if selected == "" {
+				input, err := openInput()
+				if err != nil {
+					return "", err
+				}
+				var selectErr error
+				selected, selectErr = chooseSetupSession(input, names)
+				if err := errors.Join(selectErr, input.Close()); err != nil {
+					return "", err
+				}
 			}
 
 			if err := writeMessage(w, message{Type: "session_select", Name: selected}); err != nil {
@@ -466,7 +473,8 @@ func bootstrapRelease(target string) error {
 		if err != nil {
 			return fmt.Errorf("reading account daemon snapshot: %w", err)
 		}
-		if err := confirmDaemonShutdown("", reply.Snapshot, nil); err != nil {
+		hostname, _ := os.Hostname()
+		if err := confirmDaemonShutdown(hostname, reply.Snapshot, nil); err != nil {
 			return err
 		}
 		if err := requestDaemonShutdown(reply.Snapshot); err != nil {

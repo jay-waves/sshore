@@ -148,7 +148,7 @@ func (c *connectionConfig) publicKeySigners() ([]cryptossh.Signer, error) {
 	if c.get("pubkeyauthentication") == "false" || c.get("pubkeyauthentication") == "no" {
 		return nil, fmt.Errorf("public-key authentication is disabled")
 	}
-	algorithms := c.algorithms("pubkeyacceptedalgorithms", nil)
+	algorithms := c.values["pubkeyacceptedalgorithms"]
 	if algorithms != nil && len(algorithms) == 0 {
 		return nil, errors.New("PubkeyAcceptedAlgorithms permits no supported SSH public-key signature algorithm")
 	}
@@ -186,30 +186,36 @@ func (c *connectionConfig) publicKeySigners() ([]cryptossh.Signer, error) {
 
 func constrainIdentitySigners(signers []cryptossh.Signer, configured []string) ([]cryptossh.Signer, error) {
 	selected := signers[:0]
-	modern := cryptossh.SupportedAlgorithms().PublicKeyAuths
 	for _, signer := range signers {
-		keyType := signer.PublicKey().Type()
+		key := signer.PublicKey()
 		algorithmSigner, ok := signer.(cryptossh.AlgorithmSigner)
 		if !ok {
-			if slices.Contains(modern, keyType) && allowsSignature(configured, keyType, keyType) {
+			if slices.Contains(configured, key.Type()) {
 				selected = append(selected, signer)
 			}
 			continue
 		}
-		var supported []string
+		cert, certified := key.(*cryptossh.Certificate)
+		if certified {
+			key = cert.Key
+		}
+		supported := []string{key.Type()}
 		if multi, ok := signer.(cryptossh.MultiAlgorithmSigner); ok {
 			supported = multi.Algorithms()
-		} else {
-			algorithm := strings.TrimSuffix(keyType, "-cert-v01@openssh.com")
-			supported = []string{algorithm}
-			if algorithm == cryptossh.KeyAlgoRSA {
-				supported = []string{cryptossh.KeyAlgoRSASHA256, cryptossh.KeyAlgoRSASHA512}
+		} else if key.Type() == cryptossh.KeyAlgoRSA {
+			supported = []string{cryptossh.KeyAlgoRSASHA256, cryptossh.KeyAlgoRSASHA512}
+		}
+		names := supported
+		if certified {
+			names = make([]string, len(supported))
+			for i, algorithm := range supported {
+				names[i] = certificateAlgorithm(algorithm)
 			}
 		}
 		var allowed []string
-		for _, algorithm := range modern {
-			if slices.Contains(supported, algorithm) && allowsSignature(configured, keyType, algorithm) {
-				allowed = append(allowed, algorithm)
+		for _, name := range configured {
+			if i := slices.Index(names, name); i >= 0 {
+				allowed = append(allowed, supported[i])
 			}
 		}
 		if len(allowed) == 0 {
@@ -248,14 +254,8 @@ func checkRSAKeySize(key cryptossh.PublicKey, minimum int) error {
 	return nil
 }
 
-func allowsSignature(configured []string, keyType, algorithm string) bool {
-	if configured == nil {
-		return true
-	}
-	if strings.HasSuffix(keyType, "-cert-v01@openssh.com") {
-		algorithm += "-cert-v01@openssh.com"
-	}
-	return slices.Contains(configured, algorithm)
+func certificateAlgorithm(algorithm string) string {
+	return strings.TrimSuffix(algorithm, "@openssh.com") + "-cert-v01@openssh.com"
 }
 
 var knownHostsMu sync.Mutex
@@ -324,7 +324,7 @@ func (c *connectionConfig) hostKeys(ctx context.Context) (cryptossh.HostKeyCallb
 	ask := canRemember && policy == "ask"
 	hashHosts, batch := c.enabled("hashknownhosts"), c.enabled("batchmode")
 	confirm := c.options.Confirm
-	caPolicy := c.algorithms("casignaturealgorithms", nil)
+	caPolicy := c.values["casignaturealgorithms"]
 	check := func(remote net.Addr, key cryptossh.PublicKey, remember bool) error {
 		knownHostsMu.Lock()
 		defer knownHostsMu.Unlock()
@@ -379,11 +379,11 @@ func (c *connectionConfig) hostKeys(ctx context.Context) (cryptossh.HostKeyCallb
 	if preferred := db.HostKeyAlgorithms(verify); len(preferred) > 0 {
 		allowed = slices.DeleteFunc(preferred, func(a string) bool { return !slices.Contains(supported, a) })
 	}
-	if explicit := c.get("hostkeyalgorithms"); explicit != "" {
+	if explicit := c.values["hostkeyalgorithms"]; explicit != nil {
 		// Keep the resolved configuration's order within the supported, trusted set.
 		var ordered []string
-		for algorithm := range strings.SplitSeq(explicit, ",") {
-			if slices.Contains(allowed, algorithm) && !slices.Contains(ordered, algorithm) {
+		for _, algorithm := range explicit {
+			if slices.Contains(allowed, algorithm) {
 				ordered = append(ordered, algorithm)
 			}
 		}

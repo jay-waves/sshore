@@ -76,6 +76,13 @@ type ftpAttributeUpdate struct {
 	atime, mtime *time.Time
 }
 
+func ftpAccessTime(info os.FileInfo) time.Time {
+	if attrs, ok := info.Sys().(*sshfx.Attributes); ok && attrs.HasACModTime() {
+		return time.Unix(int64(attrs.ATime), 0)
+	}
+	return info.ModTime()
+}
+
 func (f *ftpFS) setAttributes(p string, opened *ftpFile, update ftpAttributeUpdate) error {
 	paths := []string{p}
 	var handle *sftp.File
@@ -86,6 +93,10 @@ func (f *ftpFS) setAttributes(p string, opened *ftpFile, update ftpAttributeUpda
 		}
 	}
 	defer f.cache.beginMutation(paths...)()
+	stat := func() (os.FileInfo, error) { return f.client.Stat(p) }
+	if handle != nil {
+		stat = handle.Stat
+	}
 	if update.size != nil {
 		size := *update.size
 		var err error
@@ -106,7 +117,7 @@ func (f *ftpFS) setAttributes(p string, opened *ftpFile, update ftpAttributeUpda
 	mode := update.mode
 	if update.readOnly != nil {
 		var err error
-		info, err = f.client.Stat(p)
+		info, err = stat()
 		if err != nil {
 			return err
 		}
@@ -134,28 +145,28 @@ func (f *ftpFS) setAttributes(p string, opened *ftpFile, update ftpAttributeUpda
 		}
 	}
 
-	// SFTP v3 times are a pair, and pkg/sftp sets them by path.
+	// SFTP v3 sets both timestamps in one request.
 	atime, mtime := update.atime, update.mtime
 	if atime == nil && mtime == nil {
 		return nil
 	}
 	if (atime == nil || mtime == nil) && info == nil {
 		var err error
-		info, err = f.client.Stat(p)
+		info, err = stat()
 		if err != nil {
 			return err
 		}
 	}
 	if atime == nil {
-		value := info.ModTime()
-		if raw, ok := info.Sys().(*sshfx.Attributes); ok {
-			value = time.Unix(int64(raw.ATime), 0)
-		}
+		value := ftpAccessTime(info)
 		atime = &value
 	}
 	if mtime == nil {
 		value := info.ModTime()
 		mtime = &value
+	}
+	if handle != nil {
+		return handle.Chtimes(*atime, *mtime)
 	}
 	return f.client.Chtimes(p, *atime, *mtime)
 }

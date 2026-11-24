@@ -76,23 +76,6 @@ func (c *commandConsole) show(body string) {
 	c.editor.Show(body, consoleCompleter(func() []sessionTarget { return targets }))
 }
 
-func resolveConsoleTarget(targets []sessionTarget, selector string) (sessionTarget, string) {
-	var selected sessionTarget
-	for _, t := range targets {
-		if t.Name != selector && !(len(selector) >= 2 && strings.HasPrefix(t.Instance, strings.ToLower(selector))) {
-			continue
-		}
-		if selected.Instance != "" {
-			return sessionTarget{}, "Ambiguous session. Use its full name or a longer ID."
-		}
-		selected = t
-	}
-	if selected.Instance == "" {
-		return selected, fmt.Sprintf("No detached child or idle root matches %q on this host.", cleanText(selector))
-	}
-	return selected, ""
-}
-
 const consoleMoreRows = "… more rows in the standalone command on this host"
 
 func consoleInventory(request message, current string) message {

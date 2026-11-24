@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,29 +17,15 @@ func resolveSession(name string, expected ...string) (string, error) {
 	return task.Instance, err
 }
 
-func resolveHostedShell(name, instance string) (shellView, error) {
+func resolveHostedShell(name, instance string) (selectedTask, error) {
 	if err := validSession(name); err != nil {
-		return shellView{}, err
+		return selectedTask{}, err
 	}
-	if active := accountActivity.Load(); active != nil && active.tasks != nil {
-		return active.tasks.resolveHostedShell(name, instance)
+	rows, err := queryRegisteredTasks(taskQuery{Kind: "hosted", Ref: name, UID: instance})
+	if err != nil || len(rows) == 0 {
+		return selectedTask{}, err
 	}
-	record, err := existingDaemonRecord()
-	if os.IsNotExist(err) {
-		return shellView{}, nil
-	}
-	if err != nil {
-		return shellView{}, err
-	}
-	query := url.Values{"name": {name}}
-	if instance != "" {
-		query.Set("instance", instance)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	var view shellView
-	err = daemonJSON(ctx, record, "/tasks/hosted/resolve?"+query.Encode(), nil, &view)
-	return view, err
+	return rows[0], nil
 }
 
 func renameSession(old, name string, expected ...string) error {

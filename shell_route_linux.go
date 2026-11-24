@@ -21,6 +21,7 @@ type shellRoute struct {
 	drain        context.Context
 	streams      sync.WaitGroup
 	childUID     string
+	host         string
 	confirmation *shellRouteConfirmation // consumed once under the shell lock
 }
 
@@ -111,22 +112,21 @@ func (s *remoteShell) serveShellRoute(c net.Conn, parent *attachment, config *sh
 		s.mu.Unlock()
 		return fmt.Errorf("parent attachment changed")
 	}
-	if !config.Local {
-		for key, candidate := range s.shellRoutes {
-			if candidate.childUID == ready.Instance {
-				token, route = key, candidate
-				break
-			}
+	host := config.Host
+	if config.Local {
+		host = ""
+	}
+	for key, candidate := range s.shellRoutes {
+		if candidate.childUID == ready.Instance && candidate.host == host {
+			token, route = key, candidate
+			break
 		}
 	}
 	newRoute := route == nil
 	if newRoute {
 		drain, cancel := context.WithCancel(context.Background())
 		token = resourceToken()
-		route = &shellRoute{open: open, drain: drain}
-		if !config.Local {
-			route.childUID = ready.Instance
-		}
+		route = &shellRoute{open: open, drain: drain, childUID: ready.Instance, host: host}
 		if s.shellRoutes == nil {
 			s.shellRoutes = make(map[string]*shellRoute)
 		}
@@ -199,11 +199,11 @@ func (s *remoteShell) serveShellRoute(c net.Conn, parent *attachment, config *sh
 
 func handoffRemoteShell(o options) (bool, error) {
 	socket := os.Getenv("SSHORE_SOCKET")
-	if socket == "" || (o.command != "sh" && o.command != "attach") || o.detached || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+	if socket == "" || (o.command != "sh" && o.command != "attach") || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return false, nil
 	}
-	if o.local && o.command == "attach" && o.instance == "" {
-		if err := resolveDetachedAttach(&o); err != nil {
+	if o.local && o.command == "attach" && o.session == "" && o.taskIdentity == "" {
+		if err := resolveDetachedAttach(&o, shellIdentityFromEnvironment()); err != nil {
 			return true, err
 		}
 	}
@@ -277,19 +277,7 @@ func (s *remoteShell) createRouteShell(req localDaemonRequest) (*remoteShell, er
 		}
 		return target, nil
 	}
-	selected, err := selectHostedShell(req.Shell.Name, "new")
-	if err != nil {
-		return nil, err
-	}
-	request := hostedShellRequest{Directory: req.Record.Directory, Name: selected.name, UID: selected.uid, Env: req.Env, parent: &s.shellTask}
-	if err := s.tasks.registerHostedShell(request); err != nil {
-		return nil, err
-	}
-	child, ok := s.tasks.lookup(selected.uid).(*remoteShell)
-	if !ok {
-		return nil, fmt.Errorf("new shell is unavailable")
-	}
-	return child, nil
+	return s.tasks.registerHostedShell(hostedShellRequest{Directory: req.Record.Directory, Name: req.Shell.Name, Env: req.Env, parent: &s.shellTask})
 }
 
 func openHostedEndpoint(ctx context.Context, instance string) (net.Conn, error) {

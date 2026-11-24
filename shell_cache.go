@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"slices"
 )
 
@@ -95,58 +96,71 @@ func (m *daemonMetadata) removeRecentDetachLocal(id string) error {
 	return nil
 }
 
-func resolveDetachedAttach(o *options) error {
-	reply, err := metadataRPC(metadataRequest{Action: "attach_recent", Key: shellIdentityFromEnvironment(), Local: o.local, Host: o.host})
-	if err != nil || reply.Target == nil {
-		return err
+func resolveDetachedAttach(o *options, parent string) error {
+	kind := "shell"
+	if parent != "" && os.Getenv("SSHORE_SOCKET") != "" {
+		kind = "hosted"
 	}
-	target := reply.Target
+	query := taskQuery{Kind: kind, Parent: parent, Ref: o.session, Detached: true}
+	var target *selectedTask
+	if query.Ref != "" {
+		rows, err := queryRegisteredTasks(query)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return missingAttachTarget(query.Ref)
+		}
+		target = &rows[0]
+	} else {
+		reply, err := metadataRPC(metadataRequest{Action: "attach_recent", Key: parent, Kind: kind})
+		if err != nil || reply.Target == nil {
+			return err
+		}
+		target = reply.Target
+	}
 	o.session, o.taskIdentity, o.instance, o.hosted = target.Name, target.Identity, target.Instance, target.Hosted
-	if route := target.Connection; route != nil {
-		o.host = route.Host
-		applyConnectionOptions(o, *route)
-	}
 	return nil
 }
 
-func (a *daemonActivity) selectDetachedAttach(local bool, host, parent string) (*selectedTask, error) {
+func (a *daemonActivity) selectDetachedAttach(parent, kind string) (*selectedTask, error) {
 	if err := a.metadata.loadDetachedAttachments(); err != nil {
 		return nil, err
 	}
-	history := a.metadata.attachments.rows
-	if !local {
-		for _, row := range history {
-			if route := row.Connection; route != nil && route.Host == host {
-				return &selectedTask{Name: row.Name, Identity: row.Identity, Instance: route.Instance, Connection: route.clone()}, nil
+	detached := (taskQuery{Kind: kind, Parent: parent, Detached: true}).registered(a.tasks)
+	for _, row := range a.metadata.attachments.rows {
+		if row.Local {
+			for _, target := range detached {
+				if row.Identity == target.Identity {
+					return &target, nil
+				}
 			}
 		}
-		return nil, nil
 	}
-
-	snapshot, _ := a.tasks.taskInventory(taskInventoryRequest{Native: true, Hosted: true, Detail: "health"})
-	detached := make(map[string]*selectedTask)
-	for _, row := range snapshot.localShells() {
-		if row.State == taskDetached && (row.Owner == "" || row.Owner == parent) {
-			target := &selectedTask{Name: row.Name, Identity: row.identity, Hosted: row.hosted}
-			if row.hosted {
-				target.Instance = canonicalTaskUID(row.identity)
-			}
-			detached[row.identity] = target
-		}
-	}
-	for _, row := range history {
-		if target := detached[row.Identity]; row.Local && target != nil {
-			return target, nil
-		}
-	}
-	// A registered shell can be detached without a saved history entry.
 	switch len(detached) {
 	case 0:
 		return nil, fmt.Errorf("no detached local shells; use sshore sh")
 	case 1:
-		for _, target := range detached {
-			return target, nil
+		return &detached[0], nil
+	default:
+		return nil, fmt.Errorf("multiple local shells; use sshore list, then sshore attach :ID")
+	}
+}
+
+// The SSH peer supplies eligible roots. Local history only ranks those identities.
+func (m *daemonMetadata) recentRemoteChoice(host string, targets []sessionTarget) (string, error) {
+	if err := m.loadDetachedAttachments(); err != nil {
+		return "", err
+	}
+	for _, row := range m.attachments.rows {
+		if row.Connection == nil || row.Connection.Host != host {
+			continue
+		}
+		for _, target := range targets {
+			if target.Instance == row.Connection.Instance {
+				return target.Name, nil
+			}
 		}
 	}
-	return nil, fmt.Errorf("multiple local shells; use sshore list, then sshore attach :ID")
+	return "", nil
 }

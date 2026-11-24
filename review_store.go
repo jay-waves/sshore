@@ -26,7 +26,6 @@ type requestRecord struct {
 	PID        int
 	ID         string
 	Directory  string
-	Quiet      bool
 	Operations []operation
 }
 

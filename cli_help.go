@@ -51,12 +51,10 @@ ProxyCommand are unsupported.
 `
 
 const connectionOptions = `  --server PATH         Remote executable (default: PATH, then ~/.local/bin/sshore)
-  -q, --quiet           Hide periodic transfer progress
   --no-escape           Disable Ctrl+B shortcuts
 `
 
 const shellStartupOptions = `  --pin                 Keep the shell until it exits
-  --detach              Start a pinned background root
   --no-login            Use non-login startup (Linux and macOS)
   --no-profile          Skip optional shell startup files; implies --no-login on Linux and macOS
 `
@@ -65,7 +63,7 @@ const shellConnectionHelp = `
 The remote release must match exactly. Update the older side before connecting.
 ` + sshOptions
 
-const connectionFlags = "--server --quiet --no-escape"
+const connectionFlags = "--server --no-escape"
 
 var cliCommands = map[string]cliSpec{
 	"": {
@@ -133,7 +131,7 @@ the intervals.
 		examples: "Measure latency to an SSH host\n  sshore ping work --count 20\n",
 	},
 	"sh": {
-		ssh: true, max: 1, flags: strings.Fields(connectionFlags + " --detach --pin --no-login --no-profile"),
+		ssh: true, max: 1, flags: strings.Fields(connectionFlags + " --pin --no-login --no-profile"),
 		help: `Usage: sshore sh [HOST|HOST:NAME|:NAME] [options] [-- SSH_OPTIONS]
 
 Start a shell on this machine or an SSH host. A shell ends with its starting
@@ -255,8 +253,9 @@ Mount a remote directory through the remote sshore helper using SFTP.
 The remote sshore release must match exactly.
 Background mounts receive fixed task IDs. HOST: selects the remote home.
 Use [HOST]:SOURCE for an IPv6 address.
-Use a bare path for the mountpoint. Use here: with an empty path
-to use ~/mnt/NAME on Linux or macOS, or a free drive letter on Windows.
+Use a bare path for the mountpoint. With an empty here: path, Linux and macOS
+use ~/mnt/NAME, with the registered task name for background mounts or a fresh
+six-character name for foreground mounts. Windows selects a free drive letter.
 Requires FUSE on Linux, WinFsp on Windows, or macFUSE with its kernel extension
 on Apple Silicon Macs (experimental).
 A custom mountpoint must be an existing empty directory on Linux or macOS, or a

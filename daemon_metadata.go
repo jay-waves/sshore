@@ -87,8 +87,8 @@ func (h *recentHistory[T]) replace(rows []T) error {
 }
 
 type metadataRequest struct {
-	Local                             bool `json:",omitempty"`
-	Action, Key, Host, Name, Instance string
+	Targets                                 []sessionTarget `json:",omitempty"`
+	Action, Key, Host, Name, Instance, Kind string
 
 	Attachment    *recentAttachment
 	Connection    *recentConnection
@@ -96,6 +96,7 @@ type metadataRequest struct {
 	Participation *participationRefresh
 }
 type metadataReply struct {
+	Choice       string            `json:",omitempty"`
 	Target       *selectedTask     `json:",omitempty"`
 	Connection   *recentConnection `json:",omitempty"`
 	Participants []participatingShell
@@ -143,7 +144,9 @@ func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply)
 	case "attach_by_id":
 		reply.Target, err = a.resolveBareAttachID(r.Instance)
 	case "attach_recent":
-		reply.Target, err = a.selectDetachedAttach(r.Local, r.Host, r.Key)
+		reply.Target, err = a.selectDetachedAttach(r.Key, r.Kind)
+	case "attach_remote_choice":
+		reply.Choice, err = s.recentRemoteChoice(r.Host, r.Targets)
 	case "attach_detach":
 		if r.Attachment != nil {
 			err = s.rememberDetachedAttachmentLocal(*r.Attachment)
@@ -254,8 +257,17 @@ func (a *daemonActivity) resolveBareAttachID(ref string) (*selectedTask, error) 
 			routes = append(routes, *row.Connection)
 		}
 	}
-	snapshot, _ := a.tasks.taskInventory(taskInventoryRequest{Native: true, Hosted: true, Detail: "health"})
-	target, err := selectTask(snapshot, "", ref, routes)
+	candidates := (taskQuery{Kind: "shell"}).registered(a.tasks)
+	for i := range routes {
+		route := &routes[i]
+		if validTaskUID(route.Instance) && !route.viaShell() {
+			candidates = append(candidates, selectedTask{Kind: "shell", Identity: identityFromUID(route.Instance), Instance: route.Instance, Connection: route})
+		}
+	}
+	target, err := matchTask(ref, candidates)
+	if err == nil && target.Identity == "" {
+		return nil, usage("unknown task %s; use sshore list or specify HOST:ID", ref)
+	}
 	return &target, err
 }
 

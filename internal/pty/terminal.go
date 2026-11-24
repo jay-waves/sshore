@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +32,46 @@ type Config struct {
 	Args, Env []string
 	Dir       string
 	Size      Size
+}
+
+func (c Config) getenv(key string) string {
+	if c.Env == nil {
+		return os.Getenv(key)
+	}
+	for _, entry := range slices.Backward(c.Env) {
+		if len(entry) > len(key) && entry[len(key)] == '=' {
+			name := entry[:len(key)]
+			if name == key || runtime.GOOS == "windows" && strings.EqualFold(name, key) {
+				return entry[len(key)+1:]
+			}
+		}
+	}
+	return ""
+}
+
+// Look up the shell using the launcher's environment and working directory.
+// A bare name must not implicitly execute a file from a relative PATH entry.
+func (c Config) executablePath() (string, error) {
+	switch c.Path {
+	case "", ".", "..":
+		return "", &exec.Error{Name: c.Path, Err: exec.ErrNotFound}
+	}
+	if filepath.Base(c.Path) != c.Path {
+		return c.findExecutable(c.Path)
+	}
+	for _, dir := range filepath.SplitList(c.getenv("PATH")) {
+		if runtime.GOOS == "windows" && dir == "" {
+			continue
+		}
+		path, err := c.findExecutable(filepath.Join(dir, c.Path))
+		if err == nil {
+			if !filepath.IsAbs(dir) {
+				return "", &exec.Error{Name: c.Path, Err: exec.ErrDot}
+			}
+			return path, nil
+		}
+	}
+	return "", &exec.Error{Name: c.Path, Err: exec.ErrNotFound}
 }
 
 type inputTerminal interface {

@@ -121,7 +121,8 @@ func LogWarning(out io.Writer, warning string) {
 func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *authenticationBudgets) (client *Client, resultErr error) {
 	connecting, cancel := context.WithCancel(ctx)
 	defer cancel()
-	releaseBudget := budgets.add(cfg.timeout, cancel)
+	seconds, _ := strconv.Atoi(cfg.get("connecttimeout"))
+	releaseBudget := budgets.add(time.Duration(seconds)*time.Second, cancel)
 	cc := &cryptossh.ClientConfig{User: cfg.user}
 	if err := cfg.configureAuthentication(connecting, cc, budgets); err != nil {
 		releaseBudget()
@@ -145,11 +146,10 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 			parent.Close()
 		}
 	}()
-	modern := cryptossh.SupportedAlgorithms()
 	var err error
-	cc.KeyExchanges = cfg.algorithms("kexalgorithms", modern.KeyExchanges)
-	cc.Ciphers = cfg.algorithms("ciphers", modern.Ciphers)
-	cc.MACs = cfg.algorithms("macs", modern.MACs)
+	cc.KeyExchanges = cfg.values["kexalgorithms"]
+	cc.Ciphers = cfg.values["ciphers"]
+	cc.MACs = cfg.values["macs"]
 	address := net.JoinHostPort(cfg.host, cfg.port)
 	var raw net.Conn
 	if jump := cfg.get("proxyjump"); jump != "" && jump != "none" {
@@ -448,6 +448,9 @@ func (g *authenticationBudgets) scheduleLocked() {
 }
 
 func (g *authenticationBudgets) add(duration time.Duration, cancel context.CancelFunc) func() {
+	if duration == 0 {
+		return func() {}
+	}
 	g.mu.Lock()
 	start := time.Now()
 	if g.paused != 0 {

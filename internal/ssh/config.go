@@ -10,7 +10,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
+
+	"github.com/jay-waves/sshore/internal/sshconfig"
 )
 
 // FormatEndpoint joins an SSH destination and its operand, bracketing IPv6 addresses.
@@ -48,7 +49,6 @@ type connectionConfig struct {
 	origins                   map[string]string
 	originalHost, localUser   string
 	host, user, port, network string
-	timeout                   time.Duration
 	passphrase                func(string) ([]byte, error)
 	passphraseAttempts        int
 }
@@ -74,17 +74,6 @@ func (c *connectionConfig) enabled(key string) bool {
 	return v == "yes" || v == "true"
 }
 
-// An explicit empty list restricts the feature to zero algorithms.
-func (c *connectionConfig) algorithms(key string, defaults []string) []string {
-	if len(c.values[key]) == 0 {
-		return defaults
-	}
-	if value := c.get(key); value != "" {
-		return strings.Split(value, ",")
-	}
-	return []string{}
-}
-
 func resolveConfig(ctx context.Context, o Options) (*connectionConfig, error) {
 	if o.Host == "" || strings.HasPrefix(o.Host, "-") || strings.ContainsAny(o.Host, "\x00\r\n\t ") {
 		return nil, fmt.Errorf("invalid SSH destination")
@@ -97,7 +86,7 @@ func resolveConfig(ctx context.Context, o Options) (*connectionConfig, error) {
 		return nil, fmt.Errorf("SSH configuration: %w", err)
 	}
 	c := &connectionConfig{
-		options: o, network: "tcp", timeout: 15 * time.Second,
+		options: o, network: "tcp",
 		values: resolved.Values, origins: resolved.Origins,
 		originalHost: resolved.OriginalHost, localUser: resolved.LocalUser,
 	}
@@ -122,13 +111,6 @@ func (c *connectionConfig) validate() error {
 		c.network = "tcp4"
 	case "inet6":
 		c.network = "tcp6"
-	}
-	if value := c.get("connecttimeout"); value != "" && value != "none" {
-		n, err := strconv.Atoi(value)
-		if err != nil || n < 1 || int64(n) > int64((1<<63-1)/time.Second) {
-			return fmt.Errorf("invalid ConnectTimeout")
-		}
-		c.timeout = time.Duration(n) * time.Second
 	}
 	for _, key := range []string{"proxycommand", "knownhostscommand", "revokedhostkeys"} {
 		if v := c.get(key); v != "" && v != "none" {
@@ -171,50 +153,13 @@ func (c *connectionConfig) unsupported(key string) error {
 
 func (c *connectionConfig) expand(value string) (string, error) {
 	home := homeDirectory(c.options.Environment)
-	var out strings.Builder
-	for i := 0; i < len(value); i++ {
-		if value[i] == '%' {
-			i++
-			if i == len(value) {
-				return "", fmt.Errorf("incomplete SSH path token")
-			}
-			switch value[i] {
-			case '%':
-				out.WriteByte('%')
-			case 'd':
-				out.WriteString(home)
-			case 'h':
-				out.WriteString(c.host)
-			case 'r':
-				out.WriteString(c.user)
-			case 'p':
-				out.WriteString(c.port)
-			case 'n':
-				out.WriteString(c.originalHost)
-			case 'u':
-				out.WriteString(c.localUser)
-			default:
-				return "", fmt.Errorf("unsupported SSH path token %%%c", value[i])
-			}
-			continue
-		}
-		if value[i] == '$' && i+1 < len(value) && value[i+1] == '{' {
-			end := strings.IndexByte(value[i+2:], '}')
-			if end < 0 {
-				return "", fmt.Errorf("incomplete SSH environment variable")
-			}
-			key := value[i+2 : i+2+end]
-			v := environment(c.options.Environment, key)
-			if v == "" {
-				return "", fmt.Errorf("SSH environment variable %s is not set", key)
-			}
-			out.WriteString(v)
-			i += end + 2
-			continue
-		}
-		out.WriteByte(value[i])
+	tokens := map[byte]string{
+		'd': home, 'h': c.host, 'n': c.originalHost, 'p': c.port, 'r': c.user, 'u': c.localUser,
 	}
-	result := out.String()
+	result, err := sshconfig.Expand(value, tokens, func(key string) string { return environment(c.options.Environment, key) })
+	if err != nil {
+		return "", fmt.Errorf("SSH path: %w", err)
+	}
 	if result == "~" {
 		result = home
 	} else if strings.HasPrefix(result, "~/") || strings.HasPrefix(result, "~\\") {

@@ -20,10 +20,10 @@ import (
 // A daemon-owned shell with one terminal and at most one attachment. Entry
 // points supply owner supervision and their additional commands.
 type shellTask struct {
-	endpoints                     terminalEndpoints
-	mu                            sync.Mutex // Protect shell state and attachment ownership.
-	terminalMu                    sync.Mutex // Serialize replay and redraw with live output. Acquire before mu.
-	renameMu                      sync.Mutex // Keep each shell's history renames in live update order.
+	endpoints  terminalEndpoints
+	mu         sync.Mutex // Protect shell state and attachment ownership.
+	terminalMu sync.Mutex // Serialize replay and redraw with live output. Acquire before mu.
+
 	terminal                      *pty.Terminal
 	process                       processIdentity
 	modes                         pty.InputState
@@ -41,7 +41,7 @@ type shellTask struct {
 	treeEnded                     atomic.Bool // Published by the registry's forest lock.
 	ownerClaimed                  bool
 	remoteOwner, remoteOwnerToken string
-	remoteChildren                map[string]*remoteShellChild
+	remoteChildren                map[*remoteShellChild]struct{}
 	scopeLost                     bool
 	pinned                        bool
 	pinUntil                      time.Time
@@ -49,6 +49,10 @@ type shellTask struct {
 }
 
 func (s *shellTask) managedShell() *shellTask { return s }
+
+func (s *shellTask) setInitialIdentity(uid, name string) {
+	s.record.UID, s.record.Name = uid, name
+}
 
 func (s *shellTask) taskName() string {
 	s.mu.Lock()
@@ -195,7 +199,7 @@ func (s *shellTask) startManagedShell(path string, env []string, m message) erro
 		}
 		s.mu.Unlock()
 		if p != nil {
-			p.finishExit(message{Type: "exit", Code: code, Reason: reason, RetainedShells: s.retainedChildren()})
+			p.finishExit(message{Type: "exit", Code: code, Reason: reason, RetainedShells: s.retainedChildren(), Output: rootConsoleTree(p.rootTree)})
 		}
 		if !s.hosted {
 			s.close()
@@ -215,7 +219,7 @@ func (s *shellTask) startManagedShell(path string, env []string, m message) erro
 func (s *shellTask) state() string {
 	switch {
 	case s.exited:
-		return taskUnknown
+		return taskExited
 	case s.active != nil:
 		return taskActive
 	case s.process.PID == 0:
@@ -227,30 +231,31 @@ func (s *shellTask) state() string {
 	}
 }
 
+// The final control frame can show the remote tree even after the frontend
+// releases its SSH lease. Collect outside the shell lock used by inventory.
+func rootConsoleTree(requested bool) string {
+	if !requested {
+		return ""
+	}
+	return consoleInventory(message{Name: "pstree"}, "").Output
+}
+
 // The table excludes new claims while the shell verifies the old reference.
-// renameMu keeps the history updates in the same order as live renames.
 func (s *shellTask) rename(old, name, instance string) error {
 	if err := validAlias(name); err != nil {
 		return err
 	}
-	s.renameMu.Lock()
-	defer s.renameMu.Unlock()
 	s.tasks.mu.Lock()
+	defer s.tasks.mu.Unlock()
 	if err := s.tasks.checkNameLocked(s.record.UID, name); err != nil {
-		s.tasks.mu.Unlock()
 		return err
 	}
 	s.mu.Lock()
-	changed := s.exited || s.killing || (s.hosted || old != "") && s.record.Name != old || instance != "" && instance != s.record.UID
-	updated := !changed && s.record.Name != name
-	if updated {
-		s.record.Name = name
-	}
-	s.mu.Unlock()
-	s.tasks.mu.Unlock()
-	if changed {
+	defer s.mu.Unlock()
+	if s.exited || s.killing || (s.hosted || old != "") && s.record.Name != old || instance != "" && instance != s.record.UID {
 		return fmt.Errorf("shell changed or is exiting; refresh with sshore list")
 	}
+	s.record.Name = name
 	return nil
 }
 
@@ -513,6 +518,7 @@ func (s *shellTask) attachTerminal(p *attachment, m message, start func(message)
 		return err
 	}
 	p.input = lease
+	p.rootTree = m.RootTree
 	s.active = p
 	if !initial {
 		pty.RequestRedraw(s.terminal)
@@ -603,6 +609,7 @@ func (s *shellTask) serveAttachment(p *attachment, control io.Reader, resizeAck 
 				s.mu.Lock()
 				reply := message{Type: "detached", Name: name, Pinned: s.pinned, PinUntil: s.pinUntil}
 				s.mu.Unlock()
+				reply.Output = rootConsoleTree(m.RootTree && p.rootTree)
 				return p.FinishDetach(reply)
 			}
 			return err
@@ -620,6 +627,8 @@ func (s *shellTask) serveAttachment(p *attachment, control io.Reader, resizeAck 
 			if resizeAck {
 				err = p.controlMessage(message{Type: "resized", Cols: m.Cols, Rows: m.Rows})
 			}
+		case "session_targets":
+			err = p.controlMessage(s.sessionTargets(m))
 		case "console_inventory":
 			s.mu.Lock()
 			current := s.treeIdentity()

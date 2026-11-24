@@ -112,18 +112,16 @@ func (r localShellRecord) identity() string {
 // Register the terminal task before publishing readiness. Attachments use the
 // account listener and never own the task lifetime.
 func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, ready func(localShellRecord) error, serve func(net.Conn, message) error) error {
-	if err := validSession(r.Name); err != nil {
-		return err
-	}
 	if r.Version != version || len(r.Token) != 64 || !filepath.IsAbs(r.Directory) {
 		return fmt.Errorf("invalid local startup request")
 	}
 	s.record = r
 	s.tasks = tasks
 	parent := s.parent
-	if err := tasks.register(r.UID, &nativeShellTask{shell: s, serve: serve}); err != nil {
+	if err := tasks.register("", &nativeShellTask{shell: s, serve: serve}); err != nil {
 		return err
 	}
+	r.UID, r.Name = s.record.UID, s.taskName()
 	s.watchParent(parent)
 	if err := ready(r); err != nil {
 		return err
@@ -153,7 +151,7 @@ func (s *localShell) view() localShellView {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	view := localShellView{
-		Owner: s.parentIdentityLocked(), Pinned: s.pinned, PinUntil: s.pinUntil, identity: s.record.identity(),
+		Owner: s.parentIdentityLocked(), Pinned: s.pinned, PinUntil: s.pinUntil, Identity: s.record.identity(),
 		Name: s.record.Name, Directory: s.record.Directory, Version: s.record.Version, PID: s.process.PID,
 	}
 	view.State = s.state()
@@ -183,46 +181,6 @@ func localShellEnvironment(source []string, term, identity string) []string {
 	}
 	env = append(env, "TERM="+term, "SSHORE_LOCAL_SESSION="+identity, "SSHORE_TREE_ID="+identity)
 	return env
-}
-
-func (s *localShell) targets(request message) message {
-	s.mu.Lock()
-	name := s.record.Name
-	s.mu.Unlock()
-	return localSessionTargets(name, request)
-}
-
-func localSessionTargets(name string, request message) message {
-	reply := message{Type: "session_targets", Action: request.Action, Name: name}
-	rows, err := localShells(false)
-	if err != nil {
-		reply.Error = err.Error()
-		return reply
-	}
-	parent := ""
-	for _, row := range rows {
-		if row.Name == name {
-			parent = row.identity
-			break
-		}
-	}
-	for _, row := range rows {
-		if row.State != taskDetached || row.Owner != "" && row.Owner != parent {
-			continue
-		}
-		if request.Action == "select" && row.Name != request.Name {
-			continue
-		}
-		reply.Targets = append(reply.Targets, sessionTarget{Name: row.Name, Instance: canonicalTaskUID(row.identity), Hosted: row.hosted})
-	}
-	if request.Action == "select" && len(reply.Targets) != 1 {
-		reply.Error = fmt.Sprintf("local shell %s unavailable", cleanText(request.Name))
-	}
-	if len(reply.Targets) > 128 {
-		reply.Targets = nil
-		reply.Error = "too many local shells; use sshore list"
-	}
-	return reply
 }
 
 func retentionLocalShell(identity string, m message) error {
@@ -295,8 +253,6 @@ func (s *localShell) attach(c net.Conn) error {
 			h := &clientHandoff{Args: args, Directory: s.record.Directory, Environment: append([]string(nil), s.environment...)}
 			s.mu.Unlock()
 			go serveChildShortcut(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
-		case "session_targets":
-			return p.controlMessage(s.targets(m))
 		default:
 			return fmt.Errorf("unexpected local control request")
 		}

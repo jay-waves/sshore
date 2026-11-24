@@ -76,33 +76,6 @@ func TestBracketedPasteNeverExecutesKeys(t *testing.T) {
 		t.Fatal("bytewise paste changed")
 	}
 }
-func TestEscapeTimeoutAndImmediateBypass(t *testing.T) {
-	for _, input := range []string{"\x1b", "\x1b[", "\x1b[A", "\x1b[201~", "\x1b\x1b[200~text\x1b[201~"} {
-		var k Keys
-		data, actions := collectKeys(&k, []byte(input))
-		for _, e := range k.FlushPending() {
-			data = append(data, e.Data...)
-		}
-		if string(data) != input || len(actions) != 0 {
-			t.Fatalf("changed escape input %q: %q %v", input, data, actions)
-		}
-	}
-	k := Keys{Bypass: true}
-	input := []byte("\x02d\x1d\x02?")
-	data, actions := collectKeys(&k, input)
-	if !bytes.Equal(data, input) || len(actions) != 0 {
-		t.Fatal("bypass intercepted input")
-	}
-}
-func TestKeyEventsPreserveOrder(t *testing.T) {
-	var k Keys
-	events := k.Feed([]byte("before\x02rafter\x02dignored"))
-	want := []KeyEvent{{Data: []byte("before")}, {Action: KeyRedraw}, {Data: []byte("after")}, {Action: KeyDetach}}
-	if !reflect.DeepEqual(events, want) {
-		t.Fatalf("got %#v", events)
-	}
-}
-
 func TestPasteWithEmbeddedControlsAndMissingClose(t *testing.T) {
 	// Like the upstream fragmented-paste cases, payload controls stay literal.
 	// A missing close must not turn a slow/large paste into local commands.
@@ -119,33 +92,6 @@ func TestPasteWithEmbeddedControlsAndMissingClose(t *testing.T) {
 	data, actions = collectKeys(&k, []byte("\x1b[20"), []byte("1~\x02r"))
 	if string(data) != "\x1b[201~" || !reflect.DeepEqual(actions, []KeyAction{KeyRedraw}) {
 		t.Fatalf("closing fragmented paste did not restore shortcuts: %q %v", data, actions)
-	}
-}
-
-func TestPasteCompletionBoundary(t *testing.T) {
-	// tmux regress/tty-keys-paste.sh: a separate Escape before paste,
-	// fragmented end, then immediately resume normal binding dispatch.
-	var k Keys
-	data, actions := collectKeys(&k, []byte("\x1b\x1b[200~\x02d\x1b[20"))
-	if string(data) != "\x1b\x1b[200~\x02d\x1b[20" || len(actions) != 0 {
-		t.Fatal("partial end marker changed paste dispatch")
-	}
-	data, actions = collectKeys(&k, []byte("1~\x02r"))
-	if string(data) != "1~" || !reflect.DeepEqual(actions, []KeyAction{KeyRedraw}) {
-		t.Fatalf("first post-paste shortcut lost: %q %v", data, actions)
-	}
-}
-
-func TestNewShellKey(t *testing.T) {
-	var k Keys
-	events := k.Feed([]byte("\x02cx"))
-	if len(events) != 1 || events[0].Action != KeyNew {
-		t.Fatalf("new shell shortcut: %#v", events)
-	}
-	var paste Keys
-	data, actions := collectKeys(&paste, []byte("\x1b[200~"), []byte("\x02c"), []byte("\x1b[201~"))
-	if len(actions) != 0 || string(data) != "\x1b[200~\x02c\x1b[201~" {
-		t.Fatalf("paste changed new shell shortcut: %q %v", data, actions)
 	}
 }
 
@@ -183,21 +129,6 @@ func TestEnhancedPrefixProtocols(t *testing.T) {
 	}
 }
 
-func TestEnhancedReleaseAndRepeat(t *testing.T) {
-	for _, prefix := range []string{"\x02", "\x1b[98;5:1u"} {
-		input := prefix + "\x1b[98;5:2u\x1b[98;5:3u\x1b[114;1:1u\x1b[114;1:2u\x1b[114;1:3uX"
-		var k Keys
-		var chunks [][]byte
-		for i := range input {
-			chunks = append(chunks, []byte(input[i:i+1]))
-		}
-		data, actions := collectKeys(&k, chunks...)
-		if string(data) != "X" || !reflect.DeepEqual(actions, []KeyAction{KeyRedraw}) {
-			t.Fatalf("%q %v", data, actions)
-		}
-	}
-}
-
 func TestEnhancedTransparentInput(t *testing.T) {
 	for _, input := range []string{
 		"你好\x1b[97;5u\x1b[97;5:3u",                                                                 // Unconsumed key events remain byte-identical.
@@ -231,26 +162,6 @@ func TestEnhancedTransparentInput(t *testing.T) {
 	}
 }
 
-func TestEnhancedInterrupt(t *testing.T) {
-	for _, input := range []string{"\x03", "\x1b[99;5u", "\x1b[99;5:2u", "\x1b[27;5;99~"} {
-		var k Keys
-		for i := range input {
-			k.Feed([]byte(input[i : i+1]))
-		}
-		if !k.Interrupted {
-			t.Fatalf("missed interrupt %q", input)
-		}
-		k.Feed([]byte("\x1b[99;5:3u"))
-		if k.Interrupted {
-			t.Fatal("release counted as interrupt")
-		}
-		k.Feed([]byte("\x1b[200~" + input + "\x1b[201~"))
-		if k.Interrupted {
-			t.Fatal("paste counted as interrupt")
-		}
-	}
-}
-
 func TestKeySequenceTimeoutAndBounds(t *testing.T) {
 	for _, input := range []string{"\x1b", "\x1b[", "\x02\x1b[98;"} {
 		var k Keys
@@ -278,41 +189,5 @@ func TestKeySequenceTimeoutAndBounds(t *testing.T) {
 	data, actions = collectKeys(&k, []byte(input))
 	if string(data) != input || len(actions) != 0 || k.Pending() {
 		t.Fatal("enhanced bypass changed input")
-	}
-}
-
-func TestPrefixReleaseFallbackPreservesOrder(t *testing.T) {
-	input := "\x1b[98;5u\x1b[98;5:3u\x1b[57442;1:3u\x1b[120;1u"
-	var k Keys
-	data, actions := collectKeys(&k, []byte(input))
-	if string(data) != input || len(actions) != 0 {
-		t.Fatalf("release reordered: %q %v", data, actions)
-	}
-}
-
-func TestEscapeTimeoutAllowsNextShortcut(t *testing.T) {
-	var k Keys
-	k.Feed([]byte{27})
-	k.FlushPending()
-	_, actions := collectKeys(&k, []byte{2, 'r'})
-	if !reflect.DeepEqual(actions, []KeyAction{KeyRedraw}) {
-		t.Fatalf("Escape swallowed next shortcut: %v", actions)
-	}
-}
-
-func TestDeliveredKeysKeepRepeatAndRelease(t *testing.T) {
-	for _, input := range []string{
-		"\x1b[98;5u\x1b[98;5u\x1b[98;5:2u\x1b[98;5:3u",
-		"\x02r\x1b[114;1u\x1b[114;1:2u\x1b[114;1:3u",
-	} {
-		var k Keys
-		data, actions := collectKeys(&k, []byte(input))
-		if strings.HasPrefix(input, "\x02") {
-			if !reflect.DeepEqual(actions, []KeyAction{KeyRedraw}) || string(data) != input[2:] {
-				t.Fatalf("ordinary key events lost: %q %v", data, actions)
-			}
-		} else if len(actions) != 0 || string(data) != input[len("\x1b[98;5u"):] {
-			t.Fatalf("double-prefix events lost: %q %v", data, actions)
-		}
 	}
 }

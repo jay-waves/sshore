@@ -212,7 +212,8 @@ func runClient(o options) (int, error) {
 	for {
 		prune(&o)
 		var ended sessionEnd
-		code, err := runClientOnce(o, transports, &ended, func(attached options) string {
+		rootTree := !o.local && pending == nil && len(parents) == 0
+		code, err := runClientOnce(o, transports, &ended, rootTree, func(attached options) string {
 			current, menu = attached, nil
 			from := currentEndpoint
 			currentEndpoint = shellDisplayEndpoint(current)
@@ -262,7 +263,7 @@ func runClient(o options) (int, error) {
 			problem := fmt.Sprintf("Could not return to %s: %s", cleanText(o.session), cleanText(err.Error()))
 			termui.Log(os.Stderr, termui.Warning, "[sshore] %s\n", problem)
 			if len(parents) == 0 {
-				menu = &current
+				menu = &o
 			}
 		}
 		var target options
@@ -281,7 +282,7 @@ func runClient(o options) (int, error) {
 			}
 			termui.Log(os.Stderr, termui.Warning, "[sshore] Target unavailable; restoring %s.%s\n", cleanText(target.session), reason)
 		case len(parents) == 0:
-			if o.detached || o.command == "kill" || o.command == "rename" || err != nil && menu == nil {
+			if o.command == "kill" || o.command == "rename" || err != nil && menu == nil {
 				return code, err
 			}
 			problem := ""
@@ -568,7 +569,6 @@ func confirmShellRoute(ctx context.Context, parent options, token, handoffToken 
 type clientHandoff struct {
 	Hosted                 bool
 	Args                   []string
-	Owner                  processIdentity
 	Directory              string
 	Environment            []string
 	TaskIdentity, Instance string
@@ -582,7 +582,7 @@ func (h *clientHandoff) options() (options, error) {
 	if err != nil {
 		return o, err
 	}
-	if o.detached || (o.command != "sh" && o.command != "attach") || !filepath.IsAbs(h.Directory) {
+	if (o.command != "sh" && o.command != "attach") || !filepath.IsAbs(h.Directory) {
 		return o, fmt.Errorf("invalid remote handoff")
 	}
 	if h.Hosted && (!o.local || o.command != "attach" || !validTaskUID(h.Instance) || h.TaskIdentity != "task:"+h.Instance) {
@@ -596,7 +596,7 @@ func (h *clientHandoff) options() (options, error) {
 
 func handoffLocalClient(o options) (bool, error) {
 	identity := os.Getenv("SSHORE_LOCAL_SESSION")
-	if identity == "" || o.detached || (o.command != "sh" && o.command != "attach") || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+	if identity == "" || (o.command != "sh" && o.command != "attach") || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return false, nil
 	}
 	cwd, err := os.Getwd()
@@ -616,7 +616,7 @@ func handoffLocalClient(o options) (bool, error) {
 	for _, flag := range []struct {
 		name    string
 		enabled bool
-	}{{"--quiet", o.quiet}, {"--no-escape", o.noEscape}, {"--pin", o.pin}, {"--no-login", o.noLogin}, {"--no-profile", o.noProfile}} {
+	}{{"--no-escape", o.noEscape}, {"--pin", o.pin}, {"--no-login", o.noLogin}, {"--no-profile", o.noProfile}} {
 		if flag.enabled {
 			args = append(args, flag.name)
 		}

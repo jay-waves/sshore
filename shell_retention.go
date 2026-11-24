@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"slices"
 	"time"
@@ -194,10 +195,7 @@ func (s *shellTask) retainedChildren() []retainedShell {
 	}
 
 	s.mu.Lock()
-	remote := make([]*remoteShellChild, 0, len(s.remoteChildren))
-	for _, child := range s.remoteChildren {
-		remote = append(remote, child)
-	}
+	remote := slices.Collect(maps.Keys(s.remoteChildren))
 	s.mu.Unlock()
 	if len(remote) > 0 {
 		replies := make(chan retainedShell, len(remote))

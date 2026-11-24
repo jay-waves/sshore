@@ -22,7 +22,6 @@ import (
 // filesystem. Its temporary upload is removed when the stream ends.
 type FS struct {
 	sftp.UnimplementedServerHandler
-	files      map[*copyFile]struct{}
 	nextHandle uint64
 	cwd        string
 	source     *Source
@@ -68,7 +67,7 @@ func (f *FS) Open(_ context.Context, req *sshfx.OpenPacket) (sftp.FileHandler, e
 			if err != nil {
 				return nil, err
 			}
-			return f.track(source.file, nil, true), nil
+			return f.newHandle(source.file, nil, true), nil
 		}
 		if name == "/source" && f.source != nil {
 			info, err := f.source.file.Stat()
@@ -78,7 +77,7 @@ func (f *FS) Open(_ context.Context, req *sshfx.OpenPacket) (sftp.FileHandler, e
 			if info.Size() != f.source.size {
 				return nil, fmt.Errorf("source metadata changed")
 			}
-			return f.track(f.source.file, nil, false), nil
+			return f.newHandle(f.source.file, nil, false), nil
 		}
 	}
 	const required = sshfx.FlagWrite | sshfx.FlagCreate | sshfx.FlagExclusive
@@ -107,7 +106,7 @@ func (f *FS) Open(_ context.Context, req *sshfx.OpenPacket) (sftp.FileHandler, e
 	}
 	upload := &copyUpload{size: size, limit: limit, file: file}
 	f.uploads[name] = upload
-	return f.track(file, upload, false), nil
+	return f.newHandle(file, upload, false), nil
 }
 
 func (f *FS) Remove(_ context.Context, req *sshfx.RemovePacket) error {
@@ -207,17 +206,14 @@ func copyAttributes(info os.FileInfo, err error) (*sshfx.Attributes, error) {
 
 type copyFile struct {
 	file   *os.File
-	owner  *FS
 	handle string
 	upload *copyUpload
 	owned  bool
 }
 
-func (f *FS) track(file *os.File, upload *copyUpload, owned bool) *copyFile {
+func (f *FS) newHandle(file *os.File, upload *copyUpload, owned bool) *copyFile {
 	f.nextHandle++
-	handle := &copyFile{file: file, owner: f, handle: strconv.FormatUint(f.nextHandle, 10), upload: upload, owned: owned}
-	f.files[handle] = struct{}{}
-	return handle
+	return &copyFile{file: file, handle: strconv.FormatUint(f.nextHandle, 10), upload: upload, owned: owned}
 }
 
 func (f *copyFile) Name() string                     { return f.file.Name() }
@@ -239,7 +235,6 @@ func (f *copyFile) WriteAt(p []byte, off int64) (int, error) {
 func (f *copyFile) SetStat(*sshfx.Attributes) error { return os.ErrPermission }
 func (f *copyFile) Sync() error                     { return os.ErrPermission }
 func (f *copyFile) Close() error {
-	delete(f.owner.files, f)
 	if f.upload != nil && f.upload.state == uploadWriting {
 		f.upload.state = uploadSealed
 	}
@@ -302,7 +297,6 @@ func ServeCopy(conn io.ReadWriteCloser) error { return ServeTransfer(conn, newCo
 func ServeTransfer(conn io.ReadWriteCloser, backend *FS) error {
 	defer conn.Close()
 	defer backend.Close()
-	backend.files = make(map[*copyFile]struct{})
 	if backend.direct && backend.cwd == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -345,9 +339,6 @@ func NewTargetFS(path string, size int64) *FS {
 	return &FS{target: path, size: size, uploads: make(map[string]*copyUpload)}
 }
 func (f *FS) Close() {
-	for file := range f.files {
-		_ = file.Close()
-	}
 	for name, upload := range f.uploads {
 		_ = f.discardUpload(name, upload)
 	}

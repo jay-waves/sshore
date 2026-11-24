@@ -63,7 +63,7 @@ func newApprovalRequest(o options, shellPID int, ops []operation) (requestRecord
 	if err != nil {
 		return requestRecord{}, err
 	}
-	request := requestRecord{Connection: connection, PID: shellPID, ID: newTaskUID(), Directory: cwd, Quiet: o.quiet, Operations: ops}
+	request := requestRecord{Connection: connection, PID: shellPID, ID: newTaskUID(), Directory: cwd, Operations: ops}
 	if !validTaskUID(connection.Instance) || request.PID <= 0 {
 		return requestRecord{}, fmt.Errorf("invalid source shell identity")
 	}
@@ -153,11 +153,7 @@ func (a approvedOperation) run(source options) error {
 		} else if err := validateMountConfig(*a.config.Mount); err != nil {
 			return err
 		}
-		reservation, err := chooseTaskIdentity(a.config.kind(), "")
-		if err != nil {
-			return err
-		}
-		_, err = startSelectedResource(a.config, reservation, a.request.Connection.Directory)
+		_, err := startResourceBackground(a.config, a.request.Connection.Directory)
 		return err
 	}
 	return runApprovedFiles(a.request, source, a.files)
@@ -324,18 +320,18 @@ func runApprovedFiles(r requestRecord, source options, approvedFiles []fileCopy)
 	open := func() (net.Conn, error) {
 		return openResourceEndpoint(ctx, &target, request, nil)
 	}
-	return executeApprovedFiles(ctx, open, approvedFiles, r.Quiet)
+	return executeApprovedFiles(ctx, open, approvedFiles)
 }
 
 // Each approved file uses its own endpoint. The batch stops on the first failure
 // and preserves completed files.
 
-func executeApprovedFiles(ctx context.Context, open func() (net.Conn, error), batch []fileCopy, quiet bool) error {
+func executeApprovedFiles(ctx context.Context, open func() (net.Conn, error), batch []fileCopy) error {
 	completed, err := transferCopyBatch(batch, func(i int, file fileCopy) error {
-		if !quiet && len(batch) > 1 {
+		if len(batch) > 1 {
 			termui.Log(os.Stderr, termui.Info, "[sshore] File %d/%d: %s %s\n", i+1, len(batch), file.approval.Kind, cleanText(file.approvedName()))
 		}
-		return executeApprovedFile(ctx, open, file, quiet)
+		return executeApprovedFile(ctx, open, file)
 	})
 	if err != nil {
 		termui.Log(os.Stderr, termui.Error, "[sshore] Transfer: %d done, 1 failed/cancelled, %d not started. Completed files kept.\n", completed, len(batch)-completed-1)
@@ -357,7 +353,7 @@ func executeApprovedFiles(ctx context.Context, open func() (net.Conn, error), ba
 	return nil
 }
 
-func executeApprovedFile(ctx context.Context, open func() (net.Conn, error), file fileCopy, quiet bool) error {
+func executeApprovedFile(ctx context.Context, open func() (net.Conn, error), file fileCopy) error {
 	remote := *file.approval
 	remote.LocalHint = ""
 	request := message{Type: "approved_transfer", Operations: []operation{remote}}
@@ -396,11 +392,8 @@ func executeApprovedFile(ctx context.Context, open func() (net.Conn, error), fil
 	}
 	err = withCopySFTP(ctx, stream, func(client *sftp.Client) error {
 		_ = st.SetDeadline(time.Time{})
-		var completed *atomic.Int64
-		if !quiet {
-			completed = new(atomic.Int64)
-			defer reportTransferProgress(remote.Kind, name, file.size(), completed)()
-		}
+		completed := new(atomic.Int64)
+		defer reportTransferProgress(remote.Kind, name, file.size(), completed)()
 		return file.transfer(ctx, client, completed)
 	})
 	if err != nil {

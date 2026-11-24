@@ -116,14 +116,8 @@ func executeMount(o ftpOptions) (int, error) {
 		return 1, err
 	}
 	if !o.foreground {
-		return startResourceBackground(resourceConfig{Mount: &o})
+		return startResourceBackground(resourceConfig{Mount: &o}, "")
 	}
-	reservation, err := chooseTaskIdentity("mount", "")
-	if err != nil {
-		return 1, err
-	}
-
-	o.Name = reservation.name
 	cleanup, err := prepareFTPPaths(&o)
 	if err != nil {
 		return 1, err

@@ -57,6 +57,8 @@ authentication. It tries the remaining methods offered by the server in
 `PreferredAuthentications` order, respecting the local authentication settings.
 Public-key authentication uses identity files and their certificates. SSH agent
 and PKCS#11 signers are outside the current client scope.
+`ConnectTimeout` defaults to 15 seconds. Set it to `none` or `0` to disable the
+connection timeout for that host.
 The default `ServerAliveInterval` is 15 seconds. Set it to `0` to disable SSH
 keepalive probes.
 
@@ -81,7 +83,6 @@ sshore attach work:build     # Resume a detached shell.
 A top-level `sh` ends when its starting connection closes. Inside a shell,
 interactive `sh` creates a child and gives it the keyboard. Its parent waits.
 Each tree has one foreground shell. Independent roots can be used in parallel.
-For a script, `sh --detach` starts a pinned background root.
 
 From an ordinary terminal or the root prompt, `attach` opens an idle root.
 Inside a shell on the same daemon, `attach :NAME` enters a detached direct
@@ -108,7 +109,9 @@ which children become independent roots. Press Esc or type `exit` to return
 to the previous shell.
 
 With no selector, `sshore attach` resumes the most recently detached eligible
-local shell. Use `sshore attach work:` for that host. From an ordinary terminal,
+local shell. With `sshore attach work:`, the remote host identifies its idle
+roots. Your detach history selects the most recent match. If several roots
+remain and none matches your history, choose one at the prompt. From an ordinary terminal,
 a bare hexadecimal ID or unique prefix can select a local shell or a remote
 shell with a saved direct SSH connection. Use `HOST:ID` to disambiguate.
 Scrollback is not replayed on attach.
@@ -173,8 +176,10 @@ sshore mount work:/srv/project .: --read-only
 Mounts use SFTP and require FUSE on Linux, [WinFsp](https://winfsp.dev/) on
 Windows, or [macFUSE](https://macfuse.github.io/) with its kernel extension on
 Apple Silicon Macs using the experimental source build. The mount command
-above prints the chosen mountpoint. Close open files
-before stopping a mount with the kill command printed at startup.
+above prints the chosen mountpoint. Linux and macOS use `~/mnt/NAME`, with the
+registered task name for a background mount and a fresh six-character name for
+`--foreground`. Windows chooses a free drive letter. Close open files before
+stopping a mount with the kill command printed at startup.
 
 ## Help and troubleshooting
 

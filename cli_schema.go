@@ -47,8 +47,7 @@ var cliOptions = map[string]cliOption{
 	"--server":    {kind: cliText},
 	"--apply":     {},
 	"--port":      {kind: cliPort},
-	"--quiet":     {alias: "-q"},
-	"--no-escape": {}, "--detach": {}, "--pin": {}, "--no-login": {}, "--no-profile": {},
+	"--no-escape": {}, "--pin": {}, "--no-login": {}, "--no-profile": {},
 	"--json":       {},
 	"--all":        {},
 	"--foreground": {},
@@ -93,6 +92,7 @@ func (s cliSpec) option(name string) (string, cliOption, bool) {
 }
 
 type cliArguments struct {
+	taskKind     string
 	bareAttachID bool
 	local        bool
 	operands     []string
