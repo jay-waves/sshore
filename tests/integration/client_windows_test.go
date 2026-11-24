@@ -114,7 +114,7 @@ func TestWindowsConPTY(t *testing.T) {
 		send("exit\r")
 	})
 	runWindowsTerminal(t, ctx, command("attach", endpoint), func(send func(string), wait terminalWait) {
-		wait("Connected " + endpoint)
+		wait("WIN_READY=retained")
 		send("echo WIN_RESUMED=%SSHORE_RESUME%:%CD%\r")
 		wait("WIN_RESUMED=retained:" + directory)
 		send("exit\r")
