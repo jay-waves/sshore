@@ -168,39 +168,45 @@ func TestWindowsWinFsp(t *testing.T) {
 	if len(root) != 3 || root[0] < 'A' || root[0] > 'Z' || root[1] != ':' {
 		t.Fatalf("missing mounted drive for %s: %+v", task, inventory.Resources)
 	}
-	target, temporary := filepath.Join(root, "target"), filepath.Join(root, "save.tmp")
-	requireFile(t, target, "original")
-	if err := os.WriteFile(temporary, []byte("replacement"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(temporary, target); err != nil {
-		t.Fatal(err)
-	}
-	requireFile(t, target, "replacement")
-	if got := windowsRun(t, ssh("exec", "winfsp-fixture", "cat share/target")); string(got) != "replacement" {
-		t.Fatalf("remote file after replace: %q", got)
-	}
-	if suite := os.Getenv("SSHORE_TEST_WINFSP_SUITE"); suite != "" {
-		dir := filepath.Join(root, "official-suite")
-		if err := os.Mkdir(dir, 0700); err != nil {
+	t.Run("replace", func(t *testing.T) {
+		target, temporary := filepath.Join(root, "target"), filepath.Join(root, "save.tmp")
+		requireFile(t, target, "original")
+		if err := os.WriteFile(temporary, []byte("replacement"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		cases := []string{"rdwr_cached_test", "rdwr_cached_append_test", "querydir_test"}
-		cmd := exec.CommandContext(ctx, suite, append([]string{"--external", "--resilient", "--tap"}, cases...)...)
-		cmd.Dir = dir
-		out := string(windowsRun(t, cmd))
-		t.Log(out)
-		for _, name := range cases {
-			if !strings.Contains(strings.ReplaceAll(out, "\r\n", "\n"), " "+name+"\n") {
-				t.Fatalf("WinFsp did not report selected case %s", name)
-			}
+		if err := os.Rename(temporary, target); err != nil {
+			t.Fatal(err)
+		}
+		requireFile(t, target, "replacement")
+		if got := windowsRun(t, ssh("exec", "winfsp-fixture", "cat share/target")); string(got) != "replacement" {
+			t.Fatalf("remote file after replace: %q", got)
+		}
+	})
+	if suite := os.Getenv("SSHORE_TEST_WINFSP_SUITE"); suite != "" {
+		for _, name := range []string{"querydir_test", "rdwr_cached_test", "rdwr_cached_append_test"} {
+			t.Run(name, func(t *testing.T) {
+				// The official runner aborts on failure and can leave files behind.
+				dir := filepath.Join(root, name)
+				if err := os.Mkdir(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.CommandContext(ctx, suite, "--external", "--resilient", "--tap", name)
+				cmd.Dir = dir
+				out := strings.ReplaceAll(string(windowsRun(t, cmd)), "\r\n", "\n")
+				t.Log(out)
+				if !strings.HasPrefix(out, "ok 1 "+name+"\n") {
+					t.Fatalf("WinFsp did not report success for %s", name)
+				}
+			})
 		}
 	}
-	windowsRun(t, command("kill", task))
-	drives, err := windows.GetLogicalDrives()
-	if err != nil || drives&(1<<uint(root[0]-'A')) != 0 {
-		t.Fatalf("drive %s remained after unmount: %v", root, err)
-	}
+	t.Run("unmount", func(t *testing.T) {
+		windowsRun(t, command("kill", task))
+		drives, err := windows.GetLogicalDrives()
+		if err != nil || drives&(1<<uint(root[0]-'A')) != 0 {
+			t.Fatalf("drive %s remained after unmount: %v", root, err)
+		}
+	})
 }
 
 func startWindowsSSH(t *testing.T, server, dir string) string {
