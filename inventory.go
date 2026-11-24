@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -87,11 +86,7 @@ type peerView struct {
 	Detail    string `json:"detail"`
 }
 type inventory struct {
-	MachineID   string           `json:"machine_id,omitempty"`
-	Hostname    string           `json:"hostname,omitempty"`
 	LocalShells []localShellView `json:"local_shells,omitempty"`
-	Version     string           `json:"version"`
-	Host        string           `json:"host,omitempty"`
 	Resources   []resourceView   `json:"resources"`
 	Shells      []shellView      `json:"shells"`
 	Peers       []peerView       `json:"peers"`
@@ -99,7 +94,7 @@ type inventory struct {
 }
 
 func emptyInventory() inventory {
-	return inventory{Version: version, Resources: []resourceView{}, Shells: []shellView{}, Peers: []peerView{}, Errors: []string{}}
+	return inventory{Resources: []resourceView{}, Shells: []shellView{}, Peers: []peerView{}, Errors: []string{}}
 }
 func viewRecord(r resourceRecord) resourceView {
 	v := resourceView{Identity: resourceIdentity(r), ID: r.Kind + "/" + r.Name, Host: r.Host, Kind: r.Kind, Direction: r.Direction, State: taskUnknown, Detail: r.Detail, resourceStatus: resourceStatus{Version: r.Version, Transport: "unknown", Target: "unchecked"}}
@@ -169,29 +164,6 @@ func (snapshot taskInventorySnapshot) nativeShells() []localShellView {
 	return rows
 }
 
-func managedInventory(ctx context.Context, tasks *daemonTasks, request taskInventoryRequest) inventory {
-	inv := emptyInventory()
-	if runtime.GOOS == "linux" {
-		inv.MachineID, inv.Hostname = localMachineIdentity()
-	}
-	snapshot, workers := tasks.taskInventory(request)
-	inv.Shells = append(inv.Shells, snapshot.Shells...)
-	if request.Native {
-		inv.LocalShells = snapshot.nativeShells()
-	}
-	if request.Resources {
-		statuses := make(map[string]resourceStatus)
-		ctx, cancel := context.WithTimeout(ctx, resourceStatusTimeout)
-		defer cancel()
-		probeResourceStatus(ctx, workers, func(row resourceStatusRow) bool {
-			statuses[row.UID] = row.Status
-			return true
-		})
-		inv.Resources = resourceViews(snapshot.Resources, statuses, request.Status)
-	}
-	return inv
-}
-
 func excludeLocalResourcePeers(peers []peerView, resources []resourceView) []peerView {
 	local := make(map[string]bool, len(resources))
 	for _, r := range resources {
@@ -201,41 +173,37 @@ func excludeLocalResourcePeers(peers []peerView, resources []resourceView) []pee
 }
 
 type taskListRequest struct {
-	Native     bool
-	Host       string
-	Observed   bool
 	ShellsOnly bool
 }
 
 func (a *daemonActivity) listTasks(ctx context.Context, request taskListRequest) inventory {
-	query := taskInventoryRequest{Native: request.Native, Hosted: request.Host == "", Host: request.Host, Detail: "inventory"}
+	query := taskInventoryRequest{Native: true, Hosted: true, Detail: "inventory"}
 	if request.ShellsOnly {
 		query.Detail = "health"
 	} else {
 		query.Resources, query.Status = true, true
 	}
-	inv := managedInventory(ctx, a.tasks, query)
-	if request.Host != "" {
-		inv.Host = request.Host
-	} else {
-		if request.Native {
-			inv.Host = "local"
-			for i := range inv.Shells {
-				inv.Shells[i].Host = "local"
-			}
-		}
-		if !request.ShellsOnly {
-			inv.Peers = excludeLocalResourcePeers(peerViews(a.incomingPeers()), inv.Resources)
-		}
+	snapshot, workers := a.tasks.taskInventory(query)
+	inv := emptyInventory()
+	inv.Shells = append(inv.Shells, snapshot.Shells...)
+	inv.LocalShells = snapshot.nativeShells()
+	if query.Resources {
+		statuses := make(map[string]resourceStatus)
+		probeCtx, cancel := context.WithTimeout(ctx, resourceStatusTimeout)
+		defer cancel()
+		probeResourceStatus(probeCtx, workers, func(row resourceStatusRow) bool {
+			statuses[row.UID] = row.Status
+			return true
+		})
+		inv.Resources = resourceViews(snapshot.Resources, statuses, query.Status)
+		inv.Peers = excludeLocalResourcePeers(peerViews(a.incomingPeers()), inv.Resources)
 	}
-	if request.Observed || request.Host != "" {
-		reply := a.handleMetadata(metadataRequest{Action: "participation_get", Host: request.Host})
-		if reply.Error != "" {
-			inv.Errors = append(inv.Errors, "remote shell history unavailable: "+cleanText(reply.Error))
-		}
-		for _, row := range reply.Participants {
-			inv.Shells = append(inv.Shells, shellView{Host: row.Host, Owner: row.Owner, Instance: row.Instance, ID: "sh/" + row.Name, Name: row.Name, State: row.State, Observed: true, SeenAt: row.ChangedAt, Pinned: row.Pinned, PinUntil: row.PinUntil, PID: row.PID})
-		}
+	reply := a.handleMetadata(metadataRequest{Action: "participation_get"})
+	if reply.Error != "" {
+		inv.Errors = append(inv.Errors, "remote shell history unavailable: "+cleanText(reply.Error))
+	}
+	for _, row := range reply.Participants {
+		inv.Shells = append(inv.Shells, shellView{Host: row.Host, Owner: row.Owner, Instance: row.Instance, ID: "sh/" + row.Name, Name: row.Name, State: row.State, Observed: true, SeenAt: row.ChangedAt, Pinned: row.Pinned, PinUntil: row.PinUntil, PID: row.PID})
 	}
 	inv.setTaskReferences()
 	return inv
@@ -269,7 +237,7 @@ func daemonListTasks(request taskListRequest) (inventory, error) {
 }
 
 func collectInventory(shellsOnly bool) (inventory, error) {
-	inv, err := daemonListTasks(taskListRequest{Native: true, Observed: true, ShellsOnly: shellsOnly})
+	inv, err := daemonListTasks(taskListRequest{ShellsOnly: shellsOnly})
 	if err != nil {
 		inv.Errors = append(inv.Errors, cleanText(err.Error()))
 		return inv, err
@@ -325,10 +293,6 @@ type taskTableRow struct {
 	current                                              bool
 }
 
-func writeTaskInventory(out io.Writer, inv inventory) {
-	writeTaskInventoryColor(out, inv, "", false)
-}
-
 func writeTaskInventoryColor(out io.Writer, inv inventory, current string, color bool) {
 	screenWidth := 0
 	if f, ok := out.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
@@ -347,10 +311,7 @@ func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color
 	}
 	now := time.Now()
 	for _, s := range inv.Shells {
-		host := s.Host
-		if host == "" {
-			host = inv.Host
-		}
+		host := cmp.Or(s.Host, "local")
 		selected := !s.Observed && current != "" && identityFromUID(s.Instance) == current && s.State == taskActive
 		detail := s.Directory
 		if s.Observed {
@@ -394,11 +355,7 @@ func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color
 		if len(inv.Errors) > 0 {
 			return
 		}
-		if inv.Host != "" && inv.Host != "local" {
-			fmt.Fprintf(out, "No tasks for %s.\n", cleanText(inv.Host))
-		} else {
-			fmt.Fprintln(out, "No tasks. Create a local shell with sshore shell.")
-		}
+		fmt.Fprintln(out, "No tasks. Create a local shell with sshore shell.")
 		return
 	}
 	for start := 0; start < len(rows); {
@@ -613,25 +570,6 @@ func writeStyledTaskTable(out io.Writer, rows [][]string, columns, remaining int
 
 func peerTaskIdentity(p peerView) string {
 	return "peer-task:" + p.UID
-}
-
-func showConnectedTasks(o options) error {
-	inv, err := daemonListTasks(taskListRequest{Host: o.host})
-	if err != nil {
-		return err
-	}
-	shells := inv.Shells[:0]
-	for _, shell := range inv.Shells {
-		if shell.Instance != o.instance {
-			shells = append(shells, shell)
-		}
-	}
-	inv.Shells = shells
-	if len(inv.Shells)+len(inv.Resources)+len(inv.Peers) > 0 {
-		fmt.Fprintln(os.Stderr, "Background tasks:")
-		writeTaskInventory(os.Stderr, inv)
-	}
-	return inv.incompleteError()
 }
 
 func peerResourceID(id string) string {

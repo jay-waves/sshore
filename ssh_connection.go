@@ -17,12 +17,46 @@ import (
 	"github.com/jay-waves/sshore/internal/pty"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
+	cryptossh "golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
 
 func sshConnectionOptions(o options) sshio.Options {
 	return sshio.Options{Host: o.host, Command: remoteCommand(o), Args: o.ssh, Environment: o.environment, Directory: o.sshDirectory, Confirm: confirmSSHHost, Secret: promptSSHSecret}
 }
+
+func withSSHDiagnostics(o sshio.Options, out io.Writer, auth *sshAuthEndpoint) sshio.Options {
+	o.IgnoredForwarding = func(ctx context.Context, host string) {
+		warning := ignoredSSHForwarding(host)
+		if !auth.warn(ctx, warning) {
+			logSSHWarning(out, warning)
+		}
+	}
+	o.Negotiated = func(host string, algorithms cryptossh.NegotiatedAlgorithms) {
+		direction := func(a cryptossh.DirectionAlgorithms) string {
+			if a.MAC == "" {
+				return a.Cipher + " (AEAD)"
+			}
+			return a.Cipher + " / " + a.MAC
+		}
+		fmt.Fprintf(out, "[sshore] SSH %q: kex=%s hostkey=%s send=%s receive=%s\n", host, algorithms.KeyExchange, algorithms.HostKey, direction(algorithms.Write), direction(algorithms.Read))
+	}
+	return o
+}
+
+func ignoredSSHForwarding(host string) string {
+	return fmt.Sprintf("Ignoring SSH forwarding rules for %q. Use sshore forward for TCP forwarding.", host)
+}
+
+func logSSHWarning(out io.Writer, warning string) {
+	warning = cleanText(warning)
+	if file, ok := out.(*os.File); ok {
+		termui.Log(file, "", termui.Warning, "WARNING: %s", warning)
+		return
+	}
+	fmt.Fprintf(out, "[sshore] WARNING: %s\n", warning)
+}
+
 func confirmSSHHost(ctx context.Context, prompt string) (bool, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return false, fmt.Errorf("SSH host trust requires an interactive terminal")
@@ -342,7 +376,7 @@ func startSSHAuthBroker() (*sshAuthEndpoint, func(), error) {
 				http.Error(w, "invalid warning", http.StatusBadRequest)
 				return
 			}
-			sshio.LogWarning(os.Stderr, string(warning))
+			logSSHWarning(os.Stderr, string(warning))
 			w.WriteHeader(http.StatusNoContent)
 			return
 		case "/ask", "/unlock":

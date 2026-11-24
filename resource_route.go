@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strconv"
 
 	forwardio "github.com/jay-waves/sshore/internal/forward"
 )
@@ -60,7 +59,7 @@ func startRoutedForward(ctx context.Context, f forwardConfig) (*forwardConnectio
 	// Bind the origin listener before consuming the remote approval.
 	if !f.Reverse {
 		var err error
-		listener, err = net.Listen("tcp", loopbackPort(f.Port))
+		listener, err = net.Listen("tcp", loopback(f.Port))
 		if err != nil {
 			return nil, err
 		}
@@ -85,5 +84,3 @@ func startRoutedForward(ctx context.Context, f forwardConfig) (*forwardConnectio
 		close: forward.Close,
 	}, nil
 }
-
-func loopbackPort(port int) string { return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) }

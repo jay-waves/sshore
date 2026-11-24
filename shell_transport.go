@@ -373,7 +373,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	connection := sshConnectionOptions(o)
 	connection.Environment = req.Env
 	connection.Confirm, connection.Secret = req.Auth.callbacks()
-	connection.Warn = req.Auth.warn
+	connection = withSSHDiagnostics(connection, diagnostics, req.Auth)
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	var err error

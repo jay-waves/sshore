@@ -49,12 +49,4 @@ func runHostedCommand(o options) (int, error) {
 	}
 }
 
-func localSessionInventory() inventory {
-	inv, err := daemonListTasks(taskListRequest{})
-	if err != nil {
-		inv.Errors = append(inv.Errors, cleanText(err.Error()))
-	}
-	return inv
-}
-
 func checkPlatform() error { return nil }

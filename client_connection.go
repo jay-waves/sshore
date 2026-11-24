@@ -464,7 +464,7 @@ func applyConnectionOptions(o *options, r recentConnection) {
 func warnUnusedRouteForwarding(o *options) {
 	args := transportio.WithoutForwarding(o.ssh)
 	if len(args) != len(o.ssh) {
-		transportio.LogWarning(os.Stderr, transportio.IgnoredForwardingWarning(o.host))
+		logSSHWarning(os.Stderr, ignoredSSHForwarding(o.host))
 		o.ssh = args
 	}
 }

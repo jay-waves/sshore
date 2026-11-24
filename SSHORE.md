@@ -91,7 +91,8 @@ identity before signaling and preserve approval checks for shell-routed resource
 Mount and forward configuration travels in the authenticated launch request.
 The upgraded stream carries readiness and the caller's commit. The mount worker
 uses a separate pipe exchange because it can outlive the launch connection.
-Copy clients and mount clients use `pkg/sftp/v2` alongside the embedded agents.
+The CLI formats SSH and mount diagnostics from callbacks. Copy clients and
+mount clients use `pkg/sftp/v2` alongside the embedded agents.
 The pinned upstream revision includes the client disconnect fix and supports the
 project's Go version. Directory change notifications use their own stream.
 Trace changes through the [task registry](daemon_tasks.go), [mount coordinator](mount.go)
@@ -122,7 +123,9 @@ Invalid remote participation history makes the inventory incomplete. Parent edge
 for registered tasks come directly from the daemon; no ancestry files are loaded.
 Diagnostics identify the unavailable source, and invalid records report the
 file, entry and rejected field. Resource leases require a task UID and direction.
-A shell connection refreshes the known shells against the host’s live list.
+When establishing a new shell SSH connection, the local daemon checks the known
+shells once against the remote daemon's live registry. Between connections,
+inventory uses the last observations and updates from shell events.
 The CLI, the root prompt and the attached terminal resolve names and ID prefixes
 through the [task registry selector](task_selection.go). An explicit UID stays
 bound across renames. The selector limits attach choices to idle roots and the

@@ -201,7 +201,8 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 		if lookupErr != nil {
 			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not read participating shells: %s\n", cleanText(lookupErr.Error()))
 		}
-		err := transportio.Run(context.Background(), sshConnectionOptions(o), os.Stdin, os.Stdout, os.Stderr)
+		connection := withSSHDiagnostics(sshConnectionOptions(o), os.Stderr, nil)
+		err := transportio.Run(context.Background(), connection, os.Stdin, os.Stdout, os.Stderr)
 		if err == nil && target.Instance != "" {
 			var updateErr error
 			if o.command == "kill" {
@@ -344,11 +345,6 @@ func runClientOnce(o options, transports clientTransports, end *sessionEnd, read
 			if err := rememberDetachedAttachment(o); err != nil {
 				termui.Log(os.Stderr, "", termui.Warning, "[sshore] Detach history not saved: %s\n", cleanText(err.Error()))
 			}
-		}
-	}
-	if !o.local {
-		if err := showConnectedTasks(o); err != nil {
-			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Task list unavailable: %s\n", cleanText(err.Error()))
 		}
 	}
 	restore, err := pty.RawConsole()

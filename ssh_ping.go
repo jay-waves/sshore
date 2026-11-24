@@ -22,7 +22,7 @@ func runPing(args []string) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	connection := sshio.Options{
-		Host: parsed.operand(0), Args: parsed.ssh, Diagnostic: os.Stderr,
+		Host: parsed.operand(0), Args: parsed.ssh,
 		Confirm: confirmSSHHost, Secret: promptSSHSecret,
 	}
 	summary, err := measureSSHPing(ctx, connection, parsed.integer("--count"), os.Stderr)
@@ -72,6 +72,7 @@ func measureSSHPing(ctx context.Context, options sshio.Options, count int, diagn
 	}
 	start := time.Now()
 	options.Command = pingEchoCommand
+	options = withSSHDiagnostics(options, diagnostic, nil)
 	client, err := sshio.Dial(ctx, options)
 	connectionTime := time.Since(start)
 	if err != nil {

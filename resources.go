@@ -4,13 +4,18 @@ import (
 	"bufio"
 	"cmp"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -18,6 +23,67 @@ import (
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
+// The account daemon owns resource identity and control. Mounts isolate native
+// filesystem code in a child connected by pipes; forwards run in the daemon.
+type resourceRecord struct {
+	UID                                                   string `json:",omitempty"`
+	Kind, Detail, Name, Host, Remote, Mountpoint, Version string
+	ReadOnly                                              bool
+	Direction                                             string `json:",omitempty"`
+}
+
+type resourceStartup struct {
+	resourceRecord
+	Error string `json:"error,omitempty"`
+}
+
+type resourceConfig struct {
+	UID     string `json:",omitempty"`
+	Mount   *ftpOptions
+	Forward *forwardConfig
+	Auth    *sshAuthEndpoint `json:",omitempty"`
+}
+
+func (c resourceConfig) kind() string {
+	switch {
+	case c.Mount != nil && c.Forward == nil:
+		return "mount"
+	case c.Forward != nil && c.Mount == nil:
+		return "forward"
+	default:
+		return ""
+	}
+}
+
+type resourceService struct {
+	log         io.Writer
+	environment []string
+	directory   string
+
+	statusMu sync.Mutex
+	status   resourceStatus
+	record   resourceRecord
+	config   resourceConfig
+	done     chan struct{}
+}
+
+func resourceToken() string {
+	var b [32]byte
+	rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+func (s *resourceService) baseEnvironment() []string {
+	if s.environment != nil {
+		return s.environment
+	}
+	return os.Environ()
+}
+func (s *resourceService) logWriter() io.Writer {
+	if s.log != nil {
+		return s.log
+	}
+	return os.Stderr
+}
 func collectLocalResources(host string, withStatus bool) ([]resourceView, error) {
 	snapshot, statuses, err := readTaskInventory(taskInventoryRequest{Resources: true, Status: withStatus, Host: host})
 	if err != nil {
@@ -108,7 +174,8 @@ func runKillAll(o options) (int, error) {
 			return 1, err
 		}
 		o.command = "daemon-admin"
-		process, err := transportio.Start(ctx, sshConnectionOptions(o), os.Stderr)
+		connection := withSSHDiagnostics(sshConnectionOptions(o), os.Stderr, nil)
+		process, err := transportio.Start(ctx, connection, os.Stderr)
 		if err != nil {
 			return 1, err
 		}
@@ -248,4 +315,155 @@ func (s *resourceService) operationCompleted() {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	s.status.LastOperation = time.Now().UTC()
+}
+
+// Mount daemons receive only startup/control messages through the account daemon.
+// Forwards run here and directly own their SSH child; payloads stay in SSH.
+func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTasks) (result error) {
+	enc := json.NewEncoder(c)
+	defer func() {
+		if result != nil {
+			termui.Log(tasks.log, canonicalTaskCode(identityFromUID(request.Resource.UID)), termui.Error, "%s", result)
+			_ = enc.Encode(resourceStartup{Error: result.Error()})
+		}
+	}()
+	config := *request.Resource
+	kind := config.kind()
+	if !validTaskUID(config.UID) {
+		return fmt.Errorf("invalid resource task ID")
+	}
+	dec := json.NewDecoder(io.LimitReader(c, daemonBodyLimit))
+	if kind == "forward" {
+		return runDaemonForward(config, enc, dec, c, request, tasks)
+	}
+	log := &logStream{out: tasks.log, id: canonicalTaskCode(identityFromUID(config.UID)), level: termui.Error}
+	defer log.flush()
+	return runDaemonMount(config, enc, dec, c, log, request, tasks)
+}
+
+func acknowledgeResourceStartup(enc *json.Encoder, c net.Conn) {
+	// The daemon owns the committed task even if the initiator loses its reply.
+	_ = enc.Encode("started")
+	_ = c.Close()
+}
+
+func newResourceService(config resourceConfig, record resourceRecord) *resourceService {
+	record.UID, record.Version = config.UID, version
+	s := &resourceService{record: record, config: config, done: make(chan struct{})}
+	s.setTransport("starting", nil)
+	return s
+}
+
+func awaitResourceCommit(read func(any) error, abandon func()) <-chan error {
+	ack := make(chan error, 1)
+	go func() {
+		var answer string
+		err := read(&answer)
+		if err == nil && answer != "commit" {
+			err = fmt.Errorf("invalid startup acknowledgement")
+		}
+		if err != nil {
+			abandon()
+		}
+		ack <- err
+	}()
+	return ack
+}
+
+func offerResourceStartup(enc *json.Encoder, startup resourceRecord, ack <-chan error, finished <-chan struct{}) error {
+	if err := enc.Encode(startup); err != nil {
+		return err
+	}
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-ack:
+		return err
+	case <-finished:
+		return fmt.Errorf("resource worker exited before startup acknowledgement")
+	case <-timer.C:
+		return fmt.Errorf("resource startup acknowledgement timed out")
+	}
+}
+
+func commitResourceStartup(enc *json.Encoder, dec *json.Decoder) error {
+	if err := enc.Encode("commit"); err != nil {
+		return err
+	}
+	var reply json.RawMessage
+	if err := dec.Decode(&reply); err != nil {
+		return fmt.Errorf("resource startup was not acknowledged: %w", err)
+	}
+	var answer string
+	if json.Unmarshal(reply, &answer) == nil && answer == "started" {
+		return nil
+	}
+	var failure resourceStartup
+	if json.Unmarshal(reply, &failure) == nil && failure.Error != "" {
+		return fmt.Errorf("resource startup: %s", failure.Error)
+	}
+	return fmt.Errorf("invalid resource startup reply")
+}
+
+func (s *resourceService) finish() {
+	close(s.done)
+}
+
+func startResourceBackground(config resourceConfig, directory string) (int, error) {
+	kind := config.kind()
+	config.UID = newTaskUID()
+	auth, stopAuth, e := startSSHAuthBroker()
+	if e != nil {
+		return 1, e
+	}
+	defer stopAuth()
+	if directory == "" {
+		directory, e = os.Getwd()
+		if e != nil {
+			return 1, e
+		}
+	}
+	config.Auth = auth
+	c, e := openLocalDaemonContext(context.Background(), localDaemonRequest{
+		Kind: "resource", Record: localShellRecord{Directory: directory},
+		Env: os.Environ(), Resource: &config,
+	})
+	if e != nil {
+		return 1, e
+	}
+	defer c.Close()
+	enc, dec := json.NewEncoder(c), json.NewDecoder(c)
+	var startup resourceStartup
+	if e = dec.Decode(&startup); e != nil {
+		return 1, fmt.Errorf("resource startup failed: %w", e)
+	}
+	if startup.Error != "" {
+		return 1, fmt.Errorf("%s", startup.Error)
+	}
+	record := startup.resourceRecord
+	if e = commitResourceStartup(enc, dec); e != nil {
+		return 1, e
+	}
+	detail := record.Detail
+	switch kind {
+	case "mount":
+		mode := "read-write"
+		if record.ReadOnly {
+			mode = "read-only"
+		}
+		detail = fmt.Sprintf("%s:%s -> %s · %s", record.Host, record.Remote, record.Mountpoint, mode)
+	case "forward":
+		if f := config.Forward; f != nil {
+			detail = f.description("local", f.Host)
+		}
+	}
+	termui.Log(os.Stdout, canonicalTaskCode(resourceIdentity(record)), termui.Info, "Started %s/%s: %s", kind, record.Name, cleanText(detail))
+
+	return 0, nil
+}
+
+func (s *resourceService) peerTask(detail string) peerRecord {
+	// Derive a stable mirror key without exposing the local control token.
+	key := sha256.Sum256([]byte("peer:" + s.record.UID))
+	return peerRecord{Direction: s.record.Direction, UID: s.record.UID, Version: version, Key: hex.EncodeToString(key[:16]), ID: s.record.Kind + "/" + s.record.Name, Manager: taskManagerLabel(), Detail: cleanText(detail)}
 }

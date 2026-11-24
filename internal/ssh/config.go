@@ -3,7 +3,6 @@ package ssh
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/jay-waves/sshore/internal/sshconfig"
+	cryptossh "golang.org/x/crypto/ssh"
 )
 
 // FormatEndpoint joins an SSH destination and its operand, bracketing IPv6 addresses.
@@ -31,10 +31,10 @@ func FormatEndpoint(host, operand string) string {
 type Options struct {
 	Host, Command, Directory string
 	Args, Environment        []string
-	// Diagnostic receives warnings and, at DEBUG or higher, negotiated algorithms.
-	Diagnostic io.Writer
-	// Warn delivers a warning to the initiating terminal and reports whether it was shown.
-	Warn func(context.Context, string) bool
+	// IgnoredForwarding reports the host whose configured forwards were skipped.
+	IgnoredForwarding func(context.Context, string)
+	// Negotiated reports the algorithms for connections with DEBUG logging.
+	Negotiated func(string, cryptossh.NegotiatedAlgorithms)
 	// RequireKnownHost prevents all hops from learning new host keys.
 	RequireKnownHost bool
 	// Confirm receives a host key fingerprint when StrictHostKeyChecking is ask.

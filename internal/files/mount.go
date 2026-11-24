@@ -14,8 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	sshio "github.com/jay-waves/sshore/internal/ssh"
-	"github.com/jay-waves/sshore/internal/termui"
 	sftp "github.com/pkg/sftp/v2"
 	sshfx "github.com/pkg/sftp/v2/encoding/ssh/filexfer"
 	"github.com/pkg/sftp/v2/encoding/ssh/filexfer/openssh"
@@ -24,15 +22,20 @@ import (
 
 // MountConfig contains mount settings and endpoint openers.
 type MountConfig struct {
-	History                           func(account, root string, delta VisitHistory) VisitHistory
-	PeerMetadata                      json.RawMessage
-	Approval                          *MountApproval
-	Host, Remote, Mountpoint, Version string
-	ReadOnly, DirectIO, Stats         bool
-	StartupTimeout, IOTimeout         time.Duration
-	Prepare                           func(context.Context, io.ReadWriter) (string, error)
-	Open                              func(context.Context) (io.ReadWriteCloser, error)
-	OpenNotifications                 func(context.Context) (io.ReadWriteCloser, error)
+	History                     func(account, root string, delta VisitHistory) VisitHistory
+	PeerMetadata                json.RawMessage
+	Approval                    *MountApproval
+	Remote, Mountpoint, Version string
+	ReadOnly, DirectIO          bool
+	StartupTimeout, IOTimeout   time.Duration
+	Prepare                     func(context.Context, io.ReadWriter) (string, error)
+	Open                        func(context.Context) (io.ReadWriteCloser, error)
+	OpenNotifications           func(context.Context) (io.ReadWriteCloser, error)
+	NotificationsUnavailable    func()
+	Mounted                     func(root string)
+	Unmounting                  func(grace time.Duration)
+	UnmountFailed               func(error)
+	ReportStats                 func(MountStats)
 }
 
 // MountLifecycle connects a background worker to the mount. Nil means foreground.
@@ -174,7 +177,7 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		}
 	}
 	ftp := newFTPWire(data, data)
-	if o.Stats {
+	if o.ReportStats != nil {
 		ftp.enableMetrics()
 	}
 	if service != nil {
@@ -225,11 +228,11 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		history = o.History(account, root, nil)
 	}
 	backend = &ftpFS{client: client, root: path.Clean(root), readOnly: o.ReadOnly, directIO: o.DirectIO}
-	backend.notifications = startFTPNotifications(events, &backend.cache)
+	backend.notifications = startFTPNotifications(events, &backend.cache, o.NotificationsUnavailable)
 	backend.notifications.enqueue(backend.root)
-	if o.Stats {
+	if o.ReportStats != nil {
 		backend.metrics = &ftpCallbackMetrics{}
-		stopStats = startFTPStats(ftp, backend, os.Stderr)
+		stopStats = startFTPStats(ftp, backend, o.ReportStats)
 	}
 	startMetadataRefresh(ctx, backend)
 	backend.prefetch = startDirectoryPrefetch(ctx, backend, history)
@@ -249,11 +252,14 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 	}
 	var done <-chan struct{}
 	if ctx.Err() == nil {
-		fmt.Fprintf(os.Stderr, "Mounted %s -> %s (SFTP). Close files, then Ctrl-C to unmount.\n", termui.CleanText(sshio.FormatEndpoint(o.Host, root)), termui.CleanText(o.Mountpoint))
+		if o.Mounted != nil {
+			o.Mounted(root)
+		}
 		mounted := make(chan struct{})
 		go func() { mount.Wait(); close(mounted) }()
 		done = mounted
 	}
+	const unmountGrace = 10 * time.Second
 	for {
 		var request chan error
 		if ctx.Err() == nil {
@@ -267,10 +273,12 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 				return 0, nil
 			case <-ctx.Done():
 			case <-interrupts:
-				fmt.Fprintln(os.Stderr, "Unmounting (up to 10s). Ctrl-C again forces disconnect.")
+				if o.Unmounting != nil {
+					o.Unmounting(unmountGrace)
+				}
 			}
 		}
-		stopped, stopErr := stopFTPMount(ctx, mount, interrupts, disconnect, 10*time.Second)
+		stopped, stopErr := stopFTPMount(ctx, mount, interrupts, disconnect, unmountGrace)
 		if request != nil {
 			request <- stopErr
 		}
@@ -280,8 +288,8 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 			}
 			return 0, nil
 		}
-		if request == nil {
-			fmt.Fprintf(os.Stderr, "Unmount failed: %s. Still connected; close files and retry Ctrl-C.\n", termui.CleanText(stopErr.Error()))
+		if request == nil && o.UnmountFailed != nil {
+			o.UnmountFailed(stopErr)
 		}
 	}
 }
@@ -481,15 +489,17 @@ func (m *ftpCallbackMetrics) observe(callback ftpCallback) func() {
 		v.MaxNS = max(v.MaxNS, elapsed)
 	}
 }
-func writeFTPStats(w *ftpWire, f *ftpFS, out io.Writer) {
-	report := struct {
-		Type                                                       string
-		Requests                                                   map[string]ftpRequestTotals
-		Inflight, PeakInflight                                     int
-		Cache                                                      ftpCacheCounters
-		CacheBytes, MetadataEntries, Directories, DirectoryEntries int
-		Callbacks                                                  map[string]ftpCallbackTotals
-	}{Type: "mount_stats", Requests: make(map[string]ftpRequestTotals), Callbacks: make(map[string]ftpCallbackTotals)}
+
+type MountStats struct {
+	Requests                                                   map[string]ftpRequestTotals
+	Inflight, PeakInflight                                     int
+	Cache                                                      ftpCacheCounters
+	CacheBytes, MetadataEntries, Directories, DirectoryEntries int
+	Callbacks                                                  map[string]ftpCallbackTotals
+}
+
+func collectMountStats(w *ftpWire, f *ftpFS) MountStats {
+	report := MountStats{Requests: make(map[string]ftpRequestTotals), Callbacks: make(map[string]ftpCallbackTotals)}
 	var requests [256]ftpRequestTotals
 	w.mu.Lock()
 	if w.totals != nil {
@@ -516,9 +526,9 @@ func writeFTPStats(w *ftpWire, f *ftpFS, out io.Writer) {
 			}
 		}
 	}
-	_ = json.NewEncoder(out).Encode(report)
+	return report
 }
-func startFTPStats(w *ftpWire, f *ftpFS, out io.Writer) func() {
+func startFTPStats(w *ftpWire, f *ftpFS, report func(MountStats)) func() {
 	stop, done := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
@@ -527,10 +537,10 @@ func startFTPStats(w *ftpWire, f *ftpFS, out io.Writer) func() {
 		for {
 			select {
 			case <-stop:
-				writeFTPStats(w, f, out)
+				report(collectMountStats(w, f))
 				return
 			case <-ticker.C:
-				writeFTPStats(w, f, out)
+				report(collectMountStats(w, f))
 			}
 		}
 	}()

@@ -198,14 +198,10 @@ func runExec(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	stopActivity, err := beginCommandActivity()
-	if err != nil {
-		return 1, err
-	}
-	defer stopActivity()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	connection := sshio.Options{Host: parsed.operands[0], Command: parsed.operands[1], Args: parsed.ssh, Confirm: confirmSSHHost, Secret: promptSSHSecret}
+	connection = withSSHDiagnostics(connection, os.Stderr, nil)
 	if err := sshio.Run(ctx, connection, os.Stdin, os.Stdout, os.Stderr); err != nil {
 		if exit, ok := errors.AsType[exitStatusError](err); ok {
 			return exit.ExitStatus(), nil

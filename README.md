@@ -47,6 +47,7 @@ for experimental Apple Silicon support.
 Use SSH host aliases from `ssh_config`. Pass SSH options after `--`, including
 `-F FILE` for a different config or `-F none` for built-in defaults. Configure
 TCP listeners with `sshore forward`.
+`sshore exec` runs directly over SSH without starting the account daemon.
 
 ```sh
 sshore exec work 'uname -a'      # Run one command on work.

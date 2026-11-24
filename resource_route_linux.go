@@ -88,7 +88,7 @@ func serveRoutedForward(c net.Conn, forward operation) {
 	var listener net.Listener
 	if forward.Reverse {
 		var err error
-		listener, err = net.Listen("tcp", loopbackPort(forward.Port))
+		listener, err = net.Listen("tcp", loopback(forward.Port))
 		if err != nil {
 			_ = writeMessage(c, message{Type: "error", SoftwareVersion: version, Error: err.Error()})
 			return

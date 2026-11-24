@@ -286,13 +286,14 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 	}
 	connection := forwardSSHOptions(f, forwardRemoteCommand(f))
 	connection.Environment, connection.Directory = s.baseEnvironment(), s.directory
+	var auth *sshAuthEndpoint
 	if initial {
-		connection.Confirm, connection.Secret = s.config.Auth.callbacks()
-		connection.Warn = s.config.Auth.warn
+		auth = s.config.Auth
+		connection.Confirm, connection.Secret = auth.callbacks()
 	} else {
 		connection.RequireKnownHost = true
 	}
-	connection.Diagnostic = diagnostic
+	connection = withSSHDiagnostics(connection, diagnostic, auth)
 	client, close, err := openDirectForward(ctx, connection, f)
 	if err != nil {
 		return nil, err
@@ -404,7 +405,7 @@ func startDirectForward(c *sshio.Client, rule forwardConfig) (*forwardio.Forward
 func runForwardTransportForeground(ctx context.Context, c forwardConfig, diagnostic io.Writer) (int, error) {
 	options := forwardSSHOptions(c, "")
 	options.Confirm, options.Secret = confirmSSHHost, promptSSHSecret
-	options.Diagnostic = diagnostic
+	options = withSSHDiagnostics(options, diagnostic, nil)
 	connection, close, err := openDirectForward(ctx, options, c)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -549,4 +550,43 @@ func (d *diagnosticsTail) String() string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return termui.CleanText(strings.TrimSpace(string(d.data)))
+}
+
+func runDaemonForward(config resourceConfig, enc *json.Encoder, dec *json.Decoder, c net.Conn, request localDaemonRequest, tasks *daemonTasks) error {
+	f := *config.Forward
+	if err := validateForwardConfig(f); err != nil {
+		return err
+	}
+	record := resourceRecord{Kind: "forward", Name: f.Name, Host: f.Host, Direction: f.direction()}
+	s := newResourceService(config, record)
+	s.log = tasks.log
+	s.environment, s.directory = request.Env, request.Record.Directory
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	task := &daemonResourceTask{record: s.record, done: s.done, control: func(action string) resourceReply {
+		switch action {
+		case "kill":
+			cancel()
+			return resourceReply{}
+		case "status":
+			return resourceReply{Status: s.statusSnapshot()}
+		default:
+			return resourceReply{Error: "invalid resource operation"}
+		}
+	}}
+	if err := tasks.register(config.UID, task); err != nil {
+		return err
+	}
+	s.record.Name = task.taskName()
+	ack := awaitResourceCommit(dec.Decode, cancel)
+	_, err := runForward(ctx, f, s, func() error {
+		record := task.publishReady(s.record.Detail, "", "")
+		if err := offerResourceStartup(enc, record, ack, nil); err != nil {
+			return err
+		}
+		acknowledgeResourceStartup(enc, c)
+		return nil
+	})
+	task.finish(s.done)
+	return err
 }

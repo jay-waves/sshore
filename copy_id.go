@@ -24,6 +24,7 @@ func runCopyID(args []string) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	connection := sshio.Options{Host: host, Args: parsed.ssh, Confirm: confirmSSHHost, Secret: promptSSHSecret}
+	connection = withSSHDiagnostics(connection, os.Stderr, nil)
 	selectKey := func(paths []string) (int, error) {
 		if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 			return -1, fmt.Errorf("multiple IdentityFile keys require an interactive terminal")

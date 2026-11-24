@@ -53,7 +53,7 @@ func runRemoteService(args []string) error {
 		req.Protocol != remoteServiceProtocol || req.Release == "" {
 		return usage("invalid remote service request")
 	}
-	if os.Getenv("SSHORE_DISABLED") == "1" && req.Operation != "inventory" {
+	if os.Getenv("SSHORE_DISABLED") == "1" {
 		return disabledFeaturesError()
 	}
 	return serveRemoteRequest(req)

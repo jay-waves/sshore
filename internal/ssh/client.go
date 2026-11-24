@@ -7,14 +7,12 @@ import (
 	"math"
 	"net"
 	"net/netip"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/termui"
 	cryptossh "golang.org/x/crypto/ssh"
 )
 
@@ -67,21 +65,9 @@ func (cfg *connectionConfig) dial(ctx context.Context, depth int, budgets *authe
 	if err != nil {
 		return nil, err
 	}
-	if strings.HasPrefix(strings.ToUpper(cfg.get("loglevel")), "DEBUG") {
-		o := cfg.options
+	if report := cfg.options.Negotiated; report != nil && strings.HasPrefix(strings.ToUpper(cfg.get("loglevel")), "DEBUG") {
 		if metadata, ok := client.Conn.(cryptossh.AlgorithmsConnMetadata); ok {
-			out := o.Diagnostic
-			if out == nil {
-				out = os.Stderr
-			}
-			algorithms := metadata.Algorithms()
-			direction := func(a cryptossh.DirectionAlgorithms) string {
-				if a.MAC == "" {
-					return a.Cipher + " (AEAD)"
-				}
-				return a.Cipher + " / " + a.MAC
-			}
-			fmt.Fprintf(out, "[sshore] SSH %q: kex=%s hostkey=%s send=%s receive=%s\n", o.Host, algorithms.KeyExchange, algorithms.HostKey, direction(algorithms.Write), direction(algorithms.Read))
+			report(cfg.options.Host, metadata.Algorithms())
 		}
 	}
 	interval, _ := strconv.Atoi(cfg.get("serveraliveinterval"))
@@ -94,28 +80,9 @@ func (cfg *connectionConfig) warnIgnoredForwarding(ctx context.Context) {
 	if cfg.get("localforward") == "" && cfg.get("remoteforward") == "" && cfg.get("dynamicforward") == "" {
 		return
 	}
-	warning := IgnoredForwardingWarning(cfg.options.Host)
-	if warn := cfg.options.Warn; warn != nil && warn(ctx, warning) {
-		return
+	if report := cfg.options.IgnoredForwarding; report != nil {
+		report(ctx, cfg.options.Host)
 	}
-	LogWarning(cfg.options.Diagnostic, warning)
-}
-
-func IgnoredForwardingWarning(host string) string {
-	return fmt.Sprintf("Ignoring SSH forwarding rules for %q. Use sshore forward for TCP forwarding.", host)
-}
-
-// LogWarning renders a warning for a local terminal or a plain diagnostic stream.
-func LogWarning(out io.Writer, warning string) {
-	if out == nil {
-		out = os.Stderr
-	}
-	warning = termui.CleanText(warning)
-	if file, ok := out.(*os.File); ok {
-		termui.Log(file, "", termui.Warning, "[sshore] WARNING: %s\n", warning)
-		return
-	}
-	fmt.Fprintf(out, "[sshore] WARNING: %s\n", warning)
 }
 
 func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *authenticationBudgets) (client *Client, resultErr error) {
@@ -195,8 +162,8 @@ func (cfg *connectionConfig) proxyJumpOptions(jump string) (Options, error) {
 	o := cfg.options
 	options := Options{
 		Host: host, Environment: o.Environment,
-		Directory: o.Directory, Confirm: o.Confirm, Secret: o.Secret, Diagnostic: o.Diagnostic,
-		Warn:             o.Warn,
+		Directory: o.Directory, Confirm: o.Confirm, Secret: o.Secret,
+		IgnoredForwarding: o.IgnoredForwarding, Negotiated: o.Negotiated,
 		RequireKnownHost: o.RequireKnownHost,
 	}
 	for args := o.Args; len(args) > 0; {
@@ -300,9 +267,6 @@ func (p *Process) OpenSibling(command string, diagnostic io.Writer) (*Process, e
 }
 
 func Start(ctx context.Context, o Options, diagnostic io.Writer) (process *Process, err error) {
-	if o.Diagnostic == nil {
-		o.Diagnostic = diagnostic
-	}
 	client, err := Dial(ctx, o)
 	if err != nil {
 		return nil, err

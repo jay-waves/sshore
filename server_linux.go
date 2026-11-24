@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -43,8 +42,6 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 		return watchRemoteTask()
 	case "task-control":
 		return serveTaskControl(req)
-	case "inventory":
-		return json.NewEncoder(os.Stdout).Encode(localSessionInventory())
 	}
 	return usage("unknown remote service operation")
 }

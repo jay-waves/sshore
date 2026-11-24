@@ -91,7 +91,7 @@ func (c *connectionConfig) installIdentities() ([]installIdentity, error) {
 // called only when several distinct configured keys are available.
 func CopyID(ctx context.Context, options Options, selectKey func([]string) (int, error), diagnostic io.Writer) error {
 	command := "exec sh -c '" + strings.ReplaceAll(copyIDScript, "'", "'\"'\"'") + "'"
-	options.Command, options.Diagnostic = command, diagnostic
+	options.Command = command
 	cfg, err := resolveDialConfig(ctx, options)
 	if err != nil {
 		return err

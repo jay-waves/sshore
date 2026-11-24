@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path"
 	"strings"
 	"sync"
@@ -18,17 +17,18 @@ const ftpWatchTimeout = 3 * time.Second
 // Watches are hints: TTLs remain mandatory for unsupported filesystems, symlink
 // retargeting and mutations through other hard links. Never cache file contents.
 type ftpNotifications struct {
-	stream       io.ReadWriteCloser
-	cache        *ftpMetadataCache
-	mu           sync.Mutex // protects subscription state, never held during transport I/O
-	dirs         map[string]ftpWatchEntry
-	recency      uint64
-	generation   uint64
-	registration ftpWatchRegistration
-	done         chan struct{}
-	warnOnce     sync.Once
-	queue        chan string
-	workers      sync.WaitGroup
+	stream        io.ReadWriteCloser
+	cache         *ftpMetadataCache
+	mu            sync.Mutex // protects subscription state, never held during transport I/O
+	dirs          map[string]ftpWatchEntry
+	recency       uint64
+	generation    uint64
+	registration  ftpWatchRegistration
+	done          chan struct{}
+	warnOnce      sync.Once
+	onUnavailable func()
+	queue         chan string
+	workers       sync.WaitGroup
 }
 
 type ftpWatchRegistration struct {
@@ -45,8 +45,8 @@ type ftpWatchEntry struct {
 	ready      chan struct{} // Non-nil while a registration is queued or in flight.
 }
 
-func startFTPNotifications(s io.ReadWriteCloser, cache *ftpMetadataCache) *ftpNotifications {
-	n := &ftpNotifications{stream: s, cache: cache, dirs: make(map[string]ftpWatchEntry), done: make(chan struct{}), queue: make(chan string, ftpWatchLimit)}
+func startFTPNotifications(s io.ReadWriteCloser, cache *ftpMetadataCache, onUnavailable func()) *ftpNotifications {
+	n := &ftpNotifications{stream: s, cache: cache, onUnavailable: onUnavailable, dirs: make(map[string]ftpWatchEntry), done: make(chan struct{}), queue: make(chan string, ftpWatchLimit)}
 	if s == nil {
 		n.stop(true)
 		return n
@@ -56,9 +56,9 @@ func startFTPNotifications(s io.ReadWriteCloser, cache *ftpMetadataCache) *ftpNo
 	return n
 }
 func (n *ftpNotifications) warn() {
-	n.warnOnce.Do(func() {
-		fmt.Fprintln(os.Stderr, "File notifications unavailable; using short-lived metadata caches.")
-	})
+	if n.onUnavailable != nil {
+		n.warnOnce.Do(n.onUnavailable)
+	}
 }
 func (n *ftpNotifications) read() {
 	defer n.stop(true)

@@ -151,6 +151,7 @@ func runBootstrap(args []string) (int, error) {
 	}
 	showInstallDestination(host, target)
 	connection := sshio.Options{Host: host, Args: parsed.ssh, Command: command, Confirm: confirmSSHHost, Secret: promptSSHSecret}
+	connection = withSSHDiagnostics(connection, os.Stderr, nil)
 	if err := sshio.Run(ctx, connection, os.Stdin, os.Stdout, os.Stderr); err != nil {
 		return 1, fmt.Errorf("remote installation on %s: %w", cleanText(host), err)
 	}
@@ -235,8 +236,6 @@ func compareReleaseVersions(a, b string) (int, bool) {
 func remoteCommand(o options) string {
 	req := remoteServiceRequest{Name: o.session, Instance: o.instance}
 	switch {
-	case o.command == "list":
-		req = remoteServiceRequest{Operation: "inventory"}
 	case o.command == "daemon-admin":
 		req.Operation = "daemon-admin"
 	case o.command == "kill" || o.command == "rename":
