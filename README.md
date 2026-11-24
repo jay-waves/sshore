@@ -46,38 +46,61 @@ TCP listeners with `sshore forward`.
 
 ```sh
 sshore exec work 'uname -a'      # Run one command on work.
-sshore shell work: -- -J jump   # Open a shell through a jump host.
+sshore shell work -- -J jump    # Open a shell through a jump host.
 sshore forward .:8080 work:3000  # Reach the remote service on local port 8080.
 sshore ping work:               # Measure SSH latency.
 ```
 
 ## Shells — Start, detach and resume
 
-`sshore shell` (`sh`) starts a local or remote shell. Detach a child, exit its
-parent, then pick up the same shell under a new parent.
+`sshore shell` (`sh`) opens a shell on the machine running the command.
+`sshore shell work` opens one over SSH. Each shell receives an automatic ID.
+
+`sshore attach` resumes the most recently detached eligible local shell.
+Use `sshore attach ID` with the ID shown by `sshore pstree`.
+
+Detach a child, exit its parent, then resume it under a new parent.
+The IDs below are illustrative, and tree output is abbreviated.
 
 ```text
-$ sshore shell :dev
-dev$ sshore shell :build
-build$ sshore detach
-dev$ sshore pstree
-* dev  active
-╰── build  detached
+$ sshore shell
+a1b2c3$ sshore shell
+7b3a91$ sshore detach
+a1b2c3$ sshore pstree
+  * a1b2c3  active
+  ╰── 7b3a91  detached
 
-dev$ exit
+a1b2c3$ exit
 sshore> exit
 $ sshore pstree
-build  detached
+  7b3a91  detached
 
-$ sshore shell :review
-review$ sshore attach :build
-build$ sshore pstree
-review  waiting
-╰── * build  active
+$ sshore shell
+e4f567$ sshore attach 7b3a91
+7b3a91$ sshore pstree
+  e4f567  waiting
+  ╰── * 7b3a91  active
 ```
 
-While `dev` is alive, only `dev` can reattach `build`. Each tree has one
-foreground shell.
+While the original parent is alive, only it can reattach its child. Each tree
+has one foreground shell.
+
+### Select a shell over SSH
+
+In `HOST:SELECTOR`, the left side selects the SSH destination, including the
+login account, and the right side is resolved by that account's daemon.
+This lets two accounts use the same shell name and lets you select a remote
+task without relying on a saved connection.
+
+| Command | What the part after `:` means |
+| --- | --- |
+| `sshore shell work` | Create a shell on `work` with an automatic ID. |
+| `sshore attach work:7b3a91` | Resume the shell whose ID uniquely starts with `7b3a91` on `work`. The ID stays the same across renames. |
+| `sshore attach work:` | Let the remote daemon supply eligible detached roots and use detach history to choose one. An explicit colon also works for hexadecimal SSH aliases such as `db:`, where bare `db` is parsed as an ID. |
+
+For optional names, `sshore shell HOST:NAME` creates a named shell and
+`sshore attach HOST:NAME` selects it. Use `:NAME` or `here:NAME` for a
+local named shell.
 
 ### Find and manage tasks
 
