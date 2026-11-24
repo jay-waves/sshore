@@ -245,7 +245,24 @@ func runClient(o options) (int, error) {
 			var resume bool
 			code, resume, err = executeLocalApproval(approval.request, approval.source)
 			if !resume {
-				return code, err
+				if err != nil {
+					termui.Log(os.Stderr, "", termui.Error, "%s", cleanText(err.Error()))
+				}
+				found := false
+				for i := len(parents) - 1; i >= 0; i-- {
+					if parents[i].local {
+						o = parents[i]
+						parents = parents[:i]
+						o.command, o.recovering = "attach", true
+						returning = true
+						found = true
+						break
+					}
+				}
+				if !found {
+					return code, err
+				}
+				continue
 			}
 			if err != nil {
 				termui.Log(os.Stderr, "", termui.Warning, "[sshore] %s\n", cleanText(err.Error()))
@@ -284,6 +301,12 @@ func runClient(o options) (int, error) {
 			if o.command == "kill" || o.command == "rename" || err != nil && menu == nil {
 				return code, err
 			}
+			if !current.local && menu == nil {
+				if ended.title != "" {
+					fmt.Fprintln(os.Stderr, formatSessionEnd(ended, current))
+				}
+				return code, err
+			}
 			problem := ""
 			if err != nil {
 				problem, current = err.Error(), *menu
@@ -303,9 +326,7 @@ func runClient(o options) (int, error) {
 			target = parents[last]
 			parents = slices.Delete(parents, last, last+1)
 			if len(ended.retained) > 0 {
-				if _, menuErr := runRootConsole(current, "", ended, shellDisplayEndpoint(target)); menuErr != nil {
-					return 1, menuErr
-				}
+				fmt.Fprintln(os.Stderr, formatSessionEnd(ended, current))
 			} else if ended.exit {
 				sessionNotice(ended.level, ended.title, ended.detail)
 			}

@@ -73,12 +73,11 @@ preserves the original scope and pin. See [tree admission](shell_tree_control.go
 
 The authenticated exit frame carries the exit code and terminal output offset.
 The frontend drains the reported tail within a time budget and reports the
-exit even if the tail is incomplete. The root prompt opens before loading the
-shell tree. It fetches inventory independently and reuses its SSH connection
-for subsequent requests to a directly reachable remote host.
-A nested exit opens the prompt when the daemon confirms surviving pinned
-children. Dismissing that prompt returns to the previous shell. A connection
-loss without an exit frame leaves the state unconfirmed.
+exit even if the tail is incomplete. The local root prompt opens before loading
+the shell tree. Remote exits return to the parent or the invoking terminal,
+and report surviving pinned children directly. Declining a return after local
+approval restores the local parent when one exists. A connection loss without
+an exit frame leaves the state unconfirmed.
 
 ### Account daemon and mounts
 

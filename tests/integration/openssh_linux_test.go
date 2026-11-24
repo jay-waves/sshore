@@ -199,6 +199,44 @@ Match command "printf forwarding-check"
 			wait("Connected " + endpoint)
 			requireFile(t, approved, "approved content")
 			send("exit\n")
+			wait("Exited " + endpoint)
+		})
+	})
+
+	t.Run("declining return after approval restores local parent", func(t *testing.T) {
+		endpoint := host + ":approval-return"
+		cleanup := func() { _, _ = command("kill", endpoint, "--server", binary).CombinedOutput() }
+		cleanup()
+		defer cleanup()
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
+		probe, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		localPort := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
+		probe.Close()
+		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+		parent := exec.CommandContext(ctx, binary, "sh", "here:approval-parent", "--no-profile", "--no-login")
+		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
+			wait("Connected here:approval-parent")
+			send(quote(binary) + " sh " + endpoint + " --no-profile --server " + quote(binary) + " -- -F " + quote(config) + "\n")
+			wait("Connected " + endpoint)
+			send("sshore fwd origin: here:" + port + "\n")
+			wait("Approve this request? [y/N]", true)
+			send("y\r")
+			wait("Local listening port", true)
+			send(localPort + "\r")
+			wait("Return to session after operation? [Y/n]", true)
+			send("n\r")
+			wait("Connected here:approval-parent")
+			send("printf 'LOCAL_APPROVAL_RETURNED\\n'\n")
+			wait("LOCAL_APPROVAL_RETURNED")
+			send("exit\n")
 			wait("No shell attached.")
 			send("exit\r")
 		})
@@ -632,8 +670,6 @@ Match command "printf forwarding-check"
 			wait("Exited " + build + " (code 0)")
 			wait("Pinned shells become independent roots")
 			wait("(saved-child) · pinned indefinitely")
-			wait("Use exit or Esc to return to here:panel-dev.")
-			send("exit\r")
 			wait("Connected here:panel-dev")
 			send("exit\n")
 			wait("No shell attached.")
@@ -643,8 +679,7 @@ Match command "printf forwarding-check"
 			wait("Connected " + child)
 			send("printf 'SAVED_%s=%s\n' state \"$SSHORE_PANEL_CHECK\"\nexit\n")
 			wait("SAVED_state=kept")
-			wait("No shell attached.")
-			send("exit\r")
+			wait("Exited " + child)
 		})
 	})
 
