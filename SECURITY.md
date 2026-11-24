@@ -194,11 +194,13 @@ Forwarding fixes direction, listener and destination before execution. Independe
 forwards request IPv4 loopback listeners and loopback destinations; occupied ports
 fail without substitution. Remote requests need local port selection or acceptance.
 Their helper rechecks the original shell version, name, PID and detached state.
-No software update runs during forward approval. The SSH transport may bind an approved
-listener before that check; failure closes the transport before it reports ready.
+No software update runs during forward approval. The origin binds its local
+listener before approval is consumed. The resource endpoint binds reverse listeners
+after authorization. Both entries use the same smux forwarding engine.
+Direct forwarding uses an SSH exec service on the destination. Its listeners
+are created by that service under the authenticated account.
 
-**Limits:** loopback is not per-user isolation. SSH server `GatewayPorts` policy
-can override reverse listener binding, and forwarded services may be malicious.
+**Limits:** loopback is not per-user isolation. Forwarded services may be malicious.
 Local `--retries` explicitly permits bounded reconnection of the same mapping;
 it is unavailable to remote requests. Retries require noninteractive authentication
 and known host keys, never restore existing application connections, and stop on

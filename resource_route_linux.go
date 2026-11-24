@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"time"
@@ -84,7 +85,7 @@ func serveApprovedFileEndpoint(c net.Conn) {
 	approvedRemoteTransfer(c, m)
 }
 
-func serveRoutedForward(c net.Conn, forward operation) {
+func serveRoutedForward(c io.ReadWriteCloser, forward operation) {
 	var listener net.Listener
 	if forward.Reverse {
 		var err error

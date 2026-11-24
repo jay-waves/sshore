@@ -60,17 +60,6 @@ func startForwarder(closeInputs func(), serve func(context.Context, *sync.WaitGr
 	return f
 }
 
-// StartForwardListener takes ownership of a listener and relays each accepted
-// connection to the supplied dial target.
-func StartForwardListener(listener net.Listener, dial func(context.Context) (net.Conn, error)) *Forwarder {
-	return startForwarder(func() { _ = listener.Close() }, func(ctx context.Context, workers *sync.WaitGroup, _ func()) {
-		forwardAccepted(ctx, workers, listener.Accept, dial)
-	})
-}
-
-// startMuxForward takes ownership of a mux with its control streams already
-// established. It opens a stream for each listener connection, or dials the
-// validated loopback target for each peer stream if listener is nil.
 func startMuxForward(mx *smux.Session, listener net.Listener, target int) *Forwarder {
 	if listener != nil {
 		return startForwarder(func() {

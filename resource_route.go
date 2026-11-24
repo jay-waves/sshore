@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 
 	forwardio "github.com/jay-waves/sshore/internal/forward"
@@ -55,6 +56,12 @@ func openResourceEndpoint(ctx context.Context, o *options, request message, tran
 
 func startRoutedForward(ctx context.Context, f forwardConfig) (*forwardConnection, error) {
 	request := message{Type: "route_forward", Name: f.Session, PID: f.ResumePID, ApprovalID: f.ApprovalID, Operations: []operation{{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse}}}
+	return openForwardStream(ctx, f, func() (io.ReadWriteCloser, error) {
+		return openRoutedResource(ctx, *f.Connection, request)
+	})
+}
+
+func openForwardStream(ctx context.Context, f forwardConfig, open func() (io.ReadWriteCloser, error)) (*forwardConnection, error) {
 	var listener net.Listener
 	// Bind the origin listener before consuming the remote approval.
 	if !f.Reverse {
@@ -69,10 +76,12 @@ func startRoutedForward(ctx context.Context, f forwardConfig) (*forwardConnectio
 			}
 		}()
 	}
-	conn, err := openRoutedResource(ctx, *f.Connection, request)
+	conn, err := open()
 	if err != nil {
 		return nil, err
 	}
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
 	forward, control, err := forwardio.Open(conn, listener, f.Target, true)
 	if err != nil {
 		return nil, err

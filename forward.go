@@ -16,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	forwardio "github.com/jay-waves/sshore/internal/forward"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 )
@@ -159,10 +158,8 @@ func loopback(port int) string { return net.JoinHostPort("127.0.0.1", strconv.It
 
 // Remote helper selection is application policy; the engine receives opaque command text.
 func forwardRemoteCommand(f forwardConfig) string {
-	req := remoteServiceRequest{Operation: "task-watch"}
-	if f.ApprovalID != "" {
-		req = remoteServiceRequest{Operation: "forward-watch", Name: f.Session, Instance: f.Instance, PID: f.ResumePID, ApprovalID: f.ApprovalID}
-	}
+	req := remoteServiceRequest{Operation: "forward-agent", Name: f.Session, Instance: f.Instance, PID: f.ResumePID, ApprovalID: f.ApprovalID,
+		Forward: &operation{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse}}
 	return renderRemoteCommand(f.Server, req)
 }
 
@@ -294,16 +291,7 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 		connection.RequireKnownHost = true
 	}
 	connection = withSSHDiagnostics(connection, diagnostic, auth)
-	client, close, err := openDirectForward(ctx, connection, f)
-	if err != nil {
-		return nil, err
-	}
-	process, err := client.Start(connection.Command, diagnostic)
-	if err != nil {
-		close()
-		return nil, err
-	}
-	return &forwardConnection{Reader: process, Writer: process, Wait: process.Wait, close: func() error { close(); return nil }}, nil
+	return startSSHForward(ctx, f, connection, diagnostic)
 }
 
 var errForwardRetries = errors.New("--retries must be between 0 and 10")
@@ -342,81 +330,53 @@ func forwardSSHOptions(c forwardConfig, command string) sshio.Options {
 	return sshio.Options{Host: c.Host, Command: command, Args: c.SSH}
 }
 
-// openDirectForward owns both the SSH connection and its forwarding workers.
-// The listener must be established before starting the remote readiness helper.
-func openDirectForward(ctx context.Context, options sshio.Options, rule forwardConfig) (*sshio.Client, func(), error) {
-	if err := rule.Validate(); err != nil {
-		return nil, nil, err
-	}
-	client, err := sshio.Dial(ctx, options)
-	if err != nil {
-		return nil, nil, err
-	}
-	// Remote listener setup may block waiting for an SSH reply.
-	stop := context.AfterFunc(ctx, func() { client.Close() })
-	worker, err := startDirectForward(client, rule)
-	if err == nil {
-		err = ctx.Err()
-	}
-	close := sync.OnceFunc(func() {
-		stop()
-		client.Close()
-		if worker != nil {
-			worker.Close()
+func startSSHForward(ctx context.Context, f forwardConfig, options sshio.Options, diagnostic io.Writer) (*forwardConnection, error) {
+	return openForwardStream(ctx, f, func() (io.ReadWriteCloser, error) {
+		process, err := sshio.Start(ctx, options, diagnostic)
+		if err != nil {
+			return nil, err
 		}
+		stream := &forwardConnection{Reader: process, Writer: process, close: process.CloseAndWait}
+		reply, err := readMessage(process)
+		if err == nil {
+			err = checkPeerVersion(reply.SoftwareVersion, "forward service")
+		}
+		if err == nil && reply.Type != "resource_ready" {
+			err = fmt.Errorf("forward service: %s", cleanText(reply.Error))
+		}
+		if err != nil {
+			stream.Close()
+			return nil, err
+		}
+		return stream, nil
 	})
-	if err != nil {
-		close()
-		return nil, nil, err
-	}
-	return client, close, nil
-}
-
-func startDirectForward(c *sshio.Client, rule forwardConfig) (*forwardio.Forwarder, error) {
-	listen := net.JoinHostPort("127.0.0.1", strconv.Itoa(rule.Port))
-	target := net.JoinHostPort("127.0.0.1", strconv.Itoa(rule.Target))
-	var listener net.Listener
-	var err error
-	if rule.Reverse {
-		listener, err = c.Listen("tcp4", listen)
-	} else {
-		listener, err = net.Listen("tcp4", listen)
-	}
-	if err != nil {
-		if rule.Reverse && err.Error() == "ssh: tcpip-forward request denied by peer" {
-			return nil, fmt.Errorf("forward %s: %w; the SSH server did not provide a reason; check its TCP forwarding policy and whether the remote port is already in use", listen, err)
-		}
-		return nil, fmt.Errorf("forward %s: %w", listen, err)
-	}
-
-	dial := func(ctx context.Context) (net.Conn, error) {
-		return c.DialContext(ctx, "tcp", target)
-	}
-	if rule.Reverse {
-		dialer := net.Dialer{Timeout: 15 * time.Second}
-		dial = func(ctx context.Context) (net.Conn, error) {
-			return dialer.DialContext(ctx, "tcp4", target)
-		}
-	}
-	return forwardio.StartForwardListener(listener, dial), nil
 }
 
 // Foreground forwards own their connection until explicit cancellation or loss.
 func runForwardTransportForeground(ctx context.Context, c forwardConfig, diagnostic io.Writer) (int, error) {
-	options := forwardSSHOptions(c, "")
+	options := forwardSSHOptions(c, forwardRemoteCommand(c))
 	options.Confirm, options.Secret = confirmSSHHost, promptSSHSecret
 	options = withSSHDiagnostics(options, diagnostic, nil)
-	connection, close, err := openDirectForward(ctx, options, c)
+	connection, err := startSSHForward(ctx, c, options, diagnostic)
 	if err != nil {
 		if ctx.Err() != nil {
 			return 0, nil
 		}
 		return 1, err
 	}
-	defer close()
+	defer connection.Close()
+	if err := readForwardReady(connection); err != nil {
+		if ctx.Err() != nil {
+			return 0, nil
+		}
+		return 1, err
+	}
 	err = connection.Wait()
 	if ctx.Err() != nil {
 		return 0, nil
+	}
+	if err == nil {
+		return 1, errors.New("forward disconnected")
 	}
 	return 1, fmt.Errorf("forward disconnected: %w", err)
 }
@@ -431,6 +391,17 @@ func parseForwardRetries(value string) (int, error) {
 }
 
 func validRetries(n int) bool { return n >= 0 && n <= 10 }
+
+func readForwardReady(input io.Reader) error {
+	marker, err := bufio.NewReader(io.LimitReader(input, int64(len(forwardReadyMarker)+2))).ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if marker != forwardReadyMarker+"\n" {
+		return fmt.Errorf("unexpected forward startup response: %q", termui.CleanText(marker))
+	}
+	return nil
+}
 
 const forwardReadyMarker = "sshore-forward-ready"
 
@@ -463,14 +434,9 @@ func runForwardAttempt(parent context.Context, s *resourceService, advertisement
 		closeConnection()
 		heartbeat.Wait()
 	}()
-	// Read only the bounded protocol marker. Unexpected login output is an error.
-	marker, readErr := bufio.NewReader(io.LimitReader(connection, int64(len(forwardReadyMarker)+2))).ReadString('\n')
+	readErr := readForwardReady(connection)
 	startupErr := readErr
-	switch {
-	case readErr != nil:
-	case marker != forwardReadyMarker+"\n":
-		startupErr = fmt.Errorf("unexpected forward startup response: %q", termui.CleanText(marker))
-	default:
+	if startupErr == nil {
 		s.setTransport("connected", nil)
 		if onReady != nil {
 			startupErr = onReady()

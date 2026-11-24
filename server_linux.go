@@ -3,15 +3,10 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	"io"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/jay-waves/sshore/internal/files"
-	"github.com/jay-waves/sshore/internal/termui"
 )
 
 func serveRemoteRequest(req remoteServiceRequest) error {
@@ -26,20 +21,21 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 		return err
 	}
 	switch req.Operation {
-	case "forward-watch", "task-watch":
-		for _, name := range []string{"SSHORE_CONFIRM_ADDR", "SSHORE_CONFIRM_TOKEN", "SSHORE_SOCKET"} {
-			_ = os.Unsetenv(name)
+	case "forward-agent":
+		if req.Forward == nil || req.Forward.Kind != "forward" {
+			return fmt.Errorf("invalid forward request")
 		}
-		if req.Operation == "forward-watch" {
+		f := req.Forward
+		if err := (forwardConfig{Port: f.Port, Target: f.TargetPort}).Validate(); err != nil {
+			return err
+		}
+		if req.ApprovalID != "" {
 			if err := checkApprovalSource(req.Name, req.PID, req.ApprovalID, req.Instance); err != nil {
 				return err
 			}
 		}
-
-		if _, err := fmt.Fprintln(os.Stdout, forwardReadyMarker); err != nil {
-			return err
-		}
-		return watchRemoteTask()
+		serveRoutedForward(agentStdio(), *f)
+		return nil
 	case "task-control":
 		return serveTaskControl(req)
 	}
@@ -74,28 +70,4 @@ func serveRemoteFiles(operation string) error {
 	return files.ServeAgentWithPeer(agentStdio(), version, account, beginIncomingMountTask, func(a files.MountApproval) error {
 		return checkApprovalSource(a.Session, a.PID, a.ID, a.Instance)
 	})
-}
-
-// The existing SSH transport owns this watcher. EOF or termination removes its
-// lease, removing its resource from the incoming inventory.
-func watchRemoteTask() error {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer cancel()
-	// Inherited stdin can block even after a signal. Give the watcher a reader
-	// we can close independently so it releases the lease before this helper exits.
-	input, output := io.Pipe()
-	defer input.Close()
-	stop := context.AfterFunc(ctx, func() { input.Close() })
-	defer stop()
-	go func() {
-		_, err := io.Copy(output, os.Stdin)
-		_ = output.CloseWithError(err)
-	}()
-	err := watchPeerRecords(input, "", func(err error) {
-		termui.Log(os.Stderr, "", termui.Warning, "[sshore] Peer inventory unavailable; forward active: %s\n", cleanText(err.Error()))
-	})
-	if ctx.Err() != nil {
-		return nil
-	}
-	return err
 }

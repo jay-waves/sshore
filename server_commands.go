@@ -13,15 +13,16 @@ const remoteServiceProtocol = 1
 
 // This request selects the SSH channel's service before any protocol uses stdin.
 type remoteServiceRequest struct {
-	Protocol   int    `json:"protocol"`
-	Release    string `json:"release"`
-	Operation  string `json:"operation"`
-	Mode       string `json:"mode,omitempty"`
-	Name       string `json:"name,omitempty"`
-	NewName    string `json:"new_name,omitempty"`
-	Instance   string `json:"instance,omitempty"`
-	ApprovalID string `json:"approval_id,omitempty"`
-	PID        int    `json:"pid,omitempty"`
+	Forward    *operation `json:"forward,omitempty"`
+	Protocol   int        `json:"protocol"`
+	Release    string     `json:"release"`
+	Operation  string     `json:"operation"`
+	Mode       string     `json:"mode,omitempty"`
+	Name       string     `json:"name,omitempty"`
+	NewName    string     `json:"new_name,omitempty"`
+	Instance   string     `json:"instance,omitempty"`
+	ApprovalID string     `json:"approval_id,omitempty"`
+	PID        int        `json:"pid,omitempty"`
 }
 
 func remoteServiceArgs(req remoteServiceRequest) []string {
