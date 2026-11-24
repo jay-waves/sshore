@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -229,6 +230,18 @@ func (s *shellTask) rememberRemoteChild(child *remoteShellChild) func() {
 		delete(s.remoteChildren, child)
 		s.mu.Unlock()
 	}
+}
+
+func (s *shellTask) remoteChildIDs(prefix string) []selectedTask {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var candidates []selectedTask
+	for child := range s.remoteChildren {
+		if strings.HasPrefix(child.uid, prefix) {
+			candidates = append(candidates, selectedTask{Kind: "shell", Identity: identityFromUID(child.uid), Instance: child.uid, ChildHost: child.host})
+		}
+	}
+	return candidates
 }
 
 func (s *shellTask) selectRemoteChild(config *shellConfig) (*remoteShellChild, error) {

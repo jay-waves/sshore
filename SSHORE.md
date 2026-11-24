@@ -128,9 +128,18 @@ shells once against the remote daemon's live registry. Between connections,
 inventory uses the last observations and updates from shell events.
 The CLI, the root prompt and the attached terminal resolve names and ID prefixes
 through the [task registry selector](task_selection.go). An explicit UID stays
-bound across renames. The selector limits attach choices to idle roots and the
-caller's detached direct children. For `attach HOST:`, the host supplies eligible
-roots during SSH setup and the client ranks them by detach history.
+bound across renames. The CLI parses selectors without consulting the daemon.
+`HOST:SELECTOR` scopes a selector to an SSH account, and `:SELECTOR` scopes it to
+the current daemon. A bare hexadecimal argument is an ID prefix, and another
+bare attach argument selects an SSH host. Within a selector's scope, an ID
+match takes precedence over a name match. Ambiguous prefixes require a longer
+prefix or an explicit scope.
+
+From a managed shell, bare `attach ID` searches shells on the current daemon
+and the caller's registered direct SSH children together. The selector binds
+the full UID before handoff. The handoff checks ownership and whether the shell
+can be entered. For `attach HOST:`, the host supplies eligible roots during
+SSH setup and the client ranks them by detach history.
 `kill` and `rename` use the same selector for shells, mounts and forwards.
 Bare IDs can resolve a remote shell through a saved direct SSH connection.
 `HOST:ID` selects a task in that authenticated account's registry. Incoming

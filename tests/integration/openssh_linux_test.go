@@ -523,7 +523,7 @@ Match command "printf forwarding-check"
 		cleanRemote(child)
 		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 		parent := exec.CommandContext(ctx, binary, "shell", "here:dev", "--no-profile", "--no-login")
-		const report = "printf 'BUILD_%s=%s:%s\\n' state \"$$\" \"$SSHORE_BUILD\"\n"
+		const report = "printf 'BUILD_%s=%s:%s:%.6s\\n' state \"$$\" \"$SSHORE_BUILD\" \"${SSHORE_TREE_ID#task:}\"\n"
 		var recorded string
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
 			wait("Connected here:dev")
@@ -533,8 +533,9 @@ Match command "printf forwarding-check"
 			const marker = "BUILD_state="
 			line := ansi.Strip(wait(marker))
 			_, state, _ := strings.Cut(strings.TrimSpace(line), marker)
-			pid, value, _ := strings.Cut(state, ":")
-			if number, err := strconv.Atoi(pid); err != nil || number <= 0 || value != "retained" {
+			pid, remainder, _ := strings.Cut(state, ":")
+			value, childID, _ := strings.Cut(remainder, ":")
+			if number, err := strconv.Atoi(pid); err != nil || number <= 0 || value != "retained" || len(childID) != 6 {
 				t.Fatalf("unexpected remote shell state: %q", line)
 			}
 			recorded = marker + state
@@ -545,7 +546,7 @@ Match command "printf forwarding-check"
 			if err == nil {
 				t.Fatalf("a separate frontend entered the child before its parent exited:\n%s", out)
 			}
-			send(quote(binary) + " attach " + child + "\n")
+			send(quote(binary) + " attach " + childID + "\n")
 			wait("Connected " + child)
 			send(report)
 			wait(recorded)

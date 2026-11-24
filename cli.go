@@ -162,9 +162,13 @@ func runTargetCommand(args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
+	host := target.ChildHost
 	if target.Connection != nil {
+		host = target.Connection.Host
+	}
+	if host != "" {
 		parsed.local = false
-		parsed.operands = append([]string{target.Connection.Host, target.Instance}, parsed.operands[1:]...)
+		parsed.operands = append([]string{host, target.Instance}, parsed.operands[1:]...)
 	} else if target.Identity != "" {
 		if len(parsed.ssh) != 0 || parsed.has("--server") {
 			return 2, usage("local tasks do not accept SSH options")

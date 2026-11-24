@@ -16,11 +16,13 @@ import (
 type taskQuery struct {
 	Kind, Ref, UID, Parent string
 	Detached               bool
+	RemoteChildrenOf       string `json:",omitempty"`
 }
 
 type selectedTask struct {
 	Kind, Name, Identity, Instance string
 	Hosted                         bool
+	ChildHost                      string            `json:",omitempty"` // An existing route owned by the caller's shell.
 	Connection                     *recentConnection `json:",omitempty"`
 	Manager                        string            `json:",omitempty"` // A visible task without a control route.
 }
@@ -105,7 +107,10 @@ func matchTask(ref string, candidates []selectedTask) (selectedTask, error) {
 		switch {
 		case byID && strings.HasPrefix(canonicalTaskUID(target.Identity), prefix):
 			if idMatch.Identity != "" && idMatch.Identity != target.Identity {
-				return selectedTask{}, usage("ambiguous task ID %s; use a longer prefix or HOST:ID", ref)
+				return selectedTask{}, usage("ambiguous task ID %s; use a longer prefix, :ID or HOST:ID", ref)
+			}
+			if idMatch.Identity == target.Identity && idMatch.ChildHost != target.ChildHost {
+				return selectedTask{}, usage("task ID %s matches multiple accounts; use :ID or HOST:ID", ref)
 			}
 			if idMatch.Identity == target.Identity && target.Connection != nil {
 				if saved, route := idMatch.Connection, target.Connection; saved != nil {
@@ -133,18 +138,18 @@ func matchTask(ref string, candidates []selectedTask) (selectedTask, error) {
 }
 
 // An explicit UID is binding even if its previous label now belongs to another task.
-func (q taskQuery) selectLocked(tasks *daemonTasks) (target selectedTask, err error) {
+func (q taskQuery) selectLocked(tasks *daemonTasks, children ...selectedTask) (target selectedTask, err error) {
 	// Resolve the reference before testing availability so a busy shell's ID
 	// cannot silently become a different shell's alias.
 	uid := q.UID
 	if uid == "" {
 		uid = strings.ToLower(q.Ref)
 	}
-	if validTaskUID(uid) {
+	if len(children) == 0 && validTaskUID(uid) {
 		target, _ = q.candidate(uid, tasks.lookupLocked(uid))
 	}
 	if target.Identity == "" && q.UID == "" {
-		target, err = matchTask(q.Ref, q.registeredLocked(tasks))
+		target, err = matchTask(q.Ref, append(q.registeredLocked(tasks), children...))
 	}
 	return target, err
 }
@@ -153,8 +158,15 @@ func (q taskQuery) run(tasks *daemonTasks) ([]selectedTask, error) {
 	if q.Ref == "" && q.UID == "" {
 		return q.registered(tasks), nil
 	}
+	var children []selectedTask
+	if q.UID == "" && q.RemoteChildrenOf != "" && isTaskIDPrefix(q.Ref) {
+		// Take the parent snapshot before acquiring the registry lock.
+		if parent, ok := tasks.lookup(canonicalTaskUID(q.RemoteChildrenOf)).(interface{ managedShell() *shellTask }); ok {
+			children = parent.managedShell().remoteChildIDs(strings.ToLower(q.Ref))
+		}
+	}
 	tasks.mu.Lock()
-	task, err := q.selectLocked(tasks)
+	task, err := q.selectLocked(tasks, children...)
 	tasks.mu.Unlock()
 	if err != nil || task.Identity == "" || q.Detached && !q.detached(tasks, task) {
 		return nil, err
@@ -270,11 +282,15 @@ func selectCLITask(command string, parsed cliArguments) (selectedTask, error) {
 		return selectedTask{}, nil
 	}
 	query := taskQuery{Kind: parsed.taskKind, Ref: parsed.operand(0)}
-	useRoutes := parsed.bareTaskID && (command != "attach" || shellIdentityFromEnvironment() == "")
+	parent := shellIdentityFromEnvironment()
+	useRoutes := parsed.bareTaskID && (command != "attach" || parent == "")
 	if command == "attach" {
 		query.Kind = "shell"
 		if !useRoutes && os.Getenv("SSHORE_SOCKET") != "" {
 			query.Kind = "hosted"
+		}
+		if parsed.bareTaskID {
+			query.RemoteChildrenOf = parent
 		}
 	}
 	if useRoutes {

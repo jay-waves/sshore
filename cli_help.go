@@ -153,13 +153,14 @@ Opening a shell from an interactive session creates a child. Its parent waits fo
 		help: `Usage: sshore attach [ID|HOST|HOST:ID|:ID] [options] [-- SSH_OPTIONS]
 
 From a terminal, enter an idle root. Inside a shell, enter a detached child
-or adopt an idle root on this daemon. Use HOST:ID for a child opened over SSH.
+or adopt an idle root on this daemon. Bare IDs also find the current shell's
+direct SSH children. Use HOST:ID or :ID to limit the search to one account.
 With no target, resume the most recently detached eligible local shell.
-A short ID or full task:<UID> selects a local shell or one with a saved direct
-SSH connection. Use HOST:ID to specify the
-remote host, or HOST: to resume there (including hexadecimal hosts such as db:).
-Use here: for the local machine, or .: as shorthand. IDs accept unique
-hexadecimal prefixes.
+Outside a managed shell, IDs can also use saved direct SSH connections.
+Use HOST: to resume on a host, including hexadecimal hosts such as db:.
+A bare hexadecimal argument is matched as an ID prefix first. Use a longer
+prefix or an explicit host if it is ambiguous. Full task:<UID> is accepted.
+Use here: for the local machine, or .: as shorthand.
 
 Options:
 ` + connectionOptions + shellConnectionHelp,

@@ -103,6 +103,10 @@ task without relying on a saved connection.
 | `sshore attach work:7b3a91` | Resume the shell whose ID uniquely starts with `7b3a91` on `work`. The ID stays the same across renames. |
 | `sshore attach work:` | Let the remote daemon supply eligible detached roots and use detach history to choose one. An explicit colon also works for hexadecimal SSH aliases such as `db:`, where bare `db` is parsed as an ID. |
 
+From the parent shell, `sshore attach 7b3a91` can also resume its direct
+SSH child. If the ID prefix matches more than one shell, use a longer prefix,
+`HOST:ID` for a remote child or `:ID` for a shell on the current daemon.
+
 For optional names, `sshore shell HOST:NAME` creates a named shell and
 `sshore attach HOST:NAME` selects it. Use `:NAME` or `here:NAME` for a
 local named shell.
