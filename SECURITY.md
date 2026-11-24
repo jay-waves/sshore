@@ -227,8 +227,9 @@ ended shells. Rename changes a label, not process identity or approval authority
 
 The authenticated starting lease owns the lifetime of a top-level shell.
 A same-host nested shell follows the registered parent task. A cross-host
-child uses a lease scoped to that parent. A lost lease is detected by its
-closure or the heartbeat deadline.
+child uses a lease scoped to that parent. Native local shell leases end when
+their loopback connections close. SSH shell leases also expire on a missed
+heartbeat.
 
 `sh --pin` retains the shell until it exits. Explicit `detach [DURATION]`
 sets retention under the same lock as task termination before releasing the
@@ -393,10 +394,10 @@ are not proof of identity, successful cleanup or remote service health. Targets
 are not probed. `list` reads remote shell observations from the local daemon.
 `pstree` uses the last observed shell state and parent to render its branches.
 `list` includes the last known parent ID and observation time.
-The host resolves task selectors against its live registry. The command prompt reads the current host’s
-registered tasks through its authenticated attachment or through a direct,
-exact-release SSH inventory request after leaving the root shell. The client
-sanitizes the response for terminal display.
+The host resolves task selectors against its live registry. The command prompt
+reads the current host’s registered tasks through its authenticated attachment.
+The temporary prompt uses the local daemon. The client sanitizes inventory for
+terminal display.
 
 See [inventory and diagnostics](SSHORE.md#inventory-and-diagnostics) for implementation entry points.
 

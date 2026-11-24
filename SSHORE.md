@@ -63,7 +63,9 @@ and enter it in the same operation. A failed attach rolls back a provisional
 adoption. A private reservation keeps the parent path occupied until the
 frontend returns or disconnects. Input elsewhere in the same tree is refused.
 
-A root follows its starting connection. A same-host child follows its parent.
+A root follows its starting connection. A native local root uses the lifetime
+of its loopback connection so system sleep does not expire its lease.
+A same-host child follows its parent.
 For a cross-host child the initiating daemon holds an authenticated SSH route
 scoped to the parent. Re-entering that child uses the same route. Each daemon
 makes its own attachment decisions. Explicit detach records a pin before
@@ -75,8 +77,8 @@ preserves the original scope and pin. See [tree admission](shell_tree_control.go
 The authenticated exit frame carries the exit code and terminal output offset.
 The frontend drains the reported tail within a time budget and reports the
 exit even if the tail is incomplete. The local root prompt opens before loading
-the shell tree. Remote exits return to the parent or the invoking terminal,
-and report surviving pinned children directly. Declining a return after local
+the shell tree. Remote exits and detaches return to the parent or the invoking
+terminal. Exit notices report surviving pinned children directly. Declining a return after local
 approval restores the local parent when one exists. A connection loss without
 an exit frame leaves the state unconfirmed. Exit notices identify the restored
 shell, temporary session or calling terminal and whether pinned children remain.

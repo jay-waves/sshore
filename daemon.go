@@ -309,6 +309,14 @@ func runDaemon() (result error) {
 	if err != nil {
 		return err
 	}
+	log := os.Stderr // Background launches inherit the account log as stderr.
+	if standalone {
+		log, err = openDaemonLog(filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		defer log.Close()
+	}
 	if err = writeStateJSON(path, record); err != nil {
 		return err
 	}
@@ -326,7 +334,15 @@ func runDaemon() (result error) {
 	} else {
 		termui.Log(os.Stderr, "daemon", termui.Info, "Daemon running.")
 	}
-	tasks := &daemonTasks{}
+	termui.Log(log, "daemon", termui.Info, "Daemon running (PID %d).", record.ManagerPID)
+	defer func() {
+		if result != nil {
+			termui.Log(log, "daemon", termui.Error, "Daemon stopped: %s", cleanText(result.Error()))
+		} else {
+			termui.Log(log, "daemon", termui.Info, "Daemon stopped.")
+		}
+	}()
+	tasks := &daemonTasks{log: log}
 	activity := &daemonActivity{tasks: tasks, root: record.Directory}
 	accountActivity.Store(activity)
 	defer accountActivity.Store(nil)
@@ -501,7 +517,7 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 	enc := json.NewEncoder(c)
 	defer func() {
 		if result != nil {
-			termui.Log(os.Stderr, taskShortCode(request.Resource.UID), termui.Error, "%s", result)
+			termui.Log(tasks.log, canonicalTaskCode(identityFromUID(request.Resource.UID)), termui.Error, "%s", result)
 			_ = enc.Encode(resourceStartup{Error: result.Error()})
 		}
 	}()
@@ -510,12 +526,12 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 	if !validTaskUID(config.UID) {
 		return fmt.Errorf("invalid resource task ID")
 	}
-	log := &logStream{out: os.Stderr, id: taskShortCode(config.UID), level: termui.Error}
-	defer log.flush()
 	dec := json.NewDecoder(io.LimitReader(c, daemonBodyLimit))
 	if kind == "forward" {
-		return runDaemonForward(config, enc, dec, c, log, request, tasks)
+		return runDaemonForward(config, enc, dec, c, request, tasks)
 	}
+	log := &logStream{out: tasks.log, id: canonicalTaskCode(identityFromUID(config.UID)), level: termui.Error}
+	defer log.flush()
 	return runDaemonMount(config, enc, dec, c, log, request, tasks)
 }
 
@@ -661,14 +677,14 @@ func runDaemonMount(config resourceConfig, enc *json.Encoder, dec *json.Decoder,
 	return nil
 }
 
-func runDaemonForward(config resourceConfig, enc *json.Encoder, dec *json.Decoder, c net.Conn, log io.Writer, request localDaemonRequest, tasks *daemonTasks) error {
+func runDaemonForward(config resourceConfig, enc *json.Encoder, dec *json.Decoder, c net.Conn, request localDaemonRequest, tasks *daemonTasks) error {
 	f := *config.Forward
 	if err := validateForwardConfig(f); err != nil {
 		return err
 	}
 	record := resourceRecord{Kind: "forward", Name: f.Name, Host: f.Host, Direction: f.direction()}
 	s := newResourceService(config, record)
-	s.log = log
+	s.log = tasks.log
 	s.environment, s.directory = request.Env, request.Record.Directory
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -728,15 +744,11 @@ func launchLocalDaemonContext(ctx context.Context, executable ...string) (localS
 	if err != nil {
 		return empty, err
 	}
-	logPath := filepath.Join(dir, "local.log")
-	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	log, err := openDaemonLog(dir)
 	if err != nil {
 		return empty, err
 	}
 	defer log.Close()
-	if err = privateStatePath(logPath, false); err != nil {
-		return empty, err
-	}
 	cmd.Stderr = log
 	input, err := cmd.StdinPipe()
 	if err != nil {

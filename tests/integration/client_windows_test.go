@@ -55,7 +55,7 @@ func windowsClient(t *testing.T) (context.Context, func(...string) *exec.Cmd) {
 	})
 	reader := bufio.NewReader(stderr)
 	line, err := reader.ReadString('\n')
-	if err != nil || strings.TrimSpace(line) != "Daemon running." {
+	if err != nil || !strings.HasSuffix(strings.TrimSpace(line), " [daemon] [info] Daemon running.") {
 		t.Fatalf("fixture daemon did not start: %q (%v)", line, err)
 	}
 	ready = true

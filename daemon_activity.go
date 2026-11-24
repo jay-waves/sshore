@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -132,19 +133,29 @@ func activityDaemon(ctx context.Context) (localShellRecord, error) {
 	}
 	return existingDaemonRecord()
 }
-func (s *daemonActivity) serve(c net.Conn, r leaseRequest) {
+func (s *daemonActivity) serve(c net.Conn, r leaseRequest, heartbeat bool) error {
 	l, err := s.registerLease(r)
 	if err != nil {
-		return
+		return err
 	}
-	pulse := s.heartbeat()
-	if writeMessage(c, message{Type: "activity_ready"}) != nil {
+	if err := writeMessage(c, message{Type: "activity_ready"}); err != nil {
 		s.remove(l)
 		_ = c.Close()
-		return
+		return err
 	}
 	_ = c.SetDeadline(time.Time{})
-	done := make(chan struct{})
+	if !heartbeat {
+		// Both endpoints suspend together. Only closure ends a native shell's lease.
+		defer s.remove(l)
+		defer c.Close()
+		_, err := readMessage(c)
+		if err == nil {
+			return fmt.Errorf("unexpected native owner message")
+		}
+		return err
+	}
+	pulse := s.heartbeat()
+	done := make(chan error, 1)
 	defer func() {
 		_ = c.Close()
 		<-done
@@ -157,21 +168,30 @@ func (s *daemonActivity) serve(c net.Conn, r leaseRequest) {
 			_ = c.SetReadDeadline(time.Now().Add(daemonHeartbeatTimeout))
 			m, err := readMessage(c)
 			if err != nil {
+				if errors.Is(err, os.ErrDeadlineExceeded) {
+					err = fmt.Errorf("heartbeat acknowledgement timed out: %w", err)
+				}
+				done <- err
 				return
 			}
-			if m.Type != "alive" {
+			switch m.Type {
+			case "alive":
+			case "release":
+				return
+			default:
+				done <- fmt.Errorf("unexpected heartbeat reply")
 				return
 			}
 		}
 	}()
 	for {
 		select {
-		case <-done:
-			return
+		case err := <-done:
+			return err
 		case <-pulse:
 			pulse = s.heartbeat()
-			if sendLeaseMessage(c, "pulse") != nil {
-				return
+			if err := sendLeaseMessage(c, "pulse"); err != nil {
+				return fmt.Errorf("send heartbeat: %w", err)
 			}
 		}
 	}
@@ -202,11 +222,10 @@ func remoteActivity(ctx context.Context, r leaseRequest) (func(), <-chan struct{
 	if err != nil {
 		return nil, nil, err
 	}
-	return acceptActivityLease(ctx, c)
+	return acceptActivityLease(ctx, c, true)
 }
 
-// Shell ownership uses the same heartbeat over SSH.
-func acceptActivityLease(ctx context.Context, c net.Conn) (func(), <-chan struct{}, error) {
+func acceptActivityLease(ctx context.Context, c net.Conn, heartbeat bool) (func(), <-chan struct{}, error) {
 	closeConnection := sync.OnceFunc(func() { _ = c.Close() })
 	stop := context.AfterFunc(ctx, closeConnection)
 	ready, err := readMessage(c)
@@ -224,8 +243,17 @@ func acceptActivityLease(ctx context.Context, c net.Conn) (func(), <-chan struct
 		return nil, nil, err
 	}
 	_ = c.SetDeadline(time.Time{})
-	var writeMu sync.Mutex
 	finished := make(chan struct{})
+	if !heartbeat {
+		go func() {
+			defer close(finished)
+			defer closeConnection()
+			defer stop()
+			_, _ = readMessage(c)
+		}()
+		return func() { closeConnection(); <-finished }, finished, nil
+	}
+	var writeMu sync.Mutex
 	go func() {
 		defer close(finished)
 		defer closeConnection()

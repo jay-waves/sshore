@@ -43,8 +43,6 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 		return watchRemoteTask()
 	case "task-control":
 		return serveTaskControl(req)
-	case "console-inventory":
-		return writeMessage(os.Stdout, consoleInventory(message{Name: req.Mode}, ""))
 	case "inventory":
 		return json.NewEncoder(os.Stdout).Encode(localSessionInventory())
 	}

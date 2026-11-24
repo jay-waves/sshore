@@ -325,7 +325,7 @@ func ownedTaskEndpoint(open taskEndpoint, uid, token string) taskEndpoint {
 	}
 }
 
-func claimShellOwner(ctx context.Context, open taskEndpoint, instance, owner, token string) (func(), <-chan struct{}, error) {
+func claimShellOwner(ctx context.Context, open taskEndpoint, instance, owner, token string, hosted bool) (func(), <-chan struct{}, error) {
 	c, err := open()
 	if err != nil {
 		return nil, nil, err
@@ -336,7 +336,7 @@ func claimShellOwner(ctx context.Context, open taskEndpoint, instance, owner, to
 		c.Close()
 		return nil, nil, err
 	}
-	return acceptActivityLease(ctx, c)
+	return acceptActivityLease(ctx, c, hosted)
 }
 
 func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest, owner *shellTask, use func(taskEndpoint, message, <-chan struct{}) error) (resultErr error) {
@@ -412,7 +412,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 		if owner != nil {
 			uid, token = owner.record.UID, resourceToken()
 		}
-		stop, done, err := claimShellOwner(ctx, open, ready.Instance, uid, token)
+		stop, done, err := claimShellOwner(ctx, open, ready.Instance, uid, token, true)
 		if err != nil {
 			return err
 		}

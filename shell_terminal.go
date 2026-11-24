@@ -15,6 +15,7 @@ import (
 
 	"github.com/jay-waves/sshore/internal/proc"
 	"github.com/jay-waves/sshore/internal/pty"
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 // A daemon-owned shell with one terminal and at most one attachment. Entry
@@ -199,6 +200,7 @@ func (s *shellTask) startManagedShell(path string, env []string, m message) erro
 			s.exitReason = reason
 		}
 		s.mu.Unlock()
+		termui.Log(s.tasks.log, canonicalTaskCode(s.treeIdentity()), termui.Info, "Shell exited (code %d): %s", code, cleanText(reason))
 		if p != nil {
 			p.finishExit(message{Type: "exit", Code: code, Reason: reason, RetainedShells: s.retainedChildren()})
 		}
@@ -544,9 +546,11 @@ func (s *shellTask) detachTerminal(p *attachment) (bool, error) {
 
 // Once attached, only this loop reads control frames. The host records release
 // under the shell lock, and may return cleanup that needs to run outside it.
-func (s *shellTask) serveAttachment(p *attachment, control io.Reader, resizeAck bool, onRelease func(error) (string, func()), extra func(message) error) error {
+func (s *shellTask) serveAttachment(p *attachment, control io.Reader, resizeAck bool, onRelease func(error) (string, func()), extra func(message) error) (result error) {
+	released := false
 	release := func() (string, error) {
 		s.mu.Lock()
+		disconnected := !released && !s.exited && s.active == p && result != nil
 		detached, err := s.detachTerminal(p)
 		s.tasks.forest.releaseInput(p.claim)
 		var name string
@@ -556,12 +560,17 @@ func (s *shellTask) serveAttachment(p *attachment, control io.Reader, resizeAck 
 		}
 		s.reapUnretainedLocked()
 		s.mu.Unlock()
+		if disconnected {
+			termui.Log(s.tasks.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Shell attachment disconnected: %s", cleanText(result.Error()))
+		}
+		if err != nil {
+			termui.Log(s.tasks.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Could not release shell input: %s", cleanText(err.Error()))
+		}
 		if cleanup != nil {
 			cleanup()
 		}
 		return name, err
 	}
-	released := false
 	inputDone := make(chan struct{})
 	defer func() {
 		p.Close()

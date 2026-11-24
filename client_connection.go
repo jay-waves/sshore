@@ -151,7 +151,7 @@ func openClientTransportContext(ctx context.Context, o *options, transports clie
 				}
 				o.taskIdentity, o.session = r.identity(), r.Name
 				if o.parent == "" {
-					stop, _, err := claimShellOwner(context.Background(), func() (net.Conn, error) { return open(ctx) }, r.UID, "", "")
+					stop, _, err := claimShellOwner(context.Background(), func() (net.Conn, error) { return open(ctx) }, r.UID, "", "", false)
 					if err != nil {
 						return nil, err
 					}
@@ -288,7 +288,7 @@ func runClient(o options) (int, error) {
 			}
 			problem := fmt.Sprintf("Could not return to %s: %s", cleanText(o.session), cleanText(err.Error()))
 			termui.Log(os.Stderr, "", termui.Warning, "[sshore] %s\n", problem)
-			if len(parents) == 0 {
+			if len(parents) == 0 && o.local {
 				menu = &o
 			}
 		}
@@ -311,17 +311,17 @@ func runClient(o options) (int, error) {
 			if o.command == "kill" || o.command == "rename" || err != nil && menu == nil {
 				return code, err
 			}
-			if !current.local && menu == nil {
-				if ended.title != "" {
-					fmt.Fprintln(os.Stderr, formatSessionEnd(ended, current, "calling terminal"))
-				}
-				return code, err
-			}
 			problem := ""
 			if err != nil {
 				problem, current = err.Error(), *menu
 			}
-			next, menuErr := runRootConsole(current, problem, ended, "")
+			if !current.local {
+				if ended.exit {
+					fmt.Fprintln(os.Stderr, formatSessionEnd(ended, current, "calling terminal"))
+				}
+				return code, err
+			}
+			next, menuErr := runRootConsole(current, problem, ended)
 			if menuErr != nil {
 				return 1, menuErr
 			}

@@ -493,8 +493,6 @@ Match command "printf forwarding-check"
 			wait("Connected " + endpoint)
 			send("\x02d")
 			wait("Detached from ")
-			wait("No shell attached.")
-			send("exit\r")
 		})
 		cleanRemote(endpoint)
 		attach := func(input string, markers ...string) {
@@ -507,8 +505,6 @@ Match command "printf forwarding-check"
 				for _, marker := range markers {
 					wait(marker)
 				}
-				wait("No shell attached.")
-				send("exit\r")
 			})
 		}
 		attach("export SSHORE_FIXTURE=retained\n\x02d", "Detached from")
@@ -566,8 +562,7 @@ Match command "printf forwarding-check"
 			wait(recorded)
 			send("exit\n")
 			wait("Exited " + child)
-			wait("No shell attached.")
-			send("exit\r")
+			wait("Now in: calling terminal")
 		})
 	})
 	t.Run("nested exit explains retained roots", func(t *testing.T) {

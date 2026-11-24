@@ -9,6 +9,8 @@ import (
 	"net"
 	"slices"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 func parseDetachCommand(args []string) (message, error) {
@@ -43,7 +45,7 @@ func requestShellRetention(c io.ReadWriter, request message) error {
 
 // A root lease belongs to the frontend. A child on another daemon gets its
 // parent identity and private entry token from this lease.
-func (s *shellTask) serveOwner(c net.Conn, m message) error {
+func (s *shellTask) serveOwner(c net.Conn, m message) (result error) {
 	s.mu.Lock()
 	if s.ownerClaimed || s.parent != nil || s.exited || s.killing || m.Instance != s.record.UID || m.SoftwareVersion != version ||
 		m.Owner == "" && m.Token != "" || m.Owner != "" && (!s.hosted || !validTaskUID(m.Owner) || len(m.Token) != 64 || s.terminal != nil) {
@@ -53,7 +55,7 @@ func (s *shellTask) serveOwner(c net.Conn, m message) error {
 	s.ownerClaimed = true
 	s.remoteOwner, s.remoteOwnerToken = m.Owner, m.Token
 	s.mu.Unlock()
-	defer s.scopeEnded(nil)
+	defer func() { s.scopeEnded(nil, result) }()
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -64,8 +66,7 @@ func (s *shellTask) serveOwner(c net.Conn, m message) error {
 		}
 	}()
 	if activity := accountActivity.Load(); activity != nil {
-		activity.serve(c, leaseRequest{Kind: "heartbeat"})
-		return nil
+		return activity.serve(c, leaseRequest{Kind: "heartbeat"}, s.hosted)
 	}
 	return fmt.Errorf("account daemon unavailable")
 }
@@ -96,28 +97,47 @@ func (s *shellTask) watchParent(parent *shellTask) {
 	go func() {
 		select {
 		case <-parent.done:
-			s.scopeEnded(parent)
+			s.scopeEnded(parent, nil)
 		case <-s.done:
 		}
 	}()
 }
 
-func (s *shellTask) scopeEnded(owner *shellTask) {
+func (s *shellTask) scopeEnded(owner *shellTask, cause error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.parent != owner {
+		s.mu.Unlock()
 		return
 	}
+	reason := "Shell owner released its lease"
+	level := termui.Info
 	if owner == nil {
 		s.remoteOwner, s.remoteOwnerToken = "", ""
+		if cause == io.EOF {
+			reason = "Shell owner connection closed"
+		} else if cause != nil {
+			level = termui.Error
+			reason = "Shell owner connection ended: " + cleanText(cause.Error())
+		}
 	} else {
+		reason = "Parent shell " + canonicalTaskCode(owner.treeIdentity()) + " ended"
 		// Pinned survivors no longer need the terminated parent's task or routes.
 		s.tasks.forest.mu.Lock()
 		s.parent = nil
 		s.tasks.forest.mu.Unlock()
 	}
+	ending := s.exited || s.killing
 	s.scopeLost = true
 	s.reapUnretainedLocked()
+	reaping := s.killing
+	s.mu.Unlock()
+	if !ending {
+		outcome := "Keeping pinned shell."
+		if reaping {
+			outcome = "Stopping unpinned shell."
+		}
+		termui.Log(s.tasks.log, canonicalTaskCode(s.treeIdentity()), level, "%s. %s", reason, outcome)
+	}
 }
 
 func (s *shellTask) pinLocked(ttl time.Duration) error {
@@ -165,7 +185,11 @@ func (s *shellTask) reapUnretainedLocked() {
 	}
 	if s.scopeLost {
 		s.killing, s.exitReason = true, "shell lifetime ended"
-		go func() { _ = s.stopTerminal() }()
+		go func() {
+			if err := s.stopTerminal(); err != nil {
+				termui.Log(s.tasks.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Could not stop unpinned shell: %s", cleanText(err.Error()))
+			}
+		}()
 	}
 }
 

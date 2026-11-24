@@ -237,8 +237,6 @@ func remoteCommand(o options) string {
 	switch {
 	case o.command == "list":
 		req = remoteServiceRequest{Operation: "inventory"}
-	case o.command == "console-inventory":
-		req.Operation, req.Mode = "console-inventory", o.newName
 	case o.command == "daemon-admin":
 		req.Operation = "daemon-admin"
 	case o.command == "kill" || o.command == "rename":

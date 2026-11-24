@@ -153,7 +153,8 @@ it. Close open files before unmounting.
 ## Help and troubleshooting
 
 - Run `sshore --tldr` for examples or `sshore COMMAND --help` for options.
-- Background diagnostics are appended to the account daemon's `local.log`.
+- Each host's account daemon records shell disconnects, retention and other
+  background diagnostics in `~/.sshore/daemon/local.log`.
 - Status and diagnostic messages show local time, task ID when available, and severity.
 
 ## Project documents

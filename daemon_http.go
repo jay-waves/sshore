@@ -241,7 +241,7 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *htt
 		if r.URL.Path == "/leases" {
 			var req leaseRequest
 			if readDaemonBody(w, r, &req) {
-				serveDaemonStream(w, r, func(c net.Conn) { activity.serve(c, req) })
+				serveDaemonStream(w, r, func(c net.Conn) { activity.serve(c, req, true) })
 			}
 			return
 		}

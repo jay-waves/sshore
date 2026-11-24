@@ -264,7 +264,7 @@ func retryForward(ctx context.Context, retries int, s *resourceService, attempt 
 	for retry := 1; established && retry <= retries && ctx.Err() == nil; retry++ {
 		s.setTransport("reconnecting", err)
 		delay := time.Second * time.Duration(1<<min(retry-1, 5))
-		termui.Log(os.Stderr, taskShortCode(s.record.UID), termui.Info, "Forward disconnected; TCP connections lost. Retry %d/%d in %s.", retry, retries, delay)
+		termui.Log(s.logWriter(), canonicalTaskCode(resourceIdentity(s.record)), termui.Info, "Forward disconnected; TCP connections lost. Retry %d/%d in %s.", retry, retries, delay)
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -447,7 +447,9 @@ func runForwardAttempt(parent context.Context, s *resourceService, advertisement
 	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
 	var diagnostics diagnosticsTail
-	connection, err := open(ctx, io.MultiWriter(s.logWriter(), &diagnostics))
+	log := &logStream{out: s.logWriter(), id: canonicalTaskCode(resourceIdentity(s.record)), level: termui.Error}
+	defer log.flush()
+	connection, err := open(ctx, io.MultiWriter(log, &diagnostics))
 	if err != nil {
 		return false, err
 	}

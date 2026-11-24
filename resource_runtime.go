@@ -282,7 +282,7 @@ func startResourceBackground(config resourceConfig, directory string) (int, erro
 			detail = f.description("local", f.Host)
 		}
 	}
-	termui.Log(os.Stdout, taskShortCode(record.UID), termui.Info, "Started %s/%s: %s", kind, record.Name, cleanText(detail))
+	termui.Log(os.Stdout, canonicalTaskCode(resourceIdentity(record)), termui.Info, "Started %s/%s: %s", kind, record.Name, cleanText(detail))
 
 	return 0, nil
 }

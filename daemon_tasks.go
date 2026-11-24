@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"net"
 	"net/http"
@@ -25,6 +26,7 @@ type daemonTask interface {
 var errDaemonDraining = errors.New("daemon is shutting down")
 
 type daemonTasks struct {
+	log      io.Writer
 	forest   shellForest
 	draining bool
 	mu       sync.Mutex

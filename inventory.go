@@ -87,7 +87,6 @@ type peerView struct {
 	Detail    string `json:"detail"`
 }
 type inventory struct {
-	Tree        []taskTreeRow    `json:"tree,omitempty"`
 	MachineID   string           `json:"machine_id,omitempty"`
 	Hostname    string           `json:"hostname,omitempty"`
 	LocalShells []localShellView `json:"local_shells,omitempty"`
@@ -239,9 +238,6 @@ func (a *daemonActivity) listTasks(ctx context.Context, request taskListRequest)
 		}
 	}
 	inv.setTaskReferences()
-	if request.Native && request.Observed && request.Host == "" {
-		inv.Tree = normalizeTaskTree(localShellTreeNodes(inv))
-	}
 	return inv
 }
 
@@ -666,24 +662,25 @@ func taskDisplayID(code, alias string) string {
 // A snapshot lists parents before children. Owner is the parent's one-based
 // row index, or zero for a root. It carries display fields only.
 type taskTreeRow struct {
-	Identity     string    `json:"identity"`
-	Code         string    `json:"short_id"`
-	Name         string    `json:"name"`
-	State        string    `json:"state"`
-	Directory    string    `json:"directory,omitempty"`
-	MissingOwner string    `json:"last_known_parent,omitempty"`
-	Remote       string    `json:"remote,omitempty"`
-	Direction    string    `json:"direction,omitempty"`
-	Owner        int       `json:"parent_row,omitempty"`
-	Pinned       bool      `json:"pinned,omitempty"`
-	PinUntil     time.Time `json:"pin_until,omitzero"`
-	SeenAt       time.Time `json:"seen_at,omitzero"`
+	Identity     string
+	Code         string
+	Name         string
+	State        string
+	Directory    string
+	MissingOwner string
+	Remote       string
+	Direction    string
+	Owner        int
+	Pinned       bool
+	PinUntil     time.Time
+	SeenAt       time.Time
 }
 
 func writeInventory(out io.Writer, command string, inv inventory, current string, color bool, width int) {
 	if command == "pstree" {
-		if len(inv.Tree) != 0 || len(inv.Errors) == 0 {
-			writeShellTree(out, inv.Tree, current, color)
+		rows := normalizeTaskTree(localShellTreeNodes(inv))
+		if len(rows) != 0 || len(inv.Errors) == 0 {
+			writeShellTree(out, rows, current, color)
 		}
 		return
 	}
