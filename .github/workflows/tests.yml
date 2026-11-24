@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/tests.yml
       - tests/integration/**
+      - tests/install_windows_test.ps1
   workflow_dispatch:
     inputs:
       ref:

@@ -136,3 +136,7 @@ func main() {
     $env:PATH = $oldPath
     if ([IO.Directory]::Exists($root)) { [IO.Directory]::Delete($root, $true) }
 }
+
+# The locked-target check intentionally runs an executable that returns 1.
+# Actions uses LASTEXITCODE when the PowerShell script otherwise succeeds.
+$global:LASTEXITCODE = 0
