@@ -213,11 +213,7 @@ func selectApprovedResource(input reviewPromptReader, r *requestRecord) (resourc
 		}}, nil
 	}
 
-	label := "Local listening port"
-	if op.Reverse {
-		label = "Local service port"
-	}
-	port, err := readApprovalPort(input, label, op.LocalHint)
+	port, err := readApprovalPort(input, localForwardPortLabel(op.Reverse), op.LocalHint)
 	if err != nil {
 		return resourceConfig{}, err
 	}

@@ -102,7 +102,7 @@ func viewRecord(r resourceRecord) resourceView {
 		v.Direction = "<-"
 		v.Mountpoint = r.Mountpoint
 		v.ReadOnly = r.ReadOnly
-		v.Detail = r.Mountpoint + " -> " + sshio.FormatEndpoint(r.Host, r.Remote)
+		v.Detail = sshio.FormatEndpoint(r.Host, r.Remote) + " -> " + r.Mountpoint
 	}
 	return v
 }

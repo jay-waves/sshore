@@ -689,7 +689,7 @@ func runEndpointForward(parsed cliArguments) (int, error) {
 		if len(parsed.ssh) != 0 || len(parsed.values) != 0 {
 			return 2, usage("remote forward requests inherit the attached connection")
 		}
-		op, err := remoteForwardRequest(parsed.operands)
+		_, op, err := parseForwardEndpoints(parsed.operands, true)
 		if err != nil {
 			return 2, err
 		}
@@ -714,14 +714,12 @@ func executeEndpointForward(f forwardConfig, foreground bool) (int, error) {
 			return 2, err
 		}
 		defer input.Close()
-		label := "Local listening port"
 		remote := f.Target
 		if f.Reverse {
-			label = "Local service port"
 			remote = f.Port
 		}
 		termui.Log(os.Stdout, "", termui.Info, "Remote %s. Submit local port to forward.\n", cleanText(sshio.FormatEndpoint(f.Host, strconv.Itoa(remote))))
-		port, err := readForwardPort(input, label)
+		port, err := readForwardPort(input, localForwardPortLabel(f.Reverse))
 		if err != nil {
 			return 1, err
 		}

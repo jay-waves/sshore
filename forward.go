@@ -35,121 +35,96 @@ func splitPortEndpoint(value string) (string, string, error) {
 	return splitEndpoint(value)
 }
 
-// A qualified endpoint identifies the peer; the first endpoint always listens.
-func parseForwardEndpoints(args []string) (string, int, int, bool, error) {
-	fail := func() (string, int, int, bool, error) {
-		return "", 0, 0, false, usage("invalid port mapping; use forward here:[PORT] HOST:PORT or forward HOST:PORT here:[PORT]")
-	}
+// Both entry points mirror SOURCE on TARGET. Only the client endpoint may
+// omit its port, and a remote request can only suggest that client port.
+func parseForwardEndpoints(args []string, attached bool) (string, operation, error) {
+	op := operation{Kind: "forward"}
 	if len(args) != 2 {
-		return fail()
+		return "", op, usage("forward requires SOURCE TARGET")
 	}
-	endpoint := func(value string) (string, int, error) {
-		host, port, err := splitPortEndpoint(value)
+	source, sourcePort, err := splitPortEndpoint(args[0])
+	if err != nil {
+		return "", op, err
+	}
+	target, targetPort, err := splitPortEndpoint(args[1])
+	if err != nil {
+		return "", op, err
+	}
+	client := "here"
+	if attached {
+		client = "origin"
+	} else if source == "origin" || target == "origin" {
+		return "", op, usage("origin: requires an attached sshore shell")
+	}
+	op.Reverse = source == client
+	host, remotePort, localPort := source, sourcePort, targetPort
+	if op.Reverse {
+		host, remotePort, localPort = target, targetPort, sourcePort
+	}
+	if attached && host != "here" {
+		return "", op, usage("forward requires one here:PORT and one origin:[PORT]")
+	}
+	if (source == client) == (target == client) {
+		return "", op, usage("forward requires one client endpoint and one remote endpoint")
+	}
+	port, err := parsePort(remotePort)
+	if err != nil {
+		return "", op, err
+	}
+	if op.Reverse {
+		op.Port = port
+	} else {
+		op.TargetPort = port
+	}
+	if localPort != "" {
+		port, err = parsePort(localPort)
 		if err != nil {
-			return "", 0, err
+			return "", op, err
 		}
-		if host == "origin" {
-			return "", 0, usage("origin: requires an attached sshore shell")
+		if attached {
+			op.LocalHint = localPort
+		} else {
+			resolveLocalPort(&op, port)
 		}
-		if host == "here" {
-			if port == "" {
-				return "", 0, nil
-			}
-			host = ""
-		}
-		n, err := parsePort(port)
-		return host, n, err
 	}
-	left, port, err := endpoint(args[0])
-	if err != nil {
-		return "", 0, 0, false, err
-	}
-	right, target, err := endpoint(args[1])
-	if err != nil {
-		return "", 0, 0, false, err
-	}
-	if (left == "") == (right == "") {
-		return fail()
-	}
-	host := right
-	if left != "" {
-		host = left
-	}
-	return host, port, target, left != "", nil
+	return host, op, nil
 }
 
 func parseForwardCommand(parsed cliArguments) (forwardConfig, bool, error) {
 	var f forwardConfig
-	var err error
 	f.SSH = parsed.ssh
 	f.Retries = parsed.integer("--retries")
 	foreground := parsed.has("--foreground")
 	if foreground && f.Retries != 0 {
 		return f, false, usage("--retries applies only to background forwards")
 	}
-	f.Host, f.Port, f.Target, f.Reverse, err = parseForwardEndpoints(parsed.operands)
+	host, op, err := parseForwardEndpoints(parsed.operands, false)
+	f.Host, f.Port, f.Target, f.Reverse = host, op.Port, op.TargetPort, op.Reverse
 	return f, foreground, err
 }
 
-func remoteForwardRequest(args []string) (operation, error) {
-	op := operation{Kind: "forward"}
-	if len(args) != 2 {
-		return op, usage("forward requires a listener and a service")
+func localForwardPortLabel(reverse bool) string {
+	if reverse {
+		return "Local source port"
 	}
-	leftHost, leftPort, err := splitPortEndpoint(args[0])
-	if err != nil {
-		return op, err
-	}
-	rightHost, rightPort, err := splitPortEndpoint(args[1])
-	if err != nil {
-		return op, err
-	}
-	var remote string
-	switch {
-	case leftHost == "origin" && rightHost == "here":
-		op.LocalHint, remote = leftPort, rightPort
-	case leftHost == "here" && rightHost == "origin":
-		remote, op.LocalHint, op.Reverse = leftPort, rightPort, true
-	default:
-		return op, usage("forward between here:PORT and origin:[PORT]")
-	}
-	if op.LocalHint != "" {
-		if _, err := parsePort(op.LocalHint); err != nil {
-			return op, err
-		}
-	}
-	port, err := parsePort(remote)
-	if op.Reverse {
-		op.Port = port
-	} else {
-		op.TargetPort = port
-	}
-	return op, err
+	return "Local target port"
 }
-
-// Independent SSH workers own forwarding; no listener belongs to a shell attachment.
 
 func (f forwardConfig) direction() string {
 	if f.Reverse {
-		return "<-"
+		return "->"
 	}
-	return "->"
+	return "<-"
 }
 
-func (f forwardConfig) description(local, remote string) string {
-	localPort, remotePort := f.Port, f.Target
+func (f forwardConfig) description(client, remote string) string {
+	source, target := remote, client
 	if f.Reverse {
-		localPort, remotePort = remotePort, localPort
+		source, target = client, remote
 	}
-	return sshio.FormatEndpoint(local, strconv.Itoa(localPort)) + " " + f.direction() + " " +
-		sshio.FormatEndpoint(remote, strconv.Itoa(remotePort))
+	return sshio.FormatEndpoint(source, strconv.Itoa(f.Target)) + " -> " +
+		sshio.FormatEndpoint(target, strconv.Itoa(f.Port))
 }
-
-// Local requests default to independent background workers; --foreground is
-// available for diagnostics. Remote shell
-// requests inherit the session and require local approval. Port commands resolve
-// server/local ports into fixed listener and target identities. Native SSH
-// configuration/authentication remains effective.
 
 // Remote helper selection is application policy; the engine receives opaque command text.
 func forwardRemoteCommand(f forwardConfig) string {
@@ -166,9 +141,9 @@ func runForwardForeground(f forwardConfig) (int, error) {
 
 func pendingPortDescription(op operation) string {
 	if op.Reverse {
-		return fmt.Sprintf("Remote listener %s -> local service", forwardio.Loopback(op.ServerPort()))
+		return fmt.Sprintf("Mirror a local service on remote port %s", forwardio.Loopback(op.ServerPort()))
 	}
-	return fmt.Sprintf("Local listener -> remote service %s", forwardio.Loopback(op.ServerPort()))
+	return fmt.Sprintf("Mirror remote service %s on a local port", forwardio.Loopback(op.ServerPort()))
 }
 
 func resolveLocalPort(op *operation, port int) {
@@ -231,7 +206,11 @@ func startForwardSession(f forwardConfig) (int, error) {
 func runForward(parent context.Context, f forwardConfig, s *resourceService, onReady func() error) (int, error) {
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	s.record.Detail = f.description("local", f.Host)
+	client := "local"
+	if f.Connection != nil {
+		client = "origin"
+	}
+	s.record.Detail = f.description(client, f.Host)
 	advertisement, err := json.Marshal(s.peerTask(f.description("manager", "here")))
 	if err != nil {
 		return 1, err

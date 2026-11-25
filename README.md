@@ -48,23 +48,21 @@ for experimental Apple Silicon support.
 ## ssh — Run remote commands and forward ports
 
 Use SSH host aliases from `ssh_config`. Pass SSH options after `--`, including
-`-F FILE` for a different config or `-F none` for built-in defaults. Configure
-TCP listeners with `sshore forward`. Forwarding requires the same sshore release
+`-F FILE` for a different config or `-F none` for built-in defaults. Port forwarding requires the same sshore release
 on the Linux destination, including with `--foreground`.
 `sshore exec` runs directly over SSH without starting the account daemon.
 
 ```sh
 sshore exec work 'uname -a'      # Run one command on work.
 sshore shell work -- -J jump    # Open a shell through a jump host.
-sshore forward .:8080 work:3000  # Reach the remote service on local port 8080.
+sshore forward work:3000 .:8080  # Reach the remote service on local port 8080.
 sshore ping work:               # Measure SSH latency.
 ```
 
-From an attached remote shell, use `sshore fwd origin:9091 .:9090` to reach
-the remote service on the client's port 9091. The first endpoint is the
-listener, and `origin:` selects the attached client. On the client, submit
-the local port to approve the mapping. The client resumes the requesting shell
-when the operation finishes.
+Use `sshore fwd SOURCE TARGET` to mirror a TCP service. For example, run
+`sshore fwd .:9090 origin:9091` in a remote shell to access its port 9090
+at `127.0.0.1:9091` on your computer. Approve the target port on your computer
+to resume the remote shell.
 
 ## Shells — Start, detach and resume
 
@@ -105,24 +103,16 @@ has one foreground shell.
 
 ### Select a shell over SSH
 
-In `HOST:SELECTOR`, the left side selects the SSH destination, including the
-login account, and the right side is resolved by that account's daemon.
-This lets two accounts use the same shell name and lets you select a remote
-task without relying on a saved connection.
+Use your SSH host alias before the colon. For example, on `work`:
 
-| Command | What the part after `:` means |
-| --- | --- |
-| `sshore shell work` | Create a shell on `work` with an automatic ID. |
-| `sshore attach work:7b3a91` | Resume the shell whose ID uniquely starts with `7b3a91` on `work`. If the target is unavailable during SSH setup, open a new shell on `work` and print a warning with its ID. |
-| `sshore attach work:` | Let the remote daemon supply eligible detached roots and use detach history to choose one. An explicit colon also works for hexadecimal SSH aliases such as `db:`, where bare `db` is parsed as an ID. |
+```sh
+sshore shell work          # Start a new shell.
+sshore attach work:        # Resume a detached shell.
+sshore attach work:7b3a91  # Select a shell by ID or name.
+```
 
-`sshore attach 7b3a91` also searches known remote shells. The parent shell
-reuses its SSH route when re-entering a direct child. If the ID prefix matches
-more than one shell, use a longer prefix, `HOST:ID` or `:ID`.
-
-For optional names, `sshore shell HOST:NAME` creates a named shell and
-`sshore attach HOST:NAME` selects it. Use `:NAME` or `here:NAME` for a
-local named shell.
+If the selected shell is unavailable during SSH setup, sshore can open a new
+one and print its ID.
 
 ### Find and manage tasks
 

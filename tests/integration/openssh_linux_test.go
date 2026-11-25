@@ -233,8 +233,8 @@ Match command "printf forwarding-check"
 			send(point + "\r")
 			wait("Started mount/")
 			wait("Connected " + endpoint)
-			prompt := "Local listening port (Enter to approve, Ctrl-C to cancel):"
-			send("sshore fwd origin:" + localPort + " here:" + port + "\n")
+			prompt := "Local target port (Enter to approve, Ctrl-C to cancel):"
+			send("sshore fwd here:" + port + " origin:" + localPort + "\n")
 			wait(prompt, true)
 			send("\x03")
 			wait("approval cancelled")
@@ -244,10 +244,20 @@ Match command "printf forwarding-check"
 				t.Fatalf("declined forward left its listener active: %v", err)
 			}
 			probe.Close()
-			send("sshore fwd origin: here:" + port + "\n")
+			send("sshore fwd ::" + localPort + " .:" + port + "\n")
+			wait("Local source port (Enter to approve, Ctrl-C to cancel):", true)
+			send("\r")
+			failed := wait("forward startup failed (origin:" + localPort + " -> " + host + ":" + port + ")")
+			if !strings.Contains(failed, "remote listener: listen tcp4 127.0.0.1:"+port) {
+				t.Fatalf("unexpected bind error: %s", failed)
+			}
+			wait("Connected " + endpoint)
+			send("sshore fwd here:" + port + " origin:\n")
 			wait(prompt, true)
 			send(localPort + "\r")
-			wait("Started forward/")
+			if line := wait("Started forward/"); !strings.Contains(line, host+":"+port+" -> origin:"+localPort) {
+				t.Fatalf("unexpected forward mapping: %s", line)
+			}
 			wait("Connected " + endpoint)
 			send("exit\n")
 			wait("Connected here:approval-parent")
@@ -272,7 +282,7 @@ Match command "printf forwarding-check"
 		}
 		mountID := resourceID(point)
 		defer local(t, "kill", mountID)
-		forwardID := resourceID("local:" + localPort)
+		forwardID := resourceID("origin:" + localPort)
 		go func() {
 			c, err := listener.Accept()
 			if err == nil {
@@ -328,8 +338,8 @@ Match command "printf forwarding-check"
 		transcript, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("Connected " + endpoint)
 			setConfig(encrypted)
-			send("sshore fwd origin:9091 here:9090\n")
-			wait("Local listening port (Enter to approve, Ctrl-C to cancel):", true)
+			send("sshore fwd here:9090 origin:9091\n")
+			wait("Local target port (Enter to approve, Ctrl-C to cancel):", true)
 			send("\r")
 			wait(credential, true)
 			setConfig(plain)
@@ -357,7 +367,7 @@ Match command "printf forwarding-check"
 		remotePort := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
 		probe.Close()
 		localPort := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
-		start, err := command("forward", host+":"+remotePort, "here:"+localPort).CombinedOutput()
+		start, err := command("forward", "here:"+localPort, host+":"+remotePort).CombinedOutput()
 		if err != nil {
 			t.Fatalf("start reverse forward: %s (%v)", start, err)
 		}
@@ -372,7 +382,7 @@ Match command "printf forwarding-check"
 			_ = exec.CommandContext(cleanup, binary, "kill", "forward/"+name).Run()
 		})
 		inventory, err := exec.CommandContext(ctx, binary, "list").CombinedOutput()
-		if err != nil || !strings.Contains(string(inventory), "local:"+localPort+" <- "+host+":"+remotePort) ||
+		if err != nil || !strings.Contains(string(inventory), "local:"+localPort+" -> "+host+":"+remotePort) ||
 			strings.Contains(string(inventory), "REMOTE") {
 			t.Fatalf("reverse forward inventory: %s (%v)", inventory, err)
 		}
@@ -414,7 +424,7 @@ Match command "printf forwarding-check"
 		probe.Close()
 		// This dedicated fixture account may log in to its own OpenSSH server.
 		run(t, "exec", host, `ssh-keygen -q -t ed25519 -N '' -f task-id-key && cat task-id-key.pub >> authorized_keys`)
-		out := run(t, "exec", host, `sshore forward here:`+port+` 127.0.0.1:2222 --port 2222 -- -F none -i "$HOME/task-id-key" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$HOME/task-id-hosts"`)
+		out := run(t, "exec", host, `sshore forward 127.0.0.1:2222 here:`+port+` --port 2222 -- -F none -i "$HOME/task-id-key" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$HOME/task-id-hosts"`)
 		_, description, _ := strings.Cut(out, "Started forward/")
 		name, _, _ := strings.Cut(description, ":")
 		if name == "" {

@@ -77,8 +77,8 @@ Resume it after detaching with Ctrl+B d
   sshore attach work:7afe22
 Upload a file
   sshore cp ./report.txt work:/tmp/report.txt
-Forward a local port to a remote service
-  sshore forward 8080 work:3000
+Mirror a remote service on a local port
+  sshore forward work:3000 8080
 
 More examples: sshore shell|cp|mount|forward --tldr
 `,
@@ -308,14 +308,14 @@ on Apple Silicon Macs (experimental).
 		"forward": {
 			run: runEndpointForward, group: groupSSH, summary: "Forward a TCP port", aliases: []string{"fwd"},
 			ssh: true, min: 2, max: 2, flags: []string{"--retries", "--foreground"},
-			help: `Usage: sshore forward LISTENER SERVICE [options] [-- SSH_OPTIONS]
+			help: `Usage: sshore forward SOURCE TARGET [options] [-- SSH_OPTIONS]
 
-The listener comes first. Use a bare port for the current machine and
-HOST:PORT for an SSH host. Leave the client-side port empty to choose it.
+Mirror the service at SOURCE on TARGET. Use a bare port for the current machine
+and HOST:PORT for an SSH host. Leave the client-side port empty to choose it.
 From a remote shell, use origin: or :: for the attached client and request local approval.
 
-  sshore forward 8080 work:3000
   sshore forward work:3000 8080
+  sshore forward 8080 work:3000
 
 Options:
   --foreground   Run in this terminal; Ctrl-C stops forwarding
@@ -325,11 +325,11 @@ Retries cannot prompt for credentials or host keys. Existing connections
 do not survive reconnect. SSH -L/-R/-D are not accepted here.
 ` + sshOptions,
 			examples: `Expose a remote service on a local port
-  sshore forward 8080 work:3000
+  sshore forward work:3000 8080
 Expose a local service on a remote port
-  sshore forward work:8080 .:3000
+  sshore forward .:3000 work:8080
 Run until Ctrl-C
-  sshore forward 8080 work:3000 --foreground
+  sshore forward work:3000 8080 --foreground
 `,
 		},
 		"daemon": {
