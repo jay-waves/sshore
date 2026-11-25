@@ -70,8 +70,6 @@ mounting.
 
 TODO: Add a macFUSE FSKit backend that preserves `CGO_ENABLED=0`.
 
-TODO: Support a Windows hosted shell as the intermediate hop in a nested shell route.
-
 TODO: Run explicit `bash -c` in the command console on the host and in the directory
 shown by the prompt.
 
