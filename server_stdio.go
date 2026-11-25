@@ -8,11 +8,42 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 
 	"github.com/jay-waves/sshore/internal/files"
 	forwardio "github.com/jay-waves/sshore/internal/forward"
 )
+
+func serveRemoteRequest(req remoteServiceRequest) error {
+	switch req.Operation {
+	case "shell":
+		return serveRemote(req)
+	case "cp-agent", "mount-agent":
+		if runtime.GOOS == "windows" {
+			return serveRemoteFileService(req, beginCommandActivity)
+		}
+		return serveRemoteFileService(req, func() (func(), error) {
+			return leaseActivity(leaseRequest{Kind: "heartbeat"})
+		})
+	case "forward-agent":
+		return serveForwardAgent(req)
+	case "daemon-admin":
+		if runtime.GOOS == "linux" {
+			// Maintenance keeps its own snapshot and shutdown verification.
+			return serveDaemonAdmin(os.Stdin, os.Stdout)
+		}
+	}
+	if runtime.GOOS == "linux" || req.Operation == "task-control" {
+		if err := checkPeerVersion(req.Release, "client"); err != nil {
+			return err
+		}
+	}
+	if req.Operation == "task-control" {
+		return serveTaskControl(req)
+	}
+	return usage("unknown remote service operation")
+}
 
 type stdioPipe struct {
 	io.Reader
