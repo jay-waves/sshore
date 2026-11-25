@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -45,14 +44,14 @@ const (
 )
 
 // Use ANSI palette colors so the terminal theme controls their appearance.
-var styles = map[Color]lipgloss.Style{
-	Heading: lipgloss.NewStyle().Bold(true),
-	Accent:  lipgloss.NewStyle().Bold(true).Foreground(ansi.Cyan),
-	Muted:   lipgloss.NewStyle().Foreground(ansi.BrightBlack),
-	Info:    lipgloss.NewStyle().Foreground(ansi.Cyan),
-	Success: lipgloss.NewStyle().Foreground(ansi.Green),
-	Warning: lipgloss.NewStyle().Foreground(ansi.Yellow),
-	Error:   lipgloss.NewStyle().Foreground(ansi.Red),
+var styles = map[Color]ansi.Style{
+	Heading: ansi.NewStyle().Bold(),
+	Accent:  ansi.NewStyle().Bold().ForegroundColor(ansi.Cyan),
+	Muted:   ansi.NewStyle().ForegroundColor(ansi.BrightBlack),
+	Info:    ansi.NewStyle().ForegroundColor(ansi.Cyan),
+	Success: ansi.NewStyle().ForegroundColor(ansi.Green),
+	Warning: ansi.NewStyle().ForegroundColor(ansi.Yellow),
+	Error:   ansi.NewStyle().ForegroundColor(ansi.Red),
 }
 
 // Format styles the text while preserving line endings used by a raw console.
@@ -61,7 +60,6 @@ func Format(color bool, level Color, format string, args ...any) string {
 	if !color {
 		return text
 	}
-	style := styles[level].TabWidth(lipgloss.NoTabConversion)
 	var out strings.Builder
 	for line := range strings.SplitAfterSeq(text, "\n") {
 		body, hasLF := strings.CutSuffix(line, "\n")
@@ -69,7 +67,7 @@ func Format(color bool, level Color, format string, args ...any) string {
 			body = strings.TrimSuffix(body, "\r")
 		}
 		if body != "" {
-			out.WriteString(style.Render(body))
+			out.WriteString(Render(true, level, body))
 		}
 		out.WriteString(line[len(body):])
 	}
@@ -96,7 +94,7 @@ func StatusLine(color bool, level Color, text string) string {
 // Render styles a piece of display text. Callers sanitize untrusted fields.
 func Render(color bool, style Color, text string) string {
 	if color && text != "" {
-		return styles[style].Render(text)
+		return styles[style].Styled(text)
 	}
 	return text
 }

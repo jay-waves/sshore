@@ -13,9 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/lipgloss/v2"
-	"charm.land/lipgloss/v2/table"
-	"charm.land/lipgloss/v2/tree"
 	"github.com/charmbracelet/x/ansi"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
@@ -478,7 +475,7 @@ func writeTaskTable(out io.Writer, table [][]string, color bool, screenWidth, cu
 				cell = "* " + cell
 			}
 			row[j] = cell
-			widths[j] = max(widths[j], lipgloss.Width(cell))
+			widths[j] = max(widths[j], ansi.StringWidth(cell))
 		}
 	}
 	// Task IDs and state stay intact; DETAIL uses the remaining terminal width.
@@ -500,13 +497,13 @@ func writeTaskTable(out io.Writer, table [][]string, color bool, screenWidth, cu
 		for j, cell := range row[:columns] {
 			padding := 0
 			if j < columns-1 {
-				padding = widths[j] - lipgloss.Width(cell) + 2
+				padding = widths[j] - ansi.StringWidth(cell) + 2
 			}
 			if j == last {
 				cell = compactTaskDetail(cell, remaining)
 			}
 			if color && i > 0 && i != currentRow && j == taskStateColumn {
-				cell = taskStateStyle(lipgloss.NewStyle(), cell).Render(cell)
+				cell = renderTaskState(cell)
 			}
 			line.WriteString(cell)
 			line.WriteString(strings.Repeat(" ", padding))
@@ -516,14 +513,14 @@ func writeTaskTable(out io.Writer, table [][]string, color bool, screenWidth, cu
 	}
 }
 
-func taskStateStyle(style lipgloss.Style, state string) lipgloss.Style {
+func renderTaskState(state string) string {
 	switch state {
 	case taskActive:
-		return style.Foreground(ansi.Green)
+		return termui.Render(true, termui.Success, state)
 	case taskUnknown, taskExited:
-		return style.Foreground(ansi.Yellow)
+		return termui.Render(true, termui.Warning, state)
 	default:
-		return style
+		return state
 	}
 }
 
@@ -534,38 +531,52 @@ func writeStyledTaskTable(out io.Writer, rows [][]string, columns, remaining int
 		return false
 	}
 	visible := make([][]string, len(rows))
+	widths := make([]int, columns)
 	for i, row := range rows {
 		visible[i] = make([]string, columns)
 		for j, cell := range row[:columns] {
 			if j == columns-1 && i > 0 {
 				cell = compactTaskDetail(cell, remaining-columns-3)
 			}
-			visible[i][j] = cleanText(cell)
+			cell = cleanText(cell)
+			visible[i][j] = cell
+			widths[j] = max(widths[j], ansi.StringWidth(cell))
 		}
 	}
-	cell := lipgloss.NewStyle().Padding(0, 1)
-	header, border := cell, lipgloss.NewStyle()
-	if color {
-		header = header.Bold(true).Foreground(ansi.Cyan)
-		border = border.Foreground(ansi.BrightBlack)
+	total := 1
+	borders := make([]string, columns)
+	for j, width := range widths {
+		total += width + 3
+		borders[j] = strings.Repeat("─", width+2)
 	}
-	t := table.New().Border(lipgloss.RoundedBorder()).BorderStyle(border).Headers(visible[0]...).Rows(visible[1:]...).Wrap(false).FitContent().StyleFunc(func(row, col int) lipgloss.Style {
-		if row == table.HeaderRow {
-			return header
-		}
-		if color && row+1 == currentRow {
-			return cell.Foreground(ansi.Cyan)
-		}
-		if color && col == taskStateColumn {
-			return taskStateStyle(cell, visible[row+1][col])
-		}
-		return cell
-	})
-	rendered := t.String()
-	if lipgloss.Width(rendered) > screenWidth {
+	if total > screenWidth {
 		return false
 	}
-	fmt.Fprintln(out, rendered)
+	border := func(text string) string { return termui.Render(color, termui.Muted, text) }
+	divider := border("│")
+	fmt.Fprintln(out, border("╭"+strings.Join(borders, "┬")+"╮"))
+	for i, row := range visible {
+		fmt.Fprint(out, divider)
+		for j, cell := range row {
+			padding := widths[j] - ansi.StringWidth(cell)
+			if color {
+				switch {
+				case i == 0:
+					cell = termui.Render(true, termui.Accent, cell)
+				case i == currentRow:
+					cell = termui.Render(true, termui.Info, cell)
+				case j == taskStateColumn:
+					cell = renderTaskState(cell)
+				}
+			}
+			fmt.Fprint(out, " ", cell, strings.Repeat(" ", padding+1), divider)
+		}
+		fmt.Fprintln(out)
+		if i == 0 {
+			fmt.Fprintln(out, border("├"+strings.Join(borders, "┼")+"┤"))
+		}
+	}
+	fmt.Fprintln(out, border("╰"+strings.Join(borders, "┴")+"╯"))
 	return true
 }
 
@@ -754,25 +765,34 @@ func writeShellTree(out io.Writer, rows []taskTreeRow, current string, color boo
 		fmt.Fprintln(out, "No shells.")
 		return
 	}
-	branchStyle := lipgloss.NewStyle().PaddingRight(1)
-	if color {
-		branchStyle = branchStyle.Foreground(ansi.BrightBlack)
-	}
-	trees := make([]*tree.Tree, len(rows))
-	var roots []*tree.Tree
+	children := make([][]int, len(rows)+1)
 	for i, row := range rows {
-		selected := current != "" && row.Identity == current
-		t := tree.Root(shellTreeLabel(row, selected, color)).Enumerator(tree.RoundedEnumerator).
-			EnumeratorStyle(branchStyle).IndenterStyle(branchStyle)
-		trees[i] = t
-		if row.Owner > 0 && row.Owner <= i {
-			trees[row.Owner-1].Child(t)
-		} else {
-			roots = append(roots, t)
+		owner := row.Owner
+		if owner < 0 || owner > i {
+			owner = 0
+		}
+		children[owner] = append(children[owner], i)
+	}
+	var writeBranch func(int, string, string)
+	writeBranch = func(i int, indent, branch string) {
+		row := rows[i]
+		fmt.Fprintln(out, termui.Render(color, termui.Muted, indent+branch)+shellTreeLabel(row, current != "" && row.Identity == current, color))
+		if branch == "├── " {
+			indent += "│   "
+		} else if branch != "" {
+			indent += "    "
+		}
+		kids := children[i+1]
+		for j, child := range kids {
+			branch := "├── "
+			if j == len(kids)-1 {
+				branch = "╰── "
+			}
+			writeBranch(child, indent, branch)
 		}
 	}
-	for _, root := range roots {
-		fmt.Fprintln(out, root)
+	for _, root := range children[0] {
+		writeBranch(root, "", "")
 	}
 }
 
