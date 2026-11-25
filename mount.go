@@ -11,14 +11,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
-	"github.com/jay-waves/sshore/internal/termui"
 )
 
 const defaultMountIOTimeout = time.Minute
@@ -62,22 +60,11 @@ func validateMountConfig(o ftpOptions) error {
 	return nil
 }
 
-func absoluteLocalPath(path string) (string, error) {
-	path, err := termui.ExpandHomePath(path)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Abs(path)
-}
-
 func readMountApprovalPath(input reviewPromptReader, hint string) (string, error) {
 	return readReviewPath(input, "Mountpoint (empty for automatic): ", hint, true, func(path string) (string, error) {
-		if !(runtime.GOOS == "windows" && len(path) == 2 && path[1] == ':') {
-			absolute, err := filepath.Abs(path)
-			if err != nil {
-				return "", err
-			}
-			path = absolute
+		path, err := files.ResolveMountpoint(path)
+		if err != nil {
+			return "", err
 		}
 		return path, files.ValidateMountpoint(path)
 	})
@@ -122,11 +109,12 @@ func executeMount(o ftpOptions) (int, error) {
 	if !o.foreground {
 		return startResourceBackground(resourceConfig{Mount: &o}, "")
 	}
-	cleanup, err := prepareFTPPaths(&o)
+	mountpoint, cleanup, err := files.PrepareMountpoint(o.Mountpoint, o.Name)
 	if err != nil {
 		return 1, err
 	}
 	defer cleanup()
+	o.Mountpoint = mountpoint
 	return runFTPMount(o, nil, nil)
 }
 
@@ -401,11 +389,12 @@ func runMountDaemon() (code int, resultErr error) {
 	}
 	record := resourceRecord{Kind: "mount", Name: o.Name, Host: o.Host, ReadOnly: o.ReadOnly, Direction: "<-"}
 	s := newResourceService(config, record)
-	cleanup, err := prepareFTPPaths(&o)
+	mountpoint, cleanup, err := files.PrepareMountpoint(o.Mountpoint, o.Name)
 	if err != nil {
 		return 1, err
 	}
 	defer cleanup()
+	o.Mountpoint = mountpoint
 	abandoned := make(chan struct{})
 	ack := awaitResourceCommit(read, func() { close(abandoned) })
 	unmount := make(chan chan error)

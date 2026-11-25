@@ -150,7 +150,7 @@ func (s *remoteShell) relayResourceRoute(c net.Conn, request message) error {
 func (s *remoteShell) consumeResourceApproval(request message, op operation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.exited || s.killing || s.active != nil || s.record.UID != request.Instance || s.record.Name != request.Name || s.process.PID == 0 || s.process.PID != request.PID {
+	if s.exited || s.killing || s.active != nil || s.record.UID != request.Instance || s.record.Name != request.Name || s.pid == 0 || s.pid != request.PID {
 		return fmt.Errorf("approved shell changed or remains attached; request the operation again")
 	}
 	grant := s.resourceApproval

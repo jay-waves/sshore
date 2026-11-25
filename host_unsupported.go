@@ -18,10 +18,6 @@ func requestOperations(command string, _ []operation) error {
 	return fmt.Errorf("%s runs on the Linux server, inside the remote shell", command)
 }
 
-func hostedDiagnostics([]shellView, []int, string) {}
-
-func currentShellDirectory(_ int, fallback string) string { return fallback }
-
 func registerPlatformDaemonRoutes(*http.ServeMux, *daemonTasks) {}
 
 func openHostedTransport(context.Context, options) (net.Conn, error) {

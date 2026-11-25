@@ -8,12 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/proc"
 	"github.com/jay-waves/sshore/internal/pty"
 	"github.com/jay-waves/sshore/internal/termui"
 )
@@ -27,7 +28,8 @@ type shellTask struct {
 	nameMu     sync.Mutex // Read the registry label without waiting for terminal I/O.
 
 	terminal                      *pty.Terminal
-	process                       processIdentity
+	pid                           int
+	shellName                     string
 	modes                         pty.InputState
 	active                        *attachment
 	exited                        bool
@@ -149,15 +151,11 @@ func (s *shellTask) kill(instance, reason string) error {
 // The caller claims shutdown under mu before stopping the validated terminal.
 func (s *shellTask) stopTerminal() error {
 	s.mu.Lock()
-	terminal, process := s.terminal, s.process
+	terminal := s.terminal
 	s.mu.Unlock()
 	var err error
 	if terminal != nil {
-		if s.hosted {
-			err = stopHostedTerminal(process.PID, process.Start)
-		} else {
-			err = terminal.Stop()
-		}
+		err = terminal.Stop()
 	}
 	if err != nil {
 		s.mu.Lock()
@@ -218,6 +216,10 @@ func (s *shellTask) startManagedShell(path string, env []string, m message) erro
 	})
 	if err == nil {
 		s.started = time.Now()
+		s.shellName = filepath.Base(path)
+		if runtime.GOOS == "windows" {
+			s.shellName = strings.TrimSuffix(strings.ToLower(s.shellName), ".exe")
+		}
 	}
 	return err
 }
@@ -229,7 +231,7 @@ func (s *shellTask) state() string {
 		return taskExited
 	case s.active != nil:
 		return taskActive
-	case s.process.PID == 0:
+	case s.pid == 0:
 		return taskStarting
 	case s.tasks != nil && s.tasks.forest.waiting(s):
 		return taskWaiting
@@ -364,7 +366,7 @@ func (s *shellTask) attachManaged(p *attachment, m message, start func(message) 
 		if validMachineID(m.MachineID) && machine != m.MachineID && len(m.SourceHost) <= 256 {
 			p.sourceHost = cleanText(m.SourceHost)
 		}
-		return p.controlMessage(message{Type: "ready", Owner: s.parentIdentityLocked(), TreeKey: claim.key, MachineID: machine, Pinned: s.pinned, PinUntil: s.pinUntil, Instance: instance, PID: s.process.PID, Name: s.record.Name})
+		return p.controlMessage(message{Type: "ready", Owner: s.parentIdentityLocked(), TreeKey: claim.key, MachineID: machine, Pinned: s.pinned, PinUntil: s.pinUntil, Instance: instance, PID: s.pid, Name: s.record.Name, Shell: s.shellName})
 	})
 	if err != nil {
 		s.tasks.forest.abort(claim, graft, oldParent)
@@ -438,18 +440,15 @@ func (s *shellTask) startShell(path string, env []string, dir string, m message,
 // The caller holds mu while publishing the terminal. The exit handler owns
 // task-specific state and exit reporting.
 func (s *shellTask) startTerminal(path string, args, env []string, dir string, m message, exited func(error, int)) error {
-	t, err := pty.Start(pty.Config{Path: path, Args: args, Env: env, Dir: dir, Size: shellSize(m)})
-	if err != nil {
-		return err
+	if s.tasks.cgroupErr != nil {
+		return s.tasks.cgroupErr
 	}
-	pid := t.PID()
-	identity, err := proc.LiveIdentity(pid)
+	t, err := pty.Start(pty.Config{Path: path, Args: args, Env: env, Dir: dir, Size: shellSize(m), TaskCgroup: s.tasks.cgroup})
 	if err != nil {
-		t.Close()
 		return err
 	}
 	s.terminal = t
-	s.process = processIdentity{PID: pid, Start: identity}
+	s.pid = t.PID()
 	go s.pumpTerminal(t, exited)
 	return nil
 }

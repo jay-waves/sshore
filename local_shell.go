@@ -16,7 +16,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/sys"
 )
+
+func currentShellDirectory(pid int, fallback string) string {
+	if pid > 0 {
+		if cwd, err := sys.WorkingDirectory(pid); err == nil && cwd != "" {
+			return cwd
+		}
+	}
+	return fallback
+}
 
 // The token is a local connection capability, never part of public inventory.
 type localShellRecord struct {
@@ -152,7 +163,7 @@ func (s *localShell) view() localShellView {
 	defer s.mu.Unlock()
 	view := localShellView{
 		Owner: s.parentIdentityLocked(), Pinned: s.pinned, PinUntil: s.pinUntil, Identity: s.record.identity(),
-		Name: s.record.Name, Directory: s.record.Directory, Version: s.record.Version, PID: s.process.PID,
+		Name: s.record.Name, Version: s.record.Version, PID: s.pid, Shell: s.shellName,
 	}
 	view.State = s.state()
 	if s.active != nil {
@@ -250,7 +261,7 @@ func (s *localShell) attach(c net.Conn) error {
 			if m.Pinned {
 				args = append(args, "--pin")
 			}
-			h := &clientHandoff{Args: args, Directory: currentShellDirectory(s.process.PID, s.record.Directory), Environment: append([]string(nil), s.environment...)}
+			h := &clientHandoff{Args: args, Directory: currentShellDirectory(s.pid, s.record.Directory), Environment: append([]string(nil), s.environment...)}
 			s.mu.Unlock()
 			go serveChildShortcut(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
 		default:

@@ -16,6 +16,7 @@ import (
 
 	"github.com/jay-waves/sshore/internal/files"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -23,12 +24,12 @@ func executeCopyCommand(o copyOptions) (int, error) {
 	var err error
 	if o.upload {
 		for i := range o.sources {
-			o.sources[i].path, err = termui.ExpandHomePath(o.sources[i].path)
+			o.sources[i].path, err = sys.ExpandHome(o.sources[i].path)
 			if err != nil {
 				return 1, err
 			}
 		}
-	} else if o.target.path, err = termui.ExpandHomePath(o.target.path); err != nil {
+	} else if o.target.path, err = sys.ExpandHome(o.target.path); err != nil {
 		return 1, err
 	}
 	stopActivity, err := beginCommandActivity()
@@ -165,7 +166,7 @@ func (f fileCopy) transfer(ctx context.Context, client *sftp.Client, progress *a
 func prepareFileRequest(kind string, paths []string, hint string) ([]operation, error) {
 	ops := make([]operation, 0, len(paths))
 	for _, path := range paths {
-		absolute, err := absoluteLocalPath(path)
+		absolute, err := sys.Abs(path)
 		if err != nil {
 			return nil, err
 		}

@@ -23,6 +23,7 @@ type localShellView struct {
 	State      string    `json:"state"`
 	PID        int       `json:"pid,omitempty"`
 	Version    string    `json:"version"`
+	Shell      string    `json:"shell,omitempty"`
 	Directory  string    `json:"directory,omitempty"`
 }
 

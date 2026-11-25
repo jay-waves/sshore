@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/chzyer/readline"
+	"github.com/jay-waves/sshore/internal/sys"
 	"golang.org/x/term"
 )
 
@@ -155,7 +156,7 @@ func CompleteLocalPath(line []rune, pos int) ([][]rune, int) {
 		searchDir = "."
 	} else {
 		var err error
-		searchDir, err = ExpandHomePath(searchDir)
+		searchDir, err = sys.ExpandHome(searchDir)
 		if err != nil {
 			return nil, 0
 		}
@@ -306,27 +307,7 @@ func ParsePath(b []byte) (string, error) {
 	if s == "" {
 		return "", fmt.Errorf("empty path")
 	}
-	return ExpandHomePath(s)
-}
-
-// ExpandHomePath expands the current user's home prefix in a native path.
-// It preserves spaces and quotes in paths already parsed by the caller.
-func ExpandHomePath(s string) (string, error) {
-	if s == "~" || strings.HasPrefix(s, "~/") || os.PathSeparator == '\\' && strings.HasPrefix(s, `~\`) {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		if !filepath.IsAbs(home) {
-			return "", fmt.Errorf("home directory is not an absolute path")
-		}
-		if s == "~" {
-			s = home
-		} else {
-			s = filepath.Join(home, s[2:])
-		}
-	}
-	return s, nil
+	return sys.ExpandHome(s)
 }
 
 // Use ANSI palette indices rather than RGB values so Base16 and other terminal

@@ -12,6 +12,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/sys"
 )
 
 func requestDaemonShutdown(expected daemonSnapshot) error {
@@ -34,7 +36,7 @@ func requestDaemonShutdown(expected daemonSnapshot) error {
 }
 
 func shutdownDaemonEndpoint(ctx context.Context, dir string, record localShellRecord, expected daemonSnapshot) error {
-	// The account lock file survives shutdown and reset. Poll the same handle
+	// The account lock file survives shutdown and reset. Keep its identity
 	// until ownership is released, then close it before any process-exit wait.
 	owner, err := openDaemonOwner(dir)
 	if err != nil {
@@ -48,11 +50,11 @@ func shutdownDaemonEndpoint(ctx context.Context, dir string, record localShellRe
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
 	for {
-		lockErr := lockResourceState(owner)
+		lockErr := owner.TryLock()
 		if lockErr == nil {
 			return nil
 		}
-		if !resourceLockBusy(lockErr) {
+		if !errors.Is(lockErr, sys.ErrFileLockBusy) {
 			return lockErr
 		}
 		// Locator removal precedes owner release; absence alone is not exit.

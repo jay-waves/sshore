@@ -11,6 +11,7 @@ import (
 type participatingShell struct {
 	Host, Instance, Name string
 	Owner                string
+	Shell                string `json:",omitempty"`
 	State                string
 	PID                  int
 	Pinned               bool
@@ -206,6 +207,7 @@ func refreshParticipation(rows []participatingShell, host string, refresh partic
 			if validSession(view.Name) == nil && view.PID > 0 && (view.State == taskActive || view.State == taskWaiting || view.State == taskDetached) {
 				row.Owner = view.Owner
 				row.Name, row.State, row.PID = view.Name, view.State, view.PID
+				row.Shell = view.Shell
 				row.Pinned, row.PinUntil, row.ChangedAt = view.Pinned, view.PinUntil, now
 			}
 		}

@@ -202,12 +202,6 @@ func relayRemoteStreams(frontend *smux.Session, open taskEndpoint) {
 	}
 }
 
-// Keep PID and creation identity together when a process outlives its launcher.
-type processIdentity struct {
-	PID   int
-	Start string
-}
-
 type taskEndpoint func() (net.Conn, error)
 
 type resourceEndpoint func(context.Context) (net.Conn, error)

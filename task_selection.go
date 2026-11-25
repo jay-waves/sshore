@@ -350,7 +350,7 @@ func (s *shellTask) sessionTargets(request message) message {
 	reply := message{Type: "session_targets", Action: request.Action, Name: s.taskName()}
 	if request.Name == "" && strings.HasPrefix(request.Action, "console:") {
 		s.mu.Lock()
-		reply.Directory = currentShellDirectory(s.process.PID, s.record.Directory)
+		reply.Directory = currentShellDirectory(s.pid, s.record.Directory)
 		s.mu.Unlock()
 	}
 	query := taskQuery{Kind: "shell", Parent: s.treeIdentity(), Ref: request.Name, Detached: true}

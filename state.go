@@ -5,12 +5,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/sys"
 )
 
 // readStateJSON checks privacy before opening and bounds the entire record.
@@ -158,7 +161,7 @@ func prepareStateDir(root, name string) (string, error) {
 }
 
 // Identity is advisory account metadata, never an authentication credential.
-func lockIdentity() (*os.File, string, error) {
+func lockIdentity() (*sys.FileLock, string, error) {
 	dir, err := stateDir("identity")
 	if err != nil {
 		return nil, "", err
@@ -167,8 +170,7 @@ func lockIdentity() (*os.File, string, error) {
 	return f, dir, err
 }
 
-// lockStateFile serializes private metadata updates. Closing the file releases it.
-func lockStateFile(path string) (*os.File, error) {
+func openPrivateFileLock(path string) (*sys.FileLock, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
@@ -177,14 +179,35 @@ func lockStateFile(path string) (*os.File, error) {
 		f.Close()
 		return nil, err
 	}
+	return sys.NewFileLock(f), nil
+}
+
+func tryPrivateFileLock(path string) (*sys.FileLock, error) {
+	lock, err := openPrivateFileLock(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := lock.TryLock(); err != nil {
+		lock.Close()
+		return nil, err
+	}
+	return lock, nil
+}
+
+// lockStateFile serializes private metadata updates. Closing the lock releases it.
+func lockStateFile(path string) (*sys.FileLock, error) {
+	lock, err := openPrivateFileLock(path)
+	if err != nil {
+		return nil, err
+	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		err = lockResourceState(f)
+		err = lock.TryLock()
 		if err == nil {
-			return f, nil
+			return lock, nil
 		}
-		if !resourceLockBusy(err) || time.Now().After(deadline) {
-			f.Close()
+		if !errors.Is(err, sys.ErrFileLockBusy) || time.Now().After(deadline) {
+			lock.Close()
 			return nil, err
 		}
 		time.Sleep(10 * time.Millisecond)

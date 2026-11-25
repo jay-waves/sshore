@@ -11,43 +11,35 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/proc"
+	"github.com/jay-waves/sshore/internal/sys"
 )
 
-func hostedDiagnostics(views []shellView, groups []int, detail string) {
+func hostedDiagnostics(view *shellView, processes []sys.Process, group int, detail string) {
 	if detail != "health" {
-		for i := range views {
-			views[i].Directory = sessionDirectory(views[i].PID)
+		view.Directory = sessionDirectory(view.PID)
+	}
+	if detail == "" || detail == "sessions" {
+		snapshot := newProcessSnapshot(processes)
+		view.Foreground = snapshot.foregroundPrograms(group)
+		if detail == "sessions" {
+			view.ProcessTree = snapshot.sessionTree(view.PID)
 		}
 	}
-	if len(views) != 0 && (detail == "" || detail == "sessions") {
-		snapshot := newProcessSnapshot()
-		for i, group := range groups {
-			views[i].Foreground = snapshot.foregroundPrograms(group)
-			if detail == "sessions" {
-				views[i].ProcessTree = snapshot.sessionTree(views[i].PID)
-			}
-		}
-	}
-	slices.SortFunc(views, func(a, b shellView) int { return strings.Compare(a.Instance, b.Instance) })
 }
 
-// One best-effort snapshot supplies names and trees for display. Process
-// ownership and identity checks used for signaling are performed separately.
+// One best-effort snapshot of task members supplies names and trees for display.
 type processSnapshot struct {
-	processes map[int]proc.Process
+	processes map[int]sys.Process
 	children  map[int][]int
 	groups    map[int][]string
 }
 
-func newProcessSnapshot() processSnapshot {
-	processes := proc.ReadProcesses()
+func newProcessSnapshot(processes []sys.Process) processSnapshot {
 	snapshot := processSnapshot{
-		processes: make(map[int]proc.Process, len(processes)),
+		processes: make(map[int]sys.Process, len(processes)),
 		children:  make(map[int][]int),
 		groups:    make(map[int][]string),
 	}
@@ -114,15 +106,6 @@ func (snapshot processSnapshot) sessionTree(shellPID int) string {
 	}
 	walk(shellPID, "", true, 0)
 	return out.String()
-}
-
-func currentShellDirectory(pid int, fallback string) string {
-	if pid > 0 {
-		if cwd, err := proc.WorkingDirectory(pid); err == nil {
-			return cwd
-		}
-	}
-	return fallback
 }
 
 func sessionDirectory(pid int) string {

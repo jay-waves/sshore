@@ -21,7 +21,7 @@ chmod 755 "$fixture" "$payload"
 cp install.sh "$payload/repo/"
 cp -R tests/integration/testdata "$payload/repo/tests/integration/"
 cp tests/integration/alpine_fixture.sh tests/integration/alpine_init.sh "$fixture/"
-printf '%s\n' "${1:-^Test(OpenSSH|LinuxInstaller)$}" > "$payload/pattern"
+printf '%s\n' "${1:-^Test(OpenSSH|LinuxInstaller|ShellCgroup)$}" > "$payload/pattern"
 
 go build -o "$fixture/build" ./scripts
 export GOOS=linux GOARCH=amd64 CGO_ENABLED=0
@@ -33,7 +33,7 @@ go test -tags=integration -c -o "$payload/integration.test" ./tests/integration
     -f tests/integration/alpine.Dockerfile "$fixture"
 image=$(cat "$fixture/image-id")
 if [ "$target" = fixture ]; then
-    "$container" run --rm --init --network none --device /dev/fuse --cap-add SYS_ADMIN \
+    "$container" run --rm --init --cgroupns private --network none --device /dev/fuse --cap-add SYS_ADMIN \
         --security-opt apparmor=unconfined -v "$payload:/fixture:ro,Z" "$image"
     exit
 fi

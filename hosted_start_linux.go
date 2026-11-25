@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/sys"
 )
 
-func prepareHostedShell(name, mode, instance, executable string, gate *os.File) error {
+func prepareHostedShell(name, mode, instance, executable string, gate *sys.FileLock) error {
 	defer gate.Close()
 	if mode == "new" && isShortTaskID(name) {
 		name = ""

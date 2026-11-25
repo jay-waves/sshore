@@ -72,6 +72,7 @@ type shellView struct {
 	PID         int       `json:"pid"`
 	Age         *int64    `json:"age_seconds"`
 	Foreground  string    `json:"foreground"`
+	Shell       string    `json:"shell,omitempty"`
 	Directory   string    `json:"directory"`
 	ProcessTree string    `json:"process_tree,omitempty"`
 }
@@ -203,7 +204,7 @@ func (a *daemonActivity) listTasks(ctx context.Context, request taskListRequest)
 		inv.Errors = append(inv.Errors, "remote shell history unavailable: "+cleanText(reply.Error))
 	}
 	for _, row := range reply.Participants {
-		inv.Shells = append(inv.Shells, shellView{Host: row.Host, Owner: row.Owner, Instance: row.Instance, ID: "sh/" + row.Name, Name: row.Name, State: row.State, Observed: true, SeenAt: row.ChangedAt, Pinned: row.Pinned, PinUntil: row.PinUntil, PID: row.PID})
+		inv.Shells = append(inv.Shells, shellView{Host: row.Host, Owner: row.Owner, Instance: row.Instance, ID: "sh/" + row.Name, Name: row.Name, State: row.State, Observed: true, SeenAt: row.ChangedAt, Pinned: row.Pinned, PinUntil: row.PinUntil, PID: row.PID, Shell: row.Shell})
 	}
 	inv.setTaskReferences()
 	return inv
@@ -298,15 +299,15 @@ func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color
 	rows := []taskTableRow{}
 	for _, s := range inv.LocalShells {
 		selected := current != "" && s.Identity == current && s.State == taskActive
-		detail := shellListDetail(s.Directory, s.SourceHost)
+		detail := shellListDetail(shellDirectoryDetail(s.Shell, s.Directory), s.SourceHost)
 		detail = pinDetail(detail, s.Pinned, s.PinUntil)
-		rows = append(rows, taskTableRow{taskUID(s.Identity), s.ShortID, s.Name, "sh", "local", s.State, taskShortCode(s.Owner), detail, selected})
+		rows = append(rows, taskTableRow{taskUID(s.Identity), s.ShortID, s.Name, "shell", "local", s.State, taskShortCode(s.Owner), detail, selected})
 	}
 	now := time.Now()
 	for _, s := range inv.Shells {
 		host := cmp.Or(s.Host, "local")
 		selected := !s.Observed && current != "" && identityFromUID(s.Instance) == current && s.State == taskActive
-		detail := s.Directory
+		detail := shellDirectoryDetail(s.Shell, s.Directory)
 		if s.Observed {
 			seen := "on " + host
 			if !s.SeenAt.IsZero() {
@@ -316,7 +317,7 @@ func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color
 		}
 		detail = shellListDetail(detail, s.SourceHost)
 		detail = pinDetail(detail, s.Pinned, s.PinUntil)
-		rows = append(rows, taskTableRow{taskUID(identityFromUID(s.Instance)), s.ShortID, s.Name, "sh", host, s.State, taskShortCode(s.Owner), detail, selected})
+		rows = append(rows, taskTableRow{taskUID(identityFromUID(s.Instance)), s.ShortID, s.Name, "shell", host, s.State, taskShortCode(s.Owner), detail, selected})
 	}
 	for _, r := range inv.Resources {
 		kind, name := r.kindAndName()
@@ -391,11 +392,18 @@ func joinTaskDetails(first, second string) string {
 	return first + " · " + second
 }
 
-func shellListDetail(directory, source string) string {
-	if source == "" {
-		return directory
+func shellDirectoryDetail(shell, directory string) string {
+	if shell == "" || directory == "" {
+		return shell + directory
 	}
-	return joinTaskDetails("from "+source, directory)
+	return shell + " " + directory
+}
+
+func shellListDetail(detail, source string) string {
+	if source == "" {
+		return detail
+	}
+	return joinTaskDetails("from "+source, detail)
 }
 
 func readOnlyDetail(detail string) string {

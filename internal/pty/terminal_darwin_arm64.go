@@ -3,9 +3,23 @@ package pty
 import (
 	"errors"
 	"os"
+	"sync"
 
 	"golang.org/x/sys/unix"
 )
+
+type platformTerminal struct {
+	stop func() error
+}
+
+func (t *Terminal) startChild(_ string) error {
+	t.stop = sync.OnceValue(func() error { return stopTerminal(t.exited, t.Close, t.forceChild) })
+	return t.cmd.Start()
+}
+
+func (t *Terminal) Stop() error { return t.stop() }
+
+func (t *Terminal) Close() error { return t.closeMaster() }
 
 func (t *Terminal) waitChild() error {
 	fd, err := unix.Kqueue()

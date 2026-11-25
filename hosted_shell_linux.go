@@ -11,6 +11,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/sys"
 )
 
 type remoteShell struct {
@@ -65,7 +67,7 @@ func (s *remoteShell) serveControl(c net.Conn) error {
 		switch m.Type {
 		case "sh_child":
 			s.mu.Lock()
-			req := &localDaemonRequest{Record: localShellRecord{Directory: currentShellDirectory(s.process.PID, s.record.Directory)}, Env: append([]string(nil), s.environment...), Shell: &shellConfig{Command: "sh", Local: true, Pin: m.Pinned}}
+			req := &localDaemonRequest{Record: localShellRecord{Directory: currentShellDirectory(s.pid, s.record.Directory)}, Env: append([]string(nil), s.environment...), Shell: &shellConfig{Command: "sh", Local: true, Pin: m.Pinned}}
 			s.mu.Unlock()
 			go serveChildShortcut(p, s.done, func(c net.Conn) {
 				s.requestShellRoute(c, message{SoftwareVersion: version, LocalRequest: req})
@@ -134,16 +136,7 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 	}
 }
 func (s *remoteShell) status(detail string) message {
-	view, group := s.hostedView(detail)
-	if detail != "health" {
-		view.Directory = sessionDirectory(view.PID)
-	}
-	if detail != "health" && detail != "inventory" {
-		view.Foreground = "—"
-		if group > 0 {
-			view.Foreground = newProcessSnapshot().foregroundPrograms(group)
-		}
-	}
+	view := s.hostedView(detail)
 	return message{Type: "session", Owner: view.Owner, Action: view.State, Pinned: view.Pinned, PinUntil: view.PinUntil, Instance: view.Instance, Name: view.Name, SoftwareVersion: version,
 		Attached: view.State == taskActive, PID: view.PID, AgeSeconds: view.Age, Foreground: view.Foreground, Directory: view.Directory}
 }
@@ -205,12 +198,11 @@ func (s *remoteShell) watchLifetime(ctx context.Context) {
 	}
 }
 
-func (s *remoteShell) hostedView(detail string) (shellView, int) {
+func (s *remoteShell) hostedView(detail string) shellView {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	view := shellView{
 		Owner: s.parentIdentityLocked(), Pinned: s.pinned, PinUntil: s.pinUntil, Instance: s.record.UID,
-		ID: "sh/" + s.record.Name, Name: s.record.Name, PID: s.process.PID,
+		ID: "sh/" + s.record.Name, Name: s.record.Name, PID: s.pid, Shell: s.shellName,
 	}
 	view.State = s.state()
 	if s.active != nil {
@@ -220,11 +212,16 @@ func (s *remoteShell) hostedView(detail string) (shellView, int) {
 		age := int64(time.Since(s.started) / time.Second)
 		view.Age = &age
 	}
-	group := 0
-	if detail != "health" && s.terminal != nil {
-		group, _ = s.terminal.ForegroundGroup()
+	terminal := s.terminal
+	s.mu.Unlock()
+	var group int
+	var processes []sys.Process
+	if terminal != nil && (detail == "" || detail == "sessions") {
+		group, _ = terminal.ForegroundGroup()
+		processes = terminal.TaskProcesses()
 	}
-	return view, group
+	hostedDiagnostics(&view, processes, group, detail)
+	return view
 }
 
 func (s *remoteShell) serveTask(c net.Conn, m message) error {

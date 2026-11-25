@@ -20,6 +20,8 @@ import (
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/term"
+
+	"github.com/jay-waves/sshore/internal/sys"
 )
 
 // Return the remote home directory from the readiness reply. Shell selection
@@ -290,7 +292,7 @@ func executableVersion(path string) (string, error) {
 }
 
 // Serialize executable checks and replacement across the account.
-func setupLock() (*os.File, error) {
+func setupLock() (*sys.FileLock, error) {
 	owner, err := daemonDirectory()
 	if err != nil {
 		return nil, err
@@ -299,18 +301,7 @@ func setupLock() (*os.File, error) {
 	if err := privateStatePath(dir, true); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(filepath.Join(dir, "setup.lock"), os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return nil, err
-	}
-	if err = privateStatePath(file.Name(), false); err == nil {
-		err = lockResourceState(file)
-	}
-	if err != nil {
-		file.Close()
-		return nil, err
-	}
-	return file, nil
+	return tryPrivateFileLock(filepath.Join(dir, "setup.lock"))
 }
 
 func requireInstalledRelease(target string) error {
@@ -335,6 +326,7 @@ func bootstrapRelease(target string) error {
 	if !filepath.IsAbs(target) {
 		return fmt.Errorf("installation target must be absolute")
 	}
+	reportBootstrapCgroup()
 	gate, err := setupLock()
 	if err != nil {
 		return err

@@ -8,6 +8,7 @@ mount -t devpts -o ptmxmode=0666 devpts /dev/pts
 ln -sf pts/ptmx /dev/ptmx
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
+mount -t cgroup2 none /sys/fs/cgroup
 ip link set lo up
 modprobe fuse
 

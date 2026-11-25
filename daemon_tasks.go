@@ -9,6 +9,7 @@ import (
 	"iter"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,11 +28,13 @@ type daemonTask interface {
 var errDaemonDraining = errors.New("daemon is shutting down")
 
 type daemonTasks struct {
-	log      io.Writer
-	forest   shellForest
-	draining bool
-	mu       sync.Mutex
-	records  map[string]daemonTask
+	log       io.Writer
+	cgroup    string
+	cgroupErr error
+	forest    shellForest
+	draining  bool
+	mu        sync.Mutex
+	records   map[string]daemonTask
 }
 
 type nativeShellTask struct {
@@ -409,7 +412,7 @@ func (t *daemonResourceTask) publishReady(detail, root, mountpoint string) resou
 }
 
 type hostedShellView interface {
-	hostedView(string) (shellView, int)
+	hostedView(string) shellView
 }
 
 type taskInventoryRequest struct {
@@ -425,7 +428,6 @@ type taskInventorySnapshot struct {
 
 func (s *daemonTasks) taskInventory(request taskInventoryRequest) (taskInventorySnapshot, []*daemonResourceTask) {
 	var snapshot taskInventorySnapshot
-	var groups []int
 	var workers []*daemonResourceTask
 	// Capture membership before collecting runtime state. A shell view may wait
 	// for its terminal handshake, so it must not hold up unrelated task lookups.
@@ -435,15 +437,13 @@ func (s *daemonTasks) taskInventory(request taskInventoryRequest) (taskInventory
 			if request.Native {
 				view := t.shell.view()
 				if request.Detail != "health" {
-					view.Directory = currentShellDirectory(view.PID, view.Directory)
+					view.Directory = currentShellDirectory(view.PID, "")
 				}
 				snapshot.Native = append(snapshot.Native, view)
 			}
 		case hostedShellView:
 			if request.Hosted {
-				view, group := t.hostedView(request.Detail)
-				snapshot.Shells = append(snapshot.Shells, view)
-				groups = append(groups, group)
+				snapshot.Shells = append(snapshot.Shells, t.hostedView(request.Detail))
 			}
 		case *daemonResourceTask:
 			if !request.Resources || request.Host != "" && t.record.Host != request.Host {
@@ -458,7 +458,7 @@ func (s *daemonTasks) taskInventory(request taskInventoryRequest) (taskInventory
 
 		}
 	}
-	hostedDiagnostics(snapshot.Shells, groups, request.Detail)
+	slices.SortFunc(snapshot.Shells, func(a, b shellView) int { return strings.Compare(a.Instance, b.Instance) })
 	return snapshot, workers
 }
 

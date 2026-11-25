@@ -264,9 +264,7 @@ not select an arbitrary task.
 Control resolves the immutable task ID in the daemon's memory table. Ending a
 task removes its live registration; clients do not infer lifetime from stale files.
 Remote shell cancellation uses the same authenticated, exact-release control
-entry and signals only the child identities owned by that task.
-Local shell `kill` requests terminal closure and waits for the directly started
-shell to exit. Hosted shell `kill` terminates confirmed Linux tasks. `kill --all` displays a
+entry and targets the registered task. `kill --all` displays a
 fresh snapshot and requires confirmation at a `[Y/n]` prompt. Enter confirms,
 and EOF cancels. A change to a reviewed task requires fresh review. For a
 remote host, the remote daemon stops first. The local daemon then verifies the
@@ -275,11 +273,14 @@ them.
 Other managers' advertisements are excluded. Administrative shutdown may cross
 release versions; individual task control still requires an exact release.
 
-Linux hosted cleanup sends KILL only to confirmed same-user shells and their
-identified tasks, with process identity validation. Local Unix shells handle
-PTY hangup according to their own job-control rules. After a grace period,
-forced termination targets only the directly started shell. Programs ignoring
-hangup or deliberately escaping may survive. Windows closes ConPTY to notify
+On Linux the daemon starts each local or hosted shell directly in a dedicated
+cgroup v2 child. The daemon retains a kernel handle to `cgroup.kill` for that
+registered shell. Explicit stop and shell exit both terminate remaining members
+before removing the group. Each managed shell has its own group, independent of
+the logical owner tree. Processes running as the same account are trusted and
+may have permission to migrate processes out of a group. On macOS, closing the
+PTY requests hangup before forced termination of the directly started shell.
+Windows closes ConPTY to notify
 console applications, then releases the daemon-owned kill-on-close job after
 the shell exits or the grace period expires.
 No process-name-wide kill is used. A daemon failure can affect all terminals it owns.
@@ -383,8 +384,8 @@ Use ordinary SSH for manual repair.
 
 New binaries continue to honor `SSHORE_DISABLED=1` inherited from legacy recovery
 shells: normal operations remain disabled until reconnecting. Legacy recovery is a
-product restriction, not a sandbox; arbitrary older binaries and deliberately
-escaped/reparented processes cannot be globally controlled. Native SSH forwarding
+product restriction, not a sandbox; arbitrary older binaries and processes
+outside registered tasks remain outside daemon control. Native SSH forwarding
 remains the local user's policy.
 
 Installer scripts verify the release before invoking the prepared executable to

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"os"
@@ -35,11 +34,9 @@ func detachDaemon(cmd *exec.Cmd) {
 }
 
 // The terminal owns a kill-on-close job; Terminal.Close ends its process tree.
-func stopHostedTerminal(pid int, start string) error { return nil }
+func reportBootstrapCgroup() {}
 
-func lockResourceState(f *os.File) error {
-	return windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &windows.Overlapped{})
-}
+func daemonTaskCgroup() (string, error) { return "", nil }
 
 // Retain a wait-only handle across authenticated shutdown. The owner lock can be
 // released before Windows unloads the daemon's executable.
@@ -69,31 +66,6 @@ func completeDaemonShutdown(ctx context.Context, pid int, shutdown func() error)
 	}
 	return nil
 }
-
-func prepareFTPPaths(o *ftpOptions) (func(), error) {
-	cleanup := func() {}
-	if o.Mountpoint != "" {
-		if len(o.Mountpoint) == 2 && o.Mountpoint[1] == ':' {
-			return cleanup, nil
-		}
-		p, e := absoluteLocalPath(o.Mountpoint)
-		o.Mountpoint = p
-		return cleanup, e
-	}
-	drives, e := windows.GetLogicalDrives()
-	if e != nil {
-		return cleanup, e
-	}
-	for c := byte('Z'); c >= 'D'; c-- {
-		if drives&(1<<uint(c-'A')) == 0 {
-			o.Mountpoint = string(c) + ":"
-			return cleanup, nil
-		}
-	}
-	return cleanup, fmt.Errorf("no free drive letter; specify a mountpoint")
-}
-
-func resourceLockBusy(err error) bool { return errors.Is(err, windows.ERROR_LOCK_VIOLATION) }
 
 // Private validates the path type and applies a protected current-user DACL.
 func privateStatePath(path string, directory bool) error {

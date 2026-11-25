@@ -15,6 +15,7 @@ import (
 
 	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/pty"
+	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
 	sftp "github.com/pkg/sftp/v2"
 )
@@ -250,7 +251,7 @@ func approvalPathHint(hint string) (string, error) {
 	if hint == "" {
 		return "", nil
 	}
-	path, err := termui.ExpandHomePath(hint)
+	path, err := sys.ExpandHome(hint)
 	if err != nil {
 		return "", fmt.Errorf("invalid local path suggestion: %w", err)
 	}

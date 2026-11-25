@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/term"
 )
@@ -45,7 +46,7 @@ func daemonStateRoot(root string, explicit bool) (string, error) {
 }
 
 // Open the existing account lock without creating state or taking ownership.
-func openDaemonOwner(dir string) (*os.File, error) {
+func openDaemonOwner(dir string) (*sys.FileLock, error) {
 	owner, err := os.OpenFile(filepath.Join(dir, "owner.lock"), os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
@@ -54,7 +55,7 @@ func openDaemonOwner(dir string) (*os.File, error) {
 		owner.Close()
 		return nil, fmt.Errorf("validate account owner lock: %w", err)
 	}
-	return owner, nil
+	return sys.NewFileLock(owner), nil
 }
 
 func daemonStateRootAt(dir, root string, explicit bool) (string, error) {
@@ -138,9 +139,9 @@ func ownedDaemonRecord(dir string) (localShellRecord, error) {
 	defer owner.Close()
 	path := filepath.Join(dir, "daemon.json")
 	for until := time.Now().Add(time.Second); ; {
-		if err := lockResourceState(owner); err == nil {
+		if err := owner.TryLock(); err == nil {
 			return localShellRecord{}, os.ErrNotExist
-		} else if !resourceLockBusy(err) {
+		} else if !errors.Is(err, sys.ErrFileLockBusy) {
 			return localShellRecord{}, err
 		}
 		record, err := readLocalRecord(path, "daemon")
@@ -159,24 +160,13 @@ func ownedDaemonRecord(dir string) (localShellRecord, error) {
 	}
 }
 
-func daemonFileLock(name string) (*os.File, error) {
+func daemonFileLock(name string) (*sys.FileLock, error) {
 	dir, err := daemonDirectory()
 	if err != nil {
 		return nil, err
 	}
 	path := filepath.Join(dir, name+".lock")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return nil, err
-	}
-	if err = privateStatePath(path, false); err == nil {
-		err = lockResourceState(f)
-	}
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	return f, nil
+	return tryPrivateFileLock(path)
 }
 
 func openLocalDaemonContext(ctx context.Context, request localDaemonRequest) (net.Conn, error) {
@@ -197,14 +187,14 @@ func ensureLocalDaemonContext(ctx context.Context, executable ...string) (localS
 	}
 	var empty localShellRecord
 	deadline := time.Now().Add(10 * time.Second)
-	var lock *os.File
+	var lock *sys.FileLock
 	var err error
 	for {
 		lock, err = daemonFileLock("startup")
 		if err == nil {
 			break
 		}
-		if !resourceLockBusy(err) || time.Now().After(deadline) {
+		if !errors.Is(err, sys.ErrFileLockBusy) || time.Now().After(deadline) {
 			return empty, err
 		}
 		select {
@@ -262,6 +252,7 @@ func runDaemon() (result error) {
 	if record.Name != "daemon" || record.Version != version || len(record.Token) != 64 || !filepath.IsAbs(record.Directory) {
 		return fmt.Errorf("invalid daemon startup")
 	}
+	group, cgroupErr := daemonTaskCgroup()
 	owner, err := daemonFileLock("owner")
 	if err != nil {
 		return err
@@ -311,7 +302,7 @@ func runDaemon() (result error) {
 			termui.Log(log, "daemon", termui.Info, "Daemon stopped.")
 		}
 	}()
-	tasks := &daemonTasks{log: log}
+	tasks := &daemonTasks{log: log, cgroup: group, cgroupErr: cgroupErr}
 	activity := &daemonActivity{tasks: tasks, root: record.Directory}
 	accountActivity.Store(activity)
 	defer accountActivity.Store(nil)

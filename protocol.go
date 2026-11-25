@@ -73,6 +73,7 @@ type message struct {
 	Foreground       string              `json:"foreground,omitempty"`
 	Attached         bool                `json:"attached,omitempty"`
 	Name             string              `json:"name,omitempty"`
+	Shell            string              `json:"shell,omitempty"`
 	Size             int64               `json:"size,omitempty"`
 	Output           string              `json:"output,omitempty"`
 	Error            string              `json:"error,omitempty"`

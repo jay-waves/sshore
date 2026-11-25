@@ -196,8 +196,9 @@ A leading * marks the current shell. Use list for details.
 		help: `Usage: sshore list  (alias: ls)
 
 List shell, mount and forward details, including incoming resources. PARENT
-shows the parent shell's short ID. DETAIL includes connection hosts and
-port mappings. A forward's arrow points toward the target service.
+shows the parent shell's short ID. DETAIL includes shell names, working
+directories when available, connection hosts and port mappings. A forward's arrow
+points toward the target service.
 `,
 	},
 	"kill": {

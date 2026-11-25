@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+
+	"github.com/jay-waves/sshore/internal/sys"
 )
 
 var resetCachePath = func() (string, error) {
@@ -99,16 +101,16 @@ func runReset() error {
 }
 
 // clear runs with setup, startup and owner locked.
-func (p resetPaths) clear(runtimeDirs []string, locks ...*os.File) error {
+func (p resetPaths) clear(runtimeDirs []string, locks ...*sys.FileLock) error {
 	// Keep lock inodes stable: a waiting client must never acquire a deleted lock
 	// while another client starts a replacement daemon under a different inode.
 	keep := make(map[string]bool)
 	for _, lock := range locks {
-		parent, err := filepath.EvalSymlinks(filepath.Dir(lock.Name()))
+		parent, err := filepath.EvalSymlinks(filepath.Dir(lock.Path()))
 		if err != nil {
 			return err
 		}
-		keep[filepath.Join(parent, filepath.Base(lock.Name()))] = true
+		keep[filepath.Join(parent, filepath.Base(lock.Path()))] = true
 	}
 	if err := resetHostedExitState(p.account, runtimeDirs); err != nil {
 		return err

@@ -8,12 +8,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/proc"
+	"github.com/jay-waves/sshore/internal/sys"
 )
 
-func stopHostedTerminal(pid int, start string) error {
-	return proc.StopSession(pid, start)
+func reportBootstrapCgroup() {
+	if err := sys.ProbeShellCgroup(); err != nil {
+		fmt.Fprintf(os.Stderr, "Linux shell cgroup unavailable: %v. Mounts and forwards remain available.\n", err)
+		return
+	}
+	fmt.Fprintln(os.Stderr, "Linux shell cgroup available.")
 }
+
+func daemonTaskCgroup() (string, error) { return sys.DaemonTaskCgroup() }
 
 // Read existing OS identity without changing system configuration.
 func systemMachineID() string {

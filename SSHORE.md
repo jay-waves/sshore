@@ -42,6 +42,15 @@ Local and hosted shells share one [shell task lifecycle](shell_terminal.go).
 Their entry points provide the commands specific to
 local handoff or hosted resources.
 
+Linux shells require cgroup v2 with `cgroup.kill` and `CLONE_INTO_CGROUP`. The
+daemon uses its own writable delegated subtree or requests a delegated scope
+from the systemd user manager. Each shell starts directly in its own child
+cgroup. Ending the shell task terminates remaining members, including background
+jobs that created separate sessions. Without delegation the daemon can still
+manage mounts and forwards. Linux bootstrap tests cgroup creation, process launch
+and group termination on the target account before resetting it. If the probe
+fails, bootstrap reports the reason and continues the installation.
+
 Build the experimental Apple Silicon client on Apple Silicon with
 `CGO_ENABLED=0 go run ./scripts go build -o sshore .`. It targets
 SSH connections to Linux hosts and supports local interactive shells. Install
@@ -89,15 +98,17 @@ shell, local console or calling terminal and whether pinned children remain.
 ### Account daemon and mounts
 
 One authenticated daemon per OS account owns registered shells and resources.
-Daemon startup is serialized by the account startup lock. The owner lock
+The daemon, installer, and state storage share the [file lock adapter](internal/sys/file_lock.go)
+backed by `gofrs/flock`. Daemon startup is serialized by the account startup lock. The owner lock
 identifies the live daemon, and its endpoint record supplies the address.
 Confirmed shutdown closes task admission, stops the reviewed tasks in parallel
 and waits for their results. A failed stop reports the task and reopens admission.
 The shutdown deadline bounds the response while accepted cleanup completes.
 Mounts and forwards use the same cleanup wait for individual and bulk stops.
-Normal connections require the exact full release version. Validate process
-identity before signaling. A remote shell's mount or forward approval is bound
-to the original task and its requested operation. The daemon opens fresh SSH
+Normal connections require the exact full release version. Validate
+[process identity](internal/sys/process_identity_linux.go) before signaling. A remote shell's mount
+or forward approval is bound to the original task and its requested operation.
+The daemon opens fresh SSH
 connections through the authenticated route at startup. The resource owns those
 connections after startup, so exiting a source or ancestor shell leaves the
 resource running. Mount and forward configuration travels in the authenticated
@@ -110,6 +121,8 @@ The upgraded stream carries readiness and the caller's commit. The mount worker
 uses a separate pipe exchange because it can outlive the launch connection.
 The CLI formats SSH and mount diagnostics from callbacks. Copy clients and
 mount clients use `pkg/sftp/v2` alongside the embedded agents.
+The [files package](internal/files/mount_paths.go) prepares local mountpoints
+for both foreground mounts and background workers.
 The pinned upstream revision includes the client disconnect fix and supports the
 project's Go version. Directory change notifications use their own stream.
 Trace changes through the [task registry](daemon_tasks.go), [mount coordinator](mount.go)
@@ -130,12 +143,17 @@ frontend holds it.
 
 `list` (`ls`) shows shell details, local mounts and forwards, and read-only
 incoming resource leases. The group header identifies the managing host.
-Connection endpoints and forwarding directions appear in `DETAIL`. Both views include
-remote shell observations and open no SSH connections. The tree shows each
-shell UID once and favors a live registration over observations of that UID.
+Shell rows use the type `shell`. Their `DETAIL` shows the launched shell's
+executable name. Live shells show their native process working directory when available,
+for example `bash ~/src`. An unavailable directory is omitted, never replaced
+with the launch directory. Windows PowerShell rows omit the directory because
+PowerShell runspace locations (`$PWD`) are independent of the native process cwd.
+Connection endpoints and forwarding directions also appear in `DETAIL`.
+Both views include remote shell observations and open no SSH connections.
+The tree shows each shell UID once and favors a live registration over observations of that UID.
 `PARENT` shows the parent's short ID. For remote observations the list displays
-the last recorded parent and includes the observation time in `DETAIL`. Its
-resource status probes run under a separate time budget.
+the last recorded parent and includes the observation time and last known shell
+name in `DETAIL`. Resource status probes run under a separate time budget.
 
 Invalid remote participation history makes the inventory incomplete. Parent edges
 for registered tasks come directly from the daemon; no ancestry files are loaded.

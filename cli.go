@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -781,7 +782,7 @@ func runMount(args []string) (int, error) {
 		if err != nil {
 			return 2, err
 		}
-		op.Path, err = absoluteLocalPath(op.Path)
+		op.Path, err = sys.Abs(op.Path)
 		if err != nil {
 			return 1, err
 		}

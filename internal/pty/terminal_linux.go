@@ -2,30 +2,44 @@ package pty
 
 import (
 	"errors"
+	"fmt"
 	"os"
 
+	"github.com/jay-waves/sshore/internal/sys"
 	"golang.org/x/sys/unix"
 )
+
+type platformTerminal struct {
+	cgroup *sys.TaskCgroup
+}
+
+func (t *Terminal) startChild(parent string) error {
+	group, dir, err := sys.NewTaskCgroup(parent)
+	if err != nil {
+		return fmt.Errorf("create terminal cgroup: %w", err)
+	}
+	defer dir.Close()
+	t.cmd.SysProcAttr.UseCgroupFD = true
+	t.cmd.SysProcAttr.CgroupFD = int(dir.Fd())
+	if err := t.cmd.Start(); err != nil {
+		return errors.Join(fmt.Errorf("start shell in task cgroup: %w", err), group.Remove())
+	}
+	t.cgroup = group
+	return nil
+}
 
 // waitTerminalChild parks in Go's I/O poller until a started child exits, then reaps it.
 // The caller must own the command's single Wait call.
 func (t *Terminal) waitChild() error {
 	awaitExit(t.cmd.Process.Pid)
-	return t.cmd.Wait()
+	return errors.Join(t.cmd.Wait(), t.cgroup.Kill(), t.cgroup.Remove())
 }
 
-func (t *Terminal) forceChild() error {
-	var err error
-	if handleErr := t.cmd.Process.WithHandle(func(fd uintptr) {
-		err = unix.PidfdSendSignal(int(fd), unix.SIGKILL, nil, 0)
-	}); handleErr != nil {
-		err = handleErr
-	}
-	if errors.Is(err, os.ErrProcessDone) || errors.Is(err, unix.ESRCH) {
-		return nil
-	}
-	return err
-}
+func (t *Terminal) Stop() error { return t.cgroup.Kill() }
+
+func (t *Terminal) Close() error { return errors.Join(t.Stop(), t.closeMaster()) }
+
+func (t *Terminal) TaskProcesses() []sys.Process { return t.cgroup.Processes() }
 
 // The child is still unreaped, so its PID remains reserved while opening the
 // pidfd. Park in Go's I/O poller before reaping to avoid a blocked OS thread

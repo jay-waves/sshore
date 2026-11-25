@@ -22,9 +22,9 @@ type Terminal struct {
 	closeMaster func() error
 	wait        func() error
 	exited      chan struct{}
-	stop        func() error
-	childMu     sync.Mutex
-	signalSafe  bool
+	platformTerminal
+	childMu    sync.Mutex
+	signalSafe bool
 }
 
 func openTerminalPair() (*os.File, *os.File, error) {
@@ -95,7 +95,7 @@ func Start(c Config) (result *Terminal, _ error) {
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 	cmd.Env = append(cmd.Environ(), "SSHORE_TTY="+slave.Name())
-	if err := cmd.Start(); err != nil {
+	if err := terminal.startChild(c.TaskCgroup); err != nil {
 		return nil, err
 	}
 	// A descendant may retain the slave after the shell exits. Reap the shell
@@ -105,9 +105,6 @@ func Start(c Config) (result *Terminal, _ error) {
 		close(terminal.exited)
 		_ = master.SetReadDeadline(time.Now().Add(time.Second))
 		return err
-	})
-	terminal.stop = sync.OnceValue(func() error {
-		return stopTerminal(terminal.exited, terminal.Close, terminal.forceChild)
 	})
 	go terminal.Wait()
 	return terminal, nil
@@ -132,11 +129,6 @@ func (t *Terminal) PID() int { return t.cmd.Process.Pid }
 
 // Wait reaps the child once; concurrent callers receive the same result.
 func (t *Terminal) Wait() error { return t.wait() }
-
-// Close hangs up the terminal; deliberately detached descendants may survive.
-func (t *Terminal) Close() error { return t.closeMaster() }
-
-func (t *Terminal) Stop() error { return t.stop() }
 
 func (t *Terminal) SetWriteDeadline(at time.Time) error { return t.master.SetWriteDeadline(at) }
 func (t *Terminal) control(fn func(int) error) error {

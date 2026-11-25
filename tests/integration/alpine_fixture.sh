@@ -13,13 +13,26 @@ install -o sshore-fixture -g sshore-fixture -m 600 "$fixture/identity.pub" /home
     printf '[127.0.0.1]:2222 '
     cat "$fixture/host.pub"
 } > "$fixture/known_hosts"
-/usr/sbin/sshd -E "$fixture/sshd.log" -f /dev/null -p 2222 -h "$fixture/host" \
-    -o ListenAddress=127.0.0.1 -o AuthorizedKeysFile=authorized_keys \
-    -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PermitRootLogin=no \
-    -o AllowUsers=sshore-fixture
+# Give the SSH test account its own cgroup subtree in the disposable guest.
+cg=/sys/fs/cgroup
+[ -f "$cg/cgroup.controllers" ] || { echo 'fixture requires cgroup v2' >&2; exit 1; }
+if [ ! -w "$cg/cgroup.procs" ]; then
+    mount -o remount,rw "$cg"
+fi
+ssh_group="$cg/sshore-fixture"
+mkdir "$ssh_group"
+chown sshore-fixture:sshore-fixture "$ssh_group" "$ssh_group/cgroup.procs" "$ssh_group/cgroup.subtree_control" "$ssh_group/cgroup.threads"
+(
+    echo 0 > "$ssh_group/cgroup.procs"
+    exec /usr/sbin/sshd -E "$fixture/sshd.log" -f /dev/null -p 2222 -h "$fixture/host" \
+        -o ListenAddress=127.0.0.1 -o AuthorizedKeysFile=authorized_keys \
+        -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PermitRootLogin=no \
+        -o AllowUsers=sshore-fixture
+)
 ln -s "$fixture/sshore" /usr/local/bin/sshore
 
 export SSHORE_TEST_OPENSSH="$fixture/sshore" SSHORE_STATE_DIR="$fixture/state" TERM=xterm NO_COLOR=1
+export SSHORE_TEST_CGROUP="$fixture/sshore"
 cd /fixture/repo/tests/integration
 /fixture/integration.test -test.run "$(cat /fixture/pattern)" -test.v -test.timeout 90s || {
     status=$?

@@ -4,15 +4,12 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 )
 
 func localShellPath(env []string) string {
@@ -31,15 +28,12 @@ func protectDaemonHangups() func() {
 	return func() { signal.Stop(hangups) }
 }
 
-func detachDaemon(c *exec.Cmd)           { c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
-func lockResourceState(f *os.File) error { return unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB) }
+func detachDaemon(c *exec.Cmd) { c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
 
 func completeDaemonShutdown(_ context.Context, _ int, shutdown func() error) error {
 	// Releasing the account lock is sufficient for replacement on Unix.
 	return shutdown()
 }
-
-func resourceLockBusy(err error) bool { return errors.Is(err, unix.EWOULDBLOCK) }
 
 // Private validates ownership, permissions and path type without following symlinks.
 func privateStatePath(path string, directory bool) error {

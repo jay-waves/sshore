@@ -1,4 +1,4 @@
-package proc
+package sys
 
 import (
 	"fmt"
@@ -10,17 +10,7 @@ import (
 	"syscall"
 )
 
-const procRoot = "/proc"
-
 func processPath(pid int) string { return filepath.Join(procRoot, strconv.Itoa(pid)) }
-
-// WorkingDirectory reads the current directory of a same-user process.
-func WorkingDirectory(pid int) (string, error) {
-	if _, err := readTask(pid); err != nil {
-		return "", err
-	}
-	return os.Readlink(filepath.Join(processPath(pid), "cwd"))
-}
 
 func readOwnedStat(path string, pid int) (string, []string, error) {
 	info, err := os.Stat(path)
@@ -51,15 +41,11 @@ type Process struct {
 	Name                           string
 }
 
-// ReadProcesses returns a best-effort snapshot of same-user processes in PID order.
-func ReadProcesses() []Process {
-	entries, _ := os.ReadDir(procRoot)
+// readProcesses returns a best-effort snapshot of same-user processes in PID order.
+func readProcesses(pids []int) []Process {
 	var processes []Process
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 0 {
-			continue
-		}
+	for _, pid := range pids {
+		// Keep the kernel's comm value. gopsutil can expand it using argv[0].
 		name, fields, err := readOwnedStat(processPath(pid), pid)
 		if err != nil || len(fields) < 3 {
 			continue

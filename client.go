@@ -307,7 +307,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	}
 	if !o.local {
 		row := participatingShell{Host: o.host, Owner: m.Owner, Instance: o.instance, Name: o.session, State: taskActive,
-			Pinned: m.Pinned, PinUntil: m.PinUntil, PID: m.PID, Attachment: newTaskUID()}
+			Pinned: m.Pinned, PinUntil: m.PinUntil, PID: m.PID, Shell: m.Shell, Attachment: newTaskUID()}
 		if err := observeParticipatingShell(row); err != nil {
 			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not record participating shell: %s\n", cleanText(err.Error()))
 		} else {

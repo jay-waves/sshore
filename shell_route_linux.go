@@ -302,7 +302,7 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 		return err
 	}
 	s.mu.Lock()
-	if s.process.PID == 0 {
+	if s.pid == 0 {
 		s.mu.Unlock()
 		return fmt.Errorf("managed shell required")
 	}
