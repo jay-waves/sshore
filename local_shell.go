@@ -12,9 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -115,8 +113,6 @@ func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, read
 	if r.Version != version || len(r.Token) != 64 || !filepath.IsAbs(r.Directory) {
 		return fmt.Errorf("invalid local startup request")
 	}
-	s.record = r
-	s.tasks = tasks
 	parent := s.parent
 	if err := tasks.register("", &nativeShellTask{shell: s, serve: serve}); err != nil {
 		return err
@@ -165,23 +161,6 @@ func (s *localShell) view(includeDirectory bool) localShellView {
 	return view
 }
 
-func localShellEnvironment(source []string, term, identity string) []string {
-	env := make([]string, 0, len(source)+2)
-	for _, item := range source {
-		key, _, _ := strings.Cut(item, "=")
-		if runtime.GOOS == "windows" {
-			key = strings.ToUpper(key)
-		}
-		switch key {
-		case "SSHORE_SOCKET", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "SSHORE_TTY", "SSHORE_LOCAL_SESSION", "SSHORE_TREE_ID", "TERM":
-			continue
-		}
-		env = append(env, item)
-	}
-	env = append(env, "TERM="+term, "SSHORE_LOCAL_SESSION="+identity, "SSHORE_TREE_ID="+identity)
-	return env
-}
-
 func retentionLocalShell(identity string, m message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
@@ -195,7 +174,7 @@ func retentionLocalShell(identity string, m message) error {
 }
 
 func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, parent *shellTask, ready func(localShellRecord) error) error {
-	s := &localShell{shellTask: shellTask{done: make(chan struct{}), environment: env, parent: parent}}
+	s := &localShell{shellTask: tasks.newShellTask(record, env, parent, false)}
 	defer s.close()
 	return serveLocalShell(tasks, s, record, ready, func(c net.Conn, m message) error {
 		switch m.Type {
@@ -205,7 +184,7 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, pa
 			return s.requestHandoff(c, m.Handoff)
 
 		default:
-			handled, err := s.serveCommand(c, m, s.attach, s.status)
+			handled, err := s.serveCommand(c, m, s.attachmentCommand, s.status)
 			if handled {
 				return err
 			}
@@ -220,37 +199,17 @@ func (s *localShell) status(_ string) message {
 		Attached: view.State == taskActive, PID: view.PID}
 }
 
-func (s *localShell) attach(c net.Conn) error {
-	terminal, m, err := acceptAttachment(c, &s.endpoints)
-	if err != nil {
-		return err
+func (s *localShell) attachmentCommand(p *attachment, m message) error {
+	switch m.Type {
+	case "handoff_result":
+		s.finishHandoff(p, m)
+	case "sh_child":
+		s.mu.Lock()
+		h := &clientHandoff{Shell: (options{command: "sh", local: true, host: "local", pin: m.Pinned}).shellConfig(), Directory: s.directoryOrStartupLocked(), Environment: append([]string(nil), s.environment...)}
+		s.mu.Unlock()
+		go serveChildShortcut(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
+	default:
+		return fmt.Errorf("unexpected local control request")
 	}
-	p := newAttachment(c, terminal)
-	if err := s.attachManaged(p, m); err != nil {
-		if errors.Is(err, errShellExited) || errors.Is(err, errShellAttached) {
-			err = fmt.Errorf("local shell unavailable or already attached")
-		}
-		_ = p.controlMessage(message{Type: "fatal", Error: err.Error()})
-		p.Close()
-		return err
-	}
-	return s.serveAttachment(p, c, false, func(err error) (string, func()) {
-		if err != nil {
-			return "", s.close
-		}
-		return s.record.Name, nil
-	}, func(m message) error {
-		switch m.Type {
-		case "handoff_result":
-			s.finishHandoff(p, m)
-		case "sh_child":
-			s.mu.Lock()
-			h := &clientHandoff{Shell: (options{command: "sh", local: true, host: "local", pin: m.Pinned}).shellConfig(), Directory: s.directoryOrStartupLocked(), Environment: append([]string(nil), s.environment...)}
-			s.mu.Unlock()
-			go serveChildShortcut(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
-		default:
-			return fmt.Errorf("unexpected local control request")
-		}
-		return nil
-	})
+	return nil
 }

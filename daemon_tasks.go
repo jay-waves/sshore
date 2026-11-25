@@ -37,6 +37,53 @@ type daemonTasks struct {
 	records   map[string]daemonTask
 }
 
+func (s *daemonTasks) newShellTask(record localShellRecord, env []string, parent *shellTask, hosted bool) shellTask {
+	return shellTask{
+		registry: s, forest: &s.forest, log: s.log, cgroup: s.cgroup, cgroupErr: s.cgroupErr,
+		record: record, environment: env, parent: parent, hosted: hosted, done: make(chan struct{}),
+	}
+}
+
+// The table excludes new claims while the shell verifies the old reference.
+func (tasks *daemonTasks) renameShell(s *shellTask, old, name, instance string) error {
+	if err := validAlias(name); err != nil {
+		return err
+	}
+	// Wait for terminal state before taking the registry lock. Registry
+	// readers only need nameMu, which is acquired last during a rename.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tasks.mu.Lock()
+	defer tasks.mu.Unlock()
+	if err := tasks.checkNameLocked(s.record.UID, name); err != nil {
+		return err
+	}
+	if s.exited || s.killing || (s.hosted || old != "") && s.record.Name != old || instance != "" && instance != s.record.UID {
+		return fmt.Errorf("shell changed or is exiting; refresh with sshore list")
+	}
+	s.nameMu.Lock()
+	s.record.Name = name
+	s.nameMu.Unlock()
+	return nil
+}
+
+func (s *daemonTasks) childShells(parent *shellTask) []*shellTask {
+	type managedTask interface {
+		daemonTask
+		managedShell() *shellTask
+	}
+	registered := liveTasks[managedTask](s)
+	s.forest.mu.Lock()
+	defer s.forest.mu.Unlock()
+	var children []*shellTask
+	for _, task := range registered {
+		if child := task.managedShell(); child.parent == parent {
+			children = append(children, child)
+		}
+	}
+	return children
+}
+
 type nativeShellTask struct {
 	shell *localShell
 	serve func(net.Conn, message) error

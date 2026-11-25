@@ -1,10 +1,15 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
+
+	"github.com/jay-waves/sshore/internal/pty"
 )
 
 // startupArgs selects startup mode and optional directory reporting.
@@ -82,4 +87,70 @@ func startupEnv(path string, env []string, noProfile bool) []string {
 		}
 	}
 	return filtered
+}
+
+func hostedShellEnvironment(source []string, term, instance, executable string) []string {
+	env := append(append([]string(nil), source...), "TERM="+term, "SSHORE_SOCKET="+instance, "SSHORE_TREE_ID="+identityFromUID(instance))
+	if executable != "" {
+		env = append(env, "PATH="+filepath.Dir(executable)+string(os.PathListSeparator)+localEnvironmentValue(source, "PATH"))
+	}
+	return env
+}
+
+// The caller holds mu while starting and publishing the terminal.
+func (s *shellTask) startManagedShell(m message) error {
+	source := s.environment
+	if source == nil {
+		source = os.Environ()
+	}
+	var path string
+	var env []string
+	if s.hosted {
+		path = cmp.Or(localEnvironmentValue(source, "SHELL"), "/bin/bash")
+		exe, _ := os.Executable()
+		env = hostedShellEnvironment(source, m.Term, s.record.UID, exe)
+	} else {
+		path = localShellPath(source)
+		env = localShellEnvironment(source, m.Term, s.record.identity())
+	}
+	args, err := startupArgs(runtime.GOOS, path, m.NoLogin, m.NoProfile)
+	if err != nil {
+		return err
+	}
+	if s.cgroupErr != nil {
+		return s.cgroupErr
+	}
+	t, err := pty.Start(pty.Config{
+		Path: path, Args: args, Env: startupEnv(path, env, m.NoProfile),
+		Dir: s.record.Directory, Size: shellSize(m), TaskCgroup: s.cgroup,
+	})
+	if err != nil {
+		return err
+	}
+	s.terminal = t
+	s.pid = t.PID()
+	s.started = time.Now()
+	s.shellName = filepath.Base(path)
+	if runtime.GOOS == "windows" {
+		s.shellName = strings.TrimSuffix(strings.ToLower(s.shellName), ".exe")
+	}
+	go s.pumpTerminal(t)
+	return nil
+}
+
+func localShellEnvironment(source []string, term, identity string) []string {
+	env := make([]string, 0, len(source)+2)
+	for _, item := range source {
+		key, _, _ := strings.Cut(item, "=")
+		if runtime.GOOS == "windows" {
+			key = strings.ToUpper(key)
+		}
+		switch key {
+		case "SSHORE_SOCKET", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "SSHORE_TTY", "SSHORE_LOCAL_SESSION", "SSHORE_TREE_ID", "TERM":
+			continue
+		}
+		env = append(env, item)
+	}
+	env = append(env, "TERM="+term, "SSHORE_LOCAL_SESSION="+identity, "SSHORE_TREE_ID="+identity)
+	return env
 }

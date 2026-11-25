@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -133,4 +135,70 @@ func (s *remoteShell) checkApprovalSource(m message) error {
 		return fmt.Errorf("source shell remains attached; request the operation again")
 	}
 	return nil
+}
+
+// The helper and attachment remain connected until the local client accepts the handoff.
+func (p *attachment) requestApproval(c net.Conn, m message, complete func(string) error) error {
+	token := rand.Text()
+	responses, err := p.approvals.open(token)
+	if err != nil {
+		return err
+	}
+	defer p.approvals.remove(token)
+	timer := time.NewTimer(requestTimeout)
+	defer timer.Stop()
+	m.Token = token
+	if err := p.controlMessage(m); err != nil {
+		return err
+	}
+	helperDone := make(chan error, 1)
+	go func() {
+		var unexpected [1]byte
+		_, err := io.ReadFull(c, unexpected[:])
+		helperDone <- err
+	}()
+	cancel := func(err error) error {
+		_ = p.controlMessage(message{Type: "approval_cancelled", Token: token})
+		return err
+	}
+	var reply message
+	select {
+	case reply = <-responses:
+	case <-p.Done():
+		return io.ErrClosedPipe
+	case <-helperDone:
+		return cancel(io.ErrClosedPipe)
+	case <-timer.C:
+		return cancel(fmt.Errorf("approval request timed out"))
+	}
+	if reply.Type != "approval_handoff" {
+		return fileResponseError(reply)
+	}
+	select {
+	case <-p.Done():
+		return io.ErrClosedPipe
+	case <-helperDone:
+		return cancel(io.ErrClosedPipe)
+	default:
+	}
+	_ = c.SetWriteDeadline(time.Now().Add(requestTimeout))
+	if err := writeMessage(c, message{Type: "approval_handoff", SoftwareVersion: version}); err != nil {
+		return cancel(err)
+	}
+	// The remote invocation owns its connection. Wait until it has received
+	// the handoff and closed before the frontend detaches and switches screens.
+	select {
+	case err := <-helperDone:
+		if err != io.EOF {
+			return cancel(fmt.Errorf("approval helper did not close its request"))
+		}
+	case <-p.Done():
+		return io.ErrClosedPipe
+	case <-timer.C:
+		return cancel(fmt.Errorf("approval request timed out"))
+	}
+	if err := complete(reply.ApprovalID); err != nil {
+		return cancel(err)
+	}
+	return p.controlMessage(message{Type: "approval_ack", Token: token})
 }

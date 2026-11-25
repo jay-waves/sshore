@@ -17,55 +17,28 @@ import (
 
 type remoteShell struct {
 	shellTask
+	tasks            *daemonTasks
 	shellRoutes      map[string]*shellRoute
 	resourceApproval resourceApproval
 }
 
-func (s *remoteShell) serveControl(c net.Conn) error {
-	terminal, m, err := acceptAttachment(c, &s.endpoints)
-	if err != nil {
-		return err
+func (s *remoteShell) attachmentCommand(p *attachment, m message) error {
+	switch m.Type {
+	case "sh_child":
+		s.mu.Lock()
+		req := &localDaemonRequest{Record: localShellRecord{Directory: s.directoryOrStartupLocked()}, Env: append([]string(nil), s.environment...), Shell: &shellConfig{Command: "sh", Local: true, Pin: m.Pinned}}
+		s.mu.Unlock()
+		go serveChildShortcut(p, s.done, func(c net.Conn) {
+			s.requestShellRoute(c, message{SoftwareVersion: version, LocalRequest: req})
+		})
+	case "approval_ready":
+		p.approvals.enable()
+	case "approval_handoff", "approval_rejected":
+		p.approvals.reply(m)
+	default:
+		return fmt.Errorf("unexpected control message: %s", m.Type)
 	}
-	p := newAttachment(c, terminal)
-	err = s.attachManaged(p, m)
-	if err != nil {
-		switch {
-		case errors.Is(err, errShellExited):
-			err = fmt.Errorf("shell is exiting; use sshore shell HOST: to create a new one")
-		case errors.Is(err, errShellAttached):
-			err = fmt.Errorf("shell already attached; detach the other connection first")
-		}
-		_ = p.controlMessage(message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
-		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
-		_, _ = readMessage(c)
-		p.Close()
-		return err
-	}
-	return s.serveAttachment(p, c, true, func(err error) (string, func()) {
-		if err != nil {
-			s.exitReason = "terminal input cancellation failed"
-			s.finishLocked()
-			return "", nil
-		}
-		return s.record.Name, nil
-	}, func(m message) error {
-		switch m.Type {
-		case "sh_child":
-			s.mu.Lock()
-			req := &localDaemonRequest{Record: localShellRecord{Directory: s.directoryOrStartupLocked()}, Env: append([]string(nil), s.environment...), Shell: &shellConfig{Command: "sh", Local: true, Pin: m.Pinned}}
-			s.mu.Unlock()
-			go serveChildShortcut(p, s.done, func(c net.Conn) {
-				s.requestShellRoute(c, message{SoftwareVersion: version, LocalRequest: req})
-			})
-		case "approval_ready":
-			p.approvals.enable()
-		case "approval_handoff", "approval_rejected":
-			p.approvals.reply(m)
-		default:
-			return fmt.Errorf("unexpected control message: %s", m.Type)
-		}
-		return nil
-	})
+	return nil
 }
 
 func (s *remoteShell) handle(c net.Conn) {
@@ -98,7 +71,7 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 		}
 		c = owned
 	}
-	if handled, _ := s.serveCommand(c, first, s.serveControl, s.status); handled {
+	if handled, _ := s.serveCommand(c, first, s.attachmentCommand, s.status); handled {
 		return
 	}
 	switch first.Type {
@@ -127,8 +100,8 @@ func (s *remoteShell) status(detail string) message {
 }
 func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) (*remoteShell, error) {
 	s := &remoteShell{
-		shellTask: shellTask{tasks: tasks, record: localShellRecord{Name: req.Name, Directory: req.Directory}, hosted: true,
-			environment: req.Env, parent: req.parent, done: make(chan struct{})},
+		shellTask: tasks.newShellTask(localShellRecord{Name: req.Name, Directory: req.Directory}, req.Env, req.parent, true),
+		tasks:     tasks,
 	}
 	if err := tasks.register("", s); err != nil {
 		if errors.Is(err, errObjectNameInUse) {
@@ -211,5 +184,94 @@ func (s *remoteShell) hostedView(detail string) shellView {
 
 func (s *remoteShell) serveTask(c net.Conn, m message) error {
 	s.handleTask(c, m)
+	return nil
+}
+
+// Public names resolve through the account daemon's task table. Control and
+// data connections select the immutable ID at the authenticated TCP endpoint.
+
+func resolveSession(name string, expected ...string) (string, error) {
+	task, err := resolveHostedShell(name, firstExpectedInstance(expected))
+	return task.Instance, err
+}
+
+func resolveHostedShell(name, instance string) (selectedTask, error) {
+	if err := validSession(name); err != nil {
+		return selectedTask{}, err
+	}
+	rows, err := queryRegisteredTasks(taskQuery{Kind: "hosted", Ref: name, UID: instance})
+	if err != nil || len(rows) == 0 {
+		return selectedTask{}, err
+	}
+	return rows[0], nil
+}
+
+func renameSession(old, name string, expected ...string) error {
+	if err := validAlias(name); err != nil {
+		return err
+	}
+	task, err := resolveHostedShell(old, firstExpectedInstance(expected))
+	if err != nil {
+		return err
+	}
+	if task.Instance == "" {
+		return fmt.Errorf("shell %s does not exist", old)
+	}
+
+	// The daemon rechecks the selected label and UID when it changes the name.
+	c, err := dialHostedTask(context.Background(), task.Instance, time.Second)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := writeMessage(c, message{Type: "rename", Instance: task.Instance, Name: name, Action: task.Name, SoftwareVersion: version}); err != nil {
+		return err
+	}
+	m, err := readMessage(c)
+	if err != nil {
+		return err
+	}
+	if m.Type != "renamed" {
+		return fmt.Errorf("rename: %s", m.Error)
+	}
+	fmt.Fprintf(os.Stdout, "Renamed shell %s to %s\n", task.Name, name)
+	return nil
+}
+
+func firstExpectedInstance(expected []string) string {
+	if len(expected) > 0 {
+		return expected[0]
+	}
+	return ""
+}
+
+// Cancellation is authorized and applied by the task owner. Process identity
+// validation belongs to the daemon immediately before it signals its child.
+func killSession(name string, expected ...string) error {
+	id, err := resolveSession(name, expected...)
+	if err != nil {
+		return err
+	}
+	if id == "" {
+		return fmt.Errorf("shell %s does not exist or its instance changed", name)
+	}
+	c, err := dialHostedTask(context.Background(), id, time.Second)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := writeMessage(c, message{Type: "kill", Instance: id, SoftwareVersion: version}); err != nil {
+		return err
+	}
+	reply, err := readMessage(c)
+	if err != nil {
+		return err
+	}
+	if reply.Type != "killed" {
+		return fmt.Errorf("kill shell: %s", reply.Error)
+	}
+	fmt.Fprintf(os.Stdout, "Ended shell %s\n", name)
 	return nil
 }

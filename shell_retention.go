@@ -13,26 +13,6 @@ import (
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
-func parseDetachCommand(args []string) (message, error) {
-	parsed, err := parseCLI(args, "detach")
-	if err != nil {
-		return message{}, err
-	}
-	return detachMessage(parsed)
-}
-
-func detachMessage(parsed cliArguments) (message, error) {
-	m := message{Type: "detach"}
-	var err error
-	if v := parsed.operand(0); v != "" {
-		m.TTL, err = time.ParseDuration(v)
-		if err != nil || m.TTL <= 0 {
-			return m, usage("invalid duration %q; use a positive duration such as 30s, 60m or 2h", v)
-		}
-	}
-	return m, nil
-}
-
 func requestShellRetention(c io.ReadWriter, request message) error {
 	request.SoftwareVersion = version
 	if err := writeMessage(c, request); err != nil {
@@ -127,9 +107,9 @@ func (s *shellTask) scopeEnded(owner *shellTask, cause error) {
 	} else {
 		reason = "Parent shell " + canonicalTaskCode(owner.treeIdentity()) + " ended"
 		// Pinned survivors no longer need the terminated parent's task or routes.
-		s.tasks.forest.mu.Lock()
+		s.forest.mu.Lock()
 		s.parent = nil
-		s.tasks.forest.mu.Unlock()
+		s.forest.mu.Unlock()
 	}
 	ending := s.exited || s.killing
 	s.scopeLost = true
@@ -141,7 +121,7 @@ func (s *shellTask) scopeEnded(owner *shellTask, cause error) {
 		if reaping {
 			outcome = "Stopping unpinned shell."
 		}
-		termui.Log(s.tasks.log, canonicalTaskCode(s.treeIdentity()), level, "%s. %s", reason, outcome)
+		termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), level, "%s. %s", reason, outcome)
 	}
 }
 
@@ -192,7 +172,7 @@ func (s *shellTask) reapUnretainedLocked() {
 		s.killing, s.exitReason = true, "shell lifetime ended"
 		go func() {
 			if err := s.stopTerminal(); err != nil {
-				termui.Log(s.tasks.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Could not stop unpinned shell: %s", cleanText(err.Error()))
+				termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Could not stop unpinned shell: %s", cleanText(err.Error()))
 			}
 		}()
 	}
@@ -207,20 +187,9 @@ func (s *shellTask) parentIdentityLocked() string {
 
 // The owner lease is still live while the exit frame is being assembled.
 func (s *shellTask) retainedChildren() []retainedShell {
-	type managedTask interface {
-		daemonTask
-		managedShell() *shellTask
-	}
 	var retained []retainedShell
 	now := time.Now()
-	children := liveTasks[managedTask](s.tasks)
-	s.tasks.forest.mu.Lock()
-	children = slices.DeleteFunc(children, func(task managedTask) bool {
-		return task.managedShell().parent != s
-	})
-	s.tasks.forest.mu.Unlock()
-	for _, task := range children {
-		child := task.managedShell()
+	for _, child := range s.registry.childShells(s) {
 		child.mu.Lock()
 		if child.parent == s && !child.exited && !child.killing && child.pinned &&
 			(child.pinUntil.IsZero() || now.Before(child.pinUntil)) {

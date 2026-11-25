@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"syscall"
 
 	sshio "github.com/jay-waves/sshore/internal/ssh"
@@ -86,6 +87,26 @@ func runDaemonCommand(parsed cliArguments) (int, error) {
 	default:
 		return 2, usage("usage: sshore daemon [mount]")
 	}
+}
+
+func parseDetachCommand(args []string) (message, error) {
+	parsed, err := parseCLI(args, "detach")
+	if err != nil {
+		return message{}, err
+	}
+	return detachMessage(parsed)
+}
+
+func detachMessage(parsed cliArguments) (message, error) {
+	m := message{Type: "detach"}
+	var err error
+	if v := parsed.operand(0); v != "" {
+		m.TTL, err = time.ParseDuration(v)
+		if err != nil || m.TTL <= 0 {
+			return m, usage("invalid duration %q; use a positive duration such as 30s, 60m or 2h", v)
+		}
+	}
+	return m, nil
 }
 
 func runDetach(parsed cliArguments) (int, error) {

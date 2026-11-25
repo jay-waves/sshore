@@ -1,8 +1,7 @@
 package main
 
 import (
-	"context"
-	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/pty"
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 // attachment owns the two connections and the terminal byte counters.
@@ -184,220 +184,6 @@ func (a *attachment) ReadInput(input *shellInput, active func() bool) {
 	}
 }
 
-// The helper and attachment remain connected until the local client accepts the handoff.
-func (p *attachment) requestApproval(c net.Conn, m message, complete func(string) error) error {
-	token := rand.Text()
-	responses, err := p.approvals.open(token)
-	if err != nil {
-		return err
-	}
-	defer p.approvals.remove(token)
-	timer := time.NewTimer(requestTimeout)
-	defer timer.Stop()
-	m.Token = token
-	if err := p.controlMessage(m); err != nil {
-		return err
-	}
-	helperDone := make(chan error, 1)
-	go func() {
-		var unexpected [1]byte
-		_, err := io.ReadFull(c, unexpected[:])
-		helperDone <- err
-	}()
-	cancel := func(err error) error {
-		_ = p.controlMessage(message{Type: "approval_cancelled", Token: token})
-		return err
-	}
-	var reply message
-	select {
-	case reply = <-responses:
-	case <-p.Done():
-		return io.ErrClosedPipe
-	case <-helperDone:
-		return cancel(io.ErrClosedPipe)
-	case <-timer.C:
-		return cancel(fmt.Errorf("approval request timed out"))
-	}
-	if reply.Type != "approval_handoff" {
-		return fileResponseError(reply)
-	}
-	select {
-	case <-p.Done():
-		return io.ErrClosedPipe
-	case <-helperDone:
-		return cancel(io.ErrClosedPipe)
-	default:
-	}
-	_ = c.SetWriteDeadline(time.Now().Add(requestTimeout))
-	if err := writeMessage(c, message{Type: "approval_handoff", SoftwareVersion: version}); err != nil {
-		return cancel(err)
-	}
-	// The remote invocation owns its connection. Wait until it has received
-	// the handoff and closed before the frontend detaches and switches screens.
-	select {
-	case err := <-helperDone:
-		if err != io.EOF {
-			return cancel(fmt.Errorf("approval helper did not close its request"))
-		}
-	case <-p.Done():
-		return io.ErrClosedPipe
-	case <-timer.C:
-		return cancel(fmt.Errorf("approval request timed out"))
-	}
-	if err := complete(reply.ApprovalID); err != nil {
-		return cancel(err)
-	}
-	return p.controlMessage(message{Type: "approval_ack", Token: token})
-}
-
-// Only one helper can hand a request to the attached client at a time.
-type approvalExchanges struct {
-	mu       sync.Mutex
-	token    string
-	response chan message
-	ready    bool
-}
-
-func (a *approvalExchanges) enable() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.ready = true
-}
-
-func (a *approvalExchanges) disable() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.ready = false
-}
-
-func (a *approvalExchanges) open(token string) (<-chan message, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if !a.ready {
-		return nil, fmt.Errorf("attached client unavailable for approval")
-	}
-	if a.response != nil {
-		return nil, fmt.Errorf("another approval is in progress")
-	}
-	a.token = token
-	a.response = make(chan message, 1)
-	return a.response, nil
-}
-func (a *approvalExchanges) remove(token string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.token == token {
-		a.token, a.response = "", nil
-	}
-}
-func (a *approvalExchanges) reply(m message) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.token != m.Token {
-		return
-	}
-	select {
-	case a.response <- m:
-	default:
-	}
-}
-
-// Terminal endpoints are authenticated by the daemon before this handshake.
-// A short-lived, single-use token binds the raw endpoint to one attachment.
-type terminalEndpoints struct {
-	mu      sync.Mutex
-	pending map[string]*terminalEndpoint
-}
-type terminalEndpoint struct {
-	net.Conn
-	done chan struct{}
-	once sync.Once
-}
-
-func (c *terminalEndpoint) Close() error {
-	err := c.Conn.Close()
-	c.once.Do(func() { close(c.done) })
-	return err
-}
-func (r *terminalEndpoints) serve(c net.Conn, request message) error {
-	if err := checkPeerVersion(request.SoftwareVersion, "terminal client"); err != nil {
-		return err
-	}
-	endpoint := &terminalEndpoint{Conn: c, done: make(chan struct{})}
-	defer endpoint.Close()
-	token := rand.Text()
-	r.mu.Lock()
-	if len(r.pending) >= 8 {
-		r.mu.Unlock()
-		return fmt.Errorf("too many pending terminal endpoints")
-	}
-	if r.pending == nil {
-		r.pending = make(map[string]*terminalEndpoint)
-	}
-	r.pending[token] = endpoint
-	r.mu.Unlock()
-	timer := time.AfterFunc(5*time.Second, func() {
-		r.mu.Lock()
-		pending := r.pending[token] == endpoint
-		if pending {
-			delete(r.pending, token)
-		}
-		r.mu.Unlock()
-		if pending {
-			endpoint.Close()
-		}
-	})
-	defer timer.Stop()
-	defer func() { r.mu.Lock(); delete(r.pending, token); r.mu.Unlock() }()
-	if err := writeMessage(c, message{Type: "terminal_ready", SoftwareVersion: version, Token: token}); err != nil {
-		return err
-	}
-	<-endpoint.done
-	return nil
-}
-func (r *terminalEndpoints) take(token string) (net.Conn, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	c := r.pending[token]
-	if c == nil {
-		return nil, fmt.Errorf("terminal endpoint expired or already claimed")
-	}
-	delete(r.pending, token)
-	return c, nil
-}
-
-func openTerminalEndpoint(ctx context.Context, o options) (stream net.Conn, token string, err error) {
-	if o.reusable != nil {
-		stream, err = openReusableTransport(ctx, o.reusable)
-	} else {
-		o.command = "attach"
-		stream, err = openClientTransportContext(ctx, &o, nil)
-	}
-	if err != nil {
-		return nil, "", err
-	}
-	timer := time.AfterFunc(5*time.Second, func() { stream.Close() })
-	defer timer.Stop()
-	defer func() {
-		if err != nil {
-			stream.Close()
-		}
-	}()
-	reply, err := exchangeRouteRequest(stream, message{Type: "terminal_open"})
-	if err != nil {
-		return stream, "", err
-	}
-	if err = checkPeerVersion(reply.SoftwareVersion, "terminal endpoint"); err != nil {
-		return stream, "", err
-	}
-	if reply.Type != "terminal_ready" || len(reply.Token) < 26 || len(reply.Token) > 128 {
-		return stream, "", fmt.Errorf("invalid terminal endpoint")
-	}
-	return stream, reply.Token, nil
-}
-
-// shellInput prevents a former attachment's in-flight write from reaching a new
-// owner. Stop must finish before another lease uses the same terminal.
 type shellInput struct {
 	terminal *pty.Terminal
 	mu       sync.Mutex
@@ -433,3 +219,255 @@ func (l *shellInput) Stop() error {
 
 // Stopped distinguishes owner cancellation from an unexpected terminal failure.
 func (l *shellInput) Stopped() bool { return l.stopped.Load() }
+
+func (s *shellTask) attach(c net.Conn, extra func(*attachment, message) error) error {
+	terminal, m, err := acceptAttachment(c, &s.endpoints)
+	if err != nil {
+		return err
+	}
+	p := newAttachment(c, terminal)
+	if err := s.attachManaged(p, m); err != nil {
+		fatal := message{Type: "fatal"}
+		if s.hosted {
+			fatal.SoftwareVersion = version
+			switch {
+			case errors.Is(err, errShellExited):
+				err = fmt.Errorf("shell is exiting; use sshore shell HOST: to create a new one")
+			case errors.Is(err, errShellAttached):
+				err = fmt.Errorf("shell already attached; detach the other connection first")
+			}
+		} else if errors.Is(err, errShellExited) || errors.Is(err, errShellAttached) {
+			err = fmt.Errorf("local shell unavailable or already attached")
+		}
+		fatal.Error = err.Error()
+		_ = p.controlMessage(fatal)
+		if s.hosted {
+			_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			_, _ = readMessage(c)
+		}
+		p.Close()
+		return err
+	}
+	return s.serveAttachment(p, c, extra)
+}
+
+// Publish the input lease after startup, the ready message and terminal replay.
+// Hosted shells obtain their owner context from the authenticated attachment.
+func (s *shellTask) attachManaged(p *attachment, m message) error {
+	if err := validateAttach(m); err != nil {
+		return err
+	}
+	s.terminalMu.Lock()
+	s.mu.Lock()
+	if err := s.checkRemoteOwnerLocked(p.control); err != nil {
+		s.mu.Unlock()
+		s.terminalMu.Unlock()
+		return err
+	}
+	initial := s.terminal == nil
+	if s.killing || s.hosted && (m.Instance != "" && m.Instance != s.record.UID || initial && m.Action == "existing") {
+		s.mu.Unlock()
+		s.terminalMu.Unlock()
+		return fmt.Errorf("shell changed or is unavailable; refresh with sshore list")
+	}
+	err := s.forest.attach(s, m.TreeKey, func(claim *treeClaim) error {
+		p.claim = claim
+		return s.activateAttachment(p, m, initial)
+	})
+	failedInitial := err != nil && initial && p.claim != nil && !errors.Is(err, errShellAttached) && !errors.Is(err, errShellExited)
+	if failedInitial && s.hosted && s.terminal != nil {
+		s.endTerminal()
+		s.exitReason = "initial attachment failed"
+		_ = s.terminal.Close()
+		s.finishLocked()
+	} else if failedInitial && !s.hosted {
+		s.killing, s.exitReason = true, "initial attachment failed"
+		s.endTerminal()
+	}
+	s.mu.Unlock()
+	s.terminalMu.Unlock()
+	if failedInitial && !s.hosted {
+		_ = s.stopTerminal()
+	}
+	return err
+}
+
+// The caller holds terminalMu and mu until input ownership is published.
+func (s *shellTask) activateAttachment(p *attachment, m message, initial bool) error {
+	if s.active != nil {
+		return errShellAttached
+	}
+	if initial {
+		if err := s.startManagedShell(m); err != nil {
+			return err
+		}
+		if m.Pinned {
+			if err := s.pinLocked(0); err != nil {
+				return err
+			}
+		}
+	} else {
+		if m.NoLogin || m.NoProfile {
+			return fmt.Errorf("startup options require a new managed shell")
+		}
+		if err := s.terminal.Resize(shellSize(m)); err != nil {
+			return err
+		}
+	}
+	instance := s.record.UID
+	if !s.hosted {
+		instance = ""
+	}
+	machine, _ := localMachineIdentity()
+	if validMachineID(m.MachineID) && machine != m.MachineID && len(m.SourceHost) <= 256 {
+		p.sourceHost = cleanText(m.SourceHost)
+	}
+	if err := p.controlMessage(message{Type: "ready", Owner: s.parentIdentityLocked(), TreeKey: p.claim.key, MachineID: machine, Pinned: s.pinned, PinUntil: s.pinUntil, Instance: instance, PID: s.pid, Name: s.record.Name, Shell: s.shellName}); err != nil {
+		return err
+	}
+	if data := s.modes.Replay(); len(data) > 0 {
+		if err := p.Output(data); err != nil {
+			return err
+		}
+	}
+	p.input = &shellInput{terminal: s.terminal}
+	s.active = p
+	if !initial {
+		pty.RequestRedraw(s.terminal)
+	}
+	return nil
+}
+
+// Hold mu through Stop so no successor can acquire the terminal's writer.
+func (s *shellTask) detachTerminal(p *attachment) (bool, error) {
+	active := s.active == p
+	if p.input == nil || !active && !s.exited {
+		return false, nil
+	}
+	input := p.input
+	p.input = nil
+	err := input.Stop()
+	// An exited shell has no successor, but its input worker must still join.
+	if !active {
+		return false, nil
+	}
+	if err != nil {
+		s.endTerminal()
+		return false, err
+	}
+	s.active = nil
+	return true, nil
+}
+
+// Once attached, only this loop reads control frames. The host records release
+// under the shell lock before a successor can take input.
+func (s *shellTask) serveAttachment(p *attachment, control io.Reader, extra func(*attachment, message) error) (result error) {
+	released := false
+	release := func() (string, error) {
+		s.mu.Lock()
+		disconnected := !released && !s.exited && s.active == p && result != nil
+		detached, err := s.detachTerminal(p)
+		s.forest.releaseInput(p.claim)
+		var name string
+		if err != nil && s.hosted {
+			s.exitReason = "terminal input cancellation failed"
+			s.finishLocked()
+		} else if detached && err == nil {
+			name = s.record.Name
+		}
+		s.reapUnretainedLocked()
+		s.mu.Unlock()
+		if disconnected {
+			termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Shell attachment disconnected: %s", cleanText(result.Error()))
+		}
+		if err != nil {
+			termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Could not release shell input: %s", cleanText(err.Error()))
+		}
+		if err != nil && !s.hosted {
+			s.close()
+		}
+		return name, err
+	}
+	inputDone := make(chan struct{})
+	defer func() {
+		p.Close()
+		if !released {
+			_, _ = release()
+		}
+		<-inputDone
+	}()
+	input := p.input
+	go func() {
+		defer close(inputDone)
+		p.ReadInput(input, func() bool {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			return s.active == p
+		})
+	}()
+	for {
+		m, err := readMessage(control)
+		if err != nil {
+			return err
+		}
+		switch m.Type {
+		case "detach":
+			if m.Action != "switch" {
+				s.mu.Lock()
+				err := s.pinLocked(m.TTL)
+				s.mu.Unlock()
+				if err != nil {
+					if err := p.controlMessage(message{Type: "pin_failed", Error: err.Error()}); err != nil {
+						return err
+					}
+					continue
+				}
+			}
+			p.approvals.disable()
+			released = true
+			name, err := release()
+			if err == nil && name != "" {
+				s.mu.Lock()
+				reply := message{Type: "detached", Name: name, Pinned: s.pinned, PinUntil: s.pinUntil}
+				s.mu.Unlock()
+				return p.FinishDetach(reply)
+			}
+			return err
+		case "input_barrier":
+			err = p.DrainInput(m.TerminalOffset)
+		case "resize":
+			s.mu.Lock()
+			if s.active == p {
+				err = s.terminal.Resize(shellSize(m))
+			}
+			s.mu.Unlock()
+			if err != nil {
+				return fmt.Errorf("resize terminal: %w", err)
+			}
+			if s.hosted {
+				err = p.controlMessage(message{Type: "resized", Cols: m.Cols, Rows: m.Rows})
+			}
+		case "session_targets":
+			err = p.controlMessage(s.sessionTargets(m))
+		case "console_inventory":
+			s.mu.Lock()
+			current := s.treeIdentity()
+			s.mu.Unlock()
+			err = p.controlMessage(consoleInventory(m, current))
+		case "redraw":
+			s.terminalMu.Lock()
+			s.mu.Lock()
+			if s.active == p {
+				pty.RequestRedraw(s.terminal)
+			}
+			s.mu.Unlock()
+			s.terminalMu.Unlock()
+			err = p.controlMessage(message{Type: "redrawn"})
+		default:
+			err = extra(p, m)
+		}
+		if err != nil {
+			return err
+		}
+	}
+}

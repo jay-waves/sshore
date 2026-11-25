@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"crypto/rand"
 	"fmt"
 	"net"
 	"sync"
-	"time"
 )
 
 // The registry's tree lock covers parent edges, terminal exit and input
@@ -45,6 +43,27 @@ func onShellPath(s, ancestor *shellTask) bool {
 		}
 	}
 	return false
+}
+
+// attach reserves the foreground slot while activate starts or restores the
+// terminal. The caller holds the shell lock until the entry commits or rolls back.
+func (f *shellForest) attach(s *shellTask, key string, activate func(*treeClaim) error) error {
+	oldParent := s.parent
+	claim, graft, err := f.enter(s, key)
+	if err != nil {
+		return err
+	}
+	if err := activate(claim); err != nil {
+		f.abort(claim, graft, oldParent)
+		return err
+	}
+	if graft != nil {
+		s.scopeLost = false
+		s.watchParent(graft)
+	} else if key != "" {
+		f.resume(s, key)
+	}
+	return nil
 }
 
 // The caller holds the target shell lock. A suspended parent supplies its
@@ -153,7 +172,7 @@ func (f *shellForest) releaseInput(c *treeClaim) {
 }
 
 func (s *shellTask) suspendedBy(key string) bool {
-	f := &s.tasks.forest
+	f := s.forest
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	c := f.claims[key]
@@ -161,7 +180,7 @@ func (s *shellTask) suspendedBy(key string) bool {
 }
 
 func (s *shellTask) holdTree(conn net.Conn, m message) error {
-	f := &s.tasks.forest
+	f := s.forest
 	f.mu.Lock()
 	c := f.claims[m.TreeKey]
 	if c == nil || c.shell != s || !c.input || c.held || checkPeerVersion(m.SoftwareVersion, "client") != nil {
@@ -185,28 +204,4 @@ func (s *shellTask) holdTree(conn net.Conn, m message) error {
 	var b [1]byte
 	_, _ = conn.Read(b[:])
 	return nil
-}
-
-func holdClientTree(o options, key string, transports clientTransports) (*clientTransport, error) {
-	o.command = "attach"
-	ctx, cancel := context.WithCancel(context.Background())
-	timeout := time.AfterFunc(requestTimeout, cancel)
-	defer timeout.Stop()
-	c, err := openClientTransportContext(ctx, &o, nil)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	reply, err := exchangeRouteRequest(c, message{Type: "tree_hold", TreeKey: key})
-	if err != nil || reply.Type != "tree_held" {
-		cancel()
-		c.Close()
-		if err != nil {
-			return nil, err
-		}
-		return nil, fmt.Errorf("reserve shell tree: %s", reply.Error)
-	}
-	lease := &clientTransport{treeKey: key, close: func() { c.Close(); cancel() }}
-	transports[lease] = false
-	return lease, nil
 }

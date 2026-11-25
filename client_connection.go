@@ -106,6 +106,63 @@ func openReusableTransport(ctx context.Context, connection *clientTransport) (ne
 
 // The returned stream owns its cleanup. Reused attachments release only their
 // own stream. A retained daemon lease can open another stream without reauthenticating.
+func openTerminalEndpoint(ctx context.Context, o options) (stream net.Conn, token string, err error) {
+	if o.reusable != nil {
+		stream, err = openReusableTransport(ctx, o.reusable)
+	} else {
+		o.command = "attach"
+		stream, err = openClientTransportContext(ctx, &o, nil)
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	timer := time.AfterFunc(5*time.Second, func() { stream.Close() })
+	defer timer.Stop()
+	defer func() {
+		if err != nil {
+			stream.Close()
+		}
+	}()
+	reply, err := exchangeRouteRequest(stream, message{Type: "terminal_open"})
+	if err != nil {
+		return stream, "", err
+	}
+	if err = checkPeerVersion(reply.SoftwareVersion, "terminal endpoint"); err != nil {
+		return stream, "", err
+	}
+	if reply.Type != "terminal_ready" || len(reply.Token) < 26 || len(reply.Token) > 128 {
+		return stream, "", fmt.Errorf("invalid terminal endpoint")
+	}
+	return stream, reply.Token, nil
+}
+
+// shellInput prevents a former attachment's in-flight write from reaching a new
+// owner. Stop must finish before another lease uses the same terminal.
+
+func holdClientTree(o options, key string, transports clientTransports) (*clientTransport, error) {
+	o.command = "attach"
+	ctx, cancel := context.WithCancel(context.Background())
+	timeout := time.AfterFunc(requestTimeout, cancel)
+	defer timeout.Stop()
+	c, err := openClientTransportContext(ctx, &o, nil)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	reply, err := exchangeRouteRequest(c, message{Type: "tree_hold", TreeKey: key})
+	if err != nil || reply.Type != "tree_held" {
+		cancel()
+		c.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("reserve shell tree: %s", reply.Error)
+	}
+	lease := &clientTransport{treeKey: key, close: func() { c.Close(); cancel() }}
+	transports[lease] = false
+	return lease, nil
+}
+
 func openClientTransportContext(ctx context.Context, o *options, transports clientTransports) (stream net.Conn, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -716,4 +773,63 @@ func (s *localShell) confirmHandoff(c net.Conn, m message) error {
 		return writeMessage(c, message{Type: "error", Error: "handoff expired or not committed"})
 	}
 	return writeMessage(c, message{Type: "handoff_confirmed"})
+}
+
+func rememberDetachedAttachment(o options) error {
+	if ownedRemoteRoute(o) {
+		return nil
+	}
+	o = directShellOptions(o)
+	row := recentAttachment{Identity: o.taskIdentity, Local: o.local, Name: o.session}
+	if row.Identity == "" {
+		row.Identity = identityFromUID(o.instance)
+	}
+	if !o.local {
+		connection, err := connectionFromOptions(o)
+		if err != nil {
+			return err
+		}
+		row.Connection = &connection
+	}
+	_, err := metadataRPC(metadataRequest{Action: "attach_detach", Attachment: &row})
+	return err
+}
+
+func removeRecentDetach(o options) error {
+	id := o.taskIdentity
+	if id == "" {
+		id = identityFromUID(o.instance)
+	}
+	if id == "" {
+		return nil
+	}
+	_, err := metadataRPC(metadataRequest{Action: "attach_remove", Key: id})
+	return err
+}
+
+func resolveDetachedAttach(o *options, parent string) error {
+	kind := "shell"
+	if parent != "" && os.Getenv("SSHORE_SOCKET") != "" {
+		kind = "hosted"
+	}
+	query := taskQuery{Kind: kind, Parent: parent, Ref: o.session, Detached: true}
+	var target *selectedTask
+	if query.Ref != "" {
+		rows, err := queryRegisteredTasks(query)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return missingAttachTarget(query.Ref)
+		}
+		target = &rows[0]
+	} else {
+		reply, err := metadataRPC(metadataRequest{Action: "attach_recent", Key: parent, Kind: kind})
+		if err != nil || reply.Target == nil {
+			return err
+		}
+		target = reply.Target
+	}
+	o.session, o.taskIdentity, o.instance, o.hosted = target.Name, target.Identity, target.Instance, target.Hosted
+	return nil
 }

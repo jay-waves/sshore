@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -251,72 +250,6 @@ func (s *shellTask) rememberRemoteChild(child *remoteShellChild) func() {
 		delete(s.remoteChildren, child)
 		s.mu.Unlock()
 	}
-}
-
-func (s *shellTask) remoteChildIDs(prefix string) []selectedTask {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var candidates []selectedTask
-	for child := range s.remoteChildren {
-		if strings.HasPrefix(child.uid, prefix) {
-			candidates = append(candidates, selectedTask{Kind: "shell", Identity: identityFromUID(child.uid), Instance: child.uid, RemoteHost: child.host})
-		}
-	}
-	return candidates
-}
-
-func (s *shellTask) selectRemoteChild(config *shellConfig) (*remoteShellChild, error) {
-	if config.Name == "" && config.Instance == "" {
-		return nil, fmt.Errorf("select a child with sshore attach HOST:ID")
-	}
-	s.mu.Lock()
-	var children []*remoteShellChild
-	for child := range s.remoteChildren {
-		if child.host == config.Host && (config.Instance == "" || child.uid == config.Instance) {
-			children = append(children, child)
-		}
-	}
-	s.mu.Unlock()
-
-	// Status and ownership come from the child's authenticated endpoint.
-	type liveChild struct {
-		child *remoteShellChild
-		state string
-	}
-	live := make(map[string]liveChild)
-	var candidates []selectedTask
-	var lookupErr error
-	for _, child := range children {
-		status, err := child.status()
-		if err != nil {
-			lookupErr = fmt.Errorf("could not check child %s on %s: %w", child.uid[:6], cleanText(child.host), err)
-			continue
-		}
-		if status.Owner == s.treeIdentity() {
-			id := identityFromUID(child.uid)
-			live[id] = liveChild{child, status.Action}
-			candidates = append(candidates, selectedTask{Identity: id, Name: status.Name})
-		}
-	}
-	ref := config.Name
-	if config.Instance != "" {
-		ref = config.Instance
-	}
-	target, err := matchTask(ref, candidates)
-	if err != nil {
-		return nil, err
-	}
-	match, ok := live[target.Identity]
-	if !ok {
-		if lookupErr != nil {
-			return nil, lookupErr
-		}
-		return nil, fmt.Errorf("no live child matches %s on %s; enter it from the shell that opened it", cleanText(ref), cleanText(config.Host))
-	}
-	if match.state != taskDetached {
-		return nil, fmt.Errorf("child shell %s is %s; detach it before attaching", taskShortCode(target.Identity), cleanText(match.state))
-	}
-	return match.child, nil
 }
 
 func (child *remoteShellChild) status() (message, error) {

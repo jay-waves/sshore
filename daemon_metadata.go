@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -267,4 +268,106 @@ func (m *daemonMetadata) rememberConnectionLocal(record recentConnection) error 
 	return m.connections.promote(*record.clone(), func(previous recentConnection) bool {
 		return previous.Host == record.Host
 	})
+}
+
+// A confirmed detach promotes one stable shell identity across all scopes.
+// Connection history supplies direct SSH defaults.
+type recentAttachment struct {
+	Identity   string
+	Local      bool
+	Name       string
+	Connection *recentConnection `json:",omitempty"`
+}
+
+func (m *daemonMetadata) rememberDetachedAttachmentLocal(row recentAttachment) error {
+	if err := validateRecentAttachment(row); err != nil {
+		return err
+	}
+	if err := m.loadDetachedAttachments(); err != nil {
+		return err
+	}
+	row.Connection = row.Connection.clone()
+	return m.attachments.promote(row, func(previous recentAttachment) bool {
+		return previous.Identity == row.Identity
+	})
+}
+
+func (m *daemonMetadata) loadDetachedAttachments() error {
+	return m.attachments.load("detached.json", 1024*1024, validateRecentAttachment)
+}
+
+func validateRecentAttachment(row recentAttachment) error {
+	if row.Identity == "" || len(row.Identity) > 256 || validSession(row.Name) != nil {
+		return fmt.Errorf("invalid detached attachment")
+	}
+	if !row.Local {
+		if row.Connection == nil {
+			return fmt.Errorf("detached attachment route missing")
+		}
+		if row.Identity != identityFromUID(row.Connection.Instance) {
+			return fmt.Errorf("detached attachment identity does not match route")
+		}
+		return validateShellHistoryConnection(*row.Connection)
+	}
+	if row.Connection != nil {
+		return fmt.Errorf("local detached attachment has remote route")
+	}
+	return nil
+}
+
+func (m *daemonMetadata) removeRecentDetachLocal(id string) error {
+	if err := m.loadDetachedAttachments(); err != nil {
+		return err
+	}
+	rows := m.attachments.rows
+	for _, row := range rows {
+		if row.Identity == id {
+			return m.attachments.replace(slices.DeleteFunc(slices.Clone(rows), func(entry recentAttachment) bool { return entry.Identity == id }))
+		}
+	}
+	return nil
+}
+
+func (a *daemonActivity) selectDetachedAttach(parent, kind string) (*selectedTask, error) {
+	detached := (taskQuery{Kind: kind, Parent: parent, Detached: true}).registered(a.tasks)
+	a.metadata.shellMu.Lock()
+	defer a.metadata.shellMu.Unlock()
+	if err := a.metadata.loadDetachedAttachments(); err != nil {
+		return nil, err
+	}
+	for _, row := range a.metadata.attachments.rows {
+		if row.Local {
+			for _, target := range detached {
+				if row.Identity == target.Identity {
+					return &target, nil
+				}
+			}
+		}
+	}
+	switch len(detached) {
+	case 0:
+		return nil, fmt.Errorf("no detached local shells; use sshore shell")
+	case 1:
+		return &detached[0], nil
+	default:
+		return nil, fmt.Errorf("multiple local shells; use sshore list, then sshore attach :ID")
+	}
+}
+
+// The SSH peer supplies eligible roots. Local history only ranks those identities.
+func (m *daemonMetadata) recentRemoteChoice(host string, targets []sessionTarget) (string, error) {
+	if err := m.loadDetachedAttachments(); err != nil {
+		return "", err
+	}
+	for _, row := range m.attachments.rows {
+		if row.Connection == nil || row.Connection.Host != host {
+			continue
+		}
+		for _, target := range targets {
+			if target.Instance == row.Connection.Instance {
+				return target.Name, nil
+			}
+		}
+	}
+	return "", nil
 }

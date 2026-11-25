@@ -341,6 +341,72 @@ func mutateRegisteredTask(command string, target selectedTask, newName string) (
 	return 0, nil
 }
 
+func (s *shellTask) remoteChildIDs(prefix string) []selectedTask {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var candidates []selectedTask
+	for child := range s.remoteChildren {
+		if strings.HasPrefix(child.uid, prefix) {
+			candidates = append(candidates, selectedTask{Kind: "shell", Identity: identityFromUID(child.uid), Instance: child.uid, RemoteHost: child.host})
+		}
+	}
+	return candidates
+}
+
+func (s *shellTask) selectRemoteChild(config *shellConfig) (*remoteShellChild, error) {
+	if config.Name == "" && config.Instance == "" {
+		return nil, fmt.Errorf("select a child with sshore attach HOST:ID")
+	}
+	s.mu.Lock()
+	var children []*remoteShellChild
+	for child := range s.remoteChildren {
+		if child.host == config.Host && (config.Instance == "" || child.uid == config.Instance) {
+			children = append(children, child)
+		}
+	}
+	s.mu.Unlock()
+
+	// Status and ownership come from the child's authenticated endpoint.
+	type liveChild struct {
+		child *remoteShellChild
+		state string
+	}
+	live := make(map[string]liveChild)
+	var candidates []selectedTask
+	var lookupErr error
+	for _, child := range children {
+		status, err := child.status()
+		if err != nil {
+			lookupErr = fmt.Errorf("could not check child %s on %s: %w", child.uid[:6], cleanText(child.host), err)
+			continue
+		}
+		if status.Owner == s.treeIdentity() {
+			id := identityFromUID(child.uid)
+			live[id] = liveChild{child, status.Action}
+			candidates = append(candidates, selectedTask{Identity: id, Name: status.Name})
+		}
+	}
+	ref := config.Name
+	if config.Instance != "" {
+		ref = config.Instance
+	}
+	target, err := matchTask(ref, candidates)
+	if err != nil {
+		return nil, err
+	}
+	match, ok := live[target.Identity]
+	if !ok {
+		if lookupErr != nil {
+			return nil, lookupErr
+		}
+		return nil, fmt.Errorf("no live child matches %s on %s; enter it from the shell that opened it", cleanText(ref), cleanText(config.Host))
+	}
+	if match.state != taskDetached {
+		return nil, fmt.Errorf("child shell %s is %s; detach it before attaching", taskShortCode(target.Identity), cleanText(match.state))
+	}
+	return match.child, nil
+}
+
 func attachmentChoices(candidates []selectedTask) ([]sessionTarget, error) {
 	if len(candidates) > 128 {
 		return nil, fmt.Errorf("too many shells to list; specify a name or ID")
@@ -360,20 +426,27 @@ func (s *shellTask) sessionTargets(request message) message {
 		reply.Directory = s.directoryOrStartupLocked()
 		s.mu.Unlock()
 	}
-	query := taskQuery{Kind: "shell", Parent: s.treeIdentity(), Ref: request.Name, Detached: true}
-	if s.hosted && !request.NativeTargets {
-		query.Kind = "hosted"
-	}
-	rows, err := query.run(s.tasks)
-	if err == nil {
-		reply.Targets, err = attachmentChoices(rows)
-	}
+	var err error
+	reply.Targets, err = s.registry.attachmentTargets(s.treeIdentity(), request.Name, s.hosted && !request.NativeTargets)
 	if err != nil {
 		reply.Error = err.Error()
-	} else if request.Name != "" && len(rows) == 0 {
-		reply.Error = missingAttachTarget(request.Name).Error()
 	}
 	return reply
+}
+
+func (tasks *daemonTasks) attachmentTargets(parent, ref string, hosted bool) ([]sessionTarget, error) {
+	query := taskQuery{Kind: "shell", Parent: parent, Ref: ref, Detached: true}
+	if hosted {
+		query.Kind = "hosted"
+	}
+	rows, err := query.run(tasks)
+	if err != nil {
+		return nil, err
+	}
+	if ref != "" && len(rows) == 0 {
+		return nil, missingAttachTarget(ref)
+	}
+	return attachmentChoices(rows)
 }
 
 func missingAttachTarget(ref string) error {

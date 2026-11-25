@@ -38,9 +38,12 @@ The shell and terminal preserve interactive state across detach. Redraw is best
 effort and must preserve user input. See the [support matrix](README.md#os-and-shell-support)
 and [native PTY adapters](internal/pty/).
 
-Local and hosted shells share one [shell task lifecycle](shell_terminal.go),
-which owns startup, attachment, input ownership and exit reporting.
-Their entry points provide local handoff or hosted resource commands.
+Local and hosted shells share [process startup](shell_startup.go),
+[attachment and input release](shell_attachment.go), and
+[exit reporting](shell_terminal.go). The [shell tree](shell_tree_control.go)
+reserves foreground input while an attachment starts and rolls back the
+reservation and any new parent edge if setup fails. The local and hosted
+entry points handle their own handoff and resource commands.
 The [PTY package](internal/pty/) owns child processes, native handles, sizing
 and process cleanup. The [terminal package](internal/term/) handles keyboard
 shortcuts, control sequences and the local console. Both use platform files

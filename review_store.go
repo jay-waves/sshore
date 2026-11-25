@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/jay-waves/sshore/internal/files"
 )
@@ -93,3 +94,55 @@ func validateRequestOperations(ops []operation) error {
 }
 
 func validRequestID(id string) bool { return validTaskUID(id) }
+
+// Only one helper can hand a request to the attached client at a time.
+type approvalExchanges struct {
+	mu       sync.Mutex
+	token    string
+	response chan message
+	ready    bool
+}
+
+func (a *approvalExchanges) enable() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.ready = true
+}
+
+func (a *approvalExchanges) disable() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.ready = false
+}
+
+func (a *approvalExchanges) open(token string) (<-chan message, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.ready {
+		return nil, fmt.Errorf("attached client unavailable for approval")
+	}
+	if a.response != nil {
+		return nil, fmt.Errorf("another approval is in progress")
+	}
+	a.token = token
+	a.response = make(chan message, 1)
+	return a.response, nil
+}
+func (a *approvalExchanges) remove(token string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.token == token {
+		a.token, a.response = "", nil
+	}
+}
+func (a *approvalExchanges) reply(m message) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.token != m.Token {
+		return
+	}
+	select {
+	case a.response <- m:
+	default:
+	}
+}
