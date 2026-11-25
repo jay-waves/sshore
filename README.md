@@ -66,13 +66,7 @@ to resume the remote shell.
 
 ## mux — Start, detach and resume
 
-`sshore shell` (`sh`) opens a shell on the machine running the command.
-`sshore shell work` opens one over SSH. Each shell receives an automatic ID.
-
-`sshore attach` resumes the most recently detached eligible local shell.
-Use `sshore attach ID` with the ID shown by `sshore pstree`.
-
-Detach a child, exit its parent, then resume it under a new parent.
+Detach a child, exit its parent, then resume (`sshore attach`) it  under a new parent.
 The IDs below are illustrative, and tree output is abbreviated.
 
 ```text
