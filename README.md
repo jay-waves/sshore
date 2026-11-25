@@ -42,7 +42,7 @@ Managed shells require the host's SSH server to allow TCP forwarding to
 loopback. Reverse forwards and nested SSH relays also use OpenSSH's
 `direct-streamlocal@openssh.com` channel and require local stream-local
 forwarding on the SSH server that hosts the private socket.
-See the [development notes](SSHORE.md#terminal-and-mux-design-scope)
+See the [development notes](docs/ARCHITECTURE.md#terminal-and-mux-design-scope)
 for experimental Apple Silicon support.
 
 ## ssh — Run remote commands and forward ports
@@ -161,8 +161,8 @@ it. Close open files before unmounting.
 
 ## Project documents
 
-[Architecture and development](SSHORE.md) · [Security](SECURITY.md) ·
-[Glossary](GLOSSARY.md) · [Contributor rules](AGENTS.md)
+[Architecture](docs/ARCHITECTURE.md) · [Security](docs/SECURITY.md) ·
+[Glossary](docs/GLOSSARY.md) · [Contributor rules](AGENTS.md)
 
 ## Acknowledgements
 
@@ -170,4 +170,4 @@ Inspired by [dtach](https://github.com/crigler/dtach),
 [sshping](https://github.com/spook/sshping), [trzsz](https://github.com/trzsz/trzsz)
 and [sshoq](https://github.com/h4sh5/sshoq).
 
-[MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_LICENSES.txt)
+[MIT license](LICENSE) · [Third-party notices](docs/THIRD_PARTY_LICENSES.txt)

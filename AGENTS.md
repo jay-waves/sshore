@@ -1,10 +1,32 @@
 # Contributor constraints
 
-- Prefer the simplest direct implementation and workflow. Avoid speculative defenses, fallback paths and redundant checks; the publisher handles release failures. Preserve the explicit security and release invariants below.
-- Support Linux and Windows amd64 clients. Linux amd64 supports remote shells and services; Windows amd64 supports remote SFTP mounts on NTFS and ReFS. Windows remote shells, split panes and tiling are out of scope. See [platform and terminal scope](SSHORE.md#terminal-and-mux-design-scope).
-- Use the account's authenticated daemon and registered tasks as the managed scope. Validate process identity before signaling; never kill by process name or adopt unregistered processes. Keep normal connections on exact full release versions. Preserve the update, reset and approval safeguards in [SECURITY.md](SECURITY.md).
-- Keep published Git tags immutable. Follow the [release workflow](SSHORE.md#release), including verified assets before pruning old releases.
-- Use the shared toolchain from the normal PATH. Check versions against repository requirements; do not substitute private runtimes, lower requirements or install tools without authorization. For browser checks, reuse global Playwright and system Chrome; do not download browsers.
-- Keep unit tests for core, side-effect-free code. Verify ordinary features with temporary checks and discard them after use. Keep lasting system contracts in external integration tests. Follow [Build and validate](SSHORE.md#build-and-validate).
-- Define CLI grammar once; parsing and help must not start services or change state. Keep destructive consequences and confirmations clear.
-- Keep project documentation in the five root documents and update the responsible document when behavior changes. See [documentation ownership](SSHORE.md#documentation-ownership).
+- Keep implementations and workflows simple. Avoid speculative fallbacks and redundant checks.
+  The publisher handles release failures.
+- Support Linux and Windows amd64 clients. Support remote shells and services on Linux amd64,
+  and remote SFTP mounts on NTFS and ReFS on Windows amd64. Windows remote shells, split panes,
+  and tiling are out of scope. See [platform scope](docs/ARCHITECTURE.md#terminal-and-mux-design-scope).
+- Manage only the authenticated account daemon and its registered tasks. Verify process identity
+  before signaling. Never kill by process name or adopt unregistered processes. Require exact full
+  release versions for normal connections. Follow the [update, reset, and approval safeguards](docs/SECURITY.md).
+- Keep published Git tags immutable. Verify published assets before pruning older releases.
+  Follow the [release workflow](docs/RELEASE.md).
+- Use the shared toolchain from PATH and check versions against repository requirements. Get
+  approval before substituting private runtimes, lowering requirements, or installing tools.
+  For browser checks, use global Playwright and system Chrome. Do not download browsers.
+- Reserve unit tests for core, side-effect-free code. Verify ordinary changes with temporary
+  checks and discard them afterward. Cover lasting system contracts with external integration
+  tests. See [build and validation](docs/BUILD.md).
+- Define CLI grammar once. Parsing and help must leave services and state untouched. Make
+  destructive consequences and confirmations explicit.
+
+## Documentation
+
+- Keep only `README.md`, `LICENSE`, and `AGENTS.md` at the root among documentation files.
+  Organize the remaining documentation by topic under [docs/](docs/).
+- Cap each project document in `docs/` at 200 lines. Only `SECURITY.md` and `GLOSSARY.md` may
+  exceed that cap. Aim for 100 columns per line, except in `SECURITY.md`. Keep third-party
+  license notices verbatim.
+- Cut redundant prose and link to code and tests for implementation details. Use CLI help
+  for command syntax and defaults. Update the relevant docs and diagrams when behavior changes.
+- Show the user the exact proposed `README.md` edits for review and wait for explicit approval.
+  Apply only the approved edits.

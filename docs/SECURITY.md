@@ -6,7 +6,7 @@ Remote requests are proposals; only an explicit local command or local approval
 grants access.
 
 This document describes threats, controls and their limits. Implementation and
-lifecycle details belong in [SSHORE.md](SSHORE.md); terminology belongs in
+lifecycle details belong in [ARCHITECTURE.md](ARCHITECTURE.md); terminology belongs in
 [GLOSSARY.md](GLOSSARY.md).
 
 ## Scope and assumptions
@@ -338,7 +338,7 @@ renamed open files may remain stale until background verification, notification
 or cache expiry. Background verification is bounded and advisory; it cannot
 prove file identity or authorize an operation. Neither
 notifications nor status queries authorize file operations or write replay. See
-[development guidance and code ownership](SSHORE.md#account-daemon-and-mounts).
+[development guidance and code ownership](ARCHITECTURE.md#account-daemon-and-mounts).
 
 ## Remote setup and updates
 
@@ -366,13 +366,13 @@ handling.
 Replacement requires a user-owned regular file and a user-owned directory
 without group/world write permission on Linux. Replacement does not elevate
 privileges. The Linux installer adds its executable directory to user shell
-profiles. See [installation](README.md#install) for PATH behavior.
+profiles. See [installation](../README.md#install) for PATH behavior.
 
 Release checksums detect corruption, not publisher compromise. Cached artifacts are
 private and rechecked on reuse; unavailable assets never cause substitution of a
 different release.
 Published tags and assets are not overwritten; older patch assets are removed after a complete
-replacement is published. See [release mechanics](SSHORE.md#release).
+replacement is published. See [release mechanics](RELEASE.md).
 
 `reset` uses the authenticated administrative snapshot and shutdown before clearing
 local state and cached releases. Failed shutdown stops reset; busy mounts may refuse
@@ -422,7 +422,7 @@ reads the current host’s registered tasks through its authenticated attachment
 The temporary prompt uses the local daemon. The client sanitizes inventory for
 terminal display.
 
-See [inventory and diagnostics](SSHORE.md#inventory-and-diagnostics) for implementation entry points.
+See [inventory and diagnostics](ARCHITECTURE.md#inventory-and-diagnostics) for implementation entry points.
 
 ## Remaining risks
 
