@@ -127,7 +127,8 @@ connections through the authenticated route at startup. The resource owns those
 connections after startup, so exiting a source or ancestor shell leaves the
 resource running. Mount and forward configuration travels in the authenticated
 launch request.
-Each accepted forward client uses a native SSH channel on the rule's connection.
+Each accepted TCP connection gets a stream in the forward rule's smux session.
+Intermediate hosts relay the resource stream as bytes.
 The [forwarding package](../internal/forward/forward.go) owns listeners, target
 dials and worker shutdown. The application supplies the authenticated transport
 and the startup exchange for the approved rule.

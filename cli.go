@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 	"syscall"
+	"time"
 
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
@@ -716,14 +716,14 @@ func runEndpointForward(parsed cliArguments) (int, error) {
 		}
 		return 0, requestOperations("forward", []operation{op})
 	}
-	f, foreground, err := parseForwardCommand(parsed)
+	f, err := parseForwardCommand(parsed)
 	if err != nil {
 		return 2, err
 	}
-	return executeEndpointForward(f, foreground)
+	return executeEndpointForward(f)
 }
 
-func executeEndpointForward(f forwardConfig, foreground bool) (int, error) {
+func executeEndpointForward(f forwardConfig) (int, error) {
 	stopActivity, err := beginCommandActivity()
 	if err != nil {
 		return 1, err
@@ -752,9 +752,6 @@ func executeEndpointForward(f forwardConfig, foreground bool) (int, error) {
 		if err = input.Close(); err != nil {
 			return 1, err
 		}
-	}
-	if foreground {
-		return runForwardForeground(f)
 	}
 	return startForwardSession(f)
 }

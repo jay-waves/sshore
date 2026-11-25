@@ -36,20 +36,18 @@ pinned shells, and clears its sshore identity, history and cached releases.
 | Platform (amd64) | Local shells | Remote hosting |
 | --- | --- | --- |
 | Linux | bash, sh, zsh, fish | Supported |
-| Windows 11 / Server 2025 or newer | PowerShell 7, cmd | SFTP mounts |
+| Windows 11 / Server 2025 or newer | PowerShell 7, cmd | SFTP mounts, direct TCP forwarding |
 
-Managed shells require the host's SSH server to allow TCP forwarding to
-loopback. Reverse forwards and nested SSH relays also use OpenSSH's
-`direct-streamlocal@openssh.com` channel and require local stream-local
-forwarding on the SSH server that hosts the private socket.
+Managed shells and their resource routes require the host's SSH server to
+allow TCP forwarding to loopback.
 See the [development notes](docs/ARCHITECTURE.md#terminal-and-mux-design-scope)
 for experimental Apple Silicon support.
 
 ## ssh — Run remote commands and forward ports
 
 Use SSH host aliases from `ssh_config`. Pass SSH options after `--`, including
-`-F FILE` for a different config or `-F none` for built-in defaults. Port forwarding requires the same sshore release
-on the Linux destination, including with `--foreground`.
+`-F FILE` for a different config or `-F none` for built-in defaults. Port
+forwarding requires the same sshore release on the destination.
 `sshore exec` runs directly over SSH without starting the account daemon.
 
 ```sh

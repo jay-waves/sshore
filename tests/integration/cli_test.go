@@ -42,7 +42,7 @@ func TestCLI(t *testing.T) {
 		{"bootstrap rejects a remote path", []string{"bootstrap", "work:/usr/bin/sshore"}, false, 2, "bootstrap installs on this machine"},
 		{"bootstrap apply requires an explicit local path", []string{"bootstrap", "--apply"}, false, 2, "requires here:PATH"},
 		{"recovery rejects task creation", []string{"shell", "here:blocked"}, true, 1, "sshore features are disabled"},
-		{"foreground forwards reject retries", []string{"fwd", "8080", "work:80", "--foreground", "--retries", "1"}, false, 2, "--retries applies only to background forwards"},
+		{"forwards reject foreground mode", []string{"fwd", "8080", "work:80", "--foreground"}, false, 2, "unsupported option: --foreground"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := filepath.Join(t.TempDir(), "state")

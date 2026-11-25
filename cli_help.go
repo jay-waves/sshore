@@ -304,19 +304,19 @@ on Apple Silicon Macs (experimental).
 		},
 		"forward": {
 			run: runEndpointForward, group: groupSSH, summary: "Forward a TCP port", aliases: []string{"fwd"},
-			ssh: true, min: 2, max: 2, flags: []string{"--retries", "--foreground"},
+			ssh: true, min: 2, max: 2, flags: []string{"--retries"},
 			help: `Usage: sshore forward SOURCE TARGET [options] [-- SSH_OPTIONS]
 
 Mirror the service at SOURCE on TARGET. Use a bare port for the current machine
 and HOST:PORT for an SSH host. Leave the client-side port empty to choose it.
 From a remote shell, use origin: or :: for the attached client and request local approval.
+The account daemon manages the forward. Use sshore kill ID to stop it.
 
   sshore forward work:3000 8080
   sshore forward 8080 work:3000
 
 Options:
-  --foreground   Run in this terminal; Ctrl-C stops forwarding
-  --retries N    Retry lost background SSH connections (0–10; default 0)
+  --retries N    Retry lost SSH connections (0–10; default 0)
 
 Retries cannot prompt for credentials or host keys. Existing connections
 do not survive reconnect. SSH -L/-R/-D are not accepted here.
@@ -325,8 +325,6 @@ do not survive reconnect. SSH -L/-R/-D are not accepted here.
   sshore forward work:3000 8080
 Expose a local service on a remote port
   sshore forward .:3000 work:8080
-Run until Ctrl-C
-  sshore forward work:3000 8080 --foreground
 `,
 		},
 		"daemon": {

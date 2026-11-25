@@ -90,17 +90,13 @@ func parseForwardEndpoints(args []string, attached bool) (string, operation, err
 	return host, op, nil
 }
 
-func parseForwardCommand(parsed cliArguments) (forwardConfig, bool, error) {
+func parseForwardCommand(parsed cliArguments) (forwardConfig, error) {
 	var f forwardConfig
 	f.SSH = parsed.ssh
 	f.Retries = parsed.integer("--retries")
-	foreground := parsed.has("--foreground")
-	if foreground && f.Retries != 0 {
-		return f, false, usage("--retries applies only to background forwards")
-	}
 	host, op, err := parseForwardEndpoints(parsed.operands, false)
 	f.Host, f.Port, f.Target, f.Reverse = host, op.Port, op.TargetPort, op.Reverse
-	return f, foreground, err
+	return f, err
 }
 
 func localForwardPortLabel(reverse bool) string {
@@ -130,13 +126,6 @@ func (f forwardConfig) description(client, remote string) string {
 func forwardRemoteCommand(f forwardConfig) string {
 	req := remoteServiceRequest{Operation: "forward-agent", Forward: &operation{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse}}
 	return renderRemoteCommand(f.Server, req)
-}
-
-func runForwardForeground(f forwardConfig) (int, error) {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	termui.Log(os.Stderr, "", termui.Info, "Starting %s; Ctrl-C stops it.", cleanText(f.description("local", f.Host)))
-	return runForwardTransportForeground(ctx, f, os.Stderr)
 }
 
 func pendingPortDescription(op operation) string {
@@ -251,6 +240,13 @@ func retryForward(ctx context.Context, retries int, s *resourceService, attempt 
 }
 
 func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceService, initial bool, diagnostic io.Writer) (*forwardio.Session, error) {
+	if f.Connection != nil {
+		request := message{Type: "route_forward", Name: f.Session, PID: f.ResumePID, ApprovalID: f.ApprovalID,
+			Operations: []operation{{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse}}}
+		return startForward(ctx, f, func() (io.ReadWriteCloser, error) {
+			return openIndependentResource(ctx, *f.Connection, request, s)
+		})
+	}
 	connection := forwardSSHOptions(f, forwardRemoteCommand(f))
 	connection.Environment, connection.Directory = s.baseEnvironment(), s.directory
 	var auth *sshAuthEndpoint
@@ -300,92 +296,32 @@ func forwardSSHOptions(c forwardConfig, command string) sshio.Options {
 	return sshio.Options{Host: c.Host, Command: command, Args: c.SSH}
 }
 
-func startSSHForward(ctx context.Context, f forwardConfig, config sshio.Options, diagnostic io.Writer) (_ *forwardio.Session, err error) {
-	var route options
-	request := message{Type: "route_forward", Name: f.Session, PID: f.ResumePID, ApprovalID: f.ApprovalID,
-		Operations: []operation{{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse}}}
-	if f.Connection != nil {
-		route, err = independentResourceRoute(*f.Connection, &request)
+func startSSHForward(ctx context.Context, f forwardConfig, config sshio.Options, diagnostic io.Writer) (*forwardio.Session, error) {
+	return startForward(ctx, f, func() (io.ReadWriteCloser, error) {
+		conn, err := sshio.Start(ctx, config, diagnostic)
 		if err != nil {
 			return nil, err
 		}
-		config.Host, config.Args, config.Directory = route.host, route.ssh, route.sshDirectory
-		config.Command = remoteCommand(route)
-	}
-	var client *sshio.Client
-	var transport forwardio.Dialer = &net.Dialer{}
-	if !route.hosted {
-		client, err = sshio.Dial(ctx, config)
+		reply, err := readMessage(conn)
+		if err == nil {
+			err = checkPeerVersion(reply.SoftwareVersion, "forward service")
+		}
+		if err == nil && reply.Type != "resource_ready" {
+			err = fmt.Errorf("forward service: %s", cleanText(reply.Error))
+		}
 		if err != nil {
+			conn.Close()
 			return nil, err
 		}
-		transport = client
-		defer func() {
-			if err != nil {
-				_ = client.Close()
-			}
-		}()
-	}
-	return forwardio.Start(ctx, transport, f.Port, f.Target, f.Reverse, func() (io.ReadWriteCloser, string, error) {
-		return openForwardControl(ctx, client, route, config.Command, request, f.Connection != nil, diagnostic)
+		return conn, nil
 	})
 }
 
-// The application owns task negotiation. The forwarding engine binds its
-// listener before invoking this function, then owns the returned stream.
-func openForwardControl(ctx context.Context, client *sshio.Client, route options, command string, request message, approved bool, diagnostic io.Writer) (io.ReadWriteCloser, string, error) {
-	var control io.ReadWriteCloser
-	var err error
-	if approved {
-		control, err = openForwardRoute(ctx, route, client, diagnostic)
-	} else {
-		control, err = client.Start(command, diagnostic)
+func startForward(ctx context.Context, f forwardConfig, open func() (io.ReadWriteCloser, error)) (*forwardio.Session, error) {
+	if f.Reverse {
+		return forwardio.Start(ctx, 0, f.Target, true, open, nil)
 	}
-	if err != nil {
-		return nil, "", err
-	}
-	stop := context.AfterFunc(ctx, func() { control.Close() })
-	defer stop()
-	var reply message
-	if approved {
-		reply, err = exchangeRouteRequest(control, request)
-	} else {
-		reply, err = readMessage(control)
-	}
-	if err == nil {
-		err = checkPeerVersion(reply.SoftwareVersion, "forward service")
-	}
-	if err == nil && reply.Type != "resource_ready" {
-		err = fmt.Errorf("forward service: %s", cleanText(reply.Error))
-	}
-	if err != nil {
-		control.Close()
-		return nil, "", err
-	}
-	return control, reply.ForwardSocket, nil
-}
-
-// Foreground forwards own their connection until explicit cancellation or loss.
-func runForwardTransportForeground(ctx context.Context, c forwardConfig, diagnostic io.Writer) (int, error) {
-	options := forwardSSHOptions(c, forwardRemoteCommand(c))
-	options.Confirm, options.Secret = confirmSSHHost, promptSSHSecret
-	options = withSSHDiagnostics(options, diagnostic, nil)
-	connection, err := startSSHForward(ctx, c, options, diagnostic)
-	if err != nil {
-		if ctx.Err() != nil {
-			return 0, nil
-		}
-		return 1, err
-	}
-	defer connection.Close()
-	err = connection.Wait()
-	if ctx.Err() != nil {
-		return 0, nil
-	}
-	if err == nil {
-		return 1, errors.New("forward disconnected")
-	}
-	return 1, fmt.Errorf("forward disconnected: %w", err)
+	return forwardio.Start(ctx, f.Port, 0, true, open, nil)
 }
 
 // parseForwardRetries applies the same retry policy to CLI and persisted configuration.

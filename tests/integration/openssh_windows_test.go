@@ -5,10 +5,14 @@ package tests_test
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWindowsOpenSSH(t *testing.T) {
@@ -100,4 +104,98 @@ func TestWindowsOpenSSH(t *testing.T) {
 			t.Fatalf("expected killed task to be absent, got %q", reply.Error)
 		}
 	})
+	for _, reverse := range []bool{false, true} {
+		name := "direct forward"
+		if reverse {
+			name = "reverse forward"
+		}
+		t.Run(name, func(t *testing.T) {
+			testWindowsForward(t, command, host, sshOptions, reverse)
+		})
+	}
+}
+
+func testWindowsForward(t *testing.T, command func(...string) *exec.Cmd, host string, sshOptions []string, reverse bool) {
+	t.Helper()
+	listen := func() net.Listener {
+		t.Helper()
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return listener
+	}
+	service := listen()
+	defer service.Close()
+	reserved := listen()
+	address := reserved.Addr().String()
+	servicePort := service.Addr().(*net.TCPAddr).Port
+	forwardPort := reserved.Addr().(*net.TCPAddr).Port
+	_ = reserved.Close()
+	source, target := fmt.Sprintf("%s:%d", host, servicePort), fmt.Sprintf("here:%d", forwardPort)
+	if reverse {
+		source, target = fmt.Sprintf("here:%d", servicePort), fmt.Sprintf("%s:%d", host, forwardPort)
+	}
+	out := windowsRun(t, command(append([]string{"forward", source, target, "--"}, sshOptions...)...))
+	_, task, found := strings.Cut(string(out), "Started forward/")
+	task, _, _ = strings.Cut(task, ":")
+	if !found || task == "" {
+		t.Fatalf("missing forward task in %q", out)
+	}
+	id := "forward/" + task
+	stopped := false
+	t.Cleanup(func() {
+		if !stopped {
+			windowsRun(t, command("kill", id))
+		}
+	})
+
+	// Two clients share the SSH connection. Each backend waits for EOF
+	// before replying, so the relay must preserve TCP half-close.
+	tcpService := service.(*net.TCPListener)
+	_ = tcpService.SetDeadline(time.Now().Add(5 * time.Second))
+	var clients, backends [2]*net.TCPConn
+	for i := range clients {
+		client, err := net.DialTimeout("tcp4", address, 5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		backend, err := tcpService.AcceptTCP()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer backend.Close()
+		clients[i], backends[i] = client.(*net.TCPConn), backend
+	}
+	for i, client := range clients {
+		backend := backends[i]
+		_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+		_ = backend.SetDeadline(time.Now().Add(5 * time.Second))
+		msg := fmt.Sprintf("stream %d", i)
+		if _, err := io.WriteString(client, msg); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.CloseWrite(); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := io.ReadAll(backend); err != nil || string(got) != msg {
+			t.Fatalf("request %q (%v)", got, err)
+		}
+		if _, err := io.WriteString(backend, msg); err != nil {
+			t.Fatal(err)
+		}
+		if err := backend.CloseWrite(); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := io.ReadAll(client); err != nil || string(got) != msg {
+			t.Fatalf("response %q (%v)", got, err)
+		}
+	}
+	windowsRun(t, command("kill", id))
+	stopped = true
+	if conn, err := net.DialTimeout("tcp4", address, time.Second); err == nil {
+		conn.Close()
+		t.Fatal("forward listener still open after stop")
+	}
 }
