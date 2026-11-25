@@ -13,12 +13,14 @@ install -o sshore-fixture -g sshore-fixture -m 600 "$fixture/identity.pub" /home
     printf '[127.0.0.1]:2222 '
     cat "$fixture/host.pub"
 } > "$fixture/known_hosts"
-# Give the SSH test account its own cgroup subtree in the disposable guest.
+# Docker's private cgroup namespace starts with a read-only mount.
+# A fresh mount is writable and rooted at the container's own cgroup.
 cg=/sys/fs/cgroup
-[ -f "$cg/cgroup.controllers" ] || { echo 'fixture requires cgroup v2' >&2; exit 1; }
-if [ ! -w "$cg/cgroup.procs" ]; then
-    mount -o remount,rw "$cg"
+if [ "${1:-}" = --mount-cgroup ]; then
+    mount -t cgroup2 -o rw none "$cg"
 fi
+[ -f "$cg/cgroup.controllers" ] || { echo 'fixture requires cgroup v2' >&2; exit 1; }
+# Give the SSH test account its own subtree.
 ssh_group="$cg/sshore-fixture"
 mkdir "$ssh_group"
 chown sshore-fixture:sshore-fixture "$ssh_group" "$ssh_group/cgroup.procs" "$ssh_group/cgroup.subtree_control" "$ssh_group/cgroup.threads"

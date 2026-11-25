@@ -3,7 +3,7 @@ RUN apk add --no-cache openssh-server procps fuse3 && \
     adduser -D -s /bin/sh sshore-fixture && \
     printf 'sshore-fixture:NP\n' | chpasswd -e
 COPY alpine_fixture.sh /usr/local/bin/alpine-fixture
-ENTRYPOINT ["/bin/sh", "/usr/local/bin/alpine-fixture"]
+ENTRYPOINT ["/bin/sh", "/usr/local/bin/alpine-fixture", "--mount-cgroup"]
 
 FROM fixture AS kvm
 RUN apk add --no-cache linux-virt cpio
