@@ -30,6 +30,8 @@ func protectDaemonHangups() func() {
 
 func detachDaemon(c *exec.Cmd) { c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
 
+func detachAccountDaemon(c *exec.Cmd) { detachDaemon(c) }
+
 func completeDaemonShutdown(_ context.Context, _ int, shutdown func() error) error {
 	// Releasing the account lock is sufficient for replacement on Unix.
 	return shutdown()

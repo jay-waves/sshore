@@ -66,9 +66,11 @@ func TestWindowsOpenSSH(t *testing.T) {
 			t.Fatalf("wrong release diagnostic: %s", reply.Error)
 		}
 	})
-	t.Run("cold start detach and reattach", func(t *testing.T) {
+	if !t.Run("cold start detach and reattach", func(t *testing.T) {
 		run(t, "shell", endpoint, []string{"--no-profile"}, func(send func(string), wait terminalWait) {
 			wait("Connected " + endpoint)
+			send("echo CI_ACCOUNT=%USERNAME%\r")
+			wait("CI_ACCOUNT=sshore-fixture")
 			send("set SSHORE_REMOTE_STATE=retained\r")
 			send("echo CI_READY=%SSHORE_REMOTE_STATE%\r")
 			wait("CI_READY=retained")
@@ -83,7 +85,9 @@ func TestWindowsOpenSSH(t *testing.T) {
 			send("exit\r")
 			leaveClient(send, wait)
 		})
-	})
+	}) {
+		return
+	}
 	t.Run("exited shell cannot be attached", func(t *testing.T) {
 		reply := raw(t, "0.0.0", "attach", "ci-shell")
 		if !strings.Contains(reply.Error, "does not exist") {

@@ -488,7 +488,7 @@ func launchLocalDaemonContext(ctx context.Context, executable ...string) (localS
 		exe = executable[0]
 	}
 	cmd := exec.Command(exe, "daemon")
-	detachDaemon(cmd)
+	detachAccountDaemon(cmd)
 	dir, err := daemonDirectory()
 	if err != nil {
 		return empty, err

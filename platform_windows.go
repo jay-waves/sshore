@@ -33,6 +33,12 @@ func detachDaemon(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 }
 
+func detachAccountDaemon(cmd *exec.Cmd) {
+	detachDaemon(cmd)
+	// OpenSSH closes its session job when the setup command exits.
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_BREAKAWAY_FROM_JOB
+}
+
 // The terminal owns a kill-on-close job; Terminal.Close ends its process tree.
 func reportBootstrapCgroup() {}
 
