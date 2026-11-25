@@ -6,19 +6,12 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/http"
 	"runtime"
 )
-
-func retentionHostedShell(message) error {
-	return fmt.Errorf("run this command inside an sshore shell")
-}
 
 func requestOperations(command string, _ []operation) error {
 	return fmt.Errorf("%s runs on the Linux server, inside the remote shell", command)
 }
-
-func registerPlatformDaemonRoutes(*http.ServeMux, *daemonTasks) {}
 
 func openHostedTransport(context.Context, options) (net.Conn, error) {
 	return nil, fmt.Errorf("%s does not host Unix shells", runtime.GOOS)

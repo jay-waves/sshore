@@ -12,7 +12,7 @@ import (
 func serveRemoteRequest(req remoteServiceRequest) error {
 	switch req.Operation {
 	case "shell", "cp-agent", "mount-agent":
-		return serveRemote(req)
+		return serveRemote(req, serveRemoteFiles)
 	case "daemon-admin":
 		// Maintenance keeps its own snapshot and shutdown verification.
 		return serveDaemonAdmin(os.Stdin, os.Stdout)

@@ -27,7 +27,8 @@ to the platform implementation and its tests.
 
 Clients support Linux and Windows amd64. Linux amd64 hosts detached shells and
 remote services. Windows amd64 can host SFTP mounts on NTFS and ReFS drive
-volumes. Each interactive shell owns one terminal with one attachment at a time.
+volumes. Experimental Windows shell hosting uses the account daemon and ConPTY.
+Each interactive shell owns one terminal with one attachment at a time.
 Split panes, tiling, screen emulation and scrollback replay are outside scope.
 The shell and terminal preserve interactive state across detach. Redraw is best
 effort and must preserve user input. See the [support matrix](../README.md#os-and-shell-support)
