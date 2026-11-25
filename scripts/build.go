@@ -117,7 +117,7 @@ func build(version, target, workspace string) (string, string, error) {
 }
 
 func pack(w io.Writer, binary, target string) error {
-	files := []string{binary, "LICENSE", "THIRD_PARTY_LICENSES.txt"}
+	files := []string{binary, "LICENSE", filepath.Join("docs", "THIRD_PARTY_LICENSES.txt")}
 	if target == "windows" {
 		z := zip.NewWriter(w)
 		for _, path := range files {
