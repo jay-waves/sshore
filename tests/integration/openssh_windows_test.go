@@ -72,7 +72,8 @@ func TestWindowsOpenSSH(t *testing.T) {
 			send("\x02d")
 			wait("Detached from " + endpoint)
 		})
-		run(t, "attach", endpoint, nil, func(send func(string), wait terminalWait) {
+		windowsRun(t, command(append([]string{"rename", endpoint, "ci-renamed", "--"}, sshOptions...)...))
+		run(t, "attach", host+":ci-renamed", nil, func(send func(string), wait terminalWait) {
 			wait("CI_READY=retained")
 			send("echo CI_RESUMED=%SSHORE_REMOTE_STATE%\r")
 			wait("CI_RESUMED=retained")
@@ -82,9 +83,21 @@ func TestWindowsOpenSSH(t *testing.T) {
 		return
 	}
 	t.Run("exited shell cannot be attached", func(t *testing.T) {
-		reply := raw(t, "0.0.0", "attach", "ci-shell")
+		reply := raw(t, "0.0.0", "attach", "ci-renamed")
 		if !strings.Contains(reply.Error, "does not exist") {
 			t.Fatalf("expected missing task after shell exit, got %q", reply.Error)
+		}
+	})
+	t.Run("kill a detached shell", func(t *testing.T) {
+		const target = host + ":ci-kill"
+		run(t, "shell", target, []string{"--no-profile"}, func(send func(string), wait terminalWait) {
+			wait("Connected " + target)
+			send("\x02d")
+			wait("Detached from " + target)
+		})
+		windowsRun(t, command(append([]string{"kill", target, "--"}, sshOptions...)...))
+		if reply := raw(t, "0.0.0", "attach", "ci-kill"); !strings.Contains(reply.Error, "does not exist") {
+			t.Fatalf("expected killed task to be absent, got %q", reply.Error)
 		}
 	})
 }

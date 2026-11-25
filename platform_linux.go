@@ -1,13 +1,10 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/jay-waves/sshore/internal/sys"
 )
@@ -30,30 +27,6 @@ func systemMachineID() string {
 		}
 	}
 	return ""
-}
-
-func openHostedTransport(ctx context.Context, o options) (net.Conn, error) {
-	id, err := resolveSession(o.session, o.instance)
-	if err != nil {
-		return nil, err
-	}
-	if id == "" {
-		return nil, fmt.Errorf("shell instance changed; refresh with sshore list")
-	}
-	return dialHostedTask(ctx, id, time.Second)
-}
-
-func runHostedCommand(o options) (int, error) {
-	switch o.command {
-	case "attach":
-		return runClient(o)
-	case "kill":
-		return 0, killSession(o.session, o.instance)
-	case "rename":
-		return 0, renameSession(o.session, o.newName, o.instance)
-	default:
-		return 2, usage("unsupported hosted shell action %s", o.command)
-	}
 }
 
 func checkPlatform() error { return nil }

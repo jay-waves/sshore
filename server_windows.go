@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -12,8 +11,14 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 	if req.Operation == "shell" {
 		return serveRemote(req, nil)
 	}
+	if req.Operation == "task-control" {
+		if err := checkPeerVersion(req.Release, "client"); err != nil {
+			return err
+		}
+		return serveTaskControl(req)
+	}
 	if req.Operation != "mount-agent" {
-		return fmt.Errorf("Windows remote hosts support shell and mount services")
+		return usage("unknown remote service operation")
 	}
 
 	account, stop, err := prepareWindowsMountAgent(req)

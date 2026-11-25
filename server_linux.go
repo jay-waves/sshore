@@ -37,21 +37,6 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 	return usage("unknown remote service operation")
 }
 
-func serveTaskControl(req remoteServiceRequest) error {
-	if req.Mode != "kill" && req.Mode != "rename" {
-		return usage("invalid task operation")
-	}
-	if err := validSession(req.Name); err != nil {
-		return err
-	}
-	target, err := selectRegisteredTask(taskQuery{Ref: req.Name, UID: req.Instance})
-	if err != nil {
-		return err
-	}
-	_, err = mutateRegisteredTask(req.Mode, target, req.NewName)
-	return err
-}
-
 func serveRemoteFiles(operation string) error {
 	stop, err := leaseActivity(leaseRequest{Kind: "heartbeat"})
 	if err != nil {

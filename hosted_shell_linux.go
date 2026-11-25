@@ -3,10 +3,8 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"net"
-	"os"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/sys"
@@ -118,83 +116,5 @@ func (s *remoteShell) hostedView(detail string) shellView {
 
 func (s *remoteShell) serveTask(c net.Conn, m message) error {
 	s.handleTask(c, m)
-	return nil
-}
-
-// Public names resolve through the account daemon's task table. Control and
-// data connections select the immutable ID at the authenticated TCP endpoint.
-
-func resolveSession(name string, expected ...string) (string, error) {
-	task, err := resolveHostedShell(name, firstExpectedInstance(expected))
-	return task.Instance, err
-}
-
-func renameSession(old, name string, expected ...string) error {
-	if err := validAlias(name); err != nil {
-		return err
-	}
-	task, err := resolveHostedShell(old, firstExpectedInstance(expected))
-	if err != nil {
-		return err
-	}
-	if task.Instance == "" {
-		return fmt.Errorf("shell %s does not exist", old)
-	}
-
-	// The daemon rechecks the selected label and UID when it changes the name.
-	c, err := dialHostedTask(context.Background(), task.Instance, time.Second)
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	if err := writeMessage(c, message{Type: "rename", Instance: task.Instance, Name: name, Action: task.Name, SoftwareVersion: version}); err != nil {
-		return err
-	}
-	m, err := readMessage(c)
-	if err != nil {
-		return err
-	}
-	if m.Type != "renamed" {
-		return fmt.Errorf("rename: %s", m.Error)
-	}
-	fmt.Fprintf(os.Stdout, "Renamed shell %s to %s\n", task.Name, name)
-	return nil
-}
-
-func firstExpectedInstance(expected []string) string {
-	if len(expected) > 0 {
-		return expected[0]
-	}
-	return ""
-}
-
-// Cancellation is authorized and applied by the task owner. Process identity
-// validation belongs to the daemon immediately before it signals its child.
-func killSession(name string, expected ...string) error {
-	id, err := resolveSession(name, expected...)
-	if err != nil {
-		return err
-	}
-	if id == "" {
-		return fmt.Errorf("shell %s does not exist or its instance changed", name)
-	}
-	c, err := dialHostedTask(context.Background(), id, time.Second)
-	if err != nil {
-		return err
-	}
-	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	if err := writeMessage(c, message{Type: "kill", Instance: id, SoftwareVersion: version}); err != nil {
-		return err
-	}
-	reply, err := readMessage(c)
-	if err != nil {
-		return err
-	}
-	if reply.Type != "killed" {
-		return fmt.Errorf("kill shell: %s", reply.Error)
-	}
-	fmt.Fprintf(os.Stdout, "Ended shell %s\n", name)
 	return nil
 }
