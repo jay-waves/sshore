@@ -22,7 +22,11 @@ func Start(parent context.Context, listenPort, targetPort int, initiator bool, o
 	if listenPort != 0 {
 		listener, err = net.Listen("tcp4", Loopback(listenPort))
 		if err != nil {
-			return nil, fmt.Errorf("listen on %s: %w", Loopback(listenPort), err)
+			side := "remote"
+			if initiator {
+				side = "local"
+			}
+			return nil, fmt.Errorf("%s listener: %w", side, err)
 		}
 		defer func() {
 			if err != nil {
