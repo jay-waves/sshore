@@ -149,8 +149,10 @@ func testWindowsReattach(t *testing.T, ctx context.Context, command func(...stri
 		t.Fatalf("unexpected shell code %q in tree:\n%s", code, tree)
 	}
 	windowsRun(t, command("rename", "shell/"+code, "conpty-renamed"))
+	if renamed := string(windowsRun(t, command("ps"))); !strings.Contains(renamed, "shell/"+code+" (conpty-renamed)  detached") {
+		t.Fatalf("rename changed the shell ID or state:\n%s", renamed)
+	}
 	run(command("a", "shell/"+code), func(send func(string), wait terminalWait) {
-		wait("Connected here:conpty-renamed")
 		wait("WIN_READY=retained")
 		send("echo WIN_RESUMED=%SSHORE_RESUME%:%CD%\r")
 		wait("WIN_RESUMED=retained:" + directory)
