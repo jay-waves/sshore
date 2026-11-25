@@ -36,8 +36,7 @@ pinned shells, and clears its sshore identity, history and cached releases.
 | Shell on OS (amd64) | Shell / reattach | File copy | SFTP mount | TCP forward | Nested shell host |
 | --- | --- | --- | --- | --- | --- |
 | bash / sh / zsh / fish on Linux | ✓ | ✓ | ✓ | ✓ | ✓ |
-| pwsh (PowerShell 7) on Windows 11 / Server 2025 or newer | ✓ | ✓ | ✓ | ✓ | TODO |
-| cmd on Windows 11 / Server 2025 or newer | ✓ | ✓ | ✓ | ✓ | TODO |
+| pwsh / cmd on Win11 | ✓ | ✓ | ✓ | ✓ | TODO |
 
 Managed shells and their resource routes require the host's SSH server to
 allow TCP forwarding to loopback.
