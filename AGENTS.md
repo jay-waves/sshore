@@ -11,6 +11,9 @@
   release versions for normal connections. Follow the [update, reset, and approval safeguards](docs/SECURITY.md).
 - Keep published Git tags immutable. Verify published assets before pruning older releases.
   Follow the [release workflow](docs/RELEASE.md).
+- For GitHub operations, try the GitHub connector first. If it cannot complete the operation,
+  try Git over SSH. If SSH also fails or cannot perform the operation, stop and report the
+  operation and the specific failure from each attempt.
 - Use the shared toolchain from PATH and check versions against repository requirements. Get
   approval before substituting private runtimes, lowering requirements, or installing tools.
   For browser checks, use global Playwright and system Chrome. Do not download browsers.
