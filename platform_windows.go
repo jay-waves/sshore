@@ -1,15 +1,10 @@
 package main
 
 import (
-	"context"
 	"fmt"
-
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
-	"time"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
@@ -26,52 +21,10 @@ func localShellPath(env []string) string {
 	return path
 }
 
-func protectDaemonHangups() func() { return func() {} }
-
-func detachDaemon(cmd *exec.Cmd) {
-	// The worker only uses pipes and sockets; the shell gets its own ConPTY.
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
-}
-
-func detachAccountDaemon(cmd *exec.Cmd) {
-	detachDaemon(cmd)
-	// OpenSSH closes its session job when the setup command exits.
-	cmd.SysProcAttr.CreationFlags |= windows.CREATE_BREAKAWAY_FROM_JOB
-}
-
 // The terminal owns a kill-on-close job; Terminal.Close ends its process tree.
 func reportBootstrapCgroup() {}
 
 func daemonTaskCgroup() (string, error) { return "", nil }
-
-// Retain a wait-only handle across authenticated shutdown. The owner lock can be
-// released before Windows unloads the daemon's executable.
-func completeDaemonShutdown(ctx context.Context, pid int, shutdown func() error) error {
-	if pid == os.Getpid() {
-		return shutdown()
-	}
-	if pid <= 0 {
-		return fmt.Errorf("cannot wait for daemon exit: invalid daemon process ID")
-	}
-	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
-	if err != nil {
-		return fmt.Errorf("cannot wait for daemon exit: %w", err)
-	}
-	defer windows.CloseHandle(handle)
-	if err := shutdown(); err != nil {
-		return err
-	}
-	deadline, _ := ctx.Deadline()
-	milliseconds := max(0, time.Until(deadline).Milliseconds())
-	status, err := windows.WaitForSingleObject(handle, uint32(milliseconds))
-	if err != nil {
-		return fmt.Errorf("wait for daemon exit: %w", err)
-	}
-	if status != windows.WAIT_OBJECT_0 {
-		return fmt.Errorf("daemon process did not exit before the shutdown deadline")
-	}
-	return nil
-}
 
 // Private validates the path type and applies a protected current-user DACL.
 func privateStatePath(path string, directory bool) error {

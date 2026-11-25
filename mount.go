@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/jay-waves/sshore/internal/sys"
 	"io"
 	"net"
 	"os"
@@ -215,7 +216,7 @@ func runDaemonMount(config resourceConfig, enc *json.Encoder, dec *json.Decoder,
 		return err
 	}
 	cmd := exec.Command(exe, "daemon", "mount")
-	detachDaemon(cmd)
+	sys.DetachWorker(cmd)
 	cmd.Dir = request.Record.Directory
 	cmd.Env = request.Env
 	cmd.Stderr = log

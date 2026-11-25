@@ -30,7 +30,7 @@ func requestDaemonShutdown(expected daemonSnapshot) error {
 	if err != nil {
 		return err
 	}
-	return completeDaemonShutdown(ctx, record.ManagerPID, func() error {
+	return sys.WaitForDaemonShutdown(ctx, record.ManagerPID, func() error {
 		return shutdownDaemonEndpoint(ctx, dir, record, expected)
 	})
 }
