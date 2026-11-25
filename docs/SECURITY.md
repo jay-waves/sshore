@@ -210,9 +210,10 @@ fail without substitution. Remote requests need local port selection or acceptan
 Their helper rechecks the original shell version, name, PID and detached state.
 No software update runs during forward approval. The origin binds its local
 listener before approval is consumed. The resource endpoint binds reverse listeners
-after authorization. Each accepted TCP connection uses its own native SSH
-channel on the task transport. Nested relays and reverse listeners expose
-their data endpoint to SSH through a Unix socket in a private task directory.
+after authorization. Each accepted TCP connection uses a smux stream on the
+task transport. Intermediate hosts relay the authenticated stream as bytes.
+The destination agent dials the fixed loopback port using TCP. OpenSSH
+`PermitOpen` applies to SSH channel destinations.
 Explicit local forwarding uses an SSH exec service on the destination. Approved
 forwarding connects to the original shell's account daemon through a fresh SSH
 transport. The authenticated account owns the listeners.

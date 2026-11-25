@@ -3,11 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"slices"
-
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 // Short file transfers can reuse the authenticated attachment path.
@@ -82,26 +79,6 @@ func negotiateResourceEndpoint(c net.Conn, request message) (_ net.Conn, err err
 		return nil, fmt.Errorf("routed resource: %s", reply.Error)
 	}
 	return c, nil
-}
-
-func openForwardRoute(ctx context.Context, o options, client *sshio.Client, diagnostic io.Writer) (net.Conn, error) {
-	if o.hosted {
-		return openClientTransportContext(ctx, &o, nil)
-	}
-	setup, err := client.Start(remoteCommand(o), diagnostic)
-	if err != nil {
-		return nil, err
-	}
-	defer setup.CloseAndWait()
-	ready, err := relayShellSetup(nil, setup, &shellDiagnostics{})
-	if err != nil {
-		return nil, err
-	}
-	record, err := remoteTaskRecord(ready)
-	if err != nil {
-		return nil, err
-	}
-	return openRemoteTaskEndpoint(ctx, record, client.DialTCP)
 }
 
 func openRemoteTaskEndpoint(ctx context.Context, record localShellRecord, dial func(context.Context, string) (net.Conn, error)) (net.Conn, error) {

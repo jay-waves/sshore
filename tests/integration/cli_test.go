@@ -39,7 +39,7 @@ func TestCLI(t *testing.T) {
 		{"shutdown accepts one account", []string{"kill", "--all", "one:", "two:"}, false, 2, "unexpected argument: two:"},
 		{"account reset accepts no target", []string{"reset", "work:"}, false, 2, "unexpected argument: work:"},
 		{"recovery rejects task creation", []string{"shell", "here:blocked"}, true, 1, "sshore features are disabled"},
-		{"foreground forwards reject retries", []string{"fwd", "8080", "work:80", "--foreground", "--retries", "1"}, false, 2, "--retries applies only to background forwards"},
+		{"forwards reject foreground mode", []string{"fwd", "8080", "work:80", "--foreground"}, false, 2, "unsupported option: --foreground"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := filepath.Join(t.TempDir(), "state")

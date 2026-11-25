@@ -226,10 +226,6 @@ type resourceSSHStream struct {
 
 func (s resourceSSHStream) Close() error { return s.transport.Close() }
 
-func (s resourceSSHStream) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	return s.transport.DialContext(ctx, network, address)
-}
-
 type remoteShellChild struct {
 	host     string
 	uid      string

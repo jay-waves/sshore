@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"time"
@@ -125,20 +124,6 @@ func (s *remoteShell) relayResourceRoute(c net.Conn, request message) error {
 	if err := checkPeerVersion(reply.SoftwareVersion, "resource route"); err != nil {
 		return err
 	}
-	if request.Type == "route_forward" && reply.Type == "resource_ready" {
-		dialer, ok := stream.(forwardio.Dialer)
-		if !ok {
-			dialer = &net.Dialer{}
-		} // Same-host child endpoint.
-		cancel()
-		return forwardio.Relay(dialer, reply.ForwardSocket, request.Operations[0].TargetPort, func(ep string) error {
-			if err := writeForwardEndpoint(c, ep); err != nil {
-				return err
-			}
-			forwardio.Bridge(c, stream)
-			return nil
-		})
-	}
 	if err := writeMessage(c, reply); err != nil || reply.Type != "resource_ready" {
 		return nil
 	}
@@ -181,22 +166,4 @@ func serveApprovedFileEndpoint(c net.Conn) {
 		return
 	}
 	approvedRemoteTransfer(c, m)
-}
-
-func serveRoutedForward(c io.ReadWriteCloser, forward operation) {
-	published := false
-	err := forwardio.Serve(forward.Reverse, forward.Port, func(ep string) error {
-		published = true
-		if err := writeForwardEndpoint(c, ep); err != nil {
-			return err
-		}
-		return watchPeerRecords(c, "forward", nil)
-	})
-	if err != nil && !published {
-		_ = writeMessage(c, message{Type: "error", SoftwareVersion: version, Error: err.Error()})
-	}
-}
-
-func writeForwardEndpoint(c io.Writer, socket string) error {
-	return writeMessage(c, message{Type: "resource_ready", SoftwareVersion: version, ForwardSocket: socket})
 }

@@ -11,6 +11,9 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 	if req.Operation == "shell" {
 		return serveRemote(req, nil)
 	}
+	if req.Operation == "forward-agent" {
+		return serveForwardAgent(req)
+	}
 	if req.Operation == "task-control" {
 		if err := checkPeerVersion(req.Release, "client"); err != nil {
 			return err

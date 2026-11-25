@@ -36,7 +36,6 @@ type resourceHop struct {
 }
 
 type message struct {
-	ForwardSocket    string              `json:"forward_socket,omitempty"`
 	ResourceRoute    []resourceHop       `json:"resource_route,omitempty"`
 	NativeTargets    bool                `json:"native_targets,omitempty"`
 	RetainedShells   []retainedShell     `json:"retained_shells,omitempty"`
