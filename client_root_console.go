@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/pty"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/term"
 	"github.com/jay-waves/sshore/internal/termui"
-	"golang.org/x/term"
+	xterm "golang.org/x/term"
 )
 
 const rootConsoleHelp = `shell [--pin]     Open a shell on this host (alias: sh)
@@ -103,19 +103,19 @@ func formatSessionEnd(ended sessionEnd, current options, destination string) str
 func runRootConsole(current options, panel *clientConsole, problem string, ended sessionEnd) (*options, error) {
 	ctx, _, stopSignals := newClientSignals(false)
 	defer stopSignals()
-	restore, err := pty.RawConsole()
+	restore, err := term.RawConsole()
 	if err != nil {
 		return nil, err
 	}
 	defer restore()
-	terminalOutput, flush := pty.OutputWriter()
+	terminalOutput, flush := term.OutputWriter()
 	defer flush()
-	screen := pty.InputState{}
+	screen := term.InputState{}
 	if err := screen.BeginConsole(terminalOutput); err != nil {
 		return nil, err
 	}
 	defer screen.EndConsole(terminalOutput)
-	cols, rows, err := term.GetSize(int(os.Stdout.Fd()))
+	cols, rows, err := xterm.GetSize(int(os.Stdout.Fd()))
 	if err != nil {
 		cols, rows = 80, 24
 	}
@@ -132,7 +132,7 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 	console := panel.open(ctx, terminalOutput, emit, "local", cols, color)
 	defer console.editor.Close()
 	keyCtx, cancelKeyboard := context.WithCancel(ctx)
-	stopKeyboard, err := pty.StartKeyboard(keyCtx, func(data []byte, err error) {
+	stopKeyboard, err := term.StartKeyboard(keyCtx, func(data []byte, err error) {
 		select {
 		case events <- clientEvent{input: data, err: err}:
 		case <-keyCtx.Done():

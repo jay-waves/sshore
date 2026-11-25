@@ -1,4 +1,4 @@
-package pty
+package term
 
 import (
 	"bytes"
@@ -27,8 +27,7 @@ type KeyEvent struct {
 // Keys retains sequence, prefix and paste state across arbitrary input reads.
 // The zero value enables shortcuts. Bypass forwards all bytes unchanged.
 type Keys struct {
-	opaque         byte
-	opaqueEscape   bool
+	opaque         controlBoundary
 	mouseTail      int
 	reports        []byte
 	forwardReports []byte
@@ -176,12 +175,9 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 			k.mouseTail--
 			continue
 		}
-		if k.opaque != 0 {
+		if k.opaque.state != controlText {
 			out = append(out, c)
-			if c == 0x18 || c == 0x1a || (c == 7 && k.opaque == ']') || (k.opaqueEscape && c == '\\') {
-				k.opaque = 0
-			}
-			k.opaqueEscape = c == 0x1b
+			k.opaque.advance(c)
 			continue
 		}
 		if k.paste {
@@ -233,8 +229,7 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 			literal(k.sequence)
 			out = append(out, c)
 			k.sequence = nil
-			k.opaque = c
-			k.opaqueEscape = false
+			k.opaque = controlBoundary{state: controlString, stringKind: c}
 			k.parser.Reset()
 			continue
 		}

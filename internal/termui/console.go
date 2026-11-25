@@ -86,7 +86,7 @@ func writeConsoleBody(out io.Writer, body string, color bool) {
 // neutralizing other terminal controls in text received from a peer.
 func cleanConsoleLine(line string, color bool) string {
 	var out strings.Builder
-	var bold, foreground bool
+	styled := false
 	for len(line) > 0 {
 		i := strings.IndexByte(line, 0x1b)
 		if i < 0 {
@@ -100,18 +100,7 @@ func cleanConsoleLine(line string, color bool) string {
 			if strings.HasPrefix(line, code) {
 				if color {
 					out.WriteString(code)
-					switch code {
-					case ansi.ResetStyle:
-						bold, foreground = false, false
-					case "\x1b[1m":
-						bold = true
-					case "\x1b[1;36m":
-						bold, foreground = true, true
-					case "\x1b[39m":
-						foreground = false
-					default:
-						foreground = true
-					}
+					styled = true
 				}
 				line = line[len(code):]
 				matched = true
@@ -123,7 +112,7 @@ func cleanConsoleLine(line string, color bool) string {
 			line = line[1:]
 		}
 	}
-	if bold || foreground {
+	if styled {
 		out.WriteString(ansi.ResetStyle)
 	}
 	return out.String()

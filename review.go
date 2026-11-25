@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
-	"github.com/jay-waves/sshore/internal/pty"
 	"github.com/jay-waves/sshore/internal/sys"
+	"github.com/jay-waves/sshore/internal/term"
 	"github.com/jay-waves/sshore/internal/termui"
 	sftp "github.com/pkg/sftp/v2"
 )
@@ -112,7 +112,8 @@ func executeLocalApproval(request requestRecord, source options) (int, bool, err
 		return 1, true, err
 	}
 	out := os.Stdout
-	if err = (pty.InputState{}).BeginConsole(out); err != nil {
+	var screen term.InputState
+	if err = screen.BeginConsole(out); err != nil {
 		_ = input.Close()
 		return 1, true, err
 	}
@@ -123,7 +124,7 @@ func executeLocalApproval(request requestRecord, source options) (int, bool, err
 	if selectionErr == nil {
 		resume, selectionErr = chooseApprovalReturn(input)
 	}
-	displayErr := (pty.InputState{}).EndConsole(out)
+	displayErr := screen.EndConsole(out)
 	if err := errors.Join(displayErr, input.Close(), selectionErr); err != nil {
 		return 1, resume, err
 	}

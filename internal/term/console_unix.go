@@ -1,6 +1,6 @@
 //go:build linux || (darwin && arm64)
 
-package pty
+package term
 
 import (
 	"context"

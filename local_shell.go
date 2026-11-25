@@ -16,18 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/jay-waves/sshore/internal/sys"
 )
-
-func currentShellDirectory(pid int, fallback string) string {
-	if pid > 0 {
-		if cwd, err := sys.WorkingDirectory(pid); err == nil && cwd != "" {
-			return cwd
-		}
-	}
-	return fallback
-}
 
 // The token is a local connection capability, never part of public inventory.
 type localShellRecord struct {
@@ -158,23 +147,22 @@ type localShell struct {
 	handoff *localHandoff
 }
 
-func (s *localShell) view() localShellView {
+func (s *localShell) view(includeDirectory bool) localShellView {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	view := localShellView{
 		Owner: s.parentIdentityLocked(), Pinned: s.pinned, PinUntil: s.pinUntil, Identity: s.record.identity(),
 		Name: s.record.Name, Version: s.record.Version, PID: s.pid, Shell: s.shellName,
 	}
+	reportedDirectory := s.reportedDirectory
 	view.State = s.state()
 	if s.active != nil {
 		view.SourceHost = s.active.sourceHost
 	}
+	s.mu.Unlock()
+	if includeDirectory {
+		view.Directory = currentShellDirectory(view.PID, reportedDirectory)
+	}
 	return view
-}
-
-func (s *localShell) start(m message) error {
-	source := s.shellEnvironment()
-	return s.startManagedShell(localShellPath(source), localShellEnvironment(source, m.Term, s.record.identity()), m)
 }
 
 func localShellEnvironment(source []string, term, identity string) []string {
@@ -227,7 +215,7 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, pa
 }
 
 func (s *localShell) status(_ string) message {
-	view := s.view()
+	view := s.view(false)
 	return message{Type: "session", Pinned: view.Pinned, PinUntil: view.PinUntil, Name: view.Name, SoftwareVersion: view.Version,
 		Attached: view.State == taskActive, PID: view.PID}
 }
@@ -238,7 +226,7 @@ func (s *localShell) attach(c net.Conn) error {
 		return err
 	}
 	p := newAttachment(c, terminal)
-	if err := s.attachManaged(p, m, s.start); err != nil {
+	if err := s.attachManaged(p, m); err != nil {
 		if errors.Is(err, errShellExited) || errors.Is(err, errShellAttached) {
 			err = fmt.Errorf("local shell unavailable or already attached")
 		}
@@ -257,7 +245,7 @@ func (s *localShell) attach(c net.Conn) error {
 			s.finishHandoff(p, m)
 		case "sh_child":
 			s.mu.Lock()
-			h := &clientHandoff{Shell: (options{command: "sh", local: true, host: "local", pin: m.Pinned}).shellConfig(), Directory: currentShellDirectory(s.pid, s.record.Directory), Environment: append([]string(nil), s.environment...)}
+			h := &clientHandoff{Shell: (options{command: "sh", local: true, host: "local", pin: m.Pinned}).shellConfig(), Directory: s.directoryOrStartupLocked(), Environment: append([]string(nil), s.environment...)}
 			s.mu.Unlock()
 			go serveChildShortcut(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
 		default:

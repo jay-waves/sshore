@@ -17,10 +17,10 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/term"
+	xterm "golang.org/x/term"
 
-	"github.com/jay-waves/sshore/internal/pty"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/term"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -72,7 +72,7 @@ type clientEvent struct {
 	console          termui.ConsoleEvent
 	inputBarrier     bool
 	inputOffset      uint64
-	keyAction        pty.KeyAction
+	keyAction        term.KeyAction
 	inputFailure     bool
 	outputIncomplete bool
 	m                *message
@@ -224,10 +224,10 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		}
 		return 0, err
 	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !xterm.IsTerminal(int(os.Stdin.Fd())) || !xterm.IsTerminal(int(os.Stdout.Fd())) {
 		return 1, fmt.Errorf("an interactive terminal is required")
 	}
-	pty.ResetInputModes()
+	term.ResetInputModes()
 	transport, err := openClientTransportContext(ctx, &o, transports)
 	if err != nil {
 		return 1, fmt.Errorf("open shell connection: %w", err)
@@ -237,12 +237,12 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	if err := clientAttachment(control); err != nil {
 		return 255, err
 	}
-	terminal, terminalToken, err := openTerminalEndpoint(ctx, o)
+	terminalStream, terminalToken, err := openTerminalEndpoint(ctx, o)
 	if err != nil {
 		return 255, fmt.Errorf("open shell terminal: %w", err)
 	}
-	defer terminal.Close()
-	cols, rows, err := term.GetSize(int(os.Stdout.Fd()))
+	defer terminalStream.Close()
+	cols, rows, err := xterm.GetSize(int(os.Stdout.Fd()))
 	if err != nil {
 		cols, rows = 80, 24
 	}
@@ -350,14 +350,15 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 			}
 		}
 	}
-	restore, err := pty.RawConsole()
+	restore, err := term.RawConsole()
 	if err != nil {
 		return 1, err
 	}
-	defer func() { restore(); _ = pty.FlushInput() }()
-	restoreTitle := pty.SetTitle("sshore: " + shellDisplayEndpoint(o))
+	defer func() { restore(); _ = term.FlushInput() }()
+	term.ResetInputModes()
+	restoreTitle := term.SetTitle("sshore: " + shellDisplayEndpoint(o))
 	defer restoreTitle()
-	var outputModes pty.InputState
+	var outputModes term.InputState
 	var console *commandConsole
 	var escapeTimer *time.Timer
 	var escapeTick <-chan time.Time
@@ -367,7 +368,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		}
 	}()
 	defer outputModes.RestoreScreen()
-	terminalOutput, flushOutput := pty.OutputWriter()
+	terminalOutput, flushOutput := term.OutputWriter()
 	defer func() { _ = flushOutput() }()
 	closeConsole := func() error {
 		if console == nil {
@@ -384,7 +385,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 			return err
 		}
 		outputModes.Observe(c.output)
-		return pty.SyncMouse(&outputModes)
+		return term.SyncMouse(&outputModes)
 	}
 	defer func() { _ = closeConsole() }()
 
@@ -398,8 +399,8 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		case <-ctx.Done():
 		}
 	}
-	readAttachmentEvents(ctx, control, terminal, emit, inputDrained)
-	stopKeyboard, err := pty.StartKeyboard(ctx, func(data []byte, err error) {
+	readAttachmentEvents(ctx, control, terminalStream, emit, inputDrained)
+	stopKeyboard, err := term.StartKeyboard(ctx, func(data []byte, err error) {
 		if len(data) > 0 {
 			emit(clientEvent{input: data})
 		}
@@ -412,7 +413,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	}
 	// One terminal writer preserves keystroke order without making file I/O or a
 	// stalled PTY block the main UI/control loop.
-	inputQueue := make(chan []pty.KeyEvent, 16)
+	inputQueue := make(chan []term.KeyEvent, 16)
 	inputDone := make(chan struct{})
 	go func() {
 		defer close(inputDone)
@@ -423,8 +424,8 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 				return
 			case batch := <-inputQueue:
 				for _, b := range batch {
-					if b.Action != pty.KeyNone {
-						if b.Action == pty.KeyDetach {
+					if b.Action != term.KeyNone {
+						if b.Action == term.KeyDetach {
 							emit(clientEvent{inputBarrier: true, inputOffset: inputBytes})
 							// The control loop owns the detach deadline.
 							select {
@@ -439,12 +440,12 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						case <-ctx.Done():
 							return
 						}
-						if b.Action == pty.KeyDetach {
+						if b.Action == term.KeyDetach {
 							return
 						}
 						continue
 					}
-					if err := writeFull(terminal, b.Data); err != nil {
+					if err := writeFull(terminalStream, b.Data); err != nil {
 						emit(clientEvent{err: err, inputFailure: true})
 						return
 					}
@@ -456,11 +457,11 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	defer func() {
 		cancel()
 		stopKeyboard()
-		_ = terminal.Close()
+		_ = terminalStream.Close()
 		_ = transport.Close()
 		<-inputDone
 	}()
-	canApprove := (!o.local || o.hosted) && term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("TERM") != "dumb"
+	canApprove := (!o.local || o.hosted) && xterm.IsTerminal(int(os.Stdin.Fd())) && xterm.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("TERM") != "dumb"
 	if canApprove {
 		if err := streamMessage(control, message{Type: "approval_ready"}); err != nil {
 			return 255, err
@@ -499,7 +500,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	}
 	ticker := time.NewTicker(resizeInterval)
 	defer ticker.Stop()
-	keys := pty.Keys{Bypass: o.noEscape}
+	keys := term.Keys{Bypass: o.noEscape}
 	var keyTimer *time.Timer
 	defer func() {
 		if keyTimer != nil {
@@ -537,7 +538,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	explicitDetach := false
 	queueDetach := func(m message) bool {
 		select {
-		case inputQueue <- []pty.KeyEvent{{Action: pty.KeyDetach}}:
+		case inputQueue <- []term.KeyEvent{{Action: term.KeyDetach}}:
 			detachRequest = m
 			drainInput()
 			return true
@@ -677,7 +678,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 			return nil
 		}
 		select {
-		case inputQueue <- []pty.KeyEvent{{Data: []byte{3}}}:
+		case inputQueue <- []term.KeyEvent{{Data: []byte{3}}}:
 			return nil
 		default:
 			return fmt.Errorf("terminal input queue is busy")
@@ -745,7 +746,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 				return 255, err
 			}
 		case <-ticker.C:
-			c, r, e := term.GetSize(int(os.Stdout.Fd()))
+			c, r, e := xterm.GetSize(int(os.Stdout.Fd()))
 			if e == nil && (c != cols || r != rows) {
 				cols, rows = c, r
 				if err = streamMessage(control, message{Type: "resize", Cols: uint16(c), Rows: uint16(r)}); err != nil {
@@ -828,15 +829,15 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 				}
 				continue
 			}
-			if e.keyAction != pty.KeyNone {
+			if e.keyAction != term.KeyNone {
 				var keyErr error
 				if detachPhase != awaitingDetach {
 					switch e.keyAction {
-					case pty.KeyNew:
+					case term.KeyNew:
 						if detachPhase == detachIdle && approval == nil && pending.action == "sh_child" {
 							keyErr = startChild(false)
 						}
-					case pty.KeyConsole:
+					case term.KeyConsole:
 						openingConsole = false
 						if detachPhase != detachIdle || approval != nil || transitioning() {
 							openingInput = nil
@@ -858,9 +859,9 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						if keyErr == nil && console != nil {
 							keyErr = requestConsoleTargets()
 						}
-					case pty.KeyDetach:
+					case term.KeyDetach:
 						keyErr = sendDetach(false)
-					case pty.KeyRedraw:
+					case term.KeyRedraw:
 						keyErr = streamMessage(control, message{Type: "redraw"})
 					}
 				}
@@ -901,7 +902,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 					return 1, err
 				}
 				outputModes.Observe(e.output)
-				if err = pty.SyncMouse(&outputModes); err != nil {
+				if err = term.SyncMouse(&outputModes); err != nil {
 					return 1, fmt.Errorf("update terminal mouse mode: %w", err)
 				}
 			} else if e.input != nil && !inputClosed {
@@ -960,15 +961,15 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 					select {
 					case inputQueue <- batch:
 						for _, key := range batch {
-							if key.Action == pty.KeyConsole {
+							if key.Action == term.KeyConsole {
 								openingConsole = true
 								openingInput = append(openingInput[:0], key.Data...)
 								break
 							}
-							if key.Action == pty.KeyNew {
+							if key.Action == term.KeyNew {
 								pending.action = "sh_child"
 							}
-							if key.Action == pty.KeyDetach {
+							if key.Action == term.KeyDetach {
 								detachRequest = message{Type: "detach"}
 								drainInput()
 								break

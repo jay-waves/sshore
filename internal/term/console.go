@@ -1,4 +1,5 @@
-package pty
+// Package term handles terminal byte streams and the local console.
+package term
 
 import (
 	"io"
@@ -20,15 +21,20 @@ import (
 // Keep this a fixed boundary cleanup, not a screen/keyboard emulator.
 const finishTerminalOutput = "\x18\x1b\\\x1b[?2026l"
 
+// Both attachment and the command console restore snapshots from this baseline.
+var inputModeBaseline = func() string {
+	var b strings.Builder
+	b.WriteString("\x1b[>4;0m\x1b>")
+	for _, mode := range inputModes {
+		writeMode(&b, mode, 'l')
+	}
+	return b.String()
+}()
+
+const resetPromptStyle = "\x1b]8;;\x1b\\\x1b[0m\x1b[?25h"
+
 func terminalInputResetSequence() string {
-	// Cancel a truncated CSI/control string before sending cleanup. ST also
-	// terminates strings on hosts which do not implement CAN inside OSC/DCS.
-	// End synchronized output before returning to a prompt, even if the remote
-	// application disconnected halfway through a frame.
-	// Remote TUIs can leave Kitty release-event reporting or xterm
-	// modifyOtherKeys enabled; termios/console restoration does not reset either.
-	return finishTerminalOutput + "\x1b[=0u\x1b[>4;0m" + MouseResetSequence() +
-		"\x1b[?1004l\x1b[?2004l\x1b[?1l\x1b[?2031l\x1b[?2033l\x1b[?2048l\x1b>\x1b]8;;\x1b\\\x1b[0m\x1b[?25h"
+	return finishTerminalOutput + "\x1b[=0u" + inputModeBaseline + resetPromptStyle
 }
 
 func ResetInputModes() {
@@ -37,23 +43,28 @@ func ResetInputModes() {
 
 // BeginConsole prepares the screen and input modes for a temporary local
 // prompt. Keep observing application output suspended until EndConsole returns.
-func (s InputState) BeginConsole(out io.Writer) error {
-	sequence := "\x1b[>0u" + terminalInputResetSequence()
-	if s.alternateScreen == 0 {
-		sequence = "\x1b[?1049h" + sequence
+func (s *InputState) BeginConsole(out io.Writer) error {
+	sequence := finishTerminalOutput
+	if s.modes.alternateScreen == 0 {
+		sequence += "\x1b[?1049h"
 	}
-	return writeFull(out, []byte(sequence+"\x1b[2J\x1b[H"))
+	sequence += "\x1b[>0u\x1b[=0u" + inputModeBaseline + resetPromptStyle + "\x1b[2J\x1b[H"
+	return writeFull(out, []byte(sequence))
 }
 
 // EndConsole restores the application screen and input modes before buffered
 // output is replayed. Applications on the alternate screen may need a redraw.
-func (s InputState) EndConsole(out io.Writer) error {
-	sequence := "\x1b[<1u\x1b[?1049l"
-	if s.alternateScreen != 0 {
-		sequence = "\x1b[<1u\x1b[2J\x1b[H"
+func (s *InputState) EndConsole(out io.Writer) error {
+	var b strings.Builder
+	b.WriteString(finishTerminalOutput)
+	b.WriteString("\x1b[<1u")
+	if s.modes.alternateScreen == 0 {
+		b.WriteString("\x1b[?1049l")
+	} else {
+		b.WriteString("\x1b[2J\x1b[H")
 	}
-	s.alternateScreen = 0
-	return writeFull(out, append([]byte(sequence+s.modifyOtherKeys), s.Replay()...))
+	b.WriteString(inputModeBaseline)
+	return writeFull(out, s.appendReplay(&b))
 }
 
 // SetTitle requests an xterm-compatible window title and returns a restoration
@@ -72,12 +83,12 @@ func SetTitle(title string) func() {
 // RestoreScreen returns to the invoking terminal's main buffer if this
 // attachment entered the alternate buffer.
 func (s *InputState) RestoreScreen() {
-	if s.alternateScreen == 0 {
+	if s.modes.alternateScreen == 0 {
 		return
 	}
 	var sequence strings.Builder
 	sequence.WriteString(finishTerminalOutput)
-	writeMode(&sequence, s.alternateScreen, 'l')
+	writeMode(&sequence, s.modes.alternateScreen, 'l')
 	writeTerminalControl(os.Stdout, sequence.String())
 }
 
@@ -137,66 +148,39 @@ func (r *consoleInput) Read(p []byte) (int, error) {
 // into a native-event encoder. In VT-only hosts, those events are literal ESC,
 // '[' and 'A' characters rather than an Up key. Leave every other mode intact.
 type consoleOutput struct {
-	out        io.Writer
-	state      byte
-	stringKind byte
-	pending    []byte
+	out      io.Writer
+	boundary controlBoundary
+	pending  []byte
 }
 
 func (w *consoleOutput) Write(data []byte) (int, error) {
 	out := make([]byte, 0, len(data)+len(w.pending))
 	for _, c := range data {
-		switch w.state {
-		case 's', 't':
-			out = append(out, c)
-			if (c == 7 && w.stringKind == ']') || (w.state == 't' && c == '\\') || c == 0x18 || c == 0x1a {
-				w.state = 0
-			} else if c == 0x1b {
-				w.state = 't'
-			} else {
-				w.state = 's'
-			}
-		case 'e':
-			if c == '[' {
-				w.pending = append(w.pending, c)
-				w.state = 'c'
-			} else {
-				out = append(out, w.pending...)
-				w.pending = w.pending[:0]
-				w.state = 0
-				if c == 0x1b {
-					w.pending = append(w.pending, c)
-					w.state = 'e'
-				} else {
-					out = append(out, c)
-					if c == ']' || c == 'P' || c == '^' || c == '_' || c == 'X' {
-						w.state, w.stringKind = 's', c
-					}
-				}
-			}
-		case 'c':
-			if c == 0x1b {
-				// Preserve cancellation even if the new escape sequence is filtered.
-				out = append(out, w.pending...)
-				out = append(out, 0x18)
-				w.pending = append(w.pending[:0], c)
-				w.state = 'e'
-				continue
-			}
+		previous := w.boundary.state
+		next := w.boundary.advance(c)
+		switch {
+		case previous == controlCSI && next == controlEscape:
+			// Preserve cancellation even if the new escape sequence is filtered.
+			out = append(out, w.pending...)
+			out = append(out, 0x18)
+			w.pending = append(w.pending[:0], c)
+		case previous == controlCSI:
 			w.pending = append(w.pending, c)
-			if c >= 0x40 && c <= 0x7e {
+			if next == controlText {
 				out = append(out, withoutWin32InputMode(w.pending)...)
 				w.pending = w.pending[:0]
-				w.state = 0
-			} else if len(w.pending) >= 128 || c == 0x18 || c == 0x1a {
+			} else if len(w.pending) >= 128 {
 				out = append(out, w.pending...)
 				w.pending = w.pending[:0]
-				w.state = 0
+				w.boundary.state = controlText
 			}
+		case next == controlCSI:
+			w.pending = append(w.pending, c)
 		default:
-			if c == 0x1b {
+			out = append(out, w.pending...)
+			w.pending = w.pending[:0]
+			if next == controlEscape {
 				w.pending = append(w.pending, c)
-				w.state = 'e'
 			} else {
 				out = append(out, c)
 			}
@@ -211,7 +195,7 @@ func (w *consoleOutput) Write(data []byte) (int, error) {
 func (w *consoleOutput) Flush() error {
 	err := writeFull(w.out, w.pending)
 	w.pending = nil
-	w.state = 0
+	w.boundary = controlBoundary{}
 	return err
 }
 

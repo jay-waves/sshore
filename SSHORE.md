@@ -36,11 +36,23 @@ volumes. Each interactive shell owns one terminal with one attachment at a time.
 Split panes, tiling, screen emulation and scrollback replay are outside scope.
 The shell and terminal preserve interactive state across detach. Redraw is best
 effort and must preserve user input. See the [support matrix](README.md#os-and-shell-support)
-and [native terminal adapters](internal/pty/).
+and [native PTY adapters](internal/pty/).
 
-Local and hosted shells share one [shell task lifecycle](shell_terminal.go).
-Their entry points provide the commands specific to
-local handoff or hosted resources.
+Local and hosted shells share one [shell task lifecycle](shell_terminal.go),
+which owns startup, attachment, input ownership and exit reporting.
+Their entry points provide local handoff or hosted resource commands.
+The [PTY package](internal/pty/) owns child processes, native handles, sizing
+and process cleanup. The [terminal package](internal/term/) handles keyboard
+shortcuts, control sequences and the local console. Both use platform files
+for native system calls.
+
+The daemon observes terminal modes while a shell runs, including detached
+output. The frontend observes the stream it displays. A fresh attachment and
+the return from the command console both establish the same input baseline,
+apply the application mode snapshot, then resume any partial control sequence.
+Only the Windows shell host collects directory reports. Output observation,
+Windows filtering and keyboard control strings share the same sequence-boundary
+rules.
 
 Linux shells require cgroup v2 with `cgroup.kill` and `CLONE_INTO_CGROUP`. The
 daemon uses its own writable delegated subtree or requests a delegated scope
@@ -145,10 +157,16 @@ frontend holds it.
 `list` (`ls`) shows shell details, local mounts and forwards, and read-only
 incoming resource leases. The group header identifies the managing host.
 Shell rows use the type `shell`. Their `DETAIL` shows the launched shell's
-executable name. Live shells show their native process working directory when available,
-for example `bash ~/src`. An unavailable directory is omitted, never replaced
-with the launch directory. Windows PowerShell rows omit the directory because
-PowerShell runspace locations (`$PWD`) are independent of the native process cwd.
+executable name and its working directory when available, for example `bash ~/src`.
+On Windows, `list`, the command console and the new child shell shortcut use
+the most recent `OSC 9;9` filesystem path reported by the local shell, including
+reports received while detached. In `pwsh` FullLanguage sessions, SSHore reports
+the initial filesystem location after profiles load and reports subsequent
+filesystem location changes. `--no-profile` skips this integration. Shells without
+a report use their native process working directory where available. If neither
+source is available, the console and shortcut use the starting directory, and
+`list` omits it. For PowerShell, the runspace location is independent of the
+native process directory.
 Connection endpoints and forwarding directions also appear in `DETAIL`.
 Both views include remote shell observations and open no SSH connections.
 The tree shows each shell UID once and favors a live registration over observations of that UID.

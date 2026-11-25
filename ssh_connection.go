@@ -14,11 +14,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jay-waves/sshore/internal/pty"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/term"
 	"github.com/jay-waves/sshore/internal/termui"
 	cryptossh "golang.org/x/crypto/ssh"
-	"golang.org/x/term"
+	xterm "golang.org/x/term"
 )
 
 func sshConnectionOptions(o options) sshio.Options {
@@ -58,7 +58,7 @@ func logSSHWarning(out io.Writer, warning string) {
 }
 
 func confirmSSHHost(ctx context.Context, prompt string) (bool, error) {
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
+	if !xterm.IsTerminal(int(os.Stdin.Fd())) {
 		return false, fmt.Errorf("SSH host trust requires an interactive terminal")
 	}
 	answer, err := readSSHLine(ctx, cleanText(prompt)+" Type yes: ")
@@ -73,14 +73,14 @@ func readSSHInput(ctx context.Context, read func(*termui.Input) (string, error))
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !xterm.IsTerminal(int(os.Stdout.Fd())) {
 		return "", usage("local selection requires an interactive terminal; specify the local endpoint")
 	}
-	pty.ResetInputModes()
-	if err := pty.FlushInput(); err != nil {
+	term.ResetInputModes()
+	if err := term.FlushInput(); err != nil {
 		return "", err
 	}
-	restore, err := pty.RawConsole()
+	restore, err := term.RawConsole()
 	if err != nil {
 		return "", err
 	}
@@ -100,7 +100,7 @@ func readSSHInput(ctx context.Context, read func(*termui.Input) (string, error))
 	defer cancelKeyboard()
 	stopCancel := context.AfterFunc(keyboardCtx, func() { _ = writer.CloseWithError(keyboardCtx.Err()) })
 	defer stopCancel()
-	stopKeyboard, err := pty.StartKeyboard(keyboardCtx, func(data []byte, err error) {
+	stopKeyboard, err := term.StartKeyboard(keyboardCtx, func(data []byte, err error) {
 		defer clear(data)
 		if len(data) != 0 {
 			_, _ = writer.Write(data)
@@ -128,7 +128,7 @@ const maxSSHPrompt = 8192
 const maxSSHResponse = 4096
 
 func promptSSHSecret(ctx context.Context, identity string) ([]byte, error) {
-	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+	if !xterm.IsTerminal(int(os.Stdin.Fd())) || !xterm.IsTerminal(int(os.Stdout.Fd())) {
 		return nil, fmt.Errorf("SSH authentication requires an interactive terminal")
 	}
 	prompt := cleanText(identity) + ": "
@@ -173,7 +173,7 @@ func readSSHSecret(parent context.Context, prompt string) ([]byte, error) {
 	if err := parent.Err(); err != nil {
 		return nil, err
 	}
-	restore, err := pty.RawConsole()
+	restore, err := term.RawConsole()
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +185,7 @@ func readSSHSecret(parent context.Context, prompt string) ([]byte, error) {
 		err  error
 	}
 	incoming := make(chan input)
-	stop, err := pty.StartKeyboard(ctx, func(data []byte, err error) {
+	stop, err := term.StartKeyboard(ctx, func(data []byte, err error) {
 		select {
 		case incoming <- input{data, err}:
 		case <-ctx.Done():

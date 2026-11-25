@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/pty"
 )
 
 // attachment owns the two connections and the terminal byte counters.
@@ -24,7 +27,7 @@ type attachment struct {
 	inputBytes          atomic.Uint64
 	inputProgress       chan struct{}
 	controlMu, outputMu sync.Mutex
-	input               shellInput
+	input               *shellInput
 	approvals           approvalExchanges
 }
 
@@ -154,10 +157,7 @@ func (a *attachment) DrainInput(offset uint64) error {
 	}
 	return a.controlMessage(message{Type: "input_drained"})
 }
-func (a *attachment) ReadInput(input interface {
-	io.Writer
-	Stopped() bool
-}, active func() bool) {
+func (a *attachment) ReadInput(input *shellInput, active func() bool) {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := a.terminal.Read(buf)
@@ -395,3 +395,41 @@ func openTerminalEndpoint(ctx context.Context, o options) (stream net.Conn, toke
 	}
 	return stream, reply.Token, nil
 }
+
+// shellInput prevents a former attachment's in-flight write from reaching a new
+// owner. Stop must finish before another lease uses the same terminal.
+type shellInput struct {
+	terminal *pty.Terminal
+	mu       sync.Mutex
+	stopped  atomic.Bool
+	once     sync.Once
+	stopErr  error
+}
+
+func (l *shellInput) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.stopped.Load() {
+		return 0, os.ErrClosed
+	}
+	return l.terminal.Write(p)
+}
+func (l *shellInput) Stop() error {
+	l.once.Do(func() {
+		l.stopped.Store(true)
+		l.stopErr = l.terminal.SetWriteDeadline(time.Now())
+		// A device without usable cancellation cannot safely transfer input ownership.
+		if l.stopErr != nil {
+			_ = l.terminal.Close()
+		}
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if l.stopErr == nil {
+			l.stopErr = l.terminal.SetWriteDeadline(time.Time{})
+		}
+	})
+	return l.stopErr
+}
+
+// Stopped distinguishes owner cancellation from an unexpected terminal failure.
+func (l *shellInput) Stopped() bool { return l.stopped.Load() }

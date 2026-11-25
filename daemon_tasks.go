@@ -435,11 +435,7 @@ func (s *daemonTasks) taskInventory(request taskInventoryRequest) (taskInventory
 		switch t := task.(type) {
 		case *nativeShellTask:
 			if request.Native {
-				view := t.shell.view()
-				if request.Detail != "health" {
-					view.Directory = currentShellDirectory(view.PID, "")
-				}
-				snapshot.Native = append(snapshot.Native, view)
+				snapshot.Native = append(snapshot.Native, t.shell.view(request.Detail != "health"))
 			}
 		case hostedShellView:
 			if request.Hosted {

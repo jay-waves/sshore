@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jay-waves/sshore/internal/pty"
+	"github.com/jay-waves/sshore/internal/term"
 )
 
 func BenchmarkTerminalInputObserve(b *testing.B) {
@@ -16,7 +16,7 @@ func BenchmarkTerminalInputObserve(b *testing.B) {
 			data := []byte(tc.data)
 			b.SetBytes(int64(len(data)))
 			b.ReportAllocs()
-			var state pty.InputState
+			var state term.InputState
 			for b.Loop() {
 				state.Observe(data)
 			}

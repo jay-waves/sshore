@@ -15,6 +15,9 @@ func TestConsoleStyleFiltering(t *testing.T) {
 	if !strings.Contains(styled, "\x1b[1;36mheader\x1b[m") || strings.Contains(styled, "\x1b[2J") || strings.Contains(styled, "\x1b]") {
 		t.Fatalf("styled: %q", styled)
 	}
+	if !strings.HasSuffix(styled, "\x1b[m") {
+		t.Fatalf("styled line must end with a reset: %q", styled)
+	}
 	if got := cleanConsoleLine("\x1b[1mheading", true); got != "\x1b[1mheading\x1b[m" {
 		t.Fatalf("unclosed style: %q", got)
 	}

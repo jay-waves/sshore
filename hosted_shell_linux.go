@@ -21,35 +21,20 @@ type remoteShell struct {
 	resourceApproval resourceApproval
 }
 
-func (s *remoteShell) start(m message) error {
-	env := s.shellEnvironment()
-	path := localEnvironmentValue(env, "SHELL")
-	if path == "" {
-		path = "/bin/bash"
-	}
-	exe, _ := os.Executable()
-	return s.startManagedShell(path, hostedShellEnvironment(env, m.Term, s.record.UID, exe), m)
-}
-func (s *remoteShell) attach(p *attachment, m message) error {
-	err := s.attachManaged(p, m, s.start)
-
-	if errors.Is(err, errShellExited) {
-		return fmt.Errorf("shell is exiting; use sshore shell HOST: to create a new one")
-	}
-	if errors.Is(err, errShellAttached) {
-		return fmt.Errorf("shell already attached; detach the other connection first")
-	}
-	return err
-}
-
 func (s *remoteShell) serveControl(c net.Conn) error {
 	terminal, m, err := acceptAttachment(c, &s.endpoints)
 	if err != nil {
 		return err
 	}
 	p := newAttachment(c, terminal)
-	err = s.attach(p, m)
+	err = s.attachManaged(p, m)
 	if err != nil {
+		switch {
+		case errors.Is(err, errShellExited):
+			err = fmt.Errorf("shell is exiting; use sshore shell HOST: to create a new one")
+		case errors.Is(err, errShellAttached):
+			err = fmt.Errorf("shell already attached; detach the other connection first")
+		}
 		_ = p.controlMessage(message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
 		_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
 		_, _ = readMessage(c)
@@ -67,7 +52,7 @@ func (s *remoteShell) serveControl(c net.Conn) error {
 		switch m.Type {
 		case "sh_child":
 			s.mu.Lock()
-			req := &localDaemonRequest{Record: localShellRecord{Directory: currentShellDirectory(s.pid, s.record.Directory)}, Env: append([]string(nil), s.environment...), Shell: &shellConfig{Command: "sh", Local: true, Pin: m.Pinned}}
+			req := &localDaemonRequest{Record: localShellRecord{Directory: s.directoryOrStartupLocked()}, Env: append([]string(nil), s.environment...), Shell: &shellConfig{Command: "sh", Local: true, Pin: m.Pinned}}
 			s.mu.Unlock()
 			go serveChildShortcut(p, s.done, func(c net.Conn) {
 				s.requestShellRoute(c, message{SoftwareVersion: version, LocalRequest: req})

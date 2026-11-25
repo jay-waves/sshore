@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/pty"
+	"github.com/jay-waves/sshore/internal/sys"
+	"github.com/jay-waves/sshore/internal/term"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -30,7 +33,8 @@ type shellTask struct {
 	terminal                      *pty.Terminal
 	pid                           int
 	shellName                     string
-	modes                         pty.InputState
+	reportedDirectory             string
+	modes                         term.InputState
 	active                        *attachment
 	exited                        bool
 	tasks                         *daemonTasks
@@ -78,6 +82,22 @@ func (s *shellTask) shellEnvironment() []string {
 		return s.environment
 	}
 	return os.Environ()
+}
+
+func currentShellDirectory(pid int, reported string) string {
+	if reported != "" || pid <= 0 {
+		return reported
+	}
+	directory, err := sys.WorkingDirectory(pid)
+	if err != nil {
+		return ""
+	}
+	return directory
+}
+
+// Call with mu held. Use the startup directory when the shell's location is unavailable.
+func (s *shellTask) directoryOrStartupLocked() string {
+	return cmp.Or(currentShellDirectory(s.pid, s.reportedDirectory), s.record.Directory)
 }
 
 func (s *shellTask) treeIdentity() string {
@@ -176,52 +196,6 @@ func (s *shellTask) stopTerminal() error {
 	case <-timer.C:
 		return fmt.Errorf("shell process ended, but terminal cleanup timed out")
 	}
-}
-
-func (s *shellTask) startManagedShell(path string, env []string, m message) error {
-	err := s.startShell(path, env, s.record.Directory, m, func(exitErr error, code int) {
-		s.mu.Lock()
-		p := s.endTerminal()
-		reason := s.exitReason
-		if reason == "" {
-			reason = "shell exited"
-			if s.hosted {
-				reason = fmt.Sprintf("shell exited (code %d)", code)
-				if e, ok := errors.AsType[*exec.ExitError](exitErr); ok {
-					if status, ok := e.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-						reason = "shell terminated by " + status.Signal().String()
-					}
-				}
-			} else if exitErr != nil {
-				reason = exitErr.Error()
-			}
-			s.exitReason = reason
-		}
-		s.mu.Unlock()
-		termui.Log(s.tasks.log, canonicalTaskCode(s.treeIdentity()), termui.Info, "Shell exited (code %d): %s", code, cleanText(reason))
-		if p != nil {
-			p.finishExit(message{
-				Type: "exit", Code: code, Reason: reason,
-				DaemonShutdown: s.tasks.isShuttingDown(),
-				RetainedShells: s.retainedChildren(),
-			})
-		}
-		if !s.hosted {
-			s.close()
-		} else {
-			s.mu.Lock()
-			s.finishLocked()
-			s.mu.Unlock()
-		}
-	})
-	if err == nil {
-		s.started = time.Now()
-		s.shellName = filepath.Base(path)
-		if runtime.GOOS == "windows" {
-			s.shellName = strings.TrimSuffix(strings.ToLower(s.shellName), ".exe")
-		}
-	}
-	return err
 }
 
 // Call with mu held.
@@ -325,9 +299,9 @@ func (s *shellTask) serveCommand(c net.Conn, m message, attach func(net.Conn) er
 	return true, writeMessage(c, reply)
 }
 
-// Both entry points publish readiness only after a successful attach. Hosted
-// shells obtain their owner context from the authenticated attachment.
-func (s *shellTask) attachManaged(p *attachment, m message, start func(message) error) error {
+// Publish the input lease after startup, the ready message and terminal replay.
+// Hosted shells obtain their owner context from the authenticated attachment.
+func (s *shellTask) attachManaged(p *attachment, m message) error {
 	if err := validateAttach(m); err != nil {
 		return err
 	}
@@ -352,12 +326,20 @@ func (s *shellTask) attachManaged(p *attachment, m message, start func(message) 
 		return err
 	}
 	p.claim = claim
-	err = s.attachTerminal(p, m, start, func() error {
-		if initial && m.Pinned {
-			if err := s.pinLocked(0); err != nil {
-				return err
-			}
-		}
+	switch {
+	case s.active != nil:
+		err = errShellAttached
+	case initial:
+		err = s.startManagedShell(m)
+	case m.NoLogin || m.NoProfile:
+		err = fmt.Errorf("startup options require a new managed shell")
+	default:
+		err = s.terminal.Resize(shellSize(m))
+	}
+	if err == nil && initial && m.Pinned {
+		err = s.pinLocked(0)
+	}
+	if err == nil {
 		instance := s.record.UID
 		if !s.hosted {
 			instance = ""
@@ -366,15 +348,27 @@ func (s *shellTask) attachManaged(p *attachment, m message, start func(message) 
 		if validMachineID(m.MachineID) && machine != m.MachineID && len(m.SourceHost) <= 256 {
 			p.sourceHost = cleanText(m.SourceHost)
 		}
-		return p.controlMessage(message{Type: "ready", Owner: s.parentIdentityLocked(), TreeKey: claim.key, MachineID: machine, Pinned: s.pinned, PinUntil: s.pinUntil, Instance: instance, PID: s.pid, Name: s.record.Name, Shell: s.shellName})
-	})
+		err = p.controlMessage(message{Type: "ready", Owner: s.parentIdentityLocked(), TreeKey: claim.key, MachineID: machine, Pinned: s.pinned, PinUntil: s.pinUntil, Instance: instance, PID: s.pid, Name: s.record.Name, Shell: s.shellName})
+	}
+	if err == nil {
+		if data := s.modes.Replay(); len(data) > 0 {
+			err = p.Output(data)
+		}
+	}
 	if err != nil {
 		s.tasks.forest.abort(claim, graft, oldParent)
-	} else if graft != nil {
-		s.scopeLost = false
-		s.watchParent(graft)
-	} else if m.TreeKey != "" {
-		s.tasks.forest.resume(s, m.TreeKey)
+	} else {
+		p.input = &shellInput{terminal: s.terminal}
+		s.active = p
+		if !initial {
+			pty.RequestRedraw(s.terminal)
+		}
+		if graft != nil {
+			s.scopeLost = false
+			s.watchParent(graft)
+		} else if m.TreeKey != "" {
+			s.tasks.forest.resume(s, m.TreeKey)
+		}
 	}
 	failedInitial := err != nil && initial && !errors.Is(err, errShellAttached) && !errors.Is(err, errShellExited)
 	if failedInitial && s.hosted && s.terminal != nil {
@@ -409,12 +403,6 @@ func (s *shellTask) endTerminal() *attachment {
 	return p
 }
 
-type shellInput interface {
-	io.Writer
-	Stopped() bool
-	Stop() error
-}
-
 func shellSize(m message) pty.Size {
 	return pty.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}
 }
@@ -427,41 +415,62 @@ func hostedShellEnvironment(source []string, term, instance, executable string) 
 	return env
 }
 
-// Both native and hosted sessions use the same shell startup rules; the caller
-// chooses the platform-specific shell and prepares its session environment.
-func (s *shellTask) startShell(path string, env []string, dir string, m message, exited func(error, int)) error {
-	args, err := pty.StartupArgs(path, m.NoLogin, m.NoProfile)
+// The caller holds mu while starting and publishing the terminal.
+func (s *shellTask) startManagedShell(m message) error {
+	source := s.shellEnvironment()
+	var path string
+	var env []string
+	if s.hosted {
+		path = cmp.Or(localEnvironmentValue(source, "SHELL"), "/bin/bash")
+		exe, _ := os.Executable()
+		env = hostedShellEnvironment(source, m.Term, s.record.UID, exe)
+	} else {
+		path = localShellPath(source)
+		env = localShellEnvironment(source, m.Term, s.record.identity())
+	}
+	args, err := startupArgs(runtime.GOOS, path, m.NoLogin, m.NoProfile)
 	if err != nil {
 		return err
 	}
-	return s.startTerminal(path, args, pty.StartupEnv(path, env, m.NoProfile), dir, m, exited)
-}
-
-// The caller holds mu while publishing the terminal. The exit handler owns
-// task-specific state and exit reporting.
-func (s *shellTask) startTerminal(path string, args, env []string, dir string, m message, exited func(error, int)) error {
 	if s.tasks.cgroupErr != nil {
 		return s.tasks.cgroupErr
 	}
-	t, err := pty.Start(pty.Config{Path: path, Args: args, Env: env, Dir: dir, Size: shellSize(m), TaskCgroup: s.tasks.cgroup})
+	t, err := pty.Start(pty.Config{
+		Path: path, Args: args, Env: startupEnv(path, env, m.NoProfile),
+		Dir: s.record.Directory, Size: shellSize(m), TaskCgroup: s.tasks.cgroup,
+	})
 	if err != nil {
 		return err
 	}
 	s.terminal = t
 	s.pid = t.PID()
-	go s.pumpTerminal(t, exited)
+	s.started = time.Now()
+	s.shellName = filepath.Base(path)
+	if runtime.GOOS == "windows" {
+		s.shellName = strings.TrimSuffix(strings.ToLower(s.shellName), ".exe")
+	}
+	go s.pumpTerminal(t)
 	return nil
 }
 
-func (s *shellTask) pumpTerminal(t *pty.Terminal, exited func(error, int)) {
+func (s *shellTask) pumpTerminal(t *pty.Terminal) {
 	buf := make([]byte, 8192)
+	var directoryReports term.DirectoryReport
 	for {
 		n, err := t.Read(buf)
 		if n > 0 {
 			s.terminalMu.Lock()
-			s.modes.Observe(buf[:n])
+			var directory string
+			if runtime.GOOS == "windows" && !s.hosted {
+				directory = directoryReports.Observe(&s.modes, buf[:n])
+			} else {
+				s.modes.Observe(buf[:n])
+			}
 			// Keep live output ordered without holding the shell lock during I/O.
 			s.mu.Lock()
+			if directory != "" {
+				s.reportedDirectory = directory
+			}
 			p := s.active
 			s.mu.Unlock()
 			if p != nil {
@@ -484,46 +493,39 @@ func (s *shellTask) pumpTerminal(t *pty.Terminal, exited func(error, int)) {
 			code = e.ExitCode()
 		}
 	}
-	exited(err, code)
-}
-
-// Caller holds both host locks. The attachment acquires ownership only after
-// startup, terminal setup and the ready handshake have succeeded.
-func (s *shellTask) attachTerminal(p *attachment, m message, start func(message) error, ready func() error) error {
-	if s.exited {
-		return errShellExited
-	}
-	if s.active != nil {
-		return errShellAttached
-	}
-	initial := s.terminal == nil
-	if initial {
-		if err := start(m); err != nil {
-			return err
+	s.mu.Lock()
+	p := s.endTerminal()
+	reason := s.exitReason
+	if reason == "" {
+		reason = "shell exited"
+		if s.hosted {
+			reason = fmt.Sprintf("shell exited (code %d)", code)
+			if e, ok := errors.AsType[*exec.ExitError](err); ok {
+				if status, ok := e.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+					reason = "shell terminated by " + status.Signal().String()
+				}
+			}
+		} else if err != nil {
+			reason = err.Error()
 		}
-	} else if m.NoLogin || m.NoProfile {
-		return fmt.Errorf("startup options require a new managed shell")
+		s.exitReason = reason
 	}
-	if err := s.terminal.Resize(shellSize(m)); err != nil {
-		return err
+	s.mu.Unlock()
+	termui.Log(s.tasks.log, canonicalTaskCode(s.treeIdentity()), termui.Info, "Shell exited (code %d): %s", code, cleanText(reason))
+	if p != nil {
+		p.finishExit(message{
+			Type: "exit", Code: code, Reason: reason,
+			DaemonShutdown: s.tasks.isShuttingDown(),
+			RetainedShells: s.retainedChildren(),
+		})
 	}
-	lease := pty.NewInputLease(s.terminal)
-	err := ready()
-	if err == nil {
-		if data := s.modes.Replay(); len(data) > 0 {
-			err = p.Output(data)
-		}
+	if !s.hosted {
+		s.close()
+	} else {
+		s.mu.Lock()
+		s.finishLocked()
+		s.mu.Unlock()
 	}
-	if err != nil {
-		lease.Stop()
-		return err
-	}
-	p.input = lease
-	s.active = p
-	if !initial {
-		pty.RequestRedraw(s.terminal)
-	}
-	return nil
 }
 
 // Hold mu through Stop so no successor can acquire the terminal's writer.

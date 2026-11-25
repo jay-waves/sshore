@@ -1,8 +1,9 @@
-package pty
+package term
 
 import (
 	"bytes"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -14,10 +15,51 @@ func TestMouseStateAcrossReadBoundaries(t *testing.T) {
 		s.Observe([]byte(input[:split]))
 		s.Observe([]byte(input[split:]))
 		got := string(s.Replay())
-		want := MouseResetSequence() + "\x1b[?1002h\x1b[?1016h"
+		want := "\x1b[?1002h\x1b[?1016h"
 		if got != want {
 			t.Fatalf("split %d: %q", split, got)
 		}
+	}
+}
+
+func TestWorkingDirectoryAcrossReadBoundaries(t *testing.T) {
+	path, err := filepath.Abs("dir ; 目录")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, end := range []string{"\a", "\x1b\\"} {
+		input := "\x1b]9;9;\"" + path + "\"" + end
+		for split := 0; split < len(input); split++ {
+			var state InputState
+			var report DirectoryReport
+			if got := report.Observe(&state, []byte(input[:split])); got != "" {
+				t.Fatalf("split %d: partial report returned %q", split, got)
+			}
+			if got := report.Observe(&state, []byte(input[split:])); got != path {
+				t.Fatalf("split %d: report %q, want %q", split, got, path)
+			}
+		}
+	}
+}
+
+func TestWorkingDirectoryIgnoresInvalidReports(t *testing.T) {
+	path, err := filepath.Abs("work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state InputState
+	input := "\x1b]9;9;" + path + "\a" +
+		"\x1b]9;9;relative\a" +
+		"\x1b]9;9;" + path + "\x18\a" +
+		"\x1bP\x1b]9;9;" + path + "other\x1b\\" +
+		"\x1b]9;9;" + path + "\xff\a" +
+		"\x1b[?2004h"
+	var report DirectoryReport
+	if got := report.Observe(&state, []byte(input)); got != path {
+		t.Fatalf("report %q, want %q", got, path)
+	}
+	if !bytes.Contains(state.Replay(), []byte("\x1b[?2004h")) {
+		t.Fatal("lost input mode after OSC")
 	}
 }
 
@@ -52,6 +94,51 @@ func TestInputModesBulkMatchesBytewise(t *testing.T) {
 	}
 }
 
+func TestReplayModifyOtherKeysBeforePartialControl(t *testing.T) {
+	const input = "\x1b[>4;2m\x1b[?2004"
+	var state InputState
+	state.Observe([]byte(input))
+	if got := string(state.Replay()); got != input {
+		t.Fatalf("replay %q, want %q", got, input)
+	}
+	var out bytes.Buffer
+	if err := state.EndConsole(&out); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), finishTerminalOutput+"\x1b[<1u\x1b[?1049l"+inputModeBaseline+input; got != want {
+		t.Fatalf("console restore %q, want %q", got, want)
+	}
+}
+
+func TestRestoreApplicationModes(t *testing.T) {
+	const app = "\x1b[?1049h\x1b[?1003h\x1b[?1003s\x1b[?1002h\x1b[?2004s\x1b[?2004h\x1b=\x1b[>4;2m"
+	const continuation = "\x1b[?1003;2004r"
+	var application, attached, console InputState
+	application.Observe([]byte(app + continuation[:7]))
+	attached.Observe(application.Replay())
+	console.Observe([]byte(app + continuation[:7]))
+	var transitions bytes.Buffer
+	if err := application.BeginConsole(&transitions); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a local editor that changes mouse reporting and keypad mode.
+	transitions.WriteString("\x1b[?1000h\x1b>")
+	if err := application.EndConsole(&transitions); err != nil {
+		t.Fatal(err)
+	}
+	console.Observe(transitions.Bytes())
+	for _, restored := range []*InputState{&application, &attached, &console} {
+		restored.Observe([]byte(continuation[7:]))
+		if restored.modes != application.modes {
+			t.Fatalf("restored modes %#v differ from application modes %#v", restored.modes, application.modes)
+		}
+	}
+	if got := string(application.Replay()); strings.Contains(got, "\x1b[?2004h") ||
+		!strings.Contains(got, "\x1b[?1003h") || strings.Contains(got, "\x1b[?1002h") {
+		t.Fatalf("saved modes not restored by the application: %q", got)
+	}
+}
+
 func TestAttachInsideOpaqueControlString(t *testing.T) {
 	for _, kind := range []byte{']', 'P', '^', '_', 'X'} {
 		end := "\x1b\\"
@@ -81,8 +168,8 @@ func TestBoundaryCleanupAfterTruncatedControl(t *testing.T) {
 			for _, c := range []byte(terminalInputResetSequence()) {
 				state.Observe([]byte{c})
 			}
-			for i, enabled := range state.current {
-				if enabled == modeOn {
+			for i, enabled := range state.modes.enabled {
+				if enabled {
 					t.Fatalf("mode %d survived cleanup", inputModes[i])
 				}
 			}
@@ -172,10 +259,5 @@ func TestConsoleOutputModes(t *testing.T) {
 	}
 }
 func sameEnabledModes(a, b *InputState) bool {
-	for i, setting := range a.current {
-		if (setting == modeOn) != (b.current[i] == modeOn) {
-			return false
-		}
-	}
-	return true
+	return a.modes.enabled == b.modes.enabled
 }
