@@ -47,7 +47,7 @@ func testWindowsOriginApproval(t *testing.T, host string, command func(...string
 		wait("Approve this request? [y/N]")
 		send("\r")
 		wait("approval cancelled")
-		wait("Connected " + endpoint)
+		wait("C:\\Users\\sshore-fixture>")
 		if _, err := os.Stat(first); !os.IsNotExist(err) {
 			t.Fatalf("declined copy destination: %v", err)
 		}
@@ -60,7 +60,7 @@ func testWindowsOriginApproval(t *testing.T, host string, command func(...string
 		wait("Save as:")
 		send("\x15" + second + "\r")
 		wait("Transferred 2/2 files.")
-		wait("Connected " + endpoint)
+		wait("C:\\Users\\sshore-fixture>")
 
 		send("sshore cp origin:\"" + first + "\" here:ci-origin-upload\r")
 		wait("Approve this request? [y/N]")
@@ -68,7 +68,7 @@ func testWindowsOriginApproval(t *testing.T, host string, command func(...string
 		wait("Local file to upload:")
 		send("\r")
 		wait("Uploaded ")
-		wait("Connected " + endpoint)
+		wait("C:\\Users\\sshore-fixture>")
 		send("set /p CI_UPLOADED=<ci-origin-upload\\first.txt\r")
 		send("echo CI_UPLOADED=%CI_UPLOADED%\r")
 		wait("CI_UPLOADED=first")
@@ -77,16 +77,15 @@ func testWindowsOriginApproval(t *testing.T, host string, command func(...string
 		wait("Approve this request? [y/N]")
 		send("\r")
 		wait("approval cancelled")
-		wait("Connected " + endpoint)
+		wait("C:\\Users\\sshore-fixture>")
 
 		send(fmt.Sprintf("sshore fwd here:%d origin:%d\r", service.Addr().(*net.TCPAddr).Port, forwardPort))
 		wait("Local target port (Enter to approve, Ctrl-C to cancel):")
 		send("\r")
-		started := wait("Started forward/")
-		_, suffix, _ := strings.Cut(started, "Started forward/")
-		task, _, _ := strings.Cut(suffix, ":")
+		wait("Started forward/")
+		task := strings.TrimSuffix(wait(":"), ":")
 		forwardID = "forward/" + task
-		wait("Connected " + endpoint)
+		wait("C:\\Users\\sshore-fixture>")
 		send("exit\r")
 	})
 
