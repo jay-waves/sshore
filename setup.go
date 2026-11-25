@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/release"
+	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/term"
-
-	"github.com/jay-waves/sshore/internal/sys"
 )
 
 // Return the remote home directory from the readiness reply. Shell selection
@@ -61,7 +61,7 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, host string, chooseShell 
 			return message{}, fmt.Errorf("%s", m.Error)
 		}
 		if m.SoftwareVersion != version {
-			return message{}, fmt.Errorf("sshore version mismatch: local=%s, remote=%q. %s", version, m.SoftwareVersion, remoteVersionHelp())
+			return message{}, release.VersionMismatch(version, m.SoftwareVersion, "remote")
 		}
 		switch m.Type {
 		case "setup_ready":
@@ -130,10 +130,6 @@ func runBootstrap(parsed cliArguments) (int, error) {
 			"Resetting and reinstalling sshore · "+cleanText("here:"+target)))
 	}
 	return 0, runLocalInstaller(target)
-}
-
-func remoteVersionHelp() string {
-	return "Managed connections require the same full release. Install matching versions on both machines using their platform installers."
 }
 
 // Return the canonical components for exact matching and upgrade ordering.
@@ -256,8 +252,11 @@ func setupLock() (*sys.FileLock, error) {
 
 func requireInstalledRelease(target string) error {
 	installed, err := executableVersion(target)
-	if err != nil || installed != version {
-		return fmt.Errorf("cannot verify installed sshore %s at %q. %s", version, target, remoteVersionHelp())
+	if err != nil {
+		return fmt.Errorf("cannot verify installed sshore %s at %q.\n%s", version, target, release.InstallHelp)
+	}
+	if installed != version {
+		return release.VersionMismatch(version, installed, "installed executable")
 	}
 	record, err := existingDaemonRecord()
 	if os.IsNotExist(err) {
