@@ -193,8 +193,6 @@ Match command "printf forwarding-check"
 			wait("Save as:", true)
 			wait(approved, true)
 			send("\r")
-			wait("Return to session after operation? [Y/n]", true)
-			send("\r")
 			wait("Saved " + approved)
 			wait("Connected " + endpoint)
 			requireFile(t, approved, "approved content")
@@ -203,7 +201,7 @@ Match command "printf forwarding-check"
 		})
 	})
 
-	t.Run("declining return after approval restores local parent", func(t *testing.T) {
+	t.Run("approval resumes requesting shell and resources outlive it", func(t *testing.T) {
 		endpoint := host + ":approval-return"
 		cleanup := func() { _, _ = command("kill", endpoint, "--server", binary).CombinedOutput() }
 		cleanup()
@@ -233,19 +231,26 @@ Match command "printf forwarding-check"
 			send("y\r")
 			wait("Mountpoint (empty for automatic):", true)
 			send(point + "\r")
-			wait("Return to session after operation? [Y/n]", true)
-			send("\r")
+			wait("Started mount/")
 			wait("Connected " + endpoint)
+			prompt := "Local listening port (Enter to approve, Ctrl-C to cancel):"
+			send("sshore fwd origin:" + localPort + " here:" + port + "\n")
+			wait(prompt, true)
+			send("\x03")
+			wait("approval cancelled")
+			wait("Connected " + endpoint)
+			probe, err := net.Listen("tcp4", "127.0.0.1:"+localPort)
+			if err != nil {
+				t.Fatalf("declined forward left its listener active: %v", err)
+			}
+			probe.Close()
 			send("sshore fwd origin: here:" + port + "\n")
-			wait("Local listening port", true)
+			wait(prompt, true)
 			send(localPort + "\r")
-			wait("Return to session after operation? [Y/n]", true)
-			send("n\r")
-			wait("[y/N]", true)
-			send("y\r")
+			wait("Started forward/")
+			wait("Connected " + endpoint)
+			send("exit\n")
 			wait("Connected here:approval-parent")
-			send("printf 'LOCAL_APPROVAL_RETURNED\\n'\n")
-			wait("LOCAL_APPROVAL_RETURNED")
 			send("exit\n")
 			wait("No shell attached.")
 			send("exit\r")
@@ -287,6 +292,56 @@ Match command "printf forwarding-check"
 		local(t, "kill", forwardID)
 		run(t, "exec", host, "printf independent > approval-lifecycle/after-exit")
 		requireFile(t, filepath.Join(point, "after-exit"), "independent")
+	})
+
+	t.Run("forward credential prompt stays in local approval screen", func(t *testing.T) {
+		identity := filepath.Join(fixture, "identity")
+		rawKey, err := os.ReadFile(identity)
+		if err != nil {
+			t.Fatal(err)
+		}
+		temp := t.TempDir()
+		encryptedKey := filepath.Join(temp, "encrypted-key")
+		if err := os.WriteFile(encryptedKey, rawKey, 0600); err != nil {
+			t.Fatal(err)
+		}
+		keygen := exec.CommandContext(ctx, "ssh-keygen", "-p", "-P", "", "-N", "fixture-passphrase", "-f", encryptedKey)
+		if out, err := keygen.CombinedOutput(); err != nil {
+			t.Fatalf("encrypt fixture key: %v\n%s", err, out)
+		}
+		plain, err := os.ReadFile(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encrypted := bytes.Replace(plain, []byte(strconv.Quote(identity)), []byte(strconv.Quote(encryptedKey)), 1)
+		approvalConfig := filepath.Join(temp, "ssh_config")
+		setConfig := func(data []byte) {
+			t.Helper()
+			if err := os.WriteFile(approvalConfig, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		setConfig(plain)
+		endpoint := host + ":approval-credentials"
+		cmd := exec.CommandContext(ctx, binary, "sh", endpoint, "--no-profile", "--server", binary, "--", "-F", approvalConfig)
+		credential := "Passphrase for " + encryptedKey + ": "
+		transcript, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+			wait("Connected " + endpoint)
+			setConfig(encrypted)
+			send("sshore fwd origin:9091 here:9090\n")
+			wait("Local listening port (Enter to approve, Ctrl-C to cancel):", true)
+			send("\r")
+			wait(credential, true)
+			setConfig(plain)
+			send("\x03")
+			wait("Connected " + endpoint)
+			send("exit\n")
+			wait("Exited " + endpoint)
+		})
+		before, _, found := strings.Cut(transcript, credential)
+		if err != nil || !found || strings.LastIndex(before, "\x1b[?1049h") <= strings.LastIndex(before, "\x1b[?1049l") {
+			t.Fatalf("credential prompt outside the approval screen: %v\n%s", err, transcript)
+		}
 	})
 
 	t.Run("reverse forward relays data", func(t *testing.T) {

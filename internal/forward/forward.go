@@ -107,7 +107,7 @@ func Serve(reverse bool, port int, control func(string) error) error {
 	}
 	listener, err := net.Listen("tcp4", Loopback(port))
 	if err != nil {
-		return err
+		return fmt.Errorf("remote listener: %w", err)
 	}
 	defer listener.Close()
 	return serveSocket(func(context.Context) (net.Conn, error) { return listener.Accept() }, true, func(socket string) error {
@@ -131,7 +131,7 @@ func Start(ctx context.Context, client Dialer, port, target int, reverse bool, o
 	if !reverse {
 		listener, err = net.Listen("tcp4", Loopback(port))
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("local listener: %w", err)
 		}
 		defer func() {
 			if err != nil {

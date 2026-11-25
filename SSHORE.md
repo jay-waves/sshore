@@ -103,7 +103,7 @@ exit even if the tail is incomplete. The local root prompt opens before loading
 the shell tree. When the local account daemon shuts down, attached local clients
 exit to the invoking terminal. Remote exits and detaches return to the parent
 or the invoking terminal. Exit notices report surviving pinned children directly.
-Declining a return after local approval restores the local parent when one exists.
+After a local approval or cancellation, the client resumes the requesting shell.
 A connection loss without an exit frame leaves the state unconfirmed. Exit notices identify the restored
 shell, local console or calling terminal and whether pinned children remain.
 

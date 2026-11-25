@@ -409,18 +409,26 @@ func (s *resourceService) finish() {
 	close(s.done)
 }
 
-func startResourceBackground(config resourceConfig, directory string) (int, error) {
-	kind := config.kind()
+func startResourceBackground(config resourceConfig) (int, error) {
+	record, err := launchResourceBackground(config, "")
+	if err != nil {
+		return 1, err
+	}
+	reportResourceStartup(record)
+	return 0, nil
+}
+
+func launchResourceBackground(config resourceConfig, directory string) (resourceRecord, error) {
 	config.UID = newTaskUID()
 	auth, stopAuth, e := startSSHAuthBroker()
 	if e != nil {
-		return 1, e
+		return resourceRecord{}, e
 	}
 	defer stopAuth()
 	if directory == "" {
 		directory, e = os.Getwd()
 		if e != nil {
-			return 1, e
+			return resourceRecord{}, e
 		}
 	}
 	config.Auth = auth
@@ -429,37 +437,33 @@ func startResourceBackground(config resourceConfig, directory string) (int, erro
 		Env: os.Environ(), Resource: &config,
 	})
 	if e != nil {
-		return 1, e
+		return resourceRecord{}, e
 	}
 	defer c.Close()
 	enc, dec := json.NewEncoder(c), json.NewDecoder(c)
 	var startup resourceStartup
 	if e = dec.Decode(&startup); e != nil {
-		return 1, fmt.Errorf("resource startup failed: %w", e)
+		return resourceRecord{}, fmt.Errorf("resource startup failed: %w", e)
 	}
 	if startup.Error != "" {
-		return 1, fmt.Errorf("%s", startup.Error)
+		return resourceRecord{}, fmt.Errorf("%s", startup.Error)
 	}
-	record := startup.resourceRecord
 	if e = commitResourceStartup(enc, dec); e != nil {
-		return 1, e
+		return resourceRecord{}, e
 	}
+	return startup.resourceRecord, nil
+}
+
+func reportResourceStartup(record resourceRecord) {
 	detail := record.Detail
-	switch kind {
-	case "mount":
+	if record.Kind == "mount" {
 		mode := "read-write"
 		if record.ReadOnly {
 			mode = "read-only"
 		}
 		detail = fmt.Sprintf("%s:%s -> %s · %s", record.Host, record.Remote, record.Mountpoint, mode)
-	case "forward":
-		if f := config.Forward; f != nil {
-			detail = f.description("local", f.Host)
-		}
 	}
-	termui.Log(os.Stdout, canonicalTaskCode(resourceIdentity(record)), termui.Info, "Started %s/%s: %s", kind, record.Name, cleanText(detail))
-
-	return 0, nil
+	termui.Log(os.Stdout, canonicalTaskCode(resourceIdentity(record)), termui.Info, "Started %s/%s: %s", record.Kind, record.Name, cleanText(detail))
 }
 
 func (s *resourceService) peerTask(detail string) peerRecord {

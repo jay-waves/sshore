@@ -123,10 +123,10 @@ write a destination, expose a mount, open a listener or reach a local service wi
 A request contains bounded operation metadata and suggested paths or ports;
 receiving it grants no permission. The client leaves the remote attachment and
 presents the request in a local approval screen. File and mount requests require
-`Y` before selecting local endpoints. For a forward the user selects the local
-port and approves the resulting mapping. A successful destination password
-prompt explicitly labeled with that mapping supplies this approval. Other
-authentication paths, including a password for a jump host, require `Y`.
+`Y` before selecting local endpoints. For a forward the local screen shows
+the direction and fixed remote endpoint. Submitting a valid local port with
+Enter approves that mapping. The local approval screen also handles any SSH
+credentials needed to start a mount or forward.
 Suggested values are editable and path
 completion does not submit them. Cancel, EOF or lack of an interactive terminal
 rejects the request without executing it. There is no persistent grant or pending

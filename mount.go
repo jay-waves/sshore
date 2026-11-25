@@ -107,7 +107,7 @@ func executeMount(o ftpOptions) (int, error) {
 		return 1, err
 	}
 	if !o.foreground {
-		return startResourceBackground(resourceConfig{Mount: &o}, "")
+		return startResourceBackground(resourceConfig{Mount: &o})
 	}
 	mountpoint, cleanup, err := files.PrepareMountpoint(o.Mountpoint, o.Name)
 	if err != nil {

@@ -60,6 +60,12 @@ sshore forward .:8080 work:3000  # Reach the remote service on local port 8080.
 sshore ping work:               # Measure SSH latency.
 ```
 
+From an attached remote shell, use `sshore fwd origin:9091 .:9090` to reach
+the remote service on the client's port 9091. The first endpoint is the
+listener, and `origin:` selects the attached client. On the client, submit
+the local port to approve the mapping. The client resumes the requesting shell
+when the operation finishes.
+
 ## Shells — Start, detach and resume
 
 `sshore shell` (`sh`) opens a shell on the machine running the command.

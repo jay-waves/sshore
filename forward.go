@@ -223,7 +223,7 @@ func startForwardSession(f forwardConfig) (int, error) {
 	if e := validateForwardConfig(f); e != nil {
 		return 2, e
 	}
-	return startResourceBackground(resourceConfig{Forward: &f}, "")
+	return startResourceBackground(resourceConfig{Forward: &f})
 }
 
 // Reconnect only an already-established, explicitly opted-in local forward.
@@ -282,7 +282,7 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 		connection.RequireKnownHost = true
 	}
 	connection = withSSHDiagnostics(connection, diagnostic, auth)
-	return startSSHForward(ctx, f, connection, auth, diagnostic)
+	return startSSHForward(ctx, f, connection, diagnostic)
 }
 
 var errForwardRetries = errors.New("--retries must be between 0 and 10")
@@ -321,7 +321,7 @@ func forwardSSHOptions(c forwardConfig, command string) sshio.Options {
 	return sshio.Options{Host: c.Host, Command: command, Args: c.SSH}
 }
 
-func startSSHForward(ctx context.Context, f forwardConfig, config sshio.Options, auth *sshAuthEndpoint, diagnostic io.Writer) (_ *forwardio.Session, err error) {
+func startSSHForward(ctx context.Context, f forwardConfig, config sshio.Options, diagnostic io.Writer) (_ *forwardio.Session, err error) {
 	var route options
 	request := message{Type: "route_forward", Name: f.Session, PID: f.ResumePID, ApprovalID: f.ApprovalID,
 		Operations: []operation{{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse}}}
@@ -332,12 +332,6 @@ func startSSHForward(ctx context.Context, f forwardConfig, config sshio.Options,
 		}
 		config.Host, config.Args, config.Directory = route.host, route.ssh, route.sshDirectory
 		config.Command = remoteCommand(route)
-	}
-	operation := f.description("local", f.Host)
-	if f.Connection != nil && len(request.ResourceRoute) == 0 && config.Secret != nil {
-		config.Password = func(ctx context.Context, identity string) ([]byte, error) {
-			return config.Secret(ctx, "Enter "+identity+"'s password to approve "+operation)
-		}
 	}
 	var client *sshio.Client
 	var transport forwardio.Dialer = &net.Dialer{}
@@ -352,19 +346,6 @@ func startSSHForward(ctx context.Context, f forwardConfig, config sshio.Options,
 				_ = client.Close()
 			}
 		}()
-	}
-	if f.Connection != nil && !(config.Password != nil && client != nil && client.PasswordAuthenticated) {
-		_, secret := auth.callbacks()
-		if secret == nil {
-			return nil, fmt.Errorf("forward approval requires an interactive terminal")
-		}
-		answer, err := secret(ctx, "\x00approve-forward:"+operation)
-		if err != nil {
-			return nil, err
-		}
-		if string(answer) != "yes" {
-			return nil, fmt.Errorf("approval cancelled")
-		}
 	}
 	return forwardio.Start(ctx, transport, f.Port, f.Target, f.Reverse, func() (io.ReadWriteCloser, string, error) {
 		return openForwardControl(ctx, client, route, config.Command, request, f.Connection != nil, diagnostic)
@@ -410,7 +391,7 @@ func runForwardTransportForeground(ctx context.Context, c forwardConfig, diagnos
 	options := forwardSSHOptions(c, forwardRemoteCommand(c))
 	options.Confirm, options.Secret = confirmSSHHost, promptSSHSecret
 	options = withSSHDiagnostics(options, diagnostic, nil)
-	connection, err := startSSHForward(ctx, c, options, nil, diagnostic)
+	connection, err := startSSHForward(ctx, c, options, diagnostic)
 	if err != nil {
 		if ctx.Err() != nil {
 			return 0, nil

@@ -821,8 +821,9 @@ func readReviewField(input prefilledPromptReader, label string, paths bool, init
 }
 
 func readApprovalPort(input prefilledPromptReader, label, initial string) (int, error) {
+	prompt := label + " (Enter to approve, Ctrl-C to cancel): "
 	for {
-		line, err := readReviewField(input, label+": ", false, initial)
+		line, err := readReviewField(input, prompt, false, initial)
 		if err != nil {
 			return 0, err
 		}

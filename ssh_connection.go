@@ -135,13 +135,6 @@ func promptSSHSecret(ctx context.Context, identity string) ([]byte, error) {
 	if strings.HasPrefix(identity, "\x00password:") {
 		prompt = cleanText(strings.TrimPrefix(identity, "\x00password:")) + "'s password: "
 	}
-	if operation, ok := strings.CutPrefix(identity, "\x00approve-forward:"); ok {
-		answer, err := readSSHLine(ctx, "Approve "+cleanText(operation)+"? [y/N] ")
-		if termui.ConfirmYes(answer) {
-			return []byte("yes"), err
-		}
-		return nil, err
-	}
 	if strings.HasPrefix(identity, "\x00challenge:") {
 		var challenge sshio.Challenge
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(identity, "\x00challenge:")), &challenge); err != nil {

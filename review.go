@@ -76,13 +76,12 @@ func newApprovalRequest(o options, shellPID int, ops []operation) (requestRecord
 }
 
 type approvedOperation struct {
-	request requestRecord
-	config  resourceConfig
-	files   []fileCopy
+	config resourceConfig
+	files  []fileCopy
 }
 
 func selectApprovedOperation(input reviewPromptReader, request requestRecord) (approvedOperation, error) {
-	selected := approvedOperation{request: request}
+	var selected approvedOperation
 	var err error
 	if request.Operations[0].Kind != "forward" {
 		line, err := input.ReadPrefilled("Approve this request? [y/N] ", false, "")
@@ -106,62 +105,45 @@ type localApproval struct {
 
 func (*localApproval) Error() string { return "local approval requested" }
 
-func executeLocalApproval(request requestRecord, source options) (int, bool, error) {
+func executeLocalApproval(request requestRecord, source options) error {
 	input, err := newLocalInput()
 	if err != nil {
-		return 1, true, err
+		return err
 	}
 	out := os.Stdout
 	var screen term.InputState
 	if err = screen.BeginConsole(out); err != nil {
 		_ = input.Close()
-		return 1, true, err
-	}
-	termui.WriteConsoleBody(out, approvalDescription(request))
-	selection, selectionErr := selectApprovedOperation(input, request)
-	defer closeCopyBatch(selection.files)
-	resume := true
-	if selectionErr == nil {
-		resume, selectionErr = chooseApprovalReturn(input)
-	}
-	displayErr := screen.EndConsole(out)
-	if err := errors.Join(displayErr, input.Close(), selectionErr); err != nil {
-		return 1, resume, err
-	}
-	if err := selection.run(source); err != nil {
-		return 1, resume, err
-	}
-	return 0, resume, nil
-}
-
-func chooseApprovalReturn(input prefilledPromptReader) (bool, error) {
-	for {
-		line, err := input.ReadPrefilled("Return to session after operation? [Y/n] ", false, "")
-		if err != nil {
-			return true, err
-		}
-		switch strings.ToLower(strings.TrimSpace(line)) {
-		case "", "y":
-			return true, nil
-		case "n":
-			return false, nil
-		}
-	}
-}
-
-func (a approvedOperation) run(source options) error {
-	if a.config.Forward != nil || a.config.Mount != nil {
-		if a.config.Forward != nil {
-			if err := validateForwardConfig(*a.config.Forward); err != nil {
-				return err
-			}
-		} else if err := validateMountConfig(*a.config.Mount); err != nil {
-			return err
-		}
-		_, err := startResourceBackground(a.config, a.request.Connection.Directory)
 		return err
 	}
-	return runApprovedFiles(a.request, source, a.files)
+	termui.WriteConsoleBody(out, approvalDescription(request))
+	selection, err := selectApprovedOperation(input, request)
+	defer closeCopyBatch(selection.files)
+	// Release stdin before the SSH broker reads credentials in this console.
+	err = errors.Join(err, input.Close())
+	var started resourceRecord
+	if err == nil && selection.config.kind() != "" {
+		started, err = startApprovedResource(selection.config, request.Connection.Directory)
+	}
+	err = errors.Join(err, screen.EndConsole(out))
+	if started.Kind != "" {
+		reportResourceStartup(started)
+	}
+	if err == nil && len(selection.files) != 0 {
+		err = runApprovedFiles(request, source, selection.files)
+	}
+	return err
+}
+
+func startApprovedResource(config resourceConfig, directory string) (resourceRecord, error) {
+	if config.Forward != nil {
+		if err := validateForwardConfig(*config.Forward); err != nil {
+			return resourceRecord{}, err
+		}
+	} else if err := validateMountConfig(*config.Mount); err != nil {
+		return resourceRecord{}, err
+	}
+	return launchResourceBackground(config, directory)
 }
 
 func approvalDescription(request requestRecord) string {
@@ -177,6 +159,7 @@ func approvalDescription(request requestRecord) string {
 			fmt.Fprintf(&body, "\nMount remote directory %s (%s)", cleanText(op.Path), mode)
 		case "forward":
 			fmt.Fprintf(&body, "\n%s", pendingPortDescription(op))
+			continue
 		case "download":
 			fmt.Fprintf(&body, "\nDownload %s (%s, %s)", cleanText(op.Path), cleanText(op.Name), displayBytes(op.Size))
 		case "upload":
@@ -242,9 +225,8 @@ func selectApprovedResource(input reviewPromptReader, r *requestRecord) (resourc
 	f := forwardConfig{
 		Host: r.Connection.Host, Server: r.Connection.Server, SSH: r.Connection.SSH,
 		Port: op.Port, Target: op.TargetPort, Reverse: op.Reverse, Session: r.Connection.Session,
-		ResumePID: r.PID, ApprovalID: r.ID, Instance: r.Connection.Instance,
+		ResumePID: r.PID, ApprovalID: r.ID, Instance: r.Connection.Instance, Connection: &r.Connection,
 	}
-	f.Connection = &r.Connection
 	return resourceConfig{Forward: &f}, nil
 }
 

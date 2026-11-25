@@ -255,29 +255,7 @@ func runClient(o options) (int, error) {
 			continue
 		}
 		if approval, ok := errors.AsType[*localApproval](err); ok {
-			var resume bool
-			code, resume, err = executeLocalApproval(approval.request, approval.source)
-			if !resume {
-				if err != nil {
-					termui.Log(os.Stderr, "", termui.Error, "%s", cleanText(err.Error()))
-				}
-				found := false
-				for i := len(parents) - 1; i >= 0; i-- {
-					if parents[i].local {
-						o = parents[i]
-						parents = parents[:i]
-						o.command, o.recovering = "attach", true
-						returning = true
-						found = true
-						break
-					}
-				}
-				if !found {
-					return code, err
-				}
-				continue
-			}
-			if err != nil {
+			if err := executeLocalApproval(approval.request, approval.source); err != nil {
 				termui.Log(os.Stderr, "", termui.Warning, "[sshore] %s\n", cleanText(err.Error()))
 			}
 			returning = true
