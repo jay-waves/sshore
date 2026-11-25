@@ -66,8 +66,7 @@ to resume the remote shell.
 
 ## mux — Start, detach and resume
 
-Detach a child, exit its parent, then resume (`sshore attach`) it  under a new parent.
-The IDs below are illustrative, and tree output is abbreviated.
+Detach a child, do something, then resume it. 
 
 ```text
 $ sshore shell
@@ -95,14 +94,14 @@ local
 While the original parent is alive, only it can reattach its child. Each tree
 has one foreground shell.
 
-### Select a shell over SSH
-
-Use your SSH host alias before the colon. For example, on `work`:
+### Attach recent jobs
 
 ```sh
 sshore shell work          # Start a new shell.
-sshore attach work:        # Resume a detached shell.
-sshore attach work:7b3a91  # Select a shell by ID or name.
+sshore attach work         # Resume a detached shell, by LRU
+sshore attach work:        # The same, `work` will parsed as a HOST name.
+sshore attach 7b3a91       # Resume a detached shell, by ID
+sshore attach work:7b3a91  # Resume a detached shell, by HOST:ID.
 ```
 
 If the selected shell is unavailable during SSH setup, sshore can open a new
@@ -110,7 +109,7 @@ one and print its ID.
 
 ### Find and manage tasks
 
-Run `sshore list` for task details.
+Run `sshore list` and `sshore pstree` for task details.
 Use `sshore kill ID` or `sshore rename ID NEW` for shells, mounts and forwards.
 `HOST:ID` selects the managing SSH account explicitly. Killing a shell can
 discard unsaved work.
@@ -138,7 +137,7 @@ Copy accepts regular files and refuses to overwrite existing destinations.
 Inside an attached remote shell, `origin:` refers to the attached client.
 Review the transfer request on that client and choose the local path.
 
-## sftp (sshfs) — Mount a remote directory locally
+## sftp (+fuse) — Mount a remote directory locally
 
 ```sh
 sshore mount work:/srv/project .: --read-only
