@@ -36,7 +36,7 @@ Use the same task ID with sshore kill and sshore rename for shells, mounts
 and forwards. A short ID or the full task:<UID> works across renames.
 Use HOST:ID to select the managing SSH account explicitly.
 
-Use sshore bootstrap to update both endpoints to %[1]s for managed connections.
+Use the platform installer on each endpoint to install %[1]s for managed connections.
 Bootstrap ends the target account's tasks, including pinned shells, and clears
 its sshore identity, history and cached releases. Save work before bootstrapping.
 Commit: %[2]s

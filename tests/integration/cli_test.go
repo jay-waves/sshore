@@ -38,6 +38,9 @@ func TestCLI(t *testing.T) {
 		{"new alias cannot be an ID", []string{"rename", "work:485bad", "654321"}, false, 2, "reserved for task IDs"},
 		{"shutdown accepts one account", []string{"kill", "--all", "one:", "two:"}, false, 2, "unexpected argument: two:"},
 		{"account reset accepts no target", []string{"reset", "work:"}, false, 2, "unexpected argument: work:"},
+		{"bootstrap rejects a bare host", []string{"bootstrap", "work"}, false, 2, "bootstrap installs on this machine"},
+		{"bootstrap rejects a remote path", []string{"bootstrap", "work:/usr/bin/sshore"}, false, 2, "bootstrap installs on this machine"},
+		{"bootstrap apply requires an explicit local path", []string{"bootstrap", "--apply"}, false, 2, "requires here:PATH"},
 		{"recovery rejects task creation", []string{"shell", "here:blocked"}, true, 1, "sshore features are disabled"},
 		{"foreground forwards reject retries", []string{"fwd", "8080", "work:80", "--foreground", "--retries", "1"}, false, 2, "--retries applies only to background forwards"},
 	} {
