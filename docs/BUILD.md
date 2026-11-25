@@ -34,6 +34,7 @@ that simulate upgrade confirmation or reset.
 - The Windows Server 2025 CI job checks installation on PowerShell 5.1 and 7,
   local ConPTY, and remote shell creation, detach, rename, reattach, exit, and
   kill through Windows OpenSSH under a separate account.
+  A WSL client also tests Windows SFTP uploads, downloads and no-overwrite behavior.
 
 The [Tests workflow](../.github/workflows/tests.yml) runs on demand and on pushes
 to `main`.

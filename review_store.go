@@ -56,7 +56,7 @@ func validateRequestOperations(ops []operation) error {
 		}
 		switch op.Kind {
 		case "download", "upload", "mount":
-			// The remote server is Linux, even when the client is Windows.
+			// Paths are slash-prefixed on the wire on both host platforms.
 			if !strings.HasPrefix(op.Path, "/") || len(op.Path) > 4096 || strings.ContainsAny(op.Path, "\x00\r\n") {
 				return fmt.Errorf("invalid remote path")
 			}

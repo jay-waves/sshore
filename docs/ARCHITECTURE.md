@@ -142,7 +142,7 @@ for both foreground mounts and background workers.
 The pinned upstream revision includes the client disconnect fix and supports the
 project's Go version. Directory change notifications use their own stream.
 Trace changes through the [task registry](../daemon_tasks.go), [mount coordinator](../mount.go)
-and [route authorization](../resource_route_linux.go). Consult [SECURITY.md](SECURITY.md)
+and [route authorization](../resource_route_host.go). Consult [SECURITY.md](SECURITY.md)
 before changing update, reset or approval behavior.
 
 ### Inventory and diagnostics

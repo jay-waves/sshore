@@ -2,16 +2,16 @@
 
 package main
 
-import (
-	"os"
-
-	"github.com/jay-waves/sshore/internal/files"
-)
+import "os"
 
 func serveRemoteRequest(req remoteServiceRequest) error {
 	switch req.Operation {
-	case "shell", "cp-agent", "mount-agent":
-		return serveRemote(req, serveRemoteFiles)
+	case "shell":
+		return serveRemote(req)
+	case "cp-agent", "mount-agent":
+		return serveRemoteFileService(req, func() (func(), error) {
+			return leaseActivity(leaseRequest{Kind: "heartbeat"})
+		})
 	case "forward-agent":
 		return serveForwardAgent(req)
 	case "daemon-admin":
@@ -25,17 +25,4 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 		return serveTaskControl(req)
 	}
 	return usage("unknown remote service operation")
-}
-
-func serveRemoteFiles(operation string) error {
-	stop, err := leaseActivity(leaseRequest{Kind: "heartbeat"})
-	if err != nil {
-		return err
-	}
-	defer stop()
-	if operation == "cp-agent" {
-		return files.ServeCopy(agentStdio())
-	}
-	account, _ := localMachineIdentity()
-	return files.ServeAgentWithPeer(agentStdio(), version, account, beginIncomingMountTask)
 }

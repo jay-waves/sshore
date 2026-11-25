@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 
+	"github.com/jay-waves/sshore/internal/files"
 	forwardio "github.com/jay-waves/sshore/internal/forward"
 )
 
@@ -30,6 +32,47 @@ func (p *stdioPipe) Close() error {
 
 func agentStdio() *stdioPipe {
 	return &stdioPipe{Reader: os.Stdin, Writer: os.Stdout, closers: []io.Closer{os.Stdin, os.Stdout}}
+}
+
+func serveRemoteFileService(req remoteServiceRequest, beginActivity func() (func(), error)) error {
+	stop, err := prepareRemoteFileService(req.Release, beginActivity)
+	if err != nil {
+		_ = writeMessage(os.Stdout, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
+		return err
+	}
+	defer stop()
+	home, _ := os.UserHomeDir()
+	if filepath.IsAbs(home) && filepath.VolumeName(home) != "" {
+		home = "/" + filepath.ToSlash(home)
+	}
+	if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", HomeDirectory: home}); err != nil {
+		return err
+	}
+	if req.Operation == "cp-agent" {
+		return files.ServeCopy(agentStdio())
+	}
+	account, _ := localMachineIdentity()
+	return files.ServeAgentWithPeer(agentStdio(), version, account, beginIncomingMountTask)
+}
+
+func prepareRemoteFileService(peerRelease string, beginActivity func() (func(), error)) (func(), error) {
+	if err := checkPeerVersion(peerRelease, "client"); err != nil {
+		return nil, err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	lock, err := setupLock()
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Close()
+	if err := requireInstalledRelease(executable); err != nil {
+		return nil, err
+	}
+	// Register the lease before reset or bootstrap can acquire the setup lock.
+	return beginActivity()
 }
 
 func serveForwardAgent(req remoteServiceRequest) error {
