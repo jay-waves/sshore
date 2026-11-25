@@ -223,7 +223,7 @@ func newDaemonRecord() (localShellRecord, error) {
 }
 
 func runDaemon() (result error) {
-	stopHangups := protectDaemonHangups()
+	stopHangups := sys.ProtectDaemonHangups()
 	defer stopHangups()
 	standalone := term.IsTerminal(int(os.Stdin.Fd()))
 	enc := json.NewEncoder(os.Stdout)
@@ -488,7 +488,7 @@ func launchLocalDaemonContext(ctx context.Context, executable ...string) (localS
 		exe = executable[0]
 	}
 	cmd := exec.Command(exe, "daemon")
-	detachAccountDaemon(cmd)
+	sys.DetachAccountDaemon(cmd)
 	dir, err := daemonDirectory()
 	if err != nil {
 		return empty, err

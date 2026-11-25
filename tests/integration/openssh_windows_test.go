@@ -55,11 +55,6 @@ func TestWindowsOpenSSH(t *testing.T) {
 			t.Fatalf("Windows OpenSSH client: %v\n%s", err, out)
 		}
 	}
-	leaveClient := func(send func(string), wait terminalWait) {
-		wait("sshore on local>")
-		send("exit\r")
-	}
-
 	t.Run("reject release mismatch", func(t *testing.T) {
 		reply := raw(t, "0.0.1", "new", "wrong-release")
 		if !strings.Contains(reply.Error, "0.0.0") || !strings.Contains(reply.Error, "0.0.1") {
@@ -76,14 +71,12 @@ func TestWindowsOpenSSH(t *testing.T) {
 			wait("CI_READY=retained")
 			send("\x02d")
 			wait("Detached from " + endpoint)
-			leaveClient(send, wait)
 		})
 		run(t, "attach", endpoint, nil, func(send func(string), wait terminalWait) {
 			wait("Connected " + endpoint)
 			send("echo CI_RESUMED=%SSHORE_REMOTE_STATE%\r")
 			wait("CI_RESUMED=retained")
 			send("exit\r")
-			leaveClient(send, wait)
 		})
 	}) {
 		return

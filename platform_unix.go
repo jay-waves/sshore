@@ -3,11 +3,8 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"syscall"
 )
@@ -18,23 +15,6 @@ func localShellPath(env []string) string {
 		path = "/bin/sh"
 	}
 	return path
-}
-
-// Catch HUP for the entire account daemon lifetime, including intervals with
-// no hosted shells. Do not use SIG_IGN, which would survive child exec.
-func protectDaemonHangups() func() {
-	hangups := make(chan os.Signal, 1)
-	signal.Notify(hangups, syscall.SIGHUP)
-	return func() { signal.Stop(hangups) }
-}
-
-func detachDaemon(c *exec.Cmd) { c.SysProcAttr = &syscall.SysProcAttr{Setsid: true} }
-
-func detachAccountDaemon(c *exec.Cmd) { detachDaemon(c) }
-
-func completeDaemonShutdown(_ context.Context, _ int, shutdown func() error) error {
-	// Releasing the account lock is sufficient for replacement on Unix.
-	return shutdown()
 }
 
 // Private validates ownership, permissions and path type without following symlinks.
