@@ -1,6 +1,12 @@
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 
+Write-Host 'WSL distributions registered on the runner before fixture setup:'
+& {
+    $PSNativeCommandUseErrorActionPreference = $false
+    wsl.exe --list --verbose
+}
+
 $rootfs = Join-Path $env:RUNNER_TEMP 'alpine-minirootfs-3.22.0-x86_64.tar.gz'
 $url = 'https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64'
 Invoke-WebRequest "$url/alpine-minirootfs-3.22.0-x86_64.tar.gz" -OutFile $rootfs
