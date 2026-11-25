@@ -27,7 +27,22 @@ import (
 // Return the remote home directory from the readiness reply. Shell selection
 // opens terminal input only after SSH authentication.
 func negotiateSetup(r io.Reader, w io.Writer, host string, chooseShell bool) (string, error) {
-	return negotiateSetupWithInput(r, w, host, chooseShell, func() (setupInput, error) { return termui.NewInput() })
+	reply, err := negotiateSetupWithInput(r, w, host, chooseShell, func() (setupInput, error) { return termui.NewInput() })
+	return reply.HomeDirectory, err
+}
+
+func negotiateShellSetup(stream io.ReadWriter, host string, chooseShell, openIfUnavailable bool) (message, error) {
+	reply, err := negotiateSetupWithInput(stream, stream, host, chooseShell, func() (setupInput, error) { return termui.NewInput() })
+	if err != nil {
+		return message{}, err
+	}
+	if reply.Reason != "" {
+		if !openIfUnavailable || !validTaskUID(reply.Instance) {
+			return message{}, fmt.Errorf("unexpected new remote shell")
+		}
+		logSSHWarning(os.Stderr, fmt.Sprintf("%s on %s. Opening new shell %s.", reply.Reason, host, taskShortCode(identityFromUID(reply.Instance))))
+	}
+	return reply, nil
 }
 
 type setupInput interface {
@@ -35,59 +50,59 @@ type setupInput interface {
 	Close() error
 }
 
-func negotiateSetupWithInput(r io.Reader, w io.Writer, host string, chooseShell bool, openInput func() (setupInput, error)) (string, error) {
+func negotiateSetupWithInput(r io.Reader, w io.Writer, host string, chooseShell bool, openInput func() (setupInput, error)) (message, error) {
 	for {
 		m, err := readMessage(r)
 		if err != nil {
-			return "", fmt.Errorf("remote setup failed: %w", err)
+			return message{}, fmt.Errorf("remote setup failed: %w", err)
 		}
 		if m.Type == "setup_diagnostic" {
 			termui.Log(os.Stderr, "", termui.Info, "%s\n", cleanText(strings.TrimSpace(m.Error)))
 			continue
 		}
 		if m.Type == "fatal" {
-			return "", fmt.Errorf("%s", m.Error)
+			return message{}, fmt.Errorf("%s", m.Error)
 		}
 		if m.SoftwareVersion != version {
-			return "", fmt.Errorf("Unexpected remote version %q. %s", m.SoftwareVersion, remoteVersionHelp(host))
+			return message{}, fmt.Errorf("Unexpected remote version %q. %s", m.SoftwareVersion, remoteVersionHelp(host))
 		}
 		switch m.Type {
 		case "setup_ready":
 			if m.Action != "managed" {
-				return "", fmt.Errorf("invalid setup mode")
+				return message{}, fmt.Errorf("invalid setup mode")
 			}
-			return m.HomeDirectory, nil
+			return m, nil
 		case "session_choice":
 			if !chooseShell || len(m.Targets) < 2 {
-				return "", fmt.Errorf("unexpected shell selection")
+				return message{}, fmt.Errorf("unexpected shell selection")
 			}
 			names, err := sessionTargetNames(m.Targets)
 			if err != nil {
-				return "", err
+				return message{}, err
 			}
 			recent, err := metadataRPC(metadataRequest{Action: "attach_remote_choice", Host: host, Targets: m.Targets})
 			if err != nil {
-				return "", err
+				return message{}, err
 			}
 			selected := recent.Choice
 			if selected == "" {
 				input, err := openInput()
 				if err != nil {
-					return "", err
+					return message{}, err
 				}
 				var selectErr error
 				selected, selectErr = chooseSetupSession(input, names)
 				if err := errors.Join(selectErr, input.Close()); err != nil {
-					return "", err
+					return message{}, err
 				}
 			}
 
 			if err := writeMessage(w, message{Type: "session_select", Name: selected}); err != nil {
-				return "", err
+				return message{}, err
 			}
 			chooseShell = false
 		default:
-			return "", fmt.Errorf("unexpected setup response: %s", m.Type)
+			return message{}, fmt.Errorf("unexpected setup response: %s", m.Type)
 		}
 	}
 }
@@ -95,11 +110,8 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, host string, chooseShell 
 //go:embed install.sh
 var linuxInstaller string
 
-func runBootstrap(args []string) (int, error) {
-	parsed, err := parseCLI(args, "bootstrap")
-	if err != nil {
-		return 2, err
-	}
+func runBootstrap(parsed cliArguments) (int, error) {
+	var err error
 	host, target := "here", ""
 	local, bare := true, false
 	if len(parsed.operands) != 0 {
@@ -254,6 +266,7 @@ func remoteCommand(o options) string {
 				req.Mode = "new"
 			case "attach":
 				req.Mode = o.command
+				req.OpenIfUnavailable = o.openIfUnavailable
 			}
 			if req.Mode == "attach" && validTaskUID(o.instance) {
 				req.Name = o.instance

@@ -78,12 +78,9 @@ func parseForwardEndpoints(args []string) (string, int, int, bool, error) {
 	return host, port, target, left != "", nil
 }
 
-func parseForwardCommand(args []string) (forwardConfig, bool, error) {
+func parseForwardCommand(parsed cliArguments) (forwardConfig, bool, error) {
 	var f forwardConfig
-	parsed, err := parseCLI(args, "forward")
-	if err != nil {
-		return f, false, err
-	}
+	var err error
 	f.SSH = parsed.ssh
 	f.Retries = parsed.integer("--retries")
 	foreground := parsed.has("--foreground")

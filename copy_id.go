@@ -15,11 +15,7 @@ import (
 	"golang.org/x/term"
 )
 
-func runCopyID(args []string) (int, error) {
-	parsed, err := parseCLI(args, "copy-id")
-	if err != nil {
-		return 2, err
-	}
+func runCopyID(parsed cliArguments) (int, error) {
 	host := parsed.operands[0]
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

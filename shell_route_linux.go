@@ -165,10 +165,14 @@ func (s *remoteShell) serveShellRoute(c net.Conn, parent *attachment, config *sh
 		if config.Command == "attach" {
 			action = "attach"
 		}
-	} else if config.Command == "attach" {
+	} else if config.Command == "attach" && ready.Reason == "" {
 		action = "remote_attach"
 	}
-	if err := parent.controlMessage(message{Type: "shell_route", Action: action, Token: token, HandoffToken: confirmed.token, Instance: ready.Instance, Name: config.Name, SourceHost: config.Host, NoLogin: config.NoLogin, NoProfile: config.NoProfile, Pinned: config.Pin}); err != nil {
+	name := config.Name
+	if ready.Reason != "" {
+		name = ""
+	}
+	if err := parent.controlMessage(message{Type: "shell_route", Action: action, Token: token, HandoffToken: confirmed.token, Instance: ready.Instance, Name: name, SourceHost: config.Host, NoLogin: config.NoLogin, NoProfile: config.NoProfile, Pinned: config.Pin}); err != nil {
 		return err
 	}
 	timer := time.NewTimer(15 * time.Second)
@@ -204,18 +208,16 @@ func handoffRemoteShell(o options) (bool, error) {
 	if socket == "" || (o.command != "sh" && o.command != "attach") || !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return false, nil
 	}
-	if o.local && o.command == "attach" && o.session == "" && o.taskIdentity == "" {
-		if err := resolveDetachedAttach(&o, shellIdentityFromEnvironment()); err != nil {
-			return true, err
-		}
-	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return true, err
 	}
-	env := os.Environ()
-	req := &localDaemonRequest{Record: localShellRecord{Directory: cwd}, Env: env, Shell: &shellConfig{Command: o.command, Instance: o.instance, NoLogin: o.noLogin, NoProfile: o.noProfile, Pin: o.pin, Local: o.local, Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh}}
-	if !o.local && o.command == "sh" {
+	if o.sshDirectory != "" {
+		cwd = o.sshDirectory
+	}
+	config := o.shellConfig()
+	req := &localDaemonRequest{Record: localShellRecord{Directory: cwd}, Env: os.Environ(), Shell: &config}
+	if !o.local && (o.command == "sh" || o.openIfUnavailable) {
 		auth, stop, err := startSSHAuthBroker()
 		if err != nil {
 			return true, err
@@ -231,7 +233,7 @@ func handoffRemoteShell(o options) (bool, error) {
 	if err := writeMessage(c, message{Type: "shell_route_request", SoftwareVersion: version, LocalRequest: req}); err != nil {
 		return true, err
 	}
-	if _, err := negotiateSetup(c, c, o.host, false); err != nil {
+	if _, err := negotiateShellSetup(c, o.host, false, o.openIfUnavailable); err != nil {
 		return true, err
 	}
 	reply, err := readMessage(c)

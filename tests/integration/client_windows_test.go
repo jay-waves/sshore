@@ -139,7 +139,18 @@ func testWindowsReattach(t *testing.T, ctx context.Context, command func(...stri
 		wait("sshore on local>")
 		send("exit\r")
 	})
-	run(command("attach", endpoint), func(send func(string), wait terminalWait) {
+	tree := string(windowsRun(t, command("ps")))
+	_, entry, found := strings.Cut(tree, "shell/")
+	if !strings.HasPrefix(tree, "local\n") || !found || !strings.Contains(entry, " (conpty)  detached") {
+		t.Fatalf("detached shell is missing from the local tree:\n%s", tree)
+	}
+	code, _, _ := strings.Cut(entry, " ")
+	if len(code) != 6 {
+		t.Fatalf("unexpected shell code %q in tree:\n%s", code, tree)
+	}
+	windowsRun(t, command("rename", "shell/"+code, "conpty-renamed"))
+	run(command("a", "shell/"+code), func(send func(string), wait terminalWait) {
+		wait("Connected here:conpty-renamed")
 		wait("WIN_READY=retained")
 		send("echo WIN_RESUMED=%SSHORE_RESUME%:%CD%\r")
 		wait("WIN_RESUMED=retained:" + directory)
@@ -148,7 +159,7 @@ func testWindowsReattach(t *testing.T, ctx context.Context, command func(...stri
 		wait("sshore on local>")
 		send("exit\r")
 	})
-	if strings.Contains(string(windowsRun(t, command("list"))), "(conpty)") {
+	if strings.Contains(string(windowsRun(t, command("ls"))), "(conpty-renamed)") {
 		t.Fatal("exited shell still registered")
 	}
 }

@@ -60,7 +60,7 @@ func serveRemote(req remoteServiceRequest) (result error) {
 			}
 			return serveRemoteFiles(req.Operation)
 		}
-		return prepareHostedShell(name, mode, req.Instance, target, lock)
+		return prepareHostedShell(name, mode, req.Instance, target, lock, req.OpenIfUnavailable && isTaskIDPrefix(name))
 	}
 }
 

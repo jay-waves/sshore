@@ -15,7 +15,7 @@ import (
 
 const rootConsoleHelp = `shell [--pin]     Open a shell on this host (alias: sh)
 attach [ID|name]  Resume a detached shell
-pstree (ps)       Show the shell tree
+pstree (ps)       Show the task tree
 list (ls)         Show task details
 pwd               Show the local console directory
 exit              Leave sshore`
@@ -25,7 +25,11 @@ func rootConsoleOptions(current options, args []string) (*options, error) {
 	next := &options{command: command, local: true, environment: current.environment, noEscape: current.noEscape}
 	switch command {
 	case "shell":
-		parsed, err := parseOptions(args)
+		cli, err := parseCLI(args[1:], command)
+		if err != nil {
+			return nil, err
+		}
+		parsed, err := shellOptions(cli, selectedTask{})
 		if err != nil {
 			return nil, err
 		}

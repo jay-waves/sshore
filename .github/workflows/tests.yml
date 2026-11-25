@@ -60,6 +60,6 @@ jobs:
           $env:SSHORE_TEST_WINDOWS_CLIENT = Join-Path $env:RUNNER_TEMP sshore.exe
           "SSHORE_TEST_WINDOWS_CLIENT=$env:SSHORE_TEST_WINDOWS_CLIENT" >> $env:GITHUB_ENV
           go run ./scripts go build -ldflags '-X main.version=0.0.0' -o $env:SSHORE_TEST_WINDOWS_CLIENT .
-      - name: Windows ConPTY regression
+      - name: Windows CLI and ConPTY integration
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: go test -tags=integration -count=1 -timeout=90s -run '^TestWindowsConPTY$' -v ./tests/integration
+        run: go test -tags=integration -count=1 -timeout=90s -run '^Test(CLI|WindowsConPTY)$' -v ./tests/integration

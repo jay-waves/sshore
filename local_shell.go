@@ -257,11 +257,7 @@ func (s *localShell) attach(c net.Conn) error {
 			s.finishHandoff(p, m)
 		case "sh_child":
 			s.mu.Lock()
-			args := []string{"sh", localEndpointPrefix}
-			if m.Pinned {
-				args = append(args, "--pin")
-			}
-			h := &clientHandoff{Args: args, Directory: currentShellDirectory(s.pid, s.record.Directory), Environment: append([]string(nil), s.environment...)}
+			h := &clientHandoff{Shell: (options{command: "sh", local: true, host: "local", pin: m.Pinned}).shellConfig(), Directory: currentShellDirectory(s.pid, s.record.Directory), Environment: append([]string(nil), s.environment...)}
 			s.mu.Unlock()
 			go serveChildShortcut(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
 		default:

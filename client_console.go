@@ -27,7 +27,7 @@ type commandConsole struct {
 	targetWarning string
 }
 
-const consoleHelp = `pstree (ps)       Show the shell tree
+const consoleHelp = `pstree (ps)       Show the task tree
 list (ls)         Show task details
 pwd               Show this shell's directory
 attach (a) <ID|name>  Enter a detached child or idle root (Tab completes)

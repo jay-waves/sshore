@@ -171,31 +171,29 @@ func excludeLocalResourcePeers(peers []peerView, resources []resourceView) []pee
 }
 
 type taskListRequest struct {
-	ShellsOnly bool
+	Tree bool
 }
 
 func (a *daemonActivity) listTasks(ctx context.Context, request taskListRequest) inventory {
-	query := taskInventoryRequest{Native: true, Hosted: true, Detail: "inventory"}
-	if request.ShellsOnly {
+	query := taskInventoryRequest{Native: true, Hosted: true, Resources: true, Status: !request.Tree, Detail: "inventory"}
+	if request.Tree {
 		query.Detail = "health"
-	} else {
-		query.Resources, query.Status = true, true
 	}
 	snapshot, workers := a.tasks.taskInventory(query)
 	inv := emptyInventory()
 	inv.Shells = append(inv.Shells, snapshot.Shells...)
 	inv.LocalShells = snapshot.nativeShells()
-	if query.Resources {
-		statuses := make(map[string]resourceStatus)
+	statuses := make(map[string]resourceStatus)
+	if query.Status {
 		probeCtx, cancel := context.WithTimeout(ctx, resourceStatusTimeout)
 		defer cancel()
 		probeResourceStatus(probeCtx, workers, func(row resourceStatusRow) bool {
 			statuses[row.UID] = row.Status
 			return true
 		})
-		inv.Resources = resourceViews(snapshot.Resources, statuses, query.Status)
-		inv.Peers = excludeLocalResourcePeers(peerViews(a.incomingPeers()), inv.Resources)
 	}
+	inv.Resources = resourceViews(snapshot.Resources, statuses, query.Status)
+	inv.Peers = excludeLocalResourcePeers(peerViews(a.incomingPeers()), inv.Resources)
 	reply := a.handleMetadata(metadataRequest{Action: "participation_get"})
 	if reply.Error != "" {
 		inv.Errors = append(inv.Errors, "remote shell history unavailable: "+cleanText(reply.Error))
@@ -227,8 +225,8 @@ func daemonListTasks(request taskListRequest) (inventory, error) {
 	return inv, nil
 }
 
-func collectInventory(shellsOnly bool) (inventory, error) {
-	inv, err := daemonListTasks(taskListRequest{ShellsOnly: shellsOnly})
+func collectInventory(tree bool) (inventory, error) {
+	inv, err := daemonListTasks(taskListRequest{Tree: tree})
 	if err != nil {
 		inv.Errors = append(inv.Errors, cleanText(err.Error()))
 		return inv, err
@@ -264,11 +262,8 @@ func (inv *inventory) setTaskReferences() {
 	}
 }
 
-func runInventoryCommand(command string, args []string) (int, error) {
-	_, err := parseCLI(args, command)
-	if err != nil {
-		return 2, err
-	}
+func runInventoryCommand(parsed cliArguments) (int, error) {
+	command := parsed.command
 	current, color := shellIdentityFromEnvironment(), termui.ColorEnabled(os.Stdout)
 	inv, err := collectInventory(command == "pstree")
 	width, _, _ := term.GetSize(int(os.Stdout.Fd()))
@@ -325,14 +320,8 @@ func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color
 		rows = append(rows, taskTableRow{taskUID(peerTaskIdentity(p)), p.ShortID, name, kind, p.Manager, p.State, "", readOnlyDetail(p.Detail), false})
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
-		if rows[i].owner != rows[j].owner {
-			if rows[i].owner == "local" {
-				return true
-			}
-			if rows[j].owner == "local" {
-				return false
-			}
-			return rows[i].owner < rows[j].owner
+		if order := compareInventoryHosts(rows[i].owner, rows[j].owner); order != 0 {
+			return order < 0
 		}
 		if rows[i].uid == "" {
 			return false
@@ -612,23 +601,13 @@ func taskDisplayID(code, alias string) string {
 // A snapshot lists parents before children. Owner is the parent's one-based
 // row index, or zero for a root. It carries display fields only.
 type taskTreeRow struct {
-	Identity     string
-	Code         string
-	Name         string
-	State        string
-	Directory    string
-	MissingOwner string
-	Remote       string
-	Direction    string
-	Owner        int
-	Pinned       bool
-	PinUntil     time.Time
-	SeenAt       time.Time
+	Identity, Kind, Code, Name, State, Remote string
+	Owner                                     int
 }
 
 func writeInventory(out io.Writer, command string, inv inventory, current string, color bool, width int) {
 	if command == "pstree" {
-		rows := normalizeTaskTree(localShellTreeNodes(inv))
+		rows := normalizeTaskTree(taskTreeNodes(inv))
 		if len(rows) != 0 || len(inv.Errors) == 0 {
 			writeShellTree(out, rows, current, color)
 		}
@@ -675,24 +654,49 @@ func normalizeTaskTree(nodes []shellTreeNode) []taskTreeRow {
 		slices.SortStableFunc(siblings, compare)
 	}
 
-	rows := make([]taskTreeRow, 0, len(nodes))
-	var appendRows func([]int, int)
-	appendRows = func(siblings []int, owner int) {
+	byHost := make(map[string][]int)
+	for _, i := range children[0] {
+		host := cmp.Or(nodes[i].Host, "local")
+		byHost[host] = append(byHost[host], i)
+	}
+	hosts := make([]string, 0, len(byHost))
+	for host := range byHost {
+		hosts = append(hosts, host)
+	}
+	slices.SortFunc(hosts, compareInventoryHosts)
+
+	rows := make([]taskTreeRow, 0, len(nodes)+len(hosts))
+	var appendRows func([]int, int, string)
+	appendRows = func(siblings []int, owner int, parentHost string) {
 		for _, i := range siblings {
 			n := nodes[i]
-			row := taskTreeRow{Directory: n.Directory, SeenAt: n.SeenAt, Identity: n.Identity, Code: n.displayCode(), Name: n.Name, State: n.State, Remote: n.Remote, Owner: owner, Pinned: n.Pinned, PinUntil: n.PinUntil}
-			if n.Remote != "" {
-				row.Direction = n.Direction
-			}
-			if owner == 0 && n.Owner != "" {
-				row.MissingOwner = taskShortCode(n.Owner)
+			row := taskTreeRow{Identity: n.Identity, Kind: n.Kind, Code: n.displayCode(), Name: n.Name, State: n.State, Owner: owner}
+			host := cmp.Or(n.Host, "local")
+			if host != parentHost {
+				row.Remote = host
 			}
 			rows = append(rows, row)
-			appendRows(children[i+1], len(rows))
+			appendRows(children[i+1], len(rows), host)
 		}
 	}
-	appendRows(children[0], 0)
+	for _, host := range hosts {
+		rows = append(rows, taskTreeRow{Code: host})
+		appendRows(byHost[host], len(rows), host)
+	}
 	return rows
+}
+
+func compareInventoryHosts(a, b string) int {
+	switch {
+	case a == b:
+		return 0
+	case a == "local":
+		return -1
+	case b == "local":
+		return 1
+	default:
+		return cmp.Compare(a, b)
+	}
 }
 
 func shellTreeOwners(nodes []shellTreeNode) []int {
@@ -722,8 +726,8 @@ func (n shellTreeNode) displayCode() string {
 
 // The local registry is authoritative. For other shells, show the newest
 // authenticated observation of each UID, even when two SSH aliases reach it.
-func localShellTreeNodes(inv inventory) []shellTreeNode {
-	nodes := make([]shellTreeNode, 0, len(inv.LocalShells)+len(inv.Shells))
+func taskTreeNodes(inv inventory) []shellTreeNode {
+	nodes := make([]shellTreeNode, 0, len(inv.LocalShells)+len(inv.Shells)+len(inv.Resources)+len(inv.Peers))
 	visible := make(map[string]int)
 	add := func(n shellTreeNode) {
 		if n.State == taskExited {
@@ -739,30 +743,34 @@ func localShellTreeNodes(inv inventory) []shellTreeNode {
 		nodes = append(nodes, n)
 	}
 	for _, s := range inv.LocalShells {
-		add(shellTreeNode{Identity: s.Identity, ShortID: s.ShortID, Owner: s.Owner, Name: s.Name, State: s.State, Directory: s.Directory,
-			Remote: s.SourceHost, Direction: "<-", Pinned: s.Pinned, PinUntil: s.PinUntil})
+		add(shellTreeNode{Kind: "shell", Identity: s.Identity, ShortID: s.ShortID, Owner: s.Owner, Name: s.Name, State: s.State})
 	}
 	for _, s := range inv.Shells {
-		n := shellTreeNode{Identity: identityFromUID(s.Instance), ShortID: s.ShortID, Owner: s.Owner, Name: s.Name, State: s.State,
-			Directory: s.Directory, Remote: s.SourceHost, Direction: "<-", Pinned: s.Pinned, PinUntil: s.PinUntil}
+		n := shellTreeNode{Kind: "shell", Identity: identityFromUID(s.Instance), ShortID: s.ShortID, Owner: s.Owner, Name: s.Name, State: s.State}
 		if s.Observed {
-			n.Remote, n.Direction, n.SeenAt = s.Host, "->", s.SeenAt
+			n.Host, n.SeenAt = s.Host, s.SeenAt
 		}
 		add(n)
+	}
+	for _, r := range inv.Resources {
+		kind, name := r.kindAndName()
+		add(shellTreeNode{Kind: kind, Identity: r.Identity, ShortID: r.ShortID, Name: name})
+	}
+	for _, p := range inv.Peers {
+		kind, name, _ := strings.Cut(peerResourceID(p.ID), "/")
+		add(shellTreeNode{Kind: kind, Identity: peerTaskIdentity(p), ShortID: p.ShortID, Host: cmp.Or(p.Manager, "unknown"), Name: name, State: p.State})
 	}
 	return nodes
 }
 
 type shellTreeNode struct {
-	Identity, ShortID, Owner, Name, State string
-	Directory, Remote, Direction          string
-	Pinned                                bool
-	PinUntil, SeenAt                      time.Time
+	Kind, Host, Identity, ShortID, Owner, Name, State string
+	SeenAt                                            time.Time
 }
 
 func writeShellTree(out io.Writer, rows []taskTreeRow, current string, color bool) {
 	if len(rows) == 0 {
-		fmt.Fprintln(out, "No shells.")
+		fmt.Fprintln(out, "No tasks.")
 		return
 	}
 	children := make([][]int, len(rows)+1)
@@ -798,10 +806,13 @@ func writeShellTree(out io.Writer, rows []taskTreeRow, current string, color boo
 
 func shellTreeLabel(n taskTreeRow, current, color bool) string {
 	label := cleanText(n.Code)
-	if n.Name != "" && n.Name != n.Code {
-		label = cleanText(n.Name) + " (" + label + ")"
+	if n.Kind != "" {
+		label = cleanText(n.Kind) + "/" + label
 	}
-	if n.Remote != "" && n.Direction == "->" {
+	if n.Name != "" && n.Name != n.Code {
+		label += " (" + cleanText(n.Name) + ")"
+	}
+	if n.Remote != "" {
 		label += " on " + cleanText(n.Remote)
 	}
 	if current {

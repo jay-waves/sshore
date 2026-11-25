@@ -86,8 +86,8 @@ func (h *recentHistory[T]) replace(rows []T) error {
 }
 
 type metadataRequest struct {
-	Targets                                 []sessionTarget `json:",omitempty"`
-	Action, Key, Host, Name, Instance, Kind string
+	Targets                                         []sessionTarget `json:",omitempty"`
+	Action, Key, Host, Name, Instance, Kind, Parent string
 
 	Attachment    *recentAttachment
 	Connection    *recentConnection
@@ -137,8 +137,8 @@ func metadataRPC(r metadataRequest) (metadataReply, error) {
 func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply) {
 	var err error
 	switch r.Action {
-	case "task_by_id":
-		reply.Target, err = a.selectTaskID(r.Instance, r.Kind)
+	case "task_by_id", "attach_by_id":
+		reply.Target, err = a.selectTaskID(r.Instance, r.Kind, r.Parent, r.Action == "attach_by_id")
 	case "attach_recent":
 		reply.Target, err = a.selectDetachedAttach(r.Key, r.Kind)
 	default:

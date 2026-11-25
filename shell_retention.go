@@ -14,11 +14,16 @@ import (
 )
 
 func parseDetachCommand(args []string) (message, error) {
-	m := message{Type: "detach"}
 	parsed, err := parseCLI(args, "detach")
 	if err != nil {
-		return m, err
+		return message{}, err
 	}
+	return detachMessage(parsed)
+}
+
+func detachMessage(parsed cliArguments) (message, error) {
+	m := message{Type: "detach"}
+	var err error
 	if v := parsed.operand(0); v != "" {
 		m.TTL, err = time.ParseDuration(v)
 		if err != nil || m.TTL <= 0 {

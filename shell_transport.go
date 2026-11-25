@@ -23,8 +23,16 @@ type shellConfig struct {
 	Local              bool
 	Host, Name, Server string
 	Command, Instance  string
+	OpenIfUnavailable  bool
 	ParentKey          string `json:",omitempty"`
 	SSH                []string
+}
+
+func (o options) shellConfig() shellConfig {
+	return shellConfig{
+		Command: o.command, Instance: o.instance, Local: o.local, Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh,
+		NoLogin: o.noLogin, NoProfile: o.noProfile, Pin: o.pin, OpenIfUnavailable: o.openIfUnavailable, ParentKey: o.remoteParentKey,
+	}
 }
 
 func openRemoteShellTransport(ctx context.Context, o *options, transports clientTransports, auth *sshAuthEndpoint) (net.Conn, error) {
@@ -39,7 +47,7 @@ func openRemoteShellTransport(ctx context.Context, o *options, transports client
 	if err != nil {
 		return nil, err
 	}
-	if auth == nil && (o.parent == "" || o.command == "sh") {
+	if auth == nil && (o.parent == "" || o.command == "sh" || o.openIfUnavailable) {
 		var stopAuth func()
 		auth, stopAuth, err = startSSHAuthBroker()
 		if err != nil {
@@ -51,7 +59,8 @@ func openRemoteShellTransport(ctx context.Context, o *options, transports client
 	if env == nil {
 		env = os.Environ()
 	}
-	request := localDaemonRequest{Kind: "remote-shell", Record: localShellRecord{Name: "remote-shell", Directory: cwd}, Env: env, Auth: auth, Parent: o.parent, Shell: &shellConfig{Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh, Command: o.command, Instance: o.instance, ParentKey: o.remoteParentKey}}
+	config := o.shellConfig()
+	request := localDaemonRequest{Kind: "remote-shell", Record: localShellRecord{Name: "remote-shell", Directory: cwd}, Env: env, Auth: auth, Parent: o.parent, Shell: &config}
 	c, err := openLocalDaemonContext(ctx, request)
 	if err != nil {
 		return nil, err
@@ -66,8 +75,13 @@ func openRemoteShellTransport(ctx context.Context, o *options, transports client
 	setup, err := mx.OpenStream()
 	if err == nil {
 		chooseShell := o.command == "attach" && o.session == "" && o.instance == ""
-		_, err = negotiateSetup(setup, setup, o.host, chooseShell)
+		var ready message
+		ready, err = negotiateShellSetup(setup, o.host, chooseShell, o.openIfUnavailable)
 		setup.Close()
+		if err == nil && ready.Reason != "" {
+			o.command, o.session, o.instance = "sh", "", ready.Instance
+			o.taskIdentity = ""
+		}
 	}
 	if err != nil {
 		mx.Close()
@@ -245,7 +259,7 @@ func (s *shellTask) remoteChildIDs(prefix string) []selectedTask {
 	var candidates []selectedTask
 	for child := range s.remoteChildren {
 		if strings.HasPrefix(child.uid, prefix) {
-			candidates = append(candidates, selectedTask{Kind: "shell", Identity: identityFromUID(child.uid), Instance: child.uid, ChildHost: child.host})
+			candidates = append(candidates, selectedTask{Kind: "shell", Identity: identityFromUID(child.uid), Instance: child.uid, RemoteHost: child.host})
 		}
 	}
 	return candidates
@@ -383,13 +397,15 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	}
 	if owner != nil && f.Command == "attach" {
 		child, err := owner.selectRemoteChild(f)
-		if err != nil {
+		if err == nil {
+			ready := message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: child.uid}
+			return use(child.open, child.resource, ready, child.done)
+		}
+		if !f.OpenIfUnavailable {
 			return err
 		}
-		ready := message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: child.uid}
-		return use(child.open, child.resource, ready, child.done)
 	}
-	o := options{command: f.Command, host: f.Host, session: f.Name, instance: f.Instance, server: f.Server, ssh: f.SSH, sshDirectory: req.Record.Directory}
+	o := options{command: f.Command, host: f.Host, session: f.Name, instance: f.Instance, server: f.Server, ssh: f.SSH, sshDirectory: req.Record.Directory, openIfUnavailable: f.OpenIfUnavailable}
 	connection := sshConnectionOptions(o)
 	connection.Environment = req.Env
 	connection.Confirm, connection.Secret = req.Auth.callbacks()
@@ -437,9 +453,10 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 		return resourceSSHStream{Conn: stream, transport: client}, nil
 	}
 	var ownerDone <-chan struct{}
-	if f.Command == "sh" {
+	if f.Command == "sh" || ready.Reason != "" {
 		var uid, token string
-		if owner != nil {
+		child := owner != nil && f.Command == "sh"
+		if child {
 			uid, token = owner.record.UID, resourceToken()
 		}
 		stop, done, err := claimShellOwner(ctx, open, ready.Instance, uid, token, true)
@@ -448,7 +465,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 		}
 		defer stop()
 		ownerDone = done
-		if owner != nil {
+		if child {
 			open = ownedTaskEndpoint(open, ready.Instance, token)
 			forget := owner.rememberRemoteChild(&remoteShellChild{host: f.Host, uid: ready.Instance, open: open, resource: resource, done: done})
 			defer forget()

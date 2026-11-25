@@ -134,9 +134,10 @@ before changing update, reset or approval behavior.
 Both inventory views query the account daemon and start it on demand.
 The daemon captures task
 membership under the registry lock, then reads each task's state independently.
-`pstree` (`ps`) reads only shells and displays names, short IDs, hosts and states.
-Its branches follow parent UIDs and siblings sort by task ID. A leading `*` marks
-the current shell.
+`pstree` (`ps`) displays `shell/ID`, `mount/ID` and `forward/ID` under `local`
+or the managing host. Shell branches follow parent UIDs, including across hosts.
+Each independent shell tree starts under its own host. Siblings sort by task ID.
+A leading `*` marks the current shell.
 `active` means a shell holds input, `waiting` means the frontend reserved its
 place while entering a child or handling an approval, and `detached` means no
 frontend holds it.
@@ -171,10 +172,21 @@ bare attach argument selects an SSH host. Within a selector's scope, an ID
 match takes precedence over a name match. Ambiguous prefixes require a longer
 prefix or an explicit scope.
 
-From a managed shell, bare `attach ID` searches shells on the current daemon
-and the caller's registered direct SSH children together. The selector binds
-the full UID before handoff. The handoff checks ownership and whether the shell
-can be entered. For `attach HOST:`, the host supplies eligible roots during
+The CLI command registry defines aliases, help, recovery availability, grammar
+and handlers. The dispatcher handles help and examples before running a handler.
+Task commands parse the selector's scope separately from its task kind. An
+explicit local or SSH scope fixes the account first. A bare ID searches known
+accounts and requires an unambiguous match. Task type limits which registrations
+can match. Inventory commands read snapshots, SSH and file commands use their
+endpoints, and account operations dispatch through their own confirmation and
+release rules.
+
+Bare `attach ID` searches registered shells, direct SSH children and known remote
+shells. The selector binds the full UID before handoff. The handoff reuses the
+parent's authenticated route for its direct SSH child. Otherwise, `attach HOST:ID`
+asks the remote daemon for the target. When the target cannot be entered during
+SSH setup, the command opens a new independent shell on that host and reports
+the reason and new ID. For `attach HOST:`, the host supplies eligible roots during
 SSH setup and the client ranks them by detach history.
 `kill` and `rename` use the same selector for shells, mounts and forwards.
 Bare IDs can resolve a remote shell through a saved direct SSH connection.

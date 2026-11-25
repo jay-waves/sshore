@@ -239,10 +239,13 @@ or downgrade. Launch environments remain in memory, not public inventory or
 persistent daemon records. The selected host’s daemon resolves task IDs against its live registrations. Lease loss releases participation, never another
 persistent shell. This is a same-user trust boundary, not a sandbox.
 
-`sh` reserves a fresh name; `attach` requires an existing shell and never evicts
-its attached client. Selection is rechecked before attachment. Recent targets only
-supply defaults: they do not carry typed passwords, authorize takeover or recreate
-ended shells. Rename changes a label, not process identity or approval authority.
+`sh` reserves a fresh name. `attach` rechecks the selected instance before admitting
+a terminal and never evicts its attached client. An interactive SSH ID request can
+start a separate shell if the target is unavailable during setup. The new shell
+receives a fresh identity and the client reports the reason and new ID. Internal
+shell and resource routes still require the registered instance. Recent targets
+supply defaults and carry no typed passwords or takeover authority. Rename changes
+a label, not process identity or approval authority.
 
 The authenticated starting lease owns the lifetime of a top-level shell.
 A same-host nested shell follows the registered parent task. A cross-host

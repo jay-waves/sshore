@@ -10,11 +10,7 @@ import (
 )
 
 // Aliases resolve only command names, never operands or SSH arguments.
-var commandAliases = map[string]string{
-	"copy": "cp", "a": "attach", "d": "detach", "ps": "pstree",
-	"ls": "list", "mnt": "mount", "fwd": "forward",
-	"sh": "shell",
-}
+var commandAliases = make(map[string]string)
 
 func canonicalCommand(name string) string {
 	if command, ok := commandAliases[name]; ok {
@@ -57,12 +53,23 @@ var cliOptions = map[string]cliOption{
 }
 
 type cliSpec struct {
-	flags    []string
-	ssh      bool
-	min, max int
-	help     string
-	examples string
+	flags, aliases []string
+	ssh, recovery  bool
+	min, max       int
+	selector       cliSelectorKind
+	group          cliGroup
+	summary        string
+	help, examples string
+	run            func(cliArguments) (int, error)
 }
+
+type cliSelectorKind uint8
+
+const (
+	cliNoSelector cliSelectorKind = iota
+	cliHostSelector
+	cliTaskSelector
+)
 
 func commandSpec(command string) (cliSpec, bool) {
 	spec, ok := cliCommands[command]
@@ -91,12 +98,24 @@ func (s cliSpec) option(name string) (string, cliOption, bool) {
 }
 
 type cliArguments struct {
-	taskKind   string
-	bareTaskID bool
-	local      bool
-	operands   []string
-	values     map[string]string
-	ssh        []string
+	command  string
+	task     taskSelector
+	operands []string
+	values   map[string]string
+	ssh      []string
+}
+
+type taskScope uint8
+
+const (
+	taskLocal taskScope = iota
+	taskKnown
+	taskSSH
+)
+
+type taskSelector struct {
+	scope           taskScope
+	host, kind, ref string
 }
 
 func (a cliArguments) has(name string) bool { _, ok := a.values[name]; return ok }
@@ -160,10 +179,20 @@ func validateCLIValue(name, value string, option cliOption) error {
 // Parsing never starts work or reads state.
 func parseCLI(args []string, command string) (cliArguments, error) {
 	command = canonicalCommand(command)
-	a := cliArguments{values: make(map[string]string)}
+	a := cliArguments{command: command, values: make(map[string]string)}
 	spec, ok := commandSpec(command)
 	if !ok {
 		return a, usage("unknown command: %s", command)
+	}
+	if command != "exec" && spec.help != "" {
+		for _, arg := range args {
+			if arg == "--" {
+				break
+			}
+			if arg == "--help" || arg == "-h" {
+				return a, errHelp
+			}
+		}
 	}
 	var err error
 	hasSSHPort := false
@@ -242,27 +271,31 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 		}
 		a.ssh = append([]string{"-p", a.values["--port"]}, a.ssh...)
 	}
-	max := spec.maxOperands(command, a)
 	if len(a.operands) < spec.min {
 		return a, usage("not enough arguments for %s; see sshore %s --help", command, command)
 	}
-	if max >= 0 && len(a.operands) > max {
-		return a, usage("unexpected argument: %s", a.operands[max])
+	if spec.max >= 0 && len(a.operands) > spec.max {
+		return a, usage("unexpected argument: %s", a.operands[spec.max])
 	}
-	if len(a.operands) != 0 && (command == "exec" || command == "ping" || command == "copy-id" || command == "kill" && a.has("--all")) {
+	if command == "kill" && a.has("--all") {
+		if len(a.operands) != 0 {
+			err = normalizeHostOperand(command, &a)
+		}
+		return a, err
+	}
+	switch spec.selector {
+	case cliHostSelector:
 		err = normalizeHostOperand(command, &a)
-	} else {
-		err = normalizeShellSelector(command, &a)
+	case cliTaskSelector:
+		a.task, err = parseTaskSelector(command, a.operand(0))
+		if err == nil && a.task.scope == taskLocal && (len(a.ssh) > 0 || a.has("--server")) {
+			err = usage("local tasks do not accept SSH options")
+		}
+		if err == nil && command == "rename" {
+			err = validAlias(a.operand(1))
+		}
 	}
 	return a, err
-}
-
-func (s cliSpec) maxOperands(command string, a cliArguments) int {
-	max := s.max
-	if command == "kill" && a.has("--all") {
-		max = 1
-	}
-	return max
 }
 
 func parseSSHOptions(suffix []string) ([]string, bool, error) {

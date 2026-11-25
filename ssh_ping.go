@@ -14,11 +14,7 @@ import (
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
-func runPing(args []string) (int, error) {
-	parsed, err := parseCLI(args, "ping")
-	if err != nil {
-		return 2, err
-	}
+func runPing(parsed cliArguments) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	connection := sshio.Options{

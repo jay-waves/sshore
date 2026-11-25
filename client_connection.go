@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -354,13 +355,6 @@ func runClient(o options) (int, error) {
 	}
 }
 
-func resolveRecentAttach(o *options) error {
-	if o.command != "attach" || o.local {
-		return nil
-	}
-	return applyRecentConnection(o)
-}
-
 func applyRecentConnection(o *options) error {
 	reply, err := metadataRPC(metadataRequest{Action: "connection_select", Host: o.host})
 	if err != nil {
@@ -493,7 +487,7 @@ func rememberConnection(o options) error {
 
 func ownedRemoteRoute(o options) bool {
 	for hop := &o; hop != nil; hop = hop.routeParent {
-		if !hop.local && hop.parent != "" || hop.routeParent != nil && !hop.sameHostRoute {
+		if hop.remoteOwned || hop.routeParent != nil && !hop.sameHostRoute {
 			return true
 		}
 	}
@@ -517,6 +511,7 @@ func directShellOptions(o options) options {
 
 func routeParentOptions(parent options) options {
 	parent.command = "attach"
+	parent.openIfUnavailable = false
 	// The remote entry point accepts immutable task UIDs, so an ancestor rename cannot sever
 	// an otherwise live child route. This transport never attaches a terminal.
 	if validTaskUID(parent.instance) {
@@ -601,31 +596,36 @@ func confirmShellRoute(ctx context.Context, parent options, token, handoffToken 
 
 // Only local authenticated control carries this request; terminal output never does.
 type clientHandoff struct {
-	Hosted                 bool
-	Args                   []string
-	Directory              string
-	Environment            []string
-	TaskIdentity, Instance string
+	Shell        shellConfig
+	Hosted       bool
+	NoEscape     bool
+	Directory    string
+	Environment  []string
+	TaskIdentity string
 }
 
 func (h *clientHandoff) options() (options, error) {
 	if h == nil {
 		return options{}, fmt.Errorf("missing handoff request")
 	}
-	o, err := parseOptions(h.Args)
-	if err != nil {
-		return o, err
+	shell := h.Shell
+	if (shell.Command != "sh" && shell.Command != "attach") || !filepath.IsAbs(h.Directory) ||
+		shell.Instance != "" && !validTaskUID(shell.Instance) || shell.Name != "" && validSession(shell.Name) != nil ||
+		shell.Local && len(shell.SSH) != 0 || !shell.Local && (validSSHDestination(shell.Host) != nil || shell.Server == "" || strings.ContainsAny(shell.Server, "\x00\r\n")) {
+		return options{}, fmt.Errorf("invalid shell handoff")
 	}
-	if (o.command != "sh" && o.command != "attach") || !filepath.IsAbs(h.Directory) {
-		return o, fmt.Errorf("invalid remote handoff")
+	if _, _, err := parseSSHOptions(shell.SSH); err != nil {
+		return options{}, err
 	}
-	if h.Hosted && (!o.local || o.command != "attach" || !validTaskUID(h.Instance) || h.TaskIdentity != "task:"+h.Instance) {
-		return o, fmt.Errorf("invalid hosted shell handoff")
+	if h.Hosted && (!shell.Local || shell.Command != "attach" || !validTaskUID(shell.Instance) || h.TaskIdentity != identityFromUID(shell.Instance)) {
+		return options{}, fmt.Errorf("invalid hosted shell handoff")
 	}
-	o.sshDirectory, o.environment = h.Directory, h.Environment
-	o.taskIdentity, o.instance = h.TaskIdentity, h.Instance
-	o.hosted = h.Hosted
-	return o, nil
+	return options{
+		command: shell.Command, local: shell.Local, host: shell.Host, session: shell.Name, server: shell.Server,
+		ssh: shell.SSH, pin: shell.Pin, noLogin: shell.NoLogin, noProfile: shell.NoProfile, noEscape: h.NoEscape,
+		sshDirectory: h.Directory, environment: h.Environment, taskIdentity: h.TaskIdentity, instance: shell.Instance, hosted: h.Hosted,
+		openIfUnavailable: shell.OpenIfUnavailable && shell.Command == "attach" && !shell.Local && isTaskIDPrefix(shell.Name),
+	}, nil
 }
 
 func handoffLocalClient(o options) (bool, error) {
@@ -640,26 +640,7 @@ func handoffLocalClient(o options) (bool, error) {
 	if o.sshDirectory != "" {
 		cwd = o.sshDirectory
 	}
-	args := []string{o.command}
-	if o.local {
-		args = append(args, localEndpointPrefix+o.session)
-	} else {
-		args = append(args, transportio.FormatEndpoint(o.host, o.session))
-		args = append(args, "--server", o.server)
-	}
-	for _, flag := range []struct {
-		name    string
-		enabled bool
-	}{{"--no-escape", o.noEscape}, {"--pin", o.pin}, {"--no-login", o.noLogin}, {"--no-profile", o.noProfile}} {
-		if flag.enabled {
-			args = append(args, flag.name)
-		}
-	}
-	if len(o.ssh) > 0 {
-		args = append(append(args, "--"), o.ssh...)
-	}
-	environment := os.Environ()
-	h := &clientHandoff{Hosted: o.hosted, Args: args, Directory: cwd, Environment: environment, TaskIdentity: o.taskIdentity, Instance: o.instance}
+	h := &clientHandoff{Shell: o.shellConfig(), Hosted: o.hosted, NoEscape: o.noEscape, Directory: cwd, Environment: os.Environ(), TaskIdentity: o.taskIdentity}
 	m, err := localRequest("", identity, message{Type: "handoff", Handoff: h})
 	if err != nil {
 		return true, err
@@ -689,16 +670,8 @@ func (h *localHandoff) deliver(errorText string) bool {
 func (s *localShell) requestHandoff(c net.Conn, h *clientHandoff) error {
 	deadline := time.Now().Add(2 * time.Minute)
 	_ = c.SetDeadline(deadline)
-	target, err := h.options()
-	if err != nil {
+	if _, err := h.options(); err != nil {
 		return writeMessage(c, message{Type: "error", Error: err.Error()})
-	}
-	if target.command == "attach" && !target.local {
-		child, err := s.selectRemoteChild(&shellConfig{Host: target.host, Name: target.session, Instance: target.instance})
-		if err != nil {
-			return writeMessage(c, message{Type: "error", Error: err.Error()})
-		}
-		h.Instance = child.uid
 	}
 	s.mu.Lock()
 	p := s.active

@@ -292,6 +292,8 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		termui.Log(os.Stderr, "", termui.Warning, "[sshore] Same identity through a new entry point; if this is a clone, run sshore reset there.\n")
 	}
 	o.instance = m.Instance
+	o.remoteOwned = !o.local && m.Owner != ""
+	o.openIfUnavailable = false
 	if o.reusable != nil {
 		o.reusable.session, o.reusable.instance = o.session, o.instance
 	}
@@ -793,7 +795,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						}
 					case len(args) > 0 && args[0] == "shell":
 						parsed, err := parseCLI(args[1:], "shell")
-						if err != nil || len(parsed.operands) != 0 || len(parsed.ssh) != 0 || len(parsed.values) > 1 || len(parsed.values) == 1 && !parsed.has("--pin") {
+						if err != nil || parsed.task.scope != taskLocal || parsed.task.ref != "" || len(parsed.values) > 1 || len(parsed.values) == 1 && !parsed.has("--pin") {
 							console.show("Usage: shell [--pin]")
 							break
 						}

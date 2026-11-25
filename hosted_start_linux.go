@@ -11,27 +11,34 @@ import (
 	"github.com/jay-waves/sshore/internal/sys"
 )
 
-func prepareHostedShell(name, mode, instance, executable string, gate *sys.FileLock) error {
+func prepareHostedShell(name, mode, instance, executable string, gate *sys.FileLock, openIfUnavailable bool) error {
 	defer gate.Close()
 	if mode == "new" && isShortTaskID(name) {
 		name = ""
 	}
 	var record localShellRecord
 	var err error
+	var reason string
 	if mode == "attach" {
-		target, err := resolveHostedShell(name, instance)
+		var target selectedTask
+		if openIfUnavailable {
+			target, reason, err = selectRemoteAttachShell(name, instance)
+		} else {
+			target, err = resolveHostedShell(name, instance)
+		}
 		if err != nil {
 			return err
 		}
-		if target.Instance == "" {
+		if reason != "" {
+			name, mode = "", "new"
+		} else if target.Instance == "" {
 			return fmt.Errorf("shell %s does not exist; check known IDs with sshore list", name)
+		} else {
+			record, err = existingDaemonRecord()
+			record.UID = target.Instance
 		}
-		record, err = existingDaemonRecord()
-		if err != nil {
-			return err
-		}
-		record.UID = target.Instance
-	} else {
+	}
+	if mode != "attach" {
 		var cwd string
 		cwd, err = os.Getwd()
 		if err == nil {
@@ -45,7 +52,41 @@ func prepareHostedShell(name, mode, instance, executable string, gate *sys.FileL
 		return err
 	}
 	gate.Close()
-	return writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: record.UID, LocalRequest: &localDaemonRequest{Record: record}})
+	return writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: record.UID, Reason: reason, LocalRequest: &localDaemonRequest{Record: record}})
+}
+
+func selectRemoteAttachShell(ref, instance string) (selectedTask, string, error) {
+	query := taskQuery{Kind: "hosted", Ref: ref, UID: instance}
+	if !validTaskUID(instance) {
+		rows, err := queryRegisteredTasks(taskQuery{Kind: "hosted"})
+		if err != nil {
+			return selectedTask{}, "", err
+		}
+		target, err := matchTask(ref, rows)
+		if err != nil {
+			return selectedTask{}, err.Error(), nil
+		}
+		if target.Instance == "" {
+			return selectedTask{}, fmt.Sprintf("Shell %s was not found", ref), nil
+		}
+		query.UID = target.Instance
+	}
+	rows, err := queryRegisteredTasks(query)
+	if err != nil {
+		return selectedTask{}, "", err
+	}
+	if len(rows) == 0 {
+		return selectedTask{}, fmt.Sprintf("Shell %s was not found", ref), nil
+	}
+	query.Detached = true
+	idle, err := queryRegisteredTasks(query)
+	if err != nil {
+		return selectedTask{}, "", err
+	}
+	if len(idle) == 0 {
+		return selectedTask{}, fmt.Sprintf("Shell %s is in use or has a parent shell", ref), nil
+	}
+	return idle[0], "", nil
 }
 
 func retentionHostedShell(m message) error {

@@ -29,7 +29,7 @@ func TestOpenSSH(t *testing.T) {
 		t.Skip("run in the disposable Alpine OpenSSH fixture")
 	}
 	fixture := filepath.Dir(binary)
-	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 	for {
 		conn, err := net.DialTimeout("tcp", "127.0.0.1:2222", time.Second)
@@ -103,6 +103,9 @@ Match command "printf forwarding-check"
 		return resourceRef{}
 	}
 	t.Run("ssh trust and configuration", func(t *testing.T) {
+		if got := run(t, "exec", "--port", "2222", host, `printf '%s' '--help -- -p 1'`); got != "--help -- -p 1" {
+			t.Fatalf("exec changed the remote command text: %q", got)
+		}
 		connection := strings.Fields(run(t, "exec", host, `printf '%s\n' "$SSH_CONNECTION"`))
 		if len(connection) != 4 || connection[0] != "127.0.0.1" || connection[2] != "127.0.0.1" || connection[3] != "2222" {
 			t.Fatalf("SSH_CONNECTION from sshd = %q", connection)
@@ -565,6 +568,90 @@ Match command "printf forwarding-check"
 
 	})
 
+	t.Run("remote IDs resume or open a new shell on the same host", func(t *testing.T) {
+		root := host + ":resume-root"
+		cleanRemote(root)
+		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
+		const marker = "RESUME_ID="
+		const report = "printf 'RESUME_%s=%.6s\\n' ID \"${SSHORE_TREE_ID#task:}\"\n"
+		var id string
+		runOpenSSHTerminal(t, ctx, command("shell", root, "--server", binary, "--no-profile", "--no-login"), func(send func(string), wait terminalWait) {
+			wait("Connected " + root)
+			send(report)
+			_, id, _ = strings.Cut(strings.TrimSpace(ansi.Strip(wait(marker))), marker)
+			if len(id) != 6 {
+				t.Fatalf("could not read remote shell ID: %q", id)
+			}
+			runOpenSSHTerminal(t, ctx, command("a", host+":"+id, "--server", binary), func(send func(string), wait terminalWait) {
+				wait("is in use or has a parent shell on " + host)
+				wait("Connected " + host + ":")
+				send(report)
+				_, fresh, _ := strings.Cut(strings.TrimSpace(ansi.Strip(wait(marker))), marker)
+				if len(fresh) != 6 || fresh == id {
+					t.Fatalf("attaching a busy root should open a separate shell, got %q", fresh)
+				}
+				send("exit\n")
+				wait("Now in: calling terminal")
+			})
+			send(report)
+			wait(marker + id)
+			send("\x02d")
+			wait("Detached from " + root)
+		})
+		tree := string(local(t, "ps"))
+		_, remoteTree, found := strings.Cut(tree, host+"\n")
+		if !found || !strings.Contains(remoteTree, "shell/"+id+" (resume-root)  detached") {
+			t.Fatalf("independent remote shell is missing from its host root:\n%s", tree)
+		}
+		const missing = "ffffffffffffffffffffffffffffffff"
+		parent := exec.CommandContext(ctx, binary, "shell", "here:resume-parent", "--no-profile", "--no-login")
+		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
+			wait("Connected here:resume-parent")
+			send(quote(binary) + " attach " + id + "\n")
+			wait("Connected " + root)
+			send(report)
+			wait(marker + id)
+			send("exit\n")
+			wait("Connected here:resume-parent")
+			send(quote(binary) + " attach " + host + ":" + missing + "\n")
+			wait("was not found on " + host + ". Opening new shell")
+			wait("Connected " + host + ":")
+			send(report)
+			_, fresh, _ := strings.Cut(strings.TrimSpace(ansi.Strip(wait(marker))), marker)
+			if len(fresh) != 6 || fresh == id || fresh == missing[:6] {
+				t.Fatalf("expected a fresh remote shell ID, got %q", fresh)
+			}
+			send("exit\n")
+			wait("Connected here:resume-parent")
+			send("exit\n")
+			wait("No shell attached.")
+			send("exit\r")
+		})
+	})
+	t.Run("hosted shell uses explicit local selectors on its own daemon", func(t *testing.T) {
+		root := host + ":scoped-root"
+		cleanRemote(root)
+		runOpenSSHTerminal(t, ctx, command("sh", root, "--server", binary, "--no-profile", "--no-login"), func(send func(string), wait terminalWait) {
+			wait("Connected " + root)
+			send("sshore sh :scoped-child --no-profile\n")
+			wait("Connected " + host + ":scoped-child")
+			send("export SSHORE_SCOPE_TEST=retained; printf 'SCOPE_%s=%s\\n' state \"$SSHORE_SCOPE_TEST\"\n")
+			wait("SCOPE_state=retained")
+			send("sshore d 3m\n")
+			wait("Connected " + root)
+			if tree := run(t, "exec", host, "sshore ps"); !strings.HasPrefix(tree, "local\n") || !strings.Contains(tree, " (scoped-root)  active") || !strings.Contains(tree, " (scoped-child)  detached") {
+				t.Fatalf("hosted tree lost its local root or detached child:\n%s", tree)
+			}
+			send("sshore rename :scoped-child scoped-renamed && sshore a :scoped-renamed\n")
+			wait("Connected " + host + ":scoped-renamed")
+			send("printf 'SCOPE_%s=%s\\n' resumed \"$SSHORE_SCOPE_TEST\"\n")
+			wait("SCOPE_resumed=retained")
+			send("exit\n")
+			wait("Connected " + root)
+			send("exit\n")
+			wait("Now in: calling terminal")
+		})
+	})
 	t.Run("remote child resumes after its parent exits", func(t *testing.T) {
 		child := host + ":build"
 		cleanRemote(child)

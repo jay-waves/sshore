@@ -76,19 +76,22 @@ $ sshore shell
 a1b2c3$ sshore shell
 7b3a91$ sshore detach
 a1b2c3$ sshore pstree
-  * a1b2c3  active
-  ╰── 7b3a91  detached
+local
+╰── * shell/a1b2c3  active
+    ╰── shell/7b3a91  detached
 
 a1b2c3$ exit
 sshore> exit
 $ sshore pstree
-  7b3a91  detached
+local
+╰── shell/7b3a91  detached
 
 $ sshore shell
 e4f567$ sshore attach 7b3a91
 7b3a91$ sshore pstree
-  e4f567  waiting
-  ╰── * 7b3a91  active
+local
+╰── shell/e4f567  waiting
+    ╰── * shell/7b3a91  active
 ```
 
 While the original parent is alive, only it can reattach its child. Each tree
@@ -104,12 +107,12 @@ task without relying on a saved connection.
 | Command | What the part after `:` means |
 | --- | --- |
 | `sshore shell work` | Create a shell on `work` with an automatic ID. |
-| `sshore attach work:7b3a91` | Resume the shell whose ID uniquely starts with `7b3a91` on `work`. The ID stays the same across renames. |
+| `sshore attach work:7b3a91` | Resume the shell whose ID uniquely starts with `7b3a91` on `work`. If the target is unavailable during SSH setup, open a new shell on `work` and print a warning with its ID. |
 | `sshore attach work:` | Let the remote daemon supply eligible detached roots and use detach history to choose one. An explicit colon also works for hexadecimal SSH aliases such as `db:`, where bare `db` is parsed as an ID. |
 
-From the parent shell, `sshore attach 7b3a91` can also resume its direct
-SSH child. If the ID prefix matches more than one shell, use a longer prefix,
-`HOST:ID` for a remote child or `:ID` for a shell on the current daemon.
+`sshore attach 7b3a91` also searches known remote shells. The parent shell
+reuses its SSH route when re-entering a direct child. If the ID prefix matches
+more than one shell, use a longer prefix, `HOST:ID` or `:ID`.
 
 For optional names, `sshore shell HOST:NAME` creates a named shell and
 `sshore attach HOST:NAME` selects it. Use `:NAME` or `here:NAME` for a
