@@ -48,7 +48,7 @@ func ValidateName(name string) error {
 	return nil
 }
 
-// ExpandRemoteHome interprets a home prefix using the Linux SSH peer's home.
+// ExpandRemoteHome interprets a home prefix using the SSH peer's SFTP path.
 func ExpandRemoteHome(name, home string) (string, error) {
 	if name != "~" && !strings.HasPrefix(name, "~/") {
 		return name, nil

@@ -1,31 +1,40 @@
 package main
 
 import (
-	"fmt"
 	"net"
 	"time"
 )
 
 type remoteShell struct {
 	shellTask
-	tasks *daemonTasks
+	tasks            *daemonTasks
+	resourceApproval resourceApproval
 }
 
 func (s *remoteShell) serveTask(c net.Conn, m message) error {
 	if handled, err := s.serveCommand(c, m, s.attachmentCommand, s.status); handled {
 		return err
 	}
-	return writeMessage(c, message{Type: "error", Error: "unsupported Windows hosted shell operation"})
+	switch m.Type {
+	case "route_mount", "route_forward", "route_files":
+		s.serveRoutedResource(c, m, nil)
+		return nil
+	case "approval_request":
+		if err := s.requestApproval(c, m); err != nil {
+			return writeMessage(c, message{Type: "error", SoftwareVersion: version, Error: err.Error()})
+		}
+		return nil
+	default:
+		return writeMessage(c, message{Type: "error", Error: "unsupported Windows hosted shell operation"})
+	}
 }
 
 func (s *remoteShell) attachmentCommand(p *attachment, m message) error {
 	switch m.Type {
-	case "approval_ready":
-		return nil
 	case "sh_child":
 		return p.controlMessage(message{Type: "sh_child_error", Error: "Windows hosted shells do not support nested routes"})
 	default:
-		return fmt.Errorf("unexpected control message: %s", m.Type)
+		return attachmentApprovalCommand(p, m)
 	}
 }
 

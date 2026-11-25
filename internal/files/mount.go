@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/release"
 	sftp "github.com/pkg/sftp/v2"
 	sshfx "github.com/pkg/sftp/v2/encoding/ssh/filexfer"
 	"github.com/pkg/sftp/v2/encoding/ssh/filexfer/openssh"
@@ -451,7 +452,7 @@ func checkPeerVersion(local, peer, role string) error {
 	if local != "" && local == peer {
 		return nil
 	}
-	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%s; reconnect to update or recover", local, role, peer)
+	return release.VersionMismatch(local, peer, role)
 }
 
 func serveMountData(data io.ReadWriteCloser) error {

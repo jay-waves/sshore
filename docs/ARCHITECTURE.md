@@ -25,9 +25,8 @@ to the platform implementation and its tests.
 
 ## Terminal and mux design scope
 
-Clients support Linux and Windows amd64. Linux amd64 hosts detached shells and
-remote services. Windows amd64 can host SFTP mounts on NTFS and ReFS drive
-volumes. Experimental Windows shell hosting uses the account daemon and ConPTY.
+Linux and Windows 11 / Server 2025 or newer are core amd64 client and host platforms.
+Windows uses ConPTY for hosted shells.
 Each interactive shell owns one terminal with one attachment at a time.
 Split panes, tiling, screen emulation and scrollback replay are outside scope.
 The shell and terminal preserve interactive state across detach. Redraw is best
@@ -70,6 +69,8 @@ extension through go-fuse. Install macFUSE and enable its kernel extension befor
 mounting.
 
 TODO: Add a macFUSE FSKit backend that preserves `CGO_ENABLED=0`.
+
+TODO: Support a Windows hosted shell as the intermediate hop in a nested shell route.
 
 TODO: Run explicit `bash -c` in the command console on the host and in the directory
 shown by the prompt.
@@ -141,7 +142,7 @@ for both foreground mounts and background workers.
 The pinned upstream revision includes the client disconnect fix and supports the
 project's Go version. Directory change notifications use their own stream.
 Trace changes through the [task registry](../daemon_tasks.go), [mount coordinator](../mount.go)
-and [route authorization](../resource_route_linux.go). Consult [SECURITY.md](SECURITY.md)
+and [route authorization](../resource_route_host.go). Consult [SECURITY.md](SECURITY.md)
 before changing update, reset or approval behavior.
 
 ### Inventory and diagnostics

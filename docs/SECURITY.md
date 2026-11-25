@@ -351,7 +351,8 @@ The authenticated SSH exec channel passes a versioned service request before
 starting the selected protocol. The request selects a handler and carries no
 additional authority. Approved routes and task mutations retain their existing
 source, identity and account-daemon checks.
-`bootstrap HOST:` uses authenticated SSH to run the bundled installer on the target.
+Run the platform installer locally on each endpoint. `bootstrap` resets and reinstalls
+the local account.
 Installers verify the release checksum and executable version. The prepared binary
 stages the replacement before requesting shutdown, including for same-version
 reinstalls. It reads one authenticated administrative snapshot and requests

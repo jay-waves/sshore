@@ -26,12 +26,8 @@ func (s *remoteShell) attachmentCommand(p *attachment, m message) error {
 		go serveChildShortcut(p, s.done, func(c net.Conn) {
 			s.requestShellRoute(c, message{SoftwareVersion: version, LocalRequest: req})
 		})
-	case "approval_ready":
-		p.approvals.enable()
-	case "approval_handoff", "approval_rejected":
-		p.approvals.reply(m)
 	default:
-		return fmt.Errorf("unexpected control message: %s", m.Type)
+		return attachmentApprovalCommand(p, m)
 	}
 	return nil
 }
@@ -71,7 +67,7 @@ func (s *remoteShell) handleTask(c net.Conn, first message) {
 	}
 	switch first.Type {
 	case "route_mount", "route_forward", "route_files":
-		s.serveRoutedResource(c, first)
+		s.serveRoutedResource(c, first, s.relayResourceRoute)
 	case "shell_connect":
 		_ = s.connectRouteShell(c, first)
 	case "shell_route_confirm":

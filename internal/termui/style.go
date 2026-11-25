@@ -20,20 +20,20 @@ func Log(out io.Writer, id string, level Color, format string, args ...any) {
 			layout = time.DateTime
 		}
 	}
-	if id == "" {
-		id = "-"
-	}
 	severity, label := Info, "info"
 	if level == Error || level == Warning {
 		severity, label = Error, "error"
 	}
 	stamp := Render(color, Muted, "["+time.Now().Format(layout)+"]")
-	identity := Render(color, Accent, "["+id+"]")
 	label = Render(color, severity, "["+label+"]")
+	prefix := stamp + " " + label
+	if id != "" {
+		prefix += " " + Render(color, Accent, "["+id+"]")
+	}
 	message := strings.TrimSuffix(fmt.Sprintf(format, args...), "\n")
 	message = strings.TrimPrefix(message, "[sshore] ")
 	for line := range strings.SplitSeq(message, "\n") {
-		fmt.Fprintf(out, "%s %s %s %s\n", stamp, identity, label, line)
+		fmt.Fprintf(out, "%s %s\n", prefix, line)
 	}
 }
 

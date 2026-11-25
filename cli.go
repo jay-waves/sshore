@@ -676,7 +676,7 @@ func runMount(parsed cliArguments) (int, error) {
 		if !info.IsDir() {
 			return 1, fmt.Errorf("mount source must be a directory")
 		}
-		return 0, requestOperations("mount", []operation{op})
+		return 0, requestOperations([]operation{op})
 	}
 
 	o, err := parseFTPOptions(parsed)
@@ -696,7 +696,7 @@ func runCopy(parsed cliArguments) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		return 0, requestOperations("cp", ops)
+		return 0, requestOperations(ops)
 	}
 	o, err := parseCopyCommand(parsed)
 	if err != nil {
@@ -714,7 +714,7 @@ func runEndpointForward(parsed cliArguments) (int, error) {
 		if err != nil {
 			return 2, err
 		}
-		return 0, requestOperations("forward", []operation{op})
+		return 0, requestOperations([]operation{op})
 	}
 	f, err := parseForwardCommand(parsed)
 	if err != nil {

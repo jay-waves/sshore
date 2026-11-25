@@ -8,6 +8,10 @@ import (
 	"runtime"
 )
 
+func requestOperations([]operation) error {
+	return fmt.Errorf("run this command inside an sshore shell on Linux or Windows")
+}
+
 func registerPlatformDaemonRoutes(*http.ServeMux, *daemonTasks) {}
 
 func retentionHostedShell(message) error {

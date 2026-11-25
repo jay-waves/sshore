@@ -136,14 +136,13 @@ func chooseDetachedHostedShell() (sessionTarget, error) {
 	return sessionTarget{}, fmt.Errorf("invalid shell selection")
 }
 
-func serveRemote(req remoteServiceRequest, serveFiles func(string) error) (result error) {
+func serveRemote(req remoteServiceRequest) (result error) {
 	mode, name := req.Mode, req.Name
-	fileService := req.Operation != "shell"
 	target, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	if !fileService && mode != "bridge" && mode != "new" && mode != "attach" {
+	if mode != "bridge" && mode != "new" && mode != "attach" {
 		return fmt.Errorf("invalid remote service")
 	}
 	if mode == "attach" && name == "" {
@@ -172,7 +171,7 @@ func serveRemote(req remoteServiceRequest, serveFiles func(string) error) (resul
 			lock.Close()
 			return err
 		}
-		if !fileService && mode == "attach" && name == "" {
+		if mode == "attach" && name == "" {
 			lock.Close()
 			selected, err := chooseDetachedHostedShell()
 			if err != nil {
@@ -180,14 +179,6 @@ func serveRemote(req remoteServiceRequest, serveFiles func(string) error) (resul
 			}
 			name = selected.Instance
 			continue // Recheck setup after waiting without the account lock.
-		}
-		if fileService {
-			lock.Close()
-			home, _ := os.UserHomeDir()
-			if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", HomeDirectory: home}); err != nil {
-				return err
-			}
-			return serveFiles(req.Operation)
 		}
 		return prepareHostedShell(name, mode, req.Instance, target, lock, req.OpenIfUnavailable && isTaskIDPrefix(name))
 	}

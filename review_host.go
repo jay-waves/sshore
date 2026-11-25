@@ -1,3 +1,5 @@
+//go:build linux || windows
+
 package main
 
 import (
@@ -8,12 +10,22 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
 )
 
-func requestOperations(_ string, ops []operation) error {
+func requestOperations(ops []operation) error {
+	if runtime.GOOS == "windows" {
+		// Match the drive-qualified paths used by the Windows mount agent.
+		for i := range ops {
+			if ops[i].Path != "" {
+				ops[i].Path = "/" + filepath.ToSlash(ops[i].Path)
+			}
+		}
+	}
 	if err := validateOperations(ops); err != nil {
 		return err
 	}
@@ -43,6 +55,18 @@ func requestOperations(_ string, ops []operation) error {
 	return nil
 }
 
+func attachmentApprovalCommand(p *attachment, m message) error {
+	switch m.Type {
+	case "approval_ready":
+		p.approvals.enable()
+	case "approval_handoff", "approval_rejected":
+		p.approvals.reply(m)
+	default:
+		return fmt.Errorf("unexpected control message: %s", m.Type)
+	}
+	return nil
+}
+
 func (s *remoteShell) requestApproval(c net.Conn, m message) error {
 	if err := checkPeerVersion(m.SoftwareVersion, "requesting helper"); err != nil {
 		return err
@@ -60,31 +84,36 @@ func (s *remoteShell) requestApproval(c net.Conn, m message) error {
 		if !validRequestID(id) {
 			return fmt.Errorf("invalid approval handoff")
 		}
-		op := m.Operations[0]
-		op.LocalHint = ""
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		s.resourceApproval = resourceApproval{}
-		if op.Kind == "mount" || op.Kind == "forward" {
-			s.resourceApproval = resourceApproval{id: id, op: op}
+		if s.active != p || s.exited || s.killing {
+			return fmt.Errorf("source attachment changed")
 		}
+		for i := range m.Operations {
+			m.Operations[i].LocalHint = ""
+		}
+		s.resourceApproval = resourceApproval{id: id, operations: m.Operations}
 		return nil
 	})
 }
 
 // The authenticated file endpoint serves one operation after its approval check.
 func approvedRemoteTransfer(st net.Conn, m message) {
-	if len(m.Operations) != 1 || validateOperations(m.Operations) != nil {
-		_ = writeMessage(st, message{Type: "error", Error: "invalid operation"})
-		return
-	}
 	op := m.Operations[0]
+	nativePath := op.Path
+	if runtime.GOOS == "windows" {
+		nativePath = filepath.FromSlash(strings.TrimPrefix(nativePath, "/"))
+		if !filepath.IsAbs(nativePath) {
+			_ = writeMessage(st, message{Type: "error", Error: "invalid absolute Windows path"})
+			return
+		}
+	}
 	var backend *files.FS
 	var err error
 	switch op.Kind {
 	case "download":
 		var f *files.Source
-		f, err = files.OpenSource(op.Path)
+		f, err = files.OpenSource(nativePath)
 		if err == nil {
 			defer f.Close()
 			if f.Name() != op.Name || f.Size() != op.Size {
@@ -99,12 +128,12 @@ func approvedRemoteTransfer(st net.Conn, m message) {
 		}
 		if err == nil {
 			var info os.FileInfo
-			info, err = os.Stat(op.Path)
+			info, err = os.Stat(nativePath)
 			if err == nil && !info.IsDir() {
 				err = fmt.Errorf("upload destination must be a directory")
 			}
 		}
-		backend = files.NewTargetFS(filepath.Join(op.Path, m.Name), m.Size)
+		backend = files.NewTargetFS(filepath.Join(nativePath, m.Name), m.Size)
 	default:
 		err = fmt.Errorf("invalid transfer kind")
 	}
@@ -117,24 +146,6 @@ func approvedRemoteTransfer(st net.Conn, m message) {
 	}
 	_ = st.SetDeadline(time.Time{})
 	_ = files.ServeTransfer(st, backend)
-}
-
-func (s *remoteShell) checkApprovalSource(m message) error {
-	if err := checkPeerVersion(m.SoftwareVersion, "approval client"); err != nil {
-		return err
-	}
-	if !validRequestID(m.ApprovalID) {
-		return fmt.Errorf("invalid approval identity")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.exited || s.pid == 0 || s.pid != m.PID || s.record.Name != m.Name || m.Instance != "" && m.Instance != s.record.UID {
-		return fmt.Errorf("approved shell changed; request the operation again")
-	}
-	if s.active != nil {
-		return fmt.Errorf("source shell remains attached; request the operation again")
-	}
-	return nil
 }
 
 // The helper and attachment remain connected until the local client accepts the handoff.

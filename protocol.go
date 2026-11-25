@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/release"
 )
 
 // Control metadata uses bounded frames. Approved file streams switch to
@@ -205,10 +207,7 @@ func checkPeerVersion(peer, role string) error {
 	if sameRelease(version, peer) {
 		return nil
 	}
-	if peer == "" {
-		peer = "unknown (older build)"
-	}
-	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%s. Managed processes must use the same full release", version, role, peer)
+	return release.VersionMismatch(version, peer, role)
 }
 
 type attachmentControl interface {

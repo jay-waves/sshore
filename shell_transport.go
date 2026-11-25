@@ -346,7 +346,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	if err != nil {
 		return err
 	}
-	ready, err := relayShellSetup(c, pipes, diagnostics)
+	ready, err := diagnostics.relaySetup(pipes)
 	if err != nil {
 		return err
 	}
@@ -455,7 +455,7 @@ func connectedHostedShells(parent context.Context, record localShellRecord, dial
 }
 
 // Relay the selection exchange until the remote setup process hands over a task.
-func relayShellSetup(setup net.Conn, pipes io.ReadWriter, diagnostics *shellDiagnostics) (message, error) {
+func (d *shellDiagnostics) relaySetup(pipes io.ReadWriter) (message, error) {
 	for {
 		m, err := readMessage(pipes)
 		if err != nil {
@@ -472,21 +472,18 @@ func relayShellSetup(setup net.Conn, pipes io.ReadWriter, diagnostics *shellDiag
 				return message{}, err
 			}
 			// Drain diagnostics before the frontend advances to the task protocol.
-			diagnostics.mu.Lock()
-			diagnostics.active = false
-			diagnostics.mu.Unlock()
+			d.mu.Lock()
+			d.active = false
+			d.mu.Unlock()
 			return m, nil
 		case "session_choice":
-			if setup == nil {
-				return message{}, fmt.Errorf("unexpected remote shell selection")
-			}
-			diagnostics.mu.Lock()
-			err := writeMessage(setup, m)
-			diagnostics.mu.Unlock()
+			d.mu.Lock()
+			err := writeMessage(d.c, m)
+			d.mu.Unlock()
 			if err != nil {
 				return message{}, err
 			}
-			answer, err := readMessage(setup)
+			answer, err := readMessage(d.c)
 			if err != nil {
 				return message{}, err
 			}

@@ -64,6 +64,11 @@ func TestWindowsOpenSSH(t *testing.T) {
 		if !strings.Contains(reply.Error, "0.0.0") || !strings.Contains(reply.Error, "0.0.1") {
 			t.Fatalf("wrong release diagnostic: %s", reply.Error)
 		}
+		for _, installer := range []string{"install.sh", "install.ps1"} {
+			if !strings.Contains(reply.Error, "https://raw.githubusercontent.com/jay-waves/sshore/main/"+installer) {
+				t.Fatalf("missing installer link for %s: %s", installer, reply.Error)
+			}
+		}
 	})
 	if !t.Run("cold start detach and reattach", func(t *testing.T) {
 		run(t, "shell", endpoint, []string{"--no-profile"}, func(send func(string), wait terminalWait) {
@@ -91,6 +96,11 @@ func TestWindowsOpenSSH(t *testing.T) {
 		if !strings.Contains(reply.Error, "does not exist") {
 			t.Fatalf("expected missing task after shell exit, got %q", reply.Error)
 		}
+	})
+	t.Run("origin resource approval", func(t *testing.T) {
+		testWindowsOriginApproval(t, host, command, func(t *testing.T, endpoint string, steps func(func(string), terminalWait)) {
+			run(t, "shell", endpoint, []string{"--no-profile"}, steps)
+		})
 	})
 	t.Run("kill a detached shell", func(t *testing.T) {
 		const target = host + ":ci-kill"

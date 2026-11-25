@@ -10,18 +10,15 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
-	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/release"
+	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/term"
-
-	"github.com/jay-waves/sshore/internal/sys"
 )
 
 // Return the remote home directory from the readiness reply. Shell selection
@@ -64,7 +61,7 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, host string, chooseShell 
 			return message{}, fmt.Errorf("%s", m.Error)
 		}
 		if m.SoftwareVersion != version {
-			return message{}, fmt.Errorf("Unexpected remote version %q. %s", m.SoftwareVersion, remoteVersionHelp(host))
+			return message{}, release.VersionMismatch(version, m.SoftwareVersion, "remote")
 		}
 		switch m.Type {
 		case "setup_ready":
@@ -111,92 +108,28 @@ func negotiateSetupWithInput(r io.Reader, w io.Writer, host string, chooseShell 
 var linuxInstaller string
 
 func runBootstrap(parsed cliArguments) (int, error) {
-	var err error
-	host, target := "here", ""
-	local, bare := true, false
+	var target string
 	if len(parsed.operands) != 0 {
-		bare = isBareSSHHost(parsed.operands[0])
-		host, target, err = installTarget(parsed.operands[0])
-		if err != nil {
-			return 2, err
+		var local bool
+		target, local = strings.CutPrefix(parsed.operands[0], "here:")
+		if !local {
+			return 2, usage("bootstrap installs on this machine; use here: or here:PATH")
 		}
-		local = !bare && host == "here"
 	}
-	if strings.ContainsAny(target, "\x00\r\n") {
-		return 2, usage("invalid installation path")
-	}
-	if local {
-		if len(parsed.ssh) != 0 {
-			return 2, usage("SSH options require a remote installation target")
-		}
-		if target != "" && !filepath.IsAbs(target) {
-			return 2, usage("installation path must be absolute")
-		}
-		if parsed.has("--apply") {
-			if target == "" {
-				return 2, usage("applying a prepared release requires here:PATH")
-			}
-			return 0, bootstrapRelease(target)
-		}
-		if runtime.GOOS == "linux" {
-			showInstallDestination(host, target)
-		}
-		return 0, runLocalInstaller(target)
-	}
-	if host == "origin" && !bare {
-		return 2, usage("bootstrap requires here: or an SSH host")
+	if target != "" && (!filepath.IsAbs(target) || strings.ContainsAny(target, "\x00\r\n")) {
+		return 2, usage("installation path must be absolute and contain no line breaks")
 	}
 	if parsed.has("--apply") {
-		return 2, usage("applying a prepared release requires here:PATH")
-	}
-	if target != "" && !strings.HasPrefix(target, "/") {
-		return 2, usage("remote installation path must be absolute")
-	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	// Keep SSH stdin available for task shutdown confirmation after authentication.
-	command := "sh -c " + shellQuote(linuxInstaller) + " install.sh --version " + shellQuote(version)
-	if target != "" {
-		command += " --path " + shellQuote(target)
-	} else {
-		// Match the executable lookup used by managed remote connections.
-		command = "if target=$(command -v sshore); then case \"$target\" in /*) ;; *) target=\"$PWD/$target\";; esac; set -- --path \"$target\"; else set --; fi; " +
-			command + " \"$@\""
-	}
-	showInstallDestination(host, target)
-	connection := sshio.Options{Host: host, Args: parsed.ssh, Command: command, Confirm: confirmSSHHost, Secret: promptSSHSecret}
-	connection = withSSHDiagnostics(connection, os.Stderr, nil)
-	if err := sshio.Run(ctx, connection, os.Stdin, os.Stdout, os.Stderr); err != nil {
-		return 1, fmt.Errorf("remote installation on %s: %w", cleanText(host), err)
-	}
-	return 0, nil
-}
-
-func showInstallDestination(host, target string) {
-	if !term.IsTerminal(int(os.Stderr.Fd())) {
-		return
-	}
-	destination := sshio.FormatEndpoint(host, target)
-	fmt.Fprintln(os.Stderr, termui.StatusLine(termui.ColorEnabled(os.Stderr), termui.Info, "Resetting and reinstalling sshore · "+cleanText(destination)))
-}
-
-func installTarget(value string) (string, string, error) {
-	if isBareSSHHost(value) {
-		if err := validSSHDestination(value); err != nil {
-			return "", "", err
+		if target == "" {
+			return 2, usage("applying a prepared release requires here:PATH")
 		}
-		return value, "", nil
+		return 0, bootstrapRelease(target)
 	}
-	return splitEndpoint(value)
-}
-
-func remoteVersionHelp(host string) string {
-	target := "HOST:"
-	if host != "" {
-		target = shellQuote(sshio.FormatEndpoint(host, ""))
+	if runtime.GOOS == "linux" && term.IsTerminal(int(os.Stderr.Fd())) {
+		fmt.Fprintln(os.Stderr, termui.StatusLine(termui.ColorEnabled(os.Stderr), termui.Info,
+			"Resetting and reinstalling sshore · "+cleanText("here:"+target)))
 	}
-	return "Remote sshore must match local version " + version + ". Run sshore bootstrap " + target +
-		" to reset and reinstall the remote account, or sshore bootstrap if this machine is older. Bootstrap ends tasks and clears sshore state. For a custom remote path, use HOST:/absolute/path."
+	return 0, runLocalInstaller(target)
 }
 
 // Return the canonical components for exact matching and upgrade ordering.
@@ -319,8 +252,11 @@ func setupLock() (*sys.FileLock, error) {
 
 func requireInstalledRelease(target string) error {
 	installed, err := executableVersion(target)
-	if err != nil || installed != version {
-		return errors.New(remoteVersionHelp(""))
+	if err != nil {
+		return fmt.Errorf("cannot verify installed sshore %s at %q.\n%s", version, target, release.InstallHelp)
+	}
+	if installed != version {
+		return release.VersionMismatch(version, installed, "installed executable")
 	}
 	record, err := existingDaemonRecord()
 	if os.IsNotExist(err) {

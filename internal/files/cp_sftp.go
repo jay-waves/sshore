@@ -50,6 +50,13 @@ const (
 // Paths on approved streams are virtual. Direct copies use the remote working directory.
 func (f *FS) resolve(name string) string {
 	if f.direct {
+		// Windows advertises its home as /C:/... so clients can use POSIX joins.
+		if drivePath, ok := strings.CutPrefix(name, "/"); ok {
+			native := filepath.FromSlash(drivePath)
+			if len(filepath.VolumeName(native)) == 2 && filepath.IsAbs(native) {
+				return filepath.Clean(native)
+			}
+		}
 		if !path.IsAbs(name) && !filepath.IsAbs(filepath.FromSlash(name)) {
 			name = path.Join(f.cwd, name)
 		}

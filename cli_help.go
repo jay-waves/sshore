@@ -95,19 +95,16 @@ choose one in the terminal with Tab completion.
 			examples: "Install the configured public key\n  sshore copy-id work\n",
 		},
 		"bootstrap": {
-			run: runBootstrap, group: groupAccount, summary: "Reset the target account and reinstall sshore",
-			ssh: true, max: 1, flags: []string{"--apply"},
-			help: `Usage: sshore bootstrap [HOST[:PATH]] [-- SSH_OPTIONS]
+			run: runBootstrap, group: groupAccount, summary: "Reset the local account and reinstall sshore",
+			max: 1, flags: []string{"--apply"},
+			help: `Usage: sshore bootstrap [here:[PATH]]
 
-Reset this account and reinstall the latest release, or reset HOST's account and
-install the exact local version over SSH. Every run ends the target's sshore
-tasks (including pinned shells) and clears its identity, history and caches.
-This also applies when the version already matches. If tasks are running,
-review the list and confirm before continuing. Run outside the target's managed shells.
-Omit the target or use here: to install locally. Use HOST or HOST: to select a remote
-default path, or append an absolute path to either endpoint.
-` + sshOptions,
-			examples: "Reset and reinstall this account\n  sshore bootstrap\nReset and reinstall the account on work\n  sshore bootstrap work\n",
+Reset this account and reinstall the latest release. This ends local sshore tasks,
+including pinned shells, and clears identity, history and caches even when the
+version already matches. Review and confirm any running tasks before continuing.
+Run outside managed shells. Use here:PATH to specify an absolute executable path.
+`,
+			examples: "Reset and reinstall this account\n  sshore bootstrap\n",
 		},
 		"exec": {
 			run: runExec, selector: cliHostSelector, group: groupSSH, summary: "Execute a command over SSH",
