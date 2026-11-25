@@ -9,8 +9,11 @@ import (
 )
 
 func serveRemoteRequest(req remoteServiceRequest) error {
+	if req.Operation == "shell" {
+		return serveRemote(req, nil)
+	}
 	if req.Operation != "mount-agent" {
-		return fmt.Errorf("Windows remote hosts support the mount service only")
+		return fmt.Errorf("Windows remote hosts support shell and mount services")
 	}
 
 	account, stop, err := prepareWindowsMountAgent(req)
@@ -26,8 +29,7 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 	if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", HomeDirectory: home}); err != nil {
 		return err
 	}
-	// Windows does not host detached remote shells. Without a validator, the
-	// agent rejects every request that carries a shell approval.
+	// Windows mount agents accept direct mounts. Shell approvals require a route validator.
 	return files.ServeAgentWithPeer(agentStdio(), version, account, beginIncomingMountTask)
 }
 

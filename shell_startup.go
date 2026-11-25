@@ -107,6 +107,9 @@ func (s *shellTask) startManagedShell(m message) error {
 	var env []string
 	if s.hosted {
 		path = cmp.Or(localEnvironmentValue(source, "SHELL"), "/bin/bash")
+		if runtime.GOOS == "windows" {
+			path = localShellPath(source)
+		}
 		exe, _ := os.Executable()
 		env = hostedShellEnvironment(source, m.Term, s.record.UID, exe)
 	} else {

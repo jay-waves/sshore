@@ -3,8 +3,9 @@
 - Keep implementations and workflows simple. Avoid speculative fallbacks and redundant checks.
   The publisher handles release failures.
 - Support Linux and Windows amd64 clients. Support remote shells and services on Linux amd64,
-  and remote SFTP mounts on NTFS and ReFS on Windows amd64. Windows remote shells, split panes,
-  and tiling are out of scope. See [platform scope](docs/ARCHITECTURE.md#terminal-and-mux-design-scope).
+  and remote SFTP mounts on NTFS and ReFS on Windows amd64. Windows remote shell hosting is
+  experimental. Split panes and tiling are out of scope.
+  See [platform scope](docs/ARCHITECTURE.md#terminal-and-mux-design-scope).
 - Manage only the authenticated account daemon and its registered tasks. Verify process identity
   before signaling. Never kill by process name or adopt unregistered processes. Require exact full
   release versions for normal connections. Follow the [update, reset, and approval safeguards](docs/SECURITY.md).
