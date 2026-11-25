@@ -73,7 +73,7 @@ func TestWindowsOpenSSH(t *testing.T) {
 			wait("Detached from " + endpoint)
 		})
 		run(t, "attach", endpoint, nil, func(send func(string), wait terminalWait) {
-			wait("Connected " + endpoint)
+			wait("CI_READY=retained")
 			send("echo CI_RESUMED=%SSHORE_REMOTE_STATE%\r")
 			wait("CI_RESUMED=retained")
 			send("exit\r")
