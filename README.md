@@ -64,7 +64,7 @@ Use `sshore fwd SOURCE TARGET` to mirror a TCP service. For example, run
 at `127.0.0.1:9091` on your computer. Approve the target port on your computer
 to resume the remote shell.
 
-## Shells — Start, detach and resume
+## mux — Start, detach and resume
 
 `sshore shell` (`sh`) opens a shell on the machine running the command.
 `sshore shell work` opens one over SSH. Each shell receives an automatic ID.
