@@ -33,10 +33,8 @@ pinned shells, and clears its sshore identity, history and cached releases.
 
 ## OS and shell support
 
-| Platform (amd64) | Local shells | Remote hosting |
-| --- | --- | --- |
-| Linux | bash, sh, zsh, fish | Supported |
-| Windows 11 / Server 2025 or newer | PowerShell 7, cmd | SFTP mounts, direct TCP forwarding |
+Linux and Windows 11 / Server 2025 or newer are core platforms for amd64 clients and hosts.
+Supported shells include bash, sh, zsh and fish on Linux, and PowerShell 7 and cmd on Windows.
 
 Managed shells and their resource routes require the host's SSH server to
 allow TCP forwarding to loopback.
