@@ -158,7 +158,7 @@ func runKillAll(o options) (int, error) {
 	var views []resourceView
 	if o.host == "" {
 		var err error
-		snapshot, err = daemonAdmin(ctx, "snapshot", nil)
+		snapshot, err = readDaemonSnapshot(ctx)
 		if os.IsNotExist(err) {
 			fmt.Println("No account daemon is running.")
 			return 0, nil
@@ -173,8 +173,8 @@ func runKillAll(o options) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		o.command = "daemon-admin"
-		connection := withSSHDiagnostics(sshConnectionOptions(o), os.Stderr, nil)
+		command := renderRemoteCommand(o.server, remoteServiceRequest{Operation: "daemon-admin"})
+		connection := withSSHDiagnostics(sshConnectionOptions(o, command), os.Stderr, nil)
 		process, err := transportio.Start(ctx, connection, os.Stderr)
 		if err != nil {
 			return 1, err

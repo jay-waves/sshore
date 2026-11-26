@@ -10,12 +10,15 @@ and channels. The root package owns command policy, authorization and task
 lifecycles. For exact behavior, start at the command entry point and follow it
 to the platform implementation and its tests.
 
+Each client command selects its SSH service. The remote entry point checks the
+release and passes operation-specific arguments to the service handler.
+
 - **How is a command parsed and dispatched?** [Command definitions and help](../cli_help.go),
   [parser](../cli_schema.go), [dispatch](../cli.go)
 - **How does a client connect and authenticate?** [Client connections](../client_connection.go),
   [configuration evaluation](../internal/sshconfig/), [SSH transport and host
   verification](../internal/ssh/)
-- **How are installation and approval enforced?** [Setup](../setup.go), [approval
+- **How are installation and approval enforced?** [Installation](../install.go), [approval
   handling](../review.go), [request validation](../review_store.go)
 - **How do copy, mount and forwarding reach their target?** [Resource commands](../cli.go), [shell
   routes](../resource_route.go), [filesystem operations](../internal/files/),

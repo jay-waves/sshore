@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/release"
+
 	"github.com/fsnotify/fsnotify"
 	"github.com/xtaci/smux"
 )
@@ -70,7 +72,7 @@ func serveMountAgent(conn io.ReadWriteCloser, version, account string, observe f
 	if err != nil {
 		return err
 	}
-	err = checkPeerVersion(version, m.SoftwareVersion, "mount client")
+	err = release.Check(version, m.SoftwareVersion, "mount client")
 	if err == nil && m.Type != "mount_data" && m.Type != "mount_watch" {
 		err = fmt.Errorf("invalid mount handshake")
 	}

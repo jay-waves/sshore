@@ -22,14 +22,8 @@ curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | 
 irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 ```
 
-Installers add the executable directory to the user PATH. Linux updates `.profile`,
-`.bashrc` and `.zshenv`; Windows updates the user environment. New sessions are
-needed, and SSH server environment settings must allow that PATH to take effect.
-
-Managed connections require matching releases. `sshore bootstrap work` installs
-your exact release on the Linux host `work`. `sshore bootstrap` installs the
-latest release locally. Either command ends the target account's tasks, including
-pinned shells, and clears its sshore identity, history and cached releases.
+The installer adds sshore to your user `PATH` (on Linux, it updates `.bashrc`).
+To reinstall, run the same install command again.
 
 ## OS and shell support
 
@@ -64,7 +58,10 @@ to resume the remote shell.
 
 ## mux — Start, detach and resume
 
-Detach a child, do something, then resume it. 
+`sshore detach` pins the current shell until it exits and returns you to its
+parent shell. If there is no parent shell, it opens the sshore command prompt
+(`sshore>`). You can also open the command prompt from an active shell with
+`Ctrl+B s`.
 
 ```text
 $ sshore shell
@@ -148,6 +145,15 @@ Mounts use SFTP and require FUSE on Linux, [WinFsp](https://winfsp.dev/) on
 Windows, or the [macFUSE](https://macfuse.github.io/) kernel extension on
 experimental macOS builds. The command prints the mountpoint and how to stop
 it. Close open files before unmounting.
+
+## Advanced usage
+
+- OSC 52 clipboard passthrough.
+- `Ctrl+B` shortcuts:
+  - `Ctrl+B c` opens a nested shell.
+  - `Ctrl+B d` pins and detaches the current shell.
+  - `Ctrl+B s` or `Ctrl+B :` opens the command prompt.
+  - `Ctrl+B r` redraws the terminal.
 
 ## Help and troubleshooting
 

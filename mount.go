@@ -171,7 +171,7 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 	}
 	connection = withSSHDiagnostics(connection, os.Stderr, auth)
 	c.Prepare = func(_ context.Context, wire io.ReadWriter) (string, error) {
-		return negotiateSetup(wire, wire, o.Host, false)
+		return negotiateFileSetup(wire)
 	}
 	var data, watch *sshio.Process
 	defer func() {
@@ -207,7 +207,8 @@ func mountSSHOptions(o ftpOptions) sshio.Options {
 	if o.Connection != nil {
 		args, server = o.Connection.SSH, o.Connection.Server
 	}
-	return sshio.Options{Host: o.Host, Args: args, Command: remoteCommand(options{command: "mount-agent", host: o.Host, server: server}), Confirm: confirmSSHHost, Secret: promptSSHSecret}
+	command := renderRemoteCommand(server, remoteServiceRequest{Operation: "mount-agent"})
+	return sshio.Options{Host: o.Host, Args: args, Command: command, Confirm: confirmSSHHost, Secret: promptSSHSecret}
 }
 
 func runDaemonMount(config resourceConfig, enc *json.Encoder, dec *json.Decoder, c net.Conn, log io.Writer, request localDaemonRequest, tasks *daemonTasks) error {

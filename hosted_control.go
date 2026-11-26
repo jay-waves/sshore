@@ -112,17 +112,17 @@ func runHostedCommand(o options) (int, error) {
 	}
 }
 
-func serveTaskControl(req remoteServiceRequest) error {
-	if req.Mode != "kill" && req.Mode != "rename" {
+func serveTaskControl(mode string, query taskQuery, newName string) error {
+	if mode != "kill" && mode != "rename" {
 		return usage("invalid task operation")
 	}
-	if err := validSession(req.Name); err != nil {
+	if err := validSession(query.Ref); err != nil {
 		return err
 	}
-	target, err := selectRegisteredTask(taskQuery{Ref: req.Name, UID: req.Instance})
+	target, err := selectRegisteredTask(query)
 	if err != nil {
 		return err
 	}
-	_, err = mutateRegisteredTask(req.Mode, target, req.NewName)
+	_, err = mutateRegisteredTask(mode, target, newName)
 	return err
 }

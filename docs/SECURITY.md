@@ -351,6 +351,12 @@ The authenticated SSH exec channel passes a versioned service request before
 starting the selected protocol. The request selects a handler and carries no
 additional authority. Approved routes and task mutations retain their existing
 source, identity and account-daemon checks.
+Shell, file and forward services reject a mismatched release with a framed
+error before opening a task or stream. The client uses the reported versions
+to show the mismatch and installer links.
+Remote services use a base64-encoded command argument and reject unknown or
+duplicate JSON members. Linux `kill --all`
+retains the raw JSON argument for the cross-release snapshot and shutdown exchange.
 Run the platform installer locally on each endpoint. `bootstrap` resets and reinstalls
 the local account.
 Installers verify the release checksum and executable version. The prepared binary
@@ -379,9 +385,8 @@ replacement is published. See [release mechanics](RELEASE.md).
 `reset` uses the authenticated administrative snapshot and shutdown before clearing
 local state and cached releases. Failed shutdown stops reset; busy mounts may refuse
 cleanup. Custom state roots are cleared by entry name, including when inherited
-from the running daemon. Account cleanup removes the daemon locator, log and legacy hosted-shell exit receipts.
-It also clears known receipt and socket entries from older runtime directories
-and preserves coordination locks to prevent concurrent startup.
+from the running daemon. Account cleanup removes the daemon locator and log.
+It preserves coordination locks to prevent concurrent startup.
 
 ## Setup failure and legacy recovery
 
@@ -414,7 +419,7 @@ each resource key. EOF or a missed heartbeat releases that connection's
 registration. These read-only entries establish transport participation.
 Resource control requires separate authorization. Attachment-source metadata is advisory.
 
-Cached shell relationships, task IDs, legacy exit receipts and worker liveness
+Cached shell relationships, task IDs and worker liveness
 are not proof of identity, successful cleanup or remote service health. Targets
 are not probed. `list` reads remote shell observations from the local daemon.
 `pstree` uses the last observed shell state and parent to render its branches.

@@ -43,7 +43,7 @@ func shutdownDaemonEndpoint(ctx context.Context, dir string, record localShellRe
 		return err
 	}
 	defer owner.Close()
-	if _, err := daemonAdministrationAt(ctx, record, "shutdown", &expected); err != nil {
+	if _, err := daemonAdminRequest(ctx, record, daemonShutdownRoute, &expected); err != nil {
 		return err
 	}
 	recordPath := filepath.Join(dir, "daemon.json")
@@ -82,8 +82,7 @@ type daemonSnapshot struct {
 }
 type daemonAdminReply struct {
 	Snapshot daemonSnapshot
-	Error    string   `json:",omitempty"`
-	Runtime  []string `json:",omitempty"` // Received from older daemons during reset.
+	Error    string `json:",omitempty"`
 }
 
 func (s *daemonTasks) adminSnapshot(record localShellRecord) daemonAdminReply {
@@ -97,27 +96,23 @@ func (s *daemonTasks) adminSnapshot(record localShellRecord) daemonAdminReply {
 	return daemonAdminReply{Snapshot: snapshot}
 }
 
-func daemonAdmin(ctx context.Context, action string, expected *daemonSnapshot) (daemonSnapshot, error) {
-	reply, err := daemonAdministration(ctx, action, expected)
-	return reply.Snapshot, err
-}
-func daemonAdministration(ctx context.Context, action string, expected *daemonSnapshot) (daemonAdminReply, error) {
+func readDaemonSnapshot(ctx context.Context) (daemonSnapshot, error) {
 	r, err := existingDaemonRecord()
 	if err != nil {
-		return daemonAdminReply{}, err
+		return daemonSnapshot{}, err
 	}
-	return daemonAdministrationAt(ctx, r, action, expected)
+	return daemonAdminRequest(ctx, r, daemonSnapshotRoute, nil)
 }
 
-func daemonAdministrationAt(ctx context.Context, r localShellRecord, action string, expected *daemonSnapshot) (daemonAdminReply, error) {
+func daemonAdminRequest(ctx context.Context, r localShellRecord, route string, expected *daemonSnapshot) (daemonSnapshot, error) {
 	var reply daemonAdminReply
-	if err := daemonJSON(ctx, r, "/admin/"+action, expected, &reply); err != nil {
-		return reply, err
+	if err := daemonJSON(ctx, r, route, expected, &reply); err != nil {
+		return daemonSnapshot{}, err
 	}
 	if reply.Error != "" {
-		return reply, fmt.Errorf("%s", reply.Error)
+		return daemonSnapshot{}, fmt.Errorf("%s", reply.Error)
 	}
-	return reply, nil
+	return reply.Snapshot, nil
 }
 
 func (s *daemonTasks) beginShutdown(record localShellRecord, expected daemonSnapshot) ([]daemonTask, error) {
@@ -210,7 +205,7 @@ func (t *nativeShellTask) stopTask() error { return t.shell.stopTask() }
 // An SSH exec channel exposes only the authenticated account's admin exchange.
 // Waiting for confirmation never grants the helper permission to start tasks.
 func serveDaemonAdmin(input io.Reader, output io.Writer) error {
-	snapshot, err := daemonAdmin(context.Background(), "snapshot", nil)
+	snapshot, err := readDaemonSnapshot(context.Background())
 	if os.IsNotExist(err) {
 		err = nil
 	}

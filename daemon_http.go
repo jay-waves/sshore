@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"fmt"
 	"io"
 	"net"
@@ -117,8 +118,8 @@ func upgradeDaemonConn(ctx context.Context, c net.Conn, record localShellRecord,
 	if resp.Header.Get("Upgrade") != daemonUpgrade {
 		return nil, fmt.Errorf("invalid daemon stream upgrade response")
 	}
-	if resp.Header.Get("Sshore-Version") != version {
-		return nil, fmt.Errorf("daemon version mismatch during stream upgrade")
+	if err := checkPeerVersion(resp.Header.Get("Sshore-Version"), "daemon"); err != nil {
+		return nil, err
 	}
 	return daemonStream{c, reader}, nil
 }
@@ -152,15 +153,8 @@ func readDaemonBody(w http.ResponseWriter, r *http.Request, out any) bool {
 }
 
 func decodeDaemonBody(w http.ResponseWriter, r *http.Request, limit int64, out any) error {
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
-	if err := decoder.Decode(out); err != nil {
-		return err
-	}
 	// Consume the complete body before an upgrade takes ownership of the connection.
-	if _, err := decoder.Token(); err != io.EOF {
-		return fmt.Errorf("invalid trailing request data")
-	}
-	return nil
+	return jsonv2.UnmarshalRead(http.MaxBytesReader(w, r.Body, limit), out)
 }
 
 func daemonDo(req *http.Request) (*http.Response, error) {
@@ -173,6 +167,9 @@ func daemonDo(req *http.Request) (*http.Response, error) {
 }
 
 func daemonResponseError(resp *http.Response) error {
+	if peer := resp.Header.Get("Sshore-Version"); resp.StatusCode == http.StatusConflict && peer != "" && peer != version {
+		return checkPeerVersion(peer, "daemon")
+	}
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if detail := strings.TrimSpace(string(body)); detail != "" {

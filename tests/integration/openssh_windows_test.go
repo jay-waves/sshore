@@ -29,10 +29,13 @@ func TestWindowsOpenSSH(t *testing.T) {
 	const endpoint = host + ":ci-shell"
 	sshOptions := []string{"-F", "none", "-p", "22222", "-l", "sshore-fixture", "-i", key,
 		"-o", "IdentitiesOnly=yes", "-o", "UserKnownHostsFile=" + hosts, "-o", "StrictHostKeyChecking=yes"}
-	raw := func(t *testing.T, release, mode, name string) (reply struct{ Type, Error string }) {
+	raw := func(t *testing.T, operation, release, mode, name string) (reply struct {
+		Type, Error     string
+		SoftwareVersion string `json:"software_version"`
+	}) {
 		t.Helper()
 		request, err := json.Marshal(map[string]any{
-			"protocol": 1, "release": release, "operation": "shell", "mode": mode, "name": name,
+			"protocol": 1, "release": release, "operation": operation, "mode": mode, "name": name,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -44,7 +47,7 @@ func TestWindowsOpenSSH(t *testing.T) {
 		probe.Stderr = &diagnostic
 		out, runErr := probe.Output()
 		if err := json.Unmarshal(out, &reply); err != nil {
-			t.Fatalf("remote shell response: %v (%v)\n%s\n%s", err, runErr, out, diagnostic.String())
+			t.Fatalf("remote %s response: %v (%v)\n%s\n%s", operation, err, runErr, out, diagnostic.String())
 		}
 		if runErr == nil || reply.Type != "fatal" {
 			t.Fatalf("expected service rejection, got %s (exit %v)", out, runErr)
@@ -60,14 +63,18 @@ func TestWindowsOpenSSH(t *testing.T) {
 		}
 	}
 	t.Run("reject release mismatch", func(t *testing.T) {
-		reply := raw(t, "0.0.1", "new", "wrong-release")
-		if !strings.Contains(reply.Error, "0.0.0") || !strings.Contains(reply.Error, "0.0.1") {
-			t.Fatalf("wrong release diagnostic: %s", reply.Error)
-		}
-		for _, installer := range []string{"install.sh", "install.ps1"} {
-			if !strings.Contains(reply.Error, "https://raw.githubusercontent.com/jay-waves/sshore/main/"+installer) {
-				t.Fatalf("missing installer link for %s: %s", installer, reply.Error)
-			}
+		for _, operation := range []string{"shell", "cp-agent", "mount-agent", "forward-agent"} {
+			t.Run(operation, func(t *testing.T) {
+				reply := raw(t, operation, "0.0.1", "new", "wrong-release")
+				if reply.SoftwareVersion != "0.0.0" || !strings.Contains(reply.Error, "0.0.0") || !strings.Contains(reply.Error, "0.0.1") {
+					t.Fatalf("wrong release diagnostic: %+v", reply)
+				}
+				for _, installer := range []string{"install.sh", "install.ps1"} {
+					if !strings.Contains(reply.Error, "https://raw.githubusercontent.com/jay-waves/sshore/main/"+installer) {
+						t.Fatalf("missing installer link for %s: %s", installer, reply.Error)
+					}
+				}
+			})
 		}
 	})
 	if !t.Run("cold start detach and reattach", func(t *testing.T) {
@@ -92,7 +99,7 @@ func TestWindowsOpenSSH(t *testing.T) {
 		return
 	}
 	t.Run("exited shell cannot be attached", func(t *testing.T) {
-		reply := raw(t, "0.0.0", "attach", "ci-renamed")
+		reply := raw(t, "shell", "0.0.0", "attach", "ci-renamed")
 		if !strings.Contains(reply.Error, "does not exist") {
 			t.Fatalf("expected missing task after shell exit, got %q", reply.Error)
 		}
@@ -110,7 +117,7 @@ func TestWindowsOpenSSH(t *testing.T) {
 			wait("Detached from " + target)
 		})
 		windowsRun(t, command(append([]string{"kill", target, "--"}, sshOptions...)...))
-		if reply := raw(t, "0.0.0", "attach", "ci-kill"); !strings.Contains(reply.Error, "does not exist") {
+		if reply := raw(t, "shell", "0.0.0", "attach", "ci-kill"); !strings.Contains(reply.Error, "does not exist") {
 			t.Fatalf("expected killed task to be absent, got %q", reply.Error)
 		}
 	})

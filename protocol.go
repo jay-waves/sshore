@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -204,10 +205,17 @@ func streamMessage(s attachmentControl, m message) error {
 
 // Check the running process, not just the executable currently on disk.
 func checkPeerVersion(peer, role string) error {
-	if sameRelease(version, peer) {
-		return nil
+	return release.Check(version, peer, role)
+}
+
+// Prefer a reported release mismatch to the peer's error text. Relays can
+// report failures before they have learned the peer's release.
+func (m message) peerError(role string) error {
+	if (m.Type == "fatal" || m.Type == "error") &&
+		(m.SoftwareVersion == "" || m.SoftwareVersion == version) {
+		return errors.New(m.Error)
 	}
-	return release.VersionMismatch(version, peer, role)
+	return checkPeerVersion(m.SoftwareVersion, role)
 }
 
 type attachmentControl interface {
@@ -227,7 +235,7 @@ func clientAttachment(c attachmentControl) error {
 	if err != nil {
 		return fmt.Errorf("SSH shell handshake failed: %w", err)
 	}
-	if err := checkPeerVersion(m.SoftwareVersion, "shell daemon"); err != nil {
+	if err := m.peerError("shell daemon"); err != nil {
 		return err
 	}
 	if m.Type != "attach_control_ready" {

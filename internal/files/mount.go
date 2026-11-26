@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/release"
 	sftp "github.com/pkg/sftp/v2"
 	sshfx "github.com/pkg/sftp/v2/encoding/ssh/filexfer"
 	"github.com/pkg/sftp/v2/encoding/ssh/filexfer/openssh"
@@ -446,13 +445,6 @@ func (r mountByteReader) ReadByte() (byte, error) {
 	var b [1]byte
 	_, err := io.ReadFull(r.Reader, b[:])
 	return b[0], err
-}
-
-func checkPeerVersion(local, peer, role string) error {
-	if local != "" && local == peer {
-		return nil
-	}
-	return release.VersionMismatch(local, peer, role)
 }
 
 func serveMountData(data io.ReadWriteCloser) error {

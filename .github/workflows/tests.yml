@@ -45,7 +45,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           # Use the patched Go release already in the Windows runner's tool cache.
-          go-version: '1.26.x'
+          go-version: '1.27.x'
       - name: Installer on Windows PowerShell 5.1
         shell: powershell
         run: ./tests/install_windows_test.ps1

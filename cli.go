@@ -794,16 +794,8 @@ func shortDirectory(path, home string) string {
 // #N unambiguously selects an index. Filtering never attaches automatically.
 // Setup validates remote names and closes the reader before sending a selection.
 
-func chooseSetupSession(input setupInput, names []string) (string, error) {
-	i, err := chooseLocalItem(input, names, names, "Shell (#number/name, /filter; Enter cancels): ", "shell")
-	if err != nil {
-		return "", err
-	}
-	return names[i], nil
-}
-
 // Return the original row so callers can use the identity attached to it.
-func chooseLocalItem(input setupInput, names, labels []string, prompt, kind string) (int, error) {
+func chooseLocalItem(input promptReader, names, labels []string, prompt, kind string) (int, error) {
 	return termui.ChooseItem(input, names, labels, prompt, kind)
 }
 

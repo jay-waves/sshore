@@ -3,5 +3,3 @@
 package main
 
 func handoffRemoteShell(o options) (bool, error) { return false, nil }
-
-func resetHostedExitState(string, []string) error { return nil }

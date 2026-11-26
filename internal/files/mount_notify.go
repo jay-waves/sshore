@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/release"
 )
 
 const ftpWatchLimit = 128
@@ -279,7 +281,7 @@ func negotiateMount(c io.ReadWriter, mode, version string, source *MountApproval
 	if err != nil {
 		return err
 	}
-	if err = checkPeerVersion(version, m.SoftwareVersion, "remote mount agent"); err != nil {
+	if err = release.Check(version, m.SoftwareVersion, "remote mount agent"); err != nil {
 		return err
 	}
 	if m.Type != "mount_ready" {

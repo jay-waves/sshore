@@ -79,12 +79,12 @@ func runReset() error {
 		return err
 	}
 	defer startup.Close()
-	reply, err := daemonAdministration(context.Background(), "snapshot", nil)
+	snapshot, err := readDaemonSnapshot(context.Background())
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	if err == nil {
-		if err := requestDaemonShutdown(reply.Snapshot); err != nil {
+		if err := requestDaemonShutdown(snapshot); err != nil {
 			return fmt.Errorf("reset stopped; application state retained: %w", err)
 		}
 	}
@@ -93,7 +93,7 @@ func runReset() error {
 		return err
 	}
 	defer owner.Close()
-	if err := paths.clear(reply.Runtime, setup, startup, owner); err != nil {
+	if err := paths.clear(setup, startup, owner); err != nil {
 		return err
 	}
 	fmt.Println("Reset complete; local tasks ended and application state and caches cleared.")
@@ -101,7 +101,7 @@ func runReset() error {
 }
 
 // clear runs with setup, startup and owner locked.
-func (p resetPaths) clear(runtimeDirs []string, locks ...*sys.FileLock) error {
+func (p resetPaths) clear(locks ...*sys.FileLock) error {
 	// Keep lock inodes stable: a waiting client must never acquire a deleted lock
 	// while another client starts a replacement daemon under a different inode.
 	keep := make(map[string]bool)
@@ -111,9 +111,6 @@ func (p resetPaths) clear(runtimeDirs []string, locks ...*sys.FileLock) error {
 			return err
 		}
 		keep[filepath.Join(parent, filepath.Base(lock.Path()))] = true
-	}
-	if err := resetHostedExitState(p.account, runtimeDirs); err != nil {
-		return err
 	}
 	if p.customState {
 		// A custom state directory may contain user files; clear only sshore's

@@ -16,31 +16,30 @@ import (
 )
 
 func serveRemoteRequest(req remoteServiceRequest) error {
-	switch req.Operation {
-	case "shell":
-		return serveRemote(req)
-	case "cp-agent", "mount-agent":
-		if runtime.GOOS == "windows" {
-			return serveRemoteFileService(req, beginCommandActivity)
-		}
-		return serveRemoteFileService(req, func() (func(), error) {
-			return leaseActivity(leaseRequest{Kind: "heartbeat"})
-		})
-	case "forward-agent":
-		return serveForwardAgent(req)
-	case "daemon-admin":
-		if runtime.GOOS == "linux" {
-			// Maintenance keeps its own snapshot and shutdown verification.
-			return serveDaemonAdmin(os.Stdin, os.Stdout)
-		}
-	}
-	if runtime.GOOS == "linux" || req.Operation == "task-control" {
+	// Maintenance keeps its own snapshot and shutdown verification.
+	if req.Operation != "daemon-admin" {
 		if err := checkPeerVersion(req.Release, "client"); err != nil {
+			if req.Operation != "task-control" {
+				_ = writeMessage(os.Stdout, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
+			}
 			return err
 		}
 	}
-	if req.Operation == "task-control" {
-		return serveTaskControl(req)
+	switch req.Operation {
+	case "daemon-admin":
+		if runtime.GOOS == "linux" {
+			return serveDaemonAdmin(os.Stdin, os.Stdout)
+		}
+	case "task-control":
+		return serveTaskControl(req.Mode, taskQuery{Ref: req.Name, UID: req.Instance}, req.NewName)
+	case "shell":
+		return serveRemoteShell(req.Mode, req.Name, req.Instance, req.OpenIfUnavailable)
+	case "cp-agent":
+		return serveRemoteFileService(files.ServeCopy)
+	case "mount-agent":
+		return serveRemoteFileService(serveRemoteMount)
+	case "forward-agent":
+		return serveForwardAgent(req.Forward)
 	}
 	return usage("unknown remote service operation")
 }
@@ -65,8 +64,8 @@ func agentStdio() *stdioPipe {
 	return &stdioPipe{Reader: os.Stdin, Writer: os.Stdout, closers: []io.Closer{os.Stdin, os.Stdout}}
 }
 
-func serveRemoteFileService(req remoteServiceRequest, beginActivity func() (func(), error)) error {
-	stop, err := prepareRemoteFileService(req.Release, beginActivity)
+func serveRemoteFileService(serve func(io.ReadWriteCloser) error) error {
+	stop, err := prepareRemoteFileService()
 	if err != nil {
 		_ = writeMessage(os.Stdout, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
 		return err
@@ -79,17 +78,15 @@ func serveRemoteFileService(req remoteServiceRequest, beginActivity func() (func
 	if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", HomeDirectory: home}); err != nil {
 		return err
 	}
-	if req.Operation == "cp-agent" {
-		return files.ServeCopy(agentStdio())
-	}
-	account, _ := localMachineIdentity()
-	return files.ServeAgentWithPeer(agentStdio(), version, account, beginIncomingMountTask)
+	return serve(agentStdio())
 }
 
-func prepareRemoteFileService(peerRelease string, beginActivity func() (func(), error)) (func(), error) {
-	if err := checkPeerVersion(peerRelease, "client"); err != nil {
-		return nil, err
-	}
+func serveRemoteMount(stream io.ReadWriteCloser) error {
+	account, _ := localMachineIdentity()
+	return files.ServeAgentWithPeer(stream, version, account, beginIncomingMountTask)
+}
+
+func prepareRemoteFileService() (func(), error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -103,28 +100,27 @@ func prepareRemoteFileService(peerRelease string, beginActivity func() (func(), 
 		return nil, err
 	}
 	// Register the lease before reset or bootstrap can acquire the setup lock.
-	return beginActivity()
+	if runtime.GOOS == "windows" {
+		return beginCommandActivity()
+	}
+	return leaseActivity(leaseRequest{Kind: "heartbeat"})
 }
 
-func serveForwardAgent(req remoteServiceRequest) error {
-	if err := checkPeerVersion(req.Release, "client"); err != nil {
-		return err
-	}
-	if req.Forward == nil || req.Forward.Kind != "forward" {
+func serveForwardAgent(req *remoteForwardRequest) error {
+	if req == nil || req.Kind != "forward" {
 		return fmt.Errorf("invalid forward request")
 	}
-	op := *req.Forward
-	if err := (forwardConfig{Port: op.Port, Target: op.TargetPort}).Validate(); err != nil {
+	if err := (forwardConfig{Port: req.Port, Target: req.TargetPort}).Validate(); err != nil {
 		return err
 	}
-	serveRoutedForward(agentStdio(), op)
+	serveForward(agentStdio(), req.Port, req.TargetPort, req.Reverse)
 	return nil
 }
 
-func serveRoutedForward(c io.ReadWriteCloser, op operation) {
-	listenPort, targetPort := 0, op.TargetPort
-	if op.Reverse {
-		listenPort, targetPort = op.Port, 0
+func serveForward(c io.ReadWriteCloser, port, targetPort int, reverse bool) {
+	listenPort := 0
+	if reverse {
+		listenPort, targetPort = port, 0
 	}
 	published := false
 	s, err := forwardio.Start(context.Background(), listenPort, targetPort, false, func() (io.ReadWriteCloser, error) {

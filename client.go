@@ -202,7 +202,10 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		if lookupErr != nil {
 			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not read participating shells: %s\n", cleanText(lookupErr.Error()))
 		}
-		connection := withSSHDiagnostics(sshConnectionOptions(o), os.Stderr, nil)
+		command := renderRemoteCommand(o.server, remoteServiceRequest{
+			Operation: "task-control", Mode: o.command, Name: o.session, Instance: o.instance, NewName: o.newName,
+		})
+		connection := withSSHDiagnostics(sshConnectionOptions(o, command), os.Stderr, nil)
 		err := transportio.Run(context.Background(), connection, os.Stdin, os.Stdout, os.Stderr)
 		if err == nil && target.Instance != "" {
 			var updateErr error

@@ -334,8 +334,19 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 			return err
 		}
 	}
-	o := options{command: f.Command, host: f.Host, session: f.Name, instance: f.Instance, server: f.Server, ssh: f.SSH, sshDirectory: req.Record.Directory, openIfUnavailable: f.OpenIfUnavailable}
-	connection := sshConnectionOptions(o)
+	shellRequest := remoteServiceRequest{Operation: "shell", Mode: "bridge", Name: f.Name, Instance: f.Instance}
+	switch f.Command {
+	case "sh":
+		shellRequest.Mode = "new"
+	case "attach":
+		shellRequest.Mode = "attach"
+		shellRequest.OpenIfUnavailable = f.OpenIfUnavailable
+		if validTaskUID(f.Instance) {
+			shellRequest.Name = f.Instance
+		}
+	}
+	connection := sshConnectionOptions(options{host: f.Host, ssh: f.SSH, sshDirectory: req.Record.Directory},
+		renderRemoteCommand(f.Server, shellRequest))
 	connection.Environment = req.Env
 	connection.Confirm, connection.Secret = req.Auth.callbacks()
 	connection = withSSHDiagnostics(connection, diagnostics, req.Auth)
@@ -461,15 +472,13 @@ func (d *shellDiagnostics) relaySetup(pipes io.ReadWriter) (message, error) {
 		if err != nil {
 			return message{}, fmt.Errorf("remote shell setup failed: %w", err)
 		}
+		if err := m.peerError("remote setup"); err != nil {
+			return message{}, err
+		}
 		switch m.Type {
-		case "fatal":
-			return message{}, fmt.Errorf("%s", m.Error)
 		case "setup_ready":
 			if m.Action != "managed" {
 				return message{}, fmt.Errorf("invalid remote shell setup mode")
-			}
-			if err := checkPeerVersion(m.SoftwareVersion, "remote setup"); err != nil {
-				return message{}, err
 			}
 			// Drain diagnostics before the frontend advances to the task protocol.
 			d.mu.Lock()

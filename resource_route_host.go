@@ -75,7 +75,7 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message, relay fun
 		return
 	}
 	if request.Type == "route_forward" {
-		serveRoutedForward(c, op)
+		serveForward(c, op.Port, op.TargetPort, op.Reverse)
 		return
 	}
 	if writeMessage(c, message{Type: "resource_ready", SoftwareVersion: version}) == nil {

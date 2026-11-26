@@ -122,12 +122,6 @@ func (f forwardConfig) description(client, remote string) string {
 		sshio.FormatEndpoint(target, strconv.Itoa(f.Port))
 }
 
-// Remote helper selection is application policy; the engine receives opaque command text.
-func forwardRemoteCommand(f forwardConfig) string {
-	req := remoteServiceRequest{Operation: "forward-agent", Forward: &operation{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse}}
-	return renderRemoteCommand(f.Server, req)
-}
-
 func pendingPortDescription(op operation) string {
 	if op.Reverse {
 		return fmt.Sprintf("Mirror a local service on remote port %s", forwardio.Loopback(op.ServerPort()))
@@ -247,8 +241,14 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 			return openIndependentResource(ctx, *f.Connection, request, s)
 		})
 	}
-	connection := forwardSSHOptions(f, forwardRemoteCommand(f))
-	connection.Environment, connection.Directory = s.baseEnvironment(), s.directory
+	command := renderRemoteCommand(f.Server, remoteServiceRequest{
+		Operation: "forward-agent",
+		Forward:   &remoteForwardRequest{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse},
+	})
+	connection := sshio.Options{
+		Host: f.Host, Command: command, Args: f.SSH,
+		Environment: s.baseEnvironment(), Directory: s.directory,
+	}
 	var auth *sshAuthEndpoint
 	if initial {
 		auth = s.config.Auth
@@ -291,11 +291,6 @@ func (c forwardConfig) Validate() error {
 	return nil
 }
 
-// SSH resolves connection settings; the application binds its own forwarding rule.
-func forwardSSHOptions(c forwardConfig, command string) sshio.Options {
-	return sshio.Options{Host: c.Host, Command: command, Args: c.SSH}
-}
-
 func startSSHForward(ctx context.Context, f forwardConfig, config sshio.Options, diagnostic io.Writer) (*forwardio.Session, error) {
 	return startForward(ctx, f, func() (io.ReadWriteCloser, error) {
 		conn, err := sshio.Start(ctx, config, diagnostic)
@@ -304,10 +299,10 @@ func startSSHForward(ctx context.Context, f forwardConfig, config sshio.Options,
 		}
 		reply, err := readMessage(conn)
 		if err == nil {
-			err = checkPeerVersion(reply.SoftwareVersion, "forward service")
+			err = reply.peerError("forward service")
 		}
 		if err == nil && reply.Type != "resource_ready" {
-			err = fmt.Errorf("forward service: %s", cleanText(reply.Error))
+			err = fmt.Errorf("unexpected forward setup response: %s", reply.Type)
 		}
 		if err != nil {
 			conn.Close()
@@ -343,11 +338,12 @@ func runForwardAttempt(parent context.Context, s *resourceService, advertisement
 	defer log.flush()
 	connection, err := open(ctx, io.MultiWriter(log, &diagnostics))
 	if err != nil {
-		detail := diagnostics.String()
-		if detail == "" {
-			detail = err.Error()
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			if detail := diagnostics.String(); detail != "" {
+				err = errors.New(detail)
+			}
 		}
-		return false, fmt.Errorf("forward startup failed (%s): %s", s.record.Detail, detail)
+		return false, fmt.Errorf("forward startup failed (%s): %w", s.record.Detail, err)
 	}
 	closeConnection := sync.OnceFunc(func() { _ = connection.Close() })
 	stop := context.AfterFunc(ctx, closeConnection)

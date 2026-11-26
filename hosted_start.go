@@ -136,8 +136,7 @@ func chooseDetachedHostedShell() (sessionTarget, error) {
 	return sessionTarget{}, fmt.Errorf("invalid shell selection")
 }
 
-func serveRemote(req remoteServiceRequest) (result error) {
-	mode, name := req.Mode, req.Name
+func serveRemoteShell(mode, name, instance string, openIfUnavailable bool) (result error) {
 	target, err := os.Executable()
 	if err != nil {
 		return err
@@ -146,7 +145,7 @@ func serveRemote(req remoteServiceRequest) (result error) {
 		return fmt.Errorf("invalid remote service")
 	}
 	if mode == "attach" && name == "" {
-		name = req.Instance
+		name = instance
 	}
 	if name != "" {
 		if err := validSession(name); err != nil {
@@ -159,9 +158,6 @@ func serveRemote(req remoteServiceRequest) (result error) {
 			_ = writeMessage(os.Stdout, message{Type: "fatal", SoftwareVersion: version, Error: result.Error()})
 		}
 	}()
-	if err := checkPeerVersion(req.Release, "client"); err != nil {
-		return err
-	}
 	for {
 		lock, err := setupLock()
 		if err != nil {
@@ -180,7 +176,7 @@ func serveRemote(req remoteServiceRequest) (result error) {
 			name = selected.Instance
 			continue // Recheck setup after waiting without the account lock.
 		}
-		return prepareHostedShell(name, mode, req.Instance, target, lock, req.OpenIfUnavailable && isTaskIDPrefix(name))
+		return prepareHostedShell(name, mode, instance, target, lock, openIfUnavailable && isTaskIDPrefix(name))
 	}
 }
 
