@@ -197,4 +197,4 @@ Inspired by [dtach](https://github.com/crigler/dtach),
 [sshping](https://github.com/spook/sshping), [trzsz](https://github.com/trzsz/trzsz)
 and [sshoq](https://github.com/h4sh5/sshoq).
 
-[MIT license](LICENSE) · [Third-party notices](docs/THIRD_PARTY_LICENSES.txt)
+[MIT license](LICENSE.txt) · [Third-party notices](docs/THIRD_PARTY_LICENSES.txt)
