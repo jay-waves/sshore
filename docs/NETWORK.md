@@ -18,6 +18,12 @@ give each path its own flow-control window. Reattaching through a live route can
 reuse its authenticated connection. An independent shell setup can establish
 a new SSH connection.
 
+Omitted file paths open a local three-column picker after SSH authentication.
+The client starts by reading the remote home into its directory cache. A mount
+worker returns the current and parent listings together over the startup
+stream and reuses that cache when it mounts the selected directory. The shell
+console's `lf` requests the same pair over its existing control channel.
+
 ## Approved resources
 
 When a remote shell requests access to the origin account, the origin daemon
@@ -37,5 +43,5 @@ administrative SSH exchange to preview
 and confirm shutdown. `daemon` and `reset` operate on the local account.
 `bootstrap` downloads the release over HTTPS and replaces the local installation.
 
-See [architecture](ARCHITECTURE.md), [security](SECURITY.md), and
-[build and validation](BUILD.md).
+See [architecture](ARCHITECTURE.md), [security](SECURITY.md), [approval](approval.md),
+[mount implementation](mount.md) and [build and validation](BUILD.md).

@@ -489,10 +489,7 @@ func parseCopyEndpoint(value string) (copyEndpoint, error) {
 	case "origin":
 		return copyEndpoint{}, usage("origin: requires an attached sshore shell")
 	}
-	if path == "" {
-		path = "."
-	}
-	return copyEndpoint{host: host, path: path}, nil
+	return copyEndpoint{host: host, path: path, pick: path == ""}, nil
 }
 
 func parseCopyCommand(parsed cliArguments) (copyOptions, error) {
@@ -513,6 +510,9 @@ func parseCopyCommand(parsed cliArguments) (copyOptions, error) {
 	for _, source := range o.sources {
 		if (source.pick || source.stream || o.target.stream) && len(o.sources) != 1 {
 			return o, usage("selection and standard streams require exactly one source")
+		}
+		if (source.pick && o.target.stream) || (source.stream && o.target.pick) {
+			return o, usage("standard streams require an explicit file path")
 		}
 		if o.upload {
 			if source.host != "" {
@@ -546,11 +546,9 @@ func parseFTPOptions(parsed cliArguments) (ftpOptions, error) {
 	if host == "here" || host == "origin" || targetHost != "here" {
 		return ftpOptions{}, usage("use mount HOST:SOURCE here:[MOUNTPOINT]")
 	}
-	if remote == "" {
-		remote = "."
-	}
 	o := ftpOptions{
 		Host: host, Remote: remote, Mountpoint: mountpoint,
+		PickRemote: remote == "", PickMountpoint: mountpoint == "" && parsed.operands[1] != ".:",
 		SSH:        parsed.ssh,
 		foreground: parsed.has("--foreground"),
 		ReadOnly:   parsed.has("--read-only"), Stats: parsed.has("--stats"), DirectIO: parsed.has("--direct-io"),

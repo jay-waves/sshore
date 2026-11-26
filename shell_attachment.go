@@ -452,6 +452,8 @@ func (s *shellTask) serveAttachment(p *attachment, control io.Reader, extra func
 			}
 		case "session_targets":
 			err = p.controlMessage(s.sessionTargets(m))
+		case "console_files":
+			err = p.controlMessage(consoleFileListing(m))
 		case "console_inventory":
 			s.mu.Lock()
 			current := s.treeIdentity()

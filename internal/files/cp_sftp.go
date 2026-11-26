@@ -16,20 +16,31 @@ import (
 	sftp "github.com/pkg/sftp/v2"
 	sshfx "github.com/pkg/sftp/v2/encoding/ssh/filexfer"
 	"github.com/pkg/sftp/v2/encoding/ssh/filexfer/openssh"
+	"github.com/pkg/sftp/v2/localfs"
 )
 
 // Each approved stream sees one virtual source or target, never a general
 // filesystem. Its temporary upload is removed when the stream ends.
 type FS struct {
 	sftp.UnimplementedServerHandler
-	nextHandle uint64
-	cwd        string
-	source     *Source
-	target     string
-	size       int64
-	direct     bool
-	uploads    map[string]*copyUpload
-	ctx        context.Context
+	directories localfs.ServerHandler
+	nextHandle  uint64
+	cwd         string
+	source      *Source
+	target      string
+	size        int64
+	direct      bool
+	uploads     map[string]*copyUpload
+	ctx         context.Context
+}
+
+func (f *FS) OpenDir(ctx context.Context, req *sshfx.OpenDirPacket) (sftp.DirHandler, error) {
+	if !f.direct {
+		return nil, os.ErrPermission
+	}
+	request := *req
+	request.Path = filepath.ToSlash(f.resolve(req.Path))
+	return f.directories.OpenDir(ctx, &request)
 }
 
 type copyUpload struct {
@@ -53,8 +64,13 @@ func (f *FS) resolve(name string) string {
 		// Windows advertises its home as /C:/... so clients can use POSIX joins.
 		if drivePath, ok := strings.CutPrefix(name, "/"); ok {
 			native := filepath.FromSlash(drivePath)
-			if len(filepath.VolumeName(native)) == 2 && filepath.IsAbs(native) {
-				return filepath.Clean(native)
+			if len(filepath.VolumeName(native)) == 2 {
+				if len(native) == 2 {
+					native += string(filepath.Separator)
+				}
+				if filepath.IsAbs(native) {
+					return filepath.Clean(native)
+				}
 			}
 		}
 		if !path.IsAbs(name) && !filepath.IsAbs(filepath.FromSlash(name)) {

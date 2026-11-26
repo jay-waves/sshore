@@ -22,6 +22,9 @@ func (s *remoteShell) attachmentCommand(p *attachment, m message) error {
 		s.mu.Lock()
 		req := &localDaemonRequest{Record: localShellRecord{Directory: s.directoryOrStartupLocked()}, Env: append([]string(nil), s.environment...), Shell: &shellConfig{Command: "sh", Local: true, Pin: m.Pinned}}
 		s.mu.Unlock()
+		if m.Directory != "" {
+			req.Record.Directory = m.Directory
+		}
 		go serveChildShortcut(p, s.done, func(c net.Conn) {
 			s.requestShellRoute(c, message{SoftwareVersion: version, LocalRequest: req})
 		})

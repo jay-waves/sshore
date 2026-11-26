@@ -31,6 +31,7 @@ type ftpOptions struct {
 	Host, Remote, Mountpoint            string
 	SSH                                 []string
 	ReadOnly, DirectIO, Stats           bool
+	PickRemote, PickMountpoint          bool
 	Name                                string
 	foreground                          bool
 }
@@ -39,8 +40,11 @@ func validateMountConfig(o ftpOptions) error {
 	if err := validSSHDestination(o.Host); err != nil {
 		return err
 	}
-	if o.Host == "here" || o.Host == "origin" || o.Remote == "" || strings.ContainsRune(o.Remote, 0) || strings.ContainsRune(o.Mountpoint, 0) {
+	if o.Host == "here" || o.Host == "origin" || (o.Remote == "" && !o.PickRemote) || strings.ContainsRune(o.Remote, 0) || strings.ContainsRune(o.Mountpoint, 0) {
 		return fmt.Errorf("invalid mount endpoints")
+	}
+	if (o.PickRemote || o.PickMountpoint) && (o.Approval != nil || o.Connection != nil) {
+		return fmt.Errorf("approved mounts already specify their paths")
 	}
 	if o.IOTimeoutNanos < 0 || o.StartupTimeoutNanos < 0 {
 		return fmt.Errorf("invalid mount timeout")
@@ -100,6 +104,11 @@ func mountVisitHistory(account, root string, delta files.VisitHistory) files.Vis
 }
 
 func executeMount(o ftpOptions) (int, error) {
+	if o.PickRemote || o.PickMountpoint {
+		if err := requireFileSelectionTerminal(); err != nil {
+			return 2, err
+		}
+	}
 	stopActivity, err := beginCommandActivity()
 	if err != nil {
 		return 1, err
@@ -111,22 +120,16 @@ func executeMount(o ftpOptions) (int, error) {
 	if !o.foreground {
 		return startResourceBackground(resourceConfig{Mount: &o})
 	}
-	mountpoint, cleanup, err := files.PrepareMountpoint(o.Mountpoint, o.Name)
-	if err != nil {
-		return 1, err
-	}
-	defer cleanup()
-	o.Mountpoint = mountpoint
-	return runFTPMount(o, nil, nil)
+	return runFTPMount(o, nil, nil, nil)
 }
 
 func (s *resourceService) mountPeerTask() peerRecord {
 	return s.peerTask("export " + s.record.Remote)
 }
 
-func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecycle) (int, error) {
+func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecycle, selector func(context.Context, files.DirectoryReader, string) (string, string, error)) (int, error) {
 	c := files.MountConfig{
-		Approval: o.Approval, Remote: o.Remote, Mountpoint: o.Mountpoint, Version: version,
+		Approval: o.Approval, Remote: o.Remote, Mountpoint: o.Mountpoint, Version: version, Name: o.Name,
 		ReadOnly: o.ReadOnly, DirectIO: o.DirectIO, StartupTimeout: time.Duration(o.StartupTimeoutNanos), IOTimeout: time.Duration(o.IOTimeoutNanos),
 		History: mountVisitHistory,
 		Mounted: func(root string) {
@@ -173,6 +176,12 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 		connection.Environment = s.baseEnvironment()
 		connection.Directory = s.directory
 		connection.Confirm, connection.Secret = auth.callbacks()
+	}
+	if o.PickRemote || o.PickMountpoint {
+		c.SelectPaths = selector
+		if c.SelectPaths == nil {
+			c.SelectPaths = mountPathSelector(o)
+		}
 	}
 	connection = withSSHDiagnostics(connection, os.Stderr, auth)
 	watchConnection := remoteService(connection, server, remoteServiceRequest{Operation: "mount-agent", Mode: "mount_watch"})
@@ -311,18 +320,76 @@ func runDaemonMount(config resourceConfig, enc *jsontext.Encoder, dec *jsontext.
 	}()
 	// Watch the initiator before writing to the worker, so cancellation also
 	// interrupts a blocked configuration write.
-	commit := awaitResourceCommit(func(v any) error { return json.UnmarshalDecode(dec, v) }, func() {
-		pipeMu.Lock()
-		defer pipeMu.Unlock()
-		cancelStartupLocked()
-	})
+	commit := make(chan error, 1)
+	configured := make(chan struct{})
+	go func() {
+		selectionDone := false
+		for {
+			var raw jsontext.Value
+			err := json.UnmarshalDecode(dec, &raw)
+			if len(raw) > 1<<20 {
+				err = fmt.Errorf("startup message too large")
+			}
+			if err != nil {
+				pipeMu.Lock()
+				cancelStartupLocked()
+				pipeMu.Unlock()
+				commit <- err
+				return
+			}
+			var answer string
+			if json.Unmarshal(raw, &answer) == nil {
+				if answer != "commit" || ((config.Mount.PickRemote || config.Mount.PickMountpoint) && !selectionDone) {
+					answer = ""
+				}
+				if answer == "" {
+					err = fmt.Errorf("invalid startup acknowledgement")
+					pipeMu.Lock()
+					cancelStartupLocked()
+					pipeMu.Unlock()
+				}
+				commit <- err
+				return
+			}
+			var request mountPathRequest
+			if selectionDone || config.Mount == nil || (!config.Mount.PickRemote && !config.Mount.PickMountpoint) || json.Unmarshal(raw, &request) != nil {
+				pipeMu.Lock()
+				cancelStartupLocked()
+				pipeMu.Unlock()
+				commit <- fmt.Errorf("invalid mount selection request")
+				return
+			}
+			if request.Directory == nil {
+				selectionDone = true
+			}
+			<-configured
+			if err = json.MarshalEncode(childInput, request); err != nil {
+				pipeMu.Lock()
+				cancelStartupLocked()
+				pipeMu.Unlock()
+				commit <- err
+				return
+			}
+		}
+	}()
 	defer func() { _ = c.SetReadDeadline(time.Now()) }()
 	if err = json.MarshalEncode(childInput, config); err != nil {
+		close(configured)
 		return err
 	}
+	close(configured)
 	var startup resourceStartup
-	if err = json.UnmarshalDecode(child, &startup); err != nil {
-		return err
+	for {
+		startup = resourceStartup{}
+		if err = json.UnmarshalDecode(child, &startup); err != nil {
+			return err
+		}
+		if !startup.Browse && startup.Listing == nil {
+			break
+		}
+		if err = json.MarshalEncode(enc, startup); err != nil {
+			return err
+		}
 	}
 	if startup.Error != "" {
 		return json.MarshalEncode(enc, startup)
@@ -386,14 +453,41 @@ func runMountDaemon() (code int, resultErr error) {
 	}
 	record := resourceRecord{Kind: "mount", Name: o.Name, Host: o.Host, ReadOnly: o.ReadOnly, Direction: "<-"}
 	s := newResourceService(config, record)
-	mountpoint, cleanup, err := files.PrepareMountpoint(o.Mountpoint, o.Name)
-	if err != nil {
-		return 1, err
-	}
-	defer cleanup()
-	o.Mountpoint = mountpoint
 	abandoned := make(chan struct{})
-	ack := awaitResourceCommit(read, func() { close(abandoned) })
+	ack := make(chan error, 1)
+	requests := make(chan mountPathRequest)
+	go func() {
+		for {
+			var raw jsontext.Value
+			err := read(&raw)
+			if err != nil {
+				close(abandoned)
+				ack <- err
+				return
+			}
+			var answer string
+			if json.Unmarshal(raw, &answer) == nil {
+				if answer != "commit" {
+					close(abandoned)
+					ack <- fmt.Errorf("invalid startup acknowledgement")
+					return
+				}
+				ack <- nil
+				return
+			}
+			var request mountPathRequest
+			if (!o.PickRemote && !o.PickMountpoint) || json.Unmarshal(raw, &request) != nil {
+				close(abandoned)
+				ack <- fmt.Errorf("invalid mount selection request")
+				return
+			}
+			select {
+			case requests <- request:
+			case <-abandoned:
+				return
+			}
+		}
+	}()
 	unmount := make(chan chan error)
 	var replyMu sync.Mutex
 	ready := func(root, mountpoint string) error {
@@ -416,7 +510,44 @@ func runMountDaemon() (code int, resultErr error) {
 		replyMu.Unlock()
 	}()
 	lifecycle := &files.MountLifecycle{Abandoned: abandoned, OperationCompleted: s.operationCompleted, Ready: ready, Stop: unmount}
-	return runFTPMount(o, s, lifecycle)
+	selector := func(ctx context.Context, readDir files.DirectoryReader, home string) (string, string, error) {
+		if o.PickRemote {
+			go readDir(ctx, home)
+		}
+		if err := json.MarshalEncode(enc, resourceStartup{Browse: true, Home: home}); err != nil {
+			return "", "", err
+		}
+		for {
+			select {
+			case request := <-requests:
+				if request.Directory == nil {
+					if request.Error != "" {
+						return "", "", fmt.Errorf("%s", request.Error)
+					}
+					return request.Remote, request.Local, nil
+				}
+				entries, err := fileSelectionEntries(readDir(ctx, *request.Directory))
+				listing := &mountPathListing{Entries: entries}
+				if err != nil {
+					listing.Error = err.Error()
+				}
+				if request.Parent != "" {
+					listing.ParentEntries, err = fileSelectionEntries(readDir(ctx, request.Parent))
+					if err != nil {
+						listing.ParentError = err.Error()
+					}
+				}
+				if err := json.MarshalEncode(enc, resourceStartup{Listing: listing}); err != nil {
+					return "", "", err
+				}
+			case <-ctx.Done():
+				return "", "", ctx.Err()
+			case <-abandoned:
+				return "", "", fmt.Errorf("mount startup abandoned")
+			}
+		}
+	}
+	return runFTPMount(o, s, lifecycle, selector)
 }
 
 // The account daemon retains the worker pipes after commit. Losing that owner

@@ -689,10 +689,12 @@ control requires matching releases.
 A bare path belongs to the machine running this command. Use HOST:PATH
 for an SSH host. Use here: or .: for an explicit local endpoint.
 In an attached remote shell, origin: or :: requests local approval.
-Leave a local path empty to choose it. Use - for standard input or output.
+Leave a path empty to choose it after connecting. A missing target opens a
+directory picker. Use - for standard input or output with an explicit file.
 Copy supports up to 16 regular files. Batches with an explicit target require a directory.
 
   sshore cp report.zip work:/tmp/
+  sshore cp here: work:
   sshore cp work:/tmp/report.txt -
   sshore cp - work:/tmp/report.txt
 
@@ -716,11 +718,12 @@ Use a different SSH port
 Mount a remote directory through the remote sshore helper using SFTP.
 The remote sshore release must match exactly and be on the SSH session's PATH.
 On a Windows host, use a drive-letter path such as HOST:E:/project.
-Background mounts receive fixed task IDs. HOST: selects the remote home.
+Background mounts receive fixed task IDs. HOST: browses from the remote home.
+Use HOST:~ to mount the home directory directly.
 Use [HOST]:SOURCE for an IPv6 address.
-Use a bare path for the mountpoint. With an empty here: path, Linux and macOS
-use ~/mnt/NAME, with the registered task name for background mounts or a fresh
-six-character name for foreground mounts. Windows selects a free drive letter.
+Use a bare path for the mountpoint or here: to choose it after connecting.
+Press a in the picker or pass .: for an automatic mountpoint. Linux and macOS
+use ~/mnt/NAME. Windows selects a free drive letter.
 Requires FUSE on Linux, WinFsp on Windows, or macFUSE with its kernel extension
 on Apple Silicon Macs (experimental).
 A custom mountpoint must be an existing empty directory on Linux or macOS, or a

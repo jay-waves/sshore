@@ -29,10 +29,12 @@ type MountConfig struct {
 	PeerMetadata                jsontext.Value
 	Approval                    *MountApproval
 	Remote, Mountpoint, Version string
+	Name                        string
 	ReadOnly, DirectIO          bool
 	StartupTimeout, IOTimeout   time.Duration
 	Open                        func(context.Context) (io.ReadWriteCloser, error)
 	OpenNotifications           func(context.Context) (io.ReadWriteCloser, error)
+	SelectPaths                 func(context.Context, DirectoryReader, string) (string, string, error)
 	NotificationsUnavailable    func()
 	Mounted                     func(root string)
 	Unmounting                  func(grace time.Duration)
@@ -58,8 +60,20 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 	if err = CheckMountPlatform(); err != nil {
 		return 1, err
 	}
-	if err = ValidateMountpoint(o.Mountpoint); err != nil {
-		return 1, err
+	cleanup := func() {}
+	defer func() { cleanup() }()
+	prepareMountpoint := func() error {
+		point, release, err := PrepareMountpoint(o.Mountpoint, o.Name)
+		if err != nil {
+			return err
+		}
+		o.Mountpoint, cleanup = point, release
+		return ValidateMountpoint(point)
+	}
+	if o.SelectPaths == nil {
+		if err := prepareMountpoint(); err != nil {
+			return 1, err
+		}
 	}
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
@@ -142,7 +156,7 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		// Cut transport before joining any worker with outstanding SFTP I/O.
 		// Client.Close itself can wait behind a blocked write.
 		disconnect(nil)
-		if backend != nil {
+		if backend != nil && backend.prefetch != nil {
 			<-backend.prefetch.done
 			<-backend.cache.refresh.done
 			if o.History != nil && account != "" {
@@ -169,10 +183,6 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		return 1, fmt.Errorf("mount agent handshake: %w", err)
 	}
 	account = ready.Account
-	remote, err := ExpandRemoteHome(o.Remote, ready.HomeDirectory)
-	if err != nil {
-		return 1, err
-	}
 	var events io.ReadWriteCloser
 	if o.OpenNotifications != nil {
 		endpoint, watchErr := o.OpenNotifications(ctx)
@@ -218,6 +228,20 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		}
 		cancel(fmt.Errorf("SFTP disconnected: %w", err))
 	})
+	backend = &ftpFS{client: client, readOnly: o.ReadOnly, directIO: o.DirectIO}
+	if o.SelectPaths != nil {
+		o.Remote, o.Mountpoint, err = o.SelectPaths(ctx, backend.browseDirectory, ready.HomeDirectory)
+		if err != nil {
+			return 1, err
+		}
+		if err := prepareMountpoint(); err != nil {
+			return 1, err
+		}
+	}
+	remote, err := ExpandRemoteHome(o.Remote, ready.HomeDirectory)
+	if err != nil {
+		return 1, err
+	}
 	root, err = client.RealPath(remote)
 	if err != nil {
 		return 1, fmt.Errorf("remote directory: %w", err)
@@ -240,7 +264,7 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 	if o.History != nil && account != "" {
 		history = o.History(account, root, nil)
 	}
-	backend = &ftpFS{client: client, root: path.Clean(root), readOnly: o.ReadOnly, directIO: o.DirectIO}
+	backend.root = path.Clean(root)
 	backend.notifications = startFTPNotifications(events, &backend.cache, o.NotificationsUnavailable)
 	backend.notifications.enqueue(backend.root)
 	if o.ReportStats != nil {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/release"
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 // Control metadata uses bounded frames. Approved file streams switch to
@@ -63,6 +64,10 @@ type message struct {
 	HomeDirectory    string              `json:"home_directory,omitempty"`
 	AgeSeconds       *int64              `json:"age_seconds,omitzero"`
 	Targets          []sessionTarget     `json:"targets,omitempty"`
+	Files            []termui.LFEntry    `json:"files,omitempty"`
+	ParentDirectory  string              `json:"parent_directory,omitempty"`
+	ParentFiles      []termui.LFEntry    `json:"parent_files,omitempty"`
+	ParentError      string              `json:"parent_error,omitempty"`
 	SoftwareVersion  string              `json:"software_version,omitempty"`
 	Operations       []operation         `json:"operations,omitempty"`
 	Action           string              `json:"action,omitempty"`

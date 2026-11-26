@@ -106,7 +106,7 @@ Preparation and bridge processes are not retained as per-shell trust boundaries.
 
 | Attack scenario | Primary gate | Remaining risk |
 | --- | --- | --- |
-| Remote output tricks the user into granting local access | [Local approval](#local-approval) | A user may still approve a deceptive request. |
+| Remote output tricks the user into granting local access | [Local approval](approval.md#local-approval) | A user may still approve a deceptive request. |
 | An old request is replayed or redirected to another shell | Single-use records and original-shell checks | A malicious server can lie about its own identity. |
 | A file request overwrites a local file or changes after approval | [Selected paths and no-overwrite publication](#files-and-forwarding) | Content can be malicious or change without changing size. |
 | A remote program exposes a local service | Locally selected, fixed forwarding endpoints | Loopback is not per-user isolation; server policy can alter reverse binds. |
@@ -115,29 +115,10 @@ Preparation and bridge processes are not retained as per-shell trust boundaries.
 | A remote filesystem hangs, floods responses or leaves writes uncertain | [Bounded mount requests and no write replay](#sftp-mounts) | Partial writes, stale data and resource exhaustion remain possible. |
 | Forged status records become authority to act | [Advisory inventory only](#inventory-and-privacy) | Displayed status may be false or stale. |
 
-## Local approval
+For the approval screens, single-use grants and trusted command console, see
+[local approval and the command console](approval.md).
 
-**Threat:** a remote program asks the connected client to read a local file,
-write a destination, expose a mount, open a listener or reach a local service without consent.
-
-A request contains bounded operation metadata and suggested paths or ports;
-receiving it grants no permission. The client leaves the remote attachment and
-presents the request in a local approval screen. File and mount requests require
-`Y` before selecting local endpoints. For a forward the local screen shows
-the direction and fixed remote endpoint. Submitting a valid local port with
-Enter approves that mapping. The local approval screen also handles any SSH
-credentials needed to start a mount or forward.
-Suggested values are editable and path
-completion does not submit them. Cancel, EOF or lack of an interactive terminal
-rejects the request without executing it. There is no persistent grant or pending
-request queue. Unsolicited transfer offers, forward-add streams and reverse
-connection streams remain rejected.
-
-Approved operations fix the selected local endpoints and validate the original
-shell identity and exact release. A mount or forward consumes its private
-handoff ID once, for the same task and requested remote operation. Mount data
-and notifications share the resulting resource connection. File batches select
-all paths before execution.
+## SSH authentication
 
 Local client configuration is a trusted input. The built-in resolver evaluates
 static `Match` conditions without executing configuration hooks. Go SSH owns
@@ -164,11 +145,6 @@ available methods. Unsupported execution hooks fail explicitly. Public-key
 restrictions and RSA size requirements remain enforced. `RevokedHostKeys` files
 are rejected. The client honors known_hosts revocation markers. Connections use
 independent transports. Forward retry policy is explicit.
-
-**Limit:** remote output can imitate local prompts, and processes sharing the
-remote account can submit requests. A request does not prove who typed it. Do not
-enter credentials or approve a request solely because remote output tells you to.
-Private records are not tamper-proof against their owner.
 
 ## Files and forwarding
 
@@ -297,7 +273,7 @@ paths/data, or leaves an application waiting indefinitely on uncertain writes.
 A local `mount` command explicitly grants access to a remote directory. Applications
 with access to that mount can read and, unless `--read-only` is set, overwrite,
 rename or delete files using the remote account's permissions. A remote program
-may request a mount through the [local approval gate](#local-approval), but cannot
+may request a mount through the [local approval gate](approval.md#local-approval), but cannot
 approve it or choose the final local mountpoint. Approval displays the access mode;
 startup revalidates the original detached shell on the mount's SSH connection.
 The resulting mount is independent of that shell. Legacy disabled mode rejects it.
@@ -336,7 +312,7 @@ renamed open files may remain stale until background verification, notification
 or cache expiry. Background verification is bounded and advisory; it cannot
 prove file identity or authorize an operation. Neither
 notifications nor status queries authorize file operations or write replay. See
-[development guidance and code ownership](ARCHITECTURE.md#account-daemon-and-mounts).
+[mount implementation](mount.md) for startup, caches and change notifications.
 
 ## Remote setup and updates
 

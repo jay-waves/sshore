@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -71,6 +72,10 @@ const terminalCloseGrace = 2 * time.Second
 type clientEvent struct {
 	consoleSource    *commandConsole
 	console          termui.ConsoleEvent
+	filePicker       *consoleFilePicker
+	fileOutput       []byte
+	fileRequest      *consoleFileRequest
+	fileResult       *consoleFileResult
 	inputBarrier     bool
 	inputOffset      uint64
 	keyAction        term.KeyAction
@@ -353,6 +358,9 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		c := console
 		console = nil
 		escapeTick = nil
+		if c.picker != nil {
+			c.picker.cancel()
+		}
 		c.editor.Close()
 		if err := outputModes.EndConsole(terminalOutput); err != nil {
 			return err
@@ -595,10 +603,10 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		target.argv = nil
 		return queueSwitch(&sessionSwitch{to: target, sameDaemon: true})
 	}
-	startChild := func(pin bool) error {
+	startChild := func(pin bool, directory string) error {
 		pending.action = "sh_child"
 		awaitResponse(30 * time.Second)
-		return streamMessage(control, message{Type: pending.action, Pinned: pin})
+		return streamMessage(control, message{Type: pending.action, Pinned: pin, Directory: directory})
 	}
 	requestSessionTargets := func(purpose, ref string) error {
 		consoleRequest++
@@ -722,8 +730,43 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 			}
 
 		case e := <-events:
+			if e.filePicker != nil {
+				if e.consoleSource != console || console == nil || e.filePicker != console.picker {
+					continue
+				}
+				switch {
+				case e.fileOutput != nil:
+					if err := writeFull(terminalOutput, e.fileOutput); err != nil {
+						return 1, err
+					}
+				case e.fileRequest != nil:
+					if e.fileRequest.ctx.Err() != nil {
+						continue
+					}
+					consoleRequest++
+					action := strconv.FormatUint(consoleRequest, 10)
+					console.picker.requests[action] = e.fileRequest
+					if err := streamMessage(control, message{Type: "console_files", Action: action, Directory: e.fileRequest.dir, ParentDirectory: e.fileRequest.parent}); err != nil {
+						return 255, err
+					}
+				case e.fileResult != nil:
+					if e.fileResult.err != nil {
+						if err := console.finishFilePicker(terminalOutput, e.fileResult); err != nil {
+							return 1, err
+						}
+					} else {
+						if err := closeConsole(); err != nil {
+							return 1, err
+						}
+						if err := startChild(false, e.fileResult.path); err != nil {
+							return 255, err
+						}
+					}
+				}
+				continue
+			}
 			if e.consoleSource != nil {
-				if e.consoleSource != console {
+				if e.consoleSource != console || console.picker != nil {
 					continue
 				}
 				switch {
@@ -758,6 +801,12 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						if err := leaveConsole(); err != nil {
 							return 255, err
 						}
+					case "lf":
+						if panel.directory == "" {
+							console.show("Current directory is unavailable.")
+							break
+						}
+						console.startFilePicker(ctx, panel.directory, emit)
 					case "shell":
 						if command.remoteCommand != "" || command.task.scope != taskLocal || command.startupDirectory != "" || len(command.values) > 1 || len(command.values) == 1 && !command.has("--pin") {
 							console.show("Usage: shell [--pin]")
@@ -766,7 +815,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						if err := closeConsole(); err != nil {
 							return 1, err
 						}
-						if err := startChild(command.has("--pin")); err != nil {
+						if err := startChild(command.has("--pin"), ""); err != nil {
 							return 255, err
 						}
 					case "attach":
@@ -800,7 +849,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 					switch e.keyAction {
 					case term.KeyNew:
 						if detachPhase == detachIdle && approval == nil && pending.action == "sh_child" {
-							keyErr = startChild(false)
+							keyErr = startChild(false, "")
 						}
 					case term.KeyAttach:
 						if detachPhase == detachIdle && approval == nil && !transitioning() {
@@ -819,7 +868,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						if o.local {
 							host = "local"
 						}
-						panel.directory = "Directory unavailable."
+						panel.directory = ""
 						console = openCommandConsole(ctx, emit, host, cols, color, true)
 						if len(openingInput) > 0 {
 							keyErr = sendConsoleInput(openingInput)
@@ -882,6 +931,10 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 					continue
 				}
 				if console != nil {
+					if console.picker != nil {
+						console.picker.send(e.input)
+						continue
+					}
 					data := e.input
 					if escapeTick != nil {
 						escapeTimer.Stop()
@@ -951,6 +1004,13 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 
 			} else if e.m != nil {
 				switch e.m.Type {
+				case "console_files":
+					if console != nil && console.picker != nil {
+						if request := console.picker.requests[e.m.Action]; request != nil {
+							delete(console.picker.requests, e.m.Action)
+							request.reply <- *e.m
+						}
+					}
 				case "sh_child_error":
 					if pending.timeout != nil && pending.action == "sh_child" {
 						clearTransition()

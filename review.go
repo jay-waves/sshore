@@ -80,7 +80,7 @@ type approvedOperation struct {
 	files  []fileCopy
 }
 
-func selectApprovedOperation(input reviewPromptReader, request requestRecord) (approvedOperation, error) {
+func selectApprovedOperation(input *termui.Input, request requestRecord) (approvedOperation, error) {
 	var selected approvedOperation
 	var err error
 	if request.Operations[0].Kind != "forward" {
@@ -191,7 +191,7 @@ func prepareApprovalDirectory(r *requestRecord) error {
 	return nil
 }
 
-func selectApprovedResource(input reviewPromptReader, r *requestRecord) (resourceConfig, error) {
+func selectApprovedResource(input *termui.Input, r *requestRecord) (resourceConfig, error) {
 	op := r.Operations[0]
 	if op.Kind == "mount" {
 		hint, err := approvalPathHint(op.LocalHint)
@@ -201,7 +201,18 @@ func selectApprovedResource(input reviewPromptReader, r *requestRecord) (resourc
 		if err := files.CheckMountPlatform(); err != nil {
 			return resourceConfig{}, err
 		}
-		mountpoint, err := readMountApprovalPath(input, hint)
+		var mountpoint string
+		if hint == "" {
+			if err := input.Close(); err != nil {
+				return resourceConfig{}, err
+			}
+			mountpoint, err = pickLocalMountpoint(context.Background(), r.Directory, true)
+			if errors.Is(err, context.Canceled) {
+				err = fmt.Errorf("approval cancelled: %w", err)
+			}
+		} else {
+			mountpoint, err = readMountApprovalPath(input, hint)
+		}
 		if err != nil {
 			return resourceConfig{}, err
 		}

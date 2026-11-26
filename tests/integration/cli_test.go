@@ -64,6 +64,8 @@ func TestCLI(t *testing.T) {
 		{"bootstrap apply requires an explicit local path", []string{"bootstrap", "--apply"}, false, 2, "requires here:PATH"},
 		{"recovery rejects task creation", []string{"shell", "--name", "blocked"}, true, 1, "sshore features are disabled"},
 		{"forwards reject foreground mode", []string{"fwd", "8080", "work:80", "--foreground"}, false, 2, "unsupported option: --foreground"},
+		{"omitted copy paths require a terminal before dialing", []string{"cp", "here:", "work:"}, false, 2, "file selection requires an interactive terminal"},
+		{"omitted mount paths require a terminal before dialing", []string{"mount", "work:", "here:"}, false, 2, "file selection requires an interactive terminal"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := filepath.Join(t.TempDir(), "state")

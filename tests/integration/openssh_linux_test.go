@@ -198,6 +198,48 @@ Match command "printf forwarding-check"
 		}
 	})
 
+	scenario("copy selects both missing paths on one connection", func(t *testing.T, ctx context.Context) {
+		source := t.TempDir()
+		const name = "integration-picked-upload"
+		if err := os.WriteFile(filepath.Join(source, name), []byte("selected content"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := command(ctx, "cp", "here:", host+":")
+		cmd.Dir = source
+		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+			wait("\x1b[7m"+name, true)
+			send("\r")
+			wait("Upload to", true)
+			wait("integration-copy", true)
+			send("\r")
+			wait("Copied ")
+		})
+		if got := run(t, ctx, "sh", host, "--", "cat "+name); got != "selected content" {
+			t.Fatalf("uploaded content = %q", got)
+		}
+	})
+	scenario("console lf starts a shell in the selected remote directory", func(t *testing.T, ctx context.Context) {
+		home := run(t, ctx, "sh", host, "--", `printf '%s' "$HOME"; mkdir -p lf-console-parent/child`)
+		parent := home + "/lf-console-parent"
+		cmd := command(ctx, "sh", host+":"+parent, "--name", "lf-parent", "--no-profile", "--server", binary)
+		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+			wait("Connected " + host + ":lf-parent")
+			send("\x02:")
+			wait("sshore on ", true)
+			send("lf\r")
+			wait("\x1b[7mchild/", true)
+			send("l")
+			wait(parent+"/child", true)
+			send("\r")
+			wait("Connected " + host + ":")
+			send("pwd\n")
+			wait(parent + "/child")
+			send("exit\n")
+			wait("Connected " + host + ":lf-parent")
+			send("exit\n")
+			wait("Exited " + host + ":lf-parent")
+		})
+	})
 	scenario("file routed through a shell requires consent", func(t *testing.T, ctx context.Context) {
 		run(t, ctx, "sh", host, "--", "printf 'approved content' > approval-source")
 		declined, approved := filepath.Join(dir, "declined"), filepath.Join(dir, "approved")
@@ -259,6 +301,8 @@ Match command "printf forwarding-check"
 			send("printf '%s\\n' \"$$\" > approval-lifecycle/shell.pid && sshore mount here:approval-lifecycle origin: --read-only\n")
 			wait("Approve this request? [y/N]", true)
 			send("y\r")
+			wait(": Type path", true)
+			send(":")
 			wait("Mountpoint (empty for automatic):", true)
 			send(point + "\r")
 			wait("Started mount/")

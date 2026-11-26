@@ -29,6 +29,7 @@ type commandConsole struct {
 	editor   *termui.Console
 	targets  []sessionTarget
 	attached bool
+	picker   *consoleFilePicker
 }
 
 const consoleTargetLookup = "console:targets:"
@@ -41,6 +42,7 @@ pwd               Show the current directory
 attach [ID|name]  Resume a session (alias: a)
 ID                Resume a task by ID
 shell [--pin]     Open a shell (alias: sh)
+lf                Browse folders and open a shell
 exit              Close the command console`
 
 func openCommandConsole(ctx context.Context, send func(clientEvent), host string, width int, color, attached bool) *commandConsole {
@@ -63,7 +65,7 @@ type consoleCompleter struct {
 func (completion consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	prefix := string(line[:pos])
 	word := prefix
-	candidates := []string{"attach", "exit", "help", "shell", "list", "pstree", "pwd"}
+	candidates := []string{"attach", "exit", "help", "lf", "shell", "list", "pstree", "pwd"}
 	if completion.attached {
 		candidates = append(candidates, "detach")
 	}
@@ -109,7 +111,7 @@ func parseConsoleCommand(line string, attached bool) (cliArguments, error) {
 		name, operands = "attach", args
 	}
 	switch name {
-	case "help", "pwd", "exit":
+	case "help", "pwd", "exit", "lf":
 		if len(operands) != 0 {
 			return cliArguments{}, usage("%s does not accept arguments in the command console", name)
 		}
@@ -286,6 +288,11 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 	termui.WriteConsoleBody(terminalOutput, "No shell attached. Use attach or shell, or type exit to leave.")
 	console := openCommandConsole(ctx, emit, "local", cols, color, false)
 	defer console.editor.Close()
+	defer func() {
+		if console.picker != nil {
+			console.picker.cancel()
+		}
+	}()
 	keyCtx, cancelKeyboard := context.WithCancel(ctx)
 	stopKeyboard, err := term.StartKeyboard(keyCtx, func(data []byte, err error) {
 		select {
@@ -339,6 +346,36 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 			queuedInventory = ""
 			console.show(consoleInventoryBody(result, rows))
 		case event := <-events:
+			if event.filePicker != nil {
+				if event.filePicker != console.picker {
+					continue
+				}
+				switch {
+				case event.fileOutput != nil:
+					if err := writeFull(terminalOutput, event.fileOutput); err != nil {
+						return nil, err
+					}
+				case event.fileResult != nil:
+					if event.fileResult.err == nil {
+						next, err := rootConsoleOptions(current, cliArguments{command: "shell", startupDirectory: event.fileResult.path})
+						if err == nil {
+							return next, nil
+						}
+						event.fileResult.err = err
+					}
+					if err := console.finishFilePicker(terminalOutput, event.fileResult); err != nil {
+						return nil, err
+					}
+				}
+				continue
+			}
+			if console.picker != nil && len(event.input) != 0 {
+				console.picker.send(event.input)
+				continue
+			}
+			if console.picker != nil && event.console.Output != nil {
+				continue
+			}
 			switch {
 			case event.err != nil || event.console.Closed:
 				return nil, nil
@@ -360,6 +397,9 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 					return nil, nil
 				case "list", "pstree":
 					loadInventory(command.command)
+					continue
+				case "lf":
+					console.startFilePicker(ctx, panel.localDirectory, emit)
 					continue
 				}
 				next, err := rootConsoleOptions(current, command)

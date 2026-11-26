@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path"
@@ -513,6 +514,26 @@ func (f *ftpFS) readDirectory(p string) ([]os.FileInfo, error) {
 func (f *ftpFS) loadDirectoryMode(ctx context.Context, p string, prefetch bool) ([]os.FileInfo, error) {
 	v, err := f.loadMetadata(ctx, ftpCacheKey{kind: ftpDirectoryKey, name: p}, prefetch)
 	return v.entries, err
+}
+
+type DirectoryReader func(context.Context, string) ([]fs.DirEntry, error)
+
+// NewSFTPDirectoryReader shares the mount directory cache policy within one
+// authenticated SFTP session.
+func NewSFTPDirectoryReader(client *sftp.Client) DirectoryReader {
+	return (&ftpFS{client: client}).browseDirectory
+}
+
+func (f *ftpFS) browseDirectory(ctx context.Context, name string) ([]fs.DirEntry, error) {
+	v, err := f.cache.loadMode(ctx, ftpCacheKey{kind: ftpDirectoryKey, name: name}, false, f.fetchMetadata)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]fs.DirEntry, len(v.entries))
+	for i, info := range v.entries {
+		entries[i] = fs.FileInfoToDirEntry(info)
+	}
+	return entries, nil
 }
 func (f *ftpFS) lstat(p string) (os.FileInfo, error) {
 	v, err := f.loadMetadata(context.Background(), ftpCacheKey{kind: ftpLstatKey, name: p}, false)

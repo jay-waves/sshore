@@ -203,6 +203,9 @@ func (s *localShell) attachmentCommand(p *attachment, m message) error {
 		s.mu.Lock()
 		h := &clientHandoff{Shell: (options{command: "sh", local: true, host: "local", pin: m.Pinned}).shellConfig(), Directory: s.directoryOrStartupLocked(), Environment: append([]string(nil), s.environment...)}
 		s.mu.Unlock()
+		if m.Directory != "" {
+			h.Directory = m.Directory
+		}
 		go serveChildShortcut(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
 	default:
 		return fmt.Errorf("unexpected local control request")

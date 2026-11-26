@@ -36,7 +36,8 @@ Each interactive task owns one terminal with one attachment at a time. `shell` a
 `new` reviews the launch in the client's full-screen console before attaching
 the terminal. With `-- PROGRAM` it starts the executable directly. Otherwise it
 opens a shell.
-`Ctrl+B s` opens the command console. Use `pstree` to display the task tree.
+`Ctrl+B s` opens the [command console](approval.md#command-console).
+Use `pstree` to display the task tree.
 Enter a task ID in the console to attach. `Ctrl+B a` attaches the most recent
 eligible session on the current host.
 Attaching to the direct parent from the command console detaches the current
@@ -134,7 +135,8 @@ shell, local console or calling terminal and whether pinned children remain.
 
 ### Account daemon and mounts
 
-See [command network topology](NETWORK.md) for SSH channels and stream choices.
+See [network topology](NETWORK.md) for SSH channels and [mount](mount.md) for worker startup,
+directory caching and notifications.
 
 One authenticated daemon per OS account owns registered shells and resources.
 The daemon, installer, and state storage share the [file lock adapter](../internal/sys/file_lock.go)

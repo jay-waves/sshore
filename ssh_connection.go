@@ -361,6 +361,7 @@ func (auth *sshAuthEndpoint) callbacks() (confirm func(context.Context, string) 
 }
 
 func startSSHAuthBroker() (*sshAuthEndpoint, func(), error) {
+
 	ctx, cancel := context.WithCancel(context.Background())
 	token := resourceToken()
 	prompts := make(chan struct{}, 1)

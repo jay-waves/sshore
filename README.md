@@ -151,6 +151,9 @@ the machine running the command. A bare file path also belongs to that machine.
 On Windows, use `C:\dir\file` or `here:C:/dir/file` for a local drive path.
 
 Copy accepts regular files and refuses to overwrite existing destinations.
+Leave a path empty to choose it in the three-column picker after SSH connects.
+For example, `sshore cp here: raspberrypi:` selects a local file, then a remote
+destination directory. Use the arrow keys or `hjkl` to browse and `q` to cancel.
 Inside an attached remote shell, `origin:` refers to the attached client.
 Review the transfer request on that client and choose the local path.
 
@@ -159,7 +162,11 @@ Review the transfer request on that client and choose the local path.
 ```sh
 sshore mount raspberrypi:/srv/project .: --read-only
 sshore mount winhost:E:/project .:
+sshore mount raspberrypi: here: --read-only
 ```
+
+Use `HOST:` to browse from the remote home, `HOST:~` to select it directly,
+and `here:` to choose the local mountpoint. Use `.:` for automatic allocation.
 
 The SSH account must find the matching sshore release on its PATH.
 Windows hosts serve directories on NTFS and ReFS volumes; other filesystems are rejected.
@@ -190,12 +197,14 @@ it. Close open files before unmounting.
 ## Project documents
 
 [Architecture](docs/ARCHITECTURE.md) · [Security](docs/SECURITY.md) ·
+[Approval and console](docs/approval.md) · [Mount implementation](docs/mount.md) ·
 [Glossary](docs/GLOSSARY.md) · [Contributor rules](AGENTS.md)
 
 ## Acknowledgements
 
 Inspired by [dtach](https://github.com/crigler/dtach),
 [sshping](https://github.com/spook/sshping), [trzsz](https://github.com/trzsz/trzsz)
-and [sshoq](https://github.com/h4sh5/sshoq).
+and [sshoq](https://github.com/h4sh5/sshoq). The file picker is inspired by
+[lf](https://github.com/gokcehan/lf).
 
 [MIT license](LICENSE.txt) · [Third-party notices](docs/THIRD_PARTY_LICENSES.txt)

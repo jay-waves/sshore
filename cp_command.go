@@ -22,6 +22,15 @@ import (
 
 func executeCopyCommand(o copyOptions) (int, error) {
 	var err error
+	interactive := o.target.pick
+	for _, source := range o.sources {
+		interactive = interactive || source.pick
+	}
+	if interactive {
+		if err := requireFileSelectionTerminal(); err != nil {
+			return 2, err
+		}
+	}
 	if o.upload {
 		for i := range o.sources {
 			o.sources[i].path, err = sys.ExpandHome(o.sources[i].path)
@@ -37,28 +46,6 @@ func executeCopyCommand(o copyOptions) (int, error) {
 		return 1, err
 	}
 	defer stopActivity()
-	var picked *files.Source
-	defer closeCopySource(&picked)
-	if o.upload && o.sources[0].pick {
-		input, err := newLocalInput()
-		if err != nil {
-			return 2, err
-		}
-		termui.Log(os.Stdout, "", termui.Info, "To %s. Submit source to copy.\n", cleanText(sshio.FormatEndpoint(o.host, o.target.path)))
-		source, err := readCopyPath(input, "Local file (Tab; Enter starts): ", func(p string) (string, error) {
-			var e error
-			picked, e = files.OpenSource(p)
-			return p, e
-		})
-		closeErr := input.Close()
-		if err != nil {
-			return 1, err
-		}
-		if closeErr != nil {
-			return 1, closeErr
-		}
-		o.sources = []copyEndpoint{{path: source}}
-	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	connection := remoteService(sshConnectionOptions(options{host: o.host, ssh: o.ssh}), "", remoteServiceRequest{Operation: "cp-agent"})
@@ -93,13 +80,68 @@ func executeCopyCommand(o copyOptions) (int, error) {
 		if o.sources[0].stream || o.target.stream {
 			return executeStreamCopy(client, o, os.Stdin, os.Stdout)
 		}
-		source := picked
-		picked = nil // The batch now owns the selected source.
-		return executeCopy(ctx, client, o, source)
+		return selectAndCopy(ctx, client, remoteHome, o)
 	}); err != nil {
 		return 1, err
 	}
 	return 0, nil
+}
+
+func selectAndCopy(ctx context.Context, client *sftp.Client, home string, o copyOptions) error {
+	var readDir files.DirectoryReader
+	if (o.upload && o.target.pick) || (!o.upload && o.sources[0].pick) {
+		readDir = files.NewSFTPDirectoryReader(client)
+		go readDir(ctx, home)
+	}
+	remote := func(title string, dir bool) termui.LFOptions {
+		return remoteFileSelection(home, title+" · "+o.host, dir, func(ctx context.Context, name string) ([]termui.LFEntry, error) {
+			return fileSelectionEntries(readDir(ctx, name))
+		})
+	}
+	var opened *files.Source
+	defer closeCopySource(&opened)
+	if o.sources[0].pick {
+		picker := remote("Download file", false)
+		if o.upload {
+			picker = localFileSelection("", "Upload file", false)
+			picker.Validate = func(name string) (err error) {
+				opened, err = files.OpenSource(name)
+				return err
+			}
+		}
+		var err error
+		o.sources[0].path, err = termui.PickLF(ctx, picker)
+		if err != nil {
+			return err
+		}
+	}
+	if o.target.pick {
+		picker := localFileSelection("", "Save in", true)
+		if o.upload {
+			picker = remote("Upload to", true)
+		} else {
+			picker.Manual = len(o.sources) == 1
+		}
+		var err error
+		o.target.path, err = termui.PickLF(ctx, picker)
+		if errors.Is(err, termui.ErrLFManual) {
+			input, inputErr := newLocalInput()
+			if inputErr != nil {
+				return inputErr
+			}
+			o.target.path, err = readCopyPath(input, "Save as: ", func(p string) (string, error) {
+				return files.DownloadDestination(p, path.Base(o.sources[0].path))
+			})
+			err = errors.Join(err, input.Close())
+			o.target.pick = false
+		}
+		if err != nil {
+			return err
+		}
+	}
+	source := opened
+	opened = nil // The batch now owns the selected source.
+	return executeCopy(ctx, client, o, source)
 }
 
 // Closing the full transport first releases SFTP reads and writes before
@@ -254,7 +296,7 @@ func executeCopy(ctx context.Context, client *sftp.Client, o copyOptions, picked
 
 // Resolve all paths and open local sources before handing the batch to execution.
 // The caller owns cleanup, even if preparation fails partway through.
-func prepareCopyBatch(client *sftp.Client, o copyOptions, items []fileCopy) (err error) {
+func prepareCopyBatch(client *sftp.Client, o copyOptions, items []fileCopy) error {
 	targetStat, targetLstat := os.Stat, os.Lstat
 	join := filepath.Join
 	if o.upload {
@@ -262,29 +304,15 @@ func prepareCopyBatch(client *sftp.Client, o copyOptions, items []fileCopy) (err
 		join = path.Join
 	}
 
-	var input *termui.Input
 	var targetDir bool
-	if o.target.pick {
-		input, err = newLocalInput()
-		if err != nil {
-			return err
-		}
-		defer func() {
-			if closeErr := input.Close(); err == nil {
-				err = closeErr
-			}
-		}()
-		termui.Log(os.Stdout, "", termui.Info, "From %s. Submit all destinations to copy; Ctrl-C cancels.\n", cleanText(o.host))
-	} else {
-		info, err := targetStat(o.target.path)
-		if err == nil {
-			targetDir = info.IsDir()
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if len(o.sources) > 1 && !targetDir {
-			return fmt.Errorf("multiple sources require a destination directory")
-		}
+	info, err := targetStat(o.target.path)
+	if err == nil {
+		targetDir = info.IsDir()
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if (len(o.sources) > 1 || o.target.pick) && !targetDir {
+		return fmt.Errorf("copy requires a destination directory")
 	}
 	seen := map[string]bool{}
 	for i, source := range o.sources {
@@ -311,25 +339,16 @@ func prepareCopyBatch(client *sftp.Client, o copyOptions, items []fileCopy) (err
 			}
 		}
 		target := o.target.path
-		if input != nil {
-			termui.Log(os.Stdout, "", termui.Info, "Copy %s · %s\n", cleanText(sshio.FormatEndpoint(o.host, source.path)), displayBytes(item.size()))
-			var err error
-			target, err = readCopyPath(input, "Save as (Tab; Enter accepts): ", func(p string) (string, error) { return files.DownloadDestination(p, name) })
-			if err != nil {
+		if targetDir {
+			target = join(target, name)
+		}
+		if o.upload {
+			if err := files.ValidateName(path.Base(target)); err != nil {
 				return err
 			}
-		} else {
-			if targetDir {
-				target = join(target, name)
-			}
-			if o.upload {
-				if err := files.ValidateName(path.Base(target)); err != nil {
-					return err
-				}
-			}
-			if err := files.CheckCopyTarget(target, targetLstat); err != nil {
-				return err
-			}
+		}
+		if err := files.CheckCopyTarget(target, targetLstat); err != nil {
+			return err
 		}
 		if seen[target] {
 			return fmt.Errorf("duplicate destination: %s", target)

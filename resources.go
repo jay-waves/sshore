@@ -35,7 +35,10 @@ type resourceRecord struct {
 
 type resourceStartup struct {
 	resourceRecord
-	Error string `json:"error,omitempty"`
+	Error   string            `json:"error,omitempty"`
+	Browse  bool              `json:"browse,omitempty"`
+	Home    string            `json:"home,omitempty"`
+	Listing *mountPathListing `json:"listing,omitempty"`
 }
 
 type resourceConfig struct {
@@ -448,6 +451,92 @@ func launchResourceBackground(config resourceConfig, directory string) (resource
 	var startup resourceStartup
 	if e = json.UnmarshalDecode(dec, &startup); e != nil {
 		return resourceRecord{}, fmt.Errorf("resource startup failed: %w", e)
+	}
+	if startup.Browse {
+		if config.Mount == nil {
+			return resourceRecord{}, fmt.Errorf("unexpected mount selection")
+		}
+		browseCtx, stopBrowse := context.WithCancelCause(context.Background())
+		defer stopBrowse(nil)
+		listings := make(chan mountPathListing, 1)
+		finishedBrowse := make(chan resourceStartup, 1)
+		go func() {
+			for {
+				var reply resourceStartup
+				if err := json.UnmarshalDecode(dec, &reply); err != nil {
+					stopBrowse(err)
+					return
+				}
+				if reply.Listing == nil {
+					if reply.Error != "" {
+						stopBrowse(errors.New(reply.Error))
+					}
+					finishedBrowse <- reply
+					return
+				}
+				select {
+				case listings <- *reply.Listing:
+				case <-browseCtx.Done():
+					return
+				}
+			}
+		}()
+		var requestMu sync.Mutex
+		request := func(ctx context.Context, name, parent string) (mountPathListing, error) {
+			requestMu.Lock()
+			defer requestMu.Unlock()
+			if err := ctx.Err(); err != nil {
+				return mountPathListing{}, err
+			}
+			if err := json.MarshalEncode(enc, mountPathRequest{Directory: &name, Parent: parent}); err != nil {
+				return mountPathListing{}, err
+			}
+			select {
+			case reply := <-listings:
+				return reply, ctx.Err()
+			case <-browseCtx.Done():
+				return mountPathListing{}, context.Cause(browseCtx)
+			}
+		}
+		list := func(ctx context.Context, name string) ([]termui.LFEntry, error) {
+			reply, err := request(ctx, name, "")
+			if err == nil && reply.Error != "" {
+				err = fmt.Errorf("%s", reply.Error)
+			}
+			return reply.Entries, err
+		}
+		pair := func(ctx context.Context, current, parent string) ([]termui.LFEntry, error, []termui.LFEntry, error) {
+			reply, err := request(ctx, current, parent)
+			if err != nil {
+				return nil, err, nil, err
+			}
+			var currentErr, parentErr error
+			if reply.Error != "" {
+				currentErr = fmt.Errorf("%s", reply.Error)
+			}
+			if reply.ParentError != "" {
+				parentErr = fmt.Errorf("%s", reply.ParentError)
+			}
+			return reply.Entries, currentErr, reply.ParentEntries, parentErr
+		}
+		remote, local, err := config.Mount.pickMountPaths(browseCtx, startup.Home, list, pair)
+		if err != nil {
+			if cause := context.Cause(browseCtx); cause != nil {
+				return resourceRecord{}, cause
+			}
+			return resourceRecord{}, err
+		}
+		requestMu.Lock()
+		err = json.MarshalEncode(enc, mountPathRequest{Remote: remote, Local: local})
+		requestMu.Unlock()
+		if err != nil {
+			return resourceRecord{}, err
+		}
+		select {
+		case startup = <-finishedBrowse:
+		case <-browseCtx.Done():
+			return resourceRecord{}, context.Cause(browseCtx)
+		}
 	}
 	if startup.Error != "" {
 		return resourceRecord{}, fmt.Errorf("%s", startup.Error)
