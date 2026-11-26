@@ -44,9 +44,10 @@ Use SSH host aliases from `ssh_config`. Pass SSH options after `--ssh`, includin
 forwarding requires the same sshore release on the destination.
 
 ```sh
-sshore sh work --ssh -J jump    # Open a shell through a jump host.
-sshore forward work:3000 .:8080  # Reach the remote service on local port 8080.
-sshore ping work:               # Measure SSH latency.
+sshore sh jay-waves@raspberrypi  # Log in as a specific SSH user.
+sshore sh raspberrypi -J jump    # Open a shell through a jump host.
+sshore forward raspberrypi:3000 .:8080  # Reach the remote service on local port 8080.
+sshore ping raspberrypi:               # Measure SSH latency.
 ```
 
 Use `sshore fwd SOURCE TARGET` to mirror a TCP service. For example, run
@@ -61,9 +62,9 @@ remote sshore installation. Like OpenSSH, it joins the words after `--`
 with spaces and lets the remote shell interpret the result.
 
 ```sh
-sshore sh work -- uname -a
-sshore sh work -- vim 'a b.txt'       # Vim receives two filenames: a and b.txt.
-sshore sh work -- 'vim "a b.txt"'     # Vim receives one filename, with no PTY.
+sshore sh raspberrypi -- uname -a
+sshore sh raspberrypi -- vim 'a b.txt'       # Vim receives two filenames: a and b.txt.
+sshore sh raspberrypi -- 'vim "a b.txt"'     # Vim receives one filename, with no PTY.
 ```
 
 ### new — Start a program in a terminal
@@ -73,8 +74,8 @@ and preserves each argument. Omit `-- PROGRAM` to open the default shell.
 Use `--pin` to keep the task running after disconnect.
 
 ```sh
-sshore new work -- vim 'a b.txt'  # Open one file whose name contains a space.
-sshore new work --pin            # Open a shell that survives disconnect.
+sshore new raspberrypi -- vim 'a b.txt'  # Open one file whose name contains a space.
+sshore new raspberrypi --pin            # Open a shell that survives disconnect.
 ```
 
 ## mux — Start, detach and resume
@@ -113,11 +114,11 @@ has one foreground shell.
 ### Attach recent jobs
 
 ```sh
-sshore shell work          # Start a new shell.
-sshore attach work         # Resume a detached shell, by LRU
-sshore attach work:        # The same, `work` will parsed as a HOST name.
+sshore shell raspberrypi          # Start a new shell.
+sshore attach raspberrypi         # Resume a detached shell, by LRU
+sshore attach raspberrypi:        # Treat raspberrypi explicitly as a host.
 sshore attach 7b3a91       # Resume a detached shell, by ID
-sshore attach work:7b3a91  # Resume a detached shell, by HOST:ID.
+sshore attach raspberrypi:7b3a91  # Resume a detached shell, by HOST:ID.
 ```
 
 If the selected shell is unavailable during SSH setup, sshore can open a new
@@ -132,7 +133,7 @@ discard unsaved work.
 
 ## copy-id — Install an SSH public key for remote login
 
-Run `sshore copy-id work` to add a configured SSH public key to the remote
+Run `sshore copy-id raspberrypi` to add a configured SSH public key to the remote
 account's `~/.ssh/authorized_keys`. The account must allow SSH command execution.
 The host needs `flock`, `base64` and `tail`. You can run this before installing
 sshore on the host. Existing entries for the same key keep their restrictions.
@@ -140,12 +141,12 @@ sshore on the host. Existing entries for the same key keep their restrictions.
 ## scp (+lrzsz) — Transfer files from either end of an SSH session
 
 ```sh
-sshore cp report.zip work:/tmp/           # Upload a file.
-sshore cp work:/tmp/report.zip ./         # Download a file.
+sshore cp report.zip raspberrypi:/tmp/           # Upload a file.
+sshore cp raspberrypi:/tmp/report.zip ./         # Download a file.
 sshore cp report.zip origin:              # From an attached remote shell, send a file to the client.
 ```
 
-`work:VALUE` selects a path or port on the SSH host. `here:` (or `.:`) selects
+`raspberrypi:VALUE` selects a path or port on the SSH host. `here:` (or `.:`) selects
 the machine running the command. A bare file path also belongs to that machine.
 On Windows, use `C:\dir\file` or `here:C:/dir/file` for a local drive path.
 
@@ -156,7 +157,7 @@ Review the transfer request on that client and choose the local path.
 ## sftp (+fuse) — Mount a remote directory locally
 
 ```sh
-sshore mount work:/srv/project .: --read-only
+sshore mount raspberrypi:/srv/project .: --read-only
 sshore mount winhost:E:/project .:
 ```
 
@@ -169,8 +170,8 @@ it. Close open files before unmounting.
 
 ## Advanced usage
 
-- Pass SSH options after `--ssh` and before `--`, as in
-  `sshore new work --ssh -J jump -- nvim`.
+- Use `-J` to connect through a jump host, as in
+  `sshore new raspberrypi -J jump -- nvim`.
 - OSC 52 clipboard passthrough.
 - `Ctrl+B` shortcuts:
   - `Ctrl+B c` opens a nested shell.
