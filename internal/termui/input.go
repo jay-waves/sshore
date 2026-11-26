@@ -85,12 +85,10 @@ func (p *Input) read(prompt string, paths bool, choices []string, initial string
 	p.completion = pathCompletion{}
 	p.completionMu.Unlock()
 	p.editor.SetPrompt(FormatPrompt(p.color, prompt))
-	// readline ignores errors from EnterRawMode. Check our Windows hook before
-	// starting its reader; repeated entry is idempotent.
-	if runtime.GOOS == "windows" {
-		if err := p.editor.Config.FuncMakeRaw(); err != nil {
-			return "", fmt.Errorf("prepare confirmation input: %w", err)
-		}
+	// ReadlineWithDefault draws the prompt before entering raw mode. Enter
+	// first so an immediate Ctrl-C reaches the editor as an input byte.
+	if err := p.editor.Config.FuncMakeRaw(); err != nil {
+		return "", fmt.Errorf("prepare confirmation input: %w", err)
 	}
 	return p.editor.ReadlineWithDefault(initial)
 }
