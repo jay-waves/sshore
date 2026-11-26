@@ -119,7 +119,7 @@ func build(version, target, workspace string) (string, string, error) {
 func pack(w io.Writer, binary, target string) error {
 	files := []struct{ path, name string }{
 		{binary, filepath.Base(binary)},
-		{filepath.Join("docs", "LICENSE.txt"), "LICENSE"},
+		{"LICENSE.txt", "LICENSE"},
 		{filepath.Join("docs", "THIRD_PARTY_LICENSES.txt"), "THIRD_PARTY_LICENSES.txt"},
 	}
 	if target == "windows" {
