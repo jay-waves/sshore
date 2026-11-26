@@ -24,7 +24,7 @@ const requestTimeout = 10 * time.Second
 type sessionTarget struct {
 	Name     string `json:"name"`
 	Instance string `json:"instance"`
-	Hosted   bool   `json:"hosted,omitempty"`
+	Hosted   bool   `json:"hosted,omitzero"`
 }
 
 // Control metadata uses JSON; terminal bytes remain binary.
@@ -40,20 +40,20 @@ type resourceHop struct {
 
 type message struct {
 	ResourceRoute    []resourceHop       `json:"resource_route,omitempty"`
-	NativeTargets    bool                `json:"native_targets,omitempty"`
+	NativeTargets    bool                `json:"native_targets,omitzero"`
 	RetainedShells   []retainedShell     `json:"retained_shells,omitempty"`
 	Owner            string              `json:"owner,omitempty"`
 	TreeKey          string              `json:"tree_key,omitempty"`
 	TTLNanos         int64               `json:"ttl_nanos,omitzero"`
 	PinUntil         time.Time           `json:"pin_until,omitzero"`
-	TerminalOffset   uint64              `json:"terminal_offset,omitempty"`
-	OutputIncomplete bool                `json:"output_incomplete,omitempty"`
-	DaemonShutdown   bool                `json:"daemon_shutdown,omitempty"`
+	TerminalOffset   uint64              `json:"terminal_offset,omitzero"`
+	OutputIncomplete bool                `json:"output_incomplete,omitzero"`
+	DaemonShutdown   bool                `json:"daemon_shutdown,omitzero"`
 	Reason           string              `json:"reason,omitempty"`
 	Handoff          *clientHandoff      `json:"handoff,omitempty"`
 	SourceHost       string              `json:"source_host,omitempty"`
 	MachineID        string              `json:"machine_id,omitempty"`
-	Pinned           bool                `json:"pinned,omitempty"`
+	Pinned           bool                `json:"pinned,omitzero"`
 	LocalRequest     *localDaemonRequest `json:"local_request,omitempty"`
 	Instance         string              `json:"instance,omitempty"`
 	Token            string              `json:"token,omitempty"`
@@ -61,27 +61,27 @@ type message struct {
 	ApprovalID       string              `json:"approval_id,omitempty"`
 	Directory        string              `json:"directory,omitempty"`
 	HomeDirectory    string              `json:"home_directory,omitempty"`
-	AgeSeconds       *int64              `json:"age_seconds,omitempty"`
+	AgeSeconds       *int64              `json:"age_seconds,omitzero"`
 	Targets          []sessionTarget     `json:"targets,omitempty"`
 	SoftwareVersion  string              `json:"software_version,omitempty"`
 	Operations       []operation         `json:"operations,omitempty"`
 	Action           string              `json:"action,omitempty"`
 	Type             string              `json:"type"`
-	Cols             uint16              `json:"cols,omitempty"`
-	Rows             uint16              `json:"rows,omitempty"`
-	Color            bool                `json:"color,omitempty"`
-	NoProfile        bool                `json:"no_profile,omitempty"`
-	NoLogin          bool                `json:"no_login,omitempty"`
+	Cols             uint16              `json:"cols,omitzero"`
+	Rows             uint16              `json:"rows,omitzero"`
+	Color            bool                `json:"color,omitzero"`
+	NoProfile        bool                `json:"no_profile,omitzero"`
+	NoLogin          bool                `json:"no_login,omitzero"`
 	Term             string              `json:"term,omitempty"`
-	PID              int                 `json:"pid,omitempty"`
+	PID              int                 `json:"pid,omitzero"`
 	Foreground       string              `json:"foreground,omitempty"`
-	Attached         bool                `json:"attached,omitempty"`
+	Attached         bool                `json:"attached,omitzero"`
 	Name             string              `json:"name,omitempty"`
 	Shell            string              `json:"shell,omitempty"`
-	Size             int64               `json:"size,omitempty"`
+	Size             int64               `json:"size,omitzero"`
 	Output           string              `json:"output,omitempty"`
 	Error            string              `json:"error,omitempty"`
-	Code             int                 `json:"code,omitempty"`
+	Code             int                 `json:"code,omitzero"`
 }
 
 func validateSessionTargets(targets []sessionTarget) error {
@@ -110,8 +110,10 @@ func sessionTargetNames(targets []sessionTarget) ([]string, error) {
 
 const maxControlMessage = 64*1024 + 4096
 
-func writeMessage(w io.Writer, m message) error {
-	body, err := json.Marshal(m)
+func writeMessage(w io.Writer, m message) error { return writeControlJSON(w, m) }
+
+func writeControlJSON(w io.Writer, value any) error {
+	body, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,8 @@ package main
 import (
 	"cmp"
 	"context"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/jsonstream"
 	"github.com/jay-waves/sshore/internal/sys"
 )
 
@@ -213,19 +214,19 @@ func serveDaemonAdmin(input io.Reader, output io.Writer) error {
 	if err != nil {
 		reply.Error = err.Error()
 	}
-	encoder := jsonstream.NewEncoder(output)
-	if err := encoder.Encode(reply); err != nil {
+	encoder := jsontext.NewEncoder(output)
+	if err := json.MarshalEncode(encoder, reply); err != nil {
 		return err
 	}
 	if reply.Error != "" {
 		return nil
 	}
 	var expected daemonSnapshot
-	if err := jsonstream.NewDecoder(io.LimitReader(input, 1<<20)).Decode(&expected); err != nil {
+	if err := json.UnmarshalDecode(jsontext.NewDecoder(io.LimitReader(input, 1<<20)), &expected); err != nil {
 		return err
 	}
 	if snapshot.Instance != expected.Instance || snapshot.Version != expected.Version || !slices.Equal(snapshot.Tasks, expected.Tasks) {
-		return encoder.Encode(daemonAdminReply{Error: "tasks changed; review again"})
+		return json.MarshalEncode(encoder, daemonAdminReply{Error: "tasks changed; review again"})
 	}
 	if snapshot.Instance != "" {
 		err = requestDaemonShutdown(expected)
@@ -234,5 +235,5 @@ func serveDaemonAdmin(input io.Reader, output io.Writer) error {
 	if err != nil {
 		reply.Error = err.Error()
 	}
-	return encoder.Encode(reply)
+	return json.MarshalEncode(encoder, reply)
 }

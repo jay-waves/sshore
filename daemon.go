@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -17,7 +19,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/jsonstream"
 	"github.com/jay-waves/sshore/internal/release"
 	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
@@ -227,16 +228,16 @@ func runDaemon() (result error) {
 	stopHangups := sys.ProtectDaemonHangups()
 	defer stopHangups()
 	standalone := term.IsTerminal(int(os.Stdin.Fd()))
-	enc := jsonstream.NewEncoder(os.Stdout)
+	enc := jsontext.NewEncoder(os.Stdout)
 	defer func() {
 		if result != nil && !standalone {
-			_ = enc.Encode(localStartup{Error: result.Error()})
+			_ = json.MarshalEncode(enc, localStartup{Error: result.Error()})
 		}
 	}()
-	dec := jsonstream.NewDecoder(io.LimitReader(os.Stdin, 16*1024))
+	dec := jsontext.NewDecoder(io.LimitReader(os.Stdin, 16*1024))
 	var record localShellRecord
 	if !standalone {
-		if err := dec.Decode(&record); err != nil {
+		if err := json.UnmarshalDecode(dec, &record); err != nil {
 			if err != io.EOF {
 				return err
 			}
@@ -283,11 +284,11 @@ func runDaemon() (result error) {
 	}
 	defer os.Remove(path)
 	if !standalone {
-		if err = enc.Encode(localStartup{Record: record}); err != nil {
+		if err = json.MarshalEncode(enc, localStartup{Record: record}); err != nil {
 			return err
 		}
 		var ack string
-		if err = dec.Decode(&ack); err != nil || ack != "ready" {
+		if err = json.UnmarshalDecode(dec, &ack); err != nil || ack != "ready" {
 			return fmt.Errorf("daemon startup not committed")
 		}
 		os.Stdin.Close()
@@ -447,18 +448,18 @@ func runDaemonLaunch(c net.Conn, req localDaemonRequest, record localShellRecord
 		if req.Parent != "" {
 			task, ok := tasks.lookup(req.Parent).(*nativeShellTask)
 			if !ok {
-				_ = jsonstream.NewEncoder(c).Encode(localStartup{Error: "parent shell is unavailable"})
+				_ = writeControlJSON(c, localStartup{Error: "parent shell is unavailable"})
 				return
 			}
 			parent = &task.shell.shellTask
 		}
 		err := runLocalShell(tasks, req.Record, req.Env, parent, func(r localShellRecord) error {
 			_ = c.SetDeadline(time.Now().Add(10 * time.Second))
-			if e := jsonstream.NewEncoder(c).Encode(localStartup{Record: r}); e != nil {
+			if e := writeControlJSON(c, localStartup{Record: r}); e != nil {
 				return e
 			}
 			var ack string
-			if e := jsonstream.NewDecoder(c).Decode(&ack); e != nil {
+			if e := readControlJSON(c, &ack); e != nil {
 				return e
 			}
 			if ack != "ready" {
@@ -468,7 +469,7 @@ func runDaemonLaunch(c net.Conn, req localDaemonRequest, record localShellRecord
 			return nil
 		})
 		if err != nil {
-			_ = jsonstream.NewEncoder(c).Encode(localStartup{Error: err.Error()})
+			_ = writeControlJSON(c, localStartup{Error: err.Error()})
 		}
 	} else {
 		_ = runDaemonResource(c, req, tasks)
@@ -535,12 +536,12 @@ func launchLocalDaemonContext(ctx context.Context, executable ...string) (localS
 		}
 		return err
 	}
-	enc := jsonstream.NewEncoder(input)
-	if err := enc.Encode(request); err != nil {
+	enc := jsontext.NewEncoder(input)
+	if err := json.MarshalEncode(enc, request); err != nil {
 		return empty, pipeError(err)
 	}
 	var reply localStartup
-	if err := jsonstream.NewDecoder(output).Decode(&reply); err != nil {
+	if err := json.UnmarshalDecode(jsontext.NewDecoder(output), &reply); err != nil {
 		return empty, pipeError(fmt.Errorf("start local daemon: %w", err))
 	}
 	if reply.Error != "" {
@@ -556,7 +557,7 @@ func launchLocalDaemonContext(ctx context.Context, executable ...string) (localS
 	if cause := context.Cause(startup); cause != nil {
 		return empty, cause
 	}
-	if err := enc.Encode("ready"); err != nil {
+	if err := json.MarshalEncode(enc, "ready"); err != nil {
 		return empty, pipeError(err)
 	}
 	committed = true

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -13,8 +15,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/jay-waves/sshore/internal/jsonstream"
 )
 
 // The daemon owns task identities and their live implementations. Entries are
@@ -239,7 +239,7 @@ func (s *daemonTasks) openNative(w http.ResponseWriter, r *http.Request) {
 		reply.Error = err.Error()
 	}
 	serveDaemonStream(w, r, func(c net.Conn) {
-		if err := jsonstream.NewEncoder(c).Encode(reply); err == nil && task != nil {
+		if err := writeControlJSON(c, reply); err == nil && task != nil {
 			serveTaskCommand(c, task.serve)
 		}
 	})
@@ -350,9 +350,9 @@ func (s *daemonTasks) serveTaskInventory(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	snapshot, workers := s.taskInventory(request)
-	enc := jsonstream.NewEncoder(w)
+	enc := jsontext.NewEncoder(w)
 	w.Header().Set("Content-Type", "application/x-ndjson")
-	if err := enc.Encode(snapshot); err != nil || len(workers) == 0 {
+	if err := json.MarshalEncode(enc, snapshot); err != nil || len(workers) == 0 {
 		return
 	}
 	controller := http.NewResponseController(w)
@@ -364,7 +364,7 @@ func (s *daemonTasks) serveTaskInventory(w http.ResponseWriter, r *http.Request)
 	deadline, _ := ctx.Deadline()
 	_ = controller.SetWriteDeadline(deadline)
 	probeResourceStatus(ctx, workers, func(row resourceStatusRow) bool {
-		return enc.Encode(row) == nil && controller.Flush() == nil
+		return json.MarshalEncode(enc, row) == nil && controller.Flush() == nil
 	})
 }
 
@@ -519,7 +519,7 @@ func (s *daemonTasks) serveResourceMutation(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		reply.Error = err.Error()
 	}
-	_ = jsonstream.NewEncoder(w).Encode(reply)
+	_ = json.MarshalWrite(w, reply)
 }
 
 // A stop returns the exact registered worker to stop outside the task table
@@ -642,10 +642,9 @@ func (s *daemonTasks) serveConfirmedResourceStops(w http.ResponseWriter, r *http
 	if !readDaemonBody(w, r, &changes) {
 		return
 	}
-	enc := jsonstream.NewEncoder(w)
 	stops, err := s.confirmedResourceStops(changes)
 	if err != nil {
-		_ = enc.Encode(resourceReply{Error: err.Error()})
+		_ = json.MarshalWrite(w, resourceReply{Error: err.Error()})
 		return
 	}
 	failures := make([]string, len(stops))
@@ -666,7 +665,7 @@ func (s *daemonTasks) serveConfirmedResourceStops(w http.ResponseWriter, r *http
 			return
 		}
 	}
-	_ = enc.Encode(resourceReply{Failures: failures})
+	_ = json.MarshalWrite(w, resourceReply{Failures: failures})
 }
 
 func daemonResourceRequest(ctx context.Context, path string, input any) (resourceReply, error) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -16,7 +17,6 @@ import (
 	"time"
 
 	forwardio "github.com/jay-waves/sshore/internal/forward"
-	"github.com/jay-waves/sshore/internal/jsonstream"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 )
@@ -424,7 +424,7 @@ func (d *diagnosticsTail) String() string {
 	return termui.CleanText(strings.TrimSpace(string(d.data)))
 }
 
-func runDaemonForward(config resourceConfig, enc *jsonstream.Encoder, dec *jsonstream.Decoder, c net.Conn, request localDaemonRequest, tasks *daemonTasks) error {
+func runDaemonForward(config resourceConfig, enc *jsontext.Encoder, dec *jsontext.Decoder, c net.Conn, request localDaemonRequest, tasks *daemonTasks) error {
 	f := *config.Forward
 	if err := validateForwardConfig(f); err != nil {
 		return err
@@ -450,7 +450,7 @@ func runDaemonForward(config resourceConfig, enc *jsonstream.Encoder, dec *jsons
 		return err
 	}
 	s.record.Name = task.taskName()
-	ack := awaitResourceCommit(dec.Decode, cancel)
+	ack := awaitResourceCommit(func(v any) error { return json.UnmarshalDecode(dec, v) }, cancel)
 	_, err := runForward(ctx, f, s, func() error {
 		record := task.publishReady(s.record.Detail, "", "")
 		if err := offerResourceStartup(enc, record, ack, nil); err != nil {

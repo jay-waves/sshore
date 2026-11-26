@@ -3,6 +3,8 @@ package main
 import (
 	"cmp"
 	"context"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -13,7 +15,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/jay-waves/sshore/internal/jsonstream"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/term"
@@ -137,14 +138,14 @@ func readTaskInventory(request taskInventoryRequest) (taskInventorySnapshot, map
 		return snapshot, nil, err
 	}
 	defer resp.Body.Close()
-	dec := jsonstream.NewDecoder(resp.Body)
-	if err := dec.Decode(&snapshot); err != nil {
+	dec := jsontext.NewDecoder(resp.Body)
+	if err := json.UnmarshalDecode(dec, &snapshot); err != nil {
 		return snapshot, nil, err
 	}
 	if request.Status {
 		for range snapshot.Resources {
 			var row resourceStatusRow
-			if dec.Decode(&row) != nil {
+			if json.UnmarshalDecode(dec, &row) != nil {
 				break
 			}
 			statuses[row.UID] = row.Status

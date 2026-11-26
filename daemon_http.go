@@ -14,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/jay-waves/sshore/internal/jsonstream"
 )
 
 const (
@@ -29,7 +27,7 @@ const (
 func daemonRequest(ctx context.Context, record localShellRecord, path string, input any) (*http.Request, error) {
 	var body bytes.Buffer
 	if input != nil {
-		if err := jsonstream.NewEncoder(&body).Encode(input); err != nil {
+		if err := json.MarshalWrite(&body, input); err != nil {
 			return nil, err
 		}
 	}
@@ -49,10 +47,6 @@ var daemonHTTPClient = &http.Client{Transport: &http.Transport{DisableKeepAlives
 
 // daemonJSON sends a daemon request and decodes its response when output is non-nil.
 func daemonJSON(ctx context.Context, r localShellRecord, path string, input, output any) error {
-	return daemonJSONLimit(ctx, r, path, input, output, 0)
-}
-
-func daemonJSONLimit(ctx context.Context, r localShellRecord, path string, input, output any, limit int64) error {
 	ctx, cancel := context.WithTimeout(ctx, daemonRequestTimeout)
 	defer cancel()
 	req, err := daemonRequest(ctx, r, path, input)
@@ -67,11 +61,7 @@ func daemonJSONLimit(ctx context.Context, r localShellRecord, path string, input
 	if output == nil {
 		return nil
 	}
-	var body io.Reader = resp.Body
-	if limit > 0 {
-		body = io.LimitReader(body, limit)
-	}
-	return jsonstream.NewDecoder(body).Decode(output)
+	return json.UnmarshalRead(resp.Body, output)
 }
 
 func daemonAuthorized(r *http.Request, record localShellRecord) bool {
@@ -146,16 +136,16 @@ func serveDaemonStream(w http.ResponseWriter, r *http.Request, serve func(net.Co
 }
 
 func readDaemonBody(w http.ResponseWriter, r *http.Request, out any) bool {
-	if err := decodeDaemonBody(w, r, daemonBodyLimit, out); err != nil {
+	if err := decodeDaemonBody(w, r, out); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return false
 	}
 	return true
 }
 
-func decodeDaemonBody(w http.ResponseWriter, r *http.Request, limit int64, out any) error {
+func decodeDaemonBody(w http.ResponseWriter, r *http.Request, out any) error {
 	// Consume the complete body before an upgrade takes ownership of the connection.
-	return json.UnmarshalRead(http.MaxBytesReader(w, r.Body, limit), out)
+	return json.UnmarshalRead(http.MaxBytesReader(w, r.Body, daemonBodyLimit), out)
 }
 
 func daemonDo(req *http.Request) (*http.Response, error) {
@@ -183,19 +173,19 @@ func daemonResponseError(resp *http.Response) error {
 func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+daemonSnapshotRoute, func(w http.ResponseWriter, r *http.Request) {
-		_ = jsonstream.NewEncoder(w).Encode(tasks.adminSnapshot(record))
+		_ = json.MarshalWrite(w, tasks.adminSnapshot(record))
 	})
 	mux.HandleFunc("POST "+daemonShutdownRoute, func(w http.ResponseWriter, r *http.Request) {
 		var expected daemonSnapshot
-		err := decodeDaemonBody(w, r, daemonBodyLimit, &expected)
+		err := decodeDaemonBody(w, r, &expected)
 		if err == nil {
 			err = tasks.shutdown(record, expected)
 		}
 		if err != nil {
-			_ = jsonstream.NewEncoder(w).Encode(daemonAdminReply{Error: err.Error()})
+			_ = json.MarshalWrite(w, daemonAdminReply{Error: err.Error()})
 			return
 		}
-		_ = jsonstream.NewEncoder(w).Encode(daemonAdminReply{Snapshot: expected})
+		_ = json.MarshalWrite(w, daemonAdminReply{Snapshot: expected})
 		stop()
 	})
 	mux.HandleFunc("POST /tasks/snapshot", tasks.serveTaskInventory)
@@ -209,7 +199,7 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *htt
 			http.Error(w, "activity unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		_ = jsonstream.NewEncoder(w).Encode(activity.listTasks(r.Context(), request))
+		_ = json.MarshalWrite(w, activity.listTasks(r.Context(), request))
 	})
 	mux.HandleFunc("POST /resources/stop-confirmed", tasks.serveConfirmedResourceStops)
 	mux.HandleFunc("POST /resources/{action}", tasks.serveResourceMutation)
@@ -223,7 +213,7 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *htt
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
-		_ = jsonstream.NewEncoder(w).Encode(matches)
+		_ = json.MarshalWrite(w, matches)
 	})
 	mux.HandleFunc("POST /tasks/native/open", tasks.openNative)
 	mux.HandleFunc("POST /tasks/{id}/open", tasks.open)
@@ -242,7 +232,7 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *htt
 		}
 		var req metadataRequest
 		if readDaemonBody(w, r, &req) {
-			_ = jsonstream.NewEncoder(w).Encode(activity.handleMetadata(req))
+			_ = json.MarshalWrite(w, activity.handleMetadata(req))
 		}
 	}
 	mux.HandleFunc("POST /metadata", activityHandler)

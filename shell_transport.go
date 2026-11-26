@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
 	"io"
@@ -13,7 +12,6 @@ import (
 	"time"
 
 	forwardio "github.com/jay-waves/sshore/internal/forward"
-	"github.com/jay-waves/sshore/internal/jsonstream"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/xtaci/smux"
 )
@@ -455,15 +453,11 @@ func connectedHostedShells(parent context.Context, record localShellRecord, dial
 	if resp.StatusCode != http.StatusOK {
 		return nil, daemonResponseError(resp)
 	}
-	var snapshot struct{ Shells jsontext.Value }
-	if err := jsonstream.NewDecoder(io.LimitReader(resp.Body, daemonBodyLimit)).Decode(&snapshot); err != nil {
+	var snapshot struct{ Shells []shellView }
+	if err := json.UnmarshalRead(io.LimitReader(resp.Body, daemonBodyLimit), &snapshot); err != nil {
 		return nil, err
 	}
-	var shells []shellView
-	if err := json.Unmarshal(snapshot.Shells, &shells); err != nil {
-		return nil, err
-	}
-	return shells, nil
+	return snapshot.Shells, nil
 }
 
 // Relay the selection exchange until the remote setup process hands over a task.

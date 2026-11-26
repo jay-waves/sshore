@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
+	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
 	"io"
@@ -16,7 +17,6 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
-	"github.com/jay-waves/sshore/internal/jsonstream"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
 )
@@ -144,7 +144,7 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 	}
 	if o.Stats {
 		c.ReportStats = func(stats files.MountStats) {
-			_ = jsonstream.NewEncoder(os.Stderr).Encode(struct {
+			_ = json.MarshalEncode(jsontext.NewEncoder(os.Stderr), struct {
 				Type string
 				files.MountStats
 			}{Type: "mount_stats", MountStats: stats})
@@ -211,7 +211,7 @@ func mountSSHOptions(o ftpOptions) sshio.Options {
 	return remoteService(sshConnectionOptions(options{host: o.Host, ssh: args}), server, remoteServiceRequest{Operation: "mount-agent"})
 }
 
-func runDaemonMount(config resourceConfig, enc *jsonstream.Encoder, dec *jsonstream.Decoder, c net.Conn, log io.Writer, request localDaemonRequest, tasks *daemonTasks) error {
+func runDaemonMount(config resourceConfig, enc *jsontext.Encoder, dec *jsontext.Decoder, c net.Conn, log io.Writer, request localDaemonRequest, tasks *daemonTasks) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -240,8 +240,8 @@ func runDaemonMount(config resourceConfig, enc *jsonstream.Encoder, dec *jsonstr
 		record: resourceRecord{Kind: "mount", UID: config.UID, Name: config.Mount.Name, Host: config.Mount.Host, ReadOnly: config.Mount.ReadOnly, Direction: "<-", Version: version},
 		done:   finished,
 	}
-	childInput := jsonstream.NewEncoder(input)
-	child := jsonstream.NewDecoder(output)
+	childInput := jsontext.NewEncoder(input)
+	child := jsontext.NewDecoder(output)
 	const (
 		starting = iota
 		cancelled
@@ -275,11 +275,11 @@ func runDaemonMount(config resourceConfig, enc *jsonstream.Encoder, dec *jsonstr
 				return resourceReply{Error: "invalid resource operation"}
 			}
 		}
-		if err := childInput.Encode(action); err != nil {
+		if err := json.MarshalEncode(childInput, action); err != nil {
 			return resourceReply{Error: err.Error()}
 		}
 		var reply resourceReply
-		if err := child.Decode(&reply); err != nil {
+		if err := json.UnmarshalDecode(child, &reply); err != nil {
 			return resourceReply{Error: err.Error()}
 		}
 		return reply
@@ -316,21 +316,21 @@ func runDaemonMount(config resourceConfig, enc *jsonstream.Encoder, dec *jsonstr
 	}()
 	// Watch the initiator before writing to the worker, so cancellation also
 	// interrupts a blocked configuration write.
-	commit := awaitResourceCommit(dec.Decode, func() {
+	commit := awaitResourceCommit(func(v any) error { return json.UnmarshalDecode(dec, v) }, func() {
 		pipeMu.Lock()
 		defer pipeMu.Unlock()
 		cancelStartupLocked()
 	})
 	defer func() { _ = c.SetReadDeadline(time.Now()) }()
-	if err = childInput.Encode(config); err != nil {
+	if err = json.MarshalEncode(childInput, config); err != nil {
 		return err
 	}
 	var startup resourceStartup
-	if err = child.Decode(&startup); err != nil {
+	if err = json.UnmarshalDecode(child, &startup); err != nil {
 		return err
 	}
 	if startup.Error != "" {
-		return enc.Encode(startup)
+		return json.MarshalEncode(enc, startup)
 	}
 	record := task.publishReady(startup.Detail, startup.Remote, startup.Mountpoint)
 	if err = offerResourceStartup(enc, record, commit, finished); err != nil {
@@ -354,11 +354,11 @@ func runDaemonMount(config resourceConfig, enc *jsonstream.Encoder, dec *jsonstr
 }
 
 func runMountDaemon() (code int, resultErr error) {
-	enc := jsonstream.NewEncoder(os.Stdout)
+	enc := jsontext.NewEncoder(os.Stdout)
 	committed := false
 	defer func() {
 		if !committed && resultErr != nil {
-			_ = enc.Encode(resourceStartup{Error: cleanText(resultErr.Error())})
+			_ = json.MarshalEncode(enc, resourceStartup{Error: cleanText(resultErr.Error())})
 		}
 	}()
 
@@ -407,7 +407,7 @@ func runMountDaemon() (code int, resultErr error) {
 		if err := offerResourceStartup(enc, s.record, ack, nil); err != nil {
 			return err
 		}
-		if err := enc.Encode(resourceCommitReply{Started: true}); err != nil {
+		if err := json.MarshalEncode(enc, resourceCommitReply{Started: true}); err != nil {
 			return err
 		}
 		committed = true
@@ -426,7 +426,7 @@ func runMountDaemon() (code int, resultErr error) {
 
 // The account daemon retains the worker pipes after commit. Losing that owner
 // stops the filesystem worker, including when no task-control RPC is in flight.
-func (s *resourceService) serveWorkerControl(read func(any) error, enc *jsonstream.Encoder, unmount chan<- chan error, replyMu *sync.Mutex) {
+func (s *resourceService) serveWorkerControl(read func(any) error, enc *jsontext.Encoder, unmount chan<- chan error, replyMu *sync.Mutex) {
 	for {
 		var action string
 		if err := read(&action); err != nil {
@@ -439,7 +439,7 @@ func (s *resourceService) serveWorkerControl(read func(any) error, enc *jsonstre
 			return
 		default:
 		}
-		err := enc.Encode(s.mountControl(action, unmount))
+		err := json.MarshalEncode(enc, s.mountControl(action, unmount))
 		replyMu.Unlock()
 		if err != nil {
 			break

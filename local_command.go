@@ -8,7 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/jsonstream"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -142,7 +141,7 @@ func startLocalSessionContext(ctx context.Context, o options) (localShellRecord,
 	defer stop()
 	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 	var reply localStartup
-	if err = jsonstream.NewDecoder(c).Decode(&reply); err != nil {
+	if err = readControlJSON(c, &reply); err != nil {
 		return empty, err
 	}
 	if reply.Error != "" {
@@ -151,7 +150,7 @@ func startLocalSessionContext(ctx context.Context, o options) (localShellRecord,
 	if !validTaskUID(reply.Record.UID) || validSession(reply.Record.Name) != nil || reply.Record.Version != version {
 		return empty, fmt.Errorf("invalid local shell startup response")
 	}
-	if err = jsonstream.NewEncoder(c).Encode("ready"); err != nil {
+	if err = writeControlJSON(c, "ready"); err != nil {
 		return empty, err
 	}
 	return reply.Record, nil

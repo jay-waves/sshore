@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 
-	"github.com/jay-waves/sshore/internal/jsonstream"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
@@ -24,14 +23,14 @@ type remoteServiceRequest struct {
 	Name              string                `json:"name,omitempty"`
 	NewName           string                `json:"new_name,omitempty"`
 	Instance          string                `json:"instance,omitempty"`
-	OpenIfUnavailable bool                  `json:"open_if_unavailable,omitempty"`
+	OpenIfUnavailable bool                  `json:"open_if_unavailable,omitzero"`
 }
 
 type remoteForwardRequest struct {
 	Kind       string `json:"kind"`
-	Port       int    `json:"port,omitempty"`
-	TargetPort int    `json:"target_port,omitempty"`
-	Reverse    bool   `json:"reverse,omitempty"`
+	Port       int    `json:"port,omitzero"`
+	TargetPort int    `json:"target_port,omitzero"`
+	Reverse    bool   `json:"reverse,omitzero"`
 }
 
 func remoteService(connection sshio.Options, server string, req remoteServiceRequest) sshio.Options {
@@ -42,7 +41,7 @@ func remoteService(connection sshio.Options, server string, req remoteServiceReq
 	connection.Command += " " + remoteServiceCommand
 	req.Protocol, req.Release = remoteServiceProtocol, version
 	connection.WriteRequest = func(w io.Writer) error {
-		return jsonstream.NewEncoder(w).Encode(req)
+		return writeControlJSON(w, req)
 	}
 	return connection
 }

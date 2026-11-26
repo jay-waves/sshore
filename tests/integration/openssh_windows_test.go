@@ -29,7 +29,8 @@ func TestWindowsOpenSSH(t *testing.T) {
 	sshOptions := []string{"-F", "none", "-p", "22222", "-l", "sshore-fixture", "-i", key,
 		"-o", "IdentitiesOnly=yes", "-o", "UserKnownHostsFile=" + hosts, "-o", "StrictHostKeyChecking=yes"}
 	raw := func(t *testing.T, operation, release, mode, name string) (reply struct {
-		Type, Error     string
+		Type            string `json:"type"`
+		Error           string `json:"error"`
 		SoftwareVersion string `json:"software_version"`
 	}) {
 		t.Helper()
