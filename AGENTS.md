@@ -18,16 +18,21 @@
 - Use the shared toolchain from PATH and check versions against repository requirements. Get
   approval before substituting private runtimes, lowering requirements, or installing tools.
   For browser checks, use global Playwright and system Chrome. Do not download browsers.
-- Reserve unit tests for core, side-effect-free code. Verify ordinary changes with temporary
-  checks and discard them afterward. Cover lasting system contracts with external integration
-  tests. See [build and validation](docs/BUILD.md).
+- Treat integration tests as executable examples of the design. Name scenarios for the behavior
+  they promise and show the setup, action, and observable outcome. Cover normal workflows and
+  meaningful boundaries such as ownership, consent, failure, and cleanup. Explain a non-obvious
+  invariant next to the step that exercises it.
+- When changing a lasting contract, add or update its integration example alongside the change.
+  Start from the example when it helps clarify the design. Reserve unit tests for core,
+  side-effect-free code. Use temporary checks for ordinary changes and discard them afterward.
+  Avoid duplicate cases and assertions tied to incidental wording. See [build and validation](docs/BUILD.md).
 - Define CLI grammar once. Parsing and help must leave services and state untouched. Make
   destructive consequences and confirmations explicit.
 
 ## Documentation
 
 - Keep only `README.md` and `AGENTS.md` at the root among documentation files.
-  Keep the license at `docs/LICENSE.txt` and organize other documentation under [docs/](docs/).
+  Keep the license at `LICENSE.txt` and organize other documentation under [docs/](docs/).
 - Cap each project document in `docs/` at 200 lines. Only `SECURITY.md` and `GLOSSARY.md` may
   exceed that cap. Aim for 100 columns per line, except in `SECURITY.md`. Keep third-party
   license notices verbatim.

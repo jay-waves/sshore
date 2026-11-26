@@ -217,6 +217,8 @@ Match command "printf forwarding-check"
 	})
 
 	t.Run("approval resumes requesting shell and resources outlive it", func(t *testing.T) {
+		// The requesting shell owns the dialogue, but the approving account
+		// owns the resources it creates. Ending the shell must leave them usable.
 		endpoint := host + ":approval-return"
 		cleanup := func() {
 			_, _ = command("kill", strings.TrimPrefix(endpoint, host+":"), "--server", binary).CombinedOutput()
@@ -480,6 +482,8 @@ Match command "printf forwarding-check"
 		return point
 	}
 	t.Run("mount keeps open handles across replacement", func(t *testing.T) {
+		// An open handle keeps referring to the original file after the path is
+		// replaced. A new open of that path must see the replacement.
 		run(t, "sh", host, "--", "mkdir mount-source && printf original > mount-source/target")
 		point := mount(t, "mount-source")
 		target, replacement := filepath.Join(point, "target"), filepath.Join(point, "replacement")
@@ -707,17 +711,21 @@ Match command "printf forwarding-check"
 		parent := exec.CommandContext(ctx, binary, "shell", "--name", "resume-parent", "--no-profile", "--no-login")
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
 			wait("Connected here:resume-parent")
+			// A managed shell can only hand off to its own remote children.
 			send(quote(binary) + " attach " + id + "\n")
-			wait("Connected " + root)
-			send(report)
-			wait(marker + id)
-			send("exit\n")
-			wait("Connected here:resume-parent")
+			wait("no live child matches")
 			send(quote(binary) + " attach " + missing + "\n")
 			wait("unknown shell ID")
 			send("exit\n")
 			wait("No shell attached.")
 			send("exit\r")
+		})
+		// The original client account can resume the independent root by ID.
+		runOpenSSHTerminal(t, ctx, command("attach", id), func(send func(string), wait terminalWait) {
+			wait("Connected " + root)
+			send(report)
+			wait(marker + id)
+			send("exit\n")
 		})
 	})
 	t.Run("hosted shell uses explicit local selectors on its own daemon", func(t *testing.T) {
@@ -834,6 +842,8 @@ Match command "printf forwarding-check"
 	})
 
 	t.Run("shutdown confirmation rejects a replacement task", func(t *testing.T) {
+		// Confirmation applies to the tasks in the preview. Reusing a name
+		// between preview and confirmation must leave the replacement alive.
 		localCommand := func(args ...string) *exec.Cmd { return exec.CommandContext(ctx, binary, args...) }
 		local := func(args ...string) []byte {
 			t.Helper()

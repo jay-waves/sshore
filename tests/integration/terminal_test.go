@@ -26,6 +26,7 @@ func terminalDialogue(t *testing.T, terminal io.ReadWriter, run func(send func(s
 	t.Helper()
 	reader := bufio.NewReader(terminal)
 	var transcript strings.Builder
+	// Prompts can stop drawing without a newline while they wait for input.
 	wait := func(marker string, prompt ...bool) string {
 		t.Helper()
 		for {

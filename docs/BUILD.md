@@ -16,12 +16,22 @@ and use the `integration` build tag. Installer checks on Windows use the
 
 Use an ad hoc check for ordinary feature work. Keep scripts, temporary
 regressions and fixture files outside the checkout and discard them after
-validation. Keep permanent integration scenarios when they protect a shared
-lifecycle or trust boundary such as shell ownership, release matching,
-file integrity or explicit approval. Exercise those contracts through the
-CLI or installer in isolation. OS-specific validation uses the affected OS
+validation. Read the permanent integration scenarios as examples of the
+product's contracts. Name the behavior each scenario demonstrates and keep
+the action and observable result together. Explain setup that establishes
+an ownership or trust boundary. Exercise those contracts through the CLI or
+installer in isolation. OS-specific validation uses the affected OS
 and its real terminal or mount driver. Keep real account shells out of tests
 that simulate upgrade confirmation or reset.
+
+Start with these scenarios when reviewing a design change:
+
+| Contract | Integration examples |
+| --- | --- |
+| Help, argument rejection, and recovery leave task state untouched | [CLI](../tests/integration/cli_test.go) |
+| Detach preserves shell state, attach resumes it, and shutdown ends it | [ConPTY](../tests/integration/client_windows_test.go) |
+| Confirming a launch preserves argument boundaries, including empty arguments | [Program lifecycle](../tests/integration/run_lifecycle_windows_test.go) |
+| SSH trust, exact release matching, consent, and file integrity | [Linux OpenSSH](../tests/integration/openssh_linux_test.go), [Windows OpenSSH](../tests/integration/openssh_windows_test.go) |
 
 - `tests/integration/ssh_docker.sh` runs the Linux installer and the built
   Linux client in a disposable Alpine container with `/dev/fuse`. The client

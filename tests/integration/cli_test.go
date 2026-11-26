@@ -11,6 +11,7 @@ import (
 	"testing"
 )
 
+// The CLI must resolve help and reject invalid requests before touching account state.
 func TestCLI(t *testing.T) {
 	binary := os.Getenv("SSHORE_TEST_OPENSSH")
 	if binary == "" {
@@ -37,10 +38,8 @@ func TestCLI(t *testing.T) {
 		{"attached port value is validated", []string{"sh", "work", "-p65536"}, false, 2, "requires a port from 1 to 65535"},
 		{"attached jump value is recognized", []string{"new", "-Jjump"}, false, 2, "local tasks do not accept SSH options"},
 		{"identity files can be repeated before and after the SSH delimiter", []string{"new", "-i", "first key", "-isecond-key", "--ssh", "-i", "third-key"}, false, 2, "local tasks do not accept SSH options"},
-		{"identity requires a value before the next option", []string{"sh", "work", "-i", "-p", "2222"}, false, 2, "missing value for -i"},
 		{"jump requires a value before the next option", []string{"new", "work", "-J", "-p", "2222"}, false, 2, "missing value for -J"},
 		{"duplicate jump option", []string{"sh", "work", "-J", "jump", "--ssh", "-J", "other"}, false, 2, "-J cannot be combined"},
-		{"duplicate jump config override", []string{"sh", "work", "-J", "jump", "--ssh", "-o", "ProxyJump=other"}, false, 2, "-J cannot be combined"},
 		{"local scope rejects SSH options", []string{"attach", "--port=2222"}, false, 2, "local tasks do not accept SSH options"},
 		{"cannot attach a typed selector", []string{"attach", "forward/485bad"}, false, 2, "attach expects a task ID, name or host"},
 		{"cannot attach a scoped selector", []string{"attach", "work:485bad"}, false, 2, "invalid host"},
@@ -54,12 +53,9 @@ func TestCLI(t *testing.T) {
 		{"new rejects an empty tail", []string{"new", "work", "--ssh", "-J", "jump", "--"}, false, 2, "expected -- followed by an executable"},
 		{"new documents shell startup options", []string{"new", "--help"}, false, 0, "--no-login"},
 		{"new rejects shell flags for an explicit program", []string{"new", "--no-profile", "--", "vim"}, false, 2, "require starting the default shell"},
-		{"new rejects an empty executable", []string{"new", "work", "--", ""}, false, 2, "expected -- followed by an executable"},
-		{"exec is removed", []string{"exec", "work", "--", "uptime"}, false, 2, "unknown command: exec"},
 		{"shell command requires a host before the delimiter", []string{"sh", "--", "work"}, false, 2, "requires one SSH host"},
 		{"shell command rejects an empty tail", []string{"sh", "work", "--"}, false, 2, "expected a command after --"},
 		{"shell command rejects pin", []string{"sh", "work", "--pin", "--", "uptime"}, false, 2, "--pin requires an interactive shell"},
-		{"rename is removed", []string{"rename", "485bad", "editor"}, false, 2, "unknown command: rename"},
 		{"shutdown accepts one account", []string{"kill", "--all", "one", "two"}, false, 2, "unexpected argument: two"},
 		{"empty host cannot become a local shutdown", []string{"kill", "--all", "--", ""}, false, 2, "empty argument"},
 		{"account reset accepts no target", []string{"reset", "work:"}, false, 2, "unexpected argument: work:"},

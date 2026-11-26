@@ -166,7 +166,7 @@ func testWindowsForward(t *testing.T, command func(...string) *exec.Cmd, host st
 	if !found || task == "" {
 		t.Fatalf("missing forward task in %q", out)
 	}
-	id := "forward/" + task
+	id := task
 	stopped := false
 	t.Cleanup(func() {
 		if !stopped {

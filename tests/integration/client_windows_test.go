@@ -95,15 +95,15 @@ func windowsRun(t *testing.T, cmd *exec.Cmd) []byte {
 func TestWindowsConPTY(t *testing.T) {
 	ctx, command := windowsClient(t)
 	t.Run("detach and reattach", func(t *testing.T) { testWindowsReattach(t, ctx, command) })
-	t.Run("attach and command panels", func(t *testing.T) {
+	t.Run("switch to a detached root and return to the parent", func(t *testing.T) {
 		start := func(name string) *exec.Cmd {
 			return command("shell", "--name", name, "--pin", "--no-profile")
 		}
 		if out, err := runWindowsTerminal(t, ctx, start("panel-target"), func(send func(string), wait terminalWait) {
-			wait("Connected here:panel-target")
+			wait("sshore: here:panel-target", true)
 			send("\x02d")
 			wait("Detached from here:panel-target")
-			wait("sshore on local>")
+			wait("sshore on local>", true)
 			send("exit\r")
 		}); err != nil {
 			t.Fatalf("prepare detached root: %v\n%s", err, out)
@@ -122,24 +122,26 @@ func TestWindowsConPTY(t *testing.T) {
 		}
 		id := taskID("panel-target")
 		if out, err := runWindowsTerminal(t, ctx, start("panel-source"), func(send func(string), wait terminalWait) {
-			wait("Connected here:panel-source")
+			wait("sshore: here:panel-source", true)
 			parentID := taskID("panel-source")
 			send("\x02a")
-			wait("Connected here:panel-target")
+			wait("sshore: here:panel-target", true)
 			send("\x02s")
-			wait("sshore on local>")
+			wait("sshore on local>", true)
+			// Selecting the parent returns to its live shell. Selecting the detached
+			// root by ID creates a new switch, which ends when that shell exits.
 			send("attach " + parentID + "\r")
-			wait("Connected here:panel-source")
+			wait("sshore: here:panel-source", true)
 			send("\x02s")
-			wait("sshore on local>")
+			wait("sshore on local>", true)
 			send("pstree\r")
 			wait("(panel-target)")
 			send(id + "\r")
-			wait("Connected here:panel-target")
+			wait("sshore: here:panel-target", true)
 			send("exit\r")
-			wait("Connected here:panel-source")
+			wait("sshore: here:panel-source", true)
 			send("exit\r")
-			wait("sshore on local>")
+			wait("sshore on local>", true)
 			send("exit\r")
 		}); err != nil {
 			t.Fatalf("attach and command panels: %v\n%s", err, out)
@@ -186,7 +188,7 @@ func testWindowsReattach(t *testing.T, ctx context.Context, command func(...stri
 		send("\x02d")
 		wait("Detached from " + endpoint)
 		wait("No shell attached.")
-		wait("sshore on local>")
+		wait("sshore on local>", true)
 		send("exit\r")
 	})
 	tree := string(windowsRun(t, command("ps")))
@@ -204,7 +206,7 @@ func testWindowsReattach(t *testing.T, ctx context.Context, command func(...stri
 		wait("WIN_RESUMED=retained:" + directory)
 		send("exit\r")
 		wait("No shell attached.")
-		wait("sshore on local>")
+		wait("sshore on local>", true)
 		send("exit\r")
 	})
 	if strings.Contains(string(windowsRun(t, command("ls"))), "(conpty)") {

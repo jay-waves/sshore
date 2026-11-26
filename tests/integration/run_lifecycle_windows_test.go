@@ -39,15 +39,15 @@ func TestWindowsNewReview(t *testing.T) {
 	cmd := exec.CommandContext(ctx, binary, "new", "--", "vim", "a b.txt")
 	out, err := runWindowsTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 		wait(`["vim","a b.txt"]`)
-		wait("Esc Cancel")
+		wait("Esc Cancel", true)
 		send("\x1b[A")
 		send("e")
-		wait("Arguments>")
+		wait("Arguments>", true)
 		send("\x01\x0b[\"vim\",null]\r")
 		wait("Use string arguments without NUL")
-		wait("Arguments>")
+		wait("Arguments>", true)
 		send("\x01\x0b[\"vim\",\"c d.txt\",\"\"]\r")
-		wait("Esc Cancel")
+		wait("Esc Cancel", true)
 		send("\x1b")
 	})
 	if err != nil {
@@ -62,7 +62,7 @@ func TestWindowsNewReview(t *testing.T) {
 }
 
 func confirmNewTerminal(send func(string), wait terminalWait) {
-	wait("Esc Cancel")
+	wait("Esc Cancel", true)
 	send("\r")
 }
 
@@ -93,7 +93,7 @@ func TestWindowsProgramArguments(t *testing.T) {
 			send("echo DEFAULT_SHELL_READY\r")
 			wait("DEFAULT_SHELL_READY")
 			send("exit\r")
-			wait("sshore on local>")
+			wait("sshore on local>", true)
 			send("exit\r")
 		})
 		if err != nil {
@@ -180,7 +180,7 @@ func TestWindowsRunLifecycle(t *testing.T) {
 		wait("Connected here:lifecycle")
 		send("\x02d")
 		wait("Detached from here:lifecycle")
-		wait("sshore on local>")
+		wait("sshore on local>", true)
 		send("exit\r")
 	})
 	if err != nil {
@@ -221,7 +221,7 @@ func TestWindowsRunLifecycle(t *testing.T) {
 		wait("Connected here:lifecycle")
 		send("\x02d")
 		wait("Detached from here:lifecycle")
-		wait("sshore on local>")
+		wait("sshore on local>", true)
 		send("exit\r")
 	})
 	if err != nil {
@@ -235,7 +235,7 @@ func TestWindowsRunLifecycle(t *testing.T) {
 		wait("Connected here:lifecycle")
 		send("kept\r")
 		wait("RESUMED=kept")
-		wait("sshore on local>")
+		wait("sshore on local>", true)
 		send("exit\r")
 	})
 	if err != nil {
@@ -250,7 +250,7 @@ func TestWindowsRunLifecycle(t *testing.T) {
 		wait("Connected here:lifecycle")
 		send("\x02d")
 		wait("Detached from here:lifecycle")
-		wait("sshore on local>")
+		wait("sshore on local>", true)
 		send("exit\r")
 	})
 	if err != nil {
