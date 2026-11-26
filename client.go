@@ -231,15 +231,11 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		return 1, fmt.Errorf("an interactive terminal is required")
 	}
 	term.ResetInputModes()
-	transport, err := openClientTransportContext(ctx, &o, transports)
+	control, err := openClientTransportContext(ctx, &o, transports)
 	if err != nil {
 		return 1, fmt.Errorf("open shell connection: %w", err)
 	}
-	defer transport.Close()
-	control := transport
-	if err := clientAttachment(control); err != nil {
-		return 255, err
-	}
+	defer control.Close()
 	terminalStream, terminalToken, err := openTerminalEndpoint(ctx, o)
 	if err != nil {
 		return 255, fmt.Errorf("open shell terminal: %w", err)
@@ -262,7 +258,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	if o.hold != nil {
 		treeKey = o.hold.treeKey
 	}
-	if err = streamMessage(control, message{Type: "attach", TreeKey: treeKey, Token: terminalToken, Pinned: o.command == "sh" && o.pin, SourceHost: sourceHost, MachineID: sourceMachine, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && o.command == "sh", NoLogin: o.noLogin && o.command == "sh"}); err != nil {
+	if err = streamMessage(control, message{Type: "attach", SoftwareVersion: version, TreeKey: treeKey, Token: terminalToken, Pinned: o.command == "sh" && o.pin, SourceHost: sourceHost, MachineID: sourceMachine, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && o.command == "sh", NoLogin: o.noLogin && o.command == "sh"}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -271,10 +267,13 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	}
 	if m.Type == "fatal" {
 		_ = streamMessage(control, message{Type: "bye"})
-		return 1, errors.New(m.Error)
+		return 1, m.peerError("shell daemon")
 	}
 	if m.Type != "ready" {
 		return 1, fmt.Errorf("unexpected attach handshake")
+	}
+	if err := checkPeerVersion(m.SoftwareVersion, "shell daemon"); err != nil {
+		return 1, err
 	}
 	if (!o.local || o.hosted) && (!validTaskUID(m.Instance) || o.instance != "" && o.instance != m.Instance) {
 		return 1, fmt.Errorf("shell instance changed; refresh with sshore list")
@@ -461,7 +460,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		cancel()
 		stopKeyboard()
 		_ = terminalStream.Close()
-		_ = transport.Close()
+		_ = control.Close()
 		<-inputDone
 	}()
 	canApprove := (!o.local || o.hosted) && xterm.IsTerminal(int(os.Stdin.Fd())) && xterm.IsTerminal(int(os.Stdout.Fd())) && os.Getenv("TERM") != "dumb"

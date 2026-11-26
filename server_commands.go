@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
 	"io"
@@ -12,9 +13,8 @@ import (
 const remoteServiceCommand = "service"
 const remoteServiceProtocol = 1
 
-// This is the on-the-wire SSH command argument. Service handlers receive their
-// own arguments after dispatch.
 type remoteServiceRequest struct {
+	PeerMetadata      jsontext.Value        `json:"peer_metadata,omitempty"`
 	Forward           *remoteForwardRequest `json:"forward,omitempty"`
 	Protocol          int                   `json:"protocol"`
 	Release           string                `json:"release"`
@@ -33,12 +33,15 @@ type remoteForwardRequest struct {
 	Reverse    bool   `json:"reverse,omitzero"`
 }
 
-func remoteService(connection sshio.Options, server string, req remoteServiceRequest) sshio.Options {
-	connection.Command = "sshore"
-	if server != "" && server != connection.Command {
-		connection.Command = shellQuote(server)
+func remoteExecutable(server string) string {
+	if server == "" || server == "sshore" {
+		return "sshore"
 	}
-	connection.Command += " " + remoteServiceCommand
+	return shellQuote(server)
+}
+
+func remoteService(connection sshio.Options, server string, req remoteServiceRequest) sshio.Options {
+	connection.Command = remoteExecutable(server) + " " + remoteServiceCommand
 	req.Protocol, req.Release = remoteServiceProtocol, version
 	connection.WriteRequest = func(w io.Writer) error {
 		return writeControlJSON(w, req)

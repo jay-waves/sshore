@@ -220,14 +220,11 @@ func (s *shellTask) serveCommand(c net.Conn, m message, extra func(*attachment, 
 		return true, s.holdTree(c, m)
 	case "terminal_open":
 		return true, s.endpoints.serve(c, m)
-	case "attach_control":
+	case "attach":
 		if err := checkPeerVersion(m.SoftwareVersion, "client"); err != nil {
 			return true, writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
 		}
-		if err := writeMessage(c, message{Type: "attach_control_ready", SoftwareVersion: version}); err != nil {
-			return true, err
-		}
-		return true, s.attach(c, extra)
+		return true, s.attach(c, m, extra)
 	case "status":
 		reply = status(m.Action)
 	case "shell_owner":

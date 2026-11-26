@@ -20,12 +20,9 @@ import (
 	"github.com/xtaci/smux"
 )
 
-func ServeAgent(conn io.ReadWriteCloser, version string, check ...func(MountApproval) error) error {
-	return ServeAgentWithPeer(conn, version, "", nil, check...)
-}
-
-func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observe func(jsontext.Value) func(), check ...func(MountApproval) error) error {
-	return serveMountAgent(conn, version, account, observe, "", check)
+func ServeAgent(conn io.ReadWriteCloser, mode, version, account, home string, peer jsontext.Value, observe func(jsontext.Value) func()) error {
+	defer conn.Close()
+	return serveMountAgent(newMountStream(conn), message{Type: mode, PeerMetadata: peer}, version, account, home, observe, nil)
 }
 
 func ServeApprovedMount(conn io.ReadWriteCloser, version, account string, observe func(jsontext.Value) func(), approval MountApproval) error {
@@ -39,51 +36,52 @@ func ServeApprovedMount(conn io.ReadWriteCloser, version, account string, observ
 		_ = session.Close()
 		return err
 	}
-	check := []func(MountApproval) error{func(actual MountApproval) error {
-		if actual != approval {
-			return fmt.Errorf("mount approval identity changed")
-		}
-		return nil
-	}}
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
 		watch, err := session.AcceptStream()
 		if err == nil {
-			_ = serveMountAgent(watch, version, account, nil, "mount_watch", check)
+			_ = serveApprovedMountStream(watch, version, account, nil, "mount_watch", approval)
 		}
 	}()
-	err = serveMountAgent(data, version, account, observe, "mount_data", check)
+	err = serveApprovedMountStream(data, version, account, observe, "mount_data", approval)
 	_ = session.Close()
 	<-watchDone
 	return err
 }
 
-func serveMountAgent(conn io.ReadWriteCloser, version, account string, observe func(jsontext.Value) func(), mode string, check []func(MountApproval) error) error {
+func serveApprovedMountStream(conn io.ReadWriteCloser, version, account string, observe func(jsontext.Value) func(), mode string, approval MountApproval) error {
 	defer conn.Close()
-	conn = newMountStream(conn)
+	wire := newMountStream(conn)
+	m, err := readMessage(wire)
+	if err != nil {
+		return err
+	}
+	if err := release.Check(version, m.SoftwareVersion, "mount client"); err != nil {
+		return writeMessage(wire, message{Type: "error", SoftwareVersion: version, Error: err.Error()})
+	}
+	if m.Type != mode || m.Approval == nil {
+		return writeMessage(wire, message{Type: "error", SoftwareVersion: version, Error: "mount approval handshake changed"})
+	}
+	return serveMountAgent(wire, m, version, account, "", observe, &approval)
+}
+
+func serveMountAgent(conn io.ReadWriteCloser, m message, version, account, home string, observe func(jsontext.Value) func(), approval *MountApproval) error {
 	if os.Getenv("SSHORE_DISABLED") == "1" {
 		return fmt.Errorf("file access disabled in recovery")
 	}
 	if runtime.GOARCH != "amd64" {
 		return fmt.Errorf("mount agent requires amd64")
 	}
-	m, err := readMessage(conn)
-	if err != nil {
-		return err
-	}
-	err = release.Check(version, m.SoftwareVersion, "mount client")
-	if err == nil && m.Type != "mount_data" && m.Type != "mount_watch" {
+	var err error
+	if m.Type != "mount_data" && m.Type != "mount_watch" {
 		err = fmt.Errorf("invalid mount handshake")
 	}
-	if err == nil && mode != "" && (m.Type != mode || m.Approval == nil) {
-		err = fmt.Errorf("mount approval handshake changed")
-	}
 	if err == nil && m.Approval != nil {
-		if len(check) != 1 {
+		if approval == nil {
 			err = fmt.Errorf("mount approval validation unavailable")
-		} else {
-			err = check[0](*m.Approval)
+		} else if *m.Approval != *approval {
+			err = fmt.Errorf("mount approval identity changed")
 		}
 	}
 	if err == nil && observe != nil && len(m.PeerMetadata) > 0 {
@@ -91,7 +89,10 @@ func serveMountAgent(conn io.ReadWriteCloser, version, account string, observe f
 			defer cleanup()
 		}
 	}
-	reply := message{Type: "mount_ready", SoftwareVersion: version, Account: account}
+	reply := message{Type: "mount_ready", SoftwareVersion: version}
+	if m.Type == "mount_data" {
+		reply.Account, reply.HomeDirectory = account, home
+	}
 	if err != nil {
 		reply.Type = "error"
 		reply.Error = err.Error()
@@ -110,7 +111,6 @@ func serveMountAgent(conn io.ReadWriteCloser, version, account string, observe f
 }
 
 func serveFTPWatch(stream io.ReadWriteCloser) {
-	defer stream.Close()
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return

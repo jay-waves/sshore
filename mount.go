@@ -162,7 +162,11 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 		}
 		return files.RunMount(c, lifecycle)
 	}
-	connection := mountSSHOptions(o)
+	args, server := o.SSH, ""
+	if o.Connection != nil {
+		args, server = o.Connection.SSH, o.Connection.Server
+	}
+	connection := sshConnectionOptions(options{host: o.Host, ssh: args})
 	var auth *sshAuthEndpoint
 	if s != nil {
 		auth = s.config.Auth
@@ -171,9 +175,8 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 		connection.Confirm, connection.Secret = auth.callbacks()
 	}
 	connection = withSSHDiagnostics(connection, os.Stderr, auth)
-	c.Prepare = func(_ context.Context, wire io.ReadWriter) (string, error) {
-		return negotiateFileSetup(wire)
-	}
+	watchConnection := remoteService(connection, server, remoteServiceRequest{Operation: "mount-agent", Mode: "mount_watch"})
+	connection = remoteService(connection, server, remoteServiceRequest{Operation: "mount-agent", Mode: "mount_data", PeerMetadata: c.PeerMetadata})
 	var data, watch *sshio.Process
 	defer func() {
 		if data != nil {
@@ -194,21 +197,13 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 	}
 	c.OpenNotifications = func(_ context.Context) (io.ReadWriteCloser, error) {
 		var err error
-		watch, err = data.OpenSibling(connection, os.Stderr)
+		watch, err = data.OpenSibling(watchConnection, os.Stderr)
 		if err != nil {
 			return nil, err
 		}
 		return watch, nil
 	}
 	return files.RunMount(c, lifecycle)
-}
-
-func mountSSHOptions(o ftpOptions) sshio.Options {
-	args, server := o.SSH, ""
-	if o.Connection != nil {
-		args, server = o.Connection.SSH, o.Connection.Server
-	}
-	return remoteService(sshConnectionOptions(options{host: o.Host, ssh: args}), server, remoteServiceRequest{Operation: "mount-agent"})
 }
 
 func runDaemonMount(config resourceConfig, enc *jsontext.Encoder, dec *jsontext.Decoder, c net.Conn, log io.Writer, request localDaemonRequest, tasks *daemonTasks) error {

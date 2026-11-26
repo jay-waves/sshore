@@ -31,7 +31,6 @@ type MountConfig struct {
 	Remote, Mountpoint, Version string
 	ReadOnly, DirectIO          bool
 	StartupTimeout, IOTimeout   time.Duration
-	Prepare                     func(context.Context, io.ReadWriter) (string, error)
 	Open                        func(context.Context) (io.ReadWriteCloser, error)
 	OpenNotifications           func(context.Context) (io.ReadWriteCloser, error)
 	NotificationsUnavailable    func()
@@ -165,18 +164,14 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		}
 		sftpWorkers.Wait()
 	}()
-	var home string
-	if o.Prepare != nil {
-		if home, err = o.Prepare(ctx, data); err != nil {
-			return 1, fmt.Errorf("mount setup: %w", err)
-		}
+	ready, err := negotiateMount(data, "mount_data", o.Version, o.Approval, o.PeerMetadata)
+	if err != nil {
+		return 1, fmt.Errorf("mount agent handshake: %w", err)
 	}
-	remote, err := ExpandRemoteHome(o.Remote, home)
+	account = ready.Account
+	remote, err := ExpandRemoteHome(o.Remote, ready.HomeDirectory)
 	if err != nil {
 		return 1, err
-	}
-	if err := negotiateMount(data, "mount_data", o.Version, o.Approval, o.PeerMetadata, &account); err != nil {
-		return 1, fmt.Errorf("mount agent handshake: %w", err)
 	}
 	var events io.ReadWriteCloser
 	if o.OpenNotifications != nil {
@@ -186,12 +181,7 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 			closeWatch := sync.OnceFunc(func() { _ = watch.Close() })
 			stopWatch := context.AfterFunc(ctx, closeWatch)
 			defer func() { stopWatch(); closeWatch() }()
-			if o.Prepare != nil {
-				_, watchErr = o.Prepare(ctx, watch)
-			}
-			if watchErr == nil {
-				watchErr = negotiateMount(watch, "mount_watch", o.Version, o.Approval, nil, nil)
-			}
+			_, watchErr = negotiateMount(watch, "mount_watch", o.Version, o.Approval, nil)
 			if watchErr == nil {
 				events = watch
 			} else {
@@ -370,9 +360,10 @@ type MountApproval struct {
 }
 
 type message struct {
-	Account      string         `json:"account,omitempty"`
-	Approval     *MountApproval `json:"mount_approval,omitempty"`
-	PeerMetadata jsontext.Value `json:"peer_metadata,omitempty"`
+	HomeDirectory string         `json:"home_directory,omitempty"`
+	Account       string         `json:"account,omitempty"`
+	Approval      *MountApproval `json:"mount_approval,omitempty"`
+	PeerMetadata  jsontext.Value `json:"peer_metadata,omitempty"`
 
 	Type            string `json:"type"`
 	SoftwareVersion string `json:"software_version,omitempty"`

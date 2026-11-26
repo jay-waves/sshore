@@ -77,10 +77,6 @@ func readLocalRecord(path, name string) (localShellRecord, error) {
 
 // Authenticate before sending any shell commands. Each exchange is bounded;
 // callers clear the deadline only when they take ownership of the connection.
-func dialLocalSessionUntil(r localShellRecord, deadline time.Time) (net.Conn, error) {
-	return dialLocalSessionContext(context.Background(), r, deadline)
-}
-
 func dialLocalSessionContext(ctx context.Context, r localShellRecord, deadline time.Time) (net.Conn, error) {
 	return dialDaemonStream(ctx, r, deadline, "/tasks/"+r.UID+"/open", nil)
 }

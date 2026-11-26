@@ -99,6 +99,10 @@ pinned child survives as a root with its own descendants. An internal handoff
 preserves the original scope and pin. See [tree admission](../shell_tree_control.go),
 [retention](../shell_retention.go) and [attachments](../shell_attachment.go).
 
+The control stream starts with an `attach` request carrying the client release and single-use
+terminal token. The daemon checks the release before claiming the token and reports its release
+in `ready`.
+
 The authenticated exit frame carries the exit code and terminal output offset.
 The frontend drains the reported tail within a time budget and reports the
 exit even if the tail is incomplete. The local root prompt opens before loading
@@ -111,6 +115,8 @@ identify the restored
 shell, local console or calling terminal and whether pinned children remain.
 
 ### Account daemon and mounts
+
+See [command network topology](NETWORK.md) for SSH channels and stream choices.
 
 One authenticated daemon per OS account owns registered shells and resources.
 The daemon, installer, and state storage share the [file lock adapter](../internal/sys/file_lock.go)
@@ -150,8 +156,10 @@ before changing update, reset or approval behavior.
 
 `pstree` groups tasks by managing host and follows shell parent UIDs across hosts.
 `list` shows task details and incoming resource leases. Both read daemon snapshots,
-including cached remote observations. A live registration takes precedence over an
-observation of the same UID. Invalid records identify the affected source and field.
+including cached remote observations. After `setup_ready`, the remote service sends its
+hosted shell list on the same exec stream while the client attaches. A live registration
+takes precedence over an observation of the same UID. Invalid records identify the affected
+source and field.
 
 On Windows, the command console and child shell shortcut use the last reported
 filesystem location when available. Shells can report it through `OSC 9;9`, including

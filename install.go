@@ -54,6 +54,10 @@ func executableVersion(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return parseExecutableVersion(out)
+}
+
+func parseExecutableVersion(out []byte) (string, error) {
 	line := strings.TrimSpace(string(out))
 	if !strings.HasPrefix(line, "sshore ") || strings.ContainsAny(line, "\r\n") {
 		return "", fmt.Errorf("unrecognized version response")

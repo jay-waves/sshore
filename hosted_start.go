@@ -4,16 +4,14 @@ package main
 
 import (
 	"context"
+	json "encoding/json/v2"
 	"fmt"
 	"net"
 	"os"
 	"time"
-
-	"github.com/jay-waves/sshore/internal/sys"
 )
 
-func prepareHostedShell(name, mode, instance, executable string, gate *sys.FileLock, openIfUnavailable bool) error {
-	defer gate.Close()
+func prepareHostedShell(name, mode, instance, executable string, openIfUnavailable bool) (localShellRecord, string, error) {
 	if mode == "new" && isShortTaskID(name) {
 		name = ""
 	}
@@ -28,12 +26,12 @@ func prepareHostedShell(name, mode, instance, executable string, gate *sys.FileL
 			target, err = resolveHostedShell(name, instance)
 		}
 		if err != nil {
-			return err
+			return localShellRecord{}, "", err
 		}
 		if reason != "" {
 			name, mode = "", "new"
 		} else if target.Instance == "" {
-			return fmt.Errorf("shell %s does not exist; check known IDs with sshore list", name)
+			return localShellRecord{}, "", fmt.Errorf("shell %s does not exist; check known IDs with sshore list", name)
 		} else {
 			record, err = existingDaemonRecord()
 			record.UID = target.Instance
@@ -47,13 +45,25 @@ func prepareHostedShell(name, mode, instance, executable string, gate *sys.FileL
 		}
 	}
 	if err != nil {
-		return err
+		return localShellRecord{}, "", err
 	}
 	if err := checkPeerVersion(record.Version, "daemon"); err != nil {
+		return localShellRecord{}, "", err
+	}
+	return record, reason, nil
+}
+
+func reportHostedShell(record localShellRecord, reason string) error {
+	if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: record.UID, Reason: reason, LocalRequest: &localDaemonRequest{Record: record}}); err != nil {
 		return err
 	}
-	gate.Close()
-	return writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: record.UID, Reason: reason, LocalRequest: &localDaemonRequest{Record: record}})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var snapshot taskInventorySnapshot
+	if err := daemonJSON(ctx, record, "/tasks/snapshot", taskInventoryRequest{Hosted: true, Detail: "health"}, &snapshot); err == nil {
+		_ = json.MarshalWrite(os.Stdout, snapshot.Shells)
+	}
+	return nil
 }
 
 func selectRemoteAttachShell(ref, instance string) (selectedTask, string, error) {
@@ -141,7 +151,7 @@ func serveRemoteShell(mode, name, instance string, openIfUnavailable bool) (resu
 	if err != nil {
 		return err
 	}
-	if mode != "bridge" && mode != "new" && mode != "attach" {
+	if mode != "new" && mode != "attach" {
 		return fmt.Errorf("invalid remote service")
 	}
 	if mode == "attach" && name == "" {
@@ -176,7 +186,12 @@ func serveRemoteShell(mode, name, instance string, openIfUnavailable bool) (resu
 			name = selected.Instance
 			continue // Recheck setup after waiting without the account lock.
 		}
-		return prepareHostedShell(name, mode, instance, target, lock, openIfUnavailable && isTaskIDPrefix(name))
+		record, reason, err := prepareHostedShell(name, mode, instance, target, openIfUnavailable && isTaskIDPrefix(name))
+		lock.Close()
+		if err != nil {
+			return err
+		}
+		return reportHostedShell(record, reason)
 	}
 }
 

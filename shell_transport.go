@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -318,9 +318,6 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 			_ = pipes.CloseAndWait()
 		}
 	}()
-	if f == nil {
-		return fmt.Errorf("invalid remote shell request")
-	}
 	if err := validSSHDestination(f.Host); err != nil {
 		return err
 	}
@@ -334,11 +331,8 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 			return err
 		}
 	}
-	shellRequest := remoteServiceRequest{Operation: "shell", Mode: "bridge", Name: f.Name, Instance: f.Instance}
-	switch f.Command {
-	case "sh":
-		shellRequest.Mode = "new"
-	case "attach":
+	shellRequest := remoteServiceRequest{Operation: "shell", Mode: "new", Name: f.Name, Instance: f.Instance}
+	if f.Command == "attach" {
 		shellRequest.Mode = "attach"
 		shellRequest.OpenIfUnavailable = f.OpenIfUnavailable
 		if validTaskUID(f.Instance) {
@@ -352,11 +346,19 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	var err error
+	// Keep the exec channel when an older service closes stdin immediately:
+	// its stdout, stderr and exit status can still explain the failure.
+	writeRequest := connection.WriteRequest
+	connection.WriteRequest = nil
 	pipes, err = transportio.Start(ctx, connection, diagnostics)
 	if err != nil {
 		return err
 	}
-	ready, err := diagnostics.relaySetup(pipes)
+	since := time.Now()
+	if err := writeRequest(pipes); err != nil && err != io.EOF {
+		return err
+	}
+	ready, err := diagnostics.relaySetup(pipes, f.Server)
 	if err != nil {
 		return err
 	}
@@ -364,6 +366,13 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	if err != nil {
 		return err
 	}
+	// After setup_ready only the optional inventory remains on exec stdout.
+	go func() {
+		var shells []shellView
+		if err := json.UnmarshalRead(io.LimitReader(pipes, daemonBodyLimit), &shells); err == nil && shells != nil {
+			_ = reconcileParticipatingShells(f.Host, shells, since)
+		}
+	}()
 	ready.LocalRequest = nil
 	open := func() (net.Conn, error) {
 		authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -410,10 +419,6 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 			defer forget()
 		}
 	}
-	since := time.Now()
-	if shells, err := connectedHostedShells(ctx, record, pipes.DialTCP); err == nil {
-		_ = reconcileParticipatingShells(f.Host, shells, since)
-	}
 	return use(open, resource, ready, ownerDone)
 }
 
@@ -429,45 +434,13 @@ func remoteTaskRecord(ready message) (localShellRecord, error) {
 	return record, checkPeerVersion(record.Version, "daemon")
 }
 
-// Query only registered hosted shells using a channel on the authenticated SSH
-// connection. The attachment control stream is independent of the query.
-func connectedHostedShells(parent context.Context, record localShellRecord, dial func(context.Context, string) (net.Conn, error)) ([]shellView, error) {
-	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
-	defer cancel()
-	req, err := daemonRequest(ctx, record, "/tasks/snapshot", taskInventoryRequest{Hosted: true, Detail: "health"})
-	if err != nil {
-		return nil, err
-	}
-	transport := &http.Transport{
-		DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, _, address string) (net.Conn, error) {
-			return dial(ctx, address)
-		},
-	}
-	client := &http.Client{Transport: transport, CheckRedirect: daemonHTTPClient.CheckRedirect}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, daemonResponseError(resp)
-	}
-	var snapshot struct{ Shells []shellView }
-	if err := json.UnmarshalRead(io.LimitReader(resp.Body, daemonBodyLimit), &snapshot); err != nil {
-		return nil, err
-	}
-	return snapshot.Shells, nil
-}
-
 // Relay the selection exchange until the remote setup process hands over a task.
-func (d *shellDiagnostics) relaySetup(pipes io.ReadWriter) (message, error) {
+func (d *shellDiagnostics) relaySetup(pipes *transportio.Process, server string) (message, error) {
 	for {
 		m, err := readMessage(pipes)
 		if err != nil {
 			if err == io.EOF {
-				return message{}, fmt.Errorf("remote shell setup ended before the handshake completed: %w\n"+
-					"Check that the SSH login can find the intended sshore executable (PATH or --server), compare sshore --version on both ends, and review any remote startup errors above.", err)
+				return message{}, remoteSetupExit(pipes, server)
 			}
 			return message{}, fmt.Errorf("remote shell setup failed: %w", err)
 		}
@@ -502,6 +475,38 @@ func (d *shellDiagnostics) relaySetup(pipes io.ReadWriter) (message, error) {
 			return message{}, fmt.Errorf("unexpected remote shell setup response")
 		}
 	}
+}
+
+func remoteSetupExit(pipes *transportio.Process, server string) error {
+	// EOF can precede stderr and exit-status. Bound the remaining diagnostics
+	// on this failed connection, including any sibling channel open.
+	timer := time.AfterFunc(3*time.Second, func() { pipes.Close() })
+	defer timer.Stop()
+	_ = pipes.CloseWrite()
+	exit := pipes.Wait()
+	cause := fmt.Errorf("remote shell setup ended before the handshake completed: %w", io.EOF)
+	if exit != nil {
+		cause = fmt.Errorf("remote shell setup: %w", exit)
+		status, ok := errors.AsType[exitStatusError](exit)
+		if !ok || status.ExitStatus() != 2 {
+			return cause
+		}
+	}
+	// Legacy services reject a different request format as a usage error.
+	probe, err := pipes.OpenSibling(transportio.Options{Command: remoteExecutable(server) + " --version"}, io.Discard)
+	if err != nil {
+		return cause
+	}
+	defer probe.CloseAndWait()
+	_ = probe.CloseWrite()
+	const maxVersion = 256
+	out, err := io.ReadAll(io.LimitReader(probe, maxVersion+1))
+	if err == nil && len(out) <= maxVersion && probe.Wait() == nil {
+		if peer, err := parseExecutableVersion(out); err == nil && peer != version {
+			return checkPeerVersion(peer, "remote executable")
+		}
+	}
+	return cause
 }
 
 // The local frontend-to-daemon connection carries independent task endpoints.

@@ -220,11 +220,13 @@ func (l *shellInput) Stop() error {
 // Stopped distinguishes owner cancellation from an unexpected terminal failure.
 func (l *shellInput) Stopped() bool { return l.stopped.Load() }
 
-func (s *shellTask) attach(c net.Conn, extra func(*attachment, message) error) error {
-	terminal, m, err := acceptAttachment(c, &s.endpoints)
+func (s *shellTask) attach(c net.Conn, m message, extra func(*attachment, message) error) error {
+	terminal, err := s.endpoints.take(m.Token)
 	if err != nil {
-		return err
+		return writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
 	}
+	// The initial request deadline must not expire an attached shell.
+	_ = c.SetReadDeadline(time.Time{})
 	p := newAttachment(c, terminal)
 	if err := s.attachManaged(p, m); err != nil {
 		fatal := message{Type: "fatal"}
@@ -322,7 +324,7 @@ func (s *shellTask) activateAttachment(p *attachment, m message, initial bool) e
 	if validMachineID(m.MachineID) && machine != m.MachineID && len(m.SourceHost) <= 256 {
 		p.sourceHost = cleanText(m.SourceHost)
 	}
-	if err := p.controlMessage(message{Type: "ready", Owner: s.parentIdentityLocked(), TreeKey: p.claim.key, MachineID: machine, Pinned: s.pinned, PinUntil: s.pinUntil, Instance: instance, PID: s.pid, Name: s.record.Name, Shell: s.shellName}); err != nil {
+	if err := p.controlMessage(message{Type: "ready", SoftwareVersion: version, Owner: s.parentIdentityLocked(), TreeKey: p.claim.key, MachineID: machine, Pinned: s.pinned, PinUntil: s.pinUntil, Instance: instance, PID: s.pid, Name: s.record.Name, Shell: s.shellName}); err != nil {
 		return err
 	}
 	if data := s.modes.Replay(); len(data) > 0 {

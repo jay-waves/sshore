@@ -353,7 +353,9 @@ additional authority. Approved routes and task mutations retain their existing
 source, identity and account-daemon checks.
 Shell, file and forward services reject a mismatched release with a framed
 error before opening a task or stream. The client uses the reported versions
-to show the mismatch and installer links.
+to show the mismatch and installer links. When shell setup receives EOF, it drains
+SSH diagnostics and reads the exit status. A clean exit or a usage error without
+a reply can trigger one bounded `--version` query on the same SSH connection.
 The SSH service reads one newline-terminated JSON request from stdin and rejects
 unknown or duplicate members. Remote `kill --all` uses the same request framing and
 requires a remote binary that understands it.

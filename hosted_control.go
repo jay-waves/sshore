@@ -13,16 +13,16 @@ import (
 // Public names resolve through the account daemon's task table. Control and
 // data connections select the immutable ID at the authenticated TCP endpoint.
 
-func resolveSession(name string, expected ...string) (string, error) {
-	task, err := resolveHostedShell(name, firstExpectedInstance(expected))
+func resolveSession(name, expected string) (string, error) {
+	task, err := resolveHostedShell(name, expected)
 	return task.Instance, err
 }
 
-func renameSession(old, name string, expected ...string) error {
+func renameSession(old, name, expected string) error {
 	if err := validAlias(name); err != nil {
 		return err
 	}
-	task, err := resolveHostedShell(old, firstExpectedInstance(expected))
+	task, err := resolveHostedShell(old, expected)
 	if err != nil {
 		return err
 	}
@@ -51,17 +51,10 @@ func renameSession(old, name string, expected ...string) error {
 	return nil
 }
 
-func firstExpectedInstance(expected []string) string {
-	if len(expected) > 0 {
-		return expected[0]
-	}
-	return ""
-}
-
 // Cancellation is authorized and applied by the task owner. Process identity
 // validation belongs to the daemon immediately before it signals its child.
-func killSession(name string, expected ...string) error {
-	id, err := resolveSession(name, expected...)
+func killSession(name, expected string) error {
+	id, err := resolveSession(name, expected)
 	if err != nil {
 		return err
 	}

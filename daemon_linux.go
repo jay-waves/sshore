@@ -105,13 +105,3 @@ func sessionDirectory(pid int) string {
 	home, _ := os.UserHomeDir()
 	return shortDirectory(currentShellDirectory(pid, ""), home)
 }
-
-func hostedShells(detail string) ([]shellView, error) {
-	request := taskInventoryRequest{Hosted: true, Detail: detail}
-	if a := accountActivity.Load(); a != nil && a.tasks != nil {
-		snapshot, _ := a.tasks.taskInventory(request)
-		return snapshot.Shells, nil
-	}
-	snapshot, _, err := readTaskInventory(request)
-	return snapshot.Shells, err
-}

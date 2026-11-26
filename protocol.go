@@ -224,43 +224,9 @@ type attachmentControl interface {
 	io.ReadWriteCloser
 	SetReadDeadline(time.Time) error
 	SetWriteDeadline(time.Time) error
-	SetDeadline(time.Time) error
-}
-
-func clientAttachment(c attachmentControl) error {
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	defer c.SetDeadline(time.Time{})
-	if err := writeMessage(c, message{Type: "attach_control", SoftwareVersion: version}); err != nil {
-		return err
-	}
-	m, err := readMessage(c)
-	if err != nil {
-		return fmt.Errorf("SSH shell handshake failed: %w", err)
-	}
-	if err := m.peerError("shell daemon"); err != nil {
-		return err
-	}
-	if m.Type != "attach_control_ready" {
-		return fmt.Errorf("incompatible sshore server: %s %s", m.Type, m.Error)
-	}
-	return nil
-}
-
-func acceptAttachment(c attachmentControl, endpoints *terminalEndpoints) (net.Conn, message, error) {
-	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
-	defer c.SetReadDeadline(time.Time{})
-	request, err := readMessage(c)
-	if err != nil {
-		return nil, request, err
-	}
-	terminal, err := endpoints.take(request.Token)
-	return terminal, request, err
 }
 
 func validateAttach(m message) error {
-	if m.Type != "attach" {
-		return fmt.Errorf("expected attach request")
-	}
 	if m.Action != "" && m.Action != "existing" {
 		return fmt.Errorf("invalid attach action")
 	}

@@ -273,24 +273,25 @@ func (n *ftpNotifications) register(dir string, timer *time.Timer) {
 	}
 }
 
-func negotiateMount(c io.ReadWriter, mode, version string, source *MountApproval, peer jsontext.Value, account *string) error {
-	if err := writeMessage(c, message{Type: mode, SoftwareVersion: version, Approval: source, PeerMetadata: peer}); err != nil {
-		return err
+func negotiateMount(c io.ReadWriter, mode, version string, source *MountApproval, peer jsontext.Value) (message, error) {
+	// Direct SSH already sent the mode in the service request. Approved streams
+	// still bind each stream to its authorized operation.
+	if source != nil {
+		if err := writeMessage(c, message{Type: mode, SoftwareVersion: version, Approval: source, PeerMetadata: peer}); err != nil {
+			return message{}, err
+		}
 	}
 	m, err := readMessage(c)
 	if err != nil {
-		return err
+		return m, err
 	}
-	if err = release.Check(version, m.SoftwareVersion, "remote mount agent"); err != nil {
-		return err
+	if err := release.Check(version, m.SoftwareVersion, "remote mount agent"); err != nil {
+		return m, err
 	}
 	if m.Type != "mount_ready" {
-		return fmt.Errorf("remote mount agent: %s", m.Error)
+		return m, fmt.Errorf("remote mount agent: %s", m.Error)
 	}
-	if account != nil {
-		*account = m.Account
-	}
-	return nil
+	return m, nil
 }
 
 func validFTPWatchPath(p string) bool {

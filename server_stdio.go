@@ -37,7 +37,10 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 	case "cp-agent":
 		return serveRemoteFileService(files.ServeCopy)
 	case "mount-agent":
-		return serveRemoteFileService(serveRemoteMount)
+		return withRemoteFileService(func(stream io.ReadWriteCloser) error {
+			account, _ := localMachineIdentity()
+			return files.ServeAgent(stream, req.Mode, version, account, remoteFileHome(), req.PeerMetadata, beginIncomingMountTask)
+		})
 	case "forward-agent":
 		return serveForwardAgent(req.Forward)
 	}
@@ -65,25 +68,30 @@ func agentStdio() *stdioPipe {
 }
 
 func serveRemoteFileService(serve func(io.ReadWriteCloser) error) error {
+	return withRemoteFileService(func(stream io.ReadWriteCloser) error {
+		if err := writeMessage(stream, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", HomeDirectory: remoteFileHome()}); err != nil {
+			return err
+		}
+		return serve(stream)
+	})
+}
+
+func withRemoteFileService(serve func(io.ReadWriteCloser) error) error {
 	stop, err := prepareRemoteFileService()
 	if err != nil {
 		_ = writeMessage(os.Stdout, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
 		return err
 	}
 	defer stop()
+	return serve(agentStdio())
+}
+
+func remoteFileHome() string {
 	home, _ := os.UserHomeDir()
 	if filepath.IsAbs(home) && filepath.VolumeName(home) != "" {
 		home = "/" + filepath.ToSlash(home)
 	}
-	if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", HomeDirectory: home}); err != nil {
-		return err
-	}
-	return serve(agentStdio())
-}
-
-func serveRemoteMount(stream io.ReadWriteCloser) error {
-	account, _ := localMachineIdentity()
-	return files.ServeAgentWithPeer(stream, version, account, beginIncomingMountTask)
+	return home
 }
 
 func prepareRemoteFileService() (func(), error) {
