@@ -26,6 +26,13 @@ func terminalDialogue(t *testing.T, terminal io.ReadWriter, run func(send func(s
 	t.Helper()
 	reader := bufio.NewReader(terminal)
 	var transcript strings.Builder
+	// An escape-prefixed marker explicitly inspects a terminal control record.
+	matches := func(line, marker string) bool {
+		if strings.HasPrefix(marker, "\x1b") {
+			return strings.Contains(line, marker)
+		}
+		return strings.Contains(ansi.Strip(line), marker)
+	}
 	// Prompts can stop drawing without a newline while they wait for input.
 	wait := func(marker string, prompt ...bool) string {
 		t.Helper()
@@ -38,11 +45,11 @@ func terminalDialogue(t *testing.T, terminal io.ReadWriter, run func(send func(s
 				}
 				line.WriteByte(char)
 				transcript.WriteByte(char)
-				if char == '\n' || len(prompt) > 0 && prompt[0] && strings.Contains(ansi.Strip(line.String()), marker) {
+				if char == '\n' || len(prompt) > 0 && prompt[0] && matches(line.String(), marker) {
 					break
 				}
 			}
-			if strings.Contains(ansi.Strip(line.String()), marker) {
+			if matches(line.String(), marker) {
 				return line.String()
 			}
 		}

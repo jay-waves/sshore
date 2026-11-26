@@ -29,8 +29,8 @@ func TestOpenSSH(t *testing.T) {
 		t.Skip("run in the disposable Alpine OpenSSH fixture")
 	}
 	fixture := filepath.Dir(binary)
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-	defer cancel()
+	startup, cancelStartup := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancelStartup()
 	for {
 		conn, err := net.DialTimeout("tcp", "127.0.0.1:2222", time.Second)
 		if err == nil {
@@ -38,11 +38,13 @@ func TestOpenSSH(t *testing.T) {
 			break
 		}
 		select {
-		case <-ctx.Done():
+		case <-startup.Done():
 			t.Fatal("sshd did not start:", err)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+
+	cancelStartup()
 
 	dir := t.TempDir()
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -68,7 +70,7 @@ Match command "printf forwarding-check"
 		t.Fatal(err)
 	}
 	ssh := []string{"--ssh", "-F", config}
-	command := func(args ...string) *exec.Cmd {
+	command := func(ctx context.Context, args ...string) *exec.Cmd {
 		for i, arg := range args {
 			if arg == "--" {
 				withSSH := append(append([]string{}, args[:i]...), ssh...)
@@ -77,15 +79,15 @@ Match command "printf forwarding-check"
 		}
 		return exec.CommandContext(ctx, binary, append(args, ssh...)...)
 	}
-	run := func(t *testing.T, args ...string) string {
+	run := func(t *testing.T, ctx context.Context, args ...string) string {
 		t.Helper()
-		out, err := command(args...).CombinedOutput()
+		out, err := command(ctx, args...).CombinedOutput()
 		if err != nil {
 			t.Fatalf("%v: %v\n%s", args, err, out)
 		}
 		return string(out)
 	}
-	local := func(t *testing.T, args ...string) []byte {
+	local := func(t *testing.T, ctx context.Context, args ...string) []byte {
 		t.Helper()
 		out, err := exec.CommandContext(ctx, binary, args...).CombinedOutput()
 		if err != nil {
@@ -108,17 +110,26 @@ Match command "printf forwarding-check"
 		}
 		return resourceRef{}
 	}
-	t.Run("ssh trust and configuration", func(t *testing.T) {
-		if got := run(t, "sh", host, "--", "printf", "'<%s>'", "a b.txt"); got != "<a><b.txt>" {
+	// Each sequential scenario owns its deadline. A hung terminal cannot
+	// consume the time available to its siblings.
+	scenario := func(name string, exercise func(*testing.T, context.Context)) {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+			defer cancel()
+			exercise(t, ctx)
+		})
+	}
+	scenario("ssh trust and configuration", func(t *testing.T, ctx context.Context) {
+		if got := run(t, ctx, "sh", host, "--", "printf", "'<%s>'", "a b.txt"); got != "<a><b.txt>" {
 			t.Fatalf("SSH command did not join words: %q", got)
 		}
-		if got := run(t, "sh", host, "--", `printf '<%s>' "a b.txt"`); got != "<a b.txt>" {
+		if got := run(t, ctx, "sh", host, "--", `printf '<%s>' "a b.txt"`); got != "<a b.txt>" {
 			t.Fatalf("SSH command did not preserve remote quoting: %q", got)
 		}
-		if got := run(t, "sh", "-p", "2222", "-i", filepath.Join(fixture, "identity"), host, "--", "printf", "'%s'", "'--help -- -p 1 -J jump -i literal'"); got != "--help -- -p 1 -J jump -i literal" {
+		if got := run(t, ctx, "sh", "-p", "2222", "-i", filepath.Join(fixture, "identity"), host, "--", "printf", "'%s'", "'--help -- -p 1 -J jump -i literal'"); got != "--help -- -p 1 -J jump -i literal" {
 			t.Fatalf("exec changed the remote command text: %q", got)
 		}
-		connection := strings.Fields(run(t, "sh", host, "--", `printf '%s\n' "$SSH_CONNECTION"`))
+		connection := strings.Fields(run(t, ctx, "sh", host, "--", `printf '%s\n' "$SSH_CONNECTION"`))
 		if len(connection) != 4 || connection[0] != "127.0.0.1" || connection[2] != "127.0.0.1" || connection[3] != "2222" {
 			t.Fatalf("SSH_CONNECTION from sshd = %q", connection)
 		}
@@ -144,7 +155,7 @@ Match command "printf forwarding-check"
 			{"sh", host, "--", "printf forwarding-check"},
 			{"sh", host, "--ssh", "-L" + listener.Addr().String() + ":localhost:80", "-F", config, "--", "printf forwarding-check"},
 		} {
-			cmd := command(args...)
+			cmd := command(ctx, args...)
 			if len(args) > 4 {
 				cmd = exec.CommandContext(ctx, binary, args...)
 			}
@@ -156,23 +167,23 @@ Match command "printf forwarding-check"
 			}
 		}
 	})
-	t.Run("copy preserves destinations and rejects a different release", func(t *testing.T) {
+	scenario("copy preserves destinations and rejects a different release", func(t *testing.T, ctx context.Context) {
 		src, dst := filepath.Join(dir, "source"), filepath.Join(dir, "download")
 		const payload = "file from the client\n"
 		if err := os.WriteFile(src, []byte(payload), 0600); err != nil {
 			t.Fatal(err)
 		}
 		remote := host + ":integration-copy"
-		run(t, "cp", src, remote)
-		run(t, "cp", remote, dst)
+		run(t, ctx, "cp", src, remote)
+		run(t, ctx, "cp", remote, dst)
 		requireFile(t, dst, payload)
 		if err := os.WriteFile(src, []byte("replacement"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if out, err := command("cp", src, remote).CombinedOutput(); err == nil || !strings.Contains(string(out), "already exists") {
+		if out, err := command(ctx, "cp", src, remote).CombinedOutput(); err == nil || !strings.Contains(string(out), "already exists") {
 			t.Fatalf("copy over existing remote file: %v\n%s", err, out)
 		}
-		if got := run(t, "sh", host, "--", "cat integration-copy"); got != payload {
+		if got := run(t, ctx, "sh", host, "--", "cat integration-copy"); got != payload {
 			t.Fatalf("upload changed the existing file: %q", got)
 		}
 
@@ -187,11 +198,11 @@ Match command "printf forwarding-check"
 		}
 	})
 
-	t.Run("file routed through a shell requires consent", func(t *testing.T) {
-		run(t, "sh", host, "--", "printf 'approved content' > approval-source")
+	scenario("file routed through a shell requires consent", func(t *testing.T, ctx context.Context) {
+		run(t, ctx, "sh", host, "--", "printf 'approved content' > approval-source")
 		declined, approved := filepath.Join(dir, "declined"), filepath.Join(dir, "approved")
 		endpoint := host + ":approval"
-		cmd := command("sh", host, "--name", strings.TrimPrefix(endpoint, host+":"), "--no-profile", "--server", binary)
+		cmd := command(ctx, "sh", host, "--name", strings.TrimPrefix(endpoint, host+":"), "--no-profile", "--server", binary)
 		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("Connected " + endpoint)
 			send("sshore cp here:approval-source origin:" + declined + "\n")
@@ -216,12 +227,12 @@ Match command "printf forwarding-check"
 		})
 	})
 
-	t.Run("approval resumes requesting shell and resources outlive it", func(t *testing.T) {
+	scenario("approval resumes requesting shell and resources outlive it", func(t *testing.T, ctx context.Context) {
 		// The requesting shell owns the dialogue, but the approving account
 		// owns the resources it creates. Ending the shell must leave them usable.
 		endpoint := host + ":approval-return"
 		cleanup := func() {
-			_, _ = command("kill", strings.TrimPrefix(endpoint, host+":"), "--server", binary).CombinedOutput()
+			_, _ = command(ctx, "kill", strings.TrimPrefix(endpoint, host+":"), "--server", binary).CombinedOutput()
 		}
 		cleanup()
 		defer cleanup()
@@ -238,7 +249,7 @@ Match command "printf forwarding-check"
 		localPort := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
 		probe.Close()
 		point := t.TempDir()
-		run(t, "sh", host, "--", "mkdir -p approval-lifecycle")
+		run(t, ctx, "sh", host, "--", "mkdir -p approval-lifecycle")
 		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 		parent := exec.CommandContext(ctx, binary, "sh", "--name", "approval-parent", "--no-profile", "--no-login")
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
@@ -287,8 +298,8 @@ Match command "printf forwarding-check"
 		// End the requesting shell as well as its frontend before exercising fresh I/O.
 		// It may already have ended with the parent.
 		cleanup()
-		run(t, "sh", host, "--", `! kill -0 "$(cat approval-lifecycle/shell.pid)" 2>/dev/null`)
-		inventory := string(local(t, "list"))
+		run(t, ctx, "sh", host, "--", `! kill -0 "$(cat approval-lifecycle/shell.pid)" 2>/dev/null`)
+		inventory := string(local(t, ctx, "list"))
 		resourceID := func(detail string) string {
 			t.Helper()
 			for _, line := range strings.Split(inventory, "\n") {
@@ -300,7 +311,7 @@ Match command "printf forwarding-check"
 			return ""
 		}
 		mountID := resourceID(point)
-		defer local(t, "kill", mountID)
+		defer local(t, ctx, "kill", mountID)
 		forwardID := resourceID("origin:" + localPort)
 		go func() {
 			c, err := listener.Accept()
@@ -318,12 +329,12 @@ Match command "printf forwarding-check"
 		if got, err := io.ReadAll(c); err != nil || string(got) != "still forwarding\n" {
 			t.Fatalf("new forwarded connection after shell exit: %q (%v)", got, err)
 		}
-		local(t, "kill", forwardID)
-		run(t, "sh", host, "--", "printf independent > approval-lifecycle/after-exit")
+		local(t, ctx, "kill", forwardID)
+		run(t, ctx, "sh", host, "--", "printf independent > approval-lifecycle/after-exit")
 		requireFile(t, filepath.Join(point, "after-exit"), "independent")
 	})
 
-	t.Run("forward credential prompt stays in local approval screen", func(t *testing.T) {
+	scenario("forward credential prompt stays in local approval screen", func(t *testing.T, ctx context.Context) {
 		identity := filepath.Join(fixture, "identity")
 		rawKey, err := os.ReadFile(identity)
 		if err != nil {
@@ -373,7 +384,7 @@ Match command "printf forwarding-check"
 		}
 	})
 
-	t.Run("reverse forward relays data", func(t *testing.T) {
+	scenario("reverse forward relays data", func(t *testing.T, ctx context.Context) {
 		listener, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
@@ -386,7 +397,7 @@ Match command "printf forwarding-check"
 		remotePort := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
 		probe.Close()
 		localPort := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
-		start, err := command("forward", "here:"+localPort, host+":"+remotePort).CombinedOutput()
+		start, err := command(ctx, "forward", "here:"+localPort, host+":"+remotePort).CombinedOutput()
 		if err != nil {
 			t.Fatalf("start reverse forward: %s (%v)", start, err)
 		}
@@ -421,16 +432,16 @@ Match command "printf forwarding-check"
 		if got, err := io.ReadAll(conn); err != nil || string(got) != "forwarded across OpenSSH\n" {
 			t.Fatalf("reverse forward delivered %q (%v)", got, err)
 		}
-		ref := findResource(t, local(t, "list"), "forward/"+name)
+		ref := findResource(t, local(t, ctx, "list"), "forward/"+name)
 		if ref.Identity == "" || ref.ShortID == "" {
 			t.Fatalf("missing identity for forward/%s", name)
 		}
-		local(t, "kill", ref.ShortID)
-		if got := findResource(t, local(t, "list"), "forward/"+name); got.Identity != "" {
+		local(t, ctx, "kill", ref.ShortID)
+		if got := findResource(t, local(t, ctx, "list"), "forward/"+name); got.Identity != "" {
 			t.Fatalf("forward still registered: %+v", got)
 		}
 	})
-	t.Run("control forward on its SSH account", func(t *testing.T) {
+	scenario("control forward on its SSH account", func(t *testing.T, ctx context.Context) {
 		probe, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
@@ -438,32 +449,32 @@ Match command "printf forwarding-check"
 		port := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
 		probe.Close()
 		// This dedicated fixture account may log in to its own OpenSSH server.
-		run(t, "sh", host, "--", `ssh-keygen -q -t ed25519 -N '' -f task-id-key && cat task-id-key.pub >> authorized_keys`)
-		out := run(t, "sh", host, "--", `sshore forward 127.0.0.1:2222 here:`+port+` --port 2222 --ssh -F none -i "$HOME/task-id-key" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$HOME/task-id-hosts"`)
+		run(t, ctx, "sh", host, "--", `ssh-keygen -q -t ed25519 -N '' -f task-id-key && cat task-id-key.pub >> authorized_keys`)
+		out := run(t, ctx, "sh", host, "--", `sshore forward 127.0.0.1:2222 here:`+port+` --port 2222 --ssh -F none -i "$HOME/task-id-key" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$HOME/task-id-hosts"`)
 		_, description, _ := strings.Cut(out, "Started forward/")
 		name, _, _ := strings.Cut(description, ":")
 		if name == "" {
 			t.Fatalf("forward did not start: %s", out)
 		}
-		ref := findResource(t, []byte(run(t, "sh", host, "--", "sshore list")), "forward/"+name)
+		ref := findResource(t, []byte(run(t, ctx, "sh", host, "--", "sshore list")), "forward/"+name)
 		if ref.ShortID == "" {
 			t.Fatalf("missing identity for remote forward/%s", name)
 		}
-		run(t, "sh", host, "--", "sshore kill "+ref.ShortID)
-		if got := findResource(t, []byte(run(t, "sh", host, "--", "sshore list")), "forward/"+name); got.Identity != "" {
+		run(t, ctx, "sh", host, "--", "sshore kill "+ref.ShortID)
+		if got := findResource(t, []byte(run(t, ctx, "sh", host, "--", "sshore list")), "forward/"+name); got.Identity != "" {
 			t.Fatalf("remote forward still registered: %+v", got)
 		}
 	})
-	mount := func(t *testing.T, source string, options ...string) string {
+	mount := func(t *testing.T, ctx context.Context, source string, options ...string) string {
 		t.Helper()
 		point := t.TempDir()
-		start := run(t, append([]string{"mount", host + ":" + source, "here:" + point}, options...)...)
+		start := run(t, ctx, append([]string{"mount", host + ":" + source, "here:" + point}, options...)...)
 		_, task, _ := strings.Cut(start, "Started mount/")
 		name, _, _ := strings.Cut(task, ":")
 		if name == "" {
 			t.Fatalf("missing mount name: %s", start)
 		}
-		ref := findResource(t, local(t, "list"), "mount/"+name)
+		ref := findResource(t, local(t, ctx, "list"), "mount/"+name)
 		if ref.ShortID == "" {
 			t.Fatalf("missing identity for mount/%s", name)
 		}
@@ -481,11 +492,11 @@ Match command "printf forwarding-check"
 		})
 		return point
 	}
-	t.Run("mount keeps open handles across replacement", func(t *testing.T) {
+	scenario("mount keeps open handles across replacement", func(t *testing.T, ctx context.Context) {
 		// An open handle keeps referring to the original file after the path is
 		// replaced. A new open of that path must see the replacement.
-		run(t, "sh", host, "--", "mkdir mount-source && printf original > mount-source/target")
-		point := mount(t, "mount-source")
+		run(t, ctx, "sh", host, "--", "mkdir mount-source && printf original > mount-source/target")
+		point := mount(t, ctx, "mount-source")
 		target, replacement := filepath.Join(point, "target"), filepath.Join(point, "replacement")
 		old, err := os.Open(target)
 		if err != nil {
@@ -502,13 +513,13 @@ Match command "printf forwarding-check"
 			t.Fatalf("open handle followed the replacement: %q (%v)", got, err)
 		}
 		requireFile(t, target, "updated")
-		if got := run(t, "sh", host, "--", "cat mount-source/target"); got != "updated" {
+		if got := run(t, ctx, "sh", host, "--", "cat mount-source/target"); got != "updated" {
 			t.Fatalf("mount did not publish the replacement: %q", got)
 		}
 	})
-	t.Run("mount file writes append and truncate", func(t *testing.T) {
-		run(t, "sh", host, "--", "mkdir mount-io")
-		point := mount(t, "mount-io")
+	scenario("mount file writes append and truncate", func(t *testing.T, ctx context.Context) {
+		run(t, ctx, "sh", host, "--", "mkdir mount-io")
+		point := mount(t, ctx, "mount-io")
 		file := filepath.Join(point, "payload")
 		checkData := func(want []byte) {
 			t.Helper()
@@ -542,13 +553,13 @@ Match command "printf forwarding-check"
 			t.Fatal(err)
 		}
 		want := fmt.Sprintf("%x", sha256.Sum256(data[:128<<10]))
-		if got := strings.Fields(run(t, "sh", host, "--", "sha256sum mount-io/payload")); len(got) != 2 || got[0] != want {
+		if got := strings.Fields(run(t, ctx, "sh", host, "--", "sha256sum mount-io/payload")); len(got) != 2 || got[0] != want {
 			t.Fatalf("remote payload after truncate: %v, want SHA-256 %s", got, want)
 		}
 	})
-	t.Run("mount creates lists renames and deletes directories", func(t *testing.T) {
-		run(t, "sh", host, "--", "mkdir mount-dirs")
-		point := mount(t, "mount-dirs")
+	scenario("mount creates lists renames and deletes directories", func(t *testing.T, ctx context.Context) {
+		run(t, ctx, "sh", host, "--", "mkdir mount-dirs")
+		point := mount(t, ctx, "mount-dirs")
 		nested, renamed := filepath.Join(point, "nested"), filepath.Join(point, "renamed")
 		if err := os.Mkdir(nested, 0700); err != nil {
 			t.Fatal(err)
@@ -563,7 +574,7 @@ Match command "printf forwarding-check"
 		if err != nil || len(entries) != 1 || entries[0].Name() != "renamed" || !entries[0].IsDir() {
 			t.Fatalf("mount directory after rename: %v (%v)", entries, err)
 		}
-		if got := run(t, "sh", host, "--", "cat mount-dirs/renamed/file"); got != "nested content" {
+		if got := run(t, ctx, "sh", host, "--", "cat mount-dirs/renamed/file"); got != "nested content" {
 			t.Fatalf("remote renamed file: %q", got)
 		}
 		if err := os.Remove(filepath.Join(renamed, "file")); err != nil {
@@ -572,18 +583,18 @@ Match command "printf forwarding-check"
 		if err := os.Remove(renamed); err != nil {
 			t.Fatal(err)
 		}
-		run(t, "sh", host, "--", "test -z \"$(ls -A mount-dirs)\"")
+		run(t, ctx, "sh", host, "--", "test -z \"$(ls -A mount-dirs)\"")
 	})
-	t.Run("mount observes remote changes and rejects escaping symlinks", func(t *testing.T) {
-		run(t, "sh", host, "--", "mkdir mount-remote && printf before > mount-remote/current && "+
+	scenario("mount observes remote changes and rejects escaping symlinks", func(t *testing.T, ctx context.Context) {
+		run(t, ctx, "sh", host, "--", "mkdir mount-remote && printf before > mount-remote/current && "+
 			"ln -s current mount-remote/inside && ln -s ../outside mount-remote/outside")
-		point := mount(t, "mount-remote")
+		point := mount(t, ctx, "mount-remote")
 		inside := filepath.Join(point, "inside")
 		requireFile(t, inside, "before")
 		if _, err := os.Readlink(filepath.Join(point, "outside")); !errors.Is(err, os.ErrPermission) {
 			t.Fatalf("read escaping symlink: %v, want permission denied", err)
 		}
-		run(t, "sh", host, "--", "printf after > mount-remote/new && mv mount-remote/new mount-remote/current")
+		run(t, ctx, "sh", host, "--", "printf after > mount-remote/new && mv mount-remote/new mount-remote/current")
 		deadline := time.Now().Add(3 * time.Second)
 		for {
 			if got, err := os.ReadFile(inside); err == nil && string(got) == "after" {
@@ -594,9 +605,9 @@ Match command "printf forwarding-check"
 			time.Sleep(50 * time.Millisecond)
 		}
 	})
-	t.Run("mount read only denies changes", func(t *testing.T) {
-		run(t, "sh", host, "--", "mkdir mount-ro && printf preserved > mount-ro/file")
-		point := mount(t, "mount-ro", "--read-only")
+	scenario("mount read only denies changes", func(t *testing.T, ctx context.Context) {
+		run(t, ctx, "sh", host, "--", "mkdir mount-ro && printf preserved > mount-ro/file")
+		point := mount(t, ctx, "mount-ro", "--read-only")
 		file := filepath.Join(point, "file")
 		requireFile(t, file, "preserved")
 		if err, want := os.WriteFile(file, []byte("changed"), 0600), unix.EROFS; !errors.Is(err, want) {
@@ -607,28 +618,28 @@ Match command "printf forwarding-check"
 		}
 		requireFile(t, file, "preserved")
 	})
-	cleanRemote := func(endpoint string) {
+	cleanRemote := func(t *testing.T, endpoint string) {
 		t.Cleanup(func() {
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_ = exec.CommandContext(cleanup, binary, append([]string{"kill", strings.TrimPrefix(endpoint, host+":"), "--server", binary}, ssh...)...).Run()
 		})
 	}
-	t.Run("remote program exit and cached inventory", func(t *testing.T) {
+	scenario("remote program exit and cached inventory", func(t *testing.T, ctx context.Context) {
 		const name = "program-inventory"
 		const argument = "private fixture argument"
-		cleanRemote(host + ":" + name)
-		cmd := command("new", host, "--name", name, "--server", binary, "--", "/bin/sh", "-c",
+		cleanRemote(t, host+":"+name)
+		cmd := command(ctx, "new", host, "--name", name, "--server", binary, "--", "/bin/sh", "-c",
 			"printf 'ARG=%s\\n' \"$1\"; read -r reply; exit 23", "fixture", argument)
 		out, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("Esc Cancel", true)
 			send("\r")
 			wait("ARG=" + argument)
-			remoteList := run(t, "sh", host, "--", binary, "list")
+			remoteList := run(t, ctx, "sh", host, "--", binary, "list")
 			if !strings.Contains(remoteList, argument) {
 				t.Fatalf("managing account lost program arguments:\n%s", remoteList)
 			}
-			localList := string(local(t, "list"))
+			localList := string(local(t, ctx, "list"))
 			if !strings.Contains(localList, name) || strings.Contains(localList, argument) {
 				t.Fatalf("unexpected cached program details:\n%s", localList)
 			}
@@ -648,21 +659,21 @@ Match command "printf forwarding-check"
 		if !errors.As(err, &exit) || exit.ExitCode() != 23 {
 			t.Fatalf("expected program exit status 23: %v\n%s", err, out)
 		}
-		if out, err := command("kill", name).CombinedOutput(); err == nil || !strings.Contains(string(out), "unknown task "+name) {
+		if out, err := command(ctx, "kill", name).CombinedOutput(); err == nil || !strings.Contains(string(out), "unknown task "+name) {
 			t.Fatalf("exited program remained selectable by name: %v\n%s", err, out)
 		}
 	})
-	t.Run("declining shutdown preserves the detached root", func(t *testing.T) {
+	scenario("declining shutdown preserves the detached root", func(t *testing.T, ctx context.Context) {
 		endpoint := host + ":resume"
-		runOpenSSHTerminal(t, ctx, command("sh", host, "--name", strings.TrimPrefix(endpoint, host+":"), "--pin", "--no-profile", "--no-login", "--server", binary), func(send func(string), wait terminalWait) {
+		runOpenSSHTerminal(t, ctx, command(ctx, "sh", host, "--name", strings.TrimPrefix(endpoint, host+":"), "--pin", "--no-profile", "--no-login", "--server", binary), func(send func(string), wait terminalWait) {
 			wait("Connected " + endpoint)
 			send("\x02d")
 			wait("Detached from ")
 		})
-		cleanRemote(endpoint)
+		cleanRemote(t, endpoint)
 		attach := func(input string, markers ...string) {
 			t.Helper()
-			cmd := command("attach", strings.TrimPrefix(endpoint, host+":"), "--server", binary)
+			cmd := command(ctx, "attach", strings.TrimPrefix(endpoint, host+":"), "--server", binary)
 			runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 				wait("Connected ")
 				send(input)
@@ -672,7 +683,7 @@ Match command "printf forwarding-check"
 			})
 		}
 		attach("export SSHORE_FIXTURE=retained\n\x02d", "Detached from")
-		cancelShutdown := command("kill", "--all", host, "--server", binary)
+		cancelShutdown := command(ctx, "kill", "--all", host, "--server", binary)
 		cancelShutdown.Stdin = strings.NewReader("n\n")
 		if out, err := cancelShutdown.CombinedOutput(); err == nil || !strings.Contains(string(out), "cancelled; no tasks ended") {
 			t.Fatalf("declined shutdown: %s (%v)", out, err)
@@ -682,14 +693,14 @@ Match command "printf forwarding-check"
 
 	})
 
-	t.Run("remote IDs resume and missing IDs fail", func(t *testing.T) {
+	scenario("remote IDs resume and missing IDs fail", func(t *testing.T, ctx context.Context) {
 		root := host + ":resume-root"
-		cleanRemote(root)
+		cleanRemote(t, root)
 		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 		const marker = "RESUME_ID="
 		const report = "printf 'RESUME_%s=%.6s\\n' ID \"${SSHORE_TREE_ID#task:}\"\n"
 		var id string
-		runOpenSSHTerminal(t, ctx, command("shell", host, "--name", strings.TrimPrefix(root, host+":"), "--server", binary, "--no-profile", "--no-login"), func(send func(string), wait terminalWait) {
+		runOpenSSHTerminal(t, ctx, command(ctx, "shell", host, "--name", strings.TrimPrefix(root, host+":"), "--server", binary, "--no-profile", "--no-login"), func(send func(string), wait terminalWait) {
 			wait("Connected " + root)
 			send(report)
 			_, id, _ = strings.Cut(strings.TrimSpace(ansi.Strip(wait(marker))), marker)
@@ -702,7 +713,7 @@ Match command "printf forwarding-check"
 			send("\x02d")
 			wait("Detached from " + root)
 		})
-		tree := string(local(t, "ps"))
+		tree := string(local(t, ctx, "ps"))
 		_, remoteTree, found := strings.Cut(tree, host+"\n")
 		if !found || !strings.Contains(remoteTree, "shell/"+id+" (resume-root)  detached") {
 			t.Fatalf("independent remote shell is missing from its host root:\n%s", tree)
@@ -716,22 +727,23 @@ Match command "printf forwarding-check"
 			wait("no live child matches")
 			send(quote(binary) + " attach " + missing + "\n")
 			wait("unknown shell ID")
-			send("exit\n")
+			// The shell would otherwise inherit the rejected command's status.
+			send("exit 0\n")
 			wait("No shell attached.")
 			send("exit\r")
 		})
 		// The original client account can resume the independent root by ID.
-		runOpenSSHTerminal(t, ctx, command("attach", id), func(send func(string), wait terminalWait) {
+		runOpenSSHTerminal(t, ctx, command(ctx, "attach", id), func(send func(string), wait terminalWait) {
 			wait("Connected " + root)
 			send(report)
 			wait(marker + id)
 			send("exit\n")
 		})
 	})
-	t.Run("hosted shell uses explicit local selectors on its own daemon", func(t *testing.T) {
+	scenario("hosted shell uses explicit local selectors on its own daemon", func(t *testing.T, ctx context.Context) {
 		root := host + ":scoped-root"
-		cleanRemote(root)
-		runOpenSSHTerminal(t, ctx, command("sh", host, "--name", strings.TrimPrefix(root, host+":"), "--server", binary, "--no-profile", "--no-login"), func(send func(string), wait terminalWait) {
+		cleanRemote(t, root)
+		runOpenSSHTerminal(t, ctx, command(ctx, "sh", host, "--name", strings.TrimPrefix(root, host+":"), "--server", binary, "--no-profile", "--no-login"), func(send func(string), wait terminalWait) {
 			wait("Connected " + root)
 			send("sshore sh --name scoped-child --no-profile\n")
 			wait("Connected " + host + ":scoped-child")
@@ -739,7 +751,7 @@ Match command "printf forwarding-check"
 			wait("SCOPE_state=retained")
 			send("sshore d 3m\n")
 			wait("Connected " + root)
-			if tree := run(t, "sh", host, "--", "sshore ps"); !strings.HasPrefix(tree, "local\n") || !strings.Contains(tree, " (scoped-root)  active") || !strings.Contains(tree, " (scoped-child)  detached") {
+			if tree := run(t, ctx, "sh", host, "--", "sshore ps"); !strings.HasPrefix(tree, "local\n") || !strings.Contains(tree, " (scoped-root)  active") || !strings.Contains(tree, " (scoped-child)  detached") {
 				t.Fatalf("hosted tree lost its local root or detached child:\n%s", tree)
 			}
 			send("sshore a scoped-child\n")
@@ -752,9 +764,9 @@ Match command "printf forwarding-check"
 			wait("Now in: calling terminal")
 		})
 	})
-	t.Run("remote child resumes after its parent exits", func(t *testing.T) {
+	scenario("remote child resumes after its parent exits", func(t *testing.T, ctx context.Context) {
 		child := host + ":build"
-		cleanRemote(child)
+		cleanRemote(t, child)
 		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 		parent := exec.CommandContext(ctx, binary, "shell", "--name", "dev", "--no-profile", "--no-login")
 		const report = "printf 'BUILD_%s=%s:%s:%.6s\\n' state \"$$\" \"$SSHORE_BUILD\" \"${SSHORE_TREE_ID#task:}\"\n"
@@ -775,7 +787,7 @@ Match command "printf forwarding-check"
 			recorded = marker + state
 			send("\x02d")
 			wait("Connected here:dev")
-			out, err := runTerminal(t, ctx, command("attach", strings.TrimPrefix(child, host+":"), "--server", binary),
+			out, err := runTerminal(t, ctx, command(ctx, "attach", strings.TrimPrefix(child, host+":"), "--server", binary),
 				func(_ func(string), wait terminalWait) { wait("from its parent") })
 			if err == nil {
 				t.Fatalf("a separate frontend entered the child before its parent exited:\n%s", out)
@@ -797,7 +809,7 @@ Match command "printf forwarding-check"
 			wait("No shell attached.")
 			send("exit\r")
 		})
-		runOpenSSHTerminal(t, ctx, command("attach", strings.TrimPrefix(child, host+":"), "--server", binary), func(send func(string), wait terminalWait) {
+		runOpenSSHTerminal(t, ctx, command(ctx, "attach", strings.TrimPrefix(child, host+":"), "--server", binary), func(send func(string), wait terminalWait) {
 			wait("Connected " + child)
 			send(report)
 			wait(recorded)
@@ -806,10 +818,10 @@ Match command "printf forwarding-check"
 			wait("Now in: calling terminal")
 		})
 	})
-	t.Run("nested exit explains retained roots", func(t *testing.T) {
+	scenario("nested exit explains retained roots", func(t *testing.T, ctx context.Context) {
 		build, child := host+":nested-build", host+":saved-child"
-		cleanRemote(child)
-		cleanRemote(build)
+		cleanRemote(t, child)
+		cleanRemote(t, build)
 		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 		parent := exec.CommandContext(ctx, binary, "sh", "--name", "panel-dev", "--no-profile", "--no-login")
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
@@ -831,7 +843,7 @@ Match command "printf forwarding-check"
 			wait("No shell attached.")
 			send("exit\r")
 		})
-		runOpenSSHTerminal(t, ctx, command("attach", strings.TrimPrefix(child, host+":"), "--server", binary), func(send func(string), wait terminalWait) {
+		runOpenSSHTerminal(t, ctx, command(ctx, "attach", strings.TrimPrefix(child, host+":"), "--server", binary), func(send func(string), wait terminalWait) {
 			wait("Connected " + child)
 			send("printf 'SAVED_%s=%s\n' state \"$SSHORE_PANEL_CHECK\"\nexit\n")
 			wait("SAVED_state=kept")
@@ -841,7 +853,7 @@ Match command "printf forwarding-check"
 		})
 	})
 
-	t.Run("shutdown confirmation rejects a replacement task", func(t *testing.T) {
+	scenario("shutdown confirmation rejects a replacement task", func(t *testing.T, ctx context.Context) {
 		// Confirmation applies to the tasks in the preview. Reusing a name
 		// between preview and confirmation must leave the replacement alive.
 		localCommand := func(args ...string) *exec.Cmd { return exec.CommandContext(ctx, binary, args...) }

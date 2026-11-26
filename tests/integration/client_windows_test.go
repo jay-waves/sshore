@@ -93,14 +93,17 @@ func windowsRun(t *testing.T, cmd *exec.Cmd) []byte {
 }
 
 func TestWindowsConPTY(t *testing.T) {
-	ctx, command := windowsClient(t)
-	t.Run("detach and reattach", func(t *testing.T) { testWindowsReattach(t, ctx, command) })
+	t.Run("detach and reattach", func(t *testing.T) {
+		ctx, command := windowsClient(t)
+		testWindowsReattach(t, ctx, command)
+	})
 	t.Run("switch to a detached root and return to the parent", func(t *testing.T) {
+		ctx, command := windowsClient(t)
 		start := func(name string) *exec.Cmd {
 			return command("shell", "--name", name, "--pin", "--no-profile")
 		}
 		if out, err := runWindowsTerminal(t, ctx, start("panel-target"), func(send func(string), wait terminalWait) {
-			wait("sshore: here:panel-target", true)
+			wait("Connected here:panel-target", true)
 			send("\x02d")
 			wait("Detached from here:panel-target")
 			wait("sshore on local>", true)
@@ -122,24 +125,24 @@ func TestWindowsConPTY(t *testing.T) {
 		}
 		id := taskID("panel-target")
 		if out, err := runWindowsTerminal(t, ctx, start("panel-source"), func(send func(string), wait terminalWait) {
-			wait("sshore: here:panel-source", true)
+			wait("Connected here:panel-source", true)
 			parentID := taskID("panel-source")
 			send("\x02a")
-			wait("sshore: here:panel-target", true)
+			wait("\x1b]0;sshore: here:panel-target\a", true)
 			send("\x02s")
 			wait("sshore on local>", true)
 			// Selecting the parent returns to its live shell. Selecting the detached
 			// root by ID creates a new switch, which ends when that shell exits.
 			send("attach " + parentID + "\r")
-			wait("sshore: here:panel-source", true)
+			wait("\x1b]0;sshore: here:panel-source\a", true)
 			send("\x02s")
 			wait("sshore on local>", true)
 			send("pstree\r")
 			wait("(panel-target)")
 			send(id + "\r")
-			wait("sshore: here:panel-target", true)
+			wait("\x1b]0;sshore: here:panel-target\a", true)
 			send("exit\r")
-			wait("sshore: here:panel-source", true)
+			wait("\x1b]0;sshore: here:panel-source\a", true)
 			send("exit\r")
 			wait("sshore on local>", true)
 			send("exit\r")
@@ -148,6 +151,7 @@ func TestWindowsConPTY(t *testing.T) {
 		}
 	})
 	t.Run("confirmed shutdown", func(t *testing.T) {
+		ctx, command := windowsClient(t)
 		const endpoint = "here:shutdown"
 		out, err := runWindowsTerminal(t, ctx, command("shell", "--name", "shutdown", "--no-profile"), func(_ func(string), wait terminalWait) {
 			wait("Connected " + endpoint)
