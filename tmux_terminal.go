@@ -9,73 +9,51 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/pty"
 	"github.com/jay-waves/sshore/internal/sys"
-	"github.com/jay-waves/sshore/internal/term"
 	"github.com/jay-waves/sshore/internal/termui"
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
-type shellRegistry interface {
-	attachmentTargets(query taskQuery, list bool) ([]sessionTarget, error)
-	childShells(*shellTask) []*shellTask
-	isShuttingDown() bool
-}
-
-// A daemon-owned shell with one terminal and at most one attachment. Entry
-// points supply owner supervision and their additional commands.
-type shellTask struct {
+// tmuxTask binds the shared terminal state to daemon registration and routing.
+type tmuxTask struct {
 	endpoints  terminalEndpoints
 	mu         sync.Mutex // Protect shell state and attachment ownership.
+	runtime    tmux.Task[*attachment, *tmuxTask]
 	terminalMu sync.Mutex // Serialize replay and redraw with live output. Acquire before mu.
 
-	terminal                      *pty.Terminal
-	pid                           int
 	shellName                     string
 	programLine                   string
 	program                       bool
 	reportedDirectory             string
-	modes                         term.InputState
-	active                        *attachment
-	exited                        bool
-	registry                      shellRegistry
-	forest                        *shellForest
+	registry                      *daemonTasks
 	log                           io.Writer
 	cgroup                        string
 	cgroupErr                     error
 	record                        localShellRecord // Immutable after registration.
 	environment                   []string
-	done                          chan struct{}
-	once                          sync.Once
 	hosted, killing               bool
-	started                       time.Time
-	detachedAt                    time.Time
 	exitReason                    string
-	parent                        *shellTask
-	treeEnded                     atomic.Bool // Published by the registry's forest lock.
 	ownerClaimed                  bool
 	remoteOwner, remoteOwnerToken string
-	remoteChildren                map[*remoteShellChild]struct{}
-	scopeLost                     bool
-	pinned                        bool
-	pinUntil                      time.Time
-	pinTimer                      *time.Timer
+	remoteChildren                map[*shellTarget]struct{}
 }
 
-func (s *shellTask) managedShell() *shellTask { return s }
+func (s *tmuxTask) managedShell() *tmuxTask { return s }
 
-func (s *shellTask) setInitialIdentity(uid, name string) {
+func (s *tmuxTask) setInitialIdentity(uid, name string) {
 	s.record.UID, s.record.Name = uid, name
+	s.runtime.SetIdentity(s, taskShortCode(s.treeIdentity()))
 }
 
-func (s *shellTask) taskName() string { return s.record.Name }
+func (s *tmuxTask) taskName() string { return s.record.Name }
 
-func (s *shellTask) expired() bool {
+func (s *tmuxTask) expired() bool {
 	select {
-	case <-s.done:
+	case <-s.runtime.Done():
 		return true
 	default:
 		return false
@@ -94,66 +72,66 @@ func currentShellDirectory(pid int, reported string) string {
 }
 
 // Call with mu held. Use the startup directory when the shell's location is unavailable.
-func (s *shellTask) directoryOrStartupLocked() string {
-	return cmp.Or(currentShellDirectory(s.pid, s.reportedDirectory), s.record.Directory)
+func (s *tmuxTask) directoryOrStartupLocked() string {
+	return cmp.Or(currentShellDirectory(s.runtime.PID(), s.reportedDirectory), s.record.Directory)
 }
 
-func (s *shellTask) treeIdentity() string {
+func (s *tmuxTask) treeIdentity() string {
 	if s.hosted || validTaskUID(s.record.UID) {
 		return identityFromUID(s.record.UID)
 	}
 	return (localShellRecord{Token: s.record.Token}).identity()
 }
 
-// Call with mu held.
-func (s *shellTask) finishLocked() {
-	s.once.Do(func() {
-		if s.pinTimer != nil {
-			s.pinTimer.Stop()
-		}
-		s.forest.end(s)
-		close(s.done)
-	})
-}
-
-func (s *shellTask) close() {
-	s.once.Do(func() {
+func (s *tmuxTask) expireUnstarted(after time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runtime.ExpireUnstarted(after, func() {
 		s.mu.Lock()
-		if s.pinTimer != nil {
-			s.pinTimer.Stop()
+		if s.runtime.Started() {
+			s.mu.Unlock()
+			return
 		}
-		terminal, attachment := s.terminal, s.endTerminal()
+		p, ok := s.runtime.BeginClose()
 		s.mu.Unlock()
-		if attachment != nil {
-			attachment.Close()
+		if ok {
+			s.completeClose(p)
 		}
-		if terminal != nil {
-			_ = terminal.Close()
-		}
-		close(s.done)
 	})
 }
 
-func (s *shellTask) stopTask() error {
+func (s *tmuxTask) close() {
+	s.mu.Lock()
+	p, ok := s.runtime.BeginClose()
+	s.mu.Unlock()
+	if ok {
+		s.completeClose(p)
+	}
+}
+
+func (s *tmuxTask) completeClose(p *attachment) {
+	if p != nil {
+		p.Close()
+	}
+	s.runtime.CompleteClose()
+}
+
+func (s *tmuxTask) stopTask() error {
 	return s.kill(s.record.UID, "killed by sshore kill")
 }
 
-func (s *shellTask) kill(instance, reason string) error {
+func (s *tmuxTask) kill(instance, reason string) error {
 	s.mu.Lock()
 	if s.hosted && (instance == "" || instance != s.record.UID) {
 		s.mu.Unlock()
 		return fmt.Errorf("shell instance changed; refresh with sshore list")
 	}
-	if s.exited {
-		s.mu.Unlock()
-		return nil
-	}
-	if s.killing {
+	if s.runtime.Exited() || s.killing {
 		s.mu.Unlock()
 		timer := time.NewTimer(5 * time.Second)
 		defer timer.Stop()
 		select {
-		case <-s.done:
+		case <-s.runtime.Done():
 			return nil
 		case <-timer.C:
 			return fmt.Errorf("shell has not finished stopping")
@@ -165,29 +143,25 @@ func (s *shellTask) kill(instance, reason string) error {
 }
 
 // The caller claims shutdown under mu before stopping the validated terminal.
-func (s *shellTask) stopTerminal() error {
+func (s *tmuxTask) stopTerminal() error {
 	s.mu.Lock()
-	terminal := s.terminal
+	started := s.runtime.Started()
 	s.mu.Unlock()
-	var err error
-	if terminal != nil {
-		err = terminal.Stop()
+	if !started {
+		s.close()
+		return nil
 	}
-	if err != nil {
+	if err := s.runtime.Stop(); err != nil {
 		s.mu.Lock()
 		s.killing = false
 		s.mu.Unlock()
 		return err
 	}
-	if terminal == nil {
-		s.close()
-		return nil
-	}
 	// The PTY pump reports the exit before closing the task and SSH lease.
 	timer := time.NewTimer(requestTimeout)
 	defer timer.Stop()
 	select {
-	case <-s.done:
+	case <-s.runtime.Done():
 		return nil
 	case <-timer.C:
 		return fmt.Errorf("shell process ended, but terminal cleanup timed out")
@@ -195,22 +169,22 @@ func (s *shellTask) stopTerminal() error {
 }
 
 // Call with mu held.
-func (s *shellTask) state() string {
+func (s *tmuxTask) state() string {
 	switch {
-	case s.exited:
+	case s.runtime.Exited():
 		return taskExited
-	case s.active != nil:
+	case s.runtime.Active() != nil:
 		return taskActive
-	case s.pid == 0:
+	case !s.runtime.Started():
 		return taskStarting
-	case s.forest.waiting(s):
+	case s.runtime.Waiting():
 		return taskWaiting
 	default:
 		return taskDetached
 	}
 }
 
-func (s *shellTask) serveCommand(c net.Conn, m message, extra func(*attachment, message) error, status func(string) message) (bool, error) {
+func (s *tmuxTask) serveCommand(c net.Conn, m message, extra func(*attachment, message) error, status func(string) message) (bool, error) {
 	var reply message
 	switch m.Type {
 	case "tree_hold":
@@ -231,14 +205,15 @@ func (s *shellTask) serveCommand(c net.Conn, m message, extra func(*attachment, 
 			return true, writeMessage(c, message{Type: "error", Error: err.Error()})
 		}
 		s.mu.Lock()
-		p := s.active
+		p := s.runtime.Active()
 		var err error
 		if p == nil {
 			err = fmt.Errorf("shell has no active attachment")
 		} else {
 			err = s.pinLocked(time.Duration(m.TTLNanos))
 		}
-		reply = message{Type: "pinned", PinUntil: s.pinUntil}
+		_, until := s.runtime.PinState()
+		reply = message{Type: "pinned", PinUntil: until}
 		s.mu.Unlock()
 		if err == nil {
 			err = p.controlMessage(message{Type: "detach_requested"})
@@ -264,56 +239,31 @@ func (s *shellTask) serveCommand(c net.Conn, m message, extra func(*attachment, 
 	return true, writeMessage(c, reply)
 }
 
-var (
-	errShellExited   = errors.New("session is exiting")
-	errShellAttached = errors.New("session already attached")
-)
-
 // Call with mu held.
-func (s *shellTask) endTerminal() *attachment {
-	p := s.active
-	s.active, s.exited = nil, true
-	s.forest.end(s)
-	return p
-}
-
 func shellSize(m message) pty.Size {
 	return pty.Size{Cols: max(m.Cols, 1), Rows: max(m.Rows, 1)}
 }
 
-func (s *shellTask) pumpTerminal(t *pty.Terminal) {
-	buf := make([]byte, 8192)
-	var directoryReports term.DirectoryReport
-	for {
-		n, err := t.Read(buf)
-		if n > 0 {
-			s.terminalMu.Lock()
-			var directory string
-			if runtime.GOOS == "windows" && !s.hosted {
-				directory = directoryReports.Observe(&s.modes, buf[:n])
-			} else {
-				s.modes.Observe(buf[:n])
-			}
-			// Keep live output ordered without holding the shell lock during I/O.
-			s.mu.Lock()
-			if directory != "" {
-				s.reportedDirectory = directory
-			}
-			p := s.active
-			s.mu.Unlock()
-			if p != nil {
-				_ = p.Output(buf[:n])
-			}
-			s.terminalMu.Unlock()
+func (s *tmuxTask) pumpTerminal() {
+	err := s.runtime.PumpOutput(func(data []byte) {
+		s.terminalMu.Lock()
+		defer s.terminalMu.Unlock()
+		directory := s.runtime.Observe(data, runtime.GOOS == "windows" && !s.hosted)
+		// Keep live output ordered without holding the shell lock during I/O.
+		s.mu.Lock()
+		if directory != "" {
+			s.reportedDirectory = directory
 		}
-		if err != nil {
-			break
+		p := s.runtime.Active()
+		s.mu.Unlock()
+		if p != nil {
+			_ = p.Output(data)
 		}
-	}
-	s.terminalExited(t.Wait())
+	})
+	s.terminalExited(err)
 }
 
-func (s *shellTask) terminalExited(err error) {
+func (s *tmuxTask) terminalExited(err error) {
 	code := 0
 	if err != nil {
 		code = 1
@@ -325,7 +275,12 @@ func (s *shellTask) terminalExited(err error) {
 		}
 	}
 	s.mu.Lock()
-	p := s.endTerminal()
+	p, ok := s.runtime.BeginClose()
+	if !ok {
+		s.mu.Unlock()
+		return
+	}
+	defer s.completeClose(p)
 	reason := s.exitReason
 	if reason == "" {
 		reason = "shell exited"
@@ -349,12 +304,5 @@ func (s *shellTask) terminalExited(err error) {
 			DaemonShutdown: s.registry.isShuttingDown(),
 			RetainedShells: s.retainedChildren(),
 		})
-	}
-	if !s.hosted {
-		s.close()
-	} else {
-		s.mu.Lock()
-		s.finishLocked()
-		s.mu.Unlock()
 	}
 }

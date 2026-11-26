@@ -18,7 +18,8 @@ give each path its own flow-control window. Reattaching through a live route can
 reuse its authenticated connection. An independent shell setup can establish
 a new SSH connection.
 
-Omitted file paths open a local three-column picker after SSH authentication.
+Omitted file paths open a three-column picker after SSH authentication.
+The header identifies the host and directory being browsed.
 The client starts by reading the remote home into its directory cache. A mount
 worker returns the current and parent listings together over the startup
 stream and reuses that cache when it mounts the selected directory. The shell

@@ -87,14 +87,20 @@ type daemonAdminReply struct {
 }
 
 func (s *daemonTasks) adminSnapshot(record localShellRecord) daemonAdminReply {
-	snapshot := daemonSnapshot{Version: record.Version, Instance: record.identity()}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	return daemonAdminReply{Snapshot: daemonSnapshot{
+		Version: record.Version, Instance: record.identity(), Tasks: s.taskInfosLocked(),
+	}}
+}
+
+func (s *daemonTasks) taskInfosLocked() []daemonTaskInfo {
+	var rows []daemonTaskInfo
 	for id, task := range s.liveLocked() {
-		snapshot.Tasks = append(snapshot.Tasks, daemonTaskInfo{ID: id, Name: task.taskName()})
+		rows = append(rows, daemonTaskInfo{ID: id, Name: task.taskName()})
 	}
-	s.mu.Unlock()
-	slices.SortFunc(snapshot.Tasks, func(a, b daemonTaskInfo) int { return cmp.Compare(a.ID, b.ID) })
-	return daemonAdminReply{Snapshot: snapshot}
+	slices.SortFunc(rows, func(a, b daemonTaskInfo) int { return cmp.Compare(a.ID, b.ID) })
+	return rows
 }
 
 func readDaemonSnapshot(ctx context.Context) (daemonSnapshot, error) {
@@ -116,34 +122,25 @@ func daemonAdminRequest(ctx context.Context, r localShellRecord, route string, e
 	return reply.Snapshot, nil
 }
 
-func (s *daemonTasks) beginShutdown(record localShellRecord, expected daemonSnapshot) ([]daemonTask, error) {
-	changed := errors.New("tasks changed; review again")
-	if record.Version != expected.Version || record.identity() != expected.Instance {
-		return nil, changed
-	}
+var errShutdownChanged = errors.New("tasks changed; review again")
+
+// A signal delivered to this process has no external review. An administrative
+// request supplies the exact task set the user approved.
+func (s *daemonTasks) beginShutdown(review *daemonSnapshot) ([]daemonTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pruneLocked()
-	if len(s.records) != len(expected.Tasks) {
-		return nil, changed
-	}
-	var stops []daemonTask
-	previousID := ""
-	for _, entry := range expected.Tasks {
-		if entry.ID <= previousID {
-			return nil, changed
-		}
-		previousID = entry.ID
-		task := s.records[entry.ID]
-		if task == nil || task.taskName() != entry.Name {
-			return nil, changed
-		}
-		stops = append(stops, task)
+	current := s.taskInfosLocked()
+	if review != nil && !slices.Equal(current, review.Tasks) {
+		return nil, errShutdownChanged
 	}
 	if s.draining {
 		return nil, fmt.Errorf("daemon is already shutting down")
 	}
 	s.draining = true
+	stops := make([]daemonTask, 0, len(current))
+	for _, entry := range current {
+		stops = append(stops, s.records[entry.ID])
+	}
 	return stops, nil
 }
 
@@ -160,7 +157,14 @@ func (s *daemonTasks) isShuttingDown() bool {
 }
 
 func (s *daemonTasks) shutdown(record localShellRecord, expected daemonSnapshot) error {
-	stops, err := s.beginShutdown(record, expected)
+	if record.Version != expected.Version || record.identity() != expected.Instance {
+		return errShutdownChanged
+	}
+	return s.stopTasks(&expected)
+}
+
+func (s *daemonTasks) stopTasks(review *daemonSnapshot) error {
+	stops, err := s.beginShutdown(review)
 	if err != nil {
 		return err
 	}
@@ -201,7 +205,6 @@ func (s *daemonTasks) shutdown(record localShellRecord, expected daemonSnapshot)
 		return fmt.Errorf("daemon task cleanup timed out; shutdown stopped")
 	}
 }
-func (t *nativeShellTask) stopTask() error { return t.shell.stopTask() }
 
 // An SSH exec channel exposes only the authenticated account's admin exchange.
 // Waiting for confirmation never grants the helper permission to start tasks.

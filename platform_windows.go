@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"golang.org/x/sys/windows"
-	"golang.org/x/sys/windows/registry"
 )
 
 // The terminal owns a kill-on-close job; Terminal.Close ends its process tree.
@@ -79,16 +78,6 @@ func privateStatePath(path string, directory bool) error {
 		return fmt.Errorf("secure state ACL: %w", err)
 	}
 	return nil
-}
-
-func systemMachineID() string {
-	key, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Cryptography`, registry.QUERY_VALUE|registry.WOW64_64KEY)
-	if err != nil {
-		return ""
-	}
-	defer key.Close()
-	value, _, _ := key.GetStringValue("MachineGuid")
-	return value
 }
 
 // checkPlatform uses the real kernel version, independent of manifest shims.

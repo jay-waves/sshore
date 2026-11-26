@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/jay-waves/sshore/internal/pty"
 	"github.com/jay-waves/sshore/internal/shell"
@@ -20,7 +19,7 @@ func hostedShellEnvironment(source []string, term, instance, executable string) 
 }
 
 // The caller holds mu while starting and publishing the terminal.
-func (s *shellTask) startManagedShell(m message) error {
+func (s *tmuxTask) startManagedShell(m message) error {
 	source := s.environment
 	if source == nil {
 		source = os.Environ()
@@ -40,16 +39,12 @@ func (s *shellTask) startManagedShell(m message) error {
 	if s.cgroupErr != nil {
 		return s.cgroupErr
 	}
-	t, err := pty.Start(pty.Config{
+	if err := s.runtime.Start(pty.Config{
 		Path: path, Args: args, Env: shell.StartupEnv(path, env, m.NoProfile),
 		Dir: s.record.Directory, Size: shellSize(m), TaskCgroup: s.cgroup,
-	})
-	if err != nil {
+	}); err != nil {
 		return err
 	}
-	s.terminal = t
-	s.pid = t.PID()
-	s.started = time.Now()
 	s.shellName = filepath.Base(path)
 	s.program = len(m.Argv) != 0
 	if s.program {
@@ -58,7 +53,7 @@ func (s *shellTask) startManagedShell(m message) error {
 	if runtime.GOOS == "windows" {
 		s.shellName = strings.TrimSuffix(strings.ToLower(s.shellName), ".exe")
 	}
-	go s.pumpTerminal(t)
+	go s.pumpTerminal()
 	return nil
 }
 

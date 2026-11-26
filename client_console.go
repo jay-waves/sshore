@@ -399,7 +399,7 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 					loadInventory(command.command)
 					continue
 				case "lf":
-					console.startFilePicker(ctx, panel.localDirectory, emit)
+					console.startFilePicker(ctx, panel.localDirectory, "", emit)
 					continue
 				}
 				next, err := rootConsoleOptions(current, command)

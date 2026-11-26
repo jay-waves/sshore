@@ -49,7 +49,7 @@
 Nested attachments retain the initiating host's connection context through a
 private route. Switching attachments does not move SSH configuration or signing
 credentials to the user's computer. See
-[connection ownership](ARCHITECTURE.md#shell-ownership-and-attachment).
+[connection ownership](ARCHITECTURE.md#tmux-ownership-and-attachment).
 
 ## Requests and approval
 

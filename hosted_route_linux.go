@@ -12,18 +12,15 @@ import (
 	"sync"
 	"time"
 
-	forwardio "github.com/jay-waves/sshore/internal/forward"
 	"github.com/jay-waves/sshore/internal/shell"
 	"golang.org/x/term"
 )
 
+// A parent grants access to a target until its route is retired.
 type shellRoute struct {
-	open         taskEndpoint
-	resource     resourceEndpoint
+	target       *shellTarget
 	drain        context.Context
 	streams      sync.WaitGroup
-	childUID     string
-	host         string
 	confirmation *shellRouteConfirmation // consumed once under the shell lock
 }
 
@@ -51,7 +48,7 @@ func (s *remoteShell) connectShellRoute(c net.Conn, request message) {
 	defer route.streams.Done()
 	stop := context.AfterFunc(route.drain, func() { c.Close() })
 	defer stop()
-	stream, err := route.open()
+	stream, err := route.target.open()
 	if err != nil {
 		_ = writeMessage(c, message{Type: "error", Error: "shell route is unavailable"})
 		return
@@ -62,7 +59,7 @@ func (s *remoteShell) connectShellRoute(c net.Conn, request message) {
 		_ = stream.Close()
 		return
 	}
-	forwardio.Bridge(c, stream)
+	relayRoute(c, stream)
 }
 
 func (s *remoteShell) requestShellRoute(c net.Conn, request message) {
@@ -72,22 +69,14 @@ func (s *remoteShell) requestShellRoute(c net.Conn, request message) {
 		return
 	}
 	s.mu.Lock()
-	parent := s.active
+	parent := s.runtime.Active()
 	s.mu.Unlock()
 	if parent == nil {
 		_ = writeMessage(c, message{Type: "fatal", Error: "managed attachment required"})
 		return
 	}
 	if req.Shell.Local {
-		child, err := s.createRouteShell(*req)
-		if err != nil {
-			_ = writeMessage(c, message{Type: "fatal", Error: err.Error()})
-			return
-		}
-		resource := func(ctx context.Context) (net.Conn, error) { return openHostedEndpoint(ctx, child.record.UID) }
-		open := func() (net.Conn, error) { return resource(context.Background()) }
-		ready := message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: child.record.UID}
-		if err := s.serveShellRoute(c, parent, req.Shell, open, resource, ready, child.done); err != nil {
+		if err := s.localShellRoute(c, parent, *req); err != nil {
 			_ = writeMessage(c, message{Type: "fatal", Error: err.Error()})
 		}
 		return
@@ -96,31 +85,41 @@ func (s *remoteShell) requestShellRoute(c net.Conn, request message) {
 	defer cancel()
 	go func() {
 		select {
-		case <-s.done:
+		case <-s.runtime.Done():
 			cancel()
 		case <-ctx.Done():
 		}
 	}()
-	_ = withRemoteShell(ctx, c, *req, &s.shellTask, func(open taskEndpoint, resource resourceEndpoint, ready message, done <-chan struct{}) error {
-		return s.serveShellRoute(c, parent, req.Shell, open, resource, ready, done)
+	_ = withRemoteShell(ctx, c, *req, &s.tmuxTask, func(target *shellTarget) error {
+		return s.serveShellRoute(c, parent, req.Shell, target)
 	})
 }
 
-func (s *remoteShell) serveShellRoute(c net.Conn, parent *attachment, config *shellConfig, open taskEndpoint, resource resourceEndpoint, ready message, targetDone <-chan struct{}) error {
+func (s *remoteShell) localShellRoute(launcher net.Conn, parent *attachment, req localDaemonRequest) error {
+	if !filepath.IsAbs(req.Record.Directory) {
+		return fmt.Errorf("child shell requires an absolute directory")
+	}
+	child, err := s.createRouteShell(req)
+	if err != nil {
+		return err
+	}
+	target := &shellTarget{uid: child.record.UID, done: child.runtime.Done()}
+	target.resource = func(ctx context.Context) (net.Conn, error) { return openHostedEndpoint(ctx, target.uid) }
+	target.open = func() (net.Conn, error) { return target.resource(context.Background()) }
+	return s.serveShellRoute(launcher, parent, req.Shell, target)
+}
+
+func (s *remoteShell) serveShellRoute(launcher net.Conn, parent *attachment, config *shellConfig, target *shellTarget) error {
 	confirmed := &shellRouteConfirmation{token: resourceToken(), result: make(chan error, 1)}
 	var token string
 	var route *shellRoute
 	s.mu.Lock()
-	if s.active != parent {
+	if s.runtime.Active() != parent {
 		s.mu.Unlock()
 		return fmt.Errorf("parent attachment changed")
 	}
-	host := config.Host
-	if config.Local {
-		host = ""
-	}
 	for key, candidate := range s.shellRoutes {
-		if candidate.childUID == ready.Instance && candidate.host == host {
+		if candidate.target.uid == target.uid && candidate.target.host == target.host {
 			token, route = key, candidate
 			break
 		}
@@ -129,7 +128,7 @@ func (s *remoteShell) serveShellRoute(c net.Conn, parent *attachment, config *sh
 	if newRoute {
 		drain, cancel := context.WithCancel(context.Background())
 		token = resourceToken()
-		route = &shellRoute{open: open, resource: resource, drain: drain, childUID: ready.Instance, host: host}
+		route = &shellRoute{target: target, drain: drain}
 		if s.shellRoutes == nil {
 			s.shellRoutes = make(map[string]*shellRoute)
 		}
@@ -157,8 +156,10 @@ func (s *remoteShell) serveShellRoute(c net.Conn, parent *attachment, config *sh
 	}
 	route.confirmation = confirmed
 	s.mu.Unlock()
-	if err := writeMessage(c, ready); err != nil {
-		return err
+	if launcher != nil {
+		if err := writeMessage(launcher, target.ready()); err != nil {
+			return err
+		}
 	}
 	action := "remote"
 	if config.Local {
@@ -169,8 +170,7 @@ func (s *remoteShell) serveShellRoute(c net.Conn, parent *attachment, config *sh
 	} else if config.Command == "attach" {
 		action = "remote_attach"
 	}
-	name := config.Name
-	if err := parent.controlMessage(message{Type: "shell_route", Action: action, Token: token, HandoffToken: confirmed.token, Instance: ready.Instance, Name: name, SourceHost: config.Host, NoLogin: config.NoLogin, NoProfile: config.NoProfile, Pinned: config.Pin, Argv: config.Argv}); err != nil {
+	if err := parent.controlMessage(message{Type: "shell_route", Action: action, Token: token, HandoffToken: confirmed.token, Instance: target.uid, Name: config.Name, SourceHost: config.Host, NoLogin: config.NoLogin, NoProfile: config.NoProfile, Pinned: config.Pin, Argv: config.Argv}); err != nil {
 		return err
 	}
 	timer := time.NewTimer(15 * time.Second)
@@ -180,23 +180,25 @@ func (s *remoteShell) serveShellRoute(c net.Conn, parent *attachment, config *sh
 		if err != nil {
 			return err
 		}
-	case <-s.done:
+	case <-s.runtime.Done():
 		return fmt.Errorf("parent shell exited")
-	case <-targetDone:
+	case <-target.done:
 		return fmt.Errorf("child shell ended before attachment")
 	case <-timer.C:
 		return fmt.Errorf("shell attachment timed out")
 	}
-	if err := writeMessage(c, message{Type: "handoff_accepted"}); err != nil {
-		return err
+	if launcher != nil {
+		if err := writeMessage(launcher, message{Type: "handoff_accepted"}); err != nil {
+			return err
+		}
+		_ = launcher.Close()
 	}
-	_ = c.Close()
 	if !newRoute {
 		return nil
 	}
 	select {
-	case <-targetDone:
-	case <-s.done:
+	case <-target.done:
+	case <-s.runtime.Done():
 	}
 	return nil
 }
@@ -273,7 +275,7 @@ func (s *remoteShell) confirmShellRoute(c net.Conn, request message) {
 
 func (s *remoteShell) createRouteShell(req localDaemonRequest) (*remoteShell, error) {
 	if req.Shell.Command == "attach" {
-		target, ok := s.tasks.lookup(req.Shell.Instance).(*remoteShell)
+		target, ok := s.registry.lookup(req.Shell.Instance).(*remoteShell)
 		if !ok {
 			return nil, fmt.Errorf("choose a registered shell on this host with sshore attach ID")
 		}
@@ -283,7 +285,7 @@ func (s *remoteShell) createRouteShell(req localDaemonRequest) (*remoteShell, er
 	if err != nil {
 		return nil, err
 	}
-	return s.tasks.registerHostedShell(hostedShellRequest{Directory: directory, Name: req.Shell.Name, Env: req.Env, parent: &s.shellTask})
+	return s.registry.registerHostedShell(hostedShellRequest{Directory: directory, Name: req.Shell.Name, Env: req.Env, parent: &s.tmuxTask})
 }
 
 func openHostedEndpoint(ctx context.Context, instance string) (net.Conn, error) {
@@ -306,7 +308,7 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 		return err
 	}
 	s.mu.Lock()
-	if s.pid == 0 {
+	if !s.runtime.Started() {
 		s.mu.Unlock()
 		return fmt.Errorf("managed shell required")
 	}
@@ -329,6 +331,6 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 	if err := writeMessage(c, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: instance}); err != nil {
 		return err
 	}
-	forwardio.Bridge(c, target)
+	relayRoute(c, target)
 	return nil
 }

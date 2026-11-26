@@ -28,7 +28,7 @@ type selectedTask struct {
 func (q taskQuery) candidate(uid string, task daemonTask) (selectedTask, bool) {
 	candidate := selectedTask{Identity: identityFromUID(uid)}
 	switch t := task.(type) {
-	case interface{ managedShell() *shellTask }:
+	case interface{ managedShell() *tmuxTask }:
 		s := t.managedShell()
 		switch q.Kind {
 		case "", "shell":
@@ -87,7 +87,7 @@ func (q taskQuery) registered(tasks *daemonTasks) []selectedTask {
 }
 
 func (q taskQuery) detached(tasks *daemonTasks, candidate *selectedTask) bool {
-	task, ok := tasks.lookup(canonicalTaskUID(candidate.Identity)).(interface{ managedShell() *shellTask })
+	task, ok := tasks.lookup(canonicalTaskUID(candidate.Identity)).(interface{ managedShell() *tmuxTask })
 	if !ok {
 		return false
 	}
@@ -95,7 +95,7 @@ func (q taskQuery) detached(tasks *daemonTasks, candidate *selectedTask) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	owner := s.parentIdentityLocked()
-	candidate.detachedAt = s.detachedAt
+	candidate.detachedAt = s.runtime.DetachedAt()
 	return s.state() == taskDetached && !s.killing && s.remoteOwner == "" && (owner == "" || owner == q.Parent)
 }
 
@@ -425,7 +425,7 @@ func (a *daemonActivity) remoteChildCandidates(parent, ref string) []selectedTas
 	if parent == "" {
 		return nil
 	}
-	source, ok := a.tasks.lookup(canonicalTaskUID(parent)).(interface{ managedShell() *shellTask })
+	source, ok := a.tasks.lookup(canonicalTaskUID(parent)).(interface{ managedShell() *tmuxTask })
 	if !ok {
 		return nil
 	}
@@ -444,12 +444,12 @@ func (a *daemonActivity) remoteChildCandidates(parent, ref string) []selectedTas
 	return candidates
 }
 
-func (s *shellTask) selectRemoteChild(config *shellConfig) (*remoteShellChild, error) {
+func (s *tmuxTask) selectRemoteChild(config *shellConfig) (*shellTarget, error) {
 	if config.Name == "" && config.Instance == "" {
 		return nil, fmt.Errorf("select a child with sshore attach ID")
 	}
 	s.mu.Lock()
-	var children []*remoteShellChild
+	var children []*shellTarget
 	for child := range s.remoteChildren {
 		if child.host == config.Host && (config.Instance == "" || child.uid == config.Instance) {
 			children = append(children, child)
@@ -459,7 +459,7 @@ func (s *shellTask) selectRemoteChild(config *shellConfig) (*remoteShellChild, e
 
 	// Status and ownership come from the child's authenticated endpoint.
 	type liveChild struct {
-		child *remoteShellChild
+		child *shellTarget
 		state string
 	}
 	live := make(map[string]liveChild)
@@ -509,7 +509,7 @@ func attachmentChoices(candidates []selectedTask) ([]sessionTarget, error) {
 	return targets, nil
 }
 
-func (s *shellTask) sessionTargets(request message) message {
+func (s *tmuxTask) sessionTargets(request message) message {
 	reply := message{Type: "session_targets", Action: request.Action, Name: s.taskName()}
 	list := strings.HasPrefix(request.Action, consoleTargetLookup)
 	parentLookup := strings.HasPrefix(request.Action, consoleParentLookup)

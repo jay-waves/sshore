@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -15,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 // The daemon owns task identities and their live implementations. Entries are
@@ -32,45 +33,37 @@ type daemonTasks struct {
 	log       io.Writer
 	cgroup    string
 	cgroupErr error
-	forest    shellForest
+	forest    tmux.Forest[*tmuxTask]
 	draining  bool
 	mu        sync.Mutex
 	records   map[string]daemonTask
 }
 
-func (s *daemonTasks) newShellTask(record localShellRecord, env []string, parent *shellTask, hosted bool) shellTask {
-	return shellTask{
-		registry: s, forest: &s.forest, log: s.log, cgroup: s.cgroup, cgroupErr: s.cgroupErr,
-		record: record, environment: env, parent: parent, hosted: hosted, done: make(chan struct{}),
+func (s *daemonTasks) newTmuxTask(record localShellRecord, env []string, parent *tmuxTask, hosted bool) tmuxTask {
+	var terminalParent *tmux.Task[*attachment, *tmuxTask]
+	if parent != nil {
+		terminalParent = &parent.runtime
+	}
+	return tmuxTask{
+		registry: s, runtime: tmux.NewTask[*attachment](&s.forest, terminalParent), log: s.log, cgroup: s.cgroup, cgroupErr: s.cgroupErr,
+		record: record, environment: env, hosted: hosted,
 	}
 }
 
-func (s *daemonTasks) childShells(parent *shellTask) []*shellTask {
+func (s *daemonTasks) childShells(parent *tmuxTask) []*tmuxTask {
 	type managedTask interface {
 		daemonTask
-		managedShell() *shellTask
+		managedShell() *tmuxTask
 	}
 	registered := liveTasks[managedTask](s)
-	s.forest.mu.Lock()
-	defer s.forest.mu.Unlock()
-	var children []*shellTask
+	var children []*tmuxTask
 	for _, task := range registered {
-		if child := task.managedShell(); child.parent == parent {
+		if child := task.managedShell(); child.parentTask() == parent {
 			children = append(children, child)
 		}
 	}
 	return children
 }
-
-type nativeShellTask struct {
-	shell *localShell
-	serve func(net.Conn, message) error
-}
-
-func (t *nativeShellTask) setInitialIdentity(uid, name string) { t.shell.setInitialIdentity(uid, name) }
-func (t *nativeShellTask) taskName() string                    { return t.shell.taskName() }
-func (t *nativeShellTask) expired() bool                       { return t.shell.expired() }
-func (t *nativeShellTask) managedShell() *shellTask            { return &t.shell.shellTask }
 
 func (s *daemonTasks) register(id string, task daemonTask) error {
 	s.mu.Lock()
@@ -210,7 +203,7 @@ func (s *daemonTasks) openNative(w http.ResponseWriter, r *http.Request) {
 	}
 	serveDaemonStream(w, r, func(c net.Conn) {
 		if err := writeControlJSON(c, reply); err == nil && task != nil {
-			serveTaskCommand(c, task.serve)
+			serveTaskCommand(c, task.serveTask)
 		}
 	})
 }
@@ -224,7 +217,7 @@ func serveTaskCommand(c net.Conn, serve func(net.Conn, message) error) {
 	_ = serve(c, m)
 }
 
-func (s *daemonTasks) findNativeShell(ref, identity string) (*nativeShellTask, localShellRecord, error) {
+func (s *daemonTasks) findNativeShell(ref, identity string) (*localShell, localShellRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	query := taskQuery{Kind: "native", Ref: ref}
@@ -238,19 +231,13 @@ func (s *daemonTasks) findNativeShell(ref, identity string) (*nativeShellTask, l
 	if err != nil || target.Identity == "" {
 		return nil, localShellRecord{}, err
 	}
-	task := s.records[canonicalTaskUID(target.Identity)].(*nativeShellTask)
-	record := task.snapshot()
+	task := s.records[canonicalTaskUID(target.Identity)].(*localShell)
+	record := task.record
 	if identity != "" && (record.identity() != identity || ref != "" && ref != record.Name && ref != record.UID) {
 		return nil, localShellRecord{}, fmt.Errorf("local task changed; refresh with sshore list")
 	}
 	return task, record, nil
 }
-
-func (t *nativeShellTask) snapshot() localShellRecord {
-	return t.shell.record
-}
-
-func (t *nativeShellTask) serveTask(c net.Conn, m message) error { return t.serve(c, m) }
 
 type resourceMutation struct {
 	Kind, Ref, Identity string
@@ -316,27 +303,17 @@ func (s *daemonTasks) serveTaskInventory(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid shell inventory detail", http.StatusBadRequest)
 		return
 	}
-	snapshot, workers := s.taskInventory(request)
-	enc := jsontext.NewEncoder(w)
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	if err := json.MarshalEncode(enc, snapshot); err != nil || len(workers) == 0 {
-		return
-	}
-	controller := http.NewResponseController(w)
-	if err := controller.Flush(); err != nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), resourceStatusTimeout)
-	defer cancel()
-	deadline, _ := ctx.Deadline()
-	_ = controller.SetWriteDeadline(deadline)
-	probeResourceStatus(ctx, workers, func(row resourceStatusRow) bool {
-		return json.MarshalEncode(enc, row) == nil && controller.Flush() == nil
-	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.MarshalWrite(w, s.taskInventory(r.Context(), request))
 }
 
-func probeResourceStatus(ctx context.Context, workers []*daemonResourceTask, emit func(resourceStatusRow) bool) {
-
+func probeResourceStatus(parent context.Context, workers []*daemonResourceTask) map[string]resourceStatus {
+	if len(workers) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(parent, resourceStatusTimeout)
+	defer cancel()
+	statuses := make(map[string]resourceStatus, len(workers))
 	probes := len(workers)
 	concurrency := min(8, probes)
 	// An outstanding probe can always return, including after this request ends.
@@ -353,19 +330,19 @@ func probeResourceStatus(ctx context.Context, workers []*daemonResourceTask, emi
 		startNext()
 	}
 
-	// Flush each result so a slow worker cannot hide completed results when
-	// the caller's aggregate deadline expires.
+	// Keep completed probes even when another worker misses the deadline.
 	for range probes {
 		select {
 		case row := <-rows:
 			startNext()
-			if row.UID != "" && !emit(row) {
-				return
+			if row.UID != "" {
+				statuses[row.UID] = row.Status
 			}
 		case <-ctx.Done():
-			return
+			return statuses
 		}
 	}
+	return statuses
 }
 
 func (task *daemonResourceTask) readStatus() resourceStatusRow {
@@ -438,19 +415,20 @@ type taskInventoryRequest struct {
 type taskInventorySnapshot struct {
 	Native    []localShellView
 	Shells    []shellView
-	Resources []resourceRecord
+	Resources []resourceView
 }
 
-func (s *daemonTasks) taskInventory(request taskInventoryRequest) (taskInventorySnapshot, []*daemonResourceTask) {
+func (s *daemonTasks) taskInventory(ctx context.Context, request taskInventoryRequest) taskInventorySnapshot {
 	var snapshot taskInventorySnapshot
+	var records []resourceRecord
 	var workers []*daemonResourceTask
 	// Capture membership before collecting runtime state. A shell view may wait
 	// for its terminal handshake, so it must not hold up unrelated task lookups.
 	for _, task := range liveTasks[daemonTask](s) {
 		switch t := task.(type) {
-		case *nativeShellTask:
+		case *localShell:
 			if request.Native {
-				snapshot.Native = append(snapshot.Native, t.shell.view(request.Detail != "health"))
+				snapshot.Native = append(snapshot.Native, t.view(request.Detail != "health"))
 			}
 		case hostedShellView:
 			if request.Hosted {
@@ -461,16 +439,16 @@ func (s *daemonTasks) taskInventory(request taskInventoryRequest) (taskInventory
 				continue
 			}
 			t.mu.Lock()
-			snapshot.Resources = append(snapshot.Resources, t.record)
+			records = append(records, t.record)
 			t.mu.Unlock()
 			if request.Status {
 				workers = append(workers, t)
 			}
-
 		}
 	}
 	slices.SortFunc(snapshot.Shells, func(a, b shellView) int { return strings.Compare(a.Instance, b.Instance) })
-	return snapshot, workers
+	snapshot.Resources = resourceViews(records, probeResourceStatus(ctx, workers), request.Status)
+	return snapshot
 }
 
 func (s *daemonTasks) serveResourceStop(w http.ResponseWriter, r *http.Request) {

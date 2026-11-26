@@ -75,7 +75,7 @@ func (s *remoteShell) requestApproval(c net.Conn, m message) error {
 		return err
 	}
 	s.mu.Lock()
-	p := s.active
+	p := s.runtime.Active()
 	s.mu.Unlock()
 	if p == nil {
 		return fmt.Errorf("no attached client")
@@ -86,7 +86,7 @@ func (s *remoteShell) requestApproval(c net.Conn, m message) error {
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if s.active != p || s.exited || s.killing {
+		if s.runtime.Active() != p || s.runtime.Exited() || s.killing {
 			return fmt.Errorf("source attachment changed")
 		}
 		for i := range m.Operations {

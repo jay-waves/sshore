@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	forwardio "github.com/jay-waves/sshore/internal/forward"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/xtaci/smux"
 )
@@ -136,13 +135,13 @@ func runRemoteShell(c net.Conn, req localDaemonRequest, tasks *daemonTasks) erro
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	conn := c
-	var owner *shellTask
+	var owner *tmuxTask
 	if req.Parent == "" {
 		conn = setupConnection{c, cancel}
 	} else {
-		parent, ok := tasks.lookup(req.Parent).(*nativeShellTask)
+		parent, ok := tasks.lookup(req.Parent).(*localShell)
 		if ok {
-			owner = &parent.shell.shellTask
+			owner = &parent.tmuxTask
 		}
 	}
 	frontend, err := smux.Server(conn, relayMuxConfig())
@@ -156,36 +155,36 @@ func runRemoteShell(c net.Conn, req localDaemonRequest, tasks *daemonTasks) erro
 	}
 	defer setup.Close()
 	if req.Parent != "" {
-		if owner == nil || !owner.suspendedBy(f.ParentKey) {
+		if owner == nil || !owner.runtime.Suspended(f.ParentKey) {
 			return writeMessage(setup, message{Type: "fatal", Error: "parent shell attachment changed"})
 		}
 		go func() {
 			select {
-			case <-owner.done:
+			case <-owner.runtime.Done():
 				cancel()
 			case <-ctx.Done():
 			}
 		}()
 	}
-	return withRemoteShell(ctx, setup, req, owner, func(open taskEndpoint, _ resourceEndpoint, ready message, ownerDone <-chan struct{}) error {
-		if err := streamMessage(setup, ready); err != nil {
+	return withRemoteShell(ctx, setup, req, owner, func(target *shellTarget) error {
+		if err := streamMessage(setup, target.ready()); err != nil {
 			return err
 		}
 		setup.Close()
 		stop := context.AfterFunc(ctx, func() { frontend.Close() })
 		defer stop()
-		if ownerDone != nil {
+		if target.done != nil {
 			go func() {
 				select {
-				case <-ownerDone:
+				case <-target.done:
 					frontend.Close()
 				case <-ctx.Done():
 				}
 			}()
 		}
-		relayRemoteStreams(frontend, open)
+		relayRemoteStreams(frontend, target.open)
 		if owner != nil && f.Command == "sh" {
-			<-ownerDone
+			<-target.done
 		}
 		return nil
 	})
@@ -206,14 +205,12 @@ func relayRemoteStreams(frontend *smux.Session, open taskEndpoint) {
 				stream.Close()
 				return
 			}
-			forwardio.Bridge(stream, target)
+			relayRoute(stream, target)
 		})
 	}
 }
 
 type taskEndpoint func() (net.Conn, error)
-
-type resourceEndpoint func(context.Context) (net.Conn, error)
 
 type resourceSSHStream struct {
 	net.Conn
@@ -222,19 +219,25 @@ type resourceSSHStream struct {
 
 func (s resourceSSHStream) Close() error { return s.transport.Close() }
 
-type remoteShellChild struct {
+// shellTarget describes one authenticated task. Resources dial separately so
+// they can outlive the shell transport.
+type shellTarget struct {
 	host     string
 	uid      string
 	name     string
 	open     taskEndpoint
-	resource resourceEndpoint
+	resource func(context.Context) (net.Conn, error)
 	done     <-chan struct{}
 }
 
-func (s *shellTask) rememberRemoteChild(child *remoteShellChild) func() {
+func (target *shellTarget) ready() message {
+	return message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: target.uid}
+}
+
+func (s *tmuxTask) rememberRemoteChild(child *shellTarget) func() {
 	s.mu.Lock()
 	if s.remoteChildren == nil {
-		s.remoteChildren = make(map[*remoteShellChild]struct{})
+		s.remoteChildren = make(map[*shellTarget]struct{})
 	}
 	s.remoteChildren[child] = struct{}{}
 	s.mu.Unlock()
@@ -245,7 +248,7 @@ func (s *shellTask) rememberRemoteChild(child *remoteShellChild) func() {
 	}
 }
 
-func (child *remoteShellChild) status() (message, error) {
+func (child *shellTarget) status() (message, error) {
 	select {
 	case <-child.done:
 		return message{}, fmt.Errorf("child shell route ended")
@@ -299,7 +302,7 @@ func claimShellOwner(ctx context.Context, open taskEndpoint, instance, owner, to
 	return acceptActivityLease(ctx, c, hosted)
 }
 
-func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest, owner *shellTask, use func(taskEndpoint, resourceEndpoint, message, <-chan struct{}) error) (resultErr error) {
+func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest, owner *tmuxTask, use func(*shellTarget) error) (resultErr error) {
 	f := req.Shell
 	diagnostics := &shellDiagnostics{c: c, active: true}
 	var pipes *transportio.Process
@@ -320,11 +323,10 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	}
 	if owner != nil && f.Command == "attach" {
 		child, err := owner.selectRemoteChild(f)
-		if err == nil {
-			ready := message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: child.uid}
-			return use(child.open, child.resource, ready, child.done)
+		if err != nil {
+			return err
 		}
-		return err
+		return use(child)
 	}
 	shellRequest := remoteServiceRequest{Operation: "shell", Mode: "new", Name: f.Name, Instance: f.Instance, Directory: f.StartupDirectory}
 	if f.Command == "attach" {
@@ -367,8 +369,8 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 			_ = reconcileParticipatingShells(f.Host, shells, since)
 		}
 	}()
-	ready.LocalRequest = nil
-	open := func() (net.Conn, error) {
+	target := &shellTarget{host: f.Host, uid: record.UID, name: record.Name}
+	target.open = func() (net.Conn, error) {
 		authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		return openRemoteTaskEndpoint(authCtx, record, pipes.DialTCP)
@@ -380,7 +382,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	resourceSSH.Confirm, resourceSSH.Secret = nil, nil
 	resourceSSH.RequireKnownHost = true
 	resourceSSH = withSSHDiagnostics(resourceSSH, io.Discard, nil)
-	resource := func(ctx context.Context) (net.Conn, error) {
+	target.resource = func(ctx context.Context) (net.Conn, error) {
 		client, err := transportio.Dial(ctx, resourceSSH)
 		if err != nil {
 			return nil, err
@@ -394,27 +396,24 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 		}
 		return resourceSSHStream{Conn: stream, transport: client}, nil
 	}
-	var ownerDone <-chan struct{}
 	if f.Command == "sh" {
 		var uid, token string
 		if owner != nil {
 			uid, token = owner.record.UID, resourceToken()
 		}
-		stop, done, err := claimShellOwner(ctx, open, ready.Instance, uid, token, true)
+		stop, done, err := claimShellOwner(ctx, target.open, target.uid, uid, token, true)
 		if err != nil {
 			return err
 		}
 		defer stop()
-		ownerDone = done
+		target.done = done
 		if owner != nil {
-			open = ownedTaskEndpoint(open, ready.Instance, token)
-			forget := owner.rememberRemoteChild(&remoteShellChild{
-				host: f.Host, uid: ready.Instance, name: record.Name, open: open, resource: resource, done: done,
-			})
+			target.open = ownedTaskEndpoint(target.open, target.uid, token)
+			forget := owner.rememberRemoteChild(target)
 			defer forget()
 		}
 	}
-	return use(open, resource, ready, ownerDone)
+	return use(target)
 }
 
 func remoteTaskRecord(ready message) (localShellRecord, error) {

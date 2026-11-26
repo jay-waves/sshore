@@ -7,8 +7,7 @@ import (
 	"net/http"
 )
 
-func systemMachineID() string { return "" }
-func checkPlatform() error    { return nil }
+func checkPlatform() error { return nil }
 func runLocalInstaller(string) error {
 	return errors.New("install the experimental macOS client manually")
 }

@@ -9,7 +9,26 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
+
+func TestLFShowsHostBeforePathAndHighlightsCurrentEntry(t *testing.T) {
+	var out strings.Builder
+	panes := [3]lfPane{{}, {entries: []LFEntry{{Name: "src", IsDir: true}}}, {}}
+	if err := lfDraw(&out, LFOptions{Host: "work", Title: "Open shell"}, "/project", panes, -1, 0, 14, 4, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	header, _, _ := strings.Cut(out.String(), "\r\n")
+	if got := ansi.Strip(header); !strings.HasPrefix(got, "work  /proj") || ansi.StringWidth(got) > 13 {
+		t.Fatalf("narrow header = %q", got)
+	}
+	_, highlighted, start := strings.Cut(out.String(), "\x1b[7m")
+	row, _, end := strings.Cut(highlighted, "\x1b[27m")
+	if !start || !end || strings.TrimSpace(row) != "src/" || ansi.StringWidth(row) != 13 {
+		t.Fatal("the selected directory did not get the full current column's reverse video")
+	}
+}
 
 func TestLFReusesPreviewWhenEnteringAndReturning(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)

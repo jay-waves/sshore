@@ -103,52 +103,22 @@ func (r localShellRecord) identity() string {
 	return fmt.Sprintf("local:%x", sha256.Sum256([]byte(r.Token)))
 }
 
-// Register the terminal task before publishing readiness. Attachments use the
-// account listener and never own the task lifetime.
-func serveLocalShell(tasks *daemonTasks, s *localShell, r localShellRecord, ready func(localShellRecord) error, serve func(net.Conn, message) error) error {
-	if r.Version != version || len(r.Token) != 64 || !filepath.IsAbs(r.Directory) {
-		return fmt.Errorf("invalid local startup request")
-	}
-	parent := s.parent
-	if err := tasks.register("", &nativeShellTask{shell: s, serve: serve}); err != nil {
-		return err
-	}
-	r.UID, r.Name = s.record.UID, s.taskName()
-	s.watchParent(parent)
-	if err := ready(r); err != nil {
-		return err
-	}
-	startupTimer := time.AfterFunc(15*time.Second, func() {
-		s.mu.Lock()
-		empty := s.terminal == nil
-		if empty {
-			s.endTerminal()
-		}
-		s.mu.Unlock()
-		if empty {
-			s.close()
-		}
-	})
-	defer startupTimer.Stop()
-	<-s.done
-	return nil
-}
-
 type localShell struct {
-	shellTask
+	tmuxTask
 	handoff *localHandoff
 }
 
 func (s *localShell) view(includeDirectory bool) localShellView {
 	s.mu.Lock()
+	pinned, until := s.runtime.PinState()
 	view := localShellView{
-		Owner: s.parentIdentityLocked(), Pinned: s.pinned, PinUntil: s.pinUntil, Identity: s.record.identity(),
-		Name: s.record.Name, Version: s.record.Version, PID: s.pid, Shell: s.shellName, Program: s.program, ProgramLine: s.programLine,
+		Owner: s.parentIdentityLocked(), Pinned: pinned, PinUntil: until, Identity: s.record.identity(),
+		Name: s.record.Name, Version: s.record.Version, PID: s.runtime.PID(), Shell: s.shellName, Program: s.program, ProgramLine: s.programLine,
 	}
 	reportedDirectory := s.reportedDirectory
 	view.State = s.state()
-	if s.active != nil {
-		view.SourceHost = s.active.sourceHost
+	if s.runtime.Active() != nil {
+		view.SourceHost = s.runtime.Active().sourceHost
 	}
 	s.mu.Unlock()
 	if includeDirectory {
@@ -169,24 +139,41 @@ func retentionLocalShell(identity string, m message) error {
 	return requestShellRetention(c, m)
 }
 
-func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, parent *shellTask, ready func(localShellRecord) error) error {
-	s := &localShell{shellTask: tasks.newShellTask(record, env, parent, false)}
+func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, parent *tmuxTask, ready func(localShellRecord) error) error {
+	if record.Version != version || len(record.Token) != 64 || !filepath.IsAbs(record.Directory) {
+		return fmt.Errorf("invalid local startup request")
+	}
+	s := &localShell{tmuxTask: tasks.newTmuxTask(record, env, parent, false)}
 	defer s.close()
-	return serveLocalShell(tasks, s, record, ready, func(c net.Conn, m message) error {
-		switch m.Type {
-		case "handoff_confirm":
-			return s.confirmHandoff(c, m)
-		case "handoff":
-			return s.requestHandoff(c, m.Handoff)
+	// Register before publishing readiness. Attachments do not own the shell.
+	if err := tasks.register("", s); err != nil {
+		return err
+	}
+	s.watchParent(parent)
+	if err := ready(s.record); err != nil {
+		return err
+	}
+	s.expireUnstarted(15 * time.Second)
+	<-s.runtime.Done()
+	return nil
+}
 
-		default:
-			handled, err := s.serveCommand(c, m, s.attachmentCommand, s.status)
-			if handled {
-				return err
-			}
-			return fmt.Errorf("unexpected local request")
+func (s *localShell) serveTask(c net.Conn, m message) error {
+	switch m.Type {
+	case "handoff_confirm":
+		return s.confirmHandoff(c, m)
+	case "handoff":
+		deadline := time.Now().Add(2 * time.Minute)
+		_ = c.SetDeadline(deadline)
+		if err := s.requestHandoff(nil, m.Handoff, deadline); err != nil {
+			return writeMessage(c, message{Type: "error", Error: err.Error()})
 		}
-	})
+		return writeMessage(c, message{Type: "handoff_accepted"})
+	}
+	if handled, err := s.serveCommand(c, m, s.attachmentCommand, s.status); handled {
+		return err
+	}
+	return fmt.Errorf("unexpected local request")
 }
 
 func (s *localShell) status(_ string) message {
@@ -206,7 +193,7 @@ func (s *localShell) attachmentCommand(p *attachment, m message) error {
 		if m.Directory != "" {
 			h.Directory = m.Directory
 		}
-		go serveChildShortcut(p, s.done, func(c net.Conn) { _ = s.requestHandoff(c, h) })
+		go func() { p.childResult(s.requestHandoff(p, h, time.Now().Add(2*time.Minute))) }()
 	default:
 		return fmt.Errorf("unexpected local control request")
 	}

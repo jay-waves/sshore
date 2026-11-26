@@ -32,8 +32,6 @@ type daemonActivity struct {
 	mu            sync.Mutex
 	leases        map[*activityLease]struct{}
 	nextPeerOrder uint64
-	pulse         chan struct{}
-	lastPulse     time.Time
 }
 
 var accountActivity atomic.Pointer[daemonActivity]
@@ -73,29 +71,6 @@ func (s *daemonActivity) remove(l *activityLease) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.leases, l)
-}
-
-// The clock closes one channel per heartbeat. Each consumer subscribes to the
-// next heartbeat before doing I/O so one can arrive while it is busy.
-func (s *daemonActivity) heartbeat() <-chan struct{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.pulse == nil {
-		s.pulse = make(chan struct{})
-	}
-	return s.pulse
-}
-
-func (s *daemonActivity) tick(now time.Time) {
-	s.mu.Lock()
-	if now.Sub(s.lastPulse) >= daemonHeartbeatInterval {
-		s.lastPulse = now
-		if s.pulse != nil {
-			close(s.pulse)
-			s.pulse = nil
-		}
-	}
-	s.mu.Unlock()
 }
 
 // Overlapping connections can describe the same resource. Show the newest
@@ -154,7 +129,8 @@ func (s *daemonActivity) serve(c net.Conn, r leaseRequest, heartbeat bool) error
 		}
 		return err
 	}
-	pulse := s.heartbeat()
+	pulse := time.NewTicker(daemonHeartbeatInterval)
+	defer pulse.Stop()
 	done := make(chan error, 1)
 	defer func() {
 		_ = c.Close()
@@ -188,8 +164,7 @@ func (s *daemonActivity) serve(c net.Conn, r leaseRequest, heartbeat bool) error
 		select {
 		case err := <-done:
 			return err
-		case <-pulse:
-			pulse = s.heartbeat()
+		case <-pulse.C:
 			if err := sendLeaseMessage(c, "pulse"); err != nil {
 				return fmt.Errorf("send heartbeat: %w", err)
 			}

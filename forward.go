@@ -8,12 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
-	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	forwardio "github.com/jay-waves/sshore/internal/forward"
@@ -153,31 +150,32 @@ type forwardConfig struct {
 }
 
 func validateForwardConfig(f forwardConfig) error {
-	if f.Connection != nil {
+	if !validRetries(f.Retries) {
+		return usage("%s", errForwardRetries)
+	}
+	if f.Name != "" {
+		if err := validSession(f.Name); err != nil {
+			return err
+		}
+	}
+	if err := validSSHDestination(f.Host); err != nil {
+		return err
+	}
+	if f.Connection != nil || f.ApprovalID != "" || f.Session != "" || f.ResumePID != 0 {
+		if f.Connection == nil || !validTaskUID(f.Instance) || !validRequestID(f.ApprovalID) ||
+			validSession(f.Session) != nil || f.ResumePID <= 0 || f.Retries != 0 {
+			return fmt.Errorf("invalid approved forward identity")
+		}
 		if err := validateRecentConnection(*f.Connection); err != nil {
 			return err
 		}
-		if f.Connection.Instance != f.Instance || f.Connection.Session != f.Session || f.Connection.Host != f.Host || f.ApprovalID == "" {
+		if f.Connection.Instance != f.Instance || f.Connection.Session != f.Session || f.Connection.Host != f.Host {
 			return fmt.Errorf("invalid routed forward approval")
 		}
 	}
-	transportErr := f.Validate()
-	if errors.Is(transportErr, errForwardRetries) {
-		return usage("--retries must be between 0 and 10")
-	}
-	if e := validSession(f.Name); f.Name != "" && e != nil {
-		return e
-	}
-	if e := validSSHDestination(f.Host); e != nil {
-		return e
-	}
-	if f.ApprovalID != "" || f.Session != "" || f.ResumePID != 0 {
-		if f.Connection == nil || !validTaskUID(f.Instance) || !validRequestID(f.ApprovalID) || validSession(f.Session) != nil || f.ResumePID <= 0 || f.Retries != 0 {
-			return fmt.Errorf("invalid approved forward identity")
-		}
-	}
-	return transportErr
+	return validateForwardPorts(f.Port, f.Target)
 }
+
 func startForwardSession(f forwardConfig) (int, error) {
 	if e := validateForwardConfig(f); e != nil {
 		return 2, e
@@ -187,9 +185,7 @@ func startForwardSession(f forwardConfig) (int, error) {
 
 // Reconnect only an already-established, explicitly opted-in local forward.
 // Each retry owns a new transport; application TCP connections are not resumed.
-func runForward(parent context.Context, f forwardConfig, s *resourceService, onReady func() error) (int, error) {
-	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
-	defer cancel()
+func runForward(ctx context.Context, f forwardConfig, s *resourceService, onReady func() error) error {
 	client := "local"
 	if f.Connection != nil {
 		client = "origin"
@@ -197,66 +193,74 @@ func runForward(parent context.Context, f forwardConfig, s *resourceService, onR
 	s.record.Detail = f.description(client, f.Host)
 	advertisement, err := json.Marshal(s.peerTask(f.description("manager", "here")))
 	if err != nil {
-		return 1, err
+		return err
 	}
 	advertisement = append(advertisement, '\n')
-	attempt := func(initial bool) (bool, error) {
-		var ready func() error
-		if initial {
-			ready = onReady
+	for retry := 0; ; retry++ {
+		if retry != 0 {
+			s.setTransport("reconnecting", err)
+			delay := time.Second * time.Duration(1<<min(retry-1, 5))
+			termui.Log(s.logWriter(), canonicalTaskCode(resourceIdentity(s.record)), termui.Info,
+				"Forward disconnected; TCP connections lost. Retry %d/%d in %s.", retry, f.Retries, delay)
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil
+			case <-timer.C:
+			}
 		}
-		return runForwardAttempt(ctx, s, advertisement, ready, func(ctx context.Context, diagnostic io.Writer) (*forwardio.Session, error) {
-			return startForwardConnection(ctx, f, s, initial, diagnostic)
-		})
-	}
-	return retryForward(ctx, f.Retries, s, attempt)
-}
-
-// retryForward owns retry policy; an attempt owns the underlying connection.
-func retryForward(ctx context.Context, retries int, s *resourceService, attempt func(bool) (bool, error)) (int, error) {
-	established, err := attempt(true)
-	for retry := 1; established && retry <= retries && ctx.Err() == nil; retry++ {
-		s.setTransport("reconnecting", err)
-		delay := time.Second * time.Duration(1<<min(retry-1, 5))
-		termui.Log(s.logWriter(), canonicalTaskCode(resourceIdentity(s.record)), termui.Info, "Forward disconnected; TCP connections lost. Retry %d/%d in %s.", retry, retries, delay)
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return 0, nil
-		case <-timer.C:
+		var established bool
+		established, err = runForwardAttempt(ctx, f, s, retry == 0, advertisement, onReady)
+		if ctx.Err() != nil {
+			return nil
 		}
-		_, err = attempt(false)
+		if retry == f.Retries || retry == 0 && !established {
+			return err
+		}
 	}
-	if ctx.Err() != nil {
-		return 0, nil
-	}
-	return 1, err
 }
 
 func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceService, initial bool, diagnostic io.Writer) (*forwardio.Session, error) {
-	if f.Connection != nil {
-		request := message{Type: "route_forward", Name: f.Session, PID: f.ResumePID, ApprovalID: f.ApprovalID,
-			Operations: []operation{{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse}}}
-		return startForward(ctx, f, func() (io.ReadWriteCloser, error) {
+	listen, target := f.Port, 0
+	if f.Reverse {
+		listen, target = 0, f.Target
+	}
+	return forwardio.Start(ctx, listen, target, true, func() (io.ReadWriteCloser, error) {
+		if f.Connection != nil {
+			request := message{Type: "route_forward", Name: f.Session, PID: f.ResumePID, ApprovalID: f.ApprovalID,
+				Operations: []operation{{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse}}}
 			return openIndependentResource(ctx, *f.Connection, request, s)
+		}
+		connection := remoteService(sshio.Options{
+			Host: f.Host, Args: f.SSH, Environment: s.baseEnvironment(), Directory: s.directory,
+			RequireKnownHost: !initial,
+		}, f.Server, remoteServiceRequest{
+			Operation: "forward-agent",
+			Forward:   &remoteForwardRequest{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse},
 		})
-	}
-	connection := remoteService(sshio.Options{
-		Host: f.Host, Args: f.SSH, Environment: s.baseEnvironment(), Directory: s.directory,
-	}, f.Server, remoteServiceRequest{
-		Operation: "forward-agent",
-		Forward:   &remoteForwardRequest{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse},
-	})
-	var auth *sshAuthEndpoint
-	if initial {
-		auth = s.config.Auth
-		connection.Confirm, connection.Secret = auth.callbacks()
-	} else {
-		connection.RequireKnownHost = true
-	}
-	connection = withSSHDiagnostics(connection, diagnostic, auth)
-	return startSSHForward(ctx, f, connection, diagnostic)
+		var auth *sshAuthEndpoint
+		if initial {
+			auth = s.config.Auth
+			connection.Confirm, connection.Secret = auth.callbacks()
+		}
+		conn, err := sshio.Start(ctx, withSSHDiagnostics(connection, diagnostic, auth), diagnostic)
+		if err != nil {
+			return nil, err
+		}
+		reply, err := readMessage(conn)
+		if err == nil {
+			err = reply.peerError("forward service")
+		}
+		if err == nil && reply.Type != "resource_ready" {
+			err = fmt.Errorf("unexpected forward setup response: %s", reply.Type)
+		}
+		if err != nil {
+			conn.Close()
+			return nil, err
+		}
+		return conn, nil
+	}, nil)
 }
 
 var errForwardRetries = errors.New("--retries must be between 0 and 10")
@@ -279,43 +283,11 @@ func parseForwardPort(s string) (int, error) {
 	return n, nil
 }
 
-// Validate checks port and retry values before task identity checks.
-func (c forwardConfig) Validate() error {
-	if !validRetries(c.Retries) {
-		return errForwardRetries
-	}
-	if c.Port < 1 || c.Port > 65535 || c.Target < 1 || c.Target > 65535 {
+func validateForwardPorts(port, target int) error {
+	if port < 1 || port > 65535 || target < 1 || target > 65535 {
 		return fmt.Errorf("invalid forward ports")
 	}
 	return nil
-}
-
-func startSSHForward(ctx context.Context, f forwardConfig, config sshio.Options, diagnostic io.Writer) (*forwardio.Session, error) {
-	return startForward(ctx, f, func() (io.ReadWriteCloser, error) {
-		conn, err := sshio.Start(ctx, config, diagnostic)
-		if err != nil {
-			return nil, err
-		}
-		reply, err := readMessage(conn)
-		if err == nil {
-			err = reply.peerError("forward service")
-		}
-		if err == nil && reply.Type != "resource_ready" {
-			err = fmt.Errorf("unexpected forward setup response: %s", reply.Type)
-		}
-		if err != nil {
-			conn.Close()
-			return nil, err
-		}
-		return conn, nil
-	})
-}
-
-func startForward(ctx context.Context, f forwardConfig, open func() (io.ReadWriteCloser, error)) (*forwardio.Session, error) {
-	if f.Reverse {
-		return forwardio.Start(ctx, 0, f.Target, true, open, nil)
-	}
-	return forwardio.Start(ctx, f.Port, 0, true, open, nil)
 }
 
 // parseForwardRetries applies the same retry policy to CLI and persisted configuration.
@@ -329,13 +301,13 @@ func parseForwardRetries(value string) (int, error) {
 
 func validRetries(n int) bool { return n >= 0 && n <= 10 }
 
-func runForwardAttempt(parent context.Context, s *resourceService, advertisement []byte, onReady func() error, open func(context.Context, io.Writer) (*forwardio.Session, error)) (bool, error) {
+func runForwardAttempt(parent context.Context, f forwardConfig, s *resourceService, initial bool, advertisement []byte, onReady func() error) (bool, error) {
 	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
 	var diagnostics diagnosticsTail
 	log := termui.NewLogWriter(s.logWriter(), canonicalTaskCode(resourceIdentity(s.record)), termui.Error)
 	defer log.Flush()
-	connection, err := open(ctx, io.MultiWriter(log, &diagnostics))
+	connection, err := startForwardConnection(ctx, f, s, initial, io.MultiWriter(log, &diagnostics))
 	if err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			if detail := diagnostics.String(); detail != "" {
@@ -344,58 +316,38 @@ func runForwardAttempt(parent context.Context, s *resourceService, advertisement
 		}
 		return false, fmt.Errorf("forward startup failed (%s): %w", s.record.Detail, err)
 	}
-	closeConnection := sync.OnceFunc(func() { _ = connection.Close() })
-	stop := context.AfterFunc(ctx, closeConnection)
-	var heartbeat sync.WaitGroup
-	defer func() {
-		cancel(nil)
-		stop()
-		closeConnection()
-		heartbeat.Wait()
-	}()
+	defer connection.Close()
 	s.setTransport("connected", nil)
-	var startupErr error
-	if onReady != nil {
-		startupErr = onReady()
+	if initial && onReady != nil {
+		if err := onReady(); err != nil {
+			return false, err
+		}
 	}
-	if startupErr != nil {
-		// A failed handshake can leave the peer waiting for input.
-		cancel(startupErr)
-	} else {
-		heartbeat.Go(func() {
-			activity := accountActivity.Load()
-			if activity == nil {
-				cancel(errors.New("forward heartbeat requires the account daemon"))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pulse := time.NewTicker(daemonHeartbeatInterval)
+		defer pulse.Stop()
+		for ctx.Err() == nil {
+			if err := writeFull(connection, advertisement); err != nil {
+				cancel(fmt.Errorf("forward heartbeat write failed: %w", err))
 				return
 			}
-			// The registered forward already keeps the account daemon busy.
-			pulse := activity.heartbeat()
-			for ctx.Err() == nil {
-				if err := writeFull(connection, advertisement); err != nil {
-					cancel(fmt.Errorf("forward heartbeat write failed: %w", err))
-					return
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-pulse:
-					pulse = activity.heartbeat()
-				}
+			select {
+			case <-ctx.Done():
+				return
+			case <-pulse.C:
 			}
-		})
-	}
-
-	err = connection.Wait()
-	if startupErr != nil {
-		return false, startupErr
-	}
-	if cause := context.Cause(ctx); cause != nil {
+		}
+	}()
+	connection.Wait()
+	cause := context.Cause(ctx)
+	cancel(nil)
+	<-done
+	if cause != nil {
 		return true, cause
 	}
-	if err == nil {
-		err = errors.New("forward transport closed")
-	}
-	return true, err
+	return true, errors.New("forward transport closed")
 }
 
 // Keep only the current attempt's diagnostic tail, never earlier log entries.
@@ -451,7 +403,7 @@ func runDaemonForward(config resourceConfig, enc *jsontext.Encoder, dec *jsontex
 	}
 	s.record.Name = task.taskName()
 	ack := awaitResourceCommit(func(v any) error { return json.UnmarshalDecode(dec, v) }, cancel)
-	_, err := runForward(ctx, f, s, func() error {
+	err := runForward(ctx, f, s, func() error {
 		record := task.publishReady(s.record.Detail, "", "")
 		if err := offerResourceStartup(enc, record, ack, nil); err != nil {
 			return err

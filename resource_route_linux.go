@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-
-	forwardio "github.com/jay-waves/sshore/internal/forward"
 )
 
 func (s *remoteShell) relayResourceRoute(c net.Conn, request message) error {
@@ -20,14 +18,14 @@ func (s *remoteShell) relayResourceRoute(c net.Conn, request message) error {
 	}
 	s.mu.Lock()
 	route := s.shellRoutes[hop.Token]
-	valid := !s.exited && !s.killing && route != nil && route.childUID == next && route.drain.Err() == nil
+	valid := !s.runtime.Exited() && !s.killing && route != nil && route.target.uid == next && route.drain.Err() == nil
 	s.mu.Unlock()
 	if !valid {
 		return fmt.Errorf("resource route is unavailable")
 	}
 	ctx, cancel := context.WithTimeout(route.drain, requestTimeout)
 	defer cancel()
-	stream, err := route.resource(ctx)
+	stream, err := route.target.resource(ctx)
 	if err != nil {
 		return fmt.Errorf("open independent resource route: %w", err)
 	}
@@ -48,6 +46,6 @@ func (s *remoteShell) relayResourceRoute(c net.Conn, request message) error {
 		return nil
 	}
 	cancel()
-	forwardio.Bridge(c, stream)
+	relayRoute(c, stream)
 	return nil
 }

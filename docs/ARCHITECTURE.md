@@ -48,15 +48,15 @@ The shell and terminal preserve interactive state across detach. Redraw is best
 effort and must preserve user input. See the [support matrix](../README.md#os-and-shell-support)
 and [native PTY adapters](../internal/pty/).
 
-Local and hosted terminals share [process startup](../shell_startup.go) and
+Local and hosted terminals share [process startup](../tmux_startup.go) and
 [launch argument and directory rules](../internal/shell/).
 `internal/shell` also resolves the default shell and parses command arguments.
 PowerShell startup embeds the [directory reporting script](../internal/shell/pwsh_directory.ps1).
 `new -- PROGRAM` passes an argument vector to the managed PTY.
 `sh HOST -- COMMAND` uses SSH exec with standard streams and no PTY.
-Local and hosted shells also share
-[attachment and input release](../shell_attachment.go), and
-[exit reporting](../shell_terminal.go). The [shell tree](../shell_tree_control.go)
+The [tmux layer](../internal/tmux/) owns terminals, input reservations and pin
+expiry for `sh` and `new`. The daemon handles wire messages and exit reporting.
+The [terminal tree](../internal/tmux/tree.go)
 reserves foreground input while an attachment starts and rolls back the
 reservation and any new parent edge if setup fails. The local and hosted
 entry points handle their own handoff and resource commands.
@@ -97,9 +97,9 @@ shown by the prompt.
 Cross-compilation alone does not validate macOS terminal input, SSH
 authentication, daemon lifetime or native mounts.
 
-### Shell ownership and attachment
+### tmux ownership and attachment
 
-The account daemon owns the parent edges between its shells. It admits one
+The tmux runtime owns the parent edges between managed shells. It admits one
 foreground terminal per tree. From outside, a frontend enters an idle root.
 From a suspended parent it can enter a direct child, or adopt an idle root
 and enter it in the same operation. A failed attach rolls back a provisional
@@ -115,8 +115,8 @@ scoped to the parent. Re-entering that child uses the same route. Each daemon
 makes its own attachment decisions. Explicit detach records a pin before
 releasing input and keeps the existing parent edge. When the owner ends, a
 pinned child survives as a root with its own descendants. An internal handoff
-preserves the original scope and pin. See [tree admission](../shell_tree_control.go),
-[retention](../shell_retention.go) and [attachments](../shell_attachment.go).
+preserves the original scope and pin. See [tree admission](../internal/tmux/tree.go),
+[retention](../tmux_retention.go) and [attachment protocol](../tmux_attachment.go).
 
 The control stream starts with an `attach` request carrying the client release and single-use
 terminal token. The daemon checks the release before claiming the token and reports its release
@@ -129,9 +129,9 @@ the shell tree. When the local account daemon shuts down, attached local clients
 exit to the invoking terminal. Remote exits and detaches return to the parent
 or the invoking terminal. Exit notices report surviving pinned children directly.
 After a local approval or cancellation, the client resumes the requesting shell.
-A connection loss without an exit frame leaves the state unconfirmed. Exit notices
-identify the restored
-shell, local console or calling terminal and whether pinned children remain.
+The task completes after its attachment and PTY close. A connection loss without an
+exit frame leaves the state unconfirmed. The exit notice identifies the restored shell,
+local console or calling terminal and whether pinned children remain.
 
 ### Account daemon and mounts
 
@@ -142,10 +142,10 @@ One authenticated daemon per OS account owns registered shells and resources.
 The daemon, installer, and state storage share the [file lock adapter](../internal/sys/file_lock.go)
 backed by `gofrs/flock`. Daemon startup is serialized by the account startup lock. The owner lock
 identifies the live daemon, and its endpoint record supplies the address.
-Confirmed shutdown closes task admission, stops the reviewed tasks in parallel
-and waits for their results. A failed stop reports the task and reopens admission.
-The shutdown deadline bounds the response while accepted cleanup completes.
-Mounts and forwards use the same cleanup wait for individual and bulk stops.
+Confirmed shutdown stops the reviewed task set. A stop signal to the daemon process
+stops its current task set. Both close admission and wait for parallel cleanup.
+A failed stop reports the task and reopens admission. Accepted cleanup may continue
+past the shutdown deadline. Individual resource stops use the same cleanup wait.
 Normal connections require the exact full release version. Validate
 [process identity](../internal/sys/process_identity_linux.go) before signaling.
 A remote shell's mount

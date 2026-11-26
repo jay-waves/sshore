@@ -118,7 +118,7 @@ func serveForwardAgent(req *remoteForwardRequest) error {
 	if req == nil || req.Kind != "forward" {
 		return fmt.Errorf("invalid forward request")
 	}
-	if err := (forwardConfig{Port: req.Port, Target: req.TargetPort}).Validate(); err != nil {
+	if err := validateForwardPorts(req.Port, req.TargetPort); err != nil {
 		return err
 	}
 	serveForward(agentStdio(), req.Port, req.TargetPort, req.Reverse)
@@ -139,7 +139,7 @@ func serveForward(c io.ReadWriteCloser, port, targetPort int, reverse bool) {
 		return c, nil
 	}, func(input io.Reader) error { return watchPeerRecords(input, "forward", nil) })
 	if err == nil {
-		_ = s.Wait()
+		s.Wait()
 	} else if !published {
 		_ = writeMessage(c, message{Type: "error", SoftwareVersion: version, Error: err.Error()})
 	}

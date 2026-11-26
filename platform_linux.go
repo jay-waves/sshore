@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/jay-waves/sshore/internal/sys"
 )
@@ -19,16 +18,6 @@ func reportBootstrapCgroup() {
 }
 
 func daemonTaskCgroup() (string, error) { return sys.DaemonTaskCgroup() }
-
-// Read existing OS identity without changing system configuration.
-func systemMachineID() string {
-	for _, path := range []string{"/var/lib/dbus/machine-id", "/etc/machine-id"} {
-		if data, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(data)) != "" {
-			return strings.TrimSpace(string(data))
-		}
-	}
-	return ""
-}
 
 func checkPlatform() error { return nil }
 

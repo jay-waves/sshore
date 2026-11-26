@@ -88,14 +88,6 @@ func (s *resourceService) logWriter() io.Writer {
 	}
 	return os.Stderr
 }
-func collectLocalResources(host string, withStatus bool) ([]resourceView, error) {
-	snapshot, statuses, err := readTaskInventory(taskInventoryRequest{Resources: true, Status: withStatus, Host: host})
-	if err != nil {
-		return nil, err
-	}
-	return resourceViews(snapshot.Resources, statuses, withStatus), nil
-}
-
 func resourceViews(records []resourceRecord, statuses map[string]resourceStatus, withStatus bool) []resourceView {
 	views := make([]resourceView, 0, len(records))
 	for _, record := range records {
@@ -172,11 +164,11 @@ func runKillAll(o options) (int, error) {
 		}
 		stop = func() error { return requestDaemonShutdown(snapshot) }
 	} else {
-		var err error
-		views, err = collectLocalResources(o.host, true)
+		local, err := readTaskInventory(taskInventoryRequest{Resources: true, Status: true, Host: o.host})
 		if err != nil {
 			return 1, err
 		}
+		views = local.Resources
 		connection := remoteService(sshConnectionOptions(o), o.server, remoteServiceRequest{Operation: "daemon-admin"})
 		connection = withSSHDiagnostics(connection, os.Stderr, nil)
 		process, err := transportio.Start(ctx, connection, os.Stderr)
@@ -458,8 +450,7 @@ func launchResourceBackground(config resourceConfig, directory string) (resource
 		}
 		browseCtx, stopBrowse := context.WithCancelCause(context.Background())
 		defer stopBrowse(nil)
-		listings := make(chan mountPathListing, 1)
-		finishedBrowse := make(chan resourceStartup, 1)
+		replies := make(chan resourceStartup, 1)
 		go func() {
 			for {
 				var reply resourceStartup
@@ -467,59 +458,48 @@ func launchResourceBackground(config resourceConfig, directory string) (resource
 					stopBrowse(err)
 					return
 				}
-				if reply.Listing == nil {
-					if reply.Error != "" {
-						stopBrowse(errors.New(reply.Error))
-					}
-					finishedBrowse <- reply
+				if reply.Error != "" {
+					stopBrowse(errors.New(reply.Error))
 					return
 				}
 				select {
-				case listings <- *reply.Listing:
+				case replies <- reply:
 				case <-browseCtx.Done():
+					return
+				}
+				if reply.Listing == nil {
 					return
 				}
 			}
 		}()
 		var requestMu sync.Mutex
-		request := func(ctx context.Context, name, parent string) (mountPathListing, error) {
+		read := func(ctx context.Context, name, parent string) ([]directoryEntry, error, []directoryEntry, error) {
 			requestMu.Lock()
 			defer requestMu.Unlock()
 			if err := ctx.Err(); err != nil {
-				return mountPathListing{}, err
-			}
-			if err := json.MarshalEncode(enc, mountPathRequest{Directory: &name, Parent: parent}); err != nil {
-				return mountPathListing{}, err
-			}
-			select {
-			case reply := <-listings:
-				return reply, ctx.Err()
-			case <-browseCtx.Done():
-				return mountPathListing{}, context.Cause(browseCtx)
-			}
-		}
-		list := func(ctx context.Context, name string) ([]termui.LFEntry, error) {
-			reply, err := request(ctx, name, "")
-			if err == nil && reply.Error != "" {
-				err = fmt.Errorf("%s", reply.Error)
-			}
-			return reply.Entries, err
-		}
-		pair := func(ctx context.Context, current, parent string) ([]termui.LFEntry, error, []termui.LFEntry, error) {
-			reply, err := request(ctx, current, parent)
-			if err != nil {
 				return nil, err, nil, err
 			}
-			var currentErr, parentErr error
-			if reply.Error != "" {
-				currentErr = fmt.Errorf("%s", reply.Error)
+			if err := json.MarshalEncode(enc, mountPathRequest{Directory: &name, Parent: parent}); err != nil {
+				return nil, err, nil, err
 			}
-			if reply.ParentError != "" {
-				parentErr = fmt.Errorf("%s", reply.ParentError)
+			select {
+			case reply := <-replies:
+				if reply.Listing == nil {
+					err := errors.New("mount startup ended before replying to the directory request")
+					stopBrowse(err)
+					return nil, err, nil, err
+				}
+				if err := ctx.Err(); err != nil {
+					return nil, err, nil, err
+				}
+				listing := reply.Listing
+				return listing.Entries, listingError(listing.Error), listing.ParentEntries, listingError(listing.ParentError)
+			case <-browseCtx.Done():
+				err := context.Cause(browseCtx)
+				return nil, err, nil, err
 			}
-			return reply.Entries, currentErr, reply.ParentEntries, parentErr
 		}
-		remote, local, err := config.Mount.pickMountPaths(browseCtx, startup.Home, list, pair)
+		remote, local, err := config.Mount.pickMountPaths(browseCtx, startup.Home, read)
 		if err != nil {
 			if cause := context.Cause(browseCtx); cause != nil {
 				return resourceRecord{}, cause
@@ -533,7 +513,10 @@ func launchResourceBackground(config resourceConfig, directory string) (resource
 			return resourceRecord{}, err
 		}
 		select {
-		case startup = <-finishedBrowse:
+		case startup = <-replies:
+			if startup.Listing != nil {
+				return resourceRecord{}, fmt.Errorf("unexpected directory listing after mount selection")
+			}
 		case <-browseCtx.Done():
 			return resourceRecord{}, context.Cause(browseCtx)
 		}

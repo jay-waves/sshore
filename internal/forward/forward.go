@@ -116,7 +116,7 @@ func Start(parent context.Context, listenPort, targetPort int, initiator bool, o
 					incoming.Close()
 					return
 				}
-				Splice(ctx, incoming, outgoing)
+				relayTCP(ctx, incoming, outgoing)
 			})
 		}
 		stop()
@@ -132,5 +132,5 @@ type Session struct {
 	done chan struct{}
 }
 
-func (s *Session) Wait() error  { <-s.done; return nil }
-func (s *Session) Close() error { s.stop(); return s.Wait() }
+func (s *Session) Wait()  { <-s.done }
+func (s *Session) Close() { s.stop(); s.Wait() }

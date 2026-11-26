@@ -14,11 +14,6 @@ import (
 )
 
 func prepareHostedShell(name, mode, instance, executable, directory string) (localShellRecord, error) {
-	if mode == "new" && isShortTaskID(name) {
-		name = ""
-	}
-	var record localShellRecord
-	var err error
 	if mode == "attach" {
 		target, err := resolveHostedShell(name, instance)
 		if err != nil {
@@ -27,26 +22,25 @@ func prepareHostedShell(name, mode, instance, executable, directory string) (loc
 		if target.Instance == "" {
 			return localShellRecord{}, fmt.Errorf("shell %s does not exist; check known IDs with sshore list", name)
 		}
-		record, err = existingDaemonRecord()
+		record, err := existingDaemonRecord()
+		if err != nil {
+			return localShellRecord{}, err
+		}
 		record.UID = target.Instance
+		return record, checkPeerVersion(record.Version, "daemon")
 	}
-	if mode != "attach" {
-		var cwd string
-		cwd, err = os.Getwd()
-		if err == nil {
-			cwd, err = shell.ResolveStartupDirectory(cwd, directory)
-		}
-		if err == nil {
-			record, err = createHostedShell(context.Background(), executable, name, cwd, os.Environ())
-		}
+	if isShortTaskID(name) {
+		name = ""
 	}
+	cwd, err := os.Getwd()
 	if err != nil {
 		return localShellRecord{}, err
 	}
-	if err := checkPeerVersion(record.Version, "daemon"); err != nil {
+	cwd, err = shell.ResolveStartupDirectory(cwd, directory)
+	if err != nil {
 		return localShellRecord{}, err
 	}
-	return record, nil
+	return createHostedShell(context.Background(), executable, name, cwd, os.Environ())
 }
 
 func reportHostedShell(record localShellRecord) error {

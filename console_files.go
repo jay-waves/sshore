@@ -35,38 +35,31 @@ type consoleFileOutput func([]byte) (int, error)
 
 func (w consoleFileOutput) Write(b []byte) (int, error) { return w(b) }
 
-func (c *commandConsole) startFilePicker(ctx context.Context, directory string, emit func(clientEvent)) {
+func (c *commandConsole) startFilePicker(ctx context.Context, directory, host string, emit func(clientEvent)) {
 	ctx, cancel := context.WithCancel(ctx)
 	picker := &consoleFilePicker{
 		input: make(chan termui.LFInput, 32), cancel: cancel,
 		requests: make(map[string]*consoleFileRequest),
 	}
 	c.picker = picker
-	options := localFileSelection(directory, "Open shell", true)
-	if c.attached {
+	var options termui.LFOptions
+	if !c.attached {
+		options = localFileSelection(directory, "Open shell", true)
+	} else {
 		windows := len(directory) >= 3 && directory[1] == ':' && strings.ContainsRune("/\\", rune(directory[2]))
 		if windows {
 			directory = strings.ReplaceAll(directory, "\\", "/")
 		}
-		read := func(ctx context.Context, dir, parent string) (message, error) {
+		options = pairedFileSelection(directory, "Open shell", host, true, func(ctx context.Context, dir, parent string) ([]directoryEntry, error, []directoryEntry, error) {
 			request := consoleFileRequest{ctx: ctx, dir: dir, parent: parent, reply: make(chan message, 1)}
 			emit(clientEvent{consoleSource: c, filePicker: picker, fileRequest: &request})
 			select {
-			case result := <-request.reply:
-				return result, nil
+			case reply := <-request.reply:
+				return reply.Files, listingError(reply.Error), reply.ParentFiles, listingError(reply.ParentError)
 			case <-ctx.Done():
-				return message{}, ctx.Err()
+				return nil, ctx.Err(), nil, ctx.Err()
 			}
-		}
-		options = remoteFileSelection(directory, "Open shell", true, func(ctx context.Context, dir string) ([]termui.LFEntry, error) {
-			reply, err := read(ctx, dir, "")
-			return reply.Files, errors.Join(err, consoleListingError(reply.Error))
 		})
-		options.ReadPair = func(ctx context.Context, dir, parent string) ([]termui.LFEntry, error, []termui.LFEntry, error) {
-			reply, err := read(ctx, dir, parent)
-			return reply.Files, errors.Join(err, consoleListingError(reply.Error)),
-				reply.ParentFiles, errors.Join(err, consoleListingError(reply.ParentError))
-		}
 		if windows {
 			options.Parent = func(dir string) string {
 				if len(dir) == 3 {
@@ -115,16 +108,9 @@ func (c *commandConsole) finishFilePicker(out io.Writer, result *consoleFileResu
 
 func consoleFileListing(request message) message {
 	reply := message{Type: "console_files", Action: request.Action}
-	read := func(dir string) ([]termui.LFEntry, string) {
-		entries, err := fileSelectionEntries(os.ReadDir(dir))
-		if err != nil {
-			return nil, err.Error()
-		}
-		return entries, ""
-	}
-	reply.Files, reply.Error = read(request.Directory)
+	reply.Files, reply.Error = listingEntries(os.ReadDir(request.Directory))
 	if request.ParentDirectory != "" {
-		reply.ParentFiles, reply.ParentError = read(request.ParentDirectory)
+		reply.ParentFiles, reply.ParentError = listingEntries(os.ReadDir(request.ParentDirectory))
 	}
 	body, _ := json.Marshal(reply)
 	if len(body) > maxControlMessage && request.ParentDirectory != "" {
@@ -135,11 +121,4 @@ func consoleFileListing(request message) message {
 		reply.Files, reply.Error = nil, "directory listing is too large"
 	}
 	return reply
-}
-
-func consoleListingError(message string) error {
-	if message == "" {
-		return nil
-	}
-	return errors.New(message)
 }

@@ -11,10 +11,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/sys"
@@ -283,6 +285,9 @@ func runDaemon() (result error) {
 		return err
 	}
 	defer os.Remove(path)
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
 	if !standalone {
 		if err = json.MarshalEncode(enc, localStartup{Record: record}); err != nil {
 			return err
@@ -308,10 +313,10 @@ func runDaemon() (result error) {
 	activity := &daemonActivity{tasks: tasks, root: record.Directory}
 	accountActivity.Store(activity)
 	defer accountActivity.Store(nil)
-	return serveDaemon(listener, record, tasks)
+	return serveDaemon(listener, record, activity, signals)
 }
 
-func serveDaemon(listener net.Listener, record localShellRecord, tasks *daemonTasks) error {
+func serveDaemon(listener net.Listener, record localShellRecord, activity *daemonActivity, signals <-chan os.Signal) error {
 	// The mutex protects bookkeeping only, never terminal I/O or worker startup.
 	var mu sync.Mutex
 	active := 0
@@ -319,15 +324,9 @@ func serveDaemon(listener net.Listener, record localShellRecord, tasks *daemonTa
 	stopping := false
 	// Only sockets still reading their initial headers are pending.
 	pending := make(map[net.Conn]struct{})
-	busy := func() bool {
-		if activity := accountActivity.Load(); activity != nil && activity.busy() {
-			return true
-		}
-		return tasks.Busy()
-	}
 	stop := func(onlyIfIdle bool) bool {
 		mu.Lock()
-		if stopping || (onlyIfIdle && (active != 0 || busy() || time.Since(last) <= 30*time.Second)) {
+		if stopping || (onlyIfIdle && (active != 0 || activity.busy() || activity.tasks.Busy() || time.Since(last) <= 30*time.Second)) {
 			mu.Unlock()
 			return false
 		}
@@ -342,27 +341,31 @@ func serveDaemon(listener net.Listener, record localShellRecord, tasks *daemonTa
 		return true
 	}
 	done := make(chan struct{})
-	clockDone := make(chan struct{})
-	defer func() { close(done); <-clockDone }()
+	monitorDone := make(chan struct{})
+	defer func() { close(done); <-monitorDone }()
 	go func() {
-		defer close(clockDone)
+		defer close(monitorDone)
 		tick := time.NewTicker(time.Second)
 		defer tick.Stop()
 		for {
 			select {
 			case <-done:
 				return
-			case now := <-tick.C:
-				if activity := accountActivity.Load(); activity != nil {
-					activity.tick(now)
+			case received := <-signals:
+				if err := activity.tasks.stopTasks(nil); err != nil {
+					termui.Log(activity.tasks.log, "daemon", termui.Error, "Could not stop after %s: %s", received, cleanText(err.Error()))
+					continue
 				}
+				stop(false)
+				return
+			case <-tick.C:
 				if stop(true) {
 					return
 				}
 			}
 		}
 	}()
-	mux := daemonRoutes(record, tasks, func() { stop(false) })
+	mux := daemonRoutes(record, activity, func() { stop(false) })
 	server := http.Server{
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       5 * time.Second,
@@ -438,20 +441,19 @@ func runDaemonLaunch(c net.Conn, req localDaemonRequest, record localShellRecord
 	req.Record.ManagerPID = os.Getpid()
 	_ = c.SetDeadline(time.Time{})
 
-	if req.Kind == "remote-shell" {
+	switch req.Kind {
+	case "remote-shell":
 		_ = runRemoteShell(c, req, tasks)
-		return
-	}
-	if req.Kind == "shell" {
+	case "shell":
 		req.Record.Address, req.Record.Token = record.Address, record.Token
-		var parent *shellTask
+		var parent *tmuxTask
 		if req.Parent != "" {
-			task, ok := tasks.lookup(req.Parent).(*nativeShellTask)
+			task, ok := tasks.lookup(req.Parent).(*localShell)
 			if !ok {
 				_ = writeControlJSON(c, localStartup{Error: "parent shell is unavailable"})
 				return
 			}
-			parent = &task.shell.shellTask
+			parent = &task.tmuxTask
 		}
 		err := runLocalShell(tasks, req.Record, req.Env, parent, func(r localShellRecord) error {
 			_ = c.SetDeadline(time.Now().Add(10 * time.Second))
@@ -471,7 +473,7 @@ func runDaemonLaunch(c net.Conn, req localDaemonRequest, record localShellRecord
 		if err != nil {
 			_ = writeControlJSON(c, localStartup{Error: err.Error()})
 		}
-	} else {
+	case "resource":
 		_ = runDaemonResource(c, req, tasks)
 	}
 }

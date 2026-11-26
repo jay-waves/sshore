@@ -30,10 +30,10 @@ func requestShellRetention(c io.ReadWriter, request message) error {
 
 // A root lease belongs to the frontend. A child on another daemon gets its
 // parent identity and private entry token from this lease.
-func (s *shellTask) serveOwner(c net.Conn, m message) (result error) {
+func (s *tmuxTask) serveOwner(c net.Conn, m message) (result error) {
 	s.mu.Lock()
-	if s.ownerClaimed || s.parent != nil || s.exited || s.killing || m.Instance != s.record.UID || m.SoftwareVersion != version ||
-		m.Owner == "" && m.Token != "" || m.Owner != "" && (!s.hosted || !validTaskUID(m.Owner) || len(m.Token) != 64 || s.terminal != nil) {
+	if s.ownerClaimed || s.parentTask() != nil || s.runtime.Exited() || s.killing || m.Instance != s.record.UID || m.SoftwareVersion != version ||
+		m.Owner == "" && m.Token != "" || m.Owner != "" && (!s.hosted || !validTaskUID(m.Owner) || len(m.Token) != 64 || s.runtime.Started()) {
 		s.mu.Unlock()
 		return writeMessage(c, message{Type: "error", Error: "shell owner unavailable"})
 	}
@@ -45,7 +45,7 @@ func (s *shellTask) serveOwner(c net.Conn, m message) (result error) {
 	defer close(done)
 	go func() {
 		select {
-		case <-s.done:
+		case <-s.runtime.Done():
 			c.Close()
 		case <-done:
 		}
@@ -61,7 +61,7 @@ type ownedShellConnection struct {
 	token string
 }
 
-func (s *shellTask) checkRemoteOwnerLocked(c attachmentControl) error {
+func (s *tmuxTask) checkRemoteOwnerLocked(c attachmentControl) error {
 	var token string
 	if owned, ok := c.(*ownedShellConnection); ok {
 		token = owned.token
@@ -75,22 +75,27 @@ func (s *shellTask) checkRemoteOwnerLocked(c attachmentControl) error {
 	return fmt.Errorf("parent shell route ended")
 }
 
-func (s *shellTask) watchParent(parent *shellTask) {
+func (s *tmuxTask) parentTask() *tmuxTask {
+	parent, _ := s.runtime.Parent()
+	return parent
+}
+
+func (s *tmuxTask) watchParent(parent *tmuxTask) {
 	if parent == nil {
 		return
 	}
 	go func() {
 		select {
-		case <-parent.done:
+		case <-parent.runtime.Done():
 			s.scopeEnded(parent, nil)
-		case <-s.done:
+		case <-s.runtime.Done():
 		}
 	}()
 }
 
-func (s *shellTask) scopeEnded(owner *shellTask, cause error) {
+func (s *tmuxTask) scopeEnded(owner *tmuxTask, cause error) {
 	s.mu.Lock()
-	if s.parent != owner {
+	if s.parentTask() != owner {
 		s.mu.Unlock()
 		return
 	}
@@ -106,13 +111,9 @@ func (s *shellTask) scopeEnded(owner *shellTask, cause error) {
 		}
 	} else {
 		reason = "Parent shell " + canonicalTaskCode(owner.treeIdentity()) + " ended"
-		// Pinned survivors no longer need the terminated parent's task or routes.
-		s.forest.mu.Lock()
-		s.parent = nil
-		s.forest.mu.Unlock()
 	}
-	ending := s.exited || s.killing
-	s.scopeLost = true
+	ending := s.runtime.Exited() || s.killing
+	s.runtime.LoseScope()
 	s.reapUnretainedLocked()
 	reaping := s.killing
 	s.mu.Unlock()
@@ -125,75 +126,42 @@ func (s *shellTask) scopeEnded(owner *shellTask, cause error) {
 	}
 }
 
-func (s *shellTask) pinLocked(ttl time.Duration) error {
-	if ttl < 0 {
-		return fmt.Errorf("invalid pin duration")
-	}
-	if s.exited || s.killing || s.terminal == nil {
-		return fmt.Errorf("shell is ending or has not started")
-	}
-	if s.pinTimer != nil {
-		s.pinTimer.Stop()
-		s.pinTimer = nil
-	}
-	s.pinned = true
-	s.pinUntil = time.Time{}
-	if ttl != 0 {
-		s.pinUntil = time.Now().Add(ttl)
-		deadline := s.pinUntil
-		s.pinTimer = time.AfterFunc(ttl, func() {
-			s.mu.Lock()
-			defer s.mu.Unlock()
-			if s.pinUntil == deadline {
-				s.reapUnretainedLocked()
-			}
-		})
-	}
-	return nil
+func (s *tmuxTask) pinLocked(ttl time.Duration) error {
+	return s.runtime.Pin(ttl, s.killing, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.reapUnretainedLocked()
+	})
 }
 
-// At expiry an attached shell can finish its current attachment. A later
-// attachment must still have a live parent or an unexpired pin.
-func (s *shellTask) reapUnretainedLocked() {
-	if s.exited || s.killing {
+func (s *tmuxTask) reapUnretainedLocked() {
+	if s.runtime.Exited() || s.killing || !s.runtime.Unretained(time.Now()) {
 		return
 	}
-	if s.parent != nil && s.parent.treeEnded.Load() {
-		s.scopeLost = true
-	}
-	if s.pinned {
-		if s.pinUntil.IsZero() || time.Now().Before(s.pinUntil) || s.scopeLost && s.active != nil {
-			return
+	s.killing, s.exitReason = true, "shell lifetime ended"
+	go func() {
+		if err := s.stopTerminal(); err != nil {
+			termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Could not stop unpinned shell: %s", cleanText(err.Error()))
 		}
-		s.pinned = false
-		s.pinUntil = time.Time{}
-	}
-	if s.scopeLost {
-		s.killing, s.exitReason = true, "shell lifetime ended"
-		go func() {
-			if err := s.stopTerminal(); err != nil {
-				termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Could not stop unpinned shell: %s", cleanText(err.Error()))
-			}
-		}()
-	}
+	}()
 }
 
-func (s *shellTask) parentIdentityLocked() string {
-	if s.parent != nil && !s.parent.treeEnded.Load() {
-		return s.parent.treeIdentity()
+func (s *tmuxTask) parentIdentityLocked() string {
+	if parent, ended := s.runtime.Parent(); parent != nil && !ended {
+		return parent.treeIdentity()
 	}
 	return identityFromUID(s.remoteOwner)
 }
 
 // The owner lease is still live while the exit frame is being assembled.
-func (s *shellTask) retainedChildren() []retainedShell {
+func (s *tmuxTask) retainedChildren() []retainedShell {
 	var retained []retainedShell
 	now := time.Now()
 	for _, child := range s.registry.childShells(s) {
 		child.mu.Lock()
-		if child.parent == s && !child.exited && !child.killing && child.pinned &&
-			(child.pinUntil.IsZero() || now.Before(child.pinUntil)) {
-			retained = append(retained, retainedShell{Instance: child.record.UID, Name: child.record.Name, PinUntil: child.pinUntil})
+		pinned, until := child.runtime.PinState()
+		if child.parentTask() == s && !child.runtime.Exited() && !child.killing && pinned && (until.IsZero() || now.Before(until)) {
+			retained = append(retained, retainedShell{Instance: child.record.UID, Name: child.record.Name, PinUntil: until})
 		}
 		child.mu.Unlock()
 	}

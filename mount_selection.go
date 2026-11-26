@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"errors"
 
 	"github.com/jay-waves/sshore/internal/files"
@@ -17,18 +19,46 @@ type mountPathRequest struct {
 }
 
 type mountPathListing struct {
-	Entries       []termui.LFEntry
+	Entries       []directoryEntry
 	Error         string
-	ParentEntries []termui.LFEntry
+	ParentEntries []directoryEntry
 	ParentError   string
 }
 
-func (o ftpOptions) pickMountPaths(ctx context.Context, home string, list func(context.Context, string) ([]termui.LFEntry, error), pair func(context.Context, string, string) ([]termui.LFEntry, error, []termui.LFEntry, error)) (string, string, error) {
+// Both sides of the worker pipe accept listings until one final selection.
+// Commit is a separate acknowledgement and cannot precede that selection.
+func readMountStartup(read func(any) error, picking bool, selectPath func(mountPathRequest) error) error {
+	for {
+		var raw jsontext.Value
+		if err := read(&raw); err != nil {
+			return err
+		}
+		if len(raw) > 1<<20 {
+			return errors.New("startup message too large")
+		}
+		if raw.Kind() == '"' {
+			var answer string
+			if picking || json.Unmarshal(raw, &answer) != nil || answer != "commit" {
+				return errors.New("invalid startup acknowledgement")
+			}
+			return nil
+		}
+		var request mountPathRequest
+		if !picking || raw.Kind() != '{' || json.Unmarshal(raw, &request) != nil {
+			return errors.New("invalid mount selection request")
+		}
+		if err := selectPath(request); err != nil {
+			return err
+		}
+		picking = request.Directory != nil
+	}
+}
+
+func (o ftpOptions) pickMountPaths(ctx context.Context, home string, read directoryPairReader) (string, string, error) {
 	remote, local := o.Remote, o.Mountpoint
 	if o.PickRemote {
 		var err error
-		picker := remoteFileSelection(home, "Mount directory · "+o.Host, true, list)
-		picker.ReadPair = pair
+		picker := pairedFileSelection(home, "Mount directory", o.Host, true, read)
 		remote, err = termui.PickLF(ctx, picker)
 		if err != nil {
 			return "", "", err
@@ -45,7 +75,7 @@ func (o ftpOptions) pickMountPaths(ctx context.Context, home string, list func(c
 }
 
 func pickLocalMountpoint(ctx context.Context, dir string, inConsole bool) (string, error) {
-	picker := localFileSelection(dir, "Local mountpoint", true)
+	picker := localFileSelection(dir, "Mountpoint", true)
 	picker.Automatic, picker.Manual, picker.InConsole = true, true, inConsole
 	picker.Validate = files.ValidateMountpoint
 	point, err := termui.PickLF(ctx, picker)
@@ -65,11 +95,12 @@ func mountPathSelector(o ftpOptions) func(context.Context, files.DirectoryReader
 		if o.PickRemote {
 			go readDir(ctx, home)
 		}
-		return o.pickMountPaths(ctx, home, func(ctx context.Context, name string) ([]termui.LFEntry, error) {
-			return fileSelectionEntries(readDir(ctx, name))
-		}, func(ctx context.Context, current, parent string) ([]termui.LFEntry, error, []termui.LFEntry, error) {
-			entries, err := fileSelectionEntries(readDir(ctx, current))
-			parents, parentErr := fileSelectionEntries(readDir(ctx, parent))
+		return o.pickMountPaths(ctx, home, func(ctx context.Context, current, parent string) ([]directoryEntry, error, []directoryEntry, error) {
+			entries, err := directoryEntries(readDir(ctx, current))
+			if parent == "" {
+				return entries, err, nil, nil
+			}
+			parents, parentErr := directoryEntries(readDir(ctx, parent))
 			return entries, err, parents, parentErr
 		})
 	}

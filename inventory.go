@@ -3,8 +3,6 @@ package main
 import (
 	"cmp"
 	"context"
-	"encoding/json/jsontext"
-	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -121,48 +119,16 @@ func viewRecord(r resourceRecord) resourceView {
 
 // Read only registered tasks here. Historical and peer observations are
 // collected separately and cannot become part of this snapshot.
-func readTaskInventory(request taskInventoryRequest) (taskInventorySnapshot, map[string]resourceStatus, error) {
-	timeout := daemonRequestTimeout
-	if request.Status && !request.Native && !request.Hosted {
-		timeout = resourceStatusTimeout
-	}
-	if request.Detail == "health" {
-		timeout = 2 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	statuses := make(map[string]resourceStatus)
+func readTaskInventory(request taskInventoryRequest) (taskInventorySnapshot, error) {
 	var snapshot taskInventorySnapshot
 	record, err := existingDaemonRecord()
 	if os.IsNotExist(err) {
-		return snapshot, nil, nil
+		return snapshot, nil
 	}
-	if err != nil {
-		return snapshot, nil, err
+	if err == nil {
+		err = daemonJSON(context.Background(), record, "/tasks/snapshot", request, &snapshot)
 	}
-	req, err := daemonRequest(ctx, record, "/tasks/snapshot", request)
-	if err != nil {
-		return snapshot, nil, err
-	}
-	resp, err := daemonDo(req)
-	if err != nil {
-		return snapshot, nil, err
-	}
-	defer resp.Body.Close()
-	dec := jsontext.NewDecoder(resp.Body)
-	if err := json.UnmarshalDecode(dec, &snapshot); err != nil {
-		return snapshot, nil, err
-	}
-	if request.Status {
-		for range snapshot.Resources {
-			var row resourceStatusRow
-			if json.UnmarshalDecode(dec, &row) != nil {
-				break
-			}
-			statuses[row.UID] = row.Status
-		}
-	}
-	return snapshot, statuses, nil
+	return snapshot, err
 }
 
 func (snapshot taskInventorySnapshot) nativeShells() []localShellView {
@@ -191,20 +157,11 @@ func (a *daemonActivity) listTasks(ctx context.Context, request taskListRequest)
 	if request.Tree {
 		query.Detail = "health"
 	}
-	snapshot, workers := a.tasks.taskInventory(query)
+	snapshot := a.tasks.taskInventory(ctx, query)
 	inv := emptyInventory()
 	inv.Shells = append(inv.Shells, snapshot.Shells...)
 	inv.LocalShells = snapshot.nativeShells()
-	statuses := make(map[string]resourceStatus)
-	if query.Status {
-		probeCtx, cancel := context.WithTimeout(ctx, resourceStatusTimeout)
-		defer cancel()
-		probeResourceStatus(probeCtx, workers, func(row resourceStatusRow) bool {
-			statuses[row.UID] = row.Status
-			return true
-		})
-	}
-	inv.Resources = resourceViews(snapshot.Resources, statuses, query.Status)
+	inv.Resources = snapshot.Resources
 	inv.Peers = excludeLocalResourcePeers(peerViews(a.incomingPeers()), inv.Resources)
 	reply := a.handleMetadata(metadataRequest{Action: "participation_get"})
 	if reply.Error != "" {

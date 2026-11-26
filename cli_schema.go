@@ -51,6 +51,7 @@ var cliOptions = map[string]cliOption{
 	"--port":      {kind: cliPort, alias: "-p"},
 	"-J":          {kind: cliText},
 	"-i":          {kind: cliText},
+	"-F":          {kind: cliText},
 	"--no-escape": {}, "--pin": {}, "--no-login": {}, "--no-profile": {},
 	"--all":        {},
 	"--foreground": {},
@@ -84,7 +85,7 @@ const (
 
 func (s cliSpec) option(name string) (string, cliOption, bool) {
 	if s.ssh {
-		for _, canonical := range [...]string{"--port", "-J", "-i"} {
+		for _, canonical := range [...]string{"--port", "-J", "-i", "-F"} {
 			option := cliOptions[canonical]
 			if name == canonical || name == option.alias {
 				return canonical, option, true
@@ -227,7 +228,7 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 		if !found && spec.ssh {
 			short, suffix, n := sshio.SplitOption([]string{arg})
 			switch short {
-			case "-J", "-p", "-i":
+			case "-J", "-p", "-i", "-F":
 				if n == 1 {
 					name, value, attached = short, suffix, true
 					canonical, option, found = spec.option(name)
@@ -247,7 +248,7 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 			if !attached {
 				i++
 				if i == len(args) || strings.HasPrefix(args[i], "--") ||
-					(name == "-J" || name == "-p" || name == "-i") && strings.HasPrefix(args[i], "-") {
+					(name == "-J" || name == "-p" || name == "-i" || name == "-F") && strings.HasPrefix(args[i], "-") {
 					return a, usage("missing value for %s", name)
 				}
 				value = args[i]
@@ -317,6 +318,12 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 		}
 		a.ssh = append([]string{"-J", a.values["-J"]}, a.ssh...)
 	}
+	if a.has("-F") {
+		if sshOptionsUsed.config {
+			return a, usage("-F cannot be combined with SSH -F after --ssh")
+		}
+		a.ssh = append([]string{"-F", a.values["-F"]}, a.ssh...)
+	}
 	a.ssh = append(identityArgs, a.ssh...)
 	if len(a.operands) < spec.min {
 		return a, usage("not enough arguments for %s; see sshore %s --help", command, command)
@@ -343,7 +350,7 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 	return a, err
 }
 
-type sshOptionPresence struct{ port, jump bool }
+type sshOptionPresence struct{ port, jump, config bool }
 
 func parseSSHOptions(suffix []string) ([]string, sshOptionPresence, error) {
 	var ssh []string
@@ -358,6 +365,7 @@ func parseSSHOptions(suffix []string) ([]string, sshOptionPresence, error) {
 		}
 		used.port = used.port || sshio.PortOption(name, value)
 		used.jump = used.jump || name == "-J" || name == "-o" && sshio.ConfigKey(value) == "proxyjump"
+		used.config = used.config || name == "-F"
 		ssh = append(ssh, name)
 		if value != "" {
 			ssh = append(ssh, value)
@@ -493,8 +501,9 @@ Version: sshore --version
 const sshOptions = `
 -p PORT (alias: --port) selects the SSH port (1–65535).
 -J DEST selects a jump host. -i FILE adds a private key file and may be repeated.
+-F FILE selects an SSH configuration file. -F none uses built-in defaults.
 Other SSH options follow --ssh.
-Do not repeat a top-level port or jump host setting after --ssh.
+Do not repeat a top-level port, jump host or configuration file after --ssh.
 Configuration options: -p -i -J -F -l -o -c -m -v/-vv/-vvv -4 -6.
 An interactive terminal is required for passphrases, passwords and
 keyboard-interactive login.

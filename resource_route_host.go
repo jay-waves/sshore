@@ -90,7 +90,7 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message, relay fun
 
 // approvalLocked checks the identity of the detached shell and its pending grant.
 func (s *remoteShell) approvalLocked(request message) (operation, error) {
-	if s.exited || s.killing || s.active != nil || s.record.UID != request.Instance || s.record.Name != request.Name || s.pid == 0 || s.pid != request.PID {
+	if s.runtime.Exited() || s.killing || s.runtime.Active() != nil || s.record.UID != request.Instance || s.record.Name != request.Name || !s.runtime.Started() || s.runtime.PID() != request.PID {
 		return operation{}, fmt.Errorf("approved shell changed or remains attached; request the operation again")
 	}
 	grant := s.resourceApproval

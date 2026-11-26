@@ -806,7 +806,11 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 							console.show("Current directory is unavailable.")
 							break
 						}
-						console.startFilePicker(ctx, panel.directory, emit)
+						host := o.host
+						if o.local {
+							host = localFileHost()
+						}
+						console.startFilePicker(ctx, panel.directory, host, emit)
 					case "shell":
 						if command.remoteCommand != "" || command.task.scope != taskLocal || command.startupDirectory != "" || len(command.values) > 1 || len(command.values) == 1 && !command.has("--pin") {
 							console.show("Usage: shell [--pin]")

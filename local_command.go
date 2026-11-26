@@ -45,7 +45,7 @@ func localRequest(ref, identity string, request message) (message, error) {
 }
 
 func nativeShells() ([]localShellView, error) {
-	snapshot, _, err := readTaskInventory(taskInventoryRequest{Native: true})
+	snapshot, err := readTaskInventory(taskInventoryRequest{Native: true})
 	return snapshot.nativeShells(), err
 }
 
@@ -81,7 +81,7 @@ type localStartup struct {
 type hostedShellRequest struct {
 	Directory, Name string
 	Env             []string
-	parent          *shellTask
+	parent          *tmuxTask
 }
 
 func createHostedShell(ctx context.Context, executable, name, cwd string, env []string) (localShellRecord, error) {

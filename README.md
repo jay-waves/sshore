@@ -39,9 +39,7 @@ for experimental Apple Silicon support.
 
 ## ssh — Run remote commands and forward ports
 
-Use SSH host aliases from `ssh_config`. Pass SSH options after `--ssh`, including
-`-F FILE` for a different config or `-F none` for built-in defaults. Port
-forwarding requires the same sshore release on the destination.
+Use SSH host aliases from `ssh_config`.
 
 ```sh
 sshore sh jay-waves@raspberrypi  # Log in as a specific SSH user.
@@ -111,25 +109,22 @@ local
 While the original parent is alive, only it can reattach its child. Each tree
 has one foreground shell.
 
-### Attach recent jobs
+### Resume a detached shell
 
 ```sh
-sshore shell raspberrypi          # Start a new shell.
-sshore attach raspberrypi         # Resume a detached shell, by LRU
-sshore attach raspberrypi:        # Treat raspberrypi explicitly as a host.
-sshore attach 7b3a91       # Resume a detached shell, by ID
-sshore attach raspberrypi:7b3a91  # Resume a detached shell, by HOST:ID.
+sshore attach              # Resume the most recently detached eligible local shell.
+sshore attach 7b3a91       # Resume a detached shell by task ID.
+sshore attach raspberrypi  # Match a known shell name first, then try the SSH host.
+sshore shell raspberrypi   # Start a new shell on the SSH host.
 ```
 
-If the selected shell is unavailable during SSH setup, sshore can open a new
-one and print its ID.
+Use a task ID when a shell name is ambiguous.
 
 ### Find and manage tasks
 
 Run `sshore list` and `sshore pstree` for task details.
-Use `sshore kill ID` or `sshore rename ID NEW` for shells, mounts and forwards.
-`HOST:ID` selects the managing SSH account explicitly. Killing a shell can
-discard unsaved work.
+Use `sshore kill ID` or `sshore kill NAME` to stop a shell, mount or forward.
+Killing a shell can discard unsaved work.
 
 ## copy-id — Install an SSH public key for remote login
 

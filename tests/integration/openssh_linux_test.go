@@ -141,7 +141,7 @@ Match command "printf forwarding-check"
 		if err := os.WriteFile(knownHosts, append([]byte("[127.0.0.1]:2222 "), wrongKey...), 0600); err != nil {
 			t.Fatal(err)
 		}
-		untrusted := exec.CommandContext(ctx, binary, "sh", host, "--ssh", "-F", config, "-o", "UserKnownHostsFile="+knownHosts,
+		untrusted := exec.CommandContext(ctx, binary, "sh", host, "-F", config, "--ssh", "-o", "UserKnownHostsFile="+knownHosts,
 			"--", "printf unexpected")
 		if out, err := untrusted.CombinedOutput(); err == nil || !strings.Contains(string(out), "key mismatch") || strings.Contains(string(out), "unexpected") {
 			t.Fatalf("untrusted host: %s (%v)", out, err)
@@ -952,6 +952,49 @@ Match command "printf forwarding-check"
 		local("kill", replacement)
 	})
 
+	scenario("stopping the daemon process cleans up its detached shell", func(t *testing.T, ctx context.Context) {
+		stop := exec.CommandContext(ctx, binary, "kill", "--all")
+		stop.Stdin = strings.NewReader("yes\n")
+		if out, err := stop.CombinedOutput(); err != nil {
+			t.Fatalf("stop previous fixture daemon: %v\n%s", err, out)
+		}
+		daemon := exec.CommandContext(ctx, binary, "daemon")
+		pidFile := filepath.Join(t.TempDir(), "shell-pid")
+		out, err := runTerminal(t, ctx, daemon, func(_ func(string), wait terminalWait) {
+			wait("Daemon running.")
+			shell := exec.CommandContext(ctx, binary, "sh", "--name", "signal-test", "--pin", "--no-profile")
+			shell.Env = append(shell.Environ(), "SSHORE_SIGNAL_TEST_PIDFILE="+pidFile)
+			runOpenSSHTerminal(t, ctx, shell, func(send func(string), wait terminalWait) {
+				wait("Connected here:signal-test")
+				send("printf '%s' \"$$\" > \"$SSHORE_SIGNAL_TEST_PIDFILE\"; printf 'shell-%s\\n' ready\r")
+				wait("shell-ready")
+				send("\x02d")
+				wait("No shell attached.")
+				send("exit\r")
+			})
+			// The process handle belongs to the daemon this scenario started.
+			if err := daemon.Process.Signal(unix.SIGTERM); err != nil {
+				t.Fatalf("signal fixture daemon: %v", err)
+			}
+		})
+		if err != nil {
+			t.Fatalf("daemon did not complete shutdown: %v\n%s", err, out)
+		}
+		data, err := os.ReadFile(pidFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pid, err := strconv.Atoi(string(data))
+		if err != nil || pid < 2 {
+			t.Fatalf("invalid fixture shell PID %q", data)
+		}
+		if err := unix.Kill(pid, 0); !errors.Is(err, unix.ESRCH) {
+			t.Fatalf("fixture shell %d still exists after daemon shutdown: %v", pid, err)
+		}
+		if out := local(t, ctx, "kill", "--all"); !strings.Contains(string(out), "No account daemon is running.") {
+			t.Fatalf("daemon did not release its account endpoint:\n%s", out)
+		}
+	})
 }
 
 func runOpenSSHTerminal(t *testing.T, ctx context.Context, cmd *exec.Cmd, run func(send func(string), wait terminalWait)) {

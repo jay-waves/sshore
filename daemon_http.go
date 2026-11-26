@@ -170,7 +170,8 @@ func daemonResponseError(resp *http.Response) error {
 	return fmt.Errorf("daemon: %s", resp.Status)
 }
 
-func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *http.ServeMux {
+func daemonRoutes(record localShellRecord, activity *daemonActivity, stop func()) *http.ServeMux {
+	tasks := activity.tasks
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+daemonSnapshotRoute, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.MarshalWrite(w, tasks.adminSnapshot(record))
@@ -194,11 +195,6 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *htt
 		if !readDaemonBody(w, r, &request) {
 			return
 		}
-		activity := accountActivity.Load()
-		if activity == nil {
-			http.Error(w, "activity unavailable", http.StatusServiceUnavailable)
-			return
-		}
 		_ = json.MarshalWrite(w, activity.listTasks(r.Context(), request))
 	})
 	mux.HandleFunc("POST /resources/stop-confirmed", tasks.serveConfirmedResourceStops)
@@ -217,26 +213,18 @@ func daemonRoutes(record localShellRecord, tasks *daemonTasks, stop func()) *htt
 	})
 	mux.HandleFunc("POST /tasks/native/open", tasks.openNative)
 	mux.HandleFunc("POST /tasks/{id}/open", tasks.open)
-	activityHandler := func(w http.ResponseWriter, r *http.Request) {
-		activity := accountActivity.Load()
-		if activity == nil {
-			http.Error(w, "activity unavailable", http.StatusServiceUnavailable)
-			return
+	mux.HandleFunc("POST /leases", func(w http.ResponseWriter, r *http.Request) {
+		var req leaseRequest
+		if readDaemonBody(w, r, &req) {
+			serveDaemonStream(w, r, func(c net.Conn) { activity.serve(c, req, true) })
 		}
-		if r.URL.Path == "/leases" {
-			var req leaseRequest
-			if readDaemonBody(w, r, &req) {
-				serveDaemonStream(w, r, func(c net.Conn) { activity.serve(c, req, true) })
-			}
-			return
-		}
+	})
+	mux.HandleFunc("POST /metadata", func(w http.ResponseWriter, r *http.Request) {
 		var req metadataRequest
 		if readDaemonBody(w, r, &req) {
 			_ = json.MarshalWrite(w, activity.handleMetadata(req))
 		}
-	}
-	mux.HandleFunc("POST /metadata", activityHandler)
-	mux.HandleFunc("POST /leases", activityHandler)
+	})
 	registerPlatformDaemonRoutes(mux, tasks)
 	mux.HandleFunc("POST /launch", func(w http.ResponseWriter, r *http.Request) {
 		var req localDaemonRequest

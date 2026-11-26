@@ -234,7 +234,7 @@ func persistentMachineIdentity(reset bool) (string, error) {
 	if len(salt) != 32 {
 		return "", fmt.Errorf("invalid identity salt; run sshore reset")
 	}
-	sum := md5.Sum(append(append([]byte("sshore\x00"+systemMachineID()+"\x00"), salt...), '\x00'))
+	sum := md5.Sum(append(append([]byte("sshore\x00"+sys.MachineID()+"\x00"), salt...), '\x00'))
 	return hex.EncodeToString(sum[:]), nil
 }
 

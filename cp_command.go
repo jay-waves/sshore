@@ -94,8 +94,8 @@ func selectAndCopy(ctx context.Context, client *sftp.Client, home string, o copy
 		go readDir(ctx, home)
 	}
 	remote := func(title string, dir bool) termui.LFOptions {
-		return remoteFileSelection(home, title+" · "+o.host, dir, func(ctx context.Context, name string) ([]termui.LFEntry, error) {
-			return fileSelectionEntries(readDir(ctx, name))
+		return remoteFileSelection(home, title, o.host, dir, func(ctx context.Context, name string) ([]termui.LFEntry, error) {
+			return pickerEntries(directoryEntries(readDir(ctx, name)))
 		})
 	}
 	var opened *files.Source

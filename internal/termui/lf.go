@@ -34,6 +34,7 @@ type LFOptions struct {
 	Join      func(string, string) string
 	Parent    func(string) string
 	Title     string
+	Host      string
 	Automatic bool
 	Manual    bool
 	InConsole bool
@@ -206,6 +207,7 @@ func PickLF(ctx context.Context, options LFOptions) (selected string, err error)
 		}
 	}
 	refresh()
+	color := ColorEnabled(os.Stdout)
 	var pending []byte
 	var escape <-chan time.Time
 	resize := time.NewTicker(100 * time.Millisecond)
@@ -222,7 +224,7 @@ func PickLF(ctx context.Context, options LFOptions) (selected string, err error)
 				break
 			}
 		}
-		if err := lfDraw(out, options, current, panes, parentIndex, index, width, height, validationErr); err != nil {
+		if err := lfDraw(out, options, current, panes, parentIndex, index, width, height, validationErr, color); err != nil {
 			return "", err
 		}
 	waitForEvent:
@@ -392,21 +394,23 @@ func PickLF(ctx context.Context, options LFOptions) (selected string, err error)
 	}
 }
 
-func lfDraw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, parentIndex, selected, width, height int, validationErr error) error {
+func lfDraw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, parentIndex, selected, width, height int, validationErr error, color bool) error {
 	width, height = max(3, width), max(3, height)
 	var b strings.Builder
-	b.WriteString("\x1b[H\x1b[2J\x1b[?25l")
+	b.WriteString("\x1b[0m\x1b[H\x1b[2J\x1b[?25l")
 	line := CleanText(dir)
-	if validationErr != nil {
-		line += "  " + CleanText(validationErr.Error())
+	if options.Host != "" {
+		line = Render(color, Accent, CleanText(options.Host)) + "  " + line
+		if options.Title != "" {
+			line += Render(color, Muted, "  ·  ") + Render(color, Heading, CleanText(options.Title))
+		}
+	} else if options.Title != "" {
+		line = Render(color, Heading, CleanText(options.Title)) + "  " + line
 	}
-	if options.Title != "" {
-		line = CleanText(options.Title) + "  " + line
-	}
-	b.WriteString(ansi.Truncate(line, width-1, ""))
+	b.WriteString(ansi.Truncate(line, width-1, "…"))
 	b.WriteString("\r\n")
 	// Keep the current directory visible even on very narrow terminals.
-	widths := [3]int{width / 4, width / 3, width - width/4 - width/3 - 2}
+	widths := [3]int{width / 4, width / 3, width - width/4 - width/3 - 3}
 	if width < 15 {
 		widths = [3]int{0, width - 1, 0}
 	}
@@ -418,30 +422,36 @@ func lfDraw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, paren
 				continue
 			}
 			if p > 0 && widths[p-1] > 0 {
-				b.WriteString(" ")
+				b.WriteString(Render(color, Muted, "│"))
 			}
 			i := row + start[p]
 			text := ""
+			style := Color("")
 			if i < len(panes[p].entries) {
 				entry := panes[p].entries[i]
 				text = CleanText(entry.Name)
 				if entry.IsDir {
 					text += "/"
+					style = Info
 				}
 			} else if i == 0 && panes[p].loading {
 				text = "…"
+				style = Muted
 			} else if i == 0 && panes[p].err != nil {
 				text = CleanText(panes[p].err.Error())
+				style = Warning
 			}
-			text = ansi.Truncate(text, w, "")
+			text = ansi.Truncate(text, w, "…")
+			padding := strings.Repeat(" ", max(0, w-ansi.StringWidth(text)))
 			if p == 1 && i == selected && i < len(panes[p].entries) {
-				b.WriteString("\x1b[7m")
-			} else if p == 0 && i == parentIndex {
-				b.WriteString("\x1b[1m")
+				b.WriteString("\x1b[7m" + text + padding + "\x1b[27m")
+				continue
 			}
-			b.WriteString(text)
-			b.WriteString(strings.Repeat(" ", max(0, w-ansi.StringWidth(text))))
-			b.WriteString("\x1b[0m")
+			if p == 0 && i == parentIndex {
+				style = Heading
+			}
+			b.WriteString(Render(color, style, text))
+			b.WriteString(padding)
 		}
 		if row+1 < rows {
 			b.WriteString("\r\n")
@@ -458,7 +468,11 @@ func lfDraw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, paren
 		hint += "  : Type path"
 	}
 	b.WriteString("\r\n")
-	b.WriteString(ansi.Truncate(hint, width-1, ""))
+	if validationErr != nil {
+		b.WriteString(Render(color, Warning, ansi.Truncate(CleanText(validationErr.Error()), width-1, "…")))
+	} else {
+		b.WriteString(Render(color, Muted, ansi.Truncate(hint, width-1, "")))
+	}
 	_, err := fmt.Fprint(out, b.String())
 	return err
 }

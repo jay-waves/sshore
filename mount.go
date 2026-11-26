@@ -326,54 +326,17 @@ func runDaemonMount(config resourceConfig, enc *jsontext.Encoder, dec *jsontext.
 	commit := make(chan error, 1)
 	configured := make(chan struct{})
 	go func() {
-		selectionDone := false
-		for {
-			var raw jsontext.Value
-			err := json.UnmarshalDecode(dec, &raw)
-			if len(raw) > 1<<20 {
-				err = fmt.Errorf("startup message too large")
-			}
-			if err != nil {
-				pipeMu.Lock()
-				cancelStartupLocked()
-				pipeMu.Unlock()
-				commit <- err
-				return
-			}
-			var answer string
-			if json.Unmarshal(raw, &answer) == nil {
-				if answer != "commit" || ((config.Mount.PickRemote || config.Mount.PickMountpoint) && !selectionDone) {
-					answer = ""
-				}
-				if answer == "" {
-					err = fmt.Errorf("invalid startup acknowledgement")
-					pipeMu.Lock()
-					cancelStartupLocked()
-					pipeMu.Unlock()
-				}
-				commit <- err
-				return
-			}
-			var request mountPathRequest
-			if selectionDone || config.Mount == nil || (!config.Mount.PickRemote && !config.Mount.PickMountpoint) || json.Unmarshal(raw, &request) != nil {
-				pipeMu.Lock()
-				cancelStartupLocked()
-				pipeMu.Unlock()
-				commit <- fmt.Errorf("invalid mount selection request")
-				return
-			}
-			if request.Directory == nil {
-				selectionDone = true
-			}
+		read := func(value any) error { return json.UnmarshalDecode(dec, value) }
+		err := readMountStartup(read, config.Mount.PickRemote || config.Mount.PickMountpoint, func(request mountPathRequest) error {
 			<-configured
-			if err = json.MarshalEncode(childInput, request); err != nil {
-				pipeMu.Lock()
-				cancelStartupLocked()
-				pipeMu.Unlock()
-				commit <- err
-				return
-			}
+			return json.MarshalEncode(childInput, request)
+		})
+		if err != nil {
+			pipeMu.Lock()
+			cancelStartupLocked()
+			pipeMu.Unlock()
 		}
+		commit <- err
 	}()
 	defer func() { _ = c.SetReadDeadline(time.Now()) }()
 	if err = json.MarshalEncode(childInput, config); err != nil {
@@ -460,36 +423,18 @@ func runMountDaemon() (code int, resultErr error) {
 	ack := make(chan error, 1)
 	requests := make(chan mountPathRequest)
 	go func() {
-		for {
-			var raw jsontext.Value
-			err := read(&raw)
-			if err != nil {
-				close(abandoned)
-				ack <- err
-				return
-			}
-			var answer string
-			if json.Unmarshal(raw, &answer) == nil {
-				if answer != "commit" {
-					close(abandoned)
-					ack <- fmt.Errorf("invalid startup acknowledgement")
-					return
-				}
-				ack <- nil
-				return
-			}
-			var request mountPathRequest
-			if (!o.PickRemote && !o.PickMountpoint) || json.Unmarshal(raw, &request) != nil {
-				close(abandoned)
-				ack <- fmt.Errorf("invalid mount selection request")
-				return
-			}
+		err := readMountStartup(read, o.PickRemote || o.PickMountpoint, func(request mountPathRequest) error {
 			select {
 			case requests <- request:
-			case <-abandoned:
-				return
+				return nil
+			case <-s.done:
+				return io.ErrClosedPipe
 			}
+		})
+		if err != nil {
+			close(abandoned)
 		}
+		ack <- err
 	}()
 	unmount := make(chan chan error)
 	var replyMu sync.Mutex
@@ -529,16 +474,10 @@ func runMountDaemon() (code int, resultErr error) {
 					}
 					return request.Remote, request.Local, nil
 				}
-				entries, err := fileSelectionEntries(readDir(ctx, *request.Directory))
-				listing := &mountPathListing{Entries: entries}
-				if err != nil {
-					listing.Error = err.Error()
-				}
+				listing := &mountPathListing{}
+				listing.Entries, listing.Error = listingEntries(readDir(ctx, *request.Directory))
 				if request.Parent != "" {
-					listing.ParentEntries, err = fileSelectionEntries(readDir(ctx, request.Parent))
-					if err != nil {
-						listing.ParentError = err.Error()
-					}
+					listing.ParentEntries, listing.ParentError = listingEntries(readDir(ctx, request.Parent))
 				}
 				if err := json.MarshalEncode(enc, resourceStartup{Listing: listing}); err != nil {
 					return "", "", err

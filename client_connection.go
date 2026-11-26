@@ -137,7 +137,7 @@ func openTerminalEndpoint(ctx context.Context, o options) (stream net.Conn, toke
 	return stream, reply.Token, nil
 }
 
-// shellInput prevents a former attachment's in-flight write from reaching a new
+// The tmux input lease prevents a former attachment's in-flight write from reaching a new
 // owner. Stop must finish before another lease uses the same terminal.
 
 func holdClientTree(o options, key string, transports clientTransports) (*clientTransport, error) {
@@ -705,17 +705,15 @@ func (h *localHandoff) deliver(errorText string) bool {
 	return true
 }
 
-func (s *localShell) requestHandoff(c net.Conn, h *clientHandoff) error {
-	deadline := time.Now().Add(2 * time.Minute)
-	_ = c.SetDeadline(deadline)
+func (s *localShell) requestHandoff(origin *attachment, h *clientHandoff, deadline time.Time) error {
 	if _, err := h.options(); err != nil {
-		return writeMessage(c, message{Type: "error", Error: err.Error()})
+		return err
 	}
 	s.mu.Lock()
-	p := s.active
-	if p == nil || s.handoff != nil {
+	p := s.runtime.Active()
+	if p == nil || origin != nil && p != origin || s.handoff != nil {
 		s.mu.Unlock()
-		return writeMessage(c, message{Type: "error", Error: "local frontend unavailable or busy"})
+		return errors.New("local frontend unavailable or busy")
 	}
 	prepared := make(chan string, 1)
 	pending := &localHandoff{token: resourceToken(), attachment: p, reply: prepared}
@@ -734,12 +732,12 @@ func (s *localShell) requestHandoff(c net.Conn, h *clientHandoff) error {
 	select {
 	case errorText := <-prepared:
 		if errorText != "" {
-			return writeMessage(c, message{Type: "error", Error: errorText})
+			return errors.New(errorText)
 		}
 	case <-p.Done():
-		return writeMessage(c, message{Type: "error", Error: "local frontend disconnected"})
+		return errors.New("local frontend disconnected")
 	case <-time.After(4 * time.Second):
-		return writeMessage(c, message{Type: "error", Error: "local frontend handoff timed out"})
+		return errors.New("local frontend handoff timed out")
 	}
 	started := make(chan string, 1)
 	s.mu.Lock()
@@ -751,11 +749,13 @@ func (s *localShell) requestHandoff(c net.Conn, h *clientHandoff) error {
 	select {
 	case errorText := <-started:
 		if errorText != "" {
-			return writeMessage(c, message{Type: "error", Error: errorText})
+			return errors.New(errorText)
 		}
-		return writeMessage(c, message{Type: "handoff_accepted"})
+		return nil
+	case <-s.runtime.Done():
+		return errors.New("parent shell exited")
 	case <-time.After(time.Until(deadline)):
-		return writeMessage(c, message{Type: "error", Error: "attachment startup timed out"})
+		return errors.New("attachment startup timed out")
 	}
 }
 

@@ -6,22 +6,8 @@ import (
 	"sync"
 )
 
-// Bridge relays opaque streams until either direction ends, then closes both
-// endpoints and joins both copies. Used for attachment routes, where EOF ends
-// the whole route. Close must unblock concurrent reads and writes.
-func Bridge(a, b io.ReadWriteCloser) {
-	relay(context.Background(), a, b, false)
-}
-
-// Splice relays a request/response connection, preserving half-close on clean
-// EOF so a peer can send its response after receiving the complete request.
-// Errors or cancellation abort both endpoints; return joins both copies and
-// cancellation cleanup. Endpoints without CloseWrite fall back to full Close.
-func Splice(ctx context.Context, a, b io.ReadWriteCloser) {
-	relay(ctx, a, b, true)
-}
-
-func relay(ctx context.Context, a, b io.ReadWriteCloser, halfClose bool) {
+// relayTCP preserves half-close so a peer can reply after reading a full request.
+func relayTCP(ctx context.Context, a, b io.ReadWriteCloser) {
 	closeA := sync.OnceFunc(func() { _ = a.Close() })
 	closeB := sync.OnceFunc(func() { _ = b.Close() })
 	closeBoth := sync.OnceFunc(func() {
@@ -36,12 +22,10 @@ func relay(ctx context.Context, a, b io.ReadWriteCloser, halfClose bool) {
 		<-done
 	})
 	defer closeBoth()
-	if ctx.Done() != nil {
-		stop := context.AfterFunc(ctx, closeBoth)
-		defer stop()
-	}
+	stop := context.AfterFunc(ctx, closeBoth)
+	defer stop()
 	copyTo := func(dst, src io.ReadWriteCloser, closeDst func()) {
-		if _, err := io.Copy(dst, src); err != nil || !halfClose {
+		if _, err := io.Copy(dst, src); err != nil {
 			closeBoth()
 			return
 		}
