@@ -121,12 +121,13 @@ main() {
     [ ! -d "$install_target" ] || fail 'installation target is a directory'
     chmod 755 "$install_tmp/sshore"
     [ "$("$install_tmp/sshore" --version)" = "sshore $install_version" ] || fail 'binary version does not match release'
-    # curl | sh uses stdin for the script. Read approval from the terminal
-    # when present; an SSH exec channel supplies approval on stdin instead.
+    # Keep the script's stdin on the pipe. Only bootstrap reads from the
+    # terminal when available; otherwise it inherits stdin (e.g. SSH exec).
     if ( : 2>/dev/null </dev/tty ); then
-        exec </dev/tty
+        "$install_tmp/sshore" bootstrap --apply "here:$install_target" </dev/tty
+    else
+        "$install_tmp/sshore" bootstrap --apply "here:$install_target"
     fi
-    "$install_tmp/sshore" bootstrap --apply "here:$install_target"
     add_to_path
     printf 'Installed sshore %s: %s\n' "$install_version" "$install_target"
     printf '%s\n' 'SHA256 verified. No sudo required.'

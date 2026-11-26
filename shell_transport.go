@@ -465,6 +465,10 @@ func (d *shellDiagnostics) relaySetup(pipes io.ReadWriter) (message, error) {
 	for {
 		m, err := readMessage(pipes)
 		if err != nil {
+			if err == io.EOF {
+				return message{}, fmt.Errorf("remote shell setup ended before the handshake completed: %w\n"+
+					"Check that the SSH login can find the intended sshore executable (PATH or --server), compare sshore --version on both ends, and review any remote startup errors above.", err)
+			}
 			return message{}, fmt.Errorf("remote shell setup failed: %w", err)
 		}
 		if err := m.peerError("remote setup"); err != nil {
