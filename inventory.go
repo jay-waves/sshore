@@ -365,17 +365,13 @@ func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color
 		if host == "" {
 			host = "unknown"
 		}
-		fmt.Fprint(out, termui.Render(color, termui.Accent, "HOST  "+cleanText(host)))
+		fmt.Fprint(out, termui.Render(color, termui.Accent, "HOST  "+hostDisplayLabel(host)))
 		fmt.Fprintln(out)
 		table := [][]string{{"ID", "TYPE", "STATE", "PARENT", "DETAIL"}}
 		currentRow := -1
 		for _, r := range rows[start:end] {
-			code := r.code
-			if code == "" {
-				code = "-"
-			}
 			parent := cmp.Or(r.parent, "-")
-			cells := []string{taskDisplayID(code, r.alias), r.kind, taskStateCode(r.state), parent, r.detail}
+			cells := []string{taskDisplayID(r.code, r.alias, r.current), r.kind, taskStateCode(r.state), parent, r.detail}
 			if r.current {
 				currentRow = len(table)
 			}
@@ -483,9 +479,6 @@ func writeTaskTable(out io.Writer, table [][]string, color bool, screenWidth, cu
 						cell += " (" + compactTaskDetail(strings.TrimSuffix(alias, ")"), aliasLimit) + ")"
 					}
 				}
-			}
-			if i == currentRow && j == 0 {
-				cell = "* " + cell
 			}
 			row[j] = cell
 			widths[j] = max(widths[j], ansi.StringWidth(cell))
@@ -630,15 +623,19 @@ func peerKind(name string) string {
 	return kind
 }
 
-func taskDisplayID(code, alias string) string {
+func taskDisplayID(code, alias string, current bool) string {
 	code = cleanText(code)
 	if code == "" {
 		code = "-"
 	}
-	if alias == "" || alias == code {
-		return code
+	suffix := ""
+	if alias != "" && alias != code {
+		suffix = " (" + cleanText(alias) + ")"
 	}
-	return code + " (" + cleanText(alias) + ")"
+	if current {
+		code += "*"
+	}
+	return code + suffix
 }
 
 // A snapshot lists parents before children. Owner is the parent's one-based
@@ -716,17 +713,24 @@ func normalizeTaskTree(nodes []shellTreeNode) []taskTreeRow {
 			row := taskTreeRow{Identity: n.Identity, Kind: n.Kind, Code: n.displayCode(), Name: n.Name, State: n.State, Owner: owner}
 			host := cmp.Or(n.Host, "local")
 			if host != parentHost {
-				row.Remote = host
+				row.Remote = hostDisplayLabel(host)
 			}
 			rows = append(rows, row)
 			appendRows(children[i+1], len(rows), host)
 		}
 	}
 	for _, host := range hosts {
-		rows = append(rows, taskTreeRow{Code: host})
+		rows = append(rows, taskTreeRow{Code: hostDisplayLabel(host)})
 		appendRows(byHost[host], len(rows), host)
 	}
 	return rows
+}
+
+func hostDisplayLabel(host string) string {
+	if host == "local" {
+		return taskManagerLabel()
+	}
+	return cleanText(host)
 }
 
 func compareInventoryHosts(a, b string) int {
@@ -825,21 +829,13 @@ func writeShellTree(out io.Writer, rows []taskTreeRow, current string, color boo
 		children[owner] = append(children[owner], i)
 	}
 	var writeBranch func(int, string, string)
-	writeBranch = func(i int, indent, branch string) {
+	writeBranch = func(i int, prefix, indent string) {
 		row := rows[i]
-		fmt.Fprintln(out, termui.Render(color, termui.Muted, indent+branch)+shellTreeLabel(row, current != "" && row.Identity == current, color))
-		if branch == "├── " {
-			indent += "│   "
-		} else if branch != "" {
-			indent += "    "
-		}
+		fmt.Fprintln(out, prefix+shellTreeLabel(row, current != "" && row.Identity == current, color))
 		kids := children[i+1]
 		for j, child := range kids {
-			branch := "├── "
-			if j == len(kids)-1 {
-				branch = "╰── "
-			}
-			writeBranch(child, indent, branch)
+			prefix, childIndent := termui.TreeBranch(color, indent, j == len(kids)-1)
+			writeBranch(child, prefix, childIndent)
 		}
 	}
 	for _, root := range children[0] {
@@ -848,18 +844,12 @@ func writeShellTree(out io.Writer, rows []taskTreeRow, current string, color boo
 }
 
 func shellTreeLabel(n taskTreeRow, current, color bool) string {
-	label := cleanText(n.Code)
+	label := taskDisplayID(n.Code, n.Name, current)
 	if n.Kind != "" {
 		label = cleanText(n.Kind) + "/" + label
 	}
-	if n.Name != "" && n.Name != n.Code {
-		label += " (" + cleanText(n.Name) + ")"
-	}
 	if n.Remote != "" {
 		label += " on " + cleanText(n.Remote)
-	}
-	if current {
-		label = "* " + label
 	}
 
 	state := cleanText(taskStateCode(n.State))

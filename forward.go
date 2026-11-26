@@ -333,8 +333,8 @@ func runForwardAttempt(parent context.Context, s *resourceService, advertisement
 	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
 	var diagnostics diagnosticsTail
-	log := &logStream{out: s.logWriter(), id: canonicalTaskCode(resourceIdentity(s.record)), level: termui.Error}
-	defer log.flush()
+	log := termui.NewLogWriter(s.logWriter(), canonicalTaskCode(resourceIdentity(s.record)), termui.Error)
+	defer log.Flush()
 	connection, err := open(ctx, io.MultiWriter(log, &diagnostics))
 	if err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {

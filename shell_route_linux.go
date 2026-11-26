@@ -13,6 +13,7 @@ import (
 	"time"
 
 	forwardio "github.com/jay-waves/sshore/internal/forward"
+	"github.com/jay-waves/sshore/internal/shell"
 	"golang.org/x/term"
 )
 
@@ -278,7 +279,7 @@ func (s *remoteShell) createRouteShell(req localDaemonRequest) (*remoteShell, er
 		}
 		return target, nil
 	}
-	directory, err := resolveStartupDirectory(req.Record.Directory, req.Shell.StartupDirectory)
+	directory, err := shell.ResolveStartupDirectory(req.Record.Directory, req.Shell.StartupDirectory)
 	if err != nil {
 		return nil, err
 	}

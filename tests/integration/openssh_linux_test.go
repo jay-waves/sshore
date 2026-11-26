@@ -751,7 +751,8 @@ Match command "printf forwarding-check"
 			wait("SCOPE_state=retained")
 			send("sshore d 3m\n")
 			wait("Connected " + root)
-			if tree := run(t, ctx, "sh", host, "--", "sshore ps"); !strings.HasPrefix(tree, "local\n") || !strings.Contains(tree, " (scoped-root)  R") || !strings.Contains(tree, " (scoped-child)  T") {
+			hostname := strings.TrimSpace(run(t, ctx, "sh", host, "--", "hostname"))
+			if tree := run(t, ctx, "sh", host, "--", "sshore ps"); !strings.HasPrefix(tree, hostname+"\n") || !strings.Contains(tree, " (scoped-root)  R") || !strings.Contains(tree, " (scoped-child)  T") {
 				t.Fatalf("hosted tree lost its local root or detached child:\n%s", tree)
 			}
 			send("sshore a scoped-child\n")

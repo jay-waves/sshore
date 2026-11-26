@@ -9,3 +9,7 @@ Lower priority: allow a Windows hosted shell to act as the intermediate hop in a
 
 Directory synchronization (`pull` / `push`) remains a proposal. Revisit deletion
 opt-in, conflict handling and optional watching before implementing it.
+
+Add an optional foreground editor shortcut for launch review and other multiline
+editors. Use the invoking shell's `EDITOR`, return to preview after editing, and
+keep `e` for inline readline editing.

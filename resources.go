@@ -337,8 +337,8 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 	if kind == "forward" {
 		return runDaemonForward(config, enc, dec, c, request, tasks)
 	}
-	log := &logStream{out: tasks.log, id: canonicalTaskCode(identityFromUID(config.UID)), level: termui.Error}
-	defer log.flush()
+	log := termui.NewLogWriter(tasks.log, canonicalTaskCode(identityFromUID(config.UID)), termui.Error)
+	defer log.Flush()
 	return runDaemonMount(config, enc, dec, c, log, request, tasks)
 }
 

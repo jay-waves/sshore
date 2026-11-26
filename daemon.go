@@ -13,8 +13,6 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
-	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +22,19 @@ import (
 	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/term"
 )
+
+func openDaemonLog(dir string) (*os.File, error) {
+	path := filepath.Join(dir, "local.log")
+	log, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := privateStatePath(path, false); err != nil {
+		_ = log.Close()
+		return nil, err
+	}
+	return log, nil
+}
 
 func daemonDirectory() (string, error) {
 	dir, err := daemonLocation()
@@ -103,16 +114,6 @@ type localDaemonRequest struct {
 	Kind     string
 	Record   localShellRecord
 	Env      []string
-}
-
-func localEnvironmentValue(env []string, name string) string {
-	for _, e := range slices.Backward(env) {
-		key, value, ok := strings.Cut(e, "=")
-		if ok && (key == name || runtime.GOOS == "windows" && strings.EqualFold(key, name)) {
-			return value
-		}
-	}
-	return ""
 }
 
 func daemonPath() (string, error) {

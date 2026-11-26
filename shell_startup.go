@@ -1,117 +1,20 @@
 package main
 
 import (
-	"cmp"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/jay-waves/sshore/internal/pty"
+	"github.com/jay-waves/sshore/internal/shell"
 )
-
-func resolveStartupDirectory(base, directory string) (string, error) {
-	if directory == "" {
-		return base, nil
-	}
-	if !validStartupPath(directory) {
-		return "", fmt.Errorf("invalid startup directory %q", directory)
-	}
-	if filepath.IsAbs(directory) {
-		return filepath.Clean(directory), nil
-	}
-	relative := filepath.ToSlash(directory)
-	if strings.HasPrefix(relative, "./") || strings.HasPrefix(relative, "../") {
-		return filepath.Join(base, directory), nil
-	}
-	return "", fmt.Errorf("startup directory %q must be absolute or explicitly relative on the target", directory)
-}
-
-// startupArgs selects startup mode and optional directory reporting.
-func startupArgs(platform, path string, noLogin, noProfile bool) ([]string, error) {
-	name := filepath.Base(path)
-	if platform == "windows" {
-		if noLogin {
-			return nil, fmt.Errorf("--no-login requires a Unix shell; use --no-profile to skip Windows shell startup configuration")
-		}
-		name = strings.ToLower(filepath.Base(strings.ReplaceAll(path, "\\", "/")))
-		if !noProfile {
-			if name == "pwsh" || name == "pwsh.exe" {
-				return []string{"-NoExit", "-Command", pwshDirectoryReporting}, nil
-			}
-			return nil, nil
-		}
-		switch name {
-		case "pwsh", "pwsh.exe", "powershell", "powershell.exe":
-			return []string{"-NoProfile"}, nil
-		case "cmd", "cmd.exe":
-			return []string{"/D"}, nil
-		default:
-			return nil, fmt.Errorf("--no-profile is unsupported for shell %q", path)
-		}
-	}
-	if noProfile {
-		switch name {
-		case "bash":
-			return []string{"--noprofile", "--norc", "-i"}, nil
-		case "zsh":
-			return []string{"-f", "-i"}, nil
-		case "fish":
-			return []string{"--no-config", "-i"}, nil
-		case "sh":
-			return []string{"-i"}, nil
-		default:
-			return nil, fmt.Errorf("--no-profile is unsupported for shell %q", path)
-		}
-	}
-	if noLogin {
-		return []string{"-i"}, nil
-	}
-	switch name {
-	case "bash", "zsh", "fish", "sh", "dash", "ash", "ksh":
-		return []string{"-l", "-i"}, nil
-	default:
-		return nil, fmt.Errorf("login startup is unsupported for shell %q; use --no-login for ordinary interactive startup", path)
-	}
-}
-
-// -Command runs after the user's profiles in the same interactive runspace.
-const pwshDirectoryReporting = `
-& {
-    if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { return }
-    $reportDirectory = [System.EventHandler[System.Management.Automation.LocationChangedEventArgs]] {
-        if ($PWD.Provider.Name -eq 'FileSystem') {
-            $esc = [char]27
-            [Console]::Write("$esc]9;9;" + '"' + $PWD.ProviderPath + '"' + "$esc\")
-        }
-    }
-    $invocation = $ExecutionContext.SessionState.InvokeCommand
-    $invocation.LocationChangedAction = [Delegate]::Combine($reportDirectory, $invocation.LocationChangedAction)
-    $reportDirectory.Invoke($null, $null)
-}`
-
-// startupEnv preserves inherited variables except sh's optional startup hook.
-func startupEnv(path string, env []string, noProfile bool) []string {
-	if runtime.GOOS != "linux" || !noProfile || filepath.Base(path) != "sh" {
-		return env
-	}
-	filtered := make([]string, 0, len(env))
-	for _, item := range env {
-		if !strings.HasPrefix(item, "ENV=") {
-			filtered = append(filtered, item)
-		}
-	}
-	return filtered
-}
 
 func hostedShellEnvironment(source []string, term, instance, executable string) []string {
 	env := append(append([]string(nil), source...), "TERM="+term, "SSHORE_SOCKET="+instance, "SSHORE_TREE_ID="+identityFromUID(instance))
 	if executable != "" {
-		env = append(env, "PATH="+filepath.Dir(executable)+string(os.PathListSeparator)+localEnvironmentValue(source, "PATH"))
+		env = append(env, "PATH="+filepath.Dir(executable)+string(os.PathListSeparator)+shell.EnvValue(source, "PATH"))
 	}
 	return env
 }
@@ -122,34 +25,23 @@ func (s *shellTask) startManagedShell(m message) error {
 	if source == nil {
 		source = os.Environ()
 	}
-	var path string
+	path := shell.DefaultPath(source, s.hosted)
 	var env []string
 	if s.hosted {
-		path = cmp.Or(localEnvironmentValue(source, "SHELL"), "/bin/bash")
-		if runtime.GOOS == "windows" {
-			path = localShellPath(source)
-		}
 		exe, _ := os.Executable()
 		env = hostedShellEnvironment(source, m.Term, s.record.UID, exe)
 	} else {
-		path = localShellPath(source)
 		env = localShellEnvironment(source, m.Term, s.record.identity())
 	}
-	var args []string
-	if len(m.Argv) != 0 {
-		path, args = m.Argv[0], m.Argv[1:]
-	} else {
-		var err error
-		args, err = startupArgs(runtime.GOOS, path, m.NoLogin, m.NoProfile)
-		if err != nil {
-			return err
-		}
+	path, args, err := shell.Command(path, m.Argv, m.NoLogin, m.NoProfile)
+	if err != nil {
+		return err
 	}
 	if s.cgroupErr != nil {
 		return s.cgroupErr
 	}
 	t, err := pty.Start(pty.Config{
-		Path: path, Args: args, Env: startupEnv(path, env, m.NoProfile),
+		Path: path, Args: args, Env: shell.StartupEnv(path, env, m.NoProfile),
 		Dir: s.record.Directory, Size: shellSize(m), TaskCgroup: s.cgroup,
 	})
 	if err != nil {
@@ -161,16 +53,7 @@ func (s *shellTask) startManagedShell(m message) error {
 	s.shellName = filepath.Base(path)
 	s.program = len(m.Argv) != 0
 	if s.program {
-		parts := make([]string, len(m.Argv))
-		for i, arg := range m.Argv {
-			parts[i] = arg
-			if arg == "" || strings.ContainsAny(arg, "\"'`") || strings.ContainsFunc(arg, func(r rune) bool {
-				return unicode.IsSpace(r) || !unicode.IsPrint(r)
-			}) {
-				parts[i] = strconv.Quote(arg)
-			}
-		}
-		s.programLine = strings.Join(parts, " ")
+		s.programLine = shell.FormatCommand(m.Argv)
 	}
 	if runtime.GOOS == "windows" {
 		s.shellName = strings.TrimSuffix(strings.ToLower(s.shellName), ".exe")

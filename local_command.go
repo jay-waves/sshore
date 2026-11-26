@@ -7,6 +7,8 @@ import (
 	"os"
 	"slices"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/shell"
 )
 
 type localShellView struct {
@@ -115,7 +117,7 @@ func startLocalSessionContext(ctx context.Context, o options) (localShellRecord,
 			return empty, err
 		}
 	}
-	dir, err = resolveStartupDirectory(dir, o.startupDirectory)
+	dir, err = shell.ResolveStartupDirectory(dir, o.startupDirectory)
 	if err != nil {
 		return empty, err
 	}

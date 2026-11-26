@@ -2,200 +2,23 @@ package main
 
 import (
 	"context"
-	json "encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
-	"github.com/chzyer/readline"
 	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/term"
 	"github.com/jay-waves/sshore/internal/termui"
 	sftp "github.com/pkg/sftp/v2"
-	xterm "golang.org/x/term"
 )
-
-func reviewNewTerminal(o *options) (_ bool, err error) {
-	if !xterm.IsTerminal(int(os.Stdin.Fd())) || !xterm.IsTerminal(int(os.Stdout.Fd())) {
-		return false, usage("new requires an interactive terminal")
-	}
-	restore, err := term.RawConsole()
-	if err != nil {
-		return false, err
-	}
-	defer restore()
-	var screen term.InputState
-	if err := screen.BeginConsole(os.Stdout); err != nil {
-		return false, err
-	}
-	defer func() { err = errors.Join(err, screen.EndConsole(os.Stdout)) }()
-	for {
-		argv := o.argv
-		if argv == nil {
-			argv = []string{}
-		}
-		encoded, err := json.Marshal(argv)
-		if err != nil {
-			return false, err
-		}
-		// Normalize C1 controls before writing the JSON to the editor.
-		draft := string(encoded)
-		for r := rune(0x80); r <= 0x9f; r++ {
-			if strings.ContainsRune(draft, r) {
-				draft = strings.ReplaceAll(draft, string(r), fmt.Sprintf("\\u%04x", r))
-			}
-		}
-		if _, err := fmt.Fprint(os.Stdout, "\x1b[2J\x1b[H"); err != nil {
-			return false, err
-		}
-		termui.WriteConsoleBody(os.Stdout, newTerminalPreview(o))
-		if _, err := fmt.Fprint(os.Stdout, "[Enter] Start, [e] Edit, [Esc] Cancel"); err != nil {
-			return false, err
-		}
-		key, err := readTerminalReviewKey()
-		if err != nil {
-			return false, err
-		}
-		switch key {
-		case '\r', '\n':
-			return true, nil
-		case 0x1b, 0x03:
-			return false, nil
-		case 'e', 'E':
-			if err := editNewTerminalArguments(o, draft); err != nil {
-				return false, err
-			}
-		}
-	}
-}
-
-func newTerminalPreview(o *options) string {
-	var body strings.Builder
-	body.WriteString(cleanText(o.host))
-	if o.startupDirectory != "" {
-		body.WriteString("\n├── Directory: " + cleanText(o.startupDirectory))
-	}
-	if o.session != "" {
-		body.WriteString("\n├── Name: " + cleanText(o.session))
-	}
-	if o.pin {
-		body.WriteString("\n├── Keep running after disconnect")
-	}
-	if len(o.argv) == 0 {
-		body.WriteString("\n╰── Default shell")
-		return body.String()
-	}
-	body.WriteString("\n╰── " + cleanText(o.argv[0]))
-	for i, arg := range o.argv[1:] {
-		branch := "\n    ├── "
-		if i == len(o.argv)-2 {
-			branch = "\n    ╰── "
-		}
-		body.WriteString(branch + strconv.Quote(arg))
-	}
-	return body.String()
-}
-
-func readTerminalReviewKey() (byte, error) {
-	type input struct {
-		data []byte
-		err  error
-	}
-	events := make(chan input)
-	ctx, cancel := context.WithCancel(context.Background())
-	stop, err := term.StartKeyboard(ctx, func(data []byte, err error) {
-		select {
-		case events <- input{data, err}:
-		case <-ctx.Done():
-		}
-	})
-	if err != nil {
-		cancel()
-		return 0, err
-	}
-	defer func() {
-		cancel()
-		stop()
-	}()
-	var state byte
-	var escapeTimeout <-chan time.Time
-	for {
-		select {
-		case <-escapeTimeout:
-			return 0x1b, nil
-		case event := <-events:
-			if event.err != nil {
-				return 0, event.err
-			}
-			escapeTimeout = nil
-			for data := event.data; len(data) != 0; {
-				key := data[0]
-				_, _, n, next := ansi.DecodeSequence(data, state, nil)
-				if state == ansi.NormalState && n == 1 {
-					switch key {
-					case '\r', '\n', 0x03, 'e', 'E':
-						return key, nil
-					case 0x1b:
-						// A lone Escape can also be the start of a split key sequence.
-						escapeTimeout = time.After(50 * time.Millisecond)
-					}
-				}
-				data, state = data[max(1, n):], next
-			}
-		}
-	}
-}
-
-func editNewTerminalArguments(o *options, draft string) (err error) {
-	input, err := termui.NewInput()
-	if err != nil {
-		return err
-	}
-	defer func() { err = errors.Join(err, input.Close()) }()
-	termui.WriteConsoleBody(os.Stdout, "Edit arguments as a JSON array. Ctrl+C discards the edit.")
-	for {
-		line, err := input.ReadPrefilled("Arguments> ", false, draft)
-		if errors.Is(err, readline.ErrInterrupt) || errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		draft = line
-		var values []*string
-		if err := json.Unmarshal([]byte(line), &values); err != nil || values == nil {
-			termui.WriteConsoleBody(os.Stdout, "Enter a JSON array of strings. Use [] for the default shell.")
-			continue
-		}
-		argv := make([]string, 0, len(values))
-		for _, value := range values {
-			if value == nil || strings.ContainsRune(*value, 0) {
-				break
-			}
-			argv = append(argv, *value)
-		}
-		switch {
-		case len(argv) != len(values), len(argv) > 0 && argv[0] == "":
-			termui.WriteConsoleBody(os.Stdout, "Use string arguments without NUL and a nonempty program name.")
-		case len(argv) > 0 && (o.noLogin || o.noProfile):
-			termui.WriteConsoleBody(os.Stdout, "Shell startup options require the default shell.")
-		default:
-			o.argv = argv
-			return nil
-		}
-	}
-}
 
 func newApprovedFile(op operation, localPath string, opened *files.Source) fileCopy {
 	if op.Kind == "upload" {

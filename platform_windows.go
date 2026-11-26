@@ -10,17 +10,6 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-func localShellPath(env []string) string {
-	path := localEnvironmentValue(env, "SHELL")
-	if path == "" {
-		path = localEnvironmentValue(env, "COMSPEC")
-	}
-	if path == "" {
-		path = "cmd.exe"
-	}
-	return path
-}
-
 // The terminal owns a kill-on-close job; Terminal.Close ends its process tree.
 func reportBootstrapCgroup() {}
 

@@ -99,6 +99,14 @@ func Render(color bool, style Color, text string) string {
 	return text
 }
 
+// TreeBranch returns a muted branch prefix and the indent for its children.
+func TreeBranch(color bool, indent string, last bool) (prefix, childIndent string) {
+	if last {
+		return Render(color, Muted, indent+"╰── "), indent + "    "
+	}
+	return Render(color, Muted, indent+"├── "), indent + "│   "
+}
+
 // FormatPrompt resets the prompt style before the space where input begins.
 func FormatPrompt(color bool, prompt string) string {
 	label := strings.TrimRight(prompt, " ")

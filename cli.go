@@ -16,6 +16,7 @@ import (
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
+	"golang.org/x/term"
 )
 
 func run(args []string) (int, error) {
@@ -113,13 +114,21 @@ func runShell(parsed cliArguments) (int, error) {
 		return 2, err
 	}
 	if parsed.command == "new" {
-		confirmed, err := reviewNewTerminal(&o)
+		if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
+			return 1, usage("new requires an interactive terminal")
+		}
+		launch := termui.Launch{
+			Host: hostDisplayLabel(o.host), Directory: o.startupDirectory, Name: o.session,
+			Args: o.argv, Pinned: o.pin, DefaultShellOnly: o.noLogin || o.noProfile,
+		}
+		confirmed, err := launch.Review()
 		if err != nil {
 			return 1, err
 		}
 		if !confirmed {
 			return 0, nil
 		}
+		o.argv = launch.Args
 	}
 	return withDaemonActivity(func() (int, error) { return executeShellCommand(o) })
 }

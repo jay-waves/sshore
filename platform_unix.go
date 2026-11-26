@@ -9,14 +9,6 @@ import (
 	"syscall"
 )
 
-func localShellPath(env []string) string {
-	path := localEnvironmentValue(env, "SHELL")
-	if path == "" {
-		path = "/bin/sh"
-	}
-	return path
-}
-
 // Private validates ownership, permissions and path type without following symlinks.
 func privateStatePath(path string, directory bool) error {
 	info, err := os.Lstat(path)

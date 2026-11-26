@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/shell"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 )
@@ -401,24 +402,11 @@ func parseStartupDestination(ref string) (taskSelector, string, error) {
 	if err != nil {
 		return taskSelector{}, "", err
 	}
-	if !validStartupPath(path) {
+	if !shell.ValidStartupPath(path) {
 		return taskSelector{}, "", usage("invalid startup path %q; use an absolute path, ./ or ../; use --name for a task name", path)
 	}
 	target, err := scopedTaskAccount(host)
 	return target, path, err
-}
-
-func validStartupPath(path string) bool {
-	if len(path) > 4096 || strings.ContainsAny(path, "\x00\r\n") {
-		return false
-	}
-	for _, prefix := range []string{"/", `\\`, "./", "../", `.\`, `..\`} {
-		if strings.HasPrefix(path, prefix) {
-			return true
-		}
-	}
-	return len(path) >= 3 && strings.ContainsRune("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", rune(path[0])) &&
-		path[1] == ':' && (path[2] == '/' || path[2] == '\\')
 }
 
 func taskIDOperand(ref string) string {
@@ -620,7 +608,7 @@ or parent shell unless started with --pin or explicitly detached.
 The arguments after -- go directly to PROGRAM. Quote paths with spaces in
 your shell before invoking sshore.
 Review the launch in the full-screen prompt. Press Enter to start, e to edit
-the argument array, or Esc to cancel.
+the command line, or Esc to cancel.
 Inside a managed session, the command returns the result of handing off the
 terminal. Control returns to the parent terminal when the child ends or detaches.
 
@@ -655,7 +643,7 @@ Use attach to resume it. Ctrl+B d also pins and detaches.
 			help: `Usage: sshore pstree  (alias: ps)
 
 Show tasks under their host roots, with type/ID labels and terminal parent edges.
-A leading * marks the current shell. Use list for details.
+A * after the ID marks the current shell. Use list for details.
 
 ` + inventoryStateHelp,
 		},
@@ -664,6 +652,7 @@ A leading * marks the current shell. Use list for details.
 			help: `Usage: sshore list  (alias: ls)
 
 List terminal sessions, mounts and forwards, including incoming resources.
+A * after the ID marks the current shell.
 PARENT shows the parent session's short ID. For a terminal, DETAIL starts with
 the executable name. A forward's arrow points toward the target service.
 

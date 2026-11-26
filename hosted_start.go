@@ -9,6 +9,8 @@ import (
 	"net"
 	"os"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/shell"
 )
 
 func prepareHostedShell(name, mode, instance, executable, directory string) (localShellRecord, error) {
@@ -32,7 +34,7 @@ func prepareHostedShell(name, mode, instance, executable, directory string) (loc
 		var cwd string
 		cwd, err = os.Getwd()
 		if err == nil {
-			cwd, err = resolveStartupDirectory(cwd, directory)
+			cwd, err = shell.ResolveStartupDirectory(cwd, directory)
 		}
 		if err == nil {
 			record, err = createHostedShell(context.Background(), executable, name, cwd, os.Environ())

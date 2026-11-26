@@ -14,7 +14,8 @@ Each client command selects its SSH service. The remote entry point checks the
 release and passes operation-specific arguments to the service handler.
 
 - **How is a command parsed and dispatched?** [Command definitions, help and
-  parser](../cli_schema.go), [dispatch](../cli.go)
+  parser](../cli_schema.go), [dispatch](../cli.go),
+  [launch confirmation](../internal/termui/launch.go)
 - **How does a client connect and authenticate?** [Client connections](../client_connection.go),
   [configuration evaluation](../internal/sshconfig/), [SSH transport and host
   verification](../internal/ssh/)
@@ -46,7 +47,13 @@ The shell and terminal preserve interactive state across detach. Redraw is best
 effort and must preserve user input. See the [support matrix](../README.md#os-and-shell-support)
 and [native PTY adapters](../internal/pty/).
 
-Local and hosted shells share [process startup](../shell_startup.go),
+Local and hosted terminals share [process startup](../shell_startup.go) and
+[launch argument and directory rules](../internal/shell/).
+`internal/shell` also resolves the default shell and parses command arguments.
+PowerShell startup embeds the [directory reporting script](../internal/shell/pwsh_directory.ps1).
+`new -- PROGRAM` passes an argument vector to the managed PTY.
+`sh HOST -- COMMAND` uses SSH exec with standard streams and no PTY.
+Local and hosted shells also share
 [attachment and input release](../shell_attachment.go), and
 [exit reporting](../shell_terminal.go). The [shell tree](../shell_tree_control.go)
 reserves foreground input while an attachment starts and rolls back the
@@ -166,6 +173,7 @@ before changing update, reset or approval behavior.
 ### Inventory and diagnostics
 
 `pstree` groups tasks by managing host and follows shell parent UIDs across hosts.
+Both inventory views display the local hostname first when local tasks are present.
 `list` shows task details and incoming resource leases. Both read daemon snapshots,
 including cached remote observations. After `setup_ready`, the remote service sends its
 hosted shell list on the same exec stream while the client attaches. A live registration

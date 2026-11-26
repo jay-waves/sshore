@@ -138,7 +138,7 @@ func TestWindowsConPTY(t *testing.T) {
 			send("\x02s")
 			wait("sshore on local>", true)
 			send("pstree\r")
-			wait("(panel-target)")
+			wait("shell/" + parentID + "* (panel-source)")
 			send(id + "\r")
 			wait("\x1b]0;sshore: here:panel-target\a", true)
 			send("exit\r")
@@ -196,8 +196,12 @@ func testWindowsReattach(t *testing.T, ctx context.Context, command func(...stri
 		send("exit\r")
 	})
 	tree := string(windowsRun(t, command("ps")))
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, entry, found := strings.Cut(tree, "shell/")
-	if !strings.HasPrefix(tree, "local\n") || !found || !strings.Contains(entry, " (conpty)  T") {
+	if !strings.HasPrefix(tree, hostname+"\n") || !found || !strings.Contains(entry, " (conpty)  T") {
 		t.Fatalf("detached shell is missing from the local tree:\n%s", tree)
 	}
 	code, _, _ := strings.Cut(entry, " ")

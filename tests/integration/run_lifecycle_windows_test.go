@@ -35,26 +35,33 @@ func TestWindowsNewReview(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "state")
 	t.Setenv("SSHORE_STATE_DIR", state)
 	t.Setenv("SSHORE_DISABLED", "")
+	t.Setenv("NO_COLOR", "1")
+	hostname, err := os.Hostname()
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := t.Context()
 	cmd := exec.CommandContext(ctx, binary, "new", "--", "vim", "a b.txt")
 	out, err := runWindowsTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+		wait(hostname)
 		wait("╰── vim")
 		wait(`╰── "a b.txt"`)
 		wait("[Esc] Cancel", true)
 		send("\x1b[A")
 		send("e")
-		wait("Arguments>", true)
-		send("\x01\x0b[\"vim\",null]\r")
-		wait("Use string arguments without NUL")
-		wait("Arguments>", true)
-		send("\x01\x0b[\"vim\",\"c d.txt\",\"\"]\r")
+		wait(`Command> vim "a b.txt"`, true)
+		send("\x01\x0b" + `vim "unclosed` + "\r")
+		wait("Close double quotes")
+		wait("Command>", true)
+		send("\x01\x0b" + `vim "c d.txt" C:\notes.txt ""` + "\r")
 		wait("[Esc] Cancel", true)
 		send("\x1b")
 	})
 	if err != nil {
 		t.Fatalf("review: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, `├── "c d.txt"`) || !strings.Contains(out, `╰── ""`) {
+	if !strings.Contains(out, `├── "c d.txt"`) || !strings.Contains(out, `├── "C:\\notes.txt"`) ||
+		!strings.Contains(out, `╰── ""`) {
 		t.Fatalf("edited arguments missing:\n%s", out)
 	}
 	if _, err := os.Stat(state); !os.IsNotExist(err) {
