@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 )
 
@@ -13,7 +12,6 @@ type participatingShell struct {
 	Owner                string
 	Shell                string `json:",omitempty"`
 	Program              bool   `json:",omitempty"`
-	ProgramLine          string `json:",omitempty"`
 	State                string
 	PID                  int
 	Pinned               bool
@@ -25,11 +23,6 @@ type participatingShell struct {
 type participationRefresh struct {
 	Shells []shellView
 	Since  time.Time
-}
-
-func readParticipatingShells(host string) ([]participatingShell, error) {
-	reply, err := metadataRPC(metadataRequest{Action: "participation_get", Host: host})
-	return reply.Participants, err
 }
 
 func reconcileParticipatingShells(host string, shells []shellView, since time.Time) error {
@@ -51,32 +44,6 @@ func observeParticipatingShell(row participatingShell) error {
 func setParticipatingShellState(row participatingShell) error {
 	_, err := metadataRPC(metadataRequest{Action: "participation_state", Participant: &row})
 	return err
-}
-
-func participatingMutationTarget(o options) (participatingShell, error) {
-	rows, err := readParticipatingShells(o.host)
-	if err != nil {
-		return participatingShell{}, err
-	}
-	var matched participatingShell
-	ambiguous := false
-	prefix := strings.ToLower(o.session)
-	for _, row := range rows {
-		if row.Instance == o.instance || o.instance == "" && row.Instance == prefix {
-			return row, nil
-		}
-		if o.instance != "" || row.Name != o.session && !(isTaskIDPrefix(o.session) && strings.HasPrefix(row.Instance, prefix)) {
-			continue
-		}
-		if matched.Instance != "" {
-			ambiguous = true
-		}
-		matched = row
-	}
-	if ambiguous {
-		return participatingShell{}, nil
-	}
-	return matched, nil
 }
 
 func validateParticipatingShell(row participatingShell) error {
@@ -197,7 +164,7 @@ func refreshParticipation(rows []participatingShell, host string, refresh partic
 			if validSession(view.Name) == nil && view.PID > 0 && (view.State == taskActive || view.State == taskWaiting || view.State == taskDetached) {
 				row.Owner = view.Owner
 				row.Name, row.State, row.PID = view.Name, view.State, view.PID
-				row.Shell, row.Program, row.ProgramLine = view.Shell, view.Program, view.ProgramLine
+				row.Shell, row.Program = view.Shell, view.Program
 				row.Pinned, row.PinUntil, row.ChangedAt = view.Pinned, view.PinUntil, now
 			}
 		}

@@ -20,7 +20,7 @@ import (
 )
 
 type shellRegistry interface {
-	attachmentTargets(parent, ref string, hosted bool) ([]sessionTarget, error)
+	attachmentTargets(query taskQuery, list bool) ([]sessionTarget, error)
 	childShells(*shellTask) []*shellTask
 	isShuttingDown() bool
 }
@@ -31,7 +31,6 @@ type shellTask struct {
 	endpoints  terminalEndpoints
 	mu         sync.Mutex // Protect shell state and attachment ownership.
 	terminalMu sync.Mutex // Serialize replay and redraw with live output. Acquire before mu.
-	nameMu     sync.Mutex // Read the registry label without waiting for terminal I/O.
 
 	terminal                      *pty.Terminal
 	pid                           int
@@ -47,12 +46,13 @@ type shellTask struct {
 	log                           io.Writer
 	cgroup                        string
 	cgroupErr                     error
-	record                        localShellRecord
+	record                        localShellRecord // Immutable after registration.
 	environment                   []string
 	done                          chan struct{}
 	once                          sync.Once
 	hosted, killing               bool
 	started                       time.Time
+	detachedAt                    time.Time
 	exitReason                    string
 	parent                        *shellTask
 	treeEnded                     atomic.Bool // Published by the registry's forest lock.
@@ -71,11 +71,7 @@ func (s *shellTask) setInitialIdentity(uid, name string) {
 	s.record.UID, s.record.Name = uid, name
 }
 
-func (s *shellTask) taskName() string {
-	s.nameMu.Lock()
-	defer s.nameMu.Unlock()
-	return s.record.Name
-}
+func (s *shellTask) taskName() string { return s.record.Name }
 
 func (s *shellTask) expired() bool {
 	select {

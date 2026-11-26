@@ -81,6 +81,6 @@ func serveTaskControl(mode string, query taskQuery) error {
 	if err != nil {
 		return err
 	}
-	_, err = mutateRegisteredTask(mode, target)
+	_, err = killRegisteredTask(target)
 	return err
 }

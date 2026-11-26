@@ -202,7 +202,7 @@ func (a *daemonActivity) listTasks(ctx context.Context, request taskListRequest)
 		inv.Errors = append(inv.Errors, "remote shell history unavailable: "+cleanText(reply.Error))
 	}
 	for _, row := range reply.Participants {
-		inv.Shells = append(inv.Shells, shellView{Host: row.Host, Owner: row.Owner, Instance: row.Instance, ID: "sh/" + row.Name, Name: row.Name, State: row.State, Observed: true, SeenAt: row.ChangedAt, Pinned: row.Pinned, PinUntil: row.PinUntil, PID: row.PID, Shell: row.Shell, Program: row.Program, ProgramLine: row.ProgramLine})
+		inv.Shells = append(inv.Shells, shellView{Host: row.Host, Owner: row.Owner, Instance: row.Instance, ID: "sh/" + row.Name, Name: row.Name, State: row.State, Observed: true, SeenAt: row.ChangedAt, Pinned: row.Pinned, PinUntil: row.PinUntil, PID: row.PID, Shell: row.Shell, Program: row.Program})
 	}
 	inv.setTaskReferences()
 	return inv

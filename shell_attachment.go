@@ -324,7 +324,7 @@ func (s *shellTask) activateAttachment(p *attachment, m message, initial bool) e
 	if validMachineID(m.MachineID) && machine != m.MachineID && len(m.SourceHost) <= 256 {
 		p.sourceHost = cleanText(m.SourceHost)
 	}
-	if err := p.controlMessage(message{Type: "ready", SoftwareVersion: version, Owner: s.parentIdentityLocked(), TreeKey: p.claim.key, MachineID: machine, Pinned: s.pinned, PinUntil: s.pinUntil, Instance: instance, PID: s.pid, Name: s.record.Name, Shell: s.shellName, Program: s.program, ProgramLine: s.programLine}); err != nil {
+	if err := p.controlMessage(message{Type: "ready", SoftwareVersion: version, Owner: s.parentIdentityLocked(), TreeKey: p.claim.key, MachineID: machine, Pinned: s.pinned, PinUntil: s.pinUntil, Instance: instance, PID: s.pid, Name: s.record.Name, Shell: s.shellName, Program: s.program}); err != nil {
 		return err
 	}
 	if data := s.modes.Replay(); len(data) > 0 {
@@ -358,6 +358,7 @@ func (s *shellTask) detachTerminal(p *attachment) (bool, error) {
 		return false, err
 	}
 	s.active = nil
+	s.detachedAt = time.Now()
 	return true, nil
 }
 

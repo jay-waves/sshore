@@ -13,8 +13,8 @@ to the platform implementation and its tests.
 Each client command selects its SSH service. The remote entry point checks the
 release and passes operation-specific arguments to the service handler.
 
-- **How is a command parsed and dispatched?** [Command definitions and help](../cli_help.go),
-  [parser](../cli_schema.go), [dispatch](../cli.go)
+- **How is a command parsed and dispatched?** [Command definitions, help and
+  parser](../cli_schema.go), [dispatch](../cli.go)
 - **How does a client connect and authenticate?** [Client connections](../client_connection.go),
   [configuration evaluation](../internal/sshconfig/), [SSH transport and host
   verification](../internal/ssh/)
@@ -32,7 +32,15 @@ Linux and Windows 11 / Server 2025 or newer are core amd64 client and host platf
 Windows uses ConPTY for hosted shells.
 Each interactive task owns one terminal with one attachment at a time. `shell` and
 `new` follow the starting connection or parent unless pinned or explicitly detached.
-`new -- PROGRAM` starts the executable directly. Otherwise it opens a shell.
+`new` reviews the launch in the client's full-screen console before attaching
+the terminal. With `-- PROGRAM` it starts the executable directly. Otherwise it
+opens a shell.
+`Ctrl+B s` opens the command console. Use `pstree` to display the task tree.
+Enter a task ID in the console to attach. `Ctrl+B a` attaches the most recent
+eligible session on the current host.
+Attaching to the direct parent from the command console detaches the current
+session and restores the parent's reserved terminal. A short ID is checked
+against other matching tasks before the current session is detached.
 Split panes, tiling, screen emulation and scrollback replay are outside scope.
 The shell and terminal preserve interactive state across detach. Redraw is best
 effort and must preserve user input. See the [support matrix](../README.md#os-and-shell-support)
@@ -89,6 +97,7 @@ From a suspended parent it can enter a direct child, or adopt an idle root
 and enter it in the same operation. A failed attach rolls back a provisional
 adoption. A private reservation keeps the parent path occupied until the
 frontend returns or disconnects. Input elsewhere in the same tree is refused.
+Cycling between idle roots keeps each root in its existing tree.
 
 A root follows its starting connection. A native local root uses the lifetime
 of its loopback connection so system sleep does not expire its lease.
@@ -163,15 +172,17 @@ hosted shell list on the same exec stream while the client attaches. A live regi
 takes precedence over an observation of the same UID. Invalid records identify the affected
 source and field.
 
-Program sessions appear as `run` and show the executable and its arguments in `list` details.
-The task's arguments stay out of inventory and participation records.
+Program sessions appear as `run`. On the managing account, `list` shows the executable and its
+arguments. Cached remote observations carry the executable name.
 
 On Windows, the command console and child shell shortcut use the last reported
 filesystem location when available. Shells can report it through `OSC 9;9`, including
 while detached. Inventory also displays the location when available.
 
 Task commands resolve names and UID prefixes through the
-[task registry selector](../task_selection.go). An explicit scope selects the
-managing account before matching. Attachment binds the full UID before handoff.
-Incoming peer records are advisory. See [inventory rendering](../inventory.go),
+[task registry selector](../task_selection.go). A bare host in `attach` selects
+a remote account when there is no matching task name. Attachment binds the full
+UID before handoff.
+Connection history supplies SSH settings. Incoming peer records are advisory.
+See [inventory rendering](../inventory.go),
 [daemon metadata](../daemon_metadata.go), and [integration tests](../tests/integration/).

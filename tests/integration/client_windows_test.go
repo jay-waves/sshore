@@ -95,6 +95,56 @@ func windowsRun(t *testing.T, cmd *exec.Cmd) []byte {
 func TestWindowsConPTY(t *testing.T) {
 	ctx, command := windowsClient(t)
 	t.Run("detach and reattach", func(t *testing.T) { testWindowsReattach(t, ctx, command) })
+	t.Run("attach and command panels", func(t *testing.T) {
+		start := func(name string) *exec.Cmd {
+			return command("shell", "--name", name, "--pin", "--no-profile")
+		}
+		if out, err := runWindowsTerminal(t, ctx, start("panel-target"), func(send func(string), wait terminalWait) {
+			wait("Connected here:panel-target")
+			send("\x02d")
+			wait("Detached from here:panel-target")
+			wait("sshore on local>")
+			send("exit\r")
+		}); err != nil {
+			t.Fatalf("prepare detached root: %v\n%s", err, out)
+		}
+		taskID := func(name string) string {
+			tree := string(windowsRun(t, command("ps")))
+			for _, line := range strings.Split(tree, "\n") {
+				_, entry, found := strings.Cut(line, "shell/")
+				id, _, _ := strings.Cut(entry, " ")
+				if found && len(id) == 6 && strings.Contains(entry, "("+name+")") {
+					return id
+				}
+			}
+			t.Fatalf("shell %q missing:\n%s", name, tree)
+			return ""
+		}
+		id := taskID("panel-target")
+		if out, err := runWindowsTerminal(t, ctx, start("panel-source"), func(send func(string), wait terminalWait) {
+			wait("Connected here:panel-source")
+			parentID := taskID("panel-source")
+			send("\x02a")
+			wait("Connected here:panel-target")
+			send("\x02s")
+			wait("sshore on local>")
+			send("attach " + parentID + "\r")
+			wait("Connected here:panel-source")
+			send("\x02s")
+			wait("sshore on local>")
+			send("pstree\r")
+			wait("(panel-target)")
+			send(id + "\r")
+			wait("Connected here:panel-target")
+			send("exit\r")
+			wait("Connected here:panel-source")
+			send("exit\r")
+			wait("sshore on local>")
+			send("exit\r")
+		}); err != nil {
+			t.Fatalf("attach and command panels: %v\n%s", err, out)
+		}
+	})
 	t.Run("confirmed shutdown", func(t *testing.T) {
 		const endpoint = "here:shutdown"
 		out, err := runWindowsTerminal(t, ctx, command("shell", "--name", "shutdown", "--no-profile"), func(_ func(string), wait terminalWait) {

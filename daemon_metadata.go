@@ -141,7 +141,7 @@ func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply)
 	case "task_by_id", "attach_by_id":
 		reply.Target, err = a.selectTaskID(r.Instance, r.Kind, r.Parent, r.Action == "attach_by_id")
 	case "task_by_name", "attach_by_name":
-		reply.Target, err = a.selectTaskName(r.Name, r.Kind, r.Action == "attach_by_name")
+		reply.Target, err = a.selectTaskName(r.Name, r.Kind, r.Parent, r.Action == "attach_by_name")
 	case "attach_recent":
 		reply.Target, err = a.selectDetachedAttach(r.Key, r.Kind)
 	default:
@@ -331,29 +331,11 @@ func (m *daemonMetadata) removeRecentDetachLocal(id string) error {
 }
 
 func (a *daemonActivity) selectDetachedAttach(parent, kind string) (*selectedTask, error) {
-	detached := (taskQuery{Kind: kind, Parent: parent, Detached: true}).registered(a.tasks)
-	a.metadata.shellMu.Lock()
-	defer a.metadata.shellMu.Unlock()
-	if err := a.metadata.loadDetachedAttachments(); err != nil {
-		return nil, err
-	}
-	for _, row := range a.metadata.attachments.rows {
-		if row.Local {
-			for _, target := range detached {
-				if row.Identity == target.Identity {
-					return &target, nil
-				}
-			}
-		}
-	}
-	switch len(detached) {
-	case 0:
+	detached := (taskQuery{Kind: kind, Parent: parent}).recentDetached(a.tasks)
+	if len(detached) == 0 {
 		return nil, fmt.Errorf("no detached local shells; use sshore shell")
-	case 1:
-		return &detached[0], nil
-	default:
-		return nil, fmt.Errorf("multiple local shells; use sshore list, then sshore attach :ID")
 	}
+	return &detached[0], nil
 }
 
 // The SSH peer supplies eligible roots. Local history only ranks those identities.

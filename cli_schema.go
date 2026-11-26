@@ -44,13 +44,12 @@ type cliOption struct {
 
 // Canonical option definitions own the public command grammar.
 var cliOptions = map[string]cliOption{
-	"--help":      {alias: "-h"},
-	"--tldr":      {},
-	"--version":   {alias: "-V"},
 	"--server":    {kind: cliText},
 	"--name":      {kind: cliText},
 	"--apply":     {},
-	"--port":      {kind: cliPort},
+	"--port":      {kind: cliPort, alias: "-p"},
+	"-J":          {kind: cliText},
+	"-i":          {kind: cliText},
 	"--no-escape": {}, "--pin": {}, "--no-login": {}, "--no-profile": {},
 	"--all":        {},
 	"--foreground": {},
@@ -82,28 +81,17 @@ const (
 	cliKillSelector
 )
 
-func commandSpec(command string) (cliSpec, bool) {
-	spec, ok := cliCommands[command]
-	if !ok {
-		return cliSpec{}, false
-	}
-	spec.flags = append(make([]string, 0, len(spec.flags)+3), spec.flags...)
-	if spec.ssh {
-		spec.flags = append(spec.flags, "--port")
-	}
-	spec.flags = append(spec.flags, "--help")
-	if spec.examples != "" {
-		spec.flags = append(spec.flags, "--tldr")
-	}
-	return spec, true
-}
-
 func (s cliSpec) option(name string) (string, cliOption, bool) {
-	for _, canonical := range s.flags {
-		option := cliOptions[canonical]
-		if name == canonical || name == option.alias {
-			return canonical, option, true
+	if s.ssh {
+		for _, canonical := range [...]string{"--port", "-J", "-i"} {
+			option := cliOptions[canonical]
+			if name == canonical || name == option.alias {
+				return canonical, option, true
+			}
 		}
+	}
+	if slices.Contains(s.flags, name) {
+		return name, cliOptions[name], true
 	}
 	return "", cliOption{}, false
 }
@@ -116,6 +104,7 @@ type cliArguments struct {
 	values           map[string]string
 	ssh              []string
 	argv             []string
+	remoteCommand    string
 }
 
 type taskScope uint8
@@ -195,11 +184,11 @@ func validateCLIValue(name, value string, option cliOption) error {
 func parseCLI(args []string, command string) (cliArguments, error) {
 	command = canonicalCommand(command)
 	a := cliArguments{command: command, values: make(map[string]string)}
-	spec, ok := commandSpec(command)
+	spec, ok := cliCommands[command]
 	if !ok {
 		return a, usage("unknown command: %s", command)
 	}
-	var literalArgs, sshArgs []string
+	var literalArgs, sshArgs, identityArgs []string
 	var hasSSH bool
 	end := slices.Index(args, "--")
 	if end >= 0 {
@@ -217,9 +206,6 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 			}
 		}
 	}
-	if command == "shell" && end >= 0 {
-		return a, usage("shell does not accept --; use new -- PROGRAM to start a program")
-	}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "" {
@@ -235,13 +221,21 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 			a.operands = append(a.operands, arg)
 			continue
 		}
-		if spec.ssh {
-			if name, _, _ := sshio.SplitOption([]string{arg}); name != "" {
+		name, value, attached := strings.Cut(arg, "=")
+		canonical, option, found := spec.option(name)
+		if !found && spec.ssh {
+			short, suffix, n := sshio.SplitOption([]string{arg})
+			switch short {
+			case "-J", "-p", "-i":
+				if n == 1 {
+					name, value, attached = short, suffix, true
+					canonical, option, found = spec.option(name)
+				}
+			case "":
+			default:
 				return a, usage("SSH option %s must follow --ssh", arg)
 			}
 		}
-		name, value, attached := strings.Cut(arg, "=")
-		canonical, option, found := spec.option(name)
 		if !found {
 			return a, usage("unsupported option: %s", name)
 		}
@@ -251,7 +245,8 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 		if option.kind != cliBool {
 			if !attached {
 				i++
-				if i == len(args) || strings.HasPrefix(args[i], "--") {
+				if i == len(args) || strings.HasPrefix(args[i], "--") ||
+					(name == "-J" || name == "-p" || name == "-i") && strings.HasPrefix(args[i], "-") {
 					return a, usage("missing value for %s", name)
 				}
 				value = args[i]
@@ -261,6 +256,10 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 			}
 		} else if attached {
 			return a, usage("%s does not accept a value", name)
+		}
+		if canonical == "-i" {
+			identityArgs = append(identityArgs, "-i", value)
+			continue
 		}
 		a.values[canonical] = value
 		if err := validateCLIValue(canonical, value, option); err != nil {
@@ -275,32 +274,49 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 			return a, usage("--no-login and --no-profile require starting the default shell")
 		}
 		a.argv = literalArgs
-	} else {
-		if command == "exec" && (len(a.operands) != 1 || len(literalArgs) != 1 || literalArgs[0] == "") {
-			return a, usage("expected HOST followed by -- and one nonempty command string")
+	} else if command == "shell" && end >= 0 {
+		a.remoteCommand = strings.Join(literalArgs, " ")
+		if strings.TrimSpace(a.remoteCommand) == "" {
+			return a, usage("expected a command after --")
 		}
+		if len(a.operands) != 1 {
+			return a, usage("shell command execution requires one SSH host")
+		}
+		for _, flag := range []string{"--name", "--pin", "--no-login", "--no-profile", "--no-escape", "--server"} {
+			if a.has(flag) {
+				return a, usage("%s requires an interactive shell", flag)
+			}
+		}
+	} else {
 		if slices.Contains(literalArgs, "") {
 			return a, usage("empty argument")
 		}
 		a.operands = append(a.operands, literalArgs...)
 	}
 	var err error
-	var hasSSHPort bool
+	var sshOptionsUsed sshOptionPresence
 	if hasSSH {
 		if len(sshArgs) == 0 {
 			return a, usage("expected SSH options after --ssh")
 		}
-		a.ssh, hasSSHPort, err = parseSSHOptions(sshArgs)
+		a.ssh, sshOptionsUsed, err = parseSSHOptions(sshArgs)
 		if err != nil {
 			return a, err
 		}
 	}
 	if a.has("--port") {
-		if hasSSHPort {
+		if sshOptionsUsed.port {
 			return a, usage("--port cannot be combined with SSH -p or -o Port")
 		}
 		a.ssh = append([]string{"-p", a.values["--port"]}, a.ssh...)
 	}
+	if a.has("-J") {
+		if sshOptionsUsed.jump {
+			return a, usage("-J cannot be combined with SSH -J or -o ProxyJump after --ssh")
+		}
+		a.ssh = append([]string{"-J", a.values["-J"]}, a.ssh...)
+	}
+	a.ssh = append(identityArgs, a.ssh...)
 	if len(a.operands) < spec.min {
 		return a, usage("not enough arguments for %s; see sshore %s --help", command, command)
 	}
@@ -311,6 +327,9 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 	case cliHostSelector:
 		return a, validateHostOperand(command, a.operand(0))
 	case cliStartupSelector:
+		if a.remoteCommand != "" {
+			return a, validateHostOperand(command, a.operand(0))
+		}
 		a.task, a.startupDirectory, err = parseStartupDestination(a.operand(0))
 	case cliAttachSelector:
 		a.task, err = parseAttachTarget(a.operand(0))
@@ -323,25 +342,28 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 	return a, err
 }
 
-func parseSSHOptions(suffix []string) ([]string, bool, error) {
+type sshOptionPresence struct{ port, jump bool }
+
+func parseSSHOptions(suffix []string) ([]string, sshOptionPresence, error) {
 	var ssh []string
-	hasPort := false
+	var used sshOptionPresence
 	for len(suffix) > 0 {
 		name, value, n := sshio.SplitOption(suffix)
 		if name == "" {
-			return nil, false, usage("unsupported SSH option after --ssh: %s; put sshore arguments before --ssh", suffix[0])
+			return nil, used, usage("unsupported SSH option after --ssh: %s; put sshore arguments before --ssh", suffix[0])
 		}
 		if n == 0 || value == "--" {
-			return nil, false, usage("missing value for %s", name)
+			return nil, used, usage("missing value for %s", name)
 		}
-		hasPort = hasPort || sshio.PortOption(name, value)
+		used.port = used.port || sshio.PortOption(name, value)
+		used.jump = used.jump || name == "-J" || name == "-o" && sshio.ConfigKey(value) == "proxyjump"
 		ssh = append(ssh, name)
 		if value != "" {
 			ssh = append(ssh, value)
 		}
 		suffix = suffix[n:]
 	}
-	return ssh, hasPort, nil
+	return ssh, used, nil
 }
 
 // Endpoints with a value require bracketed IPv6; a host alone may omit the brackets.
@@ -474,18 +496,20 @@ var cliGroupNames = [...]string{
 }
 
 const helpFooter = `Start: sshore shell work  Resume: sshore attach 7afe22
-In a session: Ctrl+B c opens a nested shell; d pins and detaches; r redraws; s or : opens commands.
+In a session: Ctrl+B c opens a nested shell; d pins and detaches; r redraws.
+Ctrl+B a attaches the latest eligible session; s or : opens the command prompt.
 Examples: sshore --tldr             Details: sshore COMMAND --help
 Version: sshore --version
 `
 
 const sshOptions = `
---port PORT selects the SSH port (1–65535). Other SSH options follow --ssh,
-for example: --port 2222 --ssh -J jump.
-Do not combine --port with SSH -p or -o Port.
+-p PORT (alias: --port) selects the SSH port (1–65535).
+-J DEST selects a jump host. -i FILE adds a private key file and may be repeated.
+Other SSH options follow --ssh.
+Do not repeat a top-level port or jump host setting after --ssh.
 Configuration options: -p -i -J -F -l -o -c -m -v/-vv/-vvv -4 -6.
-IdentityFile/-i selects private key files. An interactive
-terminal is required for passphrases, passwords and keyboard-interactive login.
+An interactive terminal is required for passphrases, passwords and
+keyboard-interactive login.
 Forwarding rules in SSH config and -L, -R, -D produce a warning and are ignored.
 Use sshore forward for TCP forwarding. Compression, agent/X11 forwarding and
 ProxyCommand are unsupported.
@@ -554,20 +578,6 @@ Run outside managed shells. Use here:PATH to specify an absolute executable path
 `,
 			examples: "Reset and reinstall this account\n  sshore bootstrap\n",
 		},
-		"exec": {
-			run: runExec, selector: cliHostSelector, group: groupSSH, summary: "Execute a command over SSH",
-			ssh: true, min: 2, max: 2,
-			help: `Usage: sshore exec HOST [--ssh SSH_OPTIONS...] -- 'COMMAND'
-
-Execute COMMAND once over SSH without a remote PTY. Uses SSH client
-configuration and private key files. Interactive login requires a terminal.
-Standard streams and the SSH exit status pass through.
-No persistent sshore shell is created and no remote installation is required.
-Use an SSH config host alias or pass connection options after --ssh.
-
-Example: sshore exec work -- 'uname -a'
-` + sshOptions,
-		},
 		"ping": {
 			run: runPing, selector: cliHostSelector, group: groupSSH, summary: "Measure SSH connection and echo latency",
 			ssh: true, min: 1, max: 1, flags: []string{"--count"},
@@ -582,9 +592,11 @@ the intervals.
 			examples: "Measure latency to an SSH host\n  sshore ping work --count 20\n",
 		},
 		"shell": {
-			run: runTargetCommand, selector: cliStartupSelector, group: groupShell, summary: "Start a shell", aliases: []string{"sh"},
+			run: runShell, selector: cliStartupSelector, group: groupShell, summary: "Start a shell or execute a command over SSH", aliases: []string{"sh"},
 			ssh: true, max: 1, flags: strings.Fields(terminalStartupFlags),
 			help: `Usage: sshore shell [HOST[:PATH]] [--name NAME] [options] [--ssh SSH_OPTIONS...]
+
+       sshore shell HOST [--ssh SSH_OPTIONS...] -- COMMAND [ARG...]
 
 Alias: sh
 
@@ -592,11 +604,14 @@ Start a shell on this machine or an SSH host. A shell ends with its starting
 connection or parent shell unless started with --pin or explicitly detached.
 Opening a shell from an interactive session creates a child. Its parent waits for it to return.
 
+With -- COMMAND, join the words with spaces and execute once over SSH without
+a remote PTY or sshore installation. Standard streams and exit status pass through.
+
 ` + startupLocationHelp + shellStartupOptions + connectionOptions + shellConnectionHelp,
 			examples: "Open a remote shell\n  sshore sh work --name build\nOpen a local shell\n  sshore sh --name build\n",
 		},
 		"new": {
-			run: runTargetCommand, selector: cliStartupSelector, group: groupShell, summary: "Start a terminal for a shell or program",
+			run: runShell, selector: cliStartupSelector, group: groupShell, summary: "Start a terminal for a shell or program",
 			ssh: true, program: true, max: 1, flags: strings.Fields(terminalStartupFlags),
 			help: `Usage: sshore new [HOST[:PATH]] [--name NAME] [options] [--ssh SSH_OPTIONS...] [-- PROGRAM [ARG...]]
 
@@ -604,6 +619,8 @@ Omit -- to open an interactive shell. The task ends with its starting connection
 or parent shell unless started with --pin or explicitly detached.
 The arguments after -- go directly to PROGRAM. Quote paths with spaces in
 your shell before invoking sshore.
+Review the launch in the full-screen prompt. Press Enter to start, e to edit
+the argument array, or Esc to cancel.
 Inside a managed session, the command returns the result of handing off the
 terminal. Control returns to the parent terminal when the child ends or detaches.
 

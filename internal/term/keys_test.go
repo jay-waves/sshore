@@ -27,7 +27,7 @@ func TestPrefixKeysAcrossReads(t *testing.T) {
 		action      KeyAction
 	}{
 		{"a\x02\x02b", "a\x02b", KeyNone}, {"before\x02dignored", "before", KeyDetach}, {"a\x02rZ", "aZ", KeyRedraw}, {"\x02i", "\x02i", KeyNone}, {"\x02?", "\x02?", KeyNone}, {"\x02x", "\x02x", KeyNone}, {"\x02s", "", KeyConsole}, {"\x02w", "\x02w", KeyNone}, {"before\x1dignored", "before\x1dignored", KeyNone},
-		{"\x02n", "\x02n", KeyNone}, {"\x02p", "\x02p", KeyNone}, {"\x02l", "\x02l", KeyNone},
+		{"\x02n", "\x02n", KeyNone}, {"\x02p", "\x02p", KeyNone}, {"before\x02lafter", "before\x02lafter", KeyNone}, {"\x02a", "", KeyAttach},
 	} {
 		for split := 0; split <= len(tc.input); split++ {
 			var k Keys

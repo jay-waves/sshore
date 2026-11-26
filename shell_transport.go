@@ -75,9 +75,8 @@ func openRemoteShellTransport(ctx context.Context, o *options, transports client
 	setup, err := mx.OpenStream()
 	if err == nil {
 		chooseShell := o.command == "attach" && o.session == "" && o.instance == ""
-		_, err = negotiateShellSetup(setup, o.host, chooseShell)
+		err = negotiateShellSetup(setup, o.host, chooseShell)
 		setup.Close()
-
 	}
 	if err != nil {
 		mx.Close()
@@ -226,6 +225,7 @@ func (s resourceSSHStream) Close() error { return s.transport.Close() }
 type remoteShellChild struct {
 	host     string
 	uid      string
+	name     string
 	open     taskEndpoint
 	resource resourceEndpoint
 	done     <-chan struct{}
@@ -397,8 +397,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	var ownerDone <-chan struct{}
 	if f.Command == "sh" {
 		var uid, token string
-		child := owner != nil && f.Command == "sh"
-		if child {
+		if owner != nil {
 			uid, token = owner.record.UID, resourceToken()
 		}
 		stop, done, err := claimShellOwner(ctx, open, ready.Instance, uid, token, true)
@@ -407,9 +406,11 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 		}
 		defer stop()
 		ownerDone = done
-		if child {
+		if owner != nil {
 			open = ownedTaskEndpoint(open, ready.Instance, token)
-			forget := owner.rememberRemoteChild(&remoteShellChild{host: f.Host, uid: ready.Instance, open: open, resource: resource, done: done})
+			forget := owner.rememberRemoteChild(&remoteShellChild{
+				host: f.Host, uid: ready.Instance, name: record.Name, open: open, resource: resource, done: done,
+			})
 			defer forget()
 		}
 	}

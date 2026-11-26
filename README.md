@@ -39,14 +39,12 @@ for experimental Apple Silicon support.
 
 ## ssh — Run remote commands and forward ports
 
-Use SSH host aliases from `ssh_config`. Pass SSH options after `--`, including
+Use SSH host aliases from `ssh_config`. Pass SSH options after `--ssh`, including
 `-F FILE` for a different config or `-F none` for built-in defaults. Port
 forwarding requires the same sshore release on the destination.
-`sshore exec` runs directly over SSH without starting the account daemon.
 
 ```sh
-sshore exec work 'uname -a'      # Run one command on work.
-sshore shell work -- -J jump    # Open a shell through a jump host.
+sshore sh work --ssh -J jump    # Open a shell through a jump host.
 sshore forward work:3000 .:8080  # Reach the remote service on local port 8080.
 sshore ping work:               # Measure SSH latency.
 ```
@@ -55,6 +53,29 @@ Use `sshore fwd SOURCE TARGET` to mirror a TCP service. For example, run
 `sshore fwd .:9090 origin:9091` in a remote shell to access its port 9090
 at `127.0.0.1:9091` on your computer. Approve the target port on your computer
 to resume the remote shell.
+
+### ssh-exec
+
+`sshore sh HOST -- COMMAND` runs once over SSH without a remote PTY or a
+remote sshore installation. Like OpenSSH, it joins the words after `--`
+with spaces and lets the remote shell interpret the result.
+
+```sh
+sshore sh work -- uname -a
+sshore sh work -- vim 'a b.txt'       # Vim receives two filenames: a and b.txt.
+sshore sh work -- 'vim "a b.txt"'     # Vim receives one filename, with no PTY.
+```
+
+### new — Start a program in a terminal
+
+`sshore new HOST -- PROGRAM [ARG...]` starts the program directly in a PTY
+and preserves each argument. Omit `-- PROGRAM` to open the default shell.
+Use `--pin` to keep the task running after disconnect.
+
+```sh
+sshore new work -- vim 'a b.txt'  # Open one file whose name contains a space.
+sshore new work --pin            # Open a shell that survives disconnect.
+```
 
 ## mux — Start, detach and resume
 
@@ -148,6 +169,8 @@ it. Close open files before unmounting.
 
 ## Advanced usage
 
+- Pass SSH options after `--ssh` and before `--`, as in
+  `sshore new work --ssh -J jump -- nvim`.
 - OSC 52 clipboard passthrough.
 - `Ctrl+B` shortcuts:
   - `Ctrl+B c` opens a nested shell.

@@ -96,8 +96,10 @@ func (s *daemonTasks) register(id string, task daemonTask) error {
 		if err := validSession(name); err != nil {
 			return err
 		}
-		if err := s.checkNameLocked("", name); err != nil {
-			return err
+		for _, existing := range s.liveLocked() {
+			if existing.taskName() == name {
+				return fmt.Errorf("%s: %w", name, errObjectNameInUse)
+			}
 		}
 	}
 	task.setInitialIdentity(id, name)
@@ -105,15 +107,6 @@ func (s *daemonTasks) register(id string, task daemonTask) error {
 		s.records = make(map[string]daemonTask)
 	}
 	s.records[id] = task
-	return nil
-}
-
-func (s *daemonTasks) checkNameLocked(except, name string) error {
-	for id, task := range s.liveLocked() {
-		if id != except && task.taskName() == name {
-			return fmt.Errorf("%s: %w", name, errObjectNameInUse)
-		}
-	}
 	return nil
 }
 
@@ -254,9 +247,6 @@ func (s *daemonTasks) findNativeShell(ref, identity string) (*nativeShellTask, l
 }
 
 func (t *nativeShellTask) snapshot() localShellRecord {
-	// Only the label changes after publication.
-	t.shell.nameMu.Lock()
-	defer t.shell.nameMu.Unlock()
 	return t.shell.record
 }
 
@@ -483,57 +473,20 @@ func (s *daemonTasks) taskInventory(request taskInventoryRequest) (taskInventory
 	return snapshot, workers
 }
 
-func (s *daemonTasks) serveResourceMutation(w http.ResponseWriter, r *http.Request) {
-	var mutation resourceMutation
-	if !readDaemonBody(w, r, &mutation) {
+func (s *daemonTasks) serveResourceStop(w http.ResponseWriter, r *http.Request) {
+	var change resourceMutation
+	if !readDaemonBody(w, r, &change) {
 		return
 	}
-	task, err := s.mutateResource(r.PathValue("action"), mutation)
-	if err == nil && task != nil {
-		err = task.stopTask()
+	stops, err := s.confirmedResourceStops([]resourceMutation{change})
+	if err == nil {
+		err = stops[0].stopTask()
 	}
 	var reply resourceReply
 	if err != nil {
 		reply.Error = err.Error()
 	}
 	_ = json.MarshalWrite(w, reply)
-}
-
-// A stop returns the exact registered worker to stop outside the task table
-// lock. Renames complete under the same lock as lookup.
-func (s *daemonTasks) mutateResource(action string, change resourceMutation) (*daemonResourceTask, error) {
-	if action != "kill" {
-		return nil, fmt.Errorf("invalid resource operation")
-	}
-	if err := validSession(change.Ref); err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, task, err := s.resolveResourceLocked(change)
-	return task, err
-}
-
-func (s *daemonTasks) resolveResourceLocked(change resourceMutation) (string, *daemonResourceTask, error) {
-	switch change.Kind {
-	case "mount", "forward":
-	default:
-		return "", nil, fmt.Errorf("invalid resource type")
-	}
-	if change.Identity != "" {
-		id := change.confirmedUID()
-		if id != "" {
-			if task := s.confirmedResourceLocked(change, id); task != nil {
-				return id, task, nil
-			}
-		}
-		return "", nil, fmt.Errorf("task changed; refresh with sshore list")
-	}
-	id, task := s.findResourceLocked(change)
-	if task == nil {
-		return "", nil, fmt.Errorf("%s/%s no longer exists; refresh with sshore list", change.Kind, change.Ref)
-	}
-	return id, task, nil
 }
 
 func (s *daemonTasks) confirmedResourceLocked(change resourceMutation, id string) *daemonResourceTask {
@@ -548,22 +501,7 @@ func (t *daemonResourceTask) matches(change resourceMutation) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	r := t.record
-	return r.Kind == change.Kind && (r.Name == change.Ref || r.UID == change.Ref) &&
-		(change.Identity == "" || resourceIdentity(r) == change.Identity)
-}
-
-func (s *daemonTasks) findResourceLocked(change resourceMutation) (string, *daemonResourceTask) {
-	if validTaskUID(change.Ref) {
-		if task, ok := s.lookupLocked(change.Ref).(*daemonResourceTask); ok && task.matches(change) {
-			return change.Ref, task
-		}
-	}
-	for id, registered := range s.liveLocked() {
-		if task, ok := registered.(*daemonResourceTask); ok && task.matches(change) {
-			return id, task
-		}
-	}
-	return "", nil
+	return r.Kind == change.Kind && (r.Name == change.Ref || r.UID == change.Ref)
 }
 
 // Resolve all confirmed identities before stopping any workers.

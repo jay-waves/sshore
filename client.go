@@ -4,6 +4,7 @@ package main
 // connections. Remote operation requests are approved in the local terminal.
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -170,7 +171,7 @@ type sessionEnd struct {
 	retained            []retainedShell
 }
 
-func runClientOnce(o options, transports clientTransports, panel *clientConsole, end *sessionEnd, ready func(options) string) (resultCode int, resultErr error) {
+func runClientOnce(o options, transports clientTransports, panel *clientConsole, end *sessionEnd, ready func(options) (from, parentID string)) (resultCode int, resultErr error) {
 	attached := false
 	var ended func()
 	report := func(level termui.Color, title, detail string) {
@@ -197,32 +198,6 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	// until the keyboard has stopped and terminal restoration has completed.
 	ctx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
-	if o.command == "kill" {
-		target, lookupErr := participatingMutationTarget(o)
-		if lookupErr != nil {
-			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not read participating shells: %s\n", cleanText(lookupErr.Error()))
-		}
-		connection := remoteService(sshConnectionOptions(o), o.server, remoteServiceRequest{
-			Operation: "task-control", Mode: o.command, Name: o.session, Instance: o.instance,
-		})
-		connection = withSSHDiagnostics(connection, os.Stderr, nil)
-		err := transportio.Run(context.Background(), connection, os.Stdin, os.Stdout, os.Stderr)
-		if err == nil && target.Instance != "" {
-			var updateErr error
-			if validTaskUID(o.instance) {
-				updateErr = rememberShellExit(o)
-			} else {
-				updateErr = forgetParticipatingShell(o.host, target.Instance)
-			}
-			if updateErr != nil {
-				termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not update participating shells: %s\n", cleanText(updateErr.Error()))
-			}
-		}
-		if e, ok := errors.AsType[exitStatusError](err); ok {
-			return e.ExitStatus(), nil
-		}
-		return 0, err
-	}
 	if !xterm.IsTerminal(int(os.Stdin.Fd())) || !xterm.IsTerminal(int(os.Stdout.Fd())) {
 		return 1, fmt.Errorf("an interactive terminal is required")
 	}
@@ -310,7 +285,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	}
 	if !o.local {
 		row := participatingShell{Host: o.host, Owner: m.Owner, Instance: o.instance, Name: o.session, State: taskActive,
-			Pinned: m.Pinned, PinUntil: m.PinUntil, PID: m.PID, Shell: m.Shell, Program: m.Program, ProgramLine: m.ProgramLine, Attachment: newTaskUID()}
+			Pinned: m.Pinned, PinUntil: m.PinUntil, PID: m.PID, Shell: m.Shell, Program: m.Program, Attachment: newTaskUID()}
 		if err := observeParticipatingShell(row); err != nil {
 			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not record participating shell: %s\n", cleanText(err.Error()))
 		} else {
@@ -477,7 +452,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	o.recovering = false
 	interruptSignals.interactive.Store(true)
 	attached = true
-	from := ready(o)
+	from, parentID := ready(o)
 
 	connected := "Connected " + cleanText(shellDisplayEndpoint(o))
 	if from != "" {
@@ -586,6 +561,14 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	var openingConsole, inputClosed bool
 	var openingInput []byte
 	clearTransition := func() { pending = transitionRequest{} }
+	detachFromConsole := func(request message) error {
+		if !queueDetach(request) {
+			console.show("Terminal input queue is busy. Try again.")
+			return nil
+		}
+		clearTransition()
+		return closeConsole()
+	}
 	awaitResponse := func(delay time.Duration) {
 		pending.deadline = time.Now().Add(delay)
 		pending.timeout = time.After(time.Until(pending.deadline))
@@ -609,6 +592,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		target.command, target.session = "attach", selected.Name
 		target.instance, target.taskIdentity = selected.Instance, "task:"+selected.Instance
 		target.hosted = o.local && selected.Hosted
+		target.argv = nil
 		return queueSwitch(&sessionSwitch{to: target, sameDaemon: true})
 	}
 	startChild := func(pin bool) error {
@@ -616,11 +600,11 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		awaitResponse(30 * time.Second)
 		return streamMessage(control, message{Type: pending.action, Pinned: pin})
 	}
-	requestConsoleTargets := func() error {
+	requestSessionTargets := func(purpose, ref string) error {
 		consoleRequest++
-		pending.action = fmt.Sprintf("console:%d", consoleRequest)
+		pending.action = fmt.Sprintf("%s%d", purpose, consoleRequest)
 		awaitResponse(5 * time.Second)
-		return streamMessage(control, message{Type: "session_targets", Action: pending.action, Name: console.attach, NativeTargets: o.local && o.routeParent == nil})
+		return streamMessage(control, message{Type: "session_targets", Action: pending.action, Name: ref, NativeTargets: o.local && o.routeParent == nil})
 	}
 	releaseOwnedTransport := func() {
 		if t := o.reusable; t != nil && t.ownsShell {
@@ -635,19 +619,8 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		awaitResponse(requestTimeout)
 		return streamMessage(control, message{Type: "console_inventory", Action: pending.action, Name: name, Color: color, Cols: uint16(cols)})
 	}
-	requestOpeningInventory := func(targetWarning string) error {
-		console.targetWarning = targetWarning
-		return requestConsoleInventory("pstree")
-	}
-	showConsoleInventory := func(body string) {
-		if console.targetWarning != "" {
-			body = console.targetWarning + "\n\n" + body
-			console.targetWarning = ""
-		}
-		console.show(consoleInventoryBody(body, rows))
-	}
 	leaveConsole := func() error {
-		if strings.HasPrefix(pending.action, "console:") {
+		if strings.HasPrefix(pending.action, "console:") || strings.HasPrefix(pending.action, consoleAttachLookup) {
 			clearTransition()
 		}
 		if err := closeConsole(); err != nil {
@@ -718,15 +691,8 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 			}
 		case <-pending.timeout:
 			if strings.HasPrefix(pending.action, "console:inventory:") && console != nil {
-				showConsoleInventory("Inventory lookup timed out.")
-			} else if strings.HasPrefix(pending.action, "console:") && console != nil {
-				if console.attach == "" {
-					if err := requestOpeningInventory("Session lookup timed out."); err != nil {
-						return 255, err
-					}
-					continue
-				}
-				console.attach = ""
+				console.show("Inventory lookup timed out.")
+			} else if console != nil {
 				console.show("Session lookup timed out.")
 			} else if pending.action == "handoff" {
 				report := pending.next.to.handoffDone
@@ -770,56 +736,54 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						return 255, err
 					}
 				case e.console.Line != nil:
-					args := strings.Fields(*e.console.Line)
-					if len(args) > 0 {
-						args[0] = canonicalCommand(args[0])
+					command, ok := console.readCommand(*e.console.Line, panel.directory)
+					if !ok {
+						break
 					}
-					switch {
-					case len(args) == 1 && args[0] == "pwd":
-						console.show(cleanText(panel.directory))
-					case len(args) > 0 && args[0] == "detach":
-						request, err := parseDetachCommand(args[1:])
+					switch command.command {
+					case "list", "pstree":
+						if err := requestConsoleInventory(command.command); err != nil {
+							return 255, err
+						}
+					case "detach":
+						request, err := detachMessage(command)
 						if err != nil {
 							console.show(err.Error())
 							break
 						}
-						if !queueDetach(request) {
-							console.show("Terminal input queue is busy. Try again.")
-							break
-						}
-						clearTransition()
-						if err := closeConsole(); err != nil {
+						if err := detachFromConsole(request); err != nil {
 							return 255, err
 						}
-					case len(args) == 1 && args[0] == "exit":
+					case "exit":
 						if err := leaveConsole(); err != nil {
 							return 255, err
 						}
-					case len(args) > 0 && args[0] == "shell":
-						parsed, err := parseCLI(args[1:], "shell")
-						if err != nil || parsed.task.scope != taskLocal || parsed.startupDirectory != "" || len(parsed.values) > 1 || len(parsed.values) == 1 && !parsed.has("--pin") {
+					case "shell":
+						if command.remoteCommand != "" || command.task.scope != taskLocal || command.startupDirectory != "" || len(command.values) > 1 || len(command.values) == 1 && !command.has("--pin") {
 							console.show("Usage: shell [--pin]")
 							break
 						}
 						if err := closeConsole(); err != nil {
 							return 1, err
 						}
-						if err := startChild(parsed.has("--pin")); err != nil {
+						if err := startChild(command.has("--pin")); err != nil {
 							return 255, err
 						}
-					case len(args) == 2 && args[0] == "attach":
-						console.attach = args[1]
-						termui.WriteConsoleBody(terminalOutput, "Looking up session…")
-						if err := requestConsoleTargets(); err != nil {
+					case "attach":
+						ref := cmp.Or(command.task.ref, command.operand(0))
+						if ref != "" && ref == parentID {
+							if err := detachFromConsole(message{Type: "detach"}); err != nil {
+								return 255, err
+							}
+							break
+						}
+						lookup := consoleAttachLookup
+						if isTaskIDPrefix(ref) && strings.HasPrefix(parentID, ref) {
+							lookup = consoleParentLookup
+						}
+						if err := requestSessionTargets(lookup, ref); err != nil {
 							return 255, err
 						}
-					case len(args) == 1 && (args[0] == "list" || args[0] == "pstree"):
-						termui.WriteConsoleBody(terminalOutput, "Loading "+args[0]+"…")
-						if err := requestConsoleInventory(args[0]); err != nil {
-							return 255, err
-						}
-					default:
-						console.show(consoleHelp)
 					}
 				}
 				continue
@@ -838,6 +802,10 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						if detachPhase == detachIdle && approval == nil && pending.action == "sh_child" {
 							keyErr = startChild(false)
 						}
+					case term.KeyAttach:
+						if detachPhase == detachIdle && approval == nil && !transitioning() {
+							keyErr = requestSessionTargets(consoleAttachLookup, "")
+						}
 					case term.KeyConsole:
 						openingConsole = false
 						if detachPhase != detachIdle || approval != nil || transitioning() {
@@ -852,13 +820,13 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 							host = "local"
 						}
 						panel.directory = "Directory unavailable."
-						console = panel.open(ctx, terminalOutput, emit, host, cols, color)
+						console = openCommandConsole(ctx, emit, host, cols, color, true)
 						if len(openingInput) > 0 {
 							keyErr = sendConsoleInput(openingInput)
 						}
 						openingInput = nil
 						if keyErr == nil && console != nil {
-							keyErr = requestConsoleTargets()
+							keyErr = requestSessionTargets(consoleTargetLookup, "")
 						}
 					case term.KeyDetach:
 						keyErr = sendDetach(false)
@@ -991,26 +959,19 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 				case "console_inventory":
 					if console != nil && strings.HasPrefix(pending.action, "console:inventory:") && e.m.Action == pending.action {
 						clearTransition()
-						showConsoleInventory(e.m.Output)
+						console.show(consoleInventoryBody(e.m.Output, rows))
 					}
 				case "session_targets":
-					if pending.timeout == nil || pending.action == "handoff" || e.m.Action != pending.action {
+					if pending.timeout == nil || e.m.Action != pending.action {
 						continue
 					}
 					clearTransition()
 					if e.m.Error != "" {
-						if console != nil && strings.HasPrefix(e.m.Action, "console:") {
-							if console.attach == "" {
-								if err := requestOpeningInventory("Session lookup failed. " + cleanText(e.m.Error)); err != nil {
-									return 255, err
-								}
-								continue
-							}
-							console.attach = ""
+						if console != nil {
 							console.show(e.m.Error)
-							continue
+						} else {
+							notice(termui.Warning, "\r\n[sshore] %s\r\n", cleanText(e.m.Error))
 						}
-						notice(termui.Warning, "\r\n[sshore] %s\r\n", cleanText(e.m.Error))
 						continue
 					}
 					if validSession(e.m.Name) != nil {
@@ -1020,37 +981,44 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						return 255, err
 					}
 					o.session = e.m.Name
-					if strings.HasPrefix(e.m.Action, "console:") {
+					if strings.HasPrefix(e.m.Action, consoleTargetLookup) {
 						if console != nil {
-							if console.attach == "" {
-								console.targets = e.m.Targets
-								if e.m.Directory != "" {
-									panel.directory = e.m.Directory
-									if o.local {
-										panel.localDirectory = panel.directory
-									}
-								}
-								if err := requestOpeningInventory(""); err != nil {
-									return 255, err
-								}
-							} else {
-								console.attach = ""
-								if len(e.m.Targets) != 1 {
-									return 255, fmt.Errorf("invalid session selection")
-								}
-								target := e.m.Targets[0]
-								if err := closeConsole(); err != nil {
-									return 1, err
-								}
-								if !switchTo(target) {
-									notice(termui.Warning, "\r\n[sshore] terminal input queue is busy\r\n")
-									if err := streamMessage(control, message{Type: "redraw"}); err != nil {
-										return 255, err
-									}
+							console.targets = e.m.Targets
+							if e.m.Directory != "" {
+								panel.directory = e.m.Directory
+								if o.local {
+									panel.localDirectory = panel.directory
 								}
 							}
+							console.show("")
 						}
 						continue
+					}
+					if strings.HasPrefix(e.m.Action, consoleParentLookup) {
+						if len(e.m.Targets) != 0 && e.m.Targets[0].Instance != parentID {
+							console.show("Ambiguous task ID. Use the full task ID to return to the parent.")
+						} else if err := detachFromConsole(message{Type: "detach"}); err != nil {
+							return 255, err
+						}
+						continue
+					}
+					if len(e.m.Targets) == 0 {
+						const message = "No detached session on this host."
+						if console != nil {
+							console.show(message)
+						} else {
+							notice(termui.Info, "\r\n[sshore] %s\r\n", message)
+						}
+						continue
+					}
+					if err := closeConsole(); err != nil {
+						return 1, err
+					}
+					if !switchTo(e.m.Targets[0]) {
+						notice(termui.Warning, "\r\n[sshore] terminal input queue is busy\r\n")
+						if err := streamMessage(control, message{Type: "redraw"}); err != nil {
+							return 255, err
+						}
 					}
 				case "shell_route":
 					if pending.timeout != nil && pending.action == "sh_child" {
@@ -1204,6 +1172,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 					if pending.action == "" && pending.next != nil {
 						pending.next.from = o
 						dest := &pending.next.to
+						// Keep the old reservation for rollback. A cycle commits to an independent tree.
 						if o.hold != nil {
 							switch {
 							case dest.recovering:

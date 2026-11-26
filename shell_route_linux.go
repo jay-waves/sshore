@@ -230,7 +230,7 @@ func handoffRemoteShell(o options) (bool, error) {
 	if err := writeMessage(c, message{Type: "shell_route_request", SoftwareVersion: version, LocalRequest: req}); err != nil {
 		return true, err
 	}
-	if _, err := negotiateShellSetup(c, o.host, false); err != nil {
+	if err := negotiateShellSetup(c, o.host, false); err != nil {
 		return true, err
 	}
 	reply, err := readMessage(c)

@@ -80,7 +80,6 @@ type message struct {
 	Name             string              `json:"name,omitempty"`
 	Shell            string              `json:"shell,omitempty"`
 	Program          bool                `json:"program,omitempty"`
-	ProgramLine      string              `json:"program_line,omitempty"`
 	Size             int64               `json:"size,omitzero"`
 	Output           string              `json:"output,omitempty"`
 	Error            string              `json:"error,omitempty"`

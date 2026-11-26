@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -274,13 +275,13 @@ func runClient(o options) (int, error) {
 	for {
 		prune(&o)
 		var ended sessionEnd
-		code, err := runClientOnce(o, transports, console, &ended, func(attached options) string {
+		code, err := runClientOnce(o, transports, console, &ended, func(attached options) (from, parentID string) {
 			current, menu = attached, nil
 			if returnEnd != nil {
 				fmt.Fprintln(os.Stderr, formatSessionEnd(*returnEnd, returnSource, shellDisplayEndpoint(attached)))
 				returnEnd = nil
 			}
-			from := currentEndpoint
+			from = currentEndpoint
 			currentEndpoint = shellDisplayEndpoint(current)
 			if from == currentEndpoint {
 				from = ""
@@ -291,8 +292,12 @@ func runClient(o options) (int, error) {
 				parents = append(parents, pending.from)
 				pending = nil
 			}
+			if len(parents) != 0 {
+				parent := parents[len(parents)-1]
+				parentID = cmp.Or(canonicalTaskUID(parent.taskIdentity), parent.instance)
+			}
 			prune(&current)
-			return from
+			return from, parentID
 		})
 		if o.handoffDone != nil && pending == nil {
 			_ = o.handoffDone(context.Background(), err)
@@ -350,17 +355,14 @@ func runClient(o options) (int, error) {
 			}
 			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Target unavailable; restoring %s.%s\n", cleanText(target.session), reason)
 		case len(parents) == 0:
-			if len(o.argv) != 0 && ended.exit {
-				return code, err
-			}
-			if o.command == "kill" || err != nil && menu == nil {
+			if err != nil && menu == nil {
 				return code, err
 			}
 			problem := ""
 			if err != nil {
 				problem, current = err.Error(), *menu
 			}
-			if !current.local {
+			if !current.local || len(o.argv) != 0 && ended.exit {
 				if ended.exit {
 					fmt.Fprintln(os.Stderr, formatSessionEnd(ended, current, "calling terminal"))
 				}

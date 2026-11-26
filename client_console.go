@@ -3,8 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
-	"fmt"
-	"io"
+	"errors"
 	"slices"
 	"strings"
 
@@ -19,30 +18,28 @@ type clientConsole struct {
 }
 
 type commandConsole struct {
-	output        []byte
-	editor        *termui.Console
-	color         bool
-	attach        string
-	targets       []sessionTarget
-	targetWarning string
+	output   []byte
+	editor   *termui.Console
+	targets  []sessionTarget
+	attached bool
 }
+
+const consoleTargetLookup = "console:targets:"
+const consoleAttachLookup = "attach:"
+const consoleParentLookup = "attach:parent:"
 
 const consoleHelp = `pstree (ps)       Show the task tree
 list (ls)         Show task details
-pwd               Show this shell's directory
-attach (a) <ID|name>  Enter a detached child or idle root (Tab completes)
-shell [--pin]     Open a nested shell (alias: sh)
-detach [DURATION] Pin and detach the current shell
-exit              Return to the current shell`
+pwd               Show the current directory
+attach [ID|name]  Resume a session (alias: a)
+ID                Resume a task by ID
+shell [--pin]     Open a shell (alias: sh)
+exit              Close the command console`
 
-func (state *clientConsole) open(ctx context.Context, out io.Writer, send func(clientEvent), host string, width int, color bool) *commandConsole {
-	c := &commandConsole{}
-	c.color = color
-	title := termui.Render(color, termui.Heading, "sshore commands")
-	keys := termui.Render(color, termui.Muted, "(Tab: next, Esc: return)")
-	fmt.Fprintf(out, "%s  %s\r\n\r\n", title, keys)
-	termui.WriteConsoleBody(out, termui.Render(color, termui.Muted, "Loading pstree…"))
-	const prefix, suffix = "sshore on ", "> "
+func openCommandConsole(ctx context.Context, send func(clientEvent), host string, width int, color, attached bool) *commandConsole {
+	c := &commandConsole{attached: attached}
+	const prefix = "sshore on "
+	const suffix = "> "
 	host = ansi.Truncate(cleanText(host), max(1, width-len(prefix)-len(suffix)-4), "…")
 	prompt := termui.FormatPrompt(color, prefix+host+suffix)
 	c.editor = termui.StartConsole(ctx, prompt, width, color, func(e termui.ConsoleEvent) {
@@ -51,12 +48,18 @@ func (state *clientConsole) open(ctx context.Context, out io.Writer, send func(c
 	return c
 }
 
-type consoleCompleter func() []sessionTarget
+type consoleCompleter struct {
+	targets  []sessionTarget
+	attached bool
+}
 
-func (targets consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
+func (completion consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	prefix := string(line[:pos])
 	word := prefix
-	candidates := []string{"attach", "detach", "exit", "help", "shell", "list", "pstree", "pwd"}
+	candidates := []string{"attach", "exit", "help", "shell", "list", "pstree", "pwd"}
+	if completion.attached {
+		candidates = append(candidates, "detach")
+	}
 	for alias, command := range commandAliases {
 		if slices.Contains(candidates, command) {
 			candidates = append(candidates, alias)
@@ -65,8 +68,13 @@ func (targets consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	command, rest, ok := strings.Cut(prefix, " ")
 	if ok && canonicalCommand(command) == "attach" {
 		word, candidates = rest, nil
-		for _, target := range targets() {
-			candidates = append(candidates, target.Name, taskShortCode("task:"+target.Instance))
+		for _, target := range completion.targets {
+			candidates = append(candidates, target.Name)
+		}
+	}
+	if !ok || canonicalCommand(command) == "attach" {
+		for _, target := range completion.targets {
+			candidates = append(candidates, taskShortCode(identityFromUID(target.Instance)))
 		}
 	}
 
@@ -81,8 +89,59 @@ func (targets consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
 }
 
 func (c *commandConsole) show(body string) {
-	targets := c.targets
-	c.editor.Show(body, consoleCompleter(func() []sessionTarget { return targets }))
+	c.editor.Show(body, consoleCompleter{targets: c.targets, attached: c.attached})
+}
+
+func parseConsoleCommand(line string, attached bool) (cliArguments, error) {
+	args := strings.Fields(line)
+	if len(args) == 0 {
+		return cliArguments{}, nil
+	}
+	name, operands := canonicalCommand(args[0]), args[1:]
+	if _, known := cliCommands[name]; !known && len(args) == 1 && taskIDOperand(args[0]) != "" {
+		name, operands = "attach", args
+	}
+	switch name {
+	case "help", "pwd", "exit":
+		if len(operands) != 0 {
+			return cliArguments{}, usage("%s does not accept arguments in the command console", name)
+		}
+		return cliArguments{command: name}, nil
+	case "detach":
+		if !attached {
+			return cliArguments{}, usage("detach requires an attached shell")
+		}
+	case "attach", "shell", "list", "pstree":
+	default:
+		return cliArguments{}, usage("unknown command %q", args[0])
+	}
+	parsed, err := parseCLI(operands, name)
+	if err == nil && name == "attach" && (len(parsed.ssh) != 0 || len(parsed.values) != 0) {
+		return cliArguments{}, usage("use attach [ID|name] in the command console")
+	}
+	return parsed, err
+}
+
+// Consume input and display built-in responses before dispatching work.
+func (c *commandConsole) readCommand(line, directory string) (cliArguments, bool) {
+	parsed, err := parseConsoleCommand(line, c.attached)
+	switch {
+	case errors.Is(err, errHelp) || parsed.command == "help" && err == nil:
+		help := consoleHelp
+		if c.attached {
+			help += "\ndetach [DURATION] Pin and detach the current shell"
+		}
+		c.show(help)
+	case err != nil:
+		c.show(err.Error())
+	case parsed.command == "pwd":
+		c.show(cleanText(directory))
+	case parsed.command == "":
+		c.show("")
+	default:
+		return parsed, true
+	}
+	return cliArguments{}, false
 }
 
 const consoleMoreRows = "… more rows in the standalone command on this host"

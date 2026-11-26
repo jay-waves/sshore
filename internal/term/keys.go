@@ -15,6 +15,7 @@ const (
 	KeyRedraw
 	KeyNew
 	KeyConsole
+	KeyAttach
 )
 
 // KeyEvent is either opaque terminal input or a local command, in input order.
@@ -151,6 +152,8 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 				action = KeyNew
 			case ':', 's':
 				action = KeyConsole
+			case 'a':
+				action = KeyAttach
 			case 'd':
 				action = KeyDetach
 			case 'r':
@@ -167,7 +170,7 @@ func (k *Keys) Feed(data []byte) []KeyEvent {
 		k.prefix = nil
 		flush()
 		events = append(events, KeyEvent{Action: action})
-		return action == KeyConsole || action == KeyDetach || action == KeyNew
+		return action == KeyConsole || action == KeyAttach || action == KeyDetach || action == KeyNew
 	}
 	for i, c := range data {
 		if k.mouseTail > 0 {

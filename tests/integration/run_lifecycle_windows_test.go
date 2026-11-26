@@ -27,6 +27,45 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestWindowsNewReview(t *testing.T) {
+	binary := os.Getenv("SSHORE_TEST_WINDOWS_CLIENT")
+	if binary == "" {
+		t.Skip("set SSHORE_TEST_WINDOWS_CLIENT to a built executable")
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	t.Setenv("SSHORE_STATE_DIR", state)
+	t.Setenv("SSHORE_DISABLED", "")
+	ctx := t.Context()
+	cmd := exec.CommandContext(ctx, binary, "new", "--", "vim", "a b.txt")
+	out, err := runWindowsTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+		wait(`["vim","a b.txt"]`)
+		wait("Esc Cancel")
+		send("\x1b[A")
+		send("e")
+		wait("Arguments>")
+		send("\x01\x0b[\"vim\",null]\r")
+		wait("Use string arguments without NUL")
+		wait("Arguments>")
+		send("\x01\x0b[\"vim\",\"c d.txt\",\"\"]\r")
+		wait("Esc Cancel")
+		send("\x1b")
+	})
+	if err != nil {
+		t.Fatalf("review: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, `["vim","c d.txt",""]`) {
+		t.Fatalf("edited arguments missing:\n%s", out)
+	}
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		t.Fatalf("canceling review changed task state: %v", err)
+	}
+}
+
+func confirmNewTerminal(send func(string), wait terminalWait) {
+	wait("Esc Cancel")
+	send("\r")
+}
+
 func TestWindowsProgramArguments(t *testing.T) {
 	program, err := os.Executable()
 	if err != nil {
@@ -49,6 +88,7 @@ func TestWindowsProgramArguments(t *testing.T) {
 	ctx, command := windowsClient(t)
 	t.Run("new without delimiter opens a shell", func(t *testing.T) {
 		out, err := runWindowsTerminal(t, ctx, command("new", "--name", "default-shell"), func(send func(string), wait terminalWait) {
+			confirmNewTerminal(send, wait)
 			wait("Connected here:default-shell")
 			send("echo DEFAULT_SHELL_READY\r")
 			wait("DEFAULT_SHELL_READY")
@@ -77,9 +117,9 @@ func TestWindowsProgramArguments(t *testing.T) {
 				t.Fatal(err)
 			}
 			out, err := runWindowsTerminal(t, ctx, command(args...), func(send func(string), wait terminalWait) {
+				confirmNewTerminal(send, wait)
 				wait("PROGRAM_ARGS=" + string(want))
-				wait("sshore on local>")
-				send("exit\r")
+				wait("Now in: calling terminal")
 			})
 			if err != nil {
 				t.Fatalf("program arguments: %v\n%s", err, out)
@@ -128,7 +168,7 @@ func TestWindowsRunLifecycle(t *testing.T) {
 		return command("new", "--name", "lifecycle", "--pin", "--", program, "-test.run=^TestWindowsRunFixture$", "--", "fixture-args", "", "space value", `quote"value`, `back\slash`, "--ssh", "--")
 	}
 	missing := filepath.Join(t.TempDir(), "missing.exe")
-	out, err := runWindowsTerminal(t, ctx, command("new", "--name", "lifecycle", "--", missing), func(func(string), terminalWait) {})
+	out, err := runWindowsTerminal(t, ctx, command("new", "--name", "lifecycle", "--", missing), confirmNewTerminal)
 	if err == nil {
 		t.Fatalf("missing executable succeeded:\n%s", out)
 	}
@@ -136,6 +176,7 @@ func TestWindowsRunLifecycle(t *testing.T) {
 		t.Fatalf("failed launch left a task registered:\n%s", tree)
 	}
 	out, err = runWindowsTerminal(t, ctx, start(), func(send func(string), wait terminalWait) {
+		confirmNewTerminal(send, wait)
 		wait("Connected here:lifecycle")
 		send("\x02d")
 		wait("Detached from here:lifecycle")
@@ -155,10 +196,11 @@ func TestWindowsRunLifecycle(t *testing.T) {
 		t.Fatalf("unexpected task ID %q in:\n%s", id, tree)
 	}
 	detail := string(windowsRun(t, command("list")))
-	if strings.ContainsAny(program, " \"'`") {
-		program = strconv.Quote(program)
+	programDetail := program
+	if strings.ContainsAny(programDetail, " \"'`") {
+		programDetail = strconv.Quote(programDetail)
 	}
-	wantDetail := program + ` -test.run=^TestWindowsRunFixture$ -- fixture-args "" "space value" "quote\"value" back\slash --ssh --`
+	wantDetail := programDetail + ` -test.run=^TestWindowsRunFixture$ -- fixture-args "" "space value" "quote\"value" back\slash --ssh --`
 	if !strings.Contains(detail, "pinned "+wantDetail) {
 		t.Fatalf("list did not show the pinned program and its arguments:\n%s", detail)
 	}
@@ -166,7 +208,7 @@ func TestWindowsRunLifecycle(t *testing.T) {
 		t.Fatalf("kill without --all should only look for a named task: %v\n%s", err, out)
 	}
 
-	out, err = runWindowsTerminal(t, ctx, start(), func(func(string), terminalWait) {})
+	out, err = runWindowsTerminal(t, ctx, start(), confirmNewTerminal)
 	if err == nil || !strings.Contains(out, "already") {
 		t.Fatalf("duplicate name should fail: %v\n%s", err, out)
 	}
@@ -204,6 +246,7 @@ func TestWindowsRunLifecycle(t *testing.T) {
 	}
 
 	out, err = runWindowsTerminal(t, ctx, start(), func(send func(string), wait terminalWait) {
+		confirmNewTerminal(send, wait)
 		wait("Connected here:lifecycle")
 		send("\x02d")
 		wait("Detached from here:lifecycle")

@@ -81,14 +81,6 @@ func runDaemonCommand(parsed cliArguments) (int, error) {
 	}
 }
 
-func parseDetachCommand(args []string) (message, error) {
-	parsed, err := parseCLI(args, "detach")
-	if err != nil {
-		return message{}, err
-	}
-	return detachMessage(parsed)
-}
-
 func detachMessage(parsed cliArguments) (message, error) {
 	m := message{Type: "detach"}
 	if v := parsed.operand(0); v != "" {
@@ -112,26 +104,70 @@ func runDetach(parsed cliArguments) (int, error) {
 	return 0, retentionHostedShell(m)
 }
 
+func runShell(parsed cliArguments) (int, error) {
+	if parsed.remoteCommand != "" {
+		return runSSHCommand(parsed)
+	}
+	o, err := shellOptions(parsed, selectedTask{})
+	if err != nil {
+		return 2, err
+	}
+	if parsed.command == "new" {
+		confirmed, err := reviewNewTerminal(&o)
+		if err != nil {
+			return 1, err
+		}
+		if !confirmed {
+			return 0, nil
+		}
+	}
+	return withDaemonActivity(func() (int, error) { return executeShellCommand(o) })
+}
+
 func runTargetCommand(parsed cliArguments) (int, error) {
-	command := parsed.command
-	if command == "kill" && parsed.has("--all") {
+	if parsed.command == "kill" && parsed.has("--all") {
 		return runKillAll(options{host: parsed.task.host, ssh: parsed.ssh, server: parsed.value("--server", "sshore")})
 	}
 	target, err := selectCLITask(parsed)
 	if err != nil {
 		return 2, err
 	}
-	if target.Identity != "" && target.Connection == nil && target.RemoteHost == "" && command != "attach" {
+	if parsed.command == "kill" && target.Connection == nil && target.RemoteHost == "" {
 		if len(parsed.ssh) != 0 || parsed.has("--server") {
 			return 2, usage("local tasks do not accept SSH options")
 		}
-		return mutateRegisteredTask(command, target)
+		return killRegisteredTask(target)
 	}
 	o, err := shellOptions(parsed, target)
 	if err != nil {
 		return 2, err
 	}
+	if parsed.command == "kill" {
+		return withDaemonActivity(func() (int, error) { return runRemoteTaskStop(o) })
+	}
 	return withDaemonActivity(func() (int, error) { return executeShellCommand(o) })
+}
+
+func runRemoteTaskStop(o options) (int, error) {
+	if !validTaskUID(o.instance) {
+		return 2, usage("remote task selection requires a full task ID")
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	connection := remoteService(sshConnectionOptions(o), o.server, remoteServiceRequest{
+		Operation: "task-control", Mode: "kill", Name: o.instance, Instance: o.instance,
+	})
+	connection = withSSHDiagnostics(connection, os.Stderr, nil)
+	if err := sshio.Run(ctx, connection, os.Stdin, os.Stdout, os.Stderr); err != nil {
+		if exit, ok := errors.AsType[exitStatusError](err); ok {
+			return exit.ExitStatus(), nil
+		}
+		return 1, err
+	}
+	if err := rememberShellExit(o); err != nil {
+		termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not record shell exit: %s\n", cleanText(err.Error()))
+	}
+	return 0, nil
 }
 
 type exitStatusError interface {
@@ -139,10 +175,10 @@ type exitStatusError interface {
 	ExitStatus() int
 }
 
-func runExec(parsed cliArguments) (int, error) {
+func runSSHCommand(parsed cliArguments) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	connection := sshio.Options{Host: parsed.operands[0], Command: parsed.operands[1], Args: parsed.ssh, Confirm: confirmSSHHost, Secret: promptSSHSecret}
+	connection := sshio.Options{Host: parsed.operands[0], Command: parsed.remoteCommand, Args: parsed.ssh, Confirm: confirmSSHHost, Secret: promptSSHSecret}
 	connection = withSSHDiagnostics(connection, os.Stderr, nil)
 	if err := sshio.Run(ctx, connection, os.Stdin, os.Stdout, os.Stderr); err != nil {
 		if exit, ok := errors.AsType[exitStatusError](err); ok {

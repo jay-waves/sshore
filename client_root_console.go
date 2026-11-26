@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -13,50 +14,24 @@ import (
 	xterm "golang.org/x/term"
 )
 
-const rootConsoleHelp = `shell [--pin]     Open a shell on this host (alias: sh)
-attach [ID|name]  Resume a detached shell
-pstree (ps)       Show the task tree
-list (ls)         Show task details
-pwd               Show the local console directory
-exit              Leave sshore`
-
-func rootConsoleOptions(current options, args []string) (*options, error) {
-	command := canonicalCommand(args[0])
-	next := &options{command: command, local: true, environment: current.environment, noEscape: current.noEscape}
-	switch command {
-	case "shell":
-		cli, err := parseCLI(args[1:], command)
-		if err != nil {
-			return nil, err
-		}
-		parsed, err := shellOptions(cli, selectedTask{})
-		if err != nil {
-			return nil, err
-		}
-		if len(parsed.ssh) != 0 || parsed.serverSet || !parsed.local {
-			return nil, usage("use shell [here:PATH] [--name NAME] to open a shell on this host")
-		}
-		next.command = parsed.command
-		next.session, next.pin = parsed.session, parsed.pin
-		next.startupDirectory = parsed.startupDirectory
-		next.noLogin, next.noProfile = parsed.noLogin, parsed.noProfile
-	case "attach":
-		if len(args) > 2 {
-			return nil, usage("use attach [ID|name]")
-		}
-		if len(args) == 2 {
-			if err := validSession(args[1]); err != nil {
-				return nil, err
-			}
-			next.session = args[1]
-		}
-		if err := resolveDetachedAttach(next, ""); err != nil {
-			return nil, err
-		}
-	default:
-		return nil, usage("unknown command %q", args[0])
+func rootConsoleOptions(current options, command cliArguments) (*options, error) {
+	if command.command == "attach" {
+		next := &options{command: "attach", local: true, environment: current.environment,
+			noEscape: current.noEscape, session: cmp.Or(command.task.ref, command.operand(0))}
+		return next, resolveDetachedAttach(next, "")
 	}
-	return next, nil
+	if command.remoteCommand != "" {
+		return nil, usage("run sh HOST -- COMMAND from your shell")
+	}
+	next, err := shellOptions(command, selectedTask{})
+	if err != nil {
+		return nil, err
+	}
+	if !next.local {
+		return nil, usage("use shell [here:PATH] [--name NAME] to open a shell on this host")
+	}
+	next.environment, next.noEscape = current.environment, current.noEscape
+	return &next, nil
 }
 
 func formatSessionEnd(ended sessionEnd, current options, destination string) string {
@@ -130,7 +105,7 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 	color := termui.ColorEnabled(os.Stdout)
 	termui.WriteConsoleBody(terminalOutput, formatSessionEnd(ended, current, "local console"))
 	termui.WriteConsoleBody(terminalOutput, "No shell attached. Use attach or shell, or type exit to leave.")
-	console := panel.open(ctx, terminalOutput, emit, "local", cols, color)
+	console := openCommandConsole(ctx, emit, "local", cols, color, false)
 	defer console.editor.Close()
 	keyCtx, cancelKeyboard := context.WithCancel(ctx)
 	stopKeyboard, err := term.StartKeyboard(keyCtx, func(data []byte, err error) {
@@ -197,32 +172,22 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 					return nil, err
 				}
 			case event.console.Line != nil:
-				args := strings.Fields(*event.console.Line)
-				if len(args) == 0 {
-					console.show("")
+				command, ok := console.readCommand(*event.console.Line, panel.localDirectory)
+				if !ok {
 					continue
 				}
-				command := canonicalCommand(args[0])
-				if len(args) > 1 && (command == "exit" || command == "help" || command == "list" || command == "pstree" || command == "pwd") {
-					console.show("Unexpected argument: " + cleanText(args[1]))
-					continue
-				}
-				switch command {
-				case "pwd":
-					console.show(cleanText(panel.localDirectory))
+				switch command.command {
 				case "exit":
 					return nil, nil
-				case "help":
-					console.show(rootConsoleHelp)
 				case "list", "pstree":
-					loadInventory(command)
-				default:
-					next, err := rootConsoleOptions(current, args)
-					if err == nil {
-						return next, nil
-					}
-					console.show(err.Error())
+					loadInventory(command.command)
+					continue
 				}
+				next, err := rootConsoleOptions(current, command)
+				if err == nil {
+					return next, nil
+				}
+				console.show(err.Error())
 			}
 		}
 	}

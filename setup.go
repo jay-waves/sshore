@@ -15,19 +15,15 @@ func negotiateFileSetup(stream io.ReadWriter) (string, error) {
 	return reply.HomeDirectory, err
 }
 
-func negotiateShellSetup(stream io.ReadWriter, host string, chooseShell bool) (message, error) {
+func negotiateShellSetup(stream io.ReadWriter, host string, chooseShell bool) error {
 	var choose func([]sessionTarget) (string, error)
 	if chooseShell {
 		choose = func(targets []sessionTarget) (string, error) {
 			return selectSetupShell(host, targets)
 		}
 	}
-	reply, err := negotiateSetup(stream, choose)
-	if err != nil {
-		return message{}, err
-	}
-
-	return reply, nil
+	_, err := negotiateSetup(stream, choose)
+	return err
 }
 
 func negotiateSetup(stream io.ReadWriter, choose func([]sessionTarget) (string, error)) (message, error) {
