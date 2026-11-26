@@ -207,9 +207,9 @@ func selectApprovedResource(input reviewPromptReader, r *requestRecord) (resourc
 		}
 		return resourceConfig{Mount: &ftpOptions{
 			Host: r.Connection.Host, Remote: op.Path, Mountpoint: mountpoint, ReadOnly: op.ReadOnly,
-			IOTimeout:  defaultMountIOTimeout,
-			Approval:   &files.MountApproval{Session: r.Connection.Session, PID: r.PID, ID: r.ID, Instance: r.Connection.Instance, Path: op.Path, ReadOnly: op.ReadOnly},
-			Connection: &r.Connection,
+			IOTimeoutNanos: defaultMountIOTimeout.Nanoseconds(),
+			Approval:       &files.MountApproval{Session: r.Connection.Session, PID: r.PID, ID: r.ID, Instance: r.Connection.Instance, Path: op.Path, ReadOnly: op.ReadOnly},
+			Connection:     &r.Connection,
 		}}, nil
 	}
 

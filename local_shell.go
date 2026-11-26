@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +13,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/jsonstream"
 )
 
 // The token is a local connection capability, never part of public inventory.
@@ -62,7 +63,7 @@ func readLocalRecord(path, name string) (localShellRecord, error) {
 		return r, err
 	}
 	defer f.Close()
-	err = json.NewDecoder(io.LimitReader(f, 16*1024)).Decode(&r)
+	err = jsonstream.NewDecoder(io.LimitReader(f, 16*1024)).Decode(&r)
 	if err != nil {
 		return r, err
 	}

@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/jsonstream"
 	"github.com/jay-waves/sshore/internal/sys"
 )
 
@@ -213,7 +213,7 @@ func serveDaemonAdmin(input io.Reader, output io.Writer) error {
 	if err != nil {
 		reply.Error = err.Error()
 	}
-	encoder := json.NewEncoder(output)
+	encoder := jsonstream.NewEncoder(output)
 	if err := encoder.Encode(reply); err != nil {
 		return err
 	}
@@ -221,7 +221,7 @@ func serveDaemonAdmin(input io.Reader, output io.Writer) error {
 		return nil
 	}
 	var expected daemonSnapshot
-	if err := json.NewDecoder(io.LimitReader(input, 1<<20)).Decode(&expected); err != nil {
+	if err := jsonstream.NewDecoder(io.LimitReader(input, 1<<20)).Decode(&expected); err != nil {
 		return err
 	}
 	if snapshot.Instance != expected.Instance || snapshot.Version != expected.Version || !slices.Equal(snapshot.Tasks, expected.Tasks) {

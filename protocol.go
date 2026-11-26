@@ -3,7 +3,7 @@ package main
 import (
 	"bufio"
 	"crypto/rand"
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -44,7 +44,7 @@ type message struct {
 	RetainedShells   []retainedShell     `json:"retained_shells,omitempty"`
 	Owner            string              `json:"owner,omitempty"`
 	TreeKey          string              `json:"tree_key,omitempty"`
-	TTL              time.Duration       `json:"ttl,omitempty"`
+	TTLNanos         int64               `json:"ttl_nanos,omitzero"`
 	PinUntil         time.Time           `json:"pin_until,omitzero"`
 	TerminalOffset   uint64              `json:"terminal_offset,omitempty"`
 	OutputIncomplete bool                `json:"output_incomplete,omitempty"`
@@ -133,7 +133,7 @@ func readMessage(r io.Reader) (message, error) {
 	return m, nil
 }
 
-func readControlJSON(r io.Reader, target any) error {
+func readControlJSON(r io.Reader, target any, opts ...json.Options) error {
 	var body []byte
 	if lines, ok := r.(interface{ ReadSlice(byte) ([]byte, error) }); ok {
 		for {
@@ -172,7 +172,7 @@ func readControlJSON(r io.Reader, target any) error {
 			body = append(body, b[0])
 		}
 	}
-	return json.Unmarshal(body, target)
+	return json.Unmarshal(body, target, opts...)
 }
 
 func writeFull(w io.Writer, b []byte) error {

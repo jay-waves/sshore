@@ -61,8 +61,7 @@ func executeCopyCommand(o copyOptions) (int, error) {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	command := renderRemoteCommand("", remoteServiceRequest{Operation: "cp-agent"})
-	connection := sshio.Options{Host: o.host, Args: o.ssh, Command: command, Confirm: confirmSSHHost, Secret: promptSSHSecret}
+	connection := remoteService(sshConnectionOptions(options{host: o.host, ssh: o.ssh}), "", remoteServiceRequest{Operation: "cp-agent"})
 	connection = withSSHDiagnostics(connection, os.Stderr, nil)
 	stream, err := sshio.Start(ctx, connection, os.Stderr)
 	if err != nil {

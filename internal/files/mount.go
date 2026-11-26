@@ -3,7 +3,8 @@ package files
 import (
 	"bufio"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -25,7 +26,7 @@ import (
 // data channel for direct SSH or the transport for an approved mount.
 type MountConfig struct {
 	History                     func(account, root string, delta VisitHistory) VisitHistory
-	PeerMetadata                json.RawMessage
+	PeerMetadata                jsontext.Value
 	Approval                    *MountApproval
 	Remote, Mountpoint, Version string
 	ReadOnly, DirectIO          bool
@@ -369,9 +370,9 @@ type MountApproval struct {
 }
 
 type message struct {
-	Account      string          `json:"account,omitempty"`
-	Approval     *MountApproval  `json:"mount_approval,omitempty"`
-	PeerMetadata json.RawMessage `json:"peer_metadata,omitempty"`
+	Account      string         `json:"account,omitempty"`
+	Approval     *MountApproval `json:"mount_approval,omitempty"`
+	PeerMetadata jsontext.Value `json:"peer_metadata,omitempty"`
 
 	Type            string `json:"type"`
 	SoftwareVersion string `json:"software_version,omitempty"`

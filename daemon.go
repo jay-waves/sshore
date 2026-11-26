@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/jsonstream"
 	"github.com/jay-waves/sshore/internal/release"
 	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
@@ -227,13 +227,13 @@ func runDaemon() (result error) {
 	stopHangups := sys.ProtectDaemonHangups()
 	defer stopHangups()
 	standalone := term.IsTerminal(int(os.Stdin.Fd()))
-	enc := json.NewEncoder(os.Stdout)
+	enc := jsonstream.NewEncoder(os.Stdout)
 	defer func() {
 		if result != nil && !standalone {
 			_ = enc.Encode(localStartup{Error: result.Error()})
 		}
 	}()
-	dec := json.NewDecoder(io.LimitReader(os.Stdin, 16*1024))
+	dec := jsonstream.NewDecoder(io.LimitReader(os.Stdin, 16*1024))
 	var record localShellRecord
 	if !standalone {
 		if err := dec.Decode(&record); err != nil {
@@ -447,18 +447,18 @@ func runDaemonLaunch(c net.Conn, req localDaemonRequest, record localShellRecord
 		if req.Parent != "" {
 			task, ok := tasks.lookup(req.Parent).(*nativeShellTask)
 			if !ok {
-				_ = json.NewEncoder(c).Encode(localStartup{Error: "parent shell is unavailable"})
+				_ = jsonstream.NewEncoder(c).Encode(localStartup{Error: "parent shell is unavailable"})
 				return
 			}
 			parent = &task.shell.shellTask
 		}
 		err := runLocalShell(tasks, req.Record, req.Env, parent, func(r localShellRecord) error {
 			_ = c.SetDeadline(time.Now().Add(10 * time.Second))
-			if e := json.NewEncoder(c).Encode(localStartup{Record: r}); e != nil {
+			if e := jsonstream.NewEncoder(c).Encode(localStartup{Record: r}); e != nil {
 				return e
 			}
 			var ack string
-			if e := json.NewDecoder(c).Decode(&ack); e != nil {
+			if e := jsonstream.NewDecoder(c).Decode(&ack); e != nil {
 				return e
 			}
 			if ack != "ready" {
@@ -468,7 +468,7 @@ func runDaemonLaunch(c net.Conn, req localDaemonRequest, record localShellRecord
 			return nil
 		})
 		if err != nil {
-			_ = json.NewEncoder(c).Encode(localStartup{Error: err.Error()})
+			_ = jsonstream.NewEncoder(c).Encode(localStartup{Error: err.Error()})
 		}
 	} else {
 		_ = runDaemonResource(c, req, tasks)
@@ -535,12 +535,12 @@ func launchLocalDaemonContext(ctx context.Context, executable ...string) (localS
 		}
 		return err
 	}
-	enc := json.NewEncoder(input)
+	enc := jsonstream.NewEncoder(input)
 	if err := enc.Encode(request); err != nil {
 		return empty, pipeError(err)
 	}
 	var reply localStartup
-	if err := json.NewDecoder(output).Decode(&reply); err != nil {
+	if err := jsonstream.NewDecoder(output).Decode(&reply); err != nil {
 		return empty, pipeError(fmt.Errorf("start local daemon: %w", err))
 	}
 	if reply.Error != "" {

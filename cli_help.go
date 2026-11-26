@@ -226,8 +226,8 @@ Effects:
 local account. With HOST it targets the remote account and also ends local
 resources connected to HOST. When tasks are present, it previews them and
 prompts [Y/n]. Enter confirms and n cancels.
---all uses authenticated cross-release daemon shutdown. Individual remote task
-control requires matching releases. Neither form installs software.
+Remote --all requires a compatible service protocol. Individual remote task
+control requires matching releases.
 ` + sshOptions,
 		},
 		"cp": {

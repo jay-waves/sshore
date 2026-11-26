@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/jsonstream"
 )
 
 // The daemon owns task identities and their live implementations. Entries are
@@ -238,7 +239,7 @@ func (s *daemonTasks) openNative(w http.ResponseWriter, r *http.Request) {
 		reply.Error = err.Error()
 	}
 	serveDaemonStream(w, r, func(c net.Conn) {
-		if err := json.NewEncoder(c).Encode(reply); err == nil && task != nil {
+		if err := jsonstream.NewEncoder(c).Encode(reply); err == nil && task != nil {
 			serveTaskCommand(c, task.serve)
 		}
 	})
@@ -349,7 +350,7 @@ func (s *daemonTasks) serveTaskInventory(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	snapshot, workers := s.taskInventory(request)
-	enc := json.NewEncoder(w)
+	enc := jsonstream.NewEncoder(w)
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	if err := enc.Encode(snapshot); err != nil || len(workers) == 0 {
 		return
@@ -518,7 +519,7 @@ func (s *daemonTasks) serveResourceMutation(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		reply.Error = err.Error()
 	}
-	_ = json.NewEncoder(w).Encode(reply)
+	_ = jsonstream.NewEncoder(w).Encode(reply)
 }
 
 // A stop returns the exact registered worker to stop outside the task table
@@ -641,7 +642,7 @@ func (s *daemonTasks) serveConfirmedResourceStops(w http.ResponseWriter, r *http
 	if !readDaemonBody(w, r, &changes) {
 		return
 	}
-	enc := json.NewEncoder(w)
+	enc := jsonstream.NewEncoder(w)
 	stops, err := s.confirmedResourceStops(changes)
 	if err != nil {
 		_ = enc.Encode(resourceReply{Error: err.Error()})

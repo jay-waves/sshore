@@ -4,9 +4,8 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
-	"github.com/jay-waves/sshore/internal/sys"
 	"io"
 	"net"
 	"os"
@@ -17,21 +16,23 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
+	"github.com/jay-waves/sshore/internal/jsonstream"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/sys"
 )
 
 const defaultMountIOTimeout = time.Minute
 
 // Direct and locally approved mounts use the same worker configuration.
 type ftpOptions struct {
-	Approval                  *files.MountApproval
-	Connection                *recentConnection
-	IOTimeout, StartupTimeout time.Duration
-	Host, Remote, Mountpoint  string
-	SSH                       []string
-	ReadOnly, DirectIO, Stats bool
-	Name                      string
-	foreground                bool
+	Approval                            *files.MountApproval
+	Connection                          *recentConnection
+	IOTimeoutNanos, StartupTimeoutNanos int64
+	Host, Remote, Mountpoint            string
+	SSH                                 []string
+	ReadOnly, DirectIO, Stats           bool
+	Name                                string
+	foreground                          bool
 }
 
 func validateMountConfig(o ftpOptions) error {
@@ -41,7 +42,7 @@ func validateMountConfig(o ftpOptions) error {
 	if o.Host == "here" || o.Host == "origin" || o.Remote == "" || strings.ContainsRune(o.Remote, 0) || strings.ContainsRune(o.Mountpoint, 0) {
 		return fmt.Errorf("invalid mount endpoints")
 	}
-	if o.IOTimeout < 0 || o.StartupTimeout < 0 {
+	if o.IOTimeoutNanos < 0 || o.StartupTimeoutNanos < 0 {
 		return fmt.Errorf("invalid mount timeout")
 	}
 	approval := o.Approval
@@ -126,7 +127,7 @@ func (s *resourceService) mountPeerTask() peerRecord {
 func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecycle) (int, error) {
 	c := files.MountConfig{
 		Approval: o.Approval, Remote: o.Remote, Mountpoint: o.Mountpoint, Version: version,
-		ReadOnly: o.ReadOnly, DirectIO: o.DirectIO, StartupTimeout: o.StartupTimeout, IOTimeout: o.IOTimeout,
+		ReadOnly: o.ReadOnly, DirectIO: o.DirectIO, StartupTimeout: time.Duration(o.StartupTimeoutNanos), IOTimeout: time.Duration(o.IOTimeoutNanos),
 		History: mountVisitHistory,
 		Mounted: func(root string) {
 			fmt.Fprintf(os.Stderr, "Mounted %s -> %s (SFTP). Close files, then Ctrl-C to unmount.\n", cleanText(sshio.FormatEndpoint(o.Host, root)), cleanText(o.Mountpoint))
@@ -143,7 +144,7 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 	}
 	if o.Stats {
 		c.ReportStats = func(stats files.MountStats) {
-			_ = json.NewEncoder(os.Stderr).Encode(struct {
+			_ = jsonstream.NewEncoder(os.Stderr).Encode(struct {
 				Type string
 				files.MountStats
 			}{Type: "mount_stats", MountStats: stats})
@@ -193,7 +194,7 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 	}
 	c.OpenNotifications = func(_ context.Context) (io.ReadWriteCloser, error) {
 		var err error
-		watch, err = data.OpenSibling(connection.Command, os.Stderr)
+		watch, err = data.OpenSibling(connection, os.Stderr)
 		if err != nil {
 			return nil, err
 		}
@@ -207,11 +208,10 @@ func mountSSHOptions(o ftpOptions) sshio.Options {
 	if o.Connection != nil {
 		args, server = o.Connection.SSH, o.Connection.Server
 	}
-	command := renderRemoteCommand(server, remoteServiceRequest{Operation: "mount-agent"})
-	return sshio.Options{Host: o.Host, Args: args, Command: command, Confirm: confirmSSHHost, Secret: promptSSHSecret}
+	return remoteService(sshConnectionOptions(options{host: o.Host, ssh: args}), server, remoteServiceRequest{Operation: "mount-agent"})
 }
 
-func runDaemonMount(config resourceConfig, enc *json.Encoder, dec *json.Decoder, c net.Conn, log io.Writer, request localDaemonRequest, tasks *daemonTasks) error {
+func runDaemonMount(config resourceConfig, enc *jsonstream.Encoder, dec *jsonstream.Decoder, c net.Conn, log io.Writer, request localDaemonRequest, tasks *daemonTasks) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -240,8 +240,8 @@ func runDaemonMount(config resourceConfig, enc *json.Encoder, dec *json.Decoder,
 		record: resourceRecord{Kind: "mount", UID: config.UID, Name: config.Mount.Name, Host: config.Mount.Host, ReadOnly: config.Mount.ReadOnly, Direction: "<-", Version: version},
 		done:   finished,
 	}
-	childInput := json.NewEncoder(input)
-	child := json.NewDecoder(output)
+	childInput := jsonstream.NewEncoder(input)
+	child := jsonstream.NewDecoder(output)
 	const (
 		starting = iota
 		cancelled
@@ -354,7 +354,7 @@ func runDaemonMount(config resourceConfig, enc *json.Encoder, dec *json.Decoder,
 }
 
 func runMountDaemon() (code int, resultErr error) {
-	enc := json.NewEncoder(os.Stdout)
+	enc := jsonstream.NewEncoder(os.Stdout)
 	committed := false
 	defer func() {
 		if !committed && resultErr != nil {
@@ -407,7 +407,7 @@ func runMountDaemon() (code int, resultErr error) {
 		if err := offerResourceStartup(enc, s.record, ack, nil); err != nil {
 			return err
 		}
-		if err := enc.Encode("started"); err != nil {
+		if err := enc.Encode(resourceCommitReply{Started: true}); err != nil {
 			return err
 		}
 		committed = true
@@ -426,7 +426,7 @@ func runMountDaemon() (code int, resultErr error) {
 
 // The account daemon retains the worker pipes after commit. Losing that owner
 // stops the filesystem worker, including when no task-control RPC is in flight.
-func (s *resourceService) serveWorkerControl(read func(any) error, enc *json.Encoder, unmount chan<- chan error, replyMu *sync.Mutex) {
+func (s *resourceService) serveWorkerControl(read func(any) error, enc *jsonstream.Encoder, unmount chan<- chan error, replyMu *sync.Mutex) {
 	for {
 		var action string
 		if err := read(&action); err != nil {

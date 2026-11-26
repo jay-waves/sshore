@@ -2,7 +2,7 @@ package files
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 	"io"
 	"path"
@@ -273,7 +273,7 @@ func (n *ftpNotifications) register(dir string, timer *time.Timer) {
 	}
 }
 
-func negotiateMount(c io.ReadWriter, mode, version string, source *MountApproval, peer json.RawMessage, account *string) error {
+func negotiateMount(c io.ReadWriter, mode, version string, source *MountApproval, peer jsontext.Value, account *string) error {
 	if err := writeMessage(c, message{Type: mode, SoftwareVersion: version, Approval: source, PeerMetadata: peer}); err != nil {
 		return err
 	}

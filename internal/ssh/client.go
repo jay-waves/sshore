@@ -266,8 +266,8 @@ func (p *Process) CloseAndWait() error {
 }
 
 // OpenSibling starts another exec channel on this process's SSH connection.
-func (p *Process) OpenSibling(command string, diagnostic io.Writer) (*Process, error) {
-	return p.client.Start(command, diagnostic)
+func (p *Process) OpenSibling(o Options, diagnostic io.Writer) (*Process, error) {
+	return startSession(p.client, o.Command, diagnostic, nil, o.WriteRequest)
 }
 
 func Start(ctx context.Context, o Options, diagnostic io.Writer) (process *Process, err error) {
@@ -282,15 +282,15 @@ func Start(ctx context.Context, o Options, diagnostic io.Writer) (process *Proce
 			client.Close()
 		}
 	}()
-	return startSession(client, o.Command, diagnostic, stop)
+	return startSession(client, o.Command, diagnostic, stop, o.WriteRequest)
 }
 
 // Start opens an exec channel owned by the caller's connection.
 func (c *Client) Start(command string, diagnostic io.Writer) (*Process, error) {
-	return startSession(c, command, diagnostic, nil)
+	return startSession(c, command, diagnostic, nil, nil)
 }
 
-func startSession(client *Client, command string, diagnostic io.Writer, stop func() bool) (*Process, error) {
+func startSession(client *Client, command string, diagnostic io.Writer, stop func() bool, writeRequest func(io.Writer) error) (*Process, error) {
 	session, err := client.NewSession()
 	if err != nil {
 		return nil, err
@@ -314,6 +314,12 @@ func startSession(client *Client, command string, diagnostic io.Writer, stop fun
 	if err = session.Start(command); err != nil {
 		_ = session.Close()
 		return nil, err
+	}
+	if writeRequest != nil {
+		if err := writeRequest(p); err != nil {
+			_ = p.CloseAndWait()
+			return nil, err
+		}
 	}
 	return p, nil
 }

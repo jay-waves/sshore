@@ -242,7 +242,7 @@ func (s *shellTask) serveCommand(c net.Conn, m message, extra func(*attachment, 
 		if p == nil {
 			err = fmt.Errorf("shell has no active attachment")
 		} else {
-			err = s.pinLocked(m.TTL)
+			err = s.pinLocked(time.Duration(m.TTLNanos))
 		}
 		reply = message{Type: "pinned", PinUntil: s.pinUntil}
 		s.mu.Unlock()

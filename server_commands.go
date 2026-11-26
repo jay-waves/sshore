@@ -1,12 +1,13 @@
 package main
 
 import (
-	"encoding/base64"
-	"encoding/json"
-	jsonv2 "encoding/json/v2"
+	json "encoding/json/v2"
 	"fmt"
+	"io"
 	"os"
-	"strings"
+
+	"github.com/jay-waves/sshore/internal/jsonstream"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 const remoteServiceCommand = "service"
@@ -33,46 +34,28 @@ type remoteForwardRequest struct {
 	Reverse    bool   `json:"reverse,omitempty"`
 }
 
-func renderRemoteCommand(server string, req remoteServiceRequest) string {
-	command := "sshore"
-	if server != "" && server != command {
-		// Explicit executable paths are used for the Linux remote shell.
-		command = shellQuote(server)
+func remoteService(connection sshio.Options, server string, req remoteServiceRequest) sshio.Options {
+	connection.Command = "sshore"
+	if server != "" && server != connection.Command {
+		connection.Command = shellQuote(server)
 	}
+	connection.Command += " " + remoteServiceCommand
 	req.Protocol, req.Release = remoteServiceProtocol, version
-	data, err := json.Marshal(req)
-	if err != nil {
-		panic(err)
+	connection.WriteRequest = func(w io.Writer) error {
+		return jsonstream.NewEncoder(w).Encode(req)
 	}
-	command += " " + remoteServiceCommand + " "
-	if req.Operation == "daemon-admin" {
-		// kill --all can stop an older Linux daemon after reviewing its snapshot.
-		return command + shellQuote(string(data))
-	}
-	return command + "base64:" + base64.RawURLEncoding.EncodeToString(data)
+	return connection
 }
 
 func runRemoteService(args []string) error {
-	if len(args) != 1 {
+	if len(args) != 0 {
 		return usage("invalid remote service request")
-	}
-	data := []byte(args[0])
-	encoded, isBase64 := strings.CutPrefix(args[0], "base64:")
-	if isBase64 {
-		var err error
-		data, err = base64.RawURLEncoding.DecodeString(encoded)
-		if err != nil {
-			return usage("invalid remote service request")
-		}
 	}
 	var req remoteServiceRequest
-	if jsonv2.Unmarshal(data, &req, jsonv2.RejectUnknownMembers(isBase64)) != nil ||
-		req.Protocol != remoteServiceProtocol || req.Release == "" {
-		return usage("invalid remote service request")
+	if err := readControlJSON(os.Stdin, &req, json.RejectUnknownMembers(true)); err != nil {
+		return fmt.Errorf("invalid remote service request: %w", err)
 	}
-	shutdown := req.Operation == "daemon-admin"
-	if shutdown == isBase64 {
-		// Only the shutdown exchange uses a raw JSON argument.
+	if req.Protocol != remoteServiceProtocol || req.Release == "" {
 		return usage("invalid remote service request")
 	}
 	if os.Getenv("SSHORE_DISABLED") == "1" {

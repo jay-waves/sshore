@@ -3,7 +3,7 @@
 package files
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 	"io"
 	"maps"
@@ -24,11 +24,11 @@ func ServeAgent(conn io.ReadWriteCloser, version string, check ...func(MountAppr
 	return ServeAgentWithPeer(conn, version, "", nil, check...)
 }
 
-func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observe func(json.RawMessage) func(), check ...func(MountApproval) error) error {
+func ServeAgentWithPeer(conn io.ReadWriteCloser, version, account string, observe func(jsontext.Value) func(), check ...func(MountApproval) error) error {
 	return serveMountAgent(conn, version, account, observe, "", check)
 }
 
-func ServeApprovedMount(conn io.ReadWriteCloser, version, account string, observe func(json.RawMessage) func(), approval MountApproval) error {
+func ServeApprovedMount(conn io.ReadWriteCloser, version, account string, observe func(jsontext.Value) func(), approval MountApproval) error {
 	session, err := smux.Server(conn, nil)
 	if err != nil {
 		_ = conn.Close()
@@ -59,7 +59,7 @@ func ServeApprovedMount(conn io.ReadWriteCloser, version, account string, observ
 	return err
 }
 
-func serveMountAgent(conn io.ReadWriteCloser, version, account string, observe func(json.RawMessage) func(), mode string, check []func(MountApproval) error) error {
+func serveMountAgent(conn io.ReadWriteCloser, version, account string, observe func(jsontext.Value) func(), mode string, check []func(MountApproval) error) error {
 	defer conn.Close()
 	conn = newMountStream(conn)
 	if os.Getenv("SSHORE_DISABLED") == "1" {

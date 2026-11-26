@@ -55,7 +55,7 @@ flowchart LR
     grant -->|"Revalidate original shell; reject changed setup"| resources
     user -->|"Explicit cp / forward / mount command"| resources
     resources <-->|"Authenticated SSH; remote account permissions"| service
-    user -->|"kill --all: confirm snapshot; cross-release admin only"| control
+    user -->|"kill --all: confirm snapshot; authenticated admin"| control
     user -->|"reset: stop tasks before clearing local state"| control
     control -->|"Private handoff; child readiness required"| client
     shell -->|"Explicit nested shell"| relay
@@ -354,9 +354,9 @@ source, identity and account-daemon checks.
 Shell, file and forward services reject a mismatched release with a framed
 error before opening a task or stream. The client uses the reported versions
 to show the mismatch and installer links.
-Remote services use a base64-encoded command argument and reject unknown or
-duplicate JSON members. Linux `kill --all`
-retains the raw JSON argument for the cross-release snapshot and shutdown exchange.
+The SSH service reads one newline-terminated JSON request from stdin and rejects
+unknown or duplicate members. Remote `kill --all` uses the same request framing and
+requires a remote binary that understands it.
 Run the platform installer locally on each endpoint. `bootstrap` resets and reinstalls
 the local account.
 Installers verify the release checksum and executable version. The prepared binary

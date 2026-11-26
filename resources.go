@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +18,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/jsonstream"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 )
@@ -173,14 +173,14 @@ func runKillAll(o options) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		command := renderRemoteCommand(o.server, remoteServiceRequest{Operation: "daemon-admin"})
-		connection := withSSHDiagnostics(sshConnectionOptions(o, command), os.Stderr, nil)
+		connection := remoteService(sshConnectionOptions(o), o.server, remoteServiceRequest{Operation: "daemon-admin"})
+		connection = withSSHDiagnostics(connection, os.Stderr, nil)
 		process, err := transportio.Start(ctx, connection, os.Stderr)
 		if err != nil {
 			return 1, err
 		}
 		defer process.CloseAndWait()
-		decoder := json.NewDecoder(process)
+		decoder := jsonstream.NewDecoder(process)
 		var reply daemonAdminReply
 		if err := decoder.Decode(&reply); err != nil {
 			return 1, fmt.Errorf("remote daemon administration unavailable: %w", err)
@@ -190,7 +190,7 @@ func runKillAll(o options) (int, error) {
 		}
 		snapshot = reply.Snapshot
 		stop = func() error {
-			if err := json.NewEncoder(process).Encode(snapshot); err != nil {
+			if err := jsonstream.NewEncoder(process).Encode(snapshot); err != nil {
 				return err
 			}
 			if err := decoder.Decode(&reply); err != nil {
@@ -320,7 +320,7 @@ func (s *resourceService) operationCompleted() {
 // Mount daemons receive only startup/control messages through the account daemon.
 // Forwards run here and directly own their SSH child; payloads stay in SSH.
 func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTasks) (result error) {
-	enc := json.NewEncoder(c)
+	enc := jsonstream.NewEncoder(c)
 	defer func() {
 		if result != nil {
 			termui.Log(tasks.log, canonicalTaskCode(identityFromUID(request.Resource.UID)), termui.Error, "%s", result)
@@ -332,7 +332,7 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 	if !validTaskUID(config.UID) {
 		return fmt.Errorf("invalid resource task ID")
 	}
-	dec := json.NewDecoder(io.LimitReader(c, daemonBodyLimit))
+	dec := jsonstream.NewDecoder(io.LimitReader(c, daemonBodyLimit))
 	if kind == "forward" {
 		return runDaemonForward(config, enc, dec, c, request, tasks)
 	}
@@ -341,9 +341,9 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 	return runDaemonMount(config, enc, dec, c, log, request, tasks)
 }
 
-func acknowledgeResourceStartup(enc *json.Encoder, c net.Conn) {
+func acknowledgeResourceStartup(enc *jsonstream.Encoder, c net.Conn) {
 	// The daemon owns the committed task even if the initiator loses its reply.
-	_ = enc.Encode("started")
+	_ = enc.Encode(resourceCommitReply{Started: true})
 	_ = c.Close()
 }
 
@@ -370,7 +370,7 @@ func awaitResourceCommit(read func(any) error, abandon func()) <-chan error {
 	return ack
 }
 
-func offerResourceStartup(enc *json.Encoder, startup resourceRecord, ack <-chan error, finished <-chan struct{}) error {
+func offerResourceStartup(enc *jsonstream.Encoder, startup resourceRecord, ack <-chan error, finished <-chan struct{}) error {
 	if err := enc.Encode(startup); err != nil {
 		return err
 	}
@@ -386,21 +386,24 @@ func offerResourceStartup(enc *json.Encoder, startup resourceRecord, ack <-chan 
 	}
 }
 
-func commitResourceStartup(enc *json.Encoder, dec *json.Decoder) error {
+type resourceCommitReply struct {
+	Started bool   `json:"started,omitzero"`
+	Error   string `json:"error,omitempty"`
+}
+
+func commitResourceStartup(enc *jsonstream.Encoder, dec *jsonstream.Decoder) error {
 	if err := enc.Encode("commit"); err != nil {
 		return err
 	}
-	var reply json.RawMessage
+	var reply resourceCommitReply
 	if err := dec.Decode(&reply); err != nil {
 		return fmt.Errorf("resource startup was not acknowledged: %w", err)
 	}
-	var answer string
-	if json.Unmarshal(reply, &answer) == nil && answer == "started" {
+	if reply.Started {
 		return nil
 	}
-	var failure resourceStartup
-	if json.Unmarshal(reply, &failure) == nil && failure.Error != "" {
-		return fmt.Errorf("resource startup: %s", failure.Error)
+	if reply.Error != "" {
+		return fmt.Errorf("resource startup: %s", reply.Error)
 	}
 	return fmt.Errorf("invalid resource startup reply")
 }
@@ -440,7 +443,7 @@ func launchResourceBackground(config resourceConfig, directory string) (resource
 		return resourceRecord{}, e
 	}
 	defer c.Close()
-	enc, dec := json.NewEncoder(c), json.NewDecoder(c)
+	enc, dec := jsonstream.NewEncoder(c), jsonstream.NewDecoder(c)
 	var startup resourceStartup
 	if e = dec.Decode(&startup); e != nil {
 		return resourceRecord{}, fmt.Errorf("resource startup failed: %w", e)

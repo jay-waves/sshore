@@ -2,7 +2,8 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"os"
@@ -85,7 +86,7 @@ func beginIncomingTask(t peerRecord) func() {
 	return stop
 }
 
-func beginIncomingMountTask(data json.RawMessage) func() {
+func beginIncomingMountTask(data jsontext.Value) func() {
 	var task peerRecord
 	if len(data) > maxRemoteTaskSize || json.Unmarshal(data, &task) != nil || !strings.HasPrefix(task.ID, "mount/") {
 		return func() {}

@@ -3,8 +3,7 @@
 package tests_test
 
 import (
-	"encoding/base64"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net"
@@ -41,9 +40,10 @@ func TestWindowsOpenSSH(t *testing.T) {
 			t.Fatal(err)
 		}
 		args := append(append([]string{"-o", "BatchMode=yes"}, sshOptions...), host,
-			"sshore service base64:"+base64.RawURLEncoding.EncodeToString(request))
+			"sshore service")
 		var diagnostic strings.Builder
 		probe := exec.CommandContext(ctx, "ssh.exe", args...)
+		probe.Stdin = strings.NewReader(string(request) + "\n")
 		probe.Stderr = &diagnostic
 		out, runErr := probe.Output()
 		if err := json.Unmarshal(out, &reply); err != nil {

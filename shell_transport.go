@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	forwardio "github.com/jay-waves/sshore/internal/forward"
+	"github.com/jay-waves/sshore/internal/jsonstream"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/xtaci/smux"
 )
@@ -345,8 +347,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 			shellRequest.Name = f.Instance
 		}
 	}
-	connection := sshConnectionOptions(options{host: f.Host, ssh: f.SSH, sshDirectory: req.Record.Directory},
-		renderRemoteCommand(f.Server, shellRequest))
+	connection := remoteService(sshConnectionOptions(options{host: f.Host, ssh: f.SSH, sshDirectory: req.Record.Directory}), f.Server, shellRequest)
 	connection.Environment = req.Env
 	connection.Confirm, connection.Secret = req.Auth.callbacks()
 	connection = withSSHDiagnostics(connection, diagnostics, req.Auth)
@@ -454,8 +455,8 @@ func connectedHostedShells(parent context.Context, record localShellRecord, dial
 	if resp.StatusCode != http.StatusOK {
 		return nil, daemonResponseError(resp)
 	}
-	var snapshot struct{ Shells json.RawMessage }
-	if err := json.NewDecoder(io.LimitReader(resp.Body, daemonBodyLimit)).Decode(&snapshot); err != nil {
+	var snapshot struct{ Shells jsontext.Value }
+	if err := jsonstream.NewDecoder(io.LimitReader(resp.Body, daemonBodyLimit)).Decode(&snapshot); err != nil {
 		return nil, err
 	}
 	var shells []shellView

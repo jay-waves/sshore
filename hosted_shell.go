@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +12,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/jsonstream"
 )
 
 func (s *remoteShell) status(detail string) message {
@@ -108,6 +109,6 @@ func registerPlatformDaemonRoutes(mux *http.ServeMux, tasks *daemonTasks) {
 			http.Error(w, err.Error(), status)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(sessionTarget{Instance: shell.record.UID, Name: shell.taskName()})
+		_ = jsonstream.NewEncoder(w).Encode(sessionTarget{Instance: shell.record.UID, Name: shell.taskName()})
 	})
 }

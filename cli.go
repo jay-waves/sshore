@@ -99,12 +99,12 @@ func parseDetachCommand(args []string) (message, error) {
 
 func detachMessage(parsed cliArguments) (message, error) {
 	m := message{Type: "detach"}
-	var err error
 	if v := parsed.operand(0); v != "" {
-		m.TTL, err = time.ParseDuration(v)
-		if err != nil || m.TTL <= 0 {
+		ttl, parseErr := time.ParseDuration(v)
+		if parseErr != nil || ttl <= 0 {
 			return m, usage("invalid duration %q; use a positive duration such as 30s, 60m or 2h", v)
 		}
+		m.TTLNanos = ttl.Nanoseconds()
 	}
 	return m, nil
 }
@@ -651,7 +651,7 @@ func parseFTPOptions(parsed cliArguments) (ftpOptions, error) {
 		SSH:        parsed.ssh,
 		foreground: parsed.has("--foreground"),
 		ReadOnly:   parsed.has("--read-only"), Stats: parsed.has("--stats"), DirectIO: parsed.has("--direct-io"),
-		IOTimeout: parsed.duration("--io-timeout", defaultMountIOTimeout), StartupTimeout: parsed.duration("--startup-timeout", 0),
+		IOTimeoutNanos: parsed.duration("--io-timeout", defaultMountIOTimeout).Nanoseconds(), StartupTimeoutNanos: parsed.duration("--startup-timeout", 0).Nanoseconds(),
 	}
 	if strings.ContainsRune(o.Remote, 0) || strings.ContainsRune(o.Mountpoint, 0) {
 		return o, usage("invalid mount path")

@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"crypto/subtle"
-	"encoding/json"
+	json "encoding/json/v2"
 	"fmt"
 	"io"
 	"net"
@@ -21,8 +21,8 @@ import (
 	xterm "golang.org/x/term"
 )
 
-func sshConnectionOptions(o options, command string) sshio.Options {
-	return sshio.Options{Host: o.host, Command: command, Args: o.ssh, Environment: o.environment, Directory: o.sshDirectory, Confirm: confirmSSHHost, Secret: promptSSHSecret}
+func sshConnectionOptions(o options) sshio.Options {
+	return sshio.Options{Host: o.host, Args: o.ssh, Environment: o.environment, Directory: o.sshDirectory, Confirm: confirmSSHHost, Secret: promptSSHSecret}
 }
 
 func withSSHDiagnostics(o sshio.Options, out io.Writer, auth *sshAuthEndpoint) sshio.Options {

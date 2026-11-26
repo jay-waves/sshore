@@ -414,7 +414,7 @@ func (s *shellTask) serveAttachment(p *attachment, control io.Reader, extra func
 		case "detach":
 			if m.Action != "switch" {
 				s.mu.Lock()
-				err := s.pinLocked(m.TTL)
+				err := s.pinLocked(time.Duration(m.TTLNanos))
 				s.mu.Unlock()
 				if err != nil {
 					if err := p.controlMessage(message{Type: "pin_failed", Error: err.Error()}); err != nil {

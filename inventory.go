@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/jay-waves/sshore/internal/jsonstream"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/term"
@@ -137,7 +137,7 @@ func readTaskInventory(request taskInventoryRequest) (taskInventorySnapshot, map
 		return snapshot, nil, err
 	}
 	defer resp.Body.Close()
-	dec := json.NewDecoder(resp.Body)
+	dec := jsonstream.NewDecoder(resp.Body)
 	if err := dec.Decode(&snapshot); err != nil {
 		return snapshot, nil, err
 	}

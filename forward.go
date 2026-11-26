@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +16,7 @@ import (
 	"time"
 
 	forwardio "github.com/jay-waves/sshore/internal/forward"
+	"github.com/jay-waves/sshore/internal/jsonstream"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 )
@@ -241,14 +242,12 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 			return openIndependentResource(ctx, *f.Connection, request, s)
 		})
 	}
-	command := renderRemoteCommand(f.Server, remoteServiceRequest{
+	connection := remoteService(sshio.Options{
+		Host: f.Host, Args: f.SSH, Environment: s.baseEnvironment(), Directory: s.directory,
+	}, f.Server, remoteServiceRequest{
 		Operation: "forward-agent",
 		Forward:   &remoteForwardRequest{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse},
 	})
-	connection := sshio.Options{
-		Host: f.Host, Command: command, Args: f.SSH,
-		Environment: s.baseEnvironment(), Directory: s.directory,
-	}
 	var auth *sshAuthEndpoint
 	if initial {
 		auth = s.config.Auth
@@ -425,7 +424,7 @@ func (d *diagnosticsTail) String() string {
 	return termui.CleanText(strings.TrimSpace(string(d.data)))
 }
 
-func runDaemonForward(config resourceConfig, enc *json.Encoder, dec *json.Decoder, c net.Conn, request localDaemonRequest, tasks *daemonTasks) error {
+func runDaemonForward(config resourceConfig, enc *jsonstream.Encoder, dec *jsonstream.Decoder, c net.Conn, request localDaemonRequest, tasks *daemonTasks) error {
 	f := *config.Forward
 	if err := validateForwardConfig(f); err != nil {
 		return err
