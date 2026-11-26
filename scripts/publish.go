@@ -35,6 +35,10 @@ Includes Linux and Windows amd64 binaries. Verify archives against SHA256SUMS.
 Use sshore kill with an ID or name for shells, mounts and forwards.
 Use sshore kill HOST --all to stop a remote account's daemon.
 
+Omitted copy paths open a picker after SSH authentication.
+For non-interactive mounts, use HOST:~ to select the remote home and .: to
+allocate a local mountpoint automatically.
+
 Use the platform installer on each endpoint to install %[1]s for managed connections.
 Bootstrap ends the target account's tasks, including pinned shells, and clears
 its sshore identity, history and cached releases. Save work before bootstrapping.
