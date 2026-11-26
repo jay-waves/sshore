@@ -14,8 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/release"
-
 	"github.com/fsnotify/fsnotify"
 	"github.com/xtaci/smux"
 )
@@ -57,8 +55,9 @@ func serveApprovedMountStream(conn io.ReadWriteCloser, version, account string, 
 	if err != nil {
 		return err
 	}
-	if err := release.Check(version, m.SoftwareVersion, "mount client"); err != nil {
-		return writeMessage(wire, message{Type: "error", SoftwareVersion: version, Error: err.Error()})
+	if m.SoftwareVersion != version {
+		return writeMessage(wire, message{Type: "error", SoftwareVersion: version,
+			Error: fmt.Sprintf("mount version mismatch: agent=%s, client=%q", version, m.SoftwareVersion)})
 	}
 	if m.Type != mode || m.Approval == nil {
 		return writeMessage(wire, message{Type: "error", SoftwareVersion: version, Error: "mount approval handshake changed"})

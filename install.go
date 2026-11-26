@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	_ "embed"
 	"errors"
@@ -13,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/release"
 	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/term"
@@ -21,6 +21,10 @@ import (
 
 //go:embed install.sh
 var linuxInstaller string
+
+const installMatchingReleaseHelp = "Install the same full release on both machines.\n" +
+	"Linux installer: https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh\n" +
+	"Windows installer: https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1"
 
 func runBootstrap(parsed cliArguments) (int, error) {
 	var target string
@@ -81,7 +85,7 @@ func setupLock() (*sys.FileLock, error) {
 func requireInstalledRelease(target string) error {
 	installed, err := executableVersion(target)
 	if err != nil {
-		return fmt.Errorf("cannot verify installed sshore %s at %q.\n%s", version, target, release.InstallHelp)
+		return fmt.Errorf("cannot verify installed sshore %s at %q.\n%s", version, target, installMatchingReleaseHelp)
 	}
 	if err := checkPeerVersion(installed, "installed executable"); err != nil {
 		return err
@@ -97,6 +101,24 @@ func requireInstalledRelease(target string) error {
 		return fmt.Errorf("account daemon runs sshore %s. Use that release to run sshore kill --all and wait for it to exit before using %s", record.Version, version)
 	}
 	return nil
+}
+
+// Compare numeric components without overflowing on large release coordinates.
+func compareReleases(a, b string) (int, bool) {
+	aa, ok := releaseParts(a)
+	if !ok {
+		return 0, false
+	}
+	bb, ok := releaseParts(b)
+	if !ok {
+		return 0, false
+	}
+	for i := range aa {
+		if order := cmp.Or(cmp.Compare(len(aa[i]), len(bb[i])), strings.Compare(aa[i], bb[i])); order != 0 {
+			return order, true
+		}
+	}
+	return 0, true
 }
 
 func bootstrapRelease(target string) error {
@@ -121,7 +143,7 @@ func bootstrapRelease(target string) error {
 			return fmt.Errorf("installation target must be a regular executable: %s", target)
 		}
 		installed, err = executableVersion(target)
-		order, known := release.Compare(installed, version)
+		order, known := compareReleases(installed, version)
 		if err != nil || !known {
 			return fmt.Errorf("unknown installed release; update manually")
 		}
@@ -137,7 +159,7 @@ func bootstrapRelease(target string) error {
 		return err
 	}
 	if running {
-		order, known := release.Compare(record.Version, version)
+		order, known := compareReleases(record.Version, version)
 		if !known || order > 0 {
 			return fmt.Errorf("cannot update account daemon release %q to %s", cleanText(record.Version), version)
 		}

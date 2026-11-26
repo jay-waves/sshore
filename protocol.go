@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/release"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -214,7 +213,39 @@ func streamMessage(s attachmentControl, m message) error {
 
 // Check the running process, not just the executable currently on disk.
 func checkPeerVersion(peer, role string) error {
-	return release.Check(version, peer, role)
+	return checkReleaseVersions(version, peer, role)
+}
+
+func checkReleaseVersions(local, peer, role string) error {
+	if local == peer {
+		if _, ok := releaseParts(local); ok {
+			return nil
+		}
+	}
+	if peer == "" {
+		peer = "unknown"
+	}
+	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%q.\n%s", local, role, peer, installMatchingReleaseHelp)
+}
+
+func releaseParts(v string) ([3]string, bool) {
+	major, rest, hasMinor := strings.Cut(v, ".")
+	minor, patch, hasPatch := strings.Cut(rest, ".")
+	if !hasMinor || !hasPatch {
+		return [3]string{}, false
+	}
+	parts := [3]string{major, minor, patch}
+	for _, part := range parts {
+		if part == "" || len(part) > 1 && part[0] == '0' {
+			return [3]string{}, false
+		}
+		for _, c := range part {
+			if c < '0' || c > '9' {
+				return [3]string{}, false
+			}
+		}
+	}
+	return parts, true
 }
 
 // Prefer a reported release mismatch to the peer's error text. Relays can

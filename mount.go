@@ -128,6 +128,9 @@ func (s *resourceService) mountPeerTask() peerRecord {
 }
 
 func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecycle, selector func(context.Context, files.DirectoryReader, string) (string, string, error)) (int, error) {
+	if _, ok := releaseParts(version); !ok {
+		return 1, fmt.Errorf("mount requires a full sshore release, got %q.\n%s", version, installMatchingReleaseHelp)
+	}
 	c := files.MountConfig{
 		Approval: o.Approval, Remote: o.Remote, Mountpoint: o.Mountpoint, Version: version, Name: o.Name,
 		ReadOnly: o.ReadOnly, DirectIO: o.DirectIO, StartupTimeout: time.Duration(o.StartupTimeoutNanos), IOTimeout: time.Duration(o.IOTimeoutNanos),
