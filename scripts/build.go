@@ -117,15 +117,19 @@ func build(version, target, workspace string) (string, string, error) {
 }
 
 func pack(w io.Writer, binary, target string) error {
-	files := []string{binary, "LICENSE", filepath.Join("docs", "THIRD_PARTY_LICENSES.txt")}
+	files := []struct{ path, name string }{
+		{binary, filepath.Base(binary)},
+		{filepath.Join("docs", "LICENSE.txt"), "LICENSE"},
+		{filepath.Join("docs", "THIRD_PARTY_LICENSES.txt"), "THIRD_PARTY_LICENSES.txt"},
+	}
 	if target == "windows" {
 		z := zip.NewWriter(w)
-		for _, path := range files {
-			entry, err := z.Create(filepath.Base(path))
+		for _, file := range files {
+			entry, err := z.Create(file.name)
 			if err != nil {
 				return err
 			}
-			if err := copyFile(entry, path); err != nil {
+			if err := copyFile(entry, file.path); err != nil {
 				return err
 			}
 		}
@@ -133,19 +137,19 @@ func pack(w io.Writer, binary, target string) error {
 	}
 	gz := gzip.NewWriter(w)
 	t := tar.NewWriter(gz)
-	for _, path := range files {
-		info, err := os.Stat(path)
+	for _, file := range files {
+		info, err := os.Stat(file.path)
 		if err != nil {
 			return err
 		}
 		mode := int64(0644)
-		if path == binary {
+		if file.path == binary {
 			mode = 0755
 		}
-		if err := t.WriteHeader(&tar.Header{Name: filepath.Base(path), Mode: mode, Size: info.Size()}); err != nil {
+		if err := t.WriteHeader(&tar.Header{Name: file.name, Mode: mode, Size: info.Size()}); err != nil {
 			return err
 		}
-		if err := copyFile(t, path); err != nil {
+		if err := copyFile(t, file.path); err != nil {
 			return err
 		}
 	}
