@@ -7,8 +7,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/jay-waves/sshore/internal/termui"
 )
 
 // Kind limits the registry scan to a task type. Native and hosted are two
@@ -106,10 +104,10 @@ func matchTask(ref string, candidates []selectedTask) (selectedTask, error) {
 		switch {
 		case byID && strings.HasPrefix(canonicalTaskUID(target.Identity), prefix):
 			if idMatch.Identity != "" && idMatch.Identity != target.Identity {
-				return selectedTask{}, usage("ambiguous task ID %s; use a longer prefix, :ID or HOST:ID", ref)
+				return selectedTask{}, usage("ambiguous task ID %s; use a longer prefix", ref)
 			}
 			if idMatch.Identity == target.Identity && idMatch.RemoteHost != target.RemoteHost {
-				return selectedTask{}, usage("task ID %s matches multiple accounts; use :ID or HOST:ID", ref)
+				return selectedTask{}, usage("task ID %s matches multiple accounts", ref)
 			}
 			if idMatch.Identity == target.Identity && target.Connection != nil {
 				if saved, route := idMatch.Connection, target.Connection; saved != nil {
@@ -125,7 +123,7 @@ func matchTask(ref string, candidates []selectedTask) (selectedTask, error) {
 		}
 	}
 	if ambiguousRoute {
-		return selectedTask{}, usage("multiple saved connections for task %s; specify HOST:ID", idMatch.Instance)
+		return selectedTask{}, usage("multiple saved connections for task %s", idMatch.Instance)
 	}
 	if idMatch.Identity != "" {
 		return idMatch, nil
@@ -211,14 +209,14 @@ func (a *daemonActivity) selectTaskID(ref, kind, parent string, attach bool) (*s
 	defer a.metadata.shellMu.Unlock()
 	records, err := a.metadata.readRecentConnectionsLocal()
 	if err != nil {
-		return nil, fmt.Errorf("%w; specify a full local task ID or HOST:ID", err)
+		return nil, err
 	}
 	if err := a.metadata.loadDetachedAttachments(); err != nil {
-		return nil, fmt.Errorf("%w; specify a full local task ID or HOST:ID", err)
+		return nil, err
 	}
 	observed, err := a.metadata.readParticipatingShellsLocal("")
 	if err != nil {
-		return nil, fmt.Errorf("%w; specify a full local task ID or HOST:ID", err)
+		return nil, err
 	}
 	addRoute := func(route *recentConnection) {
 		if route != nil && !route.viaShell() && strings.HasPrefix(route.Instance, prefix) && (!attach || !live[identityFromUID(route.Instance)]) {
@@ -274,7 +272,7 @@ func (a *daemonActivity) selectTaskID(ref, kind, parent string, attach bool) (*s
 		return nil, err
 	}
 	if target.Identity == "" && attach {
-		return nil, usage("unknown shell ID %s; specify HOST:ID for a remote shell", ref)
+		return nil, usage("unknown shell ID %s; refresh with sshore list", ref)
 	}
 	if target.Identity == "" {
 		return nil, usage("unknown task %s; refresh with sshore list", ref)
@@ -285,32 +283,111 @@ func (a *daemonActivity) selectTaskID(ref, kind, parent string, attach bool) (*s
 	return &target, nil
 }
 
-func selectCLITask(parsed cliArguments) (selectedTask, error) {
-	command, target := parsed.command, parsed.task
-	if command == "shell" || target.scope == taskSSH || target.ref == "" {
-		return selectedTask{}, nil
+// Resolve names from account-owned registrations and already known routes only.
+func (a *daemonActivity) selectTaskName(name, kind string, attach bool) (*selectedTask, error) {
+	candidates := (taskQuery{Kind: kind}).registered(a.tasks)
+	a.metadata.shellMu.Lock()
+	defer a.metadata.shellMu.Unlock()
+	routes, err := a.metadata.readRecentConnectionsLocal()
+	if err != nil {
+		return nil, err
 	}
-	query := taskQuery{Kind: target.kind, Ref: target.ref}
-	parent := shellIdentityFromEnvironment()
-	action := "task_by_id"
-	if command == "attach" {
-		action = "attach_by_id"
-		query.Kind = "shell"
-		if parent != "" && os.Getenv("SSHORE_SOCKET") != "" {
-			query.Kind = "hosted"
+	if err := a.metadata.loadDetachedAttachments(); err != nil {
+		return nil, err
+	}
+	observed, err := a.metadata.readParticipatingShellsLocal("")
+	if err != nil {
+		return nil, err
+	}
+	known := make(map[string]bool)
+	for _, target := range candidates {
+		known[target.Identity] = true
+	}
+	addRoute := func(route *recentConnection) {
+		if route == nil || route.viaShell() || route.Session != name || !validTaskUID(route.Instance) {
+			return
+		}
+		id := identityFromUID(route.Instance)
+		if !known[id] {
+			candidates = append(candidates, selectedTask{Kind: "shell", Name: name, Identity: id, Instance: route.Instance, Connection: route})
+			known[id] = true
 		}
 	}
-	if target.scope == taskKnown {
-		reply, err := metadataRPC(metadataRequest{Action: action, Kind: query.Kind, Instance: query.Ref, Parent: parent})
+	for i := range routes {
+		addRoute(&routes[i])
+	}
+	for _, row := range a.metadata.attachments.rows {
+		addRoute(row.Connection)
+	}
+	for _, row := range observed {
+		id := identityFromUID(row.Instance)
+		if row.Name != name || !validTaskUID(row.Instance) || known[id] {
+			continue
+		}
+		i := slices.IndexFunc(routes, func(route recentConnection) bool { return route.Host == row.Host && !route.viaShell() })
+		if i >= 0 {
+			route := routes[i]
+			route.Instance, route.Session = row.Instance, row.Name
+			addRoute(&route)
+		} else if attach {
+			candidates = append(candidates, selectedTask{Kind: "shell", Name: name, Identity: id, Instance: row.Instance, RemoteHost: row.Host})
+			known[id] = true
+		} else {
+			candidates = append(candidates, selectedTask{Kind: "shell", Name: name, Identity: id, Instance: row.Instance, Manager: row.Host})
+			known[id] = true
+		}
+	}
+	target, err := matchTask(name, candidates)
+	if err != nil || target.Identity == "" {
+		return nil, err
+	}
+	if target.Manager != "" {
+		return nil, usage("task %s is managed on %s; use its managing account", name, cleanText(target.Manager))
+	}
+	return &target, nil
+}
+
+func selectCLITask(parsed cliArguments) (selectedTask, error) {
+	command, target := parsed.command, parsed.task
+	if target.name != "" {
+		action, kind := "task_by_name", ""
+		if command == "attach" {
+			action, kind = "attach_by_name", "shell"
+			if shellIdentityFromEnvironment() != "" && os.Getenv("SSHORE_SOCKET") != "" {
+				kind = "hosted"
+			}
+		}
+		reply, err := metadataRPC(metadataRequest{Action: action, Name: target.name, Kind: kind})
 		if err != nil {
 			return selectedTask{}, err
 		}
-		if reply.Target == nil {
-			return selectedTask{}, fmt.Errorf("missing task selection")
+		if reply.Target != nil {
+			return *reply.Target, nil
 		}
-		return *reply.Target, nil
+		if command == "kill" {
+			return selectedTask{}, usage("unknown task %s; use kill HOST --all for a remote account", cleanText(target.name))
+		}
+		return selectedTask{}, nil
 	}
-	return selectRegisteredTask(query)
+	if target.ref == "" {
+		return selectedTask{}, nil
+	}
+	parent := shellIdentityFromEnvironment()
+	action, kind := "task_by_id", ""
+	if command == "attach" {
+		action, kind = "attach_by_id", "shell"
+		if parent != "" && os.Getenv("SSHORE_SOCKET") != "" {
+			kind = "hosted"
+		}
+	}
+	reply, err := metadataRPC(metadataRequest{Action: action, Kind: kind, Instance: target.ref, Parent: parent})
+	if err != nil {
+		return selectedTask{}, err
+	}
+	if reply.Target == nil {
+		return selectedTask{}, fmt.Errorf("missing task selection")
+	}
+	return *reply.Target, nil
 }
 
 func selectRegisteredTask(query taskQuery) (selectedTask, error) {
@@ -324,20 +401,16 @@ func selectRegisteredTask(query taskQuery) (selectedTask, error) {
 	return rows[0], nil
 }
 
-func mutateRegisteredTask(command string, target selectedTask, newName string) (int, error) {
+func mutateRegisteredTask(command string, target selectedTask) (int, error) {
 	if target.Kind == "shell" {
-		return runLocalCommand(options{command: command, session: target.Name, newName: newName,
+		return runLocalCommand(options{command: command, session: target.Name,
 			hosted: target.Hosted, taskIdentity: target.Identity, instance: target.Instance})
 	}
-	change := resourceMutation{Kind: target.Kind, Ref: canonicalTaskUID(target.Identity), Identity: target.Identity, NewName: newName}
+	change := resourceMutation{Kind: target.Kind, Ref: canonicalTaskUID(target.Identity), Identity: target.Identity}
 	if _, err := daemonResourceRequest(context.Background(), "/resources/"+command, change); err != nil {
 		return 1, err
 	}
-	if command == "kill" {
-		printStoppedResource(target.Kind, target.Name, target.Identity)
-	} else {
-		termui.Log(os.Stdout, taskShortCode(target.Identity), termui.Info, "Renamed %s/%s to %s.", target.Kind, target.Name, newName)
-	}
+	printStoppedResource(target.Kind, target.Name, target.Identity)
 	return 0, nil
 }
 
@@ -355,7 +428,7 @@ func (s *shellTask) remoteChildIDs(prefix string) []selectedTask {
 
 func (s *shellTask) selectRemoteChild(config *shellConfig) (*remoteShellChild, error) {
 	if config.Name == "" && config.Instance == "" {
-		return nil, fmt.Errorf("select a child with sshore attach HOST:ID")
+		return nil, fmt.Errorf("select a child with sshore attach ID")
 	}
 	s.mu.Lock()
 	var children []*remoteShellChild

@@ -97,7 +97,7 @@ func TestWindowsConPTY(t *testing.T) {
 	t.Run("detach and reattach", func(t *testing.T) { testWindowsReattach(t, ctx, command) })
 	t.Run("confirmed shutdown", func(t *testing.T) {
 		const endpoint = "here:shutdown"
-		out, err := runWindowsTerminal(t, ctx, command("shell", endpoint, "--no-profile"), func(_ func(string), wait terminalWait) {
+		out, err := runWindowsTerminal(t, ctx, command("shell", "--name", "shutdown", "--no-profile"), func(_ func(string), wait terminalWait) {
 			wait("Connected " + endpoint)
 			stop := command("kill", "--all")
 			stop.Stdin = strings.NewReader("y\n")
@@ -127,7 +127,7 @@ func testWindowsReattach(t *testing.T, ctx context.Context, command func(...stri
 	}
 	directory := t.TempDir()
 	const endpoint = "here:conpty"
-	run(command("shell", endpoint, "--pin", "--no-profile"), func(send func(string), wait terminalWait) {
+	run(command("shell", "--name", "conpty", "--pin", "--no-profile"), func(send func(string), wait terminalWait) {
 		wait("Connected " + endpoint)
 		send("set \"SSHORE_RESUME=retained\"\r")
 		send("cd /d \"" + directory + "\"\r")
@@ -148,11 +148,7 @@ func testWindowsReattach(t *testing.T, ctx context.Context, command func(...stri
 	if len(code) != 6 {
 		t.Fatalf("unexpected shell code %q in tree:\n%s", code, tree)
 	}
-	windowsRun(t, command("rename", "shell/"+code, "conpty-renamed"))
-	if renamed := string(windowsRun(t, command("ps"))); !strings.Contains(renamed, "shell/"+code+" (conpty-renamed)  detached") {
-		t.Fatalf("rename changed the shell ID or state:\n%s", renamed)
-	}
-	run(command("a", "shell/"+code), func(send func(string), wait terminalWait) {
+	run(command("a", code), func(send func(string), wait terminalWait) {
 		wait("WIN_READY=retained")
 		send("echo WIN_RESUMED=%SSHORE_RESUME%:%CD%\r")
 		wait("WIN_RESUMED=retained:" + directory)
@@ -161,7 +157,7 @@ func testWindowsReattach(t *testing.T, ctx context.Context, command func(...stri
 		wait("sshore on local>")
 		send("exit\r")
 	})
-	if strings.Contains(string(windowsRun(t, command("ls"))), "(conpty-renamed)") {
+	if strings.Contains(string(windowsRun(t, command("ls"))), "(conpty)") {
 		t.Fatal("exited shell still registered")
 	}
 }

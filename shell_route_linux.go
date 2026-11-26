@@ -165,14 +165,11 @@ func (s *remoteShell) serveShellRoute(c net.Conn, parent *attachment, config *sh
 		if config.Command == "attach" {
 			action = "attach"
 		}
-	} else if config.Command == "attach" && ready.Reason == "" {
+	} else if config.Command == "attach" {
 		action = "remote_attach"
 	}
 	name := config.Name
-	if ready.Reason != "" {
-		name = ""
-	}
-	if err := parent.controlMessage(message{Type: "shell_route", Action: action, Token: token, HandoffToken: confirmed.token, Instance: ready.Instance, Name: name, SourceHost: config.Host, NoLogin: config.NoLogin, NoProfile: config.NoProfile, Pinned: config.Pin}); err != nil {
+	if err := parent.controlMessage(message{Type: "shell_route", Action: action, Token: token, HandoffToken: confirmed.token, Instance: ready.Instance, Name: name, SourceHost: config.Host, NoLogin: config.NoLogin, NoProfile: config.NoProfile, Pinned: config.Pin, Argv: config.Argv}); err != nil {
 		return err
 	}
 	timer := time.NewTimer(15 * time.Second)
@@ -217,7 +214,7 @@ func handoffRemoteShell(o options) (bool, error) {
 	}
 	config := o.shellConfig()
 	req := &localDaemonRequest{Record: localShellRecord{Directory: cwd}, Env: os.Environ(), Shell: &config}
-	if !o.local && (o.command == "sh" || o.openIfUnavailable) {
+	if !o.local && (o.command == "sh") {
 		auth, stop, err := startSSHAuthBroker()
 		if err != nil {
 			return true, err
@@ -233,7 +230,7 @@ func handoffRemoteShell(o options) (bool, error) {
 	if err := writeMessage(c, message{Type: "shell_route_request", SoftwareVersion: version, LocalRequest: req}); err != nil {
 		return true, err
 	}
-	if _, err := negotiateShellSetup(c, o.host, false, o.openIfUnavailable); err != nil {
+	if _, err := negotiateShellSetup(c, o.host, false); err != nil {
 		return true, err
 	}
 	reply, err := readMessage(c)
@@ -277,11 +274,15 @@ func (s *remoteShell) createRouteShell(req localDaemonRequest) (*remoteShell, er
 	if req.Shell.Command == "attach" {
 		target, ok := s.tasks.lookup(req.Shell.Instance).(*remoteShell)
 		if !ok {
-			return nil, fmt.Errorf("choose a registered shell on this host with sshore attach :ID")
+			return nil, fmt.Errorf("choose a registered shell on this host with sshore attach ID")
 		}
 		return target, nil
 	}
-	return s.tasks.registerHostedShell(hostedShellRequest{Directory: req.Record.Directory, Name: req.Shell.Name, Env: req.Env, parent: &s.shellTask})
+	directory, err := resolveStartupDirectory(req.Record.Directory, req.Shell.StartupDirectory)
+	if err != nil {
+		return nil, err
+	}
+	return s.tasks.registerHostedShell(hostedShellRequest{Directory: directory, Name: req.Shell.Name, Env: req.Env, parent: &s.shellTask})
 }
 
 func openHostedEndpoint(ctx context.Context, instance string) (net.Conn, error) {

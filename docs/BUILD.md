@@ -32,7 +32,7 @@ that simulate upgrade confirmation or reset.
   Alpine guest with `tests/integration/ssh_docker.sh --kvm`. Either mode accepts
   a Go test pattern, for example `'^TestOpenSSH$/^mount'`.
 - The Windows Server 2025 CI job checks installation on PowerShell 5.1 and 7,
-  local ConPTY, and remote shell creation, detach, rename, reattach, exit, and
+  local ConPTY, and remote shell creation, detach, reattach, exit, and
   kill through Windows OpenSSH under a separate account.
   A WSL client also tests Windows SFTP uploads, downloads and no-overwrite behavior.
 

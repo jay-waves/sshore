@@ -15,7 +15,7 @@ func negotiateFileSetup(stream io.ReadWriter) (string, error) {
 	return reply.HomeDirectory, err
 }
 
-func negotiateShellSetup(stream io.ReadWriter, host string, chooseShell, openIfUnavailable bool) (message, error) {
+func negotiateShellSetup(stream io.ReadWriter, host string, chooseShell bool) (message, error) {
 	var choose func([]sessionTarget) (string, error)
 	if chooseShell {
 		choose = func(targets []sessionTarget) (string, error) {
@@ -26,12 +26,7 @@ func negotiateShellSetup(stream io.ReadWriter, host string, chooseShell, openIfU
 	if err != nil {
 		return message{}, err
 	}
-	if reply.Reason != "" {
-		if !openIfUnavailable || !validTaskUID(reply.Instance) {
-			return message{}, fmt.Errorf("unexpected new remote shell")
-		}
-		logSSHWarning(os.Stderr, fmt.Sprintf("%s on %s. Opening new shell %s.", reply.Reason, host, taskShortCode(identityFromUID(reply.Instance))))
-	}
+
 	return reply, nil
 }
 

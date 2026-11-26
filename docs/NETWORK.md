@@ -4,7 +4,7 @@
 
 | Command | Transport | Startup exchange |
 | --- | --- | --- |
-| `shell`, `attach` | The local daemon owns the SSH connection. Each attachment uses separate SSH TCP channels for control and terminal data. | An exec channel selects or creates the remote task. The daemon validates the version and data-channel token in the attach request. |
+| `shell`, `new`, `attach` | The local daemon owns the SSH connection. Each attachment uses separate SSH TCP channels for control and terminal data. | An exec channel selects or creates the remote task. The daemon validates the version and data-channel token in the attach request. |
 | `exec` | One SSH exec channel. | SSH starts the command and returns its exit status. |
 | `cp` | One SSH exec channel and one SFTP session for the entire batch. | The service returns the version and remote home, then SFTP negotiates its protocol. |
 | `mount` | One SSH connection with sibling exec channels for SFTP and optional filesystem notifications. | Each service request selects data or notifications and gets one mount readiness reply. The data reply includes the account identity and remote home. |
@@ -31,9 +31,9 @@ forward. An approved copy uses an authorized file stream for SFTP.
 ## Task and account commands
 
 `list` and `pstree` read local daemon inventory and cached remote observations.
-`detach` updates the active task through its managing daemon. `rename` and `kill`
-use the managing daemon for local tasks and a versioned SSH service for explicit
-remote tasks. Remote `kill --all` uses an administrative SSH exchange to preview
+`detach` updates the active task through its managing daemon. `kill ID` and `kill NAME`
+resolve a known task and contact its managing daemon. `kill HOST --all` uses an
+administrative SSH exchange to preview
 and confirm shutdown. `daemon` and `reset` operate on the local account.
 `bootstrap` downloads the release over HTTPS and replaces the local installation.
 

@@ -350,7 +350,10 @@ func runClient(o options) (int, error) {
 			}
 			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Target unavailable; restoring %s.%s\n", cleanText(target.session), reason)
 		case len(parents) == 0:
-			if o.command == "kill" || o.command == "rename" || err != nil && menu == nil {
+			if len(o.argv) != 0 && ended.exit {
+				return code, err
+			}
+			if o.command == "kill" || err != nil && menu == nil {
 				return code, err
 			}
 			problem := ""
@@ -404,7 +407,7 @@ func applyRecentConnection(o *options) error {
 		return nil
 	}
 	if o.host == "" {
-		return usage("no recent connection; use sshore attach HOST:[ID] or sshore shell HOST:")
+		return usage("no recent connection; use sshore attach HOST or sshore shell HOST")
 	}
 	return nil
 }
@@ -546,8 +549,7 @@ func directShellOptions(o options) options {
 
 func routeParentOptions(parent options) options {
 	parent.command = "attach"
-	parent.openIfUnavailable = false
-	// The remote entry point accepts immutable task UIDs, so an ancestor rename cannot sever
+	// The remote entry point accepts immutable task UIDs, so a changed label cannot sever
 	// an otherwise live child route. This transport never attaches a terminal.
 	if validTaskUID(parent.instance) {
 		parent.session = parent.instance
@@ -657,9 +659,8 @@ func (h *clientHandoff) options() (options, error) {
 	}
 	return options{
 		command: shell.Command, local: shell.Local, host: shell.Host, session: shell.Name, server: shell.Server,
-		ssh: shell.SSH, pin: shell.Pin, noLogin: shell.NoLogin, noProfile: shell.NoProfile, noEscape: h.NoEscape,
+		ssh: shell.SSH, argv: shell.Argv, startupDirectory: shell.StartupDirectory, pin: shell.Pin, noLogin: shell.NoLogin, noProfile: shell.NoProfile, noEscape: h.NoEscape,
 		sshDirectory: h.Directory, environment: h.Environment, taskIdentity: h.TaskIdentity, instance: shell.Instance, hosted: h.Hosted,
-		openIfUnavailable: shell.OpenIfUnavailable && shell.Command == "attach" && !shell.Local && isTaskIDPrefix(shell.Name),
 	}, nil
 }
 

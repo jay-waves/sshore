@@ -87,7 +87,7 @@ func (s *remoteShell) hostedView(detail string) shellView {
 	s.mu.Lock()
 	view := shellView{
 		Owner: s.parentIdentityLocked(), Pinned: s.pinned, PinUntil: s.pinUntil, Instance: s.record.UID,
-		ID: "sh/" + s.record.Name, Name: s.record.Name, PID: s.pid, Shell: s.shellName,
+		ID: "sh/" + s.record.Name, Name: s.record.Name, PID: s.pid, Shell: s.shellName, Program: s.program, ProgramLine: s.programLine,
 	}
 	view.State = s.state()
 	if s.active != nil {

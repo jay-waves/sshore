@@ -140,6 +140,8 @@ func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply)
 	switch r.Action {
 	case "task_by_id", "attach_by_id":
 		reply.Target, err = a.selectTaskID(r.Instance, r.Kind, r.Parent, r.Action == "attach_by_id")
+	case "task_by_name", "attach_by_name":
+		reply.Target, err = a.selectTaskName(r.Name, r.Kind, r.Action == "attach_by_name")
 	case "attach_recent":
 		reply.Target, err = a.selectDetachedAttach(r.Key, r.Kind)
 	default:
@@ -173,7 +175,7 @@ func (a *daemonActivity) handleShellHistory(r metadataRequest) (reply metadataRe
 		}
 	case "participation_get":
 		reply.Participants, err = s.readParticipatingShellsLocal(r.Host)
-	case "participation_observe", "participation_state", "participation_forget", "participation_rename", "participation_refresh":
+	case "participation_observe", "participation_state", "participation_forget", "participation_refresh":
 		err = s.updateParticipation(r)
 	default:
 		err = fmt.Errorf("invalid metadata operation")

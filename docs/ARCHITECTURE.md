@@ -30,7 +30,9 @@ release and passes operation-specific arguments to the service handler.
 
 Linux and Windows 11 / Server 2025 or newer are core amd64 client and host platforms.
 Windows uses ConPTY for hosted shells.
-Each interactive shell owns one terminal with one attachment at a time.
+Each interactive task owns one terminal with one attachment at a time. `shell` and
+`new` follow the starting connection or parent unless pinned or explicitly detached.
+`new -- PROGRAM` starts the executable directly. Otherwise it opens a shell.
 Split panes, tiling, screen emulation and scrollback replay are outside scope.
 The shell and terminal preserve interactive state across detach. Redraw is best
 effort and must preserve user input. See the [support matrix](../README.md#os-and-shell-support)
@@ -160,6 +162,9 @@ including cached remote observations. After `setup_ready`, the remote service se
 hosted shell list on the same exec stream while the client attaches. A live registration
 takes precedence over an observation of the same UID. Invalid records identify the affected
 source and field.
+
+Program sessions appear as `run` and show the executable and its arguments in `list` details.
+The task's arguments stay out of inventory and participation records.
 
 On Windows, the command console and child shell shortcut use the last reported
 filesystem location when available. Shells can report it through `OSC 9;9`, including

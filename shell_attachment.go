@@ -234,7 +234,7 @@ func (s *shellTask) attach(c net.Conn, m message, extra func(*attachment, messag
 			fatal.SoftwareVersion = version
 			switch {
 			case errors.Is(err, errShellExited):
-				err = fmt.Errorf("shell is exiting; use sshore shell HOST: to create a new one")
+				err = fmt.Errorf("shell is exiting; use sshore shell HOST to create a new one")
 			case errors.Is(err, errShellAttached):
 				err = fmt.Errorf("shell already attached; detach the other connection first")
 			}
@@ -309,7 +309,7 @@ func (s *shellTask) activateAttachment(p *attachment, m message, initial bool) e
 			}
 		}
 	} else {
-		if m.NoLogin || m.NoProfile {
+		if m.NoLogin || m.NoProfile || len(m.Argv) != 0 {
 			return fmt.Errorf("startup options require a new managed shell")
 		}
 		if err := s.terminal.Resize(shellSize(m)); err != nil {
@@ -324,7 +324,7 @@ func (s *shellTask) activateAttachment(p *attachment, m message, initial bool) e
 	if validMachineID(m.MachineID) && machine != m.MachineID && len(m.SourceHost) <= 256 {
 		p.sourceHost = cleanText(m.SourceHost)
 	}
-	if err := p.controlMessage(message{Type: "ready", SoftwareVersion: version, Owner: s.parentIdentityLocked(), TreeKey: p.claim.key, MachineID: machine, Pinned: s.pinned, PinUntil: s.pinUntil, Instance: instance, PID: s.pid, Name: s.record.Name, Shell: s.shellName}); err != nil {
+	if err := p.controlMessage(message{Type: "ready", SoftwareVersion: version, Owner: s.parentIdentityLocked(), TreeKey: p.claim.key, MachineID: machine, Pinned: s.pinned, PinUntil: s.pinUntil, Instance: instance, PID: s.pid, Name: s.record.Name, Shell: s.shellName, Program: s.program, ProgramLine: s.programLine}); err != nil {
 		return err
 	}
 	if data := s.modes.Replay(); len(data) > 0 {

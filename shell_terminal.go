@@ -21,7 +21,6 @@ import (
 
 type shellRegistry interface {
 	attachmentTargets(parent, ref string, hosted bool) ([]sessionTarget, error)
-	renameShell(shell *shellTask, old, name, instance string) error
 	childShells(*shellTask) []*shellTask
 	isShuttingDown() bool
 }
@@ -37,6 +36,8 @@ type shellTask struct {
 	terminal                      *pty.Terminal
 	pid                           int
 	shellName                     string
+	programLine                   string
+	program                       bool
 	reportedDirectory             string
 	modes                         term.InputState
 	active                        *attachment
@@ -249,19 +250,14 @@ func (s *shellTask) serveCommand(c net.Conn, m message, extra func(*attachment, 
 		if err != nil {
 			reply = message{Type: "error", Error: err.Error()}
 		}
-	case "rename", "kill":
+	case "kill":
 		var err error
 		if s.hosted {
 			err = checkPeerVersion(m.SoftwareVersion, "client")
 		}
 		if err == nil {
-			if m.Type == "rename" {
-				err = s.registry.renameShell(s, m.Action, m.Name, m.Instance)
-				reply = message{Type: "renamed", Name: m.Name}
-			} else {
-				err = s.kill(m.Instance, "killed by sshore kill")
-				reply.Type = "killed"
-			}
+			err = s.kill(m.Instance, "killed by sshore kill")
+			reply.Type = "killed"
 		}
 		if err != nil {
 			reply = message{Type: "error", Error: err.Error()}

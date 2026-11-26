@@ -143,7 +143,7 @@ func (s *localShell) view(includeDirectory bool) localShellView {
 	s.mu.Lock()
 	view := localShellView{
 		Owner: s.parentIdentityLocked(), Pinned: s.pinned, PinUntil: s.pinUntil, Identity: s.record.identity(),
-		Name: s.record.Name, Version: s.record.Version, PID: s.pid, Shell: s.shellName,
+		Name: s.record.Name, Version: s.record.Version, PID: s.pid, Shell: s.shellName, Program: s.program, ProgramLine: s.programLine,
 	}
 	reportedDirectory := s.reportedDirectory
 	view.State = s.state()

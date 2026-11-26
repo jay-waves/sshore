@@ -70,6 +70,7 @@ type message struct {
 	Cols             uint16              `json:"cols,omitzero"`
 	Rows             uint16              `json:"rows,omitzero"`
 	Color            bool                `json:"color,omitzero"`
+	Argv             []string            `json:"argv,omitempty"`
 	NoProfile        bool                `json:"no_profile,omitzero"`
 	NoLogin          bool                `json:"no_login,omitzero"`
 	Term             string              `json:"term,omitempty"`
@@ -78,6 +79,8 @@ type message struct {
 	Attached         bool                `json:"attached,omitzero"`
 	Name             string              `json:"name,omitempty"`
 	Shell            string              `json:"shell,omitempty"`
+	Program          bool                `json:"program,omitempty"`
+	ProgramLine      string              `json:"program_line,omitempty"`
 	Size             int64               `json:"size,omitzero"`
 	Output           string              `json:"output,omitempty"`
 	Error            string              `json:"error,omitempty"`
@@ -230,7 +233,7 @@ func validateAttach(m message) error {
 	if m.Action != "" && m.Action != "existing" {
 		return fmt.Errorf("invalid attach action")
 	}
-	if (m.NoLogin || m.NoProfile) && m.Action != "" {
+	if (m.NoLogin || m.NoProfile || len(m.Argv) != 0) && m.Action != "" {
 		return fmt.Errorf("startup options require a new shell")
 	}
 	if m.Term == "" || len(m.Term) > 128 || strings.ContainsAny(m.Term, "\x00\r\n\x1b") {

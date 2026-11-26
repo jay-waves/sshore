@@ -94,8 +94,8 @@ func validAlias(name string) error {
 	if err := validSession(name); err != nil {
 		return err
 	}
-	if isShortTaskID(name) {
-		return usage("6–32 hexadecimal characters are reserved for task IDs; choose another alias")
+	if isTaskIDPrefix(name) {
+		return usage("2–32 hexadecimal characters are reserved for task IDs; choose another name")
 	}
 	return nil
 }

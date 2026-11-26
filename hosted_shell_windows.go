@@ -44,7 +44,7 @@ func (s *remoteShell) hostedView(_ string) shellView {
 	view := shellView{
 		Owner: s.parentIdentityLocked(), Pinned: s.pinned, PinUntil: s.pinUntil,
 		Instance: s.record.UID, ID: "sh/" + s.record.Name, Name: s.record.Name,
-		PID: s.pid, Shell: s.shellName, State: s.state(),
+		PID: s.pid, Shell: s.shellName, Program: s.program, ProgramLine: s.programLine, State: s.state(),
 		Directory: s.directoryOrStartupLocked(),
 	}
 	if s.active != nil {

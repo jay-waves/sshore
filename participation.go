@@ -12,6 +12,8 @@ type participatingShell struct {
 	Host, Instance, Name string
 	Owner                string
 	Shell                string `json:",omitempty"`
+	Program              bool   `json:",omitempty"`
+	ProgramLine          string `json:",omitempty"`
 	State                string
 	PID                  int
 	Pinned               bool
@@ -38,11 +40,6 @@ func reconcileParticipatingShells(host string, shells []shellView, since time.Ti
 
 func forgetParticipatingShell(host, instance string) error {
 	_, err := metadataRPC(metadataRequest{Action: "participation_forget", Host: host, Instance: instance})
-	return err
-}
-
-func renameParticipatingShell(host, instance, name string) error {
-	_, err := metadataRPC(metadataRequest{Action: "participation_rename", Host: host, Instance: instance, Name: name})
 	return err
 }
 
@@ -158,7 +155,7 @@ func (m *daemonMetadata) updateParticipation(r metadataRequest) error {
 		default:
 			rows = append(rows, row)
 		}
-	case "participation_forget", "participation_rename":
+	case "participation_forget":
 		if !validTaskUID(r.Instance) || validSSHDestination(r.Host) != nil {
 			return fmt.Errorf("invalid participating shell identity")
 		}
@@ -166,14 +163,7 @@ func (m *daemonMetadata) updateParticipation(r metadataRequest) error {
 			return row.Host == r.Host && row.Instance == r.Instance
 		})
 		if i >= 0 {
-			if r.Action == "participation_forget" {
-				rows = slices.Delete(rows, i, i+1)
-			} else {
-				if err := validSession(r.Name); err != nil {
-					return err
-				}
-				rows[i].Name, rows[i].ChangedAt = r.Name, now
-			}
+			rows = slices.Delete(rows, i, i+1)
 		}
 	case "participation_refresh":
 		if r.Participation == nil || validSSHDestination(r.Host) != nil {
@@ -207,7 +197,7 @@ func refreshParticipation(rows []participatingShell, host string, refresh partic
 			if validSession(view.Name) == nil && view.PID > 0 && (view.State == taskActive || view.State == taskWaiting || view.State == taskDetached) {
 				row.Owner = view.Owner
 				row.Name, row.State, row.PID = view.Name, view.State, view.PID
-				row.Shell = view.Shell
+				row.Shell, row.Program, row.ProgramLine = view.Shell, view.Program, view.ProgramLine
 				row.Pinned, row.PinUntil, row.ChangedAt = view.Pinned, view.PinUntil, now
 			}
 		}

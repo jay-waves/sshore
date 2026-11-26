@@ -34,10 +34,11 @@ func rootConsoleOptions(current options, args []string) (*options, error) {
 			return nil, err
 		}
 		if len(parsed.ssh) != 0 || parsed.serverSet || !parsed.local {
-			return nil, usage("use shell [--pin] [:NAME] to open a shell on this host")
+			return nil, usage("use shell [here:PATH] [--name NAME] to open a shell on this host")
 		}
 		next.command = parsed.command
 		next.session, next.pin = parsed.session, parsed.pin
+		next.startupDirectory = parsed.startupDirectory
 		next.noLogin, next.noProfile = parsed.noLogin, parsed.noProfile
 	case "attach":
 		if len(args) > 2 {

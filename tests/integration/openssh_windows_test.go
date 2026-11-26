@@ -57,7 +57,14 @@ func TestWindowsOpenSSH(t *testing.T) {
 	}
 	run := func(t *testing.T, verb, target string, args []string, steps func(func(string), terminalWait)) {
 		t.Helper()
-		args = append(append([]string{verb, target}, args...), "--")
+		if verb == "shell" {
+			hostName, name, _ := strings.Cut(target, ":")
+			target = hostName
+			if name != "" {
+				args = append(args, "--name", name)
+			}
+		}
+		args = append(append([]string{verb, target}, args...), "--ssh")
 		args = append(args, sshOptions...)
 		if out, err := runWindowsTerminal(t, ctx, command(args...), steps); err != nil {
 			t.Fatalf("Windows OpenSSH client: %v\n%s", err, out)
@@ -89,8 +96,7 @@ func TestWindowsOpenSSH(t *testing.T) {
 			send("\x02d")
 			wait("Detached from " + endpoint)
 		})
-		windowsRun(t, command(append([]string{"rename", endpoint, "ci-renamed", "--"}, sshOptions...)...))
-		run(t, "attach", host+":ci-renamed", nil, func(send func(string), wait terminalWait) {
+		run(t, "attach", host, nil, func(send func(string), wait terminalWait) {
 			wait("CI_READY=retained")
 			send("echo CI_RESUMED=%SSHORE_REMOTE_STATE%\r")
 			wait("CI_RESUMED=retained")
@@ -100,7 +106,7 @@ func TestWindowsOpenSSH(t *testing.T) {
 		return
 	}
 	t.Run("exited shell cannot be attached", func(t *testing.T) {
-		reply := raw(t, "shell", "0.0.0", "attach", "ci-renamed")
+		reply := raw(t, "shell", "0.0.0", "attach", "ci-shell")
 		if !strings.Contains(reply.Error, "does not exist") {
 			t.Fatalf("expected missing task after shell exit, got %q", reply.Error)
 		}
@@ -117,7 +123,7 @@ func TestWindowsOpenSSH(t *testing.T) {
 			send("\x02d")
 			wait("Detached from " + target)
 		})
-		windowsRun(t, command(append([]string{"kill", target, "--"}, sshOptions...)...))
+		windowsRun(t, command(append([]string{"kill", "ci-kill", "--ssh"}, sshOptions...)...))
 		if reply := raw(t, "shell", "0.0.0", "attach", "ci-kill"); !strings.Contains(reply.Error, "does not exist") {
 			t.Fatalf("expected killed task to be absent, got %q", reply.Error)
 		}
@@ -154,7 +160,7 @@ func testWindowsForward(t *testing.T, command func(...string) *exec.Cmd, host st
 	if reverse {
 		source, target = fmt.Sprintf("here:%d", servicePort), fmt.Sprintf("%s:%d", host, forwardPort)
 	}
-	out := windowsRun(t, command(append([]string{"forward", source, target, "--"}, sshOptions...)...))
+	out := windowsRun(t, command(append([]string{"forward", source, target, "--ssh"}, sshOptions...)...))
 	_, task, found := strings.Cut(string(out), "Started forward/")
 	task, _, _ = strings.Cut(task, ":")
 	if !found || task == "" {

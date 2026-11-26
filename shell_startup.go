@@ -6,11 +6,30 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jay-waves/sshore/internal/pty"
 )
+
+func resolveStartupDirectory(base, directory string) (string, error) {
+	if directory == "" {
+		return base, nil
+	}
+	if !validStartupPath(directory) {
+		return "", fmt.Errorf("invalid startup directory %q", directory)
+	}
+	if filepath.IsAbs(directory) {
+		return filepath.Clean(directory), nil
+	}
+	relative := filepath.ToSlash(directory)
+	if strings.HasPrefix(relative, "./") || strings.HasPrefix(relative, "../") {
+		return filepath.Join(base, directory), nil
+	}
+	return "", fmt.Errorf("startup directory %q must be absolute or explicitly relative on the target", directory)
+}
 
 // startupArgs selects startup mode and optional directory reporting.
 func startupArgs(platform, path string, noLogin, noProfile bool) ([]string, error) {
@@ -116,9 +135,15 @@ func (s *shellTask) startManagedShell(m message) error {
 		path = localShellPath(source)
 		env = localShellEnvironment(source, m.Term, s.record.identity())
 	}
-	args, err := startupArgs(runtime.GOOS, path, m.NoLogin, m.NoProfile)
-	if err != nil {
-		return err
+	var args []string
+	if len(m.Argv) != 0 {
+		path, args = m.Argv[0], m.Argv[1:]
+	} else {
+		var err error
+		args, err = startupArgs(runtime.GOOS, path, m.NoLogin, m.NoProfile)
+		if err != nil {
+			return err
+		}
 	}
 	if s.cgroupErr != nil {
 		return s.cgroupErr
@@ -134,6 +159,19 @@ func (s *shellTask) startManagedShell(m message) error {
 	s.pid = t.PID()
 	s.started = time.Now()
 	s.shellName = filepath.Base(path)
+	s.program = len(m.Argv) != 0
+	if s.program {
+		parts := make([]string, len(m.Argv))
+		for i, arg := range m.Argv {
+			parts[i] = arg
+			if arg == "" || strings.ContainsAny(arg, "\"'`") || strings.ContainsFunc(arg, func(r rune) bool {
+				return unicode.IsSpace(r) || !unicode.IsPrint(r)
+			}) {
+				parts[i] = strconv.Quote(arg)
+			}
+		}
+		s.programLine = strings.Join(parts, " ")
+	}
 	if runtime.GOOS == "windows" {
 		s.shellName = strings.TrimSuffix(strings.ToLower(s.shellName), ".exe")
 	}

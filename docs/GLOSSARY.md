@@ -73,7 +73,7 @@ editable default in local approval.
 
 - **ID / NAME** A task has one immutable UID generated from 16 cryptographically random bytes and
   encoded as 32 lowercase hexadecimal characters; the first six characters are its displayed
-  reference. An optional NAME is a readable label set at creation or by `rename`; it identifies the
+  reference. An optional NAME is a readable label set at creation; it identifies the
   same task. References are scoped to the managing account. An ID selector accepts 2–32 hexadecimal
   characters and must identify one task; collisions require a longer prefix, the full UID or an
   explicit scope.

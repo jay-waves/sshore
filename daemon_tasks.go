@@ -45,29 +45,6 @@ func (s *daemonTasks) newShellTask(record localShellRecord, env []string, parent
 	}
 }
 
-// The table excludes new claims while the shell verifies the old reference.
-func (tasks *daemonTasks) renameShell(s *shellTask, old, name, instance string) error {
-	if err := validAlias(name); err != nil {
-		return err
-	}
-	// Wait for terminal state before taking the registry lock. Registry
-	// readers only need nameMu, which is acquired last during a rename.
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tasks.mu.Lock()
-	defer tasks.mu.Unlock()
-	if err := tasks.checkNameLocked(s.record.UID, name); err != nil {
-		return err
-	}
-	if s.exited || s.killing || (s.hosted || old != "") && s.record.Name != old || instance != "" && instance != s.record.UID {
-		return fmt.Errorf("shell changed or is exiting; refresh with sshore list")
-	}
-	s.nameMu.Lock()
-	s.record.Name = name
-	s.nameMu.Unlock()
-	return nil
-}
-
 func (s *daemonTasks) childShells(parent *shellTask) []*shellTask {
 	type managedTask interface {
 		daemonTask
@@ -286,7 +263,7 @@ func (t *nativeShellTask) snapshot() localShellRecord {
 func (t *nativeShellTask) serveTask(c net.Conn, m message) error { return t.serve(c, m) }
 
 type resourceMutation struct {
-	Kind, Ref, Identity, NewName string
+	Kind, Ref, Identity string
 }
 
 func (change resourceMutation) confirmedUID() string {
@@ -525,37 +502,16 @@ func (s *daemonTasks) serveResourceMutation(w http.ResponseWriter, r *http.Reque
 // A stop returns the exact registered worker to stop outside the task table
 // lock. Renames complete under the same lock as lookup.
 func (s *daemonTasks) mutateResource(action string, change resourceMutation) (*daemonResourceTask, error) {
-	if action != "kill" && action != "rename" {
+	if action != "kill" {
 		return nil, fmt.Errorf("invalid resource operation")
 	}
 	if err := validSession(change.Ref); err != nil {
 		return nil, err
 	}
-	if action == "rename" {
-		if err := validAlias(change.NewName); err != nil {
-			return nil, err
-		}
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	id, task, err := s.resolveResourceLocked(change)
-	if err != nil {
-		return nil, err
-	}
-
-	if action == "kill" {
-		return task, nil
-	}
-	if err := s.checkNameLocked(id, change.NewName); err != nil {
-		return nil, err
-	}
-	task.mu.Lock()
-	defer task.mu.Unlock()
-	if task.expired() {
-		return nil, fmt.Errorf("task is exiting; refresh with sshore list")
-	}
-	task.record.Name = change.NewName
-	return nil, nil
+	_, task, err := s.resolveResourceLocked(change)
+	return task, err
 }
 
 func (s *daemonTasks) resolveResourceLocked(change resourceMutation) (string, *daemonResourceTask, error) {

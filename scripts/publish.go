@@ -32,9 +32,8 @@ func publish(build func(string) ([]string, error)) error {
 
 Includes Linux and Windows amd64 binaries. Verify archives against SHA256SUMS.
 
-Use the same task ID with sshore kill and sshore rename for shells, mounts
-and forwards. A short ID or the full task:<UID> works across renames.
-Use HOST:ID to select the managing SSH account explicitly.
+Use sshore kill with an ID or name for shells, mounts and forwards.
+Use sshore kill HOST --all to stop a remote account's daemon.
 
 Use the platform installer on each endpoint to install %[1]s for managed connections.
 Bootstrap ends the target account's tasks, including pinned shells, and clears

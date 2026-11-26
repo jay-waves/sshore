@@ -31,9 +31,9 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 			return serveDaemonAdmin(os.Stdin, os.Stdout)
 		}
 	case "task-control":
-		return serveTaskControl(req.Mode, taskQuery{Ref: req.Name, UID: req.Instance}, req.NewName)
+		return serveTaskControl(req.Mode, taskQuery{Ref: req.Name, UID: req.Instance})
 	case "shell":
-		return serveRemoteShell(req.Mode, req.Name, req.Instance, req.OpenIfUnavailable)
+		return serveRemoteShell(req.Mode, req.Name, req.Instance, req.Directory)
 	case "cp-agent":
 		return serveRemoteFileService(files.ServeCopy)
 	case "mount-agent":

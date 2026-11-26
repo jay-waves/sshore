@@ -21,16 +21,17 @@ type shellConfig struct {
 	Pin                bool
 	Local              bool
 	Host, Name, Server string
+	StartupDirectory   string
 	Command, Instance  string
-	OpenIfUnavailable  bool
 	ParentKey          string `json:",omitempty"`
 	SSH                []string
+	Argv               []string
 }
 
 func (o options) shellConfig() shellConfig {
 	return shellConfig{
-		Command: o.command, Instance: o.instance, Local: o.local, Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh,
-		NoLogin: o.noLogin, NoProfile: o.noProfile, Pin: o.pin, OpenIfUnavailable: o.openIfUnavailable, ParentKey: o.remoteParentKey,
+		StartupDirectory: o.startupDirectory, Command: o.command, Instance: o.instance, Local: o.local, Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh,
+		NoLogin: o.noLogin, NoProfile: o.noProfile, Pin: o.pin, Argv: o.argv, ParentKey: o.remoteParentKey,
 	}
 }
 
@@ -46,7 +47,7 @@ func openRemoteShellTransport(ctx context.Context, o *options, transports client
 	if err != nil {
 		return nil, err
 	}
-	if auth == nil && (o.parent == "" || o.command == "sh" || o.openIfUnavailable) {
+	if auth == nil && (o.parent == "" || o.command == "sh") {
 		var stopAuth func()
 		auth, stopAuth, err = startSSHAuthBroker()
 		if err != nil {
@@ -74,13 +75,9 @@ func openRemoteShellTransport(ctx context.Context, o *options, transports client
 	setup, err := mx.OpenStream()
 	if err == nil {
 		chooseShell := o.command == "attach" && o.session == "" && o.instance == ""
-		var ready message
-		ready, err = negotiateShellSetup(setup, o.host, chooseShell, o.openIfUnavailable)
+		_, err = negotiateShellSetup(setup, o.host, chooseShell)
 		setup.Close()
-		if err == nil && ready.Reason != "" {
-			o.command, o.session, o.instance = "sh", "", ready.Instance
-			o.taskIdentity = ""
-		}
+
 	}
 	if err != nil {
 		mx.Close()
@@ -327,14 +324,11 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 			ready := message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: child.uid}
 			return use(child.open, child.resource, ready, child.done)
 		}
-		if !f.OpenIfUnavailable {
-			return err
-		}
+		return err
 	}
-	shellRequest := remoteServiceRequest{Operation: "shell", Mode: "new", Name: f.Name, Instance: f.Instance}
+	shellRequest := remoteServiceRequest{Operation: "shell", Mode: "new", Name: f.Name, Instance: f.Instance, Directory: f.StartupDirectory}
 	if f.Command == "attach" {
 		shellRequest.Mode = "attach"
-		shellRequest.OpenIfUnavailable = f.OpenIfUnavailable
 		if validTaskUID(f.Instance) {
 			shellRequest.Name = f.Instance
 		}
@@ -401,7 +395,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 		return resourceSSHStream{Conn: stream, transport: client}, nil
 	}
 	var ownerDone <-chan struct{}
-	if f.Command == "sh" || ready.Reason != "" {
+	if f.Command == "sh" {
 		var uid, token string
 		child := owner != nil && f.Command == "sh"
 		if child {

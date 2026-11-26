@@ -70,14 +70,6 @@ func usage(format string, args ...any) error { return &usageError{fmt.Sprintf(fo
 
 var errHelp = errors.New("help requested")
 
-func killAllOptions(parsed cliArguments) (options, error) {
-	o := options{host: parsed.operand(0), ssh: parsed.ssh, server: parsed.value("--server", "sshore")}
-	if o.host == "" && (len(o.ssh) != 0 || o.server != "sshore") {
-		return o, validSSHDestination(o.host)
-	}
-	return o, nil
-}
-
 func runDaemonCommand(parsed cliArguments) (int, error) {
 	switch parsed.operand(0) {
 	case "":
@@ -123,11 +115,7 @@ func runDetach(parsed cliArguments) (int, error) {
 func runTargetCommand(parsed cliArguments) (int, error) {
 	command := parsed.command
 	if command == "kill" && parsed.has("--all") {
-		o, err := killAllOptions(parsed)
-		if err != nil {
-			return 2, err
-		}
-		return runKillAll(o)
+		return runKillAll(options{host: parsed.task.host, ssh: parsed.ssh, server: parsed.value("--server", "sshore")})
 	}
 	target, err := selectCLITask(parsed)
 	if err != nil {
@@ -137,7 +125,7 @@ func runTargetCommand(parsed cliArguments) (int, error) {
 		if len(parsed.ssh) != 0 || parsed.has("--server") {
 			return 2, usage("local tasks do not accept SSH options")
 		}
-		return mutateRegisteredTask(command, target, parsed.operand(1))
+		return mutateRegisteredTask(command, target)
 	}
 	o, err := shellOptions(parsed, target)
 	if err != nil {
@@ -168,23 +156,26 @@ func runExec(parsed cliArguments) (int, error) {
 func shellOptions(parsed cliArguments, target selectedTask) (options, error) {
 	command := parsed.command
 	o := options{command: command, server: parsed.value("--server", "sshore")}
-	if command == "shell" {
+	creating := command == "shell" || command == "new"
+	if creating {
 		o.command = "sh" // Shell requests use the existing protocol operation.
 	}
 	o.ssh, o.local = parsed.ssh, parsed.task.scope != taskSSH
 	o.portOverrideOnly = parsed.has("--port") && len(sshio.WithoutForwarding(parsed.ssh)) == 2
 	o.serverSet = parsed.has("--server")
 	o.noEscape = parsed.has("--no-escape")
+	o.argv = parsed.argv
 	o.pin = parsed.has("--pin")
 	o.noLogin = parsed.has("--no-login")
 	o.noProfile = parsed.has("--no-profile")
 	o.host, o.session = parsed.task.host, parsed.task.ref
+	if creating {
+		o.startupDirectory, o.session = parsed.startupDirectory, parsed.value("--name", "")
+	}
 	if o.local {
 		o.host = "local"
 	}
-	if command == "rename" {
-		o.newName = parsed.operand(1)
-	}
+
 	if target.Identity != "" {
 		o.taskIdentity, o.instance, o.hosted = target.Identity, target.Instance, target.Hosted
 		switch {
@@ -194,13 +185,12 @@ func shellOptions(parsed cliArguments, target selectedTask) (options, error) {
 		case target.RemoteHost != "":
 			o.host, o.session, o.local = target.RemoteHost, target.Instance, false
 		default:
-			o.session = target.Name
+			o.host, o.session, o.local = "local", target.Name, true
 		}
 	}
 	if o.local && (len(o.ssh) > 0 || o.serverSet) {
 		return o, usage("local shells do not accept SSH options")
 	}
-	o.openIfUnavailable = command == "attach" && !o.local && isTaskIDPrefix(o.session)
 
 	if o.host != "" || o.command != "attach" {
 		if err := validSSHDestination(o.host); err != nil {
@@ -213,143 +203,10 @@ func shellOptions(parsed cliArguments, target selectedTask) (options, error) {
 	return o, validSession(o.session)
 }
 
-// Endpoints with a value require bracketed IPv6; a host alone may omit the brackets.
-func isBareSSHHost(ref string) bool {
-	if !strings.Contains(ref, ":") {
-		return true
-	}
-	address := ref
-	if _, after, ok := strings.Cut(ref, "@"); ok {
-		address = after
-	}
-	if ref != "::" && net.ParseIP(address) != nil {
-		return true
-	}
-	if strings.HasSuffix(address, "]") {
-		_, err := endpointHost(ref)
-		return err == nil
-	}
-	return false
-}
-
-func normalizeHostOperand(command string, parsed *cliArguments) error {
-	ref := parsed.operands[0]
-	if isBareSSHHost(ref) {
-		return validSSHDestination(ref)
-	}
-	host, value, err := splitEndpoint(ref)
-	if err != nil {
-		return err
-	}
-	if value != "" {
-		return usage("%s requires an empty value after the host colon", command)
-	}
-	switch host {
-	case "origin":
-		return usage("%s requires here: or an SSH host", command)
-	case "here":
-		if command == "exec" || command == "ping" || command == "copy-id" {
-			return usage("%s requires an SSH host", command)
-		}
-		if len(parsed.ssh) != 0 || parsed.has("--server") {
-			return usage("local tasks do not accept SSH options")
-		}
-		parsed.operands = nil
-	default:
-		parsed.operands[0] = host
-	}
-	return nil
-}
-
-func parseTaskSelector(command, ref string) (taskSelector, error) {
-	if command == "shell" {
-		if ref == "" {
-			return taskSelector{}, nil
-		}
-		if isBareSSHHost(ref) {
-			return taskSelector{scope: taskSSH, host: ref}, validSSHDestination(ref)
-		}
-		host, name, err := splitEndpoint(ref)
-		if err != nil {
-			return taskSelector{}, err
-		}
-		if host == "origin" {
-			return taskSelector{}, usage("create shells on here: or an SSH host")
-		}
-		if name != "" {
-			if err := validAlias(name); err != nil {
-				return taskSelector{}, err
-			}
-		}
-		return scopedTask(host, name), nil
-	}
-
-	if uid, ok := strings.CutPrefix(ref, "task:"); ok && validTaskUID(uid) {
-		ref = uid
-	}
-	if kind, selector, typed := strings.Cut(ref, "/"); typed {
-		switch kind {
-		case "sh", "shell":
-			kind = "shell"
-		case "mount", "forward":
-			if command == "attach" {
-				return taskSelector{}, usage("attach requires a shell")
-			}
-		default:
-			return taskSelector{}, usage("unknown task type %q", kind)
-		}
-		scope := taskLocal
-		if kind == "shell" && isTaskIDPrefix(selector) && command == "attach" {
-			scope = taskKnown
-		}
-		return taskSelector{scope: scope, kind: kind, ref: selector}, validSession(selector)
-	}
-	if ref == "" && command == "attach" {
-		return taskSelector{}, nil
-	}
-	if isTaskIDPrefix(ref) {
-		return taskSelector{scope: taskKnown, ref: ref}, nil
-	}
-	if isBareSSHHost(ref) {
-		if command == "attach" {
-			return taskSelector{scope: taskSSH, host: ref}, validSSHDestination(ref)
-		}
-		return taskSelector{}, usage("%s requires a task ID, HOST:ID, :ID or TYPE/ID", command)
-	}
-
-	host, selector, err := splitEndpoint(ref)
-	if err != nil {
-		return taskSelector{}, err
-	}
-	if selector == "" && command != "attach" {
-		return taskSelector{}, usage("%s requires a task ID or alias after the colon", command)
-	}
-	if host == "origin" {
-		return taskSelector{}, usage("shell selectors require here: or an SSH host")
-	}
-	if selector != "" {
-		if uid, ok := strings.CutPrefix(selector, "task:"); ok && validTaskUID(uid) {
-			selector = uid
-		}
-		if err := validSession(selector); err != nil {
-			return taskSelector{}, err
-		}
-	}
-	return scopedTask(host, selector), nil
-}
-
-func scopedTask(host, ref string) taskSelector {
-	if host == "here" {
-		return taskSelector{scope: taskLocal, ref: ref}
-	}
-	return taskSelector{scope: taskSSH, host: host, ref: ref}
-}
-
 type options struct {
 	hold                  *clientTransport
 	fromTree              string
 	recovering            bool
-	openIfUnavailable     bool
 	reusable              *clientTransport
 	routeTarget           bool
 	sameHostRoute         bool
@@ -360,9 +217,9 @@ type options struct {
 	hosted                bool
 	host, session, server string
 	command               string
-	newName               string
 	noEscape              bool
 	ssh                   []string
+	argv                  []string
 	local                 bool
 	pin                   bool
 	noLogin               bool
@@ -375,18 +232,19 @@ type options struct {
 	portOverrideOnly      bool
 	serverSet             bool
 	sshDirectory          string
+	startupDirectory      string
 }
 
 func executeShellCommand(o options) (int, error) {
 	managedRemoteAttach := o.command == "attach" && !o.local && (os.Getenv("SSHORE_SOCKET") != "" || os.Getenv("SSHORE_LOCAL_SESSION") != "")
 	if managedRemoteAttach && o.session == "" && o.instance == "" {
-		return 1, usage("select a child with sshore attach HOST:ID")
+		return 1, usage("select a child by task ID")
 	}
 	if o.command == "attach" && o.taskIdentity == "" {
 		var err error
 		if o.local && o.session == "" {
 			err = resolveDetachedAttach(&o, shellIdentityFromEnvironment())
-		} else if !o.local && (!managedRemoteAttach || o.openIfUnavailable) {
+		} else if !o.local && !managedRemoteAttach {
 			err = applyRecentConnection(&o)
 		}
 		if err != nil {

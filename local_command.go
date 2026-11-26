@@ -7,27 +7,27 @@ import (
 	"os"
 	"slices"
 	"time"
-
-	"github.com/jay-waves/sshore/internal/termui"
 )
 
 type localShellView struct {
-	SourceHost string    `json:"source_host,omitempty"`
-	Owner      string    `json:"owner,omitempty"`
-	Pinned     bool      `json:"pinned,omitempty"`
-	PinUntil   time.Time `json:"pin_until,omitzero"`
-	ShortID    string    `json:"short_id,omitempty"`
-	Identity   string    `json:"identity"`
-	Name       string    `json:"name"`
-	State      string    `json:"state"`
-	PID        int       `json:"pid,omitempty"`
-	Version    string    `json:"version"`
-	Shell      string    `json:"shell,omitempty"`
-	Directory  string    `json:"directory,omitempty"`
+	SourceHost  string    `json:"source_host,omitempty"`
+	Owner       string    `json:"owner,omitempty"`
+	Pinned      bool      `json:"pinned,omitempty"`
+	PinUntil    time.Time `json:"pin_until,omitzero"`
+	ShortID     string    `json:"short_id,omitempty"`
+	Identity    string    `json:"identity"`
+	Name        string    `json:"name"`
+	State       string    `json:"state"`
+	PID         int       `json:"pid,omitempty"`
+	Version     string    `json:"version"`
+	Shell       string    `json:"shell,omitempty"`
+	Program     bool      `json:"program,omitempty"`
+	ProgramLine string    `json:"program_line,omitempty"`
+	Directory   string    `json:"directory,omitempty"`
 }
 
 func localRequest(ref, identity string, request message) (message, error) {
-	c, record, err := openNativeShell(context.Background(), ref, identity)
+	c, _, err := openNativeShell(context.Background(), ref, identity)
 	if err != nil {
 		return message{}, err
 	}
@@ -35,8 +35,6 @@ func localRequest(ref, identity string, request message) (message, error) {
 	switch request.Type {
 	case "handoff":
 		_ = c.SetDeadline(time.Now().Add(2 * time.Minute))
-	case "rename":
-		request.Action = record.Name
 	}
 	if err = writeMessage(c, request); err != nil {
 		return message{}, err
@@ -66,15 +64,6 @@ func runLocalCommand(o options) (int, error) {
 		m, err := localRequest(o.session, o.taskIdentity, message{Type: "kill"})
 		if err == nil && m.Type != "killed" {
 			err = fmt.Errorf("kill local shell: %s", cleanText(m.Error))
-		}
-		return 0, err
-	case "rename":
-		m, err := localRequest(o.session, o.taskIdentity, message{Type: "rename", Name: o.newName})
-		if err == nil && m.Type != "renamed" {
-			err = fmt.Errorf("rename local shell: %s", cleanText(m.Error))
-		}
-		if err == nil {
-			termui.Log(os.Stdout, taskShortCode(o.taskIdentity), termui.Info, "Renamed local shell %s to %s", o.session, o.newName)
 		}
 		return 0, err
 	default:
@@ -125,6 +114,10 @@ func startLocalSessionContext(ctx context.Context, o options) (localShellRecord,
 		if err != nil {
 			return empty, err
 		}
+	}
+	dir, err = resolveStartupDirectory(dir, o.startupDirectory)
+	if err != nil {
+		return empty, err
 	}
 	env := o.environment
 	if env == nil {

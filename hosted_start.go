@@ -11,50 +11,44 @@ import (
 	"time"
 )
 
-func prepareHostedShell(name, mode, instance, executable string, openIfUnavailable bool) (localShellRecord, string, error) {
+func prepareHostedShell(name, mode, instance, executable, directory string) (localShellRecord, error) {
 	if mode == "new" && isShortTaskID(name) {
 		name = ""
 	}
 	var record localShellRecord
 	var err error
-	var reason string
 	if mode == "attach" {
-		var target selectedTask
-		if openIfUnavailable {
-			target, reason, err = selectRemoteAttachShell(name, instance)
-		} else {
-			target, err = resolveHostedShell(name, instance)
-		}
+		target, err := resolveHostedShell(name, instance)
 		if err != nil {
-			return localShellRecord{}, "", err
+			return localShellRecord{}, err
 		}
-		if reason != "" {
-			name, mode = "", "new"
-		} else if target.Instance == "" {
-			return localShellRecord{}, "", fmt.Errorf("shell %s does not exist; check known IDs with sshore list", name)
-		} else {
-			record, err = existingDaemonRecord()
-			record.UID = target.Instance
+		if target.Instance == "" {
+			return localShellRecord{}, fmt.Errorf("shell %s does not exist; check known IDs with sshore list", name)
 		}
+		record, err = existingDaemonRecord()
+		record.UID = target.Instance
 	}
 	if mode != "attach" {
 		var cwd string
 		cwd, err = os.Getwd()
 		if err == nil {
+			cwd, err = resolveStartupDirectory(cwd, directory)
+		}
+		if err == nil {
 			record, err = createHostedShell(context.Background(), executable, name, cwd, os.Environ())
 		}
 	}
 	if err != nil {
-		return localShellRecord{}, "", err
+		return localShellRecord{}, err
 	}
 	if err := checkPeerVersion(record.Version, "daemon"); err != nil {
-		return localShellRecord{}, "", err
+		return localShellRecord{}, err
 	}
-	return record, reason, nil
+	return record, nil
 }
 
-func reportHostedShell(record localShellRecord, reason string) error {
-	if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: record.UID, Reason: reason, LocalRequest: &localDaemonRequest{Record: record}}); err != nil {
+func reportHostedShell(record localShellRecord) error {
+	if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: record.UID, LocalRequest: &localDaemonRequest{Record: record}}); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -64,40 +58,6 @@ func reportHostedShell(record localShellRecord, reason string) error {
 		_ = json.MarshalWrite(os.Stdout, snapshot.Shells)
 	}
 	return nil
-}
-
-func selectRemoteAttachShell(ref, instance string) (selectedTask, string, error) {
-	query := taskQuery{Kind: "hosted", Ref: ref, UID: instance}
-	if !validTaskUID(instance) {
-		rows, err := queryRegisteredTasks(taskQuery{Kind: "hosted"})
-		if err != nil {
-			return selectedTask{}, "", err
-		}
-		target, err := matchTask(ref, rows)
-		if err != nil {
-			return selectedTask{}, err.Error(), nil
-		}
-		if target.Instance == "" {
-			return selectedTask{}, fmt.Sprintf("Shell %s was not found", ref), nil
-		}
-		query.UID = target.Instance
-	}
-	rows, err := queryRegisteredTasks(query)
-	if err != nil {
-		return selectedTask{}, "", err
-	}
-	if len(rows) == 0 {
-		return selectedTask{}, fmt.Sprintf("Shell %s was not found", ref), nil
-	}
-	query.Detached = true
-	idle, err := queryRegisteredTasks(query)
-	if err != nil {
-		return selectedTask{}, "", err
-	}
-	if len(idle) == 0 {
-		return selectedTask{}, fmt.Sprintf("Shell %s is in use or has a parent shell", ref), nil
-	}
-	return idle[0], "", nil
 }
 
 func retentionHostedShell(m message) error {
@@ -125,7 +85,7 @@ func chooseDetachedHostedShell() (sessionTarget, error) {
 	}
 	switch len(targets) {
 	case 0:
-		return sessionTarget{}, fmt.Errorf("no detached shells; use sshore shell HOST: to create one")
+		return sessionTarget{}, fmt.Errorf("no detached shells; use sshore shell HOST to create one")
 	case 1:
 		return targets[0], nil
 	}
@@ -146,7 +106,7 @@ func chooseDetachedHostedShell() (sessionTarget, error) {
 	return sessionTarget{}, fmt.Errorf("invalid shell selection")
 }
 
-func serveRemoteShell(mode, name, instance string, openIfUnavailable bool) (result error) {
+func serveRemoteShell(mode, name, instance, directory string) (result error) {
 	target, err := os.Executable()
 	if err != nil {
 		return err
@@ -186,12 +146,12 @@ func serveRemoteShell(mode, name, instance string, openIfUnavailable bool) (resu
 			name = selected.Instance
 			continue // Recheck setup after waiting without the account lock.
 		}
-		record, reason, err := prepareHostedShell(name, mode, instance, target, openIfUnavailable && isTaskIDPrefix(name))
+		record, err := prepareHostedShell(name, mode, instance, target, directory)
 		lock.Close()
 		if err != nil {
 			return err
 		}
-		return reportHostedShell(record, reason)
+		return reportHostedShell(record)
 	}
 }
 

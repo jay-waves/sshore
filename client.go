@@ -197,26 +197,22 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	// until the keyboard has stopped and terminal restoration has completed.
 	ctx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
-	if o.command == "kill" || o.command == "rename" {
+	if o.command == "kill" {
 		target, lookupErr := participatingMutationTarget(o)
 		if lookupErr != nil {
 			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not read participating shells: %s\n", cleanText(lookupErr.Error()))
 		}
 		connection := remoteService(sshConnectionOptions(o), o.server, remoteServiceRequest{
-			Operation: "task-control", Mode: o.command, Name: o.session, Instance: o.instance, NewName: o.newName,
+			Operation: "task-control", Mode: o.command, Name: o.session, Instance: o.instance,
 		})
 		connection = withSSHDiagnostics(connection, os.Stderr, nil)
 		err := transportio.Run(context.Background(), connection, os.Stdin, os.Stdout, os.Stderr)
 		if err == nil && target.Instance != "" {
 			var updateErr error
-			if o.command == "kill" {
-				if validTaskUID(o.instance) {
-					updateErr = rememberShellExit(o)
-				} else {
-					updateErr = forgetParticipatingShell(o.host, target.Instance)
-				}
+			if validTaskUID(o.instance) {
+				updateErr = rememberShellExit(o)
 			} else {
-				updateErr = renameParticipatingShell(o.host, target.Instance, o.newName)
+				updateErr = forgetParticipatingShell(o.host, target.Instance)
 			}
 			if updateErr != nil {
 				termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not update participating shells: %s\n", cleanText(updateErr.Error()))
@@ -258,7 +254,11 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	if o.hold != nil {
 		treeKey = o.hold.treeKey
 	}
-	if err = streamMessage(control, message{Type: "attach", SoftwareVersion: version, TreeKey: treeKey, Token: terminalToken, Pinned: o.command == "sh" && o.pin, SourceHost: sourceHost, MachineID: sourceMachine, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && o.command == "sh", NoLogin: o.noLogin && o.command == "sh"}); err != nil {
+	var argv []string
+	if o.command == "sh" {
+		argv = o.argv
+	}
+	if err = streamMessage(control, message{Type: "attach", SoftwareVersion: version, TreeKey: treeKey, Token: terminalToken, Pinned: o.command == "sh" && o.pin, SourceHost: sourceHost, MachineID: sourceMachine, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && o.command == "sh", NoLogin: o.noLogin && o.command == "sh", Argv: argv}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -295,7 +295,6 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	}
 	o.instance = m.Instance
 	o.remoteOwned = !o.local && m.Owner != ""
-	o.openIfUnavailable = false
 	if o.reusable != nil {
 		o.reusable.session, o.reusable.instance = o.session, o.instance
 	}
@@ -311,7 +310,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	}
 	if !o.local {
 		row := participatingShell{Host: o.host, Owner: m.Owner, Instance: o.instance, Name: o.session, State: taskActive,
-			Pinned: m.Pinned, PinUntil: m.PinUntil, PID: m.PID, Shell: m.Shell, Attachment: newTaskUID()}
+			Pinned: m.Pinned, PinUntil: m.PinUntil, PID: m.PID, Shell: m.Shell, Program: m.Program, ProgramLine: m.ProgramLine, Attachment: newTaskUID()}
 		if err := observeParticipatingShell(row); err != nil {
 			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not record participating shell: %s\n", cleanText(err.Error()))
 		} else {
@@ -798,7 +797,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						}
 					case len(args) > 0 && args[0] == "shell":
 						parsed, err := parseCLI(args[1:], "shell")
-						if err != nil || parsed.task.scope != taskLocal || parsed.task.ref != "" || len(parsed.values) > 1 || len(parsed.values) == 1 && !parsed.has("--pin") {
+						if err != nil || parsed.task.scope != taskLocal || parsed.startupDirectory != "" || len(parsed.values) > 1 || len(parsed.values) == 1 && !parsed.has("--pin") {
 							console.show("Usage: shell [--pin]")
 							break
 						}
@@ -1071,7 +1070,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						reject()
 						continue
 					}
-					target := options{pin: e.m.Pinned, noLogin: e.m.NoLogin, noProfile: e.m.NoProfile, command: "sh", host: e.m.SourceHost, session: e.m.Name, instance: e.m.Instance, routeParent: &parent, routeToken: e.m.Token}
+					target := options{argv: e.m.Argv, pin: e.m.Pinned, noLogin: e.m.NoLogin, noProfile: e.m.NoProfile, command: "sh", host: e.m.SourceHost, session: e.m.Name, instance: e.m.Instance, routeParent: &parent, routeToken: e.m.Token}
 					if e.m.Action == "attach" || e.m.Action == "remote_attach" {
 						target.command = "attach"
 					}
@@ -1333,23 +1332,21 @@ func reconnectCommand(o options) string {
 	if validTaskUID(o.instance) {
 		selector = o.instance
 	}
-	args := []string{"sshore", "attach", transportio.FormatEndpoint(o.host, selector)}
 	if o.local {
 		identity := o.taskIdentity
 		if identity == "" {
 			identity = identityFromUID(o.instance)
 		}
-		selector := taskUID(identity)
-		if selector == "" {
-			selector = o.session
+		if id := canonicalTaskUID(identity); id != "" {
+			selector = id
 		}
-		args = []string{"sshore", "attach", localEndpointPrefix + selector}
 	}
+	args := []string{"sshore", "attach", selector}
 	if o.server != "" && o.server != "sshore" {
 		args = append(args, "--server", o.server)
 	}
 	if len(o.ssh) > 0 {
-		args = append(args, "--")
+		args = append(args, "--ssh")
 		args = append(args, o.ssh...)
 	}
 	for i := range args {

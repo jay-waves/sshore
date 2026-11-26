@@ -26,7 +26,7 @@ func TestShellCgroup(t *testing.T) {
 		t.Helper()
 		marker := filepath.Join(t.TempDir(), "group")
 		endpoint := "here:" + name
-		cmd := exec.CommandContext(ctx, binary, "sh", endpoint, "--pin", "--no-profile", "--no-login")
+		cmd := exec.CommandContext(ctx, binary, "sh", "--name", name, "--pin", "--no-profile", "--no-login")
 		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("Connected " + endpoint)
 			send(fmt.Sprintf("setsid sh -c 'cat /proc/self/cgroup > %q; exec sleep 60' </dev/null >/dev/null 2>&1 &\n", marker))
@@ -36,7 +36,7 @@ func TestShellCgroup(t *testing.T) {
 			wait("No shell attached.")
 			send("exit\r")
 		})
-		t.Cleanup(func() { _ = exec.Command(binary, "kill", endpoint).Run() })
+		t.Cleanup(func() { _ = exec.Command(binary, "kill", name).Run() })
 		data, err := os.ReadFile(marker)
 		if err != nil {
 			t.Fatal(err)
@@ -45,7 +45,7 @@ func TestShellCgroup(t *testing.T) {
 		if !ok || path == "" {
 			t.Fatalf("no task cgroup in %q", data)
 		}
-		return endpoint, filepath.Join("/sys/fs/cgroup", path)
+		return name, filepath.Join("/sys/fs/cgroup", path)
 	}
 	target, first := start("cg-first")
 	_, second := start("cg-second")

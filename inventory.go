@@ -71,6 +71,8 @@ type shellView struct {
 	Age         *int64    `json:"age_seconds"`
 	Foreground  string    `json:"foreground"`
 	Shell       string    `json:"shell,omitempty"`
+	Program     bool      `json:"program,omitempty"`
+	ProgramLine string    `json:"program_line,omitempty"`
 	Directory   string    `json:"directory"`
 	ProcessTree string    `json:"process_tree,omitempty"`
 }
@@ -200,7 +202,7 @@ func (a *daemonActivity) listTasks(ctx context.Context, request taskListRequest)
 		inv.Errors = append(inv.Errors, "remote shell history unavailable: "+cleanText(reply.Error))
 	}
 	for _, row := range reply.Participants {
-		inv.Shells = append(inv.Shells, shellView{Host: row.Host, Owner: row.Owner, Instance: row.Instance, ID: "sh/" + row.Name, Name: row.Name, State: row.State, Observed: true, SeenAt: row.ChangedAt, Pinned: row.Pinned, PinUntil: row.PinUntil, PID: row.PID, Shell: row.Shell})
+		inv.Shells = append(inv.Shells, shellView{Host: row.Host, Owner: row.Owner, Instance: row.Instance, ID: "sh/" + row.Name, Name: row.Name, State: row.State, Observed: true, SeenAt: row.ChangedAt, Pinned: row.Pinned, PinUntil: row.PinUntil, PID: row.PID, Shell: row.Shell, Program: row.Program, ProgramLine: row.ProgramLine})
 	}
 	inv.setTaskReferences()
 	return inv
@@ -292,25 +294,25 @@ func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color
 	rows := []taskTableRow{}
 	for _, s := range inv.LocalShells {
 		selected := current != "" && s.Identity == current && s.State == taskActive
-		detail := shellListDetail(shellDirectoryDetail(s.Shell, s.Directory), s.SourceHost)
+		detail := shellListDetail(joinTaskDetails(cmp.Or(s.ProgramLine, s.Shell), s.Directory), s.SourceHost)
 		detail = pinDetail(detail, s.Pinned, s.PinUntil)
-		rows = append(rows, taskTableRow{taskUID(s.Identity), s.ShortID, s.Name, "shell", "local", s.State, taskShortCode(s.Owner), detail, selected})
+		rows = append(rows, taskTableRow{taskUID(s.Identity), s.ShortID, s.Name, terminalTaskKind(s.Program), "local", s.State, taskShortCode(s.Owner), detail, selected})
 	}
 	now := time.Now()
 	for _, s := range inv.Shells {
 		host := cmp.Or(s.Host, "local")
 		selected := !s.Observed && current != "" && identityFromUID(s.Instance) == current && s.State == taskActive
-		detail := shellDirectoryDetail(s.Shell, s.Directory)
+		detail := joinTaskDetails(cmp.Or(s.ProgramLine, s.Shell), s.Directory)
 		if s.Observed {
 			seen := "on " + host
 			if !s.SeenAt.IsZero() {
 				seen += " · seen " + observationAge(s.SeenAt, now)
 			}
-			detail = joinTaskDetails(seen, detail)
+			detail = joinTaskDetails(detail, seen)
 		}
 		detail = shellListDetail(detail, s.SourceHost)
 		detail = pinDetail(detail, s.Pinned, s.PinUntil)
-		rows = append(rows, taskTableRow{taskUID(identityFromUID(s.Instance)), s.ShortID, s.Name, "shell", host, s.State, taskShortCode(s.Owner), detail, selected})
+		rows = append(rows, taskTableRow{taskUID(identityFromUID(s.Instance)), s.ShortID, s.Name, terminalTaskKind(s.Program), host, s.State, taskShortCode(s.Owner), detail, selected})
 	}
 	for _, r := range inv.Resources {
 		kind, name := r.kindAndName()
@@ -379,18 +381,25 @@ func joinTaskDetails(first, second string) string {
 	return first + " · " + second
 }
 
-func shellDirectoryDetail(shell, directory string) string {
-	if shell == "" || directory == "" {
-		return shell + directory
+func terminalTaskKind(program bool) string {
+	if program {
+		return "run"
 	}
-	return shell + " " + directory
+	return "shell"
+}
+
+func terminalTreeName(program bool, name, command string) string {
+	if program && isShortTaskID(name) {
+		return command
+	}
+	return name
 }
 
 func shellListDetail(detail, source string) string {
 	if source == "" {
 		return detail
 	}
-	return joinTaskDetails("from "+source, detail)
+	return joinTaskDetails(detail, "from "+source)
 }
 
 func readOnlyDetail(detail string) string {
@@ -744,10 +753,10 @@ func taskTreeNodes(inv inventory) []shellTreeNode {
 		nodes = append(nodes, n)
 	}
 	for _, s := range inv.LocalShells {
-		add(shellTreeNode{Kind: "shell", Identity: s.Identity, ShortID: s.ShortID, Owner: s.Owner, Name: s.Name, State: s.State})
+		add(shellTreeNode{Kind: terminalTaskKind(s.Program), Identity: s.Identity, ShortID: s.ShortID, Owner: s.Owner, Name: terminalTreeName(s.Program, s.Name, s.Shell), State: s.State})
 	}
 	for _, s := range inv.Shells {
-		n := shellTreeNode{Kind: "shell", Identity: identityFromUID(s.Instance), ShortID: s.ShortID, Owner: s.Owner, Name: s.Name, State: s.State}
+		n := shellTreeNode{Kind: terminalTaskKind(s.Program), Identity: identityFromUID(s.Instance), ShortID: s.ShortID, Owner: s.Owner, Name: terminalTreeName(s.Program, s.Name, s.Shell), State: s.State}
 		if s.Observed {
 			n.Host, n.SeenAt = s.Host, s.SeenAt
 		}

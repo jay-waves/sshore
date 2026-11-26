@@ -11,7 +11,7 @@ chmod 600 "$tmp/key"
 cd "$tmp"
 
 copy() {
-    ./sshore cp "$@" -- -F none -p 22222 -l sshore-fixture -i "$tmp/key" \
+    ./sshore cp "$@" --ssh -F none -p 22222 -l sshore-fixture -i "$tmp/key" \
         -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$tmp/hosts"
 }
 

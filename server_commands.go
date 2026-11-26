@@ -14,16 +14,15 @@ const remoteServiceCommand = "service"
 const remoteServiceProtocol = 1
 
 type remoteServiceRequest struct {
-	PeerMetadata      jsontext.Value        `json:"peer_metadata,omitempty"`
-	Forward           *remoteForwardRequest `json:"forward,omitempty"`
-	Protocol          int                   `json:"protocol"`
-	Release           string                `json:"release"`
-	Operation         string                `json:"operation"`
-	Mode              string                `json:"mode,omitempty"`
-	Name              string                `json:"name,omitempty"`
-	NewName           string                `json:"new_name,omitempty"`
-	Instance          string                `json:"instance,omitempty"`
-	OpenIfUnavailable bool                  `json:"open_if_unavailable,omitzero"`
+	PeerMetadata jsontext.Value        `json:"peer_metadata,omitempty"`
+	Forward      *remoteForwardRequest `json:"forward,omitempty"`
+	Protocol     int                   `json:"protocol"`
+	Release      string                `json:"release"`
+	Operation    string                `json:"operation"`
+	Mode         string                `json:"mode,omitempty"`
+	Name         string                `json:"name,omitempty"`
+	Directory    string                `json:"directory,omitempty"`
+	Instance     string                `json:"instance,omitempty"`
 }
 
 type remoteForwardRequest struct {
