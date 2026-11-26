@@ -131,7 +131,7 @@ func (c *commandConsole) readCommand(line, directory string) (cliArguments, bool
 		if c.attached {
 			help += "\ndetach [DURATION] Pin and detach the current shell"
 		}
-		c.show(help)
+		c.show(help + "\n\n" + strings.TrimRight(inventoryStateHelp, "\n"))
 	case err != nil:
 		c.show(err.Error())
 	case parsed.command == "pwd":

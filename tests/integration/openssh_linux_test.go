@@ -632,7 +632,7 @@ Match command "printf forwarding-check"
 		cmd := command(ctx, "new", host, "--name", name, "--server", binary, "--", "/bin/sh", "-c",
 			"printf 'ARG=%s\\n' \"$1\"; read -r reply; exit 23", "fixture", argument)
 		out, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
-			wait("Esc Cancel", true)
+			wait("[Esc] Cancel", true)
 			send("\r")
 			wait("ARG=" + argument)
 			remoteList := run(t, ctx, "sh", host, "--", binary, "list")
@@ -715,7 +715,7 @@ Match command "printf forwarding-check"
 		})
 		tree := string(local(t, ctx, "ps"))
 		_, remoteTree, found := strings.Cut(tree, host+"\n")
-		if !found || !strings.Contains(remoteTree, "shell/"+id+" (resume-root)  detached") {
+		if !found || !strings.Contains(remoteTree, "shell/"+id+" (resume-root)  T") {
 			t.Fatalf("independent remote shell is missing from its host root:\n%s", tree)
 		}
 		const missing = "ffffffffffffffffffffffffffffffff"
@@ -751,7 +751,7 @@ Match command "printf forwarding-check"
 			wait("SCOPE_state=retained")
 			send("sshore d 3m\n")
 			wait("Connected " + root)
-			if tree := run(t, ctx, "sh", host, "--", "sshore ps"); !strings.HasPrefix(tree, "local\n") || !strings.Contains(tree, " (scoped-root)  active") || !strings.Contains(tree, " (scoped-child)  detached") {
+			if tree := run(t, ctx, "sh", host, "--", "sshore ps"); !strings.HasPrefix(tree, "local\n") || !strings.Contains(tree, " (scoped-root)  R") || !strings.Contains(tree, " (scoped-child)  T") {
 				t.Fatalf("hosted tree lost its local root or detached child:\n%s", tree)
 			}
 			send("sshore a scoped-child\n")

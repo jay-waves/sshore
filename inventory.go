@@ -29,6 +29,15 @@ const (
 	taskExited   = "exited"
 )
 
+const inventoryStateHelp = `Task states
+  R  Attached session or responding resource
+  S  Waiting for terminal control
+  T  Detached session (can keep running)
+  ?  Unknown
+
+Starting and exited tasks are omitted.
+`
+
 type resourceView struct {
 	ShortID    string `json:"short_id,omitempty"`
 	Identity   string `json:"identity,omitempty"`
@@ -322,6 +331,9 @@ func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color
 		kind, name, _ := strings.Cut(peerResourceID(p.ID), "/")
 		rows = append(rows, taskTableRow{taskUID(peerTaskIdentity(p)), p.ShortID, name, kind, p.Manager, p.State, "", readOnlyDetail(p.Detail), false})
 	}
+	rows = slices.DeleteFunc(rows, func(row taskTableRow) bool {
+		return taskHiddenFromInventory(row.state)
+	})
 	sort.SliceStable(rows, func(i, j int) bool {
 		if order := compareInventoryHosts(rows[i].owner, rows[j].owner); order != 0 {
 			return order < 0
@@ -363,7 +375,7 @@ func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color
 				code = "-"
 			}
 			parent := cmp.Or(r.parent, "-")
-			cells := []string{taskDisplayID(code, r.alias), r.kind, r.state, parent, r.detail}
+			cells := []string{taskDisplayID(code, r.alias), r.kind, taskStateCode(r.state), parent, r.detail}
 			if r.current {
 				currentRow = len(table)
 			}
@@ -372,6 +384,8 @@ func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color
 		writeTaskTable(out, table, color, screenWidth, currentRow)
 		start = end
 	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, termui.Render(color, termui.Muted, "R attached or responding  ·  T detached  ·  ? unknown"))
 }
 
 func joinTaskDetails(first, second string) string {
@@ -512,11 +526,30 @@ func writeTaskTable(out io.Writer, table [][]string, color bool, screenWidth, cu
 	}
 }
 
-func renderTaskState(state string) string {
+func taskHiddenFromInventory(state string) bool {
+	return state == taskStarting || state == taskExited
+}
+
+func taskStateCode(state string) string {
 	switch state {
 	case taskActive:
+		return "R"
+	case taskWaiting:
+		return "S"
+	case taskDetached:
+		return "T"
+	case taskUnknown:
+		return "?"
+	default:
+		return state
+	}
+}
+
+func renderTaskState(state string) string {
+	switch state {
+	case "R":
 		return termui.Render(true, termui.Success, state)
-	case taskUnknown, taskExited:
+	case "?":
 		return termui.Render(true, termui.Warning, state)
 	default:
 		return state
@@ -740,7 +773,7 @@ func taskTreeNodes(inv inventory) []shellTreeNode {
 	nodes := make([]shellTreeNode, 0, len(inv.LocalShells)+len(inv.Shells)+len(inv.Resources)+len(inv.Peers))
 	visible := make(map[string]int)
 	add := func(n shellTreeNode) {
-		if n.State == taskExited {
+		if taskHiddenFromInventory(n.State) {
 			return
 		}
 		if i, found := visible[n.Identity]; found {
@@ -829,7 +862,7 @@ func shellTreeLabel(n taskTreeRow, current, color bool) string {
 		label = "* " + label
 	}
 
-	state := cleanText(n.State)
+	state := cleanText(taskStateCode(n.State))
 	if state == "" {
 		return termui.Render(color && current, termui.Accent, label)
 	}

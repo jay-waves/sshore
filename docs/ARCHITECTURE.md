@@ -172,6 +172,8 @@ hosted shell list on the same exec stream while the client attaches. A live regi
 takes precedence over an observation of the same UID. Invalid records identify the affected
 source and field.
 
+Both views omit starting and exited tasks. Their help defines the task state codes.
+
 Program sessions appear as `run`. On the managing account, `list` shows the executable and its
 arguments. Cached remote observations carry the executable name.
 

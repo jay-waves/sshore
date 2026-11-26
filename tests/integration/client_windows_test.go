@@ -197,7 +197,7 @@ func testWindowsReattach(t *testing.T, ctx context.Context, command func(...stri
 	})
 	tree := string(windowsRun(t, command("ps")))
 	_, entry, found := strings.Cut(tree, "shell/")
-	if !strings.HasPrefix(tree, "local\n") || !found || !strings.Contains(entry, " (conpty)  detached") {
+	if !strings.HasPrefix(tree, "local\n") || !found || !strings.Contains(entry, " (conpty)  T") {
 		t.Fatalf("detached shell is missing from the local tree:\n%s", tree)
 	}
 	code, _, _ := strings.Cut(entry, " ")

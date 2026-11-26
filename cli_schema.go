@@ -656,7 +656,8 @@ Use attach to resume it. Ctrl+B d also pins and detaches.
 
 Show tasks under their host roots, with type/ID labels and terminal parent edges.
 A leading * marks the current shell. Use list for details.
-`,
+
+` + inventoryStateHelp,
 		},
 		"list": {
 			run: runInventoryCommand, recovery: true, group: groupTask, summary: "Show task details", aliases: []string{"ls"},
@@ -665,7 +666,8 @@ A leading * marks the current shell. Use list for details.
 List terminal sessions, mounts and forwards, including incoming resources.
 PARENT shows the parent session's short ID. For a terminal, DETAIL starts with
 the executable name. A forward's arrow points toward the target service.
-`,
+
+` + inventoryStateHelp,
 		},
 		"kill": {
 			run: runTargetCommand, selector: cliKillSelector, group: groupTask, summary: "End a task or shut down its manager",

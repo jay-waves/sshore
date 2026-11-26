@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -48,33 +49,18 @@ func reviewNewTerminal(o *options) (_ bool, err error) {
 		if err != nil {
 			return false, err
 		}
-		// Normalize C1 controls before writing the JSON to either terminal view.
+		// Normalize C1 controls before writing the JSON to the editor.
 		draft := string(encoded)
 		for r := rune(0x80); r <= 0x9f; r++ {
 			if strings.ContainsRune(draft, r) {
 				draft = strings.ReplaceAll(draft, string(r), fmt.Sprintf("\\u%04x", r))
 			}
 		}
-		body := "New terminal on " + cleanText(o.host)
-		if o.startupDirectory != "" {
-			body += "\nDirectory: " + cleanText(o.startupDirectory)
-		}
-		if o.session != "" {
-			body += "\nName: " + cleanText(o.session)
-		}
-		if o.pin {
-			body += "\nKeep running after disconnect"
-		}
-		if len(argv) == 0 {
-			body += "\n\nDefault shell"
-		} else {
-			body += "\n\n" + draft
-		}
 		if _, err := fmt.Fprint(os.Stdout, "\x1b[2J\x1b[H"); err != nil {
 			return false, err
 		}
-		termui.WriteConsoleBody(os.Stdout, body)
-		if _, err := fmt.Fprint(os.Stdout, "Enter Start   e Edit   Esc Cancel"); err != nil {
+		termui.WriteConsoleBody(os.Stdout, newTerminalPreview(o))
+		if _, err := fmt.Fprint(os.Stdout, "[Enter] Start, [e] Edit, [Esc] Cancel"); err != nil {
 			return false, err
 		}
 		key, err := readTerminalReviewKey()
@@ -92,6 +78,33 @@ func reviewNewTerminal(o *options) (_ bool, err error) {
 			}
 		}
 	}
+}
+
+func newTerminalPreview(o *options) string {
+	var body strings.Builder
+	body.WriteString(cleanText(o.host))
+	if o.startupDirectory != "" {
+		body.WriteString("\n├── Directory: " + cleanText(o.startupDirectory))
+	}
+	if o.session != "" {
+		body.WriteString("\n├── Name: " + cleanText(o.session))
+	}
+	if o.pin {
+		body.WriteString("\n├── Keep running after disconnect")
+	}
+	if len(o.argv) == 0 {
+		body.WriteString("\n╰── Default shell")
+		return body.String()
+	}
+	body.WriteString("\n╰── " + cleanText(o.argv[0]))
+	for i, arg := range o.argv[1:] {
+		branch := "\n    ├── "
+		if i == len(o.argv)-2 {
+			branch = "\n    ╰── "
+		}
+		body.WriteString(branch + strconv.Quote(arg))
+	}
+	return body.String()
 }
 
 func readTerminalReviewKey() (byte, error) {
