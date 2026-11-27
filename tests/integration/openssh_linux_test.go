@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -114,7 +115,10 @@ Match command "printf forwarding-check"
 		t.Helper()
 		_, name, _ := strings.Cut(id, "/")
 		list, tree := local(t, ctx, "list"), local(t, ctx, "ps")
-		if listed := findResource(t, list, id).Identity != ""; listed != present || strings.Contains(string(tree), " ("+name+")") != present {
+		// The tree prints a generated task name as its ID without parentheses.
+		inTree := strings.Contains(string(tree), " ("+name+")") ||
+			slices.Contains(strings.Fields(string(tree)), id)
+		if listed := findResource(t, list, id).Identity != ""; listed != present || inTree != present {
 			t.Fatalf("task %s present=%v, list:\n%s\nps:\n%s", id, present, list, tree)
 		}
 	}
