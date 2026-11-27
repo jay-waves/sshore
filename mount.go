@@ -34,7 +34,7 @@ type ftpOptions struct {
 	IOTimeoutNanos, StartupTimeoutNanos int64
 	Host, Remote, Mountpoint            string
 	SSH                                 []string
-	ReadOnly, DirectIO, Stats, LF       bool
+	ReadOnly, DirectIO, Stats           bool
 	PickRemote, PickMountpoint          bool
 	Name                                string
 }
@@ -453,7 +453,7 @@ func runMountDaemon() (code int, resultErr error) {
 	}
 	lifecycle := files.MountLifecycle{OwnerDone: ownerDone, Ready: ready, Stop: unmount}
 	selector := func(ctx context.Context, readDir files.DirectoryReader, home string) (string, string, error) {
-		if o.PickRemote && o.LF {
+		if o.PickRemote {
 			go readDir(ctx, home)
 		}
 		if err := json.MarshalEncode(enc, resourceStartup{Browse: true, Home: home}); err != nil {
@@ -518,20 +518,6 @@ func readMountSelection(read func(any) error, selectPath func(mountPathRequest) 
 
 func (o ftpOptions) selectMountPaths(ctx context.Context, console *termui.LocalConsole, home string, read directoryPairReader) (string, string, error) {
 	remote, local := o.Remote, o.Mountpoint
-	if !o.LF {
-		input, err := newLocalInput()
-		if err != nil {
-			return "", "", err
-		}
-		defer input.Close()
-		if o.PickRemote {
-			remote, err = confirmRemotePath(input, "Remote directory: ", home, home, nil)
-		}
-		if err == nil && o.PickMountpoint {
-			local, err = readMountApprovalPath(input, "")
-		}
-		return remote, local, err
-	}
 	if o.PickRemote {
 		var err error
 		picker := pairedFileSelection(home, "Mount directory", o.Host, true, read)

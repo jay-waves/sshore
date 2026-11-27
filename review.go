@@ -179,7 +179,7 @@ func selectApprovedResource(console *termui.LocalConsole, input *termui.Input, r
 	}
 
 	rule := op.Forward
-	port, err := readForwardPort(input, rule, true)
+	port, err := readForwardPort(input, rule)
 	if err != nil {
 		return resourceConfig{}, err
 	}

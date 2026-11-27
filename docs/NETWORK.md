@@ -24,8 +24,8 @@ give each path its own flow-control window. Reattaching through a live route can
 reuse its authenticated connection. An independent shell setup can establish
 a new SSH connection.
 
-Omitted file paths prompt with an editable default after SSH authentication.
-Use `--lf` to open the three-column picker.
+Direct copies use the current directory for an empty local path and the remote home for an
+empty SSH path. Use `--lf` to browse omitted paths in the three-column picker.
 The header identifies the host and directory being browsed. Use `gg` and `G`
 to jump to the top or bottom of the current list. Use `/` or `?` to search
 filenames forward or backward. Use `n` to repeat in the same direction and

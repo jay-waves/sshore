@@ -73,8 +73,8 @@ func TestCLI(t *testing.T) {
 		{"origin shorthand requires an attached shell", []string{"cp", "./file", "0:"}, 2, "requires an attached sshore shell"},
 		{"retired origin shorthand is rejected", []string{"cp", "./file", "::file"}, 2, "use 0: or origin:"},
 		{"cp opens help for copy", []string{"cp", "--help"}, 0, "Usage: sshore copy"},
-		{"omitted copy paths require a terminal before dialing", []string{"copy", "here:", "work:"}, 2, "file selection requires an interactive terminal"},
-		{"omitted mount paths require a terminal before dialing", []string{"mount", "work:", "here:"}, 2, "file selection requires an interactive terminal"},
+		{"LF copy requires a terminal before dialing", []string{"copy", "--lf", "here:", "work:"}, 2, "file selection requires an interactive terminal"},
+		{"LF mount requires a terminal before dialing", []string{"mount", "--lf", "work:", "here:"}, 2, "file selection requires an interactive terminal"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := filepath.Join(t.TempDir(), "state")

@@ -22,10 +22,7 @@ import (
 
 func executeCopyCommand(o copyOptions) (int, error) {
 	var err error
-	interactive := o.target.pick
-	for _, source := range o.sources {
-		interactive = interactive || source.pick
-	}
+	interactive := o.target.pick || o.sources[0].pick
 	if interactive {
 		if err := requireFileSelectionTerminal(); err != nil {
 			return 2, err
@@ -77,11 +74,7 @@ func executeCopyCommand(o copyOptions) (int, error) {
 		}
 		var picked []fileCopy
 		if interactive {
-			if !o.lf {
-				if err := confirmCopyPaths(client, remoteHome, &o); err != nil {
-					return err
-				}
-			} else if err := termui.RunLocalConsole(func(console *termui.LocalConsole) error {
+			if err := termui.RunLocalConsole(func(console *termui.LocalConsole) error {
 				var err error
 				picked, err = pickCopyPaths(ctx, console, client, remoteHome, &o)
 				return err
@@ -98,49 +91,6 @@ func executeCopyCommand(o copyOptions) (int, error) {
 		return 1, err
 	}
 	return 0, nil
-}
-
-func confirmCopyPaths(client *sftp.Client, home string, o *copyOptions) error {
-	input, err := newLocalInput()
-	if err != nil {
-		return err
-	}
-	defer input.Close()
-	cwd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	if o.sources[0].pick {
-		if o.upload {
-			o.sources[0].path, err = readApprovalPath(input, "Local source: ", cwd, func(name string) (string, error) {
-				info, err := os.Lstat(name)
-				if err == nil && !(info.Mode().IsRegular() || o.recursive && info.IsDir()) {
-					err = fmt.Errorf("select a regular file or use -r to copy a directory")
-				}
-				return name, err
-			})
-		} else {
-			o.sources[0].path, err = confirmRemotePath(input, "Remote source: ", home, home, func(name string) error {
-				info, err := client.LStat(name)
-				if err == nil && !(info.Mode().IsRegular() || o.recursive && info.IsDir()) {
-					return fmt.Errorf("select a regular file or use -r to copy a directory")
-				}
-				return err
-			})
-		}
-		if err != nil {
-			return err
-		}
-	}
-	if o.target.pick {
-		if o.upload {
-			o.target.path, err = confirmRemotePath(input, "Remote destination: ", home, home, nil)
-		} else {
-			o.target.path, err = readApprovalPath(input, "Local destination: ", cwd, func(name string) (string, error) { return name, nil })
-		}
-		o.target.pick = false
-	}
-	return err
 }
 
 func pickCopyPaths(ctx context.Context, console *termui.LocalConsole, client *sftp.Client, home string, o *copyOptions) ([]fileCopy, error) {

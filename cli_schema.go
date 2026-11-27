@@ -709,7 +709,10 @@ Alias: cp
 A bare path belongs to the machine running this command. Use HOST:PATH
 for an SSH host. Use here: or .: for an explicit local endpoint.
 In an attached remote shell, origin: or 0: requests local approval.
-Leave a path empty for an editable path prompt after connecting. Use --lf to browse. Use - for standard input or output with an explicit file.
+An empty local path uses the current directory and an empty SSH path uses the
+remote home. An empty source selects a directory and requires -r unless you
+use --lf to browse. Use - for standard input or output
+with an explicit file.
 Copy accepts up to 16 source arguments. Multiple sources require a destination directory.
 Use -r to copy directories over SSH, including empty directories. Recursive
 copy rejects symbolic links and does not overwrite existing files.
@@ -742,11 +745,10 @@ Mount a remote directory through the remote sshore helper using SFTP.
 The remote sshore release must match exactly and be on the SSH session's PATH.
 On a Windows host, use a drive-letter path such as HOST:E:/project.
 Mounts run in the background. Use sshore kill TASK to unmount.
-HOST: prompts with the remote home prefilled.
-Use HOST:~ to mount the home directory directly.
+HOST: and HOST:~ mount the remote home.
 Use [HOST]:SOURCE for an IPv6 address.
-Use here: to confirm a mountpoint after connecting. Use --lf to browse.
-Pass .: for an automatic mountpoint. Linux and macOS
+Use : for an automatic mountpoint or add --lf to browse omitted paths.
+Pass .: to allocate a mountpoint even with --lf. Linux and macOS
 use ~/mnt/NAME. Windows selects a free drive letter.
 Requires FUSE on Linux, WinFsp on Windows, or macFUSE with its kernel extension
 on Apple Silicon Macs (experimental).
@@ -783,7 +785,7 @@ on Apple Silicon Macs (experimental).
 			help: `Usage: sshore forward SOURCE TARGET [options] [--ssh SSH_OPTIONS...]
 
 Mirror the service at SOURCE on TARGET. Use a bare port for the current machine
-and HOST:PORT for an SSH host. Leave the client-side port empty to confirm the other endpoint’s port.
+and HOST:PORT for an SSH host. Use : to use the same port on the local machine.
 From a remote shell, use origin: or 0: for the attached client and request local approval.
 The account daemon manages the forward. Use sshore kill ID to stop it.
 

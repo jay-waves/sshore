@@ -456,7 +456,7 @@ Match command "printf forwarding-check"
 			}
 		}
 	})
-	scenario("copy confirms omitted paths and LF Enter selects a directory tree", func(t *testing.T, ctx context.Context) {
+	scenario("copy uses default paths without a terminal and LF Enter selects a directory tree", func(t *testing.T, ctx context.Context) {
 		source := t.TempDir()
 		tree := filepath.Join(source, "lf-copy-tree")
 		if err := os.Mkdir(tree, 0700); err != nil {
@@ -466,21 +466,37 @@ Match command "printf forwarding-check"
 		if err := os.WriteFile(file, []byte("tree"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		cmd := command(ctx, "cp", "here:", host+":")
+		cmd := command(ctx, "cp", file, host+":")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("copy to remote home: %v\n%s", err, out)
+		}
+		destination := t.TempDir()
+		cmd = command(ctx, "cp", host+":payload", ":")
+		cmd.Dir = destination
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("copy to current directory: %v\n%s", err, out)
+		}
+		requireFile(t, filepath.Join(destination, "payload"), "tree")
+		run(t, ctx, "sh", host, "--", "printf second > default-copy-second")
+		batch := t.TempDir()
+		cmd = command(ctx, "cp", host+":payload", host+":default-copy-second", ":")
+		cmd.Dir = batch
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("copy batch to current directory: %v\n%s", err, out)
+		}
+		requireFile(t, filepath.Join(batch, "payload"), "tree")
+		requireFile(t, filepath.Join(batch, "default-copy-second"), "second")
+		cmd = command(ctx, "cp", "-r", ":", host+":default-source-copy")
 		cmd.Dir = source
-		transcript, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
-			wait("Local source:", true)
-			send("\x15" + file + "\r")
-			wait("Remote destination:", true)
-			send("\r")
-			wait("Copied " + file)
-		})
-		if err != nil || strings.Contains(transcript, "\x1b[?1049h") {
-			t.Fatalf("copy prompts: %v\n%s", err, transcript)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("copy from current directory: %v\n%s", err, out)
+		}
+		if got := run(t, ctx, "sh", host, "--", "cat default-source-copy/lf-copy-tree/payload"); got != "tree" {
+			t.Fatalf("copied content = %q", got)
 		}
 		cmd = command(ctx, "cp", "--lf", "here:", host+":")
 		cmd.Dir = source
-		transcript, err = runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+		transcript, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("\x1b[7mlf-copy-tree/", true)
 			send("\r")
 			wait("Choose upload destination", true)
@@ -707,6 +723,32 @@ Match command "printf forwarding-check"
 		}
 	})
 
+	scenario("forward uses the other port without a terminal in either direction", func(t *testing.T, ctx context.Context) {
+		probe, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
+		probe.Close()
+		remote, localEndpoint := host+":"+port, "local:"+port
+		for _, endpoints := range [][3]string{
+			{remote, ":", remote + " -> " + localEndpoint},
+			{":", remote, localEndpoint + " -> " + remote},
+			{remote, port, remote + " -> " + localEndpoint},
+		} {
+			out := run(t, ctx, "fwd", endpoints[0], endpoints[1])
+			_, description, _ := strings.Cut(out, "Started forward/")
+			name, _, _ := strings.Cut(description, ":")
+			if name == "" {
+				t.Fatalf("forward did not start: %s", out)
+			}
+			inventory := string(local(t, ctx, "list"))
+			local(t, ctx, "kill", name)
+			if !strings.Contains(inventory, endpoints[2]) {
+				t.Fatalf("missing mapping %s in %s", endpoints[2], inventory)
+			}
+		}
+	})
 	scenario("reverse forward relays data", func(t *testing.T, ctx context.Context) {
 		listener, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
@@ -903,20 +945,13 @@ Match command "printf forwarding-check"
 		})
 		return point
 	}
-	scenario("mount confirms defaults and LF only selects a path", func(t *testing.T, ctx context.Context) {
+	scenario("mount uses default paths without a terminal and LF browses", func(t *testing.T, ctx context.Context) {
 		run(t, ctx, "sh", host, "--", "printf mount-default > mount-default-marker")
-		cmd := command(ctx, "mount", host+":", "here:", "--read-only")
-		var name string
-		transcript, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
-			wait("Remote directory:", true)
-			send("\r")
-			wait("Mountpoint (.: automatic):", true)
-			send("\r")
-			_, description, _ := strings.Cut(wait("Started mount/"), "Started mount/")
-			name, _, _ = strings.Cut(description, ":")
-		})
-		if err != nil || name == "" || strings.Contains(transcript, "\x1b[?1049h") {
-			t.Fatalf("mount defaults: %v\n%s", err, transcript)
+		out := run(t, ctx, "mount", host+":", ":", "--read-only")
+		_, description, _ := strings.Cut(out, "Started mount/")
+		name, _, _ := strings.Cut(description, ":")
+		if name == "" {
+			t.Fatalf("mount did not start: %s", out)
 		}
 		t.Cleanup(func() {
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -931,8 +966,8 @@ Match command "printf forwarding-check"
 		requireFile(t, filepath.Join(point, "mount-default-marker"), "mount-default")
 		local(t, ctx, "kill", name)
 
-		cmd = command(ctx, "mount", "--lf", host+":~", "here:")
-		transcript, err = runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+		cmd := command(ctx, "mount", "--lf", host+":~", ":")
+		transcript, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("Mountpoint", true)
 			wait("Enter Choose current dir", true)
 			send("aq")

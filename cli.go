@@ -473,12 +473,12 @@ type copyEndpoint struct {
 	pick, stream bool
 }
 type copyOptions struct {
-	sources       []copyEndpoint
-	target        copyEndpoint
-	host          string
-	upload        bool
-	recursive, lf bool
-	ssh           []string
+	sources   []copyEndpoint
+	target    copyEndpoint
+	host      string
+	upload    bool
+	recursive bool
+	ssh       []string
 }
 
 func parseCopyEndpoint(value string) (copyEndpoint, error) {
@@ -496,7 +496,8 @@ func parseCopyEndpoint(value string) (copyEndpoint, error) {
 }
 
 func parseCopyCommand(parsed cliArguments) (copyOptions, error) {
-	o := copyOptions{ssh: parsed.ssh, recursive: parsed.has("-r"), lf: parsed.has("--lf")}
+	o := copyOptions{ssh: parsed.ssh, recursive: parsed.has("-r")}
+	browse := parsed.has("--lf")
 	var endpoints []copyEndpoint
 	for _, a := range parsed.operands {
 		e, err := parseCopyEndpoint(a)
@@ -514,7 +515,7 @@ func parseCopyCommand(parsed cliArguments) (copyOptions, error) {
 		if o.recursive && (source.stream || o.target.stream) {
 			return o, usage("recursive copy requires filesystem paths")
 		}
-		if (source.pick || source.stream || o.target.stream) && len(o.sources) != 1 {
+		if (source.pick || browse && o.target.pick || source.stream || o.target.stream) && len(o.sources) != 1 {
 			return o, usage("selection and standard streams require exactly one source")
 		}
 		if (source.pick && o.target.stream) || (source.stream && o.target.pick) {
@@ -537,6 +538,19 @@ func parseCopyCommand(parsed cliArguments) (copyOptions, error) {
 	if len(o.sources) > maxRequestItems {
 		return o, usage("at most %d files per copy", maxRequestItems)
 	}
+	if !browse {
+		local, remote := ".", "~"
+		sourceDefault, targetDefault := remote, local
+		if o.upload {
+			sourceDefault, targetDefault = local, remote
+		}
+		if o.sources[0].pick {
+			o.sources[0].path, o.sources[0].pick = sourceDefault, false
+		}
+		if o.target.pick {
+			o.target.path, o.target.pick = targetDefault, false
+		}
+	}
 	return o, nil
 }
 
@@ -552,9 +566,13 @@ func parseFTPOptions(parsed cliArguments) (ftpOptions, error) {
 	if host == "here" || host == "origin" || targetHost != "here" {
 		return ftpOptions{}, usage("use mount HOST:SOURCE here:[MOUNTPOINT]")
 	}
+	browse := parsed.has("--lf")
+	if remote == "" && !browse {
+		remote = "~"
+	}
 	o := ftpOptions{
-		Host: host, Remote: remote, Mountpoint: mountpoint, LF: parsed.has("--lf"),
-		PickRemote: remote == "", PickMountpoint: mountpoint == "" && parsed.operands[1] != ".:",
+		Host: host, Remote: remote, Mountpoint: mountpoint,
+		PickRemote: browse && remote == "", PickMountpoint: browse && mountpoint == "" && parsed.operands[1] != ".:",
 		SSH:      parsed.ssh,
 		ReadOnly: parsed.has("--read-only"), Stats: parsed.has("--stats"), DirectIO: parsed.has("--direct-io"),
 		IOTimeoutNanos: parsed.duration("--io-timeout", defaultMountIOTimeout).Nanoseconds(), StartupTimeoutNanos: parsed.duration("--startup-timeout", 0).Nanoseconds(),
@@ -623,23 +641,7 @@ func runEndpointForward(parsed cliArguments) (int, error) {
 	if attached {
 		return 0, requestOperations([]operation{{Kind: "forward", Forward: rule}})
 	}
-	if rule.LocalPort == 0 {
-		err := termui.RunLocalConsole(func(*termui.LocalConsole) error {
-			input, err := newLocalInput()
-			if err != nil {
-				return err
-			}
-			termui.Log(os.Stdout, "", termui.Info, "Remote %s. Submit local port to forward.\n", cleanText(sshio.FormatEndpoint(host, strconv.Itoa(rule.RemotePort))))
-			rule.LocalPort, err = readForwardPort(input, rule, false)
-			return errors.Join(err, input.Close())
-		})
-		if errors.Is(err, termui.ErrTerminalRequired) {
-			return 2, usage("%s", err)
-		}
-		if err != nil {
-			return 1, err
-		}
-	}
+	rule.LocalPort = cmp.Or(rule.LocalPort, rule.RemotePort)
 	return startForwardSession(forwardConfig{Host: host, SSH: parsed.ssh, Retries: parsed.integer("--retries"), Rule: rule})
 }
 
@@ -703,17 +705,13 @@ type reviewPromptReader interface {
 	ReadPath(string, termui.PathOptions) (string, error)
 }
 
-func readForwardPort(input prefilledPromptReader, rule forwardRule, approve bool) (int, error) {
+func readForwardPort(input prefilledPromptReader, rule forwardRule) (int, error) {
 	initial := strconv.Itoa(cmp.Or(rule.LocalPort, rule.RemotePort))
-	suffix, action := " (Enter starts; Ctrl-C cancels): ", "forward"
-	if approve {
-		suffix, action = " (Enter to approve, Ctrl-C to cancel): ", "approval"
-	}
-	prompt := localForwardPortLabel(rule.Reverse) + suffix
+	prompt := localForwardPortLabel(rule.Reverse) + " (Enter to approve, Ctrl-C to cancel): "
 	for {
 		line, err := input.ReadPrefilled(prompt, false, initial)
 		if err != nil {
-			return 0, fmt.Errorf("%s cancelled: %w", action, err)
+			return 0, fmt.Errorf("approval cancelled: %w", err)
 		}
 		port, err := parsePort(strings.TrimSpace(line))
 		if err == nil {
