@@ -223,38 +223,43 @@ func (a *daemonActivity) publishRows(changes map[string]func() any) {
 	}
 }
 
+type liveTaskRow struct {
+	Shell    *shellView    `json:"shell,omitempty"`
+	Hosted   bool          `json:"hosted,omitempty"`
+	Resource *resourceView `json:"resource,omitempty"`
+}
+
 func (a *daemonActivity) publishTask(tasks ...daemonTask) {
 	changes := make(map[string]func() any, len(tasks))
 	for _, task := range tasks {
+		var uid string
 		switch t := task.(type) {
 		case *tmuxTask:
-			prefix := "shell/native/"
-			if t.hosted {
-				prefix = "shell/hosted/"
-			}
-			changes[prefix+t.record.UID] = func() any {
+			uid = t.record.UID
+		case *daemonResourceTask:
+			uid = t.record.UID
+		default:
+			continue
+		}
+		changes[uid] = func() any {
+			// A delayed exit notification may share its UID with a replacement.
+			switch t := a.tasks.lookup(uid).(type) {
+			case *tmuxTask:
 				t.mu.Lock()
 				defer t.mu.Unlock()
 				view := t.snapshotLocked()
-				if t.expired() || view.State == taskExited {
-					return nil
+				if !t.expired() && view.State != taskExited {
+					return liveTaskRow{Shell: &view, Hosted: t.hosted}
 				}
-				return view
+			case *daemonResourceTask:
+				t.mu.Lock()
+				defer t.mu.Unlock()
+				if !t.expired() {
+					view := viewRecord(t.record)
+					return liveTaskRow{Resource: &view}
+				}
 			}
-		case *daemonResourceTask:
-			uid := t.record.UID
-			changes["resource/"+uid] = func() any {
-				task, ok := a.tasks.lookup(uid).(*daemonResourceTask)
-				if !ok {
-					return nil
-				}
-				task.mu.Lock()
-				defer task.mu.Unlock()
-				if task.expired() {
-					return nil
-				}
-				return viewRecord(task.record)
-			}
+			return nil
 		}
 	}
 	a.publishRows(changes)
@@ -309,20 +314,35 @@ func currentLiveBucket(tx *bolt.Tx, instance string) *bolt.Bucket {
 }
 
 func (inv *inventory) readLiveRow(key, data []byte) error {
-	kind, _, _ := strings.Cut(string(key), "/")
-	switch kind {
-	case "host":
+	switch {
+	case bytes.Equal(key, []byte("host")):
 		return json.Unmarshal(data, &inv.LocalHost)
-	case "shell":
-		if err := appendLiveRow(&inv.Shells, data); err != nil {
+	case bytes.HasPrefix(key, []byte("peer/")):
+		return appendLiveRow(&inv.Peers, data)
+	case validTaskUID(string(key)):
+		var row liveTaskRow
+		if err := json.Unmarshal(data, &row); err != nil {
 			return err
 		}
-		inv.Shells[len(inv.Shells)-1].Hosted = bytes.HasPrefix(key, []byte("shell/hosted/"))
-		return nil
-	case "resource":
-		return appendLiveRow(&inv.Resources, data)
-	case "peer":
-		return appendLiveRow(&inv.Peers, data)
+		switch {
+		case row.Shell != nil:
+			row.Shell.Hosted = row.Hosted
+			inv.Shells = append(inv.Shells, *row.Shell)
+		case row.Resource != nil:
+			inv.Resources = append(inv.Resources, *row.Resource)
+		default:
+			return fmt.Errorf("invalid live task record %s", key)
+		}
+	}
+	return nil
+}
+
+func (inv *inventory) readPrefix(bucket *bolt.Bucket, prefix []byte) error {
+	cursor := bucket.Cursor()
+	for key, data := cursor.Seek(prefix); key != nil && bytes.HasPrefix(key, prefix); key, data = cursor.Next() {
+		if err := inv.readLiveRow(key, data); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -339,13 +359,16 @@ func readHostedShells() ([]shellView, error) {
 		if bucket == nil {
 			return nil
 		}
-		prefix := []byte("shell/hosted/")
-		cursor := bucket.Cursor()
-		for key, data := cursor.Seek(prefix); bytes.HasPrefix(key, prefix); key, data = cursor.Next() {
-			if err := appendLiveRow(&rows, data); err != nil {
-				return err
+		var inv inventory
+		if err := bucket.ForEach(inv.readLiveRow); err != nil {
+			return err
+		}
+		for _, shell := range inv.Shells {
+			if shell.Hosted {
+				rows = append(rows, shell)
 			}
 		}
+
 		return nil
 	})
 	return rows, err

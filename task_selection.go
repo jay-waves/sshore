@@ -277,30 +277,26 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id 
 	err = historyTransaction(root, false, func(tx *bolt.Tx) error {
 		inv := emptyInventory()
 		bucket := currentLiveBucket(tx, instance)
-		exact := false
 		if bucket != nil {
-			if validTaskUID(id) {
-				for _, prefix := range []string{"shell/hosted/", "shell/native/", "resource/"} {
-					if (hostedOnly && prefix == "shell/native/") || (attach && prefix == "resource/") {
-						continue
-					}
-					key := []byte(prefix + id)
-					if data := bucket.Get(key); data != nil {
-						if err := inv.readLiveRow(key, data); err != nil {
-							return err
-						}
-						exact = true
-						break
+			switch {
+			case validTaskUID(id):
+				key := []byte(id)
+				if data := bucket.Get(key); data != nil {
+					if err := inv.readLiveRow(key, data); err != nil {
+						return err
 					}
 				}
-			}
-			if !exact {
+			case id != "":
+				if err := inv.readPrefix(bucket, []byte(id)); err != nil {
+					return err
+				}
+			default:
 				if err := bucket.ForEach(inv.readLiveRow); err != nil {
 					return err
 				}
 			}
 		}
-
+		before := len(candidates)
 		for _, s := range inv.Shells {
 			if hostedOnly && !s.Hosted {
 				continue
@@ -317,7 +313,7 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id 
 				candidates = append(candidates, selectedTask{Kind: kind, Name: name, Identity: r.Identity})
 			}
 		}
-		if exact {
+		if validTaskUID(id) && len(candidates) > before {
 			return nil
 		}
 		known := make(map[string]bool)
@@ -375,7 +371,10 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id 
 		for _, t := range candidates {
 			known[t.Identity] = true
 		}
-		if !attach && id != "" {
+		if !attach && id != "" && bucket != nil {
+			if err := inv.readPrefix(bucket, []byte("peer/")); err != nil {
+				return err
+			}
 			for _, p := range inv.Peers {
 				id := identityFromUID(p.UID)
 				if p.Manager != "" {
