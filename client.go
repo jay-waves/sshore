@@ -25,6 +25,7 @@ import (
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/term"
 	"github.com/jay-waves/sshore/internal/termui"
+	bolt "go.etcd.io/bbolt"
 )
 
 // An interrupt cancels setup, but becomes terminal input after attachment.
@@ -280,35 +281,44 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	}
 	var participation *participatingShell
 	var terminalStateConfirmed bool
-	updateParticipation := func(state string) {
-		if participation != nil {
-			participation.Name, participation.State = o.session, state
-			if err := setParticipatingShellState(*participation); err != nil {
-				termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not update participating shell: %s\n", cleanText(err.Error()))
-			}
-		}
-	}
 	if !o.local {
-		row := participatingShell{HostInfo: o.hostInfo, Host: o.host, Owner: m.Owner, Instance: o.instance, Name: o.session, State: taskActive,
+		participation = &participatingShell{HostInfo: o.hostInfo, Host: o.host, Owner: m.Owner, Instance: o.instance, Name: o.session, State: taskActive,
 			Pinned: m.Pinned, PinUntil: m.PinUntil, PID: m.PID, Shell: m.Shell, Program: m.Program, Attachment: newTaskUID()}
-		if err := observeParticipatingShell(row); err != nil {
-			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not record participating shell: %s\n", cleanText(err.Error()))
-		} else {
-			participation = &row
+	}
+	var historyID string
+	err = updateHistory(func(tx *bolt.Tx) error {
+		id, err := historyGeneration(tx)
+		if err != nil {
+			return err
 		}
+		historyID = id
+		if err := removeRecentDetach(tx, o); err != nil {
+			return err
+		}
+		if participation == nil {
+			return nil
+		}
+		if err := updateParticipation(tx, participationChange{Action: "participation_observe", Participant: participation}); err != nil {
+			return err
+		}
+		return rememberConnection(tx, o)
+	})
+	if err != nil {
+		termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not save shell history: %s\n", cleanText(err.Error()))
+		participation = nil
+		historyID = ""
+	}
+	if participation != nil {
 		defer func() {
 			if !terminalStateConfirmed {
-				updateParticipation(taskUnknown)
+				participation.State = taskUnknown
+				if err := updateAttachedHistory(historyID, func(tx *bolt.Tx) error {
+					return updateParticipation(tx, participationChange{Action: "participation_state", Participant: participation})
+				}); err != nil {
+					termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not update shell history: %s\n", cleanText(err.Error()))
+				}
 			}
 		}()
-	}
-	if err := removeRecentDetach(o); err != nil {
-		termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not update recent detaches: %s\n", cleanText(err.Error()))
-	}
-	if !o.local {
-		if e := rememberConnection(o); e != nil {
-			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Connection history not saved: %s\n", cleanText(e.Error()))
-		}
 	}
 	shellPID := m.PID
 
@@ -317,18 +327,34 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		if validSession(reply.Name) == nil {
 			o.session = reply.Name
 		}
+		if participation == nil && !o.local {
+			return
+		}
 		if participation != nil {
+			participation.Name, participation.State = o.session, taskDetached
 			participation.Pinned, participation.PinUntil = reply.Pinned, reply.PinUntil
-		}
-		if o.hold != nil {
-			updateParticipation(taskWaiting)
-		} else {
-			updateParticipation(taskDetached)
-		}
-		if o.hold == nil {
-			if err := rememberDetachedAttachment(o); err != nil {
-				termui.Log(os.Stderr, "", termui.Warning, "[sshore] Detach history not saved: %s\n", cleanText(err.Error()))
+			if o.hold != nil {
+				participation.State = taskWaiting
 			}
+		} else if o.hold != nil {
+			return
+		}
+		if err := updateAttachedHistory(historyID, func(tx *bolt.Tx) error {
+			if participation != nil {
+				current, err := currentParticipation(tx, *participation)
+				if err != nil || !current {
+					return err
+				}
+				if err := updateParticipation(tx, participationChange{Action: "participation_state", Participant: participation}); err != nil {
+					return err
+				}
+			}
+			if o.hold == nil {
+				return rememberDetachedAttachment(tx, o)
+			}
+			return nil
+		}); err != nil {
+			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not save detach history: %s\n", cleanText(err.Error()))
 		}
 	}
 	restore, err := term.RawConsole()
@@ -1296,7 +1322,9 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						if end.localDaemonShutdown {
 							return
 						}
-						if exitErr := rememberShellExit(o); exitErr != nil {
+						if exitErr := updateAttachedHistory(historyID, func(tx *bolt.Tx) error {
+							return forgetShellHistory(tx, o)
+						}); exitErr != nil {
 							termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not record shell exit: %s\n", cleanText(exitErr.Error()))
 						}
 					}

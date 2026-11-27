@@ -67,12 +67,12 @@ func selectSetupShell(host string, targets []sessionTarget) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	recent, err := metadataRPC(metadataRequest{Action: "attach_remote_choice", Host: host, Targets: targets})
+	recent, err := recentRemoteChoice(host, targets)
 	if err != nil {
 		return "", err
 	}
-	if recent.Choice != "" {
-		return recent.Choice, nil
+	if recent != "" {
+		return recent, nil
 	}
 	input, err := termui.NewInput()
 	if err != nil {

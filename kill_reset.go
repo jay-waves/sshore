@@ -75,6 +75,15 @@ func prepareReset() (resetPaths, error) {
 
 // clear runs with startup and owner locked.
 func (p resetPaths) clear(locks ...*sys.FileLock) error {
+	if _, err := prepareStateDir(p.state, ""); err != nil {
+		return err
+	}
+	history, err := lockStateFile(filepath.Join(p.state, historyLock))
+	if err != nil {
+		return err
+	}
+	defer history.Close()
+	locks = append(locks, history)
 	// Keep lock inodes stable: a waiting client must never acquire a deleted lock
 	// while another client starts a replacement daemon under a different inode.
 	keep := make(map[string]bool)

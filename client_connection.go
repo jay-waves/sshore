@@ -18,6 +18,7 @@ import (
 
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
+	bolt "go.etcd.io/bbolt"
 	"golang.org/x/term"
 )
 
@@ -395,11 +396,11 @@ func runClient(o options) (int, error) {
 }
 
 func applyRecentConnection(o *options) error {
-	reply, err := metadataRPC(metadataRequest{Action: "connection_select", Host: o.host})
+	connection, err := selectRecentConnection(o.host)
 	if err != nil {
 		return err
 	}
-	if r := reply.Connection; r != nil {
+	if r := connection; r != nil {
 		o.host = r.Host
 		// The history supplies only transport configuration. The authenticated
 		// target resolves the supplied selector and confirms the actual instance.
@@ -413,14 +414,14 @@ func applyRecentConnection(o *options) error {
 	return nil
 }
 
-func (m *daemonMetadata) selectRecentConnection(host string) (*recentConnection, error) {
-	records, err := m.readRecentConnectionsLocal()
+func selectRecentConnection(host string) (*recentConnection, error) {
+	records, err := accountHistoryRows(connectionBucket, validateShellHistoryConnection)
 	if err != nil {
 		return nil, err
 	}
 	for i := range records {
 		if host == "" || host == records[i].Host {
-			return records[i].clone(), nil
+			return &records[i], nil
 		}
 	}
 	return nil, nil
@@ -505,7 +506,7 @@ func warnUnusedRouteForwarding(o *options) {
 	}
 }
 
-func rememberConnection(o options) error {
+func rememberConnection(tx *bolt.Tx, o options) error {
 	if o.session == "" || ownedRemoteRoute(o) {
 		return nil
 	}
@@ -517,8 +518,12 @@ func rememberConnection(o options) error {
 	if err != nil {
 		return err
 	}
-	_, err = metadataRPC(metadataRequest{Action: "connection_save", Connection: &record})
-	return err
+	if err := validateShellHistoryConnection(record); err != nil {
+		return err
+	}
+	return promoteRecent(tx, connectionBucket, record, func(previous recentConnection) bool {
+		return previous.Host == record.Host
+	})
 }
 
 func ownedRemoteRoute(o options) bool {
@@ -777,7 +782,7 @@ func (s *tmuxTask) confirmHandoff(c net.Conn, m message) error {
 	return writeMessage(c, message{Type: "handoff_confirmed"})
 }
 
-func rememberDetachedAttachment(o options) error {
+func rememberDetachedAttachment(tx *bolt.Tx, o options) error {
 	if ownedRemoteRoute(o) {
 		return nil
 	}
@@ -793,11 +798,15 @@ func rememberDetachedAttachment(o options) error {
 		}
 		row.Connection = &connection
 	}
-	_, err := metadataRPC(metadataRequest{Action: "attach_detach", Attachment: &row})
-	return err
+	if err := validateRecentAttachment(row); err != nil {
+		return err
+	}
+	return promoteRecent(tx, attachmentBucket, row, func(previous recentAttachment) bool {
+		return previous.Identity == row.Identity
+	})
 }
 
-func removeRecentDetach(o options) error {
+func removeRecentDetach(tx *bolt.Tx, o options) error {
 	id := o.taskIdentity
 	if id == "" {
 		id = identityFromUID(o.instance)
@@ -805,8 +814,9 @@ func removeRecentDetach(o options) error {
 	if id == "" {
 		return nil
 	}
-	_, err := metadataRPC(metadataRequest{Action: "attach_remove", Key: id})
-	return err
+	return deleteRecent(tx.Bucket(attachmentBucket), func(row recentAttachment) bool {
+		return row.Identity == id
+	})
 }
 
 func resolveDetachedAttach(o *options, parent string) error {
@@ -826,7 +836,7 @@ func resolveDetachedAttach(o *options, parent string) error {
 		}
 		target = &rows[0]
 	} else {
-		reply, err := metadataRPC(metadataRequest{Action: "attach_recent", Key: parent, Kind: kind})
+		reply, err := taskSelectionRPC(taskSelectionRequest{Action: "attach_recent", Key: parent, Kind: kind})
 		if err != nil || reply.Target == nil {
 			return err
 		}

@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
+	bolt "go.etcd.io/bbolt"
 	"golang.org/x/term"
 )
 
@@ -136,7 +136,11 @@ func (a *daemonActivity) listTasks() inventory {
 	inv.LocalShells = snapshot.nativeShells()
 	inv.Resources = snapshot.Resources
 	inv.Peers = excludeLocalResourcePeers(peerViews(a.incomingPeers()), inv.Resources)
-	observed, err := a.metadata.participatingShells()
+	var observed []participatingShell
+	err := historyTransaction(a.root, false, func(tx *bolt.Tx) (err error) {
+		observed, err = participatingShells(tx)
+		return err
+	})
 	if err != nil {
 		inv.Errors = append(inv.Errors, "remote shell history unavailable: "+cleanText(err.Error()))
 	}
@@ -768,9 +772,17 @@ func pinDetail(detail string, pinned bool, deadline time.Time) string {
 }
 
 func rememberShellExit(o options) error {
-	detachErr := removeRecentDetach(o)
-	if o.local || !validTaskUID(o.instance) {
-		return detachErr
+	return updateHistory(func(tx *bolt.Tx) error {
+		return forgetShellHistory(tx, o)
+	})
+}
+
+func forgetShellHistory(tx *bolt.Tx, o options) error {
+	if err := removeRecentDetach(tx, o); err != nil {
+		return err
 	}
-	return errors.Join(detachErr, forgetParticipatingShell(o.host, o.instance))
+	if o.local || !validTaskUID(o.instance) {
+		return nil
+	}
+	return updateParticipation(tx, participationChange{Action: "participation_forget", Host: o.host, Instance: o.instance})
 }

@@ -29,7 +29,6 @@ type daemonActivity struct {
 	hostInfo      atomic.Pointer[hostInfo]
 	root          string
 	tasks         *daemonTasks
-	metadata      daemonMetadata
 	mu            sync.Mutex
 	leases        map[*activityLease]struct{}
 	nextPeerOrder uint64

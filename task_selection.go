@@ -222,17 +222,8 @@ func (a *daemonActivity) selectTaskID(ref, kind, parent string, attach bool) (*s
 	for _, target := range candidates {
 		live[target.Identity] = true
 	}
-	observed, err := a.metadata.participatingShells()
+	observed, records, detached, err := readShellCandidates(a.root)
 	if err != nil {
-		return nil, err
-	}
-	a.metadata.shellMu.Lock()
-	defer a.metadata.shellMu.Unlock()
-	records, err := a.metadata.readRecentConnectionsLocal()
-	if err != nil {
-		return nil, err
-	}
-	if err := a.metadata.loadDetachedAttachments(); err != nil {
 		return nil, err
 	}
 	addRoute := func(route *recentConnection) {
@@ -240,7 +231,7 @@ func (a *daemonActivity) selectTaskID(ref, kind, parent string, attach bool) (*s
 			candidates = append(candidates, selectedTask{Kind: "shell", Identity: identityFromUID(route.Instance), Instance: route.Instance, Connection: route})
 		}
 	}
-	for _, row := range a.metadata.attachments.rows {
+	for _, row := range detached {
 		addRoute(row.Connection)
 	}
 	known := make(map[string]bool, len(candidates))
@@ -303,17 +294,8 @@ func (a *daemonActivity) selectTaskName(name, kind, parent string, attach bool) 
 	if attach {
 		candidates = append(candidates, a.remoteChildCandidates(parent, name)...)
 	}
-	observed, err := a.metadata.participatingShells()
+	observed, routes, detached, err := readShellCandidates(a.root)
 	if err != nil {
-		return nil, err
-	}
-	a.metadata.shellMu.Lock()
-	defer a.metadata.shellMu.Unlock()
-	routes, err := a.metadata.readRecentConnectionsLocal()
-	if err != nil {
-		return nil, err
-	}
-	if err := a.metadata.loadDetachedAttachments(); err != nil {
 		return nil, err
 	}
 	known := make(map[string]bool)
@@ -330,7 +312,7 @@ func (a *daemonActivity) selectTaskName(name, kind, parent string, attach bool) 
 			known[id] = true
 		}
 	}
-	for _, row := range a.metadata.attachments.rows {
+	for _, row := range detached {
 		addRoute(row.Connection)
 	}
 	for _, row := range observed {
@@ -366,7 +348,7 @@ func selectCLITask(parsed cliArguments) (selectedTask, error) {
 	if target.ref == "" && target.name == "" {
 		return selectedTask{}, nil
 	}
-	req := metadataRequest{Instance: target.ref, Name: target.name}
+	req := taskSelectionRequest{Instance: target.ref, Name: target.name}
 	action := "task"
 	if command == "attach" {
 		action, req.Kind = "attach", "shell"
@@ -379,7 +361,7 @@ func selectCLITask(parsed cliArguments) (selectedTask, error) {
 	if target.name != "" {
 		req.Action = action + "_by_name"
 	}
-	reply, err := metadataRPC(req)
+	reply, err := taskSelectionRPC(req)
 	if err != nil {
 		return selectedTask{}, err
 	}
