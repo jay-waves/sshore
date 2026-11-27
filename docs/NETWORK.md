@@ -25,6 +25,8 @@ chooses the highlighted directory and `./` chooses the directory being browsed.
 Use `l` or the right arrow to enter a highlighted directory. In the copy source
 picker, Space marks or unmarks a file and moves down. Enter submits the marked
 files, or chooses the highlighted file when none are marked.
+In a local picker that owns the terminal, `e` opens the highlighted file with
+`EDITOR` and `i` opens it with `PAGER`. Missing settings are shown in the picker.
 The client starts by reading the remote home into its directory cache. A mount
 worker returns the current and parent listings together over the startup
 stream and reuses that cache when it mounts the selected directory. The shell

@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/jay-waves/sshore/internal/shell"
 	"github.com/jay-waves/sshore/internal/term"
 	xterm "golang.org/x/term"
 )
@@ -27,20 +30,21 @@ type LFEntry struct {
 
 // LFOptions supplies path operations and directory listings for a picker.
 type LFOptions struct {
-	Dir       string
-	Directory bool
-	ReadDir   func(context.Context, string) ([]LFEntry, error)
-	ReadPair  func(ctx context.Context, current, parent string) (currentEntries []LFEntry, currentErr error, parentEntries []LFEntry, parentErr error)
-	Join      func(string, string) string
-	Parent    func(string) string
-	Title     string
-	Host      string
-	Automatic bool
-	Manual    bool
-	InConsole bool
-	Validate  func(string) error
-	Input     <-chan LFInput
-	Output    io.Writer
+	Dir        string
+	Directory  bool
+	ReadDir    func(context.Context, string) ([]LFEntry, error)
+	ReadPair   func(ctx context.Context, current, parent string) (currentEntries []LFEntry, currentErr error, parentEntries []LFEntry, parentErr error)
+	Join       func(string, string) string
+	Parent     func(string) string
+	Title      string
+	Host       string
+	Automatic  bool
+	Manual     bool
+	InConsole  bool
+	LocalFiles bool // The listed paths belong to this process's filesystem.
+	Validate   func(string) error
+	Input      <-chan LFInput
+	Output     io.Writer
 }
 
 type lfResult struct {
@@ -98,6 +102,8 @@ func pickLF(ctx context.Context, options LFOptions, validateFiles func([]string)
 	defer cancel()
 	input := options.Input
 	var out io.Writer
+	var startTerminal func() error
+	var stopTerminal func() error
 	if input != nil {
 		if options.Output == nil {
 			return nil, errors.New("embedded picker requires an output writer")
@@ -108,35 +114,59 @@ func pickLF(ctx context.Context, options LFOptions, validateFiles func([]string)
 		if !xterm.IsTerminal(int(os.Stdin.Fd())) || !xterm.IsTerminal(int(os.Stdout.Fd())) {
 			return nil, ErrTerminalRequired
 		}
-		restore, e := term.RawConsole()
-		if e != nil {
-			return nil, e
-		}
-		defer restore()
-		var flush func() error
-		out, flush = term.OutputWriter()
-		defer func() { err = errors.Join(err, flush()) }()
-		var screen term.InputState
-		if options.InConsole {
-			defer func() { _, e := fmt.Fprint(out, "\x1b[0m\x1b[?25h"); err = errors.Join(err, e) }()
-		} else {
-			if e := screen.BeginConsole(out); e != nil {
-				return nil, e
+		startTerminal = func() error {
+			restore, err := term.RawConsole()
+			if err != nil {
+				return err
 			}
-			defer func() { err = errors.Join(err, screen.EndConsole(out)) }()
-		}
-		events := make(chan LFInput, 32)
-		stop, e := term.StartKeyboard(ctx, func(data []byte, e error) {
-			select {
-			case events <- LFInput{data, e}:
-			case <-ctx.Done():
+			writer, flush := term.OutputWriter()
+			out = writer
+			var screen term.InputState
+			if !options.InConsole {
+				if err := screen.BeginConsole(out); err != nil {
+					restore()
+					return errors.Join(err, flush())
+				}
 			}
-		})
-		if e != nil {
-			return nil, e
+			keyCtx, cancelKeys := context.WithCancel(ctx)
+			events := make(chan LFInput, 32)
+			stopKeys, err := term.StartKeyboard(keyCtx, func(data []byte, err error) {
+				select {
+				case events <- LFInput{data, err}:
+				case <-keyCtx.Done():
+				}
+			})
+			stopTerminal = func() error {
+				cancelKeys()
+				if stopKeys != nil {
+					stopKeys()
+				}
+				var err error
+				if options.InConsole {
+					_, err = fmt.Fprint(out, "\x1b[0m\x1b[?25h")
+				} else {
+					err = screen.EndConsole(out)
+				}
+				err = errors.Join(err, flush())
+				restore()
+				stopTerminal = nil
+				return err
+			}
+			if err != nil {
+				return errors.Join(err, stopTerminal())
+			}
+			input = events
+			return nil
 		}
-		defer stop()
-		input = events
+		if err := startTerminal(); err != nil {
+			return nil, err
+		}
+		defer func() {
+			if stopTerminal != nil {
+				err = errors.Join(err, stopTerminal())
+			}
+		}()
+
 	}
 	results := make(chan lfResult, 16)
 	var panes [3]lfPane
@@ -394,6 +424,34 @@ func pickLF(ctx context.Context, options LFOptions, validateFiles func([]string)
 						current, index = parent, 0
 						refresh()
 					}
+				case 'e', 'i':
+					if index >= len(panes[1].entries) || panes[1].entries[index].IsDir {
+						continue
+					}
+					variable := "EDITOR"
+					if key == 'i' {
+						variable = "PAGER"
+					}
+					command, err := lfFileCommand(ctx, variable, options.Join(current, panes[1].entries[index].Name), options.LocalFiles && startTerminal != nil)
+					validationErr = err
+					if err != nil {
+						continue
+					}
+					if err := stopTerminal(); err != nil {
+						return nil, err
+					}
+					runErr := command.Run()
+					if err := startTerminal(); err != nil {
+						return nil, errors.Join(runErr, err)
+					}
+					pending = nil
+					if key == 'e' {
+						delete(cache, current)
+						refresh()
+					}
+					if runErr != nil {
+						validationErr = fmt.Errorf("%s: %w", variable, runErr)
+					}
 				case ' ':
 					if validateFiles == nil || index >= len(panes[1].entries) || panes[1].entries[index].IsDir {
 						continue
@@ -455,6 +513,31 @@ func pickLF(ctx context.Context, options LFOptions, validateFiles func([]string)
 			}
 		}
 	}
+}
+
+func lfFileCommand(ctx context.Context, variable, name string, local bool) (*exec.Cmd, error) {
+	value := strings.TrimSpace(os.Getenv(variable))
+	if value == "" {
+		return nil, fmt.Errorf("%s is not set", variable)
+	}
+	if !local {
+		return nil, fmt.Errorf("%s requires a local picker with terminal access", variable)
+	}
+	argv, err := shell.ParseCommand(value)
+	if err != nil || len(argv) == 0 || argv[0] == "" {
+		return nil, fmt.Errorf("invalid %s command", variable)
+	}
+	name, err = filepath.Abs(name)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, argv[0], append(argv[1:], name)...)
+	if cmd.Err != nil {
+		return nil, fmt.Errorf("%s: %w", variable, cmd.Err)
+	}
+	cmd.Dir = filepath.Dir(name)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd, nil
 }
 
 func lfDraw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, parentIndex, selected, width, height int, validationErr error, color, multi bool, marked []string) error {

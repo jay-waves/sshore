@@ -32,7 +32,7 @@ func localFileSelection(dir, title string, directory bool) termui.LFOptions {
 		dir, _ = os.Getwd()
 	}
 	return termui.LFOptions{
-		Dir: dir, Title: title, Host: localFileHost(), Directory: directory,
+		Dir: dir, Title: title, Host: localFileHost(), Directory: directory, LocalFiles: true,
 		Join: func(dir, name string) string { return filepath.Join(dir, name) }, Parent: filepath.Dir,
 		ReadDir: func(_ context.Context, name string) ([]termui.LFEntry, error) {
 			return pickerEntries(directoryEntries(os.ReadDir(name)))
