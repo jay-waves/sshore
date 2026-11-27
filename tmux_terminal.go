@@ -61,14 +61,6 @@ func (s *tmuxTask) expired() bool {
 	}
 }
 
-func (s *tmuxTask) inventoryView() shellView {
-	if !s.mu.TryLock() {
-		return shellView{Instance: s.record.UID, Name: s.record.Name, State: taskUnknown}
-	}
-	defer s.mu.Unlock()
-	return s.snapshotLocked()
-}
-
 // snapshotLocked projects the managed terminal state for either ingress.
 func (s *tmuxTask) snapshotLocked() shellView {
 	pinned, until := s.runtime.PinState()

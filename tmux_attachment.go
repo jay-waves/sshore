@@ -200,9 +200,11 @@ func (s *tmuxTask) prepareAttachment(p *attachment, m message, initial bool, key
 
 // A descendant's terminal reservation also changes the waiting state of its ancestors.
 func (s *tmuxTask) publishTreeState() {
+	var tasks []daemonTask
 	for task := s; task != nil; task = task.parentTask() {
-		task.registry.inventoryChanged(task)
+		tasks = append(tasks, task)
 	}
+	s.registry.inventoryChanged(tasks...)
 }
 
 func (s *tmuxTask) releaseAttachment(p *attachment, cause error) (message, error) {

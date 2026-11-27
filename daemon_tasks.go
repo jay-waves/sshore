@@ -9,7 +9,6 @@ import (
 	"iter"
 	"net"
 	"net/http"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +28,7 @@ type daemonTask interface {
 var errDaemonDraining = errors.New("daemon is shutting down")
 
 type daemonTasks struct {
-	publishInventory func(daemonTask)
+	publishInventory func(...daemonTask)
 	log              io.Writer
 	cgroup           string
 	cgroupErr        error
@@ -39,9 +38,9 @@ type daemonTasks struct {
 	records          map[string]daemonTask
 }
 
-func (s *daemonTasks) inventoryChanged(task daemonTask) {
+func (s *daemonTasks) inventoryChanged(tasks ...daemonTask) {
 	if s != nil && s.publishInventory != nil {
-		s.publishInventory(task)
+		s.publishInventory(tasks...)
 	}
 }
 
@@ -305,13 +304,21 @@ func (t *daemonResourceTask) expired() bool {
 	}
 }
 
-func (s *daemonTasks) serveTaskInventory(w http.ResponseWriter, r *http.Request) {
-	var request taskInventoryRequest
-	if !readDaemonBody(w, r, &request) {
+func (s *daemonTasks) serveResourcesForHost(w http.ResponseWriter, r *http.Request) {
+	var host string
+	if !readDaemonBody(w, r, &host) {
 		return
 	}
+	var rows []resourceView
+	for _, task := range liveTasks[*daemonResourceTask](s) {
+		if task.record.Host == host {
+			task.mu.Lock()
+			rows = append(rows, viewRecord(task.record))
+			task.mu.Unlock()
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.MarshalWrite(w, s.taskInventory(request))
+	_ = json.MarshalWrite(w, rows)
 }
 
 const resourceStopTimeout = 20 * time.Second
@@ -357,49 +364,6 @@ func (t *daemonResourceTask) publishReady(detail, root, mountpoint string) resou
 	defer t.mu.Unlock()
 	t.record.Detail, t.record.Remote, t.record.Mountpoint = detail, root, mountpoint
 	return t.record
-}
-
-type taskInventoryRequest struct {
-	Native, Hosted, Resources bool
-	Host                      string
-}
-
-type taskInventorySnapshot struct {
-	Native    []localShellView
-	Shells    []shellView
-	Resources []resourceView
-}
-
-func localView(record localShellRecord, view shellView) localShellView {
-	return localShellView{Identity: record.identity(), ShortID: taskShortCode(record.identity()), Name: view.Name, State: view.State,
-		Owner: view.Owner, Pinned: view.Pinned, PinUntil: view.PinUntil, SourceHost: view.SourceHost,
-		Shell: view.Shell, Program: view.Program, ProgramLine: view.ProgramLine, Directory: view.Directory}
-}
-
-func (s *daemonTasks) taskInventory(request taskInventoryRequest) taskInventorySnapshot {
-	var snapshot taskInventorySnapshot
-	// Capture membership before reading individual tasks.
-	for _, task := range liveTasks[daemonTask](s) {
-		switch t := task.(type) {
-		case *tmuxTask:
-			shell := t
-			if shell.hosted && request.Hosted {
-				snapshot.Shells = append(snapshot.Shells, shell.inventoryView())
-			} else if !shell.hosted && request.Native {
-				view := shell.inventoryView()
-				snapshot.Native = append(snapshot.Native, localView(shell.record, view))
-			}
-		case *daemonResourceTask:
-			if !request.Resources || request.Host != "" && t.record.Host != request.Host {
-				continue
-			}
-			t.mu.Lock()
-			snapshot.Resources = append(snapshot.Resources, viewRecord(t.record))
-			t.mu.Unlock()
-		}
-	}
-	slices.SortFunc(snapshot.Shells, func(a, b shellView) int { return strings.Compare(a.Instance, b.Instance) })
-	return snapshot
 }
 
 func (s *daemonTasks) serveTaskStop(w http.ResponseWriter, r *http.Request) {

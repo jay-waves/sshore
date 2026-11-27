@@ -41,12 +41,6 @@ func writeList(out io.Writer, inv inventory, current string, color bool) {
 func writeListWidth(out io.Writer, inv inventory, current string, color bool, screenWidth int) {
 	rows := []taskTableRow{}
 	hostInfos := map[string]hostInfo{}
-	for _, s := range inv.LocalShells {
-		selected := current != "" && s.Identity == current && s.State == taskActive
-		detail := shellListDetail(joinTaskDetails(cmp.Or(s.ProgramLine, s.Shell), s.Directory), s.SourceHost)
-		detail = pinDetail(detail, s.Pinned, s.PinUntil)
-		rows = append(rows, taskTableRow{taskUID(s.Identity), s.ShortID, s.Name, terminalTaskKind(s.Program), localInventoryHost, s.State, taskShortCode(s.Owner), detail, selected})
-	}
 	now := time.Now()
 	for _, s := range inv.Shells {
 		host := cmp.Or(s.Host, localInventoryHost)

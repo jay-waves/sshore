@@ -189,7 +189,13 @@ func killLocalAccount(ctx context.Context, reset bool) error {
 }
 
 func killRemoteAccount(ctx context.Context, o options, reset bool) error {
-	local, err := readTaskInventory(taskInventoryRequest{Resources: true, Host: o.host})
+	var local []resourceView
+	record, err := existingDaemonRecord()
+	if err == nil {
+		err = daemonJSON(ctx, record, "/resources/for-host", o.host, &local)
+	} else if os.IsNotExist(err) {
+		err = nil
+	}
 	if err != nil {
 		return err
 	}
@@ -221,7 +227,7 @@ func killRemoteAccount(ctx context.Context, o options, reset bool) error {
 		}
 		snapshot = reply.Snapshot
 	}
-	if err := confirmDaemonShutdown(o.host, snapshot, local.Resources, reset); err != nil {
+	if err := confirmDaemonShutdown(o.host, snapshot, local, reset); err != nil {
 		return err
 	}
 	if process != nil && (snapshot.Instance != "" || reset) {
@@ -235,7 +241,7 @@ func killRemoteAccount(ctx context.Context, o options, reset bool) error {
 			return err
 		}
 	}
-	if err := stopConfirmedResources(ctx, local.Resources); err != nil {
+	if err := stopConfirmedResources(ctx, local); err != nil {
 		return fmt.Errorf("local resource cleanup: %w", err)
 	}
 	if reset && process != nil {

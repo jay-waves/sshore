@@ -41,13 +41,13 @@ func TestInventoryReadsHistoryWhileShellIsBusy(t *testing.T) {
 			t.Fatal(err)
 		}
 		offline, err := loadInventory(root, newTaskUID())
-		if err != nil || len(offline.LocalShells) != 0 || len(offline.Shells) != 1 {
+		if err != nil || len(offline.Shells) != 1 {
 			t.Fatalf("stale live view was not discarded: %+v, %v", offline, err)
 		}
-		if len(snapshot.LocalShells) != 1 || snapshot.LocalShells[0].State != taskStarting {
-			t.Fatalf("busy shell missing or mislabeled: %+v", snapshot.LocalShells)
+		if len(snapshot.Shells) != 2 || snapshot.Shells[0].State != taskStarting {
+			t.Fatalf("busy shell missing or mislabeled: %+v", snapshot.Shells)
 		}
-		if len(snapshot.Shells) != 1 || !snapshot.Shells[0].Observed || snapshot.Shells[0].Name != "remembered-shell" {
+		if !snapshot.Shells[1].Observed || snapshot.Shells[1].Name != "remembered-shell" {
 			t.Fatalf("published history missing: %+v", snapshot.Shells)
 		}
 	case <-time.After(2 * time.Second):

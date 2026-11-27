@@ -59,11 +59,8 @@ func reportHostedShell(record localShellRecord) error {
 	if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Host: &hostAnnouncement{Info: localHostInfo(), SSHServer: serverIP}, Instance: record.UID, LocalRequest: &localDaemonRequest{Record: record}}); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	var snapshot taskInventorySnapshot
-	if err := daemonJSON(ctx, record, "/tasks/snapshot", taskInventoryRequest{Hosted: true}, &snapshot); err == nil {
-		_ = json.MarshalWrite(os.Stdout, snapshot.Shells)
+	if rows, err := readHostedShells(); err == nil {
+		_ = json.MarshalWrite(os.Stdout, rows)
 	}
 	return nil
 }

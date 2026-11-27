@@ -181,9 +181,9 @@ available. Conflicting snapshots for the same SSH name leave only the name.
 Clients record recent connections, detaches, and remote observations in `connections/participation.db`.
 One short transaction records each confirmed attachment event. The daemon owns live tasks and leases.
 Both views read bbolt directly. Live rows come from the daemon that currently owns the account lock.
-State changes update the affected task and peer rows. Readers see the last committed state
-and omit starting and exited shells. The hosted shell list follows `setup_ready` on the same exec
-stream. A live registration takes precedence over an observation of the same UID.
+Native and hosted shells share one row format. A terminal and its affected ancestors commit together.
+Readers omit starting and exited shells. The host reads its registered hosted shells from bbolt and
+sends them after `setup_ready`. A live registration takes precedence over an observation of the same UID.
 
 Program sessions appear as `run`. The managing account lists arguments alongside the executable.
 

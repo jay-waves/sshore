@@ -189,7 +189,7 @@ func daemonRoutes(record localShellRecord, activity *daemonActivity, stop func()
 		_ = json.MarshalWrite(w, daemonAdminReply{Snapshot: expected})
 		stop()
 	})
-	mux.HandleFunc("POST /tasks/snapshot", tasks.serveTaskInventory)
+	mux.HandleFunc("POST /resources/for-host", tasks.serveResourcesForHost)
 	mux.HandleFunc("POST /resources/stop-confirmed", tasks.serveConfirmedResourceStops)
 	mux.HandleFunc("POST /tasks/stop", tasks.serveTaskStop)
 	mux.HandleFunc("POST /tasks/select", func(w http.ResponseWriter, r *http.Request) {

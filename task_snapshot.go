@@ -1,10 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
-	"context"
 	json "encoding/json/v2"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -75,12 +76,11 @@ type peerView struct {
 	Detail string `json:"detail"`
 }
 type inventory struct {
-	LocalHost   *hostInfo        `json:"local_host,omitempty"`
-	LocalShells []localShellView `json:"local_shells,omitempty"`
-	Resources   []resourceView   `json:"resources"`
-	Shells      []shellView      `json:"shells"`
-	Peers       []peerView       `json:"peers"`
-	Errors      []string         `json:"errors"`
+	LocalHost *hostInfo      `json:"local_host,omitempty"`
+	Resources []resourceView `json:"resources"`
+	Shells    []shellView    `json:"shells"`
+	Peers     []peerView     `json:"peers"`
+	Errors    []string       `json:"errors"`
 }
 
 func emptyInventory() inventory {
@@ -95,20 +95,6 @@ func viewRecord(r resourceRecord) resourceView {
 	return v
 }
 
-// Read only registered tasks here. Historical and peer observations are
-// collected separately and cannot become part of this snapshot.
-func readTaskInventory(request taskInventoryRequest) (taskInventorySnapshot, error) {
-	var snapshot taskInventorySnapshot
-	record, err := existingDaemonRecord()
-	if os.IsNotExist(err) {
-		return snapshot, nil
-	}
-	if err == nil {
-		err = daemonJSON(context.Background(), record, "/tasks/snapshot", request, &snapshot)
-	}
-	return snapshot, err
-}
-
 func excludeLocalResourcePeers(peers []peerView, resources []resourceView) []peerView {
 	local := make(map[string]bool, len(resources))
 	for _, r := range resources {
@@ -119,12 +105,7 @@ func excludeLocalResourcePeers(peers []peerView, resources []resourceView) []pee
 
 func mergeInventory(inv inventory, observed []participatingShell) inventory {
 	// Both renderers prefer a live row over a cached observation of the same task.
-	live := make(map[string]bool, len(inv.LocalShells)+len(inv.Shells))
-	for _, shell := range inv.LocalShells {
-		if uid := canonicalTaskUID(shell.Identity); uid != "" && !taskHiddenFromInventory(shell.State) {
-			live[uid] = true
-		}
-	}
+	live := make(map[string]bool, len(inv.Shells))
 	for _, shell := range inv.Shells {
 		if !shell.Observed && shell.Instance != "" && !taskHiddenFromInventory(shell.State) {
 			live[shell.Instance] = true
@@ -174,13 +155,24 @@ func (inv *inventory) setTaskReferences() {
 var liveTasksBucket = []byte("live-task-rows")
 
 // Serialize projection and commit so delayed notifications always read the latest state.
-func (a *daemonActivity) publishRow(key string, project func() any) {
+func (a *daemonActivity) publishRows(changes map[string]func() any) {
 	a.inventoryMu.Lock()
 	defer a.inventoryMu.Unlock()
 	if a.instance == "" {
 		return
 	}
-	row := project()
+	if a.pendingRows == nil {
+		a.pendingRows = changes
+	} else {
+		maps.Copy(a.pendingRows, changes)
+	}
+	if len(a.pendingRows) == 0 {
+		return
+	}
+	rows := make(map[string]any, len(a.pendingRows))
+	for key, project := range a.pendingRows {
+		rows[key] = project()
+	}
 	err := historyTransaction(a.root, true, func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(liveTasksBucket)
 		if bucket != nil && string(bucket.Get([]byte("instance"))) != a.instance {
@@ -199,67 +191,76 @@ func (a *daemonActivity) publishRow(key string, project func() any) {
 				return err
 			}
 		}
-		if row == nil {
-			return bucket.Delete([]byte(key))
+		for key, row := range rows {
+			if row == nil {
+				if err := bucket.Delete([]byte(key)); err != nil {
+					return err
+				}
+				continue
+			}
+			data, err := json.Marshal(row)
+			if err != nil {
+				return err
+			}
+			if err := bucket.Put([]byte(key), data); err != nil {
+				return err
+			}
 		}
-		data, err := json.Marshal(row)
-		if err != nil {
-			return err
-		}
-		return bucket.Put([]byte(key), data)
+		return nil
 	})
 	if err == nil {
-		if timer := a.inventoryRetry[key]; timer != nil {
-			timer.Stop()
-			delete(a.inventoryRetry, key)
+		a.pendingRows = nil
+		if a.inventoryRetry != nil {
+			a.inventoryRetry.Stop()
+			a.inventoryRetry = nil
 		}
-		return
-	}
-	if a.inventoryRetry == nil {
-		a.inventoryRetry = make(map[string]*time.Timer)
-	}
-	if timer := a.inventoryRetry[key]; timer != nil {
-		timer.Reset(time.Second)
-	} else {
+	} else if a.inventoryRetry == nil {
 		fmt.Fprintf(a.tasks.log, "publish task inventory: %v\n", err)
-		a.inventoryRetry[key] = time.AfterFunc(time.Second, func() { a.publishRow(key, project) })
+		a.inventoryRetry = time.AfterFunc(time.Second, func() { a.publishRows(nil) })
+	} else {
+		a.inventoryRetry.Reset(time.Second)
 	}
 }
 
-func (a *daemonActivity) publishTask(task daemonTask) {
-	switch t := task.(type) {
-	case *tmuxTask:
-		key := "local/" + t.record.UID
-		if t.hosted {
-			key = "shell/" + t.record.UID
-		}
-		a.publishRow(key, func() any {
-			t.mu.Lock()
-			defer t.mu.Unlock()
-			view := t.snapshotLocked()
-			if t.expired() || view.State == taskExited {
-				return nil
-			}
+func (a *daemonActivity) publishTask(tasks ...daemonTask) {
+	changes := make(map[string]func() any, len(tasks))
+	for _, task := range tasks {
+		switch t := task.(type) {
+		case *tmuxTask:
+			prefix := "shell/native/"
 			if t.hosted {
+				prefix = "shell/hosted/"
+			}
+			changes[prefix+t.record.UID] = func() any {
+				t.mu.Lock()
+				defer t.mu.Unlock()
+				view := t.snapshotLocked()
+				if t.expired() || view.State == taskExited {
+					return nil
+				}
 				return view
 			}
-			return localView(t.record, view)
-		})
-	case *daemonResourceTask:
-		uid := t.record.UID
-		a.publishRow("resource/"+uid, func() any {
-			t, ok := a.tasks.lookup(uid).(*daemonResourceTask)
-			if !ok {
-				return nil
+		case *daemonResourceTask:
+			uid := t.record.UID
+			changes["resource/"+uid] = func() any {
+				task, ok := a.tasks.lookup(uid).(*daemonResourceTask)
+				if !ok {
+					return nil
+				}
+				task.mu.Lock()
+				defer task.mu.Unlock()
+				if task.expired() {
+					return nil
+				}
+				return viewRecord(task.record)
 			}
-			t.mu.Lock()
-			defer t.mu.Unlock()
-			if t.expired() {
-				return nil
-			}
-			return viewRecord(t.record)
-		})
+		}
 	}
+	a.publishRows(changes)
+}
+
+func (a *daemonActivity) publishRow(key string, project func() any) {
+	a.publishRows(map[string]func() any{key: project})
 }
 
 func (a *daemonActivity) publishPeer(key string) {
@@ -284,8 +285,8 @@ func (a *daemonActivity) closeInventory() {
 	a.inventoryMu.Lock()
 	defer a.inventoryMu.Unlock()
 	a.instance = ""
-	for _, timer := range a.inventoryRetry {
-		timer.Stop()
+	if a.inventoryRetry != nil {
+		a.inventoryRetry.Stop()
 	}
 }
 
@@ -307,8 +308,6 @@ func readLiveRows(bucket *bolt.Bucket, instance string, inv *inventory) error {
 		switch kind {
 		case "host":
 			return json.Unmarshal(data, &inv.LocalHost)
-		case "local":
-			return appendLiveRow(&inv.LocalShells, data)
 		case "shell":
 			return appendLiveRow(&inv.Shells, data)
 		case "resource":
@@ -318,6 +317,30 @@ func readLiveRows(bucket *bolt.Bucket, instance string, inv *inventory) error {
 		}
 		return nil
 	})
+}
+
+// The setup response advertises only hosted shells owned by the current daemon.
+func readHostedShells() ([]shellView, error) {
+	record, err := existingDaemonRecord()
+	if err != nil {
+		return nil, err
+	}
+	var rows []shellView
+	err = historyTransaction(record.Directory, false, func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(liveTasksBucket)
+		if bucket == nil || string(bucket.Get([]byte("instance"))) != record.UID {
+			return nil
+		}
+		prefix := []byte("shell/hosted/")
+		cursor := bucket.Cursor()
+		for key, data := cursor.Seek(prefix); bytes.HasPrefix(key, prefix); key, data = cursor.Next() {
+			if err := appendLiveRow(&rows, data); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return rows, err
 }
 
 func readPublishedInventory() (inventory, error) {

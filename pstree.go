@@ -140,7 +140,7 @@ func (n shellTreeNode) displayCode() string {
 // The local registry is authoritative. For other shells, show the newest
 // authenticated observation of each UID, even when two SSH aliases reach it.
 func taskTreeNodes(inv inventory) []shellTreeNode {
-	nodes := make([]shellTreeNode, 0, len(inv.LocalShells)+len(inv.Shells)+len(inv.Resources)+len(inv.Peers))
+	nodes := make([]shellTreeNode, 0, len(inv.Shells)+len(inv.Resources)+len(inv.Peers))
 	visible := make(map[string]int)
 	add := func(n shellTreeNode) {
 		if taskHiddenFromInventory(n.State) {
@@ -154,9 +154,6 @@ func taskTreeNodes(inv inventory) []shellTreeNode {
 		}
 		visible[n.Identity] = len(nodes)
 		nodes = append(nodes, n)
-	}
-	for _, s := range inv.LocalShells {
-		add(shellTreeNode{Kind: terminalTaskKind(s.Program), Identity: s.Identity, ShortID: s.ShortID, Owner: s.Owner, Name: terminalTreeName(s.Program, s.Name, s.Shell), State: s.State})
 	}
 	for _, s := range inv.Shells {
 		n := shellTreeNode{Kind: terminalTaskKind(s.Program), Identity: identityFromUID(s.Instance), ShortID: s.ShortID, Owner: s.Owner, Name: terminalTreeName(s.Program, s.Name, s.Shell), State: s.State}

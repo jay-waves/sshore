@@ -29,7 +29,8 @@ type daemonActivity struct {
 	root           string
 	instance       string
 	inventoryMu    sync.Mutex
-	inventoryRetry map[string]*time.Timer
+	inventoryRetry *time.Timer
+	pendingRows    map[string]func() any
 	tasks          *daemonTasks
 	mu             sync.Mutex
 	leases         map[*activityLease]struct{}
