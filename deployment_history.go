@@ -57,10 +57,6 @@ func deploymentEndpointFor(connection sshio.Options, destination sshio.Destinati
 	return endpoint, nil
 }
 
-func (e deploymentEndpoint) matches(other deploymentEndpoint) bool {
-	return e.Destination == other.Destination
-}
-
 func (e deploymentEndpoint) sameRoute(other deploymentEndpoint) bool {
 	return e.Host == other.Host && e.Directory == other.Directory && slices.Equal(e.SSH, other.SSH)
 }
@@ -75,7 +71,7 @@ func (e deploymentEndpoint) cached() (deploymentEndpoint, error) {
 		return deploymentEndpoint{}, err
 	}
 	for _, entry := range endpoints {
-		if e.matches(entry) {
+		if e.Destination == entry.Destination {
 			return entry, nil
 		}
 	}
@@ -100,14 +96,18 @@ func (e deploymentEndpoint) remember(home string, review bool) error {
 	if err != nil {
 		return err
 	}
-	e.Home, e.Review = home, review
 	for i, entry := range endpoints {
-		if e.matches(entry) {
-			e.Review = e.Review || entry.Review
-			endpoints[i] = e
-			return writeBoundedStateJSON(name, endpoints, maxDeploymentHistory)
+		if e.Destination != entry.Destination {
+			continue
 		}
+		if entry.Review && !review {
+			e = entry
+		}
+		e.Home, e.Review = home, review || entry.Review
+		endpoints[i] = e
+		return writeBoundedStateJSON(name, endpoints, maxDeploymentHistory)
 	}
+	e.Home, e.Review = home, review
 	return writeBoundedStateJSON(name, append(endpoints, e), maxDeploymentHistory)
 }
 

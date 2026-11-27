@@ -88,6 +88,19 @@ Match command "printf forwarding-check"
 		}
 		return string(out)
 	}
+	remoteCLI := func(t *testing.T, ctx context.Context, args ...string) string {
+		t.Helper()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := os.ReadFile(filepath.Join(home, ".sshore", "deployment-id"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		program := ".sshore/clients/" + string(id) + "/0.0.0/sshore"
+		return run(t, ctx, append([]string{"sh", host, "--", program}, args...)...)
+	}
 	local := func(t *testing.T, ctx context.Context, args ...string) []byte {
 		t.Helper()
 		out, err := exec.CommandContext(ctx, binary, args...).CombinedOutput()
@@ -715,18 +728,19 @@ Match command "printf forwarding-check"
 		probe.Close()
 		// This dedicated fixture account may log in to its own OpenSSH server.
 		run(t, ctx, "sh", host, "--", `ssh-keygen -q -t ed25519 -N '' -f task-id-key && cat task-id-key.pub >> authorized_keys`)
-		out := run(t, ctx, "sh", host, "--", `sshore forward 127.0.0.1:2222 here:`+port+` --port 2222 --ssh -F none -i "$HOME/task-id-key" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$HOME/task-id-hosts"`)
+		run(t, ctx, "cp", host+":task-id-key.pub", filepath.Join(t.TempDir(), "public-key"))
+		out := remoteCLI(t, ctx, `forward 127.0.0.1:2222 here:`+port+` --port 2222 --ssh -F none -i "$HOME/task-id-key" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$HOME/task-id-hosts"`)
 		_, description, _ := strings.Cut(out, "Started forward/")
 		name, _, _ := strings.Cut(description, ":")
 		if name == "" {
 			t.Fatalf("forward did not start: %s", out)
 		}
-		ref := findResource(t, []byte(run(t, ctx, "sh", host, "--", "sshore list")), "forward/"+name)
+		ref := findResource(t, []byte(remoteCLI(t, ctx, "list")), "forward/"+name)
 		if ref.ShortID == "" {
 			t.Fatalf("missing identity for remote forward/%s", name)
 		}
-		run(t, ctx, "sh", host, "--", "sshore kill "+ref.ShortID)
-		if got := findResource(t, []byte(run(t, ctx, "sh", host, "--", "sshore list")), "forward/"+name); got.Identity != "" {
+		remoteCLI(t, ctx, "kill", ref.ShortID)
+		if got := findResource(t, []byte(remoteCLI(t, ctx, "list")), "forward/"+name); got.Identity != "" {
 			t.Fatalf("remote forward still registered: %+v", got)
 		}
 	})
@@ -900,7 +914,7 @@ Match command "printf forwarding-check"
 			wait("[Esc] Cancel", true)
 			send("\r")
 			wait("ARG=" + argument)
-			remoteList := run(t, ctx, "sh", host, "--", binary, "list")
+			remoteList := remoteCLI(t, ctx, "list")
 			if !strings.Contains(remoteList, argument) {
 				t.Fatalf("managing account lost program arguments:\n%s", remoteList)
 			}
@@ -1021,7 +1035,7 @@ Match command "printf forwarding-check"
 			wait("SCOPE_state=retained")
 			send("sshore d 3m\n")
 			wait("Connected " + root)
-			if tree := run(t, ctx, "sh", host, "--", "sshore ps"); !strings.HasPrefix(tree, "local\n") || !strings.Contains(tree, " (scoped-root)  R") || !strings.Contains(tree, " (scoped-child)  T") {
+			if tree := remoteCLI(t, ctx, "ps"); !strings.HasPrefix(tree, "local\n") || !strings.Contains(tree, " (scoped-root)  R") || !strings.Contains(tree, " (scoped-child)  T") {
 				t.Fatalf("hosted tree lost its local root or detached child:\n%s", tree)
 			}
 			send("sshore a scoped-child\n")

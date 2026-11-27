@@ -29,7 +29,7 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 	case "shell":
 		return serveRemoteShell(req.Mode, req.Name, req.Instance, req.Directory)
 	case "cp-agent":
-		return serveRemoteFileService(files.ServeCopy)
+		return serveRemoteCopy()
 	case "mount-agent":
 		account, _ := localMachineIdentity()
 		return files.ServeAgent(agentStdio(), req.Mode, version, account, remoteFileHome(), req.PeerMetadata, beginIncomingMountTask)
@@ -59,12 +59,12 @@ func agentStdio() *stdioPipe {
 	return &stdioPipe{Reader: os.Stdin, Writer: os.Stdout, closers: []io.Closer{os.Stdin, os.Stdout}}
 }
 
-func serveRemoteFileService(serve func(io.ReadWriteCloser) error) error {
+func serveRemoteCopy() error {
 	stream := agentStdio()
 	if err := writeMessage(stream, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", HomeDirectory: remoteFileHome()}); err != nil {
 		return err
 	}
-	return serve(stream)
+	return files.ServeCopy(stream)
 }
 
 func remoteFileHome() string {
