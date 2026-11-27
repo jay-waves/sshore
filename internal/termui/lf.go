@@ -33,21 +33,21 @@ type LFEntry struct {
 
 // LFOptions supplies path operations and directory listings for a picker.
 type LFOptions struct {
-	Dir        string
-	Directory  bool
-	ReadDir    func(context.Context, string) ([]LFEntry, error)
-	ReadPair   func(ctx context.Context, current, parent string) (currentEntries []LFEntry, currentErr error, parentEntries []LFEntry, parentErr error)
-	Join       func(string, string) string
-	Parent     func(string) string
-	Title      string
-	Host       string
-	Automatic  bool
-	Manual     bool
-	LocalFiles bool // The listed paths belong to this process's filesystem.
-	Validate   func(string) error
-	Input      <-chan LFInput
-	Output     io.Writer
-	console    *LocalConsole
+	Dir               string
+	Directory         bool
+	ReadDir           func(context.Context, string) ([]LFEntry, error)
+	ReadPair          func(ctx context.Context, current, parent string) (currentEntries []LFEntry, currentErr error, parentEntries []LFEntry, parentErr error)
+	Join              func(string, string) string
+	Parent            func(string) string
+	Title             string
+	Host              string
+	ChooseDirectories bool
+	Manual            bool
+	LocalFiles        bool // The listed paths belong to this process's filesystem.
+	Validate          func(string) error
+	Input             <-chan LFInput
+	Output            io.Writer
+	console           *LocalConsole
 }
 
 type lfResult struct {
@@ -524,10 +524,6 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 					if options.Manual {
 						return nil, ErrLFManual
 					}
-				case 'a':
-					if options.Directory && options.Automatic {
-						return nil, nil
-					}
 				case 'k':
 					if index > 0 {
 						index--
@@ -612,7 +608,7 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 						name = options.Join(current, entry.Name)
 					}
 					if entry.IsDir {
-						if !options.Directory || !enter {
+						if !(options.Directory || options.ChooseDirectories) || !enter {
 							if name != current {
 								reveal = ""
 								current, index = name, 0
@@ -802,14 +798,14 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 		if selected < len(panes[1].entries) && panes[1].entries[selected].Name == "." {
 			hint = "Enter Choose current dir  l Open  q Cancel"
 		}
-		if options.Automatic {
-			hint += "  a Automatic"
-		}
 	}
 	if multi {
 		hint = "Enter Choose file  Space Mark  / Search  q Cancel"
 		if selected < len(panes[1].entries) && panes[1].entries[selected].IsDir {
 			hint = "Enter Open directory  Space Mark files  / Search  q Cancel"
+			if options.ChooseDirectories {
+				hint = "Enter Copy directory recursively  l Open  q Cancel"
+			}
 		}
 		if len(marked) > 0 {
 			noun := "files"

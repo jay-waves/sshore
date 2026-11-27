@@ -340,3 +340,7 @@ func openSourceFile(path string) (*os.File, error) {
 	}
 	return os.NewFile(uintptr(fd), path), nil
 }
+
+func openRootCopySource(root *os.Root, name string) (*os.File, error) {
+	return root.OpenFile(name, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+}

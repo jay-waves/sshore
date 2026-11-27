@@ -49,6 +49,32 @@ func selectApprovedFiles(input reviewPromptReader, r requestRecord) ([]fileCopy,
 		if err != nil {
 			return approvedFiles, err
 		}
+		if op.Recursive {
+			prompt, initial := "Save directory as: ", filepath.Join(r.Directory, op.Name)
+			if op.Kind == "upload" {
+				prompt, initial = "Local directory to upload: ", r.Directory
+			}
+			if hint != "" {
+				initial = hint
+			}
+			name, err := readApprovalPath(input, prompt, initial, func(name string) (string, error) {
+				if err := checkCopyDirectory(name, op.Kind == "download"); err != nil {
+					return "", err
+				}
+				if op.Kind == "download" && destinations[name] {
+					return "", fmt.Errorf("destination already selected: %s", name)
+				}
+				return name, nil
+			})
+			if err != nil {
+				return approvedFiles, err
+			}
+			approvedFiles = append(approvedFiles, newApprovedFile(op, name, nil))
+			if op.Kind == "download" {
+				destinations[name] = true
+			}
+			continue
+		}
 		switch op.Kind {
 		case "download":
 			dest := filepath.Join(r.Directory, op.Name)
@@ -137,6 +163,22 @@ func executeApprovedFiles(ctx context.Context, open func(operation, string, int6
 
 func executeApprovedFile(ctx context.Context, open func(operation, string, int64) (net.Conn, error), remote operation, file fileCopy) error {
 	remote.LocalHint = ""
+	if remote.Recursive {
+		stream, err := open(remote, "", 0)
+		if err != nil {
+			return err
+		}
+		defer stream.Close()
+		upload := remote.Kind == "upload"
+		source, target := "/", file.target
+		if upload {
+			source, target = file.source, "/"
+		}
+		return withCopySFTP(ctx, stream, func(client *sftp.Client) error {
+			options := copyOptions{upload: upload, sources: []copyEndpoint{{path: source}}, target: copyEndpoint{path: target}}
+			return executeRecursiveCopy(ctx, client, options, !upload)
+		})
+	}
 	name := file.approvedName(remote)
 	var filename, result string
 	var size int64

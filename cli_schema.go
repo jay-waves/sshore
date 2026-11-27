@@ -45,6 +45,8 @@ type cliOption struct {
 
 // Canonical option definitions own the public command grammar.
 var cliOptions = map[string]cliOption{
+	"--lf":        {},
+	"-r":          {},
 	"--name":      {kind: cliText},
 	"--apply":     {},
 	"--port":      {kind: cliPort, alias: "-p"},
@@ -666,7 +668,7 @@ A * after the ID marks the current shell. Use list for details.
 			run: runList, group: groupTask, summary: "Show task details", aliases: []string{"ls"},
 			help: `Usage: sshore list  (alias: ls)
 
-List terminal sessions, mounts and forwards, including incoming resources.
+List terminal sessions, mounts and forwards, including read-only resources under origin.
 A * after the ID marks the current shell.
 PARENT shows the parent session's short ID. For a terminal, DETAIL starts with
 the executable name. A forward's arrow points toward the target service.
@@ -674,13 +676,13 @@ the executable name. A forward's arrow points toward the target service.
 ` + inventoryStateHelp,
 		},
 		"kill": {
-			run: runTargetCommand, selector: cliKillSelector, group: groupTask, summary: "End a task or shut down its manager",
+			run: runTargetCommand, selector: cliKillSelector, group: groupTask, summary: "End a task or shut down the account daemon",
 			ssh: true, max: 1, flags: []string{"--all", "--reset"},
 			help: `Usage: sshore kill ID|NAME [--ssh SSH_OPTIONS...]
        sshore kill [HOST] --all [--reset] [--ssh SSH_OPTIONS...]
 
 Select a known shell, mount or forward by its ID or name. An ambiguous name
-requires an ID. Stop incoming resources on their managing account.
+requires an ID. Stop resources listed under origin on the account that owns them.
 
 Effects:
   Shell     Kills the shell and its identified processes without confirmation.
@@ -699,19 +701,22 @@ requires confirmation. Run local reset outside managed shells.
 		},
 		"copy": {
 			run: runCopy, group: groupSSH, summary: "Copy files over SSH", aliases: []string{"cp"},
-			ssh: true, min: 2, max: -1,
-			help: `Usage: sshore copy SOURCE... TARGET [--ssh SSH_OPTIONS...]
+			ssh: true, min: 2, max: -1, flags: []string{"-r", "--lf"},
+			help: `Usage: sshore copy [-r] [--lf] SOURCE... TARGET [--ssh SSH_OPTIONS...]
 
 Alias: cp
 
 A bare path belongs to the machine running this command. Use HOST:PATH
 for an SSH host. Use here: or .: for an explicit local endpoint.
-In an attached remote shell, origin: or :: requests local approval.
-Leave a path empty to choose it after connecting. A missing target opens a
-directory picker. Use - for standard input or output with an explicit file.
-Copy supports up to 16 regular files. Batches with an explicit target require a directory.
+In an attached remote shell, origin: or 0: requests local approval.
+Leave a path empty for an editable path prompt after connecting. Use --lf to browse. Use - for standard input or output with an explicit file.
+Copy accepts up to 16 source arguments. Multiple sources require a destination directory.
+Use -r to copy directories over SSH, including empty directories. Recursive
+copy rejects symbolic links and does not overwrite existing files.
+Recursive copy requires filesystem paths. With origin:, approval is per directory.
 
   sshore copy report.zip work:/tmp/
+  sshore cp -r ./project work:/tmp/
   sshore copy here: work:
   sshore copy work:/tmp/report.txt -
   sshore copy - work:/tmp/report.txt
@@ -729,7 +734,7 @@ Use a different SSH port
 		},
 		"mount": {
 			run: runMount, group: groupSSH, summary: "Mount a remote directory", aliases: []string{"mnt"},
-			ssh: true, min: 2, max: 2, flags: strings.Fields("--read-only --io-timeout --startup-timeout --stats --direct-io"),
+			ssh: true, min: 2, max: 2, flags: strings.Fields("--read-only --io-timeout --startup-timeout --stats --direct-io --lf"),
 			help: `Usage: sshore mount HOST:SOURCE MOUNTPOINT [options] [--ssh SSH_OPTIONS...]
        sshore mount here:[DIRECTORY] origin:[MOUNTPOINT] [--read-only]
 
@@ -737,11 +742,11 @@ Mount a remote directory through the remote sshore helper using SFTP.
 The remote sshore release must match exactly and be on the SSH session's PATH.
 On a Windows host, use a drive-letter path such as HOST:E:/project.
 Mounts run in the background. Use sshore kill TASK to unmount.
-HOST: browses from the remote home.
+HOST: prompts with the remote home prefilled.
 Use HOST:~ to mount the home directory directly.
 Use [HOST]:SOURCE for an IPv6 address.
-Use a bare path for the mountpoint or here: to choose it after connecting.
-Press a in the picker or pass .: for an automatic mountpoint. Linux and macOS
+Use here: to confirm a mountpoint after connecting. Use --lf to browse.
+Pass .: for an automatic mountpoint. Linux and macOS
 use ~/mnt/NAME. Windows selects a free drive letter.
 Requires FUSE on Linux, WinFsp on Windows, or macFUSE with its kernel extension
 on Apple Silicon Macs (experimental).
@@ -755,7 +760,7 @@ Options:
   --stats                      Report request and cache statistics
   --direct-io                  Disable kernel read caching (Linux)
 
-From a remote shell, origin: and :: select the attached client.
+From a remote shell, origin: and 0: select the attached client.
 Approve the request locally and choose a mountpoint.
 If the filesystem reports a busy mount, close files and retry sshore kill TASK.
 Request timeouts close the whole mount connection;
@@ -778,8 +783,8 @@ on Apple Silicon Macs (experimental).
 			help: `Usage: sshore forward SOURCE TARGET [options] [--ssh SSH_OPTIONS...]
 
 Mirror the service at SOURCE on TARGET. Use a bare port for the current machine
-and HOST:PORT for an SSH host. Leave the client-side port empty to choose it.
-From a remote shell, use origin: or :: for the attached client and request local approval.
+and HOST:PORT for an SSH host. Leave the client-side port empty to confirm the other endpoint’s port.
+From a remote shell, use origin: or 0: for the attached client and request local approval.
 The account daemon manages the forward. Use sshore kill ID to stop it.
 
   sshore forward work:3000 8080
@@ -798,14 +803,14 @@ Expose a local service on a remote port
 `,
 		},
 		"daemon": {
-			run: runDaemonCommand, group: groupAccount, summary: "Run the account task manager",
+			run: runDaemonCommand, group: groupAccount, summary: "Run the account daemon",
 			max: 1,
 			help: `Usage: sshore daemon [mount]
 
-Run this account's task manager in the foreground. Clients start it automatically
-when needed. One manager owns shells and resource coordination.
+Run the account daemon in the foreground. Clients start it automatically when needed.
+The daemon owns shells and coordinates mounts and forwards.
 It exits after 30 seconds without tasks or connections.
-The mount subcommand runs an isolated mount worker, started by the manager.
+The mount subcommand runs an isolated mount worker, started by the daemon.
 `,
 		},
 	}

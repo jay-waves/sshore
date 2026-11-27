@@ -375,10 +375,10 @@ cross-host owner lease. Tree reservations and private child routes authorize
 foreground handoffs and stay outside the public inventory. Foreground summaries and detailed resource
 status can reveal working-directory/project names, paths, ports and errors.
 
-Peer records expose only their resource identity, manager label, remote-facing
+Peer records expose only their resource identity, origin host label, remote-facing
 path or port direction, and state. They exclude local mount paths and unrelated
 hosts. A remote account can forge its own inventory. The account daemon displays
-incoming resources in `list` for the lifetime of their authenticated
+these resources under `origin` in `list` for the lifetime of their authenticated
 socket leases. When connections overlap, it displays the newest live lease for
 each resource key. EOF or a missed heartbeat releases that connection's
 registration. These read-only entries establish transport participation.

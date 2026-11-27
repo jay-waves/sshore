@@ -7,7 +7,8 @@ import (
 )
 
 const localInventoryHost = "\x00local"
-const incomingInventoryHost = "\x00incoming"
+const originLabel = "origin"
+const originInventoryHost = "\x00" + originLabel
 
 func terminalTaskKind(program bool) string {
 	if program {
@@ -59,8 +60,8 @@ func hostDisplayLabel(host string) string {
 	if host == localInventoryHost {
 		return "local"
 	}
-	if host == incomingInventoryHost {
-		return "incoming"
+	if host == originInventoryHost {
+		return originLabel
 	}
 	return cleanText(host)
 }

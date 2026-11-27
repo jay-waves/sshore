@@ -24,7 +24,8 @@ give each path its own flow-control window. Reattaching through a live route can
 reuse its authenticated connection. An independent shell setup can establish
 a new SSH connection.
 
-Omitted file paths open a three-column picker after SSH authentication.
+Omitted file paths prompt with an editable default after SSH authentication.
+Use `--lf` to open the three-column picker.
 The header identifies the host and directory being browsed. Use `gg` and `G`
 to jump to the top or bottom of the current list. Use `/` or `?` to search
 filenames forward or backward. Use `n` to repeat in the same direction and
@@ -34,7 +35,8 @@ Use `l` or the right arrow to enter a highlighted directory. In the copy source
 picker, Space marks or unmarks a file and moves down. A bar to the left identifies
 marked files, and the footer shows the total across directories. Esc clears
 all marks and leaves the picker open. Press `q` to quit. Enter submits the marked
-files, or chooses the highlighted file when none are marked.
+files. With no marks, Enter chooses the highlighted file or recursively copies
+the highlighted directory.
 In a local picker that owns the terminal, `e` opens the highlighted file with
 `EDITOR` and `i` opens it with `PAGER`. Missing settings are shown in the picker.
 The client starts by reading the remote home into its directory cache. A mount

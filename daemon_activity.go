@@ -48,11 +48,11 @@ func (s *daemonActivity) registerLease(request leaseRequest) (*activityLease, er
 	case "heartbeat":
 	case "incoming":
 		if request.Peer == nil {
-			return nil, fmt.Errorf("invalid incoming task")
+			return nil, fmt.Errorf("invalid origin resource record")
 		}
 		peer := *request.Peer
 		if validateRemoteTask(peer) != nil {
-			return nil, fmt.Errorf("invalid incoming task")
+			return nil, fmt.Errorf("invalid origin resource record")
 		}
 		l.peer = &peer
 	default:

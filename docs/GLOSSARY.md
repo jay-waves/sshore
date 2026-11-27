@@ -25,10 +25,13 @@
   excluding other users.
 - **Client** The sshore process interacting with the user. For nested attachments, the client at the
   user's terminal continues to own input and shortcuts.
-- **Daemon** The unique background manager for an OS account, reached through one authenticated
+- **Origin** The client side of a connection. In an attached shell, `origin:` (alias `0:`)
+  addresses the attached client. For a mount or forward, the origin account owns the task.
+  On the SSH host, `list` and `ps` (`pstree`) group these read-only records under `origin`.
+  Each record refers to its own connection, so several clients can appear in this group.
+- **Daemon** The background process for an OS account, reached through one authenticated
   loopback TCP endpoint. It owns the in-memory task table, activity leases and current metadata; no
-  daemon-crash recovery is promised. A mount isolation worker is an implementation role, not another
-  manager.
+  daemon-crash recovery is promised. The daemon starts a separate worker for each mount.
 - **Activity lease** A daemon-owned registration retained by a live authenticated connection or an
   in-process owner. The shared daemon heartbeat detects lost clients. Releasing a lease ends that
   participation; persistent shell lifetime remains independent.
@@ -43,8 +46,7 @@
   daemon applies pins and cleans up ended tasks.
 - **Attachment source** The managed shell from which the current attachment was opened. It may
   change on reattachment and does not control the target shell's lifetime.
-- **Peer** Another computer managing a resource. Its remotely visible peer record is advisory and
-  read-only; it cannot control the original resource.
+- **Peer record** The read-only description of an origin-owned mount or forward on its SSH host.
 
 Nested attachments retain the initiating host's connection context through a
 private route. Switching attachments does not move SSH configuration or signing
@@ -65,8 +67,7 @@ An approved copy runs on a separate file stream. An approved mount or forward
 becomes an independent task with its own UID and name.
 Ending a source shell does not stop its independent resources.
 
-`here:` and `.:` identify the machine running the command. `origin:` and `::`
-identify the currently attached client. A remote request's path or port is an
+`here:` and `.:` identify the machine running the command. A remote request's path or port is an
 editable default in local approval.
 
 ## Identity and state

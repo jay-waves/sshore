@@ -427,7 +427,7 @@ Match command "printf forwarding-check"
 		if err := os.WriteFile(filepath.Join(source, "different.txt"), []byte("skip"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		cmd := command(ctx, "copy", "here:", host+":")
+		cmd := command(ctx, "copy", "--lf", "here:", host+":")
 		cmd.Dir = source
 		transcript, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("\x1b[7mdifferent.txt", true)
@@ -454,6 +454,45 @@ Match command "printf forwarding-check"
 			if got := run(t, ctx, "sh", host, "--", "cat "+name); got != name {
 				t.Fatalf("uploaded %s content = %q", name, got)
 			}
+		}
+	})
+	scenario("copy confirms omitted paths and LF Enter selects a directory tree", func(t *testing.T, ctx context.Context) {
+		source := t.TempDir()
+		tree := filepath.Join(source, "lf-copy-tree")
+		if err := os.Mkdir(tree, 0700); err != nil {
+			t.Fatal(err)
+		}
+		file := filepath.Join(tree, "payload")
+		if err := os.WriteFile(file, []byte("tree"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := command(ctx, "cp", "here:", host+":")
+		cmd.Dir = source
+		transcript, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+			wait("Local source:", true)
+			send("\x15" + file + "\r")
+			wait("Remote destination:", true)
+			send("\r")
+			wait("Copied " + file)
+		})
+		if err != nil || strings.Contains(transcript, "\x1b[?1049h") {
+			t.Fatalf("copy prompts: %v\n%s", err, transcript)
+		}
+		cmd = command(ctx, "cp", "--lf", "here:", host+":")
+		cmd.Dir = source
+		transcript, err = runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+			wait("\x1b[7mlf-copy-tree/", true)
+			send("\r")
+			wait("Choose upload destination", true)
+			wait("\x1b[7m./", true)
+			send("\r")
+			wait("Copied 2 entries")
+		})
+		if err != nil {
+			t.Fatalf("copy directory from LF: %v\n%s", err, transcript)
+		}
+		if got := run(t, ctx, "sh", host, "--", "cat payload lf-copy-tree/payload"); got != "treetree" {
+			t.Fatalf("copied content = %q", got)
 		}
 	})
 	scenario("console lf returns to the prompt or opens a shell in the selected remote directory", func(t *testing.T, ctx context.Context) {
@@ -495,7 +534,7 @@ Match command "printf forwarding-check"
 			if _, err := os.Stat(declined); !os.IsNotExist(err) {
 				t.Fatalf("declined copy created the destination: %v", err)
 			}
-			send("sshore cp here:approval-source origin:" + approved + "\n")
+			send("sshore cp here:approval-source 0:" + approved + "\n")
 			wait("Approve this request? [y/N]", true)
 			send("y\r")
 			wait("Save as:", true)
@@ -538,18 +577,16 @@ Match command "printf forwarding-check"
 			wait("Connected here:approval-parent")
 			send("sshore sh " + host + " --name approval-return --no-profile --ssh -F " + quote(config) + "\n")
 			wait("Connected " + endpoint)
-			send("printf '%s\\n' \"$$\" > approval-lifecycle/shell.pid && sshore mount here:approval-lifecycle origin: --read-only\n")
+			send("printf '%s\\n' \"$$\" > approval-lifecycle/shell.pid && sshore mount here:approval-lifecycle 0: --read-only\n")
 			wait("Approve this request? [y/N]", true)
 			send("y\r")
-			wait(": Type path", true)
-			send(":")
-			wait("Mountpoint (empty for automatic):", true)
-			send(point + "\r")
+			wait("Mountpoint (.: automatic):", true)
+			send("\x15" + point + "\r")
 			wait("Started mount/")
 			wait("Connected " + endpoint)
 			prompt := "Local target port (Enter to approve, Ctrl-C to cancel):"
-			send("sshore fwd here:" + port + " origin:" + localPort + "\n")
-			wait(prompt, true)
+			send("sshore fwd here:" + port + " origin:\n")
+			wait(prompt+" "+port, true)
 			send("\x03")
 			wait("approval cancelled")
 			wait("Connected " + endpoint)
@@ -558,7 +595,7 @@ Match command "printf forwarding-check"
 				t.Fatalf("declined forward left its listener active: %v", err)
 			}
 			probe.Close()
-			send("sshore fwd ::" + localPort + " .:" + port + "\n")
+			send("sshore fwd 0:" + localPort + " .:" + port + "\n")
 			wait("Local source port (Enter to approve, Ctrl-C to cancel):", true)
 			send("\r")
 			failed := wait("forward startup failed (origin:" + localPort + " -> " + host + ":" + port + ")")
@@ -701,6 +738,15 @@ Match command "printf forwarding-check"
 		if err != nil || !strings.Contains(string(inventory), "local:"+localPort+" -> "+host+":"+remotePort) ||
 			strings.Contains(string(inventory), "REMOTE") {
 			t.Fatalf("reverse forward inventory: %s (%v)", inventory, err)
+		}
+		// On the SSH host the same forward is visible from its origin connection.
+		remoteList := remoteCLI(t, ctx, "list")
+		if !strings.Contains(remoteList, "HOST  origin") || !strings.Contains(remoteList, "origin:"+localPort+" -> here:"+remotePort) {
+			t.Fatalf("forward on SSH host: %s", remoteList)
+		}
+		tree := remoteCLI(t, ctx, "ps")
+		if _, group, ok := strings.Cut("\n"+tree, "\norigin\n"); !ok || !strings.Contains(group, "forward/"+name) {
+			t.Fatalf("forward missing from origin tree: %s", tree)
 		}
 		go func() {
 			conn, err := listener.Accept()
@@ -857,6 +903,44 @@ Match command "printf forwarding-check"
 		})
 		return point
 	}
+	scenario("mount confirms defaults and LF only selects a path", func(t *testing.T, ctx context.Context) {
+		run(t, ctx, "sh", host, "--", "printf mount-default > mount-default-marker")
+		cmd := command(ctx, "mount", host+":", "here:", "--read-only")
+		var name string
+		transcript, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+			wait("Remote directory:", true)
+			send("\r")
+			wait("Mountpoint (.: automatic):", true)
+			send("\r")
+			_, description, _ := strings.Cut(wait("Started mount/"), "Started mount/")
+			name, _, _ = strings.Cut(description, ":")
+		})
+		if err != nil || name == "" || strings.Contains(transcript, "\x1b[?1049h") {
+			t.Fatalf("mount defaults: %v\n%s", err, transcript)
+		}
+		t.Cleanup(func() {
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = exec.CommandContext(cleanup, binary, "kill", name).Run()
+		})
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		point := filepath.Join(home, "mnt", name)
+		requireFile(t, filepath.Join(point, "mount-default-marker"), "mount-default")
+		local(t, ctx, "kill", name)
+
+		cmd = command(ctx, "mount", "--lf", host+":~", "here:")
+		transcript, err = runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+			wait("Mountpoint", true)
+			wait("Enter Choose current dir", true)
+			send("aq")
+		})
+		if err == nil || strings.Contains(transcript, "a Automatic") || strings.Contains(transcript, "Started mount/") {
+			t.Fatalf("mount LF did not stay in path selection: %v\n%s", err, transcript)
+		}
+	})
 	scenario("mount keeps open handles across replacement", func(t *testing.T, ctx context.Context) {
 		// An open handle keeps referring to the original file after the path is
 		// replaced. A new open of that path must see the replacement.

@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 
+	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/termui"
 	xterm "golang.org/x/term"
 )
@@ -106,4 +108,27 @@ func listingError(message string) error {
 		return nil
 	}
 	return errors.New(message)
+}
+
+func confirmRemotePath(input prefilledPromptReader, prompt, initial, home string, check func(string) error) (string, error) {
+	if cleanText(initial) != initial {
+		return "", fmt.Errorf("invalid suggested remote path")
+	}
+	for {
+		value, err := input.ReadPrefilled(prompt, false, initial)
+		if err != nil {
+			return "", err
+		}
+		name, err := files.ExpandRemoteHome(value, home)
+		if err == nil && (name == "" || strings.ContainsRune(name, 0)) {
+			err = fmt.Errorf("enter a remote path")
+		}
+		if err == nil && check != nil {
+			err = check(name)
+		}
+		if err == nil {
+			return name, nil
+		}
+		termui.Log(os.Stderr, "", termui.Warning, "%s\n", cleanText(err.Error()))
+	}
 }

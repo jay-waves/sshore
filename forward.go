@@ -76,7 +76,7 @@ func parseForwardEndpoints(args []string, attached bool) (string, forwardRule, e
 	}
 	client := "here"
 	if attached {
-		client = "origin"
+		client = originLabel
 	} else if source == "origin" || target == "origin" {
 		return "", rule, usage("origin: requires an attached sshore shell")
 	}
@@ -188,10 +188,10 @@ func startForwardSession(f forwardConfig) (int, error) {
 func runForward(ctx context.Context, f forwardConfig, s *resourceService, onReady func() error) error {
 	client := "local"
 	if f.Connection != nil {
-		client = "origin"
+		client = originLabel
 	}
 	s.record.Detail = f.description(client, f.Host)
-	advertisement, err := json.Marshal(s.peerTask(f.description("manager", "here")))
+	advertisement, err := json.Marshal(s.peerTask(f.description(originLabel, "here")))
 	if err != nil {
 		return err
 	}

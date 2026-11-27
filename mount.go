@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/json/jsontext"
@@ -33,7 +34,7 @@ type ftpOptions struct {
 	IOTimeoutNanos, StartupTimeoutNanos int64
 	Host, Remote, Mountpoint            string
 	SSH                                 []string
-	ReadOnly, DirectIO, Stats           bool
+	ReadOnly, DirectIO, Stats, LF       bool
 	PickRemote, PickMountpoint          bool
 	Name                                string
 }
@@ -64,13 +65,20 @@ func validateMountConfig(o ftpOptions) error {
 	return nil
 }
 
+func validateLocalMountpoint(path string) (string, error) {
+	path, err := files.ResolveMountpoint(path)
+	if err != nil {
+		return "", err
+	}
+	return path, files.ValidateMountpoint(path)
+}
+
 func readMountApprovalPath(input reviewPromptReader, hint string) (string, error) {
-	return readReviewPath(input, "Mountpoint (empty for automatic): ", hint, true, func(path string) (string, error) {
-		path, err := files.ResolveMountpoint(path)
-		if err != nil {
-			return "", err
+	return readReviewPath(input, "Mountpoint (.: automatic): ", cmp.Or(hint, ".:"), true, func(path string) (string, error) {
+		if path == ".:" {
+			return "", nil
 		}
-		return path, files.ValidateMountpoint(path)
+		return validateLocalMountpoint(path)
 	})
 }
 
@@ -445,7 +453,7 @@ func runMountDaemon() (code int, resultErr error) {
 	}
 	lifecycle := files.MountLifecycle{OwnerDone: ownerDone, Ready: ready, Stop: unmount}
 	selector := func(ctx context.Context, readDir files.DirectoryReader, home string) (string, string, error) {
-		if o.PickRemote {
+		if o.PickRemote && o.LF {
 			go readDir(ctx, home)
 		}
 		if err := json.MarshalEncode(enc, resourceStartup{Browse: true, Home: home}); err != nil {
@@ -508,8 +516,22 @@ func readMountSelection(read func(any) error, selectPath func(mountPathRequest) 
 	}
 }
 
-func (o ftpOptions) pickMountPaths(ctx context.Context, console *termui.LocalConsole, home string, read directoryPairReader) (string, string, error) {
+func (o ftpOptions) selectMountPaths(ctx context.Context, console *termui.LocalConsole, home string, read directoryPairReader) (string, string, error) {
 	remote, local := o.Remote, o.Mountpoint
+	if !o.LF {
+		input, err := newLocalInput()
+		if err != nil {
+			return "", "", err
+		}
+		defer input.Close()
+		if o.PickRemote {
+			remote, err = confirmRemotePath(input, "Remote directory: ", home, home, nil)
+		}
+		if err == nil && o.PickMountpoint {
+			local, err = readMountApprovalPath(input, "")
+		}
+		return remote, local, err
+	}
 	if o.PickRemote {
 		var err error
 		picker := pairedFileSelection(home, "Mount directory", o.Host, true, read)
@@ -530,7 +552,7 @@ func (o ftpOptions) pickMountPaths(ctx context.Context, console *termui.LocalCon
 
 func pickLocalMountpoint(ctx context.Context, console *termui.LocalConsole, dir string) (string, error) {
 	picker := localFileSelection(dir, "Mountpoint", true)
-	picker.Automatic, picker.Manual = true, true
+	picker.Manual = true
 	picker.Validate = files.ValidateMountpoint
 	point, err := console.PickLF(ctx, picker)
 	if !errors.Is(err, termui.ErrLFManual) {
@@ -540,6 +562,6 @@ func pickLocalMountpoint(ctx context.Context, console *termui.LocalConsole, dir 
 	if err != nil {
 		return "", err
 	}
-	point, err = readMountApprovalPath(input, "")
+	point, err = readReviewPath(input, "Mountpoint: ", "", false, validateLocalMountpoint)
 	return point, errors.Join(err, input.Close())
 }

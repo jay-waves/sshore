@@ -72,7 +72,7 @@ func writeListWidth(out io.Writer, inv inventory, current string, color bool, sc
 	for _, p := range inv.Peers {
 		kind, name, _ := strings.Cut(p.ID, "/")
 		identity := peerTaskIdentity(p)
-		rows = append(rows, taskTableRow{taskUID(identity), taskShortCode(identity), name, kind, incomingInventoryHost, taskActive, "", readOnlyDetail(p.Detail), false})
+		rows = append(rows, taskTableRow{taskUID(identity), taskShortCode(identity), name, kind, originInventoryHost, taskActive, "", readOnlyDetail(p.Detail), false})
 	}
 	rows = slices.DeleteFunc(rows, func(row taskTableRow) bool {
 		return taskHiddenFromInventory(row.state)

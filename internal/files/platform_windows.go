@@ -382,3 +382,7 @@ func openSourceFile(path string) (*os.File, error) {
 	}
 	return os.NewFile(uintptr(handle), path), nil
 }
+
+func openRootCopySource(root *os.Root, name string) (*os.File, error) {
+	return root.Open(name)
+}

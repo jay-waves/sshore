@@ -107,9 +107,17 @@ func approvalDescription(request requestRecord) string {
 			fmt.Fprintf(&body, "\n%s", op.Forward.pendingDescription())
 			continue
 		case "download":
-			fmt.Fprintf(&body, "\nDownload %s (%s, %s)", cleanText(op.Path), cleanText(op.Name), displayBytes(op.Size))
+			if op.Recursive {
+				fmt.Fprintf(&body, "\nDownload directory tree %s", cleanText(op.Path))
+			} else {
+				fmt.Fprintf(&body, "\nDownload %s (%s, %s)", cleanText(op.Path), cleanText(op.Name), displayBytes(op.Size))
+			}
 		case "upload":
-			fmt.Fprintf(&body, "\nUpload to %s", cleanText(op.Path))
+			if op.Recursive {
+				fmt.Fprintf(&body, "\nUpload a directory tree into %s", cleanText(op.Path))
+			} else {
+				fmt.Fprintf(&body, "\nUpload to %s", cleanText(op.Path))
+			}
 		}
 		if op.LocalHint != "" {
 			fmt.Fprintf(&body, "\nSuggested local endpoint: %s", cleanText(op.LocalHint))
@@ -148,7 +156,7 @@ func selectApprovedResource(console *termui.LocalConsole, input *termui.Input, r
 			return resourceConfig{}, err
 		}
 		var mountpoint string
-		if hint == "" {
+		if op.LF {
 			if err := input.Close(); err != nil {
 				return resourceConfig{}, err
 			}

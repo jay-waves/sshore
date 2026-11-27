@@ -169,7 +169,7 @@ func taskTreeNodes(inv inventory) []shellTreeNode {
 	for _, p := range inv.Peers {
 		kind, name, _ := strings.Cut(p.ID, "/")
 		identity := peerTaskIdentity(p)
-		add(shellTreeNode{Kind: kind, Identity: identity, ShortID: taskShortCode(identity), Host: incomingInventoryHost, Name: name, State: taskActive})
+		add(shellTreeNode{Kind: kind, Identity: identity, ShortID: taskShortCode(identity), Host: originInventoryHost, Name: name, State: taskActive})
 	}
 	return nodes
 }

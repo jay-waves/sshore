@@ -11,10 +11,9 @@ or a port from the user. Commands with explicit endpoints can run without it.
 
 File and mount requests show `Approve this request? [y/N]` before local endpoint
 selection. For a forward, the screen shows the direction and fixed remote endpoint.
-Submitting a valid local port approves that mapping. Suggested values are editable,
-and path completion leaves the decision open.
-For a mount without a local suggestion, press Enter to confirm the current directory,
-`a` to allocate a mountpoint, or `:` to type a path.
+Submitting a valid local port approves that mapping. The remote port is prefilled when the
+request omits the local port. For a mount, the suggested mountpoint is editable and `.:` is
+prefilled when no location was suggested. Use `--lf` to browse for a mountpoint.
 
 Cancel, EOF or lack of an interactive terminal rejects the request without executing it.
 Grants are single-use, and there is no pending request queue. Unsolicited transfer offers,
@@ -23,6 +22,10 @@ forward-add streams and reverse connection streams remain rejected.
 Approval fixes the selected local endpoints. Each routed operation revalidates the original
 detached shell identity and exact release, matches the stored operation, and consumes it
 before starting work. All file endpoints in a batch are selected before execution.
+With `cp -r`, the screen shows the requested directory tree and asks for its local
+source or destination. A single grant covers that tree. The remote endpoint opens
+the approved directory as its root and allows reading for downloads or creating
+directories and new files for uploads.
 An approved resource uses the scoped route described in the
 [mount implementation](mount.md) and [network topology](NETWORK.md).
 

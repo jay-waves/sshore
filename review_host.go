@@ -91,6 +91,7 @@ func (s *tmuxTask) requestApproval(c net.Conn, m message) error {
 		}
 		for i := range m.Operations {
 			m.Operations[i].LocalHint = ""
+			m.Operations[i].LF = false
 		}
 		s.resourceApproval = resourceApproval{id: id, operations: m.Operations}
 		return nil
@@ -106,6 +107,17 @@ func approvedRemoteTransfer(st net.Conn, m message) error {
 		if !filepath.IsAbs(nativePath) {
 			return fmt.Errorf("invalid absolute Windows path")
 		}
+	}
+	if op.Recursive {
+		if m.FileName != "" || m.Size != 0 {
+			return fmt.Errorf("unexpected metadata for directory transfer")
+		}
+		backend, release, err := files.NewDirectoryFS(nativePath, op.Kind == "upload")
+		if err != nil {
+			return err
+		}
+		defer release()
+		return serveApprovedCopy(st, backend)
 	}
 	var backend *files.FS
 	var err error
@@ -139,6 +151,10 @@ func approvedRemoteTransfer(st net.Conn, m message) error {
 	if err != nil {
 		return err
 	}
+	return serveApprovedCopy(st, backend)
+}
+
+func serveApprovedCopy(st net.Conn, backend *files.FS) error {
 	if err := writeMessage(st, message{Type: "resource_ready", SoftwareVersion: version}); err != nil {
 		return err
 	}

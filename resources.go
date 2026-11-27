@@ -520,11 +520,17 @@ func launchResourceBackground(config resourceConfig, directory string) (resource
 			}
 		}
 		var remote, local string
-		err := termui.RunLocalConsole(func(console *termui.LocalConsole) error {
+		selectPaths := func(console *termui.LocalConsole) error {
 			var err error
-			remote, local, err = config.Mount.pickMountPaths(browseCtx, console, startup.Home, read)
+			remote, local, err = config.Mount.selectMountPaths(browseCtx, console, startup.Home, read)
 			return err
-		})
+		}
+		var err error
+		if config.Mount.LF {
+			err = termui.RunLocalConsole(selectPaths)
+		} else {
+			err = selectPaths(nil)
+		}
 		if err != nil {
 			if cause := context.Cause(browseCtx); cause != nil {
 				return resourceRecord{}, cause

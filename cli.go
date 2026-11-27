@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -320,8 +321,10 @@ const localEndpointPrefix = "here:"
 
 func splitEndpoint(value string) (host, suffix string, err error) {
 	switch {
-	case strings.HasPrefix(value, "::"):
+	case strings.HasPrefix(value, "0:"):
 		return "origin", value[2:], nil
+	case strings.HasPrefix(value, "::"):
+		return "", "", usage("use 0: or origin: for the attached client, or bracket an IPv6 host")
 	case strings.HasPrefix(value, ".:"):
 		return "here", value[2:], nil
 	case strings.HasPrefix(value, ":"):
@@ -450,11 +453,11 @@ func remoteMountRequest(parsed cliArguments) (operation, error) {
 		return operation{}, usage("remote mount requests inherit the attached connection")
 	}
 	for name := range parsed.values {
-		if name != "--read-only" {
-			return operation{}, usage("remote mount requests accept only --read-only")
+		if name != "--read-only" && name != "--lf" {
+			return operation{}, usage("remote mount requests accept only --read-only and --lf")
 		}
 	}
-	return operation{Kind: "mount", Path: source, LocalHint: hint, ReadOnly: parsed.has("--read-only")}, nil
+	return operation{Kind: "mount", Path: source, LocalHint: hint, LF: parsed.has("--lf"), ReadOnly: parsed.has("--read-only")}, nil
 }
 
 // validSSHDestination applies to SSH aliases as well as user@host addresses.
@@ -470,11 +473,12 @@ type copyEndpoint struct {
 	pick, stream bool
 }
 type copyOptions struct {
-	sources []copyEndpoint
-	target  copyEndpoint
-	host    string
-	upload  bool
-	ssh     []string
+	sources       []copyEndpoint
+	target        copyEndpoint
+	host          string
+	upload        bool
+	recursive, lf bool
+	ssh           []string
 }
 
 func parseCopyEndpoint(value string) (copyEndpoint, error) {
@@ -492,7 +496,7 @@ func parseCopyEndpoint(value string) (copyEndpoint, error) {
 }
 
 func parseCopyCommand(parsed cliArguments) (copyOptions, error) {
-	o := copyOptions{ssh: parsed.ssh}
+	o := copyOptions{ssh: parsed.ssh, recursive: parsed.has("-r"), lf: parsed.has("--lf")}
 	var endpoints []copyEndpoint
 	for _, a := range parsed.operands {
 		e, err := parseCopyEndpoint(a)
@@ -507,6 +511,9 @@ func parseCopyCommand(parsed cliArguments) (copyOptions, error) {
 		o.host = o.target.host
 	}
 	for _, source := range o.sources {
+		if o.recursive && (source.stream || o.target.stream) {
+			return o, usage("recursive copy requires filesystem paths")
+		}
 		if (source.pick || source.stream || o.target.stream) && len(o.sources) != 1 {
 			return o, usage("selection and standard streams require exactly one source")
 		}
@@ -546,7 +553,7 @@ func parseFTPOptions(parsed cliArguments) (ftpOptions, error) {
 		return ftpOptions{}, usage("use mount HOST:SOURCE here:[MOUNTPOINT]")
 	}
 	o := ftpOptions{
-		Host: host, Remote: remote, Mountpoint: mountpoint,
+		Host: host, Remote: remote, Mountpoint: mountpoint, LF: parsed.has("--lf"),
 		PickRemote: remote == "", PickMountpoint: mountpoint == "" && parsed.operands[1] != ".:",
 		SSH:      parsed.ssh,
 		ReadOnly: parsed.has("--read-only"), Stats: parsed.has("--stats"), DirectIO: parsed.has("--direct-io"),
@@ -591,7 +598,7 @@ func runCopy(parsed cliArguments) (int, error) {
 		if err != nil {
 			return 2, err
 		}
-		ops, err := prepareFileRequest(kind, paths, hint)
+		ops, err := prepareFileRequest(kind, paths, hint, parsed.has("-r"))
 		if err != nil {
 			return 1, err
 		}
@@ -697,10 +704,7 @@ type reviewPromptReader interface {
 }
 
 func readForwardPort(input prefilledPromptReader, rule forwardRule, approve bool) (int, error) {
-	initial := ""
-	if rule.LocalPort != 0 {
-		initial = strconv.Itoa(rule.LocalPort)
-	}
+	initial := strconv.Itoa(cmp.Or(rule.LocalPort, rule.RemotePort))
 	suffix, action := " (Enter starts; Ctrl-C cancels): ", "forward"
 	if approve {
 		suffix, action = " (Enter to approve, Ctrl-C to cancel): ", "approval"

@@ -115,16 +115,16 @@ func stageCopyFile(target string) (*os.File, error) {
 	return os.CreateTemp(filepath.Dir(target), ".sshore-*.part")
 }
 
-func discardCopyFile(file *os.File) error {
+func discardCopyFile(file *os.File, temp string, remove func(string) error) error {
 	_ = file.Close()
-	err := os.Remove(file.Name())
+	err := remove(temp)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	return err
 }
 
-func publishCopyFile(ctx context.Context, file *os.File, target string, size int64) error {
+func publishStagedCopy(ctx context.Context, file *os.File, size int64, link func() error) error {
 	info, err := file.Stat()
 	if err != nil {
 		return err
@@ -143,7 +143,7 @@ func publishCopyFile(ctx context.Context, file *os.File, target string, size int
 	}
 	// The temporary file is on the same filesystem. Link fails if the
 	// destination has appeared since preflight.
-	if err := os.Link(file.Name(), target); err != nil {
+	if err := link(); err != nil {
 		return fmt.Errorf("publish file without overwriting: %w", err)
 	}
 	return nil
@@ -237,11 +237,11 @@ func Download(ctx context.Context, client *sftp.Client, source, target string, s
 	if err != nil {
 		return err
 	}
-	defer discardCopyFile(receiver)
+	defer discardCopyFile(receiver, receiver.Name(), os.Remove)
 	if err = DownloadTo(client, source, receiver, size, progress); err != nil {
 		return err
 	}
-	return publishCopyFile(ctx, receiver, target, size)
+	return publishStagedCopy(ctx, receiver, size, func() error { return os.Link(receiver.Name(), target) })
 }
 
 func DownloadTo(client *sftp.Client, source string, target io.Writer, size int64, progress *atomic.Int64) error {

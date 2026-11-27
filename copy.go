@@ -77,7 +77,11 @@ func executeCopyCommand(o copyOptions) (int, error) {
 		}
 		var picked []fileCopy
 		if interactive {
-			if err := termui.RunLocalConsole(func(console *termui.LocalConsole) error {
+			if !o.lf {
+				if err := confirmCopyPaths(client, remoteHome, &o); err != nil {
+					return err
+				}
+			} else if err := termui.RunLocalConsole(func(console *termui.LocalConsole) error {
 				var err error
 				picked, err = pickCopyPaths(ctx, console, client, remoteHome, &o)
 				return err
@@ -86,11 +90,57 @@ func executeCopyCommand(o copyOptions) (int, error) {
 				return err
 			}
 		}
+		if o.recursive {
+			return executeRecursiveCopy(ctx, client, o, false)
+		}
 		return executeCopy(ctx, client, o, picked)
 	}); err != nil {
 		return 1, err
 	}
 	return 0, nil
+}
+
+func confirmCopyPaths(client *sftp.Client, home string, o *copyOptions) error {
+	input, err := newLocalInput()
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	if o.sources[0].pick {
+		if o.upload {
+			o.sources[0].path, err = readApprovalPath(input, "Local source: ", cwd, func(name string) (string, error) {
+				info, err := os.Lstat(name)
+				if err == nil && !(info.Mode().IsRegular() || o.recursive && info.IsDir()) {
+					err = fmt.Errorf("select a regular file or use -r to copy a directory")
+				}
+				return name, err
+			})
+		} else {
+			o.sources[0].path, err = confirmRemotePath(input, "Remote source: ", home, home, func(name string) error {
+				info, err := client.LStat(name)
+				if err == nil && !(info.Mode().IsRegular() || o.recursive && info.IsDir()) {
+					return fmt.Errorf("select a regular file or use -r to copy a directory")
+				}
+				return err
+			})
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if o.target.pick {
+		if o.upload {
+			o.target.path, err = confirmRemotePath(input, "Remote destination: ", home, home, nil)
+		} else {
+			o.target.path, err = readApprovalPath(input, "Local destination: ", cwd, func(name string) (string, error) { return name, nil })
+		}
+		o.target.pick = false
+	}
+	return err
 }
 
 func pickCopyPaths(ctx context.Context, console *termui.LocalConsole, client *sftp.Client, home string, o *copyOptions) ([]fileCopy, error) {
@@ -107,10 +157,21 @@ func pickCopyPaths(ctx context.Context, console *termui.LocalConsole, client *sf
 	var picked []fileCopy
 	if o.sources[0].pick {
 		picker := remote("Choose files to download", false)
-		var validate func([]string) error
+		stat := client.LStat
 		if o.upload {
 			picker = localFileSelection("", "Choose files to upload", false)
-			validate = func(names []string) error {
+			stat = os.Lstat
+		}
+		picker.ChooseDirectories = true
+		validate := func(names []string) error {
+			if !o.recursive && len(names) == 1 {
+				info, err := stat(names[0])
+				if err != nil {
+					return err
+				}
+				o.recursive = info.IsDir()
+			}
+			if o.upload && !o.recursive {
 				batch := make([]fileCopy, len(names))
 				for i, name := range names {
 					source, err := files.OpenSource(name)
@@ -121,8 +182,8 @@ func pickCopyPaths(ctx context.Context, console *termui.LocalConsole, client *sf
 					batch[i].opened = source
 				}
 				picked = batch
-				return nil
 			}
+			return nil
 		}
 		names, err := console.PickLFFiles(ctx, picker, validate)
 		if err != nil {
@@ -138,7 +199,7 @@ func pickCopyPaths(ctx context.Context, console *termui.LocalConsole, client *sf
 		if o.upload {
 			picker = remote("Choose upload destination", true)
 		} else {
-			picker.Manual = len(o.sources) == 1
+			picker.Manual = !o.recursive && len(o.sources) == 1
 		}
 		var err error
 		o.target.path, err = console.PickLF(ctx, picker)
@@ -217,15 +278,22 @@ func (f fileCopy) transfer(ctx context.Context, client *sftp.Client, progress *a
 	return files.Download(ctx, client, f.source, f.target, f.size(), progress)
 }
 
-func prepareFileRequest(kind string, paths []string, hint string) ([]operation, error) {
+func prepareFileRequest(kind string, paths []string, hint string, recursive bool) ([]operation, error) {
 	ops := make([]operation, 0, len(paths))
 	for _, path := range paths {
 		absolute, err := sys.Abs(path)
 		if err != nil {
 			return nil, err
 		}
-		op := operation{Kind: kind, Path: absolute, LocalHint: hint}
-		if kind == "download" {
+		op := operation{Kind: kind, Path: absolute, LocalHint: hint, Recursive: recursive}
+		if recursive {
+			if err := checkCopyDirectory(absolute, false); err != nil {
+				return nil, err
+			}
+			if kind == "download" {
+				op.Name = filepath.Base(absolute)
+			}
+		} else if kind == "download" {
 			f, err := files.OpenSource(absolute)
 			if err != nil {
 				return nil, err

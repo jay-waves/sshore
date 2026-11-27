@@ -195,6 +195,6 @@ Task commands resolve names and UID prefixes through the
 [task registry selector](../task_selection.go). A bare host in `attach` selects
 a remote account when there is no matching task name. Attachment binds the full
 UID before handoff.
-Connection history supplies SSH settings. Incoming peer records are advisory.
+Connection history supplies SSH settings. Peer records under `origin` are read-only.
 See rendering for [list](../list.go) and [pstree](../pstree.go),
 [daemon metadata](../daemon_metadata.go), and [integration tests](../tests/integration/).

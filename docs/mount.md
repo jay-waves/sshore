@@ -2,9 +2,10 @@
 
 ## Path selection and startup
 
-- `HOST:` starts browsing at the remote home. `HOST:~` selects home directly.
-  `here:` opens the local mountpoint picker, and `.:` requests automatic allocation.
-  Explicit paths and automatic allocation skip the corresponding picker.
+- `HOST:` asks for a remote directory with the remote home prefilled. `HOST:~` selects home
+  directly. `here:` prompts with `.:` prefilled for automatic mountpoint allocation.
+  Use `--lf` to browse omitted paths and Enter to select a directory. Explicit `.:` allocates
+  a mountpoint directly.
 - Direct mounts authenticate before opening a picker. After authentication the
   worker can warm the home listing, and can reply with the current and parent
   listings in one startup message. The selected root is resolved and validated

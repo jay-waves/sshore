@@ -70,6 +70,8 @@ func TestCLI(t *testing.T) {
 		{"install apply requires an explicit local path", []string{"install", "--apply"}, 2, "requires here:PATH"},
 		{"forwards reject foreground mode", []string{"fwd", "8080", "work:80", "--foreground"}, 2, "unsupported option: --foreground"},
 		{"mounts only start in the background", []string{"mount", "work:/srv", ".:", "--foreground"}, 2, "unsupported option: --foreground"},
+		{"origin shorthand requires an attached shell", []string{"cp", "./file", "0:"}, 2, "requires an attached sshore shell"},
+		{"retired origin shorthand is rejected", []string{"cp", "./file", "::file"}, 2, "use 0: or origin:"},
 		{"cp opens help for copy", []string{"cp", "--help"}, 0, "Usage: sshore copy"},
 		{"omitted copy paths require a terminal before dialing", []string{"copy", "here:", "work:"}, 2, "file selection requires an interactive terminal"},
 		{"omitted mount paths require a terminal before dialing", []string{"mount", "work:", "here:"}, 2, "file selection requires an interactive terminal"},

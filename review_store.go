@@ -12,6 +12,8 @@ const maxRequestItems = 16
 
 type operation struct {
 	Kind      string      `json:"kind"`
+	LF        bool        `json:"lf,omitempty"`
+	Recursive bool        `json:"recursive,omitempty"`
 	ReadOnly  bool        `json:"read_only,omitempty"`
 	Path      string      `json:"path,omitempty"`
 	Name      string      `json:"name,omitempty"`
@@ -37,8 +39,14 @@ func validateOperations(ops []operation) error {
 		if len(op.LocalHint) > 4096 || strings.ContainsAny(op.LocalHint, "\x00\r\n") {
 			return fmt.Errorf("invalid local endpoint hint")
 		}
+		if op.LF && op.Kind != "mount" {
+			return fmt.Errorf("unexpected LF flag")
+		}
 		if op.ReadOnly && op.Kind != "mount" {
 			return fmt.Errorf("unexpected read-only flag")
+		}
+		if op.Recursive && (op.Kind != "download" && op.Kind != "upload" || op.Size != 0) {
+			return fmt.Errorf("invalid recursive copy request")
 		}
 		switch op.Kind {
 		case "download", "upload", "mount":

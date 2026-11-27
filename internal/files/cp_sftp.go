@@ -30,11 +30,20 @@ type FS struct {
 	target      string
 	size        int64
 	direct      bool
+	root        *os.Root
+	writeTree   bool
 	uploads     map[string]*copyUpload
 	ctx         context.Context
 }
 
 func (f *FS) OpenDir(ctx context.Context, req *sshfx.OpenDirPacket) (sftp.DirHandler, error) {
+	if f.root != nil && !f.writeTree {
+		file, err := f.openTreeEntry(f.resolve(req.Path), true)
+		if err != nil {
+			return nil, err
+		}
+		return copyTreeDir{DirHandler: &localfs.File{File: file}, handle: f.allocateHandle()}, nil
+	}
 	if !f.direct {
 		return nil, os.ErrPermission
 	}
@@ -47,6 +56,7 @@ type copyUpload struct {
 	size  int64
 	limit int64
 	file  *os.File
+	temp  string
 	state uploadState
 }
 
@@ -60,6 +70,9 @@ const (
 
 // Paths on approved streams are virtual. Direct copies use the remote working directory.
 func (f *FS) resolve(name string) string {
+	if f.root != nil {
+		return treePath(name)
+	}
 	if f.direct {
 		// Windows advertises its home as /C:/... so clients can use POSIX joins.
 		if drivePath, ok := strings.CutPrefix(name, "/"); ok {
@@ -85,6 +98,13 @@ func (f *FS) Open(_ context.Context, req *sshfx.OpenPacket) (sftp.FileHandler, e
 	name := f.resolve(req.Filename)
 	flags := req.PFlags
 	if flags == sshfx.FlagRead {
+		if f.root != nil && !f.writeTree {
+			file, err := f.openTreeEntry(name, false)
+			if err != nil {
+				return nil, err
+			}
+			return f.newHandle(file, nil, true), nil
+		}
 		if f.direct {
 			source, err := OpenSource(name)
 			if err != nil {
@@ -108,8 +128,8 @@ func (f *FS) Open(_ context.Context, req *sshfx.OpenPacket) (sftp.FileHandler, e
 		return nil, os.ErrPermission
 	}
 	target, size := f.target, f.size
-	if f.direct {
-		if len(f.uploads) >= 32 || f.uploads[name] != nil || !strings.HasPrefix(filepath.Base(name), ".sshore-") {
+	if f.direct || f.writeTree {
+		if name == "" || len(f.uploads) >= 32 || f.uploads[name] != nil || !strings.HasPrefix(filepath.Base(name), ".sshore-") {
 			return nil, os.ErrPermission
 		}
 		target, size = name, -1
@@ -123,13 +143,37 @@ func (f *FS) Open(_ context.Context, req *sshfx.OpenPacket) (sftp.FileHandler, e
 		}
 		limit = size + sha256.Size
 	}
-	file, err := stageCopyFile(target)
+	var file *os.File
+	var temp string
+	var err error
+	if f.writeTree {
+		file, temp, err = f.stageTreeUpload(target)
+	} else {
+		file, err = stageCopyFile(target)
+	}
 	if err != nil {
 		return nil, err
 	}
-	upload := &copyUpload{size: size, limit: limit, file: file}
+	if !f.writeTree {
+		temp = file.Name()
+	}
+	upload := &copyUpload{size: size, limit: limit, file: file, temp: temp}
 	f.uploads[name] = upload
 	return f.newHandle(file, upload, false), nil
+}
+
+func (f *FS) Mkdir(_ context.Context, req *sshfx.MkdirPacket) error {
+	if f.writeTree {
+		return f.root.Mkdir(f.resolve(req.Path), 0755)
+	}
+	if !f.direct {
+		return os.ErrPermission
+	}
+	name := f.resolve(req.Path)
+	if err := ValidateName(filepath.Base(name)); err != nil {
+		return err
+	}
+	return os.Mkdir(name, 0755)
 }
 
 func (f *FS) Remove(_ context.Context, req *sshfx.RemovePacket) error {
@@ -148,8 +192,12 @@ func (f *FS) Hardlink(_ context.Context, req *openssh.HardlinkExtendedPacket) er
 		return os.ErrPermission
 	}
 	target := f.target
-	if f.direct {
-		if filepath.Dir(destination) != filepath.Dir(upload.file.Name()) {
+	link := os.Link
+	if f.writeTree {
+		link = f.root.Link
+	}
+	if f.direct || f.writeTree {
+		if filepath.Dir(destination) != filepath.Dir(upload.temp) {
 			return os.ErrPermission
 		}
 		if err := ValidateName(filepath.Base(destination)); err != nil {
@@ -163,18 +211,22 @@ func (f *FS) Hardlink(_ context.Context, req *openssh.HardlinkExtendedPacket) er
 		return err
 	}
 	defer f.discardUpload(name, upload)
-	return publishCopyFile(f.ctx, upload.file, target, upload.size)
+	return publishStagedCopy(f.ctx, upload.file, upload.size, func() error { return link(upload.temp, target) })
 }
 
 func (f *FS) discardUpload(name string, upload *copyUpload) error {
 	upload.state = uploadDiscarding
 	if upload.file != nil {
-		if err := discardCopyFile(upload.file); err != nil {
+		remove := os.Remove
+		if f.writeTree {
+			remove = f.root.Remove
+		}
+		if err := discardCopyFile(upload.file, upload.temp, remove); err != nil {
 			return err
 		}
 		upload.file = nil
 	}
-	if f.direct {
+	if f.direct || f.writeTree {
 		delete(f.uploads, name)
 	}
 	return nil
@@ -185,7 +237,7 @@ func (f *FS) Stat(_ context.Context, req *sshfx.StatPacket) (*sshfx.Attributes, 
 }
 
 func (f *FS) LStat(_ context.Context, req *sshfx.LStatPacket) (*sshfx.Attributes, error) {
-	if !f.direct {
+	if !f.direct && f.root == nil {
 		return nil, os.ErrPermission
 	}
 	return copyAttributes(f.stat(f.resolve(req.Path), true))
@@ -197,6 +249,9 @@ func (f *FS) stat(name string, lstat bool) (os.FileInfo, error) {
 			return nil, os.ErrNotExist
 		}
 		return upload.file.Stat()
+	}
+	if f.root != nil {
+		return f.root.Lstat(name)
 	}
 	if f.direct {
 		if lstat {
@@ -235,8 +290,12 @@ type copyFile struct {
 }
 
 func (f *FS) newHandle(file *os.File, upload *copyUpload, owned bool) *copyFile {
+	return &copyFile{file: file, handle: f.allocateHandle(), upload: upload, owned: owned}
+}
+
+func (f *FS) allocateHandle() string {
 	f.nextHandle++
-	return &copyFile{file: file, handle: strconv.FormatUint(f.nextHandle, 10), upload: upload, owned: owned}
+	return strconv.FormatUint(f.nextHandle, 10)
 }
 
 func (f *copyFile) Name() string                     { return f.file.Name() }
