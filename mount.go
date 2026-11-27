@@ -12,7 +12,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -21,6 +20,7 @@ import (
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
+	bolt "go.etcd.io/bbolt"
 )
 
 const defaultMountIOTimeout = time.Minute
@@ -74,31 +74,60 @@ func readMountApprovalPath(input reviewPromptReader, hint string) (string, error
 	})
 }
 
-// Merge this mount's observations under the account state lock on unmount.
+var mountHistoryBucket = []byte("mount-visits")
+
+// Mount workers read history once and merge their in-memory visits on unmount.
 func mountVisitHistory(account, root string, delta files.VisitHistory) files.VisitHistory {
-	const maxHistoryBytes = files.VisitHistoryLimit * (6*4096 + 128)
 	if !validMachineID(account) {
 		return nil
 	}
-	dir, err := stateDir("mount-history")
+	state, err := statePath("")
 	if err != nil {
 		return nil
 	}
-	lock, err := lockStateFile(filepath.Join(dir, "state.lock"))
+	key := sha256.Sum256([]byte(account + "\x00" + root))
+	const maxHistoryBytes = files.VisitHistoryLimit * (6*4096 + 128)
+	var history files.VisitHistory
+	err = historyTransaction(state, len(delta) > 0, func(tx *bolt.Tx) error {
+		if tx == nil {
+			return nil
+		}
+		bucket := tx.Bucket(mountHistoryBucket)
+		if bucket != nil {
+			data := bucket.Get(key[:])
+			if len(data) > 0 && len(data) <= maxHistoryBytes {
+				if err := json.Unmarshal(data, &history); err != nil || len(history) > files.VisitHistoryLimit {
+					history = nil
+				}
+			}
+		}
+		if history == nil {
+			history = files.VisitHistory{}
+		}
+		history.Merge(delta, time.Now())
+		if len(delta) == 0 {
+			return nil
+		}
+		if len(history) == 0 {
+			if bucket != nil {
+				return bucket.Delete(key[:])
+			}
+			return nil
+		}
+		data, err := marshalBoundedStateJSON("mount visit history", history, maxHistoryBytes)
+		if err != nil {
+			return err
+		}
+		bucket, err = tx.CreateBucketIfNotExists(mountHistoryBucket)
+		if err != nil {
+			return err
+		}
+		return bucket.Put(key[:], data)
+	})
 	if err != nil {
 		return nil
 	}
-	defer lock.Close()
-	file := filepath.Join(dir, fmt.Sprintf("%x.json", sha256.Sum256([]byte(account+"\x00"+root))))
-	var h files.VisitHistory
-	if err := readStateJSON(file, maxHistoryBytes, &h); err != nil || h == nil || len(h) > files.VisitHistoryLimit {
-		h = files.VisitHistory{}
-	}
-	h.Merge(delta, time.Now())
-	if len(delta) > 0 {
-		_ = writeBoundedStateJSON(file, h, maxHistoryBytes)
-	}
-	return h
+	return history
 }
 
 func executeMount(o ftpOptions) (int, error) {

@@ -38,8 +38,10 @@ See [mount startup and path selection](../mount.go),
   admission. An oversized reply fails rather than returning a partial listing.
 - Directory reads can seed short-lived metadata for regular entries. A bounded
   prefetch follows likely child directories using visit history. Recent cached
-  directories can be checked in the background. History and cache entries
-  improve latency. Permissions and file identity are checked by the operation.
+  directories can be checked in the background. The worker loads visit history
+  from bbolt at mount startup and merges its visits in one transaction at unmount.
+  Directory listings and file metadata live in the connection cache. Each
+  operation checks permissions and file identity.
 - The picker reuses recent lists and debounces right-column previews. It follows
   the current and parent directories without recursively scanning the remote tree.
 
