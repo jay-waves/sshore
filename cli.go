@@ -117,8 +117,12 @@ func runShell(parsed cliArguments) (int, error) {
 		if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 			return 1, usage("new requires an interactive terminal")
 		}
+		host := cleanText(o.host)
+		if o.local {
+			host = taskManagerLabel()
+		}
 		launch := termui.Launch{
-			Host: hostDisplayLabel(o.host), Directory: o.startupDirectory, Name: o.session,
+			Host: host, Directory: o.startupDirectory, Name: o.session,
 			Args: o.argv, Pinned: o.pin, DefaultShellOnly: o.noLogin || o.noProfile,
 		}
 		confirmed, err := launch.Review()

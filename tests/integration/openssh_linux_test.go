@@ -559,7 +559,13 @@ Match command "printf forwarding-check"
 			}
 			return kind + "/" + name
 		}
-		forwardID := start("forward", host+":2222", "here:")
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		localPort := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
+		listener.Close()
+		forwardID := start("forward", host+":2222", "here:"+localPort)
 		mountID := start("mount", host+":.", "here:"+t.TempDir())
 		assertInventory(t, ctx, forwardID, true)
 		assertInventory(t, ctx, mountID, true)

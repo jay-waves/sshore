@@ -4,6 +4,7 @@ package tests_test
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMain(m *testing.M) {
@@ -40,7 +42,8 @@ func TestWindowsNewReview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := t.Context()
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, "new", "--", "vim", "a b.txt")
 	out, err := runWindowsTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 		wait(hostname)
