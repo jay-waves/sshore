@@ -357,13 +357,6 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	if err != nil {
 		return err
 	}
-	// After setup_ready only the optional inventory remains on exec stdout.
-	go func() {
-		var shells []shellView
-		if err := json.UnmarshalRead(io.LimitReader(pipes, daemonBodyLimit), &shells); err == nil && shells != nil {
-			_ = reconcileParticipatingShells(f.Host, shells, since)
-		}
-	}()
 	destination := pipes.Destination()
 	info := ready.advertisedHost()
 	var serverIP string
@@ -371,6 +364,13 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 		serverIP = ready.Host.SSHServer
 	}
 	info.User, info.Address, info.Port = destination.User, destination.ObservedAddress(serverIP), destination.Port
+	// After setup_ready only the optional inventory remains on exec stdout.
+	go func() {
+		var shells []shellView
+		if err := json.UnmarshalRead(io.LimitReader(pipes, daemonBodyLimit), &shells); err == nil && shells != nil {
+			_ = reconcileParticipatingShells(f.Host, info, shells, since)
+		}
+	}()
 	target := &shellTarget{host: f.Host, uid: record.UID, name: record.Name, hostInfo: info}
 	target.open = func() (net.Conn, error) {
 		authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)

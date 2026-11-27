@@ -12,11 +12,12 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/jay-waves/sshore/internal/files/dirlist"
 )
 
 func TestLFShowsHostBeforePathAndHighlightsCurrentEntry(t *testing.T) {
 	var out strings.Builder
-	panes := [3]lfPane{{}, {entries: []LFEntry{{Name: "src", IsDir: true}}}, {}}
+	panes := [3]lfPane{{}, {entries: []dirlist.Entry{{Name: "src", IsDir: true}}}, {}}
 	var display lfScreen
 	if err := display.draw(&out, LFOptions{Host: "work", Title: "Open"}, "/project", panes, -1, 0, 14, 5, nil, true, false, nil, ""); err != nil {
 		t.Fatal(err)
@@ -37,7 +38,7 @@ func TestLFRepaintsOnlyChangedRowsWithinTheViewport(t *testing.T) {
 	var out strings.Builder
 	var panes [3]lfPane
 	for _, name := range []string{"a", "b", "c", "d", "e", "f"} {
-		panes[1].entries = append(panes[1].entries, LFEntry{Name: name})
+		panes[1].entries = append(panes[1].entries, dirlist.Entry{Name: name})
 	}
 	draw := func(selected int) string {
 		t.Helper()
@@ -61,7 +62,7 @@ func TestLFRepaintsOnlyChangedRowsWithinTheViewport(t *testing.T) {
 func TestLFReusesPreviewWhenEnteringAndReturning(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	input := make(chan LFInput, 1)
+	input := make(chan KeyInput, 1)
 	var mu sync.Mutex
 	counts := map[string]int{}
 	step := 0
@@ -69,15 +70,15 @@ func TestLFReusesPreviewWhenEnteringAndReturning(t *testing.T) {
 	_, err := PickLF(ctx, LFOptions{
 		Dir: "/root", Title: "Pick", Input: input,
 		Join: func(a, b string) string { return path.Join(a, b) }, Parent: path.Dir,
-		ReadDir: func(_ context.Context, dir string) ([]LFEntry, error) {
+		ReadDir: func(_ context.Context, dir string) ([]dirlist.Entry, error) {
 			mu.Lock()
 			counts[dir]++
 			mu.Unlock()
 			switch dir {
 			case "/root":
-				return []LFEntry{{Name: "child", IsDir: true}}, nil
+				return []dirlist.Entry{{Name: "child", IsDir: true}}, nil
 			case "/root/child":
-				return []LFEntry{{Name: "preview-file"}}, nil
+				return []dirlist.Entry{{Name: "preview-file"}}, nil
 			}
 			return nil, nil
 		},
@@ -94,13 +95,13 @@ func TestLFReusesPreviewWhenEnteringAndReturning(t *testing.T) {
 			switch {
 			case step == 0 && directory == "/root":
 				step++
-				input <- LFInput{Data: []byte("l")}
+				input <- KeyInput{Data: []byte("l")}
 			case step == 1 && directory == "/root/child":
 				step++
-				input <- LFInput{Data: []byte("h")}
+				input <- KeyInput{Data: []byte("h")}
 			case step == 2 && directory == "/root":
 				step++
-				input <- LFInput{Data: []byte("q")}
+				input <- KeyInput{Data: []byte("q")}
 			}
 		}),
 	})
@@ -118,11 +119,11 @@ func TestLFOpenUsesDirectoryFirstOrdering(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	ready := make(chan struct{}, 1)
-	input := make(chan LFInput, 1)
+	input := make(chan KeyInput, 1)
 	go func() {
 		select {
 		case <-ready:
-			input <- LFInput{Data: []byte("jl")}
+			input <- KeyInput{Data: []byte("jl")}
 		case <-ctx.Done():
 		}
 	}()
@@ -138,9 +139,9 @@ func TestLFOpenUsesDirectoryFirstOrdering(t *testing.T) {
 		}),
 		Join:   func(dir, name string) string { return path.Join(dir, name) },
 		Parent: path.Dir,
-		ReadDir: func(_ context.Context, dir string) ([]LFEntry, error) {
+		ReadDir: func(_ context.Context, dir string) ([]dirlist.Entry, error) {
 			if dir == "/" {
-				return []LFEntry{{Name: "z"}, {Name: "folder", IsDir: true}, {Name: "a"}}, nil
+				return []dirlist.Entry{{Name: "z"}, {Name: "folder", IsDir: true}, {Name: "a"}}, nil
 			}
 			return nil, nil
 		},
@@ -161,18 +162,18 @@ func TestLFLoadsCurrentAndParentTogether(t *testing.T) {
 	defer cancel()
 	calls := make(chan [2]string, 1)
 	singles := make(chan string, 2)
-	input := make(chan LFInput, 1)
+	input := make(chan KeyInput, 1)
 	done := make(chan error, 1)
 	go func() {
 		_, err := PickLF(ctx, LFOptions{
 			Dir: "/start", Input: input, Output: io.Discard,
 			Join:   func(dir, name string) string { return path.Join(dir, name) },
 			Parent: path.Dir,
-			ReadDir: func(_ context.Context, dir string) ([]LFEntry, error) {
+			ReadDir: func(_ context.Context, dir string) ([]dirlist.Entry, error) {
 				singles <- dir
 				return nil, nil
 			},
-			ReadPair: func(_ context.Context, current, parent string) ([]LFEntry, error, []LFEntry, error) {
+			ReadPair: func(_ context.Context, current, parent string) ([]dirlist.Entry, error, []dirlist.Entry, error) {
 				calls <- [2]string{current, parent}
 				return nil, nil, nil, nil
 			},
@@ -189,7 +190,7 @@ func TestLFLoadsCurrentAndParentTogether(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("picker did not request the directory pair")
 	}
-	input <- LFInput{Data: []byte{3}}
+	input <- KeyInput{Data: []byte{3}}
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel picker: %v", err)
 	}
@@ -206,14 +207,14 @@ func TestLFCancelDoesNotChooseAFolder(t *testing.T) {
 		t.Run(key.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 			defer cancel()
-			input := make(chan LFInput, 1)
+			input := make(chan KeyInput, 1)
 			stopped := make(chan struct{})
 			selected, err := PickLF(ctx, LFOptions{
 				Dir: "/", Directory: true, Input: input, Output: io.Discard,
 				Join:   func(dir, name string) string { return path.Join(dir, name) },
 				Parent: path.Dir,
-				ReadDir: func(ctx context.Context, _ string) ([]LFEntry, error) {
-					input <- LFInput{Data: []byte(key.bytes)}
+				ReadDir: func(ctx context.Context, _ string) ([]dirlist.Entry, error) {
+					input <- KeyInput{Data: []byte(key.bytes)}
 					<-ctx.Done()
 					close(stopped)
 					return nil, ctx.Err()
@@ -238,15 +239,15 @@ func TestLFCancelDoesNotChooseAFolder(t *testing.T) {
 func TestLFArrowsReturnFocusToTheDirectoryJustLeft(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	input := make(chan LFInput, 4)
+	input := make(chan KeyInput, 4)
 	step := 0
 	selected, err := PickLF(ctx, LFOptions{
 		Dir: "/", Title: "Pick", Directory: true, Input: input,
 		Join:   func(dir, name string) string { return path.Join(dir, name) },
 		Parent: path.Dir,
-		ReadDir: func(_ context.Context, dir string) ([]LFEntry, error) {
+		ReadDir: func(_ context.Context, dir string) ([]dirlist.Entry, error) {
 			if dir == "/" {
-				return []LFEntry{{Name: "first", IsDir: true}, {Name: "second", IsDir: true}}, nil
+				return []dirlist.Entry{{Name: "first", IsDir: true}, {Name: "second", IsDir: true}}, nil
 			}
 			return nil, nil
 		},
@@ -254,17 +255,17 @@ func TestLFArrowsReturnFocusToTheDirectoryJustLeft(t *testing.T) {
 			switch {
 			case step == 0 && strings.Contains(frame, "\x1b[7m./"):
 				step++
-				input <- LFInput{Data: []byte("\x1b[1;5B\x1b[")}
-				input <- LFInput{Data: []byte("B\x1b[B\x1bOC")}
+				input <- KeyInput{Data: []byte("\x1b[1;5B\x1b[")}
+				input <- KeyInput{Data: []byte("B\x1b[B\x1bOC")}
 			case step == 1 && strings.Contains(frame, "\x1b[2;1H/second\x1b[K"):
 				step++
-				input <- LFInput{Data: []byte("\x1b[D")}
+				input <- KeyInput{Data: []byte("\x1b[D")}
 			case step == 2 && strings.Contains(frame, "\x1b[2;1H/\x1b[K") && strings.Contains(frame, "\x1b[7msecond/"):
 				step++
-				input <- LFInput{Data: []byte("\x1b[C")}
+				input <- KeyInput{Data: []byte("\x1b[C")}
 			case step == 3 && strings.Contains(frame, "\x1b[7m./"):
 				step++
-				input <- LFInput{Data: []byte("\r")}
+				input <- KeyInput{Data: []byte("\r")}
 			}
 		}),
 	})
@@ -276,28 +277,28 @@ func TestLFArrowsReturnFocusToTheDirectoryJustLeft(t *testing.T) {
 func TestLFMarksFilesAcrossDirectories(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	input := make(chan LFInput, 1)
+	input := make(chan KeyInput, 1)
 	step := 0
 	selected, err := PickLFFiles(ctx, LFOptions{
 		Dir: "/", Input: input,
 		Join: func(dir, name string) string { return path.Join(dir, name) }, Parent: path.Dir,
-		ReadDir: func(_ context.Context, dir string) ([]LFEntry, error) {
+		ReadDir: func(_ context.Context, dir string) ([]dirlist.Entry, error) {
 			if dir == "/" {
-				return []LFEntry{{Name: "sub", IsDir: true}, {Name: "a"}, {Name: "b"}}, nil
+				return []dirlist.Entry{{Name: "sub", IsDir: true}, {Name: "a"}, {Name: "b"}}, nil
 			}
-			return []LFEntry{{Name: "c"}}, nil
+			return []dirlist.Entry{{Name: "c"}}, nil
 		},
 		Output: lfTestOutput(func(frame string) {
 			switch {
 			case step == 0 && strings.Contains(frame, "\x1b[7msub/"):
 				step++
-				input <- LFInput{Data: []byte("j  ")}
+				input <- KeyInput{Data: []byte("j  ")}
 			case step == 1 && strings.Contains(ansi.Strip(frame), "▌ a ") && strings.Contains(ansi.Strip(frame), "▌ b ") && strings.Contains(frame, "2 files marked  Enter Continue"):
 				step++
-				input <- LFInput{Data: []byte("kkl")}
+				input <- KeyInput{Data: []byte("kkl")}
 			case step == 2 && strings.Contains(frame, "\x1b[7mc"):
 				step++
-				input <- LFInput{Data: []byte(" \r")}
+				input <- KeyInput{Data: []byte(" \r")}
 			}
 		}),
 	}, nil)
@@ -309,26 +310,26 @@ func TestLFMarksFilesAcrossDirectories(t *testing.T) {
 func TestLFJumpsToTopAndBottom(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	input := make(chan LFInput, 2)
+	input := make(chan KeyInput, 2)
 	step := 0
 	selected, err := PickLF(ctx, LFOptions{
 		Dir: "/", Directory: true, Input: input,
 		Join: func(dir, name string) string { return path.Join(dir, name) }, Parent: path.Dir,
-		ReadDir: func(context.Context, string) ([]LFEntry, error) {
-			return []LFEntry{{Name: "first", IsDir: true}, {Name: "last", IsDir: true}}, nil
+		ReadDir: func(context.Context, string) ([]dirlist.Entry, error) {
+			return []dirlist.Entry{{Name: "first", IsDir: true}, {Name: "last", IsDir: true}}, nil
 		},
 		Output: lfTestOutput(func(frame string) {
 			switch {
 			case step == 0 && strings.Contains(frame, "\x1b[7m./"):
 				step++
-				input <- LFInput{Data: []byte("G")}
+				input <- KeyInput{Data: []byte("G")}
 			case step == 1 && strings.Contains(frame, "\x1b[7mlast/"):
 				step++
-				input <- LFInput{Data: []byte("g")}
-				input <- LFInput{Data: []byte("g")}
+				input <- KeyInput{Data: []byte("g")}
+				input <- KeyInput{Data: []byte("g")}
 			case step == 2 && strings.Contains(frame, "\x1b[7m./"):
 				step++
-				input <- LFInput{Data: []byte("\r")}
+				input <- KeyInput{Data: []byte("\r")}
 			}
 		}),
 	})
@@ -340,7 +341,7 @@ func TestLFJumpsToTopAndBottom(t *testing.T) {
 func TestLFSearchRepeatsInOriginalDirection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	input := make(chan LFInput, 1)
+	input := make(chan KeyInput, 1)
 	step := 0
 	names := []string{"0-alpha", "B-report", "C-report"}
 	frames := []string{"0-alpha", "C-report", "B-report", "C-report", "B-report"}
@@ -348,16 +349,16 @@ func TestLFSearchRepeatsInOriginalDirection(t *testing.T) {
 	selected, err := PickLF(ctx, LFOptions{
 		Dir: "/", Input: input,
 		Join: func(dir, name string) string { return path.Join(dir, name) }, Parent: path.Dir,
-		ReadDir: func(context.Context, string) ([]LFEntry, error) {
-			var entries []LFEntry
+		ReadDir: func(context.Context, string) ([]dirlist.Entry, error) {
+			var entries []dirlist.Entry
 			for _, name := range names {
-				entries = append(entries, LFEntry{Name: name})
+				entries = append(entries, dirlist.Entry{Name: name})
 			}
 			return entries, nil
 		},
 		Output: lfTestOutput(func(frame string) {
 			if step < len(keys) && strings.Contains(frame, "\x1b[7m"+frames[step]+" ") {
-				input <- LFInput{Data: []byte(keys[step])}
+				input <- KeyInput{Data: []byte(keys[step])}
 				step++
 			}
 		}),
@@ -370,27 +371,27 @@ func TestLFSearchRepeatsInOriginalDirection(t *testing.T) {
 func TestLFPasteStaysSearchText(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	input := make(chan LFInput, 3)
+	input := make(chan KeyInput, 3)
 	step := 0
 	selected, err := PickLF(ctx, LFOptions{
 		Dir: "/", Input: input,
 		Join: func(dir, name string) string { return path.Join(dir, name) }, Parent: path.Dir,
-		ReadDir: func(context.Context, string) ([]LFEntry, error) {
-			return []LFEntry{{Name: "a"}, {Name: "报告.txt"}}, nil
+		ReadDir: func(context.Context, string) ([]dirlist.Entry, error) {
+			return []dirlist.Entry{{Name: "a"}, {Name: "报告.txt"}}, nil
 		},
 		Output: lfTestOutput(func(frame string) {
 			switch {
 			case step == 0 && strings.Contains(frame, "\x1b[7ma "):
 				step++
-				input <- LFInput{Data: []byte(lfPasteStart + "q\r" + lfPasteEnd)}
-				input <- LFInput{Data: []byte("/" + lfPasteStart + "报")}
-				input <- LFInput{Data: []byte("告\r" + lfPasteEnd[:3])}
+				input <- KeyInput{Data: []byte(pasteStart + "q\r" + pasteEnd)}
+				input <- KeyInput{Data: []byte("/" + pasteStart + "报")}
+				input <- KeyInput{Data: []byte("告\r" + pasteEnd[:3])}
 			case step == 1 && strings.Contains(frame, "/报告"):
 				step++
-				input <- LFInput{Data: []byte(lfPasteEnd[3:] + "\r\n")}
+				input <- KeyInput{Data: []byte(pasteEnd[3:] + "\r\n")}
 			case step == 2 && strings.Contains(frame, "\x1b[7m报告.txt "):
 				step++
-				input <- LFInput{Data: []byte("\r")}
+				input <- KeyInput{Data: []byte("\r")}
 			}
 		}),
 	})
@@ -402,25 +403,25 @@ func TestLFPasteStaysSearchText(t *testing.T) {
 func TestLFEscapeClearsMarksAndQQuits(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	input := make(chan LFInput, 1)
+	input := make(chan KeyInput, 1)
 	step := 0
 	_, err := PickLFFiles(ctx, LFOptions{
 		Dir: "/", Input: input,
 		Join: func(dir, name string) string { return path.Join(dir, name) }, Parent: path.Dir,
-		ReadDir: func(context.Context, string) ([]LFEntry, error) {
-			return []LFEntry{{Name: "file.txt"}}, nil
+		ReadDir: func(context.Context, string) ([]dirlist.Entry, error) {
+			return []dirlist.Entry{{Name: "file.txt"}}, nil
 		},
 		Output: lfTestOutput(func(frame string) {
 			switch {
 			case step == 0 && strings.Contains(frame, "\x1b[7mfile.txt"):
 				step++
-				input <- LFInput{Data: []byte(" ")}
+				input <- KeyInput{Data: []byte(" ")}
 			case step == 1 && strings.Contains(frame, "1 file marked"):
 				step++
-				input <- LFInput{Data: []byte("\x1b")}
+				input <- KeyInput{Data: []byte("\x1b")}
 			case step == 2 && strings.Contains(frame, "Enter Choose file"):
 				step++
-				input <- LFInput{Data: []byte("\x1bq")}
+				input <- KeyInput{Data: []byte("\x1bq")}
 			}
 		}),
 	}, nil)

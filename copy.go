@@ -15,7 +15,6 @@ import (
 	sftp "github.com/pkg/sftp/v2"
 
 	"github.com/jay-waves/sshore/internal/files"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
 )
@@ -40,31 +39,20 @@ func executeCopyCommand(o copyOptions) (int, error) {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	connection := remoteService(sshConnectionOptions(options{host: o.host, ssh: o.ssh}), remoteServiceRequest{Operation: "cp-agent"})
-	connection = withSSHDiagnostics(connection, os.Stderr, nil)
-	stream, err := sshio.Start(ctx, connection, os.Stderr)
-	if err != nil {
-		return 1, err
-	}
-	defer stream.CloseAndWait()
-	remoteHome, err := negotiateFileSetup(stream)
-	if err != nil {
-		return 1, err
-	}
-	if o.upload {
-		o.target.path, err = files.ExpandRemoteHome(o.target.path, remoteHome)
-		if err != nil {
-			return 1, err
-		}
-	} else {
-		for i := range o.sources {
-			o.sources[i].path, err = files.ExpandRemoteHome(o.sources[i].path, remoteHome)
+	err = withRemoteFiles(ctx, o.host, o.ssh, func(client *sftp.Client, remoteHome string) error {
+		if o.upload {
+			o.target.path, err = files.ExpandRemoteHome(o.target.path, remoteHome)
 			if err != nil {
-				return 1, err
+				return err
+			}
+		} else {
+			for i := range o.sources {
+				o.sources[i].path, err = files.ExpandRemoteHome(o.sources[i].path, remoteHome)
+				if err != nil {
+					return err
+				}
 			}
 		}
-	}
-	if err := withCopySFTP(ctx, stream, func(client *sftp.Client) error {
 		if o.sources[0].stream {
 			stopInput := context.AfterFunc(ctx, func() { _ = os.Stdin.Close() })
 			defer stopInput()
@@ -87,7 +75,8 @@ func executeCopyCommand(o copyOptions) (int, error) {
 			return executeRecursiveCopy(ctx, client, o, false)
 		}
 		return executeCopy(ctx, client, o, picked)
-	}); err != nil {
+	})
+	if err != nil {
 		return 1, err
 	}
 	return 0, nil
@@ -100,9 +89,7 @@ func pickCopyPaths(ctx context.Context, console *termui.LocalConsole, client *sf
 		go readDir(ctx, home)
 	}
 	remote := func(title string, dir bool) termui.LFOptions {
-		return remoteFileSelection(home, title, o.host, dir, func(ctx context.Context, name string) ([]termui.LFEntry, error) {
-			return pickerEntries(directoryEntries(readDir(ctx, name)))
-		})
+		return sftpFileSelection(home, title, o.host, dir, readDir)
 	}
 	var picked []fileCopy
 	if o.sources[0].pick {
@@ -169,6 +156,20 @@ func pickCopyPaths(ctx context.Context, console *termui.LocalConsole, client *sf
 		}
 	}
 	return picked, nil
+}
+
+// Direct copy and file browsing share the same version-checked SFTP session.
+func withRemoteFiles(ctx context.Context, host string, ssh []string, run func(*sftp.Client, string) error) error {
+	stream, err := startHostService(ctx, host, ssh, "cp-agent")
+	if err != nil {
+		return err
+	}
+	defer stream.CloseAndWait()
+	reply, err := negotiateSetup(stream, nil)
+	if err != nil {
+		return err
+	}
+	return withCopySFTP(ctx, stream, func(client *sftp.Client) error { return run(client, reply.HomeDirectory) })
 }
 
 // Closing the full transport first releases SFTP reads and writes before
@@ -362,6 +363,18 @@ func executeCopy(ctx context.Context, client *sftp.Client, o copyOptions, items 
 	return nil
 }
 
+func (o copyOptions) destinationIsDir(name string, stat func(string) (os.FileInfo, error)) (bool, error) {
+	info, err := stat(name)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	dir := err == nil && info.IsDir()
+	if !dir && (len(o.sources) > 1 || o.target.pick) {
+		return false, fmt.Errorf("copy requires a destination directory")
+	}
+	return dir, nil
+}
+
 // Resolve all paths and open local sources before handing the batch to execution.
 // The caller owns cleanup, even if preparation fails partway through.
 func prepareCopyBatch(client *sftp.Client, o copyOptions, items []fileCopy) error {
@@ -372,15 +385,9 @@ func prepareCopyBatch(client *sftp.Client, o copyOptions, items []fileCopy) erro
 		join = path.Join
 	}
 
-	var targetDir bool
-	info, err := targetStat(o.target.path)
-	if err == nil {
-		targetDir = info.IsDir()
-	} else if !errors.Is(err, os.ErrNotExist) {
+	targetDir, err := o.destinationIsDir(o.target.path, targetStat)
+	if err != nil {
 		return err
-	}
-	if (len(o.sources) > 1 || o.target.pick) && !targetDir {
-		return fmt.Errorf("copy requires a destination directory")
 	}
 	seen := map[string]bool{}
 	for i, source := range o.sources {

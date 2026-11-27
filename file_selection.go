@@ -7,18 +7,14 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
 
+	"github.com/jay-waves/sshore/internal/files"
+	"github.com/jay-waves/sshore/internal/files/dirlist"
 	"github.com/jay-waves/sshore/internal/termui"
 	xterm "golang.org/x/term"
 )
 
-type directoryEntry struct {
-	Name  string
-	IsDir bool
-}
-
-type directoryPairReader func(ctx context.Context, dir, parent string) ([]directoryEntry, error, []directoryEntry, error)
+type directoryPairReader func(ctx context.Context, dir, parent string) ([]dirlist.Entry, error, []dirlist.Entry, error)
 
 func requireFileSelectionTerminal() error {
 	if !xterm.IsTerminal(int(os.Stdin.Fd())) || !xterm.IsTerminal(int(os.Stdout.Fd())) {
@@ -34,8 +30,8 @@ func localFileSelection(dir, title string, directory bool) termui.LFOptions {
 	return termui.LFOptions{
 		Dir: dir, Title: title, Host: localFileHost(), Directory: directory, LocalFiles: true,
 		Join: func(dir, name string) string { return filepath.Join(dir, name) }, Parent: filepath.Dir,
-		ReadDir: func(_ context.Context, name string) ([]termui.LFEntry, error) {
-			return pickerEntries(directoryEntries(os.ReadDir(name)))
+		ReadDir: func(_ context.Context, name string) ([]dirlist.Entry, error) {
+			return dirlist.FromDirEntries(os.ReadDir(name))
 		},
 	}
 }
@@ -47,54 +43,30 @@ func localFileHost() string {
 	return "here"
 }
 
-func remoteFileSelection(dir, title, host string, directory bool, readDir func(context.Context, string) ([]termui.LFEntry, error)) termui.LFOptions {
+func remoteFileSelection(dir, title, host string, directory bool, readDir func(context.Context, string) ([]dirlist.Entry, error)) termui.LFOptions {
 	return termui.LFOptions{
 		Dir: dir, Title: title, Host: host, Directory: directory,
 		Join: func(dir, name string) string { return path.Join(dir, name) }, Parent: path.Dir, ReadDir: readDir,
 	}
 }
 
-func pairedFileSelection(dir, title, host string, directory bool, read directoryPairReader) termui.LFOptions {
-	picker := remoteFileSelection(dir, title, host, directory, func(ctx context.Context, dir string) ([]termui.LFEntry, error) {
-		entries, err, _, _ := read(ctx, dir, "")
-		return pickerEntries(entries, err)
+func sftpFileSelection(dir, title, host string, directory bool, read files.DirectoryReader) termui.LFOptions {
+	return remoteFileSelection(dir, title, host, directory, func(ctx context.Context, name string) ([]dirlist.Entry, error) {
+		return dirlist.FromDirEntries(read(ctx, name))
 	})
-	picker.ReadPair = func(ctx context.Context, dir, parent string) ([]termui.LFEntry, error, []termui.LFEntry, error) {
-		entries, err, parents, parentErr := read(ctx, dir, parent)
-		current, err := pickerEntries(entries, err)
-		siblings, parentErr := pickerEntries(parents, parentErr)
-		return current, err, siblings, parentErr
-	}
+}
+
+func pairedFileSelection(dir, title, host string, directory bool, read directoryPairReader) termui.LFOptions {
+	picker := remoteFileSelection(dir, title, host, directory, func(ctx context.Context, dir string) ([]dirlist.Entry, error) {
+		entries, err, _, _ := read(ctx, dir, "")
+		return entries, err
+	})
+	picker.ReadPair = read
 	return picker
 }
 
-func directoryEntries(entries []fs.DirEntry, err error) ([]directoryEntry, error) {
-	if err != nil {
-		return nil, err
-	}
-	list := make([]directoryEntry, 0, len(entries))
-	for _, entry := range entries {
-		name := entry.Name()
-		if name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\x00") {
-			list = append(list, directoryEntry{Name: name, IsDir: entry.IsDir()})
-		}
-	}
-	return list, nil
-}
-
-func pickerEntries(entries []directoryEntry, err error) ([]termui.LFEntry, error) {
-	if entries == nil {
-		return nil, err
-	}
-	list := make([]termui.LFEntry, len(entries))
-	for i, entry := range entries {
-		list[i] = termui.LFEntry(entry)
-	}
-	return list, err
-}
-
-func listingEntries(entries []fs.DirEntry, err error) ([]directoryEntry, string) {
-	list, err := directoryEntries(entries, err)
+func listingEntries(entries []fs.DirEntry, err error) ([]dirlist.Entry, string) {
+	list, err := dirlist.FromDirEntries(entries, err)
 	if err != nil {
 		return nil, err.Error()
 	}

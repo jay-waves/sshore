@@ -6,20 +6,21 @@ import (
 	"sync"
 
 	"github.com/jay-waves/sshore/internal/files"
+	"github.com/jay-waves/sshore/internal/ports"
 )
 
 const maxRequestItems = 16
 
 type operation struct {
-	Kind      string      `json:"kind"`
-	LF        bool        `json:"lf,omitempty"`
-	Recursive bool        `json:"recursive,omitempty"`
-	ReadOnly  bool        `json:"read_only,omitempty"`
-	Path      string      `json:"path,omitempty"`
-	Name      string      `json:"name,omitempty"`
-	Size      int64       `json:"size,omitempty"`
-	Forward   forwardRule `json:"forward,omitzero"`
-	LocalHint string      `json:"local_hint,omitempty"`
+	Kind      string     `json:"kind"`
+	LF        bool       `json:"lf,omitempty"`
+	Recursive bool       `json:"recursive,omitempty"`
+	ReadOnly  bool       `json:"read_only,omitempty"`
+	Path      string     `json:"path,omitempty"`
+	Name      string     `json:"name,omitempty"`
+	Size      int64      `json:"size,omitempty"`
+	Forward   ports.Rule `json:"forward,omitzero"`
+	LocalHint string     `json:"local_hint,omitempty"`
 }
 
 type requestRecord struct {
@@ -54,7 +55,7 @@ func validateOperations(ops []operation) error {
 			if !strings.HasPrefix(op.Path, "/") || len(op.Path) > 4096 || strings.ContainsAny(op.Path, "\x00\r\n") {
 				return fmt.Errorf("invalid remote path")
 			}
-			if op.Forward != (forwardRule{}) {
+			if op.Forward != (ports.Rule{}) {
 				return fmt.Errorf("unexpected port in file request")
 			}
 			if op.Kind == "mount" && len(ops) != 1 {

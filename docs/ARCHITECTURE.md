@@ -156,9 +156,9 @@ connections through the authenticated route at startup. The resource owns those
 connections after startup, so exiting a source or ancestor shell leaves the
 resource running. Mount and forward configuration travels in the authenticated
 launch request.
-Each accepted TCP connection gets a stream in the forward rule's smux session.
+Each TCP connection or UDP sender gets a stream in the forward rule's smux session.
 Intermediate hosts relay the resource stream as bytes.
-The [forwarding package](../internal/forward/forward.go) owns listeners, target
+The [ports package](../internal/ports) owns endpoint discovery, listeners, target
 dials and worker shutdown. The application supplies the authenticated transport
 and the startup exchange for the approved rule.
 The upgraded stream carries readiness and the caller's commit to the daemon.
@@ -179,7 +179,8 @@ before changing update, reset or approval behavior.
 `local` first. `list` shows the observed SSH address, OS, architecture, and hostname when
 available. Conflicting snapshots for the same SSH name leave only the name.
 Clients record recent connections, detaches, and remote observations in `connections/participation.db`.
-One short transaction records each confirmed attachment event. The daemon owns live tasks and leases.
+Remote output refreshes the attachment at most once a minute. Detach history only ranks remote shell UIDs.
+Remote refreshes cover the connected SSH user, address and port. The daemon owns live tasks and leases.
 Both views and CLI target lookup read bbolt directly. Parent-owned child connections and detach eligibility come from the running daemon. Live rows come from the daemon that currently owns the account lock.
 Live tasks are keyed by full UID. Short IDs scan matching keys and are checked against saved observations for ambiguity. A terminal and its affected ancestors commit together.
 Readers omit starting and exited shells. The host reads its registered hosted shells from bbolt and
@@ -194,7 +195,6 @@ while detached. Inventory uses the reported or startup directory from the regist
 Task commands resolve names and UID prefixes through the
 [task registry selector](../task_selection.go). A bare host in `attach` selects
 a remote account when there is no matching task name. Attachment binds the full
-UID before handoff.
-Connection history supplies SSH settings. Peer records under `origin` are read-only.
-See rendering for [list](../list.go) and [pstree](../pstree.go),
+UID before handoff. Direct remote tasks store their SSH routes. Host defaults use connection history.
+Peer records under `origin` are read-only. See rendering for [list](../list.go) and [pstree](../pstree.go),
 [daemon metadata](../daemon_metadata.go), and [integration tests](../tests/integration/).

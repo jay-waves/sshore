@@ -88,11 +88,7 @@ func TestParticipationForgetAndStaleAttachment(t *testing.T) {
 	stale.Attachment = newTaskUID()
 	stale.State = taskDetached
 	if err := historyTransaction(root, true, func(tx *bolt.Tx) error {
-		updated, err := setParticipationState(tx, stale)
-		if updated {
-			t.Fatal("accepted stale attachment")
-		}
-		return err
+		return setParticipationState(tx, stale)
 	}); err != nil {
 		t.Fatal(err)
 	}

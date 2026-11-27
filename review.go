@@ -111,7 +111,7 @@ func approvalDescription(request requestRecord) string {
 			}
 			fmt.Fprintf(&body, "\nMount remote directory %s (%s)", cleanText(op.Path), mode)
 		case "forward":
-			fmt.Fprintf(&body, "\n%s", op.Forward.pendingDescription())
+			fmt.Fprintf(&body, "\n%s", pendingForwardDescription(op.Forward))
 			continue
 		case "download":
 			if op.Recursive {

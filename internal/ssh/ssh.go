@@ -72,6 +72,13 @@ func diagnosticOption(name, value string) bool {
 	return name == "-v" || name == "-vv" || name == "-vvv" || name == "-o" && ConfigKey(value) == "loglevel"
 }
 
+// RouteArgs retains connection settings for saving and reusing an SSH route.
+func RouteArgs(args []string) []string {
+	return appendFilteredOptions(nil, args, func(name, value string) bool {
+		return diagnosticOption(name, value) || ForwardingOption(name, value)
+	})
+}
+
 // WithoutDiagnostics keeps options that can affect how a connection is established.
 func WithoutDiagnostics(args []string) []string {
 	return appendFilteredOptions(nil, args, diagnosticOption)

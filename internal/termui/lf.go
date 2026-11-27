@@ -1,7 +1,6 @@
 package termui
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -14,29 +13,21 @@ import (
 	"strings"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/jay-waves/sshore/internal/files/dirlist"
 	"github.com/jay-waves/sshore/internal/shell"
-	"github.com/jay-waves/sshore/internal/term"
-	xterm "golang.org/x/term"
 )
 
 // ErrLFManual requests a caller-owned path editor.
 var ErrLFManual = errors.New("enter path manually")
 
-// LFEntry is a directory entry; callers need not fetch file metadata.
-type LFEntry struct {
-	Name  string
-	IsDir bool
-}
-
 // LFOptions supplies path operations and directory listings for a picker.
 type LFOptions struct {
 	Dir               string
 	Directory         bool
-	ReadDir           func(context.Context, string) ([]LFEntry, error)
-	ReadPair          func(ctx context.Context, current, parent string) (currentEntries []LFEntry, currentErr error, parentEntries []LFEntry, parentErr error)
+	ReadDir           func(context.Context, string) ([]dirlist.Entry, error)
+	ReadPair          func(ctx context.Context, current, parent string) (currentEntries []dirlist.Entry, currentErr error, parentEntries []dirlist.Entry, parentErr error)
 	Join              func(string, string) string
 	Parent            func(string) string
 	Title             string
@@ -46,34 +37,26 @@ type LFOptions struct {
 	LocalFiles        bool // The listed paths belong to this process's filesystem.
 	BrowseAction      func(key byte, directory bool)
 	Validate          func(string) error
-	Input             <-chan LFInput
+	Input             <-chan KeyInput
 	Output            io.Writer
 	console           *LocalConsole
 }
 
 type lfResult struct {
 	path    string
-	entries []LFEntry
+	entries []dirlist.Entry
 	err     error
 }
 
 type lfCacheEntry struct {
-	entries []LFEntry
+	entries []dirlist.Entry
 	expires time.Time
 }
 
 type lfPane struct {
-	entries []LFEntry
+	entries []dirlist.Entry
 	err     error
 	loading bool
-}
-
-const lfPasteStart, lfPasteEnd = "\x1b[200~", "\x1b[201~"
-
-// LFInput carries input from an existing terminal owner.
-type LFInput struct {
-	Data []byte
-	Err  error
 }
 
 // PickLF presents parent, current and child directory lists. q and Ctrl-C
@@ -124,38 +107,12 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 			return nil, errors.New("picker requires a local console or an input stream")
 		}
 		startTerminal = func() error {
-			restore, err := term.RawConsole()
+			terminal, err := openPickerTerminal(ctx)
 			if err != nil {
 				return err
 			}
-			writer, flush := term.OutputWriter()
-			out = writer
-			keyCtx, cancelKeys := context.WithCancel(ctx)
-			events := make(chan LFInput, 32)
-			stopKeys, err := term.StartKeyboard(keyCtx, func(data []byte, err error) {
-				select {
-				case events <- LFInput{data, err}:
-				case <-keyCtx.Done():
-				}
-			})
-			stopTerminal = func() error {
-				cancelKeys()
-				if stopKeys != nil {
-					stopKeys()
-				}
-				_, err := fmt.Fprint(out, "\x1b[?2004l\x1b[0m\x1b[?25h")
-				err = errors.Join(err, flush())
-				restore()
-				stopTerminal = nil
-				return err
-			}
-			if err != nil {
-				return errors.Join(err, stopTerminal())
-			}
-			if _, err := fmt.Fprint(out, "\x1b[?2004h"); err != nil {
-				return errors.Join(err, stopTerminal())
-			}
-			input = events
+			out, input = terminal.out, terminal.input
+			stopTerminal = func() error { stopTerminal = nil; return terminal.close() }
 			return nil
 		}
 		if err := startTerminal(); err != nil {
@@ -190,7 +147,7 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 	cache := make(map[string]lfCacheEntry)
 	inflight := make(map[string]bool)
 	var hover <-chan time.Time
-	send := func(dir string, entries []LFEntry, err error) {
+	send := func(dir string, entries []dirlist.Entry, err error) {
 		select {
 		case results <- lfResult{dir, entries, err}:
 		case <-ctx.Done():
@@ -228,7 +185,7 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 	}
 	updateCursor := func() {
 		if (options.Directory || options.BrowseAction != nil) && panes[1].err == nil {
-			panes[1].entries = append([]LFEntry{{Name: ".", IsDir: true}}, panes[1].entries...)
+			panes[1].entries = append([]dirlist.Entry{{Name: ".", IsDir: true}}, panes[1].entries...)
 		}
 		index = min(index, max(0, len(panes[1].entries)-1))
 		if reveal != "" {
@@ -273,9 +230,9 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 	}
 	refresh()
 	color := ColorEnabled(os.Stdout)
-	var pending []byte
-	var awaitingG, inPaste, afterCR bool
-	var searchPrompt byte
+	var decoder keyDecoder
+	var awaitingG bool
+	var searchPrompt rune
 	cancelLayer := func() {
 		if searchPrompt != 0 {
 			searchPrompt = 0
@@ -305,14 +262,8 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 		child()
 	}
 	var display lfScreen
-	var escape <-chan time.Time
-	resize := time.NewTicker(100 * time.Millisecond)
-	defer resize.Stop()
+	size, resized := watchScreenSize(ctx)
 	for {
-		width, height, sizeErr := xterm.GetSize(int(os.Stdout.Fd()))
-		if sizeErr != nil {
-			width, height = 80, 24
-		}
 		parentIndex := -1
 		for i, entry := range panes[0].entries {
 			if options.Join(paths[0], entry.Name) == current {
@@ -324,21 +275,16 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 		if searchPrompt != 0 {
 			prompt = string(searchPrompt) + string(query)
 		}
-		if err := display.draw(out, options, current, panes, parentIndex, index, width, height, validationErr, color, multi, marked, prompt); err != nil {
+		if err := display.draw(out, options, current, panes, parentIndex, index, size.width, size.height, validationErr, color, multi, marked, prompt); err != nil {
 			return nil, err
 		}
-	waitForEvent:
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-escape:
+		case <-decoder.escape:
+			decoder.finishEscape()
 			cancelLayer()
-			pending, escape = nil, nil
-		case <-resize.C:
-			newWidth, newHeight, err := xterm.GetSize(int(os.Stdout.Fd()))
-			if err != nil || newWidth == width && newHeight == height {
-				goto waitForEvent
-			}
+		case size = <-resized:
 		case <-hover:
 			hover = nil
 			if paths[2] != "" {
@@ -348,7 +294,7 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 			delete(inflight, result.path)
 			if result.err == nil {
 				result.entries = slices.Clone(result.entries)
-				slices.SortFunc(result.entries, func(a, b LFEntry) int {
+				slices.SortFunc(result.entries, func(a, b dirlist.Entry) int {
 					if a.IsDir != b.IsDir {
 						if a.IsDir {
 							return -1
@@ -390,95 +336,28 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 			if event.Err != nil {
 				return nil, event.Err
 			}
-			pending = append(pending, event.Data...)
-			for len(pending) > 0 {
-				if inPaste {
-					if bytes.HasPrefix(pending, []byte(lfPasteEnd)) {
-						pending = pending[len(lfPasteEnd):]
-						inPaste = false
-						continue
-					}
-					if bytes.HasPrefix([]byte(lfPasteEnd), pending) || !utf8.FullRune(pending) {
-						break
-					}
-					r, size := utf8.DecodeRune(pending)
-					pending = pending[size:]
+			for event := range decoder.feed(event.Data) {
+				key := event.value
+				if event.pasted {
+					awaitingG = false
 					if searchPrompt != 0 {
-						appendQuery(r)
+						appendQuery(key)
 					}
 					continue
 				}
-				key := pending[0]
-				if afterCR {
-					afterCR = false
-					if key == '\n' {
-						pending = pending[1:]
-						continue
-					}
-				}
-				var typed rune
 				if key == 0x1b {
-					if len(pending) == 1 {
-						escape = time.After(50 * time.Millisecond)
-						break
-					}
-					escape = nil
-					if pending[1] != '[' && pending[1] != 'O' {
-						cancelLayer()
-						pending = pending[1:]
-						continue
-					}
-					if len(pending) < 3 {
-						break
-					}
-					end := 2
-					if pending[1] == '[' {
-						for end < len(pending) && pending[end] >= 0x20 && pending[end] <= 0x3f {
-							end++
-						}
-						if end == len(pending) {
-							break
-						}
-					}
-					if string(pending[:end+1]) == lfPasteStart {
-						pending = pending[end+1:]
-						inPaste, awaitingG = true, false
-						continue
-					}
-					key = 0
-					if end == 2 {
-						switch pending[2] {
-						case 'A':
-							key = 'k'
-						case 'B':
-							key = 'j'
-						case 'C':
-							key = 'l'
-						case 'D':
-							key = 'h'
-						}
-					}
-					pending = pending[end+1:]
-				} else if searchPrompt != 0 {
-					if !utf8.FullRune(pending) {
-						break
-					}
-					var size int
-					typed, size = utf8.DecodeRune(pending)
-					pending = pending[size:]
-				} else {
-					pending = pending[1:]
+					cancelLayer()
+					continue
 				}
-				afterCR = key == '\r'
 				if searchPrompt != 0 {
-					switch typed {
+					switch key {
 					case 3:
 						searchPrompt = 0
-					case 8, 127:
+					case '\b':
 						if len(query) > 0 {
 							query = query[:len(query)-1]
 						}
-					case '\r', '\n':
+					case '\n':
 						if len(query) > 0 {
 							searchPattern = string(query)
 							searchDirection = 1
@@ -489,7 +368,7 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 						}
 						searchPrompt = 0
 					default:
-						appendQuery(typed)
+						appendQuery(key)
 					}
 					continue
 				}
@@ -509,7 +388,7 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 						validationErr = errors.New("Choose a directory to mount")
 						continue
 					}
-					options.BrowseAction(key, entry.IsDir)
+					options.BrowseAction(byte(key), entry.IsDir)
 					return []string{name}, nil
 				case '/', '?':
 					searchPrompt = key
@@ -540,17 +419,17 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 					if options.Manual {
 						return nil, ErrLFManual
 					}
-				case 'k':
+				case 'k', keyUp:
 					if index > 0 {
 						index--
 						child()
 					}
-				case 'j':
+				case 'j', keyDown:
 					if index+1 < len(panes[1].entries) {
 						index++
 						child()
 					}
-				case 'h':
+				case 'h', keyLeft:
 					if parent := options.Parent(current); parent != current {
 						reveal = current
 						current, index = parent, 0
@@ -582,7 +461,7 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 					if err := startTerminal(); err != nil {
 						return nil, errors.Join(runErr, err)
 					}
-					pending = nil
+					decoder = keyDecoder{}
 					display.rows = nil // The external program owned the screen.
 					if key == 'e' {
 						delete(cache, current)
@@ -606,8 +485,8 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 						index++
 						child()
 					}
-				case 'l', '\r', '\n':
-					enter := key != 'l'
+				case 'l', keyRight, '\n':
+					enter := key == '\n'
 					if enter && len(marked) > 0 {
 						validationErr = validateSelection(marked)
 						if validationErr == nil {
@@ -671,7 +550,7 @@ func lfFileCommand(ctx context.Context, variable, name string, local bool) (*exe
 	return cmd, nil
 }
 
-func lfSearch(entries []LFEntry, index int, pattern string, direction int) (int, bool) {
+func lfSearch(entries []dirlist.Entry, index int, pattern string, direction int) (int, bool) {
 	fold := strings.IndexFunc(pattern, unicode.IsUpper) < 0
 	if fold {
 		pattern = strings.ToLower(pattern)
@@ -693,38 +572,6 @@ type lfScreen struct {
 	listScreen
 	directory    string
 	firstVisible int
-}
-
-type listScreen struct {
-	rows         []string
-	width        int
-	cursorColumn int
-}
-
-// Paint only changed rows. Erasing to the right of each replacement removes
-// old text without blanking the screen between keystrokes.
-func (s *listScreen) paint(out io.Writer, width int, rows []string, cursorColumn int) error {
-	full := len(rows) != len(s.rows) || width != s.width
-	var update strings.Builder
-	if full || s.cursorColumn != 0 && cursorColumn == 0 {
-		update.WriteString("\x1b[0m\x1b[?25l")
-	}
-	for i, row := range rows {
-		if full || row != s.rows[i] {
-			fmt.Fprintf(&update, "\x1b[%d;1H%s\x1b[K", i+1, row)
-		}
-	}
-	if cursorColumn != 0 && (update.Len() > 0 || s.cursorColumn != cursorColumn) {
-		fmt.Fprintf(&update, "\x1b[%d;%dH\x1b[?25h", len(rows), cursorColumn)
-	}
-	if update.Len() == 0 {
-		return nil
-	}
-	if _, err := io.WriteString(out, update.String()); err != nil {
-		return err
-	}
-	s.rows, s.width, s.cursorColumn = rows, width, cursorColumn
-	return nil
 }
 
 func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, parentIndex, selected, width, height int, validationErr error, color, multi bool, marked []string, prompt string) error {

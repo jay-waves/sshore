@@ -252,6 +252,11 @@ func selectCLITask(parsed cliArguments) (selectedTask, error) {
 			return selectedTask{}, err
 		}
 	}
+	if target.Connection != nil {
+		if err := validateShellHistoryConnection(*target.Connection); err != nil {
+			return selectedTask{}, err
+		}
+	}
 	if target.Manager != "" {
 		return selectedTask{}, usage("task %s is managed on %s; use an authenticated connection to that account", ref, cleanText(target.Manager))
 	}
@@ -298,7 +303,7 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id 
 		}
 		before := len(candidates)
 		for _, s := range inv.Shells {
-			if hostedOnly && !s.Hosted {
+			if taskHiddenFromInventory(s.State) || hostedOnly && !s.Hosted {
 				continue
 			}
 			t := selectedTask{Kind: "shell", Name: s.Name, Identity: identityFromUID(s.Instance), Hosted: s.Hosted}
@@ -320,30 +325,7 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id 
 		for _, t := range candidates {
 			known[t.Identity] = true
 		}
-		detached, err := readHistoryRows(tx, attachmentBucket, validateRecentAttachment)
-		if err != nil {
-			return err
-		}
-		addRoute := func(r *recentConnection) {
-			if r == nil || r.viaShell() || !validTaskUID(r.Instance) {
-				return
-			}
-			id := identityFromUID(r.Instance)
-			if !known[id] {
-				candidates = append(candidates, selectedTask{Kind: "shell", Name: r.Session, Identity: id, Instance: r.Instance, Connection: r})
-			}
-		}
-		for _, d := range detached {
-			addRoute(d.Connection)
-		}
-		for _, t := range candidates {
-			known[t.Identity] = true
-		}
 		observed, err := participatingShells(tx)
-		if err != nil {
-			return err
-		}
-		routes, err := readHistoryRows(tx, connectionBucket, validateShellHistoryConnection)
 		if err != nil {
 			return err
 		}
@@ -353,20 +335,18 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id 
 			if known[id] {
 				continue
 			}
-			i := slices.IndexFunc(routes, func(r recentConnection) bool { return r.Host == s.Host && !r.viaShell() })
-			if i >= 0 {
-				r := routes[i]
-				r.Session, r.Instance = s.Name, s.Instance
-				addRoute(&r)
-			} else {
-				t := selectedTask{Kind: "shell", Name: s.Name, Identity: id, Instance: s.Instance}
-				if attach {
-					t.RemoteHost = s.Host
-				} else {
-					t.Manager = s.Host
-				}
-				advisory = append(advisory, t)
+			t := selectedTask{Kind: "shell", Name: s.Name, Identity: id, Instance: s.Instance}
+			if route := s.Route; route != nil && s.Owner == "" {
+				t.Connection = &recentConnection{Host: s.Host, Instance: s.Instance, Session: s.Name, Directory: route.Directory, SSH: route.SSH}
+				candidates = append(candidates, t)
+				continue
 			}
+			if attach {
+				t.RemoteHost = s.Host
+			} else {
+				t.Manager = s.Host
+			}
+			advisory = append(advisory, t)
 		}
 		for _, t := range candidates {
 			known[t.Identity] = true

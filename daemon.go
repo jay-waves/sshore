@@ -290,8 +290,8 @@ func runDaemon() (result error) {
 		}
 	}()
 	go func() {
-		info := localHostInfo()
-		activity.publishRow("host", func() any { return info })
+		activity.inventoryHost = localHostInfo()
+		activity.publishRows("host")
 	}()
 	accountActivity.Store(activity)
 	defer accountActivity.Store(nil)

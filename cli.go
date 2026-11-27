@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/ports"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
@@ -210,7 +211,7 @@ func shellOptions(parsed cliArguments, target selectedTask) (options, error) {
 		o.command = "sh" // Shell requests use the existing protocol operation.
 	}
 	o.ssh, o.local = parsed.ssh, parsed.task.scope != taskSSH
-	o.portOverrideOnly = parsed.has("--port") && len(sshio.WithoutDiagnostics(sshio.WithoutForwarding(parsed.ssh))) == 2
+	o.portOverrideOnly = parsed.has("--port") && len(sshio.RouteArgs(parsed.ssh)) == 2
 	o.noEscape = parsed.has("--no-escape")
 	o.argv = parsed.argv
 	o.pin = parsed.has("--pin")
@@ -647,13 +648,14 @@ func runCopy(parsed cliArguments) (int, error) {
 
 func runEndpointForward(parsed cliArguments) (int, error) {
 	attached := os.Getenv("SSHORE_SOCKET") != ""
-	if attached && (len(parsed.ssh) != 0 || len(parsed.values) != 0) {
+	if attached && (len(parsed.ssh) != 0 || parsed.has("--retries")) {
 		return 2, usage("remote forward requests inherit the attached connection")
 	}
 	host, rule, err := parseForwardEndpoints(parsed.operands, attached)
 	if err != nil {
 		return 2, err
 	}
+	rule.UDP = parsed.has("--udp")
 	if attached {
 		return 0, requestOperations([]operation{{Kind: "forward", Forward: rule}})
 	}
@@ -721,7 +723,7 @@ type reviewPromptReader interface {
 	ReadPath(string, termui.PathOptions) (string, error)
 }
 
-func readForwardPort(input prefilledPromptReader, rule forwardRule) (int, error) {
+func readForwardPort(input prefilledPromptReader, rule ports.Rule) (int, error) {
 	initial := strconv.Itoa(cmp.Or(rule.LocalPort, rule.RemotePort))
 	prompt := localForwardPortLabel(rule.Reverse) + " (Enter to approve, Ctrl-C to cancel): "
 	for {

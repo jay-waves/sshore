@@ -180,15 +180,15 @@ cancels connection-owned transfers; it does not undo completed operations.
 
 ### Unwanted listeners and local service access
 
-Forwarding fixes direction, listener and destination before execution. Independent
+Forwarding fixes protocol, direction, listener and destination before execution. Independent
 forwards request IPv4 loopback listeners and loopback destinations; occupied ports
 fail without substitution. Remote requests need local port selection or acceptance.
 Their helper rechecks the original shell version, name, PID and detached state.
 No software update runs during forward approval. The origin binds its local
 listener before approval is consumed. The resource endpoint binds reverse listeners
-after authorization. Each accepted TCP connection uses a smux stream on the
+after authorization. Each TCP connection or UDP sender uses a smux stream on the
 task transport. Intermediate hosts relay the authenticated stream as bytes.
-The destination agent dials the fixed loopback port using TCP. OpenSSH
+The destination agent dials the fixed loopback port using the approved protocol. OpenSSH
 `PermitOpen` applies to SSH channel destinations.
 Explicit local forwarding uses an SSH exec service on the destination. Approved
 forwarding connects to the original shell's account daemon through a fresh SSH

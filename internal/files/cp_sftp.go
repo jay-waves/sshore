@@ -143,23 +143,26 @@ func (f *FS) Open(_ context.Context, req *sshfx.OpenPacket) (sftp.FileHandler, e
 		}
 		limit = size + sha256.Size
 	}
-	var file *os.File
-	var temp string
-	var err error
-	if f.writeTree {
-		file, temp, err = f.stageTreeUpload(target)
-	} else {
-		file, err = stageCopyFile(target)
-	}
+	file, temp, err := f.stageUpload(target)
 	if err != nil {
 		return nil, err
-	}
-	if !f.writeTree {
-		temp = file.Name()
 	}
 	upload := &copyUpload{size: size, limit: limit, file: file, temp: temp}
 	f.uploads[name] = upload
 	return f.newHandle(file, upload, false), nil
+}
+
+func (f *FS) stageUpload(target string) (*os.File, string, error) {
+	if f.writeTree {
+		temp := filepath.Join(filepath.Dir(target), copyTempName())
+		file, err := f.root.OpenFile(temp, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+		return file, temp, err
+	}
+	file, err := stageCopyFile(target)
+	if err != nil {
+		return nil, "", err
+	}
+	return file, file.Name(), nil
 }
 
 func (f *FS) Mkdir(_ context.Context, req *sshfx.MkdirPacket) error {
@@ -372,13 +375,14 @@ func (w copyContextWriter) Write(p []byte) (int, error) {
 	return w.Writer.Write(p)
 }
 
-func newCopyFS() *FS { return &FS{direct: true, uploads: make(map[string]*copyUpload)} }
-
-func ServeCopy(conn io.ReadWriteCloser) error { return ServeTransfer(conn, newCopyFS()) }
-
-func ServeTransfer(conn io.ReadWriteCloser, backend *FS) error {
-	defer conn.Close()
+func ServeCopy(conn io.ReadWriteCloser) error {
+	backend := &FS{direct: true, uploads: make(map[string]*copyUpload)}
 	defer backend.Close()
+	return backend.Serve(conn)
+}
+
+func (backend *FS) Serve(conn io.ReadWriteCloser) error {
+	defer conn.Close()
 	if backend.direct && backend.cwd == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -415,7 +419,7 @@ type copyStream struct {
 
 func (c copyStream) Read(p []byte) (int, error) { return c.input.Read(p) }
 
-// NewSourceFS borrows the source until ServeTransfer returns.
+// NewSourceFS takes ownership of the opened source.
 func NewSourceFS(source *Source) *FS { return &FS{source: source} }
 func NewTargetFS(path string, size int64) *FS {
 	return &FS{target: path, size: size, uploads: make(map[string]*copyUpload)}
@@ -423,5 +427,11 @@ func NewTargetFS(path string, size int64) *FS {
 func (f *FS) Close() {
 	for name, upload := range f.uploads {
 		_ = f.discardUpload(name, upload)
+	}
+	if f.root != nil {
+		_ = f.root.Close()
+	}
+	if f.source != nil {
+		f.source.Close()
 	}
 }

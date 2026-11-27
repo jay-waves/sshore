@@ -138,6 +138,7 @@ sshore on the host. Existing entries for the same key keep their restrictions.
 ```sh
 sshore cp report.zip raspberrypi:/tmp/           # Upload a file.
 sshore cp raspberrypi:/tmp/report.zip ./         # Download a file.
+sshore cp -r ./project raspberrypi:/tmp/         # Upload a directory tree.
 sshore cp report.zip origin:              # From an attached remote shell, send a file to the client.
 ```
 
@@ -145,12 +146,15 @@ sshore cp report.zip origin:              # From an attached remote shell, send 
 the machine running the command. A bare file path also belongs to that machine.
 On Windows, use `C:\dir\file` or `here:C:/dir/file` for a local drive path.
 
-Copy accepts regular files and refuses to overwrite existing destinations.
+Copy accepts regular files. Use `-r` to upload or download a directory tree,
+including empty directories. Recursive copy rejects symbolic links. Existing
+directories can receive new entries, and existing files are never overwritten.
 Leave a path empty to choose it in the three-column picker after SSH connects.
 For example, `sshore cp here: raspberrypi:` selects a local file, then a remote
 destination directory. Use the arrow keys or `hjkl` to browse and `q` to cancel.
 Inside an attached remote shell, `origin:` refers to the attached client.
-Review the transfer request on that client and choose the local path.
+Review the transfer request on that client and choose the local path. With
+`cp -r`, approve and choose a local directory for each requested tree.
 
 ## sftp (+fuse) — Mount a remote directory locally
 
@@ -168,6 +172,16 @@ Mounts use SFTP and require FUSE on Linux, [WinFsp](https://winfsp.dev/) on
 Windows, or the [macFUSE](https://macfuse.github.io/) kernel extension on
 experimental macOS builds. The command prints the mountpoint and how to stop
 it. Close open files before unmounting.
+
+## tui — Browse files and ports
+
+`sshore lf` opens the current directory. Use `sshore lf HOST` for the remote home directory
+or `sshore lf HOST:/path` for a specific directory. Press `s` to open a shell, `c` to copy,
+`m` to mount, or `f` to browse ports on the same host.
+
+`sshore lp [HOST]` lists local or remote TCP and UDP ports. Use the arrow keys to select
+a port or `/` to filter. Press Enter to review the target port, then Enter to start forwarding.
+Press `q` to leave either browser.
 
 ## Advanced usage
 

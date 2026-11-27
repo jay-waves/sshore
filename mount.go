@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
+	"github.com/jay-waves/sshore/internal/files/dirlist"
 	"github.com/jay-waves/sshore/internal/release"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
@@ -491,9 +492,9 @@ type mountPathRequest struct {
 }
 
 type mountPathListing struct {
-	Entries       []directoryEntry
+	Entries       []dirlist.Entry
 	Error         string
-	ParentEntries []directoryEntry
+	ParentEntries []dirlist.Entry
 	ParentError   string
 }
 

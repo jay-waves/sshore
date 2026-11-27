@@ -9,9 +9,15 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+type directSSHRoute struct {
+	Directory string   `json:",omitempty"`
+	SSH       []string `json:",omitempty"`
+}
+
 // Participation records only tasks opened through this client account.
 type participatingShell struct {
-	HostInfo             hostInfo `json:",omitzero"`
+	Route                *directSSHRoute `json:",omitempty"`
+	HostInfo             hostInfo        `json:",omitzero"`
 	Host, Instance, Name string
 	Owner                string
 	Shell                string `json:",omitempty"`
@@ -90,24 +96,47 @@ func observeParticipation(tx *bolt.Tx, row participatingShell) error {
 }
 
 // Only the current attachment may change the observation and its detach history.
-func setParticipationState(tx *bolt.Tx, row participatingShell) (bool, error) {
+func setParticipationState(tx *bolt.Tx, row participatingShell) error {
 	if err := validateParticipatingShell(row); err != nil {
-		return false, err
+		return err
 	}
 	key := participationKey(row.Host, row.Instance)
 	var previous participatingShell
 	bucket := tx.Bucket(participationBucket)
 	found, err := readBucketJSON(bucket, key, &previous)
 	if err != nil || !found || previous.Attachment != row.Attachment {
-		return false, err
+		return err
 	}
 	if row.State == taskDetached {
 		previous.Name = row.Name
 	}
 	previous.State, previous.ChangedAt = row.State, time.Now()
 	previous.Pinned, previous.PinUntil = row.Pinned, row.PinUntil
-	err = writeParticipation(bucket, key, previous)
-	return err == nil, err
+	if err := writeParticipation(bucket, key, previous); err != nil {
+		return err
+	}
+	if previous.State == taskDetached && previous.Route != nil {
+		row := recentAttachment{Host: previous.Host, Instance: previous.Instance}
+		return promoteRecent(tx, attachmentBucket, row, func(old recentAttachment) bool {
+			return old.Instance == row.Instance
+		})
+	}
+	return nil
+}
+
+// Late terminal output cannot revive a detached or replaced attachment.
+func touchParticipation(attachment participatingShell, seen time.Time) error {
+	return updateHistory(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(participationBucket)
+		key := participationKey(attachment.Host, attachment.Instance)
+		var row participatingShell
+		found, err := readBucketJSON(bucket, key, &row)
+		if err != nil || !found || row.Attachment != attachment.Attachment || row.State != taskActive || !row.ChangedAt.Before(seen) {
+			return err
+		}
+		row.ChangedAt = seen
+		return writeParticipation(bucket, key, row)
+	})
 }
 
 func forgetParticipation(tx *bolt.Tx, host, instance string) error {
@@ -120,9 +149,12 @@ func forgetParticipation(tx *bolt.Tx, host, instance string) error {
 	return nil
 }
 
-func reconcileParticipatingShells(host string, shells []shellView, since time.Time) error {
+func reconcileParticipatingShells(host string, peer hostInfo, shells []shellView, since time.Time) error {
 	if validSSHDestination(host) != nil {
 		return fmt.Errorf("invalid participating shell refresh")
+	}
+	if peer.User == "" || peer.Address == "" || peer.Port == "" {
+		return nil
 	}
 	observed := make(map[string]shellView, len(shells))
 	for _, view := range shells {
@@ -146,7 +178,8 @@ func reconcileParticipatingShells(host string, shells []shellView, since time.Ti
 			if err := json.Unmarshal(value, &row); err != nil {
 				return err
 			}
-			if !row.ChangedAt.Before(since) {
+			if !row.ChangedAt.Before(since) ||
+				row.HostInfo.User != peer.User || row.HostInfo.Address != peer.Address || row.HostInfo.Port != peer.Port {
 				continue
 			}
 			view, found := observed[row.Instance]

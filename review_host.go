@@ -112,53 +112,49 @@ func approvedRemoteTransfer(st net.Conn, m message) error {
 		if m.FileName != "" || m.Size != 0 {
 			return fmt.Errorf("unexpected metadata for directory transfer")
 		}
-		backend, release, err := files.NewDirectoryFS(nativePath, op.Kind == "upload")
+		backend, err := files.NewDirectoryFS(nativePath, op.Kind == "upload")
 		if err != nil {
 			return err
 		}
-		defer release()
 		return serveApprovedCopy(st, backend)
 	}
-	var backend *files.FS
-	var err error
 	switch op.Kind {
 	case "download":
-		var f *files.Source
-		f, err = files.OpenSource(nativePath)
-		if err == nil {
-			defer f.Close()
-			if f.Name() != op.Name || f.Size() != op.Size {
-				err = fmt.Errorf("remote file metadata changed; request again")
-			}
+		source, err := files.OpenSource(nativePath)
+		if err != nil {
+			return err
 		}
-		backend = files.NewSourceFS(f)
+		if source.Name() != op.Name || source.Size() != op.Size {
+			source.Close()
+			return fmt.Errorf("remote file metadata changed; request again")
+		}
+		return serveApprovedCopy(st, files.NewSourceFS(source))
 	case "upload":
-		err = files.ValidateName(m.FileName)
+		if err := files.ValidateName(m.FileName); err != nil {
+			return err
+		}
 		if m.Size < 0 {
-			err = fmt.Errorf("invalid upload size")
+			return fmt.Errorf("invalid upload size")
 		}
-		if err == nil {
-			var info os.FileInfo
-			info, err = os.Stat(nativePath)
-			if err == nil && !info.IsDir() {
-				err = fmt.Errorf("upload destination must be a directory")
-			}
+		info, err := os.Stat(nativePath)
+		if err != nil {
+			return err
 		}
-		backend = files.NewTargetFS(filepath.Join(nativePath, m.FileName), m.Size)
+		if !info.IsDir() {
+			return fmt.Errorf("upload destination must be a directory")
+		}
+		return serveApprovedCopy(st, files.NewTargetFS(filepath.Join(nativePath, m.FileName), m.Size))
 	default:
-		err = fmt.Errorf("invalid transfer kind")
+		return fmt.Errorf("invalid transfer kind")
 	}
-	if err != nil {
-		return err
-	}
-	return serveApprovedCopy(st, backend)
 }
 
 func serveApprovedCopy(st net.Conn, backend *files.FS) error {
+	defer backend.Close()
 	if err := writeMessage(st, message{Type: "resource_ready", SoftwareVersion: version}); err != nil {
 		return err
 	}
-	_ = files.ServeTransfer(st, backend)
+	_ = backend.Serve(st)
 	return nil
 }
 

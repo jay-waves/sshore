@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/files/dirlist"
 	"github.com/jay-waves/sshore/internal/release"
 )
 
@@ -43,10 +44,10 @@ type terminalDisplay struct {
 }
 
 type consoleFilePayload struct {
-	Files           []directoryEntry `json:"files,omitempty"`
-	ParentDirectory string           `json:"parent_directory,omitempty"`
-	ParentFiles     []directoryEntry `json:"parent_files,omitempty"`
-	ParentError     string           `json:"parent_error,omitempty"`
+	Files           []dirlist.Entry `json:"files,omitempty"`
+	ParentDirectory string          `json:"parent_directory,omitempty"`
+	ParentFiles     []dirlist.Entry `json:"parent_files,omitempty"`
+	ParentError     string          `json:"parent_error,omitempty"`
 }
 
 type hostAnnouncement struct {

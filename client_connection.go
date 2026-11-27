@@ -436,7 +436,7 @@ func connectionFromOptions(o options) (recentConnection, error) {
 			return recentConnection{}, fmt.Errorf("too many connection hops")
 		}
 		// Remember options that establish the route.
-		ssh := transportio.WithoutDiagnostics(transportio.WithoutForwarding(src.ssh))
+		ssh := transportio.RouteArgs(src.ssh)
 		directory := src.sshDirectory
 		if len(ssh) == 0 {
 			directory = ""
@@ -489,7 +489,7 @@ func applyConnectionOptions(o *options, r recentConnection, attachment *options)
 			o.ssh = transportio.AppendWithoutPort(o.ssh, ssh)
 			o.sshDirectory = hop.Directory
 			o.portOverrideOnly = false
-		} else if len(transportio.WithoutDiagnostics(transportio.WithoutForwarding(o.ssh))) == 0 {
+		} else if len(transportio.RouteArgs(o.ssh)) == 0 {
 			o.ssh = append(o.ssh, ssh...)
 			o.sshDirectory = hop.Directory
 		}
@@ -511,24 +511,25 @@ func warnUnusedRouteForwarding(o *options) {
 	}
 }
 
-func rememberConnection(tx *bolt.Tx, o options) error {
-	if o.session == "" || ownedRemoteRoute(o) {
-		return nil
+func rememberRemoteAttachment(tx *bolt.Tx, o options, row participatingShell) error {
+	direct := directShellOptions(o)
+	if direct.local || ownedRemoteRoute(o) {
+		return observeParticipation(tx, row)
 	}
-	o = directShellOptions(o)
-	if o.local || o.host == "" {
-		return nil
-	}
-	record, err := connectionFromOptions(o)
+	record, err := connectionFromOptions(direct)
 	if err != nil {
 		return err
 	}
 	if err := validateShellHistoryConnection(record); err != nil {
 		return err
 	}
-	return promoteRecent(tx, connectionBucket, record, func(previous recentConnection) bool {
+	row.Route = &directSSHRoute{SSH: record.SSH, Directory: record.Directory}
+	if err := promoteRecent(tx, connectionBucket, record, func(previous recentConnection) bool {
 		return previous.Host == record.Host
-	})
+	}); err != nil {
+		return err
+	}
+	return observeParticipation(tx, row)
 }
 
 func ownedRemoteRoute(o options) bool {
@@ -785,43 +786,6 @@ func (s *tmuxTask) confirmHandoff(c net.Conn, m message) error {
 		return writeMessage(c, message{Type: "error", Error: "handoff expired or not committed"})
 	}
 	return writeMessage(c, message{Type: "handoff_confirmed"})
-}
-
-func rememberDetachedAttachment(tx *bolt.Tx, o options) error {
-	if ownedRemoteRoute(o) {
-		return nil
-	}
-	o = directShellOptions(o)
-	row := recentAttachment{Identity: o.taskIdentity, Local: o.local, Name: o.session}
-	if row.Identity == "" {
-		row.Identity = identityFromUID(o.instance)
-	}
-	if !o.local {
-		connection, err := connectionFromOptions(o)
-		if err != nil {
-			return err
-		}
-		row.Connection = &connection
-	}
-	if err := validateRecentAttachment(row); err != nil {
-		return err
-	}
-	return promoteRecent(tx, attachmentBucket, row, func(previous recentAttachment) bool {
-		return previous.Identity == row.Identity
-	})
-}
-
-func removeRecentDetach(tx *bolt.Tx, o options) error {
-	id := o.taskIdentity
-	if id == "" {
-		id = identityFromUID(o.instance)
-	}
-	if id == "" {
-		return nil
-	}
-	return pruneRecent(tx.Bucket(attachmentBucket), recentHistoryLimit, func(row recentAttachment) bool {
-		return row.Identity == id
-	})
 }
 
 func resolveDetachedAttach(o *options, parent string) error {

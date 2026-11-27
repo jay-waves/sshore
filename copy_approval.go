@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net"
@@ -47,90 +48,75 @@ func pickApprovedUpload(console *termui.LocalConsole, request requestRecord) ([]
 	if err != nil {
 		return nil, err
 	}
-	var source *files.Source
-	if op.Recursive {
-		err = checkCopyDirectory(name, false)
-	} else {
-		source, err = files.OpenSource(name)
-	}
+	file, err := approvedUpload(op, name)
 	if err != nil {
 		return nil, err
 	}
-	return []fileCopy{newApprovedFile(op, name, source)}, nil
+	return []fileCopy{file}, nil
+}
+
+func approvedUpload(op operation, name string) (fileCopy, error) {
+	if op.Recursive {
+		return newApprovedFile(op, name, nil), checkCopyDirectory(name, false)
+	}
+	source, err := files.OpenSource(name)
+	return newApprovedFile(op, name, source), err
 }
 
 // The caller closes all opened sources, including on a partial selection.
 func selectApprovedFiles(input reviewPromptReader, r requestRecord) ([]fileCopy, error) {
-	approvedFiles := make([]fileCopy, 0, len(r.Operations))
+	batch := make([]fileCopy, 0, len(r.Operations))
 	destinations := make(map[string]bool)
 	for _, op := range r.Operations {
 		hint, err := approvalPathHint(op.LocalHint)
 		if err != nil {
-			return approvedFiles, err
+			return batch, err
 		}
-		if op.Recursive {
-			prompt, initial := "Save directory as: ", filepath.Join(r.Directory, op.Name)
-			if op.Kind == "upload" {
-				prompt, initial = "Local directory to upload: ", r.Directory
+		var file fileCopy
+		if op.Kind == "upload" {
+			prompt := "Local file to upload: "
+			if op.Recursive {
+				prompt = "Local directory to upload: "
+				hint = cmp.Or(hint, r.Directory)
+			} else {
+				termui.Log(os.Stdout, "", termui.Info, "Upload → %s\n", cleanText(op.Path))
 			}
-			if hint != "" {
-				initial = hint
+			_, err = readApprovalPath(input, prompt, hint, func(name string) (string, error) {
+				var openErr error
+				file, openErr = approvedUpload(op, name)
+				return name, openErr
+			})
+		} else {
+			prompt := "Save as: "
+			if op.Recursive {
+				prompt = "Save directory as: "
+			} else {
+				termui.Log(os.Stdout, "", termui.Info, "Download %s · %s\n", cleanText(op.Path), displayBytes(op.Size))
 			}
-			name, err := readApprovalPath(input, prompt, initial, func(name string) (string, error) {
-				if err := checkCopyDirectory(name, op.Kind == "download"); err != nil {
-					return "", err
+			name, selectErr := readApprovalPath(input, prompt, cmp.Or(hint, filepath.Join(r.Directory, op.Name)), func(name string) (string, error) {
+				var err error
+				if op.Recursive {
+					err = checkCopyDirectory(name, true)
+				} else {
+					name, err = files.DownloadDestination(name, op.Name)
 				}
-				if op.Kind == "download" && destinations[name] {
+				if err == nil && destinations[name] {
 					return "", fmt.Errorf("destination already selected: %s", name)
 				}
-				return name, nil
+				return name, err
 			})
-			if err != nil {
-				return approvedFiles, err
-			}
-			approvedFiles = append(approvedFiles, newApprovedFile(op, name, nil))
-			if op.Kind == "download" {
+			err = selectErr
+			if err == nil {
 				destinations[name] = true
+				file = newApprovedFile(op, name, nil)
 			}
-			continue
 		}
-		switch op.Kind {
-		case "download":
-			dest := filepath.Join(r.Directory, op.Name)
-			if hint != "" {
-				dest = hint
-			}
-			termui.Log(os.Stdout, "", termui.Info, "Download %s · %s\n", cleanText(op.Path), displayBytes(op.Size))
-			path, e := readApprovalPath(input, "Save as: ", dest, func(path string) (string, error) {
-				path, err := files.DownloadDestination(path, op.Name)
-				if err == nil && destinations[path] {
-					return "", fmt.Errorf("destination already selected: %s", path)
-				}
-				return path, err
-			})
-			if e != nil {
-				return approvedFiles, e
-			}
-			approvedFiles = append(approvedFiles, newApprovedFile(op, path, nil))
-			destinations[path] = true
-		case "upload":
-			termui.Log(os.Stdout, "", termui.Info, "Upload → %s\n", cleanText(op.Path))
-			var source *files.Source
-			path, e := readApprovalPath(input, "Local file to upload: ", hint, func(path string) (string, error) {
-				f, e := files.OpenSource(path)
-				if e != nil {
-					return "", e
-				}
-				source = f
-				return path, nil
-			})
-			if e != nil {
-				return approvedFiles, e
-			}
-			approvedFiles = append(approvedFiles, newApprovedFile(op, path, source))
+		if err != nil {
+			return batch, err
 		}
+		batch = append(batch, file)
 	}
-	return approvedFiles, nil
+	return batch, nil
 }
 
 func runApprovedFiles(r requestRecord, source options, approvedFiles []fileCopy) error {

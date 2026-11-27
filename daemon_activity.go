@@ -30,7 +30,8 @@ type daemonActivity struct {
 	instance       string
 	inventoryMu    sync.Mutex
 	inventoryRetry *time.Timer
-	pendingRows    map[string]func() any
+	inventoryHost  hostInfo
+	pendingRows    map[string]struct{}
 	tasks          *daemonTasks
 	mu             sync.Mutex
 	leases         map[*activityLease]struct{}
@@ -69,7 +70,7 @@ func (s *daemonActivity) registerLease(request leaseRequest) (*activityLease, er
 	s.leases[l] = struct{}{}
 	s.mu.Unlock()
 	if l.peer != nil {
-		s.publishPeer(l.peer.Key)
+		s.publishRows("peer/" + l.peer.Key)
 	}
 	return l, nil
 }
@@ -78,7 +79,7 @@ func (s *daemonActivity) remove(l *activityLease) {
 	delete(s.leases, l)
 	s.mu.Unlock()
 	if l.peer != nil {
-		s.publishPeer(l.peer.Key)
+		s.publishRows("peer/" + l.peer.Key)
 	}
 }
 

@@ -43,9 +43,10 @@ machine, select an empty directory to use as the mountpoint. On a remote host, s
 to mount. Selecting a directory for copy includes its contents.
 
 `f` opens the port list for the same host. Use `sshore lp [HOST]` to open that list directly.
-It shows IPv4 wildcard and loopback TCP listeners with process information when available. Select
+It lists TCP listeners and bound UDP ports on IPv4 wildcard and loopback addresses. Select
 a port with the arrow keys, filter with `/`, or enter a port with `:`. Submit the target port
-to start the forward. Both browsers restore the terminal before running the chosen command.
+to start the forward using the selected protocol. Manual port entry defaults to TCP.
+Both browsers restore the terminal before running the chosen command.
 Requests sent to `origin:` follow the same approval flow as the corresponding CLI command.
 
 ## Command console

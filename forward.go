@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	forwardio "github.com/jay-waves/sshore/internal/forward"
+	"github.com/jay-waves/sshore/internal/ports"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/termui"
 )
@@ -33,36 +33,10 @@ func splitPortEndpoint(value string) (string, string, error) {
 	return splitEndpoint(value)
 }
 
-// Ports are relative to the client that owns the forward.
-type forwardRule struct {
-	LocalPort  int  `json:"local_port,omitzero"`
-	RemotePort int  `json:"remote_port"`
-	Reverse    bool `json:"reverse,omitzero"`
-}
-
-func (r forwardRule) validate(allowUnselectedLocal bool) error {
-	if r.RemotePort < 1 || r.RemotePort > 65535 || r.LocalPort < 0 ||
-		r.LocalPort > 65535 || (r.LocalPort == 0 && !allowUnselectedLocal) {
-		return fmt.Errorf("invalid forward ports")
-	}
-	return nil
-}
-
-func (r forwardRule) ports(remote bool) (listen, target int) {
-	port := r.LocalPort
-	if remote {
-		port = r.RemotePort
-	}
-	if remote == r.Reverse {
-		return port, 0
-	}
-	return 0, port
-}
-
 // Both entry points mirror SOURCE on TARGET. Only the client endpoint may
 // omit its port, and a remote request can only suggest that client port.
-func parseForwardEndpoints(args []string, attached bool) (string, forwardRule, error) {
-	var rule forwardRule
+func parseForwardEndpoints(args []string, attached bool) (string, ports.Rule, error) {
+	var rule ports.Rule
 	if len(args) != 2 {
 		return "", rule, usage("forward requires SOURCE TARGET")
 	}
@@ -121,29 +95,37 @@ func (f forwardConfig) direction() string {
 func (f forwardConfig) description(client, remote string) string {
 	local := sshio.FormatEndpoint(client, strconv.Itoa(f.Rule.LocalPort))
 	host := sshio.FormatEndpoint(remote, strconv.Itoa(f.Rule.RemotePort))
-	if f.Rule.Reverse {
-		return local + " -> " + host
+	if !f.Rule.Reverse {
+		local, host = host, local
 	}
-	return host + " -> " + local
+	mapping := local + " -> " + host
+	if f.Rule.UDP {
+		return "UDP " + mapping
+	}
+	return mapping
 }
 
 func validateForwardProposal(op operation, count int) error {
 	if count != 1 || op.LocalHint != "" || op.Path != "" || op.Name != "" || op.Size != 0 ||
-		op.Forward.validate(true) != nil {
+		op.Forward.Validate(true) != nil {
 		return fmt.Errorf("invalid port request")
 	}
 	return nil
 }
 
-func (r forwardRule) pendingDescription() string {
-	if r.Reverse {
-		return fmt.Sprintf("Mirror a local service on remote port %s", forwardio.Loopback(r.RemotePort))
+func pendingForwardDescription(r ports.Rule) string {
+	service := "service"
+	if r.UDP {
+		service = "UDP service"
 	}
-	return fmt.Sprintf("Mirror remote service %s on a local port", forwardio.Loopback(r.RemotePort))
+	if r.Reverse {
+		return fmt.Sprintf("Mirror a local %s on remote port %s", service, ports.Loopback(r.RemotePort))
+	}
+	return fmt.Sprintf("Mirror remote %s %s on a local port", service, ports.Loopback(r.RemotePort))
 }
 
 type forwardConfig struct {
-	Rule       forwardRule
+	Rule       ports.Rule
 	Connection *recentConnection
 	Retries    int
 	ApprovalID string
@@ -173,7 +155,7 @@ func validateForwardConfig(f forwardConfig) error {
 			return err
 		}
 	}
-	return f.Rule.validate(false)
+	return f.Rule.Validate(false)
 }
 
 func startForwardSession(f forwardConfig) (int, error) {
@@ -200,7 +182,7 @@ func runForward(ctx context.Context, f forwardConfig, s *resourceService, onRead
 		if retry != 0 {
 			delay := time.Second * time.Duration(1<<min(retry-1, 5))
 			termui.Log(s.logWriter(), canonicalTaskCode(resourceIdentity(s.record)), termui.Info,
-				"Forward disconnected; TCP connections lost. Retry %d/%d in %s.", retry, f.Retries, delay)
+				"Forward disconnected; active flows lost. Retry %d/%d in %s.", retry, f.Retries, delay)
 			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
@@ -220,9 +202,8 @@ func runForward(ctx context.Context, f forwardConfig, s *resourceService, onRead
 	}
 }
 
-func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceService, initial bool, diagnostic io.Writer) (*forwardio.Session, error) {
-	listen, target := f.Rule.ports(false)
-	return forwardio.Start(ctx, listen, target, true, func() (io.ReadWriteCloser, error) {
+func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceService, initial bool, diagnostic io.Writer) (*ports.Session, error) {
+	return f.Rule.Start(ctx, true, func() (io.ReadWriteCloser, error) {
 		if f.Connection != nil {
 			request := approvedResourceRequest(f.Connection.Session, f.ResumePID, f.ApprovalID, operation{Kind: "forward", Forward: f.Rule})
 			return openIndependentResource(ctx, *f.Connection, request, s)

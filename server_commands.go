@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/ports"
 	"github.com/jay-waves/sshore/internal/release"
 	deployment "github.com/jay-waves/sshore/internal/release/remote"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
@@ -22,13 +23,18 @@ const remoteServiceReady = byte(0)
 
 type remoteServiceRequest struct {
 	PeerMetadata jsontext.Value `json:"peer_metadata,omitempty"`
-	Forward      *forwardRule   `json:"forward,omitempty"`
+	Forward      *ports.Rule    `json:"forward,omitempty"`
 	Release      string         `json:"release"`
 	Operation    string         `json:"operation"`
 	Mode         string         `json:"mode,omitempty"`
 	Name         string         `json:"name,omitempty"`
 	Directory    string         `json:"directory,omitempty"`
 	Instance     string         `json:"instance,omitempty"`
+}
+
+func startHostService(ctx context.Context, host string, ssh []string, op string) (*sshio.Process, error) {
+	conn := remoteService(sshConnectionOptions(options{host: host, ssh: ssh}), remoteServiceRequest{Operation: op})
+	return sshio.Start(ctx, withSSHDiagnostics(conn, os.Stderr, nil), os.Stderr)
 }
 
 func remoteService(connection sshio.Options, req remoteServiceRequest) sshio.Options {

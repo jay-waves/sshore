@@ -1,4 +1,4 @@
-package forward
+package ports
 
 import (
 	"context"
@@ -14,13 +14,21 @@ import (
 
 func Loopback(port int) string { return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) }
 
-// Start binds the listener before negotiating the rule. A zero listenPort
-// makes this endpoint dial targetPort instead. The initiator opens the first
+// Start binds the listener before negotiating the rule. The initiator opens the first
 // stream for task metadata. The listener opens all subsequent streams.
-func Start(parent context.Context, listenPort, targetPort int, initiator bool, open func() (io.ReadWriteCloser, error), watch func(io.Reader) error) (_ *Session, err error) {
-	var listener net.Listener
+func (rule Rule) Start(parent context.Context, initiator bool, open func() (io.ReadWriteCloser, error), watch func(io.Reader) error) (_ *Session, err error) {
+	listenPort, targetPort := rule.ports(!initiator)
+	var tcp net.Listener
+	var udp *net.UDPConn
+	var listener io.Closer
 	if listenPort != 0 {
-		listener, err = net.Listen("tcp4", Loopback(listenPort))
+		if rule.UDP {
+			udp, err = net.ListenUDP("udp4", udpLoopback(listenPort))
+			listener = udp
+		} else {
+			tcp, err = net.Listen("tcp4", Loopback(listenPort))
+			listener = tcp
+		}
 		if err != nil {
 			side := "remote"
 			if initiator {
@@ -71,16 +79,6 @@ func Start(parent context.Context, listenPort, targetPort int, initiator bool, o
 		return nil, err
 	}
 
-	accept := mux.Accept
-	dialer := net.Dialer{Timeout: 5 * time.Second}
-	dial := func(ctx context.Context) (io.ReadWriteCloser, error) {
-		return dialer.DialContext(ctx, "tcp4", Loopback(targetPort))
-	}
-	if listener != nil {
-		accept = func() (io.ReadWriteCloser, error) { return listener.Accept() }
-		dial = func(context.Context) (io.ReadWriteCloser, error) { return mux.Open() }
-	}
-
 	ctx, cancel := context.WithCancel(parent)
 	stop := sync.OnceFunc(func() {
 		cancel()
@@ -105,19 +103,13 @@ func Start(parent context.Context, listenPort, targetPort int, initiator bool, o
 			stop()
 		}()
 		var workers sync.WaitGroup
-		for {
-			incoming, err := accept()
-			if err != nil {
-				break
-			}
-			workers.Go(func() {
-				outgoing, err := dial(ctx)
-				if err != nil {
-					incoming.Close()
-					return
-				}
-				relayTCP(ctx, incoming, outgoing)
-			})
+		switch {
+		case udp != nil:
+			serveUDPListener(udp, mux, &workers)
+		case tcp != nil:
+			serveTCPListener(ctx, tcp, mux, &workers)
+		default:
+			rule.serveTarget(ctx, targetPort, mux, &workers)
 		}
 		stop()
 		workers.Wait()
@@ -134,3 +126,25 @@ type Session struct {
 
 func (s *Session) Wait()  { <-s.done }
 func (s *Session) Close() { s.stop(); s.Wait() }
+
+func (rule Rule) serveTarget(ctx context.Context, targetPort int, mux *smux.Session, workers *sync.WaitGroup) {
+	for {
+		stream, err := mux.AcceptStream()
+		if err != nil {
+			break
+		}
+		workers.Go(func() {
+			if rule.UDP {
+				relayUDPTarget(stream, targetPort)
+				return
+			}
+			dialer := net.Dialer{Timeout: 5 * time.Second}
+			conn, err := dialer.DialContext(ctx, "tcp4", Loopback(targetPort))
+			if err != nil {
+				stream.Close()
+				return
+			}
+			relayTCP(ctx, conn, stream)
+		})
+	}
+}

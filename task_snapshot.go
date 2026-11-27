@@ -5,7 +5,6 @@ import (
 	"cmp"
 	json "encoding/json/v2"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -156,23 +155,24 @@ func (inv *inventory) setTaskReferences() {
 var liveTasksBucket = []byte("live-task-rows")
 
 // Serialize projection and commit so delayed notifications always read the latest state.
-func (a *daemonActivity) publishRows(changes map[string]func() any) {
+func (a *daemonActivity) publishRows(keys ...string) {
 	a.inventoryMu.Lock()
 	defer a.inventoryMu.Unlock()
 	if a.instance == "" {
 		return
 	}
 	if a.pendingRows == nil {
-		a.pendingRows = changes
-	} else {
-		maps.Copy(a.pendingRows, changes)
+		a.pendingRows = make(map[string]struct{}, len(keys))
+	}
+	for _, key := range keys {
+		a.pendingRows[key] = struct{}{}
 	}
 	if len(a.pendingRows) == 0 {
 		return
 	}
 	rows := make(map[string]any, len(a.pendingRows))
-	for key, project := range a.pendingRows {
-		rows[key] = project()
+	for key := range a.pendingRows {
+		rows[key] = a.currentRow(key)
 	}
 	err := historyTransaction(a.root, true, func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(liveTasksBucket)
@@ -217,7 +217,7 @@ func (a *daemonActivity) publishRows(changes map[string]func() any) {
 		}
 	} else if a.inventoryRetry == nil {
 		fmt.Fprintf(a.tasks.log, "publish task inventory: %v\n", err)
-		a.inventoryRetry = time.AfterFunc(time.Second, func() { a.publishRows(nil) })
+		a.inventoryRetry = time.AfterFunc(time.Second, func() { a.publishRows() })
 	} else {
 		a.inventoryRetry.Reset(time.Second)
 	}
@@ -230,52 +230,29 @@ type liveTaskRow struct {
 }
 
 func (a *daemonActivity) publishTask(tasks ...daemonTask) {
-	changes := make(map[string]func() any, len(tasks))
+	keys := make([]string, 0, len(tasks))
 	for _, task := range tasks {
-		var uid string
 		switch t := task.(type) {
 		case *tmuxTask:
-			uid = t.record.UID
+			keys = append(keys, t.record.UID)
 		case *daemonResourceTask:
-			uid = t.record.UID
-		default:
-			continue
-		}
-		changes[uid] = func() any {
-			// A delayed exit notification may share its UID with a replacement.
-			switch t := a.tasks.lookup(uid).(type) {
-			case *tmuxTask:
-				t.mu.Lock()
-				defer t.mu.Unlock()
-				view := t.snapshotLocked()
-				if !t.expired() && view.State != taskExited {
-					return liveTaskRow{Shell: &view, Hosted: t.hosted}
-				}
-			case *daemonResourceTask:
-				t.mu.Lock()
-				defer t.mu.Unlock()
-				if !t.expired() {
-					view := viewRecord(t.record)
-					return liveTaskRow{Resource: &view}
-				}
-			}
-			return nil
+			keys = append(keys, t.record.UID)
 		}
 	}
-	a.publishRows(changes)
+	a.publishRows(keys...)
 }
 
-func (a *daemonActivity) publishRow(key string, project func() any) {
-	a.publishRows(map[string]func() any{key: project})
-}
-
-func (a *daemonActivity) publishPeer(key string) {
-	a.publishRow("peer/"+key, func() any {
+// Resolve each key again on retry: a lease can close or a task can be replaced.
+func (a *daemonActivity) currentRow(key string) any {
+	if key == "host" {
+		return a.inventoryHost
+	}
+	if peer, ok := strings.CutPrefix(key, "peer/"); ok {
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		var newest *activityLease
 		for l := range a.leases {
-			if l.peer != nil && l.peer.Key == key && (newest == nil || l.order > newest.order) {
+			if l.peer != nil && l.peer.Key == peer && (newest == nil || l.order > newest.order) {
 				newest = l
 			}
 		}
@@ -284,7 +261,24 @@ func (a *daemonActivity) publishPeer(key string) {
 		}
 		p := newest.peer
 		return peerView{Manager: p.Manager, UID: p.UID, ID: p.ID, Detail: p.Detail}
-	})
+	}
+	switch t := a.tasks.lookup(key).(type) {
+	case *tmuxTask:
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		view := t.snapshotLocked()
+		if !t.expired() && view.State != taskExited {
+			return liveTaskRow{Shell: &view, Hosted: t.hosted}
+		}
+	case *daemonResourceTask:
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		if !t.expired() {
+			view := viewRecord(t.record)
+			return liveTaskRow{Resource: &view}
+		}
+	}
+	return nil
 }
 
 func (a *daemonActivity) closeInventory() {

@@ -10,11 +10,6 @@ import (
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
-func negotiateFileSetup(stream io.ReadWriter) (string, error) {
-	reply, err := negotiateSetup(stream, nil)
-	return reply.HomeDirectory, err
-}
-
 func negotiateShellSetup(stream io.ReadWriter, host string, chooseShell bool) (message, error) {
 	var choose func([]sessionTarget) (string, error)
 	if chooseShell {

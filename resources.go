@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/files/dirlist"
 	deployment "github.com/jay-waves/sshore/internal/release/remote"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
@@ -493,7 +494,7 @@ func launchResourceBackground(config resourceConfig, directory string) (resource
 			}
 		}()
 		var requestMu sync.Mutex
-		read := func(ctx context.Context, name, parent string) ([]directoryEntry, error, []directoryEntry, error) {
+		read := func(ctx context.Context, name, parent string) ([]dirlist.Entry, error, []dirlist.Entry, error) {
 			requestMu.Lock()
 			defer requestMu.Unlock()
 			if err := ctx.Err(); err != nil {

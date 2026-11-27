@@ -45,11 +45,6 @@ func parseBrowseLocation(a cliArguments) (browseLocation, error) {
 	return loc, nil
 }
 
-func browseStream(ctx context.Context, host string, ssh []string, op string) (*sshio.Process, error) {
-	conn := remoteService(sshConnectionOptions(options{host: host, ssh: ssh}), remoteServiceRequest{Operation: op})
-	return sshio.Start(ctx, withSSHDiagnostics(conn, os.Stderr, nil), os.Stderr)
-}
-
 func runFileBrowser(a cliArguments) (int, error) {
 	loc, err := parseBrowseLocation(a)
 	if err != nil {
@@ -74,31 +69,19 @@ func runFileBrowser(a cliArguments) (int, error) {
 			}
 			return pick(localFileSelection(dir, title, false))
 		}
-		stream, err := browseStream(ctx, loc.host, a.ssh, "cp-agent")
-		if err != nil {
-			return err
-		}
-		defer stream.CloseAndWait()
-		home, err := negotiateFileSetup(stream)
-		if err != nil {
-			return err
-		}
-		windowsHost = len(home) > 3 && home[0] == '/' && home[2:4] == ":/"
-		if windowsHost && len(loc.dir) > 2 && loc.dir[1] == ':' {
-			loc.dir = "/" + strings.ReplaceAll(loc.dir, `\`, "/")
-		}
-		dir, err := files.ExpandRemoteHome(cmp.Or(loc.dir, "~"), home)
-		if err != nil {
-			return err
-		}
-		if !path.IsAbs(dir) {
-			dir = path.Join(home, dir)
-		}
-		return withCopySFTP(ctx, stream, func(client *sftp.Client) error {
-			read := files.NewSFTPDirectoryReader(client)
-			return pick(remoteFileSelection(dir, title, loc.host, false, func(ctx context.Context, name string) ([]termui.LFEntry, error) {
-				return pickerEntries(directoryEntries(read(ctx, name)))
-			}))
+		return withRemoteFiles(ctx, loc.host, a.ssh, func(client *sftp.Client, home string) error {
+			windowsHost = len(home) > 3 && home[0] == '/' && home[2:4] == ":/"
+			if windowsHost && len(loc.dir) > 2 && loc.dir[1] == ':' {
+				loc.dir = "/" + strings.ReplaceAll(loc.dir, `\`, "/")
+			}
+			dir, err := files.ExpandRemoteHome(cmp.Or(loc.dir, "~"), home)
+			if err != nil {
+				return err
+			}
+			if !path.IsAbs(dir) {
+				dir = path.Join(home, dir)
+			}
+			return pick(sftpFileSelection(dir, title, loc.host, false, files.NewSFTPDirectoryReader(client)))
 		})
 	})
 	if errors.Is(err, context.Canceled) {

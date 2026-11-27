@@ -11,7 +11,7 @@ import (
 	"sync"
 
 	"github.com/jay-waves/sshore/internal/files"
-	forwardio "github.com/jay-waves/sshore/internal/forward"
+	"github.com/jay-waves/sshore/internal/ports"
 )
 
 func serveRemoteRequest(req remoteServiceRequest) error {
@@ -34,7 +34,7 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 		account, _ := localMachineIdentity()
 		return files.ServeAgent(agentStdio(), req.Mode, version, account, remoteFileHome(), req.PeerMetadata, beginIncomingMountTask)
 	case "listeners":
-		rows, err := listeners(context.Background())
+		rows, err := ports.Listeners(context.Background())
 		if err != nil {
 			return err
 		}
@@ -81,21 +81,20 @@ func remoteFileHome() string {
 	return home
 }
 
-func serveForwardAgent(req *forwardRule) error {
+func serveForwardAgent(req *ports.Rule) error {
 	if req == nil {
 		return fmt.Errorf("invalid forward request")
 	}
-	if err := req.validate(false); err != nil {
+	if err := req.Validate(false); err != nil {
 		return err
 	}
 	serveForward(agentStdio(), *req)
 	return nil
 }
 
-func serveForward(c io.ReadWriteCloser, rule forwardRule) {
-	listenPort, targetPort := rule.ports(true)
+func serveForward(c io.ReadWriteCloser, rule ports.Rule) {
 	published := false
-	s, err := forwardio.Start(context.Background(), listenPort, targetPort, false, func() (io.ReadWriteCloser, error) {
+	s, err := rule.Start(context.Background(), false, func() (io.ReadWriteCloser, error) {
 		published = true
 		if err := writeMessage(c, message{Type: "resource_ready", SoftwareVersion: version}); err != nil {
 			return nil, err

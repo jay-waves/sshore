@@ -12,7 +12,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -108,6 +107,8 @@ func CheckCopyTarget(target string, lstat func(string) (os.FileInfo, error)) err
 	return err
 }
 
+func copyTempName() string { return ".sshore-" + rand.Text() + ".part" }
+
 func stageCopyFile(target string) (*os.File, error) {
 	if err := CheckCopyTarget(target, os.Lstat); err != nil {
 		return nil, err
@@ -186,9 +187,7 @@ func (f *Source) Upload(client *sftp.Client, target string, progress *atomic.Int
 // A negative size denotes stdin: count bytes until EOF, then verify that count
 // and digest before publishing. File sources still require their declared size.
 func UploadReader(client *sftp.Client, source io.Reader, target string, size int64) (err error) {
-	var nonce [16]byte
-	rand.Read(nonce[:])
-	temporary := path.Join(path.Dir(target), ".sshore-"+hex.EncodeToString(nonce[:])+".part")
+	temporary := path.Join(path.Dir(target), copyTempName())
 	remote, err := client.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err

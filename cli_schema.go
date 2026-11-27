@@ -46,6 +46,7 @@ type cliOption struct {
 // Canonical option definitions own the public command grammar.
 var cliOptions = map[string]cliOption{
 	"--lf":        {},
+	"--udp":       {},
 	"-r":          {},
 	"--name":      {kind: cliText},
 	"--apply":     {},
@@ -513,7 +514,7 @@ Configuration options: -p -i -J -F -l -o -c -m -v/-vv/-vvv -4 -6.
 An interactive terminal is required for passphrases, passwords and
 keyboard-interactive login.
 Forwarding rules in SSH config and -L, -R, -D produce a warning and are ignored.
-Use sshore forward for TCP forwarding. Compression, agent/X11 forwarding and
+Use sshore forward for port forwarding. Compression, agent/X11 forwarding and
 ProxyCommand are unsupported.
 `
 
@@ -795,13 +796,13 @@ on Apple Silicon Macs (experimental).
 		},
 		"lp": {
 			run: runPortBrowser, group: groupSSH, ssh: true, max: 1,
-			summary:  "Browse listening TCP ports and forward a service",
-			help:     "Usage: sshore lp [HOST] [options]\n\nBrowse TCP listeners reachable via IPv4 loopback. Select a service to forward.\n" + sshOptions,
+			summary:  "Browse TCP and UDP ports and forward a service",
+			help:     "Usage: sshore lp [HOST] [options]\n\nBrowse bound UDP ports and TCP listeners on IPv4 loopback or wildcard addresses. Select a service to forward.\n" + sshOptions,
 			examples: "Browse services on an SSH host\n  sshore lp work\n",
 		},
 		"forward": {
-			run: runEndpointForward, group: groupSSH, summary: "Forward a TCP port", aliases: []string{"fwd"},
-			ssh: true, min: 2, max: 2, flags: []string{"--retries"},
+			run: runEndpointForward, group: groupSSH, summary: "Forward a TCP or UDP port", aliases: []string{"fwd"},
+			ssh: true, min: 2, max: 2, flags: []string{"--retries", "--udp"},
 			help: `Usage: sshore forward SOURCE TARGET [options] [--ssh SSH_OPTIONS...]
 
 Mirror the service at SOURCE on TARGET. Use a bare port for the current machine
@@ -813,6 +814,7 @@ The account daemon manages the forward. Use sshore kill ID to stop it.
   sshore forward 8080 work:3000
 
 Options:
+  --udp          Forward UDP datagrams (default: TCP)
   --retries N    Retry lost SSH connections (0–10; default 0)
 
 Retries cannot prompt for credentials or host keys. Existing connections
@@ -822,6 +824,8 @@ do not survive reconnect. SSH -L/-R/-D are not accepted here.
   sshore forward work:3000 8080
 Expose a local service on a remote port
   sshore forward .:3000 work:8080
+Forward a remote UDP DNS service to local port 1053
+  sshore forward --udp work:53 1053
 `,
 		},
 		"daemon": {

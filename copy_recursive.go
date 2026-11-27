@@ -43,13 +43,9 @@ func executeRecursiveCopy(ctx context.Context, client *sftp.Client, o copyOption
 		sourceFS, targetFS = local, remote
 	}
 	target := targetFS.clean(o.target.path)
-	info, err := targetFS.lstat(target)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	targetDir, err := o.destinationIsDir(target, targetFS.lstat)
+	if err != nil {
 		return err
-	}
-	targetDir := err == nil && info.IsDir()
-	if (len(o.sources) > 1 || o.target.pick) && !targetDir {
-		return fmt.Errorf("copy requires a destination directory")
 	}
 
 	// Enumerate the sources before creating output, including when both sides

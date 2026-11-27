@@ -11,8 +11,8 @@
 - **Pin** Retention on a shell. `sh --pin` retains it until exit. `detach [DURATION]` retains the
   running shell as it releases its terminal.
 - **Mount** A remote directory exposed to local applications through SFTP and FUSE/WinFsp.
-- **Forward** A fixed TCP port mapping through SSH. It carries TCP traffic, including an existing
-  SOCKS service, but does not implement SOCKS itself. Use this term instead of tunnel.
+- **Forward** A fixed TCP or UDP port mapping through SSH. TCP forwards can carry existing
+  SOCKS services. Use this term instead of tunnel.
 - **Copy / transfer** A one-time regular-file copy through SFTP, invoked directly or executed after
   approval. It belongs to its executing connection.
 - **Resource** A collective name for mounts and forwards, which have lifetimes independent of shell

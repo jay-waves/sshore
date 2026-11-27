@@ -8,11 +8,12 @@ import (
 	"path"
 	"strings"
 
+	"github.com/jay-waves/sshore/internal/files/dirlist"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
 type consoleFilePicker struct {
-	input    chan termui.LFInput
+	input    chan termui.KeyInput
 	cancel   context.CancelFunc
 	requests map[string]*consoleFileRequest
 }
@@ -36,7 +37,7 @@ func (w consoleFileOutput) Write(b []byte) (int, error) { return w(b) }
 func startConsoleFilePicker(ctx context.Context, directory, host string, attached bool, emit func(clientEvent)) *consoleFilePicker {
 	ctx, cancel := context.WithCancel(ctx)
 	picker := &consoleFilePicker{
-		input: make(chan termui.LFInput, 32), cancel: cancel,
+		input: make(chan termui.KeyInput, 32), cancel: cancel,
 		requests: make(map[string]*consoleFileRequest),
 	}
 	var options termui.LFOptions
@@ -47,7 +48,7 @@ func startConsoleFilePicker(ctx context.Context, directory, host string, attache
 		if windows {
 			directory = strings.ReplaceAll(directory, "\\", "/")
 		}
-		options = pairedFileSelection(directory, "Open shell", host, true, func(ctx context.Context, dir, parent string) ([]directoryEntry, error, []directoryEntry, error) {
+		options = pairedFileSelection(directory, "Open shell", host, true, func(ctx context.Context, dir, parent string) ([]dirlist.Entry, error, []dirlist.Entry, error) {
 			request := consoleFileRequest{ctx: ctx, dir: dir, parent: parent, reply: make(chan message, 1)}
 			emit(clientEvent{filePicker: picker, fileRequest: &request})
 			select {
@@ -87,7 +88,7 @@ func startConsoleFilePicker(ctx context.Context, directory, host string, attache
 
 func (p *consoleFilePicker) send(data []byte) {
 	select {
-	case p.input <- termui.LFInput{Data: data}:
+	case p.input <- termui.KeyInput{Data: data}:
 	default:
 		p.cancel()
 	}

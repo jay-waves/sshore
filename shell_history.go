@@ -9,7 +9,7 @@ import (
 
 var (
 	connectionBucket = []byte("recent-connections")
-	attachmentBucket = []byte("recent-detaches")
+	attachmentBucket = []byte("remote-detach-order")
 )
 
 const recentHistoryLimit = 32
@@ -53,13 +53,19 @@ func promoteRecent[T any](tx *bolt.Tx, name []byte, row T, same func(T) bool) er
 	return bucket.Put(binary.BigEndian.AppendUint64(nil, seq), data)
 }
 
+func removeRecentDetach(tx *bolt.Tx, instance string) error {
+	return pruneRecent(tx.Bucket(attachmentBucket), recentHistoryLimit, func(row recentAttachment) bool {
+		return row.Instance == instance
+	})
+}
+
 func rememberShellExit(o options) error {
+	if o.local || !validTaskUID(o.instance) {
+		return nil
+	}
 	return updateHistory(func(tx *bolt.Tx) error {
-		if err := removeRecentDetach(tx, o); err != nil {
+		if err := removeRecentDetach(tx, o.instance); err != nil {
 			return err
-		}
-		if o.local || !validTaskUID(o.instance) {
-			return nil
 		}
 		return forgetParticipation(tx, o.host, o.instance)
 	})

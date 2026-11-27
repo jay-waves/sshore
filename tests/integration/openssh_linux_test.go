@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
+	bolt "go.etcd.io/bbolt"
 	cryptossh "golang.org/x/crypto/ssh"
 	"golang.org/x/sys/unix"
 )
@@ -620,7 +622,10 @@ Match command "printf forwarding-check"
 		out, err := runTerminal(t, ctx, command(ctx, "lp", host), func(send func(string), wait terminalWait) {
 			wait("2222", true)
 			// Select sshd by port even if other fixture services are listening.
-			send("/2222\r")
+			// Pasted shortcuts stay inert, including Enter inside the filter.
+			send("\x1b[200~q:\r\x1b[201~/\x1b[200~2222\r\x1b[201~")
+			wait("/2222", true)
+			send("\r")
 			wait("Listen on here at port:", true)
 			send("\x15" + port + "\r")
 			wait("Started forward/")
@@ -693,6 +698,34 @@ Match command "printf forwarding-check"
 			send("exit\n")
 			wait("Exited " + endpoint)
 		})
+	})
+
+	scenario("approved directory copies round trip through the selected roots", func(t *testing.T, ctx context.Context) {
+		dest := filepath.Join(t.TempDir(), "chosen")
+		run(t, ctx, "sh", host, "--", "mkdir -p tree-source/empty tree-target && printf payload > tree-source/file")
+		cmd := command(ctx, "sh", host, "--name", "tree-copy", "--no-profile")
+		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+			wait("Connected " + host + ":tree-copy")
+			send("sshore cp -r here:tree-source origin:" + dest + "\n")
+			wait("Approve this request?", true)
+			send("y\r")
+			wait("Save directory as:", true)
+			wait(dest, true)
+			send("\r")
+			wait("Connected " + host + ":tree-copy")
+			requireFile(t, filepath.Join(dest, "file"), "payload")
+			send("sshore cp -r origin:" + dest + " here:tree-target\n")
+			wait("Approve this request?", true)
+			send("y\r")
+			wait("Local directory to upload:", true)
+			wait(dest, true)
+			send("\r")
+			wait("Connected " + host + ":tree-copy")
+			send("exit\n")
+		})
+		if got := run(t, ctx, "sh", host, "--", "test -d tree-target/chosen/empty && cat tree-target/chosen/file"); got != "payload" {
+			t.Fatalf("uploaded tree content = %q", got)
+		}
 	})
 
 	scenario("attached copy and mount browse empty endpoints before using origin resources", func(t *testing.T, ctx context.Context) {
@@ -955,6 +988,68 @@ Match command "printf forwarding-check"
 			if !strings.Contains(inventory, endpoints[2]) {
 				t.Fatalf("missing mapping %s in %s", endpoints[2], inventory)
 			}
+		}
+	})
+	scenario("UDP forwards preserve datagrams and return replies to each sender", func(t *testing.T, ctx context.Context) {
+		// The two accounts share the fixture's loopback, so the test can drive
+		// the service and both clients in either forwarding direction.
+		bind := func() *net.UDPConn {
+			sock, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return sock
+		}
+		service := bind()
+		defer service.Close()
+		source := strconv.Itoa(service.LocalAddr().(*net.UDPAddr).Port)
+		for _, mode := range []string{"lp", "reverse", "origin"} {
+			probe := bind()
+			dest := probe.LocalAddr().(*net.UDPAddr)
+			probe.Close()
+			port := strconv.Itoa(dest.Port)
+			var out string
+			var err error
+			switch mode {
+			case "lp":
+				out, err = runTerminal(t, ctx, command(ctx, "lp", host), func(send func(string), wait terminalWait) {
+					wait("Enter Forward", true)
+					send("/" + source + "\r")
+					wait("Listen on here at port:", true)
+					send("\x15" + port + "\r")
+					wait("Started forward/")
+				})
+			case "reverse":
+				out = run(t, ctx, "fwd", "--udp", source, host+":"+port)
+			case "origin":
+				out, err = runTerminal(t, ctx, command(ctx, "sh", host, "--no-profile"), func(send func(string), wait terminalWait) {
+					wait("Connected " + host + ":")
+					send("sshore fwd --udp " + source + " origin:" + port + "\n")
+					wait("UDP service", true)
+					wait("Enter to approve", true)
+					send("\r")
+					wait("Started forward/")
+					send("exit\n")
+				})
+			}
+			if err != nil {
+				t.Fatalf("%s: %v\n%s", mode, err, out)
+			}
+			_, task, ok := strings.Cut(out, "Started forward/")
+			name, _, _ := strings.Cut(task, ":")
+			if !ok || name == "" {
+				t.Fatalf("missing task: %s", out)
+			}
+			if !strings.Contains(string(local(t, ctx, "list")), "UDP ") {
+				t.Fatal("missing UDP task")
+			}
+			checkUDPExchange(t, service, dest)
+			local(t, ctx, "kill", name)
+			again, err := net.ListenUDP("udp4", dest)
+			if err != nil {
+				t.Fatalf("stopped %s retained its UDP port: %v", mode, err)
+			}
+			again.Close()
 		}
 	})
 	scenario("reverse forward relays data", func(t *testing.T, ctx context.Context) {
@@ -1322,11 +1417,64 @@ Match command "printf forwarding-check"
 		const argument = "private fixture argument"
 		cleanRemote(t, host+":"+name)
 		cmd := command(ctx, "new", host, "--name", name, "--", "/bin/sh", "-c",
-			"printf 'ARG=%s\\n' \"$1\"; read -r reply; exit 23", "fixture", argument)
+			"read -r start; printf 'ARG=%s\\n' \"$1\"; read -r reply; exit 23", "fixture", argument)
 		out, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("[Esc] Cancel", true)
 			send("\r")
+			wait("Connected ")
+			beforeOutput := time.Now()
+			send("\n")
 			wait("ARG=" + argument)
+			if root := os.Getenv("SSHORE_STATE_DIR"); root != "" {
+				path := filepath.Join(root, "connections", "participation.db")
+				// The program was silent until prompted. Only its live stream can
+				// advance this observation while the same attachment remains open.
+				deadline := time.Now().Add(3 * time.Second)
+				for {
+					db, err := bolt.Open(path, 0600, &bolt.Options{ReadOnly: true, Timeout: time.Second})
+					if err != nil {
+						t.Fatal(err)
+					}
+					var seen time.Time
+					err = db.View(func(tx *bolt.Tx) error {
+						b := tx.Bucket([]byte("participation"))
+						if b == nil {
+							return nil
+						}
+						return b.ForEach(func(_, data []byte) error {
+							var row struct {
+								Name      string
+								ChangedAt time.Time
+							}
+							if err := json.Unmarshal(data, &row); err != nil {
+								return err
+							}
+							if row.Name == name {
+								seen = row.ChangedAt
+							}
+							return nil
+						})
+					})
+					db.Close()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if seen.After(beforeOutput) {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("terminal output did not refresh the open attachment")
+					}
+					time.Sleep(25 * time.Millisecond)
+				}
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(data), name) || strings.Contains(string(data), argument) {
+					t.Fatal("unexpected program details in participation state")
+				}
+			}
 			remoteList := remoteCLI(t, ctx, "list")
 			if !strings.Contains(remoteList, argument) {
 				t.Fatalf("managing account lost program arguments:\n%s", remoteList)
@@ -1339,15 +1487,6 @@ Match command "printf forwarding-check"
 			if !strings.Contains(tree, "fixture-alias\n") {
 				t.Fatalf("SSH alias missing from tree:\n%s", tree)
 			}
-			if root := os.Getenv("SSHORE_STATE_DIR"); root != "" {
-				data, err := os.ReadFile(filepath.Join(root, "connections", "participation.db"))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !strings.Contains(string(data), name) || strings.Contains(string(data), argument) {
-					t.Fatal("unexpected program details in participation state")
-				}
-			}
 			send("\n")
 			wait("Now in: calling terminal")
 		})
@@ -1359,6 +1498,24 @@ Match command "printf forwarding-check"
 		if out, err := command(ctx, "kill", name).CombinedOutput(); err == nil || !strings.Contains(string(out), "unknown task "+name) {
 			t.Fatalf("exited program remained selectable by name: %v\n%s", err, out)
 		}
+	})
+	scenario("remote refresh removes a vanished detached task from selection", func(t *testing.T, ctx context.Context) {
+		const name = "vanished-root"
+		runOpenSSHTerminal(t, ctx, command(ctx, "sh", host, "--name", name, "--no-profile", "--no-login"), func(send func(string), wait terminalWait) {
+			wait("Connected " + host + ":" + name)
+			send("\x02d")
+			wait("Detached from ")
+		})
+		remoteCLI(t, ctx, "kill", name)
+		// A fresh connection receives the remote daemon's current hosted shells.
+		runOpenSSHTerminal(t, ctx, command(ctx, "sh", host, "--name", "refresh-root", "--no-profile", "--no-login"), func(send func(string), wait terminalWait) {
+			wait("Connected " + host + ":refresh-root")
+			assertInventory(t, ctx, "shell/"+name, false)
+			if out, err := command(ctx, "kill", name).CombinedOutput(); err == nil || !strings.Contains(string(out), "unknown task "+name) {
+				t.Fatalf("detached history supplied a vanished task: %v\n%s", err, out)
+			}
+			send("exit\n")
+		})
 	})
 	scenario("declining shutdown preserves the detached root", func(t *testing.T, ctx context.Context) {
 		endpoint := host + ":resume"
@@ -1390,6 +1547,40 @@ Match command "printf forwarding-check"
 
 	})
 
+	scenario("task ID keeps its SSH route when the host default changes", func(t *testing.T, ctx context.Context) {
+		const name = "original-route"
+		data, err := os.ReadFile(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second := filepath.Join(t.TempDir(), "second-config")
+		if err := os.WriteFile(second, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		cleanRemote(t, host+":"+name)
+		_, err = runTerminal(t, ctx, command(ctx, "sh", host, "--name", name, "--no-profile"), func(send func(string), wait terminalWait) {
+			wait("Connected " + host + ":" + name)
+			send("printf 'ROUTE_%s=%.6s\\n' id \"$SSHORE_SOCKET\"\n")
+			_, uid, _ := strings.Cut(strings.TrimSpace(ansi.Strip(wait("ROUTE_id="))), "ROUTE_id=")
+			if len(uid) != 6 {
+				t.Fatalf("invalid task ID %q", uid)
+			}
+			runOpenSSHTerminal(t, ctx, exec.CommandContext(ctx, binary, "sh", host, "--name", "new-default", "--no-profile", "--ssh", "-F", second), func(send func(string), wait terminalWait) {
+				wait("Connected " + host + ":new-default")
+				send("exit\n")
+			})
+			// Only the original route still works. The active task has no detach history.
+			if err := os.Remove(second); err != nil {
+				t.Fatal(err)
+			}
+			local(t, ctx, "kill", uid)
+			wait("Exited ")
+		})
+		var exit *exec.ExitError
+		if err != nil && !errors.As(err, &exit) {
+			t.Fatal(err)
+		}
+	})
 	scenario("remote IDs resume and missing IDs fail", func(t *testing.T, ctx context.Context) {
 		root := host + ":resume-root"
 		cleanRemote(t, root)
@@ -1677,6 +1868,45 @@ Match command "printf forwarding-check"
 		}
 		requireFile(t, userFile, "fixture")
 	})
+}
+
+// Two outstanding requests receive replies in reverse order. The empty and
+// maximum-sized packets also exercise message boundaries across smux frames.
+func checkUDPExchange(t *testing.T, service *net.UDPConn, dest *net.UDPAddr) {
+	t.Helper()
+	var clients [2]*net.UDPConn
+	senders := make([]*net.UDPAddr, 2)
+	payloads := [][]byte{{}, bytes.Repeat([]byte{0xa5}, 65507)}
+	buf := make([]byte, 65535)
+	service.SetDeadline(time.Now().Add(4 * time.Second))
+	for i, payload := range payloads {
+		client, err := net.DialUDP("udp4", nil, dest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		clients[i] = client
+		client.SetDeadline(time.Now().Add(4 * time.Second))
+		if _, err = client.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+		n, addr, err := service.ReadFromUDP(buf)
+		if err != nil || !bytes.Equal(buf[:n], payload) {
+			t.Fatalf("request %d: %d bytes, %v", i, n, err)
+		}
+		senders[i] = addr
+	}
+	for i := len(senders) - 1; i >= 0; i-- {
+		if _, err := service.WriteToUDP(payloads[i], senders[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, client := range clients {
+		n, err := client.Read(buf)
+		if err != nil || !bytes.Equal(buf[:n], payloads[i]) {
+			t.Fatalf("reply %d: %d bytes, %v", i, n, err)
+		}
+	}
 }
 
 func runOpenSSHTerminal(t *testing.T, ctx context.Context, cmd *exec.Cmd, run func(send func(string), wait terminalWait)) {

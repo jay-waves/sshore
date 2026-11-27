@@ -1,7 +1,6 @@
 package files
 
 import (
-	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,29 +10,29 @@ import (
 )
 
 // NewDirectoryFS exposes one opened directory through a read or write grant.
-// The caller releases the root after the transfer has cleaned up its uploads.
-func NewDirectoryFS(name string, write bool) (*FS, func(), error) {
+// The filesystem owns the root until Close removes any unfinished uploads.
+func NewDirectoryFS(name string, write bool) (*FS, error) {
 	info, err := os.Lstat(name)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if !info.IsDir() {
-		return nil, nil, fmt.Errorf("approved path must be a directory")
+		return nil, fmt.Errorf("approved path must be a directory")
 	}
 	root, err := os.OpenRoot(name)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	opened, err := root.Stat(".")
 	if err != nil || !os.SameFile(info, opened) {
 		_ = root.Close()
-		return nil, nil, fmt.Errorf("approved directory changed; request again")
+		return nil, fmt.Errorf("approved directory changed; request again")
 	}
 	f := &FS{root: root, writeTree: write}
 	if write {
 		f.uploads = make(map[string]*copyUpload)
 	}
-	return f, func() { _ = root.Close() }, nil
+	return f, nil
 }
 
 func treePath(name string) string {
@@ -67,12 +66,6 @@ func (f *FS) openTreeEntry(name string, directory bool) (*os.File, error) {
 		return nil, os.ErrPermission
 	}
 	return file, nil
-}
-
-func (f *FS) stageTreeUpload(target string) (*os.File, string, error) {
-	temp := filepath.Join(filepath.Dir(target), ".sshore-"+rand.Text()+".part")
-	file, err := f.root.OpenFile(temp, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
-	return file, temp, err
 }
 
 type copyTreeDir struct {

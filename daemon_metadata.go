@@ -58,30 +58,13 @@ func validateShellHistoryConnection(record recentConnection) error {
 	return validateRecentConnection(record)
 }
 
-// A confirmed detach promotes one stable shell identity across all scopes.
-// Connection history supplies direct SSH defaults.
 type recentAttachment struct {
-	Identity   string
-	Local      bool
-	Name       string
-	Connection *recentConnection `json:",omitempty"`
+	Host, Instance string
 }
 
 func validateRecentAttachment(row recentAttachment) error {
-	if row.Identity == "" || len(row.Identity) > 256 || validSession(row.Name) != nil {
+	if !validTaskUID(row.Instance) || validSSHDestination(row.Host) != nil {
 		return fmt.Errorf("invalid detached attachment")
-	}
-	if !row.Local {
-		if row.Connection == nil {
-			return fmt.Errorf("detached attachment route missing")
-		}
-		if row.Identity != identityFromUID(row.Connection.Instance) {
-			return fmt.Errorf("detached attachment identity does not match route")
-		}
-		return validateShellHistoryConnection(*row.Connection)
-	}
-	if row.Connection != nil {
-		return fmt.Errorf("local detached attachment has remote route")
 	}
 	return nil
 }
@@ -93,11 +76,11 @@ func recentRemoteChoice(host string, targets []sessionTarget) (string, error) {
 		return "", err
 	}
 	for _, row := range rows {
-		if row.Connection == nil || row.Connection.Host != host {
+		if row.Host != host {
 			continue
 		}
 		for _, target := range targets {
-			if target.Instance == row.Connection.Instance {
+			if target.Instance == row.Instance {
 				return target.Name, nil
 			}
 		}
