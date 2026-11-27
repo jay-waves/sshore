@@ -3,16 +3,12 @@
 package tests_test
 
 import (
-	"bytes"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
-
-	"golang.org/x/crypto/ssh"
 )
 
 // The CLI must resolve help and reject invalid requests before touching account state.
@@ -96,47 +92,5 @@ func TestCLI(t *testing.T) {
 			}
 		})
 	}
-	t.Run("keygen writes a matching pair and preserves it on retry", func(t *testing.T) {
-		target := filepath.Join(t.TempDir(), "id_ed25519")
-		generate := func() ([]byte, error) {
-			return exec.CommandContext(t.Context(), binary, "keygen", target, "--no-passphrase").CombinedOutput()
-		}
-		out, err := generate()
-		if err != nil {
-			t.Fatalf("keygen: %v\n%s", err, out)
-		}
-		if runtime.GOOS == "linux" {
-			want, err := exec.CommandContext(t.Context(), "ssh-keygen", "-E", "sha256", "-lvf", target+".pub").Output()
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, art, _ := strings.Cut(string(want), "\n")
-			if !strings.HasSuffix(string(out), art) {
-				t.Fatalf("fingerprint art differs from OpenSSH:\n%s\nwant:\n%s", out, art)
-			}
-		}
-		read := func(name string) []byte {
-			t.Helper()
-			data, err := os.ReadFile(name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return data
-		}
-		private, public := read(target), read(target+".pub")
-		signer, err := ssh.ParsePrivateKey(private)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if signer.PublicKey().Type() != ssh.KeyAlgoED25519 || !bytes.Equal(ssh.MarshalAuthorizedKey(signer.PublicKey()), public) {
-			t.Fatal("generated files are not a matching Ed25519 key pair")
-		}
-		if _, err := generate(); err == nil {
-			t.Fatal("keygen accepted an existing target")
-		}
-		if !bytes.Equal(private, read(target)) || !bytes.Equal(public, read(target+".pub")) {
-			t.Fatal("keygen changed existing key files")
-		}
-	})
 
 }

@@ -41,14 +41,11 @@ func runKeygen(args cliArguments) (int, error) {
 	}
 	defer clear(private)
 	var block *pem.Block
-	var passphrase []byte
-	if !args.has("--no-passphrase") {
-		passphrase, err = readKeyPassphrase()
-		if err != nil {
-			return 1, err
-		}
-		defer clear(passphrase)
+	passphrase, err := readKeyPassphrase()
+	if err != nil {
+		return 1, err
 	}
+	defer clear(passphrase)
 	if len(passphrase) == 0 {
 		block, err = ssh.MarshalPrivateKey(private, "")
 	} else {
@@ -82,7 +79,7 @@ func runKeygen(args cliArguments) (int, error) {
 func readKeyPassphrase() ([]byte, error) {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		return nil, fmt.Errorf("keygen requires a terminal to read a passphrase; use --no-passphrase for an unencrypted key")
+		return nil, fmt.Errorf("keygen requires a terminal to read a passphrase")
 	}
 	fmt.Fprint(os.Stderr, "Passphrase (Enter for none): ")
 	passphrase, err := term.ReadPassword(fd)

@@ -52,11 +52,10 @@ var cliOptions = map[string]cliOption{
 	"-i":          {kind: cliText},
 	"-F":          {kind: cliText},
 	"--no-escape": {}, "--pin": {}, "--no-login": {}, "--no-profile": {},
-	"--all":           {},
-	"--reset":         {},
-	"--no-passphrase": {},
-	"--foreground":    {},
-	"--read-only":     {}, "--stats": {}, "--direct-io": {},
+	"--all":        {},
+	"--reset":      {},
+	"--foreground": {},
+	"--read-only":  {}, "--stats": {}, "--direct-io": {},
 	"--io-timeout": {kind: cliDuration}, "--startup-timeout": {kind: cliDuration},
 	"--retries": {kind: cliRetries},
 	"--count":   {kind: cliPingCount},
@@ -553,13 +552,12 @@ More examples: sshore shell|cp|mount|forward --tldr
 		},
 		"keygen": {
 			run: runKeygen, group: groupSSH, summary: "Generate an Ed25519 SSH key pair",
-			max: 1, flags: []string{"--no-passphrase"},
-			help: `Usage: sshore keygen [PATH] [--no-passphrase]
+			max: 1,
+			help: `Usage: sshore keygen [PATH]
 
 Generate an OpenSSH Ed25519 key pair. The default private key path is
 ~/.ssh/id_ed25519. The public key uses the same path with a .pub suffix.
-Existing files are kept. Press Enter at the passphrase prompt or use
---no-passphrase to save an unencrypted private key.
+Existing files are kept. Press Enter at the passphrase prompt for no passphrase.
 `,
 		},
 		"copy-id": {
