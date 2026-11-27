@@ -17,7 +17,6 @@ import (
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/term"
 	"github.com/jay-waves/sshore/internal/termui"
-	cryptossh "golang.org/x/crypto/ssh"
 	xterm "golang.org/x/term"
 )
 
@@ -28,20 +27,20 @@ func sshConnectionOptions(o options) sshio.Options {
 func withSSHDiagnostics(o sshio.Options, out io.Writer, auth *sshAuthEndpoint) sshio.Options {
 	o.IgnoredForwarding = func(ctx context.Context, host string) {
 		warning := ignoredSSHForwarding(host)
-		if !auth.warn(ctx, warning) {
+		if !auth.report(ctx, "/warn", warning) {
 			logSSHWarning(out, warning)
 		}
 	}
-	o.Negotiated = func(host string, algorithms cryptossh.NegotiatedAlgorithms) {
-		direction := func(a cryptossh.DirectionAlgorithms) string {
-			if a.MAC == "" {
-				return a.Cipher + " (AEAD)"
-			}
-			return a.Cipher + " / " + a.MAC
+	o.Diagnostic = func(ctx context.Context, detail string) {
+		if !auth.report(ctx, "/diagnostic", detail) {
+			logSSHDiagnostic(out, detail)
 		}
-		fmt.Fprintf(out, "[sshore] SSH %q: kex=%s hostkey=%s send=%s receive=%s\n", host, algorithms.KeyExchange, algorithms.HostKey, direction(algorithms.Write), direction(algorithms.Read))
 	}
 	return o
+}
+
+func logSSHDiagnostic(out io.Writer, detail string) {
+	fmt.Fprintf(out, "[sshore] %s\n", cleanText(detail))
 }
 
 func ignoredSSHForwarding(host string) string {
@@ -303,13 +302,13 @@ type sshAuthEndpoint struct {
 	Token   string
 }
 
-func (auth *sshAuthEndpoint) warn(ctx context.Context, warning string) bool {
+func (auth *sshAuthEndpoint) report(ctx context.Context, route, detail string) bool {
 	if auth == nil {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	response, err := postSSHAuth(ctx, auth.Address, auth.Token, "/warn", strings.NewReader(warning))
+	response, err := postSSHAuth(ctx, auth.Address, auth.Token, route, strings.NewReader(detail))
 	if err != nil {
 		return false
 	}
@@ -371,13 +370,17 @@ func startSSHAuthBroker() (*sshAuthEndpoint, func(), error) {
 			return
 		}
 		switch r.URL.Path {
-		case "/warn":
-			warning, err := io.ReadAll(io.LimitReader(r.Body, maxSSHPrompt+1))
-			if err != nil || len(warning) > maxSSHPrompt {
-				http.Error(w, "invalid warning", http.StatusBadRequest)
+		case "/warn", "/diagnostic":
+			detail, err := io.ReadAll(io.LimitReader(r.Body, maxSSHPrompt+1))
+			if err != nil || len(detail) > maxSSHPrompt {
+				http.Error(w, "invalid SSH diagnostic", http.StatusBadRequest)
 				return
 			}
-			logSSHWarning(os.Stderr, string(warning))
+			if r.URL.Path == "/warn" {
+				logSSHWarning(os.Stderr, string(detail))
+			} else {
+				logSSHDiagnostic(os.Stderr, string(detail))
+			}
 			w.WriteHeader(http.StatusNoContent)
 			return
 		case "/ask", "/unlock":

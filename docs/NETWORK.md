@@ -24,6 +24,12 @@ give each path its own flow-control window. Reattaching through a live route can
 reuse its authenticated connection. An independent shell setup can establish
 a new SSH connection.
 
+For SSH connections, `-v` and `--verbose` send diagnostics to stderr. These include the
+resolved endpoint and user, server version and host key fingerprint, identity file paths
+and public-key fingerprints, authentication results, and negotiated key exchange, host key,
+ciphers and integrity algorithms. `--ssh -v` and SSH `LogLevel DEBUG` enable the same output.
+For example, `sshore sh work -v` traces a shell connection.
+
 Direct copies use the current directory for an empty local path and the remote home for an
 empty SSH path. Use `--lf` to browse omitted paths in the three-column picker.
 The header identifies the host and directory being browsed. Use `gg` and `G`

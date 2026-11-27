@@ -435,8 +435,8 @@ func connectionFromOptions(o options) (recentConnection, error) {
 		if depth >= maxConnectionHops {
 			return recentConnection{}, fmt.Errorf("too many connection hops")
 		}
-		// A remembered route must not replay the original forwarding rules.
-		ssh := transportio.WithoutForwarding(src.ssh)
+		// Remember options that establish the route.
+		ssh := transportio.WithoutDiagnostics(transportio.WithoutForwarding(src.ssh))
 		directory := src.sshDirectory
 		if len(ssh) == 0 {
 			directory = ""
@@ -480,19 +480,24 @@ func applyConnectionOptions(o *options, r recentConnection, attachment *options)
 		if o.instance == "" && (o.session == "" || o.session == hop.Session) {
 			o.instance = hop.Instance
 		}
+		diagnostics := transportio.DiagnosticOptions(o.ssh)
+		ssh := hop.SSH
+		if len(diagnostics) != 0 {
+			ssh = transportio.WithoutDiagnostics(ssh)
+		}
 		if o.portOverrideOnly {
-			o.ssh = transportio.AppendWithoutPort(o.ssh, hop.SSH)
+			o.ssh = transportio.AppendWithoutPort(o.ssh, ssh)
 			o.sshDirectory = hop.Directory
 			o.portOverrideOnly = false
-		} else if len(transportio.WithoutForwarding(o.ssh)) == 0 {
-			o.ssh = append(o.ssh, hop.SSH...)
+		} else if len(transportio.WithoutDiagnostics(transportio.WithoutForwarding(o.ssh))) == 0 {
+			o.ssh = append(o.ssh, ssh...)
 			o.sshDirectory = hop.Directory
 		}
 		parent := hop.Parent
 		if parent == nil {
 			return
 		}
-		o.routeParent = &options{command: "attach", host: parent.Host, session: parent.Session}
+		o.routeParent = &options{command: "attach", host: parent.Host, session: parent.Session, ssh: diagnostics}
 		o.routeToken, o.routeTarget = hop.RouteToken, hop.RouteTarget
 		o = o.routeParent
 	}

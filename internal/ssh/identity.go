@@ -2,6 +2,7 @@ package ssh
 
 import (
 	"bytes"
+	"context"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -69,7 +70,7 @@ func (c *connectionConfig) unlockIdentity(path string) (cryptossh.Signer, error)
 	return nil, fmt.Errorf("incorrect passphrase for IdentityFile %q", path)
 }
 
-func (c *connectionConfig) privateIdentities(paths []string) ([]cryptossh.Signer, error) {
+func (c *connectionConfig) privateIdentities(ctx context.Context, paths []string) ([]cryptossh.Signer, error) {
 	seen := make(map[string]bool)
 	var signers []cryptossh.Signer
 	var failures []error
@@ -82,6 +83,7 @@ func (c *connectionConfig) privateIdentities(paths []string) ([]cryptossh.Signer
 		default:
 			var encrypted *cryptossh.PassphraseMissingError
 			if !errors.As(err, &encrypted) || c.passphrase == nil || c.passphraseAttempts <= 0 {
+				c.debugf(ctx, "Identity file %q unavailable: %v", path, err)
 				failures = append(failures, fmt.Errorf("IdentityFile %q: %w", path, err))
 				continue
 			}
@@ -102,6 +104,9 @@ func (c *connectionConfig) privateIdentities(paths []string) ([]cryptossh.Signer
 			continue
 		}
 		seen[id] = true
+		if c.debugEnabled() {
+			c.debugf(ctx, "Identity file %q: %s", path, describePublicKey(public))
+		}
 		signers = append(signers, privateFileSigner{key: public, load: func() (cryptossh.Signer, error) {
 			if signer == nil {
 				loaded, err := c.unlockIdentity(path)

@@ -239,6 +239,48 @@ Match command "printf forwarding-check"
 			}
 		}
 	})
+	scenario("SSH verbosity reports the connection and authentication on stderr", func(t *testing.T, ctx context.Context) {
+		keyData, err := os.ReadFile(filepath.Join(fixture, "identity.pub"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, _, _, _, err := cryptossh.ParseAuthorizedKey(keyData)
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity := key.Type() + " " + cryptossh.FingerprintSHA256(key)
+		for _, args := range [][]string{
+			{"sh", host, "-v", "-F", config},
+			{"--verbose", "sh", host, "-F", config},
+			{"sh", host, "--ssh", "-v", "-F", config},
+		} {
+			var stderr bytes.Buffer
+			cmd := exec.CommandContext(ctx, binary, append(args, "--", "printf payload")...)
+			cmd.Stderr = &stderr
+			out, err := cmd.Output()
+			if err != nil || string(out) != "payload" {
+				t.Fatalf("SSH stdout = %q, error = %v\n%s", out, err, &stderr)
+			}
+			for _, detail := range []string{
+				"SSH config hostname from", "Connecting to 127.0.0.1:2222 as \"sshore-fixture\"",
+				"Server version", "Server host key:", "Server host key verified",
+				"Identity file", "Offering public key: " + identity, "Authenticated using publickey " + identity,
+				"Negotiated kex=", " hostkey=", " send=", " receive=",
+			} {
+				if !strings.Contains(stderr.String(), detail) {
+					t.Fatalf("missing %q in SSH diagnostics:\n%s", detail, &stderr)
+				}
+			}
+		}
+		var stderr bytes.Buffer
+		cmd := exec.CommandContext(ctx, binary, "sh", host, "-v", "-F", config,
+			"--ssh", "-o", "PubkeyAuthentication=no", "--", "printf unexpected")
+		cmd.Stderr = &stderr
+		if out, err := cmd.Output(); err == nil || len(out) != 0 ||
+			!strings.Contains(stderr.String(), "Negotiated kex=") || strings.Contains(stderr.String(), "Authenticated using") {
+			t.Fatalf("failed authentication: stdout %q, error %v\n%s", out, err, &stderr)
+		}
+	})
 	scenario("copy deploys by release and preserves destinations", func(t *testing.T, ctx context.Context) {
 		src, dst := filepath.Join(dir, "source"), filepath.Join(dir, "download")
 		const payload = "file from the client\n"
@@ -259,9 +301,9 @@ Match command "printf forwarding-check"
 		if got := countDeployments(); got != first+1 {
 			t.Fatalf("first copy opened %d SFTP subsystems, want one", got-first)
 		}
-		warm := command(ctx, "cp", remote, dst)
+		warm := command(ctx, "cp", remote, dst, "--verbose")
 		warm.Dir = dir
-		if out, err := warm.CombinedOutput(); err != nil {
+		if out, err := warm.CombinedOutput(); err != nil || !strings.Contains(string(out), "Negotiated kex=") {
 			t.Fatalf("warm copy from another directory: %v\n%s", err, out)
 		}
 		requireFile(t, dst, payload)
@@ -810,7 +852,7 @@ Match command "printf forwarding-check"
 			{":", remote, localEndpoint + " -> " + remote},
 			{remote, port, remote + " -> " + localEndpoint},
 		} {
-			out := run(t, ctx, "fwd", endpoints[0], endpoints[1])
+			out := run(t, ctx, "fwd", "-v", endpoints[0], endpoints[1])
 			_, description, _ := strings.Cut(out, "Started forward/")
 			name, _, _ := strings.Cut(description, ":")
 			if name == "" {
@@ -818,6 +860,9 @@ Match command "printf forwarding-check"
 			}
 			inventory := string(local(t, ctx, "list"))
 			local(t, ctx, "kill", name)
+			if !strings.Contains(out, "Negotiated kex=") {
+				t.Fatalf("missing forward SSH diagnostics: %s", out)
+			}
 			if !strings.Contains(inventory, endpoints[2]) {
 				t.Fatalf("missing mapping %s in %s", endpoints[2], inventory)
 			}
@@ -1021,11 +1066,11 @@ Match command "printf forwarding-check"
 	}
 	scenario("mount uses default paths without a terminal and LF browses", func(t *testing.T, ctx context.Context) {
 		run(t, ctx, "sh", host, "--", "printf mount-default > mount-default-marker")
-		out := run(t, ctx, "mount", host+":", ":", "--read-only")
+		out := run(t, ctx, "mount", host+":", ":", "--read-only", "--verbose")
 		_, description, _ := strings.Cut(out, "Started mount/")
 		name, _, _ := strings.Cut(description, ":")
-		if name == "" {
-			t.Fatalf("mount did not start: %s", out)
+		if name == "" || !strings.Contains(out, "Negotiated kex=") {
+			t.Fatalf("mount startup or SSH diagnostics missing: %s", out)
 		}
 		t.Cleanup(func() {
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1295,8 +1340,9 @@ Match command "printf forwarding-check"
 			wait("No shell attached.")
 			send("exit\r")
 		})
-		// The original client account can resume the independent root by ID.
-		runOpenSSHTerminal(t, ctx, command(ctx, "attach", id), func(send func(string), wait terminalWait) {
+		// Verbosity must retain the saved SSH configuration when resuming by ID.
+		runOpenSSHTerminal(t, ctx, exec.CommandContext(ctx, binary, "attach", id, "-v"), func(send func(string), wait terminalWait) {
+			wait("Negotiated kex=")
 			wait("Connected " + root)
 			send(report)
 			wait(marker + id)

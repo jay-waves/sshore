@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/jay-waves/sshore/internal/sshconfig"
-	cryptossh "golang.org/x/crypto/ssh"
 )
 
 // FormatEndpoint joins an SSH destination and its operand, bracketing IPv6 addresses.
@@ -36,8 +35,8 @@ type Options struct {
 	OpenCommand func(context.Context, *Client, string, io.Writer) (*Process, error)
 	// IgnoredForwarding reports the host whose configured forwards were skipped.
 	IgnoredForwarding func(context.Context, string)
-	// Negotiated reports the algorithms for connections with DEBUG logging.
-	Negotiated func(string, cryptossh.NegotiatedAlgorithms)
+	// Diagnostic reports SSH progress when debug logging is enabled.
+	Diagnostic func(context.Context, string)
 	// RequireKnownHost prevents all hops from learning new host keys.
 	RequireKnownHost bool
 	// Confirm receives a host key fingerprint when StrictHostKeyChecking is ask.
@@ -72,6 +71,16 @@ func (c *connectionConfig) get(key string) string {
 	}
 	return ""
 }
+func (c *connectionConfig) debugEnabled() bool {
+	return c.options.Diagnostic != nil && strings.HasPrefix(strings.ToUpper(c.get("loglevel")), "DEBUG")
+}
+
+func (c *connectionConfig) debugf(ctx context.Context, format string, args ...any) {
+	if c.debugEnabled() {
+		c.options.Diagnostic(ctx, fmt.Sprintf("SSH %q: ", c.options.Host)+fmt.Sprintf(format, args...))
+	}
+}
+
 func (c *connectionConfig) enabled(key string) bool {
 	v := c.get(key)
 	return v == "yes" || v == "true"

@@ -62,14 +62,14 @@ func resolveDialConfig(ctx context.Context, o Options) (*connectionConfig, error
 
 func (cfg *connectionConfig) dial(ctx context.Context, depth int, budgets *authenticationBudgets) (*Client, error) {
 	cfg.warnIgnoredForwarding(ctx)
+	for _, key := range []string{"hostname", "user", "port"} {
+		if source := cfg.origins[key]; source != "" {
+			cfg.debugf(ctx, "SSH config %s from %q", key, source)
+		}
+	}
 	client, err := cfg.handshake(ctx, depth, budgets)
 	if err != nil {
 		return nil, err
-	}
-	if report := cfg.options.Negotiated; report != nil && strings.HasPrefix(strings.ToUpper(cfg.get("loglevel")), "DEBUG") {
-		if metadata, ok := client.Conn.(cryptossh.AlgorithmsConnMetadata); ok {
-			report(cfg.options.Host, metadata.Algorithms())
-		}
 	}
 	interval, _ := strconv.Atoi(cfg.get("serveraliveinterval"))
 	count, _ := strconv.Atoi(cfg.get("serveralivecountmax"))
@@ -92,9 +92,28 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 	seconds, _ := strconv.Atoi(cfg.get("connecttimeout"))
 	releaseBudget := budgets.add(time.Duration(seconds)*time.Second, cancel)
 	cc := &cryptossh.ClientConfig{User: cfg.user}
-	if err := cfg.configureAuthentication(connecting, cc, budgets); err != nil {
+	authenticatedWith := "none"
+	if err := cfg.configureAuthentication(connecting, cc, budgets, &authenticatedWith); err != nil {
 		releaseBudget()
 		return nil, err
+	}
+	var reportNegotiation func(cryptossh.ConnMetadata, cryptossh.NegotiatedAlgorithms)
+	if cfg.debugEnabled() {
+		reported := false
+		reportNegotiation = func(metadata cryptossh.ConnMetadata, a cryptossh.NegotiatedAlgorithms) {
+			if reported {
+				return
+			}
+			reported = true
+			cfg.debugf(connecting, "Server version %q", metadata.ServerVersion())
+			cfg.debugf(connecting, "Negotiated kex=%s hostkey=%s send=%s receive=%s",
+				a.KeyExchange, a.HostKey, describeDirection(a.Write), describeDirection(a.Read))
+		}
+		auth := cc.AuthCallback
+		cc.AuthCallback = func(state *cryptossh.ClientAuthContext) (cryptossh.AuthMethod, error) {
+			reportNegotiation(state.Metadata, state.Algorithms)
+			return auth(state)
+		}
 	}
 	var parent *Client
 	var stopTransport func() bool
@@ -120,7 +139,9 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 	cc.MACs = cfg.values["macs"]
 	address := net.JoinHostPort(cfg.host, cfg.port)
 	var raw net.Conn
-	if jump := cfg.get("proxyjump"); jump != "" && jump != "none" {
+	jump := cfg.get("proxyjump")
+	if jump != "" && jump != "none" {
+		cfg.debugf(connecting, "Connecting to %s as %q via ProxyJump %q", address, cfg.user, jump)
 		options, jumpErr := cfg.proxyJumpOptions(jump)
 		if jumpErr != nil {
 			return nil, jumpErr
@@ -135,6 +156,7 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 		stopTransport = context.AfterFunc(connecting, func() { _ = hop.Close() })
 		raw, err = hop.Dial("tcp", address)
 	} else {
+		cfg.debugf(connecting, "Connecting to %s as %q", address, cfg.user)
 		dialer := net.Dialer{}
 		if bind := cfg.get("bindaddress"); bind != "" && bind != "*" {
 			dialer.LocalAddr, err = net.ResolveTCPAddr(cfg.network, net.JoinHostPort(bind, "0"))
@@ -150,10 +172,17 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 	if err != nil {
 		return nil, err
 	}
+	cfg.debugf(connecting, "Connection established to %s", raw.RemoteAddr())
 	// NewClientConn takes ownership of raw, including on handshake failure.
 	conn, ch, req, err := cryptossh.NewClientConn(raw, address, cc)
 	if err != nil {
 		return nil, fmt.Errorf("SSH %s: %w", cfg.options.Host, err)
+	}
+	if reportNegotiation != nil {
+		if metadata, ok := conn.(cryptossh.AlgorithmsConnMetadata); ok {
+			reportNegotiation(conn, metadata.Algorithms())
+		}
+		cfg.debugf(connecting, "Authenticated using %s", authenticatedWith)
 	}
 	peerIP := ""
 	if parent == nil {
@@ -166,6 +195,13 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 	}
 	return &Client{Client: cryptossh.NewClient(conn, ch, req), jump: parent, done: make(chan struct{}), destination: Destination{User: cfg.user, Host: cfg.host, Port: cfg.port, PeerIP: peerIP, Jump: parent != nil}}, nil
 }
+func describeDirection(a cryptossh.DirectionAlgorithms) string {
+	if a.MAC == "" {
+		return a.Cipher + " (AEAD)"
+	}
+	return a.Cipher + " / " + a.MAC
+}
+
 func (cfg *connectionConfig) proxyJumpOptions(jump string) (Options, error) {
 	last := strings.LastIndexByte(jump, ',')
 	host := jump[last+1:]
@@ -173,7 +209,7 @@ func (cfg *connectionConfig) proxyJumpOptions(jump string) (Options, error) {
 	options := Options{
 		Host: host, Environment: o.Environment,
 		Directory: o.Directory, Confirm: o.Confirm, Secret: o.Secret,
-		IgnoredForwarding: o.IgnoredForwarding, Negotiated: o.Negotiated,
+		IgnoredForwarding: o.IgnoredForwarding, Diagnostic: o.Diagnostic,
 		RequireKnownHost: o.RequireKnownHost,
 	}
 	for args := o.Args; len(args) > 0; {
@@ -182,6 +218,9 @@ func (cfg *connectionConfig) proxyJumpOptions(jump string) (Options, error) {
 			options.Args = append(options.Args, args[:n]...)
 		}
 		args = args[max(n, 1):]
+	}
+	if cfg.debugEnabled() {
+		options.Args = append(options.Args, "-v")
 	}
 	if last >= 0 {
 		options.Args = append(options.Args, "-J", jump[:last])

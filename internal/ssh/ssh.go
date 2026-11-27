@@ -68,6 +68,19 @@ func WithoutForwarding(args []string) []string {
 	return appendFilteredOptions(nil, args, ForwardingOption)
 }
 
+func diagnosticOption(name, value string) bool {
+	return name == "-v" || name == "-vv" || name == "-vvv" || name == "-o" && ConfigKey(value) == "loglevel"
+}
+
+// WithoutDiagnostics keeps options that can affect how a connection is established.
+func WithoutDiagnostics(args []string) []string {
+	return appendFilteredOptions(nil, args, diagnosticOption)
+}
+
+func DiagnosticOptions(args []string) []string {
+	return appendFilteredOptions(nil, args, func(name, value string) bool { return !diagnosticOption(name, value) })
+}
+
 // AppendWithoutPort keeps the destination's explicit port and appends the
 // remaining options in their original form and order.
 func AppendWithoutPort(dst, args []string) []string {

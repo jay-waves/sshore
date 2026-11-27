@@ -20,7 +20,7 @@ import (
 )
 
 // Keep authentication prompts local to this handshake.
-func (c connectionConfig) configureAuthentication(ctx context.Context, cc *cryptossh.ClientConfig, budgets *authenticationBudgets) error {
+func (c connectionConfig) configureAuthentication(ctx context.Context, cc *cryptossh.ClientConfig, budgets *authenticationBudgets, authenticatedWith *string) error {
 	if confirm := c.options.Confirm; confirm != nil {
 		c.options.Confirm = func(ctx context.Context, prompt string) (bool, error) {
 			resume := budgets.pause()
@@ -32,7 +32,17 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 	if err != nil {
 		return err
 	}
-	cc.HostKeyCallback, cc.HostKeyAlgorithms = hostKey, algorithms
+	cc.HostKeyAlgorithms = algorithms
+	cc.HostKeyCallback = func(host string, remote net.Addr, key cryptossh.PublicKey) error {
+		if c.debugEnabled() {
+			c.debugf(ctx, "Server host key: %s", describePublicKey(key))
+		}
+		err := hostKey(host, remote, key)
+		if err == nil {
+			c.debugf(ctx, "Server host key verified")
+		}
+		return err
+	}
 
 	// Let the server accept none authentication before requiring local identities.
 	attempts := map[string]int{}
@@ -80,7 +90,7 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 			if method == "publickey" {
 				if !publicKeysLoaded {
 					publicKeysLoaded = true
-					publicKeys, identityErr = c.publicKeySigners()
+					publicKeys, identityErr = c.publicKeySigners(ctx)
 					if promptErr != nil {
 						return nil, promptErr
 					}
@@ -92,6 +102,11 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 				// the previous signer failed locally after its public-key probe.
 				signer := publicKeys[0]
 				publicKeys = publicKeys[1:]
+				if c.debugEnabled() {
+					key := describePublicKey(signer.PublicKey())
+					*authenticatedWith = "publickey " + key
+					c.debugf(ctx, "Offering public key: %s", key)
+				}
 				return cryptossh.PublicKeys(signer), nil
 			}
 			if c.enabled("batchmode") || c.options.Secret == nil || attempts[method] >= limit {
@@ -103,6 +118,8 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 					continue
 				}
 				attempts[method]++
+				*authenticatedWith = method
+				c.debugf(ctx, "Trying %s authentication", method)
 				return cryptossh.PasswordCallback(func() (string, error) {
 					return ask("\x00password:" + c.user + "@" + c.host)
 				}), nil
@@ -111,6 +128,8 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 					continue
 				}
 				attempts[method]++
+				*authenticatedWith = method
+				c.debugf(ctx, "Trying %s authentication", method)
 				return cryptossh.KeyboardInteractive(func(name, instruction string, questions []string, echoes []bool) ([]string, error) {
 					if len(questions) != len(echoes) {
 						return nil, fmt.Errorf("invalid SSH authentication challenge")
@@ -142,7 +161,11 @@ func (c connectionConfig) configureAuthentication(ctx context.Context, cc *crypt
 	return nil
 }
 
-func (c *connectionConfig) publicKeySigners() ([]cryptossh.Signer, error) {
+func describePublicKey(key cryptossh.PublicKey) string {
+	return key.Type() + " " + cryptossh.FingerprintSHA256(key)
+}
+
+func (c *connectionConfig) publicKeySigners(ctx context.Context) ([]cryptossh.Signer, error) {
 	minimumRSA, err := c.minimumRSASize()
 	if err != nil {
 		return nil, err
@@ -155,7 +178,7 @@ func (c *connectionConfig) publicKeySigners() ([]cryptossh.Signer, error) {
 		return nil, errors.New("PubkeyAcceptedAlgorithms permits no supported SSH public-key signature algorithm")
 	}
 	paths, pathErr := c.identityPaths()
-	signers, privateErr := c.privateIdentities(paths)
+	signers, privateErr := c.privateIdentities(ctx, paths)
 	signers = slices.DeleteFunc(signers, func(signer cryptossh.Signer) bool {
 		return checkRSAKeySize(signer.PublicKey(), minimumRSA) != nil
 	})

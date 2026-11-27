@@ -23,6 +23,9 @@ func run(args []string) (int, error) {
 	if len(args) == 0 {
 		return 0, showHelp(nil, os.Stdout)
 	}
+	if len(args) > 1 && (args[0] == "-v" || args[0] == "--verbose") {
+		args = append([]string{args[1], args[0]}, args[2:]...)
+	}
 	command, args := canonicalCommand(args[0]), args[1:]
 	switch command {
 	case "--tldr":
@@ -207,7 +210,7 @@ func shellOptions(parsed cliArguments, target selectedTask) (options, error) {
 		o.command = "sh" // Shell requests use the existing protocol operation.
 	}
 	o.ssh, o.local = parsed.ssh, parsed.task.scope != taskSSH
-	o.portOverrideOnly = parsed.has("--port") && len(sshio.WithoutForwarding(parsed.ssh)) == 2
+	o.portOverrideOnly = parsed.has("--port") && len(sshio.WithoutDiagnostics(sshio.WithoutForwarding(parsed.ssh))) == 2
 	o.noEscape = parsed.has("--no-escape")
 	o.argv = parsed.argv
 	o.pin = parsed.has("--pin")

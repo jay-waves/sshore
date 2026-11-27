@@ -50,6 +50,7 @@ var cliOptions = map[string]cliOption{
 	"--name":      {kind: cliText},
 	"--apply":     {},
 	"--port":      {kind: cliPort, alias: "-p"},
+	"--verbose":   {alias: "-v"},
 	"-J":          {kind: cliText},
 	"-i":          {kind: cliText},
 	"-F":          {kind: cliText},
@@ -85,7 +86,7 @@ const (
 
 func (s cliSpec) option(name string) (string, cliOption, bool) {
 	if s.ssh {
-		for _, canonical := range [...]string{"--port", "-J", "-i", "-F"} {
+		for _, canonical := range [...]string{"--port", "-J", "-i", "-F", "--verbose"} {
 			option := cliOptions[canonical]
 			if name == canonical || name == option.alias {
 				return canonical, option, true
@@ -321,6 +322,9 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 		}
 		a.ssh = append([]string{"-F", a.values["-F"]}, a.ssh...)
 	}
+	if a.has("--verbose") {
+		a.ssh = append([]string{"-v"}, a.ssh...)
+	}
 	a.ssh = append(identityArgs, a.ssh...)
 	if len(a.operands) < spec.min {
 		return a, usage("not enough arguments for %s; see sshore %s --help", command, command)
@@ -502,6 +506,7 @@ const sshOptions = `
 -p PORT (alias: --port) selects the SSH port (1–65535).
 -J DEST selects a jump host. -i FILE adds a private key file and may be repeated.
 -F FILE selects an SSH configuration file. -F none uses built-in defaults.
+-v (alias: --verbose) prints SSH connection, authentication and negotiation details to stderr.
 Other SSH options follow --ssh.
 Do not repeat a top-level port, jump host or configuration file after --ssh.
 Configuration options: -p -i -J -F -l -o -c -m -v/-vv/-vvv -4 -6.
