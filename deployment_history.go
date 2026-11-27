@@ -113,20 +113,8 @@ func (e deploymentEndpoint) remember(home string, review bool) error {
 
 // Use the installed client so the shutdown request selects its own deployment.
 func stopInstalledDeployments(executable, release string) error {
-	dir, err := daemonLocation()
-	if err != nil {
-		return err
-	}
-	// Pre-bbolt releases cannot enumerate their deployments for this installer.
-	// Require manual shutdown before replacing a client with a legacy ledger.
-	legacy := filepath.Join(filepath.Dir(dir), "deployments", release+".json")
-	if _, err := os.Lstat(legacy); err == nil {
-		return fmt.Errorf("legacy deployment history for sshore %s: stop its remote tasks with the installed client and remove %q before upgrading", cleanText(release), legacy)
-	} else if !os.IsNotExist(err) {
-		return err
-	}
 	var endpoints []deploymentEndpoint
-	err = deploymentHistoryTransaction(false, func(tx *bolt.Tx) error {
+	err := deploymentHistoryTransaction(false, func(tx *bolt.Tx) error {
 		if tx == nil {
 			return nil
 		}

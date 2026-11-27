@@ -332,6 +332,20 @@ Match command "printf forwarding-check"
 		}
 		startDetached(installed, "0.0.0")
 		startDetached(newer, "0.0.1")
+		account, err := user.Current()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// An obsolete ledger must have no effect on reviewing the bbolt records.
+		legacy := filepath.Join(account.HomeDir, ".sshore", "deployments", "0.0.0.json")
+		ledger, err := os.OpenFile(legacy, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Remove(legacy) })
+		if err := ledger.Close(); err != nil {
+			t.Fatal(err)
+		}
 		connections := filepath.Join(os.Getenv("SSHORE_STATE_DIR"), "connections")
 		if err := os.MkdirAll(connections, 0700); err != nil {
 			t.Fatal(err)
