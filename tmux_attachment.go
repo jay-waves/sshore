@@ -148,6 +148,7 @@ func (s *tmuxTask) attachManaged(p *attachment, m message) error {
 	}
 	s.mu.Unlock()
 	s.terminalMu.Unlock()
+	s.registry.inventoryChanged()
 	if abort {
 		if s.hosted {
 			s.close()
@@ -212,6 +213,7 @@ func (s *tmuxTask) releaseAttachment(p *attachment, cause error) (message, error
 		reply = message{Type: "detached", Name: s.record.Name, Pinned: pinned, PinUntil: until}
 	}
 	s.mu.Unlock()
+	s.registry.inventoryChanged()
 	if disconnected {
 		termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Shell attachment disconnected: %s", cleanText(cause.Error()))
 	}

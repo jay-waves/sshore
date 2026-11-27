@@ -127,7 +127,7 @@ func excludeLocalResourcePeers(peers []peerView, resources []resourceView) []pee
 	return slices.DeleteFunc(peers, func(p peerView) bool { return local[p.UID] })
 }
 
-func (a *daemonActivity) listTasks() inventory {
+func (a *daemonActivity) liveInventory() inventory {
 	query := taskInventoryRequest{Native: true, Hosted: true, Resources: true}
 	snapshot := a.tasks.taskInventory(query)
 	inv := emptyInventory()
@@ -136,14 +136,10 @@ func (a *daemonActivity) listTasks() inventory {
 	inv.LocalShells = snapshot.nativeShells()
 	inv.Resources = snapshot.Resources
 	inv.Peers = excludeLocalResourcePeers(peerViews(a.incomingPeers()), inv.Resources)
-	var observed []participatingShell
-	err := historyTransaction(a.root, false, func(tx *bolt.Tx) (err error) {
-		observed, err = participatingShells(tx)
-		return err
-	})
-	if err != nil {
-		inv.Errors = append(inv.Errors, "remote shell history unavailable: "+cleanText(err.Error()))
-	}
+	return inv
+}
+
+func mergeInventory(inv inventory, observed []participatingShell) inventory {
 	// Both renderers prefer a live row over a cached observation of the same task.
 	live := make(map[string]bool, len(inv.LocalShells)+len(inv.Shells))
 	for _, shell := range inv.LocalShells {
@@ -165,31 +161,10 @@ func (a *daemonActivity) listTasks() inventory {
 	return inv
 }
 
-func daemonListTasks() (inventory, error) {
-	if activity := accountActivity.Load(); activity != nil {
-		return activity.listTasks(), nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	record, err := daemonRecordWithin(0)
-	if os.IsNotExist(err) {
-		return emptyInventory(), nil
-	}
-	if err != nil {
-		return emptyInventory(), fmt.Errorf("open local task inventory: %w", err)
-	}
-	var inv inventory
-	if err := daemonJSON(ctx, record, "/tasks/list", struct{}{}, &inv); err != nil {
-		return emptyInventory(), fmt.Errorf("read local task inventory: %w", err)
-	}
-	return inv, nil
-}
-
 func collectInventory() (inventory, error) {
-	inv, err := daemonListTasks()
+	inv, err := readPublishedInventory()
 	if err != nil {
 		inv.Errors = append(inv.Errors, cleanText(err.Error()))
-		return inv, err
 	}
 	return inv, inv.incompleteError()
 }

@@ -28,6 +28,9 @@ type activityLease struct {
 type daemonActivity struct {
 	hostInfo      atomic.Pointer[hostInfo]
 	root          string
+	instance      string
+	inventoryMu   sync.Mutex
+	published     []byte
 	tasks         *daemonTasks
 	mu            sync.Mutex
 	leases        map[*activityLease]struct{}
@@ -56,7 +59,6 @@ func (s *daemonActivity) registerLease(request leaseRequest) (*activityLease, er
 		return nil, fmt.Errorf("invalid activity lease kind")
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.leases == nil {
 		s.leases = make(map[*activityLease]struct{})
 	}
@@ -65,12 +67,19 @@ func (s *daemonActivity) registerLease(request leaseRequest) (*activityLease, er
 		l.order = s.nextPeerOrder
 	}
 	s.leases[l] = struct{}{}
+	s.mu.Unlock()
+	if l.peer != nil {
+		s.publishInventory()
+	}
 	return l, nil
 }
 func (s *daemonActivity) remove(l *activityLease) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.leases, l)
+	s.mu.Unlock()
+	if l.peer != nil {
+		s.publishInventory()
+	}
 }
 
 // Overlapping connections can describe the same resource. Show the newest

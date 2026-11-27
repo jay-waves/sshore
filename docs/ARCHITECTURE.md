@@ -180,7 +180,7 @@ before changing update, reset or approval behavior.
 available. Conflicting snapshots for the same SSH name leave only the name.
 Clients record recent connections, detaches, and remote observations in `connections/participation.db`.
 One short transaction records each confirmed attachment event. The daemon owns live tasks and leases.
-Both views read history and live registrations without starting a daemon or probing workers.
+Both views read bbolt directly. Live rows come from the daemon that currently owns the account lock.
 A shell whose attachment transition holds its lock appears as unknown. Starting and exited
 shells are omitted when their state is known. The hosted shell list follows `setup_ready` on the same exec
 stream. A live registration takes precedence over an observation of the same UID.

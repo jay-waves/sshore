@@ -136,6 +136,7 @@ func (s *tmuxTask) completeClose(p *attachment) {
 		p.Close()
 	}
 	s.runtime.CompleteClose()
+	s.registry.inventoryChanged()
 }
 
 func (s *tmuxTask) stopTask() error {
@@ -334,6 +335,7 @@ func (s *tmuxTask) terminalExited(err error) {
 		s.exitReason = reason
 	}
 	s.mu.Unlock()
+	s.registry.inventoryChanged()
 	termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Info, "Shell exited (code %d): %s", code, cleanText(reason))
 	if p != nil {
 		p.finishExit(message{

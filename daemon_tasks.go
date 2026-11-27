@@ -29,13 +29,20 @@ type daemonTask interface {
 var errDaemonDraining = errors.New("daemon is shutting down")
 
 type daemonTasks struct {
-	log       io.Writer
-	cgroup    string
-	cgroupErr error
-	forest    tmux.Forest[*tmuxTask]
-	draining  bool
-	mu        sync.Mutex
-	records   map[string]daemonTask
+	publishInventory func()
+	log              io.Writer
+	cgroup           string
+	cgroupErr        error
+	forest           tmux.Forest[*tmuxTask]
+	draining         bool
+	mu               sync.Mutex
+	records          map[string]daemonTask
+}
+
+func (s *daemonTasks) inventoryChanged() {
+	if s != nil && s.publishInventory != nil {
+		s.publishInventory()
+	}
 }
 
 func (s *daemonTasks) newTmuxTask(record localShellRecord, env []string, parent *tmuxTask, hosted bool) *tmuxTask {

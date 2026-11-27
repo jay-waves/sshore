@@ -19,7 +19,7 @@ func TestInventoryReadsHistoryWhileShellIsBusy(t *testing.T) {
 		Host: "work", Instance: newTaskUID(), Name: "remembered-shell",
 		State: taskDetached, PID: 42, Attachment: newTaskUID(),
 	}
-	activity := &daemonActivity{tasks: tasks, root: root}
+	activity := &daemonActivity{tasks: tasks, root: root, instance: newTaskUID()}
 	if err := changeParticipation(root, participationChange{Action: "participation_observe", Participant: &row}); err != nil {
 		t.Fatal(err)
 	}
@@ -27,14 +27,23 @@ func TestInventoryReadsHistoryWhileShellIsBusy(t *testing.T) {
 	// Simulate a shell busy starting.
 	shell.mu.Lock()
 	defer shell.mu.Unlock()
-	done := make(chan inventory, 1)
+	done := make(chan struct{})
 	go func() {
 		// Shutdown review holds the registry lock while collecting task identity.
 		tasks.adminSnapshot(localShellRecord{})
-		done <- activity.listTasks()
+		activity.publishInventory()
+		close(done)
 	}()
 	select {
-	case snapshot := <-done:
+	case <-done:
+		snapshot, err := loadInventory(root, activity.instance)
+		if err != nil {
+			t.Fatal(err)
+		}
+		offline, err := loadInventory(root, newTaskUID())
+		if err != nil || len(offline.LocalShells) != 0 || len(offline.Shells) != 1 {
+			t.Fatalf("stale live view was not discarded: %+v, %v", offline, err)
+		}
 		if len(snapshot.LocalShells) != 1 || snapshot.LocalShells[0].State != taskUnknown {
 			t.Fatalf("busy shell missing or mislabeled: %+v", snapshot.LocalShells)
 		}
@@ -94,7 +103,7 @@ func TestParticipationForgetAndStaleAttachment(t *testing.T) {
 	}
 }
 
-func TestUnavailableParticipationHistoryLeavesLiveInventoryAvailable(t *testing.T) {
+func TestUnavailableInventoryReportsDatabaseFailure(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	dir, err := prepareStateDir(root, "connections")
 	if err != nil {
@@ -103,18 +112,8 @@ func TestUnavailableParticipationHistoryLeavesLiveInventoryAvailable(t *testing.
 	if err := writeStateFile(filepath.Join(dir, "participation.db"), []byte("invalid database")); err != nil {
 		t.Fatal(err)
 	}
-	tasks := &daemonTasks{}
-	shell := tasks.newTmuxTask(localShellRecord{Name: "live-shell"}, nil, nil, false)
-	if err := tasks.registerShell(shell, nil); err != nil {
-		t.Fatal(err)
-	}
-	activity := &daemonActivity{tasks: tasks, root: root}
-	inv := activity.listTasks()
-	if len(inv.LocalShells) != 1 || inv.LocalShells[0].Name != "live-shell" {
-		t.Fatalf("live shell missing: %+v", inv.LocalShells)
-	}
-	if len(inv.Errors) != 1 {
-		t.Fatalf("history failure not reported: %+v", inv.Errors)
+	if _, err := loadInventory(root, newTaskUID()); err == nil {
+		t.Fatal("inventory reported success with an invalid database")
 	}
 }
 

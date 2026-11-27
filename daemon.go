@@ -230,7 +230,7 @@ func newDaemonRecord() (localShellRecord, error) {
 	if err != nil {
 		return localShellRecord{}, err
 	}
-	return localShellRecord{Name: "daemon", Version: version, Token: resourceToken(), Directory: root}, nil
+	return localShellRecord{Name: "daemon", UID: newTaskUID(), Version: version, Token: resourceToken(), Directory: root}, nil
 }
 
 func runDaemon() (result error) {
@@ -292,7 +292,8 @@ func runDaemon() (result error) {
 		defer log.Close()
 	}
 	tasks := &daemonTasks{log: log, cgroup: group, cgroupErr: cgroupErr}
-	activity := &daemonActivity{tasks: tasks, root: record.Directory}
+	activity := &daemonActivity{tasks: tasks, root: record.Directory, instance: record.UID}
+	tasks.publishInventory = activity.publishInventory
 	if err = writeStateJSON(path, record); err != nil {
 		return err
 	}
@@ -324,6 +325,7 @@ func runDaemon() (result error) {
 	go func() {
 		info := localHostInfo()
 		activity.hostInfo.Store(&info)
+		activity.publishInventory()
 	}()
 	accountActivity.Store(activity)
 	defer accountActivity.Store(nil)
@@ -379,6 +381,12 @@ func serveDaemon(listener net.Listener, record localShellRecord, activity *daemo
 			}
 		}
 	}()
+	inventoryDone := make(chan struct{})
+	defer func() {
+		close(inventoryDone)
+		activity.clearInventory()
+	}()
+	go activity.refreshInventory(inventoryDone)
 	mux := daemonRoutes(record, activity, func() { stop(false) })
 	server := http.Server{
 		ReadHeaderTimeout: 5 * time.Second,
