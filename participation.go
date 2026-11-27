@@ -24,25 +24,6 @@ type participatingShell struct {
 	ChangedAt            time.Time
 }
 
-type participationRefresh struct {
-	Shells []shellView
-	Since  time.Time
-}
-
-type participationChange struct {
-	Action         string
-	Host, Instance string
-	Participant    *participatingShell
-	Participation  *participationRefresh
-}
-
-func reconcileParticipatingShells(host string, shells []shellView, since time.Time) error {
-	refresh := participationRefresh{Shells: shells, Since: since}
-	return updateHistory(func(tx *bolt.Tx) error {
-		return updateParticipation(tx, participationChange{Action: "participation_refresh", Host: host, Participation: &refresh})
-	})
-}
-
 func validateParticipatingShell(row participatingShell) error {
 	switch {
 	case validSSHDestination(row.Host) != nil:
@@ -76,22 +57,6 @@ func participatingShells(tx *bolt.Tx) ([]participatingShell, error) {
 	return readHistoryRows(tx, participationBucket, validateParticipatingShell)
 }
 
-func currentParticipation(tx *bolt.Tx, row participatingShell) (bool, error) {
-	bucket := tx.Bucket(participationBucket)
-	if bucket == nil {
-		return false, nil
-	}
-	data := bucket.Get(participationKey(row.Host, row.Instance))
-	if data == nil {
-		return false, nil
-	}
-	var current participatingShell
-	if err := json.Unmarshal(data, &current); err != nil {
-		return false, err
-	}
-	return current.Attachment == row.Attachment, nil
-}
-
 func writeParticipation(bucket *bolt.Bucket, key []byte, row participatingShell) error {
 	data, err := json.Marshal(row)
 	if err != nil {
@@ -100,79 +65,88 @@ func writeParticipation(bucket *bolt.Bucket, key []byte, row participatingShell)
 	return bucket.Put(key, data)
 }
 
-func updateParticipation(tx *bolt.Tx, r participationChange) error {
+func observeParticipation(tx *bolt.Tx, row participatingShell) error {
+	if err := validateParticipatingShell(row); err != nil {
+		return err
+	}
 	bucket, err := tx.CreateBucketIfNotExists(participationBucket)
 	if err != nil {
 		return err
 	}
-	now := time.Now()
-	switch r.Action {
-	case "participation_observe", "participation_state":
-		if r.Participant == nil {
-			return fmt.Errorf("missing participating shell")
+	key := participationKey(row.Host, row.Instance)
+	var previous participatingShell
+	found, err := readBucketJSON(bucket, key, &previous)
+	if err != nil {
+		return err
+	}
+	if !found && bucket.Stats().KeyN >= participationLimit {
+		return fmt.Errorf("participating shell limit reached")
+	}
+	if row.HostInfo == (hostInfo{}) {
+		row.HostInfo = previous.HostInfo
+	}
+	row.ChangedAt = time.Now()
+	return writeParticipation(bucket, key, row)
+}
+
+// Only the current attachment may change the observation and its detach history.
+func setParticipationState(tx *bolt.Tx, row participatingShell) (bool, error) {
+	if err := validateParticipatingShell(row); err != nil {
+		return false, err
+	}
+	key := participationKey(row.Host, row.Instance)
+	var previous participatingShell
+	bucket := tx.Bucket(participationBucket)
+	found, err := readBucketJSON(bucket, key, &previous)
+	if err != nil || !found || previous.Attachment != row.Attachment {
+		return false, err
+	}
+	if row.State == taskDetached {
+		previous.Name = row.Name
+	}
+	previous.State, previous.ChangedAt = row.State, time.Now()
+	previous.Pinned, previous.PinUntil = row.Pinned, row.PinUntil
+	err = writeParticipation(bucket, key, previous)
+	return err == nil, err
+}
+
+func forgetParticipation(tx *bolt.Tx, host, instance string) error {
+	if !validTaskUID(instance) || validSSHDestination(host) != nil {
+		return fmt.Errorf("invalid participating shell identity")
+	}
+	if bucket := tx.Bucket(participationBucket); bucket != nil {
+		return bucket.Delete(participationKey(host, instance))
+	}
+	return nil
+}
+
+func reconcileParticipatingShells(host string, shells []shellView, since time.Time) error {
+	if validSSHDestination(host) != nil {
+		return fmt.Errorf("invalid participating shell refresh")
+	}
+	observed := make(map[string]shellView, len(shells))
+	for _, view := range shells {
+		if !validTaskUID(view.Instance) || view.Owner != "" && view.Owner != identityFromUID(canonicalTaskUID(view.Owner)) {
+			return fmt.Errorf("invalid shell or parent ID in participation refresh")
 		}
-		row := *r.Participant
-		if err := validateParticipatingShell(row); err != nil {
-			return err
+		observed[view.Instance] = view
+	}
+	return updateHistory(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(participationBucket)
+		if bucket == nil {
+			return nil
 		}
-		key := participationKey(row.Host, row.Instance)
-		var previous participatingShell
-		old := bucket.Get(key)
-		if old != nil {
-			if err := json.Unmarshal(old, &previous); err != nil {
-				return err
-			}
-		}
-		if r.Action == "participation_state" {
-			if old == nil || previous.Attachment != row.Attachment {
-				return nil
-			}
-			if row.State == taskDetached {
-				previous.Name = row.Name
-			}
-			previous.State, previous.ChangedAt = row.State, now
-			previous.Pinned, previous.PinUntil = row.Pinned, row.PinUntil
-			row = previous
-		} else {
-			row.ChangedAt = now
-			if old != nil && row.HostInfo == (hostInfo{}) {
-				row.HostInfo = previous.HostInfo
-			}
-		}
-		// Only a new observation adds a key. Keep the bounded count scan
-		// off the refresh and attachment state update paths.
-		if old == nil && bucket.Stats().KeyN >= participationLimit {
-			return fmt.Errorf("participating shell limit reached")
-		}
-		return writeParticipation(bucket, key, row)
-	case "participation_forget":
-		if !validTaskUID(r.Instance) || validSSHDestination(r.Host) != nil {
-			return fmt.Errorf("invalid participating shell identity")
-		}
-		return bucket.Delete(participationKey(r.Host, r.Instance))
-	case "participation_refresh":
-		if r.Participation == nil || validSSHDestination(r.Host) != nil {
-			return fmt.Errorf("invalid participating shell refresh")
-		}
-		for _, view := range r.Participation.Shells {
-			if !validTaskUID(view.Instance) || view.Owner != "" && view.Owner != identityFromUID(canonicalTaskUID(view.Owner)) {
-				return fmt.Errorf("invalid shell or parent ID in participation refresh")
-			}
-		}
-		observed := make(map[string]shellView, len(r.Participation.Shells))
-		for _, view := range r.Participation.Shells {
-			observed[view.Instance] = view
-		}
+		now := time.Now()
 		var changed []participatingShell
 		var removed [][]byte
-		prefix := []byte(r.Host + "\x00")
+		prefix := []byte(host + "\x00")
 		cursor := bucket.Cursor()
 		for key, value := cursor.Seek(prefix); bytes.HasPrefix(key, prefix); key, value = cursor.Next() {
 			var row participatingShell
 			if err := json.Unmarshal(value, &row); err != nil {
 				return err
 			}
-			if !row.ChangedAt.Before(r.Participation.Since) {
+			if !row.ChangedAt.Before(since) {
 				continue
 			}
 			view, found := observed[row.Instance]
@@ -199,6 +173,5 @@ func updateParticipation(tx *bolt.Tx, r participationChange) error {
 			}
 		}
 		return nil
-	}
-	return fmt.Errorf("invalid metadata operation")
+	})
 }

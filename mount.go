@@ -89,9 +89,6 @@ func mountVisitHistory(account, root string, delta files.VisitHistory) files.Vis
 	const maxHistoryBytes = files.VisitHistoryLimit * (6*4096 + 128)
 	var history files.VisitHistory
 	err = historyTransaction(state, len(delta) > 0, func(tx *bolt.Tx) error {
-		if tx == nil {
-			return nil
-		}
 		bucket := tx.Bucket(mountHistoryBucket)
 		if bucket != nil {
 			data := bucket.Get(key[:])

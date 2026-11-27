@@ -20,12 +20,13 @@ func historyTransaction(root string, write bool, run func(*bolt.Tx) error) error
 	return stateDBTransaction(root, filepath.Join("connections", "participation.db"), write, run)
 }
 
+// A read of a missing database succeeds without invoking run.
 func stateDBTransaction(root, file string, write bool, run func(*bolt.Tx) error) error {
 	path := filepath.Join(root, file)
 	subdir := filepath.Dir(file)
 	if !write {
 		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-			return run(nil)
+			return nil
 		}
 	}
 	dir, err := prepareStateDir(root, "")
@@ -47,7 +48,7 @@ func stateDBTransaction(root, file string, write bool, run func(*bolt.Tx) error)
 	} else {
 		if err := sys.PrivateStatePath(filepath.Dir(path), true); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return run(nil)
+				return nil
 			}
 			return err
 		}
@@ -56,7 +57,7 @@ func stateDBTransaction(root, file string, write bool, run func(*bolt.Tx) error)
 		ReadOnly: !write, Timeout: time.Second, OpenFile: openHistoryFile,
 	})
 	if !write && errors.Is(err, os.ErrNotExist) {
-		return run(nil)
+		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("open state database: %w", err)
@@ -95,12 +96,25 @@ func updateHistory(run func(*bolt.Tx) error) error {
 	return historyTransaction(root, true, run)
 }
 
+// A read of a missing key leaves dst untouched.
+func readBucketJSON(bucket *bolt.Bucket, key []byte, dst any) (bool, error) {
+	if bucket == nil {
+		return false, nil
+	}
+	data := bucket.Get(key)
+	if data == nil {
+		return false, nil
+	}
+	return true, json.Unmarshal(data, dst)
+}
+
 func readHistoryRows[T any](tx *bolt.Tx, name []byte, validate func(T) error) ([]T, error) {
-	if tx == nil || tx.Bucket(name) == nil {
+	bucket := tx.Bucket(name)
+	if bucket == nil {
 		return nil, nil
 	}
 	var rows []T
-	cursor := tx.Bucket(name).Cursor()
+	cursor := bucket.Cursor()
 	for key, data := cursor.Last(); key != nil; key, data = cursor.Prev() {
 		var row T
 		if err := json.Unmarshal(data, &row); err != nil {

@@ -20,7 +20,7 @@ func TestInventoryReadsHistoryWhileShellIsBusy(t *testing.T) {
 		State: taskDetached, PID: 42, Attachment: newTaskUID(),
 	}
 	activity := &daemonActivity{tasks: tasks, root: root, instance: newTaskUID()}
-	if err := changeParticipation(root, participationChange{Action: "participation_observe", Participant: &row}); err != nil {
+	if err := historyTransaction(root, true, func(tx *bolt.Tx) error { return observeParticipation(tx, row) }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -81,20 +81,26 @@ func TestParticipationForgetAndStaleAttachment(t *testing.T) {
 	if rows, err := testParticipationRows(root); err != nil || len(rows) != 0 {
 		t.Fatalf("expected empty database with legacy JSON present: %+v, %v", rows, err)
 	}
-	if err := changeParticipation(root, participationChange{Action: "participation_observe", Participant: &row}); err != nil {
+	if err := historyTransaction(root, true, func(tx *bolt.Tx) error { return observeParticipation(tx, row) }); err != nil {
 		t.Fatal(err)
 	}
 	stale := row
 	stale.Attachment = newTaskUID()
 	stale.State = taskDetached
-	if err := changeParticipation(root, participationChange{Action: "participation_state", Participant: &stale}); err != nil {
+	if err := historyTransaction(root, true, func(tx *bolt.Tx) error {
+		updated, err := setParticipationState(tx, stale)
+		if updated {
+			t.Fatal("accepted stale attachment")
+		}
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := testParticipationRows(root)
 	if err != nil || len(rows) != 1 || rows[0].State != taskActive {
 		t.Fatalf("stale attachment changed history: %+v, %v", rows, err)
 	}
-	if err := changeParticipation(root, participationChange{Action: "participation_forget", Host: row.Host, Instance: row.Instance}); err != nil {
+	if err := historyTransaction(root, true, func(tx *bolt.Tx) error { return forgetParticipation(tx, row.Host, row.Instance) }); err != nil {
 		t.Fatal(err)
 	}
 	rows, err = testParticipationRows(root)
@@ -115,12 +121,6 @@ func TestUnavailableInventoryReportsDatabaseFailure(t *testing.T) {
 	if _, err := loadInventory(root, newTaskUID()); err == nil {
 		t.Fatal("inventory reported success with an invalid database")
 	}
-}
-
-func changeParticipation(root string, change participationChange) error {
-	return historyTransaction(root, true, func(tx *bolt.Tx) error {
-		return updateParticipation(tx, change)
-	})
 }
 
 func testParticipationRows(root string) (rows []participatingShell, err error) {

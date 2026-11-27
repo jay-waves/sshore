@@ -814,7 +814,7 @@ func removeRecentDetach(tx *bolt.Tx, o options) error {
 	if id == "" {
 		return nil
 	}
-	return deleteRecent(tx.Bucket(attachmentBucket), func(row recentAttachment) bool {
+	return pruneRecent(tx.Bucket(attachmentBucket), recentHistoryLimit, func(row recentAttachment) bool {
 		return row.Identity == id
 	})
 }

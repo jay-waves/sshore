@@ -292,7 +292,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		if participation == nil {
 			return nil
 		}
-		if err := updateParticipation(tx, participationChange{Action: "participation_observe", Participant: participation}); err != nil {
+		if err := observeParticipation(tx, *participation); err != nil {
 			return err
 		}
 		return rememberConnection(tx, o)
@@ -306,7 +306,8 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 			if !terminalStateConfirmed {
 				participation.State = taskUnknown
 				if err := updateHistory(func(tx *bolt.Tx) error {
-					return updateParticipation(tx, participationChange{Action: "participation_state", Participant: participation})
+					_, err := setParticipationState(tx, *participation)
+					return err
 				}); err != nil {
 					termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not update shell history: %s\n", cleanText(err.Error()))
 				}
@@ -334,11 +335,8 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		}
 		if err := updateHistory(func(tx *bolt.Tx) error {
 			if participation != nil {
-				current, err := currentParticipation(tx, *participation)
+				current, err := setParticipationState(tx, *participation)
 				if err != nil || !current {
-					return err
-				}
-				if err := updateParticipation(tx, participationChange{Action: "participation_state", Participant: participation}); err != nil {
 					return err
 				}
 			}

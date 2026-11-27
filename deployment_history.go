@@ -68,17 +68,8 @@ func (e deploymentEndpoint) cached() (entry deploymentEndpoint, err error) {
 		return entry, err
 	}
 	err = deploymentHistoryTransaction(false, func(tx *bolt.Tx) error {
-		if tx == nil {
-			return nil
-		}
-		bucket := tx.Bucket([]byte(version))
-		if bucket == nil {
-			return nil
-		}
-		if data := bucket.Get(key); data != nil {
-			return json.Unmarshal(data, &entry)
-		}
-		return nil
+		_, err := readBucketJSON(tx.Bucket([]byte(version)), key, &entry)
+		return err
 	})
 	return entry, err
 }
@@ -93,14 +84,12 @@ func (e deploymentEndpoint) remember(home string, review bool) error {
 		if err != nil {
 			return err
 		}
-		if data := bucket.Get(key); data != nil {
-			var previous deploymentEndpoint
-			if err := json.Unmarshal(data, &previous); err != nil {
-				return err
-			}
-			if previous.Review && !review {
-				e = previous
-			}
+		var previous deploymentEndpoint
+		if _, err := readBucketJSON(bucket, key, &previous); err != nil {
+			return err
+		}
+		if previous.Review && !review {
+			e = previous
 		}
 		e.Home, e.Review = home, review || e.Review
 		data, err := marshalBoundedStateJSON("deployment endpoint", e, maxDeploymentRecordBytes)
@@ -115,9 +104,6 @@ func (e deploymentEndpoint) remember(home string, review bool) error {
 func stopInstalledDeployments(executable, release string) error {
 	var endpoints []deploymentEndpoint
 	err := deploymentHistoryTransaction(false, func(tx *bolt.Tx) error {
-		if tx == nil {
-			return nil
-		}
 		bucket := tx.Bucket([]byte(release))
 		if bucket == nil {
 			return nil

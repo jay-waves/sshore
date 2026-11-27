@@ -14,20 +14,22 @@ var (
 
 const recentHistoryLimit = 32
 
-// Recent histories contain at most 32 rows, ordered by bbolt's bucket sequence.
-func deleteRecent[T any](bucket *bolt.Bucket, match func(T) bool) error {
+// Scan newest first. On promotion, reserve one slot by evicting the oldest
+// row if the bounded history contains no match.
+func pruneRecent[T any](bucket *bolt.Bucket, keep int, match func(T) bool) error {
 	if bucket == nil {
 		return nil
 	}
 	cursor := bucket.Cursor()
-	for key, data := cursor.First(); key != nil; key, data = cursor.Next() {
+	for key, data := cursor.Last(); key != nil; key, data = cursor.Prev() {
 		var row T
 		if err := json.Unmarshal(data, &row); err != nil {
 			return err
 		}
-		if match(row) {
+		if match(row) || keep == 0 {
 			return cursor.Delete()
 		}
+		keep--
 	}
 	return nil
 }
@@ -37,20 +39,8 @@ func promoteRecent[T any](tx *bolt.Tx, name []byte, row T, same func(T) bool) er
 	if err != nil {
 		return err
 	}
-	if err := deleteRecent(bucket, same); err != nil {
+	if err := pruneRecent(bucket, recentHistoryLimit-1, same); err != nil {
 		return err
-	}
-	// Count with a fresh cursor because the transaction may already have deleted a row.
-	cursor := bucket.Cursor()
-	n := 0
-	for key, _ := cursor.First(); key != nil; key, _ = cursor.Next() {
-		n++
-	}
-	if n >= recentHistoryLimit {
-		cursor.First()
-		if err := cursor.Delete(); err != nil {
-			return err
-		}
 	}
 	seq, err := bucket.NextSequence()
 	if err != nil {
@@ -87,6 +77,6 @@ func rememberShellExit(o options) error {
 		if o.local || !validTaskUID(o.instance) {
 			return nil
 		}
-		return updateParticipation(tx, participationChange{Action: "participation_forget", Host: o.host, Instance: o.instance})
+		return forgetParticipation(tx, o.host, o.instance)
 	})
 }

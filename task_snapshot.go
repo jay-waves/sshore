@@ -275,14 +275,9 @@ func loadInventory(root, instance string) (inventory, error) {
 	var observed []participatingShell
 	var live publishedInventory
 	err := historyTransaction(root, false, func(tx *bolt.Tx) error {
-		if tx == nil {
-			return nil
-		}
-		if bucket := tx.Bucket(inventoryBucket); bucket != nil && instance != "" {
-			if data := bucket.Get(inventoryKey); data != nil {
-				if err := json.Unmarshal(data, &live); err != nil {
-					return err
-				}
+		if instance != "" {
+			if _, err := readBucketJSON(tx.Bucket(inventoryBucket), inventoryKey, &live); err != nil {
+				return err
 			}
 		}
 		var err error

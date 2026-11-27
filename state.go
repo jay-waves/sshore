@@ -19,11 +19,7 @@ import (
 
 // writeStateJSON encodes metadata before replacing its private state file.
 func writeStateJSON(path string, value any) error {
-	return writeBoundedStateJSON(path, value, 0)
-}
-
-func writeBoundedStateJSON(path string, value any, maxBytes int) error {
-	data, err := marshalBoundedStateJSON(path, value, maxBytes)
+	data, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
