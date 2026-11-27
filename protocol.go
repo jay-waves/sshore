@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/release"
 )
 
 // Control metadata uses bounded frames. Approved file streams switch to
@@ -231,7 +233,7 @@ func checkPeerVersion(peer, role string) error {
 
 func checkReleaseVersions(local, peer, role string) error {
 	if local == peer {
-		if _, ok := releaseParts(local); ok {
+		if release.Valid(local) {
 			return nil
 		}
 	}
@@ -239,26 +241,6 @@ func checkReleaseVersions(local, peer, role string) error {
 		peer = "unknown"
 	}
 	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%q", local, role, peer)
-}
-
-func releaseParts(v string) ([3]string, bool) {
-	major, rest, hasMinor := strings.Cut(v, ".")
-	minor, patch, hasPatch := strings.Cut(rest, ".")
-	if !hasMinor || !hasPatch {
-		return [3]string{}, false
-	}
-	parts := [3]string{major, minor, patch}
-	for _, part := range parts {
-		if part == "" || len(part) > 1 && part[0] == '0' {
-			return [3]string{}, false
-		}
-		for _, c := range part {
-			if c < '0' || c > '9' {
-				return [3]string{}, false
-			}
-		}
-	}
-	return parts, true
 }
 
 // Prefer a reported release mismatch to the peer's error text. Relays can

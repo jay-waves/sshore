@@ -5,12 +5,14 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/jay-waves/sshore/internal/release"
 )
 
 func publish(build func(string) ([]string, error)) error {
 	ref := os.Getenv("GITHUB_REF")
 	version, ok := strings.CutPrefix(ref, "refs/tags/v")
-	if !ok || version == "0.0.0" || !fullVersion.MatchString(version) {
+	if !ok || version == "0.0.0" || !release.Valid(version) {
 		return fmt.Errorf("expected a full release tag in GITHUB_REF, got %q", ref)
 	}
 	commit := os.Getenv("GITHUB_SHA")
@@ -40,8 +42,8 @@ For non-interactive mounts, use HOST:~ to select the remote home and .: to
 allocate a local mountpoint automatically.
 
 Install the client locally. Managed SSH connections deploy the matching server automatically.
-Bootstrap ends the target account's tasks, including pinned shells, and clears
-its sshore identity, history and cached releases. Save work before bootstrapping.
+Install ends the target account's tasks, including pinned shells, and clears
+its sshore identity, history and cached releases. Save work before installing.
 Commit: %[2]s
 `, version, commit))
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

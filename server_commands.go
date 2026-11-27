@@ -7,12 +7,13 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"io"
 	"os"
 	"sync"
 	"time"
 
-	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/release"
 )
 
 const remoteServiceCommand = "service"
@@ -64,7 +65,7 @@ func (e deploymentEndpoint) openService(ctx context.Context, client *sshio.Clien
 	if err != nil {
 		return nil, err
 	}
-	if _, ok := releaseParts(version); !ok && version != "dev" {
+	if !release.Valid(version) && version != "dev" {
 		return nil, fmt.Errorf("invalid deployment version %q", version)
 	}
 	cached, err := e.cached()

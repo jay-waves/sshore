@@ -14,7 +14,7 @@ Usage: sh install.sh [--version X.Y.Z] [--path PATH | --bin-dir DIRECTORY]
 Install a published Linux amd64 release and add its directory to user PATH.
 Default: latest release into $HOME/.local/bin. Explicit --version is recommended
 when matching a local client. Requires curl, tar and sha256sum (or shasum).
-Bootstrap resets this account's sshore state and reinstalls even at the same
+Installation resets this account's sshore state and reinstalls even at the same
 version. Review any running tasks before confirming.
 Windows clients: use install.ps1 or the matching release ZIP.
 HELP
@@ -121,12 +121,18 @@ main() {
     [ ! -d "$install_target" ] || fail 'installation target is a directory'
     chmod 755 "$install_tmp/sshore"
     [ "$("$install_tmp/sshore" --version)" = "sshore $install_version" ] || fail 'binary version does not match release'
-    # Keep the script's stdin on the pipe. Only bootstrap reads from the
+    # Older published targets expose the same apply operation as bootstrap.
+    install_action=bootstrap
+    if "$install_tmp/sshore" --help | grep -Eq '^[[:space:]]+install[[:space:]]'; then
+        install_action=install
+    fi
+
+    # Keep the script's stdin on the pipe. Only the apply step reads from the
     # terminal when available; otherwise it inherits stdin (e.g. SSH exec).
     if ( : 2>/dev/null </dev/tty ); then
-        "$install_tmp/sshore" bootstrap --apply "here:$install_target" </dev/tty
+        "$install_tmp/sshore" "$install_action" --apply "here:$install_target" </dev/tty
     else
-        "$install_tmp/sshore" bootstrap --apply "here:$install_target"
+        "$install_tmp/sshore" "$install_action" --apply "here:$install_target"
     fi
     add_to_path
     printf 'Installed sshore %s: %s\n' "$install_version" "$install_target"

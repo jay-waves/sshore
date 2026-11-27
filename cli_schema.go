@@ -557,17 +557,17 @@ choose one in the terminal with Tab completion.
 ` + sshOptions,
 			examples: "Install the configured public key\n  sshore copy-id work\n",
 		},
-		"bootstrap": {
-			run: runBootstrap, group: groupAccount, summary: "Reset the local account and reinstall sshore",
+		"install": {
+			run: runInstall, group: groupAccount, summary: "Reset the local account and reinstall sshore",
 			max: 1, flags: []string{"--apply"},
-			help: `Usage: sshore bootstrap [here:[PATH]]
+			help: `Usage: sshore install [here:[PATH]]
 
 Reset this account and reinstall the latest release. This ends local sshore tasks,
 including pinned shells, and clears identity, history and caches even when the
 version already matches. Review and confirm any running tasks before continuing.
 Run outside managed shells. Use here:PATH to specify an absolute executable path.
 `,
-			examples: "Reset and reinstall this account\n  sshore bootstrap\n",
+			examples: "Reset and reinstall this account\n  sshore install\n",
 		},
 		"ping": {
 			run: runPing, selector: cliHostSelector, group: groupSSH, summary: "Measure SSH connection and echo latency",

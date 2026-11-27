@@ -184,7 +184,7 @@ func validateResetDirectory(path string) (string, error) {
 	if err == nil && resetContains(real, realExecutable) || real == filepath.Dir(real) {
 		return "", fmt.Errorf("refusing to reset unsafe state directory: %s", path)
 	}
-	return real, privateStatePath(absolute, true)
+	return real, sys.PrivateStatePath(absolute, true)
 }
 
 func resetContains(parent, path string) bool {

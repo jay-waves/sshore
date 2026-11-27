@@ -286,7 +286,7 @@ Match command "printf forwarding-check"
 		startDetached(installed, "0.0.0")
 		startDetached(newer, "0.0.1")
 		upgrade := func(answer string) ([]byte, error) {
-			cmd := exec.CommandContext(ctx, newer, "bootstrap", "--apply", "here:"+installed)
+			cmd := exec.CommandContext(ctx, newer, "install", "--apply", "here:"+installed)
 			cmd.Stdin = strings.NewReader(answer + "\n")
 			return cmd.CombinedOutput()
 		}

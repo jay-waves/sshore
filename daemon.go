@@ -30,7 +30,7 @@ func openDaemonLog(dir string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := privateStatePath(path, false); err != nil {
+	if err := sys.PrivateStatePath(path, false); err != nil {
 		_ = log.Close()
 		return nil, err
 	}
@@ -45,7 +45,7 @@ func daemonDirectory() (string, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
-	if err := privateStatePath(dir, true); err != nil {
+	if err := sys.PrivateStatePath(dir, true); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -65,7 +65,7 @@ func openDaemonOwner(dir string) (*sys.FileLock, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := privateStatePath(owner.Name(), false); err != nil {
+	if err := sys.PrivateStatePath(owner.Name(), false); err != nil {
 		owner.Close()
 		return nil, fmt.Errorf("validate account owner lock: %w", err)
 	}
@@ -259,7 +259,7 @@ func runDaemon() (result error) {
 	if record.Name != "daemon" || record.Version != version || len(record.Token) != 64 || !filepath.IsAbs(record.Directory) {
 		return fmt.Errorf("invalid daemon startup")
 	}
-	group, cgroupErr := daemonTaskCgroup()
+	group, cgroupErr := sys.DaemonTaskCgroup()
 	owner, err := daemonFileLock("owner")
 	if err != nil {
 		return err

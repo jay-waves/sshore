@@ -11,11 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
-)
 
-var fullVersion = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*)){2}$`)
+	"github.com/jay-waves/sshore/internal/release"
+)
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -51,7 +50,7 @@ func run(args []string) error {
 		return fmt.Errorf("usage: go run ./scripts [version|publish]")
 	}
 	version := strings.TrimPrefix(tag, "v")
-	if !fullVersion.MatchString(version) {
+	if !release.Valid(version) {
 		return fmt.Errorf("invalid release version %q", tag)
 	}
 	_, err := buildPackages(version)

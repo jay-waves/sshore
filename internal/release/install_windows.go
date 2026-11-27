@@ -1,56 +1,22 @@
-package main
+package release
 
 import (
-	_ "embed"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"unsafe"
 
-	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/sys/windows"
 )
 
-func validateInstallTarget(target string) error {
-	for _, path := range []string{filepath.Dir(target), target} {
-		info, err := os.Lstat(path)
-		if errors.Is(err, os.ErrNotExist) && path == target {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		name, err := windows.UTF16PtrFromString(path)
-		if err != nil {
-			return err
-		}
-		attributes, err := windows.GetFileAttributes(name)
-		if err != nil {
-			return err
-		}
-		if attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-			return fmt.Errorf("installation path must not be a reparse point")
-		}
-		if info.Mode()&os.ModeSymlink != 0 || path == target && !info.Mode().IsRegular() || path != target && !info.IsDir() {
-			return fmt.Errorf("installation target must be a regular executable in a real directory")
-		}
-	}
-	return nil
-}
-
-//go:embed install.ps1
-var windowsInstaller string
-
-func runLocalInstaller(target string) error {
+func RunInstaller(target, _, script string) error {
 	// Start the installer in a separate console so this executable can exit before replacement.
 	f, err := os.CreateTemp("", "sshore-install-*.ps1")
 	if err != nil {
 		return err
 	}
-	if _, err := f.WriteString(windowsInstaller); err != nil {
+	if _, err := f.WriteString(script); err != nil {
 		f.Close()
 		os.Remove(f.Name())
 		return err
@@ -64,7 +30,6 @@ func runLocalInstaller(target string) error {
 		os.Remove(f.Name())
 		return err
 	}
-	fmt.Fprintln(os.Stderr, termui.StatusLine(termui.ColorEnabled(os.Stderr), termui.Info, "Continue setup in the installer window."))
 	return nil
 }
 

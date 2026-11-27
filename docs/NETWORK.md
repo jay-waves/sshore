@@ -59,7 +59,7 @@ forward. An approved copy uses an authorized file stream for SFTP.
 resolve a known task and contact its managing daemon. `kill HOST --all` uses an
 administrative SSH exchange to preview
 and confirm shutdown. `daemon` and `reset` operate on the local account.
-`bootstrap` downloads the release over HTTPS. Before replacing the local
+`install` downloads the release over HTTPS. Before replacing the local
 client, it uses the installed client to review and stop its recorded shell hosts
 and local daemon. A changed SSH destination stops the upgrade before it sends a
 shutdown request. Copies do not add hosts to the shutdown review.

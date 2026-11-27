@@ -78,9 +78,9 @@ daemon uses its own writable delegated subtree or requests a delegated scope
 from the systemd user manager. Each shell starts directly in its own child
 cgroup. Ending the shell task terminates remaining members, including background
 jobs that created separate sessions. Without delegation the daemon can still
-manage mounts and forwards. Linux bootstrap tests cgroup creation, process launch
+manage mounts and forwards. Linux install tests cgroup creation, process launch
 and group termination on the target account before resetting it. If the probe
-fails, bootstrap reports the reason and continues the installation.
+fails, install reports the reason and continues the installation.
 
 Build the experimental Apple Silicon client on Apple Silicon with
 `CGO_ENABLED=0 go run ./scripts go build -o sshore .`. It targets

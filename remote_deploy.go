@@ -1,18 +1,12 @@
 package main
 
 import (
-	"archive/tar"
-	"archive/zip"
-	"bytes"
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"io"
 	"io/fs"
-	"net/http"
 	"os"
 	"os/user"
 	"path"
@@ -21,21 +15,14 @@ import (
 	"strings"
 	"sync"
 
-	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/release"
+	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/pkg/sftp/v2"
 )
 
 const deploymentDirectory = ".sshore/clients"
-const maxDeploymentAsset = 64 << 20
 
 var deploymentReleaseBase = "https://github.com/jay-waves/sshore/releases/download"
-
-var deploymentHTTP = &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
-	if len(via) >= 10 || req.URL.Scheme != via[0].URL.Scheme {
-		return fmt.Errorf("invalid release download redirect")
-	}
-	return nil
-}}
 
 var errRemoteDeploymentMissing = errors.New("remote deployment is absent")
 
@@ -91,7 +78,7 @@ func deploymentClientID() (string, error) {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return "", err
 	}
-	if err := privateStatePath(root, true); err != nil {
+	if err := sys.PrivateStatePath(root, true); err != nil {
 		return "", err
 	}
 	lock, err := lockStateFile(filepath.Join(root, "deployment-id.lock"))
@@ -161,7 +148,7 @@ func prepareRemoteDeployment(ctx context.Context, client *sshio.Client, id strin
 				return "", false, err
 			}
 		}
-		source, err := deploymentSource(ctx, platform.os, platform.binary)
+		source, err := release.OpenBinary(ctx, deploymentReleaseBase, version, platform.os, platform.binary)
 		if err != nil {
 			return "", false, err
 		}
@@ -262,116 +249,4 @@ func uploadDeployment(ftp *sftp.Client, source io.Reader, destination string, wi
 		}
 	}
 	return nil
-}
-
-func deploymentSource(ctx context.Context, target, binary string) (io.ReadCloser, error) {
-	if runtime.GOOS == target && runtime.GOARCH == "amd64" {
-		exe, err := os.Executable()
-		if err != nil {
-			return nil, err
-		}
-		return os.Open(exe)
-	}
-	if _, ok := releaseParts(version); !ok {
-		return nil, fmt.Errorf("cross-platform remote deployment requires a published release")
-	}
-	data, err := downloadDeployment(ctx, target, binary)
-	if err != nil {
-		return nil, err
-	}
-	return io.NopCloser(bytes.NewReader(data)), nil
-}
-
-func downloadDeployment(ctx context.Context, target, binary string) ([]byte, error) {
-	extension := ".tar.gz"
-	if target == "windows" {
-		extension = ".zip"
-	}
-	name := "sshore_" + version + "_" + target + "_amd64" + extension
-	base := deploymentReleaseBase + "/v" + version + "/"
-	manifest, err := readDeploymentAsset(ctx, base+"SHA256SUMS", 16<<10)
-	if err != nil {
-		return nil, err
-	}
-	var expected string
-	for line := range strings.SplitSeq(string(manifest), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 2 && fields[1] == name {
-			if expected != "" {
-				return nil, fmt.Errorf("duplicate release checksum for %s", name)
-			}
-			expected = fields[0]
-		}
-	}
-	if len(expected) != 2*sha256.Size {
-		return nil, fmt.Errorf("release checksum missing for %s", name)
-	}
-	archive, err := readDeploymentAsset(ctx, base+name, maxDeploymentAsset)
-	if err != nil {
-		return nil, err
-	}
-	sum := sha256.Sum256(archive)
-	if !strings.EqualFold(hex.EncodeToString(sum[:]), expected) {
-		return nil, fmt.Errorf("release checksum mismatch for %s", name)
-	}
-	if target == "windows" {
-		z, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
-		if err != nil {
-			return nil, err
-		}
-		for _, f := range z.File {
-			if f.Name == binary && f.Mode().IsRegular() {
-				r, err := f.Open()
-				if err != nil {
-					return nil, err
-				}
-				defer r.Close()
-				return readBoundedDeployment(r, maxDeploymentAsset)
-			}
-		}
-	} else {
-		gz, err := gzip.NewReader(bytes.NewReader(archive))
-		if err != nil {
-			return nil, err
-		}
-		defer gz.Close()
-		tr := tar.NewReader(gz)
-		for {
-			entry, err := tr.Next()
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			if err != nil {
-				return nil, err
-			}
-			if entry.Name == binary && entry.Typeflag == tar.TypeReg {
-				return readBoundedDeployment(tr, maxDeploymentAsset)
-			}
-		}
-	}
-	return nil, fmt.Errorf("release archive %s lacks %s", name, binary)
-}
-
-func readDeploymentAsset(ctx context.Context, url string, limit int64) ([]byte, error) {
-	request, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	response, err := deploymentHTTP.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download %s: %s", url, response.Status)
-	}
-	return readBoundedDeployment(response.Body, limit)
-}
-
-func readBoundedDeployment(r io.Reader, limit int64) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(r, limit+1))
-	if err == nil && int64(len(data)) > limit {
-		err = fmt.Errorf("release asset exceeds %d bytes", limit)
-	}
-	return data, err
 }

@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/sys"
 )
 
 // The token is a local connection capability, never part of public inventory.
@@ -55,7 +57,7 @@ func openNativeShell(ctx context.Context, ref, identity string) (net.Conn, local
 
 func readLocalRecord(path, name string) (localShellRecord, error) {
 	var r localShellRecord
-	if err := privateStatePath(path, false); err != nil {
+	if err := sys.PrivateStatePath(path, false); err != nil {
 		return r, err
 	}
 	f, err := os.Open(path)

@@ -7,6 +7,7 @@ import (
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"fmt"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"io"
 	"net"
 	"os"
@@ -17,7 +18,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/release"
 	"github.com/jay-waves/sshore/internal/sys"
 )
 
@@ -123,7 +124,7 @@ func (s *resourceService) mountPeerTask() peerRecord {
 }
 
 func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecycle, selector func(context.Context, files.DirectoryReader, string) (string, string, error)) (int, error) {
-	if _, ok := releaseParts(version); !ok {
+	if !release.Valid(version) {
 		return 1, fmt.Errorf("mount requires a full sshore release, got %q", version)
 	}
 	c := files.MountConfig{

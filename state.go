@@ -18,7 +18,7 @@ import (
 
 // readStateJSON checks privacy before opening and bounds the entire record.
 func readStateJSON(path string, maxBytes int, value any) error {
-	if err := privateStatePath(path, false); err != nil {
+	if err := sys.PrivateStatePath(path, false); err != nil {
 		return err
 	}
 	f, err := os.Open(path)
@@ -67,8 +67,8 @@ func marshalBoundedStateJSON(path string, value any, maxBytes int) ([]byte, erro
 // writeStateFile replaces metadata only after a complete private write. File transfers use
 // no-overwrite publication instead; pending approvals use exclusive creation.
 func writeStateFile(path string, data []byte) error {
-	staged, err := stageSiblingFile(path, ".state-*", func(f *os.File) error {
-		if err := privateStatePath(f.Name(), false); err != nil {
+	staged, err := sys.StageSiblingFile(path, ".state-*", func(f *os.File) error {
+		if err := sys.PrivateStatePath(f.Name(), false); err != nil {
 			return err
 		}
 		return writeFull(f, data)
@@ -78,31 +78,6 @@ func writeStateFile(path string, data []byte) error {
 	}
 	defer os.Remove(staged)
 	return os.Rename(staged, path)
-}
-
-// stageSiblingFile gives the caller a closed, synced file on the destination
-// filesystem. It owns cleanup until the path is returned.
-func stageSiblingFile(target, pattern string, prepare func(*os.File) error) (staged string, err error) {
-	f, err := os.CreateTemp(filepath.Dir(target), pattern)
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		if staged == "" {
-			_ = f.Close()
-			_ = os.Remove(f.Name())
-		}
-	}()
-	if err = prepare(f); err != nil {
-		return "", err
-	}
-	if err = f.Sync(); err != nil {
-		return "", err
-	}
-	if err = f.Close(); err != nil {
-		return "", err
-	}
-	return f.Name(), nil
 }
 
 // Path resolves a state path without creating directories or changing permissions.
@@ -147,7 +122,7 @@ func prepareStateDir(root, name string) (string, error) {
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return "", err
 	}
-	if err := privateStatePath(root, true); err != nil {
+	if err := sys.PrivateStatePath(root, true); err != nil {
 		return "", err
 	}
 	dir := filepath.Join(root, name)
@@ -157,7 +132,7 @@ func prepareStateDir(root, name string) (string, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", err
 	}
-	if err := privateStatePath(dir, true); err != nil {
+	if err := sys.PrivateStatePath(dir, true); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -178,7 +153,7 @@ func openPrivateFileLock(path string) (*sys.FileLock, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err = privateStatePath(path, false); err != nil {
+	if err = sys.PrivateStatePath(path, false); err != nil {
 		f.Close()
 		return nil, err
 	}

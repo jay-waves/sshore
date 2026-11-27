@@ -332,7 +332,7 @@ same OS account. Account permissions govern filesystem access.
 
 Remote `kill --all` presents the daemon's live task snapshot before stopping it
 and verifies the confirmed snapshot before shutdown. Local installers set up
-the client. `bootstrap` resets and reinstalls the local account.
+the client. `install` resets and reinstalls the local account.
 Installers verify the release checksum and executable version. The prepared binary
 stages the replacement before shutdown, including for same-version reinstalls.
 It uses the installed client to review and stop its deployments and local daemon.
@@ -342,7 +342,7 @@ under the startup and owner locks, the installer rechecks the installation targe
 against the file it inspected. After replacement it clears the target account's
 identity, history, runtime state and cached releases under the same locks as
 `reset`. A cleanup failure reports the installed version and can be retried with
-`bootstrap`. Unknown or newer installed releases require manual
+`install`. Unknown or newer installed releases require manual
 handling.
 
 Replacement requires a user-owned regular file and a user-owned directory
@@ -365,7 +365,7 @@ It preserves coordination locks to prevent concurrent startup.
 ## Setup failure
 
 Use ordinary SSH for manual repair. Installer scripts verify the release before
-invoking the prepared executable to apply it. Bootstrap help is read-only.
+invoking the prepared executable to apply it. Install help is read-only.
 
 ## Inventory and privacy
 

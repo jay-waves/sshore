@@ -50,6 +50,12 @@ stderr 'SHA256 mismatch'
 cmp $BIN/sshore sshore
 cmp $BIN/sshore-backup old
 
+# A release with the renamed command uses install for the apply step.
+exec sh bundle 0.3.2
+exec sh $INSTALL --bin-dir $BIN --version 0.3.2
+exec $BIN/sshore --version
+stdout '^sshore 0.3.2$'
+
 -- bundle --
 set -eu
 asset=sshore_${1}_linux_amd64.tar.gz
@@ -61,7 +67,10 @@ sha256sum "$asset" > SHA256SUMS
 -- payload --
 set -eu
 if [ "$1" = --version ]; then echo "sshore $version"; exit; fi
-[ "$1" = bootstrap ] && [ "$2" = --apply ] || exit 2
+action=bootstrap
+if [ "$version" = 0.3.2 ]; then action=install; fi
+if [ "$1" = --help ]; then printf '  %s  Install sshore\n' "$action"; exit; fi
+[ "$1" = "$action" ] && [ "$2" = --apply ] || exit 2
 target=${3#here:}
 cp -p "$target" "$target-backup"
 cp "$0" "$target.next"

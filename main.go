@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -13,7 +14,7 @@ var version = "dev"
 
 func main() {
 	code := 1
-	err := checkPlatform()
+	err := sys.CheckHost()
 	if err == nil {
 		code, err = run(os.Args[1:])
 	}

@@ -1,6 +1,6 @@
 //go:build linux || (darwin && arm64)
 
-package main
+package sys
 
 import (
 	"fmt"
@@ -10,7 +10,7 @@ import (
 )
 
 // Private validates ownership, permissions and path type without following symlinks.
-func privateStatePath(path string, directory bool) error {
+func PrivateStatePath(path string, directory bool) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
@@ -22,7 +22,7 @@ func privateStatePath(path string, directory bool) error {
 	return nil
 }
 
-func validateInstallTarget(target string) error {
+func ValidateInstallTarget(target string) error {
 	dirInfo, err := os.Stat(filepath.Dir(target))
 	if err != nil {
 		return err
