@@ -673,9 +673,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		select {
 		case <-escapeTick:
 			if console != nil {
-				if err := leaveConsole(); err != nil {
-					return 255, err
-				}
+				console.clearInput()
 			}
 			escapeTick = nil
 		case <-interruptSignals.interrupts:

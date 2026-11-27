@@ -74,6 +74,11 @@ func (c *commandConsole) stopEditor() {
 	}
 }
 
+// Move to the end, then clear the whole Readline draft.
+func (c *commandConsole) clearInput() {
+	c.editor.TryInput([]byte{5, 21})
+}
+
 func (c *commandConsole) accepts(event clientEvent) bool {
 	return c != nil && c.editor != nil && event.consoleSource == c && event.consoleGeneration == c.generation
 }
@@ -345,6 +350,7 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 		cancelKeyboard()
 		stopKeyboard()
 	}()
+	var escape <-chan time.Time
 	results := make(chan string)
 	var pendingInventory, queuedInventory string
 	loadInventory := func(command string) {
@@ -369,6 +375,9 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 	console.show(consoleInventoryBody(body, rows))
 	for {
 		select {
+		case <-escape:
+			escape = nil
+			console.clearInput()
 		case <-ctx.Done():
 			return nil, nil
 		case result := <-results:
@@ -419,7 +428,16 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 			case event.err != nil || event.console.Closed:
 				return nil, nil
 			case len(event.input) != 0:
-				if string(event.input) == "\x1b" || !console.editor.TryInput(event.input) {
+				data := event.input
+				if escape != nil {
+					escape = nil
+					data = append([]byte{27}, data...)
+				}
+				if len(data) == 1 && data[0] == 27 {
+					escape = time.After(50 * time.Millisecond)
+					continue
+				}
+				if !console.editor.TryInput(data) {
 					return nil, nil
 				}
 			case event.console.Output != nil:
@@ -438,6 +456,7 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 					loadInventory(command.command)
 					continue
 				case "lf":
+					escape = nil
 					console.stopEditor()
 					picker = startConsoleFilePicker(ctx, panel.localDirectory, "", false, emit)
 					continue

@@ -75,7 +75,7 @@ type LFInput struct {
 	Err  error
 }
 
-// PickLF presents parent, current and child directory lists. q, Escape and Ctrl-C
+// PickLF presents parent, current and child directory lists. q and Ctrl-C
 // return context.Canceled. ReadDir must honor its context for prompt cleanup.
 func PickLF(ctx context.Context, options LFOptions) (string, error) {
 	paths, err := pickLF(ctx, options, false, nil)
@@ -288,6 +288,16 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 	var pending []byte
 	var awaitingG, inPaste, afterCR bool
 	var searchPrompt byte
+	cancelLayer := func() {
+		if searchPrompt != 0 {
+			searchPrompt = 0
+			return
+		}
+		if len(marked) == 0 {
+			return
+		}
+		marked, validationErr = nil, nil
+	}
 	var query []rune
 	appendQuery := func(r rune) {
 		if unicode.IsPrint(r) && len(query) < 1024 {
@@ -334,10 +344,8 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-escape:
-			if searchPrompt == 0 {
-				return nil, context.Canceled
-			}
-			pending, escape, searchPrompt = nil, nil, 0
+			cancelLayer()
+			pending, escape = nil, nil
 		case <-resize.C:
 			newWidth, newHeight, err := xterm.GetSize(int(os.Stdout.Fd()))
 			if err != nil || newWidth == width && newHeight == height {
@@ -428,12 +436,9 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 					}
 					escape = nil
 					if pending[1] != '[' && pending[1] != 'O' {
-						if searchPrompt != 0 {
-							searchPrompt = 0
-							pending = pending[1:]
-							continue
-						}
-						return nil, context.Canceled
+						cancelLayer()
+						pending = pending[1:]
+						continue
 					}
 					if len(pending) < 3 {
 						break
@@ -777,7 +782,7 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 			textWidth := w
 			if multi && p == 1 && w >= 3 {
 				if markedEntry {
-					b.WriteString(Render(color, Success, "▎ "))
+					b.WriteString(Render(color, Success, "▌ "))
 				} else {
 					b.WriteString("  ")
 				}
@@ -798,7 +803,7 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 		lines = append(lines, b.String())
 		b.Reset()
 	}
-	hint := "Enter Choose file  q/Esc Cancel"
+	hint := "Enter Choose file  q Quit"
 	if options.Directory {
 		hint = "Enter Choose highlighted dir  l Open  q Cancel"
 		if selected < len(panes[1].entries) && panes[1].entries[selected].Name == "." {
@@ -818,7 +823,7 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 			if len(marked) == 1 {
 				noun = "file"
 			}
-			hint = fmt.Sprintf("%d %s marked  Enter Continue  Space Toggle  / Search", len(marked), noun)
+			hint = fmt.Sprintf("%d %s marked  Enter Continue  Esc Clear  Space Toggle", len(marked), noun)
 		}
 	}
 	if options.Manual {

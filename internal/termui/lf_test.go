@@ -201,7 +201,6 @@ func TestLFCancelDoesNotChooseAFolder(t *testing.T) {
 		bytes string
 	}{
 		{"q", "q"},
-		{"Escape", "\x1b"},
 		{"Ctrl-C", "\x03"},
 	} {
 		t.Run(key.name, func(t *testing.T) {
@@ -293,7 +292,7 @@ func TestLFMarksFilesAcrossDirectories(t *testing.T) {
 			case step == 0 && strings.Contains(frame, "\x1b[7msub/"):
 				step++
 				input <- LFInput{Data: []byte("j  ")}
-			case step == 1 && strings.Contains(ansi.Strip(frame), "▎ a ") && strings.Contains(ansi.Strip(frame), "▎ b ") && strings.Contains(frame, "2 files marked  Enter Continue"):
+			case step == 1 && strings.Contains(ansi.Strip(frame), "▌ a ") && strings.Contains(ansi.Strip(frame), "▌ b ") && strings.Contains(frame, "2 files marked  Enter Continue"):
 				step++
 				input <- LFInput{Data: []byte("kkl")}
 			case step == 2 && strings.Contains(frame, "\x1b[7mc"):
@@ -397,5 +396,35 @@ func TestLFPasteStaysSearchText(t *testing.T) {
 	})
 	if err != nil || selected != "/报告.txt" || step != 3 {
 		t.Fatalf("step %d, selected %q, error %v", step, selected, err)
+	}
+}
+
+func TestLFEscapeClearsMarksAndQQuits(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	input := make(chan LFInput, 1)
+	step := 0
+	_, err := PickLFFiles(ctx, LFOptions{
+		Dir: "/", Input: input,
+		Join: func(dir, name string) string { return path.Join(dir, name) }, Parent: path.Dir,
+		ReadDir: func(context.Context, string) ([]LFEntry, error) {
+			return []LFEntry{{Name: "file.txt"}}, nil
+		},
+		Output: lfTestOutput(func(frame string) {
+			switch {
+			case step == 0 && strings.Contains(frame, "\x1b[7mfile.txt"):
+				step++
+				input <- LFInput{Data: []byte(" ")}
+			case step == 1 && strings.Contains(frame, "1 file marked"):
+				step++
+				input <- LFInput{Data: []byte("\x1b")}
+			case step == 2 && strings.Contains(frame, "Enter Choose file"):
+				step++
+				input <- LFInput{Data: []byte("\x1bq")}
+			}
+		}),
+	}, nil)
+	if step != 3 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("step %d, error %v", step, err)
 	}
 }
