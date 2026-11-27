@@ -93,7 +93,6 @@ func TestWindowsProgramArguments(t *testing.T) {
 	}
 	t.Setenv("SSHORE_PROGRAM_FIXTURE", "1")
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
-	t.Setenv("SSHORE_TREE_ID", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	ctx, command := windowsClient(t)
 	t.Run("new without delimiter opens a shell", func(t *testing.T) {
@@ -171,7 +170,6 @@ func TestWindowsRunLifecycle(t *testing.T) {
 	}
 	t.Setenv("SSHORE_RUN_FIXTURE", "1")
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
-	t.Setenv("SSHORE_TREE_ID", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	ctx, command := windowsClient(t)
 	start := func() *exec.Cmd {

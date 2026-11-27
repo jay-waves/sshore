@@ -831,8 +831,8 @@ func shellTreeLabel(n taskTreeRow, current, color bool) string {
 }
 
 func shellIdentityFromEnvironment() string {
-	if id := os.Getenv("SSHORE_TREE_ID"); id != "" {
-		return id
+	if uid := os.Getenv("SSHORE_SOCKET"); uid != "" {
+		return identityFromUID(uid)
 	}
 	return os.Getenv("SSHORE_LOCAL_SESSION")
 }

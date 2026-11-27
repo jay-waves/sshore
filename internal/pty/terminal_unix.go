@@ -94,7 +94,6 @@ func Start(c Config) (result *Terminal, _ error) {
 	}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
-	cmd.Env = append(cmd.Environ(), "SSHORE_TTY="+slave.Name())
 	if err := terminal.startChild(c.TaskCgroup); err != nil {
 		return nil, err
 	}

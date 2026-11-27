@@ -11,7 +11,7 @@ import (
 )
 
 func hostedShellEnvironment(source []string, term, instance, executable string) []string {
-	env := append(append([]string(nil), source...), "TERM="+term, "SSHORE_SOCKET="+instance, "SSHORE_TREE_ID="+identityFromUID(instance))
+	env := append(append([]string(nil), source...), "TERM="+term, "SSHORE_SOCKET="+instance)
 	if executable != "" {
 		env = append(env, "PATH="+filepath.Dir(executable)+string(os.PathListSeparator)+shell.EnvValue(source, "PATH"))
 	}
@@ -65,11 +65,11 @@ func localShellEnvironment(source []string, term, identity string) []string {
 			key = strings.ToUpper(key)
 		}
 		switch key {
-		case "SSHORE_SOCKET", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "SSHORE_TTY", "SSHORE_LOCAL_SESSION", "SSHORE_TREE_ID", "TERM":
+		case "SSHORE_SOCKET", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "SSHORE_LOCAL_SESSION", "TERM":
 			continue
 		}
 		env = append(env, item)
 	}
-	env = append(env, "TERM="+term, "SSHORE_LOCAL_SESSION="+identity, "SSHORE_TREE_ID="+identity)
+	env = append(env, "TERM="+term, "SSHORE_LOCAL_SESSION="+identity)
 	return env
 }

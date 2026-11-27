@@ -995,7 +995,7 @@ Match command "printf forwarding-check"
 		root := host + ":resume-root"
 		cleanRemote(t, root)
 		const marker = "RESUME_ID="
-		const report = "printf 'RESUME_%s=%.6s\\n' ID \"${SSHORE_TREE_ID#task:}\"\n"
+		const report = "printf 'RESUME_%s=%.6s\\n' ID \"$SSHORE_SOCKET\"\n"
 		var id string
 		runOpenSSHTerminal(t, ctx, command(ctx, "shell", host, "--name", strings.TrimPrefix(root, host+":"), "--no-profile", "--no-login"), func(send func(string), wait terminalWait) {
 			wait("Connected " + root)
@@ -1067,7 +1067,7 @@ Match command "printf forwarding-check"
 		cleanRemote(t, child)
 		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 		parent := exec.CommandContext(ctx, binary, "shell", "--name", "dev", "--no-profile", "--no-login")
-		const report = "printf 'BUILD_%s=%s:%s:%.6s\\n' state \"$$\" \"$SSHORE_BUILD\" \"${SSHORE_TREE_ID#task:}\"\n"
+		const report = "printf 'BUILD_%s=%s:%s:%.6s\\n' state \"$$\" \"$SSHORE_BUILD\" \"$SSHORE_SOCKET\"\n"
 		var recorded string
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
 			wait("Connected here:dev")
