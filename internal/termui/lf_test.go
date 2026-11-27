@@ -17,7 +17,7 @@ import (
 func TestLFShowsHostBeforePathAndHighlightsCurrentEntry(t *testing.T) {
 	var out strings.Builder
 	panes := [3]lfPane{{}, {entries: []LFEntry{{Name: "src", IsDir: true}}}, {}}
-	if err := lfDraw(&out, LFOptions{Host: "work", Title: "Open shell"}, "/project", panes, -1, 0, 14, 5, nil, true, false, nil); err != nil {
+	if err := lfDraw(&out, LFOptions{Host: "work", Title: "Open shell"}, "/project", panes, -1, 0, 14, 5, nil, true, false, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	header := strings.Split(ansi.Strip(out.String()), "\r\n")
@@ -258,8 +258,11 @@ func TestLFMarksFilesAcrossDirectories(t *testing.T) {
 			switch {
 			case step == 0 && strings.Contains(frame, "\x1b[7msub/"):
 				step++
-				input <- LFInput{Data: []byte("j  kkl")}
-			case step == 1 && strings.Contains(frame, "\x1b[7mc"):
+				input <- LFInput{Data: []byte("j  ")}
+			case step == 1 && strings.Count(frame, "✓") == 2 && strings.Contains(frame, "2 files marked  Enter Continue"):
+				step++
+				input <- LFInput{Data: []byte("kkl")}
+			case step == 2 && strings.Contains(frame, "\x1b[7mc") && strings.Contains(frame, "2 files marked"):
 				step++
 				input <- LFInput{Data: []byte(" \r")}
 			}
@@ -297,6 +300,68 @@ func TestLFJumpsToTopAndBottom(t *testing.T) {
 		}),
 	})
 	if err != nil || selected != "/" || step != 3 {
+		t.Fatalf("step %d, selected %q, error %v", step, selected, err)
+	}
+}
+
+func TestLFSearchRepeatsInOriginalDirection(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	input := make(chan LFInput, 1)
+	step := 0
+	names := []string{"0-alpha", "B-report", "C-report"}
+	frames := []string{"0-alpha", "C-report", "B-report", "C-report", "B-report"}
+	keys := []string{"?report\r", "n", "N", "/report\r", "\r"}
+	selected, err := PickLF(ctx, LFOptions{
+		Dir: "/", Input: input,
+		Join: func(dir, name string) string { return path.Join(dir, name) }, Parent: path.Dir,
+		ReadDir: func(context.Context, string) ([]LFEntry, error) {
+			var entries []LFEntry
+			for _, name := range names {
+				entries = append(entries, LFEntry{Name: name})
+			}
+			return entries, nil
+		},
+		Output: lfTestOutput(func(frame string) {
+			if step < len(keys) && strings.Contains(frame, "\x1b[7m"+frames[step]+" ") {
+				input <- LFInput{Data: []byte(keys[step])}
+				step++
+			}
+		}),
+	})
+	if err != nil || selected != "/B-report" || step != len(keys) {
+		t.Fatalf("step %d, selected %q, error %v", step, selected, err)
+	}
+}
+
+func TestLFPasteStaysSearchText(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	input := make(chan LFInput, 3)
+	step := 0
+	selected, err := PickLF(ctx, LFOptions{
+		Dir: "/", Input: input,
+		Join: func(dir, name string) string { return path.Join(dir, name) }, Parent: path.Dir,
+		ReadDir: func(context.Context, string) ([]LFEntry, error) {
+			return []LFEntry{{Name: "a"}, {Name: "报告.txt"}}, nil
+		},
+		Output: lfTestOutput(func(frame string) {
+			switch {
+			case step == 0 && strings.Contains(frame, "\x1b[7ma "):
+				step++
+				input <- LFInput{Data: []byte(lfPasteStart + "q\r" + lfPasteEnd)}
+				input <- LFInput{Data: []byte("/" + lfPasteStart + "报")}
+				input <- LFInput{Data: []byte("告\r" + lfPasteEnd[:3])}
+			case step == 1 && strings.Contains(frame, "/报告"):
+				step++
+				input <- LFInput{Data: []byte(lfPasteEnd[3:] + "\r\n")}
+			case step == 2 && strings.Contains(frame, "\x1b[7m报告.txt "):
+				step++
+				input <- LFInput{Data: []byte("\r")}
+			}
+		}),
+	})
+	if err != nil || selected != "/报告.txt" || step != 3 {
 		t.Fatalf("step %d, selected %q, error %v", step, selected, err)
 	}
 }

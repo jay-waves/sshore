@@ -20,10 +20,13 @@ a new SSH connection.
 
 Omitted file paths open a three-column picker after SSH authentication.
 The header identifies the host and directory being browsed. Use `gg` and `G`
-to jump to the top or bottom of the current list. In a directory picker, Enter
+to jump to the top or bottom of the current list. Use `/` or `?` to search
+filenames forward or backward. Use `n` to repeat in the same direction and
+`N` to repeat in reverse. In a directory picker, Enter
 chooses the highlighted directory and `./` chooses the directory being browsed.
 Use `l` or the right arrow to enter a highlighted directory. In the copy source
-picker, Space marks or unmarks a file and moves down. Enter submits the marked
+picker, Space marks or unmarks a file and moves down. A check mark identifies
+marked files, and the footer shows the total across directories. Enter submits the marked
 files, or chooses the highlighted file when none are marked.
 In a local picker that owns the terminal, `e` opens the highlighted file with
 `EDITOR` and `i` opens it with `PAGER`. Missing settings are shown in the picker.

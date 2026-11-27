@@ -206,11 +206,18 @@ Match command "printf forwarding-check"
 				t.Fatal(err)
 			}
 		}
+		if err := os.WriteFile(filepath.Join(source, "different.txt"), []byte("skip"), 0600); err != nil {
+			t.Fatal(err)
+		}
 		cmd := command(ctx, "cp", "here:", host+":")
 		cmd.Dir = source
 		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+			wait("\x1b[7mdifferent.txt", true)
+			send("/picked\r")
 			wait("\x1b[7m"+names[0], true)
-			send("  \r")
+			send("  ")
+			wait("2 files marked  Enter Continue", true)
+			send("\r")
 			wait("Choose upload destination", true)
 			wait("\x1b[7m./", true)
 			send("\r")

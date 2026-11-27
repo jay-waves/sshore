@@ -111,7 +111,7 @@ func selectAndCopy(ctx context.Context, client *sftp.Client, home string, o copy
 					source, err := files.OpenSource(name)
 					if err != nil {
 						closeCopyBatch(batch)
-						return err
+						return fmt.Errorf("open %s: %w", filepath.Base(name), err)
 					}
 					batch[i].opened = source
 				}
