@@ -25,7 +25,7 @@ filenames forward or backward. Use `n` to repeat in the same direction and
 `N` to repeat in reverse. In a directory picker, Enter
 chooses the highlighted directory and `./` chooses the directory being browsed.
 Use `l` or the right arrow to enter a highlighted directory. In the copy source
-picker, Space marks or unmarks a file and moves down. A check mark identifies
+picker, Space marks or unmarks a file and moves down. A bar to the left identifies
 marked files, and the footer shows the total across directories. Enter submits the marked
 files, or chooses the highlighted file when none are marked.
 In a local picker that owns the terminal, `e` opens the highlighted file with

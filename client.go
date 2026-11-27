@@ -70,21 +70,22 @@ func newClientSignals(recovering bool) (context.Context, *clientSignals, func())
 const terminalCloseGrace = 2 * time.Second
 
 type clientEvent struct {
-	consoleSource    *commandConsole
-	console          termui.ConsoleEvent
-	filePicker       *consoleFilePicker
-	fileOutput       []byte
-	fileRequest      *consoleFileRequest
-	fileResult       *consoleFileResult
-	inputBarrier     bool
-	inputOffset      uint64
-	keyAction        term.KeyAction
-	inputFailure     bool
-	outputIncomplete bool
-	m                *message
-	input            []byte
-	output           []byte
-	err              error
+	consoleSource     *commandConsole
+	consoleGeneration uint64
+	console           termui.ConsoleEvent
+	filePicker        *consoleFilePicker
+	fileOutput        []byte
+	fileRequest       *consoleFileRequest
+	fileResult        *consoleFileResult
+	inputBarrier      bool
+	inputOffset       uint64
+	keyAction         term.KeyAction
+	inputFailure      bool
+	outputIncomplete  bool
+	m                 *message
+	input             []byte
+	output            []byte
+	err               error
 }
 
 // Drain the terminal tail before publishing a confirmed exit. A data-stream
@@ -341,6 +342,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	defer restoreTitle()
 	var outputModes term.InputState
 	var console *commandConsole
+	var picker *consoleFilePicker
 	var escapeTimer *time.Timer
 	var escapeTick <-chan time.Time
 	defer func() {
@@ -358,10 +360,11 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		c := console
 		console = nil
 		escapeTick = nil
-		if c.picker != nil {
-			c.picker.cancel()
+		if picker != nil {
+			picker.cancel()
+			picker = nil
 		}
-		c.editor.Close()
+		c.stopEditor()
 		if err := outputModes.EndConsole(terminalOutput); err != nil {
 			return err
 		}
@@ -731,7 +734,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 
 		case e := <-events:
 			if e.filePicker != nil {
-				if e.consoleSource != console || console == nil || e.filePicker != console.picker {
+				if e.filePicker != picker {
 					continue
 				}
 				switch {
@@ -745,13 +748,15 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 					}
 					consoleRequest++
 					action := strconv.FormatUint(consoleRequest, 10)
-					console.picker.requests[action] = e.fileRequest
+					picker.requests[action] = e.fileRequest
 					if err := streamMessage(control, message{Type: "console_files", Action: action, Directory: e.fileRequest.dir, ParentDirectory: e.fileRequest.parent}); err != nil {
 						return 255, err
 					}
 				case e.fileResult != nil:
 					if e.fileResult.err != nil {
-						if err := console.finishFilePicker(terminalOutput, e.fileResult); err != nil {
+						picker.cancel()
+						picker = nil
+						if err := console.resumeAfterPicker(terminalOutput, e.fileResult.err); err != nil {
 							return 1, err
 						}
 					} else {
@@ -766,7 +771,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 				continue
 			}
 			if e.consoleSource != nil {
-				if e.consoleSource != console || console.picker != nil {
+				if !console.accepts(e) {
 					continue
 				}
 				switch {
@@ -810,7 +815,9 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						if o.local {
 							host = localFileHost()
 						}
-						console.startFilePicker(ctx, panel.directory, host, emit)
+						escapeTick = nil
+						console.stopEditor()
+						picker = startConsoleFilePicker(ctx, panel.directory, host, true, emit)
 					case "shell":
 						if command.remoteCommand != "" || command.task.scope != taskLocal || command.startupDirectory != "" || len(command.values) > 1 || len(command.values) == 1 && !command.has("--pin") {
 							console.show("Usage: shell [--pin]")
@@ -935,8 +942,8 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 					continue
 				}
 				if console != nil {
-					if console.picker != nil {
-						console.picker.send(e.input)
+					if picker != nil {
+						picker.send(e.input)
 						continue
 					}
 					data := e.input
@@ -1009,9 +1016,9 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 			} else if e.m != nil {
 				switch e.m.Type {
 				case "console_files":
-					if console != nil && console.picker != nil {
-						if request := console.picker.requests[e.m.Action]; request != nil {
-							delete(console.picker.requests, e.m.Action)
+					if picker != nil {
+						if request := picker.requests[e.m.Action]; request != nil {
+							delete(picker.requests, e.m.Action)
 							request.reply <- *e.m
 						}
 					}

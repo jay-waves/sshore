@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -25,11 +26,12 @@ type clientConsole struct {
 }
 
 type commandConsole struct {
-	output   []byte
-	editor   *termui.Console
-	targets  []sessionTarget
-	attached bool
-	picker   *consoleFilePicker
+	output     []byte
+	editor     *termui.Console
+	targets    []sessionTarget
+	attached   bool
+	generation uint64
+	newEditor  func(uint64) *termui.Console
 }
 
 const consoleTargetLookup = "console:targets:"
@@ -51,10 +53,42 @@ func openCommandConsole(ctx context.Context, send func(clientEvent), host string
 	const suffix = "> "
 	host = ansi.Truncate(cleanText(host), max(1, width-len(prefix)-len(suffix)-4), "…")
 	prompt := termui.FormatPrompt(color, prefix+host+suffix)
-	c.editor = termui.StartConsole(ctx, prompt, width, color, func(e termui.ConsoleEvent) {
-		send(clientEvent{consoleSource: c, console: e})
-	})
+	c.newEditor = func(generation uint64) *termui.Console {
+		return termui.StartConsole(ctx, prompt, width, color, func(e termui.ConsoleEvent) {
+			send(clientEvent{consoleSource: c, consoleGeneration: generation, console: e})
+		})
+	}
+	c.startEditor()
 	return c
+}
+
+func (c *commandConsole) startEditor() {
+	c.generation++
+	c.editor = c.newEditor(c.generation)
+}
+
+func (c *commandConsole) stopEditor() {
+	if c.editor != nil {
+		c.editor.Close()
+		c.editor = nil
+	}
+}
+
+func (c *commandConsole) accepts(event clientEvent) bool {
+	return c != nil && c.editor != nil && event.consoleSource == c && event.consoleGeneration == c.generation
+}
+
+func (c *commandConsole) resumeAfterPicker(out io.Writer, err error) error {
+	if err := writeFull(out, []byte("\x1b[2J\x1b[H")); err != nil {
+		return err
+	}
+	c.startEditor()
+	if err != nil && !errors.Is(err, context.Canceled) {
+		c.show(err.Error())
+	} else {
+		c.show("")
+	}
+	return nil
 }
 
 type consoleCompleter struct {
@@ -98,7 +132,9 @@ func (completion consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
 }
 
 func (c *commandConsole) show(body string) {
-	c.editor.Show(body, consoleCompleter{targets: c.targets, attached: c.attached})
+	if c.editor != nil {
+		c.editor.Show(body, consoleCompleter{targets: c.targets, attached: c.attached})
+	}
 }
 
 func parseConsoleCommand(line string, attached bool) (cliArguments, error) {
@@ -287,10 +323,11 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 	termui.WriteConsoleBody(terminalOutput, formatSessionEnd(ended, current, "local console"))
 	termui.WriteConsoleBody(terminalOutput, "No shell attached. Use attach or shell, or type exit to leave.")
 	console := openCommandConsole(ctx, emit, "local", cols, color, false)
-	defer console.editor.Close()
+	defer console.stopEditor()
+	var picker *consoleFilePicker
 	defer func() {
-		if console.picker != nil {
-			console.picker.cancel()
+		if picker != nil {
+			picker.cancel()
 		}
 	}()
 	keyCtx, cancelKeyboard := context.WithCancel(ctx)
@@ -347,7 +384,7 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 			console.show(consoleInventoryBody(result, rows))
 		case event := <-events:
 			if event.filePicker != nil {
-				if event.filePicker != console.picker {
+				if event.filePicker != picker {
 					continue
 				}
 				switch {
@@ -363,17 +400,19 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 						}
 						event.fileResult.err = err
 					}
-					if err := console.finishFilePicker(terminalOutput, event.fileResult); err != nil {
+					picker.cancel()
+					picker = nil
+					if err := console.resumeAfterPicker(terminalOutput, event.fileResult.err); err != nil {
 						return nil, err
 					}
 				}
 				continue
 			}
-			if console.picker != nil && len(event.input) != 0 {
-				console.picker.send(event.input)
+			if picker != nil && len(event.input) != 0 {
+				picker.send(event.input)
 				continue
 			}
-			if console.picker != nil && event.console.Output != nil {
+			if event.consoleSource != nil && !console.accepts(event) {
 				continue
 			}
 			switch {
@@ -399,7 +438,8 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 					loadInventory(command.command)
 					continue
 				case "lf":
-					console.startFilePicker(ctx, panel.localDirectory, "", emit)
+					console.stopEditor()
+					picker = startConsoleFilePicker(ctx, panel.localDirectory, "", false, emit)
 					continue
 				}
 				next, err := rootConsoleOptions(current, command)

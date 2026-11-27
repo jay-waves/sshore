@@ -229,13 +229,17 @@ Match command "printf forwarding-check"
 			}
 		}
 	})
-	scenario("console lf starts a shell in the selected remote directory", func(t *testing.T, ctx context.Context) {
+	scenario("console lf returns to the prompt or opens a shell in the selected remote directory", func(t *testing.T, ctx context.Context) {
 		home := run(t, ctx, "sh", host, "--", `printf '%s' "$HOME"; mkdir -p lf-console-parent/child`)
 		parent := home + "/lf-console-parent"
 		cmd := command(ctx, "sh", host+":"+parent, "--name", "lf-parent", "--no-profile", "--server", binary)
 		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("Connected " + host + ":lf-parent")
 			send("\x02:")
+			wait("sshore on ", true)
+			send("lf\r")
+			wait("\x1b[7m./", true)
+			send("q")
 			wait("sshore on ", true)
 			send("lf\r")
 			wait("\x1b[7m./", true)

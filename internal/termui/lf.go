@@ -306,6 +306,7 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 		index = next
 		child()
 	}
+	var display lfScreen
 	var escape <-chan time.Time
 	resize := time.NewTicker(100 * time.Millisecond)
 	defer resize.Stop()
@@ -325,7 +326,7 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 		if searchPrompt != 0 {
 			prompt = string(searchPrompt) + string(query)
 		}
-		if err := lfDraw(out, options, current, panes, parentIndex, index, width, height, validationErr, color, multi, marked, prompt); err != nil {
+		if err := display.draw(out, options, current, panes, parentIndex, index, width, height, validationErr, color, multi, marked, prompt); err != nil {
 			return nil, err
 		}
 	waitForEvent:
@@ -572,6 +573,7 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 						return nil, errors.Join(runErr, err)
 					}
 					pending = nil
+					display.rows = nil // The external program owned the screen.
 					if key == 'e' {
 						delete(cache, current)
 						refresh()
@@ -677,10 +679,43 @@ func lfSearch(entries []LFEntry, index int, pattern string, direction int) (int,
 	return index, false
 }
 
-func lfDraw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, parentIndex, selected, width, height int, validationErr error, color, multi bool, marked []string, prompt string) error {
-	width, height = max(3, width), max(5, height)
-	var b strings.Builder
-	b.WriteString("\x1b[0m\x1b[H\x1b[2J\x1b[?25l")
+type lfScreen struct {
+	rows         []string
+	width        int
+	cursorColumn int
+	directory    string
+	firstVisible int
+}
+
+// Paint only changed rows. Erasing to the right of each replacement removes
+// old text without blanking the screen between keystrokes.
+func (s *lfScreen) paint(out io.Writer, width int, rows []string, cursorColumn int) error {
+	full := len(rows) != len(s.rows) || width != s.width
+	var update strings.Builder
+	if full || s.cursorColumn != 0 && cursorColumn == 0 {
+		update.WriteString("\x1b[0m\x1b[?25l")
+	}
+	for i, row := range rows {
+		if full || row != s.rows[i] {
+			fmt.Fprintf(&update, "\x1b[%d;1H%s\x1b[K", i+1, row)
+		}
+	}
+	if cursorColumn != 0 && (update.Len() > 0 || s.cursorColumn != cursorColumn) {
+		fmt.Fprintf(&update, "\x1b[%d;%dH\x1b[?25h", len(rows), cursorColumn)
+	}
+	if update.Len() == 0 {
+		return nil
+	}
+	if _, err := io.WriteString(out, update.String()); err != nil {
+		return err
+	}
+	s.rows, s.width, s.cursorColumn = rows, width, cursorColumn
+	return nil
+}
+
+func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, parentIndex, selected, width, height int, validationErr error, color, multi bool, marked []string, prompt string) error {
+	width, height = max(1, width), max(1, height)
+	lines := make([]string, 0, height)
 	header := Render(color, Heading, CleanText(options.Title))
 	if options.Host != "" {
 		if header != "" {
@@ -688,17 +723,30 @@ func lfDraw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, paren
 		}
 		header += Render(color, Accent, CleanText(options.Host))
 	}
-	b.WriteString(ansi.Truncate(header, width-1, "…"))
-	b.WriteString("\r\n")
-	b.WriteString(ansi.Truncate(CleanText(dir), width-1, "…"))
-	b.WriteString("\r\n\r\n")
+	if height > 1 {
+		lines = append(lines, ansi.Truncate(header, width-1, "…"))
+	}
+	if height > 2 {
+		lines = append(lines, ansi.Truncate(CleanText(dir), width-1, "…"))
+	}
+	if height >= 5 {
+		lines = append(lines, "")
+	}
 	// Keep the current directory visible even on very narrow terminals.
 	widths := [3]int{width / 4, width / 3, width - width/4 - width/3 - 3}
 	if width < 15 {
 		widths = [3]int{0, width - 1, 0}
 	}
-	rows := height - 4
-	start := [3]int{max(0, parentIndex-rows+1), max(0, selected-rows+1), 0}
+	rows := height - len(lines) - 1
+	if s.directory != dir {
+		s.directory, s.firstVisible = dir, 0
+	}
+	if rows > 0 {
+		lastStart := max(0, len(panes[1].entries)-rows)
+		s.firstVisible = max(selected-rows+1, min(s.firstVisible, selected, lastStart))
+	}
+	start := [3]int{max(0, parentIndex-rows+1), s.firstVisible, 0}
+	var b strings.Builder
 	for row := 0; row < rows; row++ {
 		for p, w := range widths {
 			if w <= 0 {
@@ -726,18 +774,19 @@ func lfDraw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, paren
 				text = CleanText(panes[p].err.Error())
 				style = Warning
 			}
-			marker := ""
+			textWidth := w
 			if multi && p == 1 && w >= 3 {
-				marker = "  "
 				if markedEntry {
-					marker = " ✓"
+					b.WriteString(Render(color, Success, "▎ "))
+				} else {
+					b.WriteString("  ")
 				}
+				textWidth -= 2
 			}
-			textWidth := w - ansi.StringWidth(marker)
 			text = ansi.Truncate(text, textWidth, "…")
 			padding := strings.Repeat(" ", max(0, textWidth-ansi.StringWidth(text)))
-			if p == 1 && i == selected && i < len(panes[p].entries) {
-				b.WriteString("\x1b[7m" + text + padding + marker + "\x1b[27m")
+			if p == 1 && i == selected && i < len(panes[1].entries) {
+				b.WriteString("\x1b[7m" + text + padding + "\x1b[27m")
 				continue
 			}
 			if p == 0 && i == parentIndex {
@@ -745,15 +794,9 @@ func lfDraw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, paren
 			}
 			b.WriteString(Render(color, style, text))
 			b.WriteString(padding)
-			if markedEntry {
-				b.WriteString(Render(color, Success, marker))
-			} else {
-				b.WriteString(marker)
-			}
 		}
-		if row+1 < rows {
-			b.WriteString("\r\n")
-		}
+		lines = append(lines, b.String())
+		b.Reset()
 	}
 	hint := "Enter Choose file  q/Esc Cancel"
 	if options.Directory {
@@ -781,15 +824,15 @@ func lfDraw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, paren
 	if options.Manual {
 		hint += "  : Type path"
 	}
-	b.WriteString("\r\n")
+	var footer string
+	var cursorColumn int
 	if prompt != "" {
-		b.WriteString(ansi.Truncate(CleanText(prompt), width-1, "…"))
-		b.WriteString("\x1b[?25h")
+		footer = ansi.Truncate(CleanText(prompt), width-1, "…")
+		cursorColumn = ansi.StringWidth(footer) + 1
 	} else if validationErr != nil {
-		b.WriteString(Render(color, Warning, ansi.Truncate(CleanText(validationErr.Error()), width-1, "…")))
+		footer = Render(color, Warning, ansi.Truncate(CleanText(validationErr.Error()), width-1, "…"))
 	} else {
-		b.WriteString(Render(color, Muted, ansi.Truncate(hint, width-1, "")))
+		footer = Render(color, Muted, ansi.Truncate(hint, width-1, ""))
 	}
-	_, err := fmt.Fprint(out, b.String())
-	return err
+	return s.paint(out, width, append(lines, footer), cursorColumn)
 }

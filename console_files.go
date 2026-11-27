@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json/v2"
-	"errors"
-	"io"
 	"os"
 	"path"
 	"strings"
@@ -35,15 +33,14 @@ type consoleFileOutput func([]byte) (int, error)
 
 func (w consoleFileOutput) Write(b []byte) (int, error) { return w(b) }
 
-func (c *commandConsole) startFilePicker(ctx context.Context, directory, host string, emit func(clientEvent)) {
+func startConsoleFilePicker(ctx context.Context, directory, host string, attached bool, emit func(clientEvent)) *consoleFilePicker {
 	ctx, cancel := context.WithCancel(ctx)
 	picker := &consoleFilePicker{
 		input: make(chan termui.LFInput, 32), cancel: cancel,
 		requests: make(map[string]*consoleFileRequest),
 	}
-	c.picker = picker
 	var options termui.LFOptions
-	if !c.attached {
+	if !attached {
 		options = localFileSelection(directory, "Open shell", true)
 	} else {
 		windows := len(directory) >= 3 && directory[1] == ':' && strings.ContainsRune("/\\", rune(directory[2]))
@@ -52,7 +49,7 @@ func (c *commandConsole) startFilePicker(ctx context.Context, directory, host st
 		}
 		options = pairedFileSelection(directory, "Open shell", host, true, func(ctx context.Context, dir, parent string) ([]directoryEntry, error, []directoryEntry, error) {
 			request := consoleFileRequest{ctx: ctx, dir: dir, parent: parent, reply: make(chan message, 1)}
-			emit(clientEvent{consoleSource: c, filePicker: picker, fileRequest: &request})
+			emit(clientEvent{filePicker: picker, fileRequest: &request})
 			select {
 			case reply := <-request.reply:
 				return reply.Files, listingError(reply.Error), reply.ParentFiles, listingError(reply.ParentError)
@@ -75,13 +72,14 @@ func (c *commandConsole) startFilePicker(ctx context.Context, directory, host st
 	}
 	options.Input = picker.input
 	options.Output = consoleFileOutput(func(b []byte) (int, error) {
-		emit(clientEvent{consoleSource: c, filePicker: picker, fileOutput: bytes.Clone(b)})
+		emit(clientEvent{filePicker: picker, fileOutput: bytes.Clone(b)})
 		return len(b), nil
 	})
 	go func() {
 		dir, err := termui.PickLF(ctx, options)
-		emit(clientEvent{consoleSource: c, filePicker: picker, fileResult: &consoleFileResult{path: dir, err: err}})
+		emit(clientEvent{filePicker: picker, fileResult: &consoleFileResult{path: dir, err: err}})
 	}()
+	return picker
 }
 
 func (p *consoleFilePicker) send(data []byte) {
@@ -90,20 +88,6 @@ func (p *consoleFilePicker) send(data []byte) {
 	default:
 		p.cancel()
 	}
-}
-
-func (c *commandConsole) finishFilePicker(out io.Writer, result *consoleFileResult) error {
-	c.picker.cancel()
-	c.picker = nil
-	if err := writeFull(out, []byte("\x1b[2J\x1b[H")); err != nil {
-		return err
-	}
-	if result.err != nil && !errors.Is(result.err, context.Canceled) {
-		c.show(result.err.Error())
-	} else {
-		c.show("")
-	}
-	return nil
 }
 
 func consoleFileListing(request message) message {

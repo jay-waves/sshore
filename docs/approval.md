@@ -38,8 +38,10 @@ and input modes.
 
 `lf` opens a directory picker. In an attached shell it starts at the reported working
 directory and requests listings on the existing authenticated control channel. Confirming
-a directory starts a child shell through the normal `sh` handoff. Cancelling returns to
-the console. With no shell attached, it browses locally and opens a local shell.
+a directory starts a child shell through the normal `sh` handoff. While browsing, the
+frontend routes input and screen output to the picker and pauses the command editor.
+Cancelling restores the command prompt. With no shell attached, `lf` browses locally
+and opens a local shell.
 Windows hosted SSH shells currently lack nested routes.
 
 An explicit console command uses the existing shell or task-control rules. Resource

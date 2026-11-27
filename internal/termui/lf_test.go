@@ -17,17 +17,44 @@ import (
 func TestLFShowsHostBeforePathAndHighlightsCurrentEntry(t *testing.T) {
 	var out strings.Builder
 	panes := [3]lfPane{{}, {entries: []LFEntry{{Name: "src", IsDir: true}}}, {}}
-	if err := lfDraw(&out, LFOptions{Host: "work", Title: "Open shell"}, "/project", panes, -1, 0, 14, 5, nil, true, false, nil, ""); err != nil {
+	var display lfScreen
+	if err := display.draw(&out, LFOptions{Host: "work", Title: "Open"}, "/project", panes, -1, 0, 14, 5, nil, true, false, nil, ""); err != nil {
 		t.Fatal(err)
 	}
-	header := strings.Split(ansi.Strip(out.String()), "\r\n")
-	if len(header) < 3 || ansi.StringWidth(header[0]) > 13 || header[1] != "/project" || header[2] != "" {
+	header := display.rows
+	if len(header) < 3 || ansi.StringWidth(header[0]) > 13 || !strings.Contains(ansi.Strip(header[0]), "work") || header[1] != "/project" || header[2] != "" {
 		t.Fatalf("narrow header = %q", header)
 	}
 	_, highlighted, start := strings.Cut(out.String(), "\x1b[7m")
 	row, _, end := strings.Cut(highlighted, "\x1b[27m")
 	if !start || !end || strings.TrimSpace(row) != "src/" || ansi.StringWidth(row) != 13 {
 		t.Fatal("the selected directory did not get the full current column's reverse video")
+	}
+}
+
+func TestLFRepaintsOnlyChangedRowsWithinTheViewport(t *testing.T) {
+	var display lfScreen
+	var out strings.Builder
+	var panes [3]lfPane
+	for _, name := range []string{"a", "b", "c", "d", "e", "f"} {
+		panes[1].entries = append(panes[1].entries, LFEntry{Name: name})
+	}
+	draw := func(selected int) string {
+		t.Helper()
+		out.Reset()
+		if err := display.draw(&out, LFOptions{Title: "Choose file"}, "/", panes, -1, selected, 80, 7, nil, false, false, nil, ""); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	draw(3)
+	update := draw(2)
+	if strings.Count(update, ";1H") != 2 || !strings.Contains(update, "\x1b[5;1H") ||
+		!strings.Contains(update, "\x1b[6;1H") || strings.Contains(update, "\x1b[2J") || display.firstVisible != 1 {
+		t.Fatalf("moving within the viewport repainted unexpected rows: %q", update)
+	}
+	if update := draw(2); update != "" {
+		t.Fatalf("unchanged screen wrote %q", update)
 	}
 }
 
@@ -38,6 +65,7 @@ func TestLFReusesPreviewWhenEnteringAndReturning(t *testing.T) {
 	var mu sync.Mutex
 	counts := map[string]int{}
 	step := 0
+	var directory string
 	_, err := PickLF(ctx, LFOptions{
 		Dir: "/root", Title: "Pick", Input: input,
 		Join: func(a, b string) string { return path.Join(a, b) }, Parent: path.Dir,
@@ -54,17 +82,23 @@ func TestLFReusesPreviewWhenEnteringAndReturning(t *testing.T) {
 			return nil, nil
 		},
 		Output: lfTestOutput(func(frame string) {
+			switch {
+			case strings.Contains(frame, "\x1b[2;1H/root\x1b[K"):
+				directory = "/root"
+			case strings.Contains(frame, "\x1b[2;1H/root/child\x1b[K"):
+				directory = "/root/child"
+			}
 			if !strings.Contains(frame, "preview-file") {
 				return
 			}
 			switch {
-			case step == 0 && strings.Contains(frame, "Pick\r\n/root\r\n"):
+			case step == 0 && directory == "/root":
 				step++
 				input <- LFInput{Data: []byte("l")}
-			case step == 1 && strings.Contains(frame, "Pick\r\n/root/child\r\n"):
+			case step == 1 && directory == "/root/child":
 				step++
 				input <- LFInput{Data: []byte("h")}
-			case step == 2 && strings.Contains(frame, "Pick\r\n/root\r\n"):
+			case step == 2 && directory == "/root":
 				step++
 				input <- LFInput{Data: []byte("q")}
 			}
@@ -223,13 +257,13 @@ func TestLFArrowsReturnFocusToTheDirectoryJustLeft(t *testing.T) {
 				step++
 				input <- LFInput{Data: []byte("\x1b[1;5B\x1b[")}
 				input <- LFInput{Data: []byte("B\x1b[B\x1bOC")}
-			case step == 1 && strings.Contains(frame, "Pick\r\n/second\r\n"):
+			case step == 1 && strings.Contains(frame, "\x1b[2;1H/second\x1b[K"):
 				step++
 				input <- LFInput{Data: []byte("\x1b[D")}
-			case step == 2 && strings.Contains(frame, "Pick\r\n/\r\n") && strings.Contains(frame, "\x1b[7msecond/"):
+			case step == 2 && strings.Contains(frame, "\x1b[2;1H/\x1b[K") && strings.Contains(frame, "\x1b[7msecond/"):
 				step++
 				input <- LFInput{Data: []byte("\x1b[C")}
-			case step == 3 && strings.Contains(frame, "Pick\r\n/second\r\n") && !strings.Contains(frame, "…"):
+			case step == 3 && strings.Contains(frame, "\x1b[7m./"):
 				step++
 				input <- LFInput{Data: []byte("\r")}
 			}
@@ -259,10 +293,10 @@ func TestLFMarksFilesAcrossDirectories(t *testing.T) {
 			case step == 0 && strings.Contains(frame, "\x1b[7msub/"):
 				step++
 				input <- LFInput{Data: []byte("j  ")}
-			case step == 1 && strings.Count(frame, "✓") == 2 && strings.Contains(frame, "2 files marked  Enter Continue"):
+			case step == 1 && strings.Contains(ansi.Strip(frame), "▎ a ") && strings.Contains(ansi.Strip(frame), "▎ b ") && strings.Contains(frame, "2 files marked  Enter Continue"):
 				step++
 				input <- LFInput{Data: []byte("kkl")}
-			case step == 2 && strings.Contains(frame, "\x1b[7mc") && strings.Contains(frame, "2 files marked"):
+			case step == 2 && strings.Contains(frame, "\x1b[7mc"):
 				step++
 				input <- LFInput{Data: []byte(" \r")}
 			}
