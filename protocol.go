@@ -238,7 +238,7 @@ func checkReleaseVersions(local, peer, role string) error {
 	if peer == "" {
 		peer = "unknown"
 	}
-	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%q.\n%s", local, role, peer, installMatchingReleaseHelp)
+	return fmt.Errorf("sshore version mismatch: this process=%s, %s=%q", local, role, peer)
 }
 
 func releaseParts(v string) ([3]string, bool) {

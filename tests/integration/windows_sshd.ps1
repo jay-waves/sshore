@@ -25,8 +25,6 @@ $fixtureUser = "$env:COMPUTERNAME\${account}"
 icacls.exe $authorizedKeys /inheritance:r /grant:r "${fixtureUser}:R" '*S-1-5-18:F' '*S-1-5-32-544:F'
 icacls.exe $authorizedKeys /setowner $fixtureUser
 
-# The runner's system PATH makes the same build available to the SSH account.
-Copy-Item $env:SSHORE_TEST_WINDOWS_CLIENT (Join-Path $env:SystemRoot 'System32\sshore.exe')
 $keysPath = $authorizedKeys.Replace('\', '/')
 @"
 ListenAddress 127.0.0.1
@@ -35,6 +33,7 @@ AllowUsers $account
 AuthorizedKeysFile "$keysPath"
 PasswordAuthentication no
 AllowTcpForwarding local
+Subsystem sftp sftp-server.exe
 "@ | Set-Content -Encoding ascii (Join-Path $state 'sshd_config')
 & "$openssh\sshd.exe" -t
 Start-Service sshd

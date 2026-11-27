@@ -179,16 +179,44 @@ Match command "printf forwarding-check"
 			}
 		}
 	})
-	scenario("copy preserves destinations and rejects a different release", func(t *testing.T, ctx context.Context) {
+	scenario("copy deploys by release and preserves destinations", func(t *testing.T, ctx context.Context) {
 		src, dst := filepath.Join(dir, "source"), filepath.Join(dir, "download")
 		const payload = "file from the client\n"
 		if err := os.WriteFile(src, []byte(payload), 0600); err != nil {
 			t.Fatal(err)
 		}
 		remote := host + ":integration-copy"
+		countDeployments := func() int {
+			t.Helper()
+			log, err := os.ReadFile(filepath.Join(fixture, "sshd.log"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return bytes.Count(log, []byte("Starting session: subsystem 'sftp'"))
+		}
+		first := countDeployments()
 		run(t, ctx, "cp", src, remote)
-		run(t, ctx, "cp", remote, dst)
+		if got := countDeployments(); got != first+1 {
+			t.Fatalf("first copy opened %d SFTP subsystems, want one", got-first)
+		}
+		warm := command(ctx, "cp", remote, dst)
+		warm.Dir = dir
+		if out, err := warm.CombinedOutput(); err != nil {
+			t.Fatalf("warm copy from another directory: %v\n%s", err, out)
+		}
 		requireFile(t, dst, payload)
+		if got := countDeployments(); got != first+1 {
+			t.Fatalf("warm copy reopened deployment SFTP, count %d", got-first)
+		}
+		// Move the deployed binary aside without touching its state. A cached
+		// exec path must open SFTP only to recover the missing binary.
+		run(t, ctx, "sh", host, "--", `for file in .sshore/clients/*/0.0.0/sshore; do mv "$file" "$file.fixture"; done`)
+		repaired := filepath.Join(dir, "repaired-copy")
+		run(t, ctx, "cp", remote, repaired)
+		requireFile(t, repaired, payload)
+		if got := countDeployments(); got != first+2 {
+			t.Fatalf("recovery opened %d SFTP subsystems, want one more", got-first)
+		}
 		if err := os.WriteFile(src, []byte("replacement"), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -199,15 +227,105 @@ Match command "printf forwarding-check"
 			t.Fatalf("upload changed the existing file: %q", got)
 		}
 
-		absent := filepath.Join(dir, "incompatible")
+		otherDownload := filepath.Join(dir, "other-version-copy")
 		other := filepath.Join(filepath.Dir(binary), "sshore-other")
-		cmd := exec.CommandContext(ctx, other, "cp", remote, absent, "--ssh", "-F", config)
-		if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "version mismatch") {
-			t.Fatalf("incompatible copy: %v\n%s", err, out)
+		cmd := exec.CommandContext(ctx, other, "cp", remote, otherDownload, "--ssh", "-F", config)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("copy with a separately deployed release: %v\n%s", err, out)
 		}
-		if _, err := os.Stat(absent); !os.IsNotExist(err) {
-			t.Fatalf("incompatible copy created the destination: %v", err)
+		requireFile(t, otherDownload, payload)
+	})
+
+	scenario("upgrade reviews only the installed release and leaves the other release running", func(t *testing.T, ctx context.Context) {
+		const name = "release-isolation"
+		newer := filepath.Join(fixture, "sshore-other")
+		installed := filepath.Join(t.TempDir(), "sshore")
+		oldBinary, err := os.ReadFile(binary)
+		if err != nil {
+			t.Fatal(err)
 		}
+		if err := os.WriteFile(installed, oldBinary, 0700); err != nil {
+			t.Fatal(err)
+		}
+		stopLocal := func(client string) {
+			t.Helper()
+			stop := exec.CommandContext(ctx, client, "kill", "--all")
+			stop.Stdin = strings.NewReader("yes\n")
+			if out, err := stop.CombinedOutput(); err != nil {
+				t.Fatalf("stop local daemon: %v\n%s", err, out)
+			}
+		}
+		startDetached := func(client, release string) {
+			t.Helper()
+			args := append([]string{"sh", host, "--name", name, "--no-profile"}, ssh...)
+			runOpenSSHTerminal(t, ctx, exec.CommandContext(ctx, client, args...), func(send func(string), wait terminalWait) {
+				wait("Connected " + host + ":" + name)
+				send("sshore --version\n")
+				wait("sshore " + release)
+				send("\x02d")
+				wait("Detached from " + host + ":" + name)
+				send("exit\n")
+			})
+			// Both clients run under the same local test account. Stopping
+			// the local daemon leaves the pinned remote release alive.
+			stopLocal(client)
+		}
+		startDetached(installed, "0.0.0")
+		startDetached(newer, "0.0.1")
+		upgrade := func(answer string) ([]byte, error) {
+			cmd := exec.CommandContext(ctx, newer, "bootstrap", "--apply", "here:"+installed)
+			cmd.Stdin = strings.NewReader(answer + "\n")
+			return cmd.CombinedOutput()
+		}
+		originalConfig, err := os.ReadFile(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Use the same test listener and trusted key so authentication succeeds
+		// and the stored destination, rather than SSH trust, rejects the change.
+		redirected := bytes.Replace(originalConfig, []byte("HostName 127.0.0.1"),
+			[]byte("HostName localhost\n    HostKeyAlias 127.0.0.1:2222"), 1)
+		if err := os.WriteFile(config, redirected, 0600); err != nil {
+			t.Fatal(err)
+		}
+		redirectedOutput, redirectedErr := upgrade("y")
+		if err := os.WriteFile(config, originalConfig, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if redirectedErr == nil || !strings.Contains(string(redirectedOutput), "changed since deployment") {
+			t.Fatalf("upgrade after SSH alias changes: %v\n%s", redirectedErr, redirectedOutput)
+		}
+		if out, err := upgrade("n"); err == nil || !strings.Contains(string(out), name) ||
+			!strings.Contains(string(out), "cancelled; no tasks ended") {
+			t.Fatalf("declined upgrade: %v\n%s", err, out)
+		}
+		if out, err := exec.CommandContext(ctx, installed, "--version").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "sshore 0.0.0" {
+			t.Fatalf("declined upgrade replaced the installed client: %v\n%s", err, out)
+		}
+		// The original task still accepts an attachment after cancellation.
+		oldAttach := append([]string{"attach", host}, ssh...)
+		runOpenSSHTerminal(t, ctx, exec.CommandContext(ctx, installed, oldAttach...), func(send func(string), wait terminalWait) {
+			wait("Connected " + host + ":" + name)
+			send("\x02d")
+			wait("Detached from " + host + ":" + name)
+			send("exit\n")
+		})
+		stopLocal(installed)
+		if out, err := upgrade("y"); err != nil || !strings.Contains(string(out), name) {
+			t.Fatalf("confirmed upgrade: %v\n%s", err, out)
+		}
+		oldProgram := ".sshore/clients/*/0.0.0/sshore"
+		if output := run(t, ctx, "sh", host, "--", "for file in "+oldProgram+"; do \"$file\" list; done"); strings.Contains(output, name) {
+			t.Fatalf("old release task survived confirmed upgrade:\n%s", output)
+		}
+		newAttach := append([]string{"attach", host}, ssh...)
+		runOpenSSHTerminal(t, ctx, exec.CommandContext(ctx, installed, newAttach...), func(send func(string), wait terminalWait) {
+			wait("Connected " + host + ":" + name)
+			send("sshore --version\n")
+			wait("sshore 0.0.1")
+			send("exit\n")
+		})
+		stopLocal(installed)
 	})
 
 	scenario("copy selects multiple files and the current remote directory", func(t *testing.T, ctx context.Context) {
@@ -244,7 +362,7 @@ Match command "printf forwarding-check"
 	scenario("console lf returns to the prompt or opens a shell in the selected remote directory", func(t *testing.T, ctx context.Context) {
 		home := run(t, ctx, "sh", host, "--", `printf '%s' "$HOME"; mkdir -p lf-console-parent/child`)
 		parent := home + "/lf-console-parent"
-		cmd := command(ctx, "sh", host+":"+parent, "--name", "lf-parent", "--no-profile", "--server", binary)
+		cmd := command(ctx, "sh", host+":"+parent, "--name", "lf-parent", "--no-profile")
 		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("Connected " + host + ":lf-parent")
 			send("\x02:")
@@ -269,7 +387,7 @@ Match command "printf forwarding-check"
 		run(t, ctx, "sh", host, "--", "printf 'approved content' > approval-source")
 		declined, approved := filepath.Join(dir, "declined"), filepath.Join(dir, "approved")
 		endpoint := host + ":approval"
-		cmd := command(ctx, "sh", host, "--name", strings.TrimPrefix(endpoint, host+":"), "--no-profile", "--server", binary)
+		cmd := command(ctx, "sh", host, "--name", strings.TrimPrefix(endpoint, host+":"), "--no-profile")
 		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("Connected " + endpoint)
 			send("sshore cp here:approval-source origin:" + declined + "\n")
@@ -299,7 +417,7 @@ Match command "printf forwarding-check"
 		// owns the resources it creates. Ending the shell must leave them usable.
 		endpoint := host + ":approval-return"
 		cleanup := func() {
-			_, _ = command(ctx, "kill", strings.TrimPrefix(endpoint, host+":"), "--server", binary).CombinedOutput()
+			_, _ = command(ctx, "kill", strings.TrimPrefix(endpoint, host+":")).CombinedOutput()
 		}
 		cleanup()
 		defer cleanup()
@@ -321,7 +439,7 @@ Match command "printf forwarding-check"
 		parent := exec.CommandContext(ctx, binary, "sh", "--name", "approval-parent", "--no-profile", "--no-login")
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
 			wait("Connected here:approval-parent")
-			send(quote(binary) + " sh " + host + " --name approval-return --no-profile --server " + quote(binary) + " --ssh -F " + quote(config) + "\n")
+			send("sshore sh " + host + " --name approval-return --no-profile --ssh -F " + quote(config) + "\n")
 			wait("Connected " + endpoint)
 			send("printf '%s\\n' \"$$\" > approval-lifecycle/shell.pid && sshore mount here:approval-lifecycle origin: --read-only\n")
 			wait("Approve this request? [y/N]", true)
@@ -432,7 +550,7 @@ Match command "printf forwarding-check"
 		}
 		setConfig(plain)
 		endpoint := host + ":approval-credentials"
-		cmd := exec.CommandContext(ctx, binary, "sh", host, "--name", "approval-credentials", "--no-profile", "--server", binary, "--ssh", "-F", approvalConfig)
+		cmd := exec.CommandContext(ctx, binary, "sh", host, "--name", "approval-credentials", "--no-profile", "--ssh", "-F", approvalConfig)
 		credential := "Passphrase for " + encryptedKey + ": "
 		transcript, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("Connected " + endpoint)
@@ -769,14 +887,14 @@ Match command "printf forwarding-check"
 		t.Cleanup(func() {
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_ = exec.CommandContext(cleanup, binary, append([]string{"kill", strings.TrimPrefix(endpoint, host+":"), "--server", binary}, ssh...)...).Run()
+			_ = exec.CommandContext(cleanup, binary, append([]string{"kill", strings.TrimPrefix(endpoint, host+":")}, ssh...)...).Run()
 		})
 	}
 	scenario("remote program exit and cached inventory", func(t *testing.T, ctx context.Context) {
 		const name = "program-inventory"
 		const argument = "private fixture argument"
 		cleanRemote(t, host+":"+name)
-		cmd := command(ctx, "new", host, "--name", name, "--server", binary, "--", "/bin/sh", "-c",
+		cmd := command(ctx, "new", host, "--name", name, "--", "/bin/sh", "-c",
 			"printf 'ARG=%s\\n' \"$1\"; read -r reply; exit 23", "fixture", argument)
 		out, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("[Esc] Cancel", true)
@@ -817,7 +935,7 @@ Match command "printf forwarding-check"
 	})
 	scenario("declining shutdown preserves the detached root", func(t *testing.T, ctx context.Context) {
 		endpoint := host + ":resume"
-		runOpenSSHTerminal(t, ctx, command(ctx, "sh", host, "--name", strings.TrimPrefix(endpoint, host+":"), "--pin", "--no-profile", "--no-login", "--server", binary), func(send func(string), wait terminalWait) {
+		runOpenSSHTerminal(t, ctx, command(ctx, "sh", host, "--name", strings.TrimPrefix(endpoint, host+":"), "--pin", "--no-profile", "--no-login"), func(send func(string), wait terminalWait) {
 			wait("Connected " + endpoint)
 			send("\x02d")
 			wait("Detached from ")
@@ -825,7 +943,7 @@ Match command "printf forwarding-check"
 		cleanRemote(t, endpoint)
 		attach := func(input string, markers ...string) {
 			t.Helper()
-			cmd := command(ctx, "attach", strings.TrimPrefix(endpoint, host+":"), "--server", binary)
+			cmd := command(ctx, "attach", strings.TrimPrefix(endpoint, host+":"))
 			runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 				wait("Connected ")
 				send(input)
@@ -835,7 +953,7 @@ Match command "printf forwarding-check"
 			})
 		}
 		attach("export SSHORE_FIXTURE=retained\n\x02d", "Detached from")
-		cancelShutdown := command(ctx, "kill", "--all", host, "--server", binary)
+		cancelShutdown := command(ctx, "kill", "--all", host)
 		cancelShutdown.Stdin = strings.NewReader("n\n")
 		if out, err := cancelShutdown.CombinedOutput(); err == nil || !strings.Contains(string(out), "cancelled; no tasks ended") {
 			t.Fatalf("declined shutdown: %s (%v)", out, err)
@@ -848,11 +966,10 @@ Match command "printf forwarding-check"
 	scenario("remote IDs resume and missing IDs fail", func(t *testing.T, ctx context.Context) {
 		root := host + ":resume-root"
 		cleanRemote(t, root)
-		quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 		const marker = "RESUME_ID="
 		const report = "printf 'RESUME_%s=%.6s\\n' ID \"${SSHORE_TREE_ID#task:}\"\n"
 		var id string
-		runOpenSSHTerminal(t, ctx, command(ctx, "shell", host, "--name", strings.TrimPrefix(root, host+":"), "--server", binary, "--no-profile", "--no-login"), func(send func(string), wait terminalWait) {
+		runOpenSSHTerminal(t, ctx, command(ctx, "shell", host, "--name", strings.TrimPrefix(root, host+":"), "--no-profile", "--no-login"), func(send func(string), wait terminalWait) {
 			wait("Connected " + root)
 			send(report)
 			_, id, _ = strings.Cut(strings.TrimSpace(ansi.Strip(wait(marker))), marker)
@@ -876,9 +993,9 @@ Match command "printf forwarding-check"
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
 			wait("Connected here:resume-parent")
 			// A managed shell can only hand off to its own remote children.
-			send(quote(binary) + " attach " + id + "\n")
+			send("sshore attach " + id + "\n")
 			wait("no live child matches")
-			send(quote(binary) + " attach " + missing + "\n")
+			send("sshore attach " + missing + "\n")
 			wait("unknown shell ID")
 			// The shell would otherwise inherit the rejected command's status.
 			send("exit 0\n")
@@ -896,7 +1013,7 @@ Match command "printf forwarding-check"
 	scenario("hosted shell uses explicit local selectors on its own daemon", func(t *testing.T, ctx context.Context) {
 		root := host + ":scoped-root"
 		cleanRemote(t, root)
-		runOpenSSHTerminal(t, ctx, command(ctx, "sh", host, "--name", strings.TrimPrefix(root, host+":"), "--server", binary, "--no-profile", "--no-login"), func(send func(string), wait terminalWait) {
+		runOpenSSHTerminal(t, ctx, command(ctx, "sh", host, "--name", strings.TrimPrefix(root, host+":"), "--no-profile", "--no-login"), func(send func(string), wait terminalWait) {
 			wait("Connected " + root)
 			send("sshore sh --name scoped-child --no-profile\n")
 			wait("Connected " + host + ":scoped-child")
@@ -926,7 +1043,7 @@ Match command "printf forwarding-check"
 		var recorded string
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
 			wait("Connected here:dev")
-			send(quote(binary) + " shell " + host + " --name build --no-profile --no-login --server " + quote(binary) + " --ssh -F " + quote(config) + "\n")
+			send("sshore shell " + host + " --name build --no-profile --no-login --ssh -F " + quote(config) + "\n")
 			wait("Connected " + child)
 			send("export SSHORE_BUILD=retained; " + report)
 			const marker = "BUILD_state="
@@ -940,18 +1057,18 @@ Match command "printf forwarding-check"
 			recorded = marker + state
 			send("\x02d")
 			wait("Connected here:dev")
-			out, err := runTerminal(t, ctx, command(ctx, "attach", strings.TrimPrefix(child, host+":"), "--server", binary),
+			out, err := runTerminal(t, ctx, command(ctx, "attach", strings.TrimPrefix(child, host+":")),
 				func(_ func(string), wait terminalWait) { wait("from its parent") })
 			if err == nil {
 				t.Fatalf("a separate frontend entered the child before its parent exited:\n%s", out)
 			}
-			send(quote(binary) + " attach " + childID + "\n")
+			send("sshore attach " + childID + "\n")
 			wait("Connected " + child)
 			send(report)
 			wait(recorded)
 			send("\x02d")
 			wait("Connected here:dev")
-			send(quote(binary) + " attach build\n")
+			send("sshore attach build\n")
 			wait("Connected " + child)
 			send(report)
 			wait(recorded)
@@ -962,7 +1079,7 @@ Match command "printf forwarding-check"
 			wait("No shell attached.")
 			send("exit\r")
 		})
-		runOpenSSHTerminal(t, ctx, command(ctx, "attach", strings.TrimPrefix(child, host+":"), "--server", binary), func(send func(string), wait terminalWait) {
+		runOpenSSHTerminal(t, ctx, command(ctx, "attach", strings.TrimPrefix(child, host+":")), func(send func(string), wait terminalWait) {
 			wait("Connected " + child)
 			send(report)
 			wait(recorded)
@@ -979,9 +1096,9 @@ Match command "printf forwarding-check"
 		parent := exec.CommandContext(ctx, binary, "sh", "--name", "panel-dev", "--no-profile", "--no-login")
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
 			wait("Connected here:panel-dev")
-			send(quote(binary) + " sh " + host + " --name nested-build --no-profile --no-login --server " + quote(binary) + " --ssh -F " + quote(config) + "\n")
+			send("sshore sh " + host + " --name nested-build --no-profile --no-login --ssh -F " + quote(config) + "\n")
 			wait("Connected " + build)
-			send(quote(binary) + " sh --name saved-child --no-profile --no-login\n")
+			send("sshore sh --name saved-child --no-profile --no-login\n")
 			wait("Connected " + child)
 			send("export SSHORE_PANEL_CHECK=kept\n\x02d")
 			wait("Connected " + build)
@@ -996,7 +1113,7 @@ Match command "printf forwarding-check"
 			wait("No shell attached.")
 			send("exit\r")
 		})
-		runOpenSSHTerminal(t, ctx, command(ctx, "attach", strings.TrimPrefix(child, host+":"), "--server", binary), func(send func(string), wait terminalWait) {
+		runOpenSSHTerminal(t, ctx, command(ctx, "attach", strings.TrimPrefix(child, host+":")), func(send func(string), wait terminalWait) {
 			wait("Connected " + child)
 			send("printf 'SAVED_%s=%s\n' state \"$SSHORE_PANEL_CHECK\"\nexit\n")
 			wait("SAVED_state=kept")
@@ -1044,7 +1161,7 @@ Match command "printf forwarding-check"
 		var replacement string
 		out, err := runTerminal(t, ctx, localCommand("kill", "--all"), func(send func(string), wait terminalWait) {
 			wait(name)
-			wait("[Y/n]", true)
+			wait("[y/N]", true)
 			local("kill", first[:6])
 			start()
 			replacement = identity()

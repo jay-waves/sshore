@@ -230,7 +230,7 @@ func selectApprovedResource(input *termui.Input, r *requestRecord) (resourceConf
 	}
 	resolveLocalPort(&op, port)
 	f := forwardConfig{
-		Host: r.Connection.Host, Server: r.Connection.Server, SSH: r.Connection.SSH,
+		Host: r.Connection.Host, SSH: r.Connection.SSH,
 		Port: op.Port, Target: op.TargetPort, Reverse: op.Reverse, Session: r.Connection.Session,
 		ResumePID: r.PID, ApprovalID: r.ID, Instance: r.Connection.Instance, Connection: &r.Connection,
 	}

@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync"
 
 	"github.com/jay-waves/sshore/internal/files"
@@ -16,20 +15,15 @@ import (
 )
 
 func serveRemoteRequest(req remoteServiceRequest) error {
-	// Maintenance keeps its own snapshot and shutdown verification.
-	if req.Operation != "daemon-admin" {
-		if err := checkPeerVersion(req.Release, "client"); err != nil {
-			if req.Operation != "task-control" {
-				_ = writeMessage(os.Stdout, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
-			}
-			return err
+	if err := checkPeerVersion(req.Release, "client"); err != nil {
+		if req.Operation != "task-control" {
+			_ = writeMessage(os.Stdout, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
 		}
+		return err
 	}
 	switch req.Operation {
 	case "daemon-admin":
-		if runtime.GOOS == "linux" {
-			return serveDaemonAdmin(os.Stdin, os.Stdout)
-		}
+		return serveDaemonAdmin(os.Stdin, os.Stdout)
 	case "task-control":
 		return serveTaskControl(req.Mode, taskQuery{Ref: req.Name, UID: req.Instance})
 	case "shell":
@@ -37,10 +31,8 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 	case "cp-agent":
 		return serveRemoteFileService(files.ServeCopy)
 	case "mount-agent":
-		return withRemoteFileService(func(stream io.ReadWriteCloser) error {
-			account, _ := localMachineIdentity()
-			return files.ServeAgent(stream, req.Mode, version, account, remoteFileHome(), req.PeerMetadata, beginIncomingMountTask)
-		})
+		account, _ := localMachineIdentity()
+		return files.ServeAgent(agentStdio(), req.Mode, version, account, remoteFileHome(), req.PeerMetadata, beginIncomingMountTask)
 	case "forward-agent":
 		return serveForwardAgent(req.Forward)
 	}
@@ -68,22 +60,11 @@ func agentStdio() *stdioPipe {
 }
 
 func serveRemoteFileService(serve func(io.ReadWriteCloser) error) error {
-	return withRemoteFileService(func(stream io.ReadWriteCloser) error {
-		if err := writeMessage(stream, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", HomeDirectory: remoteFileHome()}); err != nil {
-			return err
-		}
-		return serve(stream)
-	})
-}
-
-func withRemoteFileService(serve func(io.ReadWriteCloser) error) error {
-	stop, err := prepareRemoteFileService()
-	if err != nil {
-		_ = writeMessage(os.Stdout, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
+	stream := agentStdio()
+	if err := writeMessage(stream, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", HomeDirectory: remoteFileHome()}); err != nil {
 		return err
 	}
-	defer stop()
-	return serve(agentStdio())
+	return serve(stream)
 }
 
 func remoteFileHome() string {
@@ -92,26 +73,6 @@ func remoteFileHome() string {
 		home = "/" + filepath.ToSlash(home)
 	}
 	return home
-}
-
-func prepareRemoteFileService() (func(), error) {
-	executable, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
-	lock, err := setupLock()
-	if err != nil {
-		return nil, err
-	}
-	defer lock.Close()
-	if err := requireInstalledRelease(executable); err != nil {
-		return nil, err
-	}
-	// Register the lease before reset or bootstrap can acquire the setup lock.
-	if runtime.GOOS == "windows" {
-		return beginCommandActivity()
-	}
-	return leaseActivity(leaseRequest{Kind: "heartbeat"})
 }
 
 func serveForwardAgent(req *remoteForwardRequest) error {

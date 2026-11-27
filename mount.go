@@ -109,12 +109,7 @@ func executeMount(o ftpOptions) (int, error) {
 			return 2, err
 		}
 	}
-	stopActivity, err := beginCommandActivity()
-	if err != nil {
-		return 1, err
-	}
-	defer stopActivity()
-	if err = files.CheckMountPlatform(); err != nil {
+	if err := files.CheckMountPlatform(); err != nil {
 		return 1, err
 	}
 	if !o.foreground {
@@ -129,7 +124,7 @@ func (s *resourceService) mountPeerTask() peerRecord {
 
 func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecycle, selector func(context.Context, files.DirectoryReader, string) (string, string, error)) (int, error) {
 	if _, ok := releaseParts(version); !ok {
-		return 1, fmt.Errorf("mount requires a full sshore release, got %q.\n%s", version, installMatchingReleaseHelp)
+		return 1, fmt.Errorf("mount requires a full sshore release, got %q", version)
 	}
 	c := files.MountConfig{
 		Approval: o.Approval, Remote: o.Remote, Mountpoint: o.Mountpoint, Version: version, Name: o.Name,
@@ -168,9 +163,9 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 		}
 		return files.RunMount(c, lifecycle)
 	}
-	args, server := o.SSH, ""
+	args := o.SSH
 	if o.Connection != nil {
-		args, server = o.Connection.SSH, o.Connection.Server
+		args = o.Connection.SSH
 	}
 	connection := sshConnectionOptions(options{host: o.Host, ssh: args})
 	var auth *sshAuthEndpoint
@@ -187,8 +182,8 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 		}
 	}
 	connection = withSSHDiagnostics(connection, os.Stderr, auth)
-	watchConnection := remoteService(connection, server, remoteServiceRequest{Operation: "mount-agent", Mode: "mount_watch"})
-	connection = remoteService(connection, server, remoteServiceRequest{Operation: "mount-agent", Mode: "mount_data", PeerMetadata: c.PeerMetadata})
+	watchConnection := remoteService(connection, remoteServiceRequest{Operation: "mount-agent", Mode: "mount_watch"})
+	connection = remoteService(connection, remoteServiceRequest{Operation: "mount-agent", Mode: "mount_data", PeerMetadata: c.PeerMetadata})
 	var data, watch *sshio.Process
 	defer func() {
 		if data != nil {
@@ -207,9 +202,9 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle *files.MountLifecyc
 		}
 		return data, nil
 	}
-	c.OpenNotifications = func(_ context.Context) (io.ReadWriteCloser, error) {
+	c.OpenNotifications = func(ctx context.Context) (io.ReadWriteCloser, error) {
 		var err error
-		watch, err = data.OpenSibling(watchConnection, os.Stderr)
+		watch, err = data.OpenSibling(ctx, watchConnection, os.Stderr)
 		if err != nil {
 			return nil, err
 		}

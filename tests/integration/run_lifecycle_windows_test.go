@@ -36,7 +36,6 @@ func TestWindowsNewReview(t *testing.T) {
 	}
 	state := filepath.Join(t.TempDir(), "state")
 	t.Setenv("SSHORE_STATE_DIR", state)
-	t.Setenv("SSHORE_DISABLED", "")
 	t.Setenv("NO_COLOR", "1")
 	hostname, err := os.Hostname()
 	if err != nil {

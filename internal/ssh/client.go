@@ -240,11 +240,12 @@ func (c *Client) keepalive(interval time.Duration, count int) {
 // its I/O and closes the connection only when created by the package-level Start.
 // Wait must be called after consuming stdout.
 type Process struct {
-	stdin  processInput
-	stdout io.Reader
-	client *Client
-	wait   func() error
-	close  func() error
+	command string
+	stdin   processInput
+	stdout  io.Reader
+	client  *Client
+	wait    func() error
+	close   func() error
 }
 
 type Destination struct {
@@ -266,7 +267,9 @@ func (d Destination) ObservedAddress(serverIP string) string {
 	return d.Host
 }
 
-func (p *Process) Destination() Destination { return p.client.destination }
+func (c *Client) Destination() Destination { return c.destination }
+
+func (p *Process) Destination() Destination { return p.client.Destination() }
 
 // DialTCP opens a sibling TCP channel. Closing it leaves the exec channel alive.
 func (p *Process) DialTCP(ctx context.Context, address string) (net.Conn, error) {
@@ -297,8 +300,11 @@ func (p *Process) CloseAndWait() error {
 }
 
 // OpenSibling starts another exec channel on this process's SSH connection.
-func (p *Process) OpenSibling(o Options, diagnostic io.Writer) (*Process, error) {
-	return startSession(p.client, o.Command, diagnostic, nil, o.WriteRequest)
+func (p *Process) OpenSibling(ctx context.Context, o Options, diagnostic io.Writer) (*Process, error) {
+	if o.OpenCommand != nil {
+		return o.OpenCommand(ctx, p.client, p.command, diagnostic)
+	}
+	return p.client.Start(o.Command, diagnostic)
 }
 
 func Start(ctx context.Context, o Options, diagnostic io.Writer) (process *Process, err error) {
@@ -313,26 +319,28 @@ func Start(ctx context.Context, o Options, diagnostic io.Writer) (process *Proce
 			client.Close()
 		}
 	}()
-	return startSession(client, o.Command, diagnostic, stop, o.WriteRequest)
+	if o.OpenCommand != nil {
+		process, err = o.OpenCommand(ctx, client, "", diagnostic)
+	} else {
+		process, err = client.Start(o.Command, diagnostic)
+	}
+	if err != nil {
+		return nil, err
+	}
+	process.close = func() error {
+		stop()
+		return client.Close()
+	}
+	return process, nil
 }
 
 // Start opens an exec channel owned by the caller's connection.
 func (c *Client) Start(command string, diagnostic io.Writer) (*Process, error) {
-	return startSession(c, command, diagnostic, nil, nil)
-}
-
-func startSession(client *Client, command string, diagnostic io.Writer, stop func() bool, writeRequest func(io.Writer) error) (*Process, error) {
-	session, err := client.NewSession()
+	session, err := c.NewSession()
 	if err != nil {
 		return nil, err
 	}
-	p := &Process{client: client, wait: sync.OnceValue(session.Wait), close: session.Close}
-	if stop != nil {
-		p.close = func() error {
-			stop()
-			return client.Close()
-		}
-	}
+	p := &Process{client: c, command: command, wait: sync.OnceValue(session.Wait), close: session.Close}
 	session.Stderr = diagnostic
 	p.stdin.writer, err = session.StdinPipe()
 	if err == nil {
@@ -345,12 +353,6 @@ func startSession(client *Client, command string, diagnostic io.Writer, stop fun
 	if err = session.Start(command); err != nil {
 		_ = session.Close()
 		return nil, err
-	}
-	if writeRequest != nil {
-		if err := writeRequest(p); err != nil {
-			_ = p.CloseAndWait()
-			return nil, err
-		}
 	}
 	return p, nil
 }

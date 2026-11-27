@@ -97,17 +97,11 @@ func (s *daemonActivity) incomingPeers() []peerRecord {
 func openActivity(parent context.Context, r leaseRequest) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
-	record, err := activityDaemon(ctx)
+	record, err := ensureLocalDaemonContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return dialDaemonStream(ctx, record, time.Now().Add(10*time.Second), "/leases", r)
-}
-func activityDaemon(ctx context.Context) (localShellRecord, error) {
-	if activityAllowed() {
-		return ensureLocalDaemonContext(ctx)
-	}
-	return existingDaemonRecord()
 }
 func (s *daemonActivity) serve(c net.Conn, r leaseRequest, heartbeat bool) error {
 	l, err := s.registerLease(r)
@@ -273,14 +267,9 @@ func acceptActivityLease(ctx context.Context, c net.Conn, heartbeat bool) (func(
 	}), finished, nil
 }
 
-func activityAllowed() bool { return os.Getenv("SSHORE_DISABLED") != "1" }
-
 func (s *daemonActivity) busy() bool { s.mu.Lock(); defer s.mu.Unlock(); return len(s.leases) != 0 }
 
 func beginCommandActivity() (func(), error) {
-	if !activityAllowed() {
-		return func() {}, nil
-	}
 	return leaseActivity(leaseRequest{Kind: "heartbeat"})
 }
 func withDaemonActivity(execute func() (int, error)) (int, error) {

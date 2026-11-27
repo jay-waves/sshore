@@ -52,9 +52,6 @@ func run(args []string) (int, error) {
 	if errors.Is(err, errHelp) {
 		return 0, showHelp([]string{command}, os.Stdout)
 	}
-	if !spec.recovery && !activityAllowed() {
-		return 1, disabledFeaturesError()
-	}
 	if err != nil {
 		return 2, err
 	}
@@ -139,14 +136,14 @@ func runShell(parsed cliArguments) (int, error) {
 
 func runTargetCommand(parsed cliArguments) (int, error) {
 	if parsed.command == "kill" && parsed.has("--all") {
-		return runKillAll(options{host: parsed.task.host, ssh: parsed.ssh, server: parsed.value("--server", "sshore")})
+		return runKillAll(options{host: parsed.task.host, ssh: parsed.ssh})
 	}
 	target, err := selectCLITask(parsed)
 	if err != nil {
 		return 2, err
 	}
 	if parsed.command == "kill" && target.Connection == nil && target.RemoteHost == "" {
-		if len(parsed.ssh) != 0 || parsed.has("--server") {
+		if len(parsed.ssh) != 0 {
 			return 2, usage("local tasks do not accept SSH options")
 		}
 		return killRegisteredTask(target)
@@ -156,7 +153,7 @@ func runTargetCommand(parsed cliArguments) (int, error) {
 		return 2, err
 	}
 	if parsed.command == "kill" {
-		return withDaemonActivity(func() (int, error) { return runRemoteTaskStop(o) })
+		return runRemoteTaskStop(o)
 	}
 	return withDaemonActivity(func() (int, error) { return executeShellCommand(o) })
 }
@@ -167,7 +164,7 @@ func runRemoteTaskStop(o options) (int, error) {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	connection := remoteService(sshConnectionOptions(o), o.server, remoteServiceRequest{
+	connection := remoteService(sshConnectionOptions(o), remoteServiceRequest{
 		Operation: "task-control", Mode: "kill", Name: o.instance, Instance: o.instance,
 	})
 	connection = withSSHDiagnostics(connection, os.Stderr, nil)
@@ -204,14 +201,13 @@ func runSSHCommand(parsed cliArguments) (int, error) {
 
 func shellOptions(parsed cliArguments, target selectedTask) (options, error) {
 	command := parsed.command
-	o := options{command: command, server: parsed.value("--server", "sshore")}
+	o := options{command: command}
 	creating := command == "shell" || command == "new"
 	if creating {
 		o.command = "sh" // Shell requests use the existing protocol operation.
 	}
 	o.ssh, o.local = parsed.ssh, parsed.task.scope != taskSSH
 	o.portOverrideOnly = parsed.has("--port") && len(sshio.WithoutForwarding(parsed.ssh)) == 2
-	o.serverSet = parsed.has("--server")
 	o.noEscape = parsed.has("--no-escape")
 	o.argv = parsed.argv
 	o.pin = parsed.has("--pin")
@@ -237,7 +233,7 @@ func shellOptions(parsed cliArguments, target selectedTask) (options, error) {
 			o.host, o.session, o.local = "local", target.Name, true
 		}
 	}
-	if o.local && (len(o.ssh) > 0 || o.serverSet) {
+	if o.local && (len(o.ssh) > 0) {
 		return o, usage("local shells do not accept SSH options")
 	}
 
@@ -253,36 +249,35 @@ func shellOptions(parsed cliArguments, target selectedTask) (options, error) {
 }
 
 type options struct {
-	hostInfo              hostInfo
-	hold                  *clientTransport
-	fromTree              string
-	recovering            bool
-	reusable              *clientTransport
-	routeTarget           bool
-	sameHostRoute         bool
-	handoffDone           func(context.Context, error) error
-	routeParent           *options
-	routeToken            string
-	environment           []string
-	hosted                bool
-	host, session, server string
-	command               string
-	noEscape              bool
-	ssh                   []string
-	argv                  []string
-	local                 bool
-	pin                   bool
-	noLogin               bool
-	noProfile             bool
-	taskIdentity          string
-	instance              string
-	parent                string
-	remoteOwned           bool
-	remoteParentKey       string
-	portOverrideOnly      bool
-	serverSet             bool
-	sshDirectory          string
-	startupDirectory      string
+	hostInfo         hostInfo
+	hold             *clientTransport
+	fromTree         string
+	recovering       bool
+	reusable         *clientTransport
+	routeTarget      bool
+	sameHostRoute    bool
+	handoffDone      func(context.Context, error) error
+	routeParent      *options
+	routeToken       string
+	environment      []string
+	hosted           bool
+	host, session    string
+	command          string
+	noEscape         bool
+	ssh              []string
+	argv             []string
+	local            bool
+	pin              bool
+	noLogin          bool
+	noProfile        bool
+	taskIdentity     string
+	instance         string
+	parent           string
+	remoteOwned      bool
+	remoteParentKey  string
+	portOverrideOnly bool
+	sshDirectory     string
+	startupDirectory string
 }
 
 func executeShellCommand(o options) (int, error) {
@@ -630,11 +625,6 @@ func runEndpointForward(parsed cliArguments) (int, error) {
 }
 
 func executeEndpointForward(f forwardConfig) (int, error) {
-	stopActivity, err := beginCommandActivity()
-	if err != nil {
-		return 1, err
-	}
-	defer stopActivity()
 	if f.Port == 0 || f.Target == 0 {
 		input, err := newLocalInput()
 		if err != nil {
@@ -655,7 +645,7 @@ func executeEndpointForward(f forwardConfig) (int, error) {
 		} else {
 			f.Port = port
 		}
-		if err = input.Close(); err != nil {
+		if err := input.Close(); err != nil {
 			return 1, err
 		}
 	}

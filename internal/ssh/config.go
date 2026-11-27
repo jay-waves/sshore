@@ -32,8 +32,8 @@ func FormatEndpoint(host, operand string) string {
 type Options struct {
 	Host, Command, Directory string
 	Args, Environment        []string
-	// WriteRequest sends a request before the caller takes over the exec stream.
-	WriteRequest func(io.Writer) error
+	// OpenCommand starts a managed command on the authenticated connection.
+	OpenCommand func(context.Context, *Client, string, io.Writer) (*Process, error)
 	// IgnoredForwarding reports the host whose configured forwards were skipped.
 	IgnoredForwarding func(context.Context, string)
 	// Negotiated reports the algorithms for connections with DEBUG logging.

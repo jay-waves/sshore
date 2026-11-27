@@ -132,7 +132,7 @@ func matchTask(ref string, candidates []selectedTask) (selectedTask, error) {
 			}
 			if idMatch.Identity == target.Identity && target.Connection != nil {
 				if saved, route := idMatch.Connection, target.Connection; saved != nil {
-					ambiguousRoute = ambiguousRoute || saved.Host != route.Host || saved.Server != route.Server ||
+					ambiguousRoute = ambiguousRoute || saved.Host != route.Host ||
 						saved.Directory != route.Directory || !slices.Equal(saved.SSH, route.SSH)
 				}
 				continue

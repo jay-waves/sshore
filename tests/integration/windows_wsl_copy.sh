@@ -2,13 +2,27 @@
 set -eu
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+release_server=
+trap 'if [ -n "$release_server" ]; then kill "$release_server" 2>/dev/null || true; wait "$release_server" || true; fi; rm -rf "$tmp"' EXIT
 cp "$1" "$tmp/sshore"
 cp "$2" "$tmp/key"
 cp "$3" "$tmp/hosts"
+cp "$4" "$tmp/release-server"
+chmod 700 "$tmp/release-server"
+"$tmp/release-server" "$5" &
+release_server=$!
 chmod 700 "$tmp/sshore"
 chmod 600 "$tmp/key"
 cd "$tmp"
+tries=0
+until wget -q -O /dev/null http://127.0.0.1:22221/v0.0.0/SHA256SUMS; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 10 ]; then
+        echo 'Release fixture did not start' >&2
+        exit 1
+    fi
+    sleep 1
+done
 
 copy() {
     ./sshore cp "$@" --ssh -F none -p 22222 -l sshore-fixture -i "$tmp/key" \

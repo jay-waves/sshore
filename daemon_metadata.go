@@ -107,22 +107,12 @@ type metadataReply struct {
 
 func metadataRPC(r metadataRequest) (metadataReply, error) {
 	var reply metadataReply
-	if !activityAllowed() {
-		switch r.Action {
-		case "connection_select", "participation_get":
-			if _, err := existingDaemonRecord(); os.IsNotExist(err) {
-				return reply, nil
-			}
-		default:
-			return reply, fmt.Errorf("daemon activity is disabled in recovery mode")
-		}
-	}
 	if activity := accountActivity.Load(); activity != nil {
 		reply = activity.handleMetadata(r)
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		record, err := activityDaemon(ctx)
+		record, err := ensureLocalDaemonContext(ctx)
 		if err != nil {
 			return reply, err
 		}
@@ -188,13 +178,13 @@ func (a *daemonActivity) handleShellHistory(r metadataRequest) (reply metadataRe
 }
 
 type recentConnection struct {
-	Hosted                           bool              `json:",omitempty"`
-	RouteTarget                      bool              `json:",omitempty"`
-	Parent                           *recentConnection `json:",omitempty"`
-	RouteToken                       string            `json:",omitempty"`
-	Instance                         string            `json:",omitempty"`
-	Host, Session, Server, Directory string
-	SSH                              []string
+	Hosted                   bool              `json:",omitempty"`
+	RouteTarget              bool              `json:",omitempty"`
+	Parent                   *recentConnection `json:",omitempty"`
+	RouteToken               string            `json:",omitempty"`
+	Instance                 string            `json:",omitempty"`
+	Host, Session, Directory string
+	SSH                      []string
 }
 
 func (r recentConnection) viaShell() bool { return r.Hosted || r.Parent != nil }
@@ -239,7 +229,7 @@ func validateRecentConnection(r recentConnection) error {
 		} else if hop.RouteToken != "" || hop.RouteTarget {
 			return fmt.Errorf("shell route parent missing")
 		}
-		if validSSHDestination(hop.Host) != nil || validSession(hop.Session) != nil || hop.Server == "" || strings.ContainsAny(hop.Server, "\x00\r\n") {
+		if validSSHDestination(hop.Host) != nil || validSession(hop.Session) != nil {
 			return fmt.Errorf("invalid recent connection")
 		}
 		if hop.Directory != "" && !filepath.IsAbs(hop.Directory) {

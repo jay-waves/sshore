@@ -45,7 +45,6 @@ type cliOption struct {
 
 // Canonical option definitions own the public command grammar.
 var cliOptions = map[string]cliOption{
-	"--server":    {kind: cliText},
 	"--name":      {kind: cliText},
 	"--apply":     {},
 	"--port":      {kind: cliPort, alias: "-p"},
@@ -64,7 +63,6 @@ var cliOptions = map[string]cliOption{
 type cliSpec struct {
 	flags, aliases []string
 	ssh, program   bool
-	recovery       bool
 	min, max       int
 	selector       cliSelectorKind
 	group          cliGroup
@@ -168,9 +166,6 @@ func validateCLIValue(name, value string, option cliOption) error {
 		if err != nil || n < 1 || n > 1000 || strings.Trim(value, "0123456789") != "" {
 			return usage("%s requires a count from 1 to 1000", name)
 		}
-	}
-	if name == "--server" && strings.ContainsAny(value, "\x00\r\n") {
-		return usage("invalid %s value", name)
 	}
 	if name == "--name" {
 		return validAlias(value)
@@ -284,7 +279,7 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 		if len(a.operands) != 1 {
 			return a, usage("shell command execution requires one SSH host")
 		}
-		for _, flag := range []string{"--name", "--pin", "--no-login", "--no-profile", "--no-escape", "--server"} {
+		for _, flag := range []string{"--name", "--pin", "--no-login", "--no-profile", "--no-escape"} {
 			if a.has(flag) {
 				return a, usage("%s requires an interactive shell", flag)
 			}
@@ -344,7 +339,7 @@ func parseCLI(args []string, command string) (cliArguments, error) {
 	case cliKillSelector:
 		a.task, err = parseKillTarget(a)
 	}
-	if err == nil && a.task.scope == taskLocal && (len(a.ssh) != 0 || a.has("--server")) && spec.selector != cliNoSelector {
+	if err == nil && a.task.scope == taskLocal && (len(a.ssh) != 0) && spec.selector != cliNoSelector {
 		err = usage("local tasks do not accept SSH options")
 	}
 	return a, err
@@ -512,8 +507,7 @@ Use sshore forward for TCP forwarding. Compression, agent/X11 forwarding and
 ProxyCommand are unsupported.
 `
 
-const connectionOptions = `  --server PATH         Linux remote executable (default: sshore on SSH PATH)
-  --no-escape           Disable Ctrl+B shortcuts
+const connectionOptions = `  --no-escape           Disable Ctrl+B shortcuts
 `
 
 const startupLocationHelp = `Use HOST:PATH or here:PATH for a startup directory. PATH must be absolute
@@ -528,10 +522,10 @@ const shellStartupOptions = `  --pin                 Keep the task running after
 `
 
 const shellConnectionHelp = `
-The remote release must match exactly. Update the older side before connecting.
+Managed connections deploy the matching server through SSH and SFTP.
 ` + sshOptions
 
-const connectionFlags = "--server --no-escape"
+const connectionFlags = "--no-escape"
 const terminalStartupFlags = connectionFlags + " --name --pin --no-login --no-profile"
 
 var cliCommands map[string]cliSpec
@@ -648,7 +642,7 @@ Use attach to resume it. Ctrl+B d also pins and detaches.
 `,
 		},
 		"pstree": {
-			run: runInventoryCommand, recovery: true, group: groupTask, summary: "Show the task tree", aliases: []string{"ps"},
+			run: runInventoryCommand, group: groupTask, summary: "Show the task tree", aliases: []string{"ps"},
 			help: `Usage: sshore pstree  (alias: ps)
 
 Show tasks under their host roots, with type/ID labels and terminal parent edges.
@@ -657,7 +651,7 @@ A * after the ID marks the current shell. Use list for details.
 ` + inventoryStateHelp,
 		},
 		"list": {
-			run: runInventoryCommand, recovery: true, group: groupTask, summary: "Show task details", aliases: []string{"ls"},
+			run: runInventoryCommand, group: groupTask, summary: "Show task details", aliases: []string{"ls"},
 			help: `Usage: sshore list  (alias: ls)
 
 List terminal sessions, mounts and forwards, including incoming resources.
@@ -669,9 +663,9 @@ the executable name. A forward's arrow points toward the target service.
 		},
 		"kill": {
 			run: runTargetCommand, selector: cliKillSelector, group: groupTask, summary: "End a task or shut down its manager",
-			ssh: true, max: 1, flags: []string{"--server", "--all"},
-			help: `Usage: sshore kill ID|NAME [--server PATH] [--ssh SSH_OPTIONS...]
-       sshore kill [HOST] --all [--server PATH] [--ssh SSH_OPTIONS...]
+			ssh: true, max: 1, flags: []string{"--all"},
+			help: `Usage: sshore kill ID|NAME [--ssh SSH_OPTIONS...]
+       sshore kill [HOST] --all [--ssh SSH_OPTIONS...]
 
 Select a known shell, mount or forward by its ID or name. An ambiguous name
 requires an ID. Stop incoming resources on their managing account.
@@ -682,12 +676,9 @@ Effects:
   Mount     Unmounts first; a busy mount stays active for retry.
   Forward   Closes the forward and its active connections.
 
---all stops the account daemon, even when idle. Without HOST it targets the
-local account. With HOST it targets the remote account and also ends local
-resources connected to HOST. When tasks are present, it previews them and
-prompts [Y/n]. Enter confirms and n cancels.
-Remote --all requires a compatible service protocol. Individual remote task
-control requires matching releases.
+--all stops the local daemon when HOST is omitted. With HOST it stops this
+client's matching remote daemon and local resources connected to HOST.
+It shows running tasks before shutdown. Answer y to end them.
 ` + sshOptions,
 		},
 		"cp": {
@@ -802,7 +793,7 @@ The mount subcommand runs an isolated mount worker, started by the manager.
 `,
 		},
 		"reset": {
-			run: func(cliArguments) (int, error) { return 0, runReset() }, recovery: true, group: groupAccount, summary: "End local tasks and clear application state",
+			run: func(cliArguments) (int, error) { return 0, runReset() }, group: groupAccount, summary: "End local tasks and clear application state",
 			help: `Usage: sshore reset
 
 Immediately end this account's tasks and clear local identity, history, requests,

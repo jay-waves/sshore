@@ -5,7 +5,6 @@ package main
 import (
 	"fmt"
 	"net"
-	"os"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
@@ -24,7 +23,7 @@ func (s *remoteShell) serveRoutedResource(c net.Conn, request message, relay fun
 		fail(err)
 		return
 	}
-	if !validTaskUID(request.Instance) || os.Getenv("SSHORE_DISABLED") == "1" {
+	if !validTaskUID(request.Instance) {
 		fail(fmt.Errorf("resource shell changed or unavailable"))
 		return
 	}

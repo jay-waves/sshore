@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -17,7 +16,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"text/tabwriter"
 	"time"
 
 	transportio "github.com/jay-waves/sshore/internal/ssh"
@@ -123,7 +121,6 @@ func stopConfirmedResources(ctx context.Context, views []resourceView) error {
 	return errors.Join(failures...)
 }
 
-// Kill-all uses administrative control, independent of normal release matching.
 func runKillAll(o options) (int, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -147,46 +144,56 @@ func runKillAll(o options) (int, error) {
 			return 1, err
 		}
 		views = local.Resources
-		connection := remoteService(sshConnectionOptions(o), o.server, remoteServiceRequest{Operation: "daemon-admin"})
+		connection := remoteService(sshConnectionOptions(o), remoteServiceRequest{Operation: "daemon-admin"})
 		connection = withSSHDiagnostics(connection, os.Stderr, nil)
 		process, err := transportio.Start(ctx, connection, os.Stderr)
-		if err != nil {
+		switch {
+		case errors.Is(err, errRemoteDeploymentMissing):
+			// The common confirmation still covers local resources on this host.
+		case err != nil:
 			return 1, err
-		}
-		defer process.CloseAndWait()
-		decoder := jsontext.NewDecoder(process)
-		var reply daemonAdminReply
-		if err := json.UnmarshalDecode(decoder, &reply); err != nil {
-			return 1, fmt.Errorf("remote daemon administration unavailable: %w", err)
-		}
-		if reply.Error != "" {
-			return 1, fmt.Errorf("%s", reply.Error)
-		}
-		snapshot = reply.Snapshot
-		stop = func() error {
-			if err := writeControlJSON(process, snapshot); err != nil {
-				return err
-			}
+		default:
+			defer process.CloseAndWait()
+			decoder := jsontext.NewDecoder(process)
+			var reply daemonAdminReply
 			if err := json.UnmarshalDecode(decoder, &reply); err != nil {
-				return err
+				return 1, fmt.Errorf("remote daemon administration unavailable: %w", err)
 			}
 			if reply.Error != "" {
-				return fmt.Errorf("%s", reply.Error)
+				return 1, fmt.Errorf("%s", reply.Error)
 			}
-			err := process.Wait()
-			return err
+			snapshot = reply.Snapshot
+			if snapshot.Instance != "" {
+				stop = func() error {
+					if err := writeControlJSON(process, true); err != nil {
+						return err
+					}
+					var result daemonAdminReply
+					if err := json.UnmarshalDecode(decoder, &result); err != nil {
+						return err
+					}
+					if result.Error != "" {
+						return fmt.Errorf("%s", result.Error)
+					}
+					return process.Wait()
+				}
+			}
 		}
 	}
 	if err := confirmDaemonShutdown(o.host, snapshot, views); err != nil {
 		return 1, err
 	}
-	if err := stop(); err != nil {
-		return 1, err
+	if stop == nil {
+		fmt.Println("No remote daemon is running.")
+	} else {
+		if err := stop(); err != nil {
+			return 1, err
+		}
+		fmt.Println("Tasks ended; daemon stopped.")
 	}
 	if err := stopConfirmedResources(ctx, views); err != nil {
-		return 1, fmt.Errorf("remote daemon stopped; local resource cleanup: %w", err)
+		return 1, fmt.Errorf("local resource cleanup: %w", err)
 	}
-	fmt.Println("Tasks ended; daemon stopped.")
 	return 0, nil
 }
 
@@ -197,13 +204,15 @@ func confirmDaemonShutdown(host string, snapshot daemonSnapshot, resources []res
 	if host == "" {
 		host = "local"
 	}
-	printDaemonSnapshot(os.Stdout, host, snapshot)
+	if len(snapshot.Tasks) > 0 {
+		printDaemonSnapshot(os.Stdout, host, snapshot)
+	}
 	if len(resources) > 0 {
 		inv := inventory{Resources: slices.Clone(resources)}
 		inv.setTaskReferences()
 		writeTaskInventoryColor(os.Stdout, inv, "", termui.ColorEnabled(os.Stdout))
 	}
-	prompt := termui.StatusLine(termui.ColorEnabled(os.Stderr), termui.Warning, "End the listed tasks and stop the account daemon? [Y/n]")
+	prompt := termui.StatusLine(termui.ColorEnabled(os.Stderr), termui.Warning, "End the listed tasks and stop the daemon? [y/N]")
 	fmt.Fprint(os.Stderr, prompt+" ")
 	if !confirmKillAll(os.Stdin) {
 		return fmt.Errorf("cancelled; no tasks ended")
@@ -217,22 +226,20 @@ func confirmKillAll(input io.Reader) bool {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(answer)) {
-	case "", "y", "yes", "kill":
+	case "y", "yes", "kill":
 		return true
 	default:
 		return false
 	}
 }
 
-func printDaemonSnapshot(w io.Writer, host string, snapshot daemonSnapshot) {
+func printDaemonSnapshot(w *os.File, host string, snapshot daemonSnapshot) {
 	fmt.Fprintf(w, "HOST  %s · daemon %s\n", cleanText(host), cleanText(snapshot.Version))
-	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(table, "ID\tNAME")
+	table := [][]string{{"ID", "TYPE"}}
 	tasks := slices.Clone(snapshot.Tasks)
 	for i := range tasks {
 		tasks[i].ID = strings.TrimPrefix(tasks[i].ID, "task:")
 	}
-	slices.SortStableFunc(tasks, func(a, b daemonTaskInfo) int { return cmp.Compare(a.ID, b.ID) })
 	for i, task := range tasks {
 		width := min(6, len(task.ID))
 		for _, neighbor := range []int{i - 1, i + 1} {
@@ -243,9 +250,9 @@ func printDaemonSnapshot(w io.Writer, host string, snapshot daemonSnapshot) {
 				width++
 			}
 		}
-		fmt.Fprintf(table, "%s\t(%s)\n", cleanText(task.ID[:width]), cleanText(task.Name))
+		table = append(table, []string{taskDisplayID(task.ID[:width], task.Name, false), task.Kind})
 	}
-	table.Flush()
+	writeTaskTable(w, table, termui.ColorEnabled(w), 0, -1)
 }
 
 // Mount daemons receive only startup/control messages through the account daemon.

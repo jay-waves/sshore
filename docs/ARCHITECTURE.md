@@ -138,7 +138,8 @@ local console or calling terminal and whether pinned children remain.
 See [network topology](NETWORK.md) for SSH channels and [mount](mount.md) for worker startup,
 directory caching and notifications.
 
-One authenticated daemon per OS account owns registered shells and resources.
+The local client uses one authenticated daemon per OS account. Remote deployments
+use one daemon per client ID and release. Each daemon owns its registered tasks.
 The daemon, installer, and state storage share the [file lock adapter](../internal/sys/file_lock.go)
 backed by `gofrs/flock`. Daemon startup is serialized by the account startup lock. The owner lock
 identifies the live daemon, and its endpoint record supplies the address.

@@ -242,13 +242,12 @@ Control resolves the immutable task ID in the daemon's memory table. Ending a
 task removes its live registration; clients do not infer lifetime from stale files.
 Remote shell cancellation uses the same authenticated, exact-release control
 entry and targets the registered task. `kill --all` displays a
-fresh snapshot and requires confirmation at a `[Y/n]` prompt. Enter confirms,
-and EOF cancels. A change to a reviewed task requires fresh review. For a
+fresh snapshot and requires explicit confirmation at a `[y/N]` prompt. A change to a reviewed task requires fresh review. For a
 remote host, the remote daemon stops first. The local daemon then verifies the
 identities and names of all displayed local resources before stopping any of
 them.
-Other managers' advertisements are excluded. Administrative shutdown may cross
-release versions; individual task control still requires an exact release.
+Other managers' advertisements are excluded. Administrative shutdown and
+individual task control both require the exact release.
 
 On Linux the daemon starts each local or hosted shell directly in a dedicated
 cgroup v2 child. The daemon retains a kernel handle to `cgroup.kill` for that
@@ -324,20 +323,20 @@ The authenticated SSH exec channel passes a versioned service request before
 starting the selected protocol. The request selects a handler and carries no
 additional authority. Approved routes and task mutations retain their existing
 source, identity and account-daemon checks.
-Shell, file and forward services reject a mismatched release with a framed
-error before opening a task or stream. The client uses the reported versions
-to show the mismatch and installer links. When shell setup receives EOF, it drains
-SSH diagnostics and reads the exit status. A clean exit or a usage error without
-a reply can trigger one bounded `--version` query on the same SSH connection.
-The SSH service reads one newline-terminated JSON request from stdin and rejects
-unknown or duplicate members. Remote `kill --all` uses the same request framing and
-requires a remote binary that understands it.
-Run the platform installer locally on each endpoint. `bootstrap` resets and reinstalls
-the local account.
+Shell, file and forward services reject a mismatched release before opening a
+task or stream. The client deploys a versioned server under the authenticated
+account's private directory through SFTP. It uploads to a temporary file and
+publishes the complete file by rename. SSH exec selects that path on the same
+authenticated connection. Client IDs select separate directories within the
+same OS account. Account permissions govern filesystem access.
+
+Remote `kill --all` presents the daemon's live task snapshot before stopping it
+and verifies the confirmed snapshot before shutdown. Local installers set up
+the client. `bootstrap` resets and reinstalls the local account.
 Installers verify the release checksum and executable version. The prepared binary
-stages the replacement before requesting shutdown, including for same-version
-reinstalls. It reads one authenticated administrative snapshot and requests
-shutdown against the same daemon instance and task set.
+stages the replacement before shutdown, including for same-version reinstalls.
+It uses the installed client to review and stop its deployments and local daemon.
+A declined or failed shutdown leaves the installed client in place.
 Active tasks require confirmation of the displayed snapshot. Before publishing
 under the startup and owner locks, the installer rechecks the installation target
 against the file it inspected. After replacement it clears the target account's
@@ -349,13 +348,13 @@ handling.
 Replacement requires a user-owned regular file and a user-owned directory
 without group/world write permission on Linux. Replacement does not elevate
 privileges. The Linux installer adds its executable directory to user shell
-profiles. See [installation](../README.md#install) for PATH behavior.
+profiles. See [installation](../README.md#install-the-client) for PATH behavior.
 
 Release checksums detect corruption, not publisher compromise. Cached artifacts are
 private and rechecked on reuse; unavailable assets never cause substitution of a
 different release.
-Published tags and assets are not overwritten; older patch assets are removed after a complete
-replacement is published. See [release mechanics](RELEASE.md).
+The publisher retains immutable tags and assets for deployment to new hosts.
+See [release mechanics](RELEASE.md).
 
 `reset` uses the authenticated administrative snapshot and shutdown before clearing
 local state and cached releases. Failed shutdown stops reset; busy mounts may refuse
@@ -363,18 +362,10 @@ cleanup. Custom state roots are cleared by entry name, including when inherited
 from the running daemon. Account cleanup removes the daemon locator and log.
 It preserves coordination locks to prevent concurrent startup.
 
-## Setup failure and legacy recovery
+## Setup failure
 
-Use ordinary SSH for manual repair.
-
-New binaries continue to honor `SSHORE_DISABLED=1` inherited from legacy recovery
-shells: normal operations remain disabled until reconnecting. Legacy recovery is a
-product restriction, not a sandbox; arbitrary older binaries and processes
-outside registered tasks remain outside daemon control. Native SSH forwarding
-remains the local user's policy.
-
-Installer scripts verify the release before invoking the prepared executable to
-apply it. Bootstrap help is read-only.
+Use ordinary SSH for manual repair. Installer scripts verify the release before
+invoking the prepared executable to apply it. Bootstrap help is read-only.
 
 ## Inventory and privacy
 

@@ -29,6 +29,9 @@ type resetPaths struct {
 
 // Resolve the running daemon's state directory before shutdown removes its record.
 func prepareReset(command string) (resetPaths, error) {
+	if deployedStateRoot() != "" {
+		return resetPaths{}, fmt.Errorf("%s applies to the installed client", command)
+	}
 	if os.Getenv("SSHORE_LOCAL_SESSION") != "" || os.Getenv("SSHORE_SOCKET") != "" {
 		return resetPaths{}, fmt.Errorf("run %s outside managed shells; it ends their tasks", command)
 	}

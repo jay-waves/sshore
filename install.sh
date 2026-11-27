@@ -131,7 +131,7 @@ main() {
     add_to_path
     printf 'Installed sshore %s: %s\n' "$install_version" "$install_target"
     printf '%s\n' 'SHA256 verified. No sudo required.'
-    printf '%s\n' 'Use matching client/server versions. Remote accounts are updated separately.'
+    printf '%s\n' 'Managed SSH connections deploy the matching server automatically.'
     printf 'Added %s to user PATH; start a new shell to apply it.\n' "$install_bin_dir"
 }
 

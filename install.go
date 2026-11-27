@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	_ "embed"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,10 +20,6 @@ import (
 
 //go:embed install.sh
 var linuxInstaller string
-
-const installMatchingReleaseHelp = "Install the same full release on both machines.\n" +
-	"Linux installer: https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh\n" +
-	"Windows installer: https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1"
 
 func runBootstrap(parsed cliArguments) (int, error) {
 	var target string
@@ -82,27 +77,6 @@ func setupLock() (*sys.FileLock, error) {
 	return tryPrivateFileLock(filepath.Join(dir, "setup.lock"))
 }
 
-func requireInstalledRelease(target string) error {
-	installed, err := executableVersion(target)
-	if err != nil {
-		return fmt.Errorf("cannot verify installed sshore %s at %q.\n%s", version, target, installMatchingReleaseHelp)
-	}
-	if err := checkPeerVersion(installed, "installed executable"); err != nil {
-		return err
-	}
-	record, err := existingDaemonRecord()
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if record.Version != version {
-		return fmt.Errorf("account daemon runs sshore %s. Use that release to run sshore kill --all and wait for it to exit before using %s", record.Version, version)
-	}
-	return nil
-}
-
 // Compare numeric components without overflowing on large release coordinates.
 func compareReleases(a, b string) (int, bool) {
 	aa, ok := releaseParts(a)
@@ -158,11 +132,8 @@ func bootstrapRelease(target string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if running {
-		order, known := compareReleases(record.Version, version)
-		if !known || order > 0 {
-			return fmt.Errorf("cannot update account daemon release %q to %s", cleanText(record.Version), version)
-		}
+	if running && record.Version != installed {
+		return fmt.Errorf("stop the local daemon using its sshore %s client before installing", cleanText(record.Version))
 	}
 
 	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
@@ -199,23 +170,17 @@ func bootstrapRelease(target string) error {
 	if err := verifyInstallTarget(target, previous); err != nil {
 		return err
 	}
-	if runtime.GOOS == "linux" && installed != "" && installed != version {
-		if err := os.Link(target, target+"-"+installed); err != nil && !errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("back up old executable: %w", err)
+	if installed != "" {
+		if err := stopInstalledDeployments(target, installed); err != nil {
+			return err
 		}
 	}
 	fmt.Fprintf(os.Stderr, "Bootstrap will end this account's sshore tasks, clear its identity, history and caches, and reinstall sshore %s at %s.\n", version, cleanText(target))
 	if running {
-		snapshot, err := daemonAdminRequest(context.Background(), record, daemonSnapshotRoute, nil)
-		if err != nil {
-			return fmt.Errorf("reading account daemon snapshot: %w", err)
-		}
-		hostname, _ := os.Hostname()
-		if err := confirmDaemonShutdown(hostname, snapshot, nil); err != nil {
-			return err
-		}
-		if err := requestDaemonShutdown(snapshot); err != nil {
-			return fmt.Errorf("stopping the account daemon: %w", err)
+		command := exec.Command(target, "kill", "--all")
+		command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err := command.Run(); err != nil {
+			return fmt.Errorf("stopping the local sshore %s daemon: %w", installed, err)
 		}
 	}
 	// A direct daemon invocation can race even while we hold the startup lock.
@@ -232,6 +197,11 @@ func bootstrapRelease(target string) error {
 	}
 	if err := paths.clear(gate, startup, owner); err != nil {
 		return fmt.Errorf("installed sshore %s, but reset did not finish: %w; retry bootstrap", version, err)
+	}
+	if installed != "" {
+		if err := forgetDeploymentHistory(installed); err != nil {
+			return fmt.Errorf("installed sshore %s, but could not clear deployment history: %w", version, err)
+		}
 	}
 	return nil
 }

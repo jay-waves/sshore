@@ -74,9 +74,7 @@ func shutdownDaemonEndpoint(ctx context.Context, dir string, record localShellRe
 	}
 }
 
-// Administrative control can inspect or stop a different release, but cannot
-// create tasks or open data streams. Normal control still requires exact versions.
-type daemonTaskInfo struct{ ID, Name string }
+type daemonTaskInfo struct{ ID, Name, Kind string }
 type daemonSnapshot struct {
 	Version, Instance string
 	Tasks             []daemonTaskInfo
@@ -97,7 +95,17 @@ func (s *daemonTasks) adminSnapshot(record localShellRecord) daemonAdminReply {
 func (s *daemonTasks) taskInfosLocked() []daemonTaskInfo {
 	var rows []daemonTaskInfo
 	for id, task := range s.liveLocked() {
-		rows = append(rows, daemonTaskInfo{ID: id, Name: task.taskName()})
+		info := daemonTaskInfo{ID: id, Name: task.taskName()}
+		switch task := task.(type) {
+		case interface{ managedShell() *tmuxTask }:
+			shell := task.managedShell()
+			shell.mu.Lock()
+			info.Kind = terminalTaskKind(shell.program)
+			shell.mu.Unlock()
+		case *daemonResourceTask:
+			info.Kind = task.record.Kind
+		}
+		rows = append(rows, info)
 	}
 	slices.SortFunc(rows, func(a, b daemonTaskInfo) int { return cmp.Compare(a.ID, b.ID) })
 	return rows
@@ -221,19 +229,17 @@ func serveDaemonAdmin(input io.Reader, output io.Writer) error {
 	if err := json.MarshalEncode(encoder, reply); err != nil {
 		return err
 	}
-	if reply.Error != "" {
+	if reply.Error != "" || snapshot.Instance == "" {
 		return nil
 	}
-	var expected daemonSnapshot
-	if err := json.UnmarshalDecode(jsontext.NewDecoder(io.LimitReader(input, 1<<20)), &expected); err != nil {
+	var confirmed bool
+	if err := readControlJSON(input, &confirmed); err != nil {
 		return err
 	}
-	if snapshot.Instance != expected.Instance || snapshot.Version != expected.Version || !slices.Equal(snapshot.Tasks, expected.Tasks) {
-		return json.MarshalEncode(encoder, daemonAdminReply{Error: "tasks changed; review again"})
+	if !confirmed {
+		return json.MarshalEncode(encoder, daemonAdminReply{Error: "cancelled; no tasks ended"})
 	}
-	if snapshot.Instance != "" {
-		err = requestDaemonShutdown(expected)
-	}
+	err = requestDaemonShutdown(snapshot)
 	reply = daemonAdminReply{}
 	if err != nil {
 		reply.Error = err.Error()

@@ -100,6 +100,9 @@ func daemonStateRootAt(dir, root string, explicit bool) (string, error) {
 
 // Daemon ownership follows the authenticated OS account, independently of runtime state.
 var daemonLocation = func() (string, error) {
+	if root := deployedStateRoot(); root != "" {
+		return filepath.Join(root, "daemon"), nil
+	}
 	account, err := user.Current()
 	if err != nil {
 		return "", err
@@ -396,12 +399,10 @@ func serveDaemon(listener net.Listener, record localShellRecord, activity *daemo
 				http.Error(w, "unauthorized", 401)
 				return
 			}
-			if r.URL.Path != daemonSnapshotRoute && r.URL.Path != daemonShutdownRoute {
-				if err := checkReleaseVersions(record.Version, r.Header.Get("Sshore-Version"), "daemon client"); err != nil {
-					w.Header().Set("Sshore-Version", record.Version)
-					http.Error(w, err.Error(), http.StatusConflict)
-					return
-				}
+			if err := checkReleaseVersions(record.Version, r.Header.Get("Sshore-Version"), "daemon client"); err != nil {
+				w.Header().Set("Sshore-Version", record.Version)
+				http.Error(w, err.Error(), http.StatusConflict)
+				return
 			}
 			mu.Lock()
 			if stopping {

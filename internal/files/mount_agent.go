@@ -66,9 +66,6 @@ func serveApprovedMountStream(conn io.ReadWriteCloser, version, account string, 
 }
 
 func serveMountAgent(conn io.ReadWriteCloser, m message, version, account, home string, observe func(jsontext.Value) func(), approval *MountApproval) error {
-	if os.Getenv("SSHORE_DISABLED") == "1" {
-		return fmt.Errorf("file access disabled in recovery")
-	}
 	if runtime.GOARCH != "amd64" {
 		return fmt.Errorf("mount agent requires amd64")
 	}

@@ -1267,7 +1267,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						if m.Owner != "" {
 							hint = "Reconnect from its parent: "
 							target.local = target.local || target.sameHostRoute
-							target.routeParent, target.server, target.ssh = nil, "", nil
+							target.routeParent, target.ssh = nil, nil
 						}
 						report("", title, hint+cleanText(reconnectCommand(target)))
 					}
@@ -1380,9 +1380,6 @@ func reconnectCommand(o options) string {
 		}
 	}
 	args := []string{"sshore", "attach", selector}
-	if o.server != "" && o.server != "sshore" {
-		args = append(args, "--server", o.server)
-	}
 	if len(o.ssh) > 0 {
 		args = append(args, "--ssh")
 		args = append(args, o.ssh...)

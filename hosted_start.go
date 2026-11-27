@@ -132,31 +132,18 @@ func serveRemoteShell(mode, name, instance, directory string) (result error) {
 			_ = writeMessage(os.Stdout, message{Type: "fatal", SoftwareVersion: version, Error: result.Error()})
 		}
 	}()
-	for {
-		lock, err := setupLock()
+	if mode == "attach" && name == "" {
+		selected, err := chooseDetachedHostedShell()
 		if err != nil {
 			return err
 		}
-		if err := requireInstalledRelease(target); err != nil {
-			lock.Close()
-			return err
-		}
-		if mode == "attach" && name == "" {
-			lock.Close()
-			selected, err := chooseDetachedHostedShell()
-			if err != nil {
-				return err
-			}
-			name = selected.Instance
-			continue // Recheck setup after waiting without the account lock.
-		}
-		record, err := prepareHostedShell(name, mode, instance, target, directory)
-		lock.Close()
-		if err != nil {
-			return err
-		}
-		return reportHostedShell(record)
+		name = selected.Instance
 	}
+	record, err := prepareHostedShell(name, mode, instance, target, directory)
+	if err != nil {
+		return err
+	}
+	return reportHostedShell(record)
 }
 
 func dialHostedTask(ctx context.Context, ref string, timeout time.Duration) (net.Conn, error) {

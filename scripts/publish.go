@@ -39,7 +39,7 @@ Omitted copy paths open a picker after SSH authentication.
 For non-interactive mounts, use HOST:~ to select the remote home and .: to
 allocate a local mountpoint automatically.
 
-Use the platform installer on each endpoint to install %[1]s for managed connections.
+Install the client locally. Managed SSH connections deploy the matching server automatically.
 Bootstrap ends the target account's tasks, including pinned shells, and clears
 its sshore identity, history and cached releases. Save work before bootstrapping.
 Commit: %[2]s

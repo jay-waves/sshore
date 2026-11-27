@@ -110,6 +110,9 @@ func statePath(name string) (string, error) {
 	if hub := accountActivity.Load(); hub != nil && hub.root != "" {
 		return filepath.Join(hub.root, name), nil
 	}
+	if root := deployedStateRoot(); root != "" {
+		return filepath.Join(root, name), nil
+	}
 	root := os.Getenv("SSHORE_STATE_DIR")
 	explicit := root != ""
 	if !explicit {

@@ -7,10 +7,9 @@
    `git push origin vX.Y.Z`. [Publish](../.github/workflows/publish.yml)
    builds and publishes both archives and their `SHA256SUMS` in one command,
    using the pushed tag as the binary version.
-4. Verify the published commit/tag, both archives and their checksums before
-   pruning older releases in the same major/minor series. Retain the highest
-   published patch and all Git tags. Exclude drafts, prereleases and noncanonical
-   tags from pruning. Published tags and assets are immutable.
+4. Verify the published commit/tag, both archives and their checksums. Retain
+   published tags and assets unchanged. A client can need either archive from
+   its exact release to deploy to a new host.
 
 Run `go run ./scripts` to build development packages using the nearest
 full release tag for managed connections. The [single-binary build](BUILD.md)

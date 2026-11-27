@@ -143,7 +143,7 @@ type forwardConfig struct {
 	Retries             int
 	Session, ApprovalID string
 	ResumePID           int
-	Host, Name, Server  string
+	Host, Name          string
 	Port, Target        int
 	Reverse             bool
 	SSH                 []string
@@ -234,7 +234,7 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 		connection := remoteService(sshio.Options{
 			Host: f.Host, Args: f.SSH, Environment: s.baseEnvironment(), Directory: s.directory,
 			RequireKnownHost: !initial,
-		}, f.Server, remoteServiceRequest{
+		}, remoteServiceRequest{
 			Operation: "forward-agent",
 			Forward:   &remoteForwardRequest{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse},
 		})

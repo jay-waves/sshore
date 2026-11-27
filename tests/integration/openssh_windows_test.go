@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,19 +36,30 @@ func TestWindowsOpenSSH(t *testing.T) {
 	}) {
 		t.Helper()
 		request, err := json.Marshal(map[string]any{
-			"protocol": 1, "release": release, "operation": operation, "mode": mode, "name": name,
+			"release": release, "operation": operation, "mode": mode, "name": name,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := os.ReadFile(filepath.Join(home, ".sshore", "deployment-id"))
+		if err != nil {
+			t.Fatal(err)
+		}
 		args := append(append([]string{"-o", "BatchMode=yes"}, sshOptions...), host,
-			"sshore service")
+			`.\.sshore\clients\`+string(id)+`\0.0.0\sshore.exe service`)
 		var diagnostic strings.Builder
 		probe := exec.CommandContext(ctx, "ssh.exe", args...)
 		probe.Stdin = strings.NewReader(string(request) + "\n")
 		probe.Stderr = &diagnostic
 		out, runErr := probe.Output()
-		if err := json.Unmarshal(out, &reply); err != nil {
+		if len(out) == 0 || out[0] != 0 {
+			t.Fatalf("remote %s did not acknowledge startup: %v\n%s\n%s", operation, runErr, out, diagnostic.String())
+		}
+		if err := json.Unmarshal(out[1:], &reply); err != nil {
 			t.Fatalf("remote %s response: %v (%v)\n%s\n%s", operation, err, runErr, out, diagnostic.String())
 		}
 		if runErr == nil || reply.Type != "fatal" {
@@ -55,25 +67,6 @@ func TestWindowsOpenSSH(t *testing.T) {
 		}
 		return reply
 	}
-	t.Run("reject release mismatch", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-		defer cancel()
-		for _, operation := range []string{"shell", "cp-agent", "mount-agent", "forward-agent"} {
-			t.Run(operation, func(t *testing.T) {
-				reply := raw(t, ctx, operation, "0.0.1", "new", "wrong-release")
-				if reply.SoftwareVersion != "0.0.0" || !strings.Contains(reply.Error, "0.0.0") || !strings.Contains(reply.Error, "0.0.1") {
-					t.Fatalf("wrong release diagnostic: %+v", reply)
-				}
-				for _, installer := range []string{"install.sh", "install.ps1"} {
-					if !strings.Contains(reply.Error, "https://raw.githubusercontent.com/jay-waves/sshore/main/"+installer) {
-						t.Fatalf("missing installer link for %s: %s", installer, reply.Error)
-					}
-				}
-			})
-		}
-	})
-	// Raw SSH probes need no local daemon. The first Windows SSH logon can
-	// outlast its idle timeout, and the harness ConPTY cannot start a daemon.
 	ctx, command := windowsClient(t)
 	run := func(t *testing.T, verb, target string, args []string, steps func(func(string), terminalWait)) {
 		t.Helper()
@@ -110,6 +103,14 @@ func TestWindowsOpenSSH(t *testing.T) {
 	}) {
 		return
 	}
+	t.Run("deployed service rejects a release mismatch", func(t *testing.T) {
+		for _, operation := range []string{"shell", "cp-agent", "mount-agent", "forward-agent"} {
+			reply := raw(t, ctx, operation, "0.0.1", "new", "wrong-release")
+			if reply.SoftwareVersion != "0.0.0" || !strings.Contains(reply.Error, "0.0.1") {
+				t.Fatalf("wrong release diagnostic: %+v", reply)
+			}
+		}
+	})
 	t.Run("exited shell cannot be attached", func(t *testing.T) {
 		reply := raw(t, ctx, "shell", "0.0.0", "attach", "ci-shell")
 		if !strings.Contains(reply.Error, "does not exist") {

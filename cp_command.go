@@ -41,14 +41,9 @@ func executeCopyCommand(o copyOptions) (int, error) {
 	} else if o.target.path, err = sys.ExpandHome(o.target.path); err != nil {
 		return 1, err
 	}
-	stopActivity, err := beginCommandActivity()
-	if err != nil {
-		return 1, err
-	}
-	defer stopActivity()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	connection := remoteService(sshConnectionOptions(options{host: o.host, ssh: o.ssh}), "", remoteServiceRequest{Operation: "cp-agent"})
+	connection := remoteService(sshConnectionOptions(options{host: o.host, ssh: o.ssh}), remoteServiceRequest{Operation: "cp-agent"})
 	connection = withSSHDiagnostics(connection, os.Stderr, nil)
 	stream, err := sshio.Start(ctx, connection, os.Stderr)
 	if err != nil {

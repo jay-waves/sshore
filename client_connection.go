@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -450,13 +449,9 @@ func connectionFromOptions(o options) (recentConnection, error) {
 			}
 			directory = cwd
 		}
-		server := src.server
-		if server == "" {
-			server = "sshore"
-		}
 		*dst = recentConnection{
 			Hosted: src.hosted, Directory: directory, Host: src.host, Session: src.session,
-			Server: server, SSH: ssh, Instance: src.instance,
+			SSH: ssh, Instance: src.instance,
 		}
 		if src.routeParent != nil {
 			dst.Parent, dst.RouteToken, dst.RouteTarget = new(recentConnection), src.routeToken, src.routeTarget
@@ -479,9 +474,6 @@ func applyConnectionOptions(o *options, r recentConnection) {
 		}
 		if o.instance == "" && (o.session == "" || o.session == hop.Session) {
 			o.instance = hop.Instance
-		}
-		if !o.serverSet {
-			o.server = hop.Server
 		}
 		if o.portOverrideOnly {
 			o.ssh = transportio.AppendWithoutPort(o.ssh, hop.SSH)
@@ -544,7 +536,7 @@ func directShellOptions(o options) options {
 			o.local, o.hosted, o.taskIdentity = true, true, identityFromUID(o.instance)
 		}
 		o.routeParent, o.routeToken, o.routeTarget = nil, "", false
-		o.server, o.ssh, o.sshDirectory = hop.server, hop.ssh, hop.sshDirectory
+		o.ssh, o.sshDirectory = hop.ssh, hop.sshDirectory
 	}
 	return o
 }
@@ -653,7 +645,7 @@ func (h *clientHandoff) options() (options, error) {
 	shell := h.Shell
 	if (shell.Command != "sh" && shell.Command != "attach") || !filepath.IsAbs(h.Directory) ||
 		shell.Instance != "" && !validTaskUID(shell.Instance) || shell.Name != "" && validSession(shell.Name) != nil ||
-		shell.Local && len(shell.SSH) != 0 || !shell.Local && (validSSHDestination(shell.Host) != nil || shell.Server == "" || strings.ContainsAny(shell.Server, "\x00\r\n")) {
+		shell.Local && len(shell.SSH) != 0 || !shell.Local && (validSSHDestination(shell.Host) != nil) {
 		return options{}, fmt.Errorf("invalid shell handoff")
 	}
 	if _, _, err := parseSSHOptions(shell.SSH); err != nil {
@@ -663,7 +655,7 @@ func (h *clientHandoff) options() (options, error) {
 		return options{}, fmt.Errorf("invalid hosted shell handoff")
 	}
 	return options{
-		command: shell.Command, local: shell.Local, host: shell.Host, session: shell.Name, server: shell.Server,
+		command: shell.Command, local: shell.Local, host: shell.Host, session: shell.Name,
 		ssh: shell.SSH, argv: shell.Argv, startupDirectory: shell.StartupDirectory, pin: shell.Pin, noLogin: shell.NoLogin, noProfile: shell.NoProfile, noEscape: h.NoEscape,
 		sshDirectory: h.Directory, environment: h.Environment, taskIdentity: h.TaskIdentity, instance: shell.Instance, hosted: h.Hosted,
 	}, nil

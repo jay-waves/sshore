@@ -200,7 +200,7 @@ function Install-Sshore([string]$Version = '', [string]$Path = '') {
             }
             Write-Host 'Added to user and current session PATH. Restart other terminals to use sshore.'
         }
-        Write-Host 'SHA256 verified. Existing remote daemons are not upgraded or stopped.'
+        Write-Host 'SHA256 verified. Managed SSH connections deploy the matching server automatically.'
 
     } finally {
         if ($stage -and [IO.File]::Exists($stage)) { [IO.File]::Delete($stage) }

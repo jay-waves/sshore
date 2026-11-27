@@ -6,7 +6,7 @@
 Start a shell on this computer or over SSH, detach, and pick up where you left
 off. You can also copy files, forward ports and mount remote directories.
 
-## Install
+## Install the client
 
 Download a [release package](https://github.com/jay-waves/sshore/releases), or run:
 
@@ -22,8 +22,8 @@ curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | 
 irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 ```
 
-The installer adds sshore to your user `PATH` (on Linux, it updates `.bashrc`).
-To reinstall, run the same install command again.
+The scripts install the local client. On the first managed SSH connection, the
+client automatically deploys the matching server over SSH and SFTP.
 
 ## OS and shell support
 
@@ -32,8 +32,8 @@ To reinstall, run the same install command again.
 | bash / sh / zsh / fish on Linux | ✓ | ✓ | ✓ | ✓ |
 | pwsh / cmd on Win11 | ✓ | ✓ | ✓ | ✓ |
 
-Managed shells and their resource routes require the host's SSH server to
-allow TCP forwarding to loopback.
+Managed shells and their resource routes also require SSH TCP forwarding to
+loopback.
 See the [development notes](docs/ARCHITECTURE.md#terminal-and-mux-design-scope)
 for experimental Apple Silicon support.
 
@@ -163,7 +163,6 @@ sshore mount raspberrypi: here: --read-only
 Use `HOST:` to browse from the remote home, `HOST:~` to select it directly,
 and `here:` to choose the local mountpoint. Use `.:` for automatic allocation.
 
-The SSH account must find the matching sshore release on its PATH.
 Windows hosts serve directories on NTFS and ReFS volumes; other filesystems are rejected.
 Mounts use SFTP and require FUSE on Linux, [WinFsp](https://winfsp.dev/) on
 Windows, or the [macFUSE](https://macfuse.github.io/) kernel extension on

@@ -22,63 +22,57 @@ func TestCLI(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name     string
-		args     []string
-		recovery bool
-		status   int
-		output   string
+		name   string
+		args   []string
+		status int
+		output string
 	}{
-		{"main help groups commands", nil, false, 0, "Account maintenance"},
-		{"alias help in recovery", []string{"ps", "--help"}, true, 0, "Usage: sshore pstree"},
-		{"help before invalid switch", []string{"kill", "--unrecognized", "--help"}, false, 0, "Usage: sshore kill"},
-		{"examples use alias", []string{"sh", "--tldr"}, true, 0, "Open a remote shell"},
-		{"help past SSH delimiter is an SSH argument", []string{"shell", "work", "--ssh", "--help"}, false, 2, "unsupported SSH option after --ssh"},
-		{"duplicate SSH port", []string{"a", "work", "--port", "2222", "--ssh", "-o", "Port=22"}, false, 2, "--port cannot be combined"},
-		{"port short and long forms share one setting", []string{"sh", "work", "-p", "2222", "--port", "22"}, false, 2, "--port may only be specified once"},
-		{"attached port value is validated", []string{"sh", "work", "-p65536"}, false, 2, "requires a port from 1 to 65535"},
-		{"attached jump value is recognized", []string{"new", "-Jjump"}, false, 2, "local tasks do not accept SSH options"},
-		{"identity files can be repeated before and after the SSH delimiter", []string{"new", "-i", "first key", "-isecond-key", "--ssh", "-i", "third-key"}, false, 2, "local tasks do not accept SSH options"},
-		{"jump requires a value before the next option", []string{"new", "work", "-J", "-p", "2222"}, false, 2, "missing value for -J"},
-		{"duplicate jump option", []string{"sh", "work", "-J", "jump", "--ssh", "-J", "other"}, false, 2, "-J cannot be combined"},
-		{"SSH config can be selected before the host", []string{"shell", "-F", "none", "work:"}, false, 2, "invalid startup path"},
-		{"attached SSH config is recognized", []string{"new", "-Fnone"}, false, 2, "local tasks do not accept SSH options"},
-		{"SSH config requires a value before the next option", []string{"new", "-F", "-p", "2222"}, false, 2, "missing value for -F"},
-		{"SSH config cannot be repeated across option blocks", []string{"sh", "work", "-F", "none", "--ssh", "-F", "other"}, false, 2, "-F cannot be combined"},
-		{"local scope rejects SSH options", []string{"attach", "--port=2222"}, false, 2, "local tasks do not accept SSH options"},
-		{"cannot attach a typed selector", []string{"attach", "forward/485bad"}, false, 2, "attach expects a task ID, name or host"},
-		{"cannot attach a scoped selector", []string{"attach", "work:485bad"}, false, 2, "invalid host"},
-		{"cannot attach with two operands", []string{"attach", "work", "485bad"}, false, 2, "unexpected argument: 485bad"},
-		{"host has no trailing colon", []string{"attach", "work:"}, false, 2, "invalid host"},
-		{"cannot kill a scoped selector", []string{"kill", "work:485bad"}, false, 2, "kill requires"},
-		{"cannot kill with two operands", []string{"kill", "work", "485bad"}, false, 2, "unexpected argument: 485bad"},
-		{"creation name cannot be an ID", []string{"shell", "work", "--name", "db"}, false, 2, "reserved for task IDs"},
-		{"creation name uses an option", []string{"shell", "work:/tmp", "editor"}, false, 2, "unexpected argument: editor"},
-		{"old shell name syntax is rejected", []string{"shell", "work:editor"}, false, 2, "use --name for a task name"},
-		{"new rejects an empty tail", []string{"new", "work", "--ssh", "-J", "jump", "--"}, false, 2, "expected -- followed by an executable"},
-		{"new documents shell startup options", []string{"new", "--help"}, false, 0, "--no-login"},
-		{"new rejects shell flags for an explicit program", []string{"new", "--no-profile", "--", "vim"}, false, 2, "require starting the default shell"},
-		{"shell command requires a host before the delimiter", []string{"sh", "--", "work"}, false, 2, "requires one SSH host"},
-		{"shell command rejects an empty tail", []string{"sh", "work", "--"}, false, 2, "expected a command after --"},
-		{"shell command rejects pin", []string{"sh", "work", "--pin", "--", "uptime"}, false, 2, "--pin requires an interactive shell"},
-		{"shutdown accepts one account", []string{"kill", "--all", "one", "two"}, false, 2, "unexpected argument: two"},
-		{"empty host cannot become a local shutdown", []string{"kill", "--all", "--", ""}, false, 2, "empty argument"},
-		{"account reset accepts no target", []string{"reset", "work:"}, false, 2, "unexpected argument: work:"},
-		{"bootstrap rejects a bare host", []string{"bootstrap", "work"}, false, 2, "bootstrap installs on this machine"},
-		{"bootstrap rejects a remote path", []string{"bootstrap", "work:/usr/bin/sshore"}, false, 2, "bootstrap installs on this machine"},
-		{"bootstrap apply requires an explicit local path", []string{"bootstrap", "--apply"}, false, 2, "requires here:PATH"},
-		{"recovery rejects task creation", []string{"shell", "--name", "blocked"}, true, 1, "sshore features are disabled"},
-		{"forwards reject foreground mode", []string{"fwd", "8080", "work:80", "--foreground"}, false, 2, "unsupported option: --foreground"},
-		{"omitted copy paths require a terminal before dialing", []string{"cp", "here:", "work:"}, false, 2, "file selection requires an interactive terminal"},
-		{"omitted mount paths require a terminal before dialing", []string{"mount", "work:", "here:"}, false, 2, "file selection requires an interactive terminal"},
+		{"main help groups commands", nil, 0, "Account maintenance"},
+		{"alias help", []string{"ps", "--help"}, 0, "Usage: sshore pstree"},
+		{"help before invalid switch", []string{"kill", "--unrecognized", "--help"}, 0, "Usage: sshore kill"},
+		{"examples use alias", []string{"sh", "--tldr"}, 0, "Open a remote shell"},
+		{"help past SSH delimiter is an SSH argument", []string{"shell", "work", "--ssh", "--help"}, 2, "unsupported SSH option after --ssh"},
+		{"duplicate SSH port", []string{"a", "work", "--port", "2222", "--ssh", "-o", "Port=22"}, 2, "--port cannot be combined"},
+		{"port short and long forms share one setting", []string{"sh", "work", "-p", "2222", "--port", "22"}, 2, "--port may only be specified once"},
+		{"attached port value is validated", []string{"sh", "work", "-p65536"}, 2, "requires a port from 1 to 65535"},
+		{"attached jump value is recognized", []string{"new", "-Jjump"}, 2, "local tasks do not accept SSH options"},
+		{"identity files can be repeated before and after the SSH delimiter", []string{"new", "-i", "first key", "-isecond-key", "--ssh", "-i", "third-key"}, 2, "local tasks do not accept SSH options"},
+		{"jump requires a value before the next option", []string{"new", "work", "-J", "-p", "2222"}, 2, "missing value for -J"},
+		{"duplicate jump option", []string{"sh", "work", "-J", "jump", "--ssh", "-J", "other"}, 2, "-J cannot be combined"},
+		{"SSH config can be selected before the host", []string{"shell", "-F", "none", "work:"}, 2, "invalid startup path"},
+		{"attached SSH config is recognized", []string{"new", "-Fnone"}, 2, "local tasks do not accept SSH options"},
+		{"SSH config requires a value before the next option", []string{"new", "-F", "-p", "2222"}, 2, "missing value for -F"},
+		{"SSH config cannot be repeated across option blocks", []string{"sh", "work", "-F", "none", "--ssh", "-F", "other"}, 2, "-F cannot be combined"},
+		{"local scope rejects SSH options", []string{"attach", "--port=2222"}, 2, "local tasks do not accept SSH options"},
+		{"cannot attach a typed selector", []string{"attach", "forward/485bad"}, 2, "attach expects a task ID, name or host"},
+		{"cannot attach a scoped selector", []string{"attach", "work:485bad"}, 2, "invalid host"},
+		{"cannot attach with two operands", []string{"attach", "work", "485bad"}, 2, "unexpected argument: 485bad"},
+		{"host has no trailing colon", []string{"attach", "work:"}, 2, "invalid host"},
+		{"cannot kill a scoped selector", []string{"kill", "work:485bad"}, 2, "kill requires"},
+		{"cannot kill with two operands", []string{"kill", "work", "485bad"}, 2, "unexpected argument: 485bad"},
+		{"creation name cannot be an ID", []string{"shell", "work", "--name", "db"}, 2, "reserved for task IDs"},
+		{"creation name uses an option", []string{"shell", "work:/tmp", "editor"}, 2, "unexpected argument: editor"},
+		{"old shell name syntax is rejected", []string{"shell", "work:editor"}, 2, "use --name for a task name"},
+		{"new rejects an empty tail", []string{"new", "work", "--ssh", "-J", "jump", "--"}, 2, "expected -- followed by an executable"},
+		{"new documents shell startup options", []string{"new", "--help"}, 0, "--no-login"},
+		{"new rejects shell flags for an explicit program", []string{"new", "--no-profile", "--", "vim"}, 2, "require starting the default shell"},
+		{"shell command requires a host before the delimiter", []string{"sh", "--", "work"}, 2, "requires one SSH host"},
+		{"shell command rejects an empty tail", []string{"sh", "work", "--"}, 2, "expected a command after --"},
+		{"shell command rejects pin", []string{"sh", "work", "--pin", "--", "uptime"}, 2, "--pin requires an interactive shell"},
+		{"shutdown accepts one account", []string{"kill", "--all", "one", "two"}, 2, "unexpected argument: two"},
+		{"empty host cannot become a local shutdown", []string{"kill", "--all", "--", ""}, 2, "empty argument"},
+		{"account reset accepts no target", []string{"reset", "work:"}, 2, "unexpected argument: work:"},
+		{"bootstrap rejects a bare host", []string{"bootstrap", "work"}, 2, "bootstrap installs on this machine"},
+		{"bootstrap rejects a remote path", []string{"bootstrap", "work:/usr/bin/sshore"}, 2, "bootstrap installs on this machine"},
+		{"bootstrap apply requires an explicit local path", []string{"bootstrap", "--apply"}, 2, "requires here:PATH"},
+		{"forwards reject foreground mode", []string{"fwd", "8080", "work:80", "--foreground"}, 2, "unsupported option: --foreground"},
+		{"omitted copy paths require a terminal before dialing", []string{"cp", "here:", "work:"}, 2, "file selection requires an interactive terminal"},
+		{"omitted mount paths require a terminal before dialing", []string{"mount", "work:", "here:"}, 2, "file selection requires an interactive terminal"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := filepath.Join(t.TempDir(), "state")
 			t.Setenv("SSHORE_STATE_DIR", state)
-			t.Setenv("SSHORE_DISABLED", "")
 			t.Setenv("SSHORE_SOCKET", "")
-			if tc.recovery {
-				t.Setenv("SSHORE_DISABLED", "1")
-			}
 			cmd := exec.CommandContext(t.Context(), binary, tc.args...)
 			output, err := cmd.CombinedOutput()
 			status := 0

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	json "encoding/json/v2"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,7 +18,7 @@ type shellConfig struct {
 	NoLogin, NoProfile bool
 	Pin                bool
 	Local              bool
-	Host, Name, Server string
+	Host, Name         string
 	StartupDirectory   string
 	Command, Instance  string
 	ParentKey          string `json:",omitempty"`
@@ -29,7 +28,7 @@ type shellConfig struct {
 
 func (o options) shellConfig() shellConfig {
 	return shellConfig{
-		StartupDirectory: o.startupDirectory, Command: o.command, Instance: o.instance, Local: o.local, Host: o.host, Name: o.session, Server: o.server, SSH: o.ssh,
+		StartupDirectory: o.startupDirectory, Command: o.command, Instance: o.instance, Local: o.local, Host: o.host, Name: o.session, SSH: o.ssh,
 		NoLogin: o.noLogin, NoProfile: o.noProfile, Pin: o.pin, Argv: o.argv, ParentKey: o.remoteParentKey,
 	}
 }
@@ -338,26 +337,19 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 			shellRequest.Name = f.Instance
 		}
 	}
-	connection := remoteService(sshConnectionOptions(options{host: f.Host, ssh: f.SSH, sshDirectory: req.Record.Directory}), f.Server, shellRequest)
+	connection := remoteService(sshConnectionOptions(options{host: f.Host, ssh: f.SSH, sshDirectory: req.Record.Directory}), shellRequest)
 	connection.Environment = req.Env
 	connection.Confirm, connection.Secret = req.Auth.callbacks()
 	connection = withSSHDiagnostics(connection, diagnostics, req.Auth)
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	var err error
-	// Keep the exec channel when an older service closes stdin immediately:
-	// its stdout, stderr and exit status can still explain the failure.
-	writeRequest := connection.WriteRequest
-	connection.WriteRequest = nil
 	pipes, err = transportio.Start(ctx, connection, diagnostics)
 	if err != nil {
 		return err
 	}
 	since := time.Now()
-	if err := writeRequest(pipes); err != nil && err != io.EOF {
-		return err
-	}
-	ready, err := diagnostics.relaySetup(pipes, f.Server)
+	ready, err := diagnostics.relaySetup(pipes)
 	if err != nil {
 		return err
 	}
@@ -439,12 +431,12 @@ func remoteTaskRecord(ready message) (localShellRecord, error) {
 }
 
 // Relay the selection exchange until the remote setup process hands over a task.
-func (d *shellDiagnostics) relaySetup(pipes *transportio.Process, server string) (message, error) {
+func (d *shellDiagnostics) relaySetup(pipes *transportio.Process) (message, error) {
 	for {
 		m, err := readMessage(pipes)
 		if err != nil {
 			if err == io.EOF {
-				return message{}, remoteSetupExit(pipes, server)
+				return message{}, remoteSetupExit(pipes)
 			}
 			return message{}, fmt.Errorf("remote shell setup failed: %w", err)
 		}
@@ -481,36 +473,16 @@ func (d *shellDiagnostics) relaySetup(pipes *transportio.Process, server string)
 	}
 }
 
-func remoteSetupExit(pipes *transportio.Process, server string) error {
+func remoteSetupExit(pipes *transportio.Process) error {
 	// EOF can precede stderr and exit-status. Bound the remaining diagnostics
-	// on this failed connection, including any sibling channel open.
+	// on this failed connection.
 	timer := time.AfterFunc(3*time.Second, func() { pipes.Close() })
 	defer timer.Stop()
 	_ = pipes.CloseWrite()
-	exit := pipes.Wait()
-	cause := fmt.Errorf("remote shell setup ended before the handshake completed: %w", io.EOF)
-	if exit != nil {
-		cause = fmt.Errorf("remote shell setup: %w", exit)
-		status, ok := errors.AsType[exitStatusError](exit)
-		if !ok || status.ExitStatus() != 2 {
-			return cause
-		}
+	if err := pipes.Wait(); err != nil {
+		return fmt.Errorf("remote shell setup: %w", err)
 	}
-	// Legacy services reject a different request format as a usage error.
-	probe, err := pipes.OpenSibling(transportio.Options{Command: remoteExecutable(server) + " --version"}, io.Discard)
-	if err != nil {
-		return cause
-	}
-	defer probe.CloseAndWait()
-	_ = probe.CloseWrite()
-	const maxVersion = 256
-	out, err := io.ReadAll(io.LimitReader(probe, maxVersion+1))
-	if err == nil && len(out) <= maxVersion && probe.Wait() == nil {
-		if peer, err := parseExecutableVersion(out); err == nil && peer != version {
-			return checkPeerVersion(peer, "remote executable")
-		}
-	}
-	return cause
+	return fmt.Errorf("remote shell setup ended before the handshake completed: %w", io.EOF)
 }
 
 // The local frontend-to-daemon connection carries independent task endpoints.

@@ -29,10 +29,10 @@ chown sshore-fixture:sshore-fixture "$ssh_group" "$ssh_group/cgroup.procs" "$ssh
     exec /usr/sbin/sshd -E "$fixture/sshd.log" -f /dev/null -p 2222 -h "$fixture/host" \
         -o ListenAddress=127.0.0.1 -o AuthorizedKeysFile=authorized_keys \
         -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PermitRootLogin=no \
-        -o AllowUsers=sshore-fixture
+        -o LogLevel=VERBOSE -o AllowUsers=sshore-fixture -o 'Subsystem=sftp internal-sftp'
 )
-ln -s "$fixture/sshore" /usr/local/bin/sshore
 
+export PATH="$fixture:$PATH"
 export SSHORE_TEST_OPENSSH="$fixture/sshore" SSHORE_STATE_DIR="$fixture/state" TERM=xterm NO_COLOR=1
 export SSHORE_TEST_CGROUP="$fixture/sshore"
 cd /fixture/repo/tests/integration
