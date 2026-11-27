@@ -17,7 +17,12 @@ const historyLock = "history.lock"
 // historyTransaction opens the account database only for the supplied transaction.
 // The separate lock coordinates opening the database with removal by reset.
 func historyTransaction(root string, write bool, run func(*bolt.Tx) error) error {
-	path := filepath.Join(root, "connections", "participation.db")
+	return stateDBTransaction(root, filepath.Join("connections", "participation.db"), write, run)
+}
+
+func stateDBTransaction(root, file string, write bool, run func(*bolt.Tx) error) error {
+	path := filepath.Join(root, file)
+	subdir := filepath.Dir(file)
 	if !write {
 		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 			return run(nil)
@@ -36,7 +41,7 @@ func historyTransaction(root string, write bool, run func(*bolt.Tx) error) error
 		if err := checkDeploymentAdmission(); err != nil {
 			return err
 		}
-		if _, err := prepareStateDir(root, "connections"); err != nil {
+		if _, err := prepareStateDir(root, subdir); err != nil {
 			return err
 		}
 	} else {
@@ -54,7 +59,7 @@ func historyTransaction(root string, write bool, run func(*bolt.Tx) error) error
 		return run(nil)
 	}
 	if err != nil {
-		return fmt.Errorf("open task history: %w", err)
+		return fmt.Errorf("open state database: %w", err)
 	}
 	defer db.Close()
 	if write {

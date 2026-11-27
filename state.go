@@ -3,42 +3,19 @@ package main
 import (
 	"crypto/md5"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/sys"
+	bolt "go.etcd.io/bbolt"
 )
-
-// readStateJSON checks privacy before opening and bounds the entire record.
-func readStateJSON(path string, maxBytes int, value any) error {
-	if err := sys.PrivateStatePath(path, false); err != nil {
-		return err
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return readBoundedStateJSON(f, maxBytes, value)
-}
-
-func readBoundedStateJSON(f *os.File, maxBytes int, value any) error {
-	data, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)+1))
-	if err != nil {
-		return err
-	}
-	if len(data) > maxBytes {
-		return fmt.Errorf("state record is too large: %s", f.Name())
-	}
-	return json.Unmarshal(data, value)
-}
 
 // writeStateJSON encodes metadata before replacing its private state file.
 func writeStateJSON(path string, value any) error {
@@ -221,36 +198,32 @@ func observeIdentityRoute(id, host string, ssh []string) (bool, error) {
 	if !validMachineID(id) || host == "" {
 		return false, nil
 	}
-	lock, dir, err := lockIdentity()
-	if err != nil {
-		return false, err
-	}
-	defer lock.Close()
-	routeData, _ := json.Marshal(struct {
+	routeData, err := json.Marshal(struct {
 		Host string
 		SSH  []string
 	}{host, ssh})
-	sum := md5.Sum(routeData)
-	route := hex.EncodeToString(sum[:])
-	path := filepath.Join(dir, id+".json")
-	routes := map[string]bool{}
-	data, err := os.ReadFile(path)
-	if err == nil {
-		if err = json.Unmarshal(data, &routes); err != nil {
-			return false, err
-		}
-	} else if !os.IsNotExist(err) {
+	if err != nil {
 		return false, err
 	}
-	if routes == nil {
-		routes = map[string]bool{}
-	}
-	if routes[route] {
-		return false, nil
-	}
-	warn := len(routes) > 0
-	routes[route] = true
-	return warn, writeStateJSON(path, routes)
+	route := sha256.Sum256(routeData)
+	var warn bool
+	err = updateHistory(func(tx *bolt.Tx) error {
+		machines, err := tx.CreateBucketIfNotExists([]byte("identity-routes"))
+		if err != nil {
+			return err
+		}
+		routes, err := machines.CreateBucketIfNotExists([]byte(id))
+		if err != nil {
+			return err
+		}
+		if routes.Get(route[:]) != nil {
+			return nil
+		}
+		first, _ := routes.Cursor().First()
+		warn = first != nil
+		return routes.Put(route[:], []byte{1})
+	})
+	return warn, err
 }
 
 // This identifier is advisory display metadata, never connection or account authority.

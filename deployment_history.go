@@ -17,9 +17,10 @@ import (
 	deployment "github.com/jay-waves/sshore/internal/release/remote"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
+	bolt "go.etcd.io/bbolt"
 )
 
-const maxDeploymentHistory = 1 << 20
+const maxDeploymentRecordBytes = 1 << 20
 const shutdownDestinationEnv = "SSHORE_SHUTDOWN_DESTINATION"
 
 type deploymentEndpoint struct {
@@ -29,20 +30,13 @@ type deploymentEndpoint struct {
 	Review                bool `json:",omitempty"`
 }
 
-func deploymentHistoryPath(release string) (string, error) {
+// Deployment records are account-scoped across releases and state directories.
+func deploymentHistoryTransaction(write bool, run func(*bolt.Tx) error) error {
 	dir, err := daemonLocation()
 	if err != nil {
-		return "", err
+		return err
 	}
-	return filepath.Join(filepath.Dir(dir), "deployments", release+".json"), nil
-}
-
-func readDeploymentHistory(name string) ([]deploymentEndpoint, error) {
-	var endpoints []deploymentEndpoint
-	if err := readStateJSON(name, maxDeploymentHistory, &endpoints); err != nil && !os.IsNotExist(err) {
-		return nil, err
-	}
-	return endpoints, nil
+	return stateDBTransaction(filepath.Dir(dir), filepath.Join("deployments", "history.db"), write, run)
 }
 
 type deploymentDestination struct {
@@ -68,63 +62,87 @@ func (e deploymentEndpoint) sameRoute(other deploymentEndpoint) bool {
 	return e.Host == other.Host && e.Directory == other.Directory && slices.Equal(e.SSH, other.SSH)
 }
 
-func (e deploymentEndpoint) cached() (deploymentEndpoint, error) {
-	name, err := deploymentHistoryPath(version)
+func (e deploymentEndpoint) cached() (entry deploymentEndpoint, err error) {
+	key, err := json.Marshal(e.Destination)
 	if err != nil {
-		return deploymentEndpoint{}, err
+		return entry, err
 	}
-	endpoints, err := readDeploymentHistory(name)
-	if err != nil {
-		return deploymentEndpoint{}, err
-	}
-	for _, entry := range endpoints {
-		if e.Destination == entry.Destination {
-			return entry, nil
+	err = deploymentHistoryTransaction(false, func(tx *bolt.Tx) error {
+		if tx == nil {
+			return nil
 		}
-	}
-	return deploymentEndpoint{}, nil
+		bucket := tx.Bucket([]byte(version))
+		if bucket == nil {
+			return nil
+		}
+		if data := bucket.Get(key); data != nil {
+			return json.Unmarshal(data, &entry)
+		}
+		return nil
+	})
+	return entry, err
 }
 
 func (e deploymentEndpoint) remember(home string, review bool) error {
-	name, err := deploymentHistoryPath(version)
+	key, err := json.Marshal(e.Destination)
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(name)
-	if _, err := prepareStateDir(filepath.Dir(dir), filepath.Base(dir)); err != nil {
-		return err
-	}
-	lock, err := lockStateFile(name + ".lock")
-	if err != nil {
-		return err
-	}
-	defer lock.Close()
-	endpoints, err := readDeploymentHistory(name)
-	if err != nil {
-		return err
-	}
-	for i, entry := range endpoints {
-		if e.Destination != entry.Destination {
-			continue
+	return deploymentHistoryTransaction(true, func(tx *bolt.Tx) error {
+		bucket, err := tx.CreateBucketIfNotExists([]byte(version))
+		if err != nil {
+			return err
 		}
-		if entry.Review && !review {
-			e = entry
+		if data := bucket.Get(key); data != nil {
+			var previous deploymentEndpoint
+			if err := json.Unmarshal(data, &previous); err != nil {
+				return err
+			}
+			if previous.Review && !review {
+				e = previous
+			}
 		}
-		e.Home, e.Review = home, review || entry.Review
-		endpoints[i] = e
-		return writeBoundedStateJSON(name, endpoints, maxDeploymentHistory)
-	}
-	e.Home, e.Review = home, review
-	return writeBoundedStateJSON(name, append(endpoints, e), maxDeploymentHistory)
+		e.Home, e.Review = home, review || e.Review
+		data, err := marshalBoundedStateJSON("deployment endpoint", e, maxDeploymentRecordBytes)
+		if err != nil {
+			return err
+		}
+		return bucket.Put(key, data)
+	})
 }
 
 // Use the installed client so the shutdown request selects its own deployment.
 func stopInstalledDeployments(executable, release string) error {
-	name, err := deploymentHistoryPath(release)
+	dir, err := daemonLocation()
 	if err != nil {
 		return err
 	}
-	endpoints, err := readDeploymentHistory(name)
+	// Pre-bbolt releases cannot enumerate their deployments for this installer.
+	// Require manual shutdown before replacing a client with a legacy ledger.
+	legacy := filepath.Join(filepath.Dir(dir), "deployments", release+".json")
+	if _, err := os.Lstat(legacy); err == nil {
+		return fmt.Errorf("legacy deployment history for sshore %s: stop its remote tasks with the installed client and remove %q before upgrading", cleanText(release), legacy)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	var endpoints []deploymentEndpoint
+	err = deploymentHistoryTransaction(false, func(tx *bolt.Tx) error {
+		if tx == nil {
+			return nil
+		}
+		bucket := tx.Bucket([]byte(release))
+		if bucket == nil {
+			return nil
+		}
+		return bucket.ForEach(func(_, data []byte) error {
+			var endpoint deploymentEndpoint
+			if err := json.Unmarshal(data, &endpoint); err != nil {
+				return err
+			}
+			endpoints = append(endpoints, endpoint)
+			return nil
+		})
+	})
 	if err != nil {
 		return err
 	}

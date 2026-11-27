@@ -334,7 +334,9 @@ Remote `kill --all` presents the daemon's live task snapshot before stopping it
 and verifies the confirmed snapshot before shutdown. The local installer
 verifies the release checksum and executable version, then stages the replacement.
 It uses the installed client to review the local daemon and, on a version change,
-its recorded remote deployments. Active tasks require confirmation of the
+its remote deployments recorded in bbolt. For a release with a legacy JSON
+deployment ledger, stop its remote tasks with that release's client and remove
+the ledger before upgrading. Active tasks require confirmation of the
 displayed snapshot. A declined or failed shutdown leaves the installed client
 in place. Before publishing under the startup and owner locks, the installer
 rechecks the target against the file it inspected. Installation preserves local
