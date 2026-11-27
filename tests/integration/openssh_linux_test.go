@@ -198,24 +198,28 @@ Match command "printf forwarding-check"
 		}
 	})
 
-	scenario("copy selects both missing paths on one connection", func(t *testing.T, ctx context.Context) {
+	scenario("copy selects multiple files and the current remote directory", func(t *testing.T, ctx context.Context) {
 		source := t.TempDir()
-		const name = "integration-picked-upload"
-		if err := os.WriteFile(filepath.Join(source, name), []byte("selected content"), 0600); err != nil {
-			t.Fatal(err)
+		names := []string{"integration-picked-a", "integration-picked-b"}
+		for _, name := range names {
+			if err := os.WriteFile(filepath.Join(source, name), []byte(name), 0600); err != nil {
+				t.Fatal(err)
+			}
 		}
 		cmd := command(ctx, "cp", "here:", host+":")
 		cmd.Dir = source
 		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
-			wait("\x1b[7m"+name, true)
+			wait("\x1b[7m"+names[0], true)
+			send("  \r")
+			wait("Choose upload destination", true)
+			wait("\x1b[7m./", true)
 			send("\r")
-			wait("Upload to", true)
-			wait("integration-copy", true)
-			send("\r")
-			wait("Copied ")
+			wait("Copied " + filepath.Join(source, names[len(names)-1]))
 		})
-		if got := run(t, ctx, "sh", host, "--", "cat "+name); got != "selected content" {
-			t.Fatalf("uploaded content = %q", got)
+		for _, name := range names {
+			if got := run(t, ctx, "sh", host, "--", "cat "+name); got != name {
+				t.Fatalf("uploaded %s content = %q", name, got)
+			}
 		}
 	})
 	scenario("console lf starts a shell in the selected remote directory", func(t *testing.T, ctx context.Context) {
@@ -227,10 +231,8 @@ Match command "printf forwarding-check"
 			send("\x02:")
 			wait("sshore on ", true)
 			send("lf\r")
-			wait("\x1b[7mchild/", true)
-			send("l")
-			wait(parent+"/child", true)
-			send("\r")
+			wait("\x1b[7m./", true)
+			send("j\r")
 			wait("Connected " + host + ":")
 			send("pwd\n")
 			wait(parent + "/child")

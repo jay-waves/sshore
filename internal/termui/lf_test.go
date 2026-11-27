@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -16,12 +17,12 @@ import (
 func TestLFShowsHostBeforePathAndHighlightsCurrentEntry(t *testing.T) {
 	var out strings.Builder
 	panes := [3]lfPane{{}, {entries: []LFEntry{{Name: "src", IsDir: true}}}, {}}
-	if err := lfDraw(&out, LFOptions{Host: "work", Title: "Open shell"}, "/project", panes, -1, 0, 14, 4, nil, true); err != nil {
+	if err := lfDraw(&out, LFOptions{Host: "work", Title: "Open shell"}, "/project", panes, -1, 0, 14, 5, nil, true, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	header, _, _ := strings.Cut(out.String(), "\r\n")
-	if got := ansi.Strip(header); !strings.HasPrefix(got, "work  /proj") || ansi.StringWidth(got) > 13 {
-		t.Fatalf("narrow header = %q", got)
+	header := strings.Split(ansi.Strip(out.String()), "\r\n")
+	if len(header) < 3 || ansi.StringWidth(header[0]) > 13 || header[1] != "/project" || header[2] != "" {
+		t.Fatalf("narrow header = %q", header)
 	}
 	_, highlighted, start := strings.Cut(out.String(), "\x1b[7m")
 	row, _, end := strings.Cut(highlighted, "\x1b[27m")
@@ -57,13 +58,13 @@ func TestLFReusesPreviewWhenEnteringAndReturning(t *testing.T) {
 				return
 			}
 			switch {
-			case step == 0 && strings.Contains(frame, "Pick  /root\r\n"):
+			case step == 0 && strings.Contains(frame, "Pick\r\n/root\r\n"):
 				step++
 				input <- LFInput{Data: []byte("l")}
-			case step == 1 && strings.Contains(frame, "Pick  /root/child\r\n"):
+			case step == 1 && strings.Contains(frame, "Pick\r\n/root/child\r\n"):
 				step++
 				input <- LFInput{Data: []byte("h")}
-			case step == 2 && strings.Contains(frame, "Pick  /root\r\n"):
+			case step == 2 && strings.Contains(frame, "Pick\r\n/root\r\n"):
 				step++
 				input <- LFInput{Data: []byte("q")}
 			}
@@ -218,17 +219,17 @@ func TestLFArrowsReturnFocusToTheDirectoryJustLeft(t *testing.T) {
 		},
 		Output: lfTestOutput(func(frame string) {
 			switch {
-			case step == 0 && strings.Contains(frame, "\x1b[7mfirst/"):
+			case step == 0 && strings.Contains(frame, "\x1b[7m./"):
 				step++
 				input <- LFInput{Data: []byte("\x1b[1;5B\x1b[")}
-				input <- LFInput{Data: []byte("B\x1bOC")}
-			case step == 1 && strings.Contains(frame, "Pick  /second\r\n"):
+				input <- LFInput{Data: []byte("B\x1b[B\x1bOC")}
+			case step == 1 && strings.Contains(frame, "Pick\r\n/second\r\n"):
 				step++
 				input <- LFInput{Data: []byte("\x1b[D")}
-			case step == 2 && strings.Contains(frame, "Pick  /\r\n") && strings.Contains(frame, "\x1b[7msecond/"):
+			case step == 2 && strings.Contains(frame, "Pick\r\n/\r\n") && strings.Contains(frame, "\x1b[7msecond/"):
 				step++
 				input <- LFInput{Data: []byte("\x1b[C")}
-			case step == 3 && strings.Contains(frame, "Pick  /second\r\n") && !strings.Contains(frame, "…"):
+			case step == 3 && strings.Contains(frame, "Pick\r\n/second\r\n") && !strings.Contains(frame, "…"):
 				step++
 				input <- LFInput{Data: []byte("\r")}
 			}
@@ -236,5 +237,66 @@ func TestLFArrowsReturnFocusToTheDirectoryJustLeft(t *testing.T) {
 	})
 	if err != nil || selected != "/second" {
 		t.Fatalf("navigation step %d, selected %q, error %v", step, selected, err)
+	}
+}
+
+func TestLFMarksFilesAcrossDirectories(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	input := make(chan LFInput, 1)
+	step := 0
+	selected, err := PickLFFiles(ctx, LFOptions{
+		Dir: "/", Input: input,
+		Join: func(dir, name string) string { return path.Join(dir, name) }, Parent: path.Dir,
+		ReadDir: func(_ context.Context, dir string) ([]LFEntry, error) {
+			if dir == "/" {
+				return []LFEntry{{Name: "sub", IsDir: true}, {Name: "a"}, {Name: "b"}}, nil
+			}
+			return []LFEntry{{Name: "c"}}, nil
+		},
+		Output: lfTestOutput(func(frame string) {
+			switch {
+			case step == 0 && strings.Contains(frame, "\x1b[7msub/"):
+				step++
+				input <- LFInput{Data: []byte("j  kkl")}
+			case step == 1 && strings.Contains(frame, "\x1b[7mc"):
+				step++
+				input <- LFInput{Data: []byte(" \r")}
+			}
+		}),
+	}, nil)
+	if err != nil || !slices.Equal(selected, []string{"/a", "/b", "/sub/c"}) {
+		t.Fatalf("selected %q, error %v", selected, err)
+	}
+}
+
+func TestLFJumpsToTopAndBottom(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	input := make(chan LFInput, 2)
+	step := 0
+	selected, err := PickLF(ctx, LFOptions{
+		Dir: "/", Directory: true, Input: input,
+		Join: func(dir, name string) string { return path.Join(dir, name) }, Parent: path.Dir,
+		ReadDir: func(context.Context, string) ([]LFEntry, error) {
+			return []LFEntry{{Name: "first", IsDir: true}, {Name: "last", IsDir: true}}, nil
+		},
+		Output: lfTestOutput(func(frame string) {
+			switch {
+			case step == 0 && strings.Contains(frame, "\x1b[7m./"):
+				step++
+				input <- LFInput{Data: []byte("G")}
+			case step == 1 && strings.Contains(frame, "\x1b[7mlast/"):
+				step++
+				input <- LFInput{Data: []byte("g")}
+				input <- LFInput{Data: []byte("g")}
+			case step == 2 && strings.Contains(frame, "\x1b[7m./"):
+				step++
+				input <- LFInput{Data: []byte("\r")}
+			}
+		}),
+	})
+	if err != nil || selected != "/" || step != 3 {
+		t.Fatalf("step %d, selected %q, error %v", step, selected, err)
 	}
 }

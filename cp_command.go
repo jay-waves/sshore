@@ -98,27 +98,40 @@ func selectAndCopy(ctx context.Context, client *sftp.Client, home string, o copy
 			return pickerEntries(directoryEntries(readDir(ctx, name)))
 		})
 	}
-	var opened *files.Source
-	defer closeCopySource(&opened)
+	var picked []fileCopy
+	defer func() { closeCopyBatch(picked) }()
 	if o.sources[0].pick {
-		picker := remote("Download file", false)
+		picker := remote("Choose files to download", false)
+		var validate func([]string) error
 		if o.upload {
-			picker = localFileSelection("", "Upload file", false)
-			picker.Validate = func(name string) (err error) {
-				opened, err = files.OpenSource(name)
-				return err
+			picker = localFileSelection("", "Choose files to upload", false)
+			validate = func(names []string) error {
+				batch := make([]fileCopy, len(names))
+				for i, name := range names {
+					source, err := files.OpenSource(name)
+					if err != nil {
+						closeCopyBatch(batch)
+						return err
+					}
+					batch[i].opened = source
+				}
+				picked = batch
+				return nil
 			}
 		}
-		var err error
-		o.sources[0].path, err = termui.PickLF(ctx, picker)
+		names, err := termui.PickLFFiles(ctx, picker, validate)
 		if err != nil {
 			return err
 		}
+		o.sources = make([]copyEndpoint, len(names))
+		for i, name := range names {
+			o.sources[i].path = name
+		}
 	}
 	if o.target.pick {
-		picker := localFileSelection("", "Save in", true)
+		picker := localFileSelection("", "Choose download destination", true)
 		if o.upload {
-			picker = remote("Upload to", true)
+			picker = remote("Choose upload destination", true)
 		} else {
 			picker.Manual = len(o.sources) == 1
 		}
@@ -139,9 +152,9 @@ func selectAndCopy(ctx context.Context, client *sftp.Client, home string, o copy
 			return err
 		}
 	}
-	source := opened
-	opened = nil // The batch now owns the selected source.
-	return executeCopy(ctx, client, o, source)
+	batch := picked
+	picked = nil // Execution owns the opened sources.
+	return executeCopy(ctx, client, o, batch)
 }
 
 // Closing the full transport first releases SFTP reads and writes before
@@ -266,10 +279,9 @@ func remoteCopySize(client *sftp.Client, source string) (int64, error) {
 	return info.Size(), nil
 }
 
-func executeCopy(ctx context.Context, client *sftp.Client, o copyOptions, picked *files.Source) error {
-	items := make([]fileCopy, len(o.sources))
-	if picked != nil {
-		items[0].opened = picked
+func executeCopy(ctx context.Context, client *sftp.Client, o copyOptions, items []fileCopy) error {
+	if items == nil {
+		items = make([]fileCopy, len(o.sources))
 	}
 	defer closeCopyBatch(items)
 	if err := prepareCopyBatch(client, o, items); err != nil {

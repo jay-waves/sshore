@@ -19,7 +19,12 @@ reuse its authenticated connection. An independent shell setup can establish
 a new SSH connection.
 
 Omitted file paths open a three-column picker after SSH authentication.
-The header identifies the host and directory being browsed.
+The header identifies the host and directory being browsed. Use `gg` and `G`
+to jump to the top or bottom of the current list. In a directory picker, Enter
+chooses the highlighted directory and `./` chooses the directory being browsed.
+Use `l` or the right arrow to enter a highlighted directory. In the copy source
+picker, Space marks or unmarks a file and moves down. Enter submits the marked
+files, or chooses the highlighted file when none are marked.
 The client starts by reading the remote home into its directory cache. A mount
 worker returns the current and parent listings together over the startup
 stream and reuses that cache when it mounts the selected directory. The shell

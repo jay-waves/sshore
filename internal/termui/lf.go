@@ -68,12 +68,31 @@ type LFInput struct {
 
 // PickLF presents parent, current and child directory lists. q, Escape and Ctrl-C
 // return context.Canceled. ReadDir must honor its context for prompt cleanup.
-func PickLF(ctx context.Context, options LFOptions) (selected string, err error) {
+func PickLF(ctx context.Context, options LFOptions) (string, error) {
+	paths, err := pickLF(ctx, options, nil)
+	if len(paths) == 0 {
+		return "", err
+	}
+	return paths[0], err
+}
+
+// PickLFFiles adds Space selection for a batch of files.
+func PickLFFiles(ctx context.Context, options LFOptions, validate func([]string) error) ([]string, error) {
+	if options.Directory {
+		return nil, errors.New("file multiselect requires a file picker")
+	}
+	if validate == nil {
+		validate = func([]string) error { return nil }
+	}
+	return pickLF(ctx, options, validate)
+}
+
+func pickLF(ctx context.Context, options LFOptions, validateFiles func([]string) error) (selected []string, err error) {
 	if options.ReadDir == nil || options.Join == nil || options.Parent == nil || options.Dir == "" {
-		return "", errors.New("picker requires a directory, path operations and a directory reader")
+		return nil, errors.New("picker requires a directory, path operations and a directory reader")
 	}
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -81,17 +100,17 @@ func PickLF(ctx context.Context, options LFOptions) (selected string, err error)
 	var out io.Writer
 	if input != nil {
 		if options.Output == nil {
-			return "", errors.New("embedded picker requires an output writer")
+			return nil, errors.New("embedded picker requires an output writer")
 		}
 		out = options.Output
 		defer func() { _, e := fmt.Fprint(out, "\x1b[0m\x1b[?25h"); err = errors.Join(err, e) }()
 	} else {
 		if !xterm.IsTerminal(int(os.Stdin.Fd())) || !xterm.IsTerminal(int(os.Stdout.Fd())) {
-			return "", ErrTerminalRequired
+			return nil, ErrTerminalRequired
 		}
 		restore, e := term.RawConsole()
 		if e != nil {
-			return "", e
+			return nil, e
 		}
 		defer restore()
 		var flush func() error
@@ -102,7 +121,7 @@ func PickLF(ctx context.Context, options LFOptions) (selected string, err error)
 			defer func() { _, e := fmt.Fprint(out, "\x1b[0m\x1b[?25h"); err = errors.Join(err, e) }()
 		} else {
 			if e := screen.BeginConsole(out); e != nil {
-				return "", e
+				return nil, e
 			}
 			defer func() { err = errors.Join(err, screen.EndConsole(out)) }()
 		}
@@ -114,7 +133,7 @@ func PickLF(ctx context.Context, options LFOptions) (selected string, err error)
 			}
 		})
 		if e != nil {
-			return "", e
+			return nil, e
 		}
 		defer stop()
 		input = events
@@ -125,6 +144,7 @@ func PickLF(ctx context.Context, options LFOptions) (selected string, err error)
 	current, index := options.Dir, 0
 	var reveal string
 	var validationErr error
+	var marked []string
 	cache := make(map[string]lfCacheEntry)
 	inflight := make(map[string]bool)
 	var hover <-chan time.Time
@@ -158,13 +178,16 @@ func PickLF(ctx context.Context, options LFOptions) (selected string, err error)
 		paths[2] = ""
 		panes[2] = lfPane{}
 		hover = nil
-		if index < len(panes[1].entries) && panes[1].entries[index].IsDir {
+		if index < len(panes[1].entries) && panes[1].entries[index].IsDir && panes[1].entries[index].Name != "." {
 			paths[2] = options.Join(current, panes[1].entries[index].Name)
 			panes[2].loading = true
 			hover = time.After(100 * time.Millisecond)
 		}
 	}
 	updateCursor := func() {
+		if options.Directory && panes[1].err == nil {
+			panes[1].entries = append([]LFEntry{{Name: ".", IsDir: true}}, panes[1].entries...)
+		}
 		index = min(index, max(0, len(panes[1].entries)-1))
 		if reveal != "" {
 			for i, entry := range panes[1].entries {
@@ -209,6 +232,7 @@ func PickLF(ctx context.Context, options LFOptions) (selected string, err error)
 	refresh()
 	color := ColorEnabled(os.Stdout)
 	var pending []byte
+	var awaitingG bool
 	var escape <-chan time.Time
 	resize := time.NewTicker(100 * time.Millisecond)
 	defer resize.Stop()
@@ -224,15 +248,15 @@ func PickLF(ctx context.Context, options LFOptions) (selected string, err error)
 				break
 			}
 		}
-		if err := lfDraw(out, options, current, panes, parentIndex, index, width, height, validationErr, color); err != nil {
-			return "", err
+		if err := lfDraw(out, options, current, panes, parentIndex, index, width, height, validationErr, color, validateFiles != nil, marked); err != nil {
+			return nil, err
 		}
 	waitForEvent:
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return nil, ctx.Err()
 		case <-escape:
-			return "", context.Canceled
+			return nil, context.Canceled
 		case <-resize.C:
 			newWidth, newHeight, err := xterm.GetSize(int(os.Stdout.Fd()))
 			if err != nil || newWidth == width && newHeight == height {
@@ -284,10 +308,10 @@ func PickLF(ctx context.Context, options LFOptions) (selected string, err error)
 			}
 		case event, ok := <-input:
 			if !ok {
-				return "", io.EOF
+				return nil, io.EOF
 			}
 			if event.Err != nil {
-				return "", event.Err
+				return nil, event.Err
 			}
 			pending = append(pending, event.Data...)
 			for len(pending) > 0 {
@@ -299,7 +323,7 @@ func PickLF(ctx context.Context, options LFOptions) (selected string, err error)
 					}
 					escape = nil
 					if pending[1] != '[' && pending[1] != 'O' {
-						return "", context.Canceled
+						return nil, context.Canceled
 					}
 					if len(pending) < 3 {
 						break
@@ -330,16 +354,29 @@ func PickLF(ctx context.Context, options LFOptions) (selected string, err error)
 				} else {
 					pending = pending[1:]
 				}
+				goToTop := key == 'g' && awaitingG
+				awaitingG = key == 'g' && !goToTop
 				switch key {
+				case 'g':
+					if goToTop && index != 0 {
+						index = 0
+						child()
+					}
+				case 'G':
+					last := max(0, len(panes[1].entries)-1)
+					if index != last {
+						index = last
+						child()
+					}
 				case 3, 'q':
-					return "", context.Canceled
+					return nil, context.Canceled
 				case ':':
 					if options.Manual {
-						return "", ErrLFManual
+						return nil, ErrLFManual
 					}
 				case 'a':
 					if options.Directory && options.Automatic {
-						return "", nil
+						return nil, nil
 					}
 				case 'k':
 					if index > 0 {
@@ -357,64 +394,90 @@ func PickLF(ctx context.Context, options LFOptions) (selected string, err error)
 						current, index = parent, 0
 						refresh()
 					}
+				case ' ':
+					if validateFiles == nil || index >= len(panes[1].entries) || panes[1].entries[index].IsDir {
+						continue
+					}
+					name := options.Join(current, panes[1].entries[index].Name)
+					if i := slices.Index(marked, name); i >= 0 {
+						marked = slices.Delete(marked, i, i+1)
+					} else {
+						marked = append(marked, name)
+					}
+					validationErr = nil
+					if index+1 < len(panes[1].entries) {
+						index++
+						child()
+					}
 				case 'l', '\r', '\n':
-					if (key == '\r' || key == '\n') && options.Directory {
-						if panes[1].loading || panes[1].err != nil {
-							continue
+					enter := key != 'l'
+					if enter && len(marked) > 0 {
+						validationErr = validateFiles(marked)
+						if validationErr == nil {
+							return marked, nil
 						}
-						if options.Validate != nil {
-							validationErr = options.Validate(current)
-							if validationErr != nil {
-								continue
-							}
-						}
-						return current, nil
+						continue
 					}
 					if index >= len(panes[1].entries) {
 						continue
 					}
 					entry := panes[1].entries[index]
-					path := options.Join(current, entry.Name)
-					if entry.IsDir {
-						reveal = ""
-						current, index = path, 0
-						refresh()
-					} else if !options.Directory {
-						if options.Validate != nil {
-							validationErr = options.Validate(path)
-							if validationErr != nil {
-								continue
-							}
-						}
-						return path, nil
+					name := current
+					if entry.Name != "." {
+						name = options.Join(current, entry.Name)
 					}
+					if entry.IsDir {
+						if !options.Directory || !enter {
+							if name != current {
+								reveal = ""
+								current, index = name, 0
+								refresh()
+							}
+							continue
+						}
+					} else if options.Directory || !enter && validateFiles != nil {
+						continue
+					}
+					if options.Validate != nil {
+						validationErr = options.Validate(name)
+						if validationErr != nil {
+							continue
+						}
+					}
+					if validateFiles != nil {
+						validationErr = validateFiles([]string{name})
+						if validationErr != nil {
+							continue
+						}
+					}
+					return []string{name}, nil
 				}
 			}
 		}
 	}
 }
 
-func lfDraw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, parentIndex, selected, width, height int, validationErr error, color bool) error {
-	width, height = max(3, width), max(3, height)
+func lfDraw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, parentIndex, selected, width, height int, validationErr error, color, multi bool, marked []string) error {
+	width, height = max(3, width), max(5, height)
 	var b strings.Builder
 	b.WriteString("\x1b[0m\x1b[H\x1b[2J\x1b[?25l")
-	line := CleanText(dir)
+	header := Render(color, Heading, CleanText(options.Title))
 	if options.Host != "" {
-		line = Render(color, Accent, CleanText(options.Host)) + "  " + line
-		if options.Title != "" {
-			line += Render(color, Muted, "  ·  ") + Render(color, Heading, CleanText(options.Title))
+		if header != "" {
+			header += "  ·  "
 		}
-	} else if options.Title != "" {
-		line = Render(color, Heading, CleanText(options.Title)) + "  " + line
+		header += Render(color, Accent, CleanText(options.Host))
 	}
-	b.WriteString(ansi.Truncate(line, width-1, "…"))
+	b.WriteString(ansi.Truncate(header, width-1, "…"))
 	b.WriteString("\r\n")
+	b.WriteString(ansi.Truncate(CleanText(dir), width-1, "…"))
+	b.WriteString("\r\n\r\n")
 	// Keep the current directory visible even on very narrow terminals.
 	widths := [3]int{width / 4, width / 3, width - width/4 - width/3 - 3}
 	if width < 15 {
 		widths = [3]int{0, width - 1, 0}
 	}
-	rows := height - 2
+	rows := height - 4
 	start := [3]int{max(0, parentIndex-rows+1), max(0, selected-rows+1), 0}
 	for row := 0; row < rows; row++ {
 		for p, w := range widths {
@@ -433,6 +496,9 @@ func lfDraw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, paren
 				if entry.IsDir {
 					text += "/"
 					style = Info
+				}
+				if multi && p == 1 && slices.Contains(marked, options.Join(dir, entry.Name)) {
+					text = "* " + text
 				}
 			} else if i == 0 && panes[p].loading {
 				text = "…"
@@ -459,9 +525,18 @@ func lfDraw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, paren
 	}
 	hint := "Enter Choose file  q/Esc Cancel"
 	if options.Directory {
-		hint = "Enter Choose directory  q/Esc Cancel"
+		hint = "Enter Choose highlighted dir  l Open  q Cancel"
+		if selected < len(panes[1].entries) && panes[1].entries[selected].Name == "." {
+			hint = "Enter Choose current dir  l Open  q Cancel"
+		}
 		if options.Automatic {
 			hint += "  a Automatic"
+		}
+	}
+	if multi {
+		hint = "Space Mark  Enter Choose file  q/Esc Cancel"
+		if len(marked) > 0 {
+			hint = fmt.Sprintf("Space Mark  Enter Copy %d file(s)  l Open  q/Esc Cancel", len(marked))
 		}
 	}
 	if options.Manual {
