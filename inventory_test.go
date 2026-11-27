@@ -14,20 +14,16 @@ func TestInventoryReadsPublishedStateWhileWritersAreBusy(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join(t.TempDir(), "state")
-	dir, err := prepareStateDir(root, "connections")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows := []participatingShell{{
+	row := participatingShell{
 		Host: "work", Instance: newTaskUID(), Name: "remembered-shell",
 		State: taskDetached, PID: 42, Attachment: newTaskUID(),
-	}}
-	if err := writeStateJSON(filepath.Join(dir, "participation.json"), rows); err != nil {
-		t.Fatal(err)
 	}
 	activity := &daemonActivity{tasks: tasks, root: root}
 	activity.metadata.loadParticipation(root)
 	defer activity.metadata.closeParticipation()
+	if err := activity.metadata.updateParticipation(metadataRequest{Action: "participation_observe", Participant: &row}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Simulate a metadata writer blocked on disk and a shell busy starting.
 	activity.metadata.shellMu.Lock()
@@ -66,22 +62,24 @@ func TestInventoryProbeSkipsDaemonBeforeEndpointPublication(t *testing.T) {
 	}
 }
 
-func TestParticipationMigrationForgetAndStaleAttachment(t *testing.T) {
+func TestParticipationForgetAndStaleAttachment(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
+	row := participatingShell{Host: "work", Instance: newTaskUID(), Name: "shell-name", State: taskActive, PID: 42, Attachment: newTaskUID()}
 	dir, err := prepareStateDir(root, "connections")
 	if err != nil {
 		t.Fatal(err)
 	}
-	row := participatingShell{Host: "work", Instance: newTaskUID(), Name: "shell-name", State: taskActive, PID: 42, Attachment: newTaskUID()}
 	if err := writeStateJSON(filepath.Join(dir, "participation.json"), []participatingShell{row}); err != nil {
 		t.Fatal(err)
 	}
 	var metadata daemonMetadata
 	metadata.loadParticipation(root)
 	defer metadata.closeParticipation()
-	rows, err := metadata.participatingShells()
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("legacy history: %+v, %v", rows, err)
+	if rows, err := metadata.participatingShells(); err != nil || len(rows) != 0 {
+		t.Fatalf("expected empty database with legacy JSON present: %+v, %v", rows, err)
+	}
+	if err := metadata.updateParticipation(metadataRequest{Action: "participation_observe", Participant: &row}); err != nil {
+		t.Fatal(err)
 	}
 	stale := row
 	stale.Attachment = newTaskUID()
@@ -89,7 +87,7 @@ func TestParticipationMigrationForgetAndStaleAttachment(t *testing.T) {
 	if err := metadata.updateParticipation(metadataRequest{Action: "participation_state", Participant: &stale}); err != nil {
 		t.Fatal(err)
 	}
-	rows, err = metadata.participatingShells()
+	rows, err := metadata.participatingShells()
 	if err != nil || len(rows) != 1 || rows[0].State != taskActive {
 		t.Fatalf("stale attachment changed history: %+v, %v", rows, err)
 	}
@@ -101,17 +99,17 @@ func TestParticipationMigrationForgetAndStaleAttachment(t *testing.T) {
 	metadata.loadParticipation(root)
 	rows, err = metadata.participatingShells()
 	if err != nil || len(rows) != 0 {
-		t.Fatalf("forgotten legacy history returned after restart: %+v, %v", rows, err)
+		t.Fatalf("forgotten observation returned after restart: %+v, %v", rows, err)
 	}
 }
 
-func TestMalformedParticipationHistoryLeavesLiveInventoryAvailable(t *testing.T) {
+func TestUnavailableParticipationHistoryLeavesLiveInventoryAvailable(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
 	dir, err := prepareStateDir(root, "connections")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writeStateFile(filepath.Join(dir, "participation.json"), []byte("{")); err != nil {
+	if err := writeStateFile(filepath.Join(dir, "participation.db"), []byte("invalid database")); err != nil {
 		t.Fatal(err)
 	}
 	tasks := &daemonTasks{}

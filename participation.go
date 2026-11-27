@@ -83,8 +83,6 @@ var participationBucket = []byte("participation")
 
 func participationKey(host, instance string) []byte { return []byte(host + "\x00" + instance) }
 
-// Creating the bucket and importing legacy history share a transaction. Its existence
-// records that migration completed, even after all imported rows are forgotten.
 func (m *daemonMetadata) loadParticipation(root string) {
 	m.participationErr = m.openParticipation(root)
 }
@@ -103,23 +101,8 @@ func (m *daemonMetadata) openParticipation(root string) error {
 		return err
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
-		if tx.Bucket(participationBucket) != nil {
-			return nil
-		}
-		var legacy recentHistory[participatingShell]
-		if err := legacy.loadAt(root, "participation.json", 1024*1024, participationLimit, validateParticipatingShell); err != nil {
-			return err
-		}
-		bucket, err := tx.CreateBucket(participationBucket)
-		if err != nil {
-			return err
-		}
-		for _, row := range legacy.rows {
-			if err := writeParticipation(bucket, participationKey(row.Host, row.Instance), row); err != nil {
-				return err
-			}
-		}
-		return nil
+		_, err := tx.CreateBucketIfNotExists(participationBucket)
+		return err
 	})
 	if err != nil {
 		db.Close()
@@ -226,7 +209,7 @@ func (m *daemonMetadata) updateParticipation(r metadataRequest) error {
 				}
 			}
 			// Only a new observation adds a key. Keep the bounded count scan
-			// off the import, refresh and attachment state update paths.
+			// off the refresh and attachment state update paths.
 			if old == nil && bucket.Stats().KeyN >= participationLimit {
 				return fmt.Errorf("participating shell limit reached")
 			}

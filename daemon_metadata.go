@@ -3,17 +3,18 @@ package main
 import (
 	"context"
 	"fmt"
-	bolt "go.etcd.io/bbolt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 // History is persisted by the daemon; running clients never coordinate through
-// these files. Each domain is loaded once and thereafter served from memory.
+// these files. Recent connections and attachments are cached in memory.
 type daemonMetadata struct {
 	attachments      recentHistory[recentAttachment]
 	connections      recentHistory[recentConnection]
@@ -36,10 +37,6 @@ func (h *recentHistory[T]) load(file string, maxBytes int, validate func(T) erro
 	if err != nil {
 		return err
 	}
-	return h.loadAt(root, file, maxBytes, recentHistoryLimit, validate)
-}
-
-func (h *recentHistory[T]) loadAt(root, file string, maxBytes, maxEntries int, validate func(T) error) error {
 	path := filepath.Join(root, "connections", file)
 	if path == h.path {
 		return nil
@@ -51,8 +48,8 @@ func (h *recentHistory[T]) loadAt(root, file string, maxBytes, maxEntries int, v
 	if err := readStateJSON(path, maxBytes, &rows); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
-	if len(rows) > maxEntries {
-		return fmt.Errorf("%s has %d entries (maximum %d)", path, len(rows), maxEntries)
+	if len(rows) > recentHistoryLimit {
+		return fmt.Errorf("%s has %d entries (maximum %d)", path, len(rows), recentHistoryLimit)
 	}
 	for i, row := range rows {
 		if err := validate(row); err != nil {
