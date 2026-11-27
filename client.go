@@ -285,13 +285,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		participation = &participatingShell{HostInfo: o.hostInfo, Host: o.host, Owner: m.Owner, Instance: o.instance, Name: o.session, State: taskActive,
 			Pinned: m.Pinned, PinUntil: m.PinUntil, PID: m.PID, Shell: m.Shell, Program: m.Program, Attachment: newTaskUID()}
 	}
-	var historyID string
 	err = updateHistory(func(tx *bolt.Tx) error {
-		id, err := historyGeneration(tx)
-		if err != nil {
-			return err
-		}
-		historyID = id
 		if err := removeRecentDetach(tx, o); err != nil {
 			return err
 		}
@@ -306,13 +300,12 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	if err != nil {
 		termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not save shell history: %s\n", cleanText(err.Error()))
 		participation = nil
-		historyID = ""
 	}
 	if participation != nil {
 		defer func() {
 			if !terminalStateConfirmed {
 				participation.State = taskUnknown
-				if err := updateAttachedHistory(historyID, func(tx *bolt.Tx) error {
+				if err := updateHistory(func(tx *bolt.Tx) error {
 					return updateParticipation(tx, participationChange{Action: "participation_state", Participant: participation})
 				}); err != nil {
 					termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not update shell history: %s\n", cleanText(err.Error()))
@@ -339,7 +332,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		} else if o.hold != nil {
 			return
 		}
-		if err := updateAttachedHistory(historyID, func(tx *bolt.Tx) error {
+		if err := updateHistory(func(tx *bolt.Tx) error {
 			if participation != nil {
 				current, err := currentParticipation(tx, *participation)
 				if err != nil || !current {
@@ -1322,9 +1315,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						if end.localDaemonShutdown {
 							return
 						}
-						if exitErr := updateAttachedHistory(historyID, func(tx *bolt.Tx) error {
-							return forgetShellHistory(tx, o)
-						}); exitErr != nil {
+						if exitErr := rememberShellExit(o); exitErr != nil {
 							termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not record shell exit: %s\n", cleanText(exitErr.Error()))
 						}
 					}

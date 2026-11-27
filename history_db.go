@@ -90,35 +90,6 @@ func updateHistory(run func(*bolt.Tx) error) error {
 	return historyTransaction(root, true, run)
 }
 
-var historyIdentityBucket = []byte("history-identity")
-var historyGenerationKey = []byte("generation")
-
-func historyGeneration(tx *bolt.Tx) (string, error) {
-	bucket, err := tx.CreateBucketIfNotExists(historyIdentityBucket)
-	if err != nil {
-		return "", err
-	}
-	if generation := bucket.Get(historyGenerationKey); generation != nil {
-		return string(generation), nil
-	}
-	generation := newTaskUID()
-	return generation, bucket.Put(historyGenerationKey, []byte(generation))
-}
-
-// A terminal callback belongs to the database generation that recorded its attach.
-func updateAttachedHistory(generation string, run func(*bolt.Tx) error) error {
-	if generation == "" {
-		return nil
-	}
-	return updateHistory(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(historyIdentityBucket)
-		if bucket == nil || string(bucket.Get(historyGenerationKey)) != generation {
-			return nil
-		}
-		return run(tx)
-	})
-}
-
 func readHistoryRows[T any](tx *bolt.Tx, name []byte, validate func(T) error) ([]T, error) {
 	if tx == nil || tx.Bucket(name) == nil {
 		return nil, nil

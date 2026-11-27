@@ -132,34 +132,18 @@ func testParticipationRows(root string) (rows []participatingShell, err error) {
 	return
 }
 
-func TestHistoryResetDiscardsCallbacksFromOldAttachment(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "state")
-	t.Setenv("SSHORE_STATE_DIR", root)
-	location := daemonLocation
-	daemonLocation = func() (string, error) { return filepath.Join(dir, "daemon"), nil }
-	t.Cleanup(func() { daemonLocation = location })
-
-	var oldGeneration string
-	if err := updateHistory(func(tx *bolt.Tx) (err error) {
-		oldGeneration, err = historyGeneration(tx)
+func TestHistoryResetDeletesDatabase(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	if err := historyTransaction(root, true, func(tx *bolt.Tx) error {
+		_, err := tx.CreateBucket(participationBucket)
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := (resetPaths{state: root, account: filepath.Join(dir, "daemon")}).clear(); err != nil {
+	if err := (resetPaths{state: root, account: filepath.Join(root, "daemon")}).clear(); err != nil {
 		t.Fatal(err)
 	}
-	if err := updateHistory(func(tx *bolt.Tx) error {
-		_, err := historyGeneration(tx)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := updateAttachedHistory(oldGeneration, func(*bolt.Tx) error {
-		t.Fatal("callback from an old attachment reached the new database")
-		return nil
-	}); err != nil {
-		t.Fatal(err)
+	if _, err := os.Lstat(filepath.Join(root, "connections", "participation.db")); !os.IsNotExist(err) {
+		t.Fatalf("history database after reset: %v", err)
 	}
 }
