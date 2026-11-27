@@ -151,8 +151,9 @@ Match command "printf forwarding-check"
 			return exec.CommandContext(t.Context(), binary, "keygen", target).CombinedOutput()
 		}
 		out, err := runTerminal(t, ctx, exec.CommandContext(ctx, binary, "keygen", target), func(send func(string), wait terminalWait) {
-			wait("Passphrase (Enter for none):")
+			wait("Passphrase (Enter for none):", true)
 			send("\r")
+			wait("[SHA256]")
 		})
 		if err != nil {
 			t.Fatalf("keygen: %v\n%s", err, out)

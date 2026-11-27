@@ -403,63 +403,34 @@ func compactTaskDetail(detail string, limit int) string {
 	return ansi.Truncate(detail, limit, "…")
 }
 
-const taskStateColumn = 2
-
 func writeTaskTable(out io.Writer, table [][]string, color bool, screenWidth, currentRow int) {
-	last := len(table[0]) - 1
-	widths := make([]int, last)
-	aliasLimit := -1
-	if screenWidth > 0 && table[0][0] == "ID" {
-		aliasLimit = min(32, max(0, screenWidth/4-9))
-	}
+	rows := make([][]termui.TableCell, len(table))
 	for i, row := range table {
-		for j, cell := range row[:last] {
-			cell = cleanText(cell)
-			if j == 0 && i > 0 && aliasLimit >= 0 {
+		rows[i] = make([]termui.TableCell, len(row))
+		for j, cell := range row {
+			switch {
+			case i == 0:
+			case j == 0 && screenWidth > 0:
 				if code, alias, ok := strings.Cut(cell, " ("); ok {
 					cell = code
-					if aliasLimit > 0 {
-						cell += " (" + compactTaskDetail(strings.TrimSuffix(alias, ")"), aliasLimit) + ")"
+					if limit := min(32, max(0, screenWidth/4-9)); limit > 0 {
+						cell += " (" + compactTaskDetail(strings.TrimSuffix(alias, ")"), limit) + ")"
 					}
 				}
+			case j == len(row)-1:
+				cell = compactTaskDetail(cell, -1)
+			case j == 2:
+				switch cell {
+				case "R":
+					rows[i][j].Color = termui.Success
+				case "?":
+					rows[i][j].Color = termui.Warning
+				}
 			}
-			row[j] = cell
-			widths[j] = max(widths[j], ansi.StringWidth(cell))
+			rows[i][j].Text = cell
 		}
 	}
-	// Task IDs and state stay intact; DETAIL uses the remaining terminal width.
-	columns, remaining := last+1, -1
-	if screenWidth > 0 {
-		remaining = screenWidth
-		for _, width := range widths {
-			remaining -= width + 2
-		}
-		if remaining <= 0 {
-			columns = last
-		}
-	}
-	if screenWidth >= 64 && writeStyledTaskTable(out, table, columns, remaining, color, screenWidth, currentRow) {
-		return
-	}
-	for i, row := range table {
-		var line strings.Builder
-		for j, cell := range row[:columns] {
-			padding := 0
-			if j < columns-1 {
-				padding = widths[j] - ansi.StringWidth(cell) + 2
-			}
-			if j == last {
-				cell = compactTaskDetail(cell, remaining)
-			}
-			if color && i > 0 && i != currentRow && j == taskStateColumn {
-				cell = renderTaskState(cell)
-			}
-			line.WriteString(cell)
-			line.WriteString(strings.Repeat(" ", padding))
-		}
-		rendered := termui.Render(color && i == 0, termui.Heading, line.String())
-		fmt.Fprintln(out, termui.Render(color && i == currentRow, termui.Accent, rendered))
-	}
+	termui.WriteTable(out, rows, screenWidth, currentRow, color)
 }
 
 func taskHiddenFromInventory(state string) bool {
@@ -479,73 +450,6 @@ func taskStateCode(state string) string {
 	default:
 		return state
 	}
-}
-
-func renderTaskState(state string) string {
-	switch state {
-	case "R":
-		return termui.Render(true, termui.Success, state)
-	case "?":
-		return termui.Render(true, termui.Warning, state)
-	default:
-		return state
-	}
-}
-
-// writeStyledTaskTable keeps compact output for narrow terminals and renders a
-// bordered table only when the task ID and state fit without truncation.
-func writeStyledTaskTable(out io.Writer, rows [][]string, columns, remaining int, color bool, screenWidth, currentRow int) bool {
-	if columns != len(rows[0]) || remaining <= columns+3 {
-		return false
-	}
-	visible := make([][]string, len(rows))
-	widths := make([]int, columns)
-	for i, row := range rows {
-		visible[i] = make([]string, columns)
-		for j, cell := range row[:columns] {
-			if j == columns-1 && i > 0 {
-				cell = compactTaskDetail(cell, remaining-columns-3)
-			}
-			cell = cleanText(cell)
-			visible[i][j] = cell
-			widths[j] = max(widths[j], ansi.StringWidth(cell))
-		}
-	}
-	total := 1
-	borders := make([]string, columns)
-	for j, width := range widths {
-		total += width + 3
-		borders[j] = strings.Repeat("─", width+2)
-	}
-	if total > screenWidth {
-		return false
-	}
-	border := func(text string) string { return termui.Render(color, termui.Muted, text) }
-	divider := border("│")
-	fmt.Fprintln(out, border("╭"+strings.Join(borders, "┬")+"╮"))
-	for i, row := range visible {
-		fmt.Fprint(out, divider)
-		for j, cell := range row {
-			padding := widths[j] - ansi.StringWidth(cell)
-			if color {
-				switch {
-				case i == 0:
-					cell = termui.Render(true, termui.Accent, cell)
-				case i == currentRow:
-					cell = termui.Render(true, termui.Info, cell)
-				case j == taskStateColumn:
-					cell = renderTaskState(cell)
-				}
-			}
-			fmt.Fprint(out, " ", cell, strings.Repeat(" ", padding+1), divider)
-		}
-		fmt.Fprintln(out)
-		if i == 0 {
-			fmt.Fprintln(out, border("├"+strings.Join(borders, "┼")+"┤"))
-		}
-	}
-	fmt.Fprintln(out, border("╰"+strings.Join(borders, "┴")+"╯"))
-	return true
 }
 
 func peerTaskIdentity(p peerView) string {
