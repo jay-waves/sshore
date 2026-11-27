@@ -6,7 +6,6 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"maps"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -353,16 +352,11 @@ func readHostedShells() ([]shellView, error) {
 }
 
 func readPublishedInventory() (inventory, error) {
-	inv := emptyInventory()
-	root, err := statePath("")
+	root, instance, err := accountDatabaseLocation(0)
 	if err != nil {
-		return inv, err
+		return emptyInventory(), err
 	}
-	record, err := daemonRecordWithin(0)
-	if err != nil && !os.IsNotExist(err) {
-		return inv, err
-	}
-	return loadInventory(root, record.UID)
+	return loadInventory(root, instance)
 }
 
 func loadInventory(root, instance string) (inventory, error) {

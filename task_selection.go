@@ -270,21 +270,13 @@ func selectCLITask(parsed cliArguments) (selectedTask, error) {
 }
 
 func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id string) ([]selectedTask, error) {
-	root, err := statePath("")
+	root, instance, err := accountDatabaseLocation(time.Second)
 	if err != nil {
 		return nil, err
 	}
-	record, err := existingDaemonRecord()
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
-	}
-	if record.Directory != "" {
-		root = record.Directory
-	}
-
 	err = historyTransaction(root, false, func(tx *bolt.Tx) error {
 		inv := emptyInventory()
-		bucket := currentLiveBucket(tx, record.UID)
+		bucket := currentLiveBucket(tx, instance)
 		exact := false
 		if bucket != nil {
 			if validTaskUID(id) {

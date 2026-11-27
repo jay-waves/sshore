@@ -53,14 +53,39 @@ func writeStateFile(path string, data []byte) error {
 	return os.Rename(staged, path)
 }
 
-// Path resolves a state path without creating directories or changing permissions.
-func statePath(name string) (string, error) {
+// Inside the daemon and on deployed hosts the state directory is already known.
+func fixedStateRoot() string {
 	if hub := accountActivity.Load(); hub != nil && hub.root != "" {
-		return filepath.Join(hub.root, name), nil
+		return hub.root
 	}
-	if root := deployedStateRoot(); root != "" {
+	return deployedStateRoot()
+}
+
+func statePath(name string) (string, error) {
+	if root := fixedStateRoot(); root != "" {
 		return filepath.Join(root, name), nil
 	}
+	root, _, err := accountDatabaseLocation(time.Second)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, name), nil
+}
+
+// Resolve the directory and the live bucket generation from one ownership probe.
+func accountDatabaseLocation(wait time.Duration) (root, instance string, err error) {
+	record, err := daemonRecordWithin(wait)
+	if err != nil && !os.IsNotExist(err) {
+		return "", "", err
+	}
+	if root := fixedStateRoot(); root != "" {
+		return root, record.UID, nil
+	}
+	root, err = configuredStateRoot(record)
+	return root, record.UID, err
+}
+
+func configuredStateRoot(record localShellRecord) (string, error) {
 	root := os.Getenv("SSHORE_STATE_DIR")
 	explicit := root != ""
 	if !explicit {
@@ -75,11 +100,25 @@ func statePath(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	root, err = daemonStateRoot(root, explicit)
-	if err != nil {
-		return "", err
+	if record.Name == "" {
+		return root, nil
 	}
-	return filepath.Join(root, name), nil
+	if !filepath.IsAbs(record.Directory) {
+		return "", fmt.Errorf("invalid account daemon state root")
+	}
+	if !explicit {
+		return record.Directory, nil
+	}
+	same := filepath.Clean(root) == filepath.Clean(record.Directory)
+	if !same {
+		a, aErr := os.Stat(root)
+		b, bErr := os.Stat(record.Directory)
+		same = aErr == nil && bErr == nil && os.SameFile(a, b)
+	}
+	if !same {
+		return "", fmt.Errorf("account daemon uses %s; SSHORE_STATE_DIR cannot select another root while it is running", record.Directory)
+	}
+	return record.Directory, nil
 }
 
 // Dir resolves and prepares a private subdirectory under the configured state root.

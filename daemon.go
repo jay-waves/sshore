@@ -45,14 +45,6 @@ func daemonDirectory() (string, error) {
 	return prepareStateDir(filepath.Dir(dir), filepath.Base(dir))
 }
 
-func daemonStateRoot(root string, explicit bool) (string, error) {
-	dir, err := daemonLocation()
-	if err != nil {
-		return "", err
-	}
-	return daemonStateRootAt(dir, root, explicit)
-}
-
 // Open the existing account lock without creating state or taking ownership.
 func openDaemonOwner(dir string) (*sys.FileLock, error) {
 	owner, err := os.OpenFile(filepath.Join(dir, "owner.lock"), os.O_RDWR, 0600)
@@ -64,32 +56,6 @@ func openDaemonOwner(dir string) (*sys.FileLock, error) {
 		return nil, fmt.Errorf("validate account owner lock: %w", err)
 	}
 	return sys.NewFileLock(owner), nil
-}
-
-func daemonStateRootAt(dir, root string, explicit bool) (string, error) {
-	record, err := ownedDaemonRecord(dir, time.Second)
-	if os.IsNotExist(err) {
-		return root, nil
-	}
-	if err != nil {
-		return "", err
-	}
-	if !filepath.IsAbs(record.Directory) {
-		return "", fmt.Errorf("invalid account daemon state root")
-	}
-	if !explicit {
-		return record.Directory, nil
-	}
-	same := filepath.Clean(root) == filepath.Clean(record.Directory)
-	if !same {
-		a, aErr := os.Stat(root)
-		b, bErr := os.Stat(record.Directory)
-		same = aErr == nil && bErr == nil && os.SameFile(a, b)
-	}
-	if !same {
-		return "", fmt.Errorf("account daemon uses %s; SSHORE_STATE_DIR cannot select another root while it is running", record.Directory)
-	}
-	return record.Directory, nil
 }
 
 // Daemon ownership follows the authenticated OS account, independently of runtime state.
