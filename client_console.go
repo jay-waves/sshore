@@ -204,7 +204,7 @@ func consoleInventory(request message, current string) message {
 	switch command {
 	case "list", "pstree":
 		var inv inventory
-		inv, err = collectInventory(command == "pstree")
+		inv, err = collectInventory()
 		writeInventory(&body, command, inv, current, request.Color, int(request.Cols))
 	default:
 		reply.Output = "Unknown inventory command."
@@ -360,7 +360,7 @@ func runRootConsole(current options, panel *clientConsole, problem string, ended
 		}
 		pendingInventory = command
 		go func() {
-			reply := consoleInventory(message{Name: command, Color: color, Cols: uint16(cols)}, "")
+			reply := consoleInventory(message{Name: command, terminalDisplay: terminalDisplay{Color: color, Cols: uint16(cols)}}, "")
 			select {
 			case results <- reply.Output:
 			case <-ctx.Done():

@@ -39,8 +39,6 @@ func (t *Terminal) Stop() error { return t.cgroup.Kill() }
 
 func (t *Terminal) Close() error { return errors.Join(t.Stop(), t.closeMaster()) }
 
-func (t *Terminal) TaskProcesses() []sys.Process { return t.cgroup.Processes() }
-
 // The child is still unreaped, so its PID remains reserved while opening the
 // pidfd. Park in Go's I/O poller before reaping to avoid a blocked OS thread
 // per live terminal. When pidfds or polling are unavailable, cmd.Wait reaps

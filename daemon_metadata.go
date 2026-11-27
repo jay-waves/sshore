@@ -87,21 +87,22 @@ func (h *recentHistory[T]) replace(rows []T) error {
 }
 
 type metadataRequest struct {
-	Targets                                         []sessionTarget `json:",omitempty"`
-	Action, Key, Host, Name, Instance, Kind, Parent string
+	Action                                  string
+	Key, Host, Name, Instance, Kind, Parent string          `json:",omitempty"`
+	Targets                                 []sessionTarget `json:",omitempty"`
 
-	Attachment    *recentAttachment
-	Connection    *recentConnection
-	Participant   *participatingShell
-	Participation *participationRefresh
+	Attachment    *recentAttachment     `json:",omitempty"`
+	Connection    *recentConnection     `json:",omitempty"`
+	Participant   *participatingShell   `json:",omitempty"`
+	Participation *participationRefresh `json:",omitempty"`
 }
 type metadataReply struct {
-	Choice       string            `json:",omitempty"`
-	Target       *selectedTask     `json:",omitempty"`
-	Connection   *recentConnection `json:",omitempty"`
-	Participants []participatingShell
+	Choice       string               `json:",omitempty"`
+	Target       *selectedTask        `json:",omitempty"`
+	Connection   *recentConnection    `json:",omitempty"`
+	Participants []participatingShell `json:",omitempty"`
 
-	Error string
+	Error string `json:",omitempty"`
 }
 
 func metadataRPC(r metadataRequest) (metadataReply, error) {

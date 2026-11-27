@@ -170,7 +170,7 @@ func (s *remoteShell) serveShellRoute(launcher net.Conn, parent *attachment, con
 	} else if config.Command == "attach" {
 		action = "remote_attach"
 	}
-	if err := parent.controlMessage(message{Type: "shell_route", Action: action, Token: token, HandoffToken: confirmed.token, Instance: target.uid, Name: config.Name, SourceHost: config.Host, NoLogin: config.NoLogin, NoProfile: config.NoProfile, Pinned: config.Pin, Argv: config.Argv}); err != nil {
+	if err := parent.controlMessage(message{Type: "shell_route", Host: &hostAnnouncement{Info: target.hostInfo}, Action: action, Token: token, HandoffToken: confirmed.token, Instance: target.uid, Name: config.Name, SourceHost: config.Host, NoLogin: config.NoLogin, NoProfile: config.NoProfile, Pinned: config.Pin, Argv: config.Argv}); err != nil {
 		return err
 	}
 	timer := time.NewTimer(15 * time.Second)
@@ -233,7 +233,7 @@ func handoffRemoteShell(o options) (bool, error) {
 	if err := writeMessage(c, message{Type: "shell_route_request", SoftwareVersion: version, LocalRequest: req}); err != nil {
 		return true, err
 	}
-	if err := negotiateShellSetup(c, o.host, false); err != nil {
+	if _, err := negotiateShellSetup(c, o.host, false); err != nil {
 		return true, err
 	}
 	reply, err := readMessage(c)

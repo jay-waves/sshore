@@ -74,7 +74,9 @@ func openRemoteShellTransport(ctx context.Context, o *options, transports client
 	setup, err := mx.OpenStream()
 	if err == nil {
 		chooseShell := o.command == "attach" && o.session == "" && o.instance == ""
-		err = negotiateShellSetup(setup, o.host, chooseShell)
+		var ready message
+		ready, err = negotiateShellSetup(setup, o.host, chooseShell)
+		o.hostInfo = ready.advertisedHost()
 		setup.Close()
 	}
 	if err != nil {
@@ -222,6 +224,7 @@ func (s resourceSSHStream) Close() error { return s.transport.Close() }
 // shellTarget describes one authenticated task. Resources dial separately so
 // they can outlive the shell transport.
 type shellTarget struct {
+	hostInfo hostInfo
 	host     string
 	uid      string
 	name     string
@@ -231,7 +234,7 @@ type shellTarget struct {
 }
 
 func (target *shellTarget) ready() message {
-	return message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: target.uid}
+	return message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: target.uid, Host: &hostAnnouncement{Info: target.hostInfo}}
 }
 
 func (s *tmuxTask) rememberRemoteChild(child *shellTarget) func() {
@@ -261,7 +264,7 @@ func (child *shellTarget) status() (message, error) {
 	defer c.Close()
 	timeout := time.AfterFunc(5*time.Second, func() { c.Close() })
 	defer timeout.Stop()
-	reply, err := exchangeRouteRequest(c, message{Type: "status", Action: "health"})
+	reply, err := exchangeRouteRequest(c, message{Type: "status"})
 	if err == nil && (reply.Type != "session" || reply.Instance != child.uid || reply.SoftwareVersion != version) {
 		err = fmt.Errorf("child shell instance changed")
 	}
@@ -369,7 +372,14 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 			_ = reconcileParticipatingShells(f.Host, shells, since)
 		}
 	}()
-	target := &shellTarget{host: f.Host, uid: record.UID, name: record.Name}
+	destination := pipes.Destination()
+	info := ready.advertisedHost()
+	var serverIP string
+	if ready.Host != nil {
+		serverIP = ready.Host.SSHServer
+	}
+	info.User, info.Address, info.Port = destination.User, destination.ObservedAddress(serverIP), destination.Port
+	target := &shellTarget{host: f.Host, uid: record.UID, name: record.Name, hostInfo: info}
 	target.open = func() (net.Conn, error) {
 		authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()

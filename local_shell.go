@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -108,21 +109,20 @@ type localShell struct {
 	handoff *localHandoff
 }
 
-func (s *localShell) view(includeDirectory bool) localShellView {
-	s.mu.Lock()
+func (s *localShell) inventoryView() localShellView {
+	if !s.mu.TryLock() {
+		return localShellView{Identity: s.record.identity(), Name: s.record.Name, State: taskUnknown}
+	}
+	defer s.mu.Unlock()
 	pinned, until := s.runtime.PinState()
 	view := localShellView{
 		Owner: s.parentIdentityLocked(), Pinned: pinned, PinUntil: until, Identity: s.record.identity(),
-		Name: s.record.Name, Version: s.record.Version, PID: s.runtime.PID(), Shell: s.shellName, Program: s.program, ProgramLine: s.programLine,
+		Name: s.record.Name, Shell: s.shellName, Program: s.program, ProgramLine: s.programLine,
 	}
-	reportedDirectory := s.reportedDirectory
+	view.Directory = cmp.Or(s.reportedDirectory, s.record.Directory)
 	view.State = s.state()
 	if s.runtime.Active() != nil {
 		view.SourceHost = s.runtime.Active().sourceHost
-	}
-	s.mu.Unlock()
-	if includeDirectory {
-		view.Directory = currentShellDirectory(view.PID, reportedDirectory)
 	}
 	return view
 }
@@ -176,10 +176,11 @@ func (s *localShell) serveTask(c net.Conn, m message) error {
 	return fmt.Errorf("unexpected local request")
 }
 
-func (s *localShell) status(_ string) message {
-	view := s.view(false)
-	return message{Type: "session", Pinned: view.Pinned, PinUntil: view.PinUntil, Name: view.Name, SoftwareVersion: view.Version,
-		Attached: view.State == taskActive, PID: view.PID}
+func (s *localShell) status() message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pinned, until := s.runtime.PinState()
+	return message{Type: "session", Pinned: pinned, PinUntil: until, Name: s.record.Name, SoftwareVersion: s.record.Version}
 }
 
 func (s *localShell) attachmentCommand(p *attachment, m message) error {

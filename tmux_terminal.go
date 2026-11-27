@@ -184,7 +184,7 @@ func (s *tmuxTask) state() string {
 	}
 }
 
-func (s *tmuxTask) serveCommand(c net.Conn, m message, extra func(*attachment, message) error, status func(string) message) (bool, error) {
+func (s *tmuxTask) serveCommand(c net.Conn, m message, extra func(*attachment, message) error, status func() message) (bool, error) {
 	var reply message
 	switch m.Type {
 	case "tree_hold":
@@ -197,7 +197,7 @@ func (s *tmuxTask) serveCommand(c net.Conn, m message, extra func(*attachment, m
 		}
 		return true, s.attach(c, m, extra)
 	case "status":
-		reply = status(m.Action)
+		reply = status()
 	case "shell_owner":
 		return true, s.serveOwner(c, m)
 	case "detach":

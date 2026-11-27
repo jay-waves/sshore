@@ -110,6 +110,14 @@ Match command "printf forwarding-check"
 		}
 		return resourceRef{}
 	}
+	assertInventory := func(t *testing.T, ctx context.Context, id string, present bool) {
+		t.Helper()
+		_, name, _ := strings.Cut(id, "/")
+		list, tree := local(t, ctx, "list"), local(t, ctx, "ps")
+		if listed := findResource(t, list, id).Identity != ""; listed != present || strings.Contains(string(tree), " ("+name+")") != present {
+			t.Fatalf("task %s present=%v, list:\n%s\nps:\n%s", id, present, list, tree)
+		}
+	}
 	// Each sequential scenario owns its deadline. A hung terminal cannot
 	// consume the time available to its siblings.
 	scenario := func(name string, exercise func(*testing.T, context.Context)) {
@@ -494,9 +502,81 @@ Match command "printf forwarding-check"
 			t.Fatalf("missing identity for forward/%s", name)
 		}
 		local(t, ctx, "kill", ref.ShortID)
-		if got := findResource(t, local(t, ctx, "list"), "forward/"+name); got.Identity != "" {
-			t.Fatalf("forward still registered: %+v", got)
+		assertInventory(t, ctx, "forward/"+name, false)
+	})
+	scenario("SSH disconnect clears forward and mount registrations", func(t *testing.T, ctx context.Context) {
+		proxy, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
 		}
+		link, cutLink := context.WithCancel(ctx)
+		defer cutLink()
+		defer proxy.Close()
+		// Only the two fixture tasks use this listener. Cutting their SSH
+		// connections leaves the account daemon and the fixture sshd running.
+		go func() {
+			for {
+				front, err := proxy.Accept()
+				if err != nil {
+					return
+				}
+				go func() {
+					defer front.Close()
+					back, err := (&net.Dialer{}).DialContext(link, "tcp4", "127.0.0.1:2222")
+					if err != nil {
+						return
+					}
+					defer back.Close()
+					defer context.AfterFunc(link, func() { front.Close(); back.Close() })()
+					go io.Copy(back, front)
+					_, _ = io.Copy(front, back)
+				}()
+			}
+		}()
+		port := strconv.Itoa(proxy.Addr().(*net.TCPAddr).Port)
+		knownHosts, configFile := filepath.Join(dir, "disconnect_hosts"), filepath.Join(dir, "disconnect_config")
+		for _, file := range []struct{ from, to, old, replacement string }{
+			{filepath.Join(fixture, "known_hosts"), knownHosts, "[127.0.0.1]:2222", "[127.0.0.1]:" + port},
+			{config, configFile, "Port 2222", "Port " + port},
+		} {
+			data, err := os.ReadFile(file.from)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data = bytes.ReplaceAll(data, []byte(file.old), []byte(file.replacement))
+			data = bytes.ReplaceAll(data, []byte(filepath.Join(fixture, "known_hosts")), []byte(knownHosts))
+			if err := os.WriteFile(file.to, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		start := func(kind string, args ...string) string {
+			t.Helper()
+			out := local(t, ctx, append(append([]string{kind}, args...), "--ssh", "-F", configFile)...)
+			_, task, found := strings.Cut(string(out), "Started "+kind+"/")
+			name, _, _ := strings.Cut(task, ":")
+			if !found || name == "" {
+				t.Fatalf("missing %s registration: %s", kind, out)
+			}
+			return kind + "/" + name
+		}
+		forwardID := start("forward", host+":2222", "here:")
+		mountID := start("mount", host+":.", "here:"+t.TempDir())
+		assertInventory(t, ctx, forwardID, true)
+		assertInventory(t, ctx, mountID, true)
+		cutLink()
+		for {
+			list := local(t, ctx, "list")
+			if findResource(t, list, forwardID).Identity == "" && findResource(t, list, mountID).Identity == "" {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("disconnected tasks remained registered:\n%s", list)
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		assertInventory(t, ctx, forwardID, false)
+		assertInventory(t, ctx, mountID, false)
 	})
 	scenario("control forward on its SSH account", func(t *testing.T, ctx context.Context) {
 		probe, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -697,8 +777,12 @@ Match command "printf forwarding-check"
 				t.Fatalf("managing account lost program arguments:\n%s", remoteList)
 			}
 			localList := string(local(t, ctx, "list"))
-			if !strings.Contains(localList, name) || strings.Contains(localList, argument) {
+			if !strings.Contains(localList, "HOST  fixture-alias  sshore-fixture@127.0.0.1:2222 (") || !strings.Contains(localList, name) || strings.Contains(localList, argument) {
 				t.Fatalf("unexpected cached program details:\n%s", localList)
+			}
+			tree := string(local(t, ctx, "ps"))
+			if !strings.Contains(tree, "fixture-alias\n") {
+				t.Fatalf("SSH alias missing from tree:\n%s", tree)
 			}
 			if root := os.Getenv("SSHORE_STATE_DIR"); root != "" {
 				data, err := os.ReadFile(filepath.Join(root, "connections", "participation.json"))
@@ -716,6 +800,7 @@ Match command "printf forwarding-check"
 		if !errors.As(err, &exit) || exit.ExitCode() != 23 {
 			t.Fatalf("expected program exit status 23: %v\n%s", err, out)
 		}
+		assertInventory(t, ctx, "run/"+name, false)
 		if out, err := command(ctx, "kill", name).CombinedOutput(); err == nil || !strings.Contains(string(out), "unknown task "+name) {
 			t.Fatalf("exited program remained selectable by name: %v\n%s", err, out)
 		}
@@ -775,6 +860,7 @@ Match command "printf forwarding-check"
 		if !found || !strings.Contains(remoteTree, "shell/"+id+" (resume-root)  T") {
 			t.Fatalf("independent remote shell is missing from its host root:\n%s", tree)
 		}
+		assertInventory(t, ctx, "shell/resume-root", true)
 		const missing = "ffffffffffffffffffffffffffffffff"
 		parent := exec.CommandContext(ctx, binary, "shell", "--name", "resume-parent", "--no-profile", "--no-login")
 		runOpenSSHTerminal(t, ctx, parent, func(send func(string), wait terminalWait) {
@@ -808,8 +894,7 @@ Match command "printf forwarding-check"
 			wait("SCOPE_state=retained")
 			send("sshore d 3m\n")
 			wait("Connected " + root)
-			hostname := strings.TrimSpace(run(t, ctx, "sh", host, "--", "hostname"))
-			if tree := run(t, ctx, "sh", host, "--", "sshore ps"); !strings.HasPrefix(tree, hostname+"\n") || !strings.Contains(tree, " (scoped-root)  R") || !strings.Contains(tree, " (scoped-child)  T") {
+			if tree := run(t, ctx, "sh", host, "--", "sshore ps"); !strings.HasPrefix(tree, "local\n") || !strings.Contains(tree, " (scoped-root)  R") || !strings.Contains(tree, " (scoped-child)  T") {
 				t.Fatalf("hosted tree lost its local root or detached child:\n%s", tree)
 			}
 			send("sshore a scoped-child\n")

@@ -20,9 +20,10 @@ import (
 // Closing a session never transfers connection ownership to another task.
 type Client struct {
 	*cryptossh.Client
-	jump *Client
-	once sync.Once
-	done chan struct{}
+	jump        *Client
+	once        sync.Once
+	done        chan struct{}
+	destination Destination
 }
 
 func (c *Client) Close() error {
@@ -154,7 +155,16 @@ func (cfg *connectionConfig) handshake(ctx context.Context, depth int, budgets *
 	if err != nil {
 		return nil, fmt.Errorf("SSH %s: %w", cfg.options.Host, err)
 	}
-	return &Client{Client: cryptossh.NewClient(conn, ch, req), jump: parent, done: make(chan struct{})}, nil
+	peerIP := ""
+	if parent == nil {
+		if addr, ok := raw.RemoteAddr().(*net.TCPAddr); ok {
+			peerIP = addr.IP.String()
+			if addr.Zone != "" {
+				peerIP += "%" + addr.Zone
+			}
+		}
+	}
+	return &Client{Client: cryptossh.NewClient(conn, ch, req), jump: parent, done: make(chan struct{}), destination: Destination{User: cfg.user, Host: cfg.host, Port: cfg.port, PeerIP: peerIP, Jump: parent != nil}}, nil
 }
 func (cfg *connectionConfig) proxyJumpOptions(jump string) (Options, error) {
 	last := strings.LastIndexByte(jump, ',')
@@ -236,6 +246,27 @@ type Process struct {
 	wait   func() error
 	close  func() error
 }
+
+type Destination struct {
+	User, Host, Port, PeerIP string
+	Jump                     bool
+}
+
+func (d Destination) ObservedAddress(serverIP string) string {
+	if !d.Jump && d.PeerIP != "" {
+		return d.PeerIP
+	}
+	if d.Jump {
+		// The jump socket does not expose the final peer. Prefer the address
+		// the destination sshd reports for its own side of this connection.
+		if addr, err := netip.ParseAddr(serverIP); err == nil {
+			return addr.Unmap().String()
+		}
+	}
+	return d.Host
+}
+
+func (p *Process) Destination() Destination { return p.client.destination }
 
 // DialTCP opens a sibling TCP channel. Closing it leaves the exec channel alive.
 func (p *Process) DialTCP(ctx context.Context, address string) (net.Conn, error) {

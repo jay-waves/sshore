@@ -33,7 +33,6 @@ type ftpRequest struct {
 }
 type ftpDirectoryBudget struct{ entries, bytes uint64 }
 type ftpWire struct {
-	onReply                       func()
 	totals                        *[256]ftpRequestTotals
 	peakRequests                  int
 	reader                        io.Reader
@@ -183,8 +182,6 @@ func (w *ftpWire) filter(packet []byte) ([]byte, error) {
 	key := uint64(id)
 	if packet[0] == 2 {
 		key = ftpHandshakeRequest
-	} else if w.onReply != nil {
-		w.onReply()
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()

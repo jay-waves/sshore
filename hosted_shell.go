@@ -3,6 +3,7 @@
 package main
 
 import (
+	"cmp"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -35,32 +36,33 @@ func (s *remoteShell) serveHostedTask(c net.Conn, m message, relay func(net.Conn
 	return true, nil
 }
 
-func (s *remoteShell) hostedSnapshot(withDirectory bool) shellView {
-	s.mu.Lock()
+func (s *remoteShell) hostedInventoryView() shellView {
+	if !s.mu.TryLock() {
+		return shellView{Instance: s.record.UID, Name: s.record.Name, State: taskUnknown}
+	}
 	defer s.mu.Unlock()
+	return s.hostedSnapshotLocked()
+}
+
+func (s *remoteShell) hostedSnapshotLocked() shellView {
 	pinned, until := s.runtime.PinState()
 	view := shellView{
 		Owner: s.parentIdentityLocked(), Pinned: pinned, PinUntil: until,
-		Instance: s.record.UID, ID: "sh/" + s.record.Name, Name: s.record.Name,
+		Instance: s.record.UID, Name: s.record.Name,
 		PID: s.runtime.PID(), Shell: s.shellName, Program: s.program, ProgramLine: s.programLine, State: s.state(),
 	}
 	if active := s.runtime.Active(); active != nil {
 		view.SourceHost = active.sourceHost
 	}
-	if view.PID != 0 {
-		age := int64(time.Since(s.runtime.StartedAt()) / time.Second)
-		view.Age = &age
-	}
-	if withDirectory {
-		view.Directory = s.directoryOrStartupLocked()
-	}
+	view.Directory = cmp.Or(s.reportedDirectory, s.record.Directory)
 	return view
 }
 
-func (s *remoteShell) status(detail string) message {
-	view := s.hostedView(detail)
-	return message{Type: "session", Owner: view.Owner, Action: view.State, Pinned: view.Pinned, PinUntil: view.PinUntil, Instance: view.Instance, Name: view.Name, SoftwareVersion: version,
-		Attached: view.State == taskActive, PID: view.PID, AgeSeconds: view.Age, Foreground: view.Foreground, Directory: view.Directory}
+func (s *remoteShell) status() message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	view := s.hostedSnapshotLocked()
+	return message{Type: "session", Owner: view.Owner, Action: view.State, Pinned: view.Pinned, PinUntil: view.PinUntil, Instance: view.Instance, Name: view.Name, SoftwareVersion: version}
 }
 func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) (*remoteShell, error) {
 	s := &remoteShell{

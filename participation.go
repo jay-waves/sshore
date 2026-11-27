@@ -8,6 +8,7 @@ import (
 
 // Participation records only tasks opened through this client account.
 type participatingShell struct {
+	HostInfo             hostInfo `json:",omitzero"`
 	Host, Instance, Name string
 	Owner                string
 	Shell                string `json:",omitempty"`
@@ -116,6 +117,9 @@ func (m *daemonMetadata) updateParticipation(r metadataRequest) error {
 			rows[i].State, rows[i].ChangedAt = row.State, now
 			rows[i].Pinned, rows[i].PinUntil = row.Pinned, row.PinUntil
 		case i >= 0:
+			if row.HostInfo == (hostInfo{}) {
+				row.HostInfo = rows[i].HostInfo
+			}
 			rows[i] = row
 		case len(rows) == 4096:
 			return fmt.Errorf("participating shell limit reached")

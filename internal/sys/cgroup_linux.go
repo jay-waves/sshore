@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -141,25 +140,4 @@ func removeCgroupTree(dir string) error {
 		}
 	}
 	return unix.Rmdir(dir)
-}
-
-// Processes returns advisory process metadata scoped to this task.
-func (g *TaskCgroup) Processes() []Process {
-	var pids []int
-	_ = filepath.WalkDir(g.dir, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || !entry.IsDir() {
-			return nil
-		}
-		data, err := os.ReadFile(filepath.Join(path, "cgroup.procs"))
-		if err != nil {
-			return nil
-		}
-		for field := range strings.FieldsSeq(string(data)) {
-			if pid, err := strconv.Atoi(field); err == nil && pid > 0 {
-				pids = append(pids, pid)
-			}
-		}
-		return nil
-	})
-	return readProcesses(pids)
 }

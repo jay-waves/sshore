@@ -33,7 +33,29 @@ type resourceHop struct {
 	Token  string
 }
 
+type terminalDisplay struct {
+	Cols  uint16 `json:"cols,omitzero"`
+	Rows  uint16 `json:"rows,omitzero"`
+	Color bool   `json:"color,omitzero"`
+	Term  string `json:"term,omitempty"`
+}
+
+type consoleFilePayload struct {
+	Files           []directoryEntry `json:"files,omitempty"`
+	ParentDirectory string           `json:"parent_directory,omitempty"`
+	ParentFiles     []directoryEntry `json:"parent_files,omitempty"`
+	ParentError     string           `json:"parent_error,omitempty"`
+}
+
+type hostAnnouncement struct {
+	Info      hostInfo `json:"host_info,omitzero"`
+	SSHServer string   `json:"ssh_server_ip,omitempty"`
+}
+
 type message struct {
+	terminalDisplay  `json:",embed"`
+	ConsoleFiles     *consoleFilePayload `json:",embed"`
+	Host             *hostAnnouncement   `json:",embed"`
 	ResourceRoute    []resourceHop       `json:"resource_route,omitempty"`
 	NativeTargets    bool                `json:"native_targets,omitzero"`
 	RetainedShells   []retainedShell     `json:"retained_shells,omitempty"`
@@ -56,33 +78,29 @@ type message struct {
 	ApprovalID       string              `json:"approval_id,omitempty"`
 	Directory        string              `json:"directory,omitempty"`
 	HomeDirectory    string              `json:"home_directory,omitempty"`
-	AgeSeconds       *int64              `json:"age_seconds,omitzero"`
 	Targets          []sessionTarget     `json:"targets,omitempty"`
-	Files            []directoryEntry    `json:"files,omitempty"`
-	ParentDirectory  string              `json:"parent_directory,omitempty"`
-	ParentFiles      []directoryEntry    `json:"parent_files,omitempty"`
-	ParentError      string              `json:"parent_error,omitempty"`
 	SoftwareVersion  string              `json:"software_version,omitempty"`
 	Operations       []operation         `json:"operations,omitempty"`
 	Action           string              `json:"action,omitempty"`
 	Type             string              `json:"type"`
-	Cols             uint16              `json:"cols,omitzero"`
-	Rows             uint16              `json:"rows,omitzero"`
-	Color            bool                `json:"color,omitzero"`
 	Argv             []string            `json:"argv,omitempty"`
 	NoProfile        bool                `json:"no_profile,omitzero"`
 	NoLogin          bool                `json:"no_login,omitzero"`
-	Term             string              `json:"term,omitempty"`
 	PID              int                 `json:"pid,omitzero"`
-	Foreground       string              `json:"foreground,omitempty"`
-	Attached         bool                `json:"attached,omitzero"`
 	Name             string              `json:"name,omitempty"`
 	Shell            string              `json:"shell,omitempty"`
-	Program          bool                `json:"program,omitempty"`
+	Program          bool                `json:"program,omitzero"`
 	Size             int64               `json:"size,omitzero"`
 	Output           string              `json:"output,omitempty"`
 	Error            string              `json:"error,omitempty"`
 	Code             int                 `json:"code,omitzero"`
+}
+
+func (m *message) advertisedHost() hostInfo {
+	if m.Host == nil {
+		return hostInfo{}
+	}
+	return m.Host.Info
 }
 
 func validateSessionTargets(targets []sessionTarget) error {

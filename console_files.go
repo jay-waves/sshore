@@ -52,7 +52,10 @@ func startConsoleFilePicker(ctx context.Context, directory, host string, attache
 			emit(clientEvent{filePicker: picker, fileRequest: &request})
 			select {
 			case reply := <-request.reply:
-				return reply.Files, listingError(reply.Error), reply.ParentFiles, listingError(reply.ParentError)
+				if files := reply.ConsoleFiles; files != nil {
+					return files.Files, listingError(reply.Error), files.ParentFiles, listingError(files.ParentError)
+				}
+				return nil, listingError(reply.Error), nil, nil
 			case <-ctx.Done():
 				return nil, ctx.Err(), nil, ctx.Err()
 			}
@@ -91,18 +94,23 @@ func (p *consoleFilePicker) send(data []byte) {
 }
 
 func consoleFileListing(request message) message {
-	reply := message{Type: "console_files", Action: request.Action}
-	reply.Files, reply.Error = listingEntries(os.ReadDir(request.Directory))
-	if request.ParentDirectory != "" {
-		reply.ParentFiles, reply.ParentError = listingEntries(os.ReadDir(request.ParentDirectory))
+	files := &consoleFilePayload{}
+	reply := message{Type: "console_files", Action: request.Action, ConsoleFiles: files}
+	files.Files, reply.Error = listingEntries(os.ReadDir(request.Directory))
+	var parent string
+	if request.ConsoleFiles != nil {
+		parent = request.ConsoleFiles.ParentDirectory
+	}
+	if parent != "" {
+		files.ParentFiles, files.ParentError = listingEntries(os.ReadDir(parent))
 	}
 	body, _ := json.Marshal(reply)
-	if len(body) > maxControlMessage && request.ParentDirectory != "" {
-		reply.ParentFiles, reply.ParentError = nil, "parent directory listing is too large"
+	if len(body) > maxControlMessage && parent != "" {
+		files.ParentFiles, files.ParentError = nil, "parent directory listing is too large"
 		body, _ = json.Marshal(reply)
 	}
 	if len(body) > maxControlMessage {
-		reply.Files, reply.Error = nil, "directory listing is too large"
+		files.Files, reply.Error = nil, "directory listing is too large"
 	}
 	return reply
 }

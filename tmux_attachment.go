@@ -282,7 +282,7 @@ func (s *tmuxTask) attachmentControl(p *attachment, request message, extra func(
 			return fmt.Errorf("resize terminal: %w", err)
 		}
 		if s.hosted {
-			return p.controlMessage(message{Type: "resized", Cols: request.Cols, Rows: request.Rows})
+			return p.controlMessage(message{Type: "resized", terminalDisplay: terminalDisplay{Cols: request.Cols, Rows: request.Rows}})
 		}
 		return nil
 	case "redraw":

@@ -7,7 +7,9 @@ import (
 	json "encoding/json/v2"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/shell"
@@ -44,13 +46,19 @@ func prepareHostedShell(name, mode, instance, executable, directory string) (loc
 }
 
 func reportHostedShell(record localShellRecord) error {
-	if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: record.UID, LocalRequest: &localDaemonRequest{Record: record}}); err != nil {
+	var serverIP string
+	if fields := strings.Fields(os.Getenv("SSH_CONNECTION")); len(fields) == 4 {
+		if addr, err := netip.ParseAddr(fields[2]); err == nil {
+			serverIP = addr.Unmap().String()
+		}
+	}
+	if err := writeMessage(os.Stdout, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Host: &hostAnnouncement{Info: localHostInfo(), SSHServer: serverIP}, Instance: record.UID, LocalRequest: &localDaemonRequest{Record: record}}); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var snapshot taskInventorySnapshot
-	if err := daemonJSON(ctx, record, "/tasks/snapshot", taskInventoryRequest{Hosted: true, Detail: "health"}, &snapshot); err == nil {
+	if err := daemonJSON(ctx, record, "/tasks/snapshot", taskInventoryRequest{Hosted: true}, &snapshot); err == nil {
 		_ = json.MarshalWrite(os.Stdout, snapshot.Shells)
 	}
 	return nil

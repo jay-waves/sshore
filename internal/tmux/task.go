@@ -24,7 +24,6 @@ type Task[A attachmentOwner, T any] struct {
 	node      *treeNode[T]
 	claim     *reservation[T]
 	terminal  *pty.Terminal
-	started   time.Time
 	detached  time.Time
 	active    A
 	done      chan struct{}
@@ -95,13 +94,11 @@ func (t *Task[A, T]) Start(config pty.Config) error {
 	if err == nil {
 		t.stopTimer()
 		t.terminal = terminal
-		t.started = time.Now()
 	}
 	return err
 }
 
 func (t *Task[A, T]) Started() bool         { return t.terminal != nil }
-func (t *Task[A, T]) StartedAt() time.Time  { return t.started }
 func (t *Task[A, T]) DetachedAt() time.Time { return t.detached }
 func (t *Task[A, T]) Active() A             { return t.active }
 func (t *Task[A, T]) Exited() bool          { return t.node.Ended() }

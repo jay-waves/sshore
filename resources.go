@@ -27,10 +27,10 @@ import (
 // The account daemon owns resource identity and control. Mounts isolate native
 // filesystem code in a child connected by pipes; forwards run in the daemon.
 type resourceRecord struct {
-	UID                                                   string `json:",omitempty"`
-	Kind, Detail, Name, Host, Remote, Mountpoint, Version string
-	ReadOnly                                              bool
-	Direction                                             string `json:",omitempty"`
+	UID                                          string `json:",omitempty"`
+	Kind, Detail, Name, Host, Remote, Mountpoint string
+	ReadOnly                                     bool
+	Direction                                    string `json:",omitempty"`
 }
 
 type resourceStartup struct {
@@ -64,11 +64,9 @@ type resourceService struct {
 	environment []string
 	directory   string
 
-	statusMu sync.Mutex
-	status   resourceStatus
-	record   resourceRecord
-	config   resourceConfig
-	done     chan struct{}
+	record resourceRecord
+	config resourceConfig
+	done   chan struct{}
 }
 
 func resourceToken() string {
@@ -88,26 +86,6 @@ func (s *resourceService) logWriter() io.Writer {
 	}
 	return os.Stderr
 }
-func resourceViews(records []resourceRecord, statuses map[string]resourceStatus, withStatus bool) []resourceView {
-	views := make([]resourceView, 0, len(records))
-	for _, record := range records {
-		view := viewRecord(record)
-		if withStatus {
-			switch status, ok := statuses[record.UID]; {
-			case !ok:
-				view.LastError = "local worker unavailable or status deadline exceeded"
-			case status.Version != version:
-				view.LastError = "incompatible or invalid worker status"
-			default:
-				view.State, view.resourceStatus = taskActive, status
-			}
-		}
-		views = append(views, view)
-	}
-	slices.SortFunc(views, func(a, b resourceView) int { return cmp.Or(cmp.Compare(a.Host, b.Host), cmp.Compare(a.ID, b.ID)) })
-	return views
-}
-
 func printStoppedResource(kind, name, identity string) {
 	switch kind {
 	case "mount":
@@ -164,7 +142,7 @@ func runKillAll(o options) (int, error) {
 		}
 		stop = func() error { return requestDaemonShutdown(snapshot) }
 	} else {
-		local, err := readTaskInventory(taskInventoryRequest{Resources: true, Status: true, Host: o.host})
+		local, err := readTaskInventory(taskInventoryRequest{Resources: true, Host: o.host})
 		if err != nil {
 			return 1, err
 		}
@@ -270,49 +248,6 @@ func printDaemonSnapshot(w io.Writer, host string, snapshot daemonSnapshot) {
 	table.Flush()
 }
 
-// Status separates local worker liveness from transport state and target health.
-// Target services are never probed by listing. Exported views deliberately omit
-// control capabilities, addresses, SSH options, credentials and terminal output.
-
-type resourceStatus struct {
-	Version       string    `json:"version"`
-	Transport     string    `json:"transport"`
-	Target        string    `json:"target"`
-	Started       time.Time `json:"started,omitempty"`
-	LastOperation time.Time `json:"last_operation,omitempty"`
-	LastError     string    `json:"last_error,omitempty"`
-}
-
-func (s *resourceService) statusSnapshot() resourceStatus {
-	s.statusMu.Lock()
-	defer s.statusMu.Unlock()
-	snapshot := s.status
-	snapshot.Version, snapshot.Target = version, "unchecked"
-	return snapshot
-}
-func (s *resourceService) setTransport(state string, err error) {
-	if s == nil {
-		return
-	}
-	s.statusMu.Lock()
-	defer s.statusMu.Unlock()
-	s.status.Transport = state
-	if err != nil {
-		s.status.LastError = cleanText(err.Error())
-	}
-	if state == "connected" && s.status.Started.IsZero() {
-		s.status.Started = time.Now().UTC()
-	}
-}
-func (s *resourceService) operationCompleted() {
-	if s == nil {
-		return
-	}
-	s.statusMu.Lock()
-	defer s.statusMu.Unlock()
-	s.status.LastOperation = time.Now().UTC()
-}
-
 // Mount daemons receive only startup/control messages through the account daemon.
 // Forwards run here and directly own their SSH child; payloads stay in SSH.
 func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTasks) (result error) {
@@ -344,9 +279,8 @@ func acknowledgeResourceStartup(enc *jsontext.Encoder, c net.Conn) {
 }
 
 func newResourceService(config resourceConfig, record resourceRecord) *resourceService {
-	record.UID, record.Version = config.UID, version
+	record.UID = config.UID
 	s := &resourceService{record: record, config: config, done: make(chan struct{})}
-	s.setTransport("starting", nil)
 	return s
 }
 

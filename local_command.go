@@ -14,16 +14,14 @@ import (
 type localShellView struct {
 	SourceHost  string    `json:"source_host,omitempty"`
 	Owner       string    `json:"owner,omitempty"`
-	Pinned      bool      `json:"pinned,omitempty"`
+	Pinned      bool      `json:"pinned,omitzero"`
 	PinUntil    time.Time `json:"pin_until,omitzero"`
 	ShortID     string    `json:"short_id,omitempty"`
 	Identity    string    `json:"identity"`
 	Name        string    `json:"name"`
 	State       string    `json:"state"`
-	PID         int       `json:"pid,omitempty"`
-	Version     string    `json:"version"`
 	Shell       string    `json:"shell,omitempty"`
-	Program     bool      `json:"program,omitempty"`
+	Program     bool      `json:"program,omitzero"`
 	ProgramLine string    `json:"program_line,omitempty"`
 	Directory   string    `json:"directory,omitempty"`
 }
@@ -42,11 +40,6 @@ func localRequest(ref, identity string, request message) (message, error) {
 		return message{}, err
 	}
 	return readMessage(c)
-}
-
-func nativeShells() ([]localShellView, error) {
-	snapshot, err := readTaskInventory(taskInventoryRequest{Native: true})
-	return snapshot.nativeShells(), err
 }
 
 func sortLocalShells(rows []localShellView) {

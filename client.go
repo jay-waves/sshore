@@ -239,7 +239,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	if o.command == "sh" {
 		argv = o.argv
 	}
-	if err = streamMessage(control, message{Type: "attach", SoftwareVersion: version, TreeKey: treeKey, Token: terminalToken, Pinned: o.command == "sh" && o.pin, SourceHost: sourceHost, MachineID: sourceMachine, Instance: o.instance, Action: action, Cols: uint16(cols), Rows: uint16(rows), Term: termName, NoProfile: o.noProfile && o.command == "sh", NoLogin: o.noLogin && o.command == "sh", Argv: argv}); err != nil {
+	if err = streamMessage(control, message{Type: "attach", SoftwareVersion: version, TreeKey: treeKey, Token: terminalToken, Pinned: o.command == "sh" && o.pin, SourceHost: sourceHost, MachineID: sourceMachine, Instance: o.instance, Action: action, terminalDisplay: terminalDisplay{Cols: uint16(cols), Rows: uint16(rows), Term: termName}, NoProfile: o.noProfile && o.command == "sh", NoLogin: o.noLogin && o.command == "sh", Argv: argv}); err != nil {
 		return 255, err
 	}
 	m, err := readMessage(control)
@@ -290,7 +290,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		}
 	}
 	if !o.local {
-		row := participatingShell{Host: o.host, Owner: m.Owner, Instance: o.instance, Name: o.session, State: taskActive,
+		row := participatingShell{HostInfo: o.hostInfo, Host: o.host, Owner: m.Owner, Instance: o.instance, Name: o.session, State: taskActive,
 			Pinned: m.Pinned, PinUntil: m.PinUntil, PID: m.PID, Shell: m.Shell, Program: m.Program, Attachment: newTaskUID()}
 		if err := observeParticipatingShell(row); err != nil {
 			termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not record participating shell: %s\n", cleanText(err.Error()))
@@ -628,7 +628,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 		consoleRequest++
 		pending.action = fmt.Sprintf("console:inventory:%d", consoleRequest)
 		awaitResponse(requestTimeout)
-		return streamMessage(control, message{Type: "console_inventory", Action: pending.action, Name: name, Color: color, Cols: uint16(cols)})
+		return streamMessage(control, message{Type: "console_inventory", Action: pending.action, Name: name, terminalDisplay: terminalDisplay{Color: color, Cols: uint16(cols)}})
 	}
 	leaveConsole := func() error {
 		if strings.HasPrefix(pending.action, "console:") || strings.HasPrefix(pending.action, consoleAttachLookup) {
@@ -725,7 +725,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 			c, r, e := xterm.GetSize(int(os.Stdout.Fd()))
 			if e == nil && (c != cols || r != rows) {
 				cols, rows = c, r
-				if err = streamMessage(control, message{Type: "resize", Cols: uint16(c), Rows: uint16(r)}); err != nil {
+				if err = streamMessage(control, message{Type: "resize", terminalDisplay: terminalDisplay{Cols: uint16(c), Rows: uint16(r)}}); err != nil {
 					return 255, err
 				}
 			}
@@ -747,7 +747,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 					consoleRequest++
 					action := strconv.FormatUint(consoleRequest, 10)
 					picker.requests[action] = e.fileRequest
-					if err := streamMessage(control, message{Type: "console_files", Action: action, Directory: e.fileRequest.dir, ParentDirectory: e.fileRequest.parent}); err != nil {
+					if err := streamMessage(control, message{Type: "console_files", Action: action, Directory: e.fileRequest.dir, ConsoleFiles: &consoleFilePayload{ParentDirectory: e.fileRequest.parent}}); err != nil {
 						return 255, err
 					}
 				case e.fileResult != nil:
@@ -1107,12 +1107,12 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						reject()
 						continue
 					}
-					target := options{argv: e.m.Argv, pin: e.m.Pinned, noLogin: e.m.NoLogin, noProfile: e.m.NoProfile, command: "sh", host: e.m.SourceHost, session: e.m.Name, instance: e.m.Instance, routeParent: &parent, routeToken: e.m.Token}
+					target := options{hostInfo: e.m.advertisedHost(), argv: e.m.Argv, pin: e.m.Pinned, noLogin: e.m.NoLogin, noProfile: e.m.NoProfile, command: "sh", host: e.m.SourceHost, session: e.m.Name, instance: e.m.Instance, routeParent: &parent, routeToken: e.m.Token}
 					if e.m.Action == "attach" || e.m.Action == "remote_attach" {
 						target.command = "attach"
 					}
 					if e.m.Action == "local" || e.m.Action == "attach" {
-						target.host, target.sameHostRoute = o.host, true
+						target.host, target.sameHostRoute, target.hostInfo = o.host, true, o.hostInfo
 					}
 					target.handoffDone = func(ctx context.Context, result error) error {
 						return confirmShellRoute(ctx, parent, token, handoffToken, result)

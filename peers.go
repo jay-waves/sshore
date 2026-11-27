@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
+
+	"github.com/shirou/gopsutil/v4/host"
 )
 
 // Peer advertisements are advisory; only daemon socket leases establish activity.
@@ -24,12 +25,38 @@ type peerRecord struct {
 	Detail    string `json:"detail"`
 }
 
+// hostInfo is display metadata for a peer reached through SSH.
+type hostInfo struct {
+	User, Address, Port string `json:",omitempty"`
+	OS, Arch, Hostname  string `json:",omitempty"`
+}
+
+func localHostname() string {
+	name, _ := os.Hostname()
+	return cleanText(name)
+}
+
+func localHostInfo() hostInfo {
+	info := hostInfo{Hostname: localHostname()}
+	if platform, _, version, err := host.PlatformInformation(); err == nil {
+		if platform == "ubuntu" {
+			platform = "Ubuntu"
+		}
+		platform = strings.TrimPrefix(platform, "Microsoft ")
+		info.OS = strings.TrimSpace(platform + " " + version)
+	}
+	info.Arch, _ = host.KernelArch()
+	if info.Arch == "x86_64" || info.Arch == "x86-64" {
+		info.Arch = "amd64"
+	}
+	return info
+}
+
 func taskManagerLabel() string {
-	h, e := os.Hostname()
-	if e != nil || h == "" {
+	h := localHostname()
+	if h == "" {
 		return "client"
 	}
-	h = cleanText(h)
 	if len(h) > 128 {
 		h = h[:128]
 	}
@@ -66,16 +93,9 @@ func validateRemoteTask(t peerRecord) error {
 func peerViews(peers []peerRecord) []peerView {
 	rows := make([]peerView, 0, len(peers))
 	for _, t := range peers {
-		row := t.view()
-		row.ID = "peer/" + t.Key[:8] + "/" + t.ID
-		rows = append(rows, row)
+		rows = append(rows, peerView{UID: t.UID, ID: t.ID, Detail: t.Detail})
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].Identity < rows[j].Identity })
 	return rows
-}
-
-func (t peerRecord) view() peerView {
-	return peerView{Direction: t.Direction, UID: t.UID, Identity: t.Key, ID: t.ID, Manager: t.Manager, State: taskActive, Detail: t.Detail}
 }
 
 func beginIncomingTask(t peerRecord) func() {

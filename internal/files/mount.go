@@ -44,9 +44,8 @@ type MountConfig struct {
 
 // MountLifecycle connects a background worker to the mount. Nil means foreground.
 type MountLifecycle struct {
-	Abandoned          <-chan struct{}
-	OperationCompleted func()
-	Ready              func(string, string) error
+	Abandoned <-chan struct{}
+	Ready     func(string, string) error
 	// Stop receives a reply channel for the graceful-unmount result.
 	Stop <-chan chan error
 }
@@ -204,7 +203,6 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		ftp.enableMetrics()
 	}
 	if service != nil {
-		ftp.onReply = service.OperationCompleted
 	}
 	if o.IOTimeout > 0 {
 		sftpWorkers.Go(func() {

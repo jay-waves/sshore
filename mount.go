@@ -244,7 +244,7 @@ func runDaemonMount(config resourceConfig, enc *jsontext.Encoder, dec *jsontext.
 	cmd.Stdout = childOutput
 	finished := make(chan struct{})
 	task := &daemonResourceTask{
-		record: resourceRecord{Kind: "mount", UID: config.UID, Name: config.Mount.Name, Host: config.Mount.Host, ReadOnly: config.Mount.ReadOnly, Direction: "<-", Version: version},
+		record: resourceRecord{Kind: "mount", UID: config.UID, Name: config.Mount.Name, Host: config.Mount.Host, ReadOnly: config.Mount.ReadOnly, Direction: "<-"},
 		done:   finished,
 	}
 	childInput := jsontext.NewEncoder(input)
@@ -273,8 +273,6 @@ func runDaemonMount(config resourceConfig, enc *jsontext.Encoder, dec *jsontext.
 		}
 		if phase != running {
 			switch action {
-			case "status":
-				return resourceReply{Status: resourceStatus{Version: version, Transport: "starting", Target: "unchecked"}}
 			case "kill":
 				cancelStartupLocked()
 				return resourceReply{}
@@ -439,7 +437,6 @@ func runMountDaemon() (code int, resultErr error) {
 	unmount := make(chan chan error)
 	var replyMu sync.Mutex
 	ready := func(root, mountpoint string) error {
-		s.setTransport("connected", nil)
 		s.record.Remote, s.record.Mountpoint = root, mountpoint
 		if err := offerResourceStartup(enc, s.record, ack, nil); err != nil {
 			return err
@@ -457,7 +454,7 @@ func runMountDaemon() (code int, resultErr error) {
 		replyMu.Lock()
 		replyMu.Unlock()
 	}()
-	lifecycle := &files.MountLifecycle{Abandoned: abandoned, OperationCompleted: s.operationCompleted, Ready: ready, Stop: unmount}
+	lifecycle := &files.MountLifecycle{Abandoned: abandoned, Ready: ready, Stop: unmount}
 	selector := func(ctx context.Context, readDir files.DirectoryReader, home string) (string, string, error) {
 		if o.PickRemote {
 			go readDir(ctx, home)

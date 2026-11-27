@@ -598,6 +598,9 @@ func openSessionRoute(ctx context.Context, o *options, transports clientTranspor
 		}
 		o.instance = reply.Instance
 	}
+	if o.sameHostRoute && o.hostInfo == (hostInfo{}) {
+		o.hostInfo = parent.hostInfo
+	}
 	o.routeParent.reusable = parent.reusable
 	return c, nil
 }

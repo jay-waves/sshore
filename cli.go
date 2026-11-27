@@ -249,6 +249,7 @@ func shellOptions(parsed cliArguments, target selectedTask) (options, error) {
 }
 
 type options struct {
+	hostInfo              hostInfo
 	hold                  *clientTransport
 	fromTree              string
 	recovering            bool

@@ -198,7 +198,6 @@ func runForward(ctx context.Context, f forwardConfig, s *resourceService, onRead
 	advertisement = append(advertisement, '\n')
 	for retry := 0; ; retry++ {
 		if retry != 0 {
-			s.setTransport("reconnecting", err)
 			delay := time.Second * time.Duration(1<<min(retry-1, 5))
 			termui.Log(s.logWriter(), canonicalTaskCode(resourceIdentity(s.record)), termui.Info,
 				"Forward disconnected; TCP connections lost. Retry %d/%d in %s.", retry, f.Retries, delay)
@@ -317,7 +316,6 @@ func runForwardAttempt(parent context.Context, f forwardConfig, s *resourceServi
 		return false, fmt.Errorf("forward startup failed (%s): %w", s.record.Detail, err)
 	}
 	defer connection.Close()
-	s.setTransport("connected", nil)
 	if initial && onReady != nil {
 		if err := onReady(); err != nil {
 			return false, err
@@ -392,8 +390,6 @@ func runDaemonForward(config resourceConfig, enc *jsontext.Encoder, dec *jsontex
 		case "kill":
 			cancel()
 			return resourceReply{}
-		case "status":
-			return resourceReply{Status: s.statusSnapshot()}
 		default:
 			return resourceReply{Error: "invalid resource operation"}
 		}

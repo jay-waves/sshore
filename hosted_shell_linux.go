@@ -4,8 +4,6 @@ package main
 
 import (
 	"net"
-
-	"github.com/jay-waves/sshore/internal/sys"
 )
 
 type hostedRoutes struct {
@@ -63,15 +61,4 @@ func (s *remoteShell) serveTask(c net.Conn, first message) error {
 		return writeMessage(c, message{Type: "fatal", Error: "unsupported connection; update sshore on both computers"})
 	}
 	return nil
-}
-
-func (s *remoteShell) hostedView(detail string) shellView {
-	view := s.hostedSnapshot(false)
-	var group int
-	var processes []sys.Process
-	if view.PID != 0 && (detail == "" || detail == "sessions") {
-		group, processes = s.runtime.Processes()
-	}
-	hostedDiagnostics(&view, processes, group, detail)
-	return view
 }

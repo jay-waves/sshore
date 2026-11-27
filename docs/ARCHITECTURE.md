@@ -174,22 +174,21 @@ before changing update, reset or approval behavior.
 
 ### Inventory and diagnostics
 
-`pstree` groups tasks by managing host and follows shell parent UIDs across hosts.
-Both inventory views display the local hostname first when local tasks are present.
-`list` shows task details and incoming resource leases. Both read daemon snapshots,
-including cached remote observations. After `setup_ready`, the remote service sends its
-hosted shell list on the same exec stream while the client attaches. A live registration
-takes precedence over an observation of the same UID. Invalid records identify the affected
-source and field.
-
-Both views omit starting and exited tasks. Their help defines the task state codes.
+`pstree` follows shell parent UIDs across hosts. Both views group by SSH destination, with
+`local` first. `list` shows the observed SSH address, OS, architecture, and hostname when
+available. Conflicting snapshots for the same SSH name leave only the name.
+Both views read the existing daemon registry, cached remote shells, and incoming leases. Listing
+starts no daemon and sends no worker probes. Resources appear until their registration ends.
+A shell whose attachment transition holds its lock appears as unknown. Starting and exited
+shells are omitted when their state is known. The hosted shell list follows `setup_ready` on the same exec
+stream. A live registration takes precedence over an observation of the same UID.
 
 Program sessions appear as `run`. On the managing account, `list` shows the executable and its
 arguments. Cached remote observations carry the executable name.
 
 On Windows, the command console and child shell shortcut use the last reported
 filesystem location when available. Shells can report it through `OSC 9;9`, including
-while detached. Inventory also displays the location when available.
+while detached. Inventory uses the reported or startup directory from the registry.
 
 Task commands resolve names and UID prefixes through the
 [task registry selector](../task_selection.go). A bare host in `attach` selects

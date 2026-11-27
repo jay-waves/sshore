@@ -19,5 +19,3 @@ func (s *remoteShell) attachmentCommand(p *attachment, m message) error {
 		return attachmentApprovalCommand(p, m)
 	}
 }
-
-func (s *remoteShell) hostedView(_ string) shellView { return s.hostedSnapshot(true) }

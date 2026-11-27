@@ -26,6 +26,7 @@ type activityLease struct {
 // All live advertisements and leases belong to the account daemon. No state
 // file or PID scan can recreate a lease after its connection has gone away.
 type daemonActivity struct {
+	hostInfo      atomic.Pointer[hostInfo]
 	root          string
 	tasks         *daemonTasks
 	metadata      daemonMetadata

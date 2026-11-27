@@ -311,6 +311,10 @@ func runDaemon() (result error) {
 	}()
 	tasks := &daemonTasks{log: log, cgroup: group, cgroupErr: cgroupErr}
 	activity := &daemonActivity{tasks: tasks, root: record.Directory}
+	go func() {
+		info := localHostInfo()
+		activity.hostInfo.Store(&info)
+	}()
 	accountActivity.Store(activity)
 	defer accountActivity.Store(nil)
 	return serveDaemon(listener, record, activity, signals)

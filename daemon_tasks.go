@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/tmux"
@@ -252,7 +251,6 @@ func (change resourceMutation) confirmedUID() string {
 }
 
 type resourceReply struct {
-	Status   resourceStatus
 	Error    string   `json:",omitempty"`
 	Failures []string `json:",omitempty"`
 }
@@ -260,13 +258,12 @@ type resourceReply struct {
 // A mount owns a child process; a forward owns an in-process executor. Both
 // expose the same bounded control operations through the account task table.
 type daemonResourceTask struct {
-	mu            sync.Mutex
-	record        resourceRecord // UID and Host are immutable after registration.
-	done          <-chan struct{}
-	control       func(string) resourceReply
-	statusPending atomic.Bool
-	stopMu        sync.Mutex
-	stopAccepted  bool // Protected by stopMu.
+	mu           sync.Mutex
+	record       resourceRecord // UID and Host are immutable after registration.
+	done         <-chan struct{}
+	control      func(string) resourceReply
+	stopMu       sync.Mutex
+	stopAccepted bool // Protected by stopMu.
 }
 
 func (t *daemonResourceTask) setInitialIdentity(uid, name string) {
@@ -287,75 +284,13 @@ func (t *daemonResourceTask) expired() bool {
 	}
 }
 
-const resourceStatusTimeout = 2 * time.Second
-
-type resourceStatusRow struct {
-	UID    string
-	Status resourceStatus
-}
-
 func (s *daemonTasks) serveTaskInventory(w http.ResponseWriter, r *http.Request) {
 	var request taskInventoryRequest
 	if !readDaemonBody(w, r, &request) {
 		return
 	}
-	if request.Detail != "" && request.Detail != "health" && request.Detail != "inventory" && request.Detail != "sessions" {
-		http.Error(w, "invalid shell inventory detail", http.StatusBadRequest)
-		return
-	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.MarshalWrite(w, s.taskInventory(r.Context(), request))
-}
-
-func probeResourceStatus(parent context.Context, workers []*daemonResourceTask) map[string]resourceStatus {
-	if len(workers) == 0 {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(parent, resourceStatusTimeout)
-	defer cancel()
-	statuses := make(map[string]resourceStatus, len(workers))
-	probes := len(workers)
-	concurrency := min(8, probes)
-	// An outstanding probe can always return, including after this request ends.
-	rows := make(chan resourceStatusRow, concurrency)
-	startNext := func() {
-		if len(workers) == 0 || ctx.Err() != nil {
-			return
-		}
-		task := workers[0]
-		workers = workers[1:]
-		go func() { rows <- task.readStatus() }()
-	}
-	for range concurrency {
-		startNext()
-	}
-
-	// Keep completed probes even when another worker misses the deadline.
-	for range probes {
-		select {
-		case row := <-rows:
-			startNext()
-			if row.UID != "" {
-				statuses[row.UID] = row.Status
-			}
-		case <-ctx.Done():
-			return statuses
-		}
-	}
-	return statuses
-}
-
-func (task *daemonResourceTask) readStatus() resourceStatusRow {
-	if task.expired() || !task.statusPending.CompareAndSwap(false, true) {
-		return resourceStatusRow{}
-	}
-	// A blocked worker can retain one probe across concurrent inventories.
-	defer task.statusPending.Store(false)
-	reply := task.control("status")
-	if reply.Error != "" {
-		return resourceStatusRow{}
-	}
-	return resourceStatusRow{UID: task.record.UID, Status: reply.Status}
+	_ = json.MarshalWrite(w, s.taskInventory(request))
 }
 
 const resourceStopTimeout = 20 * time.Second
@@ -404,12 +339,12 @@ func (t *daemonResourceTask) publishReady(detail, root, mountpoint string) resou
 }
 
 type hostedShellView interface {
-	hostedView(string) shellView
+	hostedInventoryView() shellView
 }
 
 type taskInventoryRequest struct {
-	Native, Hosted, Resources, Status bool
-	Host, Detail                      string
+	Native, Hosted, Resources bool
+	Host                      string
 }
 
 type taskInventorySnapshot struct {
@@ -418,36 +353,29 @@ type taskInventorySnapshot struct {
 	Resources []resourceView
 }
 
-func (s *daemonTasks) taskInventory(ctx context.Context, request taskInventoryRequest) taskInventorySnapshot {
+func (s *daemonTasks) taskInventory(request taskInventoryRequest) taskInventorySnapshot {
 	var snapshot taskInventorySnapshot
-	var records []resourceRecord
-	var workers []*daemonResourceTask
-	// Capture membership before collecting runtime state. A shell view may wait
-	// for its terminal handshake, so it must not hold up unrelated task lookups.
+	// Capture membership before reading individual tasks.
 	for _, task := range liveTasks[daemonTask](s) {
 		switch t := task.(type) {
 		case *localShell:
 			if request.Native {
-				snapshot.Native = append(snapshot.Native, t.view(request.Detail != "health"))
+				snapshot.Native = append(snapshot.Native, t.inventoryView())
 			}
 		case hostedShellView:
 			if request.Hosted {
-				snapshot.Shells = append(snapshot.Shells, t.hostedView(request.Detail))
+				snapshot.Shells = append(snapshot.Shells, t.hostedInventoryView())
 			}
 		case *daemonResourceTask:
 			if !request.Resources || request.Host != "" && t.record.Host != request.Host {
 				continue
 			}
 			t.mu.Lock()
-			records = append(records, t.record)
+			snapshot.Resources = append(snapshot.Resources, viewRecord(t.record))
 			t.mu.Unlock()
-			if request.Status {
-				workers = append(workers, t)
-			}
 		}
 	}
 	slices.SortFunc(snapshot.Shells, func(a, b shellView) int { return strings.Compare(a.Instance, b.Instance) })
-	snapshot.Resources = resourceViews(records, probeResourceStatus(ctx, workers), request.Status)
 	return snapshot
 }
 
@@ -553,9 +481,6 @@ func daemonResourceRequest(ctx context.Context, path string, input any) (resourc
 }
 
 func (s *resourceService) mountControl(action string, unmount chan<- chan error) resourceReply {
-	if action == "status" {
-		return resourceReply{Status: s.statusSnapshot()}
-	}
 	if action != "kill" {
 		return resourceReply{Error: "invalid resource operation"}
 	}
