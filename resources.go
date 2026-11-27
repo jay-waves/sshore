@@ -276,7 +276,7 @@ func confirmDaemonShutdown(host string, snapshot daemonSnapshot, resources []res
 	if len(resources) > 0 {
 		inv := inventory{Resources: slices.Clone(resources)}
 		inv.setTaskReferences()
-		writeTaskInventoryColor(os.Stdout, inv, "", termui.ColorEnabled(os.Stdout))
+		writeList(os.Stdout, inv, "", termui.ColorEnabled(os.Stdout))
 	}
 	question := "End the listed tasks and stop the daemon? [y/N]"
 	if reset {

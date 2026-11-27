@@ -199,16 +199,16 @@ const consoleMoreRows = "… more rows in the standalone command on this host"
 func consoleInventory(request message, current string) message {
 	reply := message{Type: "console_inventory", Action: request.Action}
 	var body bytes.Buffer
-	var err error
 	command := canonicalCommand(request.Name)
-	switch command {
-	case "list", "pstree":
-		var inv inventory
-		inv, err = collectInventory()
-		writeInventory(&body, command, inv, current, request.Color, int(request.Cols))
-	default:
+	if command != "list" && command != "pstree" {
 		reply.Output = "Unknown inventory command."
 		return reply
+	}
+	inv, err := collectInventory()
+	if command == "list" {
+		writeListWidth(&body, inv, current, request.Color, int(request.Cols))
+	} else {
+		writePstree(&body, inv, current, request.Color)
 	}
 	reply.Output = strings.TrimRight(body.String(), "\n")
 	if err != nil {

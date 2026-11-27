@@ -654,7 +654,7 @@ Use attach to resume it. Ctrl+B d also pins and detaches.
 `,
 		},
 		"pstree": {
-			run: runInventoryCommand, group: groupTask, summary: "Show the task tree", aliases: []string{"ps"},
+			run: runPstree, group: groupTask, summary: "Show the task tree", aliases: []string{"ps"},
 			help: `Usage: sshore pstree  (alias: ps)
 
 Show tasks under their host roots, with type/ID labels and terminal parent edges.
@@ -663,7 +663,7 @@ A * after the ID marks the current shell. Use list for details.
 ` + inventoryStateHelp,
 		},
 		"list": {
-			run: runInventoryCommand, group: groupTask, summary: "Show task details", aliases: []string{"ls"},
+			run: runList, group: groupTask, summary: "Show task details", aliases: []string{"ls"},
 			help: `Usage: sshore list  (alias: ls)
 
 List terminal sessions, mounts and forwards, including incoming resources.

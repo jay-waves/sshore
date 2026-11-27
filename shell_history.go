@@ -78,3 +78,15 @@ func readShellCandidates(root string) (observed []participatingShell, records []
 	})
 	return
 }
+
+func rememberShellExit(o options) error {
+	return updateHistory(func(tx *bolt.Tx) error {
+		if err := removeRecentDetach(tx, o); err != nil {
+			return err
+		}
+		if o.local || !validTaskUID(o.instance) {
+			return nil
+		}
+		return updateParticipation(tx, participationChange{Action: "participation_forget", Host: o.host, Instance: o.instance})
+	})
+}
