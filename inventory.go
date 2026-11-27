@@ -310,17 +310,20 @@ func writeTaskInventoryWidth(out io.Writer, inv inventory, current string, color
 		}
 		fmt.Fprint(out, termui.Render(color, termui.Accent, "HOST  "+inventoryHostTitle(host, info)))
 		fmt.Fprintln(out)
-		table := [][]string{{"ID", "TYPE", "STATE", "PARENT", "DETAIL"}}
+		table := [][]termui.TableCell{{{Text: "ID"}, {Text: "TYPE"}, {Text: "STATE"}, {Text: "PARENT"}, {Text: "DETAIL"}}}
 		currentRow := -1
 		for _, r := range rows[start:end] {
 			parent := cmp.Or(r.parent, "-")
-			cells := []string{taskDisplayID(r.code, r.alias, r.current), r.kind, taskStateCode(r.state), parent, r.detail}
+			cells := []termui.TableCell{
+				{Text: taskTableID(r, screenWidth)}, {Text: r.kind}, taskStateCell(r.state),
+				{Text: parent}, {Text: compactTaskDetail(r.detail, -1)},
+			}
 			if r.current {
 				currentRow = len(table)
 			}
 			table = append(table, cells)
 		}
-		writeTaskTable(out, table, color, screenWidth, currentRow)
+		termui.WriteTable(out, table, screenWidth, currentRow, color)
 		start = end
 	}
 	fmt.Fprintln(out)
@@ -403,34 +406,28 @@ func compactTaskDetail(detail string, limit int) string {
 	return ansi.Truncate(detail, limit, "…")
 }
 
-func writeTaskTable(out io.Writer, table [][]string, color bool, screenWidth, currentRow int) {
-	rows := make([][]termui.TableCell, len(table))
-	for i, row := range table {
-		rows[i] = make([]termui.TableCell, len(row))
-		for j, cell := range row {
-			switch {
-			case i == 0:
-			case j == 0 && screenWidth > 0:
-				if code, alias, ok := strings.Cut(cell, " ("); ok {
-					cell = code
-					if limit := min(32, max(0, screenWidth/4-9)); limit > 0 {
-						cell += " (" + compactTaskDetail(strings.TrimSuffix(alias, ")"), limit) + ")"
-					}
-				}
-			case j == len(row)-1:
-				cell = compactTaskDetail(cell, -1)
-			case j == 2:
-				switch cell {
-				case "R":
-					rows[i][j].Color = termui.Success
-				case "?":
-					rows[i][j].Color = termui.Warning
-				}
-			}
-			rows[i][j].Text = cell
+func taskTableID(row taskTableRow, screenWidth int) string {
+	alias := row.alias
+	if screenWidth > 0 && alias != "" && alias != row.code {
+		limit := min(32, max(0, screenWidth/4-9))
+		if limit == 0 {
+			alias = ""
+		} else {
+			alias = compactTaskDetail(alias, limit)
 		}
 	}
-	termui.WriteTable(out, rows, screenWidth, currentRow, color)
+	return taskDisplayID(row.code, alias, row.current)
+}
+
+func taskStateCell(state string) termui.TableCell {
+	cell := termui.TableCell{Text: taskStateCode(state)}
+	switch cell.Text {
+	case "R":
+		cell.Color = termui.Success
+	case "?":
+		cell.Color = termui.Warning
+	}
+	return cell
 }
 
 func taskHiddenFromInventory(state string) bool {

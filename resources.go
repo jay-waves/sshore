@@ -307,7 +307,7 @@ func confirmKillAll(input io.Reader) bool {
 
 func printDaemonSnapshot(w *os.File, host string, snapshot daemonSnapshot) {
 	fmt.Fprintf(w, "HOST  %s · daemon %s\n", cleanText(host), cleanText(snapshot.Version))
-	table := [][]string{{"ID", "TYPE"}}
+	table := [][]termui.TableCell{{{Text: "ID"}, {Text: "TYPE"}}}
 	tasks := slices.Clone(snapshot.Tasks)
 	for i := range tasks {
 		tasks[i].ID = strings.TrimPrefix(tasks[i].ID, "task:")
@@ -322,9 +322,9 @@ func printDaemonSnapshot(w *os.File, host string, snapshot daemonSnapshot) {
 				width++
 			}
 		}
-		table = append(table, []string{taskDisplayID(task.ID[:width], task.Name, false), task.Kind})
+		table = append(table, []termui.TableCell{{Text: taskDisplayID(task.ID[:width], task.Name, false)}, {Text: task.Kind}})
 	}
-	writeTaskTable(w, table, termui.ColorEnabled(w), 0, -1)
+	termui.WriteTable(w, table, 0, -1, termui.ColorEnabled(w))
 }
 
 // Mount daemons receive only startup/control messages through the account daemon.
