@@ -75,14 +75,25 @@ func executeCopyCommand(o copyOptions) (int, error) {
 		if o.sources[0].stream || o.target.stream {
 			return executeStreamCopy(client, o, os.Stdin, os.Stdout)
 		}
-		return selectAndCopy(ctx, client, remoteHome, o)
+		var picked []fileCopy
+		if interactive {
+			if err := termui.RunLocalConsole(func(console *termui.LocalConsole) error {
+				var err error
+				picked, err = pickCopyPaths(ctx, console, client, remoteHome, &o)
+				return err
+			}); err != nil {
+				closeCopyBatch(picked)
+				return err
+			}
+		}
+		return executeCopy(ctx, client, o, picked)
 	}); err != nil {
 		return 1, err
 	}
 	return 0, nil
 }
 
-func selectAndCopy(ctx context.Context, client *sftp.Client, home string, o copyOptions) error {
+func pickCopyPaths(ctx context.Context, console *termui.LocalConsole, client *sftp.Client, home string, o *copyOptions) ([]fileCopy, error) {
 	var readDir files.DirectoryReader
 	if (o.upload && o.target.pick) || (!o.upload && o.sources[0].pick) {
 		readDir = files.NewSFTPDirectoryReader(client)
@@ -94,7 +105,6 @@ func selectAndCopy(ctx context.Context, client *sftp.Client, home string, o copy
 		})
 	}
 	var picked []fileCopy
-	defer func() { closeCopyBatch(picked) }()
 	if o.sources[0].pick {
 		picker := remote("Choose files to download", false)
 		var validate func([]string) error
@@ -114,9 +124,9 @@ func selectAndCopy(ctx context.Context, client *sftp.Client, home string, o copy
 				return nil
 			}
 		}
-		names, err := termui.PickLFFiles(ctx, picker, validate)
+		names, err := console.PickLFFiles(ctx, picker, validate)
 		if err != nil {
-			return err
+			return picked, err
 		}
 		o.sources = make([]copyEndpoint, len(names))
 		for i, name := range names {
@@ -131,11 +141,11 @@ func selectAndCopy(ctx context.Context, client *sftp.Client, home string, o copy
 			picker.Manual = len(o.sources) == 1
 		}
 		var err error
-		o.target.path, err = termui.PickLF(ctx, picker)
+		o.target.path, err = console.PickLF(ctx, picker)
 		if errors.Is(err, termui.ErrLFManual) {
 			input, inputErr := newLocalInput()
 			if inputErr != nil {
-				return inputErr
+				return picked, inputErr
 			}
 			o.target.path, err = readCopyPath(input, "Save as: ", func(p string) (string, error) {
 				return files.DownloadDestination(p, path.Base(o.sources[0].path))
@@ -144,12 +154,10 @@ func selectAndCopy(ctx context.Context, client *sftp.Client, home string, o copy
 			o.target.pick = false
 		}
 		if err != nil {
-			return err
+			return picked, err
 		}
 	}
-	batch := picked
-	picked = nil // Execution owns the opened sources.
-	return executeCopy(ctx, client, o, batch)
+	return picked, nil
 }
 
 // Closing the full transport first releases SFTP reads and writes before
@@ -168,15 +176,11 @@ type fileCopy struct {
 	source, target string
 	downloadSize   int64
 	opened         *files.Source
-	approval       *operation // Original request for a scoped transfer.
 }
 
 func (f fileCopy) size() int64 {
 	if f.opened != nil {
 		return f.opened.Size()
-	}
-	if f.approval != nil {
-		return f.approval.Size
 	}
 	return f.downloadSize
 }

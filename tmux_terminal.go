@@ -20,6 +20,8 @@ import (
 
 // tmuxTask binds the shared terminal state to daemon registration and routing.
 type tmuxTask struct {
+	hostedState
+	handoff    *localHandoff
 	endpoints  terminalEndpoints
 	mu         sync.Mutex // Protect shell state and attachment ownership.
 	runtime    tmux.Task[*attachment, *tmuxTask]
@@ -42,8 +44,6 @@ type tmuxTask struct {
 	remoteChildren                map[*shellTarget]struct{}
 }
 
-func (s *tmuxTask) managedShell() *tmuxTask { return s }
-
 func (s *tmuxTask) setInitialIdentity(uid, name string) {
 	s.record.UID, s.record.Name = uid, name
 	s.runtime.SetIdentity(s, taskShortCode(s.treeIdentity()))
@@ -58,6 +58,27 @@ func (s *tmuxTask) expired() bool {
 	default:
 		return false
 	}
+}
+
+func (s *tmuxTask) inventoryView() shellView {
+	if !s.mu.TryLock() {
+		return shellView{Instance: s.record.UID, Name: s.record.Name, State: taskUnknown}
+	}
+	defer s.mu.Unlock()
+	return s.snapshotLocked()
+}
+
+// snapshotLocked projects the managed terminal state for either ingress.
+func (s *tmuxTask) snapshotLocked() shellView {
+	pinned, until := s.runtime.PinState()
+	view := shellView{Owner: s.parentIdentityLocked(), Pinned: pinned, PinUntil: until,
+		Instance: s.record.UID, Name: s.record.Name, PID: s.runtime.PID(), Shell: s.shellName,
+		Program: s.program, ProgramLine: s.programLine, State: s.state(),
+		Directory: cmp.Or(s.reportedDirectory, s.record.Directory)}
+	if active := s.runtime.Active(); active != nil {
+		view.SourceHost = active.sourceHost
+	}
+	return view
 }
 
 func currentShellDirectory(pid int, reported string) string {
@@ -184,7 +205,14 @@ func (s *tmuxTask) state() string {
 	}
 }
 
-func (s *tmuxTask) serveCommand(c net.Conn, m message, extra func(*attachment, message) error, status func() message) (bool, error) {
+func (s *tmuxTask) serveTask(c net.Conn, m message) error {
+	if s.hosted {
+		return s.serveHostedIngress(c, m)
+	}
+	return s.serveLocalTask(c, m)
+}
+
+func (s *tmuxTask) serveCommand(c net.Conn, m message, extra func(*attachment, message) error) (bool, error) {
 	var reply message
 	switch m.Type {
 	case "tree_hold":
@@ -197,7 +225,15 @@ func (s *tmuxTask) serveCommand(c net.Conn, m message, extra func(*attachment, m
 		}
 		return true, s.attach(c, m, extra)
 	case "status":
-		reply = status()
+		s.mu.Lock()
+		if s.hosted {
+			view := s.snapshotLocked()
+			reply = message{Type: "session", Owner: view.Owner, Action: view.State, Pinned: view.Pinned, PinUntil: view.PinUntil, Instance: view.Instance, Name: view.Name, SoftwareVersion: version}
+		} else {
+			pinned, until := s.runtime.PinState()
+			reply = message{Type: "session", Pinned: pinned, PinUntil: until, Name: s.record.Name, SoftwareVersion: s.record.Version}
+		}
+		s.mu.Unlock()
 	case "shell_owner":
 		return true, s.serveOwner(c, m)
 	case "detach":

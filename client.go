@@ -21,12 +21,11 @@ import (
 
 	xterm "golang.org/x/term"
 
+	"github.com/jay-waves/sshore/internal/shell"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/term"
 	"github.com/jay-waves/sshore/internal/termui"
 )
-
-func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 
 // An interrupt cancels setup, but becomes terminal input after attachment.
 // Recovery setup ignores repeated Ctrl+C so one cancellation cannot unwind
@@ -1364,7 +1363,7 @@ func reconnectCommand(o options) string {
 		if runtime.GOOS == "windows" {
 			return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 		}
-		return shellQuote(s)
+		return shell.QuotePOSIX(s)
 	}
 	selector := o.session
 	if validTaskUID(o.instance) {

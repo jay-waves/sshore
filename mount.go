@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json/jsontext"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,13 +20,15 @@ import (
 	"github.com/jay-waves/sshore/internal/release"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 const defaultMountIOTimeout = time.Minute
 
 // Direct and locally approved mounts use the same worker configuration.
 type ftpOptions struct {
-	Approval                            *files.MountApproval
+	ApprovalID                          string
+	ResumePID                           int
 	Connection                          *recentConnection
 	IOTimeoutNanos, StartupTimeoutNanos int64
 	Host, Remote, Mountpoint            string
@@ -42,21 +45,17 @@ func validateMountConfig(o ftpOptions) error {
 	if o.Host == "here" || o.Host == "origin" || (o.Remote == "" && !o.PickRemote) || strings.ContainsRune(o.Remote, 0) || strings.ContainsRune(o.Mountpoint, 0) {
 		return fmt.Errorf("invalid mount endpoints")
 	}
-	if (o.PickRemote || o.PickMountpoint) && (o.Approval != nil || o.Connection != nil) {
-		return fmt.Errorf("approved mounts already specify their paths")
-	}
 	if o.IOTimeoutNanos < 0 || o.StartupTimeoutNanos < 0 {
 		return fmt.Errorf("invalid mount timeout")
 	}
-	approval := o.Approval
-	if approval != nil && (o.Connection == nil || !validTaskUID(approval.Instance) || approval.PID <= 0 || validSession(approval.Session) != nil || !validRequestID(approval.ID) || approval.Path != o.Remote || approval.ReadOnly != o.ReadOnly) {
-		return fmt.Errorf("invalid mount approval")
-	}
-	if connection := o.Connection; connection != nil {
-		if approval == nil || connection.Session != approval.Session || connection.Instance != approval.Instance || connection.Host != o.Host {
-			return fmt.Errorf("invalid mount approval connection")
+	if o.Connection != nil || o.ApprovalID != "" || o.ResumePID != 0 {
+		if o.PickRemote || o.PickMountpoint {
+			return fmt.Errorf("approved mounts already specify their paths")
 		}
-		return validateRecentConnection(*connection)
+		if o.Connection == nil || !validTaskUID(o.Connection.Instance) || o.ResumePID <= 0 || !validRequestID(o.ApprovalID) || o.Connection.Host != o.Host {
+			return fmt.Errorf("invalid mount approval")
+		}
+		return validateRecentConnection(*o.Connection)
 	}
 	if len(o.SSH) != 0 {
 		_, _, err := parseSSHOptions(o.SSH)
@@ -119,7 +118,7 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle files.MountLifecycl
 		return 1, fmt.Errorf("mount requires a full sshore release, got %q", version)
 	}
 	c := files.MountConfig{
-		Approval: o.Approval, Remote: o.Remote, Mountpoint: o.Mountpoint, Version: version, Name: o.Name,
+		Remote: o.Remote, Mountpoint: o.Mountpoint, Version: version, Name: o.Name,
 		ReadOnly: o.ReadOnly, DirectIO: o.DirectIO, StartupTimeout: time.Duration(o.StartupTimeoutNanos), IOTimeout: time.Duration(o.IOTimeoutNanos),
 		History: mountVisitHistory,
 		NotificationsUnavailable: func() {
@@ -135,20 +134,15 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle files.MountLifecycl
 		}
 	}
 	c.PeerMetadata, _ = json.Marshal(s.peerTask("export " + s.record.Remote))
-	if o.Approval != nil {
+	if o.Connection != nil {
+		c.Approval = &files.MountApproval{Session: o.Connection.Session, PID: o.ResumePID, ID: o.ApprovalID, Instance: o.Connection.Instance, Path: o.Remote, ReadOnly: o.ReadOnly}
 		c.Open = func(ctx context.Context) (io.ReadWriteCloser, error) {
-			return openIndependentResource(ctx, *o.Connection, message{
-				Type: "route_mount", Name: o.Approval.Session, PID: o.Approval.PID, ApprovalID: o.Approval.ID,
-				Operations: []operation{{Kind: "mount", Path: o.Remote, ReadOnly: o.ReadOnly}},
-			}, s)
+			request := approvedResourceRequest(o.Connection.Session, o.ResumePID, o.ApprovalID, operation{Kind: "mount", Path: o.Remote, ReadOnly: o.ReadOnly})
+			return openIndependentResource(ctx, *o.Connection, request, s)
 		}
 		return files.RunMount(c, lifecycle)
 	}
-	args := o.SSH
-	if o.Connection != nil {
-		args = o.Connection.SSH
-	}
-	connection := sshConnectionOptions(options{host: o.Host, ssh: args})
+	connection := sshConnectionOptions(options{host: o.Host, ssh: o.SSH})
 	auth := s.config.Auth
 	connection.Environment = s.baseEnvironment()
 	connection.Directory = s.directory
@@ -450,4 +444,73 @@ func runMountDaemon() (code int, resultErr error) {
 		}
 	}
 	return runFTPMount(o, s, lifecycle, selector)
+}
+
+type mountPathRequest struct {
+	Directory *string
+	Parent    string
+	Remote    string
+	Local     string
+}
+
+type mountPathListing struct {
+	Entries       []directoryEntry
+	Error         string
+	ParentEntries []directoryEntry
+	ParentError   string
+}
+
+func readMountSelection(read func(any) error, selectPath func(mountPathRequest) error) error {
+	for {
+		var raw jsontext.Value
+		if err := read(&raw); err != nil {
+			return err
+		}
+		var request mountPathRequest
+		if raw.Kind() != '{' || json.Unmarshal(raw, &request) != nil {
+			return errors.New("invalid mount selection request")
+		}
+		if err := selectPath(request); err != nil {
+			return err
+		}
+		if request.Directory == nil {
+			return nil
+		}
+	}
+}
+
+func (o ftpOptions) pickMountPaths(ctx context.Context, console *termui.LocalConsole, home string, read directoryPairReader) (string, string, error) {
+	remote, local := o.Remote, o.Mountpoint
+	if o.PickRemote {
+		var err error
+		picker := pairedFileSelection(home, "Mount directory", o.Host, true, read)
+		remote, err = console.PickLF(ctx, picker)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	if o.PickMountpoint {
+		var err error
+		local, err = pickLocalMountpoint(ctx, console, "")
+		if err != nil {
+			return "", "", err
+		}
+	}
+	return remote, local, nil
+}
+
+func pickLocalMountpoint(ctx context.Context, console *termui.LocalConsole, dir string) (string, error) {
+	picker := localFileSelection(dir, "Mountpoint", true)
+	picker.Automatic, picker.Manual = true, true
+	picker.Validate = files.ValidateMountpoint
+	point, err := console.PickLF(ctx, picker)
+	if !errors.Is(err, termui.ErrLFManual) {
+		return point, err
+	}
+	input, err := newLocalInput()
+	if err != nil {
+		return "", err
+	}
+	point, err = readMountApprovalPath(input, "")
+	return point, errors.Join(err, input.Close())
 }

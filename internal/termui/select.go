@@ -1,6 +1,7 @@
 package termui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,55 @@ import (
 )
 
 var ErrTerminalRequired = errors.New("local selection requires an interactive terminal; specify the local endpoint")
+
+// LocalConsole owns the screen while a command collects local input.
+type LocalConsole struct {
+	screen  term.InputState
+	restore func() error
+}
+
+func RunLocalConsole(run func(*LocalConsole) error) (err error) {
+	if !xterm.IsTerminal(int(os.Stdin.Fd())) || !xterm.IsTerminal(int(os.Stdout.Fd())) {
+		return ErrTerminalRequired
+	}
+	var console LocalConsole
+	if err := console.open(); err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, console.close()) }()
+	return run(&console)
+}
+
+func (c *LocalConsole) open() error {
+	restore, err := enableLocalConsoleOutput()
+	if err != nil {
+		return err
+	}
+	if err := c.screen.BeginConsole(os.Stdout); err != nil {
+		return errors.Join(err, restore())
+	}
+	c.restore = restore
+	return nil
+}
+
+func (c *LocalConsole) close() error {
+	if c.restore == nil {
+		return nil
+	}
+	err := errors.Join(c.screen.EndConsole(os.Stdout), c.restore())
+	c.restore = nil
+	return err
+}
+
+func (c *LocalConsole) PickLF(ctx context.Context, options LFOptions) (string, error) {
+	options.console = c
+	return PickLF(ctx, options)
+}
+
+func (c *LocalConsole) PickLFFiles(ctx context.Context, options LFOptions, validate func([]string) error) ([]string, error) {
+	options.console = c
+	return PickLFFiles(ctx, options, validate)
+}
 
 // NewLocalInput obtains a local terminal after clearing application input modes.
 func NewLocalInput() (*Input, error) {

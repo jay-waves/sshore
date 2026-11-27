@@ -4,12 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime"
 
+	"github.com/jay-waves/sshore/internal/release"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
 )
@@ -203,14 +202,12 @@ func removeResetEntry(path string, keep map[string]bool) error {
 	return os.RemoveAll(path)
 }
 
-const deploymentResetMarker = ".reset"
-
 func checkDeploymentAdmission() error {
 	dir, _ := deploymentCoordinates()
 	if dir == "" {
 		return nil
 	}
-	_, err := os.Lstat(filepath.Join(dir, deploymentResetMarker))
+	_, err := os.Lstat(filepath.Join(dir, release.ResetMarker))
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -246,7 +243,7 @@ func resetRemoteState(snapshot daemonSnapshot) error {
 	}
 	defer owner.Close()
 	// Keep new tasks out until the client removes the executable after exit.
-	if err := writeStateFile(filepath.Join(dir, deploymentResetMarker), nil); err != nil {
+	if err := writeStateFile(filepath.Join(dir, release.ResetMarker), nil); err != nil {
 		return err
 	}
 	paths := resetPaths{state: filepath.Join(dir, "state"), account: filepath.Dir(owner.Path())}
@@ -258,22 +255,5 @@ func removeRemoteServer(ctx context.Context, client *sshio.Client) error {
 	if err != nil {
 		return err
 	}
-	ftp, closeFiles, err := openDeploymentFiles(ctx, client)
-	if err != nil {
-		return err
-	}
-	defer closeFiles()
-	home, err := ftp.RealPath(".")
-	if err != nil {
-		return err
-	}
-	platform, err := remoteDeploymentPlatform(home)
-	if err != nil {
-		return err
-	}
-	target := path.Join(home, platform.binaryPath(id))
-	if err := ftp.RemoveFile(target); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("remove remote server: %w", err)
-	}
-	return nil
+	return release.RemoveRemote(ctx, client, id, version)
 }

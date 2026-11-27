@@ -30,3 +30,9 @@ func openHostedTransport(context.Context, options) (net.Conn, error) {
 func runHostedCommand(options) (int, error) {
 	return 1, errDarwinHostedShell
 }
+
+type hostedState struct{}
+
+func (s *tmuxTask) serveHostedIngress(c net.Conn, m message) error {
+	return errDarwinHostedShell
+}

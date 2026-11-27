@@ -9,6 +9,10 @@ import (
 	"golang.org/x/term"
 )
 
+func enableLocalConsoleOutput() (func() error, error) {
+	return func() error { return nil }, nil
+}
+
 func configureInputTerminal(config *readline.Config) (func() error, bool) {
 	fd := int(os.Stdin.Fd())
 	var state *term.State

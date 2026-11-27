@@ -55,12 +55,6 @@ func runLocalCommand(o options) (int, error) {
 	switch o.command {
 	case "sh", "attach":
 		return runClient(o)
-	case "kill":
-		m, err := localRequest(o.session, o.taskIdentity, message{Type: "kill"})
-		if err == nil && m.Type != "killed" {
-			err = fmt.Errorf("kill local shell: %s", cleanText(m.Error))
-		}
-		return 0, err
 	default:
 		return 2, usage("local %s is not available yet", o.command)
 	}

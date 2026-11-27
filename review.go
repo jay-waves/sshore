@@ -4,53 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
-	"os/signal"
-	"path/filepath"
 	"strings"
-	"sync/atomic"
-	"syscall"
-	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/sys"
-	"github.com/jay-waves/sshore/internal/term"
 	"github.com/jay-waves/sshore/internal/termui"
-	sftp "github.com/pkg/sftp/v2"
 )
-
-func newApprovedFile(op operation, localPath string, opened *files.Source) fileCopy {
-	if op.Kind == "upload" {
-		return fileCopy{source: localPath, target: "/target", opened: opened, approval: &op}
-	}
-	return fileCopy{source: "/source", target: localPath, approval: &op}
-}
-
-func (f fileCopy) approvedName() string {
-	if f.opened != nil {
-		return f.opened.Name()
-	}
-	if f.approval.Kind == "upload" && f.source != "" {
-		return filepath.Base(f.source)
-	}
-	return f.approval.Name
-}
-
-func (f fileCopy) approvedLocalPath() string {
-	if f.approval.Kind == "upload" {
-		return f.source
-	}
-	return f.target
-}
-
-func validateOperations(ops []operation) error {
-	err := validateRequestOperations(ops)
-	if errors.Is(err, errForwardPort) {
-		return usage("%s", err)
-	}
-	return err
-}
 
 func newApprovalRequest(o options, shellPID int, ops []operation) (requestRecord, error) {
 	if err := validateOperations(ops); err != nil {
@@ -80,7 +40,7 @@ type approvedOperation struct {
 	files  []fileCopy
 }
 
-func selectApprovedOperation(input *termui.Input, request requestRecord) (approvedOperation, error) {
+func selectApprovedOperation(console *termui.LocalConsole, input *termui.Input, request requestRecord) (approvedOperation, error) {
 	var selected approvedOperation
 	var err error
 	if request.Operations[0].Kind != "forward" {
@@ -91,7 +51,7 @@ func selectApprovedOperation(input *termui.Input, request requestRecord) (approv
 	}
 	switch request.Operations[0].Kind {
 	case "mount", "forward":
-		selected.config, err = selectApprovedResource(input, &request)
+		selected.config, err = selectApprovedResource(console, input, &request)
 	default:
 		selected.files, err = selectApprovedFiles(input, request)
 	}
@@ -106,26 +66,23 @@ type localApproval struct {
 func (*localApproval) Error() string { return "local approval requested" }
 
 func executeLocalApproval(request requestRecord, source options) error {
-	input, err := newLocalInput()
-	if err != nil {
-		return err
-	}
-	out := os.Stdout
-	var screen term.InputState
-	if err = screen.BeginConsole(out); err != nil {
-		_ = input.Close()
-		return err
-	}
-	termui.WriteConsoleBody(out, approvalDescription(request))
-	selection, err := selectApprovedOperation(input, request)
-	defer closeCopyBatch(selection.files)
-	// Release stdin before the SSH broker reads credentials in this console.
-	err = errors.Join(err, input.Close())
+	var selection approvedOperation
+	defer func() { closeCopyBatch(selection.files) }()
 	var started resourceRecord
-	if err == nil && selection.config.kind() != "" {
-		started, err = startApprovedResource(selection.config, request.Connection.Directory)
-	}
-	err = errors.Join(err, screen.EndConsole(out))
+	err := termui.RunLocalConsole(func(console *termui.LocalConsole) error {
+		input, err := newLocalInput()
+		if err != nil {
+			return err
+		}
+		termui.WriteConsoleBody(os.Stdout, approvalDescription(request))
+		selection, err = selectApprovedOperation(console, input, request)
+		// Release stdin before the SSH broker reads credentials in this console.
+		err = errors.Join(err, input.Close())
+		if err == nil && selection.config.kind() != "" {
+			started, err = launchResourceBackground(selection.config, request.Connection.Directory)
+		}
+		return err
+	})
 	if started.Kind != "" {
 		reportResourceStartup(started)
 	}
@@ -133,17 +90,6 @@ func executeLocalApproval(request requestRecord, source options) error {
 		err = runApprovedFiles(request, source, selection.files)
 	}
 	return err
-}
-
-func startApprovedResource(config resourceConfig, directory string) (resourceRecord, error) {
-	if config.Forward != nil {
-		if err := validateForwardConfig(*config.Forward); err != nil {
-			return resourceRecord{}, err
-		}
-	} else if err := validateMountConfig(*config.Mount); err != nil {
-		return resourceRecord{}, err
-	}
-	return launchResourceBackground(config, directory)
 }
 
 func approvalDescription(request requestRecord) string {
@@ -158,7 +104,7 @@ func approvalDescription(request requestRecord) string {
 			}
 			fmt.Fprintf(&body, "\nMount remote directory %s (%s)", cleanText(op.Path), mode)
 		case "forward":
-			fmt.Fprintf(&body, "\n%s", pendingPortDescription(op))
+			fmt.Fprintf(&body, "\n%s", op.Forward.pendingDescription())
 			continue
 		case "download":
 			fmt.Fprintf(&body, "\nDownload %s (%s, %s)", cleanText(op.Path), cleanText(op.Name), displayBytes(op.Size))
@@ -191,7 +137,7 @@ func prepareApprovalDirectory(r *requestRecord) error {
 	return nil
 }
 
-func selectApprovedResource(input *termui.Input, r *requestRecord) (resourceConfig, error) {
+func selectApprovedResource(console *termui.LocalConsole, input *termui.Input, r *requestRecord) (resourceConfig, error) {
 	op := r.Operations[0]
 	if op.Kind == "mount" {
 		hint, err := approvalPathHint(op.LocalHint)
@@ -206,7 +152,7 @@ func selectApprovedResource(input *termui.Input, r *requestRecord) (resourceConf
 			if err := input.Close(); err != nil {
 				return resourceConfig{}, err
 			}
-			mountpoint, err = pickLocalMountpoint(context.Background(), r.Directory, true)
+			mountpoint, err = pickLocalMountpoint(context.Background(), console, r.Directory)
 			if errors.Is(err, context.Canceled) {
 				err = fmt.Errorf("approval cancelled: %w", err)
 			}
@@ -219,20 +165,20 @@ func selectApprovedResource(input *termui.Input, r *requestRecord) (resourceConf
 		return resourceConfig{Mount: &ftpOptions{
 			Host: r.Connection.Host, Remote: op.Path, Mountpoint: mountpoint, ReadOnly: op.ReadOnly,
 			IOTimeoutNanos: defaultMountIOTimeout.Nanoseconds(),
-			Approval:       &files.MountApproval{Session: r.Connection.Session, PID: r.PID, ID: r.ID, Instance: r.Connection.Instance, Path: op.Path, ReadOnly: op.ReadOnly},
-			Connection:     &r.Connection,
+			ApprovalID:     r.ID, ResumePID: r.PID,
+			Connection: &r.Connection,
 		}}, nil
 	}
 
-	port, err := readApprovalPort(input, localForwardPortLabel(op.Reverse), op.LocalHint)
+	rule := op.Forward
+	port, err := readForwardPort(input, rule, true)
 	if err != nil {
 		return resourceConfig{}, err
 	}
-	resolveLocalPort(&op, port)
+	rule.LocalPort = port
 	f := forwardConfig{
-		Host: r.Connection.Host, SSH: r.Connection.SSH,
-		Port: op.Port, Target: op.TargetPort, Reverse: op.Reverse, Session: r.Connection.Session,
-		ResumePID: r.PID, ApprovalID: r.ID, Instance: r.Connection.Instance, Connection: &r.Connection,
+		Host: r.Connection.Host, Rule: rule,
+		ResumePID: r.PID, ApprovalID: r.ID, Connection: &r.Connection,
 	}
 	return resourceConfig{Forward: &f}, nil
 }
@@ -246,207 +192,4 @@ func approvalPathHint(hint string) (string, error) {
 		return "", fmt.Errorf("invalid local path suggestion: %w", err)
 	}
 	return path, nil
-}
-
-// The caller closes all opened sources, including on a partial selection.
-func selectApprovedFiles(input reviewPromptReader, r requestRecord) ([]fileCopy, error) {
-	approvedFiles := make([]fileCopy, 0, len(r.Operations))
-	destinations := make(map[string]bool)
-	for _, op := range r.Operations {
-		hint, err := approvalPathHint(op.LocalHint)
-		if err != nil {
-			return approvedFiles, err
-		}
-		switch op.Kind {
-		case "download":
-			dest := filepath.Join(r.Directory, op.Name)
-			if hint != "" {
-				dest = hint
-			}
-			termui.Log(os.Stdout, "", termui.Info, "Download %s · %s\n", cleanText(op.Path), displayBytes(op.Size))
-			path, e := readApprovalPath(input, "Save as: ", dest, func(path string) (string, error) {
-				path, err := files.DownloadDestination(path, op.Name)
-				if err == nil && destinations[path] {
-					return "", fmt.Errorf("destination already selected: %s", path)
-				}
-				return path, err
-			})
-			if e != nil {
-				return approvedFiles, e
-			}
-			approvedFiles = append(approvedFiles, newApprovedFile(op, path, nil))
-			destinations[path] = true
-		case "upload":
-			termui.Log(os.Stdout, "", termui.Info, "Upload → %s\n", cleanText(op.Path))
-			var source *files.Source
-			path, e := readApprovalPath(input, "Local file to upload: ", hint, func(path string) (string, error) {
-				f, e := files.OpenSource(path)
-				if e != nil {
-					return "", e
-				}
-				source = f
-				return path, nil
-			})
-			if e != nil {
-				return approvedFiles, e
-			}
-			approvedFiles = append(approvedFiles, newApprovedFile(op, path, source))
-		}
-	}
-	return approvedFiles, nil
-}
-
-func runApprovedFiles(r requestRecord, source options, approvedFiles []fileCopy) error {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	request := message{Type: "route_files", Name: r.Connection.Session, PID: r.PID, ApprovalID: r.ID}
-	target, err := approvedFileOptions(r.Connection)
-	if err != nil {
-		return err
-	}
-	// The route contains resource-safe SSH arguments. Keep the authenticated
-	// attachment's transport and lifetime lease wherever the route allows reuse.
-	for from, to := &source, &target; from != nil && to != nil; from, to = from.routeParent, to.routeParent {
-		to.reusable = from.reusable
-	}
-	open := func() (net.Conn, error) {
-		return openResourceEndpoint(ctx, &target, request, nil)
-	}
-	return executeApprovedFiles(ctx, open, approvedFiles)
-}
-
-// Each approved file uses its own endpoint. The batch stops on the first failure
-// and preserves completed files.
-
-func executeApprovedFiles(ctx context.Context, open func() (net.Conn, error), batch []fileCopy) error {
-	completed, err := transferCopyBatch(batch, func(i int, file fileCopy) error {
-		if len(batch) > 1 {
-			termui.Log(os.Stderr, "", termui.Info, "[sshore] File %d/%d: %s %s\n", i+1, len(batch), file.approval.Kind, cleanText(file.approvedName()))
-		}
-		return executeApprovedFile(ctx, open, file)
-	})
-	if err != nil {
-		termui.Log(os.Stderr, "", termui.Error, "[sshore] Transfer: %d done, 1 failed/cancelled, %d not started. Completed files kept.\n", completed, len(batch)-completed-1)
-		for i, file := range batch {
-			state := "not started"
-			if i < completed {
-				state = "completed"
-			} else if i == completed {
-				state = "failed/cancelled"
-			}
-			termui.Log(os.Stderr, "", termui.Info, "[sshore] %s: %s (%s)\n", state, cleanText(file.approvedName()), cleanText(file.approvedLocalPath()))
-		}
-		termui.Log(os.Stderr, "", termui.Info, "[sshore] Cleanup may leave .sshore-*.part downloads or partial uploads.\n")
-		return err
-	}
-	if len(batch) > 1 {
-		termui.Log(os.Stderr, "", termui.Success, "[sshore] Transferred %d/%d files.\n", len(batch), len(batch))
-	}
-	return nil
-}
-
-func executeApprovedFile(ctx context.Context, open func() (net.Conn, error), file fileCopy) error {
-	remote := *file.approval
-	remote.LocalHint = ""
-	request := message{Type: "approved_transfer", Operations: []operation{remote}}
-	name := file.approvedName()
-	var result string
-	switch remote.Kind {
-	case "upload":
-		if file.opened == nil {
-			return fmt.Errorf("approved upload has no opened source; request again")
-		}
-		request.Name, request.Size = name, file.opened.Size()
-		result = "Uploaded " + file.source + " -> " + remote.Path
-	case "download":
-		result = "Saved " + file.target
-	default:
-		return fmt.Errorf("invalid transfer kind")
-	}
-	stream, err := open()
-	if err != nil {
-		return err
-	}
-	defer stream.Close()
-	stop := context.AfterFunc(ctx, func() { _ = stream.Close() })
-	defer stop()
-	st := stream
-	_ = st.SetDeadline(time.Now().Add(requestTimeout))
-	if err = writeMessage(stream, request); err != nil {
-		return err
-	}
-	m, err := readMessage(stream)
-	if err != nil {
-		return err
-	}
-	if m.Type != "sftp" {
-		return fileResponseError(m)
-	}
-	err = withCopySFTP(ctx, stream, func(client *sftp.Client) error {
-		_ = st.SetDeadline(time.Time{})
-		completed := new(atomic.Int64)
-		defer reportTransferProgress(remote.Kind, name, file.size(), completed)()
-		return file.transfer(ctx, client, completed)
-	})
-	if err != nil {
-		return err
-	}
-	termui.Log(os.Stderr, "", termui.Success, "[sshore] %s\n", cleanText(result))
-	return nil
-}
-
-func reportTransferProgress(kind, name string, size int64, completed *atomic.Int64) func() {
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		progress := transferProgress{at: time.Now()}
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case now := <-ticker.C:
-				termui.Log(os.Stderr, "", termui.Info, "[sshore] %s %s: %s\n", kind, cleanText(name), progress.sample(now, completed.Load(), size))
-			}
-		}
-	}()
-	return func() {
-		close(stop)
-		<-done
-	}
-}
-
-// Rate is a time-smoothed estimate, never a promise of remote persistence.
-type transferProgress struct {
-	at    time.Time
-	bytes int64
-	rate  float64
-}
-
-func (p *transferProgress) sample(now time.Time, done, total int64) string {
-	elapsed := now.Sub(p.at).Seconds()
-	if elapsed > 0 {
-		rate := float64(max(int64(0), done-p.bytes)) / elapsed
-		if p.at.IsZero() {
-			rate = 0
-		}
-		if p.rate == 0 {
-			p.rate = rate
-		} else {
-			p.rate = .3*rate + .7*p.rate
-		}
-	}
-	p.at, p.bytes = now, done
-	eta := "unknown"
-	if done >= total {
-		eta = "0s"
-	} else if p.rate >= 1 {
-		seconds := float64(total-done) / p.rate
-		if seconds < float64((1<<63-1)/int64(time.Second)) {
-			eta = (time.Duration(seconds) * time.Second).String()
-		}
-	}
-	return fmt.Sprintf("%s/%s · %s/s · remaining %s", displayBytes(done), displayBytes(total), displayBytes(int64(p.rate)), eta)
 }

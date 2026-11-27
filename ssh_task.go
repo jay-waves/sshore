@@ -140,9 +140,9 @@ func runRemoteShell(c net.Conn, req localDaemonRequest, tasks *daemonTasks) erro
 	if req.Parent == "" {
 		conn = setupConnection{c, cancel}
 	} else {
-		parent, ok := tasks.lookup(req.Parent).(*localShell)
-		if ok {
-			owner = &parent.tmuxTask
+		parent, ok := tasks.lookup(req.Parent).(*tmuxTask)
+		if ok && !parent.hosted {
+			owner = parent
 		}
 	}
 	frontend, err := smux.Server(conn, relayMuxConfig())

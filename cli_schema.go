@@ -542,11 +542,11 @@ func init() {
 Resume it after detaching with Ctrl+B d
   sshore attach 7afe22
 Upload a file
-  sshore cp ./report.txt work:/tmp/report.txt
+  sshore copy ./report.txt work:/tmp/report.txt
 Mirror a remote service on a local port
   sshore forward work:3000 8080
 
-More examples: sshore shell|cp|mount|forward --tldr
+More examples: sshore shell|copy|mount|forward --tldr
 `,
 		},
 		"keygen": {
@@ -697,10 +697,12 @@ HOST it removes this client's current remote server and its state. Reset always
 requires confirmation. Run local reset outside managed shells.
 ` + sshOptions,
 		},
-		"cp": {
-			run: runCopy, group: groupSSH, summary: "Copy files over SSH", aliases: []string{"copy"},
+		"copy": {
+			run: runCopy, group: groupSSH, summary: "Copy files over SSH", aliases: []string{"cp"},
 			ssh: true, min: 2, max: -1,
-			help: `Usage: sshore cp SOURCE... TARGET [--ssh SSH_OPTIONS...]
+			help: `Usage: sshore copy SOURCE... TARGET [--ssh SSH_OPTIONS...]
+
+Alias: cp
 
 A bare path belongs to the machine running this command. Use HOST:PATH
 for an SSH host. Use here: or .: for an explicit local endpoint.
@@ -709,20 +711,20 @@ Leave a path empty to choose it after connecting. A missing target opens a
 directory picker. Use - for standard input or output with an explicit file.
 Copy supports up to 16 regular files. Batches with an explicit target require a directory.
 
-  sshore cp report.zip work:/tmp/
-  sshore cp here: work:
-  sshore cp work:/tmp/report.txt -
-  sshore cp - work:/tmp/report.txt
+  sshore copy report.zip work:/tmp/
+  sshore copy here: work:
+  sshore copy work:/tmp/report.txt -
+  sshore copy - work:/tmp/report.txt
 
 A failure stops the batch and keeps completed files. Stdout may already
 contain partial data. The remote sshore release must match exactly.
 ` + sshOptions,
 			examples: `Upload a file
-  sshore cp ./report.txt work:/tmp/report.txt
+  sshore copy ./report.txt work:/tmp/report.txt
 Download a file
-  sshore cp work:/tmp/report.txt ./report.txt
+  sshore copy work:/tmp/report.txt ./report.txt
 Use a different SSH port
-  sshore cp ./report.txt work:/tmp/report.txt --port 2222
+  sshore copy ./report.txt work:/tmp/report.txt --port 2222
 `,
 		},
 		"mount": {

@@ -67,7 +67,7 @@ func attachmentApprovalCommand(p *attachment, m message) error {
 	return nil
 }
 
-func (s *remoteShell) requestApproval(c net.Conn, m message) error {
+func (s *tmuxTask) requestApproval(c net.Conn, m message) error {
 	if err := checkPeerVersion(m.SoftwareVersion, "requesting helper"); err != nil {
 		return err
 	}
@@ -98,14 +98,13 @@ func (s *remoteShell) requestApproval(c net.Conn, m message) error {
 }
 
 // The authenticated file endpoint serves one operation after its approval check.
-func approvedRemoteTransfer(st net.Conn, m message) {
+func approvedRemoteTransfer(st net.Conn, m message) error {
 	op := m.Operations[0]
 	nativePath := op.Path
 	if runtime.GOOS == "windows" {
 		nativePath = filepath.FromSlash(strings.TrimPrefix(nativePath, "/"))
 		if !filepath.IsAbs(nativePath) {
-			_ = writeMessage(st, message{Type: "error", Error: "invalid absolute Windows path"})
-			return
+			return fmt.Errorf("invalid absolute Windows path")
 		}
 	}
 	var backend *files.FS
@@ -122,7 +121,7 @@ func approvedRemoteTransfer(st net.Conn, m message) {
 		}
 		backend = files.NewSourceFS(f)
 	case "upload":
-		err = files.ValidateName(m.Name)
+		err = files.ValidateName(m.FileName)
 		if m.Size < 0 {
 			err = fmt.Errorf("invalid upload size")
 		}
@@ -133,19 +132,18 @@ func approvedRemoteTransfer(st net.Conn, m message) {
 				err = fmt.Errorf("upload destination must be a directory")
 			}
 		}
-		backend = files.NewTargetFS(filepath.Join(nativePath, m.Name), m.Size)
+		backend = files.NewTargetFS(filepath.Join(nativePath, m.FileName), m.Size)
 	default:
 		err = fmt.Errorf("invalid transfer kind")
 	}
 	if err != nil {
-		_ = writeMessage(st, message{Type: "error", Error: err.Error()})
-		return
+		return err
 	}
-	if writeMessage(st, message{Type: "sftp"}) != nil {
-		return
+	if err := writeMessage(st, message{Type: "resource_ready", SoftwareVersion: version}); err != nil {
+		return err
 	}
-	_ = st.SetDeadline(time.Time{})
 	_ = files.ServeTransfer(st, backend)
+	return nil
 }
 
 // The helper and attachment remain connected until the local client accepts the handoff.

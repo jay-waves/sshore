@@ -56,6 +56,8 @@ PowerShell startup embeds the [directory reporting script](../internal/shell/pws
 `sh HOST -- COMMAND` uses SSH exec with standard streams and no PTY.
 The [tmux layer](../internal/tmux/) owns terminals, input reservations and pin
 expiry for `sh` and `new`. The daemon handles wire messages and exit reporting.
+The account daemon registers local and hosted shells through the same task
+lifecycle and reads their state from the managed terminal.
 The [terminal tree](../internal/tmux/tree.go)
 reserves foreground input while an attachment starts and rolls back the
 reservation and any new parent edge if setup fails. The local and hosted

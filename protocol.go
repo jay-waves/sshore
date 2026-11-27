@@ -90,6 +90,7 @@ type message struct {
 	NoLogin          bool                `json:"no_login,omitzero"`
 	PID              int                 `json:"pid,omitzero"`
 	Name             string              `json:"name,omitempty"`
+	FileName         string              `json:"file_name,omitempty"`
 	Shell            string              `json:"shell,omitempty"`
 	Program          bool                `json:"program,omitzero"`
 	Size             int64               `json:"size,omitzero"`

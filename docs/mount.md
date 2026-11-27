@@ -23,7 +23,7 @@
   detached shell. The resulting resource owns its connection and can outlive that shell.
   Approved mounts carry data and notifications in separate smux streams.
 
-See [mount startup](../mount.go), [path selection](../mount_selection.go),
+See [mount startup and path selection](../mount.go),
 [mount lifecycle](../internal/files/mount.go) and [SSH topology](NETWORK.md).
 
 ## Directory and metadata caches

@@ -2,13 +2,21 @@ package main
 
 import (
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
+	"sync"
 
+	"github.com/jay-waves/sshore/internal/release"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/sys"
 )
 
 const maxDeploymentHistory = 1 << 20
@@ -145,4 +153,81 @@ func stopInstalledDeployments(executable, release string) error {
 		}
 	}
 	return nil
+}
+
+var deploymentReleaseBase = "https://github.com/jay-waves/sshore/releases/download"
+
+// The binary's startup location selects state for service, daemon and CLI.
+var deploymentCoordinates = sync.OnceValues(func() (directory, clientID string) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", ""
+	}
+	dir := filepath.Dir(exe)
+	parent := filepath.Dir(dir)
+	id := filepath.Base(parent)
+	if filepath.Base(dir) != version || !validMachineID(id) {
+		return "", ""
+	}
+	account, err := user.Current()
+	if err != nil {
+		return "", ""
+	}
+	root := filepath.Join(account.HomeDir, filepath.FromSlash(release.ClientDirectory))
+	if !sameDeploymentRoot(filepath.Dir(parent), root) {
+		home, err := filepath.EvalSymlinks(account.HomeDir)
+		if err != nil || !sameDeploymentRoot(filepath.Dir(parent), filepath.Join(home, filepath.FromSlash(release.ClientDirectory))) {
+			return "", ""
+		}
+	}
+	return dir, id
+})
+
+func sameDeploymentRoot(path, root string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(path, root)
+	}
+	return path == root
+}
+
+func deployedStateRoot() string {
+	if dir, _ := deploymentCoordinates(); dir != "" {
+		return filepath.Join(dir, "state")
+	}
+	return ""
+}
+
+func deploymentClientID() (string, error) {
+	if _, id := deploymentCoordinates(); id != "" {
+		return id, nil
+	}
+	daemon, err := daemonLocation()
+	if err != nil {
+		return "", err
+	}
+	root := filepath.Dir(daemon)
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return "", err
+	}
+	if err := sys.PrivateStatePath(root, true); err != nil {
+		return "", err
+	}
+	lock, err := lockStateFile(filepath.Join(root, "deployment-id.lock"))
+	if err != nil {
+		return "", err
+	}
+	defer lock.Close()
+	name := filepath.Join(root, "deployment-id")
+	id, err := os.ReadFile(name)
+	if errors.Is(err, fs.ErrNotExist) {
+		value := resourceToken()[:32]
+		return value, writeStateFile(name, []byte(value))
+	}
+	if err != nil {
+		return "", err
+	}
+	if !validMachineID(string(id)) {
+		return "", fmt.Errorf("invalid deployment ID in %s", name)
+	}
+	return string(id), nil
 }

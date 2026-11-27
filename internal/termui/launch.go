@@ -24,17 +24,22 @@ type Launch struct {
 }
 
 // Review lets the user edit the command and returns whether they confirm launch.
-func (launch *Launch) Review() (_ bool, err error) {
+func (launch *Launch) Review() (bool, error) {
+	var confirmed bool
+	err := RunLocalConsole(func(*LocalConsole) error {
+		var reviewErr error
+		confirmed, reviewErr = launch.review()
+		return reviewErr
+	})
+	return confirmed, err
+}
+
+func (launch *Launch) review() (bool, error) {
 	restore, err := term.RawConsole()
 	if err != nil {
 		return false, err
 	}
 	defer restore()
-	var screen term.InputState
-	if err := screen.BeginConsole(os.Stdout); err != nil {
-		return false, err
-	}
-	defer func() { err = errors.Join(err, screen.EndConsole(os.Stdout)) }()
 	color := ColorEnabled(os.Stdout)
 	for {
 		if _, err := fmt.Fprint(os.Stdout, "\x1b[2J\x1b[H"); err != nil {

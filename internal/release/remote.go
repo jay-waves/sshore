@@ -1,105 +1,26 @@
-package main
+package release
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"io"
 	"io/fs"
 	"os"
-	"os/user"
 	"path"
-	"path/filepath"
-	"runtime"
 	"strings"
-	"sync"
 
-	"github.com/jay-waves/sshore/internal/release"
-	"github.com/jay-waves/sshore/internal/sys"
+	"github.com/jay-waves/sshore/internal/shell"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/pkg/sftp/v2"
 )
 
-const deploymentDirectory = ".sshore/clients"
+const ClientDirectory = ".sshore/clients"
+const ResetMarker = ".reset"
 
-var deploymentReleaseBase = "https://github.com/jay-waves/sshore/releases/download"
-
-var errRemoteDeploymentMissing = errors.New("remote deployment is absent")
-
-// The binary's startup location selects state for service, daemon and CLI.
-var deploymentCoordinates = sync.OnceValues(func() (directory, clientID string) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", ""
-	}
-	dir := filepath.Dir(exe)
-	parent := filepath.Dir(dir)
-	id := filepath.Base(parent)
-	if filepath.Base(dir) != version || !validMachineID(id) {
-		return "", ""
-	}
-	account, err := user.Current()
-	if err != nil {
-		return "", ""
-	}
-	root := filepath.Join(account.HomeDir, filepath.FromSlash(deploymentDirectory))
-	if !sameDeploymentRoot(filepath.Dir(parent), root) {
-		home, err := filepath.EvalSymlinks(account.HomeDir)
-		if err != nil || !sameDeploymentRoot(filepath.Dir(parent), filepath.Join(home, filepath.FromSlash(deploymentDirectory))) {
-			return "", ""
-		}
-	}
-	return dir, id
-})
-
-func sameDeploymentRoot(path, root string) bool {
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(path, root)
-	}
-	return path == root
-}
-
-func deployedStateRoot() string {
-	if dir, _ := deploymentCoordinates(); dir != "" {
-		return filepath.Join(dir, "state")
-	}
-	return ""
-}
-
-func deploymentClientID() (string, error) {
-	if _, id := deploymentCoordinates(); id != "" {
-		return id, nil
-	}
-	daemon, err := daemonLocation()
-	if err != nil {
-		return "", err
-	}
-	root := filepath.Dir(daemon)
-	if err := os.MkdirAll(root, 0700); err != nil {
-		return "", err
-	}
-	if err := sys.PrivateStatePath(root, true); err != nil {
-		return "", err
-	}
-	lock, err := lockStateFile(filepath.Join(root, "deployment-id.lock"))
-	if err != nil {
-		return "", err
-	}
-	defer lock.Close()
-	name := filepath.Join(root, "deployment-id")
-	id, err := os.ReadFile(name)
-	if errors.Is(err, fs.ErrNotExist) {
-		value := resourceToken()[:32]
-		return value, writeStateFile(name, []byte(value))
-	}
-	if err != nil {
-		return "", err
-	}
-	if !validMachineID(string(id)) {
-		return "", fmt.Errorf("invalid deployment ID in %s", name)
-	}
-	return string(id), nil
-}
+var ErrRemoteMissing = errors.New("remote deployment is absent")
 
 func openDeploymentFiles(ctx context.Context, client *sshio.Client) (_ *sftp.Client, _ func(), result error) {
 	session, err := client.NewSession()
@@ -132,7 +53,7 @@ func openDeploymentFiles(ctx context.Context, client *sshio.Client) (_ *sftp.Cli
 	}, nil
 }
 
-func prepareRemoteDeployment(ctx context.Context, client *sshio.Client, id string, install bool) (home string, uploaded bool, err error) {
+func PrepareRemote(ctx context.Context, client *sshio.Client, id, version, releaseBase string, install bool) (home string, uploaded bool, err error) {
 	ftp, closeFiles, err := openDeploymentFiles(ctx, client)
 	if err != nil {
 		return "", false, err
@@ -146,7 +67,7 @@ func prepareRemoteDeployment(ctx context.Context, client *sshio.Client, id strin
 	if err != nil {
 		return "", false, err
 	}
-	relative := platform.binaryPath(id)
+	relative := platform.binaryPath(id, version)
 	destination := path.Join(home, relative)
 	exists, err := deploymentExists(ftp, destination)
 	if err != nil {
@@ -154,7 +75,7 @@ func prepareRemoteDeployment(ctx context.Context, client *sshio.Client, id strin
 	}
 	if !exists {
 		if !install {
-			return "", false, errRemoteDeploymentMissing
+			return "", false, ErrRemoteMissing
 		}
 		dir := home
 		for part := range strings.SplitSeq(path.Dir(relative), "/") {
@@ -163,11 +84,11 @@ func prepareRemoteDeployment(ctx context.Context, client *sshio.Client, id strin
 				return "", false, err
 			}
 		}
-		marker := path.Join(path.Dir(destination), deploymentResetMarker)
+		marker := path.Join(path.Dir(destination), ResetMarker)
 		if err := ftp.RemoveFile(marker); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return "", false, err
 		}
-		source, err := release.OpenBinary(ctx, deploymentReleaseBase, version, platform.os, platform.binary)
+		source, err := OpenBinary(ctx, releaseBase, version, platform.os, platform.binary)
 		if err != nil {
 			return "", false, err
 		}
@@ -195,22 +116,22 @@ func remoteDeploymentPlatform(home string) (deploymentPlatform, error) {
 	return deploymentPlatform{"linux", "sshore"}, nil
 }
 
-func (p deploymentPlatform) binaryPath(id string) string {
-	return path.Join(deploymentDirectory, id, version, p.binary)
+func (p deploymentPlatform) binaryPath(id, version string) string {
+	return path.Join(ClientDirectory, id, version, p.binary)
 }
 
-func deploymentCommand(home, id string) (string, error) {
+func RemoteCommand(home, id, version, command string) (string, error) {
 	p, err := remoteDeploymentPlatform(home)
 	if err != nil {
 		return "", err
 	}
-	binary := p.binaryPath(id)
+	binary := p.binaryPath(id, version)
 	if p.os == "windows" {
 		binary = `.\` + strings.ReplaceAll(binary, "/", `\`)
 	} else {
-		binary = shellQuote(path.Join(home, binary))
+		binary = shell.QuotePOSIX(path.Join(home, binary))
 	}
-	return binary + " " + remoteServiceCommand, nil
+	return binary + " " + command, nil
 }
 
 func ensureDeploymentDirectory(ftp *sftp.Client, dir string, windows bool) error {
@@ -247,7 +168,9 @@ func deploymentExists(ftp *sftp.Client, name string) (bool, error) {
 }
 
 func uploadDeployment(ftp *sftp.Client, source io.Reader, destination string, windows bool) error {
-	temporary := destination + "." + resourceToken() + ".tmp"
+	var nonce [32]byte
+	rand.Read(nonce[:])
+	temporary := destination + "." + hex.EncodeToString(nonce[:]) + ".tmp"
 	f, err := ftp.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0700)
 	if err != nil {
 		return err
@@ -266,6 +189,27 @@ func uploadDeployment(ftp *sftp.Client, source io.Reader, destination string, wi
 		if exists, checkErr := deploymentExists(ftp, destination); checkErr != nil || !exists {
 			return err
 		}
+	}
+	return nil
+}
+
+func RemoveRemote(ctx context.Context, client *sshio.Client, id, version string) error {
+	ftp, closeFiles, err := openDeploymentFiles(ctx, client)
+	if err != nil {
+		return err
+	}
+	defer closeFiles()
+	home, err := ftp.RealPath(".")
+	if err != nil {
+		return err
+	}
+	platform, err := remoteDeploymentPlatform(home)
+	if err != nil {
+		return err
+	}
+	target := path.Join(home, platform.binaryPath(id, version))
+	if err := ftp.RemoveFile(target); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove remote server: %w", err)
 	}
 	return nil
 }

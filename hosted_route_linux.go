@@ -30,7 +30,7 @@ type shellRouteConfirmation struct {
 }
 
 // Open an authenticated task endpoint within the scope of the parent capability.
-func (s *remoteShell) connectShellRoute(c net.Conn, request message) {
+func (s *tmuxTask) connectShellRoute(c net.Conn, request message) {
 	if checkPeerVersion(request.SoftwareVersion, "client") != nil || request.Instance != s.record.UID {
 		_ = writeMessage(c, message{Type: "error", Error: "parent shell instance changed"})
 		return
@@ -62,7 +62,7 @@ func (s *remoteShell) connectShellRoute(c net.Conn, request message) {
 	relayRoute(c, stream)
 }
 
-func (s *remoteShell) requestShellRoute(c net.Conn, request message) {
+func (s *tmuxTask) requestShellRoute(c net.Conn, request message) {
 	req := request.LocalRequest
 	if checkPeerVersion(request.SoftwareVersion, "launcher") != nil || req == nil || req.Shell == nil || !filepath.IsAbs(req.Record.Directory) ||
 		req.Shell.Command != "sh" && req.Shell.Command != "attach" {
@@ -90,12 +90,12 @@ func (s *remoteShell) requestShellRoute(c net.Conn, request message) {
 		case <-ctx.Done():
 		}
 	}()
-	_ = withRemoteShell(ctx, c, *req, &s.tmuxTask, func(target *shellTarget) error {
+	_ = withRemoteShell(ctx, c, *req, s, func(target *shellTarget) error {
 		return s.serveShellRoute(c, parent, req.Shell, target)
 	})
 }
 
-func (s *remoteShell) localShellRoute(launcher net.Conn, parent *attachment, req localDaemonRequest) error {
+func (s *tmuxTask) localShellRoute(launcher net.Conn, parent *attachment, req localDaemonRequest) error {
 	if !filepath.IsAbs(req.Record.Directory) {
 		return fmt.Errorf("child shell requires an absolute directory")
 	}
@@ -109,7 +109,7 @@ func (s *remoteShell) localShellRoute(launcher net.Conn, parent *attachment, req
 	return s.serveShellRoute(launcher, parent, req.Shell, target)
 }
 
-func (s *remoteShell) serveShellRoute(launcher net.Conn, parent *attachment, config *shellConfig, target *shellTarget) error {
+func (s *tmuxTask) serveShellRoute(launcher net.Conn, parent *attachment, config *shellConfig, target *shellTarget) error {
 	confirmed := &shellRouteConfirmation{token: resourceToken(), result: make(chan error, 1)}
 	var token string
 	var route *shellRoute
@@ -246,7 +246,7 @@ func handoffRemoteShell(o options) (bool, error) {
 	return true, nil
 }
 
-func (s *remoteShell) confirmShellRoute(c net.Conn, request message) {
+func (s *tmuxTask) confirmShellRoute(c net.Conn, request message) {
 	if checkPeerVersion(request.SoftwareVersion, "client") != nil || request.Instance != s.record.UID {
 		_ = writeMessage(c, message{Type: "error", Error: "parent shell instance changed"})
 		return
@@ -273,10 +273,10 @@ func (s *remoteShell) confirmShellRoute(c net.Conn, request message) {
 	_ = writeMessage(c, message{Type: "route_confirmed"})
 }
 
-func (s *remoteShell) createRouteShell(req localDaemonRequest) (*remoteShell, error) {
+func (s *tmuxTask) createRouteShell(req localDaemonRequest) (*tmuxTask, error) {
 	if req.Shell.Command == "attach" {
-		target, ok := s.registry.lookup(req.Shell.Instance).(*remoteShell)
-		if !ok {
+		target, ok := s.registry.lookup(req.Shell.Instance).(*tmuxTask)
+		if !ok || !target.hosted {
 			return nil, fmt.Errorf("choose a registered shell on this host with sshore attach ID")
 		}
 		return target, nil
@@ -285,7 +285,7 @@ func (s *remoteShell) createRouteShell(req localDaemonRequest) (*remoteShell, er
 	if err != nil {
 		return nil, err
 	}
-	return s.registry.registerHostedShell(hostedShellRequest{Directory: directory, Name: req.Shell.Name, Env: req.Env, parent: &s.tmuxTask})
+	return s.registry.registerHostedShell(hostedShellRequest{Directory: directory, Name: req.Shell.Name, Env: req.Env, parent: s})
 }
 
 func openHostedEndpoint(ctx context.Context, instance string) (net.Conn, error) {
@@ -298,7 +298,7 @@ func openHostedEndpoint(ctx context.Context, instance string) (net.Conn, error) 
 }
 
 // Sibling selection stays on this machine; names never become root SSH aliases.
-func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error) {
+func (s *tmuxTask) connectRouteShell(c net.Conn, request message) (err error) {
 	defer func() {
 		if err != nil {
 			_ = writeMessage(c, message{Type: "fatal", Error: err.Error()})
@@ -316,21 +316,78 @@ func (s *remoteShell) connectRouteShell(c net.Conn, request message) (err error)
 	if request.Action != "attach" {
 		return fmt.Errorf("invalid shell selection")
 	}
-	instance, err := resolveSession(request.Name, request.Instance)
+	selected, err := resolveHostedShell(request.Name, request.Instance)
 	if err != nil {
 		return err
 	}
-	if instance == "" {
+	if selected.Instance == "" {
 		return fmt.Errorf("shell is unavailable")
 	}
-	target, err := openHostedEndpoint(context.Background(), instance)
+	target, err := openHostedEndpoint(context.Background(), selected.Instance)
 	if err != nil {
 		return err
 	}
 	defer target.Close()
-	if err := writeMessage(c, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: instance}); err != nil {
+	if err := writeMessage(c, message{Type: "setup_ready", SoftwareVersion: version, Action: "managed", Instance: selected.Instance}); err != nil {
 		return err
 	}
 	relayRoute(c, target)
+	return nil
+}
+
+type hostedRoutes struct {
+	shellRoutes map[string]*shellRoute
+}
+
+func (s *tmuxTask) hostedAttachmentCommand(p *attachment, m message) error {
+	switch m.Type {
+	case "sh_child":
+		s.mu.Lock()
+		req := &localDaemonRequest{Record: localShellRecord{Directory: s.directoryOrStartupLocked()}, Env: append([]string(nil), s.environment...), Shell: &shellConfig{Command: "sh", Local: true, Pin: m.Pinned}}
+		s.mu.Unlock()
+		if m.Directory != "" {
+			req.Record.Directory = m.Directory
+		}
+		go func() { p.childResult(s.localShellRoute(nil, p, *req)) }()
+	default:
+		return attachmentApprovalCommand(p, m)
+	}
+	return nil
+}
+
+func (s *tmuxTask) serveHostedIngress(c net.Conn, first message) error {
+	if first.Type == "shell_owner_access" {
+		owned := &ownedShellConnection{Conn: c, token: first.Token}
+		s.mu.Lock()
+		allowed := s.remoteOwner != "" && s.checkRemoteOwnerLocked(owned) == nil
+		s.mu.Unlock()
+		if !allowed || first.SoftwareVersion != version || first.Instance != s.record.UID {
+			return writeMessage(c, message{Type: "error", Error: "shell owner route unavailable"})
+		}
+		if err := writeMessage(c, message{Type: "shell_owner_access_ready", SoftwareVersion: version}); err != nil {
+			return err
+		}
+		var err error
+		first, err = readMessage(c)
+		if err != nil {
+			return err
+		}
+		c = owned
+	}
+	if handled, err := s.serveHostedTask(c, first, s.relayResourceRoute); handled {
+		return err
+	}
+	switch first.Type {
+	case "shell_connect":
+		return s.connectRouteShell(c, first)
+	case "shell_route_confirm":
+		s.confirmShellRoute(c, first)
+	case "shell_route_request":
+		s.requestShellRoute(c, first)
+	case "shell_route_connect":
+		s.connectShellRoute(c, first)
+	default:
+		return writeMessage(c, message{Type: "fatal", Error: "unsupported connection; update sshore on both computers"})
+	}
 	return nil
 }

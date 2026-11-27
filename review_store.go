@@ -11,15 +11,13 @@ import (
 const maxRequestItems = 16
 
 type operation struct {
-	Kind       string `json:"kind"`
-	ReadOnly   bool   `json:"read_only,omitempty"`
-	Path       string `json:"path,omitempty"`
-	Name       string `json:"name,omitempty"`
-	Size       int64  `json:"size,omitempty"`
-	Port       int    `json:"port,omitempty"`
-	Reverse    bool   `json:"reverse,omitempty"`
-	TargetPort int    `json:"target_port,omitempty"`
-	LocalHint  string `json:"local_hint,omitempty"`
+	Kind      string      `json:"kind"`
+	ReadOnly  bool        `json:"read_only,omitempty"`
+	Path      string      `json:"path,omitempty"`
+	Name      string      `json:"name,omitempty"`
+	Size      int64       `json:"size,omitempty"`
+	Forward   forwardRule `json:"forward,omitzero"`
+	LocalHint string      `json:"local_hint,omitempty"`
 }
 
 type requestRecord struct {
@@ -30,19 +28,7 @@ type requestRecord struct {
 	Operations []operation
 }
 
-// Port denotes the listener and TargetPort denotes the service.
-func (op operation) ServerPort() int {
-	if op.Reverse {
-		return op.Port
-	}
-	return op.TargetPort
-}
-
-func (op operation) LocalPortPending() bool {
-	return op.Kind == "forward" && (op.Port == 0 || op.TargetPort == 0)
-}
-
-func validateRequestOperations(ops []operation) error {
+func validateOperations(ops []operation) error {
 	if len(ops) == 0 || len(ops) > maxRequestItems {
 		return fmt.Errorf("request must contain 1–%d operations", maxRequestItems)
 	}
@@ -60,7 +46,7 @@ func validateRequestOperations(ops []operation) error {
 			if !strings.HasPrefix(op.Path, "/") || len(op.Path) > 4096 || strings.ContainsAny(op.Path, "\x00\r\n") {
 				return fmt.Errorf("invalid remote path")
 			}
-			if op.Port != 0 || op.TargetPort != 0 || op.Reverse {
+			if op.Forward != (forwardRule{}) {
 				return fmt.Errorf("unexpected port in file request")
 			}
 			if op.Kind == "mount" && len(ops) != 1 {
@@ -78,13 +64,8 @@ func validateRequestOperations(ops []operation) error {
 				return fmt.Errorf("unexpected upload metadata")
 			}
 		case "forward":
-			if op.LocalHint != "" {
-				if _, err := parseForwardPort(op.LocalHint); err != nil {
-					return err
-				}
-			}
-			if len(ops) != 1 || op.Port < 0 || op.Port > 65535 || op.TargetPort < 0 || op.TargetPort > 65535 || op.ServerPort() == 0 || op.Path != "" || op.Name != "" || op.Size != 0 {
-				return fmt.Errorf("invalid port request")
+			if err := validateForwardProposal(op, len(ops)); err != nil {
+				return err
 			}
 		default:
 			return fmt.Errorf("unsupported requested operation")

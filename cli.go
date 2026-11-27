@@ -16,7 +16,6 @@ import (
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
-	"golang.org/x/term"
 )
 
 func run(args []string) (int, error) {
@@ -111,9 +110,6 @@ func runShell(parsed cliArguments) (int, error) {
 		return 2, err
 	}
 	if parsed.command == "new" {
-		if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
-			return 1, usage("new requires an interactive terminal")
-		}
 		host := cleanText(o.host)
 		if o.local {
 			host = taskManagerLabel()
@@ -123,6 +119,9 @@ func runShell(parsed cliArguments) (int, error) {
 			Args: o.argv, Pinned: o.pin, DefaultShellOnly: o.noLogin || o.noProfile,
 		}
 		confirmed, err := launch.Review()
+		if errors.Is(err, termui.ErrTerminalRequired) {
+			return 1, usage("new requires an interactive terminal")
+		}
 		if err != nil {
 			return 1, err
 		}
@@ -226,7 +225,7 @@ func shellOptions(parsed cliArguments, target selectedTask) (options, error) {
 		switch {
 		case target.Connection != nil:
 			o.host, o.session, o.local = target.Connection.Host, target.Instance, false
-			applyConnectionOptions(&o, *target.Connection)
+			applyConnectionOptions(&o, *target.Connection, nil)
 		case target.RemoteHost != "":
 			o.host, o.session, o.local = target.RemoteHost, target.Instance, false
 		default:
@@ -370,7 +369,7 @@ func splitFileEndpoint(value string) (string, string, error) {
 
 func remoteCopyRequest(parsed cliArguments) (string, []string, string, error) {
 	fail := func() (string, []string, string, error) {
-		return "", nil, "", usage("use cp here:SOURCE... origin:[PATH] or cp origin:[PATH] here:DIRECTORY")
+		return "", nil, "", usage("use copy here:SOURCE... origin:[PATH] or copy origin:[PATH] here:DIRECTORY")
 	}
 	if len(parsed.ssh) != 0 {
 		return "", nil, "", usage("remote copy requests inherit the attached connection")
@@ -520,7 +519,7 @@ func parseCopyCommand(parsed cliArguments) (copyOptions, error) {
 			}
 		} else {
 			if source.host == "" {
-				return o, usage("cp requires a remote source or destination")
+				return o, usage("copy requires a remote source or destination")
 			}
 			if o.host != "" && o.host != source.host {
 				return o, usage("all sources must use the same SSH destination")
@@ -606,49 +605,35 @@ func runCopy(parsed cliArguments) (int, error) {
 }
 
 func runEndpointForward(parsed cliArguments) (int, error) {
-	if os.Getenv("SSHORE_SOCKET") != "" {
-		if len(parsed.ssh) != 0 || len(parsed.values) != 0 {
-			return 2, usage("remote forward requests inherit the attached connection")
-		}
-		_, op, err := parseForwardEndpoints(parsed.operands, true)
-		if err != nil {
-			return 2, err
-		}
-		return 0, requestOperations([]operation{op})
+	attached := os.Getenv("SSHORE_SOCKET") != ""
+	if attached && (len(parsed.ssh) != 0 || len(parsed.values) != 0) {
+		return 2, usage("remote forward requests inherit the attached connection")
 	}
-	f, err := parseForwardCommand(parsed)
+	host, rule, err := parseForwardEndpoints(parsed.operands, attached)
 	if err != nil {
 		return 2, err
 	}
-	return executeEndpointForward(f)
-}
-
-func executeEndpointForward(f forwardConfig) (int, error) {
-	if f.Port == 0 || f.Target == 0 {
-		input, err := newLocalInput()
+	if attached {
+		return 0, requestOperations([]operation{{Kind: "forward", Forward: rule}})
+	}
+	if rule.LocalPort == 0 {
+		err := termui.RunLocalConsole(func(*termui.LocalConsole) error {
+			input, err := newLocalInput()
+			if err != nil {
+				return err
+			}
+			termui.Log(os.Stdout, "", termui.Info, "Remote %s. Submit local port to forward.\n", cleanText(sshio.FormatEndpoint(host, strconv.Itoa(rule.RemotePort))))
+			rule.LocalPort, err = readForwardPort(input, rule, false)
+			return errors.Join(err, input.Close())
+		})
+		if errors.Is(err, termui.ErrTerminalRequired) {
+			return 2, usage("%s", err)
+		}
 		if err != nil {
-			return 2, err
-		}
-		defer input.Close()
-		remote := f.Target
-		if f.Reverse {
-			remote = f.Port
-		}
-		termui.Log(os.Stdout, "", termui.Info, "Remote %s. Submit local port to forward.\n", cleanText(sshio.FormatEndpoint(f.Host, strconv.Itoa(remote))))
-		port, err := readForwardPort(input, localForwardPortLabel(f.Reverse))
-		if err != nil {
-			return 1, err
-		}
-		if f.Reverse {
-			f.Target = port
-		} else {
-			f.Port = port
-		}
-		if err := input.Close(); err != nil {
 			return 1, err
 		}
 	}
-	return startForwardSession(f)
+	return startForwardSession(forwardConfig{Host: host, SSH: parsed.ssh, Retries: parsed.integer("--retries"), Rule: rule})
 }
 
 func newLocalInput() (*termui.Input, error) {
@@ -711,24 +696,20 @@ type reviewPromptReader interface {
 	ReadPath(string, termui.PathOptions) (string, error)
 }
 
-func readReviewField(input prefilledPromptReader, label string, paths bool, initial string) (string, error) {
-	// Terminal control bytes must never enter the readline buffer.
-	if cleanText(initial) != initial {
-		return "", fmt.Errorf("invalid suggested value")
+func readForwardPort(input prefilledPromptReader, rule forwardRule, approve bool) (int, error) {
+	initial := ""
+	if rule.LocalPort != 0 {
+		initial = strconv.Itoa(rule.LocalPort)
 	}
-	line, err := input.ReadPrefilled(label, paths, initial)
-	if err != nil {
-		return "", fmt.Errorf("approval cancelled: %w", err)
+	suffix, action := " (Enter starts; Ctrl-C cancels): ", "forward"
+	if approve {
+		suffix, action = " (Enter to approve, Ctrl-C to cancel): ", "approval"
 	}
-	return line, nil
-}
-
-func readApprovalPort(input prefilledPromptReader, label, initial string) (int, error) {
-	prompt := label + " (Enter to approve, Ctrl-C to cancel): "
+	prompt := localForwardPortLabel(rule.Reverse) + suffix
 	for {
-		line, err := readReviewField(input, prompt, false, initial)
+		line, err := input.ReadPrefilled(prompt, false, initial)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("%s cancelled: %w", action, err)
 		}
 		port, err := parsePort(strings.TrimSpace(line))
 		if err == nil {
@@ -780,18 +761,4 @@ func displayBytes(size int64) string {
 		}
 	}
 	return fmt.Sprintf("%d B", size)
-}
-
-func readForwardPort(input promptReader, label string) (int, error) {
-	for {
-		value, err := input.Read(label+" (Enter starts; Ctrl-C cancels): ", false)
-		if err != nil {
-			return 0, fmt.Errorf("forward cancelled: %w", err)
-		}
-		port, err := parsePort(value)
-		if err == nil {
-			return port, nil
-		}
-		termui.Log(os.Stdout, "", termui.Warning, "%s\n", err)
-	}
 }

@@ -15,7 +15,7 @@ import (
 	"github.com/jay-waves/sshore/internal/shell"
 )
 
-func prepareHostedShell(name, mode, instance, executable, directory string) (localShellRecord, error) {
+func prepareHostedShell(name, mode, instance, directory string) (localShellRecord, error) {
 	if mode == "attach" {
 		target, err := resolveHostedShell(name, instance)
 		if err != nil {
@@ -33,6 +33,10 @@ func prepareHostedShell(name, mode, instance, executable, directory string) (loc
 	}
 	if isShortTaskID(name) {
 		name = ""
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return localShellRecord{}, err
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -111,10 +115,6 @@ func chooseDetachedHostedShell() (sessionTarget, error) {
 }
 
 func serveRemoteShell(mode, name, instance, directory string) (result error) {
-	target, err := os.Executable()
-	if err != nil {
-		return err
-	}
 	if mode != "new" && mode != "attach" {
 		return fmt.Errorf("invalid remote service")
 	}
@@ -139,7 +139,7 @@ func serveRemoteShell(mode, name, instance, directory string) (result error) {
 		}
 		name = selected.Instance
 	}
-	record, err := prepareHostedShell(name, mode, instance, target, directory)
+	record, err := prepareHostedShell(name, mode, instance, directory)
 	if err != nil {
 		return err
 	}

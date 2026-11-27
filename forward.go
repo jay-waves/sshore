@@ -33,68 +33,75 @@ func splitPortEndpoint(value string) (string, string, error) {
 	return splitEndpoint(value)
 }
 
+// Ports are relative to the client that owns the forward.
+type forwardRule struct {
+	LocalPort  int  `json:"local_port,omitzero"`
+	RemotePort int  `json:"remote_port"`
+	Reverse    bool `json:"reverse,omitzero"`
+}
+
+func (r forwardRule) validate(allowUnselectedLocal bool) error {
+	if r.RemotePort < 1 || r.RemotePort > 65535 || r.LocalPort < 0 ||
+		r.LocalPort > 65535 || (r.LocalPort == 0 && !allowUnselectedLocal) {
+		return fmt.Errorf("invalid forward ports")
+	}
+	return nil
+}
+
+func (r forwardRule) ports(remote bool) (listen, target int) {
+	port := r.LocalPort
+	if remote {
+		port = r.RemotePort
+	}
+	if remote == r.Reverse {
+		return port, 0
+	}
+	return 0, port
+}
+
 // Both entry points mirror SOURCE on TARGET. Only the client endpoint may
 // omit its port, and a remote request can only suggest that client port.
-func parseForwardEndpoints(args []string, attached bool) (string, operation, error) {
-	op := operation{Kind: "forward"}
+func parseForwardEndpoints(args []string, attached bool) (string, forwardRule, error) {
+	var rule forwardRule
 	if len(args) != 2 {
-		return "", op, usage("forward requires SOURCE TARGET")
+		return "", rule, usage("forward requires SOURCE TARGET")
 	}
 	source, sourcePort, err := splitPortEndpoint(args[0])
 	if err != nil {
-		return "", op, err
+		return "", rule, err
 	}
 	target, targetPort, err := splitPortEndpoint(args[1])
 	if err != nil {
-		return "", op, err
+		return "", rule, err
 	}
 	client := "here"
 	if attached {
 		client = "origin"
 	} else if source == "origin" || target == "origin" {
-		return "", op, usage("origin: requires an attached sshore shell")
+		return "", rule, usage("origin: requires an attached sshore shell")
 	}
-	op.Reverse = source == client
+	rule.Reverse = source == client
 	host, remotePort, localPort := source, sourcePort, targetPort
-	if op.Reverse {
+	if rule.Reverse {
 		host, remotePort, localPort = target, targetPort, sourcePort
 	}
 	if attached && host != "here" {
-		return "", op, usage("forward requires one here:PORT and one origin:[PORT]")
+		return "", rule, usage("forward requires one here:PORT and one origin:[PORT]")
 	}
 	if (source == client) == (target == client) {
-		return "", op, usage("forward requires one client endpoint and one remote endpoint")
+		return "", rule, usage("forward requires one client endpoint and one remote endpoint")
 	}
-	port, err := parsePort(remotePort)
+	rule.RemotePort, err = parsePort(remotePort)
 	if err != nil {
-		return "", op, err
-	}
-	if op.Reverse {
-		op.Port = port
-	} else {
-		op.TargetPort = port
+		return "", rule, err
 	}
 	if localPort != "" {
-		port, err = parsePort(localPort)
+		rule.LocalPort, err = parsePort(localPort)
 		if err != nil {
-			return "", op, err
-		}
-		if attached {
-			op.LocalHint = localPort
-		} else {
-			resolveLocalPort(&op, port)
+			return "", rule, err
 		}
 	}
-	return host, op, nil
-}
-
-func parseForwardCommand(parsed cliArguments) (forwardConfig, error) {
-	var f forwardConfig
-	f.SSH = parsed.ssh
-	f.Retries = parsed.integer("--retries")
-	host, op, err := parseForwardEndpoints(parsed.operands, false)
-	f.Host, f.Port, f.Target, f.Reverse = host, op.Port, op.TargetPort, op.Reverse
-	return f, err
+	return host, rule, nil
 }
 
 func localForwardPortLabel(reverse bool) string {
@@ -105,48 +112,44 @@ func localForwardPortLabel(reverse bool) string {
 }
 
 func (f forwardConfig) direction() string {
-	if f.Reverse {
+	if f.Rule.Reverse {
 		return "->"
 	}
 	return "<-"
 }
 
 func (f forwardConfig) description(client, remote string) string {
-	source, target := remote, client
-	if f.Reverse {
-		source, target = client, remote
+	local := sshio.FormatEndpoint(client, strconv.Itoa(f.Rule.LocalPort))
+	host := sshio.FormatEndpoint(remote, strconv.Itoa(f.Rule.RemotePort))
+	if f.Rule.Reverse {
+		return local + " -> " + host
 	}
-	return sshio.FormatEndpoint(source, strconv.Itoa(f.Target)) + " -> " +
-		sshio.FormatEndpoint(target, strconv.Itoa(f.Port))
+	return host + " -> " + local
 }
 
-func pendingPortDescription(op operation) string {
-	if op.Reverse {
-		return fmt.Sprintf("Mirror a local service on remote port %s", forwardio.Loopback(op.ServerPort()))
+func validateForwardProposal(op operation, count int) error {
+	if count != 1 || op.LocalHint != "" || op.Path != "" || op.Name != "" || op.Size != 0 ||
+		op.Forward.validate(true) != nil {
+		return fmt.Errorf("invalid port request")
 	}
-	return fmt.Sprintf("Mirror remote service %s on a local port", forwardio.Loopback(op.ServerPort()))
+	return nil
 }
 
-func resolveLocalPort(op *operation, port int) {
-	if op.Reverse {
-		op.TargetPort = port
-	} else {
-		op.Port = port
+func (r forwardRule) pendingDescription() string {
+	if r.Reverse {
+		return fmt.Sprintf("Mirror a local service on remote port %s", forwardio.Loopback(r.RemotePort))
 	}
-	op.LocalHint = ""
+	return fmt.Sprintf("Mirror remote service %s on a local port", forwardio.Loopback(r.RemotePort))
 }
 
-// Keep persisted task identity together with its forwarding configuration.
 type forwardConfig struct {
-	Instance            string `json:",omitempty"`
-	Connection          *recentConnection
-	Retries             int
-	Session, ApprovalID string
-	ResumePID           int
-	Host, Name          string
-	Port, Target        int
-	Reverse             bool
-	SSH                 []string
+	Rule       forwardRule
+	Connection *recentConnection
+	Retries    int
+	ApprovalID string
+	ResumePID  int
+	Host, Name string
+	SSH        []string
 }
 
 func validateForwardConfig(f forwardConfig) error {
@@ -161,19 +164,16 @@ func validateForwardConfig(f forwardConfig) error {
 	if err := validSSHDestination(f.Host); err != nil {
 		return err
 	}
-	if f.Connection != nil || f.ApprovalID != "" || f.Session != "" || f.ResumePID != 0 {
-		if f.Connection == nil || !validTaskUID(f.Instance) || !validRequestID(f.ApprovalID) ||
-			validSession(f.Session) != nil || f.ResumePID <= 0 || f.Retries != 0 {
+	if f.Connection != nil || f.ApprovalID != "" || f.ResumePID != 0 {
+		if f.Connection == nil || !validTaskUID(f.Connection.Instance) || !validRequestID(f.ApprovalID) ||
+			f.ResumePID <= 0 || f.Retries != 0 || f.Connection.Host != f.Host {
 			return fmt.Errorf("invalid approved forward identity")
 		}
 		if err := validateRecentConnection(*f.Connection); err != nil {
 			return err
 		}
-		if f.Connection.Instance != f.Instance || f.Connection.Session != f.Session || f.Connection.Host != f.Host {
-			return fmt.Errorf("invalid routed forward approval")
-		}
 	}
-	return validateForwardPorts(f.Port, f.Target)
+	return f.Rule.validate(false)
 }
 
 func startForwardSession(f forwardConfig) (int, error) {
@@ -221,14 +221,10 @@ func runForward(ctx context.Context, f forwardConfig, s *resourceService, onRead
 }
 
 func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceService, initial bool, diagnostic io.Writer) (*forwardio.Session, error) {
-	listen, target := f.Port, 0
-	if f.Reverse {
-		listen, target = 0, f.Target
-	}
+	listen, target := f.Rule.ports(false)
 	return forwardio.Start(ctx, listen, target, true, func() (io.ReadWriteCloser, error) {
 		if f.Connection != nil {
-			request := message{Type: "route_forward", Name: f.Session, PID: f.ResumePID, ApprovalID: f.ApprovalID,
-				Operations: []operation{{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse}}}
+			request := approvedResourceRequest(f.Connection.Session, f.ResumePID, f.ApprovalID, operation{Kind: "forward", Forward: f.Rule})
 			return openIndependentResource(ctx, *f.Connection, request, s)
 		}
 		connection := remoteService(sshio.Options{
@@ -236,7 +232,7 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 			RequireKnownHost: !initial,
 		}, remoteServiceRequest{
 			Operation: "forward-agent",
-			Forward:   &remoteForwardRequest{Kind: "forward", Port: f.Port, TargetPort: f.Target, Reverse: f.Reverse},
+			Forward:   &f.Rule,
 		})
 		var auth *sshAuthEndpoint
 		if initial {
@@ -280,13 +276,6 @@ func parseForwardPort(s string) (int, error) {
 		return 0, errForwardPort
 	}
 	return n, nil
-}
-
-func validateForwardPorts(port, target int) error {
-	if port < 1 || port > 65535 || target < 1 || target > 65535 {
-		return fmt.Errorf("invalid forward ports")
-	}
-	return nil
 }
 
 // parseForwardRetries applies the same retry policy to CLI and persisted configuration.

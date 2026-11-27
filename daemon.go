@@ -453,12 +453,12 @@ func runDaemonLaunch(c net.Conn, req localDaemonRequest, record localShellRecord
 		req.Record.Address, req.Record.Token = record.Address, record.Token
 		var parent *tmuxTask
 		if req.Parent != "" {
-			task, ok := tasks.lookup(req.Parent).(*localShell)
-			if !ok {
+			task, ok := tasks.lookup(req.Parent).(*tmuxTask)
+			if !ok || task.hosted {
 				_ = writeControlJSON(c, localStartup{Error: "parent shell is unavailable"})
 				return
 			}
-			parent = &task.tmuxTask
+			parent = task
 		}
 		err := runLocalShell(tasks, req.Record, req.Env, parent, func(r localShellRecord) error {
 			_ = c.SetDeadline(time.Now().Add(10 * time.Second))

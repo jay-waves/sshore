@@ -97,8 +97,8 @@ func (s *daemonTasks) taskInfosLocked() []daemonTaskInfo {
 	for id, task := range s.liveLocked() {
 		info := daemonTaskInfo{ID: id, Name: task.taskName()}
 		switch task := task.(type) {
-		case interface{ managedShell() *tmuxTask }:
-			shell := task.managedShell()
+		case *tmuxTask:
+			shell := task
 			shell.mu.Lock()
 			info.Kind = terminalTaskKind(shell.program)
 			shell.mu.Unlock()

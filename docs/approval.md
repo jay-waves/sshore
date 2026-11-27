@@ -6,6 +6,8 @@ A program in an attached shell can request a copy, mount or port forward through
 The request contains bounded operation metadata and optional path or port suggestions. The
 client leaves the remote attachment and presents the request in a local approval screen.
 The screen also handles any SSH credentials needed to start a mount or forward.
+Direct copy, mount and forward use the same local console when they need paths
+or a port from the user. Commands with explicit endpoints can run without it.
 
 File and mount requests show `Approve this request? [y/N]` before local endpoint
 selection. For a forward, the screen shows the direction and fixed remote endpoint.
@@ -18,10 +20,10 @@ Cancel, EOF or lack of an interactive terminal rejects the request without execu
 Grants are single-use, and there is no pending request queue. Unsolicited transfer offers,
 forward-add streams and reverse connection streams remain rejected.
 
-Approval fixes the selected local endpoints. Startup revalidates the original detached
-shell identity and exact release. A mount or forward consumes its private handoff ID for
-that task and requested operation. All file endpoints in a batch are selected before
-execution. An approved resource uses the scoped route described in the
+Approval fixes the selected local endpoints. Each routed operation revalidates the original
+detached shell identity and exact release, matches the stored operation, and consumes it
+before starting work. All file endpoints in a batch are selected before execution.
+An approved resource uses the scoped route described in the
 [mount implementation](mount.md) and [network topology](NETWORK.md).
 
 Remote output can imitate the local screen, and processes sharing a remote account can

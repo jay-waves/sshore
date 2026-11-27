@@ -43,11 +43,11 @@ type LFOptions struct {
 	Host       string
 	Automatic  bool
 	Manual     bool
-	InConsole  bool
 	LocalFiles bool // The listed paths belong to this process's filesystem.
 	Validate   func(string) error
 	Input      <-chan LFInput
 	Output     io.Writer
+	console    *LocalConsole
 }
 
 type lfResult struct {
@@ -119,8 +119,8 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 			return nil, err
 		}
 	} else {
-		if !xterm.IsTerminal(int(os.Stdin.Fd())) || !xterm.IsTerminal(int(os.Stdout.Fd())) {
-			return nil, ErrTerminalRequired
+		if options.console == nil {
+			return nil, errors.New("picker requires a local console or an input stream")
 		}
 		startTerminal = func() error {
 			restore, err := term.RawConsole()
@@ -129,13 +129,6 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 			}
 			writer, flush := term.OutputWriter()
 			out = writer
-			var screen term.InputState
-			if !options.InConsole {
-				if err := screen.BeginConsole(out); err != nil {
-					restore()
-					return errors.Join(err, flush())
-				}
-			}
 			keyCtx, cancelKeys := context.WithCancel(ctx)
 			events := make(chan LFInput, 32)
 			stopKeys, err := term.StartKeyboard(keyCtx, func(data []byte, err error) {
@@ -149,13 +142,7 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 				if stopKeys != nil {
 					stopKeys()
 				}
-				_, err := fmt.Fprint(out, "\x1b[?2004l")
-				if options.InConsole {
-					_, e := fmt.Fprint(out, "\x1b[0m\x1b[?25h")
-					err = errors.Join(err, e)
-				} else {
-					err = errors.Join(err, screen.EndConsole(out))
-				}
+				_, err := fmt.Fprint(out, "\x1b[?2004l\x1b[0m\x1b[?25h")
 				err = errors.Join(err, flush())
 				restore()
 				stopTerminal = nil
@@ -573,7 +560,13 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 					if err := stopTerminal(); err != nil {
 						return nil, err
 					}
+					if err := options.console.close(); err != nil {
+						return nil, err
+					}
 					runErr := command.Run()
+					if err := options.console.open(); err != nil {
+						return nil, errors.Join(runErr, err)
+					}
 					if err := startTerminal(); err != nil {
 						return nil, errors.Join(runErr, err)
 					}

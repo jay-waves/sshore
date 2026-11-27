@@ -143,6 +143,21 @@ func (a *daemonActivity) listTasks() inventory {
 	for _, row := range reply.Participants {
 		inv.Shells = append(inv.Shells, shellView{HostInfo: row.HostInfo, Host: row.Host, Owner: row.Owner, Instance: row.Instance, Name: row.Name, State: row.State, Observed: true, SeenAt: row.ChangedAt, Pinned: row.Pinned, PinUntil: row.PinUntil, PID: row.PID, Shell: row.Shell, Program: row.Program})
 	}
+	// Both renderers prefer a live row over a cached observation of the same task.
+	live := make(map[string]bool, len(inv.LocalShells)+len(inv.Shells))
+	for _, shell := range inv.LocalShells {
+		if uid := canonicalTaskUID(shell.Identity); uid != "" && !taskHiddenFromInventory(shell.State) {
+			live[uid] = true
+		}
+	}
+	for _, shell := range inv.Shells {
+		if !shell.Observed && shell.Instance != "" && !taskHiddenFromInventory(shell.State) {
+			live[shell.Instance] = true
+		}
+	}
+	inv.Shells = slices.DeleteFunc(inv.Shells, func(shell shellView) bool {
+		return shell.Observed && live[shell.Instance]
+	})
 	inv.setTaskReferences()
 	return inv
 }

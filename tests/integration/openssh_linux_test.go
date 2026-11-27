@@ -412,9 +412,9 @@ Match command "printf forwarding-check"
 		if err := os.WriteFile(filepath.Join(source, "different.txt"), []byte("skip"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		cmd := command(ctx, "cp", "here:", host+":")
+		cmd := command(ctx, "copy", "here:", host+":")
 		cmd.Dir = source
-		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+		transcript, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("\x1b[7mdifferent.txt", true)
 			send("/picked\r")
 			wait("\x1b[7m"+names[0], true)
@@ -426,6 +426,15 @@ Match command "printf forwarding-check"
 			send("\r")
 			wait("Copied " + filepath.Join(source, names[len(names)-1]))
 		})
+		if err != nil {
+			t.Fatalf("interactive copy: %v\n%s", err, transcript)
+		}
+		// Both pickers share one local screen, restored before transfer output.
+		selection, transfer, found := strings.Cut(transcript, "Copied ")
+		if !found || strings.Count(selection, "\x1b[?1049h") != 1 ||
+			strings.Count(selection, "\x1b[?1049l") != 1 || strings.Contains(transfer, "\x1b[?1049h") {
+			t.Fatal("copy did not use one local screen for both pickers")
+		}
 		for _, name := range names {
 			if got := run(t, ctx, "sh", host, "--", "cat "+name); got != name {
 				t.Fatalf("uploaded %s content = %q", name, got)
@@ -542,9 +551,11 @@ Match command "printf forwarding-check"
 				t.Fatalf("unexpected bind error: %s", failed)
 			}
 			wait("Connected " + endpoint)
-			send("sshore fwd here:" + port + " origin:\n")
+			// The requesting shell can suggest a port. The origin user owns the
+			// listener and may replace that suggestion without changing the remote service.
+			send("sshore fwd here:" + port + " origin:" + port + "\n")
 			wait(prompt, true)
-			send(localPort + "\r")
+			send("\x15" + localPort + "\r")
 			if line := wait("Started forward/"); !strings.Contains(line, host+":"+port+" -> origin:"+localPort) {
 				t.Fatalf("unexpected forward mapping: %s", line)
 			}

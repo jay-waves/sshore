@@ -6,7 +6,7 @@ import (
 	"net"
 )
 
-func (s *remoteShell) relayResourceRoute(c net.Conn, request message) error {
+func (s *tmuxTask) relayResourceRoute(c net.Conn, request message) error {
 	hop := request.ResourceRoute[0]
 	if len(request.ResourceRoute) >= maxConnectionHops || hop.Parent != s.record.UID {
 		return fmt.Errorf("resource route parent changed")

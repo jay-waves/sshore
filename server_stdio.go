@@ -75,22 +75,19 @@ func remoteFileHome() string {
 	return home
 }
 
-func serveForwardAgent(req *remoteForwardRequest) error {
-	if req == nil || req.Kind != "forward" {
+func serveForwardAgent(req *forwardRule) error {
+	if req == nil {
 		return fmt.Errorf("invalid forward request")
 	}
-	if err := validateForwardPorts(req.Port, req.TargetPort); err != nil {
+	if err := req.validate(false); err != nil {
 		return err
 	}
-	serveForward(agentStdio(), req.Port, req.TargetPort, req.Reverse)
+	serveForward(agentStdio(), *req)
 	return nil
 }
 
-func serveForward(c io.ReadWriteCloser, port, targetPort int, reverse bool) {
-	listenPort := 0
-	if reverse {
-		listenPort, targetPort = port, 0
-	}
+func serveForward(c io.ReadWriteCloser, rule forwardRule) {
+	listenPort, targetPort := rule.ports(true)
 	published := false
 	s, err := forwardio.Start(context.Background(), listenPort, targetPort, false, func() (io.ReadWriteCloser, error) {
 		published = true

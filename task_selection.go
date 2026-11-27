@@ -28,8 +28,8 @@ type selectedTask struct {
 func (q taskQuery) candidate(uid string, task daemonTask) (selectedTask, bool) {
 	candidate := selectedTask{Identity: identityFromUID(uid)}
 	switch t := task.(type) {
-	case interface{ managedShell() *tmuxTask }:
-		s := t.managedShell()
+	case *tmuxTask:
+		s := t
 		switch q.Kind {
 		case "", "shell":
 		case "native":
@@ -87,11 +87,11 @@ func (q taskQuery) registered(tasks *daemonTasks) []selectedTask {
 }
 
 func (q taskQuery) detached(tasks *daemonTasks, candidate *selectedTask) bool {
-	task, ok := tasks.lookup(canonicalTaskUID(candidate.Identity)).(interface{ managedShell() *tmuxTask })
+	task, ok := tasks.lookup(canonicalTaskUID(candidate.Identity)).(*tmuxTask)
 	if !ok {
 		return false
 	}
-	s := task.managedShell()
+	s := task
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	owner := s.parentIdentityLocked()
@@ -409,15 +409,18 @@ func selectRegisteredTask(query taskQuery) (selectedTask, error) {
 }
 
 func killRegisteredTask(target selectedTask) (int, error) {
-	if target.Kind == "shell" {
-		return runLocalCommand(options{command: "kill", session: target.Name,
-			hosted: target.Hosted, taskIdentity: target.Identity, instance: target.Instance})
+	uid := canonicalTaskUID(target.Identity)
+	if uid == "" {
+		return 1, fmt.Errorf("invalid task identity")
 	}
-	change := resourceMutation{Kind: target.Kind, Ref: canonicalTaskUID(target.Identity), Identity: target.Identity}
-	if _, err := daemonResourceRequest(context.Background(), "/resources/kill", change); err != nil {
+	if _, err := daemonResourceRequest(context.Background(), "/tasks/stop", struct{ UID string }{uid}); err != nil {
 		return 1, err
 	}
-	printStoppedResource(target.Kind, target.Name, target.Identity)
+	if target.Kind != "shell" {
+		printStoppedResource(target.Kind, target.Name, target.Identity)
+	} else if target.Hosted {
+		fmt.Fprintf(os.Stdout, "Ended shell %s\n", target.Name)
+	}
 	return 0, nil
 }
 
@@ -425,11 +428,11 @@ func (a *daemonActivity) remoteChildCandidates(parent, ref string) []selectedTas
 	if parent == "" {
 		return nil
 	}
-	source, ok := a.tasks.lookup(canonicalTaskUID(parent)).(interface{ managedShell() *tmuxTask })
+	source, ok := a.tasks.lookup(canonicalTaskUID(parent)).(*tmuxTask)
 	if !ok {
 		return nil
 	}
-	s := source.managedShell()
+	s := source
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var candidates []selectedTask

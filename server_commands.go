@@ -7,34 +7,27 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
-	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"io"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/release"
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
 const remoteServiceCommand = "service"
 const remoteServiceReady = byte(0)
 
 type remoteServiceRequest struct {
-	PeerMetadata jsontext.Value        `json:"peer_metadata,omitempty"`
-	Forward      *remoteForwardRequest `json:"forward,omitempty"`
-	Release      string                `json:"release"`
-	Operation    string                `json:"operation"`
-	Mode         string                `json:"mode,omitempty"`
-	Name         string                `json:"name,omitempty"`
-	Directory    string                `json:"directory,omitempty"`
-	Instance     string                `json:"instance,omitempty"`
-}
-
-type remoteForwardRequest struct {
-	Kind       string `json:"kind"`
-	Port       int    `json:"port,omitzero"`
-	TargetPort int    `json:"target_port,omitzero"`
-	Reverse    bool   `json:"reverse,omitzero"`
+	PeerMetadata jsontext.Value `json:"peer_metadata,omitempty"`
+	Forward      *forwardRule   `json:"forward,omitempty"`
+	Release      string         `json:"release"`
+	Operation    string         `json:"operation"`
+	Mode         string         `json:"mode,omitempty"`
+	Name         string         `json:"name,omitempty"`
+	Directory    string         `json:"directory,omitempty"`
+	Instance     string         `json:"instance,omitempty"`
 }
 
 func remoteService(connection sshio.Options, req remoteServiceRequest) sshio.Options {
@@ -83,7 +76,7 @@ func (e deploymentEndpoint) openService(ctx context.Context, client *sshio.Clien
 				return nil, err
 			}
 		}
-		previous, err = deploymentCommand(cached.Home, id)
+		previous, err = release.RemoteCommand(cached.Home, id, version, remoteServiceCommand)
 		if err != nil {
 			return nil, err
 		}
@@ -100,15 +93,15 @@ func (e deploymentEndpoint) openService(ctx context.Context, client *sshio.Clien
 		launchErr = err
 	}
 
-	resolved, uploaded, err := prepareRemoteDeployment(ctx, client, id, install)
+	resolved, uploaded, err := release.PrepareRemote(ctx, client, id, version, deploymentReleaseBase, install)
 	if err != nil {
-		if pending != nil && !errors.Is(err, errRemoteDeploymentMissing) {
+		if pending != nil && !errors.Is(err, release.ErrRemoteMissing) {
 			pending.forward(diagnostic)
 			err = errors.Join(launchErr, err)
 		}
 		return nil, err
 	}
-	command, err := deploymentCommand(resolved, id)
+	command, err := release.RemoteCommand(resolved, id, version, remoteServiceCommand)
 	if err != nil {
 		return nil, err
 	}

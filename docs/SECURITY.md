@@ -53,7 +53,7 @@ flowchart LR
     user --> review
     review --> grant
     grant -->|"Revalidate original shell; reject changed setup"| resources
-    user -->|"Explicit cp / forward / mount command"| resources
+    user -->|"Explicit copy / forward / mount command"| resources
     resources <-->|"Authenticated SSH; remote account permissions"| service
     user -->|"kill --all: confirm snapshot; authenticated admin"| control
     user -->|"reset: stop tasks before clearing local state"| control

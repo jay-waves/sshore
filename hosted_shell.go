@@ -3,7 +3,6 @@
 package main
 
 import (
-	"cmp"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -13,18 +12,17 @@ import (
 	"time"
 )
 
-type remoteShell struct {
-	tmuxTask
+type hostedState struct {
 	hostedRoutes
 	resourceApproval resourceApproval
 }
 
-func (s *remoteShell) serveHostedTask(c net.Conn, m message, relay func(net.Conn, message) error) (bool, error) {
-	if handled, err := s.serveCommand(c, m, s.attachmentCommand, s.status); handled {
+func (s *tmuxTask) serveHostedTask(c net.Conn, m message, relay func(net.Conn, message) error) (bool, error) {
+	if handled, err := s.serveCommand(c, m, s.hostedAttachmentCommand); handled {
 		return true, err
 	}
 	switch m.Type {
-	case "route_mount", "route_forward", "route_files":
+	case "route_resource":
 		s.serveRoutedResource(c, m, relay)
 	case "approval_request":
 		if err := s.requestApproval(c, m); err != nil {
@@ -36,45 +34,14 @@ func (s *remoteShell) serveHostedTask(c net.Conn, m message, relay func(net.Conn
 	return true, nil
 }
 
-func (s *remoteShell) hostedInventoryView() shellView {
-	if !s.mu.TryLock() {
-		return shellView{Instance: s.record.UID, Name: s.record.Name, State: taskUnknown}
-	}
-	defer s.mu.Unlock()
-	return s.hostedSnapshotLocked()
-}
-
-func (s *remoteShell) hostedSnapshotLocked() shellView {
-	pinned, until := s.runtime.PinState()
-	view := shellView{
-		Owner: s.parentIdentityLocked(), Pinned: pinned, PinUntil: until,
-		Instance: s.record.UID, Name: s.record.Name,
-		PID: s.runtime.PID(), Shell: s.shellName, Program: s.program, ProgramLine: s.programLine, State: s.state(),
-	}
-	if active := s.runtime.Active(); active != nil {
-		view.SourceHost = active.sourceHost
-	}
-	view.Directory = cmp.Or(s.reportedDirectory, s.record.Directory)
-	return view
-}
-
-func (s *remoteShell) status() message {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	view := s.hostedSnapshotLocked()
-	return message{Type: "session", Owner: view.Owner, Action: view.State, Pinned: view.Pinned, PinUntil: view.PinUntil, Instance: view.Instance, Name: view.Name, SoftwareVersion: version}
-}
-func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) (*remoteShell, error) {
-	s := &remoteShell{
-		tmuxTask: tasks.newTmuxTask(localShellRecord{Name: req.Name, Directory: req.Directory}, req.Env, req.parent, true),
-	}
-	if err := tasks.register("", s); err != nil {
+func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) (*tmuxTask, error) {
+	s := tasks.newTmuxTask(localShellRecord{Name: req.Name, Directory: req.Directory}, req.Env, req.parent, true)
+	if err := tasks.registerShell(s, req.parent); err != nil {
 		if errors.Is(err, errObjectNameInUse) {
 			return nil, fmt.Errorf("name %s already exists; use a different shell name", req.Name)
 		}
 		return nil, err
 	}
-	s.watchParent(req.parent)
 	// A failed initial attach should not leave an empty shell indefinitely.
 	s.expireUnstarted(30 * time.Second)
 	return s, nil

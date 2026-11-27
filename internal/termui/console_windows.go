@@ -23,16 +23,29 @@ func configureInputTerminal(config *readline.Config) (func() error, bool) {
 // Bypass readline's legacy ANSI translator only after native VT is enabled.
 // Both editor writers use the same console, whose mode is restored on Close.
 func configureInputVT(config *readline.Config, get func(*uint32) error, set func(uint32) error) (func() error, bool) {
-	noop := func() error { return nil }
-	var saved uint32
-	if err := get(&saved); err != nil {
-		return noop, false
-	}
-	if err := set(saved | windows.ENABLE_PROCESSED_OUTPUT | windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING); err != nil {
-		return noop, false
+	restore, err := enableConsoleVT(get, set)
+	if err != nil {
+		return func() error { return nil }, false
 	}
 	config.Stdout, config.Stderr = os.Stdout, os.Stdout
-	return func() error { return set(saved) }, true
+	return restore, true
+}
+
+func enableLocalConsoleOutput() (func() error, error) {
+	out := windows.Handle(os.Stdout.Fd())
+	return enableConsoleVT(func(mode *uint32) error { return windows.GetConsoleMode(out, mode) },
+		func(mode uint32) error { return windows.SetConsoleMode(out, mode) })
+}
+
+func enableConsoleVT(get func(*uint32) error, set func(uint32) error) (func() error, error) {
+	var saved uint32
+	if err := get(&saved); err != nil {
+		return nil, err
+	}
+	if err := set(saved | windows.ENABLE_PROCESSED_OUTPUT | windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING); err != nil {
+		return nil, err
+	}
+	return func() error { return set(saved) }, nil
 }
 
 // Use the checked Windows API wrappers instead of readline's syscall wrapper,

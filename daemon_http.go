@@ -198,7 +198,7 @@ func daemonRoutes(record localShellRecord, activity *daemonActivity, stop func()
 		_ = json.MarshalWrite(w, activity.listTasks())
 	})
 	mux.HandleFunc("POST /resources/stop-confirmed", tasks.serveConfirmedResourceStops)
-	mux.HandleFunc("POST /resources/kill", tasks.serveResourceStop)
+	mux.HandleFunc("POST /tasks/stop", tasks.serveTaskStop)
 	mux.HandleFunc("POST /tasks/select", func(w http.ResponseWriter, r *http.Request) {
 		var q taskQuery
 		if !readDaemonBody(w, r, &q) {

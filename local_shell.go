@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -106,29 +105,6 @@ func (r localShellRecord) identity() string {
 	return fmt.Sprintf("local:%x", sha256.Sum256([]byte(r.Token)))
 }
 
-type localShell struct {
-	tmuxTask
-	handoff *localHandoff
-}
-
-func (s *localShell) inventoryView() localShellView {
-	if !s.mu.TryLock() {
-		return localShellView{Identity: s.record.identity(), Name: s.record.Name, State: taskUnknown}
-	}
-	defer s.mu.Unlock()
-	pinned, until := s.runtime.PinState()
-	view := localShellView{
-		Owner: s.parentIdentityLocked(), Pinned: pinned, PinUntil: until, Identity: s.record.identity(),
-		Name: s.record.Name, Shell: s.shellName, Program: s.program, ProgramLine: s.programLine,
-	}
-	view.Directory = cmp.Or(s.reportedDirectory, s.record.Directory)
-	view.State = s.state()
-	if s.runtime.Active() != nil {
-		view.SourceHost = s.runtime.Active().sourceHost
-	}
-	return view
-}
-
 func retentionLocalShell(identity string, m message) error {
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
@@ -145,13 +121,12 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, pa
 	if record.Version != version || len(record.Token) != 64 || !filepath.IsAbs(record.Directory) {
 		return fmt.Errorf("invalid local startup request")
 	}
-	s := &localShell{tmuxTask: tasks.newTmuxTask(record, env, parent, false)}
+	s := tasks.newTmuxTask(record, env, parent, false)
 	defer s.close()
 	// Register before publishing readiness. Attachments do not own the shell.
-	if err := tasks.register("", s); err != nil {
+	if err := tasks.registerShell(s, parent); err != nil {
 		return err
 	}
-	s.watchParent(parent)
 	if err := ready(s.record); err != nil {
 		return err
 	}
@@ -160,7 +135,7 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, pa
 	return nil
 }
 
-func (s *localShell) serveTask(c net.Conn, m message) error {
+func (s *tmuxTask) serveLocalTask(c net.Conn, m message) error {
 	switch m.Type {
 	case "handoff_confirm":
 		return s.confirmHandoff(c, m)
@@ -172,20 +147,13 @@ func (s *localShell) serveTask(c net.Conn, m message) error {
 		}
 		return writeMessage(c, message{Type: "handoff_accepted"})
 	}
-	if handled, err := s.serveCommand(c, m, s.attachmentCommand, s.status); handled {
+	if handled, err := s.serveCommand(c, m, s.localAttachmentCommand); handled {
 		return err
 	}
 	return fmt.Errorf("unexpected local request")
 }
 
-func (s *localShell) status() message {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	pinned, until := s.runtime.PinState()
-	return message{Type: "session", Pinned: pinned, PinUntil: until, Name: s.record.Name, SoftwareVersion: s.record.Version}
-}
-
-func (s *localShell) attachmentCommand(p *attachment, m message) error {
+func (s *tmuxTask) localAttachmentCommand(p *attachment, m message) error {
 	switch m.Type {
 	case "handoff_result":
 		s.finishHandoff(p, m)

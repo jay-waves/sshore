@@ -404,7 +404,7 @@ func applyRecentConnection(o *options) error {
 		// The history supplies only transport configuration. The authenticated
 		// target resolves the supplied selector and confirms the actual instance.
 		r.Instance = ""
-		applyConnectionOptions(o, *r)
+		applyConnectionOptions(o, *r, nil)
 		return nil
 	}
 	if o.host == "" {
@@ -466,8 +466,12 @@ func connectionFromOptions(o options) (recentConnection, error) {
 	return record, nil
 }
 
-func applyConnectionOptions(o *options, r recentConnection) {
+func applyConnectionOptions(o *options, r recentConnection, attachment *options) {
 	for hop := &r; ; hop = hop.Parent {
+		if attachment != nil {
+			o.reusable = attachment.reusable
+			attachment = attachment.routeParent
+		}
 		if hop.Hosted {
 			o.local, o.hosted = true, true
 			o.taskIdentity = "task:" + hop.Instance
@@ -700,7 +704,7 @@ func (h *localHandoff) deliver(errorText string) bool {
 	return true
 }
 
-func (s *localShell) requestHandoff(origin *attachment, h *clientHandoff, deadline time.Time) error {
+func (s *tmuxTask) requestHandoff(origin *attachment, h *clientHandoff, deadline time.Time) error {
 	if _, err := h.options(); err != nil {
 		return err
 	}
@@ -754,7 +758,7 @@ func (s *localShell) requestHandoff(origin *attachment, h *clientHandoff, deadli
 	}
 }
 
-func (s *localShell) finishHandoff(p *attachment, m message) {
+func (s *tmuxTask) finishHandoff(p *attachment, m message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if h := s.handoff; h != nil && h.attachment == p && h.token == m.Token {
@@ -762,7 +766,7 @@ func (s *localShell) finishHandoff(p *attachment, m message) {
 	}
 }
 
-func (s *localShell) confirmHandoff(c net.Conn, m message) error {
+func (s *tmuxTask) confirmHandoff(c net.Conn, m message) error {
 	s.mu.Lock()
 	pending := s.handoff
 	delivered := pending != nil && pending.attachment == nil && pending.token == m.Token && pending.deliver(m.Error)

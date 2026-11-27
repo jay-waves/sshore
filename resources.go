@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/release"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
@@ -206,7 +207,7 @@ func killRemoteAccount(ctx context.Context, o options, reset bool) error {
 	stop := context.AfterFunc(ctx, func() { client.Close() })
 	defer stop()
 	process, err := connection.OpenCommand(ctx, client, "", os.Stderr)
-	if err != nil && !errors.Is(err, errRemoteDeploymentMissing) {
+	if err != nil && !errors.Is(err, release.ErrRemoteMissing) {
 		return err
 	}
 	var snapshot daemonSnapshot
@@ -512,7 +513,12 @@ func launchResourceBackground(config resourceConfig, directory string) (resource
 				return nil, err, nil, err
 			}
 		}
-		remote, local, err := config.Mount.pickMountPaths(browseCtx, startup.Home, read)
+		var remote, local string
+		err := termui.RunLocalConsole(func(console *termui.LocalConsole) error {
+			var err error
+			remote, local, err = config.Mount.pickMountPaths(browseCtx, console, startup.Home, read)
+			return err
+		})
 		if err != nil {
 			if cause := context.Cause(browseCtx); cause != nil {
 				return resourceRecord{}, cause

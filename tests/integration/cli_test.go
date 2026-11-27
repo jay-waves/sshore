@@ -55,6 +55,7 @@ func TestCLI(t *testing.T) {
 		{"old shell name syntax is rejected", []string{"shell", "work:editor"}, 2, "use --name for a task name"},
 		{"new rejects an empty tail", []string{"new", "work", "--ssh", "-J", "jump", "--"}, 2, "expected -- followed by an executable"},
 		{"new documents shell startup options", []string{"new", "--help"}, 0, "--no-login"},
+		{"new requires a terminal for launch review", []string{"new"}, 2, "new requires an interactive terminal"},
 		{"new rejects shell flags for an explicit program", []string{"new", "--no-profile", "--", "vim"}, 2, "require starting the default shell"},
 		{"shell command requires a host before the delimiter", []string{"sh", "--", "work"}, 2, "requires one SSH host"},
 		{"shell command rejects an empty tail", []string{"sh", "work", "--"}, 2, "expected a command after --"},
@@ -69,7 +70,8 @@ func TestCLI(t *testing.T) {
 		{"install apply requires an explicit local path", []string{"install", "--apply"}, 2, "requires here:PATH"},
 		{"forwards reject foreground mode", []string{"fwd", "8080", "work:80", "--foreground"}, 2, "unsupported option: --foreground"},
 		{"mounts only start in the background", []string{"mount", "work:/srv", ".:", "--foreground"}, 2, "unsupported option: --foreground"},
-		{"omitted copy paths require a terminal before dialing", []string{"cp", "here:", "work:"}, 2, "file selection requires an interactive terminal"},
+		{"cp opens help for copy", []string{"cp", "--help"}, 0, "Usage: sshore copy"},
+		{"omitted copy paths require a terminal before dialing", []string{"copy", "here:", "work:"}, 2, "file selection requires an interactive terminal"},
 		{"omitted mount paths require a terminal before dialing", []string{"mount", "work:", "here:"}, 2, "file selection requires an interactive terminal"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

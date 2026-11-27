@@ -63,3 +63,6 @@ func ParseCommand(line string) ([]string, error) {
 	}
 	return argv, nil
 }
+
+// QuotePOSIX quotes one argument for a POSIX shell.
+func QuotePOSIX(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }

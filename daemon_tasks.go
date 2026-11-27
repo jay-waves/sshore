@@ -38,26 +38,31 @@ type daemonTasks struct {
 	records   map[string]daemonTask
 }
 
-func (s *daemonTasks) newTmuxTask(record localShellRecord, env []string, parent *tmuxTask, hosted bool) tmuxTask {
+func (s *daemonTasks) newTmuxTask(record localShellRecord, env []string, parent *tmuxTask, hosted bool) *tmuxTask {
 	var terminalParent *tmux.Task[*attachment, *tmuxTask]
 	if parent != nil {
 		terminalParent = &parent.runtime
 	}
-	return tmuxTask{
+	return &tmuxTask{
 		registry: s, runtime: tmux.NewTask[*attachment](&s.forest, terminalParent), log: s.log, cgroup: s.cgroup, cgroupErr: s.cgroupErr,
 		record: record, environment: env, hosted: hosted,
 	}
 }
 
-func (s *daemonTasks) childShells(parent *tmuxTask) []*tmuxTask {
-	type managedTask interface {
-		daemonTask
-		managedShell() *tmuxTask
+// Register both shell ingress capabilities against the same managed lifecycle.
+func (s *daemonTasks) registerShell(task *tmuxTask, parent *tmuxTask) error {
+	if err := s.register("", task); err != nil {
+		return err
 	}
-	registered := liveTasks[managedTask](s)
+	task.watchParent(parent)
+	return nil
+}
+
+func (s *daemonTasks) childShells(parent *tmuxTask) []*tmuxTask {
+	registered := liveTasks[*tmuxTask](s)
 	var children []*tmuxTask
 	for _, task := range registered {
-		if child := task.managedShell(); child.parentTask() == parent {
+		if child := task; child.parentTask() == parent {
 			children = append(children, child)
 		}
 	}
@@ -216,7 +221,7 @@ func serveTaskCommand(c net.Conn, serve func(net.Conn, message) error) {
 	_ = serve(c, m)
 }
 
-func (s *daemonTasks) findNativeShell(ref, identity string) (*localShell, localShellRecord, error) {
+func (s *daemonTasks) findNativeShell(ref, identity string) (*tmuxTask, localShellRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	query := taskQuery{Kind: "native", Ref: ref}
@@ -230,7 +235,10 @@ func (s *daemonTasks) findNativeShell(ref, identity string) (*localShell, localS
 	if err != nil || target.Identity == "" {
 		return nil, localShellRecord{}, err
 	}
-	task := s.records[canonicalTaskUID(target.Identity)].(*localShell)
+	task, ok := s.records[canonicalTaskUID(target.Identity)].(*tmuxTask)
+	if !ok || task.hosted {
+		return nil, localShellRecord{}, fmt.Errorf("local task changed; refresh with sshore list")
+	}
 	record := task.record
 	if identity != "" && (record.identity() != identity || ref != "" && ref != record.Name && ref != record.UID) {
 		return nil, localShellRecord{}, fmt.Errorf("local task changed; refresh with sshore list")
@@ -338,10 +346,6 @@ func (t *daemonResourceTask) publishReady(detail, root, mountpoint string) resou
 	return t.record
 }
 
-type hostedShellView interface {
-	hostedInventoryView() shellView
-}
-
 type taskInventoryRequest struct {
 	Native, Hosted, Resources bool
 	Host                      string
@@ -358,13 +362,15 @@ func (s *daemonTasks) taskInventory(request taskInventoryRequest) taskInventoryS
 	// Capture membership before reading individual tasks.
 	for _, task := range liveTasks[daemonTask](s) {
 		switch t := task.(type) {
-		case *localShell:
-			if request.Native {
-				snapshot.Native = append(snapshot.Native, t.inventoryView())
-			}
-		case hostedShellView:
-			if request.Hosted {
-				snapshot.Shells = append(snapshot.Shells, t.hostedInventoryView())
+		case *tmuxTask:
+			shell := t
+			if shell.hosted && request.Hosted {
+				snapshot.Shells = append(snapshot.Shells, shell.inventoryView())
+			} else if !shell.hosted && request.Native {
+				view := shell.inventoryView()
+				snapshot.Native = append(snapshot.Native, localShellView{Identity: shell.record.identity(), Name: view.Name, State: view.State,
+					Owner: view.Owner, Pinned: view.Pinned, PinUntil: view.PinUntil, SourceHost: view.SourceHost,
+					Shell: view.Shell, Program: view.Program, ProgramLine: view.ProgramLine, Directory: view.Directory})
 			}
 		case *daemonResourceTask:
 			if !request.Resources || request.Host != "" && t.record.Host != request.Host {
@@ -379,18 +385,18 @@ func (s *daemonTasks) taskInventory(request taskInventoryRequest) taskInventoryS
 	return snapshot
 }
 
-func (s *daemonTasks) serveResourceStop(w http.ResponseWriter, r *http.Request) {
-	var change resourceMutation
-	if !readDaemonBody(w, r, &change) {
+func (s *daemonTasks) serveTaskStop(w http.ResponseWriter, r *http.Request) {
+	var request struct{ UID string }
+	if !readDaemonBody(w, r, &request) {
 		return
 	}
-	stops, err := s.confirmedResourceStops([]resourceMutation{change})
-	if err == nil {
-		err = stops[0].stopTask()
-	}
 	var reply resourceReply
-	if err != nil {
-		reply.Error = err.Error()
+	if task := s.lookup(request.UID); task != nil {
+		if err := task.stopTask(); err != nil {
+			reply.Error = err.Error()
+		}
+	} else {
+		reply.Error = "task changed; refresh with sshore list"
 	}
 	_ = json.MarshalWrite(w, reply)
 }
