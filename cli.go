@@ -400,10 +400,10 @@ func remoteCopyRequest(parsed cliArguments) (string, []string, string, error) {
 	paths := make([]string, 0, len(sources))
 	for _, source := range sources {
 		host, path, err := splitFileEndpoint(source)
-		if err != nil || host != "here" || path == "-" || (path == "" && kind != "upload") {
+		if err != nil || host != "here" || path == "-" || (path == "" && len(args) != 2) {
 			return fail()
 		}
-		if path == "" {
+		if path == "" && kind == "upload" {
 			path = "."
 		}
 		paths = append(paths, path)
@@ -446,7 +446,7 @@ func remoteMountRequest(parsed cliArguments) (operation, error) {
 	if sourceHost != "here" || targetHost != "origin" {
 		return operation{}, usage("use mount here:[DIRECTORY] origin:[MOUNTPOINT]")
 	}
-	if source == "" {
+	if source == "" && !parsed.has("--lf") {
 		source = "."
 	}
 	if len(parsed.ssh) != 0 {
@@ -589,6 +589,19 @@ func runMount(parsed cliArguments) (int, error) {
 		if err != nil {
 			return 2, err
 		}
+		if op.Path == "" {
+			if err := requireFileSelectionTerminal(); err != nil {
+				return 2, err
+			}
+			err = termui.RunLocalConsole(func(console *termui.LocalConsole) error {
+				var err error
+				op.Path, err = console.PickLF(context.Background(), localFileSelection("", "Choose directory to mount", true))
+				return err
+			})
+			if err != nil {
+				return 1, err
+			}
+		}
 		op.Path, err = sys.Abs(op.Path)
 		if err != nil {
 			return 1, err
@@ -616,7 +629,7 @@ func runCopy(parsed cliArguments) (int, error) {
 		if err != nil {
 			return 2, err
 		}
-		ops, err := prepareFileRequest(kind, paths, hint, parsed.has("-r"))
+		ops, err := prepareRemoteCopy(kind, paths, hint, parsed.has("-r"), parsed.has("--lf"))
 		if err != nil {
 			return 1, err
 		}

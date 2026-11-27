@@ -39,7 +39,7 @@ func validateOperations(ops []operation) error {
 		if len(op.LocalHint) > 4096 || strings.ContainsAny(op.LocalHint, "\x00\r\n") {
 			return fmt.Errorf("invalid local endpoint hint")
 		}
-		if op.LF && op.Kind != "mount" {
+		if op.LF && op.Kind != "mount" && (op.Kind != "upload" || len(ops) != 1 || op.LocalHint != "") {
 			return fmt.Errorf("unexpected LF flag")
 		}
 		if op.ReadOnly && op.Kind != "mount" {

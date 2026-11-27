@@ -709,6 +709,8 @@ Alias: cp
 A bare path belongs to the machine running this command. Use HOST:PATH
 for an SSH host. Use here: or .: for an explicit local endpoint.
 In an attached remote shell, origin: or 0: requests local approval.
+Use : (also .: or here:) and --lf to browse on the host before sending to
+origin. Use origin: as an empty source with --lf to browse during approval.
 An empty local path uses the current directory and an empty SSH path uses the
 remote home. An empty source selects a directory and requires -r unless you
 use --lf to browse. Use - for standard input or output
@@ -763,7 +765,8 @@ Options:
   --direct-io                  Disable kernel read caching (Linux)
 
 From a remote shell, origin: and 0: select the attached client.
-Approve the request locally and choose a mountpoint.
+Use : (also .: or here:) as the source with --lf to browse on the host.
+Approve the request on the attached client and choose a mountpoint.
 If the filesystem reports a busy mount, close files and retry sshore kill TASK.
 Request timeouts close the whole mount connection;
 affected writes are not retried.

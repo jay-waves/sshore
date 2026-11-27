@@ -228,7 +228,46 @@ func (f fileCopy) transfer(ctx context.Context, client *sftp.Client, progress *a
 	return files.Download(ctx, client, f.source, f.target, f.size(), progress)
 }
 
+func prepareRemoteCopy(kind string, paths []string, hint string, recursive, browse bool) ([]operation, error) {
+	if kind == "download" && paths[0] == "" {
+		if browse {
+			if err := requireFileSelectionTerminal(); err != nil {
+				return nil, err
+			}
+			picker := localFileSelection("", "Choose files to send to origin", false)
+			picker.ChooseDirectories = true
+			var ops []operation
+			err := termui.RunLocalConsole(func(console *termui.LocalConsole) error {
+				_, err := console.PickLFFiles(context.Background(), picker, func(names []string) error {
+					tree := recursive
+					if len(names) == 1 {
+						info, err := os.Lstat(names[0])
+						if err != nil {
+							return err
+						}
+						tree = tree || info.IsDir()
+					}
+					var err error
+					ops, err = prepareFileRequest(kind, names, hint, tree)
+					return err
+				})
+				return err
+			})
+			return ops, err
+		}
+		paths[0] = "."
+	}
+	ops, err := prepareFileRequest(kind, paths, hint, recursive)
+	if err == nil && kind == "upload" && browse && hint == "" {
+		ops[0].LF = true
+	}
+	return ops, err
+}
+
 func prepareFileRequest(kind string, paths []string, hint string, recursive bool) ([]operation, error) {
+	if len(paths) > maxRequestItems {
+		return nil, usage("at most %d files per copy", maxRequestItems)
+	}
 	ops := make([]operation, 0, len(paths))
 	for _, path := range paths {
 		absolute, err := sys.Abs(path)

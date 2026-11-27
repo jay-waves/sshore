@@ -6,8 +6,9 @@ A program in an attached shell can request a copy, mount or port forward through
 The request contains bounded operation metadata and optional path or port suggestions. The
 client leaves the remote attachment and presents the request in a local approval screen.
 The screen also handles any SSH credentials needed to start a mount or forward.
-Direct copy, mount and forward use the same local console when they need paths
-or a port from the user. Commands with explicit endpoints can run without it.
+In an attached shell, use `: origin: --lf` with `cp` or `mount` to browse the host
+before requesting approval. `.:` and `here:` also select the current host.
+Use `cp origin: : --lf` to browse for the source on the client after approving.
 
 File and mount requests show `Approve this request? [y/N]` before local endpoint
 selection. For a forward, the screen shows the direction and fixed remote endpoint.

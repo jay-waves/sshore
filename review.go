@@ -53,7 +53,14 @@ func selectApprovedOperation(console *termui.LocalConsole, input *termui.Input, 
 	case "mount", "forward":
 		selected.config, err = selectApprovedResource(console, input, &request)
 	default:
-		selected.files, err = selectApprovedFiles(input, request)
+		if request.Operations[0].LF {
+			if err := input.Close(); err != nil {
+				return selected, err
+			}
+			selected.files, err = pickApprovedUpload(console, request)
+		} else {
+			selected.files, err = selectApprovedFiles(input, request)
+		}
 	}
 	return selected, err
 }

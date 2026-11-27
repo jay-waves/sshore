@@ -40,6 +40,25 @@ func (f fileCopy) approvedLocalPath(op operation) string {
 	return f.target
 }
 
+func pickApprovedUpload(console *termui.LocalConsole, request requestRecord) ([]fileCopy, error) {
+	op := request.Operations[0]
+	picker := localFileSelection(request.Directory, "Choose source to upload", op.Recursive)
+	name, err := console.PickLF(context.Background(), picker)
+	if err != nil {
+		return nil, err
+	}
+	var source *files.Source
+	if op.Recursive {
+		err = checkCopyDirectory(name, false)
+	} else {
+		source, err = files.OpenSource(name)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []fileCopy{newApprovedFile(op, name, source)}, nil
+}
+
 // The caller closes all opened sources, including on a partial selection.
 func selectApprovedFiles(input reviewPromptReader, r requestRecord) ([]fileCopy, error) {
 	approvedFiles := make([]fileCopy, 0, len(r.Operations))
@@ -163,6 +182,7 @@ func executeApprovedFiles(ctx context.Context, open func(operation, string, int6
 
 func executeApprovedFile(ctx context.Context, open func(operation, string, int64) (net.Conn, error), remote operation, file fileCopy) error {
 	remote.LocalHint = ""
+	remote.LF = false
 	if remote.Recursive {
 		stream, err := open(remote, "", 0)
 		if err != nil {

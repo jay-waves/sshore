@@ -564,6 +564,80 @@ Match command "printf forwarding-check"
 		})
 	})
 
+	scenario("attached copy and mount browse empty endpoints before using origin resources", func(t *testing.T, ctx context.Context) {
+		origin := t.TempDir()
+		point := filepath.Join(origin, "picker-mountpoint")
+		if err := os.Mkdir(point, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(origin, "origin-picker-file"), []byte("from origin"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		endpoint := host + ":approval-picker"
+		cmd := command(ctx, "sh", host, "--name", "approval-picker", "--no-profile")
+		cmd.Dir = origin
+		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+			wait("Connected " + endpoint)
+			send("mkdir -p approval-picker-source && cd approval-picker-source && printf 'from host' > remote-picker-file && printf 'picker-%s\\n' ready\n")
+			wait("picker-ready")
+			for i, empty := range []string{":", ".:", "here:"} {
+				send("sshore cp " + empty + " origin: --lf\n")
+				wait("Choose files to send to origin", true)
+				wait("remote-picker-file", true)
+				send("\r")
+				wait("Approve this request? [y/N]", true)
+				send("y\r")
+				wait("Save as:", true)
+				dest := filepath.Join(origin, fmt.Sprintf("received-%d", i))
+				send("\x15" + dest + "\r")
+				wait("Saved " + dest)
+				wait("Connected " + endpoint)
+				requireFile(t, dest, "from host")
+
+				send("sshore mount " + empty + " 0: --lf --read-only\n")
+				wait("Choose directory to mount", true)
+				wait("Enter Choose current dir", true)
+				send("\r")
+				wait("Approve this request? [y/N]", true)
+				if i < 2 {
+					send("\r")
+					wait("approval cancelled")
+					wait("Connected " + endpoint)
+					continue
+				}
+				send("y\r")
+				wait("Mountpoint", true)
+				wait("picker-mountpoint/", true)
+				send("j")
+				wait("\x1b[7mpicker-mountpoint/", true)
+				send("\r")
+				_, description, _ := strings.Cut(wait("Started mount/"), "Started mount/")
+				name, _, _ := strings.Cut(description, ":")
+				if name == "" {
+					t.Fatal("missing started mount name")
+				}
+				defer local(t, ctx, "kill", name)
+				wait("Connected " + endpoint)
+				requireFile(t, filepath.Join(point, "remote-picker-file"), "from host")
+			}
+			send("sshore cp origin: : --lf\n")
+			wait("Approve this request? [y/N]", true)
+			send("y\r")
+			wait("Choose source to upload", true)
+			wait("origin-picker-file", true)
+			send("/origin-picker-file\r")
+			wait("\x1b[7morigin-picker-file", true)
+			send("\r")
+			wait("Uploaded " + filepath.Join(origin, "origin-picker-file"))
+			wait("Connected " + endpoint)
+			send("exit\n")
+			wait("Exited " + endpoint)
+		})
+		if got := run(t, ctx, "sh", host, "--", "cat approval-picker-source/origin-picker-file"); got != "from origin" {
+			t.Fatalf("uploaded content = %q", got)
+		}
+	})
+
 	scenario("approval resumes requesting shell and resources outlive it", func(t *testing.T, ctx context.Context) {
 		// The requesting shell owns the dialogue, but the approving account
 		// owns the resources it creates. Ending the shell must leave them usable.
