@@ -294,6 +294,7 @@ func runDaemon() (result error) {
 	tasks := &daemonTasks{log: log, cgroup: group, cgroupErr: cgroupErr}
 	activity := &daemonActivity{tasks: tasks, root: record.Directory}
 	activity.metadata.loadParticipation(activity.root)
+	defer activity.metadata.closeParticipation()
 	if err = writeStateJSON(path, record); err != nil {
 		return err
 	}

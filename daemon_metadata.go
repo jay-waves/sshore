@@ -3,22 +3,23 @@ package main
 import (
 	"context"
 	"fmt"
+	bolt "go.etcd.io/bbolt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
 // History is persisted by the daemon; running clients never coordinate through
 // these files. Each domain is loaded once and thereafter served from memory.
 type daemonMetadata struct {
-	attachments   recentHistory[recentAttachment]
-	connections   recentHistory[recentConnection]
-	participation atomic.Pointer[participationSnapshot]
-	shellMu       sync.Mutex
+	attachments      recentHistory[recentAttachment]
+	connections      recentHistory[recentConnection]
+	participationDB  *bolt.DB
+	participationErr error
+	shellMu          sync.Mutex
 }
 
 // The two histories retain independent orderings and share the same file lifecycle.
@@ -146,6 +147,12 @@ func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply)
 
 func (a *daemonActivity) handleShellHistory(r metadataRequest) (reply metadataReply) {
 	s := &a.metadata
+	if r.Action == "participation_observe" || r.Action == "participation_state" || r.Action == "participation_forget" || r.Action == "participation_refresh" {
+		if err := s.updateParticipation(a.root, r); err != nil {
+			reply.Error = err.Error()
+		}
+		return
+	}
 	s.shellMu.Lock()
 	defer s.shellMu.Unlock()
 	var err error
@@ -164,8 +171,6 @@ func (a *daemonActivity) handleShellHistory(r metadataRequest) (reply metadataRe
 		if r.Connection != nil {
 			err = s.rememberConnectionLocal(*r.Connection)
 		}
-	case "participation_observe", "participation_state", "participation_forget", "participation_refresh":
-		err = s.updateParticipation(a.root, r)
 	default:
 		err = fmt.Errorf("invalid metadata operation")
 	}

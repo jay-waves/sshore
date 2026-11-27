@@ -998,7 +998,7 @@ Match command "printf forwarding-check"
 				t.Fatalf("SSH alias missing from tree:\n%s", tree)
 			}
 			if root := os.Getenv("SSHORE_STATE_DIR"); root != "" {
-				data, err := os.ReadFile(filepath.Join(root, "connections", "participation.json"))
+				data, err := os.ReadFile(filepath.Join(root, "connections", "participation.db"))
 				if err != nil {
 					t.Fatal(err)
 				}

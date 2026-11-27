@@ -1,8 +1,14 @@
 package main
 
 import (
+	"bytes"
+	json "encoding/json/v2"
 	"fmt"
-	"slices"
+	"os"
+	"path/filepath"
+
+	"github.com/jay-waves/sshore/internal/sys"
+	bolt "go.etcd.io/bbolt"
 	"time"
 )
 
@@ -70,119 +76,200 @@ func validateParticipatingShell(row participatingShell) error {
 	}
 }
 
-type participationSnapshot struct {
-	recentHistory[participatingShell]
-	err error
+var participationBucket = []byte("participation")
+
+func participationKey(host, instance string) []byte { return []byte(host + "\x00" + instance) }
+
+// Creating the bucket and importing legacy history share a transaction. Its existence
+// records that migration completed, even after all imported rows are forgotten.
+func (m *daemonMetadata) loadParticipation(root string) {
+	m.participationErr = m.openParticipation(root)
 }
 
-// The daemon publishes its last successful write as immutable state.
-func (m *daemonMetadata) loadParticipation(root string) *participationSnapshot {
-	snapshot := new(participationSnapshot)
-	snapshot.err = snapshot.loadAt(root, "participation.json", 1024*1024, 4096, validateParticipatingShell)
-	m.participation.Store(snapshot)
-	return snapshot
-}
-
-func (m *daemonMetadata) participatingShells() ([]participatingShell, error) {
-	snapshot := m.participation.Load()
-	return snapshot.rows, snapshot.err
-}
-
-func (m *daemonMetadata) updateParticipation(root string, r metadataRequest) error {
-	current := m.participation.Load()
-	if current.err != nil {
-		current = m.loadParticipation(root)
-		if current.err != nil {
-			return current.err
-		}
-	}
-	rows := slices.Clone(current.rows)
-	now := time.Now()
-	switch r.Action {
-	case "participation_observe", "participation_state":
-		if r.Participant == nil {
-			return fmt.Errorf("missing participating shell")
-		}
-		row := *r.Participant
-		if err := validateParticipatingShell(row); err != nil {
-			return err
-		}
-		row.ChangedAt = now
-		i := slices.IndexFunc(rows, func(old participatingShell) bool {
-			return old.Host == row.Host && old.Instance == row.Instance
-		})
-		switch {
-		case r.Action == "participation_state":
-			if i < 0 || rows[i].Attachment != row.Attachment {
-				return nil
-			}
-			if row.State == taskDetached {
-				rows[i].Name = row.Name
-			}
-			rows[i].State, rows[i].ChangedAt = row.State, now
-			rows[i].Pinned, rows[i].PinUntil = row.Pinned, row.PinUntil
-		case i >= 0:
-			if row.HostInfo == (hostInfo{}) {
-				row.HostInfo = rows[i].HostInfo
-			}
-			rows[i] = row
-		case len(rows) == 4096:
-			return fmt.Errorf("participating shell limit reached")
-		default:
-			rows = append(rows, row)
-		}
-	case "participation_forget":
-		if !validTaskUID(r.Instance) || validSSHDestination(r.Host) != nil {
-			return fmt.Errorf("invalid participating shell identity")
-		}
-		i := slices.IndexFunc(rows, func(row participatingShell) bool {
-			return row.Host == r.Host && row.Instance == r.Instance
-		})
-		if i >= 0 {
-			rows = slices.Delete(rows, i, i+1)
-		}
-	case "participation_refresh":
-		if r.Participation == nil || validSSHDestination(r.Host) != nil {
-			return fmt.Errorf("invalid participating shell refresh")
-		}
-		for _, view := range r.Participation.Shells {
-			if !validTaskUID(view.Instance) || view.Owner != "" && view.Owner != identityFromUID(canonicalTaskUID(view.Owner)) {
-				return fmt.Errorf("invalid shell or parent ID in participation refresh")
-			}
-		}
-		rows = refreshParticipation(rows, r.Host, *r.Participation, now)
-	}
-	if slices.Equal(rows, current.rows) {
-		return nil
-	}
-	next := *current
-	if err := next.replace(rows); err != nil {
+func (m *daemonMetadata) openParticipation(root string) error {
+	dir, err := prepareStateDir(root, "connections")
+	if err != nil {
 		return err
 	}
-	m.participation.Store(&next)
+	path := filepath.Join(dir, "participation.db")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	if err = sys.PrivateStatePath(path, false); err != nil {
+		return err
+	}
+	db, err := bolt.Open(path, 0600, &bolt.Options{Timeout: time.Second})
+	if err != nil {
+		return err
+	}
+	err = db.Update(func(tx *bolt.Tx) error {
+		if tx.Bucket(participationBucket) != nil {
+			return nil
+		}
+		var legacy recentHistory[participatingShell]
+		if err := legacy.loadAt(root, "participation.json", 1024*1024, 4096, validateParticipatingShell); err != nil {
+			return err
+		}
+		bucket, err := tx.CreateBucket(participationBucket)
+		if err != nil {
+			return err
+		}
+		for _, row := range legacy.rows {
+			if err := putParticipation(bucket, row); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		db.Close()
+		return err
+	}
+	m.participationDB = db
 	return nil
 }
 
-func refreshParticipation(rows []participatingShell, host string, refresh participationRefresh, now time.Time) []participatingShell {
-	observed := make(map[string]shellView, len(refresh.Shells))
-	for _, view := range refresh.Shells {
-		observed[view.Instance] = view
+func (m *daemonMetadata) closeParticipation() {
+	if m.participationDB != nil {
+		_ = m.participationDB.Close()
 	}
-	updated := rows[:0]
-	for _, row := range rows {
-		if row.Host == host && row.ChangedAt.Before(refresh.Since) {
-			view, found := observed[row.Instance]
-			if !found {
-				continue
+}
+
+func (m *daemonMetadata) participatingShells() ([]participatingShell, error) {
+	db, err := m.participationDB, m.participationErr
+	if db == nil {
+		return nil, err
+	}
+	var rows []participatingShell
+	err = db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(participationBucket).ForEach(func(_, value []byte) error {
+			var row participatingShell
+			if err := json.Unmarshal(value, &row); err != nil {
+				return err
 			}
-			if validSession(view.Name) == nil && view.PID > 0 && (view.State == taskActive || view.State == taskWaiting || view.State == taskDetached) {
-				row.Owner = view.Owner
-				row.Name, row.State, row.PID = view.Name, view.State, view.PID
-				row.Shell, row.Program = view.Shell, view.Program
-				row.Pinned, row.PinUntil, row.ChangedAt = view.Pinned, view.PinUntil, now
+			if err := validateParticipatingShell(row); err != nil {
+				return err
 			}
+			rows = append(rows, row)
+			return nil
+		})
+	})
+	return rows, err
+}
+
+func putParticipation(bucket *bolt.Bucket, row participatingShell) error {
+	key := participationKey(row.Host, row.Instance)
+	if bucket.Get(key) == nil && bucket.Stats().KeyN >= 4096 {
+		return fmt.Errorf("participating shell limit reached")
+	}
+	data, err := json.Marshal(row)
+	if err != nil {
+		return err
+	}
+	return bucket.Put(key, data)
+}
+
+func (m *daemonMetadata) updateParticipation(root string, r metadataRequest) error {
+	db, err := m.participationDB, m.participationErr
+	if db == nil {
+		return err
+	}
+	now := time.Now()
+	return db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(participationBucket)
+		switch r.Action {
+		case "participation_observe", "participation_state":
+			if r.Participant == nil {
+				return fmt.Errorf("missing participating shell")
+			}
+			row := *r.Participant
+			if err := validateParticipatingShell(row); err != nil {
+				return err
+			}
+			key := participationKey(row.Host, row.Instance)
+			var previous participatingShell
+			old := bucket.Get(key)
+			if old != nil {
+				if err := json.Unmarshal(old, &previous); err != nil {
+					return err
+				}
+			}
+			if r.Action == "participation_state" {
+				if old == nil || previous.Attachment != row.Attachment {
+					return nil
+				}
+				if row.State == taskDetached {
+					previous.Name = row.Name
+				}
+				previous.State, previous.ChangedAt = row.State, now
+				previous.Pinned, previous.PinUntil = row.Pinned, row.PinUntil
+				row = previous
+			} else {
+				row.ChangedAt = now
+				if old != nil && row.HostInfo == (hostInfo{}) {
+					row.HostInfo = previous.HostInfo
+				}
+			}
+			return putParticipation(bucket, row)
+		case "participation_forget":
+			if !validTaskUID(r.Instance) || validSSHDestination(r.Host) != nil {
+				return fmt.Errorf("invalid participating shell identity")
+			}
+			return bucket.Delete(participationKey(r.Host, r.Instance))
+		case "participation_refresh":
+			if r.Participation == nil || validSSHDestination(r.Host) != nil {
+				return fmt.Errorf("invalid participating shell refresh")
+			}
+			for _, view := range r.Participation.Shells {
+				if !validTaskUID(view.Instance) || view.Owner != "" && view.Owner != identityFromUID(canonicalTaskUID(view.Owner)) {
+					return fmt.Errorf("invalid shell or parent ID in participation refresh")
+				}
+			}
+			observed := make(map[string]shellView, len(r.Participation.Shells))
+			for _, view := range r.Participation.Shells {
+				observed[view.Instance] = view
+			}
+			var changed []participatingShell
+			var removed [][]byte
+			prefix := []byte(r.Host + "\x00")
+			cursor := bucket.Cursor()
+			for key, value := cursor.Seek(prefix); bytes.HasPrefix(key, prefix); key, value = cursor.Next() {
+				var row participatingShell
+				if err := json.Unmarshal(value, &row); err != nil {
+					return err
+				}
+				if !row.ChangedAt.Before(r.Participation.Since) {
+					continue
+				}
+				view, found := observed[row.Instance]
+				if !found {
+					removed = append(removed, bytes.Clone(key))
+					continue
+				}
+				if validSession(view.Name) == nil && view.PID > 0 && (view.State == taskActive || view.State == taskWaiting || view.State == taskDetached) {
+					row.Owner = view.Owner
+					row.Name, row.State, row.PID = view.Name, view.State, view.PID
+					row.Shell, row.Program = view.Shell, view.Program
+					row.Pinned, row.PinUntil, row.ChangedAt = view.Pinned, view.PinUntil, now
+					changed = append(changed, row)
+				}
+			}
+			for _, key := range removed {
+				if err := bucket.Delete(key); err != nil {
+					return err
+				}
+			}
+			for _, row := range changed {
+				if err := putParticipation(bucket, row); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
-		updated = append(updated, row)
-	}
-	return updated
+		return fmt.Errorf("invalid metadata operation")
+	})
 }

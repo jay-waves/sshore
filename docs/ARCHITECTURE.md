@@ -178,7 +178,8 @@ before changing update, reset or approval behavior.
 `pstree` follows shell parent UIDs across hosts. Both views group by SSH destination, with
 `local` first. `list` shows the observed SSH address, OS, architecture, and hostname when
 available. Conflicting snapshots for the same SSH name leave only the name.
-Both views read the existing daemon registry, cached remote shells, and incoming leases. Listing
+Both views read the existing daemon registry, cached remote shells, and incoming leases. The daemon
+stores remote shell participation in a private bbolt database and imports legacy JSON once. Listing
 starts no daemon and sends no worker probes. Resources appear until their registration ends.
 A shell whose attachment transition holds its lock appears as unknown. Starting and exited
 shells are omitted when their state is known. The hosted shell list follows `setup_ready` on the same exec

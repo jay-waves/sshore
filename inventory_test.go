@@ -27,6 +27,7 @@ func TestInventoryReadsPublishedStateWhileWritersAreBusy(t *testing.T) {
 	}
 	activity := &daemonActivity{tasks: tasks, root: root}
 	activity.metadata.loadParticipation(root)
+	defer activity.metadata.closeParticipation()
 
 	// Simulate a metadata writer blocked on disk and a shell busy starting.
 	activity.metadata.shellMu.Lock()
@@ -62,5 +63,62 @@ func TestInventoryProbeSkipsDaemonBeforeEndpointPublication(t *testing.T) {
 	// An account can already own the lock while loading its history.
 	if _, err := ownedDaemonRecord(dir, 0); !os.IsNotExist(err) {
 		t.Fatalf("unpublished daemon endpoint: %v", err)
+	}
+}
+
+func TestParticipationMigrationForgetAndStaleAttachment(t *testing.T) {
+	root := t.TempDir()
+	dir, err := prepareStateDir(root, "connections")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := participatingShell{Host: "work", Instance: newTaskUID(), Name: "shell-name", State: taskActive, PID: 42, Attachment: newTaskUID()}
+	if err := writeStateJSON(filepath.Join(dir, "participation.json"), []participatingShell{row}); err != nil {
+		t.Fatal(err)
+	}
+	var metadata daemonMetadata
+	metadata.loadParticipation(root)
+	defer metadata.closeParticipation()
+	rows, err := metadata.participatingShells()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("legacy history: %+v, %v", rows, err)
+	}
+	stale := row
+	stale.Attachment = newTaskUID()
+	stale.State = taskDetached
+	if err := metadata.updateParticipation(root, metadataRequest{Action: "participation_state", Participant: &stale}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = metadata.participatingShells()
+	if err != nil || len(rows) != 1 || rows[0].State != taskActive {
+		t.Fatalf("stale attachment changed history: %+v, %v", rows, err)
+	}
+	if err := metadata.updateParticipation(root, metadataRequest{Action: "participation_forget", Host: row.Host, Instance: row.Instance}); err != nil {
+		t.Fatal(err)
+	}
+	metadata.closeParticipation()
+	metadata = daemonMetadata{}
+	metadata.loadParticipation(root)
+	rows, err = metadata.participatingShells()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("forgotten legacy history returned after restart: %+v, %v", rows, err)
+	}
+}
+
+func TestMalformedParticipationHistoryLeavesLiveInventoryAvailable(t *testing.T) {
+	root := t.TempDir()
+	dir, err := prepareStateDir(root, "connections")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeStateFile(filepath.Join(dir, "participation.json"), []byte("{")); err != nil {
+		t.Fatal(err)
+	}
+	activity := &daemonActivity{tasks: &daemonTasks{}, root: root}
+	activity.metadata.loadParticipation(root)
+	defer activity.metadata.closeParticipation()
+	inv := activity.listTasks()
+	if len(inv.Errors) != 1 {
+		t.Fatalf("history failure not reported: %+v", inv.Errors)
 	}
 }

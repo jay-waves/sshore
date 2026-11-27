@@ -222,6 +222,10 @@ func (a *daemonActivity) selectTaskID(ref, kind, parent string, attach bool) (*s
 	for _, target := range candidates {
 		live[target.Identity] = true
 	}
+	observed, err := a.metadata.participatingShells()
+	if err != nil {
+		return nil, err
+	}
 	a.metadata.shellMu.Lock()
 	defer a.metadata.shellMu.Unlock()
 	records, err := a.metadata.readRecentConnectionsLocal()
@@ -229,10 +233,6 @@ func (a *daemonActivity) selectTaskID(ref, kind, parent string, attach bool) (*s
 		return nil, err
 	}
 	if err := a.metadata.loadDetachedAttachments(); err != nil {
-		return nil, err
-	}
-	observed, err := a.metadata.participatingShells()
-	if err != nil {
 		return nil, err
 	}
 	addRoute := func(route *recentConnection) {
@@ -303,6 +303,10 @@ func (a *daemonActivity) selectTaskName(name, kind, parent string, attach bool) 
 	if attach {
 		candidates = append(candidates, a.remoteChildCandidates(parent, name)...)
 	}
+	observed, err := a.metadata.participatingShells()
+	if err != nil {
+		return nil, err
+	}
 	a.metadata.shellMu.Lock()
 	defer a.metadata.shellMu.Unlock()
 	routes, err := a.metadata.readRecentConnectionsLocal()
@@ -310,10 +314,6 @@ func (a *daemonActivity) selectTaskName(name, kind, parent string, attach bool) 
 		return nil, err
 	}
 	if err := a.metadata.loadDetachedAttachments(); err != nil {
-		return nil, err
-	}
-	observed, err := a.metadata.participatingShells()
-	if err != nil {
 		return nil, err
 	}
 	known := make(map[string]bool)
