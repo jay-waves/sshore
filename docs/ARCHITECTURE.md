@@ -124,10 +124,10 @@ in `ready`.
 
 The authenticated exit frame carries the exit code and terminal output offset.
 The frontend drains the reported tail within a time budget and reports the
-exit even if the tail is incomplete. The local root prompt opens before loading
-the shell tree. When the local account daemon shuts down, attached local clients
-exit to the invoking terminal. Remote exits and detaches return to the parent
-or the invoking terminal. Exit notices report surviving pinned children directly.
+exit even if the tail is incomplete. A remote root shell returns its exit code to the caller.
+The local root prompt opens before loading the shell tree. Local daemon shutdown returns
+attached clients to the invoking terminal. A nested remote exit returns to the parent.
+Exit notices report surviving pinned children directly.
 After a local approval or cancellation, the client resumes the requesting shell.
 The task completes after its attachment and PTY close. A connection loss without an
 exit frame leaves the state unconfirmed. The exit notice identifies the restored shell,
@@ -178,15 +178,14 @@ before changing update, reset or approval behavior.
 `pstree` follows shell parent UIDs across hosts. Both views group by SSH destination, with
 `local` first. `list` shows the observed SSH address, OS, architecture, and hostname when
 available. Conflicting snapshots for the same SSH name leave only the name.
-Both views read the existing daemon registry, cached remote shells, and incoming leases. The daemon
-stores remote shell participation in a private bbolt database and imports legacy JSON once. Listing
-starts no daemon and sends no worker probes. Resources appear until their registration ends.
+Both views read live tasks, incoming leases, and `connections/participation.db`. The daemon
+imports legacy participation JSON once. If the history fails, both views show live tasks and
+report the error. Listing starts no daemon and sends no worker probes.
 A shell whose attachment transition holds its lock appears as unknown. Starting and exited
 shells are omitted when their state is known. The hosted shell list follows `setup_ready` on the same exec
 stream. A live registration takes precedence over an observation of the same UID.
 
-Program sessions appear as `run`. On the managing account, `list` shows the executable and its
-arguments. Cached remote observations carry the executable name.
+Program sessions appear as `run`. The managing account lists arguments alongside the executable.
 
 On Windows, the command console and child shell shortcut use the last reported
 filesystem location when available. Shells can report it through `OSC 9;9`, including

@@ -13,7 +13,7 @@ func TestInventoryReadsPublishedStateWhileWritersAreBusy(t *testing.T) {
 	if err := tasks.registerShell(shell, nil); err != nil {
 		t.Fatal(err)
 	}
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "state")
 	dir, err := prepareStateDir(root, "connections")
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestInventoryProbeSkipsDaemonBeforeEndpointPublication(t *testing.T) {
 }
 
 func TestParticipationMigrationForgetAndStaleAttachment(t *testing.T) {
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "state")
 	dir, err := prepareStateDir(root, "connections")
 	if err != nil {
 		t.Fatal(err)
@@ -86,14 +86,14 @@ func TestParticipationMigrationForgetAndStaleAttachment(t *testing.T) {
 	stale := row
 	stale.Attachment = newTaskUID()
 	stale.State = taskDetached
-	if err := metadata.updateParticipation(root, metadataRequest{Action: "participation_state", Participant: &stale}); err != nil {
+	if err := metadata.updateParticipation(metadataRequest{Action: "participation_state", Participant: &stale}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err = metadata.participatingShells()
 	if err != nil || len(rows) != 1 || rows[0].State != taskActive {
 		t.Fatalf("stale attachment changed history: %+v, %v", rows, err)
 	}
-	if err := metadata.updateParticipation(root, metadataRequest{Action: "participation_forget", Host: row.Host, Instance: row.Instance}); err != nil {
+	if err := metadata.updateParticipation(metadataRequest{Action: "participation_forget", Host: row.Host, Instance: row.Instance}); err != nil {
 		t.Fatal(err)
 	}
 	metadata.closeParticipation()
@@ -106,7 +106,7 @@ func TestParticipationMigrationForgetAndStaleAttachment(t *testing.T) {
 }
 
 func TestMalformedParticipationHistoryLeavesLiveInventoryAvailable(t *testing.T) {
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "state")
 	dir, err := prepareStateDir(root, "connections")
 	if err != nil {
 		t.Fatal(err)
@@ -114,10 +114,18 @@ func TestMalformedParticipationHistoryLeavesLiveInventoryAvailable(t *testing.T)
 	if err := writeStateFile(filepath.Join(dir, "participation.json"), []byte("{")); err != nil {
 		t.Fatal(err)
 	}
-	activity := &daemonActivity{tasks: &daemonTasks{}, root: root}
+	tasks := &daemonTasks{}
+	shell := tasks.newTmuxTask(localShellRecord{Name: "live-shell"}, nil, nil, false)
+	if err := tasks.registerShell(shell, nil); err != nil {
+		t.Fatal(err)
+	}
+	activity := &daemonActivity{tasks: tasks, root: root}
 	activity.metadata.loadParticipation(root)
 	defer activity.metadata.closeParticipation()
 	inv := activity.listTasks()
+	if len(inv.LocalShells) != 1 || inv.LocalShells[0].Name != "live-shell" {
+		t.Fatalf("live shell missing: %+v", inv.LocalShells)
+	}
 	if len(inv.Errors) != 1 {
 		t.Fatalf("history failure not reported: %+v", inv.Errors)
 	}

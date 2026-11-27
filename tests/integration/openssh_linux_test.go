@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -91,11 +92,11 @@ Match command "printf forwarding-check"
 	}
 	remoteCLI := func(t *testing.T, ctx context.Context, args ...string) string {
 		t.Helper()
-		home, err := os.UserHomeDir()
+		account, err := user.Current()
 		if err != nil {
 			t.Fatal(err)
 		}
-		id, err := os.ReadFile(filepath.Join(home, ".sshore", "deployment-id"))
+		id, err := os.ReadFile(filepath.Join(account.HomeDir, ".sshore", "deployment-id"))
 		if err != nil {
 			t.Fatal(err)
 		}

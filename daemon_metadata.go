@@ -148,7 +148,7 @@ func (a *daemonActivity) handleMetadata(r metadataRequest) (reply metadataReply)
 func (a *daemonActivity) handleShellHistory(r metadataRequest) (reply metadataReply) {
 	s := &a.metadata
 	if r.Action == "participation_observe" || r.Action == "participation_state" || r.Action == "participation_forget" || r.Action == "participation_refresh" {
-		if err := s.updateParticipation(a.root, r); err != nil {
+		if err := s.updateParticipation(r); err != nil {
 			reply.Error = err.Error()
 		}
 		return

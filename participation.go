@@ -3,13 +3,14 @@ package main
 import (
 	"bytes"
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jay-waves/sshore/internal/sys"
 	bolt "go.etcd.io/bbolt"
-	"time"
 )
 
 // Participation records only tasks opened through this client account.
@@ -76,6 +77,8 @@ func validateParticipatingShell(row participatingShell) error {
 	}
 }
 
+const participationLimit = 4096
+
 var participationBucket = []byte("participation")
 
 func participationKey(host, instance string) []byte { return []byte(host + "\x00" + instance) }
@@ -92,17 +95,10 @@ func (m *daemonMetadata) openParticipation(root string) error {
 		return err
 	}
 	path := filepath.Join(dir, "participation.db")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return err
-	}
-	if err = f.Close(); err != nil {
-		return err
-	}
-	if err = sys.PrivateStatePath(path, false); err != nil {
-		return err
-	}
-	db, err := bolt.Open(path, 0600, &bolt.Options{Timeout: time.Second})
+	db, err := bolt.Open(path, 0600, &bolt.Options{
+		Timeout:  time.Second,
+		OpenFile: openParticipationFile,
+	})
 	if err != nil {
 		return err
 	}
@@ -111,7 +107,7 @@ func (m *daemonMetadata) openParticipation(root string) error {
 			return nil
 		}
 		var legacy recentHistory[participatingShell]
-		if err := legacy.loadAt(root, "participation.json", 1024*1024, 4096, validateParticipatingShell); err != nil {
+		if err := legacy.loadAt(root, "participation.json", 1024*1024, participationLimit, validateParticipatingShell); err != nil {
 			return err
 		}
 		bucket, err := tx.CreateBucket(participationBucket)
@@ -119,7 +115,7 @@ func (m *daemonMetadata) openParticipation(root string) error {
 			return err
 		}
 		for _, row := range legacy.rows {
-			if err := putParticipation(bucket, row); err != nil {
+			if err := writeParticipation(bucket, participationKey(row.Host, row.Instance), row); err != nil {
 				return err
 			}
 		}
@@ -131,6 +127,25 @@ func (m *daemonMetadata) openParticipation(root string) error {
 	}
 	m.participationDB = db
 	return nil
+}
+
+func openParticipationFile(path string, flags int, mode os.FileMode) (*os.File, error) {
+	err := sys.PrivateStatePath(path, false)
+	if err == nil {
+		return os.OpenFile(path, flags&^os.O_CREATE, mode)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, flags|os.O_EXCL, mode)
+	if err != nil {
+		return nil, err
+	}
+	if err := sys.PrivateStatePath(path, false); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }
 
 func (m *daemonMetadata) closeParticipation() {
@@ -161,11 +176,7 @@ func (m *daemonMetadata) participatingShells() ([]participatingShell, error) {
 	return rows, err
 }
 
-func putParticipation(bucket *bolt.Bucket, row participatingShell) error {
-	key := participationKey(row.Host, row.Instance)
-	if bucket.Get(key) == nil && bucket.Stats().KeyN >= 4096 {
-		return fmt.Errorf("participating shell limit reached")
-	}
+func writeParticipation(bucket *bolt.Bucket, key []byte, row participatingShell) error {
 	data, err := json.Marshal(row)
 	if err != nil {
 		return err
@@ -173,13 +184,13 @@ func putParticipation(bucket *bolt.Bucket, row participatingShell) error {
 	return bucket.Put(key, data)
 }
 
-func (m *daemonMetadata) updateParticipation(root string, r metadataRequest) error {
+func (m *daemonMetadata) updateParticipation(r metadataRequest) error {
 	db, err := m.participationDB, m.participationErr
 	if db == nil {
 		return err
 	}
-	now := time.Now()
 	return db.Update(func(tx *bolt.Tx) error {
+		now := time.Now()
 		bucket := tx.Bucket(participationBucket)
 		switch r.Action {
 		case "participation_observe", "participation_state":
@@ -214,7 +225,12 @@ func (m *daemonMetadata) updateParticipation(root string, r metadataRequest) err
 					row.HostInfo = previous.HostInfo
 				}
 			}
-			return putParticipation(bucket, row)
+			// Only a new observation adds a key. Keep the bounded count scan
+			// off the import, refresh and attachment state update paths.
+			if old == nil && bucket.Stats().KeyN >= participationLimit {
+				return fmt.Errorf("participating shell limit reached")
+			}
+			return writeParticipation(bucket, key, row)
 		case "participation_forget":
 			if !validTaskUID(r.Instance) || validSSHDestination(r.Host) != nil {
 				return fmt.Errorf("invalid participating shell identity")
@@ -264,7 +280,7 @@ func (m *daemonMetadata) updateParticipation(root string, r metadataRequest) err
 				}
 			}
 			for _, row := range changed {
-				if err := putParticipation(bucket, row); err != nil {
+				if err := writeParticipation(bucket, participationKey(row.Host, row.Instance), row); err != nil {
 					return err
 				}
 			}
