@@ -112,8 +112,7 @@ func writeListWidth(out io.Writer, inv inventory, current string, color bool, sc
 		if host == localInventoryHost && inv.LocalHost != nil {
 			info = *inv.LocalHost
 		}
-		fmt.Fprint(out, termui.Render(color, termui.Accent, "HOST  "+inventoryHostTitle(host, info)))
-		fmt.Fprintln(out)
+		fmt.Fprintln(out, inventoryHostTitle(host, info, color))
 		table := [][]termui.TableCell{{{Text: "ID"}, {Text: "TYPE"}, {Text: "STATE"}, {Text: "PARENT"}, {Text: "DETAIL"}}}
 		currentRow := -1
 		for _, r := range rows[start:end] {
@@ -220,8 +219,8 @@ func taskStateCell(state string) termui.TableCell {
 	return cell
 }
 
-func inventoryHostTitle(route string, info hostInfo) string {
-	title := hostDisplayLabel(route)
+func inventoryHostTitle(route string, info hostInfo, color bool) string {
+	title := "HOST  " + hostDisplayLabel(route)
 	if info.Address != "" {
 		address := info.Address
 		if info.Port != "" && info.Port != "22" {
@@ -242,8 +241,9 @@ func inventoryHostTitle(route string, info hostInfo) string {
 			details = append(details, value)
 		}
 	}
+	title = termui.Render(color, termui.Accent, title)
 	if len(details) > 0 {
-		title += " (" + strings.Join(details, ", ") + ")"
+		title += " " + termui.Render(color, termui.Muted, "("+strings.Join(details, ", ")+")")
 	}
 	return title
 }
