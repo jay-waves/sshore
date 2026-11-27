@@ -787,6 +787,18 @@ Requires FUSE on Linux, WinFsp on Windows, or macFUSE with its kernel extension
 on Apple Silicon Macs (experimental).
 `,
 		},
+		"lf": {
+			run: runFileBrowser, group: groupSSH, ssh: true, max: 1,
+			summary:  "Browse files and open a shell, copy or mount",
+			help:     "Usage: sshore lf [HOST[:PATH] | here:PATH] [options]\n\nBrowse here by default. A host starts in its home directory.\ns opens a shell, c copies, m mounts and f lists ports. q quits.\n" + sshOptions,
+			examples: "Browse the current directory\n  sshore lf\nBrowse a project on an SSH host\n  sshore lf work:/srv/project\n",
+		},
+		"lp": {
+			run: runPortBrowser, group: groupSSH, ssh: true, max: 1,
+			summary:  "Browse listening TCP ports and forward a service",
+			help:     "Usage: sshore lp [HOST] [options]\n\nBrowse TCP listeners reachable via IPv4 loopback. Select a service to forward.\n" + sshOptions,
+			examples: "Browse services on an SSH host\n  sshore lp work\n",
+		},
 		"forward": {
 			run: runEndpointForward, group: groupSSH, summary: "Forward a TCP port", aliases: []string{"fwd"},
 			ssh: true, min: 2, max: 2, flags: []string{"--retries"},

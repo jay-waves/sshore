@@ -35,6 +35,19 @@ submit requests. A request provides no evidence of who typed it. Verify the cont
 entering credentials or granting access. Private records are within the local account's
 trust boundary. See the [security model](SECURITY.md#trust-boundaries).
 
+## Standalone browsers
+
+`sshore lf` opens the current directory. Give it a host or a host-qualified path to browse over
+SFTP. Use `s` to open a shell at the selected directory, `c` to copy, or `m` to mount. On the local
+machine, select an empty directory to use as the mountpoint. On a remote host, select the directory
+to mount. Selecting a directory for copy includes its contents.
+
+`f` opens the port list for the same host. Use `sshore lp [HOST]` to open that list directly.
+It shows IPv4 wildcard and loopback TCP listeners with process information when available. Select
+a port with the arrow keys, filter with `/`, or enter a port with `:`. Submit the target port
+to start the forward. Both browsers restore the terminal before running the chosen command.
+Requests sent to `origin:` follow the same approval flow as the corresponding CLI command.
+
 ## Command console
 
 `Ctrl+B s` or `Ctrl+B :` opens the local `sshore>` command console from an active shell.

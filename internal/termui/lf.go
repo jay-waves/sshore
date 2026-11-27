@@ -44,6 +44,7 @@ type LFOptions struct {
 	ChooseDirectories bool
 	Manual            bool
 	LocalFiles        bool // The listed paths belong to this process's filesystem.
+	BrowseAction      func(key byte, directory bool)
 	Validate          func(string) error
 	Input             <-chan LFInput
 	Output            io.Writer
@@ -226,7 +227,7 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 		}
 	}
 	updateCursor := func() {
-		if options.Directory && panes[1].err == nil {
+		if (options.Directory || options.BrowseAction != nil) && panes[1].err == nil {
 			panes[1].entries = append([]LFEntry{{Name: ".", IsDir: true}}, panes[1].entries...)
 		}
 		index = min(index, max(0, len(panes[1].entries)-1))
@@ -495,6 +496,21 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 				goToTop := key == 'g' && awaitingG
 				awaitingG = key == 'g' && !goToTop
 				switch key {
+				case 's', 'c', 'm', 'f':
+					if options.BrowseAction == nil || index >= len(panes[1].entries) {
+						continue
+					}
+					entry := panes[1].entries[index]
+					name := options.Join(current, entry.Name)
+					if key == 's' && !entry.IsDir {
+						name = current
+					}
+					if key == 'm' && !entry.IsDir {
+						validationErr = errors.New("Choose a directory to mount")
+						continue
+					}
+					options.BrowseAction(key, entry.IsDir)
+					return []string{name}, nil
 				case '/', '?':
 					searchPrompt = key
 					query = query[:0]
@@ -616,7 +632,7 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 							}
 							continue
 						}
-					} else if options.Directory || !enter && multi {
+					} else if options.BrowseAction != nil || options.Directory || !enter && multi {
 						continue
 					}
 					validationErr = validateSelection([]string{name})
@@ -674,16 +690,20 @@ func lfSearch(entries []LFEntry, index int, pattern string, direction int) (int,
 }
 
 type lfScreen struct {
-	rows         []string
-	width        int
-	cursorColumn int
+	listScreen
 	directory    string
 	firstVisible int
 }
 
+type listScreen struct {
+	rows         []string
+	width        int
+	cursorColumn int
+}
+
 // Paint only changed rows. Erasing to the right of each replacement removes
 // old text without blanking the screen between keystrokes.
-func (s *lfScreen) paint(out io.Writer, width int, rows []string, cursorColumn int) error {
+func (s *listScreen) paint(out io.Writer, width int, rows []string, cursorColumn int) error {
 	full := len(rows) != len(s.rows) || width != s.width
 	var update strings.Builder
 	if full || s.cursorColumn != 0 && cursorColumn == 0 {
@@ -817,6 +837,9 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 	}
 	if options.Manual {
 		hint += "  : Type path"
+	}
+	if options.BrowseAction != nil {
+		hint = "s Shell  c Copy  m Mount  f Ports  l Open  / Search  q Quit"
 	}
 	var footer string
 	var cursorColumn int

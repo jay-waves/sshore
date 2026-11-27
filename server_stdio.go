@@ -33,6 +33,12 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 	case "mount-agent":
 		account, _ := localMachineIdentity()
 		return files.ServeAgent(agentStdio(), req.Mode, version, account, remoteFileHome(), req.PeerMetadata, beginIncomingMountTask)
+	case "listeners":
+		rows, err := listeners(context.Background())
+		if err != nil {
+			return err
+		}
+		return writeControlJSON(os.Stdout, rows)
 	case "forward-agent":
 		return serveForwardAgent(req.Forward)
 	}

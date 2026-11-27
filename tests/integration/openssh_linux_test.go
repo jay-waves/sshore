@@ -3,6 +3,7 @@
 package tests_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -551,6 +552,94 @@ Match command "printf forwarding-check"
 		}
 		if got := run(t, ctx, "sh", host, "--", "cat payload lf-copy-tree/payload"); got != "treetree" {
 			t.Fatalf("copied content = %q", got)
+		}
+	})
+	scenario("local browsers restore the terminal on quit", func(t *testing.T, ctx context.Context) {
+		for _, tc := range []struct{ cmd, marker string }{{"lf", "s Shell"}, {"lp", "Enter Forward"}} {
+			out, err := runTerminal(t, ctx, exec.CommandContext(ctx, binary, tc.cmd), func(send func(string), wait terminalWait) {
+				wait(tc.marker, true)
+				send("q")
+			})
+			_, screen, opened := strings.Cut(out, "\x1b[?1049h")
+			if err != nil || !opened || !strings.Contains(screen, "\x1b[?1049l") {
+				t.Fatalf("%s did not restore the terminal: %v\n%s", tc.cmd, err, out)
+			}
+		}
+	})
+	scenario("file browser operates on the selected remote path", func(t *testing.T, ctx context.Context) {
+		root := run(t, ctx, "sh", host, "--", `mkdir -p browser-demo && printf payload > browser-demo/marker && cd browser-demo && pwd`)
+		root = strings.TrimSpace(root)
+		browse := func(key string, after func(func(string), terminalWait)) string {
+			cmd := command(ctx, "lf", host+":"+root)
+			cmd.Dir = dir
+			out, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+				wait("\x1b[7m./", true)
+				send(key)
+				after(send, wait)
+			})
+			if err != nil {
+				t.Fatalf("lf %q: %v\n%s", key, err, out)
+			}
+			return out
+		}
+		browse("s", func(send func(string), wait terminalWait) {
+			wait("Connected " + host + ":")
+			send("cat marker; echo\n")
+			wait("payload")
+			send("exit\n")
+		})
+		browse("jc", func(send func(string), wait terminalWait) {
+			wait("Choose download destination", true)
+			wait("\x1b[7m./", true)
+			send("\r")
+		})
+		if data, err := os.ReadFile(filepath.Join(dir, "marker")); err != nil || string(data) != "payload" {
+			t.Fatalf("downloaded %q: %v", data, err)
+		}
+		out := browse("m", func(send func(string), wait terminalWait) { wait("Started mount/") })
+		_, task, _ := strings.Cut(out, "Started mount/")
+		name, _, _ := strings.Cut(task, ":")
+		defer local(t, ctx, "kill", name)
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if data, err := os.ReadFile(filepath.Join(home, "mnt", name, "marker")); err != nil || string(data) != "payload" {
+			t.Fatalf("mounted %q: %v", data, err)
+		}
+		browse("f", func(send func(string), wait terminalWait) { wait("2222", true); send("q") })
+	})
+	scenario("port browser forwards a discovered SSH service to an edited port", func(t *testing.T, ctx context.Context) {
+		probe, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dest := probe.Addr().String()
+		port := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
+		probe.Close()
+		out, err := runTerminal(t, ctx, command(ctx, "lp", host), func(send func(string), wait terminalWait) {
+			wait("2222", true)
+			// Select sshd by port even if other fixture services are listening.
+			send("/2222\r")
+			wait("Listen on here at port:", true)
+			send("\x15" + port + "\r")
+			wait("Started forward/")
+		})
+		if err != nil {
+			t.Fatalf("lp: %v\n%s", err, out)
+		}
+		_, task, _ := strings.Cut(out, "Started forward/")
+		name, _, _ := strings.Cut(task, ":")
+		defer local(t, ctx, "kill", name)
+		conn, err := net.DialTimeout("tcp4", dest, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		banner, err := bufio.NewReader(conn).ReadString('\n')
+		if err != nil || !strings.HasPrefix(banner, "SSH-") {
+			t.Fatalf("forwarded banner %q: %v", banner, err)
 		}
 	})
 	scenario("console lf returns to the prompt or opens a shell in the selected remote directory", func(t *testing.T, ctx context.Context) {
