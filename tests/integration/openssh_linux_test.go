@@ -21,7 +21,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
-	"golang.org/x/crypto/ssh"
+	cryptossh "golang.org/x/crypto/ssh"
 	"golang.org/x/sys/unix"
 )
 
@@ -174,11 +174,11 @@ Match command "printf forwarding-check"
 			return data
 		}
 		private, public := read(target), read(target+".pub")
-		signer, err := ssh.ParsePrivateKey(private)
+		signer, err := cryptossh.ParsePrivateKey(private)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if signer.PublicKey().Type() != ssh.KeyAlgoED25519 || !bytes.Equal(ssh.MarshalAuthorizedKey(signer.PublicKey()), public) {
+		if signer.PublicKey().Type() != cryptossh.KeyAlgoED25519 || !bytes.Equal(cryptossh.MarshalAuthorizedKey(signer.PublicKey()), public) {
 			t.Fatal("generated files are not a matching Ed25519 key pair")
 		}
 		if _, err := generate(); err == nil {
