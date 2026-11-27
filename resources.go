@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/release"
+	deployment "github.com/jay-waves/sshore/internal/release/remote"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
@@ -207,7 +207,7 @@ func killRemoteAccount(ctx context.Context, o options, reset bool) error {
 	stop := context.AfterFunc(ctx, func() { client.Close() })
 	defer stop()
 	process, err := connection.OpenCommand(ctx, client, "", os.Stderr)
-	if err != nil && !errors.Is(err, release.ErrRemoteMissing) {
+	if err != nil && !errors.Is(err, deployment.ErrMissing) {
 		return err
 	}
 	var snapshot daemonSnapshot

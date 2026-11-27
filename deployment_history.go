@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/jay-waves/sshore/internal/release"
+	deployment "github.com/jay-waves/sshore/internal/release/remote"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
 )
@@ -173,10 +173,10 @@ var deploymentCoordinates = sync.OnceValues(func() (directory, clientID string) 
 	if err != nil {
 		return "", ""
 	}
-	root := filepath.Join(account.HomeDir, filepath.FromSlash(release.ClientDirectory))
+	root := filepath.Join(account.HomeDir, filepath.FromSlash(deployment.ClientDirectory))
 	if !sameDeploymentRoot(filepath.Dir(parent), root) {
 		home, err := filepath.EvalSymlinks(account.HomeDir)
-		if err != nil || !sameDeploymentRoot(filepath.Dir(parent), filepath.Join(home, filepath.FromSlash(release.ClientDirectory))) {
+		if err != nil || !sameDeploymentRoot(filepath.Dir(parent), filepath.Join(home, filepath.FromSlash(deployment.ClientDirectory))) {
 			return "", ""
 		}
 	}

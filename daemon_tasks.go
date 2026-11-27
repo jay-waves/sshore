@@ -267,7 +267,7 @@ type resourceReply struct {
 // expose the same bounded control operations through the account task table.
 type daemonResourceTask struct {
 	mu           sync.Mutex
-	record       resourceRecord // UID and Host are immutable after registration.
+	record       resourceRecord // Only Detail, Remote and Mountpoint change after registration.
 	done         <-chan struct{}
 	control      func(string) resourceReply
 	stopMu       sync.Mutex
@@ -279,8 +279,6 @@ func (t *daemonResourceTask) setInitialIdentity(uid, name string) {
 }
 
 func (t *daemonResourceTask) taskName() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	return t.record.Name
 }
 func (t *daemonResourceTask) expired() bool {
@@ -410,10 +408,7 @@ func (s *daemonTasks) confirmedResourceLocked(change resourceMutation, id string
 }
 
 func (t *daemonResourceTask) matches(change resourceMutation) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	r := t.record
-	return r.Kind == change.Kind && (r.Name == change.Ref || r.UID == change.Ref)
+	return t.record.Kind == change.Kind && (t.record.Name == change.Ref || t.record.UID == change.Ref)
 }
 
 // Resolve all confirmed identities before stopping any workers.

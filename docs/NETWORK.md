@@ -54,7 +54,8 @@ forward. An approved copy uses an authorized file stream for SFTP.
 
 ## Task and account commands
 
-`list` and `pstree` read local daemon inventory and cached remote observations.
+`list` and `pstree` read the local daemon's live registry and last published
+remote observations. Listing does not wait for history writes or SSH responses.
 `detach` updates the active task through its managing daemon. `kill ID` and `kill NAME`
 resolve a known task and contact its managing daemon. `kill HOST --all` uses an
 administrative SSH exchange to preview

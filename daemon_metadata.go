@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,7 +17,7 @@ import (
 type daemonMetadata struct {
 	attachments   recentHistory[recentAttachment]
 	connections   recentHistory[recentConnection]
-	participation recentHistory[participatingShell]
+	participation atomic.Pointer[participationSnapshot]
 	shellMu       sync.Mutex
 }
 
@@ -30,14 +31,14 @@ type recentHistory[T any] struct {
 }
 
 func (h *recentHistory[T]) load(file string, maxBytes int, validate func(T) error) error {
-	return h.loadEntries(file, maxBytes, recentHistoryLimit, validate)
-}
-
-func (h *recentHistory[T]) loadEntries(file string, maxBytes, maxEntries int, validate func(T) error) error {
 	root, err := statePath("")
 	if err != nil {
 		return err
 	}
+	return h.loadAt(root, file, maxBytes, recentHistoryLimit, validate)
+}
+
+func (h *recentHistory[T]) loadAt(root, file string, maxBytes, maxEntries int, validate func(T) error) error {
 	path := filepath.Join(root, "connections", file)
 	if path == h.path {
 		return nil
@@ -97,10 +98,9 @@ type metadataRequest struct {
 	Participation *participationRefresh `json:",omitempty"`
 }
 type metadataReply struct {
-	Choice       string               `json:",omitempty"`
-	Target       *selectedTask        `json:",omitempty"`
-	Connection   *recentConnection    `json:",omitempty"`
-	Participants []participatingShell `json:",omitempty"`
+	Choice     string            `json:",omitempty"`
+	Target     *selectedTask     `json:",omitempty"`
+	Connection *recentConnection `json:",omitempty"`
 
 	Error string `json:",omitempty"`
 }
@@ -164,10 +164,8 @@ func (a *daemonActivity) handleShellHistory(r metadataRequest) (reply metadataRe
 		if r.Connection != nil {
 			err = s.rememberConnectionLocal(*r.Connection)
 		}
-	case "participation_get":
-		reply.Participants, err = s.readParticipatingShellsLocal(r.Host)
 	case "participation_observe", "participation_state", "participation_forget", "participation_refresh":
-		err = s.updateParticipation(r)
+		err = s.updateParticipation(a.root, r)
 	default:
 		err = fmt.Errorf("invalid metadata operation")
 	}

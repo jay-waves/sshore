@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/release"
+	deployment "github.com/jay-waves/sshore/internal/release/remote"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 )
 
@@ -76,7 +77,7 @@ func (e deploymentEndpoint) openService(ctx context.Context, client *sshio.Clien
 				return nil, err
 			}
 		}
-		previous, err = release.RemoteCommand(cached.Home, id, version, remoteServiceCommand)
+		previous, err = deployment.Command(cached.Home, id, version, remoteServiceCommand)
 		if err != nil {
 			return nil, err
 		}
@@ -93,15 +94,15 @@ func (e deploymentEndpoint) openService(ctx context.Context, client *sshio.Clien
 		launchErr = err
 	}
 
-	resolved, uploaded, err := release.PrepareRemote(ctx, client, id, version, deploymentReleaseBase, install)
+	resolved, uploaded, err := deployment.Prepare(ctx, client, id, version, deploymentReleaseBase, install)
 	if err != nil {
-		if pending != nil && !errors.Is(err, release.ErrRemoteMissing) {
+		if pending != nil && !errors.Is(err, deployment.ErrMissing) {
 			pending.forward(diagnostic)
 			err = errors.Join(launchErr, err)
 		}
 		return nil, err
 	}
-	command, err := release.RemoteCommand(resolved, id, version, remoteServiceCommand)
+	command, err := deployment.Command(resolved, id, version, remoteServiceCommand)
 	if err != nil {
 		return nil, err
 	}

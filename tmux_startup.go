@@ -46,9 +46,9 @@ func (s *tmuxTask) startManagedShell(m message) error {
 		return err
 	}
 	s.shellName = filepath.Base(path)
-	s.program = len(m.Argv) != 0
-	if s.program {
+	if len(m.Argv) != 0 {
 		s.programLine = shell.FormatCommand(m.Argv)
+		s.program.Store(true)
 	}
 	if runtime.GOOS == "windows" {
 		s.shellName = strings.TrimSuffix(strings.ToLower(s.shellName), ".exe")

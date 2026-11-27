@@ -132,16 +132,13 @@ func (a *daemonActivity) listTasks() inventory {
 	snapshot := a.tasks.taskInventory(query)
 	inv := emptyInventory()
 	inv.LocalHost = a.hostInfo.Load()
-	inv.Shells = append(inv.Shells, snapshot.Shells...)
+	inv.Shells = snapshot.Shells
 	inv.LocalShells = snapshot.nativeShells()
 	inv.Resources = snapshot.Resources
 	inv.Peers = excludeLocalResourcePeers(peerViews(a.incomingPeers()), inv.Resources)
-	reply := a.handleMetadata(metadataRequest{Action: "participation_get"})
-	if reply.Error != "" {
-		inv.Errors = append(inv.Errors, "remote shell history unavailable: "+cleanText(reply.Error))
-	}
-	for _, row := range reply.Participants {
-		inv.Shells = append(inv.Shells, shellView{HostInfo: row.HostInfo, Host: row.Host, Owner: row.Owner, Instance: row.Instance, Name: row.Name, State: row.State, Observed: true, SeenAt: row.ChangedAt, Pinned: row.Pinned, PinUntil: row.PinUntil, PID: row.PID, Shell: row.Shell, Program: row.Program})
+	observed, err := a.metadata.participatingShells()
+	if err != nil {
+		inv.Errors = append(inv.Errors, "remote shell history unavailable: "+cleanText(err.Error()))
 	}
 	// Both renderers prefer a live row over a cached observation of the same task.
 	live := make(map[string]bool, len(inv.LocalShells)+len(inv.Shells))
@@ -155,9 +152,11 @@ func (a *daemonActivity) listTasks() inventory {
 			live[shell.Instance] = true
 		}
 	}
-	inv.Shells = slices.DeleteFunc(inv.Shells, func(shell shellView) bool {
-		return shell.Observed && live[shell.Instance]
-	})
+	for _, row := range observed {
+		if !live[row.Instance] {
+			inv.Shells = append(inv.Shells, shellView{HostInfo: row.HostInfo, Host: row.Host, Owner: row.Owner, Instance: row.Instance, Name: row.Name, State: row.State, Observed: true, SeenAt: row.ChangedAt, Pinned: row.Pinned, PinUntil: row.PinUntil, PID: row.PID, Shell: row.Shell, Program: row.Program})
+		}
+	}
 	inv.setTaskReferences()
 	return inv
 }
@@ -166,9 +165,9 @@ func daemonListTasks() (inventory, error) {
 	if activity := accountActivity.Load(); activity != nil {
 		return activity.listTasks(), nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), daemonRequestTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	record, err := existingDaemonRecord()
+	record, err := daemonRecordWithin(0)
 	if os.IsNotExist(err) {
 		return emptyInventory(), nil
 	}

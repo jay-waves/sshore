@@ -1,4 +1,4 @@
-package release
+package remote
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/jay-waves/sshore/internal/release"
 	"github.com/jay-waves/sshore/internal/shell"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/pkg/sftp/v2"
@@ -20,7 +21,7 @@ import (
 const ClientDirectory = ".sshore/clients"
 const ResetMarker = ".reset"
 
-var ErrRemoteMissing = errors.New("remote deployment is absent")
+var ErrMissing = errors.New("remote deployment is absent")
 
 func openDeploymentFiles(ctx context.Context, client *sshio.Client) (_ *sftp.Client, _ func(), result error) {
 	session, err := client.NewSession()
@@ -53,7 +54,7 @@ func openDeploymentFiles(ctx context.Context, client *sshio.Client) (_ *sftp.Cli
 	}, nil
 }
 
-func PrepareRemote(ctx context.Context, client *sshio.Client, id, version, releaseBase string, install bool) (home string, uploaded bool, err error) {
+func Prepare(ctx context.Context, client *sshio.Client, id, version, releaseBase string, install bool) (home string, uploaded bool, err error) {
 	ftp, closeFiles, err := openDeploymentFiles(ctx, client)
 	if err != nil {
 		return "", false, err
@@ -75,7 +76,7 @@ func PrepareRemote(ctx context.Context, client *sshio.Client, id, version, relea
 	}
 	if !exists {
 		if !install {
-			return "", false, ErrRemoteMissing
+			return "", false, ErrMissing
 		}
 		dir := home
 		for part := range strings.SplitSeq(path.Dir(relative), "/") {
@@ -88,7 +89,7 @@ func PrepareRemote(ctx context.Context, client *sshio.Client, id, version, relea
 		if err := ftp.RemoveFile(marker); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return "", false, err
 		}
-		source, err := OpenBinary(ctx, releaseBase, version, platform.os, platform.binary)
+		source, err := release.OpenBinary(ctx, releaseBase, version, platform.os, platform.binary)
 		if err != nil {
 			return "", false, err
 		}
@@ -120,7 +121,7 @@ func (p deploymentPlatform) binaryPath(id, version string) string {
 	return path.Join(ClientDirectory, id, version, p.binary)
 }
 
-func RemoteCommand(home, id, version, command string) (string, error) {
+func Command(home, id, version, command string) (string, error) {
 	p, err := remoteDeploymentPlatform(home)
 	if err != nil {
 		return "", err
@@ -193,7 +194,7 @@ func uploadDeployment(ftp *sftp.Client, source io.Reader, destination string, wi
 	return nil
 }
 
-func RemoveRemote(ctx context.Context, client *sshio.Client, id, version string) error {
+func Remove(ctx context.Context, client *sshio.Client, id, version string) error {
 	ftp, closeFiles, err := openDeploymentFiles(ctx, client)
 	if err != nil {
 		return err

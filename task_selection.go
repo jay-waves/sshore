@@ -48,8 +48,6 @@ func (q taskQuery) candidate(uid string, task daemonTask) (selectedTask, bool) {
 			candidate.Instance = uid
 		}
 	case *daemonResourceTask:
-		t.mu.Lock()
-		defer t.mu.Unlock()
 		if q.Kind != "" && q.Kind != t.record.Kind {
 			return selectedTask{}, false
 		}
@@ -233,7 +231,7 @@ func (a *daemonActivity) selectTaskID(ref, kind, parent string, attach bool) (*s
 	if err := a.metadata.loadDetachedAttachments(); err != nil {
 		return nil, err
 	}
-	observed, err := a.metadata.readParticipatingShellsLocal("")
+	observed, err := a.metadata.participatingShells()
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +312,7 @@ func (a *daemonActivity) selectTaskName(name, kind, parent string, attach bool) 
 	if err := a.metadata.loadDetachedAttachments(); err != nil {
 		return nil, err
 	}
-	observed, err := a.metadata.readParticipatingShellsLocal("")
+	observed, err := a.metadata.participatingShells()
 	if err != nil {
 		return nil, err
 	}

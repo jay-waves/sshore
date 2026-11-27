@@ -2,13 +2,12 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 
-	"github.com/jay-waves/sshore/internal/release"
+	deployment "github.com/jay-waves/sshore/internal/release/remote"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
 )
@@ -207,7 +206,7 @@ func checkDeploymentAdmission() error {
 	if dir == "" {
 		return nil
 	}
-	_, err := os.Lstat(filepath.Join(dir, release.ResetMarker))
+	_, err := os.Lstat(filepath.Join(dir, deployment.ResetMarker))
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -243,7 +242,7 @@ func resetRemoteState(snapshot daemonSnapshot) error {
 	}
 	defer owner.Close()
 	// Keep new tasks out until the client removes the executable after exit.
-	if err := writeStateFile(filepath.Join(dir, release.ResetMarker), nil); err != nil {
+	if err := writeStateFile(filepath.Join(dir, deployment.ResetMarker), nil); err != nil {
 		return err
 	}
 	paths := resetPaths{state: filepath.Join(dir, "state"), account: filepath.Dir(owner.Path())}
@@ -255,5 +254,5 @@ func removeRemoteServer(ctx context.Context, client *sshio.Client) error {
 	if err != nil {
 		return err
 	}
-	return release.RemoveRemote(ctx, client, id, version)
+	return deployment.Remove(ctx, client, id, version)
 }

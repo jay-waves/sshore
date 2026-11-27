@@ -67,7 +67,7 @@ func openDaemonOwner(dir string) (*sys.FileLock, error) {
 }
 
 func daemonStateRootAt(dir, root string, explicit bool) (string, error) {
-	record, err := ownedDaemonRecord(dir)
+	record, err := ownedDaemonRecord(dir, time.Second)
 	if os.IsNotExist(err) {
 		return root, nil
 	}
@@ -125,21 +125,25 @@ func daemonPath() (string, error) {
 // Reads never start a manager or create locator/lock files. The owner lock,
 // rather than a leftover locator, establishes whether pending state exists.
 func existingDaemonRecord() (localShellRecord, error) {
+	return daemonRecordWithin(time.Second)
+}
+
+func daemonRecordWithin(wait time.Duration) (localShellRecord, error) {
 	dir, err := daemonLocation()
 	if err != nil {
 		return localShellRecord{}, err
 	}
-	return ownedDaemonRecord(dir)
+	return ownedDaemonRecord(dir, wait)
 }
 
-func ownedDaemonRecord(dir string) (localShellRecord, error) {
+func ownedDaemonRecord(dir string, wait time.Duration) (localShellRecord, error) {
 	owner, err := openDaemonOwner(dir)
 	if err != nil {
 		return localShellRecord{}, err
 	}
 	defer owner.Close()
 	path := filepath.Join(dir, "daemon.json")
-	for until := time.Now().Add(time.Second); ; {
+	for until := time.Now().Add(wait); ; {
 		if err := owner.TryLock(); err == nil {
 			return localShellRecord{}, os.ErrNotExist
 		} else if !errors.Is(err, sys.ErrFileLockBusy) {
@@ -151,6 +155,9 @@ func ownedDaemonRecord(dir string) (localShellRecord, error) {
 		}
 		if !os.IsNotExist(err) {
 			return record, fmt.Errorf("read account daemon endpoint %s: %w", path, err)
+		}
+		if wait == 0 {
+			return record, err
 		}
 		// Startup publishes the endpoint after taking ownership. Exit removes it
 		// before releasing ownership. Recheck both under the same account scope.
@@ -284,6 +291,9 @@ func runDaemon() (result error) {
 		}
 		defer log.Close()
 	}
+	tasks := &daemonTasks{log: log, cgroup: group, cgroupErr: cgroupErr}
+	activity := &daemonActivity{tasks: tasks, root: record.Directory}
+	activity.metadata.loadParticipation(activity.root)
 	if err = writeStateJSON(path, record); err != nil {
 		return err
 	}
@@ -312,8 +322,6 @@ func runDaemon() (result error) {
 			termui.Log(log, "daemon", termui.Info, "Daemon stopped.")
 		}
 	}()
-	tasks := &daemonTasks{log: log, cgroup: group, cgroupErr: cgroupErr}
-	activity := &daemonActivity{tasks: tasks, root: record.Directory}
 	go func() {
 		info := localHostInfo()
 		activity.hostInfo.Store(&info)

@@ -70,28 +70,33 @@ func validateParticipatingShell(row participatingShell) error {
 	}
 }
 
-func (m *daemonMetadata) loadParticipation() error {
-	return m.participation.loadEntries("participation.json", 1024*1024, 4096, validateParticipatingShell)
+type participationSnapshot struct {
+	recentHistory[participatingShell]
+	err error
 }
 
-func (m *daemonMetadata) readParticipatingShellsLocal(host string) ([]participatingShell, error) {
-	if err := m.loadParticipation(); err != nil {
-		return nil, err
-	}
-	var rows []participatingShell
-	for _, row := range m.participation.rows {
-		if host == "" || row.Host == host {
-			rows = append(rows, row)
+// The daemon publishes its last successful write as immutable state.
+func (m *daemonMetadata) loadParticipation(root string) *participationSnapshot {
+	snapshot := new(participationSnapshot)
+	snapshot.err = snapshot.loadAt(root, "participation.json", 1024*1024, 4096, validateParticipatingShell)
+	m.participation.Store(snapshot)
+	return snapshot
+}
+
+func (m *daemonMetadata) participatingShells() ([]participatingShell, error) {
+	snapshot := m.participation.Load()
+	return snapshot.rows, snapshot.err
+}
+
+func (m *daemonMetadata) updateParticipation(root string, r metadataRequest) error {
+	current := m.participation.Load()
+	if current.err != nil {
+		current = m.loadParticipation(root)
+		if current.err != nil {
+			return current.err
 		}
 	}
-	return rows, nil
-}
-
-func (m *daemonMetadata) updateParticipation(r metadataRequest) error {
-	if err := m.loadParticipation(); err != nil {
-		return err
-	}
-	rows := slices.Clone(m.participation.rows)
+	rows := slices.Clone(current.rows)
 	now := time.Now()
 	switch r.Action {
 	case "participation_observe", "participation_state":
@@ -147,10 +152,15 @@ func (m *daemonMetadata) updateParticipation(r metadataRequest) error {
 		}
 		rows = refreshParticipation(rows, r.Host, *r.Participation, now)
 	}
-	if slices.Equal(rows, m.participation.rows) {
+	if slices.Equal(rows, current.rows) {
 		return nil
 	}
-	return m.participation.replace(rows)
+	next := *current
+	if err := next.replace(rows); err != nil {
+		return err
+	}
+	m.participation.Store(&next)
+	return nil
 }
 
 func refreshParticipation(rows []participatingShell, host string, refresh participationRefresh, now time.Time) []participatingShell {

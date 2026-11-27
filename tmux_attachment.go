@@ -186,7 +186,7 @@ func (s *tmuxTask) prepareAttachment(p *attachment, m message, initial bool, key
 		p.sourceHost = cleanText(m.SourceHost)
 	}
 	pinned, until := s.runtime.PinState()
-	if err := p.controlMessage(message{Type: "ready", SoftwareVersion: version, Owner: s.parentIdentityLocked(), TreeKey: key, MachineID: machine, Pinned: pinned, PinUntil: until, Instance: instance, PID: s.runtime.PID(), Name: s.record.Name, Shell: s.shellName, Program: s.program}); err != nil {
+	if err := p.controlMessage(message{Type: "ready", SoftwareVersion: version, Owner: s.parentIdentityLocked(), TreeKey: key, MachineID: machine, Pinned: pinned, PinUntil: until, Instance: instance, PID: s.runtime.PID(), Name: s.record.Name, Shell: s.shellName, Program: s.program.Load()}); err != nil {
 		return err
 	}
 	if data := s.runtime.Replay(); len(data) > 0 {

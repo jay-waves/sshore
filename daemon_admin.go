@@ -98,10 +98,7 @@ func (s *daemonTasks) taskInfosLocked() []daemonTaskInfo {
 		info := daemonTaskInfo{ID: id, Name: task.taskName()}
 		switch task := task.(type) {
 		case *tmuxTask:
-			shell := task
-			shell.mu.Lock()
-			info.Kind = terminalTaskKind(shell.program)
-			shell.mu.Unlock()
+			info.Kind = terminalTaskKind(task.program.Load())
 		case *daemonResourceTask:
 			info.Kind = task.record.Kind
 		}

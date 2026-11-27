@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,7 +30,7 @@ type tmuxTask struct {
 
 	shellName                     string
 	programLine                   string
-	program                       bool
+	program                       atomic.Bool
 	reportedDirectory             string
 	registry                      *daemonTasks
 	log                           io.Writer
@@ -73,7 +74,7 @@ func (s *tmuxTask) snapshotLocked() shellView {
 	pinned, until := s.runtime.PinState()
 	view := shellView{Owner: s.parentIdentityLocked(), Pinned: pinned, PinUntil: until,
 		Instance: s.record.UID, Name: s.record.Name, PID: s.runtime.PID(), Shell: s.shellName,
-		Program: s.program, ProgramLine: s.programLine, State: s.state(),
+		Program: s.program.Load(), ProgramLine: s.programLine, State: s.state(),
 		Directory: cmp.Or(s.reportedDirectory, s.record.Directory)}
 	if active := s.runtime.Active(); active != nil {
 		view.SourceHost = active.sourceHost
