@@ -27,14 +27,18 @@ type resetPaths struct {
 	customState           bool
 }
 
-// Resolve the running daemon's state directory before shutdown removes its record.
-func prepareReset(command string) (resetPaths, error) {
+func requireLocalMaintenance(command string) error {
 	if deployedStateRoot() != "" {
-		return resetPaths{}, fmt.Errorf("%s applies to the installed client", command)
+		return fmt.Errorf("%s applies to the installed client", command)
 	}
 	if os.Getenv("SSHORE_LOCAL_SESSION") != "" || os.Getenv("SSHORE_SOCKET") != "" {
-		return resetPaths{}, fmt.Errorf("run %s outside managed shells; it ends their tasks", command)
+		return fmt.Errorf("run %s outside managed shells; it ends their tasks", command)
 	}
+	return nil
+}
+
+// Resolve the running daemon's state directory before shutdown removes its record.
+func prepareReset() (resetPaths, error) {
 	root, err := statePath("")
 	if err != nil {
 		return resetPaths{}, err
@@ -68,20 +72,18 @@ func prepareReset(command string) (resetPaths, error) {
 }
 
 func runReset() error {
-	paths, err := prepareReset("reset")
-	if err != nil {
+	if err := requireLocalMaintenance("reset"); err != nil {
 		return err
 	}
-	setup, err := setupLock()
-	if err != nil {
-		return err
-	}
-	defer setup.Close()
 	startup, err := daemonFileLock("startup")
 	if err != nil {
 		return err
 	}
 	defer startup.Close()
+	paths, err := prepareReset()
+	if err != nil {
+		return err
+	}
 	snapshot, err := readDaemonSnapshot(context.Background())
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -96,14 +98,14 @@ func runReset() error {
 		return err
 	}
 	defer owner.Close()
-	if err := paths.clear(setup, startup, owner); err != nil {
+	if err := paths.clear(startup, owner); err != nil {
 		return err
 	}
 	fmt.Println("Reset complete; local tasks ended and application state and caches cleared.")
 	return nil
 }
 
-// clear runs with setup, startup and owner locked.
+// clear runs with startup and owner locked.
 func (p resetPaths) clear(locks ...*sys.FileLock) error {
 	// Keep lock inodes stable: a waiting client must never acquire a deleted lock
 	// while another client starts a replacement daemon under a different inode.

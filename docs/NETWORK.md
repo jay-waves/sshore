@@ -60,9 +60,9 @@ resolve a known task and contact its managing daemon. `kill HOST --all` uses an
 administrative SSH exchange to preview
 and confirm shutdown. `daemon` and `reset` operate on the local account.
 `install` downloads the release over HTTPS. Before replacing the local
-client, it uses the installed client to review and stop its recorded shell hosts
-and local daemon. A changed SSH destination stops the upgrade before it sends a
-shutdown request. Copies do not add hosts to the shutdown review.
+client, it uses the installed client to review its local daemon and, on a version
+change, its recorded shell hosts. A changed SSH destination stops the upgrade
+before it sends a shutdown request. Copies do not add hosts to the review.
 
 See [architecture](ARCHITECTURE.md), [security](SECURITY.md), [approval](approval.md),
 [mount implementation](mount.md) and [build and validation](BUILD.md).

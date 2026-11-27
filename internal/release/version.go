@@ -35,7 +35,7 @@ func parts(v string) ([3]string, bool) {
 }
 
 // Compare numeric components without overflowing on large release coordinates.
-func Compare(a, b string) (int, bool) {
+func compare(a, b string) (int, bool) {
 	aa, ok := parts(a)
 	if !ok {
 		return 0, false
@@ -52,7 +52,7 @@ func Compare(a, b string) (int, bool) {
 	return 0, true
 }
 
-func ExecutableVersion(path string) (string, error) {
+func executableVersion(path string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, path, "--version").Output()

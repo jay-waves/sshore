@@ -285,6 +285,14 @@ Match command "printf forwarding-check"
 		}
 		startDetached(installed, "0.0.0")
 		startDetached(newer, "0.0.1")
+		connections := filepath.Join(os.Getenv("SSHORE_STATE_DIR"), "connections")
+		if err := os.MkdirAll(connections, 0700); err != nil {
+			t.Fatal(err)
+		}
+		marker := filepath.Join(connections, "install-preserves-state")
+		if err := os.WriteFile(marker, []byte("existing local history"), 0600); err != nil {
+			t.Fatal(err)
+		}
 		upgrade := func(answer string) ([]byte, error) {
 			cmd := exec.CommandContext(ctx, newer, "install", "--apply", "here:"+installed)
 			cmd.Stdin = strings.NewReader(answer + "\n")
@@ -327,10 +335,16 @@ Match command "printf forwarding-check"
 		if out, err := upgrade("y"); err != nil || !strings.Contains(string(out), name) {
 			t.Fatalf("confirmed upgrade: %v\n%s", err, out)
 		}
+		requireFile(t, marker, "existing local history")
 		oldProgram := ".sshore/clients/*/0.0.0/sshore"
 		if output := run(t, ctx, "sh", host, "--", "for file in "+oldProgram+"; do \"$file\" list; done"); strings.Contains(output, name) {
 			t.Fatalf("old release task survived confirmed upgrade:\n%s", output)
 		}
+		// Reinstalling the same release can leave its detached remote task alone.
+		if out, err := upgrade("n"); err != nil {
+			t.Fatalf("same-version reinstall: %v\n%s", err, out)
+		}
+		requireFile(t, marker, "existing local history")
 		newAttach := append([]string{"attach", host}, ssh...)
 		runOpenSSHTerminal(t, ctx, exec.CommandContext(ctx, installed, newAttach...), func(send func(string), wait terminalWait) {
 			wait("Connected " + host + ":" + name)

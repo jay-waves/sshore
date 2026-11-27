@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -47,26 +45,6 @@ func delegatedCgroup() (string, error) {
 		return dir, nil
 	}
 	return "", errors.New("cgroup v2 is unavailable")
-}
-
-// ProbeShellCgroup exercises the operations needed to start and stop a Linux shell.
-func ProbeShellCgroup() (err error) {
-	parent, err := DaemonTaskCgroup()
-	if err != nil {
-		return err
-	}
-	group, dir, err := NewTaskCgroup(parent)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	defer func() { err = errors.Join(err, group.Remove()) }()
-	cmd := exec.Command("/bin/sh", "-c", "exit 0")
-	cmd.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(dir.Fd())}
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("start cgroup probe: %w", err)
-	}
-	return group.Kill()
 }
 
 // TaskCgroup owns a private child of the daemon's delegated cgroup. The kill

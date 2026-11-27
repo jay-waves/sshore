@@ -1,6 +1,7 @@
 package release
 
 import (
+	"embed"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,13 +11,18 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func RunInstaller(target, _, script string) error {
+func RunInstaller(target string, scripts embed.FS) error {
+	script, err := scripts.ReadFile("install.ps1")
+	if err != nil {
+		return err
+	}
+
 	// Start the installer in a separate console so this executable can exit before replacement.
 	f, err := os.CreateTemp("", "sshore-install-*.ps1")
 	if err != nil {
 		return err
 	}
-	if _, err := f.WriteString(script); err != nil {
+	if _, err := f.Write(script); err != nil {
 		f.Close()
 		os.Remove(f.Name())
 		return err

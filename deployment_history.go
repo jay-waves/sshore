@@ -2,7 +2,6 @@ package main
 
 import (
 	json "encoding/json/v2"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -144,17 +143,6 @@ func stopInstalledDeployments(executable, release string) error {
 		if err := command.Run(); err != nil {
 			return fmt.Errorf("retiring sshore %s on %s: %w", release, cleanText(endpoint.Host), err)
 		}
-	}
-	return nil
-}
-
-func forgetDeploymentHistory(release string) error {
-	name, err := deploymentHistoryPath(release)
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
 	}
 	return nil
 }

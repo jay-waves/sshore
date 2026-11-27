@@ -331,19 +331,15 @@ authenticated connection. Client IDs select separate directories within the
 same OS account. Account permissions govern filesystem access.
 
 Remote `kill --all` presents the daemon's live task snapshot before stopping it
-and verifies the confirmed snapshot before shutdown. Local installers set up
-the client. `install` resets and reinstalls the local account.
-Installers verify the release checksum and executable version. The prepared binary
-stages the replacement before shutdown, including for same-version reinstalls.
-It uses the installed client to review and stop its deployments and local daemon.
-A declined or failed shutdown leaves the installed client in place.
-Active tasks require confirmation of the displayed snapshot. Before publishing
-under the startup and owner locks, the installer rechecks the installation target
-against the file it inspected. After replacement it clears the target account's
-identity, history, runtime state and cached releases under the same locks as
-`reset`. A cleanup failure reports the installed version and can be retried with
-`install`. Unknown or newer installed releases require manual
-handling.
+and verifies the confirmed snapshot before shutdown. The local installer
+verifies the release checksum and executable version, then stages the replacement.
+It uses the installed client to review the local daemon and, on a version change,
+its recorded remote deployments. Active tasks require confirmation of the
+displayed snapshot. A declined or failed shutdown leaves the installed client
+in place. Before publishing under the startup and owner locks, the installer
+rechecks the target against the file it inspected. Installation preserves local
+state. Use `reset` to clear it. Unknown or newer installed releases require
+manual handling.
 
 Replacement requires a user-owned regular file and a user-owned directory
 without group/world write permission on Linux. Replacement does not elevate

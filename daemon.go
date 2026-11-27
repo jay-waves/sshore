@@ -42,13 +42,7 @@ func daemonDirectory() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", err
-	}
-	if err := sys.PrivateStatePath(dir, true); err != nil {
-		return "", err
-	}
-	return dir, nil
+	return prepareStateDir(filepath.Dir(dir), filepath.Base(dir))
 }
 
 func daemonStateRoot(root string, explicit bool) (string, error) {

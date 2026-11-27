@@ -1,7 +1,10 @@
 package release
 
-import "errors"
+import (
+	"embed"
+	"errors"
+)
 
-func RunInstaller(_, _, _ string) error {
+func RunInstaller(_ string, _ embed.FS) error {
 	return errors.New("install the experimental macOS client manually")
 }

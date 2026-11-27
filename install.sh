@@ -14,8 +14,7 @@ Usage: sh install.sh [--version X.Y.Z] [--path PATH | --bin-dir DIRECTORY]
 Install a published Linux amd64 release and add its directory to user PATH.
 Default: latest release into $HOME/.local/bin. Explicit --version is recommended
 when matching a local client. Requires curl, tar and sha256sum (or shasum).
-Installation resets this account's sshore state and reinstalls even at the same
-version. Review any running tasks before confirming.
+The installer reviews running tasks before replacement.
 Windows clients: use install.ps1 or the matching release ZIP.
 HELP
 }

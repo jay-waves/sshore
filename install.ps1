@@ -8,8 +8,7 @@ on PATH; otherwise install to %LOCALAPPDATA%\sshore\bin. Add a new or explicit
 install directory to the user and current session PATH. Verify SHA256SUMS and executable version before
 replacement. Never modify system PATH, profiles or execution
 policy; never elevate or create versioned backups. The installer stops the account daemon
-before replacement and prompts when it owns tasks. Installation resets account
-state even at the same version.
+before replacement after reviewing its tasks.
 Remaining clients may still hold the executable open; close them and retry.
 .PARAMETER Version
 Published X.Y.Z version (without v). Defaults to the latest release.
@@ -131,7 +130,6 @@ function Install-Sshore([string]$Version = '', [string]$Path = '') {
         throw 'Installation target is a directory or reparse point; installation unchanged.'
     }
     $temp = Join-Path ([IO.Path]::GetTempPath()) ('sshore-install-' + [Guid]::NewGuid().ToString('N'))
-    $stage = $null
     $null = [IO.Directory]::CreateDirectory($temp)
     try {
         $releases = 'https://github.com/jay-waves/sshore/releases'
@@ -177,19 +175,15 @@ function Install-Sshore([string]$Version = '', [string]$Path = '') {
         if ($existing -and ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint))) {
             throw 'Installation target is a directory or reparse point; installation unchanged.'
         }
-        $stage = Join-Path $directory ('.sshore-install-' + [Guid]::NewGuid().ToString('N') + '.exe')
-        [IO.File]::Copy($payload, $stage, $false)
-        if ((Read-SshoreBinaryVersion $stage) -cne "sshore $Version") {
+        if ((Read-SshoreBinaryVersion $payload) -cne "sshore $Version") {
             throw 'Binary version does not match release; installation unchanged.'
         }
         # Older published targets expose the same apply operation as bootstrap.
-        $commands = & $stage --help
+        $commands = & $payload --help
         if ($LASTEXITCODE -ne 0) { throw 'Could not read the staged client help.' }
         $action = if ($commands -match '^\s+install\s') { 'install' } else { 'bootstrap' }
-        & $stage $action --apply "here:$target"
+        & $payload $action --apply "here:$target"
         if ($LASTEXITCODE -ne 0) { throw 'Installation stopped. Close remaining sshore clients if the executable is still in use, then retry.' }
-        [IO.File]::Delete($stage)
-        $stage = $null
         Write-Host "Installed sshore ${Version}: $target"
         if ($Path -or -not $foundOnPath) {
             try {
@@ -207,7 +201,6 @@ function Install-Sshore([string]$Version = '', [string]$Path = '') {
         Write-Host 'SHA256 verified. Managed SSH connections deploy the matching server automatically.'
 
     } finally {
-        if ($stage -and [IO.File]::Exists($stage)) { [IO.File]::Delete($stage) }
         [IO.Directory]::Delete($temp, $true)
     }
 }

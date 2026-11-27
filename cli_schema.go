@@ -558,16 +558,15 @@ choose one in the terminal with Tab completion.
 			examples: "Install the configured public key\n  sshore copy-id work\n",
 		},
 		"install": {
-			run: runInstall, group: groupAccount, summary: "Reset the local account and reinstall sshore",
+			run: runInstall, group: groupAccount, summary: "Install the local sshore client",
 			max: 1, flags: []string{"--apply"},
 			help: `Usage: sshore install [here:[PATH]]
 
-Reset this account and reinstall the latest release. This ends local sshore tasks,
-including pinned shells, and clears identity, history and caches even when the
-version already matches. Review and confirm any running tasks before continuing.
+Install the latest client release. Review running tasks before replacement.
+Installation preserves local settings and history. Use reset to clear state.
 Run outside managed shells. Use here:PATH to specify an absolute executable path.
 `,
-			examples: "Reset and reinstall this account\n  sshore install\n",
+			examples: "Install the latest client release\n  sshore install\n",
 		},
 		"ping": {
 			run: runPing, selector: cliHostSelector, group: groupSSH, summary: "Measure SSH connection and echo latency",
