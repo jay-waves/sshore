@@ -28,7 +28,15 @@ func (l *FileLock) Close() error { return errors.Join(l.lock.Close(), l.file.Clo
 
 // TryLock takes an exclusive lock without waiting.
 func (l *FileLock) TryLock() error {
-	locked, err := l.lock.TryLock()
+	return l.finishLock(l.lock.TryLock())
+}
+
+// TryReadLock allows other readers to acquire the same lock.
+func (l *FileLock) TryReadLock() error {
+	return l.finishLock(l.lock.TryRLock())
+}
+
+func (l *FileLock) finishLock(locked bool, err error) error {
 	if err != nil {
 		return err
 	}

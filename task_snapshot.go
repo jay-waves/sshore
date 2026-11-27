@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	json "encoding/json/v2"
@@ -110,33 +109,12 @@ func readTaskInventory(request taskInventoryRequest) (taskInventorySnapshot, err
 	return snapshot, err
 }
 
-func (snapshot taskInventorySnapshot) nativeShells() []localShellView {
-	rows := snapshot.Native
-	for i := range rows {
-		rows[i].ShortID = taskShortCode(rows[i].Identity)
-	}
-	sortLocalShells(rows)
-	return rows
-}
-
 func excludeLocalResourcePeers(peers []peerView, resources []resourceView) []peerView {
 	local := make(map[string]bool, len(resources))
 	for _, r := range resources {
 		local[canonicalTaskUID(r.Identity)] = true
 	}
 	return slices.DeleteFunc(peers, func(p peerView) bool { return local[p.UID] })
-}
-
-func (a *daemonActivity) liveInventory() inventory {
-	query := taskInventoryRequest{Native: true, Hosted: true, Resources: true}
-	snapshot := a.tasks.taskInventory(query)
-	inv := emptyInventory()
-	inv.LocalHost = a.hostInfo.Load()
-	inv.Shells = snapshot.Shells
-	inv.LocalShells = snapshot.nativeShells()
-	inv.Resources = snapshot.Resources
-	inv.Peers = excludeLocalResourcePeers(peerViews(a.incomingPeers()), inv.Resources)
-	return inv
 }
 
 func mergeInventory(inv inventory, observed []participatingShell) inventory {
@@ -193,68 +171,153 @@ func (inv *inventory) setTaskReferences() {
 	})
 }
 
-var inventoryBucket = []byte("live-inventory")
-var inventoryKey = []byte("account")
+var liveTasksBucket = []byte("live-task-rows")
 
-type publishedInventory struct {
-	Instance  string
-	Inventory inventory
-}
-
-func (a *daemonActivity) publishInventory() {
+// Serialize projection and commit so delayed notifications always read the latest state.
+func (a *daemonActivity) publishRow(key string, project func() any) {
 	a.inventoryMu.Lock()
 	defer a.inventoryMu.Unlock()
 	if a.instance == "" {
 		return
 	}
-	inv := a.liveInventory()
-	slices.SortFunc(inv.Resources, func(a, b resourceView) int { return strings.Compare(a.Identity, b.Identity) })
-	slices.SortFunc(inv.Peers, func(a, b peerView) int { return strings.Compare(a.UID, b.UID) })
-	data, err := json.Marshal(publishedInventory{Instance: a.instance, Inventory: inv})
-	if err != nil || bytes.Equal(a.published, data) {
-		return
-	}
-	if err := historyTransaction(a.root, true, func(tx *bolt.Tx) error {
-		bucket, err := tx.CreateBucketIfNotExists(inventoryBucket)
+	row := project()
+	err := historyTransaction(a.root, true, func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(liveTasksBucket)
+		if bucket != nil && string(bucket.Get([]byte("instance"))) != a.instance {
+			if err := tx.DeleteBucket(liveTasksBucket); err != nil {
+				return err
+			}
+			bucket = nil
+		}
+		if bucket == nil {
+			var err error
+			bucket, err = tx.CreateBucket(liveTasksBucket)
+			if err != nil {
+				return err
+			}
+			if err := bucket.Put([]byte("instance"), []byte(a.instance)); err != nil {
+				return err
+			}
+		}
+		if row == nil {
+			return bucket.Delete([]byte(key))
+		}
+		data, err := json.Marshal(row)
 		if err != nil {
 			return err
 		}
-		return bucket.Put(inventoryKey, data)
-	}); err == nil {
-		a.published = data
+		return bucket.Put([]byte(key), data)
+	})
+	if err == nil {
+		if timer := a.inventoryRetry[key]; timer != nil {
+			timer.Stop()
+			delete(a.inventoryRetry, key)
+		}
+		return
+	}
+	if a.inventoryRetry == nil {
+		a.inventoryRetry = make(map[string]*time.Timer)
+	}
+	if timer := a.inventoryRetry[key]; timer != nil {
+		timer.Reset(time.Second)
+	} else {
+		fmt.Fprintf(a.tasks.log, "publish task inventory: %v\n", err)
+		a.inventoryRetry[key] = time.AfterFunc(time.Second, func() { a.publishRow(key, project) })
 	}
 }
 
-func (a *daemonActivity) clearInventory() {
+func (a *daemonActivity) publishTask(task daemonTask) {
+	switch t := task.(type) {
+	case *tmuxTask:
+		key := "local/" + t.record.UID
+		if t.hosted {
+			key = "shell/" + t.record.UID
+		}
+		a.publishRow(key, func() any {
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			view := t.snapshotLocked()
+			if t.expired() || view.State == taskExited {
+				return nil
+			}
+			if t.hosted {
+				return view
+			}
+			return localView(t.record, view)
+		})
+	case *daemonResourceTask:
+		uid := t.record.UID
+		a.publishRow("resource/"+uid, func() any {
+			t, ok := a.tasks.lookup(uid).(*daemonResourceTask)
+			if !ok {
+				return nil
+			}
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			if t.expired() {
+				return nil
+			}
+			return viewRecord(t.record)
+		})
+	}
+}
+
+func (a *daemonActivity) publishPeer(key string) {
+	a.publishRow("peer/"+key, func() any {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		var newest *activityLease
+		for l := range a.leases {
+			if l.peer != nil && l.peer.Key == key && (newest == nil || l.order > newest.order) {
+				newest = l
+			}
+		}
+		if newest == nil {
+			return nil
+		}
+		p := newest.peer
+		return peerView{UID: p.UID, ID: p.ID, Detail: p.Detail}
+	})
+}
+
+func (a *daemonActivity) closeInventory() {
 	a.inventoryMu.Lock()
 	defer a.inventoryMu.Unlock()
 	a.instance = ""
-	if a.published == nil {
-		return
-	}
-	if err := historyTransaction(a.root, true, func(tx *bolt.Tx) error {
-		if bucket := tx.Bucket(inventoryBucket); bucket != nil {
-			return bucket.Delete(inventoryKey)
-		}
-		return nil
-	}); err != nil {
-		fmt.Fprintln(a.tasks.log, "clear task inventory:", err)
+	for _, timer := range a.inventoryRetry {
+		timer.Stop()
 	}
 }
 
-// Periodic sampling covers changes that do not have a publication boundary,
-// including pin expiry and directory reports. Equal snapshots incur no write.
-func (a *daemonActivity) refreshInventory(done <-chan struct{}) {
-	tick := time.NewTicker(250 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		select {
-		case <-done:
-			return
-		case <-tick.C:
-			a.publishInventory()
-		}
+func appendLiveRow[T any](rows *[]T, data []byte) error {
+	var row T
+	if err := json.Unmarshal(data, &row); err != nil {
+		return err
 	}
+	*rows = append(*rows, row)
+	return nil
+}
+
+func readLiveRows(bucket *bolt.Bucket, instance string, inv *inventory) error {
+	if instance == "" || bucket == nil || string(bucket.Get([]byte("instance"))) != instance {
+		return nil
+	}
+	return bucket.ForEach(func(key, data []byte) error {
+		kind, _, _ := strings.Cut(string(key), "/")
+		switch kind {
+		case "host":
+			return json.Unmarshal(data, &inv.LocalHost)
+		case "local":
+			return appendLiveRow(&inv.LocalShells, data)
+		case "shell":
+			return appendLiveRow(&inv.Shells, data)
+		case "resource":
+			return appendLiveRow(&inv.Resources, data)
+		case "peer":
+			return appendLiveRow(&inv.Peers, data)
+		}
+		return nil
+	})
 }
 
 func readPublishedInventory() (inventory, error) {
@@ -273,20 +336,15 @@ func readPublishedInventory() (inventory, error) {
 func loadInventory(root, instance string) (inventory, error) {
 	inv := emptyInventory()
 	var observed []participatingShell
-	var live publishedInventory
 	err := historyTransaction(root, false, func(tx *bolt.Tx) error {
-		if instance != "" {
-			if _, err := readBucketJSON(tx.Bucket(inventoryBucket), inventoryKey, &live); err != nil {
-				return err
-			}
+		if err := readLiveRows(tx.Bucket(liveTasksBucket), instance, &inv); err != nil {
+			return err
 		}
+		inv.Peers = excludeLocalResourcePeers(inv.Peers, inv.Resources)
 		var err error
 		observed, err = participatingShells(tx)
 		return err
 	})
-	if live.Instance != "" && live.Instance == instance {
-		inv = live.Inventory
-	}
 	if err != nil {
 		return mergeInventory(inv, nil), fmt.Errorf("read task inventory: %w", err)
 	}

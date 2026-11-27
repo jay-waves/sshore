@@ -26,15 +26,14 @@ type activityLease struct {
 // All live advertisements and leases belong to the account daemon. No state
 // file or PID scan can recreate a lease after its connection has gone away.
 type daemonActivity struct {
-	hostInfo      atomic.Pointer[hostInfo]
-	root          string
-	instance      string
-	inventoryMu   sync.Mutex
-	published     []byte
-	tasks         *daemonTasks
-	mu            sync.Mutex
-	leases        map[*activityLease]struct{}
-	nextPeerOrder uint64
+	root           string
+	instance       string
+	inventoryMu    sync.Mutex
+	inventoryRetry map[string]*time.Timer
+	tasks          *daemonTasks
+	mu             sync.Mutex
+	leases         map[*activityLease]struct{}
+	nextPeerOrder  uint64
 }
 
 var accountActivity atomic.Pointer[daemonActivity]
@@ -69,7 +68,7 @@ func (s *daemonActivity) registerLease(request leaseRequest) (*activityLease, er
 	s.leases[l] = struct{}{}
 	s.mu.Unlock()
 	if l.peer != nil {
-		s.publishInventory()
+		s.publishPeer(l.peer.Key)
 	}
 	return l, nil
 }
@@ -78,7 +77,7 @@ func (s *daemonActivity) remove(l *activityLease) {
 	delete(s.leases, l)
 	s.mu.Unlock()
 	if l.peer != nil {
-		s.publishInventory()
+		s.publishPeer(l.peer.Key)
 	}
 }
 

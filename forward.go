@@ -390,7 +390,7 @@ func runDaemonForward(config resourceConfig, enc *jsontext.Encoder, dec *jsontex
 	ack := awaitResourceCommit(func(v any) error { return json.UnmarshalDecode(dec, v) }, cancel)
 	err := runForward(ctx, f, s, func() error {
 		record := task.publishReady(s.record.Detail, "", "")
-		tasks.inventoryChanged()
+		tasks.inventoryChanged(task)
 		if err := offerResourceStartup(enc, record, ack, nil); err != nil {
 			return err
 		}
@@ -398,6 +398,6 @@ func runDaemonForward(config resourceConfig, enc *jsontext.Encoder, dec *jsontex
 		return nil
 	})
 	task.finish(s.done)
-	tasks.inventoryChanged()
+	tasks.inventoryChanged(task)
 	return err
 }

@@ -147,13 +147,21 @@ func tryPrivateFileLock(path string) (*sys.FileLock, error) {
 
 // lockStateFile serializes private metadata updates. Closing the lock releases it.
 func lockStateFile(path string) (*sys.FileLock, error) {
+	return acquireStateFileLock(path, false)
+}
+
+func acquireStateFileLock(path string, shared bool) (*sys.FileLock, error) {
 	lock, err := openPrivateFileLock(path)
 	if err != nil {
 		return nil, err
 	}
+	try := lock.TryLock
+	if shared {
+		try = lock.TryReadLock
+	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		err = lock.TryLock()
+		err = try()
 		if err == nil {
 			return lock, nil
 		}

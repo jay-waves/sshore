@@ -90,14 +90,6 @@ func validateRemoteTask(t peerRecord) error {
 	}
 	return nil
 }
-func peerViews(peers []peerRecord) []peerView {
-	rows := make([]peerView, 0, len(peers))
-	for _, t := range peers {
-		rows = append(rows, peerView{UID: t.UID, ID: t.ID, Detail: t.Detail})
-	}
-	return rows
-}
-
 func beginIncomingTask(t peerRecord) func() {
 	stop, err := leaseActivity(leaseRequest{Kind: "incoming", Peer: &t})
 	if err != nil {

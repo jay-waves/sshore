@@ -40,6 +40,7 @@ func (s *tmuxTask) serveOwner(c net.Conn, m message) (result error) {
 	s.ownerClaimed = true
 	s.remoteOwner, s.remoteOwnerToken = m.Owner, m.Token
 	s.mu.Unlock()
+	s.registry.inventoryChanged(s)
 	defer func() { s.scopeEnded(nil, result) }()
 	done := make(chan struct{})
 	defer close(done)
@@ -117,6 +118,7 @@ func (s *tmuxTask) scopeEnded(owner *tmuxTask, cause error) {
 	s.reapUnretainedLocked()
 	reaping := s.killing
 	s.mu.Unlock()
+	s.registry.inventoryChanged(s)
 	if !ending {
 		outcome := "Keeping pinned shell."
 		if reaping {
@@ -129,8 +131,9 @@ func (s *tmuxTask) scopeEnded(owner *tmuxTask, cause error) {
 func (s *tmuxTask) pinLocked(ttl time.Duration) error {
 	return s.runtime.Pin(ttl, s.killing, func() {
 		s.mu.Lock()
-		defer s.mu.Unlock()
 		s.reapUnretainedLocked()
+		s.mu.Unlock()
+		s.registry.inventoryChanged(s)
 	})
 }
 

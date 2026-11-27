@@ -29,7 +29,7 @@ type daemonTask interface {
 var errDaemonDraining = errors.New("daemon is shutting down")
 
 type daemonTasks struct {
-	publishInventory func()
+	publishInventory func(daemonTask)
 	log              io.Writer
 	cgroup           string
 	cgroupErr        error
@@ -39,9 +39,9 @@ type daemonTasks struct {
 	records          map[string]daemonTask
 }
 
-func (s *daemonTasks) inventoryChanged() {
+func (s *daemonTasks) inventoryChanged(task daemonTask) {
 	if s != nil && s.publishInventory != nil {
-		s.publishInventory()
+		s.publishInventory(task)
 	}
 }
 
@@ -77,6 +77,14 @@ func (s *daemonTasks) childShells(parent *tmuxTask) []*tmuxTask {
 }
 
 func (s *daemonTasks) register(id string, task daemonTask) error {
+	if err := s.registerTask(id, task); err != nil {
+		return err
+	}
+	s.inventoryChanged(task)
+	return nil
+}
+
+func (s *daemonTasks) registerTask(id string, task daemonTask) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.draining {
@@ -362,6 +370,12 @@ type taskInventorySnapshot struct {
 	Resources []resourceView
 }
 
+func localView(record localShellRecord, view shellView) localShellView {
+	return localShellView{Identity: record.identity(), ShortID: taskShortCode(record.identity()), Name: view.Name, State: view.State,
+		Owner: view.Owner, Pinned: view.Pinned, PinUntil: view.PinUntil, SourceHost: view.SourceHost,
+		Shell: view.Shell, Program: view.Program, ProgramLine: view.ProgramLine, Directory: view.Directory}
+}
+
 func (s *daemonTasks) taskInventory(request taskInventoryRequest) taskInventorySnapshot {
 	var snapshot taskInventorySnapshot
 	// Capture membership before reading individual tasks.
@@ -373,9 +387,7 @@ func (s *daemonTasks) taskInventory(request taskInventoryRequest) taskInventoryS
 				snapshot.Shells = append(snapshot.Shells, shell.inventoryView())
 			} else if !shell.hosted && request.Native {
 				view := shell.inventoryView()
-				snapshot.Native = append(snapshot.Native, localShellView{Identity: shell.record.identity(), Name: view.Name, State: view.State,
-					Owner: view.Owner, Pinned: view.Pinned, PinUntil: view.PinUntil, SourceHost: view.SourceHost,
-					Shell: view.Shell, Program: view.Program, ProgramLine: view.ProgramLine, Directory: view.Directory})
+				snapshot.Native = append(snapshot.Native, localView(shell.record, view))
 			}
 		case *daemonResourceTask:
 			if !request.Resources || request.Host != "" && t.record.Host != request.Host {

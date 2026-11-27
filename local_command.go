@@ -1,11 +1,9 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"os"
-	"slices"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/shell"
@@ -40,12 +38,6 @@ func localRequest(ref, identity string, request message) (message, error) {
 		return message{}, err
 	}
 	return readMessage(c)
-}
-
-func sortLocalShells(rows []localShellView) {
-	slices.SortStableFunc(rows, func(a, b localShellView) int {
-		return cmp.Compare(taskUID(a.Identity), taskUID(b.Identity))
-	})
 }
 
 func runLocalCommand(o options) (int, error) {

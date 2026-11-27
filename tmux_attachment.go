@@ -148,7 +148,7 @@ func (s *tmuxTask) attachManaged(p *attachment, m message) error {
 	}
 	s.mu.Unlock()
 	s.terminalMu.Unlock()
-	s.registry.inventoryChanged()
+	s.publishTreeState()
 	if abort {
 		if s.hosted {
 			s.close()
@@ -198,6 +198,13 @@ func (s *tmuxTask) prepareAttachment(p *attachment, m message, initial bool, key
 	return nil
 }
 
+// A descendant's terminal reservation also changes the waiting state of its ancestors.
+func (s *tmuxTask) publishTreeState() {
+	for task := s; task != nil; task = task.parentTask() {
+		task.registry.inventoryChanged(task)
+	}
+}
+
 func (s *tmuxTask) releaseAttachment(p *attachment, cause error) (message, error) {
 	s.mu.Lock()
 	disconnected := cause != nil && !s.runtime.Exited() && s.runtime.Active() == p
@@ -213,7 +220,7 @@ func (s *tmuxTask) releaseAttachment(p *attachment, cause error) (message, error
 		reply = message{Type: "detached", Name: s.record.Name, Pinned: pinned, PinUntil: until}
 	}
 	s.mu.Unlock()
-	s.registry.inventoryChanged()
+	s.publishTreeState()
 	if disconnected {
 		termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Shell attachment disconnected: %s", cleanText(cause.Error()))
 	}
@@ -323,7 +330,11 @@ func (s *tmuxTask) holdTree(conn net.Conn, m message) error {
 	if !ok {
 		return writeMessage(conn, message{Type: "error", Error: "current shell attachment changed"})
 	}
-	defer release()
+	s.publishTreeState()
+	defer func() {
+		release()
+		s.publishTreeState()
+	}()
 	if err := writeMessage(conn, message{Type: "tree_held"}); err != nil {
 		return err
 	}

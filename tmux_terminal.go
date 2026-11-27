@@ -136,7 +136,7 @@ func (s *tmuxTask) completeClose(p *attachment) {
 		p.Close()
 	}
 	s.runtime.CompleteClose()
-	s.registry.inventoryChanged()
+	s.publishTreeState()
 }
 
 func (s *tmuxTask) stopTask() error {
@@ -254,6 +254,7 @@ func (s *tmuxTask) serveCommand(c net.Conn, m message, extra func(*attachment, m
 		reply = message{Type: "pinned", PinUntil: until}
 		s.mu.Unlock()
 		if err == nil {
+			s.registry.inventoryChanged(s)
 			err = p.controlMessage(message{Type: "detach_requested"})
 		}
 		if err != nil {
@@ -285,17 +286,21 @@ func shellSize(m message) pty.Size {
 func (s *tmuxTask) pumpTerminal() {
 	err := s.runtime.PumpOutput(func(data []byte) {
 		s.terminalMu.Lock()
-		defer s.terminalMu.Unlock()
 		directory := s.runtime.Observe(data, runtime.GOOS == "windows" && !s.hosted)
 		// Keep live output ordered without holding the shell lock during I/O.
 		s.mu.Lock()
-		if directory != "" {
+		changed := directory != "" && directory != s.reportedDirectory
+		if changed {
 			s.reportedDirectory = directory
 		}
 		p := s.runtime.Active()
 		s.mu.Unlock()
 		if p != nil {
 			_ = p.Output(data)
+		}
+		s.terminalMu.Unlock()
+		if changed {
+			s.registry.inventoryChanged(s)
 		}
 	})
 	s.terminalExited(err)
@@ -335,7 +340,7 @@ func (s *tmuxTask) terminalExited(err error) {
 		s.exitReason = reason
 	}
 	s.mu.Unlock()
-	s.registry.inventoryChanged()
+	s.publishTreeState()
 	termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Info, "Shell exited (code %d): %s", code, cleanText(reason))
 	if p != nil {
 		p.finishExit(message{

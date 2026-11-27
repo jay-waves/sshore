@@ -33,7 +33,7 @@ func stateDBTransaction(root, file string, write bool, run func(*bolt.Tx) error)
 	if err != nil {
 		return err
 	}
-	lock, err := lockStateFile(filepath.Join(dir, historyLock))
+	lock, err := acquireStateFileLock(filepath.Join(dir, historyLock), !write)
 	if err != nil {
 		return err
 	}

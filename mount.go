@@ -252,14 +252,14 @@ func runDaemonMount(config resourceConfig, enc *jsontext.Encoder, dec *jsontext.
 	config.Mount.Name = task.taskName()
 	if err = cmd.Start(); err != nil {
 		task.finish(finished)
-		tasks.inventoryChanged()
+		tasks.inventoryChanged(task)
 		return err
 	}
 	childOutput.Close()
 	go func() {
 		_ = cmd.Wait()
 		task.finish(finished)
-		tasks.inventoryChanged()
+		tasks.inventoryChanged(task)
 	}()
 	killWorker := func() {
 		_ = cmd.Process.Kill()
@@ -327,7 +327,7 @@ func runDaemonMount(config resourceConfig, enc *jsontext.Encoder, dec *jsontext.
 		return json.MarshalEncode(enc, startup)
 	}
 	record := task.publishReady(startup.Detail, startup.Remote, startup.Mountpoint)
-	tasks.inventoryChanged()
+	tasks.inventoryChanged(task)
 	if err = offerResourceStartup(enc, record, commit, finished); err != nil {
 		return err
 	}
