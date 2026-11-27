@@ -237,7 +237,7 @@ func selectCLITask(parsed cliArguments) (selectedTask, error) {
 			return selectedTask{}, err
 		}
 	}
-	candidates, err := publishedCandidates(children, attach, parent != "" && os.Getenv("SSHORE_SOCKET") != "", byID)
+	candidates, err := publishedCandidates(children, attach, parent != "" && os.Getenv("SSHORE_SOCKET") != "", parsed.task.ref)
 	if err != nil {
 		return selectedTask{}, err
 	}
@@ -269,7 +269,7 @@ func selectCLITask(parsed cliArguments) (selectedTask, error) {
 	return target, nil
 }
 
-func publishedCandidates(candidates []selectedTask, attach, hostedOnly, byID bool) ([]selectedTask, error) {
+func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id string) ([]selectedTask, error) {
 	root, err := statePath("")
 	if err != nil {
 		return nil, err
@@ -284,8 +284,29 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly, byID boo
 
 	err = historyTransaction(root, false, func(tx *bolt.Tx) error {
 		inv := emptyInventory()
-		if err := readLiveRows(tx.Bucket(liveTasksBucket), record.UID, &inv); err != nil {
-			return err
+		bucket := currentLiveBucket(tx, record.UID)
+		exact := false
+		if bucket != nil {
+			if validTaskUID(id) {
+				for _, prefix := range []string{"shell/hosted/", "shell/native/", "resource/"} {
+					if (hostedOnly && prefix == "shell/native/") || (attach && prefix == "resource/") {
+						continue
+					}
+					key := []byte(prefix + id)
+					if data := bucket.Get(key); data != nil {
+						if err := inv.readLiveRow(key, data); err != nil {
+							return err
+						}
+						exact = true
+						break
+					}
+				}
+			}
+			if !exact {
+				if err := bucket.ForEach(inv.readLiveRow); err != nil {
+					return err
+				}
+			}
 		}
 
 		for _, s := range inv.Shells {
@@ -303,6 +324,9 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly, byID boo
 				kind, name := r.kindAndName()
 				candidates = append(candidates, selectedTask{Kind: kind, Name: name, Identity: r.Identity})
 			}
+		}
+		if exact {
+			return nil
 		}
 		known := make(map[string]bool)
 		for _, t := range candidates {
@@ -359,7 +383,7 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly, byID boo
 		for _, t := range candidates {
 			known[t.Identity] = true
 		}
-		if !attach && byID {
+		if !attach && id != "" {
 			for _, p := range inv.Peers {
 				id := identityFromUID(p.UID)
 				if p.Manager != "" {

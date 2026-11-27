@@ -301,28 +301,31 @@ func appendLiveRow[T any](rows *[]T, data []byte) error {
 	return nil
 }
 
-func readLiveRows(bucket *bolt.Bucket, instance string, inv *inventory) error {
+func currentLiveBucket(tx *bolt.Tx, instance string) *bolt.Bucket {
+	bucket := tx.Bucket(liveTasksBucket)
 	if instance == "" || bucket == nil || string(bucket.Get([]byte("instance"))) != instance {
 		return nil
 	}
-	return bucket.ForEach(func(key, data []byte) error {
-		kind, _, _ := strings.Cut(string(key), "/")
-		switch kind {
-		case "host":
-			return json.Unmarshal(data, &inv.LocalHost)
-		case "shell":
-			if err := appendLiveRow(&inv.Shells, data); err != nil {
-				return err
-			}
-			inv.Shells[len(inv.Shells)-1].Hosted = bytes.HasPrefix(key, []byte("shell/hosted/"))
-			return nil
-		case "resource":
-			return appendLiveRow(&inv.Resources, data)
-		case "peer":
-			return appendLiveRow(&inv.Peers, data)
+	return bucket
+}
+
+func (inv *inventory) readLiveRow(key, data []byte) error {
+	kind, _, _ := strings.Cut(string(key), "/")
+	switch kind {
+	case "host":
+		return json.Unmarshal(data, &inv.LocalHost)
+	case "shell":
+		if err := appendLiveRow(&inv.Shells, data); err != nil {
+			return err
 		}
+		inv.Shells[len(inv.Shells)-1].Hosted = bytes.HasPrefix(key, []byte("shell/hosted/"))
 		return nil
-	})
+	case "resource":
+		return appendLiveRow(&inv.Resources, data)
+	case "peer":
+		return appendLiveRow(&inv.Peers, data)
+	}
+	return nil
 }
 
 // The setup response advertises only hosted shells owned by the current daemon.
@@ -333,8 +336,8 @@ func readHostedShells() ([]shellView, error) {
 	}
 	var rows []shellView
 	err = historyTransaction(record.Directory, false, func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(liveTasksBucket)
-		if bucket == nil || string(bucket.Get([]byte("instance"))) != record.UID {
+		bucket := currentLiveBucket(tx, record.UID)
+		if bucket == nil {
 			return nil
 		}
 		prefix := []byte("shell/hosted/")
@@ -366,8 +369,10 @@ func loadInventory(root, instance string) (inventory, error) {
 	inv := emptyInventory()
 	var observed []participatingShell
 	err := historyTransaction(root, false, func(tx *bolt.Tx) error {
-		if err := readLiveRows(tx.Bucket(liveTasksBucket), instance, &inv); err != nil {
-			return err
+		if bucket := currentLiveBucket(tx, instance); bucket != nil {
+			if err := bucket.ForEach(inv.readLiveRow); err != nil {
+				return err
+			}
 		}
 		inv.Peers = excludeLocalResourcePeers(inv.Peers, inv.Resources)
 		var err error
