@@ -479,29 +479,3 @@ func daemonResourceRequest(ctx context.Context, path string, input any) (resourc
 	}
 	return reply, err
 }
-
-func (s *resourceService) mountControl(action string, unmount chan<- chan error) resourceReply {
-	if action != "kill" {
-		return resourceReply{Error: "invalid resource operation"}
-	}
-	request := make(chan error, 1)
-	select {
-	case unmount <- request:
-	case <-s.done:
-		return resourceReply{}
-	}
-	var err error
-	select {
-	case err = <-request:
-	case <-s.done:
-		// Shutdown can close done immediately after sending the stop result.
-		select {
-		case err = <-request:
-		default:
-		}
-	}
-	if err != nil {
-		return resourceReply{Error: err.Error()}
-	}
-	return resourceReply{}
-}

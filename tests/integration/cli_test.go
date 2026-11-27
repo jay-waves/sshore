@@ -68,6 +68,7 @@ func TestCLI(t *testing.T) {
 		{"install rejects a remote path", []string{"install", "work:/usr/bin/sshore"}, 2, "install applies to this machine"},
 		{"install apply requires an explicit local path", []string{"install", "--apply"}, 2, "requires here:PATH"},
 		{"forwards reject foreground mode", []string{"fwd", "8080", "work:80", "--foreground"}, 2, "unsupported option: --foreground"},
+		{"mounts only start in the background", []string{"mount", "work:/srv", ".:", "--foreground"}, 2, "unsupported option: --foreground"},
 		{"omitted copy paths require a terminal before dialing", []string{"cp", "here:", "work:"}, 2, "file selection requires an interactive terminal"},
 		{"omitted mount paths require a terminal before dialing", []string{"mount", "work:", "here:"}, 2, "file selection requires an interactive terminal"},
 	} {

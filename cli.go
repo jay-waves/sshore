@@ -549,9 +549,8 @@ func parseFTPOptions(parsed cliArguments) (ftpOptions, error) {
 	o := ftpOptions{
 		Host: host, Remote: remote, Mountpoint: mountpoint,
 		PickRemote: remote == "", PickMountpoint: mountpoint == "" && parsed.operands[1] != ".:",
-		SSH:        parsed.ssh,
-		foreground: parsed.has("--foreground"),
-		ReadOnly:   parsed.has("--read-only"), Stats: parsed.has("--stats"), DirectIO: parsed.has("--direct-io"),
+		SSH:      parsed.ssh,
+		ReadOnly: parsed.has("--read-only"), Stats: parsed.has("--stats"), DirectIO: parsed.has("--direct-io"),
 		IOTimeoutNanos: parsed.duration("--io-timeout", defaultMountIOTimeout).Nanoseconds(), StartupTimeoutNanos: parsed.duration("--startup-timeout", 0).Nanoseconds(),
 	}
 	if strings.ContainsRune(o.Remote, 0) || strings.ContainsRune(o.Mountpoint, 0) {

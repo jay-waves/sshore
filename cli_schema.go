@@ -52,10 +52,9 @@ var cliOptions = map[string]cliOption{
 	"-i":          {kind: cliText},
 	"-F":          {kind: cliText},
 	"--no-escape": {}, "--pin": {}, "--no-login": {}, "--no-profile": {},
-	"--all":        {},
-	"--reset":      {},
-	"--foreground": {},
-	"--read-only":  {}, "--stats": {}, "--direct-io": {},
+	"--all":       {},
+	"--reset":     {},
+	"--read-only": {}, "--stats": {}, "--direct-io": {},
 	"--io-timeout": {kind: cliDuration}, "--startup-timeout": {kind: cliDuration},
 	"--retries": {kind: cliRetries},
 	"--count":   {kind: cliPingCount},
@@ -728,14 +727,15 @@ Use a different SSH port
 		},
 		"mount": {
 			run: runMount, group: groupSSH, summary: "Mount a remote directory", aliases: []string{"mnt"},
-			ssh: true, min: 2, max: 2, flags: strings.Fields("--foreground --read-only --io-timeout --startup-timeout --stats --direct-io"),
+			ssh: true, min: 2, max: 2, flags: strings.Fields("--read-only --io-timeout --startup-timeout --stats --direct-io"),
 			help: `Usage: sshore mount HOST:SOURCE MOUNTPOINT [options] [--ssh SSH_OPTIONS...]
        sshore mount here:[DIRECTORY] origin:[MOUNTPOINT] [--read-only]
 
 Mount a remote directory through the remote sshore helper using SFTP.
 The remote sshore release must match exactly and be on the SSH session's PATH.
 On a Windows host, use a drive-letter path such as HOST:E:/project.
-Background mounts receive fixed task IDs. HOST: browses from the remote home.
+Mounts run in the background. Use sshore kill TASK to unmount.
+HOST: browses from the remote home.
 Use HOST:~ to mount the home directory directly.
 Use [HOST]:SOURCE for an IPv6 address.
 Use a bare path for the mountpoint or here: to choose it after connecting.
@@ -748,7 +748,6 @@ free drive letter or nonexistent directory on Windows.
 
 Options:
   --read-only                  Reject changes through the mount
-  --foreground                 Run in this terminal; Ctrl-C requests unmount
   --io-timeout DURATION        Per SFTP request, including handshake (60s; 0s disables)
   --startup-timeout DURATION   Startup including authentication (0s disables)
   --stats                      Report request and cache statistics
@@ -756,8 +755,8 @@ Options:
 
 From a remote shell, origin: and :: select the attached client.
 Approve the request locally and choose a mountpoint.
-Busy mounts stay active. A second Ctrl-C during unmount forces disconnect
-and can interrupt writes. Request timeouts close the whole mount connection;
+If the filesystem reports a busy mount, close files and retry sshore kill TASK.
+Request timeouts close the whole mount connection;
 affected writes are not retried.
 
 Example: sshore mount work:/srv/project .: --read-only
@@ -766,8 +765,6 @@ Example: sshore mount work:/srv/project .: --read-only
   sshore mount work:/srv/project .:
 Mount read-only
   sshore mount work:/srv/project .: --read-only
-Run in the foreground
-  sshore mount work:/srv/project .: --foreground
 
 Requires FUSE on Linux, WinFsp on Windows, or macFUSE with its kernel extension
 on Apple Silicon Macs (experimental).

@@ -366,17 +366,21 @@ func newResourceService(config resourceConfig, record resourceRecord) *resourceS
 func awaitResourceCommit(read func(any) error, abandon func()) <-chan error {
 	ack := make(chan error, 1)
 	go func() {
-		var answer string
-		err := read(&answer)
-		if err == nil && answer != "commit" {
-			err = fmt.Errorf("invalid startup acknowledgement")
-		}
-		if err != nil {
-			abandon()
-		}
-		ack <- err
+		ack <- readResourceCommit(read, abandon)
 	}()
 	return ack
+}
+
+func readResourceCommit(read func(any) error, abandon func()) error {
+	var answer string
+	err := read(&answer)
+	if err == nil && answer != "commit" {
+		err = fmt.Errorf("invalid startup acknowledgement")
+	}
+	if err != nil {
+		abandon()
+	}
+	return err
 }
 
 func offerResourceStartup(enc *jsontext.Encoder, startup resourceRecord, ack <-chan error, finished <-chan struct{}) error {
@@ -415,10 +419,6 @@ func commitResourceStartup(enc *jsontext.Encoder, dec *jsontext.Decoder) error {
 		return fmt.Errorf("resource startup: %s", reply.Error)
 	}
 	return fmt.Errorf("invalid resource startup reply")
-}
-
-func (s *resourceService) finish() {
-	close(s.done)
 }
 
 func startResourceBackground(config resourceConfig) (int, error) {

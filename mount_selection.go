@@ -15,7 +15,6 @@ type mountPathRequest struct {
 	Parent    string
 	Remote    string
 	Local     string
-	Error     string
 }
 
 type mountPathListing struct {
@@ -25,32 +24,22 @@ type mountPathListing struct {
 	ParentError   string
 }
 
-// Both sides of the worker pipe accept listings until one final selection.
-// Commit is a separate acknowledgement and cannot precede that selection.
-func readMountStartup(read func(any) error, picking bool, selectPath func(mountPathRequest) error) error {
+func readMountSelection(read func(any) error, selectPath func(mountPathRequest) error) error {
 	for {
 		var raw jsontext.Value
 		if err := read(&raw); err != nil {
 			return err
 		}
-		if len(raw) > 1<<20 {
-			return errors.New("startup message too large")
-		}
-		if raw.Kind() == '"' {
-			var answer string
-			if picking || json.Unmarshal(raw, &answer) != nil || answer != "commit" {
-				return errors.New("invalid startup acknowledgement")
-			}
-			return nil
-		}
 		var request mountPathRequest
-		if !picking || raw.Kind() != '{' || json.Unmarshal(raw, &request) != nil {
+		if raw.Kind() != '{' || json.Unmarshal(raw, &request) != nil {
 			return errors.New("invalid mount selection request")
 		}
 		if err := selectPath(request); err != nil {
 			return err
 		}
-		picking = request.Directory != nil
+		if request.Directory == nil {
+			return nil
+		}
 	}
 }
 
@@ -88,20 +77,4 @@ func pickLocalMountpoint(ctx context.Context, dir string, inConsole bool) (strin
 	}
 	point, err = readMountApprovalPath(input, "")
 	return point, errors.Join(err, input.Close())
-}
-
-func mountPathSelector(o ftpOptions) func(context.Context, files.DirectoryReader, string) (string, string, error) {
-	return func(ctx context.Context, readDir files.DirectoryReader, home string) (string, string, error) {
-		if o.PickRemote {
-			go readDir(ctx, home)
-		}
-		return o.pickMountPaths(ctx, home, func(ctx context.Context, current, parent string) ([]directoryEntry, error, []directoryEntry, error) {
-			entries, err := directoryEntries(readDir(ctx, current))
-			if parent == "" {
-				return entries, err, nil, nil
-			}
-			parents, parentErr := directoryEntries(readDir(ctx, parent))
-			return entries, err, parents, parentErr
-		})
-	}
 }

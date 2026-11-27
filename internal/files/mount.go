@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/signal"
 	"path"
 	"sync"
@@ -36,25 +35,28 @@ type MountConfig struct {
 	OpenNotifications           func(context.Context) (io.ReadWriteCloser, error)
 	SelectPaths                 func(context.Context, DirectoryReader, string) (string, string, error)
 	NotificationsUnavailable    func()
-	Mounted                     func(root string)
-	Unmounting                  func(grace time.Duration)
-	UnmountFailed               func(error)
 	ReportStats                 func(MountStats)
 }
 
-// MountLifecycle connects a background worker to the mount. Nil means foreground.
+// MountLifecycle connects the worker's control pipe to the mount.
 type MountLifecycle struct {
-	Abandoned <-chan struct{}
+	OwnerDone <-chan struct{}
 	Ready     func(string, string) error
-	// Stop receives a reply channel for the graceful-unmount result.
-	Stop <-chan chan error
+	// Stop receives a callback for the graceful-unmount result.
+	Stop <-chan func(error)
 }
 type ftpMount interface {
 	Unmount() error
 	Wait()
 }
 
-func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error) {
+func RunMount(o MountConfig, service MountLifecycle) (code int, resultErr error) {
+	var stoppedReply func(error)
+	defer func() {
+		if stoppedReply != nil {
+			stoppedReply(resultErr)
+		}
+	}()
 	var err error
 	if err = CheckMountPlatform(); err != nil {
 		return 1, err
@@ -82,13 +84,8 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 			resultErr = errors.Join(resultErr, cause)
 		}
 	}()
-	interrupts := make(chan os.Signal, 2)
-	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(interrupts)
-	var abandoned <-chan struct{}
-	if service != nil {
-		abandoned = service.Abandoned
-	}
+	signals, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+	defer stopSignals()
 	var startupTimer *time.Timer
 	var startupDeadline <-chan time.Time
 	if o.StartupTimeout > 0 {
@@ -103,9 +100,9 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 			defer startupTimer.Stop()
 		}
 		select {
-		case <-abandoned:
+		case <-service.OwnerDone:
 			cancel(errors.New("mount startup abandoned"))
-		case <-interrupts:
+		case <-signals.Done():
 			cancel(errors.New("mount startup interrupted"))
 		case <-startupDeadline:
 			cancel(fmt.Errorf("mount startup timed out after %s (including SSH authentication)", o.StartupTimeout))
@@ -202,8 +199,6 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 	if o.ReportStats != nil {
 		ftp.enableMetrics()
 	}
-	if service != nil {
-	}
 	if o.IOTimeout > 0 {
 		sftpWorkers.Go(func() {
 			if err := ftp.watchRequests(ctx, o.IOTimeout); err != nil {
@@ -276,63 +271,50 @@ func RunMount(o MountConfig, service *MountLifecycle) (code int, resultErr error
 		return 1, err
 	}
 	finishSetup()
-	var requests <-chan chan error
-	if service != nil {
-		requests = service.Stop
-		if ctx.Err() == nil {
-			if err := service.Ready(root, o.Mountpoint); err != nil {
-				cancel(err)
-			}
+	if ctx.Err() == nil {
+		if err := service.Ready(root, o.Mountpoint); err != nil {
+			cancel(err)
 		}
 	}
 	var done <-chan struct{}
 	if ctx.Err() == nil {
-		if o.Mounted != nil {
-			o.Mounted(root)
-		}
 		mounted := make(chan struct{})
 		go func() { mount.Wait(); close(mounted) }()
 		done = mounted
 	}
 	const unmountGrace = 10 * time.Second
 	for {
-		var request chan error
+		var reply func(error)
 		if ctx.Err() == nil {
 			select {
-			case request = <-requests:
-				if request == nil {
-					requests = nil
-					continue
-				}
+			case reply = <-service.Stop:
 			case <-done:
 				return 0, nil
 			case <-ctx.Done():
-			case <-interrupts:
-				if o.Unmounting != nil {
-					o.Unmounting(unmountGrace)
-				}
+			case <-service.OwnerDone:
+			case <-signals.Done():
 			}
 		}
-		stopped, stopErr := stopFTPMount(ctx, mount, interrupts, disconnect, unmountGrace)
-		if request != nil {
-			request <- stopErr
-		}
+		stopped, stopErr := stopFTPMount(ctx, mount, disconnect, unmountGrace)
 		if stopped {
+			stoppedReply = reply
 			if stopErr != nil {
 				return 1, stopErr
 			}
 			return 0, nil
 		}
-		if request == nil && o.UnmountFailed != nil {
-			o.UnmountFailed(stopErr)
+		if reply != nil {
+			reply(stopErr)
+		} else {
+			// With no owner left to retry a busy mount, disconnect and finish.
+			disconnect(stopErr)
 		}
 	}
 }
 
 // stopFTPMount leaves a busy mount connected after a normal unmount refusal.
-// It only interrupts transport after the grace period or an explicit second
-// signal, or follows a transport failure into the bounded forced wait.
-func stopFTPMount(ctx context.Context, m ftpMount, interrupts <-chan os.Signal, disconnect func(error), grace time.Duration) (bool, error) {
+// It interrupts transport on timeout or transport failure before the forced wait.
+func stopFTPMount(ctx context.Context, m ftpMount, disconnect func(error), grace time.Duration) (bool, error) {
 	reason := context.Cause(ctx)
 	wait := grace
 	if reason != nil {
@@ -350,8 +332,6 @@ func stopFTPMount(ctx context.Context, m ftpMount, interrupts <-chan os.Signal, 
 				return true, errors.Join(cause, err)
 			}
 			return err == nil, err
-		case <-interrupts:
-			reason = errors.New("forced disconnect")
 		case <-ctx.Done():
 			reason = context.Cause(ctx)
 		case <-timer.C:

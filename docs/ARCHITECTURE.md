@@ -159,12 +159,12 @@ Intermediate hosts relay the resource stream as bytes.
 The [forwarding package](../internal/forward/forward.go) owns listeners, target
 dials and worker shutdown. The application supplies the authenticated transport
 and the startup exchange for the approved rule.
-The upgraded stream carries readiness and the caller's commit. The mount worker
-uses a separate pipe exchange because it can outlive the launch connection.
+The upgraded stream carries readiness and the caller's commit to the daemon.
+The mount worker reports readiness once and keeps its control pipe to the daemon
+after the launch connection closes.
 The CLI formats SSH and mount diagnostics from callbacks. Copy clients and
 mount clients use `pkg/sftp/v2` alongside the embedded agents.
-The [files package](../internal/files/mount_paths.go) prepares local mountpoints
-for both foreground mounts and background workers.
+The [files package](../internal/files/mount_paths.go) prepares local mountpoints.
 The pinned upstream revision includes the client disconnect fix and supports the
 project's Go version. Directory change notifications use their own stream.
 Trace changes through the [task registry](../daemon_tasks.go), [mount coordinator](../mount.go)

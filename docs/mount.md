@@ -9,12 +9,14 @@
   worker can warm the home listing, and can reply with the current and parent
   listings in one startup message. The selected root is resolved and validated
   through the existing SFTP client before mounting.
-- In a background mount the frontend owns the picker, the account daemon owns the
-  registered task and relays startup messages, and the isolated worker owns the
-  SSH connection and native mount. The credential broker handles SSH prompts.
-  After path selection, the worker reports readiness and the frontend commits
-  startup. A pending task can be cancelled at any stage, including authentication
-  or browsing. Loss of the initiator before commit abandons startup.
+- Mounts run in the background. The CLI owns the picker, the account daemon owns
+  the task, and one isolated worker owns the SSH connection and native mount.
+  The credential broker handles SSH prompts. The worker reports readiness and
+  the CLI commits startup with the daemon. Losing the CLI before commit cancels
+  startup, including during authentication or browsing.
+- Use `sshore kill TASK` to unmount. A busy unmount can be retried after files are
+  closed. If the worker stops responding during shutdown, the daemon terminates
+  that worker.
 - Direct mounts use sibling data and optional notification channels on one SSH
   connection. An `origin:` request first goes through [local approval](approval.md).
   The approved route binds the remote directory and access mode to the original

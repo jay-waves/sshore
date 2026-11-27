@@ -7,7 +7,7 @@ import (
 )
 
 // PrepareMountpoint resolves an explicit local path or allocates a default.
-// Pass the validated task name for a background mount, or an empty name for a foreground mount.
+// An automatic mountpoint uses the validated task name on Unix.
 // Call the returned cleanup function after using the mountpoint.
 func PrepareMountpoint(path, name string) (string, func(), error) {
 	if path == "" {
