@@ -52,10 +52,11 @@ var cliOptions = map[string]cliOption{
 	"-i":          {kind: cliText},
 	"-F":          {kind: cliText},
 	"--no-escape": {}, "--pin": {}, "--no-login": {}, "--no-profile": {},
-	"--all":        {},
-	"--reset":      {},
-	"--foreground": {},
-	"--read-only":  {}, "--stats": {}, "--direct-io": {},
+	"--all":           {},
+	"--reset":         {},
+	"--no-passphrase": {},
+	"--foreground":    {},
+	"--read-only":     {}, "--stats": {}, "--direct-io": {},
 	"--io-timeout": {kind: cliDuration}, "--startup-timeout": {kind: cliDuration},
 	"--retries": {kind: cliRetries},
 	"--count":   {kind: cliPingCount},
@@ -548,6 +549,17 @@ Mirror a remote service on a local port
   sshore forward work:3000 8080
 
 More examples: sshore shell|cp|mount|forward --tldr
+`,
+		},
+		"keygen": {
+			run: runKeygen, group: groupSSH, summary: "Generate an Ed25519 SSH key pair",
+			max: 1, flags: []string{"--no-passphrase"},
+			help: `Usage: sshore keygen [PATH] [--no-passphrase]
+
+Generate an OpenSSH Ed25519 key pair. The default private key path is
+~/.ssh/id_ed25519. The public key uses the same path with a .pub suffix.
+Existing files are kept. Enter a passphrase at the terminal, or explicitly
+use --no-passphrase to save an unencrypted private key.
 `,
 		},
 		"copy-id": {
