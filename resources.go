@@ -19,6 +19,7 @@ import (
 	"time"
 
 	transportio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/sys"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -121,87 +122,151 @@ func stopConfirmedResources(ctx context.Context, views []resourceView) error {
 	return errors.Join(failures...)
 }
 
-func runKillAll(o options) (int, error) {
+func runKillAll(o options, reset bool) (int, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var snapshot daemonSnapshot
-	var stop func() error
-	var views []resourceView
+	var err error
 	if o.host == "" {
-		var err error
-		snapshot, err = readDaemonSnapshot(ctx)
-		if os.IsNotExist(err) {
-			fmt.Println("No account daemon is running.")
-			return 0, nil
-		}
-		if err != nil {
-			return 1, err
-		}
-		stop = func() error { return requestDaemonShutdown(snapshot) }
+		err = killLocalAccount(ctx, reset)
 	} else {
-		local, err := readTaskInventory(taskInventoryRequest{Resources: true, Host: o.host})
-		if err != nil {
-			return 1, err
-		}
-		views = local.Resources
-		connection := remoteService(sshConnectionOptions(o), remoteServiceRequest{Operation: "daemon-admin"})
-		connection = withSSHDiagnostics(connection, os.Stderr, nil)
-		process, err := transportio.Start(ctx, connection, os.Stderr)
-		switch {
-		case errors.Is(err, errRemoteDeploymentMissing):
-			// The common confirmation still covers local resources on this host.
-		case err != nil:
-			return 1, err
-		default:
-			defer process.CloseAndWait()
-			decoder := jsontext.NewDecoder(process)
-			var reply daemonAdminReply
-			if err := json.UnmarshalDecode(decoder, &reply); err != nil {
-				return 1, fmt.Errorf("remote daemon administration unavailable: %w", err)
-			}
-			if reply.Error != "" {
-				return 1, fmt.Errorf("%s", reply.Error)
-			}
-			snapshot = reply.Snapshot
-			if snapshot.Instance != "" {
-				stop = func() error {
-					if err := writeControlJSON(process, true); err != nil {
-						return err
-					}
-					var result daemonAdminReply
-					if err := json.UnmarshalDecode(decoder, &result); err != nil {
-						return err
-					}
-					if result.Error != "" {
-						return fmt.Errorf("%s", result.Error)
-					}
-					return process.Wait()
-				}
-			}
-		}
+		err = killRemoteAccount(ctx, o, reset)
 	}
-	if err := confirmDaemonShutdown(o.host, snapshot, views); err != nil {
+	if err != nil {
 		return 1, err
-	}
-	if stop == nil {
-		fmt.Println("No remote daemon is running.")
-	} else {
-		if err := stop(); err != nil {
-			return 1, err
-		}
-		fmt.Println("Tasks ended; daemon stopped.")
-	}
-	if err := stopConfirmedResources(ctx, views); err != nil {
-		return 1, fmt.Errorf("local resource cleanup: %w", err)
 	}
 	return 0, nil
 }
 
-func confirmDaemonShutdown(host string, snapshot daemonSnapshot, resources []resourceView) error {
-	if len(snapshot.Tasks)+len(resources) == 0 {
+func killLocalAccount(ctx context.Context, reset bool) error {
+	var startup *sys.FileLock
+	if reset {
+		if err := requireLocalMaintenance("kill --all --reset"); err != nil {
+			return err
+		}
+		var err error
+		startup, err = daemonFileLock("startup")
+		if err != nil {
+			return err
+		}
+		defer startup.Close()
+	}
+	snapshot, err := readDaemonSnapshot(ctx)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := confirmDaemonShutdown("", snapshot, nil, reset); err != nil {
+		return err
+	}
+	var paths resetPaths
+	if reset {
+		paths, err = prepareReset()
+		if err != nil {
+			return err
+		}
+	}
+	if snapshot.Instance != "" {
+		if err := requestDaemonShutdown(snapshot); err != nil {
+			return err
+		}
+	}
+	if reset {
+		owner, err := daemonFileLock("owner")
+		if err != nil {
+			return err
+		}
+		defer owner.Close()
+		if err := paths.clear(startup, owner); err != nil {
+			return err
+		}
+		fmt.Println("Local sshore state and caches cleared.")
+	} else if snapshot.Instance == "" {
+		fmt.Println("No account daemon is running.")
+	} else {
+		fmt.Println("Tasks ended; daemon stopped.")
+	}
+	return nil
+}
+
+func killRemoteAccount(ctx context.Context, o options, reset bool) error {
+	local, err := readTaskInventory(taskInventoryRequest{Resources: true, Host: o.host})
+	if err != nil {
+		return err
+	}
+	request := remoteServiceRequest{Operation: "daemon-admin"}
+	if reset {
+		request.Mode = "reset"
+	}
+	connection := remoteService(sshConnectionOptions(o), request)
+	connection = withSSHDiagnostics(connection, os.Stderr, nil)
+	client, err := transportio.Dial(ctx, connection)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	stop := context.AfterFunc(ctx, func() { client.Close() })
+	defer stop()
+	process, err := connection.OpenCommand(ctx, client, "", os.Stderr)
+	if err != nil && !errors.Is(err, errRemoteDeploymentMissing) {
+		return err
+	}
+	var snapshot daemonSnapshot
+	var decoder *jsontext.Decoder
+	if process != nil {
+		defer process.CloseAndWait()
+		decoder = jsontext.NewDecoder(process)
+		reply, err := readDaemonAdminReply(decoder)
+		if err != nil {
+			return err
+		}
+		snapshot = reply.Snapshot
+	}
+	if err := confirmDaemonShutdown(o.host, snapshot, local.Resources, reset); err != nil {
+		return err
+	}
+	if process != nil && (snapshot.Instance != "" || reset) {
+		if err := writeControlJSON(process, true); err != nil {
+			return err
+		}
+		if _, err := readDaemonAdminReply(decoder); err != nil {
+			return err
+		}
+		if err := process.Wait(); err != nil {
+			return err
+		}
+	}
+	if err := stopConfirmedResources(ctx, local.Resources); err != nil {
+		return fmt.Errorf("local resource cleanup: %w", err)
+	}
+	if reset && process != nil {
+		if err := removeRemoteServer(ctx, client); err != nil {
+			return err
+		}
+		fmt.Println("Remote sshore server and data cleared.")
+	} else if snapshot.Instance == "" {
+		fmt.Println("No remote daemon is running.")
+	} else {
+		fmt.Println("Tasks ended; daemon stopped.")
+	}
+	return nil
+}
+
+func readDaemonAdminReply(decoder *jsontext.Decoder) (daemonAdminReply, error) {
+	var reply daemonAdminReply
+	if err := json.UnmarshalDecode(decoder, &reply); err != nil {
+		return reply, fmt.Errorf("remote daemon administration unavailable: %w", err)
+	}
+	if reply.Error != "" {
+		return reply, fmt.Errorf("%s", reply.Error)
+	}
+	return reply, nil
+}
+
+func confirmDaemonShutdown(host string, snapshot daemonSnapshot, resources []resourceView, reset bool) error {
+	if !reset && len(snapshot.Tasks)+len(resources) == 0 {
 		return nil
 	}
-	if host == "" {
+	local := host == ""
+	if local {
 		host = "local"
 	}
 	if len(snapshot.Tasks) > 0 {
@@ -212,7 +277,14 @@ func confirmDaemonShutdown(host string, snapshot daemonSnapshot, resources []res
 		inv.setTaskReferences()
 		writeTaskInventoryColor(os.Stdout, inv, "", termui.ColorEnabled(os.Stdout))
 	}
-	prompt := termui.StatusLine(termui.ColorEnabled(os.Stderr), termui.Warning, "End the listed tasks and stop the daemon? [y/N]")
+	question := "End the listed tasks and stop the daemon? [y/N]"
+	if reset {
+		question = "End tasks and clear local sshore state and caches? [y/N]"
+		if !local {
+			question = fmt.Sprintf("End tasks and delete this client's sshore %s server and state on %s? [y/N]", version, cleanText(host))
+		}
+	}
+	prompt := termui.StatusLine(termui.ColorEnabled(os.Stderr), termui.Warning, question)
 	fmt.Fprint(os.Stderr, prompt+" ")
 	if !confirmKillAll(os.Stdin) {
 		return fmt.Errorf("cancelled; no tasks ended")

@@ -205,6 +205,9 @@ func ensureLocalDaemonContext(ctx context.Context, executable ...string) (localS
 		}
 	}
 	defer lock.Close()
+	if err := checkDeploymentAdmission(); err != nil {
+		return empty, err
+	}
 	record, err := existingDaemonRecord()
 	if os.IsNotExist(err) {
 		return launchLocalDaemonContext(ctx, executable...)
@@ -259,6 +262,9 @@ func runDaemon() (result error) {
 		return err
 	}
 	defer owner.Close()
+	if err := checkDeploymentAdmission(); err != nil {
+		return err
+	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return err

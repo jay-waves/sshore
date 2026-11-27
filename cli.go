@@ -136,7 +136,7 @@ func runShell(parsed cliArguments) (int, error) {
 
 func runTargetCommand(parsed cliArguments) (int, error) {
 	if parsed.command == "kill" && parsed.has("--all") {
-		return runKillAll(options{host: parsed.task.host, ssh: parsed.ssh})
+		return runKillAll(options{host: parsed.task.host, ssh: parsed.ssh}, parsed.has("--reset"))
 	}
 	target, err := selectCLITask(parsed)
 	if err != nil {

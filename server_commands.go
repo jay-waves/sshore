@@ -206,5 +206,11 @@ func runRemoteService(args []string) error {
 	if req.Release == "" {
 		return usage("invalid remote service request")
 	}
+	if req.Operation != "daemon-admin" {
+		if err := checkDeploymentAdmission(); err != nil {
+			_ = writeMessage(os.Stdout, message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
+			return err
+		}
+	}
 	return serveRemoteRequest(req)
 }

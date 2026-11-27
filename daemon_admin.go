@@ -216,7 +216,7 @@ func (s *daemonTasks) stopTasks(review *daemonSnapshot) error {
 
 // An SSH exec channel exposes only the authenticated account's admin exchange.
 // Waiting for confirmation never grants the helper permission to start tasks.
-func serveDaemonAdmin(input io.Reader, output io.Writer) error {
+func serveDaemonAdmin(input io.Reader, output io.Writer, reset bool) error {
 	snapshot, err := readDaemonSnapshot(context.Background())
 	if os.IsNotExist(err) {
 		err = nil
@@ -229,7 +229,7 @@ func serveDaemonAdmin(input io.Reader, output io.Writer) error {
 	if err := json.MarshalEncode(encoder, reply); err != nil {
 		return err
 	}
-	if reply.Error != "" || snapshot.Instance == "" {
+	if reply.Error != "" || (snapshot.Instance == "" && !reset) {
 		return nil
 	}
 	var confirmed bool
@@ -239,8 +239,12 @@ func serveDaemonAdmin(input io.Reader, output io.Writer) error {
 	if !confirmed {
 		return json.MarshalEncode(encoder, daemonAdminReply{Error: "cancelled; no tasks ended"})
 	}
-	err = requestDaemonShutdown(snapshot)
 	reply = daemonAdminReply{}
+	if reset {
+		err = resetRemoteState(snapshot)
+	} else {
+		err = requestDaemonShutdown(snapshot)
+	}
 	if err != nil {
 		reply.Error = err.Error()
 	}

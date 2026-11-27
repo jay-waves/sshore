@@ -101,28 +101,43 @@ func deploymentClientID() (string, error) {
 	return string(id), nil
 }
 
-func prepareRemoteDeployment(ctx context.Context, client *sshio.Client, id string, install bool) (home string, uploaded bool, err error) {
+func openDeploymentFiles(ctx context.Context, client *sshio.Client) (_ *sftp.Client, _ func(), result error) {
 	session, err := client.NewSession()
 	if err != nil {
-		return "", false, err
+		return nil, nil, err
 	}
-	defer session.Close()
+	defer func() {
+		if result != nil {
+			_ = session.Close()
+		}
+	}()
 	in, err := session.StdinPipe()
 	if err != nil {
-		return "", false, err
+		return nil, nil, err
 	}
 	out, err := session.StdoutPipe()
 	if err != nil {
-		return "", false, err
+		return nil, nil, err
 	}
 	if err := session.RequestSubsystem("sftp"); err != nil {
-		return "", false, fmt.Errorf("open SFTP for remote deployment: %w", err)
+		return nil, nil, fmt.Errorf("open SFTP for remote deployment: %w", err)
 	}
 	ftp, err := sftp.NewClientPipe(ctx, out, in)
 	if err != nil {
+		return nil, nil, err
+	}
+	return ftp, func() {
+		_ = ftp.Close()
+		_ = session.Close()
+	}, nil
+}
+
+func prepareRemoteDeployment(ctx context.Context, client *sshio.Client, id string, install bool) (home string, uploaded bool, err error) {
+	ftp, closeFiles, err := openDeploymentFiles(ctx, client)
+	if err != nil {
 		return "", false, err
 	}
-	defer ftp.Close()
+	defer closeFiles()
 	home, err = ftp.RealPath(".")
 	if err != nil {
 		return "", false, err
@@ -147,6 +162,10 @@ func prepareRemoteDeployment(ctx context.Context, client *sshio.Client, id strin
 			if err := ensureDeploymentDirectory(ftp, dir, platform.os == "windows"); err != nil {
 				return "", false, err
 			}
+		}
+		marker := path.Join(path.Dir(destination), deploymentResetMarker)
+		if err := ftp.RemoveFile(marker); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return "", false, err
 		}
 		source, err := release.OpenBinary(ctx, deploymentReleaseBase, version, platform.os, platform.binary)
 		if err != nil {

@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 
+	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
 )
 
@@ -71,40 +75,6 @@ func prepareReset() (resetPaths, error) {
 	return resetPaths{state: root, cache: cache, account: account, customState: custom}, nil
 }
 
-func runReset() error {
-	if err := requireLocalMaintenance("reset"); err != nil {
-		return err
-	}
-	startup, err := daemonFileLock("startup")
-	if err != nil {
-		return err
-	}
-	defer startup.Close()
-	paths, err := prepareReset()
-	if err != nil {
-		return err
-	}
-	snapshot, err := readDaemonSnapshot(context.Background())
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err == nil {
-		if err := requestDaemonShutdown(snapshot); err != nil {
-			return fmt.Errorf("reset stopped; application state retained: %w", err)
-		}
-	}
-	owner, err := daemonFileLock("owner")
-	if err != nil {
-		return err
-	}
-	defer owner.Close()
-	if err := paths.clear(startup, owner); err != nil {
-		return err
-	}
-	fmt.Println("Reset complete; local tasks ended and application state and caches cleared.")
-	return nil
-}
-
 // clear runs with startup and owner locked.
 func (p resetPaths) clear(locks ...*sys.FileLock) error {
 	// Keep lock inodes stable: a waiting client must never acquire a deleted lock
@@ -133,8 +103,10 @@ func (p resetPaths) clear(locks ...*sys.FileLock) error {
 	} else if err := removeResetData(p.state, keep); err != nil {
 		return err
 	}
-	if err := removeResetData(p.cache, keep); err != nil {
-		return err
+	if p.cache != "" {
+		if err := removeResetData(p.cache, keep); err != nil {
+			return err
+		}
 	}
 	// The account directory has a fixed layout. Its other files and the
 	// coordination lock files are outside reset's removal set.
@@ -229,4 +201,79 @@ func removeResetEntry(path string, keep map[string]bool) error {
 		}
 	}
 	return os.RemoveAll(path)
+}
+
+const deploymentResetMarker = ".reset"
+
+func checkDeploymentAdmission() error {
+	dir, _ := deploymentCoordinates()
+	if dir == "" {
+		return nil
+	}
+	_, err := os.Lstat(filepath.Join(dir, deploymentResetMarker))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("remote deployment reset is pending; retry kill HOST --all --reset")
+}
+
+func resetRemoteState(snapshot daemonSnapshot) error {
+	dir, _ := deploymentCoordinates()
+	if dir == "" {
+		return fmt.Errorf("remote reset requires a deployed server")
+	}
+	startup, err := daemonFileLock("startup")
+	if err != nil {
+		return err
+	}
+	defer startup.Close()
+	if snapshot.Instance != "" {
+		if err := requestDaemonShutdown(snapshot); err != nil {
+			return err
+		}
+	} else if _, err := existingDaemonRecord(); !os.IsNotExist(err) {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("remote daemon changed; review again")
+	}
+	owner, err := daemonFileLock("owner")
+	if err != nil {
+		return err
+	}
+	defer owner.Close()
+	// Keep new tasks out until the client removes the executable after exit.
+	if err := writeStateFile(filepath.Join(dir, deploymentResetMarker), nil); err != nil {
+		return err
+	}
+	paths := resetPaths{state: filepath.Join(dir, "state"), account: filepath.Dir(owner.Path())}
+	return paths.clear(startup, owner)
+}
+
+func removeRemoteServer(ctx context.Context, client *sshio.Client) error {
+	id, err := deploymentClientID()
+	if err != nil {
+		return err
+	}
+	ftp, closeFiles, err := openDeploymentFiles(ctx, client)
+	if err != nil {
+		return err
+	}
+	defer closeFiles()
+	home, err := ftp.RealPath(".")
+	if err != nil {
+		return err
+	}
+	platform, err := remoteDeploymentPlatform(home)
+	if err != nil {
+		return err
+	}
+	target := path.Join(home, platform.binaryPath(id))
+	if err := ftp.RemoveFile(target); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove remote server: %w", err)
+	}
+	return nil
 }

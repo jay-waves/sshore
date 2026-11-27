@@ -53,6 +53,7 @@ var cliOptions = map[string]cliOption{
 	"-F":          {kind: cliText},
 	"--no-escape": {}, "--pin": {}, "--no-login": {}, "--no-profile": {},
 	"--all":        {},
+	"--reset":      {},
 	"--foreground": {},
 	"--read-only":  {}, "--stats": {}, "--direct-io": {},
 	"--io-timeout": {kind: cliDuration}, "--startup-timeout": {kind: cliDuration},
@@ -440,6 +441,9 @@ func parseKillTarget(a cliArguments) (taskSelector, error) {
 	if a.has("--all") {
 		return parseTaskAccount(a.operand(0))
 	}
+	if a.has("--reset") {
+		return taskSelector{}, usage("--reset requires --all")
+	}
 	ref := a.operand(0)
 	if id := taskIDOperand(ref); id != "" {
 		return taskSelector{scope: taskKnown, ref: id}, nil
@@ -563,7 +567,7 @@ choose one in the terminal with Tab completion.
 			help: `Usage: sshore install [here:[PATH]]
 
 Install the latest client release. Review running tasks before replacement.
-Installation preserves local settings and history. Use reset to clear state.
+Installation preserves settings and history. Use kill --all --reset to clear state.
 Run outside managed shells. Use here:PATH to specify an absolute executable path.
 `,
 			examples: "Install the latest client release\n  sshore install\n",
@@ -662,9 +666,9 @@ the executable name. A forward's arrow points toward the target service.
 		},
 		"kill": {
 			run: runTargetCommand, selector: cliKillSelector, group: groupTask, summary: "End a task or shut down its manager",
-			ssh: true, max: 1, flags: []string{"--all"},
+			ssh: true, max: 1, flags: []string{"--all", "--reset"},
 			help: `Usage: sshore kill ID|NAME [--ssh SSH_OPTIONS...]
-       sshore kill [HOST] --all [--ssh SSH_OPTIONS...]
+       sshore kill [HOST] --all [--reset] [--ssh SSH_OPTIONS...]
 
 Select a known shell, mount or forward by its ID or name. An ambiguous name
 requires an ID. Stop incoming resources on their managing account.
@@ -678,6 +682,10 @@ Effects:
 --all stops the local daemon when HOST is omitted. With HOST it stops this
 client's matching remote daemon and local resources connected to HOST.
 It shows running tasks before shutdown. Answer y to end them.
+
+--reset also clears local sshore state and caches when HOST is omitted. With
+HOST it removes this client's current remote server and its state. Reset always
+requires confirmation. Run local reset outside managed shells.
 ` + sshOptions,
 		},
 		"cp": {
@@ -789,16 +797,6 @@ Run this account's task manager in the foreground. Clients start it automaticall
 when needed. One manager owns shells and resource coordination.
 It exits after 30 seconds without tasks or connections.
 The mount subcommand runs an isolated mount worker, started by the manager.
-`,
-		},
-		"reset": {
-			run: func(cliArguments) (int, error) { return 0, runReset() }, group: groupAccount, summary: "End local tasks and clear application state",
-			help: `Usage: sshore reset
-
-Immediately end this account's tasks and clear local identity, history, requests,
-logs and cached releases. Unsaved work may be lost. Run outside managed shells.
-The program and user files remain. Busy mounts can prevent reset.
-
 `,
 		},
 	}

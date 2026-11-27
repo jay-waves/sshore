@@ -272,7 +272,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	if warn, err := observeIdentityRoute(m.MachineID, o.host, o.ssh); err != nil {
 		termui.Log(os.Stderr, "", termui.Warning, "[sshore] Identity tracking failed: %s\n", cleanText(err.Error()))
 	} else if warn {
-		termui.Log(os.Stderr, "", termui.Warning, "[sshore] Same identity through a new entry point; if this is a clone, run sshore reset there.\n")
+		termui.Log(os.Stderr, "", termui.Warning, "[sshore] Same identity through a new entry point; if this is a clone, reset that host's sshore state.\n")
 	}
 	o.instance = m.Instance
 	o.remoteOwned = !o.local && m.Owner != ""

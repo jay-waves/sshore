@@ -43,7 +43,7 @@ allocate a local mountpoint automatically.
 
 Install the client locally. Managed SSH connections deploy the matching server automatically.
 The installer reviews active tasks before stopping them for replacement.
-Installation preserves settings and history. Use sshore reset to clear state.
+Installation preserves settings and history. Use sshore kill --all --reset to clear state.
 Commit: %[2]s
 `, version, commit))
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr

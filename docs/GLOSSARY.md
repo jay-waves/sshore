@@ -78,7 +78,7 @@ editable default in local approval.
   characters and must identify one task; collisions require a longer prefix, the full UID or an
   explicit scope.
 - **Account identity** A private identifier used to group account display records. It is not SSH
-  authentication; copying its state can duplicate it. `reset` replaces it.
+  authentication; copying its state can duplicate it. `kill --all --reset` replaces it.
 
 ### Task ID
 

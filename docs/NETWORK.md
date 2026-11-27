@@ -58,7 +58,8 @@ forward. An approved copy uses an authorized file stream for SFTP.
 `detach` updates the active task through its managing daemon. `kill ID` and `kill NAME`
 resolve a known task and contact its managing daemon. `kill HOST --all` uses an
 administrative SSH exchange to preview
-and confirm shutdown. `daemon` and `reset` operate on the local account.
+and confirm shutdown. Add `--reset` to remove this client's current version
+of the remote server and its data, or omit HOST to clear local state and caches.
 `install` downloads the release over HTTPS. Before replacing the local
 client, it uses the installed client to review its local daemon and, on a version
 change, its recorded shell hosts. A changed SSH destination stops the upgrade

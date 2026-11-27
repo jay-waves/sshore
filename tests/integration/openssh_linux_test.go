@@ -1248,6 +1248,35 @@ Match command "printf forwarding-check"
 			t.Fatalf("daemon did not release its account endpoint:\n%s", out)
 		}
 	})
+	scenario("local reset asks before clearing state on an idle account", func(t *testing.T, ctx context.Context) {
+		root := os.Getenv("SSHORE_STATE_DIR")
+		connections := filepath.Join(root, "connections")
+		if err := os.MkdirAll(connections, 0700); err != nil {
+			t.Fatal(err)
+		}
+		marker := filepath.Join(connections, "reset-marker")
+		userFile := filepath.Join(root, "unrelated.txt")
+		for _, name := range []string{marker, userFile} {
+			if err := os.WriteFile(name, []byte("fixture"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		decline := exec.CommandContext(ctx, binary, "kill", "--all", "--reset")
+		decline.Stdin = strings.NewReader("n\n")
+		if out, err := decline.CombinedOutput(); err == nil || !strings.Contains(string(out), "[y/N]") {
+			t.Fatalf("declined reset: %v\n%s", err, out)
+		}
+		requireFile(t, marker, "fixture")
+		confirm := exec.CommandContext(ctx, binary, "kill", "--all", "--reset")
+		confirm.Stdin = strings.NewReader("y\n")
+		if out, err := confirm.CombinedOutput(); err != nil {
+			t.Fatalf("confirmed reset: %v\n%s", err, out)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("local state remains after reset: %v", err)
+		}
+		requireFile(t, userFile, "fixture")
+	})
 }
 
 func runOpenSSHTerminal(t *testing.T, ctx context.Context, cmd *exec.Cmd, run func(send func(string), wait terminalWait)) {

@@ -23,7 +23,7 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 	}
 	switch req.Operation {
 	case "daemon-admin":
-		return serveDaemonAdmin(os.Stdin, os.Stdout)
+		return serveDaemonAdmin(os.Stdin, os.Stdout, req.Mode == "reset")
 	case "task-control":
 		return serveTaskControl(req.Mode, taskQuery{Ref: req.Name, UID: req.Instance})
 	case "shell":

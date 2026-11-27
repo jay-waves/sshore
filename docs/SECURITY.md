@@ -338,7 +338,7 @@ its recorded remote deployments. Active tasks require confirmation of the
 displayed snapshot. A declined or failed shutdown leaves the installed client
 in place. Before publishing under the startup and owner locks, the installer
 rechecks the target against the file it inspected. Installation preserves local
-state. Use `reset` to clear it. Unknown or newer installed releases require
+state. Use `kill --all --reset` to clear it. Unknown or newer installed releases require
 manual handling.
 
 Replacement requires a user-owned regular file and a user-owned directory
@@ -352,11 +352,14 @@ different release.
 The publisher retains immutable tags and assets for deployment to new hosts.
 See [release mechanics](RELEASE.md).
 
-`reset` uses the authenticated administrative snapshot and shutdown before clearing
-local state and cached releases. Failed shutdown stops reset; busy mounts may refuse
-cleanup. Custom state roots are cleared by entry name, including when inherited
-from the running daemon. Account cleanup removes the daemon locator and log.
-It preserves coordination locks to prevent concurrent startup.
+`kill --all --reset` asks for confirmation even when the task list is empty.
+Local reset clears state and caches while preserving the executable, remote
+deployment identity and coordination locks. Custom state roots are cleared
+by entry name. A failed shutdown leaves state in place.
+With HOST, the matching server stops its reviewed daemon and blocks new tasks.
+The server clears application state and exits. The client then removes the
+executable over SFTP on the same connection. The current client ID and version
+select the deployment. Its empty directories and locks can remain.
 
 ## Setup failure
 

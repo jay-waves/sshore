@@ -143,6 +143,40 @@ func TestWindowsOpenSSH(t *testing.T) {
 			testWindowsForward(t, command, host, sshOptions, reverse)
 		})
 	}
+	t.Run("remote reset removes the matching server and its state", func(t *testing.T) {
+		const name = "ci-reset"
+		run(t, "shell", host+":"+name, []string{"--no-profile"}, func(send func(string), wait terminalWait) {
+			wait("Connected " + host + ":" + name)
+			send("\x02d")
+			wait("Detached from " + host + ":" + name)
+		})
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := os.ReadFile(filepath.Join(home, ".sshore", "deployment-id"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := `.\.sshore\clients\` + string(id) + `\0.0.0`
+		rawCommand := func(remote string) []byte {
+			args := append([]string{"sh", host, "--ssh"}, sshOptions...)
+			return windowsRun(t, command(append(args, "--", remote)...))
+		}
+		state := dir + `\state\daemon\local.log`
+		rawCommand(`if not exist ` + state + ` exit /b 1`)
+		reset := command(append([]string{"kill", host, "--all", "--reset", "--ssh"}, sshOptions...)...)
+		reset.Stdin = strings.NewReader("y\n")
+		if out := windowsRun(t, reset); !strings.Contains(string(out), name) {
+			t.Fatalf("reset did not display the detached task:\n%s", out)
+		}
+		rawCommand(`if exist ` + dir + `\sshore.exe exit /b 1`)
+		rawCommand(`if exist ` + state + ` exit /b 1`)
+		run(t, "shell", host+":ci-after-reset", []string{"--no-profile"}, func(send func(string), wait terminalWait) {
+			wait("Connected " + host + ":ci-after-reset")
+			send("exit\r")
+		})
+	})
 }
 
 func testWindowsForward(t *testing.T, command func(...string) *exec.Cmd, host string, sshOptions []string, reverse bool) {
