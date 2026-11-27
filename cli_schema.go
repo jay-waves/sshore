@@ -558,8 +558,8 @@ More examples: sshore shell|cp|mount|forward --tldr
 
 Generate an OpenSSH Ed25519 key pair. The default private key path is
 ~/.ssh/id_ed25519. The public key uses the same path with a .pub suffix.
-Existing files are kept. Enter a passphrase at the terminal, or explicitly
-use --no-passphrase to save an unencrypted private key.
+Existing files are kept. Press Enter at the passphrase prompt or use
+--no-passphrase to save an unencrypted private key.
 `,
 		},
 		"copy-id": {

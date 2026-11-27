@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -100,8 +101,19 @@ func TestCLI(t *testing.T) {
 		generate := func() ([]byte, error) {
 			return exec.CommandContext(t.Context(), binary, "keygen", target, "--no-passphrase").CombinedOutput()
 		}
-		if out, err := generate(); err != nil {
+		out, err := generate()
+		if err != nil {
 			t.Fatalf("keygen: %v\n%s", err, out)
+		}
+		if runtime.GOOS == "linux" {
+			want, err := exec.CommandContext(t.Context(), "ssh-keygen", "-E", "sha256", "-lvf", target+".pub").Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, art, _ := strings.Cut(string(want), "\n")
+			if !strings.HasSuffix(string(out), art) {
+				t.Fatalf("fingerprint art differs from OpenSSH:\n%s\nwant:\n%s", out, art)
+			}
 		}
 		read := func(name string) []byte {
 			t.Helper()
