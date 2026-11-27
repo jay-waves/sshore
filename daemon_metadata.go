@@ -1,61 +1,10 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 )
-
-type taskSelectionRequest struct {
-	Action                                  string
-	Key, Host, Name, Instance, Kind, Parent string `json:",omitempty"`
-}
-type taskSelectionReply struct {
-	Target *selectedTask `json:",omitempty"`
-
-	Error string `json:",omitempty"`
-}
-
-func taskSelectionRPC(r taskSelectionRequest) (taskSelectionReply, error) {
-	var reply taskSelectionReply
-	if activity := accountActivity.Load(); activity != nil {
-		reply = activity.handleTaskSelection(r)
-	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		record, err := ensureLocalDaemonContext(ctx)
-		if err != nil {
-			return reply, err
-		}
-		if err := daemonJSON(ctx, record, "/tasks/resolve", r, &reply); err != nil {
-			return reply, err
-		}
-	}
-	if reply.Error != "" {
-		return reply, fmt.Errorf("%s", reply.Error)
-	}
-	return reply, nil
-}
-
-func (a *daemonActivity) handleTaskSelection(r taskSelectionRequest) (reply taskSelectionReply) {
-	var err error
-	switch r.Action {
-	case "task_by_id", "attach_by_id":
-		reply.Target, err = a.selectTaskID(r.Instance, r.Kind, r.Parent, r.Action == "attach_by_id")
-	case "task_by_name", "attach_by_name":
-		reply.Target, err = a.selectTaskName(r.Name, r.Kind, r.Parent, r.Action == "attach_by_name")
-	case "attach_recent":
-		reply.Target, err = a.selectDetachedAttach(r.Key, r.Kind)
-	default:
-		err = fmt.Errorf("invalid task selection operation")
-	}
-	if err != nil {
-		reply.Error = err.Error()
-	}
-	return
-}
 
 type recentConnection struct {
 	Hosted                   bool              `json:",omitempty"`
@@ -135,14 +84,6 @@ func validateRecentAttachment(row recentAttachment) error {
 		return fmt.Errorf("local detached attachment has remote route")
 	}
 	return nil
-}
-
-func (a *daemonActivity) selectDetachedAttach(parent, kind string) (*selectedTask, error) {
-	detached := (taskQuery{Kind: kind, Parent: parent}).recentDetached(a.tasks)
-	if len(detached) == 0 {
-		return nil, fmt.Errorf("no detached local shells; use sshore shell")
-	}
-	return &detached[0], nil
 }
 
 // The SSH peer supplies eligible roots. Local history only ranks those identities.

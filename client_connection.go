@@ -825,23 +825,18 @@ func resolveDetachedAttach(o *options, parent string) error {
 		kind = "hosted"
 	}
 	query := taskQuery{Kind: kind, Parent: parent, Ref: o.session, Detached: true}
-	var target *selectedTask
-	if query.Ref != "" {
-		rows, err := queryRegisteredTasks(query)
-		if err != nil {
-			return err
-		}
-		if len(rows) == 0 {
-			return missingAttachTarget(query.Ref)
-		}
-		target = &rows[0]
-	} else {
-		reply, err := taskSelectionRPC(taskSelectionRequest{Action: "attach_recent", Key: parent, Kind: kind})
-		if err != nil || reply.Target == nil {
-			return err
-		}
-		target = reply.Target
+	query.Recent = query.Ref == ""
+	rows, err := queryRegisteredTasks(query)
+	if err != nil {
+		return err
 	}
+	if len(rows) == 0 {
+		if query.Recent {
+			return fmt.Errorf("no detached local shells; use sshore shell")
+		}
+		return missingAttachTarget(query.Ref)
+	}
+	target := rows[0]
 	o.session, o.taskIdentity, o.instance, o.hosted = target.Name, target.Identity, target.Instance, target.Hosted
 	return nil
 }

@@ -53,22 +53,6 @@ func promoteRecent[T any](tx *bolt.Tx, name []byte, row T, same func(T) bool) er
 	return bucket.Put(binary.BigEndian.AppendUint64(nil, seq), data)
 }
 
-func readShellCandidates(root string) (observed []participatingShell, records []recentConnection, detached []recentAttachment, err error) {
-	err = historyTransaction(root, false, func(tx *bolt.Tx) error {
-		observed, err = participatingShells(tx)
-		if err != nil {
-			return err
-		}
-		records, err = readHistoryRows(tx, connectionBucket, validateShellHistoryConnection)
-		if err != nil {
-			return err
-		}
-		detached, err = readHistoryRows(tx, attachmentBucket, validateRecentAttachment)
-		return err
-	})
-	return
-}
-
 func rememberShellExit(o options) error {
 	return updateHistory(func(tx *bolt.Tx) error {
 		if err := removeRecentDetach(tx, o); err != nil {

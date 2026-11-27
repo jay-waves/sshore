@@ -212,12 +212,6 @@ func daemonRoutes(record localShellRecord, activity *daemonActivity, stop func()
 			serveDaemonStream(w, r, func(c net.Conn) { activity.serve(c, req, true) })
 		}
 	})
-	mux.HandleFunc("POST /tasks/resolve", func(w http.ResponseWriter, r *http.Request) {
-		var req taskSelectionRequest
-		if readDaemonBody(w, r, &req) {
-			_ = json.MarshalWrite(w, activity.handleTaskSelection(req))
-		}
-	})
 	registerPlatformDaemonRoutes(mux, tasks)
 	mux.HandleFunc("POST /launch", func(w http.ResponseWriter, r *http.Request) {
 		var req localDaemonRequest

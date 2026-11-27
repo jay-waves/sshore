@@ -52,6 +52,7 @@ func (r resourceView) kindAndName() (string, string) {
 }
 
 type shellView struct {
+	Hosted      bool      `json:"-"`
 	HostInfo    hostInfo  `json:"host_info,omitzero"`
 	SourceHost  string    `json:"source_host,omitempty"`
 	Owner       string    `json:"owner,omitempty"`
@@ -71,9 +72,10 @@ type shellView struct {
 	Directory   string    `json:"directory"`
 }
 type peerView struct {
-	UID    string `json:"uid"`
-	ID     string `json:"id"`
-	Detail string `json:"detail"`
+	Manager string `json:"manager,omitempty"`
+	UID     string `json:"uid"`
+	ID      string `json:"id"`
+	Detail  string `json:"detail"`
 }
 type inventory struct {
 	LocalHost *hostInfo      `json:"local_host,omitempty"`
@@ -277,7 +279,7 @@ func (a *daemonActivity) publishPeer(key string) {
 			return nil
 		}
 		p := newest.peer
-		return peerView{UID: p.UID, ID: p.ID, Detail: p.Detail}
+		return peerView{Manager: p.Manager, UID: p.UID, ID: p.ID, Detail: p.Detail}
 	})
 }
 
@@ -309,7 +311,11 @@ func readLiveRows(bucket *bolt.Bucket, instance string, inv *inventory) error {
 		case "host":
 			return json.Unmarshal(data, &inv.LocalHost)
 		case "shell":
-			return appendLiveRow(&inv.Shells, data)
+			if err := appendLiveRow(&inv.Shells, data); err != nil {
+				return err
+			}
+			inv.Shells[len(inv.Shells)-1].Hosted = bytes.HasPrefix(key, []byte("shell/hosted/"))
+			return nil
 		case "resource":
 			return appendLiveRow(&inv.Resources, data)
 		case "peer":

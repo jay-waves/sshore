@@ -82,26 +82,6 @@ func (s *daemonActivity) remove(l *activityLease) {
 	}
 }
 
-// Overlapping connections can describe the same resource. Show the newest
-// live registration, including when an earlier connection closes out of order.
-func (s *daemonActivity) incomingPeers() []peerRecord {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	latest := make(map[string]*activityLease)
-	for lease := range s.leases {
-		if peer := lease.peer; peer != nil {
-			if old := latest[peer.Key]; old == nil || old.order < lease.order {
-				latest[peer.Key] = lease
-			}
-		}
-	}
-	peers := make([]peerRecord, 0, len(latest))
-	for _, lease := range latest {
-		peers = append(peers, *lease.peer)
-	}
-	return peers
-}
-
 func openActivity(parent context.Context, r leaseRequest) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()

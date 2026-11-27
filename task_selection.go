@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	bolt "go.etcd.io/bbolt"
 	"os"
 	"slices"
 	"strings"
@@ -14,6 +15,7 @@ import (
 type taskQuery struct {
 	Kind, Ref, UID, Parent string
 	Detached               bool
+	Recent, RemoteChildren bool
 }
 
 type selectedTask struct {
@@ -171,6 +173,16 @@ func (q taskQuery) selectLocked(tasks *daemonTasks) (target selectedTask, err er
 }
 
 func (q taskQuery) run(tasks *daemonTasks) ([]selectedTask, error) {
+	if q.RemoteChildren {
+		return tasks.remoteChildCandidates(q.Parent, q.Ref), nil
+	}
+	if q.Recent {
+		rows := q.recentDetached(tasks)
+		if len(rows) > 1 {
+			rows = rows[:1]
+		}
+		return rows, nil
+	}
 	if q.Ref == "" && q.UID == "" {
 		return q.registered(tasks), nil
 	}
@@ -201,180 +213,171 @@ func queryRegisteredTasks(q taskQuery) ([]selectedTask, error) {
 	return result, err
 }
 
-// Resolve one ID across the registry, saved routes and visible peer records.
-// Only a registered task or a saved authenticated route can accept control.
-func (a *daemonActivity) selectTaskID(ref, kind, parent string, attach bool) (*selectedTask, error) {
-	prefix := strings.ToLower(ref)
-	if !isTaskIDPrefix(prefix) {
-		return nil, usage("invalid task ID")
-	}
-	query := taskQuery{Kind: kind}
-	if validTaskUID(prefix) {
-		if target, ok := query.candidate(prefix, a.tasks.lookup(prefix)); ok {
-			return &target, nil
-		}
-	}
-	candidates := query.registered(a.tasks)
-	if attach {
-		candidates = append(candidates, a.remoteChildCandidates(parent, prefix)...)
-	}
-	live := make(map[string]bool)
-	for _, target := range candidates {
-		live[target.Identity] = true
-	}
-	observed, records, detached, err := readShellCandidates(a.root)
-	if err != nil {
-		return nil, err
-	}
-	addRoute := func(route *recentConnection) {
-		if route != nil && !route.viaShell() && strings.HasPrefix(route.Instance, prefix) && (!attach || !live[identityFromUID(route.Instance)]) {
-			candidates = append(candidates, selectedTask{Kind: "shell", Identity: identityFromUID(route.Instance), Instance: route.Instance, Connection: route})
-		}
-	}
-	for _, row := range detached {
-		addRoute(row.Connection)
-	}
-	known := make(map[string]bool, len(candidates))
-	for _, target := range candidates {
-		known[target.Identity] = true
-	}
-	var advisory []selectedTask
-	for _, row := range observed {
-		if !strings.HasPrefix(row.Instance, prefix) || known[identityFromUID(row.Instance)] {
-			continue
-		}
-		i := slices.IndexFunc(records, func(route recentConnection) bool { return route.Host == row.Host })
-		if attach && (i < 0 || records[i].viaShell()) {
-			candidates = append(candidates, selectedTask{Kind: "shell", Identity: identityFromUID(row.Instance), Instance: row.Instance, RemoteHost: row.Host})
-			continue
-		}
-		if i < 0 {
-			advisory = append(advisory, selectedTask{Kind: "shell", Identity: identityFromUID(row.Instance), Manager: row.Host})
-			continue
-		}
-		route := records[i]
-		route.Instance, route.Session = row.Instance, row.Name
-		addRoute(&route)
-	}
-	if kind == "" {
-		for _, peer := range a.incomingPeers() {
-			if strings.HasPrefix(peer.UID, prefix) {
-				advisory = append(advisory, selectedTask{Kind: peerKind(peer.ID), Identity: identityFromUID(peer.UID), Manager: peer.Manager})
-			}
-		}
-	}
-	for _, target := range candidates {
-		known[target.Identity] = true
-	}
-	for _, target := range advisory {
-		if !known[target.Identity] {
-			candidates = append(candidates, target)
-			known[target.Identity] = true
-		}
-	}
-	target, err := matchTask(ref, candidates)
-	if err != nil {
-		return nil, err
-	}
-	if target.Identity == "" && attach {
-		return nil, usage("unknown shell ID %s; refresh with sshore list", ref)
-	}
-	if target.Identity == "" {
-		return nil, usage("unknown task %s; refresh with sshore list", ref)
-	}
-	if target.Manager != "" {
-		return nil, usage("task %s is managed on %s; use an authenticated connection to that account", ref, cleanText(target.Manager))
-	}
-	return &target, nil
-}
-
-// Resolve names from account-owned registrations and already known routes only.
-func (a *daemonActivity) selectTaskName(name, kind, parent string, attach bool) (*selectedTask, error) {
-	candidates := (taskQuery{Kind: kind}).registered(a.tasks)
-	if attach {
-		candidates = append(candidates, a.remoteChildCandidates(parent, name)...)
-	}
-	observed, routes, detached, err := readShellCandidates(a.root)
-	if err != nil {
-		return nil, err
-	}
-	known := make(map[string]bool)
-	for _, target := range candidates {
-		known[target.Identity] = true
-	}
-	addRoute := func(route *recentConnection) {
-		if route == nil || route.viaShell() || route.Session != name || !validTaskUID(route.Instance) {
-			return
-		}
-		id := identityFromUID(route.Instance)
-		if !known[id] {
-			candidates = append(candidates, selectedTask{Kind: "shell", Name: name, Identity: id, Instance: route.Instance, Connection: route})
-			known[id] = true
-		}
-	}
-	for _, row := range detached {
-		addRoute(row.Connection)
-	}
-	for _, row := range observed {
-		id := identityFromUID(row.Instance)
-		if row.Name != name || !validTaskUID(row.Instance) || known[id] {
-			continue
-		}
-		i := slices.IndexFunc(routes, func(route recentConnection) bool { return route.Host == row.Host && !route.viaShell() })
-		if i >= 0 {
-			route := routes[i]
-			route.Instance, route.Session = row.Instance, row.Name
-			addRoute(&route)
-		} else if attach {
-			candidates = append(candidates, selectedTask{Kind: "shell", Name: name, Identity: id, Instance: row.Instance, RemoteHost: row.Host})
-			known[id] = true
-		} else {
-			candidates = append(candidates, selectedTask{Kind: "shell", Name: name, Identity: id, Instance: row.Instance, Manager: row.Host})
-			known[id] = true
-		}
-	}
-	target, err := matchTask(name, candidates)
-	if err != nil || target.Identity == "" {
-		return nil, err
-	}
-	if target.Manager != "" {
-		return nil, usage("task %s is managed on %s; use its managing account", name, cleanText(target.Manager))
-	}
-	return &target, nil
-}
-
+// Selection reads the published account view. Opening or stopping the chosen UID
+// is a separate authenticated operation against its manager.
 func selectCLITask(parsed cliArguments) (selectedTask, error) {
-	command, target := parsed.command, parsed.task
-	if target.ref == "" && target.name == "" {
+	ref := parsed.task.ref
+	byID := ref != ""
+	if !byID {
+		ref = parsed.task.name
+	}
+	if ref == "" {
 		return selectedTask{}, nil
 	}
-	req := taskSelectionRequest{Instance: target.ref, Name: target.name}
-	action := "task"
-	if command == "attach" {
-		action, req.Kind = "attach", "shell"
-		req.Parent = shellIdentityFromEnvironment()
-		if req.Parent != "" && os.Getenv("SSHORE_SOCKET") != "" {
-			req.Kind = "hosted"
+	attach := parsed.command == "attach"
+	var parent string
+	if attach {
+		parent = shellIdentityFromEnvironment()
+	}
+	var children []selectedTask
+	var err error
+	if parent != "" {
+		children, err = queryRegisteredTasks(taskQuery{RemoteChildren: true, Parent: parent, Ref: ref})
+		if err != nil {
+			return selectedTask{}, err
 		}
 	}
-	req.Action = action + "_by_id"
-	if target.name != "" {
-		req.Action = action + "_by_name"
-	}
-	reply, err := taskSelectionRPC(req)
+	candidates, err := publishedCandidates(children, attach, parent != "" && os.Getenv("SSHORE_SOCKET") != "", byID)
 	if err != nil {
 		return selectedTask{}, err
 	}
-	if reply.Target != nil {
-		return *reply.Target, nil
+	target, err := matchTask(ref, candidates)
+	if err != nil {
+		return selectedTask{}, err
 	}
-	if target.name == "" {
-		return selectedTask{}, fmt.Errorf("missing task selection")
+	// A name and an ID must resolve to the same unambiguous route.
+	if !byID && target.Identity != "" {
+		target, err = matchTask(canonicalTaskUID(target.Identity), candidates)
+		if err != nil {
+			return selectedTask{}, err
+		}
 	}
-	if command == "kill" {
-		return selectedTask{}, usage("unknown task %s; use kill HOST --all for a remote account", cleanText(target.name))
+	if target.Manager != "" {
+		return selectedTask{}, usage("task %s is managed on %s; use an authenticated connection to that account", ref, cleanText(target.Manager))
 	}
-	return selectedTask{}, nil // A bare hostname is also a valid attach target.
+	if target.Identity == "" {
+		if byID && attach {
+			return selectedTask{}, usage("unknown shell ID %s; refresh with sshore list", ref)
+		}
+		if byID {
+			return selectedTask{}, usage("unknown task %s; refresh with sshore list", ref)
+		}
+		if !attach {
+			return selectedTask{}, usage("unknown task %s; use kill HOST --all for a remote account", cleanText(ref))
+		}
+	}
+	return target, nil
+}
+
+func publishedCandidates(candidates []selectedTask, attach, hostedOnly, byID bool) ([]selectedTask, error) {
+	root, err := statePath("")
+	if err != nil {
+		return nil, err
+	}
+	record, err := existingDaemonRecord()
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	if record.Directory != "" {
+		root = record.Directory
+	}
+
+	err = historyTransaction(root, false, func(tx *bolt.Tx) error {
+		inv := emptyInventory()
+		if err := readLiveRows(tx.Bucket(liveTasksBucket), record.UID, &inv); err != nil {
+			return err
+		}
+
+		for _, s := range inv.Shells {
+			if hostedOnly && !s.Hosted {
+				continue
+			}
+			t := selectedTask{Kind: "shell", Name: s.Name, Identity: identityFromUID(s.Instance), Hosted: s.Hosted}
+			if t.Hosted {
+				t.Instance = s.Instance
+			}
+			candidates = append(candidates, t)
+		}
+		if !attach {
+			for _, r := range inv.Resources {
+				kind, name := r.kindAndName()
+				candidates = append(candidates, selectedTask{Kind: kind, Name: name, Identity: r.Identity})
+			}
+		}
+		known := make(map[string]bool)
+		for _, t := range candidates {
+			known[t.Identity] = true
+		}
+		detached, err := readHistoryRows(tx, attachmentBucket, validateRecentAttachment)
+		if err != nil {
+			return err
+		}
+		addRoute := func(r *recentConnection) {
+			if r == nil || r.viaShell() || !validTaskUID(r.Instance) {
+				return
+			}
+			id := identityFromUID(r.Instance)
+			if !known[id] {
+				candidates = append(candidates, selectedTask{Kind: "shell", Name: r.Session, Identity: id, Instance: r.Instance, Connection: r})
+			}
+		}
+		for _, d := range detached {
+			addRoute(d.Connection)
+		}
+		for _, t := range candidates {
+			known[t.Identity] = true
+		}
+		observed, err := participatingShells(tx)
+		if err != nil {
+			return err
+		}
+		routes, err := readHistoryRows(tx, connectionBucket, validateShellHistoryConnection)
+		if err != nil {
+			return err
+		}
+		var advisory []selectedTask
+		for _, s := range observed {
+			id := identityFromUID(s.Instance)
+			if known[id] {
+				continue
+			}
+			i := slices.IndexFunc(routes, func(r recentConnection) bool { return r.Host == s.Host && !r.viaShell() })
+			if i >= 0 {
+				r := routes[i]
+				r.Session, r.Instance = s.Name, s.Instance
+				addRoute(&r)
+			} else {
+				t := selectedTask{Kind: "shell", Name: s.Name, Identity: id, Instance: s.Instance}
+				if attach {
+					t.RemoteHost = s.Host
+				} else {
+					t.Manager = s.Host
+				}
+				advisory = append(advisory, t)
+			}
+		}
+		for _, t := range candidates {
+			known[t.Identity] = true
+		}
+		if !attach && byID {
+			for _, p := range inv.Peers {
+				id := identityFromUID(p.UID)
+				if p.Manager != "" {
+					advisory = append(advisory, selectedTask{Kind: peerKind(p.ID), Identity: id, Manager: p.Manager})
+				}
+			}
+		}
+		for _, t := range advisory {
+			if !known[t.Identity] {
+				candidates = append(candidates, t)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return candidates, nil
 }
 
 func selectRegisteredTask(query taskQuery) (selectedTask, error) {
@@ -404,11 +407,11 @@ func killRegisteredTask(target selectedTask) (int, error) {
 	return 0, nil
 }
 
-func (a *daemonActivity) remoteChildCandidates(parent, ref string) []selectedTask {
+func (tasks *daemonTasks) remoteChildCandidates(parent, ref string) []selectedTask {
 	if parent == "" {
 		return nil
 	}
-	source, ok := a.tasks.lookup(canonicalTaskUID(parent)).(*tmuxTask)
+	source, ok := tasks.lookup(canonicalTaskUID(parent)).(*tmuxTask)
 	if !ok {
 		return nil
 	}
