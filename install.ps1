@@ -9,7 +9,7 @@ install directory to the user and current session PATH. Verify SHA256SUMS and ex
 replacement. Never modify system PATH, profiles or execution
 policy; never elevate or create versioned backups. The installer stops the account daemon
 before replacement after reviewing its tasks.
-Remaining clients may still hold the executable open; close them and retry.
+If replacement fails because the executable is in use, close its remaining clients and retry.
 .PARAMETER Version
 Published X.Y.Z version (without v). Defaults to the latest release.
 .EXAMPLE
@@ -183,7 +183,7 @@ function Install-Sshore([string]$Version = '', [string]$Path = '') {
         if ($LASTEXITCODE -ne 0) { throw 'Could not read the staged client help.' }
         $action = if ($commands -match '^\s+install\s') { 'install' } else { 'bootstrap' }
         & $payload $action --apply "here:$target"
-        if ($LASTEXITCODE -ne 0) { throw 'Installation stopped. Close remaining sshore clients if the executable is still in use, then retry.' }
+        if ($LASTEXITCODE -ne 0) { throw "Installation stopped (installer exit code $LASTEXITCODE). See the error above." }
         Write-Host "Installed sshore ${Version}: $target"
         if ($Path -or -not $foundOnPath) {
             try {

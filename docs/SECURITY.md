@@ -318,7 +318,8 @@ It uses the installed client to review the local daemon and, on a version change
 its remote deployments recorded in bbolt. Active tasks require confirmation of the
 displayed snapshot. A declined or failed shutdown leaves the installed client
 in place. Before publishing under the startup and owner locks, the installer
-rechecks the target against the file it inspected. Installation preserves local
+rechecks the target against the file it inspected. On Windows, it retries a blocked
+file replacement briefly while holding both locks. Installation preserves local
 state. Use `kill --all --reset` to clear it. Unknown or newer installed releases require
 manual handling.
 

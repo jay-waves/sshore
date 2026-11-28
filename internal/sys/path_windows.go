@@ -102,3 +102,26 @@ func ValidateInstallTarget(target string) error {
 	}
 	return nil
 }
+
+// Capture the file identity now, even while a reader is holding the executable.
+func StatInstallTarget(path string) (os.FileInfo, error) {
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	h, err := windows.CreateFile(name, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "stat", Path: path, Err: err}
+	}
+	f := os.NewFile(uintptr(h), path)
+	defer f.Close()
+	return f.Stat()
+}
+
+// Windows can report access denied for an executable that is still mapped.
+func IsInstallReplacementBlocked(err error) bool {
+	return errors.Is(err, windows.ERROR_ACCESS_DENIED) ||
+		errors.Is(err, windows.ERROR_SHARING_VIOLATION) ||
+		errors.Is(err, windows.ERROR_USER_MAPPED_FILE)
+}

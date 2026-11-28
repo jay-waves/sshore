@@ -41,3 +41,7 @@ func ValidateInstallTarget(target string) error {
 	}
 	return nil
 }
+
+func StatInstallTarget(path string) (os.FileInfo, error) { return os.Lstat(path) }
+
+func IsInstallReplacementBlocked(error) bool { return false }

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jay-waves/sshore/internal/sys"
 )
@@ -27,7 +28,7 @@ func PrepareReplacement(target, version string) (Replacement, error) {
 	if err := sys.ValidateInstallTarget(target); err != nil {
 		return Replacement{}, err
 	}
-	previous, err := os.Lstat(target)
+	previous, err := sys.StatInstallTarget(target)
 	if err != nil && !os.IsNotExist(err) {
 		return Replacement{}, err
 	}
@@ -58,19 +59,26 @@ func PrepareReplacement(target, version string) (Replacement, error) {
 }
 
 func (r Replacement) Publish() error {
-	if err := verifyTarget(r.target, r.previous); err != nil {
-		return err
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if err := verifyTarget(r.target, r.previous); err != nil {
+			return err
+		}
+		err := os.Rename(r.staged, r.target)
+		if err == nil {
+			return nil
+		}
+		if !sys.IsInstallReplacementBlocked(err) || !time.Now().Before(deadline) {
+			return fmt.Errorf("replace installed executable: %w", err)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	if err := os.Rename(r.staged, r.target); err != nil {
-		return fmt.Errorf("replace installed executable: %w", err)
-	}
-	return nil
 }
 
 func (r Replacement) Discard() { _ = os.Remove(r.staged) }
 
 func verifyTarget(path string, previous os.FileInfo) error {
-	current, err := os.Lstat(path)
+	current, err := sys.StatInstallTarget(path)
 	if os.IsNotExist(err) && previous == nil {
 		return nil
 	}

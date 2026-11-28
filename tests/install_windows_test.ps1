@@ -126,7 +126,7 @@ func main() {
         $locked = [IO.File]::Open($target, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         try {
             $downloadCount = $script:Downloads.Count
-            Assert-Fails { Install-Sshore -Version '0.3.3' } 'Close remaining sshore clients'
+            Assert-Fails { Install-Sshore -Version '0.3.3' } 'installer exit code 1'
             Assert-True ($script:Downloads.Count -eq ($downloadCount + 2)) 'Replacement was not prepared before cleanup'
         } finally { $locked.Dispose() }
         Assert-True ((Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $target).Hash -eq $installedHash) 'Locked target was damaged'
