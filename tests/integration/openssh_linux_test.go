@@ -557,22 +557,77 @@ Match command "printf forwarding-check"
 		}
 	})
 	scenario("local browsers restore the terminal on quit", func(t *testing.T, ctx context.Context) {
-		for _, tc := range []struct{ cmd, marker string }{{"lf", "s Shell"}, {"lp", "Enter Forward"}} {
+		for _, args := range [][]string{{"lf", host + ":/tmp"}, {"lp", host + ":"}, {"lf", ":", "here:"}, {"lp", host + ":22", ":"}} {
+			var status *exec.ExitError
+			if out, err := command(ctx, args...).CombinedOutput(); !errors.As(err, &status) || status.ExitCode() != 2 {
+				t.Fatalf("expected usage error for %v: %v\n%s", args, err, out)
+			}
+		}
+		for _, tc := range []struct{ cmd, marker, keys, disabled string }{
+			{"lf", "s Shell", "cmf", "c Copy"}, {"lp", "/ Filter", "\r:", "Enter Forward"},
+		} {
 			out, err := runTerminal(t, ctx, exec.CommandContext(ctx, binary, tc.cmd), func(send func(string), wait terminalWait) {
 				wait(tc.marker, true)
-				send("q")
+				send(tc.keys + "q")
 			})
 			_, screen, opened := strings.Cut(out, "\x1b[?1049h")
 			if err != nil || !opened || !strings.Contains(screen, "\x1b[?1049l") {
 				t.Fatalf("%s did not restore the terminal: %v\n%s", tc.cmd, err, out)
 			}
+			if tc.cmd == "lp" && !strings.Contains(out, "Some process names may require administrator privileges.") {
+				t.Fatalf("port browser omitted its process-name permissions hint:\n%s", out)
+			}
+			if strings.Contains(out, tc.disabled) {
+				t.Fatalf("%s offered a transfer without a second endpoint:\n%s", tc.cmd, out)
+			}
 		}
+	})
+	scenario("local file browser distinguishes open editor and pager", func(t *testing.T, ctx context.Context) {
+		root, helpers := t.TempDir(), t.TempDir()
+		folder, file := filepath.Join(root, "a folder"), filepath.Join(root, "z file")
+		if err := os.Mkdir(folder, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		log := filepath.Join(helpers, "actions")
+		for _, name := range []string{"xdg-open", "editor", "pager"} {
+			const record = `#!/bin/sh
+printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
+`
+			if err := os.WriteFile(filepath.Join(helpers, name), []byte(record), 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cmd := exec.CommandContext(ctx, binary, "lf")
+		cmd.Dir = root
+		cmd.Env = append(cmd.Environ(), "PATH="+helpers+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"EDITOR="+filepath.Join(helpers, "editor"), "PAGER="+filepath.Join(helpers, "pager"),
+			"SSHORE_TEST_LF_ACTIONS="+log)
+		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+			wait("\x1b[7m./", true)
+			waitForRedraw := func(keys string) {
+				send(keys)
+				wait("\x1b[?1049h", true)
+				wait("s Shell", true)
+			}
+			waitForRedraw("j\r")
+			waitForRedraw("G\r")
+			waitForRedraw("l")
+			send("e")
+			wait("\x1b[?1049h", true)
+			wait("\x1b[7mz file", true)
+			waitForRedraw("i")
+			send("q")
+		})
+		requireFile(t, log, "xdg-open "+folder+"\nxdg-open "+file+"\nxdg-open "+file+"\neditor "+file+"\npager "+file+"\n")
 	})
 	scenario("file browser operates on the selected remote path", func(t *testing.T, ctx context.Context) {
 		root := run(t, ctx, "sh", host, "--", `mkdir -p browser-demo && printf payload > browser-demo/marker && cd browser-demo && pwd`)
 		root = strings.TrimSpace(root)
 		browse := func(key string, after func(func(string), terminalWait)) string {
-			cmd := command(ctx, "lf", host+":"+root)
+			cmd := command(ctx, "lf", host+":"+root, ":")
 			cmd.Dir = dir
 			out, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 				wait("\x1b[7m./", true)
@@ -609,7 +664,22 @@ Match command "printf forwarding-check"
 		if data, err := os.ReadFile(filepath.Join(home, "mnt", name, "marker")); err != nil || string(data) != "payload" {
 			t.Fatalf("mounted %q: %v", data, err)
 		}
-		browse("f", func(send func(string), wait terminalWait) { wait("2222", true); send("q") })
+	})
+	scenario("file browser uploads to the peer from its command line", func(t *testing.T, ctx context.Context) {
+		src := t.TempDir()
+		if err := os.WriteFile(filepath.Join(src, "browser-upload"), []byte("from here"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := command(ctx, "lf", ":", host+":browser-upload")
+		cmd.Dir = src
+		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+			wait("c Copy", true)
+			send("jc")
+			wait("Copied")
+		})
+		if got := run(t, ctx, "sh", host, "--", "cat browser-upload"); got != "from here" {
+			t.Fatalf("uploaded %q", got)
+		}
 	})
 	scenario("port browser forwards a discovered SSH service to an edited port", func(t *testing.T, ctx context.Context) {
 		probe, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -619,7 +689,7 @@ Match command "printf forwarding-check"
 		dest := probe.Addr().String()
 		port := strconv.Itoa(probe.Addr().(*net.TCPAddr).Port)
 		probe.Close()
-		out, err := runTerminal(t, ctx, command(ctx, "lp", host), func(send func(string), wait terminalWait) {
+		out, err := runTerminal(t, ctx, command(ctx, "lp", host+":", ":"), func(send func(string), wait terminalWait) {
 			wait("2222", true)
 			// Select sshd by port even if other fixture services are listening.
 			// Pasted shortcuts stay inert, including Enter inside the filter.
@@ -1011,16 +1081,18 @@ Match command "printf forwarding-check"
 			var out string
 			var err error
 			switch mode {
-			case "lp":
-				out, err = runTerminal(t, ctx, command(ctx, "lp", host), func(send func(string), wait terminalWait) {
+			case "lp", "reverse":
+				first, peer := host+":", "here"
+				if mode == "reverse" {
+					first, peer = ":", host
+				}
+				out, err = runTerminal(t, ctx, command(ctx, "lp", first, peer+":"), func(send func(string), wait terminalWait) {
 					wait("Enter Forward", true)
 					send("/" + source + "\r")
-					wait("Listen on here at port:", true)
+					wait("Listen on "+peer+" at port:", true)
 					send("\x15" + port + "\r")
 					wait("Started forward/")
 				})
-			case "reverse":
-				out = run(t, ctx, "fwd", "--udp", source, host+":"+port)
 			case "origin":
 				out, err = runTerminal(t, ctx, command(ctx, "sh", host, "--no-profile"), func(send func(string), wait terminalWait) {
 					wait("Connected " + host + ":")

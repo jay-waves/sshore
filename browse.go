@@ -18,35 +18,49 @@ import (
 
 type browseLocation struct{ host, dir string }
 
-func parseBrowseLocation(a cliArguments) (browseLocation, error) {
-	loc := browseLocation{host: "here"}
-	arg := a.operand(0)
-	if arg != "" {
-		var err error
-		if isBareSSHHost(arg) {
-			err = validateHostOperand(a.command, arg)
-			loc.host = arg
-		} else {
-			loc.host, loc.dir, err = splitEndpoint(arg)
+func (loc browseLocation) endpoint() string {
+	return sshio.FormatEndpoint(loc.host, loc.dir)
+}
+
+func parseBrowseLocations(a cliArguments) (source, peer browseLocation, err error) {
+	source.host = "here"
+	switch len(a.operands) {
+	case 1:
+		source.host = a.operand(0)
+		if err := validateHostOperand(a.command, source.host); err != nil {
+			return source, peer, usage("use %s [HOST] or specify both endpoints", a.command)
 		}
+	case 2:
+		source.host, source.dir, err = splitEndpoint(a.operand(0))
 		if err != nil {
-			return loc, err
+			return source, peer, err
+		}
+		peer.host, peer.dir, err = splitEndpoint(a.operand(1))
+		if err != nil {
+			return source, peer, err
+		}
+		if (source.host == "here") == (peer.host == "here") {
+			return source, peer, usage("%s requires one local endpoint and one peer", a.command)
+		}
+		if a.command == "lp" && (source.dir != "" || peer.dir != "") {
+			return source, peer, usage("lp endpoints take no value after the colon")
+		}
+		attached := os.Getenv("SSHORE_SOCKET") != ""
+		if attached != (peer.host == "origin") {
+			return source, peer, usage("%s pairs use here: and origin: inside an attached shell, or here: and an SSH host outside it", a.command)
 		}
 	}
-	if loc.host == "origin" {
-		return loc, usage("browse here: or an SSH host")
+	if source.host == "origin" {
+		return source, peer, usage("browse here or an SSH host")
 	}
-	if a.command == "lp" && loc.dir != "" {
-		return loc, usage("lp expects a host without a directory")
+	if source.host == "here" && (peer.host == "" || peer.host == "origin") && len(a.ssh) > 0 {
+		return source, peer, usage("this browser has no SSH host for the SSH options")
 	}
-	if loc.host == "here" && len(a.ssh) > 0 {
-		return loc, usage("local browsing does not accept SSH options")
-	}
-	return loc, nil
+	return source, peer, nil
 }
 
 func runFileBrowser(a cliArguments) (int, error) {
-	loc, err := parseBrowseLocation(a)
+	loc, peer, err := parseBrowseLocations(a)
 	if err != nil {
 		return 2, err
 	}
@@ -56,6 +70,7 @@ func runFileBrowser(a cliArguments) (int, error) {
 	ctx := context.Background()
 	err = termui.RunLocalConsole(func(c *termui.LocalConsole) error {
 		pick := func(opts termui.LFOptions) error {
+			opts.BrowseTransfers = peer.host != ""
 			opts.BrowseAction = func(key byte, isDir bool) { action, directory = key, isDir }
 			var err error
 			selected, err = c.PickLF(ctx, opts)
@@ -91,60 +106,29 @@ func runFileBrowser(a cliArguments) (int, error) {
 		return 1, err
 	}
 	source := sshio.FormatEndpoint(loc.host, selected)
-	attached := os.Getenv("SSHORE_SOCKET") != ""
 	switch action {
 	case 's':
+		if loc.host == "here" {
+			return browseCommand("shell", nil, source)
+		}
 		// Windows SFTP exposes drive paths with a leading slash.
 		if windowsHost && len(selected) > 3 && selected[0] == '/' && selected[2] == ':' && selected[3] == '/' {
 			source = sshio.FormatEndpoint(loc.host, selected[1:])
 		}
 		return browseCommand("shell", a.ssh, source)
-	case 'f':
-		return browseCommand("lp", a.ssh, sshio.FormatEndpoint(loc.host, ""))
 	case 'm':
-		if loc.host != "here" {
-			return browseCommand("mount", a.ssh, source, ".:")
+		if loc.host != "here" || peer.host == "origin" {
+			return browseCommand("mount", a.ssh, source, peer.endpoint())
 		}
-		if attached {
-			return browseCommand("mount", nil, source, "origin:")
-		}
-		remote, err := browsePrompt("Remote directory (HOST:PATH): ", "")
-		if err != nil {
-			return 1, err
-		}
-		return browseCommand("mount", a.ssh, remote, source)
+		return browseCommand("mount", a.ssh, "--lf", peer.endpoint(), source)
 	case 'c':
-		target := "here:"
-		if loc.host == "here" {
-			if attached {
-				target = "origin:"
-			} else {
-				target, err = browsePrompt("Copy to (HOST:[PATH]): ", "")
-				if err != nil {
-					return 1, err
-				}
-			}
-		}
-		args := []string{"--lf", source, target}
+		args := []string{"--lf", source, peer.endpoint()}
 		if directory {
 			args = append(args, "-r")
 		}
 		return browseCommand("copy", a.ssh, args...)
 	}
 	return 1, fmt.Errorf("unknown file action")
-}
-
-func browsePrompt(prompt, initial string) (string, error) {
-	var value string
-	err := termui.RunLocalConsole(func(*termui.LocalConsole) error {
-		input, err := newLocalInput()
-		if err != nil {
-			return err
-		}
-		value, err = input.ReadPrefilled(prompt, false, initial)
-		return errors.Join(err, input.Close())
-	})
-	return value, err
 }
 
 func browseCommand(command string, ssh []string, args ...string) (int, error) {

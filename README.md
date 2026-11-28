@@ -173,15 +173,40 @@ Windows, or the [macFUSE](https://macfuse.github.io/) kernel extension on
 experimental macOS builds. The command prints the mountpoint and how to stop
 it. Close open files before unmounting.
 
-## tui — Browse files and ports
+## TUI
 
-`sshore lf` opens the current directory. Use `sshore lf HOST` for the remote home directory
-or `sshore lf HOST:/path` for a specific directory. Press `s` to open a shell, `c` to copy,
-`m` to mount, or `f` to browse ports on the same host.
+### `lf` — Browse files
 
-`sshore lp [HOST]` lists local or remote TCP and UDP ports. Use the arrow keys to select
-a port or `/` to filter. Press Enter to review the target port, then Enter to start forwarding.
-Press `q` to leave either browser.
+```sh
+sshore lf                      # Browse the local current directory
+sshore lf work                 # Browse the remote home directory
+sshore lf : work:              # Browse locally with copy and mount enabled
+sshore lf work:/srv/project :  # Browse remotely with copy and mount enabled
+```
+
+| Key | Action |
+| --- | --- |
+| `Enter` | Open a local file or directory in the system default app |
+| `e` | Edit a local file with `$EDITOR` |
+| `i` | View a local file with `$PAGER` |
+| `l` | Enter a directory or open a local file |
+| `s` | Open a shell |
+| `c` / `m` | Copy / mount when both endpoints are set |
+| `q` | Quit |
+
+System open uses `xdg-open` on Linux, `open` on macOS, and `ShellExecute` on Windows.
+
+### `lp` — Browse TCP and UDP ports
+
+```sh
+sshore lp          # List local ports
+sshore lp work     # List remote ports
+sshore lp work: :  # Select a remote service and listen locally
+sshore lp : work:  # Select a local service and listen remotely
+```
+
+Press `/` to filter and `q` to quit. With two endpoints, press `Enter` to choose
+the listening port. Some process names may require administrator privileges.
 
 ## Advanced usage
 
@@ -211,8 +236,8 @@ Press `q` to leave either browser.
 ## Acknowledgements
 
 Inspired by [dtach](https://github.com/crigler/dtach),
-[sshping](https://github.com/spook/sshping), [trzsz](https://github.com/trzsz/trzsz)
-and [sshoq](https://github.com/h4sh5/sshoq). The file picker is inspired by
-[lf](https://github.com/gokcehan/lf).
+[sshping](https://github.com/spook/sshping), [trzsz](https://github.com/trzsz/trzsz),
+[sshoq](https://github.com/h4sh5/sshoq), [lf](https://github.com/gokcehan/lf),
+and [lsoff](https://github.com/yutat23/lsoff).
 
 [MIT license](LICENSE.txt) · [Third-party notices](docs/THIRD_PARTY_LICENSES.txt)

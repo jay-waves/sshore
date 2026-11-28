@@ -36,6 +36,7 @@ type LFOptions struct {
 	Manual            bool
 	LocalFiles        bool // The listed paths belong to this process's filesystem.
 	BrowseAction      func(key byte, directory bool)
+	BrowseTransfers   bool
 	Validate          func(string) error
 	Input             <-chan KeyInput
 	Output            io.Writer
@@ -262,6 +263,28 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 		child()
 	}
 	var display lfScreen
+	runFileAction := func(action string, run func() error) error {
+		if err := stopTerminal(); err != nil {
+			return err
+		}
+		if err := options.console.close(); err != nil {
+			return err
+		}
+		runErr := run()
+		if err := options.console.open(); err != nil {
+			return errors.Join(runErr, err)
+		}
+		if err := startTerminal(); err != nil {
+			return errors.Join(runErr, err)
+		}
+		decoder = keyDecoder{}
+		display.rows = nil
+		validationErr = nil
+		if runErr != nil {
+			validationErr = fmt.Errorf("%s: %w", action, runErr)
+		}
+		return nil
+	}
 	size, resized := watchScreenSize(ctx)
 	for {
 		parentIndex := -1
@@ -375,8 +398,8 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 				goToTop := key == 'g' && awaitingG
 				awaitingG = key == 'g' && !goToTop
 				switch key {
-				case 's', 'c', 'm', 'f':
-					if options.BrowseAction == nil || index >= len(panes[1].entries) {
+				case 's', 'c', 'm':
+					if options.BrowseAction == nil || (key != 's' && !options.BrowseTransfers) || index >= len(panes[1].entries) {
 						continue
 					}
 					entry := panes[1].entries[index]
@@ -448,27 +471,14 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 					if err != nil {
 						continue
 					}
-					if err := stopTerminal(); err != nil {
+					if err := runFileAction(variable, command.Run); err != nil {
 						return nil, err
 					}
-					if err := options.console.close(); err != nil {
-						return nil, err
-					}
-					runErr := command.Run()
-					if err := options.console.open(); err != nil {
-						return nil, errors.Join(runErr, err)
-					}
-					if err := startTerminal(); err != nil {
-						return nil, errors.Join(runErr, err)
-					}
-					decoder = keyDecoder{}
-					display.rows = nil // The external program owned the screen.
 					if key == 'e' {
 						delete(cache, current)
+						editErr := validationErr
 						refresh()
-					}
-					if runErr != nil {
-						validationErr = fmt.Errorf("%s: %w", variable, runErr)
+						validationErr = editErr
 					}
 				case ' ':
 					if !multi || index >= len(panes[1].entries) || panes[1].entries[index].IsDir {
@@ -502,6 +512,16 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 					if entry.Name != "." {
 						name = options.Join(current, entry.Name)
 					}
+					if options.BrowseAction != nil && (enter || key == 'l' && !entry.IsDir) {
+						if !options.LocalFiles || startTerminal == nil {
+							validationErr = errors.New("System open is available for local paths")
+							continue
+						}
+						if err := runFileAction("Open", func() error { return openLFPath(ctx, name) }); err != nil {
+							return nil, err
+						}
+						continue
+					}
 					if entry.IsDir {
 						if !(options.Directory || options.ChooseDirectories) || !enter {
 							if name != current {
@@ -526,12 +546,12 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 }
 
 func lfFileCommand(ctx context.Context, variable, name string, local bool) (*exec.Cmd, error) {
+	if !local {
+		return nil, fmt.Errorf("%s requires a local picker with terminal access", variable)
+	}
 	value := strings.TrimSpace(os.Getenv(variable))
 	if value == "" {
 		return nil, fmt.Errorf("%s is not set", variable)
-	}
-	if !local {
-		return nil, fmt.Errorf("%s requires a local picker with terminal access", variable)
 	}
 	argv, err := shell.ParseCommand(value)
 	if err != nil || len(argv) == 0 || argv[0] == "" {
@@ -593,12 +613,16 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 	if height >= 5 {
 		lines = append(lines, "")
 	}
+	showFileActions := options.BrowseAction != nil && options.LocalFiles && height >= 4
 	// Keep the current directory visible even on very narrow terminals.
 	widths := [3]int{width / 4, width / 3, width - width/4 - width/3 - 3}
 	if width < 15 {
 		widths = [3]int{0, width - 1, 0}
 	}
 	rows := height - len(lines) - 1
+	if showFileActions {
+		rows--
+	}
 	if s.directory != dir {
 		s.directory, s.firstVisible = dir, 0
 	}
@@ -686,7 +710,14 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 		hint += "  : Type path"
 	}
 	if options.BrowseAction != nil {
-		hint = "s Shell  c Copy  m Mount  f Ports  l Open  / Search  q Quit"
+		hint = "s Shell  l Navigate  / Search  q Quit"
+		if options.BrowseTransfers {
+			hint = "s Shell  c Copy  m Mount  l Navigate  / Search  q Quit"
+		}
+	}
+	if showFileActions {
+		const actions = "Enter Open  l Enter dir/Open file  e Editor  i Pager"
+		lines = append(lines, Render(color, Muted, ansi.Truncate(actions, width-1, "")))
 	}
 	var footer string
 	var cursorColumn int

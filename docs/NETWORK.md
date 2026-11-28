@@ -50,6 +50,14 @@ worker returns the current and parent listings together over the startup
 stream and reuses that cache when it mounts the selected directory. The shell
 console's `lf` requests the same pair over its existing control channel.
 
+The standalone file and port browsers open the first endpoint. A second endpoint
+enables copy and mount in the file browser or forwarding in the port browser.
+With a single SSH host or no arguments, the file browser can open a shell and the
+port browser lists listeners. Some process names may require administrator privileges.
+In the standalone local file browser, Enter uses the system default app. Use
+`l` to enter a directory or open a file, `e` for the editor and `i` for the pager.
+See the command help for endpoint syntax.
+
 ## Approved resources
 
 When a remote shell requests access to the origin account, the origin daemon

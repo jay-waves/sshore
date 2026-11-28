@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
@@ -32,7 +31,7 @@ func browseListeners(ctx context.Context, host string, ssh []string) ([]ports.Li
 }
 
 func runPortBrowser(a cliArguments) (int, error) {
-	loc, err := parseBrowseLocation(a)
+	loc, peer, err := parseBrowseLocations(a)
 	if err != nil {
 		return 2, err
 	}
@@ -51,7 +50,7 @@ func runPortBrowser(a cliArguments) (int, error) {
 			}
 			labels[i] = fmt.Sprintf("%-5s  %-6d  %-15s  %s", strings.ToUpper(row.Protocol), row.Port, row.Address, owner)
 		}
-		index, err := console.PickPort(loc.host, labels)
+		index, err := console.PickPort(loc.host, labels, peer.host != "")
 		if err == nil && index >= 0 {
 			udp = rows[index].Protocol == "udp"
 			port = strconv.FormatUint(uint64(rows[index].Port), 10)
@@ -65,7 +64,7 @@ func runPortBrowser(a cliArguments) (int, error) {
 		return 1, err
 	}
 	if port == "" {
-		port, err = browsePrompt("Source port: ", "")
+		port, err = portPrompt("Source port: ", "")
 		if err != nil {
 			return 1, err
 		}
@@ -73,30 +72,29 @@ func runPortBrowser(a cliArguments) (int, error) {
 			return 2, err
 		}
 	}
-	peer := "here"
-	if loc.host == "here" {
-		if os.Getenv("SSHORE_SOCKET") != "" {
-			peer = "origin"
-		} else {
-			peer, err = browsePrompt("Forward to SSH host: ", "")
-			if err != nil {
-				return 1, err
-			}
-			if err = validateHostOperand("forward", peer); err != nil {
-				return 2, err
-			}
-		}
-	}
-	dest, err := browsePrompt("Listen on "+cleanText(peer)+" at port: ", port)
+	dest, err := portPrompt("Listen on "+cleanText(peer.host)+" at port: ", port)
 	if err != nil {
 		return 1, err
 	}
 	if _, err = parsePort(dest); err != nil {
 		return 2, err
 	}
-	args := []string{sshio.FormatEndpoint(loc.host, port), sshio.FormatEndpoint(peer, dest)}
+	args := []string{sshio.FormatEndpoint(loc.host, port), sshio.FormatEndpoint(peer.host, dest)}
 	if udp {
 		args = append(args, "--udp")
 	}
 	return browseCommand("forward", a.ssh, args...)
+}
+
+func portPrompt(prompt, initial string) (string, error) {
+	var value string
+	err := termui.RunLocalConsole(func(*termui.LocalConsole) error {
+		input, err := newLocalInput()
+		if err != nil {
+			return err
+		}
+		value, err = input.ReadPrefilled(prompt, false, initial)
+		return errors.Join(err, input.Close())
+	})
+	return value, err
 }

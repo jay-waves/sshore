@@ -789,16 +789,16 @@ on Apple Silicon Macs (experimental).
 `,
 		},
 		"lf": {
-			run: runFileBrowser, group: groupSSH, ssh: true, max: 1,
+			run: runFileBrowser, group: groupSSH, ssh: true, max: 2,
 			summary:  "Browse files and open a shell, copy or mount",
-			help:     "Usage: sshore lf [HOST[:PATH] | here:PATH] [options]\n\nBrowse here by default. A host starts in its home directory.\ns opens a shell, c copies, m mounts and f lists ports. q quits.\n" + sshOptions,
-			examples: "Browse the current directory\n  sshore lf\nBrowse a project on an SSH host\n  sshore lf work:/srv/project\n",
+			help:     "Usage: sshore lf [HOST | SOURCE PEER] [options]\n\nBrowse the current directory or the given host's home. Press s to open a shell.\nEnter opens a local file or directory with the system default app.\nUse l to enter a directory or open a local file, e for EDITOR and i for PAGER.\nWith two endpoints, browse the first and use c to copy or m to mount.\nUse : for the local side and HOST:[PATH] for the SSH side. In an attached\nshell, use origin: as the second endpoint to request approval. q quits.\n" + sshOptions,
+			examples: "Browse the current directory\n  sshore lf\nBrowse a remote project and operate on it locally\n  sshore lf work:/srv/project :\nCopy a local selection to an SSH host\n  sshore lf : work:\n",
 		},
 		"lp": {
-			run: runPortBrowser, group: groupSSH, ssh: true, max: 1,
+			run: runPortBrowser, group: groupSSH, ssh: true, max: 2,
 			summary:  "Browse TCP and UDP ports and forward a service",
-			help:     "Usage: sshore lp [HOST] [options]\n\nBrowse bound UDP ports and TCP listeners on IPv4 loopback or wildcard addresses. Select a service to forward.\n" + sshOptions,
-			examples: "Browse services on an SSH host\n  sshore lp work\n",
+			help:     "Usage: sshore lp [HOST | SOURCE TARGET] [options]\n\nBrowse bound UDP ports and TCP listeners. Some process names may require\nadministrator privileges. With two endpoints, browse the first and press Enter\nto forward a service to the second. Use : for the local side and HOST: for the\nSSH side. In an attached shell, use origin: as the second endpoint to request\napproval. q quits.\n" + sshOptions,
+			examples: "Browse services on an SSH host\n  sshore lp work\nBrowse remote services and forward one to a local port\n  sshore lp work: :\n",
 		},
 		"forward": {
 			run: runEndpointForward, group: groupSSH, summary: "Forward a TCP or UDP port", aliases: []string{"fwd"},

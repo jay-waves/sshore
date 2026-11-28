@@ -10,8 +10,9 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// PickPort returns the highlighted row, or -1 for manual entry.
-func (c *LocalConsole) PickPort(host string, labels []string) (selected int, err error) {
+// PickPort browses listeners and returns a selection in forwarding mode.
+// A selection of -1 requests manual port entry.
+func (c *LocalConsole) PickPort(host string, labels []string, forward bool) (selected int, err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	terminal, err := openPickerTerminal(ctx)
@@ -41,7 +42,7 @@ func (c *LocalConsole) PickPort(host string, labels []string) (selected int, err
 	for {
 		w, h := size.width, size.height
 		lines := []string{Render(color, Heading, "Bound ports") + "  ·  " + Render(color, Accent, CleanText(host)), Render(color, Muted, "PROTO  PORT    ADDRESS          PROCESS")}
-		page := max(1, h-3)
+		page := max(1, h-4)
 		first := max(0, index-page+1)
 		for i := first; i < min(len(visible), first+page); i++ {
 			row := ansi.Truncate(CleanText(labels[visible[i]]), w-1, "…")
@@ -57,7 +58,11 @@ func (c *LocalConsole) PickPort(host string, labels []string) (selected int, err
 			}
 			lines = append(lines, message)
 		}
-		hint := "↑/↓ Move  Enter Forward  / Filter  : Enter port  q Quit"
+		lines = append(lines, Render(color, Muted, "Some process names may require administrator privileges."))
+		hint := "↑/↓ Move  / Filter  q Quit"
+		if forward {
+			hint = "↑/↓ Move  Enter Forward  / Filter  : Enter port  q Quit"
+		}
 		if filtering {
 			hint = "/" + string(query)
 		}
@@ -94,8 +99,12 @@ func (c *LocalConsole) PickPort(host string, labels []string) (selected int, err
 						filtering = false
 						query = nil
 					case '\n':
-						if len(visible) > 0 {
-							return visible[index], nil
+						if forward {
+							if len(visible) > 0 {
+								return visible[index], nil
+							}
+						} else {
+							filtering = false
 						}
 						continue
 					case '\b':
@@ -116,13 +125,15 @@ func (c *LocalConsole) PickPort(host string, labels []string) (selected int, err
 				case 'q', 3:
 					return -1, context.Canceled
 				case ':':
-					return -1, nil
+					if forward {
+						return -1, nil
+					}
 				case 'j', keyDown:
 					index = min(max(0, len(visible)-1), index+1)
 				case 'k', keyUp:
 					index = max(0, index-1)
 				case '\n':
-					if len(visible) > 0 {
+					if forward && len(visible) > 0 {
 						return visible[index], nil
 					}
 				}
