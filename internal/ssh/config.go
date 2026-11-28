@@ -32,7 +32,7 @@ type Options struct {
 	Host, Command, Directory string
 	Args, Environment        []string
 	// OpenCommand starts a managed command on the authenticated connection.
-	OpenCommand func(context.Context, *Client, string, io.Writer) (*Process, error)
+	OpenCommand func(context.Context, *Client, io.Writer) (*Process, error)
 	// IgnoredForwarding reports the host whose configured forwards were skipped.
 	IgnoredForwarding func(context.Context, string)
 	// Diagnostic reports SSH progress when debug logging is enabled.

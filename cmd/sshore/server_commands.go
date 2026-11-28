@@ -40,10 +40,7 @@ func startHostService(ctx context.Context, host string, ssh []string, op string)
 
 func remoteService(connection sshio.Options, req remoteServiceRequest) sshio.Options {
 	req.Release = version
-	connection.OpenCommand = func(ctx context.Context, client *sshio.Client, sibling string, diagnostic io.Writer) (*sshio.Process, error) {
-		if sibling != "" {
-			return startRemoteService(ctx, client, sibling, req, diagnostic)
-		}
+	connection.OpenCommand = func(ctx context.Context, client *sshio.Client, diagnostic io.Writer) (*sshio.Process, error) {
 		endpoint, err := deploymentEndpointFor(connection, client.Destination())
 		if err != nil {
 			return nil, err

@@ -212,7 +212,7 @@ func killRemoteAccount(ctx context.Context, o options, reset bool) error {
 	defer client.Close()
 	stop := context.AfterFunc(ctx, func() { client.Close() })
 	defer stop()
-	process, err := connection.OpenCommand(ctx, client, "", os.Stderr)
+	process, err := connection.OpenCommand(ctx, client, os.Stderr)
 	if err != nil && !errors.Is(err, deployment.ErrMissing) {
 		return err
 	}

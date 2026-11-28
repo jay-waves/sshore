@@ -388,7 +388,7 @@ func Start(ctx context.Context, o Options, diagnostic io.Writer) (process *Proce
 		}
 	}()
 	if o.OpenCommand != nil {
-		process, err = o.OpenCommand(ctx, client, "", diagnostic)
+		process, err = o.OpenCommand(ctx, client, diagnostic)
 	} else {
 		process, err = client.Start(o.Command, diagnostic)
 	}
