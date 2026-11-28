@@ -17,11 +17,12 @@
 - Use `sshore kill TASK` to unmount. A busy unmount can be retried after files are
   closed. If the worker stops responding during shutdown, the daemon terminates
   that worker.
-- Direct mounts use sibling data and optional notification channels on one SSH
-  connection. An `..:` request first goes through [local approval](approval.md).
+- Direct mounts start one SSH exec channel. An `..:` request first goes through
+  [local approval](approval.md).
   The approved route binds the remote directory and access mode to the original
   detached shell. The resulting resource owns its connection and can outlive that shell.
-  Approved mounts carry data and notifications in separate smux streams.
+  Both routes carry data and notifications in separate `StreamMux` streams. The
+  data handshake validates the version and approval before starting SFTP.
 
 See [mount startup and path selection](../cmd/sshore/mount.go),
 [mount lifecycle](../internal/files/mount.go) and [SSH topology](network.md).
@@ -81,13 +82,15 @@ Run on Windows or Linux with the repository's Go toolchain:
 go run ./scripts go test ./tests/benchmarks -run '^$' -bench '^BenchmarkMountResponsiveness$' -benchtime=20x
 ```
 
-The benchmark uses the real SFTP client and agent on a local TCP connection.
-Thirty-two workers issue 128 KiB reads while the foreground lists a directory
-or opens and reads a short file. The test paces each 64 KiB data reply by 2 ms
-to keep the shared stream busy. Both modes use the same fixture. The shared
-window provides the unscheduled baseline and the reserved windows use the
-mount scheduler. The output reports foreground P95 latency in milliseconds
-and concurrent bulk throughput in MiB/s.
+The benchmark uses the real SFTP client and mount agent through `StreamMux` on
+a local TCP connection. Thirty-two workers issue 128 KiB reads while the
+foreground lists a directory, opens and reads a short file, or waits for a
+directory watch acknowledgment on the second stream. The carrier pauses for
+2 ms per 64 KiB of bulk frames to keep the connection busy. Both modes use the
+same carrier. The shared request window provides the unscheduled baseline and
+the reserved request windows use the mount scheduler. The output reports
+foreground P95 latency in milliseconds and the carrier's rate for large frames
+in MiB/s.
 
 Use these figures to compare changes under the same load. End-to-end
 filesystem and SSH performance also depends on the platform, caching, network,

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json/jsontext"
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
@@ -25,14 +24,13 @@ const remoteServiceCommand = "service"
 const remoteServiceReady = byte(0)
 
 type remoteServiceRequest struct {
-	PeerMetadata jsontext.Value `json:"peer_metadata,omitempty"`
-	Forward      *ports.Rule    `json:"forward,omitempty"`
-	Release      string         `json:"release"`
-	Operation    string         `json:"operation"`
-	Mode         string         `json:"mode,omitempty"`
-	Name         string         `json:"name,omitempty"`
-	Directory    string         `json:"directory,omitempty"`
-	Instance     string         `json:"instance,omitempty"`
+	Forward   *ports.Rule `json:"forward,omitempty"`
+	Release   string      `json:"release"`
+	Operation string      `json:"operation"`
+	Mode      string      `json:"mode,omitempty"`
+	Name      string      `json:"name,omitempty"`
+	Directory string      `json:"directory,omitempty"`
+	Instance  string      `json:"instance,omitempty"`
 }
 
 func startHostService(ctx context.Context, host string, ssh []string, op string) (*sshio.Process, error) {

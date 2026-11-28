@@ -18,92 +18,58 @@ import (
 	"github.com/jay-waves/sshore/internal/ssh"
 )
 
-func ServeAgent(conn io.ReadWriteCloser, mode, version, account, home string, peer jsontext.Value, observe func(jsontext.Value) func()) error {
+// ServeMount serves the same stream protocol on a direct exec channel or an
+// approved resource route. The data handshake authorizes the entire carrier.
+func ServeMount(conn io.ReadWriteCloser, version, account, home string, approval *MountApproval, observe func(jsontext.Value) func()) error {
 	defer conn.Close()
-	return serveMountAgent(newMountStream(conn), message{Type: mode, PeerMetadata: peer}, version, account, home, observe, nil)
-}
-
-func ServeApprovedMount(conn io.ReadWriteCloser, version, account string, observe func(jsontext.Value) func(), approval MountApproval) error {
-	session, err := ssh.NewStreamMux(conn, false, ssh.SharedStreamWindow)
+	if runtime.GOARCH != "amd64" {
+		return fmt.Errorf("mount agent requires amd64")
+	}
+	session, err := ssh.NewStreamMux(conn, false)
 	if err != nil {
-		_ = conn.Close()
 		return err
 	}
-	data, err := session.AcceptStream()
+	defer session.Close()
+	stream, err := session.AcceptStream()
 	if err != nil {
-		_ = session.Close()
+		return err
+	}
+	data := newMountStream(stream)
+	request, err := readMessage(data)
+	if err != nil {
+		return err
+	}
+	if request.SoftwareVersion != version {
+		err = fmt.Errorf("mount version mismatch: agent=%s, client=%q", version, request.SoftwareVersion)
+	} else if request.Type != "mount" {
+		err = fmt.Errorf("invalid mount handshake")
+	} else if (request.Approval == nil) != (approval == nil) || approval != nil && *request.Approval != *approval {
+		err = fmt.Errorf("mount approval identity changed")
+	}
+	if err != nil {
+		_ = writeMessage(data, message{Type: "error", SoftwareVersion: version, Error: err.Error()})
+		return err
+	}
+	if observe != nil && len(request.PeerMetadata) > 0 {
+		if cleanup := observe(request.PeerMetadata); cleanup != nil {
+			defer cleanup()
+		}
+	}
+	if err := writeMessage(data, message{Type: "mount_ready", SoftwareVersion: version, Account: account, HomeDirectory: home}); err != nil {
 		return err
 	}
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		watch, err := session.AcceptStream()
-		if err == nil {
-			_ = serveApprovedMountStream(watch, version, account, nil, "mount_watch", approval)
+		if watch, err := session.AcceptStream(); err == nil {
+			defer watch.Close()
+			serveFTPWatch(newMountStream(watch))
 		}
 	}()
-	err = serveApprovedMountStream(data, version, account, observe, "mount_data", approval)
+	err = serveMountData(data)
 	_ = session.Close()
 	<-watchDone
 	return err
-}
-
-func serveApprovedMountStream(conn io.ReadWriteCloser, version, account string, observe func(jsontext.Value) func(), mode string, approval MountApproval) error {
-	defer conn.Close()
-	wire := newMountStream(conn)
-	m, err := readMessage(wire)
-	if err != nil {
-		return err
-	}
-	if m.SoftwareVersion != version {
-		return writeMessage(wire, message{Type: "error", SoftwareVersion: version,
-			Error: fmt.Sprintf("mount version mismatch: agent=%s, client=%q", version, m.SoftwareVersion)})
-	}
-	if m.Type != mode || m.Approval == nil {
-		return writeMessage(wire, message{Type: "error", SoftwareVersion: version, Error: "mount approval handshake changed"})
-	}
-	return serveMountAgent(wire, m, version, account, "", observe, &approval)
-}
-
-func serveMountAgent(conn *mountStream, m message, version, account, home string, observe func(jsontext.Value) func(), approval *MountApproval) error {
-	if runtime.GOARCH != "amd64" {
-		return fmt.Errorf("mount agent requires amd64")
-	}
-	var err error
-	if m.Type != "mount_data" && m.Type != "mount_watch" {
-		err = fmt.Errorf("invalid mount handshake")
-	}
-	if err == nil && m.Approval != nil {
-		if approval == nil {
-			err = fmt.Errorf("mount approval validation unavailable")
-		} else if *m.Approval != *approval {
-			err = fmt.Errorf("mount approval identity changed")
-		}
-	}
-	if err == nil && observe != nil && len(m.PeerMetadata) > 0 {
-		if cleanup := observe(m.PeerMetadata); cleanup != nil {
-			defer cleanup()
-		}
-	}
-	reply := message{Type: "mount_ready", SoftwareVersion: version}
-	if m.Type == "mount_data" {
-		reply.Account, reply.HomeDirectory = account, home
-	}
-	if err != nil {
-		reply.Type = "error"
-		reply.Error = err.Error()
-	}
-	if e := writeMessage(conn, reply); e != nil {
-		return e
-	}
-	if err != nil {
-		return err
-	}
-	if m.Type == "mount_watch" {
-		serveFTPWatch(conn)
-		return nil
-	}
-	return serveMountData(conn)
 }
 
 func serveFTPWatch(stream *mountStream) {

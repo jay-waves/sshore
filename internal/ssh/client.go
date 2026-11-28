@@ -280,12 +280,11 @@ func (c *Client) keepalive(interval time.Duration, count int) {
 // its I/O and closes the connection only when created by the package-level Start.
 // Stdout has a single reader. Wait must be called after consuming stdout.
 type Process struct {
-	command string
-	stdin   processInput
-	stdout  io.Reader
-	client  *Client
-	wait    func() error
-	close   func() error
+	stdin  processInput
+	stdout io.Reader
+	client *Client
+	wait   func() error
+	close  func() error
 }
 
 type Destination struct {
@@ -376,14 +375,6 @@ func (p *Process) CloseAndWait() error {
 	return p.Wait()
 }
 
-// OpenSibling starts another exec channel on this process's SSH connection.
-func (p *Process) OpenSibling(ctx context.Context, o Options, diagnostic io.Writer) (*Process, error) {
-	if o.OpenCommand != nil {
-		return o.OpenCommand(ctx, p.client, p.command, diagnostic)
-	}
-	return p.client.Start(o.Command, diagnostic)
-}
-
 func Start(ctx context.Context, o Options, diagnostic io.Writer) (process *Process, err error) {
 	client, err := Dial(ctx, o)
 	if err != nil {
@@ -417,7 +408,7 @@ func (c *Client) Start(command string, diagnostic io.Writer) (*Process, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &Process{client: c, command: command, wait: sync.OnceValue(session.Wait), close: session.Close}
+	p := &Process{client: c, wait: sync.OnceValue(session.Wait), close: session.Close}
 	session.Stderr = diagnostic
 	p.stdin.writer, err = session.StdinPipe()
 	if err == nil {

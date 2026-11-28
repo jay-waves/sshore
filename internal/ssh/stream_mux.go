@@ -16,22 +16,12 @@ type Stream interface {
 	CloseWrite() error
 }
 
-type StreamWindow uint8
-
-const (
-	SharedStreamWindow StreamWindow = iota
-	PerStreamWindow
-)
-
 // StreamMux owns a reliable transport and all its child streams.
 type StreamMux struct{ session *smux.Session }
 
-func NewStreamMux(transport io.ReadWriteCloser, initiator bool, window StreamWindow) (*StreamMux, error) {
+func NewStreamMux(transport io.ReadWriteCloser, initiator bool) (*StreamMux, error) {
 	config := smux.DefaultConfig()
-	config.Version = 1
-	if window == PerStreamWindow {
-		config.Version = 2
-	}
+	config.Version = 2
 	open := smux.Server
 	if initiator {
 		open = smux.Client

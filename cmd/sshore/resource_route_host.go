@@ -68,7 +68,7 @@ func (s *shellTask) serveRoutedResource(c net.Conn, request message, relay func(
 			Path: op.Path, ReadOnly: op.ReadOnly,
 		}
 		account, _ := localMachineIdentity()
-		_ = files.ServeApprovedMount(c, version, account, beginIncomingMountTask, approval)
+		_ = files.ServeMount(c, version, account, "", &approval, beginIncomingMountTask)
 	}
 }
 

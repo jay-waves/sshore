@@ -54,7 +54,7 @@ func (rule Rule) Start(parent context.Context, initiator bool, open func() (io.R
 	stopSetup := context.AfterFunc(parent, func() { conn.Close() })
 	defer stopSetup()
 
-	streams, err := ssh.NewStreamMux(conn, initiator, ssh.PerStreamWindow)
+	streams, err := ssh.NewStreamMux(conn, initiator)
 	if err != nil {
 		return nil, err
 	}

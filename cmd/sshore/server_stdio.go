@@ -32,7 +32,7 @@ func serveRemoteRequest(req remoteServiceRequest) error {
 		return serveRemoteCopy()
 	case "mount-agent":
 		account, _ := localMachineIdentity()
-		return files.ServeAgent(agentStdio(), req.Mode, version, account, remoteFileHome(), req.PeerMetadata, beginIncomingMountTask)
+		return files.ServeMount(agentStdio(), version, account, remoteFileHome(), nil, beginIncomingMountTask)
 	case "listeners":
 		rows, err := ports.ReadListenerSnapshot(context.Background())
 		if err != nil {

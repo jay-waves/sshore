@@ -2,8 +2,6 @@ package files
 
 import (
 	"context"
-	"encoding/json/jsontext"
-	"fmt"
 	"path"
 	"strings"
 	"sync"
@@ -268,27 +266,6 @@ func (n *ftpNotifications) register(dir string, timer *time.Timer) {
 			// The reader has the reply and is finishing the cache update.
 		}
 	}
-}
-
-func negotiateMount(c *mountStream, mode, version string, source *MountApproval, peer jsontext.Value) (message, error) {
-	// Direct SSH already sent the mode in the service request. Approved streams
-	// still bind each stream to its authorized operation.
-	if source != nil {
-		if err := writeMessage(c, message{Type: mode, SoftwareVersion: version, Approval: source, PeerMetadata: peer}); err != nil {
-			return message{}, err
-		}
-	}
-	m, err := readMessage(c)
-	if err != nil {
-		return m, err
-	}
-	if m.SoftwareVersion != version {
-		return m, fmt.Errorf("mount version mismatch: client=%s, agent=%q", version, m.SoftwareVersion)
-	}
-	if m.Type != "mount_ready" {
-		return m, fmt.Errorf("remote mount agent: %s", m.Error)
-	}
-	return m, nil
 }
 
 func validFTPWatchPath(p string) bool {

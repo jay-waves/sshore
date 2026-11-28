@@ -163,50 +163,34 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle files.MountLifecycl
 		}
 	}
 	c.PeerMetadata, _ = json.Marshal(s.peerTask("export " + s.record.Remote))
+	var process *sshio.Process
+	defer func() {
+		if process != nil {
+			_ = process.CloseAndWait()
+		}
+	}()
 	if o.Connection != nil {
 		c.Approval = &files.MountApproval{Session: o.Connection.Session, PID: o.ResumePID, ID: o.ApprovalID, Instance: o.Connection.Instance, Path: o.Remote, ReadOnly: o.ReadOnly}
 		c.Open = func(ctx context.Context) (io.ReadWriteCloser, error) {
 			request := approvedResourceRequest(o.Connection.Session, o.ResumePID, o.ApprovalID, operation{Kind: "mount", Path: o.Remote, ReadOnly: o.ReadOnly})
 			return openIndependentResource(ctx, *o.Connection, request, s)
 		}
-		return files.RunMount(c, lifecycle)
-	}
-	connection := sshConnectionOptions(options{host: o.Host, ssh: o.SSH})
-	auth := s.auth
-	connection.Environment = s.baseEnvironment()
-	connection.Directory = s.directory
-	connection.Confirm, connection.Secret = auth.callbacks()
-	if o.PickRemote || o.PickMountpoint {
-		c.SelectPaths = selector
-	}
-	connection = withSSHDiagnostics(connection, os.Stderr, auth)
-	watchConnection := remoteService(connection, remoteServiceRequest{Operation: "mount-agent", Mode: "mount_watch"})
-	connection = remoteService(connection, remoteServiceRequest{Operation: "mount-agent", Mode: "mount_data", PeerMetadata: c.PeerMetadata})
-	var data, watch *sshio.Process
-	defer func() {
-		if data != nil {
-			_ = data.Close()
-			_ = data.Wait()
+	} else {
+		connection := sshConnectionOptions(options{host: o.Host, ssh: o.SSH})
+		auth := s.auth
+		connection.Environment = s.baseEnvironment()
+		connection.Directory = s.directory
+		connection.Confirm, connection.Secret = auth.callbacks()
+		if o.PickRemote || o.PickMountpoint {
+			c.SelectPaths = selector
 		}
-		if watch != nil {
-			_ = watch.Wait()
+		connection = withSSHDiagnostics(connection, os.Stderr, auth)
+		connection = remoteService(connection, remoteServiceRequest{Operation: "mount-agent"})
+		c.Open = func(ctx context.Context) (io.ReadWriteCloser, error) {
+			var err error
+			process, err = sshio.Start(ctx, connection, os.Stderr)
+			return process, err
 		}
-	}()
-	c.Open = func(ctx context.Context) (io.ReadWriteCloser, error) {
-		var err error
-		data, err = sshio.Start(ctx, connection, os.Stderr)
-		if err != nil {
-			return nil, err
-		}
-		return data, nil
-	}
-	c.OpenNotifications = func(ctx context.Context) (io.ReadWriteCloser, error) {
-		var err error
-		watch, err = data.OpenSibling(ctx, watchConnection, os.Stderr)
-		if err != nil {
-			return nil, err
-		}
-		return watch, nil
 	}
 	return files.RunMount(c, lifecycle)
 }

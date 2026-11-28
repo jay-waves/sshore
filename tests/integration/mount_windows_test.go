@@ -155,7 +155,7 @@ func startWindowsMount(t *testing.T, source, point string, readOnly bool, barrie
 				}
 				client, server := net.Pipe()
 				go func() {
-					_ = files.ServeAgent(server, "mount_data", version, "fixture", "/"+filepath.ToSlash(source), nil, nil)
+					_ = files.ServeMount(server, version, "fixture", "/"+filepath.ToSlash(source), nil, nil)
 				}()
 				return client, nil
 			},

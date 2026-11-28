@@ -3,20 +3,22 @@
 package benchmarks
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
+	"github.com/jay-waves/sshore/internal/ssh"
 	sftp "github.com/pkg/sftp/v2"
 	sshfx "github.com/pkg/sftp/v2/encoding/ssh/filexfer"
 )
@@ -77,7 +79,7 @@ func BenchmarkMountResponsiveness(b *testing.B) {
 		if scheduled {
 			mode = "reserved-windows"
 		}
-		for _, operation := range []string{"readdir", "open-small-read"} {
+		for _, operation := range []string{"readdir", "open-small-read", "watch-ack"} {
 			b.Run(mode+"/"+operation, func(b *testing.B) {
 				benchmarkMountDuringDownload(b, scheduled, operation)
 			})
@@ -111,16 +113,34 @@ func benchmarkMountDuringDownload(b *testing.B, scheduled bool, operation string
 	}
 	defer peer.Close()
 	firstData := make(chan struct{})
+	carrier := &pacedMountReplies{Conn: peer, firstData: sync.OnceFunc(func() { close(firstData) })}
 	go func() {
 		defer peer.Close()
-		_ = files.ServeAgent(&pacedMountReplies{Conn: peer, firstData: sync.OnceFunc(func() { close(firstData) })},
-			"mount_data", "0.0.0", "benchmark", "", nil, nil)
+		_ = files.ServeMount(carrier, "0.0.0", "benchmark", "", nil, nil)
 	}()
-	// The agent waits for the client's INIT after sending its readiness line.
-	if _, err := bufio.NewReader(conn).ReadString('\n'); err != nil {
+	mux, err := ssh.NewStreamMux(conn, true)
+	if err != nil {
 		b.Fatal(err)
 	}
-	wire := files.NewSFTPWire(conn)
+	defer mux.Close()
+	data, _, err := files.OpenMountData(mux, "0.0.0", nil, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	watch, err := mux.OpenStream()
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer watch.Close()
+	watchRequest := struct {
+		Type      string `json:"type"`
+		Directory string `json:"directory"`
+	}{Type: "watch", Directory: root}
+	if !strings.HasPrefix(root, "/") {
+		watchRequest.Directory = "/" + root
+	}
+	watchEncoder, watchDecoder := json.NewEncoder(watch), json.NewDecoder(watch)
+	wire := files.NewSFTPWire(data)
 	var client *sftp.Client
 	if scheduled {
 		client, err = files.NewMountSFTPClient(b.Context(), wire, 0)
@@ -138,7 +158,6 @@ func benchmarkMountDuringDownload(b *testing.B, scheduled bool, operation string
 	defer bulk.Close()
 
 	var readers sync.WaitGroup
-	var transferred atomic.Uint64
 	stop := make(chan struct{})
 	defer func() { close(stop); readers.Wait() }()
 	for worker := range 32 {
@@ -150,12 +169,11 @@ func benchmarkMountDuringDownload(b *testing.B, scheduled bool, operation string
 					return
 				default:
 				}
-				n, err := bulk.ReadAt(buf, int64(worker*block))
+				_, err := bulk.ReadAt(buf, int64(worker*block))
 				if err != nil {
 					b.Error(err)
 					return
 				}
-				transferred.Add(uint64(n))
 			}
 		})
 	}
@@ -166,16 +184,17 @@ func benchmarkMountDuringDownload(b *testing.B, scheduled bool, operation string
 	}
 
 	latencies := make([]time.Duration, 0, b.N)
-	startBytes := transferred.Load()
+	startBytes := carrier.bulkWritten.Load()
 	b.ResetTimer()
 	start := time.Now()
 	for range b.N {
 		started := time.Now()
-		if operation == "readdir" {
+		switch operation {
+		case "readdir":
 			if entries, err := client.ReadDir(root); err != nil || len(entries) != 2 {
 				b.Fatalf("read directory: %d entries, %v", len(entries), err)
 			}
-		} else {
+		case "open-small-read":
 			small, err := client.Open(root + "/small")
 			if err != nil {
 				b.Fatal(err)
@@ -186,28 +205,52 @@ func benchmarkMountDuringDownload(b *testing.B, scheduled bool, operation string
 			if readErr != nil || closeErr != nil || string(buf[:]) != "short document" {
 				b.Fatalf("read small file: %q, %v, %v", buf, readErr, closeErr)
 			}
+		case "watch-ack":
+			var ack struct {
+				Type  string `json:"type"`
+				Error string `json:"error"`
+			}
+			if err := watch.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				b.Fatal(err)
+			}
+			if err := watchEncoder.Encode(watchRequest); err != nil {
+				b.Fatal(err)
+			}
+			if err := watchDecoder.Decode(&ack); err != nil || ack.Type != "watch_ack" || ack.Error != "" {
+				b.Fatalf("watch reply %+v, %v", ack, err)
+			}
 		}
 		latencies = append(latencies, time.Since(started))
 	}
 	elapsed := time.Since(start)
+	bulkBytes := carrier.bulkWritten.Load() - startBytes
 	b.StopTimer()
 	slices.Sort(latencies)
 	p95 := (95*len(latencies)+99)/100 - 1
 	b.ReportMetric(float64(latencies[p95])/float64(time.Millisecond), "p95-ms")
-	b.ReportMetric(float64(transferred.Load()-startBytes)/elapsed.Seconds()/(1024*1024), "bulk-MiB/s")
+	b.ReportMetric(float64(bulkBytes)/elapsed.Seconds()/(1024*1024), "bulk-wire-MiB/s")
 }
 
 // The local TCP buffers let the client pipeline requests. Pacing large
 // replies models competition for a shared bottleneck without slowing metadata.
 type pacedMountReplies struct {
 	net.Conn
-	firstData func()
+	firstData   func()
+	bulkBytes   int
+	bulkWritten atomic.Uint64
 }
 
 func (c *pacedMountReplies) Write(p []byte) (int, error) {
-	if len(p) == files.MountSFTPDataLength {
-		c.firstData()
+	if len(p) < 16<<10 {
+		return c.Conn.Write(p)
+	}
+	c.bulkBytes += len(p)
+	if c.bulkBytes >= files.MountSFTPDataLength {
+		c.bulkBytes -= files.MountSFTPDataLength
 		time.Sleep(2 * time.Millisecond)
 	}
-	return c.Conn.Write(p)
+	n, err := c.Conn.Write(p)
+	c.bulkWritten.Add(uint64(n))
+	c.firstData()
+	return n, err
 }

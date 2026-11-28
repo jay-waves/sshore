@@ -32,7 +32,6 @@ type MountConfig struct {
 	ReadOnly, DirectIO          bool
 	StartupTimeout, IOTimeout   time.Duration
 	Open                        func(context.Context) (io.ReadWriteCloser, error)
-	OpenNotifications           func(context.Context) (io.ReadWriteCloser, error)
 	SelectPaths                 func(context.Context, DirectoryReader, string) (string, string, error)
 	NotificationsUnavailable    func()
 	ReportStats                 func(MountStats)
@@ -120,34 +119,18 @@ func RunMount(o MountConfig, service MountLifecycle) (code int, resultErr error)
 	if err != nil {
 		return 1, err
 	}
-	closeEndpoint := endpoint.Close
-	var session *ssh.StreamMux
-	if o.Approval != nil {
-		session, err = ssh.NewStreamMux(endpoint, true, ssh.SharedStreamWindow)
-		if err != nil {
-			_ = endpoint.Close()
-			return 1, err
-		}
-		closeEndpoint = session.Close
-		o.OpenNotifications = func(context.Context) (io.ReadWriteCloser, error) {
-			return session.OpenStream()
-		}
+	session, err := ssh.NewStreamMux(endpoint, true)
+	if err != nil {
+		_ = endpoint.Close()
+		return 1, err
 	}
-	closeTransport := sync.OnceFunc(func() { _ = closeEndpoint() })
+	closeTransport := sync.OnceFunc(func() { _ = session.Close() })
 	stopTransport := context.AfterFunc(ctx, closeTransport)
 	defer stopTransport()
 	disconnect := func(reason error) {
 		cancel(reason)
 		closeTransport()
 	}
-	if session != nil {
-		endpoint, err = session.OpenStream()
-		if err != nil {
-			disconnect(nil)
-			return 1, err
-		}
-	}
-	data := newMountStream(endpoint)
 	var account, root string
 	var client *sftp.Client
 	var backend *ftpFS
@@ -179,26 +162,14 @@ func RunMount(o MountConfig, service MountLifecycle) (code int, resultErr error)
 		}
 		sftpWorkers.Wait()
 	}()
-	ready, err := negotiateMount(data, "mount_data", o.Version, o.Approval, o.PeerMetadata)
+	data, ready, err := OpenMountData(session, o.Version, o.Approval, o.PeerMetadata)
 	if err != nil {
 		return 1, fmt.Errorf("mount agent handshake: %w", err)
 	}
 	account = ready.Account
 	var events *mountStream
-	if o.OpenNotifications != nil {
-		endpoint, watchErr := o.OpenNotifications(ctx)
-		if watchErr == nil {
-			watch := newMountStream(endpoint)
-			closeWatch := sync.OnceFunc(func() { _ = watch.Close() })
-			stopWatch := context.AfterFunc(ctx, closeWatch)
-			defer func() { stopWatch(); closeWatch() }()
-			_, watchErr = negotiateMount(watch, "mount_watch", o.Version, o.Approval, nil)
-			if watchErr == nil {
-				events = watch
-			} else {
-				closeWatch()
-			}
-		}
+	if watch, err := session.OpenStream(); err == nil {
+		events = newMountStream(watch)
 	}
 	ftp := NewSFTPWire(data)
 	if o.ReportStats != nil {
@@ -402,6 +373,29 @@ func writeMessage(w io.Writer, m message) error {
 		return err
 	}
 	return ssh.WriteControlFrame(w, body, maxMountMessage)
+}
+
+// OpenMountData opens the first stream and completes the mount handshake.
+func OpenMountData(session *ssh.StreamMux, version string, approval *MountApproval, peer jsontext.Value) (*mountStream, message, error) {
+	stream, err := session.OpenStream()
+	if err != nil {
+		return nil, message{}, err
+	}
+	data := newMountStream(stream)
+	if err := writeMessage(data, message{Type: "mount", SoftwareVersion: version, Approval: approval, PeerMetadata: peer}); err != nil {
+		return nil, message{}, err
+	}
+	ready, err := readMessage(data)
+	if err != nil {
+		return nil, message{}, err
+	}
+	if ready.SoftwareVersion != version {
+		return nil, message{}, fmt.Errorf("mount version mismatch: client=%s, agent=%q", version, ready.SoftwareVersion)
+	}
+	if ready.Type != "mount_ready" {
+		return nil, message{}, fmt.Errorf("remote mount agent: %s", ready.Error)
+	}
+	return data, ready, nil
 }
 
 func readMessage(r *mountStream) (message, error) {

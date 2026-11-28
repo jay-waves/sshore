@@ -15,7 +15,7 @@ deploys a server from a release archive.
 | `shell`, `start`, `attach` | The initiating client owns the SSH connection. Each attachment uses separate SSH TCP channels for control and terminal data. | An exec channel selects or creates the remote task. The daemon validates the version and data-channel token in the attach request. |
 | `sh HOST -- COMMAND` | One SSH exec channel. | SSH starts the command and returns its exit status. |
 | `copy` | One SSH exec channel carries SFTP for the entire batch. | The service returns the version and remote home, then SFTP negotiates its protocol. |
-| `mount` | One SSH connection with sibling exec channels for SFTP and optional filesystem notifications. | Each service request selects data or notifications and gets one mount readiness reply. The data reply includes the account identity and remote home. |
+| `mount` | One SSH exec channel carries a `StreamMux` with SFTP and optional notification streams. | The data stream returns the mount version, account identity and remote home before starting SFTP. |
 | `forward` | One SSH exec channel per connection attempt. A smux session carries one control stream and one stream per TCP connection or UDP sender. | The service reports readiness after opening the required remote listener. Reconnect attempts establish a new SSH connection. |
 | `ping` | An authenticated SSH connection for connection timing and echo probes. | Echo batches reuse one exec channel. |
 | `copy-id` | An SSH exec operation against the selected account. | The command uses SSH authentication to install the selected public key. |
@@ -33,9 +33,8 @@ The daemon and mount protocols share bounded control framing before handing
 the same byte stream to their application protocol.
 
 [`StreamMux`](../internal/ssh/stream_mux.go) opens and accepts reliable child
-streams over one existing carrier. smux is its implementation. Forwarding
-uses per-stream flow control, and approved mounts use the shared-window profile
-for their data and notification streams. The terminal task manager in
+streams over one existing carrier. smux is its implementation. Forwarding and
+mounts use per-stream flow control. The terminal task manager in
 [`internal/tmux`](../internal/tmux/) owns terminal tasks and attachments.
 
 `Datagram` preserves packet boundaries on a child stream using length framing.
@@ -105,8 +104,9 @@ See the command help for endpoint syntax.
 When a remote shell requests access to the origin account, the origin daemon
 checks the request and uses the authorized route. A mount or forward opens an
 independent SSH connection along that route so the resource can outlive the
-shell. Intermediate hosts relay the resource stream. An approved mount uses
-smux for its data and notification streams and validates the approval on each.
+shell. Intermediate hosts relay the resource stream. The approved mount binds its
+data handshake to the authorized request, then opens its notification stream on
+the same carrier.
 Both forward paths preserve UDP datagram boundaries and expire idle senders after one minute.
 An approved copy uses an authorized file stream for SFTP.
 
