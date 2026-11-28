@@ -60,8 +60,9 @@ The header shows whether the account on the selected host has administrator priv
 In the standalone local file browser, `o` uses the system default app. Use
 `l` to enter a directory or open a file, `e` for the editor and `i` for the pager.
 Press `y` to copy the selected file path or port address through the terminal's
-OSC 52 clipboard support. In the port browser, `r` refreshes the list and
-`s` switches between port and process sorting.
+OSC 52 clipboard support. Both browsers use `j` / `k` and the arrow keys to move.
+In the port browser, press Enter to apply a filter, then move through the results.
+`r` refreshes the list and `s` switches between port and process sorting.
 See the command help for endpoint syntax.
 
 ## Approved resources

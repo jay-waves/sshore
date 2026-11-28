@@ -146,7 +146,7 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 		}
 		hint += "  t TCP  u UDP  / Filter  r Refresh  s Sort  y Copy address  q Quit"
 		if filtering {
-			hint = "/" + string(query)
+			hint = "/" + string(query) + "  ·  Enter Apply filter"
 		} else if status != "" {
 			hint = Render(color, Info, status)
 		} else {
@@ -187,13 +187,7 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 						filtering = false
 						query = nil
 					case '\n':
-						if forward {
-							if len(visible) > 0 {
-								return visible[index], nil
-							}
-						} else {
-							filtering = false
-						}
+						filtering = false
 						continue
 					case '\b':
 						if len(query) > 0 {

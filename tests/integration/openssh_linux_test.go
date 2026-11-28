@@ -786,6 +786,33 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			send("q")
 		})
 	})
+	scenario("port browser moves with j and k after applying a filter", func(t *testing.T, ctx context.Context) {
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		other, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer other.Close()
+		if listener.Addr().(*net.TCPAddr).Port > other.Addr().(*net.TCPAddr).Port {
+			listener, other = other, listener
+		}
+		runOpenSSHTerminal(t, ctx, exec.CommandContext(ctx, binary, "lp", ":", host+":"), func(send func(string), wait terminalWait) {
+			wait("Enter Forward", true)
+			send(fmt.Sprintf("/(%d)", os.Getpid()))
+			wait("Enter Apply filter", true)
+			send("\r")
+			wait("Enter Forward", true)
+			send("jy")
+			wait(ansi.SetSystemClipboard(other.Addr().String()), true)
+			send("ky")
+			wait(ansi.SetSystemClipboard(listener.Addr().String()), true)
+			send("q")
+		})
+	})
 	scenario("port browser filters listeners and forwards the selected SSH service", func(t *testing.T, ctx context.Context) {
 		probe, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
@@ -803,7 +830,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			// Pasted shortcuts stay inert, including Enter inside the filter.
 			send("\x1b[200~q\r\x1b[201~/\x1b[200~2222\r\x1b[201~")
 			wait("/2222", true)
-			send("\r")
+			send("\r\r")
 			wait("Listen on here at port:", true)
 			send("\x15" + port + "\r")
 			wait("Started forward/")
