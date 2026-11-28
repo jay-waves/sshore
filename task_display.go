@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"os"
 	"strings"
+
+	"github.com/jay-waves/sshore/internal/taskid"
 )
 
 const localInventoryHost = "\x00local"
@@ -81,7 +83,7 @@ func compareInventoryHosts(a, b string) int {
 
 func shellIdentityFromEnvironment() string {
 	if uid := os.Getenv("SSHORE_SOCKET"); uid != "" {
-		return identityFromUID(uid)
+		return taskid.Key(uid)
 	}
 	return os.Getenv("SSHORE_LOCAL_SESSION")
 }

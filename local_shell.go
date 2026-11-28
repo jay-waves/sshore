@@ -7,6 +7,7 @@ import (
 	json "encoding/json/v2"
 	"errors"
 	"fmt"
+	"github.com/jay-waves/sshore/internal/shell"
 	"io"
 	"net"
 	"net/url"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/sys"
+	"github.com/jay-waves/sshore/internal/taskid"
 )
 
 // The token is a local connection capability, never part of public inventory.
@@ -43,7 +45,7 @@ func openNativeShell(ctx context.Context, ref, identity string) (net.Conn, local
 		switch {
 		case reply.Error != "":
 			err = errors.New(reply.Error)
-		case !validTaskUID(reply.Record.UID):
+		case !taskid.Valid(reply.Record.UID):
 			err = os.ErrNotExist
 		}
 	}
@@ -71,7 +73,7 @@ func readLocalRecord(path, name string) (localShellRecord, error) {
 	host, port, err := net.SplitHostPort(r.Address)
 	n, portErr := strconv.Atoi(port)
 	token, tokenErr := hex.DecodeString(r.Token)
-	if err != nil || host != "127.0.0.1" || portErr != nil || n < 1 || n > 65535 || tokenErr != nil || len(token) != 32 || (r.Name != name && r.UID != name) || r.UID != "" && !validTaskUID(r.UID) || r.Version == "" {
+	if err != nil || host != "127.0.0.1" || portErr != nil || n < 1 || n > 65535 || tokenErr != nil || len(token) != 32 || (r.Name != name && r.UID != name) || r.UID != "" && !taskid.Valid(r.UID) || r.Version == "" {
 		return r, fmt.Errorf("invalid local shell record: %s", name)
 	}
 	return r, nil
@@ -99,7 +101,7 @@ func dialDaemonStream(ctx context.Context, r localShellRecord, deadline time.Tim
 }
 
 func (r localShellRecord) identity() string {
-	if validTaskUID(r.UID) {
+	if taskid.Valid(r.UID) {
 		return "task:" + r.UID
 	}
 	return fmt.Sprintf("local:%x", sha256.Sum256([]byte(r.Token)))
@@ -169,4 +171,110 @@ func (s *tmuxTask) localAttachmentCommand(p *attachment, m message) error {
 		return fmt.Errorf("unexpected local control request")
 	}
 	return nil
+}
+
+func localRequest(ref, identity string, request message) (message, error) {
+	c, _, err := openNativeShell(context.Background(), ref, identity)
+	if err != nil {
+		return message{}, err
+	}
+	defer c.Close()
+	switch request.Type {
+	case "handoff":
+		_ = c.SetDeadline(time.Now().Add(2 * time.Minute))
+	}
+	if err = writeMessage(c, request); err != nil {
+		return message{}, err
+	}
+	return readMessage(c)
+}
+
+func runLocalCommand(o options) (int, error) {
+	if o.hosted {
+		return runHostedCommand(o)
+	}
+	switch o.command {
+	case "sh", "attach":
+		return runClient(o)
+	default:
+		return 2, usage("local %s is not available yet", o.command)
+	}
+}
+
+type localStartup struct {
+	Record localShellRecord
+	Error  string
+}
+
+type hostedShellRequest struct {
+	Directory, Name string
+	Env             []string
+	parent          *tmuxTask
+}
+
+func createHostedShell(ctx context.Context, executable, name, cwd string, env []string) (localShellRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	record, err := ensureLocalDaemonContext(ctx, executable)
+	if err != nil {
+		return localShellRecord{}, err
+	}
+	req := hostedShellRequest{Directory: cwd, Name: name, Env: env}
+	var target sessionTarget
+	if err := daemonJSON(ctx, record, "/shells", req, &target); err != nil {
+		return localShellRecord{}, err
+	}
+	record.UID, record.Name, record.Directory = target.Instance, target.Name, cwd
+	return record, nil
+}
+
+func startLocalSessionContext(ctx context.Context, o options) (localShellRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return localShellRecord{}, err
+	}
+	name := o.session
+	var empty localShellRecord
+	if taskid.IsShort(name) {
+		name = ""
+	}
+	var err error
+	dir := o.sshDirectory
+	if dir == "" {
+		dir, err = os.Getwd()
+		if err != nil {
+			return empty, err
+		}
+	}
+	dir, err = shell.ResolveStartupDirectory(dir, o.startupDirectory)
+	if err != nil {
+		return empty, err
+	}
+	env := o.environment
+	if env == nil {
+		env = os.Environ()
+	}
+
+	request := localShellRecord{Name: name, Directory: dir, Version: version}
+	c, err := openLocalDaemonContext(ctx, localDaemonRequest{Kind: "shell", Record: request, Env: env, Parent: o.parent})
+	if err != nil {
+		return empty, err
+	}
+	defer c.Close()
+	stop := context.AfterFunc(ctx, func() { c.Close() })
+	defer stop()
+	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+	var reply localStartup
+	if err = readControlJSON(c, &reply); err != nil {
+		return empty, err
+	}
+	if reply.Error != "" {
+		return empty, fmt.Errorf("start local shell: %s", reply.Error)
+	}
+	if !taskid.Valid(reply.Record.UID) || validSession(reply.Record.Name) != nil || reply.Record.Version != version {
+		return empty, fmt.Errorf("invalid local shell startup response")
+	}
+	if err = writeControlJSON(c, "ready"); err != nil {
+		return empty, err
+	}
+	return reply.Record, nil
 }

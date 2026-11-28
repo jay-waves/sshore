@@ -9,6 +9,7 @@ import (
 
 	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/sys"
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -24,8 +25,8 @@ func newApprovalRequest(o options, shellPID int, ops []operation) (requestRecord
 	if err != nil {
 		return requestRecord{}, err
 	}
-	request := requestRecord{Connection: connection, PID: shellPID, ID: newTaskUID(), Directory: cwd, Operations: ops}
-	if !validTaskUID(connection.Instance) || request.PID <= 0 {
+	request := requestRecord{Connection: connection, PID: shellPID, ID: taskid.New(), Directory: cwd, Operations: ops}
+	if !taskid.Valid(connection.Instance) || request.PID <= 0 {
 		return requestRecord{}, fmt.Errorf("invalid source shell identity")
 	}
 	if err := validateRecentConnection(connection); err != nil {

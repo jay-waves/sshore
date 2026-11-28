@@ -82,7 +82,7 @@ func runFileBrowser(a cliArguments) (int, error) {
 			if err != nil {
 				return err
 			}
-			return pick(localFileSelection(dir, title, false))
+			return pick(termui.LocalFileSelection(dir, title, false))
 		}
 		return withRemoteFiles(ctx, loc.host, a.ssh, func(client *sftp.Client, home string) error {
 			windowsHost = len(home) > 3 && home[0] == '/' && home[2:4] == ":/"

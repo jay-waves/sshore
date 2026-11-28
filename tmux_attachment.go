@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/pty"
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/jay-waves/sshore/internal/termui"
 	"github.com/jay-waves/sshore/internal/tmux"
 )
@@ -224,10 +225,10 @@ func (s *tmuxTask) releaseAttachment(p *attachment, cause error) (message, error
 	s.mu.Unlock()
 	s.publishTreeState()
 	if disconnected {
-		termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Shell attachment disconnected: %s", cleanText(cause.Error()))
+		termui.Log(s.log, taskid.ShortKey(s.treeIdentity()), termui.Error, "Shell attachment disconnected: %s", cleanText(cause.Error()))
 	}
 	if err != nil {
-		termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Could not release shell input: %s", cleanText(err.Error()))
+		termui.Log(s.log, taskid.ShortKey(s.treeIdentity()), termui.Error, "Could not release shell input: %s", cleanText(err.Error()))
 		s.close()
 	}
 	return reply, err

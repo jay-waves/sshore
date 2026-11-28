@@ -161,9 +161,9 @@ Intermediate hosts relay the resource stream as bytes.
 The [ports package](../internal/ports) owns endpoint discovery, listeners, target
 dials and worker shutdown. The application supplies the authenticated transport
 and the startup exchange for the approved rule.
-The upgraded stream carries readiness and the caller's commit to the daemon.
-The mount worker reports readiness once and keeps its control pipe to the daemon
-after the launch connection closes.
+The daemon task registry publishes mount and forward state at registration, readiness and exit.
+The caller commits startup on the launch stream. After it closes, the daemon can still stop
+a forward by cancelling its context or unmount through the mount worker's control pipe.
 The CLI formats SSH and mount diagnostics from callbacks. Copy clients and
 mount clients use `pkg/sftp/v2` alongside the embedded agents.
 The [files package](../internal/files/mount_paths.go) prepares local mountpoints.
@@ -197,4 +197,4 @@ Task commands resolve names and UID prefixes through the
 a remote account when there is no matching task name. Attachment binds the full
 UID before handoff. Direct remote tasks store their SSH routes. Host defaults use connection history.
 Peer records under `origin` are read-only. See rendering for [list](../list.go) and [pstree](../pstree.go),
-[daemon metadata](../daemon_metadata.go), and [integration tests](../tests/integration/).
+[shell connection history](../shell_history.go), and [integration tests](../tests/integration/).

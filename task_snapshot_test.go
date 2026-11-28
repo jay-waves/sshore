@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/taskid"
 )
 
 func TestInventoryReadsHistoryWhileShellIsBusy(t *testing.T) {
@@ -16,10 +18,10 @@ func TestInventoryReadsHistoryWhileShellIsBusy(t *testing.T) {
 	}
 	root := filepath.Join(t.TempDir(), "state")
 	row := participatingShell{
-		Host: "work", Instance: newTaskUID(), Name: "remembered-shell",
-		State: taskDetached, PID: 42, Attachment: newTaskUID(),
+		Host: "work", Instance: taskid.New(), Name: "remembered-shell",
+		State: taskDetached, PID: 42, Attachment: taskid.New(),
 	}
-	activity := &daemonActivity{tasks: tasks, root: root, instance: newTaskUID()}
+	activity := &daemonActivity{tasks: tasks, root: root, instance: taskid.New()}
 	if err := historyTransaction(root, true, func(tx *bolt.Tx) error { return observeParticipation(tx, row) }); err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +42,7 @@ func TestInventoryReadsHistoryWhileShellIsBusy(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		offline, err := loadInventory(root, newTaskUID())
+		offline, err := loadInventory(root, taskid.New())
 		if err != nil || len(offline.Shells) != 1 {
 			t.Fatalf("stale live view was not discarded: %+v, %v", offline, err)
 		}
@@ -70,7 +72,7 @@ func TestInventoryProbeSkipsDaemonBeforeEndpointPublication(t *testing.T) {
 
 func TestParticipationForgetAndStaleAttachment(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "state")
-	row := participatingShell{Host: "work", Instance: newTaskUID(), Name: "shell-name", State: taskActive, PID: 42, Attachment: newTaskUID()}
+	row := participatingShell{Host: "work", Instance: taskid.New(), Name: "shell-name", State: taskActive, PID: 42, Attachment: taskid.New()}
 	dir, err := prepareStateDir(root, "connections")
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +87,7 @@ func TestParticipationForgetAndStaleAttachment(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale := row
-	stale.Attachment = newTaskUID()
+	stale.Attachment = taskid.New()
 	stale.State = taskDetached
 	if err := historyTransaction(root, true, func(tx *bolt.Tx) error {
 		return setParticipationState(tx, stale)
@@ -114,7 +116,7 @@ func TestUnavailableInventoryReportsDatabaseFailure(t *testing.T) {
 	if err := writeStateFile(filepath.Join(dir, "participation.db"), []byte("invalid database")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadInventory(root, newTaskUID()); err == nil {
+	if _, err := loadInventory(root, taskid.New()); err == nil {
 		t.Fatal("inventory reported success with an invalid database")
 	}
 }

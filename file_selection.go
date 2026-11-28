@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path"
-	"path/filepath"
 
 	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/files/dirlist"
@@ -21,26 +20,6 @@ func requireFileSelectionTerminal() error {
 		return usage("file selection requires an interactive terminal; specify the paths")
 	}
 	return nil
-}
-
-func localFileSelection(dir, title string, directory bool) termui.LFOptions {
-	if dir == "" {
-		dir, _ = os.Getwd()
-	}
-	return termui.LFOptions{
-		Dir: dir, Title: title, Host: localFileHost(), Directory: directory, LocalFiles: true,
-		Join: func(dir, name string) string { return filepath.Join(dir, name) }, Parent: filepath.Dir,
-		ReadDir: func(_ context.Context, name string) ([]dirlist.Entry, error) {
-			return dirlist.FromDirEntries(os.ReadDir(name))
-		},
-	}
-}
-
-func localFileHost() string {
-	if host, _ := os.Hostname(); host != "" {
-		return host + " (here)"
-	}
-	return "here"
 }
 
 func remoteFileSelection(dir, title, host string, directory bool, readDir func(context.Context, string) ([]dirlist.Entry, error)) termui.LFOptions {

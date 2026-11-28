@@ -4,11 +4,13 @@ import (
 	"cmp"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -21,28 +23,21 @@ func runPstree(_ cliArguments) (int, error) {
 	return 0, nil
 }
 
-func writePstree(out io.Writer, inv inventory, current string, color bool) {
-	rows := normalizeTaskTree(taskTreeNodes(inv))
-	if len(rows) != 0 || len(inv.Errors) == 0 {
-		writeShellTree(out, rows, current, color)
-	}
-}
-
 func terminalTreeName(program bool, name, command string) string {
-	if program && isShortTaskID(name) {
+	if program && taskid.IsShort(name) {
 		return command
 	}
 	return name
 }
 
-// A snapshot lists parents before children. Owner is the parent's one-based
-// row index, or zero for a root. It carries display fields only.
-type taskTreeRow struct {
-	Identity, Kind, Code, Name, State, Remote string
-	Owner                                     int
-}
-
-func normalizeTaskTree(nodes []shellTreeNode) []taskTreeRow {
+func writePstree(out io.Writer, inv inventory, current string, color bool) {
+	nodes := taskTreeNodes(inv)
+	if len(nodes) == 0 {
+		if len(inv.Errors) == 0 {
+			fmt.Fprintln(out, "No tasks.")
+		}
+		return
+	}
 	owners := shellTreeOwners(nodes)
 	// Each node has at most one owner. Cut a display edge at each cycle so
 	// every component has a root, even when cached relationships disagree.
@@ -73,7 +68,7 @@ func normalizeTaskTree(nodes []shellTreeNode) []taskTreeRow {
 		children[bucket] = append(children[bucket], i)
 	}
 	compare := func(a, b int) int {
-		return cmp.Or(cmp.Compare(nodes[a].displayCode(), nodes[b].displayCode()),
+		return cmp.Or(cmp.Compare(nodes[a].ShortID, nodes[b].ShortID),
 			cmp.Compare(nodes[a].Identity, nodes[b].Identity))
 	}
 	for _, siblings := range children {
@@ -85,31 +80,20 @@ func normalizeTaskTree(nodes []shellTreeNode) []taskTreeRow {
 		host := cmp.Or(nodes[i].Host, localInventoryHost)
 		byHost[host] = append(byHost[host], i)
 	}
-	hosts := make([]string, 0, len(byHost))
-	for host := range byHost {
-		hosts = append(hosts, host)
-	}
-	slices.SortFunc(hosts, compareInventoryHosts)
-
-	rows := make([]taskTreeRow, 0, len(nodes)+len(hosts))
-	var appendRows func([]int, int, string)
-	appendRows = func(siblings []int, owner int, parentHost string) {
-		for _, i := range siblings {
+	var writeChildren func([]int, string, string)
+	writeChildren = func(siblings []int, indent, parentHost string) {
+		for j, i := range siblings {
 			n := nodes[i]
-			row := taskTreeRow{Identity: n.Identity, Kind: n.Kind, Code: n.displayCode(), Name: n.Name, State: n.State, Owner: owner}
 			host := cmp.Or(n.Host, localInventoryHost)
-			if host != parentHost {
-				row.Remote = hostDisplayLabel(host)
-			}
-			rows = append(rows, row)
-			appendRows(children[i+1], len(rows), host)
+			prefix, nextIndent := termui.TreeBranch(color, indent, j == len(siblings)-1)
+			fmt.Fprintln(out, prefix+shellTreeLabel(n, host, parentHost, current != "" && n.Identity == current, color))
+			writeChildren(children[i+1], nextIndent, host)
 		}
 	}
-	for _, host := range hosts {
-		rows = append(rows, taskTreeRow{Code: hostDisplayLabel(host)})
-		appendRows(byHost[host], len(rows), host)
+	for _, host := range slices.SortedFunc(maps.Keys(byHost), compareInventoryHosts) {
+		fmt.Fprintln(out, hostDisplayLabel(host))
+		writeChildren(byHost[host], "", host)
 	}
-	return rows
 }
 
 func shellTreeOwners(nodes []shellTreeNode) []int {
@@ -130,13 +114,6 @@ func shellTreeOwners(nodes []shellTreeNode) []int {
 	return owners
 }
 
-func (n shellTreeNode) displayCode() string {
-	if n.ShortID != "" {
-		return n.ShortID
-	}
-	return taskShortCode(n.Identity)
-}
-
 // The local registry is authoritative. For other shells, show the newest
 // authenticated observation of each UID, even when two SSH aliases reach it.
 func taskTreeNodes(inv inventory) []shellTreeNode {
@@ -146,6 +123,7 @@ func taskTreeNodes(inv inventory) []shellTreeNode {
 		if taskHiddenFromInventory(n.State) {
 			return
 		}
+		n.ShortID = taskid.ShortObservation(n.Identity)
 		if i, found := visible[n.Identity]; found {
 			if !nodes[i].SeenAt.IsZero() && (n.SeenAt.IsZero() || n.SeenAt.After(nodes[i].SeenAt)) {
 				nodes[i] = n
@@ -156,7 +134,7 @@ func taskTreeNodes(inv inventory) []shellTreeNode {
 		nodes = append(nodes, n)
 	}
 	for _, s := range inv.Shells {
-		n := shellTreeNode{Kind: terminalTaskKind(s.Program), Identity: identityFromUID(s.Instance), ShortID: s.ShortID, Owner: s.Owner, Name: terminalTreeName(s.Program, s.Name, s.Shell), State: s.State}
+		n := shellTreeNode{Kind: terminalTaskKind(s.Program), Identity: taskid.Key(s.Instance), Owner: s.Owner, Name: terminalTreeName(s.Program, s.Name, s.Shell), State: s.State}
 		if s.Observed {
 			n.Host, n.SeenAt = s.Host, s.SeenAt
 		}
@@ -164,12 +142,12 @@ func taskTreeNodes(inv inventory) []shellTreeNode {
 	}
 	for _, r := range inv.Resources {
 		kind, name := r.kindAndName()
-		add(shellTreeNode{Kind: kind, Identity: r.Identity, ShortID: r.ShortID, Name: name, State: taskActive})
+		add(shellTreeNode{Kind: kind, Identity: r.Identity, Name: name, State: taskActive})
 	}
 	for _, p := range inv.Peers {
 		kind, name, _ := strings.Cut(p.ID, "/")
 		identity := peerTaskIdentity(p)
-		add(shellTreeNode{Kind: kind, Identity: identity, ShortID: taskShortCode(identity), Host: originInventoryHost, Name: name, State: taskActive})
+		add(shellTreeNode{Kind: kind, Identity: identity, Host: originInventoryHost, Name: name, State: taskActive})
 	}
 	return nodes
 }
@@ -179,41 +157,13 @@ type shellTreeNode struct {
 	SeenAt                                            time.Time
 }
 
-func writeShellTree(out io.Writer, rows []taskTreeRow, current string, color bool) {
-	if len(rows) == 0 {
-		fmt.Fprintln(out, "No tasks.")
-		return
-	}
-	children := make([][]int, len(rows)+1)
-	for i, row := range rows {
-		owner := row.Owner
-		if owner < 0 || owner > i {
-			owner = 0
-		}
-		children[owner] = append(children[owner], i)
-	}
-	var writeBranch func(int, string, string)
-	writeBranch = func(i int, prefix, indent string) {
-		row := rows[i]
-		fmt.Fprintln(out, prefix+shellTreeLabel(row, current != "" && row.Identity == current, color))
-		kids := children[i+1]
-		for j, child := range kids {
-			prefix, childIndent := termui.TreeBranch(color, indent, j == len(kids)-1)
-			writeBranch(child, prefix, childIndent)
-		}
-	}
-	for _, root := range children[0] {
-		writeBranch(root, "", "")
-	}
-}
-
-func shellTreeLabel(n taskTreeRow, current, color bool) string {
-	label := taskDisplayID(n.Code, n.Name, current)
+func shellTreeLabel(n shellTreeNode, host, parentHost string, current, color bool) string {
+	label := taskDisplayID(n.ShortID, n.Name, current)
 	if n.Kind != "" {
 		label = cleanText(n.Kind) + "/" + label
 	}
-	if n.Remote != "" {
-		label += " on " + cleanText(n.Remote)
+	if host != parentHost {
+		label += " on " + hostDisplayLabel(host)
 	}
 
 	state := cleanText(taskStateCode(n.State))

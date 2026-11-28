@@ -22,6 +22,26 @@ import (
 // ErrLFManual requests a caller-owned path editor.
 var ErrLFManual = errors.New("enter path manually")
 
+func LocalFileSelection(dir, title string, directory bool) LFOptions {
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+	return LFOptions{
+		Dir: dir, Title: title, Host: LocalFileHost(), Directory: directory, LocalFiles: true,
+		Join: func(dir, name string) string { return filepath.Join(dir, name) }, Parent: filepath.Dir,
+		ReadDir: func(_ context.Context, name string) ([]dirlist.Entry, error) {
+			return dirlist.FromDirEntries(os.ReadDir(name))
+		},
+	}
+}
+
+func LocalFileHost() string {
+	if host, _ := os.Hostname(); host != "" {
+		return host + " (here)"
+	}
+	return "here"
+}
+
 // LFOptions supplies path operations and directory listings for a picker.
 type LFOptions struct {
 	Dir               string

@@ -96,7 +96,7 @@ func pickCopyPaths(ctx context.Context, console *termui.LocalConsole, client *sf
 		picker := remote("Choose files to download", false)
 		stat := client.LStat
 		if o.upload {
-			picker = localFileSelection("", "Choose files to upload", false)
+			picker = termui.LocalFileSelection("", "Choose files to upload", false)
 			stat = os.Lstat
 		}
 		picker.ChooseDirectories = true
@@ -132,7 +132,7 @@ func pickCopyPaths(ctx context.Context, console *termui.LocalConsole, client *sf
 		}
 	}
 	if o.target.pick {
-		picker := localFileSelection("", "Choose download destination", true)
+		picker := termui.LocalFileSelection("", "Choose download destination", true)
 		if o.upload {
 			picker = remote("Choose upload destination", true)
 		} else {
@@ -235,7 +235,7 @@ func prepareRemoteCopy(kind string, paths []string, hint string, recursive, brow
 			if err := requireFileSelectionTerminal(); err != nil {
 				return nil, err
 			}
-			picker := localFileSelection("", "Choose files to send to origin", false)
+			picker := termui.LocalFileSelection("", "Choose files to send to origin", false)
 			picker.ChooseDirectories = true
 			var ops []operation
 			err := termui.RunLocalConsole(func(console *termui.LocalConsole) error {

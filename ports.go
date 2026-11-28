@@ -2,13 +2,8 @@ package main
 
 import (
 	"bufio"
-	"cmp"
 	"context"
 	"errors"
-	"fmt"
-	"net"
-	"strconv"
-	"strings"
 
 	"github.com/jay-waves/sshore/internal/ports"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
@@ -39,24 +34,8 @@ func runPortBrowser(a cliArguments) (int, error) {
 	var port string
 	var udp bool
 	err = termui.RunLocalConsole(func(console *termui.LocalConsole) error {
-		row, err := console.PickPort(loc.host, peer.host != "", func(ctx context.Context) ([]termui.PortRow, bool, error) {
-			listeners, err := browseListeners(ctx, loc.host, a.ssh)
-			if err != nil {
-				return nil, false, err
-			}
-			rows := make([]termui.PortRow, 0, len(listeners.Rows))
-			for _, listener := range listeners.Rows {
-				owner := listener.Process
-				if listener.PID > 0 {
-					owner = fmt.Sprintf("%s (%d)", cmp.Or(owner, "PID"), listener.PID)
-				}
-				port := strconv.FormatUint(uint64(listener.Port), 10)
-				rows = append(rows, termui.PortRow{
-					Label:   fmt.Sprintf("%-5s  %-6s  %-15s  %s", strings.ToUpper(listener.Protocol), port, listener.Address, owner),
-					Address: net.JoinHostPort(listener.Address, port), Port: port, Process: listener.Process, UDP: listener.Protocol == "udp",
-				})
-			}
-			return rows, listeners.Admin, nil
+		row, err := console.PickPort(loc.host, peer.host != "", func(ctx context.Context) (ports.ListenerSnapshot, error) {
+			return browseListeners(ctx, loc.host, a.ssh)
 		})
 		port, udp = row.Port, row.UDP
 		return err

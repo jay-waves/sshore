@@ -22,6 +22,7 @@ import (
 	deployment "github.com/jay-waves/sshore/internal/release/remote"
 	transportio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -66,8 +67,7 @@ type resourceService struct {
 	directory   string
 
 	record resourceRecord
-	config resourceConfig
-	done   chan struct{}
+	auth   *sshAuthEndpoint
 }
 
 func resourceToken() string {
@@ -90,9 +90,9 @@ func (s *resourceService) logWriter() io.Writer {
 func printStoppedResource(kind, name, identity string) {
 	switch kind {
 	case "mount":
-		termui.Log(os.Stdout, taskShortCode(identity), termui.Info, "Unmounted mount/%s.", name)
+		termui.Log(os.Stdout, taskid.ShortObservation(identity), termui.Info, "Unmounted mount/%s.", name)
 	case "forward":
-		termui.Log(os.Stdout, taskShortCode(identity), termui.Info, "Closed forward/%s.", name)
+		termui.Log(os.Stdout, taskid.ShortObservation(identity), termui.Info, "Closed forward/%s.", name)
 	}
 }
 
@@ -281,9 +281,7 @@ func confirmDaemonShutdown(host string, snapshot daemonSnapshot, resources []res
 		printDaemonSnapshot(os.Stdout, host, snapshot)
 	}
 	if len(resources) > 0 {
-		inv := inventory{Resources: slices.Clone(resources)}
-		inv.setTaskReferences()
-		writeList(os.Stdout, inv, "", termui.ColorEnabled(os.Stdout))
+		writeList(os.Stdout, inventory{Resources: resources}, "", termui.ColorEnabled(os.Stdout))
 	}
 	question := "End the listed tasks and stop the daemon? [y/N]"
 	if reset {
@@ -341,20 +339,20 @@ func runDaemonResource(c net.Conn, request localDaemonRequest, tasks *daemonTask
 	enc := jsontext.NewEncoder(c)
 	defer func() {
 		if result != nil {
-			termui.Log(tasks.log, canonicalTaskCode(identityFromUID(request.Resource.UID)), termui.Error, "%s", result)
+			termui.Log(tasks.log, taskid.ShortKey(taskid.Key(request.Resource.UID)), termui.Error, "%s", result)
 			_ = json.MarshalEncode(enc, resourceStartup{Error: result.Error()})
 		}
 	}()
 	config := *request.Resource
 	kind := config.kind()
-	if !validTaskUID(config.UID) {
+	if !taskid.Valid(config.UID) {
 		return fmt.Errorf("invalid resource task ID")
 	}
 	dec := jsontext.NewDecoder(io.LimitReader(c, daemonBodyLimit))
 	if kind == "forward" {
 		return runDaemonForward(config, enc, dec, c, request, tasks)
 	}
-	log := termui.NewLogWriter(tasks.log, canonicalTaskCode(identityFromUID(config.UID)), termui.Error)
+	log := termui.NewLogWriter(tasks.log, taskid.ShortKey(taskid.Key(config.UID)), termui.Error)
 	defer log.Flush()
 	return runDaemonMount(config, enc, dec, c, log, request, tasks)
 }
@@ -363,12 +361,6 @@ func acknowledgeResourceStartup(enc *jsontext.Encoder, c net.Conn) {
 	// The daemon owns the committed task even if the initiator loses its reply.
 	_ = json.MarshalEncode(enc, resourceCommitReply{Started: true})
 	_ = c.Close()
-}
-
-func newResourceService(config resourceConfig, record resourceRecord) *resourceService {
-	record.UID = config.UID
-	s := &resourceService{record: record, config: config, done: make(chan struct{})}
-	return s
 }
 
 func awaitResourceCommit(read func(any) error, abandon func()) <-chan error {
@@ -439,7 +431,7 @@ func startResourceBackground(config resourceConfig) (int, error) {
 }
 
 func launchResourceBackground(config resourceConfig, directory string) (resourceRecord, error) {
-	config.UID = newTaskUID()
+	config.UID = taskid.New()
 	auth, stopAuth, e := startSSHAuthBroker()
 	if e != nil {
 		return resourceRecord{}, e
@@ -565,7 +557,7 @@ func reportResourceStartup(record resourceRecord) {
 		}
 		detail = fmt.Sprintf("%s:%s -> %s · %s", record.Host, record.Remote, record.Mountpoint, mode)
 	}
-	termui.Log(os.Stdout, canonicalTaskCode(resourceIdentity(record)), termui.Info, "Started %s/%s: %s", record.Kind, record.Name, cleanText(detail))
+	termui.Log(os.Stdout, taskid.ShortKey(taskid.Key(record.UID)), termui.Info, "Started %s/%s: %s", record.Kind, record.Name, cleanText(detail))
 }
 
 func (s *resourceService) peerTask(detail string) peerRecord {

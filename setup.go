@@ -73,7 +73,7 @@ func selectSetupShell(host string, targets []sessionTarget) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	i, selectErr := chooseLocalItem(input, names, names, "Shell (#number/name, /filter; Enter cancels): ", "shell")
+	i, selectErr := termui.ChooseItem(input, names, names, "Shell (#number/name, /filter; Enter cancels): ", "shell")
 	if err := errors.Join(selectErr, input.Close()); err != nil {
 		return "", err
 	}

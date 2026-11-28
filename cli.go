@@ -17,6 +17,7 @@ import (
 	"github.com/jay-waves/sshore/internal/ports"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -163,20 +164,14 @@ func runTargetCommand(parsed cliArguments) (int, error) {
 }
 
 func runRemoteTaskStop(o options) (int, error) {
-	if !validTaskUID(o.instance) {
+	if !taskid.Valid(o.instance) {
 		return 2, usage("remote task selection requires a full task ID")
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 	connection := remoteService(sshConnectionOptions(o), remoteServiceRequest{
 		Operation: "task-control", Mode: "kill", Name: o.instance, Instance: o.instance,
 	})
-	connection = withSSHDiagnostics(connection, os.Stderr, nil)
-	if err := sshio.Run(ctx, connection, os.Stdin, os.Stdout, os.Stderr); err != nil {
-		if exit, ok := errors.AsType[exitStatusError](err); ok {
-			return exit.ExitStatus(), nil
-		}
-		return 1, err
+	if code, err := runSSHProcess(connection); code != 0 || err != nil {
+		return code, err
 	}
 	if err := rememberShellExit(o); err != nil {
 		termui.Log(os.Stderr, "", termui.Warning, "[sshore] Could not record shell exit: %s\n", cleanText(err.Error()))
@@ -190,9 +185,13 @@ type exitStatusError interface {
 }
 
 func runSSHCommand(parsed cliArguments) (int, error) {
+	connection := sshio.Options{Host: parsed.operands[0], Command: parsed.remoteCommand, Args: parsed.ssh, Confirm: confirmSSHHost, Secret: promptSSHSecret}
+	return runSSHProcess(connection)
+}
+
+func runSSHProcess(connection sshio.Options) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	connection := sshio.Options{Host: parsed.operands[0], Command: parsed.remoteCommand, Args: parsed.ssh, Confirm: confirmSSHHost, Secret: promptSSHSecret}
 	connection = withSSHDiagnostics(connection, os.Stderr, nil)
 	if err := sshio.Run(ctx, connection, os.Stdin, os.Stdout, os.Stderr); err != nil {
 		if exit, ok := errors.AsType[exitStatusError](err); ok {
@@ -599,7 +598,7 @@ func runMount(parsed cliArguments) (int, error) {
 			}
 			err = termui.RunLocalConsole(func(console *termui.LocalConsole) error {
 				var err error
-				op.Path, err = console.PickLF(context.Background(), localFileSelection("", "Choose directory to mount", true))
+				op.Path, err = console.PickLF(context.Background(), termui.LocalFileSelection("", "Choose directory to mount", true))
 				return err
 			})
 			if err != nil {
@@ -693,25 +692,6 @@ func shortDirectory(path, home string) string {
 		path = "…" + string(r[len(r)-39:])
 	}
 	return path
-}
-
-// Session and request selection share the existing line reader, with no second
-// input loop or screen ownership. Filters only change visibility; original
-// numbers remain stable. Bare input always denotes an exact name;
-// #N unambiguously selects an index. Filtering never attaches automatically.
-// Setup validates remote names and closes the reader before sending a selection.
-
-// Return the original row so callers can use the identity attached to it.
-func chooseLocalItem(input promptReader, names, labels []string, prompt, kind string) (int, error) {
-	return termui.ChooseItem(input, names, labels, prompt, kind)
-}
-
-// Path fields reuse readline editing/completion and retry only local validation.
-// Fields start with an editable suggestion and require local submission.
-// Transfer code independently checks paths at execution time.
-
-type promptReader interface {
-	Read(string, bool) (string, error)
 }
 
 type prefilledPromptReader interface {

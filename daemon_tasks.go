@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/jay-waves/sshore/internal/tmux"
 )
 
@@ -90,8 +91,8 @@ func (s *daemonTasks) registerTask(id string, task daemonTask) error {
 		return errDaemonDraining
 	}
 	if id == "" {
-		id = newTaskUID()
-	} else if !validTaskUID(id) {
+		id = taskid.New()
+	} else if !taskid.Valid(id) {
 		return fmt.Errorf("invalid task ID")
 	}
 	if s.lookupLocked(id) != nil {
@@ -240,7 +241,7 @@ func (s *daemonTasks) findNativeShell(ref, identity string) (*tmuxTask, localShe
 	defer s.mu.Unlock()
 	query := taskQuery{Kind: "native", Ref: ref}
 	if identity != "" {
-		query.UID = canonicalTaskUID(identity)
+		query.UID = taskid.ParseKey(identity)
 		if query.UID == "" {
 			return nil, localShellRecord{}, nil
 		}
@@ -249,7 +250,7 @@ func (s *daemonTasks) findNativeShell(ref, identity string) (*tmuxTask, localShe
 	if err != nil || target.Identity == "" {
 		return nil, localShellRecord{}, err
 	}
-	task, ok := s.records[canonicalTaskUID(target.Identity)].(*tmuxTask)
+	task, ok := s.records[taskid.ParseKey(target.Identity)].(*tmuxTask)
 	if !ok || task.hosted {
 		return nil, localShellRecord{}, fmt.Errorf("local task changed; refresh with sshore list")
 	}
@@ -266,7 +267,7 @@ type resourceMutation struct {
 
 func (change resourceMutation) confirmedUID() string {
 	id, ok := strings.CutPrefix(change.Identity, "task:")
-	if ok && validTaskUID(id) {
+	if ok && taskid.Valid(id) {
 		return id
 	}
 	return ""
@@ -280,12 +281,22 @@ type resourceReply struct {
 // A mount owns a child process; a forward owns an in-process executor. Both
 // expose the same bounded control operations through the account task table.
 type daemonResourceTask struct {
-	mu           sync.Mutex
-	record       resourceRecord // Only Detail, Remote and Mountpoint change after registration.
-	done         <-chan struct{}
-	control      func(string) resourceReply
-	stopMu       sync.Mutex
-	stopAccepted bool // Protected by stopMu.
+	mu     sync.Mutex
+	record resourceRecord // Only Detail, Remote and Mountpoint change after registration.
+	done   chan struct{}
+	stopMu sync.Mutex
+	stop   func() error // Cleared once the worker accepts the stop request.
+}
+
+func (s *daemonTasks) registerResource(record resourceRecord, cancel context.CancelFunc) (*daemonResourceTask, error) {
+	task := &daemonResourceTask{record: record, done: make(chan struct{}), stop: func() error {
+		cancel()
+		return nil
+	}}
+	if err := s.register(record.UID, task); err != nil {
+		return nil, err
+	}
+	return task, nil
 }
 
 func (t *daemonResourceTask) setInitialIdentity(uid, name string) {
@@ -326,15 +337,13 @@ const resourceStopTimeout = 20 * time.Second
 func (t *daemonResourceTask) requestStop() error {
 	t.stopMu.Lock()
 	defer t.stopMu.Unlock()
-	if t.stopAccepted || t.expired() {
+	if t.stop == nil || t.expired() {
 		return nil
 	}
-	reply := t.control("kill")
-	// A refusal leaves the task connected and may be retried.
-	if reply.Error != "" {
-		return errors.New(reply.Error)
+	if err := t.stop(); err != nil {
+		return err
 	}
-	t.stopAccepted = true
+	t.stop = nil
 	return nil
 }
 
@@ -352,18 +361,21 @@ func (t *daemonResourceTask) stopTask() error {
 	}
 }
 
-func (t *daemonResourceTask) finish(done chan struct{}) {
+func (s *daemonTasks) finishResource(t *daemonResourceTask) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	close(done)
+	close(t.done)
+	t.mu.Unlock()
+	s.inventoryChanged(t)
 }
 
 // Startup supplies runtime details. The task table owns identity and naming.
-func (t *daemonResourceTask) publishReady(detail, root, mountpoint string) resourceRecord {
+func (s *daemonTasks) resourceReady(t *daemonResourceTask, detail, root, mountpoint string) resourceRecord {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.record.Detail, t.record.Remote, t.record.Mountpoint = detail, root, mountpoint
-	return t.record
+	record := t.record
+	t.mu.Unlock()
+	s.inventoryChanged(t)
+	return record
 }
 
 func (s *daemonTasks) serveTaskStop(w http.ResponseWriter, r *http.Request) {
@@ -463,3 +475,5 @@ func daemonResourceRequest(ctx context.Context, path string, input any) (resourc
 	}
 	return reply, err
 }
+
+var errObjectNameInUse = errors.New("name is already in use")

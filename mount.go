@@ -21,6 +21,7 @@ import (
 	"github.com/jay-waves/sshore/internal/release"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
 	"github.com/jay-waves/sshore/internal/sys"
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/jay-waves/sshore/internal/termui"
 	bolt "go.etcd.io/bbolt"
 )
@@ -54,7 +55,7 @@ func validateMountConfig(o ftpOptions) error {
 		if o.PickRemote || o.PickMountpoint {
 			return fmt.Errorf("approved mounts already specify their paths")
 		}
-		if o.Connection == nil || !validTaskUID(o.Connection.Instance) || o.ResumePID <= 0 || !validRequestID(o.ApprovalID) || o.Connection.Host != o.Host {
+		if o.Connection == nil || !taskid.Valid(o.Connection.Instance) || o.ResumePID <= 0 || !validRequestID(o.ApprovalID) || o.Connection.Host != o.Host {
 			return fmt.Errorf("invalid mount approval")
 		}
 		return validateRecentConnection(*o.Connection)
@@ -178,7 +179,7 @@ func runFTPMount(o ftpOptions, s *resourceService, lifecycle files.MountLifecycl
 		return files.RunMount(c, lifecycle)
 	}
 	connection := sshConnectionOptions(options{host: o.Host, ssh: o.SSH})
-	auth := s.config.Auth
+	auth := s.auth
 	connection.Environment = s.baseEnvironment()
 	connection.Directory = s.directory
 	connection.Confirm, connection.Secret = auth.callbacks()
@@ -241,34 +242,25 @@ func runDaemonMount(config resourceConfig, enc *jsontext.Encoder, dec *jsontext.
 	defer output.Close()
 	defer childOutput.Close()
 	cmd.Stdout = childOutput
-	finished := make(chan struct{})
-	task := &daemonResourceTask{
-		record: resourceRecord{Kind: "mount", UID: config.UID, Name: config.Mount.Name, Host: config.Mount.Host, ReadOnly: config.Mount.ReadOnly, Direction: "<-"},
-		done:   finished,
-	}
 	childInput := jsontext.NewEncoder(input)
 	child := jsontext.NewDecoder(output)
 	owner, releaseWorker := context.WithCancel(context.Background())
 	defer releaseWorker()
-	task.control = func(string) resourceReply {
-		releaseWorker()
-		return resourceReply{}
-	}
 	// Claim the task name before the worker can prepare its mountpoint.
-	if err := tasks.register(config.UID, task); err != nil {
+	record := resourceRecord{Kind: "mount", UID: config.UID, Name: config.Mount.Name, Host: config.Mount.Host, ReadOnly: config.Mount.ReadOnly, Direction: "<-"}
+	task, err := tasks.registerResource(record, releaseWorker)
+	if err != nil {
 		return err
 	}
 	config.Mount.Name = task.taskName()
 	if err = cmd.Start(); err != nil {
-		task.finish(finished)
-		tasks.inventoryChanged(task)
+		tasks.finishResource(task)
 		return err
 	}
 	childOutput.Close()
 	go func() {
 		_ = cmd.Wait()
-		task.finish(finished)
-		tasks.inventoryChanged(task)
+		tasks.finishResource(task)
 	}()
 	killWorker := func() {
 		_ = cmd.Process.Kill()
@@ -280,14 +272,14 @@ func runDaemonMount(config resourceConfig, enc *jsontext.Encoder, dec *jsontext.
 		timer := time.NewTimer(resourceStopTimeout)
 		defer timer.Stop()
 		select {
-		case <-finished:
+		case <-task.done:
 		case <-timer.C:
 			killWorker()
 		}
 	})
 	defer func() {
 		releaseWorker()
-		<-finished
+		<-task.done
 		// The worker has exited. Let any control call consume its final reply
 		// before closing the read end.
 		task.stopMu.Lock()
@@ -335,9 +327,8 @@ func runDaemonMount(config resourceConfig, enc *jsontext.Encoder, dec *jsontext.
 	if startup.Error != "" {
 		return json.MarshalEncode(enc, startup)
 	}
-	record := task.publishReady(startup.Detail, startup.Remote, startup.Mountpoint)
-	tasks.inventoryChanged(task)
-	if err = offerResourceStartup(enc, record, commit, finished); err != nil {
+	record = tasks.resourceReady(task, startup.Detail, startup.Remote, startup.Mountpoint)
+	if err = offerResourceStartup(enc, record, commit, task.done); err != nil {
 		return err
 	}
 	// The CLI has committed. Task control now owns the worker pipes.
@@ -346,25 +337,26 @@ func runDaemonMount(config resourceConfig, enc *jsontext.Encoder, dec *jsontext.
 		task.stopMu.Unlock()
 		return fmt.Errorf("mount stopped during startup")
 	}
-	task.control = func(action string) resourceReply {
+	task.stop = func() error {
 		// A hung worker cannot keep daemon task control blocked on its pipe.
 		timer := time.AfterFunc(resourceStopTimeout, killWorker)
 		defer timer.Stop()
-		if err := json.MarshalEncode(childInput, action); err != nil {
-			return resourceReply{Error: err.Error()}
+		if err := json.MarshalEncode(childInput, "kill"); err != nil {
+			return err
 		}
 		var reply resourceReply
 		if err := json.UnmarshalDecode(child, &reply); err != nil {
-			return resourceReply{Error: fmt.Sprintf("mount worker stopped without an unmount result: %v", err)}
+			return fmt.Errorf("mount worker stopped without an unmount result: %w", err)
 		}
-		if reply.Error == "" {
-			releaseWorker()
+		if reply.Error != "" {
+			return errors.New(reply.Error)
 		}
-		return reply
+		releaseWorker()
+		return nil
 	}
 	task.stopMu.Unlock()
 	acknowledgeResourceStartup(enc, c)
-	<-finished
+	<-task.done
 	return nil
 }
 
@@ -394,7 +386,7 @@ func runMountDaemon() (code int, resultErr error) {
 	if e := read(&config); e != nil {
 		return 1, e
 	}
-	if config.kind() != "mount" || !validTaskUID(config.UID) {
+	if config.kind() != "mount" || !taskid.Valid(config.UID) {
 		return 1, fmt.Errorf("mount worker requires a registered mount configuration")
 	}
 	o := *config.Mount
@@ -404,8 +396,8 @@ func runMountDaemon() (code int, resultErr error) {
 	if err := validateMountConfig(o); err != nil {
 		return 1, err
 	}
-	record := resourceRecord{Kind: "mount", Name: o.Name, Host: o.Host, ReadOnly: o.ReadOnly, Direction: "<-"}
-	s := newResourceService(config, record)
+	record := resourceRecord{UID: config.UID, Kind: "mount", Name: o.Name, Host: o.Host, ReadOnly: o.ReadOnly, Direction: "<-"}
+	s := &resourceService{record: record, auth: config.Auth}
 	ownerDone := make(chan struct{})
 	workerDone := make(chan struct{})
 	defer close(workerDone)
@@ -538,7 +530,7 @@ func (o ftpOptions) selectMountPaths(ctx context.Context, console *termui.LocalC
 }
 
 func pickLocalMountpoint(ctx context.Context, console *termui.LocalConsole, dir string) (string, error) {
-	picker := localFileSelection(dir, "Mountpoint", true)
+	picker := termui.LocalFileSelection(dir, "Mountpoint", true)
 	picker.Manual = true
 	picker.Validate = files.ValidateMountpoint
 	point, err := console.PickLF(ctx, picker)

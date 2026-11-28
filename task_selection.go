@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/jay-waves/sshore/internal/taskid"
 )
 
 // Kind limits the registry scan to a task type. Native and hosted are two
@@ -28,7 +30,7 @@ type selectedTask struct {
 }
 
 func (q taskQuery) candidate(uid string, task daemonTask) (selectedTask, bool) {
-	candidate := selectedTask{Identity: identityFromUID(uid)}
+	candidate := selectedTask{Identity: taskid.Key(uid)}
 	switch t := task.(type) {
 	case *tmuxTask:
 		s := t
@@ -87,7 +89,7 @@ func (q taskQuery) registered(tasks *daemonTasks) []selectedTask {
 }
 
 func (q taskQuery) detached(tasks *daemonTasks, candidate *selectedTask) bool {
-	task, ok := tasks.lookup(canonicalTaskUID(candidate.Identity)).(*tmuxTask)
+	task, ok := tasks.lookup(taskid.ParseKey(candidate.Identity)).(*tmuxTask)
 	if !ok {
 		return false
 	}
@@ -119,11 +121,11 @@ func (q taskQuery) recentDetached(tasks *daemonTasks) []selectedTask {
 func matchTask(ref string, candidates []selectedTask) (selectedTask, error) {
 	var idMatch, alias selectedTask
 	prefix := strings.ToLower(ref)
-	byID := isTaskIDPrefix(prefix)
+	byID := taskid.IsPrefix(prefix)
 	var ambiguousRoute, ambiguousAlias bool
 	for _, target := range candidates {
 		switch {
-		case byID && strings.HasPrefix(canonicalTaskUID(target.Identity), prefix):
+		case byID && strings.HasPrefix(taskid.ParseKey(target.Identity), prefix):
 			if idMatch.Identity != "" && idMatch.Identity != target.Identity {
 				return selectedTask{}, usage("ambiguous task ID %s; use a longer prefix", ref)
 			}
@@ -163,7 +165,7 @@ func (q taskQuery) selectLocked(tasks *daemonTasks) (target selectedTask, err er
 	if uid == "" {
 		uid = strings.ToLower(q.Ref)
 	}
-	if validTaskUID(uid) {
+	if taskid.Valid(uid) {
 		target, _ = q.candidate(uid, tasks.lookupLocked(uid))
 	}
 	if target.Identity == "" && q.UID == "" {
@@ -247,7 +249,7 @@ func selectCLITask(parsed cliArguments) (selectedTask, error) {
 	}
 	// A name and an ID must resolve to the same unambiguous route.
 	if !byID && target.Identity != "" {
-		target, err = matchTask(canonicalTaskUID(target.Identity), candidates)
+		target, err = matchTask(taskid.ParseKey(target.Identity), candidates)
 		if err != nil {
 			return selectedTask{}, err
 		}
@@ -284,7 +286,7 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id 
 		bucket := currentLiveBucket(tx, instance)
 		if bucket != nil {
 			switch {
-			case validTaskUID(id):
+			case taskid.Valid(id):
 				key := []byte(id)
 				if data := bucket.Get(key); data != nil {
 					if err := inv.readLiveRow(key, data); err != nil {
@@ -306,7 +308,7 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id 
 			if taskHiddenFromInventory(s.State) || hostedOnly && !s.Hosted {
 				continue
 			}
-			t := selectedTask{Kind: "shell", Name: s.Name, Identity: identityFromUID(s.Instance), Hosted: s.Hosted}
+			t := selectedTask{Kind: "shell", Name: s.Name, Identity: taskid.Key(s.Instance), Hosted: s.Hosted}
 			if t.Hosted {
 				t.Instance = s.Instance
 			}
@@ -318,7 +320,7 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id 
 				candidates = append(candidates, selectedTask{Kind: kind, Name: name, Identity: r.Identity})
 			}
 		}
-		if validTaskUID(id) && len(candidates) > before {
+		if taskid.Valid(id) && len(candidates) > before {
 			return nil
 		}
 		known := make(map[string]bool)
@@ -331,7 +333,7 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id 
 		}
 		var advisory []selectedTask
 		for _, s := range observed {
-			id := identityFromUID(s.Instance)
+			id := taskid.Key(s.Instance)
 			if known[id] {
 				continue
 			}
@@ -356,7 +358,7 @@ func publishedCandidates(candidates []selectedTask, attach, hostedOnly bool, id 
 				return err
 			}
 			for _, p := range inv.Peers {
-				id := identityFromUID(p.UID)
+				id := taskid.Key(p.UID)
 				if p.Manager != "" {
 					advisory = append(advisory, selectedTask{Kind: peerKind(p.ID), Identity: id, Manager: p.Manager})
 				}
@@ -387,7 +389,7 @@ func selectRegisteredTask(query taskQuery) (selectedTask, error) {
 }
 
 func killRegisteredTask(target selectedTask) (int, error) {
-	uid := canonicalTaskUID(target.Identity)
+	uid := taskid.ParseKey(target.Identity)
 	if uid == "" {
 		return 1, fmt.Errorf("invalid task identity")
 	}
@@ -406,7 +408,7 @@ func (tasks *daemonTasks) remoteChildCandidates(parent, ref string) []selectedTa
 	if parent == "" {
 		return nil
 	}
-	source, ok := tasks.lookup(canonicalTaskUID(parent)).(*tmuxTask)
+	source, ok := tasks.lookup(taskid.ParseKey(parent)).(*tmuxTask)
 	if !ok {
 		return nil
 	}
@@ -414,11 +416,11 @@ func (tasks *daemonTasks) remoteChildCandidates(parent, ref string) []selectedTa
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var candidates []selectedTask
-	byID := isTaskIDPrefix(ref)
+	byID := taskid.IsPrefix(ref)
 	for child := range s.remoteChildren {
 		if byID && strings.HasPrefix(child.uid, ref) || !byID && child.name == ref {
 			candidates = append(candidates, selectedTask{
-				Kind: "shell", Name: child.name, Identity: identityFromUID(child.uid), Instance: child.uid, RemoteHost: child.host,
+				Kind: "shell", Name: child.name, Identity: taskid.Key(child.uid), Instance: child.uid, RemoteHost: child.host,
 			})
 		}
 	}
@@ -453,7 +455,7 @@ func (s *tmuxTask) selectRemoteChild(config *shellConfig) (*shellTarget, error) 
 			continue
 		}
 		if status.Owner == s.treeIdentity() {
-			id := identityFromUID(child.uid)
+			id := taskid.Key(child.uid)
 			live[id] = liveChild{child, status.Action}
 			candidates = append(candidates, selectedTask{Identity: id, Name: status.Name})
 		}
@@ -474,7 +476,7 @@ func (s *tmuxTask) selectRemoteChild(config *shellConfig) (*shellTarget, error) 
 		return nil, fmt.Errorf("no live child matches %s on %s; enter it from the shell that opened it", cleanText(ref), cleanText(config.Host))
 	}
 	if match.state != taskDetached {
-		return nil, fmt.Errorf("child shell %s is %s; detach it before attaching", taskShortCode(target.Identity), cleanText(match.state))
+		return nil, fmt.Errorf("child shell %s is %s; detach it before attaching", taskid.ShortObservation(target.Identity), cleanText(match.state))
 	}
 	return match.child, nil
 }
@@ -485,7 +487,7 @@ func attachmentChoices(candidates []selectedTask) ([]sessionTarget, error) {
 	}
 	targets := make([]sessionTarget, 0, len(candidates))
 	for _, t := range candidates {
-		targets = append(targets, sessionTarget{Name: t.Name, Instance: canonicalTaskUID(t.Identity), Hosted: t.Hosted})
+		targets = append(targets, sessionTarget{Name: t.Name, Instance: taskid.ParseKey(t.Identity), Hosted: t.Hosted})
 	}
 	return targets, nil
 }

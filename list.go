@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/term"
 )
@@ -26,8 +27,8 @@ func runList(_ cliArguments) (int, error) {
 }
 
 type taskTableRow struct {
-	uid, code, alias, kind, owner, state, parent, detail string
-	current                                              bool
+	uid, alias, kind, owner, state, parent, detail string
+	current                                        bool
 }
 
 func writeList(out io.Writer, inv inventory, current string, color bool) {
@@ -52,7 +53,7 @@ func writeListWidth(out io.Writer, inv inventory, current string, color bool, sc
 				hostInfos[host] = s.HostInfo
 			}
 		}
-		selected := !s.Observed && current != "" && identityFromUID(s.Instance) == current && s.State == taskActive
+		selected := !s.Observed && current != "" && taskid.Key(s.Instance) == current && s.State == taskActive
 		detail := joinTaskDetails(cmp.Or(s.ProgramLine, s.Shell), s.Directory)
 		if s.Observed {
 			seen := "on " + hostDisplayLabel(host)
@@ -63,16 +64,16 @@ func writeListWidth(out io.Writer, inv inventory, current string, color bool, sc
 		}
 		detail = shellListDetail(detail, s.SourceHost)
 		detail = pinDetail(detail, s.Pinned, s.PinUntil)
-		rows = append(rows, taskTableRow{taskUID(identityFromUID(s.Instance)), s.ShortID, s.Name, terminalTaskKind(s.Program), host, s.State, taskShortCode(s.Owner), detail, selected})
+		rows = append(rows, taskTableRow{taskid.ObservationUID(taskid.Key(s.Instance)), s.Name, terminalTaskKind(s.Program), host, s.State, taskid.ShortObservation(s.Owner), detail, selected})
 	}
 	for _, r := range inv.Resources {
 		kind, name := r.kindAndName()
-		rows = append(rows, taskTableRow{taskUID(r.Identity), r.ShortID, name, kind, localInventoryHost, taskActive, "", resourceListDetail(r), false})
+		rows = append(rows, taskTableRow{taskid.ObservationUID(r.Identity), name, kind, localInventoryHost, taskActive, "", resourceListDetail(r), false})
 	}
 	for _, p := range inv.Peers {
 		kind, name, _ := strings.Cut(p.ID, "/")
 		identity := peerTaskIdentity(p)
-		rows = append(rows, taskTableRow{taskUID(identity), taskShortCode(identity), name, kind, originInventoryHost, taskActive, "", readOnlyDetail(p.Detail), false})
+		rows = append(rows, taskTableRow{taskid.ObservationUID(identity), name, kind, originInventoryHost, taskActive, "", readOnlyDetail(p.Detail), false})
 	}
 	rows = slices.DeleteFunc(rows, func(row taskTableRow) bool {
 		return taskHiddenFromInventory(row.state)
@@ -196,8 +197,9 @@ func compactTaskDetail(detail string, limit int) string {
 }
 
 func taskTableID(row taskTableRow, screenWidth int) string {
+	code := taskid.Short(row.uid)
 	alias := row.alias
-	if screenWidth > 0 && alias != "" && alias != row.code {
+	if screenWidth > 0 && alias != "" && alias != code {
 		limit := min(32, max(0, screenWidth/4-9))
 		if limit == 0 {
 			alias = ""
@@ -205,7 +207,7 @@ func taskTableID(row taskTableRow, screenWidth int) string {
 			alias = compactTaskDetail(alias, limit)
 		}
 	}
-	return taskDisplayID(row.code, alias, row.current)
+	return taskDisplayID(code, alias, row.current)
 }
 
 func taskStateCell(state string) termui.TableCell {

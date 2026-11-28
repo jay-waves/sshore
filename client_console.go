@@ -14,6 +14,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/jay-waves/sshore/internal/term"
 	"github.com/jay-waves/sshore/internal/termui"
 	xterm "golang.org/x/term"
@@ -122,7 +123,7 @@ func (completion consoleCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	}
 	if !ok || canonicalCommand(command) == "attach" {
 		for _, target := range completion.targets {
-			candidates = append(candidates, taskShortCode(identityFromUID(target.Instance)))
+			candidates = append(candidates, taskid.ShortObservation(taskid.Key(target.Instance)))
 		}
 	}
 
@@ -284,7 +285,7 @@ func formatSessionEnd(ended sessionEnd, current options, destination string) str
 				host = "here"
 			}
 		}
-		name := taskDisplayID(taskShortCode(identityFromUID(child.Instance)), child.Name, false)
+		name := taskDisplayID(taskid.ShortObservation(taskid.Key(child.Instance)), child.Name, false)
 		endpoint := sshio.FormatEndpoint(host, name)
 		pin := "pinned indefinitely"
 		if !child.PinUntil.IsZero() {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/jay-waves/sshore/internal/files/dirlist"
 	"github.com/jay-waves/sshore/internal/release"
+	"github.com/jay-waves/sshore/internal/taskid"
 )
 
 // Control metadata uses bounded frames. Approved file streams switch to
@@ -112,7 +113,7 @@ func validateSessionTargets(targets []sessionTarget) error {
 		return fmt.Errorf("too many session targets")
 	}
 	for i, target := range targets {
-		if validSession(target.Name) != nil || !validTaskUID(target.Instance) ||
+		if validSession(target.Name) != nil || !taskid.Valid(target.Instance) ||
 			slices.ContainsFunc(targets[:i], func(other sessionTarget) bool { return other.Name == target.Name }) {
 			return fmt.Errorf("invalid session target")
 		}

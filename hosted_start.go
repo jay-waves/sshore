@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/shell"
+	"github.com/jay-waves/sshore/internal/taskid"
 )
 
 func prepareHostedShell(name, mode, instance, directory string) (localShellRecord, error) {
@@ -31,7 +32,7 @@ func prepareHostedShell(name, mode, instance, directory string) (localShellRecor
 		record.UID = target.Instance
 		return record, checkPeerVersion(record.Version, "daemon")
 	}
-	if isShortTaskID(name) {
+	if taskid.IsShort(name) {
 		name = ""
 	}
 	executable, err := os.Executable()
@@ -148,7 +149,7 @@ func dialHostedTask(ctx context.Context, ref string, timeout time.Duration) (net
 	if err != nil {
 		return nil, err
 	}
-	if !validTaskUID(ref) {
+	if !taskid.Valid(ref) {
 		return nil, fmt.Errorf("invalid task ID")
 	}
 	r.UID = ref

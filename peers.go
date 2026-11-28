@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/shirou/gopsutil/v4/host"
 )
 
@@ -63,7 +64,7 @@ func taskManagerLabel() string {
 	return h
 }
 func validateRemoteTask(t peerRecord) error {
-	if !validTaskUID(t.UID) || t.Direction != "<-" && t.Direction != "->" {
+	if !taskid.Valid(t.UID) || t.Direction != "<-" && t.Direction != "->" {
 		return fmt.Errorf("invalid peer identity or direction")
 	}
 	if t.Version != version || !validRequestID(t.Key) || t.Manager == "" || len(t.Manager) > 128 || len(t.Detail) > 4096 {

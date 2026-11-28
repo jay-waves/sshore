@@ -4,17 +4,37 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/jay-waves/sshore/internal/ports"
 )
 
 type PortRow struct {
 	Label, Address, Port, Process string
 	UDP                           bool
+}
+
+func portRows(listeners []ports.Listener) []PortRow {
+	rows := make([]PortRow, 0, len(listeners))
+	for _, listener := range listeners {
+		owner := listener.Process
+		if listener.PID > 0 {
+			owner = fmt.Sprintf("%s (%d)", cmp.Or(owner, "PID"), listener.PID)
+		}
+		port := strconv.FormatUint(uint64(listener.Port), 10)
+		rows = append(rows, PortRow{
+			Label:   fmt.Sprintf("%-5s  %-6s  %-15s  %s", strings.ToUpper(listener.Protocol), port, listener.Address, owner),
+			Address: net.JoinHostPort(listener.Address, port), Port: port, Process: listener.Process, UDP: listener.Protocol == "udp",
+		})
+	}
+	return rows
 }
 
 func comparePortProcess(a, b PortRow) int {
@@ -28,10 +48,10 @@ func comparePortProcess(a, b PortRow) int {
 }
 
 // PickPort returns the selected listener or a zero row for manual port entry.
-func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Context) ([]PortRow, bool, error)) (selected PortRow, err error) {
+func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Context) (ports.ListenerSnapshot, error)) (selected PortRow, err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	rows, admin, err := load(ctx)
+	listeners, err := load(ctx)
 	if err != nil {
 		return PortRow{}, err
 	}
@@ -44,6 +64,7 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 			err = errors.Join(err, terminal.close())
 		}
 	}()
+	rows := portRows(listeners.Rows)
 	var decoder keyDecoder
 	var screen listScreen
 	index := 0
@@ -93,7 +114,7 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 			protocol = "UDP"
 		}
 		privilege := "Non-admin"
-		if admin {
+		if listeners.Admin {
 			privilege = "Admin"
 		}
 		header := strings.Join([]string{
@@ -199,7 +220,7 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 					if err := errors.Join(closeErr, c.close()); err != nil {
 						return PortRow{}, err
 					}
-					next, elevated, loadErr := load(ctx)
+					next, loadErr := load(ctx)
 					if err := c.open(); err != nil {
 						return PortRow{}, errors.Join(loadErr, err)
 					}
@@ -213,7 +234,8 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 						status = "Refresh failed. " + CleanText(loadErr.Error())
 						break keys
 					}
-					rows, admin = next, elevated
+					listeners = next
+					rows = portRows(next.Rows)
 					rebuild(previous)
 					status = "Ports refreshed"
 					break keys

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jay-waves/sshore/internal/sys"
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/term"
 )
@@ -196,7 +197,7 @@ func newDaemonRecord() (localShellRecord, error) {
 	if err != nil {
 		return localShellRecord{}, err
 	}
-	return localShellRecord{Name: "daemon", UID: newTaskUID(), Version: version, Token: resourceToken(), Directory: root}, nil
+	return localShellRecord{Name: "daemon", UID: taskid.New(), Version: version, Token: resourceToken(), Directory: root}, nil
 }
 
 func runDaemon() (result error) {

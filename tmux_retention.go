@@ -10,6 +10,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -33,7 +34,7 @@ func requestShellRetention(c io.ReadWriter, request message) error {
 func (s *tmuxTask) serveOwner(c net.Conn, m message) (result error) {
 	s.mu.Lock()
 	if s.ownerClaimed || s.parentTask() != nil || s.runtime.Exited() || s.killing || m.Instance != s.record.UID || m.SoftwareVersion != version ||
-		m.Owner == "" && m.Token != "" || m.Owner != "" && (!s.hosted || !validTaskUID(m.Owner) || len(m.Token) != 64 || s.runtime.Started()) {
+		m.Owner == "" && m.Token != "" || m.Owner != "" && (!s.hosted || !taskid.Valid(m.Owner) || len(m.Token) != 64 || s.runtime.Started()) {
 		s.mu.Unlock()
 		return writeMessage(c, message{Type: "error", Error: "shell owner unavailable"})
 	}
@@ -71,7 +72,7 @@ func (s *tmuxTask) checkRemoteOwnerLocked(c attachmentControl) error {
 		return nil
 	}
 	if s.remoteOwner != "" {
-		return fmt.Errorf("enter shell %s from its parent %s", taskShortCode(s.treeIdentity()), taskShortCode(identityFromUID(s.remoteOwner)))
+		return fmt.Errorf("enter shell %s from its parent %s", taskid.ShortObservation(s.treeIdentity()), taskid.ShortObservation(taskid.Key(s.remoteOwner)))
 	}
 	return fmt.Errorf("parent shell route ended")
 }
@@ -111,7 +112,7 @@ func (s *tmuxTask) scopeEnded(owner *tmuxTask, cause error) {
 			reason = "Shell owner connection ended: " + cleanText(cause.Error())
 		}
 	} else {
-		reason = "Parent shell " + canonicalTaskCode(owner.treeIdentity()) + " ended"
+		reason = "Parent shell " + taskid.ShortKey(owner.treeIdentity()) + " ended"
 	}
 	ending := s.runtime.Exited() || s.killing
 	s.runtime.LoseScope()
@@ -124,7 +125,7 @@ func (s *tmuxTask) scopeEnded(owner *tmuxTask, cause error) {
 		if reaping {
 			outcome = "Stopping unpinned shell."
 		}
-		termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), level, "%s. %s", reason, outcome)
+		termui.Log(s.log, taskid.ShortKey(s.treeIdentity()), level, "%s. %s", reason, outcome)
 	}
 }
 
@@ -144,7 +145,7 @@ func (s *tmuxTask) reapUnretainedLocked() {
 	s.killing, s.exitReason = true, "shell lifetime ended"
 	go func() {
 		if err := s.stopTerminal(); err != nil {
-			termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Could not stop unpinned shell: %s", cleanText(err.Error()))
+			termui.Log(s.log, taskid.ShortKey(s.treeIdentity()), termui.Error, "Could not stop unpinned shell: %s", cleanText(err.Error()))
 		}
 	}()
 }
@@ -153,7 +154,7 @@ func (s *tmuxTask) parentIdentityLocked() string {
 	if parent, ended := s.runtime.Parent(); parent != nil && !ended {
 		return parent.treeIdentity()
 	}
-	return identityFromUID(s.remoteOwner)
+	return taskid.Key(s.remoteOwner)
 }
 
 // The owner lease is still live while the exit frame is being assembled.

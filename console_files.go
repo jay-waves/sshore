@@ -42,7 +42,7 @@ func startConsoleFilePicker(ctx context.Context, directory, host string, attache
 	}
 	var options termui.LFOptions
 	if !attached {
-		options = localFileSelection(directory, "Open shell", true)
+		options = termui.LocalFileSelection(directory, "Open shell", true)
 	} else {
 		windows := len(directory) >= 3 && directory[1] == ':' && strings.ContainsRune("/\\", rune(directory[2]))
 		if windows {

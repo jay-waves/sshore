@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"slices"
+
+	"github.com/jay-waves/sshore/internal/taskid"
 )
 
 func approvedResourceRequest(session string, pid int, id string, op operation) message {
@@ -17,7 +19,7 @@ func approvedFileOptions(connection recentConnection, attachment *options) (opti
 	if err := validateRecentConnection(connection); err != nil {
 		return options{}, err
 	}
-	if !validTaskUID(connection.Instance) {
+	if !taskid.Valid(connection.Instance) {
 		return options{}, fmt.Errorf("routed resource requires a live shell route")
 	}
 	o := options{command: "attach", host: connection.Host, session: connection.Session}
@@ -35,7 +37,7 @@ func openIndependentResource(ctx context.Context, connection recentConnection, r
 		c, err = openClientTransportContext(ctx, &o, nil)
 	} else {
 		o.environment = service.baseEnvironment()
-		c, err = openRemoteShellTransport(ctx, &o, nil, service.config.Auth)
+		c, err = openRemoteShellTransport(ctx, &o, nil, service.auth)
 	}
 	if err != nil {
 		return nil, err

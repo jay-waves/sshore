@@ -17,6 +17,7 @@ import (
 	"time"
 
 	transportio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/jay-waves/sshore/internal/termui"
 	bolt "go.etcd.io/bbolt"
 	"golang.org/x/term"
@@ -220,7 +221,7 @@ func openClientTransportContext(ctx context.Context, o *options, transports clie
 			}
 		} else {
 			ref := o.session
-			if canonicalTaskUID(o.taskIdentity) != "" {
+			if taskid.ParseKey(o.taskIdentity) != "" {
 				ref = ""
 			}
 			c, r, err = openNativeShell(ctx, ref, o.taskIdentity)
@@ -294,7 +295,7 @@ func runClient(o options) (int, error) {
 			}
 			if len(parents) != 0 {
 				parent := parents[len(parents)-1]
-				parentID = cmp.Or(canonicalTaskUID(parent.taskIdentity), parent.instance)
+				parentID = cmp.Or(taskid.ParseKey(parent.taskIdentity), parent.instance)
 			}
 			prune(&current)
 			return from, parentID
@@ -548,7 +549,7 @@ func directShellOptions(o options) options {
 	}
 	if hop != &o && hop.routeParent == nil {
 		if hop.local {
-			o.local, o.hosted, o.taskIdentity = true, true, identityFromUID(o.instance)
+			o.local, o.hosted, o.taskIdentity = true, true, taskid.Key(o.instance)
 		}
 		o.routeParent, o.routeToken, o.routeTarget = nil, "", false
 		o.ssh, o.sshDirectory = hop.ssh, hop.sshDirectory
@@ -560,7 +561,7 @@ func routeParentOptions(parent options) options {
 	parent.command = "attach"
 	// The remote entry point accepts immutable task UIDs, so a changed label cannot sever
 	// an otherwise live child route. This transport never attaches a terminal.
-	if validTaskUID(parent.instance) {
+	if taskid.Valid(parent.instance) {
 		parent.session = parent.instance
 	}
 	return parent
@@ -600,7 +601,7 @@ func openSessionRoute(ctx context.Context, o *options, transports clientTranspor
 		if err := checkPeerVersion(reply.SoftwareVersion, "routed shell"); err != nil {
 			return nil, err
 		}
-		if !validTaskUID(reply.Instance) || o.instance != "" && o.instance != reply.Instance {
+		if !taskid.Valid(reply.Instance) || o.instance != "" && o.instance != reply.Instance {
 			return nil, fmt.Errorf("routed shell instance changed")
 		}
 		o.instance = reply.Instance
@@ -659,14 +660,14 @@ func (h *clientHandoff) options() (options, error) {
 	}
 	shell := h.Shell
 	if (shell.Command != "sh" && shell.Command != "attach") || !filepath.IsAbs(h.Directory) ||
-		shell.Instance != "" && !validTaskUID(shell.Instance) || shell.Name != "" && validSession(shell.Name) != nil ||
+		shell.Instance != "" && !taskid.Valid(shell.Instance) || shell.Name != "" && validSession(shell.Name) != nil ||
 		shell.Local && len(shell.SSH) != 0 || !shell.Local && (validSSHDestination(shell.Host) != nil) {
 		return options{}, fmt.Errorf("invalid shell handoff")
 	}
 	if _, _, err := parseSSHOptions(shell.SSH); err != nil {
 		return options{}, err
 	}
-	if h.Hosted && (!shell.Local || shell.Command != "attach" || !validTaskUID(shell.Instance) || h.TaskIdentity != identityFromUID(shell.Instance)) {
+	if h.Hosted && (!shell.Local || shell.Command != "attach" || !taskid.Valid(shell.Instance) || h.TaskIdentity != taskid.Key(shell.Instance)) {
 		return options{}, fmt.Errorf("invalid hosted shell handoff")
 	}
 	return options{

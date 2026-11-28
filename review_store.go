@@ -7,6 +7,7 @@ import (
 
 	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/ports"
+	"github.com/jay-waves/sshore/internal/taskid"
 )
 
 const maxRequestItems = 16
@@ -83,7 +84,7 @@ func validateOperations(ops []operation) error {
 	return nil
 }
 
-func validRequestID(id string) bool { return validTaskUID(id) }
+func validRequestID(id string) bool { return taskid.Valid(id) }
 
 // Only one helper can hand a request to the attached client at a time.
 type approvalExchanges struct {

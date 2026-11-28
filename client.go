@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/taskid"
 	xterm "golang.org/x/term"
 
 	"github.com/jay-waves/sshore/internal/shell"
@@ -257,7 +258,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	if err := checkPeerVersion(m.SoftwareVersion, "shell daemon"); err != nil {
 		return 1, err
 	}
-	if (!o.local || o.hosted) && (!validTaskUID(m.Instance) || o.instance != "" && o.instance != m.Instance) {
+	if (!o.local || o.hosted) && (!taskid.Valid(m.Instance) || o.instance != "" && o.instance != m.Instance) {
 		return 1, fmt.Errorf("shell instance changed; refresh with sshore list")
 	}
 	if err := acceptSessionName(&o, m.Name); err != nil {
@@ -284,7 +285,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 	var terminalStateConfirmed bool
 	if !o.local {
 		participation = &participatingShell{HostInfo: o.hostInfo, Host: o.host, Owner: m.Owner, Instance: o.instance, Name: o.session, State: taskActive,
-			Pinned: m.Pinned, PinUntil: m.PinUntil, PID: m.PID, Shell: m.Shell, Program: m.Program, Attachment: newTaskUID()}
+			Pinned: m.Pinned, PinUntil: m.PinUntil, PID: m.PID, Shell: m.Shell, Program: m.Program, Attachment: taskid.New()}
 		if err := updateHistory(func(tx *bolt.Tx) error {
 			if err := removeRecentDetach(tx, o.instance); err != nil {
 				return err
@@ -811,7 +812,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 						}
 						host := o.host
 						if o.local {
-							host = localFileHost()
+							host = termui.LocalFileHost()
 						}
 						escapeTick = nil
 						console.stopEditor()
@@ -836,7 +837,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 							break
 						}
 						lookup := consoleAttachLookup
-						if isTaskIDPrefix(ref) && strings.HasPrefix(parentID, ref) {
+						if taskid.IsPrefix(ref) && strings.HasPrefix(parentID, ref) {
 							lookup = consoleParentLookup
 						}
 						if err := requestSessionTargets(lookup, ref); err != nil {
@@ -1139,7 +1140,7 @@ func runClientOnce(o options, transports clientTransports, panel *clientConsole,
 					target, handoffErr := e.m.Handoff.options()
 					source, token := o, e.m.Token
 					if target.command == "sh" || !target.local {
-						target.parent = canonicalTaskUID(source.taskIdentity)
+						target.parent = taskid.ParseKey(source.taskIdentity)
 					}
 					target.handoffDone = func(_ context.Context, result error) error {
 						request := message{Type: "handoff_confirm", Token: token}
@@ -1375,15 +1376,15 @@ func reconnectCommand(o options) string {
 		return shell.QuotePOSIX(s)
 	}
 	selector := o.session
-	if validTaskUID(o.instance) {
+	if taskid.Valid(o.instance) {
 		selector = o.instance
 	}
 	if o.local {
 		identity := o.taskIdentity
 		if identity == "" {
-			identity = identityFromUID(o.instance)
+			identity = taskid.Key(o.instance)
 		}
-		if id := canonicalTaskUID(identity); id != "" {
+		if id := taskid.ParseKey(identity); id != "" {
 			selector = id
 		}
 	}

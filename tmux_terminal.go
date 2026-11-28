@@ -15,6 +15,7 @@ import (
 
 	"github.com/jay-waves/sshore/internal/pty"
 	"github.com/jay-waves/sshore/internal/sys"
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/jay-waves/sshore/internal/termui"
 	"github.com/jay-waves/sshore/internal/tmux"
 )
@@ -47,7 +48,7 @@ type tmuxTask struct {
 
 func (s *tmuxTask) setInitialIdentity(uid, name string) {
 	s.record.UID, s.record.Name = uid, name
-	s.runtime.SetIdentity(s, taskShortCode(s.treeIdentity()))
+	s.runtime.SetIdentity(s, taskid.ShortObservation(s.treeIdentity()))
 }
 
 func (s *tmuxTask) taskName() string { return s.record.Name }
@@ -91,8 +92,8 @@ func (s *tmuxTask) directoryOrStartupLocked() string {
 }
 
 func (s *tmuxTask) treeIdentity() string {
-	if s.hosted || validTaskUID(s.record.UID) {
-		return identityFromUID(s.record.UID)
+	if s.hosted || taskid.Valid(s.record.UID) {
+		return taskid.Key(s.record.UID)
 	}
 	return (localShellRecord{Token: s.record.Token}).identity()
 }
@@ -333,7 +334,7 @@ func (s *tmuxTask) terminalExited(err error) {
 	}
 	s.mu.Unlock()
 	s.publishTreeState()
-	termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Info, "Shell exited (code %d): %s", code, cleanText(reason))
+	termui.Log(s.log, taskid.ShortKey(s.treeIdentity()), termui.Info, "Shell exited (code %d): %s", code, cleanText(reason))
 	if p != nil {
 		p.finishExit(message{
 			Type: "exit", Code: code, Reason: reason,

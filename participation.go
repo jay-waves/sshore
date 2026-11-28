@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/taskid"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -34,15 +35,15 @@ func validateParticipatingShell(row participatingShell) error {
 	switch {
 	case validSSHDestination(row.Host) != nil:
 		return fmt.Errorf("remote shell has an invalid SSH destination")
-	case !validTaskUID(row.Instance):
+	case !taskid.Valid(row.Instance):
 		return fmt.Errorf("remote shell has an invalid task ID")
-	case row.Owner != "" && row.Owner != identityFromUID(canonicalTaskUID(row.Owner)):
+	case row.Owner != "" && row.Owner != taskid.Key(taskid.ParseKey(row.Owner)):
 		return fmt.Errorf("remote shell has an invalid parent task ID")
 	case validSession(row.Name) != nil:
 		return fmt.Errorf("remote shell has an invalid session name")
 	case row.PID <= 0:
 		return fmt.Errorf("remote shell has invalid PID %d (expected a positive PID)", row.PID)
-	case !validTaskUID(row.Attachment):
+	case !taskid.Valid(row.Attachment):
 		return fmt.Errorf("remote shell has an invalid attachment ID")
 	}
 	switch row.State {
@@ -140,7 +141,7 @@ func touchParticipation(attachment participatingShell, seen time.Time) error {
 }
 
 func forgetParticipation(tx *bolt.Tx, host, instance string) error {
-	if !validTaskUID(instance) || validSSHDestination(host) != nil {
+	if !taskid.Valid(instance) || validSSHDestination(host) != nil {
 		return fmt.Errorf("invalid participating shell identity")
 	}
 	if bucket := tx.Bucket(participationBucket); bucket != nil {
@@ -158,7 +159,7 @@ func reconcileParticipatingShells(host string, peer hostInfo, shells []shellView
 	}
 	observed := make(map[string]shellView, len(shells))
 	for _, view := range shells {
-		if !validTaskUID(view.Instance) || view.Owner != "" && view.Owner != identityFromUID(canonicalTaskUID(view.Owner)) {
+		if !taskid.Valid(view.Instance) || view.Owner != "" && view.Owner != taskid.Key(taskid.ParseKey(view.Owner)) {
 			return fmt.Errorf("invalid shell or parent ID in participation refresh")
 		}
 		observed[view.Instance] = view

@@ -15,6 +15,7 @@ import (
 
 	"github.com/jay-waves/sshore/internal/ports"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/jay-waves/sshore/internal/termui"
 )
 
@@ -147,7 +148,7 @@ func validateForwardConfig(f forwardConfig) error {
 		return err
 	}
 	if f.Connection != nil || f.ApprovalID != "" || f.ResumePID != 0 {
-		if f.Connection == nil || !validTaskUID(f.Connection.Instance) || !validRequestID(f.ApprovalID) ||
+		if f.Connection == nil || !taskid.Valid(f.Connection.Instance) || !validRequestID(f.ApprovalID) ||
 			f.ResumePID <= 0 || f.Retries != 0 || f.Connection.Host != f.Host {
 			return fmt.Errorf("invalid approved forward identity")
 		}
@@ -181,7 +182,7 @@ func runForward(ctx context.Context, f forwardConfig, s *resourceService, onRead
 	for retry := 0; ; retry++ {
 		if retry != 0 {
 			delay := time.Second * time.Duration(1<<min(retry-1, 5))
-			termui.Log(s.logWriter(), canonicalTaskCode(resourceIdentity(s.record)), termui.Info,
+			termui.Log(s.logWriter(), taskid.ShortKey(taskid.Key(s.record.UID)), termui.Info,
 				"Forward disconnected; active flows lost. Retry %d/%d in %s.", retry, f.Retries, delay)
 			timer := time.NewTimer(delay)
 			select {
@@ -217,7 +218,7 @@ func startForwardConnection(ctx context.Context, f forwardConfig, s *resourceSer
 		})
 		var auth *sshAuthEndpoint
 		if initial {
-			auth = s.config.Auth
+			auth = s.auth
 			connection.Confirm, connection.Secret = auth.callbacks()
 		}
 		conn, err := sshio.Start(ctx, withSSHDiagnostics(connection, diagnostic, auth), diagnostic)
@@ -274,7 +275,7 @@ func runForwardAttempt(parent context.Context, f forwardConfig, s *resourceServi
 	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
 	var diagnostics diagnosticsTail
-	log := termui.NewLogWriter(s.logWriter(), canonicalTaskCode(resourceIdentity(s.record)), termui.Error)
+	log := termui.NewLogWriter(s.logWriter(), taskid.ShortKey(taskid.Key(s.record.UID)), termui.Error)
 	defer log.Flush()
 	connection, err := startForwardConnection(ctx, f, s, initial, io.MultiWriter(log, &diagnostics))
 	if err != nil {
@@ -349,36 +350,23 @@ func runDaemonForward(config resourceConfig, enc *jsontext.Encoder, dec *jsontex
 	if err := validateForwardConfig(f); err != nil {
 		return err
 	}
-	record := resourceRecord{Kind: "forward", Name: f.Name, Host: f.Host, Direction: f.direction()}
-	s := newResourceService(config, record)
-	s.log = tasks.log
-	s.environment, s.directory = request.Env, request.Record.Directory
+	record := resourceRecord{UID: config.UID, Kind: "forward", Name: f.Name, Host: f.Host, Direction: f.direction()}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	task := &daemonResourceTask{record: s.record, done: s.done, control: func(action string) resourceReply {
-		switch action {
-		case "kill":
-			cancel()
-			return resourceReply{}
-		default:
-			return resourceReply{Error: "invalid resource operation"}
-		}
-	}}
-	if err := tasks.register(config.UID, task); err != nil {
+	task, err := tasks.registerResource(record, cancel)
+	if err != nil {
 		return err
 	}
-	s.record.Name = task.taskName()
+	s := &resourceService{record: task.record, auth: config.Auth, log: tasks.log, environment: request.Env, directory: request.Record.Directory}
 	ack := awaitResourceCommit(func(v any) error { return json.UnmarshalDecode(dec, v) }, cancel)
-	err := runForward(ctx, f, s, func() error {
-		record := task.publishReady(s.record.Detail, "", "")
-		tasks.inventoryChanged(task)
+	err = runForward(ctx, f, s, func() error {
+		record := tasks.resourceReady(task, s.record.Detail, "", "")
 		if err := offerResourceStartup(enc, record, ack, nil); err != nil {
 			return err
 		}
 		acknowledgeResourceStartup(enc, c)
 		return nil
 	})
-	task.finish(s.done)
-	tasks.inventoryChanged(task)
+	tasks.finishResource(task)
 	return err
 }

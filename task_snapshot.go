@@ -10,6 +10,7 @@ import (
 	"time"
 
 	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/taskid"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -36,7 +37,6 @@ Starting and exited tasks are omitted.
 `
 
 type resourceView struct {
-	ShortID  string `json:"short_id,omitempty"`
 	Identity string `json:"identity,omitempty"`
 	ID       string `json:"id"`
 	Host     string `json:"host"`
@@ -57,7 +57,6 @@ type shellView struct {
 	Pinned      bool      `json:"pinned,omitempty"`
 	PinUntil    time.Time `json:"pin_until,omitzero"`
 	Instance    string    `json:"instance,omitempty"`
-	ShortID     string    `json:"short_id,omitempty"`
 	Host        string    `json:"host,omitempty"`
 	Name        string    `json:"name"`
 	State       string    `json:"state"`
@@ -87,7 +86,7 @@ func emptyInventory() inventory {
 	return inventory{Resources: []resourceView{}, Shells: []shellView{}, Peers: []peerView{}, Errors: []string{}}
 }
 func viewRecord(r resourceRecord) resourceView {
-	v := resourceView{Identity: resourceIdentity(r), ID: r.Kind + "/" + r.Name, Host: r.Host, Detail: r.Detail}
+	v := resourceView{Identity: taskid.Key(r.UID), ID: r.Kind + "/" + r.Name, Host: r.Host, Detail: r.Detail}
 	if r.Kind == "mount" {
 		v.ReadOnly = r.ReadOnly
 		v.Detail = sshio.FormatEndpoint(r.Host, r.Remote) + " -> " + r.Mountpoint
@@ -98,7 +97,7 @@ func viewRecord(r resourceRecord) resourceView {
 func excludeLocalResourcePeers(peers []peerView, resources []resourceView) []peerView {
 	local := make(map[string]bool, len(resources))
 	for _, r := range resources {
-		local[canonicalTaskUID(r.Identity)] = true
+		local[taskid.ParseKey(r.Identity)] = true
 	}
 	return slices.DeleteFunc(peers, func(p peerView) bool { return local[p.UID] })
 }
@@ -116,7 +115,9 @@ func mergeInventory(inv inventory, observed []participatingShell) inventory {
 			inv.Shells = append(inv.Shells, shellView{HostInfo: row.HostInfo, Host: row.Host, Owner: row.Owner, Instance: row.Instance, Name: row.Name, State: row.State, Observed: true, SeenAt: row.ChangedAt, Pinned: row.Pinned, PinUntil: row.PinUntil, PID: row.PID, Shell: row.Shell, Program: row.Program})
 		}
 	}
-	inv.setTaskReferences()
+	slices.SortStableFunc(inv.Resources, func(a, b resourceView) int {
+		return cmp.Compare(taskid.ObservationUID(a.Identity), taskid.ObservationUID(b.Identity))
+	})
 	return inv
 }
 
@@ -133,23 +134,6 @@ func (inv inventory) incompleteError() error {
 		return fmt.Errorf("inventory incomplete: %s", strings.Join(inv.Errors, "; "))
 	}
 	return nil
-}
-
-func (inv *inventory) setTaskReferences() {
-	for i := range inv.Shells {
-		shell := &inv.Shells[i]
-		shell.ShortID = taskShortCode(identityFromUID(shell.Instance))
-	}
-	for i := range inv.Resources {
-		resource := &inv.Resources[i]
-		resource.ShortID = taskShortCode(resource.Identity)
-	}
-	slices.SortStableFunc(inv.Resources, func(a, b resourceView) int {
-		if order := cmp.Compare(a.ShortID, b.ShortID); order != 0 {
-			return order
-		}
-		return cmp.Compare(taskUID(a.Identity), taskUID(b.Identity))
-	})
 }
 
 var liveTasksBucket = []byte("live-task-rows")
@@ -313,7 +297,7 @@ func (inv *inventory) readLiveRow(key, data []byte) error {
 		return json.Unmarshal(data, &inv.LocalHost)
 	case bytes.HasPrefix(key, []byte("peer/")):
 		return appendLiveRow(&inv.Peers, data)
-	case validTaskUID(string(key)):
+	case taskid.Valid(string(key)):
 		var row liveTaskRow
 		if err := json.Unmarshal(data, &row); err != nil {
 			return err

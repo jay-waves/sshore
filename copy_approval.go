@@ -43,7 +43,7 @@ func (f fileCopy) approvedLocalPath(op operation) string {
 
 func pickApprovedUpload(console *termui.LocalConsole, request requestRecord) ([]fileCopy, error) {
 	op := request.Operations[0]
-	picker := localFileSelection(request.Directory, "Choose source to upload", op.Recursive)
+	picker := termui.LocalFileSelection(request.Directory, "Choose source to upload", op.Recursive)
 	name, err := console.PickLF(context.Background(), picker)
 	if err != nil {
 		return nil, err

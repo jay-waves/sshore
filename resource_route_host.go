@@ -7,6 +7,7 @@ import (
 	"net"
 
 	"github.com/jay-waves/sshore/internal/files"
+	"github.com/jay-waves/sshore/internal/taskid"
 )
 
 type resourceApproval struct {
@@ -22,7 +23,7 @@ func (s *tmuxTask) serveRoutedResource(c net.Conn, request message, relay func(n
 		fail(err)
 		return
 	}
-	if !validTaskUID(request.Instance) {
+	if !taskid.Valid(request.Instance) {
 		fail(fmt.Errorf("resource shell changed or unavailable"))
 		return
 	}

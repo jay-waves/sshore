@@ -11,6 +11,7 @@ import (
 	"time"
 
 	transportio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/taskid"
 	"github.com/xtaci/smux"
 )
 
@@ -333,7 +334,7 @@ func withRemoteShell(parent context.Context, c net.Conn, req localDaemonRequest,
 	shellRequest := remoteServiceRequest{Operation: "shell", Mode: "new", Name: f.Name, Instance: f.Instance, Directory: f.StartupDirectory}
 	if f.Command == "attach" {
 		shellRequest.Mode = "attach"
-		if validTaskUID(f.Instance) {
+		if taskid.Valid(f.Instance) {
 			shellRequest.Name = f.Instance
 		}
 	}
@@ -424,7 +425,7 @@ func remoteTaskRecord(ready message) (localShellRecord, error) {
 	}
 	record := ready.LocalRequest.Record
 	host, _, err := net.SplitHostPort(record.Address)
-	if err != nil || host != "127.0.0.1" || !validTaskUID(record.UID) || ready.Instance != record.UID || len(record.Token) != 64 {
+	if err != nil || host != "127.0.0.1" || !taskid.Valid(record.UID) || ready.Instance != record.UID || len(record.Token) != 64 {
 		return localShellRecord{}, fmt.Errorf("invalid daemon endpoint")
 	}
 	return record, checkPeerVersion(record.Version, "daemon")
