@@ -4,7 +4,7 @@
 [![Linux amd64 and Windows amd64](.github/badges/platforms.svg)](#os-and-shell-support)
 
 Start a shell on this computer or over SSH, detach, and pick up where you left
-off. You can also copy files, forward ports and mount remote directories.
+off. Copy files, forward TCP or UDP ports, and mount remote directories.
 
 ## Install the client
 
@@ -22,18 +22,17 @@ curl -fsSL https://raw.githubusercontent.com/jay-waves/sshore/main/install.sh | 
 irm https://raw.githubusercontent.com/jay-waves/sshore/main/install.ps1 | iex
 ```
 
-The scripts install the local client. On the first managed SSH connection, the
-client automatically deploys the matching server over SSH and SFTP.
+The client deploys the matching server over SSH and SFTP when a remote
+operation needs it.
 
 ## OS and shell support
 
-| Shell on OS (amd64) | Shell / reattach | File copy | SFTP mount | TCP forward |
+| Shell on OS (amd64) | Shell / reattach | File copy | SFTP mount | TCP / UDP forward |
 | --- | --- | --- | --- | --- |
 | bash / sh / zsh / fish on Linux | ✓ | ✓ | ✓ | ✓ |
-| pwsh / cmd on Win11 | ✓ | ✓ | ✓ | ✓ |
+| PowerShell / cmd on Win11 or Server 2025 and newer | ✓ | ✓ | ✓ | ✓ |
 
-Managed shells and their resource routes also require SSH TCP forwarding to
-loopback.
+Managed remote shells require SSH TCP forwarding to loopback.
 See the [development notes](docs/ARCHITECTURE.md#terminal-and-mux-design-scope)
 for experimental Apple Silicon support.
 
@@ -42,38 +41,35 @@ for experimental Apple Silicon support.
 Use SSH host aliases from `ssh_config`.
 
 ```sh
-sshore sh jay-waves@raspberrypi  # Log in as a specific SSH user.
-sshore sh raspberrypi -J jump    # Open a shell through a jump host.
-sshore forward raspberrypi:3000 .:8080  # Reach the remote service on local port 8080.
-sshore ping raspberrypi:               # Measure SSH latency.
+sshore sh jay-waves@pi  # Log in as a specific SSH user.
+sshore sh pi -J jump    # Open a shell through a jump host.
+sshore forward pi:3000 .:8080  # Reach the remote service on local port 8080.
+sshore ping pi                # Measure SSH latency.
+sshore fwd --udp pi:53 1053   # Forward a remote DNS service to local port 1053.
 ```
 
-Use `sshore fwd SOURCE TARGET` to mirror a TCP service. For example, run
-`sshore fwd .:9090 origin:9091` in a remote shell to access its port 9090
-at `127.0.0.1:9091` on your computer. Approve the target port on your computer
-to resume the remote shell.
+Run `sshore fwd :9090 origin:9091` from an attached remote shell to request
+forwarding its port 9090 to port 9091 on the client. Approve it on the client.
 
 ### ssh-exec
 
-`sshore sh HOST -- COMMAND` runs once over SSH without a remote PTY or a
-remote sshore installation. Like OpenSSH, it joins the words after `--`
-with spaces and lets the remote shell interpret the result.
+`sshore sh HOST -- COMMAND` joins the words after `--` for the remote shell.
+It runs without a remote PTY or sshore server.
 
 ```sh
-sshore sh raspberrypi -- uname -a
-sshore sh raspberrypi -- vim 'a b.txt'       # Vim receives two filenames: a and b.txt.
-sshore sh raspberrypi -- 'vim "a b.txt"'     # Vim receives one filename, with no PTY.
+sshore sh pi -- uname -a
+sshore sh pi -- 'ls -l "a b.txt"'
 ```
 
 ### new — Start a program in a terminal
 
-`sshore new HOST -- PROGRAM [ARG...]` starts the program directly in a PTY
-and preserves each argument. Omit `-- PROGRAM` to open the default shell.
-Use `--pin` to keep the task running after disconnect.
+`sshore new HOST -- PROGRAM [ARG...]` preserves each argument and opens a
+launch review before starting the program in a PTY. Use `--pin` to keep the
+task running after disconnect.
 
 ```sh
-sshore new raspberrypi -- vim 'a b.txt'  # Open one file whose name contains a space.
-sshore new raspberrypi --pin            # Open a shell that survives disconnect.
+sshore new pi -- vim 'a b.txt'  # Open one file whose name contains a space.
+sshore new pi --pin            # Open a shell that survives disconnect.
 ```
 
 ## mux — Start, detach and resume
@@ -114,8 +110,8 @@ has one foreground shell.
 ```sh
 sshore attach              # Resume the most recently detached eligible local shell.
 sshore attach 7b3a91       # Resume a detached shell by task ID.
-sshore attach raspberrypi  # Match a known shell name first, then try the SSH host.
-sshore shell raspberrypi   # Start a new shell on the SSH host.
+sshore attach pi  # Match a known shell name first, then try the SSH host.
+sshore shell pi   # Start a new shell on the SSH host.
 ```
 
 Use a task ID when a shell name is ambiguous.
@@ -128,50 +124,43 @@ Killing a shell can discard unsaved work.
 
 ## copy-id — Install an SSH public key for remote login
 
-Run `sshore copy-id raspberrypi` to add a configured SSH public key to the remote
-account's `~/.ssh/authorized_keys`. The account must allow SSH command execution.
-The host needs `flock`, `base64` and `tail`. You can run this before installing
-sshore on the host. Existing entries for the same key keep their restrictions.
+Run `sshore copy-id pi` to add a configured public key to the remote
+account's `~/.ssh/authorized_keys`. Existing entries keep their restrictions.
 
 ## scp (+lrzsz) — Transfer files from either end of an SSH session
 
 ```sh
-sshore cp report.zip raspberrypi:/tmp/           # Upload a file.
-sshore cp raspberrypi:/tmp/report.zip ./         # Download a file.
-sshore cp -r ./project raspberrypi:/tmp/         # Upload a directory tree.
-sshore cp report.zip origin:              # From an attached remote shell, send a file to the client.
+sshore cp report.zip pi:/tmp/           # Upload a file.
+sshore cp pi:/tmp/report.zip ./         # Download a file.
+sshore cp -r ./project pi:/tmp/         # Upload a directory tree.
+sshore cp --lf : pi:                   # Pick both paths.
+sshore cp report.zip origin:                    # Send to the client from an attached shell.
 ```
 
-`raspberrypi:VALUE` selects a path or port on the SSH host. `here:` (or `.:`) selects
-the machine running the command. A bare file path also belongs to that machine.
+A bare path belongs to the machine running the command. Use `:` or `here:`
+for an explicit local endpoint. An empty local path uses the current directory
+and an empty SSH path uses the remote home. Add `--lf` to pick omitted paths.
+Recursive copy includes empty directories, rejects symbolic links, and keeps
+existing files. `origin:` refers to the attached client and requests its approval.
 On Windows, use `C:\dir\file` or `here:C:/dir/file` for a local drive path.
-
-Copy accepts regular files. Use `-r` to upload or download a directory tree,
-including empty directories. Recursive copy rejects symbolic links. Existing
-directories can receive new entries, and existing files are never overwritten.
-Leave a path empty to choose it in the three-column picker after SSH connects.
-For example, `sshore cp here: raspberrypi:` selects a local file, then a remote
-destination directory. Use the arrow keys or `hjkl` to browse and `q` to cancel.
-Inside an attached remote shell, `origin:` refers to the attached client.
-Review the transfer request on that client and choose the local path. With
-`cp -r`, approve and choose a local directory for each requested tree.
 
 ## sftp (+fuse) — Mount a remote directory locally
 
 ```sh
-sshore mount raspberrypi:/srv/project .: --read-only
+sshore mount pi:/srv/project .: --read-only
 sshore mount winhost:E:/project .:
-sshore mount raspberrypi: here: --read-only
+sshore mount pi: :
+sshore mount --lf pi: here:
 ```
 
-Use `HOST:` to browse from the remote home, `HOST:~` to select it directly,
-and `here:` to choose the local mountpoint. Use `.:` for automatic allocation.
+An empty remote path mounts the remote home and an empty local mountpoint
+allocates one automatically. Add `--lf` to pick omitted paths. Use `.:` to
+keep automatic mountpoint allocation with `--lf`.
 
 Windows hosts serve directories on NTFS and ReFS volumes; other filesystems are rejected.
-Mounts use SFTP and require FUSE on Linux, [WinFsp](https://winfsp.dev/) on
-Windows, or the [macFUSE](https://macfuse.github.io/) kernel extension on
-experimental macOS builds. The command prints the mountpoint and how to stop
-it. Close open files before unmounting.
+Mounts require FUSE on Linux, [WinFsp](https://winfsp.dev/) on Windows, or
+the [macFUSE](https://macfuse.github.io/) kernel extension on experimental
+macOS builds. Use `sshore kill ID` to unmount.
 
 ## TUI
 
@@ -187,9 +176,9 @@ sshore lf work:/srv/project :  # Browse remotely with copy and mount enabled
 | Key | Action |
 | --- | --- |
 | `Enter` | Open a local file or directory in the system default app |
-| `e` | Edit a local file with `$EDITOR` |
-| `i` | View a local file with `$PAGER` |
+| `e` / `i` | Edit or view local text with `$EDITOR` / `$PAGER` |
 | `l` | Enter a directory or open a local file |
+| `y` | Copy the selected path |
 | `s` | Open a shell |
 | `c` / `m` | Copy / mount when both endpoints are set |
 | `q` | Quit |
@@ -205,14 +194,15 @@ sshore lp work: :  # Select a remote service and listen locally
 sshore lp : work:  # Select a local service and listen remotely
 ```
 
-Press `/` to filter and `q` to quit. With two endpoints, press `Enter` to choose
+Use `/` to filter, `r` to refresh, `s` to sort by port or process, `y` to copy
+the selected address, and `q` to quit. With two endpoints, `Enter` chooses
 the listening port. Some process names may require administrator privileges.
 
 ## Advanced usage
 
 - Use `-J` to connect through a jump host, as in
-  `sshore new raspberrypi -J jump -- nvim`.
-- OSC 52 clipboard passthrough.
+  `sshore new pi -J jump -- nvim`.
+- The terminal supports OSC 52 passthrough. Both browsers use OSC 52 for `y`.
 - `Ctrl+B` shortcuts:
   - `Ctrl+B c` opens a nested shell.
   - `Ctrl+B d` pins and detaches the current shell.
@@ -224,8 +214,6 @@ the listening port. Some process names may require administrator privileges.
 - Run `sshore --tldr` for examples or `sshore COMMAND --help` for options.
 - Each host's account daemon records shell disconnects, retention and other
   background diagnostics in `~/.sshore/daemon/local.log`.
-- Status and diagnostic messages show local time as `MM-DD HH:mm` on screen,
-  plus the task ID when available and severity. Log files include the year and seconds.
 
 ## Project documents
 

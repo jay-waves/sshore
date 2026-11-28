@@ -624,6 +624,8 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			wait("\x1b[7mz file", true)
 			waitForRedraw("\r")
 			waitForRedraw("l")
+			send("y")
+			wait(ansi.SetSystemClipboard(file), true)
 			send("e")
 			wait("\x1b[?1049h", true)
 			wait("\x1b[7mz file", true)
@@ -648,6 +650,10 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			}
 			return out
 		}
+		browse("jy", func(send func(string), wait terminalWait) {
+			wait(ansi.SetSystemClipboard(root+"/marker"), true)
+			send("q")
+		})
 		browse("s", func(send func(string), wait terminalWait) {
 			wait("Connected " + host + ":")
 			send("cat marker; echo\n")
@@ -690,6 +696,29 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			t.Fatalf("uploaded %q", got)
 		}
 	})
+	scenario("port browser keeps filter and sort on refresh and copies the selected address", func(t *testing.T, ctx context.Context) {
+		cmd := exec.CommandContext(ctx, binary, "lp")
+		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+			wait("r Refresh", true)
+			send("s")
+			wait("By process", true)
+			listener, err := net.Listen("tcp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			address := listener.Addr().String()
+			port := strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)
+			send("/" + port + "\r")
+			wait("No matches", true)
+			send("r")
+			wait("By process", true)
+			wait("Ports refreshed", true)
+			send("y")
+			wait(ansi.SetSystemClipboard(address), true)
+			send("q")
+		})
+	})
 	scenario("port browser forwards a discovered SSH service to an edited port", func(t *testing.T, ctx context.Context) {
 		probe, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
@@ -700,6 +729,8 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		probe.Close()
 		out, err := runTerminal(t, ctx, command(ctx, "lp", host+":", ":"), func(send func(string), wait terminalWait) {
 			wait("2222", true)
+			send("r")
+			wait("Ports refreshed", true)
 			// Select sshd by port even if other fixture services are listening.
 			// Pasted shortcuts stay inert, including Enter inside the filter.
 			send("\x1b[200~q:\r\x1b[201~/\x1b[200~2222\r\x1b[201~")

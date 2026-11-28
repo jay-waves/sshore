@@ -57,6 +57,9 @@ With a single SSH host or no arguments, the file browser can open a shell and th
 port browser lists listeners. Some process names may require administrator privileges.
 In the standalone local file browser, Enter uses the system default app. Use
 `l` to enter a directory or open a file, `e` for the editor and `i` for the pager.
+Press `y` to copy the selected file path or port address through the terminal's
+OSC 52 clipboard support. In the port browser, `r` refreshes the list and
+`s` switches between port and process sorting.
 See the command help for endpoint syntax.
 
 ## Approved resources

@@ -397,7 +397,18 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 				}
 				goToTop := key == 'g' && awaitingG
 				awaitingG = key == 'g' && !goToTop
+				display.notice = ""
 				switch key {
+				case 'y':
+					if options.BrowseAction == nil || index >= len(panes[1].entries) {
+						continue
+					}
+					name := options.Join(current, panes[1].entries[index].Name)
+					if err := copyToClipboard(out, name); err != nil {
+						return nil, err
+					}
+					validationErr = nil
+					display.notice = "Copied path"
 				case 's', 'c', 'm':
 					if options.BrowseAction == nil || (key != 's' && !options.BrowseTransfers) || index >= len(panes[1].entries) {
 						continue
@@ -598,6 +609,7 @@ type lfScreen struct {
 	listScreen
 	directory    string
 	firstVisible int
+	notice       string
 }
 
 func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]lfPane, parentIndex, selected, width, height int, validationErr error, color, multi bool, marked []string, prompt string) error {
@@ -716,9 +728,9 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 		hint += "  : Type path"
 	}
 	if options.BrowseAction != nil {
-		hint = "s Shell  l Navigate  / Search  q Quit"
+		hint = "s Shell  l Navigate  / Search  y Copy path  q Quit"
 		if options.BrowseTransfers {
-			hint = "s Shell  c Copy  m Mount  l Navigate  / Search  q Quit"
+			hint = "s Shell  c Copy  m Mount  l Navigate  / Search  y Copy path  q Quit"
 		}
 	}
 	if showFileActions {
@@ -732,6 +744,8 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 		cursorColumn = ansi.StringWidth(footer) + 1
 	} else if validationErr != nil {
 		footer = Render(color, Warning, ansi.Truncate(CleanText(validationErr.Error()), width-1, "…"))
+	} else if s.notice != "" {
+		footer = Render(color, Muted, ansi.Truncate(s.notice, width-1, ""))
 	} else {
 		footer = Render(color, Muted, ansi.Truncate(hint, width-1, ""))
 	}

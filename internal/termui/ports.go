@@ -1,51 +1,101 @@
 package termui
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"unicode"
 
 	"github.com/charmbracelet/x/ansi"
 )
 
-// PickPort browses listeners and returns a selection in forwarding mode.
-// A selection of -1 requests manual port entry.
-func (c *LocalConsole) PickPort(host string, labels []string, forward bool) (selected int, err error) {
+type PortRow struct {
+	Label, Address, Port, Process string
+	UDP                           bool
+}
+
+func comparePortProcess(a, b PortRow) int {
+	if (a.Process == "") != (b.Process == "") {
+		if a.Process == "" {
+			return 1
+		}
+		return -1
+	}
+	return cmp.Compare(strings.ToLower(a.Process), strings.ToLower(b.Process))
+}
+
+// PickPort returns the selected listener or a zero row for manual port entry.
+func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Context) ([]PortRow, error)) (selected PortRow, err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	rows, err := load(ctx)
+	if err != nil {
+		return PortRow{}, err
+	}
 	terminal, err := openPickerTerminal(ctx)
 	if err != nil {
-		return -1, err
+		return PortRow{}, err
 	}
-	defer func() { err = errors.Join(err, terminal.close()) }()
+	defer func() {
+		if terminal.close != nil {
+			err = errors.Join(err, terminal.close())
+		}
+	}()
 	var decoder keyDecoder
 	var screen listScreen
 	index := 0
 	size, resized := watchScreenSize(ctx)
-	var filtering bool
+	var filtering, byProcess bool
 	var query []rune
-	visible := make([]int, 0, len(labels))
+	visible := make([]int, 0, len(rows))
 	filter := func() {
 		visible = visible[:0]
 		needle := strings.ToLower(string(query))
-		for i, label := range labels {
-			if strings.Contains(strings.ToLower(label), needle) {
+		for i, row := range rows {
+			if strings.Contains(strings.ToLower(row.Label), needle) {
 				visible = append(visible, i)
 			}
 		}
+		if byProcess {
+			slices.SortStableFunc(visible, func(a, b int) int {
+				return comparePortProcess(rows[a], rows[b])
+			})
+		}
 		index = 0
 	}
+	// Keep the same address and protocol when the rows are reordered or refreshed.
+	selectedRow := func() PortRow {
+		if len(visible) == 0 {
+			return PortRow{}
+		}
+		return rows[visible[index]]
+	}
+	rebuild := func(previous PortRow) {
+		filter()
+		if i := slices.IndexFunc(visible, func(rowIndex int) bool {
+			row := rows[rowIndex]
+			return row.Address == previous.Address && row.UDP == previous.UDP
+		}); i >= 0 {
+			index = i
+		}
+	}
 	filter()
+	var status string
 	color := ColorEnabled(os.Stdout)
 	for {
 		w, h := size.width, size.height
-		lines := []string{Render(color, Heading, "Bound ports") + "  ·  " + Render(color, Accent, CleanText(host)), Render(color, Muted, "PROTO  PORT    ADDRESS          PROCESS")}
+		sortLabel := "By port"
+		if byProcess {
+			sortLabel = "By process"
+		}
+		lines := []string{Render(color, Heading, "Bound ports") + "  ·  " + Render(color, Accent, CleanText(host)) + "  ·  " + sortLabel, Render(color, Muted, "PROTO  PORT    ADDRESS          PROCESS")}
 		page := max(1, h-4)
 		first := max(0, index-page+1)
 		for i := first; i < min(len(visible), first+page); i++ {
-			row := ansi.Truncate(CleanText(labels[visible[i]]), w-1, "…")
+			row := ansi.Truncate(CleanText(rows[visible[i]].Label), w-1, "…")
 			if i == index {
 				row = "\x1b[7m" + row + "\x1b[0m"
 			}
@@ -53,18 +103,20 @@ func (c *LocalConsole) PickPort(host string, labels []string, forward bool) (sel
 		}
 		if len(visible) == 0 {
 			message := "No listeners"
-			if filtering {
+			if len(query) > 0 {
 				message = "No matches"
 			}
 			lines = append(lines, message)
 		}
 		lines = append(lines, Render(color, Muted, "Some process names may require administrator privileges."))
-		hint := "↑/↓ Move  / Filter  q Quit"
+		hint := "↑/↓ Move  / Filter  r Refresh  s Sort  y Copy address  q Quit"
 		if forward {
-			hint = "↑/↓ Move  Enter Forward  / Filter  : Enter port  q Quit"
+			hint = "↑/↓ Move  Enter Forward  / Filter  r Refresh  s Sort  y Copy address  : Enter port  q Quit"
 		}
 		if filtering {
 			hint = "/" + string(query)
+		} else if status != "" {
+			hint = status
 		}
 		lines = append(lines, Render(color, Muted, hint))
 		for len(lines) < min(len(screen.rows), h) {
@@ -74,16 +126,18 @@ func (c *LocalConsole) PickPort(host string, labels []string, forward bool) (sel
 			lines[i] = ansi.Truncate(lines[i], w-1, "…")
 		}
 		if err := screen.paint(terminal.out, w, lines, 0); err != nil {
-			return -1, err
+			return PortRow{}, err
 		}
 		select {
 		case size = <-resized:
 		case <-decoder.escape:
 			decoder.finishEscape()
+			filtering = false
 		case input := <-terminal.input:
 			if input.Err != nil {
-				return -1, input.Err
+				return PortRow{}, input.Err
 			}
+		keys:
 			for event := range decoder.feed(input.Data) {
 				r := event.value
 				if event.pasted {
@@ -95,13 +149,16 @@ func (c *LocalConsole) PickPort(host string, labels []string, forward bool) (sel
 				}
 				if filtering && r != keyUp && r != keyDown {
 					switch r {
+					case 0x1b:
+						filtering = false
+						continue
 					case 3:
 						filtering = false
 						query = nil
 					case '\n':
 						if forward {
 							if len(visible) > 0 {
-								return visible[index], nil
+								return rows[visible[index]], nil
 							}
 						} else {
 							filtering = false
@@ -119,14 +176,51 @@ func (c *LocalConsole) PickPort(host string, labels []string, forward bool) (sel
 					filter()
 					continue
 				}
+				status = ""
 				switch r {
+				case 'r':
+					previous := selectedRow()
+					closeErr := terminal.close()
+					terminal = pickerTerminal{}
+					if err := errors.Join(closeErr, c.close()); err != nil {
+						return PortRow{}, err
+					}
+					next, loadErr := load(ctx)
+					if err := c.open(); err != nil {
+						return PortRow{}, errors.Join(loadErr, err)
+					}
+					var err error
+					terminal, err = openPickerTerminal(ctx)
+					if err != nil {
+						return PortRow{}, errors.Join(loadErr, err)
+					}
+					screen, decoder = listScreen{}, keyDecoder{}
+					if loadErr != nil {
+						status = "Refresh failed. " + CleanText(loadErr.Error())
+						break keys
+					}
+					rows = next
+					rebuild(previous)
+					status = "Ports refreshed"
+					break keys
+				case 's':
+					byProcess = !byProcess
+					rebuild(selectedRow())
+				case 'y':
+					if len(visible) > 0 {
+						address := rows[visible[index]].Address
+						if err := copyToClipboard(terminal.out, address); err != nil {
+							return PortRow{}, err
+						}
+						status = "Copied address " + address
+					}
 				case '/':
 					filtering = true
 				case 'q', 3:
-					return -1, context.Canceled
+					return PortRow{}, context.Canceled
 				case ':':
 					if forward {
-						return -1, nil
+						return PortRow{}, nil
 					}
 				case 'j', keyDown:
 					index = min(max(0, len(visible)-1), index+1)
@@ -134,7 +228,7 @@ func (c *LocalConsole) PickPort(host string, labels []string, forward bool) (sel
 					index = max(0, index-1)
 				case '\n':
 					if forward && len(visible) > 0 {
-						return visible[index], nil
+						return rows[visible[index]], nil
 					}
 				}
 			}

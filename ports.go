@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 
@@ -38,23 +39,26 @@ func runPortBrowser(a cliArguments) (int, error) {
 	var port string
 	var udp bool
 	err = termui.RunLocalConsole(func(console *termui.LocalConsole) error {
-		rows, err := browseListeners(context.Background(), loc.host, a.ssh)
-		if err != nil {
-			return err
-		}
-		labels := make([]string, len(rows))
-		for i, row := range rows {
-			owner := row.Process
-			if row.PID > 0 {
-				owner = fmt.Sprintf("%s (%d)", cmp.Or(owner, "PID"), row.PID)
+		row, err := console.PickPort(loc.host, peer.host != "", func(ctx context.Context) ([]termui.PortRow, error) {
+			listeners, err := browseListeners(ctx, loc.host, a.ssh)
+			if err != nil {
+				return nil, err
 			}
-			labels[i] = fmt.Sprintf("%-5s  %-6d  %-15s  %s", strings.ToUpper(row.Protocol), row.Port, row.Address, owner)
-		}
-		index, err := console.PickPort(loc.host, labels, peer.host != "")
-		if err == nil && index >= 0 {
-			udp = rows[index].Protocol == "udp"
-			port = strconv.FormatUint(uint64(rows[index].Port), 10)
-		}
+			rows := make([]termui.PortRow, 0, len(listeners))
+			for _, listener := range listeners {
+				owner := listener.Process
+				if listener.PID > 0 {
+					owner = fmt.Sprintf("%s (%d)", cmp.Or(owner, "PID"), listener.PID)
+				}
+				port := strconv.FormatUint(uint64(listener.Port), 10)
+				rows = append(rows, termui.PortRow{
+					Label:   fmt.Sprintf("%-5s  %-6s  %-15s  %s", strings.ToUpper(listener.Protocol), port, listener.Address, owner),
+					Address: net.JoinHostPort(listener.Address, port), Port: port, Process: listener.Process, UDP: listener.Protocol == "udp",
+				})
+			}
+			return rows, nil
+		})
+		port, udp = row.Port, row.UDP
 		return err
 	})
 	if errors.Is(err, context.Canceled) {
