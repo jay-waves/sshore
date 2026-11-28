@@ -692,11 +692,7 @@ func (s *lfScreen) draw(out io.Writer, options LFOptions, dir string, panes [3]l
 			text = ansi.Truncate(text, textWidth, "…")
 			padding := strings.Repeat(" ", max(0, textWidth-ansi.StringWidth(text)))
 			if p == 1 && i == selected && i < len(panes[1].entries) {
-				if len(padding) > 0 {
-					text += " "
-					padding = padding[1:]
-				}
-				b.WriteString("\x1b[7m" + text + "\x1b[27m" + padding)
+				b.WriteString("\x1b[7m" + text + padding + "\x1b[27m")
 				continue
 			}
 			if p == 0 && i == parentIndex {

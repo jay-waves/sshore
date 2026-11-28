@@ -119,7 +119,7 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 			}
 			lines = append(lines, Render(color, Muted, " "+message))
 		}
-		hint := "↑/↓ Move"
+		hint := "j/k Move"
 		if forward {
 			hint += "  Enter Forward"
 		}
@@ -135,10 +135,10 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 		} else {
 			hint = shortcutLine(color, hint)
 		}
-		lines = append(lines, hint)
-		for len(lines) < min(len(screen.rows), h) {
+		for len(lines) < h-1 {
 			lines = append(lines, "")
 		}
+		lines = append(lines, hint)
 		for i := range lines {
 			lines[i] = ansi.Truncate(lines[i], w-1, "…")
 		}
