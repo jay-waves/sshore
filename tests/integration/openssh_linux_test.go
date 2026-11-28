@@ -1270,11 +1270,11 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			var err error
 			switch mode {
 			case "lp", "reverse":
-				first, peer := host+":", "here"
+				first, peer := host+":", ":"
 				if mode == "reverse" {
-					first, peer = ":", host
+					first, peer = ":", host+":"
 				}
-				out, err = runTerminal(t, ctx, command(ctx, "lp", first, peer+":"), func(send func(string), wait terminalWait) {
+				out, err = runTerminal(t, ctx, command(ctx, "lp", first, peer), func(send func(string), wait terminalWait) {
 					wait("Enter Forward", true)
 					send("u")
 					wait("UDP ports", true)
@@ -1543,7 +1543,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		requireFile(t, filepath.Join(point, "mount-default-marker"), "mount-default")
 		local(t, ctx, "kill", name)
 
-		cmd := command(ctx, "mount", "--lf", host+":~", ":")
+		cmd := command(ctx, "mount", "--lf", host+":~")
 		transcript, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("Mountpoint", true)
 			wait("Enter Choose current dir", true)

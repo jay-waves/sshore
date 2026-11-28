@@ -77,6 +77,8 @@ func TestCLI(t *testing.T) {
 		{"forward batch validates every source before startup", []string{"fwd", "work:100", "work:70000", ":"}, 2, "port must be an integer"},
 		{"LF copy requires a terminal before dialing", []string{"copy", "--lf", ":", "work:"}, 2, "file selection requires an interactive terminal"},
 		{"LF mount requires a terminal before dialing", []string{"mount", "--lf", "work:", ":"}, 2, "file selection requires an interactive terminal"},
+		{"LF mount browses an omitted mountpoint", []string{"mount", "--lf", "work:~"}, 2, "file selection requires an interactive terminal"},
+		{"noninteractive mount requires a destination", []string{"mount", "work:~"}, 2, "mount requires a destination"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := filepath.Join(t.TempDir(), "state")

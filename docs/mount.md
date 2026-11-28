@@ -2,9 +2,9 @@
 
 ## Path selection and startup
 
-- `HOST:` uses the remote home and `:` allocates a local mountpoint. Use `--lf` to browse
-  omitted paths and Enter to select a directory. Explicit `HOST:~` and `:` use the defaults
-  even with `--lf`.
+- `HOST:` uses the remote home and `:` allocates a local mountpoint. With `--lf`, omit the
+  remote path or the entire mountpoint argument to browse for that directory. Explicit
+  `HOST:~` and `:` use the defaults even with `--lf`.
 - Windows drive-letter mounts use the last component of the resolved remote directory.
   For example, `/srv/projects/work` mounts as `\\sshore\work`. Share names use lowercase.
   Concurrent mounts with the same name use the first free name from `work`, `work-2`,

@@ -581,9 +581,13 @@ func parseFTPOptions(parsed cliArguments) (ftpOptions, error) {
 	if err != nil {
 		return ftpOptions{}, err
 	}
-	targetHost, mountpoint, err := splitFileEndpoint(parsed.operands[1])
-	if err != nil {
-		return ftpOptions{}, err
+	var mountpoint string
+	targetHost := "here"
+	if len(parsed.operands) == 2 {
+		targetHost, mountpoint, err = splitFileEndpoint(parsed.operands[1])
+		if err != nil {
+			return ftpOptions{}, err
+		}
 	}
 	if host == "here" || host == "origin" || targetHost != "here" {
 		return ftpOptions{}, usage("use mount HOST:SOURCE :[MOUNTPOINT]")
@@ -594,7 +598,7 @@ func parseFTPOptions(parsed cliArguments) (ftpOptions, error) {
 	}
 	o := ftpOptions{
 		Host: host, Remote: remote, Mountpoint: mountpoint,
-		PickRemote: browse && remote == "", PickMountpoint: browse && mountpoint == "" && parsed.operands[1] != localEndpointPrefix,
+		PickRemote: browse && remote == "", PickMountpoint: len(parsed.operands) == 1,
 		SSH:      parsed.ssh,
 		ReadOnly: parsed.has("--read-only"), Stats: parsed.has("--stats"), DirectIO: parsed.has("--direct-io"),
 		IOTimeoutNanos: parsed.duration("--io-timeout", defaultMountIOTimeout).Nanoseconds(), StartupTimeoutNanos: parsed.duration("--startup-timeout", 0).Nanoseconds(),
@@ -606,7 +610,11 @@ func parseFTPOptions(parsed cliArguments) (ftpOptions, error) {
 }
 
 func runMount(parsed cliArguments) (int, error) {
-	if os.Getenv("SSHORE_SOCKET") != "" {
+	attached := os.Getenv("SSHORE_SOCKET") != ""
+	if len(parsed.operands) == 1 && (attached || !parsed.has("--lf")) {
+		return 2, usage("mount requires a destination; see sshore mount --help")
+	}
+	if attached {
 		op, err := remoteMountRequest(parsed)
 		if err != nil {
 			return 2, err

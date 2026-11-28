@@ -753,8 +753,9 @@ Use a different SSH port
 		},
 		"mount": {
 			run: runMount, group: groupSSH, summary: "Mount a remote directory", aliases: []string{"mnt"},
-			ssh: true, min: 2, max: 2, flags: strings.Fields("--read-only --io-timeout --startup-timeout --stats --direct-io --lf"),
+			ssh: true, min: 1, max: 2, flags: strings.Fields("--read-only --io-timeout --startup-timeout --stats --direct-io --lf"),
 			help: `Usage: sshore mount HOST:SOURCE MOUNTPOINT [options] [--ssh SSH_OPTIONS...]
+       sshore mount --lf HOST:SOURCE [MOUNTPOINT] [options]
        sshore mount :[DIRECTORY] ::[MOUNTPOINT] [--read-only]
 
 Mount a remote directory over SFTP. The client deploys and starts a remote
@@ -763,9 +764,9 @@ On a Windows host, use a drive-letter path such as HOST:E:/project.
 Mounts run in the background. Use sshore kill TASK to unmount.
 HOST: and HOST:~ mount the remote home.
 Use [HOST]:SOURCE for an IPv6 address.
-Use : for an automatic mountpoint or add --lf to browse omitted paths.
-Pass : to allocate a mountpoint even with --lf. Linux and macOS
-use ~/mnt/NAME. Windows selects a free drive letter.
+With --lf, omit MOUNTPOINT to browse for a local mountpoint.
+Pass : to allocate a mountpoint automatically. Linux and macOS use
+~/mnt/NAME. Windows selects a free drive letter.
 Requires FUSE on Linux, WinFsp on Windows, or macFUSE with its kernel extension
 on Apple Silicon Macs (experimental).
 A custom mountpoint must be an existing empty directory on Linux or macOS, or a
