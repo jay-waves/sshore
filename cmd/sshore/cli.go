@@ -114,7 +114,7 @@ func runShell(parsed cliArguments) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	if parsed.command == "go" {
+	if parsed.command == "start" {
 		host := cleanText(o.host)
 		if o.local {
 			host = taskManagerLabel()
@@ -125,7 +125,7 @@ func runShell(parsed cliArguments) (int, error) {
 		}
 		confirmed, err := launch.Review()
 		if errors.Is(err, termui.ErrTerminalRequired) {
-			return 1, usage("go requires an interactive terminal")
+			return 1, usage("start requires an interactive terminal")
 		}
 		if err != nil {
 			return 1, err
@@ -204,7 +204,7 @@ func runSSHProcess(connection sshio.Options) (int, error) {
 func shellOptions(parsed cliArguments, target selectedTask) (options, error) {
 	command := parsed.command
 	o := options{command: command}
-	creating := command == "shell" || command == "go"
+	creating := command == "shell" || command == "start"
 	if creating {
 		o.command = "sh" // Shell requests use the existing protocol operation.
 	}

@@ -1617,7 +1617,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		const name = "program-inventory"
 		const argument = "private fixture argument"
 		cleanRemote(t, host+":"+name)
-		cmd := command(ctx, "go", host, "--name", name, "--", "/bin/sh", "-c",
+		cmd := command(ctx, "start", host, "--name", name, "--", "/bin/sh", "-c",
 			"read -r start; printf 'ARG=%s\\n' \"$1\"; read -r reply; exit 23", "fixture", argument)
 		out, err := runTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 			wait("[Esc] Cancel", true)

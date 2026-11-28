@@ -61,15 +61,15 @@ sshore sh pi -- uname -a
 sshore sh pi -- 'ls -l "a b.txt"'
 ```
 
-### go — Start a shell or program in a terminal
+### start — Start a shell or program in a terminal
 
-`sshore go HOST -- PROGRAM [ARG...]` preserves each argument and opens a
-launch review before starting the program in a PTY. `embark` is an alias for
-`go`. Use `--pin` to keep the task running after disconnect.
+`sshore start HOST -- PROGRAM [ARG...]` preserves each argument and opens a
+launch review before starting the program in a PTY. `go` is an alias for
+`start`. Use `--pin` to keep the task running after disconnect.
 
 ```sh
-sshore go pi -- vim 'a b.txt'  # Open one file whose name contains a space.
-sshore go pi --pin            # Open a shell that survives disconnect.
+sshore start pi -- vim 'a b.txt'  # Open one file whose name contains a space.
+sshore start pi --pin            # Open a shell that survives disconnect.
 ```
 
 ## mux — Start, detach and resume
@@ -203,7 +203,7 @@ the listening port. Some process names may require administrator privileges.
 ## Advanced usage
 
 - Use `-J` to connect through a jump host, as in
-  `sshore go pi -J jump -- nvim`.
+  `sshore start pi -J jump -- nvim`.
 - Use `-` to pipe a single file over SSH. Upload to a new remote filename with
   `gzip -c report.txt | sshore cp - pi:/tmp/report.txt.gz`, or download with
   `sshore cp pi:/tmp/report.txt.gz - | gzip -dc`.

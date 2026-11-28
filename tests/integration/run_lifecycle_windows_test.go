@@ -43,7 +43,7 @@ func TestWindowsLaunchReview(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, "go", "--", "vim", "a b.txt")
+	cmd := exec.CommandContext(ctx, binary, "start", "--", "vim", "a b.txt")
 	out, err := runWindowsTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
 		wait(hostname)
 		wait("╰── vim")
@@ -95,8 +95,8 @@ func TestWindowsProgramArguments(t *testing.T) {
 	t.Setenv("SSHORE_LOCAL_SESSION", "")
 	t.Setenv("SSHORE_SOCKET", "")
 	ctx, command := windowsClient(t)
-	t.Run("go without delimiter opens a shell", func(t *testing.T) {
-		out, err := runWindowsTerminal(t, ctx, command("go", "--name", "default-shell"), func(send func(string), wait terminalWait) {
+	t.Run("start without delimiter opens a shell", func(t *testing.T) {
+		out, err := runWindowsTerminal(t, ctx, command("start", "--name", "default-shell"), func(send func(string), wait terminalWait) {
 			confirmLaunch(send, wait)
 			wait("Connected .:default-shell")
 			send("echo DEFAULT_SHELL_READY\r")
@@ -120,7 +120,7 @@ func TestWindowsProgramArguments(t *testing.T) {
 		{"less spaced file", "less.exe", []string{"xxx yyy"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := append([]string{"go", "--", filepath.Join(dir, tc.program)}, tc.args...)
+			args := append([]string{"start", "--", filepath.Join(dir, tc.program)}, tc.args...)
 			want, err := json.Marshal(tc.args)
 			if err != nil {
 				t.Fatal(err)
@@ -173,10 +173,10 @@ func TestWindowsRunLifecycle(t *testing.T) {
 	t.Setenv("SSHORE_SOCKET", "")
 	ctx, command := windowsClient(t)
 	start := func() *exec.Cmd {
-		return command("go", "--name", "lifecycle", "--pin", "--", program, "-test.run=^TestWindowsRunFixture$", "--", "fixture-args", "", "space value", `quote"value`, `back\slash`, "--ssh", "--")
+		return command("start", "--name", "lifecycle", "--pin", "--", program, "-test.run=^TestWindowsRunFixture$", "--", "fixture-args", "", "space value", `quote"value`, `back\slash`, "--ssh", "--")
 	}
 	missing := filepath.Join(t.TempDir(), "missing.exe")
-	out, err := runWindowsTerminal(t, ctx, command("go", "--name", "lifecycle", "--", missing), confirmLaunch)
+	out, err := runWindowsTerminal(t, ctx, command("start", "--name", "lifecycle", "--", missing), confirmLaunch)
 	if err == nil {
 		t.Fatalf("missing executable succeeded:\n%s", out)
 	}

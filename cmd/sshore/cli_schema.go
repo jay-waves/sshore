@@ -624,12 +624,12 @@ a remote PTY or sshore installation. Standard streams and exit status pass throu
 ` + startupLocationHelp + shellStartupOptions + connectionOptions + shellConnectionHelp,
 			examples: "Open a remote shell\n  sshore sh work --name build\nOpen a local shell\n  sshore sh --name build\n",
 		},
-		"go": {
-			run: runShell, selector: cliStartupSelector, group: groupShell, summary: "Start a shell or program in a managed terminal", aliases: []string{"embark"},
+		"start": {
+			run: runShell, selector: cliStartupSelector, group: groupShell, summary: "Start a shell or program in a managed terminal", aliases: []string{"go"},
 			ssh: true, program: true, max: 1, flags: strings.Fields(terminalStartupFlags),
-			help: `Usage: sshore go [HOST[:[PATH]]] [--name NAME] [options] [--ssh SSH_OPTIONS...] [-- PROGRAM [ARG...]]
+			help: `Usage: sshore start [HOST[:[PATH]]] [--name NAME] [options] [--ssh SSH_OPTIONS...] [-- PROGRAM [ARG...]]
 
-Alias: embark
+Alias: go
 
 Omit -- to open an interactive shell. The task ends with its starting connection
 or parent shell unless started with --pin or explicitly detached.
@@ -641,7 +641,7 @@ Inside a managed session, the command returns the result of handing off the
 terminal. Control returns to the parent terminal when the child ends or detaches.
 
 ` + startupLocationHelp + shellStartupOptions + connectionOptions + shellConnectionHelp,
-			examples: "Open a shell\n  sshore go work\nKeep an editor running after disconnect\n  sshore go work:/srv/project --name editor --pin -- nvim .\n",
+			examples: "Open a shell\n  sshore start work\nKeep an editor running after disconnect\n  sshore start work:/srv/project --name editor --pin -- nvim .\n",
 		},
 		"attach": {
 			run: runTargetCommand, selector: cliAttachSelector, group: groupShell, summary: "Resume a detached session", aliases: []string{"a"},
