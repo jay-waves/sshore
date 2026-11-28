@@ -31,7 +31,7 @@
 
 ## Documentation
 
-- Keep only `README.md` and `AGENTS.md` at the root among documentation files.
+- Keep only `README.md`, `CHANGELOG.md`, and `AGENTS.md` at the root among documentation files.
   Keep the license at `LICENSE.txt` and organize other documentation under [docs/](docs/).
 - Cap each project document in `docs/` at 200 lines. Only `SECURITY.md` and `GLOSSARY.md` may
   exceed that cap. Aim for 100 columns per line, except in `SECURITY.md`. Keep third-party

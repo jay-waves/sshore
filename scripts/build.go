@@ -43,48 +43,39 @@ func run(args []string) error {
 		tag = strings.TrimSpace(string(out))
 	case 1:
 		tag = args[0]
-		if tag == "publish" {
-			return publish(buildPackages)
-		}
 	default:
-		return fmt.Errorf("usage: go run ./scripts [version|publish]")
+		return fmt.Errorf("usage: go run ./scripts [version]")
 	}
 	version := strings.TrimPrefix(tag, "v")
 	if !release.Valid(version) {
 		return fmt.Errorf("invalid release version %q", tag)
 	}
-	_, err := buildPackages(version)
-	return err
+	return buildPackages(version)
 }
 
-func buildPackages(version string) ([]string, error) {
+func buildPackages(version string) error {
 	for _, dir := range []string{"dist", "packages"} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	var sums strings.Builder
-	var assets []string
 	err := withPatchedModules(func(workspace string) error {
 		for _, target := range []string{"linux", "windows"} {
 			archive, checksum, err := build(version, target, workspace)
 			if err != nil {
 				return err
 			}
-			assets = append(assets, archive)
 			sums.WriteString(checksum)
 			fmt.Println(archive)
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	manifest := filepath.Join("packages", "SHA256SUMS")
-	if err := os.WriteFile(manifest, []byte(sums.String()), 0644); err != nil {
-		return nil, err
-	}
-	return append(assets, manifest), nil
+	return os.WriteFile(manifest, []byte(sums.String()), 0644)
 }
 
 func build(version, target, workspace string) (string, string, error) {
@@ -93,7 +84,7 @@ func build(version, target, workspace string) (string, string, error) {
 		name, ext = "sshore.exe", ".zip"
 	}
 	binary := filepath.Join("dist", name)
-	cmd := workspaceGo(workspace, "build", "-trimpath", "-ldflags", "-s -w -X main.version="+version, "-o", binary, ".")
+	cmd := workspaceGo(workspace, "build", "-trimpath", "-ldflags", "-s -w -X main.version="+version, "-o", binary, "./cmd/sshore")
 	cmd.Env = append(cmd.Env, "CGO_ENABLED=0", "GOARCH=amd64", "GOOS="+target)
 	if err := cmd.Run(); err != nil {
 		return "", "", err

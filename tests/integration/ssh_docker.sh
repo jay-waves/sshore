@@ -25,8 +25,8 @@ printf '%s\n' "${1:-^Test(CLI|OpenSSH|LinuxInstaller|ShellCgroup)$}" > "$payload
 
 go build -o "$fixture/build" ./scripts
 export GOOS=linux GOARCH=amd64 CGO_ENABLED=0
-"$fixture/build" go build -ldflags '-X main.version=0.0.0' -o "$payload/sshore" .
-"$fixture/build" go build -ldflags '-X main.version=0.0.1' -o "$payload/sshore-other" .
+"$fixture/build" go build -ldflags '-X main.version=0.0.0' -o "$payload/sshore" ./cmd/sshore
+"$fixture/build" go build -ldflags '-X main.version=0.0.1' -o "$payload/sshore-other" ./cmd/sshore
 go test -tags=integration -c -o "$payload/integration.test" ./tests/integration
 
 "$container" build --platform linux/amd64 --target "$target" --iidfile "$fixture/image-id" \

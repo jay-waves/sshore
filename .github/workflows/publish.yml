@@ -16,8 +16,17 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
-      - name: Build and publish release
+      - name: Build tagged packages
+        run: |
+          test "$GITHUB_REF_NAME" != v0.0.0
+          go run ./scripts "$GITHUB_REF_NAME"
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: go run ./scripts publish
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --latest \
+            --title "sshore $GITHUB_REF_NAME" \
+            --notes "See the [changelog](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/CHANGELOG.md) for changes and migration notes." \
+            "packages/sshore_${version}_linux_amd64.tar.gz" \
+            "packages/sshore_${version}_windows_amd64.zip" packages/SHA256SUMS

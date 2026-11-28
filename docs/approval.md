@@ -71,9 +71,9 @@ Render remote names and errors as text before adding terminal styling.
 
 ## Implementation and checks
 
-- [Local review](../review.go), [single-use requests](../review_store.go) and
-  [route authorization](../resource_route_host.go) implement consent and scope.
-- [Console routing](../client_console.go), [directory requests](../console_files.go)
-  and [terminal ownership](../client.go) keep commands and screen rendering local.
+- [Local review](../cmd/sshore/review.go), [single-use requests](../cmd/sshore/review_store.go) and
+  [route authorization](../cmd/sshore/resource_route_host.go) implement consent and scope.
+- [Console routing](../cmd/sshore/client_console.go), [directory requests](../cmd/sshore/console_files.go)
+  and [terminal ownership](../cmd/sshore/client.go) keep commands and screen rendering local.
 - [OpenSSH integration scenarios](../tests/integration/openssh_linux_test.go) cover
   declined transfers, approved resources outliving their shell, and `lf` launching a shell.

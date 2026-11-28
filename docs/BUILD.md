@@ -2,7 +2,7 @@
 
 Use Go and Git from the shared PATH and check the Go version against
 [go.mod](../go.mod). From the repository root, run
-`go run ./scripts go build -o dist/sshore .` on Linux or target
+`go run ./scripts go build -o dist/sshore ./cmd/sshore` on Linux or target
 `dist/sshore.exe` on Windows. The script applies the [SFTP](../scripts/patches/pkg-sftp-v2.patch)
 and [WinFsp](../scripts/patches/go-winfsp.patch) patches to temporary copies of
 the pinned modules and builds in a temporary Go workspace. Use the same entry

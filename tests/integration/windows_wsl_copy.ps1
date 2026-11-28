@@ -35,7 +35,7 @@ try {
     $env:GOOS = 'linux'
     $env:GOARCH = 'amd64'
     $env:CGO_ENABLED = '0'
-    & $builder go build -ldflags '-X main.version=0.0.0 -X main.deploymentReleaseBase=http://127.0.0.1:22221' -o $client .
+    & $builder go build -ldflags '-X main.version=0.0.0 -X main.deploymentReleaseBase=http://127.0.0.1:22221' -o $client ./cmd/sshore
     go build -o $assetServer (Join-Path $PSScriptRoot 'testdata/release_server.go')
 
 

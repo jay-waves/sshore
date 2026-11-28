@@ -6,7 +6,7 @@ command-line options before user and system files, retains earlier values on
 the final pass, and preserves file lists as separate entries.
 `internal/ssh` selects credentials and applies host-key and algorithm policy to
 the Go SSH library. The library handles the wire protocol, key exchange, signing
-and channels. The root package owns command policy, authorization and task
+and channels. The command package owns command policy, authorization and task
 lifecycles. For exact behavior, start at the command entry point and follow it
 to the platform implementation and its tests.
 
@@ -14,16 +14,16 @@ Each client command selects its SSH service. The remote entry point checks the
 release and passes operation-specific arguments to the service handler.
 
 - **How is a command parsed and dispatched?** [Command definitions, help and
-  parser](../cli_schema.go), [dispatch](../cli.go),
+  parser](../cmd/sshore/cli_schema.go), [dispatch](../cmd/sshore/cli.go),
   [launch confirmation](../internal/termui/launch.go)
-- **How does a client connect and authenticate?** [Client connections](../client_connection.go),
+- **How does a client connect and authenticate?** [Client connections](../cmd/sshore/client_connection.go),
   [configuration evaluation](../internal/sshconfig/), [SSH transport and host
   verification](../internal/ssh/)
-- **How are installation and approval enforced?** [Installation](../install.go), [approval
-  handling](../review.go), [request validation](../review_store.go)
-- **How do copy, mount and forwarding reach their target?** [Resource commands](../cli.go), [shell
-  routes](../resource_route.go), [filesystem operations](../internal/files/),
-  [forwarding](../forward.go)
+- **How are installation and approval enforced?** [Installation](../cmd/sshore/install.go), [approval
+  handling](../cmd/sshore/review.go), [request validation](../cmd/sshore/review_store.go)
+- **How do copy, mount and forwarding reach their target?** [Resource commands](../cmd/sshore/cli.go), [shell
+  routes](../cmd/sshore/resource_route.go), [filesystem operations](../internal/files/),
+  [forwarding](../cmd/sshore/forward.go)
 - **Where is behavior tested?** [External integration tests](../tests/integration/) run the built
   CLI against OpenSSH, and installer checks run the platform scripts
 
@@ -48,7 +48,7 @@ The shell and terminal preserve interactive state across detach. Redraw is best
 effort and must preserve user input. See the [support matrix](../README.md#os-and-shell-support)
 and [native PTY adapters](../internal/pty/).
 
-Local and hosted terminals share [process startup](../tmux_startup.go) and
+Local and hosted terminals share [process startup](../cmd/sshore/tmux_startup.go) and
 [launch argument and directory rules](../internal/shell/).
 `internal/shell` also resolves the default shell and parses command arguments.
 PowerShell startup embeds the [directory reporting script](../internal/shell/pwsh_directory.ps1).
@@ -83,7 +83,7 @@ jobs that created separate sessions. Without delegation the daemon can still
 manage mounts and forwards. A shell launch reports any delegation error.
 
 Build the experimental Apple Silicon client on Apple Silicon with
-`CGO_ENABLED=0 go run ./scripts go build -o sshore .`. It targets
+`CGO_ENABLED=0 go run ./scripts go build -o sshore ./cmd/sshore`. It targets
 SSH connections to Linux hosts and supports local interactive shells. Install
 the client manually. Local SFTP mounts use the traditional macFUSE kernel
 extension through go-fuse. Install macFUSE and enable its kernel extension before
@@ -116,7 +116,7 @@ makes its own attachment decisions. Explicit detach records a pin before
 releasing input and keeps the existing parent edge. When the owner ends, a
 pinned child survives as a root with its own descendants. An internal handoff
 preserves the original scope and pin. See [tree admission](../internal/tmux/tree.go),
-[retention](../tmux_retention.go) and [attachment protocol](../tmux_attachment.go).
+[retention](../cmd/sshore/tmux_retention.go) and [attachment protocol](../cmd/sshore/tmux_attachment.go).
 
 The control stream starts with an `attach` request carrying the client release and single-use
 terminal token. The daemon checks the release before claiming the token and reports its release
@@ -169,8 +169,8 @@ mount clients use `pkg/sftp/v2` alongside the embedded agents.
 The [files package](../internal/files/mount_paths.go) prepares local mountpoints.
 The pinned upstream revision includes the client disconnect fix and supports the
 project's Go version. Directory change notifications use their own stream.
-Trace changes through the [task registry](../daemon_tasks.go), [mount coordinator](../mount.go)
-and [route authorization](../resource_route_host.go). Consult [SECURITY.md](SECURITY.md)
+Trace changes through the [task registry](../cmd/sshore/daemon_tasks.go), [mount coordinator](../cmd/sshore/mount.go)
+and [route authorization](../cmd/sshore/resource_route_host.go). Consult [SECURITY.md](SECURITY.md)
 before changing update, reset or approval behavior.
 
 ### Inventory and diagnostics
@@ -193,8 +193,8 @@ filesystem location when available. Shells can report it through `OSC 9;9`, incl
 while detached. Inventory uses the reported or startup directory from the registry.
 
 Task commands resolve names and UID prefixes through the
-[task registry selector](../task_selection.go). A bare host in `attach` selects
+[task registry selector](../cmd/sshore/task_selection.go). A bare host in `attach` selects
 a remote account when there is no matching task name. Attachment binds the full
 UID before handoff. Direct remote tasks store their SSH routes. Host defaults use connection history.
-Peer records under `origin` are read-only. See rendering for [list](../list.go) and [pstree](../pstree.go),
-[shell connection history](../shell_history.go), and [integration tests](../tests/integration/).
+Peer records under `origin` are read-only. See rendering for [list](../cmd/sshore/list.go) and [pstree](../cmd/sshore/pstree.go),
+[shell connection history](../cmd/sshore/shell_history.go), and [integration tests](../tests/integration/).
