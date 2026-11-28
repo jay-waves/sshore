@@ -284,9 +284,9 @@ local tools into unrelated local files. Windows rejects unrepresentable names
 instead of silently aliasing them. Remote filenames, attributes and data remain
 untrusted.
 
-Mounts require a matching release. The agent serves SFTP in Go under the
-authenticated account. Remote startup requires command execution and a matching
-`sshore` on the SSH session's PATH. Windows hosts accept direct mounts.
+The mount agent serves SFTP in Go under the authenticated account. The client
+deploys the matching release through the SSH server's SFTP subsystem and starts
+the agent by its deployed path over SSH exec. Windows hosts accept direct mounts.
 Approved mounts use the shell account daemon's SFTP agent.
 Accounts restricted to `internal-sftp` cannot start the agent.
 OpenSSH subsystem flags apply only to the SSH subsystem. The mount connection

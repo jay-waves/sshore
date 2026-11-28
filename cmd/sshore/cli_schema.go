@@ -749,8 +749,8 @@ Use a different SSH port
 			help: `Usage: sshore mount HOST:SOURCE MOUNTPOINT [options] [--ssh SSH_OPTIONS...]
        sshore mount here:[DIRECTORY] origin:[MOUNTPOINT] [--read-only]
 
-Mount a remote directory through the remote sshore helper using SFTP.
-The remote sshore release must match exactly and be on the SSH session's PATH.
+Mount a remote directory over SFTP. The client deploys and starts a remote
+helper with the same release version.
 On a Windows host, use a drive-letter path such as HOST:E:/project.
 Mounts run in the background. Use sshore kill TASK to unmount.
 HOST: and HOST:~ mount the remote home.
