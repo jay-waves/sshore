@@ -468,6 +468,9 @@ func pickLF(ctx context.Context, options LFOptions, multi bool, validateFiles fu
 					}
 					command, err := lfFileCommand(ctx, variable, options.Join(current, panes[1].entries[index].Name), options.LocalFiles && startTerminal != nil)
 					validationErr = err
+					if errors.Is(err, errLFNonText) && options.BrowseAction != nil {
+						validationErr = fmt.Errorf("%w; use Enter to open with the system", err)
+					}
 					if err != nil {
 						continue
 					}
@@ -549,6 +552,13 @@ func lfFileCommand(ctx context.Context, variable, name string, local bool) (*exe
 	if !local {
 		return nil, fmt.Errorf("%s requires a local picker with terminal access", variable)
 	}
+	name, err := filepath.Abs(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkLFText(name); err != nil {
+		return nil, err
+	}
 	value := strings.TrimSpace(os.Getenv(variable))
 	if value == "" {
 		return nil, fmt.Errorf("%s is not set", variable)
@@ -556,10 +566,6 @@ func lfFileCommand(ctx context.Context, variable, name string, local bool) (*exe
 	argv, err := shell.ParseCommand(value)
 	if err != nil || len(argv) == 0 || argv[0] == "" {
 		return nil, fmt.Errorf("invalid %s command", variable)
-	}
-	name, err = filepath.Abs(name)
-	if err != nil {
-		return nil, err
 	}
 	cmd := exec.CommandContext(ctx, argv[0], append(argv[1:], name)...)
 	if cmd.Err != nil {

@@ -44,7 +44,8 @@ all marks and leaves the picker open. Press `q` to quit. Enter submits the marke
 files. With no marks, Enter chooses the highlighted file or recursively copies
 the highlighted directory.
 In a local picker that owns the terminal, `e` opens the highlighted file with
-`EDITOR` and `i` opens it with `PAGER`. Missing settings are shown in the picker.
+`EDITOR` and `i` opens it with `PAGER`. Both sample the start of the file and
+skip likely binary files. Missing settings are shown in the picker.
 The client starts by reading the remote home into its directory cache. A mount
 worker returns the current and parent listings together over the startup
 stream and reuses that cache when it mounts the selected directory. The shell

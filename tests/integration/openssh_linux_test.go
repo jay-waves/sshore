@@ -591,6 +591,10 @@ Match command "printf forwarding-check"
 		if err := os.WriteFile(file, nil, 0600); err != nil {
 			t.Fatal(err)
 		}
+		binaryPath := filepath.Join(root, "zz binary")
+		if err := os.WriteFile(binaryPath, []byte("prefix\x00suffix"), 0600); err != nil {
+			t.Fatal(err)
+		}
 		log := filepath.Join(helpers, "actions")
 		for _, name := range []string{"xdg-open", "editor", "pager"} {
 			const record = `#!/bin/sh
@@ -613,7 +617,12 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 				wait("s Shell", true)
 			}
 			waitForRedraw("j\r")
-			waitForRedraw("G\r")
+			send("Gei")
+			wait("use Enter to open with the system", true)
+			waitForRedraw("\r")
+			send("k")
+			wait("\x1b[7mz file", true)
+			waitForRedraw("\r")
 			waitForRedraw("l")
 			send("e")
 			wait("\x1b[?1049h", true)
@@ -621,7 +630,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			waitForRedraw("i")
 			send("q")
 		})
-		requireFile(t, log, "xdg-open "+folder+"\nxdg-open "+file+"\nxdg-open "+file+"\neditor "+file+"\npager "+file+"\n")
+		requireFile(t, log, "xdg-open "+folder+"\nxdg-open "+binaryPath+"\nxdg-open "+file+"\nxdg-open "+file+"\neditor "+file+"\npager "+file+"\n")
 	})
 	scenario("file browser operates on the selected remote path", func(t *testing.T, ctx context.Context) {
 		root := run(t, ctx, "sh", host, "--", `mkdir -p browser-demo && printf payload > browser-demo/marker && cd browser-demo && pwd`)
