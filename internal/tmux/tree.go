@@ -13,8 +13,10 @@ var ErrEnded = errors.New("session is exiting")
 
 // treeNode participates in a forest. Its value and label are set before registration.
 type treeNode[T any] struct {
+	id     string
 	Value  T
 	Label  string
+	done   <-chan struct{}
 	parent atomic.Pointer[treeNode[T]]
 	ended  atomic.Bool
 }

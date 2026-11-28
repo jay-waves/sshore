@@ -203,6 +203,9 @@ the listening port. Some process names may require administrator privileges.
 
 - Use `-J` to connect through a jump host, as in
   `sshore new pi -J jump -- nvim`.
+- Use `-` to pipe a single file over SSH. Upload to a new remote filename with
+  `gzip -c report.txt | sshore cp - pi:/tmp/report.txt.gz`, or download with
+  `sshore cp pi:/tmp/report.txt.gz - | gzip -dc`.
 - The terminal supports OSC 52 passthrough. Both browsers use OSC 52 for `y`.
 - `Ctrl+B` shortcuts:
   - `Ctrl+B c` opens a nested shell.
@@ -220,7 +223,7 @@ the listening port. Some process names may require administrator privileges.
 
 [Architecture](docs/ARCHITECTURE.md) · [Security](docs/SECURITY.md) ·
 [Approval and console](docs/approval.md) · [Mount implementation](docs/mount.md) ·
-[Glossary](docs/GLOSSARY.md) · [Contributor rules](AGENTS.md)
+[Glossary](docs/glossary.md) · [Contributor rules](AGENTS.md)
 
 ## Acknowledgements
 

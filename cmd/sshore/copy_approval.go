@@ -8,9 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sync/atomic"
 	"syscall"
-	"time"
 
 	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/termui"
@@ -91,7 +89,7 @@ func selectApprovedFiles(input reviewPromptReader, r requestRecord) ([]fileCopy,
 			if op.Recursive {
 				prompt = "Save directory as: "
 			} else {
-				termui.Log(os.Stdout, "", termui.Info, "Download %s · %s\n", cleanText(op.Path), displayBytes(op.Size))
+				termui.Log(os.Stdout, "", termui.Info, "Download %s · %s\n", cleanText(op.Path), termui.FormatBytes(op.Size))
 			}
 			name, selectErr := readApprovalPath(input, prompt, cmp.Or(hint, filepath.Join(r.Directory, op.Name)), func(name string) (string, error) {
 				var err error
@@ -206,69 +204,11 @@ func executeApprovedFile(ctx context.Context, open func(operation, string, int64
 	}
 	defer stream.Close()
 	err = withCopySFTP(ctx, stream, func(client *sftp.Client) error {
-		completed := new(atomic.Int64)
-		defer reportTransferProgress(remote.Kind, name, file.size(), completed)()
-		return file.transfer(ctx, client, completed)
+		return file.transfer(ctx, client, name)
 	})
 	if err != nil {
 		return err
 	}
 	termui.Log(os.Stderr, "", termui.Success, "[sshore] %s\n", cleanText(result))
 	return nil
-}
-
-func reportTransferProgress(kind, name string, size int64, completed *atomic.Int64) func() {
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		progress := transferProgress{at: time.Now()}
-		ticker := time.NewTicker(time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case now := <-ticker.C:
-				termui.Log(os.Stderr, "", termui.Info, "[sshore] %s %s: %s\n", kind, cleanText(name), progress.sample(now, completed.Load(), size))
-			}
-		}
-	}()
-	return func() {
-		close(stop)
-		<-done
-	}
-}
-
-// Rate is a time-smoothed estimate, never a promise of remote persistence.
-type transferProgress struct {
-	at    time.Time
-	bytes int64
-	rate  float64
-}
-
-func (p *transferProgress) sample(now time.Time, done, total int64) string {
-	elapsed := now.Sub(p.at).Seconds()
-	if elapsed > 0 {
-		rate := float64(max(int64(0), done-p.bytes)) / elapsed
-		if p.at.IsZero() {
-			rate = 0
-		}
-		if p.rate == 0 {
-			p.rate = rate
-		} else {
-			p.rate = .3*rate + .7*p.rate
-		}
-	}
-	p.at, p.bytes = now, done
-	eta := "unknown"
-	if done >= total {
-		eta = "0s"
-	} else if p.rate >= 1 {
-		seconds := float64(total-done) / p.rate
-		if seconds < float64((1<<63-1)/int64(time.Second)) {
-			eta = (time.Duration(seconds) * time.Second).String()
-		}
-	}
-	return fmt.Sprintf("%s/%s · %s/s · remaining %s", displayBytes(done), displayBytes(total), displayBytes(int64(p.rate)), eta)
 }

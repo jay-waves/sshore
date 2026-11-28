@@ -86,7 +86,7 @@ func (s *tmuxTask) requestApproval(c net.Conn, m message) error {
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if s.runtime.Active() != p || s.runtime.Exited() || s.killing {
+		if s.runtime.Active() != p || s.runtime.Exited() || s.runtime.Stopping() {
 			return fmt.Errorf("source attachment changed")
 		}
 		for i := range m.Operations {

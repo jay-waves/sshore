@@ -9,7 +9,7 @@
   before signaling. Never kill by process name or adopt unregistered processes. Require exact full
   release versions for normal connections. Follow the [update, reset, and approval safeguards](docs/SECURITY.md).
 - Keep published Git tags immutable. Verify published assets before pruning older releases.
-  Follow the [release workflow](docs/RELEASE.md).
+  Follow the [release workflow](docs/release.md).
 - Make repository changes and create commits in the local checkout, then push those same
   commits using Git and the configured remote. Use Git to fetch and synchronize branches.
   Never use a connector or remote API to create commits, edit tracked files, or advance branches.
@@ -25,15 +25,15 @@
 - When changing a lasting contract, add or update its integration example alongside the change.
   Start from the example when it helps clarify the design. Reserve unit tests for core,
   side-effect-free code. Use temporary checks for ordinary changes and discard them afterward.
-  Avoid duplicate cases and assertions tied to incidental wording. See [build and validation](docs/BUILD.md).
+  Avoid duplicate cases and assertions tied to incidental wording. See [build and validation](docs/build.md).
 - Define CLI grammar once. Parsing and help must leave services and state untouched. Make
   destructive consequences and confirmations explicit.
 
 ## Documentation
 
-- Keep only `README.md`, `CHANGELOG.md`, and `AGENTS.md` at the root among documentation files.
+- Keep only `README.md` and `AGENTS.md` at the root among documentation files.
   Keep the license at `LICENSE.txt` and organize other documentation under [docs/](docs/).
-- Cap each project document in `docs/` at 200 lines. Only `SECURITY.md` and `GLOSSARY.md` may
+- Cap each project document in `docs/` at 200 lines. Only `SECURITY.md` and `glossary.md` may
   exceed that cap. Aim for 100 columns per line, except in `SECURITY.md`. Keep third-party
   license notices verbatim.
 - Cut redundant prose and link to code and tests for implementation details. Use CLI help

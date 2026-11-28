@@ -8,6 +8,7 @@ import (
 
 	"github.com/jay-waves/sshore/internal/pty"
 	"github.com/jay-waves/sshore/internal/shell"
+	"github.com/jay-waves/sshore/internal/tmux"
 )
 
 func hostedShellEnvironment(source []string, term, instance, executable string) []string {
@@ -18,8 +19,7 @@ func hostedShellEnvironment(source []string, term, instance, executable string) 
 	return env
 }
 
-// The caller holds mu while starting and publishing the terminal.
-func (s *tmuxTask) startManagedShell(m message) error {
+func (s *tmuxTask) shellLaunch(m message) (tmux.Launch, error) {
 	source := s.environment
 	if source == nil {
 		source = os.Environ()
@@ -34,27 +34,21 @@ func (s *tmuxTask) startManagedShell(m message) error {
 	}
 	path, args, err := shell.Command(path, m.Argv, m.NoLogin, m.NoProfile)
 	if err != nil {
-		return err
+		return tmux.Launch{}, err
 	}
 	if s.cgroupErr != nil {
-		return s.cgroupErr
+		return tmux.Launch{}, s.cgroupErr
 	}
-	if err := s.runtime.Start(pty.Config{
-		Path: path, Args: args, Env: shell.StartupEnv(path, env, m.NoProfile),
-		Dir: s.record.Directory, Size: shellSize(m), TaskCgroup: s.cgroup,
-	}); err != nil {
-		return err
-	}
-	s.shellName = filepath.Base(path)
-	if len(m.Argv) != 0 {
-		s.programLine = shell.FormatCommand(m.Argv)
-		s.program.Store(true)
-	}
+	name := filepath.Base(path)
 	if runtime.GOOS == "windows" {
-		s.shellName = strings.TrimSuffix(strings.ToLower(s.shellName), ".exe")
+		name = strings.TrimSuffix(strings.ToLower(name), ".exe")
 	}
-	go s.pumpTerminal()
-	return nil
+	return tmux.Launch{
+		Config: pty.Config{Path: path, Args: args, Env: shell.StartupEnv(path, env, m.NoProfile),
+			Dir: s.record.Directory, TaskCgroup: s.cgroup},
+		Process:         tmux.ProcessInfo{Shell: name, ProgramLine: shell.FormatCommand(m.Argv)},
+		ReportDirectory: runtime.GOOS == "windows" && !s.hosted,
+	}, nil
 }
 
 func localShellEnvironment(source []string, term, identity string) []string {

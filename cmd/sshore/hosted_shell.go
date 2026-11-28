@@ -35,15 +35,15 @@ func (s *tmuxTask) serveHostedTask(c net.Conn, m message, relay func(net.Conn, m
 }
 
 func (tasks *daemonTasks) registerHostedShell(req hostedShellRequest) (*tmuxTask, error) {
-	s := tasks.newTmuxTask(localShellRecord{Name: req.Name, Directory: req.Directory}, req.Env, req.parent, true)
-	if err := tasks.registerShell(s, req.parent); err != nil {
+	s, err := tasks.newShell(localShellRecord{Name: req.Name, Directory: req.Directory}, req.Env, req.parent, true)
+	if err != nil {
 		if errors.Is(err, errObjectNameInUse) {
 			return nil, fmt.Errorf("name %s already exists; use a different shell name", req.Name)
 		}
 		return nil, err
 	}
 	// A failed initial attach should not leave an empty shell indefinitely.
-	s.expireUnstarted(30 * time.Second)
+	s.runtime.ExpireUnstarted(30 * time.Second)
 	return s, nil
 }
 

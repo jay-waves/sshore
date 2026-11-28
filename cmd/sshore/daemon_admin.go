@@ -92,20 +92,33 @@ func (s *daemonTasks) adminSnapshot(record localShellRecord) daemonAdminReply {
 	}}
 }
 
-func (s *daemonTasks) taskInfosLocked() []daemonTaskInfo {
-	var rows []daemonTaskInfo
+type reviewedTask struct {
+	info daemonTaskInfo
+	task daemonTask
+}
+
+func (s *daemonTasks) reviewedTasksLocked() []reviewedTask {
+	var rows []reviewedTask
 	for id, task := range s.liveLocked() {
 		info := daemonTaskInfo{ID: id, Name: task.taskName()}
 		switch task := task.(type) {
 		case *tmuxTask:
-			info.Kind = terminalTaskKind(task.program.Load())
+			info.Kind = terminalTaskKind(task.runtime.Process().ProgramLine != "")
 		case *daemonResourceTask:
 			info.Kind = task.record.Kind
 		}
-		rows = append(rows, info)
+		rows = append(rows, reviewedTask{info, task})
 	}
-	slices.SortFunc(rows, func(a, b daemonTaskInfo) int { return cmp.Compare(a.ID, b.ID) })
+	slices.SortFunc(rows, func(a, b reviewedTask) int { return cmp.Compare(a.info.ID, b.info.ID) })
 	return rows
+}
+
+func (s *daemonTasks) taskInfosLocked() []daemonTaskInfo {
+	var infos []daemonTaskInfo
+	for _, entry := range s.reviewedTasksLocked() {
+		infos = append(infos, entry.info)
+	}
+	return infos
 }
 
 func readDaemonSnapshot(ctx context.Context) (daemonSnapshot, error) {
@@ -134,8 +147,10 @@ var errShutdownChanged = errors.New("tasks changed; review again")
 func (s *daemonTasks) beginShutdown(review *daemonSnapshot) ([]daemonTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	current := s.taskInfosLocked()
-	if review != nil && !slices.Equal(current, review.Tasks) {
+	current := s.reviewedTasksLocked()
+	if review != nil && !slices.EqualFunc(current, review.Tasks, func(entry reviewedTask, expected daemonTaskInfo) bool {
+		return entry.info == expected
+	}) {
 		return nil, errShutdownChanged
 	}
 	if s.draining {
@@ -144,7 +159,7 @@ func (s *daemonTasks) beginShutdown(review *daemonSnapshot) ([]daemonTask, error
 	s.draining = true
 	stops := make([]daemonTask, 0, len(current))
 	for _, entry := range current {
-		stops = append(stops, s.records[entry.ID])
+		stops = append(stops, entry.task)
 	}
 	return stops, nil
 }

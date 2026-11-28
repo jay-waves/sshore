@@ -74,7 +74,7 @@ func (s *tmuxTask) serveRoutedResource(c net.Conn, request message, relay func(n
 func (s *tmuxTask) consumeResourceApproval(request message, op operation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.runtime.Exited() || s.killing || s.runtime.Active() != nil || s.record.UID != request.Instance || s.record.Name != request.Name || !s.runtime.Started() || s.runtime.PID() != request.PID {
+	if s.runtime.Exited() || s.runtime.Stopping() || s.runtime.Active() != nil || s.record.UID != request.Instance || s.record.Name != request.Name || !s.runtime.Started() || s.runtime.PID() != request.PID {
 		return fmt.Errorf("approved shell changed or remains attached; request the operation again")
 	}
 	grant := &s.resourceApproval

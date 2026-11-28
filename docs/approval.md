@@ -28,7 +28,7 @@ source or destination. A single grant covers that tree. The remote endpoint open
 the approved directory as its root and allows reading for downloads or creating
 directories and new files for uploads.
 An approved resource uses the scoped route described in the
-[mount implementation](mount.md) and [network topology](NETWORK.md).
+[mount implementation](mount.md) and [network topology](network.md).
 
 Remote output can imitate the local screen, and processes sharing a remote account can
 submit requests. A request provides no evidence of who typed it. Verify the context before
@@ -43,9 +43,9 @@ machine, select an empty directory to use as the mountpoint. On a remote host, s
 to mount. Selecting a directory for copy includes its contents.
 
 `f` opens the port list for the same host. Use `sshore lp [HOST]` to open that list directly.
-It lists TCP listeners and bound UDP ports on IPv4 wildcard and loopback addresses. Select
-a port with the arrow keys, filter with `/`, or enter a port with `:`. Submit the target port
-to start the forward using the selected protocol. Manual port entry defaults to TCP.
+It lists TCP listeners and bound UDP ports on IPv4 wildcard and loopback addresses. Filter
+with `/`, select a listener, and press Enter. Submit the target port to start the forward
+using the selected protocol.
 Both browsers restore the terminal before running the chosen command.
 Requests sent to `origin:` follow the same approval flow as the corresponding CLI command.
 

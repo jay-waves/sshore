@@ -18,7 +18,7 @@ func (s *tmuxTask) relayResourceRoute(c net.Conn, request message) error {
 	}
 	s.mu.Lock()
 	route := s.shellRoutes[hop.Token]
-	valid := !s.runtime.Exited() && !s.killing && route != nil && route.target.uid == next && route.drain.Err() == nil
+	valid := !s.runtime.Exited() && !s.runtime.Stopping() && route != nil && route.target.uid == next && route.drain.Err() == nil
 	s.mu.Unlock()
 	if !valid {
 		return fmt.Errorf("resource route is unavailable")

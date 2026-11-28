@@ -7,6 +7,8 @@ connection, the client deploys its matching server through SSH and the standard
 SFTP subsystem. Later connections use the saved path and only reopen SFTP
 when checking a failed launch. They publish a replacement if the binary is
 missing. Each client and release has its own remote daemon and state.
+The client shows SFTP upload progress on stderr when it deploys or replaces a
+server.
 
 | Command | Transport | Startup exchange |
 | --- | --- | --- |
@@ -31,7 +33,8 @@ ciphers and integrity algorithms. `--ssh -v` and SSH `LogLevel DEBUG` enable the
 For example, `sshore sh work -v` traces a shell connection.
 
 Direct copies use the current directory for an empty local path and the remote home for an
-empty SSH path. Use `--lf` to browse omitted paths in the three-column picker.
+empty SSH path. Copy transfers show byte progress on stderr. Stdin uploads show the bytes read
+so far. Use `--lf` to browse omitted paths in the three-column picker.
 The header identifies the host and directory being browsed. Use `gg` and `G`
 to jump to the top or bottom of the current list. Use `/` or `?` to search
 filenames forward or backward. Use `n` to repeat in the same direction and
@@ -88,4 +91,4 @@ change, its recorded shell hosts. A changed SSH destination stops the upgrade
 before it sends a shutdown request. Copies do not add hosts to the review.
 
 See [architecture](ARCHITECTURE.md), [security](SECURITY.md), [approval](approval.md),
-[mount implementation](mount.md) and [build and validation](BUILD.md).
+[mount implementation](mount.md) and [build and validation](build.md).

@@ -10,12 +10,15 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/jay-waves/sshore/internal/files"
 	"github.com/jay-waves/sshore/internal/ports"
 	"github.com/jay-waves/sshore/internal/release"
 	deployment "github.com/jay-waves/sshore/internal/release/remote"
 	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/termui"
 )
 
 const remoteServiceCommand = "service"
@@ -100,7 +103,15 @@ func (e deploymentEndpoint) openService(ctx context.Context, client *sshio.Clien
 		launchErr = err
 	}
 
-	resolved, uploaded, err := deployment.Prepare(ctx, client, id, version, deploymentReleaseBase, install)
+	track := func(size int64, source io.Reader, send func(io.Reader) error) error {
+		label := "Deploy server " + version + " to " + e.Host
+		run := func(count *atomic.Int64) error { return send(files.CountReads(source, count)) }
+		if relay, ok := diagnostic.(*shellDiagnostics); ok {
+			return relay.trackProgress(label, size, run)
+		}
+		return termui.RunProgress(diagnostic, label, size, run)
+	}
+	resolved, uploaded, err := deployment.Prepare(ctx, client, id, version, deploymentReleaseBase, install, track)
 	if err != nil {
 		if pending != nil && !errors.Is(err, deployment.ErrMissing) {
 			pending.forward(diagnostic)

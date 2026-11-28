@@ -27,6 +27,5 @@ jobs:
           version=${GITHUB_REF_NAME#v}
           gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --latest \
             --title "sshore $GITHUB_REF_NAME" \
-            --notes "See the [changelog](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/CHANGELOG.md) for changes and migration notes." \
             "packages/sshore_${version}_linux_amd64.tar.gz" \
             "packages/sshore_${version}_windows_amd64.zip" packages/SHA256SUMS

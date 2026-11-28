@@ -749,15 +749,3 @@ func readCopyPath(input reviewPromptReader, prompt string, validate func(string)
 	}
 	return path, nil
 }
-
-func displayBytes(size int64) string {
-	for _, unit := range []struct {
-		size  int64
-		label string
-	}{{1 << 30, "GiB"}, {1 << 20, "MiB"}, {1 << 10, "KiB"}} {
-		if size >= unit.size {
-			return fmt.Sprintf("%.1f %s", float64(size)/float64(unit.size), unit.label)
-		}
-	}
-	return fmt.Sprintf("%d B", size)
-}

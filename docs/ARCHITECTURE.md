@@ -6,8 +6,8 @@ command-line options before user and system files, retains earlier values on
 the final pass, and preserves file lists as separate entries.
 `internal/ssh` selects credentials and applies host-key and algorithm policy to
 the Go SSH library. The library handles the wire protocol, key exchange, signing
-and channels. The command package owns command policy, authorization and task
-lifecycles. For exact behavior, start at the command entry point and follow it
+and channels. The command package owns command policy and authorization.
+For exact behavior, start at the command entry point and follow it
 to the platform implementation and its tests.
 
 Each client command selects its SSH service. The remote entry point checks the
@@ -48,20 +48,18 @@ The shell and terminal preserve interactive state across detach. Redraw is best
 effort and must preserve user input. See the [support matrix](../README.md#os-and-shell-support)
 and [native PTY adapters](../internal/pty/).
 
-Local and hosted terminals share [process startup](../cmd/sshore/tmux_startup.go) and
-[launch argument and directory rules](../internal/shell/).
-`internal/shell` also resolves the default shell and parses command arguments.
-PowerShell startup embeds the [directory reporting script](../internal/shell/pwsh_directory.ps1).
-`new -- PROGRAM` passes an argument vector to the managed PTY.
+The [shell package](../internal/shell/) prepares the executable, argument vector and startup
+options. The CLI and terminal UI also use it to parse and display commands.
+The [launch adapter](../cmd/sshore/tmux_startup.go) supplies account settings to tmux.
+`new -- PROGRAM` passes that argument vector to the managed PTY.
+PowerShell startup embeds its [directory reporting script](../internal/shell/pwsh_directory.ps1).
 `sh HOST -- COMMAND` uses SSH exec with standard streams and no PTY.
-The [tmux layer](../internal/tmux/) owns terminals, input reservations and pin
-expiry for `sh` and `new`. The daemon handles wire messages and exit reporting.
-The account daemon registers local and hosted shells through the same task
-lifecycle and reads their state from the managed terminal.
-The [terminal tree](../internal/tmux/tree.go)
-reserves foreground input while an attachment starts and rolls back the
-reservation and any new parent edge if setup fails. The local and hosted
-entry points handle their own handoff and resource commands.
+The [tmux manager](../internal/tmux/manager.go) owns live local and hosted sessions,
+their terminal input and output, and their lifetime. `sshore` checks SSH access,
+supplies launch settings, and publishes tmux snapshots and resource rows to bbolt.
+The manager checks the full session ID again before acting on a published selection.
+The [terminal tree](../internal/tmux/tree.go) reserves input during attachment
+and rolls back the reservation and any new parent edge if setup fails.
 The [PTY package](../internal/pty/) owns child processes, native handles, sizing
 and process cleanup. The [terminal package](../internal/term/) handles keyboard
 shortcuts, control sequences and the local console. Both use platform files
@@ -116,11 +114,11 @@ makes its own attachment decisions. Explicit detach records a pin before
 releasing input and keeps the existing parent edge. When the owner ends, a
 pinned child survives as a root with its own descendants. An internal handoff
 preserves the original scope and pin. See [tree admission](../internal/tmux/tree.go),
-[retention](../cmd/sshore/tmux_retention.go) and [attachment protocol](../cmd/sshore/tmux_attachment.go).
+[retention](../internal/tmux/retention.go) and [attachment protocol](../cmd/sshore/tmux_attachment.go).
 
-The control stream starts with an `attach` request carrying the client release and single-use
-terminal token. The daemon checks the release before claiming the token and reports its release
-in `ready`.
+The daemon checks the client release on `attach`. tmux claims the single-use
+terminal token, starts input after `ready`, and releases input when the control
+loop ends. Closing a session also closes its unclaimed terminal streams.
 
 The authenticated exit frame carries the exit code and terminal output offset.
 The frontend drains the reported tail within a time budget and reports the
@@ -135,7 +133,7 @@ local console or calling terminal and whether pinned children remain.
 
 ### Account daemon and mounts
 
-See [network topology](NETWORK.md) for SSH channels and [mount](mount.md) for worker startup,
+See [network topology](network.md) for SSH channels and [mount](mount.md) for worker startup,
 directory caching and notifications.
 
 The local client uses one authenticated daemon per OS account. Remote deployments
@@ -179,10 +177,12 @@ before changing update, reset or approval behavior.
 `local` first. `list` shows the observed SSH address, OS, architecture, and hostname when
 available. Conflicting snapshots for the same SSH name leave only the name.
 Clients record recent connections, detaches, and remote observations in `connections/participation.db`.
-Remote output refreshes the attachment at most once a minute. Detach history only ranks remote shell UIDs.
-Remote refreshes cover the connected SSH user, address and port. The daemon owns live tasks and leases.
-Both views and CLI target lookup read bbolt directly. Parent-owned child connections and detach eligibility come from the running daemon. Live rows come from the daemon that currently owns the account lock.
-Live tasks are keyed by full UID. Short IDs scan matching keys and are checked against saved observations for ambiguity. A terminal and its affected ancestors commit together.
+Remote output refreshes the attachment at most once a minute. Detach history ranks remote shell UIDs.
+Both views, CLI target lookup and detached-shell selection read bbolt. The running
+daemon supplies authenticated routes to cross-host children. Live rows belong to
+the daemon that currently owns the account lock.
+Live rows are keyed by full UID. Short IDs are checked against saved observations
+for ambiguity. A terminal and its affected ancestors commit together.
 Readers omit starting and exited shells. The host reads its registered hosted shells from bbolt and
 sends them after `setup_ready`. A live registration takes precedence over an observation of the same UID.
 

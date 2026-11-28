@@ -155,7 +155,7 @@ func (entry recursiveCopyEntry) copy(ctx context.Context, client *sftp.Client, t
 		defer source.Close()
 		entry.opened = source
 	}
-	return entry.transfer(ctx, client, nil)
+	return entry.transfer(ctx, client, "")
 }
 
 func checkCopyDirectory(name string, allowMissing bool) error {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/jay-waves/sshore/internal/sys"
+	"github.com/jay-waves/sshore/internal/termui"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
@@ -72,7 +73,8 @@ func runKeygen(args cliArguments) (int, error) {
 		return 1, errors.Join(err, os.Remove(target))
 	}
 	fmt.Fprintf(os.Stdout, "%s  %s.pub\n", ssh.FingerprintSHA256(key), cleanText(target))
-	fmt.Fprint(os.Stdout, keyRandomart(key))
+	digest := sha256.Sum256(key.Marshal())
+	fmt.Fprint(os.Stdout, termui.Randomart(digest[:], "ED25519 256", "SHA256"))
 	return 0, nil
 }
 
@@ -102,40 +104,6 @@ func readKeyPassphrase() ([]byte, error) {
 		return nil, fmt.Errorf("passphrases do not match")
 	}
 	return passphrase, nil
-}
-
-func keyRandomart(key ssh.PublicKey) string {
-	const width, height = 17, 9
-	const marks = " .o+=*BOX@%&#/^"
-	var field [height][width]int
-	x, y := width/2, height/2
-	for _, value := range sha256.Sum256(key.Marshal()) {
-		// Each pair of bits selects one diagonal move, clamped at the edges.
-		for range 4 {
-			x = min(width-1, max(0, x+2*int(value&1)-1))
-			y = min(height-1, max(0, y+2*int(value>>1&1)-1))
-			field[y][x]++
-			value >>= 2
-		}
-	}
-	var image bytes.Buffer
-	image.WriteString("+--[ED25519 256]--+\n")
-	for row, cells := range field {
-		image.WriteByte('|')
-		for col, visits := range cells {
-			switch {
-			case col == x && row == y:
-				image.WriteByte('E')
-			case col == width/2 && row == height/2:
-				image.WriteByte('S')
-			default:
-				image.WriteByte(marks[min(visits, len(marks)-1)])
-			}
-		}
-		image.WriteString("|\n")
-	}
-	image.WriteString("+----[SHA256]-----+\n")
-	return image.String()
 }
 
 func writeKeyFile(name string, data []byte) error {

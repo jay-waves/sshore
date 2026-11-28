@@ -47,7 +47,7 @@ func comparePortProcess(a, b PortRow) int {
 	return cmp.Compare(strings.ToLower(a.Process), strings.ToLower(b.Process))
 }
 
-// PickPort returns the selected listener or a zero row for manual port entry.
+// PickPort returns the selected listener when forwarding is enabled.
 func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Context) (ports.ListenerSnapshot, error)) (selected PortRow, err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -144,11 +144,7 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 		if forward {
 			hint += "  Enter Forward"
 		}
-		hint += "  t TCP  u UDP  / Filter  r Refresh  s Sort  y Copy address"
-		if forward {
-			hint += "  : Enter port"
-		}
-		hint += "  q Quit"
+		hint += "  t TCP  u UDP  / Filter  r Refresh  s Sort  y Copy address  q Quit"
 		if filtering {
 			hint = "/" + string(query)
 		} else if status != "" {
@@ -257,10 +253,6 @@ func (c *LocalConsole) PickPort(host string, forward bool, load func(context.Con
 					filtering = true
 				case 'q', 3:
 					return PortRow{}, context.Canceled
-				case ':':
-					if forward {
-						return PortRow{UDP: udpOnly}, nil
-					}
 				case 'j', keyDown:
 					index = min(max(0, len(visible)-1), index+1)
 				case 'k', keyUp:

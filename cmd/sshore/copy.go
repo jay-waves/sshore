@@ -222,11 +222,18 @@ func transferCopyBatch(batch []fileCopy, transfer func(int, fileCopy) error) (in
 	return len(batch), nil
 }
 
-func (f fileCopy) transfer(ctx context.Context, client *sftp.Client, progress *atomic.Int64) error {
+func (f fileCopy) transfer(ctx context.Context, client *sftp.Client, name string) error {
 	if f.opened != nil {
-		return f.opened.Upload(client, f.target, progress)
+		return termui.RunProgress(os.Stderr, "Upload "+f.opened.Name(), f.size(), func(progress *atomic.Int64) error {
+			return f.opened.Upload(client, f.target, progress)
+		})
 	}
-	return files.Download(ctx, client, f.source, f.target, f.size(), progress)
+	if name == "" {
+		name = path.Base(f.source)
+	}
+	return termui.RunProgress(os.Stderr, "Download "+name, f.size(), func(progress *atomic.Int64) error {
+		return files.Download(ctx, client, f.source, f.target, f.size(), progress)
+	})
 }
 
 func prepareRemoteCopy(kind string, paths []string, hint string, recursive, browse bool) ([]operation, error) {
@@ -315,14 +322,18 @@ func executeStreamCopy(client *sftp.Client, o copyOptions, input io.Reader, outp
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		return files.UploadReader(client, input, o.target.path, -1)
+		return termui.RunProgress(os.Stderr, "Upload "+path.Base(o.target.path), -1, func(progress *atomic.Int64) error {
+			return files.UploadReader(client, files.CountReads(input, progress), o.target.path, -1)
+		})
 	}
 	source := o.sources[0].path
 	size, err := remoteCopySize(client, source)
 	if err != nil {
 		return err
 	}
-	return files.DownloadTo(client, source, output, size, nil)
+	return termui.RunProgress(os.Stderr, "Download "+path.Base(source), size, func(progress *atomic.Int64) error {
+		return files.DownloadTo(client, source, output, size, progress)
+	})
 }
 
 func remoteCopySize(client *sftp.Client, source string) (int64, error) {
@@ -345,7 +356,7 @@ func executeCopy(ctx context.Context, client *sftp.Client, o copyOptions, items 
 		return err
 	}
 	completed, err := transferCopyBatch(items, func(_ int, item fileCopy) error {
-		if err := item.transfer(ctx, client, nil); err != nil {
+		if err := item.transfer(ctx, client, ""); err != nil {
 			return err
 		}
 		source, target := item.source, item.target

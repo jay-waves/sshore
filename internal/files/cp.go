@@ -181,7 +181,7 @@ func checkCopySize(src io.Reader, n, size int64) error {
 
 // Upload transfers the file already opened by OpenSource.
 func (f *Source) Upload(client *sftp.Client, target string, progress *atomic.Int64) error {
-	return UploadReader(client, progressReader{f.file, progress}, target, f.size)
+	return UploadReader(client, CountReads(f.file, progress), target, f.size)
 }
 
 // A negative size denotes stdin: count bytes until EOF, then verify that count
@@ -302,11 +302,17 @@ type progressReader struct {
 	count *atomic.Int64
 }
 
+// CountReads updates count as the transfer consumes bytes from source.
+func CountReads(source io.Reader, count *atomic.Int64) io.Reader {
+	if count == nil {
+		return source
+	}
+	return progressReader{source, count}
+}
+
 func (r progressReader) Read(p []byte) (int, error) {
 	n, err := r.Reader.Read(p)
-	if r.count != nil {
-		r.count.Add(int64(n))
-	}
+	r.count.Add(int64(n))
 	return n, err
 }
 

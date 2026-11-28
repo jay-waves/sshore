@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	bolt "go.etcd.io/bbolt"
@@ -10,108 +11,20 @@ import (
 	"time"
 )
 
-// Kind limits the registry scan to a task type. Native and hosted are two
-// ways to reach a shell. Detached queries list idle roots and direct children.
+// Kind limits the published account view to a task type.
 type taskQuery struct {
 	Kind, Ref, UID, Parent string
-	Detached               bool
-	Recent, RemoteChildren bool
+	Detached, Recent       bool
 }
 
 type selectedTask struct {
 	detachedAt                     time.Time
+	attachable                     bool
 	Kind, Name, Identity, Instance string
 	Hosted                         bool
 	RemoteHost                     string            `json:",omitempty"` // Host of a remote attach candidate without a saved direct route.
 	Connection                     *recentConnection `json:",omitempty"`
 	Manager                        string            `json:",omitempty"` // A visible task without a control route.
-}
-
-func (q taskQuery) candidate(uid string, task daemonTask) (selectedTask, bool) {
-	candidate := selectedTask{Identity: taskKey(uid)}
-	switch t := task.(type) {
-	case *tmuxTask:
-		s := t
-		switch q.Kind {
-		case "", "shell":
-		case "native":
-			if s.hosted {
-				return selectedTask{}, false
-			}
-		case "hosted":
-			if !s.hosted {
-				return selectedTask{}, false
-			}
-		default:
-			return selectedTask{}, false
-		}
-		candidate.Kind, candidate.Name, candidate.Hosted = "shell", s.taskName(), s.hosted
-		if s.hosted {
-			candidate.Instance = uid
-		}
-	case *daemonResourceTask:
-		if q.Kind != "" && q.Kind != t.record.Kind {
-			return selectedTask{}, false
-		}
-		candidate.Kind, candidate.Name = t.record.Kind, t.record.Name
-	default:
-		return selectedTask{}, false
-	}
-	return candidate, true
-}
-
-func (q taskQuery) registeredLocked(tasks *daemonTasks) []selectedTask {
-	var candidates []selectedTask
-	for uid, task := range tasks.liveLocked() {
-		if target, ok := q.candidate(uid, task); ok {
-			candidates = append(candidates, target)
-		}
-	}
-	return candidates
-}
-
-func (q taskQuery) registered(tasks *daemonTasks) []selectedTask {
-	tasks.mu.Lock()
-	candidates := q.registeredLocked(tasks)
-	tasks.mu.Unlock()
-	if q.Detached {
-		detached := candidates[:0]
-		for _, candidate := range candidates {
-			if q.detached(tasks, &candidate) {
-				detached = append(detached, candidate)
-			}
-		}
-		candidates = detached
-	}
-	return candidates
-}
-
-func (q taskQuery) detached(tasks *daemonTasks, candidate *selectedTask) bool {
-	task, ok := tasks.lookup(canonicalTaskUID(candidate.Identity)).(*tmuxTask)
-	if !ok {
-		return false
-	}
-	s := task
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	owner := s.parentIdentityLocked()
-	candidate.detachedAt = s.runtime.DetachedAt()
-	return s.state() == taskDetached && !s.killing && s.remoteOwner == "" && (owner == "" || owner == q.Parent)
-}
-
-func (q taskQuery) recentDetached(tasks *daemonTasks) []selectedTask {
-	q.Detached = true
-	rows := q.registered(tasks)
-	slices.SortFunc(rows, func(a, b selectedTask) int {
-		if order := b.detachedAt.Compare(a.detachedAt); order != 0 {
-			return order
-		}
-		if order := strings.Compare(a.Name, b.Name); order != 0 {
-			return order
-		}
-		return strings.Compare(a.Identity, b.Identity)
-	})
-	return rows
 }
 
 // IDs take precedence over aliases, including aliases that look like short hex
@@ -155,49 +68,123 @@ func matchTask(ref string, candidates []selectedTask) (selectedTask, error) {
 	return alias, nil
 }
 
-// An explicit UID is binding even if its previous label now belongs to another task.
-func (q taskQuery) selectLocked(tasks *daemonTasks) (target selectedTask, err error) {
-	// Resolve the reference before testing availability so a busy shell's ID
-	// cannot silently become a different shell's alias.
-	uid := q.UID
-	if uid == "" {
-		uid = strings.ToLower(q.Ref)
+// Resolve ordinary selectors from bbolt. The account daemon rechecks the full
+// ID when the caller opens a stream or changes a task.
+func queryRegisteredTasks(q taskQuery) ([]selectedTask, error) {
+	record, err := existingDaemonRecord()
+	if os.IsNotExist(err) {
+		return nil, nil
 	}
-	if validTaskUID(uid) {
-		target, _ = q.candidate(uid, tasks.lookupLocked(uid))
-	}
-	if target.Identity == "" && q.UID == "" {
-		target, err = matchTask(q.Ref, q.registeredLocked(tasks))
-	}
-	return target, err
-}
-
-func (q taskQuery) run(tasks *daemonTasks) ([]selectedTask, error) {
-	if q.RemoteChildren {
-		return tasks.remoteChildCandidates(q.Parent, q.Ref), nil
-	}
-	if q.Recent {
-		rows := q.recentDetached(tasks)
-		if len(rows) > 1 {
-			rows = rows[:1]
-		}
-		return rows, nil
-	}
-	if q.Ref == "" && q.UID == "" {
-		return q.registered(tasks), nil
-	}
-	tasks.mu.Lock()
-	task, err := q.selectLocked(tasks)
-	tasks.mu.Unlock()
-	if err != nil || task.Identity == "" || q.Detached && !q.detached(tasks, &task) {
+	if err != nil {
 		return nil, err
 	}
-	return []selectedTask{task}, nil
+	return q.published(record)
 }
 
-func queryRegisteredTasks(q taskQuery) ([]selectedTask, error) {
+func (q taskQuery) published(record localShellRecord) ([]selectedTask, error) {
+	var inv inventory
+	err := historyTransaction(record.Directory, false, func(tx *bolt.Tx) error {
+		bucket := currentLiveBucket(tx, record.UID)
+		if bucket == nil {
+			return nil
+		}
+		if q.UID != "" {
+			key := []byte(q.UID)
+			if data := bucket.Get(key); data != nil {
+				return inv.readLiveRow(key, data)
+			}
+			return nil
+		}
+		return bucket.ForEach(func(key, data []byte) error {
+			if validTaskUID(string(key)) {
+				return inv.readLiveRow(key, data)
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return q.selectPublished(inv)
+}
+
+func (q taskQuery) selectPublished(inv inventory) ([]selectedTask, error) {
+	var rows []selectedTask
+	for _, shell := range inv.Shells {
+		switch q.Kind {
+		case "", "shell":
+		case "native":
+			if shell.Hosted {
+				continue
+			}
+		case "hosted":
+			if !shell.Hosted {
+				continue
+			}
+		default:
+			continue
+		}
+		if shell.State == taskExited {
+			continue
+		}
+		row := selectedTask{Kind: "shell", Name: shell.Name, Identity: taskKey(shell.Instance),
+			Hosted: shell.Hosted, detachedAt: shell.DetachedAt,
+			attachable: shell.State == taskDetached && !shell.Stopping && !shell.RemoteOwner &&
+				(shell.Owner == "" || shell.Owner == q.Parent)}
+		if shell.Hosted {
+			row.Instance = shell.Instance
+		}
+		rows = append(rows, row)
+	}
+	for _, resource := range inv.Resources {
+		kind, name := resource.kindAndName()
+		if q.Kind == "" || q.Kind == kind {
+			rows = append(rows, selectedTask{Kind: kind, Name: name, Identity: resource.Identity})
+		}
+	}
+
+	// Resolve an exact ID before checking availability. A busy session never
+	// turns a reference to its ID into a different session's name.
+	if !q.Recent && (q.UID != "" || q.Ref != "") {
+		var row selectedTask
+		uid := cmp.Or(q.UID, strings.ToLower(q.Ref))
+		if validTaskUID(uid) {
+			for _, candidate := range rows {
+				if canonicalTaskUID(candidate.Identity) == uid {
+					row = candidate
+					break
+				}
+			}
+		}
+		if row.Identity == "" && q.UID == "" {
+			var err error
+			row, err = matchTask(q.Ref, rows)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if row.Identity == "" || q.Detached && !row.attachable {
+			return nil, nil
+		}
+		return []selectedTask{row}, nil
+	}
+	if q.Detached || q.Recent {
+		rows = slices.DeleteFunc(rows, func(row selectedTask) bool { return !row.attachable })
+		slices.SortFunc(rows, func(a, b selectedTask) int {
+			return cmp.Or(b.detachedAt.Compare(a.detachedAt), strings.Compare(a.Name, b.Name), strings.Compare(a.Identity, b.Identity))
+		})
+		if q.Recent && len(rows) > 1 {
+			rows = rows[:1]
+		}
+	}
+	return rows, nil
+}
+
+type remoteChildQuery struct{ Parent, Ref string }
+
+func queryRemoteChildren(parent, ref string) ([]selectedTask, error) {
 	if activity := accountActivity.Load(); activity != nil && activity.tasks != nil {
-		return q.run(activity.tasks)
+		return activity.tasks.remoteChildCandidates(parent, ref), nil
 	}
 	record, err := existingDaemonRecord()
 	if os.IsNotExist(err) {
@@ -209,7 +196,7 @@ func queryRegisteredTasks(q taskQuery) ([]selectedTask, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var result []selectedTask
-	err = daemonJSON(ctx, record, "/tasks/select", q, &result)
+	err = daemonJSON(ctx, record, "/tasks/remote-children", remoteChildQuery{parent, ref}, &result)
 	return result, err
 }
 
@@ -232,7 +219,7 @@ func selectCLITask(parsed cliArguments) (selectedTask, error) {
 	var children []selectedTask
 	var err error
 	if parent != "" {
-		children, err = queryRegisteredTasks(taskQuery{RemoteChildren: true, Parent: parent, Ref: ref})
+		children, err = queryRemoteChildren(parent, ref)
 		if err != nil {
 			return selectedTask{}, err
 		}
@@ -406,11 +393,10 @@ func (tasks *daemonTasks) remoteChildCandidates(parent, ref string) []selectedTa
 	if parent == "" {
 		return nil
 	}
-	source, ok := tasks.lookup(canonicalTaskUID(parent)).(*tmuxTask)
-	if !ok {
+	s := tasks.shell(canonicalTaskUID(parent))
+	if s == nil {
 		return nil
 	}
-	s := source
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var candidates []selectedTask
@@ -503,8 +489,11 @@ func (s *tmuxTask) sessionTargets(request message) message {
 	if s.hosted && !request.NativeTargets {
 		query.Kind = "hosted"
 	}
-	var err error
-	reply.Targets, err = s.registry.attachmentTargets(query, list)
+	query.Recent = query.Ref == "" && query.Detached && !list
+	rows, err := queryRegisteredTasks(query)
+	if err == nil {
+		reply.Targets, err = attachmentChoices(rows)
+	}
 	if err == nil && query.Detached && query.Ref != "" && len(reply.Targets) == 0 {
 		err = missingAttachTarget(query.Ref)
 	}
@@ -512,21 +501,6 @@ func (s *tmuxTask) sessionTargets(request message) message {
 		reply.Error = err.Error()
 	}
 	return reply
-}
-
-func (tasks *daemonTasks) attachmentTargets(query taskQuery, list bool) ([]sessionTarget, error) {
-	if query.Ref == "" && query.Detached {
-		rows := query.recentDetached(tasks)
-		if !list && len(rows) > 1 {
-			rows = rows[:1]
-		}
-		return attachmentChoices(rows)
-	}
-	rows, err := query.run(tasks)
-	if err != nil {
-		return nil, err
-	}
-	return attachmentChoices(rows)
 }
 
 func missingAttachTarget(ref string) error {

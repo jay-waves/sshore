@@ -31,6 +31,19 @@ func openNativeShell(ctx context.Context, ref, identity string) (net.Conn, local
 	if err != nil {
 		return nil, localShellRecord{}, err
 	}
+	if identity == "" {
+		if ref == "" {
+			return nil, localShellRecord{}, os.ErrNotExist
+		}
+		matches, err := (taskQuery{Kind: "native", Ref: ref}).published(record)
+		if err != nil {
+			return nil, localShellRecord{}, err
+		}
+		if len(matches) == 0 {
+			return nil, localShellRecord{}, os.ErrNotExist
+		}
+		ref, identity = matches[0].Name, matches[0].Identity
+	}
 	path := "/tasks/native/open?" + url.Values{"ref": {ref}, "identity": {identity}}.Encode()
 	conn, err := dialDaemonStream(ctx, record, time.Now().Add(5*time.Second), path, nil)
 	if err != nil {
@@ -122,16 +135,16 @@ func runLocalShell(tasks *daemonTasks, record localShellRecord, env []string, pa
 	if record.Version != version || len(record.Token) != 64 || !filepath.IsAbs(record.Directory) {
 		return fmt.Errorf("invalid local startup request")
 	}
-	s := tasks.newTmuxTask(record, env, parent, false)
-	defer s.close()
 	// Register before publishing readiness. Attachments do not own the shell.
-	if err := tasks.registerShell(s, parent); err != nil {
+	s, err := tasks.newShell(record, env, parent, false)
+	if err != nil {
 		return err
 	}
+	defer s.runtime.Close()
 	if err := ready(s.record); err != nil {
 		return err
 	}
-	s.expireUnstarted(15 * time.Second)
+	s.runtime.ExpireUnstarted(15 * time.Second)
 	<-s.runtime.Done()
 	return nil
 }

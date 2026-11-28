@@ -24,7 +24,7 @@
   Approved mounts carry data and notifications in separate smux streams.
 
 See [mount startup and path selection](../cmd/sshore/mount.go),
-[mount lifecycle](../internal/files/mount.go) and [SSH topology](NETWORK.md).
+[mount lifecycle](../internal/files/mount.go) and [SSH topology](network.md).
 
 ## Directory and metadata caches
 

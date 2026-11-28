@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jay-waves/sshore/internal/pty"
 	"github.com/jay-waves/sshore/internal/termui"
 	"github.com/jay-waves/sshore/internal/tmux"
 )
@@ -20,10 +19,6 @@ type attachment struct {
 	control    attachmentControl
 	controlMu  sync.Mutex
 	approvals  approvalExchanges
-}
-
-func newAttachment(control attachmentControl, terminal net.Conn) *attachment {
-	return &attachment{Attachment: tmux.NewAttachment(control, terminal), control: control}
 }
 
 func (a *attachment) controlMessage(m message) error {
@@ -38,17 +33,11 @@ func (a *attachment) childResult(err error) {
 	}
 }
 
-// FinishExit follows terminal output, allowing bounded consumption before close.
 func (a *attachment) finishExit(exit message) {
-	a.AfterOutput(func(offset uint64, incomplete bool) {
+	a.FinishOutput(func(offset uint64, incomplete bool) {
 		exit.TerminalOffset, exit.OutputIncomplete = offset, incomplete
 		_ = a.controlMessage(exit)
 	})
-	select {
-	case <-a.Done():
-	case <-time.After(2 * time.Second):
-		a.Close()
-	}
 }
 
 func expectDetachMessage(r io.Reader, expected string) (message, error) {
@@ -64,8 +53,7 @@ func expectDetachMessage(r io.Reader, expected string) (message, error) {
 
 // FinishDetach confirms the handoff after the host releases the input lease.
 // Only the control loop may call it, since it consumes the final acknowledgement.
-func (a *attachment) FinishDetach(reply message) error {
-	defer a.Close()
+func (a *attachment) finishDetach(reply message) error {
 	if err := a.controlMessage(reply); err != nil {
 		return err
 	}
@@ -75,110 +63,67 @@ func (a *attachment) FinishDetach(reply message) error {
 }
 
 func (s *tmuxTask) attach(c net.Conn, m message, extra func(*attachment, message) error) error {
-	terminal := s.endpoints.take(m.Token)
-	if terminal == nil {
-		return writeMessage(c, message{Type: "fatal", SoftwareVersion: version, Error: "terminal endpoint expired or already claimed"})
-	}
 	// The initial request deadline must not expire an attached shell.
 	_ = c.SetReadDeadline(time.Time{})
-	p := newAttachment(c, terminal)
-	if err := s.attachManaged(p, m); err != nil {
-		fatal := message{Type: "fatal"}
-		if s.hosted {
-			fatal.SoftwareVersion = version
-			switch {
-			case errors.Is(err, tmux.ErrEnded):
-				err = fmt.Errorf("shell is exiting; use sshore shell HOST to create a new one")
-			case errors.Is(err, tmux.ErrAttached):
-				err = fmt.Errorf("shell already attached; detach the other connection first")
-			}
-		} else if errors.Is(err, tmux.ErrEnded) || errors.Is(err, tmux.ErrAttached) {
-			err = fmt.Errorf("local shell unavailable or already attached")
+	p := &attachment{Attachment: tmux.NewAttachment(c), control: c}
+	return s.runtime.ServeAttachment(p, s.attachmentRequest(p, m), func(key string, state tmux.Snapshot[*attachment]) error {
+		return s.attachmentReady(p, m, key, state)
+	}, func(err error) error {
+		if err != nil {
+			return s.attachRejected(p, err)
 		}
-		fatal.Error = err.Error()
-		_ = p.controlMessage(fatal)
-		if s.hosted {
-			_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
-			_, _ = readMessage(c)
-		}
-		p.Close()
-		return err
-	}
-	return s.serveAttachment(p, extra)
+		return s.serveAttachment(p, extra)
+	})
 }
 
-// Publish the input lease after startup, the ready message and terminal replay.
-// Hosted shells obtain their owner context from the authenticated attachment.
-func (s *tmuxTask) attachManaged(p *attachment, m message) error {
-	if err := validateAttach(m); err != nil {
-		return err
+func (s *tmuxTask) attachRejected(p *attachment, err error) error {
+	if errors.Is(err, tmux.ErrTerminalEndpoint) {
+		return p.controlMessage(message{Type: "fatal", SoftwareVersion: version, Error: err.Error()})
 	}
-	s.terminalMu.Lock()
-	s.mu.Lock()
-	if err := s.checkRemoteOwnerLocked(p.control); err != nil {
-		s.mu.Unlock()
-		s.terminalMu.Unlock()
-		return err
-	}
-	initial := !s.runtime.Started()
-	if s.killing || s.hosted && (m.Instance != "" && m.Instance != s.record.UID || initial && m.Action == "existing") {
-		s.mu.Unlock()
-		s.terminalMu.Unlock()
-		return fmt.Errorf("shell changed or is unavailable; refresh with sshore list")
-	}
-	prepared := false
-	parent, err := s.runtime.Attach(p, m.TreeKey, s.remoteOwner != "", func() bool {
-		s.reapUnretainedLocked()
-		return !s.runtime.Exited() && !s.killing
-	}, func(key string) error {
-		prepared = true
-		return s.prepareAttachment(p, m, initial, key)
-	})
-	if parent != nil {
-		s.watchParent(parent)
-	}
-	if err == nil && !initial {
-		s.runtime.Redraw(p)
-	}
-	failedInitial := err != nil && initial && prepared && !errors.Is(err, tmux.ErrAttached) && !errors.Is(err, tmux.ErrEnded)
-	abort := failedInitial && (!s.hosted || s.runtime.Started())
-	if abort {
-		s.killing, s.exitReason = true, "initial attachment failed"
-		s.runtime.End()
-	}
-	s.mu.Unlock()
-	s.terminalMu.Unlock()
-	s.publishTreeState()
-	if abort {
-		if s.hosted {
-			s.close()
-		} else {
-			_ = s.stopTerminal()
+	fatal := message{Type: "fatal"}
+	if s.hosted {
+		fatal.SoftwareVersion = version
+		switch {
+		case errors.Is(err, tmux.ErrEnded):
+			err = fmt.Errorf("shell is exiting; use sshore shell HOST to create a new one")
+		case errors.Is(err, tmux.ErrAttached):
+			err = fmt.Errorf("shell already attached; detach the other connection first")
 		}
+	} else if errors.Is(err, tmux.ErrEnded) || errors.Is(err, tmux.ErrAttached) {
+		err = fmt.Errorf("local shell unavailable or already attached")
+	}
+	fatal.Error = err.Error()
+	_ = p.controlMessage(fatal)
+	if s.hosted {
+		_ = p.control.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _ = readMessage(p.control)
 	}
 	return err
 }
 
-// The caller holds terminalMu and mu until input ownership is published.
-func (s *tmuxTask) prepareAttachment(p *attachment, m message, initial bool, key string) error {
-	if initial {
-		if err := s.startManagedShell(m); err != nil {
-			return err
-		}
-		if m.Pinned {
-			if err := s.pinLocked(0); err != nil {
-				return err
-			}
-		}
-	} else {
-		if m.NoLogin || m.NoProfile || len(m.Argv) != 0 {
-			return fmt.Errorf("startup options require a new managed shell")
-		}
-		if err := s.runtime.Resize(shellSize(m)); err != nil {
-			return err
-		}
+func (s *tmuxTask) attachmentRequest(p *attachment, m message) tmux.AttachRequest {
+	req := tmux.AttachRequest{TerminalToken: m.Token, ValidationError: validateAttach(m)}
+	if req.ValidationError != nil {
+		return req
 	}
-	instance := s.record.UID
+	if s.hosted && m.Instance != "" && m.Instance != s.record.UID {
+		req.ValidationError = fmt.Errorf("shell changed or is unavailable; refresh with sshore list")
+		return req
+	}
+	req.TreeKey, req.Size, req.Pin = m.TreeKey, shellSize(m), m.Pinned
+	req.Existing, req.RetryUnstarted = s.hosted && m.Action == "existing", s.hosted
+	req.StartupOptions = m.NoLogin || m.NoProfile || len(m.Argv) != 0
+	if owned, ok := p.control.(*ownedShellConnection); ok {
+		req.OwnerToken = owned.token
+	}
+	if !req.Existing {
+		req.Launch, req.LaunchError = s.shellLaunch(m)
+	}
+	return req
+}
+
+func (s *tmuxTask) attachmentReady(p *attachment, m message, key string, state tmux.Snapshot[*attachment]) error {
+	instance := state.ID
 	if !s.hosted {
 		instance = ""
 	}
@@ -186,90 +131,49 @@ func (s *tmuxTask) prepareAttachment(p *attachment, m message, initial bool, key
 	if validMachineID(m.MachineID) && machine != m.MachineID && len(m.SourceHost) <= 256 {
 		p.sourceHost = cleanText(m.SourceHost)
 	}
-	pinned, until := s.runtime.PinState()
-	if err := p.controlMessage(message{Type: "ready", SoftwareVersion: version, Owner: s.parentIdentityLocked(), TreeKey: key, MachineID: machine, Pinned: pinned, PinUntil: until, Instance: instance, PID: s.runtime.PID(), Name: s.record.Name, Shell: s.shellName, Program: s.program.Load()}); err != nil {
-		return err
-	}
-	if data := s.runtime.Replay(); len(data) > 0 {
-		if err := p.Output(data); err != nil {
-			return err
-		}
-	}
-	return nil
+	return p.controlMessage(message{Type: "ready", SoftwareVersion: version, Owner: taskKey(state.OwnerID),
+		TreeKey: key, MachineID: machine, Pinned: state.Pinned, PinUntil: state.PinUntil, Instance: instance,
+		PID: state.PID, Name: state.Name, Shell: state.Process.Shell, Program: state.Process.ProgramLine != ""})
 }
 
-// A descendant's terminal reservation also changes the waiting state of its ancestors.
-func (s *tmuxTask) publishTreeState() {
-	var tasks []daemonTask
-	for task := s; task != nil; task = task.parentTask() {
-		tasks = append(tasks, task)
-	}
-	s.registry.inventoryChanged(tasks...)
-}
-
-func (s *tmuxTask) releaseAttachment(p *attachment, cause error) (message, error) {
-	s.mu.Lock()
-	disconnected := cause != nil && !s.runtime.Exited() && s.runtime.Active() == p
-	// Hold mu through cancellation so a successor cannot inherit an old write.
-	detached, err := s.runtime.ReleaseInput(p)
-	if err != nil {
-		s.exitReason = "terminal input cancellation failed"
-	}
-	s.reapUnretainedLocked()
-	var reply message
-	if detached && err == nil {
-		pinned, until := s.runtime.PinState()
-		reply = message{Type: "detached", Name: s.record.Name, Pinned: pinned, PinUntil: until}
-	}
-	s.mu.Unlock()
-	s.publishTreeState()
-	if disconnected {
+func (s *tmuxTask) reportAttachmentLoss(cause, err error) {
+	if cause != nil {
 		termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Shell attachment disconnected: %s", cleanText(cause.Error()))
 	}
 	if err != nil {
 		termui.Log(s.log, canonicalTaskCode(s.treeIdentity()), termui.Error, "Could not release shell input: %s", cleanText(err.Error()))
-		s.close()
 	}
-	return reply, err
 }
 
 func (s *tmuxTask) detachAttachment(p *attachment, request message) (bool, error) {
+	var retention *time.Duration
 	if request.Action != "switch" {
-		s.mu.Lock()
-		err := s.pinLocked(time.Duration(request.TTLNanos))
-		s.mu.Unlock()
-		if err != nil {
-			return false, p.controlMessage(message{Type: "pin_failed", Error: err.Error()})
-		}
+		duration := time.Duration(request.TTLNanos)
+		retention = &duration
+	}
+	detached, err := s.runtime.Detach(p, retention)
+	if _, failed := errors.AsType[tmux.PinFailure](err); failed {
+		return false, p.controlMessage(message{Type: "pin_failed", Error: err.Error()})
 	}
 	p.approvals.disable()
-	reply, err := s.releaseAttachment(p, nil)
-	if err == nil && reply.Type != "" {
-		err = p.FinishDetach(reply)
+	if err != nil {
+		s.reportAttachmentLoss(nil, err)
+	} else if detached.Released {
+		err = p.finishDetach(message{Type: "detached", Name: s.record.Name, Pinned: detached.Pinned, PinUntil: detached.PinUntil})
 	}
 	return true, err
 }
 
-// Only this loop reads control frames. The byte stream runs independently,
-// with the same input lease until detach or disconnect releases it.
-func (s *tmuxTask) serveAttachment(p *attachment, extra func(*attachment, message) error) (result error) {
-	released := false
-	inputDone := p.PumpInput()
-	defer func() {
-		p.Close()
-		if !released {
-			_, _ = s.releaseAttachment(p, result)
-		}
-		<-inputDone
-	}()
+// The control loop translates messages while tmux runs the terminal byte stream.
+func (s *tmuxTask) serveAttachment(p *attachment, extra func(*attachment, message) error) error {
 	for {
 		request, err := readMessage(p.control)
 		if err != nil {
 			return err
 		}
 		if request.Type == "detach" {
-			released, err = s.detachAttachment(p, request)
-			if released || err != nil {
+			finished, err := s.detachAttachment(p, request)
+			if finished || err != nil {
 				return err
 			}
 			continue
@@ -289,7 +193,7 @@ func (s *tmuxTask) attachmentControl(p *attachment, request message, extra func(
 		}
 		return p.controlMessage(message{Type: "input_drained"})
 	case "resize":
-		if err := s.resizeAttachment(p, shellSize(request)); err != nil {
+		if err := s.runtime.ResizeAttached(p, shellSize(request)); err != nil {
 			return fmt.Errorf("resize terminal: %w", err)
 		}
 		if s.hosted {
@@ -297,7 +201,7 @@ func (s *tmuxTask) attachmentControl(p *attachment, request message, extra func(
 		}
 		return nil
 	case "redraw":
-		s.redrawAttachment(p)
+		s.runtime.Redraw(p)
 		return p.controlMessage(message{Type: "redrawn"})
 	case "session_targets":
 		return p.controlMessage(s.sessionTargets(request))
@@ -310,20 +214,6 @@ func (s *tmuxTask) attachmentControl(p *attachment, request message, extra func(
 	}
 }
 
-func (s *tmuxTask) resizeAttachment(p *attachment, size pty.Size) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.runtime.ResizeAttached(p, size)
-}
-
-func (s *tmuxTask) redrawAttachment(p *attachment) {
-	s.terminalMu.Lock()
-	defer s.terminalMu.Unlock()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.runtime.Redraw(p)
-}
-
 func (s *tmuxTask) holdTree(conn net.Conn, m message) error {
 	if checkPeerVersion(m.SoftwareVersion, "client") != nil {
 		return writeMessage(conn, message{Type: "error", Error: "current shell attachment changed"})
@@ -332,11 +222,7 @@ func (s *tmuxTask) holdTree(conn net.Conn, m message) error {
 	if !ok {
 		return writeMessage(conn, message{Type: "error", Error: "current shell attachment changed"})
 	}
-	s.publishTreeState()
-	defer func() {
-		release()
-		s.publishTreeState()
-	}()
+	defer release()
 	if err := writeMessage(conn, message{Type: "tree_held"}); err != nil {
 		return err
 	}

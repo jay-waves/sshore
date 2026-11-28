@@ -117,7 +117,7 @@ func approvalDescription(request requestRecord) string {
 			if op.Recursive {
 				fmt.Fprintf(&body, "\nDownload directory tree %s", cleanText(op.Path))
 			} else {
-				fmt.Fprintf(&body, "\nDownload %s (%s, %s)", cleanText(op.Path), cleanText(op.Name), displayBytes(op.Size))
+				fmt.Fprintf(&body, "\nDownload %s (%s, %s)", cleanText(op.Path), cleanText(op.Name), termui.FormatBytes(op.Size))
 			}
 		case "upload":
 			if op.Recursive {

@@ -8,9 +8,11 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	transportio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/termui"
 	"github.com/xtaci/smux"
 )
 
@@ -114,6 +116,19 @@ func (d *shellDiagnostics) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
+func (d *shellDiagnostics) trackProgress(label string, size int64, run func(*atomic.Int64) error) error {
+	report := func(action, name string, size int64) {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if d.active {
+			_ = streamMessage(d.c, message{Type: "setup_progress", SoftwareVersion: version, Action: action, Name: name, Size: size})
+		}
+	}
+	report("start", label, size)
+	defer report("done", "", 0)
+	return termui.MonitorProgress(func(done int64) { report("update", "", done) }, run)
+}
+
 // Observe frontend EOF during setup as well as during stream relaying.
 type setupConnection struct {
 	net.Conn
@@ -140,8 +155,8 @@ func runRemoteShell(c net.Conn, req localDaemonRequest, tasks *daemonTasks) erro
 	if req.Parent == "" {
 		conn = setupConnection{c, cancel}
 	} else {
-		parent, ok := tasks.lookup(req.Parent).(*tmuxTask)
-		if ok && !parent.hosted {
+		parent := tasks.shell(req.Parent)
+		if parent != nil && !parent.hosted {
 			owner = parent
 		}
 	}

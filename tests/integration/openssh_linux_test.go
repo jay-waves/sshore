@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/user"
@@ -19,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -284,7 +286,7 @@ Match command "printf forwarding-check"
 			t.Fatalf("failed authentication: stdout %q, error %v\n%s", out, err, &stderr)
 		}
 	})
-	scenario("copy deploys by release and preserves destinations", func(t *testing.T, ctx context.Context) {
+	scenario("copy reports deployment and transfer progress and preserves destinations", func(t *testing.T, ctx context.Context) {
 		src, dst := filepath.Join(dir, "source"), filepath.Join(dir, "download")
 		const payload = "file from the client\n"
 		if err := os.WriteFile(src, []byte(payload), 0600); err != nil {
@@ -300,7 +302,11 @@ Match command "printf forwarding-check"
 			return bytes.Count(log, []byte("Starting session: subsystem 'sftp'"))
 		}
 		first := countDeployments()
-		run(t, ctx, "cp", src, remote)
+		runOpenSSHTerminal(t, ctx, command(ctx, "cp", src, remote), func(_ func(string), wait terminalWait) {
+			wait("Deploy server 0.0.0 to "+host, true)
+			wait("Upload source", true)
+			wait("Copied ")
+		})
 		if got := countDeployments(); got != first+1 {
 			t.Fatalf("first copy opened %d SFTP subsystems, want one", got-first)
 		}
@@ -313,9 +319,49 @@ Match command "printf forwarding-check"
 		if got := countDeployments(); got != first+1 {
 			t.Fatalf("warm copy reopened deployment SFTP, count %d", got-first)
 		}
+		var streamed bytes.Buffer
+		stream := command(ctx, "cp", remote, "here:-")
+		stream.Stdout = &streamed
+		transcript, err := runTerminal(t, ctx, stream, func(_ func(string), wait terminalWait) {
+			wait("Download integration-copy", true)
+		})
+		if err != nil || streamed.String() != payload || strings.Contains(transcript, "Deploy server") {
+			t.Fatalf("warm streaming copy: %v, stdout %q\n%s", err, &streamed, transcript)
+		}
+		input, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer input.Close()
+		defer writer.Close()
+		stdinPayload := strings.Repeat("x", 4<<10)
+		stdinCopy := command(ctx, "cp", "here:-", host+":integration-stdin")
+		stdinCopy.Stdin = input
+		stdinCopy.SysProcAttr = &syscall.SysProcAttr{Ctty: 2} // stderr is the terminal; stdin is a pipe.
+		runOpenSSHTerminal(t, ctx, stdinCopy, func(_ func(string), wait terminalWait) {
+			wait("Upload integration-stdin", true)
+			if _, err := io.WriteString(writer, stdinPayload); err != nil {
+				t.Fatal(err)
+			}
+			// Keep stdin open until the byte count is visible during the transfer.
+			wait("4.0 KiB", true)
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if got := run(t, ctx, "sh", host, "--", "cat integration-stdin"); got != stdinPayload {
+			t.Fatalf("streamed upload stored %d bytes, want %d", len(got), len(stdinPayload))
+		}
 		// Move the deployed binary aside without touching its state. A cached
-		// exec path must open SFTP only to recover the missing binary.
+		// exec path must open SFTP to recover it and relay progress to the shell frontend.
 		run(t, ctx, "sh", host, "--", `for file in .sshore/clients/*/0.0.0/sshore; do mv "$file" "$file.fixture"; done`)
+		shell := command(ctx, "sh", host, "--name", "copy-recovery", "--no-profile")
+		runOpenSSHTerminal(t, ctx, shell, func(send func(string), wait terminalWait) {
+			wait("Deploy server 0.0.0 to "+host, true)
+			wait("Connected " + host + ":copy-recovery")
+			send("exit\n")
+			wait("Exited " + host + ":copy-recovery")
+		})
 		repaired := filepath.Join(dir, "repaired-copy")
 		run(t, ctx, "cp", remote, repaired)
 		requireFile(t, repaired, payload)
@@ -740,7 +786,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			send("q")
 		})
 	})
-	scenario("port browser forwards a discovered SSH service to an edited port", func(t *testing.T, ctx context.Context) {
+	scenario("port browser filters listeners and forwards the selected SSH service", func(t *testing.T, ctx context.Context) {
 		probe, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
@@ -750,11 +796,12 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		probe.Close()
 		out, err := runTerminal(t, ctx, command(ctx, "lp", host+":", ":"), func(send func(string), wait terminalWait) {
 			wait("2222", true)
-			send("r")
+			// A colon leaves the browser open for listener selection.
+			send(":r")
 			wait("Ports refreshed", true)
 			// Select sshd by port even if other fixture services are listening.
 			// Pasted shortcuts stay inert, including Enter inside the filter.
-			send("\x1b[200~q:\r\x1b[201~/\x1b[200~2222\r\x1b[201~")
+			send("\x1b[200~q\r\x1b[201~/\x1b[200~2222\r\x1b[201~")
 			wait("/2222", true)
 			send("\r")
 			wait("Listen on here at port:", true)
@@ -1881,6 +1928,126 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		})
 	})
 
+	scenario("terminal streams are single use and close with their session", func(t *testing.T, ctx context.Context) {
+		var uid string
+		cmd := exec.CommandContext(ctx, binary, "sh", "--name", "stream-owner", "--pin", "--no-profile")
+		runOpenSSHTerminal(t, ctx, cmd, func(send func(string), wait terminalWait) {
+			wait("Connected here:stream-owner")
+			send("printf 'STREAM_%s=%s\\n' id \"$SSHORE_LOCAL_SESSION\"\n")
+			_, identity, _ := strings.Cut(ansi.Strip(wait("STREAM_id=")), "STREAM_id=")
+			uid = strings.TrimPrefix(strings.TrimSpace(identity), "task:")
+			send("\x02d")
+			wait("No shell attached.")
+			send("exit\r")
+		})
+		if len(uid) != 32 {
+			t.Fatalf("missing task ID: %q", uid)
+		}
+		t.Cleanup(func() {
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = exec.CommandContext(cleanup, binary, "kill", uid).Run()
+		})
+		account, err := user.Current()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(filepath.Join(account.HomeDir, ".sshore", "daemon", "daemon.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var daemon struct{ Address, Token, Version string }
+		if err := json.Unmarshal(data, &daemon); err != nil {
+			t.Fatal(err)
+		}
+		// Use the authenticated account endpoint and bind every stream to the
+		// same full task ID, just as a regular frontend does.
+		type terminalReply struct{ Type, Token string }
+		open := func(request map[string]any) (net.Conn, *bufio.Reader, terminalReply) {
+			t.Helper()
+			c, err := (&net.Dialer{}).DialContext(ctx, "tcp4", daemon.Address)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = c.Close() })
+			if err := c.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			req, err := http.NewRequest(http.MethodPost, "http://"+daemon.Address+"/tasks/"+uid+"/open", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+daemon.Token)
+			req.Header.Set("Sshore-Version", daemon.Version)
+			req.Header.Set("Connection", "Upgrade")
+			req.Header.Set("Upgrade", "sshore-stream")
+			if err := req.Write(c); err != nil {
+				t.Fatal(err)
+			}
+			reader := bufio.NewReader(c)
+			resp, err := http.ReadResponse(reader, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusSwitchingProtocols {
+				t.Fatalf("task stream upgrade returned %s", resp.Status)
+			}
+			request["software_version"] = daemon.Version
+			if err := json.NewEncoder(c).Encode(request); err != nil {
+				t.Fatal(err)
+			}
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
+				t.Fatal(err)
+			}
+			var reply terminalReply
+			if err := json.Unmarshal(line, &reply); err != nil {
+				t.Fatal(err)
+			}
+			return c, reader, reply
+		}
+		offer := func() (net.Conn, *bufio.Reader, string) {
+			t.Helper()
+			c, reader, reply := open(map[string]any{"type": "terminal_open"})
+			if reply.Type != "terminal_ready" || reply.Token == "" {
+				t.Fatal("terminal stream was not offered")
+			}
+			return c, reader, reply.Token
+		}
+		terminal, output, token := offer()
+		attach := map[string]any{"type": "attach", "action": "existing", "token": token, "term": "xterm", "cols": 100, "rows": 25}
+		control, _, ready := open(attach)
+		if ready.Type != "ready" {
+			t.Fatal("terminal stream did not attach")
+		}
+		if _, _, reply := open(attach); reply.Type != "fatal" {
+			t.Fatal("the terminal offer was accepted twice")
+		}
+		if _, err := io.WriteString(terminal, "printf 'LEASE_%s\\n' active\n"); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			line, err := output.ReadString('\n')
+			if err != nil {
+				t.Fatalf("original attachment lost its stream: %v", err)
+			}
+			if strings.Contains(line, "LEASE_active") {
+				break
+			}
+		}
+		_ = control.Close()
+		if _, err := io.Copy(io.Discard, output); err != nil {
+			t.Fatalf("terminal stream stayed open after control disconnected: %v", err)
+		}
+		pending, unused, _ := offer()
+		local(t, ctx, "kill", uid)
+		// An unclaimed stream closes on task completion before its offer times out.
+		_ = pending.SetReadDeadline(time.Now().Add(time.Second))
+		if _, err := unused.ReadByte(); !errors.Is(err, io.EOF) {
+			t.Fatalf("pending terminal stream outlived its task: %v", err)
+		}
+	})
+
 	scenario("shutdown confirmation rejects a replacement task", func(t *testing.T, ctx context.Context) {
 		// Confirmation applies to the tasks in the preview. Reusing a name
 		// between preview and confirmation must leave the replacement alive.
@@ -1903,16 +2070,47 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 				send("exit\r")
 			})
 		}
+		// The detached row is the same published state that CLI selection reads.
 		identity := func() string {
 			t.Helper()
-			for _, line := range strings.Split(string(local("list")), "\n") {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 && fields[1] == "("+name+")" {
-					return fields[0]
-				}
+			path := filepath.Join(os.Getenv("SSHORE_STATE_DIR"), "connections", "participation.db")
+			db, err := bolt.Open(path, 0600, &bolt.Options{ReadOnly: true, Timeout: time.Second})
+			if err != nil {
+				t.Fatal(err)
 			}
-			t.Fatalf("missing shell %s", name)
-			return ""
+			defer db.Close()
+			var id string
+			err = db.View(func(tx *bolt.Tx) error {
+				b := tx.Bucket([]byte("live-task-rows"))
+				if b == nil {
+					return fmt.Errorf("missing live task rows")
+				}
+				return b.ForEach(func(key, data []byte) error {
+					if len(key) != 32 {
+						return nil
+					}
+					var row struct {
+						Shell *struct {
+							Instance, Name, State string
+							DetachedAt            time.Time `json:"detached_at"`
+						}
+					}
+					if err := json.Unmarshal(data, &row); err != nil {
+						return err
+					}
+					if row.Shell != nil && row.Shell.Name == name {
+						if id != "" || string(key) != row.Shell.Instance || row.Shell.State != "detached" || row.Shell.DetachedAt.IsZero() {
+							return fmt.Errorf("invalid detached session row: %+v", row.Shell)
+						}
+						id = string(key)
+					}
+					return nil
+				})
+			})
+			if err != nil || id == "" {
+				t.Fatalf("published detached shell %s: %v", name, err)
+			}
+			return id
 		}
 		start()
 		first := identity()
@@ -1920,7 +2118,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 		out, err := runTerminal(t, ctx, localCommand("kill", "--all"), func(send func(string), wait terminalWait) {
 			wait(name)
 			wait("[y/N]", true)
-			local("kill", first[:6])
+			local("kill", first)
 			start()
 			replacement = identity()
 			send("y\n")

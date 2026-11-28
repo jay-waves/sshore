@@ -259,7 +259,7 @@ func runDaemon() (result error) {
 	}
 	tasks := &daemonTasks{log: log, cgroup: group, cgroupErr: cgroupErr}
 	activity := &daemonActivity{tasks: tasks, root: record.Directory, instance: record.UID}
-	tasks.publishInventory = activity.publishTask
+	tasks.publishInventory = activity.publishRows
 	defer activity.closeInventory()
 	if err = writeStateJSON(path, record); err != nil {
 		return err
@@ -428,8 +428,8 @@ func runDaemonLaunch(c net.Conn, req localDaemonRequest, record localShellRecord
 		req.Record.Address, req.Record.Token = record.Address, record.Token
 		var parent *tmuxTask
 		if req.Parent != "" {
-			task, ok := tasks.lookup(req.Parent).(*tmuxTask)
-			if !ok || task.hosted {
+			task := tasks.shell(req.Parent)
+			if task == nil || task.hosted {
 				_ = writeControlJSON(c, localStartup{Error: "parent shell is unavailable"})
 				return
 			}

@@ -10,16 +10,17 @@ import (
 	"time"
 
 	sshio "github.com/jay-waves/sshore/internal/ssh"
+	"github.com/jay-waves/sshore/internal/tmux"
 	bolt "go.etcd.io/bbolt"
 )
 
 const (
-	taskActive   = "active"
-	taskDetached = "detached"
-	taskWaiting  = "waiting"
-	taskStarting = "starting"
+	taskActive   = tmux.StateActive
+	taskDetached = tmux.StateDetached
+	taskWaiting  = tmux.StateWaiting
+	taskStarting = tmux.StateStarting
 	taskUnknown  = "unknown"
-	taskExited   = "exited"
+	taskExited   = tmux.StateExited
 )
 
 func taskHiddenFromInventory(state string) bool {
@@ -55,6 +56,9 @@ type shellView struct {
 	Owner       string    `json:"owner,omitempty"`
 	Pinned      bool      `json:"pinned,omitempty"`
 	PinUntil    time.Time `json:"pin_until,omitzero"`
+	DetachedAt  time.Time `json:"detached_at,omitzero"`
+	Stopping    bool      `json:"stopping,omitempty"`
+	RemoteOwner bool      `json:"remote_owner,omitempty"`
 	Instance    string    `json:"instance,omitempty"`
 	Host        string    `json:"host,omitempty"`
 	Name        string    `json:"name"`
@@ -212,19 +216,6 @@ type liveTaskRow struct {
 	Resource *resourceView `json:"resource,omitempty"`
 }
 
-func (a *daemonActivity) publishTask(tasks ...daemonTask) {
-	keys := make([]string, 0, len(tasks))
-	for _, task := range tasks {
-		switch t := task.(type) {
-		case *tmuxTask:
-			keys = append(keys, t.record.UID)
-		case *daemonResourceTask:
-			keys = append(keys, t.record.UID)
-		}
-	}
-	a.publishRows(keys...)
-}
-
 // Resolve each key again on retry: a lease can close or a task can be replaced.
 func (a *daemonActivity) currentRow(key string) any {
 	if key == "host" {
@@ -247,9 +238,7 @@ func (a *daemonActivity) currentRow(key string) any {
 	}
 	switch t := a.tasks.lookup(key).(type) {
 	case *tmuxTask:
-		t.mu.Lock()
-		defer t.mu.Unlock()
-		view := t.snapshotLocked()
+		view := t.snapshot()
 		if !t.expired() && view.State != taskExited {
 			return liveTaskRow{Shell: &view, Hosted: t.hosted}
 		}

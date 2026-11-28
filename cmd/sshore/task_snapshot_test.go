@@ -10,8 +10,8 @@ import (
 
 func TestInventoryReadsHistoryWhileShellIsBusy(t *testing.T) {
 	tasks := &daemonTasks{}
-	shell := tasks.newTmuxTask(localShellRecord{Name: "busy-shell"}, nil, nil, false)
-	if err := tasks.registerShell(shell, nil); err != nil {
+	shell, err := tasks.newShell(localShellRecord{Name: "busy-shell"}, nil, nil, false)
+	if err != nil {
 		t.Fatal(err)
 	}
 	root := filepath.Join(t.TempDir(), "state")
@@ -24,7 +24,7 @@ func TestInventoryReadsHistoryWhileShellIsBusy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	activity.publishTask(shell)
+	activity.publishRows(shell.record.UID)
 	// Readers use the last published state even while the shell is busy.
 	shell.mu.Lock()
 	defer shell.mu.Unlock()

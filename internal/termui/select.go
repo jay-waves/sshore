@@ -33,7 +33,7 @@ func RunLocalConsole(run func(*LocalConsole) error) (err error) {
 }
 
 func (c *LocalConsole) open() error {
-	restore, err := enableLocalConsoleOutput()
+	restore, err := enableConsoleOutput(os.Stdout)
 	if err != nil {
 		return err
 	}

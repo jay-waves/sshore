@@ -9,7 +9,7 @@ import (
 	"golang.org/x/term"
 )
 
-func enableLocalConsoleOutput() (func() error, error) {
+func enableConsoleOutput(*os.File) (func() error, error) {
 	return func() error { return nil }, nil
 }
 

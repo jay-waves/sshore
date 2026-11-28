@@ -7,7 +7,7 @@ grants access.
 
 This document describes threats, controls and their limits. Implementation and
 lifecycle details belong in [ARCHITECTURE.md](ARCHITECTURE.md); terminology belongs in
-[GLOSSARY.md](GLOSSARY.md).
+[glossary.md](glossary.md).
 
 ## Scope and assumptions
 
@@ -350,7 +350,7 @@ Release checksums detect corruption, not publisher compromise. Cached artifacts 
 private and rechecked on reuse; unavailable assets never cause substitution of a
 different release.
 The publisher retains immutable tags and assets for deployment to new hosts.
-See [release mechanics](RELEASE.md).
+See [release mechanics](release.md).
 
 `kill --all --reset` asks for confirmation even when the task list is empty.
 Local reset clears state and caches while preserving the executable, remote

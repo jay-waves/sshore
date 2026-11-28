@@ -21,6 +21,14 @@ func negotiateShellSetup(stream io.ReadWriter, host string, chooseShell bool) (m
 }
 
 func negotiateSetup(stream io.ReadWriter, choose func([]sessionTarget) (string, error)) (message, error) {
+	var progress *termui.Progress
+	closeProgress := func() {
+		if progress != nil {
+			progress.Close()
+			progress = nil
+		}
+	}
+	defer closeProgress()
 	for {
 		m, err := readMessage(stream)
 		if err != nil {
@@ -34,6 +42,20 @@ func negotiateSetup(stream io.ReadWriter, choose func([]sessionTarget) (string, 
 			return message{}, err
 		}
 		switch m.Type {
+		case "setup_progress":
+			switch m.Action {
+			case "start":
+				closeProgress()
+				progress = termui.NewProgress(os.Stderr, m.Name, m.Size)
+			case "update":
+				if progress != nil {
+					progress.Update(m.Size)
+				}
+			case "done":
+				closeProgress()
+			default:
+				return message{}, fmt.Errorf("invalid setup progress action")
+			}
 		case "setup_ready":
 			if m.Action != "managed" {
 				return message{}, fmt.Errorf("invalid setup mode")

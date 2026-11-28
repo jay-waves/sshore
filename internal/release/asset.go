@@ -26,22 +26,32 @@ var assetClient = &http.Client{CheckRedirect: func(req *http.Request, via []*htt
 	return nil
 }}
 
-func OpenBinary(ctx context.Context, baseURL, version, target, binary string) (io.ReadCloser, error) {
+// OpenBinary returns the deployment binary and its uncompressed size in bytes.
+func OpenBinary(ctx context.Context, baseURL, version, target, binary string) (io.ReadCloser, int64, error) {
 	if runtime.GOOS == target && runtime.GOARCH == "amd64" {
 		exe, err := os.Executable()
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		return os.Open(exe)
+		file, err := os.Open(exe)
+		if err != nil {
+			return nil, 0, err
+		}
+		info, err := file.Stat()
+		if err != nil {
+			_ = file.Close()
+			return nil, 0, err
+		}
+		return file, info.Size(), nil
 	}
 	if !Valid(version) {
-		return nil, fmt.Errorf("cross-platform remote deployment requires a published release")
+		return nil, 0, fmt.Errorf("cross-platform remote deployment requires a published release")
 	}
 	data, err := downloadBinary(ctx, baseURL, version, target, binary)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return io.NopCloser(bytes.NewReader(data)), nil
+	return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
 }
 
 func downloadBinary(ctx context.Context, baseURL, version, target, binary string) ([]byte, error) {

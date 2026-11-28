@@ -275,8 +275,8 @@ func (s *tmuxTask) confirmShellRoute(c net.Conn, request message) {
 
 func (s *tmuxTask) createRouteShell(req localDaemonRequest) (*tmuxTask, error) {
 	if req.Shell.Command == "attach" {
-		target, ok := s.registry.lookup(req.Shell.Instance).(*tmuxTask)
-		if !ok || !target.hosted {
+		target := s.registry.shell(req.Shell.Instance)
+		if target == nil || !target.hosted {
 			return nil, fmt.Errorf("choose a registered shell on this host with sshore attach ID")
 		}
 		return target, nil
@@ -358,10 +358,7 @@ func (s *tmuxTask) hostedAttachmentCommand(p *attachment, m message) error {
 func (s *tmuxTask) serveHostedIngress(c net.Conn, first message) error {
 	if first.Type == "shell_owner_access" {
 		owned := &ownedShellConnection{Conn: c, token: first.Token}
-		s.mu.Lock()
-		allowed := s.remoteOwner != "" && s.checkRemoteOwnerLocked(owned) == nil
-		s.mu.Unlock()
-		if !allowed || first.SoftwareVersion != version || first.Instance != s.record.UID {
+		if first.SoftwareVersion != version || first.Instance != s.record.UID || !s.runtime.HasRemoteOwner(first.Token) {
 			return writeMessage(c, message{Type: "error", Error: "shell owner route unavailable"})
 		}
 		if err := writeMessage(c, message{Type: "shell_owner_access_ready", SoftwareVersion: version}); err != nil {

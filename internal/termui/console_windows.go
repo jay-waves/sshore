@@ -31,8 +31,8 @@ func configureInputVT(config *readline.Config, get func(*uint32) error, set func
 	return restore, true
 }
 
-func enableLocalConsoleOutput() (func() error, error) {
-	out := windows.Handle(os.Stdout.Fd())
+func enableConsoleOutput(f *os.File) (func() error, error) {
+	out := windows.Handle(f.Fd())
 	return enableConsoleVT(func(mode *uint32) error { return windows.GetConsoleMode(out, mode) },
 		func(mode uint32) error { return windows.SetConsoleMode(out, mode) })
 }

@@ -46,15 +46,6 @@ func runPortBrowser(a cliArguments) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	if port == "" {
-		port, err = portPrompt("Source port: ", "")
-		if err != nil {
-			return 1, err
-		}
-		if _, err = parsePort(port); err != nil {
-			return 2, err
-		}
-	}
 	dest, err := portPrompt("Listen on "+cleanText(peer.host)+" at port: ", port)
 	if err != nil {
 		return 1, err

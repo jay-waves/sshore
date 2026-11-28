@@ -192,17 +192,12 @@ func daemonRoutes(record localShellRecord, activity *daemonActivity, stop func()
 	mux.HandleFunc("POST /resources/for-host", tasks.serveResourcesForHost)
 	mux.HandleFunc("POST /resources/stop-confirmed", tasks.serveConfirmedResourceStops)
 	mux.HandleFunc("POST /tasks/stop", tasks.serveTaskStop)
-	mux.HandleFunc("POST /tasks/select", func(w http.ResponseWriter, r *http.Request) {
-		var q taskQuery
+	mux.HandleFunc("POST /tasks/remote-children", func(w http.ResponseWriter, r *http.Request) {
+		var q remoteChildQuery
 		if !readDaemonBody(w, r, &q) {
 			return
 		}
-		matches, err := q.run(tasks)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
-		_ = json.MarshalWrite(w, matches)
+		_ = json.MarshalWrite(w, tasks.remoteChildCandidates(q.Parent, q.Ref))
 	})
 	mux.HandleFunc("POST /tasks/native/open", tasks.openNative)
 	mux.HandleFunc("POST /tasks/{id}/open", tasks.open)
