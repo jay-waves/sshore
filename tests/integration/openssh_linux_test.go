@@ -1271,8 +1271,10 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 			switch mode {
 			case "lp", "reverse":
 				first, peer := host+":", ":"
+				peerLabel := "here"
 				if mode == "reverse" {
 					first, peer = ":", host+":"
+					peerLabel = host
 				}
 				out, err = runTerminal(t, ctx, command(ctx, "lp", first, peer), func(send func(string), wait terminalWait) {
 					wait("Enter Forward", true)
@@ -1283,7 +1285,7 @@ printf '%s %s\n' "${0##*/}" "$1" >> "$SSHORE_TEST_LF_ACTIONS"
 					send("u")
 					wait("UDP ports", true)
 					send("/" + source + "\r\r")
-					wait("Listen on "+peer+" at port:", true)
+					wait("Listen on "+peerLabel+" at port:", true)
 					send("\x15" + port + "\r")
 					wait("Started forward/")
 				})
